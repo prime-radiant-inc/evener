@@ -23,7 +23,7 @@ import { zoomParamsColumnRefs } from "../panes/zoom/cascadeCoverage";
 import { parseZoomParams } from "../panes/zoom/intent";
 import { createSecureUUID } from "../stores/secureUUID";
 import { type PaneTypeId, paneFor } from "./paneRegistry";
-import { paramString, refParam } from "./routing";
+import { paramString, refParam, sameParams } from "./routing";
 import { isMobileViewport } from "./useIsMobile";
 
 // Which of the workspace's two slots a pane lives in. The main slot holds
@@ -211,15 +211,6 @@ export interface WorkspaceStoreState {
 export interface PanePanelParams {
   paneType: PaneTypeId;
   paneParams: unknown;
-}
-
-// Plain structural equality for the small, always-JSON-safe param objects
-// every pane type uses ({ref}, {ref,path}, {section?}, {}). JSON.stringify
-// is deterministic here because none of them have more than a couple of
-// primitive-valued keys with no realistic key-ordering ambiguity - a full
-// deep-equal dependency would be more machinery than this actually needs.
-function sameParams(a: unknown, b: unknown): boolean {
-  return JSON.stringify(a) === JSON.stringify(b);
 }
 
 const pendingPaneFocus = new Set<string>();

@@ -31,7 +31,7 @@ import { PopoutHeaderAction } from "./PopoutHeaderAction";
 import { PaneDocumentContext } from "./paneDocument";
 import { type PaneTitleCtx, paneFor } from "./paneRegistry";
 import { PaneVisibilityContext } from "./paneVisibility";
-import { refParam } from "./routing";
+import { refParam, sameParams } from "./routing";
 import { openTopLevelSession } from "./sessionPlacement";
 import {
   cancelPaneFocus,
@@ -672,9 +672,7 @@ export function DockHost() {
       routed.every((expected) =>
         restoredWorkspace.panes.some(
           (pane) =>
-            pane.type === expected.type &&
-            pane.slot === expected.slot &&
-            JSON.stringify(pane.params) === JSON.stringify(expected.params),
+            pane.type === expected.type && pane.slot === expected.slot && sameParams(pane.params, expected.params),
         ),
       );
     const preservedInspection =
@@ -693,8 +691,8 @@ export function DockHost() {
       // the legacy cascade-retention rule (it keeps its route role and its
       // restored neighbors), so the boot re-apply and every later placement
       // of the same route agree.
-      const ref = (routedPrimary.params as { ref?: unknown }).ref;
-      if (typeof ref === "string") openTopLevelSession(ref);
+      const ref = refParam(routedPrimary.params);
+      if (ref !== null) openTopLevelSession(ref);
     }
     for (const pane of routedSecondary) {
       workspaceStore.getState().openPane(pane.type, pane.params, {

@@ -73,7 +73,7 @@ func stoolCommunicateRun(t *testing.T, data []byte) stoolCommunicateTrace {
 		reg := tool.NewRegistry()
 		_ = registerCommunicateTool(reg, deps)
 		_, err := reg.Get("communicate").Exec(context.Background(), nil, map[string]any{
-			"message": "abort " + token, "end_turn": true,
+			"message": "abort " + token, "next": tool.CommunicateNextSendAndEndTurn,
 		})
 		if !errors.Is(err, abortErr) || calls != abortAt {
 			t.Fatalf("abort %d: calls=%d err=%v", abortAt, calls, err)
@@ -89,13 +89,13 @@ func stoolCommunicateRun(t *testing.T, data []byte) stoolCommunicateTrace {
 	reg := tool.NewRegistry()
 	_ = registerCommunicateTool(reg, deps)
 	handler := reg.Get("communicate").Exec
-	if _, err := handler(context.Background(), nil, map[string]any{"end_turn": false}); err == nil {
+	if _, err := handler(context.Background(), nil, map[string]any{"next": tool.CommunicateNextSendAndContinue}); err == nil {
 		t.Fatal("message-less progress update was accepted")
 	}
 
 	// Nonterminal output may supply the message, but must not commit a result.
 	nonterminal, err := handler(context.Background(), nil, map[string]any{
-		"end_turn": false,
+		"next": tool.CommunicateNextSendAndContinue,
 		"output": map[string]any{
 			"message":   token,
 			"data":      map[string]any{"iteration": len(data)},
@@ -116,7 +116,7 @@ func stoolCommunicateRun(t *testing.T, data []byte) stoolCommunicateTrace {
 	}
 
 	if _, err := handler(context.Background(), nil, map[string]any{"message": token}); err != nil || !committed {
-		t.Fatalf("omitted end_turn did not commit the report: err=%v committed=%v", err, committed)
+		t.Fatalf("omitted next did not commit the report: err=%v committed=%v", err, committed)
 	}
 
 	var resultMessage, resultReply, resultOutput string
@@ -141,8 +141,8 @@ func stoolCommunicateRun(t *testing.T, data []byte) stoolCommunicateTrace {
 	}
 
 	args := map[string]any{
-		"message":  " done " + token + " ",
-		"end_turn": true,
+		"message": " done " + token + " ",
+		"next":    tool.CommunicateNextSendAndEndTurn,
 		"output": map[string]any{
 			"message":   token,
 			"data":      map[string]any{"bytes": len(data)},

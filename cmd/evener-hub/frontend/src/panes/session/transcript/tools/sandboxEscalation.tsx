@@ -37,16 +37,8 @@
 
 import type { SandboxEscalationRequested } from "@evener/appwire-client";
 import { sessionActionError } from "@evener/appwire-client";
-import {
-  createContext,
-  type KeyboardEvent as ReactKeyboardEvent,
-  type ReactNode,
-  useCallback,
-  useContext,
-  useEffect,
-  useRef,
-  useState,
-} from "react";
+import { createContext, type ReactNode, useCallback, useContext, useEffect, useRef, useState } from "react";
+import { useCardPrimaryAction } from "../../../../keybindings/cardPrimaryAction";
 import { threadsStore, useThreadsStore } from "../../../../stores/threads";
 import { Button, Card, Chip } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
@@ -84,11 +76,7 @@ export interface SandboxEscalationCardProps {
 // deny - denial must never be one accidental keypress away, so Deny stays
 // mouse/tab-reachable only.
 export function SandboxEscalationCard({ escalation, onApprove, onDeny, resolved, error }: SandboxEscalationCardProps) {
-  function handleKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
-    if (event.key !== "Enter" || !(event.metaKey || event.ctrlKey)) return;
-    event.preventDefault();
-    if (!resolved) onApprove();
-  }
+  const handleKeyDown = useCardPrimaryAction({ onPrimary: onApprove, enabled: !resolved });
 
   return (
     // role="group" + Mod+Enter's onKeyDown makes this an interactive

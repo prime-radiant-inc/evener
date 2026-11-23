@@ -1295,3 +1295,18 @@ describe("memory refresh projection", () => {
     expect(projection.eligibleDisclosureIds).not.toContain("item_memory_context_0");
   });
 });
+
+describe("quiet yield projection", () => {
+  test.each(["chat", "intent", "tools", "activity", "full"] as const)(
+    "keeps quiet_yield visible as an item entry at %s even with system events off",
+    (level) => {
+      const quiet = item("item_quiet_yield_1", "systemMessage", {
+        eventKind: "quiet_yield",
+        description: "Quiet yield",
+        text: "Ended turn quietly",
+      });
+      const entries = entriesFor(threadWith(quiet), preset(level, { systemEvents: false }));
+      expect(entries).toEqual([expect.objectContaining({ kind: "item", id: "item_quiet_yield_1", isMessage: false })]);
+    },
+  );
+});

@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { createPortal } from "react-dom";
 import { afterEach, expect, test, vi } from "vitest";
 import { FindBar } from "./FindBar";
@@ -50,4 +50,17 @@ test("Enter and Shift+Enter step from the field, in a popped-out window too", ()
   vi.mocked(shown.step).mockClear();
   fireEvent.keyDown(button, { key: "Enter" });
   expect(shown.step).not.toHaveBeenCalled();
+});
+
+test("each focus request focuses the field and selects its query", () => {
+  const shown = view();
+  const { rerender } = render(<FindBar view={shown} />);
+  const field = screen.getByRole("searchbox") as HTMLInputElement;
+  field.blur();
+  expect(document.activeElement).not.toBe(field);
+
+  rerender(<FindBar view={{ ...shown, focusEpoch: shown.focusEpoch + 1 }} />);
+  expect(document.activeElement).toBe(field);
+  expect(field.selectionStart).toBe(0);
+  expect(field.selectionEnd).toBe(shown.query.length);
 });

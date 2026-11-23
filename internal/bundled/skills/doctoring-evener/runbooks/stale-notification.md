@@ -1,10 +1,10 @@
 # Runbook: stale-notification
 
 **Question:** did this session keep receiving notification steering turns
-after it had already declared itself done (`end_turn=true`)?
+after it had already declared itself done (`next="send_and_end_turn"` / legacy `end_turn=true`)?
 
-`end_turn=true` ends a turn; it does not by itself mean the task is done. A
-session that ends a turn quietly with `communicate({})` is waiting for work
+`send_and_end_turn` (legacy `end_turn=true`) ends a turn; it does not by itself mean the task is done. A
+session that ends a turn quietly with `communicate` (`next="log_quietly_and_end_turn"` / legacy `{}`) is waiting for work
 it started, and the next turn is that work reporting back. Only the
 session's last turn-ending call, with nothing left waiting on, marks the
 point where a later notification is stale.
@@ -12,10 +12,10 @@ point where a later notification is stale.
 ## HEALTHY
 
 - Few or no notification-kind steering turns arrive after the session's
-  final `end_turn=true` result-tool call. `doctor_evener` `transcript` with
+  final `send_and_end_turn` (or legacy `end_turn=true`) result-tool call. `doctor_evener` `transcript` with
   `health: true`
   reports `stale_notifications` below the threshold.
-- Note: a notification delivered BEFORE the session's final `end_turn` is
+- Note: a notification delivered BEFORE the session's final `send_and_end_turn` is
   normal — the session is still working and can act on it. Only post-done
   delivery counts here.
 
@@ -42,7 +42,7 @@ audit:
 
 - Read the flagged session's transcript around each stale notification
   (`doctor_evener` `transcript` with `range` narrowed to the affected turns) to see how late it
-  arrived relative to the final `end_turn` call, and whether it forced a
+  arrived relative to the final `send_and_end_turn` (or `end_turn`) call, and whether it forced a
   wasted acknowledgment turn — the 2026-08-05 session study found completion
   events arriving up to 54 minutes after the final answer, ~14 sessions
   affected. If the notification's source watch itself looks suspect, widen

@@ -106,7 +106,7 @@ func TestProviderImageRecovery(t *testing.T) {
 				case toolRequest:
 					providerRecoveryToolStream(t, w, body["model"].(string), "effect-call", "image_effect", `{"value":"input-sentinel"}`)
 				case toolRequest + 1, toolRequest + 2:
-					providerRecoveryToolStream(t, w, body["model"].(string), fmt.Sprintf("done-%d", n), "communicate", `{"message":"output-sentinel","end_turn":true,"output":{"message":"","data":{},"artifacts":[]}}`)
+					providerRecoveryToolStream(t, w, body["model"].(string), fmt.Sprintf("done-%d", n), "communicate", `{"message":"output-sentinel","next":"send_and_end_turn","output":{"message":"","data":{},"artifacts":[]}}`)
 				default:
 					t.Errorf("unexpected request number %d", n)
 					w.WriteHeader(http.StatusInternalServerError)

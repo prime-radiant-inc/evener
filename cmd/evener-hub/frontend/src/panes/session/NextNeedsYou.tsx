@@ -4,18 +4,13 @@
 // session list, ordering, validity and navigation decision belongs to the
 // shared needs-you controller.
 import type { NavigationSessionSummary } from "@evener/appwire-client";
-import type {
-  ReactElement,
-  KeyboardEvent as ReactKeyboardEvent,
-  MouseEvent as ReactMouseEvent,
-  PointerEvent as ReactPointerEvent,
-} from "react";
+import type { ReactElement, KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent } from "react";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import { useOptionalNeedsYou, useOptionalNeedsYouController } from "../../shell/NeedsYouProvider";
 import type { NeedsYouChoice, NeedsYouSnapshot } from "../../shell/needsYouActions";
 import { Button, IconButton, ListRow, Popover, StatusDot } from "../../widgets";
-import { LONG_PRESS_MS, POINTER_CLICK_WINDOW_MS } from "../../widgets/hovercard";
 import { requireClass } from "../../widgets/internal/requireClass";
+import { useLongPress } from "../../widgets/internal/useLongPress";
 import styles from "./nextNeedsYou.module.css";
 
 export interface NextNeedsYouProps {
@@ -69,8 +64,6 @@ export function useNextNeedsYouMount(sessionRef: string, hidden: boolean): boole
   return useSyncExternalStore(subscribe, getMount, getMount);
 }
 
-const HOLD_SLOP_PX = 10;
-
 const CLASS = {
   root: requireClass(styles.root, "nextNeedsYou.module.css", "root"),
   nextSlot: requireClass(styles.nextSlot, "nextNeedsYou.module.css", "nextSlot"),
@@ -118,133 +111,7 @@ function OwnedNextNeedsYou({
   const [listOpen, setListOpen] = useState(false);
   const listOpenRef = useRef(listOpen);
   listOpenRef.current = listOpen;
-
-  const nextChoice = snapshot.choices.find((choice) => choice.summary.ref === snapshot.nextRef);
-  const nextTitle = nextChoice?.summary.title?.trim() ?? "";
-  const otherChoices = snapshot.choices.filter((choice) => choice.summary.ref !== sessionRef);
-  const visible = nextNeedsYouVisible(snapshot, sessionRef, hidden);
-
-  const moreRef = useRef<HTMLButtonElement>(null);
-  const listRef = useRef<HTMLElement>(null);
-  const holdTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  const suppressBackstopRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  const pressRef = useRef<{ x: number; y: number; pointerId: number } | null>(null);
-  const captureRef = useRef<{ element: Element; pointerId: number } | null>(null);
-  const pointerDownRef = useRef(false);
-  const holdCompletedRef = useRef(false);
-  const suppressClickRef = useRef(false);
   const restoreFocusRef = useRef(false);
-  const gestureCleanupRef = useRef<(() => void) | null>(null);
-  const visibilityCleanupRef = useRef<(() => void) | null>(null);
-
-  const clearHoldTimer = useCallback(() => {
-    clearTimeout(holdTimerRef.current);
-    holdTimerRef.current = undefined;
-    // The visibility watch exists only while a hold is pending. Completing,
-    // cancelling or unmounting a hold all pass through here.
-    const detachVisibility = visibilityCleanupRef.current;
-    visibilityCleanupRef.current = null;
-    detachVisibility?.();
-  }, []);
-
-  const clearSuppressBackstop = useCallback(() => {
-    clearTimeout(suppressBackstopRef.current);
-    suppressBackstopRef.current = undefined;
-  }, []);
-
-  // The one click a completed hold still emits arrives with the release, so
-  // its suppression window starts there, not when the list opened: a hold
-  // longer than the window would otherwise navigate on release.
-  const armSuppressBackstop = useCallback(() => {
-    clearSuppressBackstop();
-    suppressBackstopRef.current = setTimeout(() => {
-      suppressBackstopRef.current = undefined;
-      suppressClickRef.current = false;
-    }, POINTER_CLICK_WINDOW_MS);
-  }, [clearSuppressBackstop]);
-
-  const detachGesture = useCallback(() => {
-    const cleanup = gestureCleanupRef.current;
-    if (cleanup === null) return;
-    gestureCleanupRef.current = null;
-    cleanup();
-  }, []);
-
-  // Capture keeps the release delivered while the pointer is away from the
-  // button, which is what lets a hold survive a small wobble - but leaving it
-  // armed after the gesture is cancelled hands the eventual release back to
-  // this button, and the click that follows it would navigate about a gesture
-  // the reader already cancelled. Drop it the moment the gesture ends.
-  const releasePointerCapture = useCallback(() => {
-    const captured = captureRef.current;
-    captureRef.current = null;
-    if (captured === null) return;
-    try {
-      if (captured.element.hasPointerCapture(captured.pointerId)) {
-        captured.element.releasePointerCapture(captured.pointerId);
-      }
-    } catch {
-      // The element can be gone, and the capture already revoked.
-    }
-  }, []);
-
-  // A pending hold ends without opening anything. A hold that already
-  // completed keeps its one-click suppression until the release click or the
-  // backstop consumes it.
-  const cancelHold = useCallback(() => {
-    clearHoldTimer();
-    pressRef.current = null;
-    detachGesture();
-    releasePointerCapture();
-    if (!holdCompletedRef.current) {
-      suppressClickRef.current = false;
-      clearSuppressBackstop();
-    }
-  }, [clearHoldTimer, clearSuppressBackstop, detachGesture, releasePointerCapture]);
-
-  // The gesture belongs to the document the button lives in. A conversation in
-  // a Dockview popout publishes its pointer events in that window, so listeners
-  // on the opener's window would never see the movement that cancels a hold.
-  const armGesture = useCallback(
-    (doc: Document) => {
-      if (gestureCleanupRef.current !== null) return;
-      const owns = (event: PointerEvent) => {
-        const press = pressRef.current;
-        return press !== null && press.pointerId === event.pointerId;
-      };
-      const onMove = (event: PointerEvent) => {
-        if (!owns(event)) return;
-        const press = pressRef.current;
-        if (!press) return;
-        // A hold that already completed opened the list; the press stays alive
-        // until it is released so the one click it emits is still consumed. A
-        // drift must not end that gesture.
-        if (holdCompletedRef.current) return;
-        if (Math.hypot(event.clientX - press.x, event.clientY - press.y) > HOLD_SLOP_PX) cancelHold();
-      };
-      const onUp = (event: PointerEvent) => {
-        if (!owns(event)) return;
-        pointerDownRef.current = false;
-        cancelHold();
-        if (suppressClickRef.current) armSuppressBackstop();
-      };
-      const onCancel = (event: PointerEvent) => {
-        if (!owns(event)) return;
-        pointerDownRef.current = false;
-        holdCompletedRef.current = false;
-        cancelHold();
-      };
-      doc.addEventListener("pointermove", onMove);
-      doc.addEventListener("pointerup", onUp);
-      doc.addEventListener("pointercancel", onCancel);
-      gestureCleanupRef.current = () => {
-        doc.removeEventListener("pointermove", onMove);
-        doc.removeEventListener("pointerup", onUp);
-        doc.removeEventListener("pointercancel", onCancel);
-      };
-    },
-    [armSuppressBackstop, cancelHold],
-  );
 
   const closeList = useCallback((restoreFocus: boolean) => {
     restoreFocusRef.current = restoreFocus;
@@ -256,67 +123,27 @@ function OwnedNextNeedsYou({
     setListOpen(true);
   }, []);
 
-  function handleNextPointerDown(event: ReactPointerEvent<HTMLButtonElement>) {
-    if (event.button !== 0 || listOpenRef.current) return;
-    // A second pointer never takes over an active gesture.
-    if (pressRef.current !== null) return;
-    holdCompletedRef.current = false;
-    suppressClickRef.current = false;
-    clearSuppressBackstop();
-    pointerDownRef.current = true;
-    pressRef.current = { x: event.clientX, y: event.clientY, pointerId: event.pointerId };
-    const doc = event.currentTarget.ownerDocument ?? document;
-    armGesture(doc);
-    try {
-      event.currentTarget.setPointerCapture(event.pointerId);
-      captureRef.current = { element: event.currentTarget, pointerId: event.pointerId };
-    } catch {
-      // jsdom has no pointer capture; the document listeners own the gesture.
-    }
-    holdTimerRef.current = setTimeout(() => {
-      clearHoldTimer();
-      holdCompletedRef.current = true;
-      suppressClickRef.current = true;
-      openList();
-    }, LONG_PRESS_MS);
-    // A page that goes hidden loses the pointer, so the pending hold ends like
-    // an early release: the timer never fires and the next click is not
-    // consumed as the completed hold's.
-    const onVisibilityChange = () => {
-      if (doc.visibilityState !== "hidden") return;
-      holdCompletedRef.current = false;
-      cancelHold();
-    };
-    doc.addEventListener("visibilitychange", onVisibilityChange);
-    visibilityCleanupRef.current = () => {
-      doc.removeEventListener("visibilitychange", onVisibilityChange);
-    };
-  }
+  const longPress = useLongPress({
+    onLongPress: openList,
+    enabled: !listOpen,
+    cancelOnVisibilityHidden: true,
+  });
+  const cancelLongPress = longPress.cancel;
+  const consumeLongPressClick = longPress.consumeClick;
+
+  const nextChoice = snapshot.choices.find((choice) => choice.summary.ref === snapshot.nextRef);
+  const nextTitle = nextChoice?.summary.title?.trim() ?? "";
+  const otherChoices = snapshot.choices.filter((choice) => choice.summary.ref !== sessionRef);
+  const visible = nextNeedsYouVisible(snapshot, sessionRef, hidden);
+
+  const moreRef = useRef<HTMLButtonElement>(null);
+  const listRef = useRef<HTMLElement>(null);
 
   function handleNextClick(event: ReactMouseEvent<HTMLButtonElement>) {
-    if (suppressClickRef.current) {
-      // The one click a completed hold still emits belongs to the hold.
-      suppressClickRef.current = false;
-      clearSuppressBackstop();
-      event.preventDefault();
-      event.stopPropagation();
-      return;
-    }
+    // The one click a completed hold still emits belongs to the hold.
+    if (consumeLongPressClick(event)) return;
     if (listOpenRef.current) closeList(false);
     void controller.next();
-  }
-
-  function handleLostPointerCapture() {
-    if (holdTimerRef.current === undefined) {
-      // A completed hold whose pointer never releases still needs its click
-      // window to end - but only once the press itself is over. While the
-      // pointer is still down the release that ends the hold has not arrived,
-      // and starting the window here would let a slow release navigate.
-      if (suppressClickRef.current && !pointerDownRef.current) armSuppressBackstop();
-      return;
-    }
-    holdCompletedRef.current = false;
-    cancelHold();
   }
 
   function handleListKeyDown(event: ReactKeyboardEvent<HTMLElement>) {
@@ -338,13 +165,10 @@ function OwnedNextNeedsYou({
     // shared controller additionally drops any deferred navigation it owns so
     // a late reply cannot act for a control the reader can no longer see.
     controller.cancel();
-    holdCompletedRef.current = false;
-    suppressClickRef.current = false;
-    clearSuppressBackstop();
-    cancelHold();
+    cancelLongPress();
     restoreFocusRef.current = false;
     if (listOpenRef.current) setListOpen(false);
-  }, [visible, controller, cancelHold, clearSuppressBackstop]);
+  }, [visible, controller, cancelLongPress]);
 
   // Focus moves into the independent list when it opens.
   useEffect(() => {
@@ -403,16 +227,6 @@ function OwnedNextNeedsYou({
     };
   }, [listOpen, closeList]);
 
-  useEffect(
-    () => () => {
-      holdCompletedRef.current = false;
-      clearHoldTimer();
-      clearSuppressBackstop();
-      detachGesture();
-    },
-    [clearHoldTimer, clearSuppressBackstop, detachGesture],
-  );
-
   if (!visible) return null;
 
   const nextAccessibleName = nextTitle ? `Next needs you: ${nextTitle}` : "Next needs you";
@@ -426,12 +240,7 @@ function OwnedNextNeedsYou({
           wrap
           data-testid="next-needs-you-next"
           aria-label={nextAccessibleName}
-          onPointerDown={handleNextPointerDown}
-          onPointerCancel={() => {
-            holdCompletedRef.current = false;
-            cancelHold();
-          }}
-          onLostPointerCapture={handleLostPointerCapture}
+          {...longPress.handlers}
           onClick={handleNextClick}
         >
           <span className={CLASS.nextStack}>

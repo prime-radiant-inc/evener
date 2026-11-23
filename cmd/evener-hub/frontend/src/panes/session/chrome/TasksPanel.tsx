@@ -94,6 +94,7 @@ import {
 } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { TaskCheck, taskStatusTouch, taskStatusWord } from "../transcript/tools/taskCheck";
+import { PanelSection } from "./PanelSection";
 import styles from "./taskspanel.module.css";
 
 export interface TasksPanelProps {
@@ -122,7 +123,6 @@ const CLASS = {
   count: requireClass(styles.count, "taskspanel.module.css", "count"),
   list: requireClass(styles.list, "taskspanel.module.css", "list"),
   description: requireClass(styles.description, "taskspanel.module.css", "description"),
-  groupHead: requireClass(styles.groupHead, "taskspanel.module.css", "groupHead"),
   groupCount: requireClass(styles.groupCount, "taskspanel.module.css", "groupCount"),
   settledSummary: requireClass(styles.settledSummary, "taskspanel.module.css", "settledSummary"),
   summaryMain: requireClass(styles.summaryMain, "taskspanel.module.css", "summaryMain"),
@@ -353,16 +353,22 @@ function LiveGroup({
 }) {
   if (tasks.length === 0) return null;
   return (
-    <section data-testid="task-group-live" data-status={status}>
-      <h4 className={CLASS.groupHead}>
-        {label} <span className={CLASS.groupCount}>{tasks.length}</span>
-      </h4>
+    <PanelSection
+      title={
+        <>
+          {label} <span className={CLASS.groupCount}>{tasks.length}</span>
+        </>
+      }
+      headingAs="h4"
+      data-testid="task-group-live"
+      data-status={status}
+    >
       <ul className={CLASS.list}>
         {tasks.map((row) => (
           <TaskRowView key={row.id} task={row} sessionRef={sessionRef} renderTime={renderTime} />
         ))}
       </ul>
-    </section>
+    </PanelSection>
   );
 }
 

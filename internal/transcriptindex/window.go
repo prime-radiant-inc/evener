@@ -805,6 +805,10 @@ func (x *Index) pendingRegistry(r *reader) (*apptranscript.ToolCallRegistry, err
 			delete(reg.CommAuthorship, id)
 		}
 	}
+	if x.builder.lastAssistantKnown {
+		reg.LastAssistantText = x.builder.lastAssistantText
+		reg.LastAssistantTurnID = x.builder.lastAssistantTurnID
+	}
 	return reg, nil
 }
 

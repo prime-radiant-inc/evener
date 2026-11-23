@@ -16,14 +16,14 @@ func TestPrepareToolCall_MissingOuterBrace(t *testing.T) {
 	if err := reg.Register(regTool(tool.DefCommunicate())); err != nil {
 		t.Fatal(err)
 	}
-	raw := `{"end_turn":true,"message":"OK","output":{"artifacts":[],"data":{},"message":""}`
+	raw := `{"next":"send_and_end_turn","message":"OK","output":{"artifacts":[],"data":{},"message":""}`
 	for _, tc := range []struct {
 		name, args, finish string
 		repaired, rejected bool
 	}{
 		{"completed", raw, "", true, false},
 		{"length stopped", raw, llm.FinishReasonLength, false, true},
-		{"empty object", `{}`, "", false, false},
+		{"empty object", `{}`, "", false, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			res := prepareToolCall(llm.ToolCallData{ID: "c1", Name: "communicate", Arguments: json.RawMessage(tc.args)}, reg.Get("communicate"), []string{"communicate"}, "communicate", "communicate", tc.finish)

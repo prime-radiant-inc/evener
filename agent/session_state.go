@@ -169,7 +169,11 @@ func historyTurnFailure(history []schema.Turn) (schema.Turn, bool) {
 // without user input. Child activity is excluded because it is projected on
 // the child session, while its eventual notification is included once queued.
 func (s *Session) sessionWorkPending() bool {
-	return s.pendingQueueDepth() > 0 || s.hasRunnableClientMutationStart() || s.hasPendingDelegateDeliveries() || s.pendingRootDelegateAttention() || s.hasPendingDelegateAttentionArmRetry() || s.hasPendingDelegateAttention() || (s.jobManager != nil && s.jobManager.hasPendingStableWatchSettlementRetry()) || s.peekNotifications() > 0
+	return s.nonMutationWorkPending() || s.hasRunnableClientMutationStart()
+}
+
+func (s *Session) nonMutationWorkPending() bool {
+	return s.pendingQueueDepth() > 0 || s.hasPendingDelegateDeliveries() || s.pendingRootDelegateAttention() || s.hasPendingDelegateAttentionArmRetry() || s.hasPendingDelegateAttention() || (s.jobManager != nil && s.jobManager.hasPendingStableWatchSettlementRetry()) || s.peekNotifications() > 0
 }
 
 func (s *Session) hasPendingDelegateAttention() bool {
@@ -268,7 +272,7 @@ func (s *Session) autonomyInFlight() bool {
 	if s.hasWorkingSubagent() {
 		return true
 	}
-	return s.sessionWorkPending()
+	return s.nonMutationWorkPending() || s.hasWakeableClientMutationStart()
 }
 
 // hasWakeableWork reports whether anything can wake a resting session. Used by

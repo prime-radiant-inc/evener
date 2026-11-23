@@ -902,7 +902,7 @@ type Session struct {
 	restBeforeInput SessionState
 
 	// terminalCommunicateAccepted latches that a communicate with
-	// end_turn=true completed a turn while TurnEndsProcess: the model has
+	// next="send_and_end_turn" completed a turn while TurnEndsProcess: the model has
 	// explicitly ended the turn that ends the process. Unlike comm it is never
 	// reset — the one-shot drain reads it to abandon residue with no live work
 	// behind it, and the round loop reads it to finish an empty post-terminal
@@ -2021,7 +2021,7 @@ const (
 // communicateOutput, and the turn loop's deliver step. Guarded by s.mu.
 type communicateResult struct {
 	phase             communicateBoundaryPhase
-	updated           bool // non-terminal communicate (end_turn=false) was invoked this turn
+	updated           bool // non-terminal communicate (next="send_and_continue") was invoked this turn
 	text              string
 	reply             string
 	output            string // canonical structured output (communicateOutput)
@@ -3111,7 +3111,7 @@ func (s *Session) communicated() bool {
 	return s.comm.hasAccepted()
 }
 
-// communicateUpdate reports whether a NON-terminal communicate (end_turn=false)
+// communicateUpdate reports whether a NON-terminal communicate (next="send_and_continue")
 // was called during the most recent ProcessInput invocation. A delegate's
 // missing-report reminder can then acknowledge the update instead of claiming
 // the delegate never called the result tool (#3734).
@@ -3353,6 +3353,14 @@ func (s *Session) envRuntimeDrifted() bool {
 	return s.envTracker != nil && s.envTracker.RuntimeDrifted(s.envRuntimeSnapshot(envctx.Snapshot{}))
 }
 
+// communicateContractDrifted reports whether a restored legacy session has not yet
+// received the active communicate contract superseding its frozen prompt.
+func (s *Session) communicateContractDrifted() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.envTracker != nil && s.envTracker.CommunicateContractDrifted(s.communicateContractLine())
+}
+
 // armEnvContext owes the next request a fresh environment block.
 func (s *Session) armEnvContext() { s.envContextPending.Store(true) }
 
@@ -3389,7 +3397,17 @@ func (s *Session) envRuntimeSnapshot(snap envctx.Snapshot) envctx.Snapshot {
 		snap.ScratchDir = le.SessionScratchDir()
 	}
 	snap.CallableTools, snap.AvailableSkills = envctx.JoinNames(toolNamesFromDefinitions(s.cachedToolDefs)), envctx.JoinNames(skills)
+	snap.CommunicateContract = s.communicateContractLine()
 	return snap
+}
+
+func (s *Session) communicateContractLine() string {
+	name := s.resultToolName()
+	if name == "" {
+		return ""
+	}
+	return fmt.Sprintf(`%s uses required "message" and optional "next" (%q default, %q for progress updates, %q with a brief note to end quietly); this supersedes retired "end_turn" and "{}" instructions from earlier prompts`,
+		name, schema.CommunicateNextSendAndEndTurn, schema.CommunicateNextSendAndContinue, schema.CommunicateNextLogQuietlyAndEndTurn)
 }
 
 // appendEnvironmentContext can persist recovery context without publishing a
@@ -4029,12 +4047,13 @@ func assistantHistoryMessage(message llm.Message) llm.Message {
 // appendAssistantTurn appends an assistant turn that carries the full response
 // metadata (usage stats and response ID) alongside the message content.
 func (s *Session) appendAssistantTurn(resp llm.Response, finalAttempt ModelAttemptMetadata) error {
-	return s.appendAssistantTurnWithAcceptance(resp, finalAttempt, false)
+	return s.appendAssistantTurnWithAcceptance(resp, finalAttempt, false, false)
 }
 
-func (s *Session) appendAssistantTurnWithAcceptance(resp llm.Response, finalAttempt ModelAttemptMetadata, acceptedReply bool) error {
+func (s *Session) appendAssistantTurnWithAcceptance(resp llm.Response, finalAttempt ModelAttemptMetadata, acceptedReply, quietYield bool) error {
 	t := schema.Turn{
 		AcceptedReply:                   acceptedReply,
+		QuietYield:                      quietYield,
 		Kind:                            schema.TurnAssistant,
 		Message:                         assistantHistoryMessage(resp.Message),
 		Timestamp:                       s.sclock().Now().UTC(),

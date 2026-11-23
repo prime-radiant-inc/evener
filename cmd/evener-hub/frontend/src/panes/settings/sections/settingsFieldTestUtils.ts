@@ -1,13 +1,14 @@
 /** The `field` id of every settings PropertyList row inside `container` (the
- * FieldValue each row's value is wrapped in), in document order, so a test can
- * tell which rows rendered without reading their labels. */
+ * rowProps each row's wrapper carries), in document order, so a test can tell
+ * which rows rendered without reading their labels. */
 export function settingsFieldIds(container: ParentNode = document): (string | null)[] {
   return [...container.querySelectorAll("[data-field]")].map((value) => value.getAttribute("data-field"));
 }
 
 /** The value definition (<dd>) of the row for `field`; throws when it did not render. */
 export function settingsFieldValue(field: string, container: ParentNode = document): HTMLElement {
-  const value = container.querySelector<HTMLElement>(`[data-field="${field}"]`)?.closest<HTMLElement>("dd");
+  const row = container.querySelector<HTMLElement>(`[data-field="${field}"]`);
+  const value = row?.closest<HTMLElement>("dd") ?? row?.querySelector<HTMLElement>("dd");
   if (!value) throw new Error(`no settings row for "${field}"`);
   return value;
 }

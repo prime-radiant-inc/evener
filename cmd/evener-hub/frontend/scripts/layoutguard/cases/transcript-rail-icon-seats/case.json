@@ -5,6 +5,7 @@
     "styles/global.css",
     "styles/tokens.css",
     "styles/railseat.module.css",
+    "styles/text.module.css",
     "panes/session/transcript/turnblock.module.css",
     "widgets/loader/loader.module.css",
     "panes/session/transcript/messages/notificationcard.module.css"

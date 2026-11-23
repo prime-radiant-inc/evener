@@ -7,11 +7,7 @@
 import type { HarnessDescriptor, LaunchConfigLayer, LaunchOption, ModelListResponse } from "@evener/appwire-client";
 import {
   type AdvancedValues,
-  basename,
   collectAdvancedOverrides,
-  effortDefaultLabel,
-  effortLabel,
-  effortReadout,
   errorText,
   FALLBACK_EFFORT_LEVELS,
   findBuiltinArgument,
@@ -58,8 +54,6 @@ import {
   ConfirmDialog,
   chordLabel,
   Dialog,
-  DirectoryIcon,
-  DirectoryPicker,
   Disclosure,
   Dropzone,
   FormRow,
@@ -69,6 +63,7 @@ import {
   type ModelCatalog,
   type ModelCatalogEntry,
   PaneScaffold,
+  PathField,
   PromptCard,
   Select,
   SendIcon,
@@ -76,12 +71,14 @@ import {
   Switch,
   ToolIcon,
   Tooltip,
+  useFocusRehome,
   useToasts,
 } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { modelListToCatalog } from "../../widgets/modelCatalog/catalogClient";
 import { mergeCatalogEntry, mergeCatalogSnapshot } from "../../widgets/modelCatalog/scopedCatalog";
 import { ModelSwitchTrigger } from "../session/chrome/ModelSwitchTrigger";
+import { ReasoningEffortControl } from "../session/chrome/ReasoningEffortControl";
 import { AttachmentTile } from "../session/composer/AttachmentTile";
 import { AttachImageControl } from "../session/composer/attachments/AttachImageControl";
 import { imageFilesFromClipboard } from "../session/composer/attachments/clipboard";
@@ -104,8 +101,8 @@ import {
 } from "./accessMode";
 import { MobileSettingRows } from "./MobileSettingRows";
 import { PluginSelectionPanel } from "./PluginSelectionPanel";
-import pluginSelectionStyles from "./pluginSelection.module.css";
 import { preflightDir } from "./preflight";
+import { SpawnHostSelection } from "./SpawnHostSelection";
 import styles from "./spawn.module.css";
 import {
   getGlobalLastWorkingDir,
@@ -201,38 +198,27 @@ const CLASS = {
   chordHints: requireClass(styles.chordHints, "spawn.module.css", "chordHints"),
   cfgDir: requireClass(styles.cfgDir, "spawn.module.css", "cfgDir"),
   branch: requireClass(styles.branch, "spawn.module.css", "branch"),
-  directoryButton: requireClass(styles.directoryButton, "spawn.module.css", "directoryButton"),
   tileSeat: requireClass(styles.tileSeat, "spawn.module.css", "tileSeat"),
   tileText: requireClass(styles.tileText, "spawn.module.css", "tileText"),
+  tileHeadline: requireClass(styles.tileHeadline, "spawn.module.css", "tileHeadline"),
   tileCaption: requireClass(styles.tileCaption, "spawn.module.css", "tileCaption"),
-  directoryAction: requireClass(styles.directoryAction, "spawn.module.css", "directoryAction"),
   summaryRow: requireClass(styles.summaryRow, "spawn.module.css", "summaryRow"),
   accessTile: requireClass(styles.accessTile, "spawn.module.css", "accessTile"),
   summaryPending: requireClass(styles.summaryPending, "spawn.module.css", "summaryPending"),
   quietRows: requireClass(styles.quietRows, "spawn.module.css", "quietRows"),
   quietRow: requireClass(styles.quietRow, "spawn.module.css", "quietRow"),
+  desktopOnly: requireClass(styles.desktopOnly, "spawn.module.css", "desktopOnly"),
+  quietSummary: requireClass(styles.quietSummary, "spawn.module.css", "quietSummary"),
+  quietSummaryAction: requireClass(styles.quietSummaryAction, "spawn.module.css", "quietSummaryAction"),
   attachments: requireClass(styles.attachments, "spawn.module.css", "attachments"),
   leading: requireClass(styles.leading, "spawn.module.css", "leading"),
   modelTrigger: requireClass(styles.modelTrigger, "spawn.module.css", "modelTrigger"),
-  effortTrigger: requireClass(styles.effortTrigger, "spawn.module.css", "effortTrigger"),
-  effortSeparator: requireClass(styles.effortSeparator, "spawn.module.css", "effortSeparator"),
   mobileConfig: requireClass(styles.mobileConfig, "spawn.module.css", "mobileConfig"),
   promptIntro: requireClass(styles.promptIntro, "spawn.module.css", "promptIntro"),
   promptHeading: requireClass(styles.promptHeading, "spawn.module.css", "promptHeading"),
   promptSubtitle: requireClass(styles.promptSubtitle, "spawn.module.css", "promptSubtitle"),
   promptAnchor: requireClass(styles.promptAnchor, "spawn.module.css", "promptAnchor"),
   submitLabel: requireClass(styles.submitLabel, "spawn.module.css", "submitLabel"),
-  pluginDesktop: requireClass(pluginSelectionStyles.desktopSurface, "pluginSelection.module.css", "desktopSurface"),
-  pluginSummary: requireClass(pluginSelectionStyles.summary, "pluginSelection.module.css", "summary"),
-  pluginSummaryAction: requireClass(pluginSelectionStyles.summaryAction, "pluginSelection.module.css", "summaryAction"),
-  // The host picker's native <select> reuses the Select widget's own stylesheet
-  // class: the widget renders a native <select> too, but its SelectOption has no
-  // per-option disabled flag, and an offline host must be RENDERED yet not
-  // selectable (Component 06b). The class only borrows the visual treatment.
-  // The Connect affordance beside the picker: one button per offline remote
-  // host, an enabled control so a never-attached host is reachable rather
-  // than dead UI (component 06 §"Connecting a configured host").
-  hostConnectRow: requireClass(styles.hostConnectRow, "spawn.module.css", "hostConnectRow"),
 };
 
 // kata xgk8: the empty-value label Model shows when the hub has confirmed it
@@ -473,7 +459,12 @@ function SpawnForm({
   // the round-eight preselection and offline fallback unchanged.
   const displaySource = displaySources.find((candidate) => candidate.id === source);
   const displayHostChoice = sources.length > 0 ? hostChoice : (displaySource?.id ?? hostChoice);
-  const displayRemoteHosts = displaySources.filter((candidate) => candidate.id !== "local");
+  // The one host list is shared by the quiet-row disclosure and the phone
+  // Sheet. The manifest labels every source, including the hub itself
+  // ("<hostname> (hub)"), so the picker renders those rows directly.
+  const showHostPicker = displaySources.some((candidate) => candidate.id !== "local");
+  const displayHostLabel =
+    displaySources.find((candidate) => candidate.id === displayHostChoice)?.label ?? displayHostChoice;
   const cwd = draft.cwd;
   const setCwd = selectSpawnDirectory;
   // Entering onboarding records the draft's own scope; the fallback below is
@@ -523,7 +514,11 @@ function SpawnForm({
       revoke();
     };
   }, [draft, submittedSource, harness, cwd]);
-  const [directoryOpen, setDirectoryOpen] = useState(false);
+  const [hostPickerOpen, setHostPickerOpen] = useState(false);
+  // Choosing a host closes the disclosure and unmounts the row that held the
+  // keyboard. Keep focus on the Host summary instead of dropping it to <body>.
+  const hostDisclosureRef = useRef<HTMLDivElement | null>(null);
+  useFocusRehome(hostDisclosureRef);
   // Scoped by cwd AND host so neither a draft switch nor a host switch can show
   // the previous project's/host's branch while the new evener/git/head request
   // is in flight - or indefinitely after it fails (resolveHeadBranch fails soft
@@ -825,6 +820,17 @@ function SpawnForm({
   // label, which is the honest UI reflection of `busyRef` once React catches
   // up - this ref is only the guard of record.
   const busyRef = draft.busyRef;
+  // Selecting a host is never itself an attach request: an online row is
+  // already attached (a dial would only be redundant), and an offline row is
+  // not selectable, so the Connect control on its row is the single path that
+  // reaches an offline host. Both host surfaces share this action.
+  function selectHost(id: string): void {
+    if (busyRef.current) return;
+    setSource(id);
+  }
+  function openHostsSettings(): void {
+    navigate("/settings/hosts");
+  }
   // The two edges of a launch attempt. busyRef is the synchronous re-entrancy
   // guard, busy and busyStartedAt are the draft state the Start button renders;
   // every exit from an attempt (success, refusal, thrown error) hands Start
@@ -1982,30 +1988,11 @@ function SpawnForm({
   );
   const effortLevels = knownEffortLevels ?? FALLBACK_EFFORT_LEVELS;
   const effortDisabled = !usesEvenerModels || (knownEffortLevels !== null && knownEffortLevels.length === 0);
-  // An effort the ladder doesn't name but state still holds. Only the FALLBACK
-  // ladder produces one: the reset effect below deliberately skips when the
-  // catalog knows nothing about the model, because clobbering a sticky default
-  // on a guessed ladder loses the user's setting.
-  //
-  // Such a value must still be OFFERED. A native select handed a value with no
-  // matching <option> renders its first one instead, so the field would read
-  // "(default)" while thread/start receives the preserved level -- the select
-  // must never show one effort and submit another.
-  const preservedEffort =
-    reasoningEffort !== "" && reasoningEffort !== "none" && !effortLevels.includes(reasoningEffort)
-      ? reasoningEffort
-      : null;
   // The effort a session started now would inherit, once launch/resolve has
   // landed with one: the open list names it on the empty option's
   // "(default)", and the closed readout shows it as the effort itself.
   const resolvedEffortDefault =
     typeof resolvedDefaults?.reasoningEffort === "string" ? resolvedDefaults.reasoningEffort.trim() : "";
-  const effortOptions = [
-    { value: "", label: effortDefaultLabel(resolvedEffortDefault, effortLevels) },
-    ...effortLevels.filter((level) => level !== "none").map((level) => ({ value: level, label: level })),
-    ...(preservedEffort === null ? [] : [{ value: preservedEffort, label: preservedEffort }]),
-    { value: "none", label: effortLabel("none", effortLevels) },
-  ];
   // The preview includes explicit access overrides. Only name it as the
   // inherited default when no sandbox override contributed to that preview.
   const sandboxOverride = mergeAccessModeSandbox(advancedOverrides, accessMode)?.sandbox?.trim();
@@ -2734,42 +2721,23 @@ function SpawnForm({
                       valueTestId="spawn-model-value"
                     />
                   </span>
-                  {/* Select's quiet variant, the same closed-state trigger
-                      StatusRow's effort control uses: the current value IS the
-                      visible control - a real native <select> laid over its own
-                      readout at zero opacity - so the row stays one quiet line
-                      instead of growing a bordered box. The readout names the
-                      effort the select holds; an unset effort whose resolved
-                      default is known shows that tier ("high"), the effort a
-                      session started now would run at, while the open list
-                      keeps "high (default)" so following the default stays
-                      distinct from pinning it. Same ladder contract the removed
-                      FormRow select kept: the selected model's own
-                      levels, the fallback ladder when the catalog can't say,
-                      and a disabled control when the model cannot reason at all
-                      (effortDisabled) rather than no control - pre-launch the
-                      setting is still discoverable beside the model it belongs
-                      to. */}
-                  <span
-                    className={CLASS.effortTrigger}
-                    data-testid="spawn-effort"
-                    data-disabled={effortDisabled ? "true" : undefined}
-                  >
-                    <span className={CLASS.effortSeparator} aria-hidden="true">
-                      ·
-                    </span>
-                    <Select
-                      variant="quiet"
-                      id="spawn-reasoning-effort"
-                      ariaLabel="Prompt reasoning effort"
-                      value={reasoningEffort}
-                      options={effortOptions}
-                      readout={effortReadout(reasoningEffort, effortLevels, resolvedEffortDefault)}
-                      onChange={(e) => handleEffortChange(e.target.value)}
-                      disabled={effortDisabled}
-                      valueTestId="spawn-effort-value"
-                    />
-                  </span>
+                  {/* The selected model's ladder, the fallback when the catalog
+                      can't say, and a disabled control when the model cannot
+                      reason at all (effortDisabled) rather than no control -
+                      pre-launch the setting is still discoverable beside the
+                      model it belongs to. The card always offers an explicit
+                      off, even when the ladder does not name "none". */}
+                  <ReasoningEffortControl
+                    levels={effortLevels}
+                    current={reasoningEffort}
+                    defaultLevel={resolvedEffortDefault}
+                    onChange={handleEffortChange}
+                    testId="spawn-effort"
+                    id="spawn-reasoning-effort"
+                    ariaLabel="Prompt reasoning effort"
+                    disabled={effortDisabled}
+                    offerNone
+                  />
                 </div>
               }
               actions={
@@ -2842,70 +2810,46 @@ function SpawnForm({
 
         {/* Host picker (Component 06b): rendered only when the manifest lists a
             non-local source, so the common single-host form is byte-for-byte
-            unchanged. Local is preselected (the draft default). An offline host
-            still renders - the reader can see it exists - but its option is
-            disabled and carries the reason in its own label. The row sits
-            ABOVE the working directory: the folder list, recents, and
-            validation all come from the selected machine (hostRequest), so
-            the form reads pick-the-machine first, then the folder on it. */}
-        {displayRemoteHosts.length > 0 && (
-          <FormRow
-            label="Host"
-            htmlFor="spawn-host"
-            help={
-              displayRemoteHosts.some((candidate) => !candidate.online)
-                ? "Where the session runs. Offline hosts can't be selected."
-                : "Where the session runs."
-            }
-          >
-            <Select
-              id="spawn-host"
-              value={displayHostChoice}
-              // A submit snapshots this choice (handleSpawn's closure carries
-              // the submittedSource/remoteLaunch that thread/start and
-              // saveDefaults receive) and then awaits the local directory
-              // preflight, so a change mid-submit would silently diverge from
-              // what actually launches and from which defaults are saved.
-              // Disabled while busy; the guard also covers the same-tick window
-              // before that attribute commits (kata 61v2's busyRef discipline).
-              disabled={busy}
-              onChange={(event) => {
-                if (busyRef.current) return;
-                const next = event.target.value;
-                setSource(next);
-                // Selecting a host is never itself an attach request: an online
-                // row is already attached (a dial would only be redundant), and
-                // an offline row's option is disabled, so a select event cannot
-                // name it — the Connect affordance below is the single path that
-                // reaches an offline host.
-              }}
-              options={displaySources.map((candidate) => ({
-                value: candidate.id,
-                label: candidate.online ? candidate.label : `${candidate.label} (offline)`,
-                disabled: !candidate.online,
-              }))}
-            />
-            {displayRemoteHosts.some((candidate) => !candidate.online) && (
-              <div className={CLASS.hostConnectRow}>
-                {displayRemoteHosts
-                  .filter((candidate) => !candidate.online)
-                  .map((candidate) => (
-                    <Button
-                      key={candidate.id}
-                      variant="quiet"
-                      size="xs"
-                      type="button"
-                      disabled={connectingHosts.has(candidate.id)}
-                      onClick={() => connectHost(candidate.id)}
-                    >
-                      {connectingHosts.has(candidate.id)
-                        ? `Connecting ${candidate.label}…`
-                        : `Connect ${candidate.label}`}
-                    </Button>
-                  ))}
-              </div>
-            )}
-          </FormRow>
+            unchanged. It is a quiet-row Disclosure, the same control the
+            Plugins-for-this-session setting uses. The expanded body is the one
+            host list: online hosts are choices, an offline host keeps its own
+            Connect action in that list, and the last row opens the hosts
+            settings for a host the hub does not list yet. The row sits ABOVE
+            the working directory: the folder list, recents, and validation all
+            come from the selected machine (hostRequest), so the form reads
+            pick-the-machine first, then the folder on it. */}
+        {showHostPicker && (
+          <div className={`${CLASS.quietRows} ${CLASS.desktopOnly}`}>
+            <div className={CLASS.quietRow} data-testid="spawn-host-desktop" ref={hostDisclosureRef}>
+              <Disclosure
+                open={hostPickerOpen}
+                onOpenChange={setHostPickerOpen}
+                data-testid="spawn-host-disclosure"
+                disabled={busy}
+                summary={
+                  <div className={CLASS.quietSummary} data-testid="spawn-host-summary">
+                    <strong>Host</strong>
+                    <span data-testid="spawn-host-value">{displayHostLabel}</span>
+                  </div>
+                }
+              >
+                <SpawnHostSelection
+                  options={displaySources}
+                  value={displayHostChoice}
+                  connecting={connectingHosts}
+                  onSelect={(id) => {
+                    setHostPickerOpen(false);
+                    selectHost(id);
+                  }}
+                  onConnect={connectHost}
+                  onConnectHost={() => {
+                    setHostPickerOpen(false);
+                    openHostsSettings();
+                  }}
+                />
+              </Disclosure>
+            </div>
+          </div>
         )}
 
         {/* The two facts a session starts from, as a pair of summary tiles
@@ -2914,32 +2858,30 @@ function SpawnForm({
             access control. */}
         <div className={CLASS.summaryRow}>
           <div className={CLASS.cfgDir}>
-            <button
-              type="button"
+            <PathField
               id="spawn-cwd"
-              className={CLASS.directoryButton}
-              data-state={cwd ? "chosen" : "unset"}
-              aria-label={`Working directory: ${cwd || "Choose a folder"}`}
-              aria-haspopup="dialog"
-              aria-expanded={directoryOpen}
-              onClick={() => setDirectoryOpen(true)}
-            >
-              <span className={CLASS.tileSeat} aria-hidden="true">
-                <DirectoryIcon />
+              variant="prominent"
+              kind="dir"
+              value={cwd}
+              onChange={(path) => {
+                setCwd(path);
+                commitLastWorkingDir(path);
+              }}
+              complete={complete}
+              listRecents={listRecents}
+              fallbackDir={pickerFallbackDir}
+              directory={{ validatePath, createDirectory }}
+              ariaLabel="Working directory"
+              placeholder="Choose a folder"
+            />
+            {/* Git info is a property of that directory (HEAD there), so it
+                stays beside the directory tile. PathField's prominent variant
+                has no detail slot to carry it inside the trigger. */}
+            {branch !== "" && (
+              <span className={CLASS.branch} data-testid="spawn-branch">
+                {branch}
               </span>
-              <span className={CLASS.tileText}>
-                <strong>{cwd ? basename(cwd) || "/" : "Working directory"}</strong>
-                <span className={CLASS.tileCaption}>{cwd || "Choose a folder"}</span>
-                {/* Git info is a property of that directory (HEAD there), so
-                    it rides inside the directory's own tile. */}
-                {branch !== "" && (
-                  <span className={CLASS.branch} data-testid="spawn-branch">
-                    {branch}
-                  </span>
-                )}
-              </span>
-              <span className={CLASS.directoryAction}>Change…</span>
-            </button>
+            )}
           </div>
           {/* A live region: a changed access mode re-announces what the
               session will be allowed to do. */}
@@ -2960,7 +2902,9 @@ function SpawnForm({
                 {resolveStatus === "ready" ? (
                   <>
                     <span className={CLASS.tileCaption}>Effective access</span>
-                    <strong>{effectiveAccess?.label ?? (effectiveSandbox || "inherited")}</strong>
+                    <strong className={CLASS.tileHeadline}>
+                      {effectiveAccess?.label ?? (effectiveSandbox || "inherited")}
+                    </strong>
                     <span className={CLASS.tileCaption}>
                       {advancedSandboxOverride ? "Set by the Advanced sandbox override." : "Set by Access mode."}
                       {effectiveAccessDescription ? ` ${effectiveAccessDescription}` : ""}
@@ -2980,23 +2924,6 @@ function SpawnForm({
             </div>
           </Card>
         </div>
-        {directoryOpen && (
-          <DirectoryPicker
-            key={cwd}
-            value={cwd}
-            fallbackDir={pickerFallbackDir}
-            complete={complete}
-            listRecents={listRecents}
-            validatePath={validatePath}
-            createDirectory={createDirectory}
-            onClose={() => setDirectoryOpen(false)}
-            onPick={(path) => {
-              setCwd(path);
-              commitLastWorkingDir(path);
-              setDirectoryOpen(false);
-            }}
-          />
-        )}
         {connectingProvider !== null && providerSetupIsLocal && (
           <ConnectProviderDialogBoundary
             key={dialogChunkVersion}
@@ -3031,6 +2958,13 @@ function SpawnForm({
             fallbackDir={pickerFallbackDir}
             onCwdPanelClose={commitLastWorkingDir}
             branch={branch}
+            hostOptions={showHostPicker ? displaySources : []}
+            hostValue={displayHostChoice}
+            hostLabel={displayHostLabel}
+            connectingHosts={connectingHosts}
+            onHostSelect={selectHost}
+            onHostConnect={connectHost}
+            onConnectHost={openHostsSettings}
             accessMode={accessMode}
             accessOptions={accessOptions}
             onAccessChange={setAccessMode}
@@ -3046,10 +2980,10 @@ function SpawnForm({
 
         <div className={CLASS.quietRows}>
           {pluginSelectionSupported && (
-            <div className={`${CLASS.pluginDesktop} ${CLASS.quietRow}`} data-testid="spawn-plugin-desktop">
+            <div className={`${CLASS.desktopOnly} ${CLASS.quietRow}`} data-testid="spawn-plugin-desktop">
               {previewResponse === null && (
                 <div
-                  className={CLASS.pluginSummary}
+                  className={CLASS.quietSummary}
                   data-testid="spawn-plugin-summary"
                   data-state={pluginPreview.state.status}
                   role="status"
@@ -3061,7 +2995,7 @@ function SpawnForm({
                       <span title={pluginPreview.state.message}>
                         Couldn't inspect plugins: {pluginPreview.state.message}
                       </span>
-                      <div className={CLASS.pluginSummaryAction}>
+                      <div className={CLASS.quietSummaryAction}>
                         <Button variant="quiet" size="xs" type="button" onClick={pluginPreview.retry}>
                           Retry
                         </Button>
@@ -3076,7 +3010,7 @@ function SpawnForm({
                   data-testid="spawn-plugin-disclosure"
                   summary={
                     <div
-                      className={CLASS.pluginSummary}
+                      className={CLASS.quietSummary}
                       data-testid="spawn-plugin-summary"
                       data-state={pluginPreview.state.status}
                     >

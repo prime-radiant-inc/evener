@@ -77,7 +77,7 @@ func TestCommunicate_ProfileOverridesPreservedByResultToolName(t *testing.T) {
 				if err := json.Unmarshal([]byte(tc.output), &output); err != nil {
 					t.Fatal(err)
 				}
-				args := map[string]any{"message": "visible-sentinel", "end_turn": true, "output": output}
+				args := map[string]any{"message": "visible-sentinel", "next": "send_and_end_turn", "output": output}
 				rawArgs := mustMarshalJSON(t, args)
 				f := newFakeAdapter("openai", func(llm.Request) llm.Response {
 					return agenttest.ToolCallResponse(llm.ToolCallData{ID: "result-schema", Name: name, Arguments: rawArgs, Type: "function"})
@@ -95,7 +95,7 @@ func TestCommunicate_ProfileOverridesPreservedByResultToolName(t *testing.T) {
 				if err := registered.Schema.Validate(args); err != nil {
 					t.Errorf("valid output rejected: %v", err)
 				}
-				if err := registered.Schema.Validate(map[string]any{"message": "m", "end_turn": true}); err != nil {
+				if err := registered.Schema.Validate(map[string]any{"message": "m", "next": "send_and_end_turn"}); err != nil {
 					t.Errorf("wire schema requires optional output: %v", err)
 				}
 				for _, raw := range tc.invalidOutput {
@@ -103,7 +103,7 @@ func TestCommunicate_ProfileOverridesPreservedByResultToolName(t *testing.T) {
 					if err := json.Unmarshal([]byte(raw), &invalid); err != nil {
 						t.Fatal(err)
 					}
-					if err := registered.Schema.Validate(map[string]any{"message": "m", "end_turn": true, "output": invalid}); err == nil {
+					if err := registered.Schema.Validate(map[string]any{"message": "m", "next": "send_and_end_turn", "output": invalid}); err == nil {
 						t.Errorf("invalid output accepted: %s", raw)
 					}
 				}

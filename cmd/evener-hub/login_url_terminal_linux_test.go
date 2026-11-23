@@ -95,7 +95,8 @@ func TestStartupLoginOriginResolvedOnce(t *testing.T) {
 	}
 	defer func() { hubHostname = prior }()
 	master, slave := openLoginPTY(t)
-	report, stop := startPublicationHub(t, path, state, slave)
+	var web *WebServer
+	report, stop := startPublicationHubWithWeb(t, path, state, slave, &web)
 	defer stop()
 	output := readLoginPTY(t, master)
 	_, port, err := net.SplitHostPort(report.Running.BoundAddr)
@@ -112,6 +113,16 @@ func TestStartupLoginOriginResolvedOnce(t *testing.T) {
 				t.Errorf("login destination=%s, want host %s", parsed.Redacted(), wantHost)
 			}
 		}
+	}
+	// The picker reads the source label from the same startup lookup the login
+	// origin uses; a hub that names itself twice would show a different host in
+	// the New session picker than in the sign-in link.
+	sources := web.apiTreeSources()
+	if len(sources) == 0 || sources[0].ID != "local" {
+		t.Fatalf("sources = %#v, want the local source first", sources)
+	}
+	if want := "first.example.test (hub)"; sources[0].Label != want {
+		t.Errorf("local source label = %q, want %q", sources[0].Label, want)
 	}
 	if !loginFound || calls != 1 {
 		t.Fatalf("interactive login found=%v hostname lookups=%d", loginFound, calls)

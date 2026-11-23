@@ -957,7 +957,9 @@ func TestHubCompletionFromRecordedRootReplies(t *testing.T) {
 		wantCompletion bool
 	}{
 		{name: "quiet with three running delegates", delegates: true, steps: []func(llm.Request) llm.Response{
-			func(llm.Request) llm.Response { return quietYieldResponse("quiet", `{}`) },
+			func(llm.Request) llm.Response {
+				return quietYieldResponse("quiet", `{"message":"waiting on delegates","next":"log_quietly_and_end_turn"}`)
+			},
 		}},
 		{name: "explicit reply with running job", job: true, wantMessages: 1, wantCompletion: true, wantTerminal: "Server up", steps: []func(llm.Request) llm.Response{
 			func(llm.Request) llm.Response {

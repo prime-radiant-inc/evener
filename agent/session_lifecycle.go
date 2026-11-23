@@ -107,9 +107,10 @@ func (e *bareTextWithoutResultToolError) Is(target error) bool {
 
 // Retry budgets for degenerate model responses within a single input turn.
 const (
-	maxEmptyRetries        = 3
-	maxTotalEmptyResponses = 8 // prevent repeated burst-and-recover spirals
-	maxBareTextRetries     = 3
+	maxEmptyRetries           = 3
+	maxTotalEmptyResponses    = 8 // prevent repeated burst-and-recover spirals
+	maxBareTextRetries        = 3
+	maxTotalBareTextResponses = 8 // prevent repeated burst-and-recover spirals
 	// maxServerContinuations bounds one input turn's run of consecutive
 	// pause_turn responses. A pause is a legitimate protocol continuation, so it
 	// still refunds its tool round (see TestSession_PauseTurn_*), but a provider
@@ -128,12 +129,13 @@ const maxHookStopReasonRunes = 160
 
 // retryTracker counts the degenerate (empty / bare-text) model responses seen so
 // far in one input turn. consecutiveEmpty and consecutiveBareText reset once the
-// model produces tool calls; totalEmpty bounds burst-and-recover spirals across
-// the whole turn.
+// model produces tool calls; totalEmpty and totalBareText bound burst-and-recover
+// spirals across the whole turn.
 type retryTracker struct {
 	consecutiveEmpty    int
 	totalEmpty          int
 	consecutiveBareText int
+	totalBareText       int
 }
 
 // recordAbandonedEnvironmentLocked remembers an environment the swap has just
@@ -1833,9 +1835,22 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			skipHistory = false
 		}
 
-		bareReply := len(calls) == 0 && !s.reportsToParent() && kind == EntryUserInput &&
-			s.usesDefaultCommunicateOutputEnvelope() && resp.Finish.Reason == llm.FinishReasonStop &&
+		roundCtx := context.WithValue(ctx, communicateEntryKindKey{}, kind)
+		bareTextStop := len(calls) == 0 && resp.Finish.Reason == llm.FinishReasonStop &&
 			!noContent && strings.TrimSpace(lastText) != "" && !s.communicated()
+		var bareReply, bareQuiet bool
+		if bareTextStop {
+			if s.reportsToParent() {
+				drainable, workErr := s.subagentHasDrainableWork()
+				bareReply = s.usesDefaultCommunicateOutputEnvelope() && kind == EntryUserInput &&
+					workErr == nil && !drainable
+				bareQuiet = !bareReply && ((workErr == nil && drainable) ||
+					(kind == EntryDelegateAttention && s.canQuietlyYield(roundCtx) == nil))
+			} else {
+				bareReply = s.usesDefaultCommunicateOutputEnvelope() && kind == EntryUserInput
+				bareQuiet = kind == EntryNotification && s.hasAcceptedTerminalCommunicate()
+			}
+		}
 		var bareStop hooks.StopResult
 		if bareReply {
 			bareStop = s.runReplyStopHook(ctx, lastText)
@@ -1854,7 +1869,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			stopErr = s.deliverReplyStopHookContext(bareStop.ModelContext)
 			bareStop.ModelContext = nil
 		}
-		if abortErr := errors.Join(s.emitAssistantResponse(ctx, resp, modelResp, txt, skipHistory, attempt, acceptedBareReply && stopErr == nil), sessionLifecycleFault(ctx, "emit_assistant"), stopErr); abortErr != nil {
+		if abortErr := errors.Join(s.emitAssistantResponse(ctx, resp, modelResp, txt, skipHistory, attempt, acceptedBareReply && stopErr == nil, bareQuiet), sessionLifecycleFault(ctx, "emit_assistant"), stopErr); abortErr != nil {
 			return "", progressed, abortErr
 		}
 		if googleTerminalSettlement {
@@ -1922,6 +1937,17 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			}
 			continue
 		}
+		if bareQuiet {
+			s.beginCommunicateRound()
+			s.recordQuietYield()
+			done, reply, err := s.deliverIfCommunicated(roundCtx, false)
+			if err != nil {
+				return "", progressed, err
+			}
+			if done {
+				return reply, progressed, nil
+			}
+		}
 		if len(calls) == 0 {
 			route := routeNoToolCalls(kind, s.hasAcceptedTerminalCommunicate())
 			if route == finishIdle {
@@ -1960,7 +1986,6 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		// Execute tool calls (possibly in parallel) and send results back.
 		s.noteParentJobActivity(jobPhaseToolRunning)
 		s.beginToolRound()
-		roundCtx := context.WithValue(ctx, communicateEntryKindKey{}, kind)
 		results, execErr := s.execToolBatch(roundCtx, calls, profile, resp.Finish.Reason)
 		execErr = errors.Join(execErr, sessionLifecycleFault(ctx, "exec_tools"))
 		if execErr != nil {

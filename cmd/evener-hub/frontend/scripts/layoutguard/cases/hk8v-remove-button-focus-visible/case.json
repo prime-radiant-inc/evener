@@ -4,7 +4,9 @@
   "cssFiles": [
     "styles/global.css",
     "styles/tokens.css",
+    "styles/sendbutton.module.css",
     "panes/session/composer/composer.module.css",
+    "widgets/internal/lightbox.module.css",
     "widgets/button/button.module.css",
     "widgets/iconbutton/iconbutton.module.css"
   ],

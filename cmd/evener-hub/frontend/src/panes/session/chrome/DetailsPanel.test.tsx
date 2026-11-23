@@ -419,9 +419,9 @@ test("no created/updated rows when the source did not know the instants", async 
 // Runtime), which is what keeps a dozen rows scannable.
 test("rows are grouped under titled sections", async () => {
   await openPanel(testModel());
-  expect(screen.getByRole("heading", { name: "Session" })).toBeTruthy();
-  expect(screen.getByRole("heading", { name: "Usage" })).toBeTruthy();
-  expect(screen.getByRole("heading", { name: "Location" })).toBeTruthy();
+  expect(screen.getByRole("heading", { level: 3, name: "Session" })).toBeTruthy();
+  expect(screen.getByRole("heading", { level: 3, name: "Usage" })).toBeTruthy();
+  expect(screen.getByRole("heading", { level: 3, name: "Location" })).toBeTruthy();
 });
 
 // A section whose every row was omitted for want of data must not leave a bare

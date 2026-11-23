@@ -179,56 +179,15 @@
   border-top: 1px solid var(--edge);
 }
 
-.activityChip {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: var(--space-1);
-  min-width: 0;
-  padding: var(--space-1);
-  border: 0;
-  border-radius: var(--radius-pane);
-  background: transparent;
-  color: var(--ink-mid);
-  font-family: var(--font-sans);
-  font-size: var(--font-size-caption);
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-  cursor: pointer;
-}
-
-.activityChip:hover,
-.activityChip[aria-expanded="true"] {
-  background: var(--hover-1);
-  color: var(--ink-hi);
-}
-
-.activityChip:focus-visible {
-  outline: var(--focus-ring);
-}
-
 .spine .activityControls {
   flex-direction: column;
   padding: var(--space-2) var(--space-1);
   border: 0;
 }
 
-.spine .activityChip {
-  flex-direction: column;
-  gap: 0;
-}
-
-.spine .activityLabel {
-  display: none;
-}
-
 .header .activityControls {
   padding: 0;
   border-top: 0;
-}
-
-.header .activityLabel {
-  display: none;
 }
 
 .peek {
@@ -255,10 +214,6 @@
 @media (max-width: 899px) {
   .column[data-leaf] {
     min-width: 0;
-  }
-
-  .column .activityLabel {
-    display: none;
   }
 
   /* The cascade pane renders flush, and on the phone its column's activity

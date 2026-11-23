@@ -20,6 +20,8 @@
      CSS modules directly, so this one declaration supplies only its production
      xs square override without introducing the raw `.xs` module-name collision. */
   .attachmentControl { width: 24px; height: 24px; padding: 0; flex: none; }
+  /* The resolver inlines composed @container rules ungated, so this probe is off-screen. */
+  .labelProbe { position: absolute; left: -10000px; top: 0; }
   /* SessionMenu's trigger is intentionally a stand-in: menu.module.css and
      modelswitch.module.css both own a local `.trigger` class that CSS Modules
      keeps distinct in production but a raw stylesheet harness cannot. Its size
@@ -47,9 +49,9 @@
                   <div class="row" data-status>
                     <span class="identity">
                       <span class="model"><button class="trigger quietTrigger triggerShrink focusModel" type="button"><span class="value" data-model-value></span><span class="chevron">⌄</span></button></span>
-                      <span class="effortTrigger" data-effort><span class="separator">·</span><span class="quietVariant quietTrigger focusEffort"><span class="quietReadout" aria-hidden="true">high</span><span class="quietCaret" aria-hidden="true">⌄</span><select class="quietSelect" aria-label="Reasoning effort"><option>high</option></select></span></span>
+                      <span class="control" data-effort-control data-effort><span class="separator" aria-hidden="true">·</span><span class="quietVariant quietTrigger focusEffort"><span class="quietReadout" aria-hidden="true">high</span><span class="quietCaret" aria-hidden="true">⌄</span><select class="quietSelect" aria-label="Reasoning effort"><option>high</option></select></span></span>
                     </span>
-                    <span class="visuallyHidden"><meter aria-label="Context: 67k of 100k tokens used, 67 percent" min="0" value="67000" max="100000"></meter></span><span class="context" aria-hidden="true"><span class="contextMeter" data-context-meter><span class="track"><span class="fill fillNeutral" style="--fill: 67%"></span></span></span><span class="contextPercent mono" data-context-percent>67%</span></span>
+                    <span class="context"><span class="contextMeter" data-context-meter><!-- biome-ignore lint/a11y/useSemanticElements: the themed gauge is the div Meter.tsx renders, not a native meter --><div class="track" role="meter" aria-label="Context: 67000 of 100000 tokens used, 67 percent" aria-valuenow="67000" aria-valuemin="0" aria-valuemax="100000"><div class="fill fillNeutral" style="--fill: 67%"></div></div></span><span class="contextPercent figure" data-context-percent aria-hidden="true">67%</span></span>
                     <span class="item mono workTime" data-work>12m 34s</span>
                     <span class="item mono queue"><span class="queueFull" data-queue-full>12 queued</span><span class="queueCompact" data-queue-compact>Q12</span></span>
                   </div>
@@ -60,6 +62,7 @@
           </div>
           <div class="actions" data-submit-actions><span class="wrapper"><button class="button primary xs focusSend" data-send type="button">Send</button></span></div>
         </div>
+        <span class="stopLabelStack labelProbe" aria-hidden="true"><span>Stop</span><span class="stopMeasure">Send</span></span>
       </div>
     </div>
   </section>
@@ -152,8 +155,7 @@ window.measure = () => {
     const status = fixture.querySelector("[data-status]");
     const attachment = fixture.querySelector("[data-attachment]");
     const effort = fixture.querySelector("[data-effort]");
-    const contextSemantic = fixture.querySelector(".visuallyHidden > meter");
-    const contextHidden = contextSemantic.parentElement;
+    const contextSemantic = fixture.querySelector('[data-context-meter] [role="meter"]');
     const contextVisual = fixture.querySelector(".context");
     const contextMeter = fixture.querySelector("[data-context-meter]");
     const contextPercent = fixture.querySelector("[data-context-percent]");
@@ -164,6 +166,7 @@ window.measure = () => {
     const sessionActions = fixture.querySelector("[data-session-actions]");
     const submitActions = fixture.querySelector("[data-submit-actions]");
     const send = fixture.querySelector("[data-send]");
+    const stopLabel = fixture.querySelector(".stopLabelStack");
     const modelValue = fixture.querySelector(".value");
     const modelTrigger = fixture.querySelector(".trigger");
     return {
@@ -185,15 +188,19 @@ window.measure = () => {
       identity: box(fixture.querySelector(".identity")),
       effort: visibleBox(effort),
       contextStructure: {
-        semanticTag: contextSemantic.tagName,
-        semanticChildren: contextSemantic.childElementCount,
-        semanticBox: box(contextHidden),
-        semanticNextIsVisual: contextHidden.nextElementSibling === contextVisual,
-        visualTag: contextVisual.tagName,
-        visualAriaHidden: contextVisual.getAttribute("aria-hidden"),
+        meterCount: fixture.querySelectorAll('[role="meter"]').length,
+        meterAriaLabel: contextSemantic === null ? null : contextSemantic.getAttribute("aria-label"),
+        meterAriaHidden:
+          contextSemantic === null ? null : contextSemantic.closest('[aria-hidden="true"]') !== null,
+        meterBox: contextSemantic === null ? null : box(contextSemantic),
+        wrapperAriaHidden: contextVisual.getAttribute("aria-hidden"),
+        wrapperBox: box(contextMeter),
+        wrapperPosition: getComputedStyle(contextMeter).position,
+        wrapperClip: getComputedStyle(contextMeter).clip,
       },
       contextMeterDisplay: getComputedStyle(contextMeter).display,
       contextPercentDisplay: getComputedStyle(contextPercent).display,
+      contextPercentAriaHidden: contextPercent.getAttribute("aria-hidden"),
       context: visibleBox(contextVisual),
       workDisplay: getComputedStyle(work).display,
       work: visibleBox(work),
@@ -203,6 +210,7 @@ window.measure = () => {
       sessionActions: box(sessionActions),
       submitActions: box(submitActions),
       send: box(send),
+      stopLabelDisplay: stopLabel === null ? "missing" : getComputedStyle(stopLabel).display,
       model: {
         triggerWidth: modelTrigger.getBoundingClientRect().width,
         clientWidth: modelValue.clientWidth,

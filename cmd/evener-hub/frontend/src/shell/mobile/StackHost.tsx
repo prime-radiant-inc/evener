@@ -150,7 +150,7 @@ function attentionEntryOwnsPane(pane: OpenPaneRecord | null | undefined): boolea
   if (!pane) return false;
   const readerRef =
     pane.type === "session"
-      ? (pane.params as { ref?: unknown }).ref
+      ? refParam(pane.params)
       : pane.type === "sessionZoom"
         ? parseZoomParams(pane.params)?.ref
         : null;
@@ -557,15 +557,11 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
           (origin && panes.includes(origin) ? origin : undefined) ??
           panes.find(
             (pane) =>
-              pane.id !== focusedPaneId &&
-              pane.type === "session" &&
-              (pane.params as { ref?: unknown }).ref === params.parentRef,
+              pane.id !== focusedPaneId && pane.type === "session" && refParam(pane.params) === params.parentRef,
           ) ??
           panes.find(
             (pane) =>
-              pane.id !== focusedPaneId &&
-              pane.type === "transcript" &&
-              (pane.params as { ref?: unknown }).ref === params.parentRef,
+              pane.id !== focusedPaneId && pane.type === "transcript" && refParam(pane.params) === params.parentRef,
           );
         target = ancestor?.id;
         // Reject cycles, not incomplete context: an absent farther ancestor

@@ -111,11 +111,12 @@ func decideNoToolCalls(noContent bool, t retryTracker, resultToolName string) no
 
 	t.consecutiveEmpty = 0
 	t.consecutiveBareText++
-	if t.consecutiveBareText <= maxBareTextRetries {
+	t.totalBareText++
+	if t.consecutiveBareText <= maxBareTextRetries && t.totalBareText <= maxTotalBareTextResponses {
 		steering := "You responded with bare text instead of a tool call. " +
 			"All user-facing messages MUST use " + resultToolName + ". " +
 			"If that bare text was meant for the user or caller, call " + resultToolName + " now with that text in message (and output when required by your schema). " +
-			"If a notification or watch frame needs nothing from you, call " + resultToolName + "({}) with no message to end your turn quietly. " +
+			"If you are waiting on running work or a notification/watch frame needs nothing from you, call " + resultToolName + ` with next="log_quietly_and_end_turn" and a brief wait note in message. ` +
 			"Otherwise call your next tool and keep working."
 		return noToolCallsDecision{
 			Tracker:      t,
@@ -813,7 +814,7 @@ func (s *Session) deliverReplyStopHookMessages(result hooks.StopResult) error {
 	return nil
 }
 
-// deliverBareReply settles a tool-free root reply. Until the Stop decision
+// deliverBareReply settles a tool-free reply. Until the Stop decision
 // allows or replaces it, the draft is not a captured reply.
 func (s *Session) deliverBareReply(ctx context.Context, text string, result hooks.StopResult) (bool, string, error) {
 	if err := s.deliverReplyStopHookMessages(result); err != nil {
@@ -834,7 +835,13 @@ func (s *Session) deliverBareReply(ctx context.Context, text string, result hook
 		return false, "", nil
 	}
 	s.mu.Lock()
-	s.comm = communicateResult{phase: commBoundarySettled, text: text, reply: text}
+	s.comm = communicateResult{
+		phase:        commBoundaryStopPending,
+		updated:      s.comm.updated,
+		text:         text,
+		reply:        text,
+		roundVisible: true,
+	}
 	s.mu.Unlock()
 	if !result.Stopped {
 		s.emitWithProvenance(events.CommunicateData{EndTurn: true, Message: text}, provenance.Clone(s.activeCausalProvenance()))

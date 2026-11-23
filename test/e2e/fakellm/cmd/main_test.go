@@ -394,8 +394,8 @@ func TestBackgroundJobModeAppliesToEverySession(t *testing.T) {
 		idle := s.round(ctx)
 		if idle.name != "communicate" {
 			t.Errorf("%s session round 2: tool %q, want communicate (go idle holding the job)", name, idle.name)
-		} else if endTurn, _ := idle.args["end_turn"].(bool); !endTurn {
-			t.Errorf("%s session round 2: end_turn %v, want true", name, endTurn)
+		} else if next, _ := idle.args["next"].(string); next != "send_and_end_turn" {
+			t.Errorf("%s session round 2: next %q, want send_and_end_turn", name, next)
 		}
 
 		// This mode's own log lines have to be attributable too: the operator
@@ -702,8 +702,8 @@ func TestTheNotificationTurnEndsWithoutANewJob(t *testing.T) {
 	if notification.name != "communicate" {
 		t.Errorf("notification turn round 1: tool %q, want communicate (a brief turn, then idle again)", notification.name)
 	}
-	if endTurn, _ := notification.args["end_turn"].(bool); !endTurn {
-		t.Errorf("notification turn round 1: end_turn %v, want true", endTurn)
+	if next, _ := notification.args["next"].(string); next != "send_and_end_turn" {
+		t.Errorf("notification turn round 1: next %q, want send_and_end_turn", next)
 	}
 	if notification.name == "shell" {
 		t.Errorf("notification turn round 1 launched a second background job")

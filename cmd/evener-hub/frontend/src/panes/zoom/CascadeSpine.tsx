@@ -21,7 +21,7 @@ export function CascadeSpine({ paneId, scope }: { paneId: string; scope: Activit
         <span className={CLASS.spineName}>{scope.leaf.title}</span>
       </button>
       <ScopeRuntimeState scope={scope} compact />
-      <ScopeActivityControls paneId={paneId} scope={scope} />
+      <ScopeActivityControls paneId={paneId} scope={scope} compact orientation="column" />
     </>
   );
 }

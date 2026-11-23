@@ -451,8 +451,8 @@ func awaitThread(ctx context.Context, t *testing.T, client *appwire.Client, ref,
 // rejected and answered with a repair round instead of ending the turn.
 func communicateArgs(message string) map[string]any {
 	return map[string]any{
-		"message":  message,
-		"end_turn": true,
+		"message": message,
+		"next":    "send_and_end_turn",
 		"output": map[string]any{
 			"message":   "",
 			"data":      map[string]any{},

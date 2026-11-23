@@ -1,15 +1,14 @@
-import { ActivityPageBoundary } from "./ActivityPageBoundary";
 // Current jobs stay visible; terminal history
 // unfolds without changing the shared collection's visible-page demand.
 
 import { activityNodeID, type JobActivityJob } from "@evener/appwire-client";
 import { useSessionActivity } from "../../stores/sessionActivity";
-import { Disclosure, EmptyState, InlineNotice, Skeleton } from "../../widgets";
+import { Disclosure } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { workspaceStore } from "../workspace";
+import { ActivityCollectionGate } from "./ActivityCollectionGate";
 import { useActivityScrollProgress } from "./ActivityViewport";
 import styles from "./activitybar.module.css";
-import { activityPlaceholderLines } from "./activityPlaceholders";
 import { JobRow } from "./activityRows";
 import type { ActivityTabBodyProps } from "./activityTabs";
 
@@ -27,14 +26,9 @@ export function JobsTab({ scope, now }: ActivityTabBodyProps) {
     collection?.complete ?? false,
     collection?.hasMore ?? false,
   );
-  if (collection?.permanent && collection.rows.length === 0)
-    return <EmptyState size="compact" title="Jobs unavailable for this session." />;
-  if (!collection || (collection.rows.length === 0 && !collection.complete))
-    return <Skeleton lines={summary?.known ? activityPlaceholderLines(summary.total) : undefined} />;
-  const running = collection.rows.filter((job) => !job.terminal);
-  const completed = collection.rows.filter((job) => job.terminal);
-  if (collection.rows.length === 0 && collection.complete)
-    return <EmptyState size="compact" title="No jobs at this level." />;
+  const rows = collection?.rows ?? [];
+  const running = rows.filter((job) => !job.terminal);
+  const completed = rows.filter((job) => job.terminal);
   const renderJob = (job: JobActivityJob) => (
     <JobRow
       key={activityNodeID({ ...job, kind: "shell" })}
@@ -51,7 +45,7 @@ export function JobsTab({ scope, now }: ActivityTabBodyProps) {
     />
   );
   return (
-    <div className={CLASS.stack}>
+    <ActivityCollectionGate noun="jobs" collection={collection} summary={summary} loadMore={loadMore}>
       {running.map(renderJob)}
       {completed.length > 0 ? (
         <Disclosure
@@ -67,16 +61,6 @@ export function JobsTab({ scope, now }: ActivityTabBodyProps) {
           <div className={CLASS.stack}>{completed.map(renderJob)}</div>
         </Disclosure>
       ) : null}
-      <ActivityPageBoundary
-        resource="jobs"
-        rows={collection.rows}
-        hasMore={collection.hasMore}
-        loading={collection.loading}
-        error={collection.error}
-        permanent={collection.permanent}
-        loadMore={loadMore}
-      />
-      {collection.error && !collection.permanent ? <InlineNotice live="off">Jobs are updating…</InlineNotice> : null}
-    </div>
+    </ActivityCollectionGate>
   );
 }

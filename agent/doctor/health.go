@@ -342,10 +342,8 @@ func finalEndTurnIndex(entries []transcript.Entry, resultTool string) int {
 // callArgsEndTurn uses communicate's default for a valid object and refuses
 // to infer a boundary from malformed arguments.
 func callArgsEndTurn(rawArgs json.RawMessage) bool {
-	args := &struct {
-		EndTurn bool `json:"end_turn"`
-	}{EndTurn: true}
-	return json.Unmarshal(rawArgs, &args) == nil && args != nil && args.EndTurn
+	endTurn, _, ok := schema.CommunicateArgsOutcome(rawArgs)
+	return ok && endTurn
 }
 
 // RenderHealth renders a HealthResult as a compact human table.

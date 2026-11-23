@@ -94,12 +94,12 @@ function matchesAnchor(
 	item: {
 		id: string;
 		transcriptKey?: string;
-		detail: { callId?: string };
+		detail?: { callId?: string };
 		position?: { entry: number; item: number };
 	},
 	anchor: ReaderAnchor,
 ): boolean {
-	const key = stepKey(item);
+	const key = item.detail ? stepKey({ detail: item.detail }) : undefined;
 	return (
 		(item.transcriptKey ?? item.id) === anchor.itemKey ||
 		(key !== undefined && key === anchor.itemKey) ||
@@ -120,10 +120,14 @@ export function resolveReaderAnchor(anchor: ReaderAnchor, rows: readonly Timelin
 		});
 		if (byPosition >= 0) return byPosition;
 	}
-	// A position saved on a step that now sits inside a folded run resolves to
-	// the run (Review Focus 4).
-	const inRun = rows.findIndex((row) => row.kind === "run" && row.steps.some((step) => matchesAnchor(step, anchor)));
-	return inRun >= 0 ? inRun : null;
+	// A position saved on a step that now sits inside a folded run, or on a
+	// standalone row folded into a details group, resolves to that container.
+	const inGroup = rows.findIndex(
+		(row) =>
+			(row.kind === "run" && row.steps.some((step) => matchesAnchor(step, anchor))) ||
+			(row.kind === "details" && row.entries.some((entry) => matchesAnchor(entry, anchor))),
+	);
+	return inGroup >= 0 ? inGroup : null;
 }
 
 export type OpeningTarget = { kind: "live" } | { kind: "row"; index: number };
@@ -163,6 +167,8 @@ export function isReaderAnchorLoaded(
 	for (const item of items) {
 		if (resolveReaderAnchor(anchor, [item]) !== null) return true;
 		if (item.kind === "notice" && anchor.itemKey === `details:${item.id}`) return true;
+		if ((item.kind === "notice" || item.kind === "activity") && anchor.itemKey === `quiet-yields:${item.id}`)
+			return true;
 		if (item.kind === "activity" && item.members?.some((member) => matchesAnchor(member, anchor))) return true;
 	}
 	return false;

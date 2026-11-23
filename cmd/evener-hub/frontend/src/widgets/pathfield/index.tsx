@@ -16,7 +16,7 @@ import { Chevron } from "../chevron";
 // Import siblings directly, never through the widgets barrel: this module is
 // itself barrel-exported, so importing the barrel here would be a cycle (the
 // same reason collectioneditor imports ../button directly).
-import { DirectoryPicker, type DirectoryPickerProps } from "../directorypicker";
+import { DirectoryIcon, DirectoryPicker, type DirectoryPickerProps } from "../directorypicker";
 import { requireClass } from "../internal/requireClass";
 import { Popover } from "../popover";
 import styles from "./pathfield.module.css";
@@ -25,6 +25,12 @@ const CLASS = {
   trigger: requireClass(styles.pathTrigger, "pathfield.module.css", "pathTrigger"),
   directoryTrigger: requireClass(styles.directoryTrigger, "pathfield.module.css", "directoryTrigger"),
   directoryValue: requireClass(styles.directoryValue, "pathfield.module.css", "directoryValue"),
+  prominentTrigger: requireClass(styles.prominentTrigger, "pathfield.module.css", "prominentTrigger"),
+  prominentSeat: requireClass(styles.prominentSeat, "pathfield.module.css", "prominentSeat"),
+  prominentText: requireClass(styles.prominentText, "pathfield.module.css", "prominentText"),
+  prominentHeadline: requireClass(styles.prominentHeadline, "pathfield.module.css", "prominentHeadline"),
+  prominentCaption: requireClass(styles.prominentCaption, "pathfield.module.css", "prominentCaption"),
+  prominentAction: requireClass(styles.prominentAction, "pathfield.module.css", "prominentAction"),
   triggerValue: requireClass(styles.triggerValue, "pathfield.module.css", "triggerValue"),
   triggerDefault: requireClass(styles.triggerDefault, "pathfield.module.css", "triggerDefault"),
   chevron: requireClass(styles.pathChevron, "pathfield.module.css", "pathChevron"),
@@ -80,6 +86,12 @@ interface PathFieldBaseProps {
    * (spec 3.7) rather than writing it on every browse step. */
   onPanelClose?: (value: string) => void;
   placeholder?: string;
+  /** The prominent variant is the directory tile rather than a form field: a
+   * grouped surface whose headline is the value's basename, whose caption is
+   * the whole path, and whose trailing action reads "Change…". The empty state
+   * uses `ariaLabel` as the headline and `placeholder` as the caption, so a
+   * tile with nothing chosen still says what it is. */
+  variant?: "default" | "prominent";
   disabled?: boolean;
   /** Names the closed trigger for assistive tech. Without it the trigger's
    * whole accessible name is the path it holds, which doesn't say WHICH field
@@ -552,7 +564,9 @@ function FileFieldPanel({
  * The closed state IS the trigger: a control-shaped button holding the current
  * path as plain monospace text plus a chevron, and clicking anywhere on it
  * opens the shared directory dialog or the file completion popover. There is no separate
- * folder/Browse button - the whole field is the affordance.
+ * folder/Browse button - the whole field is the affordance. The prominent
+ * variant turns that same button into a summary tile instead: basename
+ * headline, full path caption, trailing "Change…".
  */
 export function PathField({
   id,
@@ -564,6 +578,7 @@ export function PathField({
   fallbackDir,
   onPanelClose,
   placeholder,
+  variant = "default",
   disabled = false,
   ariaLabel,
   directory,
@@ -571,6 +586,12 @@ export function PathField({
   const [open, setOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const shownValue = value === "" ? (placeholder ?? "(default)") : value;
+  const prominent = variant === "prominent";
+  // The prominent tile's headline: the value's basename, or - when nothing is
+  // chosen - the field's own name, which is the only caller-supplied name the
+  // widget has. "/" keeps its own headline: the filesystem root's basename is
+  // empty, but it is a real directory (see withoutTrailingSlash).
+  const headline = value === "" ? (ariaLabel ?? placeholder ?? shownValue) : basename(value) || "/";
 
   // Restore the field trigger on every exit. Directory cancellation reports
   // the committed value; file browsing retains its live-value contract.
@@ -590,8 +611,11 @@ export function PathField({
       ref={triggerRef}
       id={id}
       type="button"
-      className={`${CLASS.trigger} ${kind === "dir" ? CLASS.directoryTrigger : ""}`}
+      className={
+        prominent ? CLASS.prominentTrigger : `${CLASS.trigger} ${kind === "dir" ? CLASS.directoryTrigger : ""}`
+      }
       disabled={disabled}
+      data-state={prominent ? (value === "" ? "unset" : "chosen") : undefined}
       aria-haspopup={kind === "dir" ? "dialog" : undefined}
       aria-expanded={kind === "dir" ? open : undefined}
       // The label has to carry the value too: aria-label replaces the
@@ -600,25 +624,40 @@ export function PathField({
       aria-label={ariaLabel === undefined ? undefined : `${ariaLabel}: ${shownValue} — browse`}
       onClick={() => (open ? closePanel(value) : setOpen(true))}
     >
-      {/* Plain text, not a Chip: the trigger already draws the control's
+      {prominent ? (
+        <>
+          <span className={CLASS.prominentSeat} aria-hidden="true">
+            {kind === "dir" ? <DirectoryIcon /> : <FileIcon />}
+          </span>
+          <span className={CLASS.prominentText}>
+            <strong className={CLASS.prominentHeadline}>{headline}</strong>
+            <span className={CLASS.prominentCaption}>{shownValue}</span>
+          </span>
+          <span className={CLASS.prominentAction}>Change…</span>
+        </>
+      ) : (
+        <>
+          {/* Plain text, not a Chip: the trigger already draws the control's
               own border, and a bordered chip inside it reads as a double
               border. */}
-      <span
-        className={`${CLASS.triggerValue} ${kind === "dir" ? CLASS.directoryValue : ""} ${value === "" ? CLASS.triggerDefault : ""}`}
-      >
-        {shownValue}
-      </span>
-      <span className={CLASS.chevron} aria-hidden="true">
-        <Chevron direction="down" />
-      </span>{" "}
-      {/* That separating space is load-bearing: the accessible name is this
+          <span
+            className={`${CLASS.triggerValue} ${kind === "dir" ? CLASS.directoryValue : ""} ${value === "" ? CLASS.triggerDefault : ""}`}
+          >
+            {shownValue}
+          </span>
+          <span className={CLASS.chevron} aria-hidden="true">
+            <Chevron direction="down" />
+          </span>{" "}
+          {/* That separating space is load-bearing: the accessible name is this
               button's children concatenated, and each child's own text is
               trimmed first, so a space INSIDE either span would be dropped and
               the name would run together as "/home/jesse— browse". A
               whitespace-only text node between them survives that trim and
               renders nothing of its own (an all-whitespace anonymous flex item
               is not laid out). */}
-      <span className={CLASS.srOnly}>— browse</span>
+          <span className={CLASS.srOnly}>— browse</span>
+        </>
+      )}
     </button>
   );
   if (kind === "dir") {

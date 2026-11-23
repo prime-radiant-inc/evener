@@ -30,7 +30,7 @@ func TestDelegateAttentionDriveStaleSelectionPreservesNextOwnerRun(t *testing.T)
 			if err := root.subagents.get(fixture.childID).sess.Enqueue(context.Background(), "queued follow-up work"); err != nil {
 				t.Errorf("queue attention follow-up: %v", err)
 			}
-			return quietYieldResponse("attention-no-action", `{}`)
+			return quietYieldResponse("attention-no-action", `{"message":"waiting on work","next":"log_quietly_and_end_turn"}`)
 		},
 		bare, bare, bare, bare,
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("follow-up report") },

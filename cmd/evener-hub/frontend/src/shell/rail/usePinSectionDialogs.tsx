@@ -2,7 +2,7 @@ import { errorText } from "@evener/appwire-client";
 import { type ChangeEvent, type ReactNode, useEffect, useId, useRef, useState } from "react";
 import { selectPinSectionSummaries } from "../../stores/navigation/selectors";
 import { navigationStore } from "../../stores/navigation/store";
-import { Button, ConfirmDialog, Dialog, FormRow, Input, useToasts } from "../../widgets";
+import { ConfirmDialog, FormRow, Input, useToasts } from "../../widgets";
 import { useClient } from "../clientContext";
 import { deletePinSection, renamePinSection } from "./actions";
 import type { RailPinSection } from "./railNodes";
@@ -126,36 +126,29 @@ export function usePinSectionDialogs(runAction: RailRunAction): {
     requestDelete: requestSectionDelete,
     dialogs: (
       <>
-        {sectionRenameTarget && (
-          <Dialog
-            open
-            onClose={closeSectionRename}
-            title="Rename pin section"
-            footer={
-              <>
-                <Button variant="quiet" onClick={closeSectionRename} disabled={sectionRenameSubmitting}>
-                  Cancel
-                </Button>
-                <Button onClick={() => void confirmSectionRename()} disabled={sectionRenameSubmitting}>
-                  Rename section
-                </Button>
-              </>
-            }
-          >
-            <FormRow label="Section name" htmlFor={sectionRenameInputID} error={sectionRenameError || undefined}>
-              <Input
-                id={sectionRenameInputID}
-                value={sectionRenameValue}
-                onChange={(event: ChangeEvent<HTMLInputElement>) => {
-                  setSectionRenameValue(event.target.value);
-                  setSectionRenameError("");
-                }}
-                disabled={sectionRenameSubmitting}
-                aria-describedby={sectionRenameError ? `${sectionRenameInputID}-error` : undefined}
-              />
-            </FormRow>
-          </Dialog>
-        )}
+        <ConfirmDialog
+          open={sectionRenameTarget !== null}
+          title="Rename pin section"
+          confirmLabel="Rename section"
+          destructive={false}
+          pendingLabel="Renaming…"
+          busy={sectionRenameSubmitting}
+          onConfirm={() => void confirmSectionRename()}
+          onCancel={closeSectionRename}
+        >
+          <FormRow label="Section name" htmlFor={sectionRenameInputID} error={sectionRenameError || undefined}>
+            <Input
+              id={sectionRenameInputID}
+              value={sectionRenameValue}
+              onChange={(event: ChangeEvent<HTMLInputElement>) => {
+                setSectionRenameValue(event.target.value);
+                setSectionRenameError("");
+              }}
+              disabled={sectionRenameSubmitting}
+              aria-describedby={sectionRenameError ? `${sectionRenameInputID}-error` : undefined}
+            />
+          </FormRow>
+        </ConfirmDialog>
         <ConfirmDialog
           open={sectionDeleteTarget !== null}
           title="Delete pin section?"

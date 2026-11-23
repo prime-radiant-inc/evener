@@ -9,10 +9,8 @@
   width: 100%;
   max-width: var(--session-measure);
   margin-inline: auto;
-  /* The query container for the Start button's word collapse below: a docked
-   * pane squeezed narrow inside a desktop viewport must compact exactly like
-   * the phone does. inline-size containment is safe here - this box's width
-   * comes from PaneScaffold's content slot, never its content. */
+  /* The query container for the shared Start word collapse
+   * (styles/sendbutton.module.css): pane width, not viewport width. */
   container-type: inline-size;
 }
 
@@ -33,16 +31,8 @@
   margin-top: var(--space-4);
 }
 
-/* The Start button's word. It rides beside the paper-plane glyph while the
- * pane has room; at the compact boundary (the same 559px the composer's
- * SessionChrome chips swap at) the word drops and the glyph carries the
- * button - the button keeps aria-label="Start", so the accessible name
- * survives. Pane width, not viewport width: a narrow docked pane on a desktop
- * display needs the same collapse the phone gets. */
-@container (max-width: 559px) {
-  .submitLabel {
-    display: none;
-  }
+.submitLabel {
+  composes: sendWord from "../../styles/sendbutton.module.css";
 }
 
 /* The prompt card's leading cluster - the attach button, then the model
@@ -84,29 +74,6 @@
   .leading {
     gap: 0;
   }
-
-  /* Same floor as the status row: keep the separator plus the 44px native
-   * select, but let a long readout ellipsize instead of reserving its full
-   * intrinsic width and squeezing the model trigger to zero. The selector must
-   * outrank the base .effortTrigger { min-width: 0 } below. */
-  .leading > .effortTrigger {
-    flex: 0 1 auto;
-    min-width: calc(var(--tap-min, 0px) + 1ch);
-  }
-}
-
-/* The effort control's wrapper: it carries the separator and keeps the
- * control one direct child of the leading row. Select's quiet variant owns
- * the pill face, the transparent native <select>, the readout and the tap
- * floor (widgets/select composes widgets/internal/quietTrigger.module.css). */
-.effortTrigger {
-  display: inline-flex;
-  align-items: center;
-  min-width: 0;
-}
-
-.effortSeparator {
-  color: var(--ink-low);
 }
 
 .mobileConfig {
@@ -147,6 +114,8 @@
 
 .cfgDir {
   display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
   min-width: 0;
 }
 
@@ -159,74 +128,28 @@
 .promptAnchor {
   position: relative;
 }
-/* The two summary tiles share one layout: a field seat holding the glyph, a
- * text column that takes the slack, and the action at the trailing edge. The
- * directory tile is itself the button, so it composes the grouped surface;
- * the access tile is a status region, an outlined Card holding this layout
- * and its own Change button. */
-.directoryButton,
+/* The access tile's layout: the shared summary-tile row and text recipe, with
+ * the Card-filling height and inline inset that are this tile's own. The
+ * directory tile in PathField's prominent variant composes the same recipe. */
 .accessTile {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  box-sizing: border-box;
-  width: 100%;
-  min-width: 0;
-  color: var(--ink-hi);
-  font-family: var(--font-sans);
-  font-size: var(--font-size-ui);
-  line-height: var(--line-height-ui);
-  text-align: left;
-}
-.directoryButton {
-  composes: grouped from "../../styles/surface.module.css";
-  padding: var(--space-3) var(--space-4);
-  cursor: pointer;
-  transition:
-    border-color var(--motion-duration-hover) var(--motion-easing-standard),
-    background-color var(--motion-duration-hover) var(--motion-easing-standard),
-    transform var(--motion-duration-press) var(--motion-easing-standard);
-}
-/* Fills the Card's content box, so the tile's content centres against the
- * taller of the pair, and keeps the inline inset the directory tile has. */
-.accessTile {
+  composes: summaryTile from "../../styles/surface.module.css";
+  /* Fills the Card's content box, so the tile's content centres against the
+   * taller of the pair, and keeps the inline inset the directory tile has. */
   height: 100%;
   padding-inline: var(--space-1);
-}
-.directoryButton:focus-visible {
-  outline: var(--focus-ring);
-  outline-offset: 2px;
-}
-.directoryButton:hover {
-  border-color: var(--edge-strong);
-}
-.directoryButton:active {
-  background: var(--hover-1);
-}
-@media (prefers-reduced-motion: no-preference) {
-  .directoryButton:active:not(:disabled):not([aria-disabled="true"]) {
-    transform: scale(var(--press-scale-row));
-  }
 }
 .tileSeat {
   composes: fieldSeat from "../../styles/surface.module.css";
   color: var(--ink-mid);
 }
 .tileText {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  min-width: 0;
-  gap: var(--space-1);
+  composes: summaryText from "../../styles/surface.module.css";
 }
-.tileText strong {
-  font-weight: var(--font-weight-medium);
-  overflow-wrap: anywhere;
+.tileHeadline {
+  composes: summaryHeadline from "../../styles/surface.module.css";
 }
 .tileCaption {
-  color: var(--ink-mid);
-  font-size: var(--font-size-caption);
-  overflow-wrap: anywhere;
+  composes: summaryCaption from "../../styles/surface.module.css";
 }
 /* The unresolved states have no value to label yet: one sentence in the
  * tile's own text size. */
@@ -234,13 +157,9 @@
   color: var(--ink-mid);
   overflow-wrap: anywhere;
 }
-.directoryAction {
-  flex: none;
-  color: var(--ink-mid);
-}
-
-/* Git info is a property of the directory (HEAD there), so it is the last
- * line of the directory tile's own text column, in machine type. */
+/* Git info is a property of the directory (HEAD there), so it sits under the
+ * directory tile in machine type. PathField's prominent trigger owns the
+ * tile's own text column and has no detail slot for it. */
 .branch {
   color: var(--ink-mid);
   font-family: var(--font-mono);
@@ -262,6 +181,59 @@
   border-top: 1px solid var(--edge);
 }
 
+/* A desktop-only surface: the phone's own settings rows carry the same
+ * setting below this breakpoint. */
+.desktopOnly {
+  min-width: 0;
+}
+
+@media (max-width: 899px) {
+  .desktopOnly {
+    display: none;
+  }
+}
+
+/* A quiet disclosure row's summary: the setting name leads and its current
+ * value trails it on the same line, truncating before it pushes the chevron
+ * off the row. Shared by Plugins-for-this-session and Host. */
+.quietSummary {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 var(--space-3);
+  padding: var(--space-1) 0;
+}
+
+/* Before a preview lands there is no disclosure to wrap the summary, so it
+ * supplies the row inset the disclosure's own summary would have given it. */
+.quietSummary[role="status"] {
+  padding: var(--space-2);
+}
+
+.quietSummary strong {
+  color: var(--ink-hi);
+  font-size: var(--font-size-ui);
+  font-weight: var(--font-weight-medium);
+}
+
+.quietSummary span {
+  flex: 1 1 12rem;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink-mid);
+  font-size: var(--font-size-caption);
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* An error state's Retry stays a small inline action at the row's end. */
+.quietSummaryAction {
+  flex: none;
+}
+
 /* The staged-attachment row. Holds AttachmentTiles, which carry their own
  * 80x80 box from composer.module.css - this only wraps them, exactly as the
  * composer's own .attachments row does. */
@@ -269,17 +241,6 @@
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-2);
-}
-
-/* The Connect affordance beside the host picker: a column of quiet buttons,
- * one per offline remote host, so a never-attached host is reachable without
- * enabling its (spawn-disabled) option. */
-.hostConnectRow {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: var(--space-1);
-  margin-top: var(--space-1);
 }
 
 @media (max-width: 899px) {

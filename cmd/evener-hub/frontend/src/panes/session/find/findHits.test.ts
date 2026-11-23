@@ -901,3 +901,140 @@ test("a delegate report's failed diagram becomes searchable when it falls back t
   act(() => noteMermaidRender(source, "ok"));
   expect(findHits(rows, "reportNode", { config: TOOLS })).toEqual([]);
 });
+
+test("quiet_yield demoted commentary is searchable standalone and inside a quietYieldGroup", () => {
+  const quietItem = (id: string, turnId: string, commentary?: string): ItemModel => ({
+    id,
+    turnId,
+    type: "systemMessage",
+    text: "quiet-sentinel",
+    eventKind: "quiet_yield",
+    ...(commentary === undefined ? {} : { raw: { commentary } }),
+  });
+  const standaloneRows = projectedRows([quietItem("qy_single", "turn_1", "quokka-single")]);
+  expect(findHits(standaloneRows, "quokka-single", { config: TOOLS })).toEqual([
+    { key: "qy_single", itemId: "qy_single", rowIndex: 0, opens: ["qy_single"], opensIgnoreBaseline: true },
+  ]);
+
+  const model: ThreadModel = {
+    ...makeTranscriptPreviewModel(),
+    ref: "ref_a",
+    turns: [
+      { id: "turn_1", status: "completed", items: [quietItem("qy_1", "turn_1")] },
+      { id: "turn_2", status: "completed", items: [quietItem("qy_2", "turn_2", "quokka-grouped")] },
+    ],
+  };
+  const groupedRows = transcriptRowsForProjection(projectThread(model, TOOLS));
+  expect(findHits(groupedRows, "quokka-grouped", { config: TOOLS })).toEqual([
+    { key: "qy_2", itemId: "qy_2", rowIndex: 0, opens: ["quiet-yield-group:qy_1", "qy_2"], opensIgnoreBaseline: true },
+  ]);
+
+  const completedNotif = notificationWireItem("job-shell-completed");
+  const fullModel: ThreadModel = {
+    ...makeTranscriptPreviewModel(),
+    ref: "ref_a",
+    turns: [
+      {
+        id: "turn_w1",
+        status: "completed",
+        items: [
+          {
+            id: "r_1",
+            turnId: "turn_w1",
+            type: "reasoning",
+            text: "",
+            reasoningSummaries: [["quokka-thought"]],
+            status: "completed",
+          },
+          {
+            id: "steer_1",
+            turnId: "turn_w1",
+            type: "steering",
+            steeringKind: completedNotif.steeringKind,
+            text: completedNotif.text ?? "",
+            status: "completed",
+          },
+          quietItem("qy_w1", "turn_w1"),
+        ],
+      },
+      { id: "turn_w2", status: "completed", items: [quietItem("qy_w2", "turn_w2", "quokka-commentary")] },
+    ],
+  };
+  const FULL = makeTranscriptDisplayConfig({ kind: "preset", level: "full" });
+  const fullRows = transcriptRowsForProjection(projectThread(fullModel, FULL));
+  const fullOpts = { config: FULL, sessionRef: "ref_a" };
+  const groupId = "quiet-yield-group:r_1";
+  expect(findHits(fullRows, "quokka-thought", fullOpts)).toEqual([
+    { key: "r_1", itemId: "r_1", rowIndex: 0, opens: [groupId, "r_1"], opensIgnoreBaseline: true },
+  ]);
+  expect(findHits(fullRows, "Run the agent tests", fullOpts)).toEqual([
+    {
+      key: "steer_1",
+      itemId: "steer_1",
+      rowIndex: 0,
+      opens: [groupId, "notification:ref_a:job_7:steer_1:0"],
+      opensIgnoreBaseline: true,
+    },
+  ]);
+  expect(findHits(fullRows, "primeradiant.com/evener/agent", fullOpts)).toEqual([
+    {
+      key: "steer_1",
+      itemId: "steer_1",
+      rowIndex: 0,
+      opens: [groupId, "notification:ref_a:job_7:steer_1:0"],
+      opensIgnoreBaseline: true,
+    },
+  ]);
+  expect(findHits(fullRows, "quokka-commentary", fullOpts)).toEqual([
+    { key: "qy_w2", itemId: "qy_w2", rowIndex: 0, opens: [groupId, "qy_w2"], opensIgnoreBaseline: true },
+  ]);
+
+  const housekeepingConfig = makeTranscriptDisplayConfig(
+    { kind: "preset", level: "full" },
+    { roundTimings: true, systemEvents: true },
+  );
+  const housekeepingModel: ThreadModel = {
+    ...makeTranscriptPreviewModel(),
+    ref: "ref_a",
+    turns: [
+      {
+        id: "turn_h1",
+        status: "completed",
+        items: [
+          {
+            id: "rt_1",
+            turnId: "turn_h1",
+            type: "systemMessage",
+            eventKind: "round_timings",
+            text: "Round 1 · 120ms · quokka-timing",
+            status: "completed",
+          },
+          {
+            id: "notes_1",
+            turnId: "turn_h1",
+            type: "systemMessage",
+            eventKind: "notes-context",
+            text: "quokka-notes",
+            status: "completed",
+          },
+          quietItem("qy_h1", "turn_h1"),
+        ],
+      },
+      { id: "turn_h2", status: "completed", items: [quietItem("qy_h2", "turn_h2")] },
+    ],
+  };
+  const hkRows = transcriptRowsForProjection(projectThread(housekeepingModel, housekeepingConfig));
+  const hkOpts = { config: housekeepingConfig, sessionRef: "ref_a" };
+  expect(findHits(hkRows, "quokka-timing", hkOpts)).toEqual([
+    { key: "rt_1", itemId: "rt_1", rowIndex: 0, opens: ["quiet-yield-group:rt_1"], opensIgnoreBaseline: true },
+  ]);
+  expect(findHits(hkRows, "quokka-notes", hkOpts)).toEqual([
+    {
+      key: "notes_1",
+      itemId: "notes_1",
+      rowIndex: 0,
+      opens: ["quiet-yield-group:rt_1", "notes_1"],
+      opensIgnoreBaseline: true,
+    },
+  ]);
+});

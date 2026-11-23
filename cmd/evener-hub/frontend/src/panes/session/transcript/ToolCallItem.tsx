@@ -17,7 +17,7 @@ import {
   type TranscriptRenderContextValue,
   useTranscriptRenderContext,
 } from "../../../transcriptDisplay/renderContext";
-import { type CadenceState, CodeBlock, StatusDot } from "../../../widgets";
+import { CodeBlock, StatusDot } from "../../../widgets";
 import { disclosureDefault, isDisclosureOpen, toggleDisclosure } from "../../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { useFindReveal } from "../find/findReveal";
@@ -36,10 +36,10 @@ import styles from "./toolcallitem.module.css";
 import { type ToolRendererDescriptor, toolCallFailed, toolRendererFor } from "./toolRenderers";
 import { rowFromDelegateItem } from "./tools/subagentModule";
 import {
+  DELEGATE_STATUS,
   delegateStableState,
   removeSubagentRow,
   rowKeyForDelegateItem,
-  type SubagentRowKind,
   turnScopeKey,
   upsertSubagentRow,
 } from "./tools/subagentModuleStore";
@@ -49,14 +49,6 @@ const CLASS = {
   call: requireClass(styles.call, "toolcallitem.module.css", "call"),
   body: requireClass(styles.body, "toolcallitem.module.css", "body"),
   error: requireClass(styles.error, "toolcallitem.module.css", "error"),
-};
-
-const DELEGATE_INDICATOR_STATE: Record<SubagentRowKind, CadenceState> = {
-  running: "working",
-  done: "ended",
-  stopped: "ended",
-  failed: "failed",
-  unknown: "idle",
 };
 
 const DELEGATE_INTENT_PREVIEW_MAX = 120;
@@ -153,7 +145,7 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
   const delegateState = isDelegate ? delegateStableState(item, live, sessionRef, thread, entities) : undefined;
   const delegateStatus =
     isDelegate && delegateState !== undefined && delegateState.kind !== "unknown" ? (
-      <StatusDot state={DELEGATE_INDICATOR_STATE[delegateState.kind]} />
+      <StatusDot state={DELEGATE_STATUS[delegateState.kind].cadence} />
     ) : undefined;
   const delegateScopeKey = turnScopeKey(sessionRef, item.turnId);
 

@@ -1,0 +1,22 @@
+/* The effort picker's wrapper: it carries the separator and stays one direct
+ * child of the caller's control run. Select's quiet variant owns the pill
+ * face, the transparent native <select>, the readout and the tap floor. */
+.control {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.separator {
+  color: var(--ink-low);
+}
+
+/* Narrow pane: keep the separator plus the 44px native select, but let a long
+ * readout ellipsize instead of reserving its full intrinsic width and
+ * squeezing the model trigger to zero. */
+@container (max-width: 399px) {
+  .control {
+    flex: 0 1 auto;
+    min-width: calc(var(--tap-min, 0px) + 1ch);
+  }
+}

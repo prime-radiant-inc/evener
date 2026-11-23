@@ -17,17 +17,28 @@ import {
   formatElapsed,
   scopedDisclosureId,
   splitMandate,
+  stableDelegateDisplayStatus,
 } from "@evener/appwire-client";
 import type { ReactNode } from "react";
 import { disclosureScopeForSession, useTranscriptRenderContext } from "../../../../transcriptDisplay/renderContext";
-import { Chip, type ChipTone, CopyButton, Disclosure, Eyebrow, InlineNotice, Markdown } from "../../../../widgets";
+import {
+  Chip,
+  CopyButton,
+  Disclosure,
+  Eyebrow,
+  InlineNotice,
+  Markdown,
+  PropertyList,
+  type PropertyListRow,
+} from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { EntityRef } from "../EntityRef";
 import { OpenTranscriptButton } from "../openTranscript";
 import type { ToolRenderProps } from "../toolRenderers";
 import { HeadClippedOutputBody } from "./bodies";
 import styles from "./delegateStatus.module.css";
-import { classifyJobStatus } from "./subagentModuleStore";
+import { classifyJobStatus, DELEGATE_STATUS, delegateStatusKey, type SubagentRowKind } from "./subagentModuleStore";
+import { ToolMeta } from "./toolMeta";
 
 const CLASS = {
   card: requireClass(styles.card, "delegateStatus.module.css", "card"),
@@ -36,19 +47,12 @@ const CLASS = {
   headSpacer: requireClass(styles.headSpacer, "delegateStatus.module.css", "headSpacer"),
   meta: requireClass(styles.meta, "delegateStatus.module.css", "meta"),
   metaSeg: requireClass(styles.metaSeg, "delegateStatus.module.css", "metaSeg"),
-  metaSep: requireClass(styles.metaSep, "delegateStatus.module.css", "metaSep"),
   metaK: requireClass(styles.metaK, "delegateStatus.module.css", "metaK"),
   metaV: requireClass(styles.metaV, "delegateStatus.module.css", "metaV"),
   mandate: requireClass(styles.mandate, "delegateStatus.module.css", "mandate"),
   mandateBody: requireClass(styles.mandateBody, "delegateStatus.module.css", "mandateBody"),
   diagnostic: requireClass(styles.diagnostic, "delegateStatus.module.css", "diagnostic"),
   env: requireClass(styles.env, "delegateStatus.module.css", "env"),
-  envRows: requireClass(styles.envRows, "delegateStatus.module.css", "envRows"),
-  envRow: requireClass(styles.envRow, "delegateStatus.module.css", "envRow"),
-  envK: requireClass(styles.envK, "delegateStatus.module.css", "envK"),
-  envV: requireClass(styles.envV, "delegateStatus.module.css", "envV"),
-  envVmono: requireClass(styles.envVmono, "delegateStatus.module.css", "envVmono"),
-  envVmuted: requireClass(styles.envVmuted, "delegateStatus.module.css", "envVmuted"),
   tools: requireClass(styles.tools, "delegateStatus.module.css", "tools"),
   toolsChips: requireClass(styles.toolsChips, "delegateStatus.module.css", "toolsChips"),
   footer: requireClass(styles.footer, "delegateStatus.module.css", "footer"),
@@ -146,40 +150,19 @@ function isDelegateStatus(raw: unknown): raw is DelegateStatusState {
   return true;
 }
 
-// Map a delegate's status to a Chip tone, reusing
-// classifyJobStatus's status vocabulary so failed→danger (not neutral).
-// An idle delegate whose last run failed should still show danger —
-// the lifecycle is idle, but the outcome is the most recent fact.
-// A running delegate always shows alive regardless of last_outcome —
-// the live lifecycle is the primary signal, not a past outcome.
-//
-// "exhausted" is NOT classified as "failed" here: a budget exhaustion is
-// a soft stop, not a hard error. classifyJobStatus maps it to "failed"
-// for the activity rail (where it's a terminal state), but the delegate
-// status card distinguishes the two: exhausted→attention (amber, "ran
-// out of budget"), failed→danger (red, "something went wrong").
 function isExhausted(status: string | undefined): boolean {
   return status === "exhausted";
 }
 
-function statusToTone(state: DelegateStatusState): ChipTone {
-  if (state.status === "idle") {
-    // Idle lifecycle: show the last run's outcome, not "running".
-    if (state.last_outcome?.status) {
-      if (isExhausted(state.last_outcome.status)) return "attention";
-      const kind = classifyJobStatus(state.last_outcome.status);
-      if (kind === "failed") return "danger";
-    }
-    return "neutral";
-  }
-  const kind = classifyJobStatus(state.status);
-  if (kind === "running") return "alive";
-  if (kind === "failed") return "danger";
-  return "neutral";
-}
-
-function statusLabel(state: DelegateStatusState): string {
-  return state.status ?? "unknown";
+// A terminal delegate's last outcome outranks its idle lifecycle, as on the card.
+function statusInfo(state: DelegateStatusState) {
+  const stable = {
+    status: state.status,
+    outcome: state.last_outcome?.status,
+    terminal: state.status !== "running",
+  };
+  const kind: SubagentRowKind = classifyJobStatus(stableDelegateDisplayStatus(stable) ?? state.status);
+  return { kind, ...DELEGATE_STATUS[delegateStatusKey(kind, stable)] };
 }
 
 interface MetaSegment {
@@ -214,64 +197,39 @@ function configSegments(state: DelegateStatusState): MetaSegment[] {
   return segs;
 }
 
-interface EnvRow {
-  key: string;
-  value: string;
-  mono?: boolean;
-  muted?: boolean;
-}
-
-function environmentRows(state: DelegateStatusState): EnvRow[] {
-  const rows: EnvRow[] = [];
-  if (state.cwd) rows.push({ key: "cwd", value: state.cwd, mono: true });
-  if (state.isolation) rows.push({ key: "isolation", value: state.isolation, muted: true });
-  if (state.sandbox_mode) rows.push({ key: "sandbox", value: state.sandbox_mode, mono: true });
+function environmentRows(state: DelegateStatusState): PropertyListRow[] {
+  const rows: PropertyListRow[] = [];
+  if (state.cwd) rows.push({ label: "cwd", value: state.cwd, mono: true });
+  if (state.isolation) rows.push({ label: "isolation", value: state.isolation, muted: true });
+  if (state.sandbox_mode) rows.push({ label: "sandbox", value: state.sandbox_mode, mono: true });
   if (state.sandbox_network !== undefined) {
-    rows.push({ key: "network", value: state.sandbox_network ? "enabled" : "disabled" });
+    rows.push({ label: "network", value: state.sandbox_network ? "enabled" : "disabled" });
   }
   return rows;
 }
 
-function envValueClass(row: EnvRow): string {
-  // Always include envV for the shared truncation rules (overflow, ellipsis,
-  // nowrap); envVmono layers on the mono font/size, envVmuted the muted color.
-  const classes = [CLASS.envV];
-  if (row.mono) classes.push(CLASS.envVmono);
-  if (row.muted) classes.push(CLASS.envVmuted);
-  return classes.join(" ");
-}
-
 function MetaLine({ segments }: { segments: MetaSegment[] }) {
-  if (segments.length === 0) return null;
   return (
-    <div className={CLASS.meta}>
-      {segments.map((seg, i) => (
-        <span key={seg.key} className={CLASS.metaSeg}>
-          {i > 0 && (
-            <span className={CLASS.metaSep} aria-hidden="true">
-              ·
-            </span>
-          )}
-          <span className={CLASS.metaK}>{seg.key}</span> <span className={CLASS.metaV}>{seg.value}</span>
-        </span>
-      ))}
-    </div>
+    <ToolMeta
+      className={CLASS.meta}
+      segments={segments.map((seg) => ({
+        key: seg.key,
+        content: (
+          <span className={CLASS.metaSeg}>
+            <span className={CLASS.metaK}>{seg.key}</span> <span className={CLASS.metaV}>{seg.value}</span>
+          </span>
+        ),
+      }))}
+    />
   );
 }
 
-function EnvTable({ rows }: { rows: EnvRow[] }) {
+function EnvTable({ rows }: { rows: PropertyListRow[] }) {
   if (rows.length === 0) return null;
   return (
     <div className={CLASS.env}>
       <Eyebrow>Environment</Eyebrow>
-      <div className={CLASS.envRows}>
-        {rows.map((row) => (
-          <div key={row.key} className={CLASS.envRow}>
-            <span className={CLASS.envK}>{row.key}</span>
-            <span className={envValueClass(row)}>{row.value}</span>
-          </div>
-        ))}
-      </div>
+      <PropertyList rows={rows} />
     </div>
   );
 }
@@ -294,8 +252,7 @@ export function DelegateStatusBody({ item, sessionRef }: ToolRenderProps) {
   // Normalize all fields to their declared types so rendering can't throw on
   // malformed persisted data (e.g. model: {} from a legacy transcript).
   const state = normalizeDelegateStatus(item.raw as Record<string, unknown>);
-  const tone = statusToTone(state);
-  const label = statusLabel(state);
+  const status = statusInfo(state);
   const mandate = splitMandate(state.task);
   const lifecycle = lifecycleSegments(state);
   const config = configSegments(state);
@@ -326,7 +283,9 @@ export function DelegateStatusBody({ item, sessionRef }: ToolRenderProps) {
           <EntityRef id={state.id ?? ""} triggerOnly />
         </span>
         <span className={CLASS.headSpacer} />
-        <Chip tone={tone}>{label}</Chip>
+        <Chip kind={status.kind} tone={status.chipTone}>
+          {status.label}
+        </Chip>
       </div>
 
       {/* Lifecycle meta: inline ·-separated segments */}

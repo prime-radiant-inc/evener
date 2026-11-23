@@ -2,12 +2,10 @@
 // to manage registered marketplaces and to install their plugins. Each row
 // expands inline to its catalog (the shared plugin rows, installed state and
 // Install action contextual) and to its management actions (Refresh, Edit,
-// Remove), replacing the old separate Browse tree and Sources sheet. The
-// filter auto-expands the marketplaces whose catalogs match.
+// Remove). The filter auto-expands the marketplaces whose catalogs match.
 
 import type { AppwireClientLike } from "@evener/appwire-client";
-import { errorText, marketplaceSourceLabel, marketplaceSourceTakesRef } from "@evener/appwire-client";
-import { HUB_WRITE_BUSY, isHubWriteBusy } from "@evener/appwire-client/state/extensions";
+import { marketplaceSourceLabel, marketplaceSourceTakesRef } from "@evener/appwire-client";
 import { type Dispatch, type FormEvent, type SetStateAction, useEffect, useId, useRef, useState } from "react";
 import {
   Button,
@@ -30,6 +28,8 @@ import {
   useMarketplaceRowFocusRehome,
   usePluginRowFocusRehome,
 } from "../../../plugins/pluginRowFocus";
+import { marketplaceMatchesQuery, pluginMatchesQuery } from "../../../plugins/pluginSearch";
+import { writeFailureText } from "../../../plugins/writeFailure";
 import { useExtensionsHostState, useExtensionsHostStore, useHostDirectoryActions } from "./hostStore";
 import { MarketplaceDetailBody } from "./MarketplaceDetailBody";
 import { MARKETPLACE_SOURCE_OPTIONS, type MarketplaceSourceKind } from "./marketplaceEdit";
@@ -45,11 +45,6 @@ const CLASS = {
 };
 
 const FILTER_DEBOUNCE_MS = 150;
-
-function pluginMatchesFilter(plugin: { name: string; description?: string }, query: string): boolean {
-  const q = query.toLowerCase();
-  return plugin.name.toLowerCase().includes(q) || (plugin.description ?? "").toLowerCase().includes(q);
-}
 
 export interface MarketplacesSectionProps {
   /** Every marketplace whose body is expanded; the filter opens several. */
@@ -151,8 +146,8 @@ export function MarketplacesSection({
           for (const m of current) {
             const cache = store.getState().browseCatalogs.get(m.name);
             const matches =
-              m.name.toLowerCase().includes(trimmedQuery.toLowerCase()) ||
-              (cache?.status === "loaded" && cache.plugins.some((p) => pluginMatchesFilter(p, trimmedQuery)));
+              marketplaceMatchesQuery(m.name, trimmedQuery) ||
+              (cache?.status === "loaded" && cache.plugins.some((p) => pluginMatchesQuery(p, trimmedQuery)));
             if (matches) next.add(m.name);
           }
           if (!cancelled) setExpandedMarketplaces(next);
@@ -198,13 +193,13 @@ export function MarketplacesSection({
       toasts.push("success", `Installed ${target.plugin}`);
       setPendingInstall(null);
     } catch (err) {
-      toasts.push("error", isHubWriteBusy(err) ? HUB_WRITE_BUSY : `Install failed: ${errorText(err)}`);
+      toasts.push("error", writeFailureText(err, "Install failed"));
     }
   }
 
   function marketplaceHasMatch(name: string): boolean {
     const cache = browseCatalogs.get(name);
-    return cache?.status === "loaded" && cache.plugins.some((p) => pluginMatchesFilter(p, trimmedQuery));
+    return cache?.status === "loaded" && cache.plugins.some((p) => pluginMatchesQuery(p, trimmedQuery));
   }
 
   function marketplaceUnresolved(name: string): boolean {
@@ -217,7 +212,7 @@ export function MarketplacesSection({
       ? marketplaces
       : marketplaces.filter(
           (m) =>
-            m.name.toLowerCase().includes(trimmedQuery.toLowerCase()) ||
+            marketplaceMatchesQuery(m.name, trimmedQuery) ||
             marketplaceUnresolved(m.name) ||
             marketplaceHasMatch(m.name),
         );
@@ -248,7 +243,7 @@ export function MarketplacesSection({
       resetAddForm();
       toasts.push("success", `Added marketplace${trimmedName ? ` ${trimmedName}` : ""}`);
     } catch (err) {
-      toasts.push("error", isHubWriteBusy(err) ? HUB_WRITE_BUSY : `Add marketplace failed: ${errorText(err)}`);
+      toasts.push("error", writeFailureText(err, "Add marketplace failed"));
     }
   }
 

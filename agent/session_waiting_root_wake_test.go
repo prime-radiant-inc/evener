@@ -29,7 +29,7 @@ func TestWaitingRootIsWokenByItsDelegateReport(t *testing.T) {
 			return delegateToolResponse("del_wait", "WAITED-CHILD: report the answer.")
 		},
 		func(llm.Request) llm.Response {
-			return quietYieldResponse("wait-for-child", `{}`)
+			return quietYieldResponse("wait-for-child", `{"message":"waiting on work","next":"log_quietly_and_end_turn"}`)
 		},
 		func(req llm.Request) llm.Response {
 			if !requestContainsText(req, "CHILD-ANSWER") {

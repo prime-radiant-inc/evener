@@ -30,7 +30,7 @@ var delegateUpdateEvalModel = flag.String("delegate-update-eval-model", "", "reg
 
 // TestDelegateUpdateGetsItsParentsAnswerLive is the spec's optional live
 // micro-test. A delegate needs a fact only its parent has, asks for it with
-// communicate(end_turn=false), and the update wakes the parent. The test
+// communicate(next="send_and_continue"), and the update wakes the parent. The test
 // records how the parent answers (delegate_send is right, communicate is
 // wrong) and whether the delegate receives the answer, logging one RESULT
 // line per run. It fails only when the harness breaks, never on model
@@ -63,8 +63,8 @@ func TestDelegateUpdateGetsItsParentsAnswerLive(t *testing.T) {
 
 	const codename = "HALCYON-42"
 	brief := "Start exactly one delegate with this prompt, word for word: \"Write a file named report.txt in the working directory whose only line is the codename your parent agent holds. " +
-		"You do not know the codename: ask your parent for it with communicate(end_turn=false), then list the working directory with the shell while you wait, " +
-		"and write the file once your parent's answer arrives. Finish with communicate(end_turn=true).\" " +
+		"You do not know the codename: ask your parent for it with communicate(next=\\\"send_and_continue\\\"), then list the working directory with the shell while you wait, " +
+		"and write the file once your parent's answer arrives. Finish with communicate(next=\\\"send_and_end_turn\\\").\" " +
 		"When the delegate asks you for the codename, answer it. The codename is " + codename + ". Do not write report.txt yourself."
 	// TRIPWIRE: real provider round trips across two sessions; only a wedged
 	// live call reaches it.
@@ -506,8 +506,8 @@ func TestToolCallsAfterQuestionIgnoresEarlierNarration(t *testing.T) {
 		e.Turn.Message.Content = []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{Name: tool, Arguments: json.RawMessage(args)}}}
 		return e
 	}
-	narration := entry("", "communicate", `{"message":"Starting a delegate to write HALCYON-42","end_turn":false}`)
-	question := entry("dlg_1/update/7", "communicate", `{"message":"ok","end_turn":false}`)
+	narration := entry("", "communicate", `{"message":"Starting a delegate to write HALCYON-42","next":"send_and_continue"}`)
+	question := entry("dlg_1/update/7", "communicate", `{"message":"ok","next":"send_and_continue"}`)
 	answer := entry("", "delegate_send", `{"message":"HALCYON-42"}`)
 
 	if got := classifyParentAnswer(toolCallsAfterQuestion([]transcript.Entry{narration, question}), "HALCYON-42"); got != "none" {
@@ -528,11 +528,11 @@ func TestClassifyParentAnswer(t *testing.T) {
 		want  string
 	}{
 		{"no calls", nil, "none"},
-		{"narration is not an answer", []llm.ToolCallData{call("communicate", `{"message":"Starting the delegate","end_turn":false}`)}, "none"},
+		{"narration is not an answer", []llm.ToolCallData{call("communicate", `{"message":"Starting the delegate","next":"send_and_continue"}`)}, "none"},
 		{"delegate_send with the codename", []llm.ToolCallData{call("delegate", `{"prompt":"ask me"}`), call("delegate_send", `{"to":"dlg_1","message":"It is HALCYON-42"}`)}, "delegate_send"},
-		{"communicate update with the codename", []llm.ToolCallData{call("communicate", `{"message":"HALCYON-42","end_turn":false}`)}, "communicate"},
-		{"terminal communicate with the codename", []llm.ToolCallData{call("communicate", `{"message":"HALCYON-42","end_turn":true}`)}, "communicate"},
-		{"delegate_send wins over an earlier communicate", []llm.ToolCallData{call("communicate", `{"message":"HALCYON-42","end_turn":false}`), call("delegate_send", `{"message":"HALCYON-42"}`)}, "delegate_send"},
+		{"communicate update with the codename", []llm.ToolCallData{call("communicate", `{"message":"HALCYON-42","next":"send_and_continue"}`)}, "communicate"},
+		{"terminal communicate with the codename", []llm.ToolCallData{call("communicate", `{"message":"HALCYON-42","next":"send_and_end_turn"}`)}, "communicate"},
+		{"delegate_send wins over an earlier communicate", []llm.ToolCallData{call("communicate", `{"message":"HALCYON-42","next":"send_and_continue"}`), call("delegate_send", `{"message":"HALCYON-42"}`)}, "delegate_send"},
 	} {
 		if got := classifyParentAnswer(tc.calls, "HALCYON-42"); got != tc.want {
 			t.Errorf("%s: got %s, want %s", tc.name, got, tc.want)

@@ -1143,9 +1143,13 @@ describe("row alignment", () => {
   });
 
   test("the title button reset preserves the rail label's explicit UI font size", () => {
-    const buttonReset = topRuleBlock(RAIL_CSS, ".sessionTitle .label");
+    const buttonReset = topRuleBlock(RAIL_CSS, ".sessionTitleButton");
     expect(buttonReset).toContain("font-family: inherit");
     expect(buttonReset).not.toMatch(/(?:^|\s)font:\s*inherit/);
+  });
+
+  test("the title's block presentation comes from HoverCard, not a rail-side reach-in", () => {
+    expect(RAIL_CSS).not.toMatch(/\.sessionTitle(?![A-Za-z])/);
   });
 });
 
@@ -1155,7 +1159,7 @@ describe("touch tap floor (RailRow.module.css, any-pointer: coarse)", () => {
   const coarseBlock = mediaBlock(RAIL_CSS, "any-pointer: coarse");
 
   test("long-press-enabled session titles meet the 44px floor in both dimensions", () => {
-    const rule = nestedRuleBlock(coarseBlock, ".sessionTitle button.label");
+    const rule = nestedRuleBlock(coarseBlock, ".label.sessionTitleButton");
     expect(rule).toContain("min-width: var(--tap-min)");
     expect(rule).toContain("min-height: var(--tap-min)");
   });

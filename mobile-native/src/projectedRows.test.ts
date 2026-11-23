@@ -575,6 +575,42 @@ describe("projectedRow — item entries", () => {
 		expect(groupTimeline([row])).toEqual([row]);
 	});
 
+	it("keeps a clean quiet_yield as a plain notice and folds companion commentary behind its label", () => {
+		const clean = projectedRow(
+			itemEntry(item({ type: "systemMessage", text: "quiet-sentinel", eventKind: "quiet_yield" })),
+		) as Extract<MobileTimelineItem, { kind: "notice" }>;
+		expect(clean).toMatchObject({
+			kind: "notice",
+			origin: "system",
+			family: "lifecycle",
+			tone: "system",
+			eventKind: "quiet_yield",
+			text: "quiet-sentinel",
+		});
+		expect(clean.label).toBeUndefined();
+
+		const withCommentary = projectedRow(
+			itemEntry(
+				item({
+					type: "systemMessage",
+					text: "quiet-sentinel",
+					eventKind: "quiet_yield",
+					raw: { commentary: "  demoted-commentary-sentinel  " },
+				}),
+			),
+		) as Extract<MobileTimelineItem, { kind: "notice" }>;
+		expect(withCommentary).toMatchObject({
+			kind: "notice",
+			origin: "system",
+			family: "lifecycle",
+			tone: "system",
+			eventKind: "quiet_yield",
+			label: "quiet-sentinel",
+			text: "demoted-commentary-sentinel",
+			rendersMarkdown: true,
+		});
+	});
+
 	it("maps a warning item to the attention failure row", () => {
 		const row = projectedRow(
 			itemEntry(item({ type: "warning", text: "disk low", warning: { title: "Space", hint: "free some" } })),

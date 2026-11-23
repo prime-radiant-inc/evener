@@ -67,3 +67,12 @@
   border-color: var(--danger-edge);
   color: var(--danger-ink);
 }
+
+/* Quiet: no fill, a hairline edge and low ink, for a state marker inside a row. */
+.chip[data-variant="quiet"] {
+  flex: none;
+  padding: 0 var(--space-1);
+  background: transparent;
+  border-color: var(--edge);
+  color: var(--ink-low);
+}

@@ -4,7 +4,7 @@
   "notes": {
     "call_apply_patch": "A v4a patch updating one file and adding another.",
     "call_ask_user": "A question put to the user, run for real: the tool posts it and answers with its fixed acknowledgement. toolWireAnswers, the user's reply, follows in the next turn.",
-    "call_communicate": "A final report to the parent: end_turn ends the turn, and the step's words read it as done. The output envelope is required by the tool's schema.",
+    "call_communicate": "A final report to the parent: next=\"send_and_end_turn\" (default) ends the turn, and the step's words read it as done. The output envelope is optional unless a schema requires it.",
     "call_compact_context": "An empty note with no instructions and no reload_skills: the tool clears the note without asking for a compaction, and the first sentence of its output is what the step's words read.",
     "call_doctor_evener": "An earlier session's transcript rendered from the session's own state root: the command and selector are what the step's words name.",
     "call_edit_file": "One replacement in one file.",
@@ -1214,7 +1214,7 @@
       "turnId": "turn_1",
       "toolName": "manage_worktree",
       "callId": "call_worktree_exit_again",
-      "output": "{\n  \"left_path\": \"/home/jesse/.local/state/evener/projects/evener/worktrees/evener/settle-fix\",\n  \"message\": \"Exited worktree /home/jesse/.local/state/evener/projects/evener/worktrees/evener/settle-fix; restored to /home/jesse/git/evener.\",\n  \"restored_root\": \"/home/jesse/git/evener\",\n  \"status\": \"exited\"\n}\n\nYou have now made this same call and received the identical result 2 times in a row. Repeating it will not change the answer — use the result you already have, or change your approach. If you are repeating it to wait for something, end your turn with your result tool: the completion wakes you, and to wake on a condition you set a job_watch with output_match.",
+      "output": "{\n  \"left_path\": \"/home/jesse/.local/state/evener/projects/evener/worktrees/evener/settle-fix\",\n  \"message\": \"Exited worktree /home/jesse/.local/state/evener/projects/evener/worktrees/evener/settle-fix; restored to /home/jesse/git/evener.\",\n  \"restored_root\": \"/home/jesse/git/evener\",\n  \"status\": \"exited\"\n}\n\nYou have now made this same call and received the identical result 2 times in a row. Repeating it will not change the answer — use the result you already have, or change your approach. If you are repeating it to wait for something, end your turn with communicate (next=\"log_quietly_and_end_turn\" and a brief wait note): the completion wakes you, and to wake on a condition you set a job_watch with output_match.",
       "status": "completed",
       "completedAt": 1790625602000
     },

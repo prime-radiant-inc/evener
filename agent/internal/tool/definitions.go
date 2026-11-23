@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
 )
@@ -494,8 +495,9 @@ func DefDelegateSendNamed(resultTool string) llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name: "delegate_send",
 		Description: "Sends a message to one of your own delegates, by the durable delegate_id you got when you created it. " +
-			"To reach your own parent, use `" + resultTool + "` instead: end_turn=false for an update, end_turn=true for a report or readiness line. " +
-			"Use `" + resultTool + "({})` to end a turn quietly while waiting. " +
+			"To reach your own parent, use `" + resultTool + "` instead: `next=\"send_and_continue\"` for an update, " +
+			"`next=\"send_and_end_turn\"` (the default) for a report or readiness line, or " +
+			"`next=\"log_quietly_and_end_turn\"` with a brief one-line `message` to end a turn quietly while waiting. " +
 			"`to` accepts only a `dlg_...` delegate_id this session owns; it rejects `caller`, job/turn handles, and runtime aliases. " +
 			"If the delegate is running, a send with max_wait_ms unset or 0 steers it and returns on delivery; a positive max_wait_ms is refused as target_busy, while a delegate that finishes before admission is started and the wait is honored. A delegate already being driven or otherwise busy is refused as target_busy. " +
 			"Idle delegates are started/resumed automatically through the existing restore path, so follow-up messages resume them without an explicit idle-mode flag.",
@@ -616,7 +618,7 @@ func DefJobStatus() llm.ToolDefinition {
 // It is the one wording shared by the job tool descriptions and the refusals of
 // wait-shaped calls.
 func EndTurnToWait(resultTool string) string {
-	return "When you have nothing else to do until your background work finishes, end your turn: call `" + resultTool + "({})` with no message to yield quietly, and its completion wakes you. To post a status note before waiting, send an update with `" + resultTool + "(end_turn=false, message=...)`. To wake on a condition instead, set `job_watch` with `output_match`."
+	return "When you have nothing else to do until your background work finishes, end your turn quietly with `" + resultTool + "` (`next=\"log_quietly_and_end_turn\"`) and a brief one-line `message` naming what you are waiting on; its completion wakes you. To post a status note before waiting, send an update with `" + resultTool + "` (`next=\"send_and_continue\"`). To wake on a condition instead, set `job_watch` with `output_match`."
 }
 
 // DefJobStatusNamed is DefJobStatus for a session whose result tool is named
@@ -836,6 +838,13 @@ func DefWebFetch() llm.ToolDefinition {
 // are built from the configured name by the Def...Named constructors.
 const DefaultResultToolName = "communicate"
 
+// CommunicateNext values select what happens after a communicate call.
+const (
+	CommunicateNextSendAndEndTurn       = schema.CommunicateNextSendAndEndTurn
+	CommunicateNextSendAndContinue      = schema.CommunicateNextSendAndContinue
+	CommunicateNextLogQuietlyAndEndTurn = schema.CommunicateNextLogQuietlyAndEndTurn
+)
+
 func DefCommunicate() llm.ToolDefinition {
 	return DefCommunicateNamed(DefaultResultToolName)
 }
@@ -843,25 +852,32 @@ func DefCommunicate() llm.ToolDefinition {
 func DefCommunicateNamed(name string) llm.ToolDefinition {
 	strictFalse := false
 	return llm.ToolDefinition{
-		Name:        name,
-		Description: "Send a message to your human partner or caller. Use this tool for every message, readiness line, requested status marker, request for input, and final answer they should see. A call with no `message` and no `output` ends your turn quietly and sends nothing: use it when you have nothing to add while background work runs, or when a notification or watch frame needs nothing from you. With `end_turn=false` the `message` is a progress update: send it only when your partner needs to know something or act on it, then keep working in the following round. With `end_turn` true or omitted, the `message` is your final reply and ends the turn. Include `output` only when you hand back completed work or machine-readable results; a `result_schema` requires it on a final reply but not on a progress update or a quiet yield.",
-		Strict:      &strictFalse,
+		Name: name,
+		Description: "Send a message to your human partner or caller, or log a quiet wait note when ending a turn without replying. " +
+			"Use this tool for every message, readiness line, requested status marker, and final answer they should see. " +
+			"`message` is always required. Choose `next`: `send_and_end_turn` (default) delivers `message` as your final reply and ends this turn; " +
+			"`send_and_continue` delivers `message` as a progress update and continues in the next round, so send one only when your partner needs to know something or act on it; " +
+			"`log_quietly_and_end_turn` records `message` as a muted one-line note of what you are waiting on or why no reply is needed and ends this turn without waking anyone or sending a chat bubble. " +
+			"Use `log_quietly_and_end_turn` only while waiting on live background work or to acknowledge a notification or watch frame that needs nothing from you, never to skip replying to a human partner's message; emit no accompanying assistant prose alongside it. " +
+			"Include `output` only on `send_and_end_turn` when you hand back completed work or machine-readable results; a `result_schema` requires `output` on `send_and_end_turn`, and `output` must be omitted on `send_and_continue` and `log_quietly_and_end_turn`.",
+		Strict: &strictFalse,
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
 				"message": map[string]any{
 					"type":        "string",
-					"description": "Text to send to your human partner or parent agent. Omit when ending your turn with nothing to send.",
+					"description": "Text to send to your human partner or caller, or a brief one-line note of what you are waiting on or why no reply is needed when `next` is `log_quietly_and_end_turn`.",
 				},
-				"end_turn": map[string]any{
-					"type":        "boolean",
-					"default":     true,
-					"description": "true (default): end this turn. false: send `message` as a progress update and continue working in the next round.",
+				"next": map[string]any{
+					"type":        "string",
+					"enum":        slices.Clone(schema.CommunicateNextValues),
+					"default":     CommunicateNextSendAndEndTurn,
+					"description": "What happens after this message: `send_and_end_turn` (default) delivers `message` as your final reply and ends this turn; `send_and_continue` delivers `message` as a progress update and continues working in the next round; `log_quietly_and_end_turn` records `message` as a muted one-line transcript note without waking anyone and ends this turn while waiting on live work or after a notification or watch frame that needs no reply.",
 				},
 				"output": map[string]any{
 					"type":                 "object",
-					"description":          "Optional structured payload for a final reply. Include it only when you hand back completed work or machine-readable results; a `result_schema` requires it on a final reply.",
+					"description":          "Optional structured payload for a final reply (`send_and_end_turn`). Include it only when you hand back completed work or machine-readable results; a `result_schema` requires it on `send_and_end_turn` and it must be omitted on `send_and_continue` and `log_quietly_and_end_turn`.",
 					"additionalProperties": false,
 					"properties": map[string]any{
 						"message": map[string]any{"type": "string", "description": "Human-readable structured summary for automation and orchestration. Leave empty for ordinary conversational replies."},
@@ -879,6 +895,7 @@ func DefCommunicateNamed(name string) llm.ToolDefinition {
 					},
 				},
 			},
+			"required": []string{"message"},
 		},
 	}
 }
@@ -887,7 +904,7 @@ func DefCommunicateNamed(name string) llm.ToolDefinition {
 // watches through resultTool, shared by every tool description and error that
 // teaches it.
 func ObserverReporting(resultTool string) string {
-	return "Observers send updates with `" + resultTool + "(end_turn=false)`, and a readiness line or their findings with `" + resultTool + "(end_turn=true)` or `" + resultTool + "(message=...)`; `" + resultTool + "({})` ends the turn quietly when a frame needs nothing from them."
+	return "Observers send updates with `" + resultTool + "` (`next=\"send_and_continue\"`), a readiness line or their findings with `" + resultTool + "` (`next=\"send_and_end_turn\"`), and quiet no-action notes with `" + resultTool + "` (`next=\"log_quietly_and_end_turn\"`)."
 }
 
 // communicateDelegateDescription is communicate worded for a delegate, whose
@@ -895,27 +912,28 @@ func ObserverReporting(resultTool string) string {
 // started with result_schema gets that schema as its output parameter
 // (provider.WithCommunicateOutputSchema), so only the schema can say the shape.
 func communicateDelegateDescription(resultTool string) string {
-	return "Send a message to your parent agent; it is the only way your parent hears from you. Put the text your parent should read in `message`. " +
-		"With `end_turn=false` the message is an update: your parent receives it, and it wakes a parent that is waiting on you, so send one only when your parent needs to know something or act on it, never to narrate progress, and keep working in the following round. " +
+	return "Send a message to your parent agent, or log a quiet wait note when ending a turn without waking your parent; it is the only way your parent hears from you. " +
+		"Put the text your parent should read (or your one-line wait note for `log_quietly_and_end_turn`) in `message`. " +
+		"With `next=\"send_and_continue\"` the message is an update: your parent receives it, and it wakes a parent that is waiting on you, so send one only when your parent needs to know something or act on it, never to narrate progress, and keep working in the following round. " +
 		"The result's `delivery` says whether your parent has the update (`delivered`), will get it at its next step (`queued`), or cannot get it (`not_delivered`, with a `reason`); the call succeeds either way. " +
-		"With `end_turn` true or omitted the message ends your turn with your report or a readiness line before you wait for watch frames: put the complete result in a report. " +
-		"When you have nothing to send while work you started keeps running, or when a notification or watch frame needs nothing from you, call `" + resultTool + "({})` with no message to end your turn quietly, keeping your report for when the work finishes. " +
-		"A `result_schema` requires its `output` on a final reply (a non-empty `message`), not on a progress update or a quiet yield; when you hand back completed work or machine-readable results, fill `output` with the evidence and structured data your parent needs."
+		"With `next=\"send_and_end_turn\"` (the default) the message ends your turn with your report or a readiness line before you wait for watch frames: put the complete result in a report. " +
+		"When you have nothing to report while work you started keeps running, or when a notification or watch frame needs nothing from you, call `" + resultTool + "` with `next=\"log_quietly_and_end_turn\"` and a brief one-line `message` saying what you are waiting on or why no action is needed; this ends your turn quietly without waking your parent and keeps your report for when the work finishes. " +
+		"A `result_schema` requires its `output` on `send_and_end_turn`, not on `send_and_continue` or `log_quietly_and_end_turn`; omit `output` on `send_and_continue` and `log_quietly_and_end_turn`, and when you hand back completed work or machine-readable results on `send_and_end_turn`, fill `output` with the evidence and structured data your parent needs."
 }
 
 // WithCommunicateDelegateUpdates returns a copy of a communicate definition
-// worded for a delegate: end_turn=false sends an update its parent receives,
-// end_turn=true (or omitted) its report or an observer
-// readiness line, and a message-less call a quiet yield. The output schema
-// stays as the caller built it.
+// worded for a delegate: next="send_and_continue" sends an update its parent
+// receives, next="send_and_end_turn" (or omitted) its report or an observer
+// readiness line, and next="log_quietly_and_end_turn" a quiet yield with a
+// bounded note. The output schema stays as the caller built it.
 func WithCommunicateDelegateUpdates(def llm.ToolDefinition) llm.ToolDefinition {
 	params := CloneSchemaMap(def.Parameters)
 	props, _ := params["properties"].(map[string]any)
 	if message, ok := props["message"].(map[string]any); ok {
-		message["description"] = "The text your parent agent receives. Omit when ending your turn with nothing to send."
+		message["description"] = "The text your parent agent receives, or a brief one-line note of what you are waiting on or why no action is needed when `next` is `log_quietly_and_end_turn`."
 	}
-	if endTurn, ok := props["end_turn"].(map[string]any); ok {
-		endTurn["description"] = "true (default): end this turn with your message. false: send `message` as an update and keep working; your parent receives it, and it wakes a parent that is waiting on you."
+	if nextProp, ok := props["next"].(map[string]any); ok {
+		nextProp["description"] = "What happens after this message: `send_and_end_turn` (default) delivers `message` as your report or readiness line and ends this turn; `send_and_continue` delivers `message` as an update your parent receives (waking a waiting parent) and continues in the next round; `log_quietly_and_end_turn` records `message` as a muted one-line note without waking your parent and ends this turn while waiting on live work or after a notification or watch frame that needs no action."
 	}
 	def.Description = communicateDelegateDescription(def.Name)
 	def.Parameters = params

@@ -32,7 +32,7 @@ func entriesOfKind(turns []schema.Turn, kind schema.TurnKind) []schema.Turn {
 // execution and before the round's tool results.
 func TestCommunicateIsRecordedBeforeItIsAnnounced(t *testing.T) {
 	s, adapter := newExecutionSession(t)
-	adapter.script(respond(agenttest.ToolCallResponse(communicateCallArgs("comm-1", map[string]any{"message": "halfway", "end_turn": false}))))
+	adapter.script(respond(agenttest.ToolCallResponse(communicateCallArgs("comm-1", map[string]any{"message": "halfway", "next": "send_and_continue"}))))
 	var mu sync.Mutex
 	recordedAtEmit := map[string]bool{}
 	drained := make(chan struct{})
@@ -145,7 +145,7 @@ func TestCommunicateNotRecordedByAPoisonedWriterStillAnnouncesWhenUnserved(t *te
 func TestCommunicateToolSucceedsWhenNotRecordedAndUnserved(t *testing.T) {
 	s, _ := newExecutionSession(t)
 	attachEnvironmentPoisoningWrite(t, s, errors.New("injected transcript write failure"), errors.New("injected rollback failure"))
-	res := s.reg.ExecuteCall(context.Background(), s.env, communicateCallArgs("comm-poisoned", map[string]any{"message": "lost", "end_turn": true}))
+	res := s.reg.ExecuteCall(context.Background(), s.env, communicateCallArgs("comm-poisoned", map[string]any{"message": "lost", "next": "send_and_end_turn"}))
 	if res.IsError {
 		t.Fatalf("communicate call failed on an unserved session despite warn-and-continue: %+v", res)
 	}
@@ -186,7 +186,7 @@ func TestTurnLimitIsRecordedAsANotice(t *testing.T) {
 
 func TestTranscriptOnlyWritesNeverEnterHistory(t *testing.T) {
 	s, adapter := newExecutionSession(t)
-	adapter.script(respond(agenttest.ToolCallResponse(communicateCallArgs("comm-1", map[string]any{"message": "halfway", "end_turn": false}))))
+	adapter.script(respond(agenttest.ToolCallResponse(communicateCallArgs("comm-1", map[string]any{"message": "halfway", "next": "send_and_continue"}))))
 	if _, err := s.ProcessInput(context.Background(), "talk", nil); err != nil {
 		t.Fatal(err)
 	}

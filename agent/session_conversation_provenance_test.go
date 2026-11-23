@@ -58,7 +58,7 @@ func runConversationRequestRace(t *testing.T, incorporate bool) {
 					t.Fatal("correction was not durably incorporated before old provider response")
 				}
 			}
-			call := communicateCallArgs("alpha-output", map[string]any{"message": "opaque-output-alpha-719", "end_turn": false})
+			call := communicateCallArgs("alpha-output", map[string]any{"message": "opaque-output-alpha-719", "next": "send_and_continue"})
 			return llm.Response{Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &call}}}}
 		},
 		func(req llm.Request) llm.Response {

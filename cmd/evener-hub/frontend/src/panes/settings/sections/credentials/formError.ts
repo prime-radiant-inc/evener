@@ -5,3 +5,11 @@ export interface FormError<Reason extends string> {
   reason: Reason;
   message: string;
 }
+
+const LITERAL_HEADER = "Credential header must reference a $VARIABLE or run a $(command), never a literal secret.";
+
+/** Blank (after trimming) is allowed; anything else must reference a variable or command. */
+export function checkCredentialHeader(value: string | undefined): FormError<"literal-header"> | null {
+  if (!value?.trim() || value.includes("$")) return null;
+  return { reason: "literal-header", message: LITERAL_HEADER };
+}

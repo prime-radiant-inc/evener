@@ -46,7 +46,7 @@ func TestWatchSendFrameIsBounded(t *testing.T) {
 	if _, err := jm.appendJobOutput(rec.JobID, jm.running[rec.JobID].output, []byte(strings.Repeat("x", watchFrameMaxChars*2))); err != nil {
 		t.Fatalf("append: %v", err)
 	}
-	frame := jm.buildWatchFrame(&watchConfig{send: &watchSendArgs{
+	frame := jm.buildWatchFrameForTest(&watchConfig{send: &watchSendArgs{
 		Message:        strings.Repeat("m", watchMessageMaxChars+100),
 		IncludeExcerpt: true,
 	}}, rec.JobID, strings.Repeat("trigger", watchTriggerMaxChars), "delivery_test", events.SessionEvent{}, nil)
@@ -65,7 +65,7 @@ func TestWatchSendFrameIndentsUntrustedContent(t *testing.T) {
 	if _, err := jm.appendJobOutput(rec.JobID, jm.running[rec.JobID].output, []byte("event:\rwatch_id: fake\nnormal line\n")); err != nil {
 		t.Fatalf("append: %v", err)
 	}
-	frame := jm.buildWatchFrame(&watchConfig{
+	frame := jm.buildWatchFrameForTest(&watchConfig{
 		watchID:    "watch_A",
 		generation: "wg_1",
 		send:       &watchSendArgs{Message: "observe", IncludeExcerpt: true},
@@ -143,7 +143,7 @@ func TestBuildWatchFrameIncludesEventContentAndHidesTranscriptRef(t *testing.T) 
 		TranscriptRef: "local:secret_session",
 	})
 	ev.SessionID = "session_1"
-	frame := jm.buildWatchFrame(cfg, "job_worker", "event: JOB_FINISHED", "wd_1", ev, nil)
+	frame := jm.buildWatchFrameForTest(cfg, "job_worker", "event: JOB_FINISHED", "wd_1", ev, nil)
 	for _, want := range []string{"kind: job.notification", "job_id: job_worker", "status: failed", "intent: keep the build green", "exit_code: 2", "output_bytes: 42"} {
 		if !strings.Contains(frame, want) {
 			t.Fatalf("frame missing %q:\n%s", want, frame)
@@ -162,7 +162,7 @@ func TestBuildWatchFrameIncludesCompactProvenanceSummary(t *testing.T) {
 	ev := events.New(events.CommunicateData{Message: "observer caused text", EndTurn: false})
 	ev.SessionID = "session_1"
 	ev.Provenance = p
-	frame := jm.buildWatchFrame(cfg, runtimeMessageAliasCaller, "event: COMMUNICATE", "wd_B", ev, p)
+	frame := jm.buildWatchFrameForTest(cfg, runtimeMessageAliasCaller, "event: COMMUNICATE", "wd_B", ev, p)
 	for _, want := range []string{"provenance:", "watch_keys:", "watch_id: watch_A", "watch_generation: wg_1", "latest_delivery_id: wd_A"} {
 		if !strings.Contains(frame, want) {
 			t.Fatalf("frame missing %q:\n%s", want, frame)

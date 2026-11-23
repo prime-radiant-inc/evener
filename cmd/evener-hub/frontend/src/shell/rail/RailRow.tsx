@@ -71,7 +71,7 @@ import {
   PropertyList,
   type PropertyListRow,
   Skeleton,
-  STATUS_LABEL,
+  STATE_LABELS,
   StatusDot,
   type TreeRowInfo,
 } from "../../widgets";
@@ -82,6 +82,7 @@ import { type PinTarget, SessionMenu } from "../sessionMenu/SessionMenu";
 import { cadenceStateFor, SIGNAL_STATES } from "../sessionStatus";
 import styles from "./RailRow.module.css";
 import { type RailActivityRead, type RailStatus, useSessionActivityRead, workingStatus } from "./railActivity";
+import { ICON, STROKE } from "./railIcons";
 import {
   activeWatchCount,
   type BandRailNode,
@@ -112,7 +113,7 @@ const CLASS = {
   titleLine: requireClass(styles.titleLine, "RailRow.module.css", "titleLine"),
   meta: requireClass(styles.meta, "RailRow.module.css", "meta"),
   label: requireClass(styles.label, "RailRow.module.css", "label"),
-  sessionTitle: requireClass(styles.sessionTitle, "RailRow.module.css", "sessionTitle"),
+  sessionTitleButton: requireClass(styles.sessionTitleButton, "RailRow.module.css", "sessionTitleButton"),
   contextCard: requireClass(styles.contextCard, "RailRow.module.css", "contextCard"),
   contextHead: requireClass(styles.contextHead, "RailRow.module.css", "contextHead"),
   contextStatus: requireClass(styles.contextStatus, "RailRow.module.css", "contextStatus"),
@@ -580,7 +581,7 @@ function sessionStatusLabel(
       text: quota.phase === "pending" ? passedQuotaResetText() : waitingForQuotaText(quota.remainingMs),
     };
   }
-  if (state === "failed") return { kind: "failed", text: STATUS_LABEL.failed };
+  if (state === "failed") return { kind: "failed", text: STATE_LABELS.failed };
   if (state === "working") return workingStatus(session, read);
   const label = humanizeState(session.state, session.ask_pending === true, session.approval_pending === true);
   return { kind: "state", text: label.charAt(0).toUpperCase() + label.slice(1) };
@@ -680,33 +681,32 @@ function SessionTitle({
     return { rowRect: row.getBoundingClientRect(), sideRight: rail.getBoundingClientRect().right };
   }, [focusTarget]);
   return (
-    <span className={CLASS.sessionTitle}>
-      <HoverCard
-        label={<SessionContextCard session={session} effectiveState={effectiveState} notStarted={notStarted} />}
-        focusTarget={focusTarget}
-        sideAnchor={sideAnchor}
-        longPressEnabled
-      >
-        {({ describedBy }) => (
-          <button
-            type="button"
-            tabIndex={-1}
-            data-testid="rail-row-title"
-            className={CLASS.label}
-            aria-describedby={describedBy}
-            onMouseDown={(event) => {
-              if (event.button !== 0) return;
-              event.preventDefault();
-              const target = focusTarget();
-              if (target === document.activeElement) return;
-              target?.focus();
-            }}
-          >
-            {session.title}
-          </button>
-        )}
-      </HoverCard>
-    </span>
+    <HoverCard
+      label={<SessionContextCard session={session} effectiveState={effectiveState} notStarted={notStarted} />}
+      focusTarget={focusTarget}
+      sideAnchor={sideAnchor}
+      longPressEnabled
+      block
+    >
+      {({ describedBy }) => (
+        <button
+          type="button"
+          tabIndex={-1}
+          data-testid="rail-row-title"
+          className={`${CLASS.label} ${CLASS.sessionTitleButton}`}
+          aria-describedby={describedBy}
+          onMouseDown={(event) => {
+            if (event.button !== 0) return;
+            event.preventDefault();
+            const target = focusTarget();
+            if (target === document.activeElement) return;
+            target?.focus();
+          }}
+        >
+          {session.title}
+        </button>
+      )}
+    </HoverCard>
   );
 }
 
@@ -967,9 +967,9 @@ function BandRow({ node, info }: { node: BandRailNode; info: TreeRowInfo }) {
 // once, and each caller passes its own module's class and its own test id.
 export function WatchGlyph({ className, testId }: { className: string; testId: string }) {
   return (
-    <svg data-testid={testId} className={className} viewBox="0 0 16 16" aria-hidden="true" focusable="false">
-      <circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" strokeWidth="1.5" />
-      <path d="M8 4.5V8l2.5 1.5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+    <svg data-testid={testId} className={className} {...ICON} aria-hidden="true" focusable="false">
+      <circle cx="8" cy="8" r="6.25" {...STROKE} />
+      <path d="M8 4.5V8l2.5 1.5" {...STROKE} />
     </svg>
   );
 }
@@ -981,9 +981,9 @@ export function WatchGlyph({ className, testId }: { className: string; testId: s
 // WatchGlyph: the label beside it is the row's accessible name.
 function HostGlyph({ className, testId }: { className: string; testId: string }) {
   return (
-    <svg data-testid={testId} className={className} viewBox="0 0 16 16" aria-hidden="true" focusable="false">
-      <rect x="2" y="2.75" width="12" height="4.5" rx="1.25" fill="none" stroke="currentColor" strokeWidth="1.5" />
-      <rect x="2" y="8.75" width="12" height="4.5" rx="1.25" fill="none" stroke="currentColor" strokeWidth="1.5" />
+    <svg data-testid={testId} className={className} {...ICON} aria-hidden="true" focusable="false">
+      <rect x="2" y="2.75" width="12" height="4.5" rx="1.25" {...STROKE} />
+      <rect x="2" y="8.75" width="12" height="4.5" rx="1.25" {...STROKE} />
       <path d="M4.75 5h.01M4.75 11h.01" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" />
     </svg>
   );

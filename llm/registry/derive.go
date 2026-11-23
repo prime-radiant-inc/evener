@@ -116,10 +116,15 @@ func derive(c *Caps, m *Model, in deriveInput, prov map[string]string) []string 
 		}
 	}
 
-	// 2. Junk output cap from a catalog or live layer.
+	// 2. Junk output cap. A cap above the window cannot fit any input and
+	// is junk from every layer. A cap equal to the window leaves no room
+	// for input either, but a live listing is the serving endpoint's own
+	// statement of its limits, so an equal live cap stays as advertised;
+	// only the catalog and cache spellings are junk at equality.
 	if c.MaxOutputTokens != nil && c.ContextWindow != nil && *c.MaxOutputTokens >= *c.ContextWindow {
 		src := prov["MaxOutputTokens"]
-		if strings.HasPrefix(src, LayerSnapshot) || strings.HasPrefix(src, LayerCache) || strings.HasPrefix(src, LayerLive) {
+		if strings.HasPrefix(src, LayerSnapshot) || strings.HasPrefix(src, LayerCache) ||
+			(*c.MaxOutputTokens > *c.ContextWindow && strings.HasPrefix(src, LayerLive)) {
 			c.MaxOutputTokens = nil
 			prov["MaxOutputTokens"] = provDerived
 		}

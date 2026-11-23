@@ -152,7 +152,7 @@ func TestE2E_VoiceLateReplyKeepsOriginatingRequestFrontier(t *testing.T) {
 		t.Fatal("Beta steer replaced Alpha's active manager turn")
 	}
 	args := communicateArgs(alphaReply)
-	args["end_turn"] = false
+	args["next"] = "send_and_continue"
 	requestAlpha.RespondToolCall("communicate", args)
 	requestBeta := f.next(t)
 	if !requestBeta.Contains(beta) || !requestBeta.Contains(alpha) || requestBeta.PreviousToolCallID() != requestAlpha.ToolCallID() {

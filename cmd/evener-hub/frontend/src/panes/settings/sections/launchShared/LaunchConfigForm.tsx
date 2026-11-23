@@ -45,7 +45,7 @@ import {
   schemaPathKind,
 } from "@evener/appwire-client";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Button, Eyebrow, InlineNotice, useToasts } from "../../../../widgets";
+import { Button, Eyebrow, formatAbsoluteTime, InlineNotice, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { EnvMapField, McpServerListField, ModelListField, PathListField } from "./collectionFields";
 import { type LaunchFormPaths, PromptCompositeField, ScalarField } from "./fields";
@@ -103,7 +103,7 @@ interface SaveStatus {
 }
 
 function formatSavedAt(): string {
-  return `Saved at ${new Date().toLocaleTimeString()}`;
+  return `Saved at ${formatAbsoluteTime(Date.now(), { format: "localeTime" })}`;
 }
 
 /** sameLayer answers whether two layers carry the same content. A re-read of
@@ -230,21 +230,19 @@ export function LaunchConfigForm({
     }
   }
 
-  function updateScalar(wireField: string, value: string): void {
-    setState((s) => ({ ...s, scalars: { ...s.scalars, [wireField]: value } }));
+  function updateSection<K extends keyof LaunchFormState>(
+    key: K,
+    wireField: string,
+    value: LaunchFormState[K] extends Record<string, infer V> ? V : never,
+  ): void {
+    setState((s) => ({ ...s, [key]: { ...s[key], [wireField]: value } }));
   }
-  function updateList(wireField: string, values: string[]): void {
-    setState((s) => ({ ...s, lists: { ...s.lists, [wireField]: values } }));
-  }
-  function updateExplicitEmpty(wireField: string, checked: boolean): void {
-    setState((s) => ({ ...s, explicitEmpty: { ...s.explicitEmpty, [wireField]: checked } }));
-  }
-  function updateEnvMap(wireField: string, value: Record<string, string>): void {
-    setState((s) => ({ ...s, envMaps: { ...s.envMaps, [wireField]: value } }));
-  }
-  function updateMcpList(wireField: string, items: MCPServerSpec[]): void {
-    setState((s) => ({ ...s, mcpLists: { ...s.mcpLists, [wireField]: items } }));
-  }
+  const updateScalar = (wireField: string, value: string) => updateSection("scalars", wireField, value);
+  const updateList = (wireField: string, values: string[]) => updateSection("lists", wireField, values);
+  const updateExplicitEmpty = (wireField: string, checked: boolean) =>
+    updateSection("explicitEmpty", wireField, checked);
+  const updateEnvMap = (wireField: string, value: Record<string, string>) => updateSection("envMaps", wireField, value);
+  const updateMcpList = (wireField: string, items: MCPServerSpec[]) => updateSection("mcpLists", wireField, items);
 
   // validateScalarPathFields mirrors assets/launchconfig.js's validate()
   // item (1): every path-kind scalar input not currently inactive due to
@@ -431,9 +429,15 @@ export function LaunchConfigForm({
         <Button type="button" onClick={() => void handleSubmit()} disabled={busy}>
           Save launch defaults
         </Button>
-        <p className={CLASS.status} aria-live="polite" data-testid="launch-config-status" data-state={status?.kind}>
-          {status?.text}
-        </p>
+        <div className={CLASS.status} aria-live="polite" data-testid="launch-config-status" data-state={status?.kind}>
+          {status?.kind === "error" ? (
+            <InlineNotice tone="danger" live="off">
+              {status.text}
+            </InlineNotice>
+          ) : (
+            status?.text
+          )}
+        </div>
       </div>
     </div>
   );

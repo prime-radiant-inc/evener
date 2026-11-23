@@ -1,5 +1,6 @@
 import type { NavigationSessionLocation } from "@evener/appwire-client";
 import * as paneActions from "../../../shell/paneActions";
+import { refParam } from "../../../shell/routing";
 import { openTopLevelSession } from "../../../shell/sessionPlacement";
 import {
   conversationOpenParentRef,
@@ -13,8 +14,7 @@ import { navigationStore } from "../../../stores/navigation/store";
 import { OpenButton } from "../../../widgets";
 
 function transcriptRefOf(params: unknown): string | undefined {
-  const ref = (params as { ref?: unknown }).ref;
-  return typeof ref === "string" ? ref : undefined;
+  return refParam(params) ?? undefined;
 }
 
 function sameParams(a: unknown, b: unknown): boolean {

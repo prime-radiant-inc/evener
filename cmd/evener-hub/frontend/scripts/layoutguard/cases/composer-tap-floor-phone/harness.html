@@ -20,7 +20,8 @@
 <!-- Composer.tsx renders the status row through SessionChrome's `.body`/`.row`
      hierarchy. The effort trigger is Select's quiet variant: a transparent
      native <select> laid over its own readout, so its painted target is the
-     .quietVariant trigger span inside the row's .effortTrigger wrapper. -->
+     .quietVariant trigger span inside the shared ReasoningEffortControl
+     wrapper (`.control` plus its data-effort-control hook). -->
 <main class="fixtures"></main>
 <template id="fixture-template">
   <section class="fixture">
@@ -50,7 +51,7 @@
                   <span class="chevron">⌄</span>
                 </button>
               </span>
-            <span class="effortTrigger">
+            <span class="control" data-effort-control>
               <span class="separator" aria-hidden="true">·</span>
               <span class="quietVariant quietTrigger" data-effort>
                 <span class="quietReadout" aria-hidden="true">high</span>
@@ -59,9 +60,9 @@
               </span>
             </span>
           </span>
-          <span class="visuallyHidden"><meter aria-label="Context: 67k of 100k tokens used, 67 percent" min="0" value="67000" max="100000"></meter></span>
-          <span class="context" aria-hidden="true">
-            <span class="contextPercent">67%</span>
+          <span class="context">
+            <span class="contextMeter" data-context-meter><!-- biome-ignore lint/a11y/useSemanticElements: the themed gauge is the div Meter.tsx renders, not a native meter --><div class="track" role="meter" aria-label="Context: 67000 of 100000 tokens used, 67 percent" aria-valuenow="67000" aria-valuemin="0" aria-valuemax="100000"><div class="fill fillNeutral" style="--fill: 67%"></div></div></span>
+            <span class="contextPercent figure" data-context-percent aria-hidden="true">67%</span>
           </span>
           <span class="item mono queue"><span class="queueCompact">Q12</span></span>
           </div>

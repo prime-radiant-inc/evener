@@ -23,7 +23,7 @@ import (
 func TestSession_ExcludesConfiguredCredentialFromResponseEndpointArtifacts(t *testing.T) {
 	t.Parallel()
 	const credential = "endpoint-path-credential-sentinel"
-	const communicateArgs = `{\"message\":\"done\",\"end_turn\":true,\"output\":{\"message\":\"\",\"data\":{},\"artifacts\":[]}}`
+	const communicateArgs = `{\"message\":\"done\",\"next\":\"send_and_end_turn\",\"output\":{\"message\":\"\",\"data\":{},\"artifacts\":[]}}`
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/"+credential+"/chat/completions" {
 			http.NotFound(w, r)

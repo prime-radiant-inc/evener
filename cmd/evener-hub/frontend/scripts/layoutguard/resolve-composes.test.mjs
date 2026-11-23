@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { resolveComposes, unwrapGlobal } from "./resolve-composes.mjs";
+import { prefixClassSelectors, resolveComposes, unwrapGlobal } from "./resolve-composes.mjs";
 
 // Removes every @media block (brace-counted, so a block's nested rules go with
 // its gate): what remains is the CSS the browser applies at EVERY width.
@@ -43,6 +43,30 @@ describe("unwrapGlobal", () => {
     // where the browser drops the whole selector and the guard passes
     // without testing the rule.
     expect(() => unwrapGlobal(".a :global(:not(.x)) { x: y; }")).toThrow(/:global/);
+  });
+});
+
+describe("prefixClassSelectors", () => {
+  test("prefixes every class selector in a rule list, including compound and gated selectors", () => {
+    const out = prefixClassSelectors(
+      ".summary, details[open] > .summary:hover { color: red; }\n@media (max-width: 899px) { .body { margin-top: 4px; } }",
+      "d-",
+    );
+    expect(out).toContain(".d-summary, details[open] > .d-summary:hover");
+    expect(out).toMatch(/@media \(max-width: 899px\) \{\s*\.d-body\s*\{/);
+    expect(out).toContain("margin-top: 4px");
+  });
+
+  test("leaves :global() inners and declaration values alone", () => {
+    const out = prefixClassSelectors('.a > :global(.kept) { content: ".body"; }', "d-");
+    expect(out).toContain(".d-a > :global(.kept)");
+    expect(out).toContain('content: ".body"');
+  });
+
+  test("prefixes same-file composes targets and leaves cross-file ones", () => {
+    const out = prefixClassSelectors('.a { composes: b, c; }\n.d { composes: e from "./x.module.css"; }', "d-");
+    expect(out).toContain("composes: d-b, d-c;");
+    expect(out).toContain('composes: e from "./x.module.css";');
   });
 });
 

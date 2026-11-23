@@ -193,7 +193,7 @@ func TestWaitRefusalAllowsQuietYieldWithBackgroundWork(t *testing.T) {
 			}
 			jobID := startBackgroundShellJob(t, s, idleShellCommand)
 			t.Cleanup(func() { _, _ = s.jobManager.stop(jobID) })
-			res := callTool(s, "communicate", map[string]any{})
+			res := callTool(s, "communicate", map[string]any{"message": "Waiting on background shell job.", "next": tool.CommunicateNextLogQuietlyAndEndTurn})
 			var state struct {
 				Accepted bool `json:"communicate_accepted"`
 				EndTurn  bool `json:"communicate_end_turn"`

@@ -2515,22 +2515,22 @@ func (s *Session) childFatalRunGated(childSessionID string) bool {
 // calling the result tool. Sent at most once.
 func communicateNudge(toolName string) string {
 	return "You stopped without calling " + toolName + ". " +
-		"If running work or a delegate will wake you and you have nothing to report, call " + toolName + "({}) with no message. " +
-		"For complete findings, a blocker, or a readiness line, call " + toolName + " with end_turn=true and a message. " +
+		`If running work or a delegate will wake you and you have nothing to report, call ` + toolName + ` with next="log_quietly_and_end_turn" and a brief one-line wait note in message. ` +
+		`For complete findings, a blocker, or a readiness line, call ` + toolName + ` with next="send_and_end_turn" and a message. ` +
 		"Your parent receives only the " + toolName + " message, not the rest of your turn."
 }
 
 // communicateUpdateNudge is the reminder for a subagent that sent its parent a
-// non-terminal update (end_turn=false) and then ended its turn without a
+// non-terminal update (next="send_and_continue") and then ended its turn without a
 // result. It must not repeat communicateNudge's false premise that the delegate
 // never called communicate, and it must not read as a new caller instruction to
 // report and stop: the bounded run's work is still allowed to execute, and an
 // automatic retry authorizes no new work (#3734).
 func communicateUpdateNudge(toolName string) string {
-	return "You ended your turn after sending the parent an update with " + toolName + " end_turn=false. " +
+	return `You ended your turn after sending the parent an update with ` + toolName + ` next="send_and_continue". ` +
 		"The parent received that update; it is not a result. " +
-		delegateContinueAuthorized + ". If running work or a delegate will wake you and you have nothing to report, call " + toolName + "({}) with no message. " +
-		"For complete findings, a blocker, or a readiness line, call " + toolName + " with end_turn=true and a message. " +
+		delegateContinueAuthorized + `. If running work or a delegate will wake you and you have nothing to report, call ` + toolName + ` with next="log_quietly_and_end_turn" and a brief one-line wait note in message. ` +
+		`For complete findings, a blocker, or a readiness line, call ` + toolName + ` with next="send_and_end_turn" and a message. ` +
 		"This is an automatic runtime reminder, not a new instruction from the parent, and it authorizes no new work."
 }
 
@@ -2540,7 +2540,7 @@ const delegateContinueAuthorized = "Continue the work you were already authorize
 
 // delegateNudgeText selects the reminder for a delegate that ended its turn
 // without a terminal result: the update-aware one when it already sent its
-// parent an end_turn=false update, else the one for a delegate that never
+// parent a send_and_continue update, else the one for a delegate that never
 // called the result tool.
 func delegateNudgeText(toolName string, updated bool) string {
 	if updated {
@@ -2640,7 +2640,7 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 			// An explicit quiet yield parks the generation until its owned work
 			// wakes it. Both the report nudge and SubagentStop wait until the
 			// drain and any required post-drain report nudge finish.
-			outstanding, workErr := a.sess.treeHasOutstandingWork()
+			outstanding, workErr := a.sess.subagentHasDrainableWork()
 			if workErr != nil {
 				err = workErr
 				shouldNudge = false

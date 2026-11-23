@@ -14,6 +14,7 @@ import {
   hydrateThread,
   type ItemModel,
   invalidateHistory,
+  isQuietYield,
   itemIsIdentityOnly,
   itemTextPresence,
   liveBootGeneration,
@@ -2747,7 +2748,9 @@ export class TranscriptRepository {
               case "stream":
                 return !!slot.roundId && item.roundId === slot.roundId;
               case "preview":
-                return !!slot.callId && item.type === "agentMessage" && item.callId === slot.callId;
+                return (
+                  !!slot.callId && (item.type === "agentMessage" || isQuietYield(item)) && item.callId === slot.callId
+                );
               case "tool":
                 return !!slot.historyKey && item.transcriptKey === slot.historyKey && !!item.completedAtEntry;
               default:

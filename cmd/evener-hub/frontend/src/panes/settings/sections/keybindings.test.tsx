@@ -324,7 +324,11 @@ test("validation warnings from the applied payload are listed quietly", async ()
   await wireClient(client, true);
   renderEditor();
 
-  expect(warningReasons()).toEqual(["unknown-action", "reserved-chord"]);
+  // The section renders its warnings through the widened Diagnostics: one
+  // item per warning, each keeping its own data-reason for tooling.
+  const items = within(screen.getByTestId("diagnostics")).getAllByRole("listitem");
+  expect(items).toHaveLength(2);
+  expect(items.map((item) => item.getAttribute("data-reason"))).toEqual(["unknown-action", "reserved-chord"]);
   // Both bad rules were skipped: every action stays on its default.
   expect(customizedActions()).toEqual([]);
 });

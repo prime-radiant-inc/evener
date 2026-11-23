@@ -1,4 +1,3 @@
-import { ActivityPageBoundary } from "./ActivityPageBoundary";
 // The selected session's subtree delegates: active branches stay visible and
 // nested under their parent, while settled runs fold into one bottom
 // disclosure grouped by parent. Visible page boundaries add demand to the
@@ -14,13 +13,13 @@ import { Fragment, type ReactNode, useEffect, useMemo, useRef } from "react";
 import { openTranscript } from "../../panes/session/transcript/openTranscript";
 import { enterAgentCascade } from "../../panes/zoom/actions";
 import { useSessionActivity } from "../../stores/sessionActivity";
-import { Chevron, Disclosure, EmptyState, IconButton, InlineNotice, Skeleton } from "../../widgets";
+import { Chevron, Disclosure, IconButton } from "../../widgets";
 import { isDisclosureOpen, setDisclosureOpen, useDisclosureSnapshot } from "../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { isMobileViewport } from "../useIsMobile";
+import { ActivityCollectionGate } from "./ActivityCollectionGate";
 import { useActivityScrollProgress } from "./ActivityViewport";
 import styles from "./activitybar.module.css";
-import { activityPlaceholderLines } from "./activityPlaceholders";
 import { AgentRow, delegateRowName } from "./activityRows";
 import type { ActivityTabBodyProps } from "./activityTabs";
 
@@ -260,16 +259,8 @@ export function AgentsTab({ scope, now, onDrill }: ActivityTabBodyProps) {
   for (const root of settledRoots) markRevealedBranches(root);
   const scrollIds = useMemo(() => rows.map((sub) => activityNodeID({ ...sub, kind: "delegate" })), [rows]);
   useActivityScrollProgress(scrollIds, collection?.complete ?? false, collection?.hasMore ?? false);
-  if (collection?.permanent && collection.rows.length === 0)
-    return <EmptyState size="compact" title="Subagents unavailable for this session." />;
-  if (!collection || (collection.rows.length === 0 && !collection.complete)) {
-    return <Skeleton lines={summary?.known ? activityPlaceholderLines(summary.total) : undefined} />;
-  }
   return (
-    <div className={CLASS.stack}>
-      {rows.length === 0 && collection.complete ? (
-        <EmptyState size="compact" title="No subagents at this level." />
-      ) : null}
+    <ActivityCollectionGate noun="subagents" collection={collection} summary={summary} loadMore={loadMore}>
       {activeRoots.map((node) => (
         <AgentBranch
           key={node.id}
@@ -313,18 +304,6 @@ export function AgentsTab({ scope, now, onDrill }: ActivityTabBodyProps) {
           </div>
         </Disclosure>
       ) : null}
-      <ActivityPageBoundary
-        resource="delegates"
-        rows={collection.rows}
-        hasMore={collection.hasMore}
-        loading={collection.loading}
-        error={collection.error}
-        permanent={collection.permanent}
-        loadMore={loadMore}
-      />
-      {collection.error && !collection.permanent ? (
-        <InlineNotice live="off">Subagents are updating…</InlineNotice>
-      ) : null}
-    </div>
+    </ActivityCollectionGate>
   );
 }

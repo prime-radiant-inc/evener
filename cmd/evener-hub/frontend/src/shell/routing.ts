@@ -43,6 +43,11 @@ export function refParam(params: unknown): string | null {
   return paramString((params as { ref?: unknown }).ref);
 }
 
+/** Pane params bags match by their JSON, key order included. */
+export function sameParams(a: unknown, b: unknown): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
 // A hub session ref is "<hostID>:<sessionID>", both halves non-empty - the
 // same shape hubapi.ParseRef (hubapi/refs.go) has always required. A BARE
 // session id is not a ref and does not route here.

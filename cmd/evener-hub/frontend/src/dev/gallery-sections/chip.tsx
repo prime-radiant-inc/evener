@@ -28,6 +28,13 @@ export default function ChipGallerySection() {
           <p className={styles.rowLabel}>mono</p>
           <Chip mono>apply_patch</Chip>
         </div>
+        <div className={styles.row}>
+          <p className={styles.rowLabel}>quiet</p>
+          <Chip variant="quiet">current</Chip>
+          <Chip variant="quiet" mono>
+            apply_patch
+          </Chip>
+        </div>
       </ThemeFlip>
     </section>
   );

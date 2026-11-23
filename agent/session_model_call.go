@@ -241,10 +241,13 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	// A fold that took the environment block out of history owes the model a
 	// restatement of it. Only such a fold sets the flag, so a fold that kept the
 	// block still deduplicates, and every other entry kind owns its own append
-	// site — the turn's last message stays what that path left it.
+	// site — the turn's last message stays what that path left it. Round 0
+	// also picks up an unemitted communicate-contract diff for restored legacy
+	// prompts woken by non-user-input turns without injecting unrelated runtime
+	// diffs (such as an idle SetModel before an attention wake).
 	foldRemoved := s.envContextFoldRemoved.Swap(false)
 	mcpRecovered := s.envContextMCPConnected.Swap(false)
-	if foldRemoved || (mcpRecovered && s.envContextDue()) {
+	if foldRemoved || (round == 0 && s.communicateContractDrifted()) || (mcpRecovered && s.envContextDue()) {
 		if err := s.maybeAppendEnvironmentContextBeforeTrailingSteering(); err != nil {
 			return nil, "", nil, llm.Request{}, nil, "", err
 		}
@@ -1741,7 +1744,7 @@ func effectiveRecordedInputTokens(usage llm.Usage, fullHistoryEstimate int, hasS
 // /delta/end, skipping start/delta when the assistant already streamed) and appends
 // the assistant turn to history unless the response was empty without phase metadata.
 // It runs under withResponseSideEffects and returns its abort error.
-func (s *Session) emitAssistantResponse(ctx context.Context, resp llm.Response, modelResp sessionModelResponse, txt string, skipHistory bool, finalAttempt ModelAttemptMetadata, acceptedReply bool) error {
+func (s *Session) emitAssistantResponse(ctx context.Context, resp llm.Response, modelResp sessionModelResponse, txt string, skipHistory bool, finalAttempt ModelAttemptMetadata, acceptedReply, quietYield bool) error {
 	var persistErr error
 	if err := s.withResponseSideEffects(ctx, func() {
 		if !modelResp.StreamedAssistant {
@@ -1750,7 +1753,7 @@ func (s *Session) emitAssistantResponse(ctx context.Context, resp llm.Response, 
 			})
 		}
 		if !skipHistory {
-			persistErr = s.appendAssistantTurnWithAcceptance(resp, finalAttempt, acceptedReply)
+			persistErr = s.appendAssistantTurnWithAcceptance(resp, finalAttempt, acceptedReply, quietYield)
 			if persistErr != nil {
 				return
 			}

@@ -1,24 +1,7 @@
 /* Notes panel: the session's shared notes as their own surface. Three stacked
- * cards (yours / agent / links) on the details section rhythm, so the panel
- * reads as one family with DetailsPanel while giving the human textarea the
- * room a popover never had. Token colors and spacing only. */
-
-.section {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-  padding-block-end: var(--space-4);
-  border-block-end: 1px solid var(--edge);
-}
-
-.section:last-child {
-  padding-block-end: 0;
-  border-block-end: none;
-}
-
-.section + .section {
-  padding-block-start: var(--space-4);
-}
+ * cards (yours / agent / links) inside PanelSection's shared section rhythm,
+ * so the panel reads as one family with DetailsPanel while giving the human
+ * textarea the room a popover never had. Token colors and spacing only. */
 
 /* The editor and the one-line save status under it (saving, saved, the
  * idle-wake cost, or the failure). */

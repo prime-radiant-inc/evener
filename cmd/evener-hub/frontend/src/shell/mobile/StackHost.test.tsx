@@ -476,7 +476,11 @@ test("Activity opened from the mobile drawer supersedes the drawer", async () =>
   await user.click(screen.getByRole("button", { name: "Activity for drawer session" }));
 
   expect(screen.queryByRole("dialog", { name: "Sessions" })).toBeNull();
-  expect(await screen.findByTestId("activity-sidebar")).toBeTruthy();
+  const sidebar = await screen.findByTestId("activity-sidebar");
+  expect(sidebar).toBeTruthy();
+  // The drawer's close restores focus to its own opener; the sidebar's
+  // selected category must take focus back after that restore.
+  await waitFor(() => expect(document.activeElement).toBe(within(sidebar).getByRole("radio", { name: /Jobs/ })));
 });
 
 test("renders the new activity sidebar over the mobile stack with the selected tab", async () => {
@@ -542,6 +546,14 @@ test.each(["Close", "Escape"])(
       await user.click(await screen.findByRole("button", { name: "Overview" }));
       await user.click(await screen.findByRole("button", { name: /Open child/ }));
       const sidebar = await screen.findByTestId("activity-sidebar");
+      // Drilling changes the inspected scope. The new scope's selected
+      // category must own focus inside the trap before the reader touches
+      // another control.
+      // Entry focus lands in one queued frame, so the short bound reports a
+      // regression as the focus mismatch, not as the test's own deadline.
+      await waitFor(() => expect(document.activeElement).toBe(within(sidebar).getByRole("radio", { name: /Agents/ })), {
+        timeout: 2_000,
+      });
       await user.click(within(sidebar).getByRole("radio", { name: "About" }));
       await within(sidebar).findByText("~$1.00");
       await screen.findByRole("heading", { name: "Child work" });

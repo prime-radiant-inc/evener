@@ -16,12 +16,12 @@ import { deriveCascadePath, parseZoomParams } from "../../panes/zoom/intent";
 import { navigationStore, useNavigationStore } from "../../stores/navigation/store";
 import { useSessionActivity, useSubagentCounts } from "../../stores/sessionActivity";
 import { EntityViewsProvider, sessionEntityViews } from "../../transcriptDisplay/entityViews";
-import { CloseIcon, FocusScope, IconButton, SegmentedControl } from "../../widgets";
+import { CloseIcon, FocusScope, IconButton, SegmentedControl, type SegmentedControlOption } from "../../widgets";
 import { DisclosurePersistenceContext } from "../../widgets/disclosure/disclosureStore";
-import { tabbable } from "../../widgets/focusscope/tabbable";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { ScopeCrumbs } from "../statusbar/ScopeCrumbs";
 import { type ActivityTab, deriveScope } from "../statusbar/statusScope";
+import { isMobileViewport } from "../useIsMobile";
 import { useWorkspaceStore, workspaceStore } from "../workspace";
 import { ActivityViewport } from "./ActivityViewport";
 import styles from "./activitybar.module.css";
@@ -44,6 +44,39 @@ const CLASS = {
   focusBody: requireClass(styles.focusBody, "activitybar.module.css", "focusBody"),
 };
 
+function OverviewStrip({
+  mobile,
+  scopeRef,
+  value,
+  options,
+}: {
+  mobile: boolean;
+  scopeRef: string;
+  value: ActivityTab;
+  options: readonly SegmentedControlOption<ActivityTab>[];
+}) {
+  // AnimatePresence renders the exiting aside from the element captured while
+  // `open` was still true, so ActivitySidebar's prop updates cannot reach the
+  // strip until the exit finishes. Subscribing here, inside the mounted
+  // subtree, drops autoFocus to false on close and raises it again on reopen,
+  // re-arming the widget's queued entry focus without remounting the strip.
+  const open = useActivitySidebarStore((state) => state.open);
+  return (
+    <SegmentedControl<ActivityTab>
+      key={mobile ? scopeRef : undefined}
+      label="Overview kind"
+      hideLabel
+      size="sm"
+      fullWidth
+      wrap
+      autoFocus={mobile && open}
+      value={value}
+      onChange={(next) => activitySidebarStore.getState().setTab(next)}
+      options={options}
+    />
+  );
+}
+
 export function ActivitySidebar({ mobile = false }: { mobile?: boolean }) {
   const open = useActivitySidebarStore((state) => state.open);
   const tab = useActivitySidebarStore((state) => state.tab);
@@ -52,8 +85,11 @@ export function ActivitySidebar({ mobile = false }: { mobile?: boolean }) {
   useEffect(
     () => () => {
       if (returnFrame.current !== null) cancelAnimationFrame(returnFrame.current);
+      // The dock is desktop-only: a teardown that lands in the phone host ends
+      // the inspection rather than reopening it as the phone's blocking Overview.
+      if (!mobile && isMobileViewport()) activitySidebarStore.getState().close();
     },
-    [],
+    [mobile],
   );
   const close = useCallback(() => {
     const focusInside = sidebar.current?.contains(document.activeElement);
@@ -78,16 +114,6 @@ export function ActivitySidebar({ mobile = false }: { mobile?: boolean }) {
   useEffect(() => {
     if (open && ref !== null) activitySidebarStore.getState().retainOpenView(ref);
   }, [open, ref]);
-  useEffect(() => {
-    if (!open || !mobile || ref === null) return;
-    const frame = requestAnimationFrame(() => {
-      const element = sidebar.current;
-      if (!element || !activitySidebarStore.getState().open) return;
-      const selected = element.querySelector<HTMLElement>('[role="radio"][aria-checked="true"]');
-      (selected ?? tabbable(element)[0])?.focus();
-    });
-    return () => cancelAnimationFrame(frame);
-  }, [open, mobile, ref]);
   const { snapshot } = useSessionActivity(open ? ref : null);
   // The watch detail resolves entity names from the evidence the session
   // transcript beside this surface already loaded. Only the Watches tab
@@ -170,6 +196,10 @@ export function ActivitySidebar({ mobile = false }: { mobile?: boolean }) {
           transition={transition}
           data-testid="activity-sidebar"
           aria-label="Overview"
+          // The phone shell overlays the one stacked pane with focus trapped:
+          // a modal dialog there, the non-modal Overview region on desktop.
+          role={mobile ? "dialog" : undefined}
+          aria-modal={mobile ? true : undefined}
         >
           <FocusScope className={CLASS.focusBody} trap={mobile} autoFocus={false}>
             <div className={CLASS.head}>
@@ -199,13 +229,10 @@ export function ActivitySidebar({ mobile = false }: { mobile?: boolean }) {
               <IconButton label="Close Overview" icon={<CloseIcon />} variant="quiet" size="sm" onClick={close} />
             </div>
             <div className={CLASS.tabs}>
-              <SegmentedControl<ActivityTab>
-                label="Overview kind"
-                hideLabel
-                size="sm"
-                fullWidth
+              <OverviewStrip
+                mobile={mobile}
+                scopeRef={scope.leaf.ref}
                 value={tab}
-                onChange={(next) => activitySidebarStore.getState().setTab(next)}
                 options={ACTIVITY_TABS.map((spec) => ({
                   value: spec.id,
                   label: spec.label,

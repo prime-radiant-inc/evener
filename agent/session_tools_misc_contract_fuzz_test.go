@@ -365,8 +365,8 @@ func stmRunRoundContracts(t *testing.T, program []byte) {
 	}
 
 	communicate := stmExec(t, s, ctx, "communicate", "communicate", map[string]any{
-		"message":  "done " + value,
-		"end_turn": true,
+		"message": "done " + value,
+		"next":    "send_and_end_turn",
 		"output": map[string]any{
 			"message":   "done " + value,
 			"data":      map[string]any{},

@@ -11,7 +11,7 @@ import type {
 } from "@evener/appwire-client";
 import type { ResourceState } from "@evener/appwire-client/state/navigation";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, expect, vi } from "vitest";
 import { ClientProvider } from "../../shell/clientContext";
@@ -79,6 +79,39 @@ export function seedSources(
 
 // The working directory is changed through an explicit-confirmation picker.
 export const LAST_WORKING_DIR_KEY = "evener-hub.spawn-defaults.global.last-working-dir";
+
+/** The label the test manifests seed for their local source. */
+export function localHostLabel(): string {
+  return "Local";
+}
+
+/** The host picker's quiet disclosure row, the same control the plugin row uses. */
+export function hostTrigger(): HTMLElement {
+  const summary = screen.getByTestId("spawn-host-summary").closest("summary");
+  if (!(summary instanceof HTMLElement)) throw new Error("host disclosure summary is missing");
+  return summary;
+}
+
+/** The host the disclosure currently displays, e.g. "Host: buildbox". */
+export function selectedHost(): string {
+  return `Host: ${screen.getByTestId("spawn-host-value").textContent ?? ""}`;
+}
+
+/** Opens the host disclosure's one host list and returns it. */
+export function openHostPicker(): HTMLElement {
+  fireEvent.click(hostTrigger());
+  return screen.getByRole("group", { name: "Host options" });
+}
+
+/** Chooses an online host through the disclosure's host list, by the row's
+ * visible label. Async so the host-switch discovery it starts is flushed before
+ * the test's next assertion, exactly as the old native select's user-event step
+ * was. */
+export async function chooseHost(label: string): Promise<void> {
+  const panel = openHostPicker();
+  fireEvent.click(within(panel).getByRole("button", { name: label }));
+  await act(async () => {});
+}
 
 export function workingDir(): HTMLElement {
   return screen.getByLabelText(/^Working directory:/, { selector: "#spawn-cwd" });

@@ -1,4 +1,6 @@
 import { useMemo } from "react";
+import { CodeBlockHeader } from "../codeblock";
+import { CopyButton } from "../copybutton";
 import { requireClass } from "../internal/requireClass";
 import styles from "./diffblock.module.css";
 
@@ -114,6 +116,7 @@ export function DiffBlock({ unified }: DiffBlockProps) {
 
   return (
     <div className={CLASS.root}>
+      <CodeBlockHeader action={<CopyButton text={unified} label="Copy diff" />} />
       {lines.map((line, i) => (
         // A diff line's position is intrinsically sequential (line 5 of a
         // unified diff IS line 5) and content can legitimately repeat

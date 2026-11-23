@@ -52,11 +52,6 @@
   font-variant-numeric: tabular-nums;
 }
 
-.progress {
-  width: 100%;
-  accent-color: var(--ink-hi);
-}
-
 .claim {
   display: flex;
   flex-direction: column;

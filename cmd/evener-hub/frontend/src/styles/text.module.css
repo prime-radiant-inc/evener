@@ -1,0 +1,12 @@
+.textSecondary {
+  font-family: var(--font-sans);
+  font-size: var(--font-size-ui);
+  color: var(--ink-mid);
+}
+.verbatim {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-caption);
+  color: var(--ink-mid);
+  white-space: pre-wrap;
+}
+.verbatimWrap { word-break: break-word; }

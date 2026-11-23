@@ -120,8 +120,8 @@ func TestSession_OpenAIResponsesContinuationPhase9FallbackReplaySanitizesMalform
 			w.Header().Set("Content-Type", "text/event-stream")
 			flusher, _ := w.(http.Flusher)
 			args := mustJSON(t, map[string]any{
-				"message":  "phase 9 sanitizer recovered",
-				"end_turn": true,
+				"message": "phase 9 sanitizer recovered",
+				"next":    "send_and_end_turn",
 				"output": map[string]any{
 					"message":   "",
 					"data":      map[string]any{},

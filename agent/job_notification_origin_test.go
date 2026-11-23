@@ -41,7 +41,9 @@ func TestAssistantNotificationTextDoesNotConsumeCompletionWake(t *testing.T) {
 			t.Parallel()
 			adapter := newFakeAdapter("openai",
 				func(llm.Request) llm.Response { return llm.Response{Message: llm.Assistant(tc.response)} },
-				func(llm.Request) llm.Response { return quietYieldResponse("initial-wake-ack", `{}`) },
+				func(llm.Request) llm.Response {
+					return quietYieldResponse("initial-wake-ack", `{"message":"no action needed","next":"log_quietly_and_end_turn"}`)
+				},
 				func(llm.Request) llm.Response { return agenttest.FinalResponse("HANDLED_SENTINEL") },
 			)
 			client := llm.NewClient()

@@ -5221,6 +5221,67 @@ describe("registered transcript view preservation", () => {
       list.dispose();
     }
   });
+
+  test("restores focus to the summary of a remounted disclosure", async () => {
+    const list = await renderRegistrationList();
+    try {
+      const anchor = document.createElement("div");
+      anchor.dataset.viewAnchorId = "watch-1";
+      anchor.dataset.viewAnchorSourceIndex = "4";
+      const disclosure = document.createElement("details");
+      const summary = document.createElement("summary");
+      summary.textContent = "job_watch";
+      disclosure.append(summary);
+      anchor.append(disclosure);
+      list.el.append(anchor);
+      const focusFallback = vi.fn();
+      summary.focus();
+      expect(document.activeElement).toBe(summary);
+
+      const positions: ViewAnchorPosition[] = [
+        { id: "watch-1", sourceIndex: 4, index: 0, offset: 18, height: 40, isMessage: false },
+      ];
+      const entries = [{ id: "watch-1", sourceIndex: 4, index: 0, isMessage: false }];
+      const { result, rerender } = renderHook(
+        ({ viewKey }) =>
+          useTranscriptViewRegistration({
+            enabled: true,
+            id: "remounted-summary-pane",
+            layout: "desktop",
+            viewKey,
+            listRef: list.ref,
+            measureAnchors: () => positions,
+            anchorEntries: entries,
+            renderedRowCount: 2,
+            focusFallback,
+          }),
+        { initialProps: { viewKey: "desktop" } },
+      );
+      await act(async () => list.commit(result.current));
+
+      act(() => {
+        transitionTranscriptViews(() => {
+          const remounted = document.createElement("details");
+          const remountedSummary = document.createElement("summary");
+          remountedSummary.textContent = "job_watch";
+          remounted.append(remountedSummary);
+          anchor.replaceChildren(remounted);
+          rerender({ viewKey: "phone" });
+        }, "Transcript display changed");
+      });
+      await act(async () => list.commit(result.current));
+      act(() => result.current.restoreAfterMeasurement());
+
+      const remountedSummary = anchor.querySelector("summary");
+      expect(remountedSummary).not.toBeNull();
+      expect(document.activeElement).toBe(remountedSummary);
+      expect(focusFallback).not.toHaveBeenCalled();
+      list.el.remove();
+    } finally {
+      cleanup();
+      list.dispose();
+    }
+  });
 });
 
 // A requestAnimationFrame stub that keeps the callbacks instead of dropping

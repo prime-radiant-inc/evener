@@ -275,7 +275,7 @@ func TestDefDelegateHasWatchParent(t *testing.T) {
 	if got, _ := watchParent["type"].(string); got != "boolean" {
 		t.Fatalf("watch_parent type = %q, want boolean", got)
 	}
-	for _, want := range []string{"watch_parent=true", "job_watch(source=\"parent\")", "communicate(end_turn=true)"} {
+	for _, want := range []string{"watch_parent=true", "job_watch(source=\"parent\")", "next=\"send_and_end_turn\"", "next=\"log_quietly_and_end_turn\""} {
 		if !strings.Contains(def.Description, want) {
 			t.Fatalf("delegate description = %q, want %q", def.Description, want)
 		}
@@ -592,13 +592,13 @@ func TestOptionalJobInspectionToolsAreNonStrict(t *testing.T) {
 	}
 }
 
-// TestDefCommunicateSchemaOptionalSurface pins the unified communicate schema:
-// message, end_turn (defaulting to true), and output are each optional,
-// nothing is required at the top level, and end_reason is gone. Every calling
-// convention the runtime accepts (quiet yield, progress update, ordinary
-// reply) must pass JSON-schema validation, and an unknown or wrongly typed
+// TestDefCommunicateSchemaNextEnumSurface pins the unified communicate schema:
+// message (required), next (optional enum defaulting to send_and_end_turn), and
+// output (optional), while end_turn and end_reason are gone. Every calling
+// convention the runtime accepts (reply, progress update, quiet wait/ack) must
+// pass JSON-schema validation, while {} and unknown/wrongly typed arguments
 // argument must not.
-func TestDefCommunicateSchemaOptionalSurface(t *testing.T) {
+func TestDefCommunicateSchemaNextEnumSurface(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		def  llm.ToolDefinition
@@ -621,16 +621,20 @@ func TestDefCommunicateSchemaOptionalSurface(t *testing.T) {
 			if !ok {
 				t.Fatalf("parameters.properties = %T, want map[string]any", def.Parameters["properties"])
 			}
-			if got, want := slices.Sorted(maps.Keys(props)), []string{"end_turn", "message", "output"}; !slices.Equal(got, want) {
-				t.Fatalf("properties = %v, want %v (no end_reason)", got, want)
+			if got, want := slices.Sorted(maps.Keys(props)), []string{"message", "next", "output"}; !slices.Equal(got, want) {
+				t.Fatalf("properties = %v, want %v (no end_turn or end_reason)", got, want)
 			}
 
-			endTurn, _ := props["end_turn"].(map[string]any)
-			if endTurn["type"] != "boolean" {
-				t.Errorf("end_turn.type = %v, want boolean", endTurn["type"])
+			nextProp, _ := props["next"].(map[string]any)
+			if nextProp["type"] != "string" {
+				t.Errorf("next.type = %v, want string", nextProp["type"])
 			}
-			if endTurn["default"] != true {
-				t.Errorf("end_turn.default = %v, want true", endTurn["default"])
+			if nextProp["default"] != CommunicateNextSendAndEndTurn {
+				t.Errorf("next.default = %v, want %q", nextProp["default"], CommunicateNextSendAndEndTurn)
+			}
+			wantNextEnum := []string{CommunicateNextSendAndEndTurn, CommunicateNextSendAndContinue, CommunicateNextLogQuietlyAndEndTurn}
+			if nextEnum, _ := nextProp["enum"].([]string); !slices.Equal(nextEnum, wantNextEnum) {
+				t.Errorf("next.enum = %v, want %v", nextEnum, wantNextEnum)
 			}
 
 			output, _ := props["output"].(map[string]any)
@@ -647,8 +651,8 @@ func TestDefCommunicateSchemaOptionalSurface(t *testing.T) {
 			if req := schemaRequiredNames(output); len(req) > 0 {
 				t.Errorf("output.required = %v, want none so an empty output envelope validates", req)
 			}
-			if req := schemaRequiredNames(def.Parameters); len(req) > 0 {
-				t.Errorf("top-level required = %v, want none", req)
+			if req := schemaRequiredNames(def.Parameters); !slices.Equal(req, []string{"message"}) {
+				t.Errorf("top-level required = %v, want [message]", req)
 			}
 
 			schema, err := compileSchema(def.Parameters)
@@ -656,11 +660,10 @@ func TestDefCommunicateSchemaOptionalSurface(t *testing.T) {
 				t.Fatalf("compile parameters: %v", err)
 			}
 			for _, args := range []map[string]any{
-				{},
 				{"message": "hi"},
-				{"message": "hi", "end_turn": false},
-				{"message": "hi", "end_turn": true},
-				{"output": map[string]any{}},
+				{"message": "hi", "next": CommunicateNextSendAndContinue},
+				{"message": "hi", "next": CommunicateNextSendAndEndTurn},
+				{"message": "waiting on go test", "next": CommunicateNextLogQuietlyAndEndTurn},
 				{"message": "hi", "output": map[string]any{"data": map[string]any{"k": 1}}},
 				{"message": "hi", "output": map[string]any{"message": "", "data": map[string]any{}, "artifacts": []any{}}},
 			} {
@@ -669,8 +672,13 @@ func TestDefCommunicateSchemaOptionalSurface(t *testing.T) {
 				}
 			}
 			for _, args := range []map[string]any{
-				{"end_reason": "done"},
+				{},
+				{"output": map[string]any{}},
+				{"message": "hi", "end_turn": true},
+				{"message": "hi", "end_reason": "done"},
+				{"message": "hi", "next": "invalid"},
 				{"message": 3},
+				{"message": "hi", "next": true},
 				{"output": "nope"},
 				{"output": map[string]any{"artifacts": []any{1}}},
 			} {
@@ -708,7 +716,7 @@ func schemaRequiredNames(schema map[string]any) []string {
 
 func TestJobListDescriptionKeepsObserverCommunicateGuidance(t *testing.T) {
 	def := DefJobList()
-	if !strings.Contains(def.Description, "communicate(end_turn=true)") {
+	if !strings.Contains(def.Description, `next="send_and_end_turn"`) {
 		t.Fatalf("%s description = %q, want observer sidecar communicate report path", def.Name, def.Description)
 	}
 	if !strings.Contains(def.Description, "audit or diagnosis") {
@@ -735,7 +743,7 @@ func TestDefJobWatchRequiresOperationAndWatchIDForClear(t *testing.T) {
 
 func TestDefJobWatchDescriptionIncludesImplicitDeliveryContract(t *testing.T) {
 	def := DefJobWatch([]string{"communicate"})
-	for _, want := range []string{"source you can observe", "`dlg_...`", "Delivery is implicit", "communicate(end_turn=true)"} {
+	for _, want := range []string{"source you can observe", "`dlg_...`", "Delivery is implicit", `next="send_and_end_turn"`, `next="log_quietly_and_end_turn"`} {
 		if !strings.Contains(def.Description, want) {
 			t.Fatalf("job_watch description = %q, want %q", def.Description, want)
 		}

@@ -5,9 +5,13 @@ import { createRoot } from "react-dom/client";
 import { afterEach, expect, test, vi } from "vitest";
 import { HoverCard as FromBarrel } from "..";
 import { appendPopout } from "../internal/popoutTestUtils";
+import { requireClass } from "../internal/requireClass";
 import { HoverCard, LONG_PRESS_MS } from ".";
+import styles from "./hovercard.module.css";
 import { installHoverlessMatchMedia } from "./hovercardTestUtils";
 import { POINTER_CLICK_WINDOW_MS, SHOW_DELAY_MS } from "./useFloatingLabel";
+
+const BLOCK = requireClass(styles.block, "hovercard.module.css", "block");
 
 afterEach(() => {
   cleanup();
@@ -17,6 +21,25 @@ afterEach(() => {
 
 test("it is exported from the widget barrel", () => {
   expect(FromBarrel).toBe(HoverCard);
+});
+
+test("the block presentation is opt-in and lands on the wrapper", () => {
+  render(
+    <HoverCard label={<div>Tests passed in 14 seconds</div>} block>
+      <button type="button">job_01HZX7P9</button>
+    </HoverCard>,
+  );
+  const blockTrigger = screen.getByRole("button", { name: "job_01HZX7P9" });
+  expect(blockTrigger.parentElement?.className.split(" ")).toContain(BLOCK);
+
+  cleanup();
+  render(
+    <HoverCard label={<div>Tests passed in 14 seconds</div>}>
+      <button type="button">job_01HZX7P9</button>
+    </HoverCard>,
+  );
+  const plainTrigger = screen.getByRole("button", { name: "job_01HZX7P9" });
+  expect(plainTrigger.parentElement?.className.split(" ")).not.toContain(BLOCK);
 });
 
 test("the plain-node gallery child keeps the automatic description association", () => {
@@ -288,6 +311,45 @@ test("long-press-enabled cards still activate when the browser has no matchMedia
 
   expect(() => fireEvent.click(trigger)).not.toThrow();
   expect(activate).toHaveBeenCalledOnce();
+});
+
+test("a hoverless capability discovered at press time still opens the card and swallows the click", () => {
+  vi.useFakeTimers();
+  let hoverless = false;
+  vi.stubGlobal(
+    "matchMedia",
+    vi.fn((query: string) => ({
+      matches: hoverless && query === "(hover: none)",
+      media: query,
+      onchange: null,
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    })),
+  );
+  const activate = vi.fn();
+  render(
+    // biome-ignore lint/a11y/noStaticElementInteractions: this fixture observes whether the nested trigger bubbles
+    // biome-ignore lint/a11y/useKeyWithClickEvents: the pointer sequence below is the interaction under test
+    <div onClick={activate}>
+      <HoverCard label={<div>Project prime-radiant</div>} longPressEnabled>
+        <button type="button">Fix flaky test</button>
+      </HoverCard>
+    </div>,
+  );
+  const trigger = screen.getByRole("button", { name: "Fix flaky test" });
+
+  // The capability flips without a render: the press-time check must see it.
+  hoverless = true;
+  fireEvent.pointerDown(trigger, { button: 0, clientX: 10, clientY: 10 });
+  act(() => vi.advanceTimersByTime(LONG_PRESS_MS));
+  expect(screen.getByRole("tooltip")).toBeTruthy();
+
+  fireEvent.pointerUp(trigger, { clientX: 10, clientY: 10 });
+  fireEvent.click(trigger);
+  expect(activate).not.toHaveBeenCalled();
 });
 
 test("the focus a hoverless tap takes opens no card, and the tap still activates the row", async () => {

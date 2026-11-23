@@ -475,6 +475,11 @@ test("an unlabeled static delegate keeps its ending and Open control", () => {
   const head = screen.getByTestId("notification-card");
   expect(head.textContent).toContain("stopped by its coordinator");
   expect(screen.getByRole("button", { name: "Open subagent" })).toBeTruthy();
+  // The static head still seats its status glyph first: the extracted
+  // NotificationHead owns the seat for both branches.
+  const icon = head.firstElementChild;
+  expect(icon?.getAttribute("data-testid")).toBe("notification-status-icon");
+  expect(icon?.getAttribute("aria-hidden")).toBe("true");
   expect(head.closest("details")).toBeNull();
 });
 

@@ -678,6 +678,35 @@ describe("the live overlay", () => {
     expect(shown(next)).toEqual([["t1", [itemKey("t1", 0), itemKey("t1", 1), itemKey("t1", 2)]]]);
   });
 
+  test("quiet_yield with matching callId covers only its preview while keeping other round previews", () => {
+    const model = hydrate([turn("t1", 1, [item("t1", 0)], "inProgress")], { activeTurnId: "t1" });
+    const makePreview = (callId: string): OverlayItem => ({
+      key: `preview:${callId}`,
+      kind: "preview",
+      turnId: "t1",
+      roundId: "r1",
+      streamId: "r1/0",
+      callId,
+      item: { type: "agentMessage", id: `preview:${callId}`, turnId: "t1", callId, text: `Preview ${callId}` },
+    });
+    let next = applyNotification(model, upserted(makePreview("call_q")), NOW);
+    next = applyNotification(next, upserted(makePreview("call_other")), NOW);
+    next = applyNotification(
+      next,
+      updated([
+        item("t1", 1, {
+          type: "systemMessage",
+          eventKind: "quiet_yield",
+          callId: "call_q",
+          text: "Ended turn quietly",
+        }),
+      ]),
+      NOW,
+    );
+    expect(Object.keys(next.overlay ?? {})).toEqual(["preview:call_other"]);
+    expect(shown(next)).toEqual([["t1", [itemKey("t1", 0), itemKey("t1", 1), "preview:call_other"]]]);
+  });
+
   test("a tool overlay is laid over its in-progress history item and dropped once it completes", () => {
     const historyKey = itemKey("t1", 1);
     const tool = item("t1", 1, { type: "commandExecution", callId: "call_1", status: "inProgress", text: undefined });

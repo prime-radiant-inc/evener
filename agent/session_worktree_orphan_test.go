@@ -977,7 +977,7 @@ func takeSharedDescendantAnnounceHold(laneName string) chan struct{} {
 }
 
 func quietWorktreeAttentionResponse(llm.Request) llm.Response {
-	return quietYieldResponse("ack-worktree-attention", `{}`)
+	return quietYieldResponse("ack-worktree-attention", `{"message":"waiting on work","next":"log_quietly_and_end_turn"}`)
 }
 
 // spawnSharedDescendantLane builds that tree: a cold fixture delegate with an

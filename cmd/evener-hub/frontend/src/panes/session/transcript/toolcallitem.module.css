@@ -658,16 +658,6 @@
   align-items: center;
 }
 
-@media (prefers-reduced-motion: no-preference) {
-  .chevron > svg {
-    transition: transform var(--motion-duration-hover) var(--motion-easing-standard);
-  }
-}
-
-.chevron[data-open="true"] > svg {
-  transform: rotate(90deg);
-}
-
 /* The .bodyTrigger button's chevron has no preceding text, so the default
  * margin-left (designed for chevrons after inline text) is removed to
  * prevent the button from adding 8px to the row's width. */

@@ -3,7 +3,7 @@
 // browser-driving agent needs. Point a providers.toml instance at it and
 // every session-loop round pauses for --hold seconds before answering with a
 // tool call, up to --rounds rounds, then ends the turn with
-// communicate(end_turn=true).
+// communicate(next="send_and_end_turn").
 //
 // Rounds are counted per session AND per turn, and held concurrently, so any
 // number of sessions can share one fake and each gets the same behaviour:
@@ -70,7 +70,7 @@ import (
 
 func main() {
 	hold := flag.Duration("hold", 15*time.Second, "how long to hold each model round before answering")
-	rounds := flag.Int("rounds", 20, "tool-call rounds in each session's turn before ending it with communicate(end_turn=true)")
+	rounds := flag.Int("rounds", 20, "tool-call rounds in each session's turn before ending it with communicate(next=\"send_and_end_turn\")")
 	jobRelease := flag.String("background-job-until", "", "answer each session's first round with a background shell job that waits for this file, then end the turn; creating the file wakes each idle session with a job-completion notification turn, which ends after one held round rather than launching another job. Give a name relative to the session's working directory -- the shell runs there, so a bare name needs no quoting and cannot be broken by a path with a space in it")
 	flag.Usage = func() {
 		// Flags first: Go's flag package stops parsing at the first non-flag
@@ -322,9 +322,9 @@ func answer(ctx context.Context, live *sessions, call *fakellm.Call, hold time.D
 	endTurn := func(message string) {
 		live.endedTurn(state, call)
 		call.RespondToolCall("communicate", map[string]any{
-			"message":  message,
-			"end_turn": true,
-			"output":   map[string]any{"message": "", "data": map[string]any{}, "artifacts": []any{}},
+			"message": message,
+			"next":    "send_and_end_turn",
+			"output":  map[string]any{"message": "", "data": map[string]any{}, "artifacts": []any{}},
 		})
 	}
 
