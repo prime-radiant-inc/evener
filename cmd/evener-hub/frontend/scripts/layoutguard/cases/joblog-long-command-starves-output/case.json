@@ -29,6 +29,6 @@
     "declaration": "panes/transcript/transcript.module.css: remove .joblogCommand's max-height and its overflow-y/overflow-x pair, leaving flex: 0 0 auto so the command grows to its full wrapped content height",
     "verified": "2026-11-23",
     "expect": "fail",
-    "note": "Measured 2026-11-23 at the 402px-wide, 700px-tall pane the guard screenshotted: without the cap the long fixture's list viewport collapses to 0px and its command block is 802px of the 602px log column (the pane body then scrolls by 204px); restoring the cap returns the list to 334px and bounds the command to 240px, while the short fixture stays at a 468px list and an unscrolled 106px command either way. The cap alone is not enough without min-height:0 - a flex item's automatic minimum size is its content, and a minimum larger than max-height wins the clamp."
+    "note": "Measured 2026-11-23 at the 402px-wide, 700px-tall pane the guard screenshotted: without the cap the long fixture's list viewport collapses to 0px and its command block is 802px of the 602px log column (the pane body then scrolls by 204px); restoring the cap returns the list to 334px and bounds the command to 240px, while the short fixture stays at a 468px list and an unscrolled 106px command either way. Dropping min-height:0 leaves the case green: overflow-y:auto already makes the block a scroll container, whose automatic minimum size is zero, so max-height plus the overflow pair is the whole fix."
   }
 }
