@@ -23,6 +23,8 @@ import {
   type ProjectedTurn,
   parseMemoryContext,
   projectThread,
+  QUIET_YIELD_EVENT_KIND,
+  quietYieldCommentaryOf,
   steeringNotificationFragments,
   stripSystemReminder,
   type ThreadModel,
@@ -312,6 +314,13 @@ export function projectedSearchTexts(
   const version = mermaidRenderVersion();
   const shown = new Map<string, readonly string[]>();
   for (const row of transcriptRowsForProjection(projectThread(model, config))) {
+    if (row.kind === "quietYieldGroup") {
+      row.entries.forEach((entry, idx) => {
+        const texts = shownTexts(entry, row.turns[idx]?.source, config, version, model.cwd);
+        if (texts.length > 0) shown.set(entry.item.id, texts);
+      });
+      continue;
+    }
     const turn = row.kind === "intentGroup" ? undefined : row.turn.source;
     for (const entry of row.kind === "intentGroup" ? row.entries : row.turn.entries) {
       const texts = shownTexts(entry, turn, config, version, model.cwd);
@@ -377,7 +386,19 @@ export function findHits(rows: readonly TranscriptBodyRow[], query: string, view
     // Where the words sit is read only for a matched row: grouping a notice
     // run costs a scan, and Find runs on every keystroke.
     let placement: SystemNoticePlacement | null = null;
-    if (groupId !== undefined) placement = { opens: groupId };
+    if (groupId !== undefined) {
+      const commentary =
+        entry.item.eventKind === QUIET_YIELD_EVENT_KIND ? quietYieldCommentaryOf(entry.item) : undefined;
+      if (commentary !== undefined && readable(markdownAsRead(commentary)).includes(needle)) {
+        disclosures.push(entry.item.id);
+        placement = { opens: groupId, opensIgnoreBaseline: true };
+      } else {
+        placement = {
+          opens: groupId,
+          ...(entry.item.eventKind === QUIET_YIELD_EVENT_KIND ? { opensIgnoreBaseline: true } : {}),
+        };
+      }
+    }
     // A thought opens its own row; no other rule applies to it.
     else if (entry.item.type === "reasoning") placement = { opens: entryDisplayKey(entry) };
     else if (turn !== undefined && view.config !== undefined)
@@ -403,6 +424,12 @@ export function findHits(rows: readonly TranscriptBodyRow[], query: string, view
   rows.forEach((row, rowIndex) => {
     if (row.kind === "intentGroup") {
       for (const entry of row.entries) add(entry, rowIndex, undefined, row.id);
+      return;
+    }
+    if (row.kind === "quietYieldGroup") {
+      for (const [idx, entry] of row.entries.entries()) {
+        add(entry, rowIndex, row.turns[idx], row.id);
+      }
       return;
     }
     // The turn's own entries, laid out the one way the transcript renders them

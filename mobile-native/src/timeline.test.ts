@@ -178,3 +178,26 @@ it.each([{ eventKind: "error" }, { eventKind: "hook_completed", exitCode: 3 }, {
 		]);
 	},
 );
+
+it("keeps a single quiet_yield standalone and collapses 2+ consecutive quiet_yields into one group", () => {
+	const quiet = (id: string): MobileTimelineItem => ({
+		kind: "notice",
+		id,
+		origin: "system",
+		family: "lifecycle",
+		tone: "system",
+		eventKind: "quiet_yield",
+		text: "quiet-sentinel",
+	});
+	expect(groupTimeline([message, quiet("q1")])).toEqual([message, quiet("q1")]);
+
+	const grouped = groupTimeline([setup, quiet("q1"), quiet("q2"), diagnostic]);
+	expect(grouped).toMatchObject([
+		{ kind: "details", id: "details:setup", entries: [setup] },
+		{ kind: "details", id: "quiet-yields:q1", quietYield: true, entries: [quiet("q1"), quiet("q2")] },
+		{ kind: "details", id: "details:diagnostic", entries: [diagnostic] },
+	]);
+	expect(groupTimeline([quiet("q1"), quiet("q2")])[0]?.id).toBe(
+		groupTimeline([quiet("q1"), quiet("q2"), quiet("q3")])[0]?.id,
+	);
+});

@@ -33,6 +33,8 @@ import {
   formatDurationMs,
   isErrorEvent,
   MEMORY_CONTEXT_EVENT_KIND,
+  QUIET_YIELD_EVENT_KIND,
+  quietYieldCommentaryOf,
   scopedDisclosureId,
   systemEventWords,
 } from "@evener/appwire-client";
@@ -235,6 +237,33 @@ function FailureLine({ item, turn }: { item: ItemModel; turn: TurnModel }) {
   );
 }
 
+function QuietYieldLine({ item, sessionRef }: { item: ItemModel; sessionRef?: string }) {
+  const words = systemEventWords(item);
+  const summary = words.label ?? (words.text || FALLBACK_LABEL);
+  const commentary = quietYieldCommentaryOf(item);
+  const context = useTranscriptRenderContext();
+  const disclosureScope = disclosureScopeForSession(context, sessionRef);
+  const disclosureKey = scopedDisclosureId(disclosureScope, item.id);
+  const defaultOpen = disclosureDefault(disclosureScope, item.id, false);
+  if (commentary === undefined) {
+    return <NoticeLine text={summary} />;
+  }
+  return (
+    <Disclosure
+      variant="quiet"
+      id={disclosureKey}
+      defaultOpen={defaultOpen}
+      ignoreBaseline
+      data-testid="system-notice-quiet-yield"
+      summary={<span>{summary}</span>}
+    >
+      <div className={CLASS.scaffoldBody} data-testid="system-notice-quiet-yield-body" data-message-body="">
+        <Markdown source={commentary} />
+      </div>
+    </Disclosure>
+  );
+}
+
 function SystemLine({
   item,
   turn,
@@ -261,6 +290,7 @@ function SystemLine({
   if (isScaffoldItem(item)) return <ScaffoldDisclosure item={item} sessionRef={sessionRef} />;
   if (isRoundTimingsItem(item)) return <RoundTimingsLine item={item} />;
   if (item.eventKind === APPROVAL_DECISION_EVENT_KIND) return <ApprovalDecisionLine item={item} />;
+  if (item.eventKind === QUIET_YIELD_EVENT_KIND) return <QuietYieldLine item={item} sessionRef={sessionRef} />;
   return <NoticeLine text={noticeText(item)} fallback={!systemEventWords(item).text} />;
 }
 

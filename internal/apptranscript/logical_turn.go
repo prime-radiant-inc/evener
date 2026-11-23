@@ -359,6 +359,7 @@ func groupedAppTurnProjection(acc *logicalTurnAccumulator, header transcript.Hea
 		prelude = p
 		entryOrdinal = 1
 	}
+	demoteQuietCompanionMessages(acc)
 	// runsByTurn are, per stamped turn id, the groups the file recorded under
 	// it, in file order. A RUN is a window onto the turn, not a turn: a
 	// standalone delivery can land between two runs of one execution, and both
@@ -525,6 +526,57 @@ func groupedAppTurnProjection(acc *logicalTurnAccumulator, header transcript.Hea
 		turns = append([]appwire.Turn{*prelude}, turns...)
 	}
 	return ItemTurnProjection{Turns: turns, NextEntry: entryOrdinal}, nil
+}
+
+// demoteQuietCompanionMessages removes agentMessage items emitted by any
+// TurnAssistant entry whose tool call settled as a quiet_yield systemMessage.
+// Companion prose is folded into the quiet_yield item's Raw payload during
+// projection, so dropping the assistant bubble here keeps full-file reads in
+// sync with the transcript index without changing per-entry call signatures.
+func demoteQuietCompanionMessages(acc *logicalTurnAccumulator) {
+	assistantByCall := map[string]int{}
+	for i := range acc.turns {
+		group := &acc.turns[i]
+		for k, entry := range group.entries {
+			if entry.Kind != schema.TurnAssistant {
+				continue
+			}
+			entryIndex := group.entryIndexes[k]
+			for _, part := range entry.Message.Content {
+				if part.Kind == llm.ContentToolCall && part.ToolCall != nil {
+					assistantByCall[part.ToolCall.ID] = entryIndex
+				}
+			}
+		}
+	}
+	demotedEntries := map[int]bool{}
+	for i := range acc.turns {
+		for _, item := range acc.turns[i].items {
+			if item.Type == "systemMessage" && item.EventKind == appwire.ThreadItemEventKindQuietYield && item.CallID != "" {
+				if entryIndex, ok := assistantByCall[item.CallID]; ok {
+					demotedEntries[entryIndex] = true
+				}
+			}
+		}
+	}
+	if len(demotedEntries) == 0 {
+		return
+	}
+	for i := range acc.turns {
+		group := &acc.turns[i]
+		keptItems := make([]appwire.ThreadItem, 0, len(group.items))
+		keptEntries := make([]int, 0, len(group.itemEntries))
+		for j, item := range group.items {
+			entryIndex := group.itemEntries[j]
+			if item.Type == "agentMessage" && demotedEntries[entryIndex] {
+				continue
+			}
+			keptItems = append(keptItems, item)
+			keptEntries = append(keptEntries, entryIndex)
+		}
+		group.items = keptItems
+		group.itemEntries = keptEntries
+	}
 }
 
 // executionStamp is one stamped turn's whole-turn metadata: the earliest

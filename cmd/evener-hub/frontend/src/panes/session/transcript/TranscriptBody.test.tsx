@@ -1961,3 +1961,81 @@ describe("retained transcript placement", () => {
     expect(port().scrollTop).toBe(3292);
   });
 });
+
+describe("consecutive quiet_yield cross-turn grouping", () => {
+  function quietTurn(id: string, commentary?: string) {
+    return {
+      id,
+      status: "completed" as const,
+      items: [
+        {
+          id: `item_${id}`,
+          turnId: id,
+          type: "systemMessage" as const,
+          text: "quiet-sentinel",
+          eventKind: "quiet_yield",
+          ...(commentary === undefined ? {} : { raw: { commentary } }),
+        },
+      ],
+    };
+  }
+
+  test("folds 2+ consecutive quiet-only turns into one collapsed group while keeping a single quiet yield after actions standalone", () => {
+    const model: ThreadModel = {
+      ...fixture,
+      turns: [
+        {
+          id: "turn_actions",
+          status: "completed",
+          items: [
+            {
+              id: "tool_a",
+              turnId: "turn_actions",
+              type: "commandExecution",
+              text: "",
+              toolName: "shell",
+              description: "Check status",
+              status: "completed",
+            },
+            {
+              id: "qy_after_action",
+              turnId: "turn_actions",
+              type: "systemMessage",
+              text: "quiet-sentinel",
+              eventKind: "quiet_yield",
+            },
+          ],
+        },
+        quietTurn("turn_q1", "commentary-1"),
+        quietTurn("turn_q2"),
+      ],
+    };
+
+    const twoQuietProjection = appwireClient.projectThread(model, preset("intent"));
+    const twoQuietRows = transcriptRowsForProjection(twoQuietProjection);
+    expect(twoQuietRows.map((row) => row.kind)).toEqual(["turn", "quietYieldGroup"]);
+    const group = twoQuietRows[1];
+    if (group?.kind !== "quietYieldGroup") throw new Error("expected quietYieldGroup");
+    expect(group.sourceTurnIds).toEqual(["turn_q1", "turn_q2"]);
+
+    const threeQuietModel: ThreadModel = {
+      ...model,
+      turns: [...model.turns, quietTurn("turn_q3", "commentary-3")],
+    };
+    const threeQuietRows = transcriptRowsForProjection(appwireClient.projectThread(threeQuietModel, preset("intent")));
+    expect(threeQuietRows[1]?.id).toBe(group.id);
+    expect(transcriptAnchorEntriesForRows(threeQuietRows).map((a) => a.id)).toContain("item_turn_q3");
+
+    render(
+      <TranscriptBody model={threeQuietModel} config={preset("full")} surface="preview" disclosureScope="qy:group" />,
+    );
+    const collapsed = screen.getByTestId("quiet-yield-group") as HTMLDetailsElement;
+    expect(collapsed.open).toBe(false);
+    expect(collapsed.querySelector("[data-count]")?.getAttribute("data-count")).toBe("3");
+    expect(screen.queryByText("commentary-1")).toBeNull();
+    const summary = collapsed.querySelector(":scope > summary");
+    if (!summary) throw new Error("missing summary");
+    fireEvent.click(summary);
+    expect(collapsed.open).toBe(true);
+  });
+});

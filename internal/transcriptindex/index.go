@@ -31,7 +31,7 @@ const (
 	// its records reproduce; either changing rebuilds every index.
 	formatVersion = 8
 	// Accepted bare replies and quiet communicate yields change the items.
-	projectionID = "transcript-read-model-v12"
+	projectionID = "transcript-read-model-v13"
 
 	// tailBytes is how much of the covered prefix's end validation compares,
 	// the check the attention fold cursor uses (agent/session_attention.go).
@@ -217,6 +217,10 @@ type meta struct {
 	// this, since a deferred communicate call projects no item of its own
 	// until it is paired or flushed.
 	CommCalls []persistedCommCall `json:"comm_calls,omitempty"`
+	// QuietAssistants persists open TurnAssistant tool calls so an adopting
+	// handle knows whether a later quiet communicate({}) result needs a paired
+	// TurnAssistant context (commentary/authorship) or demotes committed text.
+	QuietAssistants []persistedQuietAssistant `json:"quiet_assistants,omitempty"`
 	// LastAssistant* persists the builder's sticky last-assistant-text state
 	// (builder.lastAssistantText/TurnID/Pos/Known), for the same reason: the
 	// healed-communicate echo check needs it, and only a full build or a
@@ -267,6 +271,14 @@ type persistedCommCall struct {
 	RawArgs      string `json:"raw_args"`
 	persistedPos        // flattened: offset, ordinal, length
 	TurnID       string `json:"turn_id"`
+}
+
+type persistedQuietAssistant struct {
+	ID            string `json:"id"`
+	HasText       bool   `json:"has_text,omitempty"`
+	HasAuthorship bool   `json:"has_authorship,omitempty"`
+	persistedPos
+	TurnID string `json:"turn_id"`
 }
 
 // EntryError reports the entry the index could not apply: a decode failure or
@@ -803,6 +815,11 @@ func (x *Index) adopt(m meta) error {
 			return err
 		}
 	}
+	for _, c := range m.QuietAssistants {
+		if err := validatePersistedPos(m, c.persistedPos); err != nil {
+			return err
+		}
+	}
 	if err := validatePersistedPos(m, m.LastAssistantPos); err != nil {
 		return err
 	}
@@ -943,7 +960,17 @@ func (x *Index) extend(length int64) error {
 			return err
 		}
 	}
+	x.builder.committedEntries = x.meta.Entries
+	x.builder.collectingDemotions = false
 	if err := x.scan(length); err != nil {
+		var demoteErr errQuietDemoteRebuild
+		if errors.As(err, &demoteErr) {
+			incarnation := x.meta.Incarnation
+			if demoteErr.rotate {
+				incarnation = ""
+			}
+			return x.rebuild(length, incarnation)
+		}
 		// The records may hold part of this scan; only a full build is
 		// known to be consistent. The transcript still extends the covered
 		// prefix when the index only needed the whole file's tool names.
@@ -1146,6 +1173,11 @@ func restoreDeferredState(b *builder, m meta, below uint64) {
 			b.commCalls[c.ID] = commState{rawArgs: c.RawArgs, pos: c.contributor(), turnID: c.TurnID}
 		}
 	}
+	for _, c := range m.QuietAssistants {
+		if c.Ordinal < below {
+			b.quietAssistants[c.ID] = quietAssistantState{hasText: c.HasText, hasAuthorship: c.HasAuthorship, pos: c.contributor(), turnID: c.TurnID}
+		}
+	}
 	b.lastAssistantText, b.lastAssistantTurnID, b.lastAssistantKnown = m.LastAssistantText, m.LastAssistantTurnID, m.LastAssistantKnown
 	b.lastAssistantPos = m.LastAssistantPos.contributor()
 }
@@ -1288,6 +1320,24 @@ func liveBuildName(dir string) (string, error) {
 }
 
 func (x *Index) buildNew(length int64, incarnation string) error {
+	x.rebuilds++
+	if err := x.buildPass(length, incarnation, nil, true); err != nil {
+		return err
+	}
+	if len(x.builder.demotedAssistants) == 0 {
+		return nil
+	}
+	demoted := x.builder.demotedAssistants
+	if x.build != "" {
+		passOneDir := filepath.Join(x.dir, x.build)
+		if err := errors.Join(x.closeBuild(), os.RemoveAll(passOneDir)); err != nil {
+			return err
+		}
+	}
+	return x.buildPass(length, incarnation, demoted, false)
+}
+
+func (x *Index) buildPass(length int64, incarnation string, demoted map[uint64]bool, collectDemotions bool) error {
 	if err := x.closeBuild(); err != nil {
 		return err
 	}
@@ -1317,7 +1367,10 @@ func (x *Index) buildNew(length int64, incarnation string) error {
 	x.stale, x.builderStale = false, false
 	x.builder = newBuilder(x)
 	x.builder.global = map[string]string{}
-	x.rebuilds++
+	x.builder.collectingDemotions = collectDemotions
+	if demoted != nil {
+		x.builder.demotedAssistants = demoted
+	}
 	if err := x.scan(length); err != nil {
 		return err
 	}
@@ -1590,6 +1643,7 @@ func (x *Index) publishMeta() error {
 	x.meta.Open, x.meta.OpenTurnID = b.grouper.Open, b.grouper.TurnID
 	x.meta.TurnSlot = b.turnSlot
 	x.meta.CommCalls = persistCommCalls(b.commCalls)
+	x.meta.QuietAssistants = persistQuietAssistants(b.quietAssistants)
 	x.meta.LastAssistantText, x.meta.LastAssistantTurnID, x.meta.LastAssistantKnown = b.lastAssistantText, b.lastAssistantTurnID, b.lastAssistantKnown
 	x.meta.LastAssistantPos = posOf(b.lastAssistantPos)
 	data, err := json.Marshal(x.meta)
@@ -1613,6 +1667,18 @@ func persistCommCalls(m map[string]commState) []persistedCommCall {
 	list := make([]persistedCommCall, 0, len(m))
 	for id, state := range m {
 		list = append(list, persistedCommCall{ID: id, RawArgs: state.rawArgs, persistedPos: posOf(state.pos), TurnID: state.turnID})
+	}
+	sort.Slice(list, func(i, j int) bool { return list[i].ID < list[j].ID })
+	return list
+}
+
+func persistQuietAssistants(m map[string]quietAssistantState) []persistedQuietAssistant {
+	if len(m) == 0 {
+		return nil
+	}
+	list := make([]persistedQuietAssistant, 0, len(m))
+	for id, state := range m {
+		list = append(list, persistedQuietAssistant{ID: id, HasText: state.hasText, HasAuthorship: state.hasAuthorship, persistedPos: posOf(state.pos), TurnID: state.turnID})
 	}
 	sort.Slice(list, func(i, j int) bool { return list[i].ID < list[j].ID })
 	return list

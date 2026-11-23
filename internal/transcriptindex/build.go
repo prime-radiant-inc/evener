@@ -25,6 +25,12 @@ import (
 // awaiting ASSISTANT entry an in-place rewrite already moved past it.
 var errRebuild = errors.New("transcript index needs a full rebuild")
 
+type errQuietDemoteRebuild struct {
+	rotate bool
+}
+
+func (e errQuietDemoteRebuild) Error() string { return "quiet yield demoted assistant prose" }
+
 // toolName is the projection's tool-name state for one call id: the name its
 // latest tool call registered, or deleted after a communicate result.
 type toolName struct {
@@ -40,6 +46,13 @@ type commState struct {
 	rawArgs string
 	pos     contributor
 	turnID  string
+}
+
+type quietAssistantState struct {
+	hasText       bool
+	hasAuthorship bool
+	pos           contributor
+	turnID        string
 }
 
 // builder applies entries, in file order, to the index's records.
@@ -133,6 +146,10 @@ type builder struct {
 	// this whole struct's values, for restoreBuilder to reconstruct it
 	// without a rebuild.
 	commCalls           map[string]commState // call id -> its deferred communicate state
+	quietAssistants     map[string]quietAssistantState
+	demotedAssistants   map[uint64]bool
+	collectingDemotions bool
+	committedEntries    uint64
 	lastAssistantText   string
 	lastAssistantTurnID string
 	lastAssistantPos    contributor
@@ -166,7 +183,8 @@ type builder struct {
 func newBuilder(x *Index) builder {
 	return builder{
 		x: x, calls: map[string]uint64{}, names: map[string]toolName{}, open: map[string]uint64{}, models: map[string]strRef{},
-		commCalls: map[string]commState{}, seedBuf: map[string]string{}, regNames: map[string]string{}, regCommArgs: map[string]string{},
+		commCalls: map[string]commState{}, quietAssistants: map[string]quietAssistantState{},
+		seedBuf: map[string]string{}, regNames: map[string]string{}, regCommArgs: map[string]string{},
 		failures: transcript.NewFailureCounter(0),
 	}
 }
@@ -236,9 +254,13 @@ func (b *builder) applyLegacy(ordinal uint64, offset int64, length uint32, entry
 	if err != nil {
 		return err
 	}
+	if err := b.checkQuietDemotions(entry); err != nil {
+		return err
+	}
 	reg := &apptranscript.ToolCallRegistry{
 		Names:               b.registryNames(seed),
 		CommRawArgs:         b.registryCommArgs(),
+		SkipAssistantText:   entry.Kind == schema.TurnAssistant && b.demotedAssistants[ordinal],
 		LastAssistantText:   b.lastAssistantText,
 		LastAssistantTurnID: b.lastAssistantTurnID,
 	}
@@ -322,6 +344,9 @@ func communicateResultCallID(entry *schema.Turn, part int, seed map[string]strin
 	if content.Kind != llm.ContentToolResult || content.ToolResult == nil {
 		return "", false
 	}
+	if apptranscript.IsQuietCommunicate(content.ToolResult) {
+		return content.ToolResult.ToolCallID, true
+	}
 	name := content.ToolResult.Name
 	if name == "" {
 		name = seed[content.ToolResult.ToolCallID]
@@ -355,6 +380,11 @@ func (b *builder) communicateContext(callID string) (strRef, error) {
 	}
 	if state, ok := b.commCalls[callID]; ok {
 		if err := add(state.pos, state.turnID); err != nil {
+			return strRef{}, err
+		}
+	}
+	if qa, ok := b.quietAssistants[callID]; ok && (qa.hasText || qa.hasAuthorship) {
+		if err := add(qa.pos, qa.turnID); err != nil {
 			return strRef{}, err
 		}
 	}
@@ -400,6 +430,38 @@ func agentMessageText(items []appwire.ThreadItem) string {
 	return lastText
 }
 
+func assistantEntryHasText(entry *schema.Turn) bool {
+	for _, part := range entry.Message.Content {
+		if part.Kind == llm.ContentText && part.Text != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func (b *builder) checkQuietDemotions(entry *schema.Turn) error {
+	if entry.Kind != schema.TurnTool && entry.Kind != schema.TurnToolResults {
+		return nil
+	}
+	for _, part := range entry.Message.Content {
+		if part.Kind != llm.ContentToolResult || part.ToolResult == nil || !apptranscript.IsQuietCommunicate(part.ToolResult) {
+			continue
+		}
+		qa, ok := b.quietAssistants[part.ToolResult.ToolCallID]
+		if !ok || !qa.hasText || b.demotedAssistants[qa.pos.Ordinal] {
+			continue
+		}
+		if !b.collectingDemotions {
+			return errQuietDemoteRebuild{rotate: qa.pos.Ordinal < b.committedEntries}
+		}
+		if b.demotedAssistants == nil {
+			b.demotedAssistants = map[uint64]bool{}
+		}
+		b.demotedAssistants[qa.pos.Ordinal] = true
+	}
+	return nil
+}
+
 // recordCommState applies the entry's effects on the deferred-communicate
 // state ProjectTurn's ToolCallRegistry threads — the same effects
 // recordNames applies to tool names, kept separate because unlike names this
@@ -409,7 +471,14 @@ func agentMessageText(items []appwire.ThreadItem) string {
 // was projected.
 func (b *builder) recordCommState(entry *schema.Turn, turnID string, seed map[string]string, c contributor, items []appwire.ThreadItem) {
 	if entry.Kind == schema.TurnAssistant {
+		hasText := assistantEntryHasText(entry)
+		hasAuthorship := entry.Authorship != nil
 		for _, part := range entry.Message.Content {
+			if part.Kind == llm.ContentToolCall && part.ToolCall != nil {
+				b.quietAssistants[part.ToolCall.ID] = quietAssistantState{
+					hasText: hasText, hasAuthorship: hasAuthorship, pos: c, turnID: turnID,
+				}
+			}
 			if deferredCommCall(entry, part) {
 				b.commCalls[part.ToolCall.ID] = commState{rawArgs: part.ToolCall.SentArguments(), pos: c, turnID: turnID}
 			}
@@ -436,6 +505,7 @@ func (b *builder) recordCommState(entry *schema.Turn, turnID string, seed map[st
 		if apptranscript.IsCommunicateTool(name, entry.ResultToolName) || apptranscript.IsQuietCommunicate(part.ToolResult) {
 			delete(b.commCalls, part.ToolResult.ToolCallID)
 		}
+		delete(b.quietAssistants, part.ToolResult.ToolCallID)
 	}
 }
 
@@ -468,6 +538,9 @@ func (b *builder) applyIdentity(ordinal uint64, offset int64, length uint32, ent
 	c := contributor{Offset: offset, Ordinal: ordinal, Length: length}
 	switch entry.Kind {
 	case schema.TurnTool, schema.TurnToolResults:
+		if err := b.checkQuietDemotions(entry); err != nil {
+			return err
+		}
 		if err := b.completeCommunications(slot, entry, c); err != nil {
 			return err
 		}
@@ -479,6 +552,7 @@ func (b *builder) applyIdentity(ordinal uint64, offset int64, length uint32, ent
 		// its visible message is suppressed as an assistant-text echo.
 		if entry.Communicate != nil {
 			delete(b.commCalls, entry.Communicate.CallID)
+			delete(b.quietAssistants, entry.Communicate.CallID)
 		}
 		echoes, err := b.echoesAwaiting(summary, entry)
 		if err != nil {
@@ -713,6 +787,7 @@ func (b *builder) interruptAwaitedCalls(summary turnRecord, completion contribut
 func (b *builder) appendItems(slot uint64, entry *schema.Turn, c contributor, seed map[string]string, absorb func(appwire.ThreadItem) (bool, error)) error {
 	reg := &apptranscript.ToolCallRegistry{
 		Names: b.registryNames(seed), CommRawArgs: b.registryCommArgs(),
+		SkipAssistantText: entry.Kind == schema.TurnAssistant && b.demotedAssistants[c.Ordinal],
 		LastAssistantText: b.lastAssistantText, LastAssistantTurnID: b.lastAssistantTurnID,
 	}
 	items, parts := apptranscript.ProjectEntryParts(entry.TurnID, int(c.Ordinal)+1, *entry, reg, apptranscript.AddressedImageProjector, apptranscript.ToolResultOutputImages)

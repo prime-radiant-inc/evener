@@ -901,3 +901,37 @@ test("a delegate report's failed diagram becomes searchable when it falls back t
   act(() => noteMermaidRender(source, "ok"));
   expect(findHits(rows, "reportNode", { config: TOOLS })).toEqual([]);
 });
+
+test("quiet_yield demoted commentary is searchable standalone and inside a quietYieldGroup", () => {
+  const quietItem = (id: string, turnId: string, commentary?: string): ItemModel => ({
+    id,
+    turnId,
+    type: "systemMessage",
+    text: "quiet-sentinel",
+    eventKind: "quiet_yield",
+    ...(commentary === undefined ? {} : { raw: { commentary } }),
+  });
+  const standaloneRows = projectedRows([quietItem("qy_single", "turn_1", "quokka-single")]);
+  expect(findHits(standaloneRows, "quokka-single", { config: TOOLS })).toEqual([
+    { key: "qy_single", itemId: "qy_single", rowIndex: 0, opens: ["qy_single"], opensIgnoreBaseline: true },
+  ]);
+
+  const model: ThreadModel = {
+    ref: "ref_a",
+    threadId: "t_a",
+    name: "",
+    status: { type: "idle" },
+    modelProvider: "anthropic",
+    model: "claude",
+    askPending: false,
+    pendingEscalations: [],
+    turns: [
+      { id: "turn_1", status: "completed", items: [quietItem("qy_1", "turn_1")] },
+      { id: "turn_2", status: "completed", items: [quietItem("qy_2", "turn_2", "quokka-grouped")] },
+    ],
+  };
+  const groupedRows = transcriptRowsForProjection(projectThread(model, TOOLS));
+  expect(findHits(groupedRows, "quokka-grouped", { config: TOOLS })).toEqual([
+    { key: "qy_2", itemId: "qy_2", rowIndex: 0, opens: ["quiet-yield-group:qy_1", "qy_2"], opensIgnoreBaseline: true },
+  ]);
+});

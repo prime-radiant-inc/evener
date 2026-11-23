@@ -76,6 +76,7 @@ type Overlay struct {
 	// reset discarded; unless an ASSISTANT entry covers them after all, they
 	// still end interrupted.
 	discardedRounds recentSet[struct{}]
+	quietRounds     recentSet[string]
 	calls           recentSet[*call]
 	// slots holds the streams, previews and tool states by overlay key.
 	slots    map[string]*slot
@@ -146,6 +147,7 @@ func New(budget *Budget) *Overlay {
 		budget:          budget,
 		coveredRounds:   newRecentSet[struct{}](maxRememberedRounds),
 		discardedRounds: newRecentSet[struct{}](maxRememberedRounds),
+		quietRounds:     newRecentSet[string](maxRememberedRounds),
 		calls:           newRecentSet[*call](maxRememberedCalls),
 		slots:           map[string]*slot{},
 		streamKeys:      map[string]string{},
@@ -164,6 +166,7 @@ func (o *Overlay) Close() {
 	o.calls.clear()
 	o.coveredRounds.clear()
 	o.discardedRounds.clear()
+	o.quietRounds.clear()
 }
 
 // RunningTurnID is the running execution for a thread nothing calls
@@ -404,6 +407,11 @@ func (o *Overlay) streamDelta(kind, text string) []Change {
 	if _, covered := o.coveredRounds.get(o.roundID); covered {
 		return nil
 	}
+	if kind == "agentMessage" {
+		if _, quiet := o.quietRounds.get(o.roundID); quiet {
+			return nil
+		}
+	}
 	key := o.streamKey(kind)
 	if _, ok := o.slots[key]; ok {
 		return o.appendText(key, text)
@@ -499,11 +507,10 @@ func isResultTool(toolName string, marked bool) bool {
 
 func (o *Overlay) startTool(ev events.SessionEvent, data events.ToolCallStartData) []Change {
 	if isResultTool(data.ToolName, data.IsResultTool) {
-		// Old end events did not carry the flag for a renamed result tool.
-		if data.ToolName != "communicate" {
-			if c, ok := o.toolCall(data.CallID); ok {
-				c.resultTool = true
-			}
+		// Track result tool calls so a later quiet ToolCallEnd knows its round
+		// even if the ASSISTANT entry has not been covered yet.
+		if c, ok := o.toolCall(data.CallID); ok {
+			c.resultTool = true
 		}
 		return nil
 	}
@@ -563,7 +570,10 @@ func (o *Overlay) appendOutput(callID, text string) []Change {
 }
 
 func (o *Overlay) endTool(data events.ToolCallEndData) []Change {
-	if isResultTool(data.ToolName, data.IsResultTool) || data.Error == "" && apptranscript.IsQuietCommunicateState(data.ToolState) {
+	if data.Error == "" && apptranscript.IsQuietCommunicateState(data.ToolState) {
+		return o.clearQuietCompanion(data.CallID)
+	}
+	if isResultTool(data.ToolName, data.IsResultTool) {
 		return nil
 	}
 	c, ok := o.toolCall(data.CallID)
@@ -600,6 +610,54 @@ func (o *Overlay) endTool(data events.ToolCallEndData) []Change {
 	}
 	item.OutputImages = fetchable
 	return o.upsert(s)
+}
+
+func (o *Overlay) clearQuietCompanion(callID string) []Change {
+	roundID := o.roundID
+	if c, ok := o.calls.get(callID); ok && c.roundID != "" {
+		roundID = c.roundID
+	}
+	if roundID != "" {
+		o.quietRounds.put(roundID, "")
+	}
+	resetStreams := map[string]bool{}
+	for key, s := range o.slots {
+		if s.item.Kind == appwire.OverlayStream && s.item.RoundID == roundID && s.item.Item.Type == "agentMessage" {
+			if s.item.StreamID != "" {
+				resetStreams[s.item.StreamID] = true
+			}
+			delete(o.slots, key)
+		}
+		if s.item.Kind == appwire.OverlayPreview && s.item.CallID == callID {
+			if s.item.StreamID != "" {
+				resetStreams[s.item.StreamID] = true
+			}
+			delete(o.slots, key)
+		}
+	}
+	if len(resetStreams) == 0 {
+		return nil
+	}
+	streamIDs := make([]string, 0, len(resetStreams))
+	for id := range resetStreams {
+		streamIDs = append(streamIDs, id)
+	}
+	slices.Sort(streamIDs)
+	var changes []Change
+	for _, streamID := range streamIDs {
+		changes = append(changes, Change{Method: appwire.NotifyOverlayReset, Params: appwire.OverlayResetParams{StreamID: streamID}})
+		var siblings []*slot
+		for _, s := range o.slots {
+			if s.item.StreamID == streamID {
+				siblings = append(siblings, s)
+			}
+		}
+		slices.SortFunc(siblings, func(a, b *slot) int { return cmp.Compare(a.order, b.order) })
+		for _, s := range siblings {
+			changes = append(changes, o.upsert(s)...)
+		}
+	}
+	return changes
 }
 
 // releaseImages sends each held call's item again with every image, now that
@@ -644,6 +702,7 @@ func (o *Overlay) endRound(roundID string) []Change {
 	}
 	o.discardedRounds.delete(roundID)
 	o.coveredRounds.delete(roundID)
+	o.quietRounds.delete(roundID)
 	if o.roundID == roundID {
 		o.newAttempt("", 0)
 	}

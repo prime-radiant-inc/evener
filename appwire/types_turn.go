@@ -152,6 +152,11 @@ const (
 	// clients show their text. The web and native renderers own presenting
 	// each as a collapsed steering-style notification.
 	ThreadItemEventKindMemoryContext ThreadItemEventKind = "memory-context"
+	// ThreadItemEventKindQuietYield marks the systemMessage item emitted for a
+	// successful quiet communicate({}) turn. When the paired assistant response
+	// also emitted companion commentary prose, it is demoted out of agentMessage
+	// chat bubbles and stored under Raw as {"commentary":"..."}.
+	ThreadItemEventKindQuietYield ThreadItemEventKind = "quiet_yield"
 )
 
 // AllThreadItemEventKinds is every ThreadItem.EventKind value emitted for
@@ -178,6 +183,7 @@ var AllThreadItemEventKinds = []string{
 	string(ThreadItemEventKindInterrupted),
 	string(ThreadItemEventKindApprovalDecision),
 	string(ThreadItemEventKindMemoryContext),
+	string(ThreadItemEventKindQuietYield),
 }
 
 type ThreadItem struct {

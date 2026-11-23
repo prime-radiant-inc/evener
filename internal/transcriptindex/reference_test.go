@@ -106,6 +106,7 @@ func referenceProjectionAndRegistry(t testing.TB, path string) ([]referenceTurn,
 		entries   []schema.Turn // legacy: the group's entries, for its stamp
 		items     []appwire.ThreadItem
 		positions []appwire.ThreadItemPosition
+		entryIdx  []int
 		calls     map[string]int // legacy: call id -> item
 		version   uint64
 		model     string
@@ -127,10 +128,13 @@ func referenceProjectionAndRegistry(t testing.TB, path string) ([]referenceTurn,
 	byID := map[string]*turnState{}
 	var grouper apptranscript.TurnGrouper
 	reg := apptranscript.NewToolCallRegistry()
+	identityReg := apptranscript.NewToolCallRegistry()
+	assistantByCall := map[string]int{}
 	add := func(s *turnState, item appwire.ThreadItem, entryIndex, part int) int {
 		item.Version = uint64(entryIndex)
 		s.items = append(s.items, item)
 		s.positions = append(s.positions, appwire.ThreadItemPosition{Entry: uint64(entryIndex), Item: uint32(part)})
+		s.entryIdx = append(s.entryIdx, entryIndex)
 		return len(s.items) - 1
 	}
 	for i, entry := range entries {
@@ -164,6 +168,13 @@ func referenceProjectionAndRegistry(t testing.TB, path string) ([]referenceTurn,
 			s.version = uint64(entryIndex)
 			if entry.Model != "" {
 				s.model = entry.Model
+			}
+			if entry.Kind == schema.TurnAssistant {
+				for _, part := range entry.Message.Content {
+					if part.Kind == llm.ContentToolCall && part.ToolCall != nil {
+						assistantByCall[part.ToolCall.ID] = entryIndex
+					}
+				}
 			}
 			items, parts := apptranscript.ProjectTurnParts(id, entryIndex, entry, reg, nil, apptranscript.ToolResultOutputImages)
 			for j, item := range items {
@@ -257,7 +268,21 @@ func referenceProjectionAndRegistry(t testing.TB, path string) ([]referenceTurn,
 			}
 			continue
 		}
-		items, parts := apptranscript.ProjectEntryParts(s.id, entryIndex, entry, &apptranscript.ToolCallRegistry{Names: seed}, nil, apptranscript.ToolResultOutputImages)
+		if entry.Kind == schema.TurnAssistant {
+			for _, part := range entry.Message.Content {
+				if part.Kind == llm.ContentToolCall && part.ToolCall != nil {
+					assistantByCall[part.ToolCall.ID] = entryIndex
+				}
+			}
+		}
+		entryReg := &apptranscript.ToolCallRegistry{
+			Names:      seed,
+			QuietCalls: identityReg.QuietCalls,
+		}
+		if entry.Kind == schema.TurnCommunicate && entry.Communicate != nil {
+			delete(identityReg.QuietCalls, entry.Communicate.CallID)
+		}
+		items, parts := apptranscript.ProjectEntryParts(s.id, entryIndex, entry, entryReg, nil, apptranscript.ToolResultOutputImages)
 		added := map[int]int{} // part -> item
 		for j, item := range items {
 			if entry.Kind == schema.TurnTool || entry.Kind == schema.TurnToolResults {
@@ -292,6 +317,32 @@ func referenceProjectionAndRegistry(t testing.TB, path string) ([]referenceTurn,
 				awaiting := entry
 				s.awaiting, s.awaitingItem, s.awaitingNames = &awaiting, calls, names
 			}
+		}
+	}
+	demotedEntries := map[int]bool{}
+	for _, s := range turns {
+		for _, item := range s.items {
+			if item.Type == "systemMessage" && item.EventKind == appwire.ThreadItemEventKindQuietYield && item.CallID != "" {
+				if entryIndex, ok := assistantByCall[item.CallID]; ok {
+					demotedEntries[entryIndex] = true
+				}
+			}
+		}
+	}
+	if len(demotedEntries) > 0 {
+		for _, s := range turns {
+			keptItems := make([]appwire.ThreadItem, 0, len(s.items))
+			keptPositions := make([]appwire.ThreadItemPosition, 0, len(s.positions))
+			keptEntries := make([]int, 0, len(s.entryIdx))
+			for j, item := range s.items {
+				if item.Type == "agentMessage" && demotedEntries[s.entryIdx[j]] {
+					continue
+				}
+				keptItems = append(keptItems, item)
+				keptPositions = append(keptPositions, s.positions[j])
+				keptEntries = append(keptEntries, s.entryIdx[j])
+			}
+			s.items, s.positions, s.entryIdx = keptItems, keptPositions, keptEntries
 		}
 	}
 	var out []referenceTurn

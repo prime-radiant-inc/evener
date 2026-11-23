@@ -343,3 +343,22 @@ func ApprovalDecisionAnnouncement(notice schema.ApprovalDecisionNotice) NoticeAn
 	})
 	return NoticeAnnouncement{EventKind: appwire.ThreadItemEventKindApprovalDecision, Description: "Approval", Text: text, Raw: raw}
 }
+
+// QuietYieldAnnouncement builds the muted notice for a successful quiet
+// communicate({}) turn. When companion assistant commentary prose was emitted
+// in the same response, it rides in Raw under "commentary" so clients keep it
+// inspectable behind the muted notice instead of as an unread chat bubble.
+func QuietYieldAnnouncement(commentary string) NoticeAnnouncement {
+	var raw json.RawMessage
+	if trimmed := strings.TrimSpace(commentary); trimmed != "" {
+		raw, _ = json.Marshal(struct {
+			Commentary string `json:"commentary"`
+		}{Commentary: trimmed})
+	}
+	return NoticeAnnouncement{
+		EventKind:   appwire.ThreadItemEventKindQuietYield,
+		Description: "Quiet yield",
+		Text:        "Ended turn quietly",
+		Raw:         raw,
+	}
+}

@@ -25,6 +25,7 @@ import transcriptStyles from "../session.module.css";
 import { SeenDivider } from "./flow/SeenDivider";
 import { rowRoleFor } from "./layoutRoles";
 import { TurnSeparator } from "./messages";
+import { SystemNoticeItem } from "./messages/SystemNoticeItem";
 import { ToolCallItem } from "./ToolCallItem";
 import { ToolRunGroup } from "./ToolRunGroup";
 import { TurnFailureEndCap } from "./TurnFailureEndCap";
@@ -69,6 +70,7 @@ export interface TurnBlockProps {
 const CLASS = {
   turn: requireClass(styles.turn, "turnblock.module.css", "turn"),
   runContent: requireClass(styles.runContent, "turnblock.module.css", "runContent"),
+  quietYieldGroupBody: requireClass(styles.quietYieldGroupBody, "turnblock.module.css", "quietYieldGroupBody"),
 };
 
 // A tool row's wrapper is also a segment of its tool card: the shared surface
@@ -203,6 +205,77 @@ export function ProjectedIntentGroup({
             </div>
           </div>
         </Disclosure>
+        {separatorTurn && <TurnSeparator turn={separatorTurn} />}
+      </div>
+    </>
+  );
+}
+
+export interface ProjectedQuietYieldGroupProps {
+  entries: readonly Extract<ProjectedEntry, { kind: "item" }>[];
+  turns: readonly ProjectedTurn[];
+  rowId: string;
+  sourceTurnIds?: readonly string[];
+  separatorTurn?: TurnModel;
+  viewAnchorIndex?: number;
+  showSeenDivider?: boolean;
+  sessionRef?: string;
+}
+
+export function ProjectedQuietYieldGroup({
+  entries,
+  turns,
+  rowId,
+  sourceTurnIds = [],
+  separatorTurn,
+  viewAnchorIndex,
+  showSeenDivider = false,
+  sessionRef,
+}: ProjectedQuietYieldGroupProps) {
+  const context = useTranscriptRenderContext();
+  const scope = disclosureScopeForSession(context, sessionRef);
+  const disclosureKey = scopedDisclosureId(scope, rowId);
+  const fallback = disclosureDefault(scope, rowId, false);
+  const open = isDisclosureOpen(disclosureKey, fallback, { ignoreBaseline: true });
+  const first = entries[0];
+  const closedAnchor =
+    first && viewAnchorIndex !== undefined
+      ? {
+          ...projectedEntryAnchor(first, viewAnchorIndex),
+          "data-view-anchor-members": entries.map((entry) => entry.id).join(","),
+        }
+      : undefined;
+  return (
+    <>
+      {showSeenDivider && <SeenDivider />}
+      <div
+        className={CLASS.turn}
+        data-transcript-row-id={rowId}
+        data-transcript-source-turn-ids={sourceTurnIds.join(",") || undefined}
+        {...(open ? undefined : closedAnchor)}
+      >
+        <div className={CLASS.runContent}>
+          <Disclosure
+            variant="quiet"
+            id={disclosureKey}
+            defaultOpen={fallback}
+            ignoreBaseline
+            data-testid="quiet-yield-group"
+            summary={<span data-count={entries.length}>{entries.length} quiet yields</span>}
+          >
+            <div className={CLASS.quietYieldGroupBody} data-testid="quiet-yield-group-body" data-message-body="">
+              {entries.map((entry, idx) => (
+                <div key={entryDisplayKey(entry)} {...projectedEntryAnchor(entry, viewAnchorIndex)}>
+                  <SystemNoticeItem
+                    item={entry.item}
+                    turn={turns[idx]?.source ?? { id: entry.turnId, status: "completed", items: [entry.item] }}
+                    sessionRef={sessionRef}
+                  />
+                </div>
+              ))}
+            </div>
+          </Disclosure>
+        </div>
         {separatorTurn && <TurnSeparator turn={separatorTurn} />}
       </div>
     </>

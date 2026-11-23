@@ -60,6 +60,7 @@ import {
 	parseAskUserQuestions,
 	parseTaskListData,
 	pendingTextJoined,
+	QUIET_YIELD_EVENT_KIND,
 	PROMPT_EVENT_KINDS,
 	projectThread,
 	steeringLabel,
@@ -826,6 +827,8 @@ const LIFECYCLE_EVENT_KINDS = new Set([
 	// An automatic memory refresh: a routine context injection like a
 	// shared-notes snapshot, drawn by memoryContextNotice below.
 	MEMORY_CONTEXT_EVENT_KIND,
+	// A quiet communicate({}) yield: a muted one-liner across every detail level.
+	QUIET_YIELD_EVENT_KIND,
 ]);
 
 function systemFamily(eventKind: string | undefined): NoticeFamily {

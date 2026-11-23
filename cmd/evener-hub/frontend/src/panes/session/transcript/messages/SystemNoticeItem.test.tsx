@@ -628,3 +628,31 @@ test("MCP recovery overlay stays quiet at full detail", () => {
   expect(screen.getByTestId("system-notice-line")).toBeTruthy();
   expect(screen.queryByTestId("warning-item")).toBeNull();
 });
+
+test("a clean quiet_yield notice renders as a single muted line with no disclosure", () => {
+  const quiet = item("qy1", { eventKind: "quiet_yield", text: "quiet-line-sentinel" });
+  const { container } = renderTurnTools(turnWith([quiet]));
+  expect(screen.getByTestId("system-notice-line").textContent).toBe("quiet-line-sentinel");
+  expect(container.querySelector("details")).toBeNull();
+});
+
+test("a quiet_yield notice with demoted commentary renders collapsed by default even at full and opens to show commentary", () => {
+  const quiet = item("qy2", {
+    eventKind: "quiet_yield",
+    text: "quiet-line-sentinel",
+    raw: { commentary: "demoted-commentary-sentinel" },
+  });
+  renderTurnFull(turnWith([quiet]));
+  const disclosure = screen.getByTestId("system-notice-quiet-yield") as HTMLDetailsElement;
+  expect(disclosure.open).toBe(false);
+  expect(disclosure.dataset.variant).toBe("quiet");
+  expect(screen.queryByTestId("system-notice-quiet-yield-body")).toBeNull();
+  expect(screen.queryByText("demoted-commentary-sentinel")).toBeNull();
+
+  const summary = disclosure.querySelector(":scope > summary");
+  if (!summary) throw new Error("missing summary");
+  fireEvent.click(summary);
+
+  expect(disclosure.open).toBe(true);
+  expect(screen.getByTestId("system-notice-quiet-yield-body").textContent).toContain("demoted-commentary-sentinel");
+});

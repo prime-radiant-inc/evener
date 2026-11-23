@@ -63,7 +63,7 @@ export function rowText(
 		case "notice":
 			return row.notifications
 				? row.notifications.map((fragment) => fragmentText(fragment, delegates)).join("\n")
-				: row.text;
+				: [row.label, row.text].filter(Boolean).join("\n");
 		case "assistant":
 			return row.markdown;
 		case "failure":
@@ -71,7 +71,7 @@ export function rowText(
 		case "question":
 			return row.questions.map((question) => `${question.header}\n${question.question}`).join("\n");
 		case "details":
-			return row.entries.map((entry) => entry.text).join("\n");
+			return row.entries.map((entry) => [entry.label, entry.text].filter(Boolean).join("\n")).join("\n");
 		case "activity": {
 			const text = stepText(row);
 			const answer = answersByRow?.get(row.id);

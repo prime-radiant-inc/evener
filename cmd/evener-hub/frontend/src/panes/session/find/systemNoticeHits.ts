@@ -12,6 +12,9 @@ import {
   MEMORY_CONTEXT_EVENT_KIND,
   type ProjectedEntry,
   type ProjectedTurn,
+  QUIET_YIELD_EVENT_KIND,
+  quietYieldCommentaryOf,
+  systemEventWords,
   type TranscriptDisplayConfigV1,
   type TurnModel,
   type WarningWords,
@@ -78,6 +81,12 @@ export function systemMessageTexts(
     const summary = roundTimingsSummary(item.raw);
     return [summary === undefined ? noticeText(item) : roundTimingsHeadline(summary)];
   }
+  if (item.eventKind === QUIET_YIELD_EVENT_KIND) {
+    const words = systemEventWords(item);
+    const label = words.label ?? (words.text || "Ended turn quietly");
+    const commentary = quietYieldCommentaryOf(item);
+    return commentary === undefined ? [label] : [label, markdownAsRead(commentary)];
+  }
   return [noticeText(item)];
 }
 
@@ -107,6 +116,9 @@ export function systemNoticePlacement(
       (candidate) => candidate.kind !== "intent" && candidate.item.id === leader.id,
     );
     return { key: leaderEntry === undefined ? leader.id : entryDisplayKey(leaderEntry), opens: leader.id };
+  }
+  if (item.eventKind === QUIET_YIELD_EVENT_KIND && quietYieldCommentaryOf(item) !== undefined) {
+    return { opens: item.id, opensIgnoreBaseline: true };
   }
   if (isScaffoldItem(item)) {
     return { opens: item.id, ...(item.eventKind === "notes-context" ? { opensIgnoreBaseline: true } : {}) };

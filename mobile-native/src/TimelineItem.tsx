@@ -175,7 +175,11 @@ export function TimelineItem({
 	switch (item.kind) {
 		case "details":
 			content = (
-				<SystemEvent label={`Session details · ${item.entries.length}`} expanded={expanded} onToggle={toggle}>
+				<SystemEvent
+					label={item.quietYield ? `${item.entries.length} quiet yields` : `Session details · ${item.entries.length}`}
+					expanded={expanded}
+					onToggle={toggle}
+				>
 					{item.entries.map((entry) => (
 						<TimelineItem
 							key={entry.id}

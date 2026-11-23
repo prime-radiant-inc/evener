@@ -3,6 +3,7 @@ package appwire
 import (
 	"encoding/json"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -387,5 +388,14 @@ func TestThreadReadResponseHistoryVocabularyJSONRoundTrip(t *testing.T) {
 	}
 	if !strings.Contains(string(raw), `"sourceItemKey":"item-key-1"`) {
 		t.Fatalf("ThreadForkParams JSON %s missing sourceItemKey", raw)
+	}
+}
+
+func TestThreadItemEventKindQuietYieldInCatalog(t *testing.T) {
+	if ThreadItemEventKindQuietYield != "quiet_yield" {
+		t.Fatalf("ThreadItemEventKindQuietYield = %q, want quiet_yield", ThreadItemEventKindQuietYield)
+	}
+	if !slices.Contains(AllThreadItemEventKinds, string(ThreadItemEventKindQuietYield)) {
+		t.Fatalf("AllThreadItemEventKinds missing %q", ThreadItemEventKindQuietYield)
 	}
 }

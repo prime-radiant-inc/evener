@@ -560,6 +560,7 @@ export type { PathPickableRow, PathRow } from "./pathRows";
 export { basename, buildPathRows, childrenPrefix, isDirEntry, parentOf, pickablePathRows } from "./pathRows";
 export { isPlainObject, sameJsonValue } from "./plainObject";
 export { RUNNING_QUIET_AFTER_MS } from "./quiet";
+export { QUIET_YIELD_EVENT_KIND, quietYieldCommentaryOf } from "./quietYield";
 export { humanizeState, needsResponseRest } from "./railSessionState";
 export type { ReadyGenerationFence } from "./readyGenerationFence";
 export { createReadyGenerationFence } from "./readyGenerationFence";
