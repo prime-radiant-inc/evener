@@ -333,98 +333,6 @@ func TestForgetDelegateAttentionLockedNonExistent(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// attentionReplacementEventsLocked
-// ---------------------------------------------------------------------------
-
-func TestReplaceDelegateAttentionLockedEmpty(t *testing.T) {
-	t.Parallel()
-	c, _ := newDelegateControllerTestHarness(t, 1, 1)
-	seedDelegateControllerIdle(t, c, "dlg_1", "")
-	c.seedAttentionRowForTest("dlg_1", "att_1", true)
-	c.replaceDelegateAttentionForTest("dlg_1", nil)
-	// A delegate the fold says owes nothing leaves its queue empty: the rows
-	// are the whole obligation now that no in-memory set can outlive them.
-	if ids := c.attentionWakeIDsForTest("dlg_1"); len(ids) != 0 {
-		t.Fatalf("queue = %v, want it empty for an empty replacement", ids)
-	}
-}
-
-func TestReplaceDelegateAttentionLockedWithIDs(t *testing.T) {
-	t.Parallel()
-	c, _ := newDelegateControllerTestHarness(t, 1, 1)
-	seedDelegateControllerIdle(t, c, "dlg_1", "")
-	c.replaceDelegateAttentionForTest("dlg_1", []string{"att_1", "att_2"})
-	if got := len(c.attentionWakeIDsForTest("dlg_1")); got != 2 {
-		t.Fatalf("queue holds %d IDs, want 2", got)
-	}
-	if got := len(c.attentionCommittedWakeIDsForTest("dlg_1")); got != 0 {
-		t.Fatalf("the replacement marked %d newly copied riders committed, want none", got)
-	}
-}
-
-// A replacement resolves the rows its new set no longer carries and keeps the
-// committed mark of the ones it still does: the fold's pending set says what is
-// owed, and a row it stops owing cannot keep a mark that would make its next
-// arm look like a duplicate.
-func TestReplaceDelegateAttentionLockedPrunesOnlyTheMarksItDrops(t *testing.T) {
-	t.Parallel()
-	c, _ := newDelegateControllerTestHarness(t, 1, 1)
-	seedDelegateControllerIdle(t, c, "dlg_1", "")
-	c.seedAttentionRowForTest("dlg_1", "att_kept", true)
-	c.seedAttentionRowForTest("dlg_1", "att_dropped", true)
-	c.replaceDelegateAttentionForTest("dlg_1", []string{"att_kept", "att_new"})
-	committed := c.attentionCommittedWakeIDsForTest("dlg_1")
-	if _, kept := committed["att_kept"]; !kept {
-		t.Fatal("the replacement dropped a committed wake it still owed")
-	}
-	if _, dropped := committed["att_dropped"]; dropped {
-		t.Fatal("the replacement kept a committed mark for a row it no longer owes")
-	}
-	if _, copied := committed["att_new"]; copied {
-		t.Fatal("the replacement marked a newly copied rider committed: its first arm would be skipped")
-	}
-	ids := c.attentionWakeIDsForTest("dlg_1")
-	if _, exists := ids["att_dropped"]; exists {
-		t.Fatalf("queue = %v, want att_dropped resolved", ids)
-	}
-	if _, exists := ids["att_new"]; !exists {
-		t.Fatalf("queue = %v, want att_new copied", ids)
-	}
-}
-
-func TestReplaceDelegateAttentionLockedEmptyStringsFiltered(t *testing.T) {
-	t.Parallel()
-	c, _ := newDelegateControllerTestHarness(t, 1, 1)
-	seedDelegateControllerIdle(t, c, "dlg_1", "")
-	c.replaceDelegateAttentionForTest("dlg_1", []string{"att_1", "", "att_2", ""})
-	if got := len(c.attentionWakeIDsForTest("dlg_1")); got != 2 {
-		t.Fatalf("queue holds %d IDs, want 2 (empty strings filtered)", got)
-	}
-}
-
-func TestReplaceDelegateAttentionLockedAllEmptyStrings(t *testing.T) {
-	t.Parallel()
-	c, _ := newDelegateControllerTestHarness(t, 1, 1)
-	seedDelegateControllerIdle(t, c, "dlg_1", "")
-	c.seedAttentionRowForTest("dlg_1", "att_1", true)
-	c.replaceDelegateAttentionForTest("dlg_1", []string{"", ""})
-	if ids := c.attentionWakeIDsForTest("dlg_1"); len(ids) != 0 {
-		t.Fatalf("queue = %v, want it empty when all replacement IDs are empty", ids)
-	}
-}
-
-func TestReplaceDelegateAttentionLockedEmptyDelegateID(t *testing.T) {
-	t.Parallel()
-	c, _ := newDelegateControllerTestHarness(t, 1, 1)
-	seedDelegateControllerIdle(t, c, "dlg_1", "")
-	c.seedAttentionRowForTest("dlg_1", "att_1", true)
-	c.replaceDelegateAttentionForTest("", []string{"att_1"})
-	if _, exists := attentionWakeIDsOf(c, "dlg_1")["att_1"]; !exists {
-		t.Fatal("an empty delegate ID replacement touched dlg_1's queue")
-	}
-}
-
-// ---------------------------------------------------------------------------
 // hasPendingDelegateAttention
 // ---------------------------------------------------------------------------
 
@@ -624,7 +532,7 @@ func TestReconcileDelegateAttentionFromTranscriptsNil(t *testing.T) {
 func TestTryOpenDelegateAttentionNilController(t *testing.T) {
 	t.Parallel()
 	var c *delegateTreeController
-	_, _, _, _, _, err := c.tryOpenDelegateAttention("dlg_1", "att_1")
+	_, _, _, _, err := c.tryOpenDelegateAttention("dlg_1", "att_1")
 	if err == nil || !errors.Is(err, errDelegateNotControllable) {
 		t.Fatalf("expected errDelegateNotControllable, got %v", err)
 	}
@@ -633,7 +541,7 @@ func TestTryOpenDelegateAttentionNilController(t *testing.T) {
 func TestTryOpenDelegateAttentionEmptyDelegateID(t *testing.T) {
 	t.Parallel()
 	c := &delegateTreeController{}
-	_, _, _, _, _, err := c.tryOpenDelegateAttention("", "att_1")
+	_, _, _, _, err := c.tryOpenDelegateAttention("", "att_1")
 	if err == nil || !errors.Is(err, errDelegateNotControllable) {
 		t.Fatalf("expected errDelegateNotControllable, got %v", err)
 	}
@@ -642,7 +550,7 @@ func TestTryOpenDelegateAttentionEmptyDelegateID(t *testing.T) {
 func TestTryOpenDelegateAttentionEmptyAttentionID(t *testing.T) {
 	t.Parallel()
 	c := &delegateTreeController{}
-	_, _, _, _, _, err := c.tryOpenDelegateAttention("dlg_1", "")
+	_, _, _, _, err := c.tryOpenDelegateAttention("dlg_1", "")
 	if err == nil || !errors.Is(err, errDelegateNotControllable) {
 		t.Fatalf("expected errDelegateNotControllable, got %v", err)
 	}
@@ -653,7 +561,7 @@ func TestTryOpenDelegateAttentionNilAggregate(t *testing.T) {
 	c := &delegateTreeController{
 		durable: map[string]*delegatestore.Aggregate{},
 	}
-	_, _, _, _, _, err := c.tryOpenDelegateAttention("dlg_missing", "att_1")
+	_, _, _, _, err := c.tryOpenDelegateAttention("dlg_missing", "att_1")
 	if err == nil || !errors.Is(err, errDelegateNotControllable) {
 		t.Fatalf("expected errDelegateNotControllable for nil aggregate, got %v", err)
 	}
@@ -664,7 +572,7 @@ func TestTryOpenDelegateAttentionAlreadyExists(t *testing.T) {
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_1", "")
 	c.seedAttentionRowForTest("dlg_1", "att_1", true)
-	added, blocker, _, emit, _, err := c.tryOpenDelegateAttention("dlg_1", "att_1")
+	added, blocker, _, emit, err := c.tryOpenDelegateAttention("dlg_1", "att_1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -676,70 +584,6 @@ func TestTryOpenDelegateAttentionAlreadyExists(t *testing.T) {
 	}
 	if emit {
 		t.Fatalf("expected emit=false")
-	}
-}
-
-// A start commit copies the rows the generation carries into the durable queue
-// without any of them having been admitted. That copy is the transcript fold's
-// word on what the generation owes, not evidence that a wake passed the gate:
-// the first arm of such a row must still publish its wake and journal the
-// release a settled user-stop quiet owes, exactly as an arm of any other owed
-// row does. Only once it has committed is a repeat arm the duplicate it looks
-// like.
-func TestTryOpenDelegateAttentionCommitsACopiedPendingRider(t *testing.T) {
-	t.Parallel()
-	c, _ := newDelegateControllerTestHarness(t, 2, 1)
-	seedDelegateControllerIdle(t, c, "dlg_rider", "")
-	journalStopAtGeneration(t, c, "dlg_rider", 1)
-
-	const attentionID = "delegate:copied-rider"
-	c.seedAttentionRowForTest("dlg_rider", attentionID, false)
-	_, copied := c.attentionWakeIDsForTest("dlg_rider")[attentionID]
-	_, committed := c.attentionCommittedWakeIDsForTest("dlg_rider")[attentionID]
-	if !copied || committed {
-		t.Fatalf("premise broken: rider copied=%t committed=%t, want the copy alone", copied, committed)
-	}
-
-	added, blocker, _, _, generation, err := c.tryOpenDelegateAttention("dlg_rider", attentionID)
-	if err != nil {
-		t.Fatalf("arm the copied rider: %v", err)
-	}
-	if blocker != nil {
-		t.Fatal("the copied rider's first arm was blocked")
-	}
-	if !added {
-		t.Fatal("the copied rider's first arm did not commit it")
-	}
-	if generation != 1 {
-		t.Fatalf("the copied rider's first arm superseded generation %d, want the settled generation 1", generation)
-	}
-	c.mu.Lock()
-	floor := c.durable["dlg_rider"].AttentionHoldReleasedGeneration
-	recorded := c.attention["dlg_rider"].releasedGeneration
-	c.mu.Unlock()
-	committedIDs := c.attentionCommittedWakeIDsForTest("dlg_rider")
-	if floor != 1 {
-		t.Fatalf("the copied rider's arm journaled no release (floor %d, want 1): a cold restore rebuilds the quiet over the row the wake freed", floor)
-	}
-	if recorded != 1 {
-		t.Fatalf("the copied rider's arm recorded released generation %d, want 1", recorded)
-	}
-	if _, committed := committedIDs[attentionID]; !committed {
-		t.Fatal("the copied rider's arm did not mark the wake committed")
-	}
-
-	added, blocker, _, _, generation, err = c.tryOpenDelegateAttention("dlg_rider", attentionID)
-	if err != nil {
-		t.Fatalf("repeat the copied rider's arm: %v", err)
-	}
-	if added || blocker != nil || generation != 0 {
-		t.Fatalf("repeat arm = added:%t blocked:%t generation:%d, want an idempotent no-op", added, blocker != nil, generation)
-	}
-	c.mu.Lock()
-	repeat := c.durable["dlg_rider"].AttentionHoldReleasedGeneration
-	c.mu.Unlock()
-	if repeat != 1 {
-		t.Fatalf("repeat arm moved the release floor to %d: a committed wake must not publish again", repeat)
 	}
 }
 
@@ -833,7 +677,10 @@ func TestDelegateAttentionWillRaiseLockedEligible(t *testing.T) {
 	}
 }
 
-func TestDelegateAttentionWillRaiseLockedQueuedRow(t *testing.T) {
+// A queued row with the projection still false is exactly the inconsistent
+// state the next queue-changing event repairs: the projection is derived from
+// the unheld rows, so the raise is still owed.
+func TestDelegateAttentionWillRaiseLockedRepairsAnUnraisedQueuedRow(t *testing.T) {
 	t.Parallel()
 	c := &delegateTreeController{
 		durable: map[string]*delegatestore.Aggregate{
@@ -847,8 +694,8 @@ func TestDelegateAttentionWillRaiseLockedQueuedRow(t *testing.T) {
 			},
 		},
 	}
-	if c.delegateAttentionWillRaiseLocked("dlg_1") {
-		t.Fatalf("expected false when the queue already holds a row")
+	if !c.delegateAttentionWillRaiseLocked("dlg_1") {
+		t.Fatalf("expected true: the unraised pending row still owes its projection")
 	}
 }
 
@@ -984,5 +831,47 @@ func TestDelegateAttentionWakeEligibleLockedWithNonAttentionReservation(t *testi
 	}
 	if c.delegateAttentionWakeEligibleLocked("dlg_1") {
 		t.Fatalf("expected false for non-attention reservation")
+	}
+}
+
+// A finalizer can read a pending row, lose the controller lock to a stop that
+// resolves or discards it, and then arm that stale identity. The arm must see
+// the journal resolution under c.mu and become a clean no-op, while a fresh
+// delivery still queues and raises NeedsAttention.
+func TestOpenDelegateAttentionIgnoresResolvedRow(t *testing.T) {
+	t.Parallel()
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerIdle(t, c, "dlg_target", "")
+	const (
+		staleID = "attention-resolved-late"
+		freshID = "attention-fresh-after-resolved"
+	)
+	if !c.noteDelegateAttentionForTest("dlg_target", staleID) {
+		t.Fatal("seed the stale attention row")
+	}
+	if err := c.forgetDelegateAttention("dlg_target", staleID); err != nil {
+		t.Fatalf("resolve the stale attention row: %v", err)
+	}
+	added, err := c.openDelegateAttention("dlg_target", staleID)
+	if err != nil || added {
+		t.Fatalf("late arm of a resolved row = added:%t err:%v, want a no-op", added, err)
+	}
+	if rows := pendingAttentionRowsForTest(t, c, "dlg_target"); len(rows) != 0 {
+		t.Fatalf("resolved row was resurrected: %#v", rows)
+	}
+	if needsAttentionForTest(t, c, "dlg_target") {
+		t.Fatal("late arm of a resolved row raised NeedsAttention")
+	}
+
+	added, err = c.openDelegateAttention("dlg_target", freshID)
+	if err != nil || !added {
+		t.Fatalf("fresh arm = added:%t err:%v, want the row queued and its wake raised", added, err)
+	}
+	rows := pendingAttentionRowsForTest(t, c, "dlg_target")
+	if len(rows) != 1 || rows[0].AttentionID != freshID || !rows[0].Committed {
+		t.Fatalf("fresh delivery rows = %#v, want one committed %q row", rows, freshID)
+	}
+	if !needsAttentionForTest(t, c, "dlg_target") {
+		t.Fatal("fresh arm did not raise NeedsAttention")
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"reflect"
@@ -1318,26 +1319,6 @@ func retirementDelegateWithPendingTranscriptAttention(t *testing.T, attentionID 
 	return root, tree, c, d
 }
 
-// A closed delegate can never act on a noted wake, so a wake whose item the
-// transcript already resolved (and whose clear failed before the closure)
-// must not hold the tree's retirement.
-func TestRetirementDelegateResolvedWakeOfClosedDelegateDoesNotBlock(t *testing.T) {
-	t.Parallel()
-	const attentionID = "attention-resolved-before-closure"
-	tree, c, d := closedRetirementDelegateWithAttention(t, attentionID, true)
-	tree.mu.Lock()
-	_, wakeKept := attentionWakeIDsOf(tree, d.DelegateID)[attentionID]
-	tree.mu.Unlock()
-	if !wakeKept {
-		t.Fatal("the resolved wake did not outlive the closure; the scenario is not the one under test")
-	}
-	claim, state, err := c.TryClaim(true)
-	if err != nil || claim == nil {
-		t.Fatalf("a closed delegate's resolved wake blocks retirement: %+v %v", state, err)
-	}
-	c.Abort(claim, "")
-}
-
 // The other direction of the closed-delegate rule: ignoring a closed
 // delegate's wakes never lets unresolved attention in its transcript through,
 // whether its runtime is resident or not.
@@ -1353,57 +1334,17 @@ func TestRetirementDelegateUnresolvedAttentionOfClosedDelegateBlocks(t *testing.
 	}
 }
 
-// A resumable delegate's wake whose transcript item already resolved is not an
-// obligation: the transcript holds the resolution, so the full read decides
-// from the fold and retirement may proceed. Only a closed delegate's resolved
-// wake was covered before #4280; a resumable one blocked the full read through
-// the in-memory wake alone.
-func TestRetirementDelegateResolvedWakeOfResumableDelegateDoesNotBlock(t *testing.T) {
-	t.Parallel()
-	root, tree, c := newRetirementDelegateController(t)
-	defer root.Close()
-	d := retirementIdleDelegate(t, root)
-	sub := root.subagents.get(d.ChildSessionID)
-	const attentionID = "attention-resolved-wake-resumable"
-	if _, err := sub.sess.appendDelegateNotificationDurably(attentionID, "resolved attention content"); err != nil {
-		t.Fatal(err)
-	}
-	if err := sub.sess.resolveAttentionDurably([]string{attentionID}, delegateAttentionConsumed); err != nil {
-		t.Fatal(err)
-	}
-	if !tree.noteDelegateAttention(d.DelegateID, attentionID) {
-		t.Fatal("fixture did not retain the resolved wake")
-	}
-	tree.mu.Lock()
-	_, wakeKept := attentionWakeIDsOf(tree, d.DelegateID)[attentionID]
-	aggregate := tree.durable[d.DelegateID]
-	open := aggregate != nil && aggregate.Resumable
-	tree.mu.Unlock()
-	if !wakeKept || !open {
-		t.Fatalf("fixture = wakeKept:%t open:%t, want a resumable delegate's retained wake", wakeKept, open)
-	}
-	claim, state, err := c.TryClaim(true)
-	if claim == nil || err != nil {
-		t.Fatalf("a resolved wake blocked retirement: %+v %v", state, err)
-	}
-	if err := c.Abort(claim, ""); err != nil {
-		t.Fatal(err)
-	}
-}
-
 // The fold is the full read's witness for pending attention even when no
 // in-memory wake exists, which is why the full read drops the wake check.
 func TestRetirementDelegatePendingTranscriptAttentionWithoutWakeBlocks(t *testing.T) {
 	t.Parallel()
 	root, tree, c, d := retirementDelegateWithPendingTranscriptAttention(t, "attention-pending-no-wake")
 	defer root.Close()
-	tree.mu.Lock()
-	wakes := len(attentionWakeIDsOf(tree, d.DelegateID))
-	aggregate := tree.durable[d.DelegateID]
-	flag := aggregate != nil && aggregate.NeedsAttention
-	tree.mu.Unlock()
-	if wakes != 0 || flag {
-		t.Fatalf("fixture = wakes:%d needsAttention:%t, want a pending item with no in-memory wake", wakes, flag)
+	// The store row is the whole witness now: there is no in-memory wake
+	// mirror to be absent, and a pending unheld row always raises the flag.
+	rows := pendingAttentionRowsForTest(t, tree, d.DelegateID)
+	if len(rows) != 1 || rows[0].HeldThrough != 0 || !needsAttentionForTest(t, tree, d.DelegateID) {
+		t.Fatalf("fixture = rows:%#v, want one pending unheld row raising NeedsAttention", rows)
 	}
 	claim, state, err := c.TryClaim(true)
 	if claim != nil {
@@ -1433,8 +1374,9 @@ func TestRetirementDelegatePendingTranscriptAttentionOfClosedDelegateWithoutWake
 	aggregate := tree.durable[d.DelegateID]
 	closed := aggregate != nil && aggregate.Phase == delegatestore.PhaseClosed && !aggregate.Resumable
 	tree.mu.Unlock()
-	if wakes != 0 || !closed {
-		t.Fatalf("fixture = wakes:%d closed:%t, want a closed delegate with no wake", wakes, closed)
+	rows := pendingAttentionRowsForTest(t, tree, d.DelegateID)
+	if !closed || len(rows) != 1 || rows[0].HeldThrough != 0 {
+		t.Fatalf("fixture = wakes:%d closed:%t rows:%#v, want a closed delegate with the pending store row", wakes, closed, rows)
 	}
 	claim, state, err := c.TryClaim(true)
 	if claim != nil {
@@ -1675,7 +1617,7 @@ func TestRetirementDelegateAttentionSourceRefusal(t *testing.T) {
 	}
 	finish := retirementPauseColdClaim(t, c, schema.SessionMetaPath(root.stateDir, cold.ChildSessionID))
 	defer finish()
-	added, blocker, _, emit, _, err := tree.tryOpenDelegateAttention(d.DelegateID, attentionID)
+	added, blocker, _, emit, err := tree.tryOpenDelegateAttention(d.DelegateID, attentionID)
 	if !errors.Is(err, ErrRetirementUnavailable) || added || blocker != nil || emit {
 		t.Fatalf("populated attention entry not refused: added=%v emit=%v %v", added, emit, err)
 	}
@@ -1699,9 +1641,8 @@ func TestRetirementDelegateAttentionSourceRefusal(t *testing.T) {
 		t.Fatal("real attention owner did not accept original source")
 	}
 	retirementSettleDelegate(t, root, d)
-	fold, err := readDelegateAttentionFold(path, d.ChildSessionID)
-	if err != nil || slices.Contains(fold.pendingIDs(), attentionID) {
-		t.Fatalf("original attention was not settled: %v", err)
+	if rows := pendingAttentionRowsForTest(t, tree, d.DelegateID); len(rows) != 0 {
+		t.Fatalf("original attention was not settled: rows=%#v", rows)
 	}
 	tree.mu.Lock()
 	current := tree.durable[d.DelegateID].Generation
@@ -1756,16 +1697,103 @@ func TestRetirementDelegateAttentionPendingBlocks(t *testing.T) {
 		t.Fatal("real attention owner did not accept original source")
 	}
 	retirementSettleDelegate(t, root, d)
-	path := transcriptPath(root.stateDir, d.ChildSessionID)
-	fold, err := readDelegateAttentionFold(path, d.ChildSessionID)
-	if err != nil || slices.Contains(fold.pendingIDs(), attentionID) {
-		t.Fatalf("original attention was not settled: %v", err)
+	if rows := pendingAttentionRowsForTest(t, tree, d.DelegateID); len(rows) != 0 {
+		t.Fatalf("original attention was not settled: rows=%#v", rows)
 	}
 	claim, state, err = c.TryClaim(true)
 	if err != nil || claim == nil {
 		t.Fatalf("settled attention blocks: %+v %v", state, err)
 	}
 	c.Abort(claim, "")
+}
+
+// retirementEvidence must answer whether a delegate owes unheld attention while
+// it still holds c.mu: FinishGeneration mutates the same durable aggregate under
+// that lock. An unheld row blocks retirement on open and closed delegates; a
+// stop-held or journal-resolved row does not.
+func TestRetirementEvidenceSnapshotsUnheldAttentionUnderLock(t *testing.T) {
+	t.Parallel()
+	root, tree, _ := newRetirementDelegateController(t)
+	defer root.Close()
+	open := retirementIdleDelegate(t, root)
+	closed := retirementIdleDelegate(t, root)
+	tree.mu.Lock()
+	tree.durable[closed.DelegateID].Phase = delegatestore.PhaseClosed
+	tree.mu.Unlock()
+	defer func() {
+		tree.mu.Lock()
+		tree.durable[closed.DelegateID].Phase = delegatestore.PhaseIdle
+		tree.mu.Unlock()
+	}()
+	blocked := func(blockers []RetirementBlocker) bool {
+		return slices.ContainsFunc(blockers, func(b RetirementBlocker) bool {
+			return b.Category == "delegate" && (b.DelegateID == open.DelegateID || b.DelegateID == closed.DelegateID)
+		})
+	}
+	attentionIDs := make(map[string]string, 2)
+	for _, d := range []delegateResult{open, closed} {
+		attentionID := "attention-retirement-" + d.DelegateID
+		sub := root.subagents.get(d.ChildSessionID)
+		if _, err := sub.sess.appendDelegateNotificationDurably(attentionID, "unheld "+d.DelegateID); err != nil {
+			t.Fatalf("append attention for %s: %v", d.DelegateID, err)
+		}
+		attentionIDs[d.DelegateID] = attentionID
+	}
+	blockers, _, err := tree.retirementEvidence()
+	if err != nil {
+		t.Fatalf("retirementEvidence: %v", err)
+	}
+	if !blocked(blockers) {
+		t.Fatalf("unheld attention on open and closed delegates did not block retirement: %+v", blockers)
+	}
+	// The stop holds one row quiet; the journal resolution spends the other.
+	tree.mu.Lock()
+	_, err = tree.appendLocked(attentionHeldEvent(open.DelegateID, attentionIDs[open.DelegateID], 1))
+	tree.mu.Unlock()
+	if err != nil {
+		t.Fatalf("hold the open delegate's row: %v", err)
+	}
+	if err := tree.forgetDelegateAttention(closed.DelegateID, attentionIDs[closed.DelegateID]); err != nil {
+		t.Fatalf("resolve the closed delegate's row: %v", err)
+	}
+	blockers, _, err = tree.retirementEvidence()
+	if err != nil {
+		t.Fatalf("retirementEvidence after settlement: %v", err)
+	}
+	if blocked(blockers) {
+		t.Fatalf("held or resolved attention still blocked retirement: %+v", blockers)
+	}
+
+	// A concurrent FinishGeneration mutates the same durable aggregate. Reading
+	// the queue without the controller lock is a data race; this phase fails
+	// under -race before the snapshot is taken under the lock.
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	const raceDelegates = 32
+	for i := range raceDelegates {
+		seedDelegateControllerRunning(t, c, fmt.Sprintf("dlg_race_%d", i), "")
+	}
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Go(func() {
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				_, _, _ = c.retirementEvidence()
+			}
+		}
+	})
+	for i := range raceDelegates {
+		lease := delegateLease{delegateID: fmt.Sprintf("dlg_race_%d", i), generation: 1}
+		if _, err := c.FinishGeneration(lease, delegateFinish{outcome: delegatestore.OutcomeCompleted, reason: "completed"}); err != nil {
+			close(stop)
+			wg.Wait()
+			t.Fatalf("FinishGeneration %d: %v", i, err)
+		}
+	}
+	close(stop)
+	wg.Wait()
 }
 
 func TestRetirementDelegateQuietSourceAndBoundRuntime(t *testing.T) {

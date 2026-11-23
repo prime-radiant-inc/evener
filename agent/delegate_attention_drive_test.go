@@ -87,8 +87,8 @@ func TestDelegateAttentionDriveStaleSelectionPreservesNextOwnerRun(t *testing.T)
 	case <-time.After(30 * time.Second): // TRIPWIRE: await the delayed drive's return.
 		t.Fatal("delayed attention drive did not return")
 	}
-	if got := root.delegateController.reservedAttentionID(sub.sess); got != "" {
-		t.Fatalf("completed attention left stale reservation %q blocking future work", got)
+	if got := len(root.delegateController.reservations); got != 0 {
+		t.Fatalf("completed attention left %d stale reservations blocking future work", got)
 	}
 	if got := supervisionRequestCount(fixture.adapter); got != 7 {
 		t.Fatalf("provider requests = %d, want warm, attention, four follow-up attempts, and recovery report", got)
@@ -105,78 +105,5 @@ func TestDelegateAttentionDriveStaleSelectionPreservesNextOwnerRun(t *testing.T)
 	}
 	if got := supervisionRequestCount(fixture.adapter); got != 8 {
 		t.Fatalf("provider requests = %d, want one additional owner report", got)
-	}
-}
-
-// An accepted marker belongs to an exact reserved generation even when its
-// journal commit failed. Revalidating fresh selections must not discard that
-// existing reservation just because the transcript ID is already consumed.
-func TestDelegateAttentionDriveRetriesAcceptedMarkerGeneration(t *testing.T) {
-	t.Parallel()
-	fixture := newColdDelegateFixture(t, "")
-	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
-		func(llm.Request) llm.Response {
-			return quietYieldResponse("quiet-ack", `{"message":"waiting on work","next":"log_quietly_and_end_turn"}`)
-		},
-	})
-	root := restoreSupervisionRoot(t, fixture, nil)
-	sub := warmStableSupervisionDelegate(t, root, fixture)
-	waitForStableSupervisionRun(t, root, fixture.childID)
-	const attentionID = "attention:accepted-retry"
-	if appended, err := sub.sess.appendDelegateNotificationDurably(attentionID, "inspect completed work"); err != nil || !appended {
-		t.Fatalf("append attention = appended:%t err:%v", appended, err)
-	}
-	controller := root.delegateController
-	if _, err := controller.openDelegateAttention(fixture.delegateID, attentionID); err != nil {
-		t.Fatalf("open attention: %v", err)
-	}
-	// Close the real journal to fail commit after the real transcript has
-	// durably accepted the generation. No provider turn has started yet.
-	if err := controller.store.Close(); err != nil {
-		t.Fatalf("close delegate journal: %v", err)
-	}
-	if !root.driveDelegateAttention(sub) {
-		t.Fatal("attention drive did not attempt the closed journal")
-	}
-	if got := controller.reservedAttentionID(sub.sess); got != attentionID {
-		t.Fatalf("failed commit reservation = %q, want %q", got, attentionID)
-	}
-	fold, err := readDelegateAttentionFold(sub.sess.TranscriptPath(), fixture.childID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(fold.pendingIDs()) != 0 || fold.resumeGenerations[attentionID] != 2 {
-		t.Fatalf("accepted attention = pending:%v generations:%v, want consumed generation 2", fold.pendingIDs(), fold.resumeGenerations)
-	}
-	if got := supervisionRequestCount(fixture.adapter); got != 1 {
-		t.Fatalf("provider requests before commit retry = %d, want warm only", got)
-	}
-	reopened, err := delegatestore.Open(delegateResourceStorePath(fixture.stateDir, fixture.meta.ID))
-	if err != nil {
-		t.Fatalf("reopen delegate journal: %v", err)
-	}
-	controller.mu.Lock()
-	controller.store = reopened
-	controller.mu.Unlock()
-	if !root.driveDelegateAttention(sub) {
-		t.Fatal("attention drive did not retry its accepted generation")
-	}
-	waitForStableSupervisionRun(t, root, fixture.childID)
-	finished := latestDelegateControllerRunFinished(t, controller, fixture.delegateID)
-	if finished.Generation != 2 || finished.Disposition != delegatestore.DispositionCompletedNoAction || finished.DeliveryID != "" {
-		t.Fatalf("retried attention finish = %#v, want generation 2 no-action without delivery", finished)
-	}
-	if got := supervisionRequestCount(fixture.adapter); got != 2 {
-		t.Fatalf("provider requests = %d, want warm plus one retried attention turn", got)
-	}
-	resolutions := 0
-	for _, entry := range readAttentionTranscriptEntries(t, sub.sess.TranscriptPath()) {
-		if resolution := entry.Turn.AttentionResolution; resolution != nil && resolution.AttentionID == attentionID {
-			resolutions++
-		}
-	}
-	if resolutions != 1 {
-		t.Fatalf("accepted attention resolution markers = %d, want one", resolutions)
 	}
 }

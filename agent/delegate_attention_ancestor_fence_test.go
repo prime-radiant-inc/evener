@@ -2,6 +2,7 @@ package agent
 
 import (
 	"errors"
+	"os"
 	"runtime"
 	"testing"
 	"time"
@@ -93,9 +94,6 @@ func TestDelegateAttentionWake_CommitStartRechecksAncestorFence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReserveAttention with open ancestor: %v", err)
 	}
-	if err := child.acceptDelegateAttention(reservation); err != nil {
-		t.Fatalf("accept attention before ancestor closes: %v", err)
-	}
 	c.mu.Lock()
 	closureStarted := make(chan struct{})
 	closureDone := make(chan error, 1)
@@ -130,12 +128,11 @@ func TestDelegateAttentionWake_CommitStartRechecksAncestorFence(t *testing.T) {
 	if parentResumable {
 		t.Fatal("ancestor closure did not commit after accepted attention start")
 	}
-	fold, err := readDelegateAttentionFold(transcriptPath(c.stateDir, "child-dlg_child"), "child-dlg_child")
-	if err != nil {
-		t.Fatalf("read accepted attention marker: %v", err)
-	}
-	if fold.resumeGenerations[attentionID] != started.lease.generation {
-		t.Fatalf("accepted marker generation = %d, want %d", fold.resumeGenerations[attentionID], started.lease.generation)
+	c.mu.Lock()
+	rows := append([]delegatestore.PendingAttention(nil), c.durable["dlg_child"].PendingAttention...)
+	c.mu.Unlock()
+	if len(rows) != 1 || rows[0].AttentionID != attentionID || rows[0].HeldThrough != 0 {
+		t.Fatalf("accepted attention rows = %#v, want the committed row still durably queued and unheld until it is presented", rows)
 	}
 }
 
@@ -205,9 +202,6 @@ func TestDelegateAttentionWake_StoppingAncestorParksAttentionForLaterDelivery(t 
 		t.Fatalf("ReserveAttention after ancestor resumed: %v", err)
 	}
 	attachDelegateAttentionTranscriptForTest(t, c, child, "dlg_child", attentionID)
-	if err := child.acceptDelegateAttention(reservation); err != nil {
-		t.Fatalf("accept attention after ancestor resumed: %v", err)
-	}
 	if _, err := c.CommitStart(reservation); err != nil {
 		t.Fatalf("CommitStart after ancestor resumed: %v", err)
 	}
@@ -348,7 +342,7 @@ func (f fencedGrandchildAttention) owedAndParked() (owed, parked bool) {
 func TestDelegateAttentionWake_PermanentClosedAncestorEscalatesToRootOnce(t *testing.T) {
 	fenced := newFencedGrandchildAttention(t)
 	fixture, root := fenced.fixture, fenced.root
-	grandchildDelegateID, grandchildSessionID, attentionID := fenced.grandchildDelegateID, fenced.grandchildSessionID, fenced.attentionID
+	grandchildDelegateID, attentionID := fenced.grandchildDelegateID, fenced.attentionID
 	root.delegateController.mu.Lock()
 	childRevision := root.delegateController.durable[grandchildDelegateID].ProjectionRevision
 	var published []delegateUpdatePlan
@@ -375,12 +369,13 @@ func TestDelegateAttentionWake_PermanentClosedAncestorEscalatesToRootOnce(t *tes
 
 	root.drivePendingDelegateAttention()
 
-	grandchildFold, err := readDelegateAttentionFold(transcriptPath(fixture.stateDir, grandchildSessionID), grandchildSessionID)
-	if err != nil {
-		t.Fatalf("read grandchild attention fold: %v", err)
-	}
-	if got := grandchildFold.resolutions[attentionID]; got != delegateAttentionDiscarded {
-		t.Fatalf("fenced grandchild attention resolution = %q, want discarded", got)
+	// The hand-over resolves the source row in delegatestore alone: the source
+	// transcript keeps the rendered message and carries no resolution marker.
+	root.delegateController.mu.Lock()
+	_, sourceResolved := root.delegateController.durable[grandchildDelegateID].ResolvedAttention[attentionID]
+	root.delegateController.mu.Unlock()
+	if !sourceResolved {
+		t.Fatalf("fenced grandchild attention %q was not resolved in the journal", attentionID)
 	}
 	rootFold, err := readDelegateAttentionFold(transcriptPath(fixture.stateDir, fixture.meta.ID), fixture.meta.ID)
 	if err != nil {
@@ -548,12 +543,18 @@ func TestDelegateAttention_ColdRestoreEscalatesFencedDescendantOnce(t *testing.T
 	if err := fresh.bootstrapDelegateResources(); err != nil {
 		t.Fatalf("bootstrap fenced descendant repair: %v", err)
 	}
+	fresh.delegateController.mu.Lock()
+	_, sourceResolved := fresh.delegateController.durable["dlg_child"].ResolvedAttention[attentionID]
+	fresh.delegateController.mu.Unlock()
+	if !sourceResolved {
+		t.Fatalf("cold fenced child attention %q was not resolved in the journal", attentionID)
+	}
 	childFold, err := readDelegateAttentionFold(childPath, "child-dlg_child")
 	if err != nil {
 		t.Fatalf("read fenced child attention: %v", err)
 	}
-	if got := childFold.resolutions[attentionID]; got != delegateAttentionDiscarded {
-		t.Fatalf("cold fenced child resolution = %q, want discarded", got)
+	if _, resolved := childFold.resolutions[attentionID]; resolved {
+		t.Fatal("cold fenced child transcript carries a discard marker, want the journal resolution alone")
 	}
 	count, content := countEscalations()
 	if count != 1 {
@@ -583,6 +584,66 @@ func TestDelegateAttention_ColdRestoreEscalatesFencedDescendantOnce(t *testing.T
 	}
 	if replay.delegateController.hasPendingDelegateAttention() {
 		t.Fatal("replay bootstrap re-armed resolved fenced attention")
+	}
+}
+
+// A closed ancestor's pending report must transfer even when the source
+// transcript is read-only: the source is resolved in the journal, never
+// written. Replay keeps one ancestor copy.
+func TestDelegateAttention_ColdTransferLeavesAReadOnlySourceUnwritten(t *testing.T) {
+	c, journalPath := newDelegateControllerTestHarness(t, 3, 1)
+	seedStableAttentionRepairDelegate(t, c, "dlg_parent", "", true)
+	seedStableAttentionRepairDelegate(t, c, "dlg_child", "dlg_parent", true)
+	closeDelegateControllerResumability(t, c, "dlg_parent", "turn_budget_exhausted")
+	const attentionID = "delegate:cold-readonly-child"
+	childPath := transcriptPath(c.stateDir, "child-dlg_child")
+	writeDelegateAttentionTranscript(t, childPath, "child-dlg_child", attentionID)
+	writeEmptyAttentionTranscript(t, transcriptPath(c.stateDir, "child-dlg_parent"), "child-dlg_parent")
+	writeEmptyAttentionTranscript(t, transcriptPath(c.stateDir, "root-session"), "root-session")
+	copyDelegateJournalForBootstrap(t, c, journalPath)
+	if err := os.Chmod(childPath, 0o444); err != nil {
+		t.Fatalf("make the fenced child transcript read-only: %v", err)
+	}
+
+	countRootCopies := func() int {
+		t.Helper()
+		rootFold, err := readDelegateAttentionFold(transcriptPath(c.stateDir, "root-session"), "root-session")
+		if err != nil {
+			t.Fatalf("read root attention fold: %v", err)
+		}
+		count := 0
+		for _, id := range rootFold.order {
+			if id == attentionID {
+				count++
+			}
+		}
+		return count
+	}
+
+	fresh := newAttentionRepairRoot(c.stateDir, nil)
+	if err := fresh.bootstrapDelegateResources(); err != nil {
+		t.Fatalf("bootstrap with a read-only source transcript: %v", err)
+	}
+	if got := countRootCopies(); got != 1 {
+		t.Fatalf("cold root transfers from a read-only source = %d, want exactly one", got)
+	}
+	fresh.delegateController.mu.Lock()
+	_, sourceResolved := fresh.delegateController.durable["dlg_child"].ResolvedAttention[attentionID]
+	fresh.delegateController.mu.Unlock()
+	if !sourceResolved {
+		t.Fatalf("read-only source attention %q was not resolved in the journal", attentionID)
+	}
+	if err := fresh.closeOwnedDelegateStore(); err != nil {
+		t.Fatalf("close first bootstrap store: %v", err)
+	}
+
+	replay := newAttentionRepairRoot(c.stateDir, nil)
+	if err := replay.bootstrapDelegateResources(); err != nil {
+		t.Fatalf("replay bootstrap with a read-only source transcript: %v", err)
+	}
+	t.Cleanup(func() { _ = replay.closeOwnedDelegateStore() })
+	if got := countRootCopies(); got != 1 {
+		t.Fatalf("root transfers after replay = %d, want exactly one", got)
 	}
 }
 
@@ -641,15 +702,22 @@ func TestDelegateAttention_EscalationCrashWindowSurvivesCascadeAndGrowth(t *test
 	if counts[attentionA] != 1 || counts[attentionB] != 1 {
 		t.Fatalf("root transfers after crash-window replay = %v, want exactly one of each", counts)
 	}
+	fresh.delegateController.mu.Lock()
+	_, resolvedA := fresh.delegateController.durable["dlg_child"].ResolvedAttention[attentionA]
+	_, resolvedB := fresh.delegateController.durable["dlg_child"].ResolvedAttention[attentionB]
+	fresh.delegateController.mu.Unlock()
+	if !resolvedA || !resolvedB {
+		t.Fatalf("crash-window journal resolutions = %t/%t, want both sources resolved", resolvedA, resolvedB)
+	}
 	childFold, err = readDelegateAttentionFold(childPath, "child-dlg_child")
 	if err != nil {
 		t.Fatalf("read child attention after replay: %v", err)
 	}
-	if got := childFold.resolutions[attentionA]; got != delegateAttentionDiscarded {
-		t.Fatalf("crash-window attention %s resolution = %q, want discarded", attentionA, got)
+	if _, resolved := childFold.resolutions[attentionA]; resolved {
+		t.Fatalf("crash-window attention %s left a transcript marker, want the journal resolution alone", attentionA)
 	}
-	if got := childFold.resolutions[attentionB]; got != delegateAttentionDiscarded {
-		t.Fatalf("late attention %s resolution = %q, want discarded", attentionB, got)
+	if _, resolved := childFold.resolutions[attentionB]; resolved {
+		t.Fatalf("late attention %s left a transcript marker, want the journal resolution alone", attentionB)
 	}
 	if fresh.delegateController.hasPendingDelegateAttention() {
 		t.Fatal("crash-window replay left fenced attention pending")
@@ -721,9 +789,6 @@ func TestDelegateAttentionWake_AncestorStopFenceParksUncoveredChild(t *testing.T
 		t.Fatalf("ReserveAttention after ancestor stop completed: %v", err)
 	}
 	attachDelegateAttentionTranscriptForTest(t, c, child, "dlg_child", attentionID)
-	if err := child.acceptDelegateAttention(reservation); err != nil {
-		t.Fatalf("accept attention after ancestor stop completed: %v", err)
-	}
 	if _, err := c.CommitStart(reservation); err != nil {
 		t.Fatalf("CommitStart after ancestor stop completed: %v", err)
 	}

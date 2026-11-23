@@ -72,3 +72,66 @@ func TestReconcileDelegateAttentionPreservesStateForDelegatesThatStillOwe(t *tes
 		t.Fatalf("reconcile did not rebuild the owed attention id: %v", got)
 	}
 }
+
+// The bootstrap rebuilds a pre-queue journal from the transcript, and a child
+// delegate's transcript keeps a presented report's message after the journal
+// resolved it. Backfilling that id would present a settled report a second time
+// on every restart, so only an id the journal never resolved is a pre-upgrade
+// row.
+func TestReconcileDelegateAttentionBackfillsOnlyUnjournaledRows(t *testing.T) {
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerIdle(t, c, "dlg_owed", "")
+	const (
+		presentedID = "delegate:presented"
+		legacyID    = "delegate:legacy-pending"
+	)
+	writer, err := transcript.NewWriter(transcriptPath(c.stateDir, "child-dlg_owed"), transcript.Header{SessionID: "child-dlg_owed"})
+	if err != nil {
+		t.Fatalf("create transcript: %v", err)
+	}
+	for _, attentionID := range []string{presentedID, legacyID} {
+		turn := schema.NewTurn(schema.TurnSteering, llm.User(attentionID))
+		turn.AttentionID = attentionID
+		if err := writer.AppendDurable(turn); err != nil {
+			t.Fatalf("append attention %s: %v", attentionID, err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close transcript: %v", err)
+	}
+	// The journal knows the presented row and that it settled; the legacy row was
+	// never journaled at all (a pre-queue journal).
+	c.mu.Lock()
+	if _, err := c.appendLocked(
+		attentionQueuedEvent("dlg_owed", presentedID, true),
+		attentionResolvedEvent("dlg_owed", presentedID),
+	); err != nil {
+		c.mu.Unlock()
+		t.Fatalf("seed journal: %v", err)
+	}
+	c.mu.Unlock()
+
+	if err := c.reconcileDelegateAttentionFromTranscripts(); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	aggregate := c.durable["dlg_owed"]
+	if _, ok := aggregate.ResolvedAttention[presentedID]; !ok {
+		t.Fatalf("resolved set = %v, want the presented id to stay resolved", aggregate.ResolvedAttention)
+	}
+	got := make(map[string]struct{}, len(aggregate.PendingAttention))
+	for _, row := range aggregate.PendingAttention {
+		got[row.AttentionID] = struct{}{}
+	}
+	if _, requeued := got[presentedID]; requeued {
+		t.Fatalf("bootstrap requeued a journal-resolved row: %v", aggregate.PendingAttention)
+	}
+	if _, ok := got[legacyID]; !ok {
+		t.Fatalf("bootstrap dropped a genuinely unjournaled legacy row: %v", aggregate.PendingAttention)
+	}
+	if !aggregate.NeedsAttention {
+		t.Fatal("the backfilled legacy row raised no NeedsAttention")
+	}
+}

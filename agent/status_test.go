@@ -280,10 +280,13 @@ func TestDelegateAttention_RestoreAndColdRead(t *testing.T) {
 			_, wakePublished := wakeIDs[attentionID]
 			wakeCount := len(wakeIDs)
 			restored.delegateController.mu.Unlock()
-			if aggregate == nil || aggregate.NeedsAttention != tt.wantAttention {
-				t.Fatalf("restored aggregate = %+v, want needs_attention=%t", aggregate, tt.wantAttention)
+			// A recovered owed generation keeps its queued trigger unheld until
+			// the run presents it, so the restored journal still owes attention.
+			wantRestoredAttention := tt.wantAttention || tt.owed
+			if aggregate == nil || aggregate.NeedsAttention != wantRestoredAttention {
+				t.Fatalf("restored aggregate = %+v, want needs_attention=%t", aggregate, wantRestoredAttention)
 			}
-			wantWake := tt.pending && !tt.owed
+			wantWake := wantRestoredAttention
 			wantWakeCount := 0
 			if wantWake {
 				wantWakeCount = 1

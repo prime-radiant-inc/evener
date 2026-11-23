@@ -1378,6 +1378,12 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 		// and resume restores them; see
 		// TestRootDelegateAttention_PendingContentSurvivesCompactionRestart),
 		// so a request after a compaction or a failed turn still presents it.
+		// An update the last turn showed whose journal resolution failed is
+		// withheld from the predicate below until the retry lands, or the
+		// drain would run a second turn for a message the model already read.
+		if flushErr := s.flushAwaitingDelegateAttentionResolutions(); flushErr != nil {
+			s.warnDelegateAttentionFailed(delegateAttentionResolveLabel, s.owningDelegateID, flushErr)
+		}
 		notificationTurnOwed := s.peekNotifications() > 0 || s.pendingRootDelegateAttention() || s.hasUndrivenDelegateUpdate(drivenUpdates)
 		if s.hasPendingStableSteering() && !notificationTurnOwed {
 			return lastResult, nil

@@ -1236,8 +1236,10 @@ func requireChildAttentionSettled(t *testing.T, child *subagent, requests func()
 	if len(fold.order) == 0 {
 		t.Fatal("child transcript holds no attention")
 	}
-	if pending := fold.pendingIDs(); len(pending) != 0 {
-		t.Fatalf("child attention still pending = %v, want every presented item consumed", pending)
+	// The store queue is the authority: every presented item must leave it.
+	rows := pendingAttentionRowsForTest(t, child.sess.delegateController, child.sess.owningDelegateID)
+	if len(rows) != 0 {
+		t.Fatalf("child attention still pending = %#v, want every presented item consumed", rows)
 	}
 	if got := len(requests()); got != wantRequests {
 		t.Fatalf("provider requests = %d, want %d: no generation re-presents consumed attention", got, wantRequests)

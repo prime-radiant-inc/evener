@@ -118,7 +118,7 @@ func TestDelegateAttentionDeliveryArmsTheRootRetryForANonRootReceiver(t *testing
 		receiver.attentionMu.Unlock()
 	})
 	attentionID := delegateAttentionID(delegateDeliveryID("dlg_lane", 1))
-	if err := c.wakeDeliveryReceiverAt(receiver, []string{attentionID}, 0); err != nil {
+	if err := c.wakeDeliveryReceiverAt(receiver, []string{attentionID}); err != nil {
 		t.Fatalf("wake the non-root receiver: %v", err)
 	}
 	if got := notifies.Load(); got != 1 {

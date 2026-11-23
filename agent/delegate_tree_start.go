@@ -31,25 +31,28 @@ type delegateStartReservation struct {
 }
 
 type delegateStartRecord struct {
-	receipt                  *delegateStartReservation
-	token                    uint64
-	delegateID               string
-	generation               uint64
-	trigger                  delegatestore.RunTrigger
-	capacityKind             delegateCapacityKind
-	ctx                      context.Context
-	cancel                   context.CancelFunc
-	create                   bool
-	descriptor               delegatestore.Descriptor
-	transcriptPath           string
-	worktreePath             string
-	runtime                  *Session
-	attentionID              string
-	attentionPendingIDs      []string
-	attentionAdmitted        bool
-	attentionResolutionReady bool
-	waiter                   *delegateInlineWaiter
-	done                     chan struct{}
+	receipt        *delegateStartReservation
+	token          uint64
+	delegateID     string
+	generation     uint64
+	trigger        delegatestore.RunTrigger
+	capacityKind   delegateCapacityKind
+	ctx            context.Context
+	cancel         context.CancelFunc
+	create         bool
+	descriptor     delegatestore.Descriptor
+	transcriptPath string
+	worktreePath   string
+	runtime        *Session
+	attentionID    string
+	// queueAttentionOnCommit marks a recovered legacy owed attention claim
+	// whose identity a pre-queue journal never carried. The start commit queues
+	// it in the same batch that opens the generation, so the journal governs
+	// its later resolution, hold, or transient-failure retry even though the
+	// transcript still carries the old consumed marker.
+	queueAttentionOnCommit bool
+	waiter                 *delegateInlineWaiter
+	done                   chan struct{}
 }
 
 type delegateStartCommit struct {
@@ -76,6 +79,11 @@ type delegateFinish struct {
 	// report this finish queues. It rides the finish rather than the delivery
 	// plan because a report queued behind an undelivered head gets no plan.
 	cause delegateCause
+	// holdAttentionID is the accepted trigger this run never presented. A stop
+	// finish holds it in the same atomic batch that records the outcome, so a
+	// journal that accepts the outcome cannot leave the row unheld for the next
+	// drive to relaunch. Empty means no hold belongs to this finish.
+	holdAttentionID string
 }
 
 type delegateCommittedStartFailureDisposition uint8
@@ -235,89 +243,21 @@ func (c *delegateTreeController) ReserveAttention(runtime *Session, attentionID 
 	if c.laneHandoffCoversLocked(delegateID) {
 		return nil, errDelegateTargetBusy
 	}
-	return c.reserveAttentionStartLocked(aggregate, attentionID, aggregate.Generation+1, runtime, nil, false)
-}
-
-func (c *delegateTreeController) attentionReservationIdentity(reservation *delegateStartReservation, runtime *Session) (string, uint64, error) {
-	c.mu.Lock()
-	record, err := c.reservationRecordLocked(reservation)
-	if err != nil || record.trigger != delegatestore.TriggerAttention || record.runtime != runtime || record.attentionID == "" {
-		c.mu.Unlock()
-		return "", 0, errDelegateTargetBusy
+	// The drive picked attentionID before taking this lock; a stop admitted
+	// since may have discarded or held the row. Reserve only a row the journal
+	// still lists unheld, so a stale selection cannot pin a dead identity.
+	if _, queued := c.delegateAttentionUnheldIDsLocked(delegateID)[attentionID]; !queued {
+		return nil, errDelegateTargetBusy
 	}
-	if record.ctx.Err() != nil || c.stopCoversLocked(record.delegateID) {
-		c.mu.Unlock()
-		return "", 0, errDelegateTargetBusy
-	}
-	aggregate := c.durable[record.delegateID]
-	if aggregate == nil || aggregate.Phase != delegatestore.PhaseIdle || !aggregate.Resumable || aggregate.Generation+1 != record.generation {
-		cancel := c.releaseReservationLocked(record)
-		c.mu.Unlock()
-		cancel()
-		return "", 0, errDelegateTargetBusy
-	}
-	if blocked, _ := c.ancestorFenceLocked(aggregate.Descriptor.ParentDelegateID); blocked {
-		cancel := c.releaseReservationLocked(record)
-		c.mu.Unlock()
-		cancel()
-		return "", 0, errDelegateTargetBusy
-	}
-	record.attentionAdmitted = true
-	c.evidenceVersion++
-	attentionID, generation := record.attentionID, record.generation
-	c.mu.Unlock()
-	return attentionID, generation, nil
-}
-
-func (c *delegateTreeController) reservedAttentionID(runtime *Session) string {
-	if c == nil || runtime == nil {
-		return ""
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	delegateID, _, err := c.runtimeOwnerLocked(runtime)
-	if err != nil || delegateID == "" {
-		return ""
-	}
-	for _, record := range c.reservations {
-		if record != nil && record.delegateID == delegateID && record.trigger == delegatestore.TriggerAttention && record.runtime == runtime {
-			return record.attentionID
-		}
-	}
-	return ""
-}
-
-func (c *delegateTreeController) prepareAttentionStart(reservation *delegateStartReservation, runtime *Session, pendingIDs []string) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	record, err := c.reservationRecordLocked(reservation)
-	if err != nil || record.trigger != delegatestore.TriggerAttention || record.runtime != runtime || record.attentionID == "" {
-		return errDelegateTargetBusy
-	}
-	if record.ctx.Err() != nil || c.stopCoversLocked(record.delegateID) {
-		return errDelegateTargetBusy
-	}
-	seen := make(map[string]struct{}, len(pendingIDs))
-	for _, attentionID := range pendingIDs {
-		if attentionID == "" || attentionID == record.attentionID {
-			return errDelegateTargetBusy
-		}
-		if _, duplicate := seen[attentionID]; duplicate {
-			return errDelegateTargetBusy
-		}
-		seen[attentionID] = struct{}{}
-	}
-	record.attentionPendingIDs = append(record.attentionPendingIDs[:0], pendingIDs...)
-	record.attentionResolutionReady = true
-	c.evidenceVersion++
-	return nil
+	return c.reserveAttentionStartLocked(aggregate, attentionID, aggregate.Generation+1, runtime)
 }
 
 // reserveOwedAttentionStart is bootstrap-only admission for a consumed marker
 // whose nonzero generation is absent from the delegate journal. The transcript
-// has already made the acceptance durable, so the reservation starts prepared
-// and CommitStart reuses the ordinary attention-clear/RunStarted batch.
-func (c *delegateTreeController) reserveOwedAttentionStart(delegateID, attentionID string, generation uint64, pendingIDs []string) (*delegateStartReservation, error) {
+// has already made the acceptance durable, so the reservation launches the
+// generation that presents the report; the store row is queued by the ordinary
+// drive when the resumed run settles.
+func (c *delegateTreeController) reserveOwedAttentionStart(delegateID, attentionID string, generation uint64) (*delegateStartReservation, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closing || delegateID == "" || attentionID == "" || generation == 0 || c.stop != nil || c.reclamationCoversLocked(delegateID) {
@@ -341,10 +281,29 @@ func (c *delegateTreeController) reserveOwedAttentionStart(delegateID, attention
 	if c.hasDeliveryWorkForOwnerLocked(delegateID) {
 		return nil, errDelegateTargetBusy
 	}
-	return c.reserveAttentionStartLocked(aggregate, attentionID, generation, nil, pendingIDs, true)
+	reservation, err := c.reserveAttentionStartLocked(aggregate, attentionID, generation, nil)
+	if err != nil {
+		return nil, err
+	}
+	if record, recordErr := c.reservationRecordLocked(reservation); recordErr == nil && record != nil {
+		record.queueAttentionOnCommit = !aggregateHasPendingAttention(aggregate, attentionID)
+	}
+	return reservation, nil
 }
 
-func (c *delegateTreeController) reserveAttentionStartLocked(aggregate *delegatestore.Aggregate, attentionID string, generation uint64, runtime *Session, pendingIDs []string, prepared bool) (*delegateStartReservation, error) {
+func aggregateHasPendingAttention(aggregate *delegatestore.Aggregate, attentionID string) bool {
+	if aggregate == nil {
+		return false
+	}
+	for _, row := range aggregate.PendingAttention {
+		if row.AttentionID == attentionID {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *delegateTreeController) reserveAttentionStartLocked(aggregate *delegatestore.Aggregate, attentionID string, generation uint64, runtime *Session) (*delegateStartReservation, error) {
 	if !c.reserveCapacityLocked(delegateDriveCapacity) {
 		return nil, errTreeAtCapacity
 	}
@@ -364,23 +323,20 @@ func (c *delegateTreeController) reserveAttentionStartLocked(aggregate *delegate
 		worktreePath:   worktreePath,
 	}
 	record := &delegateStartRecord{
-		receipt:                  reservation,
-		token:                    c.nextToken,
-		delegateID:               delegateID,
-		generation:               generation,
-		trigger:                  delegatestore.TriggerAttention,
-		capacityKind:             delegateDriveCapacity,
-		ctx:                      ctx,
-		cancel:                   cancel,
-		descriptor:               descriptor,
-		transcriptPath:           transcriptPath,
-		worktreePath:             worktreePath,
-		runtime:                  runtime,
-		attentionID:              attentionID,
-		attentionPendingIDs:      append([]string(nil), pendingIDs...),
-		attentionAdmitted:        prepared,
-		attentionResolutionReady: prepared,
-		done:                     make(chan struct{}),
+		receipt:        reservation,
+		token:          c.nextToken,
+		delegateID:     delegateID,
+		generation:     generation,
+		trigger:        delegatestore.TriggerAttention,
+		capacityKind:   delegateDriveCapacity,
+		ctx:            ctx,
+		cancel:         cancel,
+		descriptor:     descriptor,
+		transcriptPath: transcriptPath,
+		worktreePath:   worktreePath,
+		runtime:        runtime,
+		attentionID:    attentionID,
+		done:           make(chan struct{}),
 	}
 	c.reservations[record.token] = record
 	c.evidenceVersion++
@@ -757,10 +713,6 @@ func (c *delegateTreeController) commitStart(reservation *delegateStartReservati
 	if err != nil {
 		return delegateStartCommit{}, errDelegateTargetBusy
 	}
-	if record.trigger == delegatestore.TriggerAttention && !record.attentionResolutionReady {
-		cancel = c.releaseReservationLocked(record)
-		return delegateStartCommit{}, errDelegateTargetBusy
-	}
 	if record.ctx.Err() != nil || c.stopCoversLocked(record.delegateID) || c.closing && record.trigger != delegatestore.TriggerAttention {
 		cancel = c.releaseReservationLocked(record)
 		return delegateStartCommit{}, errDelegateTargetBusy
@@ -800,18 +752,15 @@ func (c *delegateTreeController) commitStart(reservation *delegateStartReservati
 	}
 	startedAt := c.now()
 	events := make([]delegatestore.Event, 0, 2)
-	if record.trigger == delegatestore.TriggerAttention {
-		// The start's queue replacement rides this batch, before the run starts:
-		// the generation carries exactly the transcript rows the replacement
-		// leaves queued.
-		events = append(events, c.attentionReplacementEventsLocked(record.delegateID, record.attentionPendingIDs)...)
-	}
 	events = append(events, delegateControllerRunStartedEvent(
 		record.delegateID,
 		record.generation,
 		record.trigger,
 		startedAt,
 	))
+	if record.queueAttentionOnCommit && record.attentionID != "" {
+		events = append(events, attentionQueuedEvent(record.delegateID, record.attentionID, true))
+	}
 	if record.create {
 		events = append([]delegatestore.Event{{
 			Kind:       delegatestore.EventDelegateCreated,
@@ -826,12 +775,6 @@ func (c *delegateTreeController) commitStart(reservation *delegateStartReservati
 		}
 		cancel = c.releaseReservationLocked(record)
 		return delegateStartCommit{}, err
-	}
-	if record.trigger == delegatestore.TriggerAttention {
-		// The replacement rode the append that just succeeded. If it consumed
-		// the queue's last row, the transient retry state has nothing left to
-		// describe and must not leak per delegate.
-		c.clearTransientAttentionIfResolvedLocked(record.delegateID)
 	}
 	delete(c.reservations, record.token)
 	if record.done != nil {

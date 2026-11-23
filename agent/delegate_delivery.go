@@ -61,11 +61,12 @@ type delegateDeliveryAdmission struct {
 	cold       bool
 	inline     bool
 	retryable  bool
-	// wakeGeneration is the owner's settled generation when the receipt was
-	// admitted. The acknowledgment's release carries it instead of sampling a
-	// newer one where the wake is journaled, so a stop that settles in between
-	// stays newer evidence than the delivery and keeps its quiet.
-	wakeGeneration uint64
+	// settledGeneration is the owner's settled generation sampled when the
+	// claim behind this admission was created. Its acknowledgment releases only
+	// the holds at or below it: a stop that settled a newer generation while the
+	// delivery was deferred keeps the hold it stamped.
+	settledGeneration    uint64
+	hasSettledGeneration bool
 	// callerCommitted marks an inline admission whose result the caller
 	// already persisted in its own tool round. Its store acknowledgment can
 	// still be retried after the reply is gone; nothing is lost.
@@ -98,12 +99,13 @@ type delegateDeliveryClaim struct {
 	ownerID    string
 	waiter     *delegateInlineWaiter
 	cold       bool
-	// wakeGeneration is the owner's settled generation when the claim was
-	// created. A deferred claim can wait a whole owner turn before
-	// BeginDelivery admits it, and a stop that settles while it waits is newer
-	// evidence than the delivery, so the acknowledgment's release carries this
-	// sample rather than one taken at admission (#7226).
-	wakeGeneration uint64
+	// settledGeneration is the owner's settled generation at claim creation.
+	// A deferred claim can wait a whole owner turn before its acknowledgment
+	// lands, and a stop inside that window stamps a hold on a row this wake must
+	// not release. hasSettledGeneration is false when no owner aggregate exists
+	// (the root receiver), whose acknowledgment releases every hold as before.
+	settledGeneration    uint64
+	hasSettledGeneration bool
 	// held marks a plan its receiver deferred to its next round because it
 	// was mid-turn.
 	held bool
@@ -296,27 +298,19 @@ func (c *delegateTreeController) BeginDelivery(plan delegateDeliveryPlan) (_ del
 	}
 	delete(c.deliveryClaims, plan.deliveryID)
 	cold := claim.cold
-	admit := func(claimToken delegateDeliveryClaimToken) *delegateDeliveryAdmission {
+	admit := func(source *delegateDeliveryClaim, claimToken delegateDeliveryClaimToken) *delegateDeliveryAdmission {
 		c.nextToken++
 		inline := plan.waiter != nil || plan.callerCommitted
 		receipt := &delegateDeliveryAdmission{
-			token:           delegateDeliveryToken{processID: c.nextToken, deliveryID: claimToken.deliveryID},
-			delegateID:      plan.delegateID,
-			ownerID:         plan.ownerDelegateID,
-			claim:           claimToken,
-			cold:            cold,
-			inline:          inline,
-			callerCommitted: plan.callerCommitted,
-		}
-		// Only a non-inline acknowledgment publishes a wake to the owner, and
-		// only the plan's own claim is admitted non-inline: a carried admission
-		// exists only on an inline reply, which carries the held head to the
-		// caller already waiting on it. The release therefore carries the
-		// generation the claim was created in rather than one read when the
-		// acknowledgment lands, so a stop that settled while a deferred claim
-		// waited is not cleared (#7226).
-		if !inline {
-			receipt.wakeGeneration = claim.wakeGeneration
+			token:                delegateDeliveryToken{processID: c.nextToken, deliveryID: claimToken.deliveryID},
+			delegateID:           plan.delegateID,
+			ownerID:              plan.ownerDelegateID,
+			claim:                claimToken,
+			cold:                 cold,
+			inline:               inline,
+			callerCommitted:      plan.callerCommitted,
+			settledGeneration:    source.settledGeneration,
+			hasSettledGeneration: source.hasSettledGeneration,
 		}
 		c.deliveries[receipt.token.processID] = receipt
 		return receipt
@@ -326,13 +320,13 @@ func (c *delegateTreeController) BeginDelivery(plan delegateDeliveryPlan) (_ del
 		// The held head is admitted under the receiver's own claim token, so
 		// a retry of it is planned as that delivery's. The deliveries behind
 		// it were never planned, so each gets a claim token of its own.
-		admit(plan.heldClaim.token).heldClaim = plan.heldClaim
+		admit(plan.heldClaim, plan.heldClaim.token).heldClaim = plan.heldClaim
 		for _, behind := range plan.carried[1:] {
 			c.nextToken++
-			admit(delegateDeliveryClaimToken{processID: c.nextToken, deliveryID: behind.DeliveryID})
+			admit(claim, delegateDeliveryClaimToken{processID: c.nextToken, deliveryID: behind.DeliveryID})
 		}
 	}
-	token := admit(plan.claim).token
+	token := admit(claim, plan.claim).token
 	c.evidenceVersion++
 	return token, true, nil
 }
@@ -347,6 +341,27 @@ func (c *delegateTreeController) deliveryStoppedLocked(delegateID, ownerID strin
 		return true
 	}
 	return c.stopCoversLocked(delegateID) || c.stopCoversLocked(ownerID)
+}
+
+// ownerSettledGenerationLocked returns the owner's last settled generation: the
+// open run's generation is not settled yet, so the sample is the one before it.
+// This is the release cap a delivery acknowledgment may carry. An owner with no
+// aggregate (the root receiver) has no journal holds to bound.
+func (c *delegateTreeController) ownerSettledGenerationLocked(ownerID string) (uint64, bool) {
+	if ownerID == "" {
+		return 0, false
+	}
+	aggregate := c.durable[ownerID]
+	if aggregate == nil {
+		return 0, false
+	}
+	if !aggregate.CurrentRunOpen {
+		return aggregate.Generation, true
+	}
+	if aggregate.Generation == 0 {
+		return 0, true
+	}
+	return aggregate.Generation - 1, true
 }
 
 // restoreHeldClaimLocked gives a held delivery a reply took over back to its
@@ -378,10 +393,6 @@ type delegateDeliveryAck struct {
 	ownerID      string
 	delegateID   string
 	ownerChanged bool
-	// wakeGeneration is the claim-creation sample the acknowledgment's release
-	// carries. See delegateDeliveryClaim.wakeGeneration for why it is not
-	// sampled here (#7226).
-	wakeGeneration uint64
 }
 
 // completeDeliveryLocked is CompleteDelivery's body under the caller's c.mu.
@@ -396,7 +407,6 @@ func (c *delegateTreeController) completeDeliveryLocked(token delegateDeliveryTo
 	}
 	updateIDs = append(updateIDs, ack.delegateID)
 	plans := c.deliveryAckPlansLocked(updateIDs, []string{ack.ownerID})
-	plans.ackWakeGeneration = ack.wakeGeneration
 	return plans, nil
 }
 
@@ -447,7 +457,15 @@ func (c *delegateTreeController) completeDeliveryAckLocked(token delegateDeliver
 	if !receipt.inline && receipt.ownerID != "" && !c.delegateAttentionCommittedLocked(receipt.ownerID, attentionID) {
 		// The queue event and the acknowledgment ride one batch, so the wake the
 		// receipt publishes is durable with the delivery that published it.
-		events = append(events, attentionQueuedEvent(receipt.ownerID, attentionID, true))
+		queued := attentionQueuedEvent(receipt.ownerID, attentionID, true)
+		if receipt.hasSettledGeneration {
+			// Bound the release to the settled generation the claim sampled: a
+			// stop that quieted a row after this delivery was deferred stamped a
+			// newer generation, and that hold must outlive this older wake.
+			through := receipt.settledGeneration
+			queued.AttentionQueued.ReleaseHoldsThrough = &through
+		}
+		events = append(events, queued)
 		ownerChanged = c.delegateAttentionWillRaiseLocked(receipt.ownerID)
 		committedWake = true
 	}
@@ -458,19 +476,11 @@ func (c *delegateTreeController) completeDeliveryAckLocked(token delegateDeliver
 			DeliveryID: token.deliveryID,
 		},
 	})
-	// The wake this acknowledgment publishes is newer evidence than a settled
-	// user-stop quiet, and the shared funnel journals that release in the same
-	// batch. A cold receiver takes this same path, so no delivery branch can
-	// publish a wake that omits the release a later arm would otherwise skip:
-	// the arm sees this wake already noted, so it appends nothing, and without
-	// the journaled release an idle reclaim rebuilds the quiet this delivery
-	// ended. Only a receipt that notes a wake releases one, so the funnel is
-	// gated on the same condition the note below is.
-	wakeOwner := ""
-	if !receipt.inline {
-		wakeOwner = receipt.ownerID
-	}
-	wakeGeneration, err := c.appendAttentionWakeAtLocked(wakeOwner, receipt.wakeGeneration, events...)
+	// The wake this acknowledgment publishes supersedes the user-stop holds its
+	// claim sampled in the same store Apply. A fresh receipt has no sample and
+	// releases every hold; a deferred one releases only what its claim-time
+	// generation covers, so a stop that landed while it waited keeps its hold.
+	_, err := c.appendLocked(events...)
 	if err != nil {
 		receipt.retryable = true
 		c.evidenceVersion++
@@ -490,11 +500,10 @@ func (c *delegateTreeController) completeDeliveryAckLocked(token delegateDeliver
 	}
 	c.evidenceVersion++
 	return delegateDeliveryAck{
-		planned:        true,
-		ownerID:        receipt.ownerID,
-		delegateID:     receipt.delegateID,
-		ownerChanged:   ownerChanged,
-		wakeGeneration: wakeGeneration,
+		planned:      true,
+		ownerID:      receipt.ownerID,
+		delegateID:   receipt.delegateID,
+		ownerChanged: ownerChanged,
 	}, nil
 }
 
@@ -762,12 +771,7 @@ func deliverDelegatePacket(plan delegateDeliveryPlan, receiver delegateDeliveryR
 	if err != nil {
 		return plans, err
 	}
-	// plans carries the generation the acknowledgment's release superseded,
-	// sampled when that delivery's claim was created, not where that release was
-	// journaled. The callback releases against that sample rather than reading
-	// the generation again, so a stop that settles between the acknowledgment and
-	// this wake keeps its quiet.
-	return plans, plan.controller.wakeDeliveryReceiverAt(receiver, []string{attentionID}, plans.ackWakeGeneration)
+	return plans, plan.controller.wakeDeliveryReceiverAt(receiver, []string{attentionID})
 }
 
 // replanStaleDelivery re-plans a delivery whose claim is gone but whose durable
@@ -796,12 +800,29 @@ func (c *delegateTreeController) replanStaleDelivery(plan delegateDeliveryPlan) 
 
 func delegateAttentionID(deliveryID string) string { return "delegate:" + deliveryID }
 
+// delegateAttentionDeliveryBacked reports whether attentionID names a
+// delegate delivery, either a generation's report or an update. The
+// delivery's own acknowledgment publishes that queue row in the same store
+// Apply, so the append's queue rider must not race it: a store hiccup there
+// must not turn a durable notification into an abandoned delivery whose ack
+// still has to land (#5564).
+func delegateAttentionDeliveryBacked(attentionID string) bool {
+	deliveryID, ok := strings.CutPrefix(attentionID, "delegate:")
+	if !ok {
+		return false
+	}
+	if delegatestore.IsUpdateDeliveryID(deliveryID) {
+		return true
+	}
+	delegateID, _, ok := strings.Cut(deliveryID, "/delivery/")
+	return ok && delegateID != ""
+}
+
 // isDelegateUpdateAttentionID reports whether attentionID names a delegate
-// update's delivery rather than a generation's report. A failed presentation
-// start re-delivers a consumed row under a reopened identity, so the reopen
-// chain is stripped first: a reopened update row must keep the update's
-// classification, or the finalization drain stops waking a turn for the
-// child's question.
+// update's delivery rather than a generation's report. A pre-upgrade transcript
+// can carry a consumed row under a reopened identity, so the reopen chain is
+// stripped first: a reopened update row must keep the update's classification,
+// or the finalization drain stops waking a turn for the child's question.
 func isDelegateUpdateAttentionID(attentionID string) bool {
 	deliveryID, ok := strings.CutPrefix(attentionID, delegateAttentionID(""))
 	return ok && delegatestore.IsUpdateDeliveryID(stripDelegateAttentionReopenSegments(deliveryID))
@@ -892,13 +913,15 @@ func (c *delegateTreeController) newHeadDeliveryPlanLocked(delegateID, deliveryI
 	if head.Packet.Kind != delegatestore.PacketUpdate {
 		waiter = c.claimDelegateWaiterLocked(delegateID, head.Generation)
 	}
+	settledGeneration, hasSettledGeneration := c.ownerSettledGenerationLocked(head.OwnerDelegateID)
 	claim := &delegateDeliveryClaim{
-		token:          claimToken,
-		delegateID:     delegateID,
-		ownerID:        head.OwnerDelegateID,
-		waiter:         waiter,
-		cold:           cold,
-		wakeGeneration: c.attentionWakeGenerationLocked(head.OwnerDelegateID),
+		token:                claimToken,
+		delegateID:           delegateID,
+		ownerID:              head.OwnerDelegateID,
+		waiter:               waiter,
+		cold:                 cold,
+		settledGeneration:    settledGeneration,
+		hasSettledGeneration: hasSettledGeneration,
 	}
 	c.deliveryClaims[deliveryID] = claim
 	if len(carried) > 0 {
@@ -975,11 +998,10 @@ func (c *delegateTreeController) hasDeliveryWorkForOwnerLocked(ownerDelegateID s
 
 // hasDeliveryWorkForOwnerBlockingStartLocked is hasDeliveryWorkForOwnerLocked
 // for a start admission. A claim the transient delivery arm kept for its retry
-// is deferred delivery, not work in flight: counting it would release the very
-// attention start whose reservation deferred the delivery, after
-// acceptDelegateAttention already consumed its trigger. The marker lives only
-// on the claim and dies with it — every admission deletes the claim — so it
-// can never suppress a later real delivery-work check.
+// is deferred delivery, not work in flight: counting it would abort the very
+// attention start that deferred the delivery. The marker lives only on the
+// claim and dies with it — every admission deletes the claim — so it can never
+// suppress a later real delivery-work check.
 func (c *delegateTreeController) hasDeliveryWorkForOwnerBlockingStartLocked(ownerDelegateID string) bool {
 	return c.deliveryWorkForOwnerLocked(ownerDelegateID, true)
 }

@@ -32,15 +32,6 @@ func (c *delegateTreeController) noteDelegateAttentionLockedForTest(delegateID, 
 	return true
 }
 
-func (c *delegateTreeController) replaceDelegateAttentionForTest(delegateID string, attentionIDs []string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	events := c.attentionReplacementEventsLocked(delegateID, attentionIDs)
-	if len(events) != 0 {
-		_, _ = c.appendLocked(events...)
-	}
-}
-
 // attentionWakeIDsForTest reads delegateID's durable queue IDs with the
 // controller lock held.
 func (c *delegateTreeController) attentionWakeIDsForTest(delegateID string) map[string]struct{} {

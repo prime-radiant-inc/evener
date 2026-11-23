@@ -380,13 +380,17 @@ func (c *delegateTreeController) FinishGeneration(lease delegateLease, finish de
 // FinishNoAction is the sole authority for a packetless completed attention
 // generation. Its exact ordinary claim and retained fallback were fenced by
 // prepareNoAction before process-local terminal state publication.
-func (c *delegateTreeController) FinishNoAction(claim *delegateSettlementClaim) (delegateMutationPlans, error) {
+// holdAttentionID rides the fallback's finish: a stop that superseded the
+// no-action completion still holds the trigger in the same batch as the
+// outcome that quieted it.
+func (c *delegateTreeController) FinishNoAction(claim *delegateSettlementClaim, holdAttentionID string) (delegateMutationPlans, error) {
 	c.mu.Lock()
 	noAction := c.reduceNoActionFinishIntent(finishIntent{claim: claim})
 	if noAction.err != nil {
 		c.mu.Unlock()
 		return delegateMutationPlans{}, noAction.err
 	}
+	noAction.finish.holdAttentionID = holdAttentionID
 	plans, cancel, err := c.finishGenerationLocked(finishIntent{
 		lease:              claim.lease,
 		finish:             noAction.finish,

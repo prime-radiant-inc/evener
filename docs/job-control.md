@@ -1816,25 +1816,33 @@ Rules:
   its own report is accepted, a later nested report waits for the generation's
   end unless an update's turn presents it first.
 - Child-delegate pending attention is a durable queue in the delegate journal,
-  keyed by exact private ID; the queue and `NeedsAttention` move in the same
-  `Apply`. The rendered message is still appended and fsynced to the receiver
-  transcript before the wake, and receiver transcripts remain the durable rail
-  for root and shell/watch attention. A successful notification turn appends
-  and fsyncs the matching consumed marker and resolves the queue row; failure
-  leaves it pending for retry. Restart re-arms those IDs provider-free, and
-  job-tree drain includes them until consumed or discarded.
+  keyed by exact private ID, and the queue is the only authority for what a
+  child still owes: the queue and `NeedsAttention` move in the same `Apply`,
+  and `NeedsAttention` counts only unheld rows. The rendered message is still
+  appended and fsynced to the receiver transcript before the wake, and receiver
+  transcripts remain the durable rail for root and shell/watch attention. A
+  child-delegate generation is never consumed before it commits and launches:
+  the row stays queued until a settled model request presents it, then one
+  atomic `Apply` removes it and republishes `NeedsAttention`. Restart re-arms
+  those IDs provider-free, and job-tree drain includes them until consumed or
+  held.
 - If an owner is permanently unreachable, unresolved attention transfers
   idempotently to the nearest reachable ancestor only after the ancestor append
-  fsyncs. A stopping subtree durably discards its own unresolved attention.
+  fsyncs. A stopping subtree durably discards rows no generation accepted, and a
+  stop that lands on a generation's accepted-but-unpresented row quiet-stamps it
+  with `held_through` in the same `Apply` that recomputes `NeedsAttention`: the
+  queue stays durable but quiet, the root wires idle, and a fresh committed wake
+  or an explicit send releases the hold.
 - If the owner is mid-turn or awaiting an `ask_user` reply, attention waits for
   the next safe boundary. Wakes coalesce, but committed entries do not vanish.
 - Attention a turn already showed the model is consumed with that turn. When a
   settled model request of a root turn, or of a delegate turn running in its
-  generation, carried an attention entry, the turn's successful end appends the
-  consumed marker, so the entry starts no further turn or attention generation.
-  This holds whether the attention was armed before the turn began or during
-  it. Attention appended after the turn's last request was built keeps its own
-  wake.
+  generation, carried an attention entry, the turn's end resolves it: a child
+  delegate's row is removed directly from the delegate journal, and a root turn
+  appends the consumed marker to the root transcript, so the entry starts no
+  further turn or attention generation. This holds whether the attention was
+  armed before the turn began or during it. Attention appended after the turn's
+  last request was built keeps its own wake.
 - Delivery distinguishes same-run finalization from a post-idle successor
   wake: a child report already pending while the receiving run is still
   finalizing is processed within that run, while one arriving after the

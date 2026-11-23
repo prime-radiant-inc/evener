@@ -196,9 +196,6 @@ func startDelegateAttentionEvidenceGenerationFor(t *testing.T, c *delegateTreeCo
 	if err != nil {
 		t.Fatalf("ReserveAttention: %v", err)
 	}
-	if err := c.prepareAttentionStart(reservation, runtime, nil); err != nil {
-		t.Fatalf("prepareAttentionStart: %v", err)
-	}
 	started, err := c.CommitStart(reservation)
 	if err != nil {
 		t.Fatalf("CommitStart attention: %v", err)
