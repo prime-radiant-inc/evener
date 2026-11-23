@@ -4,12 +4,19 @@ import assert from "node:assert/strict";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { Driver } from "../skillguard/run.mjs";
-import { evaluate, navigateTo, queryAccessibilityTree, REFUSED_BUTTON_SELECTOR } from "../browserGuardCdp.mjs";
+import {
+  evaluate,
+  navigateTo,
+  queryAccessibilityTree,
+  REFUSED_BUTTON_SELECTOR,
+  withTimeout,
+} from "../browserGuardCdp.mjs";
 import { revealControlStep, revealReadyExpr } from "./revealControl.mjs";
 import { pressRowExpr } from "./pressRow.mjs";
 import { retainsNewerReadingPoint } from "./releaseRetained.mjs";
 import { attentionJourney } from "./attention.mjs";
 import { isHistoryReadMethod } from "../lib/historyMethods.mjs";
+import { readerWheelDelta, repositionReader } from "./nativeWheel.mjs";
 
 const fixture = JSON.parse(readFileSync(0, "utf8"));
 const driver = new Driver(fixture);
@@ -60,6 +67,13 @@ const scopeRefs = (testid) => `JSON.stringify([...document.querySelectorAll('[da
 const wait = (expression, label, options = {}) => {
   new Function(`return (${expression})`);
   return driver.waitPage(expression, { label, ...options });
+};
+// A repositioning stage may spend only the hard slice of the retry budget that
+// remains to it. Pass that slice as both the floor and the cap: load-derived
+// widening still applies to every other wait, but cannot stretch this one.
+const hardWait = (expression, label, remaining) => {
+  const timeoutMs = remaining();
+  return wait(expression, label, { timeoutMs, hardTimeoutMs: timeoutMs });
 };
 const read = (expression) => evaluate(driver.send, expression);
 const scope = (ref) => `${inspectorRoot} [data-scope-ref=${q(ref)}]`;
@@ -276,8 +290,18 @@ async function settledReadingContinuity(before, portExpr, label) {
   })()`, `${label}, actual source reading position finishes restoration`);
 }
 
-async function nativeReaderWheel(portExpr, deltaY) {
-  const point = await wait(`(() => {
+// A repositioning stage passes `remaining`, and every wait and dispatch is
+// hard-capped to the slice it returns. The standalone interruption probe
+// passes nothing and keeps the driver's load-scaled waits.
+async function nativeReaderWheel(portExpr, deltaY, { remaining } = {}) {
+  const stageWait = remaining
+    ? (expression, label) => hardWait(expression, label, remaining)
+    : (expression, label) => wait(expression, label);
+  const dispatch = (params, label) =>
+    remaining
+      ? withTimeout(driver.send("Input.dispatchMouseEvent", params), remaining(), label)
+      : driver.send("Input.dispatchMouseEvent", params);
+  const point = await stageWait(`(() => {
     const port = ${portExpr};
     if (!port || port.clientWidth <= 0 || port.clientHeight <= 0) return null;
     const r = port.getBoundingClientRect();
@@ -299,15 +323,16 @@ async function nativeReaderWheel(portExpr, deltaY) {
       portBox:box(port), intendedAtMeasure:port.contains(target), viewport:innerWidth,
       hitSurface:target?.closest('[data-pane-scaffold]')?.dataset.paneScaffold };
   })()`, "native wheel midpoint actually hits its intended reader");
+  const delta = typeof deltaY === "function" ? deltaY(point) : deltaY;
   const observation = { kind:"wheel-target", point };
   readingPoints.push(observation);
-  await driver.send("Input.dispatchMouseEvent", { type:"mouseMoved", x:point.x, y:point.y });
-  await driver.send("Input.dispatchMouseEvent", { type:"mouseWheel", deltaX:0, deltaY, x:point.x, y:point.y });
-  const observed = await wait(`window.__cascadeReaderWheels[${point.eventIndex}]`, "native wheel event reaches the page");
+  await dispatch({ type:"mouseMoved", x:point.x, y:point.y }, "native wheel mouseMoved");
+  await dispatch({ type:"mouseWheel", deltaX:0, deltaY:delta, x:point.x, y:point.y }, "native wheel dispatch");
+  const observed = await stageWait(`window.__cascadeReaderWheels[${point.eventIndex}]`, "native wheel event reaches the page");
   observation.observed = observed;
   assert.equal(observed.trusted, true, "reader movement uses genuine native wheel input");
   assert.equal(observed.intended, true, "native wheel targets its intended reader");
-  await wait(`(${portExpr})?.scrollTop !== ${point.scrollTop}`, "native wheel actually moves its intended reader");
+  await stageWait(`(${portExpr})?.scrollTop !== ${point.scrollTop}`, "native wheel actually moves its intended reader");
 }
 
 // The interruption and reflow measurements need a reading point inside a tall
@@ -318,13 +343,15 @@ function insideUsefulTallEntry(point) {
 }
 
 async function readInsideTallEntry(portExpr, label) {
-  await nativeReaderWheel(portExpr, -900);
-  return wait(`(() => {
-    const point = ${readingPointExpr(portExpr)};
-    window.__cascadeReadingAttempt = { label:${q(label)}, point };
-    ${insideUsefulTallEntry.toString()}
-    return point?.useful && insideUsefulTallEntry(point) ? point : null;
-  })()`, `${label}, native wheel selects useful content inside a tall entry`);
+  return repositionReader({
+    wheel: (remaining) => nativeReaderWheel(portExpr, readerWheelDelta, { remaining }),
+    tallEntry: (remaining, attempt) => hardWait(`(() => {
+      const point = ${readingPointExpr(portExpr)};
+      window.__cascadeReadingAttempt = { label:${q(label)}, attempt:${attempt}, point };
+      ${insideUsefulTallEntry.toString()}
+      return point?.useful && insideUsefulTallEntry(point) ? point : null;
+    })()`, `${label}, native wheel selects useful content inside a tall entry`, remaining),
+  });
 }
 
 async function widthOnlyReflow(portExpr, width, height, label) {
