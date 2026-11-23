@@ -20,6 +20,7 @@ import {
   ListRow,
   RadioGroup,
   Sheet,
+  useFocusRehome,
 } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import styles from "./MobileSettingRows.module.css";
@@ -223,6 +224,11 @@ export function MobileSettingRows({
   const [openPicker, setOpenPicker] = useState<PickerName | null>(null);
   const [pluginDraft, setPluginDraft] = useState<PluginSelectionState>(pluginSelection);
   const lastTriggerRef = useRef<HTMLButtonElement | null>(null);
+  // A Connect that turns pending disables the button that held the keyboard,
+  // and the browser then drops focus to <body> while the sheet stays open.
+  // Keep the keyboard inside the sheet's host list.
+  const hostSheetBodyRef = useRef<HTMLDivElement | null>(null);
+  useFocusRehome(hostSheetBodyRef);
 
   useEffect(() => {
     if (openPicker !== null || lastTriggerRef.current === null) return;
@@ -321,7 +327,7 @@ export function MobileSettingRows({
 
       {hasHostPicker && (
         <Sheet open={openPicker === "Host"} side="bottom" onClose={closePicker} title="Host">
-          <div className={CLASS.sheetBody}>
+          <div className={CLASS.sheetBody} ref={hostSheetBodyRef}>
             <SpawnHostSelection
               options={hostOptions}
               value={hostValue}

@@ -1,6 +1,6 @@
 import type { PluginPreviewResponse } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { expect, test, vi } from "vitest";
 import { readModuleCss } from "../../styles/cssBlock";
@@ -157,6 +157,29 @@ test("the host row opens the one host list in a sheet", async () => {
   await user.click(within(reopened).getByRole("button", { name: "Connect host" }));
   expect(onConnectHost).toHaveBeenCalledTimes(1);
   expect(screen.queryByRole("dialog", { name: "Host" })).toBeNull();
+});
+
+// Connect disables its own button while the attach is in flight. Focus must
+// stay in the open sheet, where Escape and Tab still belong to it.
+test("a pending Connect keeps focus inside the open host sheet", async () => {
+  const user = userEvent.setup();
+  const hostOptions = [
+    { id: "local", label: "magic-kingdom (hub)", online: true },
+    { id: "offline-host", label: "offline-host", online: false },
+  ];
+  const hostLabel = "magic-kingdom (hub)";
+  const { rerender } = render(<MobileSettingRows {...props({ hostOptions, hostLabel })} />);
+
+  await user.click(screen.getByRole("button", { name: `Host: ${hostLabel}` }));
+  const dialog = await screen.findByRole("dialog", { name: "Host" });
+  const connect = within(dialog).getByRole("button", { name: "Connect offline-host" });
+  act(() => connect.focus());
+  expect(document.activeElement).toBe(connect);
+
+  rerender(<MobileSettingRows {...props({ hostOptions, hostLabel, connectingHosts: new Set(["offline-host"]) })} />);
+
+  expect(document.activeElement).not.toBe(connect);
+  expect(dialog.contains(document.activeElement)).toBe(true);
 });
 
 test("option sheets commit a selection and return focus to the row", async () => {
