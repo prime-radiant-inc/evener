@@ -8,14 +8,10 @@ import type { NavigationSessionSummary } from "@evener/appwire-client";
 // session. Written as an exclusion list rather than
 // `=== "session"` so an unrecognized future kind still gets the action rather
 // than silently losing it.
-export const NESTED_KINDS: ReadonlySet<string> = new Set(["subagent", "fork"]);
-
-export function isNestedSessionKind(kind: string): boolean {
-  return NESTED_KINDS.has(kind);
-}
+const NESTED_KINDS: ReadonlySet<string> = new Set(["subagent", "fork"]);
 
 export function isTopLevelSession(session: Pick<NavigationSessionSummary, "kind">): boolean {
-  return !isNestedSessionKind(session.kind);
+  return !NESTED_KINDS.has(session.kind);
 }
 
 export function isConfirmedCrashedSession(

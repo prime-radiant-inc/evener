@@ -2,7 +2,7 @@
 // navigation store remains untouched; an operation is removed only after the
 // caller has reloaded the affected navigation resources.
 import type { RailPinSection, RailProject, RailSession } from "./railNodes";
-import { isNestedSessionKind } from "./sessionKind";
+import { isTopLevelSession } from "./sessionKind";
 
 export interface RailPinSummary {
   id: string;
@@ -85,7 +85,7 @@ export function buildPinSourceIndex(resources: RailResources, options?: PinSourc
   const rowsByIdentity = new Map<string, RailSession>();
   const add = (rows: readonly RailSession[]) => {
     for (const row of rows) {
-      if (!isNestedSessionKind(row.kind)) rowsByIdentity.set(identity(row), row);
+      if (isTopLevelSession(row)) rowsByIdentity.set(identity(row), row);
     }
   };
   const addProjects = (projects: readonly RailProject[]) => {
@@ -129,7 +129,7 @@ function applySessionPin(
   pinSources: PinSourceIndex,
 ): RailResources {
   const source =
-    op.source.ref === op.ref && !isNestedSessionKind(op.source.kind)
+    op.source.ref === op.ref && isTopLevelSession(op.source)
       ? pinSources.rowsByIdentity.get(identity(op.source))
       : undefined;
   if (!source) return resources;

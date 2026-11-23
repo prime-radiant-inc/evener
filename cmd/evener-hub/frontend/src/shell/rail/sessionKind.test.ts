@@ -1,11 +1,10 @@
 import { describe, expect, test } from "vitest";
-import { isConfirmedCrashedSession, isNestedSessionKind, isTopLevelSession } from "./sessionKind";
+import { isConfirmedCrashedSession, isTopLevelSession } from "./sessionKind";
 
 describe("nested session kinds", () => {
   test("names exactly the two kinds that are never top-level", () => {
-    expect(isNestedSessionKind("subagent")).toBe(true);
-    expect(isNestedSessionKind("fork")).toBe(true);
-    expect(isNestedSessionKind("session")).toBe(false);
+    expect(isTopLevelSession({ kind: "subagent" })).toBe(false);
+    expect(isTopLevelSession({ kind: "fork" })).toBe(false);
     expect(isTopLevelSession({ kind: "session" })).toBe(true);
   });
 });

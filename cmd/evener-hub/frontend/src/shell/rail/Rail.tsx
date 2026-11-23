@@ -346,19 +346,6 @@ interface PinnedRailSectionProps extends Omit<RailSectionProps, "title" | "nodes
   projectRetryCallback: (key: string) => () => void;
 }
 function PinnedRailSection({ section, open, onToggleOpen, onRename, onDelete, ...rest }: PinnedRailSectionProps) {
-  const nodes = useMemo(
-    () => [
-      ...sessionNodes(section.sessions ?? []),
-      ...pinSectionOverflowNode(
-        `pinsection:${section.id}`,
-        section.id,
-        section.remaining ?? 0,
-        section.offset ?? section.sessions.length,
-        section.limit ?? 50,
-      ),
-    ],
-    [section.sessions, section.id, section.remaining, section.offset, section.limit],
-  );
   return (
     <RailSectionShell
       label={section.name}
@@ -373,20 +360,25 @@ function PinnedRailSection({ section, open, onToggleOpen, onRename, onDelete, ..
           ]}
         />
       }
-      nodes={nodes}
+      nodes={
+        open
+          ? [
+              ...sessionNodes(section.sessions ?? []),
+              ...pinSectionOverflowNode(
+                `pinsection:${section.id}`,
+                section.id,
+                section.remaining ?? 0,
+                section.offset ?? section.sessions.length,
+                section.limit ?? 50,
+              ),
+            ]
+          : []
+      }
       open={open}
       onToggleOpen={onToggleOpen}
       {...rest}
     />
   );
-}
-interface ArchivedSectionProps extends Omit<RailSectionProps, "title"> {
-  count: number;
-  projectRetryCallback: (key: string) => () => void;
-}
-function ArchivedSection({ count, open, onToggleOpen, nodes, ...rest }: ArchivedSectionProps) {
-  const label = `Archived sessions (${count})`;
-  return <RailSectionShell label={label} eyebrow nodes={nodes} open={open} onToggleOpen={onToggleOpen} {...rest} />;
 }
 
 export interface RailProps {
@@ -1170,8 +1162,9 @@ function NavigationRail({
                 projectRetryCallback={projectRetryCallback}
               />
               {archivedNodes.length > 0 && (
-                <ArchivedSection
-                  count={archivedCount(resources.archivedProjects, unarchived)}
+                <RailSectionShell
+                  label={`Archived sessions (${archivedCount(resources.archivedProjects, unarchived)})`}
+                  eyebrow
                   open={archivedOpen}
                   onToggleOpen={() => toggleSection(ARCHIVED_SECTION_KEY, false)}
                   nodes={archivedNodes}
