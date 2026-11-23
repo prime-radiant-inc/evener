@@ -7,6 +7,14 @@ import (
 	"slices"
 )
 
+// userLayerEnabled reports whether this hub has an editable providers.toml to
+// read. A registry can be wired without one (EVENER_PROVIDERS_CONFIG present
+// and empty), which is the shape a child gets; the record watcher still has to
+// run there, so only the file read below is gated on this.
+func (c *hubInstancesController) userLayerEnabled() bool {
+	return c.providersConfigPath != "" && (c.auth == nil || !c.auth.noUserLayer)
+}
+
 // refreshProviderFile adopts external edits under the same locks as instance
 // mutations. Failed loads retain a recovery owner: the notice watcher retries
 // once per tick even when the edited bytes have not changed. Only a changed

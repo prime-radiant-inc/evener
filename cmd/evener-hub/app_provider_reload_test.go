@@ -310,6 +310,14 @@ func TestCopilotRecordWatcherObservesExternalLoginWithoutUserLayer(t *testing.T)
 		ProvidersConfigPath: "", NoUserLayer: true,
 	})
 	defer hub.Close()
+	// The record watcher is the one surface this mode keeps: even though the
+	// controller is constructed, the instance CRUD/list handlers stay
+	// unregistered exactly as they were when the controller did not exist.
+	client := dialHubRPCInitialized(t, hub)
+	for _, method := range []string{appwire.MethodEvenerInstanceList, appwire.MethodEvenerInstanceCreate} {
+		err := client.Request(context.Background(), method, appwire.EmptyParams{}, nil)
+		requireWireError(t, err, appwire.CodeMethodNotFound)
+	}
 	// Startup observations belong to the process, not to this client.
 	web.notices.OnCommitted(func(noticeCommitted) {})
 	web.notices.watchRead(context.Background())
@@ -325,6 +333,10 @@ func TestCopilotRecordWatcherObservesExternalLoginWithoutUserLayer(t *testing.T)
 	if !reg.Get().HasInstance("github-copilot") {
 		t.Fatal("the external login did not add the Copilot instance")
 	}
+	// Still absent after the reload: observing the record must not expose the
+	// handlers this mode never registered.
+	err := client.Request(context.Background(), appwire.MethodEvenerInstanceList, appwire.EmptyParams{}, nil)
+	requireWireError(t, err, appwire.CodeMethodNotFound)
 
 	cli.logout(t, stateDir, "github-copilot")
 	web.notices.watchRead(context.Background())
@@ -333,22 +345,6 @@ func TestCopilotRecordWatcherObservesExternalLoginWithoutUserLayer(t *testing.T)
 	}
 	if reg.Get().HasInstance("github-copilot") {
 		t.Fatal("the external logout left the Copilot instance listed")
-	}
-}
-
-// TestInstanceEditsAreRefusedWithoutUserLayer pins the file gates: the user
-// layer setting, not the path's emptiness, decides whether the instance
-// surface may read or write providers.toml.
-func TestInstanceEditsAreRefusedWithoutUserLayer(t *testing.T) {
-	t.Parallel()
-	for _, path := range []string{"", filepath.Join(t.TempDir(), "providers.toml")} {
-		ctl := &hubInstancesController{providersConfigPath: path, auth: &hubAuthController{noUserLayer: true}}
-		if _, _, err := ctl.read(); !errors.Is(err, errNoUserLayer) {
-			t.Fatalf("read(path=%q) error = %v, want the no-user-layer refusal", path, err)
-		}
-		if err := ctl.write(&registry.Layer{}); !errors.Is(err, errNoUserLayer) {
-			t.Fatalf("write(path=%q) error = %v, want the no-user-layer refusal", path, err)
-		}
 	}
 }
 
