@@ -161,26 +161,13 @@
 .promptAnchor {
   position: relative;
 }
-/* The access tile's layout: a field seat holding the glyph, a text column that
- * takes the slack, and the action at the trailing edge. The directory tile's
- * own version of this shape lives in PathField's prominent variant; this is
- * the status region (an outlined Card) that remains local. */
+/* The access tile's layout: the shared summary-tile row and text recipe, with
+ * the Card-filling height and inline inset that are this tile's own. The
+ * directory tile in PathField's prominent variant composes the same recipe. */
 .accessTile {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  box-sizing: border-box;
-  width: 100%;
-  min-width: 0;
-  color: var(--ink-hi);
-  font-family: var(--font-sans);
-  font-size: var(--font-size-ui);
-  line-height: var(--line-height-ui);
-  text-align: left;
-}
-/* Fills the Card's content box, so the tile's content centres against the
- * taller of the pair, and keeps the inline inset the directory tile has. */
-.accessTile {
+  composes: summaryTile from "../../styles/surface.module.css";
+  /* Fills the Card's content box, so the tile's content centres against the
+   * taller of the pair, and keeps the inline inset the directory tile has. */
   height: 100%;
   padding-inline: var(--space-1);
 }
@@ -189,20 +176,13 @@
   color: var(--ink-mid);
 }
 .tileText {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  min-width: 0;
-  gap: var(--space-1);
+  composes: summaryText from "../../styles/surface.module.css";
 }
-.tileText strong {
-  font-weight: var(--font-weight-medium);
-  overflow-wrap: anywhere;
+.tileHeadline {
+  composes: summaryHeadline from "../../styles/surface.module.css";
 }
 .tileCaption {
-  color: var(--ink-mid);
-  font-size: var(--font-size-caption);
-  overflow-wrap: anywhere;
+  composes: summaryCaption from "../../styles/surface.module.css";
 }
 /* The unresolved states have no value to label yet: one sentence in the
  * tile's own text size. */

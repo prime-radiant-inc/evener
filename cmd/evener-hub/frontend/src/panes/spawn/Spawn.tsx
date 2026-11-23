@@ -2953,7 +2953,9 @@ function SpawnForm({
                 {resolveStatus === "ready" ? (
                   <>
                     <span className={CLASS.tileCaption}>Effective access</span>
-                    <strong>{effectiveAccess?.label ?? (effectiveSandbox || "inherited")}</strong>
+                    <strong className={CLASS.tileHeadline}>
+                      {effectiveAccess?.label ?? (effectiveSandbox || "inherited")}
+                    </strong>
                     <span className={CLASS.tileCaption}>
                       {advancedSandboxOverride ? "Set by the Advanced sandbox override." : "Set by Access mode."}
                       {effectiveAccessDescription ? ` ${effectiveAccessDescription}` : ""}
