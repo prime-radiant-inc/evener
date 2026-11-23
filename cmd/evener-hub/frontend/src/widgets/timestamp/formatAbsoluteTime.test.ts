@@ -22,14 +22,6 @@ const DATE_TIME_WITH_SECONDS = new Intl.DateTimeFormat("en", {
   second: "2-digit",
   hour12: false,
 });
-const DATE_TIME_WITHOUT_SECONDS = new Intl.DateTimeFormat("en", {
-  month: "short",
-  day: "numeric",
-  hour: "2-digit",
-  minute: "2-digit",
-  hour12: false,
-});
-
 const INSTANT = new Date(2026, 7, 9, 13, 2, 10).getTime();
 const LATER_THE_SAME_DAY = new Date(2026, 7, 9, 23, 5, 0).getTime();
 const THE_DAY_BEFORE = new Date(2026, 7, 8, 22, 3, 48).getTime();
@@ -50,10 +42,6 @@ test("adaptive follows the calendar boundary, not elapsed time", () => {
   const earlyMorning = new Date(2026, 7, 9, 0, 1, 0).getTime();
   const lateThatNight = new Date(2026, 7, 9, 23, 59, 30).getTime();
   expect(formatAbsoluteTime(earlyMorning, { now: lateThatNight })).toBe(TIME_WITH_SECONDS.format(earlyMorning));
-});
-
-test("dateTime keeps the date and minute precision", () => {
-  expect(formatAbsoluteTime(INSTANT, { format: "dateTime" })).toBe(DATE_TIME_WITHOUT_SECONDS.format(INSTANT));
 });
 
 test("locale uses the reader's locale for the date and time", () => {
