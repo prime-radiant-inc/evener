@@ -16,9 +16,11 @@ import {
   activityWatch,
 } from "../../stores/sessionActivityTestUtils";
 import { resetDisclosureStoreForTests } from "../../widgets/disclosure/disclosureStore";
+import { requireClass } from "../../widgets/internal/requireClass";
 import { deriveScope } from "../statusbar/statusScope";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
 import { AgentsTab } from "./AgentsTab";
+import styles from "./activitybar.module.css";
 import { ActivityBoundaryObserver } from "./activityPagingTestUtils";
 import { JobsTab } from "./JobsTab";
 import { WatchesTab } from "./WatchesTab";
@@ -37,6 +39,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 const NOW = Date.parse("2026-10-05T00:00:00Z");
+const STACK_CLASS = requireClass(styles.stack, "activitybar.module.css", "stack");
 
 it.each([
   { resource: "delegates" as const, Body: AgentsTab, total: 5 },
@@ -89,6 +92,31 @@ it.each([
     expect(document.querySelectorAll("[data-activity-anchor]")).toHaveLength(1);
   },
 );
+
+it.each([
+  { resource: "delegates" as const, Body: AgentsTab },
+  { resource: "jobs" as const, Body: JobsTab },
+  { resource: "watches" as const, Body: WatchesTab },
+])("$resource keeps its loaded-empty line inside the collection flow", async ({ resource, Body }) => {
+  const client = activityClient();
+  const methods = {
+    delegates: "evener/thread/delegates/list",
+    jobs: "evener/thread/jobs/list",
+    watches: "evener/thread/watches/list",
+  } as const;
+  client.on(methods[resource], ({ ref, scope }) => {
+    const context = activityContext(ref);
+    const page = { complete: true, issues: [] };
+    if (resource === "delegates") return { context, scope: scope ?? "session", delegates: [], page };
+    if (resource === "jobs") return { context, scope: scope ?? "session", jobs: [], page };
+    return { context, scope: scope ?? "session", watches: [], page };
+  });
+  connectionStore.getState().connect(client);
+  render(<Body now={NOW} scope={scope()} />);
+  const empty = await screen.findByTestId("empty-state");
+  expect(empty.parentElement?.classList.contains(STACK_CLASS)).toBe(true);
+  expect(screen.queryByRole("status", { name: "Loading" })).toBeNull();
+});
 
 const scope = () =>
   deriveScope(

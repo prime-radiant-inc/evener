@@ -192,6 +192,10 @@ export function ActivitySidebar({ mobile = false }: { mobile?: boolean }) {
           transition={transition}
           data-testid="activity-sidebar"
           aria-label="Overview"
+          // The phone shell overlays the one stacked pane with focus trapped:
+          // a modal dialog there, the non-modal Overview region on desktop.
+          role={mobile ? "dialog" : undefined}
+          aria-modal={mobile ? true : undefined}
         >
           <FocusScope className={CLASS.focusBody} trap={mobile} autoFocus={false}>
             <div className={CLASS.head}>

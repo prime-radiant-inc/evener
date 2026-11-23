@@ -853,6 +853,8 @@ test("activity tabs keep a named keyboard radio group without a visible heading"
   mount();
   await screen.findByRole("button", { name: /inspect/ });
   expect(screen.getByRole("complementary", { name: "Overview" })).toBeTruthy();
+  expect(screen.queryByRole("dialog", { name: "Overview" })).toBeNull();
+  expect(screen.getByTestId("activity-sidebar").getAttribute("aria-modal")).toBeNull();
   expect(screen.getByRole("radiogroup", { name: "Overview kind" })).toBeTruthy();
   expect(screen.queryByText("Overview kind")).toBeNull();
   await act(async () => fireEvent.keyDown(screen.getByRole("radio", { name: /Agents/ }), { key: "End" }));
@@ -890,6 +892,8 @@ test("phone Overview enters its selected category and contains sequential keyboa
     activitySidebarStore.getState().openWith("about", opener);
     mount(true);
     const sidebar = await screen.findByTestId("activity-sidebar");
+    expect(screen.getByRole("dialog", { name: "Overview" })).toBe(sidebar);
+    expect(sidebar.getAttribute("aria-modal")).toBe("true");
     const about = screen.getByRole("radio", { name: "About" });
     await waitFor(() => expect(document.activeElement).toBe(about));
     for (let step = 0; step < 20; step += 1) {
