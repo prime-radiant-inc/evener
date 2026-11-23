@@ -85,7 +85,7 @@ func waitForLockHeld(t *testing.T, stateDir, instance string) {
 		if time.Now().After(deadline) {
 			t.Fatalf("record lock %s was never held by the other process", lockPath)
 		}
-		time.Sleep(time.Millisecond)
+		<-time.After(time.Millisecond)
 	}
 }
 
@@ -153,15 +153,8 @@ func waitForSignal(t *testing.T, ch <-chan struct{}, what string) {
 
 func waitForPath(t *testing.T, path string) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		if _, err := os.Stat(path); err == nil {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("timed out waiting for %s", path)
-		}
-		time.Sleep(time.Millisecond)
+	if !fileAppearsWithin(path, 10*time.Second) {
+		t.Fatalf("timed out waiting for %s", path)
 	}
 }
 
