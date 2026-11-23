@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/hooks"
@@ -451,6 +452,257 @@ func TestCommunicateQuietYieldAfterBlockedStopHookDoesNotAcceptBlockedReply(t *t
 		}
 		if acceptedID != "first-winner" {
 			t.Fatalf("AcceptedCommunicateCallID = %q, want %q", acceptedID, "first-winner")
+		}
+	})
+}
+
+func TestCommunicateQuietYieldHubClientMutations(t *testing.T) {
+	t.Parallel()
+
+	t.Run("turn_start_without_other_work_rejects_quiet_yield", func(t *testing.T) {
+		t.Parallel()
+		adapter := newFakeAdapter("openai",
+			func(llm.Request) llm.Response { return quietYieldResponse("quiet-start", `{}`) },
+			func(llm.Request) llm.Response { return quietYieldResponse("reply-start", `{"message":"addressed"}`) },
+		)
+		s := newSession(t, withAdapter(adapter), withStateDir(t.TempDir()))
+		if _, err := s.AcceptClientMutationStart(appwire.TurnStartParams{
+			ClientMutationID: "cm-quiet-start",
+			Input:            []appwire.InputItem{{Type: "text", Text: "yeah. looks reasonable"}},
+		}); err != nil {
+			t.Fatalf("AcceptClientMutationStart: %v", err)
+		}
+		reply, ran, err := s.ProcessClientMutationStart(tripwireCtx(t), nil)
+		if err != nil || !ran {
+			t.Fatalf("ProcessClientMutationStart: ran=%v err=%v", ran, err)
+		}
+		if res := communicateToolResult(t, s, "quiet-start"); !res.IsError {
+			t.Fatalf("communicate({}) on turn/start without other work succeeded: state=%s", res.ToolState)
+		}
+		if s.quietlyYielded() || !s.communicated() || reply != "addressed" {
+			t.Fatalf("quiet=%v communicated=%v reply=%q; want refused quiet yield and reply=addressed",
+				s.quietlyYielded(), s.communicated(), reply)
+		}
+		if got := len(adapter.Requests()); got != 2 {
+			t.Fatalf("provider requests=%d, want 2 (rejected quiet yield + reply)", got)
+		}
+	})
+
+	t.Run("turn_queue_without_other_work_rejects_quiet_yield", func(t *testing.T) {
+		t.Parallel()
+		adapter := newFakeAdapter("openai",
+			func(llm.Request) llm.Response { return quietYieldResponse("quiet-queue", `{}`) },
+			func(llm.Request) llm.Response { return quietYieldResponse("reply-queue", `{"message":"addressed"}`) },
+		)
+		s := newSession(t, withAdapter(adapter), withStateDir(t.TempDir()))
+		if _, err := s.AcceptClientMutationQueue(appwire.TurnQueueParams{
+			ClientMutationID: "cm-quiet-queue",
+			Input:            []appwire.InputItem{{Type: "text", Text: "queued message"}},
+		}); err != nil {
+			t.Fatalf("AcceptClientMutationQueue: %v", err)
+		}
+		reply, ran, err := s.ProcessPendingUserInput(tripwireCtx(t), nil)
+		if err != nil || !ran {
+			t.Fatalf("ProcessPendingUserInput: ran=%v err=%v", ran, err)
+		}
+		if res := communicateToolResult(t, s, "quiet-queue"); !res.IsError {
+			t.Fatalf("communicate({}) on turn/queue without other work succeeded: state=%s", res.ToolState)
+		}
+		if s.quietlyYielded() || !s.communicated() || reply != "addressed" {
+			t.Fatalf("quiet=%v communicated=%v reply=%q; want refused quiet yield and reply=addressed",
+				s.quietlyYielded(), s.communicated(), reply)
+		}
+		if got := len(adapter.Requests()); got != 2 {
+			t.Fatalf("provider requests=%d, want 2 (rejected quiet yield + reply)", got)
+		}
+	})
+
+	t.Run("turn_start_with_pending_queued_input_allows_quiet_yield", func(t *testing.T) {
+		t.Parallel()
+		var s *Session
+		queued := false
+		adapter := newFakeAdapter("openai",
+			func(llm.Request) llm.Response {
+				if !queued {
+					queued = true
+					if _, err := s.AcceptClientMutationQueue(appwire.TurnQueueParams{
+						ClientMutationID: "cm-queued-followup",
+						Input:            []appwire.InputItem{{Type: "text", Text: "QUEUED_FOLLOWUP_SENTINEL"}},
+					}); err != nil {
+						t.Errorf("AcceptClientMutationQueue: %v", err)
+					}
+				}
+				return quietYieldResponse("quiet-start-with-queue", `{}`)
+			},
+			func(req llm.Request) llm.Response {
+				if !requestContainsText(req, "QUEUED_FOLLOWUP_SENTINEL") {
+					t.Errorf("second turn did not receive queued followup")
+				}
+				return quietYieldResponse("reply-queued-followup", `{"message":"handled queued"}`)
+			},
+		)
+		s = newSession(t, withAdapter(adapter), withStateDir(t.TempDir()))
+		if _, err := s.AcceptClientMutationStart(appwire.TurnStartParams{
+			ClientMutationID: "cm-start-with-queue",
+			Input:            []appwire.InputItem{{Type: "text", Text: "first turn"}},
+		}); err != nil {
+			t.Fatalf("AcceptClientMutationStart: %v", err)
+		}
+		reply, ran, err := s.ProcessClientMutationStart(tripwireCtx(t), nil)
+		if err != nil || !ran {
+			t.Fatalf("ProcessClientMutationStart: ran=%v err=%v", ran, err)
+		}
+		requireQuietToolResult(t, s, "quiet-start-with-queue")
+		if reply != "handled queued" || len(adapter.Requests()) != 2 {
+			t.Fatalf("reply=%q requests=%d, want handled queued in 2 requests", reply, len(adapter.Requests()))
+		}
+	})
+
+	t.Run("turn_queue_with_pending_queued_input_allows_quiet_yield", func(t *testing.T) {
+		t.Parallel()
+		adapter := newFakeAdapter("openai",
+			func(llm.Request) llm.Response { return quietYieldResponse("quiet-queue-with-second", `{}`) },
+			func(req llm.Request) llm.Response {
+				if !requestContainsText(req, "SECOND_QUEUED_SENTINEL") {
+					t.Errorf("second queued turn did not receive expected text")
+				}
+				return quietYieldResponse("reply-second-queued", `{"message":"handled second queued"}`)
+			},
+		)
+		s := newSession(t, withAdapter(adapter), withStateDir(t.TempDir()))
+		if _, err := s.AcceptClientMutationQueue(appwire.TurnQueueParams{
+			ClientMutationID: "cm-queue-first",
+			Input:            []appwire.InputItem{{Type: "text", Text: "first queued"}},
+		}); err != nil {
+			t.Fatalf("AcceptClientMutationQueue first: %v", err)
+		}
+		if _, err := s.AcceptClientMutationQueue(appwire.TurnQueueParams{
+			ClientMutationID: "cm-queue-second",
+			Input:            []appwire.InputItem{{Type: "text", Text: "SECOND_QUEUED_SENTINEL"}},
+		}); err != nil {
+			t.Fatalf("AcceptClientMutationQueue second: %v", err)
+		}
+		reply, ran, err := s.ProcessPendingUserInput(tripwireCtx(t), nil)
+		if err != nil || !ran {
+			t.Fatalf("ProcessPendingUserInput: ran=%v err=%v", ran, err)
+		}
+		requireQuietToolResult(t, s, "quiet-queue-with-second")
+		if reply != "handled second queued" || len(adapter.Requests()) != 2 {
+			t.Fatalf("reply=%q requests=%d, want handled second queued in 2 requests", reply, len(adapter.Requests()))
+		}
+	})
+
+	t.Run("turn_start_with_live_background_job_allows_quiet_yield", func(t *testing.T) {
+		t.Parallel()
+		env := newHeldJobEnvironment(t.TempDir())
+		adapter := newFakeAdapter("openai",
+			func(llm.Request) llm.Response {
+				return agenttest.ToolCallResponse(llm.ToolCallData{ID: "bg-shell", Name: "shell", Arguments: json.RawMessage(`{"command":"go test","mode":"background"}`)})
+			},
+			func(llm.Request) llm.Response { return quietYieldResponse("quiet-start-with-job", `{}`) },
+		)
+		s := newSession(t, withEnv(env), withAdapter(adapter), withStateDir(t.TempDir()))
+		t.Cleanup(env.releaseJob)
+		if _, err := s.AcceptClientMutationStart(appwire.TurnStartParams{
+			ClientMutationID: "cm-start-with-job",
+			Input:            []appwire.InputItem{{Type: "text", Text: "run in background"}},
+		}); err != nil {
+			t.Fatalf("AcceptClientMutationStart: %v", err)
+		}
+		if _, ran, err := s.ProcessClientMutationStart(tripwireCtx(t), nil); err != nil || !ran {
+			t.Fatalf("ProcessClientMutationStart: ran=%v err=%v", ran, err)
+		}
+		requireQuietToolResult(t, s, "quiet-start-with-job")
+		if !s.quietlyYielded() || len(adapter.Requests()) != 2 {
+			t.Fatalf("quiet=%v requests=%d, want true and 2", s.quietlyYielded(), len(adapter.Requests()))
+		}
+	})
+
+	t.Run("recovered_incorporated_turn_start_self_excluded_unless_second_start_pending", func(t *testing.T) {
+		t.Parallel()
+		for _, withFollowUp := range []bool{false, true} {
+			name := "without_followup"
+			if withFollowUp {
+				name = "with_second_turn_start_pending"
+			}
+			t.Run(name, func(t *testing.T) {
+				t.Parallel()
+				dir := t.TempDir()
+				crashed := newSession(t, withDir(dir), withStateDir(dir))
+				id := crashed.ID()
+				if _, err := crashed.AcceptClientMutationStart(appwire.TurnStartParams{
+					ClientMutationID: "cm-dead-turn",
+					Input:            []appwire.InputItem{{Type: "text", Text: "recovered prompt"}},
+				}); err != nil {
+					t.Fatalf("AcceptClientMutationStart: %v", err)
+				}
+				if _, err := crashed.SimulateCrashMidExecutionForTest(); err != nil {
+					t.Fatalf("SimulateCrashMidExecutionForTest: %v", err)
+				}
+				crashed.Close()
+
+				var restored *Session
+				followUpAccepted := false
+				steps := []func(llm.Request) llm.Response{
+					func(llm.Request) llm.Response {
+						if withFollowUp && !followUpAccepted {
+							followUpAccepted = true
+							if _, err := restored.AcceptClientMutationStart(appwire.TurnStartParams{
+								ClientMutationID: "cm-second-start",
+								Input:            []appwire.InputItem{{Type: "text", Text: "second turn start"}},
+							}); err != nil {
+								t.Errorf("AcceptClientMutationStart follow-up: %v", err)
+							}
+						}
+						return quietYieldResponse("quiet-recovered", `{}`)
+					},
+					func(llm.Request) llm.Response {
+						return quietYieldResponse("reply-recovered", `{"message":"recovered reply"}`)
+					},
+				}
+				adapter := newFakeAdapter("openai", steps...)
+				c := registryClient(t, nil, adapter)
+				meta, err := schema.LoadSessionMeta(dir, id)
+				if err != nil {
+					t.Fatalf("LoadSessionMeta: %v", err)
+				}
+				restored, err = RestoreSessionFromMetaWithConfig(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), meta, RestoreSessionConfig{
+					StateDir: dir,
+					testOnly: sharingHostProbe(testConfig{}),
+				})
+				if err != nil {
+					t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
+				}
+				t.Cleanup(restored.Close)
+
+				if !restored.hasRunnableClientMutationStart() || restored.WireState() != string(SessionProcessing) {
+					t.Fatalf("before reclaim: runnable=%v wireState=%q, want true and %q",
+						restored.hasRunnableClientMutationStart(), restored.WireState(), SessionProcessing)
+				}
+				reply, ran, err := restored.ProcessClientMutationStart(tripwireCtx(t), nil)
+				if err != nil || !ran {
+					t.Fatalf("ProcessClientMutationStart: ran=%v err=%v", ran, err)
+				}
+				if withFollowUp {
+					requireQuietToolResult(t, restored, "quiet-recovered")
+					if !restored.quietlyYielded() || len(adapter.Requests()) != 1 {
+						t.Fatalf("with second start: quiet=%v requests=%d, want true and 1",
+							restored.quietlyYielded(), len(adapter.Requests()))
+					}
+					reply2, ran2, err2 := restored.ProcessClientMutationStart(tripwireCtx(t), nil)
+					if err2 != nil || !ran2 || reply2 != "recovered reply" {
+						t.Fatalf("second start run: ran=%v reply=%q err=%v", ran2, reply2, err2)
+					}
+				} else {
+					if res := communicateToolResult(t, restored, "quiet-recovered"); !res.IsError {
+						t.Fatalf("communicate({}) on recovered turn without follow-up succeeded: state=%s", res.ToolState)
+					}
+					if restored.quietlyYielded() || !restored.communicated() || reply != "recovered reply" || len(adapter.Requests()) != 2 {
+						t.Fatalf("without follow-up: quiet=%v communicated=%v reply=%q requests=%d",
+							restored.quietlyYielded(), restored.communicated(), reply, len(adapter.Requests()))
+					}
+				}
+			})
 		}
 	})
 }
