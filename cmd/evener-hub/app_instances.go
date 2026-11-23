@@ -1940,7 +1940,7 @@ func (c *hubInstancesController) moveCopilotRecord(oldName, newName string) erro
 		return nil
 	}
 	if err != nil {
-		return fmt.Errorf("Copilot OAuth record not read: %w", err)
+		return fmt.Errorf("copilot OAuth record not read: %w", err)
 	}
 	// Both locks are taken in canonical path order so opposite renames (A to B
 	// and B to A) cannot deadlock on each other's destination.
@@ -1966,27 +1966,27 @@ func (c *hubInstancesController) moveCopilotRecordLocked(oldName, newName string
 		return nil
 	}
 	if err != nil {
-		return fmt.Errorf("Copilot OAuth record not read: %w", err)
+		return fmt.Errorf("copilot OAuth record not read: %w", err)
 	}
 	if !record.SameGeneration(expected) {
-		return fmt.Errorf("Copilot OAuth record changed during the rename; log in again under %q", newName)
+		return fmt.Errorf("copilot OAuth record changed during the rename; log in again under %q", newName)
 	}
 	if _, err := githubcopilot.LoadAuth(c.auth.stateDir, newName); err == nil {
-		return fmt.Errorf("Copilot OAuth record for %q already exists; it was left in place", newName)
+		return fmt.Errorf("copilot OAuth record for %q already exists; it was left in place", newName)
 	} else if !errors.Is(err, githubcopilot.ErrAuthNotFound) {
-		return fmt.Errorf("Copilot OAuth record for %q not read: %w", newName, err)
+		return fmt.Errorf("copilot OAuth record for %q not read: %w", newName, err)
 	}
 	sourceSignature := registry.CopilotSignature(record, time.Now())
 	record.Instance = newName
 	if err := githubcopilot.SaveAuth(c.auth.stateDir, newName, record); err != nil {
-		return fmt.Errorf("Copilot OAuth record not copied: %w", err)
+		return fmt.Errorf("copilot OAuth record not copied: %w", err)
 	}
 	c.setCopilotAuthSignature(newName, registry.CopilotSignature(record, time.Now()))
 	if err := githubcopilot.DeleteAuth(c.auth.stateDir, oldName); err != nil {
 		// The source file is still the record this move read, so keep it
 		// announced as that record.
 		c.setCopilotAuthSignature(oldName, sourceSignature)
-		return fmt.Errorf("Copilot OAuth record for %q left behind: %w", oldName, err)
+		return fmt.Errorf("copilot OAuth record for %q left behind: %w", oldName, err)
 	}
 	c.forgetCopilotAuthSignature(oldName)
 	return nil

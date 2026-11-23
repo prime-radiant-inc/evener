@@ -5669,8 +5669,7 @@ func TestInstances_EditRenameKeepsALoginThatArrivesAtTheDestination(t *testing.T
 	if heldErr := <-lockErr; heldErr != nil {
 		t.Fatalf("land the destination login: %v", heldErr)
 	}
-	var persisted renamePersistedError
-	if !errors.As(err, &persisted) {
+	if _, ok := errors.AsType[renamePersistedError](err); !ok {
 		t.Fatalf("Edit(rename) = %v, want a persisted rename reporting the leftover", err)
 	}
 	record, loadErr := githubcopilot.LoadAuth(f.stateDir, "copilot-work")

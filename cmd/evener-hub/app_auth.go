@@ -1296,9 +1296,7 @@ func (c *hubAuthController) startCopilotDeviceFlow(ctx context.Context, provider
 	}
 	c.mu.Unlock()
 	expiresIn := int(dc.Expiry.Sub(now).Round(time.Second) / time.Second)
-	if expiresIn < 0 {
-		expiresIn = 0
-	}
+	expiresIn = max(0, expiresIn)
 	return appwire.AuthDeviceStartResponse{
 		Provider: provider, FlowID: flowID, UserCode: dc.UserCode, VerificationURL: dc.VerificationURL,
 		IntervalSeconds: int(dc.Interval / time.Second), ExpiresInSeconds: expiresIn,
