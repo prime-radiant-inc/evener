@@ -1,5 +1,5 @@
-import { useState } from "react";
 import { ConfirmDialog } from "../../widgets";
+import { useAsyncConfirm } from "../useAsyncConfirm";
 
 export function ForceStopDialog({
   open,
@@ -10,26 +10,14 @@ export function ForceStopDialog({
   onClose(): void;
   onConfirm(): Promise<void>;
 }) {
-  const [busy, setBusy] = useState(false);
-  const confirm = async () => {
-    if (busy) return;
-    setBusy(true);
-    try {
-      await onConfirm();
-      onClose();
-    } catch {
-      // The action adapter reports the failure; retain confirmation for retry.
-    } finally {
-      setBusy(false);
-    }
-  };
+  const { busy, run } = useAsyncConfirm();
   return (
     <ConfirmDialog
       open={open}
       title="Force shutdown this session?"
       confirmLabel="Force shutdown"
       busy={busy}
-      onConfirm={() => void confirm()}
+      onConfirm={() => void run(onConfirm, onClose)}
       onCancel={() => {
         if (!busy) onClose();
       }}

@@ -1,5 +1,13 @@
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { navigate, observeRouteHistory, openSessionRoute, paneToURL, routeHistoryEntryId, urlToPane } from "./routing";
+import {
+  navigate,
+  observeRouteHistory,
+  openSessionRoute,
+  paneToURL,
+  routeHistoryEntryId,
+  sameParams,
+  urlToPane,
+} from "./routing";
 
 beforeEach(() => {
   window.history.pushState({}, "", "/");
@@ -363,4 +371,16 @@ test("navigate does not carry an empty host parameter", () => {
   navigate("/settings/theme");
   expect(window.location.pathname).toBe("/settings/theme");
   expect(window.location.search).toBe("");
+});
+
+// --- sameParams: the one structural params comparison ---------------------
+
+test("sameParams compares params bags by their JSON, key order included", () => {
+  expect(sameParams({ ref: "local:a" }, { ref: "local:a" })).toBe(true);
+  expect(sameParams({}, {})).toBe(true);
+  expect(sameParams({ ref: "local:a" }, { ref: "local:b" })).toBe(false);
+  expect(sameParams({ ref: "local:a" }, { ref: "local:a", path: "x" })).toBe(false);
+  // JSON-string semantics are the contract: a reordered bag is a different
+  // pane even though it carries the same entries.
+  expect(sameParams({ ref: "local:a", path: "x" }, { path: "x", ref: "local:a" })).toBe(false);
 });

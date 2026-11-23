@@ -31,7 +31,7 @@ import { PopoutHeaderAction } from "./PopoutHeaderAction";
 import { PaneDocumentContext } from "./paneDocument";
 import { type PaneTitleCtx, paneFor } from "./paneRegistry";
 import { PaneVisibilityContext } from "./paneVisibility";
-import { refParam } from "./routing";
+import { refParam, sameParams } from "./routing";
 import { openTopLevelSession } from "./sessionPlacement";
 import {
   cancelPaneFocus,
@@ -672,9 +672,7 @@ export function DockHost() {
       routed.every((expected) =>
         restoredWorkspace.panes.some(
           (pane) =>
-            pane.type === expected.type &&
-            pane.slot === expected.slot &&
-            JSON.stringify(pane.params) === JSON.stringify(expected.params),
+            pane.type === expected.type && pane.slot === expected.slot && sameParams(pane.params, expected.params),
         ),
       );
     const preservedInspection =
