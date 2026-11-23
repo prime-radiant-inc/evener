@@ -286,7 +286,6 @@ export function ModelSwitchTrigger({
       ariaMode={isMobile ? "dialog" : "listbox"}
       actionLabel={actionLabel}
       value={label}
-      variant="quiet"
       classes={{
         trigger: shrink ? `${CLASS.trigger} ${CLASS.triggerShrink}` : CLASS.trigger,
         value: CLASS.value,

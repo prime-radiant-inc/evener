@@ -37,7 +37,6 @@ const CLASS = {
   triggerValue: requireClass(styles.triggerValue, "modelCatalog.module.css", "triggerValue"),
   triggerDefault: requireClass(styles.triggerDefault, "modelCatalog.module.css", "triggerDefault"),
   chevron: requireClass(styles.chevron, "modelCatalog.module.css", "chevron"),
-  srOnly: requireClass(styles.srOnly, "modelCatalog.module.css", "srOnly"),
   popoverPanel: requireClass(styles.popoverPanel, "modelCatalog.module.css", "popoverPanel"),
   panel: requireClass(styles.panel, "modelCatalog.module.css", "panel"),
   input: requireClass(styles.input, "modelCatalog.module.css", "input"),
@@ -143,8 +142,12 @@ export function ModelCatalogPanel({
   // Typing re-filters the rows, and the first match of the NEW list is the
   // answer the user is narrowing toward - so Enter right after typing picks
   // it. The key cannot be chosen in the onChange (the new rows do not exist
-  // yet), so this asks the effect below to activate the first row once they do.
-  const activateFirstRef = useRef(false);
+  // yet), so the effect below activates the first row once one exists. It
+  // re-runs on every edit, including an edit that leaves the rows unchanged
+  // (Backspace clearing the prefill to the empty query), and stays pending
+  // while the query matches nothing - so an async catalog arrival still
+  // activates the row the user is now looking at.
+  const firstMatchQueryRef = useRef<string | null>(null);
   const isSheet = variant === "sheet";
 
   // The sheet variant has no input to own focus or drive a query: the list is
@@ -196,10 +199,11 @@ export function ModelCatalogPanel({
   }, [isSheet, picks, value, typed, setActiveKey]);
 
   useEffect(() => {
-    if (!activateFirstRef.current) return;
-    activateFirstRef.current = false;
+    if (firstMatchQueryRef.current !== typed || typed === null) return;
+    if (picks.length === 0) return;
+    firstMatchQueryRef.current = null;
     setActiveKey(picks[0]?.key);
-  }, [picks, setActiveKey]);
+  }, [typed, picks, setActiveKey]);
 
   function pickAt(index: number): boolean {
     const row = picks[index];
@@ -235,7 +239,7 @@ export function ModelCatalogPanel({
           value={text}
           onChange={(event) => {
             setTyped(event.target.value);
-            activateFirstRef.current = true;
+            firstMatchQueryRef.current = event.target.value;
           }}
           onKeyDown={handleKeyDown}
           aria-expanded={listShown}
@@ -421,14 +425,11 @@ export function ModelCatalog({
           ariaMode="listbox"
           actionLabel="change model"
           value={value === "" ? emptyLabel : value}
-          isDefault={value === ""}
           valueState={value === "" ? "default" : undefined}
           classes={{
             trigger: CLASS.trigger,
-            value: CLASS.triggerValue,
-            defaultValue: CLASS.triggerDefault,
+            value: `${CLASS.triggerValue} ${value === "" ? CLASS.triggerDefault : ""}`,
             chevron: CLASS.chevron,
-            action: CLASS.srOnly,
           }}
         />
       }

@@ -97,10 +97,6 @@
   composes: chevron from "../internal/fieldTrigger.module.css";
 }
 
-.pathSrOnly {
-  composes: srOnly from "../internal/fieldTrigger.module.css";
-}
-
 /* The floating panel's own content padding/sizing - widgets/popover's shared
  * chassis supplies position/background/border/radius/animation. Width is
  * capped against the viewport so the same panel works on a phone, reserving

@@ -36,7 +36,6 @@ const CLASS = {
   triggerValue: requireClass(styles.triggerValue, "pathfield.module.css", "triggerValue"),
   triggerDefault: requireClass(styles.triggerDefault, "pathfield.module.css", "triggerDefault"),
   chevron: requireClass(styles.pathChevron, "pathfield.module.css", "pathChevron"),
-  srOnly: requireClass(styles.pathSrOnly, "pathfield.module.css", "pathSrOnly"),
   popoverPanel: requireClass(styles.popoverPanel, "pathfield.module.css", "popoverPanel"),
   panel: requireClass(styles.panel, "pathfield.module.css", "panel"),
   input: requireClass(styles.input, "pathfield.module.css", "input"),
@@ -586,13 +585,10 @@ export function PathField({
       ariaMode={kind === "dir" ? "dialog" : "listbox"}
       actionLabel="browse"
       value={shownValue}
-      isDefault={value === ""}
       classes={{
         trigger: `${CLASS.trigger}${kind === "dir" ? ` ${CLASS.directoryTrigger}` : ""}`,
-        value: `${CLASS.triggerValue}${kind === "dir" ? ` ${CLASS.directoryValue}` : ""}`,
-        defaultValue: CLASS.triggerDefault,
+        value: `${CLASS.triggerValue} ${kind === "dir" ? CLASS.directoryValue : ""} ${value === "" ? CLASS.triggerDefault : ""}`,
         chevron: CLASS.chevron,
-        action: CLASS.srOnly,
       }}
       disabled={disabled}
       ariaLabel={name}

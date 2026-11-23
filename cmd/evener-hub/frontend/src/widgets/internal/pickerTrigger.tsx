@@ -1,9 +1,9 @@
 // The one closed-state trigger every picker in the app draws: a button whose
-// visible value is the current choice, a chevron, and a visually hidden action
-// suffix after it. Three call sites carried the same markup with drifted ARIA
-// before this existed - PathField set aria-haspopup/expanded for its directory
-// dialog, ModelCatalog and ModelSwitchTrigger set neither - so the attributes
-// are owned here and every caller gets the correct ones.
+// visible value is the current choice, a chevron, and a screen-reader-only
+// action suffix after it. Three call sites carried the same markup with
+// drifted ARIA before this existed - PathField set aria-haspopup/expanded for
+// its directory dialog, ModelCatalog and ModelSwitchTrigger set neither - so
+// the attributes are owned here and every caller gets the correct ones.
 //
 // The whitespace text node between the chevron and the action is load-bearing:
 // the accessible name is the button's children concatenated, and each child's
@@ -12,13 +12,17 @@
 // node between them survives that trim and renders nothing of its own (an
 // all-whitespace anonymous flex item is not laid out).
 //
-// The visual recipes stay with their owners instead of being copied here: the
-// field-shaped callers compose widgets/internal/fieldTrigger.module.css and
-// the quiet chip composes widgets/internal/quietTrigger.module.css, each from
-// its own stylesheet. That keeps the panes' responsive contracts (ModelSwitch's
-// shrink and tap-floor rules, PathField's wrapped directory value) in the
-// stylesheet that owns them; this widget owns the structure and the ARIA, which
-// is where the three copies had actually drifted.
+// The action suffix is VisuallyHidden - the design system's one recipe for
+// assistive-tech-only text - for every trigger, with the whitespace immediately
+// before it. There is no second sr-only rendering path.
+//
+// The visual recipes stay with their owners instead of being copied here: each
+// caller passes its own trigger/value/chevron classes, and composes the
+// default-value ink into the value class itself, because the panes' responsive
+// contracts (ModelSwitch's shrink and tap-floor rules, PathField's wrapped
+// directory value, ModelCatalog's field slot) live in the stylesheet that owns
+// them. This widget owns the structure and the ARIA, which is where the three
+// copies had actually drifted.
 //
 // Internal rather than barrelled? ModelSwitchTrigger lives outside src/widgets,
 // so the barrel exports this one; Listbox/useListbox stay internal because only
@@ -35,14 +39,9 @@ export type PickerTriggerAriaMode = "listbox" | "dialog";
 export interface PickerTriggerClassNames {
   /** The button's own closed-state recipe. */
   trigger: string;
-  /** The visible value span. */
+  /** The visible value span, with any kind/default class already composed. */
   value: string;
-  /** Appended to value when isDefault (field variant only). */
-  defaultValue?: string;
   chevron: string;
-  /** The field variant's visually-hidden action span. The quiet variant uses
-   * the shared VisuallyHidden widget instead, matching its existing markup. */
-  action?: string;
 }
 
 export interface PickerTriggerProps {
@@ -55,12 +54,6 @@ export interface PickerTriggerProps {
   actionLabel: string;
   /** The visible value; the caller decides what an empty value reads as. */
   value: ReactNode;
-  /** The value is the empty/default state: append the caller's default class
-   * and, when valueState is given, mark the span. Field variant only. */
-  isDefault?: boolean;
-  /** "field" is the control-shaped form trigger; "quiet" is the chrome chip
-   * whose visible label IS the control. Default "field". */
-  variant?: "field" | "quiet";
   classes: PickerTriggerClassNames;
   /** data-state for the value span (ModelCatalog's "default" marker). */
   valueState?: string;
@@ -83,8 +76,6 @@ export function PickerTrigger({
   ariaMode,
   actionLabel,
   value,
-  isDefault = false,
-  variant = "field",
   classes,
   valueState,
   disabled = false,
@@ -95,12 +86,6 @@ export function PickerTrigger({
   "data-testid": testId,
   valueTestId,
 }: PickerTriggerProps): JSX.Element {
-  const quiet = variant === "quiet";
-  const valueClass =
-    !quiet && isDefault && classes.defaultValue !== undefined
-      ? `${classes.value} ${classes.defaultValue}`
-      : classes.value;
-
   return (
     <button
       ref={ref}
@@ -115,17 +100,13 @@ export function PickerTrigger({
       data-testid={testId}
       onClick={onClick}
     >
-      <span className={valueClass} data-testid={valueTestId} data-state={valueState}>
+      <span className={classes.value} data-testid={valueTestId} data-state={valueState}>
         {value}
       </span>
       <span className={classes.chevron} aria-hidden="true">
         <Chevron direction="down" />
       </span>{" "}
-      {quiet || classes.action === undefined ? (
-        <VisuallyHidden>— {actionLabel}</VisuallyHidden>
-      ) : (
-        <span className={classes.action}>— {actionLabel}</span>
-      )}
+      <VisuallyHidden>— {actionLabel}</VisuallyHidden>
     </button>
   );
 }

@@ -27,10 +27,6 @@
   composes: chevron from "../internal/fieldTrigger.module.css";
 }
 
-.srOnly {
-  composes: srOnly from "../internal/fieldTrigger.module.css";
-}
-
 /* The floating panel's own content padding/sizing - widgets/popover's shared
  * chassis supplies position/background/border/radius/animation; this widget
  * only adds the padding and a sane width so the search field and the grouped

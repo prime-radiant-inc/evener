@@ -25,9 +25,6 @@ export interface UseListboxResult {
   /** The listbox element's own id (React's useId), for the container and for
    * aria-controls on the driving input. */
   listboxId: string;
-  /** The stored active key. It can name a row that is no longer listed; use
-   * activeDescendantKey wherever a DOM reference must resolve. */
-  activeKey: string | undefined;
   /** The stored key's position among `keys`, or -1 when it names no row. */
   activeIndex: number;
   /** The active key only while it resolves to a listed row - the value an
@@ -83,5 +80,5 @@ export function useListbox(keys: readonly string[]): UseListboxResult {
     }
   }
 
-  return { listboxId, activeKey, activeIndex, activeDescendantKey, setActiveKey, handleNavigationKey };
+  return { listboxId, activeIndex, activeDescendantKey, setActiveKey, handleNavigationKey };
 }

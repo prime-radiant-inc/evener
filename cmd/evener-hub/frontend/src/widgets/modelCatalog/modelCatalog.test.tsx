@@ -528,6 +528,55 @@ describe("keyboard", () => {
     expect(screen.queryByRole("combobox", { name: "Model" })).toBeNull();
   });
 
+  // The prefill is selected on open, so Backspace clears it to the same empty
+  // query the list already shows. The rows do not change, but the first match
+  // still has to become active - otherwise Enter silently re-picks the old
+  // model - and arrow keys must keep walking from that activated row.
+  test("clearing the prefilled value activates the first match", async () => {
+    const user = userEvent.setup();
+    const { onChange } = renderPicker({ value: "openai/gpt-5" });
+
+    const combo = await openPicker(user);
+    await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(3));
+    const activeText = () => {
+      const id = combo.getAttribute("aria-activedescendant");
+      return id ? document.getElementById(id)?.textContent : null;
+    };
+
+    await user.clear(combo);
+    expect(activeText()).toContain("Claude Sonnet 4.5");
+
+    await user.keyboard("{ArrowDown}");
+    expect(activeText()).toContain("Claude Haiku 4.5");
+    await user.keyboard("{ArrowUp}{Enter}");
+    expect(onChange).toHaveBeenCalledWith("anthropic/claude-sonnet-4-5");
+  });
+
+  // Typing while the catalogue is still in flight has no rows to activate yet.
+  // The request has to stay pending until the result arrives, or Enter after
+  // the list appears does nothing.
+  test("typing before the catalog resolves still activates the first match", async () => {
+    const user = userEvent.setup();
+    let deliverCatalog: (catalog: ModelCatalog) => void = () => {};
+    const loadCatalog = vi.fn(
+      () =>
+        new Promise<ModelCatalog>((resolve) => {
+          deliverCatalog = resolve;
+        }),
+    );
+    const { onChange } = renderPicker({ loadCatalog });
+
+    const combo = await openPicker(user);
+    await user.type(combo, "haiku");
+    deliverCatalog(CATALOG);
+    await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(1));
+
+    const id = combo.getAttribute("aria-activedescendant");
+    expect(id ? document.getElementById(id)?.textContent : null).toContain("Claude Haiku 4.5");
+    await user.keyboard("{Enter}");
+    expect(onChange).toHaveBeenCalledWith("anthropic/claude-haiku-4-5");
+  });
+
   test("Escape closes the picker without changing the value", async () => {
     const user = userEvent.setup();
     const { onChange } = renderPicker({ value: "openai/gpt-5" });
