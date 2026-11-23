@@ -1067,9 +1067,13 @@ func appThreadTreeLive(thread appwire.Thread) bool {
 }
 
 func (s *WebServer) apiTreeSources() []hubapi.Source {
+	localLabel := "this host"
+	if s.cfg.LocalHostName != "" {
+		localLabel = s.cfg.LocalHostName + " (hub)"
+	}
 	sources := []hubapi.Source{{
 		ID:     "local",
-		Label:  "this host",
+		Label:  localLabel,
 		Kind:   "local",
 		Online: true,
 	}}

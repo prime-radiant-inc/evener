@@ -214,6 +214,59 @@
   border-top: 1px solid var(--edge);
 }
 
+/* A desktop-only surface: the phone's own settings rows carry the same
+ * setting below this breakpoint. */
+.desktopOnly {
+  min-width: 0;
+}
+
+@media (max-width: 899px) {
+  .desktopOnly {
+    display: none;
+  }
+}
+
+/* A quiet disclosure row's summary: the setting name leads and its current
+ * value trails it on the same line, truncating before it pushes the chevron
+ * off the row. Shared by Plugins-for-this-session and Host. */
+.quietSummary {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 var(--space-3);
+  padding: var(--space-1) 0;
+}
+
+/* Before a preview lands there is no disclosure to wrap the summary, so it
+ * supplies the row inset the disclosure's own summary would have given it. */
+.quietSummary[role="status"] {
+  padding: var(--space-2);
+}
+
+.quietSummary strong {
+  color: var(--ink-hi);
+  font-size: var(--font-size-ui);
+  font-weight: var(--font-weight-medium);
+}
+
+.quietSummary span {
+  flex: 1 1 12rem;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink-mid);
+  font-size: var(--font-size-caption);
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* An error state's Retry stays a small inline action at the row's end. */
+.quietSummaryAction {
+  flex: none;
+}
+
 /* The staged-attachment row. Holds AttachmentTiles, which carry their own
  * 80x80 box from composer.module.css - this only wraps them, exactly as the
  * composer's own .attachments row does. */
@@ -221,17 +274,6 @@
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-2);
-}
-
-/* The Connect affordance beside the host picker: a column of quiet buttons,
- * one per offline remote host, so a never-attached host is reachable without
- * enabling its (spawn-disabled) option. */
-.hostConnectRow {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: var(--space-1);
-  margin-top: var(--space-1);
 }
 
 @media (max-width: 899px) {

@@ -47,6 +47,7 @@ type RelayLifecycleHooks struct {
 // WebConfig is everything the web server needs.
 type WebConfig struct {
 	HubAddr                   string
+	LocalHostName             string                   // this hub machine's hostname; empty falls back to "this host" in the picker
 	AuthToken                 string                   // capability token gating every non-exempt route
 	PublicURL                 string                   // optional external origin used for mobile pairing QR codes
 	HubStateRoot              string                   // root of hub-level machine state (auth-token, index.db, deletions/); defaults to cmdutil.DefaultStateRoot()
