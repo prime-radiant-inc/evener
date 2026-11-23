@@ -1,6 +1,6 @@
 import { type ReactNode, useEffect, useState } from "react";
 import { useResolvedScheme } from "../../stores/prefs";
-import codeblockStyles from "../codeblock/codeblock.module.css";
+import { CODEBLOCK_CLASS, CodeBlockHeader, CodeBlockPre } from "../codeblock";
 import { requireClass } from "../internal/requireClass";
 import { ZoomableMedia } from "../zoomablemedia";
 import { DiagramViewer } from "./DiagramViewer";
@@ -16,18 +16,6 @@ const CLASS = {
   root: requireClass(styles.root, "mermaid.module.css", "root"),
   error: requireClass(styles.error, "mermaid.module.css", "error"),
   svg: requireClass(styles.svg, "mermaid.module.css", "svg"),
-};
-
-// The error fallback renders the source through CodeBlock's own stylesheet so
-// a failed diagram looks identical to a mermaid fenced block; the borrowed
-// classes go through requireClass like every other class-lookup table
-// (widgets/markdown/index.tsx's own CODEBLOCK_CLASS is the precedent).
-const CODEBLOCK_CLASS = {
-  root: requireClass(codeblockStyles.root, "codeblock.module.css", "root"),
-  header: requireClass(codeblockStyles.header, "codeblock.module.css", "header"),
-  language: requireClass(codeblockStyles.language, "codeblock.module.css", "language"),
-  pre: requireClass(codeblockStyles.pre, "codeblock.module.css", "pre"),
-  code: requireClass(codeblockStyles.code, "codeblock.module.css", "code"),
 };
 
 type State = { status: "loading" } | { status: "ok"; svg: string } | { status: "error" };
@@ -88,12 +76,8 @@ export function MermaidDiagram({ source, renderTimeoutMs = 10000 }: MermaidDiagr
     // Same styling as a fenced code block, plus the honest note.
     body = (
       <div className={CODEBLOCK_CLASS.root}>
-        <div className={CODEBLOCK_CLASS.header}>
-          <span className={CODEBLOCK_CLASS.language}>{MERMAID_FENCE_LANGUAGE}</span>
-        </div>
-        <pre className={CODEBLOCK_CLASS.pre}>
-          <code className={CODEBLOCK_CLASS.code}>{source}</code>
-        </pre>
+        <CodeBlockHeader language={MERMAID_FENCE_LANGUAGE} />
+        <CodeBlockPre>{source}</CodeBlockPre>
         <p className={CLASS.error}>Couldn&apos;t render this diagram.</p>
       </div>
     );
