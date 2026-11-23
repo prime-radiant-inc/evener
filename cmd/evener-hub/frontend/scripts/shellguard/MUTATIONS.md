@@ -138,3 +138,77 @@ overlay dock's idiom), the re-run's hover-card journeys pass, and
 silently regress.
 
 **Verified:** 2026-11-23. **Expect:** fail.
+
+## The phone Overview family pins the sheet-owned activity counts and the
+folded card's expansion (`measureOverview()`/`assertOverview()` and
+`overviewOnPage()`'s phone arm, the `shellguard-entry.tsx` harness)
+
+The group changed with the design ruling it pins: e6ce393c69 folded the
+phone's inspectors into one Overview sheet (design-system.md section 12),
+so the phone's pane bottom - the composer card alone - carries neither the
+old `composer-activity-line` nor any `[data-activity-tab]`, and the pane's
+Overview entry opens the sheet first, whose activity row opens the shared
+ActivitySidebar on its tab. The assertions flipped with it:
+
+- The phone's expansion wait no longer treats the removed line as the
+  signal. It measures the folded resting card first - throwing when the
+  card is not resting folded, so the growth comparison can never be
+  vacuous - then requires the typed draft to drop `data-folded` AND grow
+  the card above the resting height (60px folded, 136px with the draft on
+  this fixture): an attribute flip without real growth still fails.
+- `assertOverview` treats the phone's missing activity surface as the
+  expected state: `footerTabs` and `strayActivityTabs` (any activity tab
+  inside the composer form) must both be empty and `footer` null, each
+  violation reporting the offending geometry. The desktop statusbar arm is
+  unchanged and still must carry exactly agents, jobs, watches, tasks.
+- The trusted flow's phone pane-Overview step walks the sheet: trigger ->
+  inspection sheet (the dialog holding the activity rows) -> agents row ->
+  shared sidebar, and its focus-return expectation is the focusable ⋯
+  button - the guard's hook sits on the glyph span inside it, and the sheet
+  passes that button as the sidebar's focus-return element.
+
+**Mutation performed:** the red side is the stale guard against the
+shipped app - `npm run shellguard` on the clean branch tip (cfec63c9ec).
+The catch proof for the flipped absence assertions restores the pre-sheet
+composer (`git checkout e6ce393c69^ -- Composer.tsx composer.module.css`;
+no later commit touched either file) and runs the isolation lane against
+the repaired guard. The sheet-flow flip's red side is the first repaired
+run, whose old pane-Overview wait timed out against the shipped sheet.
+
+**Result before the repair (stale guard, shipped app):** FAIL - eight
+lines, one per phone Overview case (390px and 320px, light and dark, child
+close and escape), plus the isolation lane:
+
+```
+shellguard FAIL: Overview 390px light XL child close: content expands the phone composer for its activity-line measurement
+shellguard FAIL: Overview 320px dark XL child escape: content expands the phone composer for its activity-line measurement
+```
+
+The first repaired run then caught the second stale expectation in the same
+family (page-text and child witnesses elided):
+
+```
+trusted interaction: page eval threw: ... Error: opened pane Overview: ⋯ ... Find in session ... Agents 100/100 ... ; child witness: {... "overview":{"open":false,...},"mountedOverview":false}
+```
+
+**Result with the pre-sheet composer (repaired guard, old app):** FAIL -
+the new absence assertions, with the offending geometry:
+
+```
+'actual pane footer identities [["agents","jobs","watches","tasks"]]',
+'phone composer grew an activity line: {"box":{"left":69.71875,"right":374,"top":710.828125,"bottom":754.828125,"width":304.28125,"height":44},"path":null,"chips":[{"tab":"agents","box":{"left":69.71875,"right":145.75,"top":710.828125,"bottom":754.828125,"width":76.03125,"height":44}},{"tab":"jobs","box":{"left":149.75,"right":219.125,"top":710.828125,"bottom":754.828125,"width":69.375,"height":44}},{"tab":"watches","box":{"left":223.125,"right":294.21875,"top":710.828125,"bottom":754.828125,"width":71.09375,"height":44}},{"tab":"tasks","box":{"left":298.21875,"right":374,"top":710.828125,"bottom":754.828125,"width":75.78125,"height":44}}],"chipRow":{"box":{"left":69.71875,"right":374,"top":710.828125,"bottom":754.828125,"width":304.28125,"height":44},"scrollWidth":304,"clientWidth":304}}'
+```
+
+The expansion wait itself passed against the old composer (the card still
+unfolds on content), so the new signal is independent of the surface the
+old one was tied to.
+
+**Result after the repair:** PASS - `npm run shellguard` exits 0, the
+isolation lane reports 1 test 1 pass, and the sweep prints all ten
+Overview cases (two desktop, eight phone) with no FAIL lines:
+
+```
+shellguard ok: document 900px in a 900px viewport, rail body scrolls (4311px in 848px), 132 tree rows; mobile Sheet body scrolls (5992px in 790px); 401 mobile tap targets all >= 44px; 2 pane-local footers stay within their panes; Dockview native resize keeps the document bounded; floating placement, overhang and native input survive resize
+```
+
+**Verified:** 2026-11-23. **Expect:** fail.

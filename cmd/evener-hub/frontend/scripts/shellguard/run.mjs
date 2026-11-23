@@ -842,8 +842,25 @@ async function chooseOverviewMenu(send, selector) {
   await settleOverview(send);
 }
 
-async function choosePaneOverview(send, selector) {
+async function choosePaneOverview(send, selector, mobile) {
   await clickControl(send, selector);
+  if (mobile) {
+    // The phone's one Overview entry opens the inspection sheet first
+    // (design-system.md section 12): the sheet's activity row is what opens
+    // the shared ActivitySidebar, on its tab, dismissing the sheet behind
+    // it - the drill StackHost's own test pins.
+    await waitForDom(
+      send,
+      `document.querySelector('[role="dialog"]')?.querySelector('[data-activity-tab="agents"]') !== null`,
+      "phone Overview entry opened its inspection sheet",
+    );
+    await clickControl(send, '[role="dialog"] [data-activity-tab="agents"]');
+    await waitForDom(
+      send,
+      `!document.querySelector('[role="dialog"]') && document.querySelector(${JSON.stringify(OVERVIEW)}) !== null`,
+      "the sheet's activity row opened the shared Overview",
+    );
+  }
   await waitForDom(send, `document.querySelector(${JSON.stringify(OVERVIEW)})`, "opened pane Overview");
   await settleOverview(send);
 }
@@ -960,14 +977,23 @@ async function measureOverview(send) {
       return measure(element, expected);
     });
     const close = aside.querySelector('button[aria-label="Close Overview"]');
-    // The activity surface: the pane's status bar on desktop, the quiet line
-    // above the composer card on a phone (the phone pane renders no footer
-    // strip).
+    // The activity surface: the pane's status bar on desktop. A phone has
+    // none - its pane bottom is the composer card alone, and the Overview
+    // sheet owns the activity counts (design-system.md section 12), so the
+    // phone renders no footer strip and the composer no activity line. The
+    // measurement still looks for the removed line and for any activity tab
+    // inside the composer form, so a phone composer that grows either fails
+    // the guard instead of passing vacuously.
     const surface = mobile
       ? document.querySelector('[data-testid="composer-activity-line"]')
       : Array.from(document.querySelectorAll('[data-testid="statusbar"]'))
           .find(e => !e.closest('[data-pane-footer-fixture]')) ?? null;
     const chips = surface ? Array.from(surface.querySelectorAll('[data-activity-tab]')) : [];
+    const strayActivityTabs = mobile
+      ? Array.from(document.querySelectorAll('[data-testid="composer-form"] [data-activity-tab]')).map(
+          button => button.dataset.activityTab,
+        )
+      : [];
     const chipRow = chips[0]?.parentElement ?? null;
     const path = surface?.querySelector('[data-testid="composer-repo-path"]');
     return {
@@ -975,6 +1001,7 @@ async function measureOverview(send) {
       sidebar: box(aside), categories, values, close: close && box(close),
       tapMin: parseFloat(getComputedStyle(aside).getPropertyValue('--tap-min')),
       footerTabs: surface ? [chips.map(button => button.dataset.activityTab)] : [],
+      strayActivityTabs,
       footer: surface ? (() => {
         return {
           box: box(mobile ? (chipRow ?? surface) : surface),
@@ -1092,13 +1119,12 @@ function assertOverview(result, viewport, theme) {
     result.close.bottom > viewport.height + 1
   )
     failures.push(`close control escapes viewport: ${JSON.stringify(result.close)}`);
-  // The focused session pane carries its activity tabs on both viewports:
-  // desktop draws them in the pane's status bar, a phone keeps them in the
-  // engaged composer's control row, which is the pane's one bottom surface.
-  if (
-    result.footerTabs.length !== 1 ||
-    JSON.stringify(result.footerTabs[0]) !== JSON.stringify(["agents", "jobs", "watches", "tasks"])
-  )
+  // The focused session pane's activity tabs live on the pane's status bar
+  // on desktop. A phone renders none in its pane bottom - the composer card
+  // - because the Overview sheet owns the counts as rows (design-system.md
+  // section 12); the categories above pin those rows.
+  const expectedFooterTabs = viewport.mobile ? [] : [["agents", "jobs", "watches", "tasks"]];
+  if (JSON.stringify(result.footerTabs) !== JSON.stringify(expectedFooterTabs))
     failures.push(`actual pane footer identities ${JSON.stringify(result.footerTabs)}`);
   if (JSON.stringify(result.categories.map((c) => c.text)) !== JSON.stringify(labels))
     failures.push(`categories/counts ${JSON.stringify(result.categories.map((c) => c.text))}`);
@@ -1141,40 +1167,15 @@ function assertOverview(result, viewport, theme) {
       if (!control || control.width < result.tapMin - 1 || control.height < result.tapMin - 1)
         failures.push(`sub-floor Overview target: ${JSON.stringify(control)}`);
     }
-    const footer = result.footer;
-    if (!footer) {
-      failures.push("engaged phone composer does not render its activity line");
-    } else {
-      // The phone pane renders no footer strip: the quiet line above the
-      // composer card carries the same four activity tabs, each at the tap
-      // floor and never clipped.
-      if (footer.chips.length !== 4) failures.push(`phone composer activity chips: ${JSON.stringify(footer.chips)}`);
-      for (const chip of footer.chips) {
-        if (!chip.glyphVisible)
-          failures.push(`phone composer activity chip ${chip.tab} lost its glyph: ${JSON.stringify(chip)}`);
-        if (
-          chip.box.width < result.tapMin - 1 ||
-          chip.box.height < result.tapMin - 1 ||
-          chip.box.top < footer.box.top - 1 ||
-          chip.box.bottom > footer.box.bottom + 1
-        )
-          failures.push(`phone composer activity chip ${chip.tab} misses the tap floor: ${JSON.stringify(chip.box)}`);
-      }
-      const row = footer.chipRow;
-      if (!row || row.box === null) {
-        failures.push(`phone composer chip row is missing: ${JSON.stringify(footer)}`);
-      } else {
-        if (row.scrollWidth > row.clientWidth + 1)
-          failures.push(
-            `phone composer chip row clips its chips (${row.scrollWidth}px in ${row.clientWidth}px): ${JSON.stringify(row)}`,
-          );
-        for (const chip of footer.chips) {
-          if (chip.box.left < row.box.left - 1 || chip.box.right > row.box.right + 1)
-            failures.push(
-              `phone composer activity chip ${chip.tab} is clipped by its row: ${JSON.stringify(chip.box)}`,
-            );
-        }
-      }
+    // The engaged phone composer carries no activity surface: the Overview
+    // sheet owns the counts, so the composer must not grow the removed
+    // activity line, and no activity tab may appear in its form. Measured,
+    // not assumed - each failure carries the offending geometry.
+    if (result.footer) {
+      failures.push(`phone composer grew an activity line: ${JSON.stringify(result.footer)}`);
+    }
+    if (result.strayActivityTabs.length) {
+      failures.push(`phone composer activity tabs in its form: ${JSON.stringify(result.strayActivityTabs)}`);
     }
   }
   if (result.document.width > viewport.width + 1 || result.document.height > viewport.height + 1)
@@ -1310,11 +1311,14 @@ async function trustedOverviewFlow(send, viewport, childGesture) {
   };
   // The rail opener is removed when a phone's Sessions drawer closes.
   await dismiss("close", pane);
-  await choosePaneOverview(send, overviewTrigger(pane));
+  await choosePaneOverview(send, overviewTrigger(pane), viewport.mobile);
   await clickControl(send, `${OVERVIEW} [role="radio"][aria-label="About"]`);
+  // The phone's Overview entry carries its hook on the ⋯ glyph inside the
+  // button, and the sheet passes that button as the sidebar's focus-return
+  // element - so the expected landing is the button, not the glyph.
   await evaluate(
     send,
-    `void (window.__overviewExpectedButton = document.querySelector(${JSON.stringify(overviewTrigger(pane))}))`,
+    `void (window.__overviewExpectedButton = document.querySelector(${JSON.stringify(overviewTrigger(pane))})?.closest("button"))`,
   );
   await dismiss("escape", pane, true);
 
@@ -1385,7 +1389,7 @@ async function trustedOverviewFlow(send, viewport, childGesture) {
   }
   if (viewport.mobile) {
     if (!(await evaluate(send, "window.overviewGuardState().overview.open")))
-      await choosePaneOverview(send, overviewTrigger(pane));
+      await choosePaneOverview(send, overviewTrigger(pane), viewport.mobile);
     await clickControl(send, `${OVERVIEW} [role="radio"][aria-label^="Agents"]`);
     await waitForDom(
       send,
@@ -1429,7 +1433,7 @@ async function trustedOverviewFlow(send, viewport, childGesture) {
     const childActions = overviewTrigger(childPaneId, "local:overview-child");
     await evaluate(
       send,
-      `void (window.__overviewExpectedButton = document.querySelector(${JSON.stringify(childActions)}))`,
+      `void (window.__overviewExpectedButton = document.querySelector(${JSON.stringify(childActions)})?.closest("button"))`,
     );
     await waitForDom(
       send,
@@ -1599,12 +1603,32 @@ export async function overviewOnPage(cdpEndpoint, vitePort, viewport, theme, chi
     const fixture = preparePage && (await preparePage(send));
     if (viewport.mobile) {
       const editor = '[data-testid="composer-form"] [role="textbox"]';
+      const card = '[data-testid="composer-input-card"]';
+      // The phone composer rests folded in its one-line shape; content
+      // unfolds the card (design-system.md section 12). Measure the resting
+      // card first, so the wait below asserts real growth, not just the
+      // data-folded attribute flipping off.
+      const resting = await evaluate(
+        send,
+        `(() => {
+        const card = document.querySelector(${JSON.stringify(card)});
+        if (!card) throw new Error('phone composer card missing');
+        return { folded: card.getAttribute('data-folded'), height: card.getBoundingClientRect().height };
+      })()`,
+      );
+      if (resting.folded === null) {
+        throw new Error(`phone composer card is not resting folded: ${JSON.stringify(resting)}`);
+      }
       await evaluate(send, `document.querySelector(${JSON.stringify(editor)}).focus()`);
       await send("Input.insertText", { text: "overview phone draft" });
       await waitForDom(
         send,
-        `document.querySelector('[data-testid="composer-activity-line"]') !== null`,
-        "content expands the phone composer for its activity-line measurement",
+        `(() => {
+        const card = document.querySelector(${JSON.stringify(card)});
+        return card !== null && card.getAttribute('data-folded') === null &&
+          card.getBoundingClientRect().height > ${resting.height + 1};
+      })()`,
+        "content expands the phone composer",
       );
     }
     const result = await measureOverview(send);
@@ -1637,7 +1661,7 @@ export async function overviewOnPage(cdpEndpoint, vitePort, viewport, theme, chi
       await waitForDom(
         send,
         `document.querySelector(${JSON.stringify(editor)}).textContent === ''`,
-        "temporary activity-line draft cleared before trusted command journeys",
+        "temporary composer draft cleared before trusted command journeys",
       );
     }
     try {
