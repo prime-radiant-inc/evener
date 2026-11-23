@@ -1,5 +1,4 @@
-// The settings surface's shared rendering clock: run only while the pane's own
-// document is visible, and re-read on the first visible frame (useVisibleInterval).
+// Settings polls run only while the pane's own document is visible (useVisibleInterval).
 import { usePaneDocument } from "../../../shell/paneDocument";
 import { useVisibleInterval } from "../../../shell/useVisibleInterval";
 

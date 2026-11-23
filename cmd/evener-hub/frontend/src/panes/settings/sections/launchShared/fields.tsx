@@ -103,20 +103,16 @@ export const controllerLaunchFormPaths: LaunchFormPaths = {
   complete: (prefix, includeFiles) => extensionsStore.getState().completePaths(prefix, includeFiles),
 };
 
-/** Binds the form's path picker to one launch-config gateway, so a
- * host-scoped pane browses ITS host's filesystem (component 07b). */
-export function launchFormPaths(store: LaunchConfigStore): LaunchFormPaths {
-  return {
-    directory: {
-      validatePath: (path, kind) => store.getState().validatePath(path, kind),
-      createDirectory: (path) => store.getState().createDirectory(path),
-    },
-    complete: (prefix, includeFiles) => store.getState().completePaths(prefix, includeFiles),
-  };
-}
+/** Binds the form's path picker to the selected host's launch-config gateway (component 07b). */
+export const launchFormPaths = (store: LaunchConfigStore): LaunchFormPaths => ({
+  directory: {
+    validatePath: (path, kind) => store.getState().validatePath(path, kind),
+    createDirectory: (path) => store.getState().createDirectory(path),
+  },
+  complete: (prefix, includeFiles) => store.getState().completePaths(prefix, includeFiles),
+});
 
-/** The load state both launch-config panes narrow on. `globalDefaults` is the
- * project pane's read-only global layer; session defaults never fills it. */
+/** Both launch-config panes narrow on this; project adds its read-only globalDefaults. */
 export type LoadState =
   | { phase: "loading" }
   | { phase: "error"; message: string }

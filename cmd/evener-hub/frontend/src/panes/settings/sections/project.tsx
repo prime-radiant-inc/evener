@@ -60,8 +60,7 @@ export function ProjectSection({ host = LOCAL_HOST }: ProjectSectionProps) {
   // host's project layer rather than this hub's (component 07b). The cwd stays
   // in the route's ?cwd= query; the host comes from the settings route.
   const store = launchConfigStoreForHost(host);
-  // Browse-assisted path fields list THIS host's filesystem: same store and
-  // proxy allow-list as the validate/save calls above (component 07b).
+  // Browse-assisted path fields list THIS host's filesystem (component 07b).
   const paths = launchFormPaths(store);
   const [load, setLoad] = useState<LoadState>({ phase: "loading" });
   // A re-read of what this pane is already showing that failed: the form (and

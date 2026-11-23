@@ -44,8 +44,7 @@ export function LaunchServerSection({ host = LOCAL_HOST }: LaunchServerSectionPr
   // for the local hub, a per-host instance (over evener/host/request) for a
   // remote one. Resolved per render; the instance is stable per host.
   const store = launchConfigStoreForHost(host);
-  // Browse-assisted path fields list THIS host's filesystem: same store and
-  // proxy allow-list as the validate/save calls above (component 07b).
+  // Browse-assisted path fields list THIS host's filesystem (component 07b).
   const paths = launchFormPaths(store);
   const [load, setLoad] = useState<LoadState>({ phase: "loading" });
   // A re-read of content this pane is ALREADY showing that failed. Kept apart
