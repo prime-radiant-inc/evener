@@ -9,7 +9,7 @@
 // counters. Archived lists separately retain fork-original conversations as
 // nested session rows; delegate/job/watch detail belongs to session activity.
 
-import { approvalWaiting, type NavigationSessionSummary, type SessionWatch, type Source } from "@evener/appwire-client";
+import { approvalWaiting, type NavigationSessionSummary, type Source } from "@evener/appwire-client";
 import {
   type Band,
   type BoardState,
@@ -307,45 +307,10 @@ export function activeWatchCount(node: NavigationSessionSummary): number {
   return node.armed_watch_count ?? 0;
 }
 
-/** Counts armed states among the supplied domain rows. */
-export function armedWatchCount(watches: readonly SessionWatch[] | undefined): number {
-  return (watches ?? []).filter((watch) => watch.state === "armed").length;
-}
-
 /** Compact summary totals include retained and armed watches independently. */
 export function watchCountLabel(armed: number, total: number): string {
   const label = `${total} watch${total === 1 ? "" : "es"}`;
   return total === armed ? label : `${label} · ${armed} armed`;
-}
-
-// The states a subagent still has live work in, read through displayState
-// (approval_pending displays as "awaiting"). The same set marks every level:
-// a subagent is current when its own state is here, when it has a running
-// job, or when any descendant is current by this same rule - so an idle
-// subagent whose child awaits the user never folds as "inactive".
-const CURRENT_SUBAGENT_STATES: ReadonlySet<string> = new Set([
-  "active",
-  "awaiting",
-  "warning",
-  "restartRequired",
-  "notLoaded",
-  // Not "done" in the fold's sense: a failed subagent needs the user (its
-  // row paints danger), and warning - the less severe signal - is current.
-  "errored",
-]);
-
-// The wire's children carry fork originals (kind "fork") beside subagents -
-// the rail renders those as nested session rows, and the activity surfaces
-// count and list agents only.
-// The activity sidebar's Agents tab splits its scope's children on this; the
-// rail itself no longer does (its rows follow the wire's order below). Reads
-// displayState, not the raw wire state: approval_pending displays as
-// "awaiting" (the rail's needs-you badge counts it), so a blocked subagent
-// is current here too, never folded as inactive about the same node.
-export function subagentIsCurrent(child: NavigationSessionSummary): boolean {
-  if (CURRENT_SUBAGENT_STATES.has(displayState(child))) return true;
-  if ((child.running_job_count ?? 0) > 0) return true;
-  return child.children.some(subagentIsCurrent);
 }
 
 // One session summary, one leaf row. The row's identity is the session
@@ -491,18 +456,6 @@ export function effectiveSessionState(session: NavigationSessionSummary): string
     return "active";
   }
   return presented;
-}
-
-export interface ActiveWorkSummary {
-  runningJobs: number;
-}
-
-export function activeWorkSummary(node: RailSession): ActiveWorkSummary {
-  let runningJobs = node.running_job_count ?? 0;
-  for (const child of node.children) {
-    runningJobs += activeWorkSummary(child).runningJobs;
-  }
-  return { runningJobs };
 }
 
 // Namespaced so a project branch's own id can never collide with a

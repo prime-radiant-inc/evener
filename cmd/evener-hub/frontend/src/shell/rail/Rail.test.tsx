@@ -451,7 +451,7 @@ describe("resource-backed Rail", () => {
     }
   });
 
-  // The clock's subscription boundary. activeWorkSummary runs on every
+  // The clock's subscription boundary. effectiveSessionState runs on every
   // SessionRow render, so counting it pins whether a tick woke the memoized row
   // or only its stamp - the boundary the row's own comment claims.
   test("a clock tick wakes only the age stamp, not the row around it", () => {
