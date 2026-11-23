@@ -133,10 +133,8 @@ func (p *Protocol) ListModels(ctx context.Context, res registry.Resolved) ([]reg
 		if err := json.Unmarshal(r.Body, &payload); err != nil {
 			return nil, fmt.Errorf("models.list: %w", err)
 		}
-		// Rows decode independently: a row whose shape the reader cannot
-		// read is dropped, so one alien row cannot fail the healthy ones.
-		// Only a listing with no usable row at all fails, and it fails
-		// with the row's own decode error.
+		// Rows decode independently; the guard below fails only a listing
+		// with no usable row, wrapping the row's own decode error.
 		openAIRows, dataErr := requestutil.DecodeListingRows[openAIModelListEntry](payload.Data)
 		codexRows, modelsErr := requestutil.DecodeListingRows[codexModelListEntry](payload.Models)
 		for _, e := range openAIRows {

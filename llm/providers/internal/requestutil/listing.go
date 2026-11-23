@@ -83,20 +83,21 @@ type ListedLimits struct {
 // survives. Both /models readers share it, so a level list keeps one
 // meaning across listings.
 func NormalizeReasoningEfforts(levels []string) []string {
-	if len(levels) == 0 {
-		return nil
-	}
-	out := make([]string, 0, len(levels))
-	seen := make(map[string]bool, len(levels))
+	filtered := make([]string, 0, len(levels))
 	for _, level := range levels {
 		effort := strings.TrimSpace(level)
-		if effort == "" || strings.EqualFold(effort, "ultra") || seen[effort] {
+		if effort == "" || isUltraPreset(effort) {
 			continue
 		}
-		seen[effort] = true
-		out = append(out, effort)
+		filtered = append(filtered, effort)
 	}
-	return out
+	return DedupStrings(filtered)
+}
+
+// isUltraPreset reports whether an advertised effort name is the Codex
+// client's `ultra` delegation preset, not an effort the wire accepts.
+func isUltraPreset(effort string) bool {
+	return strings.EqualFold(effort, "ultra")
 }
 
 // NormalizeDefaultReasoningEffort returns the effort name a listing states
@@ -105,7 +106,7 @@ func NormalizeReasoningEfforts(levels []string) []string {
 // the wire accepts.
 func NormalizeDefaultReasoningEffort(s string) string {
 	s = strings.TrimSpace(s)
-	if s == "" || strings.EqualFold(s, "ultra") {
+	if s == "" || isUltraPreset(s) {
 		return ""
 	}
 	return s
@@ -138,6 +139,9 @@ func ApplyListedReasoningFacts(caps *registry.Caps, r ListedReasoning, levels []
 			caps.ThinkingAlwaysOn = new(true)
 		}
 		if r.SupportedEfforts != nil {
+			// OpenRouter's efforts are copied verbatim, served order:
+			// the ultra preset is a Codex fact, so the levels
+			// normalizer does not apply to this spelling.
 			caps.EffortValues = DedupStrings(r.SupportedEfforts)
 		}
 	}
