@@ -620,18 +620,6 @@ func TestAppendColdDelegateAttentionMessageDurablyWithOpen_InvalidInputs(t *test
 	}
 }
 
-func TestAppendColdAttentionResolutionWithOpen_InvalidInputs(t *testing.T) {
-	t.Parallel()
-	// Empty sessionID.
-	if err := appendColdAttentionResolutionWithOpen("path", "", nil, delegateAttentionConsumed, nil); err == nil {
-		t.Fatal("empty sessionID should error")
-	}
-	// Nil opener.
-	if err := appendColdAttentionResolutionWithOpen("path", "s1", nil, delegateAttentionConsumed, nil); err == nil {
-		t.Fatal("nil opener should error")
-	}
-}
-
 var testTime = time.Unix(1000, 0).UTC()
 
 // Ensure errors package is used (for potential future assertions).

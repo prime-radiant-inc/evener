@@ -98,6 +98,15 @@ func readExistingDelegateAttentionFold(path, expectedSessionID string) (delegate
 // resolves the rows it no longer carries in one journal batch per delegate,
 // and lowers a rowless legacy boolean through the legacy event.
 func (c *delegateTreeController) reconcileDelegateAttentionFromTranscripts() error {
+	return c.reconcileDelegateAttentionFromTranscriptsPreserving(nil)
+}
+
+// reconcileDelegateAttentionFromTranscriptsPreserving reconciles the journal
+// queue with the transcripts, keeping the rows in preserved. Bootstrap passes
+// the owed starts it just committed: their legacy consumed markers hide them
+// from the transcript's pending set, but the recovered generation still owes
+// them, so resolving them here would lose its wake.
+func (c *delegateTreeController) reconcileDelegateAttentionFromTranscriptsPreserving(preserved map[string]map[string]struct{}) error {
 	if c == nil {
 		return errors.New("delegate attention controller is nil")
 	}
@@ -154,6 +163,9 @@ func (c *delegateTreeController) reconcileDelegateAttentionFromTranscripts() err
 		for _, row := range aggregate.PendingAttention {
 			have[row.AttentionID] = struct{}{}
 			if _, keep := want[row.AttentionID]; !keep {
+				if _, recovered := preserved[id][row.AttentionID]; recovered {
+					continue
+				}
 				events = append(events, attentionResolvedEvent(id, row.AttentionID))
 			}
 		}

@@ -882,7 +882,7 @@ func TestDelegateAttention_ColdResolutionRetryReestablishesDurabilityBeforeStopA
 	}
 
 	fs.failNextAmbiguousDurability(2)
-	if err := appendColdAttentionResolutionWithOpen(path, sessionID, []string{attentionID}, delegateAttentionDiscarded, open); err == nil {
+	if err := appendColdAttentionResolutionForGenerationWithOpen(path, sessionID, []string{attentionID}, delegateAttentionDiscarded, 0, open); err == nil {
 		t.Fatal("ambiguous cold resolution append unexpectedly succeeded")
 	}
 	fold, err := readDelegateAttentionFold(path, sessionID)
@@ -892,7 +892,7 @@ func TestDelegateAttention_ColdResolutionRetryReestablishesDurabilityBeforeStopA
 	if got := fold.resolutions[attentionID]; got != delegateAttentionDiscarded {
 		t.Fatalf("fault fixture resolution = %q, want readable discard", got)
 	}
-	if err := appendColdAttentionResolutionWithOpen(path, sessionID, []string{attentionID}, delegateAttentionDiscarded, open); err != nil {
+	if err := appendColdAttentionResolutionForGenerationWithOpen(path, sessionID, []string{attentionID}, delegateAttentionDiscarded, 0, open); err != nil {
 		t.Fatalf("retry existing cold resolution: %v", err)
 	}
 	if got := fs.successfulSyncsAfterFailure(); got == 0 {
@@ -3982,8 +3982,8 @@ func TestDelegateAttention_RestartRearmsColdChildAndDrainsExactAttention(t *test
 	if generation != 1 || trigger != delegatestore.TriggerAttention || !open || !needsAttention {
 		t.Fatalf("owed attention generation = generation:%d trigger:%q open:%t needs:%t, want 1/attention/open/true", generation, trigger, open, needsAttention)
 	}
-	if !reflect.DeepEqual(unresolved, map[string]struct{}{remainingID: {}}) {
-		t.Fatalf("restart unresolved IDs = %#v, want only %q", unresolved, remainingID)
+	if !reflect.DeepEqual(unresolved, map[string]struct{}{owedID: {}, remainingID: {}}) {
+		t.Fatalf("restart unresolved IDs = %#v, want %q and %q", unresolved, owedID, remainingID)
 	}
 	if !attentionSeen {
 		t.Fatal("owed generation provider request omitted the exact consumed attention")
@@ -5639,8 +5639,14 @@ func TestDelegateAttention_UnreachableOwnerTransfersToNearestReachableAncestor(t
 	if err != nil {
 		t.Fatalf("read child attention: %v", err)
 	}
-	if got := childFold.resolutions[attentionID]; got != delegateAttentionDiscarded {
-		t.Fatalf("unreachable child resolution = %q, want discarded after transfer", got)
+	if _, resolved := childFold.resolutions[attentionID]; resolved {
+		t.Fatalf("unreachable child transcript resolution = %q, want the journal to own it", childFold.resolutions[attentionID])
+	}
+	fresh.delegateController.mu.Lock()
+	_, sourceResolved := fresh.delegateController.durable["dlg_child"].ResolvedAttention[attentionID]
+	fresh.delegateController.mu.Unlock()
+	if !sourceResolved {
+		t.Fatalf("unreachable child attention %q was not resolved in the journal after the transfer", attentionID)
 	}
 	rootFold, err := readDelegateAttentionFold(transcriptPath(c.stateDir, "root-session"), "root-session")
 	if err != nil {
@@ -5651,7 +5657,7 @@ func TestDelegateAttention_UnreachableOwnerTransfersToNearestReachableAncestor(t
 	}
 }
 
-func TestDelegateAttention_AncestorFsyncPrecedesChildDiscard(t *testing.T) {
+func TestDelegateAttention_TransferFsyncsAncestorWithoutWritingSource(t *testing.T) {
 	c, journalPath := newDelegateControllerTestHarness(t, 3, 1)
 	seedStableAttentionRepairDelegate(t, c, "dlg_parent", "", true)
 	seedStableAttentionRepairDelegate(t, c, "dlg_child", "dlg_parent", false)
@@ -5674,8 +5680,14 @@ func TestDelegateAttention_AncestorFsyncPrecedesChildDiscard(t *testing.T) {
 	t.Cleanup(func() { _ = fresh.closeOwnedDelegateStore() })
 	paths := fs.syncedPaths()
 	parentIndex, childIndex := pathIndex(paths, parentPath), pathIndex(paths, childPath)
-	if parentIndex < 0 || childIndex < 0 || parentIndex >= childIndex {
-		t.Fatalf("attention repair fsync order = %#v, want ancestor %q before child %q", paths, parentPath, childPath)
+	if parentIndex < 0 || childIndex >= 0 {
+		t.Fatalf("attention repair fsync paths = %#v, want only durable ancestor %q with the source left unwritten", paths, parentPath)
+	}
+	fresh.delegateController.mu.Lock()
+	_, sourceResolved := fresh.delegateController.durable["dlg_child"].ResolvedAttention[attentionID]
+	fresh.delegateController.mu.Unlock()
+	if !sourceResolved {
+		t.Fatalf("transferred attention %q was not resolved in the journal", attentionID)
 	}
 }
 
@@ -5746,8 +5758,14 @@ func TestDelegateAttention_StartupRepairUsesNoProvider(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read child attention: %v", err)
 	}
-	if got := childFold.resolutions[attentionID]; got != delegateAttentionDiscarded {
-		t.Fatalf("provider-free child discard = %q", got)
+	if _, resolved := childFold.resolutions[attentionID]; resolved {
+		t.Fatalf("provider-free child transcript resolution = %q, want the journal to own it", childFold.resolutions[attentionID])
+	}
+	fresh.delegateController.mu.Lock()
+	_, sourceResolved := fresh.delegateController.durable["dlg_child"].ResolvedAttention[attentionID]
+	fresh.delegateController.mu.Unlock()
+	if !sourceResolved {
+		t.Fatalf("provider-free child attention %q was not resolved in the journal", attentionID)
 	}
 }
 

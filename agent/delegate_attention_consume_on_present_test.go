@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"path/filepath"
@@ -100,10 +101,12 @@ func reopenDelegateControllerForTest(t *testing.T, journalPath string) *delegate
 	return c
 }
 
-// #5681 regression: a stop that discards the pending row between ReserveAttention
-// and CommitStart must abort the reservation cleanly. The row was never
-// consumed, so it stays durably queued, no reservation survives to pin later
-// drives, and no in-memory latch claims a generation that never ran.
+// #5681 regression, through the real stop admission: a job_stop that lands
+// between ReserveAttention and CommitStart must admit immediately and cancel
+// the uncommitted reservation through the stop's start claim. It must not park
+// on the reservation until the generation commits ahead of it. The row was
+// never consumed, so it stays durably queued, no reservation survives to pin
+// later drives, no generation launches, and a fresh wake starts normally.
 func TestDelegateAttentionReserveCommitGapStopAbortsWithoutLeaking(t *testing.T) {
 	t.Parallel()
 	const (
@@ -113,36 +116,34 @@ func TestDelegateAttentionReserveCommitGapStopAbortsWithoutLeaking(t *testing.T)
 	)
 	c, runtime, _ := newDelegateAttentionAcceptanceHarness(t, sessionID, nil, attentionID)
 	runtime.owningDelegateID = delegateID
+	root := newAttentionRepairRoot(c.stateDir, nil)
+	root.delegateController = c
+	c.rootRuntime = root
 	reservation, err := c.ReserveAttention(runtime, attentionID)
 	if err != nil {
 		t.Fatalf("ReserveAttention: %v", err)
 	}
-	// A stop landing in the gap cancels the reservation's run context; the
-	// commit re-reads it under the lock and must abort there.
-	c.mu.Lock()
-	record, err := c.reservationRecordLocked(reservation)
-	if err != nil || record == nil || record.cancel == nil {
-		c.mu.Unlock()
-		t.Fatalf("reservation record = %#v, err %v", record, err)
+	// Before the fix the job_stop waited on this reservation's done channel and
+	// never returned while the start stayed in the reserve-to-commit gap.
+	result, cancelPlan, _, err := c.StopSubtreeAndDrive(context.Background(), rootDelegateActor("root-session"), delegateID)
+	if err != nil {
+		t.Fatalf("job_stop in the reserve-to-commit gap: %v", err)
 	}
-	record.cancel()
-	c.mu.Unlock()
+	if result.id != delegateID {
+		t.Fatalf("job_stop target = %q, want %q", result.id, delegateID)
+	}
+	executeDelegateCancelPlan(cancelPlan)
+
+	// The canceled reservation makes the commit refuse and clean itself up.
 	if _, err := c.CommitStart(reservation); !errors.Is(err, errDelegateTargetBusy) {
 		t.Fatalf("CommitStart after the stop = %v, want target busy", err)
-	}
-	// With the reservation aborted, the stop admission no longer waits on it.
-	if _, _, _, err := c.StopSubtree(rootDelegateActor("root-session"), delegateID); err != nil {
-		t.Fatalf("StopSubtree after the aborted commit: %v", err)
 	}
 	if len(c.reservations) != 0 {
 		t.Fatalf("reservations after the aborted commit = %d, want the gap stop to release every one", len(c.reservations))
 	}
 	rows := pendingAttentionRowsForTest(t, c, delegateID)
-	if len(rows) != 1 || rows[0].AttentionID != attentionID {
-		t.Fatalf("pending rows after the gap stop = %#v, want the untouched row", rows)
-	}
-	if rows[0].HeldThrough != 0 {
-		t.Fatalf("gap stop stamped hold %d on a row no generation presented, want unheld", rows[0].HeldThrough)
+	if len(rows) != 1 || rows[0].AttentionID != attentionID || rows[0].HeldThrough != 0 {
+		t.Fatalf("pending rows after the gap stop = %#v, want the untouched unheld row", rows)
 	}
 	if got := acceptedTriggerForTest(t, runtime); got != "" {
 		t.Fatalf("accepted latch = %q after the aborted commit, want empty", got)
@@ -150,12 +151,37 @@ func TestDelegateAttentionReserveCommitGapStopAbortsWithoutLeaking(t *testing.T)
 	c.mu.Lock()
 	blocker := c.attentionStartBlockerLocked(delegateID)
 	_, stillQueued := c.delegateAttentionWakeIDsLocked(delegateID)[attentionID]
+	generation := c.durable[delegateID].Generation
+	driver := c.stopDriver
 	c.mu.Unlock()
 	if blocker != nil {
 		t.Fatal("the aborted reservation still blocks attention starts")
 	}
 	if !stillQueued {
 		t.Fatal("the discarded row left the durable queue: nothing was consumed, so nothing may be lost")
+	}
+	if generation != 0 {
+		t.Fatalf("delegate committed generation %d, want the gap stop to launch none", generation)
+	}
+	if needsAttentionForTest(t, c, delegateID) {
+		t.Fatal("NeedsAttention stayed true under the pending stop")
+	}
+	if driver == nil {
+		t.Fatal("the admitted stop started no reconcile driver")
+	}
+	select {
+	case <-driver.done:
+	case <-time.After(5 * time.Second): // TRIPWIRE: an idle target reconciles immediately; only a stuck drain reaches this
+		t.Fatal("the gap stop's reconcile driver did not drain")
+	}
+	// Nothing pins the queue once the stop settles: a fresh wake reserves and
+	// aborts cleanly.
+	fresh, err := c.ReserveAttention(runtime, attentionID)
+	if err != nil {
+		t.Fatalf("fresh wake after the gap stop: %v", err)
+	}
+	if err := c.AbortStart(fresh); err != nil {
+		t.Fatalf("abort the fresh wake: %v", err)
 	}
 }
 

@@ -386,7 +386,7 @@ func (s *Session) nameSessionFromCompactionTurn(ctx context.Context, turn schema
 }
 
 func appendColdAttentionResolution(path, expectedSessionID string, ids []string, disposition delegateAttentionResolution) (err error) {
-	return appendColdAttentionResolutionWithOpen(path, expectedSessionID, ids, disposition, transcript.OpenWriterForSession)
+	return appendColdAttentionResolutionForGenerationWithOpen(path, expectedSessionID, ids, disposition, 0, transcript.OpenWriterForSession)
 }
 
 func (s *Session) readMemoryIndex(scope string) memoryProjection {

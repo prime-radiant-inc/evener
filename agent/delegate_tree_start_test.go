@@ -934,6 +934,13 @@ func TestOwedLegacyCommitQueuesItsAttentionRowInTheStartBatch(t *testing.T) {
 	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_owed", "")
+	path := transcriptPath(c.stateDir, "child-dlg_owed")
+	writeDelegateAttentionTranscript(t, path, "child-dlg_owed", "att_legacy")
+	appendColdConsumedClaim(t, path, "child-dlg_owed", "att_legacy", 1)
+	owed, err := c.owedAttentionStartsFromTranscripts()
+	if err != nil || len(owed) != 1 || owed[0].attentionID != "att_legacy" {
+		t.Fatalf("owed starts = %#v (err %v), want the legacy claim", owed, err)
+	}
 	reservation, err := c.reserveOwedAttentionStart("dlg_owed", "att_legacy", 1)
 	if err != nil {
 		t.Fatalf("reserveOwedAttentionStart: %v", err)
@@ -947,6 +954,12 @@ func TestOwedLegacyCommitQueuesItsAttentionRowInTheStartBatch(t *testing.T) {
 	}
 	if _, err := c.CommitStart(reservation); err != nil {
 		t.Fatalf("CommitStart: %v", err)
+	}
+	// Bootstrap's next step reconciles the queue with the transcripts. The
+	// legacy consumed marker keeps the recovered row out of the transcript's
+	// pending set, so the reconcile must preserve what the owed start queued.
+	if err := c.reconcileDelegateAttentionFromTranscriptsPreserving(owedAttentionPreserveSet(owed)); err != nil {
+		t.Fatalf("reconcile after the owed commit: %v", err)
 	}
 	rows := pendingAttentionRowsForTest(t, c, "dlg_owed")
 	if len(rows) != 1 || rows[0].AttentionID != "att_legacy" || rows[0].HeldThrough != 0 {

@@ -480,10 +480,6 @@ func appendColdDelegateAttentionMessageDurablyWithOpen(path, expectedSessionID, 
 	return true, nil
 }
 
-func appendColdAttentionResolutionWithOpen(path, expectedSessionID string, ids []string, disposition delegateAttentionResolution, open delegateAttentionWriterOpener) (err error) {
-	return appendColdAttentionResolutionForGenerationWithOpen(path, expectedSessionID, ids, disposition, 0, open)
-}
-
 func appendColdAttentionResolutionForGenerationWithOpen(path, expectedSessionID string, ids []string, disposition delegateAttentionResolution, resumeGeneration uint64, open delegateAttentionWriterOpener) (err error) {
 	if expectedSessionID == "" {
 		return errors.New("cold attention resolution session ID is empty")

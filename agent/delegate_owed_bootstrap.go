@@ -71,6 +71,26 @@ type deferredOwedDelegateAttentionStart struct {
 	started delegateStartCommit
 }
 
+// owedAttentionPreserveSet names the rows this bootstrap queued for recovered
+// owed generations. Their transcripts still carry the legacy consumed marker
+// that hides them from the pending scan, so the reconcile must not resolve the
+// row the recovered generation is about to present.
+func owedAttentionPreserveSet(owed []delegateOwedAttentionStart) map[string]map[string]struct{} {
+	if len(owed) == 0 {
+		return nil
+	}
+	preserved := make(map[string]map[string]struct{}, len(owed))
+	for _, start := range owed {
+		set := preserved[start.delegateID]
+		if set == nil {
+			set = make(map[string]struct{}, 1)
+			preserved[start.delegateID] = set
+		}
+		set[start.attentionID] = struct{}{}
+	}
+	return preserved
+}
+
 func (s *Session) admitOwedDelegateAttentionStarts() error {
 	if s == nil || s.delegateController == nil {
 		return errors.New("owed delegate attention controller is unavailable")
@@ -82,6 +102,7 @@ func (s *Session) admitOwedDelegateAttentionStarts() error {
 	if err != nil {
 		return err
 	}
+	preserved := owedAttentionPreserveSet(owed)
 	gate := &owedBootstrapRestore{held: true, pending: make(map[*Session]func()), done: make(map[*subagent]bool)}
 	deferred := make([]deferredOwedDelegateAttentionStart, 0, len(owed))
 	for _, start := range owed {
@@ -91,7 +112,7 @@ func (s *Session) admitOwedDelegateAttentionStarts() error {
 		}
 		deferred = append(deferred, *admitted)
 	}
-	if err := s.delegateController.reconcileDelegateAttentionFromTranscripts(); err != nil {
+	if err := s.delegateController.reconcileDelegateAttentionFromTranscriptsPreserving(preserved); err != nil {
 		return errors.Join(err, s.abortOwedDelegateBootstrap(gate, err))
 	}
 	for _, restored := range gate.restored {

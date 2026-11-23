@@ -935,7 +935,9 @@ func repairPermanentlyUnreachableDelegateAttention(c *delegateTreeController) er
 			if _, err := appendColdDelegateAttentionMessageDurablyWithOpen(targetPath, targetSessionID, attentionID, message, now(), open); err != nil {
 				return fmt.Errorf("delegate %s transfer attention %s: %w", plan.sourceDelegateID, attentionID, err)
 			}
-			if err := appendColdAttentionResolutionWithOpen(sourcePath, sourceSessionID, []string{attentionID}, delegateAttentionDiscarded, open); err != nil {
+			// The source is resolved in the journal alone: its transcript keeps
+			// the rendered message, and a read-only source still transfers.
+			if err := c.forgetTransferredDelegateAttention(plan.sourceDelegateID, attentionID); err != nil {
 				return fmt.Errorf("delegate %s discard transferred attention %s: %w", plan.sourceDelegateID, attentionID, err)
 			}
 		}
