@@ -71,9 +71,7 @@
 
 /* The layout inside the add form's outlined Card. */
 .addForm {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
+  composes: stack3 from "../../../../styles/surface.module.css";
 }
 
 .formActions {
@@ -132,9 +130,7 @@
 }
 
 .switchRows {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
+  composes: stack3 from "../../../../styles/surface.module.css";
 }
 
 /* The marketplace editor's body and actions (spec 2026-09-07 §3): the form

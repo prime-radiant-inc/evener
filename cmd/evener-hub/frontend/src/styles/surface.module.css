@@ -26,6 +26,15 @@
   border-top: 1px solid var(--edge);
 }
 
+/* A plain vertical stack with one group step between its children: the
+ * layout a form, a settings section and a dialog body all open with. It is
+ * not a surface - consumers compose it for the arrangement alone. */
+.stack3 {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
 /* --- the summary tiles -----------------------------------------------
  * The two tiles under a page's primary task - a directory that is itself a
  * button and a status card that is not - share one inner layout: a row with
