@@ -21,6 +21,7 @@ import { DisclosurePersistenceContext } from "../../widgets/disclosure/disclosur
 import { requireClass } from "../../widgets/internal/requireClass";
 import { ScopeCrumbs } from "../statusbar/ScopeCrumbs";
 import { type ActivityTab, deriveScope } from "../statusbar/statusScope";
+import { isMobileViewport } from "../useIsMobile";
 import { useWorkspaceStore, workspaceStore } from "../workspace";
 import { ActivityViewport } from "./ActivityViewport";
 import styles from "./activitybar.module.css";
@@ -84,8 +85,11 @@ export function ActivitySidebar({ mobile = false }: { mobile?: boolean }) {
   useEffect(
     () => () => {
       if (returnFrame.current !== null) cancelAnimationFrame(returnFrame.current);
+      // The dock is desktop-only: a teardown that lands in the phone host ends
+      // the inspection rather than reopening it as the phone's blocking Overview.
+      if (!mobile && isMobileViewport()) activitySidebarStore.getState().close();
     },
-    [],
+    [mobile],
   );
   const close = useCallback(() => {
     const focusInside = sidebar.current?.contains(document.activeElement);
@@ -192,6 +196,10 @@ export function ActivitySidebar({ mobile = false }: { mobile?: boolean }) {
           transition={transition}
           data-testid="activity-sidebar"
           aria-label="Overview"
+          // The phone shell overlays the one stacked pane with focus trapped:
+          // a modal dialog there, the non-modal Overview region on desktop.
+          role={mobile ? "dialog" : undefined}
+          aria-modal={mobile ? true : undefined}
         >
           <FocusScope className={CLASS.focusBody} trap={mobile} autoFocus={false}>
             <div className={CLASS.head}>

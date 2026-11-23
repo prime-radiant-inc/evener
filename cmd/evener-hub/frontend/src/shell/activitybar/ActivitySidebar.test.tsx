@@ -28,9 +28,11 @@ import {
 import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
 import { resetDisclosureStoreForTests } from "../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../widgets/internal/requireClass";
+import { installSwitchableViewport } from "../appShellTestUtils";
 import { ClientProvider } from "../clientContext";
 import { conversationPaneLifetime } from "../paneLifetime";
 import { installFocusedScope } from "../statusbar/scopeTestUtils";
+import { resetMobileViewportForTests } from "../useIsMobile";
 import { currentSessionRef, type OpenPaneRecord, resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
 import { ActivitySidebar } from "./ActivitySidebar";
 import styles from "./activitybar.module.css";
@@ -853,6 +855,8 @@ test("activity tabs keep a named keyboard radio group without a visible heading"
   mount();
   await screen.findByRole("button", { name: /inspect/ });
   expect(screen.getByRole("complementary", { name: "Overview" })).toBeTruthy();
+  expect(screen.queryByRole("dialog", { name: "Overview" })).toBeNull();
+  expect(screen.getByTestId("activity-sidebar").getAttribute("aria-modal")).toBeNull();
   expect(screen.getByRole("radiogroup", { name: "Overview kind" })).toBeTruthy();
   expect(screen.queryByText("Overview kind")).toBeNull();
   await act(async () => fireEvent.keyDown(screen.getByRole("radio", { name: /Agents/ }), { key: "End" }));
@@ -890,6 +894,8 @@ test("phone Overview enters its selected category and contains sequential keyboa
     activitySidebarStore.getState().openWith("about", opener);
     mount(true);
     const sidebar = await screen.findByTestId("activity-sidebar");
+    expect(screen.getByRole("dialog", { name: "Overview" })).toBe(sidebar);
+    expect(sidebar.getAttribute("aria-modal")).toBe("true");
     const about = screen.getByRole("radio", { name: "About" });
     await waitFor(() => expect(document.activeElement).toBe(about));
     for (let step = 0; step < 20; step += 1) {
@@ -906,6 +912,42 @@ test("phone Overview enters its selected category and contains sequential keyboa
   } finally {
     opener.remove();
   }
+});
+
+test("the desktop dock ends its inspection when the phone host takes over", async () => {
+  const setMobile = installSwitchableViewport();
+  try {
+    connectionStore.getState().connect(activityClient());
+    installFocusedScope(ref);
+    activitySidebarStore.getState().openWith("agents");
+    const desktop = mount();
+    await screen.findByTestId("activity-sidebar");
+    // AppShell tears the desktop surface down once the breakpoint crosses;
+    // StackHost then mounts the phone surface in its place.
+    setMobile(true);
+    desktop.unmount();
+    mount(true);
+    expect(activitySidebarStore.getState().open).toBe(false);
+    expect(screen.queryByTestId("activity-sidebar")).toBeNull();
+    // No dialog claims the whole phone screen, so the reader's attention
+    // control is not blocked by an Overview the dock left open.
+    expect(document.querySelector('[aria-modal="true"]')).toBeNull();
+  } finally {
+    vi.unstubAllGlobals();
+    resetMobileViewportForTests();
+  }
+});
+
+test("a desktop remount keeps the dock's saved inspection", async () => {
+  connectionStore.getState().connect(activityClient());
+  installFocusedScope(ref);
+  activitySidebarStore.getState().openWith("agents");
+  const first = mount();
+  await screen.findByTestId("activity-sidebar");
+  first.unmount();
+  expect(activitySidebarStore.getState().open).toBe(true);
+  mount();
+  expect(await screen.findByTestId("activity-sidebar")).toBeTruthy();
 });
 
 test("phone Overview reopening during its exit returns focus to its selected category", async () => {
