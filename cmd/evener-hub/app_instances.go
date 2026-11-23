@@ -151,6 +151,16 @@ func (c *hubInstancesController) rememberCopilotAuthSignature() {
 	}
 }
 
+// adoptCopilotAuthSignature adopts the records on disk as already announced on
+// behalf of a writer outside this controller, such as the hub's own device
+// login. It takes mu itself; rememberCopilotAuthSignature expects the caller
+// to hold it.
+func (c *hubInstancesController) adoptCopilotAuthSignature() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.rememberCopilotAuthSignature()
+}
+
 // lockForWrite takes mu exclusively and clears the applied-write record, so
 // every mutation's answer to "did this call write?" is its own writes and not
 // a previous call's.

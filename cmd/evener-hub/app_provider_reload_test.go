@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -359,5 +360,82 @@ func TestCopilotRecordWatcherReportsCorruptionWithoutDeletingTheRecord(t *testin
 	}
 	if inst.CredentialSource != "none" {
 		t.Fatalf("credential source = %q, want the corrupt record to resolve no credential", inst.CredentialSource)
+	}
+}
+
+// TestCopilotDeviceLoginDoesNotEchoItsOwnRecordWrite runs the hub's real
+// device sign-in through the RPC surface: the login owns its broadcast, so the
+// sweep that adopts the record on disk must stay quiet about that same write.
+// Only an external login is the sweep's to announce.
+func TestCopilotDeviceLoginDoesNotEchoItsOwnRecordWrite(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	transport := newCopilotDeviceTransport()
+	transport.polls = []string{
+		`{"error":"authorization_pending"}`,
+		`{"access_token":"github-access-token","token_type":"bearer","scope":"read:user"}`,
+	}
+	var clockMu sync.Mutex
+	now := time.Now()
+	setNow := func(next time.Time) {
+		clockMu.Lock()
+		defer clockMu.Unlock()
+		now = next
+	}
+	previous := hubAuthControllerSetup
+	hubAuthControllerSetup = func(c *hubAuthController) {
+		c.client = &http.Client{Transport: transport}
+		c.copilotService = githubcopilot.NewService(c.copilotCfg, c.client)
+		c.now = func() time.Time {
+			clockMu.Lock()
+			defer clockMu.Unlock()
+			return now
+		}
+	}
+	t.Cleanup(func() { hubAuthControllerSetup = previous })
+	hub, web := newHubRPCTestServerWithWeb(t, hubcore.WebConfig{
+		Registry: f.ctl.reg, ProvidersConfigPath: f.tomlPath, CredsStore: f.store,
+	})
+	defer hub.Close()
+	// Startup observations belong to the process, not to this client.
+	web.notices.OnCommitted(func(noticeCommitted) {})
+	web.notices.watchRead(context.Background())
+	broadcaster := newRecordingBroadcaster()
+	web.notices.OnCommitted(func(change noticeCommitted) { dispatchNoticeCommitted(broadcaster, change) })
+
+	client := dialHubRPCInitialized(t, hub)
+	var start appwire.AuthDeviceStartResponse
+	if err := client.Request(context.Background(), appwire.MethodEvenerAuthDeviceStart,
+		appwire.AuthDeviceStartParams{Provider: "github-copilot"}, &start); err != nil {
+		t.Fatalf("start the Copilot device flow: %v", err)
+	}
+	if start.Fallback || start.FlowID == "" {
+		t.Fatalf("device start = %+v, want a device flow", start)
+	}
+	poll := func() appwire.AuthDevicePollResponse {
+		t.Helper()
+		var resp appwire.AuthDevicePollResponse
+		if err := client.Request(context.Background(), appwire.MethodEvenerAuthDevicePoll,
+			appwire.AuthDevicePollParams{Provider: "github-copilot", FlowID: start.FlowID}, &resp); err != nil {
+			t.Fatalf("poll the Copilot device flow: %v", err)
+		}
+		return resp
+	}
+	setNow(now.Add(5 * time.Second))
+	if got := poll(); got.State != "pending" {
+		t.Fatalf("first poll = %+v, want pending", got)
+	}
+	setNow(now.Add(5 * time.Second))
+	if got := poll(); got.State != "authorized" {
+		t.Fatalf("authorized poll = %+v, want authorized", got)
+	}
+	if _, err := githubcopilot.LoadAuth(f.stateDir, "github-copilot"); err != nil {
+		t.Fatalf("the hub login did not write its record: %v", err)
+	}
+
+	// The login RPC announced its own write. The sweep must adopt the record
+	// as already announced rather than announce it a second time.
+	web.notices.watchRead(context.Background())
+	if got := authUpdatedCount(broadcaster); got != 0 {
+		t.Fatalf("the sweep re-announced the hub's own login: %d broadcasts", got)
 	}
 }

@@ -59,6 +59,11 @@ type hubAuthController struct {
 	// noUserLayer is EVENER_PROVIDERS_CONFIG's tri-state: present and empty
 	// means the probe must build a client with no user layer, as a child would.
 	noUserLayer bool
+	// copilotRecordAdopted, when set, adopts a Copilot record this hub just
+	// wrote as already observed, so the notice sweep does not announce the
+	// login RPC's own write a second time. The server wires it to the
+	// instances controller, which owns the observation.
+	copilotRecordAdopted func()
 
 	credentialTestLoader credentialProbeLoader
 	credentialTests      map[string]*credentialTestCall
@@ -1431,6 +1436,9 @@ func (c *hubAuthController) pollCopilotDevice(ctx context.Context, provider, flo
 		_, err := c.copilotService.SavePreparedLogin(c.stateDir, provider, record)
 		return err
 	})
+	if applied && c.copilotRecordAdopted != nil {
+		c.copilotRecordAdopted()
+	}
 	defer func() {
 		var status appwire.AuthStatusResponse
 		if resp.Status != nil {
