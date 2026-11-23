@@ -123,6 +123,45 @@ function statusIconSeat(tone: NotificationTone): { className: string; summaryCla
   };
 }
 
+// The card's one head: status glyph, the warning chip a warning tone earns,
+// title and secondary line. The static line wraps it, every other card passes
+// it as the Disclosure summary; `inSummary` selects the glyph's seat and
+// nothing else differs.
+function NotificationHead({
+  tone,
+  inSummary = false,
+  title,
+  secondary,
+}: {
+  tone: NotificationTone;
+  inSummary?: boolean;
+  title: string;
+  secondary?: ReactNode;
+}) {
+  const seat = statusIconSeat(tone);
+  const showWarningChip = tone === "warning";
+  return (
+    <>
+      <span
+        className={inSummary ? seat.summaryClassName : seat.className}
+        data-testid="notification-status-icon"
+        aria-hidden="true"
+      >
+        {seat.glyph}
+      </span>
+      {showWarningChip && (
+        <Chip tone="attention" kind="warning">
+          warning
+        </Chip>
+      )}
+      <span className={CLASS.headingText}>
+        <span className={CLASS.title}>{title}</span>
+        {secondary !== undefined && <span className={CLASS.secondary}>{secondary}</span>}
+      </span>
+    </>
+  );
+}
+
 function ExcerptText({ text, ansi }: { text: string; ansi: boolean }) {
   if (!ansi) return text;
   return parseAnsiLines(text).map((line, index) => (
@@ -345,12 +384,6 @@ export function NotificationCard({
     id: scopedNotificationId,
     defaultOpen: expandDetailsByDefault(context.config),
   });
-  // Only warning earns a Chip; success + neutral recede with no chip at all
-  // (the done glyph is the same neutral as any other card). Error announces
-  // itself with the red FailureGlyph in the head's rail seat instead - a
-  // pill reading "error" beside a title that already says "Job failed"
-  // carried nothing the glyph doesn't.
-  const showWarningChip = notification.tone === "warning";
   // The head's open affordance is the SUBAGENT control, so only a delegate
   // notification earns it: its transcript_ref, when a frame carries one,
   // names a child session's thread. A job notification is not a subagent
@@ -416,27 +449,6 @@ export function NotificationCard({
       <OpenTranscriptButton transcriptRef={transcriptRef} parentRef={sessionRef} label="Open subagent" />
     </span>
   ) : null;
-  // Seated first in the head, before the chip and title. Decorative - the
-  // title's own words ("Job completed", "Job failed") already name the status
-  // for assistive tech, so exposing the glyph would announce the same fact
-  // twice (the same ruling as every other rail icon and ThinkBlock's bulb) -
-  // which is also why FailureGlyph's own accessible name is silenced by the
-  // aria-hidden seat here, unlike its inline use on failed tool rows where it
-  // is the only failure signal. The static head seats it in the transcript's
-  // icon rail (see notificationcard.module.css's .statusIcon; error's
-  // full-strength variant is .statusIconError); a Disclosure summary sits in
-  // the content column like every Disclosure, so there it takes only the
-  // glyph's own box.
-  const seat = statusIconSeat(notification.tone);
-  const statusIcon = (inSummary: boolean) => (
-    <span
-      className={inSummary ? seat.summaryClassName : seat.className}
-      data-testid="notification-status-icon"
-      aria-hidden="true"
-    >
-      {seat.glyph}
-    </span>
-  );
   // The head's identity for a reader of the DOM: the notification's type,
   // tone and settled outcome, and whether it is a running update.
   const headData = {
@@ -448,29 +460,18 @@ export function NotificationCard({
   };
   if (!delegateHasReport) {
     const delegateName = delegateTrigger(false);
+    // Neither the ending nor the Open control may be gated on the label.
+    const secondary =
+      delegateName !== undefined || notification.secondary !== "" || openControl !== null ? (
+        <>
+          {delegateName !== undefined ? delegateName : notification.secondary}
+          {delegateName !== undefined && delegateEnding ? ` · ${delegateEnding}` : null}
+          {openControl}
+        </>
+      ) : undefined;
     return (
       <div className={CLASS.staticHead} {...headData}>
-        {statusIcon(false)}
-        {showWarningChip && (
-          <Chip tone="attention" kind="warning">
-            warning
-          </Chip>
-        )}
-        <span className={CLASS.headingText}>
-          <span className={CLASS.title}>{notification.title}</span>
-          {/* An unlabeled delegate keeps its ending and Open control: the
-              secondary falls back to the parser's own composition (which
-              already carries the ending) when no name/description/id exists,
-              and the Open control renders wherever a transcript_ref does -
-              neither may be gated on the label. */}
-          {(delegateName !== undefined || notification.secondary !== "" || openControl !== null) && (
-            <span className={CLASS.secondary}>
-              {delegateName !== undefined ? delegateName : notification.secondary}
-              {delegateName !== undefined && delegateEnding ? ` · ${delegateEnding}` : null}
-              {openControl}
-            </span>
-          )}
-        </span>
+        <NotificationHead tone={notification.tone} title={notification.title} secondary={secondary} />
       </div>
     );
   }
@@ -492,18 +493,7 @@ export function NotificationCard({
           id={disclosure.key}
           defaultOpen={disclosure.fallback}
           summary={
-            <>
-              {statusIcon(true)}
-              {showWarningChip && (
-                <Chip tone="attention" kind="warning">
-                  warning
-                </Chip>
-              )}
-              <span className={CLASS.headingText}>
-                <span className={CLASS.title}>{notification.title}</span>
-                {secondary !== undefined && <span className={CLASS.secondary}>{secondary}</span>}
-              </span>
-            </>
+            <NotificationHead tone={notification.tone} inSummary title={notification.title} secondary={secondary} />
           }
         >
           <div className={CLASS.expanded}>

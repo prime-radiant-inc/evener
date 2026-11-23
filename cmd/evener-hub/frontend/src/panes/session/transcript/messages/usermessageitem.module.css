@@ -77,27 +77,6 @@
   min-width: 0;
 }
 
-.header {
-  display: flex;
-  align-items: baseline;
-  gap: var(--space-2);
-}
-
-/* The speaker name at body size / medium weight / --ink-hi (spec decision
- * 1): identity is a first-class header now, not a demoted caption eyebrow. */
-.name {
-  font-family: var(--font-sans);
-  font-size: var(--font-size-body);
-  font-weight: var(--font-weight-semibold);
-  color: var(--ink-hi);
-}
-
-/* The header's meta slot: caption size, --ink-low, and rendered only when
- * the item carries a startedAt - never a placeholder. */
-.time {
-  composes: textSecondary from "../../../../styles/text.module.css";
-}
-
 .actions {
   margin-left: auto;
   display: flex;

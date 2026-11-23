@@ -9,6 +9,7 @@ import { readModuleCss } from "../../../../styles/cssBlock";
 import { SessionNowContext } from "../../liveness";
 import { ignoringTurn, itemRendererFor } from "../types";
 import { AgentMessageItem } from "./AgentMessageItem";
+import { SpeakerHeader } from "./SpeakerHeader";
 
 const turn: TurnModel = { id: "turn_1", status: "inProgress", items: [] };
 
@@ -168,6 +169,20 @@ test("both live and settled render inside the same stable wrapper testid", () =>
 // --- the speaker header (slack-lean spec, decisions 1-2) -------------------
 // Replaces the old caption eyebrow at exactly the same trigger: exchange
 // boundaries only (opensExchange), in BOTH the live and settled branches.
+
+test("the shared speaker header renders name, meta and actions as one row", () => {
+  const { container } = render(
+    <SpeakerHeader name="speaker" meta="meta" actions={<button type="button">act</button>} />,
+  );
+  const header = container.firstElementChild as HTMLElement;
+  expect([...header.children].map((child) => child.textContent)).toEqual(["speaker", "meta", "act"]);
+  expect(within(header).getByRole("button", { name: "act" })).toBeTruthy();
+});
+
+test("the shared speaker header omits an empty meta slot instead of reserving its gap", () => {
+  const { container } = render(<SpeakerHeader name="speaker" />);
+  expect((container.firstElementChild as HTMLElement).children).toHaveLength(1);
+});
 
 test("exchange-opening agent message shows the speaker header: name, meta, and a decorative avatar", () => {
   renderMessage(
