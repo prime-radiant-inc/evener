@@ -1,8 +1,6 @@
-import { cleanup, render, screen, within } from "@testing-library/react";
-import { afterEach, expect, test } from "vitest";
+import { render, screen, within } from "@testing-library/react";
+import { expect, test } from "vitest";
 import { Diagnostics } from "./diagnostics";
-
-afterEach(cleanup);
 
 test("plain string diagnostics render one item each, with no per-item reason", () => {
   render(<Diagnostics diagnostics={["first warning", "second warning"]} />);
