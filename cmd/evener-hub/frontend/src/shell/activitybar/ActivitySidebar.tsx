@@ -189,6 +189,7 @@ export function ActivitySidebar({ mobile = false }: { mobile?: boolean }) {
             </div>
             <div className={CLASS.tabs}>
               <SegmentedControl<ActivityTab>
+                key={mobile ? scope.leaf.ref : undefined}
                 label="Overview kind"
                 hideLabel
                 size="sm"

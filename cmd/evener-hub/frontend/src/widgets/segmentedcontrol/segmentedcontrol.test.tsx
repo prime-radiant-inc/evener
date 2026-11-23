@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { describe, expect, test, vi } from "vitest";
@@ -267,7 +267,7 @@ describe("selection and roving focus", () => {
     expect(onChange).toHaveBeenLastCalledWith("chat");
   });
 
-  test("autoFocus enters the selected option rather than the group", () => {
+  test("autoFocus enters the selected option rather than the group", async () => {
     render(
       <SegmentedControl
         label="Choice"
@@ -280,11 +280,12 @@ describe("selection and roving focus", () => {
         autoFocus
       />,
     );
-    expect(document.activeElement).toBe(screen.getByRole("radio", { name: "Two" }));
+    const selected = screen.getByRole("radio", { name: "Two" });
+    await waitFor(() => expect(document.activeElement).toBe(selected));
     expect(document.activeElement).not.toBe(screen.getByRole("radiogroup"));
   });
 
-  test("autoFocus falls back to the roving tab stop when the selected option is disabled", () => {
+  test("autoFocus falls back to the roving tab stop when the selected option is disabled", async () => {
     render(
       <SegmentedControl
         label="Choice"
@@ -297,7 +298,7 @@ describe("selection and roving focus", () => {
         autoFocus
       />,
     );
-    expect(document.activeElement).toBe(screen.getByRole("radio", { name: "One" }));
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("radio", { name: "One" })));
   });
 
   test("leaves the reader's focus alone without autoFocus", () => {

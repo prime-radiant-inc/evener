@@ -22,7 +22,7 @@ export interface SegmentedControlProps<T extends string = string> {
   fullWidth?: boolean;
   /** Break labels and details onto more lines inside their columns instead of ellipsizing; the track grows in block size. */
   wrap?: boolean;
-  /** Focus the selected option (not the group container) when the control mounts. */
+  /** Focus the selected option (not the group container) in the frame after the control mounts. */
   autoFocus?: boolean;
   id?: string;
   "aria-describedby"?: string;
@@ -127,10 +127,13 @@ export function SegmentedControl<T extends string = string>({
   // Auto-focus is the control's entry event: focusing the selected option as
   // it appears is the caller's focus plan, and repeating it whenever options
   // or the value change would steal focus from wherever the reader moved it.
+  // The queued frame lets a caller's own focus restore, such as a closing
+  // drawer's, land first.
   // biome-ignore lint/correctness/useExhaustiveDependencies: tabbableIndex is read once, on mount, by design.
   useEffect(() => {
     if (!autoFocus) return;
-    optionRefs.current[tabbableIndex]?.focus();
+    const frame = requestAnimationFrame(() => optionRefs.current[tabbableIndex]?.focus());
+    return () => cancelAnimationFrame(frame);
   }, [autoFocus]);
 
   function choose(index: number) {
