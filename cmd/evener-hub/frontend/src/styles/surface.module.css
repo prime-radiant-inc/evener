@@ -35,6 +35,15 @@
   gap: var(--space-3);
 }
 
+/* A settings section opens at pane-title size, a subsection at body size. */
+.settingsSectionHeading {
+  margin: 0;
+  color: var(--ink-hi);
+  font-weight: var(--font-weight-semibold);
+}
+.settingsSectionHeadingPaneTitle { font-size: var(--font-size-pane-title); }
+.settingsSectionHeadingBody { font-size: var(--font-size-body); }
+
 /* --- the summary tiles -----------------------------------------------
  * The two tiles under a page's primary task - a directory that is itself a
  * button and a status card that is not - share one inner layout: a row with

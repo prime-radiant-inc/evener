@@ -5,6 +5,7 @@ import type { LaunchConfigLayer } from "@evener/appwire-client";
 import { friendlyErrorMessage, LOCAL_HOST } from "@evener/appwire-client";
 import { useEffect, useState } from "react";
 import { launchConfigStoreForHost } from "../../../stores/launchConfig";
+import surfaceStyles from "../../../styles/surface.module.css";
 import { Button, InlineNotice, Loader } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { HostScopedSurface } from "./hostScopedSurface";
@@ -14,6 +15,9 @@ import { LaunchConfigForm } from "./launchShared/LaunchConfigForm";
 import styles from "./project.module.css";
 import { RefreshErrorNotice } from "./sectionGate";
 import { useHostScopedLoad, useLaunchConfigRefresh } from "./useConnectedEffect";
+
+const PANE_HEADING = `${surfaceStyles.settingsSectionHeading} ${surfaceStyles.settingsSectionHeadingPaneTitle}`;
+const BODY_HEADING = `${surfaceStyles.settingsSectionHeading} ${surfaceStyles.settingsSectionHeadingBody}`;
 
 const CLASS = {
   root: requireClass(styles.root, "project.module.css", "root"),
@@ -139,7 +143,7 @@ export function ProjectSection({ host = LOCAL_HOST }: ProjectSectionProps) {
   if (!cwd) {
     return (
       <div className={CLASS.root}>
-        <h2>Project launch settings</h2>
+        <h2 className={PANE_HEADING}>Project launch settings</h2>
         <p className={CLASS.help} data-reason="no-project">
           No project selected. Open this page via the gear icon next to a project in the sidebar, or navigate here with
           a <code>?cwd=</code> query parameter.
@@ -150,10 +154,10 @@ export function ProjectSection({ host = LOCAL_HOST }: ProjectSectionProps) {
 
   return (
     <div className={CLASS.root}>
-      <h2>Project launch settings</h2>
+      <h2 className={PANE_HEADING}>Project launch settings</h2>
       <p className={CLASS.help}>{cwd}</p>
       <RepositoryConfigSection host={host} cwd={cwd} />
-      <h3>Local overrides</h3>
+      <h3 className={BODY_HEADING}>Local overrides</h3>
       <p className={CLASS.help}>
         Saved in <code>.evener/launch.local.toml</code> for this directory. These values override session defaults and
         trusted repository settings.
