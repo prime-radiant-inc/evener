@@ -20,6 +20,25 @@ func TestSessionAvailability(t *testing.T) {
 			t.Fatalf("session availability narrowed unrelated skill %q", name)
 		}
 	}
+
+	for _, tc := range []struct {
+		name      string
+		available SessionAvailability
+	}{
+		{RunningJobsSkillName, SessionAvailability{RunningJobsAvailable: true}},
+		{UsingWorktreesSkillName, SessionAvailability{WorktreeAvailable: true}},
+		{ReadingTranscriptsSkillName, SessionAvailability{TranscriptsAvailable: true}},
+	} {
+		if !tc.available.SkillAvailable(tc.name) {
+			t.Fatalf("capable session must be offered %q", tc.name)
+		}
+		if unavailable.SkillAvailable(tc.name) {
+			t.Fatalf("session without capability must not be offered %q", tc.name)
+		}
+		if available.SkillAvailable(tc.name) {
+			t.Fatalf("MemorySaveAvailable must not unlock %q", tc.name)
+		}
+	}
 }
 
 func TestUserEntriesForSession(t *testing.T) {

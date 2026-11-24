@@ -42,6 +42,7 @@ func TestFinishingPromptGating(t *testing.T) {
 			checkPromptInput(t, "IsSubagent", data.IsSubagent, tc.delegate)
 			checkPromptInput(t, "HasTool manage_worktree", data.HasTool("manage_worktree"), tc.worktree)
 			checkPromptInput(t, "worktreeDisposeOnly", sess.worktreeDisposeOnly, tc.disposeOnly)
+			checkPromptInput(t, "WorktreeDisposeOnly", data.WorktreeDisposeOnly, tc.disposeOnly)
 			prompt, warning, _ := sess.renderSystemPrompt(sess.env)
 			if warning != "" {
 				t.Fatalf("render system prompt: %s", warning)

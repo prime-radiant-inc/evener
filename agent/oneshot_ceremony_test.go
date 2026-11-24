@@ -57,10 +57,26 @@ func TestOneShotOmitsCeremonyTools(t *testing.T) {
 		if strings.Contains(finishing, "|---|---|") {
 			t.Errorf("## Finishing renders a table with no rows:\n%s", finishing)
 		}
+		if strings.Contains(finishing, "notes_agent_set") {
+			t.Errorf("## Finishing mentions omitted tool notes_agent_set:\n%s", finishing)
+		}
+		if strings.Contains(prompt, "\n## Memory\n") {
+			t.Error("prompt renders ## Memory when memory is unconfigured")
+		}
 	})
 
-	t.Run("one-shot keeps the finishing table when memory saves are enabled", func(t *testing.T) {
+	t.Run("one-shot keeps memory finishing guidance when memory saves are enabled", func(t *testing.T) {
 		t.Parallel()
+		withoutMemory := newSession(t, withConfig(SessionConfig{
+			TurnEndsProcess: true,
+			AgentsDocPath:   filepath.Join(t.TempDir(), "no-personal-AGENTS.md"),
+		}))
+		withoutPrompt, warning, _ := withoutMemory.renderSystemPrompt(withoutMemory.env)
+		if warning != "" {
+			t.Fatalf("renderSystemPrompt (no memory): %s", warning)
+		}
+		withoutFinishing := systemPromptSection(t, withoutPrompt, "## Finishing")
+
 		s := newSession(t, withConfig(SessionConfig{
 			TurnEndsProcess: true,
 			MemoryStateRoot: t.TempDir(),
@@ -76,8 +92,14 @@ func TestOneShotOmitsCeremonyTools(t *testing.T) {
 			t.Fatalf("renderSystemPrompt: %s", warning)
 		}
 		finishing := systemPromptSection(t, prompt, "## Finishing")
-		if !strings.Contains(finishing, "|---|---|") {
-			t.Errorf("## Finishing lost its table although MemorySaves=true:\n%s", finishing)
+		if !strings.Contains(prompt, "\n## Memory\n") {
+			t.Error("prompt omitted ## Memory although MemorySaves=true")
+		}
+		if strings.Contains(finishing, "notes_agent_set") {
+			t.Errorf("## Finishing mentions omitted tool notes_agent_set:\n%s", finishing)
+		}
+		if finishing == withoutFinishing {
+			t.Errorf("## Finishing did not add memory-save guidance when MemorySaves=true:\n%s", finishing)
 		}
 	})
 
@@ -104,8 +126,8 @@ func TestOneShotOmitsCeremonyTools(t *testing.T) {
 			t.Error("prompt missing ## Session links under TurnEndsProcess=false")
 		}
 		finishing := systemPromptSection(t, prompt, "## Finishing")
-		if !strings.Contains(finishing, "|---|---|") {
-			t.Errorf("## Finishing missing table under TurnEndsProcess=false:\n%s", finishing)
+		if !strings.Contains(finishing, "notes_agent_set") {
+			t.Errorf("## Finishing missing notes_agent_set guidance under TurnEndsProcess=false:\n%s", finishing)
 		}
 	})
 }
