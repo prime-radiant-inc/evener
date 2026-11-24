@@ -11,6 +11,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"primeradiant.com/evener/agent/schema"
@@ -1171,4 +1172,49 @@ func TestHubModelListServesLaunchContractFromCache(t *testing.T) {
 	if got := spawner.callCount(); got != 1 {
 		t.Fatalf("launch contract called %d times for two model/list RPCs, want 1", got)
 	}
+}
+
+// TestFetchLiveModelsUsesSharedListingBudget proves the settings sheet's
+// per-instance credential probe uses the one shared listing budget, whatever
+// the instance's transport.
+func TestFetchLiveModelsUsesSharedListingBudget(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		r, err := registry.Load(
+			registry.WithOffline(true), registry.WithoutCache(), registry.WithNoUserLayer(),
+			registry.WithStateRoot(t.TempDir()),
+			registry.WithEnv(func(string) (string, bool) { return "", false }),
+			registry.WithInstances(map[string]registry.Provider{
+				"kimi-anthropic-api": {Base: "kimi-for-coding", APIKey: "k"},
+			}),
+		)
+		if err != nil {
+			t.Fatalf("registry: %v", err)
+		}
+		client := llm.NewClient(llm.WithRegistry(r))
+		recorder := &modelListAuthRecorder{
+			name:   "kimi-anthropic-api",
+			models: []registry.Model{{ID: "k3"}},
+		}
+		client.Register(recorder)
+		for _, inst := range r.Instances() {
+			if inst.Name != "kimi-anthropic-api" {
+				client.Register(&modelMetadataAdapter{name: inst.Name})
+			}
+		}
+		oldLoadClient := liveModelLoadClient
+		liveModelLoadClient = func(string) (*llm.Client, error) { return client, nil }
+		t.Cleanup(func() { liveModelLoadClient = oldLoadClient })
+
+		NewWebServer(hubcore.WebConfig{}).fetchLiveModels(context.Background())
+		if recorder.requestCtx == nil {
+			t.Fatal("the settings listing never ran")
+		}
+		deadline, ok := recorder.requestCtx.Deadline()
+		if !ok {
+			t.Fatal("the settings listing ran without the shared deadline")
+		}
+		if remaining := time.Until(deadline); remaining != 8*time.Second {
+			t.Fatalf("settings listing budget = %s, want the shared 8s listing budget", remaining)
+		}
+	})
 }

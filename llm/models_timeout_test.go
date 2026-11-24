@@ -11,7 +11,6 @@ import (
 	"testing/synctest"
 	"time"
 
-	"primeradiant.com/evener/auth/githubcopilot"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/apilog"
 	"primeradiant.com/evener/llm/providers/anthropic"
@@ -21,27 +20,9 @@ import (
 	"primeradiant.com/evener/llm/registry"
 )
 
-// A Copilot listing resolves the stored session before it fetches models, and
-// that resolution may spend a whole session exchange under the listing
-// context: the auth service bounds one exchange by its HTTP timeout. The
-// shared listing budget must contain that exchange with headroom, or a slow
-// exchange kills the listing deadline before the still-valid stored session
-// can answer. The budget stays a maximum: a caller's earlier deadline still
-// cancels the listing through the context, and a session past its actual
-// expiry is still renewed rather than reused.
-func TestLiveModelListBudgetOutlastsCopilotSessionExchange(t *testing.T) {
-	t.Parallel()
-	exchange := githubcopilot.DefaultConfig().HTTPTimeout
-	if headroom := llm.CopilotLiveModelListTimeout - exchange; headroom < 5*time.Second {
-		t.Fatalf("CopilotLiveModelListTimeout = %s leaves %s beyond the %s Copilot session-exchange window, want at least 5s of headroom", llm.CopilotLiveModelListTimeout, headroom, exchange)
-	}
-}
-
-// The shared listing budget must stay the previous 8s for ordinary providers:
-// two stalled non-Copilot endpoints then cost 16s of the hub's 30s
-// launch-check child budget, so the healthy providers after them still answer.
-// Only a Copilot route, which may resolve its stored session first, needs the
-// longer budget.
+// The one shared listing budget must stay 8s for every provider: two stalled
+// endpoints then cost 16s of the hub's 30s launch-check child budget, so the
+// healthy providers after them still answer.
 func TestLiveModelListNonCopilotBudgetIsEightSeconds(t *testing.T) {
 	t.Parallel()
 	if llm.LiveModelListTimeout != 8*time.Second {
@@ -50,62 +31,6 @@ func TestLiveModelListNonCopilotBudgetIsEightSeconds(t *testing.T) {
 	if twoStalls := 2 * llm.LiveModelListTimeout; twoStalls >= 30*time.Second {
 		t.Fatalf("two stalled non-Copilot listings cost %s of the 30s launch-check child budget", twoStalls)
 	}
-}
-
-// The listing budget is selected per route, not globally: only an instance
-// whose listing transport is the Copilot account gets the session-exchange
-// budget. Every other route, including one the registry cannot resolve, keeps
-// the short budget.
-func TestLiveModelListRouteBudgets(t *testing.T) {
-	t.Parallel()
-	reg := routeBudgetRegistry(t)
-	if got := llm.LiveModelListTimeoutFor(reg, "plain"); got != llm.LiveModelListTimeout {
-		t.Fatalf("plain route budget = %s, want %s", got, llm.LiveModelListTimeout)
-	}
-	if got := llm.LiveModelListTimeoutFor(reg, "copilot"); got != llm.CopilotLiveModelListTimeout {
-		t.Fatalf("Copilot route budget = %s, want %s", got, llm.CopilotLiveModelListTimeout)
-	}
-	for _, tc := range []struct {
-		name     string
-		reg      *registry.Registry
-		instance string
-	}{
-		{name: "nil registry", instance: "copilot"},
-		{name: "unknown instance", reg: reg, instance: "missing"},
-	} {
-		if got := llm.LiveModelListTimeoutFor(tc.reg, tc.instance); got != llm.LiveModelListTimeout {
-			t.Fatalf("%s budget = %s, want %s", tc.name, got, llm.LiveModelListTimeout)
-		}
-	}
-}
-
-func routeBudgetRegistry(t *testing.T) *registry.Registry {
-	t.Helper()
-	provider := func(auth, baseURL string) registry.Provider {
-		return registry.Provider{
-			Base: "openai", Protocol: registry.ProtocolOpenAIChat, Surface: registry.SurfaceGeneric,
-			APIKey: "k",
-			Transport: registry.Transport{
-				Auth: auth, BaseURL: baseURL,
-				Endpoint: "/chat/completions", ModelsEndpoint: "/models",
-				CountTokensEndpoint: registry.EndpointUnsupported,
-			},
-			Models: map[string]registry.Model{"m": {ID: "m"}},
-		}
-	}
-	reg, err := registry.Load(
-		registry.WithOffline(true), registry.WithoutCache(), registry.WithNoUserLayer(),
-		registry.WithStateRoot(t.TempDir()),
-		registry.WithEnv(func(string) (string, bool) { return "", false }),
-		registry.WithInstances(map[string]registry.Provider{
-			"plain":   provider(registry.AuthBearer, "https://plain.example.test"),
-			"copilot": provider(registry.AuthOAuthGitHubCopilot, "https://copilot.example.test"),
-		}),
-	)
-	if err != nil {
-		t.Fatalf("registry: %v", err)
-	}
-	return reg
 }
 
 type modelListTransport func(*http.Request) (*http.Response, error)

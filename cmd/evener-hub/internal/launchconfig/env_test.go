@@ -1,10 +1,15 @@
 package launchconfig
 
 import (
+	"fmt"
+	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/spf13/afero"
 	"primeradiant.com/evener/llm/registry"
 )
 
@@ -241,4 +246,99 @@ func envSliceToMap(env []string) map[string]string {
 		out[kv[:i]] = kv[i+1:]
 	}
 	return out
+}
+
+// A project TOML env key may itself contain '='. envvars.Set serializes that
+// key as "key=value", and a child splits each environment entry at the first
+// '=', so the part before '=' becomes the variable's name in the child. A
+// malformed project key could therefore alias a reserved name the exact check
+// refused. This drives the project layer through real TOML parsing and ToEnv
+// into a child process, then resolves the provider file from what that child
+// observed.
+func checkToEnv_ProjectMalformedEnvNameCannotAliasReservedNames(t *testing.T) {
+	writeProviders := func(path, baseURL string) {
+		t.Helper()
+		body := "[providers.cp]\nbase = \"github-copilot\"\nbase_url = \"" + baseURL + "\"\n"
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	hubProviders := filepath.Join(t.TempDir(), "hub-providers.toml")
+	writeProviders(hubProviders, "https://hub.example.test")
+
+	// The malformed key's trailing value lands after a separator the child
+	// keeps, so the checkout names a file carrying that trailing '='.
+	checkoutProviders := filepath.Join(t.TempDir(), "checkout-providers.toml") + "="
+	writeProviders(checkoutProviders, "https://checkout.example.test")
+
+	projectFile := filepath.Join(t.TempDir(), "launch.local.toml")
+	malformedProvidersKey := "EVENER_PROVIDERS_CONFIG=" + strings.TrimSuffix(checkoutProviders, "=")
+	malformedCopilotKey := "GITHUB_COPILOT_BASE_URL=https://checkout.example.test/"
+	body := "[env]\n" +
+		fmt.Sprintf("%q = \"\"\n", malformedProvidersKey) +
+		fmt.Sprintf("%q = \"\"\n", malformedCopilotKey) +
+		"\"PROJECT_KEPT\" = \"kept\"\n"
+	if err := os.WriteFile(projectFile, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	project, err := loadLayerFS(afero.NewOsFs(), projectFile)
+	if err != nil {
+		t.Fatalf("load project layer: %v", err)
+	}
+	resolved, diags := mergeLayers(map[LayerName]Layer{LayerProject: project})
+	env := ToEnv(EnvInputs{
+		Resolved:            resolved,
+		ParentEnv:           []string{"PATH=/usr/bin"},
+		ProvidersConfigPath: hubProviders,
+		StateDir:            "/state",
+	})
+
+	// A real child is the oracle for the names it receives: exec dedups the
+	// environment and the child splits each entry at the first '='.
+	cmd := exec.Command("sh", "-c", `printf '%s\n' "$EVENER_PROVIDERS_CONFIG" "$GITHUB_COPILOT_BASE_URL" "$PROJECT_KEPT"`)
+	cmd.Env = env
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("child environment: %v", err)
+	}
+	lines := strings.Split(strings.TrimSuffix(string(out), "\n"), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("child output = %q, want three values", out)
+	}
+	if lines[0] != hubProviders {
+		t.Fatalf("child EVENER_PROVIDERS_CONFIG = %q, want the hub provider file %q: a malformed project key aliased the reserved name", lines[0], hubProviders)
+	}
+	if lines[1] != "" {
+		t.Fatalf("child GITHUB_COPILOT_BASE_URL = %q, want unset: a malformed project key aliased the reserved name", lines[1])
+	}
+	if lines[2] != "kept" {
+		t.Fatalf("child PROJECT_KEPT = %q, want the valid project key applied", lines[2])
+	}
+	if len(diags) != 2 {
+		t.Fatalf("project-layer diagnostics = %v, want both malformed names rejected", diags)
+	}
+	for _, diag := range diags {
+		if diag.Layer != LayerProject || !strings.HasPrefix(diag.Field, EnvField+".") {
+			t.Fatalf("diagnostic = %+v, want the malformed project env name named", diag)
+		}
+	}
+
+	// What the child observed is the environment the registry resolves.
+	childEnv := map[string]string{"EVENER_PROVIDERS_CONFIG": lines[0]}
+	if lines[1] != "" {
+		childEnv["GITHUB_COPILOT_BASE_URL"] = lines[1]
+	}
+	if host := resolvedCopilotHost(t, childEnv); host != "hub.example.test" {
+		t.Fatalf("Copilot endpoint host = %q, want the hub provider file's host", host)
+	}
+}
+
+func resolvedCopilotHost(t *testing.T, env map[string]string) string {
+	t.Helper()
+	baseURL := resolvedCopilotBaseURL(t, env)
+	u, err := url.Parse(baseURL)
+	if err != nil || u.Hostname() == "" {
+		t.Fatalf("Copilot base URL = %q: parse error %v", baseURL, err)
+	}
+	return u.Hostname()
 }

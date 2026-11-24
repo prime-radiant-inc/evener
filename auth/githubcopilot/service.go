@@ -198,6 +198,13 @@ func githubNeedsRefresh(now time.Time, record AuthRecord) bool {
 	return !record.AccessExpiry.IsZero() && needsRefresh(now, record.AccessExpiry)
 }
 
+// opportunisticExchangeBudget bounds a session exchange that runs while the
+// stored session is still inside its actual lifetime. That exchange renews
+// early, so a stalled one must not spend the caller's whole deadline before
+// the still-valid stored session can answer. A session at its actual expiry
+// is not opportunistic: its renewal may use the caller's deadline.
+const opportunisticExchangeBudget = 5 * time.Second
+
 func (s *Service) renewUnderLock(ctx context.Context, stateDir, instance string) (credentials RuntimeCredentials, err error) {
 	beforeRecordLock()
 	err = WithRecordLock(stateDir, instance, func() error {
@@ -229,7 +236,13 @@ func (s *Service) renewUnderLock(ctx context.Context, stateDir, instance string)
 			}
 		}
 		if needsRefresh(nowFunc(), renewed.CopilotExpiry) {
-			session, err := ExchangeCopilotToken(ctx, s.client, s.cfg, renewed.AccessToken)
+			exchangeCtx := ctx
+			if copilotSessionValid(nowFunc(), renewed) {
+				var cancel context.CancelFunc
+				exchangeCtx, cancel = context.WithTimeout(ctx, opportunisticExchangeBudget)
+				defer cancel()
+			}
+			session, err := ExchangeCopilotToken(exchangeCtx, s.client, s.cfg, renewed.AccessToken)
 			if errors.Is(err, ErrCopilotTokenRejected) {
 				return s.saveRejected(stateDir, instance, current, renewed, ErrCopilotTokenRejected)
 			}

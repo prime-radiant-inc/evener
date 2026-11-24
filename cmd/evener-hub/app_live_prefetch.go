@@ -106,7 +106,7 @@ func newLiveClient(reg *registry.Registry) *llm.Client {
 // token-validated path. live says the endpoint answered; usable says
 // the rows may become the live-authoritative catalog.
 func fetchInstanceLiveWith(ctx context.Context, client *llm.Client, name string) (rows []registry.Model, live, usable bool, err error) {
-	fetchCtx, cancel := context.WithTimeout(ctx, llm.LiveModelListTimeoutFor(client.Registry(), name))
+	fetchCtx, cancel := context.WithTimeout(ctx, llm.LiveModelListTimeout)
 	defer cancel()
 	rows, live, err = client.ListLive(fetchCtx, name)
 	if err != nil || !live {

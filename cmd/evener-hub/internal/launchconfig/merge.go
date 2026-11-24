@@ -40,6 +40,14 @@ func projectLayerRefusedEnvKey(key string) (string, bool) {
 	return "", false
 }
 
+// validEnvName reports whether key can name a child environment variable. The
+// environment format splits each entry at its first '=', so a key containing
+// '=' would reach the child under a different name than the one checked here;
+// exec refuses NUL outright.
+func validEnvName(key string) bool {
+	return key != "" && !strings.ContainsAny(key, "=\x00")
+}
+
 // sandboxModeIsOff reports whether a launch-config sandbox mode denotes no
 // confinement — empty (unset) or "off" (case/space-insensitive). sandbox_net has
 // no effect in that state (evener ignores --sandbox-net without a sandbox mode), so
@@ -225,6 +233,13 @@ func mergeLayers(layers map[LayerName]Layer) (Resolved, []Diagnostic) {
 		}
 		// Env map: last-write-wins per key, with credential blocklist.
 		for k, v := range l.Env {
+			if name == LayerProject && !validEnvName(k) {
+				diags = append(diags, Diagnostic{
+					Layer: name, Field: EnvField + "." + k,
+					Message: fmt.Sprintf("env name %q is not a valid environment variable name; the child would receive a different name", k),
+				})
+				continue
+			}
 			if isCredentialEnvKey(k) {
 				diags = append(diags, Diagnostic{
 					Layer: name, Field: EnvField + "." + k,

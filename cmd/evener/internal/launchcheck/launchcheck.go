@@ -173,7 +173,7 @@ func launchCheckModels() ([]appwire.ModelDescriptor, []appwire.ModelListDiagnost
 			}
 			continue
 		}
-		listCtx, cancel := context.WithTimeout(context.Background(), llm.LiveModelListTimeoutFor(client.Registry(), inst.Name))
+		listCtx, cancel := context.WithTimeout(context.Background(), llm.LiveModelListTimeout)
 		listing, err := client.Models(listCtx, inst.Name)
 		cancel()
 		if err != nil {
@@ -300,7 +300,7 @@ func validateLaunchCheckModel(ref cmdutil.ModelRef) error {
 	if err != nil {
 		return nil
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), llm.LiveModelListTimeoutFor(client.Registry(), ref.Provider))
+	ctx, cancel := context.WithTimeout(context.Background(), llm.LiveModelListTimeout)
 	defer cancel()
 	if client.Registry().LaunchMintsCredentialCommand(ref.Provider) {
 		// The preflight never mints (spec §10.1): a command-credentialed
