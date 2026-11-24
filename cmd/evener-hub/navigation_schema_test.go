@@ -1016,6 +1016,12 @@ func TestValidateNavigationManifestRawRejectsCorruptedShapes(t *testing.T) {
 	if validateNavigationManifestRaw(corrupt("sources", []any{map[string]any{"id": "source", "label": "Source", "kind": "local"}})) {
 		t.Error("a source object with a missing field was accepted")
 	}
+	if !validateNavigationManifestRaw(corrupt("sources", []any{map[string]any{"id": "source", "label": "Source", "kind": "local", "online": true, "threadStartIdempotency": true}})) {
+		t.Error("a source object with optional threadStartIdempotency was refused")
+	}
+	if validateNavigationManifestRaw(corrupt("sources", []any{map[string]any{"id": "source", "label": "Source", "kind": "local", "online": true, "extra": true}})) {
+		t.Error("a source object with an unknown extra field was accepted")
+	}
 }
 
 // The manifest's typed values and the project summary are bounded the way

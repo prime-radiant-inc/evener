@@ -105,9 +105,10 @@ type RemoteHubSource struct {
 }
 
 var (
-	_ Source                  = (*RemoteHubSource)(nil)
-	_ ItemCandidateSource     = (*RemoteHubSource)(nil)
-	_ ItemReadCandidateSource = (*RemoteHubSource)(nil)
+	_ Source                       = (*RemoteHubSource)(nil)
+	_ ItemCandidateSource          = (*RemoteHubSource)(nil)
+	_ ItemReadCandidateSource      = (*RemoteHubSource)(nil)
+	_ ThreadStartIdempotencySource = (*RemoteHubSource)(nil)
 )
 
 func NewRemoteHubSource(id string, roots []string, client RemoteHubClientFunc) *RemoteHubSource {
@@ -182,6 +183,17 @@ func (s *RemoteHubSource) SessionToolsSupported(ctx context.Context) (supported,
 		return false, false
 	}
 	return client.Features().SessionTools, true
+}
+
+// ThreadStartIdempotencySupportedIfAttached reports whether this source is
+// online and its currently attached remote client negotiated
+// FeatureSet.ThreadStartIdempotency, without dialing.
+func (s *RemoteHubSource) ThreadStartIdempotencySupportedIfAttached() bool {
+	if s == nil || !s.Online() || s.clientIfAttached == nil {
+		return false
+	}
+	client, ok := s.clientIfAttached(s.id)
+	return ok && client != nil && client.Features().ThreadStartIdempotency
 }
 
 // call forwards one request over the current remote client and translates any
