@@ -79,11 +79,11 @@ function OverviewSheetBody({
   const resolvedBranch = useLocalSessionBranch(sessionRef, model);
   const now = useNowTick(WORK_TICK_MS);
   const scope = useActivityScope(sessionRef);
-  // The viewed thread can report tasks before its navigation row arrives.
-  const tasks = model?.tasks;
+  // Either source can report a known list, including an authoritative zero.
+  const tasks = model?.tasks ?? scope.leaf.tasks;
   const counts =
     tasks == null ? scope.counts : { ...scope.counts, tasksSettled: taskSettledCount(tasks), tasksTotal: tasks.total };
-  const tabs = ACTIVITY_TABS.filter((tab) => tab.chipVisible(counts));
+  const tabs = ACTIVITY_TABS.filter((tab) => (tab.id === "tasks" ? tasks != null : tab.chipVisible(counts)));
 
   const openTab = (tab: ActivityTab) => {
     if (paneId) workspaceStore.getState().focusPane(paneId);

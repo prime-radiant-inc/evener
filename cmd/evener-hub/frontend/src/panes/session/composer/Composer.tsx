@@ -75,7 +75,6 @@ import {
 } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { SessionChrome, type SessionChromeProps } from "../chrome/SessionChrome";
-import { TasksPanel, type TasksPanelHandle } from "../chrome/TasksPanel";
 import { AttachmentTile } from "./AttachmentTile";
 import { useAskDockPending } from "./askDockPending";
 import { AttachImageControl } from "./attachments/AttachImageControl";
@@ -264,7 +263,6 @@ function ComposerWithSubmission({
   // press that never clicks never ends editing.
   const outsidePressRef = useRef(false);
   const submitButtonRef = useRef<HTMLButtonElement>(null);
-  const tasksPanelRef = useRef<TasksPanelHandle>(null);
   // Set by scheduleCursorRestore below; consumed (and cleared) by the
   // cursor-restore layout effect in the commit that carries the edit.
   const cursorToRestoreRef = useRef<number | null>(null);
@@ -675,17 +673,9 @@ function ComposerWithSubmission({
   };
 
   const showTasks = (): void => {
-    // Desktop Tasks everywhere is the activity sidebar, preselected to its
-    // Tasks tab; on mobile there is no sidebar, so the per-session Sheet
-    // keeps its behavior.
-    if (isMobile) tasksPanelRef.current?.open();
-    else {
-      // The owning pane rides along, like every other embedded-column
-      // request: the sidebar opens THIS conversation's Tasks and holds its
-      // scope, keeping the cascade focused even when an ordinary pane for
-      // the same conversation exists.
-      activitySidebarStore.getState().openFor(ref, "tasks", undefined, paneId);
-    }
+    // Desktop CurrentWork opens its own conversation's Tasks, including when
+    // a cascade and an ordinary pane both show the same session.
+    activitySidebarStore.getState().openFor(ref, "tasks", undefined, paneId);
   };
 
   // enterToSend drives the Steer/Send kbd-hint labels below - read via the
@@ -1423,17 +1413,14 @@ function ComposerWithSubmission({
         </div>
       )}
       {!askPending && (
-        <>
-          <TasksPanel ref={tasksPanelRef} sessionRef={ref} model={model} hideTrigger />
-          <CurrentWork
-            task={model.tasks?.current?.description}
-            goal={model.goal?.objective}
-            goalStatus={model.goal?.status}
-            phoneShellLayout={phoneShellLayout}
-            onOpenTasks={showTasks}
-            onEditGoal={() => editGoal((model.goal?.objective ?? "").trim())}
-          />
-        </>
+        <CurrentWork
+          task={model.tasks?.current?.description}
+          goal={model.goal?.objective}
+          goalStatus={model.goal?.status}
+          phoneShellLayout={phoneShellLayout}
+          onOpenTasks={showTasks}
+          onEditGoal={() => editGoal((model.goal?.objective ?? "").trim())}
+        />
       )}
       {pendingGoalReplacement !== null && (
         <ConfirmDialog

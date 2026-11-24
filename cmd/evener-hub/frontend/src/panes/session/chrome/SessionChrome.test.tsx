@@ -98,9 +98,10 @@ function locationWithSession(ref: string): NavigationSessionLocation {
     },
   };
 }
-function setLocation(ref: string): void {
+function setLocation(ref: string, tasks?: NonNullable<NavigationSessionLocation["session"]>["tasks"]): void {
   const key = { kind: "location", ref } as const;
   const data = locationWithSession(ref);
+  if (data.session && tasks) data.session.tasks = tasks;
   navigationStore.setState({
     mode: "v3",
     clientGenerationID: "generation_test",
@@ -477,6 +478,7 @@ test("the phone header keeps session facts, Find and same-session Tasks in one O
   const fake = connectFakeClient();
   fake.on("evener/git/head", () => ({ head: branch }));
   fake.on("evener/tasks/list", () => ({ data: [] }));
+  let tasks: NonNullable<Thread["evener"]>["tasks"];
   fake.on("thread/read", () =>
     readResponse(ref, {
       cwd,
@@ -484,7 +486,7 @@ test("the phone header keeps session facts, Find and same-session Tasks in one O
         ref,
         capabilities: CAPABILITIES,
         queue: { revision: 0 },
-        tasks: { total: 1, done: 0, current: { id: 1, description: "Check fixture results" } },
+        tasks,
         sessionUrls: [{ id: "u1", url: link, label: "Example", addedBy: "human", addedAt: 7 }],
       },
     }),
@@ -510,15 +512,26 @@ test("the phone header keeps session facts, Find and same-session Tasks in one O
   expect((await within(sheet).findByTestId("session-details-branch")).textContent).toContain(branch);
   expect(fake.calls.find((call) => call.method === "evener/git/head")?.params).toEqual({ cwd });
   expect(within(sheet).getByTestId("overview-sheet-link-u1").textContent).toContain(link);
+  expect(within(sheet).queryByRole("button", { name: /^Tasks,/ })).toBeNull();
+  act(() => setLocation(ref, { total: 0, done: 0 }));
+  expect(within(within(sheet).getByRole("button", { name: /^Tasks,/ })).getByText("0/0")).toBeTruthy();
+  act(() => resetNavigationStoreForTests());
 
   await user.click(within(sheet).getByRole("button", { name: "Find in session" }));
   expect(asked.result.current?.target).toBe(paneId);
   await waitFor(() => expect(sheet.isConnected).toBe(false));
 
-  // This thread's task exists before its navigation row has loaded.
+  // The thread can know its task list is empty before a navigation row loads.
+  tasks = { total: 0, done: 0 };
+  await act(async () => {
+    fake.emitNotification({ method: "evener/thread/resync", params: { threadId: `thr_${ref}`, ref } });
+  });
+  await waitFor(() => expect(threadsStore.getState().threads.get(ref)?.tasks).toMatchObject(tasks));
   await user.click(entry);
   const reopened = await screen.findByRole("dialog", { name: "Overview" });
-  await user.click(within(reopened).getByRole("button", { name: /Tasks/ }));
+  const tasksRow = within(reopened).getByRole("button", { name: /^Tasks,/ });
+  expect(within(tasksRow).getByText("0/0")).toBeTruthy();
+  await user.click(tasksRow);
   const sidebar = await screen.findByTestId("activity-sidebar");
   expect(activitySidebarStore.getState()).toMatchObject({ open: true, ref, tab: "tasks" });
   await waitFor(() => expect(fake.calls.find((call) => call.method === "evener/tasks/list")?.params).toEqual({ ref }));

@@ -587,7 +587,7 @@ test("goal replacement focus waits until an ended follow-up textarea mounts", as
 // tab (the same retarget the rail row and the chrome menu share) - the
 // current-task button opens no sessionTasks pane. The phone shell hides the
 // visible current-work rows (the test above pins that); its Tasks entry is the
-// top bar's Overview sheet, and the composer keeps its TasksPanel mount.
+// top bar's Overview sheet.
 test("clicking the current task opens the activity sidebar's tasks tab, never a pane, on desktop", async () => {
   const user = userEvent.setup();
   await mountComposer("ref_a", {
@@ -595,8 +595,7 @@ test("clicking the current task opens the activity sidebar's tasks tab, never a 
   });
 
   await user.click(screen.getByRole("button", { name: "Open tasks: Finish the focused composer test" }));
-  expect(activitySidebarStore.getState().open).toBe(true);
-  expect(activitySidebarStore.getState().tab).toBe("tasks");
+  expect(activitySidebarStore.getState()).toMatchObject({ open: true, ref: "ref_a", tab: "tasks" });
   expect(isPaneOpen(workspaceStore.getState(), "sessionTasks", { ref: "ref_a" })).toBe(false);
   // act(): the chrome subscribes to focus-derived state (its Activity check
   // reads currentSessionRef), so this raw store mutation re-renders it.
