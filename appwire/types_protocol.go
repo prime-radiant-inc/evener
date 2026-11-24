@@ -110,6 +110,7 @@ const (
 	MethodEvenerThreadWatchesList     = "evener/thread/watches/list"
 	MethodEvenerSubagentPreview       = "evener/subagentPreview"
 	MethodEvenerPathsComplete         = "evener/paths/complete"
+	MethodEvenerFilesSearch           = "evener/files/search"
 	MethodEvenerDirsCreate            = "evener/dirs/create"
 	MethodEvenerProjectsRecent        = "evener/projects/recent"
 	MethodEvenerPathValidate          = "evener/path/validate"

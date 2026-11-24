@@ -670,6 +670,19 @@ func (s *RemoteHubSource) FetchSessionDocument(ctx context.Context, params appwi
 	return out, nil
 }
 
+// SearchFiles forwards one session-scoped evener/files/search request to the
+// owning remote host's hub using the attached-only RPC channel.
+func (s *RemoteHubSource) SearchFiles(ctx context.Context, params appwire.FilesSearchParams) (appwire.FilesSearchResponse, error) {
+	var out appwire.FilesSearchResponse
+	if err := s.call(ctx, appwire.MethodEvenerFilesSearch, params, &out); err != nil {
+		return appwire.FilesSearchResponse{}, err
+	}
+	if out.Items == nil {
+		out.Items = []appwire.FileSearchItem{}
+	}
+	return out, nil
+}
+
 // ReadSessionActivity reads the host's own live sessions' pulse meters for the
 // controller's evener/activity/read (S5). Refs are rewritten into the host's
 // namespace on the way out and back into the controller's on the way in; a
