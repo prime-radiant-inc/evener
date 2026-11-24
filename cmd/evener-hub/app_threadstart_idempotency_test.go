@@ -1404,3 +1404,235 @@ func TestThreadStartIdempotencyOlderRemoteFallback(t *testing.T) {
 		t.Fatalf("recovered okResp = %+v", okResp)
 	}
 }
+
+func TestThreadStartIdempotencyOlderRemoteReplayAndUncertainWhileDetached(t *testing.T) {
+	remoteSessionID := hubtest.SessionID(t)
+	var remoteSpawns atomic.Int32
+	var dropOnCall atomic.Bool
+	var attached atomic.Bool
+	attached.Store(true)
+
+	remoteServer := appserver.NewServer(appserver.ServerConfig{
+		ServerName: "remote-legacy-detach",
+		SourceID:   "local",
+		Features:   appwire.FeatureSet{ThreadList: true, TurnStart: true},
+	})
+	var remoteClientMu sync.Mutex
+	var activeRemoteClient *appwire.Client
+	appserver.HandleTyped(remoteServer.Router(), appwire.MethodThreadStart, func(_ context.Context, _ appwire.ThreadStartParams) (appwire.ThreadStartResponse, error) {
+		if dropOnCall.Load() {
+			remoteClientMu.Lock()
+			c := activeRemoteClient
+			remoteClientMu.Unlock()
+			if c != nil {
+				_ = c.Close()
+			}
+			return appwire.ThreadStartResponse{}, errors.New("ssh drop")
+		}
+		remoteSpawns.Add(1)
+		return appwire.ThreadStartResponse{
+			Thread: appwire.Thread{
+				ID:        remoteSessionID,
+				SessionID: remoteSessionID,
+				Source:    "local",
+				Evener:    appwire.EvenerThread{Ref: "local:" + remoteSessionID, InstanceID: remoteSessionID},
+			},
+			Turn: appwire.Turn{ID: "turn_1", Status: "inProgress"},
+		}, nil
+	})
+	remoteHTTP := httptest.NewServer(http.HandlerFunc(remoteServer.ServeWebSocket))
+	defer remoteHTTP.Close()
+	remoteClient := dialHubRPCInitialized(t, remoteHTTP)
+	remoteClientMu.Lock()
+	activeRemoteClient = remoteClient
+	remoteClientMu.Unlock()
+
+	stateRoot := t.TempDir()
+	localHub := newHubRPCTestServer(t, testWebConfig(t, hubcore.WebConfig{
+		HubStateRoot: stateRoot,
+		RunDir:       t.TempDir(),
+		RemoteHosts:  []hostreg.Host{{Name: "remote-a", SSH: "remote-a.example"}},
+		RemoteHostClient: func(context.Context, string) (*appwire.Client, error) {
+			if !attached.Load() {
+				return nil, errors.New("host detached")
+			}
+			return remoteClient, nil
+		},
+		RemoteHostClientIfAttached: func(string) (*appwire.Client, bool) {
+			if !attached.Load() {
+				return nil, false
+			}
+			return remoteClient, true
+		},
+		RemoteHostOnline: func(string) bool { return attached.Load() },
+	}))
+	defer localHub.Close()
+	client := dialHubRPCInitialized(t, localHub)
+
+	// (a) Completed on older remote, then host detaches -> retry must replay completed receipt.
+	compParams := appwire.ThreadStartParams{
+		ClientMutationID: "mut-detach-completed",
+		Source:           "remote-a",
+		Model:            "openai/gpt-5",
+		CWD:              "/remote/work",
+	}
+	first, err := appwiretest.ThreadStart(context.Background(), client, compParams)
+	if err != nil {
+		t.Fatalf("initial older remote start: %v", err)
+	}
+	if first.Disposition != appwire.MutationDispositionApplied {
+		t.Fatalf("first disposition = %q, want applied", first.Disposition)
+	}
+	attached.Store(false)
+	replay, err := appwiretest.ThreadStart(context.Background(), client, compParams)
+	if err != nil {
+		t.Fatalf("retry completed while host detached failed: %v", err)
+	}
+	if replay.Disposition != appwire.MutationDispositionReplayed || replay.ClientMutationID != "mut-detach-completed" || replay.Thread.Evener.Ref != "remote-a:"+remoteSessionID {
+		t.Fatalf("detached replay resp = %+v", replay)
+	}
+
+	// Conflicting payload for completed key while detached still returns ConflictingMutationID.
+	conflictParams := compParams
+	conflictParams.CWD = "/remote/other"
+	_, err = appwiretest.ThreadStart(context.Background(), client, conflictParams)
+	_, data := wireErrorData(t, err)
+	if data.EvenerErrorInfo != appwire.ErrorConflictingMutationID || data.MutationOutcome != appwire.MutationOutcomeNotAccepted {
+		t.Fatalf("detached conflict data = %+v", data)
+	}
+
+	// (b) SSH drop records uncertain, then host stays detached -> retry must return Unknown+Blocked, NOT NotAccepted.
+	attached.Store(true)
+	dropOnCall.Store(true)
+	uncParams := appwire.ThreadStartParams{
+		ClientMutationID: "mut-detach-uncertain",
+		Source:           "remote-a",
+		Model:            "openai/gpt-5",
+		CWD:              "/remote/work",
+	}
+	_, err = appwiretest.ThreadStart(context.Background(), client, uncParams)
+	_, data = wireErrorData(t, err)
+	if data.MutationOutcome != appwire.MutationOutcomeUnknown || data.RetryDisposition != appwire.RetryDispositionBlocked {
+		t.Fatalf("ssh drop data = %+v, want Unknown+Blocked", data)
+	}
+	attached.Store(false)
+	_, err = appwiretest.ThreadStart(context.Background(), client, uncParams)
+	_, data = wireErrorData(t, err)
+	if data.MutationOutcome != appwire.MutationOutcomeUnknown || data.RetryDisposition != appwire.RetryDispositionBlocked || data.ClientMutationID != "mut-detach-uncertain" {
+		t.Fatalf("retry uncertain while host detached data = %+v, want Unknown+Blocked (not NotAccepted)", data)
+	}
+
+	// Unseen key while detached still returns NotAccepted without touching creations/state.json.
+	_, err = appwiretest.ThreadStart(context.Background(), client, appwire.ThreadStartParams{
+		ClientMutationID: "mut-detach-unseen",
+		Source:           "remote-a",
+		Model:            "openai/gpt-5",
+		CWD:              "/remote/work",
+	})
+	_, data = wireErrorData(t, err)
+	if data.MutationOutcome != appwire.MutationOutcomeNotAccepted || data.ClientMutationID != "mut-detach-unseen" {
+		t.Fatalf("unseen key while host detached data = %+v, want NotAccepted", data)
+	}
+	if rawState, readErr := os.ReadFile(filepath.Join(stateRoot, "creations", "state.json")); readErr != nil || strings.Contains(string(rawState), "mut-detach-unseen") {
+		t.Fatalf("creations/state.json leaked unseen detached key or failed read (%v): %s", readErr, rawState)
+	}
+	if remoteSpawns.Load() != 1 {
+		t.Fatalf("remoteSpawns = %d, want 1", remoteSpawns.Load())
+	}
+}
+
+func TestThreadStartIdempotencyOlderRemotePartialErrorPreserved(t *testing.T) {
+	remoteSessionID := hubtest.SessionID(t)
+	var remoteSpawns atomic.Int32
+
+	remoteServer := appserver.NewServer(appserver.ServerConfig{
+		ServerName: "remote-legacy-partial",
+		SourceID:   "local",
+		Features:   appwire.FeatureSet{ThreadList: true, TurnStart: true},
+	})
+	appserver.HandleTyped(remoteServer.Router(), appwire.MethodThreadStart, func(_ context.Context, _ appwire.ThreadStartParams) (appwire.ThreadStartResponse, error) {
+		remoteSpawns.Add(1)
+		return appwire.ThreadStartResponse{}, appwire.WireError{
+			Code:    appwire.CodeUnavailable,
+			Message: "daemon lost during turn 1",
+			Data: appwire.ThreadStartPartialErrorData{
+				ErrorData: appwire.ErrorData{
+					EvenerErrorInfo:  appwire.ErrorSessionUnavailable,
+					Cause:            "daemonDrop",
+					RetryDisposition: appwire.RetryDispositionAutomatic,
+				},
+				CreatedRef:        "local:" + remoteSessionID,
+				CreatedInstanceID: "inst-remote-partial",
+			},
+		}
+	})
+	remoteHTTP := httptest.NewServer(http.HandlerFunc(remoteServer.ServeWebSocket))
+	defer remoteHTTP.Close()
+	remoteClient := dialHubRPCInitialized(t, remoteHTTP)
+
+	localHub := newHubRPCTestServer(t, testWebConfig(t, hubcore.WebConfig{
+		HubStateRoot:               t.TempDir(),
+		RunDir:                     t.TempDir(),
+		RemoteHosts:                []hostreg.Host{{Name: "remote-a", SSH: "remote-a.example"}},
+		RemoteHostClient:           func(context.Context, string) (*appwire.Client, error) { return remoteClient, nil },
+		RemoteHostClientIfAttached: func(string) (*appwire.Client, bool) { return remoteClient, true },
+	}))
+	defer localHub.Close()
+	client := dialHubRPCInitialized(t, localHub)
+
+	params := appwire.ThreadStartParams{
+		ClientMutationID: "mut-remote-partial",
+		Source:           "remote-a",
+		Model:            "openai/gpt-5",
+		CWD:              "/remote/work",
+		Input:            []appwire.InputItem{{Type: "text", Text: "run turn 1"}},
+	}
+	_, err := appwiretest.ThreadStart(context.Background(), client, params)
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		t.Fatalf("err = %T (%v), want WireError", err, err)
+	}
+	rawData, merr := json.Marshal(wire.Data)
+	if merr != nil {
+		t.Fatal(merr)
+	}
+	var partial appwire.ThreadStartPartialErrorData
+	if uerr := json.Unmarshal(rawData, &partial); uerr != nil {
+		t.Fatal(uerr)
+	}
+	if wire.Code != appwire.CodeUnavailable ||
+		!strings.Contains(wire.Message, "daemon lost during turn 1") ||
+		partial.EvenerErrorInfo != appwire.ErrorSessionUnavailable ||
+		partial.Cause != "daemonDrop" ||
+		partial.ClientMutationID != "mut-remote-partial" ||
+		partial.CreatedRef != "remote-a:"+remoteSessionID ||
+		partial.CreatedInstanceID != "inst-remote-partial" ||
+		partial.RetryDisposition != appwire.RetryDispositionBlocked {
+		t.Fatalf("older remote partial error = code:%d msg:%q data:%+v (raw=%s)", wire.Code, wire.Message, partial, rawData)
+	}
+
+	// Retrying the same key must stay blocked (no second spawn) and retain the created identity.
+	_, retryErr := appwiretest.ThreadStart(context.Background(), client, params)
+	var retryWire appwire.WireError
+	if !errors.As(retryErr, &retryWire) {
+		t.Fatalf("retryErr = %T (%v), want WireError", retryErr, retryErr)
+	}
+	rawRetry, merr := json.Marshal(retryWire.Data)
+	if merr != nil {
+		t.Fatal(merr)
+	}
+	var retryPartial appwire.ThreadStartPartialErrorData
+	if uerr := json.Unmarshal(rawRetry, &retryPartial); uerr != nil {
+		t.Fatal(uerr)
+	}
+	if retryPartial.MutationOutcome != appwire.MutationOutcomeUnknown ||
+		retryPartial.RetryDisposition != appwire.RetryDispositionBlocked ||
+		retryPartial.ClientMutationID != "mut-remote-partial" ||
+		retryPartial.CreatedRef != "remote-a:"+remoteSessionID ||
+		retryPartial.CreatedInstanceID != "inst-remote-partial" {
+		t.Fatalf("retry partial error data = %+v (raw=%s)", retryPartial, rawRetry)
+	}
+	if remoteSpawns.Load() != 1 {
+		t.Fatalf("remoteSpawns = %d, want 1", remoteSpawns.Load())
+	}
+}

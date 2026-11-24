@@ -91,11 +91,29 @@ func TestCreationStoreRoundTripAllFourStatesAndStripsSnapshots(t *testing.T) {
 	}
 	fullResp := appwire.ThreadStartResponse{
 		Thread: appwire.Thread{
-			ID:        "sess-2",
-			SessionID: "sess-2",
-			CWD:       "/tmp/project",
-			Source:    "local",
-			Evener:    appwire.EvenerThread{Ref: "local:sess-2", InstanceID: "inst-2"},
+			ID:            "sess-2",
+			SessionID:     "sess-2",
+			Name:          "Keep Metadata",
+			ModelProvider: "openai",
+			CWD:           "/tmp/project",
+			Source:        "local",
+			Evener: appwire.EvenerThread{
+				Ref:                        "local:sess-2",
+				InstanceID:                 "inst-2",
+				Capabilities:               appwire.ThreadCapabilities{Send: true},
+				MutationStateAuthoritative: true,
+				PendingMutations: []appwire.PendingMutation{{
+					ClientMutationID: "turn-m-2",
+					Method:           appwire.MethodTurnStart,
+					ExecutionState:   "accepted",
+					Input: []appwire.InputItem{
+						{Type: "text", Text: "PENDING_MUTATION_SECRET_PROMPT"},
+						{Type: "image", URL: "data:image/png;base64,PENDING_DATA_URL_SECRET", Data: []byte("PENDING_RAW_IMAGE_BYTES")},
+					},
+					ProjectionState: appwire.MutationProjectionPending,
+				}},
+				Queue: appwire.QueueState{Depth: 1, Revision: 3, Preview: []string{"QUEUED_PREVIEW_SECRET"}, Texts: []string{"QUEUED_FULL_TEXT_SECRET"}, IDs: []string{"q1"}, ClientMutationIDs: []string{"qm1"}},
+			},
 			Turns: []appwire.Turn{{
 				ID:     "turn_1",
 				Status: "inProgress",
@@ -129,10 +147,25 @@ func TestCreationStoreRoundTripAllFourStatesAndStripsSnapshots(t *testing.T) {
 		t.Fatalf("MarkUncertain: %v", err)
 	}
 	store.ReleaseOwner(uncRes.Owner, appwire.ThreadStartResponse{}, errors.New("uncertain"))
+	if len(fullResp.Thread.Evener.PendingMutations) != 1 || fullResp.Thread.Evener.Queue.Depth != 1 || !fullResp.Thread.Evener.MutationStateAuthoritative {
+		t.Fatal("CommitCompleted mutated caller ThreadStartResponse")
+	}
 
 	rawBytes, err := os.ReadFile(creationStatePath(root))
 	if err != nil {
 		t.Fatal(err)
+	}
+	for _, forbidden := range [][]byte{
+		[]byte("PENDING_MUTATION_SECRET_PROMPT"),
+		[]byte("PENDING_DATA_URL_SECRET"),
+		[]byte("PENDING_RAW_IMAGE_BYTES"),
+		[]byte("UEVORElOR19SQVdfSU1BR0VfQllURVM"),
+		[]byte("QUEUED_PREVIEW_SECRET"),
+		[]byte("QUEUED_FULL_TEXT_SECRET"),
+	} {
+		if bytes.Contains(rawBytes, forbidden) {
+			t.Fatalf("state.json leaked pending/queued prompt or image bytes (%s): %s", forbidden, rawBytes)
+		}
 	}
 	if bytes.Contains(rawBytes, []byte("SUPER_SECRET_PROMPT_TEXT")) ||
 		bytes.Contains(rawBytes, []byte("RAW_IMAGE_BYTES_SENTINEL")) ||
@@ -174,7 +207,14 @@ func TestCreationStoreRoundTripAllFourStatesAndStripsSnapshots(t *testing.T) {
 	if gotComp.Response.Disposition != appwire.MutationDispositionReplayed ||
 		gotComp.Response.ClientMutationID != "m-completed" ||
 		gotComp.Response.Thread.ID != "sess-2" ||
+		gotComp.Response.Thread.Name != "Keep Metadata" ||
+		gotComp.Response.Thread.ModelProvider != "openai" ||
+		gotComp.Response.Thread.CWD != "/tmp/project" ||
+		!gotComp.Response.Thread.Evener.Capabilities.Send ||
 		gotComp.Response.Thread.Turns != nil ||
+		gotComp.Response.Thread.Evener.PendingMutations != nil ||
+		!reflect.DeepEqual(gotComp.Response.Thread.Evener.Queue, appwire.QueueState{}) ||
+		gotComp.Response.Thread.Evener.MutationStateAuthoritative ||
 		!reflect.DeepEqual(gotComp.Response.Turn, appwire.Turn{ID: "turn_1", Status: "inProgress"}) {
 		t.Fatalf("unexpected replayed response: %+v", gotComp.Response)
 	}

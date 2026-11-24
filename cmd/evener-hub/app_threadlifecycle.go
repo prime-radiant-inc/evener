@@ -3,6 +3,7 @@ package hub
 import (
 	"cmp"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -170,6 +171,29 @@ func commitKeyedCompleted(store *hubcore.CreationStore, id string, resp appwire.
 
 func keyedRemoteThreadStart(ctx context.Context, cfg hubcore.WebConfig, remote appsource.Source, params, forward appwire.ThreadStartParams) (response appwire.ThreadStartResponse, startErr error) {
 	id := params.ClientMutationID
+	if cfg.CreationStoreErr == nil && cfg.CreationStore != nil {
+		payloadHash, err := hubcore.CreationPayloadHash(remote.ID(), params)
+		if err != nil {
+			return startRefused(err, id)
+		}
+		existing, found, err := cfg.CreationStore.AcquireExisting(ctx, id, payloadHash)
+		if err != nil {
+			return appwire.ThreadStartResponse{}, err
+		}
+		if found {
+			if existing.Response != nil {
+				if err := deletionFenceError(cfg, existing.Response.Thread.Evener.Ref, cmp.Or(existing.Response.Thread.SessionID, existing.Response.Thread.ID), id); err != nil {
+					return appwire.ThreadStartResponse{}, err
+				}
+				return *existing.Response, nil
+			}
+			if existing.Owner != nil {
+				err := appwire.MutationUnknown(id, "thread/start outcome is unknown; verify whether the session started before retrying")
+				cfg.CreationStore.ReleaseOwner(existing.Owner, appwire.ThreadStartResponse{}, err)
+				return appwire.ThreadStartResponse{}, err
+			}
+		}
+	}
 	if probe, ok := remote.(interface {
 		ThreadStartIdempotencySupported(context.Context) (bool, error)
 	}); ok {
@@ -194,6 +218,11 @@ func keyedRemoteThreadStart(ctx context.Context, cfg hubcore.WebConfig, remote a
 	forward.ClientMutationID = ""
 	resp, err := remote.StartThread(ctx, forward)
 	if err != nil {
+		if partialWire, ok := remoteThreadStartPartialError(err, id); ok {
+			partial := partialWire.Data.(appwire.ThreadStartPartialErrorData)
+			_ = cfg.CreationStore.MarkUncertainWithCreated(id, partial.CreatedRef, partial.CreatedInstanceID)
+			return appwire.ThreadStartResponse{}, causedWireError{wire: partialWire, cause: err}
+		}
 		_, notSent := errors.AsType[appwire.RequestNotSentError](err)
 		data, hasData := typedWireErrorData(err)
 		if notSent || (hasData && data.MutationOutcome == appwire.MutationOutcomeNotAccepted) {
@@ -207,6 +236,39 @@ func keyedRemoteThreadStart(ctx context.Context, cfg hubcore.WebConfig, remote a
 		return appwire.ThreadStartResponse{}, appwire.MutationUnknown(id, err.Error())
 	}
 	return commitKeyedCompleted(cfg.CreationStore, id, resp)
+}
+
+func remoteThreadStartPartialError(err error, clientMutationID string) (appwire.WireError, bool) {
+	wire, ok := errors.AsType[appwire.WireError](err)
+	if !ok || wire.Data == nil {
+		return appwire.WireError{}, false
+	}
+	var partial appwire.ThreadStartPartialErrorData
+	if typed, ok := wire.Data.(appwire.ThreadStartPartialErrorData); ok {
+		partial = typed
+	} else {
+		raw, merr := json.Marshal(wire.Data)
+		if merr != nil || json.Unmarshal(raw, &partial) != nil {
+			return appwire.WireError{}, false
+		}
+	}
+	if partial.CreatedRef == "" && partial.CreatedInstanceID == "" {
+		return appwire.WireError{}, false
+	}
+	wire = wire.WithThreadStartPartial(partial.CreatedRef, partial.CreatedInstanceID)
+	data, ok := wire.Data.(appwire.ThreadStartPartialErrorData)
+	if !ok {
+		return appwire.WireError{}, false
+	}
+	data.ClientMutationID = clientMutationID
+	if data.MutationOutcome == "" {
+		data.MutationOutcome = appwire.MutationOutcomeUnknown
+	}
+	if data.RetryDisposition == "" || data.RetryDisposition == appwire.RetryDispositionAutomatic {
+		data.RetryDisposition = appwire.RetryDispositionBlocked
+	}
+	wire.Data = data
+	return wire, true
 }
 
 func keyedLocalThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadStartParams) (response appwire.ThreadStartResponse, startErr error) {
