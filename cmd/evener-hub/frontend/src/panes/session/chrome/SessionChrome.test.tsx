@@ -887,7 +887,7 @@ test("Overview About reads the work time of the SAME ref passed to SessionChrome
   );
   await user.click(screen.getByRole("button", { name: /session actions/i }));
   await user.click(screen.getByRole("menuitem", { name: "Overview" }));
-  await user.click(await screen.findByRole("radio", { name: "About" }));
+  await user.click(await screen.findByRole("tab", { name: "About" }));
 
   expect((await screen.findByTestId("session-details-work-time")).textContent).toContain("2m");
   restoreViewport();
@@ -1133,7 +1133,7 @@ test("mobile chrome opens Overview without changing workspace panes", async () =
     const sidebar = await screen.findByTestId("activity-sidebar");
     await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
     await waitFor(() => expect(sidebar.contains(document.activeElement)).toBe(true));
-    await user.click(screen.getByRole("radio", { name: "About" }));
+    await user.click(screen.getByRole("tab", { name: "About" }));
     await user.keyboard("{Escape}");
     await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("button", { name: "Session actions" })));
     expect(workspaceStore.getState().panes).toEqual(panes);
@@ -1188,7 +1188,7 @@ test.each(["removed", "hidden ancestor"])(
       await waitFor(() => expect(sidebar.contains(document.activeElement)).toBe(true));
       if (condition === "removed") original.unmount();
       else original.container.style.display = "none";
-      await user.click(screen.getByRole("radio", { name: "About" }));
+      await user.click(screen.getByRole("tab", { name: "About" }));
       await user.keyboard("{Escape}");
       const trigger = within(replacement.container).getByRole("button", { name: "Session actions" });
       await waitFor(() => expect(document.activeElement).toBe(trigger));

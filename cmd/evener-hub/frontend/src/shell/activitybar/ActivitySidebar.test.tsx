@@ -884,6 +884,82 @@ test("activity tabs show each fraction as a detail line and About stays a single
   expect(screen.getByRole("radio", { name: "About" }).querySelectorAll("span")).toHaveLength(1);
 });
 
+test("phone Overview tabs form a named tablist with one selected tab stop and an owned panel", async () => {
+  const user = userEvent.setup();
+  connectionStore.getState().connect(activityClient());
+  installFocusedScope(ref);
+  activitySidebarStore.getState().openWith("agents");
+  mount(true);
+  const sidebar = await screen.findByTestId("activity-sidebar");
+  const list = within(sidebar).getByRole("tablist", { name: "Overview kind" });
+  expect(list.getAttribute("aria-orientation")).toBe("horizontal");
+  expect(screen.queryByRole("radiogroup", { name: "Overview kind" })).toBeNull();
+  const tabs = screen.getAllByRole("tab");
+  expect(tabs).toHaveLength(5);
+  const selected = screen.getByRole("tab", { name: /^Agents,/ });
+  expect(selected.querySelectorAll("span")).toHaveLength(2);
+  expect(screen.getByRole("tab", { name: "About" }).querySelectorAll("span")).toHaveLength(1);
+  expect(selected.getAttribute("aria-selected")).toBe("true");
+  expect(tabs.filter((tab) => tab.tabIndex === 0)).toEqual([selected]);
+  for (const tab of tabs) if (tab !== selected) expect(tab.tabIndex).toBe(-1);
+  const panel = screen.getByRole("tabpanel");
+  expect(selected.getAttribute("aria-controls")).toBe(panel.id);
+  expect(panel.getAttribute("aria-labelledby")).toBe(selected.id);
+  // Sequential focus enters the strip on the selected tab and leaves it on
+  // the next Tab: the row is one stop, not one per category or one per Button.
+  await waitFor(() => expect(document.activeElement).toBe(selected));
+  within(sidebar).getByRole("button", { name: "Close Overview" }).focus();
+  await user.tab();
+  expect(document.activeElement).toBe(selected);
+  await user.tab();
+  expect(list.contains(document.activeElement)).toBe(false);
+});
+
+test("phone Overview tabs rove with arrows, Home and End and keep the selected tab in view", async () => {
+  connectionStore.getState().connect(activityClient());
+  installFocusedScope(ref);
+  const scrolled: { element: Element; options: ScrollIntoViewOptions | undefined }[] = [];
+  const originalScroll = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollIntoView");
+  Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+    configurable: true,
+    value(this: HTMLElement, options?: ScrollIntoViewOptions) {
+      scrolled.push({ element: this, options });
+    },
+  });
+  try {
+    activitySidebarStore.getState().openWith("agents");
+    mount(true);
+    const list = await screen.findByRole("tablist", { name: "Overview kind" });
+    const agents = screen.getByRole("tab", { name: /^Agents,/ });
+    await waitFor(() => expect(document.activeElement).toBe(agents));
+    const press = async (key: string) => {
+      await act(async () => fireEvent.keyDown(list, { key }));
+    };
+    await press("ArrowRight");
+    const jobs = screen.getByRole("tab", { name: /^Jobs,/ });
+    expect(activitySidebarStore.getState().tab).toBe("jobs");
+    expect(document.activeElement).toBe(jobs);
+    expect(jobs.getAttribute("aria-selected")).toBe("true");
+    expect(agents.getAttribute("aria-selected")).toBe("false");
+    expect(jobs.tabIndex).toBe(0);
+    expect(agents.tabIndex).toBe(-1);
+    expect(scrolled.at(-1)).toEqual({ element: jobs, options: { block: "nearest", inline: "nearest" } });
+    await press("End");
+    const about = screen.getByRole("tab", { name: "About" });
+    expect(activitySidebarStore.getState().tab).toBe("about");
+    expect(document.activeElement).toBe(about);
+    await press("Home");
+    expect(activitySidebarStore.getState().tab).toBe("agents");
+    expect(document.activeElement).toBe(agents);
+    await press("ArrowLeft");
+    expect(activitySidebarStore.getState().tab).toBe("about");
+    expect(document.activeElement).toBe(about);
+  } finally {
+    if (originalScroll) Object.defineProperty(HTMLElement.prototype, "scrollIntoView", originalScroll);
+    else delete (HTMLElement.prototype as Partial<HTMLElement>).scrollIntoView;
+  }
+});
+
 test("phone Overview enters its selected category and contains sequential keyboard focus", async () => {
   const user = userEvent.setup();
   connectionStore.getState().connect(activityClient());
@@ -896,7 +972,7 @@ test("phone Overview enters its selected category and contains sequential keyboa
     const sidebar = await screen.findByTestId("activity-sidebar");
     expect(screen.getByRole("dialog", { name: "Overview" })).toBe(sidebar);
     expect(sidebar.getAttribute("aria-modal")).toBe("true");
-    const about = screen.getByRole("radio", { name: "About" });
+    const about = screen.getByRole("tab", { name: "About" });
     await waitFor(() => expect(document.activeElement).toBe(about));
     for (let step = 0; step < 20; step += 1) {
       await user.tab();
@@ -960,8 +1036,8 @@ test("phone Overview reopening during its exit returns focus to its selected cat
     opener.click();
     mount(true);
     const sidebar = await screen.findByTestId("activity-sidebar");
-    const strip = screen.getByRole("radiogroup");
-    const about = screen.getByRole("radio", { name: "About" });
+    const strip = screen.getByRole("tablist", { name: "Overview kind" });
+    const about = screen.getByRole("tab", { name: "About" });
     await waitFor(() => expect(document.activeElement).toBe(about));
     // Close and reopen in separate synchronous commits. No timer or frame can
     // run between them, so the exit animation cannot finish and the aside
@@ -979,7 +1055,7 @@ test("phone Overview reopening during its exit returns focus to its selected cat
     });
     expect(activitySidebarStore.getState().open).toBe(true);
     expect(screen.getByTestId("activity-sidebar")).toBe(sidebar);
-    expect(screen.getByRole("radiogroup")).toBe(strip);
+    expect(screen.getByRole("tablist", { name: "Overview kind" })).toBe(strip);
     await waitFor(() => expect(document.activeElement).toBe(about), { timeout: 1_500 });
   } finally {
     opener.remove();
