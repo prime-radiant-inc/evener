@@ -246,6 +246,28 @@ test("codec drops unknown keys across the manifest and keeps everything it knows
   expect(materializeSnapshot(resource, decodedSnapshot(resource, snapshot))).toEqual(known);
 });
 
+test("codec keeps optional boolean threadStartIdempotency on manifest sources and rejects non-boolean values", () => {
+  const { key: resource, snapshot } = schemaFixture("manifest");
+  const baseMeta = snapshot.metadata as Record<string, unknown>;
+  const validSource = {
+    id: "remote-a",
+    label: "remote-a",
+    kind: "appwire",
+    online: true,
+    threadStartIdempotency: true,
+  };
+  snapshot.metadata = { ...baseMeta, sources: [validSource] };
+  const decoded = decodedSnapshot(resource, snapshot);
+  expect((decoded.snapshot.metadata as { sources: unknown[] }).sources).toEqual([validSource]);
+
+  const badSnapshot = cloneSnapshot(snapshot);
+  badSnapshot.metadata = {
+    ...baseMeta,
+    sources: [{ id: "remote-a", label: "remote-a", kind: "appwire", online: true, threadStartIdempotency: "yes" }],
+  };
+  expect(() => decodeNavigationResponse(resource, undefined, snapshotResponse(resource, badSnapshot))).toThrow();
+});
+
 test("codec drops unknown keys on a location's metadata", () => {
   const { key: resource, snapshot } = schemaFixture("location");
   snapshot.metadata = { ...(snapshot.metadata as object), host_label: "private-body-value" };

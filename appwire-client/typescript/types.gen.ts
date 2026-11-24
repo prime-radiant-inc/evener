@@ -4671,6 +4671,7 @@ export interface Source {
   label: string;
   kind: string;
   online: boolean;
+  threadStartIdempotency?: boolean;
 }
 
 export interface SpawnSlashCatalogParams {

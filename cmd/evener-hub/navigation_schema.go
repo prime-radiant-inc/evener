@@ -387,7 +387,32 @@ func validateNavigationManifestRaw(raw json.RawMessage) bool {
 		return false
 	}
 	for _, source := range sources {
-		if !navigationRawObjectExact(source, []string{"id", "label", "kind", "online"}) {
+		if !navigationRawObjectWithOptional(source, []string{"id", "label", "kind", "online"}, []string{"threadStartIdempotency"}) {
+			return false
+		}
+	}
+	return true
+}
+
+func navigationRawObjectWithOptional(raw json.RawMessage, required, optional []string) bool {
+	var object map[string]json.RawMessage
+	if json.Unmarshal(raw, &object) != nil {
+		return false
+	}
+	for _, field := range required {
+		if _, ok := object[field]; !ok {
+			return false
+		}
+	}
+	allowed := make(map[string]bool, len(required)+len(optional))
+	for _, field := range required {
+		allowed[field] = true
+	}
+	for _, field := range optional {
+		allowed[field] = true
+	}
+	for field := range object {
+		if !allowed[field] {
 			return false
 		}
 	}

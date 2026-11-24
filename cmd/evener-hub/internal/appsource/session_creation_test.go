@@ -257,3 +257,72 @@ func TestRemoteThreadStartRefusesOlderAndOfflineDirectly(t *testing.T) {
 		t.Fatalf("wireCalls to older remote = %+v, want 0", got)
 	}
 }
+
+func TestRemoteHubSourceThreadStartIdempotencySupportedIfAttached(t *testing.T) {
+	var dials atomic.Int32
+	dial := func(context.Context, string) (*appwire.Client, error) {
+		dials.Add(1)
+		return nil, errors.New("manifest capability check must never dial")
+	}
+
+	capableClient := newScriptedClientWithFeatures(t, appwire.FeatureSet{ThreadStartIdempotency: true})
+	olderClient := newScriptedClientWithFeatures(t, appwire.FeatureSet{ThreadStartIdempotency: false})
+
+	noLookup := NewRemoteHubSource("alpha", nil, dial)
+	if noLookup.ThreadStartIdempotencySupportedIfAttached() {
+		t.Fatal("expected false without attached-only lookup")
+	}
+
+	var attached bool
+	var online atomic.Bool
+	online.Store(true)
+	var current *appwire.Client
+
+	source := NewRemoteHubSource("alpha", nil, dial)
+	source.SetHostClientIfAttached(func(string) (*appwire.Client, bool) {
+		return current, attached
+	})
+	source.SetHostOnline(online.Load)
+
+	if source.ThreadStartIdempotencySupportedIfAttached() {
+		t.Fatal("expected false while unattached")
+	}
+
+	attached = true
+	current = olderClient
+	if source.ThreadStartIdempotencySupportedIfAttached() {
+		t.Fatal("expected false for attached older remote client")
+	}
+
+	current = capableClient
+	if !source.ThreadStartIdempotencySupportedIfAttached() {
+		t.Fatal("expected true for online attached capable remote client")
+	}
+
+	online.Store(false)
+	if source.ThreadStartIdempotencySupportedIfAttached() {
+		t.Fatal("expected false when source reports offline")
+	}
+
+	if dials.Load() != 0 {
+		t.Fatalf("dials = %d, want 0", dials.Load())
+	}
+}
+
+func newScriptedClientWithFeatures(t *testing.T, features appwire.FeatureSet) *appwire.Client {
+	t.Helper()
+	srv := appserver.NewServer(appserver.ServerConfig{ServerName: "remote", SourceID: "local", Features: features})
+	srvHTTP := httptest.NewServer(http.HandlerFunc(srv.ServeWebSocket))
+	t.Cleanup(srvHTTP.Close)
+	transport, err := appwire.DialWebSocket(t.Context(), "ws"+strings.TrimPrefix(srvHTTP.URL, "http"), srvHTTP.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := appwire.NewClient(transport)
+	client.Start(t.Context())
+	t.Cleanup(func() { _ = client.Close() })
+	if _, err := client.Initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatal(err)
+	}
+	return client
+}

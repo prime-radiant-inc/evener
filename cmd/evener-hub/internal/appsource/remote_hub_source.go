@@ -184,6 +184,17 @@ func (s *RemoteHubSource) SessionToolsSupported(ctx context.Context) (supported,
 	return client.Features().SessionTools, true
 }
 
+// ThreadStartIdempotencySupportedIfAttached reports whether this source is
+// online and its currently attached remote client negotiated
+// FeatureSet.ThreadStartIdempotency, without dialing.
+func (s *RemoteHubSource) ThreadStartIdempotencySupportedIfAttached() bool {
+	if s == nil || !s.Online() || s.clientIfAttached == nil {
+		return false
+	}
+	client, ok := s.clientIfAttached(s.id)
+	return ok && client != nil && client.Features().ThreadStartIdempotency
+}
+
 // call forwards one request over the current remote client and translates any
 // refs in the response back into the controller namespace. Errors bypass
 // response translation; StartThread translates its createdRef error evidence

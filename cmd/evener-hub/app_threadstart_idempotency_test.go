@@ -23,6 +23,8 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubtest"
+	"primeradiant.com/evener/cmd/evener-hub/internal/sshconn"
+	"primeradiant.com/evener/hubapi"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/llm"
@@ -1573,5 +1575,199 @@ func TestThreadStartIdempotencyCommitSpawnedAfterRenameRetainsSpawnedAndFinishes
 	_, retryBeforeData := wireErrorData(t, retryBeforeErr)
 	if retryBeforeData.MutationOutcome != appwire.MutationOutcomeUnknown || retryBeforeData.RetryDisposition != appwire.RetryDispositionBlocked || spawns.Load() != 2 {
 		t.Fatalf("retry after CommitSpawned BeforeRename data=%+v spawns=%d", retryBeforeData, spawns.Load())
+	}
+}
+
+func newRemoteFeatureHubClient(t *testing.T, name string, features appwire.FeatureSet) *appwire.Client {
+	t.Helper()
+	srv := appserver.NewServer(appserver.ServerConfig{ServerName: name, SourceID: "local", Features: features})
+	httpSrv := httptest.NewServer(http.HandlerFunc(srv.ServeWebSocket))
+	t.Cleanup(httpSrv.Close)
+	return dialHubRPCInitialized(t, httpSrv)
+}
+
+func TestThreadStartIdempotencyManifestSourcesCapability(t *testing.T) {
+	capableClient := newRemoteFeatureHubClient(t, "remote-capable", appwire.FeatureSet{ThreadStartIdempotency: true})
+	olderClient := newRemoteFeatureHubClient(t, "remote-older", appwire.FeatureSet{ThreadStartIdempotency: false})
+
+	var dials atomic.Int32
+	web := NewWebServer(hubcore.WebConfig{
+		HubAddr:       "127.0.0.1:9180",
+		LocalHostName: "controller",
+		RemoteHosts: []hostreg.Host{
+			{Name: "remote-capable", SSH: "remote-capable.example"},
+			{Name: "remote-older", SSH: "remote-older.example"},
+			{Name: "remote-offline", SSH: "remote-offline.example"},
+		},
+		RemoteHostClient: func(context.Context, string) (*appwire.Client, error) {
+			dials.Add(1)
+			return nil, errors.New("apiTreeSources must never dial")
+		},
+		RemoteHostClientIfAttached: func(host string) (*appwire.Client, bool) {
+			switch host {
+			case "remote-capable":
+				return capableClient, true
+			case "remote-older":
+				return olderClient, true
+			default:
+				return nil, false
+			}
+		},
+		RemoteHostOnline: func(host string) bool {
+			return host != "remote-offline"
+		},
+	})
+	sources := web.apiTreeSources()
+	byID := make(map[string]hubapi.Source, len(sources))
+	for _, src := range sources {
+		byID[src.ID] = src
+	}
+	if !byID["local"].ThreadStartIdempotency {
+		t.Fatalf("local source ThreadStartIdempotency = false, want true: %+v", byID["local"])
+	}
+	if !byID["remote-capable"].ThreadStartIdempotency || !byID["remote-capable"].Online {
+		t.Fatalf("remote-capable = %+v, want Online=true ThreadStartIdempotency=true", byID["remote-capable"])
+	}
+	if byID["remote-older"].ThreadStartIdempotency || !byID["remote-older"].Online {
+		t.Fatalf("remote-older = %+v, want Online=true ThreadStartIdempotency=false", byID["remote-older"])
+	}
+	if byID["remote-offline"].ThreadStartIdempotency || byID["remote-offline"].Online {
+		t.Fatalf("remote-offline = %+v, want Online=false ThreadStartIdempotency=false", byID["remote-offline"])
+	}
+	if dials.Load() != 0 {
+		t.Fatalf("apiTreeSources dialed %d times, want 0", dials.Load())
+	}
+
+	// Projection preserves ThreadStartIdempotency across clone + Manifest().
+	inputs := navigationBuildInputsFromTreeSnapshot("generation", 1, hubcore.Tree{}, sources, hubapi.AttentionSummary{}, nil, nil, nil, nil, nil)
+	projection, err := buildNavigationProjection(inputs)
+	if err != nil {
+		t.Fatalf("buildNavigationProjection: %v", err)
+	}
+	manifest := projection.Manifest()
+	if len(manifest.Sources) != len(sources) || !manifest.Sources[0].ThreadStartIdempotency {
+		t.Fatalf("projection.Manifest().Sources = %+v, want ThreadStartIdempotency preserved", manifest.Sources)
+	}
+
+	// Corrupt creation store reports local ThreadStartIdempotency=false.
+	corruptRoot := t.TempDir()
+	statePath := filepath.Join(corruptRoot, "creations", "state.json")
+	if err := os.MkdirAll(filepath.Dir(statePath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(statePath, []byte(`{corrupt`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	corruptWeb := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", HubStateRoot: corruptRoot})
+	corruptSources := corruptWeb.apiTreeSources()
+	if len(corruptSources) != 1 || corruptSources[0].ID != "local" || corruptSources[0].ThreadStartIdempotency {
+		t.Fatalf("corrupt store local source = %+v, want ThreadStartIdempotency=false", corruptSources)
+	}
+}
+
+func TestThreadStartIdempotencyManifestInvalidatesOnRemoteCapabilityChange(t *testing.T) {
+	capableClient := newRemoteFeatureHubClient(t, "remote-capable", appwire.FeatureSet{ThreadStartIdempotency: true})
+	olderClient := newRemoteFeatureHubClient(t, "remote-older", appwire.FeatureSet{ThreadStartIdempotency: false})
+
+	var mu sync.Mutex
+	var online bool
+	var attachedClient *appwire.Client
+	hosts := []hostreg.Host{{Name: "remote-a", SSH: "remote-a.example"}}
+	cfg := hubcore.WebConfig{
+		HubAddr:     "127.0.0.1:9180",
+		RemoteHosts: hosts,
+		RemoteHostClient: func(context.Context, string) (*appwire.Client, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			online = true
+			attachedClient = capableClient
+			return capableClient, nil
+		},
+		RemoteHostClientIfAttached: func(host string) (*appwire.Client, bool) {
+			if host != "remote-a" {
+				return nil, false
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			return attachedClient, attachedClient != nil
+		},
+		RemoteHostOnline: func(host string) bool {
+			if host != "remote-a" {
+				return false
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			return online
+		},
+	}
+	web := NewWebServer(cfg)
+	initial, err := web.navigation.readV3(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}, nil)
+	if err != nil {
+		t.Fatalf("initial manifest readV3: %v", err)
+	}
+	rev1 := initial.Response.Revision
+	if got := web.apiTreeSources()[1]; got.Online || got.ThreadStartIdempotency {
+		t.Fatalf("before attach remote-a = %+v, want offline and keyless", got)
+	}
+
+	// Explicit attach flips remote-a to online + capable and invalidates manifest.
+	hostReg, err := hostreg.New(hosts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := hostAttachAndInvalidateSources(t.Context(), web.cfg, web.sources, hostReg, web.navigation, appwire.HostAttachParams{Host: "remote-a"}); err != nil {
+		t.Fatalf("hostAttachAndInvalidateSources: %v", err)
+	}
+	web.navigation.refreshPending(t.Context())
+	pubs1 := web.navigation.DrainPublications()
+	if len(pubs1) != 1 || !hasNavigationTarget(pubs1[0].Targets, appwire.NavigationTargetManifest, "") {
+		t.Fatalf("attach publications = %+v, want manifest invalidation", pubs1)
+	}
+	afterAttach, err := web.navigation.readV3(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}, nil)
+	if err != nil {
+		t.Fatalf("after attach manifest readV3: %v", err)
+	}
+	if afterAttach.Response.Revision <= rev1 {
+		t.Fatalf("manifest revision after attach = %d, want > %d", afterAttach.Response.Revision, rev1)
+	}
+	var attachedManifest hubapi.NavigationManifest
+	var snap1 hubapi.NavigationSnapshot
+	if err := json.Unmarshal(afterAttach.Response.Data, &snap1); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(snap1.Metadata, &attachedManifest); err != nil {
+		t.Fatal(err)
+	}
+	if !attachedManifest.Sources[1].Online || !attachedManifest.Sources[1].ThreadStartIdempotency {
+		t.Fatalf("attached manifest source = %+v, want Online=true ThreadStartIdempotency=true", attachedManifest.Sources[1])
+	}
+
+	// Reattach with an older remote client + SSH invalidation flips ThreadStartIdempotency back to false and advances manifest revision.
+	mu.Lock()
+	attachedClient = olderClient
+	mu.Unlock()
+	hubSSHStateInvalidation(func() { web.navigation.Invalidate(navigationChangeHint{Sources: true}) }, nil)(sshconn.Event{Host: "remote-a", Kind: sshconn.EventAttached})
+	web.navigation.refreshPending(t.Context())
+	pubs2 := web.navigation.DrainPublications()
+	if len(pubs2) != 1 || !hasNavigationTarget(pubs2[0].Targets, appwire.NavigationTargetManifest, "") {
+		t.Fatalf("reattach publications = %+v, want manifest invalidation", pubs2)
+	}
+	afterReattach, err := web.navigation.readV3(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}, nil)
+	if err != nil {
+		t.Fatalf("after reattach manifest readV3: %v", err)
+	}
+	if afterReattach.Response.Revision <= afterAttach.Response.Revision {
+		t.Fatalf("manifest revision after capability flip = %d, want > %d", afterReattach.Response.Revision, afterAttach.Response.Revision)
+	}
+	var reattachedManifest hubapi.NavigationManifest
+	var snap2 hubapi.NavigationSnapshot
+	if err := json.Unmarshal(afterReattach.Response.Data, &snap2); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(snap2.Metadata, &reattachedManifest); err != nil {
+		t.Fatal(err)
+	}
+	if !reattachedManifest.Sources[1].Online || reattachedManifest.Sources[1].ThreadStartIdempotency {
+		t.Fatalf("reattached manifest source = %+v, want Online=true ThreadStartIdempotency=false", reattachedManifest.Sources[1])
 	}
 }
