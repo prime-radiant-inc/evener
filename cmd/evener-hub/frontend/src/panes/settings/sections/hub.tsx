@@ -7,11 +7,12 @@ import {
   settingsOverviewStore,
   useSettingsOverviewStore,
 } from "../../../stores/settingsOverview";
-import { Button, Disclosure, InlineNotice, PropertyList, Skeleton } from "../../../widgets";
+import { Disclosure, InlineNotice, PropertyList } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import styles from "./hub.module.css";
 import { HubResidents } from "./hubResidents";
 import { HubUpdates } from "./hubUpdates";
+import { SectionGate } from "./sectionGate";
 import { Code, FieldDim } from "./settingsField";
 
 const CLASS = {
@@ -46,27 +47,16 @@ export function HubSection() {
     });
   }, []);
 
-  if (loading && !data) return <Skeleton lines={3} />;
-
-  if (!data && error) {
+  if (!data) {
     return (
-      <InlineNotice
-        tone="danger"
-        live="status"
-        data-reason="unavailable"
+      <SectionGate
+        loading={loading}
+        error={error}
         title="Couldn't load hub settings"
-        action={
-          <Button size="sm" onClick={() => void settingsOverviewStore.getState().refresh()}>
-            Retry
-          </Button>
-        }
-      >
-        {error}
-      </InlineNotice>
+        onRetry={() => void settingsOverviewStore.getState().refresh()}
+      />
     );
   }
-
-  if (!data) return null; // not yet fetched, not loading, no error: effect hasn't run yet
 
   const hub = data.hub;
 

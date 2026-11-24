@@ -14,6 +14,15 @@ beforeEach(() => {
   resetSettingsOverviewStoreForTests();
 });
 
+test("shows four skeleton lines while the first overview read is pending", () => {
+  const fake = connectReadyFakeClient();
+  fake.on("evener/settings/overview", () => new Promise(() => {}));
+
+  render(<StorageSection />);
+
+  expect(screen.getAllByTestId("skeleton-line")).toHaveLength(4);
+});
+
 test("renders State dir (from storage, not hub), Run dir (from hub), and the static hub.toml row", async () => {
   const fake = connectReadyFakeClient();
   const response: SettingsOverviewResponse = {

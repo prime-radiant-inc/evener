@@ -11,7 +11,7 @@ import { resetSettingsHostForTests, setSettingsHost } from "../../../stores/sett
 import { connectReadyFakeClient } from "../../../testing/connectionTestUtils";
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
 import { ProjectHostScope } from "./project";
-import { shownReasons } from "./reasonTestUtils";
+import { shownReasons, statusReasons } from "./reasonTestUtils";
 
 // The Per-project launch overrides surface's host scope (component 07b): the
 // shared HostPicker over the selected host, whose own project layer both shows
@@ -301,6 +301,7 @@ test("a failed refresh keeps the project form and the draft, and a retry clears 
   await act(() => hostsStore.getState().refresh());
 
   await waitFor(() => expect(shownReasons()).toContain("refresh-failed"));
+  expect(statusReasons(document.body)).toContain("refresh-failed");
   expect((screen.getByLabelText("Agent") as HTMLInputElement).value).toBe("typed-on-beta");
 
   refuse = false;
