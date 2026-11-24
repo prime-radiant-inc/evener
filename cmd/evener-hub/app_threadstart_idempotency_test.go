@@ -1252,7 +1252,7 @@ func TestThreadStartIdempotencyRemoteCapableErrorsAndNotSent(t *testing.T) {
 				Source:    "local",
 				Evener:    appwire.EvenerThread{Ref: "local:" + remoteSessionID, InstanceID: remoteSessionID},
 			},
-			Turn: appwire.Turn{ID: "turn_1", Status: "inProgress"},
+			Turn:             appwire.Turn{ID: "turn_1", Status: "inProgress"},
 			ClientMutationID: params.ClientMutationID,
 			Disposition:      appwire.MutationDispositionApplied,
 		}, nil
@@ -1268,9 +1268,9 @@ func TestThreadStartIdempotencyRemoteCapableErrorsAndNotSent(t *testing.T) {
 
 	var useWedged atomic.Bool
 	hub := newHubRPCTestServer(t, testWebConfig(t, hubcore.WebConfig{
-		HubStateRoot:               t.TempDir(),
-		RunDir:                     t.TempDir(),
-		RemoteHosts:                []hostreg.Host{{Name: "remote-a", SSH: "remote-a.example"}},
+		HubStateRoot: t.TempDir(),
+		RunDir:       t.TempDir(),
+		RemoteHosts:  []hostreg.Host{{Name: "remote-a", SSH: "remote-a.example"}},
 		RemoteHostClient: func(context.Context, string) (*appwire.Client, error) {
 			if useWedged.Load() {
 				return slotClient, nil
