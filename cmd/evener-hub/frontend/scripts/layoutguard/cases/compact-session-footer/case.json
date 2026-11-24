@@ -4,6 +4,7 @@
   "cssFiles": [
     "styles/global.css",
     "styles/tapfloor.module.css",
+    "styles/surface.module.css",
     "widgets/promptcard/promptcard.module.css",
     "widgets/button/button.module.css",
     "styles/motion.module.css",

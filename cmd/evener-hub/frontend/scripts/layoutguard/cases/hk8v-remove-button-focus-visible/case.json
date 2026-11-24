@@ -5,6 +5,7 @@
     "styles/global.css",
     "styles/tapfloor.module.css",
     "styles/tokens.css",
+    "styles/surface.module.css",
     "styles/sendbutton.module.css",
     "panes/session/composer/composer.module.css",
     "widgets/internal/lightbox.module.css",

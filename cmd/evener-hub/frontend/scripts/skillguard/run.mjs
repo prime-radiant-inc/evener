@@ -1155,7 +1155,7 @@ export class Driver {
   // in completeSkill fails on it.
   slashRowPointExpr(row) {
     return `(() => { const menu = document.querySelector("[data-testid='composer-slash-menu']");
-      const b = menu && [...menu.querySelectorAll("button")].find((n) => n.textContent.includes(${JSON.stringify(row)}));
+      const b = menu && [...menu.querySelectorAll("[role='option']")].find((n) => n.textContent.includes(${JSON.stringify(row)}));
       return b ? (${uncoveredCenter})(b, "nearest") : null; })()`;
   }
 
@@ -2222,7 +2222,7 @@ async function runScenarios(driver) {
     await driver.typeText(ref, "/");
     const rows = await driver.waitPage(
       `(() => { const menu = document.querySelector("[data-testid='composer-slash-menu']");
-      const rows = menu ? [...menu.querySelectorAll("button")].map((b) => b.textContent) : [];
+      const rows = menu ? [...menu.querySelectorAll("[role='option']")].map((b) => b.textContent) : [];
       return rows.some((row) => row.includes(${JSON.stringify(`/owner-${owner}`)})) ? rows : null; })()`,
       { label: `owning ${owner} project command in live completion` },
     );

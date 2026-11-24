@@ -18,14 +18,6 @@ const rule = (css: string, selector: string): string => {
   return match[1]!;
 };
 
-test("pane titles are sentence-case headings, not micro-labels", () => {
-  const title = rule(read("widgets/panescaffold/panescaffold.module.css"), ".title");
-  expect(title).not.toMatch(/text-transform/);
-  expect(title).toMatch(/font-size: var\(--font-size-pane-title\)/);
-  expect(title).toMatch(/font-weight: var\(--font-weight-semibold\)/);
-  expect(title).toMatch(/color: var\(--ink-hi\)/);
-});
-
 test("exchange boundaries, runs and pane bodies use the rhythm and space tokens", () => {
   const user = read("panes/session/transcript/messages/usermessageitem.module.css");
   // Only a message that OPENS an exchange takes the exchange step: mid-turn

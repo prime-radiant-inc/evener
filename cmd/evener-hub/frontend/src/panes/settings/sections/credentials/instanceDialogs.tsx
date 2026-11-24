@@ -34,6 +34,7 @@ import {
   Input,
   Select,
   type SelectOption,
+  Textarea,
   useToasts,
 } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
@@ -47,7 +48,6 @@ import { useEditorLifetime } from "./useEditorLifetime";
 const CLASS = {
   body: requireClass(styles.body, "instanceDialogs.module.css", "body"),
   actions: requireClass(styles.actions, "instanceDialogs.module.css", "actions"),
-  textarea: requireClass(styles.textarea, "instanceDialogs.module.css", "textarea"),
 };
 
 // The endpoint a credential dialog was opened against is the one the typed
@@ -598,14 +598,15 @@ function CredentialValueDialog({
       <form className={CLASS.body} onSubmit={(event) => void handleSubmit(event)}>
         <FormRow label={label} htmlFor={inputId}>
           {input === "textarea" ? (
-            <textarea
+            <Textarea
               id={inputId}
-              className={CLASS.textarea}
-              rows={8}
               value={value}
               onChange={(event) => setValue(event.target.value)}
               placeholder={placeholder}
               disabled={busy}
+              rows={8}
+              monospace
+              fill
               spellCheck={false}
             />
           ) : (

@@ -885,23 +885,40 @@ test("ArrowDown/ArrowUp move the highlighted option and wrap at both ends", asyn
   await mountComposer("ref_slash7", {
     evener: { ...testThread("ref_slash7").evener, diagnostics: { commands: REVIEW_RELEASE_CATALOG } },
   });
-  await user.type(textarea(), "hi /re");
-  // Four matches: three contiguous beginnings, then one fuzzy match
-  // (/drain-as-steer would be a second, but it is unavailable on an idle
-  // session with nothing queued and the menu hides it).
-  expect(slashOptions()).toHaveLength(4);
+  const editor = textarea();
+  // jsdom implements no scrollIntoView at all, so useListbox calls it
+  // optionally; spy on it to see which row the menu reveals.
+  const scrollSpy = vi.fn();
+  HTMLElement.prototype.scrollIntoView = scrollSpy as unknown as typeof HTMLElement.prototype.scrollIntoView;
+  try {
+    await user.type(editor, "hi /re");
+    // Four matches: three contiguous beginnings, then one fuzzy match
+    // (/drain-as-steer would be a second, but it is unavailable on an idle
+    // session with nothing queued and the menu hides it).
+    expect(slashOptions()).toHaveLength(4);
 
-  expect(slashOptions()[0]?.getAttribute("aria-selected")).toBe("true");
-  await user.keyboard("{ArrowDown}");
-  expect(slashOptions()[1]?.getAttribute("aria-selected")).toBe("true");
-  await user.keyboard("{ArrowDown}");
-  expect(slashOptions()[2]?.getAttribute("aria-selected")).toBe("true");
-  await user.keyboard("{ArrowDown}");
-  expect(slashOptions()[3]?.getAttribute("aria-selected")).toBe("true");
-  await user.keyboard("{ArrowDown}"); // wraps past the last option back to the first
-  expect(slashOptions()[0]?.getAttribute("aria-selected")).toBe("true");
-  await user.keyboard("{ArrowUp}"); // wraps the other way, back to the last
-  expect(slashOptions()[3]?.getAttribute("aria-selected")).toBe("true");
+    expect(slashOptions()[0]?.getAttribute("aria-selected")).toBe("true");
+    await user.keyboard("{ArrowDown}");
+    expect(slashOptions()[1]?.getAttribute("aria-selected")).toBe("true");
+    await user.keyboard("{ArrowDown}");
+    expect(slashOptions()[2]?.getAttribute("aria-selected")).toBe("true");
+    await user.keyboard("{ArrowDown}");
+    expect(slashOptions()[3]?.getAttribute("aria-selected")).toBe("true");
+    await user.keyboard("{ArrowDown}"); // wraps past the last option back to the first
+    expect(slashOptions()[0]?.getAttribute("aria-selected")).toBe("true");
+    await user.keyboard("{ArrowUp}"); // wraps the other way, back to the last
+    expect(slashOptions()[3]?.getAttribute("aria-selected")).toBe("true");
+
+    // The wrapped-to row is the one named by aria-activedescendant, and the
+    // menu reveals it without moving focus off the editor.
+    const activeRow = document.getElementById(editor.getAttribute("aria-activedescendant") ?? "");
+    expect(activeRow).toBe(slashOptions()[3]);
+    expect(scrollSpy.mock.contexts.at(-1)).toBe(activeRow);
+    expect(document.activeElement).toBe(editor);
+  } finally {
+    // @ts-expect-error restore jsdom's honest absence of scrollIntoView
+    delete HTMLElement.prototype.scrollIntoView;
+  }
 });
 
 test("Tab commits the highlighted option: splices /name<space> at the token start, caret after the space", async () => {
