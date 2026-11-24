@@ -1,0 +1,93 @@
+/* Anchored-float listbox for inline @file mention completion, opening upward
+ * above the composer card by default, or downward below .promptAnchor in
+ * top-anchored forms like Spawn. */
+.listbox {
+  position: absolute;
+  bottom: calc(100% + var(--space-1));
+  left: 0;
+  right: 0;
+  z-index: var(--z-menu);
+  max-height: min(220px, 38dvh);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-half);
+  padding: var(--space-1);
+  background: var(--surface-2);
+  border-radius: var(--radius-pane);
+  box-shadow: var(--shadow-overlay);
+}
+
+.below {
+  top: calc(100% + var(--space-half));
+  bottom: auto;
+}
+
+.option {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  width: 100%;
+  box-sizing: border-box;
+  padding: var(--space-2);
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--ink-hi);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-ui);
+  text-align: left;
+  cursor: pointer;
+  min-width: 0;
+}
+
+.option:hover {
+  background: var(--hover-1);
+}
+
+.optionActive {
+  background: var(--hover-2);
+}
+
+.basename {
+  flex: none;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  color: var(--ink-hi);
+}
+
+.directory {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink-mid);
+  font-size: var(--font-size-caption);
+}
+
+.match {
+  color: var(--accent-ink);
+  font-weight: var(--font-weight-semibold);
+}
+
+.loaderRow {
+  display: flex;
+  align-items: center;
+  padding: var(--space-2);
+}
+
+.status {
+  padding: var(--space-1) var(--space-2);
+  color: var(--ink-mid);
+  font-size: var(--font-size-caption);
+}
+
+@media (pointer: coarse) {
+  .option {
+    min-height: var(--tap-min);
+    align-items: center;
+  }
+}

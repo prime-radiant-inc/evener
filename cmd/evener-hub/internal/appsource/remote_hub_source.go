@@ -670,6 +670,19 @@ func (s *RemoteHubSource) FetchSessionDocument(ctx context.Context, params appwi
 	return out, nil
 }
 
+// SearchFiles forwards one session-scoped evener/files/search request to the
+// owning remote host's hub using the attached-only RPC channel.
+func (s *RemoteHubSource) SearchFiles(ctx context.Context, params appwire.FilesSearchParams) (appwire.FilesSearchResponse, error) {
+	var out appwire.FilesSearchResponse
+	if err := s.call(ctx, appwire.MethodEvenerFilesSearch, params, &out); err != nil {
+		return appwire.FilesSearchResponse{}, err
+	}
+	if out.Items == nil {
+		out.Items = []appwire.FileSearchItem{}
+	}
+	return out, nil
+}
+
 // ReadSessionActivity reads the host's own live sessions' pulse meters for the
 // controller's evener/activity/read (S5). Refs are rewritten into the host's
 // namespace on the way out and back into the controller's on the way in; a
@@ -1100,11 +1113,12 @@ func (s *RemoteHubSource) ItemCandidatesFromRead(ctx context.Context, params app
 	}
 	// A remote hub is a separate process, possibly a different version: its
 	// fragments must satisfy the same strictly-increasing, uniquely-keyed contract
-	// the local daemon source validates — plus the per-entry adjacency a page's
-	// observed run depends on — before anything is merged or cached, or a
+	// the local daemon source validates before anything is merged or cached, or a
 	// misbehaving remote could poison the retained cursor identity for later
-	// continuations.
-	if err := validateRemotePagePositions(candidates); err != nil {
+	// continuations. Position.Item is a sparse content-part index under
+	// transcriptindex, so strictly increasing positions within an entry are valid
+	// even when hidden or collapsed parts leave gaps.
+	if err := appitempaging.ValidateCandidates(candidates); err != nil {
 		return ItemCandidateResult{}, err
 	}
 	// The remote hub's read cursor is retained behind the controller identity, so
@@ -1134,7 +1148,7 @@ func (s *RemoteHubSource) ItemCandidatesFromLegacyPage(ctx context.Context, para
 	if err != nil {
 		return ItemCandidateResult{}, err
 	}
-	if err := validateRemotePagePositions(candidates); err != nil {
+	if err := appitempaging.ValidateCandidates(candidates); err != nil {
 		return ItemCandidateResult{}, err
 	}
 	// The identity names the history the reread came from, so a compatibility
@@ -1186,44 +1200,10 @@ func (s *RemoteHubSource) remoteItemPage(ctx context.Context, remote appwire.Thr
 	if err != nil {
 		return nil, "", HistoryIdentity{}, err
 	}
-	if err := validateRemotePagePositions(candidates); err != nil {
+	if err := appitempaging.ValidateCandidates(candidates); err != nil {
 		return nil, "", HistoryIdentity{}, err
 	}
 	return candidates, out.NextCursor, PageHistoryIdentity(out), nil
-}
-
-// validateRemotePagePositions applies to one remote item page the whole positional
-// contract this source must prove before the page is merged or retained: the
-// strictly-increasing, uniquely-keyed candidates appitempaging validates, and the
-// per-entry adjacency the page's observed run depends on.
-func validateRemotePagePositions(candidates []appitempaging.TranscriptItemCandidate) error {
-	if err := appitempaging.ValidateCandidates(candidates); err != nil {
-		return err
-	}
-	return validateRemotePageAdjacency(candidates)
-}
-
-// validateRemotePageAdjacency rejects a page whose observed positions skip an item
-// index inside one entry. Item-mode positions are (entry, item) pairs and a turn's
-// projected items are numbered densely from zero within their entry
-// (apptranscript.ProjectTurn and server.positionAppItems), so (10,0) followed by
-// (10,2) without (10,1) is an item the remote holds and did not return — never a
-// contiguous window. Both consumers of an observed page trust the run between its
-// endpoints: the retained span the page is recorded as, and the local continuation
-// served from that span. Accepting the page would let them skip the withheld item
-// silently, so it is refused before anything is merged or cached, exactly as an
-// out-of-order page is. A jump to a later entry is not gated: entry ordinals advance
-// for logical groups that project no visible item at all, which positions alone
-// cannot rule out.
-func validateRemotePageAdjacency(candidates []appitempaging.TranscriptItemCandidate) error {
-	for index := 1; index < len(candidates); index++ {
-		previous := candidates[index-1].Position
-		current := candidates[index].Position
-		if current.Entry == previous.Entry && current.Item != previous.Item+1 {
-			return fmt.Errorf("remote item page skips item positions in entry %d: %d then %d", previous.Entry, previous.Item, current.Item)
-		}
-	}
-	return nil
 }
 
 // validateRemotePageCursor validates the cursor a remote page carries before the
@@ -1483,14 +1463,13 @@ func remoteMergeCandidates(retained, observed []appitempaging.TranscriptItemCand
 	return merged, true
 }
 
-// remotePositionsAdjacent reports whether newer is the position immediately
-// after older. Item-mode positions are (entry, item) pairs, and an entry can
-// project several items, so the successor of an item is the next item of the
-// same entry or the first item (item 0) of the next entry. This is the only
-// successor relationship positions alone can prove: a page that resumes at a
-// later entry may still be contiguous (entry ordinals skip for logical groups
-// with no visible items), but that cannot be proven locally, so
-// remoteItemSpansAfterObserving records it as the start of a new observed run.
+// remotePositionsAdjacent reports whether newer is the immediate dense
+// positional successor of older. Under transcriptindex, Position.Item is a
+// sparse content-part index, so positions alone can no longer prove every
+// cross-entry or sparse within-entry append is contiguous; this remains a
+// conservative guard across separate non-overlapping cursorless reads — when a
+// later read cannot prove it abuts here, remoteItemSpansAfterObserving records
+// it as the start of a new observed run rather than failing the read.
 func remotePositionsAdjacent(older, newer appwire.ThreadItemPosition) bool {
 	if older.Entry == newer.Entry {
 		return newer.Item == older.Item+1
@@ -1514,10 +1493,12 @@ func remoteForwardMergeCutsItems(older, newer appitempaging.TranscriptItemCandid
 // remoteItemSpansAfterObserving folds one observed page into the window's
 // recorded runs.
 //
-// A remote page is internally contiguous — the hub returns consecutive items, and
-// validateRemotePagePositions has already refused a page that skips an item index
-// inside one entry — so the page contributes the run between its oldest and its
-// newest item. That run is merged with every recorded run it is provably connected
+// A remote page is internally contiguous — the hub returns consecutive visible
+// items from its ordered sequence, and appitempaging.ValidateCandidates has
+// verified strict positional order and unique keys (Position.Item is a sparse
+// content-part index under transcriptindex, so gaps inside one entry are
+// normal) — so the page contributes the run between its oldest and its newest
+// item. That run is merged with every recorded run it is provably connected
 // to, and runs it connects are merged with each other, so the recorded runs stay
 // maximal. Connected means one of:
 //
@@ -1612,9 +1593,9 @@ func remoteItemSpanUnion(left, right remoteItemSpan) remoteItemSpan {
 
 // remoteItemSpansForCandidates returns the single run a window of candidates
 // covers when that window is one page, or the trimmed suffix of one page: its
-// positions are strictly increasing, they hold no gap inside an entry
-// (validateRemotePagePositions), and the page carried every position between its
-// oldest and newest item.
+// positions are strictly increasing and uniquely keyed
+// (appitempaging.ValidateCandidates), and the page carried every visible item
+// between its oldest and newest position.
 func remoteItemSpansForCandidates(candidates []appitempaging.TranscriptItemCandidate) []remoteItemSpan {
 	if len(candidates) == 0 {
 		return nil

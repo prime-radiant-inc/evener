@@ -176,6 +176,7 @@ func TestForwardedHostReadAdmitsOnlyOrderFreeReads(t *testing.T) {
 		{appwire.MethodEvenerPluginList, forward(appwire.MethodEvenerPluginList), false},
 		// Padding names the same host, so the same pool.
 		{appwire.MethodEvenerHostRequest, json.RawMessage(`{"host":" m4\t","method":"` + appwire.MethodEvenerPluginList + `"}`), true},
+		{appwire.MethodEvenerHostRequest, forward(appwire.MethodEvenerFilesSearch), true},
 	} {
 		pool, got := forwardedHostRead(tc.method, tc.params)
 		if got != tc.want {
@@ -186,4 +187,28 @@ func TestForwardedHostReadAdmitsOnlyOrderFreeReads(t *testing.T) {
 			t.Errorf("forwardedHostRead(%s, %s) pool = %q, want the target host m4", tc.method, tc.params, pool)
 		}
 	}
+
+	t.Run("concurrentForwardedRequest routes evener/files/search to target host or local pool", func(t *testing.T) {
+		remoteParams, _ := json.Marshal(appwire.FilesSearchParams{Ref: "m4:0123", Query: "main"})
+		pool, ok := concurrentForwardedRequest(appwire.MethodEvenerFilesSearch, remoteParams)
+		if !ok || pool != "m4" {
+			t.Fatalf("remote ref concurrentForwardedRequest = (%q, %v), want (%q, true)", pool, ok, "m4")
+		}
+		localParams, _ := json.Marshal(appwire.FilesSearchParams{Ref: "local:0123", Query: "main"})
+		if pool, ok := concurrentForwardedRequest(appwire.MethodEvenerFilesSearch, localParams); !ok || pool != appwire.LocalSourceID {
+			t.Fatalf("local ref concurrentForwardedRequest = (%q, %v), want (%q, true)", pool, ok, appwire.LocalSourceID)
+		}
+		cwdParams, _ := json.Marshal(appwire.FilesSearchParams{CWD: "/tmp", Query: "main"})
+		if pool, ok := concurrentForwardedRequest(appwire.MethodEvenerFilesSearch, cwdParams); !ok || pool != appwire.LocalSourceID {
+			t.Fatalf("local cwd concurrentForwardedRequest = (%q, %v), want (%q, true)", pool, ok, appwire.LocalSourceID)
+		}
+		bothParams, _ := json.Marshal(appwire.FilesSearchParams{Ref: "local:0123", CWD: "/tmp", Query: "main"})
+		if pool, ok := concurrentForwardedRequest(appwire.MethodEvenerFilesSearch, bothParams); ok {
+			t.Fatalf("both ref+cwd concurrentForwardedRequest = (%q, %v), want inline (false)", pool, ok)
+		}
+		invalidRefParams, _ := json.Marshal(appwire.FilesSearchParams{Ref: "not-a-ref", Query: "main"})
+		if pool, ok := concurrentForwardedRequest(appwire.MethodEvenerFilesSearch, invalidRefParams); ok {
+			t.Fatalf("invalid ref concurrentForwardedRequest = (%q, %v), want inline (false)", pool, ok)
+		}
+	})
 }
