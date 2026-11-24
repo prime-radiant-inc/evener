@@ -29,11 +29,8 @@
   color: var(--ink-hi);
 }
 
-/* The FocusScope root fills the aside and stacks the head, tabs and scrolling
- * body; the phone Overview's named tabpanel stacks its own scrolling body the
- * same way. */
-.focusBody,
-.panel {
+/* The FocusScope root fills the aside and stacks the head, tabs and scrolling body. */
+.focusBody {
   display: flex;
   flex-direction: column;
   flex: 1 1 auto;
@@ -80,13 +77,8 @@
   border-bottom: 2px solid transparent;
 }
 
-.tab[aria-selected="true"] {
+.tab[data-selected] {
   border-bottom-color: var(--ink-hi);
-}
-
-.tab:focus-visible {
-  outline: var(--focus-ring);
-  outline-offset: -2px;
 }
 
 .body {

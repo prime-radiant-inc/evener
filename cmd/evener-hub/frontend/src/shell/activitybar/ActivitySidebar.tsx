@@ -50,7 +50,6 @@ const CLASS = {
   tabs: requireClass(styles.tabs, "activitybar.module.css", "tabs"),
   tablist: requireClass(styles.tablist, "activitybar.module.css", "tablist"),
   tab: requireClass(styles.tab, "activitybar.module.css", "tab"),
-  panel: requireClass(styles.panel, "activitybar.module.css", "panel"),
   body: requireClass(styles.body, "activitybar.module.css", "body"),
   focusBody: requireClass(styles.focusBody, "activitybar.module.css", "focusBody"),
 };
@@ -77,9 +76,9 @@ function OverviewStrip({
 }
 
 // The phone and tablet Overview's category strip: underline tabs in a
-// horizontally scrolling row. A tab is a wrapper span carrying the tab role
-// and roving tabIndex around the shared quiet Button, so the underline is
-// drawn on our own element instead of reaching into the widget's DOM.
+// horizontally scrolling row. The quiet Button is the tab itself; the wrapper
+// span only draws the selected underline, so one tab holds one interactive
+// control.
 function MobileOverviewTabs({
   value,
   options,
@@ -96,28 +95,28 @@ function MobileOverviewTabs({
   // strip until the exit finishes. Subscribing here, inside the mounted
   // subtree, re-arms entry focus when the store reopens during that exit.
   const open = useActivitySidebarStore((state) => state.open);
-  const tabRefs = useRef<(HTMLSpanElement | null)[]>([]);
+  const tabRefs = useRef<(HTMLButtonElement | null)[]>([]);
   const selectedIndex = options.findIndex((option) => option.value === value);
-  function select(index: number) {
+  function reveal(tab: HTMLButtonElement | null) {
+    tab?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
+  }
+  function choose(index: number) {
     const option = options[index];
     if (!option) return;
     activitySidebarStore.getState().setTab(option.value);
-    tabRefs.current[index]?.focus();
+    const tab = tabRefs.current[index];
+    tab?.focus();
+    reveal(tab ?? null);
   }
-  const move = useRovingRadio({
-    items: options,
-    mode: "tablist",
-    onMove: (index) => {
-      select(index);
-      // A browser scrolls a newly focused tab into view on its own; the
-      // explicit call also covers a pointer selection at the row's edge.
-      tabRefs.current[index]?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
-    },
-  });
+  const move = useRovingRadio({ items: options, mode: "tablist", onMove: choose });
   // biome-ignore lint/correctness/useExhaustiveDependencies: selectedIndex is read once, when entry focus is armed.
   useEffect(() => {
     if (!open) return;
-    const frame = requestAnimationFrame(() => tabRefs.current[selectedIndex]?.focus());
+    const frame = requestAnimationFrame(() => {
+      const tab = tabRefs.current[selectedIndex];
+      tab?.focus();
+      reveal(tab ?? null);
+    });
     return () => cancelAnimationFrame(frame);
   }, [open]);
   function handleKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
@@ -137,26 +136,21 @@ function MobileOverviewTabs({
       {options.map((option, index) => {
         const selected = option.value === value;
         return (
-          <span
-            key={option.value}
-            ref={(node) => {
-              tabRefs.current[index] = node;
-            }}
-            className={CLASS.tab}
-            role="tab"
-            id={tabDomId(option.value)}
-            aria-selected={selected}
-            aria-controls={panelId}
-            aria-label={option.accessibleLabel ?? option.label}
-            tabIndex={selected ? 0 : -1}
-            onClick={() => select(index)}
-            onKeyDown={(event) => {
-              if (event.key !== "Enter" && event.key !== " ") return;
-              event.preventDefault();
-              select(index);
-            }}
-          >
-            <Button variant="quiet" size="sm" tabIndex={-1}>
+          <span key={option.value} className={CLASS.tab} data-selected={selected ? "" : undefined}>
+            <Button
+              ref={(node) => {
+                tabRefs.current[index] = node;
+              }}
+              variant="quiet"
+              size="sm"
+              role="tab"
+              id={tabDomId(option.value)}
+              aria-selected={selected}
+              aria-controls={panelId}
+              aria-label={option.accessibleLabel ?? option.label}
+              tabIndex={selected ? 0 : -1}
+              onClick={() => choose(index)}
+            >
               <span>{option.label}</span>
               {option.detail !== undefined && option.detail.trim() !== "" ? <span>{option.detail}</span> : null}
             </Button>
@@ -347,27 +341,19 @@ export function ActivitySidebar({ mobile = false }: { mobile?: boolean }) {
             )}
             <DisclosurePersistenceContext.Provider value={JSON.stringify([scope.leaf.ref, tab])}>
               <ActivityBodyClock>
-                {(now) => {
-                  const viewport = (
-                    <EntityViewsProvider entities={entities} ownerRef={ref ?? undefined}>
-                      <ActivityViewport
-                        key={JSON.stringify([scope.leaf.ref, tab])}
-                        sessionRef={scope.leaf.ref}
-                        tab={tab}
-                        className={CLASS.body}
-                      >
-                        {Body === null ? null : <Body scope={scope} now={now} />}
-                      </ActivityViewport>
-                    </EntityViewsProvider>
-                  );
-                  return mobile ? (
-                    <div className={CLASS.panel} id={tabPanelId} role="tabpanel" aria-labelledby={tabDomId(tab)}>
-                      {viewport}
-                    </div>
-                  ) : (
-                    viewport
-                  );
-                }}
+                {(now) => (
+                  <EntityViewsProvider entities={entities} ownerRef={ref ?? undefined}>
+                    <ActivityViewport
+                      key={JSON.stringify([scope.leaf.ref, tab])}
+                      sessionRef={scope.leaf.ref}
+                      tab={tab}
+                      className={CLASS.body}
+                      panel={mobile ? { id: tabPanelId, labelledBy: tabDomId(tab) } : undefined}
+                    >
+                      {Body === null ? null : <Body scope={scope} now={now} />}
+                    </ActivityViewport>
+                  </EntityViewsProvider>
+                )}
               </ActivityBodyClock>
             </DisclosurePersistenceContext.Provider>
           </FocusScope>

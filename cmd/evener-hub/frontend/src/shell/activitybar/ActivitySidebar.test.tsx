@@ -902,6 +902,12 @@ test("phone Overview tabs form a named tablist with one selected tab stop and an
   expect(selected.getAttribute("aria-selected")).toBe("true");
   expect(tabs.filter((tab) => tab.tabIndex === 0)).toEqual([selected]);
   for (const tab of tabs) if (tab !== selected) expect(tab.tabIndex).toBe(-1);
+  // The tab is the interactive element itself: a tab that wrapped a Button
+  // would nest a second native control inside one tab stop.
+  for (const tab of tabs) {
+    expect(tab).toBeInstanceOf(HTMLButtonElement);
+    expect(tab.querySelector("button, a[href], input, select, textarea, [tabindex]")).toBeNull();
+  }
   const panel = screen.getByRole("tabpanel");
   expect(selected.getAttribute("aria-controls")).toBe(panel.id);
   expect(panel.getAttribute("aria-labelledby")).toBe(selected.id);
@@ -916,6 +922,7 @@ test("phone Overview tabs form a named tablist with one selected tab stop and an
 });
 
 test("phone Overview tabs rove with arrows, Home and End and keep the selected tab in view", async () => {
+  const user = userEvent.setup();
   connectionStore.getState().connect(activityClient());
   installFocusedScope(ref);
   const scrolled: { element: Element; options: ScrollIntoViewOptions | undefined }[] = [];
@@ -932,6 +939,7 @@ test("phone Overview tabs rove with arrows, Home and End and keep the selected t
     const list = await screen.findByRole("tablist", { name: "Overview kind" });
     const agents = screen.getByRole("tab", { name: /^Agents,/ });
     await waitFor(() => expect(document.activeElement).toBe(agents));
+    expect(scrolled.at(-1)).toEqual({ element: agents, options: { block: "nearest", inline: "nearest" } });
     const press = async (key: string) => {
       await act(async () => fireEvent.keyDown(list, { key }));
     };
@@ -954,6 +962,10 @@ test("phone Overview tabs rove with arrows, Home and End and keep the selected t
     await press("ArrowLeft");
     expect(activitySidebarStore.getState().tab).toBe("about");
     expect(document.activeElement).toBe(about);
+    await user.click(jobs);
+    expect(activitySidebarStore.getState().tab).toBe("jobs");
+    expect(document.activeElement).toBe(jobs);
+    expect(scrolled.at(-1)).toEqual({ element: jobs, options: { block: "nearest", inline: "nearest" } });
   } finally {
     if (originalScroll) Object.defineProperty(HTMLElement.prototype, "scrollIntoView", originalScroll);
     else delete (HTMLElement.prototype as Partial<HTMLElement>).scrollIntoView;
