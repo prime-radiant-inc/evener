@@ -198,6 +198,12 @@ type jobManager struct {
 	// (still durable, not yet Delivered) and re-enqueues it during the drain's
 	// 250ms recheck, reproducing the issue-#140 finalization provider-request leak.
 	testOnlyAfterNotifyPendingAppend func(jobID string)
+	// testOnlyAfterStableAttentionArm fires after persistStableShellAttention
+	// has durably queued a finished shell's attention and armed the receiver,
+	// but before the job leaves the running map. It is nil in production;
+	// deterministic tests hold the finalization here to prove a receiver woken
+	// by the arm never treats the already-told completion as drainable work.
+	testOnlyAfterStableAttentionArm func(jobID string)
 	// testOnlyAfterRematerializeDurableLoad fires inside rematerializeDurablePendings
 	// after it has read the durable records, before it decides what to re-enqueue.
 	// It is nil in production; deterministic tests use it to hold a rematerialize
@@ -2067,10 +2073,13 @@ func (jm *jobManager) armFinalizedJob(run *runningJob, terminal *terminalJob) er
 		flushNotices()
 		return err
 	}
-	_, stableOwner, err := jm.persistStableShellAttention(run.rec.JobID)
+	attentionID, stableOwner, err := jm.persistStableShellAttention(run.rec.JobID)
 	if err != nil {
 		flushNotices()
 		return err
+	}
+	if hook := jm.testOnlyAfterStableAttentionArm; hook != nil && attentionID != "" {
+		hook(run.rec.JobID)
 	}
 
 	jm.mu.Lock()
@@ -2141,9 +2150,11 @@ func (jm *jobManager) persistStableShellAttention(jobID string) (string, *Sessio
 	if _, err := owner.appendDelegateNotificationDurably(attentionID, content); err != nil {
 		return "", owner, err
 	}
-	if err := owner.armDelegateAttention(attentionID); err != nil {
-		return "", owner, err
-	}
+	// Record the handoff before arming the receiver. The arm is the wake that
+	// lets the receiver's drain observe this completion, and once it runs the
+	// drain must not still count the finalizing job as drainable work (see
+	// outstandingDrainJobIDsByBackground). The attention row above is already
+	// durable, so a crash before the arm leaves the row queued for restore.
 	if record.NotifyState != jobstore.NotifyDelivered {
 		delivered := jobstore.Event{
 			Kind:        jobstore.EventJobNotificationDelivered,
@@ -2157,6 +2168,9 @@ func (jm *jobManager) persistStableShellAttention(jobID string) (string, *Sessio
 		if err := jm.forwardSnapshot(delivered); err != nil {
 			owner.emit(warningDataFromError("forward stable shell attention acknowledgement", err))
 		}
+	}
+	if err := owner.armDelegateAttention(attentionID); err != nil {
+		return "", owner, err
 	}
 	return attentionID, owner, nil
 }

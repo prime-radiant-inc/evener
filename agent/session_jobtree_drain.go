@@ -102,7 +102,9 @@ func isOwnedDrainJob(rec *jobstore.JobRecord, sessionID string) bool {
 // outstandingDrainJobCount reports how many managed jobs still owe this session
 // a completion notification turn. A managed job counts while it is either still
 // in the running map (not yet finalized) or recorded terminal with an owner
-// notification that is pending but not yet delivered.
+// notification that is pending but not yet delivered. A finalizing job whose
+// record already reads NotifyDelivered has had its completion handed to the
+// owner and is only waiting for its running-map delete, so it no longer counts.
 //
 // Both halves are needed to be race-free against the finalization sequence
 // (jobs.go armFinalizedJob): the running-map membership covers the window from
@@ -161,6 +163,16 @@ func (jm *jobManager) outstandingDrainJobIDsByBackground() (all, background []st
 	var ids []string
 	for id, run := range jm.running {
 		if isOwnedDrainJob(run.rec, jm.sessionID) {
+			// The arm that wakes the owner runs while the job is still in the
+			// running map. Once the stable attention acknowledgement is durable,
+			// the delegate's un-presented attention row keeps the subtree
+			// drainable (subagentHasDrainableWork), so this job must not also
+			// read as work the completion wake still owes. Otherwise the woken
+			// delegate quietly yields instead of sending its report (#7605).
+			if rec := recs[id]; rec != nil && run.terminal != nil &&
+				rec.TerminalGen == run.terminal.generation && rec.NotifyState == jobstore.NotifyDelivered {
+				continue
+			}
 			counted[id] = true
 			ids = append(ids, id)
 			// A job whose terminal record exists is finalizing (armFinalizedJob
