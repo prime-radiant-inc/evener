@@ -174,6 +174,20 @@ describe("parseFileMentionToken", () => {
     expect(parseFileMentionToken('open @"my\nnotes', 15)).toBeNull();
     expect(parseFileMentionToken('open @"my\rnotes', 15)).toBeNull();
     expect(parseFileMentionToken('foo@"bar', 8)).toBeNull();
+    // Unclosed quoted query must end at caret and never consume trailing prose or cross a newline.
+    const unclosedWithProse = 'check @"release existing prose';
+    expect(parseFileMentionToken(unclosedWithProse, 'check @"release'.length)).toEqual({
+      start: 6,
+      end: 15,
+      query: "release",
+      quoted: true,
+    });
+    expect(parseFileMentionToken('check @"release\n"later"', 'check @"release'.length)).toEqual({
+      start: 6,
+      end: 15,
+      query: "release",
+      quoted: true,
+    });
   });
 
   it('decodes escaped quotes and backslashes inside @"..." and supports dir drill-in round-trips', () => {
@@ -197,6 +211,37 @@ describe("parseFileMentionToken", () => {
     });
     // Past unescaped closing quote on escaped string is inactive.
     expect(parseFileMentionToken('@"Q1 \\"drafts\\""', 16)).toBeNull();
+    // Paths containing @ (unquoted and quoted) remain active from their opening @.
+    expect(parseFileMentionToken("see @app/@modal/page", 20)).toEqual({
+      start: 4,
+      end: 20,
+      query: "app/@modal/page",
+      quoted: false,
+    });
+    expect(parseFileMentionToken("see @app/@modal/page, next", 15)).toEqual({
+      start: 4,
+      end: 20,
+      query: "app/@modal",
+      quoted: false,
+    });
+    expect(parseFileMentionToken('@"app/@modal/"', 13)).toEqual({
+      start: 0,
+      end: 14,
+      query: "app/@modal/",
+      quoted: true,
+    });
+    expect(parseFileMentionToken('open @"my @notes"', 16)).toEqual({
+      start: 5,
+      end: 17,
+      query: "my @notes",
+      quoted: true,
+    });
+    expect(parseFileMentionToken('open @"@modal/"', 14)).toEqual({
+      start: 5,
+      end: 15,
+      query: "@modal/",
+      quoted: true,
+    });
   });
 
   it("rejects email addresses, URLs, double-@, mid-word @, spaces, and >256 queries", () => {
@@ -207,6 +252,8 @@ describe("parseFileMentionToken", () => {
     expect(parseFileMentionToken("@@", 2)).toBeNull();
     expect(parseFileMentionToken("foo@bar", 7)).toBeNull();
     expect(parseFileMentionToken("@ ", 2)).toBeNull();
+    expect(parseFileMentionToken("user@example.com/@modal", 23)).toBeNull();
+    expect(parseFileMentionToken("@@app/@modal", 12)).toBeNull();
     expect(
       parseFileMentionToken(`@${"a".repeat(FILE_MENTION_MAX_QUERY_LENGTH + 1)}`, FILE_MENTION_MAX_QUERY_LENGTH + 2),
     ).toBeNull();
@@ -252,6 +299,19 @@ describe("spliceFileMention", () => {
     expect(spliceFileMention('read @"my notes" "other"', midQuoted, { path: "my notes.txt", kind: "file" })).toEqual({
       text: 'read @"my notes.txt" "other"',
       caret: 20,
+      keepOpen: false,
+    });
+
+    // Unclosed quoted query preserves existing prose after caret.
+    const unclosedToken = parseFileMentionToken('check @"release existing prose', 'check @"release'.length)!;
+    expect(
+      spliceFileMention('check @"release existing prose', unclosedToken, {
+        path: "docs/release notes.md",
+        kind: "file",
+      }),
+    ).toEqual({
+      text: 'check @"docs/release notes.md" existing prose',
+      caret: 30,
       keepOpen: false,
     });
   });
@@ -304,6 +364,23 @@ describe("spliceFileMention", () => {
     });
     const reparsed = parseFileMentionToken(escapedDirSpliced.text, escapedDirSpliced.caret);
     expect(reparsed).toEqual({ start: 0, end: 17, query: 'Q1 "drafts"/', quoted: true });
+
+    const atDirSpliced = spliceFileMention(
+      "edit @app",
+      { start: 5, end: 9, query: "app", quoted: false },
+      { path: "app/@modal", kind: "dir" },
+    );
+    expect(atDirSpliced).toEqual({
+      text: "edit @app/@modal/",
+      caret: 17,
+      keepOpen: true,
+    });
+    expect(parseFileMentionToken(atDirSpliced.text, atDirSpliced.caret)).toEqual({
+      start: 5,
+      end: 17,
+      query: "app/@modal/",
+      quoted: false,
+    });
   });
 });
 

@@ -91,66 +91,93 @@ function markUnsupportedFileSearchHost(client: object, host: string): void {
 
 export function parseFileMentionToken(text: string, caret: number): FileMentionToken | null {
   if (caret <= 0 || caret > text.length) return null;
-  const before = text.slice(0, caret);
-  const atIndex = before.lastIndexOf("@");
-  if (atIndex < 0) return null;
 
-  if (atIndex > 0) {
-    const prev = before.charAt(atIndex - 1);
-    if (!VALID_AT_BOUNDARY_RE.test(prev)) return null;
-  }
+  let i = 0;
+  while (i < caret) {
+    if (text.charAt(i) !== "@" || (i > 0 && !VALID_AT_BOUNDARY_RE.test(text.charAt(i - 1)))) {
+      i += 1;
+      continue;
+    }
 
-  const openPos = atIndex + 1;
-  if (text.charAt(openPos) === '"') {
-    let query = "";
-    let escaped = false;
-    let end = text.length;
-    for (let i = openPos + 1; i < text.length; i += 1) {
-      const ch = text.charAt(i);
-      if (ch === "\r" || ch === "\n") {
-        if (i < caret) return null;
-        end = i;
-        break;
-      }
-      if (escaped) {
-        escaped = false;
-        if (i < caret) {
-          query += ch === '"' || ch === "\\" ? ch : `\\${ch}`;
+    const openPos = i + 1;
+    if (openPos < caret && text.charAt(openPos) === '"') {
+      let query = "";
+      let escaped = false;
+      let closedBeforeCaret = false;
+      let abortedAt = -1;
+      let end = caret;
+      for (let j = openPos + 1; j < text.length; j += 1) {
+        const ch = text.charAt(j);
+        if (ch === "\r" || ch === "\n") {
+          if (j < caret) abortedAt = j;
+          break;
         }
+        if (escaped) {
+          escaped = false;
+          if (j < caret) {
+            query += ch === '"' || ch === "\\" ? ch : `\\${ch}`;
+          }
+          continue;
+        }
+        if (ch === "\\") {
+          escaped = true;
+          if (j + 1 === caret) {
+            query += "\\";
+          }
+          continue;
+        }
+        if (ch === '"') {
+          if (j < caret) {
+            closedBeforeCaret = true;
+            abortedAt = j;
+          } else {
+            end = j + 1;
+          }
+          break;
+        }
+        if (j < caret) {
+          query += ch;
+        }
+      }
+      if (closedBeforeCaret || abortedAt >= 0) {
+        i = abortedAt + 1;
         continue;
       }
-      if (ch === "\\") {
-        escaped = true;
-        if (i + 1 === caret) {
-          query += "\\";
-        }
-        continue;
-      }
-      if (ch === '"') {
-        if (i < caret) return null;
-        end = i + 1;
+      if (query.length > FILE_MENTION_MAX_QUERY_LENGTH) return null;
+      return { start: i, end, query, quoted: true };
+    }
+
+    if (openPos < caret && text.charAt(openPos) === "@") {
+      i += 1;
+      continue;
+    }
+
+    let breakAt = -1;
+    for (let j = openPos; j < caret; j += 1) {
+      const ch = text.charAt(j);
+      if (ch === '"' || /\s/u.test(ch)) {
+        breakAt = j;
         break;
-      }
-      if (i < caret) {
-        query += ch;
       }
     }
+    if (breakAt >= 0) {
+      i = breakAt + 1;
+      continue;
+    }
+
+    const query = text.slice(openPos, caret);
     if (query.length > FILE_MENTION_MAX_QUERY_LENGTH) return null;
-    return { start: atIndex, end, query, quoted: true };
+    let end = caret;
+    while (end < text.length && !UNQUOTED_STOP_RE.test(text.charAt(end))) {
+      end += 1;
+    }
+    while (end > caret && UNQUOTED_TRAILING_PUNCT_RE.test(text.charAt(end - 1))) {
+      end -= 1;
+    }
+    return { start: i, end, query, quoted: false };
   }
 
-  const tail = before.slice(openPos);
-  if (tail.startsWith("@")) return null;
-  if (/[\s"]/.test(tail)) return null;
-  if (tail.length > FILE_MENTION_MAX_QUERY_LENGTH) return null;
-  let end = caret;
-  while (end < text.length && !UNQUOTED_STOP_RE.test(text.charAt(end))) {
-    end += 1;
-  }
-  while (end > caret && UNQUOTED_TRAILING_PUNCT_RE.test(text.charAt(end - 1))) {
-    end -= 1;
-  }
-  return { start: atIndex, end, query: tail, quoted: false };
+  return null;
 }
 
 export function spliceFileMention(

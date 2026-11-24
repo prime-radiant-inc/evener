@@ -14,6 +14,7 @@ export interface FileCompletionMenuProps {
   query: string;
   items: FileSearchItem[];
   highlightedIndex: number;
+  placement?: "above" | "below";
   showLoader: boolean;
   truncated: boolean;
   onSelect: (item: FileSearchItem) => void;
@@ -50,6 +51,7 @@ export function FileCompletionMenu({
   query,
   items,
   highlightedIndex,
+  placement = "above",
   showLoader,
   truncated,
   onSelect,
@@ -76,7 +78,8 @@ export function FileCompletionMenu({
       role="listbox"
       id={id}
       aria-label="Files"
-      className={styles.listbox}
+      className={placement === "below" ? `${styles.listbox} ${styles.below}` : styles.listbox}
+      data-placement={placement}
       data-testid="composer-file-menu"
     >
       {items.map((item, index) => {

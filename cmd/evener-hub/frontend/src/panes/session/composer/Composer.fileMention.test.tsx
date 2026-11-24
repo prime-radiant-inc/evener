@@ -89,6 +89,7 @@ test("typing @ queries evener/files/search, supports keyboard navigation, and En
   expect(searchCall?.params).toEqual({ ref, query: "", limit: 25 });
 
   expect(editor.getAttribute("aria-controls")).toBe(fileMenu().id);
+  expect(fileMenu().getAttribute("data-placement")).toBe("above");
   expect(editor.getAttribute("aria-activedescendant")).toBe(fileOptions()[0]?.id);
   expect(fileOptions()[0]?.getAttribute("aria-selected")).toBe("true");
 

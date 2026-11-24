@@ -2713,6 +2713,7 @@ function SpawnForm({
               query={fileToken?.query ?? ""}
               items={fileItems}
               highlightedIndex={fileActiveIndex}
+              placement="below"
               showLoader={fileShowLoader}
               truncated={fileTruncated}
               onSelect={commitFileCompletion}

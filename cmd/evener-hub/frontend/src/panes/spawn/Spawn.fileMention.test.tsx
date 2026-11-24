@@ -2,6 +2,7 @@ import type { HostRequestParams } from "@evener/appwire-client";
 import { FILE_MENTION_DEBOUNCE_MS } from "@evener/appwire-client";
 import { act, screen, waitFor, within } from "@testing-library/react";
 import { expect, test, vi } from "vitest";
+import { readModuleCss, topRuleBlock } from "../../styles/cssBlock";
 import { getToasts } from "../../widgets/toast/store";
 import "../session/testing/editorGeometry";
 import {
@@ -62,6 +63,7 @@ test("typing @ queries evener/files/search directly on local host and through ev
   });
   await waitFor(() => expect(fileOptions()).toHaveLength(1));
   expect(fileOptions()[0]?.textContent).toContain("app.go");
+  expect(fileMenu().getAttribute("data-placement")).toBe("below");
   expect(fake.calls.some((c) => c.method === "evener/files/search")).toBe(true);
 
   // Switch host to online remote host "buildbox": menu resets and subsequent @ queries go through hostRequest.
@@ -130,4 +132,14 @@ test("switching cwd or draft resets file menu and clears optimistic rows; missin
   await act(async () => {});
   expect(queryFileMenu()).toBeNull();
   expect(getToasts()).toEqual([]);
+});
+
+test("file completion stylesheet anchors upward by default and opens downward for below placement", () => {
+  const css = readModuleCss(import.meta.url, "../session/composer/filecompletionmenu.module.css");
+  const listboxRule = topRuleBlock(css, ".listbox");
+  expect(listboxRule).toContain("bottom: calc(100% + var(--space-1));");
+
+  const belowRule = topRuleBlock(css, ".below");
+  expect(belowRule).toContain("top: calc(100% + var(--space-half));");
+  expect(belowRule).toContain("bottom: auto;");
 });
