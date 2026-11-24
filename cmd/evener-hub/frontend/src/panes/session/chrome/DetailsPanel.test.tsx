@@ -120,6 +120,38 @@ test("details body shows a locally resolved branch when the wire carries none", 
   expect(screen.getByTestId("session-details-branch").textContent).toContain("trunk");
 });
 
+// The overview sheet's Session facts include the reasoning effort
+// (design-system.md section 12): the same readout the status row shows,
+// display-only. Setting effort stays on the settings surface, so the row
+// never renders a control.
+test("the details body lists the session's reasoning effort when its ladder exists", () => {
+  render(
+    <DetailsPanelBody
+      model={testModel({ reasoningEffortLevels: ["low", "high"], supportsReasoning: true, reasoningEffort: "high" })}
+      now={0}
+    />,
+  );
+  const row = screen.getByTestId("session-details-effort");
+  expect(row.textContent?.toLowerCase()).toContain("high");
+  expect(row.closest("button")).toBeNull();
+});
+
+test("the details body omits the effort row when the model has no ladder", () => {
+  render(<DetailsPanelBody model={testModel({ reasoningEffortLevels: [], supportsReasoning: false })} now={0} />);
+  expect(screen.queryByTestId("session-details-effort")).toBeNull();
+});
+
+// Queue depth rides the usage group beside work time, absent at zero like
+// the status row's own figure: an empty queue is the normal case and a "0
+// queued" row would be noise on every session.
+test("the details body lists queue depth only while a queue holds work", () => {
+  render(<DetailsPanelBody model={testModel({ queue: { revision: 1, depth: 2 } })} now={0} />);
+  expect(screen.getByTestId("session-details-queue").textContent).toContain("2");
+  cleanup();
+  render(<DetailsPanelBody model={testModel()} now={0} />);
+  expect(screen.queryByTestId("session-details-queue")).toBeNull();
+});
+
 test("details body keeps the wire's branch over a locally resolved one", () => {
   render(<DetailsPanelBody model={testModel({ gitBranch: "feature/wire" })} now={0} resolvedBranch="trunk" />);
   expect(screen.getByTestId("session-details-branch").textContent).toContain("feature/wire");

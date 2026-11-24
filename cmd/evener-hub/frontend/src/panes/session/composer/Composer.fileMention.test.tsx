@@ -2,7 +2,7 @@ import { type FilesSearchParams, type FilesSearchResponse, WireError } from "@ev
 import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { IDBFactory } from "fake-indexeddb";
-import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, expect, onTestFinished, test, vi } from "vitest";
 import { appliedReceipt } from "../../../mutationReceiptTestUtils";
 import { resetWorkspaceStoreForTests } from "../../../shell/workspace";
 import { installLocalStorage, MemoryStorage } from "../../../storageTestUtils";
@@ -12,6 +12,7 @@ import { resetThreadsStoreForTests } from "../../../stores/threads";
 import { ALL_CAPABILITIES as FULL_CAPABILITIES } from "../../../threadTestUtils";
 import { getToasts, resetToastStoreForTests } from "../../../widgets/toast/store";
 import { pastePngInto, selectEditorText } from "../testing/editor";
+import { installMobileViewport } from "../testing/mobileViewport";
 import { resetAskDockStoreForTests } from "./askDock/askDockStore";
 import { resetComposerFocusStoreForTests } from "./composerFocus";
 import { installCanvasStubs, mountComposerWithHandle, testThread, textarea } from "./composerTestUtils";
@@ -220,37 +221,41 @@ test("pasting @scope/pkg suppresses opening, caret move away closes menu, and cl
   expect(queryFileMenu()).toBeNull();
 });
 
-test("slash menu and file mention menu are mutually exclusive with ARIA wiring switching", async () => {
-  const user = userEvent.setup();
-  const ref = "ref_file_slash_mutex";
-  await mountComposerWithHandle(
-    ref,
-    {
-      evener: {
-        ...testThread(ref).evener,
-        diagnostics: { commands: [{ name: "review", description: "review diff" }] },
+test.each(["desktop", "phone"])(
+  "%s slash and file menus are mutually exclusive and switch ARIA ownership",
+  async (layout) => {
+    if (layout === "phone") onTestFinished(installMobileViewport());
+    const user = userEvent.setup();
+    const ref = "ref_file_slash_mutex";
+    await mountComposerWithHandle(
+      ref,
+      {
+        evener: {
+          ...testThread(ref).evener,
+          diagnostics: { commands: [{ name: "review", description: "review diff" }] },
+        },
       },
-    },
-    {
-      prepare: (client) => {
-        client.on("evener/files/search", () => ({
-          items: [{ path: "src/index.ts", kind: "file" }],
-        }));
+      {
+        prepare: (client) => {
+          client.on("evener/files/search", () => ({
+            items: [{ path: "src/index.ts", kind: "file" }],
+          }));
+        },
       },
-    },
-  );
+    );
 
-  const editor = textarea();
-  await user.type(editor, "/rev");
-  const slashMenu = screen.getByTestId("composer-slash-menu");
-  expect(queryFileMenu()).toBeNull();
-  expect(editor.getAttribute("aria-controls")).toBe(slashMenu.id);
+    const editor = textarea();
+    await user.type(editor, "/rev");
+    const slashMenu = screen.getByTestId("composer-slash-menu");
+    expect(queryFileMenu()).toBeNull();
+    expect(editor.getAttribute("aria-controls")).toBe(slashMenu.id);
 
-  await user.type(editor, " @idx");
-  await waitFor(() => expect(fileOptions()).toHaveLength(1));
-  expect(screen.queryByTestId("composer-slash-menu")).toBeNull();
-  expect(editor.getAttribute("aria-controls")).toBe(fileMenu().id);
-});
+    await user.type(editor, " @idx");
+    await waitFor(() => expect(fileOptions()).toHaveLength(1));
+    expect(screen.queryByTestId("composer-slash-menu")).toBeNull();
+    expect(editor.getAttribute("aria-controls")).toBe(fileMenu().id);
+  },
+);
 
 test("delays Loader by 150ms when zero rows, renders non-selectable truncation footer, and keeps zero-match menu closed", async () => {
   vi.stubGlobal("jest", { advanceTimersByTime: vi.advanceTimersByTime });

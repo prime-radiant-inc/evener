@@ -463,6 +463,71 @@ test("header Overview toggles the session's sidebar and selected state", async (
   expect(overview.getAttribute("aria-pressed")).toBe("false");
 });
 
+test("the phone header keeps session facts, Find and same-session Tasks in one Overview", async ({
+  onTestFinished,
+}) => {
+  onTestFinished(installMobileViewport());
+  const ref = "local:phone_sheet";
+  const paneId = "pane_phone_sheet";
+  const cwd = "/tmp/overview-project";
+  const branch = "fixture-overview-branch";
+  const link = "https://example.com/docs";
+  const user = userEvent.setup();
+  const asked = renderHook(() => useFindRequest(ref, paneId));
+  const fake = connectFakeClient();
+  fake.on("evener/git/head", () => ({ head: branch }));
+  fake.on("evener/tasks/list", () => ({ data: [] }));
+  fake.on("thread/read", () =>
+    readResponse(ref, {
+      cwd,
+      evener: {
+        ref,
+        capabilities: CAPABILITIES,
+        queue: { revision: 0 },
+        tasks: { total: 1, done: 0, current: { id: 1, description: "Check fixture results" } },
+        sessionUrls: [{ id: "u1", url: link, label: "Example", addedBy: "human", addedAt: 7 }],
+      },
+    }),
+  );
+  workspaceStore.setState({
+    panes: [{ id: paneId, type: "session", params: { ref }, slot: "main" }],
+    focusedPaneId: paneId,
+  });
+  const panes = workspaceStore.getState().panes;
+  await threadsStore.getState().ensureThread(ref);
+  render(
+    <MotionProvider>
+      <SessionInspectionActions sessionRef={ref} paneId={paneId} />
+      <ActivitySidebar mobile />
+    </MotionProvider>,
+  );
+
+  expect(screen.queryByRole("button", { name: "Find in session" })).toBeNull();
+  const entry = screen.getByRole("button", { name: "Overview" });
+  await user.click(entry);
+  const sheet = await screen.findByRole("dialog", { name: "Overview" });
+  expect(within(sheet).getByTestId("session-details-model")).toBeTruthy();
+  expect((await within(sheet).findByTestId("session-details-branch")).textContent).toContain(branch);
+  expect(fake.calls.find((call) => call.method === "evener/git/head")?.params).toEqual({ cwd });
+  expect(within(sheet).getByTestId("overview-sheet-link-u1").textContent).toContain(link);
+
+  await user.click(within(sheet).getByRole("button", { name: "Find in session" }));
+  expect(asked.result.current?.target).toBe(paneId);
+  await waitFor(() => expect(sheet.isConnected).toBe(false));
+
+  // This thread's task exists before its navigation row has loaded.
+  await user.click(entry);
+  const reopened = await screen.findByRole("dialog", { name: "Overview" });
+  await user.click(within(reopened).getByRole("button", { name: /Tasks/ }));
+  const sidebar = await screen.findByTestId("activity-sidebar");
+  expect(activitySidebarStore.getState()).toMatchObject({ open: true, ref, tab: "tasks" });
+  await waitFor(() => expect(fake.calls.find((call) => call.method === "evener/tasks/list")?.params).toEqual({ ref }));
+  expect(workspaceStore.getState().panes).toEqual(panes);
+  await waitFor(() => expect(sidebar.contains(document.activeElement)).toBe(true));
+  await user.keyboard("{Escape}");
+  await waitFor(() => expect(document.activeElement).toBe(entry));
+});
+
 test("an ordinary session's composer leaves Find and Overview to the header but keeps Verbosity", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();

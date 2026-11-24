@@ -1185,15 +1185,18 @@ cause an `evener/thread/*` activity read for every session in the navigation
 rail; the rail's open title card makes only its own one-ref pulse read, as
 described under [Navigation session status](#navigation-session-status).
 
-Session chrome and the navigation rail expose Overview through their session
-action menus. On the phone, that action opens the full-screen shared activity
-sidebar, preserving the last selected category for the focused session. Its
+The phone session header opens an Overview sheet with session facts, Find,
+links and activity counts. Choosing a count opens the full-screen shared
+activity sidebar at that category for the same session. The navigation rail
+and embedded session action menus still open the activity sidebar directly.
+Direct entry preserves the focused session's last selected category. The menu's
 optional active count sums the subagents running at every depth and the
 session's own running jobs, only when both are known; watches and completed work
 are not part of that number. The sidebar's Jobs, Watches and Tasks tabs use
 session-scoped reads on both viewports, while About uses the shared session
-model. The Agents tab and all Agents counts (the pane's activity chip, the
-sidebar's Agents tab label, each cascade scope's Agents chip, the Overview
+model. The Agents tab and all Agents counts (the desktop pane's activity chip,
+the phone Overview activity row, the sidebar's Agents tab label, each cascade
+scope's Agents chip, the Overview
 action count, and the conversation's liveness line) read the same
 subtree store
 ([`useSubagentCounts`](../../cmd/evener-hub/frontend/src/stores/sessionActivity.ts)
