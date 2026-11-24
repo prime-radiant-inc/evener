@@ -87,8 +87,9 @@ except where a line says so itself.
 - The message field stays left of the session menu. Attach, the menu, and
   Send/Stop keep their positions as content expands the card: folded Steer keeps
   a hidden reserved slot, Stop measures against Send's existing label width, and Steer
-  enters to the primary action's left. On phones the returning activity line
-  sits above the card rather than pushing the controls up.
+  enters to the primary action's left. On phones, activity stays in the header's
+  [Overview sheet](../design-system.md#12-phone-and-tablet-fluency-floating-chrome-reading-first)
+  in every composer state.
 - A Send-to-Stop swap shows a distinct Stop button immediately, disabled for
   500 ms to reject accidental double-taps. A Stop present when the composer
   opens needs no delay. The delay expires automatically and cannot outlive

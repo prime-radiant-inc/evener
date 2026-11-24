@@ -124,14 +124,12 @@ losing the conversation that made the evidence relevant.
   but separates reading from scanning. Shared size and width preferences remain available.
   Phones reflow speaker rows, controls and evidence rather than shrinking a desktop page;
   wide evidence scrolls within its surface instead of widening the page or shrinking targets.
-- **Keep session reading controls in the header.** Find in session, then Overview, occupy the
-  desktop pane header's action slot; below 900px `StackHost` mounts the same actions as icon
-  buttons with the ordinary touch floor. The ordinary composer menu leaves those two actions to
-  the header and retains Verbosity, turn verbs, and session management. Rail and embedded-column
-  menus keep their existing inspection access. Overview keeps one icon and shows its open state
-  through selected styling. Mobile session titles align left. A session with no real Back
-  destination gets Sessions as its only leading navigation control; a retained parent, valid
-  back-stack destination, or attention Back uses Back instead. Non-session top bars are unchanged.
+- **Keep session reading controls in the header.** The desktop pane header shows Find, then
+  Overview. Below 900px the header has a single ⋯ entry to the Overview sheet, including Find.
+  The ordinary composer menu retains Verbosity, turn verbs and session management. Rail and
+  embedded-column menus keep their inspection access. Mobile session titles align left.
+  On a phone, Sessions leads unless Back has a real destination: a retained parent, a valid
+  back-stack entry or an attention return. On a tablet, the board replaces the drawer (§12).
 - **Keep session status inside its pane.** Every visible desktop session pane ends
   with its own
   flush status footer, never one strip spanning sibling panes. The footer leads with that
@@ -142,18 +140,17 @@ losing the conversation that made the evidence relevant.
   At the narrow shell breakpoint (899px and below), phones keep one bottom surface:
   the pane renders no separate footer strip below the
   composer, so the composer's own control row carries Attach, the session menu and
-  Send or Stop. The activity counts are rows in the Overview sheet (§12), so the card
-  carries no chips and no counts line in any state, and nothing arrives above it to
-  move the persistent controls. The card remains the
+  Send or Stop. The Overview sheet owns activity counts and session facts (§12).
+  Typing, attaching and answering a question never add a model switch, an effort control
+  or a status row. Current work is announced to assistive technology; its visible tasks
+  live in Overview instead of pushing the composer up. The card remains the
   lowest interactive surface. The composer dock owns the home-indicator band, and that band is one
   token: `--dock-clearance` in `tokens.css` (`max(0px, env(safe-area-inset-bottom) -
   var(--keyboard-inset, 0px))`). Every dock reads that one value, and it yields when the
   on-screen keyboard covers the band. The working-directory strip follows that shell breakpoint:
   the narrow phone reads the session's working directory and branch through the top bar's
   Overview (About), while a primary-touch phone whose wider landscape viewport uses the desktop
-  shell retains the separate status footer. A phone chip shows its
-  glyph and a single active count (settled for Tasks); its category name and the full
-  active/total fraction stay in its accessible name and tooltip. An empty composer
+  shell retains the separate status footer. An empty composer
   with room folds to one row: Attach keeps its leading utility slot, the message field
   stays left of the session menu, and the menu and Send or Stop keep their trailing
   slots. Steer enters to the primary action's left. These positions do not move when
@@ -188,7 +185,6 @@ losing the conversation that made the evidence relevant.
   (`promptcard.module.css`'s 440–500px portrait query, with the matching dock gap
   in `composer.module.css`). Every Duo card keeps zero bottom padding and a zero
   Attach inset, so persistent controls do not move when content expands the card.
-  The activity count line keeps the 44px `--tap-min` floor (`.activityRow`).
 - **Let the lowest footer own the safe area.** A pane with a flush `edgeFooter`
   below its padded composer footer gives that edge footer the home-indicator band
   at every width. The composer footer keeps only its ordinary `--space-3` gap, so a
@@ -1456,15 +1452,11 @@ over it.
 
 ## 12. Phone and tablet fluency: floating chrome, reading first
 
-Below the 899px boundary the phone stack is the product, on phones and the
-iPhone Duo's cover, with the tablet band adding the board column beside it.
-The transcript owns the screen: at rest the persistent chrome is the
-StackHost bar, the session notes' one quiet line, and the floating composer —
-around 105px of an 844px viewport, 12%. The fluency pass (Jesse 2026-11-22,
-artifact `evener-fluent-prototype-v8a`, preserved under
-[docs/web-ui/mock](mock/)) adds no tokens: it removes
-backgrounds and borders that carry no information. Desktop's DockHost layout
-is unchanged by this pass.
+Below 900px the conversation uses the phone stack. A tablet adds a board beside it.
+The transcript owns the screen: at rest only the header and floating composer reserve
+chrome space, about 121px on an 844px phone at default text size. The quiet notes line
+belongs to the reading surface. The [approved mock](mock/evener-fluent-prototype-v8a.html)
+illustrates that hierarchy; desktop keeps its DockHost layout.
 
 **The header collapses on transcript scroll, never on the board.** On a
 session-family pane (session, sessionZoom, transcript), scrolling down past
@@ -1495,12 +1487,13 @@ reader still hears the note the line no longer previews. Collapsed, the
 line belongs to the reading surface — it keeps the body's own top spacing
 below the bar, and on touch it grows to the 44px tap floor.
 
-**One entry to the inspectors.** The header's ⋯ control opens a bottom sheet
-holding the session facts — model, context meter, effort, work time, queue —
-plus activity counts (tap → the shared ActivitySidebar tabs) and links.
-Nothing in the transcript scroll renders chips for model, effort, skills, or
-plugins; effort is set on the settings surface, not in chat chrome. Activity
-tabs are underline tabs, never pills.
+**One entry to the inspectors.** The header's ⋯ opens a bottom sheet with session facts,
+Find, activity counts and links. Tap an activity row to inspect that category for the
+same session. Tasks has a direct row when a task list exists. Model and effort stay off
+the composer in every state; effort is set in Settings. The mobile inspector uses one
+horizontal row of underline tabs. The selected tab stays in view as the row scrolls;
+Tab enters it once, and arrow keys, Home and End change categories. Desktop retains its
+wrapping segmented control.
 
 **The board keeps the session list's organization** (Jesse 2026-11-22):
 Live → Pinned → Projects → Idle → Archive. Live sorts needs-first. A board
@@ -1514,8 +1507,9 @@ it. One search field; no ⌘K hint text anywhere in the UI.
 
 **Tablet splits board and conversation side-by-side.** The 768–899px band is
 the tablet: StackHost keeps its phone anatomy, but the rail leaves the drawer
-and becomes a persistent board column with a 1px divider and the conversation
-flexing beside it. The column scrolls as one region, the same
+and becomes a full-height board column. Its own header stays at the top. The conversation's
+title and its floating controls stay on the conversation side of the 1px divider.
+The board list scrolls independently, the same
 parent-owns-scroll contract as the drawer sheet. Its width is the sidebar's
 ONE width — the `sidebarWidth` pref the desktop rail also reads, default
 280px — so a dragged width follows the window whichever layout renders it,
@@ -1523,19 +1517,16 @@ with no second preference to keep in step. The divider drags like the
 desktop rail's edge: the same separator, live-painting the width through the
 drag and committing once on release, with the same arrow-key steps, the same
 bounds (the rail's measured content floor, the 560px sidebar max) and the
-same double-click reset to the 280 default. The collapse control is one
-glyph riding the interior seam of the divider — hugging the divider's
-conversation lip while the board is visible, the conversation's leading edge
-while hidden — rotating 180° to indicate direction; never two collapse
-controls at once, and never over the rail's own controls. The drawer trigger
+same double-click reset to the 280 default. One ◧ toggles the board. While open it sits
+inside the board header, after Search. While closed it sits at the conversation's leading
+edge, rotated 180°. The toggle keeps keyboard focus through the move. The drawer trigger
 does not exist in the band, and a blank stack shows the board column, not the
 sheet. The Duo exterior is the single phone stack on the cover, not a second
 two-pane.
 
-Verification for changes to any of this: screenshots at 390×844 (phone),
-768×1024 (tablet portrait, inside the band), 840×600 (Duo interior); chrome at
-rest within the budget stated above (bar 61px + pill 60px = 121px at phone
-width); transcript content scrolling under the composer
+Verification: inspect the populated app at 390–400×844 (phone), 768×1024 or 800×1025
+(tablet portrait), 840×600 (Duo interior), and 1024×768 (landscape, desktop host).
+Check the resting chrome budget and transcript content scrolling under the composer
 card; header collapse only on session-family scroll; `node scripts/ds-audit.mjs`
 counts no higher than before; the tablet divider's drag commits its width,
 the width survives a reload, and a double-click returns it to the 280
