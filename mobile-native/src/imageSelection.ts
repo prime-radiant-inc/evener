@@ -2,10 +2,14 @@ import {
 	type AttachmentRejection,
 	admissionRejection,
 	MAX_ATTACHMENTS,
+	MAX_SOURCE_BYTES,
+	MAX_SOURCE_PIXELS,
 	nextComposerImageMarker,
 	sizeRejection,
 } from "@evener/appwire-client";
 import type { DraftDocument } from "./draftDocument";
+
+export { MAX_SOURCE_BYTES };
 
 export interface PickedImage {
 	uri: string;
@@ -65,16 +69,6 @@ export interface EncodedImage {
 	data: string;
 	mediaType: "image/jpeg" | "image/png";
 }
-
-/** The largest picked file the phone decodes to scale it: far above a camera
- * HEIC or JPEG, and a bound on the memory decoding takes. */
-export const MAX_SOURCE_BYTES = 25 * 1024 * 1024;
-
-/** A full frame from a 48 megapixel iPhone camera, the most pixels the phone
- * decodes. */
-const FULL_FRAME_WIDTH = 8064;
-const FULL_FRAME_HEIGHT = 6048;
-const MAX_SOURCE_PIXELS = FULL_FRAME_WIDTH * FULL_FRAME_HEIGHT;
 
 /** Why an image can't be attached, after its name: the reason, then what to
  * do (#3166). Too large to decode and too large to send read the same. */

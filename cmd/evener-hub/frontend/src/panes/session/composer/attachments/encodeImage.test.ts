@@ -250,7 +250,7 @@ describe("encodeImage decoding", () => {
 
     const result = await encodeImage(blob);
 
-    expect(result).toEqual({ data: "AQIDBA==", mediaType: "image/png", width: 800, height: 600, byteLength: 4 });
+    expect(result).toEqual({ data: "AQIDBA==", mediaType: "image/png", width: 800, height: 600 });
     expect(probe.toBlobCalls).toEqual([{ type: "image/png", quality: undefined, width: 800, height: 600 }]);
     const context = firstContext(probe);
     expect(context.drawImageCalls).toEqual([[bitmap, 0, 0, 800, 600]]);
@@ -289,7 +289,7 @@ describe("encodeImage decoding", () => {
     expect(createObjectURLMock).toHaveBeenCalledWith(blob);
     expect(revokeObjectURLMock).toHaveBeenCalledWith("blob:test-url");
     expect(firstContext(probe).drawImageCalls).toEqual([[firstImage(images), 0, 0, 300, 200]]);
-    expect(result).toEqual({ data: "AQID", mediaType: "image/jpeg", width: 300, height: 200, byteLength: 3 });
+    expect(result).toEqual({ data: "AQID", mediaType: "image/jpeg", width: 300, height: 200 });
   });
 
   test("rejects with decodeFailed and revokes the object URL when HTMLImageElement cannot decode", async () => {
@@ -362,7 +362,7 @@ describe("encodeImage format selection", () => {
       [bitmap, 0, 0, 800, 600],
       [bitmap, 0, 0, 800, 600],
     ]);
-    expect(result).toEqual({ data: "CQgH", mediaType: "image/jpeg", width: 800, height: 600, byteLength: 3 });
+    expect(result).toEqual({ data: "CQgH", mediaType: "image/jpeg", width: 800, height: 600 });
   });
 
   test("rejects with tooLarge when the inflated PNG and its fallback JPEG both exceed 8 MB", async () => {
@@ -400,7 +400,7 @@ describe("encodeImage format selection", () => {
 
     expect(probe.toBlobCalls).toEqual([{ type: "image/jpeg", quality: 0.85, width: 800, height: 600 }]);
     expect(firstContext(probe).fillRectCalls).toHaveLength(1);
-    expect(result).toEqual({ data: "AQID", mediaType: "image/jpeg", width: 800, height: 600, byteLength: 3 });
+    expect(result).toEqual({ data: "AQID", mediaType: "image/jpeg", width: 800, height: 600 });
   });
 
   test.each(["image/jpeg", "image/webp", "image/svg+xml", "image/png"])(
@@ -412,7 +412,7 @@ describe("encodeImage format selection", () => {
 
       const result = await encodeImage(blobOf(type, [1]));
 
-      expect(result).toEqual({ data: "CQgH", mediaType: "image/jpeg", width: 2048, height: 1536, byteLength: 3 });
+      expect(result).toEqual({ data: "CQgH", mediaType: "image/jpeg", width: 2048, height: 1536 });
       const context = firstContext(probe);
       expect(context.fillRectCalls).toEqual([{ x: 0, y: 0, width: 2048, height: 1536, fillStyle: "#ffffff" }]);
       expect(context.imageSmoothingEnabled).toBe(true);

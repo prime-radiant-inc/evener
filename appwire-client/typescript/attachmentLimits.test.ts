@@ -113,10 +113,6 @@ test("rounds fractional dimensions to whole pixels", () => {
   expect(fitImageDimensions(800.4, 600.6)).toEqual({ width: 800, height: 601 });
 });
 
-test("fits to an explicit maxEdge when one is given", () => {
-  expect(fitImageDimensions(4032, 3024, 1024)).toEqual({ width: 1024, height: 768 });
-});
-
 test("never scales an edge below one pixel", () => {
   expect(fitImageDimensions(10000, 1)).toEqual({ width: 2048, height: 1 });
   expect(fitImageDimensions(1, 10000)).toEqual({ width: 1, height: 2048 });

@@ -20,7 +20,6 @@ export interface EncodedImage {
   mediaType: EncodedImageMediaType;
   width: number;
   height: number;
-  byteLength: number;
 }
 
 export type ImageEncodeErrorCode = "decodeFailed" | "tooManyPixels" | "tooLarge";
@@ -121,7 +120,6 @@ async function toEncodedImage(
     mediaType,
     width,
     height,
-    byteLength: out.size,
   };
 }
 
