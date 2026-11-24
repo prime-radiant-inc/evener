@@ -1167,7 +1167,7 @@ func (s *Session) projectUserImagesForTarget(profile *provider.Profile, messages
 		carries := s.turnInputCarriesImages
 		s.mu.Unlock()
 		if carries {
-			for i := len(messages) - 1; i >= 0; i-- {
+			for i := range slices.Backward(messages) {
 				if messages[i].Role == llm.RoleUser && messageHasUserImage(messages[i]) {
 					keep = i
 					break
