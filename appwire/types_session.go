@@ -654,4 +654,5 @@ type FeatureSet struct {
 	Auth                      bool `json:"auth"`
 	TranscriptDisplaySettings bool `json:"transcriptDisplaySettings,omitempty"`
 	KeybindingsSettings       bool `json:"keybindingsSettings,omitempty"`
+	ThreadStartIdempotency    bool `json:"threadStartIdempotency,omitempty"`
 }

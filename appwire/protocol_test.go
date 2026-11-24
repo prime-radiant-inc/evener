@@ -3,8 +3,10 @@ package appwire
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -363,6 +365,111 @@ func TestFeatureSetTranscriptDisplayJSONField(t *testing.T) {
 	}
 	if !bytes.Contains(generated, []byte("transcriptDisplaySettings?: boolean;")) {
 		t.Fatal("generated TypeScript feature field is not optional")
+	}
+}
+
+func TestFeatureSetThreadStartIdempotency(t *testing.T) {
+	encoded, err := json.Marshal(FeatureSet{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(encoded, []byte(`"threadStartIdempotency"`)) {
+		t.Fatalf("false feature must be omitted: %s", encoded)
+	}
+	encoded, err = json.Marshal(FeatureSet{ThreadStartIdempotency: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(encoded, []byte(`"threadStartIdempotency":true`)) {
+		t.Fatalf("true feature missing from JSON: %s", encoded)
+	}
+
+	generated, err := os.ReadFile("../appwire-client/typescript/types.gen.ts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(generated, []byte("threadStartIdempotency?: boolean;")) {
+		t.Fatal("generated TypeScript feature field is not optional")
+	}
+}
+
+func TestThreadStartIdempotencyJSON(t *testing.T) {
+	emptyParams, err := json.Marshal(ThreadStartParams{CWD: "/tmp"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(emptyParams, []byte(`"clientMutationId"`)) {
+		t.Fatalf("empty clientMutationId must be omitted: %s", emptyParams)
+	}
+
+	emptyResp, err := json.Marshal(ThreadStartResponse{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(emptyResp, []byte(`"clientMutationId"`)) || bytes.Contains(emptyResp, []byte(`"disposition"`)) {
+		t.Fatalf("empty idempotency fields must be omitted: %s", emptyResp)
+	}
+
+	keyedParams, err := json.Marshal(ThreadStartParams{CWD: "/tmp", ClientMutationID: "mut-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(keyedParams, []byte(`"clientMutationId":"mut-1"`)) {
+		t.Fatalf("clientMutationId missing from params: %s", keyedParams)
+	}
+
+	keyedResp, err := json.Marshal(ThreadStartResponse{ClientMutationID: "mut-1", Disposition: MutationDispositionReplayed})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(keyedResp, []byte(`"clientMutationId":"mut-1"`)) || !bytes.Contains(keyedResp, []byte(`"disposition":"replayed"`)) {
+		t.Fatalf("idempotency fields missing from response: %s", keyedResp)
+	}
+}
+
+func TestValidateOptionalClientMutationID(t *testing.T) {
+	valid := []string{
+		"",
+		"a",
+		"mut-1234",
+		strings.Repeat("x", 128),
+		strings.Repeat("é", 64), // 128 UTF-8 bytes
+		"a b",                   // internal space allowed
+	}
+	for _, id := range valid {
+		if err := ValidateOptionalClientMutationID(id); err != nil {
+			t.Fatalf("ValidateOptionalClientMutationID(%q) unexpected error: %v", id, err)
+		}
+	}
+
+	invalid := []string{
+		strings.Repeat("x", 129),
+		strings.Repeat("é", 65), // 130 UTF-8 bytes
+		" mut-1",
+		"mut-1 ",
+		"\tmut-1",
+		"   ",
+		"\u00a0mut-1",
+		"\xff",
+		"mut\x00id",
+		"mut\x1fid",
+		"mut\nid",
+		"mut\x7fid",
+	}
+	for _, id := range invalid {
+		err := ValidateOptionalClientMutationID(id)
+		var wire WireError
+		if !errors.As(err, &wire) {
+			t.Fatalf("ValidateOptionalClientMutationID(%q) = %T (%v), want WireError", id, err, err)
+		}
+		if wire.Code != CodeInvalidParams {
+			t.Fatalf("ValidateOptionalClientMutationID(%q) code = %d, want %d", id, wire.Code, CodeInvalidParams)
+		}
+		data, ok := DecodedErrorData(wire.Data)
+		if !ok || data.EvenerErrorInfo != ErrorInvalidParams || data.ClientMutationID != "" ||
+			data.MutationOutcome != MutationOutcomeNotAccepted || data.RetryDisposition != RetryDispositionNone {
+			t.Fatalf("ValidateOptionalClientMutationID(%q) data = %+v (ok=%v), want InvalidParams NotAccepted(\"\")", id, data, ok)
+		}
 	}
 }
 
