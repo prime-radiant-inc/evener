@@ -9,6 +9,18 @@
 export const MAX_ATTACHMENTS = 8;
 export const MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024;
 
+// A composer that decodes an image before sending it bounds the decode with
+// the source's own bytes and pixels: far above a camera photo, and a ceiling
+// on the memory the decode takes.
+export const MAX_SOURCE_BYTES = 25 * 1024 * 1024;
+export const MAX_SOURCE_PIXELS = 8064 * 6048;
+
+// The decoded result is redrawn with its long edge at most this many pixels
+// and encoded as JPEG at this quality: a camera photo comes out a few MB,
+// well inside MAX_ATTACHMENT_BYTES.
+export const MAX_IMAGE_LONG_EDGE = 2048;
+export const IMAGE_JPEG_QUALITY = 0.85;
+
 export interface RejectableFile {
   type: string;
   size: number;
@@ -50,4 +62,21 @@ export function rejectionReason(file: RejectableFile, reservedCount: number): st
     case undefined:
       return undefined;
   }
+}
+
+// fitImageDimensions is the size an image is redrawn at before encoding: its
+// long edge capped to maxEdge (MAX_IMAGE_LONG_EDGE by default) and the short
+// edge scaled by the same ratio, rounded to whole pixels and never below one.
+// An image that already fits keeps its dimensions unchanged.
+export function fitImageDimensions(
+  width: number,
+  height: number,
+  maxEdge: number = MAX_IMAGE_LONG_EDGE,
+): { width: number; height: number } {
+  const longEdge = Math.max(width, height);
+  if (longEdge <= maxEdge) return { width, height };
+  return {
+    width: Math.max(1, Math.round((width * maxEdge) / longEdge)),
+    height: Math.max(1, Math.round((height * maxEdge) / longEdge)),
+  };
 }
