@@ -304,6 +304,27 @@ export {
   WireError,
   wireRejectionPayload,
 } from "./errors";
+export type {
+  FileMentionMatch,
+  FileMentionSearchInputs,
+  FileMentionSnapshot,
+  FileMentionSpliceResult,
+  FileMentionStore,
+  FileMentionTarget,
+  FileMentionToken,
+} from "./fileMention";
+export {
+  clearUnsupportedFileSearchHost,
+  createFileMentionStore,
+  FILE_MENTION_DEBOUNCE_MS,
+  FILE_MENTION_DEFAULT_LIMIT,
+  FILE_MENTION_MAX_QUERY_LENGTH,
+  matchFileMentionPositions,
+  parseFileMentionToken,
+  rankFileMentions,
+  scoreFileMention,
+  spliceFileMention,
+} from "./fileMention";
 export {
   findIndexIn,
   findMatches,
