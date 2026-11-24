@@ -216,7 +216,11 @@ function MobileOverviewEntry({
         }
         variant={overviewOpen ? "secondary" : "quiet"}
         aria-pressed={overviewOpen}
-        onClick={() => setOpen(true)}
+        onClick={({ currentTarget }) => {
+          // The sheet records the active element before it moves focus inside.
+          if (currentTarget.ownerDocument.activeElement !== currentTarget) currentTarget.focus({ preventScroll: true });
+          setOpen(true);
+        }}
       />
       {/* Anchor to the viewport, outside the header's floating blur. */}
       {sheetDocument !== null &&

@@ -1302,6 +1302,26 @@ async function trustedOverviewFlow(send, viewport, childGesture) {
   );
   await dismiss("escape", pane, true);
 
+  if (viewport.width === MOBILE_VIEWPORT.width && childGesture === "close") {
+    await evaluate(send, `(() => {
+      const button = window.__overviewExpectedButton;
+      button.blur();
+      // Keep the real click, but suppress Chromium's default mousedown focus.
+      button.addEventListener('mousedown', event => event.preventDefault(), { once: true });
+      button.addEventListener('click', event => {
+        window.__overviewUnfocusedClick = event.isTrusted && document.activeElement !== button;
+      }, { once: true });
+    })()`);
+    await clickControl(send, overviewTrigger(pane));
+    await waitForDom(send, `document.querySelector(${JSON.stringify(PHONE_INSPECTION)})`, "pointer opens phone Overview");
+    if (!(await evaluate(send, "window.__overviewUnfocusedClick")))
+      throw new Error("phone Overview pointer fixture did not activate without default focus");
+    await pressKey(send, "Escape", "Escape", 27);
+    await waitForDom(send, `!document.querySelector(${JSON.stringify(PHONE_INSPECTION)})`, "Escape dismisses phone Overview");
+    const returned = await evaluate(send, "document.activeElement === window.__overviewExpectedButton");
+    if (!returned) throw new Error("phone Overview did not return focus to its header after an unfocused pointer activation");
+  }
+
   const submitStatus = async (wrongFocusedPane = null) => {
     const editor =
       '[data-pane-scaffold="session:local:p0-s0"] ~ [data-testid="pane-footer"] [role="textbox"][aria-label="Message"]';
