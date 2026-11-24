@@ -1471,7 +1471,8 @@ iPhone Duo's cover, with the tablet band adding the board column beside it.
 The transcript owns the screen: at rest the persistent chrome is the
 StackHost bar, the session notes' one quiet line, and the floating composer —
 around 105px of an 844px viewport, 12%. The fluency pass (Jesse 2026-11-22,
-artifact `evener-fluent-prototype-v8a`) adds no tokens: it removes
+artifact `evener-fluent-prototype-v8a`, preserved under
+[docs/web-ui/mock](mock/)) adds no tokens: it removes
 backgrounds and borders that carry no information. Desktop's DockHost layout
 is unchanged by this pass.
 
