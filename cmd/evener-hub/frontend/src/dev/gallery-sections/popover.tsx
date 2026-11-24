@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Button } from "../../widgets/button";
 import { Popover } from "../../widgets/popover";
 import { GallerySection } from "../GallerySection";
 import styles from "./popover.module.css";
@@ -23,9 +24,9 @@ function PopoverDemo() {
         open={open}
         onClose={() => setOpen(false)}
         trigger={
-          <button type="button" onClick={() => setOpen((v) => !v)}>
+          <Button variant="quiet" size="sm" onClick={() => setOpen((v) => !v)}>
             Details
-          </button>
+          </Button>
         }
       >
         <p className={styles.panelBody}>
