@@ -43,7 +43,7 @@
 
 /* The body is the drag surface's host: it fills the panel between header and
  * footer and clips instead of scrolling, so a pan moves the diagram and never
- * leaves a scrollbar behind. Passed through OverlayPanel's bodyClassName. */
+ * leaves a scrollbar behind. Passed through Dialog's bodyClassName. */
 .viewerBody {
   display: flex;
   flex: 1 1 auto;
