@@ -32,7 +32,7 @@ Every future efficiency experiment starts from `origin/main` including `4759d4c0
   - Branch includes `4759d4c0eb` (#7501) and current `origin/main`.
   - Every edited line of `agent/prompts/system.md.tmpl` and `agent/internal/tool/definitions.go` is reviewed directly for clear, complete, grammatical English (Strunk/Hemingway style). Never compress prompts into telegraphic shorthand, semicolon pileups, or single-line crammed lists.
   - Never alter a safety, lifecycle, or cleanup qualifier while tightening prose.
-  - A 5-model / multi-provider live E2E field test passes and audits clean with `evener doctor transcript --health`.
+  - A 5-model / multi-provider live E2E field test passes and audits clean by running `evener doctor transcript <session-selector> --health` for each of the five field-test sessions (`agent/doctor/selector.go:32` requires a session selector).
 - **Before promotion or merge (on the reviewed PR head):**
   - All GitHub CI checks pass green and all RoboRev findings are resolved.
 
@@ -203,7 +203,7 @@ Round 4 ran `222` live trials via `vertex-arc/gemini-4-hydrogen` with `100%` rea
 - **Input and tool discipline:** Round 1 input dropped `51%` (`10,646` on fixture, `11,030` on Terminal-Bench, vs `93d73fdd59`), with `0` ceremony calls, **`0` tool errors across all `830` tool calls** (`0/8` `job_watch` errors), and `using-worktrees` auto-gated `0/30` on non-git containers.
 - **Fixture outcomes (`overfull-hbox`, n=12):** `9/12` raw pass (`3` transient Lunaroute HTTP 503 outages at `calls=0..2`; `9/9`, `100%` non-outage, `0` timeouts).
 - **Terminal-Bench 2.1 outcomes (n=30):** `19/30` raw pass, with `8` transient Lunaroute HTTP 503 outages (`calls=0..2`), yielding `19/22` non-outage pass (`16/16` across the 8 deterministic/core tasks, `1/3` clean non-timeout pass on `largest-eigenval` at `833s`, and `2/3` on `configure-git-webserver`).
-- **Gate 2 & Gate 4 status:** R4-5 is an **exploratory combined stack** evaluated before same-base Gate 2 controls were run for R4-2, R4-3, and R4-4. Full-board Gate 4 promotion validation is **provisional / incomplete due to 8 provider outages**; replacing or re-running the infrastructure-invalid attempts (alongside same-base controls) is required to establish `>= 27/30` across the complete 30-trial board.
+- **Gate 2 & Gate 4 status:** R4-5 is an **exploratory combined stack** evaluated before same-base Gate 2 controls were run for R4-2, R4-3, and R4-4. Its `19/30` raw pass rate and `8` outages remain exploratory evidence, and Gate 4 promotion requires a **fresh 30-trial stack board paired with a same-base control built from the stack's base SHA, run on the same day and fleet**, rather than replacing the `8` outage trials onto the `22` older historical runs.
 
 ---
 
