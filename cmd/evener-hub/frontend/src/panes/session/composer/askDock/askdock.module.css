@@ -18,12 +18,11 @@
 }
 
 .attentionCue {
+  composes: helpCaption from "../../../../styles/help.module.css";
   display: flex;
   align-items: center;
   gap: var(--space-1);
   margin-bottom: var(--space-2);
-  font-size: var(--font-size-caption);
-  color: var(--ink-mid);
 }
 
 /* A neutral outlined Card contains each pending batch. The small attention
@@ -75,8 +74,7 @@
 }
 
 .count {
-  font-size: var(--font-size-caption);
-  color: var(--ink-mid);
+  composes: helpCaption from "../../../../styles/help.module.css";
 }
 
 /* Touch target floor (2026-07-30-mobile-session-layout-design.md, decision

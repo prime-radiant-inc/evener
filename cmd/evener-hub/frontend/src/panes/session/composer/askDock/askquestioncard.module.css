@@ -25,8 +25,7 @@
 }
 
 .why {
-  font-size: var(--font-size-caption);
-  color: var(--ink-mid);
+  composes: helpCaption from "../../../../styles/help.module.css";
   /* The why line renders through the Markdown widget, whose root sets its
    * own color and family and would otherwise shadow this host's muted
    * caption treatment with the reading-surface defaults. */
