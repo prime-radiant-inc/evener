@@ -1,12 +1,15 @@
 {
   "name": "rail-live-band-rows-phone",
-  "description": "Live rows on the touch board: names lead the band and secondary text even when selected, titles align, and the why line truncates under its title",
+  "description": "Live rows on the touch board: names lead the band and secondary text even when selected, titles align, and the why line truncates a single line below its title",
   "cssFiles": [
     "styles/global.css",
+    "styles/motion.module.css",
     "styles/text.module.css",
     "styles/tokens.css",
     "styles/help.module.css",
+    "widgets/internal/floatingSurface.module.css",
     "widgets/internal/selectableRow.module.css",
+    "widgets/hovercard/hovercard.module.css",
     "widgets/tree/tree.module.css",
     "widgets/badge/badge.module.css",
     "shell/rail/Rail.module.css",
@@ -23,6 +26,6 @@
     "declaration": "RailRow.module.css: .why { white-space: nowrap } removed",
     "verified": "2026-11-13",
     "expect": "fail",
-    "note": "Without nowrap the long why text wraps and the .why box grows past one caption line."
+    "note": "Without nowrap the long why text wraps and the .why box grows past one caption line. On 2026-11-24 the old title-only button put the reason 29.59px below the name for an 18.2px line. Inside one target without the column layout, their centers were just 0.5px apart. Both failed."
   }
 }

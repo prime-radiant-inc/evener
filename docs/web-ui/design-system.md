@@ -462,8 +462,10 @@ status bar sits on the pane's own surface, and each activity counter is a
 The visible face is indicator, title, and age/actions only. Project,
 host, branch, running jobs, subagent tally, watches, tier and age move into a shared `HoverCard` on
 the title. Hovering the title or focusing the owning tree row exposes it; on a hoverless device a
-long press on the title exposes it and a tap activates the row. Session pin stars
-do not appear on the row.
+long press on the title exposes it and a tap activates the row. On the phone drawer and tablet
+board, the name and its optional second line share that touch target. The two lines read together;
+the row does not reserve a separate button-height gap between them. Session pin stars do not
+appear on the row.
 
 **Live bands.** The Live section reads top to bottom as Needs you, Working, Idle: each
 band that has sessions is a fold in the section's `Tree`, its name in medium ink with a

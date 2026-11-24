@@ -435,6 +435,9 @@
  * the explanation to the same level as the name. */
 @media (max-width: 899px) {
   .sessionTitleButton {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
     font-weight: var(--font-weight-semibold);
     line-height: var(--line-height-ui);
   }

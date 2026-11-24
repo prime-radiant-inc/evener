@@ -7,5 +7,9 @@ export default function assert(m) {
   if (!namesLead) {
     return { pass: false, reason: `session names do not lead their group and metadata: ${JSON.stringify(m.type)}` };
   }
-  return assertLines(m);
+  if (!(m.textStep > why.size / 2 && m.textStep <= m.titleLineHeight + 1)) {
+    return { pass: false, reason: `name and reason are ${m.textStep}px apart for a ${m.titleLineHeight}px line` };
+  }
+  const lines = assertLines(m);
+  return lines.pass ? { pass: true, reason: `text lines ${m.textStep}px apart; ${lines.reason}` } : lines;
 }
