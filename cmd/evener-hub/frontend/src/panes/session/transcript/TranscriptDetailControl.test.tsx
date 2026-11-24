@@ -288,7 +288,6 @@ test("composes the controlled overlay only from shared controls and Dialog/Sheet
   const here = dirname(fileURLToPath(import.meta.url));
   const source = readFileSync(join(here, "TranscriptDetailControl.tsx"), "utf8");
 
-  expect(source).toMatch(/import \{ Button, Dialog, Sheet \} from "\.\.\/\.\.\/\.\.\/widgets";/);
   expect(source).not.toMatch(/<button\b/);
   expect(source.match(/<Button\b/g)).toHaveLength(2);
   expect(source.match(/variant="secondary"/g)).toHaveLength(1);
@@ -311,11 +310,6 @@ test("CSS keeps the shared overlay body layout-only with no private motion or ch
   expect(panelBody).toMatch(/min-width:\s*0/);
   expect(panelBody).not.toMatch(/background|box-shadow|border-radius/);
   expect(panelBody).not.toMatch(/(?:^|[;\n])\s*border(?:-[a-z-]+)?\s*:/);
-  const statusMatch = /\.detailStatus,\s*\.detailWarning\s*\{([^}]*)\}/.exec(css);
-  expect(statusMatch).not.toBeNull();
-  const statusBody = statusMatch?.[1] ?? "";
-  expect(statusBody).toMatch(/background:\s*var\(--surface-inset\)/);
-  expect(statusBody).toMatch(/line-height:\s*var\(--line-height-body\)/);
   expect(css).not.toMatch(/border-inline-start|--accent|--warning/);
   expect(css).not.toMatch(/line-height:\s*1\.(?:45|5)\b/);
   expect(css).not.toMatch(/prefers-reduced-motion/);

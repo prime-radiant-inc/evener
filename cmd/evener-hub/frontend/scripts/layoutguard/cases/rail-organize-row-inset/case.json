@@ -4,7 +4,9 @@
   "cssFiles": [
     "styles/global.css",
     "styles/tapfloor.module.css",
+    "styles/text.module.css",
     "styles/tokens.css",
+    "widgets/internal/foldHeader.module.css",
     "shell/rail/Rail.module.css",
     "widgets/disclosureheading/disclosureheading.module.css",
     "widgets/eyebrow/eyebrow.module.css",

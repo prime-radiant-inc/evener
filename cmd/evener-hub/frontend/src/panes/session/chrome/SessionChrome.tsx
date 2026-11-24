@@ -54,6 +54,7 @@ import { threadsStore, useThreadsStore } from "../../../stores/threads";
 import { Cadence, useToasts } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { requestFindInSession } from "../find/findRequest";
+import { forceStopAndRefresh } from "../forceStop";
 import { NOW_TICK_MS, useNowTick, WORK_TICK_MS } from "../liveness";
 import { navigationSummaryFor } from "../threadTitle";
 import { TranscriptDetailControl } from "../transcript/TranscriptDetailControl";
@@ -203,19 +204,7 @@ export function SessionChrome({
   // between them.
   const forceStopAction =
     sessionRef.startsWith("local:") && model.status.type !== "closed" && !recoveryOwnerRef
-      ? async () => {
-          try {
-            await threadsStore.getState().forceStop(sessionRef);
-          } catch (err) {
-            toasts.push("error", sessionActionError("Couldn't force shutdown session", err));
-            throw err;
-          }
-          try {
-            await threadsStore.getState().refreshThread(sessionRef);
-          } catch (err) {
-            toasts.push("error", sessionActionError("Session stopped; couldn't refresh its view", err));
-          }
-        }
+      ? () => forceStopAndRefresh(sessionRef, (message) => toasts.push("error", message))
       : undefined;
   const shutdownAction = async () => {
     const convergence = buildShutdownConvergence(sessionRef, {

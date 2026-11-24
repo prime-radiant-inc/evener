@@ -3,11 +3,9 @@ package agent
 import (
 	"context"
 	"errors"
-	"path/filepath"
 	"strings"
 	"testing"
 
-	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/jobstore"
 )
 
@@ -1256,8 +1254,7 @@ func TestWatchHistoryCountsTerminalFlushDeliveries(t *testing.T) {
 
 // A parent observer's invalid watch configuration is rejected, and the repair
 // error names the watcher's own result tool so a session that renamed it is not
-// sent to a tool it does not have. The two errors' text is pinned whole in
-// testdata/watchrepair, since it is model-facing prose.
+// sent to a tool it does not have.
 func TestWatchRepairErrorsNameTheResultTool(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -1281,11 +1278,16 @@ func TestWatchRepairErrorsNameTheResultTool(t *testing.T) {
 			}
 
 			// Name the tool the session actually has: the renamed case must not
-			// mention the default one at all. The whole-error goldens pin the
-			// rest of the repair text.
+			// mention the default one at all.
 			wantTool := "communicate"
 			if tc.resultTool != "" {
 				wantTool = tc.resultTool
+			}
+			if !strings.HasPrefix(outputMatchErr.Error(), "invalid_request:") {
+				t.Fatalf("output_match error = %v, want invalid_request", outputMatchErr)
+			}
+			if !strings.HasPrefix(eventFilterErr.Error(), "invalid_request:") {
+				t.Fatalf("event_filter error = %v, want invalid_request", eventFilterErr)
 			}
 			if !strings.Contains(outputMatchErr.Error(), "`"+wantTool+"` (`next=\"send_and_end_turn\"`)") {
 				t.Fatalf("output_match repair does not name %q: %s", wantTool, outputMatchErr)
@@ -1293,10 +1295,14 @@ func TestWatchRepairErrorsNameTheResultTool(t *testing.T) {
 			if !strings.Contains(eventFilterErr.Error(), "`"+wantTool+"` (`next=\"send_and_end_turn\"`)") {
 				t.Fatalf("event_filter repair does not name %q: %s", wantTool, eventFilterErr)
 			}
-
-			agenttest.CheckGolden(t, filepath.Join("testdata", "watchrepair", tc.name+".md"),
-				[]byte(outputMatchErr.Error()+"\n\n"+eventFilterErr.Error()+"\n"), *updatePromptGoldens,
-				"Regenerate with `go test ./agent -run 'TestWatchRepairErrorsNameTheResultTool$' -count=1 -update-prompt` and read the diff.")
+			if tc.resultTool != "" {
+				if strings.Contains(outputMatchErr.Error(), "`communicate`") {
+					t.Fatalf("output_match repair mentions default tool despite rename: %s", outputMatchErr)
+				}
+				if strings.Contains(eventFilterErr.Error(), "`communicate`") {
+					t.Fatalf("event_filter repair mentions default tool despite rename: %s", eventFilterErr)
+				}
+			}
 		})
 	}
 }

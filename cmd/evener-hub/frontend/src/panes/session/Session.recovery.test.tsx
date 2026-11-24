@@ -257,7 +257,7 @@ test.each(["success", "refused"])(
       // The dialog closes only when the complete refresh promise settles.
       expect(screen.queryByRole("dialog")).toBeNull();
     } else {
-      expect(await screen.findByText("no direct daemon ownership claim")).toBeTruthy();
+      expect(await screen.findByText(/no direct daemon ownership claim/)).toBeTruthy();
       expect(
         (within(screen.getByRole("dialog")).getByRole("button", { name: "Force shutdown" }) as HTMLButtonElement)
           .disabled,

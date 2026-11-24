@@ -20,12 +20,12 @@ const CLASS = {
   pickerList: requireClass(styles.pickerList, "railDialog.module.css", "pickerList"),
 };
 
-function compareSections(a: PinSectionSummary, b: PinSectionSummary): number {
+export function comparePinSections(a: { id: string; name: string }, b: { id: string; name: string }): number {
   return a.name.localeCompare(b.name, undefined, { sensitivity: "base" }) || a.id.localeCompare(b.id);
 }
 
 function sortedPinSectionSummaries(): PinSectionSummary[] {
-  return selectPinSectionSummaries(navigationStore.getState()).sort(compareSections);
+  return selectPinSectionSummaries(navigationStore.getState()).sort(comparePinSections);
 }
 
 export function PinSectionPicker({ session, onAssign, onClose }: PinSectionPickerProps) {

@@ -1,9 +1,5 @@
 .eyebrow {
+  composes: eyebrowType from "../../styles/text.module.css";
   margin: 0;
   color: var(--ink-mid);
-  font-family: var(--font-sans);
-  font-size: var(--font-size-caption);
-  font-weight: var(--font-weight-medium);
-  text-transform: uppercase;
-  letter-spacing: var(--tracking-eyebrow);
 }

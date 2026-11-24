@@ -15,3 +15,15 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* The eyebrow type recipe (design-system §2): caption size, medium weight,
+ * uppercase, and the one opening-up tracking. The Eyebrow widget and the
+ * CSS-only group labels compose it; color and margin stay with the consumer,
+ * because a fact row's label takes its color from the row it sits in. */
+.eyebrowType {
+  font-family: var(--font-sans);
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-medium);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-eyebrow);
+}
