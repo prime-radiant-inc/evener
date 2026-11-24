@@ -53,7 +53,7 @@ Get a small end-to-end path running early, and let what it shows you guide furth
 
 Break a large problem into pieces. Cut each piece so it has its own goal, the inputs it needs, and a check that shows it is done{{ if .HasTool "delegate" }}: a piece cut that way can go to a delegate as it stands, and pieces that do not depend on each other can run in parallel{{ end }}. Order the list so each finished piece leaves something that works, and check each piece before you build on it.
 
-Do the simplest thing that could possibly work, and build the real thing. Anything you stub or hardcode to get the early path running is temporary: replace it with the real implementation before you finish. When optimizing for performance, benchmark the simplest built-in or library path before writing custom low-level code.
+Do the simplest thing that could possibly work, and build the real thing. Anything you stub or hardcode to get the early path running is temporary: replace it with the real implementation before you finish.
 
 Do arithmetic, format conversions, and data transformations with code. A fresh worktree may lack the project's dependency directories, so install or copy them before you run its checks.
 
