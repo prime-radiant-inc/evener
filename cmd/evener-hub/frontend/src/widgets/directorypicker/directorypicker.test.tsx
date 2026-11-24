@@ -5,6 +5,7 @@ import { createPortal } from "react-dom";
 import { expect, test, vi } from "vitest";
 import { readModuleCss, topRuleBlock } from "../../styles/cssBlock";
 import { DirectoryIcon as FromBarrel } from "..";
+import rawNoticeStyles from "../inlinenotice/inlinenotice.module.css";
 import { appendPopout } from "../internal/popoutTestUtils";
 import { requireClass } from "../internal/requireClass";
 import rawStyles from "./directorypicker.module.css";
@@ -13,6 +14,11 @@ import { DirectoryIcon, DirectoryPicker, type DirectoryPickerProps } from "./ind
 const pickerClass = {
   panel: requireClass(rawStyles.panel, "directorypicker.module.css", "panel"),
   body: requireClass(rawStyles.body, "directorypicker.module.css", "body"),
+};
+
+const noticeClass = {
+  notice: requireClass(rawNoticeStyles.notice, "inlinenotice.module.css", "notice"),
+  danger: requireClass(rawNoticeStyles.danger, "inlinenotice.module.css", "danger"),
 };
 
 function setup(overrides: Partial<DirectoryPickerProps> = {}, onCommit: () => void = () => {}) {
@@ -116,7 +122,10 @@ test("an invalid typed path cannot accidentally select the previously browsed fo
   const input = screen.getByRole("textbox", { name: "Path" });
   await user.clear(input);
   await user.type(input, "/missing{Enter}");
-  expect((await screen.findByRole("alert")).textContent).toBe(validationDetail);
+  const alert = await screen.findByRole("alert");
+  expect(alert.textContent).toBe(validationDetail);
+  expect(alert.classList.contains(noticeClass.notice)).toBe(true);
+  expect(alert.classList.contains(noticeClass.danger)).toBe(true);
   expect((screen.getByRole("button", { name: "Use this folder" }) as HTMLButtonElement).disabled).toBe(true);
   expect(onPick).not.toHaveBeenCalled();
 });

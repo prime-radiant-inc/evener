@@ -3,6 +3,7 @@ import { type FormEvent, useEffect, useId, useLayoutEffect, useRef, useState } f
 import { createPortal } from "react-dom";
 import { Button } from "../button";
 import { Dialog } from "../dialog";
+import { InlineNotice } from "../inlinenotice";
 import { ownerDocumentOf } from "../internal/documentRealm";
 import { requireClass } from "../internal/requireClass";
 import { usePortalDocument } from "../internal/usePortalDocument";
@@ -371,11 +372,7 @@ export function DirectoryPicker({
               </div>
             </form>
           )}
-          {error && (
-            <p className={CLASS.status} role="alert">
-              {error}
-            </p>
-          )}
+          {error && <InlineNotice tone="danger">{error}</InlineNotice>}
           <section
             className={CLASS.folders}
             aria-label="Folders"
