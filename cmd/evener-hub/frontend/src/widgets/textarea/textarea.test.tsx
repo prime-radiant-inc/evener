@@ -115,10 +115,13 @@ test("without autoGrow, no inline height style is ever applied - sizing stays ro
   expect(textarea.style.height).toBe("");
 });
 
-test("declares a :focus-visible rule in its CSS module, using only tokens", () => {
-  const here = dirname(fileURLToPath(import.meta.url));
-  const css = readFileSync(join(here, "textarea.module.css"), "utf8");
-  expect(css).toContain(":focus-visible");
+// The focus ring, the sunken-field box and the edge-strong hover/focus-within
+// border live once in widgets/internal/control.module.css (pinned by
+// control.contract.test.ts); Textarea composes that recipe and keeps its own
+// prose metrics and its seamless opt-out.
+test("composes the shared control field for its box, hover edge, and focus ring", () => {
+  const rule = /\.textarea\s*\{([^}]*)\}/.exec(moduleCss())?.[1] ?? "";
+  expect(rule).toContain('composes: controlField from "../internal/control.module.css"');
 });
 
 // --- seamless: opt-in only, and only ADDS a class ------------------------
@@ -199,20 +202,6 @@ test("the seamless modifier removes the field's own box and its focus ring", () 
   expect(rule).toContain("resize: none");
   // The enclosing card owns the focus affordance instead (:focus-within).
   expect(css).toMatch(/\.seamless:focus-visible\s*\{\s*outline: none;\s*\}/);
-});
-
-// Beautiful UI "sunken field" treatment - see input.test.tsx's matching
-// assertion and docs/superpowers/specs/2026-08-13-webui-beautiful-ui-
-// retheme-design.md §6. Base variant only; seamless deliberately opts out
-// (see above).
-test("the base variant declares the sunken-field background/shadow and an edge-strong hover/focus-within border", () => {
-  const css = moduleCss();
-  const rule = /\.textarea\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
-  expect(rule).toContain("background: var(--field)");
-  expect(rule).toContain("box-shadow: var(--shadow-inset-field)");
-  expect(css).toMatch(
-    /\.textarea:hover:not\(:disabled\),\s*\n\.textarea:focus-within\s*\{[^}]*border-color: var\(--edge-strong\)/,
-  );
 });
 
 // --- autoGrow: scrollHeight-based, not newline-counting -------------------

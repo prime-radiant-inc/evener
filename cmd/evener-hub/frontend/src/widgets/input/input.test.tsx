@@ -192,23 +192,13 @@ test("the roomy modifier carries the palette's padding and control-floored body 
   expect(rule).toContain("font-size: max(var(--font-size-control), var(--font-size-body))");
 });
 
-test("declares a :focus-visible rule in its CSS module, using only tokens", () => {
-  const here = dirname(fileURLToPath(import.meta.url));
-  const css = readFileSync(join(here, "input.module.css"), "utf8");
-  expect(css).toContain(":focus-visible");
-});
-
-// Beautiful UI "sunken field" treatment: the field sinks into --field via
-// --shadow-inset-field, and its resting hairline (--edge) strengthens on
-// hover/focus-within - see docs/superpowers/specs/2026-08-13-webui-
-// beautiful-ui-retheme-design.md §6.
-test("declares the sunken-field background/shadow and an edge-strong hover/focus-within border", () => {
+// The sunken-field box, the edge-strong hover/focus-within border and the
+// focus ring live once in widgets/internal/control.module.css (pinned by
+// control.contract.test.ts); Input composes that recipe and keeps only its
+// own metrics.
+test("composes the shared control field for its box, hover edge, and focus ring", () => {
   const here = dirname(fileURLToPath(import.meta.url));
   const css = readFileSync(join(here, "input.module.css"), "utf8");
   const rule = /\.input\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
-  expect(rule).toContain("background: var(--field)");
-  expect(rule).toContain("box-shadow: var(--shadow-inset-field)");
-  expect(css).toMatch(
-    /\.input:hover:not\(:disabled\),\s*\n\.input:focus-within\s*\{[^}]*border-color: var\(--edge-strong\)/,
-  );
+  expect(rule).toContain('composes: controlField from "../internal/control.module.css"');
 });

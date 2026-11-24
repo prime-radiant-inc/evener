@@ -12,6 +12,7 @@
     "panes/session/chrome/statusrow.module.css",
     "panes/session/chrome/reasoningeffortcontrol.module.css",
     "panes/session/chrome/modelswitch.module.css",
+    "widgets/internal/control.module.css",
     "widgets/select/select.module.css",
     "widgets/promptcard/promptcard.module.css",
     "widgets/button/button.module.css",

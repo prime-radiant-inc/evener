@@ -7,12 +7,8 @@
  * no inline height at all. */
 .textarea {
   --textarea-min-lines: 2;
+  composes: controlField from "../internal/control.module.css";
   padding: var(--space-2) var(--space-3);
-  border-radius: var(--radius-control);
-  border: 1px solid var(--edge);
-  background: var(--field);
-  box-shadow: var(--shadow-inset-field);
-  color: var(--ink-hi);
   font-family: var(--font-sans);
   /* Prose input reads at the body size on desktop (the control step is the
    * 13px ui size there), and never under the phone's 16px control floor:
@@ -24,29 +20,15 @@
    * carry this variant's own vertical padding on top of the text lines. */
   min-height: calc(var(--textarea-min-lines) * var(--line-height-body) * 1em + 2 * var(--space-2));
   resize: vertical;
-  transition:
-    background-color var(--motion-duration-hover) var(--motion-easing-standard),
-    border-color var(--motion-duration-hover) var(--motion-easing-standard),
-    box-shadow var(--motion-duration-hover) var(--motion-easing-standard);
 }
 
 .textarea::placeholder {
   color: var(--ink-low);
 }
 
-.textarea:hover:not(:disabled),
-.textarea:focus-within {
-  border-color: var(--edge-strong);
-}
-
 .textarea:disabled {
   cursor: not-allowed;
   opacity: 0.5;
-}
-
-.textarea:focus-visible {
-  outline: var(--focus-ring);
-  outline-offset: 2px;
 }
 
 /* Fill: the field claims its host's width and may shrink below its native

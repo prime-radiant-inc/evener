@@ -5,6 +5,7 @@
     "styles/global.css",
     "styles/tokens.css",
     "styles/surface.module.css",
+    "widgets/internal/control.module.css",
     "widgets/formrow/formrow.module.css",
     "widgets/input/input.module.css",
     "widgets/button/button.module.css",

@@ -1,0 +1,28 @@
+/* The box every form control draws: a hairline edge over the sunken field,
+ * strengthening on hover and focus, with the standard focus ring. Input,
+ * Select, Textarea, the picker trigger and PathField's browse field all draw
+ * it, so it is declared once here and each composes `.controlField`, keeping
+ * its own metrics (height, padding, font-size, resize) and its own disabled
+ * treatment. The type face stays with the composing widget: the picker
+ * trigger is a button and PathField reads mono. Tokens only. */
+.controlField {
+  border-radius: var(--radius-control);
+  border: 1px solid var(--edge);
+  background: var(--field);
+  box-shadow: var(--shadow-inset-field);
+  color: var(--ink-hi);
+  transition:
+    background-color var(--motion-duration-hover) var(--motion-easing-standard),
+    border-color var(--motion-duration-hover) var(--motion-easing-standard),
+    box-shadow var(--motion-duration-hover) var(--motion-easing-standard);
+}
+
+.controlField:hover:not(:disabled),
+.controlField:focus-within {
+  border-color: var(--edge-strong);
+}
+
+.controlField:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: 2px;
+}
