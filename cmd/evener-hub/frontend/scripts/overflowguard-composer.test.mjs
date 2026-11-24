@@ -5,6 +5,9 @@ import { assertComposerPlacement } from "./overflowguard/composer.mjs";
 function measurement(width, ids, { stop = true, steer = false, statusBottom = 40, triggerTop = 20 } = {}) {
   return {
     currentWork: {
+      found: false,
+      composerCardFound: true,
+      composerFitsPane: true,
       verbCluster: { containerWidth: width, controls: ids.length - 1, top: 20, statusRowBottom: statusBottom },
       controls: ids.map((testId) => ({ testId, present: true })),
       controlGeometry: Object.fromEntries(
@@ -16,7 +19,6 @@ function measurement(width, ids, { stop = true, steer = false, statusBottom = 40
       controlsFound: true,
       controlsContained: true,
       controlsDoNotOverlap: true,
-      sharedPaneWithoutOverflow: true,
     },
     trigger: { left: 0, right: 44, top: triggerTop, bottom: triggerTop + 44 },
     scrollers: [],

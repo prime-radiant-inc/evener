@@ -317,3 +317,9 @@
   flex: 0 0 var(--tap-min);
   min-width: var(--tap-min);
 }
+
+/* The leading row grows when a draft expands the card. Keep the menu beside
+ * the verbs, with the spare space on the Attach side. */
+.leading > .menuSlot {
+  margin-inline-start: auto;
+}

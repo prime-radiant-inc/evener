@@ -642,7 +642,7 @@ if (settingsMode) {
   });
   createRoot(rootEl).render(
     <ClientProvider client={fake}>
-      <div id="oh-pane" style={{ width, height }}>
+      <div id="oh-pane" style={{ width, height, position: "relative" }}>
         <Session params={{ ref: activeRef }} paneId="oh" focused />
       </div>
     </ClientProvider>,
@@ -1899,13 +1899,10 @@ async function measure() {
           containerWidth: composerContainerWidth,
         };
       })(),
-      sharedPaneWithoutOverflow:
-        !!currentWork &&
-        !!composerCard &&
-        currentWork.scrollWidth <= currentWork.clientWidth + 1 &&
-        composerCard.scrollWidth <= composerCard.clientWidth + 1 &&
-        containedInPane(currentWorkBox) &&
-        containedInPane(composerCardBox),
+      composerFitsPane:
+        !!composerCard && composerCard.scrollWidth <= composerCard.clientWidth + 1 && containedInPane(composerCardBox),
+      currentWorkFitsPane:
+        !!currentWork && currentWork.scrollWidth <= currentWork.clientWidth + 1 && containedInPane(currentWorkBox),
       orderedAboveComposer: !!currentWorkBox && !!composerCardBox && currentWorkBox.bottom <= composerCardBox.top + 1,
     },
   };
