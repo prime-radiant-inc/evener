@@ -7,12 +7,18 @@ import { readModuleCss, topRuleBlock } from "../../styles/cssBlock";
 import { DirectoryIcon as FromBarrel } from "..";
 import { appendPopout } from "../internal/popoutTestUtils";
 import { requireClass } from "../internal/requireClass";
+import rawListRowStyles from "../listrow/listrow.module.css";
 import rawStyles from "./directorypicker.module.css";
 import { DirectoryIcon, DirectoryPicker, type DirectoryPickerProps } from "./index";
 
 const pickerClass = {
   panel: requireClass(rawStyles.panel, "directorypicker.module.css", "panel"),
   body: requireClass(rawStyles.body, "directorypicker.module.css", "body"),
+};
+
+const listRowClass = {
+  plain: requireClass(rawListRowStyles.plain, "listrow.module.css", "plain"),
+  interactive: requireClass(rawListRowStyles.interactive, "listrow.module.css", "interactive"),
 };
 
 function setup(overrides: Partial<DirectoryPickerProps> = {}, onCommit: () => void = () => {}) {
@@ -53,6 +59,21 @@ function setupPendingInitialValidation() {
 
 test("its folder glyph is exported from the widget barrel", () => {
   expect(FromBarrel).toBe(DirectoryIcon);
+});
+
+// Both row types are the shared plain ListRow: a framed surface would read as
+// a collection, and the picker's rows are choices inside the picker's own
+// surface. The browse row stays ONE <button>: the drill glyph is row content,
+// not a trailing control the row would split its target around.
+test("renders its folder and recent rows through the shared plain ListRow", async () => {
+  setup();
+  const browseRow = await screen.findByRole("button", { name: "Open /work/app" });
+  const recentRow = screen.getByRole("button", { name: "Open recent /recent/app" });
+  for (const row of [browseRow, recentRow]) {
+    expect(row.classList.contains(listRowClass.plain)).toBe(true);
+    expect(row.classList.contains(listRowClass.interactive)).toBe(true);
+  }
+  expect(browseRow.querySelector("button")).toBeNull();
 });
 
 // The picker keeps its own scrollport: its body class lands on the shared

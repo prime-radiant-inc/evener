@@ -6,6 +6,7 @@ import { Dialog } from "../dialog";
 import { ownerDocumentOf } from "../internal/documentRealm";
 import { requireClass } from "../internal/requireClass";
 import { usePortalDocument } from "../internal/usePortalDocument";
+import { ListRow } from "../listrow";
 import { ToolIcon } from "../toolicon";
 import styles from "./directorypicker.module.css";
 
@@ -32,7 +33,7 @@ const CLASS = {
   input: requireClass(styles.input, "directorypicker.module.css", "input"),
   listHeading: requireClass(styles.listHeading, "directorypicker.module.css", "listHeading"),
   folders: requireClass(styles.folders, "directorypicker.module.css", "folders"),
-  row: requireClass(styles.row, "directorypicker.module.css", "row"),
+  rowGlyph: requireClass(styles.rowGlyph, "directorypicker.module.css", "rowGlyph"),
   path: requireClass(styles.path, "directorypicker.module.css", "path"),
   footer: requireClass(styles.footer, "directorypicker.module.css", "footer"),
   destination: requireClass(styles.destination, "directorypicker.module.css", "destination"),
@@ -232,21 +233,19 @@ export function DirectoryPicker({
         <aside className={CLASS.recents} aria-label={listRecents ? "Recent directories" : "Locations"}>
           {listRecents && <h3>Recent</h3>}
           {recents.map((path) => (
-            <button
-              className={CLASS.row}
-              type="button"
+            <ListRow
               key={path}
+              variant="plain"
+              label={basename(path) || "/"}
+              meta={parentOf(path)}
               // The sidebar truncates this text, so the full path rides on
               // hover for sighted users; aria-label already carries it for
               // assistive tech.
               title={path}
               disabled={busy}
               aria-label={`Open recent ${path}`}
-              onClick={() => void browse(path)}
-            >
-              <strong>{basename(path) || "/"}</strong>
-              <span className={CLASS.path}>{parentOf(path)}</span>
-            </button>
+              onSelect={() => void browse(path)}
+            />
           ))}
           {listRecents && recents.length === 0 && <p className={CLASS.status}>No recent directories.</p>}
           <h3>Locations</h3>
@@ -397,18 +396,23 @@ export function DirectoryPicker({
               </p>
             ) : (
               entries.map((path) => (
-                <button
-                  type="button"
-                  className={CLASS.row}
-                  disabled={busy}
-                  aria-label={`Open ${path}`}
+                <ListRow
                   key={path}
-                  onClick={() => void browse(path)}
-                >
-                  <DirectoryIcon />
-                  <span>{basename(path)}</span>
-                  <span aria-hidden="true">›</span>
-                </button>
+                  variant="plain"
+                  leading={
+                    <span className={CLASS.rowGlyph}>
+                      <DirectoryIcon />
+                    </span>
+                  }
+                  label={basename(path)}
+                  // The drill glyph is row content: ListRow's trailing slot is
+                  // for a real control, and a decorative mark there would sit
+                  // outside the row's single click target.
+                  value={<span aria-hidden="true">›</span>}
+                  aria-label={`Open ${path}`}
+                  disabled={busy}
+                  onSelect={() => void browse(path)}
+                />
               ))
             )}
           </section>

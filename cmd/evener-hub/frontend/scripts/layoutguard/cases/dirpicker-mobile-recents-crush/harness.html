@@ -48,23 +48,24 @@
         <aside class="recents" id="recents" aria-label="Recent directories">
           <h3>Recent</h3>
           <!-- 15 recents rows, seeded from the reported phone screenshot's
-               list, each mirroring the component's row: strong basename plus
-               a truncated .path parent span. -->
-          <button class="row" type="button"><strong>evener</strong><span class="path">/home/jesse/git/prime-radiant-inc</span></button>
-          <button class="row" type="button"><strong>sigma-fp</strong><span class="path">/home/jesse/git</span></button>
-          <button class="row" type="button"><strong>chao</strong><span class="path">/home/jesse/git/prime-radiant-inc</span></button>
-          <button class="row" type="button"><strong>cat-test</strong><span class="path">/home/jesse</span></button>
-          <button class="row" type="button"><strong>frop</strong><span class="path">/home/jesse/git/prime-radiant-inc</span></button>
-          <button class="row" type="button"><strong>jesse</strong><span class="path">/home</span></button>
-          <button class="row" type="button"><strong>tmp</strong><span class="path">/</span></button>
-          <button class="row" type="button"><strong>alltheagents.org</strong><span class="path">/home/jesse/git/prime-radiant-inc</span></button>
-          <button class="row" type="button"><strong>easy-writing</strong><span class="path">/home/jesse/git/prime-radiant-inc</span></button>
-          <button class="row" type="button"><strong>msgvault</strong><span class="path">/home/jesse/git</span></button>
-          <button class="row" type="button"><strong>obsidian</strong><span class="path">/fast</span></button>
-          <button class="row" type="button"><strong>cdp-probe</strong><span class="path">/home/jesse/git</span></button>
-          <button class="row" type="button"><strong>browser-cache</strong><span class="path">/home/jesse/git</span></button>
-          <button class="row" type="button"><strong>par-notes</strong><span class="path">/home/jesse/git</span></button>
-          <button class="row" type="button"><strong>quorum</strong><span class="path">/home/jesse/git/prime-radiant-inc</span></button>
+               list, each mirroring the component's row: ListRow's plain
+               interactive row, with the basename as the label and the parent
+               directory as the truncated meta line. -->
+          <button class="row plain interactive" type="button"><span class="heading"><span class="label">evener</span></span><span class="meta">/home/jesse/git/prime-radiant-inc</span></button>
+          <button class="row plain interactive" type="button"><span class="heading"><span class="label">sigma-fp</span></span><span class="meta">/home/jesse/git</span></button>
+          <button class="row plain interactive" type="button"><span class="heading"><span class="label">chao</span></span><span class="meta">/home/jesse/git/prime-radiant-inc</span></button>
+          <button class="row plain interactive" type="button"><span class="heading"><span class="label">cat-test</span></span><span class="meta">/home/jesse</span></button>
+          <button class="row plain interactive" type="button"><span class="heading"><span class="label">frop</span></span><span class="meta">/home/jesse/git/prime-radiant-inc</span></button>
+          <button class="row plain interactive" type="button"><span class="heading"><span class="label">jesse</span></span><span class="meta">/home</span></button>
+          <button class="row plain interactive" type="button"><span class="heading"><span class="label">tmp</span></span><span class="meta">/</span></button>
+          <button class="row plain interactive" type="button"><span class="heading"><span class="label">alltheagents.org</span></span><span class="meta">/home/jesse/git/prime-radiant-inc</span></button>
+          <button class="row plain interactive" type="button"><span class="heading"><span class="label">easy-writing</span></span><span class="meta">/home/jesse/git/prime-radiant-inc</span></button>
+          <button class="row plain interactive" type="button"><span class="heading"><span class="label">msgvault</span></span><span class="meta">/home/jesse/git</span></button>
+          <button class="row plain interactive" type="button"><span class="heading"><span class="label">obsidian</span></span><span class="meta">/fast</span></button>
+          <button class="row plain interactive" type="button"><span class="heading"><span class="label">cdp-probe</span></span><span class="meta">/home/jesse/git</span></button>
+          <button class="row plain interactive" type="button"><span class="heading"><span class="label">browser-cache</span></span><span class="meta">/home/jesse/git</span></button>
+          <button class="row plain interactive" type="button"><span class="heading"><span class="label">par-notes</span></span><span class="meta">/home/jesse/git</span></button>
+          <button class="row plain interactive" type="button"><span class="heading"><span class="label">quorum</span></span><span class="meta">/home/jesse/git/prime-radiant-inc</span></button>
           <h3>Locations</h3>
           <button type="button" class="button quiet md">Home</button>
         </aside>
@@ -86,11 +87,11 @@
             <button type="button" id="new-folder" class="button quiet sm">New folder</button>
           </div>
           <section class="folders" aria-label="Folders" id="folders">
-            <button class="row" type="button"><span>.config</span><span aria-hidden="true">›</span></button>
-            <button class="row" type="button"><span>Documents</span><span aria-hidden="true">›</span></button>
-            <button class="row" type="button"><span>Downloads</span><span aria-hidden="true">›</span></button>
-            <button class="row" type="button"><span>git</span><span aria-hidden="true">›</span></button>
-            <button class="row" type="button"><span>.local</span><span aria-hidden="true">›</span></button>
+            <button class="row plain withLeading interactive" type="button"><span class="leading"><span class="rowGlyph">▸</span></span><span class="heading"><span class="label">.config</span><span class="value" aria-hidden="true">›</span></span></button>
+            <button class="row plain withLeading interactive" type="button"><span class="leading"><span class="rowGlyph">▸</span></span><span class="heading"><span class="label">Documents</span><span class="value" aria-hidden="true">›</span></span></button>
+            <button class="row plain withLeading interactive" type="button"><span class="leading"><span class="rowGlyph">▸</span></span><span class="heading"><span class="label">Downloads</span><span class="value" aria-hidden="true">›</span></span></button>
+            <button class="row plain withLeading interactive" type="button"><span class="leading"><span class="rowGlyph">▸</span></span><span class="heading"><span class="label">git</span><span class="value" aria-hidden="true">›</span></span></button>
+            <button class="row plain withLeading interactive" type="button"><span class="leading"><span class="rowGlyph">▸</span></span><span class="heading"><span class="label">.local</span><span class="value" aria-hidden="true">›</span></span></button>
           </section>
         </div>
       </div>
