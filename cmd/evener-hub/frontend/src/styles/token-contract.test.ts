@@ -421,7 +421,7 @@ const SEMANTIC_USE_ALLOWLIST = [
   "statusdot", // state color
   "meter", // danger/attention fill tone
   "toast", // tone prop
-  "formrow", // error-state left border + message text (wave 7)
+  "formrow", // error-state left border + message text, the text in --danger-ink
   "collectioneditor", // inline add-validation error text (wave 7)
   "failureglyph", // the ✗ that marks a failure - the hue IS the content
   "banner", // overlay status strip: tone prop (attention/danger) — a connection banner's whole purpose is to carry a warning hue
@@ -990,6 +990,12 @@ test("the four -ink companions clear 4.5:1 on their theme's lightest text ground
       }
     }
   }
+});
+
+test("FormRow error text uses the -ink companion, not the bare hue", () => {
+  const css = STYLESHEETS["widgets/formrow/formrow.module.css"];
+  if (!css) throw new Error("Missing formrow stylesheet");
+  expect(declarationInRule(css, "errorText", "color")).toBe("var(--danger-ink)");
 });
 
 // --ink-low is documented as placeholder/disabled/timestamp ink, but 96
