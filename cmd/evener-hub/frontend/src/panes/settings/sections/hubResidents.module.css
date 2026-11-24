@@ -1,7 +1,5 @@
 .root {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-4);
+  composes: stack4 from "../../../styles/surface.module.css";
 }
 
 .meta {
@@ -36,9 +34,7 @@
 }
 
 .actions {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
+  composes: stack1 from "../../../styles/surface.module.css";
   align-items: flex-start;
 }
 

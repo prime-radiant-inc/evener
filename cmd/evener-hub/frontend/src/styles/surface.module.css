@@ -26,13 +26,50 @@
   border-top: 1px solid var(--edge);
 }
 
-/* A plain vertical stack with one group step between its children: the
- * layout a form, a settings section and a dialog body all open with. It is
- * not a surface - consumers compose it for the arrangement alone. */
+/* Plain vertical stacks, named by gap step: the layout a form, a settings
+ * section and a dialog body all open with, and the inner stack a list of
+ * rows uses. They are not surfaces - consumers compose one for the
+ * arrangement alone and add only their own layout. */
+.stack1 {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.stack2 {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
 .stack3 {
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
+}
+
+.stack4 {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.stack5 {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+
+/* The reading measure a settings section keeps its children inside. */
+.sectionMeasure {
+  max-width: 720px;
+}
+
+/* A list that is also a stack: no marker, no inset. */
+.listReset {
+  margin: 0;
+  padding: 0;
+  list-style: none;
 }
 
 /* --- the reading measure ---------------------------------------------

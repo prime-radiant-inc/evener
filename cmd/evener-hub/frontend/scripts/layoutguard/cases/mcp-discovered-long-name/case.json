@@ -13,6 +13,7 @@
     "styles/text.module.css",
     "styles/tokens.css",
     "styles/help.module.css",
+    "styles/surface.module.css",
     "widgets/listrow/listrow.module.css",
     "widgets/chip/chip.module.css",
     "panes/settings/sections/mcp.module.css"

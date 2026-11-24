@@ -1,7 +1,5 @@
 .page {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-5);
+  composes: stack5 from "../../../styles/surface.module.css";
 }
 
 .help {
@@ -9,9 +7,7 @@
 }
 
 .section {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
+  composes: stack2 from "../../../styles/surface.module.css";
 }
 
 .sectionHelp {
@@ -19,12 +15,9 @@
 }
 
 .list {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-  margin: 0;
-  padding: 0;
-  list-style: none;
+  composes: stack1 from "../../../styles/surface.module.css";
+  /* biome-ignore lint/suspicious/noDuplicateProperties: css-modules composes takes one declaration per composed class, each with its own `from` */
+  composes: listReset from "../../../styles/surface.module.css";
 }
 
 /* A discovered server's name wraps in full inside ListRow's one-line label:

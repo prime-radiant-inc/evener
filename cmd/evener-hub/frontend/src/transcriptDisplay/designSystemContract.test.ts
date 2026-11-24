@@ -175,9 +175,7 @@ test("keeps feature rules from taking shared Card and overlay chrome", () => {
   const cardPath = "src/panes/settings/sections/transcriptDisplayCard.module.css";
   const contentRule = expectExactlyOneRule(cardPath, ".content");
   expectDeclarations(contentRule, [
-    ["display", "flex"],
-    ["flex-direction", "column"],
-    ["gap", "var(--space-4)"],
+    ["composes", 'stack4 from "../../../styles/surface.module.css"'],
     ["min-width", "0"],
   ]);
 
