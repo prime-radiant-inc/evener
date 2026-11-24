@@ -64,6 +64,7 @@
 }
 
 .option {
+  composes: tapFloor from "../../styles/tapfloor.module.css";
   position: relative;
   display: flex;
   align-items: center;
@@ -176,12 +177,6 @@
   font-size: min(var(--font-size-caption), calc(var(--font-size-caption) / var(--font-scale)));
   font-variant-numeric: tabular-nums;
   font-weight: var(--font-weight-regular);
-}
-
-@media (max-width: 899px), (any-pointer: coarse) {
-  .option {
-    min-block-size: var(--tap-min);
-  }
 }
 
 @media (prefers-reduced-motion: reduce) {

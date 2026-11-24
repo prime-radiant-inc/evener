@@ -5,8 +5,6 @@ import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createRef } from "react";
 import { expect, test, vi } from "vitest";
-import { MOBILE_QUERY } from "../../shell/useIsMobile";
-import { escapeRegExp } from "../../styles/cssBlock";
 import { SHOW_DELAY_MS } from "../hovercard/useFloatingLabel";
 import { IconButton, type IconButtonProps } from "./index";
 
@@ -260,18 +258,18 @@ test("without a badge the button carries no count", () => {
 // decision 4): the square icon-only sizes (the top bar's Back/drawer, the
 // composer's attach) reach 44px in both dimensions on the phone. min-*, not
 // width/height, so the desktop squares above stay the desktop rule.
-test("mobile: all icon-button sizes meet the 44px tap floor in both dimensions", () => {
-  const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "iconbutton.module.css"), "utf8");
-  const mobile = css.match(
-    new RegExp(`@media ${escapeRegExp(MOBILE_QUERY)}, \\(any-pointer: coarse\\) \\{([\\s\\S]*?)\\n\\}`),
-  );
-  expect(mobile, "iconbutton.module.css must have a mobile media block").not.toBeNull();
+test("mobile: all icon-button sizes compose the shared 44px tap floor in both dimensions", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const css = readFileSync(join(here, "iconbutton.module.css"), "utf8");
   for (const size of ["squareXs", "squareSm", "squareMd"]) {
-    const rule = mobile![1]!.match(new RegExp(`\\.${size} \\{([^}]*)\\}`));
-    expect(rule, `mobile media block must override .${size}`).not.toBeNull();
-    expect(rule![1]).toContain("min-width: var(--tap-min)");
-    expect(rule![1]).toContain("min-height: var(--tap-min)");
+    const rule = new RegExp(`\\.${size}\\s*\\{([^}]*)\\}`).exec(css);
+    expect(rule, `iconbutton.module.css must compose the floor in .${size}`).not.toBeNull();
+    expect(rule![1]).toContain('composes: tapFloorSquare from "../../styles/tapfloor.module.css"');
   }
+  const floor = readFileSync(join(here, "../../styles/tapfloor.module.css"), "utf8");
+  expect(floor).toMatch(
+    /@media \(max-width: 899px\), \(any-pointer: coarse\)\s*\{[\s\S]*?\.tapFloorSquare\s*\{[^}]*min-width:\s*var\(--tap-min\)[^}]*min-height:\s*var\(--tap-min\)/,
+  );
 });
 
 test("an aria-disabled reset icon button does not reset its form", async () => {

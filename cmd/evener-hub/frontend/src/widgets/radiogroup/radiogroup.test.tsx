@@ -304,3 +304,15 @@ test("an unselected option hovers with the --hover-1 wash", () => {
     /\.option:not\(\[aria-checked="true"\]\):hover:not\(:disabled\)\s*\{[^}]*background: var\(--hover-1\)/,
   );
 });
+
+test("an option composes the shared phone tap floor", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const css = readFileSync(join(here, "radiogroup.module.css"), "utf8");
+  const option = /\.option\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
+  expect(option).toContain('composes: tapFloor from "../../styles/tapfloor.module.css"');
+
+  const floor = readFileSync(join(here, "../../styles/tapfloor.module.css"), "utf8");
+  expect(floor).toMatch(
+    /@media \(max-width: 899px\), \(any-pointer: coarse\)\s*\{[\s\S]*?\.tapFloor\s*\{[^}]*min-height:\s*var\(--tap-min\)/,
+  );
+});
