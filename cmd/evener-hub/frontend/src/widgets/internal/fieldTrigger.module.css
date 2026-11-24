@@ -1,7 +1,9 @@
 /* The shared closed-state trigger for a picker whose trigger IS a form
  * control: the model picker and the path field both draw this exact box, so
  * the declarations live here once and each widget's own module composes them
- * (see pathfield.module.css) rather than copying them.
+ * (see pathfield.module.css) rather than copying them. The box chrome itself
+ * is the shared control field (./control.module.css), the same one
+ * Input/Select/Textarea draw.
  *
  * Control-shaped (32px + one hairline edge that strengthens on hover and
  * focus, matching Input/Select) so the
@@ -11,6 +13,7 @@
  * tracked its value read as a stray tag wedged between two full-width fields.
  * Tokens only. */
 .trigger {
+  composes: field from "./control.module.css";
   display: flex;
   align-items: center;
   gap: var(--space-1);
@@ -18,28 +21,9 @@
   width: 100%;
   height: 32px;
   padding: 0 var(--space-3);
-  border: 1px solid var(--edge);
-  border-radius: var(--radius-control);
-  background: var(--field);
-  box-shadow: var(--shadow-inset-field);
-  color: var(--ink-hi);
   font-size: var(--font-size-ui);
   text-align: left;
   cursor: pointer;
-  transition:
-    background-color var(--motion-duration-hover) var(--motion-easing-standard),
-    border-color var(--motion-duration-hover) var(--motion-easing-standard),
-    box-shadow var(--motion-duration-hover) var(--motion-easing-standard);
-}
-
-.trigger:hover:not(:disabled),
-.trigger:focus-within {
-  border-color: var(--edge-strong);
-}
-
-.trigger:focus-visible {
-  outline: var(--focus-ring);
-  outline-offset: 2px;
 }
 
 .trigger:disabled {

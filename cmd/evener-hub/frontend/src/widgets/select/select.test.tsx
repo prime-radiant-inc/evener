@@ -1,6 +1,3 @@
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
@@ -121,24 +118,13 @@ test("an id prop passes through for external <label htmlFor> association", () =>
   expect(screen.getByRole("combobox").id).toBe("region");
 });
 
-test("declares a :focus-visible rule in its CSS module, using only tokens", () => {
-  const here = dirname(fileURLToPath(import.meta.url));
-  const css = readFileSync(join(here, "select.module.css"), "utf8");
-  expect(css).toContain(":focus-visible");
-});
-
-// Beautiful UI "sunken field" treatment - see input.test.tsx's matching
-// assertion and docs/superpowers/specs/2026-08-13-webui-beautiful-ui-
-// retheme-design.md §6.
-test("declares the sunken-field background/shadow and an edge-strong hover/focus-within border", () => {
-  const here = dirname(fileURLToPath(import.meta.url));
-  const css = readFileSync(join(here, "select.module.css"), "utf8");
-  const rule = /\.select\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
-  expect(rule).toContain("background: var(--field)");
-  expect(rule).toContain("box-shadow: var(--shadow-inset-field)");
-  expect(css).toMatch(
-    /\.select:hover:not\(:disabled\),\s*\n\.select:focus-within\s*\{[^}]*border-color: var\(--edge-strong\)/,
-  );
+// The sunken-field box, the edge-strong hover/focus-within border and the
+// focus ring live once in widgets/internal/control.module.css (pinned by
+// control.contract.test.ts); Select composes that recipe and keeps only its
+// own metrics.
+test("composes the shared control field for its box, hover edge, and focus ring", () => {
+  const rule = topRuleBlock(readModuleCss(import.meta.url, "select.module.css"), ".select");
+  expect(rule).toContain('composes: field from "../internal/control.module.css"');
 });
 
 test("keeps the native select at 32px on desktop and the mobile touch floor", () => {

@@ -25,25 +25,20 @@ const SHARED = declarations("internal/fieldTrigger.module.css");
 // for free, so the shared module has to actually carry them.
 test("the shared recipe declares the control-shaped box", () => {
   const trigger = SHARED.match(/\.trigger\s*\{([^}]*)\}/)?.[1] ?? "";
+  expect(trigger).toContain('composes: field from "./control.module.css"');
   expect(trigger).toContain("box-sizing: border-box");
   expect(trigger).toContain("width: 100%");
   expect(trigger).toContain("height: 32px");
   expect(trigger).toContain("padding: 0 var(--space-3)");
-  // A hairline at rest; the hover/focus-within rule below strengthens it.
-  expect(trigger).toContain("border: 1px solid var(--edge)");
-  expect(trigger).toContain("border-radius: var(--radius-control)");
 });
 
-// Beautiful UI "sunken field" treatment - see widgets/input's matching
-// assertion and docs/superpowers/specs/2026-08-13-webui-beautiful-ui-
-// retheme-design.md §6.
-test("the shared recipe declares the sunken-field background/shadow and an edge-strong hover/focus-within border", () => {
+// The sunken-field box and its edge-strong hover/focus-within border are the
+// shared control field's (widgets/internal/control.module.css, pinned by
+// control.contract.test.ts); the trigger composes them rather than restating
+// them.
+test("the shared recipe composes the shared control field", () => {
   const trigger = SHARED.match(/\.trigger\s*\{([^}]*)\}/)?.[1] ?? "";
-  expect(trigger).toContain("background: var(--field)");
-  expect(trigger).toContain("box-shadow: var(--shadow-inset-field)");
-  expect(SHARED).toMatch(
-    /\.trigger:hover:not\(:disabled\),\s*\n\.trigger:focus-within\s*\{[^}]*border-color: var\(--edge-strong\)/,
-  );
+  expect(trigger).toContain('composes: field from "./control.module.css"');
 });
 
 // A button does NOT inherit the body font, so the face is the one thing each
