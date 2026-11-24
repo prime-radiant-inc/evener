@@ -64,6 +64,11 @@ func walkProjectFiles(ctx context.Context, root string, opts ProjectFilesOptions
 	queue := []string{"."}
 	ignores := &ignoreSet{}
 	var out []ProjectFileEntry
+	if truncated, aerr := loadAncestorProjectIgnores(ctx, canonical, maskedRoots, budget, cache, ignores); aerr != nil {
+		return ProjectFilesResult{}, aerr
+	} else if truncated {
+		return ProjectFilesResult{Entries: out, Truncated: true}, nil
+	}
 
 	for head := 0; head < len(queue); head++ {
 		if cerr := ctx.Err(); cerr != nil {
@@ -113,16 +118,11 @@ func walkProjectFiles(ctx context.Context, root string, opts ProjectFilesOptions
 			}
 			matcher, rules, _, ierr := readIgnoreRules(ctx, fsys, canonical, ignoreRel, budget, cache)
 			if ierr != nil {
-				if _, ok := errors.AsType[*globBudgetError](ierr); ok {
-					return ProjectFilesResult{Entries: out, Truncated: true}, nil
+				res, handled, cerr := classifyIgnoreReadErr(ctx, out, ierr)
+				if handled {
+					return res, nil
 				}
-				if cerr := ctx.Err(); cerr != nil {
-					return classifyWalkCtxErr(out, cerr)
-				}
-				if errors.Is(ierr, context.DeadlineExceeded) {
-					return ProjectFilesResult{Entries: out, Truncated: true}, nil
-				}
-				return ProjectFilesResult{}, ierr
+				return ProjectFilesResult{}, cerr
 			}
 			if matcher != nil {
 				ignores.dirs = append(ignores.dirs, ignoreDir{rel: dir, matcher: matcher, rules: rules})
@@ -173,6 +173,94 @@ func walkProjectFiles(ctx context.Context, root string, opts ProjectFilesOptions
 	}
 
 	return ProjectFilesResult{Entries: out}, nil
+}
+
+func classifyIgnoreReadErr(ctx context.Context, out []ProjectFileEntry, err error) (ProjectFilesResult, bool, error) {
+	if _, ok := errors.AsType[*globBudgetError](err); ok {
+		return ProjectFilesResult{Entries: out, Truncated: true}, true, nil
+	}
+	if cerr := ctx.Err(); cerr != nil {
+		res, rerr := classifyWalkCtxErr(out, cerr)
+		return res, rerr == nil, rerr
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return ProjectFilesResult{Entries: out, Truncated: true}, true, nil
+	}
+	return ProjectFilesResult{}, false, err
+}
+
+// loadAncestorProjectIgnores loads .gitignore layers from the enclosing Git
+// worktree root down through each strict parent directory of canonical (never
+// canonical itself, which the BFS loop reads at ".").
+func loadAncestorProjectIgnores(
+	ctx context.Context,
+	canonical string,
+	maskedRoots []string,
+	budget *GlobBudget,
+	cache *ignoreMatcherCache,
+	ignores *ignoreSet,
+) (bool, error) {
+	gitRoot, ok := structuralWorktreeRoot(canonical)
+	if !ok || gitRoot == "" {
+		return false, nil
+	}
+	if gitFd, err := unix.Open(gitRoot, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0); err == nil {
+		gitRoot = filepath.Clean(browseBasePath(gitFd, gitRoot))
+		_ = unix.Close(gitFd)
+	}
+	relFromGit, err := filepath.Rel(gitRoot, canonical)
+	if err != nil || relFromGit == "." || relFromGit == ".." || strings.HasPrefix(relFromGit, ".."+string(filepath.Separator)) {
+		return false, nil //nolint:nilerr // non-relative gitRoot means canonical is not strictly beneath it
+	}
+	ancestors := DirsFromRootToCwd(gitRoot, canonical)
+	for _, ancDir := range ancestors[:len(ancestors)-1] {
+		if cerr := ctx.Err(); cerr != nil {
+			res, rerr := classifyWalkCtxErr(nil, cerr)
+			return res.Truncated, rerr
+		}
+		ancFd, oerr := unix.Open(ancDir, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+		if oerr != nil {
+			continue
+		}
+		ancCanonical := filepath.Clean(browseBasePath(ancFd, ancDir))
+		rel, rerr := filepath.Rel(ancCanonical, canonical)
+		if rerr != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			_ = unix.Close(ancFd)
+			continue
+		}
+		ignoreAbs := filepath.Join(ancCanonical, ".gitignore")
+		if isProjectPathMasked(ancCanonical, maskedRoots) || isProjectPathMasked(ignoreAbs, maskedRoots) {
+			_ = unix.Close(ancFd)
+			continue
+		}
+		ancFS := cancelFS{
+			ctx: ctx,
+			fsys: &secureDirFS{
+				baseFd:   ancFd,
+				basePath: ancCanonical,
+				budget:   budget,
+				ctx:      ctx,
+			},
+		}
+		matcher, rules, _, ierr := readIgnoreRules(ctx, ancFS, ancCanonical, ".gitignore", budget, cache)
+		_ = unix.Close(ancFd)
+		if ierr != nil {
+			res, handled, cerr := classifyIgnoreReadErr(ctx, nil, ierr)
+			if handled {
+				return res.Truncated, nil
+			}
+			return false, cerr
+		}
+		if matcher != nil {
+			ignores.dirs = append(ignores.dirs, ignoreDir{
+				rel:            ".",
+				ancestorPrefix: filepath.ToSlash(rel),
+				matcher:        matcher,
+				rules:          rules,
+			})
+		}
+	}
+	return false, nil
 }
 
 func classifyWalkCtxErr(out []ProjectFileEntry, err error) (ProjectFilesResult, error) {

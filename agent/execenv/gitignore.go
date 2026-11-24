@@ -267,9 +267,10 @@ func ignoreFileVersion(ctx context.Context, fsys fs.FS, path string, cache *igno
 // "!" negation) patterns from a shallower one. Traversal callers (such as
 // WalkProjectFiles and grep) prune ignored directories before descending, so a
 // .gitignore inside an un-negated excluded directory is never read, matching
-// git's directory-pruning semantics. Patterns from .gitignore files outside the
-// search base (e.g. a repo root .gitignore when base is a subdirectory) are not
-// consulted; this is a known simplification for a directory-scoped search.
+// git's directory-pruning semantics. WalkProjectFiles also seeds dirs with
+// ancestor .gitignore layers from the enclosing Git worktree root down to the
+// walk base via ancestorPrefix; directory-scoped glob/grep callers leave
+// ancestorPrefix empty.
 type ignoreSet struct {
 	// dirs is ordered shallowest-to-deepest (BFS / depth-sorted) so deeper
 	// .gitignore files override shallower ones.
@@ -277,9 +278,10 @@ type ignoreSet struct {
 }
 
 type ignoreDir struct {
-	rel     string // "." for the base itself, else slash-separated relative dir
-	matcher *gitignore.GitIgnore
-	rules   []compiledIgnoreRule
+	rel            string // "." for the base itself, else slash-separated relative dir
+	ancestorPrefix string // non-empty when matching a strict ancestor .gitignore (base relative to that ancestor)
+	matcher        *gitignore.GitIgnore
+	rules          []compiledIgnoreRule
 }
 
 func ignoreRelDepth(rel string) int {
@@ -850,6 +852,8 @@ func (s *ignoreSet) matches(relPath string, isDir bool) bool {
 	for _, id := range s.dirs {
 		var rel string
 		switch {
+		case id.ancestorPrefix != "":
+			rel = id.ancestorPrefix + "/" + relPath
 		case id.rel == ".":
 			rel = relPath
 		case relPath == id.rel:

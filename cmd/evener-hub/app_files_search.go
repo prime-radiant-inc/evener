@@ -50,13 +50,16 @@ type fileSearchCacheEntry struct {
 // fileSearchService serves evener/files/search with live sessionCWD resolution,
 // single-hop remote session forwarding, a 5s canonical-root LRU cache, and
 // singleflight walk deduplication.
+var defaultSearchCanonicalizeDir = fspaths.CanonicalizeDir
+
 type fileSearchService struct {
-	cfg         hubcore.WebConfig
-	sources     *appsource.Registry
-	ignoreCache *execenv.ProjectFilesIgnoreCache
-	now         func() time.Time
-	homeDir     func() string
-	walk        func(context.Context, string, execenv.ProjectFilesOptions) (execenv.ProjectFilesResult, error)
+	cfg             hubcore.WebConfig
+	sources         *appsource.Registry
+	ignoreCache     *execenv.ProjectFilesIgnoreCache
+	now             func() time.Time
+	homeDir         func() string
+	canonicalizeDir func(string) (string, error)
+	walk            func(context.Context, string, execenv.ProjectFilesOptions) (execenv.ProjectFilesResult, error)
 
 	sf    singleflight.Group
 	mu    sync.Mutex
@@ -66,14 +69,15 @@ type fileSearchService struct {
 
 func newFileSearchService(cfg hubcore.WebConfig, sources *appsource.Registry) *fileSearchService {
 	return &fileSearchService{
-		cfg:         cfg,
-		sources:     sources,
-		ignoreCache: execenv.NewProjectFilesIgnoreCache(),
-		now:         time.Now,
-		homeDir:     envvars.Home.Getenv,
-		walk:        execenv.WalkProjectFiles,
-		lru:         list.New(),
-		cache:       make(map[fileSearchCacheKey]*list.Element, fileSearchCacheCapacity),
+		cfg:             cfg,
+		sources:         sources,
+		ignoreCache:     execenv.NewProjectFilesIgnoreCache(),
+		now:             time.Now,
+		homeDir:         envvars.Home.Getenv,
+		canonicalizeDir: defaultSearchCanonicalizeDir,
+		walk:            execenv.WalkProjectFiles,
+		lru:             list.New(),
+		cache:           make(map[fileSearchCacheKey]*list.Element, fileSearchCacheCapacity),
 	}
 }
 
@@ -125,7 +129,7 @@ func (s *fileSearchService) Search(ctx context.Context, params appwire.FilesSear
 		if err != nil {
 			return appwire.FilesSearchResponse{}, err
 		}
-		resolved, err := fspaths.CanonicalizeDir(dir)
+		resolved, err := s.canonicalizeDir(dir)
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
 				return emptyFilesSearchResponse(), nil
@@ -142,7 +146,7 @@ func (s *fileSearchService) Search(ctx context.Context, params appwire.FilesSear
 			}
 			expanded = filepath.Join(home, strings.TrimPrefix(expanded, "~"))
 		}
-		resolved, err := fspaths.CanonicalizeDir(expanded)
+		resolved, err := s.canonicalizeDir(expanded)
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
 				return emptyFilesSearchResponse(), nil

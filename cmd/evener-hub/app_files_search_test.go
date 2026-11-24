@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
@@ -21,6 +23,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/identifier"
+	"primeradiant.com/evener/internal/testwait"
 )
 
 func TestFilesSearchValidationAndSpawnCWD(t *testing.T) {
@@ -404,6 +407,239 @@ func TestFilesSearchRemoteSingleHopAndProxyGuards(t *testing.T) {
 		assertWireCode(t, err, appwire.CodeInvalidParams)
 		if slices.ContainsFunc(calls(), func(c hostAdminCall) bool { return c.method != appwire.MethodInitialize }) {
 			t.Fatalf("proxy forwarded files/search with ref (%+v), want local InvalidParams refusal", calls())
+		}
+	})
+}
+
+type blockingFileSearchSource struct {
+	*scriptedAppSource
+	gate    <-chan struct{}
+	started func()
+}
+
+func (b *blockingFileSearchSource) ReadThread(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+	if !params.IncludeTurns {
+		b.started()
+		select {
+		case <-b.gate:
+		case <-ctx.Done():
+			return appwire.ThreadReadResponse{}, ctx.Err()
+		}
+	}
+	return b.scriptedAppSource.ReadThread(ctx, params)
+}
+
+func (b *blockingFileSearchSource) InterruptTurn(context.Context, appwire.TurnInterruptParams) (appwire.TurnInterruptResponse, error) {
+	return appwire.TurnInterruptResponse{}, nil
+}
+
+func TestFilesSearchLocalDoesNotHeadOfLineBlockConnection(t *testing.T) {
+	t.Run("stalled local ref search does not block same-connection requests", func(t *testing.T) {
+		dir := t.TempDir()
+		mustWriteFileForSearchTest(t, filepath.Join(dir, "main.go"), "package main\n")
+
+		sessionID := identifier.EncodeUUID(uuid.Must(uuid.NewV7()))
+		ref := localAppRef(sessionID)
+		gate := make(chan struct{})
+		openGate := sync.OnceFunc(func() { close(gate) })
+
+		var started atomic.Bool
+		src := &blockingFileSearchSource{
+			scriptedAppSource: &scriptedAppSource{
+				id: appwire.LocalSourceID,
+				thread: appwire.Thread{
+					ID:     sessionID,
+					CWD:    dir,
+					Evener: appwire.EvenerThread{Ref: ref},
+				},
+			},
+			gate:    gate,
+			started: func() { started.Store(true) },
+		}
+		sources := appsource.NewRegistry()
+		sources.Add(src)
+		roster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{
+			SessionID: sessionID,
+			Status:    appwire.ThreadStatusIdle,
+		})
+		server := newHubAppServer(testWebConfig(t, hubcore.WebConfig{Roster: roster}), sources)
+		wire := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
+		t.Cleanup(wire.Close)
+		t.Cleanup(openGate)
+		client := dialHubRPC(t, wire)
+		t.Cleanup(func() { _ = client.Close() })
+		mustInitializeHubClient(t, client)
+
+		searchDone := make(chan error, 1)
+		go func() {
+			var resp appwire.FilesSearchResponse
+			searchDone <- client.Request(context.Background(), appwire.MethodEvenerFilesSearch, appwire.FilesSearchParams{Ref: ref, Query: "main"}, &resp)
+		}()
+		testwait.Until(t, "local evener/files/search to reach ReadThread", started.Load)
+
+		validateDone := make(chan error, 1)
+		go func() {
+			var out appwire.PathValidateResponse
+			validateDone <- client.Request(context.Background(), appwire.MethodEvenerPathValidate, appwire.PathValidateParams{Path: dir}, &out)
+		}()
+		select {
+		case err := <-validateDone:
+			if err != nil {
+				t.Fatalf("same-connection path/validate failed: %v", err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("same-connection request waited behind stalled local evener/files/search")
+		}
+
+		if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: ref, IncludeTurns: true}); err != nil {
+			t.Fatalf("same-connection thread/read failed: %v", err)
+		}
+		select {
+		case err := <-searchDone:
+			t.Fatalf("stalled local evener/files/search answered before gate opened: %v", err)
+		default:
+		}
+		openGate()
+		if err := <-searchDone; err != nil {
+			t.Fatalf("unblocked local evener/files/search failed: %v", err)
+		}
+	})
+
+	t.Run("stalled explicit cwd CanonicalizeDir does not block interrupt or remote pool and bounds local pool", func(t *testing.T) {
+		dir := t.TempDir()
+		mustWriteFileForSearchTest(t, filepath.Join(dir, "main.go"), "package main\n")
+		sessionID := identifier.EncodeUUID(uuid.Must(uuid.NewV7()))
+		ref := localAppRef(sessionID)
+
+		gate := make(chan struct{})
+		openGate := sync.OnceFunc(func() { close(gate) })
+		var blockedCount atomic.Int32
+
+		origCanonicalize := defaultSearchCanonicalizeDir
+		defaultSearchCanonicalizeDir = func(p string) (string, error) {
+			blockedCount.Add(1)
+			<-gate
+			return origCanonicalize(p)
+		}
+		t.Cleanup(func() { defaultSearchCanonicalizeDir = origCanonicalize })
+
+		remoteClient, remoteCalls, _ := scriptedAdminRemote(t, func(method string, _ json.RawMessage) hostAdminReply {
+			if method == appwire.MethodEvenerFilesSearch {
+				return hostAdminReply{result: appwire.FilesSearchResponse{
+					Items: []appwire.FileSearchItem{{Path: "remote/main.go", Kind: "file"}},
+				}}
+			}
+			return okReply()
+		}, true)
+		remoteSource := appsource.NewRemoteHubSource("m4", nil, func(context.Context, string) (*appwire.Client, error) {
+			return remoteClient, nil
+		})
+		remoteSource.SetHostOnline(func() bool { return true })
+		localSrc := &blockingFileSearchSource{
+			scriptedAppSource: &scriptedAppSource{
+				id: appwire.LocalSourceID,
+				thread: appwire.Thread{
+					ID:     sessionID,
+					CWD:    dir,
+					Evener: appwire.EvenerThread{Ref: ref},
+				},
+			},
+			gate:    gate,
+			started: func() {},
+		}
+		sources := appsource.NewRegistry()
+		sources.Add(localSrc)
+		sources.Add(remoteSource)
+		roster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{
+			SessionID: sessionID,
+			Status:    appwire.ThreadStatusActive,
+		})
+		hosts, err := hostreg.New([]hostreg.Host{{Name: "m4", SSH: "m4.example"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		server := newHubAppServer(testWebConfig(t, hubcore.WebConfig{
+			Roster:             roster,
+			RemoteHostRegistry: hosts,
+		}), sources)
+		wire := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
+		t.Cleanup(wire.Close)
+		t.Cleanup(openGate)
+		client := dialHubRPC(t, wire)
+		t.Cleanup(func() { _ = client.Close() })
+		mustInitializeHubClient(t, client)
+
+		cwdSearchDone := make(chan error, 1)
+		go func() {
+			var resp appwire.FilesSearchResponse
+			cwdSearchDone <- client.Request(context.Background(), appwire.MethodEvenerFilesSearch, appwire.FilesSearchParams{CWD: dir, Query: "main"}, &resp)
+		}()
+		testwait.Until(t, "cwd evener/files/search to reach CanonicalizeDir", func() bool {
+			return blockedCount.Load() == 1
+		})
+
+		// Inline turn/interrupt on the serial worker must complete immediately.
+		interruptDone := make(chan error, 1)
+		go func() {
+			var out appwire.TurnInterruptResponse
+			ierr := client.Request(context.Background(), appwire.MethodTurnInterrupt, appwire.TurnInterruptParams{
+				Ref:                ref,
+				ClientMutationID:   "interrupt-1",
+				ExpectedInstanceID: sessionID,
+			}, &out)
+			interruptDone <- ierr
+		}()
+		select {
+		case ierr := <-interruptDone:
+			if ierr != nil {
+				t.Fatalf("same-connection turn/interrupt failed: %v", ierr)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("same-connection turn/interrupt waited behind stalled cwd evener/files/search")
+		}
+
+		// Saturate the local pool and confirm excess local searches fail Unavailable
+		// without blocking serial worker requests or remote host searches.
+		var held []<-chan error
+		for i := 2; ; i++ {
+			if i > 1000 {
+				t.Fatal("local concurrent request pool never saturated")
+			}
+			ch := make(chan error, 1)
+			go func() {
+				var resp appwire.FilesSearchResponse
+				ch <- client.Request(context.Background(), appwire.MethodEvenerFilesSearch, appwire.FilesSearchParams{CWD: dir, Query: "main"}, &resp)
+			}()
+			testwait.Until(t, "local search to block or be refused", func() bool {
+				return len(ch) > 0 || int(blockedCount.Load()) == i
+			})
+			if len(ch) == 0 {
+				held = append(held, ch)
+				continue
+			}
+			var wireErr appwire.WireError
+			if err := <-ch; !errors.As(err, &wireErr) || wireErr.Code != appwire.CodeUnavailable {
+				t.Fatalf("excess local search = %v, want CodeUnavailable", err)
+			}
+			break
+		}
+
+		var remoteResp appwire.FilesSearchResponse
+		if err := client.Request(context.Background(), appwire.MethodEvenerFilesSearch, appwire.FilesSearchParams{Ref: "m4:" + sessionID, Query: "main"}, &remoteResp); err != nil {
+			t.Fatalf("remote search while local pool full failed: %v", err)
+		}
+		if len(remoteResp.Items) != 1 || remoteResp.Items[0].Path != "remote/main.go" || len(remoteCalls()) == 0 {
+			t.Fatalf("unexpected remote search response: %+v", remoteResp)
+		}
+
+		openGate()
+		if err := <-cwdSearchDone; err != nil {
+			t.Fatalf("unblocked cwd evener/files/search failed: %v", err)
+		}
+		for _, ch := range held {
+			if err := <-ch; err != nil {
+				t.Fatalf("held local evener/files/search failed: %v", err)
+			}
 		}
 	})
 }
