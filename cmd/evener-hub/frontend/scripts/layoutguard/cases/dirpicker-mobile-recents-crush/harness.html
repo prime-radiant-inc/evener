@@ -87,11 +87,11 @@
             <button type="button" id="new-folder" class="button quiet sm">New folder</button>
           </div>
           <section class="folders" aria-label="Folders" id="folders">
-            <button class="row plain withLeading interactive" type="button"><span class="leading"><span class="rowGlyph">▸</span></span><span class="heading"><span class="label">.config</span><span class="value" aria-hidden="true">›</span></span></button>
-            <button class="row plain withLeading interactive" type="button"><span class="leading"><span class="rowGlyph">▸</span></span><span class="heading"><span class="label">Documents</span><span class="value" aria-hidden="true">›</span></span></button>
-            <button class="row plain withLeading interactive" type="button"><span class="leading"><span class="rowGlyph">▸</span></span><span class="heading"><span class="label">Downloads</span><span class="value" aria-hidden="true">›</span></span></button>
-            <button class="row plain withLeading interactive" type="button"><span class="leading"><span class="rowGlyph">▸</span></span><span class="heading"><span class="label">git</span><span class="value" aria-hidden="true">›</span></span></button>
-            <button class="row plain withLeading interactive" type="button"><span class="leading"><span class="rowGlyph">▸</span></span><span class="heading"><span class="label">.local</span><span class="value" aria-hidden="true">›</span></span></button>
+            <button class="row plain withLeading interactive" type="button"><span class="leading"><span class="rowGlyph">▸</span></span><span class="heading"><span class="label"><span class="rowLabel">.config</span></span><span class="value" aria-hidden="true">›</span></span></button>
+            <button class="row plain withLeading interactive" type="button"><span class="leading"><span class="rowGlyph">▸</span></span><span class="heading"><span class="label"><span class="rowLabel">Documents</span></span><span class="value" aria-hidden="true">›</span></span></button>
+            <button class="row plain withLeading interactive" type="button"><span class="leading"><span class="rowGlyph">▸</span></span><span class="heading"><span class="label"><span class="rowLabel">Downloads</span></span><span class="value" aria-hidden="true">›</span></span></button>
+            <button class="row plain withLeading interactive" type="button"><span class="leading"><span class="rowGlyph">▸</span></span><span class="heading"><span class="label"><span class="rowLabel">git</span></span><span class="value" aria-hidden="true">›</span></span></button>
+            <button class="row plain withLeading interactive" type="button"><span class="leading"><span class="rowGlyph">▸</span></span><span class="heading"><span class="label"><span class="rowLabel">.local</span></span><span class="value" aria-hidden="true">›</span></span></button>
           </section>
         </div>
       </div>
@@ -122,7 +122,7 @@ function scrollable(el) {
   return { ...rectOf(el), scrollHeight: el.scrollHeight, clientHeight: el.clientHeight, overflowY: getComputedStyle(el).overflowY };
 }
 
-window.measure = function () {
+window.measure = () => {
   const panel = document.getElementById("panel");
   const body = document.getElementById("body");
   const browser = document.getElementById("browser");

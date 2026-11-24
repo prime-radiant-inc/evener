@@ -35,6 +35,7 @@ const CLASS = {
   listHeading: requireClass(styles.listHeading, "directorypicker.module.css", "listHeading"),
   folders: requireClass(styles.folders, "directorypicker.module.css", "folders"),
   rowGlyph: requireClass(styles.rowGlyph, "directorypicker.module.css", "rowGlyph"),
+  rowLabel: requireClass(styles.rowLabel, "directorypicker.module.css", "rowLabel"),
   path: requireClass(styles.path, "directorypicker.module.css", "path"),
   footer: requireClass(styles.footer, "directorypicker.module.css", "footer"),
   destination: requireClass(styles.destination, "directorypicker.module.css", "destination"),
@@ -405,7 +406,7 @@ export function DirectoryPicker({
                       <DirectoryIcon />
                     </span>
                   }
-                  label={basename(path)}
+                  label={<span className={CLASS.rowLabel}>{basename(path)}</span>}
                   // The drill glyph is row content: ListRow's trailing slot is
                   // for a real control, and a decorative mark there would sit
                   // outside the row's single click target.

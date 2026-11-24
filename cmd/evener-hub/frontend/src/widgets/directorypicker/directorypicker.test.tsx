@@ -19,6 +19,7 @@ const pickerClass = {
 const listRowClass = {
   plain: requireClass(rawListRowStyles.plain, "listrow.module.css", "plain"),
   interactive: requireClass(rawListRowStyles.interactive, "listrow.module.css", "interactive"),
+  label: requireClass(rawListRowStyles.label, "listrow.module.css", "label"),
 };
 
 function setup(overrides: Partial<DirectoryPickerProps> = {}, onCommit: () => void = () => {}) {
@@ -76,6 +77,31 @@ test("renders its folder and recent rows through the shared plain ListRow", asyn
   expect(browseRow.querySelector("button")).toBeNull();
   // Two glyphs draw as SVGs: the leading folder and the drill chevron.
   expect(browseRow.querySelectorAll("svg")).toHaveLength(2);
+});
+
+// ListRow's label slot ellipsizes its one line, which hides the end of two
+// sibling folders that differ only there before one is chosen. The browse
+// label therefore brings its own wrapping span; the recents sidebar keeps the
+// single line and its full-path title.
+test("the browse label wraps a long folder name inside the row", async () => {
+  setup();
+  const browseLabel = (await screen.findByRole("button", { name: "Open /work/app" })).querySelector(
+    `.${listRowClass.label}`,
+  );
+  const labelNode = browseLabel?.firstElementChild as HTMLElement | null;
+  expect(labelNode?.tagName).toBe("SPAN");
+  expect(labelNode?.className).toContain("rowLabel");
+
+  const recentLabel = screen
+    .getByRole("button", { name: "Open recent /recent/app" })
+    .querySelector(`.${listRowClass.label}`);
+  expect(recentLabel?.firstElementChild).toBeNull();
+
+  const css = readModuleCss(import.meta.url, "directorypicker.module.css");
+  const rowLabel = topRuleBlock(css, ".rowLabel");
+  expect(rowLabel).toContain("display: block");
+  expect(rowLabel).toContain("white-space: normal");
+  expect(rowLabel).toContain("overflow-wrap: anywhere");
 });
 
 // The picker keeps its own scrollport: its body class lands on the shared

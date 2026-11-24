@@ -108,6 +108,16 @@
   display: inline-flex;
   color: var(--ink-mid);
 }
+
+/* A folder name is chosen by what differs at its end, so the browse row
+ * wraps it: ListRow's single-line slot ellipsizes long names and would hide
+ * the distinguishing tail. The recents sidebar keeps the one-line truncation
+ * and its full-path title. */
+.rowLabel {
+  display: block;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
 .path {
   font-size: var(--font-size-caption);
   color: var(--ink-mid);
