@@ -163,6 +163,16 @@ func (h *HubSpawner) ListLaunchModelContractForWorkingDir(ctx context.Context, w
 	return listEvenerLaunchModelContractFn(ctx, h.EvenerBinary, env)
 }
 
+// projectEndpointEnvExclusions names the environment inputs that resolve a
+// configured provider's endpoint, so the checkout-controlled project layer
+// cannot redirect a launch. Nil when no registry has loaded yet.
+func (h *HubSpawner) projectEndpointEnvExclusions() []string {
+	if h.Registry == nil {
+		return nil
+	}
+	return h.Registry.Get().EndpointEnvNames()
+}
+
 func (h *HubSpawner) Spawn(ctx context.Context, req hubcore.SpawnRequest) (rendezvous.Entry, error) {
 	timeout := h.Cfg.SpawnTimeout
 	if timeout == 0 {
@@ -205,14 +215,15 @@ func (h *HubSpawner) Spawn(ctx context.Context, req hubcore.SpawnRequest) (rende
 	defer childConfig.cleanupUnowned()
 	parentEnv := os.Environ()
 	req.Env = childConfig.environment(launchconfig.EnvInputs{
-		Resolved:            req.Resolved,
-		ParentEnv:           parentEnv,
-		RunDir:              h.RunDir,
-		StateDir:            req.StateDir,
-		HubToken:            h.HubToken,
-		ProvidersConfigPath: childConfig.path,
-		NoUserLayer:         childConfig.noUserLayer,
-		CredentialsPath:     h.CredentialsPath,
+		Resolved:             req.Resolved,
+		ParentEnv:            parentEnv,
+		RunDir:               h.RunDir,
+		StateDir:             req.StateDir,
+		HubToken:             h.HubToken,
+		ProvidersConfigPath:  childConfig.path,
+		NoUserLayer:          childConfig.noUserLayer,
+		CredentialsPath:      h.CredentialsPath,
+		ProjectEnvExclusions: h.projectEndpointEnvExclusions(),
 	})
 	if err := validateProviderCredentials(req.Provider, req.Resolved.Effective.Model, h.Registry); err != nil {
 		return rendezvous.Entry{}, err
@@ -261,14 +272,15 @@ func (h *HubSpawner) Resume(ctx context.Context, req hubcore.ResumeRequest) (ren
 	defer childConfig.cleanupUnowned()
 	parentEnv := os.Environ()
 	req.Env = childConfig.environment(launchconfig.EnvInputs{
-		Resolved:            req.Resolved,
-		ParentEnv:           parentEnv,
-		RunDir:              h.RunDir,
-		StateDir:            req.StateDir,
-		HubToken:            h.HubToken,
-		ProvidersConfigPath: childConfig.path,
-		NoUserLayer:         childConfig.noUserLayer,
-		CredentialsPath:     h.CredentialsPath,
+		Resolved:             req.Resolved,
+		ParentEnv:            parentEnv,
+		RunDir:               h.RunDir,
+		StateDir:             req.StateDir,
+		HubToken:             h.HubToken,
+		ProvidersConfigPath:  childConfig.path,
+		NoUserLayer:          childConfig.noUserLayer,
+		CredentialsPath:      h.CredentialsPath,
+		ProjectEnvExclusions: h.projectEndpointEnvExclusions(),
 	})
 	if req.Provider != "" {
 		// The resume request carries the model the session persisted

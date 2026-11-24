@@ -1256,6 +1256,98 @@ func (r *Registry) TemplateVarsEnv(id string) map[string]string {
 	return out
 }
 
+// EndpointEnvNames lists the environment variables the loaded configuration
+// reads to choose a provider endpoint: every vars_env mapping of a template
+// variable some transport's URL references, plus every $VARIABLE a user vars
+// entry carries for one of those variables. A checkout-controlled launch file
+// must not set any of them.
+func (r *Registry) EndpointEnvNames() []string {
+	if r == nil {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	for _, rec := range r.recordsForEndpointScan() {
+		referenced := map[string]bool{}
+		var transports []Transport
+		note := func(t Transport) {
+			for _, tpl := range []string{t.BaseURL, t.Endpoint, t.StreamEndpoint, t.ModelsEndpoint, t.CountTokensEndpoint} {
+				for _, m := range placeholderRe.FindAllStringSubmatch(tpl, -1) {
+					referenced[m[1]] = true
+				}
+			}
+			for _, name := range hostRuleAuthorityVars(t.HostRule) {
+				referenced[name] = true
+			}
+			transports = append(transports, t)
+		}
+		matchesRow := func(glob string) bool {
+			for rowID := range rec.head.Models {
+				if matchGlob(glob, rowID) {
+					return true
+				}
+			}
+			return false
+		}
+		for _, rows := range r.topGlobs {
+			for glob, row := range rows {
+				if row.Transport != nil && matchesRow(glob) {
+					note(*row.Transport)
+				}
+			}
+		}
+		for _, row := range rec.head.Models {
+			if row.Transport != nil {
+				note(*row.Transport)
+			}
+		}
+		note(rec.head.Transport)
+		for _, t := range transports {
+			for name, env := range t.VarsEnv {
+				if referenced[name] && env != "" {
+					seen[env] = struct{}{}
+				}
+			}
+		}
+		for name := range referenced {
+			value, ok := rec.userVars[name]
+			if !ok || value == "" {
+				continue
+			}
+			refs, _, err := ScanConfigValue(value)
+			if err != nil {
+				continue
+			}
+			for _, ref := range refs {
+				seen[ref] = struct{}{}
+			}
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for name := range seen {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// recordsForEndpointScan returns every loaded provider record. A name may be
+// present in both maps when the user layer shadows a curated id; scanning
+// both keeps the scan a pure function of what can resolve.
+func (r *Registry) recordsForEndpointScan() []*record {
+	out := make([]*record, 0, len(r.curated)+len(r.explicit))
+	out = append(out, sortedRecordValues(r.curated)...)
+	out = append(out, sortedRecordValues(r.explicit)...)
+	return out
+}
+
+func sortedRecordValues(records map[string]*record) []*record {
+	out := make([]*record, 0, len(records))
+	for _, name := range sortedKeys(records) {
+		out = append(out, records[name])
+	}
+	return out
+}
+
 // ProviderIDs lists the curated registry ids, sorted.
 func (r *Registry) ProviderIDs() []string { return sortedKeys(r.curated) }
 

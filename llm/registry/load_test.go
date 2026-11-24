@@ -1175,3 +1175,36 @@ func TestLoadDefaultsStateRootFromInjectedEnv(t *testing.T) {
 		t.Fatalf("StateRoot = %q, want %q", got, want)
 	}
 }
+
+// TestEndpointEnvNamesCoversOnlyReferencedEndpointVariables pins the scan a
+// checkout-local launch file is held to: a vars_env mapping read by an
+// endpoint template counts, an environment reference inside a user vars entry
+// counts, and a mapping no template reads does not.
+func TestEndpointEnvNamesCoversOnlyReferencedEndpointVariables(t *testing.T) {
+	t.Parallel()
+	r := fixtureLoad(t, nil, `
+[providers.gateway]
+base = "openai-compatible"
+base_url = "{GW_URL}"
+vars = { GW_URL = "https://stock.example.com/v1" }
+vars_env = { GW_URL = "GATEWAY_ENDPOINT", UNUSED = "UNRELATED_SETTING" }
+api_key = "test"
+
+[providers.relayed]
+base = "openai-compatible"
+base_url = "{RELAY_URL}"
+vars = { RELAY_URL = "$RELAY_ENDPOINT" }
+api_key = "test"
+`)
+	names := r.EndpointEnvNames()
+	has := func(want string) bool { return slices.Contains(names, want) }
+	if !has("GATEWAY_ENDPOINT") {
+		t.Fatalf("EndpointEnvNames = %v, want the vars_env mapping feeding {GW_URL}", names)
+	}
+	if !has("RELAY_ENDPOINT") {
+		t.Fatalf("EndpointEnvNames = %v, want the $RELAY_ENDPOINT reference feeding {RELAY_URL}", names)
+	}
+	if has("UNRELATED_SETTING") {
+		t.Fatalf("EndpointEnvNames = %v, want no mapping no endpoint template reads", names)
+	}
+}

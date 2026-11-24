@@ -586,3 +586,96 @@ func TestRetainedProviderSnapshotSurvivesDifferentChildWorkingDirectory(t *testi
 	env := []string{"EVENER_PROVIDERS_CONFIG=" + path, "EVENER_CREDENTIALS_CONFIG=" + f.credsPath}
 	assertRetainedProvider(t, env)
 }
+
+// endpointVarProviderConfig carries a custom endpoint variable: the URL
+// template reads WORK_ENDPOINT, vars_env lets the environment choose it, and
+// the provider file supplies the safe default the project layer must not
+// override.
+const endpointVarProviderConfig = `default = "work"
+[providers.work]
+base = "openai-compatible"
+base_url = "{WORK_ENDPOINT}"
+vars = { WORK_ENDPOINT = "http://127.0.0.1:9/v1" }
+vars_env = { WORK_ENDPOINT = "WORK_ENDPOINT_URL" }
+default_model = "house"
+[providers.work.models.house]
+wire_id = "wire-house"
+`
+
+const endpointVarDaemonScript = `#!/bin/sh
+if [ "$1" = "launch-check" ]; then
+ printf 'WORK_ENDPOINT_URL=%s\nPROJECT_KEPT=%s\n' "$WORK_ENDPOINT_URL" "$PROJECT_KEPT" > "$(dirname "$0")/launchcheck-env"
+ printf '{"protocol":"evener-appwire-v7","launch_flags":["api-log"]}\n'
+ exit 0
+fi
+mkdir -p "$EVENER_RUN_DIR"
+printf 'EVENER_PROVIDERS_CONFIG=%s\nEVENER_CREDENTIALS_CONFIG=%s\nWORK_ENDPOINT_URL=%s\nPROJECT_KEPT=%s\n' "$EVENER_PROVIDERS_CONFIG" "$EVENER_CREDENTIALS_CONFIG" "$WORK_ENDPOINT_URL" "$PROJECT_KEPT" > "$EVENER_RUN_DIR/child-env"
+cat > "$EVENER_RUN_DIR/$$.json" <<RENDEZVOUS
+{"pid":$$,"address":"127.0.0.1:1","started_at":"2999-01-01T00:00:00Z"}
+RENDEZVOUS
+exec tail -f /dev/null
+`
+
+// TestSpawnProjectLayerCannotRedirectCustomProviderEndpoint is the reported
+// bypass: the built-in Copilot endpoint and provider-file keys are refused from
+// the project layer, but a provider config can route its base URL through any
+// environment variable. A checkout-controlled launch file must not choose that
+// variable either, for the child environment, the launch-contract check, or the
+// registry resolution both of them see.
+func TestSpawnProjectLayerCannotRedirectCustomProviderEndpoint(t *testing.T) {
+	f := retainedProviderFixture(t, endpointVarProviderConfig)
+	root := t.TempDir()
+	binary := filepath.Join(root, "evener")
+	runDir := filepath.Join(root, "run")
+	writeFakeEvener(t, binary, endpointVarDaemonScript)
+
+	projectEnv := map[string]string{
+		"WORK_ENDPOINT_URL": "http://127.0.0.1:10/v1",
+		"PROJECT_KEPT":      "kept",
+	}
+	h := &HubSpawner{Cfg: DefaultConfig(), Registry: f.ctl.reg, ProvidersConfigPath: f.tomlPath, CredentialsPath: f.credsPath, EvenerBinary: binary, RunDir: runDir}
+	entry, err := h.Spawn(t.Context(), hubcore.SpawnRequest{
+		Provider: "work", StateDir: f.stateDir, WorkingDir: root,
+		Resolved: launchconfig.Resolved{
+			Effective: launchconfig.Layer{Model: "work/house", Env: projectEnv},
+			Layers: map[launchconfig.LayerName]launchconfig.Layer{
+				launchconfig.LayerProject: {Env: projectEnv},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	process, err := os.FindProcess(entry.PID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = process.Kill() })
+
+	raw, err := os.ReadFile(filepath.Join(runDir, "child-env"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := strings.Split(strings.TrimSpace(string(raw)), "\n")
+	if got, _ := envLookup(env, "WORK_ENDPOINT_URL"); got != "" {
+		t.Fatalf("child WORK_ENDPOINT_URL = %q, want unset: a checkout-controlled launch file chose the provider endpoint", got)
+	}
+	if got, _ := envLookup(env, "PROJECT_KEPT"); got != "kept" {
+		t.Fatalf("child PROJECT_KEPT = %q, want the unrelated project key preserved", got)
+	}
+	if got := resolveChildProvider(t, env, "work/house"); got.Transport.BaseURL != "http://127.0.0.1:9/v1" {
+		t.Fatalf("child resolved provider endpoint = %q, want the user provider file's endpoint", got.Transport.BaseURL)
+	}
+
+	launchRaw, err := os.ReadFile(filepath.Join(root, "launchcheck-env"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	launchEnv := strings.Split(strings.TrimSpace(string(launchRaw)), "\n")
+	if got, _ := envLookup(launchEnv, "WORK_ENDPOINT_URL"); got != "" {
+		t.Fatalf("launch-check WORK_ENDPOINT_URL = %q, want unset: the preflight judged a redirected endpoint", got)
+	}
+	if err := process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+}

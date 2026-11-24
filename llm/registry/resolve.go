@@ -267,6 +267,14 @@ func (r *Registry) LiveListingAuthoritative(instance string) bool {
 	if !ok {
 		return false
 	}
+	// The roster's authority belongs to the transport that fetched it: a
+	// Copilot account's listing always goes through the configured provider
+	// transport (listsThroughConfiguredTransport), even when the instance's
+	// default row routes generation through a separate gateway with its own
+	// auth scheme.
+	if listsThroughConfiguredTransport(rec) {
+		return true
+	}
 	return r.listingTransport(rec).Auth == AuthOAuthGitHubCopilot
 }
 

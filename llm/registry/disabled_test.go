@@ -675,6 +675,34 @@ func TestApplyLiveListingAuthoritativeHidesStaticRows(t *testing.T) {
 	}
 }
 
+// TestLiveListingAuthoritativeFollowsConfiguredListingTransport pins the
+// authority rule to the transport that actually fetches the roster, not to a
+// default row that may override generation to a separate gateway. Discovery
+// for a Copilot account always uses the configured provider transport, so the
+// roster it fetched is authoritative even when the default row's own transport
+// authenticates differently.
+func TestLiveListingAuthoritativeFollowsConfiguredListingTransport(t *testing.T) {
+	t.Parallel()
+	r := copilotTestRegistry(t, `
+[providers.github-copilot]
+base = "github-copilot"
+default_model = "claude-x"
+[providers.github-copilot.models."claude-x"]
+auth = "bearer"
+base_url = "https://gateway.example.com/v1"
+`)
+	if !r.LiveListingAuthoritative("github-copilot") {
+		t.Fatal("the roster is fetched through the configured Copilot transport; its answer must be authoritative even though the default row routes generation with a separate auth scheme")
+	}
+	res, err := r.ResolveInstanceListing("github-copilot")
+	if err != nil {
+		t.Fatalf("ResolveInstanceListing: %v", err)
+	}
+	if res.Transport.Auth != AuthOAuthGitHubCopilot {
+		t.Fatalf("listing transport auth = %q, want the configured Copilot transport %q", res.Transport.Auth, AuthOAuthGitHubCopilot)
+	}
+}
+
 // liveClaudeRow is the advertised Copilot routing for the one live-proven
 // Claude row.
 func liveClaudeRow() Model {

@@ -397,3 +397,162 @@ func toolResultText(messages []llm.Message) string {
 	}
 	return b.String()
 }
+
+// userImageMessage is one user input carrying an image the session accepted
+// while a vision-capable model was selected.
+func userImageMessage(text string) llm.Message {
+	return buildUserInputMessage(text, []ImageAttachment{{
+		MediaType: "image/png",
+		Data:      []byte("png-bytes"),
+	}})
+}
+
+// userMessageImages returns every image payload riding in user messages.
+func userMessageImages(req llm.Request) [][]byte {
+	var out [][]byte
+	for _, m := range req.Messages {
+		if m.Role != llm.RoleUser {
+			continue
+		}
+		for _, p := range m.Content {
+			if p.Kind == llm.ContentImage && p.Image != nil {
+				out = append(out, p.Image.Data)
+			}
+		}
+	}
+	return out
+}
+
+// userImagesInHistory returns every image payload retained in the live
+// history, so a request-side projection can be checked against the transcript
+// copy it must not touch.
+func userImagesInHistory(history []schema.Turn) [][]byte {
+	var out [][]byte
+	for _, t := range history {
+		if t.Message.Role != llm.RoleUser {
+			continue
+		}
+		for _, p := range t.Message.Content {
+			if p.Kind == llm.ContentImage && p.Image != nil {
+				out = append(out, p.Image.Data)
+			}
+		}
+	}
+	return out
+}
+
+// TestImageBlindTargetDropsHistoricalUserImages is #7629: an attachment the
+// session accepted earlier must not reach a text-only target at all, even
+// though the transcript keeps it for the user and for a later capable model.
+func TestImageBlindTargetDropsHistoricalUserImages(t *testing.T) {
+	t.Parallel()
+	profile := newMiniMaxProfile("MiniMax-M2.7")
+	if profile.AcceptsImageInput() {
+		t.Fatal("test premise: the MiniMax fixture row must not accept image input")
+	}
+	adapter := &fakeAdapter{name: "minimax"}
+	sess := newSession(t, withProfile(profile), withAdapter(adapter))
+	sess.appendTurn(schema.TurnUserInput, userImageMessage("what is in this image?"))
+
+	req := runOneTurn(t, sess, adapter)
+	if got := userMessageImages(req); len(got) != 0 {
+		t.Fatalf("text-only target received %d historical user image(s); the bytes must stay in the transcript", len(got))
+	}
+	sess.mu.Lock()
+	history := append([]schema.Turn(nil), sess.history...)
+	sess.mu.Unlock()
+	if got := userImagesInHistory(history); len(got) != 1 {
+		t.Fatalf("live history carries %d user image(s), want the original 1: the request projection must not mutate stored turns", len(got))
+	}
+}
+
+// TestModelSwitchDropsHistoricalUserImagesForImageBlindTarget reproduces the
+// reported sequence: a vision model accepted an image, the session switched to
+// a text-only model, and the next image-free follow-up must dispatch without
+// replaying the old attachment.
+func TestModelSwitchDropsHistoricalUserImagesForImageBlindTarget(t *testing.T) {
+	t.Parallel()
+	vision := newAnthropicProfile("claude-opus-4-6")
+	if !vision.AcceptsImageInput() {
+		t.Fatal("test premise: the Anthropic fixture row must accept image input")
+	}
+	blind := newMiniMaxProfile("MiniMax-M2.7")
+	if blind.AcceptsImageInput() {
+		t.Fatal("test premise: the MiniMax fixture row must not accept image input")
+	}
+	adapter := &fakeAdapter{name: "minimax"}
+	sess := newSession(t,
+		withProfile(vision),
+		withAdapter(&fakeAdapter{name: "anthropic"}),
+		withAdapter(adapter),
+		withConfig(SessionConfig{
+			ResolveProfile: testResolverFull,
+			testOnly:       testConfig{skipGitSnapshot: true},
+		}),
+	)
+	sess.appendTurn(schema.TurnUserInput, userImageMessage("what is in this image?"))
+	if err := sess.SetModel("minimax/MiniMax-M2.7"); err != nil {
+		t.Fatalf("SetModel: %v", err)
+	}
+
+	req := runOneTurn(t, sess, adapter)
+	if got := userMessageImages(req); len(got) != 0 {
+		t.Fatalf("after switching to a text-only model, the follow-up replayed %d user image(s)", len(got))
+	}
+	sess.mu.Lock()
+	history := append([]schema.Turn(nil), sess.history...)
+	sess.mu.Unlock()
+	if got := userImagesInHistory(history); len(got) != 1 {
+		t.Fatalf("live history carries %d user image(s) after the switch, want the original 1", len(got))
+	}
+}
+
+// TestImageBlindTargetKeepsNewUserImage keeps the other half: an image added
+// with the current input still reaches the provider, so a provider that
+// refuses it answers with its actionable error instead of the attachment
+// vanishing silently.
+func TestImageBlindTargetKeepsNewUserImage(t *testing.T) {
+	t.Parallel()
+	profile := newMiniMaxProfile("MiniMax-M2.7")
+	if profile.AcceptsImageInput() {
+		t.Fatal("test premise: the MiniMax fixture row must not accept image input")
+	}
+	adapter := &fakeAdapter{name: "minimax"}
+	sess := newSession(t, withProfile(profile), withAdapter(adapter))
+	adapter.setSteps([]func(req llm.Request) llm.Response{
+		func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(communicateCall("c1", "ok")) },
+	})
+
+	// TRIPWIRE: scripted in-process adapter; 30s only catches a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "look at this", []ImageAttachment{{MediaType: "image/png", Data: []byte("new-png")}}); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	reqs := adapter.Requests()
+	if len(reqs) == 0 {
+		t.Fatal("no provider request recorded")
+	}
+	req := reqs[len(reqs)-1]
+	if got := userMessageImages(req); len(got) != 1 {
+		t.Fatalf("the newly added user image reached the request %d time(s), want 1 so the provider can refuse it", len(got))
+	}
+}
+
+// TestImageCapableTargetKeepsHistoricalUserImages keeps supported routes
+// unchanged: a row that accepts image input still sees the transcript's image.
+func TestImageCapableTargetKeepsHistoricalUserImages(t *testing.T) {
+	t.Parallel()
+	profile := newAnthropicProfile("claude-opus-4-6")
+	if !profile.AcceptsImageInput() {
+		t.Fatal("test premise: the Anthropic fixture row must accept image input")
+	}
+	adapter := &fakeAdapter{name: "anthropic"}
+	sess := newSession(t, withProfile(profile), withAdapter(adapter))
+	sess.appendTurn(schema.TurnUserInput, userImageMessage("what is in this image?"))
+
+	req := runOneTurn(t, sess, adapter)
+	if got := userMessageImages(req); len(got) != 1 {
+		t.Fatalf("image-capable target received %d user image(s), want the retained 1", len(got))
+	}
+}

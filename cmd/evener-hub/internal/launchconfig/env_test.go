@@ -342,3 +342,61 @@ func resolvedCopilotHost(t *testing.T, env map[string]string) string {
 	}
 	return u.Hostname()
 }
+
+// checkToEnv_ProjectEndpointExclusionsKeepTrustedValues pins the layering
+// around an endpoint input the project layer may not choose: a per-launch
+// override still wins, a trusted layer's value is restored, an inherited
+// parent value survives, and every unrelated project key is untouched.
+func checkToEnv_ProjectEndpointExclusionsKeepTrustedValues(t *testing.T) {
+	const key = "CUSTOM_ENDPOINT_URL"
+	resolved, diags := mergeLayers(map[LayerName]Layer{
+		LayerGlobal:  {Env: map[string]string{key: "https://global.example.test/v1", "GLOBAL_KEPT": "global"}},
+		LayerRepo:    {Env: map[string]string{key: "https://repo.example.test/v1", "REPO_KEPT": "repo"}},
+		LayerProject: {Env: map[string]string{key: "https://checkout.example.test/v1", "PROJECT_KEPT": "kept"}},
+	})
+	if len(diags) != 0 {
+		t.Fatalf("merge diagnostics = %v, want none for an ordinary endpoint variable", diags)
+	}
+	env := envSliceToMap(ToEnv(EnvInputs{
+		Resolved:             resolved,
+		ParentEnv:            []string{key + "=https://parent.example.test/v1"},
+		ProjectEnvExclusions: []string{key},
+	}))
+	if got := env[key]; got != "https://repo.example.test/v1" {
+		t.Fatalf("%s = %q, want the trusted repo layer's value restored over the global one", key, got)
+	}
+	if env["PROJECT_KEPT"] != "kept" || env["GLOBAL_KEPT"] != "global" {
+		t.Fatalf("unrelated env keys = %v, want the project and global keys preserved", env)
+	}
+
+	resolved, diags = mergeLayers(map[LayerName]Layer{
+		LayerGlobal:  {Env: map[string]string{key: "https://global.example.test/v1"}},
+		LayerProject: {Env: map[string]string{key: "https://checkout.example.test/v1"}},
+		LayerLaunch:  {Env: map[string]string{key: "https://launch.example.test/v1"}},
+	})
+	if len(diags) != 0 {
+		t.Fatalf("merge diagnostics = %v, want none", diags)
+	}
+	env = envSliceToMap(ToEnv(EnvInputs{
+		Resolved:             resolved,
+		ProjectEnvExclusions: []string{key},
+	}))
+	if got := env[key]; got != "https://launch.example.test/v1" {
+		t.Fatalf("%s = %q, want the per-launch override kept", key, got)
+	}
+
+	resolved, diags = mergeLayers(map[LayerName]Layer{
+		LayerProject: {Env: map[string]string{key: "https://checkout.example.test/v1"}},
+	})
+	if len(diags) != 0 {
+		t.Fatalf("merge diagnostics = %v, want none", diags)
+	}
+	env = envSliceToMap(ToEnv(EnvInputs{
+		Resolved:             resolved,
+		ParentEnv:            []string{key + "=https://parent.example.test/v1"},
+		ProjectEnvExclusions: []string{key},
+	}))
+	if got := env[key]; got != "https://parent.example.test/v1" {
+		t.Fatalf("%s = %q, want the inherited parent value kept", key, got)
+	}
+}
