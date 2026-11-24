@@ -4,6 +4,7 @@
   "cssFiles": [
     "styles/tokens.css",
     "styles/global.css",
+    "styles/tapfloor.module.css",
     "styles/sendbutton.module.css",
     "panes/session/composer/composer.module.css",
     "widgets/internal/lightbox.module.css",

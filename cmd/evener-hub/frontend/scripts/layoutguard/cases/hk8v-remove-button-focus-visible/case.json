@@ -3,6 +3,7 @@
   "description": "composer attachment tile: the remove button hides at rest and reveals on hover, so keyboard focus must reveal it too - a focused opacity:0 control is one you cannot see you are standing on (kata hk8v)",
   "cssFiles": [
     "styles/global.css",
+    "styles/tapfloor.module.css",
     "styles/tokens.css",
     "styles/sendbutton.module.css",
     "panes/session/composer/composer.module.css",

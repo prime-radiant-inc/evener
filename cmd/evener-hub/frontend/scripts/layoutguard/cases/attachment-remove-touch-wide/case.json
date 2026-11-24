@@ -3,6 +3,7 @@
   "description": "composer attachment tile on a wide touch screen (above the 900px phone breakpoint, coarse pointer): the remove control is visible at rest and meets the 44px tap floor, and its hit box never covers the thumbnail's centre or a neighbouring tile, so a tap on the image opens the lightbox instead of removing the attachment",
   "cssFiles": [
     "styles/global.css",
+    "styles/tapfloor.module.css",
     "styles/tokens.css",
     "styles/sendbutton.module.css",
     "panes/session/composer/composer.module.css",
