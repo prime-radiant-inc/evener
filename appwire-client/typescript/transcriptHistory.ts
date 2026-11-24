@@ -7,7 +7,7 @@ import { compareBootGeneration, liveBootGeneration } from "./bootGeneration";
 import { historyFallback, historyReplacesWindow, historyServingFacts } from "./historyServing";
 import type { HistoryState, ItemModel, OlderFrontier, QuotaRetryOutputBaseline, ThreadModel, TurnModel } from "./model";
 import { comparePositions, SYSTEM_PRELUDE_TURN_ID } from "./model";
-import { frontierFromCursor, olderFrontierOf, withOlderFrontier } from "./olderFrontier";
+import { frontierFromCursor, olderFrontierOf, olderHistoryExhausted, withOlderFrontier } from "./olderFrontier";
 import { isQuietYield } from "./quietYield";
 
 export { comparePositions } from "./model";
@@ -647,6 +647,7 @@ function overlayTurnId(
   overlayItem: OverlayItem,
   turns: readonly TurnModel[],
   runningTurnId: string | undefined,
+  transcriptStartLoaded: boolean,
 ): string {
   const fallback = overlayItem.turnId || overlayItem.item.turnId || runningTurnId || "";
   if (overlayItem.kind === "tool" && overlayItem.historyKey) {
@@ -663,15 +664,15 @@ function overlayTurnId(
     // Nothing loaded precedes the anchor. Entries missing before the first
     // visible item may be the notice's true owner, so the first visible turn
     // is not evidence. Show the notice only where its own turn places it: a
-    // not-yet-loaded own turn, or the transcript's start once
-    // that start is loaded. Otherwise keep it in the overlay until a page
-    // supplies its predecessor.
+    // not-yet-loaded own turn, or the transcript's start once the source has
+    // named the end of older history. Otherwise keep it in the overlay until a
+    // page supplies its predecessor.
     if (ownTurnId !== "" && (ownTurnId === runningTurnId || turns.some((turn) => turn.id === ownTurnId))) {
       return ownTurnId;
     }
     const earliest = earliestPosition(turns);
     if (earliest === undefined) return turns[0]?.id ?? (ownTurnId || SYSTEM_PRELUDE_TURN_ID);
-    return earliest.entry <= 1 ? (turns[0]?.id ?? "") : "";
+    return earliest.entry <= 1 && transcriptStartLoaded ? (turns[0]?.id ?? "") : "";
   }
   return fallback;
 }
@@ -725,10 +726,11 @@ function displayTurns(
   previous: readonly TurnModel[],
   imageSessionRoute: string | undefined,
   runningTurnId: string | undefined,
+  transcriptStartLoaded: boolean,
 ): TurnModel[] {
   const byTurn = new Map<string, OverlayItem[]>();
   for (const overlayItem of Object.values(overlay)) {
-    const id = overlayTurnId(overlayItem, recorded, runningTurnId);
+    const id = overlayTurnId(overlayItem, recorded, runningTurnId, transcriptStartLoaded);
     if (id === "") continue;
     const list = byTurn.get(id);
     if (list) list.push(overlayItem);
@@ -781,7 +783,14 @@ export function withDisplay<M extends ThreadModel>(
     ...model,
     history,
     overlay: shown,
-    turns: displayTurns(history.turns, shown, model.turns, modelImageSessionRoute(model), model.runningTurnId),
+    turns: displayTurns(
+      history.turns,
+      shown,
+      model.turns,
+      modelImageSessionRoute(model),
+      model.runningTurnId,
+      olderHistoryExhausted(model),
+    ),
   };
 }
 

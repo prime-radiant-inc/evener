@@ -996,6 +996,31 @@ describe("the live overlay", () => {
     expect(shown(model)).toEqual([["t1", [notice.key, itemKey("t1", 0)]]]);
   });
 
+  test("a startup notice waits when a truncated window omits the prelude behind it", () => {
+    // The warning was emitted before any recorded entry, so it anchors at
+    // entry 0. The read truncated the prelude behind a real older cursor, so
+    // the oldest loaded entry is 1. Entry 1 alone does not make this window
+    // the transcript's beginning.
+    const notice = noticeOverlay(0, 0, "");
+    const tail = hydrate([turn("t1", 1, [item("t1", 0)])], {
+      overlay: [notice],
+      olderCursor: "cursor_before_prelude",
+    });
+    expect(shown(tail)).toEqual([["t1", [itemKey("t1", 0)]]]);
+    expect(tail.overlay?.[notice.key]).toBe(notice);
+
+    const prelude = item("turn_system", 0, {
+      type: "systemMessage",
+      eventKind: "system_prompt",
+      position: { entry: 0, item: 0 },
+    });
+    const placed = mergeOlderItemPage(tail, page([turn("turn_system", 1, [prelude])]));
+    expect(shown(placed)).toEqual([
+      ["turn_system", [prelude.id, notice.key]],
+      ["t1", [itemKey("t1", 0)]],
+    ]);
+  });
+
   test("a running turn's warning with no recorded predecessor stays on the running turn", () => {
     const notice = noticeOverlay(0, 5, "t_running");
     const model = hydrate([turn("t_old", 51, [item("t_old", 50)])], {

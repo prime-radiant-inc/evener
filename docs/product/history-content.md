@@ -293,10 +293,12 @@ shared projection retains a notice in the overlay while no held item precedes
 its anchor and the loaded window starts after the transcript's first entry, so
 the first visible turn never stands in for the notice's owner. A later page
 that supplies the anchor's neighbor renders the notice once, at that neighbor.
-A notice whose own turn is loaded or running, and a prelude notice once the
-transcript's start is loaded, render without a recorded predecessor. A notice
-that names no turn is placed by its anchor alone; a different turn running now
-does not adopt it.
+A notice whose own turn is loaded or running renders without a recorded
+predecessor, and so does a prelude notice once a source read or page names the
+end of older history. A window whose oldest entry is 0 or 1 is not that proof:
+a truncated read carries an older cursor for the omitted prelude, and the
+notice waits for that page. A notice that names no turn is placed by its anchor
+alone; a different turn running now does not adopt it.
 
 The browser repository persists normal-page omissions only inside the original
 wire interval. The cache commits rows, omission fences, certificates and header
