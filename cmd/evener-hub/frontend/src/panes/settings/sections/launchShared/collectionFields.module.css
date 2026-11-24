@@ -1,7 +1,5 @@
 .section {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
+  composes: stack2 from "../../../../styles/surface.module.css";
 }
 
 .envField {

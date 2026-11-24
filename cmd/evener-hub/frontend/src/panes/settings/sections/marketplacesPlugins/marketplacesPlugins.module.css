@@ -5,15 +5,11 @@
  * 3-4 times). */
 
 .page {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-5);
+  composes: stack5 from "../../../../styles/surface.module.css";
 }
 
 .section {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
+  composes: stack2 from "../../../../styles/surface.module.css";
 }
 
 .help {
@@ -21,12 +17,9 @@
 }
 
 .list {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-  margin: 0;
-  padding: 0;
-  list-style: none;
+  composes: stack1 from "../../../../styles/surface.module.css";
+  /* biome-ignore lint/suspicious/noDuplicateProperties: css-modules composes takes one declaration per composed class, each with its own `from` */
+  composes: listReset from "../../../../styles/surface.module.css";
 }
 
 /* The layout inside a row's outlined Card. */
@@ -97,9 +90,7 @@
 }
 
 .treeChildren {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
+  composes: stack1 from "../../../../styles/surface.module.css";
   margin: 0 0 0 var(--space-5);
   padding: 0;
   list-style: none;
@@ -121,9 +112,7 @@
 }
 
 .metaList {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
+  composes: stack2 from "../../../../styles/surface.module.css";
   margin: var(--space-4) 0;
 }
 
@@ -135,16 +124,12 @@
  * above the meta table, then Refresh, then the danger zone under a divider -
  * the same shape as the provider editor. */
 .sheetForm {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
+  composes: stack3 from "../../../../styles/surface.module.css";
   margin-bottom: var(--space-4);
 }
 
 .sheetActions {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
+  composes: stack1 from "../../../../styles/surface.module.css";
 }
 
 .sheetDivider {

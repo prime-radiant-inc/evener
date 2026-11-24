@@ -71,7 +71,6 @@ test("attention substitution retains the source lifetime", async () => {
   const origin = captureAttentionPlacement();
   if (!origin) throw new Error("missing fixture origin");
 
-  let complete: BlobCallback | undefined;
   vi.stubGlobal(
     "Image",
     class {
@@ -87,9 +86,12 @@ test("attention substitution retains the source lifetime", async () => {
   vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
   vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
     drawImage() {},
+    fillRect() {},
   } as unknown as CanvasRenderingContext2D);
-  vi.spyOn(HTMLCanvasElement.prototype, "toBlob").mockImplementation((callback) => {
-    complete = callback;
+  const completePromise = new Promise<BlobCallback>((resolve) => {
+    vi.spyOn(HTMLCanvasElement.prototype, "toBlob").mockImplementation((callback) => {
+      resolve(callback);
+    });
   });
   const rejected: string[] = [];
   createAttachmentOperations(composer.editor, composer.attachments).ingestFiles(
@@ -111,7 +113,7 @@ test("attention substitution retains the source lifetime", async () => {
       }
     });
   });
-  if (!complete) throw new Error("encoder did not reach browser canvas");
+  const complete = await completePromise;
   complete(new Blob([new Uint8Array([9, 8, 7])], { type: "image/png" }));
   await settled;
   expect(rejected).toEqual([]);

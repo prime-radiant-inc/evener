@@ -565,13 +565,13 @@ function ComposerWithSubmission({
             : { start: cursor, end: cursor };
         return { text: textRef.current, cursor, selection };
       },
-      write: (nextText, cursor, editSource, splice) => {
+      write: (nextText, cursor, editSource, splice, restoredMentions) => {
         // Background cleanup changes this editor without claiming a shared
         // draft that another composer has edited in the meantime. Ownership is
         // the persisted revision identity, not a tab-local counter: two tabs
         // share one draft, and the counter cannot see the other tab's write.
         const mayPersist = editSource === undefined || editSource === "edit" || source.ownsDraftRevision();
-        writeDraft(nextText, mayPersist, editSource, splice);
+        writeDraft(nextText, mayPersist, editSource, splice, restoredMentions);
         scheduleCursorRestore(cursor);
       },
     }),

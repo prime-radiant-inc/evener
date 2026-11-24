@@ -27,112 +27,45 @@
   composes: chevron from "../internal/fieldTrigger.module.css";
 }
 
-/* The floating panel's own content padding/sizing - widgets/popover's shared
- * chassis supplies position/background/border/radius/animation; this widget
- * only adds the padding and a sane width so the search field and the grouped
- * list don't read as cramped. Width is capped against the viewport so the
- * same panel works on a phone without a separate mobile rendering. The cap
- * reserves both of computePosition's EDGE_MARGINs (8px a side). */
 .popoverPanel {
-  padding: var(--space-3);
-  width: 380px;
-  max-width: calc(100dvw - var(--space-4));
+  composes: popoverPanel from "../internal/pickerPanel.module.css";
 }
 
-/* The open picker: the search field over one internally-scrolling list. */
 .panel {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
+  composes: panel from "../internal/pickerPanel.module.css";
 }
 
-/* Matches Input's own field recipe (32px control height, hairline
- * edge, control radius) so the picker's field is the same object the rest of
- * the app's forms use. */
+/* A model id reads as prose, so this picker's field keeps the sans face. */
 .input {
-  display: block;
-  width: 100%;
-  height: 32px;
-  padding: 0 var(--space-3);
-  border: 1px solid var(--edge);
-  border-radius: var(--radius-control);
-  background: var(--surface-1);
-  color: var(--ink-hi);
+  composes: input from "../internal/pickerPanel.module.css";
   font-family: var(--font-sans);
-  font-size: var(--font-size-control);
-}
-
-.input:focus-visible {
-  outline: var(--focus-ring);
-  outline-offset: 2px;
-}
-
-.error {
-  margin: 0;
-  color: var(--ink-mid);
-  font-size: var(--font-size-ui);
 }
 
 /* Provider (and Recent) section eyebrow: small, quiet, not an option. */
 .groupRow {
-  composes: eyebrowType from "../../styles/text.module.css";
-  padding: var(--space-2) var(--space-2) var(--space-1);
-  color: var(--ink-mid);
+  composes: groupRow from "../internal/pickerPanel.module.css";
+  /* biome-ignore lint/suspicious/noDuplicateProperties: css-modules composes takes one declaration per composed class, each with its own `from` */
+  composes: groupLabel from "../internal/pickerPanel.module.css";
 }
 
 .row {
-  display: flex;
-  align-items: baseline;
-  gap: var(--space-2);
-  padding: var(--space-1) var(--space-2);
-  border-radius: var(--radius-control);
-  color: var(--ink-hi);
-  font-size: var(--font-size-ui);
-  cursor: pointer;
-  transition: background-color var(--motion-duration-hover) var(--motion-easing-standard);
+  composes: row from "../internal/pickerPanel.module.css";
 }
 
-.row:hover {
-  background: var(--hover-1);
-}
-
-/* The active option is a virtual (aria-activedescendant), not real DOM focus -
- * real focus stays on the input the whole time - so this is a plain
- * background wash, not a :focus-visible rule. */
 .rowActive {
-  background: var(--hover-2);
+  composes: rowActive from "../internal/pickerPanel.module.css";
 }
 
-/* The model name is what the user is actually reading and choosing by, so it
- * NEVER yields: flex-shrink 0 keeps it at its natural width and the metadata
- * absorbs the entire overflow (see .meta). Model names are short; the meta
- * line - capabilities, cost, context window - is what runs long. It still
- * ellipsizes rather than overflowing, for a pathologically long name. */
 .rowName {
-  composes: truncate from "../../styles/text.module.css";
-  flex: 0 0 auto;
-  max-width: 100%;
+  composes: rowName from "../internal/pickerPanel.module.css";
 }
 
-/* The current model's marker. Paired with aria-selected on the row, never
- * carrying the meaning alone. */
 .check {
-  color: var(--accent);
-  font-size: var(--font-size-caption);
+  composes: check from "../internal/pickerPanel.module.css";
 }
 
-/* Per-row metadata (provider for the mixed Recent group, capabilities, cost,
- * context window): passive small text, pushed to the row's trailing edge. */
-/* min-width: 0 is what lets a nowrap flex item shrink at all - without it
- * this long line would refuse to give, and the row would overflow (or, with a
- * shrinkable name, starve the name instead). */
 .meta {
-  composes: truncate from "../../styles/text.module.css";
-  flex: 0 1 auto;
-  min-width: 0;
-  margin-left: auto;
-  color: var(--ink-mid);
-  font-size: var(--font-size-caption);
+  composes: meta from "../internal/pickerPanel.module.css";
 }
 
 /* A provider the hub couldn't reach, in place where its section would be:

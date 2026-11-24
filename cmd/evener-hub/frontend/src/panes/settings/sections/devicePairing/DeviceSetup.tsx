@@ -135,9 +135,11 @@ export function DeviceSetup({ initialOrigin, method }: { initialOrigin: string; 
               ]}
             />
           </FormRow>
-          <Button size="sm" disabled={busy} onClick={() => void create()}>
-            {busy ? "Creating invitation…" : "Create invitation"}
-          </Button>
+          <div className={controlsClass}>
+            <Button size="sm" disabled={busy} onClick={() => void create()}>
+              {busy ? "Creating invitation…" : "Create invitation"}
+            </Button>
+          </div>
         </>
       ) : (
         <>

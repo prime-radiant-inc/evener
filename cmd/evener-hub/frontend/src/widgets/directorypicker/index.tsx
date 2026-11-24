@@ -2,12 +2,20 @@ import { basename, childrenPrefix, friendlyErrorMessage, parentOf } from "@evene
 import { type FormEvent, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Button } from "../button";
+import { Chevron } from "../chevron";
 import { Dialog } from "../dialog";
+import { Disclosure } from "../disclosure";
+import { EmptyState } from "../emptystate";
+import { InlineNotice } from "../inlinenotice";
 import { ownerDocumentOf } from "../internal/documentRealm";
 import { requireClass } from "../internal/requireClass";
 import { usePortalDocument } from "../internal/usePortalDocument";
+import { ListRow } from "../listrow";
+import { Loader } from "../loader";
 import { ToolIcon } from "../toolicon";
 import styles from "./directorypicker.module.css";
+
+const EMPTY_FOLDERS_MESSAGE = "No subfolders to display.";
 
 export interface DirectoryPickerProps {
   value: string;
@@ -32,7 +40,8 @@ const CLASS = {
   input: requireClass(styles.input, "directorypicker.module.css", "input"),
   listHeading: requireClass(styles.listHeading, "directorypicker.module.css", "listHeading"),
   folders: requireClass(styles.folders, "directorypicker.module.css", "folders"),
-  row: requireClass(styles.row, "directorypicker.module.css", "row"),
+  rowGlyph: requireClass(styles.rowGlyph, "directorypicker.module.css", "rowGlyph"),
+  rowLabel: requireClass(styles.rowLabel, "directorypicker.module.css", "rowLabel"),
   path: requireClass(styles.path, "directorypicker.module.css", "path"),
   footer: requireClass(styles.footer, "directorypicker.module.css", "footer"),
   destination: requireClass(styles.destination, "directorypicker.module.css", "destination"),
@@ -69,6 +78,7 @@ export function DirectoryPicker({
   const [creating, setCreating] = useState(false);
   const [folderName, setFolderName] = useState("");
   const [busy, setBusy] = useState(false);
+  const [earlierOpen, setEarlierOpen] = useState(false);
   const request = useRef(0);
   const mounted = useRef(true);
   const pathInput = useRef<HTMLInputElement>(null);
@@ -232,23 +242,23 @@ export function DirectoryPicker({
         <aside className={CLASS.recents} aria-label={listRecents ? "Recent directories" : "Locations"}>
           {listRecents && <h3>Recent</h3>}
           {recents.map((path) => (
-            <button
-              className={CLASS.row}
-              type="button"
+            <ListRow
               key={path}
+              variant="plain"
+              label={basename(path) || "/"}
+              meta={parentOf(path)}
               // The sidebar truncates this text, so the full path rides on
               // hover for sighted users; aria-label already carries it for
               // assistive tech.
               title={path}
               disabled={busy}
               aria-label={`Open recent ${path}`}
-              onClick={() => void browse(path)}
-            >
-              <strong>{basename(path) || "/"}</strong>
-              <span className={CLASS.path}>{parentOf(path)}</span>
-            </button>
+              onSelect={() => void browse(path)}
+            />
           ))}
-          {listRecents && recents.length === 0 && <p className={CLASS.status}>No recent directories.</p>}
+          {listRecents && recents.length === 0 && (
+            <EmptyState title="No recent directories." size="compact" reason="empty" />
+          )}
           <h3>Locations</h3>
           <Button variant="quiet" disabled={busy} onClick={() => void browse("~")}>
             Home
@@ -262,21 +272,25 @@ export function DirectoryPicker({
               disabled={busy || current === "/"}
               onClick={() => void browse(parentOf(current))}
             >
-              ↑
+              <Chevron direction="up" />
             </Button>
             <nav className={CLASS.crumbs} aria-label="Directory breadcrumbs">
               <Button variant="quiet" disabled={busy} onClick={() => void browse("/")}>
                 /
               </Button>
               {crumbs.length > 3 && (
-                <details>
-                  <summary aria-label="Earlier directories">…</summary>
+                <Disclosure
+                  summary="…"
+                  summaryAriaLabel={() => "Earlier directories"}
+                  open={earlierOpen}
+                  onOpenChange={setEarlierOpen}
+                >
                   {crumbs.slice(0, -3).map((crumb) => (
                     <Button key={crumb.path} variant="quiet" disabled={busy} onClick={() => void browse(crumb.path)}>
                       {crumb.label}
                     </Button>
                   ))}
-                </details>
+                </Disclosure>
               )}
               {crumbs.slice(-3).map((crumb) => (
                 <Button variant="quiet" key={crumb.path} disabled={busy} onClick={() => void browse(crumb.path)}>
@@ -371,44 +385,43 @@ export function DirectoryPicker({
               </div>
             </form>
           )}
-          {error && (
-            <p className={CLASS.status} role="alert">
-              {error}
-            </p>
-          )}
+          {error && <InlineNotice tone="danger">{error}</InlineNotice>}
           <section
             className={CLASS.folders}
             aria-label="Folders"
             aria-busy={!pathEdited && entries === null && error === null}
           >
+            <div role="status" data-state={entries !== null && entries.length === 0 ? "empty" : undefined}>
+              {entries !== null && entries.length === 0 && (
+                <EmptyState title={EMPTY_FOLDERS_MESSAGE} size="compact" reason="empty" />
+              )}
+            </div>
             {pathEdited ? (
               <p className={CLASS.status} role="status" data-state="edited">
                 Press Go to browse this path.
               </p>
             ) : entries === null ? (
-              !error && (
-                <p className={CLASS.status} role="status" data-state="loading">
-                  Loading directories…
-                </p>
-              )
-            ) : entries.length === 0 ? (
-              <p className={CLASS.status} role="status" data-state="empty">
-                No subfolders to display.
-              </p>
+              !error && <Loader label="Loading directories…" />
             ) : (
+              entries.length > 0 &&
               entries.map((path) => (
-                <button
-                  type="button"
-                  className={CLASS.row}
-                  disabled={busy}
-                  aria-label={`Open ${path}`}
+                <ListRow
                   key={path}
-                  onClick={() => void browse(path)}
-                >
-                  <DirectoryIcon />
-                  <span>{basename(path)}</span>
-                  <span aria-hidden="true">›</span>
-                </button>
+                  variant="plain"
+                  leading={
+                    <span className={CLASS.rowGlyph}>
+                      <DirectoryIcon />
+                    </span>
+                  }
+                  label={<span className={CLASS.rowLabel}>{basename(path)}</span>}
+                  // The drill glyph is row content: ListRow's trailing slot is
+                  // for a real control, and a decorative mark there would sit
+                  // outside the row's single click target.
+                  value={<Chevron direction="right" />}
+                  aria-label={`Open ${path}`}
+                  disabled={busy}
+                  onSelect={() => void browse(path)}
+                />
               ))
             )}
           </section>

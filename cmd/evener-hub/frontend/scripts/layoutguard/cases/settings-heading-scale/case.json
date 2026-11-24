@@ -1,0 +1,21 @@
+{
+  "name": "settings-heading-scale",
+  "description": "Settings headings all come from the shared surface recipe: a section heading resolves to the pane-title size, a subsection heading to the body size, and both carry zero margins, so no section can regress to the user-agent heading scale.",
+  "cssFiles": [
+    "styles/global.css",
+    "styles/tokens.css",
+    "styles/surface.module.css"
+  ],
+  "viewport": {
+    "width": 900,
+    "height": 700,
+    "deviceScaleFactor": 1,
+    "mobile": false
+  },
+  "mutation": {
+    "declaration": "styles/surface.module.css: .settingsSectionHeadingPaneTitle { font-size: var(--font-size-pane-title) } changed to var(--font-size-body), and separately .settingsSectionHeading { margin: 0 } deleted",
+    "verified": "2026-11-24",
+    "expect": "fail",
+    "note": "The pane-title mutation failed with 'section heading font-size is 15px, expected the pane-title probe 20px'; deleting the margin reset failed with 'section heading margins are 16.6px/16.6px, expected 0/0; subsection heading margins are 15px/15px, expected 0/0'. Both were reverted and the case passed again."
+  }
+}

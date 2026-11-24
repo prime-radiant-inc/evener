@@ -5,9 +5,16 @@ import { WireError } from "@evener/appwire-client";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, test, vi } from "vitest";
+import rawNoticeStyles from "../inlinenotice/inlinenotice.module.css";
+import { requireClass } from "../internal/requireClass";
 // ModelCatalog is both the component (value) and the envelope interface (type);
 // a single import brings in both meanings via declaration merging.
 import { ModelCatalog, type ModelCatalogEntry, ModelCatalogPanel } from "./index";
+
+const noticeClass = {
+  notice: requireClass(rawNoticeStyles.notice, "inlinenotice.module.css", "notice"),
+  danger: requireClass(rawNoticeStyles.danger, "inlinenotice.module.css", "danger"),
+};
 
 const SONNET: ModelCatalogEntry = {
   provider: "anthropic",
@@ -68,7 +75,9 @@ test("a synchronously throwing catalog loader shows an inline error", async () =
     },
   });
   await userEvent.setup().click(openTrigger());
-  expect(await screen.findByRole("alert")).toBeTruthy();
+  const alert = await screen.findByRole("alert");
+  expect(alert.classList.contains(noticeClass.notice)).toBe(true);
+  expect(alert.classList.contains(noticeClass.danger)).toBe(true);
 });
 
 test("an open picker refreshes selectable models when provider configuration changes", async () => {
@@ -569,10 +578,13 @@ describe("keyboard", () => {
     const combo = await openPicker(user);
     await user.type(combo, "haiku");
     deliverCatalog(CATALOG);
-    await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(1));
-
-    const id = combo.getAttribute("aria-activedescendant");
-    expect(id ? document.getElementById(id)?.textContent : null).toContain("Claude Haiku 4.5");
+    // The catalog arrival renders the rows first, and the panel's first-match
+    // effect activates one in a later commit; wait for both states together.
+    await waitFor(() => {
+      expect(screen.getAllByRole("option")).toHaveLength(1);
+      const id = combo.getAttribute("aria-activedescendant");
+      expect(id ? document.getElementById(id)?.textContent : null).toContain("Claude Haiku 4.5");
+    });
     await user.keyboard("{Enter}");
     expect(onChange).toHaveBeenCalledWith("anthropic/claude-haiku-4-5");
   });
@@ -673,7 +685,9 @@ test("a scroll does not dismiss the open picker", async () => {
 
 test("a row hovers with the resting wash and transitions on background-color", () => {
   const here = dirname(fileURLToPath(import.meta.url));
-  const css = readFileSync(join(here, "modelCatalog.module.css"), "utf8");
+  const css = readFileSync(join(here, "../internal/pickerPanel.module.css"), "utf8");
+  const local = readFileSync(join(here, "modelCatalog.module.css"), "utf8");
+  expect(/\.row\s*\{[^}]*composes: row from "\.\.\/internal\/pickerPanel\.module\.css"/.test(local)).toBe(true);
   const rowRule = /\.row\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
   expect(rowRule).toContain("transition: background-color var(--motion-duration-hover) var(--motion-easing-standard)");
   const hoverRule = /\.row:hover\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
@@ -682,7 +696,11 @@ test("a row hovers with the resting wash and transitions on background-color", (
 
 test("the active (virtual-focus) row carries the selected wash", () => {
   const here = dirname(fileURLToPath(import.meta.url));
-  const css = readFileSync(join(here, "modelCatalog.module.css"), "utf8");
+  const css = readFileSync(join(here, "../internal/pickerPanel.module.css"), "utf8");
+  const local = readFileSync(join(here, "modelCatalog.module.css"), "utf8");
+  expect(/\.rowActive\s*\{[^}]*composes: rowActive from "\.\.\/internal\/pickerPanel\.module\.css"/.test(local)).toBe(
+    true,
+  );
   const rule = /\.rowActive\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
   expect(rule).toContain("background: var(--hover-2)");
 });

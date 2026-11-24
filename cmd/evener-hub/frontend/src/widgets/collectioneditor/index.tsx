@@ -1,7 +1,9 @@
 import { type FormEvent, type ReactNode, useState } from "react";
 import { Button } from "../button";
 import { CloseIcon } from "../dialog/CloseIcon";
+import { EmptyState } from "../emptystate";
 import { IconButton } from "../iconbutton";
+import { InlineNotice } from "../inlinenotice";
 import { Input } from "../input";
 import { requireClass } from "../internal/requireClass";
 import { VisuallyHidden } from "../visuallyhidden";
@@ -70,12 +72,10 @@ const CLASS = {
   list: requireClass(styles.list, "collectioneditor.module.css", "list"),
   row: requireClass(styles.row, "collectioneditor.module.css", "row"),
   content: requireClass(styles.content, "collectioneditor.module.css", "content"),
-  empty: requireClass(styles.empty, "collectioneditor.module.css", "empty"),
   inherited: requireClass(styles.inherited, "collectioneditor.module.css", "inherited"),
   inheritedTag: requireClass(styles.inheritedTag, "collectioneditor.module.css", "inheritedTag"),
   addForm: requireClass(styles.addForm, "collectioneditor.module.css", "addForm"),
   addField: requireClass(styles.addField, "collectioneditor.module.css", "addField"),
-  error: requireClass(styles.error, "collectioneditor.module.css", "error"),
 };
 
 /**
@@ -141,8 +141,8 @@ export function CollectionEditor<T>({
     <div className={CLASS.root}>
       <ul aria-label={label} className={CLASS.list}>
         {items.length === 0 && inheritedItems.length === 0 ? (
-          <li className={CLASS.empty} data-reason="empty">
-            {emptyMessage}
+          <li>
+            <EmptyState title={emptyMessage} size="compact" reason="empty" />
           </li>
         ) : (
           <>
@@ -185,11 +185,7 @@ export function CollectionEditor<T>({
           {addButtonLabel}
         </Button>
       </form>
-      {error !== null && (
-        <p role="alert" className={CLASS.error}>
-          {error}
-        </p>
-      )}
+      {error !== null && <InlineNotice tone="danger">{error}</InlineNotice>}
     </div>
   );
 }

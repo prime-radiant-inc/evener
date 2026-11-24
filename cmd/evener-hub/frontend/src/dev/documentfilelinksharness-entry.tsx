@@ -8,19 +8,17 @@ import { selectLocation } from "../stores/navigation/selectors";
 import { navigationStore } from "../stores/navigation/store";
 import { Markdown } from "../widgets/markdown";
 import { DocumentFileLinksFixture, startFileLinksFixture } from "./DocumentFileLinksFixture";
+import { mountHarness } from "./mountHarness";
 import { NestedFocusProbe } from "./NestedFocusProbe";
-import "../styles/tokens.css";
-import "../styles/global.css";
 
-const root = document.getElementById("root");
-if (!root) throw new Error("document harness missing root");
 const query = new URLSearchParams(location.search);
 const fixtureRef = query.get("ref") ?? "";
 const childRef = query.get("child");
 // The dev page is fetched through Vite's filesystem route, but the shell must
 // receive a genuine product session URL rather than that development filename.
 history.replaceState(null, "", `/s/${encodeURIComponent(fixtureRef)}`);
-createRoot(root).render(
+mountHarness(
+  "documentfilelinksharness",
   <DocumentFileLinksFixture
     probe={
       childRef ? (

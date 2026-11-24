@@ -1,4 +1,4 @@
-import { MAX_ATTACHMENT_BYTES } from "@evener/appwire-client";
+import { IMAGE_JPEG_QUALITY, MAX_ATTACHMENT_BYTES, MAX_IMAGE_LONG_EDGE } from "@evener/appwire-client";
 import { randomUUID } from "expo-crypto";
 import { File } from "expo-file-system";
 import { ImageManipulator, SaveFormat } from "expo-image-manipulator";
@@ -69,22 +69,18 @@ function measure(uri: string): Promise<{ width: number; height: number }> {
  * JPEG it would lose its sharp text and its transparency. */
 function sendsAsIs(image: PickedImage, size: { width: number; height: number }): boolean {
 	return (
-		image.type === "image/png" && Math.max(size.width, size.height) <= LONG_EDGE && image.size <= MAX_ATTACHMENT_BYTES
+		image.type === "image/png" &&
+		Math.max(size.width, size.height) <= MAX_IMAGE_LONG_EDGE &&
+		image.size <= MAX_ATTACHMENT_BYTES
 	);
 }
 
-// A camera photo is 12 to 48 megapixels; staged whole, even as JPEG it can
-// pass the 8 MB attachment limit (#3099). Scaled so its long edge is at most
-// 2048 px and saved at this quality, it comes out a few MB at most.
-const LONG_EDGE = 2048;
-const JPEG_QUALITY = 0.85;
-
 type Resize = { width: number } | { height: number } | null;
 
-/** Scales the long edge down to LONG_EDGE; a smaller image is never enlarged. */
+/** Scales the long edge down to MAX_IMAGE_LONG_EDGE; a smaller image is never enlarged. */
 function fitResize(width: number, height: number): Resize {
-	if (Math.max(width, height) <= LONG_EDGE) return null;
-	return width >= height ? { width: LONG_EDGE } : { height: LONG_EDGE };
+	if (Math.max(width, height) <= MAX_IMAGE_LONG_EDGE) return null;
+	return width >= height ? { width: MAX_IMAGE_LONG_EDGE } : { height: MAX_IMAGE_LONG_EDGE };
 }
 
 type Rendered = Awaited<ReturnType<ReturnType<typeof ImageManipulator.manipulate>["renderAsync"]>>;
@@ -107,7 +103,7 @@ async function render<T>(uri: string, resize: Resize, use: (rendered: Rendered) 
 }
 
 async function saveJpeg(rendered: Rendered): Promise<string> {
-	const result = await rendered.saveAsync({ format: SaveFormat.JPEG, compress: JPEG_QUALITY, base64: true });
+	const result = await rendered.saveAsync({ format: SaveFormat.JPEG, compress: IMAGE_JPEG_QUALITY, base64: true });
 	try {
 		if (!result.base64) throw new Error("Image data is unavailable.");
 		return result.base64;

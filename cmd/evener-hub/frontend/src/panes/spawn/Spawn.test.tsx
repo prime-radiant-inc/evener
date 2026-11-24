@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import type { LaunchOption } from "@evener/appwire-client";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { expect, onTestFinished, test, vi } from "vitest";
+import { stubViewportCapabilities } from "../../shell/appShellTestUtils";
 import { MOBILE_QUERY } from "../../shell/useIsMobile";
 import { connectionStore } from "../../stores/connection";
 import { readModuleCss, topRuleBlock } from "../../styles/cssBlock";
@@ -329,13 +330,14 @@ test("an unfocused pane never focuses the prompt field on mount", async () => {
   expect(document.activeElement).not.toBe(screen.getByRole("textbox", { name: "Prompt" }));
 });
 
-test("a focused pane never focuses the prompt field on mount on mobile", async () => {
-  vi.stubGlobal("matchMedia", ((query: string) => ({
-    matches: true,
-    media: query,
-    addEventListener() {},
-    removeEventListener() {},
-  })) as unknown as typeof window.matchMedia);
+// Both portrait phones and wide landscape phones (past the 899px breakpoint)
+// have coarse pointers: mount autofocus follows primary pointer capability so
+// neither pops the on-screen keyboard on load.
+test.each([
+  { label: "mobile", capabilities: { mobile: true, fineHover: false } },
+  { label: "a wide landscape phone", capabilities: { mobile: false, fineHover: false } },
+])("a focused pane never focuses the prompt field on mount on $label", async ({ capabilities }) => {
+  stubViewportCapabilities(capabilities);
   renderSpawn(readyClient());
   await settled();
   expect(document.activeElement).not.toBe(screen.getByRole("textbox", { name: "Prompt" }));
@@ -720,7 +722,12 @@ test("survives a null data payload from either list RPC", async () => {
 
   // The panel is up, listing nothing, rather than having thrown its tree away.
   expect(await screen.findByRole("textbox", { name: "Path" })).toBeTruthy();
-  await waitFor(() => expect(document.querySelector('[role="status"][data-state="empty"]')).not.toBeNull());
+  await waitFor(() => {
+    const folders = document.querySelector('section[aria-label="Folders"]');
+    if (folders === null) throw new Error("Folders region missing");
+    expect(folders.querySelector('[role="status"][data-state="empty"]')).not.toBeNull();
+    expect(folders.querySelector('[data-testid="empty-state"]')).not.toBeNull();
+  });
 });
 
 test("offers to create a missing directory, then creates it and spawns", async () => {
