@@ -1205,12 +1205,12 @@ func waitForOwnedJobDrainGeneration(t *testing.T, child *subagent, entered <-cha
 	}
 }
 
-// parkStableAttentionFinalization holds a finished owned shell between its
-// stable attention arm and its running-map delete. It returns wait, which
-// blocks until the child has executed its first tool after the completion
-// wake (the post-check quiet yield), and release, which lets the finalization
-// continue. Cleanup releases the hook so a failed assertion cannot wedge the
-// finalizer.
+// parkStableAttentionFinalization holds a finished owned shell right after its
+// stable attention arm, before the delivered acknowledgement and its
+// running-map delete. The returned wait function blocks until the child has
+// executed its first tool after the completion wake (the post-check quiet
+// yield); release lets the finalization continue. Cleanup releases the hook so
+// a failed assertion cannot wedge the finalizer.
 func parkStableAttentionFinalization(ctx context.Context, t *testing.T, child *subagent) (wait, release func()) {
 	t.Helper()
 	attentionArmed := make(chan struct{})
@@ -2147,10 +2147,11 @@ func TestSubagentOwnedJobDrainQuietYieldDefersSubagentStopHook(t *testing.T) {
 		},
 		{
 			// The same sequence with the finished job's finalization held
-			// between its stable attention arm and its running-map delete. The
-			// notification wake must still refuse the post-check quiet yield:
-			// the completion is already the delegate's, so the finalizing job
-			// is not drainable work (#7605).
+			// right after its stable attention arm, before the delivered
+			// acknowledgement and the running-map delete. The notification wake
+			// must still refuse the post-check quiet yield: the completion is
+			// already the delegate's, so the finalizing job is not drainable
+			// work (#7605).
 			name:               "stop_blocked_report_then_quiet_yield_parked_finalization",
 			decision:           `{}`,
 			childStopDecisions: stopBlockedStopDecisions,
