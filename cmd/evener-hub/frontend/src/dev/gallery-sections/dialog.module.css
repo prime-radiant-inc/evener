@@ -5,10 +5,6 @@
   min-height: 280px;
 }
 
-.reopen {
-  composes: reopen from "./gallery-frame.module.css";
-}
-
 /* The panelClassName/bodyClassName demo: both land on the shared chassis. */
 .customPanel {
   border: 1px solid var(--accent);

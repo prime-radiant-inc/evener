@@ -39,10 +39,3 @@
   border-radius: var(--radius-pane);
   background: var(--surface-0);
 }
-
-/* The demo's trigger for reopening the overlay, pinned to the frame corner. */
-.reopen {
-  position: absolute;
-  top: var(--space-3);
-  left: var(--space-3);
-}

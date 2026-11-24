@@ -4,7 +4,3 @@
   composes: frame from "./gallery-frame.module.css";
   min-height: 280px;
 }
-
-.reopen {
-  composes: reopen from "./gallery-frame.module.css";
-}

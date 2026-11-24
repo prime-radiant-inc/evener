@@ -6,7 +6,9 @@
 }
 
 .reopen {
-  composes: reopen from "./gallery-frame.module.css";
+  position: absolute;
+  top: var(--space-3);
+  left: var(--space-3);
 }
 
 .sheetBody {
