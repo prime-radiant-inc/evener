@@ -6,6 +6,7 @@ import { Chevron } from "../chevron";
 import { Dialog } from "../dialog";
 import { Disclosure } from "../disclosure";
 import { EmptyState } from "../emptystate";
+import { InlineNotice } from "../inlinenotice";
 import { ownerDocumentOf } from "../internal/documentRealm";
 import { requireClass } from "../internal/requireClass";
 import { usePortalDocument } from "../internal/usePortalDocument";
@@ -384,11 +385,7 @@ export function DirectoryPicker({
               </div>
             </form>
           )}
-          {error && (
-            <p className={CLASS.status} role="alert">
-              {error}
-            </p>
-          )}
+          {error && <InlineNotice tone="danger">{error}</InlineNotice>}
           <section
             className={CLASS.folders}
             aria-label="Folders"

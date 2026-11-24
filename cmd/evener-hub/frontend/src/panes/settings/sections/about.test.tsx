@@ -81,6 +81,21 @@ test("omits version/commit gracefully, with no raw error text, when not connecte
   const storedError = settingsOverviewStore.getState().error;
   expect(storedError).not.toBeNull();
   expect(screen.getByTestId("about-version-unavailable").textContent).toContain(storedError);
+  const unavailable = screen.getByTestId("about-version-unavailable");
+  expect(unavailable.getAttribute("data-reason")).toBe("unavailable");
+});
+
+test("a first-load failure lands in a polite region that was already mounted", async () => {
+  render(<AboutSection />);
+  // The region exists from the first render, while the overview is still
+  // loading; the failure text is inserted into it afterwards, so a screen
+  // reader announces a change to a region it already knows.
+  const region = screen.getByTestId("about-version-status");
+  expect(region.getAttribute("aria-live")).toBe("polite");
+  const unavailable = await screen.findByTestId("about-version-unavailable");
+  expect(region.contains(unavailable)).toBe(true);
+  expect(unavailable.getAttribute("role")).toBeNull();
+  expect(unavailable.getAttribute("data-reason")).toBe("unavailable");
 });
 
 test("a fetch failure shows a friendly message, never the raw error", async () => {

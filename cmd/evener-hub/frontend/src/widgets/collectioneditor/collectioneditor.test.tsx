@@ -2,6 +2,8 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { describe, expect, test, vi } from "vitest";
+import rawNoticeStyles from "../inlinenotice/inlinenotice.module.css";
+import { requireClass } from "../internal/requireClass";
 import { type CollectionAddResult, CollectionEditor } from "./index";
 
 interface DirItem {
@@ -9,6 +11,11 @@ interface DirItem {
 }
 
 const ITEMS: DirItem[] = [{ path: "/opt/plugins" }, { path: "/home/user/.evener/plugins" }];
+
+const noticeClass = {
+  notice: requireClass(rawNoticeStyles.notice, "inlinenotice.module.css", "notice"),
+  danger: requireClass(rawNoticeStyles.danger, "inlinenotice.module.css", "danger"),
+};
 
 function baseProps(overrides: Partial<Parameters<typeof CollectionEditor<DirItem>>[0]> = {}) {
   return {
@@ -275,7 +282,9 @@ describe("renderAddField", () => {
     const onAdd = vi.fn(async (): Promise<CollectionAddResult> => ({ ok: false, error: "Path does not exist." }));
     render(<CollectionEditor<DirItem> {...baseProps({ onAdd, renderAddField: customField })} />);
     await user.type(screen.getByRole("textbox", { name: "Custom path field" }), "/nope{Enter}");
-    expect(await screen.findByRole("alert")).toBeTruthy();
+    const alert = await screen.findByRole("alert");
+    expect(alert.classList.contains(noticeClass.notice)).toBe(true);
+    expect(alert.classList.contains(noticeClass.danger)).toBe(true);
   });
 
   test("the custom field's disabled arg mirrors the built-in busy state while onAdd is pending", async () => {

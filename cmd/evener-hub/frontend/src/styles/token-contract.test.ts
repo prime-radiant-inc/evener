@@ -425,7 +425,6 @@ const SEMANTIC_USE_ALLOWLIST = [
   "statusdot", // state color
   "meter", // danger/attention fill tone
   "formrow", // error-state left border + message text, the text in --danger-ink
-  "collectioneditor", // inline add-validation error text (wave 7)
   "failureglyph", // the ✗ that marks a failure - the hue IS the content
   "card", // attention tone: the "a human is needed right now" envelope (ask batch, sandbox approval)
   "toolicon", // tone prop: a state glyph whose hue IS the state (the activity sidebar's agent and job rows)
