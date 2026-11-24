@@ -22,6 +22,7 @@ import { friendlyErrorMessage, LOCAL_HOST } from "@evener/appwire-client";
 import { useId, useLayoutEffect, useRef, useState } from "react";
 import { connectionStore } from "../../../stores/connection";
 import { extensionsStoreForHost, useExtensionsStoreForHost } from "../../../stores/extensions";
+import surfaceStyles from "../../../styles/surface.module.css";
 import {
   type CollectionAddResult,
   CollectionEditor,
@@ -40,11 +41,12 @@ import { useHostScopedLoad } from "./useConnectedEffect";
 const CLASS = {
   section: requireClass(styles.section, "dirListSetting.module.css", "section"),
   header: requireClass(styles.header, "dirListSetting.module.css", "header"),
-  title: requireClass(styles.title, "dirListSetting.module.css", "title"),
   count: requireClass(styles.count, "dirListSetting.module.css", "count"),
   help: requireClass(styles.help, "dirListSetting.module.css", "help"),
   addBlock: requireClass(styles.addBlock, "dirListSetting.module.css", "addBlock"),
 };
+
+const HEADING = `${surfaceStyles.settingsSectionHeading} ${surfaceStyles.settingsSectionHeadingPaneTitle}`;
 
 export interface PathListEditorProps {
   /** Accessible name for the row list. */
@@ -242,7 +244,7 @@ export function DirListSetting({ wireField, label, copy, host = LOCAL_HOST }: Di
   return (
     <section className={CLASS.section}>
       <header className={CLASS.header}>
-        <h2 className={CLASS.title}>{label}</h2>
+        <h2 className={HEADING}>{label}</h2>
         {showCount && (
           <span className={CLASS.count} data-count={items.length}>
             {items.length} {items.length === 1 ? "entry" : "entries"}
