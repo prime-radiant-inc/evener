@@ -16,7 +16,7 @@
      FormRow in a flex row (every parent is a column or a block), so the row
      below and its sibling chip are invented scaffolding kept HERE - the same
      move button-label-nowrap makes with its invented paragraph. Everything
-     inside .row is FormRow's and PathField's current real markup (widgets/
+     inside .formrowRow is FormRow's and PathField's current real markup (widgets/
      formrow/index.tsx, widgets/pathfield/index.tsx's file-kind trigger, the
      Chevron widget's svg). The declaration under test is formrow.module.css's
      .root { min-width: 0 }. */
@@ -25,7 +25,9 @@
     box-sizing: border-box;
     padding: var(--space-4);
   }
-  .row {
+  /* Not .row: this case loads the picker's own unscoped stylesheets, whose
+     .row is an option row and would drag the wrapper's geometry with it. */
+  .formrowRow {
     display: flex;
     align-items: flex-end;
     gap: var(--space-2);
@@ -39,7 +41,7 @@
 </head>
 <body data-font-size="m">
 <div class="page">
-  <div class="row" id="row">
+  <div class="formrowRow" id="row">
     <div class="root" id="formrow">
       <label for="prompt-file" class="label">System prompt file</label>
       <div class="control">
