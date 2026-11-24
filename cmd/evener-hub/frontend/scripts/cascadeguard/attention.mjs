@@ -594,6 +594,25 @@ export async function attentionJourney(ctx) {
   await controlVisible(null, { timeoutMs: 90000 });
   driver.milestone("attention-tier-visible", { refs: needsYouWire()?.rows.length ?? 0 });
 
+  // The resting phone shape: an empty, folded composer. The stack's reserve is
+  // the footer's measured height, so the control clears the card by the
+  // footer's own gutter. A fixed reserve parked the control far above a folded
+  // card, which is what the before/after gap recorded here measures.
+  await driver.send("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 1, mobile: false });
+  await controlVisible(null, { timeoutMs: 15000 });
+  const restingGeometry = await settledGeometry("attention geometry 390 resting");
+  driver.milestone("attention-390-resting", {
+    next: restingGeometry.next,
+    stack: restingGeometry.stack,
+    composer: restingGeometry.composer,
+    nextGap:
+      restingGeometry.composer && restingGeometry.next
+        ? restingGeometry.composer.top - restingGeometry.next.bottom
+        : null,
+  });
+  await driver.send("Emulation.setDeviceMetricsOverride", { width: 1000, height: 900, deviceScaleFactor: 1, mobile: false });
+  await controlVisible(null, { timeoutMs: 15000 });
+
   // ---- journey 1: draft, staged PNG, away-reading, hops ----------------
 
   // A structured draft of the source's own: an exact text, a skill atom from
@@ -899,7 +918,11 @@ export async function attentionJourney(ctx) {
           ? { lastBottom: box.bottom, stackTop: stackBox.top, stackBottom: stackBox.bottom } : null;
       })()`, `${label}: final transcript content scrolls above the floating controls`);
       geometry.push({ width, theme, next: sample.next, more: sample.more, stack: sample.stack, pill: sample.pill, send: sample.send, clearance: sample.clearanceHeight, lastRowBottom: bottom.lastBottom, stackTop: bottom.stackTop, stackBottom: bottom.stackBottom });
-      driver.milestone(label, { width, theme, next: sample.next, more: sample.more, stack: sample.stack, pill: sample.pill, send: sample.send, clearance: sample.clearanceHeight, nextText: sample.nextText, lastRowBottom: bottom.lastBottom, stackBottom: bottom.stackBottom, ...(passingProbe ? { probe: passingProbe } : {}) });
+      // `nextGap` is the measured button-to-footer boundary: the reserve the
+      // stylesheet lifts the stack by should track the composer's own box, so
+      // this gap stays the footer's normal gutter whatever the card's height.
+      const nextGap = sample.composer && sample.next ? sample.composer.top - sample.next.bottom : null;
+      driver.milestone(label, { width, theme, next: sample.next, more: sample.more, stack: sample.stack, pill: sample.pill, send: sample.send, composer: sample.composer, nextGap, clearance: sample.clearanceHeight, nextText: sample.nextText, lastRowBottom: bottom.lastBottom, stackBottom: bottom.stackBottom, ...(passingProbe ? { probe: passingProbe } : {}) });
     }
   }
   await read(`document.documentElement.removeAttribute('data-theme')`);

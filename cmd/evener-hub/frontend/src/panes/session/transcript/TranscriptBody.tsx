@@ -488,6 +488,10 @@ export interface TranscriptBodyProps {
   liveOverlay?: ReactNode;
   attentionOverlay?: ReactNode;
   onOverlayHeightChange?: (height: number) => void;
+  /** Height of the floating chrome the attention stack clears. The stack's own
+   * clearance is measured against where the stylesheet puts it, so a chrome
+   * that grows under it must re-run that measurement. */
+  floatingChromeHeight?: number;
   listRef?: RefObject<VirtualListHandle | null>;
   onMeasurementsChange?: (layout?: CommittedVirtualListLayout) => void;
   trailingContent?: ReactNode;
@@ -533,6 +537,7 @@ export function TranscriptBody({
   liveOverlay,
   attentionOverlay,
   onOverlayHeightChange,
+  floatingChromeHeight,
   listRef,
   onMeasurementsChange,
   trailingContent,
@@ -769,6 +774,7 @@ export function TranscriptBody({
           pill={liveOverlay}
           attentionOverlay={attentionOverlay}
           onOverlayHeightChange={onOverlayHeightChange}
+          floatingChromeHeight={floatingChromeHeight}
         >
           <div className={styles.transcriptContent}>
             {list}
