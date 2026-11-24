@@ -35,6 +35,26 @@
   gap: var(--space-3);
 }
 
+/* The prompt card's control-row leading cluster: the attach control, the
+ * model trigger and effort in one row. The session composer and the spawn
+ * form render the same PromptCard row and compose this; the composer adds
+ * its leading inset and wrap. */
+.cardLeading {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+/* The staged-attachment strip in a prompt card: wrapping tiles one gap
+ * apart. */
+.attachmentStrip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
 /* --- the summary tiles -----------------------------------------------
  * The two tiles under a page's primary task - a directory that is itself a
  * button and a status card that is not - share one inner layout: a row with

@@ -21,6 +21,7 @@ import {
   CodeBlock,
   Dialog,
   EmptyState,
+  InlineNotice,
   Markdown,
   PaneScaffold,
   Skeleton,
@@ -137,11 +138,7 @@ function BoundDocument({
         </Button>
       }
     >
-      {hasContent && read.notice && (
-        <div className={CLASS.notice} role="status">
-          <span className={CLASS.noticeText}>{read.notice}</span>
-        </div>
-      )}
+      {hasContent && read.notice && <InlineNotice>{read.notice}</InlineNotice>}
       {body}
     </PaneScaffold>
   );

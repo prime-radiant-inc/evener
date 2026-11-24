@@ -16,6 +16,15 @@
   white-space: nowrap;
 }
 
+.paneTitle {
+  color: var(--ink-hi);
+  font-family: var(--font-prose);
+  font-size: var(--font-size-pane-title);
+  font-weight: var(--font-weight-semibold);
+  letter-spacing: var(--tracking-display);
+  line-height: var(--line-height-title);
+}
+
 /* The eyebrow type recipe (design-system §2): caption size, medium weight,
  * uppercase, and the one opening-up tracking. The Eyebrow widget and the
  * CSS-only group labels compose it; color and margin stay with the consumer,

@@ -1,6 +1,7 @@
 // ModelCatalog is both the component (value) and the envelope interface (type);
 // one import brings in both meanings via declaration merging.
 import { useState } from "react";
+import { Button } from "../../widgets/button";
 import { ModelCatalog, type ModelCatalog as ModelCatalogEnvelope, ModelCatalogPanel } from "../../widgets/modelCatalog";
 import { Sheet } from "../../widgets/sheet";
 import { GallerySection } from "../GallerySection";
@@ -33,9 +34,11 @@ function SheetDemo() {
   return (
     <div className={styles.demoFrame}>
       {!open && (
-        <button type="button" className={styles.reopen} onClick={() => setOpen(true)}>
-          Reopen sheet
-        </button>
+        <div className={styles.reopen}>
+          <Button variant="quiet" size="sm" onClick={() => setOpen(true)}>
+            Reopen sheet
+          </Button>
+        </div>
       )}
       <Sheet open={open} side="bottom" onClose={() => setOpen(false)} title="Choose model">
         <div className={styles.sheetBody}>

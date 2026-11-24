@@ -545,3 +545,24 @@ test("the picker's listing wait renders the shared loader", async () => {
   await screen.findByRole("dialog", { name: "Choose directory" });
   expect(await screen.findByTestId("loader-grid")).toBeTruthy();
 });
+
+// The chooser draws both navigation glyphs from the shared widgets: the parent
+// control gets the chevron instead of a text arrow, and the fold of earlier
+// crumbs is the shared disclosure rather than a restyled <details>.
+test("the chooser draws its navigation glyphs with the shared chevron and disclosure", async () => {
+  const { user } = setup({ value: "/deep/a/b/c/d" });
+  await screen.findByRole("dialog", { name: "Choose directory" });
+
+  const parent = screen.getByRole("button", { name: "Parent directory" });
+  expect(parent.querySelector("svg")).toBeTruthy();
+  expect(parent.textContent).toBe("");
+
+  const summary = screen.getByLabelText("Earlier directories");
+  const details = summary.parentElement;
+  if (details === null) throw new Error("earlier-directories summary has no details parent");
+  expect(summary.querySelector("svg")).toBeTruthy();
+  // The disclosure renders its folded crumbs only while it is open.
+  expect(within(details).queryByRole("button")).toBeNull();
+  await user.click(summary);
+  expect(within(details).getAllByRole("button")).toHaveLength(2);
+});
