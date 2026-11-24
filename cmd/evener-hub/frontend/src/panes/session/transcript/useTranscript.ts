@@ -4,7 +4,7 @@
 
 import type { ThreadModel } from "@evener/appwire-client";
 import { sessionActionError } from "@evener/appwire-client";
-import { useCallback, useEffect, useLayoutEffect, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import { useConnectionStore } from "../../../stores/connection";
 import { olderTranscriptPageKey } from "../../../stores/entryTranscriptRoutes";
 import { useThreadsStore } from "../../../stores/threads";
@@ -91,6 +91,12 @@ function useTranscriptInternal(
     return matchesBinding(retained, binding) ? retained : createPaging(ref, binding);
   });
   const [readerActive, setReaderActive] = useState(false);
+  // What the last render published. The activation effect re-runs whenever the
+  // owning document changes - a pane moved between windows rebinds without a
+  // visibility event in either document - and it must start from that value:
+  // seeding the effect's own tracker with "inactive" makes a hidden replacement
+  // document agree with it while the pane still reports an active reader.
+  const publishedActiveRef = useRef(false);
   // Only committed readers can install or bind shared demand. A suspended
   // first render must not retire a waiting reader's unknown binding.
   useLayoutEffect(() => {
@@ -120,6 +126,7 @@ function useTranscriptInternal(
   }, [view]);
   useEffect(() => {
     if (!ready) {
+      publishedActiveRef.current = false;
       setReaderActive(false);
       return;
     }
@@ -132,7 +139,7 @@ function useTranscriptInternal(
       pagingByRef.set(ref, entry);
     } else if (pagingByRef.get(ref) !== entry) return;
     let release: (() => void) | undefined;
-    let active = false;
+    let active = publishedActiveRef.current;
     const sync = () => {
       const inactive =
         ownerDocument.visibilityState === "hidden" ||
@@ -152,6 +159,7 @@ function useTranscriptInternal(
       const next = !inactive;
       if (next !== active) {
         active = next;
+        publishedActiveRef.current = next;
         setReaderActive(next);
       }
     };
