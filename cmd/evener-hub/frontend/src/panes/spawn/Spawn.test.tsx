@@ -15,6 +15,8 @@ import editorStyles from "../session/composer/skilleditor.module.css";
 import Welcome from "../welcome/Welcome";
 import { applySpawnURL, spawnDraftsStore } from "./spawnDrafts";
 import {
+  accessRowTrigger,
+  cwdRowTrigger,
   effortControl,
   expectWorkingDir,
   fillPrompt,
@@ -24,6 +26,7 @@ import {
   modelState,
   modelTrigger,
   modelValue,
+  openWorkingDir,
   readyClient,
   renderSpawn,
   settled,
@@ -76,12 +79,13 @@ test("the cold-start spawn pane carries the chord hints when no session is open"
 // access summaries beneath it; model and effort in the card's own control
 // row; harness in Advanced options.
 
-test("the desktop directory trigger announces the confirmed path", async () => {
+test("the desktop directory row announces the confirmed path", async () => {
   const user = setupUser();
   renderSpawn(readyClient());
   await settled();
   await setWorkingDir(user, "/tmp/project");
-  expect(screen.getByLabelText(/^Working directory: \/tmp\/project/, { selector: "#spawn-cwd" })).toBe(workingDir());
+  expect(workingDir().textContent).toBe("/tmp/project");
+  expect(screen.getByLabelText(/^Working directory: \/tmp\/project/, { selector: "#spawn-cwd" })).toBeTruthy();
 });
 
 // Issue #198: the attach button, model trigger, and effort control are the
@@ -95,7 +99,7 @@ test("the prompt card leads and the directory follows it; model and effort live 
   renderSpawn(readyClient());
   await settled();
 
-  const dir = screen.getByLabelText(/^Working directory:/, { selector: "#spawn-cwd" });
+  const dir = workingDir();
   const card = screen.getByTestId("spawn-prompt-card");
   const controls = screen.getByTestId("spawn-controls");
   // The task is the page's first control and the directory summary comes
@@ -118,6 +122,43 @@ test("the prompt card leads and the directory follows it; model and effort live 
   expect(
     [...mobileConfig.querySelectorAll<HTMLElement>("[data-testid='mobile-spawn-row']")].map((row) => row.dataset.label),
   ).toEqual(["Harness", "Working directory", "Branch", "Access mode", "Plugins"]);
+});
+
+// The two facts a session starts from sit in the same quiet-rows list as the
+// Host and Plugins settings: the working directory is a row that opens the
+// directory dialog, and access is a disclosure whose summary carries the
+// current level.
+test("the desktop settings list carries the working directory and access as quiet rows", async () => {
+  const user = setupUser();
+  const fake = readyClient((client) => {
+    client.on("evener/launch/resolve", (params) => ({
+      effective: { sandbox: (params as { launchOverrides?: { sandbox?: string } }).launchOverrides?.sandbox ?? "" },
+      layers: {},
+      provenance: {},
+    }));
+  });
+  renderSpawn(fake);
+  await settled();
+
+  const cwdRow = screen.getByTestId("spawn-cwd-desktop");
+  const pluginRow = screen.getByTestId("spawn-plugin-desktop");
+  expect(cwdRow.parentElement).toBe(pluginRow.parentElement);
+  expect(within(cwdRow.parentElement as HTMLElement).getByTestId("spawn-access-summary")).toBeTruthy();
+
+  expect(workingDir().dataset.state).toBe("unset");
+  await user.click(cwdRowTrigger());
+  const picker = screen.getByRole("dialog");
+  expect(within(picker).getByRole("textbox", { name: "Path" })).toBeTruthy();
+  await user.click(within(picker).getByRole("button", { name: "Cancel" }));
+  await setWorkingDir(user, "/tmp/rows");
+  expect(workingDir().textContent).toBe("/tmp/rows");
+
+  await user.click(accessRowTrigger());
+  await user.selectOptions(screen.getByLabelText("Access mode"), "read-only");
+  await waitFor(() =>
+    expect(screen.getByTestId("spawn-effective-access").getAttribute("data-sandbox")).toBe("read-only"),
+  );
+  expect(screen.getByTestId("spawn-access-value").textContent).not.toBe("");
 });
 
 // The card's trigger says what the Model field says: "(default)" while the
@@ -408,13 +449,15 @@ test("the attach control draws an SVG glyph, not a literal text character", asyn
   expect(attach.textContent).toBe("");
 });
 
-test("Access mode moved from the top-level bar into Advanced options (9ct0)", async () => {
+test("Access mode is its own quiet row, not a field inside Advanced options (9ct0)", async () => {
   const user = setupUser();
   renderSpawn(readyClient());
   await settled();
 
   expect(screen.queryByLabelText("Access mode")).toBeNull();
   await user.click(screen.getByText("Advanced options"));
+  expect(within(screen.getByTestId("spawn-advanced-options")).queryByLabelText("Access mode")).toBeNull();
+  await user.click(accessRowTrigger());
   expect(screen.getByLabelText("Access mode")).toBeTruthy();
 });
 
@@ -426,7 +469,7 @@ test("a full submit sends the cwd, prompt, and access-mode sandbox, then routes 
 
   await fillPrompt(user, "do the thing");
   await setWorkingDir(user, "/tmp/project");
-  await user.click(screen.getByText("Advanced options"));
+  await user.click(accessRowTrigger());
   await user.selectOptions(screen.getByLabelText("Access mode"), "Read-only");
   await user.click(screen.getByTestId("spawn-submit"));
 
@@ -487,7 +530,7 @@ test("loads sticky defaults from localStorage on mount", async () => {
   await settled();
 
   await waitFor(() => expectWorkingDir("/saved/project"));
-  await user.click(screen.getByText("Advanced options"));
+  await user.click(accessRowTrigger());
   expect((screen.getByLabelText("Access mode") as HTMLSelectElement).value).toBe("workspace-write");
 });
 
@@ -593,7 +636,7 @@ test("only confirming a directory updates the launch defaults", async () => {
   const user = setupUser();
   renderSpawn(readyClient((f) => f.on("evener/paths/complete", () => ({ data: ["/tmp/project/src"] }))));
   await settled();
-  await user.click(workingDir());
+  await user.click(openWorkingDir());
   await user.click(await screen.findByRole("button", { name: "Open /tmp/project/src" }));
   expect(localStorage.getItem(LAST_WORKING_DIR_KEY)).toBeNull();
   const confirm = screen.getByRole("button", { name: "Use this folder" });
@@ -610,7 +653,7 @@ test("Escape discards directory browsing while preserving the prompt and launch 
   renderSpawn(fake);
   await settled();
   await fillPrompt(user, "my important draft text");
-  await user.click(workingDir());
+  await user.click(openWorkingDir());
   await user.click(await screen.findByRole("button", { name: "Open /tmp/project/src" }));
   const pathname = window.location.pathname;
   await user.keyboard("{Escape}");
@@ -639,7 +682,7 @@ test("the browse panel opens on the stamped last-working-directory global", asyn
   // when the value is empty, and an empty field shows its placeholder.
   expect(workingDir().dataset.state).toBe("unset");
 
-  await user.click(workingDir());
+  await user.click(openWorkingDir());
   await screen.findByRole("textbox", { name: "Path" });
 
   await waitFor(() => expect(complete.mock.calls.map(([params]) => params.prefix)).toContain("/home/me/lastone/"));
@@ -660,7 +703,7 @@ test("survives a null data payload from either list RPC", async () => {
   );
   await settled();
 
-  await user.click(workingDir());
+  await user.click(openWorkingDir());
 
   // The panel is up, listing nothing, rather than having thrown its tree away.
   expect(await screen.findByRole("textbox", { name: "Path" })).toBeTruthy();

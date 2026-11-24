@@ -35,6 +35,7 @@ import {
   modelValue,
   openDesktopPluginSelection,
   openHostPicker,
+  openWorkingDir,
   pickModel,
   promptField,
   readyClient,
@@ -47,7 +48,6 @@ import {
   setupUser,
   setWorkingDir,
   waitForPluginPreviewState,
-  workingDir,
 } from "./spawnTestUtils";
 
 installSpawnTestHooks();
@@ -344,7 +344,7 @@ test("a remote target can select a directory this controller cannot see", async 
 
   // A LOCAL target keeps the controller's gate unchanged: the same path is
   // reported invalid and cannot be selected.
-  await user.click(workingDir());
+  await user.click(openWorkingDir());
   const localInput = await screen.findByRole("textbox", { name: "Path" });
   await user.clear(localInput);
   await user.type(localInput, "/srv/remote-only{Enter}");
@@ -384,7 +384,7 @@ test("the picker creates a folder on the selected host, never on the controller"
   await settled();
 
   await chooseHost("buildbox");
-  await user.click(workingDir());
+  await user.click(openWorkingDir());
   const input = await screen.findByRole("textbox", { name: "Path" });
   await user.clear(input);
   await user.type(input, "/srv/remote-create{Enter}");
@@ -1049,7 +1049,7 @@ test("a remote spawn reads recent projects and completes paths from the selected
   renderSpawn(fake);
   await settled();
 
-  await user.click(workingDir());
+  await user.click(openWorkingDir());
   await screen.findByRole("textbox", { name: "Path" });
   expect(await screen.findByRole("button", { name: "Open /srv/remote-project/src" })).toBeTruthy();
 
@@ -1669,7 +1669,7 @@ test("a remote directory pick never seeds the controller's last-working-dir", as
   renderSpawn(fake);
   await settled();
 
-  await user.click(workingDir());
+  await user.click(openWorkingDir());
   await user.click(await screen.findByRole("button", { name: "Open recent /srv/remote-pick" }));
   const confirm = screen.getByRole("button", { name: "Use this folder" });
   await waitFor(() => expect((confirm as HTMLButtonElement).disabled).toBe(false));
@@ -2154,7 +2154,7 @@ test("a remote directory picker does not start from the controller's last workin
   renderSpawn(fake);
   await settled();
 
-  await user.click(workingDir());
+  await user.click(openWorkingDir());
   await waitFor(() => expect(routedHostCalls(fake, "evener/path/validate")).toHaveLength(1));
   expect(routedHostCalls(fake, "evener/path/validate")[0]?.params).toMatchObject({ path: "~" });
 });
