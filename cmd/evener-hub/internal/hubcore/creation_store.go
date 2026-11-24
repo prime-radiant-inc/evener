@@ -166,7 +166,7 @@ func (s *CreationStore) Acquire(ctx context.Context, id, targetSource, payloadHa
 	}
 
 	s.mu.Lock()
-	if res, handled, err, owner, onWait := s.acquireExistingLocked(id, payloadHash); handled {
+	if res, owner, onWait, handled, err := s.acquireExistingLocked(id, payloadHash); handled {
 		s.mu.Unlock()
 		if owner != nil {
 			return waitOnCreationOwner(ctx, id, owner, onWait)
@@ -202,7 +202,7 @@ func (s *CreationStore) AcquireExisting(ctx context.Context, id, payloadHash str
 		return CreationAcquireResult{}, false, err
 	}
 	s.mu.Lock()
-	res, handled, err, owner, onWait := s.acquireExistingLocked(id, payloadHash)
+	res, owner, onWait, handled, err := s.acquireExistingLocked(id, payloadHash)
 	s.mu.Unlock()
 	if !handled {
 		return CreationAcquireResult{}, false, nil
@@ -214,33 +214,33 @@ func (s *CreationStore) AcquireExisting(ctx context.Context, id, payloadHash str
 	return res, true, err
 }
 
-func (s *CreationStore) acquireExistingLocked(id, payloadHash string) (res CreationAcquireResult, handled bool, err error, waitOwner *CreationOwner, onWait func()) {
+func (s *CreationStore) acquireExistingLocked(id, payloadHash string) (res CreationAcquireResult, waitOwner *CreationOwner, onWait func(), handled bool, err error) {
 	if owner := s.owners[id]; owner != nil {
 		if owner.payloadHash != payloadHash {
-			return CreationAcquireResult{}, true, conflictingCreationError(id), nil, nil
+			return CreationAcquireResult{}, nil, nil, true, conflictingCreationError(id)
 		}
 		owner.waiters++
-		return CreationAcquireResult{}, true, nil, owner, s.faults.OnWait
+		return CreationAcquireResult{}, owner, s.faults.OnWait, true, nil
 	}
 	rec, ok := s.records[id]
 	if !ok {
-		return CreationAcquireResult{}, false, nil, nil, nil
+		return CreationAcquireResult{}, nil, nil, false, nil
 	}
 	if rec.PayloadHash != payloadHash {
-		return CreationAcquireResult{}, true, conflictingCreationError(id), nil, nil
+		return CreationAcquireResult{}, nil, nil, true, conflictingCreationError(id)
 	}
 	switch rec.State {
 	case CreationStateCompleted:
 		cloned := cloneCreationRecord(rec)
 		resp := creationReplayResponse(id, cloned)
-		return CreationAcquireResult{Record: &cloned, Response: &resp}, true, nil, nil, nil
+		return CreationAcquireResult{Record: &cloned, Response: &resp}, nil, nil, true, nil
 	case CreationStateSpawned:
 		owner := &CreationOwner{id: id, payloadHash: payloadHash, done: make(chan struct{})}
 		s.owners[id] = owner
 		cloned := cloneCreationRecord(rec)
-		return CreationAcquireResult{Owner: owner, Record: &cloned}, true, nil, nil, nil
+		return CreationAcquireResult{Owner: owner, Record: &cloned}, nil, nil, true, nil
 	default:
-		return CreationAcquireResult{}, true, uncertainRecordError(id, rec), nil, nil
+		return CreationAcquireResult{}, nil, nil, true, uncertainRecordError(id, rec)
 	}
 }
 
