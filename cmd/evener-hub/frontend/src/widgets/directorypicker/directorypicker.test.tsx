@@ -74,6 +74,8 @@ test("renders its folder and recent rows through the shared plain ListRow", asyn
     expect(row.classList.contains(listRowClass.interactive)).toBe(true);
   }
   expect(browseRow.querySelector("button")).toBeNull();
+  // Two glyphs draw as SVGs: the leading folder and the drill chevron.
+  expect(browseRow.querySelectorAll("svg")).toHaveLength(2);
 });
 
 // The picker keeps its own scrollport: its body class lands on the shared

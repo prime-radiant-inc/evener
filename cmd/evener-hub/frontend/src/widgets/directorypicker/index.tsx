@@ -2,6 +2,7 @@ import { basename, childrenPrefix, friendlyErrorMessage, parentOf } from "@evene
 import { type FormEvent, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Button } from "../button";
+import { Chevron } from "../chevron";
 import { Dialog } from "../dialog";
 import { ownerDocumentOf } from "../internal/documentRealm";
 import { requireClass } from "../internal/requireClass";
@@ -408,7 +409,7 @@ export function DirectoryPicker({
                   // The drill glyph is row content: ListRow's trailing slot is
                   // for a real control, and a decorative mark there would sit
                   // outside the row's single click target.
-                  value={<span aria-hidden="true">›</span>}
+                  value={<Chevron direction="right" />}
                   aria-label={`Open ${path}`}
                   disabled={busy}
                   onSelect={() => void browse(path)}
