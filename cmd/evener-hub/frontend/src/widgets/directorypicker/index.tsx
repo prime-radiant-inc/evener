@@ -11,6 +11,8 @@ import { Loader } from "../loader";
 import { ToolIcon } from "../toolicon";
 import styles from "./directorypicker.module.css";
 
+const EMPTY_FOLDERS_MESSAGE = "No subfolders to display.";
+
 export interface DirectoryPickerProps {
   value: string;
   fallbackDir?: string;
@@ -385,15 +387,19 @@ export function DirectoryPicker({
             aria-label="Folders"
             aria-busy={!pathEdited && entries === null && error === null}
           >
+            <div role="status" data-state={entries !== null && entries.length === 0 ? "empty" : undefined}>
+              {entries !== null && entries.length === 0 && (
+                <EmptyState title={EMPTY_FOLDERS_MESSAGE} size="compact" reason="empty" />
+              )}
+            </div>
             {pathEdited ? (
               <p className={CLASS.status} role="status" data-state="edited">
                 Press Go to browse this path.
               </p>
             ) : entries === null ? (
               !error && <Loader label="Loading directories…" />
-            ) : entries.length === 0 ? (
-              <EmptyState title="No subfolders to display." size="compact" reason="empty" />
             ) : (
+              entries.length > 0 &&
               entries.map((path) => (
                 <button
                   type="button"

@@ -71,7 +71,6 @@ const CLASS = {
   list: requireClass(styles.list, "collectioneditor.module.css", "list"),
   row: requireClass(styles.row, "collectioneditor.module.css", "row"),
   content: requireClass(styles.content, "collectioneditor.module.css", "content"),
-  empty: requireClass(styles.empty, "collectioneditor.module.css", "empty"),
   inherited: requireClass(styles.inherited, "collectioneditor.module.css", "inherited"),
   inheritedTag: requireClass(styles.inheritedTag, "collectioneditor.module.css", "inheritedTag"),
   addForm: requireClass(styles.addForm, "collectioneditor.module.css", "addForm"),

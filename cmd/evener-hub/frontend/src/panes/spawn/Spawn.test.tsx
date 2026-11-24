@@ -720,7 +720,12 @@ test("survives a null data payload from either list RPC", async () => {
 
   // The panel is up, listing nothing, rather than having thrown its tree away.
   expect(await screen.findByRole("textbox", { name: "Path" })).toBeTruthy();
-  await waitFor(() => expect(document.querySelector('[role="status"][data-state="empty"]')).not.toBeNull());
+  await waitFor(() => {
+    const folders = document.querySelector('section[aria-label="Folders"]');
+    if (folders === null) throw new Error("Folders region missing");
+    expect(folders.querySelector('[role="status"][data-state="empty"]')).not.toBeNull();
+    expect(folders.querySelector('[data-testid="empty-state"]')).not.toBeNull();
+  });
 });
 
 test("offers to create a missing directory, then creates it and spawns", async () => {

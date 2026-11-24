@@ -536,6 +536,8 @@ test("the picker's empty regions render the shared empty state", async () => {
   expect(within(recents).getByTestId("empty-state").getAttribute("data-reason")).toBe("empty");
   const folders = screen.getByRole("region", { name: "Folders" });
   await waitFor(() => expect(within(folders).getByTestId("empty-state")).toBeTruthy());
+  // The empty result is still announced through a polite region.
+  expect(within(folders).getByRole("status").getAttribute("data-state")).toBe("empty");
 });
 
 test("the picker's listing wait renders the shared loader", async () => {
