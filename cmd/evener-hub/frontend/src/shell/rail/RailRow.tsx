@@ -80,6 +80,7 @@ import { useActivitySidebarOpenFor } from "../activitybar/activitySidebarStore";
 import { navigate } from "../routing";
 import { type PinTarget, SessionMenu } from "../sessionMenu/SessionMenu";
 import { cadenceStateFor, SIGNAL_STATES } from "../sessionStatus";
+import { useIsMobile } from "../useIsMobile";
 import styles from "./RailRow.module.css";
 import { type RailActivityRead, type RailStatus, useSessionActivityRead, workingStatus } from "./railActivity";
 import { ICON, STROKE } from "./railIcons";
@@ -539,6 +540,11 @@ function RailWhyTicking(props: RailWhyProps): ReactNode {
 
 function RailWhyLine({ session, state, host, now }: RailWhyProps & { now: number }): ReactNode {
   const line = whyLine({ row: session, state }, undefined, 0, now);
+  // The phone's drawer and tablet board have no hover card to open, so a
+  // pending question prints its own words there. The desktop row keeps the
+  // state word (docs/product/attention-navigation.md); useIsMobile reads the
+  // one shared media-query listener, not a listener of its own.
+  const asked = useIsMobile() && state === "question" ? session.question?.text : undefined;
   // A reason line's word names the attention; the sentence after it only
   // tells the reader to open the session, which the row already invites. The
   // bare state word repeats the band's own name.
@@ -546,7 +552,7 @@ function RailWhyLine({ session, state, host, now }: RailWhyProps & { now: number
     line === null || line.kind === "state"
       ? undefined
       : line.kind === "reason"
-        ? { text: line.word, hue: line.hue, kind: line.kind }
+        ? { text: asked ?? line.word, hue: line.hue, kind: line.kind }
         : { text: line.text, hue: undefined, kind: line.kind };
   if (said === undefined && host === undefined) return null;
   return (
