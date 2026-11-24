@@ -120,3 +120,43 @@ func TestLaunchCheckAcceptsModelWhenRosterIsNotAuthoritative(t *testing.T) {
 		t.Fatalf("a non-authoritative listing is not evidence of absence: %v", err)
 	}
 }
+
+// TestLaunchCheckRejectsModelWhenListingTransportOwnsTheRoster pins the
+// authority rule against a default row that routes generation through a
+// separate gateway: the roster was fetched through the configured Copilot
+// transport, so an empty answer still proves the account offers nothing. The
+// saved static row must not resurrect.
+func TestLaunchCheckRejectsModelWhenListingTransportOwnsTheRoster(t *testing.T) {
+	stateHome := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", stateHome)
+	stateRoot := filepath.Join(stateHome, "evener")
+	if err := githubcopilot.SaveAuth(stateRoot, "copilot-plan", githubcopilot.AuthRecord{
+		Instance: "copilot-plan", Scheme: githubcopilot.AuthScheme, Version: 1,
+		AccessToken: "access", CopilotToken: "copilot", AccountID: "account-1",
+		ObtainedAt: time.Now().Add(-time.Hour), CopilotExpiry: time.Now().Add(24 * time.Hour),
+	}); err != nil {
+		t.Fatalf("SaveAuth: %v", err)
+	}
+	baseURL := rosterServer(t, http.StatusOK, `{"data":[]}`)
+	client := loadRosterClient(t, `
+[providers.copilot-plan]
+base = "github-copilot"
+base_url = "`+baseURL+`"
+default_model = "claude-x"
+[providers.copilot-plan.models."claude-x"]
+auth = "bearer"
+base_url = "https://gateway.example.com/v1"
+`, stateRoot)
+	withLaunchCheckLoadClient(t, fixedLaunchCheckClient(client))
+
+	ref := cmdutil.ModelRef{Provider: "copilot-plan", Model: "gpt-5.6-sol"}
+	if !client.Registry().LiveListingAuthoritative(ref.Provider) {
+		t.Fatal("fixture precondition: the roster fetched through the configured Copilot transport must be authoritative")
+	}
+	if !client.CanServe(ref.Provider, ref.Model) {
+		t.Fatal("fixture precondition: the saved model must resolve on the bundled catalog")
+	}
+	if err := validateLaunchCheckModel(ref); err == nil {
+		t.Fatal("launch check accepted a static model although the authoritative roster answered with no usable row")
+	}
+}

@@ -428,6 +428,7 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	untrimmedHistory := history
 	history = projectThinkingForTarget(profile, history)
 	history = projectToolResultMediaFor(profile, history)
+	history = s.projectUserImagesForTarget(profile, history)
 
 	req = s.buildModelRequest(profile, sys, history, toolDefs, reasoningEffort, toolDefsJSONBytes)
 	req = s.attachFullHistoryInputEstimate(req, historyTurns, len(sys))
@@ -1147,6 +1148,92 @@ func projectToolResultMediaFor(profile *provider.Profile, messages []llm.Message
 		out[i] = scope.projectToolResultMedia(out[i])
 	}
 	return out
+}
+
+// projectUserImagesForTarget returns messages with user-message image bytes
+// removed for a target whose row declares no image input. The input the turn
+// accepted keeps its own attachments so the provider can answer them with its
+// actionable refusal; every older image leaves the outbound copy while the
+// transcript keeps it. Without that split, an image-free follow-up after a
+// switch to a text-only model is rejected for history that model never saw
+// (#7629).
+func (s *Session) projectUserImagesForTarget(profile *provider.Profile, messages []llm.Message) []llm.Message {
+	if !targetRulesOutImageHistory(profile) {
+		return messages
+	}
+	keep := -1
+	if s != nil {
+		s.mu.Lock()
+		carries := s.turnInputCarriesImages
+		s.mu.Unlock()
+		if carries {
+			for i := len(messages) - 1; i >= 0; i-- {
+				if messages[i].Role == llm.RoleUser && messageHasUserImage(messages[i]) {
+					keep = i
+					break
+				}
+			}
+		}
+	}
+	var out []llm.Message
+	for i := range messages {
+		if i == keep || messages[i].Role != llm.RoleUser || !messageHasUserImage(messages[i]) {
+			if out != nil {
+				out = append(out, messages[i])
+			}
+			continue
+		}
+		// Allocate the projected list on the first payload that has to go:
+		// most histories carry no user images, and this runs on every request.
+		if out == nil {
+			out = make([]llm.Message, 0, len(messages))
+			out = append(out, messages[:i]...)
+		}
+		out = append(out, withoutUserImageParts(messages[i]))
+	}
+	if out == nil {
+		return messages
+	}
+	return out
+}
+
+// targetRulesOutImageHistory reports whether the target's resolved row
+// positively declares an input modality list that excludes images. A row
+// without one states no facts — an unmanaged gateway's ids and a fallback row
+// the catalog cannot describe both resolve that way — so its history images
+// keep flowing and the generic media estimate still prices them. Only a
+// declared text-only row is the shape whose provider refuses a request
+// carrying an attachment (#7629).
+func targetRulesOutImageHistory(profile *provider.Profile) bool {
+	if profile == nil {
+		return false
+	}
+	res := profile.Resolved()
+	return len(res.Caps.InputModalities) > 0 && !res.Caps.AcceptsModality("image")
+}
+
+func messageHasUserImage(m llm.Message) bool {
+	return slices.ContainsFunc(m.Content, func(p llm.ContentPart) bool {
+		return p.Kind == llm.ContentImage && p.Image != nil
+	})
+}
+
+// withoutUserImageParts copies m without its image payloads. A message that
+// held nothing else keeps one machinery note naming the omission, so the
+// outbound conversation never carries an empty user message.
+func withoutUserImageParts(m llm.Message) llm.Message {
+	kept := make([]llm.ContentPart, 0, len(m.Content))
+	for _, p := range m.Content {
+		if p.Kind == llm.ContentImage && p.Image != nil {
+			continue
+		}
+		kept = append(kept, p)
+	}
+	if len(kept) == 0 {
+		kept = append(kept, llm.MachineryText("[attachment omitted: the selected model does not accept image input]"))
+	}
+	m.Content = kept
+	return m
 }
 
 func responsesContinuationTurnKinds(turns []schema.Turn) []string {
@@ -2196,6 +2283,7 @@ func (s *Session) responsesContinuationFallbackRequest(profile *provider.Profile
 	}
 	fbReq.Messages = projectThinkingForTarget(profile, fbReq.Messages)
 	fbReq.Messages = projectToolResultMediaFor(profile, fbReq.Messages)
+	fbReq.Messages = s.projectUserImagesForTarget(profile, fbReq.Messages)
 	// The same effort rule as the primary path, against the FALLBACK model's own
 	// facts: profile was resolved from the fallback reference, so its ladder and
 	// stated default are the fallback model's, not the primary's.

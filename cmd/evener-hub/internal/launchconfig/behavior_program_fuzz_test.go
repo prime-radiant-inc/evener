@@ -114,6 +114,7 @@ func FuzzLaunchConfigBehaviorProgram(f *testing.F) {
 		checkMerge_ProjectProvidersConfigRefused,
 		checkToEnv_ProjectLayerCannotRedirectProviderResolution,
 		checkToEnv_ProjectMalformedEnvNameCannotAliasReservedNames,
+		checkToEnv_ProjectEndpointExclusionsKeepTrustedValues,
 	}
 	for i := range checks {
 		f.Add(uint8(i))

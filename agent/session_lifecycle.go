@@ -1107,6 +1107,13 @@ func delegateEntryRequiresReport(kind EntryKind) bool {
 
 func (s *Session) processOneInput(ctx context.Context, input string, images []ImageAttachment, kind EntryKind, inputProvenance *provenance.Causal) (out string, progressed bool, err error) {
 	communicatePreviewCalls := map[string]struct{}{}
+	// The accepted input's own attachments ride its requests even when the
+	// target row is image-blind, so the provider can refuse them with the
+	// actionable message. Request shaping uses this provenance to tell them
+	// apart from images an earlier vision-capable model accepted (#7629).
+	s.mu.Lock()
+	s.turnInputCarriesImages = len(images) > 0
+	s.mu.Unlock()
 	// A speculative document strip that this input never resolves must not
 	// outlive it: cancellation, a round cap, or a recovery branch can exit
 	// before the retry that would commit or roll it back (#4465).
