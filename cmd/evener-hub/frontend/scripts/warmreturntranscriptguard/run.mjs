@@ -490,10 +490,11 @@ async function main() {
           `the healthy warm reopen issued ${activation.reads} thread/read and ${activation.pages} thread/turns/list request(s)`,
         );
       }
-      // The control holds no recorded body at all, so the hold owes it nothing:
-      // before its pane opens (and can persist anything) its entry cache has no
-      // durable metadata for the ref, and the settle it publishes is its own
-      // retained notice rather than a restore.
+      // The control session's display is a notice beside its own recorded
+      // entry, not the pruned publication this opening must withhold: the hold
+      // owes it nothing, so it settles and keeps the notice visible. Its
+      // durable state is measured for the record; this fixture gives it a
+      // recorded row of its own, so it is not a recorded-body-free session.
       const controlNative = await evaluate(driver.send, nativeEntryEvidenceExpression(SESSION_A));
       await driver.openSession(SESSION_A);
       const controlDeadline = Date.now() + 30000;
@@ -503,23 +504,20 @@ async function main() {
         if (controlState && controlState.localOpening === false) break;
         await delay(100);
       }
-      milestone("warm-no-bodies-control", {
+      milestone("warm-notice-control", {
         ref: SESSION_A,
         ...controlState,
         nativeMetadata: controlNative === null ? "absent" : "present",
         nativeRows: controlNative === null ? 0 : controlNative.rows.length,
       });
       if (!controlState || controlState.localOpening) {
-        throw new Error("the no-bodies control session never settled its local opening");
+        throw new Error("the notice control session never settled its local opening");
       }
       if (controlState.pending) {
-        throw new Error("the no-bodies control session held a pending display it owes nothing for");
+        throw new Error("the notice control session held a pending display it owes nothing for");
       }
       if (!controlState.modelPresent || controlState.noticeDisplay < 1) {
-        throw new Error("the no-bodies control session settled without a retained notice");
-      }
-      if (controlNative !== null && controlNative.rows.length > 0) {
-        throw new Error("the no-bodies control session has recorded rows in native entry storage");
+        throw new Error("the notice control session settled without a retained notice");
       }
 
       // A clear retires the durable cache and the entry route's publication

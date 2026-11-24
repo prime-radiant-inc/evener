@@ -311,25 +311,27 @@ func assertWarmReturnTranscript(t *testing.T, fixture *skillGuardFixture, milest
 		t.Errorf("warm-restored: activation reads were split as %+v", restored.Activation)
 	}
 
-	var empty struct {
+	var control struct {
 		warmReturnStructural
 		NativeMetadata string `json:"nativeMetadata"` //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field nativeMetadata.
 		NativeRows     int    `json:"nativeRows"`     //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field nativeRows.
 	}
-	if !skillGuardMilestoneDetail(t, milestones, "warm-no-bodies-control", &empty) {
-		t.Fatal("missing warm-no-bodies-control milestone")
+	if !skillGuardMilestoneDetail(t, milestones, "warm-notice-control", &control) {
+		t.Fatal("missing warm-notice-control milestone")
 	}
-	if empty.LocalOpening || empty.Pending {
-		t.Errorf("warm-no-bodies-control: the session's local opening never settled: %+v", empty)
+	if control.LocalOpening || control.Pending {
+		t.Errorf("warm-notice-control: the session's local opening never settled: %+v", control)
 	}
-	if !empty.ModelPresent || empty.NoticeDisplay < 1 {
-		t.Errorf("warm-no-bodies-control: the session settled without a retained notice: %+v", empty)
+	if !control.ModelPresent || control.NoticeDisplay < 1 {
+		t.Errorf("warm-notice-control: the session settled without a retained notice: %+v", control)
 	}
-	// The control genuinely holds no recorded body: its entry cache never had
-	// durable metadata for the ref, so nothing was ever restored for it.
-	if empty.NativeMetadata == "present" && empty.NativeRows > 0 {
-		t.Errorf("warm-no-bodies-control: the control has %d recorded row(s) in native entry storage", empty.NativeRows)
-	}
+	// This fixture cannot produce a session with no recorded entry of its own,
+	// so the control shows what the hold must leave alone: a retained notice
+	// settling beside its session's own recorded entry, never withheld as a
+	// pruned historical publication. Its durable state is logged for the
+	// record, and the empty, notice-only, cleared, replaced-ref and anonymous
+	// source cases are covered at the store layer by
+	// threads.entryProduction.test.ts and threads.sessionCache.test.ts.
 
 	var cleared struct {
 		warmReturnStructural
@@ -351,11 +353,12 @@ func assertWarmReturnTranscript(t *testing.T, fixture *skillGuardFixture, milest
 		"warm return: native={rows:%d turns:%d} pruned={items:%d notices:%d history:%d} "+
 			"opening={parked:%d frames:%d pending:%d noticeOnly:%d} "+
 			"restored={items:%d bodies:%d notices:%d reads:%d pages:%d} "+
-			"noBodies={items:%d notices:%d native:%s} clear={metadata:%s}",
+			"control={items:%d notices:%d native:%s rows:%d} clear={metadata:%s}",
 		native.Rows, native.Turns,
 		pruned.DisplayItems, pruned.OverlayNotices, pruned.HistoryItems,
 		opening.Parked, opening.Frames, opening.PendingFrames, opening.NoticeOnlyFrames,
 		restored.DisplayItems, restored.BodyItems, restored.OverlayNotices, reads, pages,
-		empty.DisplayItems, empty.OverlayNotices, empty.NativeMetadata, cleared.NativeMetadata,
+		control.DisplayItems, control.OverlayNotices, control.NativeMetadata, control.NativeRows,
+		cleared.NativeMetadata,
 	)
 }
