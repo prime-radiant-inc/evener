@@ -1,6 +1,10 @@
-import { render, screen } from "@testing-library/react";
+import type { ThreadModel } from "@evener/appwire-client";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { expect, test } from "vitest";
+import { workspaceStore } from "../../../../shell/workspace";
 import { readModuleCss } from "../../../../styles/cssBlock";
+import { TranscriptRenderProvider } from "../../../../transcriptDisplay/renderContext";
+import "../../../doc";
 import { toolRendererFor } from "../toolRenderers";
 import "./askUser";
 import type { ItemModel } from "@evener/appwire-client";
@@ -173,6 +177,75 @@ test("bold emphasis in the question out-weighs the semibold base", () => {
   const rule = css.match(/\.question\s*\{([^}]*)\}/);
   expect(rule, "askuser.module.css must declare a .question rule").not.toBeNull();
   expect(rule![1]).toContain("--markdown-strong-weight: var(--font-weight-bold)");
+});
+
+// The transcript tool card renders inside ToolCallItem's transcript render
+// provider, so its question prose can resolve file:// report links exactly
+// like assistant prose. The fixture mirrors agentFileLinks.test.tsx's own
+// thread fixture: the minimum ThreadModel AgentMarkdown needs to resolve a
+// link against the session's cwd.
+const fileLinkThread: ThreadModel = {
+  ref: "local:sess_1",
+  threadId: "sess_1",
+  name: "Ask",
+  status: { type: "idle" },
+  modelProvider: "",
+  model: "",
+  visionModel: "",
+  askPending: false,
+  pendingEscalations: [],
+  turns: [],
+  queue: null,
+  tasks: null,
+  jobsUpdatedAt: null,
+  jobsTreeRevision: null,
+  lastFrameAt: 0,
+  capabilities: {
+    send: false,
+    steer: false,
+    interrupt: false,
+    compact: false,
+    clear: false,
+    forkFromTurn: false,
+    shutdown: false,
+    changeModel: false,
+    changeVisionModel: false,
+    queue: false,
+    goal: false,
+    sharedNotes: false,
+    rename: false,
+  },
+  goal: null,
+  humanNote: "",
+  agentNote: "",
+  sessionUrls: [],
+  contextUsed: 0,
+  contextWindow: 0,
+  contextPressure: 0,
+  contextAssumed: false,
+  compactionThreshold: 0,
+  usage: null,
+  workMillis: 0,
+  reasoningEffortLevels: [],
+  supportsReasoning: false,
+  cwd: "/tmp/project",
+};
+
+test("body resolves a file:// report link in the question into a document request", () => {
+  const d = toolRendererFor("ask_user");
+  const Body = d.body!;
+  const questions = [{ ...ONE_QUESTION[0], question: "See [the report](file:///tmp/project/docs/report.md) first?" }];
+  render(
+    <TranscriptRenderProvider thread={fileLinkThread} sourcePaneId="pane_fixture">
+      <Body item={item({ toolName: "ask_user", argumentsJSON: askUserArgs(questions) })} live={false} />
+    </TranscriptRenderProvider>,
+  );
+
+  const open = screen.getByRole("button", { name: "Open beside: docs/report.md" });
+  fireEvent.click(open);
+  expect(workspaceStore.getState().panes).toMatchObject([
+    { type: "doc", params: { session: "local:sess_1", path: "docs/report.md", kind: "file" } },
+  ]);
 });
 
 test("body notes the answer happens in the composer (this wave is read-only)", () => {

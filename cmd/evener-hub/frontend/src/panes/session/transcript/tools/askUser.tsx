@@ -26,9 +26,10 @@ import {
   askUserSummary,
   parseAskUserQuestions,
 } from "@evener/appwire-client";
-import { Card, Markdown } from "../../../../widgets";
+import { Card } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { AskOptionCopy } from "../../AskOptionCopy";
+import { AgentMarkdown } from "../messages/AgentMarkdown";
 import type { ToolRenderProps } from "../toolRenderers";
 import { registerToolRenderer } from "../toolRenderers";
 import styles from "./askuser.module.css";
@@ -68,14 +69,16 @@ function QuestionCard({ q }: { q: AskUserQuestion }) {
     <Card variant="outlined" data-testid="ask-user-question">
       <div className={CLASS.content}>
         {/* Model-authored prose (question, why, if_unanswered) renders
-            through the shared Markdown widget, the same treatment as the
-            composer's interactive card (askDock/AskQuestionCard). The
-            option label stays plain - it is the answer value the reply
-            echoes back verbatim - and the shared AskOptionCopy renders
-            label and detail inside spans, whose phrasing-only content
-            model cannot host the widget's block root. */}
+            through AgentMarkdown - the shared sanitized markdown pipeline
+            plus the transcript's own reference resolution, the same
+            treatment as the composer's interactive card
+            (askDock/AskQuestionCard). The option label stays plain - it is
+            the answer value the reply echoes back verbatim - and the
+            shared AskOptionCopy renders label and detail inside spans,
+            whose phrasing-only content model cannot host the widget's
+            block root. */}
         <div className={CLASS.question} data-slot="question">
-          <Markdown source={q.question} />
+          <AgentMarkdown source={q.question} />
         </div>
         <ul className={CLASS.options}>
           {q.options.map((opt) => (
@@ -91,7 +94,7 @@ function QuestionCard({ q }: { q: AskUserQuestion }) {
         )}
         {q.why && (
           <div className={CLASS.note} data-note="why">
-            <Markdown source={q.why} />
+            <AgentMarkdown source={q.why} />
           </div>
         )}
         {q.ifUnanswered && (
@@ -99,7 +102,7 @@ function QuestionCard({ q }: { q: AskUserQuestion }) {
             {/* The prefix rides inside the source: the widget's root is a
                 block element, so a plain sibling prefix would break onto
                 its own line. */}
-            <Markdown source={`If unanswered: ${q.ifUnanswered}`} />
+            <AgentMarkdown source={`If unanswered: ${q.ifUnanswered}`} />
           </div>
         )}
       </div>

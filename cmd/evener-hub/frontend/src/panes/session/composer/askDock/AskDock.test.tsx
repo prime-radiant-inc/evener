@@ -9,6 +9,7 @@ import userEvent from "@testing-library/user-event";
 import { IDBFactory } from "fake-indexeddb";
 import { beforeEach, describe, expect, onTestFinished, test, vi } from "vitest";
 import { appliedReceipt } from "../../../../mutationReceiptTestUtils";
+import { resetWorkspaceStoreForTests, workspaceStore } from "../../../../shell/workspace";
 import { resetConnectionStoreForTests } from "../../../../stores/connection";
 import {
   putThreadModel,
@@ -19,6 +20,7 @@ import {
 } from "../../../../stores/threads";
 import { connectReadyFakeClient } from "../../../../testing/connectionTestUtils";
 import { ALL_CAPABILITIES as CAPABILITIES } from "../../../../threadTestUtils";
+import "../../../doc";
 import { resetComposerFocusStoreForTests, useComposerFocusRequest } from "../composerFocus";
 import { AskDock, AskDockAnnouncements } from "./AskDock";
 import { askDockStore, resetAskDockStoreForTests } from "./askDockStore";
@@ -110,6 +112,7 @@ beforeEach(() => {
   resetThreadsStoreForTests();
   resetAskDockStoreForTests();
   resetComposerFocusStoreForTests();
+  resetWorkspaceStoreForTests();
 });
 
 test("renders nothing when there is no pending ask for this ref", async () => {
@@ -662,6 +665,31 @@ test("Mod+Enter on a focused link in the question prose opens the link, not the 
   expect(fake.calls.some((c) => c.method === "turn/start")).toBe(false);
   const { outbox } = await readMutationPersistence("ref_a");
   expect(outbox).toHaveLength(0);
+});
+
+// Question prose resolves file:// report links through the transcript's
+// document machinery, same as assistant prose: the dock supplies its own
+// transcript render context (thread + paneId), so a report link opens
+// beside the answering surface instead of a browser-blocked raw anchor.
+test("a file:// report link in the question opens the document beside", async () => {
+  const fake = connectReadyFakeClient();
+  fake.on("thread/read", () => readResponse("ref_a"));
+  await threadsStore.getState().ensureThread("ref_a");
+  startTurn(fake, "ref_a", "turn_1");
+  ackAskUserCall(fake, "ref_a", "turn_1", "item_1", "call_1", [
+    {
+      header: "Deploy?",
+      question: "See [the report](file:///tmp/project/docs/report.md) first?",
+      options: [{ label: "Yes", detail: "" }],
+    },
+  ]);
+  render(<AskDock ref="ref_a" paneId="pane_fixture" />);
+
+  const open = screen.getByRole("button", { name: "Open beside: docs/report.md" });
+  fireEvent.click(open);
+  expect(workspaceStore.getState().panes).toMatchObject([
+    { type: "doc", params: { session: "ref_a", path: "docs/report.md", kind: "file" } },
+  ]);
 });
 
 test("Mod+Enter advances rather than sends when another question is still unanswered", async () => {
