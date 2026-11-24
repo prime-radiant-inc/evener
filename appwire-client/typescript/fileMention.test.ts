@@ -188,6 +188,26 @@ describe("parseFileMentionToken", () => {
       query: "release",
       quoted: true,
     });
+    // Unfinished quoted mention before another quoted phrase on the same line keeps end = caret.
+    expect(parseFileMentionToken('check @"release and check "v2"', 'check @"release'.length)).toEqual({
+      start: 6,
+      end: 15,
+      query: "release",
+      quoted: true,
+    });
+    // Valid closed mentions before prose or punctuation still span through the closing quote.
+    expect(parseFileMentionToken('check @"my notes" and "v2"', 11)).toEqual({
+      start: 6,
+      end: 17,
+      query: "my ",
+      quoted: true,
+    });
+    expect(parseFileMentionToken('check @"my notes", next', 11)).toEqual({
+      start: 6,
+      end: 17,
+      query: "my ",
+      quoted: true,
+    });
   });
 
   it('decodes escaped quotes and backslashes inside @"..." and supports dir drill-in round-trips', () => {
@@ -254,6 +274,7 @@ describe("parseFileMentionToken", () => {
     expect(parseFileMentionToken("@ ", 2)).toBeNull();
     expect(parseFileMentionToken("user@example.com/@modal", 23)).toBeNull();
     expect(parseFileMentionToken("@@app/@modal", 12)).toBeNull();
+    expect(parseFileMentionToken("@@modal/", 8)).toBeNull();
     expect(
       parseFileMentionToken(`@${"a".repeat(FILE_MENTION_MAX_QUERY_LENGTH + 1)}`, FILE_MENTION_MAX_QUERY_LENGTH + 2),
     ).toBeNull();
@@ -312,6 +333,27 @@ describe("spliceFileMention", () => {
     ).toEqual({
       text: 'check @"docs/release notes.md" existing prose',
       caret: 30,
+      keepOpen: false,
+    });
+
+    const unfinishedBeforeQuoted = parseFileMentionToken('check @"release and check "v2"', 'check @"release'.length)!;
+    expect(
+      spliceFileMention('check @"release and check "v2"', unfinishedBeforeQuoted, {
+        path: "docs/release notes.md",
+        kind: "file",
+      }),
+    ).toEqual({
+      text: 'check @"docs/release notes.md" and check "v2"',
+      caret: 30,
+      keepOpen: false,
+    });
+
+    const closedBeforeQuoted = parseFileMentionToken('check @"my notes" and "v2"', 11)!;
+    expect(
+      spliceFileMention('check @"my notes" and "v2"', closedBeforeQuoted, { path: "my notes.md", kind: "file" }),
+    ).toEqual({
+      text: 'check @"my notes.md" and "v2"',
+      caret: 20,
       keepOpen: false,
     });
   });
@@ -380,6 +422,24 @@ describe("spliceFileMention", () => {
       end: 17,
       query: "app/@modal/",
       quoted: false,
+    });
+
+    // Leading-@ paths are quoted so selecting @modal produces @"@modal/" instead of invalid @@modal/.
+    const leadingAtSpliced = spliceFileMention(
+      "@m",
+      { start: 0, end: 2, query: "m", quoted: false },
+      { path: "@modal", kind: "dir" },
+    );
+    expect(leadingAtSpliced).toEqual({
+      text: '@"@modal/"',
+      caret: 9,
+      keepOpen: true,
+    });
+    expect(parseFileMentionToken(leadingAtSpliced.text, leadingAtSpliced.caret)).toEqual({
+      start: 0,
+      end: 10,
+      query: "@modal/",
+      quoted: true,
     });
   });
 });
@@ -546,6 +606,27 @@ describe("createFileMentionStore", () => {
     await Promise.resolve();
     store.search({ client, target: { kind: "session", ref: "local:s1" }, query: "src/in", enabled: true });
     expect(store.getState().items).toEqual([]);
+
+    // Narrowing abbreviated fuzzy slash query sr -> sr/ without an sr dir keeps src/main.go.
+    const srStore = createFileMentionStore();
+    const srClient = makeFakeRequestClient(async () => ({
+      items: [
+        { path: "src", kind: "dir" },
+        { path: "src/main.go", kind: "file" },
+      ],
+      truncated: false,
+    }));
+    srStore.search({
+      client: srClient,
+      target: { kind: "session", ref: "local:s1" },
+      query: "sr",
+      enabled: true,
+      immediate: true,
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    await Promise.resolve();
+    srStore.search({ client: srClient, target: { kind: "session", ref: "local:s1" }, query: "sr/", enabled: true });
+    expect(srStore.getState().items).toEqual([{ path: "src/main.go", kind: "file" }]);
   });
 
   it("degrades quietly per (client, host) on MethodNotFound while keeping local and sibling hosts working", async () => {

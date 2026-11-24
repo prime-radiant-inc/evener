@@ -426,12 +426,14 @@ test("Ctrl+Enter, Cmd+Enter, and Shift+Enter bypass file mention commit and reac
   await user.keyboard("{Control>}{Enter}{/Control}");
   await waitFor(() => expect(fake.calls.filter((c) => c.method === "turn/start")).toHaveLength(1));
   expect(editor.textContent).toBe("");
+  expect(screen.queryByRole("listbox", { name: "Files" })).toBeNull();
 
   await user.type(editor, "check @ma");
   await waitFor(() => expect(fileOptions()).toHaveLength(1));
   await user.keyboard("{Meta>}{Enter}{/Meta}");
   await waitFor(() => expect(fake.calls.filter((c) => c.method === "turn/start")).toHaveLength(2));
   expect(editor.textContent).toBe("");
+  expect(screen.queryByRole("listbox", { name: "Files" })).toBeNull();
 
   // With enterToSend enabled, Shift+Enter inserts a newline without committing or submitting.
   act(() => prefsStore.getState().setEnterToSend(true));

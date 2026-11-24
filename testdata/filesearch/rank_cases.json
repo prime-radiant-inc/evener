@@ -290,6 +290,19 @@
       "wantPositions": {
         "src/main.go": [0, 3, 4]
       }
+    },
+    {
+      "name": "unmatched_trailing_slash_fuzzy_fallback",
+      "query": "sr/",
+      "limit": 10,
+      "items": [
+        { "path": "src", "kind": "dir" },
+        { "path": "src/main.go", "kind": "file" }
+      ],
+      "wantPaths": ["src/main.go"],
+      "wantPositions": {
+        "src/main.go": [0, 1, 3]
+      }
     }
   ]
 }

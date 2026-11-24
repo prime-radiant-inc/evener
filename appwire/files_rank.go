@@ -33,30 +33,25 @@ func ScoreFileMention(path, query string) (score int, positions []int, ok bool) 
 	if norm == "" {
 		return 0, nil, true
 	}
-	if prefix, _, frag, hasSlash := splitDirPrefixQuery(norm); hasSlash {
-		if strings.HasPrefix(path, prefix) {
-			prefixRuneLen := utf8.RuneCountInString(prefix)
-			prefixPos := make([]int, prefixRuneLen)
-			for k := range prefixRuneLen {
-				prefixPos[k] = k
-			}
-			if frag == "" {
-				return 0, prefixPos, true
-			}
-			relScore, relPos, matched := scoreNormalizedFileMention(path[len(prefix):], frag)
-			if !matched {
-				return 0, nil, false
-			}
-			positions = make([]int, 0, prefixRuneLen+len(relPos))
-			positions = append(positions, prefixPos...)
-			for _, pos := range relPos {
-				positions = append(positions, prefixRuneLen+pos)
-			}
-			return relScore, positions, true
+	if prefix, _, frag, hasSlash := splitDirPrefixQuery(norm); hasSlash && strings.HasPrefix(path, prefix) {
+		prefixRuneLen := utf8.RuneCountInString(prefix)
+		prefixPos := make([]int, prefixRuneLen)
+		for k := range prefixRuneLen {
+			prefixPos[k] = k
 		}
 		if frag == "" {
+			return 0, prefixPos, true
+		}
+		relScore, relPos, matched := scoreNormalizedFileMention(path[len(prefix):], frag)
+		if !matched {
 			return 0, nil, false
 		}
+		positions = make([]int, 0, prefixRuneLen+len(relPos))
+		positions = append(positions, prefixPos...)
+		for _, pos := range relPos {
+			positions = append(positions, prefixRuneLen+pos)
+		}
+		return relScore, positions, true
 	}
 	return scoreNormalizedFileMention(path, norm)
 }
@@ -159,9 +154,6 @@ func hasExactDirPrefixScope(items []FileSearchItem, norm string) (prefix, frag s
 	prefix, dirNoSlash, frag, hasSlash := splitDirPrefixQuery(norm)
 	if !hasSlash {
 		return "", "", false
-	}
-	if frag == "" {
-		return prefix, "", true
 	}
 	for _, item := range items {
 		if strings.HasPrefix(item.Path, prefix) || (dirNoSlash != "" && item.Kind == "dir" && item.Path == dirNoSlash) {

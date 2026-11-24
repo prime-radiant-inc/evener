@@ -616,6 +616,9 @@ function ComposerWithSubmission({
     textRef,
     plainKeysOnly: true,
   });
+  useEffect(() => {
+    if (text === "") resetFileCompletion();
+  }, [text, resetFileCompletion]);
   useLayoutEffect(() => {
     mountedRef.current = true;
     const unbind = source.bindEditor(textEditor);
