@@ -1,6 +1,5 @@
 .hint {
-  color: var(--ink-mid);
-  font-size: var(--font-size-caption);
+  composes: help from "../../styles/help.module.css";
 }
 
 /* A field slot: PathField's trigger fills its container the way Input does,

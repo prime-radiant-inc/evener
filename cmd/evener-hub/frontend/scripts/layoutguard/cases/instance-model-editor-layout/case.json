@@ -4,12 +4,14 @@
   "cssFiles": [
     "styles/global.css",
     "styles/tokens.css",
+    "styles/help.module.css",
     "styles/surface.module.css",
     "widgets/formrow/formrow.module.css",
     "widgets/input/input.module.css",
     "widgets/button/button.module.css",
     "panes/settings/sections/credentials/InstanceSheet.module.css"
   ],
+  "allowlist": { ".help": "formrow's .help composes help.module.css's .help, so the de-scoped harness carries the one help recipe twice and no other selector is affected" },
   "viewport": {
     "width": 1280,
     "height": 800,

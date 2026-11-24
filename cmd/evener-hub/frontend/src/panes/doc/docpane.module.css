@@ -24,7 +24,5 @@
 }
 
 .noticeText {
-  color: var(--ink-mid);
-  font-family: var(--font-sans);
-  font-size: var(--font-size-caption);
+  composes: help from "../../styles/help.module.css";
 }

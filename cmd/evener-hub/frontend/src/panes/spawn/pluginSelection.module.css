@@ -69,9 +69,8 @@
 }
 
 .description {
+  composes: helpMuted from "../../styles/help.module.css";
   min-width: 0;
-  color: var(--ink-low);
-  font-size: var(--font-size-caption);
 }
 
 /* The quiet Details action that ends a row's description: the span wrapping

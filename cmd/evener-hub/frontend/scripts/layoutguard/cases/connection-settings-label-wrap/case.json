@@ -3,9 +3,11 @@
   "cssFiles": [
     "styles/global.css",
     "styles/tokens.css",
+    "styles/help.module.css",
     "widgets/input/input.module.css",
     "widgets/propertylist/propertylist.module.css"
   ],
+  "allowlist": { ".help": "propertylist's .help composes help.module.css's .help, so the de-scoped harness carries the one help recipe twice and no other selector is affected" },
   "viewport": { "width": 760, "height": 600, "deviceScaleFactor": 1 },
   "mutation": {
     "declaration": "widgets/propertylist/propertylist.module.css .settingsLabel overflow-wrap: anywhere deleted, leaving the single-token label to run past its 104px column into the input",

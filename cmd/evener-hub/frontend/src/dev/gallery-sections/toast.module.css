@@ -23,9 +23,7 @@
 }
 
 .hint {
+  composes: help from "../../styles/help.module.css";
   margin: 0;
   padding: var(--space-3);
-  color: var(--ink-mid);
-  font-family: var(--font-sans);
-  font-size: var(--font-size-caption);
 }

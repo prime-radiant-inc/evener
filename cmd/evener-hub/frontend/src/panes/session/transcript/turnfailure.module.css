@@ -21,8 +21,6 @@
 }
 
 .hintText {
-  font-family: var(--font-sans);
-  font-size: var(--font-size-caption);
-  color: var(--ink-mid);
+  composes: help from "../../../styles/help.module.css";
 }
 

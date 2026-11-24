@@ -88,9 +88,8 @@
 }
 
 .description {
+  composes: help from "../../styles/help.module.css";
   margin: 0;
-  color: var(--ink-mid);
-  font-size: var(--font-size-caption);
   line-height: var(--line-height-body);
 }
 

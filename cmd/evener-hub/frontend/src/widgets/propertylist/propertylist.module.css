@@ -110,10 +110,8 @@
 }
 
 .help {
+  composes: help from "../../styles/help.module.css";
   margin: 0;
-  color: var(--ink-mid);
-  font-family: var(--font-sans);
-  font-size: var(--font-size-caption);
   line-height: var(--line-height-body);
 }
 

@@ -71,10 +71,9 @@
 }
 
 .note {
+  composes: help from "../../../styles/help.module.css";
   flex-basis: 100%;
   margin: 0;
-  color: var(--ink-mid);
-  font-size: var(--font-size-caption);
   line-height: var(--line-height-body);
   display: flex;
   align-items: center;
@@ -120,8 +119,7 @@
 }
 
 .captureHint {
-  color: var(--ink-mid);
-  font-size: var(--font-size-caption);
+  composes: help from "../../../styles/help.module.css";
   line-height: var(--line-height-body);
   white-space: nowrap;
 }

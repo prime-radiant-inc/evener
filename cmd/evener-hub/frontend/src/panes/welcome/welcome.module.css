@@ -32,11 +32,9 @@
 }
 
 .hintFooter {
+  composes: help from "../../styles/help.module.css";
   display: flex;
   align-items: center;
   gap: var(--space-1);
   margin: var(--space-2) 0 0;
-  color: var(--ink-mid);
-  font-family: var(--font-sans);
-  font-size: var(--font-size-caption);
 }
