@@ -1103,3 +1103,59 @@ func TestDrainDoesNotExcuseFiredReadinessWatch(t *testing.T) {
 		t.Fatalf("fired readiness watch still excuses job: ids=%v sole=%v", ids, sole)
 	}
 }
+
+// A completion can reach the delegate's attention queue after a drain pass's
+// turn gate read no owed attention but before that pass counts the tree's
+// outstanding work. The pass's outstanding scan does not read a delegate's own
+// pending attention, so the pass would return quiescent with the completion
+// undriven. The drain re-reads the turn gate's attention predicate at that
+// verdict; this test commits a stable shell completion in exactly that interval
+// and requires the completion turn to run before the drain returns.
+func TestDrainJobTreeRechecksUndrivenAttentionBeforeReturningQuiescent(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	sess := newSession(t, withDir(stateDir), withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1}))
+	controller, _ := newDelegateControllerTestHarness(t, 1, 1)
+	const delegateID = "dlg_drain_recheck"
+	seedDelegateControllerIdle(t, controller, delegateID, "")
+	sess.delegateController = controller
+	sess.owningDelegateID = delegateID
+
+	const attentionID = "shell:job-recheck:1"
+	committed := false
+	updateSessionTestConfig(sess, func(cfg *testConfig) {
+		cfg.jobTreeDrainBeforeOutstanding = func(s *Session) {
+			if committed {
+				return
+			}
+			committed = true
+			if _, err := s.appendDelegateNotificationDurably(attentionID, "SHELL_COMPLETION_RECHECK"); err != nil {
+				t.Errorf("append completion attention: %v", err)
+				return
+			}
+			added, blocker, _, _, err := s.delegateController.tryOpenDelegateAttention(delegateID, attentionID)
+			if err != nil || blocker != nil || !added {
+				t.Errorf("commit completion attention: added=%v blocker=%v err=%v", added, blocker, err)
+			}
+		}
+	})
+
+	turns := 0
+	stopAfterTurn := errors.New("drain recheck test: completion turn recorded")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_, err := sess.drainJobTreeWith(ctx, make(chan time.Time), func(context.Context) error { return nil },
+		func(_ context.Context, _ string, _ []ImageAttachment, kind EntryKind) (string, error) {
+			turns++
+			if kind != EntryNotification {
+				t.Errorf("completion turn kind = %v, want EntryNotification", kind)
+			}
+			return "", stopAfterTurn
+		})
+	if !errors.Is(err, stopAfterTurn) {
+		t.Fatalf("drain returned %v after %d completion turns; a completion queued between the turn gate and the outstanding scan must run its completion turn before the drain returns", err, turns)
+	}
+	if !committed {
+		t.Fatal("the drain gate interval was never exercised")
+	}
+}

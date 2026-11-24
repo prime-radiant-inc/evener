@@ -1463,6 +1463,9 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 			prevOutstanding = true
 			continue
 		}
+		if hook := s.cfg.testOnly.jobTreeDrainBeforeOutstanding; hook != nil {
+			hook(s)
+		}
 		outstanding, err := s.treeHasOutstandingWork()
 		if err != nil {
 			return lastResult, err
@@ -1475,7 +1478,13 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 			// Nothing pending and nothing outstanding anywhere in the subtree — but the
 			// scan above is not a snapshot: if the tree moved while it ran, re-run the
 			// pass instead of trusting the verdict.
-			if treeMoved() {
+			//
+			// The scan is also not the turn gate above: a completion can commit its
+			// delegate attention between that gate and this verdict, making the
+			// finalizing job stop counting before the wake that will drive its
+			// notification turn is raised. Re-read the gate's attention predicate
+			// here so that completion cannot end the drain quiescent.
+			if treeMoved() || s.hasUndrivenDelegateUpdate(drivenUpdates) {
 				continue
 			}
 			// The outstanding scan deliberately excludes forwarded records for
