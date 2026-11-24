@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"sync/atomic"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
@@ -141,9 +142,11 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) error {
 				deps.recordQuietYield()
 				inbox := drainCommunicateInbox(deps)
 				accepted := true
+				companion, _ := ctx.Value(communicateCompanionKey{}).(*communicateCompanion)
 				b, _ := json.Marshal(map[string]any{"accepted": true, "next": next, "quiet": true, "inbox": inbox})
 				return tool.StateResult{Output: string(b), State: communicateEndState{
 					Accepted: &accepted, EndTurn: &accepted, Quiet: &accepted, QuietNote: quietNote,
+					QuietCommentary: companion.claim(),
 				}}, nil
 			}
 			if message == "" {
@@ -284,6 +287,24 @@ func drainCommunicateInbox(deps *toolDeps) []string {
 var errQuietYieldWithoutWake = errors.New("nothing can wake this turn. Start the work or arm a watch before yielding, or send your final reply with the result tool")
 
 type communicateEntryKindKey struct{}
+
+// communicateCompanion carries the round's assistant prose when the round also
+// called communicate quietly. claimed keeps a second quiet call in the same
+// round from recording the prose twice.
+type communicateCompanion struct {
+	text    string
+	claimed atomic.Bool
+}
+
+type communicateCompanionKey struct{}
+
+// claim returns the companion prose once, or "" when it was already claimed.
+func (c *communicateCompanion) claim() string {
+	if c == nil || !c.claimed.CompareAndSwap(false, true) {
+		return ""
+	}
+	return c.text
+}
 
 func (s *Session) canQuietlyYield(ctx context.Context) error {
 	kind, _ := ctx.Value(communicateEntryKindKey{}).(EntryKind)

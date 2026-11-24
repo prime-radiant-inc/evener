@@ -1,9 +1,7 @@
 package apptranscript
 
 import (
-	"slices"
 	"sort"
-	"strings"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/schema"
@@ -114,19 +112,6 @@ type logicalTurnAccumulator struct {
 	// interruptAwaitedCalls), but a call announced after a later reopen is not
 	// its concern.
 	stampedCompletionAt map[string][]int
-	// suppressedComms and quietHookDemote stay nil except in the rare case
-	// where a PreToolUse hook turns a non-empty communicate call into
-	// communicate_quiet after its TurnAssistant already committed prose.
-	suppressedComms []suppressedCommEntry
-	quietHookDemote map[int]bool
-}
-
-type suppressedCommEntry struct {
-	turn       schema.Turn
-	turnID     string
-	entryIndex int
-	turnSlot   int
-	insertAt   int
 }
 
 // stampedState is one stamped turn's folded completion state: the status the
@@ -326,14 +311,6 @@ func appendProjectedEntry(acc *logicalTurnAccumulator, project EntryProjector, t
 					for range items {
 						acc.turns[i].itemEntries = append(acc.turns[i].itemEntries, entryIndex)
 					}
-				} else if turn.Kind == schema.TurnCommunicate && turn.Communicate != nil {
-					acc.suppressedComms = append(acc.suppressedComms, suppressedCommEntry{
-						turn:       turn,
-						turnID:     turn.TurnID,
-						entryIndex: entryIndex,
-						turnSlot:   i,
-						insertAt:   len(acc.turns[i].items),
-					})
 				}
 				break
 			}
@@ -359,91 +336,6 @@ func appendProjectedEntry(acc *logicalTurnAccumulator, project EntryProjector, t
 		items = project(turn, turnID, entryIndex)
 	}
 	acc.appendEntry(turn, entryIndex, items)
-	if (turn.Kind == schema.TurnTool || turn.Kind == schema.TurnToolResults) && turnHasQuietCommunicate(&turn) {
-		acc.recordUnexpectedQuietDemotions(&turn)
-	}
-}
-
-func turnHasQuietCommunicate(turn *schema.Turn) bool {
-	for _, part := range turn.Message.Content {
-		if part.Kind == llm.ContentToolResult && part.ToolResult != nil && IsQuietCommunicate(part.ToolResult) {
-			return true
-		}
-	}
-	return false
-}
-
-func (a *logicalTurnAccumulator) recordUnexpectedQuietDemotions(resultTurn *schema.Turn) {
-	for _, part := range resultTurn.Message.Content {
-		if part.Kind != llm.ContentToolResult || part.ToolResult == nil || !IsQuietCommunicate(part.ToolResult) {
-			continue
-		}
-		callID := part.ToolResult.ToolCallID
-	findAssistant:
-		for ti, g := range slices.Backward(a.turns) {
-			for ei, entry := range slices.Backward(g.entries) {
-				if entry.Kind != schema.TurnAssistant {
-					continue
-				}
-				for _, cpart := range entry.Message.Content {
-					if cpart.Kind == llm.ContentToolCall && cpart.ToolCall != nil && cpart.ToolCall.ID == callID {
-						entryIdx := g.entryIndexes[ei]
-						for j, item := range g.items {
-							if a.turns[ti].itemEntries[j] == entryIdx && item.Type == "agentMessage" {
-								if a.quietHookDemote == nil {
-									a.quietHookDemote = map[int]bool{}
-								}
-								a.quietHookDemote[entryIdx] = true
-								break
-							}
-						}
-						break findAssistant
-					}
-				}
-			}
-		}
-	}
-}
-
-func applyQuietHookDemotions(acc *logicalTurnAccumulator) {
-	if len(acc.quietHookDemote) == 0 {
-		return
-	}
-	for _, sc := range acc.suppressedComms {
-		if item, ok := CommunicateItem(sc.turnID, sc.entryIndex, sc.turn); ok && sc.turnSlot >= 0 && sc.turnSlot < len(acc.turns) {
-			g := &acc.turns[sc.turnSlot]
-			lastShownAssistant := 0
-			for ei, idx := range g.entryIndexes {
-				if idx < sc.entryIndex && g.entries[ei].Kind == schema.TurnAssistant {
-					for j, it := range g.items {
-						if g.itemEntries[j] == idx && it.Type == "agentMessage" {
-							lastShownAssistant = idx
-							break
-						}
-					}
-				}
-			}
-			if acc.quietHookDemote[lastShownAssistant] {
-				at := min(sc.insertAt, len(g.items))
-				g.items = append(g.items[:at], append([]appwire.ThreadItem{item}, g.items[at:]...)...)
-				g.itemEntries = append(g.itemEntries[:at], append([]int{sc.entryIndex}, g.itemEntries[at:]...)...)
-			}
-		}
-	}
-	for ti := range acc.turns {
-		g := &acc.turns[ti]
-		var kept []appwire.ThreadItem
-		var keptEntries []int
-		for j, item := range g.items {
-			entryIdx := g.itemEntries[j]
-			if acc.quietHookDemote[entryIdx] && item.Type == "agentMessage" && !strings.HasPrefix(item.ID, "item_"+string(appwire.ThreadItemEventKindQuietYield)+"_") {
-				continue
-			}
-			kept = append(kept, item)
-			keptEntries = append(keptEntries, entryIdx)
-		}
-		g.items, g.itemEntries = kept, keptEntries
-	}
 }
 
 // groupedAppTurnProjection flushes the accumulator into AppWire turns under
@@ -456,7 +348,6 @@ func applyQuietHookDemotions(acc *logicalTurnAccumulator) {
 // bounded readers, and the item-window path must all agree on these keys (PR
 // #822 F3).
 func groupedAppTurnProjection(acc *logicalTurnAccumulator, header transcript.Header, launchPrompt string) (ItemTurnProjection, error) {
-	applyQuietHookDemotions(acc)
 	turns := []appwire.Turn{}
 	entryOrdinal := uint64(0)
 	var prelude *appwire.Turn

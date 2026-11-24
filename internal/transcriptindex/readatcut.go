@@ -150,7 +150,6 @@ type suffixEffects struct {
 	entries       uint64
 	commAdds      map[string]bool
 	commAnnounced map[string]bool
-	quietAdds     map[string]bool
 	identityIDs   map[string]bool
 	commDelivers  []uint64
 	assistantText bool
@@ -174,7 +173,6 @@ func (s suffixEffects) commDelivered(ordinal uint64) bool {
 func (x *Index) scanSuffixEffects(length int64) (suffix suffixEffects, err error) {
 	suffix.commAdds = map[string]bool{}
 	suffix.commAnnounced = map[string]bool{}
-	suffix.quietAdds = map[string]bool{}
 	suffix.identityIDs = map[string]bool{}
 	reader := bufio.NewReaderSize(io.NewSectionReader(x.transcript, length, x.meta.Length-length), 4<<10)
 	for {
@@ -229,9 +227,6 @@ func applySuffixEffects(turn *schema.Turn, position uint64, suffix *suffixEffect
 	switch turn.Kind {
 	case schema.TurnAssistant:
 		for _, part := range turn.Message.Content {
-			if part.Kind == llm.ContentToolCall && part.ToolCall != nil {
-				suffix.quietAdds[part.ToolCall.ID] = true
-			}
 			if deferredCommCall(turn, part) {
 				suffix.commAdds[part.ToolCall.ID] = true
 				suffix.commAnnounced[part.ToolCall.ID] = true
@@ -270,10 +265,6 @@ func applySuffixEffects(turn *schema.Turn, position uint64, suffix *suffixEffect
 				}
 			}
 			if !apptranscript.IsCommunicateTool(name, turn.ResultToolName) && !apptranscript.IsQuietCommunicate(part.ToolResult) {
-				continue
-			}
-			if apptranscript.IsQuietCommunicate(part.ToolResult) && suffix.quietAdds[id] {
-				delete(suffix.quietAdds, id)
 				continue
 			}
 			if suffix.commAdds[id] {
