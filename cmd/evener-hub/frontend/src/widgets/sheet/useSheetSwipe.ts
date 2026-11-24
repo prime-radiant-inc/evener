@@ -7,6 +7,7 @@ import {
   useRef,
 } from "react";
 import { motionDurationMs } from "../../motion/tokens";
+import dialogStyles from "../dialog/dialog.module.css";
 import { ownerDocumentOf, ownerWindowOf } from "../internal/documentRealm";
 import { requireClass } from "../internal/requireClass";
 import styles from "./sheet.module.css";
@@ -14,6 +15,8 @@ import styles from "./sheet.module.css";
 const SNAP_BACK_CLASS = requireClass(styles.snapBack, "sheet.module.css", "snapBack");
 const HANDLE_CLASS = requireClass(styles.handle, "sheet.module.css", "handle");
 const GRAB_HANDLE_CLASS = requireClass(styles.grabHandle, "sheet.module.css", "grabHandle");
+const BOTTOM_HEADER_CLASS = requireClass(styles.bottomHeader, "sheet.module.css", "bottomHeader");
+const CLOSE_BUTTON_CLASS = requireClass(dialogStyles.closeButton, "dialog.module.css", "closeButton");
 
 const VELOCITY_WINDOW_MS = 100;
 const HOLD_CUTOFF_MS = 80;
@@ -71,6 +74,7 @@ type GestureState =
       touchId: number;
       startY: number;
       offsetY: number;
+      panelHeight: number;
       samples: VelocitySample[];
     }
   | {
@@ -78,6 +82,7 @@ type GestureState =
       pointerId: number;
       startY: number;
       offsetY: number;
+      panelHeight: number;
       samples: VelocitySample[];
       hasTranslated: boolean;
       expandableMode: "peek" | "full" | undefined;
@@ -114,7 +119,7 @@ function targetElement(target: EventTarget | null): Element | null {
 function isHandleOrHeaderTarget(target: EventTarget | null, panel: HTMLElement): boolean {
   const el = targetElement(target);
   if (el === null) return false;
-  const match = el.closest(`.${HANDLE_CLASS}, .${GRAB_HANDLE_CLASS}, header`);
+  const match = el.closest(`.${HANDLE_CLASS}, .${GRAB_HANDLE_CLASS}, .${BOTTOM_HEADER_CLASS}`);
   return match !== null && match.parentElement === panel;
 }
 
@@ -123,7 +128,7 @@ function isExcludedTarget(target: EventTarget | null, body: HTMLElement | null, 
   if (el === null) return false;
   if (inHeader) return el.closest(HEADER_INTERACTIVE_EXCLUDE_SELECTOR) !== null;
   if (el.closest(INTERACTIVE_EXCLUDE_SELECTOR) !== null) return true;
-  if (el.closest('button[aria-label="Close"]') !== null) return true;
+  if (el.closest(`.${CLOSE_BUTTON_CLASS}`) !== null) return true;
   return body !== null && !body.contains(el) && el.closest("button") !== null;
 }
 
@@ -138,11 +143,7 @@ function hasScrolledAncestor(target: EventTarget | null, panel: HTMLElement): bo
 }
 
 function findTouchById(list: TouchList, id: number): Touch | undefined {
-  for (let i = 0; i < list.length; i += 1) {
-    const touch = list[i];
-    if (touch && (touch.identifier ?? 0) === id) return touch;
-  }
-  return undefined;
+  return Array.from(list).find((touch) => (touch.identifier ?? 0) === id);
 }
 
 function isTouchActive(event: TouchEvent, touchId: number): boolean {
@@ -198,10 +199,10 @@ function clearInlineStyles(panel: HTMLElement | null, scrim: HTMLElement | null)
   if (scrim !== null) scrim.style.opacity = "";
 }
 
-function applyDragStyles(panel: HTMLElement, scrim: HTMLElement | null, offsetY: number): void {
+function applyDragStyles(panel: HTMLElement, scrim: HTMLElement | null, offsetY: number, panelHeight: number): void {
   panel.style.transform = `translateY(${offsetY}px)`;
   if (scrim !== null) {
-    const ratio = offsetY / Math.max(panel.getBoundingClientRect().height, 1);
+    const ratio = offsetY / Math.max(panelHeight, 1);
     scrim.style.opacity = String(Math.max(0.4, 1 - ratio * 0.6));
   }
 }
@@ -254,14 +255,14 @@ function settleOrClear(
 function settleSwipeDrag(
   ctrl: SwipeController,
   latestRef: RefObject<{ open: boolean; onClose: () => void }>,
-  state: { offsetY: number; samples: VelocitySample[] },
+  state: { offsetY: number; panelHeight: number; samples: VelocitySample[] },
   panel: HTMLElement,
   scrimRef: RefObject<HTMLDivElement | null>,
   cancelled: boolean,
 ): void {
   const scrim = scrimRef.current;
   if (!cancelled && state.offsetY > 0) {
-    const threshold = dismissThreshold(panel.getBoundingClientRect().height);
+    const threshold = dismissThreshold(state.panelHeight);
     const projectedY = state.offsetY + computeVelocityY(state.samples, performance.now()) * PROJECTION_MS;
     if (projectedY >= threshold) {
       latestRef.current.onClose();
@@ -402,6 +403,7 @@ export function useSheetSwipe({
           touchId: state.touchId,
           startY: state.startY,
           offsetY: 0,
+          panelHeight: panel.getBoundingClientRect().height,
           samples: [{ y: state.startY, time: state.startTime }],
         };
       }
@@ -410,7 +412,7 @@ export function useSheetSwipe({
       const offsetY = Math.max(0, touch.clientY - state.startY);
       state.offsetY = offsetY;
       pushSample(state.samples, touch.clientY, performance.now());
-      applyDragStyles(panel, scrimRef.current, offsetY);
+      applyDragStyles(panel, scrimRef.current, offsetY, state.panelHeight);
     };
 
     const finishTouch = (event: TouchEvent, cancelled: boolean) => {
@@ -453,21 +455,22 @@ export function useSheetSwipe({
         // A primary pointerdown implies no primary touch remains active; clear orphaned touch state.
         ctrl.gesture = { kind: "idle" };
       }
-      if (
-        !isOpen ||
-        (origin === "header"
-          ? currentSide !== "bottom" || exp?.geometry === "full"
-          : !exp && currentSide !== "bottom") ||
-        isExcludedTarget(e.target, bodyRef.current, origin === "header")
-      ) {
+      const originAllowsDrag =
+        origin === "header"
+          ? currentSide === "bottom" && exp?.geometry !== "full"
+          : currentSide === "bottom" || Boolean(exp);
+      if (!isOpen || !originAllowsDrag || isExcludedTarget(e.target, bodyRef.current, origin === "header")) {
         if (orphanedTouch !== null) settleOrClear(ctrl, panelRef.current, scrimRef.current, orphanedTouch.offsetY);
         return;
       }
 
-      const win = ownerWindowOf(panelRef.current ?? e.currentTarget);
-      const recoveryOffsetY =
-        orphanedTouch?.offsetY ??
-        (ctrl.cancelDeclinedGuard !== null ? 1 : ctrl.cancelSnapBack !== null ? 0 : undefined);
+      const panelAtStart = panelRef.current;
+      const win = ownerWindowOf(panelAtStart ?? e.currentTarget);
+      let recoveryOffsetY = orphanedTouch?.offsetY;
+      if (recoveryOffsetY === undefined) {
+        if (ctrl.cancelDeclinedGuard !== null) recoveryOffsetY = 1;
+        else if (ctrl.cancelSnapBack !== null) recoveryOffsetY = 0;
+      }
       clearCallback(ctrl, "cancelSnapBack");
       clearCallback(ctrl, "cancelDeclinedGuard");
 
@@ -476,6 +479,7 @@ export function useSheetSwipe({
         pointerId: e.pointerId ?? 0,
         startY: e.clientY,
         offsetY: 0,
+        panelHeight: panelAtStart?.getBoundingClientRect().height ?? 0,
         hasTranslated: false,
         samples: [{ y: e.clientY, time: performance.now() }],
         expandableMode: origin === "handle" && exp !== undefined ? exp.geometry : undefined,
@@ -522,7 +526,7 @@ export function useSheetSwipe({
         if (offsetY > 0 || state.hasTranslated) {
           state.hasTranslated = true;
           state.offsetY = offsetY;
-          applyDragStyles(panel, scrimRef.current, offsetY);
+          applyDragStyles(panel, scrimRef.current, offsetY, state.panelHeight);
         }
         pushSample(state.samples, moveEvent.clientY, performance.now());
       };

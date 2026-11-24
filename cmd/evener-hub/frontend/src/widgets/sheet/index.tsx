@@ -66,23 +66,19 @@ const EXPANDABLE_BOTTOM_CLASS = requireClass(styles.expandableBottom, "sheet.mod
 const EXPANDABLE_HEADER_CLASS = requireClass(styles.expandableHeader, "sheet.module.css", "expandableHeader");
 const EXPANDABLE_BODY_CLASS = requireClass(styles.expandableBody, "sheet.module.css", "expandableBody");
 
-function DragHandle({ onPointerDown }: { onPointerDown: (e: ReactPointerEvent) => void }) {
+function SheetHandle({
+  className,
+  testId,
+  ariaHidden,
+  onPointerDown,
+}: {
+  className: string;
+  testId: string;
+  ariaHidden?: true;
+  onPointerDown: (e: ReactPointerEvent) => void;
+}) {
   return (
-    <div className={HANDLE_CLASS} data-testid="sheet-handle" onPointerDown={onPointerDown}>
-      <div className={HANDLE_BAR_CLASS} />
-    </div>
-  );
-}
-
-/**
- * The decorative grab pill a non-expandable bottom Sheet shows above its
- * header on a coarse pointer. It has no role or tab stop so keyboard and
- * screen-reader users keep using Escape and the close button, while pointer
- * drags on it invoke the shared swipe-down dismissal.
- */
-function GrabPill({ onPointerDown }: { onPointerDown: (e: ReactPointerEvent) => void }) {
-  return (
-    <div className={GRAB_HANDLE_CLASS} data-testid="sheet-grab-pill" aria-hidden="true" onPointerDown={onPointerDown}>
+    <div className={className} data-testid={testId} aria-hidden={ariaHidden} onPointerDown={onPointerDown}>
       <div className={HANDLE_BAR_CLASS} />
     </div>
   );
@@ -163,9 +159,18 @@ export function Sheet({
         title={title}
         footer={footer}
         panelClassName={composedPanelClassName}
-        handle={side === "bottom" ? <GrabPill onPointerDown={onHandlePointerDown} /> : undefined}
+        handle={
+          side === "bottom" ? (
+            <SheetHandle
+              className={GRAB_HANDLE_CLASS}
+              testId="sheet-grab-pill"
+              ariaHidden
+              onPointerDown={onHandlePointerDown}
+            />
+          ) : undefined
+        }
         headerClassName={bottomHeaderClassName}
-        bodyClassName={plainBodyClassName || undefined}
+        bodyClassName={plainBodyClassName}
         motion="slide"
         panelRef={panelRef}
         bodyRef={bodyRef}
@@ -186,7 +191,7 @@ export function Sheet({
       onClose={onClose}
       title={title}
       footer={footer}
-      handle={<DragHandle onPointerDown={onHandlePointerDown} />}
+      handle={<SheetHandle className={HANDLE_CLASS} testId="sheet-handle" onPointerDown={onHandlePointerDown} />}
       headerClassName={expandableHeaderClassName}
       bodyClassName={expandableBodyClassName}
       panelClassName={`${composedExpandablePanelClassName} ${EXPANDABLE_BOTTOM_CLASS}`}
