@@ -8,6 +8,7 @@
 // supply an in-memory store to retain the bag and its encode continuations
 // across remounts. Image bytes never go through localStorage.
 import {
+  type ComposerMention,
   type ImageMarkerRange,
   insertMarker,
   MAX_ATTACHMENT_BYTES,
@@ -119,7 +120,17 @@ export interface TextEditor {
    * untouched marker, and inferring the edit from that pair would put the
    * insertion INSIDE it and retire its provenance. Callers that know their own
    * coordinates should always say so. */
-  write(text: string, cursor: number, source?: TextEditSource, splice?: TextSplice): void;
+  write(
+    text: string,
+    cursor: number,
+    source?: TextEditSource,
+    splice?: TextSplice,
+    restoredMentions?: readonly ComposerMention[],
+  ): void;
+  /** Captures skill/command mention metadata wholly contained within `[start, end)`,
+   * with offsets relative to `start`, so a failed encode can restore both text
+   * and atom identity when rolling back a replaced selection. */
+  captureMentions?(start: number, end: number): readonly ComposerMention[];
   /** Returns the tracked staged occurrence range for `marker` (if still in
    * text) and whether `marker` ever had positional provenance. Used so tile
    * removal and cleanup delete only the staged occurrence, preserving literals. */
@@ -377,9 +388,10 @@ export function createAttachmentOperations(editor: TextEditor, store: Attachment
         selection: { start, end },
       } = editor.read();
       const replacedSelection = start < end ? text.slice(start, end) : "";
+      const replacedMentions = replacedSelection.length > 0 ? (editor.captureMentions?.(start, end) ?? []) : [];
       const selectionBatch =
         replacedSelection.length > 0
-          ? { text: replacedSelection, pending: accepted.length, keepReplaced: false }
+          ? { text: replacedSelection, mentions: replacedMentions, pending: accepted.length, keepReplaced: false }
           : null;
       // One write reaches the editor for the whole batch, so its splice is the
       // batch's own: the selection the gesture replaced, and the markers put
@@ -430,10 +442,10 @@ export function createAttachmentOperations(editor: TextEditor, store: Attachment
               // strip from the editor or tell them about.
               if (removedWhilePendingRef.current.delete(token)) return;
               if (selectionBatch) selectionBatch.pending -= 1;
-              const restoreSelection =
+              const restoreBatch =
                 selectionBatch !== null && !selectionBatch.keepReplaced && selectionBatch.pending === 0
-                  ? selectionBatch.text
-                  : "";
+                  ? selectionBatch
+                  : null;
               const currentItem = store.getState().items.find((item) => operationToken(item) === token);
               if (currentItem) {
                 // The tile leaves the store before the strip's own write, so the
@@ -442,21 +454,35 @@ export function createAttachmentOperations(editor: TextEditor, store: Attachment
                 setItems((prev) => prev.filter((item) => operationToken(item) !== token));
                 const current = editor.read();
                 const stripped = stripTrackedMarker(current.text, current.cursor, currentItem.marker);
-                if (restoreSelection.length > 0 && stripped.splice) {
+                const stripSplice = stripped.splice;
+                if (restoreBatch !== null && stripSplice) {
                   const restoredText =
-                    stripped.value.slice(0, stripped.splice.start) +
-                    restoreSelection +
-                    stripped.value.slice(stripped.splice.start);
+                    stripped.value.slice(0, stripSplice.start) +
+                    restoreBatch.text +
+                    stripped.value.slice(stripSplice.start);
                   const baseCursor = stripped.cursor ?? current.cursor;
                   const restoredCursor =
-                    baseCursor >= stripped.splice.start ? baseCursor + restoreSelection.length : baseCursor;
-                  editor.write(restoredText, restoredCursor, "cleanup", {
-                    start: stripped.splice.start,
-                    end: stripped.splice.end,
-                    insertedLength: restoreSelection.length,
-                  });
+                    baseCursor >= stripSplice.start ? baseCursor + restoreBatch.text.length : baseCursor;
+                  const restoredMentions =
+                    restoreBatch.mentions.length > 0
+                      ? restoreBatch.mentions.map((mention) => ({
+                          ...mention,
+                          offset: mention.offset + stripSplice.start,
+                        }))
+                      : undefined;
+                  editor.write(
+                    restoredText,
+                    restoredCursor,
+                    "cleanup",
+                    {
+                      start: stripSplice.start,
+                      end: stripSplice.end,
+                      insertedLength: restoreBatch.text.length,
+                    },
+                    restoredMentions,
+                  );
                 } else {
-                  editor.write(stripped.value, stripped.cursor ?? current.cursor, "cleanup", stripped.splice);
+                  editor.write(stripped.value, stripped.cursor ?? current.cursor, "cleanup", stripSplice);
                 }
               }
               onRejected(encodeFailureMessage(file.name, error));
