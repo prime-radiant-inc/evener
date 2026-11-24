@@ -491,6 +491,13 @@ const (
 	// must NOT reuse the target's before/after sentinels, or those gates would
 	// pass on history content instead of the target's own turn.
 	backgroundHistoryReply = "BACKGROUND_HISTORY_REPLY"
+	// backgroundWarningPrompt is the first seeded history prompt. Its turn
+	// carries a provider warning whose notice the driver anchors early in the
+	// target transcript.
+	backgroundWarningPrompt = "BACKGROUND_HISTORY_01"
+	// backgroundWarningSentinel is the warning's opaque fixture text. The
+	// driver reads it from the Session model; it is data, never prose.
+	backgroundWarningSentinel = "BACKGROUND_WARNING_ANCHOR"
 )
 
 // backgroundWorkload is the deterministic payload one sustained turn appends.
@@ -623,7 +630,14 @@ func (a *skillBrowserAdapter) scriptBackgroundStream(ctx context.Context, st *ll
 		// target's before/after/tool gates and exactly-once checks cannot pass
 		// on history content. They complete immediately, without phase gates.
 		st.Send(llm.StreamEvent{Type: llm.StreamEventTextDelta, Delta: backgroundHistoryReply})
-		sendScriptedCommunicate(st)
+		if carriesBackgroundWarning(req) {
+			sendScriptedCommunicateWithWarnings(st, []llm.Warning{{
+				Code:    llm.WarningCodeImageColorUnmanaged,
+				Message: backgroundWarningSentinel,
+			}})
+		} else {
+			sendScriptedCommunicate(st)
+		}
 		return
 	}
 	if hasToolResults(req) {
@@ -668,6 +682,13 @@ func (a *skillBrowserAdapter) scriptBackgroundStream(ctx context.Context, st *ll
 // already-streamed text is preserved; this only ends the turn and carries a
 // short, distinct message that never repeats the streamed payload.
 func sendScriptedCommunicate(st *llm.ChanStream) {
+	sendScriptedCommunicateWithWarnings(st, nil)
+}
+
+// sendScriptedCommunicateWithWarnings ends a scripted turn like
+// sendScriptedCommunicate, carrying the given provider warnings on the final
+// response. The daemon announces each one as a warning notice.
+func sendScriptedCommunicateWithWarnings(st *llm.ChanStream, warnings []llm.Warning) {
 	args, _ := json.Marshal(map[string]any{
 		"message": backgroundTurnDone,
 		"next":    "send_and_end_turn",
@@ -681,7 +702,25 @@ func sendScriptedCommunicate(st *llm.ChanStream) {
 	}
 	st.Send(llm.StreamEvent{Type: llm.StreamEventToolCallStart, ToolCall: &call})
 	st.Send(llm.StreamEvent{Type: llm.StreamEventToolCallEnd, ToolCall: &call})
-	st.Send(llm.StreamEvent{Type: llm.StreamEventFinish, FinishReason: &llm.FinishReason{Reason: llm.FinishReasonToolCalls}})
+	finish := llm.StreamEvent{Type: llm.StreamEventFinish, FinishReason: &llm.FinishReason{Reason: llm.FinishReasonToolCalls}}
+	if len(warnings) > 0 {
+		finish.Response = &llm.Response{Warnings: warnings}
+	}
+	st.Send(finish)
+}
+
+// carriesBackgroundWarning reports whether this request is the first seeded
+// history turn. Only the current turn's user message is scanned: every later
+// request also carries BACKGROUND_HISTORY_01 in its conversation history.
+func carriesBackgroundWarning(req llm.Request) bool {
+	last := -1
+	for i := len(req.Messages) - 1; i >= 0; i-- {
+		if req.Messages[i].Role == llm.RoleUser {
+			last = i
+			break
+		}
+	}
+	return last >= 0 && strings.Contains(req.Messages[last].Text(), backgroundWarningPrompt)
 }
 
 // backgroundRole returns the adapter's scripted role under the lock.
