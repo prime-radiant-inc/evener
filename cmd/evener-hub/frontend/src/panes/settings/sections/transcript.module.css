@@ -1,7 +1,5 @@
 .root {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-4);
+  composes: stack4 from "../../../styles/surface.module.css";
   min-width: 0;
 }
 
@@ -13,9 +11,7 @@
 }
 
 .cards {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-5);
+  composes: stack5 from "../../../styles/surface.module.css";
   min-width: 0;
 }
 

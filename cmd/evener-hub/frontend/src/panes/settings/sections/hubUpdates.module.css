@@ -1,7 +1,5 @@
 .root {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
+  composes: stack3 from "../../../styles/surface.module.css";
   margin-top: var(--space-4);
 }
 
