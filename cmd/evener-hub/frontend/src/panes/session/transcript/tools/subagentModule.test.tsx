@@ -732,6 +732,22 @@ test("an expanded card with no child activity yet says so instead of rendering a
   expect(within(quotes).queryAllByRole("listitem")).toHaveLength(0);
 });
 
+test("a closed card with no child activity yet says so through the shared empty state", () => {
+  const Body = toolRendererFor("delegate").body!;
+  const running = delegateItem({
+    id: "d_closed_empty_quotes",
+    callId: "call_closed_empty_quotes",
+    argumentsJSON: JSON.stringify({ prompt: "just spawned" }),
+    output: JSON.stringify({ delegate_id: "job_ceq", status: "running", transcript_ref: "ref_closed_empty" }),
+  });
+  threadsStore.setState((state) => ({
+    watchedThreads: new Map(state.watchedThreads).set("ref_closed_empty", { turns: [] } as unknown as ThreadModel),
+  }));
+  render(<Body item={running} live={false} />);
+  const empty = screen.getByTestId("subagent-quotes-empty");
+  expect(within(empty).getByTestId("empty-state").dataset.reason).toBe("empty");
+});
+
 // mhcf: a child thread/read fixture with MANY intent-bearing steps.
 // childThreadRead above hard-codes exactly two real steps - useful for the
 // Mandate/Activity/Summary shape, but far too few to exercise a cap. `status`

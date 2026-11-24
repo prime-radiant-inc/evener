@@ -244,6 +244,14 @@ test("list body renders one row per watch with a status chip and the watch id", 
   expect(text).toContain("ended");
 });
 
+test("an empty list renders the shared empty state", () => {
+  const d = toolRendererFor("job_watch");
+  const Body = d.body!;
+  render(<Body item={watchItem({ operation: "list" }, { watches: [], recent_watches: [], count: 0 })} live={false} />);
+  const empty = screen.getByTestId("job-watch-empty");
+  expect(within(empty).getByTestId("empty-state").dataset.reason).toBe("empty");
+});
+
 test("list watch IDs are full-id entity triggers with no open control or navigation", () => {
   const d = toolRendererFor("job_watch");
   const Body = d.body!;
