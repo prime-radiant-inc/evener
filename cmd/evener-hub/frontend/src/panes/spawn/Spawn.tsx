@@ -797,9 +797,6 @@ function SpawnForm({
     slashCatalogResponse.commands.filter((command) => !builtinInvocations.has(slashCommandInvocation(command))),
     (slashCatalogResponse.skills ?? []).filter((skill) => !builtinInvocations.has(`/${skill.name}`)),
   );
-  // Singleton pane - no ref scoping needed, unlike Composer's per-ref id.
-  const slashListboxId = "spawn-slash-listbox";
-
   const textareaRef = useRef<SkillEditorHandle>(null);
 
   // Attachments reuse the composer's staged-image pipeline via a TextEditor
@@ -974,14 +971,14 @@ function SpawnForm({
     setToken: setSlashToken,
     items: slashItems,
     open: slashOpen,
-    activeIndex: slashActiveIndex,
+    activeKey: slashActiveKey,
     activeId: slashActiveId,
+    listboxId: slashListboxId,
     commit: commitSlashCompletion,
     handleKeyDown: handleSlashKeyDown,
   } = useSlashCompletion({
     catalog: slashMenuCatalog,
     enabled: pluginSelectionSupported,
-    listboxId: slashListboxId,
     initialToken: () => parseSlashToken(prompt, prompt.length),
     editorRef: textareaRef,
     textRef,
@@ -2628,7 +2625,7 @@ function SpawnForm({
             <SlashCompletionMenu
               id={slashListboxId}
               items={slashItems}
-              highlightedIndex={slashActiveIndex}
+              activeKey={slashActiveKey}
               onSelect={commitSlashCompletion}
             />
           )}
