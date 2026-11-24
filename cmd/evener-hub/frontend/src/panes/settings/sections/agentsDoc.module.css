@@ -1,8 +1,7 @@
 .root {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-4);
-  max-width: 720px;
+  composes: stack4 from "../../../styles/surface.module.css";
+  /* biome-ignore lint/suspicious/noDuplicateProperties: css-modules composes takes one declaration per composed class, each with its own `from` */
+  composes: sectionMeasure from "../../../styles/surface.module.css";
 }
 
 .help {

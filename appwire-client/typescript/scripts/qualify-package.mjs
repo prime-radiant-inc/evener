@@ -237,6 +237,11 @@ assert.deepEqual(client.spliceSlashCommand("say /rev", slashToken, "/acme:review
   text: "say /acme:review ",
   caret: 17,
 });
+const fileToken = client.parseFileMentionToken("open @app", 9);
+assert.deepEqual(fileToken, { start: 5, end: 9, query: "app", quoted: false });
+assert.deepEqual(client.rankFileMentions([{ path: "src/app.ts", kind: "file" }], "app", 5).map((item) => item.path), ["src/app.ts"]);
+assert.deepEqual(client.spliceFileMention("open @app", fileToken, { path: "src/app.ts", kind: "file" }), { text: "open @src/app.ts ", caret: 17, keepOpen: false });
+assert.equal(client.createFileMentionStore().getState().settledQuery, null);
 assert.equal(client.canReadSharedNotes({ capabilities: { sharedNotes: true } }), true);
 assert.equal(client.canReadSharedNotes({ capabilities: { sharedNotes: false } }), false);
 assert.equal(client.canReadSharedNotes({ capabilities: {} }), false);

@@ -26,14 +26,84 @@
   border-top: 1px solid var(--edge);
 }
 
-/* A plain vertical stack with one group step between its children: the
- * layout a form, a settings section and a dialog body all open with. It is
- * not a surface - consumers compose it for the arrangement alone. */
+/* Plain vertical stacks, named by gap step: the layout a form, a settings
+ * section and a dialog body all open with, and the inner stack a list of
+ * rows uses. They are not surfaces - consumers compose one for the
+ * arrangement alone and add only their own layout. */
+.stack1 {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.stack2 {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
 .stack3 {
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
 }
+
+.stack4 {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.stack5 {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+
+/* The reading measure a settings section keeps its children inside. */
+.sectionMeasure {
+  max-width: 720px;
+}
+
+/* A list that is also a stack: no marker, no inset. */
+.listReset {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* --- the reading measure ---------------------------------------------
+ * The one centered column the transcript, the composer, the ask dock, the
+ * find bar and the spawn form stand in. --session-measure is declared on
+ * <body> in tokens.css (44rem, or 64rem under the Transcript width
+ * preference), so a surface that renders outside a TurnBlock - a
+ * virtual-list row, a docked bar, a whole pane form - reads the token
+ * itself and still lines up with every turn above it. Consumers compose
+ * this and add only their own layout. Settings' content column is bounded
+ * but not centered, so it does not compose this. */
+.measureColumn {
+  width: 100%;
+  max-width: var(--session-measure);
+  margin-inline: auto;
+}
+
+/* The quiet status line a settings section shows while it waits on the hub
+ * or reports a save in flight: caption ink, no margin, in the flow. */
+.settingsSectionStatus {
+  margin: 0;
+  color: var(--ink-mid);
+  font-size: var(--font-size-caption);
+  line-height: var(--line-height-body);
+}
+
+/* A settings section opens at pane-title size, a subsection at body size. */
+.settingsSectionHeading {
+  margin: 0;
+  color: var(--ink-hi);
+  font-weight: var(--font-weight-semibold);
+}
+.settingsSectionHeadingPaneTitle { font-size: var(--font-size-pane-title); }
+.settingsSectionHeadingBody { font-size: var(--font-size-body); }
 
 /* The prompt card's control-row leading cluster: the attach control, the
  * model trigger and effort in one row. The session composer and the spawn

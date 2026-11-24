@@ -788,3 +788,36 @@ func TestMarketplaceEditCatalog(t *testing.T) {
 	}
 	t.Fatalf("method catalog missing %s", MethodEvenerMarketplaceEdit)
 }
+
+func TestFilesSearchCatalogContract(t *testing.T) {
+	if ProtocolVersion != "evener-appwire-v7" {
+		t.Fatalf("ProtocolVersion = %q, want evener-appwire-v7", ProtocolVersion)
+	}
+	var found *MethodSpec
+	for i := range Methods {
+		if Methods[i].Name == MethodEvenerFilesSearch {
+			found = &Methods[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("method catalog missing %q", MethodEvenerFilesSearch)
+	}
+	if found.Scope != ScopeHub {
+		t.Fatalf("scope = %q, want %q", found.Scope, ScopeHub)
+	}
+	if reflect.TypeOf(found.Params) != reflect.TypeFor[FilesSearchParams]() {
+		t.Fatalf("params type = %T, want FilesSearchParams", found.Params)
+	}
+	if reflect.TypeOf(found.Result) != reflect.TypeFor[FilesSearchResponse]() {
+		t.Fatalf("result type = %T, want FilesSearchResponse", found.Result)
+	}
+	for _, name := range CatalogMethodNames(ScopeDaemon) {
+		if name == MethodEvenerFilesSearch {
+			t.Fatalf("%s must not be in ScopeDaemon catalog", MethodEvenerFilesSearch)
+		}
+	}
+	if !IsHostRequestMethod(MethodEvenerFilesSearch) {
+		t.Fatalf("IsHostRequestMethod(%q) = false, want true", MethodEvenerFilesSearch)
+	}
+}

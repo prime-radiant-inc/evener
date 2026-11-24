@@ -492,7 +492,7 @@ func TestModelListContinuationWithChangedBoundsNamesTheCursors(t *testing.T) {
 
 func TestModelListToolPreservesJSONUnderConfiguredOutputLimit(t *testing.T) {
 	t.Parallel()
-	models := make([]registry.Model, modelavailability.DefaultInlineMaxCount)
+	models := make([]registry.Model, modelavailability.DefaultInlineMaxCount+1)
 	for i := range models {
 		models[i].ID = fmt.Sprintf("model-%02d-%s", i, strings.Repeat("x", 12))
 	}

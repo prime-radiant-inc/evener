@@ -149,6 +149,37 @@ the fixture mode disturbs nothing else.
 
 **Verified:** 2026-09-27. **Expect:** fail.
 
+## First-reply skeleton column (`inspectColdStartSkeleton()`, the
+`?coldstart=1` fixture)
+
+Asserts that `ColdStartSkeleton` fills the shared reading column at the Wide
+transcript measure: its longest `skeleton-line` bar must fill the column's
+content box after `.coldStart`'s own padding, and the column must fill its
+parent's content box. The horizontal-overflow scan cannot see a narrow
+skeleton - nothing escapes a scroller, the bars simply stop short of the
+column. The fixture is an active thread with no turn and one pending send
+seeded through the real durable outbox path (`enqueueIntent` for `turn/start`
+plus the shared projection refresh).
+
+**Mutation performed:** appended `max-width: 42rem` to `.skeleton` in
+`widgets/skeleton/skeleton.module.css` - the inner cap the deleted
+`.coldStartMeasure` wrapper used to apply.
+
+**Result before restore:** FAIL -
+`cold start skeleton ... FAIL - {"measure":"wide","skeletonWidth":976,"contentWidth":944,"barWidth":672,"parentContentWidth":976}`
+(the bar held 672px inside a 944px column; the column itself stayed 976px).
+
+**Result after restore:** PASS -
+`cold start skeleton ... PASS - first-reply skeleton fills the wide reading column after its padding`
+with `measured bar 944.0px in column content 944.0px, column 976.0px of 976.0px at wide`.
+
+A cap on `.coldStart` itself is not a visible regression here: the composed
+`.measureColumn` rule is emitted after `session.module.css`, so its
+`max-width` wins the cascade (observed 2026-11-24 while mutation-testing this
+case).
+
+**Verified:** 2026-11-24. **Expect:** fail.
+
 ## Footer visibility predicate (`isElementVisible` in `src/dev/guardVisibility.ts`) — kata bsq9
 
 `footer.effortVisible` / `contextVisible` / `queueVisible` all rest on one

@@ -6890,19 +6890,13 @@ test("a fractional correction that carries the content still keeps the menu open
   }
 });
 
-test("keeps the menu trigger and items at the narrow-viewport tap floor", () => {
+test("composes the shared tap floor on the trigger, its icon, and the items", () => {
   const here = dirname(fileURLToPath(import.meta.url));
   const css = readFileSync(join(here, "menu.module.css"), "utf8");
-  expect(css).toMatch(
-    new RegExp(
-      `@media ${escapeRegExp(MOBILE_QUERY)}, \\(any-pointer: coarse\\)\\s*\\{[\\s\\S]*?\\.trigger\\s*\\{[^}]*min-height:\\s*var\\(--tap-min\\)`,
-    ),
-  );
-  expect(css).toMatch(
-    new RegExp(
-      `@media ${escapeRegExp(MOBILE_QUERY)}, \\(any-pointer: coarse\\)\\s*\\{[\\s\\S]*?\\.item\\s*\\{[^}]*min-height:\\s*var\\(--tap-min\\)`,
-    ),
-  );
+  const rule = (selector: string) => new RegExp(`${escapeRegExp(selector)}\\s*\\{([^}]*)\\}`).exec(css)?.[1] ?? "";
+  expect(rule(".trigger")).toContain('composes: tapFloor from "../../styles/tapfloor.module.css"');
+  expect(rule(".triggerIcon")).toContain('composes: tapFloorWidth from "../../styles/tapfloor.module.css"');
+  expect(rule(".item")).toContain('composes: tapFloor from "../../styles/tapfloor.module.css"');
 });
 
 // jsdom does not evaluate real CSS animations or media queries - see the

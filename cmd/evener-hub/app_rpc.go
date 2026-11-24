@@ -1014,17 +1014,45 @@ func hubLogfFunc(log *slog.Logger) func(format string, args ...any) {
 var navigationStatsLogFor = hubLogFor
 
 // concurrentForwardedRequest is the ConcurrentRequest policy newHubAppServer
-// installs: requests whose cost is a remote party's leave the connection's
-// serial worker, so a slow remote never head-of-line blocks the browser's
-// socket. forwardedHostRead admits a proxied host read; forwardedDaemonControl
-// admits a daemon retire forwarded to the local daemon, which can wait out the
-// session namer's timeout (#4080, #3921). Each half carries its own
-// order-safety argument where it is defined; the default is to stay inline.
+// installs: requests whose cost can stall on a remote party, daemon wait, or
+// local filesystem walk/stat leave the connection's serial worker so they never
+// head-of-line block the browser's socket. forwardedHostRead admits a proxied
+// host read; forwardedFilesSearch admits order-free read-only evener/files/search
+// across remote refs (per-host pool), local refs, and explicit cwds (local
+// pool); forwardedDaemonControl admits a daemon retire forwarded to the local
+// daemon (#4080, #3921). Each predicate keeps malformed or invalid params
+// inline so error order stays deterministic.
 func concurrentForwardedRequest(method string, params json.RawMessage) (pool string, ok bool) {
 	if pool, ok := forwardedHostRead(method, params); ok {
 		return pool, true
 	}
+	if pool, ok := forwardedFilesSearch(method, params); ok {
+		return pool, true
+	}
 	return forwardedDaemonControl(method, params)
+}
+
+func forwardedFilesSearch(method string, params json.RawMessage) (string, bool) {
+	if method != appwire.MethodEvenerFilesSearch {
+		return "", false
+	}
+	var searchParams appwire.FilesSearchParams
+	if json.Unmarshal(params, &searchParams) != nil {
+		return "", false
+	}
+	ref := strings.TrimSpace(searchParams.Ref)
+	cwd := strings.TrimSpace(searchParams.CWD)
+	if (ref == "" && cwd == "") || (ref != "" && cwd != "") {
+		return "", false
+	}
+	if cwd != "" {
+		return appwire.LocalSourceID, true
+	}
+	parsed, err := appwire.ParseRef(ref)
+	if err != nil || parsed.SourceID == "" {
+		return "", false
+	}
+	return parsed.SourceID, true
 }
 
 func newHubAppServer(cfg hubcore.WebConfig, sources *appsource.Registry) *appserver.Server {
@@ -2067,6 +2095,10 @@ func registerMiscHandlers(server *appserver.Server, cfg hubcore.WebConfig, sourc
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPathsComplete, func(_ context.Context, params appwire.PathsCompleteParams) (appwire.PathsCompleteResponse, error) {
 		return fspaths.CompletePaths(params)
+	})
+	fileSearch := newFileSearchService(cfg, sources)
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerFilesSearch, func(ctx context.Context, params appwire.FilesSearchParams) (appwire.FilesSearchResponse, error) {
+		return fileSearch.Search(ctx, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerDirsCreate, func(_ context.Context, params appwire.DirsCreateParams) (appwire.DirsCreateResponse, error) {
 		return hubDirsCreate(cfg, params)

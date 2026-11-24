@@ -49,11 +49,11 @@ import { requireClass } from "../../../widgets/internal/requireClass";
 import { useDismissOnOutsidePress } from "../../../widgets/internal/useDismissOnOutsidePress";
 import { Diagnostics } from "./diagnostics";
 import styles from "./keybindings.module.css";
+import { SectionStatus } from "./sectionStatus";
 
 const CLASS = {
   root: requireClass(styles.root, "keybindings.module.css", "root"),
   intro: requireClass(styles.intro, "keybindings.module.css", "intro"),
-  status: requireClass(styles.status, "keybindings.module.css", "status"),
   list: requireClass(styles.list, "keybindings.module.css", "list"),
   row: requireClass(styles.row, "keybindings.module.css", "row"),
   label: requireClass(styles.label, "keybindings.module.css", "label"),
@@ -624,11 +624,7 @@ export function KeybindingsSection() {
         description="Saved in this browser. When on, pressing ? outside a text field opens the keyboard shortcuts overlay. Turn off to keep every shortcut on a modifier chord."
       />
 
-      {status !== undefined && (
-        <p className={CLASS.status} role="status" data-reason={status.reason}>
-          {status.text}
-        </p>
-      )}
+      {status !== undefined && <SectionStatus reason={status.reason}>{status.text}</SectionStatus>}
       {hubError !== null && (
         <InlineNotice
           tone="danger"

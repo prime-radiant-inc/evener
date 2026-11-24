@@ -6,6 +6,7 @@
     "styles/text.module.css",
     "styles/help.module.css",
     "styles/tokens.css",
+    "styles/surface.module.css",
     "widgets/panescaffold/panescaffold.module.css",
     "widgets/virtuallist/virtuallist.module.css",
     "widgets/card/card.module.css",

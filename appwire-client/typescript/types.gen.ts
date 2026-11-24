@@ -1363,6 +1363,45 @@ export interface FencingEpoch {
   opSeq: number;
 }
 
+export interface FileSearchItem {
+  /**
+   * Slash-separated path relative to the resolved root, never starting with "/" or "..".
+   */
+  path: string;
+  /**
+   * "file" or "dir".
+   */
+  kind: string;
+}
+
+export interface FilesSearchParams {
+  /**
+   * Exactly one of Ref or CWD must be set.
+   * Ref resolves a session's live working directory (local or single-hop remote).
+   */
+  ref?: string;
+  /**
+   * CWD resolves an explicit absolute directory on the target hub (Spawn).
+   */
+  cwd?: string;
+  query: string;
+  /**
+   * Limit bounds returned items; <= 0 defaults to 25, capped at 50.
+   */
+  limit?: number;
+}
+
+export interface FilesSearchResponse {
+  /**
+   * Non-nil empty slice on no matches so JSON always encodes [] rather than null.
+   */
+  items: FileSearchItem[];
+  /**
+   * True when the host walk hit its path, directory, or wall-clock budget.
+   */
+  truncated?: boolean;
+}
+
 export interface FireKey {
   watch_id?: string;
   watch_generation?: string;
@@ -6123,6 +6162,7 @@ export const METHOD_NAMES = [
   "evener/thread/watches/list",
   "evener/subagentPreview",
   "evener/paths/complete",
+  "evener/files/search",
   "evener/dirs/create",
   "evener/projects/recent",
   "evener/path/validate",
@@ -6242,6 +6282,7 @@ export const HOST_REQUEST_METHODS = [
   "evener/auth/status",
   "evener/auth/test",
   "evener/dirs/create",
+  "evener/files/search",
   "evener/git/head",
   "evener/harnesses/list",
   "evener/instance/create",
@@ -6806,6 +6847,7 @@ export interface MethodTypes {
   "evener/thread/watches/list": { params: SessionActivityListParams; result: SessionWatchesResponse };
   "evener/subagentPreview": { params: EvenerSubagentPreviewParams; result: EvenerSubagentPreviewResponse };
   "evener/paths/complete": { params: PathsCompleteParams; result: PathsCompleteResponse };
+  "evener/files/search": { params: FilesSearchParams; result: FilesSearchResponse };
   "evener/dirs/create": { params: DirsCreateParams; result: DirsCreateResponse };
   "evener/projects/recent": { params: ProjectsRecentParams; result: ProjectsRecentResponse };
   "evener/path/validate": { params: PathValidateParams; result: PathValidateResponse };

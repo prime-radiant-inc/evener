@@ -4,9 +4,8 @@ import { fileURLToPath } from "node:url";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { expect, test, vi } from "vitest";
-import { MOBILE_QUERY } from "../../shell/useIsMobile";
-import { escapeRegExp } from "../../styles/cssBlock";
 import { CloseIcon as FromBarrel } from "..";
+import { IconButton } from "../iconbutton";
 import { requireClass } from "../internal/requireClass";
 import { CloseIcon } from "./CloseIcon";
 import rawStyles from "./dialog.module.css";
@@ -377,12 +376,6 @@ test("both panel sizes float in and out by the shared recipe, and the scrim fade
   expect(css).not.toMatch(/@keyframes/);
 });
 
-test("declares a :focus-visible rule in its CSS module, using only tokens", () => {
-  const here = dirname(fileURLToPath(import.meta.url));
-  const css = readFileSync(join(here, "dialog.module.css"), "utf8");
-  expect(css).toContain(":focus-visible");
-});
-
 // --- size (kata b4xf: ImageGallery's lightbox needs to fill almost the
 // whole window, unlike every other Dialog caller, which wants the compact
 // default) -------------------------------------------------------------
@@ -482,23 +475,19 @@ test("the footer is a chrome band on the inset surface", () => {
   expect(rule).toContain("border-top: 1px solid var(--edge)");
 });
 
-// FIX 5 (real-phone measurement, mirrors Rail.module.css's own coarse-
-// pointer precedent for its row action buttons): .closeButton is a plain
-// <button>, not the shared IconButton widget (see OverlayPanel.tsx's own
-// comment on why - FocusScope's initial-focus ordering needs it last in
-// markup), so it never picked up IconButton's own any-pointer: coarse 44px
-// floor (iconbutton.module.css). Measured 24x24 on TreeDrawer's own Sheet
-// (Dialog and Sheet share this one closeButton via OverlayPanel), under the
-// platform's 44px tap floor every other icon-only control in the app
-// already gets on a coarse pointer.
-test("the close button reaches the 44px tap floor on a coarse (touch) pointer", () => {
-  const here = dirname(fileURLToPath(import.meta.url));
-  const css = readFileSync(join(here, "dialog.module.css"), "utf8");
-  const coarseBlock = new RegExp(
-    `@media ${escapeRegExp(MOBILE_QUERY)}, \\(any-pointer: coarse\\)\\s*\\{([\\s\\S]*?)\\n\\}`,
-  ).exec(css);
-  expect(coarseBlock).toBeTruthy();
-  const closeButtonRule = /\.closeButton\s*\{([^}]*)\}/.exec(coarseBlock?.[1] ?? "")?.[1] ?? "";
-  expect(closeButtonRule).toContain("min-width: var(--tap-min)");
-  expect(closeButtonRule).toContain("min-height: var(--tap-min)");
+// The close control is the shared IconButton at its quiet xs square, so its
+// desktop box and its phone tap floor are the widget's own (iconbutton's
+// square class carries both; iconbutton.test.tsx asserts the floor). This
+// pins the rendered control's classes to the widget's, rather than reading
+// this stylesheet for a floor it no longer restates.
+test("the close button renders as the shared IconButton's quiet xs square", () => {
+  const { unmount } = render(
+    <Dialog open onClose={vi.fn()} title="t">
+      Body
+    </Dialog>,
+  );
+  const closeButtonClasses = [...screen.getByRole("button", { name: "Close" }).classList].sort();
+  unmount();
+  render(<IconButton label="Close" icon={<CloseIcon />} variant="quiet" size="xs" />);
+  expect(closeButtonClasses).toEqual([...screen.getByRole("button", { name: "Close" }).classList].sort());
 });

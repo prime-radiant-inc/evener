@@ -38,6 +38,8 @@ export interface SkillEditorHandle {
    * that never landed. */
   insertSkill(start: number, end: number, name: string): boolean;
   insertCommand(start: number, end: number, name: string): boolean;
+  /** Replaces UTF-16 range [start, end) with plain text in one undoable step. */
+  replaceTextRange(start: number, end: number, text: string, caretOffset?: number): boolean;
   /** Deletes every occurrence the document marks as an adopted anchor - or
    * only those naming `markers` - in ONE transaction, and reports how many
    * occurrences it removed. The marks are the exact occurrences, so an
@@ -47,7 +49,8 @@ export interface SkillEditorHandle {
 
 export interface SkillEditorProps {
   value: SkillEditorValue;
-  onChange(value: SkillEditorValue, cursor: number): void;
+  onChange(value: SkillEditorValue, cursor: number, meta?: { isPaste?: boolean }): void;
+  onSelectionChange?: (cursor: number) => void;
   onKeyDown?: HTMLAttributes<HTMLDivElement>["onKeyDown"];
   onPaste?: HTMLAttributes<HTMLDivElement>["onPaste"];
   onFocus?: HTMLAttributes<HTMLDivElement>["onFocus"];
@@ -335,10 +338,24 @@ export const SkillEditor = forwardRef<SkillEditorHandle, SkillEditorProps>(funct
         if (!view) return;
         const from = textOffsetToDocumentPosition(view.state.doc, start);
         const to = start === end ? from : textOffsetToDocumentPosition(view.state.doc, end, 1);
-        view.dispatch(view.state.tr.setSelection(TextSelection.create(view.state.doc, from, to)));
+        view.dispatch(
+          view.state.tr.setSelection(TextSelection.create(view.state.doc, from, to)).setMeta(externalSync, true),
+        );
       },
       insertSkill: (start, end, name) => insertAtom(viewRef.current, start, end, name, "skill"),
       insertCommand: (start, end, name) => insertAtom(viewRef.current, start, end, name, "command"),
+      replaceTextRange: (start, end, replacementText, caretOffset = replacementText.length) => {
+        const view = viewRef.current;
+        if (!view || view.composing) return false;
+        const { doc } = view.state;
+        const from = textOffsetToDocumentPosition(doc, start);
+        const to = textOffsetToDocumentPosition(doc, end, 1);
+        const tr = closeHistory(view.state.tr.insertText(replacementText, from, to));
+        tr.setSelection(TextSelection.create(tr.doc, from + caretOffset));
+        view.dispatch(tr);
+        view.focus();
+        return true;
+      },
       removeStagedAnchors: (markers) => {
         const view = viewRef.current;
         if (!view || view.composing) return 0;
@@ -374,7 +391,10 @@ export const SkillEditor = forwardRef<SkillEditorHandle, SkillEditorProps>(funct
             latest.current.onChange(
               serializeSkillDocument(view.state.doc),
               documentPositionToTextOffset(view.state.doc, view.state.selection.head),
+              { isPaste: Boolean(transaction.getMeta("paste")) },
             );
+          } else if (transaction.selectionSet && !transaction.docChanged && !transaction.getMeta(externalSync)) {
+            latest.current.onSelectionChange?.(documentPositionToTextOffset(view.state.doc, view.state.selection.head));
           }
         },
         nodeViews: {

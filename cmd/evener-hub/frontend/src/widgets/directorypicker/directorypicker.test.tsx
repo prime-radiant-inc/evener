@@ -5,14 +5,27 @@ import { createPortal } from "react-dom";
 import { expect, test, vi } from "vitest";
 import { readModuleCss, topRuleBlock } from "../../styles/cssBlock";
 import { DirectoryIcon as FromBarrel } from "..";
+import rawNoticeStyles from "../inlinenotice/inlinenotice.module.css";
 import { appendPopout } from "../internal/popoutTestUtils";
 import { requireClass } from "../internal/requireClass";
+import rawListRowStyles from "../listrow/listrow.module.css";
 import rawStyles from "./directorypicker.module.css";
 import { DirectoryIcon, DirectoryPicker, type DirectoryPickerProps } from "./index";
 
 const pickerClass = {
   panel: requireClass(rawStyles.panel, "directorypicker.module.css", "panel"),
   body: requireClass(rawStyles.body, "directorypicker.module.css", "body"),
+};
+
+const noticeClass = {
+  notice: requireClass(rawNoticeStyles.notice, "inlinenotice.module.css", "notice"),
+  danger: requireClass(rawNoticeStyles.danger, "inlinenotice.module.css", "danger"),
+};
+
+const listRowClass = {
+  plain: requireClass(rawListRowStyles.plain, "listrow.module.css", "plain"),
+  interactive: requireClass(rawListRowStyles.interactive, "listrow.module.css", "interactive"),
+  label: requireClass(rawListRowStyles.label, "listrow.module.css", "label"),
 };
 
 function setup(overrides: Partial<DirectoryPickerProps> = {}, onCommit: () => void = () => {}) {
@@ -53,6 +66,48 @@ function setupPendingInitialValidation() {
 
 test("its folder glyph is exported from the widget barrel", () => {
   expect(FromBarrel).toBe(DirectoryIcon);
+});
+
+// Both row types are the shared plain ListRow: a framed surface would read as
+// a collection, and the picker's rows are choices inside the picker's own
+// surface. The browse row stays ONE <button>: the drill glyph is row content,
+// not a trailing control the row would split its target around.
+test("renders its folder and recent rows through the shared plain ListRow", async () => {
+  setup();
+  const browseRow = await screen.findByRole("button", { name: "Open /work/app" });
+  const recentRow = screen.getByRole("button", { name: "Open recent /recent/app" });
+  for (const row of [browseRow, recentRow]) {
+    expect(row.classList.contains(listRowClass.plain)).toBe(true);
+    expect(row.classList.contains(listRowClass.interactive)).toBe(true);
+  }
+  expect(browseRow.querySelector("button")).toBeNull();
+  // Two glyphs draw as SVGs: the leading folder and the drill chevron.
+  expect(browseRow.querySelectorAll("svg")).toHaveLength(2);
+});
+
+// ListRow's label slot ellipsizes its one line, which hides the end of two
+// sibling folders that differ only there before one is chosen. The browse
+// label therefore brings its own wrapping span; the recents sidebar keeps the
+// single line and its full-path title.
+test("the browse label wraps a long folder name inside the row", async () => {
+  setup();
+  const browseLabel = (await screen.findByRole("button", { name: "Open /work/app" })).querySelector(
+    `.${listRowClass.label}`,
+  );
+  const labelNode = browseLabel?.firstElementChild as HTMLElement | null;
+  expect(labelNode?.tagName).toBe("SPAN");
+  expect(labelNode?.className).toContain("rowLabel");
+
+  const recentLabel = screen
+    .getByRole("button", { name: "Open recent /recent/app" })
+    .querySelector(`.${listRowClass.label}`);
+  expect(recentLabel?.firstElementChild).toBeNull();
+
+  const css = readModuleCss(import.meta.url, "directorypicker.module.css");
+  const rowLabel = topRuleBlock(css, ".rowLabel");
+  expect(rowLabel).toContain("display: block");
+  expect(rowLabel).toContain("white-space: normal");
+  expect(rowLabel).toContain("overflow-wrap: anywhere");
 });
 
 // The picker keeps its own scrollport: its body class lands on the shared
@@ -116,7 +171,10 @@ test("an invalid typed path cannot accidentally select the previously browsed fo
   const input = screen.getByRole("textbox", { name: "Path" });
   await user.clear(input);
   await user.type(input, "/missing{Enter}");
-  expect((await screen.findByRole("alert")).textContent).toBe(validationDetail);
+  const alert = await screen.findByRole("alert");
+  expect(alert.textContent).toBe(validationDetail);
+  expect(alert.classList.contains(noticeClass.notice)).toBe(true);
+  expect(alert.classList.contains(noticeClass.danger)).toBe(true);
   expect((screen.getByRole("button", { name: "Use this folder" }) as HTMLButtonElement).disabled).toBe(true);
   expect(onPick).not.toHaveBeenCalled();
 });
@@ -523,4 +581,46 @@ test("initial validation in a popout reads focus from that document and preserve
     view.unmount();
     frame.remove();
   }
+});
+
+// Empty and loading placeholders are the shared widgets, not hand-rolled
+// status paragraphs: both empty regions show EmptyState's compact message,
+// and the wait shows Loader's announcing grid.
+test("the picker's empty regions render the shared empty state", async () => {
+  setup({ complete: async () => [], listRecents: async () => [] });
+  await screen.findByRole("dialog", { name: "Choose directory" });
+
+  const recents = await screen.findByLabelText("Recent directories");
+  expect(within(recents).getByTestId("empty-state").getAttribute("data-reason")).toBe("empty");
+  const folders = screen.getByRole("region", { name: "Folders" });
+  await waitFor(() => expect(within(folders).getByTestId("empty-state")).toBeTruthy());
+  // The empty result is still announced through a polite region.
+  expect(within(folders).getByRole("status").getAttribute("data-state")).toBe("empty");
+});
+
+test("the picker's listing wait renders the shared loader", async () => {
+  setup({ complete: () => new Promise<string[]>(() => {}) });
+  await screen.findByRole("dialog", { name: "Choose directory" });
+  expect(await screen.findByTestId("loader-grid")).toBeTruthy();
+});
+
+// The chooser draws both navigation glyphs from the shared widgets: the parent
+// control gets the chevron instead of a text arrow, and the fold of earlier
+// crumbs is the shared disclosure rather than a restyled <details>.
+test("the chooser draws its navigation glyphs with the shared chevron and disclosure", async () => {
+  const { user } = setup({ value: "/deep/a/b/c/d" });
+  await screen.findByRole("dialog", { name: "Choose directory" });
+
+  const parent = screen.getByRole("button", { name: "Parent directory" });
+  expect(parent.querySelector("svg")).toBeTruthy();
+  expect(parent.textContent).toBe("");
+
+  const summary = screen.getByLabelText("Earlier directories");
+  const details = summary.parentElement;
+  if (details === null) throw new Error("earlier-directories summary has no details parent");
+  expect(summary.querySelector("svg")).toBeTruthy();
+  // The disclosure renders its folded crumbs only while it is open.
+  expect(within(details).queryByRole("button")).toBeNull();
+  await user.click(summary);
+  expect(within(details).getAllByRole("button")).toHaveLength(2);
 });

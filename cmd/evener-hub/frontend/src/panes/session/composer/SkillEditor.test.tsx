@@ -2,6 +2,7 @@ import { act, fireEvent, render, waitFor } from "@testing-library/react";
 import { createRef, useState } from "react";
 import { describe, expect, it, vi } from "vitest";
 import "../testing/editorGeometry";
+import { selectEditorText } from "../testing/editor";
 import { SkillEditor, type SkillEditorHandle, type SkillEditorProps, type SkillEditorValue } from "./SkillEditor";
 
 function mount(initial: SkillEditorValue, extra: Partial<SkillEditorProps> = {}) {
@@ -447,5 +448,83 @@ describe("SkillEditor real ProseMirror view", () => {
     key(result.editor, "z", { ctrlKey: true });
     expect(result.value().text).toBe("[image 1 /inspect [image 2]");
     expect(result.value().adoptedImageMarkers).toEqual([2]);
+  });
+
+  it("replaceTextRange inserts plain text in one undoable step while preserving skill/command atoms and image marks", () => {
+    const text = "[image 1] /review @ma /audit [image 2]";
+    const result = mount({
+      text,
+      skillNames: ["review"],
+      commandNames: ["audit"],
+      mentions: [
+        { kind: "skill", name: "review", offset: 10 },
+        { kind: "command", name: "audit", offset: 22 },
+      ],
+      adoptedImageMarkers: [1, 2],
+      adoptedImageRanges: [
+        { marker: 1, start: 0, end: 9 },
+        { marker: 2, start: 29, end: 38 },
+      ],
+    });
+
+    let ok = false;
+    act(() => {
+      ok = result.ref.current?.replaceTextRange(18, 21, "@cmd/main.go ") ?? false;
+    });
+    expect(ok).toBe(true);
+    expect(result.value().text).toBe("[image 1] /review @cmd/main.go  /audit [image 2]");
+    expect(result.value().skillNames).toEqual(["review"]);
+    expect(result.value().commandNames).toEqual(["audit"]);
+    expect(result.value().adoptedImageMarkers).toEqual([1, 2]);
+    expect(result.editor.querySelectorAll("[data-skill-name]")).toHaveLength(1);
+    expect(result.editor.querySelectorAll("[data-command-name]")).toHaveLength(1);
+    expect(result.ref.current?.getCursor()).toBe(18 + "@cmd/main.go ".length);
+
+    key(result.editor, "z", { ctrlKey: true });
+    expect(result.value().text).toBe(text);
+    expect(result.value().skillNames).toEqual(["review"]);
+    expect(result.value().commandNames).toEqual(["audit"]);
+    expect(result.value().adoptedImageMarkers).toEqual([1, 2]);
+  });
+
+  it("replaceTextRange refuses during active IME composition without editing prose", () => {
+    const result = mount({ text: "open @ma", skillNames: [] });
+    fireEvent.compositionStart(result.editor);
+    let ok = true;
+    act(() => {
+      ok = result.ref.current?.replaceTextRange(5, 8, "@main.go ") ?? true;
+    });
+    expect(ok).toBe(false);
+    expect(result.value().text).toBe("open @ma");
+    fireEvent.compositionEnd(result.editor);
+  });
+
+  it("passes { isPaste: true } on paste, suppresses onSelectionChange for programmatic setSelection, and fires on user caret movement", () => {
+    const onChange = vi.fn();
+    const onSelectionChange = vi.fn();
+    const ref = createRef<SkillEditorHandle>();
+    const rendered = render(
+      <SkillEditor
+        ref={ref}
+        value={{ text: "hello @src", skillNames: [] }}
+        onChange={onChange}
+        onSelectionChange={onSelectionChange}
+        aria-label="Message"
+      />,
+    );
+    const editor = rendered.getByRole("textbox");
+
+    paste(editor, " pasted");
+    expect(onChange).toHaveBeenCalledTimes(1);
+    expect(onChange.mock.calls[0]?.[2]).toEqual({ isPaste: true });
+    expect(onSelectionChange).not.toHaveBeenCalled();
+
+    act(() => {
+      ref.current?.setSelection(2);
+    });
+    expect(onSelectionChange).not.toHaveBeenCalled();
+
+    selectEditorText(editor, 4);
+    expect(onSelectionChange).toHaveBeenCalledWith(4);
   });
 });

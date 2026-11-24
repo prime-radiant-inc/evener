@@ -214,6 +214,7 @@ var Methods = []MethodSpec{
 	{MethodEvenerThreadWatchesList, SessionActivityListParams{}, SessionWatchesResponse{}, ScopeBoth, "Pages receiver-owned watches and bounded retained history for a session or its subtree."},
 	{MethodEvenerSubagentPreview, EvenerSubagentPreviewParams{}, EvenerSubagentPreviewResponse{}, ScopeHub, "Reads a bounded lazy preview of a subagent transcript's latest direct items."},
 	{MethodEvenerPathsComplete, PathsCompleteParams{}, PathsCompleteResponse{}, ScopeHub, "Path autocompletion for a prefix."},
+	{MethodEvenerFilesSearch, FilesSearchParams{}, FilesSearchResponse{}, ScopeHub, "Fuzzy-searches files and directories under a session's live working directory or an explicit host directory, honoring .gitignore and secret-path masks."},
 	{MethodEvenerDirsCreate, DirsCreateParams{}, DirsCreateResponse{}, ScopeHub, "Creates a missing working directory and its parents for Spawn preflight."},
 	{MethodEvenerProjectsRecent, ProjectsRecentParams{}, ProjectsRecentResponse{}, ScopeHub, "Lists the most recently used project working directories (session creation path-dropdown options; default cap 15)."},
 	{MethodEvenerPathValidate, PathValidateParams{}, PathValidateResponse{}, ScopeHub, "Validates a launch path."},

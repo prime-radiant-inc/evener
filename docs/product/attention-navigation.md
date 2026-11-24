@@ -43,6 +43,15 @@ Archiving is a clearing verb for the population too, and it reaches the whole
 project as well as a single session. `tierEligible` drops a session whose own
 decision archives it and one whose owning project's decision does, so a
 manually archived project stops claiming attention for every session under it.
+That project decision is cleared when a top-level session is created in the
+project after the decision: launching a session is using the project again, so
+the new session is not filed as archived at birth and the project's earlier
+sessions return to their tiers. The rule is per owning source and counts only
+sessions created strictly after the decision, compared at the decision row's
+one-second precision so a session created in the decision's own second counts
+as covered. An existing or resumed session,
+or a subagent's spawn, leaves the archive in place, and a session's own
+unarchive decision still cannot override a project archive.
 Only the manual decision counts here: the sidebar's age-based auto-archive
 never clears attention, because a needs-you session does not decay. Live
 applies the same manual decisions plus its age rule

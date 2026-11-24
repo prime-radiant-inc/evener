@@ -71,7 +71,7 @@
  * centred between hairlines) on every TranscriptBody surface, including
  * read-only and preview. */
 .intentGroup {
-  width: 100%;
+  composes: measureColumn from "../../styles/surface.module.css";
   /* A trailing or cross-turn intent run is promoted to its own virtual-list
    * row (TranscriptBody's transcriptRowsForProjection) and renders WITHOUT
    * TurnBlock's .turn wrapper, so it must read the reading measure itself or
@@ -79,8 +79,6 @@
    * (the reload-shaped misalignment overflowguard's "intent group column"
    * check measures). Inside .turn this is a no-op: the parent is already
    * exactly this wide. */
-  max-width: var(--session-measure);
-  margin-inline: auto;
 }
 
 .intentGroupItems {
@@ -124,14 +122,8 @@
 }
 
 .coldStart {
-  width: 100%;
-  max-width: var(--session-measure);
-  margin-inline: auto;
+  composes: measureColumn from "../../styles/surface.module.css";
   padding: var(--space-6) var(--space-4);
-}
-
-.coldStartMeasure {
-  max-width: 42rem;
 }
 
 /* The pane before its transcript hydrates: the Loader and skeleton, then
@@ -156,8 +148,7 @@
 }
 
 .loadingSkeleton {
-  width: 100%;
-  max-width: var(--session-measure);
+  composes: measureColumn from "../../styles/surface.module.css";
   text-align: left;
 }
 
@@ -171,9 +162,7 @@
 }
 
 .measure {
-  width: 100%;
-  max-width: var(--session-measure);
-  margin-inline: auto;
+  composes: measureColumn from "../../styles/surface.module.css";
   flex: 1 1 auto;
   min-height: 0;
   display: flex;

@@ -97,6 +97,7 @@ var hostRequestMethods = map[string]struct{}{
 	// the admin families above do not already carry. Without these rows a remote
 	// settings pane or spawn form fails closed with appwire.InvalidParams.
 	MethodEvenerPathsComplete:     {},
+	MethodEvenerFilesSearch:       {},
 	MethodEvenerPathValidate:      {},
 	MethodEvenerDirsCreate:        {},
 	MethodEvenerProjectsRecent:    {},

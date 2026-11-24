@@ -97,8 +97,13 @@ export { answeredAskUserReply, answeredAskUserSuffix, parseAskUserQuestions } fr
 export type { AttachmentRejection, RejectableFile } from "./attachmentLimits";
 export {
   admissionRejection,
+  fitImageDimensions,
+  IMAGE_JPEG_QUALITY,
   MAX_ATTACHMENT_BYTES,
   MAX_ATTACHMENTS,
+  MAX_IMAGE_LONG_EDGE,
+  MAX_SOURCE_BYTES,
+  MAX_SOURCE_PIXELS,
   rejectionReason,
   sizeRejection,
 } from "./attachmentLimits";
@@ -304,6 +309,26 @@ export {
   WireError,
   wireRejectionPayload,
 } from "./errors";
+export type {
+  FileMentionMatch,
+  FileMentionSearchInputs,
+  FileMentionSnapshot,
+  FileMentionSpliceResult,
+  FileMentionStore,
+  FileMentionTarget,
+  FileMentionToken,
+} from "./fileMention";
+export {
+  createFileMentionStore,
+  FILE_MENTION_DEBOUNCE_MS,
+  FILE_MENTION_DEFAULT_LIMIT,
+  FILE_MENTION_MAX_QUERY_LENGTH,
+  matchFileMentionPositions,
+  parseFileMentionToken,
+  rankFileMentions,
+  scoreFileMention,
+  spliceFileMention,
+} from "./fileMention";
 export {
   findIndexIn,
   findMatches,

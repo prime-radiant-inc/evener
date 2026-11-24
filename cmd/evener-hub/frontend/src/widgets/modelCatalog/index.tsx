@@ -19,6 +19,7 @@ import {
   pickableModelRows,
 } from "@evener/appwire-client";
 import { type JSX, type KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
+import { InlineNotice } from "../inlinenotice";
 // Import siblings directly, never through the widgets barrel: this module is
 // itself barrel-exported, so importing the barrel here would be a cycle (the
 // same reason collectioneditor imports ../button directly).
@@ -40,7 +41,6 @@ const CLASS = {
   popoverPanel: requireClass(styles.popoverPanel, "modelCatalog.module.css", "popoverPanel"),
   panel: requireClass(styles.panel, "modelCatalog.module.css", "panel"),
   input: requireClass(styles.input, "modelCatalog.module.css", "input"),
-  error: requireClass(styles.error, "modelCatalog.module.css", "error"),
   groupRow: requireClass(styles.groupRow, "modelCatalog.module.css", "groupRow"),
   row: requireClass(styles.row, "modelCatalog.module.css", "row"),
   rowActive: requireClass(styles.rowActive, "modelCatalog.module.css", "rowActive"),
@@ -261,11 +261,7 @@ export function ModelCatalogPanel({
         />
       )}
       {loading && <Skeleton lines={SKELETON_LINES} />}
-      {error !== null && (
-        <p className={CLASS.error} role="alert">
-          {error}
-        </p>
-      )}
+      {error !== null && <InlineNotice tone="danger">{error}</InlineNotice>}
       {listShown && (
         <Listbox id={listboxId} label="Model" className={isSheet ? CLASS.listSheet : undefined}>
           {rows.map((row) => {
