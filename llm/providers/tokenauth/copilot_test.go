@@ -498,8 +498,7 @@ func TestCopilotClientRefusesTextOnlyImageBeforeSending(t *testing.T) {
 	client := newCopilotClientAt(t, ts.URL, stateDir)
 	ctx := llm.WithScopedAuthenticator(context.Background(), registry.AuthOAuthGitHubCopilot, ScopedCopilot(stateDir))
 	_, err := client.Complete(ctx, imageRequest("m"))
-	var configErr *llm.ConfigurationError
-	if !errors.As(err, &configErr) {
+	if _, ok := errors.AsType[*llm.ConfigurationError](err); !ok {
 		t.Fatalf("Complete error = %v, want a configuration error", err)
 	}
 	if got := requests.Load(); got != 0 {
