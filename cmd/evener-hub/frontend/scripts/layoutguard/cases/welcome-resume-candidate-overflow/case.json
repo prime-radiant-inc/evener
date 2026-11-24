@@ -11,6 +11,7 @@
     "styles/global.css",
     "styles/text.module.css",
     "styles/tokens.css",
+    "styles/help.module.css",
     "widgets/panescaffold/panescaffold.module.css",
     "widgets/emptystate/emptystate.module.css",
     "widgets/button/button.module.css",

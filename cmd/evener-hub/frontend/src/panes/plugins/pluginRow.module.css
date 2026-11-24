@@ -29,9 +29,8 @@
 }
 
 .description {
+  composes: helpMuted from "../../styles/help.module.css";
   min-width: 0;
-  color: var(--ink-low);
-  font-size: var(--font-size-caption);
 }
 
 .details {

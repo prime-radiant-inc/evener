@@ -42,9 +42,8 @@
 }
 
 .help {
+  composes: helpCaption from "../../styles/help.module.css";
   margin: 0;
-  font-size: var(--font-size-caption);
-  color: var(--ink-mid);
 }
 
 .errorText {

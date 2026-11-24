@@ -429,9 +429,8 @@
  * size and the lowest ink rather than sitting at row weight and competing
  * with the sessions above it. */
 .overflow {
+  composes: helpMuted from "../../styles/help.module.css";
   flex: 1;
   min-width: 0;
-  color: var(--ink-low);
-  font-size: var(--font-size-caption);
 }
 

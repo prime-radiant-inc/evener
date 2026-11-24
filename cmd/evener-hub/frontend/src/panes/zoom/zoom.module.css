@@ -15,11 +15,10 @@
 }
 
 .hint {
+  composes: helpMuted from "../../styles/help.module.css";
   flex: 0 0 auto;
   margin: 0;
   padding: var(--space-2) var(--space-3);
-  color: var(--ink-low);
-  font-size: var(--font-size-caption);
 }
 
 .track {

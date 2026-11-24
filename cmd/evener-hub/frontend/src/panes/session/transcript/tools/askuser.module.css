@@ -33,8 +33,7 @@
 }
 
 .note {
-  font-size: var(--font-size-caption);
-  color: var(--ink-mid);
+  composes: helpCaption from "../../../../styles/help.module.css";
   /* The why and if-unanswered notes render through the Markdown widget,
    * whose root sets its own color and family and would otherwise shadow
    * this host's muted caption treatment; the plain multi-select line is
