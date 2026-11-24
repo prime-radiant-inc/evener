@@ -3,11 +3,13 @@
   "description": "A folded tool run that stands on its own (widgets/disclosure's details inside surface.module.css's tool-run segment) keeps the tool-row contracts in the real cascade on a phone. The Open control in the run's last row is 44px tall and overhangs its line; a tap one pixel inside its top or bottom edge reaches the control. The open run's first row sits flush with its summary, with Disclosure's --space-1 top gap cancelled, and the last row's evidence band spans its row with no unexpected inset.",
   "cssFiles": [
     "styles/global.css",
+    "styles/text.module.css",
     "styles/tokens.css",
     "styles/railseat.module.css",
     "styles/surface.module.css",
     "styles/motion.module.css",
     "widgets/chevron/chevron.module.css",
+    "widgets/internal/foldHeader.module.css",
     "widgets/disclosure/disclosure.module.css",
     "panes/session/transcript/toolcallitem.module.css",
     "panes/session/transcript/toolrungroup.module.css",

@@ -3,6 +3,7 @@
   "description": "At a phone viewport the two-level body trigger that overlays the summary line is absolutely positioned (inset: 0, position: absolute) with the summary line as its containing block. The phone tap-floor block gives .bodyTrigger min-height: var(--tap-min) (44px), but an absolutely positioned box with top: 0 and bottom: 0 that is forced taller than its container by min-height overflows DOWNWARD - so the invisible button escapes the summary line into the rows and gaps below it and can capture taps and focus there. This case asserts the overlay stays contained within its summary line at 390px (the summary-line container must carry the matching minimum height, so the floor grows the line instead of escaping it).",
   "cssFiles": [
     "styles/global.css",
+    "styles/text.module.css",
     "styles/tokens.css",
     "styles/railseat.module.css",
     "styles/surface.module.css",

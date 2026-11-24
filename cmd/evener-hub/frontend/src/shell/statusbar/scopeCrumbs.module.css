@@ -24,11 +24,9 @@
 }
 
 .crumbCurrent {
+  composes: truncate from "../../styles/text.module.css";
   color: var(--ink-hi);
   font-size: var(--font-size-caption);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .hierarchy {

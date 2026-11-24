@@ -41,8 +41,6 @@
 /* Fixture-data caption under a surface section's heading: reminds the
  * reader the surface below renders canned data, not a live hub. */
 .note {
+  composes: helpMuted from "../styles/help.module.css";
   margin: 0;
-  color: var(--ink-low);
-  font-family: var(--font-sans);
-  font-size: var(--font-size-caption);
 }

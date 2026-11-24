@@ -45,7 +45,6 @@ import {
   PropertyList,
   type PropertyListRow,
   Sheet,
-  Skeleton,
   Textarea,
   useFocusRehome,
   useToasts,
@@ -53,6 +52,7 @@ import {
 } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import styles from "./hosts.module.css";
+import { SectionGate } from "./sectionGate";
 import { Code } from "./settingsField";
 import { useConnectedEffect } from "./useConnectedEffect";
 import { useSettingsPoll } from "./useSettingsPoll";
@@ -329,22 +329,14 @@ export function HostsSection(_props: HostsSectionProps) {
     }
   }
 
-  if (load.phase === "loading") return <Skeleton lines={3} />;
-  if (load.phase === "error") {
+  if (load.phase !== "ready") {
     return (
-      <InlineNotice
-        tone="danger"
-        live="status"
-        data-reason="unavailable"
+      <SectionGate
+        loading={load.phase === "loading"}
+        error={load.phase === "error" ? load.message : null}
         title="Couldn't load hosts"
-        action={
-          <Button size="sm" onClick={() => void hostsStore.getState().fetch()}>
-            Retry
-          </Button>
-        }
-      >
-        {load.message}
-      </InlineNotice>
+        onRetry={() => void hostsStore.getState().fetch()}
+      />
     );
   }
 

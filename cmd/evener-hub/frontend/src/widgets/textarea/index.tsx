@@ -78,6 +78,9 @@ export interface TextareaProps {
    * width stands. A host that wants this must pass `fill` rather than reach
    * into the widget's DOM with a `.host textarea` rule. */
   fill?: boolean;
+  /** Native spell-check passthrough: content the user edits as code or config
+   * (a credential's JSON) turns the browser's inline squiggles off. */
+  spellCheck?: boolean;
 }
 
 /** The field's smallest comfortable target, in text lines. Mirrored by
@@ -151,6 +154,7 @@ export const Textarea = forwardRef<HTMLTextAreaElement, TextareaProps>(function 
     seamless = false,
     monospace = false,
     fill = false,
+    spellCheck,
   },
   forwardedRef,
 ) {
@@ -226,6 +230,7 @@ export const Textarea = forwardRef<HTMLTextAreaElement, TextareaProps>(function 
       onFocus={onFocus}
       onBlur={onBlur}
       placeholder={placeholder}
+      spellCheck={spellCheck}
       aria-label={ariaLabel}
       disabled={disabled}
       // An inline custom property, not an inline height: the stylesheet's

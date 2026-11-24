@@ -3,6 +3,7 @@
   "description": "spawn's prompt card keeps its whole control row - attach, the model trigger, and Start - inside the card at phone width, exactly where the session composer keeps them (issue #198)",
   "cssFiles": [
     "styles/tokens.css",
+    "styles/help.module.css",
     "styles/global.css",
     "widgets/promptcard/promptcard.module.css",
     "widgets/internal/control.module.css",

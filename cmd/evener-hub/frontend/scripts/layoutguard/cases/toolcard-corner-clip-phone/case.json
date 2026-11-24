@@ -3,6 +3,7 @@
   "description": "A one-element tool group (session.module.css's .intentGroupRows) keeps the tool-row contracts in the real cascade on a phone. The Open control's 44px touch target overhangs its text line, so a tap one pixel inside its top or bottom edge must reach the control. The last rendered row's evidence band spans its row edge to edge, and a suppressed member's empty wrapper adds no space below it.",
   "cssFiles": [
     "styles/global.css",
+    "styles/text.module.css",
     "styles/tokens.css",
     "styles/railseat.module.css",
     "styles/surface.module.css",

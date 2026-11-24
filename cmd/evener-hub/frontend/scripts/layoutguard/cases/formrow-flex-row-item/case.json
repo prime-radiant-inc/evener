@@ -3,7 +3,9 @@
   "description": "FormRow's widget contract, not a real screen: a FormRow dropped into a flex ROW as a sibling of another item must shrink with the row and let its control's own ellipsis clip a long value, instead of taking the full nowrap value width and overflowing the row (kata p6g8's mechanism). The flex-row parent and its sibling chip are invented scaffolding - no layout the app renders today makes a FormRow a flex item of a row (every parent is a column or a block, where formrow.module.css's min-width:0 has nothing to act on). The FormRow and the file-kind PathField inside it are their current real markup and classes.",
   "cssFiles": [
     "styles/global.css",
+    "styles/text.module.css",
     "styles/tokens.css",
+    "styles/help.module.css",
     "styles/surface.module.css",
     "widgets/internal/control.module.css",
     "widgets/internal/fieldTrigger.module.css",

@@ -128,10 +128,8 @@
  * whatever text survives. The JS-side 120-char preview clamp remains the
  * primary bound. */
 .summaryText {
+  composes: truncate from "../../../../styles/text.module.css";
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 /* Loader owns the live label's UI font size; this wrapper owns the matching

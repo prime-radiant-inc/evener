@@ -24,10 +24,8 @@
 }
 
 .label {
+  composes: truncate from "../../../styles/text.module.css";
   min-width: 0;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
 }
 
 /* Place the first expanded call directly below the summary. */

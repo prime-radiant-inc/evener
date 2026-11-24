@@ -3,6 +3,7 @@
   "description": "A job log pane in a narrow workspace column keeps a real output viewport under a long command. The command block is bounded and scrolls inside itself, the virtual list keeps at least half of the log column and a nonzero height, and a short command stays fully visible rather than clipped. The fixtures reproduce JobLog.tsx's PaneScaffold > transcript column > command block > .joblog chain with the real component stylesheets; the long command is the 832-character barrier script the background-jobs browser guard renders, recovered from its retained failure DOM.",
   "cssFiles": [
     "styles/global.css",
+    "styles/text.module.css",
     "styles/tokens.css",
     "widgets/panescaffold/panescaffold.module.css",
     "widgets/codeblock/codeblock.module.css",

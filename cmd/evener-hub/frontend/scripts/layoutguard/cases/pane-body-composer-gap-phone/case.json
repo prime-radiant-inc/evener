@@ -3,6 +3,7 @@
   "description": "On a phone the breakpoint's own .body rule declares a different bottom inset; a pane with any slot below its body (a padded footer, or a flush edge footer alone) must still close its scrolling body on that surface's hairline, while a footer-less pane keeps the phone's inset.",
   "cssFiles": [
     "styles/global.css",
+    "styles/text.module.css",
     "styles/tokens.css",
     "widgets/panescaffold/panescaffold.module.css"
   ],

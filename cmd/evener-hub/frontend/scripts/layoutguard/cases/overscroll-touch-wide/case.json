@@ -4,6 +4,7 @@
   "viewport": { "width": 1280, "height": 800, "touch": true },
   "cssFiles": [
     "styles/global.css",
+    "styles/text.module.css",
     "styles/tokens.css",
     "shell/AppShell.module.css",
     "shell/DockHost.module.css",

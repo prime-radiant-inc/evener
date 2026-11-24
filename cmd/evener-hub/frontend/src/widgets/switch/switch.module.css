@@ -116,12 +116,10 @@
 }
 
 .description {
+  composes: helpCaption from "../../styles/help.module.css";
   grid-column: 2;
   justify-self: stretch;
   min-width: 0;
-  color: var(--ink-mid);
-  font-family: var(--font-sans);
-  font-size: var(--font-size-caption);
   line-height: var(--line-height-body);
 }
 

@@ -1744,7 +1744,7 @@ func effectiveRecordedInputTokens(usage llm.Usage, fullHistoryEstimate int, hasS
 // /delta/end, skipping start/delta when the assistant already streamed) and appends
 // the assistant turn to history unless the response was empty without phase metadata.
 // It runs under withResponseSideEffects and returns its abort error.
-func (s *Session) emitAssistantResponse(ctx context.Context, resp llm.Response, modelResp sessionModelResponse, txt string, skipHistory bool, finalAttempt ModelAttemptMetadata, acceptedReply, quietYield bool) error {
+func (s *Session) emitAssistantResponse(ctx context.Context, resp llm.Response, modelResp sessionModelResponse, txt string, skipHistory bool, finalAttempt ModelAttemptMetadata, acceptedReply, quietYield, quietCompanion bool) error {
 	var persistErr error
 	if err := s.withResponseSideEffects(ctx, func() {
 		if !modelResp.StreamedAssistant {
@@ -1753,7 +1753,7 @@ func (s *Session) emitAssistantResponse(ctx context.Context, resp llm.Response, 
 			})
 		}
 		if !skipHistory {
-			persistErr = s.appendAssistantTurnWithAcceptance(resp, finalAttempt, acceptedReply, quietYield)
+			persistErr = s.appendAssistantTurnWithAcceptance(resp, finalAttempt, acceptedReply, quietYield, quietCompanion)
 			if persistErr != nil {
 				return
 			}

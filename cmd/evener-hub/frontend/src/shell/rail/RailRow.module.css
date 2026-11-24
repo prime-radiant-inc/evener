@@ -248,9 +248,7 @@
 }
 
 .label {
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
+  composes: truncate from "../../styles/text.module.css";
   /* Same flex-shrink enabler as .textCol: the label sits inside .titleLine
    * beside the trailing chevron, and must give up its own overflow (not the
    * chevron's slot) when the row runs narrow. */
@@ -299,14 +297,6 @@
   overflow-wrap: anywhere;
 }
 
-.contextCard[data-state="needs-you"] .contextStatus {
-  color: var(--attention-ink);
-}
-
-.contextCard[data-state="failed"] .contextStatus {
-  color: var(--danger-ink);
-}
-
 .contextSummary {
   color: var(--ink-hi);
   overflow-wrap: anywhere;
@@ -328,9 +318,7 @@
  * semantic hue: the wait is not an error, the session resumes by itself. It
  * truncates rather than wrapping so the row stays two lines tall. */
 .quotaWait {
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
+  composes: truncate from "../../styles/text.module.css";
   color: var(--ink-mid);
   font-size: var(--font-size-caption);
 }
@@ -340,17 +328,19 @@
  * same way so a row is never taller than two lines. Only the word naming a
  * Needs-you row's attention takes a hue, matching the row's own dot. */
 .why {
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
+  composes: truncate from "../../styles/text.module.css";
   color: var(--ink-mid);
   font-size: var(--font-size-caption);
 }
 
+/* The one attention/danger ink pair: the row's why word and the session
+ * context status both name their hue on data-hue. */
+.contextStatus[data-hue="attention"],
 .whyReason[data-hue="attention"] {
   color: var(--attention-ink);
 }
 
+.contextStatus[data-hue="danger"],
 .whyReason[data-hue="danger"] {
   color: var(--danger-ink);
 }
@@ -435,9 +425,8 @@
  * size and the lowest ink rather than sitting at row weight and competing
  * with the sessions above it. */
 .overflow {
+  composes: helpMuted from "../../styles/help.module.css";
   flex: 1;
   min-width: 0;
-  color: var(--ink-low);
-  font-size: var(--font-size-caption);
 }
 

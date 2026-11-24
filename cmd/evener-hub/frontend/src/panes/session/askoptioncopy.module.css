@@ -23,9 +23,8 @@
 }
 
 .optionDetail {
+  composes: helpCaption from "../../styles/help.module.css";
   display: block;
   margin-top: var(--space-half);
-  font-size: var(--font-size-caption);
   line-height: var(--line-height-ui);
-  color: var(--ink-mid);
 }

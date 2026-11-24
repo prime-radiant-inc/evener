@@ -3,7 +3,9 @@
   "description": "rail: every row's text starts at the same x at a given nesting depth - the signal dot hangs OUTDENTED in the row's leading padding (never moving the title), the inactive-fold's label lines up with its sibling session rows, and a branch row's chevron trails the label text",
   "cssFiles": [
     "styles/global.css",
+    "styles/text.module.css",
     "styles/tokens.css",
+    "styles/help.module.css",
     "widgets/tree/tree.module.css",
     "shell/rail/Rail.module.css",
     "shell/rail/RailRow.module.css"

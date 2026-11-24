@@ -88,14 +88,11 @@
 }
 
 .description {
+  composes: helpCaption from "../../styles/help.module.css";
   margin: 0;
-  color: var(--ink-mid);
-  font-size: var(--font-size-caption);
   line-height: var(--line-height-body);
 }
 
 .optionLabel {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  composes: truncate from "../../styles/text.module.css";
 }

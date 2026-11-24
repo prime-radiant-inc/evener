@@ -20,14 +20,12 @@
 /* The caller's typography for ListRow's value slot: quiet, right-aligned, and
  * truncated before the caret. */
 .rowValue {
+  composes: truncate from "../../styles/text.module.css";
   min-width: 0;
   max-width: 100%;
-  overflow: hidden;
   color: var(--ink-mid);
   font-size: var(--font-size-body);
   text-align: right;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .caret {

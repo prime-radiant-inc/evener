@@ -66,7 +66,7 @@ jobs:
         with:
           fetch-depth: 2
 
-      - uses: actions/setup-go@v7
+      - uses: actions/setup-go@v7.1.0
         with:
           go-version-file: go.work
           cache: false
@@ -109,7 +109,7 @@ jobs:
           node-version: "22"
 
       # The gate itself is Go: make test-web builds and runs evener-dev.
-      - uses: actions/setup-go@v7
+      - uses: actions/setup-go@v7.1.0
         with:
           go-version-file: go.work
           cache: false
@@ -190,7 +190,7 @@ jobs:
 
       # The retirement, skill, cascade and background guards run go test
       # against cmd/evener-hub, with and without the browserguard tag.
-      - uses: actions/setup-go@v7
+      - uses: actions/setup-go@v7.1.0
         with:
           go-version-file: go.work
           cache: false
@@ -361,7 +361,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: actions/setup-go@v7
+      - uses: actions/setup-go@v7.1.0
         with:
           go-version-file: go.work
           cache: false
@@ -431,7 +431,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: actions/setup-go@v7
+      - uses: actions/setup-go@v7.1.0
         with:
           go-version-file: go.work
           cache: false
@@ -487,7 +487,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: actions/setup-go@v7
+      - uses: actions/setup-go@v7.1.0
         with:
           go-version-file: go.work
           cache: false
@@ -552,7 +552,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: actions/setup-go@v7
+      - uses: actions/setup-go@v7.1.0
         with:
           go-version-file: go.work
           cache: false

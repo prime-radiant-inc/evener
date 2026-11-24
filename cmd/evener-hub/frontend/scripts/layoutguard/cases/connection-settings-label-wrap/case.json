@@ -2,7 +2,9 @@
   "description": "A single-token env-var label (DEEPSEEK_BASE_URL) must wrap inside the settings row's fixed 104px label column instead of running into the control beside it (#6271). PropertyList's settings variant puts overflow-wrap: anywhere on .settingsLabel; this pins that rule. The inline facts label has its own identical .label rule, which this settings-layout fixture does not exercise.",
   "cssFiles": [
     "styles/global.css",
+    "styles/text.module.css",
     "styles/tokens.css",
+    "styles/help.module.css",
     "widgets/internal/control.module.css",
     "widgets/input/input.module.css",
     "widgets/propertylist/propertylist.module.css"

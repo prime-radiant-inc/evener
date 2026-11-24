@@ -3,8 +3,6 @@
 }
 
 .help {
-  margin: 0;
-  color: var(--ink-mid);
-  font-size: var(--font-size-ui);
+  composes: helpUi from "../../../styles/help.module.css";
 }
 

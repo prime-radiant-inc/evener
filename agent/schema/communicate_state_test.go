@@ -61,6 +61,79 @@ func TestTurnQuietYieldJSONRoundTrip(t *testing.T) {
 	}
 }
 
+func TestQuietCommunicateCommentary(t *testing.T) {
+	t.Parallel()
+	tr := true
+	fa := false
+
+	rawQuiet, err := json.Marshal(CommunicateToolState{
+		Accepted:        &tr,
+		EndTurn:         &tr,
+		Quiet:           &tr,
+		QuietNote:       "waiting on CI",
+		QuietCommentary: "  Running the suite now.  ",
+	})
+	if err != nil {
+		t.Fatalf("Marshal quiet state: %v", err)
+	}
+	if got := QuietCommunicateCommentary(rawQuiet); got != "Running the suite now." {
+		t.Fatalf("QuietCommunicateCommentary(quiet) = %q, want trimmed commentary", got)
+	}
+	if got := QuietCommunicateNote(rawQuiet); got != "waiting on CI" {
+		t.Fatalf("QuietCommunicateNote(quiet) = %q, want %q", got, "waiting on CI")
+	}
+
+	rawNoCommentary, err := json.Marshal(CommunicateToolState{
+		Accepted: &tr,
+		EndTurn:  &tr,
+		Quiet:    &tr,
+	})
+	if err != nil {
+		t.Fatalf("Marshal quiet state without commentary: %v", err)
+	}
+	if got := QuietCommunicateCommentary(rawNoCommentary); got != "" {
+		t.Fatalf("QuietCommunicateCommentary(no commentary) = %q, want empty", got)
+	}
+
+	rawLoud, err := json.Marshal(CommunicateToolState{
+		Accepted:        &tr,
+		EndTurn:         &tr,
+		Quiet:           &fa,
+		QuietCommentary: "ignored when not quiet",
+	})
+	if err != nil {
+		t.Fatalf("Marshal non-quiet state: %v", err)
+	}
+	if got := QuietCommunicateCommentary(rawLoud); got != "" {
+		t.Fatalf("QuietCommunicateCommentary(non-quiet) = %q, want empty", got)
+	}
+
+	if got := QuietCommunicateCommentary(nil); got != "" {
+		t.Fatalf("QuietCommunicateCommentary(nil) = %q, want empty", got)
+	}
+	if got := QuietCommunicateCommentary(json.RawMessage(`{invalid`)); got != "" {
+		t.Fatalf("QuietCommunicateCommentary(invalid) = %q, want empty", got)
+	}
+}
+
+func TestTurnQuietCompanionJSONRoundTrip(t *testing.T) {
+	t.Parallel()
+	data, err := json.Marshal(Turn{Kind: TurnAssistant, QuietCompanion: true})
+	if err != nil {
+		t.Fatalf("Marshal Turn: %v", err)
+	}
+	var got Turn
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("Unmarshal Turn: %v", err)
+	}
+	if !got.QuietCompanion {
+		t.Fatalf("QuietCompanion = false after round-trip, raw=%s", data)
+	}
+	if got.QuietYield {
+		t.Fatalf("QuietYield = true after round-trip, raw=%s", data)
+	}
+}
+
 func TestCommunicateArgsOutcome(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {

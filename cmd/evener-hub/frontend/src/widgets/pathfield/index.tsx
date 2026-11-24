@@ -21,6 +21,7 @@ import { PickerTrigger } from "../internal/pickerTrigger";
 import { requireClass } from "../internal/requireClass";
 import { ariaActiveDescendant, optionDomId, useListbox } from "../internal/useListbox";
 import { Popover } from "../popover";
+import { ToolIcon } from "../toolicon";
 import styles from "./pathfield.module.css";
 
 const CLASS = {
@@ -147,34 +148,6 @@ function typedFilter(text: string): string {
   if (text.endsWith("/")) return "";
   const idx = text.lastIndexOf("/");
   return idx === -1 ? text : text.slice(idx + 1);
-}
-
-function FolderIcon() {
-  return (
-    <svg viewBox="0 0 14 12" width="12" height="10" aria-hidden="true" className={CLASS.icon}>
-      <path
-        d="M1 2h4l1.3 1.6H13a1 1 0 0 1 1 1V10a1 1 0 0 1-1 1H1a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1Z"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.2"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
-
-function FileIcon() {
-  return (
-    <svg viewBox="0 0 12 14" width="10" height="12" aria-hidden="true" className={CLASS.icon}>
-      <path
-        d="M1.5 1h5L11 5v8a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V2a1 1 0 0 1 .5-1ZM6.5 1v4H11"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.2"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
 }
 
 interface FileFieldPanelProps {
@@ -484,7 +457,9 @@ function FileFieldPanel({
               activeClassName={CLASS.rowActive}
               onSelect={() => pickRow(row)}
             >
-              {row.kind === "file" ? <FileIcon /> : <FolderIcon />}
+              <span className={CLASS.icon}>
+                <ToolIcon kind={row.kind === "file" ? "file" : "folder"} size={12} />
+              </span>
               <span className={CLASS.rowName}>{row.kind === "parent" ? "../" : row.name}</span>
               {current && (
                 <span className={CLASS.check} aria-hidden="true">
@@ -566,7 +541,7 @@ export function PathField({
       onClick={onClick}
     >
       <span className={CLASS.prominentSeat} aria-hidden="true">
-        {kind === "dir" ? <DirectoryIcon /> : <FileIcon />}
+        {kind === "dir" ? <DirectoryIcon /> : <ToolIcon kind="file" size={16} />}
       </span>
       <span className={CLASS.prominentText}>
         <strong className={CLASS.prominentHeadline}>{headline}</strong>

@@ -451,6 +451,15 @@ test("remove confirms then calls evener/host/remove", async () => {
   expect(fake.calls.find((c) => c.method === "evener/host/remove")?.params).toMatchObject({ name: "beta" });
 });
 
+test("shows three skeleton lines while the host registry read is pending", () => {
+  const fake = connectReadyFakeClient();
+  fake.on("evener/host/list", () => new Promise(() => {}));
+
+  render(<HostsSection sectionId="hosts" />);
+
+  expect(screen.getAllByTestId("skeleton-line")).toHaveLength(3);
+});
+
 test("load failure shows retry", async () => {
   const fake = connectReadyFakeClient();
   fake.on("evener/host/list", () => {

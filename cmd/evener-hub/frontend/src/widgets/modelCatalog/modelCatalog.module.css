@@ -75,12 +75,9 @@
 
 /* Provider (and Recent) section eyebrow: small, quiet, not an option. */
 .groupRow {
+  composes: eyebrowType from "../../styles/text.module.css";
   padding: var(--space-2) var(--space-2) var(--space-1);
   color: var(--ink-mid);
-  font-size: var(--font-size-caption);
-  font-weight: var(--font-weight-medium);
-  text-transform: uppercase;
-  letter-spacing: var(--tracking-eyebrow);
 }
 
 .row {
@@ -112,11 +109,9 @@
  * line - capabilities, cost, context window - is what runs long. It still
  * ellipsizes rather than overflowing, for a pathologically long name. */
 .rowName {
+  composes: truncate from "../../styles/text.module.css";
   flex: 0 0 auto;
   max-width: 100%;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 /* The current model's marker. Paired with aria-selected on the row, never
@@ -132,14 +127,12 @@
  * this long line would refuse to give, and the row would overflow (or, with a
  * shrinkable name, starve the name instead). */
 .meta {
+  composes: truncate from "../../styles/text.module.css";
   flex: 0 1 auto;
   min-width: 0;
   margin-left: auto;
   color: var(--ink-mid);
   font-size: var(--font-size-caption);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 /* A provider the hub couldn't reach, in place where its section would be:
@@ -227,16 +220,12 @@
 }
 
 .sheetRowName {
+  composes: truncate from "../../styles/text.module.css";
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .sheetRowMeta {
-  overflow: hidden;
+  composes: truncate from "../../styles/text.module.css";
   color: var(--ink-mid);
   font-size: var(--font-size-caption);
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }

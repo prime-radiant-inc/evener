@@ -134,13 +134,11 @@
  * to the two rows this shape carries, not to the shape: .groupLabel is an
  * uppercase eyebrow and opens up, .groupPath is a path and does not. */
 .groupRow {
+  composes: truncate from "../../styles/text.module.css";
   padding: var(--space-2) var(--space-2) var(--space-1);
-  overflow: hidden;
   color: var(--ink-mid);
   font-size: var(--font-size-caption);
   font-weight: var(--font-weight-medium);
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 /* The current directory reads as a path, not as a section title, so it keeps
@@ -151,10 +149,8 @@
 }
 
 .groupLabel {
-  font-size: var(--font-size-caption);
+  composes: eyebrowType from "../../styles/text.module.css";
   color: var(--ink-mid);
-  text-transform: uppercase;
-  letter-spacing: var(--tracking-eyebrow);
 }
 
 /* 94yg: a directory click both picks the value and descends into it (spec
@@ -204,12 +200,10 @@
  * short; the full path on a Recent row is what runs long. It still ellipsizes
  * rather than overflowing, for a pathologically long name. */
 .rowName {
+  composes: truncate from "../../styles/text.module.css";
   flex: 0 0 auto;
   max-width: 100%;
-  overflow: hidden;
   font-family: var(--font-mono);
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 /* The entry-kind glyph: a folder or a document outline, in passive ink. */
@@ -229,15 +223,13 @@
  * min-width: 0 is what lets a nowrap flex item shrink at all - without it
  * this long line would refuse to give and would starve the name instead. */
 .meta {
+  composes: truncate from "../../styles/text.module.css";
   flex: 0 1 auto;
   min-width: 0;
   margin-left: auto;
-  overflow: hidden;
   color: var(--ink-mid);
   font-family: var(--font-mono);
   font-size: var(--font-size-caption);
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 /* Loading / nothing-here: in place where the rows would be, dim, small, and

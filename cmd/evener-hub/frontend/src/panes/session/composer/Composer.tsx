@@ -568,21 +568,18 @@ function ComposerWithSubmission({
     }),
     [textRef, source, writeDraft, scheduleCursorRestore],
   );
-  // Scoped by `ref`: dockview can have several session panes - and so several
-  // mounted Composers - open at once, and a bare literal id would collide.
-  const slashListboxId = `composer-slash-listbox-${ref}`;
   const {
     setToken: setSlashToken,
     items: slashItems,
     open: slashOpen,
-    activeIndex: slashActiveIndex,
+    activeKey: slashActiveKey,
     activeId: slashActiveId,
+    listboxId: slashListboxId,
     commit: commitSlashCompletion,
     handleKeyDown: handleSlashKeyDown,
     reset: resetSlashCompletion,
   } = useSlashCompletion({
     catalog: slashMenuCatalog,
-    listboxId: slashListboxId,
     editorRef,
     textRef,
     textEditor,
@@ -1414,7 +1411,7 @@ function ComposerWithSubmission({
             <SlashCompletionMenu
               id={slashListboxId}
               items={slashItems}
-              highlightedIndex={slashActiveIndex}
+              activeKey={slashActiveKey}
               onSelect={commitSlashCompletion}
             />
           )}

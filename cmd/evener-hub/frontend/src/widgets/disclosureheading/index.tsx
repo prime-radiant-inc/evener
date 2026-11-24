@@ -49,7 +49,7 @@ export function DisclosureHeading({
       <Heading className={CLASS.heading}>
         <button type="button" className={CLASS.toggle} aria-expanded={open} onClick={() => onOpenChange(!open)}>
           {eyebrow ? <Eyebrow as="span">{label}</Eyebrow> : label}
-          <Chevron direction={open ? "down" : "right"} />
+          <Chevron open={open} />
         </button>
       </Heading>
       {action !== undefined && <div className={CLASS.action}>{action}</div>}

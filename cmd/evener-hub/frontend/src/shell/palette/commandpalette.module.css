@@ -2,7 +2,7 @@
  * trap, close button) is the shared Dialog/OverlayPanel; these classes style
  * only the palette-specific body: the results list and the row grammars for
  * search / command / args / help. Tokens only - color is used only where it
- * means attention (the error strip's danger, the <mark> highlight's accent);
+ * means attention (the <mark> highlight's accent);
  * every neutral surface stays neutral. */
 
 .palette {
@@ -26,15 +26,6 @@
   font-family: var(--font-sans);
   font-size: var(--font-size-caption);
   font-weight: var(--font-weight-medium);
-}
-
-/* The inline error strip carries no color of its own: the danger hue is the
- * Chip widget's job (the design system gates the attention-family tokens to
- * allowlisted widgets), so this is a neutral, left-aligned wrapper that only
- * positions the danger Chip and gives it the alert role. */
-.error {
-  align-self: flex-start;
-  max-width: 100%;
 }
 
 .results {
@@ -137,9 +128,8 @@
 }
 
 .hint {
+  composes: helpCaption from "../../styles/help.module.css";
   flex: none;
-  color: var(--ink-mid);
-  font-size: var(--font-size-caption);
 }
 
 .project {

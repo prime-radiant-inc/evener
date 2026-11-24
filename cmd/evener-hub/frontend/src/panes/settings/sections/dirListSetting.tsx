@@ -28,14 +28,13 @@ import {
   ConfirmDialog,
   type DirectoryActions,
   FormRow,
-  InlineNotice,
   PathField,
   type PathFieldKind,
-  Skeleton,
   useToasts,
 } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import styles from "./dirListSetting.module.css";
+import { SectionGate } from "./sectionGate";
 import { useHostScopedLoad } from "./useConnectedEffect";
 
 const CLASS = {
@@ -251,13 +250,7 @@ export function DirListSetting({ wireField, label, copy, host = LOCAL_HOST }: Di
         )}
       </header>
       <p className={CLASS.help}>{copy}</p>
-      {error !== null ? (
-        <InlineNotice tone="danger" live="status" data-reason="unavailable">
-          Failed to load: {error}
-        </InlineNotice>
-      ) : loading && layer === null ? (
-        <Skeleton />
-      ) : (
+      <SectionGate loading={error === null && loading && layer === null} error={error && `Failed to load: ${error}`}>
         <PathListEditor
           directory={{
             validatePath: (path, kind) => store.getState().validatePath(path, kind),
@@ -274,7 +267,7 @@ export function DirListSetting({ wireField, label, copy, host = LOCAL_HOST }: Di
           removeConfirmTitle="Remove directory"
           removeConfirmBody={(path) => `Remove "${path}" from ${lowerLabel}?`}
         />
-      )}
+      </SectionGate>
     </section>
   );
 }

@@ -48,11 +48,7 @@ export function PaneTab(props: IDockviewPanelHeaderProps<PanePanelParams>) {
     // the session-cycling chip positions itself over the first session tab.
     <span className={styles.tab} data-session-tab={ref !== undefined ? "" : undefined}>
       <DockviewDefaultTab {...props} />
-      {state !== undefined && SIGNAL_STATES.has(state) && (
-        <span className={styles.dot}>
-          <StatusDot state={state} />
-        </span>
-      )}
+      {state !== undefined && SIGNAL_STATES.has(state) && <StatusDot state={state} />}
     </span>
   );
 }
