@@ -10,13 +10,11 @@
 import type { Thread, ThreadCapabilities, ThreadReadResponse } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { useEffect } from "react";
-import { createRoot } from "react-dom/client";
 import { SessionChrome } from "../panes/session/chrome/SessionChrome";
 import { ClientProvider } from "../shell/clientContext";
-import "../styles/tokens.css";
-import "../styles/global.css";
 import { connectionStore } from "../stores/connection";
 import { threadsStore } from "../stores/threads";
+import { mountHarness } from "./mountHarness";
 
 // This harness renders SessionChrome outside the app shell, so it relies on the
 // chrome's own activity wiring rather than the shell's.
@@ -76,9 +74,6 @@ fake.on("thread/read", () => ({ thread: testThread(REF) }) satisfies ThreadReadR
 fake.on("evener/tasks/list", () => ({ data: [] }));
 connectionStore.getState().connect(fake);
 
-const root = document.getElementById("root");
-if (!root) throw new Error("k7harness.html is missing #root");
-
 function Harness() {
   return (
     <div style={{ padding: 24, fontFamily: "sans-serif" }}>
@@ -117,7 +112,8 @@ function PaneContent() {
   );
 }
 
-createRoot(root).render(
+mountHarness(
+  "k7harness",
   <ClientProvider client={fake}>
     <Harness />
   </ClientProvider>,
