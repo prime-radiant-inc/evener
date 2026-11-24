@@ -85,6 +85,15 @@ describe("resolveComposes", () => {
     expect(out).toMatch(/\.a\s*\{[^}]*color:\s*red/);
   });
 
+  test("splices a zero-specificity :where(.base) rule and leaves the wrapper in place", () => {
+    // `:where(.panel)` keeps the class a composes line names; the wrapper
+    // only lowers its specificity. The harness element must still receive
+    // the declarations, and the wrapper itself stays as the sheet wrote it.
+    const out = resolveComposes([":where(.base) { color: red; }", '.a { composes: base from "./b.module.css"; }']);
+    expect(out).toContain(":where(.base)");
+    expect(out).toMatch(/\.a\s*\{[^}]*color:\s*red/);
+  });
+
   test("keeps a gated consumer's own gate when it composes an ungated body", () => {
     // Composing INTO a rule that already sits inside a media block splices in
     // place, so the composed declarations stay inside the consumer's gate.

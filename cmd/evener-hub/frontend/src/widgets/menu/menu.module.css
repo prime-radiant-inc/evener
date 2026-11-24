@@ -57,6 +57,8 @@
  * trigger's corner, which index.tsx sets inline with the placement. */
 .popup {
   composes: float from "../../styles/motion.module.css";
+  /* biome-ignore lint/suspicious/noDuplicateProperties: css-modules composes takes one declaration per composed class, each with its own `from` */
+  composes: panel from "../internal/floatingSurface.module.css";
   position: fixed;
   z-index: var(--z-menu);
   min-width: 180px;
@@ -79,9 +81,6 @@
    * square hover corner meets the popup's rounded one. */
   padding: var(--space-1) var(--menu-inline-pad, var(--space-1));
   list-style: none;
-  background: var(--surface-2);
-  border-radius: var(--radius-pane);
-  box-shadow: var(--shadow-overlay);
 }
 
 .item {
