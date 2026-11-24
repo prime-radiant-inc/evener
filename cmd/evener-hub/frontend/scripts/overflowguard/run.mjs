@@ -1386,6 +1386,19 @@ async function verifyHeldSteerColumn(cdpEndpoint, url) {
   );
 }
 
+// The first-reply skeleton's column: ColdStartSkeleton composes the shared
+// measure recipe, so its longest bar must fill the column's content box (after
+// .coldStart's own padding), and the column must fill its parent's content box
+// at the Wide transcript measure. A hard-coded 42rem cap narrows the skeleton
+// inside a wider column, and the horizontal-overflow scan cannot see it.
+async function verifyColdStartSkeleton(cdpEndpoint, url) {
+  return inspectOnSettledPage(
+    cdpEndpoint,
+    url,
+    "window.__overflowGuardColdStartSkeleton = window.inspectColdStartSkeleton()",
+  );
+}
+
 function assertFieldsets(detail, label) {
   const failures = [];
   if (!detail || !Number.isFinite(detail.rootRemPx) || detail.rootRemPx <= 0) {
@@ -2328,6 +2341,37 @@ async function main() {
       console.log(
         `  measured stack [${heldSteerColumn.stackLeft.toFixed(1)}, ${heldSteerColumn.stackRight.toFixed(1)}] ` +
           `against turn [${heldSteerColumn.turnLeft.toFixed(1)}, ${heldSteerColumn.turnRight.toFixed(1)}]`,
+      );
+    }
+
+    const coldStartSkeleton = await verifyColdStartSkeleton(
+      cdpEndpoint,
+      `http://127.0.0.1:${vitePort}/overflowharness.html?coldstart=1&w=1024`,
+    );
+    // The Wide measure is 64rem at the page's 16px root. When the pane is
+    // narrower than that, the column fills the pane instead.
+    const wideMeasurePx = 64 * 16;
+    const expectedColdStartWidth =
+      coldStartSkeleton.parentContentWidth === null
+        ? null
+        : Math.min(coldStartSkeleton.parentContentWidth, wideMeasurePx);
+    const barGap =
+      coldStartSkeleton.barWidth === null || coldStartSkeleton.contentWidth === null
+        ? Number.POSITIVE_INFINITY
+        : Math.abs(coldStartSkeleton.barWidth - coldStartSkeleton.contentWidth);
+    const columnGap =
+      coldStartSkeleton.skeletonWidth === null || expectedColdStartWidth === null
+        ? Number.POSITIVE_INFINITY
+        : Math.abs(coldStartSkeleton.skeletonWidth - expectedColdStartWidth);
+    if (!coldStartSkeleton.found || coldStartSkeleton.measure !== "wide" || barGap > 1 || columnGap > 1) {
+      failed++;
+      console.log(`cold start skeleton ... FAIL - ${JSON.stringify(coldStartSkeleton)}`);
+    } else {
+      console.log("cold start skeleton ... PASS - first-reply skeleton fills the wide reading column after its padding");
+      console.log(
+        `  measured bar ${coldStartSkeleton.barWidth.toFixed(1)}px in column content ` +
+          `${coldStartSkeleton.contentWidth.toFixed(1)}px, column ${coldStartSkeleton.skeletonWidth.toFixed(1)}px ` +
+          `of ${expectedColdStartWidth.toFixed(1)}px at ${coldStartSkeleton.measure}`,
       );
     }
 

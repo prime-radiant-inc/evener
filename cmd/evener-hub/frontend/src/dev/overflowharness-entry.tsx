@@ -44,6 +44,7 @@ import { workspaceStore } from "../shell/workspace";
 import { connectionStore } from "../stores/connection";
 import { MutationOutboxIndexedDB } from "../stores/mutationOutboxIndexedDB";
 import { navigationStore } from "../stores/navigation/store";
+import { prefsStore } from "../stores/prefs";
 import { putThreadModel, threadsStore } from "../stores/threads";
 import { initTranscriptDisplay, transcriptDisplayStore } from "../stores/transcriptDisplay";
 import "../styles/tokens.css";
@@ -73,6 +74,11 @@ const aboutOverviewMode = panelsMode && params.get("activity") === "about";
 // ?heldtail=1: the trailing pending-stack fixture for its column
 // alignment (see inspectHeldSteerColumn below).
 const heldTailMode = params.get("heldtail") === "1";
+// ?coldstart=1: the first-reply fixture. The thread is active with no real
+// turn yet and holds a pending send - the state useColdStartSkeleton answers -
+// so ConversationBody mounts ColdStartSkeleton. The guard measures it at the
+// Wide transcript measure.
+const coldStartMode = params.get("coldstart") === "1";
 // The guard sweeps busy sessions with and without advertised Steer.
 const steerMode = params.get("steer") === "1";
 // ?ask=1: reconcile one live question into the ask dock after the fixture
@@ -341,6 +347,22 @@ const heldTailSnapshot: ThreadReadResponse = {
   },
 };
 
+// ?coldstart=1: the first-reply skeleton fixture. Session renders
+// ColdStartSkeleton while the thread is active, holds no authoritative turn,
+// and has a pending send; the send is seeded below through the same durable
+// outbox path every submission takes, never a direct store write.
+const COLDSTART_REF = "overflowcoldstart";
+const coldStartSnapshot: ThreadReadResponse = {
+  thread: {
+    ...snapshot.thread,
+    id: "thr_overflow_coldstart",
+    sessionId: "sess_overflow_coldstart",
+    name: "Cold start",
+    turns: [],
+    evener: { ...snapshot.thread.evener, ref: COLDSTART_REF },
+  },
+};
+
 const ABOUT_REF = "local:overflowabout";
 const ABOUT_BRANCH = "feature/overflow-about-branch-that-must-not-widen-the-panel";
 const aboutSnapshot: ThreadReadResponse = {
@@ -431,6 +453,7 @@ const FIXTURES = [
   { on: pagingMode, ref: PAGING_REF, snapshot: pagingSnapshot },
   { on: intentTailMode, ref: INTENTTAIL_REF, snapshot: intentTailSnapshot },
   { on: heldTailMode, ref: HELDTAIL_REF, snapshot: heldTailSnapshot },
+  { on: coldStartMode, ref: COLDSTART_REF, snapshot: coldStartSnapshot },
   { on: aboutOverviewMode, ref: ABOUT_REF, snapshot: aboutSnapshot },
 ];
 const activeFixture = FIXTURES.find((fixture) => fixture.on) ?? { ref: REF, snapshot };
@@ -535,6 +558,25 @@ if (heldTailMode) {
     await refreshPendingTurnsProjection(HELDTAIL_REF);
   })();
 }
+// The pending send that mounts the first-reply skeleton: the same
+// enqueueIntent + shared projection refresh every real submission takes
+// (seedPendingSend's path in sessionTestUtils.tsx, minus the test-only act
+// flush - the browser has real IndexedDB, and the inspect call frame-waits).
+if (coldStartMode) {
+  void (async () => {
+    const storage = new MutationOutboxIndexedDB();
+    await storage.enqueueIntent({
+      targetRef: COLDSTART_REF,
+      threadId: coldStartSnapshot.thread.id,
+      method: "turn/start",
+      payload: { ref: COLDSTART_REF, input: [{ type: "text", text: "cold start skeleton probe" }] },
+      attachments: [],
+      optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "cold start skeleton probe" }] },
+    });
+    storage.close();
+    await refreshPendingTurnsProjection(COLDSTART_REF);
+  })();
+}
 const locationKey = { kind: "location", ref: activeRef } as const;
 const location: NavigationSessionLocation = {
   generation_id: "overflow_generation",
@@ -578,6 +620,7 @@ navigationStore.setState({
   ]),
 });
 initTranscriptDisplay();
+if (coldStartMode) prefsStore.getState().setTranscriptMeasure("wide");
 // The browser guard must not inherit a developer's local transcript settings.
 // Tools plus both diagnostic families keeps the real system-prompt and raw
 // notification disclosure fixtures mounted in both layout classes. Tools
@@ -1620,6 +1663,67 @@ async function inspectHeldSteerColumn(): Promise<HeldSteerColumnMeasurement> {
   };
 }
 
+interface ColdStartSkeletonMeasurement {
+  found: boolean;
+  measure: string | null;
+  skeletonWidth: number | null;
+  contentWidth: number | null;
+  barWidth: number | null;
+  contentLeft: number | null;
+  contentRight: number | null;
+  parentContentWidth: number | null;
+  padding: string[] | null;
+}
+
+// The first-reply skeleton takes the shared reading measure as a column. Run
+// at the ?coldstart=1 fixture with the transcript measure set to Wide: the
+// longest bar must fill the column's content box (after .coldStart's own
+// padding), and the column itself must fill its parent's content box rather
+// than sit at a hard-coded cap. The pending send behind the skeleton is an
+// async outbox refresh that can mount it after `settled`, so it is waited for.
+async function inspectColdStartSkeleton(): Promise<ColdStartSkeletonMeasurement> {
+  const pane = document.getElementById("oh-pane");
+  if (!pane) throw new Error("Cold start harness pane never mounted");
+  const skeleton = await waitFor(
+    () => pane.querySelector<HTMLElement>('[data-testid="cold-start-skeleton"]'),
+    "Cold start skeleton",
+    "first-reply skeleton",
+  );
+  await waitFor(
+    () => skeleton.querySelector<HTMLElement>('[data-testid="skeleton-line"]'),
+    "Cold start skeleton",
+    "skeleton bar",
+  );
+  await twoPaintedFrames();
+  const style = getComputedStyle(skeleton);
+  const paddingLeft = Number.parseFloat(style.paddingLeft) || 0;
+  const paddingRight = Number.parseFloat(style.paddingRight) || 0;
+  const box = skeleton.getBoundingClientRect();
+  const bars = Array.from(skeleton.querySelectorAll<HTMLElement>('[data-testid="skeleton-line"]'));
+  const longest = bars.reduce((widest, candidate) =>
+    candidate.getBoundingClientRect().width > widest.getBoundingClientRect().width ? candidate : widest,
+  );
+  const barBox = longest.getBoundingClientRect();
+  const parent = skeleton.parentElement;
+  const parentStyle = parent ? getComputedStyle(parent) : null;
+  const parentContentWidth = parent
+    ? parent.getBoundingClientRect().width -
+      (Number.parseFloat(parentStyle?.paddingLeft ?? "0") || 0) -
+      (Number.parseFloat(parentStyle?.paddingRight ?? "0") || 0)
+    : null;
+  return {
+    found: true,
+    measure: document.body.dataset.transcriptMeasure ?? null,
+    skeletonWidth: box.width,
+    contentWidth: box.width - paddingLeft - paddingRight,
+    barWidth: barBox.width,
+    contentLeft: box.left + paddingLeft,
+    contentRight: box.right - paddingRight,
+    parentContentWidth,
+    padding: [style.paddingTop, style.paddingRight, style.paddingBottom, style.paddingLeft],
+  };
+}
+
 // Report observed geometry only. The runner owns the placement oracle.
 function measureComposerContentWidth(): number | null {
   const pane = document.getElementById("oh-pane");
@@ -2276,6 +2380,7 @@ declare global {
     inspectChatFocus: typeof inspectChatFocus;
     inspectIntentColumn: typeof inspectIntentColumn;
     inspectHeldSteerColumn: typeof inspectHeldSteerColumn;
+    inspectColdStartSkeleton: typeof inspectColdStartSkeleton;
     measureMenuVerbs: typeof measureMenuVerbs;
     measureDuoCompactStates: typeof measureDuoCompactStates;
     measureDuoDraftState: typeof measureDuoDraftState;
@@ -2290,6 +2395,7 @@ window.inspectDetail = inspectDetail;
 window.inspectChatFocus = inspectChatFocus;
 window.inspectIntentColumn = inspectIntentColumn;
 window.inspectHeldSteerColumn = inspectHeldSteerColumn;
+window.inspectColdStartSkeleton = inspectColdStartSkeleton;
 window.measureMenuVerbs = measureMenuVerbs;
 window.measureDuoCompactStates = measureDuoCompactStates;
 window.measureDuoDraftState = measureDuoDraftState;
