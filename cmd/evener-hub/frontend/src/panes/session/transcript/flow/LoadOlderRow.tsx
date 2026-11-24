@@ -27,6 +27,15 @@
 // exists because Jesse ruled out a fallback "load more" button but silent
 // failure is not an option. Retry is also the accessible escape hatch: a
 // failed fetch must be recoverable without pixel-precise scrolling.
+//
+// A successful page does not always move the geometry the observer watches: a
+// compact transcript at Chat or Intent detail can prepend a page of hidden
+// reasoning or system rows, which advances the older cursor and adds no height.
+// No border box changes, so no observer callback arrives, and the next cursor
+// would sit unrequested while the port is still short. The page key
+// (UseTranscriptResult.olderPageKey) is the settled page's identity, so a key
+// that advances after the row's own fetch settled re-decides the same measured
+// predicate. historyPaging still owns single-flight, backoff, and the key.
 import { useEffect, useRef } from "react";
 import { Button } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
@@ -47,6 +56,9 @@ export interface LoadOlderRowProps {
   // The transcript's scroll element, read to decide whether older history
   // should load and re-read whenever its geometry changes.
   scrollElement: () => HTMLElement | null;
+  // The older-page identity the model holds now. It advances when a page
+  // succeeds and is null once history is exhausted.
+  pageKey: string | null;
 }
 
 const CLASS = {
@@ -55,7 +67,7 @@ const CLASS = {
   error: requireClass(styles.error, "loadolderrow.module.css", "error"),
 };
 
-export function LoadOlderRow({ onLoad, loading, error, scrollElement }: LoadOlderRowProps) {
+export function LoadOlderRow({ onLoad, loading, error, scrollElement, pageKey }: LoadOlderRowProps) {
   // Latest-ref so the observer - attached once - never calls a stale
   // onLoad/scrollElement pair. loadOlder's identity changes on every
   // loadingOlder flip (useTranscript.ts), and a stale closure would read a
@@ -77,6 +89,10 @@ export function LoadOlderRow({ onLoad, loading, error, scrollElement }: LoadOlde
   // (jsdom): without an observer, a port that appears on a later render would
   // otherwise never be checked.
   const maybeLoadRef = useRef<() => void>(() => {});
+  // The page key whose settled check has already been made. Initialised to the
+  // mount key so the mount's own observer notification stays the only mount
+  // check.
+  const pageKeyRef = useRef<string | null>(pageKey);
 
   useEffect(() => {
     const maybeLoad = () => {
@@ -130,6 +146,19 @@ export function LoadOlderRow({ onLoad, loading, error, scrollElement }: LoadOlde
     syncTargetsRef.current();
     if (typeof ResizeObserver !== "function") maybeLoadRef.current();
   });
+
+  // A settled page can leave every observed border box exactly where it was
+  // (an older page of hidden rows), so the advance is the only signal that
+  // arrives. Re-decide when it does, but only for a page that has settled: a
+  // key that moves while a fetch is still in flight or an error is showing is
+  // handled once that clears, and the key is only marked handled by a real
+  // check.
+  useEffect(() => {
+    if (pageKey === null || pageKey === pageKeyRef.current) return;
+    if (loading || error !== null) return;
+    pageKeyRef.current = pageKey;
+    maybeLoadRef.current();
+  }, [pageKey, loading, error]);
 
   return (
     <div

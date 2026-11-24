@@ -50,6 +50,14 @@ const BOTTOM_TOLERANCE_PX = 1;
 const UNSEEN_LANDING_TOLERANCE_PX = 2;
 const UNSEEN_OPEN = { seen: "turn_35", opensAt: "turn_36" };
 
+// #7682's compact-history pass: one cached cursor per successful page, in
+// order. The fixture's three older pages are the same turn's earlier entries,
+// the first two hidden-only (so they add no height), and the third the oldest,
+// carrying the visible older reply. The dock's compact outer height bounds what
+// counts as a compact port here.
+const STALL_CURSORS = ["cursor_stall_a", "cursor_stall_b", "cursor_stall_c"];
+const STALL_DOCK_HEIGHT_PX = 420;
+
 // Every post-settle wait, with the setup each needs to reach its own read of the
 // transcript: clickPillAndSettle needs a pill, which only exists once the reader
 // is away from the bottom. Each `wait` is the harness's own name for that wait,
@@ -578,6 +586,118 @@ async function main() {
           `ended prepend reached the workspace fallback or captured errors: ${JSON.stringify(ended.state)}`,
         );
 
+      // #7682: a compact transcript whose older pages add hidden rows only. The
+      // pass makes NO input of any kind - no scroll, resize, or loadOlder call -
+      // so the automatic geometry trigger is the only possible requester. It
+      // must keep demanding after each successful height-free page until the
+      // oldest page's visible reply is in the viewport, then stop: one request
+      // per cursor, nothing after exhaustion.
+      const runStallPass = async (query) => {
+        await navigateTo(page, `http://127.0.0.1:${vitePort}/transcriptscrollguard.html?${query}`, BOOT);
+        await waitForFonts(send);
+        return JSON.parse(
+          await evaluate(send, "(async () => JSON.stringify(await window.waitForStallPagedSettled()))()"),
+        );
+      };
+      const assertStallPass = (label, state) => {
+        const series = state.calls.map((call) => call.cursor);
+        const first = state.calls[0]?.geometryBefore ?? null;
+        if (state.errors.length > 0) failures.push(`page errors on ${label}: ${state.errors.join("; ")}`);
+        if (!state.settledStill) failures.push(`${label} never quiesced within 10s`);
+        if (!(state.clientHeight > 0 && state.clientHeight < STALL_DOCK_HEIGHT_PX)) {
+          failures.push(
+            `${label} did not render a compact nonzero scroll port (clientHeight ${state.clientHeight}, ` +
+              `scrollHeight ${state.scrollHeight}, dock height ${STALL_DOCK_HEIGHT_PX})`,
+          );
+        }
+        if (!state.measuredLayout) failures.push(`${label} settled without measured natural row geometry`);
+        if (JSON.stringify(series) !== JSON.stringify(STALL_CURSORS)) {
+          failures.push(
+            `${label} requested older pages ${JSON.stringify(series)}, expected exactly ` +
+              `${JSON.stringify(STALL_CURSORS)} - the automatic trigger stopped after a successful page`,
+          );
+        } else {
+          if (first === null || first.scrollHeight > first.clientHeight) {
+            failures.push(
+              `${label} did not open underfilled (scrollHeight ${first?.scrollHeight}, ` +
+                `clientHeight ${first?.clientHeight}) - the short-page trigger was not exercised`,
+            );
+          }
+          const firstAfter = state.calls[0]?.geometryAfter ?? null;
+          const secondBefore = state.calls[1]?.geometryBefore ?? null;
+          const secondAfter = state.calls[1]?.geometryAfter ?? null;
+          const thirdItemsAfter = state.calls[2]?.itemsAfter ?? null;
+          if (first !== null && firstAfter !== null && firstAfter.scrollHeight !== first.scrollHeight) {
+            failures.push(
+              `${label}'s first older page changed the height (${first.scrollHeight} -> ` +
+                `${firstAfter.scrollHeight}); the fixture must add none`,
+            );
+          }
+          if (first !== null && secondBefore !== null && secondBefore.scrollHeight !== first.scrollHeight) {
+            failures.push(
+              `${label}'s second older page began at ${secondBefore.scrollHeight}px, not the unchanged ` +
+                `${first.scrollHeight}px - the first page was not height-free`,
+            );
+          }
+          if (secondAfter !== null && first !== null && secondAfter.scrollHeight !== first.scrollHeight) {
+            failures.push(
+              `${label}'s second older page changed the height (${first.scrollHeight} -> ` +
+                `${secondAfter.scrollHeight}); the fixture must add none`,
+            );
+          }
+          // The oldest page is the one that carries visible dialogue: the turn
+          // must have merged all 125 items (40 + 40 + 40 + 5) for the reply the
+          // assertion above sees to be the real one.
+          if (thirdItemsAfter !== 125) {
+            failures.push(
+              `${label}'s oldest page merged ${thirdItemsAfter} turn items, expected 125 - ` +
+                "its visible older dialogue did not land in the model",
+            );
+          }
+        }
+        if (state.cursor !== null) {
+          failures.push(`${label} still holds older cursor ${state.cursor} after the oldest page`);
+        }
+        if (state.pagingRow) failures.push(`${label} still shows the paging row after the oldest page`);
+        if (state.oldDialogue.anchorId !== "stall_old_agent" || !state.oldDialogue.visible) {
+          failures.push(
+            `${label}'s older reply is not visible in the scroll port: ${JSON.stringify(state.oldDialogue)}`,
+          );
+        }
+      };
+
+      const stallChat = await runStallPass("stall=chat&dock=1");
+      console.log("compact chat paging", JSON.stringify(stallChat));
+      assertStallPass("the compact Chat transcript", stallChat);
+
+      const stallIntent = await runStallPass("stall=intent&dock=1");
+      console.log("compact intent paging", JSON.stringify(stallIntent));
+      assertStallPass("the compact Intent transcript", stallIntent);
+
+      // The control: the same compact turn with all 40 items visible genuinely
+      // overflows. The paging row mounts with cursor A and must make no request
+      // until the reader approaches the top.
+      const stallControl = await runStallPass("stall=chat&dock=1&fill=1");
+      console.log("compact overflowing control", JSON.stringify(stallControl));
+      if (stallControl.errors.length > 0)
+        failures.push(`page errors on the compact overflowing control: ${stallControl.errors.join("; ")}`);
+      if (stallControl.clientHeight <= 0)
+        failures.push(`the compact overflowing control rendered no scroll port (clientHeight 0)`);
+      if (stallControl.scrollHeight <= stallControl.clientHeight)
+        failures.push(
+          `the compact overflowing control did not overflow (scrollHeight ${stallControl.scrollHeight}, ` +
+            `clientHeight ${stallControl.clientHeight}) - it cannot tell the short-page trigger from the scroll rule`,
+        );
+      if (!stallControl.pagingRow)
+        failures.push("the compact overflowing control mounted no paging row (olderCursor missing?)");
+      if (stallControl.calls.length !== 0)
+        failures.push(
+          `the compact overflowing control auto-loaded ${stallControl.calls.length} older page(s) on open: ` +
+            JSON.stringify(stallControl.calls.map((call) => call.cursor)),
+        );
+      if (stallControl.cursor !== STALL_CURSORS[0])
+        failures.push(`the compact overflowing control lost its opening cursor (${stallControl.cursor})`);
+
       await navigateTo(page, `http://127.0.0.1:${vitePort}/transcriptscrollguard.html?dock=1`, BOOT);
       await waitForFonts(send);
       const dock = JSON.parse(
@@ -641,6 +761,9 @@ async function main() {
           `opened at that reply with it on; ` +
           `a large ended dock session merged older history and preserved its measured keyed-row geometry; ` +
           `the session-ref transcript pane recovered as the live conversation and did the same; deferred hydration waited for the mounted paged viewport; ` +
+          `a compact Chat and a compact Intent transcript each demanded one older page per cursor through two ` +
+          `height-free advances until the oldest page's visible reply and exhaustion, while an overflowing ` +
+          `compact control made no request on open; ` +
           `all ${MID_PASS_UNMOUNT_WAITS.length} post-settle waits named a pane that unmounted under them`,
       );
     } else {

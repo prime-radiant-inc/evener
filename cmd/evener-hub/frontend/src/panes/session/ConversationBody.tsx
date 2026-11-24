@@ -604,6 +604,7 @@ function LiveConversationBody({
               onLoad={loadOlderReportingError}
               loading={loadingOlder}
               error={olderError}
+              pageKey={olderPageKey ?? null}
               scrollElement={() => virtualListRef.current?.getScrollElement() ?? null}
             />
           )

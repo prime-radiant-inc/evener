@@ -1,6 +1,12 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { LoadOlderRow } from "./LoadOlderRow";
+import { LoadOlderRow as LoadOlderRowImpl, type LoadOlderRowProps } from "./LoadOlderRow";
+
+// The row's page key is the model's older cursor. The geometry cases below do
+// not page, so they run with none; the keyed cases pass it explicitly.
+function LoadOlderRow(props: Omit<LoadOlderRowProps, "pageKey"> & { pageKey?: string | null }) {
+  return <LoadOlderRowImpl {...props} pageKey={props.pageKey ?? null} />;
+}
 
 // jsdom implements no ResizeObserver at all (the same gap the row's earlier
 // IntersectionObserver sentinel needed stubbed). This stub records every
@@ -197,6 +203,149 @@ test("re-checks on a later geometry change and loads once the port is no longer 
   latestObserver().resize();
 
   expect(onLoad).toHaveBeenCalledTimes(1);
+});
+
+// #7682: an older page of hidden rows (reasoning at Chat, routine system rows at
+// Intent) advances the model's cursor without moving either observed border
+// box, so the observer never fires. The row must re-decide its short-page
+// predicate on the settled advance, or the next cursor sits unrequested while
+// the reader still has older history to reach.
+test("asks for the next page after a successful page that changed no geometry", () => {
+  const port = scrollPort(300, 500);
+  const onLoad = vi.fn();
+  const { rerender } = render(
+    <LoadOlderRow
+      onLoad={onLoad}
+      loading={false}
+      error={null}
+      pageKey="server:cursor_a"
+      scrollElement={() => port.el}
+    />,
+  );
+  latestObserver().resize();
+  expect(onLoad).toHaveBeenCalledTimes(1);
+
+  // The page settled: the model's cursor is B, and the observed nodes and the
+  // port's geometry are exactly what they were.
+  rerender(
+    <LoadOlderRow
+      onLoad={onLoad}
+      loading={false}
+      error={null}
+      pageKey="server:cursor_b"
+      scrollElement={() => port.el}
+    />,
+  );
+
+  expect(onLoad).toHaveBeenCalledTimes(2);
+});
+
+// One request per key: re-renders of the page the row already settled - a
+// clock tick, a loading flip back - must not add demand.
+test("does not repeat the demand for a page key it already checked", () => {
+  const port = scrollPort(300, 500);
+  const onLoad = vi.fn();
+  const { rerender } = render(
+    <LoadOlderRow
+      onLoad={onLoad}
+      loading={false}
+      error={null}
+      pageKey="server:cursor_a"
+      scrollElement={() => port.el}
+    />,
+  );
+  latestObserver().resize();
+  expect(onLoad).toHaveBeenCalledTimes(1);
+
+  rerender(
+    <LoadOlderRow
+      onLoad={onLoad}
+      loading={true}
+      error={null}
+      pageKey="server:cursor_a"
+      scrollElement={() => port.el}
+    />,
+  );
+  rerender(
+    <LoadOlderRow
+      onLoad={onLoad}
+      loading={false}
+      error={null}
+      pageKey="server:cursor_a"
+      scrollElement={() => port.el}
+    />,
+  );
+
+  expect(onLoad).toHaveBeenCalledTimes(1);
+});
+
+// The key can move before the row hears that the page settled. Re-asking then
+// would stack a demand on the in-flight page; the check belongs to the settled
+// render of that key.
+test("waits for a new page key to settle before re-asking", () => {
+  const port = scrollPort(300, 500);
+  const onLoad = vi.fn();
+  const { rerender } = render(
+    <LoadOlderRow
+      onLoad={onLoad}
+      loading={false}
+      error={null}
+      pageKey="server:cursor_a"
+      scrollElement={() => port.el}
+    />,
+  );
+  latestObserver().resize();
+  expect(onLoad).toHaveBeenCalledTimes(1);
+
+  rerender(
+    <LoadOlderRow
+      onLoad={onLoad}
+      loading={true}
+      error={null}
+      pageKey="server:cursor_b"
+      scrollElement={() => port.el}
+    />,
+  );
+  expect(onLoad).toHaveBeenCalledTimes(1);
+
+  rerender(
+    <LoadOlderRow
+      onLoad={onLoad}
+      loading={false}
+      error={null}
+      pageKey="server:cursor_b"
+      scrollElement={() => port.el}
+    />,
+  );
+  expect(onLoad).toHaveBeenCalledTimes(2);
+});
+
+// The same measured predicate decides: a new key alone is not demand. A port
+// that already overflows owes the reader nothing until they approach the top.
+test("a new page key adds no demand while the transcript already overflows", () => {
+  const port = OVERFLOWING();
+  const onLoad = vi.fn();
+  const { rerender } = render(
+    <LoadOlderRow
+      onLoad={onLoad}
+      loading={false}
+      error={null}
+      pageKey="server:cursor_a"
+      scrollElement={() => port.el}
+    />,
+  );
+  latestObserver().resize();
+  rerender(
+    <LoadOlderRow
+      onLoad={onLoad}
+      loading={false}
+      error={null}
+      pageKey="server:cursor_b"
+      scrollElement={() => port.el}
+    />,
+  );
+
+  expect(onLoad).not.toHaveBeenCalled();
 });
 
 test("a null scroll element never loads", () => {

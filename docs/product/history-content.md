@@ -364,7 +364,10 @@ supported position-based request for missing ranges. The paging scheduler
 pane's load-older control are part of the guarantee, not just the repository
 and store beneath them: a null scheduling key or a hidden control makes
 genuine cached bodies unreachable. The store's tagged scheduling key
-(`olderTranscriptPageKey`) never goes onto the wire.
+(`olderTranscriptPageKey`) never goes onto the wire. A settled page that adds
+no height — its rows hidden by the active detail level — moves no observed
+geometry, so the load-older control re-decides its short-page predicate from
+the advanced scheduling key instead of waiting for a resize that never comes.
 
 Reopen honors an explicit older-page demand. A caught-up pane with healthy
 durable coverage needs no activation `thread/read` — zero activation reads is
