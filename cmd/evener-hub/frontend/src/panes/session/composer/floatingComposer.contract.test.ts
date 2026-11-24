@@ -13,8 +13,9 @@ import { blockBody, escapeRegExp, mediaBlock, readModuleCss } from "../../../sty
 //    gutters (its children take taps again).
 //  - The session pane's own stylesheet sizes the scrollable reserve that lets
 //    the last turn clear the floating composer: the end inset row measures to
-//    the overlay's height plus the home-indicator band only under the phone's
-//    gate, and the attention dock rides above the same reserve.
+//    the chrome's measured height plus the home-indicator band only under the
+//    phone's gate, topped up by the floating stack's own clearance, and the
+//    dormant attention dock rides above the same reserve.
 //  - PromptCard's phone block turns the composer card - and only the
 //    composer's, keyed on [data-composer] so the spawn form keeps its framed
 //    card - into the floating surface: no border (the outline focus ring is
@@ -58,11 +59,20 @@ test("a phone session pane floats its footer over the transcript", () => {
 test("the transcript carries a scrollable reserve under the floating composer on the phone", () => {
   const phone = mediaBlock(sessionCss, "max-width: 899px");
   const column = ruleIn(phone, /\.contentColumn\s*\{/);
-  expect(column).toMatch(/--floating-composer-reserve:\s*calc\([^)]*--dock-clearance\)/);
-  // The end inset row (TranscriptBody) rides on the same reserve, and the
-  // attention dock floats above it rather than under the pill.
+  // The reserve is the chrome's measured height - the footer ConversationBody
+  // publishes - plus the home-indicator band, with the resting composer's
+  // height as its pre-measure fallback.
+  expect(column).toMatch(
+    /--floating-composer-reserve:\s*calc\(var\(--floating-chrome-height,\s*150px\)\s*\+\s*var\(--dock-clearance\)\)/,
+  );
+  // The end inset row (TranscriptBody) rides on the same reserve, topped up
+  // by the mounted stack's own measured clearance so the two reserves take
+  // the larger instead of adding: the last turn ends at the stack's top edge,
+  // never a second composer band higher.
   const inset = ruleIn(sessionCss, /\.transcriptEndInset\s*\{/);
-  expect(inset).toMatch(/height:\s*var\(--floating-composer-reserve\)/);
+  expect(inset).toMatch(
+    /height:\s*max\(0px,\s*calc\(var\(--floating-composer-reserve\)\s*-\s*var\(--overlay-clearance,\s*0px\)\)\)/,
+  );
   const dock = ruleIn(phone, /\.attentionDock\s*\{/);
   expect(dock).toMatch(/bottom:\s*calc\([\s\S]*--floating-composer-reserve/);
 });

@@ -13,7 +13,12 @@
 
 .stack {
   composes: dock from "../../overlayDock.module.css";
-  bottom: var(--space-3);
+  /* Ride above the phone's floating composer: the conversation column's
+   * --floating-composer-reserve is the reserve its end inset row and its
+   * dormant attention dock already share, and it is 0px wherever the footer
+   * is in flow. Without it the stack sits under the composer card and a tap
+   * on Next lands on the composer's own controls. */
+  bottom: calc(var(--space-3) + var(--floating-composer-reserve, 0px));
   /* Both inline anchors, not just the trailing one: the stack's width is
    * then the pane's width less the two insets. With only `right` it
    * shrink-wrapped its content, so a trigger label wider than the pane

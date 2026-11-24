@@ -38,14 +38,24 @@
 
 /* The end inset row (TranscriptBody): the scrollable reserve that lets the
  * last turn scroll clear of the floating composer. Zero on desktop - the
- * footer is in flow there and the pane body already ends above it. */
+ * footer is in flow there and the pane body already ends above it. While a
+ * floating stack is mounted, its measured clearance (--overlay-clearance,
+ * published on this column) already reaches above the composer, so the two
+ * reserves take the larger rather than their sum: the last turn then ends at
+ * the stack's top edge, as it does on the desktop, instead of a second
+ * composer band higher. */
 .transcriptEndInset {
-  height: var(--floating-composer-reserve);
+  height: max(0px, calc(var(--floating-composer-reserve) - var(--overlay-clearance, 0px)));
 }
 
 @media (max-width: 899px) {
   .contentColumn {
-    --floating-composer-reserve: calc(150px + var(--dock-clearance));
+    /* The chrome's own measured height (ConversationBody's footer), so the
+     * reserve is the card's real boundary: a staged attachment strip or a
+     * grown draft pushes it - and every control that rides on it - up with the
+     * card, and a folded card leaves only the normal gutter. 150px is the
+     * first frame's pre-measure fallback, the resting composer's height. */
+    --floating-composer-reserve: calc(var(--floating-chrome-height, 150px) + var(--dock-clearance));
   }
 
   /* The attention dock floats above the transcript's trailing edge; lift it

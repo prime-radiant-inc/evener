@@ -548,6 +548,13 @@ test("the measured attention stack becomes transcript end clearance", async ({ o
   const clearance = screen.getByTestId("transcript-end-clearance");
   expect(clearance.style.height).toBe("96px");
   expect(clearance.closest('[data-row-id="live-edge"]')).toBeTruthy();
+  // The same measurement sizes the phone's composer reserve: the column
+  // publishes it so the end inset row takes the larger of the two reserves
+  // instead of stacking a second full composer band above the stack.
+  const reserveOwner = [...view.container.querySelectorAll<HTMLElement>("[style]")].find(
+    (node) => node.style.getPropertyValue("--overlay-clearance") !== "",
+  );
+  expect(reserveOwner?.style.getPropertyValue("--overlay-clearance")).toBe("96px");
   const pill = screen.getByTestId("flow-overlay-pill");
   const attention = screen.getByTestId("flow-overlay-attention");
   expect(pill.compareDocumentPosition(attention) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
