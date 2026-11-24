@@ -1,6 +1,7 @@
 import { resolveEffectiveConfig, type ViewportClass } from "@evener/appwire-client";
 import type { RefObject } from "react";
-import { useRef } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { transcriptDisplayStore, useTranscriptDisplayStore } from "../../../stores/transcriptDisplay";
 import { Button, Dialog, InlineNotice, Sheet } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
@@ -130,6 +131,12 @@ function DetailPanel({
 export function TranscriptDetailControl({ open, onClose, layout, onEditHubDefaults }: TranscriptDetailControlProps) {
   const editButtonRef = useRef<HTMLButtonElement>(null);
   const isMobile = layout === "mobile";
+  // Portal out of the composer's inline-size container into the owning document.
+  const hostRef = useRef<HTMLSpanElement>(null);
+  const [panelDocument, setPanelDocument] = useState<Document | null>(null);
+  useLayoutEffect(() => {
+    if (open) setPanelDocument(hostRef.current?.ownerDocument ?? document);
+  }, [open]);
   const local = useTranscriptDisplayStore((state) => state.local[layout]);
   const hub = useTranscriptDisplayStore((state) => state.hub[layout]);
   const hubLoading = useTranscriptDisplayStore((state) => state.hubLoading);
@@ -177,13 +184,23 @@ export function TranscriptDetailControl({ open, onClose, layout, onEditHubDefaul
     />
   );
 
-  return isMobile ? (
-    <Sheet open={open} side="bottom" size="wide" onClose={onClose} title="Verbosity" footer={footer}>
-      {panel}
-    </Sheet>
-  ) : (
-    <Dialog open={open} onClose={onClose} title="Verbosity">
-      {panel}
-    </Dialog>
+  if (!isMobile) {
+    return (
+      <Dialog open={open} onClose={onClose} title="Verbosity">
+        {panel}
+      </Dialog>
+    );
+  }
+  return (
+    <>
+      <span ref={hostRef} hidden />
+      {panelDocument !== null &&
+        createPortal(
+          <Sheet open={open} side="bottom" size="wide" onClose={onClose} title="Verbosity" footer={footer}>
+            {panel}
+          </Sheet>,
+          panelDocument.body,
+        )}
+    </>
   );
 }

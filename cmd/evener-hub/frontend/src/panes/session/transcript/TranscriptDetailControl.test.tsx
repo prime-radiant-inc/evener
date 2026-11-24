@@ -231,6 +231,19 @@ test("uses a controlled bottom mobile Sheet and restores focus to the external t
   expect(document.activeElement).toBe(trigger);
 });
 
+test("exits the mobile Sheet through Edit hub defaults", async () => {
+  const user = userEvent.setup();
+  const onEditHubDefaults = vi.fn();
+  seedStore({ local: { mobile: config("activity") } });
+  render(<ControlledDetail layout="mobile" onEditHubDefaults={onEditHubDefaults} />);
+
+  await user.click(screen.getByRole("button", { name: "Open verbosity" }));
+  await user.click(screen.getByRole("button", { name: "Edit hub defaults" }));
+
+  expect(onEditHubDefaults).toHaveBeenCalledOnce();
+  expect(screen.queryByRole("dialog", { name: "Verbosity" })).toBeNull();
+});
+
 test("keeps Desktop focus after reset so Escape closes and restores external trigger focus", async () => {
   const user = userEvent.setup();
   seedStore({ local: { desktop: config("activity") } });
