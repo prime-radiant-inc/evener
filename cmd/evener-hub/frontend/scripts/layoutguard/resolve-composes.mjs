@@ -19,11 +19,13 @@
 // mirrors the build exactly for the simple element/class inners this
 // codebase uses.
 //
-// For every simple `.class { ... }` rule across ALL provided sources, a
-// `composes: x from "...";` line is replaced with the target rule's own
-// declarations, and the target's own composes are resolved the same way: the
-// build merges class names, so a chain of compositions is just more classes
-// on the element. A cycle is refused rather than walked forever.
+// This does one level of inlining: for every simple `.class { ... }` rule
+// across ALL provided sources, if its body contains
+// `composes: a[, b] from "...";`, splice in the (already-defined) target
+// rule's own declarations in place of the composes line. Good enough for the
+// flat one-file-deep composes chains this codebase actually uses (verified:
+// fieldTrigger.module.css itself composes nothing, so there is no chain to
+// walk recursively).
 //
 // The one refinement correctness demands: a composes target whose rule sits
 // INSIDE a media block must not have its body spliced ungated. The build step
@@ -213,46 +215,19 @@ export function resolveComposes(cssTexts) {
   // definition: a class may be defined both ungated and inside a block, and
   // composing it must carry both (the same element carries both rules in the
   // built app).
-  //
-  // Each rule also carries its position as an identity: `composes: input from
-  // "../input/input.module.css"` in a module that itself defines `.input`
-  // names a DIFFERENT rule, so cycle detection must compare rules, not class
-  // names.
-  const ruleIdByOffset = new Map();
   const bodies = new Map();
-  let nextRuleId = 0;
   for (const m of combined.matchAll(RULE_RE)) {
-    const id = nextRuleId++;
-    ruleIdByOffset.set(m.index, id);
     const entries = bodies.get(m[1]) ?? [];
-    entries.push({ id, body: m[2], gate: gateAt(m.index) });
+    entries.push({ body: m[2], gate: gateAt(m.index) });
     bodies.set(m[1], entries);
   }
 
-  // Resolves one rule body by replacing each composes line, IN PLACE, with the
-  // target rules' own resolved bodies. The position matters: declarations the
-  // consumer writes after `composes` come after the composed declarations and
-  // win, exactly as in the built app. Appending composed declarations at the
-  // end would silently reverse that cascade (directorypicker's `.input`
-  // composes input.module.css's sans-serif font and then sets its own
-  // monospace one, so appending measures the path field in the wrong font).
-  //
-  // Each composed class keeps its OWN media gate - the build merges class
-  // names, so a gate belongs to the class whose rule carries it, never to the
-  // consumer's chain - and gated declarations are re-stated after the
-  // consumer's rule on the consumer's selector.
-  const resolveBody = (body, consumerGate, stack, selfId, gated) => {
-    const addGated = (gate, declarations) => {
-      if (declarations === "") return;
-      gated.set(gate, (gated.get(gate) ?? []).concat([declarations]));
-    };
-
-    let out = "";
-    let last = 0;
-    for (const match of body.matchAll(COMPOSES_RE)) {
-      out += body.slice(last, match.index);
-      last = match.index + match[0].length;
-      const names = match[1];
+  return combined.replace(RULE_RE, (_whole, selector, body, offset) => {
+    const consumerGate = gateAt(offset);
+    // Gated composed bodies for this consumer, grouped by gate so one
+    // re-stated block carries all of that gate's declarations.
+    const gatedByGate = new Map();
+    const resolvedBody = body.replace(COMPOSES_RE, (_composesDecl, names) => {
       // One class per composes line. A comma list would not mean what it
       // looks like it means: the build (postcss-modules) binds `from` to the
       // last comma entry only, so every earlier name resolves as a LOCAL
@@ -272,44 +247,31 @@ export function resolveComposes(cssTexts) {
         // descendants, never the consumer's own box, so the consumer's
         // declarations have nothing to inherit from it; only a class defined
         // nowhere is an error.
-        if (new RegExp(`\\.${name}(?![A-Za-z0-9_-])`).test(combined)) continue;
+        if (new RegExp(`\\.${name}(?![A-Za-z0-9_-])`).test(combined)) return "";
         throw new Error(
           `composes references .${name}, but no such rule was found in the provided CSS sources - add the module that defines it to the case's cssFiles`,
         );
       }
+      const inlined = [];
       for (const entry of entries) {
-        // A rule composing a same-named class from another module names that
-        // other rule; its own rule is not a cycle.
-        if (entry.id === selfId) continue;
-        if (entry.gate !== null && consumerGate !== null) {
+        if (entry.gate === null) {
+          inlined.push(entry.body);
+        } else if (consumerGate === null) {
+          const decls = gatedByGate.get(entry.gate) ?? [];
+          decls.push(entry.body.trim());
+          gatedByGate.set(entry.gate, decls);
+        } else {
           throw new Error(
             `composes in a rule gated by "${consumerGate}" references the media-gated .${name}: the composed class's gate must stay independent of the consumer's - extend resolveComposes instead`,
           );
         }
-        if (stack.has(entry.id)) {
-          throw new Error(`composes cycle through .${name}`);
-        }
-        const entryStack = new Set(stack).add(entry.id);
-        const resolved = resolveBody(entry.body, entry.gate ?? consumerGate, entryStack, entry.id, gated);
-        if (entry.gate === null) out += resolved;
-        else addGated(entry.gate, resolved.trim());
       }
-    }
-    return out + body.slice(last);
-  };
+      return inlined.join("\n");
+    });
 
-  return combined.replace(RULE_RE, (_whole, selector, body, offset) => {
-    const own = body.replace(COMPOSES_RE, "").trim();
-    // No composes: leave the rule text byte-identical. Cases assert on the
-    // resolved sheet's exact whitespace in places, and rewriting every rule
-    // would perturb sheets this resolver has no business touching.
-    if (own === body.trim()) return _whole;
-    const selfId = ruleIdByOffset.get(offset);
-    const gated = new Map();
-    const resolvedBody = resolveBody(body, gateAt(offset), new Set([selfId]), selfId, gated);
     let out = `${selector} {${resolvedBody}}`;
-    for (const [gate, parts] of gated) {
-      out += `\n\n${gate} {\n  ${selector} {\n${parts.map((d) => `    ${d}`).join("\n")}\n  }\n}`;
+    for (const [gate, decls] of gatedByGate) {
+      out += `\n\n${gate} {\n  ${selector} {\n${decls.map((d) => `    ${d}`).join("\n")}\n  }\n}`;
     }
     return out;
   });

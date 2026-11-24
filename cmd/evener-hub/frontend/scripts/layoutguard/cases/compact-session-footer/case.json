@@ -3,7 +3,6 @@
   "description": "inline composer controls stay on one row and compress status facts in priority order, in both the expanded card and the folded one-line shape",
   "cssFiles": [
     "styles/global.css",
-    "styles/text.module.css",
     "widgets/promptcard/promptcard.module.css",
     "widgets/button/button.module.css",
     "styles/motion.module.css",
