@@ -703,6 +703,140 @@ base_url = "https://gateway.example.com/v1"
 	}
 }
 
+// gatewayCopilotConfig is one Copilot instance whose default model generates
+// through a separate API-key gateway. The provider head keeps the account's
+// configured Copilot transport, so the roster and the connection identity
+// come from the account while generation leaves through the gateway.
+const gatewayCopilotConfig = `
+[providers.work]
+base = "github-copilot"
+api_key_env = ["GATEWAY_KEY"]
+default_model = "claude-x"
+[providers.work.models."claude-x"]
+auth = "bearer"
+base_url = "https://gateway.example.com/v1"
+`
+
+// TestCopilotConnectionMetadataFollowsConfiguredTransport pins the connection
+// half of the boundary: an instance whose default row generates through a
+// gateway still authenticates with its Copilot account, reports the account's
+// credential and endpoint, and keeps the gateway credential for generation.
+func TestCopilotConnectionMetadataFollowsConfiguredTransport(t *testing.T) {
+	t.Parallel()
+	state := t.TempDir()
+	saveCopilotRecordForTest(t, state, "work", healthyCopilotRecord("work"))
+	r := fixtureLoad(t, map[string]string{"GATEWAY_KEY": "gw-secret"}, gatewayCopilotConfig, WithStateRoot(state))
+
+	gen, err := r.Resolve("work/claude-x")
+	if err != nil {
+		t.Fatalf("Resolve(work/claude-x): %v", err)
+	}
+	inst, ok := r.Instance("work")
+	if !ok {
+		t.Fatal("Instance(work) missing")
+	}
+	if inst.Auth != AuthOAuthGitHubCopilot {
+		t.Fatalf("connection auth = %q, want the configured Copilot transport %q", inst.Auth, AuthOAuthGitHubCopilot)
+	}
+	if inst.CredentialSource != "oauth" {
+		t.Fatalf("connection credential source = %q, want oauth", inst.CredentialSource)
+	}
+	if inst.BaseURL != "https://api.githubcopilot.com" {
+		t.Fatalf("connection base URL = %q, want the Copilot endpoint", inst.BaseURL)
+	}
+	if inst.Protocol != gen.Protocol {
+		t.Fatalf("connection protocol = %q, want the generation protocol %q", inst.Protocol, gen.Protocol)
+	}
+	if inst.DefaultModel != "claude-x" {
+		t.Fatalf("default model = %q, want the generation default claude-x", inst.DefaultModel)
+	}
+	if gen.Transport.Auth != AuthBearer || gen.Transport.BaseURL != "https://gateway.example.com/v1" {
+		t.Fatalf("generation transport = %+v, want the gateway bearer transport", gen.Transport)
+	}
+	if gen.Credential.Value != "gw-secret" || gen.Credential.Source != "env:GATEWAY_KEY" {
+		t.Fatalf("generation credential = %+v, want the gateway key", gen.Credential)
+	}
+	gate, err := r.ResolveGateCredential("work", "claude-x")
+	if err != nil {
+		t.Fatalf("ResolveGateCredential(work, claude-x): %v", err)
+	}
+	if gate.Transport.Auth != AuthBearer || gate.Credential.Source != "env:GATEWAY_KEY" {
+		t.Fatalf("generation gate transport/credential = %q/%q, want the gateway bearer credential", gate.Transport.Auth, gate.Credential.Source)
+	}
+
+	listing, err := r.ResolveInstanceListing("work")
+	if err != nil {
+		t.Fatalf("ResolveInstanceListing(work): %v", err)
+	}
+	if listing.Transport.Auth != AuthOAuthGitHubCopilot || listing.Transport.BaseURL != "https://api.githubcopilot.com" {
+		t.Fatalf("listing transport = %+v, want the configured Copilot endpoint", listing.Transport)
+	}
+
+	// A gateway-key rotation is not a connection change: the roster still
+	// comes from the same account. An account switch is.
+	first, ok := r.AuthFingerprint("work")
+	if !ok {
+		t.Fatal("no connection fingerprint")
+	}
+	rotated := fixtureLoad(t, map[string]string{"GATEWAY_KEY": "gw-other"}, gatewayCopilotConfig, WithStateRoot(state))
+	if next, _ := rotated.AuthFingerprint("work"); next != first {
+		t.Fatal("a gateway key rotation moved the connection identity; the roster did not come from it")
+	}
+	switched := healthyCopilotRecord("work")
+	switched.AccountID = "account-2"
+	saveCopilotRecordForTest(t, state, "work", switched)
+	if next, _ := rotated.AuthFingerprint("work"); next == first {
+		t.Fatal("a Copilot account switch kept the connection identity of the old account's roster")
+	}
+}
+
+// TestCopilotConnectionAuthDecidesAutomaticSelection pins that automatic
+// default selection reads the account sign-in, not the gateway credential a
+// default row uses for generation.
+func TestCopilotConnectionAuthDecidesAutomaticSelection(t *testing.T) {
+	t.Parallel()
+	r := fixtureLoad(t, map[string]string{"GATEWAY_KEY": "gw-secret"}, gatewayCopilotConfig, WithStateRoot(t.TempDir()))
+	if name, _, err := r.DefaultInstance(); err == nil {
+		t.Fatalf("DefaultInstance = %q, want no instance: a gateway key is not a Copilot sign-in", name)
+	}
+	inst, ok := r.Instance("work")
+	if !ok {
+		t.Fatal("Instance(work) missing")
+	}
+	if inst.Auth != AuthOAuthGitHubCopilot || inst.CredentialSource != "none" {
+		t.Fatalf("connection = auth %q source %q, want the Copilot account with no sign-in", inst.Auth, inst.CredentialSource)
+	}
+}
+
+// TestCopilotImplicitInstanceUsesTheAccountNotTheGenerationScheme pins the
+// implicit half of the same boundary: a curated Copilot instance whose default
+// model resolves through a gateway row still lists, and still shows the
+// account's credential and endpoint, because its connection is the account.
+func TestCopilotImplicitInstanceUsesTheAccountNotTheGenerationScheme(t *testing.T) {
+	t.Parallel()
+	state := t.TempDir()
+	saveCopilotRecordForTest(t, state, "github-copilot", healthyCopilotRecord("github-copilot"))
+	r := fixtureLoad(t, nil, "[models.\"gpt-5*\"]\nauth = \"bearer\"\nbase_url = \"https://gateway.example.com/v1\"\n", WithStateRoot(state))
+
+	gen, err := r.Resolve("github-copilot/gpt-5.6-sol")
+	if err != nil {
+		t.Fatalf("Resolve(github-copilot/gpt-5.6-sol): %v", err)
+	}
+	if gen.Transport.Auth != AuthBearer || gen.Transport.BaseURL != "https://gateway.example.com/v1" {
+		t.Fatalf("generation transport = %+v, want the gateway bearer transport", gen.Transport)
+	}
+	inst, ok := r.Instance("github-copilot")
+	if !ok {
+		t.Fatal("the signed-in implicit Copilot instance disappeared because its generation row resolves no credential")
+	}
+	if inst.Auth != AuthOAuthGitHubCopilot || inst.CredentialSource != "oauth" {
+		t.Fatalf("connection = auth %q source %q, want the Copilot account", inst.Auth, inst.CredentialSource)
+	}
+	if inst.BaseURL != "https://api.githubcopilot.com" {
+		t.Fatalf("connection base URL = %q, want the Copilot endpoint", inst.BaseURL)
+	}
+}
+
 // liveClaudeRow is the advertised Copilot routing for the one live-proven
 // Claude row.
 func liveClaudeRow() Model {

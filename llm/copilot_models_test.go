@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	"primeradiant.com/evener/llm/registry"
@@ -198,4 +199,103 @@ func TestCopilotRosterParserFollowsAuthScheme(t *testing.T) {
 		return
 	}
 	t.Fatalf("listing ids = %v, want claude-haiku-5.5", modelIDs(listing.Models))
+}
+
+// TestCopilotRosterStaysOnTheConfiguredTransportBesideGatewayGeneration pins
+// the listing half of the connection/generation boundary: a default row that
+// generates through an API-key gateway must not move the roster fetch or the
+// roster's authority. Two consecutive listings keep the configured models URL
+// and every advertised route and visibility, and an empty account roster stays
+// empty instead of resurrecting the static catalog.
+func TestCopilotRosterStaysOnTheConfiguredTransportBesideGatewayGeneration(t *testing.T) {
+	t.Parallel()
+	var mu sync.Mutex
+	var paths []string
+	body := copilotRefreshRoster
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		paths = append(paths, r.URL.Path)
+		response := body
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(response))
+	}))
+	t.Cleanup(srv.Close)
+
+	cfgPath := filepath.Join(t.TempDir(), "providers.toml")
+	cfg := "[providers.work]\nbase = \"github-copilot\"\nbase_url = \"" + srv.URL + "/v1\"\n" +
+		"api_key_env = [\"GATEWAY_KEY\"]\ndefault_model = \"gateway-gen\"\n" +
+		"[providers.work.models.\"gateway-gen\"]\nauth = \"bearer\"\nbase_url = \"https://gateway.example.com/v1\"\n"
+	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r, err := registry.Load(
+		registry.WithConfigPath(cfgPath), registry.WithStateRoot(t.TempDir()),
+		registry.WithOffline(true), registry.WithoutCache(),
+		registry.WithEnv(func(name string) (string, bool) {
+			if name == "GATEWAY_KEY" {
+				return "gw-secret", true
+			}
+			return "", false
+		}),
+	)
+	if err != nil {
+		t.Fatalf("registry: %v", err)
+	}
+	c := NewClient(WithRegistry(r))
+	ctx := WithScopedAuthenticator(context.Background(), registry.AuthOAuthGitHubCopilot, copilotTestAuthenticator{})
+
+	first, err := c.Models(ctx, "work")
+	if err != nil {
+		t.Fatalf("first listing: %v", err)
+	}
+	second, err := c.Models(ctx, "work")
+	if err != nil {
+		t.Fatalf("second listing: %v", err)
+	}
+	for _, listing := range []ModelListing{first, second} {
+		if !listing.Live || !listing.Usable {
+			t.Fatalf("listing = live %v usable %v, want a usable account listing", listing.Live, listing.Usable)
+		}
+	}
+	if got, want := modelIDs(second.Models), modelIDs(first.Models); !slices.Equal(got, want) {
+		t.Fatalf("second listing ids = %v, want the first listing's %v", got, want)
+	}
+	for _, hidden := range []string{"picker-hidden", "policy-disabled", "embedding-only"} {
+		if slices.Contains(modelIDs(second.Models), hidden) {
+			t.Fatalf("second listing offered %q: the account's picker/policy filter was lost", hidden)
+		}
+	}
+	routes := map[string]string{}
+	for _, row := range second.Models {
+		routes[row.ModelID] = row.Protocol
+	}
+	if routes["claude-haiku-5.5"] != registry.ProtocolAnthropic || routes["gpt-5.6-sol"] != registry.ProtocolOpenAIResponses {
+		t.Fatalf("second listing routes = %v, want the account's per-row protocols", routes)
+	}
+	mu.Lock()
+	gotPaths := slices.Clone(paths)
+	body = `{"data":[]}`
+	mu.Unlock()
+	if want := []string{"/v1/models", "/v1/models"}; !slices.Equal(gotPaths, want) {
+		t.Fatalf("listing paths = %v, want the configured models URL %v", gotPaths, want)
+	}
+
+	empty, err := c.Models(ctx, "work")
+	if err != nil {
+		t.Fatalf("empty roster listing: %v", err)
+	}
+	mu.Lock()
+	emptyPath := paths[len(paths)-1]
+	mu.Unlock()
+	if emptyPath != "/v1/models" {
+		t.Fatalf("empty roster path = %q, want the configured models URL", emptyPath)
+	}
+	if !empty.Live || empty.Usable || len(empty.Models) != 0 {
+		t.Fatalf("empty roster listing = live %v usable %v rows %v, want an authoritative empty answer",
+			empty.Live, empty.Usable, modelIDs(empty.Models))
+	}
+	if !c.ListingProvesUnavailable("work", empty) {
+		t.Fatal("the empty account roster did not prove unavailability; the static catalog was resurrected")
+	}
 }

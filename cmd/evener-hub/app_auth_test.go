@@ -33,6 +33,19 @@ import (
 
 const copilotDeviceInstanceToml = "[providers.work]\nbase = \"github-copilot\"\n"
 
+// gatewayCopilotDeviceToml is a Copilot instance whose default model generates
+// through a separate API-key gateway. Its connection is still the account, so
+// Settings must offer the Copilot sign-in and not the gateway key.
+const gatewayCopilotDeviceToml = `
+[providers.work]
+base = "github-copilot"
+api_key_env = ["GATEWAY_KEY"]
+default_model = "claude-x"
+[providers.work.models."claude-x"]
+auth = "bearer"
+base_url = "https://gateway.example.com/v1"
+`
+
 // writeCopilotOAuthRecord stores a launchable Copilot record for instance.
 func writeCopilotOAuthRecord(t *testing.T, stateDir, instance, email string) githubcopilot.AuthRecord {
 	t.Helper()
@@ -192,6 +205,54 @@ func TestAuth_CopilotStatusReportsTheStoredRecord(t *testing.T) {
 		if strings.Contains(string(encoded), token.value) {
 			t.Fatalf("status response leaked %s", token.field)
 		}
+	}
+}
+
+// TestAuth_CopilotSettingsIgnoreGatewayGenerationTransport pins that Settings
+// reads the connection, not the generation row: a Copilot instance whose
+// default model leaves through an API-key gateway still offers the Copilot
+// device sign-in, reports the account's credential source, and keeps the
+// OAuth credential fence that refuses a stored key.
+func TestAuth_CopilotSettingsIgnoreGatewayGenerationTransport(t *testing.T) {
+	dir := t.TempDir()
+	stateDir := t.TempDir()
+	writeCopilotOAuthRecord(t, stateDir, "work", "octocat@example.test")
+	ctrl := newTestAuthController(t, dir, stateDir, writeProvidersToml(t, dir, gatewayCopilotDeviceToml),
+		map[string]string{"GATEWAY_KEY": "gw-secret"})
+	transport := newCopilotDeviceTransport()
+	ctrl.client = &http.Client{Transport: transport}
+	ctrl.copilotService = githubcopilot.NewService(ctrl.copilotCfg, ctrl.client)
+
+	got, err := ctrl.Status(appwire.AuthStatusParams{Provider: "work"})
+	if err != nil {
+		t.Fatalf("Status(work): %v", err)
+	}
+	if !got.Supported || !got.SignedIn || got.ActiveSource != "oauth" {
+		t.Fatalf("Status(work) = %+v, want the Copilot account's OAuth sign-in", got)
+	}
+	if want := []string{"oauth"}; !slices.Equal(got.AuthModes, want) {
+		t.Fatalf("AuthModes = %v, want %v", got.AuthModes, want)
+	}
+	if got.EnvVar != "" {
+		t.Fatalf("EnvVar = %q, want no gateway variable offered for a Copilot account", got.EnvVar)
+	}
+	if !got.HasStoredOAuth {
+		t.Fatal("HasStoredOAuth = false, want the account's stored record")
+	}
+
+	start, err := ctrl.DeviceStart(context.Background(), appwire.AuthDeviceStartParams{Provider: "work"})
+	if err != nil {
+		t.Fatalf("DeviceStart(work): %v", err)
+	}
+	if start.Fallback || start.FlowID == "" || start.UserCode != "USER-1" {
+		t.Fatalf("DeviceStart(work) = %+v, want the Copilot device flow", start)
+	}
+
+	if _, err := ctrl.ApiKeySet(appwire.AuthApiKeySetParams{Provider: "work", Value: "sk-test"}); !errors.Is(err, errAPIKeyForOAuthInstance) {
+		t.Fatalf("ApiKeySet(work) err = %v, want the OAuth-record refusal", err)
+	}
+	if _, ok := ctrl.storedKey("work"); ok {
+		t.Fatal("ApiKeySet stored a key under the Copilot account")
 	}
 }
 
