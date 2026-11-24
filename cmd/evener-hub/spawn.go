@@ -41,6 +41,13 @@ const evenerLaunchCheckWaitDelay = time.Second
 // quoted back to the operator as the reason it would not start.
 const daemonLaunchOutputLimit = 64 * 1024
 
+// preExecSpawnError marks a Spawn error that happened before cmd.Start()
+// succeeded, proving no child process was started.
+type preExecSpawnError struct{ err error }
+
+func (e preExecSpawnError) Error() string { return e.err.Error() }
+func (e preExecSpawnError) Unwrap() error { return e.err }
+
 var (
 	spawnMkdirAll                   = os.MkdirAll
 	spawnMkdirTemp                  = os.MkdirTemp
@@ -176,12 +183,12 @@ func (h *HubSpawner) Spawn(ctx context.Context, req hubcore.SpawnRequest) (rende
 			req.Project, req.StateDir, err = resolveEvenerLaunchProjectStateDir(req.WorkingDir, req.Resolved.Effective.Env)
 		}
 		if err != nil {
-			return rendezvous.Entry{}, err
+			return rendezvous.Entry{}, preExecSpawnError{err: err}
 		}
 	}
 	resolved, cleanup, err := prepareResolvedForSpawn(req.StateDir, req.Resolved)
 	if err != nil {
-		return rendezvous.Entry{}, err
+		return rendezvous.Entry{}, preExecSpawnError{err: err}
 	}
 	defer cleanup()
 	req.Resolved = resolved
@@ -200,7 +207,7 @@ func (h *HubSpawner) Spawn(ctx context.Context, req hubcore.SpawnRequest) (rende
 	}
 	childConfig, err := prepareChildProviderConfig(h.ProvidersConfigPath, h.NoUserLayer, h.Registry, req.Resolved.Effective.Env)
 	if err != nil {
-		return rendezvous.Entry{}, err
+		return rendezvous.Entry{}, preExecSpawnError{err: err}
 	}
 	defer childConfig.cleanupUnowned()
 	parentEnv := os.Environ()
@@ -215,10 +222,10 @@ func (h *HubSpawner) Spawn(ctx context.Context, req hubcore.SpawnRequest) (rende
 		CredentialsPath:     h.CredentialsPath,
 	})
 	if err := validateProviderCredentials(req.Provider, req.Resolved.Effective.Model, h.Registry); err != nil {
-		return rendezvous.Entry{}, err
+		return rendezvous.Entry{}, preExecSpawnError{err: err}
 	}
 	if err := validateEvenerLaunchContract(ctx, h.EvenerBinary, req.Resolved.Effective.Model, req.Env); err != nil {
-		return rendezvous.Entry{}, err
+		return rendezvous.Entry{}, preExecSpawnError{err: err}
 	}
 	return spawnDaemonWithProviderConfig(ctx, h.EvenerBinary, h.RunDir, req, timeout, os.Stderr, childConfig)
 }
@@ -469,7 +476,7 @@ func spawnDaemonWithProviderConfig(ctx context.Context, evenerBinary string, run
 	// the id and reports it through rendezvous, so the file is adopted below.
 	dlog, err := openDaemonLog(runDir, "")
 	if err != nil {
-		return rendezvous.Entry{}, err
+		return rendezvous.Entry{}, preExecSpawnError{err: err}
 	}
 	dlog.attach(cmd)
 
@@ -478,7 +485,7 @@ func spawnDaemonWithProviderConfig(ctx context.Context, evenerBinary string, run
 		dlog.close()
 		// Nothing was ever written to it and no session will ever claim it.
 		dlog.removeIfPending()
-		return rendezvous.Entry{}, fmt.Errorf("start daemon: %w", err)
+		return rendezvous.Entry{}, preExecSpawnError{err: fmt.Errorf("start daemon: %w", err)}
 	}
 	cleanupProvider := providerConfig.transferToChild()
 	// The child holds its own descriptor from here on.

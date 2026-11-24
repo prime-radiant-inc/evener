@@ -178,6 +178,8 @@ type hubRuntime struct {
 	transcriptDisplayStoreErr error
 	keybindingsStore          *hubcore.KeybindingsStore
 	keybindingsStoreErr       error
+	creationStore             *hubcore.CreationStore
+	creationStoreErr          error
 
 	providersConfigPath string
 	credentialsPath     string
@@ -493,6 +495,10 @@ func (r *hubRuntime) openDurableState() error {
 	if r.keybindingsStoreErr != nil {
 		r.logf("keybindings state: %v", r.keybindingsStoreErr)
 	}
+	r.creationStore, r.creationStoreErr = hubcore.NewCreationStore(r.hubStateRoot)
+	if r.creationStoreErr != nil {
+		r.logf("creation state: %v", r.creationStoreErr)
+	}
 	// Resolve the registry root once for this hub process. Launch configuration
 	// may override XDG_CONFIG_HOME for a child, so the child must receive this
 	// concrete root rather than resolving its own default from that environment.
@@ -643,6 +649,8 @@ func (r *hubRuntime) buildWeb(appwireTrace *appserver.WebSocketTrace, localHostN
 		TranscriptDisplayStoreErr: r.transcriptDisplayStoreErr,
 		KeybindingsStore:          r.keybindingsStore,
 		KeybindingsStoreErr:       r.keybindingsStoreErr,
+		CreationStore:             r.creationStore,
+		CreationStoreErr:          r.creationStoreErr,
 		RunDir:                    r.runDir,
 		SpawnTimeout:              cfg.SpawnTimeout,
 		DaemonIdleTimeout:         cfg.DaemonIdleTimeout,

@@ -72,21 +72,27 @@ var (
 // client may let the person start that draft again (#3184). Like any refusal
 // marked so, it asks for no automatic retry: the same start would be refused
 // the same way. err stays in the chain behind the wire refusal.
-func startRefused(err error) (appwire.ThreadStartResponse, error) {
-	return appwire.ThreadStartResponse{}, causedWireError{wire: appserver.WireError(err).NotAccepted(""), cause: err}
+func startRefused(err error, clientMutationID string) (appwire.ThreadStartResponse, error) {
+	return appwire.ThreadStartResponse{}, causedWireError{wire: appserver.WireError(err).NotAccepted(clientMutationID), cause: err}
 }
 
 func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadStartParams) (response appwire.ThreadStartResponse, startErr error) {
+	if err := appwire.ValidateOptionalClientMutationID(params.ClientMutationID); err != nil {
+		return appwire.ThreadStartResponse{}, err
+	}
 	remote, forward, err := routeThreadStart(ctx, sources, params)
 	if err != nil {
-		return startRefused(err)
+		return startRefused(err, params.ClientMutationID)
 	}
 	if remote != nil {
 		return remote.StartThread(ctx, forward)
 	}
+	if params.ClientMutationID != "" {
+		return keyedLocalThreadStart(ctx, cfg, sources, params)
+	}
 	plan, err := prepareLocalSpawn(ctx, cfg, params)
 	if err != nil {
-		return startRefused(err)
+		return startRefused(err, "")
 	}
 	// The mutation is admitted here: every validation has passed and the spawn
 	// is about to happen. From this point the outcome must not depend on the
@@ -125,6 +131,249 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 			localSpawnWorkspaceRef(entry), createdInstanceID)
 		startErr = causedWireError{wire: wire, cause: startErr}
 	}()
+	return finishLocalThreadStart(ctx, cfg, sources, params, plan, entry, "", &createdInstanceID)
+}
+
+func keyedLocalThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadStartParams) (response appwire.ThreadStartResponse, startErr error) {
+	id := params.ClientMutationID
+	if cfg.CreationStoreErr != nil || cfg.CreationStore == nil {
+		return appwire.ThreadStartResponse{}, appwire.MutationUnknown(id, "creation store is unavailable")
+	}
+	plan, err := prepareLocalSpawn(ctx, cfg, params)
+	if err != nil {
+		return startRefused(err, id)
+	}
+	payloadHash, err := hubcore.CreationPayloadHash(appwire.LocalSourceID, params)
+	if err != nil {
+		return startRefused(err, id)
+	}
+	var initialTurnMutationID string
+	if len(params.Input) > 0 {
+		initialTurnMutationID, err = identifier.NewClientMutationID()
+		if err != nil {
+			return startRefused(appwire.InternalError("create initial turn mutation id: "+err.Error()), id)
+		}
+	}
+	acq, err := cfg.CreationStore.Acquire(ctx, id, appwire.LocalSourceID, payloadHash, len(params.Input) > 0, initialTurnMutationID)
+	if err != nil {
+		if _, isWire := errors.AsType[appwire.WireError](err); isWire || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return appwire.ThreadStartResponse{}, err
+		}
+		return startRefused(err, id)
+	}
+	if acq.Response != nil {
+		if err := deletionFenceError(cfg, acq.Response.Thread.Evener.Ref, cmp.Or(acq.Response.Thread.SessionID, acq.Response.Thread.ID), id); err != nil {
+			return appwire.ThreadStartResponse{}, err
+		}
+		return *acq.Response, nil
+	}
+	ctx, cancelDetached := context.WithTimeout(context.WithoutCancel(ctx), threadStartDetachedTimeout)
+	defer cancelDetached()
+	var createdRef, createdInstanceID string
+	var attachPartial bool
+	defer func() {
+		if startErr != nil && attachPartial && createdRef != "" {
+			startErr = keyedThreadStartPartialError(startErr, id, createdRef, createdInstanceID)
+		}
+		cfg.CreationStore.ReleaseOwner(acq.Owner, response, startErr)
+	}()
+	if acq.Record.State == hubcore.CreationStateSpawned {
+		createdRef = acq.Record.CreatedRef
+		createdInstanceID = acq.Record.CreatedInstanceID
+		attachPartial = true
+		resp, err := finishSpawnedLocalCreation(ctx, cfg, sources, params, *acq.Record)
+		if err != nil {
+			return appwire.ThreadStartResponse{}, err
+		}
+		resp.ClientMutationID = id
+		resp.Disposition = appwire.MutationDispositionApplied
+		if err := cfg.CreationStore.CommitCompleted(id, resp); err != nil {
+			return appwire.ThreadStartResponse{}, err
+		}
+		return resp, nil
+	}
+	entry, err := cfg.Spawner.Spawn(ctx, hubcore.SpawnRequest{
+		Project:       plan.resolved.Project,
+		Resolved:      plan.resolved,
+		WorkingDir:    plan.workingDir,
+		PluginRoot:    cfg.PluginRoot,
+		AgentsDocPath: hubAgentsDocPath(cfg),
+		Provider:      plan.modelRef.Provider,
+		Manager:       params.Manager,
+	})
+	if err != nil {
+		if _, pre := errors.AsType[preExecSpawnError](err); pre {
+			_ = cfg.CreationStore.RollbackSpawning(id)
+			return appwire.ThreadStartResponse{}, causedWireError{wire: appwire.HubLaunchError(err.Error()).NotAccepted(id), cause: err}
+		}
+		_ = cfg.CreationStore.MarkUncertain(id)
+		return appwire.ThreadStartResponse{}, appwire.MutationUnknown(id, err.Error())
+	}
+	if entry.ThreadID == "" && entry.SessionID == "" && cfg.Roster != nil {
+		if err := hubRosterRefresh(ctx, cfg.Roster); err == nil {
+			for _, live := range hubRosterList(cfg.Roster) {
+				if live.PID == entry.PID {
+					entry.ThreadID, entry.SessionID = live.SessionID, live.SessionID
+					break
+				}
+			}
+		}
+	}
+	if entry.ThreadID == "" && entry.SessionID == "" {
+		_ = cfg.CreationStore.MarkUncertain(id)
+		return appwire.ThreadStartResponse{}, appwire.MutationUnknown(id, "spawned daemon reported no thread identity")
+	}
+	createdRef = localSpawnWorkspaceRef(entry)
+	createdSessionID := cmp.Or(entry.SessionID, entry.ThreadID)
+	createdInstanceID = localSpawnInstanceID(entry, appwire.Thread{})
+	if err := cfg.CreationStore.CommitSpawned(id, createdRef, createdSessionID, createdInstanceID); err != nil {
+		_ = cfg.CreationStore.MarkUncertain(id)
+		return appwire.ThreadStartResponse{}, appwire.MutationUnknown(id, err.Error())
+	}
+	attachPartial = true
+	resp, err := finishLocalThreadStart(ctx, cfg, sources, params, plan, entry, initialTurnMutationID, &createdInstanceID)
+	if err != nil {
+		return appwire.ThreadStartResponse{}, err
+	}
+	resp.ClientMutationID = id
+	resp.Disposition = appwire.MutationDispositionApplied
+	if err := cfg.CreationStore.CommitCompleted(id, resp); err != nil {
+		return appwire.ThreadStartResponse{}, err
+	}
+	return resp, nil
+}
+
+func keyedThreadStartPartialError(err error, clientMutationID, ref, instanceID string) error {
+	wire := appserver.WireError(err).WithThreadStartPartial(ref, instanceID)
+	if data, ok := wire.Data.(appwire.ThreadStartPartialErrorData); ok {
+		data.ClientMutationID = clientMutationID
+		if !isTargetDeletedError(err) && !isSessionRecoveryAdmissionError(err) && data.RetryDisposition == appwire.RetryDispositionBlocked {
+			data.RetryDisposition = ""
+		}
+		wire.Data = data
+	}
+	return causedWireError{wire: wire, cause: err}
+}
+
+func finishSpawnedLocalCreation(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadStartParams, rec hubcore.CreationRecord) (appwire.ThreadStartResponse, error) {
+	if err := deletionFenceError(cfg, rec.CreatedRef, rec.CreatedSessionID, params.ClientMutationID); err != nil {
+		return appwire.ThreadStartResponse{}, err
+	}
+	var thread appwire.Thread
+	var source appsource.Source
+	var liveEntry *rendezvous.Entry
+	live := false
+	if cfg.Roster != nil {
+		_ = hubRosterRefresh(ctx, cfg.Roster)
+		_, live = liveDaemonForThread(cfg.Roster, rec.CreatedSessionID)
+	}
+	if cfg.Roster == nil || live {
+		if s, err := sourceForThread(sources, rec.CreatedRef, rec.CreatedSessionID); err == nil {
+			if readResp, readErr := s.ReadThread(ctx, appwire.ThreadReadParams{Ref: rec.CreatedRef}); readErr == nil {
+				thread = annotateThreadProject(applyHubCapabilities(cfg, readResp.Thread))
+				source = s
+			} else if live || !isDeadSessionError(readErr) {
+				return appwire.ThreadStartResponse{}, readErr
+			}
+		}
+	}
+	if source == nil && cfg.RunDir != "" {
+		if entries, listErr := rendezvous.List(cfg.RunDir); listErr == nil {
+			for _, e := range entries {
+				if e.Protocol != appwire.ProtocolVersion || e.Endpoint == "" {
+					continue
+				}
+				if e.SessionID != rec.CreatedSessionID && e.ThreadID != rec.CreatedSessionID && localSpawnWorkspaceRef(e) != rec.CreatedRef {
+					continue
+				}
+				read := func(ctx context.Context) (appwire.ThreadReadResponse, error) {
+					return readSpawnedLocalThread(ctx, sources, e)
+				}
+				var readResp appwire.ThreadReadResponse
+				var readErr error
+				if cfg.Roster != nil && !cfg.Roster.HasConfirmedEntry(e) {
+					readResp, readErr = cfg.Roster.ReadSpawnedThread(ctx, e, read)
+				} else {
+					readResp, readErr = read(ctx)
+				}
+				if readErr == nil {
+					if local, err := spawnedLocalDaemonSource(sources); err == nil {
+						thread = annotateThreadProject(applyHubCapabilities(cfg, readResp.Thread))
+						source = local
+						entryCopy := e
+						liveEntry = &entryCopy
+					}
+				} else if !isDeadSessionError(readErr) && !isSessionUnavailableError(readErr) {
+					return appwire.ThreadStartResponse{}, readErr
+				}
+				break
+			}
+		}
+	}
+	if source == nil {
+		if cfg.Past != nil {
+			if _, ok := cfg.Past.Find(rec.CreatedSessionID); !ok {
+				_, _ = cfg.Past.Rebuild()
+			}
+		}
+		if !rec.HasInitialInput {
+			pastResp, ok, pastErr := pastThreadReadResponse(ctx, cfg, appwire.ThreadReadParams{Ref: rec.CreatedRef, ThreadID: rec.CreatedSessionID})
+			if pastErr != nil {
+				return appwire.ThreadStartResponse{}, pastErr
+			}
+			if !ok {
+				return appwire.ThreadStartResponse{}, appwire.Unavailable("spawned session is not available: " + rec.CreatedRef)
+			}
+			return appwire.ThreadStartResponse{Thread: annotateThreadProject(applyHubCapabilities(cfg, pastResp.Thread))}, nil
+		}
+		resumed, resumeErr := hubThreadAutoResume(ctx, cfg, sources, appwire.ThreadResumeParams{Ref: rec.CreatedRef, Session: rec.CreatedSessionID})
+		if resumeErr != nil {
+			return appwire.ThreadStartResponse{}, resumeErr
+		}
+		thread = resumed.Thread
+		var err error
+		source, err = sourceForThread(sources, rec.CreatedRef, rec.CreatedSessionID)
+		if err != nil {
+			return appwire.ThreadStartResponse{}, err
+		}
+	}
+	var turn appwire.Turn
+	if rec.HasInitialInput {
+		if err := appwire.ValidateSkillInputSupport(params.Input, thread.Evener.Capabilities.SkillInput); err != nil {
+			return appwire.ThreadStartResponse{}, appwire.InvalidParams(err.Error())
+		}
+		if err := appwire.ValidateCommandInputSupport(params.Input, thread.Evener.Capabilities.CommandInput); err != nil {
+			return appwire.ThreadStartResponse{}, appwire.InvalidParams(err.Error())
+		}
+		expectedInstanceID := cmp.Or(rec.CreatedInstanceID, thread.Evener.InstanceID, rec.CreatedSessionID)
+		startEpoch := sessionRecoveryState(cfg, rec.CreatedRef, rec.CreatedSessionID).Epoch
+		turnParams := appwire.TurnStartParams{
+			Ref:                rec.CreatedRef,
+			ClientMutationID:   rec.InitialTurnMutationID,
+			ExpectedInstanceID: expectedInstanceID,
+			Input:              params.Input,
+		}
+		turnResp, err := withDeletionTargetOwnership(ctx, cfg, rec.CreatedRef, rec.CreatedSessionID, rec.InitialTurnMutationID, func() (appwire.TurnStartResponse, error) {
+			if err := sessionActionRecoveryError(ctx, cfg, rec.CreatedRef, rec.CreatedSessionID, startEpoch); err != nil {
+				return appwire.TurnStartResponse{}, err
+			}
+			if liveEntry != nil {
+				if local, ok := source.(*appsource.LocalDaemonSource); ok {
+					return local.StartTurnAtEntry(ctx, *liveEntry, turnParams)
+				}
+			}
+			return source.StartTurn(ctx, turnParams)
+		})
+		if err != nil {
+			return appwire.ThreadStartResponse{}, err
+		}
+		turn = turnResp.Turn
+	}
+	return appwire.ThreadStartResponse{Thread: thread, Turn: turn}, nil
+}
+
+func finishLocalThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadStartParams, plan localSpawnPlan, entry rendezvous.Entry, initialTurnMutationID string, createdInstanceID *string) (appwire.ThreadStartResponse, error) {
+	var err error
 	canUseSpawnEntry := entry.Protocol == appwire.ProtocolVersion && entry.Endpoint != "" && entry.ThreadID != ""
 	if cfg.Roster != nil {
 		refreshErr := hubRosterRefresh(ctx, cfg.Roster)
@@ -207,7 +456,7 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 		}
 	}
 	expectedInstanceID := localSpawnInstanceID(entry, threadResp.Thread)
-	createdInstanceID = expectedInstanceID
+	*createdInstanceID = expectedInstanceID
 	threadResp.Thread = applyHubCapabilities(cfg, threadResp.Thread)
 	threadResp.Thread = annotateThreadProject(threadResp.Thread)
 	turn := appwire.Turn{}
@@ -226,9 +475,12 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 			return appwire.ThreadStartResponse{}, appwire.InvalidParams(err.Error())
 
 		}
-		clientMutationID, err := identifier.NewClientMutationID()
-		if err != nil {
-			return appwire.ThreadStartResponse{}, appwire.InternalError("create initial turn mutation id: " + err.Error())
+		clientMutationID := initialTurnMutationID
+		if clientMutationID == "" {
+			clientMutationID, err = identifier.NewClientMutationID()
+			if err != nil {
+				return appwire.ThreadStartResponse{}, appwire.InternalError("create initial turn mutation id: " + err.Error())
+			}
 		}
 		turnParams := appwire.TurnStartParams{
 			Ref:                ref,

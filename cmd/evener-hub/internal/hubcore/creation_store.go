@@ -103,6 +103,12 @@ func NewCreationStore(stateRoot string) (*CreationStore, error) {
 	return newCreationStoreFS(afero.NewOsFs(), stateRoot, creationStoreFaults{}, time.Now)
 }
 
+// NewCreationStoreForTest opens the creation journal with an optional hook
+// invoked when a concurrent Acquire blocks waiting on an active owner.
+func NewCreationStoreForTest(stateRoot string, onWait func()) (*CreationStore, error) {
+	return newCreationStoreFS(afero.NewOsFs(), stateRoot, creationStoreFaults{OnWait: onWait}, time.Now)
+}
+
 func newCreationStoreFS(fs afero.Fs, stateRoot string, faults creationStoreFaults, now func() time.Time) (*CreationStore, error) {
 	if now == nil {
 		now = time.Now
