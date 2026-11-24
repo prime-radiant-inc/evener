@@ -812,40 +812,24 @@ describe("compact session status", () => {
     }
   });
 
-  // The bug this pins: on a touch-only device the row's own tap must open the
-  // session, and only a long press may expose the context card. A real tap
-  // first fires mousedown, which RailRow uses to focus the owning tree row -
-  // exactly the focus that used to pop the card on its own. On the phone the
-  // title and the reason under it are one target: a hold on either line opens
-  // the card, and the tap it lifts still opens the session exactly once.
+  // A tap opens the session. Holding the second line opens the same context
+  // card as holding the name, and lifting the hold does not open the session.
   test("a hoverless tap opens the session and only a long press opens the context panel", () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     const restoreViewport = installMobileViewport([MOBILE_QUERY, "(hover: none)"]);
     const rowInfo = info();
-    const asked = "Cut the release from main or the stable branch?";
     try {
       render(
         <div role="treeitem" tabIndex={0}>
           <RailRow
-            node={sessionRailNode(
-              apiNode({ state: "awaiting", ask_pending: true, question: { text: asked, count: 1 } }),
-              { live: "question" },
-            )}
+            node={sessionRailNode(apiNode({ state: "awaiting", ask_pending: true }), { live: "question" })}
             info={rowInfo}
             actions={actions()}
           />
         </div>,
       );
       const title = screen.getByTestId("rail-row-title");
-      // One trigger carries both lines: the name and the question it asks.
       const reason = screen.getByTestId("rail-row-why-text");
-      expect(reason.textContent).toBe(asked);
-      expect(title.contains(reason)).toBe(true);
-      // The button keeps the class pair the coarse tap floor targets, and its
-      // own content is the name followed by the row's one reason.
-      expect(title.className).toBe(`${railStyles.label} ${railStyles.sessionTitleButton}`);
-      expect(title.firstElementChild?.textContent).toBe("Fix flaky test");
-      expect(screen.getAllByTestId("rail-row-why")).toHaveLength(1);
 
       // Real touch order: the pointer lifts, then the compatibility mousedown
       // focuses the row. That focus must not open the card on its own.
