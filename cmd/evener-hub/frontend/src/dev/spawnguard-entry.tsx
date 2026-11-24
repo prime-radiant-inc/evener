@@ -15,9 +15,8 @@ import { ClientProvider } from "../shell/clientContext";
 import { connectionStore } from "../stores/connection";
 import { PathField, Toast } from "../widgets";
 import { isElementVisible } from "./guardVisibility";
+import { harnessRoot } from "./mountHarness";
 import { storageHasSecret } from "./storageHasSecret";
-import "../styles/tokens.css";
-import "../styles/global.css";
 
 const fake = new FakeClient("ready");
 fake.on("evener/harnesses/list", () => ({
@@ -84,8 +83,7 @@ fake.on("evener/plugin/preview", () => ({
 }));
 fake.on("evener/spawn/slashCatalog", () => ({ commands: [], skills: [] }));
 
-const rootEl = document.getElementById("root");
-if (!rootEl) throw new Error("spawnguard.html is missing #root");
+const rootEl = harnessRoot("spawnguard");
 
 document.documentElement.style.height = "100%";
 document.body.style.height = "100%";
