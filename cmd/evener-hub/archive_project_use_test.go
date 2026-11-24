@@ -257,6 +257,49 @@ func TestLiveEntrySourceKeysTheUnarchive(t *testing.T) {
 	assertProjectUnarchived(t, store, remote)
 }
 
+// A remote thread's project identity comes from the host that reported it.
+// Two hosts can name the same working directory, and the snapshot's
+// path-keyed project map picks one of their projects; reconciliation must
+// not use that pick for the other host's session.
+func TestRemoteSessionUnarchivesItsReportedProject(t *testing.T) {
+	decided := time.Date(2026, 8, 19, 16, 51, 56, 0, time.UTC)
+	zID := identifier.ProjectFromCanonicalPath("/work/z").ID
+	aID := identifier.ProjectFromCanonicalPath("/work/a").ID
+	remoteID, remotePath, decoyID := zID, "/work/z", aID
+	if aID > zID {
+		remoteID, remotePath, decoyID = aID, "/work/a", zID
+	}
+	cache := &hubcore.RemoteThreadCache{}
+	cache.StoreSnapshotData(hubcore.RemoteThreadSnapshot{Threads: []appwire.Thread{
+		{
+			ID: "t-remote", SessionID: "t-remote", Source: "host-a", CWD: "/work/task",
+			ProjectID: remoteID, ProjectPath: remotePath, CreatedAt: decided.Add(time.Hour).Unix(),
+		},
+		{
+			ID: "t-other", SessionID: "t-other", Source: "host-b", CWD: "/work/task",
+			ProjectID: decoyID, ProjectPath: "/work/decoy", CreatedAt: decided.Add(time.Hour).Unix(),
+		},
+	}})
+	store := newArchiveDecisionStore(t)
+	web := NewWebServer(testWebConfig(t, hubcore.WebConfig{Archive: store, RemoteThreadCache: cache}))
+	snapshot := web.navigationSnapshot(t.Context())
+	if got := snapshot.projects["/work/task"].ID; got != decoyID {
+		t.Fatalf("path-keyed project = %q, want the other host's %q so the test can tell the two apart", got, decoyID)
+	}
+
+	reported := hubcore.ArchiveKey{Kind: "project", ID: remoteID, Source: "host-a"}
+	decoy := hubcore.ArchiveKey{Kind: "project", ID: decoyID, Source: "host-a"}
+	for _, key := range []hubcore.ArchiveKey{reported, decoy} {
+		if err := store.Set(key.Source, key.Kind, key.ID, true, decided); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	unarchiveProjectsUsedSinceNewSessions(store, snapshot)
+	assertProjectUnarchived(t, store, reported)
+	assertProjectArchived(t, store, decoy)
+}
+
 // The reconcile rides the hub's one snapshot wake, so the attention derive and
 // the project archive read the same state: the derive sees the cleared flag
 // in the same pass.

@@ -24,7 +24,11 @@ func unarchiveProjectsUsedSinceNewSessions(archive *hubcore.ArchiveStore, snapsh
 	seen := make(map[string]bool, len(snapshot.metas))
 	for _, meta := range snapshot.metas {
 		seen[meta.ID] = true
-		if project, ok := snapshot.projects[hubcore.EffectiveWorkingDir(meta)]; ok && project.ID != "" {
+		project, ok := snapshot.reportedProjects[meta.ID]
+		if !ok {
+			project, ok = snapshot.projects[hubcore.EffectiveWorkingDir(meta)]
+		}
+		if ok && project.ID != "" {
 			source := hubcore.SessionSourceFromID(meta.ID)
 			sessions = append(sessions, sessionProject(source, project.ID, meta, !roots.TopLevel(meta.ID) || running[meta.ID]))
 		}
@@ -39,6 +43,9 @@ func unarchiveProjectsUsedSinceNewSessions(archive *hubcore.ArchiveStore, snapsh
 		}
 		source := hubcore.LiveEntrySource(live)
 		projectID := live.Project.ID
+		if reported, ok := snapshot.reportedProjects[live.SessionID]; ok {
+			projectID = reported.ID
+		}
 		if projectID != "" {
 			if decision, ok := decisions[hubcore.ProjectDecisionKey(source, projectID)]; !ok || !decision.Archived {
 				continue

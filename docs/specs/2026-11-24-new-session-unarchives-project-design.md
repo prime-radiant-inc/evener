@@ -35,7 +35,9 @@ The clearing is narrow:
   fork original superseded by its continuation, does not. A fork does count:
   it is a new top-level session.
 - The decision is per owning source. A new remote session clears that host's
-  project decision only.
+  project decision only. The project ID is the one the owning host reported
+  for that session: two hosts can name the same working directory, so the
+  hub's path-keyed project map cannot stand in for the host's own identity.
 - The session's own archive decision is untouched. An explicit session
   unarchive still does not override a project archive; the project decision is
   the one cleared.
