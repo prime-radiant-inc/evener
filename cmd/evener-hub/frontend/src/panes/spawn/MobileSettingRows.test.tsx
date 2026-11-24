@@ -36,6 +36,8 @@ function props(overrides: Partial<MobileSettingRowsProps> = {}): MobileSettingRo
       { value: "", label: "(default)" },
       { value: "workspace-write", label: "workspace write" },
     ],
+    effectiveAccessLabel: "(default)",
+    advancedAccessOverride: false,
     onAccessChange: vi.fn(),
     pluginPreview: { status: "ready", response: { plugins: [] } as PluginPreviewResponse },
     pluginSelection: { mode: "default" },
@@ -214,6 +216,25 @@ test("the option sheet marks exactly the checked radio", async () => {
 
   await user.click(unchecked);
   expect(onAccessChange).toHaveBeenCalledWith("workspace-write");
+});
+
+// The row reports what the launch will actually be allowed to do, including
+// when Advanced options' sandbox override is what decides it. The sheet stays
+// on the requested mode so it remains the thing the user can change.
+test("the access row reads the resolved level and its Advanced source, and the sheet keeps the requested mode", async () => {
+  const user = userEvent.setup();
+  renderRows({ effectiveAccessLabel: "read-only", advancedAccessOverride: true });
+
+  const row = within(screen.getByTestId("mobile-spawn-config"))
+    .getAllByTestId("mobile-spawn-row")
+    .find((candidate) => candidate.dataset.label === "Access mode") as HTMLElement;
+  expect(row.dataset.state).toBe("advanced");
+  const value = within(row).getByTitle(/^read-only/);
+  expect(value.textContent).toContain("read-only");
+
+  await user.click(row);
+  const dialog = await screen.findByRole("dialog", { name: "Choose access mode" });
+  expect(within(dialog).getByRole("radio", { name: "(default)" }).getAttribute("aria-checked")).toBe("true");
 });
 
 test("arrow keys preview the access choice without committing; Enter commits it", async () => {

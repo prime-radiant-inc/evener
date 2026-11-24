@@ -49,11 +49,12 @@ import { selectDisplaySources, selectSources } from "../../stores/navigation/sel
 import { useNavigationStore } from "../../stores/navigation/store";
 import {
   Button,
-  Card,
+  Chevron,
   CloseIcon,
   ConfirmDialog,
   chordLabel,
   Dialog,
+  DirectoryPicker,
   Disclosure,
   Dropzone,
   FormRow,
@@ -63,13 +64,11 @@ import {
   type ModelCatalog,
   type ModelCatalogEntry,
   PaneScaffold,
-  PathField,
   PromptCard,
   Select,
   SendIcon,
   ShortcutList,
   Switch,
-  ToolIcon,
   Tooltip,
   useFocusRehome,
   useToasts,
@@ -196,19 +195,14 @@ const CLASS = {
   form: requireClass(styles.form, "spawn.module.css", "form"),
   startReason: requireClass(styles.startReason, "spawn.module.css", "startReason"),
   chordHints: requireClass(styles.chordHints, "spawn.module.css", "chordHints"),
-  cfgDir: requireClass(styles.cfgDir, "spawn.module.css", "cfgDir"),
   branch: requireClass(styles.branch, "spawn.module.css", "branch"),
-  tileSeat: requireClass(styles.tileSeat, "spawn.module.css", "tileSeat"),
-  tileText: requireClass(styles.tileText, "spawn.module.css", "tileText"),
-  tileHeadline: requireClass(styles.tileHeadline, "spawn.module.css", "tileHeadline"),
-  tileCaption: requireClass(styles.tileCaption, "spawn.module.css", "tileCaption"),
-  summaryRow: requireClass(styles.summaryRow, "spawn.module.css", "summaryRow"),
-  accessTile: requireClass(styles.accessTile, "spawn.module.css", "accessTile"),
-  summaryPending: requireClass(styles.summaryPending, "spawn.module.css", "summaryPending"),
+  accessNote: requireClass(styles.accessNote, "spawn.module.css", "accessNote"),
   quietRows: requireClass(styles.quietRows, "spawn.module.css", "quietRows"),
   quietRow: requireClass(styles.quietRow, "spawn.module.css", "quietRow"),
   desktopOnly: requireClass(styles.desktopOnly, "spawn.module.css", "desktopOnly"),
   quietSummary: requireClass(styles.quietSummary, "spawn.module.css", "quietSummary"),
+  quietButtonSummary: requireClass(styles.quietButtonSummary, "spawn.module.css", "quietButtonSummary"),
+  rowChevron: requireClass(styles.rowChevron, "spawn.module.css", "rowChevron"),
   quietSummaryAction: requireClass(styles.quietSummaryAction, "spawn.module.css", "quietSummaryAction"),
   attachments: requireClass(styles.attachments, "spawn.module.css", "attachments"),
   leading: requireClass(styles.leading, "spawn.module.css", "leading"),
@@ -1286,9 +1280,9 @@ function SpawnForm({
     () => hostRequest(client, submittedSource, "evener/projects/recent", {}).then((r) => r.data ?? []),
     [client, submittedSource],
   );
-  // Injected into every PathField on this pane (the working directory here and
-  // the advanced panel's path/pathList fields): the widget derives includeFiles
-  // from its own kind, so this just forwards it.
+  // Injected into the pane's path controls (the working directory's directory
+  // picker and the advanced panel's path/pathList fields): the widgets derive
+  // includeFiles from their own kind, so this just forwards it.
   const complete = useCallback(
     (prefix: string, includeFiles: boolean) =>
       withLaunchConfig(submittedSource, (config) => config.completePaths(prefix, includeFiles)),
@@ -2006,18 +2000,61 @@ function SpawnForm({
   const advancedSandboxOverride =
     typeof advancedOverrides.sandbox === "string" && advancedOverrides.sandbox.trim() !== "";
 
-  const [advancedOpen, setAdvancedOpen] = useState(false);
+  // The row and the dialog name the same destination, and the access summary
+  // and its note read the same resolution, so each is derived once.
+  const cwdText = cwd === "" ? "Choose a folder" : cwd;
+  const accessValue =
+    resolveStatus === "ready"
+      ? (effectiveAccess?.label ?? (effectiveSandbox || "inherited"))
+      : resolveStatus === "error"
+        ? "Unresolved"
+        : "Resolving…";
+  const accessNote =
+    resolveStatus === "ready"
+      ? `${advancedSandboxOverride ? "Set by the Advanced sandbox override." : "Set by Access mode."}${
+          effectiveAccessDescription ? ` ${effectiveAccessDescription}` : ""
+        }`
+      : resolveStatus === "error"
+        ? "Effective access is unresolved because launch settings could not be resolved."
+        : "Effective access is being resolved.";
 
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [cwdPickerOpen, setCwdPickerOpen] = useState(false);
+  const cwdTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const [accessOpen, setAccessOpen] = useState(false);
+  const accessRowRef = useRef<HTMLDivElement | null>(null);
+
+  // The directory row IS the picker's trigger: one click opens the shared
+  // dialog. Closing returns the keyboard to the row, because the dialog owns
+  // focus while it is open.
+  function closeCwdPicker(): void {
+    setCwdPickerOpen(false);
+    cwdTriggerRef.current?.focus();
+  }
+
+  // Opening the access row lands the keyboard on the select it exists to
+  // change; closing it returns the keyboard to the row, because the select is
+  // unmounted with the body.
+  function setAccessRowOpen(open: boolean): void {
+    flushSync(() => setAccessOpen(open));
+    queueMicrotask(() => {
+      const row = accessRowRef.current;
+      if (row === null) return;
+      const target = open ? row.querySelector<HTMLElement>("#spawn-access") : row.querySelector<HTMLElement>("summary");
+      target?.focus();
+    });
+  }
+
+  // An Advanced sandbox override owns the effective access, so the access
+  // row's note offers this jump instead of pretending its own select governs.
   function focusAccessOwner(): void {
     const owner = advancedOwnerRef.current;
     if (owner === null) return;
-    // Committed before the focus below looks for a field inside the panel.
-    flushSync(() => setAdvancedOpen(true));
+    flushSync(() => {
+      setAccessOpen(false);
+      setAdvancedOpen(true);
+    });
     queueMicrotask(() => {
-      if (!advancedSandboxOverride) {
-        owner.querySelector<HTMLElement>("#spawn-access")?.focus();
-        return;
-      }
       const field = owner.querySelector<HTMLElement>('[data-launch-field="sandbox"]');
       const selected = field?.querySelector<HTMLElement>('[role="radio"][aria-checked="true"]');
       const firstEnabled = field?.querySelector<HTMLElement>(
@@ -2808,122 +2845,6 @@ function SpawnForm({
           </InlineNotice>
         )}
 
-        {/* Host picker (Component 06b): rendered only when the manifest lists a
-            non-local source, so the common single-host form is byte-for-byte
-            unchanged. It is a quiet-row Disclosure, the same control the
-            Plugins-for-this-session setting uses. The expanded body is the one
-            host list: online hosts are choices, an offline host keeps its own
-            Connect action in that list, and the last row opens the hosts
-            settings for a host the hub does not list yet. The row sits ABOVE
-            the working directory: the folder list, recents, and validation all
-            come from the selected machine (hostRequest), so the form reads
-            pick-the-machine first, then the folder on it. */}
-        {showHostPicker && (
-          <div className={`${CLASS.quietRows} ${CLASS.desktopOnly}`}>
-            <div className={CLASS.quietRow} data-testid="spawn-host-desktop" ref={hostDisclosureRef}>
-              <Disclosure
-                open={hostPickerOpen}
-                onOpenChange={setHostPickerOpen}
-                data-testid="spawn-host-disclosure"
-                disabled={busy}
-                summary={
-                  <div className={CLASS.quietSummary} data-testid="spawn-host-summary">
-                    <strong>Host</strong>
-                    <span data-testid="spawn-host-value">{displayHostLabel}</span>
-                  </div>
-                }
-              >
-                <SpawnHostSelection
-                  options={displaySources}
-                  value={displayHostChoice}
-                  connecting={connectingHosts}
-                  onSelect={(id) => {
-                    setHostPickerOpen(false);
-                    selectHost(id);
-                  }}
-                  onConnect={connectHost}
-                  onConnectHost={() => {
-                    setHostPickerOpen(false);
-                    openHostsSettings();
-                  }}
-                />
-              </Disclosure>
-            </div>
-          </div>
-        )}
-
-        {/* The two facts a session starts from, as a pair of summary tiles
-            under the task: where it runs and what it may touch. Each tile's
-            action opens the owner of that fact - the directory picker, the
-            access control. */}
-        <div className={CLASS.summaryRow}>
-          <div className={CLASS.cfgDir}>
-            <PathField
-              id="spawn-cwd"
-              variant="prominent"
-              kind="dir"
-              value={cwd}
-              onChange={(path) => {
-                setCwd(path);
-                commitLastWorkingDir(path);
-              }}
-              complete={complete}
-              listRecents={listRecents}
-              fallbackDir={pickerFallbackDir}
-              directory={{ validatePath, createDirectory }}
-              ariaLabel="Working directory"
-              placeholder="Choose a folder"
-            />
-            {/* Git info is a property of that directory (HEAD there), so it
-                stays beside the directory tile. PathField's prominent variant
-                has no detail slot to carry it inside the trigger. */}
-            {branch !== "" && (
-              <span className={CLASS.branch} data-testid="spawn-branch">
-                {branch}
-              </span>
-            )}
-          </div>
-          {/* A live region: a changed access mode re-announces what the
-              session will be allowed to do. */}
-          <Card
-            variant="outlined"
-            role="status"
-            data-testid="spawn-effective-access"
-            data-state={resolveStatus}
-            data-sandbox={resolveStatus === "ready" ? effectiveSandbox : undefined}
-            data-access={resolveStatus === "ready" ? (effectiveAccess?.value ?? effectiveSandbox) : undefined}
-            data-source={advancedSandboxOverride ? "advanced" : "access"}
-          >
-            <div className={CLASS.accessTile}>
-              <span className={CLASS.tileSeat} aria-hidden="true">
-                <ToolIcon kind="shield" size={16} />
-              </span>
-              <span className={CLASS.tileText}>
-                {resolveStatus === "ready" ? (
-                  <>
-                    <span className={CLASS.tileCaption}>Effective access</span>
-                    <strong className={CLASS.tileHeadline}>
-                      {effectiveAccess?.label ?? (effectiveSandbox || "inherited")}
-                    </strong>
-                    <span className={CLASS.tileCaption}>
-                      {advancedSandboxOverride ? "Set by the Advanced sandbox override." : "Set by Access mode."}
-                      {effectiveAccessDescription ? ` ${effectiveAccessDescription}` : ""}
-                    </span>
-                  </>
-                ) : (
-                  <span className={CLASS.summaryPending}>
-                    {resolveStatus === "error"
-                      ? "Effective access is unresolved because launch settings could not be resolved."
-                      : "Effective access is being resolved."}
-                  </span>
-                )}
-              </span>
-              <Button variant="quiet" size="xs" type="button" onClick={focusAccessOwner}>
-                Change
-              </Button>
-            </div>
-          </Card>
-        </div>
         {connectingProvider !== null && providerSetupIsLocal && (
           <ConnectProviderDialogBoundary
             key={dialogChunkVersion}
@@ -2967,6 +2888,8 @@ function SpawnForm({
             onConnectHost={openHostsSettings}
             accessMode={accessMode}
             accessOptions={accessOptions}
+            effectiveAccessLabel={accessValue}
+            advancedAccessOverride={advancedSandboxOverride}
             onAccessChange={setAccessMode}
             pluginPreview={pluginPreview.state}
             pluginSelection={pluginSelection}
@@ -2978,7 +2901,137 @@ function SpawnForm({
           />
         </div>
 
+        {/* The settings the launch starts from, as quiet disclosure rows in
+            one hairline-divided list. The host row leads because the folder
+            list, recents, and validation all come from the selected machine. */}
         <div className={CLASS.quietRows}>
+          {showHostPicker && (
+            <div
+              className={`${CLASS.desktopOnly} ${CLASS.quietRow}`}
+              data-testid="spawn-host-desktop"
+              ref={hostDisclosureRef}
+            >
+              <Disclosure
+                open={hostPickerOpen}
+                onOpenChange={setHostPickerOpen}
+                data-testid="spawn-host-disclosure"
+                disabled={busy}
+                summary={
+                  <div className={CLASS.quietSummary} data-testid="spawn-host-summary">
+                    <strong>Host</strong>
+                    <span data-testid="spawn-host-value">{displayHostLabel}</span>
+                  </div>
+                }
+              >
+                <SpawnHostSelection
+                  options={displaySources}
+                  value={displayHostChoice}
+                  connecting={connectingHosts}
+                  onSelect={(id) => {
+                    setHostPickerOpen(false);
+                    selectHost(id);
+                  }}
+                  onConnect={connectHost}
+                  onConnectHost={() => {
+                    setHostPickerOpen(false);
+                    openHostsSettings();
+                  }}
+                />
+              </Disclosure>
+            </div>
+          )}
+          <div className={`${CLASS.desktopOnly} ${CLASS.quietRow}`} data-testid="spawn-cwd-desktop">
+            <Button
+              ref={cwdTriggerRef}
+              id="spawn-cwd"
+              type="button"
+              variant="quiet"
+              size="xs"
+              block
+              wrap
+              data-testid="spawn-cwd-trigger"
+              aria-haspopup="dialog"
+              aria-expanded={cwdPickerOpen}
+              aria-label={`Working directory: ${cwdText}${branch !== "" ? `, branch ${branch}` : ""} — browse`}
+              onClick={() => setCwdPickerOpen(true)}
+            >
+              <span className={`${CLASS.quietSummary} ${CLASS.quietButtonSummary}`}>
+                <strong>Working directory</strong>
+                <span data-testid="spawn-cwd-value" data-state={cwd ? "chosen" : "unset"} title={cwd}>
+                  {cwdText}
+                </span>
+                {/* Git info is a property of that directory (HEAD there), so
+                    it suffixes the directory value on the row. */}
+                {branch !== "" && (
+                  <span className={CLASS.branch} data-testid="spawn-branch">
+                    {branch}
+                  </span>
+                )}
+                <span className={`${CLASS.quietSummaryAction} ${CLASS.rowChevron}`} aria-hidden="true">
+                  <Chevron direction="right" />
+                </span>
+              </span>
+            </Button>
+            {cwdPickerOpen && (
+              <DirectoryPicker
+                key={cwd}
+                value={cwd}
+                fallbackDir={pickerFallbackDir}
+                complete={complete}
+                listRecents={listRecents}
+                validatePath={validatePath}
+                createDirectory={createDirectory}
+                onPick={(path) => {
+                  setCwd(path);
+                  commitLastWorkingDir(path);
+                  closeCwdPicker();
+                }}
+                onClose={closeCwdPicker}
+              />
+            )}
+          </div>
+          {/* A live region: a changed access mode re-announces what the
+              session will be allowed to do. */}
+          <div
+            className={`${CLASS.desktopOnly} ${CLASS.quietRow}`}
+            data-testid="spawn-effective-access"
+            data-state={resolveStatus}
+            data-sandbox={resolveStatus === "ready" ? effectiveSandbox : undefined}
+            data-access={resolveStatus === "ready" ? (effectiveAccess?.value ?? effectiveSandbox) : undefined}
+            data-source={advancedSandboxOverride ? "advanced" : "access"}
+            ref={accessRowRef}
+          >
+            <Disclosure
+              open={accessOpen}
+              onOpenChange={setAccessRowOpen}
+              data-testid="spawn-access-disclosure"
+              summary={
+                <div className={CLASS.quietSummary} data-testid="spawn-access-summary">
+                  <strong>Access mode</strong>
+                  <span role="status" data-testid="spawn-access-value">
+                    {accessValue}
+                  </span>
+                </div>
+              }
+            >
+              <FormRow label="Access mode" htmlFor="spawn-access">
+                <Select
+                  id="spawn-access"
+                  value={accessMode}
+                  onChange={(e) => setAccessMode(e.target.value)}
+                  options={accessOptions}
+                />
+              </FormRow>
+              <p className={CLASS.accessNote} data-testid="spawn-access-note">
+                {accessNote}
+              </p>
+              {advancedSandboxOverride && (
+                <Button variant="quiet" size="xs" type="button" onClick={focusAccessOwner}>
+                  Change in Advanced options
+                </Button>
+              )}
+            </Disclosure>
+          </div>
           {pluginSelectionSupported && (
             <div className={`${CLASS.desktopOnly} ${CLASS.quietRow}`} data-testid="spawn-plugin-desktop">
               {previewResponse === null && (
@@ -3063,14 +3116,6 @@ function SpawnForm({
                   value={harness || "evener"}
                   onChange={(e) => handleHarnessChange(e.target.value)}
                   options={harnessOptions}
-                />
-              </FormRow>
-              <FormRow label="Access mode" htmlFor="spawn-access">
-                <Select
-                  id="spawn-access"
-                  value={accessMode}
-                  onChange={(e) => setAccessMode(e.target.value)}
-                  options={accessOptions}
                 />
               </FormRow>
               <Switch
