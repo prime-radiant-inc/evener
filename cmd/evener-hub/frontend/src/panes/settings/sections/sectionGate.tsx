@@ -5,14 +5,16 @@ import { Button, InlineNotice, Skeleton } from "../../../widgets";
 export interface SectionGateProps {
   loading: boolean;
   error: string | null;
-  title: string;
-  onRetry: () => void;
+  title?: string;
+  onRetry?: () => void;
   skeletonLines?: number;
+  /** The loaded body. Omit when the caller renders its own body after the gate. */
+  children?: ReactNode;
 }
 
-export function SectionGate({ loading, error, title, onRetry, skeletonLines }: SectionGateProps) {
+export function SectionGate({ loading, error, title, onRetry, skeletonLines, children }: SectionGateProps) {
   if (loading) return <Skeleton lines={skeletonLines} />;
-  if (error === null) return null;
+  if (error === null) return <>{children}</>;
   return (
     <InlineNotice
       tone="danger"
@@ -20,9 +22,11 @@ export function SectionGate({ loading, error, title, onRetry, skeletonLines }: S
       data-reason="unavailable"
       title={title}
       action={
-        <Button size="sm" onClick={onRetry}>
-          Retry
-        </Button>
+        onRetry ? (
+          <Button size="sm" onClick={onRetry}>
+            Retry
+          </Button>
+        ) : undefined
       }
     >
       {error}
