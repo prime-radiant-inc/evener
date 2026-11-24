@@ -1,6 +1,7 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeAll, beforeEach, describe, expect, test } from "vitest";
+import { beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
+import { MOBILE_QUERY, resetMobileViewportForTests, TABLET_QUERY } from "../../../shell/useIsMobile";
 import { installLocalStorage, MemoryStorage } from "../../../storageTestUtils";
 import { prefsStore, resetPrefsStoreForTests } from "../../../stores/prefs";
 import { Toast } from "../../../widgets";
@@ -105,4 +106,55 @@ describe("Transcript width", () => {
     expect(prefsStore.getState().transcriptMeasure).toBe("wide");
     expect(document.body.dataset.transcriptMeasure).toBe("wide");
   });
+});
+
+test("the session list remembers only the choice made for the active layout", async () => {
+  const user = userEvent.setup();
+  const narrow = Object.assign(new EventTarget(), { matches: true });
+  const tablet = Object.assign(new EventTarget(), { matches: false });
+  const otherQuery = Object.assign(new EventTarget(), { matches: false });
+  vi.stubGlobal("matchMedia", (query: string) =>
+    query === MOBILE_QUERY ? narrow : query === TABLET_QUERY ? tablet : otherQuery,
+  );
+  const resize = (media: typeof narrow, matches: boolean) =>
+    act(() => {
+      media.matches = matches;
+      media.dispatchEvent(Object.assign(new Event("change"), { matches }));
+    });
+  const stored = () =>
+    ["phone", "tablet", "desktop"].map((layout) => localStorage.getItem(`evener.prefs.sessionListStyle.${layout}`));
+
+  try {
+    renderWithToasts();
+    const controls = within(screen.getByTestId("session-list-style")).getByRole("radiogroup");
+    const [automatic, threeLines, compact] = within(controls).getAllByRole("radio");
+    if (!automatic || !threeLines || !compact) throw new Error("expected three style options");
+    expect(controls.hasAttribute("aria-describedby")).toBe(true);
+    expect(automatic.getAttribute("aria-checked")).toBe("true");
+    expect(stored()).toEqual([null, null, null]);
+
+    await user.click(compact);
+    resize(tablet, true);
+    expect(automatic.getAttribute("aria-checked")).toBe("true");
+    expect(stored()).toEqual(["compact", null, null]);
+    await user.click(compact);
+
+    resize(narrow, false);
+    expect(automatic.getAttribute("aria-checked")).toBe("true");
+    expect(stored()).toEqual(["compact", "compact", null]);
+    await user.click(threeLines);
+
+    act(() => resetPrefsStoreForTests());
+    expect(threeLines.getAttribute("aria-checked")).toBe("true");
+    resize(narrow, true);
+    expect(compact.getAttribute("aria-checked")).toBe("true");
+    await user.click(automatic);
+    resize(tablet, false);
+    expect(compact.getAttribute("aria-checked")).toBe("true");
+    expect(stored()).toEqual(["compact", null, "flat"]);
+  } finally {
+    cleanup();
+    vi.unstubAllGlobals();
+    resetMobileViewportForTests();
+  }
 });

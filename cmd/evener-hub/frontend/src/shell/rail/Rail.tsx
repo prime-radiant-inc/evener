@@ -22,7 +22,7 @@ import {
 import { selectAttentionSummary, selectDisplaySources } from "../../stores/navigation/selectors";
 import { buildShutdownConvergence } from "../../stores/navigation/shutdownConvergence";
 import { navigationStore, useNavigationStore } from "../../stores/navigation/store";
-import { type SidebarGroupingPref, usePrefsStore } from "../../stores/prefs";
+import { defaultSessionListStyle, type SidebarGroupingPref, usePrefsStore } from "../../stores/prefs";
 import { sessionReadProgress, useSessionSeen } from "../../stores/readProgress";
 import { threadsStore } from "../../stores/threads";
 import {
@@ -51,7 +51,7 @@ import { closePanesForDeletedSessions } from "../deletedSessionPanes";
 import { useDismissNavigationChrome } from "../navigationChrome";
 import { navigate } from "../routing";
 import { openSessionByRef } from "../sessionPlacement";
-import { useIsMobile } from "../useIsMobile";
+import { useIsMobile, useWebLayout } from "../useIsMobile";
 import { currentSessionRef, useWorkspaceStore, workspaceStore } from "../workspace";
 import {
   assignSessionPin,
@@ -387,8 +387,6 @@ function PinnedRailSection({ section, open, onToggleOpen, onRename, onDelete, ..
 }
 
 export interface RailProps {
-  /** Override the phone/tablet flat and desktop classic defaults. */
-  appearance?: "classic" | "flat";
   onHide?: () => void;
   width?: number;
   onWidthChange?: (width: number) => void;
@@ -1192,10 +1190,12 @@ function NavigationRail({
   );
 }
 
-export function Rail({ appearance, ...props }: RailProps = {}) {
-  const isMobile = useIsMobile();
+export function Rail(props: RailProps = {}) {
+  const layout = useWebLayout();
+  const style = usePrefsStore((state) => state.sessionListStyle[layout]);
+  const flat = (style === "auto" ? defaultSessionListStyle(layout) : style) === "flat";
   return (
-    <RailFlatContext.Provider value={appearance === undefined ? isMobile : appearance === "flat"}>
+    <RailFlatContext.Provider value={flat}>
       <NavigationRail {...props} />
     </RailFlatContext.Provider>
   );

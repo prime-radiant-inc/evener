@@ -77,6 +77,7 @@ import {
 import { useSyncExternalStore } from "react";
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
+import type { WebLayout } from "../shell/useIsMobile";
 
 export type ThemePref = "system" | "light" | "dark";
 export type PhoneDensityPref = "compact" | "comfortable";
@@ -96,6 +97,11 @@ export type NotificationsLoudScopePref = "asks" | "all";
 // branches - because the grouping is the feature, not something the
 // control must unlock first.
 export type SidebarGroupingPref = "host-project" | "project-host";
+export type SessionListStylePref = "auto" | "flat" | "compact";
+
+export function defaultSessionListStyle(layout: WebLayout): Exclude<SessionListStylePref, "auto"> {
+  return layout === "desktop" ? "compact" : "flat";
+}
 
 export interface PrefsStoreState {
   theme: ThemePref;
@@ -103,6 +109,7 @@ export interface PrefsStoreState {
   sidebarHidden: boolean;
   sidebarWidth: number;
   sidebarGrouping: SidebarGroupingPref;
+  sessionListStyle: Record<WebLayout, SessionListStylePref>;
   fontSize: FontSizePref;
   transcriptMeasure: TranscriptMeasurePref;
   // Composer prefs (Display section, parity-m7-settings.md §5). Field names
@@ -136,6 +143,7 @@ export interface PrefsStoreState {
   setSidebarHidden(value: boolean): void;
   setSidebarWidth(value: number): void;
   setSidebarGrouping(value: SidebarGroupingPref): void;
+  setSessionListStyle(layout: WebLayout, value: SessionListStylePref): void;
   setFontSize(value: FontSizePref): void;
   setTranscriptMeasure(value: TranscriptMeasurePref): void;
   setEnterToSend(value: boolean): void;
@@ -342,6 +350,14 @@ const TRANSCRIPT_MEASURE_VALUES: readonly TranscriptMeasurePref[] = ["reading", 
 const LOUD_SCOPE_VALUES: readonly NotificationsLoudScopePref[] = ["asks", "all"];
 const SIDEBAR_GROUPING_VALUES: readonly SidebarGroupingPref[] = ["host-project", "project-host"];
 
+function sessionListStyleKey(layout: WebLayout): string {
+  return `sessionListStyle.${layout}`;
+}
+
+function readSessionListStyle(layout: WebLayout): SessionListStylePref {
+  return readEnum<SessionListStylePref>(sessionListStyleKey(layout), ["flat", "compact"], "auto");
+}
+
 // Per-field localStorage key names for the grouped notifications record -
 // exposed as a small in-memory record for a convenient single destructure at
 // the section's call site, but each
@@ -486,6 +502,7 @@ function loadInitialState(): Omit<
   | "setSidebarHidden"
   | "setSidebarWidth"
   | "setSidebarGrouping"
+  | "setSessionListStyle"
   | "setFontSize"
   | "setTranscriptMeasure"
   | "setEnterToSend"
@@ -509,6 +526,11 @@ function loadInitialState(): Omit<
     sidebarHidden: readBool("sidebarHidden", false),
     sidebarWidth: readNumber("sidebarWidth", SIDEBAR_WIDTH_DEFAULT, clampSidebarWidth),
     sidebarGrouping: readEnum("sidebarGrouping", SIDEBAR_GROUPING_VALUES, "project-host"),
+    sessionListStyle: {
+      phone: readSessionListStyle("phone"),
+      tablet: readSessionListStyle("tablet"),
+      desktop: readSessionListStyle("desktop"),
+    },
     fontSize,
     transcriptMeasure,
     enterToSend: readBool("enterToSend", false),
@@ -557,6 +579,13 @@ export const prefsStore = createStore<PrefsStoreState>((set) => ({
   setSidebarGrouping(value) {
     writeRaw("sidebarGrouping", value);
     set({ sidebarGrouping: value });
+  },
+
+  setSessionListStyle(layout, value) {
+    const key = sessionListStyleKey(layout);
+    if (value === "auto") removeRaw(key);
+    else writeRaw(key, value);
+    set((state) => ({ sessionListStyle: { ...state.sessionListStyle, [layout]: value } }));
   },
 
   setFontSize(value) {

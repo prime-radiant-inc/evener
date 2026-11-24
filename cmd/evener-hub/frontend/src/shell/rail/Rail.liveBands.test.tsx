@@ -17,7 +17,7 @@ import { toastKinds } from "../../widgets/toast/toastTestUtils";
 import { resetActivitySidebarStoreForTests } from "../activitybar/activitySidebarStore";
 import { ClientProvider } from "../clientContext";
 import { NeedsYouProvider } from "../NeedsYouProvider";
-import { resetMobileViewportForTests } from "../useIsMobile";
+import { MOBILE_QUERY, resetMobileViewportForTests, TABLET_QUERY } from "../useIsMobile";
 import { resetWorkspaceStoreForTests } from "../workspace";
 import { liveBandRefs, railLiveBands } from "./liveBands";
 import { Rail, type RailProps } from "./Rail";
@@ -292,13 +292,18 @@ test("a pending question's row says its usable words on the phone and its word a
 });
 
 test.each([
-  { narrow: true, appearance: undefined, flat: true },
-  { narrow: false, appearance: undefined, flat: false },
-  { narrow: true, appearance: "classic" as const, flat: false },
-  { narrow: false, appearance: "flat" as const, flat: true },
-])("the row's reading target follows its appearance ($narrow, $appearance)", async ({ narrow, appearance, flat }) => {
-  const restore = installMobileViewport(narrow ? undefined : []);
+  { layout: "phone", queries: [MOBILE_QUERY], choice: null, flat: true },
+  { layout: "tablet", queries: [MOBILE_QUERY, TABLET_QUERY], choice: null, flat: true },
+  { layout: "desktop", queries: [TABLET_QUERY], choice: null, flat: false },
+  { layout: "phone", queries: [MOBILE_QUERY], choice: "compact", flat: false },
+  { layout: "desktop", queries: [TABLET_QUERY], choice: "flat", flat: true },
+])("the row's reading target follows its appearance ($layout, $choice)", async ({ layout, queries, choice, flat }) => {
+  const restore = installMobileViewport(queries);
   try {
+    if (choice !== null) {
+      localStorage.setItem(`evener.prefs.sessionListStyle.${layout}`, choice);
+      resetPrefsStoreForTests();
+    }
     const project = "Release engineering";
     const updated_at = new Date(Date.now() - 60_000).toISOString();
     const remote = { id: "buildbox", label: "Build box", kind: "appwire", online: true } as const;
@@ -312,20 +317,17 @@ test.each([
       updated_at,
     });
     const quiet = session("quiet", { updated_at });
-    await mountRail(
-      {
-        live: [asked, quiet],
-        sources: [{ id: "local", label: "This host", kind: "local", online: true }, remote],
-      },
-      { appearance },
-    );
+    await mountRail({
+      live: [asked, quiet],
+      sources: [{ id: "local", label: "This host", kind: "local", online: true }, remote],
+    });
     for (const entry of [asked, quiet]) {
       const row = within(rowFor(entry.ref));
       const target = within(row.getByTestId("rail-row-title"));
       expect(row.getAllByTestId("rail-row-time")).toHaveLength(1);
       expect(target.queryByTestId("rail-row-time") !== null).toBe(flat);
       expect(target.queryByText(project) !== null).toBe(flat && entry === asked);
-      expect(target.queryByText(ASKED) !== null).toBe((flat || narrow) && entry === asked);
+      expect(target.queryByText(ASKED) !== null).toBe((flat || layout !== "desktop") && entry === asked);
       if (flat) {
         const status = target.getByTestId("rail-row-status");
         if (entry === quiet) expect(status.textContent).toBe("");

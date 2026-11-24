@@ -451,7 +451,11 @@ recipe `Tree` and `ListRow` share. `Tree` owns the inset, all three states, the 
 the nested levels' guide rails (§3); the rail contributes row content only. Section
 headings stay full-bleed above the rows.
 
-Three lines is the default on the phone drawer and tablet board. One reading target
+Settings → Appearance → Session list style saves a browser-local choice for the
+current layout: phone, tablet, or desktop. Automatic clears that layout's override.
+Changing layouts uses the destination's saved choice without editing it. Automatic
+uses Three lines on the phone drawer and tablet board, and Compact rows on desktop.
+In Three lines, one reading target
 holds the semibold title, one status line, and quiet metadata: the age once, then the
 actual project name and any host cue. Reserve the status line even when it is empty.
 Use the question or work from the navigation summary when available, and omit missing
