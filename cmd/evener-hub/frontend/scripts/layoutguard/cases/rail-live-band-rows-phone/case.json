@@ -5,6 +5,7 @@
     "styles/global.css",
     "styles/motion.module.css",
     "styles/text.module.css",
+    "styles/tapfloor.module.css",
     "styles/tokens.css",
     "styles/help.module.css",
     "widgets/internal/floatingSurface.module.css",
@@ -12,6 +13,8 @@
     "widgets/hovercard/hovercard.module.css",
     "widgets/tree/tree.module.css",
     "widgets/badge/badge.module.css",
+    "widgets/button/button.module.css",
+    "widgets/menu/menu.module.css",
     "shell/rail/Rail.module.css",
     "shell/rail/RailRow.module.css"
   ],
@@ -23,9 +26,9 @@
     "touch": true
   },
   "mutation": {
-    "declaration": "RailRow.module.css: .why { white-space: nowrap } removed",
-    "verified": "2026-11-13",
+    "declaration": "RailRow.module.css: remove flex-direction: column from the narrow .sessionTitleButton",
+    "verified": "2026-11-24",
     "expect": "fail",
-    "note": "Without nowrap the long why text wraps and the .why box grows past one caption line. On 2026-11-24 the old title-only button put the reason 29.59px below the name for an 18.2px line. Inside one target without the column layout, their centers were just 0.5px apart. Both failed."
+    "note": "Removing the column direction put the reason 1.5px above the title's text center and failed the spacing assertion. Restoring it put the reason 16.69px below and passed."
   }
 }
