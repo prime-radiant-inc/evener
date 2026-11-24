@@ -5,6 +5,7 @@
     "styles/global.css",
     "styles/tokens.css",
     "styles/surface.module.css",
+    "widgets/internal/control.module.css",
     "widgets/internal/fieldTrigger.module.css",
     "widgets/pathfield/pathfield.module.css",
     "widgets/formrow/formrow.module.css"

@@ -143,6 +143,36 @@ test("leading receives the widget's open state and summaryClassName lands on the
   expect(screen.getByTestId("leading-body")).toBeTruthy();
 });
 
+test("summaryAriaLabel names the summary per open state and leaves the visible summary alone", () => {
+  const label = (open: boolean) => (open ? "Collapse section" : "Expand section");
+  const view = (open: boolean, name: (open: boolean) => string | undefined) => (
+    <Disclosure
+      open={open}
+      onOpenChange={() => {}}
+      summary="Visible summary"
+      summaryAriaLabel={name}
+      data-testid="named"
+    >
+      <span>Body</span>
+    </Disclosure>
+  );
+
+  const { rerender } = render(view(false, label));
+  const details = screen.getByTestId("named");
+  const summary = details.querySelector("summary");
+  if (summary === null) throw new Error("the disclosure rendered no summary");
+  expect(summary.getAttribute("aria-label")).toBe(label(false));
+  expect(summary.textContent).toBe("Visible summary");
+
+  rerender(view(true, label));
+  expect(summary.getAttribute("aria-label")).toBe(label(true));
+
+  // A caller that only needs a name in one state returns undefined there, so
+  // the visible content stays the accessible name instead of an empty label.
+  rerender(view(true, () => undefined));
+  expect(summary.hasAttribute("aria-label")).toBe(false);
+});
+
 // Declaration-level (jsdom runs no cascade): the quiet variant drops the hover
 // fill and the open-state wash, and keeps the summary flush with the content
 // column, while the default variant keeps both washes.

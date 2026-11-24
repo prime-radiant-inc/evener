@@ -3,6 +3,7 @@
   "cssFiles": [
     "styles/global.css",
     "styles/tokens.css",
+    "widgets/internal/control.module.css",
     "widgets/input/input.module.css",
     "widgets/propertylist/propertylist.module.css"
   ],

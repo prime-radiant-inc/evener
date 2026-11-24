@@ -316,7 +316,7 @@ export function MobileSettingRows({
           tone="danger"
           live="status"
           action={
-            <Button variant="quiet" size="xs" type="button" onClick={onPluginRetry}>
+            <Button variant="quiet" size="sm" type="button" onClick={onPluginRetry}>
               Retry
             </Button>
           }
