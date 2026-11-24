@@ -97,8 +97,13 @@ export { answeredAskUserReply, answeredAskUserSuffix, parseAskUserQuestions } fr
 export type { AttachmentRejection, RejectableFile } from "./attachmentLimits";
 export {
   admissionRejection,
+  fitImageDimensions,
+  IMAGE_JPEG_QUALITY,
   MAX_ATTACHMENT_BYTES,
   MAX_ATTACHMENTS,
+  MAX_IMAGE_LONG_EDGE,
+  MAX_SOURCE_BYTES,
+  MAX_SOURCE_PIXELS,
   rejectionReason,
   sizeRejection,
 } from "./attachmentLimits";

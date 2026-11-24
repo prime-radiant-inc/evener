@@ -42,7 +42,9 @@ test("the reading measure is one body-level token with a wide override", () => {
   expect(read("panes/session/session.module.css")).not.toMatch(/76rem/);
   // The ask dock is the transcript's trailing virtual row and sits outside
   // the .turn column, so it has to take the token itself (roborev, PR #947).
-  expect(read("panes/session/composer/askDock/askdock.module.css")).toMatch(/max-width: var\(--session-measure\)/);
+  expect(read("panes/session/composer/askDock/askdock.module.css")).toMatch(
+    /composes:\s*measureColumn from "[./]*styles\/surface\.module\.css"/,
+  );
   expect(read("panes/session/composer/askDock/askdock.module.css")).not.toMatch(/76rem/);
 });
 

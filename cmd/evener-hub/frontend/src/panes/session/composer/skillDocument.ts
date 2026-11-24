@@ -343,12 +343,42 @@ export function serializeSkillDocument(doc: ProseMirrorNode): SkillEditorValue {
   };
 }
 
+/** Mentions of every active skill/command atom inside `value`, in document order. */
+function documentMentions(value: SkillEditorValue): ComposerMention[] {
+  const mentions: ComposerMention[] = [];
+  let offset = 0;
+  parseSkillDocument(value).forEach((node) => {
+    if (node.isText) {
+      offset += (node.text ?? "").length;
+      return;
+    }
+    const kind = node.type.name === "command" ? "command" : "skill";
+    mentions.push({ kind, name: node.attrs.name, offset });
+    offset += node.attrs.name.length + 1;
+  });
+  return mentions;
+}
+
+/** Active skill/command atoms wholly contained within `[start, end)`, with offsets relative to `start`. */
+export function extractMentionsInRange(value: SkillEditorValue, start: number, end: number): ComposerMention[] {
+  if (end <= start) return [];
+  const captured: ComposerMention[] = [];
+  for (const mention of documentMentions(value)) {
+    const mentionEnd = mention.offset + mention.name.length + 1;
+    if (mention.offset >= start && mentionEnd <= end) {
+      captured.push({ kind: mention.kind, name: mention.name, offset: mention.offset - start });
+    }
+  }
+  return captured;
+}
+
 /** Shift existing atom identities across a plain-text splice without selecting new prose. */
 export function patchSelectionText(
   value: SkillEditorValue,
   text: string,
   splice?: TextSplice,
   stagedAdded?: readonly ImageMarkerRange[],
+  restoredMentions?: readonly ComposerMention[],
 ): SkillEditorValue {
   // The adoption is re-derived from the marks, so a splice that removes or
   // moves an adopted occurrence has to move its range too: without this the
@@ -376,6 +406,15 @@ export function patchSelectionText(
   // `SkillEditor` syncs the updated `stagedImage` marks in place.
   const keep = (patched: SkillEditorValue): SkillEditorValue =>
     stagedImageRanges.length === 0 ? patched : { ...patched, stagedImageRanges };
+  if (restoredMentions && restoredMentions.length > 0) {
+    const surviving = reconcileComposerMentions(value.text, text, documentMentions(value));
+    const merged = [...surviving, ...restoredMentions].sort((left, right) => left.offset - right.offset);
+    const skillNames = canonicalSkillNames(merged.filter((m) => m.kind === "skill").map((m) => m.name));
+    const commandNames = canonicalSkillNames(merged.filter((m) => m.kind === "command").map((m) => m.name));
+    return keep(
+      serializeSkillDocument(parseSkillDocument({ ...adopted, text, skillNames, commandNames, mentions: merged })),
+    );
+  }
   if (!value.mentions) return keep(serializeSkillDocument(parseSkillDocument({ ...adopted, text })));
   const mentions = reconcileComposerMentions(value.text, text, value.mentions);
   return keep(serializeSkillDocument(parseSkillDocument({ ...adopted, text, mentions })));
