@@ -20,6 +20,8 @@ import (
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/appwire/appwiretest"
+	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubtest"
 	"primeradiant.com/evener/identifier"
@@ -1091,4 +1093,331 @@ func TestThreadStartIdempotencyPayloadConflictAndTargetDeleted(t *testing.T) {
 	if data.MutationOutcome != appwire.MutationOutcomeTargetDeleted || data.ClientMutationID != spawnedParams.ClientMutationID {
 		t.Fatalf("deleted spawned data = %+v, want MutationOutcomeTargetDeleted", data)
 	}
+}
+
+func dialRemoteHubClient(t *testing.T, srv *httptest.Server) *appwire.Client {
+	t.Helper()
+	transport, err := appwire.DialWebSocket(t.Context(), "ws"+strings.TrimPrefix(srv.URL, "http"), srv.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := appwire.NewClient(transport)
+	client.Start(t.Context())
+	t.Cleanup(func() { _ = client.Close() })
+	if _, err := client.Initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatal(err)
+	}
+	return client
+}
+
+func TestThreadStartIdempotencyRemoteOfflineNotAccepted(t *testing.T) {
+	stateRoot := t.TempDir()
+	hub := newHubRPCTestServer(t, testWebConfig(t, hubcore.WebConfig{
+		HubStateRoot: stateRoot,
+		RunDir:       t.TempDir(),
+		RemoteHosts:  []hostreg.Host{{Name: "remote-a", SSH: "remote-a.example"}},
+		RemoteHostClient: func(context.Context, string) (*appwire.Client, error) {
+			t.Fatal("offline host must not dial on thread/start")
+			return nil, nil
+		},
+		RemoteHostClientIfAttached: func(string) (*appwire.Client, bool) {
+			return nil, false
+		},
+		RemoteHostOnline: func(string) bool { return false },
+	}))
+	defer hub.Close()
+	client := dialHubRPCInitialized(t, hub)
+
+	_, err := appwiretest.ThreadStart(context.Background(), client, appwire.ThreadStartParams{
+		ClientMutationID: "mut-remote-offline",
+		Source:           "remote-a",
+		Model:            "openai/gpt-5",
+		CWD:              "/remote/work",
+	})
+	wire, data := wireErrorData(t, err)
+	if wire.Code != appwire.CodeUnavailable || data.EvenerErrorInfo != appwire.ErrorSessionUnavailable ||
+		data.MutationOutcome != appwire.MutationOutcomeNotAccepted || data.ClientMutationID != "mut-remote-offline" {
+		t.Fatalf("offline remote data=%+v wire=%+v", data, wire)
+	}
+	if _, statErr := os.Stat(filepath.Join(stateRoot, "creations", "state.json")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("offline remote unexpectedly wrote creations/state.json: %v", statErr)
+	}
+}
+
+func TestThreadStartIdempotencyRemoteCapableForwardsAndDedups(t *testing.T) {
+	remoteSessionID := hubtest.SessionID(t)
+	var remoteSpawns atomic.Int32
+	var seenMutationIDs []string
+	var mu sync.Mutex
+
+	remoteServer := appserver.NewServer(appserver.ServerConfig{
+		ServerName: "remote-capable",
+		SourceID:   "local",
+		Features:   appwire.FeatureSet{ThreadStartIdempotency: true, TurnStart: true},
+	})
+	appserver.HandleTyped(remoteServer.Router(), appwire.MethodThreadStart, func(_ context.Context, params appwire.ThreadStartParams) (appwire.ThreadStartResponse, error) {
+		mu.Lock()
+		seenMutationIDs = append(seenMutationIDs, params.ClientMutationID)
+		mu.Unlock()
+		n := remoteSpawns.Add(1)
+		disp := appwire.MutationDispositionApplied
+		if n > 1 {
+			remoteSpawns.Add(-1)
+			disp = appwire.MutationDispositionReplayed
+		}
+		return appwire.ThreadStartResponse{
+			Thread: appwire.Thread{
+				ID:        remoteSessionID,
+				SessionID: remoteSessionID,
+				Source:    "local",
+				Evener:    appwire.EvenerThread{Ref: "local:" + remoteSessionID, InstanceID: remoteSessionID},
+			},
+			Turn:             appwire.Turn{ID: "turn_1", Status: "inProgress"},
+			ClientMutationID: params.ClientMutationID,
+			Disposition:      disp,
+		}, nil
+	})
+	remoteHTTP := httptest.NewServer(http.HandlerFunc(remoteServer.ServeWebSocket))
+	defer remoteHTTP.Close()
+	remoteClient := dialRemoteHubClient(t, remoteHTTP)
+
+	localHub := newHubRPCTestServer(t, testWebConfig(t, hubcore.WebConfig{
+		HubStateRoot:               t.TempDir(),
+		RunDir:                     t.TempDir(),
+		RemoteHosts:                []hostreg.Host{{Name: "remote-a", SSH: "remote-a.example"}},
+		RemoteHostClient:           func(context.Context, string) (*appwire.Client, error) { return remoteClient, nil },
+		RemoteHostClientIfAttached: func(string) (*appwire.Client, bool) { return remoteClient, true },
+	}))
+	defer localHub.Close()
+	client := dialHubRPCInitialized(t, localHub)
+
+	params := appwire.ThreadStartParams{
+		ClientMutationID: "mut-remote-cap",
+		Source:           "remote-a",
+		Model:            "openai/gpt-5",
+		CWD:              "/remote/work",
+		Input:            []appwire.InputItem{{Type: "text", Text: "remote prompt"}},
+	}
+	first, err := appwiretest.ThreadStart(context.Background(), client, params)
+	if err != nil {
+		t.Fatalf("first remote start: %v", err)
+	}
+	if first.Thread.Evener.Ref != "remote-a:"+remoteSessionID || first.ClientMutationID != "mut-remote-cap" || first.Disposition != appwire.MutationDispositionApplied {
+		t.Fatalf("first remote resp = %+v", first)
+	}
+	replay, err := appwiretest.ThreadStart(context.Background(), client, params)
+	if err != nil {
+		t.Fatalf("retry remote start: %v", err)
+	}
+	if replay.Thread.Evener.Ref != "remote-a:"+remoteSessionID || replay.ClientMutationID != "mut-remote-cap" || replay.Disposition != appwire.MutationDispositionReplayed {
+		t.Fatalf("replay remote resp = %+v", replay)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if remoteSpawns.Load() != 1 || len(seenMutationIDs) != 2 || seenMutationIDs[0] != "mut-remote-cap" || seenMutationIDs[1] != "mut-remote-cap" {
+		t.Fatalf("remoteSpawns=%d seenMutationIDs=%v", remoteSpawns.Load(), seenMutationIDs)
+	}
+}
+
+type legacyRemoteSlotTransport struct {
+	firstStarted chan struct{}
+	once         sync.Once
+	release      chan struct{}
+}
+
+func (t *legacyRemoteSlotTransport) Send(_ context.Context, _ appwire.Message) error {
+	t.once.Do(func() { close(t.firstStarted) })
+	<-t.release
+	return nil
+}
+func (t *legacyRemoteSlotTransport) Recv(ctx context.Context) (appwire.Message, error) {
+	<-ctx.Done()
+	return appwire.Message{}, ctx.Err()
+}
+func (t *legacyRemoteSlotTransport) Close() error { return nil }
+
+func TestThreadStartIdempotencyOlderRemoteFallback(t *testing.T) {
+	remoteSessionID := hubtest.SessionID(t)
+	var remoteSpawns atomic.Int32
+	var seenMutationIDs []string
+	var mu sync.Mutex
+	var mode atomic.Int32 // 0 = succeed, 1 = NotAccepted refusal, 2 = drop transport mid-call
+
+	remoteServer := appserver.NewServer(appserver.ServerConfig{
+		ServerName: "remote-legacy",
+		SourceID:   "local",
+		Features:   appwire.FeatureSet{ThreadList: true, TurnStart: true}, // ThreadStartIdempotency == false
+	})
+	var remoteClientMu sync.Mutex
+	var activeRemoteClient *appwire.Client
+	appserver.HandleTyped(remoteServer.Router(), appwire.MethodThreadStart, func(_ context.Context, params appwire.ThreadStartParams) (appwire.ThreadStartResponse, error) {
+		mu.Lock()
+		seenMutationIDs = append(seenMutationIDs, params.ClientMutationID)
+		mu.Unlock()
+		switch mode.Load() {
+		case 1:
+			return appwire.ThreadStartResponse{}, appwire.InvalidParams("remote cwd missing").NotAccepted("")
+		case 2:
+			remoteClientMu.Lock()
+			c := activeRemoteClient
+			remoteClientMu.Unlock()
+			if c != nil {
+				_ = c.Close()
+			}
+			return appwire.ThreadStartResponse{}, errors.New("transport closed")
+		}
+		remoteSpawns.Add(1)
+		return appwire.ThreadStartResponse{
+			Thread: appwire.Thread{
+				ID:        remoteSessionID,
+				SessionID: remoteSessionID,
+				Source:    "local",
+				Evener:    appwire.EvenerThread{Ref: "local:" + remoteSessionID, InstanceID: remoteSessionID},
+			},
+			Turn: appwire.Turn{ID: "turn_1", Status: "inProgress"},
+		}, nil
+	})
+	remoteHTTP := httptest.NewServer(http.HandlerFunc(remoteServer.ServeWebSocket))
+	defer remoteHTTP.Close()
+
+	stateRoot := t.TempDir()
+	remoteClient := dialRemoteHubClient(t, remoteHTTP)
+	remoteClientMu.Lock()
+	activeRemoteClient = remoteClient
+	remoteClientMu.Unlock()
+
+	localHub := newHubRPCTestServer(t, testWebConfig(t, hubcore.WebConfig{
+		HubStateRoot:               stateRoot,
+		RunDir:                     t.TempDir(),
+		RemoteHosts:                []hostreg.Host{{Name: "remote-a", SSH: "remote-a.example"}},
+		RemoteHostClient:           func(context.Context, string) (*appwire.Client, error) { return remoteClient, nil },
+		RemoteHostClientIfAttached: func(string) (*appwire.Client, bool) { return remoteClient, true },
+	}))
+	defer localHub.Close()
+	client := dialHubRPCInitialized(t, localHub)
+
+	// 1. NotAccepted from older remote rolls back local spawning so same ID can retry.
+	mode.Store(1)
+	params := appwire.ThreadStartParams{
+		ClientMutationID: "mut-legacy-1",
+		Source:           "remote-a",
+		Model:            "openai/gpt-5",
+		CWD:              "/remote/work",
+	}
+	_, err := appwiretest.ThreadStart(context.Background(), client, params)
+	_, data := wireErrorData(t, err)
+	if data.MutationOutcome != appwire.MutationOutcomeNotAccepted || data.ClientMutationID != "mut-legacy-1" {
+		t.Fatalf("older remote NotAccepted data=%+v", data)
+	}
+
+	// 2. Success commits local completed and strips clientMutationId on wire; retry replays locally.
+	mode.Store(0)
+	first, err := appwiretest.ThreadStart(context.Background(), client, params)
+	if err != nil {
+		t.Fatalf("older remote start: %v", err)
+	}
+	if first.Thread.Evener.Ref != "remote-a:"+remoteSessionID || first.ClientMutationID != "mut-legacy-1" || first.Disposition != appwire.MutationDispositionApplied {
+		t.Fatalf("first legacy resp = %+v", first)
+	}
+	replay, err := appwiretest.ThreadStart(context.Background(), client, params)
+	if err != nil {
+		t.Fatalf("older remote replay: %v", err)
+	}
+	if replay.Disposition != appwire.MutationDispositionReplayed || replay.Thread.Evener.Ref != "remote-a:"+remoteSessionID {
+		t.Fatalf("replay legacy resp = %+v", replay)
+	}
+	if remoteSpawns.Load() != 1 {
+		t.Fatalf("remoteSpawns=%d, want 1", remoteSpawns.Load())
+	}
+	mu.Lock()
+	for _, seen := range seenMutationIDs {
+		if seen != "" {
+			mu.Unlock()
+			t.Fatalf("older remote received non-empty clientMutationId %q", seen)
+		}
+	}
+	mu.Unlock()
+
+	// 3. SSH transport drop mid-request commits local uncertain (Blocked).
+	mode.Store(2)
+	_, err = appwiretest.ThreadStart(context.Background(), client, appwire.ThreadStartParams{
+		ClientMutationID: "mut-legacy-drop",
+		Source:           "remote-a",
+		Model:            "openai/gpt-5",
+		CWD:              "/remote/work",
+	})
+	_, data = wireErrorData(t, err)
+	if data.MutationOutcome != appwire.MutationOutcomeUnknown || data.RetryDisposition != appwire.RetryDispositionBlocked || data.ClientMutationID != "mut-legacy-drop" {
+		t.Fatalf("older remote SSH drop data=%+v, want Unknown+Blocked", data)
+	}
+	// Subsequent retry stays Blocked.
+	_, err = appwiretest.ThreadStart(context.Background(), client, appwire.ThreadStartParams{
+		ClientMutationID: "mut-legacy-drop",
+		Source:           "remote-a",
+		Model:            "openai/gpt-5",
+		CWD:              "/remote/work",
+	})
+	_, data = wireErrorData(t, err)
+	if data.MutationOutcome != appwire.MutationOutcomeUnknown || data.RetryDisposition != appwire.RetryDispositionBlocked {
+		t.Fatalf("older remote SSH drop retry data=%+v, want Unknown+Blocked", data)
+	}
+
+	// 4. RequestNotSentError on older remote rolls back local spawning so same ID succeeds next.
+	slotTransport := &legacyRemoteSlotTransport{firstStarted: make(chan struct{}), release: make(chan struct{})}
+	slotClient := appwire.NewClient(slotTransport)
+	go func() { _ = slotClient.Notify(t.Context(), appwire.NotifyEvenerAuthUpdated, map[string]string{}) }()
+	<-slotTransport.firstStarted
+	var useWedged atomic.Bool
+	useWedged.Store(true)
+	remoteClient2 := dialRemoteHubClient(t, remoteHTTP)
+	mode.Store(0)
+	slotHub := newHubRPCTestServer(t, testWebConfig(t, hubcore.WebConfig{
+		HubStateRoot: t.TempDir(),
+		RunDir:       t.TempDir(),
+		RemoteHosts:  []hostreg.Host{{Name: "remote-a", SSH: "remote-a.example"}},
+		RemoteHostClient: func(context.Context, string) (*appwire.Client, error) {
+			if useWedged.Load() {
+				return slotClient, nil
+			}
+			return remoteClient2, nil
+		},
+		RemoteHostClientIfAttached: func(string) (*appwire.Client, bool) {
+			if useWedged.Load() {
+				return slotClient, true
+			}
+			return remoteClient2, true
+		},
+	}))
+	defer slotHub.Close()
+	slotRPCC := dialHubRPCInitialized(t, slotHub)
+	origDetached := threadStartDetachedTimeout
+	threadStartDetachedTimeout = 100 * time.Millisecond
+	t.Cleanup(func() { threadStartDetachedTimeout = origDetached })
+	_, err = appwiretest.ThreadStart(context.Background(), slotRPCC, appwire.ThreadStartParams{
+		ClientMutationID: "mut-legacy-notsent",
+		Source:           "remote-a",
+		Model:            "openai/gpt-5",
+		CWD:              "/remote/work",
+	})
+	threadStartDetachedTimeout = origDetached
+	close(slotTransport.release)
+	_, data = wireErrorData(t, err)
+	if data.MutationOutcome != appwire.MutationOutcomeNotAccepted || data.ClientMutationID != "mut-legacy-notsent" {
+		t.Fatalf("older remote RequestNotSentError data=%+v, want NotAccepted", data)
+	}
+
+	useWedged.Store(false)
+	okResp, err := appwiretest.ThreadStart(context.Background(), slotRPCC, appwire.ThreadStartParams{
+		ClientMutationID: "mut-legacy-notsent",
+		Source:           "remote-a",
+		Model:            "openai/gpt-5",
+		CWD:              "/remote/work",
+	})
+	if err != nil {
+		t.Fatalf("retry after RequestNotSentError failed: %v", err)
+	}
+	if okResp.ClientMutationID != "mut-legacy-notsent" || okResp.Disposition != appwire.MutationDispositionApplied {
+		t.Fatalf("recovered okResp = %+v", okResp)
+	}
+	_ = appsource.ErrSourceNotFound
 }

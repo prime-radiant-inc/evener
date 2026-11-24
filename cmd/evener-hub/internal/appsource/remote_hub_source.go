@@ -184,6 +184,22 @@ func (s *RemoteHubSource) SessionToolsSupported(ctx context.Context) (supported,
 	return client.Features().SessionTools, true
 }
 
+// ThreadStartIdempotencySupported reports whether the attached remote hub
+// advertises threadStartIdempotency. An unattached host returns SessionUnavailable.
+func (s *RemoteHubSource) ThreadStartIdempotencySupported(ctx context.Context) (bool, error) {
+	client, err := s.resolveClient(ctx)
+	if err != nil {
+		if cerr := ctx.Err(); cerr != nil {
+			return false, cerr
+		}
+		return false, s.mapConnectError(err)
+	}
+	if client == nil {
+		return false, remoteHubUnavailable(s.id, "")
+	}
+	return client.Features().ThreadStartIdempotency, nil
+}
+
 // call forwards one request over the current remote client and translates any
 // refs in the response back into the controller namespace. Errors bypass
 // response translation; StartThread translates its createdRef error evidence
