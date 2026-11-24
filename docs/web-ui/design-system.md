@@ -1457,7 +1457,7 @@ over it.
 ## 12. Phone session controls
 
 Below 900px, the session header's Overview button opens a bottom sheet with
-the shared Details facts, Find in session, activity counts and session links.
+Find in session directly under the title, followed by the shared Details facts, activity counts and session links.
 An activity row opens its category for that same session. Tasks has a direct
 row when a task list is known. The sheet and activity overlay return focus
 to the header entry when dismissed and the entry still belongs to that session.

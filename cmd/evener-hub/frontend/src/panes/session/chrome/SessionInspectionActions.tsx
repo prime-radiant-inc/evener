@@ -97,7 +97,6 @@ function OverviewSheetBody({
 
   return (
     <div className={CLASS.body}>
-      {model && <DetailsPanelBody model={model} now={now} resolvedBranch={resolvedBranch} />}
       <ListRow
         variant="plain"
         label="Find in session"
@@ -106,6 +105,7 @@ function OverviewSheetBody({
           onDismiss();
         }}
       />
+      {model && <DetailsPanelBody model={model} now={now} resolvedBranch={resolvedBranch} />}
       <section className={CLASS.group}>
         <Eyebrow as="h3">Activity</Eyebrow>
         <ul className={CLASS.list} aria-label="Session activity">

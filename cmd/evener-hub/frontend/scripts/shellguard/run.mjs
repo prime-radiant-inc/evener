@@ -842,7 +842,13 @@ async function chooseOverviewMenu(send, selector) {
 }
 
 async function choosePaneOverview(send, selector, mobile = false, measure = false) {
-  await clickControl(send, selector);
+  if (mobile && measure) {
+    await waitForDom(send, `document.querySelector(${JSON.stringify(selector)})`, "mounted phone Overview trigger");
+    await evaluate(send, `document.querySelector(${JSON.stringify(selector)}).closest('button').focus({ preventScroll: true })`);
+    await pressKey(send, "Enter", "Enter", 13);
+  } else {
+    await clickControl(send, selector);
+  }
   let inspection;
   if (mobile) {
     await waitForDom(send, `(() => {
@@ -853,6 +859,15 @@ async function choosePaneOverview(send, selector, mobile = false, measure = fals
       inspection = await evaluate(send, `(() => {
         const sheet = document.querySelector(${JSON.stringify(PHONE_INSPECTION)});
         const rect = sheet.getBoundingClientRect();
+        // Hit-test before clickControl can scroll an off-screen target into view.
+        const active = document.activeElement;
+        const focus = active.getBoundingClientRect();
+        const hit = document.elementFromPoint(focus.left + focus.width / 2, focus.top + focus.height / 2);
+        const initialFocus = {
+          visible: sheet.contains(active) && active.matches('button:focus-visible') && active.contains(hit),
+          box: focus.toJSON(),
+          sheet: rect.toJSON(),
+        };
         const tapMin = parseFloat(getComputedStyle(sheet).getPropertyValue('--tap-min'));
         const rows = [...sheet.querySelectorAll('[data-activity-tab]')].map(element => {
           const box = element.getBoundingClientRect();
@@ -863,9 +878,12 @@ async function choosePaneOverview(send, selector, mobile = false, measure = fals
             fits: box.height >= tapMin - 1 && box.width >= tapMin - 1 &&
               box.left >= rect.left - 1 && box.right <= rect.right + 1 && element.scrollWidth <= element.clientWidth + 1 };
         });
-        return { rows, fits: rect.left >= -1 && rect.right <= innerWidth + 1 && rect.top >= -1 &&
+        return { initialFocus, rows, fits: rect.left >= -1 && rect.right <= innerWidth + 1 && rect.top >= -1 &&
           rect.bottom <= innerHeight + 1 };
       })()`);
+      if (!inspection.initialFocus.visible) {
+        throw new Error(`phone Overview starts with clipped keyboard focus: ${JSON.stringify(inspection.initialFocus)}`);
+      }
       if (!inspection.fits || JSON.stringify(inspection.rows.map(row => row.tab)) !== JSON.stringify(["agents", "jobs", "watches", "tasks"]) ||
           inspection.rows.some(row => !row.fits || !row.glyphVisible)) {
         throw new Error(`phone Overview misses its activity geometry: ${JSON.stringify(inspection)}`);
