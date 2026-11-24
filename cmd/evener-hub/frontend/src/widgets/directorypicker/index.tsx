@@ -3,9 +3,11 @@ import { type FormEvent, useEffect, useId, useLayoutEffect, useRef, useState } f
 import { createPortal } from "react-dom";
 import { Button } from "../button";
 import { Dialog } from "../dialog";
+import { EmptyState } from "../emptystate";
 import { ownerDocumentOf } from "../internal/documentRealm";
 import { requireClass } from "../internal/requireClass";
 import { usePortalDocument } from "../internal/usePortalDocument";
+import { Loader } from "../loader";
 import { ToolIcon } from "../toolicon";
 import styles from "./directorypicker.module.css";
 
@@ -248,7 +250,9 @@ export function DirectoryPicker({
               <span className={CLASS.path}>{parentOf(path)}</span>
             </button>
           ))}
-          {listRecents && recents.length === 0 && <p className={CLASS.status}>No recent directories.</p>}
+          {listRecents && recents.length === 0 && (
+            <EmptyState title="No recent directories." size="compact" reason="empty" />
+          )}
           <h3>Locations</h3>
           <Button variant="quiet" disabled={busy} onClick={() => void browse("~")}>
             Home
@@ -386,15 +390,9 @@ export function DirectoryPicker({
                 Press Go to browse this path.
               </p>
             ) : entries === null ? (
-              !error && (
-                <p className={CLASS.status} role="status" data-state="loading">
-                  Loading directories…
-                </p>
-              )
+              !error && <Loader label="Loading directories…" />
             ) : entries.length === 0 ? (
-              <p className={CLASS.status} role="status" data-state="empty">
-                No subfolders to display.
-              </p>
+              <EmptyState title="No subfolders to display." size="compact" reason="empty" />
             ) : (
               entries.map((path) => (
                 <button

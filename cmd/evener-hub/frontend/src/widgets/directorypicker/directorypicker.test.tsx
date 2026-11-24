@@ -524,3 +524,22 @@ test("initial validation in a popout reads focus from that document and preserve
     frame.remove();
   }
 });
+
+// Empty and loading placeholders are the shared widgets, not hand-rolled
+// status paragraphs: both empty regions show EmptyState's compact message,
+// and the wait shows Loader's announcing grid.
+test("the picker's empty regions render the shared empty state", async () => {
+  setup({ complete: async () => [], listRecents: async () => [] });
+  await screen.findByRole("dialog", { name: "Choose directory" });
+
+  const recents = await screen.findByLabelText("Recent directories");
+  expect(within(recents).getByTestId("empty-state").getAttribute("data-reason")).toBe("empty");
+  const folders = screen.getByRole("region", { name: "Folders" });
+  await waitFor(() => expect(within(folders).getByTestId("empty-state")).toBeTruthy());
+});
+
+test("the picker's listing wait renders the shared loader", async () => {
+  setup({ complete: () => new Promise<string[]>(() => {}) });
+  await screen.findByRole("dialog", { name: "Choose directory" });
+  expect(await screen.findByTestId("loader-grid")).toBeTruthy();
+});

@@ -32,12 +32,6 @@
   font-size: var(--font-size-ui);
 }
 
-.empty {
-  padding: var(--space-2) var(--space-3);
-  color: var(--ink-mid);
-  font-size: var(--font-size-ui);
-}
-
 /* An inherited ("(default)") row: informational only, so it loses the filled
  * surface and drops to mid-ink - the tag stands where a local row's remove
  * button would be, keeping the two row shapes aligned. */
