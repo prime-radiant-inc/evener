@@ -1,0 +1,21 @@
+{
+  "name": "connection-facts-control-wide",
+  "description": "At a desktop viewport an editable inline connection fact keeps its label beside a value cell that grows to the row's right edge, so the instance sheet's Name and Base URL inputs span the rest of the row instead of sitting at the input's intrinsic width. A read-only fact keeps the compact label column and does not grow.",
+  "cssFiles": [
+    "styles/global.css",
+    "styles/tapfloor.module.css",
+    "styles/text.module.css",
+    "styles/tokens.css",
+    "styles/help.module.css",
+    "widgets/internal/control.module.css",
+    "widgets/input/input.module.css",
+    "widgets/propertylist/propertylist.module.css"
+  ],
+  "viewport": { "width": 900, "height": 800, "deviceScaleFactor": 2, "mobile": false },
+  "mutation": {
+    "declaration": "widgets/propertylist/propertylist.module.css: the .controlValue { flex: 1 1 auto } growth rule (deleted), leaving an editable fact's value at its intrinsic width",
+    "verified": "2026-11-23",
+    "expect": "fail",
+    "note": "Observed red run without the growth rule: the name input and the Base URL input each ended 539.0px short of the row's right edge (329px wide in an 868px row). Restoring the rule passes with both editable inputs reaching the row's right edge while the phone case still stacks."
+  }
+}

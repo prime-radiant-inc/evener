@@ -43,6 +43,12 @@ type ResumeLocks struct {
 	// the replacement's unconfirmed claim blocks every retry and the old record
 	// and relay outlive the resume.
 	pendingReplacements map[string]pendingReplacement
+	// pendingLaunches holds the resume child each session currently has in
+	// flight, so a caller that walks away mid-restore leaves its healthy child
+	// claimed instead of letting the next caller spawn a duplicate. Guarded by
+	// mu; see pendinglaunch.go.
+	pendingLaunches map[string]*PendingLaunch
+	closed          bool
 }
 
 // replacementFailure is one recorded failed replacement attempt.

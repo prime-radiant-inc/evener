@@ -21,11 +21,46 @@ var HarnessFrameOpeners = []string{
 	"<job-notification",
 	"<delegate-user-note",
 	"<system-notification",
+	"<watch-notification",
 	"<system-reminder",
 	"<SYSTEM-REMINDER",
 	"<environment_context",
 	"<shared-notes",
 	"<skill-context",
+}
+
+// RolloverOffset reports where an assistant text stops being the model's own
+// prose and starts forging a turn boundary only the harness owns: a prose line
+// that opens a harness frame, a line-start answers marker, or a bare user or
+// model turn header. It returns that line's byte offset and the marker it
+// opened, or -1 and the empty string when the whole text is prose. Fenced code,
+// indented code and blockquotes keep those markers as quoted content.
+func RolloverOffset(text string) (int, string) {
+	var fence mdfence.Tracker
+	for i := 0; i < len(text); {
+		end := len(text)
+		if nl := strings.IndexByte(text[i:], '\n'); nl >= 0 {
+			end = i + nl + 1
+		}
+		body := strings.TrimSuffix(strings.TrimSuffix(text[i:end], "\n"), "\r")
+		if rest, prose := proseStart(&fence, body); prose {
+			if marker, ok := rolloverMarker(rest); ok {
+				return i, marker
+			}
+		}
+		i = end
+	}
+	return -1, ""
+}
+
+// rolloverMarker names the turn boundary rest opens at a prose line start, or
+// reports that the line is ordinary prose.
+func rolloverMarker(rest string) (string, bool) {
+	trimmed := strings.TrimRight(rest, " \t")
+	if trimmed == "user" || trimmed == "model" {
+		return trimmed, true
+	}
+	return frameMarkerAt(rest, true)
 }
 
 // EscapeModelAuthoredFrames escapes the harness direction model prose must not
@@ -108,18 +143,31 @@ func proseStart(fence *mdfence.Tracker, body string) (string, bool) {
 // escapeFrameAt escapes rest's opening byte when it opens a frame the model
 // must not open, and reports whether it did.
 func escapeFrameAt(rest string, openers bool) (string, bool) {
-	if after, ok := strings.CutPrefix(rest, answersMarker); ok && markerEnds(after) {
+	marker, ok := frameMarkerAt(rest, openers)
+	if !ok {
+		return rest, false
+	}
+	if marker == answersMarker {
 		return "&#91;" + rest[1:], true
 	}
+	return "&lt;" + rest[1:], true
+}
+
+// frameMarkerAt returns the harness-direction marker rest opens at a prose line
+// start: the answers marker, or with openers set a harness frame opener.
+func frameMarkerAt(rest string, openers bool) (string, bool) {
+	if after, ok := strings.CutPrefix(rest, answersMarker); ok && markerEnds(after) {
+		return answersMarker, true
+	}
 	if !openers || rest[0] != '<' {
-		return rest, false
+		return "", false
 	}
 	for _, opener := range HarnessFrameOpeners {
 		if after, ok := strings.CutPrefix(rest, opener); ok && tagEnds(after) {
-			return "&lt;" + rest[1:], true
+			return opener, true
 		}
 	}
-	return rest, false
+	return "", false
 }
 
 // markerEnds reports whether after ends the answers marker rather than

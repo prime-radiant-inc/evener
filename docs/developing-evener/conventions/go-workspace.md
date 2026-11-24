@@ -206,8 +206,8 @@ GOOS=windows go vet ./...   # per module; silent means the port is whole
 ```
 
 The cross-vet covers `windows`: a package's `windows` seam source is what
-is in scope (for example `agent/schema/snapshot_flock_windows.go`), or its
-`!unix` fallback when the package has no `windows` file. A `//go:build
+is in scope (for example `agent/schema/session_livelock_windows.go`), or its
+`!unix` fallback when the seam has no `windows` file. A `//go:build
 unix` source is outside that port, so a syscall that exists on only some
 Unix GOOS is not caught by CI — by design, given the supported set above.
 

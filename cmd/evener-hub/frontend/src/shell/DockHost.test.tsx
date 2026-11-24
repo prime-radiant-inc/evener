@@ -2533,6 +2533,43 @@ test("restores a previously-saved layout on boot instead of falling back to welc
   expect(Array.from(tabs).map((t) => t.textContent)).toEqual(["Doc ref_a", "Doc ref_b", "Doc ref_c"]);
 });
 
+// A session pane whose params carry an empty ref names no session (DockHost's
+// own boot comment). The pane seeded here stands in for the route AppShell
+// opens during render, before this ready handler runs; a boot that treated
+// "" as a routed ref would place a top-level session for it, and that primary
+// replacement clears the workspace the saved layout had just restored.
+test("an empty-ref session route does not replace the restored layout on boot", async () => {
+  const restoreSession = registerPaneForTests({
+    id: "session",
+    title: () => "Session fixture",
+    component: lazy(() => Promise.resolve({ default: DocFixture })),
+  });
+  try {
+    workspaceStore.getState().openPane("doc", { ref: "ref_restored" });
+    const first = render(<DockHost />);
+    await screen.findByText(/doc pane: ref_restored/);
+
+    vi.useFakeTimers();
+    act(() => {
+      workspaceStore.getState().openPane("doc", { ref: "ref_saved" });
+    });
+    await Promise.resolve();
+    advance(500);
+    expect(localStorage.getItem(LAYOUT_KEY)).not.toBeNull();
+    vi.useRealTimers();
+    first.unmount();
+    resetWorkspaceStoreForTests(); // fresh boot restores only the saved layout
+
+    workspaceStore.getState().openPane("session", { ref: "" });
+    render(<DockHost />);
+
+    expect(await screen.findByText(/doc pane: ref_saved/)).toBeTruthy();
+    expect(workspaceStore.getState().panes.map((pane) => pane.type)).toEqual(["doc", "doc"]);
+  } finally {
+    restoreSession();
+  }
+});
+
 // A layout saved by a build that still shipped a pane type this one no
 // longer registers (the removed sessionNotes) must not wipe the workspace -
 // and the skipped panel must leave the live dockview api in the same restore:

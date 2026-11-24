@@ -318,6 +318,29 @@ test("a rejected resolve surfaces an error on the card instead of an unhandled r
   expect(threadsStore.getState().threads.get("ref_a")?.pendingEscalations).toHaveLength(1);
 });
 
+test("a rejected resolve renders its failure through the shared inline notice without a second live region", async () => {
+  const fake = connectReadyFakeClient();
+  fake.on("thread/read", () => readResponse("ref_a"));
+  fake.on("evener/sandbox/escalation/resolve", () => Promise.reject(new Error("sandbox offline")));
+  const user = userEvent.setup();
+  await threadsStore.getState().ensureThread("ref_a");
+
+  render(<SandboxEscalationRail sessionRef="ref_a" />);
+  act(() => {
+    fake.emitNotification({ method: "evener/sandbox/escalation/requested", params: requested() });
+  });
+
+  await user.click(await screen.findByRole("button", { name: /allow/i }));
+
+  const notice = await screen.findByTestId("sandbox-escalation-error");
+  expect(notice.textContent).toContain("sandbox offline");
+  // The card is already a labelled group, so the notice stays silent rather
+  // than opening a second live region.
+  expect(notice.getAttribute("role")).toBeNull();
+  // "Failed" stays a visible title above the message, not colour alone.
+  expect(notice.querySelector("p")).not.toBeNull();
+});
+
 test("a subsequent successful resolve clears a previously shown error", async () => {
   const fake = connectReadyFakeClient();
   fake.on("thread/read", () => readResponse("ref_a"));
@@ -487,6 +510,44 @@ test("a plain Enter (no modifier) does not approve - only Mod+Enter does", async
 
   fireEvent.keyDown(screen.getByRole("button", { name: /allow/i }), { key: "Enter" });
   expect(onApprove).not.toHaveBeenCalled();
+});
+
+// An IME composition's confirm keystroke also fires as "Enter": it is text
+// input, never activation, so it must not approve the card. AskDock has
+// carried this guard (isIMECompositionKeydown) since PR #884; the shared
+// useCardPrimaryAction extends it here too.
+test("an IME-confirm Enter does not approve", async () => {
+  const onApprove = vi.fn();
+  render(<SandboxEscalationCard escalation={requested()} onApprove={onApprove} onDeny={() => {}} resolved={false} />);
+
+  fireEvent.keyDown(screen.getByRole("button", { name: /allow/i }), {
+    key: "Enter",
+    metaKey: true,
+    isComposing: true,
+  });
+  expect(onApprove).not.toHaveBeenCalled();
+});
+
+test("an IME commit reported only through keyCode 229 (no isComposing) does not approve", async () => {
+  const onApprove = vi.fn();
+  render(<SandboxEscalationCard escalation={requested()} onApprove={onApprove} onDeny={() => {}} resolved={false} />);
+
+  fireEvent.keyDown(screen.getByRole("button", { name: /allow/i }), { key: "Enter", metaKey: true, keyCode: 229 });
+  expect(onApprove).not.toHaveBeenCalled();
+});
+
+test("a consumed Mod+Enter does not propagate to window-level listeners", async () => {
+  render(<SandboxEscalationCard escalation={requested()} onApprove={() => {}} onDeny={() => {}} resolved={false} />);
+
+  const seen: string[] = [];
+  const listener = (event: KeyboardEvent) => seen.push(event.key);
+  window.addEventListener("keydown", listener);
+  try {
+    fireEvent.keyDown(screen.getByRole("button", { name: /allow/i }), { key: "Enter", metaKey: true });
+    expect(seen).toEqual([]);
+  } finally {
+    window.removeEventListener("keydown", listener);
+  }
 });
 
 // Denial must never be one accidental keypress away: Escape is deliberately

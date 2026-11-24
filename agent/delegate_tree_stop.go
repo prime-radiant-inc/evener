@@ -45,13 +45,6 @@ type delegateStopDriver struct {
 	cancel context.CancelFunc
 }
 
-// errDelegateStopNotAdmitted reports that a stop request was cancelled by its
-// caller before durable admission. No stop fence was written and the target is
-// untouched; a reservation that was blocking admission stays owned, so
-// process-owned retry/reconciliation still reaches the durable stop once a
-// later request is admitted.
-var errDelegateStopNotAdmitted = errors.New("delegate stop not admitted")
-
 // newDelegateStopDriver mints a driver whose drain is bounded by a context the
 // close joins cancel once they give up on it. Without that wake a driver parked
 // on delegate stop progress would outlive the closed store for the life of the
@@ -93,32 +86,25 @@ func (c *delegateTreeController) StopSubtree(actor delegateActor, targetID strin
 		return delegateStopResult{}, delegateCancelPlan{}, delegateMutationPlans{}, retirementErr
 	}
 	defer retirementRelease()
-	for {
-		c.mu.Lock()
-		if c.stop == nil {
-			if err := c.authorizeMutationLocked(actor, targetID); err != nil {
-				c.mu.Unlock()
-				return delegateStopResult{}, delegateCancelPlan{}, delegateMutationPlans{}, err
-			}
-			if blocker := c.attentionStartBlockerLocked(targetID, false); blocker != nil {
-				c.mu.Unlock()
-				<-blocker
-				continue
-			}
+	c.mu.Lock()
+	if c.stop == nil {
+		if err := c.authorizeMutationLocked(actor, targetID); err != nil {
+			c.mu.Unlock()
+			return delegateStopResult{}, delegateCancelPlan{}, delegateMutationPlans{}, err
 		}
-		result, cancel, plans, err := c.stopSubtreeLocked(actor, targetID, false)
-		c.mu.Unlock()
-		return result, cancel, plans, err
 	}
+	result, cancel, plans, err := c.stopSubtreeLocked(actor, targetID, false)
+	c.mu.Unlock()
+	return result, cancel, plans, err
 }
 
 // StopSubtreeAndDrive admits the durable stop and gives its reconciliation to
 // the root runtime. The driver is process-only and unique for the exact stop;
 // callers may stop waiting without stopping reconciliation.
 //
-// ctx bounds only the pre-admission wait on a retained attention-start
-// reservation, returning errDelegateStopNotAdmitted rather than parking on a
-// bare receive when the caller cancels.
+// ctx bounds the caller's own wait; admission is immediate because an
+// uncommitted attention reservation is canceled through the stop's start
+// claim instead of being waited on.
 func (c *delegateTreeController) StopSubtreeAndDrive(ctx context.Context, actor delegateActor, targetID string) (delegateStopResult, delegateCancelPlan, delegateMutationPlans, error) {
 	retirementRelease, retirementErr := c.beginRetirementMutation()
 	if retirementErr != nil {
@@ -130,22 +116,12 @@ func (c *delegateTreeController) StopSubtreeAndDrive(ctx context.Context, actor 
 			retirementRelease()
 		}
 	}()
-	for {
-		c.mu.Lock()
-		if c.stop == nil {
-			if err := c.authorizeMutationLocked(actor, targetID); err != nil {
-				c.mu.Unlock()
-				return delegateStopResult{}, delegateCancelPlan{}, delegateMutationPlans{}, err
-			}
-			if blocker := c.attentionStartBlockerLocked(targetID, false); blocker != nil {
-				c.mu.Unlock()
-				if waitErr := waitAttentionStartAdmission(ctx, blocker); waitErr != nil {
-					return delegateStopResult{}, delegateCancelPlan{}, delegateMutationPlans{}, errors.Join(errDelegateStopNotAdmitted, waitErr)
-				}
-				continue
-			}
+	c.mu.Lock()
+	if c.stop == nil {
+		if err := c.authorizeMutationLocked(actor, targetID); err != nil {
+			c.mu.Unlock()
+			return delegateStopResult{}, delegateCancelPlan{}, delegateMutationPlans{}, err
 		}
-		break
 	}
 	if c.closing {
 		c.mu.Unlock()
@@ -188,19 +164,16 @@ func (c *delegateTreeController) StopSubtreeAndDrive(ctx context.Context, actor 
 	c.mu.Unlock()
 	if startDriver {
 		handedOff = true
-		go func() {
-			defer retirementRelease()
-			c.runStopReconcileDriver(stop, driver, root)
-		}()
+		go c.runStopReconcileDriver(stop, driver, root, retirementRelease)
 	}
 	return result, cancelPlan, plans, nil
 }
 
-func (c *delegateTreeController) attentionStartBlockerLocked(targetID string, acceptedOnly bool) <-chan struct{} {
+func (c *delegateTreeController) attentionStartBlockerLocked(targetID string) <-chan struct{} {
 	members := c.subtreeMembersLocked(targetID)
 	tokens := make([]uint64, 0)
 	for token, record := range c.reservations {
-		if record == nil || record.trigger != delegatestore.TriggerAttention || record.done == nil || acceptedOnly && !record.attentionAdmitted {
+		if record == nil || record.trigger != delegatestore.TriggerAttention || record.done == nil {
 			continue
 		}
 		if _, covered := members[record.delegateID]; covered {
@@ -615,7 +588,7 @@ func (c *delegateTreeController) CloseResumability(actor delegateActor, delegate
 			c.mu.Unlock()
 			return delegateMutationPlans{}, errDelegateTargetBusy
 		}
-		if blocker := c.attentionStartBlockerLocked(delegateID, true); blocker != nil {
+		if blocker := c.attentionStartBlockerLocked(delegateID); blocker != nil {
 			c.mu.Unlock()
 			<-blocker
 			c.mu.Lock()
@@ -778,7 +751,7 @@ func (c *delegateTreeController) stopSubtreeForClose(ctx context.Context, target
 	for {
 		c.mu.Lock()
 		if c.stop == nil {
-			if blocker := c.attentionStartBlockerLocked(targetID, false); blocker != nil {
+			if blocker := c.attentionStartBlockerLocked(targetID); blocker != nil {
 				c.mu.Unlock()
 				if admitCtx == nil {
 					admitCtx, cancelAdmit = closeStopJoinContext(ctx)
@@ -1013,10 +986,21 @@ func (c *delegateTreeController) drainStopAbandonable(ctx context.Context, stop 
 	}
 }
 
-func (c *delegateTreeController) runStopReconcileDriver(stop *delegateStopState, driver *delegateStopDriver, root *Session) {
+func (c *delegateTreeController) runStopReconcileDriver(stop *delegateStopState, driver *delegateStopDriver, root *Session, release func()) {
 	err := c.drainStopAbandonable(driver.ctx, stop, root, driver.ctx.Done(), false)
+	c.publishStopDriverDone(driver, release, err)
+}
+
+// publishStopDriverDone releases the handoff's retirement admission and
+// publishes done in one owner-lock critical section, the same lock the
+// retirement evidence scan takes. A claim cannot slip between the release and
+// the publication: it either meets the lease and is refused before admission
+// closes, or observes done closed and the lease gone. Done stays the barrier
+// callers use to observe the settled stop.
+func (c *delegateTreeController) publishStopDriverDone(driver *delegateStopDriver, release func(), err error) {
 	c.mu.Lock()
 	driver.err = err
+	release()
 	close(driver.done)
 	c.mu.Unlock()
 }

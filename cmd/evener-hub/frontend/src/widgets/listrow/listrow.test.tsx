@@ -2,8 +2,7 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createRef } from "react";
 import { expect, test, vi } from "vitest";
-import { MOBILE_QUERY } from "../../shell/useIsMobile";
-import { escapeRegExp, readModuleCss } from "../../styles/cssBlock";
+import { readModuleCss } from "../../styles/cssBlock";
 import { ListRow, type ListRowProps } from "./index";
 
 function css(): string {
@@ -111,6 +110,46 @@ test("spreads native attributes onto a read-only row too", () => {
 test("the leading slot renders before the label", () => {
   render(<ListRow label="anthropic" leading={<span>dot</span>} onSelect={() => {}} />);
   expect(screen.getByRole("button").textContent?.startsWith("dotanthropic")).toBe(true);
+});
+
+test("a caller-supplied value renders on the label line before the chevron", () => {
+  render(<ListRow label="Harness" value="evener" onSelect={() => {}} />);
+  const row = screen.getByRole("button", { name: /Harness/ });
+  const label = screen.getByText("Harness");
+  const value = screen.getByText("evener");
+  expect(row.contains(value)).toBe(true);
+  expect(label.compareDocumentPosition(value) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  const chevron = row.querySelector('[aria-hidden="true"] svg');
+  expect(chevron).not.toBeNull();
+  expect(value.compareDocumentPosition(chevron?.parentElement as Node) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+});
+
+test("the value slot renders the caller's own node in the caller's typography", () => {
+  render(
+    <ListRow
+      label="Branch"
+      value={
+        <span data-testid="branch-value" style={{ fontFamily: "var(--font-mono)" }}>
+          main
+        </span>
+      }
+    />,
+  );
+
+  const value = screen.getByTestId("branch-value");
+  expect(value.style.fontFamily).toBe("var(--font-mono)");
+  expect(screen.queryByRole("button")).toBeNull();
+  expect(screen.getByText("main")).toBe(value);
+});
+
+test("the value takes a shrinkable share of the label line", () => {
+  const value = rule(".value");
+  expect(value).toContain("flex: 1 1 0");
+  expect(value).toContain("justify-content: flex-end");
+  expect(value).toContain("min-width: 0");
+  expect(value).toContain("max-width: max-content");
+  // The heading still wraps, so chips can move under a long label.
+  expect(rule(".heading")).toContain("flex-wrap: wrap");
 });
 
 test("an interactive collection row ends in a decorative drill-in chevron; a plain row does not", () => {
@@ -302,16 +341,12 @@ test("the split shape's CSS: the container washes on focus-within, the main butt
 test("the collection meta line is mono and truncates", () => {
   expect(rule(".collection .meta")).toContain("font-family: var(--font-mono)");
   const meta = rule(".meta");
-  expect(meta).toContain("text-overflow: ellipsis");
-  expect(meta).toContain("white-space: nowrap");
+  expect(meta).toContain('composes: truncate from "../../styles/text.module.css"');
 });
 
-test("mobile: interactive and collection rows reach the 44px tap floor", () => {
-  const mobile =
-    new RegExp(`@media ${escapeRegExp(MOBILE_QUERY)}, \\(any-pointer: coarse\\) \\{([\\s\\S]*?)\\n\\}`).exec(
-      css(),
-    )?.[1] ?? "";
-  expect(mobile).toMatch(/\.collection,\s*\.interactive\s*\{[^}]*min-height: var\(--tap-min\)/);
+test("mobile: interactive and collection rows compose the shared 44px tap floor", () => {
+  expect(rule(".collection")).toContain('composes: tapFloor from "../../styles/tapfloor.module.css"');
+  expect(rule(".interactive")).toContain('composes: tapFloor from "../../styles/tapfloor.module.css"');
 });
 
 test("an aria-disabled interactive row refuses activation but keeps focus", async () => {

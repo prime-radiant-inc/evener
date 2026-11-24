@@ -1703,7 +1703,6 @@ function SelectedConnection({
 
   const addFacts = (): ConnectionFact[] => [
     {
-      key: "name",
       label: "Name",
       htmlFor: "connection-name",
       value: (
@@ -1711,6 +1710,7 @@ function SelectedConnection({
           id="connection-name"
           value={newName}
           disabled={busy}
+          fill
           onChange={(event) => {
             setNewName(event.target.value);
             setError(null);
@@ -1719,7 +1719,6 @@ function SelectedConnection({
       ),
     },
     {
-      key: "endpoint",
       label: "Endpoint URL",
       htmlFor: "connection-endpoint",
       value: (
@@ -1729,6 +1728,7 @@ function SelectedConnection({
             placeholder="https://…/v1"
             value={newBaseUrl}
             disabled={busy}
+            fill
             onChange={(event) => {
               setNewBaseUrl(event.target.value);
               setError(null);
@@ -1738,7 +1738,6 @@ function SelectedConnection({
       ),
     },
     ...addVarRows.map(({ key, label }) => ({
-      key,
       label,
       htmlFor: `connection-var-${key}`,
       value: (
@@ -1746,6 +1745,7 @@ function SelectedConnection({
           id={`connection-var-${key}`}
           value={addVars[key] ?? ""}
           disabled={busy}
+          fill
           onChange={(event) => {
             setAddVars((current) => ({ ...current, [key]: event.target.value }));
             setError(null);
@@ -1754,7 +1754,6 @@ function SelectedConnection({
       ),
     })),
     {
-      key: "credential",
       label: json ? "Credential JSON" : "API key",
       htmlFor: "provider-credential",
       value: (
@@ -1764,6 +1763,7 @@ function SelectedConnection({
           autoComplete="off"
           required={required}
           disabled={busy}
+          fill
           aria-describedby={missingCredential ? "provider-credential-error" : undefined}
           value={value}
           onChange={(event) => changeValue(event.target.value)}
@@ -1779,7 +1779,6 @@ function SelectedConnection({
   ];
   const savedFacts = (): ConnectionFact[] => [
     {
-      key: "endpoint",
       label: "Endpoint",
       value:
         editing === "endpoint" ? (
@@ -1789,6 +1788,7 @@ function SelectedConnection({
               aria-label="Endpoint URL"
               value={endpointDraft}
               disabled={busy}
+              fill
               onChange={(event) => setEndpointDraft(event.target.value)}
             />
           </div>
@@ -1825,7 +1825,6 @@ function SelectedConnection({
     ...(storedMode
       ? [
           {
-            key: "credential",
             label: json ? "Credential JSON" : "API key",
             htmlFor: editing === "key" ? "provider-credential" : undefined,
             value:
@@ -1836,6 +1835,7 @@ function SelectedConnection({
                   autoComplete="off"
                   required={required}
                   disabled={busy}
+                  fill
                   aria-describedby={missingCredential ? "provider-credential-error" : undefined}
                   value={value}
                   onChange={(event) => changeValue(event.target.value)}
@@ -1925,7 +1925,6 @@ function SelectedConnection({
         ]
       : []),
     {
-      key: "status",
       label: "Status",
       value: (
         <span role="status" data-state={result?.status === "success" ? "success" : undefined}>

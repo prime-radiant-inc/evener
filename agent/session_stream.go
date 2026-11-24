@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	"unicode/utf16"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/llm"
 )
 
@@ -80,6 +82,22 @@ type attemptObservation struct {
 // the retry chip's denominator drops to it as soon as such a failure lands, so
 // the two readers must not drift.
 const modelRetryFailFastAfter = 4
+
+// maxToolCallsPerResponse bounds one streamed assistant response. A model that
+// emits more calls than this is a runaway, not a productive response: the
+// stream is cut, none of the calls execute, and the turn fails. Read-only calls
+// count too, because a read-only batch fans out one goroutine per call.
+const maxToolCallsPerResponse = 100
+
+// responseToolCallLimitError reports a response discarded by
+// maxToolCallsPerResponse. It is non-retryable and model-fallback-ineligible:
+// the same request against another model replays the runaway.
+type responseToolCallLimitError struct {
+	cause error
+}
+
+func (e *responseToolCallLimitError) Error() string { return e.cause.Error() }
+func (e *responseToolCallLimitError) Unwrap() error { return e.cause }
 
 // emitModelRetry builds the RetryPolicy.OnRetry hook that reports each retry of
 // req on the session event bus. Attempt counts retries (the first retry is 1);
@@ -319,6 +337,7 @@ func (s *Session) consumeModelStream(ctx context.Context, req llm.Request, st ll
 	toolNames := map[string]string{}
 	communicateText := map[string]string{}
 	communicatePreviewStarted := map[string]bool{}
+	communicatePreviewSuppressed := map[string]bool{}
 	communicatePreviewDecoders := map[string]*communicatePreviewDecoder{}
 	var communicatePreviewOrder []string
 	streamedAssistant := false
@@ -326,6 +345,21 @@ func (s *Session) consumeModelStream(ctx context.Context, req llm.Request, st ll
 	finished := false
 	previewCallIDs := func() []string {
 		return append([]string(nil), communicatePreviewOrder...)
+	}
+	// toolCallSeen counts distinct tool-call ids in this one response, at each
+	// id's first event. The name/args maps cannot serve as the count: a provider
+	// may repeat an id across start, delta, and end, and which of those it emits
+	// varies by provider.
+	toolCallSeen := map[string]struct{}{}
+	overToolCallLimit := func(id string) bool {
+		if id == "" {
+			return false
+		}
+		if _, seen := toolCallSeen[id]; seen {
+			return false
+		}
+		toolCallSeen[id] = struct{}{}
+		return len(toolCallSeen) > maxToolCallsPerResponse
 	}
 	defer func() {
 		if recovered := recover(); recovered != nil {
@@ -382,6 +416,13 @@ func (s *Session) consumeModelStream(ctx context.Context, req llm.Request, st ll
 		return obs
 	}
 
+	abortOverToolCallLimit := func() (sessionModelResponse, attemptObservation, error) {
+		err := &responseToolCallLimitError{
+			cause: llm.NewPermanentStreamError(req.Provider, "assistant response exceeded "+strconv.Itoa(maxToolCallsPerResponse)+" tool calls", nil),
+		}
+		return sessionModelResponse{CommunicatePreviewCallIDs: previewCallIDs()}, observe(err), err
+	}
+
 	emitAssistantStart := func() {
 		if assistantStarted {
 			return
@@ -403,7 +444,10 @@ func (s *Session) consumeModelStream(ctx context.Context, req llm.Request, st ll
 		}
 		s.emit(events.ReasoningSummaryDeltaData{Delta: delta})
 	}
-	emitCommunicatePreview := func(callID string) {
+	emitCommunicatePreview := func(callID string, final bool) {
+		if communicatePreviewSuppressed[callID] {
+			return
+		}
 		args := ""
 		if b := toolArgs[callID]; b != nil {
 			args = b.String()
@@ -411,12 +455,29 @@ func (s *Session) consumeModelStream(ctx context.Context, req llm.Request, st ll
 		// Decode incrementally: this runs once per streamed argument delta, and
 		// re-deriving the whole message each time is quadratic in its length.
 		decoder := communicatePreviewDecoders[callID]
+		wasFound := decoder != nil && decoder.found
+		wasClosed := decoder != nil && decoder.closed
 		if decoder == nil {
 			decoder = &communicatePreviewDecoder{field: "message"}
 			communicatePreviewDecoders[callID] = decoder
 		}
 		message, ok := decoder.message(args)
+		if (!wasFound || (decoder.closed && !wasClosed) || final) && isQuietCommunicatePreviewArgs(args) {
+			communicatePreviewSuppressed[callID] = true
+			if communicatePreviewStarted[callID] {
+				s.emit(events.CommunicatePreviewResetData{CallID: callID, Quiet: true})
+				delete(communicatePreviewStarted, callID)
+				delete(communicateText, callID)
+				communicatePreviewOrder = slices.DeleteFunc(communicatePreviewOrder, func(id string) bool {
+					return id == callID
+				})
+			}
+			return
+		}
 		if !ok || message == "" {
+			return
+		}
+		if !communicatePreviewStarted[callID] && strings.TrimSpace(message) == "" {
 			return
 		}
 		prev := communicateText[callID]
@@ -455,6 +516,9 @@ func (s *Session) consumeModelStream(ctx context.Context, req llm.Request, st ll
 			if ev.ToolCall == nil || ev.ToolCall.ID == "" {
 				break
 			}
+			if overToolCallLimit(ev.ToolCall.ID) {
+				return abortOverToolCallLimit()
+			}
 			toolNames[ev.ToolCall.ID] = s.canonicalToolName(ev.ToolCall.Name)
 			if _, ok := toolArgs[ev.ToolCall.ID]; !ok {
 				toolArgs[ev.ToolCall.ID] = &strings.Builder{}
@@ -463,6 +527,9 @@ func (s *Session) consumeModelStream(ctx context.Context, req llm.Request, st ll
 			s.noteParentJobActivity(jobPhaseModelStreaming)
 			if ev.ToolCall == nil || ev.ToolCall.ID == "" {
 				break
+			}
+			if overToolCallLimit(ev.ToolCall.ID) {
+				return abortOverToolCallLimit()
 			}
 			if ev.ToolCall.Name != "" {
 				toolNames[ev.ToolCall.ID] = s.canonicalToolName(ev.ToolCall.Name)
@@ -475,12 +542,15 @@ func (s *Session) consumeModelStream(ctx context.Context, req llm.Request, st ll
 				noteContent()
 			}
 			if toolNames[ev.ToolCall.ID] == s.resultToolName() {
-				emitCommunicatePreview(ev.ToolCall.ID)
+				emitCommunicatePreview(ev.ToolCall.ID, false)
 			}
 		case llm.StreamEventToolCallEnd:
 			s.noteParentJobActivity(jobPhaseModelStreaming)
 			if ev.ToolCall == nil || ev.ToolCall.ID == "" {
 				break
+			}
+			if overToolCallLimit(ev.ToolCall.ID) {
+				return abortOverToolCallLimit()
 			}
 			if ev.ToolCall.Name != "" {
 				toolNames[ev.ToolCall.ID] = s.canonicalToolName(ev.ToolCall.Name)
@@ -495,10 +565,11 @@ func (s *Session) consumeModelStream(ctx context.Context, req llm.Request, st ll
 				// offsets are only valid while the text it read is a prefix of the
 				// current text, so drop it and decode the final text from scratch.
 				delete(communicatePreviewDecoders, ev.ToolCall.ID)
+				delete(communicatePreviewSuppressed, ev.ToolCall.ID)
 				noteContent()
 			}
 			if toolNames[ev.ToolCall.ID] == s.resultToolName() {
-				emitCommunicatePreview(ev.ToolCall.ID)
+				emitCommunicatePreview(ev.ToolCall.ID, true)
 			}
 		case llm.StreamEventFinish:
 			finished = true
@@ -544,6 +615,15 @@ func salvagedContentBytes(r *llm.Response) int {
 		n += len(tc.Arguments)
 	}
 	return n
+}
+
+func isQuietCommunicatePreviewArgs(raw string) bool {
+	for _, field := range partialJSONStringFields(raw) {
+		if field.Key == "next" {
+			return strings.TrimSpace(field.Value) == tool.CommunicateNextLogQuietlyAndEndTurn
+		}
+	}
+	return false
 }
 
 // partialJSONStringField pulls ONE named string field out of possibly-truncated

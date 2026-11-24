@@ -484,7 +484,11 @@ func memoryEvalConfig(ctx context.Context, root string, disabled bool, stageCap 
 	// which runs `go test ./...`. The 10s budget cut that real run off under a
 	// loaded runner, leaving a running job and application=false even though the
 	// held-out verifier passed; use production's default command budget instead.
-	return SessionConfig{LifetimeContext: ctx, LLMRetryPolicy: &llm.RetryPolicy{MaxRetries: 0}, MemoryStateRoot: filepath.Join(root, "wiki"), MemoryProjectID: "fixture-project", DisableMemory: disabled, StateDir: filepath.Join(root, "history"), AgentsDocPath: filepath.Join(root, "no-user-AGENTS.md"), ReasoningEffort: "high", NonInteractive: true, MaxToolRoundsPerInput: stageCap, MaxSubagentDepth: 1, TurnEndsProcess: true, VisionModel: "off", DefaultCommandTimeoutMS: 120_000, MaxCommandTimeoutMS: 180_000}
+	// memoryEvalIsolateProcess moves HOME and XDG_CONFIG_HOME under a temp dir,
+	// and the fixture environment inherits none of it, so the launch snapshot's
+	// `go env` telemetry probe would write into that dir after the test's
+	// cleanup. Skipping the snapshot is the isolation this fixture already has.
+	return SessionConfig{LifetimeContext: ctx, LLMRetryPolicy: &llm.RetryPolicy{MaxRetries: 0}, MemoryStateRoot: filepath.Join(root, "wiki"), MemoryProjectID: "fixture-project", DisableMemory: disabled, StateDir: filepath.Join(root, "history"), AgentsDocPath: filepath.Join(root, "no-user-AGENTS.md"), ReasoningEffort: "high", NonInteractive: true, MaxToolRoundsPerInput: stageCap, MaxSubagentDepth: 1, TurnEndsProcess: true, VisionModel: "off", DefaultCommandTimeoutMS: 120_000, MaxCommandTimeoutMS: 180_000, testOnly: testConfig{skipGitSnapshot: true}}
 }
 func memoryEvalWrite(t *testing.T, path, body string) {
 	t.Helper()

@@ -20,6 +20,11 @@ interface ListRowContentProps
   leading?: ReactNode;
   /** State chips after the label. */
   chips?: ReactNode;
+  /** A trailing readout on the label line - the current setting's value -
+   * rendered in the caller's own typography. It shrinks before the label and
+   * sits before the drill-in chevron; truncation or wrapping belongs to the
+   * caller's node. */
+  value?: ReactNode;
   /** One secondary line under the label; truncates. */
   meta?: ReactNode;
   variant?: ListRowVariant;
@@ -60,6 +65,7 @@ const CLASS = {
   heading: requireClass(styles.heading, "listrow.module.css", "heading"),
   label: requireClass(styles.label, "listrow.module.css", "label"),
   chips: requireClass(styles.chips, "listrow.module.css", "chips"),
+  value: requireClass(styles.value, "listrow.module.css", "value"),
   meta: requireClass(styles.meta, "listrow.module.css", "meta"),
   trailing: requireClass(styles.trailing, "listrow.module.css", "trailing"),
   chevron: requireClass(styles.chevron, "listrow.module.css", "chevron"),
@@ -97,7 +103,7 @@ const VARIANT_CLASS: Record<ListRowVariant, string> = {
  * control that owns it, not the roleless container around it.
  */
 export const ListRow = forwardRef<HTMLElement, ListRowProps>(function ListRow(
-  { label, leading, chips, meta, variant = "collection", onSelect, disabled, action, trailingAction, ...rest },
+  { label, leading, chips, value, meta, variant = "collection", onSelect, disabled, action, trailingAction, ...rest },
   ref,
 ) {
   const interactive = onSelect !== undefined;
@@ -123,6 +129,7 @@ export const ListRow = forwardRef<HTMLElement, ListRowProps>(function ListRow(
       <span className={CLASS.heading}>
         <span className={CLASS.label}>{label}</span>
         {chips !== undefined && <span className={CLASS.chips}>{chips}</span>}
+        {value !== undefined && <span className={CLASS.value}>{value}</span>}
       </span>
       {meta !== undefined && <span className={CLASS.meta}>{meta}</span>}
     </>

@@ -19,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/execsupport/fsatomic"
@@ -29,9 +30,8 @@ const (
 	// formatVersion is the sidecar's layout. projectionID names the projection
 	// its records reproduce; either changing rebuilds every index.
 	formatVersion = 8
-	// Dedicated COMMUNICATE records consume inherited call reconstruction.
-	// Older sidecars can contain duplicate messages from ordinary forks.
-	projectionID = "transcript-read-model-v11"
+	// Accepted bare replies and quiet communicate yields change the items.
+	projectionID = "transcript-read-model-v15"
 
 	// tailBytes is how much of the covered prefix's end validation compares,
 	// the check the attention fold cursor uses (agent/session_attention.go).
@@ -1214,7 +1214,14 @@ func (x *Index) readHeader() error {
 		// ordinary error no rebuild trigger ever answers.
 		return fmt.Errorf("%w: decode stored header: %w", errCorrupt, err)
 	}
-	x.prelude = apptranscript.PreludeTurn(header)
+	// A fork that starts with an empty header saved the prompt it rendered to
+	// the meta beside the transcript; the prelude is computed once here, at
+	// open, from both.
+	launchPrompt := ""
+	if strings.TrimSpace(header.SystemPrompt) == "" {
+		launchPrompt = schema.LaunchSystemPromptBesideTranscript(x.path)
+	}
+	x.prelude = apptranscript.PreludeTurn(header, launchPrompt)
 	return nil
 }
 
@@ -1350,9 +1357,6 @@ func (x *Index) buildNew(length int64, incarnation string) error {
 	return nil
 }
 
-// removeOtherBuilds deletes every build but the live one. A reader in another
-// process may still hold an old one's files open; where the platform refuses
-// the removal, the next rebuild tries again.
 func (x *Index) removeOtherBuilds() {
 	entries, err := os.ReadDir(x.dir)
 	if err != nil {

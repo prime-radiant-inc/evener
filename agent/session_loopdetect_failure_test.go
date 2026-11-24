@@ -127,17 +127,20 @@ func TestLoopDetection_MixedWindowKeepsStuckEscalation(t *testing.T) {
 	// Alternating failure/success fills a 6-wide window with an A-B pattern that
 	// still contains real progress, so today's tiered steering stands.
 	reads := []string{"absent.txt", "present.txt", "absent.txt", "present.txt", "absent.txt", "present.txt"}
-	messages, _, _ := loopDetectionSession(t, 6, []string{"present.txt"}, reads)
+	messages, effort, _ := loopDetectionSession(t, 6, []string{"present.txt"}, reads)
 
 	if len(messages) == 0 {
 		t.Fatal("expected a loop detection for the alternating pattern")
 	}
 	joined := strings.Join(messages, "\n")
-	if !strings.Contains(joined, "Your reasoning effort has been increased") {
+	if !strings.Contains(joined, "Stop and think about why your current approach is not working") {
 		t.Fatalf("expected tier-1 stuck escalation, got %q", joined)
 	}
 	if strings.Contains(joined, "Repeating a failing call cannot make it succeed") {
 		t.Fatalf("mixed window must not get the structural intervention, got %q", joined)
+	}
+	if effort != "low" {
+		t.Fatalf("reasoning effort after loop detection = %q, want it unchanged at %q", effort, "low")
 	}
 }
 
@@ -158,7 +161,7 @@ func TestLoopDetection_AllFailingWindowGetsStructuralIntervention(t *testing.T) 
 		!strings.Contains(joined, "Stop. Either change the arguments, or take a different approach to the goal.") {
 		t.Fatalf("structural intervention text incomplete, got %q", joined)
 	}
-	if strings.Contains(joined, "Your reasoning effort has been increased") {
+	if strings.Contains(joined, "Stop and think about why your current approach is not working") {
 		t.Fatalf("failure loop must skip the tier-1 escalation, got %q", joined)
 	}
 	// The tier counter still advances through a failure loop, so a later mixed

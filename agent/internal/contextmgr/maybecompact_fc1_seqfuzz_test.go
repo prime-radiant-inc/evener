@@ -172,7 +172,7 @@ func (m *fc1MaybeCompactModel) applyOp(rt *rapid.T, op fc1MaybeCompactOp, _ int)
 		// to ~1.5x the window lets it push pressure across the checkpoint threshold
 		// (exercising the measurement path) or sit below it (exercising the reset).
 		tokens := rapid.IntRange(0, fc1MaybeCompactWindow*3/2).Draw(rt, "recordTokens")
-		m.cm.RecordInputTokens(tokens, len(m.history))
+		m.cm.RecordInputTokens(tokens, len(m.history), "")
 
 	case fc1OpMaybeCompact:
 		m.cm.MaybeCompact(context.Background(), &m.history, fc1MaybeCompactSysPromptChars, noopEmit)

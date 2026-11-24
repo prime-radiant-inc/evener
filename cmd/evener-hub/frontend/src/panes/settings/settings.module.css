@@ -5,10 +5,8 @@
 }
 
 .nav {
-  display: flex;
+  composes: stack1 from "../../styles/surface.module.css";
   flex: none;
-  flex-direction: column;
-  gap: var(--space-1);
   box-sizing: border-box;
   width: calc(200px + 2 * var(--space-1));
   /* The scroll port clips at its padding edge: this inset is the room the
@@ -32,9 +30,7 @@
 /* A cluster's rows on desktop: a stack with a hair of air between the
  * pills. */
 .clusterRows {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
+  composes: stack1 from "../../styles/surface.module.css";
 }
 
 /* A cluster's rows on a phone, where the nav is the master list: one grouped
@@ -55,10 +51,8 @@
 }
 
 .content {
-  display: flex;
+  composes: stack3 from "../../styles/surface.module.css";
   flex: 1;
-  flex-direction: column;
-  gap: var(--space-3);
   min-width: 0;
   /* One reading measure, shared with the transcript: label/value hairlines
    * that spanned 900px+ read as a spreadsheet (critique finding 8). */

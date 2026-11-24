@@ -14,7 +14,7 @@ func TestCov_LastInputTokens(t *testing.T) {
 	if got := cm.LastInputTokens(); got != 0 {
 		t.Errorf("fresh manager LastInputTokens = %d, want 0", got)
 	}
-	cm.RecordInputTokens(1234, 3)
+	cm.RecordInputTokens(1234, 3, "")
 	if got := cm.LastInputTokens(); got != 1234 {
 		t.Errorf("LastInputTokens = %d, want 1234", got)
 	}

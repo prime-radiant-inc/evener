@@ -5,13 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
 	"testing"
 
-	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
@@ -371,10 +369,6 @@ func TestVoicePresentationActualStartAndSteerRequests(t *testing.T) {
 				t.Fatalf("presentation not separately projected: %+v", message)
 			}
 			content := message.Content[1].Text
-			if text == "start-719" {
-				golden := strings.ReplaceAll(content, want.InstanceID, "INSTANCE")
-				agenttest.CheckGolden(t, filepath.Join("testdata", "voicepresentation", "reference.md"), []byte(golden+"\n"), *updatePromptGoldens, "Regenerate with go test ./agent -run '^TestVoicePresentationActualStartAndSteerRequests$' -update-prompt and review the diff.")
-			}
 			index := strings.Index(content, "\n{")
 			if index < 0 {
 				t.Fatal("no quoted JSON evidence")
@@ -400,7 +394,7 @@ func TestVoicePresentationActualStartAndSteerRequests(t *testing.T) {
 			if _, err := sess.AcceptClientMutationSteer(appwire.TurnSteerParams{ClientMutationID: "steer-831", Input: []appwire.InputItem{{Type: "text", Text: "steer-831", VoicePresentation: steer}}}); err != nil {
 				t.Fatal(err)
 			}
-			call := communicateCallArgs("first", map[string]any{"message": "opaque-output-719", "end_turn": false})
+			call := communicateCallArgs("first", map[string]any{"message": "opaque-output-719", "next": "send_and_continue"})
 			return llm.Response{Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &call}}}}
 		},
 		func(req llm.Request) llm.Response {

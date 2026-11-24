@@ -5,24 +5,13 @@
  * No custom dropdown: the pickers that need rich rows own their own.
  */
 .select {
+  composes: controlField from "../internal/control.module.css";
+  /* biome-ignore lint/suspicious/noDuplicateProperties: css-modules composes takes one declaration per composed class, each with its own `from` */
+  composes: tapFloor from "../../styles/tapfloor.module.css";
   height: 32px;
   padding: 0 var(--space-3);
-  border-radius: var(--radius-control);
-  border: 1px solid var(--edge);
-  background: var(--field);
-  box-shadow: var(--shadow-inset-field);
-  color: var(--ink-hi);
   font-family: var(--font-sans);
   font-size: var(--font-size-control);
-  transition:
-    background-color var(--motion-duration-hover) var(--motion-easing-standard),
-    border-color var(--motion-duration-hover) var(--motion-easing-standard),
-    box-shadow var(--motion-duration-hover) var(--motion-easing-standard);
-}
-
-.select:hover:not(:disabled),
-.select:focus-within {
-  border-color: var(--edge-strong);
 }
 
 .select:disabled {
@@ -30,14 +19,72 @@
   opacity: 0.5;
 }
 
-.select:focus-visible {
-  outline: var(--focus-ring);
-  outline-offset: 2px;
+/* Quiet variant: the current value IS the control. The closed face is the
+ * shared quiet-trigger recipe (also composed by ModelSwitchTrigger's Popover
+ * button); the containing block and tap floor below are the native-select
+ * parts only this variant owns. */
+.quietVariant {
+  composes: quietTrigger from "../internal/quietTrigger.module.css";
+}
+
+.quietReadout {
+  composes: quietValue from "../internal/quietTrigger.module.css";
+}
+
+.quietCaret {
+  composes: quietChevron from "../internal/quietTrigger.module.css";
+}
+
+/* The compact composer status row has no room for the chevron beside a
+ * tap-floor trigger; the control still reads as a picker through its value
+ * and native select. */
+@container (max-width: 399px) {
+  .quietCaret {
+    display: none;
+  }
+}
+
+/* A REAL native <select>, laid over its own readout at zero opacity: the
+ * control keeps every native behavior a hand-built listbox would have thrown
+ * away - tab order, arrow keys, type-ahead, and the platform's own dropdown.
+ * `opacity: 0` rather than `visibility: hidden` or a clip rect: it must stay
+ * hittable and focusable, which both of those would end. The readout beneath
+ * is aria-hidden, so this element is the control's single spoken source for
+ * the value. */
+.quietSelect {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  opacity: 0;
+  /* Inherit the wrapper's cursor: the overlay is the topmost hittable layer,
+   * so its own `pointer` would win over the wrapper's `not-allowed` on a
+   * disabled control and promise an interaction the select refuses. */
+  cursor: inherit;
+  font: inherit;
+  /* A real native select: it must not inherit the trigger's caption size,
+   * or iOS zooms into it on focus (--font-size-control is 16px on phones). */
+  font-size: var(--font-size-control);
+}
+
+.quietVariant:not([data-disabled="true"]) .quietSelect {
+  cursor: pointer;
 }
 
 @media (max-width: 899px), (any-pointer: coarse) {
   .select {
-    min-height: var(--tap-min);
     height: var(--tap-min);
+  }
+
+  /* Select's quiet variant is a phone control too: both axes get the floor,
+   * and the value stays centred in it. */
+  .quietVariant {
+    justify-content: center;
+    min-width: var(--tap-min);
+    min-height: var(--tap-min);
   }
 }

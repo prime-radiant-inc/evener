@@ -2,6 +2,17 @@
   display: inline-block;
 }
 
+/* The block presentation: a caller in a flex or grid line (the rail's session
+ * title, for example) gets a block-level box with the clipping from the
+ * widget, rather than wrapping the card in its own span and reaching in with
+ * a descendant selector. No width is claimed: a block box fills a normal
+ * block container, while a flex item still sizes to its trigger. */
+.block {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+}
+
 /* A floating layer of the design system, not an oversized tooltip: the card
  * rides the same ground as popover/menu/dialog (--surface-1 with the
  * --shadow-overlay ring-and-shadow), while the tooltip keeps its inverted
@@ -11,14 +22,14 @@
  * trigger, which floatingBubble.tsx sets inline with the placement. */
 .bubble {
   composes: float from "../../styles/motion.module.css";
+  /* biome-ignore lint/suspicious/noDuplicateProperties: css-modules composes takes one declaration per composed class, each with its own `from` */
+  composes: panel from "../internal/floatingSurface.module.css";
   position: fixed;
   z-index: var(--z-tooltip);
   width: max-content;
   max-width: min(320px, calc(100vw - var(--space-4)));
   padding: var(--space-3);
   background: var(--surface-1);
-  border-radius: var(--radius-pane);
-  box-shadow: var(--shadow-overlay);
   color: var(--ink-hi);
   font-family: var(--font-sans);
   font-size: var(--font-size-ui);

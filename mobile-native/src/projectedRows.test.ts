@@ -575,6 +575,42 @@ describe("projectedRow — item entries", () => {
 		expect(groupTimeline([row])).toEqual([row]);
 	});
 
+	it("keeps a clean quiet_yield as a plain notice and folds companion commentary behind its label", () => {
+		const clean = projectedRow(
+			itemEntry(item({ type: "systemMessage", text: "quiet-sentinel", eventKind: "quiet_yield" })),
+		) as Extract<MobileTimelineItem, { kind: "notice" }>;
+		expect(clean).toMatchObject({
+			kind: "notice",
+			origin: "system",
+			family: "lifecycle",
+			tone: "system",
+			eventKind: "quiet_yield",
+			text: "quiet-sentinel",
+		});
+		expect(clean.label).toBeUndefined();
+
+		const withCommentary = projectedRow(
+			itemEntry(
+				item({
+					type: "systemMessage",
+					text: "quiet-sentinel",
+					eventKind: "quiet_yield",
+					raw: { commentary: "  demoted-commentary-sentinel  " },
+				}),
+			),
+		) as Extract<MobileTimelineItem, { kind: "notice" }>;
+		expect(withCommentary).toMatchObject({
+			kind: "notice",
+			origin: "system",
+			family: "lifecycle",
+			tone: "system",
+			eventKind: "quiet_yield",
+			label: "quiet-sentinel",
+			text: "demoted-commentary-sentinel",
+			rendersMarkdown: true,
+		});
+	});
+
 	it("maps a warning item to the attention failure row", () => {
 		const row = projectedRow(
 			itemEntry(item({ type: "warning", text: "disk low", warning: { title: "Space", hint: "free some" } })),
@@ -1914,11 +1950,11 @@ describe("the timeline projection delegates to the shared projector", () => {
 		["activity", false, true],
 	] as const)(
 		"level %s: keeps exactly the rows the shared projector keeps, byte-identical except its own reclassifications",
-		(level, intentRows, settledTraceRows) => {
+		(level, intentRows, thinkingRows) => {
 			const rows = rowsAt(model, level);
-			// Visibility: every show-everything row survives except the settled
-			// thought r1 at chat, where the preset stays conversation-only; the
-			// other levels keep it as a settled trace row. The cross-turn r2+r3
+			// Visibility: every show-everything row survives except reasoning at
+			// chat, where the preset stays conversation-only; the other levels
+			// keep their thinking rows. The cross-turn r2+r3
 			// cluster cannot form — the projector reclassifies both members —
 			// so r3 becomes its own row here. At the compact levels the settled
 			// c5 is the summarized member of the running c4's cluster, and its
@@ -1935,15 +1971,14 @@ describe("the timeline projection delegates to the shared projector", () => {
 				"sys-compact",
 				"c1",
 				"c3",
-				...(settledTraceRows ? ["r1"] : []),
+				...(thinkingRows ? ["r1"] : []),
 				"w1",
 				"unk1",
 				"ask1",
 				"c4",
 				...(intentRows ? [] : ["c5:attachments"]),
 				"a2",
-				"r2",
-				"r3",
+				...(thinkingRows ? ["r2", "r3"] : []),
 				"failure:t3",
 			]);
 
@@ -1964,34 +1999,36 @@ describe("the timeline projection delegates to the shared projector", () => {
 			}
 
 			// The settled thought is a completed trace row carrying its text.
-			if (settledTraceRows) {
+			if (thinkingRows) {
 				expect(rows.find((row) => rowId(row) === "r1")).toMatchObject({
 					kind: "activity",
 					family: "reasoning",
 					state: "completed",
 					detail: { output: "auditing quietly" },
 				});
+				// The live current thought becomes a content-free placeholder.
+				expect(rows.find((row) => rowId(row) === "r2")).toEqual({
+					kind: "activity",
+					id: "r2",
+					label: "Reasoning",
+					family: "reasoning",
+					state: "running",
+					detail: {},
+					turnId: "t2",
+				});
+				// The failed turn's settled thought keeps its neutral title and
+				// carries the thought behind the fold.
+				expect(rows.find((row) => rowId(row) === "r3")).toEqual({
+					kind: "failure",
+					id: "r3",
+					title: "Thought not shown",
+					detail: "final thought",
+					thought: true,
+					turnId: "t3",
+				});
+			} else {
+				expect(rows.some((row) => ["r1", "r2", "r3"].includes(rowId(row)))).toBe(false);
 			}
-			// The live current thought becomes a content-free placeholder.
-			expect(rows.find((row) => rowId(row) === "r2")).toEqual({
-				kind: "activity",
-				id: "r2",
-				label: "Reasoning",
-				family: "reasoning",
-				state: "running",
-				detail: {},
-				turnId: "t2",
-			});
-			// The failed turn's settled thought keeps its neutral title and
-			// carries the thought behind the fold.
-			expect(rows.find((row) => rowId(row) === "r3")).toEqual({
-				kind: "failure",
-				id: "r3",
-				title: "Thought not shown",
-				detail: "final thought",
-				thought: true,
-				turnId: "t3",
-			});
 
 			// A summarized tool call is a summary-only row at compact levels:
 			// the same activity, carrying ONLY the projector's trimmed
@@ -2060,11 +2097,9 @@ describe("the timeline projection delegates to the shared projector", () => {
 			// The live current thought is content-free wherever it runs.
 			expect(shown).not.toContain("secret live thought");
 			if (level === "chat") {
-				// Conversation-only: the settled healthy trace stays hidden; a
-				// broken turn's thought still explains itself, its text riding
-				// behind the failure row's fold.
+				// Conversation-only: no reasoning row or body survives.
 				expect(shown).not.toContain("auditing quietly");
-				expect(shown).toContain("final thought");
+				expect(shown).not.toContain("final thought");
 			} else {
 				// Settled traces ride as collapsed rows whose text unfolds on
 				// demand, so their bodies are present at every other level.

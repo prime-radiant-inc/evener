@@ -69,7 +69,7 @@ func runLocalEdgeContractProgram(t *testing.T, program []byte) localEdgeTrace {
 	}
 	trace.Fuzzy = append(trace.Fuzzy, "single", "multi", "blank")
 
-	if got := nearestFileRegion("alpha beta gamma\nlast line", "alpha beta\nrequested second line"); got != "alpha beta gamma\nlast line" {
+	if got := nearestFileRegion("alpha beta gamma\nlast line", "alpha beta\nrequested second line"); got != "L1:\nalpha beta gamma\nlast line" {
 		t.Fatalf("nearest region clamp = %q", got)
 	}
 	if got := nearestFileRegion("unrelated words", "different tokens"); got != "" {
@@ -78,7 +78,7 @@ func runLocalEdgeContractProgram(t *testing.T, program []byte) localEdgeTrace {
 	if got := nearestFileRegion("content", "\t "); got != "" {
 		t.Fatalf("blank nearest region = %q", got)
 	}
-	if got := nearestFileRegion("first line\nalpha beta gamma", "alpha beta\nrequested trailing line"); got != "alpha beta gamma" {
+	if got := nearestFileRegion("first line\nalpha beta gamma", "alpha beta\nrequested trailing line"); got != "L2:\nalpha beta gamma" {
 		t.Fatalf("nearest region tail clamp = %q", got)
 	}
 	if lineSimilarity("", "x") != 0 || lineSimilarity("alpha beta", "alpha") != 1 || lineSimilarity("alpha", "beta") != 0 || lineSimilarity(" ", "\t") != 0 {

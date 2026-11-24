@@ -95,22 +95,30 @@ func stceFileTools(t *testing.T) {
 	if res := exec(&stceFileEnv{DenyEnv: &agenttest.DenyEnv{WorkDir: root}, readOutput: badRaster}, "read-bad-image", "read_file", map[string]any{"file_path": "bad.png"}); !res.IsError || !strings.Contains(res.Output, "invalid image data") || len(res.ImageData) != 0 {
 		t.Fatalf("malformed raster read = %#v", res)
 	}
-	// The exemption, stated as a contract: the SAME bytes that are rejected as
-	// a raster above ride through untouched under a document header. The
-	// document path hands the model whatever the environment read, because a
-	// PDF is not something llm.RasterMediaType can decode.
+	// The exemption, stated as a contract: read_file's document arm validates
+	// the payload as a PDF but never raster-decodes it, and an unpaged PDF
+	// within the unpaged limit rides through byte-for-byte (pdfslice.SlicePDF
+	// returns the raw bytes verbatim rather than re-writing them). The fixture
+	// is a real one-page PDF: read_file v2 parses every document payload before
+	// dispatch.
 	//
 	// This states the rule; it does not hold it alone. Blanking ImageMediaType
 	// for application/pdf reddens this, and also
 	// TestW3Sub_RegisterFileTools_DocumentResult,
 	// TestADocumentResultIsNotAnnouncedAsAnImage and
-	// TestReadFile_RealPDF_DetectedByItsBytes. Its job is to say the quiet part
-	// at the exact fixture that implied it for years without ever asserting it
-	// -- and note this file is //go:build evenerfuzz, outside `make test`, so the
-	// contract is only read in the fuzz lane (`-tags evenerfuzz`).
-	exemptDoc := "[document: bad.pdf]\n" + base64.StdEncoding.EncodeToString(notRaster)
-	if res := exec(&stceFileEnv{DenyEnv: &agenttest.DenyEnv{WorkDir: root}, readOutput: exemptDoc}, "read-exempt-doc", "read_file", map[string]any{"file_path": "bad.pdf"}); res.IsError || res.ImageMediaType != "application/pdf" || !bytes.Equal(res.ImageData, notRaster) {
-		t.Fatalf("document payloads are exempt from raster decoding, but the exempt read = %#v", res)
+	// TestReadFile_RealPDF_DetectedByItsBytes. Note this file is
+	// //go:build evenerfuzz, outside `make test`, so the contract is only read
+	// in the fuzz lane (`-tags evenerfuzz`).
+	docBytes := validPDFFixture(t)
+	exemptDoc := "[document: bad.pdf]\n" + base64.StdEncoding.EncodeToString(docBytes)
+	if res := exec(&stceFileEnv{DenyEnv: &agenttest.DenyEnv{WorkDir: root}, readOutput: exemptDoc}, "read-exempt-doc", "read_file", map[string]any{"file_path": "bad.pdf"}); res.IsError || res.ImageMediaType != "application/pdf" || !bytes.Equal(res.ImageData, docBytes) {
+		t.Fatalf("document payloads must ride through without raster decoding, but the document read = %#v", res)
+	}
+	// Mandatory PDF parsing: the bytes rejected as a raster above are rejected
+	// as a document too.
+	badDoc := "[document: bad.pdf]\n" + base64.StdEncoding.EncodeToString(notRaster)
+	if res := exec(&stceFileEnv{DenyEnv: &agenttest.DenyEnv{WorkDir: root}, readOutput: badDoc}, "read-bad-doc", "read_file", map[string]any{"file_path": "bad.pdf"}); !res.IsError {
+		t.Fatalf("read_file accepted a non-PDF document payload: %#v", res)
 	}
 	readErr := errors.New("read failure")
 	if res := exec(&stceFileEnv{DenyEnv: &agenttest.DenyEnv{WorkDir: root}, readErr: readErr}, "read-error", "read_file", map[string]any{"file_path": "bad"}); !res.IsError {
@@ -122,10 +130,10 @@ func stceFileTools(t *testing.T) {
 	if res := exec(&stceFileEnv{DenyEnv: &agenttest.DenyEnv{WorkDir: root}, writeErr: errors.New("write failure")}, "write-error", "write_file", map[string]any{"file_path": "x", "content": "y"}); !res.IsError {
 		t.Fatalf("write error = %#v", res)
 	}
-	if res := exec(&stceFileEnv{DenyEnv: &agenttest.DenyEnv{WorkDir: root}}, "edit", "edit_file", map[string]any{"file_path": "x", "old_string": "a", "new_string": "b", "replace_all": true}); res.IsError || !strings.HasPrefix(res.Output, warning) {
+	if res := exec(&stceFileEnv{DenyEnv: &agenttest.DenyEnv{WorkDir: root}}, "edit", "edit_file", map[string]any{"file_path": "x", "edits": []any{map[string]any{"old_string": "a", "new_string": "b", "replace_all": true}}}); res.IsError || !strings.HasPrefix(res.Output, warning) {
 		t.Fatalf("edit warning = %#v", res)
 	}
-	if res := exec(&stceFileEnv{DenyEnv: &agenttest.DenyEnv{WorkDir: root}, editErr: errors.New("edit failure")}, "edit-error", "edit_file", map[string]any{"file_path": "x"}); !res.IsError {
+	if res := exec(&stceFileEnv{DenyEnv: &agenttest.DenyEnv{WorkDir: root}, editErr: errors.New("edit failure")}, "edit-error", "edit_file", map[string]any{"file_path": "x", "edits": []any{map[string]any{"old_string": "a", "new_string": "b"}}}); !res.IsError {
 		t.Fatalf("edit error = %#v", res)
 	}
 
@@ -172,16 +180,9 @@ func stceVisionAndWeb(t *testing.T, selector byte) {
 
 	_ = adapter
 
-	result, err := s.webSearch(context.Background(), "query")
-	if err != nil || result != "scripted vision" {
-		t.Fatalf("web search = %#v, %v", result, err)
-	}
 	adapter.FaultResponder = func(llm.Request) error { return errors.New("search failure") }
 	if got := s.describeImage(context.Background(), tool.ExecResult{ImageData: []byte("x")}); got != "" {
 		t.Fatalf("vision error = %q", got)
-	}
-	if _, err := s.webSearch(context.Background(), "query"); err == nil || !strings.Contains(err.Error(), "web search failed") {
-		t.Fatalf("web search error = %v", err)
 	}
 }
 

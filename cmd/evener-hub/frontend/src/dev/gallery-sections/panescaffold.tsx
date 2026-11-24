@@ -1,7 +1,7 @@
 import { Button } from "../../widgets/button";
 import { Cadence } from "../../widgets/cadence";
 import { PaneScaffold } from "../../widgets/panescaffold";
-import { ThemeFlip } from "../ThemeFlip";
+import { GallerySection } from "../GallerySection";
 import styles from "./panescaffold.module.css";
 
 const NOW = 1_700_000_000_000;
@@ -44,16 +44,13 @@ function FullChromePane() {
 
 export default function PaneScaffoldGallerySection() {
   return (
-    <section>
-      <h2>PaneScaffold</h2>
-      <ThemeFlip>
-        <div className={styles.frame}>
-          <MinimalPane />
-        </div>
-        <div className={styles.frame}>
-          <FullChromePane />
-        </div>
-      </ThemeFlip>
-    </section>
+    <GallerySection title="PaneScaffold">
+      <div className={styles.frame}>
+        <MinimalPane />
+      </div>
+      <div className={styles.frame}>
+        <FullChromePane />
+      </div>
+    </GallerySection>
   );
 }

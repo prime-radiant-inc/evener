@@ -95,6 +95,14 @@ export function useDisclosureSnapshot<T>(selector: (state: DisclosureState) => T
   return useStore(store, selector);
 }
 export const setDisclosureOpen = store.setOpen;
+/** Non-reactive read, for a caller outside a render (a find landing). */
+export const isDisclosureOpenNow = store.isOpen;
+/** Whether the reader's own choice has this id open, ignoring any baseline (a
+ * closed row stays closed to this even under expand-all). Non-reactive, for a
+ * caller outside a render. */
+export function isDisclosureOpenExplicitly(id: string): boolean {
+  return isDisclosureOpenIn(store.getState(), id, false, { ignoreBaseline: true });
+}
 export const toggleDisclosure = store.toggle;
 export const beginDisclosureBaseline = store.beginBaseline;
 export const disclosureDefault = store.defaultFor;

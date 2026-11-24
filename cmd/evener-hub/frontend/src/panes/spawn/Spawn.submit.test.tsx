@@ -7,6 +7,7 @@ import { toastKinds } from "../../widgets/toast/toastTestUtils";
 import { selectEditorText } from "../session/testing/editor";
 import { selectSpawnDirectory } from "./spawnDrafts";
 import {
+  chooseHost,
   effortControl,
   effortOptionValues,
   effortSelect,
@@ -16,6 +17,7 @@ import {
   installSpawnTestHooks,
   modelListRequests,
   openDesktopPluginSelection,
+  openWorkingDir,
   pastePngInto,
   pickModel,
   promptField,
@@ -29,7 +31,6 @@ import {
   setWorkingDir,
   startResponse,
   visitSpawnURL,
-  workingDir,
 } from "./spawnTestUtils";
 
 installSpawnTestHooks();
@@ -459,7 +460,7 @@ test("a remote /model value without a provider leaves Start usable", async () =>
   renderSpawn(fake);
   await settled();
 
-  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await chooseHost("buildbox");
   await user.type(promptField(), "/model foo");
   await user.keyboard("{Escape}");
   await user.click(screen.getByTestId("spawn-submit"));
@@ -487,6 +488,7 @@ test("a remote /model value without a provider leaves Start usable", async () =>
 function installStalledDecodeStub(): void {
   HTMLCanvasElement.prototype.getContext = (() => ({
     drawImage() {},
+    fillRect() {},
   })) as unknown as typeof HTMLCanvasElement.prototype.getContext;
   HTMLCanvasElement.prototype.toBlob = () => {}; // never invokes its callback
   class NeverLoadsImage {
@@ -508,13 +510,14 @@ function installStalledDecodeStub(): void {
 function installGatedDecodeStub(): { release: () => Promise<void> } {
   HTMLCanvasElement.prototype.getContext = (() => ({
     drawImage() {},
+    fillRect() {},
   })) as unknown as typeof HTMLCanvasElement.prototype.getContext;
   let markDelivered!: () => void;
   const delivered = new Promise<void>((resolve) => {
     markDelivered = resolve;
   });
-  HTMLCanvasElement.prototype.toBlob = (callback: BlobCallback): void => {
-    const blob = new Blob([new Uint8Array([9, 9, 9])], { type: "image/png" });
+  HTMLCanvasElement.prototype.toBlob = (callback: BlobCallback, type?: string): void => {
+    const blob = new Blob([new Uint8Array([9, 9, 9])], { type: type ?? "image/png" });
     const readBytes = blob.arrayBuffer.bind(blob);
     blob.arrayBuffer = async () => {
       const buffer = await readBytes();
@@ -771,7 +774,7 @@ test("typing a working directory reloads the model catalog only after confirmati
   // Global cleanup can run before the initial directory-scoped catalog load.
   await waitFor(() => expect(modelListRequests(fake).some((params) => Object.hasOwn(params, "cwd"))).toBe(true));
   const baseline = fake.calls.filter((call) => call.method === "model/list").length;
-  await user.click(workingDir());
+  await user.click(await openWorkingDir());
   const input = await screen.findByRole("textbox", { name: "Path" });
   await user.clear(input);
   await user.type(input, "/tmp/some/project{Enter}");
@@ -796,7 +799,7 @@ test.each(["desktop", "mobile"])("%s directory picker follows route directory ch
   await waitFor(() => expectWorkingDir("/home/me/app"));
   await user.click(
     surface === "desktop"
-      ? workingDir()
+      ? await openWorkingDir()
       : screen.getByLabelText(/^Working directory:/, { selector: "button:not(#spawn-cwd)" }),
   );
   const input = await screen.findByRole("textbox", { name: "Path" });

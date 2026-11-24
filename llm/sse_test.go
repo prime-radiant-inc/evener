@@ -33,6 +33,48 @@ func TestSSEReadTimeoutErrorMatchesSentinelWithoutLosingItsDuration(t *testing.T
 	}
 }
 
+// A streamed event that outgrows the configured bound fails the parse instead
+// of buffering without limit, whether the bytes arrive as one long line or as
+// many data lines in one event.
+func TestParseSSE_MaxEventBytes(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name  string
+		input string
+		opts  []SSEOption
+	}{
+		{name: "one long line", input: "data: " + strings.Repeat("x", 33) + "\n\n"},
+		{name: "accumulated data", input: "data: " + strings.Repeat("x", 17) + "\ndata: " + strings.Repeat("x", 17) + "\n\n"},
+		{name: "timeout path", input: "data: " + strings.Repeat("x", 33) + "\n\n", opts: []SSEOption{WithStreamReadTimeout(time.Minute)}},
+	} {
+		err := ParseSSE(context.Background(), strings.NewReader(tc.input), func(SSEEvent) error { return nil },
+			append(tc.opts, WithMaxEventBytes(32))...)
+		if !errors.Is(err, ErrSSEEventTooLarge) || !strings.Contains(err.Error(), "exceeds 32 bytes") {
+			t.Fatalf("%s: error = %v, want ErrSSEEventTooLarge naming 32 bytes", tc.name, err)
+		}
+	}
+
+	var got string
+	err := ParseSSE(context.Background(), strings.NewReader("data: "+strings.Repeat("x", 32)+"\n\n"), func(ev SSEEvent) error {
+		got = string(ev.Data)
+		return nil
+	}, WithMaxEventBytes(64))
+	if err != nil || len(got) != 32 {
+		t.Fatalf("an event at the bound = %q, %v, want it delivered whole", got, err)
+	}
+
+	// Many short lines belong to many small events, so a bound below the read
+	// size must not fail them: only an unterminated run accumulates.
+	short := strings.Repeat(": comment\n", 20) + "data: hi\n\n"
+	got = ""
+	if err := ParseSSE(context.Background(), strings.NewReader(short), func(ev SSEEvent) error {
+		got = string(ev.Data)
+		return nil
+	}, WithMaxEventBytes(32)); err != nil || got != "hi" {
+		t.Fatalf("short lines under a small bound = %q, %v, want hi and no error", got, err)
+	}
+}
+
 func TestParseSSE_BasicEvent(t *testing.T) {
 	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	input := "data: hello\n\n"

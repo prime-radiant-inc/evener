@@ -986,6 +986,26 @@ test("the trigger announces its popup state via aria-haspopup/aria-expanded", as
   expect(trigger.getAttribute("aria-expanded")).toBe("true");
 });
 
+test("the trigger exposes its open state as data-open for callers' CSS", async () => {
+  const user = userEvent.setup();
+  render(
+    <div>
+      <Menu trigger="Actions" items={items()} />
+      <button type="button">Elsewhere</button>
+    </div>,
+  );
+  const trigger = screen.getByRole("button", { name: "Actions" });
+  expect(trigger.getAttribute("data-open")).toBe("false");
+  await user.click(trigger);
+  expect(trigger.getAttribute("data-open")).toBe("true");
+  await user.keyboard("{Escape}");
+  expect(trigger.getAttribute("data-open")).toBe("false");
+  await user.click(trigger);
+  expect(trigger.getAttribute("data-open")).toBe("true");
+  await user.click(screen.getByRole("button", { name: "Elsewhere" }));
+  expect(trigger.getAttribute("data-open")).toBe("false");
+});
+
 // --- fix-wave: role=menu accessible name (Important) -------------------
 // A menu with no accessible name announces as just "menu" to a screen
 // reader - indistinguishable from any other menu on the page. Labelling
@@ -6870,19 +6890,13 @@ test("a fractional correction that carries the content still keeps the menu open
   }
 });
 
-test("keeps the menu trigger and items at the narrow-viewport tap floor", () => {
+test("composes the shared tap floor on the trigger, its icon, and the items", () => {
   const here = dirname(fileURLToPath(import.meta.url));
   const css = readFileSync(join(here, "menu.module.css"), "utf8");
-  expect(css).toMatch(
-    new RegExp(
-      `@media ${escapeRegExp(MOBILE_QUERY)}, \\(any-pointer: coarse\\)\\s*\\{[\\s\\S]*?\\.trigger\\s*\\{[^}]*min-height:\\s*var\\(--tap-min\\)`,
-    ),
-  );
-  expect(css).toMatch(
-    new RegExp(
-      `@media ${escapeRegExp(MOBILE_QUERY)}, \\(any-pointer: coarse\\)\\s*\\{[\\s\\S]*?\\.item\\s*\\{[^}]*min-height:\\s*var\\(--tap-min\\)`,
-    ),
-  );
+  const rule = (selector: string) => new RegExp(`${escapeRegExp(selector)}\\s*\\{([^}]*)\\}`).exec(css)?.[1] ?? "";
+  expect(rule(".trigger")).toContain('composes: tapFloor from "../../styles/tapfloor.module.css"');
+  expect(rule(".triggerIcon")).toContain('composes: tapFloorWidth from "../../styles/tapfloor.module.css"');
+  expect(rule(".item")).toContain('composes: tapFloor from "../../styles/tapfloor.module.css"');
 });
 
 // jsdom does not evaluate real CSS animations or media queries - see the

@@ -172,7 +172,11 @@ func TestDelegateGenerationEvidenceSnapshotDeepClonesFallback(t *testing.T) {
 
 func startDelegateAttentionEvidenceGeneration(t *testing.T, c *delegateTreeController, delegateID string) delegateLease {
 	t.Helper()
-	runtime := &Session{id: "child-" + delegateID, stateDir: c.stateDir, delegateController: c}
+	return startDelegateAttentionEvidenceGenerationFor(t, c, delegateID, &Session{id: "child-" + delegateID, stateDir: c.stateDir, delegateController: c})
+}
+
+func startDelegateAttentionEvidenceGenerationFor(t *testing.T, c *delegateTreeController, delegateID string, runtime *Session) delegateLease {
+	t.Helper()
 	c.mu.Lock()
 	if _, err := c.appendLocked(delegatestore.Event{
 		Kind:       delegatestore.EventDelegateAttentionChanged,
@@ -185,15 +189,12 @@ func startDelegateAttentionEvidenceGeneration(t *testing.T, c *delegateTreeContr
 		t.Fatalf("append attention projection: %v", err)
 	}
 	c.live[delegateID] = &delegateLiveState{runtime: runtime}
-	c.noteDelegateAttentionLocked(delegateID, "attention-"+delegateID)
+	c.noteDelegateAttentionLockedForTest(delegateID, "attention-"+delegateID)
 	c.mu.Unlock()
 
 	reservation, err := c.ReserveAttention(runtime, "attention-"+delegateID)
 	if err != nil {
 		t.Fatalf("ReserveAttention: %v", err)
-	}
-	if err := c.prepareAttentionStart(reservation, runtime, nil); err != nil {
-		t.Fatalf("prepareAttentionStart: %v", err)
 	}
 	started, err := c.CommitStart(reservation)
 	if err != nil {

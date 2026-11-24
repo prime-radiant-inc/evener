@@ -53,6 +53,10 @@ losing the conversation that made the evidence relevant.
   Open navigates independently. Neither action should accidentally trigger the other.
   Progressive disclosure costs an extra action to inspect detail; it must not conceal
   the reason to inspect it.
+- **Keep thinking at intent density.** Chat omits reasoning rows. At Intent and above,
+  compact live and settled summaries share the icon rail, sans UI type, title line
+  height, and a `--rhythm-item` vertical inset. Their chevrons disclose the same quiet,
+  italic reading text. Full keeps the richer reasoning presentation.
 - **Keep different facts distinct.** Delegate lifecycle, attention, immutable launch receipt
   and child-authored report answer different questions. A successful launch is not finished
   work; an earlier report is not current activity. Prefer an honest unknown to an inferred
@@ -105,20 +109,29 @@ losing the conversation that made the evidence relevant.
   [desktop recovery](../../cmd/evener-hub/frontend/src/shell/DockHost.tsx).
   The phone shell (`StackHost`) slides between panes as the Slide recipe
   (recipe 4 in [motion.md](motion.md)).
-- **Quiet the frame, lift what you act on.** The page frame stays flat: pane scaffolds and
-  tables are square, and fine rules and aligned columns carry the structure. The objects a
-  reader handles are enclosed and sit one step up: a run of tool calls is one rounded card,
-  a section is a `Card`, and the prompt card, the selected rail row, the user's message slip
-  and a secondary button carry a soft shadow. One object gets one edge; a card never draws
-  a second card inside itself. Fields still look editable, overlays retain boundaries, focus
-  remains visible, and semantic color distinguishes attention, activity, failure and
-  selection with text or shape as well as hue. Minimalism is not permission to hide an
-  affordance.
+- **Quiet the frame, lift what you act on.** Pane scaffolds and tables stay square and flat;
+  fine rules and aligned columns carry the structure. A section is a `Card`. The composer,
+  selected rail row and secondary buttons keep their lift. One object gets one edge. Fields
+  look editable, overlays retain boundaries and keyboard focus remains visible. Distinguish
+  attention, activity, failure and selection with text or shape as well as color.
+- **Let the conversation read as conversation.** At every width, the speaker row
+  introduces the words that follow. Delivered messages sit directly on the page. Spacing
+  and aligned icons group routine tool calls. A failed call stands out before the reader
+  opens it. Keep native evidence inspectable and the Open action separate from the
+  disclosure. Pending delivery keeps its own cue.
 - **Optimize readable density, not maximum density.** Prose gets a reading face and measure;
   operations use compact sans; machine evidence uses mono. Larger prose occupies more space
   but separates reading from scanning. Shared size and width preferences remain available.
   Phones reflow speaker rows, controls and evidence rather than shrinking a desktop page;
   wide evidence scrolls within its surface instead of widening the page or shrinking targets.
+- **Keep session reading controls in the header.** Find in session, then Overview, occupy the
+  desktop pane header's action slot; below 900px `StackHost` mounts the same actions as icon
+  buttons with the ordinary touch floor. The ordinary composer menu leaves those two actions to
+  the header and retains Verbosity, turn verbs, and session management. Rail and embedded-column
+  menus keep their existing inspection access. Overview keeps one icon and shows its open state
+  through selected styling. Mobile session titles align left. A session with no real Back
+  destination gets Sessions as its only leading navigation control; a retained parent, valid
+  back-stack destination, or attention Back uses Back instead. Non-session top bars are unchanged.
 - **Keep session status inside its pane.** Every visible desktop session pane ends
   with its own
   flush status footer, never one strip spanning sibling panes. The footer leads with that
@@ -129,52 +142,51 @@ losing the conversation that made the evidence relevant.
   At the narrow shell breakpoint (899px and below), phones keep one bottom surface:
   the pane renders no separate footer strip below the
   composer, so the composer's own control row carries Attach, the model and reasoning
-  chrome line, and Send or Stop. The activity counts sit on a quiet line below the card,
-  where the desktop status bar puts them, and that line is the pane's bottom edge: on
-  the phone the chips fill the home-indicator band themselves, so the dock reserves no
-  space below them. The composer dock owns the home-indicator band, and that band is one
+  chrome line, and Send or Stop. The activity counts sit on a quiet line above the card,
+  so their arrival never moves the card's persistent controls. The card remains the
+  lowest interactive surface. The composer dock owns the home-indicator band, and that band is one
   token: `--dock-clearance` in `tokens.css` (`max(0px, env(safe-area-inset-bottom) -
   var(--keyboard-inset, 0px))`). Every dock reads that one value, and it yields when the
   on-screen keyboard covers the band. The working-directory strip follows that shell breakpoint:
-  the narrow phone reads the session's working directory and branch through the session menu's
+  the narrow phone reads the session's working directory and branch through the top bar's
   Overview (About), while a primary-touch phone whose wider landscape viewport uses the desktop
   shell retains the separate status footer. A phone chip shows its
   glyph and a single active count (settled for Tasks); its category name and the full
-  active/total fraction stay in its accessible name and tooltip. While the card rests —
-  empty, unfocused, no send in flight — a composer
-  with room folds to one row: the placeholder beside the model and effort, with the
-  session menu and Send at the right. The paperclip returns with the expanded card,
-  and focusing or typing grows it back on the spatial recipe (§5). The space
+  active/total fraction stay in its accessible name and tooltip. An empty composer
+  with room folds to one row: Attach keeps its leading utility slot, the message field
+  stays left of the session menu, and the menu and Send or Stop keep their trailing
+  slots. Steer enters to the primary action's left. These positions do not move when
+  content arrives.
+  Focus, including session-opening
+  autofocus, never grows the empty card; typing or another content contribution expands
+  it on the spatial recipe (§5). Clearing while focused keeps that expanded shape stable,
+  and leaving the empty editor folds it again. The space
   around the card keeps its outgoing height until the animation starts, so a
-  transcript resting at its end stays there through the fold. The fold runs
-  after a completed click outside the card, never at the press: the card is in
-  flow, so folding mid-press would move the pressed control out from under the
-  pointer and swallow its click. The listener reads that click in the capture
-  phase, because a transcript control may consume its own click with
-  `stopPropagation`, and folds on the task after it, so the card's height
-  change cannot land under the control's own handlers. A press that never
-  becomes a click — selecting text, dragging a scroll — leaves the card as it
-  was. A phone's
-  resting composer is one line too, but it keeps only the session menu and Send
-  there; engaging the editor restores the full row, including Attach and the model
-  picker. This phone treatment also holds on a primary-touch landscape viewport up
-  to 1000px wide and 700px tall, including the Duo's 951×669pt inner display, even
-  though that width uses the desktop shell. A fine-pointer desktop card under 620px keeps the stacked
-  control row and the folded one-line field. The phone's resting card sheds Attach, the model chrome and the
-  activity line: the folded card is the phone's smallest surface, and the counts come
-  back with the expanded card. At the 466px Duo cover width the control row
-  tightens; focus, drafts, attachments, and question/approval docks keep their writing
-  and response space. The
-  four activity counters stay in the
-  app with their existing Overview links. The OS-owned Duo system rail is not a public
-  customization surface, so no counters move there. The 466px cover treatment is a fit
-  pass on that existing session screen, not a new mode: content, controls and workflow
-  stay, and an empty, unfocused card gives its own padding back to the transcript
-  (`promptcard.module.css`'s 440–500px portrait query, which zeroes the card's block padding
-  and field gap from their resting `--space-3` top, `--space-2` sides and bottom, and
-  `--space-2` gap, with the matching dock gap in
-  `composer.module.css`), while the activity count line keeps the 44px `--tap-min` floor
-  (`composer.module.css` `.activityRow`).
+  transcript resting at its end stays there through the fold. The folded empty row
+  hides inline Steer; Session actions keeps queue draining available whenever
+  inline Steer is unavailable. A focused clear preserves the
+  existing control geometry. Where the 559px pane-width compression rung
+  hides Send and Stop's words, their glyphs and accessible names remain.
+  At container widths up to 340px, the card yields its inline padding and column
+  gap in every state; the field's own text inset remains, leaving half the card
+  for writing beside three tap targets without moving them when content arrives.
+  A phone's resting composer is one line too, keeping Attach, the session menu and Send
+  or Stop while shedding the model chrome and activity line. Content restores the full
+  row, including the model picker and activity counts. This phone treatment also holds
+  on a primary-touch landscape viewport up to 1000px wide and 700px tall, including the
+  Duo's 951×669pt inner display, even though that width uses the desktop shell. A
+  fine-pointer desktop card under 620px keeps the stacked control row and the folded
+  one-line field. At the 466px Duo cover width the control row tightens; drafts,
+  attachments, and question/approval docks keep their writing and response space. The
+  four activity counters stay in the app with their existing Overview links. The
+  OS-owned Duo system rail is not a public customization surface, so no counters move
+  there. The 466px cover treatment is a fit pass on that existing session screen, not
+  a new mode: content, controls and workflow stay, and an empty folded card gives
+  its block padding and field gap back to the transcript regardless of focus
+  (`promptcard.module.css`'s 440–500px portrait query, with the matching dock gap
+  in `composer.module.css`). Every Duo card keeps zero bottom padding and a zero
+  Attach inset, so persistent controls do not move when content expands the card.
+  The activity count line keeps the 44px `--tap-min` floor (`.activityRow`).
 - **Let the lowest footer own the safe area.** A pane with a flush `edgeFooter`
   below its padded composer footer gives that edge footer the home-indicator band
   at every width. The composer footer keeps only its ordinary `--space-3` gap, so a
@@ -235,26 +247,15 @@ Keep disclosure separate from file/transcript opening; retain existing folding a
 disclosure persistence. Evidence stays in its native code, diff, output or structured
 renderer rather than becoming a second prose summary.
 
-**A run of tool rows is one card.** Adjacent tool rows in a turn share one rounded
-(`--radius-pane`) `--surface-1` surface with a `--edge` hairline around it, a hairline
-between rows and `--shadow-card` under the last row.
-[TurnBlock](../../cmd/evener-hub/frontend/src/panes/session/transcript/TurnBlock.tsx)
-marks each tool row's wrapper with its place in the run (`data-tool-card` =
-`only`/`first`/`middle`/`last`); the row's own root, a tool call or a folded run,
-carries the surface, so the card starts at the content edge under the speaker's name at
-every width. A single call is a card of one row. Prose, a notification or any other
-non-tool entry ends the card. The card has one owner,
-[`styles/surface.module.css`](../../cmd/evener-hub/frontend/src/styles/surface.module.css):
-the grouped surface and its rows rule, the slices a turn draws across sibling rows, and
-the two insets every row reads (`--tool-card-inset`, and `--tool-card-row-pad`, one
-`--rhythm-item`). An intent group and an open folded run compose the same classes.
+**Group routine work by spacing and alignment.** Leave the page visible between calls,
+with no card or vertical line around the run. A prose or notification row breaks the
+run. Intent groups and calls inside a turn share their [row insets](../../cmd/evener-hub/frontend/src/styles/surface.module.css)
+on desktop and phone.
 
-The kind icon sits at full strength on the field seat at the head of its row: the shared
-`--field` square at `--field-seat-size-row`, the avatar column plus a half step. The
-seat is painted, not laid out, so a one-line row stays one line tall. Expanded evidence is
-a band inside the same card: `--surface-inset`, one hairline above it, running to the
-card's edges and taking the card's lower corners when it is the last thing in it. The
-band never draws a card of its own; native renderers keep their own output boundaries.
+Keep each kind icon at the head of its row. A failed call gets a quiet `--surface-1`
+band and its failure glyph even while collapsed. Opening evidence reveals it directly
+under the call on `--surface-inset`, with one hairline above. Keep the native code,
+diff and output boundaries, including their internal scrolling.
 
 A failed call badges its kind icon: the `--danger` ✗ overlays the icon's
 bottom-right corner instead of opening a second inline column beside it, so the
@@ -477,6 +478,11 @@ idle keeps one line. The same line names the row's host where Live spans hosts a
 row is away from this hub, or the host is offline. Rows outside Live keep the one-line
 face; their only second line is the usage-limit wait.
 
+In the narrow shell, every session name is semibold. The reason and age stay regular
+even on the selected row. A pending question shows its own words when supplied and
+falls back to the attention label otherwise. The title and reason share one control:
+tap either line to open the session, or hold either line to reveal the full name and context.
+
 The rail's New-session control is a `Button variant="secondary"`, and the shell keeps at most
 one filled primary on screen: the rail is chrome, so its CTA must not outrank the current
 task's primary action. `scripts/shellguard` (`run.mjs`'s `railNewSession`/`primaryButtons`
@@ -531,7 +537,7 @@ web's custom properties, and `@evener/appwire-client/palette` for the values the
 | Accent as text `--accent-ink` | `#96A1FF` | `#3A44D6` |
 | On a solid accent fill `--on-accent` | `#111214` | `#FFFFFF` |
 
-PaneScaffold shares the page ground. `Card`, the tool card, the prompt card and the
+PaneScaffold shares the page ground. `Card`, the prompt card and the
 selected rail row sit on `--surface-1`, one step up from the page and two from the rail's
 canvas. Evidence and overlays still have their own grounds. Fine borders are structure,
 not text. Low ink clears 4.5:1 on page and evidence surfaces: dark 7.20/6.56, light 5.72/6.14.
@@ -563,9 +569,8 @@ browser chrome does not stay dark.
 The neutral grounds are the cool-neutral ruling, not a preference: no warm or beige ground
 may replace them. The accent is the one chromatic signature laid over them. The rail stays
 one visible step from the page (`--surface-canvas` over
-`--surface-0`), and the user's message slip sits on `--surface-1` with a `--edge` hairline,
-`--shadow-card` and a tight top-left corner pointing at the speaker's avatar: the corners
-are ladder steps, `--radius-chip` toward the avatar and `--radius-pane` on the other three.
+`--surface-0`). Delivered user and agent messages share the page ground; the speaker
+row identifies the voice. Keep the dashed accent edge for a message awaiting delivery.
 `token-contract.test.ts`, `pwa-manifest-colors.test.ts`, `prefs.test.ts` and the
 `zscn-theme-flip-dark-surface` layoutguard case pin the palette; change them together
 with the tokens, never one at a time.
@@ -600,13 +605,15 @@ The `--font-size-caption/ui/body/pane-title/page-title/display` ramp is
 12/13/15/20/26/34px. **`--font-size-prose: calc(16px * var(--font-scale))`**, declared on
 `body` alongside that ramp so S/M/L/XL (0.9/1/1.1/1.25) scale reading text too. Phone body remains
 16px; editable phone controls use `max(16px, var(--font-size-body))`, even under S. The serif
-reading step is 16px at M in both viewports. Weights are 400/500/600; leading body/ui/title is
+reading step is 16px at M in both viewports. Weights are 400/500/600/700; leading body/ui/title is
 1.6/1.4/1.25. Reading surfaces use `--line-height-prose`, declared on `body` beside the size ramp so the
 comfortable-density preference scales its default 1.45 leading, independently of editor and general UI geometry. Display tracking remains −0.02em.
 
 Markdown keeps the prose face but composes with its host's size (the root falls back to `1em`);
 reading surfaces pin `--prose-font-size: var(--font-size-prose)` on the host that owns their
-prose, and `--markdown-ink` stays the ink hook. Inline code stays JetBrains Mono at 0.86em with a quiet underline; fenced code
+prose, `--markdown-ink` stays the ink hook, and `--markdown-strong-weight` is the emphasis hook:
+strong defaults to semibold, so a host that already renders its body semibold (the ask question
+cards) opts strong into the bold token. Inline code stays JetBrains Mono at 0.86em with a quiet underline; fenced code
 explicitly keeps the mono face. Markdown tables use the sans face at body size, tabular figures,
 wrapping labels and fine horizontal rules. PaneScaffold and EmptyState headings use the serif;
 buttons, fields, dialog labels and other compact operational headings do not inherit it globally.
@@ -639,10 +646,8 @@ grid; unchanged by the re-theme). `--space-half` (2px) is the one step below the
 hairline inset inside a pill or a tight two-line stack. It is written by name, never as
 arithmetic on `--space-1`.
 
-`--field-seat-size` (32px) and `--field-seat-size-row` (the 24px avatar column plus a half
-step) size the field seat, the rounded `--field` square a glyph sits on: a summary tile's
-leading box takes the first, a transcript tool row's painted seat the second. Both are one
-recipe in `styles/surface.module.css`.
+`--field-seat-size` (32px) sizes the field seat, the rounded `--field` square a glyph
+sits on: a summary tile's leading box. It is one recipe in `styles/surface.module.css`.
 
 The radius ladder has five steps, and each has named users:
 
@@ -650,13 +655,13 @@ The radius ladder has five steps, and each has named users:
 |---|---|---|
 | `--radius-chip` | 6px | keycaps, small inline tags, tight inner corners such as a tab's close button |
 | `--radius-control` | 8px | buttons, fields, rail and tree rows, dock tabs, menu items, tooltips, icon seats, an inset band inside a card |
-| `--radius-pane` | 12px | `Card`, the tool card, code and diff blocks, menus, dialogs, popovers, toasts, hover cards, grouped phone lists |
+| `--radius-pane` | 12px | `Card`, code and diff blocks, menus, dialogs, popovers, toasts, hover cards, grouped phone lists |
 | `--radius-panel` | 16px | the largest surfaces: the prompt card, the notes panel's lower corners, the bottom sheet's top corners |
 | `--radius-pill` | 999px | chips, badges, count and status pills, switch, meter and segmented-control tracks, round avatars |
 
 A surface nested in another takes the next step down, so the two arcs stay concentric:
 a `--radius-control` button one `--space-2` inside the `--radius-panel` prompt card, a
-`--radius-control` question card inside the `--radius-pane` attention envelope. The page
+`--radius-control` option row inside the `--radius-pane` question frame. The page
 frame is not on the ladder: PaneScaffold, tables and side sheets are square, and a bottom
 sheet rounds only its top corners, on the panel step. Existing widget
 dimensions and touch targets do not depend on the radius.
@@ -728,7 +733,7 @@ declared in both theme blocks, because the shadow ink differs by theme.
 
 | Token | Value (light / dark shadow ink) | Used by |
 |---|---|---|
-| `--shadow-card` | `0 1px 2px` at 6% ink / 35% black | things that sit on the page and carry their own border: the outlined `Card`, the tool card, the user's message slip, the raised segmented-control thumb, secondary buttons, summary tiles, grouped phone lists |
+| `--shadow-card` | `0 1px 2px` at 6% ink / 35% black | outlined `Card`, a provisional message awaiting delivery, raised segmented-control thumb, secondary buttons, summary tiles, grouped phone lists |
 | `--shadow-card-ringed` | a 1px `--edge` ring plus `--shadow-card` | a raised surface with no border of its own, so the ring costs no box size: the flat `Card`, the selected row (rail and settings nav), the active dock tab |
 | `--shadow-raised` | `--shadow-card` plus a wide soft ambient, `0 8px 24px` at 6% ink / 40% black | the one surface a pane is about: the prompt card (the session composer and the New session task card) |
 | `--shadow-overlay` | a 1px `--edge` ring plus `0 12px 40px` | floating layers: menus, popovers, toasts, dialogs, sheets, hover cards, floating dock groups |
@@ -788,11 +793,11 @@ during implementation (noted inline); this table is the one to trust.
 | **DiffTable** | `{columns: {key,label}[]; rows: {key; cells: Record<string,{value; proposed?}>}[]}` | Tabular proposed edits: struck-through old value beside the new one on the neutral `--diff-add-bg` wash — same hue-gate exemption as DiffBlock. Ported from Beautiful UI's Diff Table. |
 | **Loader** | `{label?; rail?; startedAt?; now?}` | Indeterminate-wait indicator (pixel grid + mm:ss elapsed); prop-driven like Cadence, no internal timers. Its animation is the sanctioned exception for user-initiated waits — never agent liveness — and lives entirely inside the reduced-motion gate. `rail` seats the grid in the transcript's icon-rail slot (the content-free "Thinking…" row's status glyph). Ported from Beautiful UI's Loading State. |
 | **ContextCard** | `{source; snippet; meta?; href?}` | Retrieved-knowledge chunk: inset card, ToolIcon source glyph, 3-line snippet clamp; renders as a link when `href` given. Ported from Beautiful UI's Context Cards. |
-| **Card** | `{children: ReactNode; variant?: "flat"\|"outlined"; tone?: "neutral"\|"attention"} & Omit<HTMLAttributes<HTMLDivElement>, "children"\|"className"\|"style">` | `variant="flat"` (default) is the roomy rounded surface for a section of a page: `--surface-1`, `--radius-pane`, `--space-4` padding, and `--shadow-card-ringed`, whose 1px `--edge` ring is drawn in the shadow, so the edge costs no box size. `variant="outlined"` is the same surface with a real border and tighter padding for a block inside a denser flow (an `ask_user` question in the transcript, the spawn form's access tile and its plugin and advanced-options panels, the marketplace add form, the provider-connection review summary): 1px `--edge`, `--radius-pane`, `--surface-1`, `--shadow-card`, `--space-3` padding. `tone="attention"` is the "a human is needed right now" envelope (the pending AskDock batch, a parked sandbox approval): the outlined geometry without the lift, in `color-mix(--attention 24%, --surface-1)` over a `color-mix(--attention 55%, --edge)` edge, mixed past the `--attention-bg/-edge` token defaults because those barely tint dark's `--surface-1`; it ignores `variant`. Card is on the token-contract `SEMANTIC_USE_ALLOWLIST` for that tone. Spreads native attributes (`role`, `aria-*`, `data-*`, `id`, `tabIndex`, key handlers) onto its `<div>` before `className`, so a caller can make the card a labelled group with a shared keybinding; `className`/`style` are not accepted. Layout of the children (a flex column and its gap) is the caller's, on an inner element. Passive: no focus ring of its own. |
+| **Card** | `{children: ReactNode; variant?: "flat"\|"outlined"; tone?: "neutral"\|"attention"} & Omit<HTMLAttributes<HTMLDivElement>, "children"\|"className"\|"style">` | `variant="flat"` (default) is the roomy rounded surface for a section of a page: `--surface-1`, `--radius-pane`, `--space-4` padding, and `--shadow-card-ringed`, whose 1px `--edge` ring is drawn in the shadow, so the edge costs no box size. `variant="outlined"` is the same surface with a real border and tighter padding for a block inside a denser flow (an `ask_user` question in the transcript, a pending AskDock batch, the spawn form's access tile and its plugin and advanced-options panels, the marketplace add form, the provider-connection review summary): 1px `--edge`, `--radius-pane`, `--surface-1`, `--shadow-card`, `--space-3` padding. Pending AskDock batches use this neutral frame with a small `StatusDot` needs-you cue rather than an amber envelope. `tone="attention"` is the "a human is needed right now" envelope (a parked sandbox approval): the outlined geometry without the lift, in `color-mix(--attention 24%, --surface-1)` over a `color-mix(--attention 55%, --edge)` edge, mixed past the `--attention-bg/-edge` token defaults because those barely tint dark's `--surface-1`; it ignores `variant`. Card is on the token-contract `SEMANTIC_USE_ALLOWLIST` for that tone. Spreads native attributes (`role`, `aria-*`, `data-*`, `id`, `tabIndex`, key handlers) onto its `<div>` before `className`, so a caller can make the card a labelled group with a shared keybinding; `className`/`style` are not accepted. Layout of the children (a flex column and its gap) is the caller's, on an inner element. Passive: no focus ring of its own. |
 | **PromptCard** | `{field: ReactNode; leading?: ReactNode; actions?: ReactNode; folded?: boolean; foldedCompact?: boolean; controlsTestId?; "data-testid"?; hidden?: boolean}` | The app's one prompt surface — the session composer and the spawn form both render it: a `--radius-panel` `--surface-1` card with a 1px `--edge` border and `--shadow-raised`, holding `field` (a `seamless` autoGrow Textarea) over a control row (`leading` slot, spacer, `actions` cluster). Padding is `--space-3` above the field and `--space-2` at the sides and bottom, with a `--space-2` gap to the control row, so the row's `--radius-control` buttons sit concentric with the card's corner; the field adds its own `--space-2` inline inset, and the folded one-line card takes `--space-2` above and below. The card owns the border, padding and the `:focus-within` ring (the accent hairline with `--focus-halo` under it), so the field inside must draw neither; no state, no opinion about verbs. `folded` puts the field and control row on one line when the card is at least 620px wide and animates the height between the folded and stacked shapes; a narrower card keeps the stacked shape. `foldedCompact` lets a caller that knows its control row is compact use the one-line shape below that threshold (the phone's menu-only resting row). `hidden` also makes the card `inert`. |
 | **Input** | `{value: string; onChange; placeholder?; disabled?; required?; autoComplete?; type?: "text"\|"password"\|"email"\|"search"\|"number"\|"tel"\|"url"; id?; name?; "aria-label"?; "aria-describedby"?}` | Controlled only; labeling is the consumer's job via `<label htmlFor>`. `aria-label` names a field with no visible label (the settings filter, an env-add row) in place of a hand-made visually-hidden `<label>`. |
 | **Textarea** | `{value: string; onChange; placeholder?; disabled?; autoGrow?: boolean; rows?; minLines?; id?; name?; onKeyDown?; onFocus?; onBlur?; onPaste?; "aria-label"?; seamless?: boolean; monospace?: boolean}` | `forwardRef<HTMLTextAreaElement>`. `autoGrow` measures the rendered `scrollHeight` after each value change (so wrapped lines grow it too), clamped to half the viewport height. `minLines` sets the resting height in lines. `seamless` drops the field's own box and focus ring for a card that draws one (PromptCard), which must then own the focus affordance. `monospace` sets the mono face for text edited as code or config (the AGENTS.md editor, a credential's JSON); only the face changes, so the field keeps its control-size floor on phones. |
-| **Select** | `{value: string; onChange; options: {value; label; disabled?: boolean}[]; disabled?; id?; name?}` | Native `<select>`, restyled — no custom listbox (the richer pickers, PathField and ModelCatalog, own their own combobox panels). A `disabled` option is listed but cannot be picked (an offline host in Spawn's host picker); say why in its `label`, since a native option has room for nothing else. |
+| **Select** | `{value: string; onChange; options: {value; label; disabled?: boolean}[]; disabled?; id?; name?}` | Native `<select>`, restyled — no custom listbox (the richer pickers, PathField and ModelCatalog, own their own floating panels). A `disabled` option is listed but cannot be picked; say why in its `label`, since a native option has room for nothing else. |
 | **SegmentedControl** | `{label: string; hideLabel?: boolean; value: T; options: readonly {value: T; label; detail?; accessibleLabel?; disabled?}[]; onChange(value: T); disabled?; size?: "sm"\|"md"; fullWidth?; id?; "aria-describedby"?}` (`T extends string`) | Two-to-six concise choices; horizontal radiogroup of native buttons with roving focus, `md` default, and optional full-width track. The track is a sunken `--surface-canvas` pill; the chosen option is a raised `--surface-1` thumb with a `--edge` hairline and `--shadow-card`, a neutral selected state. `hideLabel` drops the visible label and names the group with `aria-label` instead. An option's `detail` is a second, quieter line (`--font-size-caption`, `--ink-mid`, tabular figures, regular weight) under its label; when any option has one the whole control is stacked: the track takes `--radius-pane`, each option is a content-height two-row column with a concentric inner radius (the track's minus its padding and border), and the fixed `sm`/`md` block size no longer applies. In the stacked shape the label takes `--font-size-caption` and the detail takes the same size capped at the unscaled caption size (12px), so a count such as `100/100` stays whole in one of five equal columns on a 320px sidebar at every font-size setting. The chosen thumb travels between options as the Move recipe (recipe 6 in [motion.md](motion.md)). Options without a detail centre their label in the same height. `accessibleLabel` still names the option. |
 | **RadioGroup** | `{label: string; value: string; onChange(value: string); options: {value; label; accessibleLabel?; disabled?}[]; disabled?; description?: ReactNode}` | Custom `role="radio"` buttons under an always-visible legend that names the group (required). `description` is help text set under the options and wired to the radiogroup via `aria-describedby`. Roving tabindex keeps the group one Tab stop; arrow keys move focus AND check, wrapping and skipping disabled options (the APG radiogroup bindings, unlike Menu/Tree's move-then-Enter); Home/End jump to the ends. |
 | **Disclosure** | `{summary: ReactNode; children: ReactNode; variant?: "default"\|"quiet"\|"rule"; disabled?; "data-testid"?} & ({id: string; defaultOpen?; ignoreBaseline?: boolean; open?: never; onOpenChange?: never} \| {open: boolean; onOpenChange(open: boolean); id?: never; defaultOpen?: never; ignoreBaseline?: never})` | Native `<details>/<summary>` with persistent store-backed or controlled state; the body mounts only while open. Every variant's summary draws the token focus ring inset (`outline-offset: -2px`), so flush rows inside a clipping scroll port keep all four sides. `variant` is reported as `data-variant` on the `<details>`. `variant="quiet"` drops the hover fill, the open-state wash and the summary's inline inset, so the chevron and summary text sit in the content column with the body below; the focus ring stays. Every transcript row uses it except action groups. `variant="rule"` renders the summary as an italic caption centred between two `--edge` hairlines that span the column, with no chevron, hover fill or open wash; the summary stays a keyboard-operable `<summary>` with the token focus ring. Use it to group a run of transcript actions under a quiet divider caption (TurnBlock's "N actions" intent group); keep the caption short, since it is the only affordance. A store-backed click flips the state the reader sees, so it also closes a row the transcript's expand-all baseline is holding open. `ignoreBaseline` keeps a row on `defaultOpen` through expand-all/collapse-all while a reader's click still wins (shared-notes snapshots, steering and memory dividers). Icons and transcript glyphs go inside `summary`. Interactive controls never go there: put them in the body or beside the disclosure. Disabled summaries are inert, removed from the tab order, and attenuated without dimming an open body. |
@@ -808,7 +813,7 @@ during implementation (noted inline); this table is the one to trust.
 | **Popover** | `{open; onClose; trigger: ReactElement; children; autoFocus? (true); closeOnScroll? (true); stretchTrigger? (false); "data-testid"?}` | The shared floating panel: `trigger` renders in flow and anchors a panel portaled to `document.body` at a fixed position (flip-then-clamp, shared with Menu), so opening never reflows the page. Outside click, Escape, and (unless `closeOnScroll={false}`) scroll or resize call `onClose`; toggling from the trigger is the caller's job. `autoFocus={false}` keeps focus in an anchoring input (the combobox pattern). |
 | **Dialog** | `{open; onClose; title; children; footer?; size?: "default"\|"large"}` | Modal: centered, enters and leaves on the Float recipe (§5), Escape/scrim-click close, trapped + restored focus. Shares its whole contract with Sheet via the internal `OverlayPanel`. `size="large"` fills almost the whole viewport for lightbox-style content. |
 | **ConfirmDialog** | `{open; title; children; confirmLabel: string; cancelLabel? ("Cancel"); destructive? (true); busy? (false); onConfirm(); onCancel()}` | A Dialog pre-composed for "every destructive action confirms": body copy plus a Cancel / confirm-verb footer, danger-toned unless `destructive={false}` (a consequential but non-destructive action like Install). Controlled — key `open` off one "what's pending" state. Escape and scrim-click call `onCancel`, never `onConfirm`; `busy` disables both buttons against a double submit. |
-| **Sheet** | `{side?: "right"\|"bottom"\|"left"; size?: "standard"\|"wide"; open; onClose; title; children; footer?; expandable?: {peekHeight: number; fullScreenFirst?: boolean}; panelClassName?; bodyClassName?}` | Same contract as Dialog (shared `OverlayPanel`); only geometry and its Slide-recipe edge animation differ. `bodyClassName` lands on the sheet's own body element, which is how the sessions drawer renders the Rail flush inside the sheet instead of as a bordered box nested in a bordered box. `expandable` adds a drag handle and a peek/full geometry (drag past a threshold or tap to toggle; `fullScreenFirst` opens full every time). |
+| **Sheet** | `{side?: "right"\|"bottom"\|"left"; size?: "standard"\|"wide"; open; onClose; title; children; footer?; expandable?: {peekHeight: number; fullScreenFirst?: boolean}; panelClassName?; bodyClassName?}` | Same contract as Dialog (shared `OverlayPanel`); only geometry and its Slide-recipe edge animation differ. `bodyClassName` lands on the sheet's own body element, which is how the sessions drawer renders the Rail flush inside the sheet instead of as a bordered box nested in a bordered box. `side="bottom"` dismisses on a downward swipe from the grab pill, the header, or an unscrolled body: the panel follows the finger and the scrim fades with it; a drag past 35% of the panel's height (capped at 160px) or a fast flick (velocity measured over the last 100ms, discarded when the finger rests 80ms before lifting) projected 200ms ahead calls `onClose`, and the slide out continues from the dragged position; a shorter drag snaps back on the spatial exit budget, instantly under reduced motion. A drag never starts on an interactive control (a range, textarea, select or contenteditable in the body, a button or link in the header), and a touch that starts in a scrolled body or nested scroller, or within 180ms of the sheet's last scroll, stays a scroll, so scrolling an inner list to its top does not dismiss the sheet. A non-expandable bottom sheet shows a decorative grab pill (36×4px) above its header on coarse pointers only (`@media (any-pointer: coarse)`); it carries no role or tab stop, so keyboard and assistive-tech readers keep Escape and the close button. The swipe and the pill are behavior of the existing props: no new public prop. `expandable` instead adds a drag handle and a peek/full geometry (drag past a threshold or tap to toggle; `fullScreenFirst` opens full every time), and a downward drag from `peek` past the dismiss threshold closes it; the handle takes the grab pill's place. `side="left"` and `side="right"` sheets are unchanged. |
 | **FocusScope** | `{trap?: boolean; autoFocus?: boolean (true); children}` | The focus-management primitive Dialog/Sheet/Menu build on: moves focus in on mount, restores on unmount; traps Tab/Shift+Tab when `trap`. `autoFocus={false}` skips both the move-in and the restore, for a popover whose focus must stay in its anchoring input. Does not (yet) set `inert` on anything outside the scope — see §4. |
 | **Tooltip** | `{label: string; children: ReactNode}` | Hover/focus-triggered, 300ms delay, neither triggered on touch (a tap fires both and dismisses neither) and hidden there via CSS. `aria-describedby` wired via `cloneElement` onto a single-element child — works for a native element or any widget that forwards a ref + spreads rest props (Button/IconButton both do, since the fix-wave in §4). |
 | **HoverCard** | `{label: ReactNode; children: ReactNode \| (association) => ReactNode; focusTarget?: () => HTMLElement \| null; longPressEnabled?: boolean; sideAnchor?: () => SideAnchor \| null}` (`HoverCardProps`, barrel-exported) | Rich, non-interactive hover/focus description on the shared floating-bubble lifecycle. Use for structured context that would overload a compact surface; function children place `aria-describedby` on the actual trigger, while `focusTarget` can associate and trigger from an owning composite widget. On a touch device neither hover nor the focus a tap takes reveals it; `longPressEnabled` adds a long press that does, a plain tap activates the trigger's own control, and keyboard or assistive-tech focus still reveals it. `sideAnchor` supplies a caller-measured side placement; without it placement is unchanged. |
@@ -844,9 +849,8 @@ entry, no gallery section. It is what finally renders principle 2 of the mockup 
 (`decisions.md`, topic 06 Alt A). The rule, owned by `transcript/toolRuns.ts`: in a SETTLED
 turn, three or more consecutive completed, non-failed tool calls whose renderer has opted in
 collapse into one `<details>` row labelled `N steps · <last consequential summary>`. The
-folded run is one row of the tool card it sits in ("Inline tools and delegates"): closed, a
-quiet count and one name at the tool rows' inset; open, the header of the rows it stands
-for, which follow inside the same card behind hairline dividers. Folding is
+summary aligns with the tool rows and opens the calls directly below on the same reading
+surface. See [Inline tools and delegates](#inline-tools-and-delegates) for appearance. Folding is
 opt-in: `fold: "quiet"` (the reads, searches, web fetches, transcript reads) folds and only
 counts; `fold: "consequential"` (the edit tools, shell, worktree) folds and is the step the label
 names, being a mutation; `fold: "never"` (delegate, ask_user, task_list, use_skill, the `job_*`
@@ -1070,13 +1074,14 @@ reduced motion, and each is defined once:
   palette; delegate rows) and stops the moment the status authority stops reporting work. It
   communicates state, not frame throughput or percent complete. Needs-you (a solid dot) and
   failed (a diamond) stay static and shape-distinct.
-- **The pulsing grid.** The transcript's content-free "Thinking…" placeholder, shown for a
-  live reasoning item while the Reasoning content flag is off, uses the catalog `Loader`'s
-  pulsing pixel grid. It renders no reasoning text, disappears once the thought is no longer
-  the turn's current activity, and is the only animation the transcript itself adds. It is a
-  user-facing wait placeholder, not an agent-status indicator, and unlike Cadence it is not
-  activity-gated, so it keeps pulsing if the stream stalls; Cadence's decaying trace remains
-  the honest liveness signal.
+- **The pulsing grid.** At Intent and above, the transcript's compact live "Thinking…"
+  summary while the Reasoning content flag is off uses the catalog `Loader`'s pulsing
+  pixel grid. Its closed summary renders no reasoning text; the disclosure reveals the
+  trace on demand. The grid disappears once the thought is no longer the turn's current
+  activity, and is the only animation the transcript itself adds. It is a user-facing wait
+  placeholder, not an agent-status indicator, and unlike Cadence it is not activity-gated,
+  so it keeps pulsing if the stream stalls; Cadence's decaying trace remains the honest
+  liveness signal.
 - **The streaming caret.** A blinking bar at the end of text that is still streaming, in
   the surrounding ink; it exists only while the text is live.
 

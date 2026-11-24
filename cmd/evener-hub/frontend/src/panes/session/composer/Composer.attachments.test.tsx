@@ -19,6 +19,7 @@ import { toastKinds } from "../../../widgets/toast/toastTestUtils";
 import { createTestComposerSource } from "../testing/composerSource";
 import { editorCursor, insertEditorTextAt, pastePngInto, replaceEditorText, selectEditorText } from "../testing/editor";
 import { resetAskDockStoreForTests } from "./askDock/askDockStore";
+import * as ImageEncoding from "./attachments/encodeImage";
 import { resetComposerFocusStoreForTests } from "./composerFocus";
 import {
   Composer,
@@ -127,6 +128,92 @@ test.each([
   expect.soft(editor.textContent).toBe(before + replacement + after);
   expect.soft(within(editor).queryAllByTestId("composer-skill-chip")).toHaveLength(0);
   expect.soft(readComposerDraft(ref)).toEqual({ text: before + replacement + after, skillNames: [] });
+});
+
+test("rejected oversized panorama over a selected inline slash command restores text, command identity, and submit payload while keeping later edits", async () => {
+  const originalEncode = ImageEncoding.encodeImage;
+  let rejectEncode!: () => void;
+  const heldEncode = new Promise<never>((_, reject) => {
+    rejectEncode = () => reject(new ImageEncoding.ImageEncodeError("tooManyPixels", "over 48 MP"));
+  });
+  const encodeSpy = vi.spyOn(ImageEncoding, "encodeImage").mockReturnValueOnce(heldEncode);
+  try {
+    const user = userEvent.setup();
+    const ref = "ref_selected_command_rollback";
+    const before = "Before ";
+    const selected = "run /deploy now";
+    const after = " after";
+    const mentions = [{ kind: "command" as const, name: "deploy", offset: before.length + "run ".length }];
+    writeComposerDraft(ref, {
+      text: before + selected + after,
+      skillNames: [],
+      commandNames: ["deploy"],
+      mentions,
+    });
+    const fake = await mountComposer(ref, {
+      evener: {
+        ...testThread(ref).evener,
+        capabilities: { ...FULL_CAPABILITIES, commandInput: true, skillInput: true },
+      },
+    });
+    const sentInputs: unknown[] = [];
+    fake.on("turn/start", (params) => {
+      sentInputs.push(params.input);
+      return {
+        receipt: appliedReceipt(params.clientMutationId, "thread_a"),
+        turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+      };
+    });
+    const editor = textarea();
+    expect(readComposerDraft(ref)).toEqual({
+      text: before + selected + after,
+      skillNames: [],
+      commandNames: ["deploy"],
+      mentions,
+    });
+
+    selectEditorText(editor, before.length, (before + selected).length);
+    const panorama = new File([new Uint8Array(16)], "panorama.jpg", { type: "image/jpeg" });
+    Object.defineProperty(panorama, "size", { value: 12 * 1024 * 1024 });
+    const dropzone = editor.closest("[data-dropzone]") ?? editor.parentElement!;
+    fireEvent.drop(dropzone, { dataTransfer: { files: [panorama], items: [] } });
+
+    await waitFor(() => expect(editor.textContent).toBe(`${before}[image 1]${after}`));
+    expect(readComposerDraft(ref)).toEqual({
+      text: `${before}[image 1]${after}`,
+      skillNames: [],
+    });
+
+    // User edits later in the draft before the pixel-limit check settles.
+    selectEditorText(editor, `${before}[image 1]${after}`.length);
+    await user.keyboard(" tail");
+    expect(editor.textContent).toBe(`${before}[image 1]${after} tail`);
+
+    await act(async () => {
+      rejectEncode();
+      await heldEncode.catch(() => {});
+      await Promise.resolve();
+    });
+
+    const restored = `${before}${selected}${after} tail`;
+    await waitFor(() => expect(editor.textContent).toBe(restored));
+    expect(readComposerDraft(ref)).toEqual({
+      text: restored,
+      skillNames: [],
+      commandNames: ["deploy"],
+      mentions,
+    });
+    expect(within(editor).getByTestId("composer-command-chip").textContent).toBe("/deploy");
+
+    await user.click(submitButton());
+    await waitFor(() => expect(sentInputs).toHaveLength(1));
+    expect(sentInputs[0]).toEqual(
+      expect.arrayContaining([expect.objectContaining({ type: "command", name: "deploy" })]),
+    );
+  } finally {
+    encodeSpy.mockImplementation(originalEncode);
+    encodeSpy.mockRestore();
+  }
 });
 
 test("same-text attachment removal consumes its cursor before the next native edit", async () => {
@@ -452,6 +539,10 @@ test("pasted image renders as a thumbnail tile with dimensions, remove button, a
   const openButton = await screen.findByRole("button", { name: "View screenshot.png" });
   const thumbnail = openButton.querySelector("img") as HTMLImageElement;
   expect(thumbnail.src).toMatch(/^data:image\/png;base64,/);
+  // The trigger owns the tile's rounding: on touch the tile stops clipping so
+  // the remove control can straddle its corner, so the button rounds and
+  // clips itself through the widget API, not a tag selector in the tile CSS.
+  expect(openButton.getAttribute("data-radius")).toBe("inherit");
 
   // Assert the dimensions are displayed
   expect(screen.getByText(/4×4/)).toBeTruthy();

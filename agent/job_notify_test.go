@@ -388,12 +388,12 @@ func appendPendingJobNotificationRecordWithProvenance(t *testing.T, jm *jobManag
 	}
 }
 
-func TestNotificationTurnBareTextAckIsNotScolded(t *testing.T) {
+func TestNotificationTurnAcknowledgesDurableCompletionQuietly(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	adapter := newFakeAdapter("openai", func(req llm.Request) llm.Response {
-		return llm.Response{Message: llm.Assistant("Acknowledged — already saw this job, no action needed.")}
+		return quietYieldResponse("job-quiet", `{"message":"no action needed","next":"log_quietly_and_end_turn"}`)
 	})
 	c.Register(adapter)
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
@@ -413,14 +413,13 @@ func TestNotificationTurnBareTextAckIsNotScolded(t *testing.T) {
 	sess.enqueueJobNotification(jobNotification{JobID: "job_X", JobType: "shell", Status: "completed", OutputBytes: 42})
 
 	if _, err := sess.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
-		t.Fatalf("notification turn with a bare-text ack must not error: %v", err)
+		t.Fatalf("quiet notification turn must not error: %v", err)
 	}
 
-	// Exactly one model request: a bare-text ack on a notification-driven turn ends
-	// the turn idle, rather than being scolded into a retry and a no-op communicate.
-	// A scold would re-call the model with steering, producing 2+ requests.
+	requireQuietToolResult(t, sess, "job-quiet")
+	// A quiet acknowledgement settles the notification in one request.
 	if reqs := adapter.Requests(); len(reqs) != 1 {
-		t.Fatalf("notification turn made %d model requests, want 1 (no bare-text scold/retry)", len(reqs))
+		t.Fatalf("notification turn made %d model requests, want 1", len(reqs))
 	}
 }
 

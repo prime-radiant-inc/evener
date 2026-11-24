@@ -11,28 +11,35 @@ import {
   parentOf,
   pickablePathRows,
 } from "@evener/appwire-client";
-import { type JSX, type KeyboardEvent, useEffect, useId, useMemo, useRef, useState } from "react";
-import { Chevron } from "../chevron";
+import { type JSX, type KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
 // Import siblings directly, never through the widgets barrel: this module is
 // itself barrel-exported, so importing the barrel here would be a cycle (the
 // same reason collectioneditor imports ../button directly).
-import { DirectoryPicker, type DirectoryPickerProps } from "../directorypicker";
+import { DirectoryIcon, DirectoryPicker, type DirectoryPickerProps } from "../directorypicker";
+import { Listbox, ListboxOption } from "../internal/listbox";
+import { PickerTrigger } from "../internal/pickerTrigger";
 import { requireClass } from "../internal/requireClass";
+import { ariaActiveDescendant, optionDomId, useListbox } from "../internal/useListbox";
 import { Popover } from "../popover";
+import { ToolIcon } from "../toolicon";
 import styles from "./pathfield.module.css";
 
 const CLASS = {
   trigger: requireClass(styles.pathTrigger, "pathfield.module.css", "pathTrigger"),
   directoryTrigger: requireClass(styles.directoryTrigger, "pathfield.module.css", "directoryTrigger"),
   directoryValue: requireClass(styles.directoryValue, "pathfield.module.css", "directoryValue"),
+  prominentTrigger: requireClass(styles.prominentTrigger, "pathfield.module.css", "prominentTrigger"),
+  prominentSeat: requireClass(styles.prominentSeat, "pathfield.module.css", "prominentSeat"),
+  prominentText: requireClass(styles.prominentText, "pathfield.module.css", "prominentText"),
+  prominentHeadline: requireClass(styles.prominentHeadline, "pathfield.module.css", "prominentHeadline"),
+  prominentCaption: requireClass(styles.prominentCaption, "pathfield.module.css", "prominentCaption"),
+  prominentAction: requireClass(styles.prominentAction, "pathfield.module.css", "prominentAction"),
   triggerValue: requireClass(styles.triggerValue, "pathfield.module.css", "triggerValue"),
   triggerDefault: requireClass(styles.triggerDefault, "pathfield.module.css", "triggerDefault"),
   chevron: requireClass(styles.pathChevron, "pathfield.module.css", "pathChevron"),
-  srOnly: requireClass(styles.pathSrOnly, "pathfield.module.css", "pathSrOnly"),
   popoverPanel: requireClass(styles.popoverPanel, "pathfield.module.css", "popoverPanel"),
   panel: requireClass(styles.panel, "pathfield.module.css", "panel"),
   input: requireClass(styles.input, "pathfield.module.css", "input"),
-  list: requireClass(styles.list, "pathfield.module.css", "list"),
   groupRow: requireClass(styles.groupRow, "pathfield.module.css", "groupRow"),
   groupLabel: requireClass(styles.groupLabel, "pathfield.module.css", "groupLabel"),
   groupPath: requireClass(styles.groupPath, "pathfield.module.css", "groupPath"),
@@ -80,6 +87,12 @@ interface PathFieldBaseProps {
    * (spec 3.7) rather than writing it on every browse step. */
   onPanelClose?: (value: string) => void;
   placeholder?: string;
+  /** The prominent variant is the directory tile rather than a form field: a
+   * grouped surface whose headline is the value's basename, whose caption is
+   * the whole path, and whose trailing action reads "Change…". The empty state
+   * uses `ariaLabel` as the headline and `placeholder` as the caption, so a
+   * tile with nothing chosen still says what it is. */
+  variant?: "default" | "prominent";
   disabled?: boolean;
   /** Names the closed trigger for assistive tech. Without it the trigger's
    * whole accessible name is the path it holds, which doesn't say WHICH field
@@ -135,38 +148,6 @@ function typedFilter(text: string): string {
   if (text.endsWith("/")) return "";
   const idx = text.lastIndexOf("/");
   return idx === -1 ? text : text.slice(idx + 1);
-}
-
-function rowDomId(listboxId: string, key: string): string {
-  return `${listboxId}-${key}`;
-}
-
-function FolderIcon() {
-  return (
-    <svg viewBox="0 0 14 12" width="12" height="10" aria-hidden="true" className={CLASS.icon}>
-      <path
-        d="M1 2h4l1.3 1.6H13a1 1 0 0 1 1 1V10a1 1 0 0 1-1 1H1a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1Z"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.2"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
-
-function FileIcon() {
-  return (
-    <svg viewBox="0 0 12 14" width="10" height="12" aria-hidden="true" className={CLASS.icon}>
-      <path
-        d="M1.5 1h5L11 5v8a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V2a1 1 0 0 1 .5-1ZM6.5 1v4H11"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.2"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
 }
 
 interface FileFieldPanelProps {
@@ -225,12 +206,6 @@ function FileFieldPanel({
   // Recents are dropped permanently by the first keystroke, for this panel's
   // lifetime: once the user is typing a path, a recents list is noise.
   const [showRecents, setShowRecents] = useState(listRecents !== undefined);
-  // The highlighted row, by KEY rather than by list position: rows arrive
-  // asynchronously (the listing, and the Recent group behind it), and an index
-  // would silently slide onto a different row the moment anything was inserted
-  // above it. undefined means nothing is highlighted, which is what lets Enter
-  // commit the typed literal.
-  const [activeKey, setActiveKey] = useState<string | undefined>(undefined);
   // Whether the highlight is the user's own doing. The current-file seeding
   // below is an opening courtesy, so it must never overwrite an arrow key.
   const highlightIsUserSetRef = useRef(false);
@@ -244,7 +219,6 @@ function FileFieldPanel({
   // unless the filter itself starts with a dot, so the listing's contents
   // depend on more than the directory - see handleType.
   const requestedFilterRef = useRef("");
-  const listboxId = useId();
   // 94yg: a directory click both picks the value and descends into it (spec
   // 3.4 - no commit button, no Cancel), and the only thing that visibly
   // changes is this quiet "you are here" header - easy to miss, which is
@@ -267,18 +241,16 @@ function FileFieldPanel({
     [kind, currentDir, visibleEntries, value, recents, showRecents, listError],
   );
   const picks = useMemo(() => pickablePathRows(rows), [rows]);
+  const pickKeys = useMemo(() => picks.map((row) => row.key), [picks]);
+  // The highlighted row, by KEY rather than by list position: rows arrive
+  // asynchronously (the listing, and the Recent group behind it), and an index
+  // would silently slide onto a different row the moment anything was inserted
+  // above it. undefined means nothing is highlighted, which is what lets Enter
+  // commit the typed literal.
+  const { listboxId, activeIndex, activeDescendantKey, setActiveKey, handleNavigationKey } = useListbox(pickKeys);
   // A key that no longer names a row (its listing was replaced) highlights
   // nothing, rather than being clamped onto whatever now sits at that position.
-  const activeIndex = activeKey === undefined ? -1 : picks.findIndex((row) => row.key === activeKey);
   const activeRow = activeIndex >= 0 ? picks[activeIndex] : undefined;
-
-  /** Move the highlight to a position in `picks`, and remember that the user is
-   * the one driving it - which is what makes the seeding effect below back off
-   * for the rest of this listing. */
-  function moveHighlight(index: number): void {
-    highlightIsUserSetRef.current = true;
-    setActiveKey(picks[index]?.key);
-  }
 
   /** Clear the highlight and hand control back to the seeding effect: a new
    * listing is on its way and its own current row should be highlighted. */
@@ -342,14 +314,7 @@ function FileFieldPanel({
   useEffect(() => {
     if (typed !== null || highlightIsUserSetRef.current) return;
     setActiveKey(picks.find((row) => (row.kind === "file" || row.kind === "dir") && row.current)?.key);
-  }, [picks, typed]);
-
-  // Keep the highlighted row visible inside the list's own scroll container.
-  // scrollIntoView is called optionally: jsdom implements none at all.
-  useEffect(() => {
-    if (activeKey === undefined) return;
-    document.getElementById(rowDomId(listboxId, activeKey))?.scrollIntoView?.({ block: "nearest" });
-  }, [activeKey, listboxId]);
+  }, [picks, typed, setActiveKey]);
 
   /** Descend: the value tracks the browse position, so this writes the field
    * AND lists the directory's children. The panel stays open. */
@@ -418,41 +383,22 @@ function FileFieldPanel({
   }
 
   function handleKeyDown(event: KeyboardEvent<HTMLInputElement>): void {
-    switch (event.key) {
-      case "ArrowDown":
-        event.preventDefault();
-        if (picks.length === 0) break;
-        moveHighlight(Math.min(activeIndex + 1, picks.length - 1));
-        break;
-      case "ArrowUp":
-        event.preventDefault();
-        if (picks.length === 0) break;
-        moveHighlight(Math.max(activeIndex - 1, 0));
-        break;
-      case "Home":
-        if (picks.length === 0) break;
-        event.preventDefault();
-        moveHighlight(0);
-        break;
-      case "End":
-        if (picks.length === 0) break;
-        event.preventDefault();
-        moveHighlight(picks.length - 1);
-        break;
-      case "Enter": {
-        event.preventDefault();
-        if (activeRow) {
-          pickRow(activeRow);
-          break;
-        }
-        // Nothing highlighted: the typed literal IS the answer, which is what
-        // an outputFile field naming a file that doesn't exist yet needs.
-        onCommit(text.trim());
-        break;
-      }
-      default:
-        break;
+    if (handleNavigationKey(event)) {
+      // A consumed arrow/Home/End means the user is driving the highlight, so
+      // the seeding effect below must back off for the rest of this listing -
+      // an async arrival must not discard the row they just moved to.
+      if (picks.length > 0) highlightIsUserSetRef.current = true;
+      return;
     }
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    if (activeRow) {
+      pickRow(activeRow);
+      return;
+    }
+    // Nothing highlighted: the typed literal IS the answer, which is what an
+    // outputFile field naming a file that doesn't exist yet needs.
+    onCommit(text.trim());
   }
 
   return (
@@ -470,21 +416,10 @@ function FileFieldPanel({
         // Named off the RESOLVED row, never off the stored key: a key whose row
         // is no longer listed must not be pointed at, since an
         // aria-activedescendant naming an absent element is an ARIA violation.
-        aria-activedescendant={activeRow !== undefined ? rowDomId(listboxId, activeRow.key) : undefined}
+        aria-activedescendant={ariaActiveDescendant(listboxId, activeDescendantKey)}
         aria-label="Path"
       />
-      {/* <ul role="listbox">/<li role="option"> is the WAI-ARIA APG
-          combobox-with-listbox-popup pattern's own example markup
-          (w3.org/WAI/ARIA/apg/patterns/combobox) - not an interactive role
-          bolted onto an arbitrary static element, Biome's role-vs-element
-          heuristic just doesn't special-case ul/li for it. */}
-      <ul
-        // biome-ignore lint/a11y/noNoninteractiveElementToInteractiveRole: ul/li is the ARIA APG's own listbox markup, see above
-        role="listbox"
-        id={listboxId}
-        aria-label="Path"
-        className={CLASS.list}
-      >
+      <Listbox id={listboxId} label="Path">
         {rows.map((row) => {
           if (row.kind === "group") {
             // The current-directory header is a path, the Recent head is a
@@ -513,26 +448,18 @@ function FileFieldPanel({
           }
           const current = (row.kind === "file" || row.kind === "dir") && row.current;
           return (
-            // Real focus never leaves the input (ARIA 1.2 activedescendant
-            // pattern): aria-activedescendant above tracks the "virtual"
-            // active option, and handleKeyDown's Enter case already performs
-            // this same pick - so this <li> is deliberately not focusable and
-            // needs no onKeyDown of its own.
-            // biome-ignore lint/a11y/useFocusableInteractive: activedescendant pattern, real focus stays on the input, see above
-            // biome-ignore lint/a11y/useKeyWithClickEvents: activedescendant pattern, Enter on the input already does this, see above
-            <li
+            <ListboxOption
               key={row.key}
-              id={rowDomId(listboxId, row.key)}
-              // biome-ignore lint/a11y/noNoninteractiveElementToInteractiveRole: ARIA APG listbox markup, see the ul above
-              role="option"
-              aria-selected={current}
-              className={`${CLASS.row} ${row.key === activeKey ? CLASS.rowActive : ""}`}
-              // Picking with the mouse must not blur the input (the ARIA 1.2
-              // pattern keeps real focus there throughout).
-              onMouseDown={(event) => event.preventDefault()}
-              onClick={() => pickRow(row)}
+              id={optionDomId(listboxId, row.key)}
+              selected={current}
+              active={row.key === activeDescendantKey}
+              className={CLASS.row}
+              activeClassName={CLASS.rowActive}
+              onSelect={() => pickRow(row)}
             >
-              {row.kind === "file" ? <FileIcon /> : <FolderIcon />}
+              <span className={CLASS.icon}>
+                <ToolIcon kind={row.kind === "file" ? "file" : "folder"} size={12} />
+              </span>
               <span className={CLASS.rowName}>{row.kind === "parent" ? "../" : row.name}</span>
               {current && (
                 <span className={CLASS.check} aria-hidden="true">
@@ -540,10 +467,10 @@ function FileFieldPanel({
                 </span>
               )}
               {row.kind === "recent" && <span className={CLASS.meta}>{row.path}</span>}
-            </li>
+            </ListboxOption>
           );
         })}
-      </ul>
+      </Listbox>
     </div>
   );
 }
@@ -552,7 +479,9 @@ function FileFieldPanel({
  * The closed state IS the trigger: a control-shaped button holding the current
  * path as plain monospace text plus a chevron, and clicking anywhere on it
  * opens the shared directory dialog or the file completion popover. There is no separate
- * folder/Browse button - the whole field is the affordance.
+ * folder/Browse button - the whole field is the affordance. The prominent
+ * variant turns that same button into a summary tile instead: basename
+ * headline, full path caption, trailing "Change…".
  */
 export function PathField({
   id,
@@ -564,6 +493,7 @@ export function PathField({
   fallbackDir,
   onPanelClose,
   placeholder,
+  variant = "default",
   disabled = false,
   ariaLabel,
   directory,
@@ -571,6 +501,12 @@ export function PathField({
   const [open, setOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const shownValue = value === "" ? (placeholder ?? "(default)") : value;
+  const prominent = variant === "prominent";
+  // The prominent tile's headline: the value's basename, or - when nothing is
+  // chosen - the field's own name, which is the only caller-supplied name the
+  // widget has. "/" keeps its own headline: the filesystem root's basename is
+  // empty, but it is a real directory (see withoutTrailingSlash).
+  const headline = value === "" ? (ariaLabel ?? placeholder ?? shownValue) : basename(value) || "/";
 
   // Restore the field trigger on every exit. Directory cancellation reports
   // the committed value; file browsing retains its live-value contract.
@@ -585,41 +521,53 @@ export function PathField({
     closePanel(path);
   }
 
-  const trigger = (
+  const onClick = () => (open ? closePanel(value) : setOpen(true));
+  // The label has to carry the value too: aria-label replaces the button's own
+  // text, so naming it "Skill directories" alone would hide the path it
+  // currently holds.
+  const name = ariaLabel === undefined ? undefined : `${ariaLabel}: ${shownValue} — browse`;
+
+  const trigger = prominent ? (
     <button
       ref={triggerRef}
       id={id}
       type="button"
-      className={`${CLASS.trigger} ${kind === "dir" ? CLASS.directoryTrigger : ""}`}
+      className={CLASS.prominentTrigger}
       disabled={disabled}
+      data-state={value === "" ? "unset" : "chosen"}
       aria-haspopup={kind === "dir" ? "dialog" : undefined}
       aria-expanded={kind === "dir" ? open : undefined}
-      // The label has to carry the value too: aria-label replaces the
-      // button's own text, so naming it "Skill directories" alone would
-      // hide the path it currently holds.
-      aria-label={ariaLabel === undefined ? undefined : `${ariaLabel}: ${shownValue} — browse`}
-      onClick={() => (open ? closePanel(value) : setOpen(true))}
+      aria-label={name}
+      onClick={onClick}
     >
-      {/* Plain text, not a Chip: the trigger already draws the control's
-              own border, and a bordered chip inside it reads as a double
-              border. */}
-      <span
-        className={`${CLASS.triggerValue} ${kind === "dir" ? CLASS.directoryValue : ""} ${value === "" ? CLASS.triggerDefault : ""}`}
-      >
-        {shownValue}
+      <span className={CLASS.prominentSeat} aria-hidden="true">
+        {kind === "dir" ? <DirectoryIcon /> : <ToolIcon kind="file" size={16} />}
       </span>
-      <span className={CLASS.chevron} aria-hidden="true">
-        <Chevron direction="down" />
-      </span>{" "}
-      {/* That separating space is load-bearing: the accessible name is this
-              button's children concatenated, and each child's own text is
-              trimmed first, so a space INSIDE either span would be dropped and
-              the name would run together as "/home/jesse— browse". A
-              whitespace-only text node between them survives that trim and
-              renders nothing of its own (an all-whitespace anonymous flex item
-              is not laid out). */}
-      <span className={CLASS.srOnly}>— browse</span>
+      <span className={CLASS.prominentText}>
+        <strong className={CLASS.prominentHeadline}>{headline}</strong>
+        <span className={CLASS.prominentCaption}>{shownValue}</span>
+      </span>
+      <span className={CLASS.prominentAction}>Change…</span>
     </button>
+  ) : (
+    <PickerTrigger
+      ref={triggerRef}
+      id={id}
+      open={open}
+      onClick={onClick}
+      // A directory field opens the validated directory dialog; a file field
+      // opens the completion listbox popover.
+      ariaMode={kind === "dir" ? "dialog" : "listbox"}
+      actionLabel="browse"
+      value={shownValue}
+      classes={{
+        trigger: `${CLASS.trigger}${kind === "dir" ? ` ${CLASS.directoryTrigger}` : ""}`,
+        value: `${CLASS.triggerValue} ${kind === "dir" ? CLASS.directoryValue : ""} ${value === "" ? CLASS.triggerDefault : ""}`,
+        chevron: CLASS.chevron,
+      }}
+      disabled={disabled}
+      ariaLabel={name}
+    />
   );
   if (kind === "dir") {
     if (!directory) throw new Error("Directory fields require validation and creation actions");

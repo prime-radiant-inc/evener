@@ -4,23 +4,15 @@
 }
 
 .top {
-  position: absolute;
+  composes: dock from "../../overlayDock.module.css";
   top: var(--space-3);
   left: 0;
   right: 0;
-  z-index: var(--z-raised);
-  display: flex;
-  flex-direction: column;
   align-items: center;
-  pointer-events: none; /* only its own interactive children (LoadOlderRow) opt back in */
-}
-
-.top > * {
-  pointer-events: auto;
 }
 
 .stack {
-  position: absolute;
+  composes: dock from "../../overlayDock.module.css";
   bottom: var(--space-3);
   /* Both inline anchors, not just the trailing one: the stack's width is
    * then the pane's width less the two insets. With only `right` it
@@ -28,16 +20,8 @@
    * pushed the control out to the left instead of being truncated. */
   left: var(--space-3);
   right: var(--space-3);
-  z-index: var(--z-raised);
-  display: flex;
-  flex-direction: column;
   align-items: flex-end;
   gap: var(--space-2);
-  pointer-events: none;
-}
-
-.stack > * {
-  pointer-events: auto;
 }
 
 .pillSlot {

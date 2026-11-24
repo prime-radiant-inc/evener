@@ -7,11 +7,7 @@
 import type { HarnessDescriptor, LaunchConfigLayer, LaunchOption, ModelListResponse } from "@evener/appwire-client";
 import {
   type AdvancedValues,
-  basename,
   collectAdvancedOverrides,
-  effortDefaultLabel,
-  effortLabel,
-  effortReadout,
   errorText,
   FALLBACK_EFFORT_LEVELS,
   findBuiltinArgument,
@@ -20,6 +16,7 @@ import {
   harnessUsesEvenerModels,
   hostRequest,
   isLocalHost,
+  markerRanges,
   matchBuiltinInvocation,
   mergeSlashCommands,
   type PathValidation,
@@ -34,7 +31,7 @@ import {
   slashCommandInvocation,
   withPluginSelection,
 } from "@evener/appwire-client";
-import { type JSX, memo, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { type JSX, memo, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { useStore } from "zustand";
 import { useClient } from "../../shell/clientContext";
@@ -53,13 +50,11 @@ import { selectDisplaySources, selectSources } from "../../stores/navigation/sel
 import { useNavigationStore } from "../../stores/navigation/store";
 import {
   Button,
-  Card,
   Chevron,
   CloseIcon,
   ConfirmDialog,
   chordLabel,
   Dialog,
-  DirectoryIcon,
   DirectoryPicker,
   Disclosure,
   Dropzone,
@@ -75,22 +70,24 @@ import {
   SendIcon,
   ShortcutList,
   Switch,
-  ToolIcon,
   Tooltip,
+  useFocusRehome,
   useToasts,
-  VisuallyHidden,
 } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { modelListToCatalog } from "../../widgets/modelCatalog/catalogClient";
 import { mergeCatalogEntry, mergeCatalogSnapshot } from "../../widgets/modelCatalog/scopedCatalog";
 import { ModelSwitchTrigger } from "../session/chrome/ModelSwitchTrigger";
+import { ReasoningEffortControl } from "../session/chrome/ReasoningEffortControl";
 import { AttachmentTile } from "../session/composer/AttachmentTile";
 import { AttachImageControl } from "../session/composer/attachments/AttachImageControl";
 import { imageFilesFromClipboard } from "../session/composer/attachments/clipboard";
 import { type TextEditor, useAttachments } from "../session/composer/attachments/useAttachments";
+import { FileCompletionMenu } from "../session/composer/FileCompletionMenu";
 import { SkillEditor, type SkillEditorHandle, type SkillEditorValue } from "../session/composer/SkillEditor";
 import { SlashCompletionMenu } from "../session/composer/SlashCompletionMenu";
 import { maskSkillAtoms, patchSelectionText } from "../session/composer/skillDocument";
+import { resolveCompletionTokens, useFileCompletion } from "../session/composer/useFileCompletion";
 import { useSlashCompletion } from "../session/composer/useSlashCompletion";
 import {
   ConnectProviderDialogBoundary,
@@ -106,8 +103,8 @@ import {
 } from "./accessMode";
 import { MobileSettingRows } from "./MobileSettingRows";
 import { PluginSelectionPanel } from "./PluginSelectionPanel";
-import pluginSelectionStyles from "./pluginSelection.module.css";
 import { preflightDir } from "./preflight";
+import { SpawnHostSelection } from "./SpawnHostSelection";
 import styles from "./spawn.module.css";
 import {
   getGlobalLastWorkingDir,
@@ -201,44 +198,24 @@ const CLASS = {
   form: requireClass(styles.form, "spawn.module.css", "form"),
   startReason: requireClass(styles.startReason, "spawn.module.css", "startReason"),
   chordHints: requireClass(styles.chordHints, "spawn.module.css", "chordHints"),
-  cfgDir: requireClass(styles.cfgDir, "spawn.module.css", "cfgDir"),
   branch: requireClass(styles.branch, "spawn.module.css", "branch"),
-  directoryButton: requireClass(styles.directoryButton, "spawn.module.css", "directoryButton"),
-  tileSeat: requireClass(styles.tileSeat, "spawn.module.css", "tileSeat"),
-  tileText: requireClass(styles.tileText, "spawn.module.css", "tileText"),
-  tileCaption: requireClass(styles.tileCaption, "spawn.module.css", "tileCaption"),
-  directoryAction: requireClass(styles.directoryAction, "spawn.module.css", "directoryAction"),
-  summaryRow: requireClass(styles.summaryRow, "spawn.module.css", "summaryRow"),
-  accessTile: requireClass(styles.accessTile, "spawn.module.css", "accessTile"),
-  summaryPending: requireClass(styles.summaryPending, "spawn.module.css", "summaryPending"),
+  accessNote: requireClass(styles.accessNote, "spawn.module.css", "accessNote"),
   quietRows: requireClass(styles.quietRows, "spawn.module.css", "quietRows"),
   quietRow: requireClass(styles.quietRow, "spawn.module.css", "quietRow"),
+  desktopOnly: requireClass(styles.desktopOnly, "spawn.module.css", "desktopOnly"),
+  quietSummary: requireClass(styles.quietSummary, "spawn.module.css", "quietSummary"),
+  quietButtonSummary: requireClass(styles.quietButtonSummary, "spawn.module.css", "quietButtonSummary"),
+  rowChevron: requireClass(styles.rowChevron, "spawn.module.css", "rowChevron"),
+  quietSummaryAction: requireClass(styles.quietSummaryAction, "spawn.module.css", "quietSummaryAction"),
   attachments: requireClass(styles.attachments, "spawn.module.css", "attachments"),
   leading: requireClass(styles.leading, "spawn.module.css", "leading"),
   modelTrigger: requireClass(styles.modelTrigger, "spawn.module.css", "modelTrigger"),
-  effortTrigger: requireClass(styles.effortTrigger, "spawn.module.css", "effortTrigger"),
-  effortSeparator: requireClass(styles.effortSeparator, "spawn.module.css", "effortSeparator"),
-  effortValue: requireClass(styles.effortValue, "spawn.module.css", "effortValue"),
-  effortChevron: requireClass(styles.effortChevron, "spawn.module.css", "effortChevron"),
-  effortSelect: requireClass(styles.effortSelect, "spawn.module.css", "effortSelect"),
-  effortLabel: requireClass(styles.effortLabel, "spawn.module.css", "effortLabel"),
   mobileConfig: requireClass(styles.mobileConfig, "spawn.module.css", "mobileConfig"),
   promptIntro: requireClass(styles.promptIntro, "spawn.module.css", "promptIntro"),
   promptHeading: requireClass(styles.promptHeading, "spawn.module.css", "promptHeading"),
   promptSubtitle: requireClass(styles.promptSubtitle, "spawn.module.css", "promptSubtitle"),
   promptAnchor: requireClass(styles.promptAnchor, "spawn.module.css", "promptAnchor"),
   submitLabel: requireClass(styles.submitLabel, "spawn.module.css", "submitLabel"),
-  pluginDesktop: requireClass(pluginSelectionStyles.desktopSurface, "pluginSelection.module.css", "desktopSurface"),
-  pluginSummary: requireClass(pluginSelectionStyles.summary, "pluginSelection.module.css", "summary"),
-  pluginSummaryAction: requireClass(pluginSelectionStyles.summaryAction, "pluginSelection.module.css", "summaryAction"),
-  // The host picker's native <select> reuses the Select widget's own stylesheet
-  // class: the widget renders a native <select> too, but its SelectOption has no
-  // per-option disabled flag, and an offline host must be RENDERED yet not
-  // selectable (Component 06b). The class only borrows the visual treatment.
-  // The Connect affordance beside the picker: one button per offline remote
-  // host, an enabled control so a never-attached host is reachable rather
-  // than dead UI (component 06 §"Connecting a configured host").
-  hostConnectRow: requireClass(styles.hostConnectRow, "spawn.module.css", "hostConnectRow"),
 };
 
 // kata xgk8: the empty-value label Model shows when the hub has confirmed it
@@ -479,7 +456,12 @@ function SpawnForm({
   // the round-eight preselection and offline fallback unchanged.
   const displaySource = displaySources.find((candidate) => candidate.id === source);
   const displayHostChoice = sources.length > 0 ? hostChoice : (displaySource?.id ?? hostChoice);
-  const displayRemoteHosts = displaySources.filter((candidate) => candidate.id !== "local");
+  // The one host list is shared by the quiet-row disclosure and the phone
+  // Sheet. The manifest labels every source, including the hub itself
+  // ("<hostname> (hub)"), so the picker renders those rows directly.
+  const showHostPicker = displaySources.some((candidate) => candidate.id !== "local");
+  const displayHostLabel =
+    displaySources.find((candidate) => candidate.id === displayHostChoice)?.label ?? displayHostChoice;
   const cwd = draft.cwd;
   const setCwd = selectSpawnDirectory;
   // Entering onboarding records the draft's own scope; the fallback below is
@@ -529,7 +511,11 @@ function SpawnForm({
       revoke();
     };
   }, [draft, submittedSource, harness, cwd]);
-  const [directoryOpen, setDirectoryOpen] = useState(false);
+  const [hostPickerOpen, setHostPickerOpen] = useState(false);
+  // Choosing a host closes the disclosure and unmounts the row that held the
+  // keyboard. Keep focus on the Host summary instead of dropping it to <body>.
+  const hostDisclosureRef = useRef<HTMLDivElement | null>(null);
+  useFocusRehome(hostDisclosureRef);
   // Scoped by cwd AND host so neither a draft switch nor a host switch can show
   // the previous project's/host's branch while the new evener/git/head request
   // is in flight - or indefinitely after it fails (resolveHeadBranch fails soft
@@ -808,9 +794,6 @@ function SpawnForm({
     slashCatalogResponse.commands.filter((command) => !builtinInvocations.has(slashCommandInvocation(command))),
     (slashCatalogResponse.skills ?? []).filter((skill) => !builtinInvocations.has(`/${skill.name}`)),
   );
-  // Singleton pane - no ref scoping needed, unlike Composer's per-ref id.
-  const slashListboxId = "spawn-slash-listbox";
-
   const textareaRef = useRef<SkillEditorHandle>(null);
 
   // Attachments reuse the composer's staged-image pipeline via a TextEditor
@@ -831,6 +814,17 @@ function SpawnForm({
   // label, which is the honest UI reflection of `busyRef` once React catches
   // up - this ref is only the guard of record.
   const busyRef = draft.busyRef;
+  // Selecting a host is never itself an attach request: an online row is
+  // already attached (a dial would only be redundant), and an offline row is
+  // not selectable, so the Connect control on its row is the single path that
+  // reaches an offline host. Both host surfaces share this action.
+  function selectHost(id: string): void {
+    if (busyRef.current) return;
+    setSource(id);
+  }
+  function openHostsSettings(): void {
+    navigate("/settings/hosts");
+  }
   // The two edges of a launch attempt. busyRef is the synchronous re-entrancy
   // guard, busy and busyStartedAt are the draft state the Start button renders;
   // every exit from an attempt (success, refusal, thrown error) hands Start
@@ -974,33 +968,83 @@ function SpawnForm({
     setToken: setSlashToken,
     items: slashItems,
     open: slashOpen,
-    activeIndex: slashActiveIndex,
+    activeKey: slashActiveKey,
     activeId: slashActiveId,
+    listboxId: slashListboxId,
     commit: commitSlashCompletion,
     handleKeyDown: handleSlashKeyDown,
   } = useSlashCompletion({
     catalog: slashMenuCatalog,
     enabled: pluginSelectionSupported,
-    listboxId: slashListboxId,
     initialToken: () => parseSlashToken(prompt, prompt.length),
     editorRef: textareaRef,
     textRef,
     textEditor,
     plainKeysOnly: true,
   });
+  const fileCompletionHostReady =
+    isLocalHost(submittedSource) || Boolean(sources.find((candidate) => candidate.id === submittedSource)?.online);
+  const fileCompletionEnabled = client !== null && cwd.trim() !== "" && fileCompletionHostReady;
+  const fileTarget = useMemo(
+    () => (cwd.trim() !== "" ? ({ kind: "cwd", host: submittedSource, cwd } as const) : null),
+    [submittedSource, cwd],
+  );
+  const protectedMarkerRangesFor = useCallback(
+    (maskedText: string) => {
+      const items = draft.attachments.getState().items;
+      if (items.length === 0) return [];
+      const activeMarkers = new Set(items.map((item) => item.marker));
+      return markerRanges(maskedText).filter((range) => activeMarkers.has(range.marker));
+    },
+    [draft.attachments],
+  );
+  const {
+    token: fileToken,
+    setToken: setFileToken,
+    items: fileItems,
+    open: fileOpen,
+    showLoader: fileShowLoader,
+    truncated: fileTruncated,
+    activeIndex: fileActiveIndex,
+    activeId: fileActiveId,
+    listboxId: fileListboxId,
+    commit: commitFileCompletion,
+    handleKeyDown: handleFileKeyDown,
+    reset: resetFileCompletion,
+  } = useFileCompletion({
+    client,
+    target: fileTarget,
+    enabled: fileCompletionEnabled,
+    editorRef: textareaRef,
+    textRef,
+    draft: prompt,
+    plainKeysOnly: true,
+    getProtectedRanges: () => protectedMarkerRangesFor(textRef.current),
+  });
+  const prevFileCompletionScopeRef = useRef({ submittedSource, cwd, draft });
+  useEffect(() => {
+    const prev = prevFileCompletionScopeRef.current;
+    if (prev.submittedSource === submittedSource && prev.cwd === cwd && prev.draft === draft) return;
+    prevFileCompletionScopeRef.current = { submittedSource, cwd, draft };
+    resetFileCompletion();
+  }, [submittedSource, cwd, draft, resetFileCompletion]);
   // URL writes bypass the keystroke path, including a prefill for the current
   // project. A restored draft should offer the same completion as typed text.
   // biome-ignore lint/correctness/useExhaustiveDependencies: prefillRevision triggers URL-only writes independently of keystrokes
   useEffect(() => {
     const text = draft.fields.getState().prompt;
     setSlashToken(parseSlashToken(text, text.length));
+    setFileToken(null);
     cursorRef.current = null;
   }, [draft, prefillRevision]);
   // Completion can clear this draft through an older, unmounted form. Retire
   // the token from the current prompt, not from that form's stale continuation.
   useEffect(() => {
-    if (prompt === "") setSlashToken(null);
-  }, [prompt, setSlashToken]);
+    if (prompt === "") {
+      setSlashToken(null);
+      setFileToken(null);
+    }
+  }, [prompt, setSlashToken, setFileToken]);
   const attachments = useAttachments(textEditor, draft.attachments);
 
   // Every catalog and readiness signal this form reads - provider instances,
@@ -1286,9 +1330,9 @@ function SpawnForm({
     () => hostRequest(client, submittedSource, "evener/projects/recent", {}).then((r) => r.data ?? []),
     [client, submittedSource],
   );
-  // Injected into every PathField on this pane (the working directory here and
-  // the advanced panel's path/pathList fields): the widget derives includeFiles
-  // from its own kind, so this just forwards it.
+  // Injected into the pane's path controls (the working directory's directory
+  // picker and the advanced panel's path/pathList fields): the widgets derive
+  // includeFiles from their own kind, so this just forwards it.
   const complete = useCallback(
     (prefix: string, includeFiles: boolean) =>
       withLaunchConfig(submittedSource, (config) => config.completePaths(prefix, includeFiles)),
@@ -1988,30 +2032,11 @@ function SpawnForm({
   );
   const effortLevels = knownEffortLevels ?? FALLBACK_EFFORT_LEVELS;
   const effortDisabled = !usesEvenerModels || (knownEffortLevels !== null && knownEffortLevels.length === 0);
-  // An effort the ladder doesn't name but state still holds. Only the FALLBACK
-  // ladder produces one: the reset effect below deliberately skips when the
-  // catalog knows nothing about the model, because clobbering a sticky default
-  // on a guessed ladder loses the user's setting.
-  //
-  // Such a value must still be OFFERED. A native select handed a value with no
-  // matching <option> renders its first one instead, so the field would read
-  // "(default)" while thread/start receives the preserved level -- the select
-  // must never show one effort and submit another.
-  const preservedEffort =
-    reasoningEffort !== "" && reasoningEffort !== "none" && !effortLevels.includes(reasoningEffort)
-      ? reasoningEffort
-      : null;
   // The effort a session started now would inherit, once launch/resolve has
   // landed with one: the open list names it on the empty option's
   // "(default)", and the closed readout shows it as the effort itself.
   const resolvedEffortDefault =
     typeof resolvedDefaults?.reasoningEffort === "string" ? resolvedDefaults.reasoningEffort.trim() : "";
-  const effortOptions = [
-    { value: "", label: effortDefaultLabel(resolvedEffortDefault, effortLevels) },
-    ...effortLevels.filter((level) => level !== "none").map((level) => ({ value: level, label: level })),
-    ...(preservedEffort === null ? [] : [{ value: preservedEffort, label: preservedEffort }]),
-    { value: "none", label: effortLabel("none", effortLevels) },
-  ];
   // The preview includes explicit access overrides. Only name it as the
   // inherited default when no sandbox override contributed to that preview.
   const sandboxOverride = mergeAccessModeSandbox(advancedOverrides, accessMode)?.sandbox?.trim();
@@ -2025,18 +2050,61 @@ function SpawnForm({
   const advancedSandboxOverride =
     typeof advancedOverrides.sandbox === "string" && advancedOverrides.sandbox.trim() !== "";
 
-  const [advancedOpen, setAdvancedOpen] = useState(false);
+  // The row and the dialog name the same destination, and the access summary
+  // and its note read the same resolution, so each is derived once.
+  const cwdText = cwd === "" ? "Choose a folder" : cwd;
+  const accessValue =
+    resolveStatus === "ready"
+      ? (effectiveAccess?.label ?? (effectiveSandbox || "inherited"))
+      : resolveStatus === "error"
+        ? "Unresolved"
+        : "Resolving…";
+  const accessNote =
+    resolveStatus === "ready"
+      ? `${advancedSandboxOverride ? "Set by the Advanced sandbox override." : "Set by Access mode."}${
+          effectiveAccessDescription ? ` ${effectiveAccessDescription}` : ""
+        }`
+      : resolveStatus === "error"
+        ? "Effective access is unresolved because launch settings could not be resolved."
+        : "Effective access is being resolved.";
 
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [cwdPickerOpen, setCwdPickerOpen] = useState(false);
+  const cwdTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const [accessOpen, setAccessOpen] = useState(false);
+  const accessRowRef = useRef<HTMLDivElement | null>(null);
+
+  // The directory row IS the picker's trigger: one click opens the shared
+  // dialog. Closing returns the keyboard to the row, because the dialog owns
+  // focus while it is open.
+  function closeCwdPicker(): void {
+    setCwdPickerOpen(false);
+    cwdTriggerRef.current?.focus();
+  }
+
+  // Opening the access row lands the keyboard on the select it exists to
+  // change; closing it returns the keyboard to the row, because the select is
+  // unmounted with the body.
+  function setAccessRowOpen(open: boolean): void {
+    flushSync(() => setAccessOpen(open));
+    queueMicrotask(() => {
+      const row = accessRowRef.current;
+      if (row === null) return;
+      const target = open ? row.querySelector<HTMLElement>("#spawn-access") : row.querySelector<HTMLElement>("summary");
+      target?.focus();
+    });
+  }
+
+  // An Advanced sandbox override owns the effective access, so the access
+  // row's note offers this jump instead of pretending its own select governs.
   function focusAccessOwner(): void {
     const owner = advancedOwnerRef.current;
     if (owner === null) return;
-    // Committed before the focus below looks for a field inside the panel.
-    flushSync(() => setAdvancedOpen(true));
+    flushSync(() => {
+      setAccessOpen(false);
+      setAdvancedOpen(true);
+    });
     queueMicrotask(() => {
-      if (!advancedSandboxOverride) {
-        owner.querySelector<HTMLElement>("#spawn-access")?.focus();
-        return;
-      }
       const field = owner.querySelector<HTMLElement>('[data-launch-field="sandbox"]');
       const selected = field?.querySelector<HTMLElement>('[role="radio"][aria-checked="true"]');
       const firstEnabled = field?.querySelector<HTMLElement>(
@@ -2173,7 +2241,7 @@ function SpawnForm({
     // Mod/Ctrl+Enter always falls through to the submit branch below even
     // with the menu open. Shift+Enter, Alt+Enter, and composing Enter keep
     // their existing behavior (newline/composition).
-    if (handleSlashKeyDown(event)) return;
+    if (handleSlashKeyDown(event) || handleFileKeyDown(event)) return;
     // ⌘/Ctrl+Enter submits (floor §1.12).
     if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
       event.preventDefault();
@@ -2647,8 +2715,20 @@ function SpawnForm({
             <SlashCompletionMenu
               id={slashListboxId}
               items={slashItems}
-              highlightedIndex={slashActiveIndex}
+              activeKey={slashActiveKey}
               onSelect={commitSlashCompletion}
+            />
+          )}
+          {fileOpen && (
+            <FileCompletionMenu
+              id={fileListboxId}
+              query={fileToken?.query ?? ""}
+              items={fileItems}
+              highlightedIndex={fileActiveIndex}
+              placement="below"
+              showLoader={fileShowLoader}
+              truncated={fileTruncated}
+              onSelect={commitFileCompletion}
             />
           )}
           <Dropzone onFiles={(files) => attachments.ingestFiles(files, (message) => toasts.push("error", message))}>
@@ -2660,8 +2740,8 @@ function SpawnForm({
                   ref={textareaRef}
                   value={{ text: prompt, skillNames, commandNames, mentions }}
                   restoreEpoch={restoreEpoch + selectionRestoreRevision}
-                  aria-controls={slashActiveId ? slashListboxId : undefined}
-                  aria-activedescendant={slashActiveId ?? undefined}
+                  aria-controls={slashActiveId ? slashListboxId : fileOpen ? fileListboxId : undefined}
+                  aria-activedescendant={slashActiveId ?? fileActiveId ?? undefined}
                   skillDetails={(name) =>
                     catalogResponse.skills?.find((item) => item.name === name)?.description ??
                     `${name} — no longer in this launch catalog`
@@ -2670,7 +2750,7 @@ function SpawnForm({
                     catalogResponse.commands.find((item) => slashCommandInvocation(item) === `/${name}`)?.description ??
                     `${name} — no longer in this launch catalog`
                   }
-                  onChange={(value: SkillEditorValue, caret) => {
+                  onChange={(value: SkillEditorValue, caret, meta) => {
                     textRef.current = value.text;
                     const fields = draft.fields.getState();
                     draft.fields.setState({
@@ -2680,7 +2760,27 @@ function SpawnForm({
                       mentions: value.mentions,
                       promptRevision: fields.promptRevision + 1,
                     });
-                    setSlashToken(parseSlashToken(maskSkillAtoms(value), caret));
+                    const masked = maskSkillAtoms(value);
+                    const tokens = resolveCompletionTokens(
+                      masked,
+                      caret,
+                      Boolean(meta?.isPaste),
+                      protectedMarkerRangesFor(masked),
+                    );
+                    setSlashToken(tokens.slashToken);
+                    setFileToken(tokens.fileToken);
+                  }}
+                  onSelectionChange={(caret) => {
+                    const fields = draft.fields.getState();
+                    const masked = maskSkillAtoms({
+                      text: fields.prompt,
+                      skillNames: fields.skillNames,
+                      commandNames: fields.commandNames,
+                      mentions: fields.mentions,
+                    });
+                    const tokens = resolveCompletionTokens(masked, caret, false, protectedMarkerRangesFor(masked));
+                    setSlashToken(tokens.slashToken);
+                    setFileToken(tokens.fileToken);
                   }}
                   onKeyDown={handlePromptKeyDown}
                   onPaste={handlePaste}
@@ -2691,7 +2791,10 @@ function SpawnForm({
                   // option never reaches this handler in the first place -
                   // see that component's own comment - so this only ever
                   // fires for a genuine "focus left the field".
-                  onBlur={() => setSlashToken(null)}
+                  onBlur={() => {
+                    setSlashToken(null);
+                    setFileToken(null);
+                  }}
                   // Short, because the intro above the card already asks the
                   // question and states the dormant-start rule; a placeholder
                   // that repeats them spends the field's one line on nothing.
@@ -2724,6 +2827,8 @@ function SpawnForm({
                       plain "(default)" until the resolve lands. */}
                   <span className={CLASS.modelTrigger} data-testid="spawn-model-slot" data-state={modelTriggerState}>
                     <ModelSwitchTrigger
+                      fill
+                      shrink
                       label={
                         modelRequired
                           ? MODEL_CHOOSE_LABEL
@@ -2738,53 +2843,23 @@ function SpawnForm({
                       valueTestId="spawn-model-value"
                     />
                   </span>
-                  {/* StatusRow's quiet-effort recipe (statusrow.module.css's
-                      .effortTrigger): the current value IS the visible control -
-                      a real native <select> laid over its own readout at zero
-                      opacity - so the row stays one quiet line instead of
-                      growing a bordered box. The readout names the effort the
-                      select holds; an unset effort whose resolved default is
-                      known shows that tier ("high"), the effort a session
-                      started now would run at, while the open list keeps
-                      "high (default)" so following the default stays distinct
-                      from pinning it. Same ladder contract the removed
-                      FormRow select kept: the selected model's own
-                      levels, the fallback ladder when the catalog can't say,
-                      and a disabled control when the model cannot reason at all
-                      (effortDisabled) rather than no control - pre-launch the
-                      setting is still discoverable beside the model it belongs
-                      to. */}
-                  <span
-                    className={CLASS.effortTrigger}
-                    data-testid="spawn-effort"
-                    data-disabled={effortDisabled ? "true" : undefined}
-                  >
-                    <span className={CLASS.effortSeparator} aria-hidden="true">
-                      ·
-                    </span>
-                    <span className={CLASS.effortValue} data-testid="spawn-effort-value" aria-hidden="true">
-                      {effortReadout(reasoningEffort, effortLevels, resolvedEffortDefault)}
-                    </span>
-                    <span className={CLASS.effortChevron} aria-hidden="true">
-                      <Chevron direction="down" />
-                    </span>
-                    <label className={CLASS.effortLabel} htmlFor="spawn-reasoning-effort">
-                      <VisuallyHidden>Prompt reasoning effort</VisuallyHidden>
-                    </label>
-                    <select
-                      id="spawn-reasoning-effort"
-                      className={CLASS.effortSelect}
-                      value={reasoningEffort}
-                      onChange={(e) => handleEffortChange(e.target.value)}
-                      disabled={effortDisabled}
-                    >
-                      {effortOptions.map((option) => (
-                        <option key={option.value} value={option.value}>
-                          {option.label}
-                        </option>
-                      ))}
-                    </select>
-                  </span>
+                  {/* The selected model's ladder, the fallback when the catalog
+                      can't say, and a disabled control when the model cannot
+                      reason at all (effortDisabled) rather than no control -
+                      pre-launch the setting is still discoverable beside the
+                      model it belongs to. The card always offers an explicit
+                      off, even when the ladder does not name "none". */}
+                  <ReasoningEffortControl
+                    levels={effortLevels}
+                    current={reasoningEffort}
+                    defaultLevel={resolvedEffortDefault}
+                    onChange={handleEffortChange}
+                    testId="spawn-effort"
+                    id="spawn-reasoning-effort"
+                    ariaLabel="Prompt reasoning effort"
+                    disabled={effortDisabled}
+                    offerNone
+                  />
                 </div>
               }
               actions={
@@ -2855,163 +2930,6 @@ function SpawnForm({
           </InlineNotice>
         )}
 
-        {/* Host picker (Component 06b): rendered only when the manifest lists a
-            non-local source, so the common single-host form is byte-for-byte
-            unchanged. Local is preselected (the draft default). An offline host
-            still renders - the reader can see it exists - but its option is
-            disabled and carries the reason in its own label. The row sits
-            ABOVE the working directory: the folder list, recents, and
-            validation all come from the selected machine (hostRequest), so
-            the form reads pick-the-machine first, then the folder on it. */}
-        {displayRemoteHosts.length > 0 && (
-          <FormRow
-            label="Host"
-            htmlFor="spawn-host"
-            help={
-              displayRemoteHosts.some((candidate) => !candidate.online)
-                ? "Where the session runs. Offline hosts can't be selected."
-                : "Where the session runs."
-            }
-          >
-            <Select
-              id="spawn-host"
-              value={displayHostChoice}
-              // A submit snapshots this choice (handleSpawn's closure carries
-              // the submittedSource/remoteLaunch that thread/start and
-              // saveDefaults receive) and then awaits the local directory
-              // preflight, so a change mid-submit would silently diverge from
-              // what actually launches and from which defaults are saved.
-              // Disabled while busy; the guard also covers the same-tick window
-              // before that attribute commits (kata 61v2's busyRef discipline).
-              disabled={busy}
-              onChange={(event) => {
-                if (busyRef.current) return;
-                const next = event.target.value;
-                setSource(next);
-                // Selecting a host is never itself an attach request: an online
-                // row is already attached (a dial would only be redundant), and
-                // an offline row's option is disabled, so a select event cannot
-                // name it — the Connect affordance below is the single path that
-                // reaches an offline host.
-              }}
-              options={displaySources.map((candidate) => ({
-                value: candidate.id,
-                label: candidate.online ? candidate.label : `${candidate.label} (offline)`,
-                disabled: !candidate.online,
-              }))}
-            />
-            {displayRemoteHosts.some((candidate) => !candidate.online) && (
-              <div className={CLASS.hostConnectRow}>
-                {displayRemoteHosts
-                  .filter((candidate) => !candidate.online)
-                  .map((candidate) => (
-                    <Button
-                      key={candidate.id}
-                      variant="quiet"
-                      size="xs"
-                      type="button"
-                      disabled={connectingHosts.has(candidate.id)}
-                      onClick={() => connectHost(candidate.id)}
-                    >
-                      {connectingHosts.has(candidate.id)
-                        ? `Connecting ${candidate.label}…`
-                        : `Connect ${candidate.label}`}
-                    </Button>
-                  ))}
-              </div>
-            )}
-          </FormRow>
-        )}
-
-        {/* The two facts a session starts from, as a pair of summary tiles
-            under the task: where it runs and what it may touch. Each tile's
-            action opens the owner of that fact - the directory picker, the
-            access control. */}
-        <div className={CLASS.summaryRow}>
-          <div className={CLASS.cfgDir}>
-            <button
-              type="button"
-              id="spawn-cwd"
-              className={CLASS.directoryButton}
-              data-state={cwd ? "chosen" : "unset"}
-              aria-label={`Working directory: ${cwd || "Choose a folder"}`}
-              aria-haspopup="dialog"
-              aria-expanded={directoryOpen}
-              onClick={() => setDirectoryOpen(true)}
-            >
-              <span className={CLASS.tileSeat} aria-hidden="true">
-                <DirectoryIcon />
-              </span>
-              <span className={CLASS.tileText}>
-                <strong>{cwd ? basename(cwd) || "/" : "Working directory"}</strong>
-                <span className={CLASS.tileCaption}>{cwd || "Choose a folder"}</span>
-                {/* Git info is a property of that directory (HEAD there), so
-                    it rides inside the directory's own tile. */}
-                {branch !== "" && (
-                  <span className={CLASS.branch} data-testid="spawn-branch">
-                    {branch}
-                  </span>
-                )}
-              </span>
-              <span className={CLASS.directoryAction}>Change…</span>
-            </button>
-          </div>
-          {/* A live region: a changed access mode re-announces what the
-              session will be allowed to do. */}
-          <Card
-            variant="outlined"
-            role="status"
-            data-testid="spawn-effective-access"
-            data-state={resolveStatus}
-            data-sandbox={resolveStatus === "ready" ? effectiveSandbox : undefined}
-            data-access={resolveStatus === "ready" ? (effectiveAccess?.value ?? effectiveSandbox) : undefined}
-            data-source={advancedSandboxOverride ? "advanced" : "access"}
-          >
-            <div className={CLASS.accessTile}>
-              <span className={CLASS.tileSeat} aria-hidden="true">
-                <ToolIcon kind="shield" size={16} />
-              </span>
-              <span className={CLASS.tileText}>
-                {resolveStatus === "ready" ? (
-                  <>
-                    <span className={CLASS.tileCaption}>Effective access</span>
-                    <strong>{effectiveAccess?.label ?? (effectiveSandbox || "inherited")}</strong>
-                    <span className={CLASS.tileCaption}>
-                      {advancedSandboxOverride ? "Set by the Advanced sandbox override." : "Set by Access mode."}
-                      {effectiveAccessDescription ? ` ${effectiveAccessDescription}` : ""}
-                    </span>
-                  </>
-                ) : (
-                  <span className={CLASS.summaryPending}>
-                    {resolveStatus === "error"
-                      ? "Effective access is unresolved because launch settings could not be resolved."
-                      : "Effective access is being resolved."}
-                  </span>
-                )}
-              </span>
-              <Button variant="quiet" size="xs" type="button" onClick={focusAccessOwner}>
-                Change
-              </Button>
-            </div>
-          </Card>
-        </div>
-        {directoryOpen && (
-          <DirectoryPicker
-            key={cwd}
-            value={cwd}
-            fallbackDir={pickerFallbackDir}
-            complete={complete}
-            listRecents={listRecents}
-            validatePath={validatePath}
-            createDirectory={createDirectory}
-            onClose={() => setDirectoryOpen(false)}
-            onPick={(path) => {
-              setCwd(path);
-              commitLastWorkingDir(path);
-              setDirectoryOpen(false);
-            }}
-          />
-        )}
         {connectingProvider !== null && providerSetupIsLocal && (
           <ConnectProviderDialogBoundary
             key={dialogChunkVersion}
@@ -3046,8 +2964,17 @@ function SpawnForm({
             fallbackDir={pickerFallbackDir}
             onCwdPanelClose={commitLastWorkingDir}
             branch={branch}
+            hostOptions={showHostPicker ? displaySources : []}
+            hostValue={displayHostChoice}
+            hostLabel={displayHostLabel}
+            connectingHosts={connectingHosts}
+            onHostSelect={selectHost}
+            onHostConnect={connectHost}
+            onConnectHost={openHostsSettings}
             accessMode={accessMode}
             accessOptions={accessOptions}
+            effectiveAccessLabel={accessValue}
+            advancedAccessOverride={advancedSandboxOverride}
             onAccessChange={setAccessMode}
             pluginPreview={pluginPreview.state}
             pluginSelection={pluginSelection}
@@ -3059,12 +2986,142 @@ function SpawnForm({
           />
         </div>
 
+        {/* The settings the launch starts from, as quiet disclosure rows in
+            one hairline-divided list. The host row leads because the folder
+            list, recents, and validation all come from the selected machine. */}
         <div className={CLASS.quietRows}>
+          {showHostPicker && (
+            <div
+              className={`${CLASS.desktopOnly} ${CLASS.quietRow}`}
+              data-testid="spawn-host-desktop"
+              ref={hostDisclosureRef}
+            >
+              <Disclosure
+                open={hostPickerOpen}
+                onOpenChange={setHostPickerOpen}
+                data-testid="spawn-host-disclosure"
+                disabled={busy}
+                summary={
+                  <div className={CLASS.quietSummary} data-testid="spawn-host-summary">
+                    <strong>Host</strong>
+                    <span data-testid="spawn-host-value">{displayHostLabel}</span>
+                  </div>
+                }
+              >
+                <SpawnHostSelection
+                  options={displaySources}
+                  value={displayHostChoice}
+                  connecting={connectingHosts}
+                  onSelect={(id) => {
+                    setHostPickerOpen(false);
+                    selectHost(id);
+                  }}
+                  onConnect={connectHost}
+                  onConnectHost={() => {
+                    setHostPickerOpen(false);
+                    openHostsSettings();
+                  }}
+                />
+              </Disclosure>
+            </div>
+          )}
+          <div className={`${CLASS.desktopOnly} ${CLASS.quietRow}`} data-testid="spawn-cwd-desktop">
+            <Button
+              ref={cwdTriggerRef}
+              id="spawn-cwd"
+              type="button"
+              variant="quiet"
+              size="xs"
+              block
+              wrap
+              data-testid="spawn-cwd-trigger"
+              aria-haspopup="dialog"
+              aria-expanded={cwdPickerOpen}
+              aria-label={`Working directory: ${cwdText}${branch !== "" ? `, branch ${branch}` : ""} — browse`}
+              onClick={() => setCwdPickerOpen(true)}
+            >
+              <span className={`${CLASS.quietSummary} ${CLASS.quietButtonSummary}`}>
+                <strong>Working directory</strong>
+                <span data-testid="spawn-cwd-value" data-state={cwd ? "chosen" : "unset"} title={cwd}>
+                  {cwdText}
+                </span>
+                {/* Git info is a property of that directory (HEAD there), so
+                    it suffixes the directory value on the row. */}
+                {branch !== "" && (
+                  <span className={CLASS.branch} data-testid="spawn-branch">
+                    {branch}
+                  </span>
+                )}
+                <span className={`${CLASS.quietSummaryAction} ${CLASS.rowChevron}`} aria-hidden="true">
+                  <Chevron direction="right" />
+                </span>
+              </span>
+            </Button>
+            {cwdPickerOpen && (
+              <DirectoryPicker
+                key={cwd}
+                value={cwd}
+                fallbackDir={pickerFallbackDir}
+                complete={complete}
+                listRecents={listRecents}
+                validatePath={validatePath}
+                createDirectory={createDirectory}
+                onPick={(path) => {
+                  setCwd(path);
+                  commitLastWorkingDir(path);
+                  closeCwdPicker();
+                }}
+                onClose={closeCwdPicker}
+              />
+            )}
+          </div>
+          {/* A live region: a changed access mode re-announces what the
+              session will be allowed to do. */}
+          <div
+            className={`${CLASS.desktopOnly} ${CLASS.quietRow}`}
+            data-testid="spawn-effective-access"
+            data-state={resolveStatus}
+            data-sandbox={resolveStatus === "ready" ? effectiveSandbox : undefined}
+            data-access={resolveStatus === "ready" ? (effectiveAccess?.value ?? effectiveSandbox) : undefined}
+            data-source={advancedSandboxOverride ? "advanced" : "access"}
+            ref={accessRowRef}
+          >
+            <Disclosure
+              open={accessOpen}
+              onOpenChange={setAccessRowOpen}
+              data-testid="spawn-access-disclosure"
+              summary={
+                <div className={CLASS.quietSummary} data-testid="spawn-access-summary">
+                  <strong>Access mode</strong>
+                  <span role="status" data-testid="spawn-access-value">
+                    {accessValue}
+                  </span>
+                </div>
+              }
+            >
+              <FormRow label="Access mode" htmlFor="spawn-access">
+                <Select
+                  id="spawn-access"
+                  value={accessMode}
+                  onChange={(e) => setAccessMode(e.target.value)}
+                  options={accessOptions}
+                />
+              </FormRow>
+              <p className={CLASS.accessNote} data-testid="spawn-access-note">
+                {accessNote}
+              </p>
+              {advancedSandboxOverride && (
+                <Button variant="quiet" size="xs" type="button" onClick={focusAccessOwner}>
+                  Change in Advanced options
+                </Button>
+              )}
+            </Disclosure>
+          </div>
           {pluginSelectionSupported && (
-            <div className={`${CLASS.pluginDesktop} ${CLASS.quietRow}`} data-testid="spawn-plugin-desktop">
+            <div className={`${CLASS.desktopOnly} ${CLASS.quietRow}`} data-testid="spawn-plugin-desktop">
               {previewResponse === null && (
                 <div
-                  className={CLASS.pluginSummary}
+                  className={CLASS.quietSummary}
                   data-testid="spawn-plugin-summary"
                   data-state={pluginPreview.state.status}
                   role="status"
@@ -3076,8 +3133,8 @@ function SpawnForm({
                       <span title={pluginPreview.state.message}>
                         Couldn't inspect plugins: {pluginPreview.state.message}
                       </span>
-                      <div className={CLASS.pluginSummaryAction}>
-                        <Button variant="quiet" size="xs" type="button" onClick={pluginPreview.retry}>
+                      <div className={CLASS.quietSummaryAction}>
+                        <Button variant="quiet" size="sm" type="button" onClick={pluginPreview.retry}>
                           Retry
                         </Button>
                       </div>
@@ -3091,7 +3148,7 @@ function SpawnForm({
                   data-testid="spawn-plugin-disclosure"
                   summary={
                     <div
-                      className={CLASS.pluginSummary}
+                      className={CLASS.quietSummary}
                       data-testid="spawn-plugin-summary"
                       data-state={pluginPreview.state.status}
                     >
@@ -3144,14 +3201,6 @@ function SpawnForm({
                   value={harness || "evener"}
                   onChange={(e) => handleHarnessChange(e.target.value)}
                   options={harnessOptions}
-                />
-              </FormRow>
-              <FormRow label="Access mode" htmlFor="spawn-access">
-                <Select
-                  id="spawn-access"
-                  value={accessMode}
-                  onChange={(e) => setAccessMode(e.target.value)}
-                  options={accessOptions}
                 />
               </FormRow>
               <Switch

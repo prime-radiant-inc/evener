@@ -249,6 +249,7 @@ no router (reserved).
 | `evener/thread/watches/list` | both | [SessionActivityListParams](#sessionactivitylistparams) | [SessionWatchesResponse](#sessionwatchesresponse) | Pages receiver-owned watches and bounded retained history for a session or its subtree. |
 | `evener/subagentPreview` | hub | [EvenerSubagentPreviewParams](#evenersubagentpreviewparams) | [EvenerSubagentPreviewResponse](#evenersubagentpreviewresponse) | Reads a bounded lazy preview of a subagent transcript's latest direct items. |
 | `evener/paths/complete` | hub | [PathsCompleteParams](#pathscompleteparams) | [PathsCompleteResponse](#pathscompleteresponse) | Path autocompletion for a prefix. |
+| `evener/files/search` | hub | [FilesSearchParams](#filessearchparams) | [FilesSearchResponse](#filessearchresponse) | Fuzzy-searches files and directories under a session's live working directory or an explicit host directory, honoring .gitignore and secret-path masks. |
 | `evener/dirs/create` | hub | [DirsCreateParams](#dirscreateparams) | [DirsCreateResponse](#dirscreateresponse) | Creates a missing working directory and its parents for Spawn preflight. |
 | `evener/projects/recent` | hub | [ProjectsRecentParams](#projectsrecentparams) | [ProjectsRecentResponse](#projectsrecentresponse) | Lists the most recently used project working directories (session creation path-dropdown options; default cap 15). |
 | `evener/path/validate` | hub | [PathValidateParams](#pathvalidateparams) | [PathValidateResponse](#pathvalidateresponse) | Validates a launch path. |
@@ -345,7 +346,7 @@ no router (reserved).
 | `evener/host/plan` | hub | [HostPlanParams](#hostplanparams) | [HostPlanPlanned](#hostplanplanned) \| [HostPlanNoToken](#hostplannotoken) | Plans one deploy against a named host and mints the single-use confirmation token evener/host/deploy consumes: refreshes the host's preflight facts without a gate, probes its running state, and answers with either the plan plus token (HostPlanPlanned) or the no-token arm (HostPlanNoToken) naming why nothing was minted and whether the refusal is terminal. |
 | `evener/host/deploy` | hub | [HostDeployParams](#hostdeployparams) | [HostDeployResponse](#hostdeployresponse) | Consumes a plan's confirmation token and starts the deploy operation it names: dedup-first on the client operation ID, then the token's single-use consume under the host gate after the running probe and under-gate re-resolution, and a durable pending operation record whose worker runs the 04b deploy path outside the RPC. |
 | `evener/host/restart` | hub | [HostRestartParams](#hostrestartparams) | [HostRestartResponse](#hostrestartresponse) | Starts a restart operation for one named host: dedup on the client operation ID and the intended (generation, incarnation id) pair, the gated under-gate re-resolution and terminal-operation scan, then a durable pending operation record whose worker runs the 04b restart path outside the RPC. |
-| `evener/host/operations` | hub | [HostOperationsParams](#hostoperationsparams) | [HostOperationsResponse](#hostoperationsresponse) | Reads the operation store's deploy/restart records, one bounded page at a time, ascending by the controller-assigned id and resumed by an opaque cursor: host-pinned pages echo the effective (generation, incarnationId) pair, unfiltered cross-host pages carry the authoritative hostBoundaries map (the triple or the literal "absent" per host in the query), and limit defaults to 50 and caps at 200. Never dials; a remote origin is refused. |
+| `evener/host/operations` | hub | [HostOperationsParams](#hostoperationsparams) | [HostOperationsResponse](#hostoperationsresponse) | Reads the operation store's deploy/restart records as one bounded listing, ascending by the controller-assigned id: host-pinned reads echo the effective (generation, incarnationId) pair, unfiltered cross-host reads list each host's current pair, and limit defaults to 50 and caps at 200. Never dials; a remote origin is refused. |
 | `evener/host/running` | hub | [HostRunningParams](#hostrunningparams) | [HostRunningResponse](#hostrunningresponse) | Serves one hub's own running build revision and authoritative health to the controller probing it over an attached session, presenting the caller's required fencing epoch: process start time is present exactly when the hub knows it, and healthy reflects the local restart-required predicate, the owner-set minimum-free-space knob, and the state-root write probe. |
 | `evener/host/pushCredentials` | hub | [HostPushCredentialsParams](#hostpushcredentialsparams) | [HostPushCredentialsResponse](#hostpushcredentialsresponse) | Copies the controller's local provider-instance keys to one named remote host (component 07c): each local store key is joined to the host's own instance by name (the lookup folds case), and the HOST's own spelling of the matched entry is what travels as Provider to evener/auth/status and evener/auth/apiKey/conditionalSet, the host classifies and writes its own store, and each entry reports added/updated/skipped/failed. |
 | `evener/session/image` | hub | [SessionImageParams](#sessionimageparams) | [SessionImageResponse](#sessionimageresponse) | Fetches one image out of the recipient hub's own local session state for the controller's host-qualified image routes (component 05): SHA addresses a replayed transcript image and Path a relative file in the session's current working directory, or an absolute file in that directory or its retained artifacts directory; the sha branch enforces the 8 MiB bound while scanning, and the media type is re-derived from the bytes. Never an HTTP route. |
@@ -1452,6 +1453,7 @@ Underlying Go kind: `string` (no struct fields).
 | `auth` | bool |  |  |
 | `transcriptDisplaySettings` | bool | yes |  |
 | `keybindingsSettings` | bool | yes |  |
+| `threadStartIdempotency` | bool | yes |  |
 
 
 ### `FencingEpoch`
@@ -1460,6 +1462,32 @@ Underlying Go kind: `string` (no struct fields).
 |-------|---------|-----------|----------|
 | `bootId` | string |  |  |
 | `opSeq` | uint64 |  |  |
+
+
+### `FileSearchItem`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `path` | string |  |  |
+| `kind` | string |  |  |
+
+
+### `FilesSearchParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `ref` | string | yes |  |
+| `cwd` | string | yes |  |
+| `query` | string |  |  |
+| `limit` | int | yes |  |
+
+
+### `FilesSearchResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `items` | [][appwire.FileSearchItem](#filesearchitem) |  |  |
+| `truncated` | bool | yes |  |
 
 
 ### `GitHeadParams`
@@ -1738,7 +1766,6 @@ Underlying Go kind: `string` (no struct fields).
 | `incarnationId` | string | yes |  |
 | `id` | string | yes |  |
 | `limit` | int | yes |  |
-| `cursor` | string | yes |  |
 
 
 ### `HostOperationsResponse`
@@ -1748,8 +1775,6 @@ Underlying Go kind: `string` (no struct fields).
 | `operations` | [][appwire.OperationRecord](#operationrecord) |  |  |
 | `generation` | uint64 | yes |  |
 | `incarnationId` | string | yes |  |
-| `hostBoundaries` | map[string]interface {} | yes |  |
-| `nextCursor` | string | yes |  |
 
 
 ### `HostPlan`
@@ -5080,6 +5105,7 @@ Underlying Go kind: `string` (no struct fields).
 | `nonInteractive` | \*bool | yes |  |
 | `launchOverrides` | \*[appwire.LaunchConfigLayer](#launchconfiglayer) | yes |  |
 | `manager` | bool | yes |  |
+| `clientMutationId` | string | yes |  |
 
 
 ### `ThreadStartResponse`
@@ -5088,6 +5114,8 @@ Underlying Go kind: `string` (no struct fields).
 |-------|---------|-----------|----------|
 | `thread` | [appwire.Thread](#thread) |  |  |
 | `turn` | [appwire.Turn](#turn) |  |  |
+| `clientMutationId` | string | yes |  |
+| `disposition` | [appwire.MutationDisposition](#mutationdisposition) | yes |  |
 
 
 ### `ThreadStartedParams`

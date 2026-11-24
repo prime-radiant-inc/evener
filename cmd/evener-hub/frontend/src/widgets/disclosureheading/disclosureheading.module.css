@@ -18,12 +18,11 @@
   font-weight: var(--font-weight-medium);
 }
 
+/* The row anatomy is shared with Disclosure; the face below is this widget's. */
 .headingToggle {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
+  composes: foldRow from "../internal/foldHeader.module.css";
   width: 100%;
-  padding: var(--space-1) var(--space-4);
+  padding-inline: var(--space-4);
   border: none;
   background: transparent;
   color: var(--ink-mid);
@@ -31,27 +30,9 @@
   font-size: var(--font-size-caption);
   font-weight: var(--font-weight-medium);
   cursor: default;
-  transition: background-color var(--motion-duration-hover) var(--motion-easing-standard);
-}
-
-.headingToggle:hover {
-  background: var(--hover-1);
-}
-
-/* Inset: a heading usually spans a clipping column edge to edge. */
-.headingToggle:focus-visible {
-  outline: var(--focus-ring);
-  outline-offset: -2px;
 }
 
 .headingAction {
   flex: none;
   padding-right: var(--space-3);
-}
-
-/* Touch target: min-height, so the tap floor only ever grows the heading. */
-@media (max-width: 899px), (any-pointer: coarse) {
-  .headingToggle {
-    min-height: var(--tap-min);
-  }
 }

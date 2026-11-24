@@ -17,6 +17,7 @@ import (
 // launched with its stderr piped to a reader that exits.
 type blockingWriter struct {
 	release chan struct{}
+	entered chan struct{}
 	once    sync.Once
 
 	mu  sync.Mutex
@@ -24,11 +25,14 @@ type blockingWriter struct {
 }
 
 func newBlockingWriter() *blockingWriter {
-	return &blockingWriter{release: make(chan struct{})}
+	return &blockingWriter{release: make(chan struct{}), entered: make(chan struct{})}
 }
 
 func (w *blockingWriter) Write(p []byte) (int, error) {
-	w.once.Do(func() { <-w.release })
+	w.once.Do(func() {
+		close(w.entered)
+		<-w.release
+	})
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return w.buf.Write(p)
@@ -107,6 +111,45 @@ func TestVerboseEventTeeWritesWhatItAccepts(t *testing.T) {
 			t.Fatalf("line %d = %q, want the event for %s", i, lines[i], want)
 		}
 	}
+}
+
+// TestVerboseEventTeeCloseIsBoundedOnAStalledWriter pins the shutdown join.
+//
+// observe never blocks, but the tee still has a writer goroutine, and serve's
+// teardown JOINs it: a clean shutdown drains the NDJSON tail before returning.
+// That join is a second, independent exposure to the same stalled pipe the
+// non-blocking send exists for. A write already in flight cannot be recalled,
+// so an unbounded wait here parks the whole teardown -- SIGTERM included --
+// behind whatever stopped reading the daemon's stderr. The join is therefore
+// budgeted: give up on the write and let the process exit.
+//
+// The writer is parked before close is called, so the join under test is the
+// one that can actually block rather than a race with the goroutine starting.
+func TestVerboseEventTeeCloseIsBoundedOnAStalledWriter(t *testing.T) {
+	w := newBlockingWriter()
+	tee := newVerboseEventTee(w, 8)
+	tee.observe(events.SessionEvent{Kind: events.EventWarning, SessionID: "s1"})
+
+	select {
+	case <-w.entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the tee's writer goroutine never reached the stalled writer; this test cannot measure the join")
+	}
+
+	closed := make(chan struct{})
+	go func() {
+		defer close(closed)
+		tee.close()
+	}()
+	select {
+	case <-closed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("tee.close waited on a write that can never finish: shutdown is joined to the sink it is leaving")
+	}
+	// Only after close has returned: the writer goroutine is still parked, and
+	// releasing it lets the abandoned worker finish instead of leaking for the
+	// rest of the run.
+	w.unblock()
 }
 
 // TestVerboseEventTeeAnnouncesWhatItDropped pins the gap being NAMED. A

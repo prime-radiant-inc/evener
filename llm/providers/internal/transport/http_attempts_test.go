@@ -527,7 +527,11 @@ func TestDoWithAPIAttemptsRecordsEffectiveRedirectHost(t *testing.T) {
 			}))
 			defer redirect.Close()
 
-			client := &http.Client{}
+			// httptest.Server.Close closes http.DefaultTransport's idle
+			// connections process-wide, so any parallel server teardown in this
+			// package can abort this redirect with "http: CloseIdleConnections
+			// called" (#7367). Use the server's own client instead.
+			client := redirect.Client()
 			client.CheckRedirect = func(request *http.Request, _ []*http.Request) error {
 				request.Header.Set("Host", "ignored-header.example")
 				request.Host = testCase.host

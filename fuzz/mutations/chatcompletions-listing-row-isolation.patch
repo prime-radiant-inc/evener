@@ -1,0 +1,17 @@
+diff --git a/llm/providers/internal/requestutil/listing.go b/llm/providers/internal/requestutil/listing.go
+--- a/llm/providers/internal/requestutil/listing.go
++++ b/llm/providers/internal/requestutil/listing.go
+@@ -152,12 +152,9 @@ func DecodeListingRows[T any](raw []json.RawMessage) (rows []T, firstErr error)
+ 	for _, r := range raw {
+ 		var e T
+ 		if err := json.Unmarshal(r, &e); err != nil {
+-			if firstErr == nil {
+-				firstErr = err
+-			}
+-			continue
++			return rows, err
+ 		}
+ 		rows = append(rows, e)
+ 	}
+ 	return rows, firstErr
+ }

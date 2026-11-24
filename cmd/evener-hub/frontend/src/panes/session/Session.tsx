@@ -22,10 +22,12 @@ import { StatusBar } from "../../shell/statusbar/StatusBar";
 import { useIsMobile } from "../../shell/useIsMobile";
 import { carryComposerSeatForPlacement, workspaceStore } from "../../shell/workspace";
 import { useNavigationStore } from "../../stores/navigation/store";
-import { threadsStore, useThreadsStore } from "../../stores/threads";
+import { useThreadsStore } from "../../stores/threads";
 import { Button, EmptyState, InlineNotice, Loader, PaneScaffold, Skeleton } from "../../widgets";
 import { ConversationBody, type ConversationSeat } from "./ConversationBody";
+import { SessionInspectionActions } from "./chrome/SessionInspectionActions";
 import { RepoLocation } from "./composer/RepoLocation";
+import { forceStopAndRefresh } from "./forceStop";
 import styles from "./session.module.css";
 import { navigationSummaryFor, resolveThreadName } from "./threadTitle";
 import { retainedTranscriptReadView } from "./transcript/transcriptReadView";
@@ -68,19 +70,9 @@ function SessionLoading({ sessionRef, repairing }: { sessionRef: string; repairi
 function SessionForceStopRecovery({ sessionRef }: { sessionRef: string }) {
   const [open, setOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const stop = async () => {
+  const stop = () => {
     setError(null);
-    try {
-      await threadsStore.getState().forceStop(sessionRef);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-      throw err;
-    }
-    try {
-      await threadsStore.getState().refreshThread(sessionRef);
-    } catch (err) {
-      setError(`Session stopped; couldn't refresh its view: ${err instanceof Error ? err.message : String(err)}`);
-    }
+    return forceStopAndRefresh(sessionRef, setError);
   };
   return (
     <>
@@ -138,7 +130,7 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
   const footerCwd = !deletedRef && model ? model.cwd : null;
   const edgeFooter = useMemo(() => {
     // The phone layout keeps one bottom surface, the composer: its activity
-    // counts render on a line below the card instead, and the
+    // counts render on a line above the card instead, and the
     // working-directory line stays a desktop-line concern (a phone reads the
     // working directory and branch through the session menu's Overview), so
     // a landscape phone spends its height on content rather than chrome
@@ -239,6 +231,7 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
             scaffoldMarker={`session:${ref}`}
             title={title}
             cadence={cadence}
+            actions={isMobile ? undefined : <SessionInspectionActions sessionRef={ref} paneId={paneId} />}
             footer={footer}
             edgeFooter={edgeFooter}
           >

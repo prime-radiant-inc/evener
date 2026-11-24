@@ -7,6 +7,7 @@ import (
 	"maps"
 	"path"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -23,7 +24,7 @@ func registerMemoryTools(reg *tool.Registry, s *Session) error {
 	tools := []tool.RegisteredTool{
 		{Definition: tool.DefMemoryRead(), ReadOnly: true, Exec: s.execMemoryRead},
 		{Definition: tool.DefMemoryWrite(), Exec: s.execMemoryWrite},
-		{Definition: tool.MemoryDefinition(tool.DefEditFile(), "memory_edit"), Exec: s.execMemoryEdit},
+		{Definition: tool.DefMemoryEdit(), Exec: s.execMemoryEdit},
 		{Definition: tool.MemoryDefinition(tool.DefGrep(), "memory_search"), ReadOnly: true, Exec: s.execMemorySearch},
 		{Definition: tool.DefMemoryDelete(), Exec: s.execMemoryDelete},
 	}
@@ -283,20 +284,40 @@ func memoryPageSizeNote(size int, withSkill bool) string {
 	return fmt.Sprintf("\n\nThis page is long (%d KB). A memory page should hold one fact.", kb)
 }
 
-func memoryIndexSliceFooter(body, scope, toolName string, offset, limit *int) string {
-	start := 1
-	if offset != nil && *offset > 0 {
-		start = *offset
+// memoryIndexRowRange parses the 1-based line numbers of the first and last
+// numbered rows rendered by execenv.NumberLines.
+func memoryIndexRowRange(rendered string) (first, last int, ok bool) {
+	trimmed := strings.TrimSuffix(rendered, "\n")
+	if trimmed == "" {
+		return 0, 0, false
 	}
-	winLimit := execenv.DefaultReadLines
-	if limit != nil && *limit > 0 {
-		winLimit = *limit
+	parseRowNum := func(line string) (int, bool) {
+		sep := strings.IndexAny(line, "\t:")
+		if sep <= 0 {
+			return 0, false
+		}
+		n, err := strconv.Atoi(strings.TrimSpace(line[:sep]))
+		return n, err == nil && n > 0
 	}
+	firstLine, _, _ := strings.Cut(trimmed, "\n")
+	lastLine := trimmed
+	if _, after, found := strings.CutLast(trimmed, "\n"); found {
+		lastLine = after
+	}
+	f, okF := parseRowNum(firstLine)
+	l, okL := parseRowNum(lastLine)
+	if !okF || !okL {
+		return 0, 0, false
+	}
+	return f, l, true
+}
+
+func memoryIndexSliceFooter(body, rendered, scope, toolName string) string {
 	totalLines := strings.Count(body, "\n") + 1
-	if start > totalLines || winLimit > totalLines-start {
+	start, end, ok := memoryIndexRowRange(rendered)
+	if !ok || end >= totalLines {
 		return ""
 	}
-	end := start + winLimit - 1
 	return fmt.Sprintf("\n[Showing lines %d-%d of %d; read more with %s(scope=%q, file_path=\"MEMORY.md\", offset=%d)]",
 		start, end, totalLines, toolName, scope, end+1)
 }
@@ -335,16 +356,16 @@ func (s *Session) execMemoryRead(ctx context.Context, _ execenv.ExecutionEnviron
 		body := strings.TrimSuffix(rendered.Index, "\n")
 		offset, limit := optionalIntArg(args, "offset"), optionalIntArg(args, "limit")
 		out := execenv.NumberLines(body, offset, limit)
-		return out + memoryIndexSliceFooter(body, scope, s.providerVisibleToolName("memory_read"), offset, limit), nil
+		return out + memoryIndexSliceFooter(body, out, scope, s.providerVisibleToolName("memory_read")), nil
 	}
 	// Capture the bytes this read loaded, so the page's record is exactly what
 	// the session saw. They are the whole page even for an offset or limit
 	// read, which therefore records the whole page as of that read.
 	var raw []byte
-	out, err := execFileReadWith(forwarded, s.fileReadGuard(env), func(path string, offset, limit *int) (string, error) {
-		text, loaded, err := env.ReadFileAndBytesCtx(ctx, path, offset, limit)
+	out, err := execFileReadWith(ctx, forwarded, s.fileReadGuard(env), func(path string, offset, limit *int) (string, execenv.ReadFileMeta, error) {
+		text, loaded, meta, err := env.ReadFileRichAndBytesCtx(ctx, path, offset, limit)
 		raw = loaded
-		return text, err
+		return text, meta, err
 	})
 	// Every page read is tracked for change notices.
 	if err == nil {
@@ -360,16 +381,26 @@ func (s *Session) execMemoryRead(ctx context.Context, _ execenv.ExecutionEnviron
 		listed := filepath.FromSlash(memorypages.ListedPagePath(env, filepath.ToSlash(file)))
 		s.recordMemoryContent(scope, listed, raw, recordErr, true)
 		// A long page gets a note pointing at what a page should be.
-		if text, ok := out.(string); ok && size > memoryPageSizeLimit {
-			out = text + memoryPageSizeNote(size, s.memoryGardeningSkillAvailable())
+		if size > memoryPageSizeLimit {
+			note := memoryPageSizeNote(size, s.memoryGardeningSkillAvailable())
+			switch text := out.(type) {
+			case string:
+				out = text + note
+			case tool.TextResult:
+				text.Output += note
+				if text.FullOutput != "" {
+					text.FullOutput += note
+				}
+				out = text
+			}
 		}
 	}
 	return out, err
 }
 func (s *Session) execMemoryEdit(ctx context.Context, _ execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 	return s.execOwnMemoryWrite(args, "edit", func(env *execenv.LocalExecutionEnvironment, forwarded map[string]any, stamp func([]byte) []byte) (any, error) {
-		return execFileEditWith(forwarded, s.fileReadGuard(env), func(path, oldString, newString string, replaceAll bool) (string, error) {
-			return env.EditFileWithCtx(ctx, path, oldString, newString, replaceAll, stamp)
+		return execFileEditWith(forwarded, s.fileReadGuard(env), func(path string, edits []execenv.FileEdit) (string, error) {
+			return env.EditFileBatchWithCtx(ctx, path, edits, stamp)
 		})
 	})
 }

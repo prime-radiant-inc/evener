@@ -112,48 +112,6 @@ func FuzzSessionGoTailCoverage(f *testing.F) {
 			s.resetJobNotificationRetry()
 		})
 
-		t.Run("provider tool transitions", func(t *testing.T) {
-			client := llm.NewClient()
-			client.Register(tailCoverageAdapter{})
-			s := &Session{
-				reg:        tool.NewRegistry(),
-				env:        execenv.NewLocalExecutionEnvironment(t.TempDir()),
-				profile:    newGeminiProfile("gemini"),
-				client:     client,
-				httpClient: nil,
-			}
-			s.reapplyProviderSpecificTools(NewOpenAIProfile("gpt-5"), newGeminiProfile("gemini"))
-			web := s.reg.Get("web_search")
-			if web == nil {
-				t.Fatal("google transition did not register web_search")
-			}
-			got, err := web.Exec(context.Background(), s.env, map[string]any{"query": "offline"})
-			if err != nil || got != "offline result" {
-				t.Fatalf("offline web_search = %v, %v", got, err)
-			}
-			netOff := false
-			policy, err := sandbox.Resolve(
-				sandbox.SandboxPolicy{Mode: sandbox.ModeRestricted, Network: &netOff},
-				sandbox.HostFacts{OS: "linux", Home: t.TempDir(), BwrapPath: "/bin/true", BwrapCapable: true},
-				t.TempDir(),
-			)
-			if err != nil {
-				t.Fatalf("resolve offline sandbox: %v", err)
-			}
-			wrapper, err := sandbox.NewWrapper(policy, "/bin/true", t.TempDir())
-			if err != nil {
-				t.Fatalf("new offline wrapper: %v", err)
-			}
-			_, err = web.Exec(context.Background(), tailCoverageSandboxEnv{ExecutionEnvironment: s.env, wrapper: wrapper}, map[string]any{"query": "denied"})
-			if err == nil {
-				t.Fatal("network-off web_search unexpectedly succeeded")
-			}
-			s.reapplyProviderSpecificTools(newGeminiProfile("gemini"), NewOpenAIProfile("gpt-5"))
-			if s.reg.Get("web_search") != nil {
-				t.Fatal("leaving google retained web_search")
-			}
-		})
-
 		t.Run("set model guards and switch", func(t *testing.T) {
 			s := &Session{profile: NewOpenAIProfile("gpt-5"), reg: tool.NewRegistry()}
 			s.resolveProfile = func(string) (*provider.Profile, error) {
@@ -166,7 +124,7 @@ func FuzzSessionGoTailCoverage(f *testing.F) {
 			}
 			s.cfg.testOnly.minimalSystemPrompt = true
 			s.SetModel("google/gemini")
-			if s.profile.Surface() != registry.SurfaceGoogle || s.reg.Get("web_search") == nil {
+			if s.profile.Surface() != registry.SurfaceGoogle || s.reg.Get("web_search") != nil {
 				t.Fatalf("cross-provider switch = %q, web_search=%v", s.profile.Surface(), s.reg.Get("web_search") != nil)
 			}
 

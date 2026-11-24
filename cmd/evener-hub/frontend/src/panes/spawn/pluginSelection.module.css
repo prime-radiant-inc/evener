@@ -5,59 +5,9 @@
   min-width: 0;
 }
 
-.desktopSurface {
-  min-width: 0;
-}
-
-.status {
-  display: flex;
-  min-height: 48px;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-2);
-  padding: var(--space-2) 0;
-  color: var(--ink-mid);
-}
-
-/* The plugin row's summary: the title leads and the configured set trails it
- * on the same line, truncating before it pushes the chevron off the row. */
-.summary {
-  display: flex;
-  flex: 1;
-  min-width: 0;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 0 var(--space-3);
-  padding: var(--space-1) 0;
-}
-
-/* Before the preview lands there is no disclosure to wrap the summary, so it
- * supplies the row inset the disclosure's own summary would have given it. */
-.summary[role="status"] {
-  padding: var(--space-2);
-}
-
-.summary strong {
-  color: var(--ink-hi);
-  font-size: var(--font-size-ui);
-  font-weight: var(--font-weight-medium);
-}
-
-.summary span {
-  flex: 1 1 12rem;
-  min-width: 0;
-  overflow: hidden;
-  color: var(--ink-mid);
-  font-size: var(--font-size-caption);
-  text-align: right;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* The error state's Retry stays a small inline action at the row's end. */
-.summaryAction {
-  flex: none;
-}
+/* The plugin row's summary and its error Retry live on the shared quiet-row
+ * recipe in spawn.module.css (quietSummary / quietSummaryAction), because
+ * Host uses the same disclosure row. */
 
 .tools {
   display: flex;
@@ -109,9 +59,8 @@
 }
 
 .description {
+  composes: helpMuted from "../../styles/help.module.css";
   min-width: 0;
-  color: var(--ink-low);
-  font-size: var(--font-size-caption);
 }
 
 /* The quiet Details action that ends a row's description: the span wrapping
@@ -157,8 +106,3 @@
   gap: var(--space-2);
 }
 
-@media (max-width: 899px) {
-  .desktopSurface {
-    display: none;
-  }
-}

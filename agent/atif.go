@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 
 	"primeradiant.com/evener/agent/internal/atif"
+	"primeradiant.com/evener/agent/schema"
 )
 
 var (
@@ -27,7 +28,11 @@ func exportATIF(transcriptPath, outPath, providerHandleMode string) error {
 	if err != nil {
 		return fmt.Errorf("read transcript: %w", err)
 	}
-	traj := atif.Convert(transcriptData.Header, transcriptData.Entries, atif.Options{ProviderHandles: mode})
+	opts := atif.Options{ProviderHandles: mode}
+	if transcriptData.Header.SystemPrompt == "" {
+		opts.LaunchSystemPrompt = schema.LaunchSystemPromptBesideTranscript(transcriptPath)
+	}
+	traj := atif.Convert(transcriptData.Header, transcriptData.Entries, opts)
 	data, err := atifMarshalIndent(traj, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal ATIF: %w", err)

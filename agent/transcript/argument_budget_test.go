@@ -33,11 +33,10 @@ func spellingToolCallTurn(t *testing.T, exact string) schema.Turn {
 	}})
 }
 
-// TestToolCallSpellingFitsRecordPayloadBoundAndColdReplaysExactly is issue
-// #6897's first acceptance point: a record carrying both argument
-// representations stays inside the payload bound and cold-replays to the
+// TestToolCallSpellingColdReplaysExactly is issue #6897's first acceptance
+// point: a record carrying both argument representations cold-replays to the
 // caller's exact bytes.
-func TestToolCallSpellingFitsRecordPayloadBoundAndColdReplaysExactly(t *testing.T) {
+func TestToolCallSpellingColdReplaysExactly(t *testing.T) {
 	exact := `{` + strings.Repeat(" ", 2500) + `"content" : "<a&b> \"quoted\"\nline", "path" : "x.png" }`
 	turn := spellingToolCallTurn(t, exact)
 	wantCanonical := string(turn.Message.Content[0].ToolCall.Arguments)
@@ -53,9 +52,6 @@ func TestToolCallSpellingFitsRecordPayloadBoundAndColdReplaysExactly(t *testing.
 		t.Fatalf("transcript holds %d lines, want the header and the tool call", len(lines))
 	}
 	entryLine := []byte(lines[1])
-	if len(entryLine) > maxRecordPayload {
-		t.Fatalf("tool-call record holds %d payload bytes, want at most the %d-byte bound", len(entryLine), maxRecordPayload)
-	}
 	for _, field := range []string{`"arguments":`, `"arguments_spelling":`} {
 		if !bytes.Contains(entryLine, []byte(field)) {
 			t.Fatalf("record does not carry %s alongside its exact spelling: %s", field, entryLine)

@@ -5,7 +5,6 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/internal/delegatestore"
-	"primeradiant.com/evener/agent/transcript"
 )
 
 // Regression test for the live attention-wake leak observed in production: a
@@ -92,12 +91,13 @@ func TestDelegateAttention_LiveStopCompletionDiscardsLateBoundWake(t *testing.T)
 	if nextID, _, pending := c.nextIdleDelegateAttention(); pending {
 		t.Fatalf("attention drive would resurrect stop-gated delegate %q", nextID)
 	}
-	fold, err := readDelegateAttentionFold(transcriptPath(c.stateDir, childSessionID), childSessionID)
-	if err != nil {
-		t.Fatalf("read stopped child attention fold: %v", err)
-	}
-	if got := fold.resolutions[attentionID]; got != delegateAttentionDiscarded {
-		t.Fatalf("stop-bound attention disposition = %q, want %q", got, delegateAttentionDiscarded)
+	// A live stop resolves the row in delegatestore; no child transcript marker
+	// is written, so the journal resolution is the durable record.
+	c.mu.Lock()
+	_, resolved := c.durable[delegateID].ResolvedAttention[attentionID]
+	c.mu.Unlock()
+	if !resolved {
+		t.Fatalf("stop-bound attention %q was not resolved in the journal", attentionID)
 	}
 }
 
@@ -157,83 +157,10 @@ func TestDelegateAttention_LiveStopSettlementDiscardsBoundAttention(t *testing.T
 	if c.hasPendingDelegateAttention() {
 		t.Fatal("hasPendingDelegateAttention is true for a deliberately stopped delegate")
 	}
-	fold, err := readDelegateAttentionFold(transcriptPath(c.stateDir, childSessionID), childSessionID)
-	if err != nil {
-		t.Fatalf("read stopped child attention fold: %v", err)
-	}
-	if got := fold.resolutions[attentionID]; got != delegateAttentionDiscarded {
-		t.Fatalf("live stop attention disposition = %q, want %q", got, delegateAttentionDiscarded)
-	}
-}
-
-// A stop's discard whose line landed but whose fsync failed leaves a readable
-// marker that is not yet durable. The cleanup's retry finds the item already
-// resolved; it must renew the durability barrier for that marker before it
-// forgets the wake and lets the stop complete, or a crash could lose the
-// discard and let the attention restart the delegate after recovery.
-func TestDelegateAttention_StopRetryRenewsDurabilityOfAnUnsyncedDiscard(t *testing.T) {
-	const (
-		delegateID     = "dlg_target"
-		childSessionID = "child-dlg_target"
-		attentionID    = "attention-discard-unsynced"
-		// ambiguousSyncFailures is how many fsyncs the first discard fails.
-		ambiguousSyncFailures = 3
-		// maxRetryPasses bounds the reconcile passes the stop needs to finish.
-		maxRetryPasses = 4
-	)
-	c, _ := newDelegateControllerTestHarness(t, 1, 1)
-	seedDelegateControllerRunning(t, c, delegateID, "")
-	writeDelegateAttentionTranscript(t, transcriptPath(c.stateDir, childSessionID), childSessionID, attentionID)
-	fs := newAttentionAmbiguousSyncFS()
-	c.attentionOpen = func(path, expectedSessionID string) (*transcript.Writer, []transcript.Entry, error) {
-		return transcript.OpenWriterForSessionWithFS(fs, path, expectedSessionID)
-	}
-
-	result, cancelPlan, _, err := c.StopSubtree(rootDelegateActor("root-session"), delegateID)
-	if err != nil {
-		t.Fatalf("StopSubtree: %v", err)
-	}
-	executeDelegateCancelPlan(cancelPlan)
-	lease := delegateLease{delegateID: delegateID, generation: 1}
-	if _, err := c.FinishGeneration(lease, delegateFinish{outcome: delegatestore.OutcomeCancelled, reason: "cancelled"}); err != nil {
-		t.Fatalf("FinishGeneration: %v", err)
-	}
-	c.noteDelegateAttention(delegateID, attentionID)
-
-	// First pass: the discard's line lands, its fsync fails.
-	plans, err := c.Reconcile(emptyDelegateReconcileEvidence(c))
-	if err != nil {
-		t.Fatalf("Reconcile: %v", err)
-	}
-	if len(plans.attention) != 1 {
-		t.Fatalf("stop attention cleanup plans = %#v, want one discard", plans.attention)
-	}
-	fs.failNextAmbiguousDurability(ambiguousSyncFailures)
-	if err := c.executeDelegateAttentionCleanup(plans.attention[0]); err == nil {
-		t.Fatal("discard with a failed fsync unexpectedly succeeded")
-	}
-
-	// Retry passes run until the stop completes.
-	for range maxRetryPasses {
-		plans, err := c.Reconcile(emptyDelegateReconcileEvidence(c))
-		if err != nil {
-			t.Fatalf("Reconcile: %v", err)
-		}
-		for _, plan := range plans.attention {
-			if err := c.executeDelegateAttentionCleanup(plan); err != nil {
-				t.Fatalf("retry discard %q: %v", plan.attentionID, err)
-			}
-		}
-		if delegateStopDone(c.stop) {
-			break
-		}
-	}
-	select {
-	case <-result.done:
-	default:
-		t.Fatal("stop did not complete")
-	}
-	if got := fs.successfulSyncsAfterFailure(); got == 0 {
-		t.Fatal("the stop completed without renewing durability for the unsynced discard")
+	c.mu.Lock()
+	_, resolved := c.durable[delegateID].ResolvedAttention[attentionID]
+	c.mu.Unlock()
+	if !resolved {
+		t.Fatalf("live stop attention %q was not resolved in the journal", attentionID)
 	}
 }

@@ -71,18 +71,21 @@ States: `idle`, `active`, `awaiting`, `closed`. `closed` is terminal.
 `active` returns to `idle` or `awaiting`; `awaiting` returns to `active` when
 the human answers, or to `idle` when autonomous work takes over.
 
-`awaiting` means the next move is owed to a person: a question is pending, or
-the last turn ended on `needs_response` with no autonomous work in flight. A
-plain reply rests `idle`. `WireState` may raise a resting state to `active` when
-the session owns work that can start its next turn without user input.
+The daemon enters `awaiting` when an `ask_user` question is pending. A final
+reply or quiet `log_quietly_and_end_turn` yield (or automatic bare-text quiet park) rests `idle`. `WireState` may raise a resting
+state to `active` when the session owns work that can start its next turn
+without user input.
 
 ### Thread status
 
 Observed states, no owner transitions: `idle`, `active`, `awaiting`,
-`warning`, `closed`, `notLoaded`, `systemError`, `restartRequired`. Clients
-normalize `closed` to `ended` and `systemError` to `errored` on navigation
-surfaces. `idle` and `systemError` are resting; `systemError` is a failed rest,
-which is why resting is a declared fact rather than a class comparison.
+`warning`, `closed`, `notLoaded`, `systemError`, `restartRequired`. On navigation
+surfaces, a pending question or approval keeps its attention state. Legacy or
+remote wire frames that report `awaiting` without a pending question or approval
+normalize to Idle rather than Needs you. Clients normalize `closed` to `ended`
+and `systemError` to `errored`. `idle` and `systemError` are resting;
+`systemError` is a failed rest, which is why resting is a declared fact rather
+than a class comparison.
 
 ### Turn
 
@@ -226,10 +229,10 @@ check.
 | Execution spans — [`Session` execution bookkeeping and transcript](../../agent/session_execution.go) | Restore closes abandoned executions once, but leaves reclaimable pending work for its owner; a reclaimed execution records its reopen. | [Crash closure, pending work and same-ID reopen](../../agent/session_execution_resume_test.go) |
 | Questions — [captured answer evidence](../../agent/session_client_mutation_ask.go) | Session admission compares the ask boot/revision pair. Fenced consumption and restore resolve only captured calls and the captured legacy count, preserving later asks. Unfenced input, legacy records, accepted interrupt and close retain whole-set behavior. See [session questions](session-questions.md). | [Refusal, consumption and replay preservation](../../agent/session_ask_fence_consumption_test.go) |
 | Mutation delivery — [session journal](../../agent/session_client_mutation.go) and [client dispatcher](../../appwire-client/typescript/state/mutation/dispatcher.ts) | The daemon owns admission receipts; web/native storage retains local intent and attempt identity. Reconciliation and transactional Stop epochs decide redispatch, not transport reconnection alone. | [Response-loss recovery](../../server/appwire_mutation_recovery_test.go), [shared storage conformance](../../appwire-client/typescript/testing/mutationOutboxStorageConformance.ts) |
-| Job and delegate attention — [job notification owner](../../agent/jobs.go), [delegate delivery](../../agent/delegate_delivery.go) and receiver transcript | Durable delivery acknowledgment is not attention consumption. Restore re-arms owned job notifications; persisted owner reads can consume them without consuming separate watch frames. Delegate attention survives compaction until presented and consumed. The receiver transcript is the authority for which rows are pending; the [delegate journal](../../agent/internal/delegatestore) is the authority for which stopped-generation holds a newer wake released, so a restore neither presents a quieted row nor rebuilds a hold a release already ended. Idle-runtime restore preserves an unreleased hold, and daemon bootstrap can re-arm a pending row without a journaled release. | [Job consumption](../../agent/job_notify_consume_test.go), [attention across compaction](../../agent/attention_survives_compaction_test.go) |
+| Job and delegate attention — [job notification owner](../../agent/jobs.go), [delegate delivery](../../agent/delegate_delivery.go) and receiver transcript | Durable delivery acknowledgment is not attention consumption. Restore re-arms owned job notifications; persisted owner reads can consume them without consuming separate watch frames. Delegate attention survives compaction until presented and consumed. The [delegate journal](../../agent/internal/delegatestore) owns the child-delegate pending-attention queue and its `NeedsAttention` projection in one `Apply`, while the receiver transcript remains the rendered message history; the journal also records which stopped-generation holds a newer wake released, so a restore neither presents a quieted row nor rebuilds a hold a release already ended. Idle-runtime restore preserves an unreleased hold, and daemon bootstrap can re-arm a pending row without a journaled release. | [Job consumption](../../agent/job_notify_consume_test.go), [attention across compaction](../../agent/attention_survives_compaction_test.go) |
 | Watches — [durable sends and settlement retries](../../agent/watch_send_settlement.go) | The job manager retains unsettled delivery obligations independently of `armed`/`ended`. Failed clear persistence leaves the watch live and retryable; partial teardown retains unapplied frames. | [Teardown persistence failures](../../agent/watch_teardown_persist_failure_test.go) |
 | Residency — [`RetirementController`](../../agent/retirement.go) | Preparation may abort before commit. Committed retirement does not reopen admission on release failure and does not append terminal session evidence. | [Transcript preservation and release failure](../../agent/session_retirement_preservation_test.go) |
-| Force Stop and resume — [hub `ResumeLocks`](../../cmd/evener-hub/internal/hubcore/resumelocks.go) | Persisted Stop intent survives hub recreation and signal failure. Replacement requires proof that the exact owner exited; automatic recovery cannot erase the explicit-resume obligation. | [Durable recovery requirement](../../cmd/evener-hub/app_recovery_persistence_test.go) |
+| Force Stop and resume — [hub `ResumeLocks`](../../cmd/evener-hub/internal/hubcore/resumelocks.go) and [pending-launch claim](../../cmd/evener-hub/internal/hubcore/pendinglaunch.go) | Persisted Stop intent survives hub recreation and signal failure. Replacement requires proof that the exact owner exited; automatic recovery cannot erase the explicit-resume obligation. A caller that disconnects mid-restore leaves the healthy child and its claim in place, so a reconnect resumes the same launch instead of starting over; the claim bounds that wait and reaps a child that never registers. | [Durable recovery requirement](../../cmd/evener-hub/app_recovery_persistence_test.go), [reconnect rejoins the restoring daemon](../../cmd/evener-hub/pending_launch_hub_test.go) |
 | Connection callbacks — [connection store](../../appwire-client/typescript/state/connection/core.ts) | `onConnectionNotification` follows the current attachment. Unsubscribe plus generation/disposal checks retire captured callbacks, including A-to-B-to-A replacement, without blocking the new attachment. | [Captured notification fanout](../../appwire-client/typescript/state/connection/core.test.ts) |
 | Subscription leases — [shared thread membership](../../appwire-client/typescript/threadSubscription.ts) | Last-holder release owns teardown. Reopened readers acquire without waiting for a departed request; late replies cannot publish stale metadata or tear down a successor's membership. | [Release, reacquisition and reconnect](../../appwire-client/typescript/threadSubscription.test.ts) |
 | Older-history demand — [`HistoryPaging`](../../appwire-client/typescript/historyPaging.ts) | Active readers drive paced retries. Transient failures and inactive readers retain demand; one reader's cancellation does not cancel another's. History stores still own cursors and merging. | [Retained demand and return to reading](../../appwire-client/typescript/historyPaging.test.ts) |

@@ -15,12 +15,13 @@ import { cascadeOrigin, cascadeOriginRef } from "../../panes/zoom/inspectionOrig
 import { deriveCascadePath, parseZoomParams } from "../../panes/zoom/intent";
 import { navigationStore, useNavigationStore } from "../../stores/navigation/store";
 import { useSessionActivity, useSubagentCounts } from "../../stores/sessionActivity";
-import { CloseIcon, FocusScope, IconButton, SegmentedControl } from "../../widgets";
+import { EntityViewsProvider, sessionEntityViews } from "../../transcriptDisplay/entityViews";
+import { CloseIcon, FocusScope, IconButton, SegmentedControl, type SegmentedControlOption } from "../../widgets";
 import { DisclosurePersistenceContext } from "../../widgets/disclosure/disclosureStore";
-import { tabbable } from "../../widgets/focusscope/tabbable";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { ScopeCrumbs } from "../statusbar/ScopeCrumbs";
 import { type ActivityTab, deriveScope } from "../statusbar/statusScope";
+import { isMobileViewport } from "../useIsMobile";
 import { useWorkspaceStore, workspaceStore } from "../workspace";
 import { ActivityViewport } from "./ActivityViewport";
 import styles from "./activitybar.module.css";
@@ -43,6 +44,39 @@ const CLASS = {
   focusBody: requireClass(styles.focusBody, "activitybar.module.css", "focusBody"),
 };
 
+function OverviewStrip({
+  mobile,
+  scopeRef,
+  value,
+  options,
+}: {
+  mobile: boolean;
+  scopeRef: string;
+  value: ActivityTab;
+  options: readonly SegmentedControlOption<ActivityTab>[];
+}) {
+  // AnimatePresence renders the exiting aside from the element captured while
+  // `open` was still true, so ActivitySidebar's prop updates cannot reach the
+  // strip until the exit finishes. Subscribing here, inside the mounted
+  // subtree, drops autoFocus to false on close and raises it again on reopen,
+  // re-arming the widget's queued entry focus without remounting the strip.
+  const open = useActivitySidebarStore((state) => state.open);
+  return (
+    <SegmentedControl<ActivityTab>
+      key={mobile ? scopeRef : undefined}
+      label="Overview kind"
+      hideLabel
+      size="sm"
+      fullWidth
+      wrap
+      autoFocus={mobile && open}
+      value={value}
+      onChange={(next) => activitySidebarStore.getState().setTab(next)}
+      options={options}
+    />
+  );
+}
+
 export function ActivitySidebar({ mobile = false }: { mobile?: boolean }) {
   const open = useActivitySidebarStore((state) => state.open);
   const tab = useActivitySidebarStore((state) => state.tab);
@@ -51,8 +85,11 @@ export function ActivitySidebar({ mobile = false }: { mobile?: boolean }) {
   useEffect(
     () => () => {
       if (returnFrame.current !== null) cancelAnimationFrame(returnFrame.current);
+      // The dock is desktop-only: a teardown that lands in the phone host ends
+      // the inspection rather than reopening it as the phone's blocking Overview.
+      if (!mobile && isMobileViewport()) activitySidebarStore.getState().close();
     },
-    [],
+    [mobile],
   );
   const close = useCallback(() => {
     const focusInside = sidebar.current?.contains(document.activeElement);
@@ -77,17 +114,15 @@ export function ActivitySidebar({ mobile = false }: { mobile?: boolean }) {
   useEffect(() => {
     if (open && ref !== null) activitySidebarStore.getState().retainOpenView(ref);
   }, [open, ref]);
-  useEffect(() => {
-    if (!open || !mobile || ref === null) return;
-    const frame = requestAnimationFrame(() => {
-      const element = sidebar.current;
-      if (!element || !activitySidebarStore.getState().open) return;
-      const selected = element.querySelector<HTMLElement>('[role="radio"][aria-checked="true"]');
-      (selected ?? tabbable(element)[0])?.focus();
-    });
-    return () => cancelAnimationFrame(frame);
-  }, [open, mobile, ref]);
   const { snapshot } = useSessionActivity(open ? ref : null);
+  // The watch detail resolves entity names from the evidence the session
+  // transcript beside this surface already loaded. Only the Watches tab
+  // mounts that detail; without a provider here the live route fell back to
+  // raw ids.
+  const entities = useMemo(
+    () => (open && tab === "watches" && ref !== null ? sessionEntityViews({ sessionRef: ref, snapshot }) : undefined),
+    [open, tab, ref, snapshot],
+  );
   const subagents = useSubagentCounts(open ? ref : null);
   // Closed derives nothing: the sidebar is mounted for the whole desktop
   // session, and a location lookup plus recursive walk per polling update
@@ -161,55 +196,55 @@ export function ActivitySidebar({ mobile = false }: { mobile?: boolean }) {
           transition={transition}
           data-testid="activity-sidebar"
           aria-label="Overview"
+          // The phone shell overlays the one stacked pane with focus trapped:
+          // a modal dialog there, the non-modal Overview region on desktop.
+          role={mobile ? "dialog" : undefined}
+          aria-modal={mobile ? true : undefined}
         >
-          <FocusScope trap={mobile} autoFocus={false}>
-            <div className={CLASS.focusBody}>
-              <div className={CLASS.head}>
-                <div className={CLASS.scope}>
-                  <ScopeCrumbs
-                    path={scope.path}
-                    hierarchy
-                    onNavigate={
-                      focusedPane?.type === "sessionZoom"
-                        ? (ancestor) => {
-                            // The origin conversation never renders inside a
-                            // separated inspector's cascade, and selecting it
-                            // there is refused: its crumb routes to the
-                            // retained origin pane instead of doing nothing.
-                            const origin =
-                              cascadeOriginRef(focusedPane) === ancestor ? cascadeOrigin(focusedPane) : null;
-                            if (origin) {
-                              workspaceStore.getState().focusPane(origin.id);
-                              return;
-                            }
-                            popAgentCascade(focusedPane.id, ancestor);
+          <FocusScope className={CLASS.focusBody} trap={mobile} autoFocus={false}>
+            <div className={CLASS.head}>
+              <div className={CLASS.scope}>
+                <ScopeCrumbs
+                  path={scope.path}
+                  hierarchy
+                  onNavigate={
+                    focusedPane?.type === "sessionZoom"
+                      ? (ancestor) => {
+                          // The origin conversation never renders inside a
+                          // separated inspector's cascade, and selecting it
+                          // there is refused: its crumb routes to the
+                          // retained origin pane instead of doing nothing.
+                          const origin = cascadeOriginRef(focusedPane) === ancestor ? cascadeOrigin(focusedPane) : null;
+                          if (origin) {
+                            workspaceStore.getState().focusPane(origin.id);
+                            return;
                           }
-                        : undefined
-                    }
-                  />
-                  {!scope.ancestryKnown ? <span className={CLASS.pending}>Finding session context…</span> : null}
-                </div>
-                <IconButton label="Close Overview" icon={<CloseIcon />} variant="quiet" size="sm" onClick={close} />
-              </div>
-              <div className={CLASS.tabs}>
-                <SegmentedControl<ActivityTab>
-                  label="Overview kind"
-                  hideLabel
-                  size="sm"
-                  fullWidth
-                  value={tab}
-                  onChange={(next) => activitySidebarStore.getState().setTab(next)}
-                  options={ACTIVITY_TABS.map((spec) => ({
-                    value: spec.id,
-                    label: spec.label,
-                    detail: spec.tabDetail?.(scope.counts),
-                    accessibleLabel: spec.chipLabel(scope.counts),
-                  }))}
+                          popAgentCascade(focusedPane.id, ancestor);
+                        }
+                      : undefined
+                  }
                 />
+                {!scope.ancestryKnown ? <span className={CLASS.pending}>Finding session context…</span> : null}
               </div>
-              <DisclosurePersistenceContext.Provider value={JSON.stringify([scope.leaf.ref, tab])}>
-                <ActivityBodyClock>
-                  {(now) => (
+              <IconButton label="Close Overview" icon={<CloseIcon />} variant="quiet" size="sm" onClick={close} />
+            </div>
+            <div className={CLASS.tabs}>
+              <OverviewStrip
+                mobile={mobile}
+                scopeRef={scope.leaf.ref}
+                value={tab}
+                options={ACTIVITY_TABS.map((spec) => ({
+                  value: spec.id,
+                  label: spec.label,
+                  detail: spec.tabDetail?.(scope.counts),
+                  accessibleLabel: spec.chipLabel(scope.counts),
+                }))}
+              />
+            </div>
+            <DisclosurePersistenceContext.Provider value={JSON.stringify([scope.leaf.ref, tab])}>
+              <ActivityBodyClock>
+                {(now) => (
+                  <EntityViewsProvider entities={entities} ownerRef={ref ?? undefined}>
                     <ActivityViewport
                       key={JSON.stringify([scope.leaf.ref, tab])}
                       sessionRef={scope.leaf.ref}
@@ -218,10 +253,10 @@ export function ActivitySidebar({ mobile = false }: { mobile?: boolean }) {
                     >
                       {Body === null ? null : <Body scope={scope} now={now} />}
                     </ActivityViewport>
-                  )}
-                </ActivityBodyClock>
-              </DisclosurePersistenceContext.Provider>
-            </div>
+                  </EntityViewsProvider>
+                )}
+              </ActivityBodyClock>
+            </DisclosurePersistenceContext.Provider>
           </FocusScope>
         </m.aside>
       ) : null}

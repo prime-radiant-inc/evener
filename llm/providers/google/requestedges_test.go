@@ -14,8 +14,6 @@ import (
 	"primeradiant.com/evener/llm/registry"
 )
 
-// geminiBuild runs BuildBody and returns the wire contents, failing the test on
-// any build error.
 func geminiBuild(t *testing.T, req llm.Request, res registry.Resolved) map[string]any {
 	t.Helper()
 	body, err := (&Protocol{}).BuildBody(req, res)
@@ -31,40 +29,30 @@ func TestBuildBodyToolChoiceNoneAndUnnamed(t *testing.T) {
 	req.Tools = []llm.ToolDefinition{{Name: "f"}}
 	req.ToolChoice = &llm.ToolChoice{Mode: "none"}
 	body := geminiBuild(t, req, protoRes(nil))
-	cfg := body["toolConfig"].(map[string]any)["functionCallingConfig"].(map[string]any)
-	if cfg["mode"] != "NONE" {
-		t.Fatalf("tool_choice none must spell functionCallingConfig mode NONE, got %v", cfg)
+	gen := body["generation_config"].(map[string]any)
+	if gen["tool_choice"] != "none" {
+		t.Fatalf("tool_choice none must spell generation_config.tool_choice = none, got %v", gen)
 	}
 
 	req.ToolChoice = &llm.ToolChoice{Mode: "named"}
 	_, err := (&Protocol{}).BuildBody(req, protoRes(nil))
-	cfgErr, ok := errors.AsType[*llm.ConfigurationError](err)
-	if !ok {
+	if _, ok := errors.AsType[*llm.ConfigurationError](err); !ok {
 		t.Fatalf("named tool_choice without a name must be a configuration error, got %T %v", err, err)
 	}
-	_ = cfgErr
 }
 
-// An effort whose ReasoningBudget is zero (anything outside the six recognized
-// levels) must send no thinkingConfig on a budget-shaped row, and an effort a
-// level-shaped row's ladder cannot vouch for must send none either.
-func TestBuildBodyThinkingEffortWithoutBudgetOrVouchedLevel(t *testing.T) {
+func TestBuildBodyThinkingEffortWithoutVouchedLevel(t *testing.T) {
 	t.Parallel()
 	weird := "bizarre"
 	req := protoReq("")
 	req.ReasoningEffort = &weird
 
-	budget := protoRes(func(c *registry.Caps) { c.ThinkingShape = new("budget") })
-	if _, has := geminiBuild(t, req, budget)["generationConfig"].(map[string]any)["thinkingConfig"]; has {
-		t.Fatal("an unrecognized effort must not size a thinking budget")
-	}
-
 	ladder := protoRes(func(c *registry.Caps) {
 		c.ThinkingShape = new("level")
 		c.EffortValues = []string{"low"}
 	})
-	if _, has := geminiBuild(t, req, ladder)["generationConfig"].(map[string]any)["thinkingConfig"]; has {
-		t.Fatal("a level-shaped row whose ladder cannot vouch the effort must send no thinking object")
+	if _, has := geminiBuild(t, req, ladder)["generation_config"].(map[string]any)["thinking_level"]; has {
+		t.Fatal("a level-shaped row whose ladder cannot vouch the effort must send no thinking_level")
 	}
 }
 
@@ -108,13 +96,13 @@ func TestSanitizeGeminiSchemaExplicitNullableWinsOverUnion(t *testing.T) {
 	}
 }
 
-// TestBuildBodyAssistantAndToolResultContents drives toGeminiContents through
+// TestBuildBodyAssistantAndToolResultContents drives toInteractionInput through
 // BuildBody with one conversation whose assistant and tool messages select
 // every translation arm: assistant text, a nil image part (dropped), an image
-// URL part (fileData), a nil tool call (dropped), a tool call whose arguments
-// are literal JSON null (must become {}), a thought signature replay, tool
-// results carrying a map / a non-string non-map payload / no call id, a tool
-// message with a non-result part (dropped), and an unknown role (ignored).
+// URL part, a nil tool call (dropped), a tool call whose arguments are literal
+// JSON null (must become {}), a thought signature replay, tool results carrying
+// a map / a non-string non-map payload / no call id, a tool message with a
+// non-result part (dropped), and an unknown role (ignored).
 func TestBuildBodyAssistantAndToolResultContents(t *testing.T) {
 	t.Parallel()
 	req := llm.Request{Model: "gemini-x", Messages: []llm.Message{
@@ -123,6 +111,7 @@ func TestBuildBodyAssistantAndToolResultContents(t *testing.T) {
 		{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentImage, Image: &llm.ImageData{URL: "https://h/p.png"}}}},
 		{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: nil}}},
 		{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+			GoogleInteraction: true, GoogleInstance: "gemini-prod", GoogleModel: "gemini-x",
 			ID: "c9", Name: "shot", Arguments: json.RawMessage(`null`), Type: "function", ThoughtSignature: "sig-1",
 		}}}},
 		{Role: llm.RoleTool, Content: []llm.ContentPart{
@@ -132,36 +121,34 @@ func TestBuildBodyAssistantAndToolResultContents(t *testing.T) {
 		}},
 		{Role: llm.Role("bogus"), Content: []llm.ContentPart{{Kind: llm.ContentText, Text: "ignored"}}},
 	}}
-	contents := geminiBuild(t, req, protoRes(nil))["contents"].([]map[string]any)
-	if len(contents) != 4 {
-		t.Fatalf("contents = %#v, want 4 entries (text, image, tool call, merged tool results)", contents)
+	steps := geminiBuild(t, req, protoRes(nil))["input"].([]any)
+	// First model_output merges adjacent GoogleStep=0 text and image; then function_call, then 2 function_result steps.
+	if len(steps) != 4 {
+		t.Fatalf("steps = %#v, want 4 entries (model_output, function_call, 2 function_results)", steps)
 	}
-	if parts := contents[0]["parts"].([]map[string]any); len(parts) != 1 || parts[0]["text"] != "hi" {
-		t.Fatalf("assistant text part = %#v", contents[0])
+	mo := steps[0].(map[string]any)
+	moContent := mo["content"].([]any)
+	if mo["type"] != "model_output" || len(moContent) != 2 {
+		t.Fatalf("model_output = %#v", mo)
 	}
-	imgParts := contents[1]["parts"].([]map[string]any)
-	fileData := imgParts[0]["fileData"].(map[string]any)
-	if fileData["fileUri"] != "https://h/p.png" || fileData["mimeType"] != "image/png" {
-		t.Fatalf("assistant image fileData = %#v", fileData)
+	if moContent[0].(map[string]any)["text"] != "hi" {
+		t.Fatalf("assistant text = %#v", moContent[0])
 	}
-	call := contents[2]["parts"].([]map[string]any)[0]["functionCall"].(map[string]any)
-	if call["name"] != "shot" || !reflect.DeepEqual(call["args"], map[string]any{}) {
-		t.Fatalf("null tool-call arguments must become an empty object, got %#v", call)
+	img := moContent[1].(map[string]any)
+	if img["type"] != "image" || img["uri"] != "https://h/p.png" || img["mime_type"] != "image/png" {
+		t.Fatalf("assistant image = %#v", img)
 	}
-	if contents[2]["parts"].([]map[string]any)[0]["thoughtSignature"] != "sig-1" {
-		t.Fatalf("assistant tool call must replay its thought signature: %#v", contents[2])
+	fc := steps[1].(map[string]any)
+	if fc["type"] != "function_call" || fc["name"] != "shot" || string(fc["arguments"].(json.RawMessage)) != "{}" || fc["signature"] != "sig-1" {
+		t.Fatalf("function_call = %#v", fc)
 	}
-	toolParts := contents[3]["parts"].([]map[string]any)
-	if contents[3]["role"] != "user" || len(toolParts) != 2 {
-		t.Fatalf("tool results must merge into one user turn: %#v", contents[3])
+	fr0 := steps[2].(map[string]any)
+	if fr0["type"] != "function_result" || fr0["name"] != "shot" || fr0["result"] != `{"ok":true}` {
+		t.Fatalf("map tool-result content must serialize to JSON string: %#v", fr0)
 	}
-	first := toolParts[0]["functionResponse"].(map[string]any)
-	if first["name"] != "shot" || !reflect.DeepEqual(first["response"], map[string]any{"ok": true}) {
-		t.Fatalf("map tool-result content must become the response object verbatim: %#v", first)
-	}
-	second := toolParts[1]["functionResponse"].(map[string]any)
-	if second["name"] != "  " || !reflect.DeepEqual(second["response"], map[string]any{"result": "42"}) {
-		t.Fatalf("non-string non-map content must marshal into result, and a blank call id and name must fall back to the raw id: %#v", second)
+	fr1 := steps[3].(map[string]any)
+	if fr1["type"] != "function_result" || fr1["result"] != "42" {
+		t.Fatalf("non-string tool-result content = %#v", fr1)
 	}
 }
 
@@ -183,11 +170,6 @@ func TestBuildBodyAssistantDocumentAndAudioRejected(t *testing.T) {
 	}
 }
 
-// TestBuildBodyImageParts drives geminiImagePart through BuildBody: inline data
-// with no media type (defaults to image/png), a remote URL, an empty image
-// part (dropped), local-file reads under the test's own TempDir (inferred
-// media type by extension, the image/png default for an unknown extension),
-// and the read-failure arm against a missing TempDir sibling.
 func TestBuildBodyImageParts(t *testing.T) {
 	t.Parallel()
 	png := testPNG(t)
@@ -201,37 +183,41 @@ func TestBuildBodyImageParts(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	build := func(t *testing.T, img *llm.ImageData) []map[string]any {
+	buildItem := func(t *testing.T, img *llm.ImageData) map[string]any {
 		t.Helper()
 		req := llm.Request{Model: "gemini-x", Messages: []llm.Message{
 			{Role: llm.RoleUser, Content: []llm.ContentPart{{Kind: llm.ContentImage, Image: img}}},
 		}}
-		contents, _ := geminiBuild(t, req, protoRes(nil))["contents"].([]map[string]any)
-		return contents
+		steps := geminiBuild(t, req, protoRes(nil))["input"].([]any)
+		return steps[0].(map[string]any)["content"].([]any)[0].(map[string]any)
 	}
 
-	inline := build(t, &llm.ImageData{Data: png})[0]["parts"].([]map[string]any)[0]["inlineData"].(map[string]any)
-	if inline["mimeType"] != "image/png" || inline["data"] != base64.StdEncoding.EncodeToString(png) {
-		t.Fatalf("inline data with no media type must derive image/png from the bytes: %#v", inline)
+	inline := buildItem(t, &llm.ImageData{Data: png})
+	if inline["mime_type"] != "image/png" || inline["data"] != base64.StdEncoding.EncodeToString(png) {
+		t.Fatalf("inline data with no media type: %#v", inline)
 	}
 
-	remote := build(t, &llm.ImageData{URL: "https://h/p.png"})[0]["parts"].([]map[string]any)[0]["fileData"].(map[string]any)
-	if remote["fileUri"] != "https://h/p.png" {
-		t.Fatalf("remote image must become fileData: %#v", remote)
+	remote := buildItem(t, &llm.ImageData{URL: "https://h/p.png"})
+	if remote["uri"] != "https://h/p.png" {
+		t.Fatalf("remote image must become uri item: %#v", remote)
 	}
 
-	if got := build(t, &llm.ImageData{}); len(got) != 0 {
-		t.Fatalf("an image part with neither bytes nor a URL must be dropped, got %#v", got)
+	// Empty image part yields no input steps -> ConfigurationError.
+	emptyReq := llm.Request{Model: "gemini-x", Messages: []llm.Message{
+		{Role: llm.RoleUser, Content: []llm.ContentPart{{Kind: llm.ContentImage, Image: &llm.ImageData{}}}},
+	}}
+	if _, err := (&Protocol{}).BuildBody(emptyReq, protoRes(nil)); err == nil {
+		t.Fatalf("empty-steps request must fail with ConfigurationError, got %v", err)
 	}
 
-	local := build(t, &llm.ImageData{URL: localPNG})[0]["parts"].([]map[string]any)[0]["inlineData"].(map[string]any)
-	if local["mimeType"] != "image/png" || local["data"] != base64.StdEncoding.EncodeToString(png) {
-		t.Fatalf("local read must inline the file bytes with the inferred type: %#v", local)
+	local := buildItem(t, &llm.ImageData{URL: localPNG})
+	if local["mime_type"] != "image/png" || local["data"] != base64.StdEncoding.EncodeToString(png) {
+		t.Fatalf("local read: %#v", local)
 	}
 
-	noExt := build(t, &llm.ImageData{URL: localNoExt})[0]["parts"].([]map[string]any)[0]["inlineData"].(map[string]any)
-	if noExt["mimeType"] != "image/png" || noExt["data"] != base64.StdEncoding.EncodeToString(png) {
-		t.Fatalf("an extension that infers no media type must fall back to image/png: %#v", noExt)
+	noExt := buildItem(t, &llm.ImageData{URL: localNoExt})
+	if noExt["mime_type"] != "image/png" || noExt["data"] != base64.StdEncoding.EncodeToString(png) {
+		t.Fatalf("no-ext default mime_type: %#v", noExt)
 	}
 
 	req := llm.Request{Model: "gemini-x", Messages: []llm.Message{
@@ -239,35 +225,14 @@ func TestBuildBodyImageParts(t *testing.T) {
 	}}
 	_, err := (&Protocol{}).BuildBody(req, protoRes(nil))
 	if !errors.Is(err, fs.ErrNotExist) {
-		t.Fatalf("a missing local image must fail with a not-found error, got %T %v", err, err)
+		t.Fatalf("missing local image must fail with ErrNotExist, got %T %v", err, err)
 	}
 
-	// The same failure inside an assistant message must surface through the
-	// assistant image arm, not only the user one.
 	assistantReq := llm.Request{Model: "gemini-x", Messages: []llm.Message{
 		{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentImage, Image: &llm.ImageData{URL: filepath.Join(dir, "gone.png")}}}},
 	}}
 	_, err = (&Protocol{}).BuildBody(assistantReq, protoRes(nil))
 	if !errors.Is(err, fs.ErrNotExist) {
-		t.Fatalf("a missing local image in an assistant message must fail with a not-found error, got %T %v", err, err)
-	}
-}
-
-func TestToolNameFromCallIDBlankAndUnknown(t *testing.T) {
-	t.Parallel()
-	msgs := []llm.Message{{
-		Role: llm.RoleAssistant,
-		Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
-			ID: "c1", Name: "shot", Type: "function",
-		}}},
-	}}
-	if got := toolNameFromCallID(msgs, "  "); got != "" {
-		t.Fatalf("a blank call id must match nothing, got %q", got)
-	}
-	if got := toolNameFromCallID(msgs, "c1"); got != "shot" {
-		t.Fatalf("matching call id must yield the wire name, got %q", got)
-	}
-	if got := toolNameFromCallID(msgs, "c2"); got != "" {
-		t.Fatalf("an unknown call id must yield no name, got %q", got)
+		t.Fatalf("missing assistant local image must fail with ErrNotExist, got %T %v", err, err)
 	}
 }

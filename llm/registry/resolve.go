@@ -17,7 +17,7 @@ var protocolDefaults = map[string]Transport{
 	ProtocolOpenAIChat:      {Endpoint: "/chat/completions", StreamEndpoint: "/chat/completions", ModelsEndpoint: "/models", CountTokensEndpoint: EndpointUnsupported},
 	ProtocolOpenAIResponses: {Endpoint: "/responses", StreamEndpoint: "/responses", ModelsEndpoint: "/models", CountTokensEndpoint: EndpointUnsupported},
 	ProtocolAnthropic:       {Endpoint: "/messages", StreamEndpoint: "/messages", ModelsEndpoint: "/models", CountTokensEndpoint: "/messages/count_tokens"},
-	ProtocolGoogle:          {Endpoint: "/models/{model}:generateContent", StreamEndpoint: "/models/{model}:streamGenerateContent?alt=sse", ModelsEndpoint: "/models", CountTokensEndpoint: "/models/{model}:countTokens"},
+	ProtocolGoogle:          {Endpoint: "/interactions", StreamEndpoint: "/interactions", ModelsEndpoint: "/models", CountTokensEndpoint: EndpointUnsupported},
 }
 
 // nonChatPatterns identifies live listing ids that are not text models
@@ -93,6 +93,27 @@ func familyCovers(pattern, wireID string) bool {
 func IsVertexGlobalOnly(wireID string) bool {
 	_, ok := vertexGlobalOnlyDetail(wireID)
 	return ok
+}
+
+var vertexInteractionsUnsupportedGemini = map[string]bool{
+	"gemini-3-flash-preview": true,
+	"gemini-3-pro-preview":   true,
+}
+
+// VertexSupportsGeminiModel reports whether id is a Gemini model supported on
+// Vertex AI's /interactions endpoint (Gemini 3.1+ and 4.x, excluding 1.x, 2.x,
+// and Vertex generateContent-only 3.0 preview IDs).
+func VertexSupportsGeminiModel(id string) bool {
+	norm := strings.ToLower(strings.TrimSpace(id))
+	if norm == "" {
+		return true
+	}
+	if strings.HasPrefix(norm, "gemini-1.") || strings.HasPrefix(norm, "gemini-1-") || norm == "gemini-1" ||
+		strings.HasPrefix(norm, "gemini-2.") || strings.HasPrefix(norm, "gemini-2-") || norm == "gemini-2" {
+		return false
+	}
+	base := StripDatedSuffix(strings.TrimSuffix(norm, "@default"))
+	return !vertexInteractionsUnsupportedGemini[base]
 }
 
 var datedSuffixRe = regexp.MustCompile(`(-\d{8}(-v\d+(:\d+)?)?|@\d{8})$`)
@@ -1123,7 +1144,7 @@ func (r *Registry) resolveLayersModeLive(rec *record, ref Ref, warnings []string
 		warnings = append(warnings, cw...)
 	}
 
-	warnings = append(warnings, derive(&caps, &row, deriveInput{Protocol: rowProto, Synthesized: hit.synthesized, ProviderSurface: rec.head.Surface, ProviderFamily: rec.head.Family, Aliased: row.AliasOf != "", AliasTargetProtocol: aliasTargetProtocol, AliasControlsRecorded: aliasControlsRecorded}, prov)...)
+	warnings = append(warnings, derive(&caps, &row, deriveInput{Protocol: rowProto, Synthesized: hit.synthesized, ProviderSurface: rec.head.Surface, ProviderFamily: rec.head.Family, TransportPreset: transport.Preset, Aliased: row.AliasOf != "", AliasTargetProtocol: aliasTargetProtocol, AliasControlsRecorded: aliasControlsRecorded}, prov)...)
 	// In the caller because derive early-returns for non-anthropic
 	// protocols; the ladder's membership is already settled here.
 	// rankEffortLadder states the ordering contract.
@@ -1143,7 +1164,9 @@ func (r *Registry) resolveLayersModeLive(rec *record, ref Ref, warnings []string
 	// Vertex's to explain: a transport addressed to a route the config built is
 	// somewhere else, and that location is not its problem.
 	if loc, derived := VertexLocationDerived(transport, hostDerived); derived && loc != "global" && loc != "us" && loc != "eu" {
-		if detail, known := vertexGlobalOnlyDetail(hit.wireID); known {
+		if rowProto == ProtocolGoogle {
+			warnings = append(warnings, fmt.Sprintf("regional Vertex location %q does not serve /interactions for Gemini models; use global, us, or eu for %s (switching changes geographic data residency)", loc, hit.wireID))
+		} else if detail, known := vertexGlobalOnlyDetail(hit.wireID); known {
 			warnings = append(warnings, fmt.Sprintf("regional Vertex location %q %s; use global, us, or eu for %s", loc, detail, hit.wireID))
 		}
 	}

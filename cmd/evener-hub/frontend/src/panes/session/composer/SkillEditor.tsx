@@ -7,12 +7,12 @@ import { type Command, EditorState, Plugin, TextSelection } from "prosemirror-st
 import { EditorView } from "prosemirror-view";
 import { forwardRef, type HTMLAttributes, useImperativeHandle, useLayoutEffect, useRef } from "react";
 import { flushSync } from "react-dom";
+import { sameImageRanges, sameMarkers, sameMentions, sameStrings } from "./selection";
 import {
   completeSkillReferenceAt,
   documentPositionToTextOffset,
   sharedPrefixLength as documentSharedPrefixLength,
   sharedSuffixLength as documentSharedSuffixLength,
-  type ImageMarkerRange,
   isSkillTokenCharacter,
   parseSkillDocument,
   type SkillEditorValue,
@@ -38,6 +38,8 @@ export interface SkillEditorHandle {
    * that never landed. */
   insertSkill(start: number, end: number, name: string): boolean;
   insertCommand(start: number, end: number, name: string): boolean;
+  /** Replaces UTF-16 range [start, end) with plain text in one undoable step. */
+  replaceTextRange(start: number, end: number, text: string, caretOffset?: number): boolean;
   /** Deletes every occurrence the document marks as an adopted anchor - or
    * only those naming `markers` - in ONE transaction, and reports how many
    * occurrences it removed. The marks are the exact occurrences, so an
@@ -47,7 +49,8 @@ export interface SkillEditorHandle {
 
 export interface SkillEditorProps {
   value: SkillEditorValue;
-  onChange(value: SkillEditorValue, cursor: number): void;
+  onChange(value: SkillEditorValue, cursor: number, meta?: { isPaste?: boolean }): void;
+  onSelectionChange?: (cursor: number) => void;
   onKeyDown?: HTMLAttributes<HTMLDivElement>["onKeyDown"];
   onPaste?: HTMLAttributes<HTMLDivElement>["onPaste"];
   onFocus?: HTMLAttributes<HTMLDivElement>["onFocus"];
@@ -201,24 +204,6 @@ function createAtomView(node: ProseMirrorNode, kind: "skill" | "command", props:
   return { dom };
 }
 
-/** Whether two marker lists name the same numbers. Order carries no meaning, and
- * neither does a repeat of one number. */
-function sameMarkerSet(a: readonly number[], b: readonly number[]): boolean {
-  const markers = new Set(a);
-  return b.every((marker) => markers.has(marker)) && markers.size === new Set(b).size;
-}
-
-/** Whether two range lists name the same occurrences: same marker, same
- * position. Order carries no meaning and a repeat of one range is the same
- * assertion twice, so both are normalised before comparing. */
-function sameRangeSet(a: readonly ImageMarkerRange[], b: readonly ImageMarkerRange[]): boolean {
-  const keys = (ranges: readonly ImageMarkerRange[]) =>
-    [...new Set(ranges.map((range) => `${range.marker}:${range.start}:${range.end}`))].sort();
-  const left = keys(a);
-  const right = keys(b);
-  return left.length === right.length && left.every((key, index) => key === right[index]);
-}
-
 /** Whether two values carry the same adoption: the same numbers AND the same
  * occurrences. Two values that agree on the numbers but disagree on WHICH
  * spelling is adopted are different values, and applying one over the other
@@ -228,8 +213,8 @@ function sameAdoption(
   b: Pick<SkillEditorValue, "adoptedImageMarkers" | "adoptedImageRanges">,
 ): boolean {
   return (
-    sameMarkerSet(a.adoptedImageMarkers ?? [], b.adoptedImageMarkers ?? []) &&
-    sameRangeSet(a.adoptedImageRanges ?? [], b.adoptedImageRanges ?? [])
+    sameMarkers(a.adoptedImageMarkers ?? [], b.adoptedImageMarkers ?? []) &&
+    sameImageRanges(a.adoptedImageRanges ?? [], b.adoptedImageRanges ?? [])
   );
 }
 
@@ -259,10 +244,9 @@ function syncImageMarks(tr: EditorState["tr"], value: SkillEditorValue): void {
 function sameEditorValue(a: SkillEditorValue, b: SkillEditorValue): boolean {
   return (
     a.text === b.text &&
-    a.skillNames.length === b.skillNames.length &&
-    a.skillNames.every((name, index) => b.skillNames[index] === name) &&
-    JSON.stringify(a.commandNames ?? []) === JSON.stringify(b.commandNames ?? []) &&
-    JSON.stringify(a.mentions ?? []) === JSON.stringify(b.mentions ?? []) &&
+    sameStrings(a.skillNames, b.skillNames) &&
+    sameStrings(a.commandNames ?? [], b.commandNames ?? []) &&
+    sameMentions(a.mentions ?? [], b.mentions ?? []) &&
     // The adoption is part of the value the editor is rendering: the document
     // carries those marks, so a value that names them is not the same value as
     // one that does not. Without this, every keystroke would re-apply the
@@ -354,10 +338,24 @@ export const SkillEditor = forwardRef<SkillEditorHandle, SkillEditorProps>(funct
         if (!view) return;
         const from = textOffsetToDocumentPosition(view.state.doc, start);
         const to = start === end ? from : textOffsetToDocumentPosition(view.state.doc, end, 1);
-        view.dispatch(view.state.tr.setSelection(TextSelection.create(view.state.doc, from, to)));
+        view.dispatch(
+          view.state.tr.setSelection(TextSelection.create(view.state.doc, from, to)).setMeta(externalSync, true),
+        );
       },
       insertSkill: (start, end, name) => insertAtom(viewRef.current, start, end, name, "skill"),
       insertCommand: (start, end, name) => insertAtom(viewRef.current, start, end, name, "command"),
+      replaceTextRange: (start, end, replacementText, caretOffset = replacementText.length) => {
+        const view = viewRef.current;
+        if (!view || view.composing) return false;
+        const { doc } = view.state;
+        const from = textOffsetToDocumentPosition(doc, start);
+        const to = textOffsetToDocumentPosition(doc, end, 1);
+        const tr = closeHistory(view.state.tr.insertText(replacementText, from, to));
+        tr.setSelection(TextSelection.create(tr.doc, from + caretOffset));
+        view.dispatch(tr);
+        view.focus();
+        return true;
+      },
       removeStagedAnchors: (markers) => {
         const view = viewRef.current;
         if (!view || view.composing) return 0;
@@ -393,7 +391,10 @@ export const SkillEditor = forwardRef<SkillEditorHandle, SkillEditorProps>(funct
             latest.current.onChange(
               serializeSkillDocument(view.state.doc),
               documentPositionToTextOffset(view.state.doc, view.state.selection.head),
+              { isPaste: Boolean(transaction.getMeta("paste")) },
             );
+          } else if (transaction.selectionSet && !transaction.docChanged && !transaction.getMeta(externalSync)) {
+            latest.current.onSelectionChange?.(documentPositionToTextOffset(view.state.doc, view.state.selection.head));
           }
         },
         nodeViews: {
@@ -467,7 +468,7 @@ export const SkillEditor = forwardRef<SkillEditorHandle, SkillEditorProps>(funct
       if (!sameEditorValue(settled, props.value)) {
         latest.current.onChange(settled, documentPositionToTextOffset(view.state.doc, view.state.selection.head));
       }
-    } else if (!sameRangeSet(current.stagedImageRanges ?? [], props.value.stagedImageRanges ?? [])) {
+    } else if (!sameImageRanges(current.stagedImageRanges ?? [], props.value.stagedImageRanges ?? [])) {
       const tr = view.state.tr;
       syncImageMarks(tr, props.value);
       if (tr.docChanged) apply(tr);

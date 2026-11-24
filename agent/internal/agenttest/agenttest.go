@@ -164,6 +164,12 @@ func EmptyResponse() llm.Response {
 	return llm.Response{Message: llm.Message{Role: llm.RoleAssistant}}
 }
 
+const (
+	communicateNextSendAndEndTurn       = "send_and_end_turn"
+	communicateNextSendAndContinue      = "send_and_continue"
+	communicateNextLogQuietlyAndEndTurn = "log_quietly_and_end_turn"
+)
+
 // CommunicateCall builds a tool call to the communicate tool carrying message.
 func CommunicateCall(id, message string) llm.ToolCallData {
 	return CommunicateCallArgs(id, map[string]any{"message": message})
@@ -179,28 +185,35 @@ func CommunicateCallArgs(id string, args map[string]any) llm.ToolCallData {
 		message = strings.TrimSpace(fmt.Sprint(v))
 	}
 
-	endTurn := true
-	if v, ok := args["end_turn"].(bool); ok {
-		endTurn = v
+	next := communicateNextSendAndEndTurn
+	if v, ok := args["next"].(string); ok && strings.TrimSpace(v) != "" {
+		next = strings.TrimSpace(v)
+	} else if v, ok := args["end_turn"].(bool); ok && !v {
+		next = communicateNextSendAndContinue
 	}
 
-	output := map[string]any{
-		"message":   "",
-		"data":      map[string]any{},
-		"artifacts": []string{},
-	}
-	if rawOutput, ok := args["output"].(map[string]any); ok {
-		maps.Copy(output, rawOutput)
-	}
-	if message == "" {
-		if outMsg, ok := output["message"].(string); ok {
-			message = outMsg
+	var output map[string]any
+	if next != communicateNextLogQuietlyAndEndTurn {
+		output = map[string]any{
+			"message":   "",
+			"data":      map[string]any{},
+			"artifacts": []string{},
+		}
+		if rawOutput, ok := args["output"].(map[string]any); ok {
+			maps.Copy(output, rawOutput)
+		}
+		if message == "" {
+			if outMsg, ok := output["message"].(string); ok {
+				message = outMsg
+			}
 		}
 	}
 
 	normalized["message"] = message
-	normalized["end_turn"] = endTurn
-	normalized["output"] = output
+	normalized["next"] = next
+	if _, explicitOutput := args["output"]; output != nil && (explicitOutput || next == communicateNextSendAndEndTurn) {
+		normalized["output"] = output
+	}
 
 	raw, _ := json.Marshal(normalized)
 	return llm.ToolCallData{
@@ -223,17 +236,24 @@ func ToolCallResponse(calls ...llm.ToolCallData) llm.Response {
 }
 
 // CommunicateResponse builds an assistant response that calls the communicate
-// tool with the given message and end_turn flag.
+// tool with the given message and turn-ending flag mapped to next.
 func CommunicateResponse(endTurn bool, message string) llm.Response {
-	args, _ := json.Marshal(map[string]any{
-		"message":  message,
-		"end_turn": endTurn,
-		"output": map[string]any{
+	next := communicateNextSendAndEndTurn
+	if !endTurn {
+		next = communicateNextSendAndContinue
+	}
+	payload := map[string]any{
+		"message": message,
+		"next":    next,
+	}
+	if endTurn {
+		payload["output"] = map[string]any{
 			"message":   "",
 			"data":      map[string]any{},
 			"artifacts": []string{},
-		},
-	})
+		}
+	}
+	args, _ := json.Marshal(payload)
 	return llm.Response{
 		Message: llm.Message{
 			Role: llm.RoleAssistant,

@@ -105,9 +105,9 @@ func (p *descendantWatchProvider) Complete(ctx context.Context, req llm.Request)
 				return llm.Response{}, ctx.Err()
 			}
 			if !p.lateTerminal {
-				return activityRelayTool("communicate", map[string]any{"message": "descendant-watch-result", "end_turn": true, "output": map[string]any{"message": "descendant-watch-result", "data": map[string]any{}, "artifacts": []string{}}}), nil
+				return activityRelayTool("communicate", map[string]any{"message": "descendant-watch-result", "next": "send_and_end_turn", "output": map[string]any{"message": "descendant-watch-result", "data": map[string]any{}, "artifacts": []string{}}}), nil
 			}
-			return activityRelayTool("communicate", map[string]any{"message": "descendant-watch-update", "end_turn": false, "output": map[string]any{"message": "", "data": map[string]any{}, "artifacts": []string{}}}), nil
+			return activityRelayTool("communicate", map[string]any{"message": "descendant-watch-update", "next": "send_and_continue", "output": map[string]any{"message": "", "data": map[string]any{}, "artifacts": []string{}}}), nil
 		case 1:
 			if !p.lateTerminal {
 				return llm.Response{}, fmt.Errorf("unexpected child model call step %d", step)
@@ -117,12 +117,12 @@ func (p *descendantWatchProvider) Complete(ctx context.Context, req llm.Request)
 			case <-ctx.Done():
 				return llm.Response{}, ctx.Err()
 			}
-			return activityRelayTool("communicate", map[string]any{"message": "descendant-watch-result", "end_turn": true, "output": map[string]any{"message": "descendant-watch-result", "data": map[string]any{}, "artifacts": []string{}}}), nil
+			return activityRelayTool("communicate", map[string]any{"message": "descendant-watch-result", "next": "send_and_end_turn", "output": map[string]any{"message": "descendant-watch-result", "data": map[string]any{}, "artifacts": []string{}}}), nil
 		default:
 			return llm.Response{}, fmt.Errorf("unexpected child model call step %d", step)
 		}
 	}
-	return activityRelayTool("communicate", map[string]any{"message": "descendant-watch-manager-idle", "end_turn": true, "output": map[string]any{"message": "", "data": map[string]any{}, "artifacts": []string{}}}), nil
+	return activityRelayTool("communicate", map[string]any{"message": "descendant-watch-manager-idle", "next": "send_and_end_turn", "output": map[string]any{"message": "", "data": map[string]any{}, "artifacts": []string{}}}), nil
 }
 
 func TestE2E_ManagerOwnedDescendantWatch(t *testing.T) {

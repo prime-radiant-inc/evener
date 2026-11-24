@@ -805,6 +805,10 @@ func (x *Index) pendingRegistry(r *reader) (*apptranscript.ToolCallRegistry, err
 			delete(reg.CommAuthorship, id)
 		}
 	}
+	if x.builder.lastAssistantKnown {
+		reg.LastAssistantText = x.builder.lastAssistantText
+		reg.LastAssistantTurnID = x.builder.lastAssistantTurnID
+	}
 	return reg, nil
 }
 
@@ -1004,6 +1008,20 @@ func (r *reader) item(record itemRecord, turnID string) (appwire.ThreadItem, err
 					if communication.Observation != nil {
 						echoes = append(echoes, communication)
 					}
+				}
+				continue
+			}
+			if completion := entry.Completion; entry.Kind == schema.TurnCompletion && completion != nil && completion.AcceptedCommunicateCallID != "" && item.Type == "agentMessage" {
+				if item.Observation != nil && item.CallID == completion.AcceptedCommunicateCallID {
+					item.Observation.TerminalAccepted = new(true)
+				}
+				for i := range echoes {
+					if echoes[i].CallID == completion.AcceptedCommunicateCallID {
+						echoes[i].Observation.TerminalAccepted = new(true)
+					}
+				}
+				if completion.ReplacementReply != nil {
+					item.Text = *completion.ReplacementReply
 				}
 				continue
 			}

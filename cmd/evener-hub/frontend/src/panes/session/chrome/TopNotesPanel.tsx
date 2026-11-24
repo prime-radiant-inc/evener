@@ -3,7 +3,7 @@ import { canReadSharedNotes, canWriteSharedNotes } from "@evener/appwire-client"
 import { useEffect, useRef } from "react";
 import { syncHumanNote, useHumanNoteDraft } from "../../../stores/humanNoteDrafts";
 import { topNotesStore, usePendingTopNotesFocus, useTopNotesExpanded } from "../../../stores/topNotes";
-import { Chevron, Eyebrow, ToolIcon } from "../../../widgets";
+import { Chevron, Disclosure, Eyebrow, ToolIcon } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { useDismissOnOutsidePress } from "../../../widgets/internal/useDismissOnOutsidePress";
 import { useOwnedDocument } from "../../../widgets/internal/useOwnedDocument";
@@ -44,7 +44,6 @@ export function TopNotesPanel({ sessionRef, model, sourcePaneId }: TopNotesPanel
   const draftState = useHumanNoteDraft(sessionRef);
   const editorRef = useRef<HTMLTextAreaElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
-  const triggerRef = useRef<HTMLButtonElement>(null);
   // Resolved from the panel's own root so a panel moved into a Dockview popout
   // listens on THAT window's document, not the opener's.
   const ownerDocument = useOwnedDocument(rootRef, expanded);
@@ -182,7 +181,7 @@ export function TopNotesPanel({ sessionRef, model, sourcePaneId }: TopNotesPanel
     // moves focus away without a blur, and the frame below then puts it on the
     // disclosure instead of leaving it on the document body.
     requestAnimationFrame(() => {
-      if (triggerRef.current?.isConnected) triggerRef.current.focus();
+      rootRef.current?.querySelector("summary")?.focus();
     });
   };
 
@@ -195,49 +194,50 @@ export function TopNotesPanel({ sessionRef, model, sourcePaneId }: TopNotesPanel
       data-testid="top-notes-panel"
       onKeyDown={handleKeyDown}
     >
-      {/* One disclosure trigger both states share (the collapsed summary and
-          the expanded header row): same button role, same toggle, same
-          chevron - only the resting style, label, and lead content differ. */}
-      <button
-        ref={triggerRef}
-        type="button"
-        className={expanded ? CLASS.expandedHeader : CLASS.summary}
-        onClick={toggle}
-        aria-expanded={expanded}
-        // Collapsed, the visible preview IS the accessible name (the note
-        // text, the link count, or the placeholder) - a generic label would
-        // hide that content from screen readers.
-        aria-label={expanded ? "Collapse session notes" : undefined}
-        data-testid={expanded ? "top-notes-collapse-trigger" : "top-notes-summary"}
-      >
-        <span className={CLASS.summaryLeft}>
-          <span className={CLASS.chevron} data-open={expanded}>
-            <Chevron size={16} />
-          </span>
-          {expanded ? (
-            <Eyebrow as="span">Session notes</Eyebrow>
-          ) : (
-            <>
-              {sourceIconKind && (
-                <span className={CLASS.sourceIcon} data-testid={`top-notes-icon-${sourceIconKind}`} aria-hidden="true">
-                  <ToolIcon kind={sourceIconKind} size={14} />
+      {/* Collapsed, the visible preview IS the accessible name (the note text,
+          the link count, or the placeholder); expanded, the visible heading
+          does not say what activating the row does, so that state carries an
+          explicit action label instead. */}
+      <Disclosure
+        open={expanded}
+        onOpenChange={toggle}
+        summary={
+          <span className={CLASS.summaryLeft}>
+            {expanded ? (
+              <Eyebrow as="span">Session notes</Eyebrow>
+            ) : (
+              <>
+                {sourceIconKind && (
+                  <span
+                    className={CLASS.sourceIcon}
+                    data-testid={`top-notes-icon-${sourceIconKind}`}
+                    aria-hidden="true"
+                  >
+                    <ToolIcon kind={sourceIconKind} size={14} />
+                  </span>
+                )}
+                <span
+                  className={isPlaceholder ? CLASS.placeholder : CLASS.clampedText}
+                  data-reason={isPlaceholder ? (canWrite ? "empty" : "read-only") : undefined}
+                >
+                  {summaryText}
                 </span>
-              )}
-              <span
-                className={isPlaceholder ? CLASS.placeholder : CLASS.clampedText}
-                data-reason={isPlaceholder ? (canWrite ? "empty" : "read-only") : undefined}
-              >
-                {summaryText}
-              </span>
-            </>
-          )}
-        </span>
-      </button>
-      {expanded && (
+              </>
+            )}
+          </span>
+        }
+        leading={(open) => (
+          <span className={CLASS.chevron}>
+            <Chevron size={16} open={open} />
+          </span>
+        )}
+        summaryClassName={expanded ? CLASS.expandedHeader : CLASS.summary}
+        summaryAriaLabel={(open) => (open ? "Collapse session notes" : undefined)}
+      >
         <div className={CLASS.expandedBody} data-testid="top-notes-expanded-content">
           <NotesPanelBody sessionRef={sessionRef} model={model} sourcePaneId={sourcePaneId} editorRef={editorRef} />
         </div>
-      )}
+      </Disclosure>
     </div>
   );
 }

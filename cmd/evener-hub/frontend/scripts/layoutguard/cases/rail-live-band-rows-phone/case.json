@@ -1,9 +1,16 @@
 {
   "name": "rail-live-band-rows-phone",
-  "description": "rail Live band rows at a 360px touch viewport, where the max-width 899px right-slot rule (flex occupant beside always-visible actions) competes with the base shared-cell rule: the why line still never wraps, titles still align, and the why line still sits under the title text",
+  "description": "Live rows on the touch board: names lead the band and secondary text even when selected, titles align, and the why line truncates a single line below its title",
   "cssFiles": [
     "styles/global.css",
+    "styles/motion.module.css",
+    "styles/text.module.css",
+    "styles/tapfloor.module.css",
     "styles/tokens.css",
+    "styles/help.module.css",
+    "widgets/internal/floatingSurface.module.css",
+    "widgets/internal/selectableRow.module.css",
+    "widgets/hovercard/hovercard.module.css",
     "widgets/tree/tree.module.css",
     "widgets/badge/badge.module.css",
     "shell/rail/Rail.module.css",
@@ -17,9 +24,9 @@
     "touch": true
   },
   "mutation": {
-    "declaration": "RailRow.module.css: .why { white-space: nowrap } removed",
-    "verified": "2026-11-13",
+    "declaration": "RailRow.module.css: remove flex-direction: column from the narrow .sessionTitleButton",
+    "verified": "2026-11-24",
     "expect": "fail",
-    "note": "Without nowrap the long why text wraps and the .why box grows past one caption line."
+    "note": "Removing the column direction put the reason 1.5px above the title's text center and failed the spacing assertion. Restoring it put the reason 16.69px below and passed."
   }
 }

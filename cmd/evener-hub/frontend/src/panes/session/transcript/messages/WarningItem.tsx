@@ -52,7 +52,7 @@ export const WarningItem = memo(function WarningItem({ item }: ItemRenderProps) 
   // SystemNoticeItem's .line uses (caption size, --ink-low, no chip).
   if (isInformationalWarning(item)) {
     return (
-      <div className={CLASS.quiet} data-testid="warning-quiet-line" title={hint}>
+      <div className={CLASS.quiet} data-testid="warning-quiet-line" data-message-body="" title={hint}>
         {message}
         {/* title on a non-focusable div is hover-only, so the hint also
          * exists as content a screen reader announces. warningWords already
@@ -73,7 +73,12 @@ export const WarningItem = memo(function WarningItem({ item }: ItemRenderProps) 
  */
 export function WarningBlock({ title, message, hint }: { title?: string; message: string; hint?: string }) {
   return (
-    <div className={CLASS.row} data-testid="warning-item" data-fallback={title ? undefined : "true"}>
+    <div
+      className={CLASS.row}
+      data-testid="warning-item"
+      data-message-body=""
+      data-fallback={title ? undefined : "true"}
+    >
       <Chip tone="attention">{title || "Warning"}</Chip>
       <div className={CLASS.message} data-testid="warning-message">
         {message}

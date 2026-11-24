@@ -64,7 +64,6 @@ const CLASS = {
   modalityGroup: requireClass(styles.modalityGroup, "InstanceSheet.module.css", "modalityGroup"),
   routingFields: requireClass(styles.routingFields, "InstanceSheet.module.css", "routingFields"),
   divider: requireClass(styles.divider, "InstanceSheet.module.css", "divider"),
-  fullRow: requireClass(styles.fullRow, "InstanceSheet.module.css", "fullRow"),
 };
 
 const CHANGED_INSTANCE_MODEL_ERROR =
@@ -726,17 +725,16 @@ export function InstanceModelEditor({
       {mode === "edit" && detail?.authoredOnly && (
         <>
           <hr className={CLASS.divider} />
-          <div className={CLASS.fullRow}>
-            <Button
-              variant="dangerQuiet"
-              disabled={busy || writesRefused}
-              onClick={() =>
-                renameGap ? onRefuseDuringRename() : onRequestRemoveCustom(detail.model, seededFingerprint.current)
-              }
-            >
-              Remove custom model
-            </Button>
-          </div>
+          <Button
+            block
+            variant="dangerQuiet"
+            disabled={busy || writesRefused}
+            onClick={() =>
+              renameGap ? onRefuseDuringRename() : onRequestRemoveCustom(detail.model, seededFingerprint.current)
+            }
+          >
+            Remove custom model
+          </Button>
         </>
       )}
     </div>

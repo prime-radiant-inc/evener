@@ -106,7 +106,7 @@ func TestAskUser_AnswerLinkInlineSuccessiveQuestions(t *testing.T) {
 				}
 			}
 		}
-		if turn.Communicate != nil && turn.Communicate.EndTurn && turn.Communicate.EndReason == "done" {
+		if turn.Communicate != nil && turn.Communicate.EndTurn {
 			completion = turn.TurnID
 		}
 	}

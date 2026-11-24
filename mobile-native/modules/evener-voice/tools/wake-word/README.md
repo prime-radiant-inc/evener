@@ -85,7 +85,6 @@ export PYTHONDONTWRITEBYTECODE=1
   --workers 4 --output "$WORK/evaluation.json"
 "$PY" "$TOOLS/verify.py" --work "$WORK" --output "$WORK/verification.json"
 "$PY" -m unittest discover -s "$TOOLS" -p 'test_*.py' -v
-make lint-tracked-file-size
 ```
 
 The default destination is

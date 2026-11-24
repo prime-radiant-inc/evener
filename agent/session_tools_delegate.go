@@ -60,7 +60,7 @@ func registerDelegateTool(reg *tool.Registry, s *Session) error {
 func delegateSendTool(ctx context.Context, s *Session, args map[string]any, maxChars int) (any, error) {
 	target := strings.TrimSpace(stringArg(args, "to"))
 	if target == runtimeMessageAliasCaller {
-		return nil, errors.New("invalid_request: delegate_send reaches only your own delegates; to message your parent, call communicate with end_turn=false")
+		return nil, errors.New(`invalid_request: delegate_send reaches only your own delegates; to message your parent, call communicate with next="send_and_continue"`)
 	}
 	message := strings.TrimSpace(stringArg(args, "message"))
 	wait := 0

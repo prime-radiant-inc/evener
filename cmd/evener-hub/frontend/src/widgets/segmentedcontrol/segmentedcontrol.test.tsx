@@ -1,12 +1,11 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { describe, expect, test, vi } from "vitest";
-import { MOBILE_QUERY } from "../../shell/useIsMobile";
-import { escapeRegExp, readModuleCss } from "../../styles/cssBlock";
+import { readModuleCss } from "../../styles/cssBlock";
 import { SegmentedControl } from "./index";
 
 const OPTIONS = [
@@ -266,6 +265,61 @@ describe("selection and roving focus", () => {
     expect(onChange).toHaveBeenCalledTimes(2);
     expect(onChange).toHaveBeenLastCalledWith("chat");
   });
+
+  test("autoFocus enters the selected option rather than the group", async () => {
+    render(
+      <SegmentedControl
+        label="Choice"
+        value="two"
+        options={[
+          { value: "one", label: "One" },
+          { value: "two", label: "Two" },
+        ]}
+        onChange={() => {}}
+        autoFocus
+      />,
+    );
+    const selected = screen.getByRole("radio", { name: "Two" });
+    await waitFor(() => expect(document.activeElement).toBe(selected));
+    expect(document.activeElement).not.toBe(screen.getByRole("radiogroup"));
+  });
+
+  test("autoFocus falls back to the roving tab stop when the selected option is disabled", async () => {
+    render(
+      <SegmentedControl
+        label="Choice"
+        value="two"
+        options={[
+          { value: "one", label: "One" },
+          { value: "two", label: "Two", disabled: true },
+        ]}
+        onChange={() => {}}
+        autoFocus
+      />,
+    );
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("radio", { name: "One" })));
+  });
+
+  test("leaves the reader's focus alone without autoFocus", () => {
+    const outside = document.body.appendChild(document.createElement("button"));
+    try {
+      outside.focus();
+      render(
+        <SegmentedControl
+          label="Choice"
+          value="one"
+          options={[
+            { value: "one", label: "One" },
+            { value: "two", label: "Two" },
+          ]}
+          onChange={() => {}}
+        />,
+      );
+      expect(document.activeElement).toBe(outside);
+    } finally {
+      outside.remove();
+    }
+  });
 });
 
 describe("disabled behavior and form safety", () => {
@@ -381,6 +435,28 @@ describe("stacked detail", () => {
   });
 });
 
+describe("wrap layout", () => {
+  const wrapped = [
+    { value: "agents", label: "Agents", detail: "18/1069" },
+    { value: "about", label: "About" },
+  ];
+
+  test("marks the option and every text line for wrapping", () => {
+    render(<SegmentedControl label="Kind" value="agents" options={wrapped} onChange={() => {}} wrap />);
+    const agents = screen.getByRole("radio", { name: "Agents" });
+    expect(agents.className).toContain("wrap");
+    expect([...agents.querySelectorAll("span")].every((span) => span.className.includes("wrap"))).toBe(true);
+    expect(screen.getByRole("radio", { name: "About" }).querySelector("span")?.className).toContain("wrap");
+  });
+
+  test("keeps the default ellipsis layout without the prop", () => {
+    render(<SegmentedControl label="Kind" value="agents" options={wrapped} onChange={() => {}} />);
+    const agents = screen.getByRole("radio", { name: "Agents" });
+    expect(agents.className).not.toContain("wrap");
+    expect(agents.querySelector("span")?.className).not.toContain("wrap");
+  });
+});
+
 describe("thumb", () => {
   function thumbOf(group: HTMLElement): HTMLElement {
     const thumb = group.querySelector('[aria-hidden="true"]');
@@ -481,16 +557,11 @@ describe("CSS contract", () => {
     expect(css).not.toMatch(/\.root\s*\{[^}]*opacity\s*:/s);
     expect(css).not.toMatch(/\.track\s*\{[^}]*opacity\s*:/s);
     expect(css).toMatch(
-      /\.optionLabel\s*\{[^}]*min-inline-size:\s*0[^}]*overflow:\s*hidden[^}]*text-overflow:\s*ellipsis[^}]*white-space:\s*nowrap/s,
+      /\.optionLabel\s*\{[^}]*composes:\s*truncate from "\.\.\/\.\.\/styles\/text\.module\.css"[^}]*min-inline-size:\s*0/s,
     );
     expect(css).toMatch(/\.sm\s*\{[^}]*block-size:\s*28px/s);
     expect(css).toMatch(/\.md\s*\{[^}]*block-size:\s*32px/s);
-    expect(css).toMatch(
-      new RegExp(
-        `@media ${escapeRegExp(MOBILE_QUERY)}, \\(any-pointer: coarse\\) \\{[\\s\\S]*?\\.option\\s*\\{[^}]*min-block-size:\\s*var\\(--tap-min\\)`,
-        "s",
-      ),
-    );
+    expect(css).toMatch(/\.option\s*\{[^}]*composes:\s*tapFloor from "\.\.\/\.\.\/styles\/tapfloor\.module\.css"/s);
     expect(css).toMatch(
       /@media\s*\(prefers-reduced-motion:\s*reduce\)[^{]*\{[\s\S]*?\.option\s*\{[^}]*transition:\s*none/s,
     );

@@ -106,7 +106,7 @@ func TestSessionTokenBudgetOutputReductionEmitsOneWarning(t *testing.T) {
 	eventsDone := captureSessionEvents(sess)
 	sess.strategy = nil
 	sess.history = []schema.Turn{schema.NewTurn(schema.TurnUserInput, llm.User("task"))}
-	sess.contextMgr.RecordInputTokens(500_000, len(sess.history))
+	sess.contextMgr.RecordInputTokens(500_000, len(sess.history), "")
 	_, _, _, req, _, _, err := sess.prepareModelRequestWithError(context.Background(), 0, new(events.RoundTimings))
 	if err != nil {
 		t.Fatalf("prepareModelRequestWithError: %v", err)
@@ -219,7 +219,7 @@ func TestSessionContinuationOutputReductionsEmitOneFinalWarning(t *testing.T) {
 		phase9MatchingAnchor("resp_warning_shadow"),
 		schema.NewTurn(schema.TurnUserInput, llm.User("current user marker")),
 	)
-	sess.contextMgr.RecordInputTokens(400_000, len(sess.history))
+	sess.contextMgr.RecordInputTokens(400_000, len(sess.history), "")
 	_, _, _, req, _, _, err := sess.prepareModelRequestWithError(context.Background(), 0, new(events.RoundTimings))
 	if err != nil {
 		t.Fatalf("prepareModelRequestWithError: %v", err)
@@ -529,7 +529,7 @@ func TestSessionFallbackBudgetAfterLocalRecoveryEmitsOneWarning(t *testing.T) {
 	sess.strategy = nil
 	sess.cfg.ModelFallbacks = []string{"local-fallback/fallback-model"}
 	sess.resolveProfile = func(string) (*provider.Profile, error) { return fallback, nil }
-	sess.contextMgr.RecordInputTokens(524_000, 0)
+	sess.contextMgr.RecordInputTokens(524_000, 0, "")
 	if _, err := sess.ProcessInput(context.Background(), "task", nil); err == nil {
 		t.Fatal("ProcessInput succeeded despite fallback input budget error")
 	}

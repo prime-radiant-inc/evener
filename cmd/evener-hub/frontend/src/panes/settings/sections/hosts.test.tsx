@@ -173,7 +173,7 @@ test("Connect renders the remote build and clears it when a later connection has
     await user.click(within(sheet).getByRole("button", { name: "Connect" }));
     await waitFor(() => expect(within(sheet).queryByRole("button", { name: "Connect" })).toBeNull());
     await act(async () => hostsStore.getState().refresh());
-    const field = sheet.querySelector('[data-field="hub-version"]');
+    const field = sheet.querySelector('[data-field="hub-version"] dd');
     if (version === undefined) expect(field).toBeNull();
     else expect(field?.textContent).toBe(version);
     expect(sheet.textContent).not.toContain("controller-sentinel");
@@ -449,6 +449,15 @@ test("remove confirms then calls evener/host/remove", async () => {
     expect(fake.calls.filter((c) => c.method === "evener/host/remove")).toHaveLength(1);
   });
   expect(fake.calls.find((c) => c.method === "evener/host/remove")?.params).toMatchObject({ name: "beta" });
+});
+
+test("shows three skeleton lines while the host registry read is pending", () => {
+  const fake = connectReadyFakeClient();
+  fake.on("evener/host/list", () => new Promise(() => {}));
+
+  render(<HostsSection sectionId="hosts" />);
+
+  expect(screen.getAllByTestId("skeleton-line")).toHaveLength(3);
 });
 
 test("load failure shows retry", async () => {
@@ -2152,7 +2161,7 @@ test("the host sheet lists the host's retained facts in full", async () => {
   }));
   render(<HostsSection sectionId="hosts" />);
   const sheet = await openHost("beta");
-  const field = (name: string) => sheet.querySelector(`[data-field="${name}"]`)?.textContent;
+  const field = (name: string) => sheet.querySelector(`[data-field="${name}"] dd`)?.textContent;
   expect(field("address")).toBe(longAddress);
   expect(field("hub-version")).toContain("9.9.9");
   expect(field("platform")).toContain("linux");

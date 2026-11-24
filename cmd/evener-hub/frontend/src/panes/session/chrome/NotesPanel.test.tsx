@@ -21,9 +21,11 @@ import {
   setMutationStorageForTests,
   threadsStore,
 } from "../../../stores/threads";
+import { readModuleCss } from "../../../styles/cssBlock";
 import { connectReadyFakeClient } from "../../../testing/connectionTestUtils";
 import { ALL_CAPABILITIES as FULL_CAPABILITIES } from "../../../threadTestUtils";
 import { Toast } from "../../../widgets";
+import rawTextareaStyles from "../../../widgets/textarea/textarea.module.css";
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
 import { toastKinds } from "../../../widgets/toast/toastTestUtils";
 import { flushPendingTurnsProjectionForTests } from "../composer/queue/testing/flushPendingTurnsProjection";
@@ -104,6 +106,15 @@ function openPanel(model: ThreadModel) {
 function editor(): HTMLTextAreaElement {
   return screen.getByRole("textbox", { name: "Human note" }) as HTMLTextAreaElement;
 }
+
+// The human note fills through the widget's own prop. The panel must not
+// reach into Textarea's DOM with a descendant `textarea` width rule.
+test("the human editor claims its width through the Textarea fill prop, not panel CSS", () => {
+  const css = readModuleCss(import.meta.url, "notespanel.module.css");
+  expect(css).not.toMatch(/\btextarea\b/);
+  openPanel(testModel());
+  expect(editor().className.split(" ")).toContain(rawTextareaStyles.fill);
+});
 
 function LivePanel({ sessionRef }: { sessionRef: string }) {
   const model = useStore(threadsStore, (state) => state.threads.get(sessionRef));

@@ -1,6 +1,7 @@
 import { useState } from "react";
+import { Chevron } from "../../widgets/chevron";
 import { Disclosure } from "../../widgets/disclosure";
-import { ThemeFlip } from "../ThemeFlip";
+import { GallerySection } from "../GallerySection";
 import styles from "./disclosure.module.css";
 
 // One row ships defaultOpen and one collapsed, so both an expanded and a
@@ -35,6 +36,18 @@ function DisclosureDemo() {
       <Disclosure id="gallery-disclosure-rule-closed" summary="5 actions" variant="rule">
         <p className={styles.body}>A rule disclosure, collapsed.</p>
       </Disclosure>
+      <Disclosure
+        id="gallery-disclosure-leading"
+        summary="Run · 3 steps"
+        summaryClassName={styles.leadingSummary}
+        leading={(open) => <Chevron open={open} />}
+        defaultOpen
+      >
+        <p className={styles.body}>
+          leading supplies the glyph and receives the widget's open state; summaryClassName carries the caller's own
+          summary layout.
+        </p>
+      </Disclosure>
       <Disclosure id="gallery-disclosure-ignore-baseline" summary="Shared notes updated · 1.2K chars" ignoreBaseline>
         <p className={styles.body}>
           ignoreBaseline: stays folded when the transcript expands everything; only a click opens it.
@@ -52,11 +65,8 @@ function DisclosureDemo() {
 
 export default function DisclosureGallerySection() {
   return (
-    <section data-testid="disclosure-gallery">
-      <h2>Disclosure</h2>
-      <ThemeFlip>
-        <DisclosureDemo />
-      </ThemeFlip>
-    </section>
+    <GallerySection title="Disclosure" testId="disclosure-gallery">
+      <DisclosureDemo />
+    </GallerySection>
   );
 }

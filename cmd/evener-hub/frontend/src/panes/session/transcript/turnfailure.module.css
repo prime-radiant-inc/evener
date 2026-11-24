@@ -21,15 +21,6 @@
 }
 
 .hintText {
-  font-family: var(--font-sans);
-  font-size: var(--font-size-caption);
-  color: var(--ink-mid);
+  composes: helpCaption from "../../../styles/help.module.css";
 }
 
-.hint {
-  flex-basis: 100%;
-  margin-top: var(--space-1);
-  font-family: var(--font-sans);
-  font-size: var(--font-size-caption);
-  color: var(--ink-mid);
-}

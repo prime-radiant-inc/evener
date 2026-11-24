@@ -26,59 +26,151 @@
   border-top: 1px solid var(--edge);
 }
 
-/* --- the tool card --------------------------------------------------
- * A run of tool rows reads as ONE grouped surface with hairline dividers.
- * Where one element holds the rows it composes .grouped and .groupedRows.
- * Inside a turn the rows are siblings of the turn's other items, so the card
- * is drawn across them instead: TurnBlock marks each row's wrapper with its
- * place in the run (data-tool-card: only, first, middle, last) and the
- * wrapper's child - the row's own root - carries its slice of the same
- * surface. The position is an attribute, not adjacency, because a suppressed
- * call leaves an empty wrapper between two rows of one card.
- *
- * Every row of a card reads its insets from here: the inline inset its
- * content keeps from the card's edge, and the block padding above and below
- * its lines, one item step so a row stays on the rhythm scale. */
+/* Plain vertical stacks, named by gap step: the layout a form, a settings
+ * section and a dialog body all open with, and the inner stack a list of
+ * rows uses. They are not surfaces - consumers compose one for the
+ * arrangement alone and add only their own layout. */
+.stack1 {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.stack2 {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.stack3 {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.stack4 {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.stack5 {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+
+/* The reading measure a settings section keeps its children inside. */
+.sectionMeasure {
+  max-width: 720px;
+}
+
+/* A list that is also a stack: no marker, no inset. */
+.listReset {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* --- the reading measure ---------------------------------------------
+ * The one centered column the transcript, the composer, the ask dock, the
+ * find bar and the spawn form stand in. --session-measure is declared on
+ * <body> in tokens.css (44rem, or 64rem under the Transcript width
+ * preference), so a surface that renders outside a TurnBlock - a
+ * virtual-list row, a docked bar, a whole pane form - reads the token
+ * itself and still lines up with every turn above it. Consumers compose
+ * this and add only their own layout. Settings' content column is bounded
+ * but not centered, so it does not compose this. */
+.measureColumn {
+  width: 100%;
+  max-width: var(--session-measure);
+  margin-inline: auto;
+}
+
+/* The quiet status line a settings section shows while it waits on the hub
+ * or reports a save in flight: caption ink, no margin, in the flow. */
+.settingsSectionStatus {
+  margin: 0;
+  color: var(--ink-mid);
+  font-size: var(--font-size-caption);
+  line-height: var(--line-height-body);
+}
+
+/* A settings section opens at pane-title size, a subsection at body size. */
+.settingsSectionHeading {
+  margin: 0;
+  color: var(--ink-hi);
+  font-weight: var(--font-weight-semibold);
+}
+.settingsSectionHeadingPaneTitle { font-size: var(--font-size-pane-title); }
+.settingsSectionHeadingBody { font-size: var(--font-size-body); }
+
+/* The prompt card's control-row leading cluster: the attach control, the
+ * model trigger and effort in one row. The session composer and the spawn
+ * form render the same PromptCard row and compose this; the composer adds
+ * its leading inset and wrap. */
+.cardLeading {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+/* The staged-attachment strip in a prompt card: wrapping tiles one gap
+ * apart. */
+.attachmentStrip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+/* --- the summary tiles -----------------------------------------------
+ * The two tiles under a page's primary task - a directory that is itself a
+ * button and a status card that is not - share one inner layout: a row with
+ * a field seat, a text column that takes the slack, a medium headline, and a
+ * caption. Consumers compose these and add only their own surface, padding,
+ * and interaction, so the pair cannot drift apart. */
+.summaryTile {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  color: var(--ink-hi);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-ui);
+  line-height: var(--line-height-ui);
+  text-align: left;
+}
+
+.summaryText {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  gap: var(--space-1);
+}
+
+.summaryHeadline {
+  font-weight: var(--font-weight-medium);
+  overflow-wrap: anywhere;
+}
+
+.summaryCaption {
+  color: var(--ink-mid);
+  font-size: var(--font-size-caption);
+  overflow-wrap: anywhere;
+}
+
+/* Calls and folded summaries share an inset so their kind icons line up. */
 .toolRowInsets {
   --tool-card-inset: var(--space-3);
   --tool-card-row-pad: var(--rhythm-item);
 }
 
-.toolRunSegment > * {
-  border-inline: 1px solid var(--edge);
-  border-top: 1px solid var(--edge);
-  border-radius: var(--tool-card-radius-top) var(--tool-card-radius-top) var(--tool-card-radius-bottom)
-    var(--tool-card-radius-bottom);
-  background: var(--surface-1);
-}
-
-/* The slice's corners are custom properties on the wrapper, so a row root
- * that paints to the card's edge from inside a shadow-slotted element (a
- * details' summary and content) can take the same corners: `inherit` stops
- * at the slot, an inherited custom property does not. */
-.toolRunSegment {
-  --tool-card-radius-top: 0;
-  --tool-card-radius-bottom: 0;
-}
-
-.toolRunSegment[data-tool-card="first"],
-.toolRunSegment[data-tool-card="only"] {
-  --tool-card-radius-top: var(--radius-pane);
-}
-
-.toolRunSegment[data-tool-card="last"],
-.toolRunSegment[data-tool-card="only"] {
-  --tool-card-radius-bottom: var(--radius-pane);
-}
-
-.toolRunSegment[data-tool-card="last"] > *,
-.toolRunSegment[data-tool-card="only"] > * {
-  border-bottom: 1px solid var(--edge);
-  box-shadow: var(--shadow-card);
-}
-
-/* The card keeps one item step clear of the prose around it; rows inside it
- * are separated by their dividers alone. */
+/* A run keeps one item step clear of the prose around it. */
 .toolRunSegment[data-tool-card="first"],
 .toolRunSegment[data-tool-card="only"] {
   padding-top: var(--rhythm-item);
@@ -90,13 +182,8 @@
 }
 
 /* --- the field seat --------------------------------------------------
- * The rounded --field square a glyph sits on. .fieldSeat is the seat as an
- * element: a tile's leading box, --field-seat-size square, centring its
- * glyph. .fieldSeatBehind paints the same square BEHIND a glyph slot that
- * must keep its own one-line layout box: the slot is the positioning
- * context, and the ground is centred on its avatar column at the row size,
- * placed with insets rather than a transform so the slot creates no stacking
- * context. Painted, not laid out, and transparent to the pointer. */
+ * The rounded --field square a glyph sits on: a tile's leading box,
+ * --field-seat-size square, centring its glyph. */
 .fieldSeat {
   display: inline-flex;
   flex: none;
@@ -104,24 +191,15 @@
   justify-content: center;
   width: var(--field-seat-size);
   height: var(--field-seat-size);
-}
-
-.fieldSeatBehind {
-  position: relative;
-}
-
-.fieldSeatBehind::before {
-  content: "";
-  position: absolute;
-  top: calc(50% - var(--field-seat-size-row) / 2);
-  left: calc((var(--speaker-avatar-size) - var(--field-seat-size-row)) / 2);
-  width: var(--field-seat-size-row);
-  height: var(--field-seat-size-row);
-  pointer-events: none;
-}
-
-.fieldSeat,
-.fieldSeatBehind::before {
   border-radius: var(--radius-control);
   background: var(--field);
+}
+
+.railBody {
+  padding: var(--space-2);
+  border-left: 2px solid var(--edge);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-body);
+  color: var(--ink-mid);
+  overflow-wrap: break-word;
 }

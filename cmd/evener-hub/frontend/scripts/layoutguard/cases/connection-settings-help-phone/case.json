@@ -1,17 +1,21 @@
 {
   "name": "connection-settings-help-phone",
-  "description": "At a phone viewport the shared connection settings row stacks its label, control, and help in one column. The credential-header row always carries help; without a mobile reset of .settingHelp's grid-column: 2, the help creates an implicit second column and the input sits beside its label instead of under it.",
+  "description": "At a phone viewport the shared connection settings row stacks its label, control, and help in one column. PropertyList's settings variant puts the help inside .settingsValue under the control; without the mobile one-column reset of .settingsRow, the row keeps its 104px label track and the input and help sit beside the label instead of below it.",
   "cssFiles": [
     "styles/global.css",
+    "styles/tapfloor.module.css",
+    "styles/text.module.css",
     "styles/tokens.css",
+    "styles/help.module.css",
+    "widgets/internal/control.module.css",
     "widgets/input/input.module.css",
-    "panes/settings/sections/credentials/ConnectionFacts.module.css"
+    "widgets/propertylist/propertylist.module.css"
   ],
   "viewport": { "width": 390, "height": 844, "deviceScaleFactor": 2, "mobile": true },
   "mutation": {
-    "declaration": "panes/settings/sections/credentials/ConnectionFacts.module.css: the @media (max-width: 480px) .settingHelp { grid-column: 1 } reset (deleted), leaving grid-column: 2 in the one-column row",
-    "verified": "2026-10-23",
+    "declaration": "widgets/propertylist/propertylist.module.css: the @media (max-width: 480px) .settingsRow { grid-template-columns: minmax(0, 1fr) } reset (removed from the media selector list), leaving the two-column settings grid at a phone width",
+    "verified": "2026-11-23",
     "expect": "fail",
-    "note": "Red run before the mobile reset: the help keeps grid-column 2, the row grows an implicit second column, and the geometry assertions fail. Restoring the reset passes with the label, input, and help stacked in one column."
+    "note": "Observed red run with .settingsRow removed from the phone media selector: the row measured 2 tracks (104px 242px), and the input and help both started 116px from the label's left edge, beside it. Restoring the reset passes: one 358px column, a 358px input, and the help below it."
   }
 }

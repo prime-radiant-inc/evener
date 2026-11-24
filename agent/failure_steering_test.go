@@ -33,6 +33,14 @@ func midStreamErr() error {
 	return llm.NewStreamError("lunarouter", "openai-compatible stream ended without completion", nil)
 }
 
+// toolCallCapErr is the terminal error a runaway response produces when it
+// exceeds maxToolCallsPerResponse.
+func toolCallCapErr() error {
+	return &responseToolCallLimitError{
+		cause: llm.NewPermanentStreamError("lunarouter", "assistant response exceeded 100 tool calls", nil),
+	}
+}
+
 // inBandErr is the shape the openai-compat adapter decodes an in-band
 // {"error": ...} chunk into.
 func inBandErr() error {
@@ -142,6 +150,14 @@ func TestClassifySettlement(t *testing.T) {
 			name:     "abort error never settles",
 			rec:      &roundRecorder{Groups: []groupRecord{withSalvage(capGroup(2), strings.Repeat("plan ", 2000))}},
 			terminal: llm.NewAbortError("cancelled", context.Canceled),
+			want:     settleNone,
+		},
+		{
+			// The partial is the runaway itself, so persisting it as a draft
+			// would steer the model to re-issue the same calls.
+			name:     "tool-call cap never settles even with salvage",
+			rec:      &roundRecorder{Groups: []groupRecord{withSalvage(capGroup(2), strings.Repeat("[incomplete tool call: x] ", 100))}},
+			terminal: toolCallCapErr(),
 			want:     settleNone,
 		},
 		{

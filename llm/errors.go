@@ -399,11 +399,13 @@ func RewriteErrorProvider(err error, provider string) error {
 		return nil
 	}
 	//nolint:errorlint // deliberate: only the error itself is rewritten, never one inside a wrapper this package cannot rebuild (see above)
-	pc, ok := err.(providerCopier)
-	if !ok || pc.Provider() == "" {
-		return err
+	if pc, ok := err.(providerCopier); ok {
+		if pc.Provider() == "" {
+			return err
+		}
+		return pc.copyWithProvider(provider)
 	}
-	return pc.copyWithProvider(provider)
+	return err
 }
 
 // ErrorFromHTTPStatus maps an HTTP status code to the corresponding Error

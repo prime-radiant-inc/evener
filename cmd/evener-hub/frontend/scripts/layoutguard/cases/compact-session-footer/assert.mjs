@@ -54,9 +54,8 @@ export default function assert(measurements) {
       if (m.card.height > m.controls.height + tolerance + m.cardFraming) {
         fail("folded card is taller than one control row plus its framing");
       }
-    } else {
-      expectContained(m.attachment, m.controls, "attachment control");
     }
+    expectContained(m.attachment, m.card, "attachment control");
     expectContained(m.modelTrigger, m.controls, "model control");
     expectContained(m.effort, m.controls, "effort control");
     expectContained(m.context, m.controls, "context control");
@@ -75,9 +74,11 @@ export default function assert(measurements) {
     ]) {
       expectSameRow(box, label);
     }
-    if (!m.folded) expectSameRow(m.attachment, "attachment control");
+    if (Math.abs(m.attachment.bottom - m.controls.bottom) > tolerance) {
+      fail("attachment control is not bottom-aligned with the composer controls");
+    }
 
-    if (!m.folded) expectBefore(m.attachment, m.modelTrigger, "attachment → model");
+    expectBefore(m.attachment, m.modelTrigger, "attachment → model");
     expectBefore(m.modelTrigger, m.effort, "model → effort");
     expectBefore(m.effort, m.context, "effort → context");
     expectBefore(m.context, m.sessionActions, "context → session actions");
@@ -87,15 +88,13 @@ export default function assert(measurements) {
     // outline plus its 2px offset even though Send is the row's trailing item.
     if (m.card.right - m.send.right < 4 - tolerance) fail("Send focus ring has no trailing clearance inside the card");
 
-    if (m.contextStructure.semanticTag !== "METER") fail("context semantic is not a native meter");
-    if (m.contextStructure.semanticChildren !== 0) fail("native context meter contains visual fallback children");
-    if (m.contextStructure.semanticBox.width > tolerance || m.contextStructure.semanticBox.height > tolerance) {
-      fail("native context meter is not visually hidden");
+    const context = m.contextStructure;
+    if (context.meterCount !== 1) fail(`context should expose exactly one role=meter, got ${context.meterCount}`);
+    if (context.meterAriaLabel === null || context.meterAriaLabel.trim() === "") {
+      fail("exposed context meter has no accessible name");
     }
-    if (!m.contextStructure.semanticNextIsVisual) fail("context meter and visual wrapper are not siblings");
-    if (m.contextStructure.visualTag !== "SPAN" || m.contextStructure.visualAriaHidden !== "true") {
-      fail("context visual wrapper is not an aria-hidden span");
-    }
+    if (context.meterAriaHidden !== false) fail("context meter is hidden from the accessibility tree");
+    if (context.wrapperAriaHidden !== null) fail("context wrapper is aria-hidden, hiding its only meter");
     if (m.model.textOverflow !== "ellipsis" || m.model.whiteSpace !== "nowrap") fail("model does not ellipsize");
     if (m.model.clientWidth <= 0) fail("model visible value has zero width");
 
@@ -137,8 +136,28 @@ export default function assert(measurements) {
     expectDisplay(m.workDisplay, full, "work time");
     expectDisplay(m.queueFullDisplay, fullQueue, "full queue label");
     expectDisplay(m.queueCompactDisplay, !fullQueue, "compact queue label");
-    expectDisplay(m.contextMeterDisplay, barContext, "context meter");
     expectDisplay(m.contextPercentDisplay, !barContext, "context percentage");
+    if (m.contextMeterDisplay === "none") {
+      fail("context meter wrapper is display:none, removing the only spoken reading");
+    }
+    if (m.contextPercentAriaHidden !== "true") {
+      fail("context percentage is exposed to assistive tech alongside the meter");
+    }
+    if (barContext) {
+      if (context.meterBox === null || context.meterBox.width < 1 || context.meterBox.height < 1) {
+        fail("context meter bar is not visible");
+      }
+    } else {
+      // Below the bar threshold the gauge is clipped, never unrendered: its
+      // wrapper stays in layout at a 1px box so role=meter keeps its name.
+      if (context.wrapperPosition !== "absolute") fail("compact context meter wrapper is not clipped out of flow");
+      if (!context.wrapperClip.startsWith("rect(")) fail("compact context meter wrapper is not clipped");
+      if (context.wrapperBox.width > 1 + tolerance || context.wrapperBox.height > 1 + tolerance) {
+        fail("compact context meter wrapper is not a 1px box");
+      }
+    }
+    // The resolver inlines composed @container rules ungated, so only the narrow hide is observable here.
+    if (m.width <= 559) expectDisplay(m.stopLabelDisplay, false, "Stop label stack");
     if (full) expectContained(m.work, m.status, "work time");
 
     // Shrink-to-fit contract: the model trigger hugs its label at every width.

@@ -38,7 +38,7 @@ func TestProviderIdleCompactionFallbackUsesSessionPolicy(t *testing.T) {
 
 func TestProviderIdleAuxiliarySessionRequests(t *testing.T) {
 	for _, value := range []string{"", "45s"} {
-		for _, path := range []string{"web search", "compaction", "cheap caller", "naming", "prompt hook"} {
+		for _, path := range []string{"compaction", "cheap caller", "naming", "prompt hook"} {
 			t.Run(value+"/"+path, func(t *testing.T) {
 				want := 10 * time.Minute
 				if value != "" {
@@ -55,8 +55,6 @@ func TestProviderIdleAuxiliarySessionRequests(t *testing.T) {
 				ctx := context.Background()
 				var err error
 				switch path {
-				case "web search":
-					_, err = sess.webSearch(ctx, "question")
 				case "compaction":
 					_, err = sess.contextMgr.ElicitNote(ctx, nil, nil)
 				case "cheap caller":

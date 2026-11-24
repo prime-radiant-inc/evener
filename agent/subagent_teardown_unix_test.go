@@ -162,11 +162,10 @@ func TestParentCloseSettlesAnOwnedUnsandboxedChildScratch(t *testing.T) {
 	}
 }
 
-// Stable-controller reclamation closes retained terminal delegate runtimes to
-// admit a new one. Like eviction it is a child teardown: the runtime's
-// environment is the root's own or a clone sharing the root's process table,
-// and the root is mid-create when this runs, so closing the runtime must not
-// reach that environment.
+// Stable-controller reclamation releases a retained terminal delegate runtime's
+// residency to admit a new one, non-terminally. The runtime's environment is
+// the root's own or a clone sharing the root's process table, and the root is
+// mid-create when this runs, so the release must not reach that environment.
 func TestReclaimedDelegateRuntimeLeavesTheRootEnvironmentAlone(t *testing.T) {
 	root, client, profile := newDelegateResourceBootstrapSession(t)
 	shared, ok := root.currentEnv().(*execenv.LocalExecutionEnvironment)
@@ -183,6 +182,11 @@ func TestReclaimedDelegateRuntimeLeavesTheRootEnvironmentAlone(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession on the root's environment: %v", err)
 	}
+	// Production child runtimes always record whether their environment was
+	// built for them or handed over; this fixture builds one by hand on the
+	// parent's own object, so it must record the same ownership. Without this
+	// the non-terminal release would read the parent's live scratch as its own.
+	resident.recordEnvironmentOwnership(shared, false)
 	root.delegateController.maxRetainedTerminal = 1
 	seedDelegateReclaimRuntimeSession(t, root.delegateController, "dlg_old", "", time.Unix(5, 0).UTC(), false, false, resident)
 
@@ -190,8 +194,13 @@ func TestReclaimedDelegateRuntimeLeavesTheRootEnvironmentAlone(t *testing.T) {
 		t.Fatalf("reclaimDelegateRuntimeCapacity: %v", err)
 	}
 
-	if got := resident.State(); got != SessionClosed {
-		t.Errorf("reclaimed runtime state = %q, want %q", got, SessionClosed)
+	// The release is residency-only: the durable session stays resumable, so it
+	// is not closed and its teardown pass is spent.
+	if got := resident.State(); got == SessionClosed {
+		t.Errorf("reclaimed runtime state = %q, want a non-terminal release", got)
+	}
+	if err := resident.releaseRuntime(context.Background(), closeOptions{}, releaseRetirement); !errors.Is(err, errRetirementTeardownSpent) {
+		t.Errorf("reclaimed runtime teardown = %v, want errRetirementTeardownSpent", err)
 	}
 	assertInFlightProcessSurvived(t, "reclamation", pid, done)
 	assertParentScratchUntouched(t, "reclamation", sharedScratch)

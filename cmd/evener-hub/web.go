@@ -87,6 +87,7 @@ type WebServer struct {
 	deletionStoreErr          error
 	transcriptDisplayStoreErr error
 	keybindingsStoreErr       error
+	creationStoreErr          error
 }
 
 var manifestMarshal = json.Marshal
@@ -149,6 +150,9 @@ func newWebServer(cfg hubcore.WebConfig, appwireTrace *appserver.WebSocketTrace)
 	if cfg.KeybindingsStore == nil {
 		cfg.KeybindingsStore, keybindingsStoreErr = hubcore.NewKeybindingsStore(cfg.HubStateRoot)
 	}
+	if cfg.CreationStore == nil && cfg.CreationStoreErr == nil {
+		cfg.CreationStore, cfg.CreationStoreErr = hubcore.NewCreationStore(cfg.HubStateRoot)
+	}
 	// One live host registry shared by every host-dependent surface. An
 	// embedder or test that threads none gets a fallback built once here —
 	// the same instance the attach, host-management, and admin handlers
@@ -195,6 +199,7 @@ func newWebServer(cfg hubcore.WebConfig, appwireTrace *appserver.WebSocketTrace)
 		recoveryStoreErr:          recoveryStoreErr,
 		transcriptDisplayStoreErr: transcriptDisplayStoreErr,
 		keybindingsStoreErr:       keybindingsStoreErr,
+		creationStoreErr:          cfg.CreationStoreErr,
 	}
 	// Transcript-index repairs hang off the server's lifetime like the rest
 	// of its background work: construction arms the repair registry with the

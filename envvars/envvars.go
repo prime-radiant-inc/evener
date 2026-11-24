@@ -138,8 +138,6 @@ var (
 	GoogleVertexProject                = Var{Name: "GOOGLE_VERTEX_PROJECT", Summary: "Google Vertex project the endpoint is built from.", Visibility: Public}
 	GoogleVertexLocation               = Var{Name: "GOOGLE_VERTEX_LOCATION", Summary: "Google Vertex location the endpoint host is built from.", Visibility: Public}
 	GoogleApplicationCredentials       = Var{Name: "GOOGLE_APPLICATION_CREDENTIALS", Summary: "Path to the Google application-default credentials file; when unset, the well-known gcloud path is used.", Visibility: Public}
-	GoogleVertexAPIKey                 = Var{Name: "GOOGLE_VERTEX_API_KEY", Summary: "Google Cloud API key for Vertex AI express mode; the google-vertex-express instance.", Secret: true, Visibility: Public}
-	GoogleVertexExpressBaseURL         = Var{Name: "GOOGLE_VERTEX_EXPRESS_BASE_URL", Summary: "Vertex AI express-mode base URL override (default https://aiplatform.googleapis.com/v1).", Visibility: Public}
 	CloudflareAccountID                = Var{Name: "CLOUDFLARE_ACCOUNT_ID", Summary: "Cloudflare account id the Workers AI endpoint is built from.", Visibility: Public}
 	DatabricksHost                     = Var{Name: "DATABRICKS_HOST", Summary: "Databricks workspace host the endpoint is built from.", Visibility: Public}
 	InfomaniakProductID                = Var{Name: "INFOMANIAK_PRODUCT_ID", Summary: "Infomaniak product id the endpoint is built from.", Visibility: Public}
@@ -160,7 +158,7 @@ var (
 	Display        = Var{Name: "DISPLAY", Summary: "Used to auto-detect graphical sessions for OpenAI login.", Visibility: Inherited}
 	GoCache        = Var{Name: "GOCACHE", Summary: "Inherited by core-only command environments; the sandbox overlays or redirects it with the other Go caches.", Visibility: Inherited}
 	GoEnv          = Var{Name: "GOENV", Summary: "Names the go env file a sandboxed session reads at start to find a GOPATH set with go env -w (off disables it).", Visibility: Inherited}
-	GoGC           = Var{Name: "GOGC", Summary: "The Go collector's target for evener's own processes. Unset tunes it to 200; an exported value is honored as it stands (off disables collection), and a value the collector would not honor refuses startup.", Visibility: Inherited}
+	GoGC           = Var{Name: "GOGC", Summary: "The Go collector's target for evener's own processes. Unset or empty tunes it to 200; an exported value is honored as it stands and parsed by the Go runtime (off disables collection).", Visibility: Inherited}
 	GoModCache     = Var{Name: "GOMODCACHE", Summary: "Inherited by core-only command environments.", Visibility: Inherited}
 	GoPath         = Var{Name: "GOPATH", Summary: "Inherited by core-only command environments.", Visibility: Inherited}
 	Home           = Var{Name: "HOME", Summary: "Home directory fallback for state/config paths and path expansion.", Visibility: Inherited}
@@ -275,8 +273,6 @@ var allVars = []Var{
 	GoogleVertexProject,
 	GoogleVertexLocation,
 	GoogleApplicationCredentials,
-	GoogleVertexAPIKey,
-	GoogleVertexExpressBaseURL,
 	CloudflareAccountID,
 	DatabricksHost,
 	InfomaniakProductID,

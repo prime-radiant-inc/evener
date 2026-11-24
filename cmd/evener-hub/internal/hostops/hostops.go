@@ -7,12 +7,12 @@
 //
 // Beyond the substrate, this package owns the custody-first quarantine of a
 // corrupt store file (§4: quarantine.go and custody.go, driven by Open) and the
-// live `quarantineEpoch` that pagination cursors pin (§8: cursor.go); the
-// per-host gate (§5) is the manager's. Its
-// record schema, states, one atomic write discipline, one store mutex, and load
-// are the substrate those paths stand on; dedup and the create-from-consume
-// write (§6), operations pagination (§8), and retention and compaction with
-// the dedup tombstones (§4) have landed on top of it.
+// live `quarantineEpoch` the quarantine advances; the per-host gate (§5) is the
+// manager's. Its record schema, states, one atomic write discipline, one store
+// mutex, and load are the substrate those paths stand on; dedup and the
+// create-from-consume write (§6), the bounded operations read (§8, §10:
+// operations.go), and retention and compaction with the dedup tombstones (§4)
+// have landed on top of it.
 //
 // The confirmation token's durable half (§3) lives in token.go: the row schema,
 // the mint write's supersede rule, the validate/consume pass, the lazy and boot
@@ -25,7 +25,7 @@
 // by the same hub.toml writes that change the pair — lives in boundary.go. The
 // store owns the record's shape and its one atomic mirror write; the boot
 // reconciliation of a mirror that trails hub.toml (deploy-pipeline §4's commit
-// marker rule) and cursor validation (§8) belong to the slices that read it.
+// marker rule) belongs to the slice that reads it.
 //
 // Corrupt or unreadable store: spec §4 quarantines a corrupt or schema-invalid
 // store file in custody-first order, and §7 runs the operation store's load

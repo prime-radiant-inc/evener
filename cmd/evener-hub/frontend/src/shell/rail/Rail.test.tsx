@@ -38,6 +38,7 @@ import { connectionStore, resetConnectionStoreForTests } from "../../stores/conn
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
 import { prefsStore, resetPrefsStoreForTests } from "../../stores/prefs";
 import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
+import { SHOW_DELAY_MS } from "../../widgets/hovercard/useFloatingLabel";
 import { getToasts, resetToastStoreForTests } from "../../widgets/toast/store";
 import { toastKinds } from "../../widgets/toast/toastTestUtils";
 import { hoverForTooltip } from "../../widgets/tooltip/tooltipTestUtils";
@@ -451,7 +452,7 @@ describe("resource-backed Rail", () => {
     }
   });
 
-  // The clock's subscription boundary. activeWorkSummary runs on every
+  // The clock's subscription boundary. effectiveSessionState runs on every
   // SessionRow render, so counting it pins whether a tick woke the memoized row
   // or only its stamp - the boundary the row's own comment claims.
   test("a clock tick wakes only the age stamp, not the row around it", () => {
@@ -881,6 +882,26 @@ describe("resource-backed Rail", () => {
       const button = brand.getByRole("button", { name: label });
       expect(button.querySelector("svg")).toBeTruthy();
       expect(button.textContent?.trim()).toBe("");
+    }
+  });
+
+  test("the header's three icon buttons all rest without a tooltip", () => {
+    installState();
+    render(<Rail onHide={vi.fn()} />);
+    const brand = within(screen.getByTestId("rail-brand"));
+    const buttons = ["Settings", "Search", "Hide sidebar"].map((label) => brand.getByRole("button", { name: label }));
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      for (const button of buttons) {
+        fireEvent.mouseEnter(button);
+        act(() => {
+          vi.advanceTimersByTime(SHOW_DELAY_MS);
+        });
+        expect(screen.queryByRole("tooltip")).toBeNull();
+        fireEvent.mouseLeave(button);
+      }
+    } finally {
+      vi.useRealTimers();
     }
   });
 

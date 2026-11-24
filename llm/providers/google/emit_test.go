@@ -48,7 +48,7 @@ func googleEmitCatalog() []llm.ToolDefinition {
 func TestTheDeriverMatchesTheBuiltFunctionDeclarations(t *testing.T) {
 	t.Parallel()
 	defs := googleEmitCatalog()
-	built := toGeminiFunctionDecls(defs)
+	built := toInteractionFunctionDecls(defs)
 
 	sent, changed := (&Protocol{}).EmitToolSchemas(defs, registry.Resolved{})
 	if !changed {

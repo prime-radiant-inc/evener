@@ -1,5 +1,5 @@
 import { markCacheSessionsDeleted } from "../stores/threads";
-import { navigate, paneToURL, urlToPane } from "./routing";
+import { navigate, paneToURL, refParam, urlToPane } from "./routing";
 import { workspaceStore } from "./workspace";
 
 // n15j's safety contract for any delete that actually happened: "if the
@@ -33,8 +33,8 @@ export function closePanesForDeletedSessions(deletedIDs: string[]): void {
   const goneRefs = deletedSessionRefs(deletedIDs);
   const workspace = workspaceStore.getState();
   for (const pane of workspace.panes) {
-    const paneRef = (pane.params as { ref?: unknown }).ref;
-    if (typeof paneRef === "string" && goneRefs.has(paneRef)) workspace.closePane(pane.id);
+    const paneRef = refParam(pane.params);
+    if (paneRef !== null && goneRefs.has(paneRef)) workspace.closePane(pane.id);
   }
   leaveDeadRoute(goneRefs);
 }
@@ -54,8 +54,8 @@ export function closePanesForDeletedSessions(deletedIDs: string[]): void {
 function leaveDeadRoute(goneRefs: ReadonlySet<string>): void {
   const route = urlToPane(window.location.pathname);
   if (route?.type !== "session") return;
-  const routedRef = (route.params as { ref?: unknown }).ref;
-  if (typeof routedRef !== "string" || !goneRefs.has(routedRef)) return;
+  const routedRef = refParam(route.params);
+  if (routedRef === null || !goneRefs.has(routedRef)) return;
   const welcome = paneToURL("welcome", {});
   if (welcome !== null) navigate(welcome);
 }

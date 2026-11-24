@@ -472,6 +472,7 @@ func TestHostAdminAllowListMatchesCatalog(t *testing.T) {
 		"evener/devicePairing/cancel":  false,
 		"evener/dirs/create":           true, // discovery: create the host directory the spawn form asked for
 		"evener/favorite/set":          false,
+		"evener/files/search":          true, // discovery: fuzzy-search files under a remote host directory
 		"evener/git/head":              true, // discovery: read-only branch metadata for a remote path
 		"evener/harnesses/list":        true, // discovery: the host's own harnesses
 		"evener/host/request":          false,
@@ -1826,6 +1827,7 @@ func TestHostAdminMutationClassificationMatchesAllowList(t *testing.T) {
 		appwire.MethodEvenerAuthList:             true,
 		appwire.MethodEvenerSettingsAgentsDocGet: true,
 		appwire.MethodEvenerPathsComplete:        true,
+		appwire.MethodEvenerFilesSearch:          true,
 		appwire.MethodEvenerPathValidate:         true,
 		appwire.MethodEvenerProjectsRecent:       true,
 		appwire.MethodEvenerHarnessesList:        true,

@@ -18,11 +18,11 @@ import {
 } from "../../../stores/humanNoteDrafts";
 import { beginUrlRemoval, endUrlRemoval, usePendingUrlRemovals } from "../../../stores/pendingUrlRemovals";
 import { threadsStore } from "../../../stores/threads";
-import { Button, EmptyState, Eyebrow, InlineNotice, Textarea, useToasts } from "../../../widgets";
-import { isWebHref } from "../../../widgets/contextcard";
+import { Button, EmptyState, InlineNotice, isWebHref, Textarea, useToasts } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { FileOpenBesideButton } from "../transcript/fileOpenBeside";
 import styles from "./notespanel.module.css";
+import { PanelSection } from "./PanelSection";
 
 function isFileHref(href: string): boolean {
   return /^file:\/\//.test(href);
@@ -44,23 +44,12 @@ export interface NotesPanelBodyProps {
 }
 
 const CLASS = {
-  section: requireClass(styles.section, "notespanel.module.css", "section"),
   editorGroup: requireClass(styles.editorGroup, "notespanel.module.css", "editorGroup"),
-  editor: requireClass(styles.editor, "notespanel.module.css", "editor"),
   prose: requireClass(styles.prose, "notespanel.module.css", "prose"),
   linkList: requireClass(styles.linkList, "notespanel.module.css", "linkList"),
   linkRow: requireClass(styles.linkRow, "notespanel.module.css", "linkRow"),
   linkUrl: requireClass(styles.linkUrl, "notespanel.module.css", "linkUrl"),
 };
-
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
-  return (
-    <section className={CLASS.section}>
-      <Eyebrow as="h3">{title}</Eyebrow>
-      {children}
-    </section>
-  );
-}
 
 // The human note's save status line: exactly one of saving / saved / error /
 // idle-hint / nothing. The idle-wake copy names the steering-carrier cost
@@ -177,10 +166,10 @@ export function NotesPanelBody({ sessionRef, model, sourcePaneId, editorRef }: N
 
   return (
     <div data-testid="shared-notes-section">
-      <Section title="Your note">
+      <PanelSection title="Your note">
         {live ? (
           <div className={CLASS.editorGroup}>
-            <div className={CLASS.editor} data-testid="shared-notes-editor">
+            <div data-testid="shared-notes-editor">
               <Textarea
                 ref={editorRef}
                 value={draft}
@@ -191,6 +180,7 @@ export function NotesPanelBody({ sessionRef, model, sourcePaneId, editorRef }: N
                 placeholder="Make a note…"
                 autoGrow
                 rows={4}
+                fill
               />
             </div>
             <HumanStatus saving={saving} saved={saved} error={error} idleWake={idleWake} />
@@ -200,9 +190,9 @@ export function NotesPanelBody({ sessionRef, model, sourcePaneId, editorRef }: N
             {model.humanNote}
           </p>
         ) : null}
-      </Section>
+      </PanelSection>
       {(hasNoteText(model.agentNote) || live) && (
-        <Section title="Agent">
+        <PanelSection title="Agent">
           {hasNoteText(model.agentNote) ? (
             <p className={CLASS.prose} data-testid="shared-notes-agent">
               {model.agentNote}
@@ -212,10 +202,10 @@ export function NotesPanelBody({ sessionRef, model, sourcePaneId, editorRef }: N
               <EmptyState size="compact" title="No agent note yet" />
             </div>
           )}
-        </Section>
+        </PanelSection>
       )}
       {(model.sessionUrls.length > 0 || live) && (
-        <Section title="Links">
+        <PanelSection title="Links">
           {model.sessionUrls.length > 0 ? (
             <ul className={CLASS.linkList} data-testid="shared-notes-urls">
               {model.sessionUrls.map((url) => (
@@ -270,12 +260,12 @@ export function NotesPanelBody({ sessionRef, model, sourcePaneId, editorRef }: N
               <EmptyState size="compact" title="No links yet" />
             </div>
           )}
-        </Section>
+        </PanelSection>
       )}
       {!live && !hasContent && (
-        <Section title="Notes">
+        <PanelSection title="Notes">
           <EmptyState size="compact" title="No shared notes" />
-        </Section>
+        </PanelSection>
       )}
     </div>
   );

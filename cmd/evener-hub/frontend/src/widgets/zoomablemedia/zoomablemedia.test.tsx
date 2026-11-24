@@ -101,10 +101,45 @@ test("only fill=true marks the trigger to fill its container's height", () => {
   expect(screen.getByRole("button", { name: "Zoom image" }).hasAttribute("data-fill")).toBe(true);
 });
 
+// Rounding is the tile's shape expressed through the widget: a touch tile
+// stops clipping so its remove control can straddle the corner, so the media
+// must round and clip itself rather than be selected from outside.
+test("radius selects the trigger's rounding without a caller selector", () => {
+  const { rerender } = render(
+    <ZoomableMedia label="Zoom image" onOpen={() => {}}>
+      <img src="data:," alt="" />
+    </ZoomableMedia>,
+  );
+  const button = screen.getByRole("button", { name: "Zoom image" });
+  expect(button.hasAttribute("data-radius")).toBe(false);
+  rerender(
+    <ZoomableMedia label="Zoom image" onOpen={() => {}} radius="inherit">
+      <img src="data:," alt="" />
+    </ZoomableMedia>,
+  );
+  expect(button.getAttribute("data-radius")).toBe("inherit");
+  rerender(
+    <ZoomableMedia label="Zoom image" onOpen={() => {}} radius="control">
+      <img src="data:," alt="" />
+    </ZoomableMedia>,
+  );
+  expect(button.getAttribute("data-radius")).toBe("control");
+});
+
 test("the base trigger keeps automatic height; only the fill form sets 100%", () => {
   const css = readModuleCss(import.meta.url, "zoomablemedia.module.css");
   const base = /\.zoomableMedia\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
   expect(base).not.toMatch(/(^|[;\s])height\s*:/);
   const fill = /\.zoomableMedia\[data-fill\]\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
   expect(fill).toMatch(/height:\s*100%/);
+});
+
+test("radius clips the trigger and takes the ladder's control step or the caller's", () => {
+  const css = readModuleCss(import.meta.url, "zoomablemedia.module.css");
+  const clipping = /\.zoomableMedia\[data-radius\]\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
+  expect(clipping).toMatch(/overflow:\s*hidden/);
+  const inherited = /\.zoomableMedia\[data-radius="inherit"\]\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
+  expect(inherited).toMatch(/border-radius:\s*inherit/);
+  const control = /\.zoomableMedia\[data-radius="control"\]\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
+  expect(control).toMatch(/border-radius:\s*var\(--radius-control\)/);
 });

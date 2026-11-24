@@ -1775,6 +1775,8 @@ function ConversationScreenView({
 	});
 	const { findHits, findKey, findCurrent, stepFind, findJumping, findAttempts, findRetryFrame, retryFindMatch } =
 		useFindInSession({
+			hubId: route.params.hubId,
+			sessionRef: route.params.ref,
 			find,
 			setFind,
 			timelineRows,

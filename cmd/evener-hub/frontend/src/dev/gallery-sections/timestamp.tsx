@@ -1,6 +1,6 @@
 import { Timestamp } from "../../widgets/timestamp";
+import { GallerySection } from "../GallerySection";
 import styles from "../gallery-section.module.css";
-import { ThemeFlip } from "../ThemeFlip";
 
 // A fixed anchor instant, not Date.now() (same reasoning as cadence.tsx's and
 // loader.tsx's own gallery sections): Timestamp is a pure render of its props,
@@ -18,16 +18,13 @@ const SAMPLES: { label: string; value: number }[] = [
 
 export default function TimestampGallerySection() {
   return (
-    <section>
-      <h2>Timestamp</h2>
-      <ThemeFlip>
-        {SAMPLES.map(({ label, value }) => (
-          <div className={styles.row} key={label}>
-            <p className={styles.rowLabel}>{label}</p>
-            <Timestamp value={value} now={NOW} />
-          </div>
-        ))}
-      </ThemeFlip>
-    </section>
+    <GallerySection title="Timestamp">
+      {SAMPLES.map(({ label, value }) => (
+        <div className={styles.row} key={label}>
+          <p className={styles.rowLabel}>{label}</p>
+          <Timestamp value={value} now={NOW} />
+        </div>
+      ))}
+    </GallerySection>
   );
 }

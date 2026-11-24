@@ -90,7 +90,6 @@ type delegateOwedAttentionStart struct {
 	parentID    string
 	attentionID string
 	generation  uint64
-	pendingIDs  []string
 	// turns are the durable turns behind the trigger and the pending items,
 	// read by the same scan that found the generation, so recovery needs no
 	// transcript read after the start commits.
@@ -125,7 +124,7 @@ func (c *delegateTreeController) owedAttentionStartsFromTranscripts() ([]delegat
 	maps.Copy(runStarts, c.runStarts)
 	stateDir := c.stateDir
 	for id, aggregate := range c.durable {
-		if aggregate == nil || aggregate.Phase != delegatestore.PhaseIdle || !delegateAttentionProjectionEligible(c.durable, id) {
+		if aggregate == nil || aggregate.Phase != delegatestore.PhaseIdle || !delegatestore.AttentionProjectionEligible(c.durable, id) {
 			continue
 		}
 		refs = append(refs, coldDelegateAttentionRef{delegateID: id, transcriptRef: aggregate.Descriptor.TranscriptRef})
@@ -196,7 +195,6 @@ func (c *delegateTreeController) owedAttentionStartsFromTranscripts() ([]delegat
 				parentID:    parents[ref.delegateID],
 				attentionID: resume.attentionID,
 				generation:  resume.generation,
-				pendingIDs:  fold.pendingIDs(),
 				turns:       fold.pendingTurns(resume.attentionID),
 			})
 		}
@@ -352,7 +350,7 @@ func (c *delegateTreeController) Reconcile(evidence delegateReconcileEvidence) (
 		wakeAfterUnlock = func() error {
 			var wakeErrs []error
 			for _, wake := range deliveryWakes {
-				wakeErrs = append(wakeErrs, c.wakeDeliveryReceiverAt(wake.receiver, wake.attentionIDs, wake.wakeGeneration))
+				wakeErrs = append(wakeErrs, c.wakeDeliveryReceiverAt(wake.receiver, wake.attentionIDs))
 			}
 			return errors.Join(wakeErrs...)
 		}
@@ -388,8 +386,21 @@ func (c *delegateTreeController) Reconcile(evidence delegateReconcileEvidence) (
 		// machinery resolves it. The controller mutex is held across this
 		// check and the completion append below, so a wake cannot slip into
 		// that window twice and leak past the completed stop.
-		if state := c.attention[id]; state != nil {
-			for attentionID := range state.wakeIDs {
+		if aggregate := c.durable[id]; aggregate != nil {
+			// The queue is the single authority for owed attention. A transcript
+			// row the queue already resolved is history, not work: child
+			// resolutions are store-only now, so no marker retires it and the
+			// stop must not plan its discard forever.
+			owed := attention[:0]
+			for _, attentionID := range attention {
+				if _, resolved := aggregate.ResolvedAttention[attentionID]; resolved {
+					continue
+				}
+				owed = append(owed, attentionID)
+			}
+			attention = owed
+			for _, row := range aggregate.PendingAttention {
+				attentionID := row.AttentionID
 				if !slices.Contains(attention, attentionID) {
 					attention = append(attention, attentionID)
 				}
@@ -523,13 +534,6 @@ func (c *delegateTreeController) reconcileRecoveryRequiredStopLocked() (delegate
 type delegateDeliveryWake struct {
 	receiver     delegateDeliveryReceiver
 	attentionIDs []string
-	// wakeGeneration is the newest settled generation the acknowledgments
-	// grouped into this wake superseded, sampled at delivery admission, not when
-	// each wake was journaled. The callback releases against this sample rather
-	// than reading the generation again after the acknowledgment landed: a stop
-	// that settles in between is newer evidence than this delivery, and
-	// re-sampling would let the older delivery clear that newer quiet.
-	wakeGeneration uint64
 }
 
 // acknowledgeRetryableStopDeliveriesLocked retries the durable acknowledgment
@@ -554,7 +558,6 @@ func (c *delegateTreeController) acknowledgeRetryableStopDeliveriesLocked(stop *
 	var lost []events.WarningData
 	liveOrder := make([]*Session, 0)
 	liveIDs := make(map[*Session][]string)
-	liveGenerations := make(map[*Session]uint64)
 	cold := false
 	buildPlans := func() delegateMutationPlans {
 		plans := c.deliveryAckPlansLocked(
@@ -568,9 +571,8 @@ func (c *delegateTreeController) acknowledgeRetryableStopDeliveriesLocked(stop *
 		wakes := make([]delegateDeliveryWake, 0, len(liveOrder)+1)
 		for _, receiver := range liveOrder {
 			wakes = append(wakes, delegateDeliveryWake{
-				receiver:       receiver,
-				attentionIDs:   liveIDs[receiver],
-				wakeGeneration: liveGenerations[receiver],
+				receiver:     receiver,
+				attentionIDs: liveIDs[receiver],
 			})
 		}
 		if cold {
@@ -667,9 +669,6 @@ func (c *delegateTreeController) acknowledgeRetryableStopDeliveriesLocked(stop *
 					liveOrder = append(liveOrder, receiver)
 				}
 				liveIDs[receiver] = append(liveIDs[receiver], delegateAttentionID(token.deliveryID))
-				if ack.wakeGeneration > liveGenerations[receiver] {
-					liveGenerations[receiver] = ack.wakeGeneration
-				}
 			case coldDelegateDeliveryReceiver:
 				cold = true
 			}
@@ -767,10 +766,9 @@ func (c *delegateTreeController) reportDelegateWakeError(err error) {
 	}
 }
 
-// wakeDeliveryReceiverAt posts the wake for attentionIDs, releasing the
-// receiver's automatic-drive holds against the generation the acknowledgment's
-// release superseded.
-func (c *delegateTreeController) wakeDeliveryReceiverAt(receiver delegateDeliveryReceiver, attentionIDs []string, wakeGeneration uint64) error {
+// wakeDeliveryReceiverAt posts the wake for attentionIDs. The committed queue
+// events it journals clear every user-stop hold in the same store Apply.
+func (c *delegateTreeController) wakeDeliveryReceiverAt(receiver delegateDeliveryReceiver, attentionIDs []string) error {
 	switch receiver := receiver.(type) {
 	case *Session:
 		if receiver == nil {
@@ -779,22 +777,6 @@ func (c *delegateTreeController) wakeDeliveryReceiverAt(receiver delegateDeliver
 		if receiver.isRootDelegateAttentionReceiver() {
 			return receiver.armDelegateAttentions(attentionIDs)
 		}
-		// A committed delivery is a wake from a new event in its own
-		// right: the child's report may present a row a user's stop
-		// held out of the automatic drives, so the holds end with it
-		// exactly as a successful arm ends them — and they end BEFORE
-		// the arm below notifies, because the notify func drives the
-		// receiver synchronously: a hold still in place at the drive's
-		// list read would present the delivered row alone and leave
-		// the stopped report for a later generation.
-		//
-		// The generation was sampled at delivery admission, not when the wake funnel journaled this
-		// acknowledgment's release: the delegate's newest settled generation,
-		// which is the newest quiet the delivery supersedes. Sampling it here
-		// would read the generation after the acknowledgment landed, so a stop
-		// that settled in that interval would be cleared by a delivery older
-		// than it.
-		receiver.releaseAutomaticDriveHolds(delegateHoldReleaseDelivery, wakeGeneration)
 		// A non-root receiver gets the same durable arm the root gets
 		// (#6330): armDelegateAttentions opens the receiver's attention
 		// in the controller, waits out a racing attention start, and
@@ -911,6 +893,19 @@ func repairPermanentlyUnreachableDelegateAttention(c *delegateTreeController) er
 			sourceRef:        c.durable[id].Descriptor.TranscriptRef,
 		})
 	}
+	// A source transcript keeps the rendered message after a journal resolution,
+	// because a child delegate's resolution is store-only. Transfer only what the
+	// journal still owes, or a discarded row would be delivered again.
+	resolved := make(map[string]map[string]struct{}, len(plans))
+	for _, plan := range plans {
+		if aggregate := c.durable[plan.sourceDelegateID]; aggregate != nil && len(aggregate.ResolvedAttention) != 0 {
+			set := make(map[string]struct{}, len(aggregate.ResolvedAttention))
+			for attentionID := range aggregate.ResolvedAttention {
+				set[attentionID] = struct{}{}
+			}
+			resolved[plan.sourceDelegateID] = set
+		}
+	}
 	c.mu.Unlock()
 	if open == nil {
 		open = transcript.OpenWriterForSession
@@ -933,11 +928,16 @@ func repairPermanentlyUnreachableDelegateAttention(c *delegateTreeController) er
 			return fmt.Errorf("delegate %s attention fold: %w", plan.sourceDelegateID, err)
 		}
 		for _, attentionID := range fold.pendingIDs() {
+			if _, done := resolved[plan.sourceDelegateID][attentionID]; done {
+				continue
+			}
 			message := fold.content[attentionID]
 			if _, err := appendColdDelegateAttentionMessageDurablyWithOpen(targetPath, targetSessionID, attentionID, message, now(), open); err != nil {
 				return fmt.Errorf("delegate %s transfer attention %s: %w", plan.sourceDelegateID, attentionID, err)
 			}
-			if err := appendColdAttentionResolutionWithOpen(sourcePath, sourceSessionID, []string{attentionID}, delegateAttentionDiscarded, open); err != nil {
+			// The source is resolved in the journal alone: its transcript keeps
+			// the rendered message, and a read-only source still transfers.
+			if err := c.forgetTransferredDelegateAttention(plan.sourceDelegateID, attentionID); err != nil {
 				return fmt.Errorf("delegate %s discard transferred attention %s: %w", plan.sourceDelegateID, attentionID, err)
 			}
 		}
@@ -1059,7 +1059,9 @@ func (c *delegateTreeController) ReportAttentionResolved(requestSeq, evidenceVer
 	if currentRuntime != runtime {
 		return delegateMutationPlans{}, errDelegateStaleLease
 	}
-	c.forgetDelegateAttentionLocked(delegateID, attentionID)
+	if err := c.forgetDelegateAttentionLocked(delegateID, attentionID); err != nil {
+		return delegateMutationPlans{}, err
+	}
 	c.evidenceVersion++
 	return delegateMutationPlans{}, nil
 }
@@ -1082,7 +1084,9 @@ func (c *delegateTreeController) ReportAttentionConsumed(lease delegateLease, at
 		return delegateMutationPlans{}, errDelegateStaleLease
 	}
 	live.attentionIDs = append(live.attentionIDs[:index], live.attentionIDs[index+1:]...)
-	c.forgetDelegateAttentionLocked(lease.delegateID, attentionID)
+	if err := c.forgetDelegateAttentionLocked(lease.delegateID, attentionID); err != nil {
+		return delegateMutationPlans{}, err
+	}
 	c.evidenceVersion++
 	return delegateMutationPlans{updates: []delegateUpdatePlan{c.capturedPlanLocked(lease.delegateID)}}, nil
 }
@@ -1120,43 +1124,17 @@ func (c *delegateTreeController) executeDelegateAttentionCleanup(plan delegateAt
 		}
 		return c.ReportAttentionStabilized(plan.lease, plan.attentionID, plan.runtime)
 	}
-	// A stop discards only attention the transcript still owes. A noted wake
-	// can outlive its item's resolution: a delegate generation consumes what
-	// its settled requests presented, and its wake stays (see
-	// clearResolvedDelegateAttention). Discarding that item again would be a
-	// conflicting resolution, so the resolver keeps a recorded resolution
-	// instead and renews its durability barrier before the wake is forgotten.
-	disposition := plan.disposition
-	if disposition == delegateAttentionDiscarded {
-		disposition = delegateAttentionDiscardUnlessResolved
-	}
-	if err := c.resolveDelegateAttentionDurably(plan.runtime, plan.transcriptRef, []string{plan.attentionID}, disposition); err != nil {
-		return err
-	}
+	// The queue is the only authority: ReportAttentionConsumed and
+	// ReportAttentionResolved each resolve the row in delegatestore, and a
+	// repeat forget of an already-resolved row appends nothing. No
+	// child transcript marker is written, so a stop resolves cleanly with no
+	// attached transcript writer.
 	if plan.disposition == delegateAttentionConsumed {
 		_, err := c.ReportAttentionConsumed(plan.lease, plan.attentionID, plan.runtime)
 		return err
 	}
 	_, err := c.ReportAttentionResolved(plan.requestSeq, plan.evidenceVersion, plan.delegateID, plan.attentionID, plan.disposition, plan.runtime)
 	return err
-}
-
-// resolveDelegateAttentionDurably appends attention resolution markers through
-// the resident runtime's one writer when it exists, and through a cold writer
-// on the receiver transcript otherwise.
-func (c *delegateTreeController) resolveDelegateAttentionDurably(runtime *Session, transcriptRef string, ids []string, disposition delegateAttentionResolution) error {
-	if runtime != nil {
-		return runtime.resolveAttentionDurably(ids, disposition)
-	}
-	path, expectedSessionID, err := delegateTranscriptPathFromRef(c.stateDir, transcriptRef)
-	if err != nil {
-		return err
-	}
-	open := c.attentionOpen
-	if open == nil {
-		open = transcript.OpenWriterForSession
-	}
-	return appendColdAttentionResolutionWithOpen(path, expectedSessionID, ids, disposition, open)
 }
 
 func (c *delegateTreeController) reconcileRuntimeLostFromEvidenceLocked() (delegateMutationPlans, error) {

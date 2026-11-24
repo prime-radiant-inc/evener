@@ -19,7 +19,7 @@ import {
   watchName,
 } from "@evener/appwire-client";
 import type { ReactNode } from "react";
-import { ActivityWatchDetail } from "../../panes/session/chrome/ActivityWatchDetail";
+import { ActivityWatchDetail, type ViewingSession } from "../../panes/session/chrome/ActivityWatchDetail";
 import { jobStatusDotState } from "../../panes/session/chrome/activityFormat";
 import { ActivityTime } from "../../panes/session/chrome/activityTime";
 import { Disclosure, ListRow, SubagentDot, ToolIcon, type ToolIconTone } from "../../widgets";
@@ -30,13 +30,10 @@ import styles from "./activitybar.module.css";
 import { agentActivityTime, jobActivityTime, watchActivityTime } from "./activityTime";
 
 const CLASS = {
-  rowContent: requireClass(styles.rowContent, "activitybar.module.css", "rowContent"),
   rowGlyph: requireClass(styles.rowGlyph, "activitybar.module.css", "rowGlyph"),
-  rowBody: requireClass(styles.rowBody, "activitybar.module.css", "rowBody"),
-  rowName: requireClass(styles.rowName, "activitybar.module.css", "rowName"),
   rowMeta: requireClass(styles.rowMeta, "activitybar.module.css", "rowMeta"),
-  rowTitle: requireClass(styles.rowTitle, "activitybar.module.css", "rowTitle"),
   rowMono: requireClass(styles.rowMono, "activitybar.module.css", "rowMono"),
+  watchSummary: requireClass(styles.watchSummary, "activitybar.module.css", "watchSummary"),
   watchGlyph: requireClass(styles.watchGlyph, "activitybar.module.css", "watchGlyph"),
 };
 
@@ -162,30 +159,24 @@ export function JobRow({ job, onOpen, now }: { job: JobActivityJob; onOpen?: () 
   );
 }
 
-export function WatchRow({ row, now }: { row: ActivityWatchRow; now: number }) {
+export function WatchRow({ row, now, viewing }: { row: ActivityWatchRow; now: number; viewing?: ViewingSession }) {
   const { watch } = row;
   return (
     <div data-activity-anchor={row.id}>
       <Disclosure
         id={`sidebar-${row.id}`}
+        summaryClassName={CLASS.watchSummary}
         summary={
-          <span className={CLASS.rowContent}>
-            <span className={CLASS.rowGlyph}>
-              <WatchGlyph className={CLASS.watchGlyph} testId={`sidebar-watch-${watch.watch.id}`} />
-            </span>
-            <span className={CLASS.rowBody}>
-              <span className={CLASS.rowTitle}>
-                <span className={CLASS.rowName} title={watchName(watch)}>
-                  {watchName(watch)}
-                </span>
-                <ActivityTime value={watchActivityTime(watch)} now={now} />
-              </span>
-              <span className={CLASS.rowMeta}>{watchMeta(watch, now)}</span>
-            </span>
-          </span>
+          <ListRow
+            variant="plain"
+            leading={<WatchGlyph className={CLASS.watchGlyph} testId={`sidebar-watch-${watch.watch.id}`} />}
+            label={<span title={watchName(watch)}>{watchName(watch)}</span>}
+            chips={<ActivityTime value={watchActivityTime(watch)} now={now} />}
+            meta={watchMeta(watch, now)}
+          />
         }
       >
-        <ActivityWatchDetail row={row} now={now} />
+        <ActivityWatchDetail row={row} now={now} viewing={viewing} />
       </Disclosure>
     </div>
   );

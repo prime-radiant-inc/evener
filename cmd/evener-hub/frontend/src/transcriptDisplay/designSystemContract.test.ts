@@ -175,9 +175,7 @@ test("keeps feature rules from taking shared Card and overlay chrome", () => {
   const cardPath = "src/panes/settings/sections/transcriptDisplayCard.module.css";
   const contentRule = expectExactlyOneRule(cardPath, ".content");
   expectDeclarations(contentRule, [
-    ["display", "flex"],
-    ["flex-direction", "column"],
-    ["gap", "var(--space-4)"],
+    ["composes", 'stack4 from "../../../styles/surface.module.css"'],
     ["min-width", "0"],
   ]);
 
@@ -189,20 +187,13 @@ test("keeps feature rules from taking shared Card and overlay chrome", () => {
     ["container-name", "transcript-detail-panel"],
   ]);
 
-  expectOnlyAllowedChrome(
-    detailPath,
-    new Map([
-      [".fieldset", [["border", "0"]]],
-      [".detailStatus,\n.detailWarning", [["background", "var(--surface-inset)"]]],
-    ]),
-  );
+  expectOnlyAllowedChrome(detailPath, new Map([[".fieldset", [["border", "0"]]]]));
   expectOnlyAllowedOverflow(detailPath, new Map());
   expectOnlyAllowedPadding(
     detailPath,
     new Map([
       [".fieldset", [["padding", "0"]]],
       [".fieldset legend", [["padding", "0"]]],
-      [".detailStatus,\n.detailWarning", [["padding", "var(--space-2) var(--space-3)"]]],
     ]),
   );
   expectOnlyAllowedChrome(

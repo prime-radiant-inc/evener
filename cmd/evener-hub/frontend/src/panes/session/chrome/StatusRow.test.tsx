@@ -14,7 +14,7 @@ import { Toast } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import rawMeterStyles from "../../../widgets/meter/meter.module.css";
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
-import visuallyHiddenStyles from "../../../widgets/visuallyhidden/visuallyhidden.module.css";
+import rawModelSwitchStyles from "./modelswitch.module.css";
 import { StatusRow } from "./StatusRow";
 import statusRowStyles from "./statusrow.module.css";
 
@@ -28,11 +28,16 @@ test("status CSS declares the approved 560, 480, and 400px compression threshold
 });
 
 test("phone status CSS reserves a visible model label without dropping fixed facts", () => {
-  const css = readFileSync(join(here, "statusrow.module.css"), "utf8");
-  const phoneBlock = /@container \(max-width: 399px\) \{([\s\S]*?)\n\}/.exec(css)?.[1] ?? "";
+  const rowCss = readFileSync(join(here, "statusrow.module.css"), "utf8");
+  const phoneBlock = /@container \(max-width: 399px\) \{([\s\S]*?)\n\}/.exec(rowCss)?.[1] ?? "";
   expect(phoneBlock).toContain("gap: var(--space-1)");
-  expect(phoneBlock).toContain("padding-inline: 0");
-  expect(phoneBlock).toContain("min-width: 1rem");
+
+  // The trigger's own half of that compression moved behind its shrink prop,
+  // so the row no longer pierces the Popover button's DOM.
+  const triggerCss = readFileSync(join(here, "modelswitch.module.css"), "utf8");
+  const triggerPhoneBlock = /@container \(max-width: 399px\) \{([\s\S]*?)\n\}/.exec(triggerCss)?.[1] ?? "";
+  expect(triggerPhoneBlock).toContain("padding-inline: 0");
+  expect(triggerPhoneBlock).toContain("min-width: 1rem");
 });
 
 function testModel(overrides: Partial<ThreadModel> = {}): ThreadModel {
@@ -180,6 +185,11 @@ test("groups model and effort visually while retaining two independent controls"
   expect(identity.children).toHaveLength(2);
 });
 
+test("the row asks the model trigger to shrink rather than widen", () => {
+  render(<StatusRow sessionRef="ref_a" model={testModel()} now={1000} />);
+  expect(screen.getByTestId("model-switch-trigger").className.split(" ")).toContain(rawModelSwitchStyles.triggerShrink);
+});
+
 // --- model switcher ---------------------------------------------------------
 
 test("shows a single model label when provider and model are still the same string (cold-hydrate shape)", () => {
@@ -202,6 +212,56 @@ test("shows provider/model once a live thread/model/changed has actually split t
     />,
   );
   expect(screen.getByTestId("model-switch-value").textContent).toBe("anthropic/claude-opus-5");
+});
+
+// A live switch to an equal provider/model pair (the bundled
+// kimi-for-coding/kimi-for-coding instance) must keep the running row marked
+// after the notification, not only once a snapshot supplies a profile. The
+// trigger keeps its collapsed single-string label either way.
+test("keeps the picker's running row marked after a live switch to an equal provider/model pair", async () => {
+  const user = userEvent.setup();
+  const fake = connectReadyFakeClient();
+  fake.on("model/list", () => ({ data: [{ provider: "kimi-for-coding", model: "kimi-for-coding" }] }));
+
+  const hydrated = hydrateThread(
+    {
+      thread: {
+        id: "thr_a",
+        sessionId: "sess_a",
+        preview: "",
+        ephemeral: false,
+        modelProvider: "kimi-for-coding",
+        createdAt: 1000,
+        updatedAt: 1000,
+        status: { type: "idle" },
+        cwd: "/tmp/project",
+        cliVersion: "1.0.0",
+        source: "evener",
+        evener: {
+          ref: "ref_a",
+          capabilities: CAPABILITIES,
+          queue: { revision: 0 },
+          profile: "kimi-for-coding",
+        },
+      },
+    },
+    "ref_a",
+    1000,
+  );
+  const switched = applyNotification(
+    hydrated,
+    {
+      method: "thread/model/changed",
+      params: { threadId: "thr_a", ref: "ref_a", modelProvider: "kimi-for-coding", model: "kimi-for-coding" },
+    },
+    2000,
+  );
+
+  render(<StatusRow sessionRef="ref_a" model={switched} now={2000} />);
+  expect(screen.getByTestId("model-switch-value").textContent).toBe("kimi-for-coding");
+  await user.click(screen.getByTestId("model-switch-trigger"));
+  await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(1));
+  expect(screen.getByRole("option", { name: /kimi-for-coding/i }).getAttribute("aria-selected")).toBe("true");
 });
 
 // composition proof only - ModelSwitch.test.tsx owns the full picker
@@ -722,7 +782,7 @@ test("renders no context gauge when the thread has no context window data", () =
   expect(screen.queryByRole("meter")).toBeNull();
 });
 
-test("renders exact context counts and percentage in its accessible label and hover tooltip", () => {
+test("renders exact context counts on the meter and percentage in its hover tooltip", () => {
   render(
     <StatusRow
       sessionRef="ref_a"
@@ -731,10 +791,10 @@ test("renders exact context counts and percentage in its accessible label and ho
     />,
   );
   const meter = screen.getByRole("meter");
-  expect(meter.tagName).toBe("METER");
-  expect(meter.getAttribute("value")).toBe("12345");
-  expect(meter.getAttribute("max")).toBe("128001");
-  expect(meter.getAttribute("aria-label")).toBe("Context: 12345 of 128001 tokens used, 10 percent");
+  expect(meter.tagName).toBe("DIV");
+  expect(meter.getAttribute("aria-valuenow")).toBe("12345");
+  expect(meter.getAttribute("aria-valuemax")).toBe("128001");
+  expect(meter.getAttribute("aria-label")).toBeTruthy();
   expect(screen.getByTestId("status-row-context").getAttribute("title")).toBe(
     "Context: 12345 of 128001 tokens used, 10 percent",
   );
@@ -756,8 +816,8 @@ test("an assumed context window marks only the capacity figure as an estimate", 
     />,
   );
   const meter = screen.getByRole("meter");
-  expect(meter.getAttribute("value")).toBe("64000");
-  expect(meter.getAttribute("max")).toBe("128000");
+  expect(meter.getAttribute("aria-valuenow")).toBe("64000");
+  expect(meter.getAttribute("aria-valuemax")).toBe("128000");
   const label = meter.getAttribute("aria-label") ?? "";
   expect(label).toContain("~128000");
   expect(label).not.toContain("~64000");
@@ -802,7 +862,7 @@ test.each([
 // the same thing twice in a row that has to stay one line. The exact numbers
 // are still reachable - spoken from the meter's label, and on hover from the
 // title, following the row's "key value" tooltip convention.
-test("context has one meter semantic with wide and compact visual variants", () => {
+test("context announces through one exposed meter, with the percentage only visual", () => {
   render(
     <StatusRow
       sessionRef="ref_a"
@@ -810,25 +870,20 @@ test("context has one meter semantic with wide and compact visual variants", () 
       now={1_000_000}
     />,
   );
-  const meter = screen.getByRole("meter", { name: /64000 of 128000 tokens used, 50 percent/i });
-  expect(meter.tagName).toBe("METER");
-  const hiddenMeter = meter.parentElement;
-  expect(
-    hiddenMeter?.classList.contains(
-      requireClass(visuallyHiddenStyles.visuallyHidden, "visuallyhidden.module.css", "visuallyHidden"),
-    ),
-  ).toBe(true);
-  expect(meter.getAttribute("value")).toBe("64000");
-  expect(meter.getAttribute("max")).toBe("128000");
+  const meter = screen.getByRole("meter");
+  expect(meter.tagName).toBe("DIV");
+  expect(meter.closest('[aria-hidden="true"]')).toBeNull();
+  expect(meter.getAttribute("aria-label")).toBeTruthy();
+  expect(meter.getAttribute("aria-valuenow")).toBe("64000");
+  expect(meter.getAttribute("aria-valuemax")).toBe("128000");
   const context = screen.getByTestId("status-row-context");
   expect(context.tagName).toBe("SPAN");
-  expect(context.getAttribute("aria-hidden")).toBe("true");
-  expect(context.contains(meter)).toBe(false);
-  expect(hiddenMeter?.nextElementSibling).toBe(context);
+  expect(context.contains(meter)).toBe(true);
   expect(screen.getByTestId("status-row-context-meter").getAttribute("aria-hidden")).toBeNull();
   expect(screen.getByTestId("status-row-context-percent").textContent).toBe("50%");
-  expect(screen.getByTestId("status-row-context-percent").getAttribute("aria-hidden")).toBeNull();
+  expect(screen.getByTestId("status-row-context-percent").getAttribute("aria-hidden")).toBe("true");
   expect(screen.getAllByRole("meter")).toHaveLength(1);
+  expect(document.querySelector("meter")).toBeNull();
 });
 
 test("uses compactionThreshold as the gauge ceiling, percentage, and tone when compactionThreshold > 0", () => {
@@ -845,15 +900,12 @@ test("uses compactionThreshold as the gauge ceiling, percentage, and tone when c
       now={1_000_000}
     />,
   );
-  const hiddenMeter = screen.getByRole("meter");
-  expect(hiddenMeter.getAttribute("value")).toBe("200000");
-  expect(hiddenMeter.getAttribute("max")).toBe("250000");
-  const visualMeter = screen.getByTestId("status-row-context-meter").querySelector('[role="meter"]');
-  expect(visualMeter?.getAttribute("aria-valuenow")).toBe("200000");
-  expect(visualMeter?.getAttribute("aria-valuemax")).toBe("250000");
+  const meter = screen.getByRole("meter");
+  expect(meter.getAttribute("aria-valuenow")).toBe("200000");
+  expect(meter.getAttribute("aria-valuemax")).toBe("250000");
   expect(screen.getByTestId("status-row-context-percent").textContent).toBe("80%");
   expect(screen.getByTestId("meter-fill").classList.contains(meterToneClass.attention)).toBe(true);
-  expect(hiddenMeter.getAttribute("aria-label") ?? "").toContain("1000000");
+  expect(meter.getAttribute("aria-label") ?? "").toContain("1000000");
 
   rerender(
     <StatusRow

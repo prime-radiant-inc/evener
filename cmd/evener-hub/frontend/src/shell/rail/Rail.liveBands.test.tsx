@@ -6,21 +6,25 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import type { ReactElement } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import "../../panes/session";
+import { installMobileViewport } from "../../panes/session/testing/mobileViewport";
 import { resetConnectionStoreForTests } from "../../stores/connection";
 import { initNavigation, navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
 import { resetPrefsStoreForTests } from "../../stores/prefs";
+import { sessionReadProgress } from "../../stores/readProgress";
 import { resetThreadsStoreForTests } from "../../stores/threads";
 import { resetToastStoreForTests } from "../../widgets/toast/store";
 import { toastKinds } from "../../widgets/toast/toastTestUtils";
 import { resetActivitySidebarStoreForTests } from "../activitybar/activitySidebarStore";
 import { ClientProvider } from "../clientContext";
 import { NeedsYouProvider } from "../NeedsYouProvider";
+import { resetMobileViewportForTests } from "../useIsMobile";
 import { resetWorkspaceStoreForTests } from "../workspace";
 import { liveBandRefs, railLiveBands } from "./liveBands";
 import { Rail } from "./Rail";
 
 beforeEach(() => {
   localStorage.clear();
+  sessionReadProgress.reset();
   resetNavigationStoreForTests();
   resetPrefsStoreForTests();
   resetThreadsStoreForTests();
@@ -184,6 +188,13 @@ function rowFor(ref: string): HTMLElement {
   if (!row) throw new Error(`${ref} has not rendered`);
   return row;
 }
+// A row's second line and the words it reaches the reader with.
+function whyFor(ref: string): HTMLElement {
+  return within(rowFor(ref)).getByTestId("rail-row-why-text");
+}
+function whyText(ref: string): string | null {
+  return whyFor(ref).textContent;
+}
 function bandNames(): string[] {
   return [...document.querySelectorAll<HTMLElement>('[data-testid="rail-row-band"]')].map(
     (header) => header.dataset.band ?? "",
@@ -238,6 +249,42 @@ test("a row says why it is in its band only where the band and its dot have not 
   expect(why("local:building")?.dataset.whyKind).toBe("job");
   expect(why("local:working")).toBeNull();
   expect(why("local:idle")).toBeNull();
+});
+
+// The same Live rows at either width: a question with usable words, one whose
+// wire text is blank, and a pending row that carries no question at all.
+const ASKED = "Cut the release from main or the stable branch?";
+function questionSessions(): NavigationSessionSummary[] {
+  return [
+    session("asked", { state: "awaiting", ask_pending: true, question: { text: ASKED, count: 2 } }),
+    session("blank", { state: "awaiting", ask_pending: true, question: { text: " \n ", count: 1 } }),
+    session("unnamed", { state: "awaiting", ask_pending: true }),
+  ];
+}
+
+test("a pending question's row says its usable words on the phone and its word above the phone's width", async () => {
+  const restoreViewport = installMobileViewport();
+  const phone = await mountRail({ live: questionSessions() });
+  try {
+    expect(whyText("local:asked")).toBe(ASKED);
+    // Blank text is no usable question: both fall back to the shared word.
+    expect(whyText("local:blank")).toBe(whyText("local:unnamed"));
+    expect(whyText("local:blank")).not.toBe("");
+    // The word names the attention; a printed question is a sentence.
+    expect(whyFor("local:blank").dataset.hue).toBe("attention");
+    expect(whyFor("local:asked").dataset.hue).toBeUndefined();
+  } finally {
+    phone.view.unmount();
+    restoreViewport();
+    resetMobileViewportForTests();
+  }
+  // The desktop rail is unchanged: the carried question never reaches it, so
+  // all three rows read the same word.
+  await mountRail({ live: questionSessions() });
+  expect(whyText("local:asked")).toBe(whyText("local:unnamed"));
+  expect(whyText("local:blank")).toBe(whyText("local:asked"));
+  expect(whyText("local:asked")).not.toBe(ASKED);
+  expect(whyFor("local:asked").dataset.hue).toBe("attention");
 });
 
 test("a working row names its running job's intent, falling back to the command", async () => {
@@ -446,4 +493,34 @@ test("a needs-you row from a later page stays in the band across a refresh and a
   // failed one: the danger hue moved to a4 with the hub's fresh copy.
   expect(within(rowFor("local:a3")).getByTestId("rail-row-why-text").dataset.hue).not.toBe("danger");
   expect(pageRow()).toBeNull();
+});
+
+test("an unread session marks its row, and reading it clears the mark without leaving Needs you", async () => {
+  const unreadTurn = "2026-11-22T04:00:00.000Z";
+  const readTurn = "2026-11-22T03:00:00.000Z";
+  const { hub, announce } = await mountRail({
+    live: [
+      session("new", { state: "awaiting", ask_pending: true, turn_ended_at: unreadTurn, unseen: true }),
+      session("read", { state: "awaiting", ask_pending: true, turn_ended_at: readTurn }),
+    ],
+  });
+
+  // Two sessions that need a person; only one has a reply the browser has not read.
+  expect(within(rowFor("local:new")).getByTestId("rail-row-unread")).toBeTruthy();
+  expect(within(rowFor("local:read")).queryByTestId("rail-row-unread")).toBeNull();
+
+  // Opening the session records its read mark at once, before the hub's rows
+  // catch up. The needs-you band does not move: reading is not answering.
+  const unread = hub.live[0];
+  if (unread === undefined || unread.turn_ended_at === undefined) throw new Error("fixture row lost its turn end");
+  const seenThrough = Date.parse(unread.turn_ended_at);
+  act(() => sessionReadProgress.markRead(unread, seenThrough));
+  await waitFor(() => expect(within(rowFor("local:new")).queryByTestId("rail-row-unread")).toBeNull());
+  expect(rowsOf("needsYou")).toContain("local:new");
+
+  // The hub's next build carries the mark.
+  hub.live[0] = { ...unread, unseen: false };
+  await announce();
+  expect(within(rowFor("local:new")).queryByTestId("rail-row-unread")).toBeNull();
+  expect(rowsOf("needsYou")).toContain("local:new");
 });

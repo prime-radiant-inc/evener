@@ -19,18 +19,11 @@
 // is ever registered on a touch viewport and the trigger chords stay inert
 // there (RailHost's rail.toggle no-registration pattern).
 
-import {
-  ACTION_DISPLAY_ROWS,
-  ACTIONS,
-  CHEATSHEET_SCOPE,
-  chordDisplayKeys,
-  displayBindingsFor,
-  serializeChord,
-} from "@evener/appwire-client";
-import { Fragment, useEffect } from "react";
+import { ACTION_DISPLAY_ROWS, ACTIONS, CHEATSHEET_SCOPE, displayBindingsFor } from "@evener/appwire-client";
+import { useEffect } from "react";
 import { useStore } from "zustand";
 import { keybindingsRegistry } from "../../keybindings/appRegistry";
-import { Dialog, Eyebrow, KeyHint } from "../../widgets";
+import { Dialog, Eyebrow, KeyHint, ShortcutList } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { installKeybindings } from "../installKeybindings";
 import styles from "./cheatsheet.module.css";
@@ -39,12 +32,6 @@ import { closeCheatsheet, toggleCheatsheet, useCheatsheetStore } from "./cheatsh
 const CLASS = {
   groups: requireClass(styles.groups, "cheatsheet.module.css", "groups"),
   group: requireClass(styles.group, "cheatsheet.module.css", "group"),
-  list: requireClass(styles.list, "cheatsheet.module.css", "list"),
-  row: requireClass(styles.row, "cheatsheet.module.css", "row"),
-  label: requireClass(styles.label, "cheatsheet.module.css", "label"),
-  chord: requireClass(styles.chord, "cheatsheet.module.css", "chord"),
-  or: requireClass(styles.or, "cheatsheet.module.css", "or"),
-  unbound: requireClass(styles.unbound, "cheatsheet.module.css", "unbound"),
   footerHint: requireClass(styles.footerHint, "cheatsheet.module.css", "footerHint"),
 };
 
@@ -134,31 +121,13 @@ export function CheatsheetOverlay() {
         {GROUPS.map((group) => (
           <section className={CLASS.group} key={group.id}>
             <Eyebrow as="h3">{group.title}</Eyebrow>
-            <ul className={CLASS.list}>
-              {ACTION_DISPLAY_ROWS.filter((row) => groupOf(row.actionId) === group.id).map((row) => {
-                const displayed = displayBindingsFor(bindings, row.actionId);
-                return (
-                  <li className={CLASS.row} key={row.actionId}>
-                    <span className={CLASS.label}>{row.title}</span>
-                    {displayed.length === 0 ? (
-                      <span className={CLASS.unbound}>Unbound</span>
-                    ) : (
-                      <span className={CLASS.chord}>
-                        {displayed.map((binding, i) => (
-                          <Fragment key={binding.id}>
-                            {i > 0 && <span className={CLASS.or}>or</span>}
-                            {binding.chord.map((press, i) => (
-                              // biome-ignore lint/suspicious/noArrayIndexKey: repeated presses in a multi-press sequence ("g g") are content-identical, position is identity, and the list is static per binding
-                              <KeyHint key={`${i}:${serializeChord([press])}`} keys={chordDisplayKeys(press)} />
-                            ))}
-                          </Fragment>
-                        ))}
-                      </span>
-                    )}
-                  </li>
-                );
-              })}
-            </ul>
+            <ShortcutList
+              items={ACTION_DISPLAY_ROWS.filter((row) => groupOf(row.actionId) === group.id).map((row) => ({
+                label: row.title,
+                sequences: displayBindingsFor(bindings, row.actionId).map((binding) => binding.chord),
+                unbound: "Unbound",
+              }))}
+            />
           </section>
         ))}
       </div>

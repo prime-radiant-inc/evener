@@ -1,18 +1,25 @@
 {
   "name": "composer-tap-floor-phone",
-  "description": "At a phone viewport the reasoning-effort trigger in the composer status row must still meet the app's 44px tap floor in both axes, and the status row must not gain horizontal overflow to make room for it.",
+  "description": "At a phone viewport and in 320px composer cards the reasoning-effort trigger in the status row must still meet the app's 44px tap floor in both axes, and its full box must fit inside .identity's clip boundary instead of being clipped by a shrunken .control wrapper. A long model label must remain visible and the status row must not gain horizontal overflow to make room for it. The provider-default fixture covers the widest readout the control carries.",
   "cssFiles": [
     "styles/global.css",
+    "styles/tapfloor.module.css",
     "styles/tokens.css",
+    "styles/surface.module.css",
+    "widgets/internal/quietTrigger.module.css",
+    "styles/sendbutton.module.css",
     "panes/session/composer/composer.module.css",
+    "widgets/internal/lightbox.module.css",
     "panes/session/chrome/sessionchrome.module.css",
     "panes/session/chrome/statusrow.module.css",
+    "panes/session/chrome/reasoningeffortcontrol.module.css",
     "panes/session/chrome/modelswitch.module.css",
+    "widgets/internal/control.module.css",
+    "widgets/select/select.module.css",
     "widgets/promptcard/promptcard.module.css",
     "widgets/button/button.module.css",
     "widgets/iconbutton/iconbutton.module.css",
-    "widgets/meter/meter.module.css",
-    "widgets/visuallyhidden/visuallyhidden.module.css"
+    "widgets/meter/meter.module.css"
   ],
   "viewport": {
     "width": 390,
@@ -22,9 +29,9 @@
     "touch": true
   },
   "mutation": {
-    "declaration": "statusrow.module.css: remove the phone/coarse min-width and min-height from .effortTrigger",
-    "verified": "2026-11-06",
+    "declaration": "Three manual probes: (1) select.module.css: remove the phone/coarse min-width and min-height from .quietVariant; (2) reasoningeffortcontrol.module.css 399px block: change .control to flex: 0 1 auto with min-width: 0; (3) statusrow.module.css: remove the min-width: 400px .identity > [data-effort-control] { flex: none } rule, or drop data-effort-control from the harness wrapper",
+    "verified": "2026-11-22",
     "expect": "fail",
-    "note": "Without the floor the effort trigger measures about 30x27 at 390px; the case fails on both axes."
+    "note": "(1) the target measured 31.4x27.2 on the two earlier fixtures, below the 44px floor. (2) lowering the floor to min-width: 0 clipped all three: 23.0 of 44.0px visible at 390px, 18.4 of 44.0px at 320px, and 42.7 of 44.0px at 320px provider-default. (3) the pre-fix flex: 0 0 auto clipped the provider-default target to 107.8 of 134.0px visible and squeezed the model trigger to 0px, while the two earlier fixtures passed (2026-11-22). 2026-11-23: the wrapper moved into ReasoningEffortControl, so the harness loads reasoningeffortcontrol.module.css and spells the wrapper .control + data-effort-control; probes (2) and (3) target that shared declaration and hook."
   }
 }

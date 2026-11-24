@@ -15,6 +15,10 @@ import (
 // ErrSSEReadTimeout identifies a provider-owned timeout between stream reads.
 var ErrSSEReadTimeout = errors.New("stream read timeout")
 
+// ErrSSEEventTooLarge identifies an event that outgrew the configured bound
+// before it could be delivered.
+var ErrSSEEventTooLarge = errors.New("sse event too large")
+
 type sseReadTimeoutError struct {
 	timeout time.Duration
 }
@@ -50,6 +54,7 @@ type SSEEvent struct {
 
 type sseOptions struct {
 	streamReadTimeout time.Duration
+	maxEventBytes     int
 }
 
 // SSEOption configures ParseSSE behavior.
@@ -62,6 +67,20 @@ func WithStreamReadTimeout(d time.Duration) SSEOption {
 	return func(o *sseOptions) { o.streamReadTimeout = d }
 }
 
+// WithMaxEventBytes bounds one SSE event's data. A line, or a run of data lines
+// accumulated into one event, longer than n bytes fails the parse with
+// [ErrSSEEventTooLarge] instead of buffering without bound. A line carries its
+// field prefix, so a data line that is exactly at the payload bound may exceed
+// it. A zero or negative n disables the bound.
+func WithMaxEventBytes(n int) SSEOption {
+	return func(o *sseOptions) { o.maxEventBytes = n }
+}
+
+// eventTooLargeError names the bound that a streamed event exceeded.
+func eventTooLargeError(maxBytes int) error {
+	return fmt.Errorf("%w: event exceeds %d bytes", ErrSSEEventTooLarge, maxBytes)
+}
+
 // readResult carries one line read by the asynchronous reader.
 type readResult struct {
 	line []byte
@@ -71,6 +90,8 @@ type readResult struct {
 // sseParser holds state for parsing SSE lines into events.
 type sseParser struct {
 	curEvent string
+	// maxEventBytes bounds the accumulated payload; zero disables the bound.
+	maxEventBytes int
 	// data accumulates the current event's payload, one data line at a time.
 	// flush hands it to the callback whole and starts the next event from nil,
 	// so the bytes a callback receives are never written again — no copy is
@@ -116,9 +137,12 @@ const sseMaxEmptyReads = 100
 // through ReadSlice keeps a CR from having to trail a whole fragment before it
 // can end a line.
 type sseLineScanner struct {
-	r   io.Reader
-	buf []byte // bytes read, from the current line's first byte onward
-	at  int    // index in buf of the current line's first byte
+	r io.Reader
+	// maxEventBytes rejects a line that outgrows the bound while still
+	// unbounded; zero disables the bound.
+	maxEventBytes int
+	buf           []byte // bytes read, from the current line's first byte onward
+	at            int    // index in buf of the current line's first byte
 	// crFrom and lfFrom resume the search for each line terminator byte. Each
 	// is the index at which looking for its byte starts: the end of the buffer
 	// after a miss, or the byte itself after a hit, so the next line reuses
@@ -143,6 +167,13 @@ type sseLineScanner struct {
 func (s *sseLineScanner) next() ([]byte, error) {
 	for {
 		if line, ok := s.line(); ok {
+			// A line longer than the bound is rejected here rather than served:
+			// fill may already have buffered it together with the lines after it,
+			// and delivering those first would settle the stream before the
+			// violation is reported.
+			if s.maxEventBytes > 0 && len(line) > s.maxEventBytes {
+				return nil, eventTooLargeError(s.maxEventBytes)
+			}
 			return line, nil
 		}
 		if s.pending != nil {
@@ -251,6 +282,12 @@ func (s *sseLineScanner) fill() error {
 	end := len(s.buf)
 	n, err := s.r.Read(s.buf[end:cap(s.buf)])
 	s.buf = s.buf[:end+n]
+	// A buffer holding complete lines can outgrow the bound without violating
+	// it: they are served and discarded one at a time. Only a run with no line
+	// terminator is accumulating without limit.
+	if s.maxEventBytes > 0 && len(s.buf)-s.at > s.maxEventBytes && !bytes.ContainsAny(s.buf[s.at:], "\r\n") {
+		return eventTooLargeError(s.maxEventBytes)
+	}
 	if n == 0 && err == nil {
 		s.empties++
 		if s.empties > sseMaxEmptyReads {
@@ -275,6 +312,9 @@ func (p *sseParser) processLine(line []byte, fn func(SSEEvent) error) (bool, err
 	case hasFieldPrefix(line, "data:"):
 		data := bytes.TrimLeft(line[len("data:"):], " ")
 		p.data = append(p.data, data...)
+		if p.maxEventBytes > 0 && len(p.data) > p.maxEventBytes {
+			return false, eventTooLargeError(p.maxEventBytes)
+		}
 		p.data = append(p.data, '\n')
 	default:
 		// retry, unknown fields; ignore.
@@ -302,17 +342,17 @@ func ParseSSE(ctx context.Context, r io.Reader, fn func(ev SSEEvent) error, opts
 
 	// Fast path: no stream-read timeout — use the simple blocking loop.
 	if cfg.streamReadTimeout <= 0 {
-		return parseSSEBlocking(ctx, r, fn)
+		return parseSSEBlocking(ctx, r, fn, cfg.maxEventBytes)
 	}
 
-	return parseSSEWithTimeout(ctx, r, fn, cfg.streamReadTimeout)
+	return parseSSEWithTimeout(ctx, r, fn, cfg.streamReadTimeout, cfg.maxEventBytes)
 }
 
 // parseSSEBlocking is the original blocking implementation, used when no
 // stream-read timeout is configured.
-func parseSSEBlocking(ctx context.Context, r io.Reader, fn func(ev SSEEvent) error) error {
-	sc := &sseLineScanner{r: r}
-	var p sseParser
+func parseSSEBlocking(ctx context.Context, r io.Reader, fn func(ev SSEEvent) error, maxEventBytes int) error {
+	sc := &sseLineScanner{r: r, maxEventBytes: maxEventBytes}
+	p := sseParser{maxEventBytes: maxEventBytes}
 
 	for {
 		if ctx.Err() != nil {
@@ -336,12 +376,12 @@ func parseSSEBlocking(ctx context.Context, r io.Reader, fn func(ev SSEEvent) err
 // parseSSEWithTimeout runs ParseSSE with a per-read deadline. A background
 // goroutine reads lines from r and sends them on a channel. The main loop
 // selects between that channel, the timeout timer, and context cancellation.
-func parseSSEWithTimeout(ctx context.Context, r io.Reader, fn func(ev SSEEvent) error, timeout time.Duration) error {
+func parseSSEWithTimeout(ctx context.Context, r io.Reader, fn func(ev SSEEvent) error, timeout time.Duration, maxEventBytes int) error {
 	timer := &sseReadTimer{timer: time.NewTimer(timeout), timeout: timeout}
 	defer timer.stop()
 	done := make(chan struct{})
 	defer close(done)
-	sc := &sseLineScanner{r: &sseActivityReader{reader: r, progress: timer.progress}}
+	sc := &sseLineScanner{r: &sseActivityReader{reader: r, progress: timer.progress}, maxEventBytes: maxEventBytes}
 
 	// The reader goroutine fills the scanner's one line buffer and the main loop
 	// consumes the bytes in it, so the two goroutines share those bytes. The
@@ -370,7 +410,7 @@ func parseSSEWithTimeout(ctx context.Context, r io.Reader, fn func(ev SSEEvent) 
 		}
 	}()
 
-	var p sseParser
+	p := sseParser{maxEventBytes: maxEventBytes}
 
 	for {
 		select {

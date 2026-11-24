@@ -236,26 +236,25 @@ posted questions, regardless of the communicate's own end-turn value. `ask_user`
 interactive-root-only — invisible in non-interactive sessions and in every subagent — so this
 branch never applies to a delegate.
 
-On the roots that get `ask_user`, `communicate` also takes `end_reason`, read only when
-`end_turn=true`: `done` (the default), `needs_response`, or `waiting_on_work`. It is recorded
-with the message (`CommunicateData`, the transcript's `CommunicateInfo`). A turn that ends on
-`done` or `waiting_on_work` rests idle. A turn-ending `waiting_on_work` call is refused when
-nothing can wake the session: use `done` if finished, `needs_response` if the partner must act,
-or start the work or arm a watch before ending the turn.
-One that ends on `needs_response` rests awaiting, unless
-autonomous work (a working child, a pending delegate report, a pending notification, queued
-input, a goal kick) will move the session first; a finished child's warm runtime does not
-count. The settle reads the first turn-ending call the input accepted, and restore derives the
-same state from the transcript. A pending question rests awaiting at the settle. A
-`needs_response` rest first waits a 5-second quiet period, resting idle, so a session that ends
-a turn and starts the next one at once never flickers to awaiting. When the period passes, the
-timer checks everything the settle checked again: a new turn or settle, a close, queued input,
-runnable steering, or autonomous work leaves the session idle. Otherwise it rests awaiting and
-announces the change with `STATUS_SETTLED`, which the server ignores when a turn is running or
-reserved, or the session has closed. One that arrives while an input is being taken, before any
-turn is published, is held and published when processing ends, unless a turn is published or the
-input's SESSION_END (an interrupted one included) lands first. A turn start waits for a rest that is arming to finish
-its announcement, so the announcement is sent before anything the turn emits once it starts. Restore derives awaiting at once, with no quiet period.
+`communicate` shares one uniform schema across interactive roots, one-shot CLI runs, and
+subagents: `(message: string, next?: enum = "send_and_end_turn", output?)` with `message` always
+required (`{}` and legacy `end_turn` are rejected). `next="send_and_end_turn"` (default) delivers
+user- or parent-visible text, enforces any configured `result_schema` on `output`, fires
+`EventCommunicate`, and ends the turn; `next="send_and_continue"` sends a progress update and
+continues working in the next round; `next="log_quietly_and_end_turn"` records `message` as a
+bounded muted one-line transcript note (`communicate_quiet_note` in `ToolState`, no `output`
+allowed) and ends the current turn without emitting `EventCommunicate`, recording a
+`TurnCommunicate`, or waking a parent: on an unanswered user turn it requires wakeable work (and
+in one-shot `TurnEndsProcess` runs, drainable work rather than an unfired self-timer alone), while
+on an admitted notification or attention-only wake it acknowledges the wake silently. Untyped
+roots and untyped idle subagents with no drainable owned work accept a clean tool-free `stop`
+response on `EntryUserInput` as the final reply when `communicate` was not called. Bare-text `stop`
+responses park quietly automatically (`Turn.QuietYield`) on subagents with live owned work,
+attention-only delegate wakes (`canQuietlyYield == nil`), and one-shot `TurnEndsProcess`
+shutdown-drain notifications after an accepted terminal reply; interactive
+notification wakes and structured-schema sessions steer via `no-tool-calls` so the model calls
+`communicate` explicitly. `SessionAwaiting` belongs solely to pending `ask_user` questions; every other clean turn boundary rests `SessionIdle`, and restore derives the same
+state from the transcript.
 
 ### The repeated-call breaker
 
@@ -337,12 +336,17 @@ appenders and exactly one drainer:
   drained by `drainPendingWatchSends` (`agent/session_watch_drain.go`), the **sole** executor
   of watch-send delivery.
 
-Stable delegate attention is deliberately not a fourth durable queue. Delegate,
-quiet, observer, and shell attention is appended to the receiver transcript,
-which is its sole durable authority. A process-local set keyed by unresolved
-attention ID arms the existing notification wake; successful notification turns
-append exact consumed markers, failures leave the IDs pending, and restore folds
-the transcript to rearm without constructing a provider runtime.
+Stable child-delegate attention is a durable queue in the root delegate journal
+(`delegatestore.Aggregate.PendingAttention`). The same journal `Apply` that
+queues or resolves a row also derives `NeedsAttention`, so no second pass can
+leave a resolved row arming a wake or a lowered flag hiding a row. Delegate,
+quiet, observer, and shell attention is still appended to the receiver
+transcript as the rendered message history a request presents; the queue rows,
+not the transcript, decide what is pending. Successful notification turns
+append exact consumed markers and journal a resolved row, failures leave the
+rows queued, and restore re-arms from the journal without constructing a
+provider runtime. Root receivers, which have no delegate aggregate, keep the
+transcript rail.
 
 **Who drains where.** `drainPendingWatchSends` runs only from loop-owned boundaries:
 between tool rounds (`injectPostToolSteering`, `agent/session_tool_round.go`), at the
@@ -368,10 +372,8 @@ zero model turns; model-bound transcript attention always runs the owner turn.
 **Session lock contract.** `Session.mu` guards the session's mutable state; the full
 list and the ordered lock pairs live in the `Session` struct comment
 (`agent/session.go`). Ordered pairs, outermost first: `responseSideEffectsMu > mu`,
-`restMu > delegateDeliveryMu > mu`, `metaSaveMu > mu`, `goalUpdateMu > mu`,
-`notesUpdateMu > mu`. `drainAbandonedMu` and `childCommittedSendMu` are leaves. `restMu` serializes a rest
-transition with its `STATUS_SETTLED` emit; the rest-generation fields themselves are
-guarded by `mu`.
+`delegateDeliveryMu > mu`, `metaSaveMu > mu`, `goalUpdateMu > mu`,
+`notesUpdateMu > mu`. `drainAbandonedMu` and `childCommittedSendMu` are leaves.
 
 **The forbidden re-entry.** `responseSideEffectsMu` is held across event emits
 (`emitAssistantResponse`, the tool-call-end emit). Observation paths and the `jobManager`'s

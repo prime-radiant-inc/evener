@@ -1,4 +1,5 @@
 .dock {
+  composes: measureColumn from "../../../../styles/surface.module.css";
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
@@ -11,33 +12,27 @@
    * is declared on <body> in tokens.css (44rem, or 64rem under the
    * Transcript width preference), and this row sits outside the .turn
    * column, so it reads the token itself. */
-  width: 100%;
-  max-width: var(--session-measure);
-  margin-inline: auto;
   min-width: 0;
 }
 
-.anchor {
-  font-size: var(--font-size-caption);
-  color: var(--ink-mid);
+.attentionCue {
+  composes: helpCaption from "../../../../styles/help.module.css";
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  margin-bottom: var(--space-2);
 }
 
-/* A batch is one pending ask_user moment - the app's clearest "a human is
- * needed right now" state (topic 16 / kata crcf) - so it sits in a
- * Card tone="attention" envelope; this is only its layout inside the card.
- * The Send button inside stays the --accent primary: attention owns the
- * container and accent owns the one action that resolves it, so the dock is
- * never all-amber. */
+/* A neutral outlined Card contains each pending batch. The small attention
+ * cue marks the interruption; the accent primary action resolves it. */
 .batch {
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
 }
 
-/* Question tab strip (kata 99yf): one question on screen at a time; the
- * strip is how the reader lists and switches the batch's questions. Plain
- * layout/control tokens only - the amber envelope above stays the one
- * needs-you signal, so no token-contract allowlist entry of its own. */
+/* One question is on screen at a time; the strip lists and switches the
+ * batch's questions without adding another attention signal. */
 .tabs {
   display: flex;
   flex-wrap: wrap;
@@ -48,7 +43,7 @@
   display: inline-flex;
   align-items: center;
   gap: var(--space-1);
-  font-family: var(--ask-tab-font, revert);
+  font-family: var(--font-sans);
   font-size: var(--font-size-ui);
   color: var(--ink-mid);
   background: var(--surface-1);
@@ -58,12 +53,12 @@
   overflow-wrap: anywhere;
 }
 
-/* Selected is --accent (control selection, design-system.md §4 - same rule
- * as askquestioncard's checked ring), not --attention: the amber container
- * already owns "a human is needed", a tab is just navigation within it. */
+/* The same ordinary selection recipe the answer rows use
+ * (askquestioncard.module.css .optionRow:has(:checked)): the softer
+ * --accent-edge hairline, the accent wash, and high ink. */
 .tab[aria-selected="true"] {
   color: var(--ink-hi);
-  border-color: var(--accent);
+  border-color: var(--accent-edge);
   background: var(--accent-bg);
 }
 
@@ -79,8 +74,7 @@
 }
 
 .count {
-  font-size: var(--font-size-caption);
-  color: var(--ink-mid);
+  composes: helpCaption from "../../../../styles/help.module.css";
 }
 
 /* Touch target floor (2026-07-30-mobile-session-layout-design.md, decision

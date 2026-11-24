@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { DisclosureHeading, Menu } from "../../widgets";
-import { ThemeFlip } from "../ThemeFlip";
+import { GallerySection } from "../GallerySection";
 import styles from "./disclosure.module.css";
 
 // The rail's section headings: an eyebrow group label open and folded, and
@@ -48,11 +48,8 @@ function DisclosureHeadingDemo() {
 
 export default function DisclosureHeadingGallerySection() {
   return (
-    <section>
-      <h2>DisclosureHeading</h2>
-      <ThemeFlip>
-        <DisclosureHeadingDemo />
-      </ThemeFlip>
-    </section>
+    <GallerySection title="DisclosureHeading">
+      <DisclosureHeadingDemo />
+    </GallerySection>
   );
 }

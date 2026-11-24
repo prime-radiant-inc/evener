@@ -4,6 +4,7 @@ import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { expect, test } from "vitest";
+import { Button } from "../../widgets";
 import { PluginContents, PluginContentsBlock } from "./PluginContents";
 import { PluginDetail } from "./PluginDetail";
 
@@ -86,6 +87,22 @@ test.each([undefined, { status: "loading" as const }])(
     expect(detail.contains(document.activeElement)).toBe(true);
   },
 );
+
+test("the components Retry uses the shared notice action treatment", () => {
+  render(
+    <PluginContentsBlock
+      entry={{ status: "error", source: "request", error: "retry-error-sentinel" }}
+      onRetry={() => {}}
+    />,
+  );
+  const retry = screen.getByRole("button", { name: "Retry" });
+  render(
+    <Button variant="quiet" size="sm">
+      reference
+    </Button>,
+  );
+  expect(retry.className).toBe(screen.getByRole("button", { name: "reference" }).className);
+});
 
 test("a manifest-only object reads as the empty case, never as an error or empty-styled list", () => {
   const components: PluginComponents = {};

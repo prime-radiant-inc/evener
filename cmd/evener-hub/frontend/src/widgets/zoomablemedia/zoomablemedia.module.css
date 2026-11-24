@@ -23,6 +23,23 @@
   height: 100%;
 }
 
+/* radius: the trigger rounds and clips its own box, for a caller that cannot
+ * clip it - the composer's touch tile stops clipping so its remove control
+ * can straddle the corner. Both values clip, so media cannot paint out of
+ * its rounded corner. inherit matches the caller's tile; control is the
+ * radius ladder's control step. */
+.zoomableMedia[data-radius] {
+  overflow: hidden;
+}
+
+.zoomableMedia[data-radius="inherit"] {
+  border-radius: inherit;
+}
+
+.zoomableMedia[data-radius="control"] {
+  border-radius: var(--radius-control);
+}
+
 /* Inset: thumbnail tiles clip their overflow, and an outset ring on a child
  * that fills the tile would be clipped away entirely. */
 .zoomableMedia:focus-visible {

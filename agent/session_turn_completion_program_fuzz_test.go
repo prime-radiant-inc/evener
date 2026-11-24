@@ -663,9 +663,8 @@ func sefAwaitRequestedEvent(t *testing.T, sess *Session) events.SandboxEscalatio
 
 // FuzzSessionLoopRecoveryProgram keeps the loop-warning portion of the turn
 // boundary deterministic and independent of providers. It verifies repeated
-// signature detection, short-window rejection, question classification, and the
-// only mutable recovery effect: the first stuck warning raises effort but later
-// warnings do not silently reset it.
+// signature detection, short-window rejection, question classification, and
+// that no stuck warning mutates the session's reasoning effort.
 func FuzzSessionLoopRecoveryProgram(f *testing.F) {
 	for _, seed := range [][]byte{{0, 0, 0, 0}, {1, 1, 1, 1}, {2, 2, 2, 2}, {3, 0, 3, 3}, {3, 3, 3, 3}, {4, 0, 4, 4}, {4, 4, 4, 4}, {255, 255, 255, 255}, {}} {
 		f.Add(seed)
@@ -680,19 +679,8 @@ func FuzzSessionLoopRecoveryProgram(f *testing.F) {
 		if strings.TrimSpace(message) == "" {
 			t.Fatal("stuck escalation returned an empty recovery message")
 		}
-		if count == 1 {
-			want := before
-			switch before {
-			case "", "low", "medium":
-				want = "high"
-			case "high", "xhigh":
-				want = "max"
-			}
-			if got := sess.cfg.ReasoningEffort; got != want {
-				t.Fatalf("first stuck escalation effort = %q, want %q", got, want)
-			}
-		} else if got := sess.cfg.ReasoningEffort; got != before {
-			t.Fatalf("later stuck escalation changed effort from %q to %q", before, got)
+		if got := sess.cfg.ReasoningEffort; got != before {
+			t.Fatalf("stuck escalation %d changed effort from %q to %q", count, before, got)
 		}
 
 		text := []string{"", "status", "need input?", "next:", "spaces ?  "}[r.intn(5)]

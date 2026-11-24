@@ -2,7 +2,7 @@ import { fenceLanguage } from "@evener/appwire-client";
 import DOMPurify from "dompurify";
 import type { RendererObject, Token, Tokens } from "marked";
 import { memo, type Ref, useMemo, useRef } from "react";
-import codeblockStyles from "../codeblock/codeblock.module.css";
+import { codeBlockHtml } from "../codeblock";
 import { requireClass } from "../internal/requireClass";
 import { MermaidDiagram } from "../mermaid";
 import styles from "./markdown.module.css";
@@ -38,14 +38,6 @@ const CLASS = {
   bubbleCompact: requireClass(styles.markdownBubbleCompact, "markdown.module.css", "markdownBubbleCompact"),
 };
 
-const CODEBLOCK_CLASS = {
-  root: requireClass(codeblockStyles.root, "codeblock.module.css", "root"),
-  header: requireClass(codeblockStyles.header, "codeblock.module.css", "header"),
-  language: requireClass(codeblockStyles.language, "codeblock.module.css", "language"),
-  pre: requireClass(codeblockStyles.pre, "codeblock.module.css", "pre"),
-  code: requireClass(codeblockStyles.code, "codeblock.module.css", "code"),
-};
-
 function escapeHtml(value: string): string {
   return value
     .replace(/&/g, "&amp;")
@@ -64,24 +56,10 @@ function escapeHtml(value: string): string {
 // is the standard way to style dangerouslySetInnerHTML content without
 // hand-building markup for every token type).
 const renderer: RendererObject = {
-  // Renders through CodeBlock's own stylesheet so a fenced block looks
-  // identical to the standalone CodeBlock widget. It's static HTML, not a
-  // mounted CodeBlock instance - dangerouslySetInnerHTML can't host live
-  // React children - so there's no copy button here; that's a deliberate,
-  // documented scope cut, the same way CodeBlock itself skips a
-  // highlighter this wave.
+  // Shared block markup; static HTML cannot host a copy button here (documented scope cut).
   code(token: Tokens.Code) {
-    const { text } = token;
-    // The same derivation the transcript's Find reads, so the header's words
-    // and the searched words agree.
-    const language = fenceLanguage(token);
-    const header = language
-      ? `<div class="${CODEBLOCK_CLASS.header}"><span class="${CODEBLOCK_CLASS.language}">${escapeHtml(language)}</span></div>`
-      : "";
-    return (
-      `<div class="${CODEBLOCK_CLASS.root}">${header}` +
-      `<pre class="${CODEBLOCK_CLASS.pre}"><code class="${CODEBLOCK_CLASS.code}">${escapeHtml(text)}</code></pre></div>`
-    );
+    // The same derivation the transcript's Find reads, so header words and searched words agree.
+    return codeBlockHtml({ text: escapeHtml(token.text), language: escapeHtml(fenceLanguage(token)) });
   },
   // Inline `` `code` `` spans get their own class rather than reusing
   // CodeBlock's block-level classes (which are sized/bordered for a
@@ -168,7 +146,7 @@ const SANITIZE_CONFIG = {
   // "class" is allowlisted globally (not scoped to specific tags) but is
   // currently inert against anything a markdown AUTHOR controls: the only
   // class attributes this pipeline ever produces are the ones the code
-  // above writes itself (CODEBLOCK_CLASS/CLASS.inlineCode) - html() above
+  // above writes itself (the codeblock helper's classes/CLASS.inlineCode) - html() above
   // escapes all raw source HTML to text before DOMPurify ever sees it, so
   // there's no path today for a class value to originate from user input.
   // `align` is the legacy HTML attribute marked emits for GFM column
@@ -190,11 +168,14 @@ const SANITIZE_CONFIG = {
   // already rejected are still stripped, which the widget's own tests pin.
   //
   // The scheme is allowed for every consumer of this widget, but only the
-  // transcript resolves it. Elsewhere a file:// anchor is a destination the
-  // browser will not follow from an http(s) page, which is honest - it shows
-  // where the link goes - where a stripped href showed nothing. Scoping the
-  // scheme to the transcript needs a caller-supplied link policy on this
-  // widget, which the design system makes Jesse's call, not a local edit.
+  // transcript's AgentMarkdown layer resolves it - the ask dock's question
+  // cards render through that same layer, so a report link in a question
+  // opens beside the answering surface. Elsewhere a file:// anchor is a
+  // destination the browser will not follow from an http(s) page, which is
+  // honest - it shows where the link goes - where a stripped href showed
+  // nothing. Scoping the scheme further needs a caller-supplied link policy
+  // on this widget, which the design system makes Jesse's call, not a local
+  // edit.
   ALLOWED_URI_REGEXP:
     /^(?:(?:(?:f|ht)tps?|mailto|tel|callto|sms|cid|xmpp|matrix|file):|[^a-z]|[a-z+.-]+(?:[^a-z+.\-:]|$))/i,
 };

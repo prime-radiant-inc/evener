@@ -161,8 +161,8 @@ test("live shows a Thinking label and renders the reasoning text open (not colla
 // --- content-free: the compact thinking row ----------------------------------
 // While the reasoning content flag is off, every thinking row is a compact
 // trace row: the loader placeholder grammar in the DISCLOSURE summary, the
-// thought text only inside the unfoldable body. The chat preset keeps the
-// plain placeholder with no disclosure at all.
+// thought text only inside the unfoldable body. Chat omits these entries in
+// the shared projector.
 
 test("contentFree renders only the Loader placeholder and an approximate token count, never the thought text", () => {
   const live = item({ reasoningSummaries: [["abcdefghijklmnop"]] });
@@ -185,24 +185,6 @@ test("contentFree with no chunks yet shows the label alone, never a fabricated t
   expect(screen.getByTestId("think-block").dataset.estimatedTokens).toBeUndefined();
 });
 
-test("the chat preset keeps the live compact row a plain placeholder with no disclosure", () => {
-  const live = item({ reasoningSummaries: [["abcdefghijklmnop"]] });
-  render(
-    <TranscriptRenderProvider
-      config={makeTranscriptDisplayConfig({ kind: "preset", level: "chat" })}
-      surface="readOnly"
-      disclosureScope="tb:chat"
-    >
-      <ThinkBlock item={live} turn={{ ...turn, items: [live] }} live={true} contentFree={true} />
-    </TranscriptRenderProvider>,
-  );
-  expect(screen.getByTestId("think-block").dataset.estimatedTokens).toBe("4");
-  expect(screen.getByTestId("loader-grid")).toBeTruthy();
-  // Conversation-only: no trace to unfold at the chat preset.
-  expect(document.querySelector("details")).toBeNull();
-  expect(screen.queryByText("abcdefghijklmnop")).toBeNull();
-});
-
 test("a settled compact thought is a collapsed disclosure whose summary is its token estimate, and unfolding reveals the body", () => {
   renderTools(
     <ThinkBlock
@@ -220,6 +202,41 @@ test("a settled compact thought is a collapsed disclosure whose summary is its t
   fireEvent.click(details.querySelector("summary")!);
   expect(details.open).toBe(true);
   expect(screen.getByText("the full reasoning text")).toBeTruthy();
+});
+
+test("a settled compact thought shares the live row's railed icon and summary text grammar", () => {
+  renderTools(
+    <ThinkBlock
+      item={item({ id: "compact_aligned", status: "completed", reasoningSummaries: [["aligned reasoning"]] })}
+      turn={turn}
+      live={false}
+      contentFree={true}
+    />,
+  );
+  const icon = screen.getByTestId("think-block-icon");
+  expect(icon.getAttribute("aria-hidden")).toBe("true");
+  expect(icon.className).toContain(rawThinkStyles.icon);
+  const row = icon.parentElement;
+  // The test CSS-modules stub does not expand `composes`; the following
+  // declaration test pins the shared label/text recipes these classes compose.
+  expect(row?.className).toContain(rawThinkStyles.compactSummary);
+  expect(row?.lastElementChild?.className).toContain(rawThinkStyles.summaryText);
+});
+
+test("compact summaries reuse the railed label and UI type while keeping the measured item padding", () => {
+  const css = thinkCss();
+  const row = /\.compactSummary\s*\{([^}]*)\}/.exec(css);
+  expect(row).not.toBeNull();
+  expect(row![1]).toContain("composes: label");
+  expect(row![1]).toContain("font-size: var(--font-size-ui)");
+  const shared = /\.compactSummary\s*,\s*\.compactLiveSummary\s*\{([^}]*)\}/.exec(css);
+  expect(shared).not.toBeNull();
+  expect(shared![1]).toContain("line-height: var(--line-height-title)");
+  // The block's 4px plus Disclosure's 4px summary padding total the intent
+  // row's 8px rhythm-item inset. Keep both halves intact.
+  const block = /\.block\s*\{([^}]*)\}/.exec(css);
+  expect(block).not.toBeNull();
+  expect(block![1]).toContain("padding: var(--space-1) 0");
 });
 
 test("the compact disclosure opens by default when thinking-open-by-default is on", () => {
@@ -322,6 +339,7 @@ test("redacted keeps the projector's summary as the collapsed label and unfolds 
   const details = screen.getByRole("group") as HTMLDetailsElement;
   expect(details.open).toBe(false);
   expect(screen.getByTestId("think-block-redacted").textContent).toContain("Thought failed");
+  expect(screen.getByTestId("think-block-icon").className).toContain(rawThinkStyles.icon);
   expect(screen.queryByText("the failure reasoning")).toBeNull();
   fireEvent.click(details.querySelector("summary")!);
   expect((screen.getByRole("group") as HTMLDetailsElement).open).toBe(true);
@@ -712,8 +730,7 @@ test("the live eyebrow is not a disclosure - there is nothing to disclose while 
 test("the summary text ellipsizes in its own span so the trailing chevron is never pushed out of view", () => {
   const rule = /\.summaryText\s*\{([^}]*)\}/.exec(thinkCss());
   expect(rule).not.toBeNull();
-  expect(rule![1]).toContain("overflow: hidden");
-  expect(rule![1]).toContain("text-overflow: ellipsis");
+  expect(rule![1]).toContain('composes: truncate from "../../../../styles/text.module.css"');
 });
 
 test("the collapsed summary keeps the final context and opening mounts the complete body", () => {

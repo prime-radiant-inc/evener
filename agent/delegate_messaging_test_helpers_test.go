@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"maps"
 	"slices"
 	"strings"
 	"sync"
@@ -175,19 +174,6 @@ func delegateToolCall(id string, arguments map[string]any) llm.Response {
 	return agenttest.ToolCallResponse(llm.ToolCallData{ID: id, Name: "delegate", Arguments: args, Type: "function"})
 }
 
-// writeToolDescriptions renders each tool's description and its parameters'
-// descriptions, parameters sorted by name, for a prompt golden.
-func writeToolDescriptions(golden *strings.Builder, defs ...llm.ToolDefinition) {
-	for _, def := range defs {
-		fmt.Fprintf(golden, "\n## %s\n\n%s\n\n", def.Name, def.Description)
-		props, _ := def.Parameters["properties"].(map[string]any)
-		for _, param := range slices.Sorted(maps.Keys(props)) {
-			description, _ := props[param].(map[string]any)["description"].(string)
-			fmt.Fprintf(golden, "- `%s`: %s\n", param, description)
-		}
-	}
-}
-
 // rootPendingAttention lists root's unresolved attention in transcript order,
 // read from its transcript the way restore reads it, or nil when the read
 // fails.
@@ -210,9 +196,9 @@ func rootAttentionFold(t *testing.T, root *Session) delegateAttentionFold {
 }
 
 // updateResponse is a delegate's model turn that sends message to its parent
-// as an update: communicate(end_turn=false).
+// as an update: communicate(next="send_and_continue").
 func updateResponse(id, message string) llm.Response {
-	return agenttest.ToolCallResponse(communicateCallArgs(id, map[string]any{"message": message, "end_turn": false}))
+	return agenttest.ToolCallResponse(communicateCallArgs(id, map[string]any{"message": message, "next": "send_and_continue"}))
 }
 
 // delegateSendResponse is a model turn that sends message to delegateID and

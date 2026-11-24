@@ -1,7 +1,8 @@
 import { render, screen } from "@testing-library/react";
 import { expect, test } from "vitest";
 import { mediaBlock, readModuleCss } from "../../styles/cssBlock";
-import type { CadenceState } from "../cadence";
+import { Cadence, type CadenceState, stateFamily } from "../cadence";
+import rawCadenceStyles from "../cadence/cadence.module.css";
 import { requireClass } from "../internal/requireClass";
 import { StatusDot } from "./index";
 import rawStyles from "./statusdot.module.css";
@@ -11,6 +12,13 @@ const styles = {
   attention: requireClass(rawStyles.attention, "statusdot.module.css", "attention"),
   danger: requireClass(rawStyles.danger, "statusdot.module.css", "danger"),
   neutral: requireClass(rawStyles.neutral, "statusdot.module.css", "neutral"),
+};
+
+const cadenceStyles = {
+  alive: requireClass(rawCadenceStyles.alive, "cadence.module.css", "alive"),
+  attention: requireClass(rawCadenceStyles.attention, "cadence.module.css", "attention"),
+  danger: requireClass(rawCadenceStyles.danger, "cadence.module.css", "danger"),
+  neutral: requireClass(rawCadenceStyles.neutral, "cadence.module.css", "neutral"),
 };
 
 // state -> token family, mirroring Cadence's own STATE_FAMILY mapping (see
@@ -116,5 +124,29 @@ test("marks its state as data-state, so a state can be read without its accessib
     const { unmount } = render(<StatusDot state={state} />);
     expect(screen.getByRole("img").getAttribute("data-state")).toBe(state);
     unmount();
+  }
+});
+
+// One table now: Cadence owns the state -> family map and StatusDot reads it.
+// Rendering both glyphs for every state proves they land in the same family,
+// so a private copy that drifts cannot come back unnoticed.
+const FAMILY_NAMES = ["alive", "attention", "danger", "neutral"] as const;
+
+function familyOf(element: Element, families: Record<(typeof FAMILY_NAMES)[number], string>): string {
+  const matches = FAMILY_NAMES.filter((name) => element.classList.contains(families[name]));
+  expect(matches).toHaveLength(1);
+  return matches[0]!;
+}
+
+test("Cadence and StatusDot agree on the state -> family map", () => {
+  for (const state of ["idle", "working", "needs-you", "failed", "ended"] as const) {
+    const dot = render(<StatusDot state={state} />);
+    const dotFamily = familyOf(screen.getByRole("img"), styles);
+    dot.unmount();
+    const cadence = render(<Cadence state={state} frameTimes={[]} now={0} />);
+    const cadenceFamily = familyOf(screen.getByTestId("cadence-dot"), cadenceStyles);
+    cadence.unmount();
+    expect(dotFamily).toBe(stateFamily(state));
+    expect(cadenceFamily).toBe(stateFamily(state));
   }
 });

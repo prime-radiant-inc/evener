@@ -1,6 +1,6 @@
 /* Page scaffolding for /dev/plugins-mockups. Sheet panels are position:fixed,
  * so each .sheetFrame is the gallery's containing-block trick (see
- * dev/gallery-sections/sheet.module.css): position:relative + contain:layout
+ * dev/gallery-sections/gallery-frame.module.css): position:relative + contain:layout
  * scopes the fixed panel to the frame, overflow:hidden clips it, and the
  * frame's width matches the Sheet's own --sheet-inline-size (420px) so the
  * anchored right edge sits exactly on the frame edge. The frame's min-height
@@ -84,9 +84,8 @@
 }
 
 .frameNote {
+  composes: helpCaption from "../styles/help.module.css";
   margin: 0;
-  color: var(--ink-mid);
-  font-size: var(--font-size-caption);
   max-width: 72ch;
 }
 

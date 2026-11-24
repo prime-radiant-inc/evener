@@ -1,8 +1,8 @@
 import { type PointerEvent as ReactPointerEvent, useCallback, useRef, useState } from "react";
 import { Button } from "../button";
+import { CodeBlockPre } from "../codeblock";
 import { CopyButton } from "../copybutton";
-import dialogStyles from "../dialog/dialog.module.css";
-import { OverlayPanel } from "../dialog/OverlayPanel";
+import { Dialog } from "../dialog";
 import { requireClass } from "../internal/requireClass";
 import styles from "./mermaid.module.css";
 
@@ -13,13 +13,6 @@ const CLASS = {
   zoomContent: requireClass(styles.zoomContent, "mermaid.module.css", "zoomContent"),
   source: requireClass(styles.source, "mermaid.module.css", "source"),
 };
-
-// The panel chassis is dialog.module.css's shared .panel (Dialog and Sheet both
-// start from it, see widgets/dialog/index.tsx's BASE_PANEL_CLASS). This class
-// adds only the viewer's near-viewport geometry on top, the same way the
-// dialog's own variant classes do.
-const BASE_PANEL_CLASS = requireClass(dialogStyles.panel, "dialog.module.css", "panel");
-const PANEL_CLASS = `${BASE_PANEL_CLASS} ${CLASS.viewerPanel}`;
 
 // The zoom bounds: a quarter-size floor keeps a diagram visible while zoomed
 // far out, and an eight-times ceiling is the useful upper end before the SVG's
@@ -38,7 +31,7 @@ export interface DiagramViewerProps {
 }
 
 /**
- * Fullscreen viewer for one inline mermaid diagram (Task 7): an OverlayPanel
+ * Fullscreen viewer for one inline mermaid diagram (Task 7): a Dialog
  * whose body is a dependency-free pan/zoom surface, with a source toggle and a
  * copy control in the footer. `svg` arrives already sanitized by security.ts;
  * re-inserting it here is the same trusted path MermaidDiagram itself uses.
@@ -111,13 +104,13 @@ export function DiagramViewer({ open, svg, source, onClose }: DiagramViewerProps
   const zoomStyle = { transform: `translate(${view.x}px, ${view.y}px) scale(${view.scale})` };
 
   return (
-    <OverlayPanel
+    <Dialog
       open={open}
       onClose={onClose}
       title="Diagram"
-      panelClassName={PANEL_CLASS}
+      size="large"
+      panelClassName={CLASS.viewerPanel}
       bodyClassName={CLASS.viewerBody}
-      motion="float"
       footer={
         <>
           <Button variant="quiet" size="sm" onClick={() => setShowSource((value) => !value)}>
@@ -131,9 +124,9 @@ export function DiagramViewer({ open, svg, source, onClose }: DiagramViewerProps
       }
     >
       {showSource ? (
-        <pre className={CLASS.source}>
-          <code>{source}</code>
-        </pre>
+        <CodeBlockPre wrap={false} className={CLASS.source}>
+          {source}
+        </CodeBlockPre>
       ) : (
         <div
           ref={attachWheel}
@@ -147,6 +140,6 @@ export function DiagramViewer({ open, svg, source, onClose }: DiagramViewerProps
           <div className={CLASS.zoomContent} style={zoomStyle} dangerouslySetInnerHTML={{ __html: svg }} />
         </div>
       )}
-    </OverlayPanel>
+    </Dialog>
   );
 }

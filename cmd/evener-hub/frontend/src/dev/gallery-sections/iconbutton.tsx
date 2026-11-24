@@ -1,7 +1,7 @@
 import type { IconButtonVariant } from "../../widgets/iconbutton";
 import { IconButton } from "../../widgets/iconbutton";
+import { GallerySection } from "../GallerySection";
 import styles from "../gallery-section.module.css";
-import { ThemeFlip } from "../ThemeFlip";
 
 const VARIANTS: IconButtonVariant[] = ["primary", "quiet", "danger", "dangerQuiet"];
 
@@ -36,25 +36,22 @@ function VariantRow({ variant }: { variant: IconButtonVariant }) {
 
 export default function IconButtonGallerySection() {
   return (
-    <section>
-      <h2>IconButton</h2>
-      <ThemeFlip>
-        {VARIANTS.map((variant) => (
-          <VariantRow key={variant} variant={variant} />
-        ))}
-        <div className={styles.row}>
-          <p className={styles.rowLabel}>badge</p>
-          <IconButton
-            variant="secondary"
-            size="sm"
-            label="Show sidebar (3 need attention)"
-            icon={<DotIcon />}
-            badge={{ count: 3, tone: "attention" }}
-          />
-          <IconButton variant="quiet" label="Sessions" icon={<DotIcon />} badge={{ count: 120, tone: "attention" }} />
-          <IconButton variant="quiet" label="Inbox" icon={<DotIcon />} badge={{ count: 7 }} />
-        </div>
-      </ThemeFlip>
-    </section>
+    <GallerySection title="IconButton">
+      {VARIANTS.map((variant) => (
+        <VariantRow key={variant} variant={variant} />
+      ))}
+      <div className={styles.row}>
+        <p className={styles.rowLabel}>badge</p>
+        <IconButton
+          variant="secondary"
+          size="sm"
+          label="Show sidebar (3 need attention)"
+          icon={<DotIcon />}
+          badge={{ count: 3, tone: "attention" }}
+        />
+        <IconButton variant="quiet" label="Sessions" icon={<DotIcon />} badge={{ count: 120, tone: "attention" }} />
+        <IconButton variant="quiet" label="Inbox" icon={<DotIcon />} badge={{ count: 7 }} />
+      </div>
+    </GallerySection>
   );
 }

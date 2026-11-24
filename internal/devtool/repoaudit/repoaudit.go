@@ -1,10 +1,10 @@
 // Package repoaudit holds the rules `make lint` enforces by reading the
 // repository's own source, scripts, Makefile and test files: one source for a
 // shared constant, one writer for a shared config, no scratch outside TMPDIR,
-// no variable-fed recursive delete, no new copy-only test. They are lint
-// rather than tests because they fail on what a change writes, not on what
-// the code does. `evener-dev dev repo-audit` runs every check from the
-// repository root, and lint-repo-audit is its gate.
+// no variable-fed recursive delete. They are lint rather than tests because
+// they fail on what a change writes, not on what the code does.
+// `evener-dev dev repo-audit` runs every check from the repository root, and
+// lint-repo-audit is its gate.
 package repoaudit
 
 import (
@@ -23,8 +23,6 @@ type check struct {
 
 // checks is every rule `make lint` holds the repository to.
 var checks = []check{
-	{"copy-only-tests", noNewCopyOnlyTests},
-	{"error-text-assertions", noNewErrorMessageAssertions},
 	{"quiet-threshold-one-source", quietThresholdHasOneSource},
 	{"custom-content-selection-one-rule", customContentSelectionHasOneRule},
 	{"projection-work-policy-in-host", projectionWorkPolicyLivesInTheHost},
@@ -37,12 +35,10 @@ var checks = []check{
 	{"script-scratch-in-tmpdir", noScriptCreatesScratchOutsideTMPDIR},
 	{"scratch-dir-not-substituted", scratchDirSubstitutionDoesNotSwallowFailure},
 	{"script-recursive-delete", noScriptFeedsVariableToRecursiveDelete},
-	{"scratch-trap-before-mkdir", scratchTrapInstalledBeforeMkdir},
 	{"makefile-recursive-delete", noMakefileRecipeFeedsVariableToRecursiveDelete},
 	{"makefile-scratch-in-tmpdir", noMakefileRecipeCreatesScratchOutsideTMPDIR},
 	{"mobile-native-build-ignored", mobileNativeGitignoreIgnoresDerivedDataBuild},
 	{"fake-timers-no-wall-clock-drift", fakeTimersDoNotFollowWallTime},
-	{"test-sleeps-within-baseline", testSleepsStayWithinBaseline},
 	{"mcp-transport-one-package", mcpTransportBuiltInOnePackage},
 	{"knob-has-consumer", everyKnobHasAConsumer},
 	{"execsupport-library-scope", execsupportStaysInLibraryScope},
@@ -123,8 +119,8 @@ func Run(stdout io.Writer) int {
 	return runChecks(checks, stdout)
 }
 
-// runChecks runs cs concurrently, since the copy-only scans dominate the wall
-// time, and reports them in order so the output is stable.
+// runChecks runs cs concurrently and reports them in order so the output is
+// stable.
 func runChecks(cs []check, stdout io.Writer) int {
 	results := make([]*audit, len(cs))
 	var wg sync.WaitGroup

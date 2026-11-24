@@ -35,7 +35,6 @@
  * out like every dialog. */
 .viewerPanel {
   composes: float from "../../styles/motion.module.css";
-  border-radius: var(--radius-pane);
   width: calc(100vw - var(--space-8));
   height: calc(100vh - var(--space-8));
   max-width: calc(100vw - var(--space-8));
@@ -44,7 +43,7 @@
 
 /* The body is the drag surface's host: it fills the panel between header and
  * footer and clips instead of scrolling, so a pan moves the diagram and never
- * leaves a scrollbar behind. Passed through OverlayPanel's bodyClassName. */
+ * leaves a scrollbar behind. Passed through Dialog's bodyClassName. */
 .viewerBody {
   display: flex;
   flex: 1 1 auto;
@@ -79,16 +78,9 @@
   display: block;
 }
 
-/* The source toggle's <pre>: fills the body and scrolls on its own so a long
- * diagram source stays readable instead of clipping. */
+/* The source pane: the shared <pre> fills the body and scrolls its own
+ * overflow, keeping one source line per row. */
 .source {
   flex: 1 1 auto;
-  box-sizing: border-box;
-  margin: 0;
-  padding: var(--space-3);
   overflow: auto;
-  font-family: var(--font-mono);
-  font-size: var(--font-size-caption);
-  white-space: pre;
-  color: var(--ink-hi);
 }

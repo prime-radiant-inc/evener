@@ -84,10 +84,12 @@ func incrementalTestEvent(i int) Event {
 	switch i % 6 {
 	case 0:
 		started := ts
+		processStarted := ts
 		return Event{
 			Kind: EventJobStarted, TS: ts, JobID: jobID, Type: JobShell,
 			Task: strings.Repeat("t", i%17), OwnerSessionID: "ses_owner",
 			VisibleToSession: "ses_owner", StartedAt: &started, OutputPath: "/tmp/out",
+			Background: true, ProcessGroupID: 4242, ProcessStartTime: &processStarted,
 			Provenance: &provenance.Causal{
 				WatchKeys: []provenance.WatchKey{{WatchID: "w1", WatchGeneration: "g1"}},
 				FireKeys:  []provenance.FireKey{{WatchID: "w1", WatchGeneration: "g1", DeliveryID: "d1"}},
@@ -433,6 +435,9 @@ func mutateEventDeeply(e *Event) {
 	if e.ExitCode != nil {
 		*e.ExitCode = 99
 	}
+	if e.ProcessStartTime != nil {
+		*e.ProcessStartTime = time.Unix(0, 0)
+	}
 	if e.StructuredResultValid != nil {
 		*e.StructuredResultValid = !*e.StructuredResultValid
 	}
@@ -487,6 +492,7 @@ func TestCloneEventCoversEveryReferenceField(t *testing.T) {
 	want := []string{
 		"Event.EndedAt",
 		"Event.ExitCode",
+		"Event.ProcessStartTime",
 		"Event.Provenance",
 		"Event.Provenance.Chain",
 		"Event.Provenance.FireKeys",

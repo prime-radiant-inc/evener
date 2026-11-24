@@ -85,10 +85,6 @@ type shellResult struct {
 	Truncated     bool
 	TotalBytes    int64
 	DroppedBytes  int64
-	// RetainedStartPartial reports that Output's first byte continues a line
-	// whose beginning the retention cap evicted, so the first visible "line"
-	// is a fragment and must not be read as diff structure.
-	RetainedStartPartial bool
 	// settle is non-nil when the command finished within its max_wait_ms bound.
 	// Calling settle(true) commits the delayed job (making it durable) and
 	// finalizes it, returning its job_id. Calling settle(false) discards the
@@ -200,6 +196,7 @@ func runShell(ctx context.Context, jm *jobManager, se execenv.StreamingExecutor,
 	}
 
 	jm.setShellSignal(run, handle.Signal)
+	jm.setShellProcessIdentity(run, handle.Pid)
 	waitCh := make(chan shellWaitResult, 1)
 	processDone := make(chan struct{})
 	var runtimeTimeoutCh <-chan struct{}
@@ -291,18 +288,17 @@ func runShell(ctx context.Context, jm *jobManager, se execenv.StreamingExecutor,
 			return run.rec.JobID
 		}
 		return shellResult{
-			Type:                 string(run.rec.Type),
-			Status:               string(status),
-			Reason:               reason,
-			RunningInBackground:  false,
-			TimedOut:             runtimeTimedOut.Load(),
-			ExitCode:             exitCode,
-			Output:               output,
-			Truncated:            truncated,
-			TotalBytes:           total,
-			DroppedBytes:         run.output.RetainedStart(),
-			RetainedStartPartial: run.output.RetainedStartPartial(),
-			settle:               settle,
+			Type:                string(run.rec.Type),
+			Status:              string(status),
+			Reason:              reason,
+			RunningInBackground: false,
+			TimedOut:            runtimeTimedOut.Load(),
+			ExitCode:            exitCode,
+			Output:              output,
+			Truncated:           truncated,
+			TotalBytes:          total,
+			DroppedBytes:        run.output.RetainedStart(),
+			settle:              settle,
 		}
 	case <-runtimeTimeoutCh:
 		wait := <-waitCh
@@ -331,18 +327,17 @@ func runShell(ctx context.Context, jm *jobManager, se execenv.StreamingExecutor,
 		jm.armLongRunningReminder()
 		go jm.finalizeShellWhenDone(run, waitCh, &runtimeTimedOut)
 		return shellResult{
-			JobID:                run.rec.JobID,
-			Type:                 string(run.rec.Type),
-			Status:               string(jobstore.StatusRunning),
-			Reason:               "foreground_timeout",
-			RunningInBackground:  true,
-			TimedOut:             true,
-			WaitElapsedMS:        jm.clock.Now().Sub(waitStarted).Milliseconds(),
-			Output:               output,
-			Truncated:            truncated,
-			TotalBytes:           total,
-			DroppedBytes:         run.output.RetainedStart(),
-			RetainedStartPartial: run.output.RetainedStartPartial(),
+			JobID:               run.rec.JobID,
+			Type:                string(run.rec.Type),
+			Status:              string(jobstore.StatusRunning),
+			Reason:              "foreground_timeout",
+			RunningInBackground: true,
+			TimedOut:            true,
+			WaitElapsedMS:       jm.clock.Now().Sub(waitStarted).Milliseconds(),
+			Output:              output,
+			Truncated:           truncated,
+			TotalBytes:          total,
+			DroppedBytes:        run.output.RetainedStart(),
 		}
 	case <-ctxDone:
 		handle.Signal()
@@ -350,17 +345,16 @@ func runShell(ctx context.Context, jm *jobManager, se execenv.StreamingExecutor,
 		output, total, truncated, _ := fullOutput(run.output)
 		jm.discardDelayedShell(run)
 		return shellResult{
-			Type:                 string(run.rec.Type),
-			Status:               string(jobstore.StatusStopped),
-			Reason:               "cancelled",
-			RunningInBackground:  false,
-			TimedOut:             false,
-			ExitCode:             &wait.exitCode,
-			Output:               output,
-			Truncated:            truncated,
-			TotalBytes:           total,
-			DroppedBytes:         run.output.RetainedStart(),
-			RetainedStartPartial: run.output.RetainedStartPartial(),
+			Type:                string(run.rec.Type),
+			Status:              string(jobstore.StatusStopped),
+			Reason:              "cancelled",
+			RunningInBackground: false,
+			TimedOut:            false,
+			ExitCode:            &wait.exitCode,
+			Output:              output,
+			Truncated:           truncated,
+			TotalBytes:          total,
+			DroppedBytes:        run.output.RetainedStart(),
 		}
 	}
 }
@@ -474,37 +468,34 @@ func (jm *jobManager) finishForegroundRuntimeTimeout(run *runningJob, wait shell
 	}
 	output, total, truncated, _ := tailOutput(run.output, shellDefaultTailBytes)
 	dropped := run.output.RetainedStart()
-	partial := run.output.RetainedStartPartial()
 	if err := jm.finalizeShellWithRetry(run.rec.JobID, status, reason, exitCode); err != nil {
 		go jm.finalizeShellUntilDurable(run.rec.JobID, status, reason, exitCode)
 		return shellResult{
-			JobID:                run.rec.JobID,
-			Type:                 string(run.rec.Type),
-			Status:               string(jobstore.StatusFailed),
-			Reason:               "finalize_failed",
-			RunningInBackground:  true,
-			TimedOut:             false,
-			ExitCode:             exitCode,
-			Output:               output,
-			Truncated:            truncated,
-			TotalBytes:           total,
-			DroppedBytes:         dropped,
-			RetainedStartPartial: partial,
+			JobID:               run.rec.JobID,
+			Type:                string(run.rec.Type),
+			Status:              string(jobstore.StatusFailed),
+			Reason:              "finalize_failed",
+			RunningInBackground: true,
+			TimedOut:            false,
+			ExitCode:            exitCode,
+			Output:              output,
+			Truncated:           truncated,
+			TotalBytes:          total,
+			DroppedBytes:        dropped,
 		}
 	}
 	return shellResult{
-		JobID:                run.rec.JobID,
-		Type:                 string(run.rec.Type),
-		Status:               string(status),
-		Reason:               reason,
-		RunningInBackground:  false,
-		TimedOut:             false,
-		ExitCode:             exitCode,
-		Output:               output,
-		Truncated:            truncated,
-		TotalBytes:           total,
-		DroppedBytes:         dropped,
-		RetainedStartPartial: partial,
+		JobID:               run.rec.JobID,
+		Type:                string(run.rec.Type),
+		Status:              string(status),
+		Reason:              reason,
+		RunningInBackground: false,
+		TimedOut:            false,
+		ExitCode:            exitCode,
+		Output:              output,
+		Truncated:           truncated,
+		TotalBytes:          total,
+		DroppedBytes:        dropped,
 	}
 }
 
@@ -610,6 +601,26 @@ func (jm *jobManager) setShellSignal(run *runningJob, signal func()) {
 	}
 }
 
+// setShellProcessIdentity records the process group the command runs in (the
+// child leads its own group, see execenv's procgroup.SysProcAttr) and the
+// leader's start time, while the child is still unreaped: os/exec holds its pid
+// until Wait, so the identity read cannot land on a recycled pid. The durable
+// start event carries both, which is what lets a later daemon verify and reap
+// this group if the daemon dies without teardown (#4843). A command that has
+// already ended has no identity to record and none to reap.
+func (jm *jobManager) setShellProcessIdentity(run *runningJob, pid int) {
+	started, ok := processStartedAt(pid)
+	if pid <= 0 || !ok {
+		return
+	}
+	jm.mu.Lock()
+	if jm.running[run.rec.JobID] == run {
+		run.rec.ProcessGroupID = pid
+		run.rec.ProcessStartTime = &started
+	}
+	jm.mu.Unlock()
+}
+
 // jobStartedEvent is the durable EventJobStarted for a freshly created shell
 // job record.
 func jobStartedEvent(rec *jobstore.JobRecord) jobstore.Event {
@@ -630,6 +641,8 @@ func jobStartedEvent(rec *jobstore.JobRecord) jobstore.Event {
 		StartedAt:        &startedAt,
 		OutputPath:       rec.OutputPath,
 		WorkingDir:       rec.WorkingDir,
+		ProcessGroupID:   rec.ProcessGroupID,
+		ProcessStartTime: rec.ProcessStartTime,
 		Provenance:       provenance.Clone(rec.Provenance),
 	}
 }

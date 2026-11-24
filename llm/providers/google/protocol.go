@@ -8,15 +8,15 @@ import (
 	"primeradiant.com/evener/llm/registry"
 )
 
-// Protocol is the Gemini API implementation (spec §8). The model always
-// rides in the endpoint path, and the credential in the header the
-// transport names (x-goog-api-key, or a Vertex bearer token).
+// Protocol is the Google Interactions API implementation (spec §8). Both
+// Gemini Developer API and Vertex AI serve POST .../interactions with the model
+// ID carried in the JSON body.
 type Protocol struct {
 	Client *http.Client
+	Hasher *llm.ContinuationHasher
 }
 
-// DefaultProtocol is the registered google instance; it is the handle a
-// test sets Client on.
+// DefaultProtocol is the registered google instance; tests set Client on it.
 var DefaultProtocol = &Protocol{}
 
 func init() { llm.RegisterProtocol(DefaultProtocol) }
@@ -24,7 +24,21 @@ func init() { llm.RegisterProtocol(DefaultProtocol) }
 // ID implements llm.Protocol.
 func (*Protocol) ID() string { return registry.ProtocolGoogle }
 
-var prunablePaths = []string{"cachedContent", "generationConfig.stopSequences", "generationConfig.temperature", "generationConfig.thinkingConfig", "generationConfig.topP", "labels", "safetySettings", "toolConfig"}
+var prunablePaths = []string{
+	"generation_config.max_output_tokens",
+	"generation_config.seed",
+	"generation_config.stop_sequences",
+	"generation_config.temperature",
+	registry.FieldGoogleThinkingLevel,
+	registry.FieldGoogleThinkingSummaries,
+	"generation_config.tool_choice",
+	"generation_config.top_p",
+	"labels",
+	"previous_interaction_id",
+	"safety_settings",
+	"service_tier",
+	"store",
+}
 
 // PrunablePaths implements llm.Protocol.
 func (*Protocol) PrunablePaths() []string {
@@ -35,23 +49,7 @@ func (*Protocol) PrunablePaths() []string {
 
 // BuildBody implements llm.Protocol.
 func (*Protocol) BuildBody(req llm.Request, res registry.Resolved) (out map[string]any, err error) {
-	// Every error this builder returns carries the instance, not the
-	// protocol id or a vendor literal (spec §7.5: provider identity is
-	// res.Instance). RewriteErrorProvider leaves errors with no provider
-	// attribution alone.
 	defer func() { err = llm.RewriteErrorProvider(err, res.Instance) }()
-	caps := res.Caps
-	system, contents, err := toGeminiContents(res.WireID, req.Messages, registry.BoolValue(caps.MultimodalToolResults))
-	if err != nil {
-		return nil, err
-	}
-	if caps.Reasoning != nil && !*caps.Reasoning {
-		req.ReasoningEffort = nil
-	}
-	if req.ReasoningEffort != nil && *req.ReasoningEffort == "none" {
-		req.ReasoningEffort = nil
-	}
-	options, _ := req.ProviderOptions[registry.ProtocolGoogle].(map[string]any)
-	webSearch := req.WebSearch && (caps.WebSearch == nil || *caps.WebSearch)
-	return generateContentBody(req, caps, system, contents, webSearch, options)
+	body, _, err := buildBodyWithPolicy(req, res, false, false)
+	return body, err
 }

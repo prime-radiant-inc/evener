@@ -183,7 +183,6 @@ func (s *Server) ReplaceAppIdentity(prepared PreparedAppIdentity, activate func(
 		s.appTurnEndStated = false
 		s.appPendingStableTurnID = ""
 		s.appDeferredTerminalNotifications = nil
-		s.appHeldSettledEffect = nil
 		s.appPushedFailedToolCalls = nil
 		// The envelope describes the session that just stopped being this
 		// daemon's session, so it is replaced in the SAME commit as the identity

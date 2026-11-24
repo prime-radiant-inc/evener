@@ -274,7 +274,7 @@ func scanQuarantineArtifacts(fs afero.Fs, storePath string) (quarantineArtifacts
 
 // readQuarantineEpochFile reads the durable counter's sidecar: a regular file,
 // owner-only, carrying exactly the sidecar schema. Anything else is refused, so
-// a symlinked or hand-edited sidecar cannot move the counter the cursors pin.
+// a symlinked or hand-edited sidecar cannot move the durable quarantine counter.
 func readQuarantineEpochFile(fs afero.Fs, storePath string) (uint64, bool, error) {
 	sidecarPath := quarantineEpochPath(storePath)
 	info, err := lstat(fs, sidecarPath)
@@ -310,7 +310,7 @@ func readQuarantineEpochFile(fs afero.Fs, storePath string) (uint64, bool, error
 	if sidecar.QuarantineEpoch == 0 {
 		// The writer only ever persists a counter above zero; an empty object or
 		// a zero value is a sidecar this store did not write, and reading it as
-		// "no quarantine yet" would hand a pre-quarantine cursor its old epoch
+		// "no quarantine yet" would hand a pre-quarantine reader its old epoch
 		// back.
 		return 0, false, fmt.Errorf("epoch sidecar %s carries no quarantine epoch", sidecarPath)
 	}

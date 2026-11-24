@@ -74,6 +74,43 @@ func TestAssembleOutputDigest(t *testing.T) {
 	}
 }
 
+// The marker must name the exact omitted lifetime byte range and the
+// offset_bytes continuation, not only a human-readable byte count.
+func TestAssembleOutputDigestStatesOmittedByteRange(t *testing.T) {
+	t.Parallel()
+	got := assembleOutputDigest([]byte("aaa\n"), []byte("zzz\n"), 1000, 0)
+	if !strings.Contains(got, "omitted [4,996)") {
+		t.Fatalf("marker must state the omitted lifetime byte range [4,996):\n%s", got)
+	}
+	if !strings.Contains(got, "offset_bytes=4") {
+		t.Fatalf("marker must offer the offset_bytes continuation at 4:\n%s", got)
+	}
+
+	// A retained output that starts at lifetime byte 100: the range and the
+	// continuation offset move with the retention boundary.
+	got = assembleOutputDigest([]byte("aaa\n"), []byte("zzz\n"), 1000, 100)
+	if !strings.Contains(got, "omitted [104,996)") {
+		t.Fatalf("evicted marker must include the retained start in its range [104,996):\n%s", got)
+	}
+	if !strings.Contains(got, "offset_bytes=104") {
+		t.Fatalf("evicted marker must offer the offset_bytes continuation at 104:\n%s", got)
+	}
+}
+
+// shellInlineDigest must fold the retention boundary into the lifetime
+// offsets it advertises.
+func TestShellInlineDigestMarkerUsesLifetimeOffsets(t *testing.T) {
+	t.Parallel()
+	full := strings.Repeat("012345678\n", 400) // 4000 bytes
+	got := shellInlineDigest(full, 5000, 1000)
+	if !strings.Contains(got, "omitted [1510,4490)") {
+		t.Fatalf("digest must state the omitted lifetime range [1510,4490):\n%s", got)
+	}
+	if !strings.Contains(got, "offset_bytes=1510") {
+		t.Fatalf("digest must offer the offset_bytes continuation at 1510:\n%s", got)
+	}
+}
+
 func TestFirstLineBytes(t *testing.T) {
 	t.Parallel()
 	cases := []struct {

@@ -12,14 +12,22 @@ import {
   parseJSONObject,
   plainQuoteLine,
   SYSTEM_PRELUDE_TURN_ID,
-  stableDelegateDisplayStatus,
   str,
 } from "@evener/appwire-client";
-import { Fragment, useEffect } from "react";
+import { useEffect } from "react";
 import { threadsStore, useThreadsStore } from "../../../../stores/threads";
 import { useEntityViews } from "../../../../transcriptDisplay/entityViews";
 import { useTranscriptRenderContext } from "../../../../transcriptDisplay/renderContext";
-import { Chevron, EmptyState, IconButton, Timestamp, Tooltip, VisuallyHidden } from "../../../../widgets";
+import {
+  Chevron,
+  EmptyState,
+  Eyebrow,
+  IconButton,
+  InlineNotice,
+  Timestamp,
+  Tooltip,
+  VisuallyHidden,
+} from "../../../../widgets";
 import { isDisclosureOpen, toggleDisclosure } from "../../../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { formatUsagePair } from "../../chrome/activityFormat";
@@ -28,8 +36,10 @@ import { statedIntentOf } from "../ToolRow";
 import { registerToolRenderer, type ToolRenderProps, type ToolStatusLineProps } from "../toolRenderers";
 import {
   currentDelegate,
+  DELEGATE_STATUS,
   type DelegatePresentation,
   delegateStableState,
+  delegateStatusKey,
   effectiveRowKind,
   resolveRowKey,
   type SubagentRow,
@@ -38,6 +48,7 @@ import {
   useSubagentRow,
 } from "./subagentModuleStore";
 import styles from "./subagentmodule.module.css";
+import { ToolMeta } from "./toolMeta";
 
 // The expanded quote list shows the most recent quotes, not the full feed -
 // "open transcript" exists for the full history (the same reasoning the old
@@ -54,7 +65,6 @@ const CLASS = {
   quoteText: requireClass(styles.quoteText, "subagentmodule.module.css", "quoteText"),
   stats: requireClass(styles.stats, "subagentmodule.module.css", "stats"),
   statsSep: requireClass(styles.statsSep, "subagentmodule.module.css", "statsSep"),
-  statsSpring: requireClass(styles.statsSpring, "subagentmodule.module.css", "statsSpring"),
   clock: requireClass(styles.clock, "subagentmodule.module.css", "clock"),
   quotes: requireClass(styles.quotes, "subagentmodule.module.css", "quotes"),
   quotesList: requireClass(styles.quotesList, "subagentmodule.module.css", "quotesList"),
@@ -62,9 +72,7 @@ const CLASS = {
   quoteLive: requireClass(styles.quoteLive, "subagentmodule.module.css", "quoteLive"),
   quoteMsg: requireClass(styles.quoteMsg, "subagentmodule.module.css", "quoteMsg"),
   quoteMeta: requireClass(styles.quoteMeta, "subagentmodule.module.css", "quoteMeta"),
-  quotesEmpty: requireClass(styles.quotesEmpty, "subagentmodule.module.css", "quotesEmpty"),
   section: requireClass(styles.section, "subagentmodule.module.css", "section"),
-  sectionLabel: requireClass(styles.sectionLabel, "subagentmodule.module.css", "sectionLabel"),
   mandate: requireClass(styles.mandate, "subagentmodule.module.css", "mandate"),
 };
 
@@ -81,39 +89,6 @@ interface Quote {
   completedAt?: string;
 }
 
-const STATUS_GLYPH: Record<SubagentRowKind, string> = {
-  running: "●",
-  done: "✓",
-  stopped: "■",
-  failed: "×",
-  unknown: "?",
-};
-
-// The one status-word vocabulary for a delegate's lifecycle line. ToolCallItem
-// renders it standalone on a collapsed row (the delegate-lifecycle div); the
-// expanded card merges it into its own first line (subagent-stats), where the
-// turn/call counts and run clock ride WITH the word. The stable projection's
-// display status outranks the frozen receipt's kind - "Exhausted"/"Idle" name
-// the run's actual outcome, not the stale receipt.
-const DELEGATE_LABEL: Record<SubagentRowKind, string> = {
-  running: "Running",
-  done: "Idle · reported",
-  stopped: "Stopped",
-  failed: "Failed",
-  unknown: "Status unavailable",
-};
-
-// Both delegate status surfaces (the card's merged first line and the
-// collapsed standalone line) derive their word here, so the wording stays
-// identical on either surface. The stable projection's NeedsAttention flag is
-// deliberately absent from every surface a delegate renders on: it is
-// wake-delivery plumbing the owner driver consumes on its own, never a
-// reader-facing status.
-function delegateLifecycleLabel(kind: SubagentRowKind, stable: DelegatePresentation | undefined): string {
-  const lifecycleStatus = stable ? stableDelegateDisplayStatus(stable) : undefined;
-  return lifecycleStatus === "exhausted" ? "Exhausted" : lifecycleStatus === "idle" ? "Idle" : DELEGATE_LABEL[kind];
-}
-
 // The status word both delegate status surfaces render, owning its own DOM
 // identity (one testid plus kind state) so consumers find it with one
 // selector wherever it renders: the standalone DelegateStatusLine, collapsed
@@ -121,7 +96,7 @@ function delegateLifecycleLabel(kind: SubagentRowKind, stable: DelegatePresentat
 function DelegateStatusWord({ kind, stable }: { kind: SubagentRowKind; stable: DelegatePresentation | undefined }) {
   return (
     <span className={CLASS.statusWord} data-testid="delegate-status-word" data-kind={kind}>
-      {delegateLifecycleLabel(kind, stable)}
+      {DELEGATE_STATUS[delegateStatusKey(kind, stable)].label}
     </span>
   );
 }
@@ -173,7 +148,7 @@ function JobDetailSection({ row, stable }: { row: SubagentRow; stable: DelegateP
   }
   return (
     <section className={CLASS.section} data-testid="subagent-job-detail">
-      <div className={CLASS.sectionLabel}>Job</div>
+      <Eyebrow>Job</Eyebrow>
       <div className={CLASS.mandate}>
         Exhaustion budget: {exhaustionBudget ?? "?"} of {exhaustionLimit ?? "?"}
       </div>
@@ -271,7 +246,7 @@ function SubagentCard({
           child's latest words (the quote) follow below, secondary. */}
       {/* The line's numbers ride as data too (turns, calls, the clock's
           milliseconds, the token pair), beside the words that show them. */}
-      <div
+      <ToolMeta
         className={CLASS.stats}
         data-testid="subagent-stats"
         data-status-line="delegate"
@@ -281,52 +256,59 @@ function SubagentCard({
         data-clock-ms={clockMs}
         data-input-tokens={usage ? stableUsage?.inputTokens : undefined}
         data-output-tokens={usage ? stableUsage?.outputTokens : undefined}
-      >
-        <span className={CLASS.statusGlyph} data-testid="subagent-status-glyph" aria-hidden="true">
-          {STATUS_GLYPH[displayKind]}
-        </span>
-        <DelegateStatusWord kind={displayKind} stable={stable} />
-        {/* Each segment rides behind the word, behind its own separator -
-            never a dangling "·" advertising a segment that has no data. */}
-        {statsSegments.map((segment) => (
-          <Fragment key={segment.key}>
-            <span className={CLASS.statsSep}>·</span>
-            <span data-segment={segment.key}>{segment.text}</span>
-          </Fragment>
-        ))}
-        <span className={CLASS.statsSpring} />
-        {clockMs !== undefined && (
-          <span className={CLASS.clock} data-segment="clock">
-            {formatElapsed(clockMs)}
-          </span>
-        )}
-        <Tooltip label={open ? "Hide recent activity" : "Show recent activity"}>
-          <IconButton
-            label={open ? "Hide recent activity" : "Show recent activity"}
-            icon={<Chevron direction={open ? "down" : "right"} />}
-            variant="quiet"
-            size="xs"
-            aria-expanded={open}
-            aria-controls={disclosureId}
-            onClick={(event) => {
-              event.stopPropagation();
-              toggleDisclosure(disclosureId, false);
-            }}
-          />
-        </Tooltip>
-      </div>
+        segments={[
+          {
+            key: "status",
+            content: (
+              <>
+                <span className={CLASS.statusGlyph} data-testid="subagent-status-glyph" aria-hidden="true">
+                  {DELEGATE_STATUS[delegateStatusKey(displayKind, stable)].glyph}
+                </span>
+                <DelegateStatusWord kind={displayKind} stable={stable} />
+              </>
+            ),
+          },
+          ...statsSegments.map((segment) => ({
+            key: segment.key,
+            content: <span data-segment={segment.key}>{segment.text}</span>,
+          })),
+        ]}
+        trailing={
+          <>
+            {clockMs !== undefined && (
+              <span className={CLASS.clock} data-segment="clock">
+                {formatElapsed(clockMs)}
+              </span>
+            )}
+            <Tooltip label={open ? "Hide recent activity" : "Show recent activity"}>
+              <IconButton
+                label={open ? "Hide recent activity" : "Show recent activity"}
+                icon={<Chevron direction={open ? "down" : "right"} />}
+                variant="quiet"
+                size="xs"
+                aria-expanded={open}
+                aria-controls={disclosureId}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  toggleDisclosure(disclosureId, false);
+                }}
+              />
+            </Tooltip>
+          </>
+        }
+      />
       {quoteText ? (
         <em className={CLASS.quote} data-testid="subagent-quote">
           {quoteText}
         </em>
+      ) : model ? (
+        <div data-testid="subagent-quotes-empty">
+          <EmptyState size="compact" title="No activity yet" reason="empty" />
+        </div>
       ) : (
-        <span
-          className={CLASS.quotesEmpty}
-          data-testid="subagent-quotes-empty"
-          data-reason={model ? "no-activity" : "unavailable"}
-        >
-          {model ? "No activity yet" : "Child activity unavailable"}
-        </span>
+        <InlineNotice tone="neutral" live="off" data-testid="subagent-quotes-empty" data-reason="unavailable">
+          Child activity unavailable
+        </InlineNotice>
       )}
       {open && (
         <section

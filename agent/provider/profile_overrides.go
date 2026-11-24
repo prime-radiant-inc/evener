@@ -16,8 +16,12 @@ var (
 
 // WithCommunicateOutputSchema returns a cloned profile whose `communicate`
 // tool has its `output` property schema replaced wholesale by the given
-// schema. The top-level `required` list on the tool parameters is also
-// updated to include `output`.
+// schema. The top-level `required` list is left alone: `message`, `end_turn`,
+// stays required while `next` and `output` stay optional, so a progress update
+// (`next="send_and_continue"`) and a quiet wait (`next="log_quietly_and_end_turn"`)
+// validate without a fabricated output object. Whenever `output` is supplied,
+// its own schema (the caller's here) validates it, and the handler requires it
+// on a final reply (`next="send_and_end_turn"`).
 //
 // The schema is validated against the draft 2020-12 meta-schema first: a
 // caller-supplied schema spliced into tool parameters verbatim ships on the
@@ -51,11 +55,12 @@ func WithCommunicateOutputSchema(p *Profile, outputSchema map[string]any) (*Prof
 	defs := append([]llm.ToolDefinition{}, p.toolDefs...)
 	for i := range defs {
 		if defs[i].Name == "communicate" {
-			bound, err := replaceCommunicateOutputSchema(defs[i], outputSchema)
+			bound, applied, err := replaceCommunicateOutputSchema(defs[i], outputSchema)
 			if err != nil {
 				return nil, fmt.Errorf("bind output schema: %w", err)
 			}
 			defs[i] = bound
+			clone.communicateOutputBound = clone.communicateOutputBound || applied
 		}
 	}
 	clone.toolDefs = defs
@@ -64,7 +69,9 @@ func WithCommunicateOutputSchema(p *Profile, outputSchema map[string]any) (*Prof
 
 // WithAllowedDecisions returns a cloned profile where the `communicate` tool
 // schema requires a `decision` field constrained to the given values, and
-// `output` is required at the top level.
+// `decision` is required whenever output is present.
+// `output` itself stays optional at the top level, so progress updates and
+// quiet yields validate; the handler requires it on a final reply.
 //
 // This is intended for orchestration systems (like Toil) that route workflow
 // DAGs based on the agent's decision.
@@ -77,7 +84,9 @@ func WithAllowedDecisions(p *Profile, decisions []string) *Profile {
 	defs := append([]llm.ToolDefinition{}, p.toolDefs...)
 	for i := range defs {
 		if defs[i].Name == "communicate" {
-			defs[i] = addDecisionToSchema(defs[i], decisions)
+			var applied bool
+			defs[i], applied = addDecisionToSchema(defs[i], decisions)
+			clone.communicateOutputBound = clone.communicateOutputBound || applied
 		}
 	}
 	clone.toolDefs = defs
@@ -108,50 +117,43 @@ func WithCheapModel(p *Profile, ref string) *Profile {
 }
 
 // replaceCommunicateOutputSchema deep-copies td.Parameters and overwrites
-// Parameters.properties.output with a deep copy of outputSchema. It also adds
-// "output" to Parameters.required if not already present.
+// Parameters.properties.output with a deep copy of outputSchema. Parameters'
+// top-level required list is untouched, so `output` stays optional.
 //
 // A tool definition with no parameters or no properties map is returned
 // unchanged: there is nowhere to splice the schema, and that absence is the
 // profile's own shape rather than a failure to bind.
-func replaceCommunicateOutputSchema(td llm.ToolDefinition, outputSchema map[string]any) (llm.ToolDefinition, error) {
+func replaceCommunicateOutputSchema(td llm.ToolDefinition, outputSchema map[string]any) (llm.ToolDefinition, bool, error) {
 	// Deep-copy Parameters via JSON round-trip to avoid mutating shared map state.
 	if td.Parameters != nil {
 		b, err := profileJSONMarshal(td.Parameters)
 		if err != nil {
-			return td, fmt.Errorf("marshal tool parameters: %w", err)
+			return td, false, fmt.Errorf("marshal tool parameters: %w", err)
 		}
 		var params map[string]any
 		if err := profileJSONUnmarshal(b, &params); err != nil {
-			return td, fmt.Errorf("unmarshal tool parameters: %w", err)
+			return td, false, fmt.Errorf("unmarshal tool parameters: %w", err)
 		}
 		td.Parameters = params
 	}
 
 	params := td.Parameters
 	if params == nil {
-		return td, nil
+		return td, false, nil
 	}
 	props, _ := params["properties"].(map[string]any)
 	if props == nil {
-		return td, nil
+		return td, false, nil
 	}
 
 	// Deep-copy outputSchema so later mutations by the caller do not leak in.
 	copied, err := deepCopyJSONMap(outputSchema)
 	if err != nil {
-		return td, fmt.Errorf("copy output schema: %w", err)
+		return td, false, fmt.Errorf("copy output schema: %w", err)
 	}
 	props["output"] = copied
 
-	// Ensure output is listed as required at the top level.
-	topReq := toStringSlice(params["required"])
-	if !slices.Contains(topReq, "output") {
-		topReq = append(topReq, "output")
-	}
-	params["required"] = topReq
-
-	return td, nil
+	return td, true, nil
 }
 
 // deepCopyJSONMap returns a deep copy of m via JSON round-trip. Returns an
@@ -168,7 +170,7 @@ func deepCopyJSONMap(m map[string]any) (map[string]any, error) {
 	return out, nil
 }
 
-func addDecisionToSchema(td llm.ToolDefinition, decisions []string) llm.ToolDefinition {
+func addDecisionToSchema(td llm.ToolDefinition, decisions []string) (llm.ToolDefinition, bool) {
 	// IMPORTANT: deep-copy Parameters via JSON round-trip to avoid mutating
 	// shared map state from the base profile. Go maps are reference types,
 	// so the shallow struct copy in WithAllowedDecisions does NOT copy the
@@ -176,34 +178,34 @@ func addDecisionToSchema(td llm.ToolDefinition, decisions []string) llm.ToolDefi
 	if td.Parameters != nil {
 		b, err := profileJSONMarshal(td.Parameters)
 		if err != nil {
-			return td
+			return td, false
 		}
 		var params map[string]any
 		if err := profileJSONUnmarshal(b, &params); err != nil {
-			return td
+			return td, false
 		}
 		td.Parameters = params
 	}
 
 	params := td.Parameters
 	if params == nil {
-		return td
+		return td, false
 	}
 	props, _ := params["properties"].(map[string]any)
 	if props == nil {
-		return td
+		return td, false
 	}
 	outputAny, ok := props["output"]
 	if !ok {
-		return td
+		return td, false
 	}
 	outputSchema, _ := outputAny.(map[string]any)
 	if outputSchema == nil {
-		return td
+		return td, false
 	}
 	outProps, _ := outputSchema["properties"].(map[string]any)
 	if outProps == nil {
-		return td
+		return td, false
 	}
 
 	// Add decision field with enum constraint.
@@ -223,14 +225,7 @@ func addDecisionToSchema(td llm.ToolDefinition, decisions []string) llm.ToolDefi
 	// Update output description (remove "optional").
 	outputSchema["description"] = "Structured output."
 
-	// Make output required at the top level.
-	topReq := toStringSlice(params["required"])
-	if !slices.Contains(topReq, "output") {
-		topReq = append(topReq, "output")
-	}
-	params["required"] = topReq
-
-	return td
+	return td, true
 }
 
 // toStringSlice converts an any (either []string or []any from JSON unmarshal)

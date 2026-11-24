@@ -24,9 +24,11 @@ export { CollectionEditor } from "./collectioneditor";
 export type { ConfirmDialogProps } from "./confirmdialog";
 export { ConfirmDialog } from "./confirmdialog";
 export type { ContextCardProps } from "./contextcard";
-export { ContextCard } from "./contextcard";
+export { ContextCard, isWebHref } from "./contextcard";
 export type { CopyButtonProps } from "./copybutton";
 export { CopyButton } from "./copybutton";
+export type { CountButtonChrome, CountButtonOrientation, CountButtonProps } from "./countbutton";
+export { CountButton } from "./countbutton";
 export type { DialogProps } from "./dialog";
 export { Dialog } from "./dialog";
 export { CloseIcon } from "./dialog/CloseIcon";
@@ -62,6 +64,12 @@ export type { InlineNoticeLive, InlineNoticeProps, InlineNoticeTone } from "./in
 export { InlineNotice } from "./inlinenotice";
 export type { InputProps } from "./input";
 export { Input } from "./input";
+export type {
+  PickerTriggerAriaMode,
+  PickerTriggerClassNames,
+  PickerTriggerProps,
+} from "./internal/pickerTrigger";
+export { PickerTrigger } from "./internal/pickerTrigger";
 export type { KeyHintProps } from "./keyhint";
 export { chordLabel, KeyHint } from "./keyhint";
 export type { ListRowProps, ListRowVariant } from "./listrow";
@@ -112,7 +120,7 @@ export { Skeleton } from "./skeleton";
 export type { SpeakerAvatarProps, SpeakerAvatarSpeaker } from "./speakeravatar";
 export { SpeakerAvatar } from "./speakeravatar";
 export type { StatusDotProps } from "./statusdot";
-export { STATUS_LABEL, StatusDot, SubagentDot } from "./statusdot";
+export { StatusDot, SubagentDot } from "./statusdot";
 export { SteeringGlyph } from "./steeringglyph";
 export type { SwitchProps } from "./switch";
 export { Switch } from "./switch";
@@ -120,6 +128,8 @@ export type { TextareaProps } from "./textarea";
 export { Textarea } from "./textarea";
 export type { TimestampProps } from "./timestamp";
 export { Timestamp } from "./timestamp";
+export type { AbsoluteTimeFormat, FormatAbsoluteTimeOptions } from "./timestamp/formatAbsoluteTime";
+export { formatAbsoluteTime } from "./timestamp/formatAbsoluteTime";
 export type { ToastKind } from "./toast";
 export { Toast, useToasts } from "./toast";
 export type { ToolIconKind, ToolIconProps, ToolIconTone } from "./toolicon";

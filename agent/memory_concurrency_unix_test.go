@@ -95,7 +95,7 @@ func TestMemoryConcurrentSessionsKeepEachPageLastWrite(t *testing.T) {
 		return err == nil
 	}
 	edit := func(s *Session, file, old, replacement string) bool {
-		_, err := s.execMemoryEdit(ctx, nil, map[string]any{"scope": "personal", "file_path": file, "old_string": old, "new_string": replacement})
+		_, err := s.execMemoryEdit(ctx, nil, map[string]any{"scope": "personal", "file_path": file, "edits": []any{map[string]any{"old_string": old, "new_string": replacement}}})
 		return err == nil
 	}
 	if !edit(a, "a-own.md", "updated: 2026-10-01\n---\n", "updated: 2026-10-01\n---\nbody-v0\n") {
@@ -268,7 +268,7 @@ func TestMemoryStampDoesNotUndoAnEditOfThePageItStamps(t *testing.T) {
 	path := filepath.Join(root, "memory", "fact.md")
 	finish := memoryStampRace(t, root, "fact.md", "A's fact", "A-fact\n", "A-fact")
 	b := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root}))
-	if _, err := b.execMemoryEdit(context.Background(), nil, map[string]any{"scope": "personal", "file_path": "fact.md", "old_string": "A-fact", "new_string": "B-corrected-fact"}); err != nil {
+	if _, err := b.execMemoryEdit(context.Background(), nil, map[string]any{"scope": "personal", "file_path": "fact.md", "edits": []any{map[string]any{"old_string": "A-fact", "new_string": "B-corrected-fact"}}}); err != nil {
 		t.Fatalf("B's edit: %v", err)
 	}
 	finish()

@@ -15,9 +15,17 @@ import { beforeEach, expect, test } from "vitest";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../../../shell/workspace";
 import { readModuleCss, topRuleBlock } from "../../../../styles/cssBlock";
 import { TranscriptRenderProvider } from "../../../../transcriptDisplay/renderContext";
+import cardStyles from "../../../../widgets/card/card.module.css";
+import { requireClass } from "../../../../widgets/internal/requireClass";
 import { toolRendererFor } from "../toolRenderers";
 import "../tools";
 import "./jobWatch";
+
+const CARD_CLASS = {
+  card: requireClass(cardStyles.card, "card.module.css", "card"),
+  outlined: requireClass(cardStyles.outlined, "card.module.css", "outlined"),
+  none: requireClass(cardStyles.none, "card.module.css", "none"),
+};
 
 beforeEach(() => {
   resetWorkspaceStoreForTests();
@@ -29,6 +37,12 @@ function item(overrides: Partial<ItemModel> = {}): ItemModel {
 
 function watchItem(args: Record<string, unknown>, raw: unknown, output = ""): ItemModel {
   return item({ toolName: "job_watch", argumentsJSON: JSON.stringify(args), raw, output });
+}
+
+function rowControl(row: HTMLElement): HTMLElement {
+  const summary = row.querySelector("summary");
+  if (!(summary instanceof HTMLElement)) throw new Error("job-watch row has no disclosure summary");
+  return summary;
 }
 
 // The hero timer note from the live session in the mockups.
@@ -121,6 +135,16 @@ test("the single-watch body never shows the watch id", () => {
   const Body = d.body!;
   render(<Body item={watchItem({ operation: "create" }, TIMER_RAW)} live={false} />);
   expect(screen.getByTestId("job-watch-body").textContent).not.toContain("watch_034KEfjYFbfoUaPeHJcLXY");
+});
+
+test("the body adopts the outlined Card with its surface padding removed", () => {
+  const d = toolRendererFor("job_watch");
+  const Body = d.body!;
+  render(<Body item={watchItem({ operation: "create" }, TIMER_RAW)} live={false} />);
+  const body = screen.getByTestId("job-watch-body");
+  expect(body.classList.contains(CARD_CLASS.card)).toBe(true);
+  expect(body.classList.contains(CARD_CLASS.outlined)).toBe(true);
+  expect(body.classList.contains(CARD_CLASS.none)).toBe(true);
 });
 
 // --- §B: create condition watch -------------------------------------------
@@ -220,6 +244,14 @@ test("list body renders one row per watch with a status chip and the watch id", 
   expect(text).toContain("ended");
 });
 
+test("an empty list renders the shared empty state", () => {
+  const d = toolRendererFor("job_watch");
+  const Body = d.body!;
+  render(<Body item={watchItem({ operation: "list" }, { watches: [], recent_watches: [], count: 0 })} live={false} />);
+  const empty = screen.getByTestId("job-watch-empty");
+  expect(within(empty).getByTestId("empty-state").dataset.reason).toBe("empty");
+});
+
 test("list watch IDs are full-id entity triggers with no open control or navigation", () => {
   const d = toolRendererFor("job_watch");
   const Body = d.body!;
@@ -276,13 +308,13 @@ test("detail-bearing watch IDs are embedded triggers and the row remains the dis
 
   const row = screen.getByTestId("job-watch-row");
   const trigger = within(row).getByTestId("entity-trigger");
-  expect(row.tagName).toBe("BUTTON");
+  expect(row.querySelector("summary")).not.toBeNull();
   expect(trigger.getAttribute("tabindex")).toBeNull();
   expect(screen.queryByRole("button", { name: /Open/ })).toBeNull();
 
-  fireEvent.click(row);
+  fireEvent.click(rowControl(row));
   expect(screen.getByTestId("job-watch-row-detail").textContent).toContain("ready");
-  fireEvent.click(row);
+  fireEvent.click(rowControl(row));
   expect(screen.queryByTestId("job-watch-row-detail")).toBeNull();
 
   fireEvent.click(trigger);
@@ -290,25 +322,25 @@ test("detail-bearing watch IDs are embedded triggers and the row remains the dis
   expect(screen.getByTestId("job-watch-row-detail").textContent).toContain("ready");
 });
 
-test("list rows are buttons that expand the row's detail sentence (RoboRev PR #954)", async () => {
+test("list rows are disclosures that expand the row's detail sentence (RoboRev PR #954)", async () => {
   const user = userEvent.setup();
   const d = toolRendererFor("job_watch");
   const Body = d.body!;
   render(<Body item={watchItem({ operation: "list" }, LIST_RAW)} live={false} />);
   const rows = screen.getAllByTestId("job-watch-row");
   expect(rows).toHaveLength(3);
-  // Only rows that CAN expand are buttons; the ended row is plain text
+  // Only rows that CAN expand are disclosures; the ended row is plain text
   // (RoboRev PR #954 combined review: no focusable no-op controls).
-  expect(rows[0]!.tagName).toBe("BUTTON");
-  expect(rows[1]!.tagName).toBe("BUTTON");
-  expect(rows[2]!.tagName).not.toBe("BUTTON");
+  expect(rows[0]!.querySelector("summary")).not.toBeNull();
+  expect(rows[1]!.querySelector("summary")).not.toBeNull();
+  expect(rows[2]!.querySelector("summary")).toBeNull();
   // Detail hidden until tapped.
   expect(screen.queryByTestId("job-watch-row-detail")).toBeNull();
-  await user.click(rows[1]!);
+  await user.click(rowControl(rows[1]!));
   const detail = screen.getByTestId("job-watch-row-detail").textContent ?? "";
   expect(detail).toContain("job_a1b2");
   expect(detail).toContain("ready|done");
-  await user.click(rows[1]!);
+  await user.click(rowControl(rows[1]!));
   expect(screen.queryByTestId("job-watch-row-detail")).toBeNull();
 });
 
@@ -482,10 +514,10 @@ test("every list row form expands a detail sentence; no expandable row is a no-o
   const rows = screen.getAllByTestId("job-watch-row");
   expect(rows).toHaveLength(3);
   // Every expandable row opens its detail; static rows (none here — all
-  // three watch with parseable conditions) are never buttons.
-  for (const row of rows) expect(row.tagName).toBe("BUTTON");
+  // three watch with parseable conditions) are never disclosure controls.
+  for (const row of rows) expect(row.querySelector("summary")).not.toBeNull();
   for (const [index, row] of rows.entries()) {
-    await user.click(row);
+    await user.click(rowControl(row));
     const details = screen.getAllByTestId("job-watch-row-detail");
     expect(details).toHaveLength(index + 1);
   }
@@ -842,10 +874,10 @@ test("ended rows are not focusable buttons (finding M2)", async () => {
   render(<Body item={watchItem({ operation: "list" }, LIST_RAW)} live={false} />);
   const rows = screen.getAllByTestId("job-watch-row");
   expect(rows).toHaveLength(3);
-  // The two watching rows stay buttons; the ended row is plain text.
-  expect(rows[0]!.tagName).toBe("BUTTON");
-  expect(rows[1]!.tagName).toBe("BUTTON");
-  expect(rows[2]!.tagName).not.toBe("BUTTON");
+  // The two watching rows stay disclosures; the ended row is plain text.
+  expect(rows[0]!.querySelector("summary")).not.toBeNull();
+  expect(rows[1]!.querySelector("summary")).not.toBeNull();
+  expect(rows[2]!.querySelector("summary")).toBeNull();
   expect(rows[2]!.textContent ?? "").toContain("ended");
   // Clicking the ended row opens nothing.
   await user.click(rows[2]!);
@@ -868,7 +900,7 @@ test("watching rows with unparsable conditions are not buttons (finding M2)", ()
     />,
   );
   const row = screen.getByTestId("job-watch-row");
-  expect(row.tagName).not.toBe("BUTTON");
+  expect(row.querySelector("summary")).toBeNull();
 });
 
 // --- combined RoboRev review (6bdc9ed): note-only watching rows ---------------
@@ -1188,7 +1220,7 @@ test("a composite row detail names events and filter beside the pattern (M1)", a
       live={false}
     />,
   );
-  await user.click(screen.getByTestId("job-watch-row"));
+  await user.click(rowControl(screen.getByTestId("job-watch-row")));
   const detail = screen.getByTestId("job-watch-row-detail").textContent ?? "";
   expect(detail).toContain("ready");
   expect(detail).toContain("assistant.tool");
@@ -1295,7 +1327,7 @@ test("a row detail names the embedded note (M1)", async () => {
       live={false}
     />,
   );
-  await user.click(screen.getByTestId("job-watch-row"));
+  await user.click(rowControl(screen.getByTestId("job-watch-row")));
   const detail = screen.getByTestId("job-watch-row-detail").textContent ?? "";
   expect(detail).toContain("ready");
   expect(detail).toContain("check the build");
@@ -1411,25 +1443,13 @@ test("expanded timer rows name the embedded note (e9ab5ec review)", async () => 
         live={false}
       />,
     );
-    await user.click(screen.getByTestId("job-watch-row"));
+    await user.click(rowControl(screen.getByTestId("job-watch-row")));
     const detail = screen.getByTestId("job-watch-row-detail").textContent ?? "";
     expect(detail).toContain("check the build");
   }
 });
 
-// --- RoboRev combined review (80abf55): button reset + separators (L1,L2) ---
-// .row wraps a native <button>: without a reset, native chrome (border,
-// background, font, color, cursor) leaks through. And rows must be direct
-// children of the list container for separators to render.
-
-test("the row rule resets native button chrome", () => {
-  const css = readModuleCss(import.meta.url, "jobWatch.module.css");
-  const rowRule = css.match(/\.row\s*\{([^}]*)\}/)?.[1] ?? "";
-  for (const decl of ["background: transparent", "cursor: pointer", "border: 0", "font: inherit"]) {
-    expect(rowRule).toContain(decl);
-  }
-});
-
+// --- RoboRev combined review (80abf55): row separators (L2) ---
 test("list rows are direct children of the list container (L2)", () => {
   const d = toolRendererFor("job_watch");
   const Body = d.body!;
@@ -1678,7 +1698,7 @@ test("a one-shot row detail reads Remind me, not Reminds in (8a56741 finding 2)"
       live={false}
     />,
   );
-  await user.click(screen.getByTestId("job-watch-row"));
+  await user.click(rowControl(screen.getByTestId("job-watch-row")));
   const detail = screen.getByTestId("job-watch-row-detail").textContent ?? "";
   expect(detail).toContain("Remind me in 5m");
   expect(detail).not.toContain("Reminds in");

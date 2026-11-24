@@ -8,13 +8,6 @@
 // module-singleton queue (widgets/toast/store.ts), not a shared prop or
 // context, so mounting <ToastRegion/> is the ONLY step needed to make every
 // useToasts().push() call anywhere in the app actually render.
-//
-// AppShell.tsx does not mount this yet - per this task's own constraint
-// ("controller wires the toast region/chrome at merge"), wiring it in is
-// the wave's merge/integration step, one line alongside the existing
-// ConnectionBanner render:
-//   <ConnectionBanner state={connectionState} />
-//   <ToastRegion />
 import { Toast } from "../../widgets";
 
 export function ToastRegion() {

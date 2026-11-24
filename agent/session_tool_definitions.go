@@ -314,6 +314,7 @@ func (s *Session) rebuildToolDefsCache() {
 		if s != nil {
 			s.cachedToolDefs = nil
 			s.cachedToolDefsJSONBytes = 0
+			s.toolDefsGen++
 		}
 		return
 	}
@@ -414,6 +415,11 @@ func (s *Session) rebuildToolDefsCache() {
 		if included[td.Name] {
 			continue
 		}
+		// Never expose both apply_patch and edit_file in the same session; both
+		// stay registered in s.reg for mid-session model switching.
+		if (td.Name == "apply_patch" && included["edit_file"]) || (td.Name == "edit_file" && included["apply_patch"]) {
+			continue
+		}
 		if td.Name == "update_goal" && !s.hasGoalConfigured() {
 			continue
 		}
@@ -434,15 +440,13 @@ func (s *Session) rebuildToolDefsCache() {
 			}
 		}
 		defs = append(defs, normalizeRegistryToolDefinition(td))
+		included[td.Name] = true
 	}
 	// The registry holds what this session can call, by canonical name.
 	canMessageDelegates := s.reg.Get("delegate_send") != nil
 	for i := range defs {
 		if isResultToolDefinition(defs[i].Name, defs[i].Name, s.resultToolName()) {
 			defs[i] = tool.WithoutIntentParameter(defs[i])
-			if s.hasHumanPartnerToAsk() {
-				defs[i] = tool.WithCommunicateEndReason(defs[i])
-			}
 			if s.reportsToParent() {
 				defs[i] = tool.WithCommunicateDelegateUpdates(defs[i])
 			}
@@ -458,6 +462,7 @@ func (s *Session) rebuildToolDefsCache() {
 
 	s.cachedToolDefs = defs
 	s.cachedToolDefsJSONBytes = llm.ToolsJSONBytes(defs)
+	s.toolDefsGen++
 }
 
 // normalizeRegistryToolDefinition keeps directly registered tools acceptable

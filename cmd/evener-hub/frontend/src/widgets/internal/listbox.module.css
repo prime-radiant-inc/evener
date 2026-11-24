@@ -1,0 +1,14 @@
+/* The listbox popup's scrolling body. Both pickers draw the same recipe: a
+ * list that scrolls INTERNALLY so the popover never grows past the viewport,
+ * capped at 320px or 60% of the viewport height.
+ *
+ * The two custom properties are the variant hooks: ModelCatalog's sheet
+ * variant hands the scrolling to the Sheet's own body by setting them on its
+ * listSheet class, rather than re-declaring this recipe. */
+.list {
+  margin: 0;
+  padding: 0;
+  max-height: var(--listbox-max-height, min(320px, 60vh));
+  overflow-y: var(--listbox-overflow-y, auto);
+  list-style: none;
+}

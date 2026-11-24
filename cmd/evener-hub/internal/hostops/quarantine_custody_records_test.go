@@ -228,7 +228,7 @@ func TestQuarantineRebuildUsesTheHighestEpochCustody(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open on a directory whose replacement vanished: %v", err)
 	}
-	if got := store.CursorEpoch().QuarantineEpoch; got != 2 {
+	if got := store.quarantineEpoch(); got != 2 {
 		t.Fatalf("the rebuilt store reads epoch %d, want the highest validated epoch 2", got)
 	}
 	if _, ok := store.Record("00000000000000000002"); !ok {

@@ -16,21 +16,26 @@ import Zoom from "../../panes/zoom/Zoom";
 import "../../panes/zoom";
 import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
 import { connectionStore, resetConnectionStoreForTests } from "../../stores/connection";
-import { sessionActivitySnapshot } from "../../stores/sessionActivity";
+import { acquireSessionActivity, sessionActivitySnapshot } from "../../stores/sessionActivity";
 import {
   activityClient,
   activityContext,
   activityDelegate,
+  activityJob,
   activitySummary,
   activityWatch,
 } from "../../stores/sessionActivityTestUtils";
 import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
 import { resetDisclosureStoreForTests } from "../../widgets/disclosure/disclosureStore";
+import { requireClass } from "../../widgets/internal/requireClass";
+import { installSwitchableViewport } from "../appShellTestUtils";
 import { ClientProvider } from "../clientContext";
 import { conversationPaneLifetime } from "../paneLifetime";
 import { installFocusedScope } from "../statusbar/scopeTestUtils";
+import { resetMobileViewportForTests } from "../useIsMobile";
 import { currentSessionRef, type OpenPaneRecord, resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
 import { ActivitySidebar } from "./ActivitySidebar";
+import styles from "./activitybar.module.css";
 import { ActivityBoundaryObserver } from "./activityPagingTestUtils";
 import { activitySidebarStore, resetActivitySidebarStoreForTests } from "./activitySidebarStore";
 import { ActivitySidebar as ActivitySidebarUnderTest } from "./activitySidebarTestUtils";
@@ -142,6 +147,75 @@ test("one visible-sidebar clock advances activity rows and expanded watch detail
     if (typeof tick === "function") Function.prototype.call.call(tick, undefined);
   });
   expect(client.calls.filter((call) => call.method !== "thread/unsubscribe").length).toBe(readsBeforeClose);
+});
+
+test("the live watch detail names a named delegate's own watch and its job target", async () => {
+  const childRef = "remote:child";
+  // A named delegate's own activity read proves the viewed session's identity;
+  // its own row is never in its own delegates collection.
+  const context = (requestedRef: string) => ({ ...activityContext(requestedRef), delegateName: "navigation-observer" });
+  const client = activityClient();
+  client.on("evener/thread/activity/read", ({ ref: requestedRef, scope }) => ({
+    ...activitySummary(requestedRef, scope),
+    context: context(requestedRef),
+  }));
+  client.on("evener/thread/delegates/list", ({ ref: requestedRef, scope }) => ({
+    context: context(requestedRef),
+    scope: scope ?? "session",
+    delegates: [],
+    page: { complete: true, issues: [] },
+  }));
+  client.on("evener/thread/jobs/list", ({ ref: requestedRef, scope }) => ({
+    context: context(requestedRef),
+    scope: scope ?? "session",
+    jobs: [activityJob({ ownerRef: requestedRef, description: "Child checks" })],
+    page: { complete: true, issues: [] },
+  }));
+  // The watch belongs in its receiver's own collection, with the source ref
+  // naming the same physical session.
+  const ownWatch = activityWatch(
+    { source: "job_raw", target: "job_raw", outputMatch: "ready", cadence: [{ kind: "output" }] },
+    childRef,
+  );
+  ownWatch.sourceRef = childRef;
+  client.on("evener/thread/watches/list", ({ ref: requestedRef, scope }) => ({
+    context: context(requestedRef),
+    scope: scope ?? "session",
+    watches: [ownWatch],
+    page: { complete: true, issues: [] },
+  }));
+  connectionStore.getState().connect(client);
+  installFocusedScope(childRef);
+  // The session transcript beside the sidebar already observes jobs and
+  // delegates; the sidebar reads that same store and owns no read of its own.
+  const activity = acquireSessionActivity(client, childRef, "session");
+  const stopDelegates = activity.store.observe("delegates");
+  const stopJobs = activity.store.observe("jobs");
+  let mounted: ReturnType<typeof mount> | undefined;
+  try {
+    await waitFor(() => expect(activity.store.getSnapshot().jobs.rows).toHaveLength(1));
+    expect(activity.store.getSnapshot().context?.delegateName).toBe("navigation-observer");
+    const entityReads = () =>
+      client.calls.filter(
+        (call) => call.method === "evener/thread/delegates/list" || call.method === "evener/thread/jobs/list",
+      ).length;
+    const readsBeforeMount = entityReads();
+    activitySidebarStore.getState().openWith("watches");
+    mounted = mount();
+    const watch = await screen.findByText("watch_raw");
+    const summary = watch.closest("summary");
+    if (!summary) throw new Error("Watch summary missing");
+    act(() => fireEvent.click(summary));
+    await screen.findByTestId("watch-facts");
+    expect(screen.getByTestId("watch-facts").textContent).toContain("Child checks");
+    expect(screen.getByText(/navigation-observer/)).toBeTruthy();
+    expect(entityReads()).toBe(readsBeforeMount);
+  } finally {
+    act(() => mounted?.unmount());
+    stopJobs();
+    stopDelegates();
+    activity.release();
+  }
 });
 
 test("closed sidebar owns no read and an open tab observes only its own collection", async () => {
@@ -282,6 +356,20 @@ test("the Overview slides in by its own width and leaves again", async () => {
   expect(aside.style.transform).toMatch(/translateX\(100%\)/);
   act(() => activitySidebarStore.getState().close());
   await waitFor(() => expect(screen.queryByTestId("activity-sidebar")).toBeNull());
+});
+
+// S2-F08: the focus scope IS the flex body. The aside used to style
+// FocusScope's unstyled wrapper with `.sidebar > div`; if a wrapper comes
+// back, the body loses its flex fill silently.
+test("the sidebar's focus scope is its flex body, not a wrapper around it", async () => {
+  connectionStore.getState().connect(activityClient());
+  installFocusedScope(ref);
+  activitySidebarStore.getState().openWith("about");
+  mount();
+  const sidebar = await screen.findByTestId("activity-sidebar");
+  const root = sidebar.firstElementChild;
+  expect(root?.classList.contains(requireClass(styles.focusBody, "activitybar.module.css", "focusBody"))).toBe(true);
+  expect(root?.getAttribute("tabindex")).toBe("-1");
 });
 
 test("Escape dismisses only an unclaimed sidebar gesture", async () => {
@@ -767,6 +855,8 @@ test("activity tabs keep a named keyboard radio group without a visible heading"
   mount();
   await screen.findByRole("button", { name: /inspect/ });
   expect(screen.getByRole("complementary", { name: "Overview" })).toBeTruthy();
+  expect(screen.queryByRole("dialog", { name: "Overview" })).toBeNull();
+  expect(screen.getByTestId("activity-sidebar").getAttribute("aria-modal")).toBeNull();
   expect(screen.getByRole("radiogroup", { name: "Overview kind" })).toBeTruthy();
   expect(screen.queryByText("Overview kind")).toBeNull();
   await act(async () => fireEvent.keyDown(screen.getByRole("radio", { name: /Agents/ }), { key: "End" }));
@@ -785,6 +875,7 @@ test("activity tabs show each fraction as a detail line and About stays a single
   await screen.findByRole("button", { name: /inspect/ });
   const tabs = screen.getAllByRole("radio");
   expect(tabs).toHaveLength(5);
+  expect(tabs[0]?.className).toContain("wrap");
   for (const tab of tabs.slice(0, 4)) {
     const spans = tab.querySelectorAll("span");
     expect(spans).toHaveLength(2);
@@ -803,6 +894,8 @@ test("phone Overview enters its selected category and contains sequential keyboa
     activitySidebarStore.getState().openWith("about", opener);
     mount(true);
     const sidebar = await screen.findByTestId("activity-sidebar");
+    expect(screen.getByRole("dialog", { name: "Overview" })).toBe(sidebar);
+    expect(sidebar.getAttribute("aria-modal")).toBe("true");
     const about = screen.getByRole("radio", { name: "About" });
     await waitFor(() => expect(document.activeElement).toBe(about));
     for (let step = 0; step < 20; step += 1) {
@@ -816,6 +909,78 @@ test("phone Overview enters its selected category and contains sequential keyboa
     await user.keyboard("{Escape}");
     await waitFor(() => expect(document.activeElement).toBe(opener));
     expect(activitySidebarStore.getState().open).toBe(false);
+  } finally {
+    opener.remove();
+  }
+});
+
+test("the desktop dock ends its inspection when the phone host takes over", async () => {
+  const setMobile = installSwitchableViewport();
+  try {
+    connectionStore.getState().connect(activityClient());
+    installFocusedScope(ref);
+    activitySidebarStore.getState().openWith("agents");
+    const desktop = mount();
+    await screen.findByTestId("activity-sidebar");
+    // AppShell tears the desktop surface down once the breakpoint crosses;
+    // StackHost then mounts the phone surface in its place.
+    setMobile(true);
+    desktop.unmount();
+    mount(true);
+    expect(activitySidebarStore.getState().open).toBe(false);
+    expect(screen.queryByTestId("activity-sidebar")).toBeNull();
+    // No dialog claims the whole phone screen, so the reader's attention
+    // control is not blocked by an Overview the dock left open.
+    expect(document.querySelector('[aria-modal="true"]')).toBeNull();
+  } finally {
+    vi.unstubAllGlobals();
+    resetMobileViewportForTests();
+  }
+});
+
+test("a desktop remount keeps the dock's saved inspection", async () => {
+  connectionStore.getState().connect(activityClient());
+  installFocusedScope(ref);
+  activitySidebarStore.getState().openWith("agents");
+  const first = mount();
+  await screen.findByTestId("activity-sidebar");
+  first.unmount();
+  expect(activitySidebarStore.getState().open).toBe(true);
+  mount();
+  expect(await screen.findByTestId("activity-sidebar")).toBeTruthy();
+});
+
+test("phone Overview reopening during its exit returns focus to its selected category", async () => {
+  connectionStore.getState().connect(activityClient());
+  installFocusedScope(ref);
+  const opener = document.body.appendChild(document.createElement("button"));
+  opener.textContent = "Open Overview";
+  opener.addEventListener("click", () => activitySidebarStore.getState().openWith("about", opener));
+  try {
+    opener.click();
+    mount(true);
+    const sidebar = await screen.findByTestId("activity-sidebar");
+    const strip = screen.getByRole("radiogroup");
+    const about = screen.getByRole("radio", { name: "About" });
+    await waitFor(() => expect(document.activeElement).toBe(about));
+    // Close and reopen in separate synchronous commits. No timer or frame can
+    // run between them, so the exit animation cannot finish and the aside
+    // stays mounted: the reopen must re-arm entry focus on this same strip
+    // rather than mount a fresh one. AboutTab's rapid-reopen test uses the
+    // same no-yield pattern.
+    act(() => {
+      fireEvent.keyDown(window, { key: "Escape" });
+    });
+    expect(activitySidebarStore.getState().open).toBe(false);
+    expect(sidebar.isConnected).toBe(true);
+    opener.focus();
+    act(() => {
+      fireEvent.click(opener);
+    });
+    expect(activitySidebarStore.getState().open).toBe(true);
+    expect(screen.getByTestId("activity-sidebar")).toBe(sidebar);
+    expect(screen.getByRole("radiogroup")).toBe(strip);
+    await waitFor(() => expect(document.activeElement).toBe(about), { timeout: 1_500 });
   } finally {
     opener.remove();
   }

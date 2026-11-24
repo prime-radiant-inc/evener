@@ -24,7 +24,7 @@ func testEstimateTokens(t *testing.T, turns []schema.Turn) int {
 // standard profile.
 func testEstimateUsedTokens(t *testing.T, lastTokens, measuredLen int, history []schema.Turn, sysPromptChars int) int {
 	t.Helper()
-	return NewManager(testProfile("openai", "gpt-5.2", 1_000_000), nil, cheapmodel.New(nil)).estimateUsedTokens(lastTokens, measuredLen, history, sysPromptChars)
+	return NewManager(testProfile("openai", "gpt-5.2", 1_000_000), nil, cheapmodel.New(nil)).estimateUsedTokens(lastTokens, measuredLen, "", history, sysPromptChars)
 }
 
 // TestEstimateTokens_PricesChatThinkingLikeRequestAssembly: chat bills replay, reasoning = false none.
@@ -199,13 +199,13 @@ func TestRecordInputTokensForRejectsAStaleAnsweringProfile(t *testing.T) {
 	previous := provider.FromResolved(registry.Resolved{Instance: "anthropic", ModelID: "claude-opus-5", Protocol: registry.ProtocolAnthropic}, nil)
 	cm := NewManager(live, nil, cheapmodel.New(nil))
 
-	if !cm.RecordInputTokensFor(live, 321, 7) {
+	if !cm.RecordInputTokensFor(live, 321, 7, "") {
 		t.Fatal("the live profile's own measurement was refused")
 	}
 	if got := cm.LastInputTokens(); got != 321 {
 		t.Fatalf("LastInputTokens = %d, want 321", got)
 	}
-	if cm.RecordInputTokensFor(previous, 999, 9) {
+	if cm.RecordInputTokensFor(previous, 999, 9, "") {
 		t.Fatal("a measurement from a profile the manager no longer holds was accepted")
 	}
 	if got := cm.LastInputTokens(); got != 321 {
@@ -240,7 +240,7 @@ func TestContextManager_SetProfileInvalidatesMeasurementsOnlyWhenTargetChanges(t
 
 	t.Run("same target", func(t *testing.T) {
 		cm := NewManager(profile, nil, cheapmodel.New(nil))
-		cm.RecordInputTokens(321, 7)
+		cm.RecordInputTokens(321, 7, "")
 		cm.SetProfile(profile.WithResolved(resolved))
 		if got := cm.LastInputTokens(); got != 321 {
 			t.Fatalf("LastInputTokens = %d, want retained measurement 321", got)
@@ -263,7 +263,7 @@ func TestContextManager_SetProfileInvalidatesMeasurementsOnlyWhenTargetChanges(t
 		disabled.Caps.Reasoning = new(false)
 
 		cm := NewManager(provider.FromResolved(silent, nil), nil, cheapmodel.New(nil))
-		cm.RecordInputTokens(321, 7)
+		cm.RecordInputTokens(321, 7, "")
 		cm.SetProfile(provider.FromResolved(permits, nil))
 		if got := cm.LastInputTokens(); got != 321 {
 			t.Fatalf("silent -> explicit true: LastInputTokens = %d, want retained measurement 321", got)
@@ -288,7 +288,7 @@ func TestContextManager_SetProfileInvalidatesMeasurementsOnlyWhenTargetChanges(t
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cm := NewManager(profile, nil, cheapmodel.New(nil))
-			cm.RecordInputTokens(321, 7)
+			cm.RecordInputTokens(321, 7, "")
 			next := resolved
 			tc.mutate(&next)
 			cm.SetProfile(provider.FromResolved(next, nil))
@@ -309,7 +309,7 @@ func TestContextManager_UsesLastInputTokensForPressure(t *testing.T) {
 	cm := NewManager(profile, nil, cheapmodel.New(nil))
 
 	// Record that the last API response reported 550 input tokens for a 10-turn history.
-	cm.RecordInputTokens(550, 10)
+	cm.RecordInputTokens(550, 10, "")
 
 	// Add 2 new turns since the measurement (~20 chars = ~5 tokens).
 	history := make([]schema.Turn, 12)
@@ -332,7 +332,7 @@ func TestContextManager_UsesLastInputTokensForPressure(t *testing.T) {
 func TestContextManager_EstimateUsageReportsRemainingWindow(t *testing.T) {
 	profile := testProfile("openai", "test", 1000)
 	cm := NewManager(profile, nil, cheapmodel.New(nil))
-	cm.RecordInputTokens(550, 10)
+	cm.RecordInputTokens(550, 10, "")
 
 	history := make([]schema.Turn, 11)
 	history[10] = schema.Turn{Kind: schema.TurnAssistant, Message: llm.Assistant(strings.Repeat("y", 40))}
@@ -461,7 +461,7 @@ func TestContextManager_SetProfile_UpdatesContextWindow(t *testing.T) {
 	cm := NewManager(smallProfile, nil, cheapmodel.New(nil))
 
 	// Record 100K tokens.
-	cm.RecordInputTokens(100_000, 5)
+	cm.RecordInputTokens(100_000, 5, "")
 	history := make([]schema.Turn, 5)
 	for i := range history {
 		history[i] = schema.Turn{Kind: schema.TurnAssistant, Message: llm.Assistant("x")}
@@ -503,7 +503,7 @@ func TestContextManager_UsageEstimateKeepsProfileAndMeasurementTogether(t *testi
 
 	measured := func(prof *provider.Profile) schema.ContextMetrics {
 		cm := NewManager(prof, nil, cheapmodel.New(nil))
-		cm.RecordInputTokens(500, 3)
+		cm.RecordInputTokens(500, 3, "")
 		return cm.EstimateUsage(history, 0)
 	}
 	cleared := func(prof *provider.Profile) schema.ContextMetrics {
@@ -522,7 +522,7 @@ func TestContextManager_UsageEstimateKeepsProfileAndMeasurementTogether(t *testi
 	}
 
 	cm := NewManager(openai, nil, cheapmodel.New(nil))
-	cm.RecordInputTokens(500, 3)
+	cm.RecordInputTokens(500, 3, "")
 
 	stop := make(chan struct{})
 	var wg sync.WaitGroup

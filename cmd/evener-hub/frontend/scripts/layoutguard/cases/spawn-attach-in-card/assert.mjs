@@ -100,6 +100,6 @@ export default function assert(m) {
   if (failures.length > 0) return { pass: false, reason: failures.join("; ") };
   return {
     pass: true,
-    reason: `at ${m.viewport.width}x${m.viewport.height} the control row is ${m.controls.position}, and attach (${describe(m.attach)}), the model trigger (${describe(m.modelTrigger)}) and Start (${describe(m.start)}) all sit inside the card (${describe(m.card)}) below the field`,
+    reason: `at ${m.viewport.width}x${m.viewport.height} the control row is ${m.controls.position}, and attach (${describe(m.attach)}), the model trigger (${describe(m.modelTrigger)}) and Start (${describe(m.start)}) all sit inside the card (${describe(m.card)}) below the field (display: ${m.field.computedDisplay}, border: ${m.field.computedBorderStyle}, background: ${m.field.computedBackground})`,
   };
 }

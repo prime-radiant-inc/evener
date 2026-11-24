@@ -1,6 +1,8 @@
 /* The phone's settings rows read as one grouped list: the shared grouped
- * surface with its hairline between rows (styles/surface.module.css). Hidden
- * above the phone breakpoint, where the desktop controls stand in. */
+ * surface with its hairline between rows (styles/surface.module.css). Each
+ * row is ListRow; this module only carries the trailing value's type and the
+ * one wrap this list needs. Hidden above the phone breakpoint, where the
+ * desktop controls stand in. */
 .config {
   composes: grouped from "../../styles/surface.module.css";
   /* biome-ignore lint/suspicious/noDuplicateProperties: css-modules composes takes one declaration per composed class, each with its own `from` */
@@ -8,69 +10,22 @@
   display: none;
 }
 
-.rowButton,
-.readOnly {
-  display: flex;
-  width: 100%;
-  min-height: 48px;
+.rowValueGroup {
+  display: inline-flex;
   align-items: center;
   gap: var(--space-2);
-  box-sizing: border-box;
-  padding: var(--space-3) var(--space-4);
-  background: transparent;
-  color: var(--ink-hi);
-  font-family: var(--font-sans);
-  font-size: var(--font-size-body);
-  text-align: left;
-}
-
-/* The border reset is the button's alone: a read-only row is the row element
- * itself, and keeps the hairline the group draws above it. */
-.rowButton {
-  border: 0;
-  cursor: pointer;
-  transition: background-color var(--motion-duration-hover) var(--motion-easing-standard);
-}
-
-.rowButton:active:not(:disabled) {
-  background: var(--hover-1);
-}
-
-.rowButton:focus-visible {
-  outline: var(--focus-ring);
-  outline-offset: -2px;
-}
-
-.rowButton:disabled {
-  cursor: not-allowed;
-  opacity: 0.55;
-}
-
-/* The end rows follow the group's corners, so a row's inset focus ring and
- * pressed wash curve with the surface instead of being cut by it. */
-.row:first-child .rowButton {
-  border-top-left-radius: var(--radius-pane);
-  border-top-right-radius: var(--radius-pane);
-}
-
-.row:last-child .rowButton {
-  border-bottom-left-radius: var(--radius-pane);
-  border-bottom-right-radius: var(--radius-pane);
-}
-
-.rowLabel {
-  flex: 0 0 auto;
-  font-weight: var(--font-weight-medium);
-}
-
-.rowValue {
   min-width: 0;
-  margin-left: auto;
-  overflow: hidden;
+}
+
+/* The caller's typography for ListRow's value slot: quiet, right-aligned, and
+ * truncated before the caret. */
+.rowValue {
+  composes: truncate from "../../styles/text.module.css";
+  min-width: 0;
+  max-width: 100%;
   color: var(--ink-mid);
+  font-size: var(--font-size-body);
   text-align: right;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .caret {
@@ -84,72 +39,10 @@
   padding-bottom: var(--dock-clearance);
 }
 
-.optionList {
-  display: flex;
-  flex-direction: column;
-}
-
-.option {
-  display: flex;
-  min-height: 48px;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-3);
-  width: 100%;
-  box-sizing: border-box;
-  padding: var(--space-3);
-  border: 0;
-  border-bottom: 1px solid var(--edge);
-  border-radius: var(--radius-control);
-  background: transparent;
-  color: var(--ink-hi);
-  font-family: var(--font-sans);
-  font-size: var(--font-size-body);
-  text-align: left;
-  cursor: pointer;
-  transition: background-color var(--motion-duration-hover) var(--motion-easing-standard);
-}
-
-.option:hover {
-  background: var(--hover-1);
-}
-
-.optionSelected {
-  background: var(--hover-2);
-}
-
-.option:focus-visible {
-  outline: var(--focus-ring);
-  outline-offset: -2px;
-}
-
-.selection {
-  flex: 0 0 auto;
-  color: var(--accent);
-  font-size: var(--font-size-caption);
-}
-
 @media (max-width: 899px) {
   .config {
     display: flex;
     box-sizing: border-box;
     width: 100%;
   }
-}
-
-/* Directory identity gets its own line so the final path component remains
- * readable even when its parents are long. */
-.row[data-label="Working directory"] .rowButton {
-  flex-wrap: wrap;
-}
-.row[data-label="Working directory"] .rowValue {
-  order: 3;
-  flex-basis: 100%;
-  margin-left: 0;
-  white-space: normal;
-  overflow-wrap: anywhere;
-  text-align: left;
-}
-.row[data-label="Working directory"] .caret {
-  margin-left: auto;
 }

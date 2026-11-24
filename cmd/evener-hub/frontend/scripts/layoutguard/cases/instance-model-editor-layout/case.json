@@ -3,7 +3,11 @@
   "description": "InstanceModelEditor desktop geometry: inside .fieldInline, .fieldGrow stretches the Input across the FormRow up to the Reset link button.",
   "cssFiles": [
     "styles/global.css",
+    "styles/tapfloor.module.css",
     "styles/tokens.css",
+    "styles/help.module.css",
+    "styles/surface.module.css",
+    "widgets/internal/control.module.css",
     "widgets/formrow/formrow.module.css",
     "widgets/input/input.module.css",
     "widgets/button/button.module.css",

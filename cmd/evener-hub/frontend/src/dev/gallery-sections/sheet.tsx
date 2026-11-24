@@ -1,13 +1,17 @@
 import { useState } from "react";
 import { Button } from "../../widgets/button";
 import { Sheet, type SheetSide } from "../../widgets/sheet";
-import { ThemeFlip } from "../ThemeFlip";
+import { GallerySection } from "../GallerySection";
 import styles from "./sheet.module.css";
 
 // Same open-by-default, contained-frame approach as dialog.tsx (Sheet
 // shares Dialog's exact contract) - see this task's report.
 function SheetDemo({ side }: { side: SheetSide }) {
   const [open, setOpen] = useState(true);
+  const description =
+    side === "bottom"
+      ? "Slides up from the bottom edge. On a coarse pointer, swipe down from the grab pill, the header, or an unscrolled body to dismiss; the pill itself is decorative. Escape, scrim click, and the close button all close it."
+      : `Slides in from the ${side} edge. Escape, scrim click, and the close button all close it.`;
 
   return (
     <div className={styles.demoFrame}>
@@ -27,7 +31,7 @@ function SheetDemo({ side }: { side: SheetSide }) {
           </Button>
         }
       >
-        <p>Slides in from the {side} edge. Escape, scrim click, and the close button all close it.</p>
+        <p>{description}</p>
       </Sheet>
     </div>
   );
@@ -35,17 +39,13 @@ function SheetDemo({ side }: { side: SheetSide }) {
 
 export default function SheetGallerySection() {
   return (
-    <section>
-      <h2>Sheet</h2>
-      <ThemeFlip>
-        <SheetDemo side="right" />
-      </ThemeFlip>
-      <ThemeFlip>
-        <SheetDemo side="bottom" />
-      </ThemeFlip>
-      <ThemeFlip>
-        <SheetDemo side="left" />
-      </ThemeFlip>
-    </section>
+    <GallerySection
+      title="Sheet"
+      flips={[
+        <SheetDemo key="right" side="right" />,
+        <SheetDemo key="bottom" side="bottom" />,
+        <SheetDemo key="left" side="left" />,
+      ]}
+    />
   );
 }

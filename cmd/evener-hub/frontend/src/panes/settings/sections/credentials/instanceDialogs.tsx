@@ -34,10 +34,11 @@ import {
   Input,
   Select,
   type SelectOption,
+  Textarea,
   useToasts,
 } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
-import type { FormError } from "./formError";
+import { checkCredentialHeader, type FormError } from "./formError";
 import styles from "./instanceDialogs.module.css";
 import { byCodePoint, PROTOCOL_OPTIONS, SURFACE_OPTIONS } from "./instanceEdit";
 import { confirmListingState, refreshListingAfterMutation } from "./reconcileListing";
@@ -47,7 +48,6 @@ import { useEditorLifetime } from "./useEditorLifetime";
 const CLASS = {
   body: requireClass(styles.body, "instanceDialogs.module.css", "body"),
   actions: requireClass(styles.actions, "instanceDialogs.module.css", "actions"),
-  textarea: requireClass(styles.textarea, "instanceDialogs.module.css", "textarea"),
 };
 
 // The endpoint a credential dialog was opened against is the one the typed
@@ -187,12 +187,9 @@ export function AddInstanceDialog({
       setError({ reason: "name-required", message: "Name is required." });
       return;
     }
-    const trimmedCredentialHeader = credentialHeader.trim();
-    if (trimmedCredentialHeader && !trimmedCredentialHeader.includes("$")) {
-      setError({
-        reason: "literal-header",
-        message: "Credential header must reference a $VARIABLE or run a $(command), never a literal secret.",
-      });
+    const headerError = checkCredentialHeader(credentialHeader);
+    if (headerError) {
+      setError(headerError);
       return;
     }
     setError(null);
@@ -206,7 +203,7 @@ export function AddInstanceDialog({
         surface: surface || undefined,
         vars: nonEmptyVars(vars),
         apiKeyEnv: apiKeyEnv.trim() || undefined,
-        credentialHeader: trimmedCredentialHeader || undefined,
+        credentialHeader: credentialHeader.trim() || undefined,
       });
       // The listing a superseded create answered with was discarded by the
       // store's generation guard - reconcile before steering on the create,
@@ -601,14 +598,15 @@ function CredentialValueDialog({
       <form className={CLASS.body} onSubmit={(event) => void handleSubmit(event)}>
         <FormRow label={label} htmlFor={inputId}>
           {input === "textarea" ? (
-            <textarea
+            <Textarea
               id={inputId}
-              className={CLASS.textarea}
-              rows={8}
               value={value}
               onChange={(event) => setValue(event.target.value)}
               placeholder={placeholder}
               disabled={busy}
+              rows={8}
+              monospace
+              fill
               spellCheck={false}
             />
           ) : (

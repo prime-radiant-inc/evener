@@ -27,7 +27,7 @@ func TestThreadReadProvenanceAtRawRecordBoundary(t *testing.T) {
 		}
 		t.Run(name, func(t *testing.T) {
 			const alpha, beta, askID = "raw-alpha-719", "raw-beta-831", "raw-beta-ask"
-			alphaArgs, err := json.Marshal(map[string]any{"message": alpha, "end_turn": true, "output": map[string]any{"message": "", "data": map[string]any{}, "artifacts": []string{}}})
+			alphaArgs, err := json.Marshal(map[string]any{"message": alpha, "next": "send_and_end_turn", "output": map[string]any{"message": "", "data": map[string]any{}, "artifacts": []string{}}})
 			if err != nil {
 				t.Fatal(err)
 			}

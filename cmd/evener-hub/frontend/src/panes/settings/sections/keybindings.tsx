@@ -47,13 +47,13 @@ import { prefsStore, usePrefsStore } from "../../../stores/prefs";
 import { Button, Chip, InlineNotice, Input, KeyHint, Switch } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { useDismissOnOutsidePress } from "../../../widgets/internal/useDismissOnOutsidePress";
+import { Diagnostics } from "./diagnostics";
 import styles from "./keybindings.module.css";
+import { SectionStatus } from "./sectionStatus";
 
 const CLASS = {
   root: requireClass(styles.root, "keybindings.module.css", "root"),
   intro: requireClass(styles.intro, "keybindings.module.css", "intro"),
-  status: requireClass(styles.status, "keybindings.module.css", "status"),
-  warningList: requireClass(styles.warningList, "keybindings.module.css", "warningList"),
   list: requireClass(styles.list, "keybindings.module.css", "list"),
   row: requireClass(styles.row, "keybindings.module.css", "row"),
   label: requireClass(styles.label, "keybindings.module.css", "label"),
@@ -624,11 +624,7 @@ export function KeybindingsSection() {
         description="Saved in this browser. When on, pressing ? outside a text field opens the keyboard shortcuts overlay. Turn off to keep every shortcut on a modifier chord."
       />
 
-      {status !== undefined && (
-        <p className={CLASS.status} role="status" data-reason={status.reason}>
-          {status.text}
-        </p>
-      )}
+      {status !== undefined && <SectionStatus reason={status.reason}>{status.text}</SectionStatus>}
       {hubError !== null && (
         <InlineNotice
           tone="danger"
@@ -658,20 +654,14 @@ export function KeybindingsSection() {
         </InlineNotice>
       )}
       {warnings.length > 0 && (
-        <div className={CLASS.status} role="status">
-          <p>
-            {warnings.some((warning) => warning.reason === "character-key-conflict")
+        <Diagnostics
+          diagnostics={warnings}
+          title={
+            warnings.some((warning) => warning.reason === "character-key-conflict")
               ? "Keybinding warnings:"
-              : "Some saved overrides were skipped:"}
-          </p>
-          <ul className={CLASS.warningList}>
-            {warnings.map((warning) => (
-              <li key={warning.message} data-reason={warning.reason}>
-                {warning.message}
-              </li>
-            ))}
-          </ul>
-        </div>
+              : "Some saved overrides were skipped:"
+          }
+        />
       )}
 
       <div data-keybinding-navigation>

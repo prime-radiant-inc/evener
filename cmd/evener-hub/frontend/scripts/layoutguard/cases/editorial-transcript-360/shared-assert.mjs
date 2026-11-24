@@ -1,5 +1,11 @@
-export default function assert(measurements) {
+export default function assert({ measurements, surfaces, collapsedFailure }) {
   const failures = [];
+  if (!collapsedFailure?.visible || !collapsedFailure.collapsed || collapsedFailure.fill === "rgba(0, 0, 0, 0)")
+    failures.push(`Intent: expected a visible filled failed call with evidence folded, got ${JSON.stringify(collapsedFailure)}`);
+  for (const { level, element, edge, fill, shadow } of surfaces) {
+    if (edge !== "0px" || fill !== "rgba(0, 0, 0, 0)" || shadow !== "none")
+      failures.push(`${level}: ${element} frames transcript content (leading edge ${edge}, fill ${fill}, shadow ${shadow})`);
+  }
   for (const m of measurements) {
     const id = `${m.theme}/${m.scale}/${m.density}/${m.width}`;
     if (m.outside.length || m.overflow > 1)
@@ -29,6 +35,6 @@ export default function assert(measurements) {
     pass: failures.length === 0,
     reason: failures.length
       ? failures.join("\n")
-      : `${measurements.length} real-component theme/size/measure combinations: contained evidence, independent Open controls, visible expanded/collapsed status, truthful unknown, serif reading text and flat collaborators`,
+      : `${measurements.length} real-component theme/size/measure combinations: contained evidence, independent Open controls, visible expanded/collapsed status, truthful unknown, serif reading text and flat collaborators, filled collapsed failed call in Intent`,
   };
 }

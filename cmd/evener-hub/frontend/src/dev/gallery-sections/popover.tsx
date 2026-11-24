@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Popover } from "../../widgets/popover";
-import { ThemeFlip } from "../ThemeFlip";
+import { GallerySection } from "../GallerySection";
 import styles from "./popover.module.css";
 
 // Shown in its natural closed state, not forced open, for the same two
@@ -38,11 +38,8 @@ function PopoverDemo() {
 
 export default function PopoverGallerySection() {
   return (
-    <section>
-      <h2>Popover</h2>
-      <ThemeFlip>
-        <PopoverDemo />
-      </ThemeFlip>
-    </section>
+    <GallerySection title="Popover">
+      <PopoverDemo />
+    </GallerySection>
   );
 }

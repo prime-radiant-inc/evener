@@ -379,7 +379,11 @@ func driveReceipt(ctx context.Context, t *testing.T, provider *fakellm.Server, o
 	requireReceiptTool(t, call, id)
 	id = call.ToolCallID()
 	toolIDs = append(toolIDs, id)
-	call.RespondToolCall("edit_file", map[string]any{"file_path": "receipt.py", "old_string": brokenReceipt, "new_string": fixedReceipt, "intent": "Fixing quantity multiplication"})
+	call.RespondToolCall("edit_file", map[string]any{
+		"file_path": "receipt.py",
+		"edits":     []map[string]any{{"old_string": brokenReceipt, "new_string": fixedReceipt}},
+		"intent":    "Fixing quantity multiplication",
+	})
 	call = next()
 	requireReceiptTool(t, call, id)
 	onEdit(id)

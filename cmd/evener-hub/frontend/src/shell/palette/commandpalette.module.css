@@ -1,9 +1,9 @@
 /* Command palette overlay body. The overlay chrome (scrim, panel, focus
  * trap, close button) is the shared Dialog/OverlayPanel; these classes style
- * only the palette-specific body: the input, the results list, and the row
- * grammars for search / command / args / help. Tokens only - color is used
- * only where it means attention (the error strip's danger, the <mark>
- * highlight's accent); every neutral surface stays neutral. */
+ * only the palette-specific body: the results list and the row grammars for
+ * search / command / args / help. Tokens only - color is used only where it
+ * means attention (the <mark> highlight's accent);
+ * every neutral surface stays neutral. */
 
 .palette {
   display: flex;
@@ -26,58 +26,6 @@
   font-family: var(--font-sans);
   font-size: var(--font-size-caption);
   font-weight: var(--font-weight-medium);
-}
-
-.pillBack {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border: none;
-  background: transparent;
-  color: var(--ink-mid);
-  cursor: pointer;
-  padding: 0;
-  line-height: 1;
-  font-size: var(--font-size-ui);
-}
-
-.pillBack:hover {
-  color: var(--ink-hi);
-}
-
-.input {
-  width: 100%;
-  box-sizing: border-box;
-  padding: var(--space-3);
-  border: 1px solid var(--edge);
-  border-radius: var(--radius-control);
-  background: var(--field);
-  box-shadow: var(--shadow-inset-field);
-  color: var(--ink-hi);
-  font-family: var(--font-sans);
-  /* The body size, floored at the phone's 16px control size: body alone is
-   * 14.4px under the S preference on a phone (display-gates.test.ts). */
-  font-size: max(var(--font-size-control), var(--font-size-body));
-  transition: border-color var(--motion-duration-hover) var(--motion-easing-standard);
-}
-
-.input:hover,
-.input:focus-within {
-  border-color: var(--edge-strong);
-}
-
-.input:focus-visible {
-  outline: var(--focus-ring);
-  outline-offset: 2px;
-}
-
-/* The inline error strip carries no color of its own: the danger hue is the
- * Chip widget's job (the design system gates the attention-family tokens to
- * allowlisted widgets), so this is a neutral, left-aligned wrapper that only
- * positions the danger Chip and gives it the alert role. */
-.error {
-  align-self: flex-start;
-  max-width: 100%;
 }
 
 .results {
@@ -180,9 +128,8 @@
 }
 
 .hint {
+  composes: helpCaption from "../../styles/help.module.css";
   flex: none;
-  color: var(--ink-mid);
-  font-size: var(--font-size-caption);
 }
 
 .project {

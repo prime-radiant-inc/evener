@@ -7,15 +7,22 @@ import {
   type ThreadModel,
   type TurnModel,
 } from "@evener/appwire-client";
+import { notificationWireItem } from "@evener/appwire-client/testing/notificationWireFixtures";
 import { act } from "@testing-library/react";
 import { beforeEach, expect, test } from "vitest";
+import { makeTranscriptPreviewModel } from "../../../transcriptDisplay/previewFixture";
 import { type TranscriptBodyRow, transcriptRowsForProjection } from "../transcript/TranscriptBody";
 import "../transcript/tools";
-import { noteMermaidRender, resetMermaidRenderStateForTests } from "../../../widgets/mermaid/renderState";
+import {
+  mermaidRenderVersion,
+  noteMermaidRender,
+  resetMermaidRenderStateForTests,
+} from "../../../widgets/mermaid/renderState";
 import { findableItemIds, findHits, indexOfMatch, isOverlay } from "./findHits";
 import { messageAsShown } from "./messageText";
 
 type ItemEntry = Extract<ProjectedEntry, { kind: "item" }>;
+type IntentEntry = Extract<ProjectedEntry, { kind: "intent" }>;
 
 function message(id: string, text: string, type = "agentMessage"): ItemEntry {
   return {
@@ -28,11 +35,174 @@ function message(id: string, text: string, type = "agentMessage"): ItemEntry {
   };
 }
 
-function turnRow(id: string, entries: ProjectedEntry[]): TranscriptBodyRow {
-  const source = { id, status: "completed", items: [] } as unknown as TurnModel;
+function reasoningEntry(
+  id: string,
+  summaries: string[][],
+  kind: "thinking" | "item" = "thinking",
+  live = false,
+): ProjectedEntry {
+  const item = {
+    id,
+    turnId: "t",
+    type: "reasoning",
+    text: "",
+    status: live ? "inProgress" : "completed",
+    reasoningSummaries: summaries,
+  } as ItemModel;
+  return kind === "thinking"
+    ? { kind, id, turnId: "t", sourceIndex: 0, item, live }
+    : { kind: "item", id, turnId: "t", sourceIndex: 0, item, isMessage: false };
+}
+
+function redactedReasoning(id: string, summary: string, summaries: string[][], text = ""): ProjectedEntry {
+  return {
+    kind: "critical",
+    id,
+    turnId: "t",
+    sourceIndex: 0,
+    sourceItemId: id,
+    item: {
+      id,
+      turnId: "t",
+      type: "reasoning",
+      text,
+      status: "failed",
+      reasoningSummaries: summaries,
+    } as ItemModel,
+    summary,
+    redacted: true,
+  };
+}
+
+function intentEntry(id: string, rationale: string): IntentEntry {
+  return {
+    kind: "intent",
+    id: `intent:${id}`,
+    turnId: "t",
+    sourceIndex: 0,
+    sourceItemId: id,
+    rationale,
+    failed: false,
+    item: {
+      id,
+      turnId: "t",
+      type: "commandExecution",
+      text: "",
+      toolName: "shell",
+      description: rationale,
+      status: "completed",
+    } as ItemModel,
+  };
+}
+
+/** The projector's shape for an action row with no stated rationale: its
+ * rationale is the neutral fallback, and the row itself shows the descriptor's
+ * own summary. */
+function rationaleLessAction(id: string, toolName: string, argumentsJson: string): IntentEntry {
+  return {
+    kind: "intent",
+    id: `intent:${id}`,
+    turnId: "t",
+    sourceIndex: 0,
+    sourceItemId: id,
+    rationale: "Action summary unavailable",
+    failed: false,
+    item: {
+      id,
+      turnId: "t",
+      type: "commandExecution",
+      text: "",
+      toolName,
+      argumentsJson,
+      status: "completed",
+    } as ItemModel,
+  };
+}
+
+function suppressedAction(id: string, rationale: string, argumentsJson: string): IntentEntry {
+  return {
+    kind: "intent",
+    id: `intent:${id}`,
+    turnId: "t",
+    sourceIndex: 0,
+    sourceItemId: id,
+    rationale,
+    failed: false,
+    item: {
+      id,
+      turnId: "t",
+      type: "commandExecution",
+      text: "",
+      toolName: "task_list",
+      argumentsJson,
+      description: rationale,
+      status: "completed",
+    } as ItemModel,
+  };
+}
+
+/** A delegate call with no stated description: its intent line is the brief
+ * the projector carries in the arguments, clipped to the row's preview. */
+function delegateAction(id: string, prompt: string): IntentEntry {
+  return {
+    kind: "intent",
+    id: `intent:${id}`,
+    turnId: "t",
+    sourceIndex: 0,
+    sourceItemId: id,
+    rationale: "Action summary unavailable",
+    failed: false,
+    item: {
+      id,
+      turnId: "t",
+      type: "commandExecution",
+      text: "",
+      toolName: "delegate",
+      argumentsJSON: JSON.stringify({ prompt }),
+      status: "completed",
+    } as ItemModel,
+  };
+}
+
+function turnRow(id: string, entries: ProjectedEntry[], status = "completed"): TranscriptBodyRow {
+  // The source turn knows the items it projected, which is how the live rule
+  // tells a thought still at the turn's tail from one a later item overtook.
+  const source = { id, status, items: entries.map((entry) => entry.item) } as unknown as TurnModel;
   const turn: ProjectedTurn = { id, source, entries, visibleItems: [] };
   return { kind: "turn", id, turn, sourceTurnIndex: 0, showTurnSeparator: true };
 }
+
+/** A tool call rendered on its own row (the tool-call levels project every
+ * non-interaction call this way), with the fields each case needs. */
+function toolCallEntry(id: string, fields: Partial<ItemModel> = {}): ProjectedEntry {
+  return {
+    kind: "item",
+    id,
+    turnId: "t",
+    sourceIndex: 0,
+    isMessage: false,
+    item: {
+      id,
+      turnId: "t",
+      type: "commandExecution",
+      text: "",
+      toolName: "shell",
+      status: "completed",
+      ...fields,
+    } as ItemModel,
+  };
+}
+
+const TOOLS = makeTranscriptDisplayConfig({ kind: "preset", level: "tools" });
+const CHAT = makeTranscriptDisplayConfig({ kind: "preset", level: "chat" });
+const COLLAPSED_INTENT = makeTranscriptDisplayConfig({
+  kind: "custom",
+  toolIntent: true,
+  toolCalls: false,
+  reasoning: false,
+  expandByDefault: false,
+  thinkingOpenByDefault: false,
+});
 
 test("hits are the messages holding the words, oldest first, each on its row", () => {
   const rows = [
@@ -85,9 +255,11 @@ test("an in-progress reply searches auto-closed Markdown as its live row reads",
 });
 
 // The invariant the rest of Find leans on: a counted match is one Find can
-// land on with its words on screen. Only a message's own text is ever read,
-// so nothing folded, cut short, suppressed or behind a disclosure can count.
-test("only the conversation's messages are searched", () => {
+// land on with its words on screen. A thought's summaries, an action's
+// rationale and a tool call's own words are readable once their disclosures
+// open, and so are a steer's visible text and a human note's divider body. A
+// system notice's line and a warning's words are rows of their own.
+test("messages, thoughts, actions, tool calls, steers, notices and warnings are searched", () => {
   const items = [
     { id: "u", type: "userMessage", text: "find the needle" },
     { id: "think", type: "reasoning", text: "needle", reasoningSummaries: [["a needle thought"]] },
@@ -109,12 +281,258 @@ test("only the conversation's messages are searched", () => {
   for (const level of ["chat", "tools", "full"] as const) {
     const config = makeTranscriptDisplayConfig({ kind: "preset", level });
     const rows = transcriptRowsForProjection(projectThread(model, config));
-    expect(findHits(rows, "needle").map((hit) => hit.itemId)).toEqual(["u", "a"]);
-    expect([...findableItemIds(model, config, "needle")].sort()).toEqual(["a", "u"]);
+    // Chat hides a settled thought and projects no tool row; the other levels
+    // show the thought's summary, and the call's summary and output hold the
+    // words. A routine notice and an uncoded warning are rows at every level,
+    // and the parent's steer and a human note show at every level.
+    const expected =
+      level === "chat"
+        ? ["u", "steer", "note", "notice", "warn", "a"]
+        : ["u", "think", "call", "steer", "note", "notice", "warn", "a"];
+    expect(findHits(rows, "needle", { config }).map((hit) => hit.itemId)).toEqual(expected);
+    expect([...findableItemIds(model, config, "needle")].sort()).toEqual([...expected].sort());
   }
   for (const item of items) {
     expect(messageAsShown(item) !== null).toBe(item.id === "u" || item.id === "a");
   }
+});
+
+test("a thought is searched by its rendered summary and its hit opens the thought", () => {
+  const rows = [turnRow("t", [reasoningEntry("r1", [["the **needle** sits here"]])])];
+  expect(findHits(rows, "needle sits here", { config: TOOLS })).toEqual([
+    { key: "r1", itemId: "r1", rowIndex: 0, opens: ["r1"] },
+  ]);
+  // The summary's own formatting marks are not words on the page.
+  expect(findHits(rows, "**needle**", { config: TOOLS })).toEqual([]);
+});
+
+// A view that hides thinking traces shows only a placeholder, so the thought's
+// summary is not a match there (the chat preset).
+test("a thought is not searched where the chat view hides thinking traces", () => {
+  const rows = [turnRow("t", [reasoningEntry("r1", [["a hidden needle"]])])];
+  expect(findHits(rows, "needle", { config: CHAT })).toEqual([]);
+  expect(findHits(rows, "needle", { config: TOOLS }).map((hit) => hit.key)).toEqual(["r1"]);
+});
+
+// Reasoning rendered with its content flag on is an item entry rather than a
+// compact trace; it is read the same way and opens the same disclosure.
+test("a full-verbosity thought is searched by its summary", () => {
+  const full = makeTranscriptDisplayConfig({ kind: "preset", level: "full" });
+  const rows = [turnRow("t", [reasoningEntry("r1", [["a needle thought"]], "item")])];
+  expect(findHits(rows, "needle thought", { config: full })).toEqual([
+    { key: "r1", itemId: "r1", rowIndex: 0, opens: ["r1"] },
+  ]);
+});
+
+// A run of 3+ notices folds into one group rendered only by its leader. Every
+// matching member is one hit, all naming the leader's anchor and opening the
+// group - and grouping reads the rendered items, so a hidden successful hook
+// between them does not split the run (the #6351 open finding).
+test("a folded notice run is searched over the rendered items and lands every member on the leader", () => {
+  const config = makeTranscriptDisplayConfig(
+    { kind: "preset", level: "tools" },
+    { systemEvents: true, hookExits: "none" },
+  );
+  const items = [
+    { id: "a", type: "systemMessage", text: "alpha needle" },
+    { id: "h", type: "systemMessage", text: "hook ok", eventKind: "hook_completed", exitCode: 0 },
+    { id: "b", type: "systemMessage", text: "beta needle" },
+    { id: "c", type: "systemMessage", text: "gamma needle" },
+  ].map((item) => ({ turnId: "t1", status: "completed", ...item })) as ItemModel[];
+  const model = { ref: "r", turns: [{ id: "t1", status: "completed", items }] } as unknown as ThreadModel;
+  const rows = transcriptRowsForProjection(projectThread(model, config));
+
+  expect(findHits(rows, "needle", { config })).toEqual([
+    { key: "a", itemId: "a", rowIndex: 0, opens: ["a"] },
+    { key: "a", itemId: "b", rowIndex: 0, opens: ["a"] },
+    { key: "a", itemId: "c", rowIndex: 0, opens: ["a"] },
+  ]);
+});
+
+test("a scaffold is searched by its rendered Markdown, and a failed diagram follows the render version", () => {
+  const config = makeTranscriptDisplayConfig({ kind: "preset", level: "tools" }, { promptEvents: true });
+  const source = "# Notes\n\nA **bold** instruction.\n\n```mermaid\ngraph TD; A-->B\n```\n";
+  const items = [
+    { id: "p", turnId: "t1", type: "systemMessage", text: source, eventKind: "system_prompt" },
+  ] as ItemModel[];
+  const model = { ref: "r", turns: [{ id: "t1", status: "completed", items }] } as unknown as ThreadModel;
+  const rows = transcriptRowsForProjection(projectThread(model, config));
+
+  expect(findHits(rows, "bold instruction", { config })).toEqual([
+    { key: "p", itemId: "p", rowIndex: 0, opens: ["p"] },
+  ]);
+  // The Markdown formatting marks are not words on the page.
+  expect(findHits(rows, "**bold**", { config })).toEqual([]);
+  // A rendered diagram is a picture; Find reads its source only after it fails.
+  expect(findHits(rows, "A-->B", { config, version: mermaidRenderVersion() })).toEqual([]);
+  act(() => noteMermaidRender("graph TD; A-->B", "error"));
+  expect(findHits(rows, "A-->B", { config, version: mermaidRenderVersion() })).toEqual([
+    { key: "p", itemId: "p", rowIndex: 0, opens: ["p"] },
+  ]);
+});
+
+// A redacted critical thought shows the projector's neutral label verbatim
+// and can unfold its Markdown summaries. Its raw `text` never renders, so it
+// is not searched.
+test("a redacted thought is searched by its rendered label and summaries", () => {
+  const rows = [
+    turnRow("t", [
+      redactedReasoning("r1", "Thought failed in main.go", [["the *needle* body"]], "raw needle that never renders"),
+    ]),
+  ];
+  const keys = (query: string) => findHits(rows, query, { config: TOOLS }).map((hit) => hit.key);
+  expect(keys("failed in main.go")).toEqual(["r1"]);
+  expect(keys("**failed**")).toEqual([]);
+  expect(keys("needle body")).toEqual(["r1"]);
+  expect(keys("raw needle")).toEqual([]);
+});
+
+test("an action is searched by its rationale and the hit opens its collapsed group", () => {
+  const rows = [turnRow("t", [intentEntry("c1", "list the repo"), intentEntry("c2", "grep for the needle")])];
+  expect(findHits(rows, "grep for the needle", { config: COLLAPSED_INTENT })).toEqual([
+    { key: "intent:c2", itemId: "c2", rowIndex: 0, opens: ["intent-group:intent:c1"] },
+  ]);
+  // A cross-turn action group names its own row id.
+  const entries: IntentEntry[] = [intentEntry("c1", "list the repo"), intentEntry("c2", "grep for the needle")];
+  const group: TranscriptBodyRow = {
+    kind: "intentGroup",
+    id: "intent-group:intent:c1",
+    entries,
+    sourceTurnIndexes: [0],
+    sourceTurnIds: ["t"],
+  };
+  expect(findHits([group], "needle", { config: COLLAPSED_INTENT }).map((hit) => hit.opens)).toEqual([
+    ["intent-group:intent:c1"],
+  ]);
+});
+
+test("an action row with no stated rationale is not searched by the projector's fallback", () => {
+  const rows = [turnRow("t", [rationaleLessAction("c1", "read_file", '{"file_path":"agent/tree.go"}')])];
+  // The opened group shows read_file's own summary, never this neutral text.
+  expect(findHits(rows, "action", { config: COLLAPSED_INTENT })).toEqual([]);
+  expect(findHits(rows, "unavailable", { config: COLLAPSED_INTENT })).toEqual([]);
+});
+
+test("a suppressed action row is not searched, because it renders nothing", () => {
+  const rows = [turnRow("t", [suppressedAction("c1", "view the task list", '{"action":"view"}')])];
+  expect(findHits(rows, "view the task list", { config: COLLAPSED_INTENT })).toEqual([]);
+});
+
+// A tool call is searched by the three texts its row can paint: the intent
+// line (always on screen), the summary line (behind its own disclosure), and
+// the body - output, error, and the arguments a body renders.
+test("a tool call is searched where its row shows each text, and its hit opens what hides it", () => {
+  const rows = [
+    turnRow("t", [
+      toolCallEntry("c1", {
+        description: "list the sources",
+        argumentsJSON: '{"command":"ls src"}',
+        output: "frobnitz.txt",
+      }),
+    ]),
+  ];
+  const hit = (query: string) => findHits(rows, query, { config: TOOLS }).map((found) => [found.itemId, found.opens]);
+  // The intent line is on screen at every level.
+  expect(hit("list the sources")).toEqual([["c1", undefined]]);
+  // The summary line quotes the command; landing opens that line.
+  expect(hit("ls src")).toEqual([["c1", ["summary:c1"]]]);
+  // Output sits behind the body, which the landing opens.
+  expect(hit("frobnitz.txt")).toEqual([["c1", ["c1"]]]);
+  // The text Find cannot land on is not counted at all.
+  expect(hit("command")).toEqual([]);
+});
+
+test("a tool call inside a folded run opens the run before the call's own body", () => {
+  const rows = [
+    turnRow("t", [
+      toolCallEntry("c1", { argumentsJSON: '{"command":"echo one"}', output: "one" }),
+      toolCallEntry("c2", { argumentsJSON: '{"command":"echo two"}', output: "the needle" }),
+      toolCallEntry("c3", { argumentsJSON: '{"command":"echo three"}', output: "three" }),
+    ]),
+  ];
+  expect(findHits(rows, "needle", { config: TOOLS })).toEqual([
+    { key: "c2", itemId: "c2", rowIndex: 0, opens: ["run:c1", "c2"] },
+  ]);
+});
+
+test("coloured tool output is searched with its terminal controls interpreted", () => {
+  const rows = [
+    turnRow("t", [
+      toolCallEntry("c1", {
+        argumentsJSON: '{"command":"make"}',
+        output: "error \u001b[31mcode\u001b[0m here",
+      }),
+    ]),
+  ];
+  // The escape sequence sits between the two words, so only the interpreted
+  // text holds the phrase.
+  expect(findHits(rows, "error code here", { config: TOOLS }).map((hit) => hit.itemId)).toEqual(["c1"]);
+});
+
+// The argument values are words a body renders (the generic arguments block);
+// the JSON around them - keys, braces, quotes - is not.
+test("argument values are searched where the row renders its arguments, and no JSON syntax is", () => {
+  const rows = [
+    turnRow("t", [
+      toolCallEntry("c1", {
+        toolName: "github: create_issue",
+        argumentsJSON: JSON.stringify({ title: "Add needle support", labels: ["bug"] }),
+      }),
+    ]),
+  ];
+  const keys = (query: string) => findHits(rows, query, { config: TOOLS }).map((hit) => hit.itemId);
+  expect(keys("needle support")).toEqual(["c1"]);
+  expect(keys("labels")).toEqual([]);
+  expect(keys('{"title"')).toEqual([]);
+});
+
+test("a suppressed tool call is not searched, because it renders nothing", () => {
+  const rows = [
+    turnRow("t", [
+      toolCallEntry("c1", { toolName: "task_list", argumentsJSON: '{"action":"view"}', output: "needle" }),
+    ]),
+  ];
+  expect(findHits(rows, "needle", { config: TOOLS })).toEqual([]);
+});
+
+// A delegate with no stated description shows its brief, clipped to the intent
+// line's preview width: the row's own words are the only text Find may count.
+test("a delegate's clipped brief is searched where the intent line shows it", () => {
+  const shown = "alpha-brief";
+  const clippedOff = "clippedneedle";
+  const prompt = `${shown} ${"pad ".repeat(40)}${clippedOff}`;
+  const rows = [turnRow("t", [delegateAction("c1", prompt)])];
+
+  expect(findHits(rows, shown, { config: COLLAPSED_INTENT }).map((hit) => [hit.itemId, hit.opens])).toEqual([
+    ["c1", ["intent-group:intent:c1"]],
+  ]);
+  // Past the preview the row shows an ellipsis, so the clipped-off words are
+  // not text a match could land on.
+  expect(findHits(rows, clippedOff, { config: COLLAPSED_INTENT })).toEqual([]);
+});
+
+test("a streaming thought's unclosed Markdown is read as its live row shows it", () => {
+  const live = [turnRow("t", [reasoningEntry("r1", [["check **the assumptions"]], "thinking", true)], "inProgress")];
+  expect(findHits(live, "check the assumptions", { config: TOOLS }).map((hit) => hit.key)).toEqual(["r1"]);
+  // A settled thought shows the unbalanced marker literally, so the phrase
+  // without it is not on screen.
+  const settled = [turnRow("t", [reasoningEntry("r1", [["check **the assumptions"]])])];
+  expect(findHits(settled, "check the assumptions", { config: TOOLS })).toEqual([]);
+});
+
+// The wire never completes a reasoning item, so a thought reads live only
+// while it is still the turn's tail, as ThinkBlock decides it: once a reply
+// starts in the same in-progress turn, the thought renders settled.
+test("a thought a later item has overtaken is read settled, not live", () => {
+  const thought = reasoningEntry("r1", [["check **the assumptions"]], "thinking", true);
+  const reply = message("a1", "Answering now");
+  const streaming: ProjectedEntry = { ...reply, item: { ...reply.item, status: "inProgress" } };
+  const overtaken = [turnRow("t", [thought, streaming], "inProgress")];
+  expect(findHits(overtaken, "check the assumptions", { config: TOOLS })).toEqual([]);
+  expect(findHits(overtaken, "check **the assumptions", { config: TOOLS }).map((hit) => hit.key)).toEqual(["r1"]);
+  // While the thought is still the turn's tail it reads live.
+  const tail = [turnRow("t", [thought], "inProgress")];
+  expect(findHits(tail, "check the assumptions", { config: TOOLS }).map((hit) => hit.key)).toEqual(["r1"]);
 });
 
 test("a diagram's source is not searched once the reply shows the diagram instead", () => {
@@ -243,4 +661,380 @@ test("a failed diagram's language header becomes searchable too", () => {
   expect(findHits(rows, "mermaid").map((hit) => hit.key)).toEqual(["drawn"]);
   act(() => noteMermaidRender(source, "ok"));
   expect(findHits(rows, "mermaid")).toEqual([]);
+});
+
+// A thought's summary is Markdown too, so a diagram inside one falls back and
+// makes its source words visible the same way - and the thought's cached text
+// has to be read again after that change.
+test("a thought's failed diagram source becomes searchable when it falls back to code", () => {
+  const fence = "```";
+  const source = "flowchart TD\n  A --> thoughtNode";
+  const summary = `The flow:\n\n${fence}mermaid\n${source}\n${fence}\n\nDone.`;
+  const rows = [turnRow("t", [reasoningEntry("r1", [[summary]])])];
+  // First read warms the thought's cache while the diagram still renders.
+  expect(findHits(rows, "thoughtNode", { config: TOOLS })).toEqual([]);
+  act(() => noteMermaidRender(source, "error"));
+  expect(findHits(rows, "thoughtNode", { config: TOOLS }).map((hit) => hit.key)).toEqual(["r1"]);
+  act(() => noteMermaidRender(source, "ok"));
+  expect(findHits(rows, "thoughtNode", { config: TOOLS })).toEqual([]);
+});
+
+// A steer and a memory refresh fold their words behind a divider keyed by the
+// session ref plus the row's own id (SteeringDivider), not by the view's
+// disclosure scope, so a hit names those ids for Find to open.
+function projectedRows(items: ItemModel[]): readonly TranscriptBodyRow[] {
+  const model = {
+    ...makeTranscriptPreviewModel(),
+    ref: "ref_a",
+    turns: [{ id: "t1", status: "completed", items } as TurnModel],
+  };
+  return transcriptRowsForProjection(projectThread(model, TOOLS));
+}
+
+function steerItem(id: string, fields: Partial<ItemModel> = {}): ItemModel {
+  return { id, turnId: "t1", type: "steering", text: "", status: "completed", ...fields };
+}
+
+test("a steer's hit names the session-scoped divider that folds its words", () => {
+  const rows = projectedRows([steerItem("s1", { text: "the brass widget" })]);
+  expect(findHits(rows, "brass", { config: TOOLS }).map((hit) => [hit.itemId, hit.opensSession])).toEqual([
+    ["s1", ["s1"]],
+  ]);
+  // A steer the human typed is a prompt bubble with no fold to open.
+  const prompt = projectedRows([steerItem("s2", { text: "the brass widget", source: "user" })]);
+  expect(findHits(prompt, "brass", { config: TOOLS }).map((hit) => hit.opensSession)).toEqual([undefined]);
+});
+
+test("a suppressed task steer is not a hit at all", () => {
+  const rows = projectedRows([steerItem("sup", { text: "the brass widget", steeringKind: "task-list" })]);
+  expect(findHits(rows, "brass", { config: TOOLS })).toEqual([]);
+});
+
+test("a steer's interstitial text span opens only its own divider", () => {
+  const card = `<job-notification job_id="j5" event="failed" job_type="shell" status="failed" reason="bad" output_bytes="1" exit_code="3">
+Job job_5 failed.
+</job-notification>`;
+  const rows = projectedRows([steerItem("mix", { text: `first brass\n\n${card}\n\nsecond brass` })]);
+  expect(findHits(rows, "second brass", { config: TOOLS }).map((hit) => hit.opensSession)).toEqual([["mix:2"]]);
+});
+
+function memoryItem(id: string, text: string, content: string): ItemModel {
+  return {
+    id,
+    turnId: "t1",
+    type: "systemMessage",
+    eventKind: "memory-context",
+    text,
+    status: "completed",
+    raw: { memoryContext: { scope: "personal", state: "current", truncated: false, content } },
+  };
+}
+
+test("a memory refresh is searched by its index, never by its folded source", () => {
+  const rows = projectedRows([memoryItem("m1", "sourceOnlyWord", "- brass widget")]);
+  expect(findHits(rows, "brass widget", { config: TOOLS }).map((hit) => [hit.itemId, hit.opensSession])).toEqual([
+    ["m1", ["m1"]],
+  ]);
+  expect(findHits(rows, "sourceOnlyWord", { config: TOOLS })).toEqual([]);
+});
+
+test("a memory refresh's failed diagram source is counted once it falls back", () => {
+  const fence = "```";
+  const source = "flowchart TD\n  A --> memoryNode";
+  const rows = projectedRows([memoryItem("m1", "recorded", `The index:\n\n${fence}mermaid\n${source}\n${fence}\n`)]);
+  expect(findHits(rows, "memoryNode", { config: TOOLS })).toEqual([]);
+  act(() => noteMermaidRender(source, "error"));
+  expect(findHits(rows, "memoryNode", { config: TOOLS }).map((hit) => hit.itemId)).toEqual(["m1"]);
+  act(() => noteMermaidRender(source, "ok"));
+  expect(findHits(rows, "memoryNode", { config: TOOLS })).toEqual([]);
+});
+
+// --- A steer's notification cards ------------------------------------------
+// A card is searched by the words it paints: the head, the report or the
+// excerpt it shows, and - only where nothing on its face holds the words - the
+// raw frame behind the one disclosure that hides it. Markup and attributes a
+// reader never sees are never a match (#6351 finding 3).
+
+function cardSteerItem(id: string, text: string, extra: Partial<ItemModel> = {}): ItemModel {
+  return { id, turnId: "t", type: "steering", text, ...extra } as ItemModel;
+}
+
+function steerRows(items: ItemModel[], config = TOOLS): readonly TranscriptBodyRow[] {
+  const model = { ref: "r", turns: [{ id: "t", status: "completed", items }] } as unknown as ThreadModel;
+  return transcriptRowsForProjection(projectThread(model, config));
+}
+
+function jobCard(attrs: string, excerpt: string): string {
+  return `<job-notification ${attrs}>\nJob completed.\nexcerpt:\n${excerpt}</job-notification>`;
+}
+
+function delegateCard(body: Record<string, unknown>): string {
+  return `<delegate-notification delegate_id="dlg_7" name="Ledger audit" kind="report">${JSON.stringify(body)}</delegate-notification>`;
+}
+
+test("a delegate card is searched by its report and opens the card, never by its frame's markup", () => {
+  const item = { ...(notificationWireItem("delegate-reported") as unknown as ItemModel), id: "steer", turnId: "t" };
+  const rows = steerRows([item]);
+  expect(findHits(rows, "the settle pass now waits for the drain", { config: TOOLS, sessionRef: "ref_a" })).toEqual([
+    { key: "steer", itemId: "steer", rowIndex: 0, opens: ["notification:ref_a:dlg_1:steer:0"] },
+  ]);
+  // Markdown marks are not words on the page.
+  expect(findHits(rows, "**settle**", { config: TOOLS })).toEqual([]);
+  // A delegate card renders no raw disclosure, so nothing only the verbatim
+  // frame holds is a match.
+  expect(findHits(rows, 'delegate_id="dlg_1"', { config: TOOLS })).toEqual([]);
+  expect(findHits(rows, '"outcome":"completed"', { config: TOOLS })).toEqual([]);
+});
+
+test("a delegate card's structured result table is searched by its rendered labels and cells", () => {
+  const rows = steerRows([
+    cardSteerItem(
+      "steer",
+      delegateCard({
+        kind: "reported",
+        message: "Audited the ledger.",
+        metadata: { outcome: "completed", name: "Ledger audit" },
+        structured_result: { finding_verdict: "looks fine", ledger_rows: 42 },
+        structured_result_valid: true,
+      }),
+    ),
+  ]);
+  const opens = (query: string) =>
+    findHits(rows, query, { config: TOOLS, sessionRef: "ref_a" }).map((hit) => hit.opens);
+  expect(opens("finding verdict")).toEqual([["notification:ref_a:dlg_7:steer:0"]]);
+  expect(opens("looks fine")).toEqual([["notification:ref_a:dlg_7:steer:0"]]);
+  expect(opens("42")).toEqual([["notification:ref_a:dlg_7:steer:0"]]);
+  // The schema key as written is not on screen; its words are.
+  expect(opens("finding_verdict")).toEqual([]);
+});
+
+test("a static delegate head is searched by its visible words and opens no disclosure", () => {
+  const rows = steerRows([
+    cardSteerItem(
+      "steer",
+      delegateCard({ kind: "reported", message: "", metadata: { outcome: "stopped", reason: "stopped_by_parent" } }),
+    ),
+  ]);
+  expect(findHits(rows, "Ledger audit", { config: TOOLS })).toEqual([{ key: "steer", itemId: "steer", rowIndex: 0 }]);
+  expect(findHits(rows, 'delegate_id="dlg_7"', { config: TOOLS })).toEqual([]);
+});
+
+test("a job card's preview opens the card alone, and its raw frame opens only for a word the preview cut", () => {
+  const filler = "padding line\n".repeat(60);
+  const rows = steerRows([
+    cardSteerItem(
+      "steer",
+      jobCard(
+        'job_id="job_9" event="completed" job_type="shell" status="completed" reason="exit_zero" intent="Tail the log" exit_code="0"',
+        `quokkaAtHead\n${filler}`,
+      ),
+    ),
+  ]);
+  const opens = (query: string) =>
+    findHits(rows, query, { config: TOOLS, sessionRef: "ref_a" }).map((hit) => hit.opens);
+  // A word the preview shows opens the card alone.
+  expect(opens("padding line")).toEqual([["notification:ref_a:job_9:steer:0"]]);
+  // A word the 500-character tail cut away opens the card AND its raw frame.
+  expect(opens("quokkaAtHead")).toEqual([["notification:ref_a:job_9:steer:0", "notification:ref_a:job_9:steer:0:raw"]]);
+  // A word only the frame carries lands behind the disclosure, never as if the
+  // card showed it - the same opening both uses.
+  expect(opens('event="completed"')).toEqual([
+    ["notification:ref_a:job_9:steer:0", "notification:ref_a:job_9:steer:0:raw"],
+  ]);
+});
+
+test("a shell excerpt is searched as its ANSI text renders, not as its escape sequences", () => {
+  const rows = steerRows([
+    cardSteerItem(
+      "steer",
+      jobCard(
+        'job_id="job_1" event="completed" job_type="shell" intent="Colour run"',
+        "starting\n\u001b[31mneedleRed\u001b[0m\n",
+      ),
+    ),
+  ]);
+  const opens = (query: string) =>
+    findHits(rows, query, { config: TOOLS, sessionRef: "ref_a" }).map((hit) => hit.opens);
+  expect(opens("needleRed")).toEqual([["notification:ref_a:job_1:steer:0"]]);
+});
+
+test("only the cards of a steer that hold the words open, and their siblings stay closed", () => {
+  const first = jobCard('job_id="job_1" event="completed" intent="First card"', "first output");
+  const second = jobCard('job_id="job_2" event="completed" intent="Second card"', "second output");
+  const rows = steerRows([cardSteerItem("steer", `${first}\n${second}`)]);
+  expect(findHits(rows, "second output", { config: TOOLS, sessionRef: "ref_a" }).map((hit) => hit.opens)).toEqual([
+    ["notification:ref_a:job_2:steer:1"],
+  ]);
+  // Both cards' words in one query open both cards.
+  expect(findHits(rows, "card", { config: TOOLS, sessionRef: "ref_a" }).map((hit) => hit.opens)).toEqual([
+    ["notification:ref_a:job_1:steer:0", "notification:ref_a:job_2:steer:1"],
+  ]);
+});
+
+test("a parent's steer and a human note show their own words and parse no cards", () => {
+  const card = jobCard('job_id="job_1" event="completed"', "quokka");
+  for (const extra of [{ source: "parent" }, { steeringKind: "human-note", source: "user" }] as Partial<ItemModel>[]) {
+    // The row paints its text verbatim, so the word is a match; no card is
+    // parsed from it, so no card disclosure opens on the hit.
+    const hits = findHits(steerRows([cardSteerItem("steer", card, extra)]), "quokka", { config: TOOLS });
+    expect(hits.map((hit) => hit.opens)).toEqual([undefined]);
+  }
+});
+
+test("a delegate report's failed diagram becomes searchable when it falls back to code", () => {
+  const fence = "```";
+  const source = "flowchart TD\n  A --> reportNode";
+  const rows = steerRows([
+    cardSteerItem(
+      "steer",
+      delegateCard({
+        kind: "reported",
+        message: `The flow:\n\n${fence}mermaid\n${source}\n${fence}\n\nDone.`,
+        metadata: { outcome: "completed" },
+      }),
+    ),
+  ]);
+  // The first read warms the card's cache while the diagram still renders.
+  expect(findHits(rows, "reportNode", { config: TOOLS })).toEqual([]);
+  act(() => noteMermaidRender(source, "error"));
+  expect(findHits(rows, "reportNode", { config: TOOLS }).map((hit) => hit.itemId)).toEqual(["steer"]);
+  act(() => noteMermaidRender(source, "ok"));
+  expect(findHits(rows, "reportNode", { config: TOOLS })).toEqual([]);
+});
+
+test("quiet_yield demoted commentary is searchable standalone and inside a quietYieldGroup", () => {
+  const quietItem = (id: string, turnId: string, commentary?: string): ItemModel => ({
+    id,
+    turnId,
+    type: "systemMessage",
+    text: "quiet-sentinel",
+    eventKind: "quiet_yield",
+    ...(commentary === undefined ? {} : { raw: { commentary } }),
+  });
+  const standaloneRows = projectedRows([quietItem("qy_single", "turn_1", "quokka-single")]);
+  expect(findHits(standaloneRows, "quokka-single", { config: TOOLS })).toEqual([
+    { key: "qy_single", itemId: "qy_single", rowIndex: 0, opens: ["qy_single"], opensIgnoreBaseline: true },
+  ]);
+
+  const model: ThreadModel = {
+    ...makeTranscriptPreviewModel(),
+    ref: "ref_a",
+    turns: [
+      { id: "turn_1", status: "completed", items: [quietItem("qy_1", "turn_1")] },
+      { id: "turn_2", status: "completed", items: [quietItem("qy_2", "turn_2", "quokka-grouped")] },
+    ],
+  };
+  const groupedRows = transcriptRowsForProjection(projectThread(model, TOOLS));
+  expect(findHits(groupedRows, "quokka-grouped", { config: TOOLS })).toEqual([
+    { key: "qy_2", itemId: "qy_2", rowIndex: 0, opens: ["quiet-yield-group:qy_1", "qy_2"], opensIgnoreBaseline: true },
+  ]);
+
+  const completedNotif = notificationWireItem("job-shell-completed");
+  const fullModel: ThreadModel = {
+    ...makeTranscriptPreviewModel(),
+    ref: "ref_a",
+    turns: [
+      {
+        id: "turn_w1",
+        status: "completed",
+        items: [
+          {
+            id: "r_1",
+            turnId: "turn_w1",
+            type: "reasoning",
+            text: "",
+            reasoningSummaries: [["quokka-thought"]],
+            status: "completed",
+          },
+          {
+            id: "steer_1",
+            turnId: "turn_w1",
+            type: "steering",
+            steeringKind: completedNotif.steeringKind,
+            text: completedNotif.text ?? "",
+            status: "completed",
+          },
+          quietItem("qy_w1", "turn_w1"),
+        ],
+      },
+      { id: "turn_w2", status: "completed", items: [quietItem("qy_w2", "turn_w2", "quokka-commentary")] },
+    ],
+  };
+  const FULL = makeTranscriptDisplayConfig({ kind: "preset", level: "full" });
+  const fullRows = transcriptRowsForProjection(projectThread(fullModel, FULL));
+  const fullOpts = { config: FULL, sessionRef: "ref_a" };
+  const groupId = "quiet-yield-group:r_1";
+  expect(findHits(fullRows, "quokka-thought", fullOpts)).toEqual([
+    { key: "r_1", itemId: "r_1", rowIndex: 0, opens: [groupId, "r_1"], opensIgnoreBaseline: true },
+  ]);
+  expect(findHits(fullRows, "Run the agent tests", fullOpts)).toEqual([
+    {
+      key: "steer_1",
+      itemId: "steer_1",
+      rowIndex: 0,
+      opens: [groupId, "notification:ref_a:job_7:steer_1:0"],
+      opensIgnoreBaseline: true,
+    },
+  ]);
+  expect(findHits(fullRows, "primeradiant.com/evener/agent", fullOpts)).toEqual([
+    {
+      key: "steer_1",
+      itemId: "steer_1",
+      rowIndex: 0,
+      opens: [groupId, "notification:ref_a:job_7:steer_1:0"],
+      opensIgnoreBaseline: true,
+    },
+  ]);
+  expect(findHits(fullRows, "quokka-commentary", fullOpts)).toEqual([
+    { key: "qy_w2", itemId: "qy_w2", rowIndex: 0, opens: [groupId, "qy_w2"], opensIgnoreBaseline: true },
+  ]);
+
+  const housekeepingConfig = makeTranscriptDisplayConfig(
+    { kind: "preset", level: "full" },
+    { roundTimings: true, systemEvents: true },
+  );
+  const housekeepingModel: ThreadModel = {
+    ...makeTranscriptPreviewModel(),
+    ref: "ref_a",
+    turns: [
+      {
+        id: "turn_h1",
+        status: "completed",
+        items: [
+          {
+            id: "rt_1",
+            turnId: "turn_h1",
+            type: "systemMessage",
+            eventKind: "round_timings",
+            text: "Round 1 · 120ms · quokka-timing",
+            status: "completed",
+          },
+          {
+            id: "notes_1",
+            turnId: "turn_h1",
+            type: "systemMessage",
+            eventKind: "notes-context",
+            text: "quokka-notes",
+            status: "completed",
+          },
+          quietItem("qy_h1", "turn_h1"),
+        ],
+      },
+      { id: "turn_h2", status: "completed", items: [quietItem("qy_h2", "turn_h2")] },
+    ],
+  };
+  const hkRows = transcriptRowsForProjection(projectThread(housekeepingModel, housekeepingConfig));
+  const hkOpts = { config: housekeepingConfig, sessionRef: "ref_a" };
+  expect(findHits(hkRows, "quokka-timing", hkOpts)).toEqual([
+    { key: "rt_1", itemId: "rt_1", rowIndex: 0, opens: ["quiet-yield-group:rt_1"], opensIgnoreBaseline: true },
+  ]);
+  expect(findHits(hkRows, "quokka-notes", hkOpts)).toEqual([
+    {
+      key: "notes_1",
+      itemId: "notes_1",
+      rowIndex: 0,
+      opens: ["quiet-yield-group:rt_1", "notes_1"],
+      opensIgnoreBaseline: true,
+    },
+  ]);
 });

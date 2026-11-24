@@ -9,6 +9,7 @@ import (
 	"os"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 
 	"primeradiant.com/evener/agent/schema"
@@ -105,6 +106,7 @@ func referenceProjectionAndRegistry(t testing.TB, path string) ([]referenceTurn,
 		entries   []schema.Turn // legacy: the group's entries, for its stamp
 		items     []appwire.ThreadItem
 		positions []appwire.ThreadItemPosition
+		entryIdx  []int
 		calls     map[string]int // legacy: call id -> item
 		version   uint64
 		model     string
@@ -121,15 +123,18 @@ func referenceProjectionAndRegistry(t testing.TB, path string) ([]referenceTurn,
 		awaiting      *schema.Turn
 		awaitingItem  map[string]int
 		awaitingNames map[string]string
+		awaitingEntry int
 	}
 	var turns []*turnState
 	byID := map[string]*turnState{}
 	var grouper apptranscript.TurnGrouper
-	reg := apptranscript.NewToolCallRegistry()
+	reg := &apptranscript.ToolCallRegistry{Names: map[string]string{}, CommRawArgs: map[string]string{}, CommAuthorship: map[string]*schema.TranscriptAuthorship{}}
+	identityReg := &apptranscript.ToolCallRegistry{Names: map[string]string{}, CommRawArgs: map[string]string{}, CommAuthorship: map[string]*schema.TranscriptAuthorship{}}
 	add := func(s *turnState, item appwire.ThreadItem, entryIndex, part int) int {
 		item.Version = uint64(entryIndex)
 		s.items = append(s.items, item)
 		s.positions = append(s.positions, appwire.ThreadItemPosition{Entry: uint64(entryIndex), Item: uint32(part)})
+		s.entryIdx = append(s.entryIdx, entryIndex)
 		return len(s.items) - 1
 	}
 	for i, entry := range entries {
@@ -210,6 +215,15 @@ func referenceProjectionAndRegistry(t testing.TB, path string) ([]referenceTurn,
 					info = *entry.Completion
 				}
 				s.open, s.completion = false, &info
+				if info.AcceptedCommunicateCallID != "" {
+					// The builder records the completion as a contributor of
+					// the accepted delivery's item, which advances its version.
+					for at := range s.items {
+						if s.items[at].CallID == info.AcceptedCommunicateCallID {
+							s.items[at].Version = uint64(entryIndex)
+						}
+					}
+				}
 				// Calls of the awaiting entry that no results completed
 				// were interrupted.
 				for _, at := range s.awaitingItem {
@@ -237,13 +251,23 @@ func referenceProjectionAndRegistry(t testing.TB, path string) ([]referenceTurn,
 				}
 			}
 		}
-		if entry.Kind == schema.TurnCommunicate && entry.Communicate != nil && s.awaiting != nil &&
-			apptranscript.EchoesAssistantText(referenceLastTextRun(s.awaiting.Message.Content), entry.Communicate.Message) {
+		echoes := false
+		if entry.Kind == schema.TurnCommunicate && entry.Communicate != nil && s.awaiting != nil {
+			if _, announced := s.awaitingNames[entry.Communicate.CallID]; announced {
+				echoText := apptranscript.AssistantEchoText(*s.awaiting)
+				echoes = echoText != "" && apptranscript.EchoesAssistantText(echoText, entry.Communicate.Message)
+			}
+		}
+		if echoes {
+			reason := entry.Communicate.EndReason
+			if reason == "" && entry.Communicate.EndTurn {
+				reason = "done"
+			}
 			for at := len(s.items) - 1; at >= 0; at-- {
 				if s.items[at].Type == "agentMessage" {
 					s.items[at].CallID = entry.Communicate.CallID
 					s.items[at].Observation = &appwire.SessionObservationMetadata{
-						TurnID: s.id, EndTurn: entry.Communicate.EndTurn, EndReason: entry.Communicate.EndReason,
+						TurnID: s.id, EndTurn: entry.Communicate.EndTurn, EndReason: reason,
 						CausalKnown: entry.CausalKnown, Causal: entry.Causal,
 					}
 					s.items[at].Version = uint64(entryIndex)
@@ -252,7 +276,9 @@ func referenceProjectionAndRegistry(t testing.TB, path string) ([]referenceTurn,
 			}
 			continue
 		}
-		items, parts := apptranscript.ProjectEntryParts(s.id, entryIndex, entry, &apptranscript.ToolCallRegistry{Names: seed}, nil, apptranscript.ToolResultOutputImages)
+		identityReg.Names = seed
+		items, parts := apptranscript.ProjectEntryParts(s.id, entryIndex, entry, identityReg, nil, apptranscript.ToolResultOutputImages)
+		identityReg.Names = nil
 		added := map[int]int{} // part -> item
 		for j, item := range items {
 			if entry.Kind == schema.TurnTool || entry.Kind == schema.TurnToolResults {
@@ -285,12 +311,16 @@ func referenceProjectionAndRegistry(t testing.TB, path string) ([]referenceTurn,
 			}
 			if len(calls) > 0 {
 				awaiting := entry
-				s.awaiting, s.awaitingItem, s.awaitingNames = &awaiting, calls, names
+				s.awaiting, s.awaitingItem, s.awaitingNames, s.awaitingEntry = &awaiting, calls, names, entryIndex
 			}
 		}
 	}
 	var out []referenceTurn
-	if prelude := apptranscript.PreludeTurn(header); prelude != nil {
+	launchPrompt := ""
+	if strings.TrimSpace(header.SystemPrompt) == "" {
+		launchPrompt = schema.LaunchSystemPromptBesideTranscript(path)
+	}
+	if prelude := apptranscript.PreludeTurn(header, launchPrompt); prelude != nil {
 		for i := range prelude.Items {
 			position := appwire.ThreadItemPosition{Entry: 0, Item: uint32(i)}
 			prelude.Items[i].Position = &position
@@ -397,28 +427,6 @@ func flushProjection(reg *apptranscript.ToolCallRegistry, projection []reference
 		out[lastShown] = last
 	}
 	return out
-}
-
-// referenceLastTextRun is the text of the last maximal run of consecutive
-// text parts.
-func referenceLastTextRun(content []llm.ContentPart) string {
-	var runs []string
-	inRun := false
-	for _, part := range content {
-		if part.Kind != llm.ContentText {
-			inRun = false
-			continue
-		}
-		if !inRun {
-			runs = append(runs, "")
-			inRun = true
-		}
-		runs[len(runs)-1] += part.Text
-	}
-	if len(runs) == 0 {
-		return ""
-	}
-	return runs[len(runs)-1]
 }
 
 // referenceTurns is the reference projection's wire turns that hold items:

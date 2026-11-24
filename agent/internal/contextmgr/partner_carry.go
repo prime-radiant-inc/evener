@@ -8,6 +8,7 @@ import (
 	"unicode/utf8"
 
 	"primeradiant.com/evener/agent/internal/runetrim"
+	"primeradiant.com/evener/agent/internal/sysmsg"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
@@ -285,11 +286,16 @@ func (cm *Manager) condensePartnerMessages(ctx context.Context, prof *provider.P
 			// batches stay within budget.
 			parts := splitMessage(strings.TrimSpace(resp.Text()), budget/3, 400)
 			for i, part := range parts {
-				label := "Summary of earlier messages: "
+				// The reply is model-authored text, so its frames must not reach the
+				// next summarizer bare. Escaping each part on its own keeps a frame a
+				// split left outside its fence escaped, and escaping before the label
+				// joins it would leave a leading fenced example's opener off the line
+				// start. So keep the label on its own line, and escape the part.
+				label := "Summary of earlier messages:"
 				if len(parts) > 1 {
-					label = fmt.Sprintf("Summary of earlier messages (part %d of %d): ", i+1, len(parts))
+					label = fmt.Sprintf("Summary of earlier messages (part %d of %d):", i+1, len(parts))
 				}
-				summaries = append(summaries, label+part+"\n")
+				summaries = append(summaries, label+"\n"+sysmsg.EscapeModelAuthoredFrames(part)+"\n")
 			}
 			start = end
 		}

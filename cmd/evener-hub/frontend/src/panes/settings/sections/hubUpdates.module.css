@@ -1,21 +1,10 @@
 .root {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
+  composes: stack3 from "../../../styles/surface.module.css";
   margin-top: var(--space-4);
 }
 
-.heading {
-  margin: 0;
-  color: var(--ink-hi);
-  font-size: var(--font-size-body);
-  font-weight: var(--font-weight-semibold);
-}
-
 .status {
-  margin: 0;
-  color: var(--ink-mid);
-  font-size: var(--font-size-ui);
+  composes: helpUi from "../../../styles/help.module.css";
 }
 
 .actions {

@@ -3,11 +3,10 @@ package agent
 import (
 	"context"
 	"encoding/json"
-	"strings"
+	"slices"
 	"testing"
 	"time"
 
-	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/clock"
@@ -28,31 +27,6 @@ func newTestSessionForState(t *testing.T) *Session {
 		t.Fatal(err)
 	}
 	return sess
-}
-
-func TestSettleTerminalState(t *testing.T) {
-	t.Parallel()
-	cases := []struct {
-		name                                                 string
-		hadOutput, goalKicked, queuePending, autonomyPending bool
-		want                                                 SessionState
-	}{
-		{"clean turn with output arms awaiting", true, false, false, false, SessionAwaiting},
-		{"no user-visible output stays idle", false, false, false, false, SessionIdle},
-		{"goal kick suppresses", true, true, false, false, SessionIdle},
-		{"queued input suppresses", true, false, true, false, SessionIdle},
-		{"autonomy in flight suppresses", true, false, false, true, SessionIdle},
-		{"all suppressors at once", true, true, true, true, SessionIdle},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			got := settleTerminalState(c.hadOutput, c.goalKicked, c.queuePending, c.autonomyPending)
-			if got != c.want {
-				t.Fatalf("settleTerminalState(%v,%v,%v,%v) = %q, want %q",
-					c.hadOutput, c.goalKicked, c.queuePending, c.autonomyPending, got, c.want)
-			}
-		})
-	}
 }
 
 func TestSettleGoalOnIdle_ReportsKick(t *testing.T) {
@@ -82,73 +56,6 @@ func TestSettleGoalOnIdle_ReportsKick(t *testing.T) {
 	}
 }
 
-// endReasonResponse is a turn-ending communicate call that states reason
-// (none when reason is empty).
-func endReasonResponse(message, reason string) llm.Response {
-	args := map[string]any{"message": message}
-	if reason != "" {
-		args["end_reason"] = reason
-	}
-	return agenttest.ToolCallResponse(communicateCallArgs("communicate_test_call", args))
-}
-
-// A clean completion rests by the reason its communicate gave: awaiting only
-// when the agent needs a response, idle for a plain reply and for a wait on
-// work. The SessionEnd event carries the same state.
-func TestProcessInput_CleanCompletionRestsByEndReason(t *testing.T) {
-	t.Parallel()
-	for _, tc := range []struct {
-		reason string
-		want   SessionState
-	}{
-		{reason: "", want: SessionIdle},
-		{reason: "done", want: SessionIdle},
-		{reason: "waiting_on_work", want: SessionIdle},
-		{reason: "needs_response", want: SessionAwaiting},
-	} {
-		t.Run("reason="+tc.reason, func(t *testing.T) {
-			t.Parallel()
-			c := llm.NewClient()
-			c.Register(newFakeAdapter("openai", func(req llm.Request) llm.Response { return endReasonResponse("done", tc.reason) }))
-			sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("test-model")), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{testOnly: immediateRestConfig()})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if tc.reason == "waiting_on_work" {
-				if _, err := sess.jobManager.configureWatch(watchArgs{Target: runtimeMessageAliasCaller, Source: "self", AfterSeconds: 3600}); err != nil {
-					t.Fatal(err)
-				}
-			}
-			eventsPtr, mu, doneCh := collectEvents(sess)
-			// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
-			if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
-				t.Fatal(err)
-			}
-			if got := sess.State(); got != tc.want {
-				t.Fatalf("state after clean completion = %q, want %q", got, tc.want)
-			}
-			sess.Close()
-			<-doneCh
-			mu.Lock()
-			defer mu.Unlock()
-			ended := false
-			for _, ev := range *eventsPtr {
-				if d, ok := ev.Data.(events.SessionEndData); ok && ev.Kind == events.EventSessionEnd && d.Reason == "input_complete" {
-					ended = true
-					if d.State != string(tc.want) {
-						t.Fatalf("SessionEnd.State = %q, want %q", d.State, tc.want)
-					}
-				}
-			}
-			if !ended {
-				t.Fatal("no input_complete SessionEnd")
-			}
-		})
-	}
-}
-
 func TestProcessInput_InterruptStaysIdle(t *testing.T) {
 	t.Parallel()
 	c := llm.NewClient()
@@ -170,8 +77,8 @@ func TestProcessInput_InterruptStaysIdle(t *testing.T) {
 func TestProcessInput_NextInputClearsAwaiting(t *testing.T) {
 	t.Parallel()
 	c := llm.NewClient()
-	c.Register(newFakeAdapter("openai", func(req llm.Request) llm.Response { return endReasonResponse("one", "needs_response") }, func(req llm.Request) llm.Response { return endReasonResponse("two", "needs_response") }))
-	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("test-model")), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{testOnly: immediateRestConfig()})
+	c.Register(newFakeAdapter("openai", slices.Repeat([]func(llm.Request) llm.Response{askAwaitingResponse}, 2)...))
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("test-model")), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -254,22 +161,6 @@ func TestAutonomyInFlight_CountsChildInFinalizeTail(t *testing.T) {
 	}
 }
 
-// A finished delegate whose runtime is still warm does not keep its parent
-// from resting awaiting after a needs_response turn (#4093).
-func TestProcessInput_NeedsResponseWithWarmIdleChildRestsAwaiting(t *testing.T) {
-	t.Parallel()
-	sess := newSession(t, withSteps(func(llm.Request) llm.Response { return endReasonResponse("which?", "needs_response") }), withImmediateRest())
-	child := newTestSessionForState(t)
-	sess.subagents.track(&subagent{id: child.ID(), sess: child})
-	ctx := tripwireCtx(t)
-	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
-		t.Fatal(err)
-	}
-	if got := sess.State(); got != SessionAwaiting {
-		t.Fatalf("state = %q, want awaiting beside a warm idle child", got)
-	}
-}
-
 func TestWireState_PendingParentWorkMakesIdleParentActive(t *testing.T) {
 	t.Parallel()
 	withNotification := newTestSessionForState(t)
@@ -304,8 +195,8 @@ func TestWireState_PendingParentWorkMakesIdleParentActive(t *testing.T) {
 func TestWireState_AwaitingOutranksAutonomy(t *testing.T) {
 	t.Parallel()
 	c := llm.NewClient()
-	c.Register(newFakeAdapter("openai", func(req llm.Request) llm.Response { return endReasonResponse("done", "needs_response") }))
-	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("test-model")), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{testOnly: immediateRestConfig()})
+	c.Register(newFakeAdapter("openai", askAwaitingResponse))
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("test-model")), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -323,55 +214,13 @@ func TestWireState_AwaitingOutranksAutonomy(t *testing.T) {
 	}
 }
 
-// A restored session rests by the reason its last communicate gave, exactly
-// as the live settle did: awaiting only when the agent needs a response.
-func TestRestore_RestsByEndReason(t *testing.T) {
-	t.Parallel()
-	for _, tc := range []struct {
-		reason string
-		want   SessionState
-	}{
-		{reason: "", want: SessionIdle},
-		{reason: "done", want: SessionIdle},
-		{reason: "waiting_on_work", want: SessionIdle},
-		{reason: "needs_response", want: SessionAwaiting},
-	} {
-		t.Run("reason="+tc.reason, func(t *testing.T) {
-			t.Parallel()
-			_, restored := restoreAfter(t, []func(llm.Request) llm.Response{
-				func(llm.Request) llm.Response { return endReasonResponse("answer", tc.reason) },
-			}, func(ctx context.Context, sess *Session) {
-				if tc.reason == "waiting_on_work" {
-					if _, err := sess.jobManager.configureWatch(watchArgs{Target: runtimeMessageAliasCaller, Source: "self", AfterSeconds: 3600}); err != nil {
-						t.Fatal(err)
-					}
-				}
-				if _, err := sess.ProcessInput(ctx, "question", nil); err != nil {
-					t.Fatal(err)
-				}
-			})
-			if restored != tc.want {
-				t.Fatalf("restored state = %q, want %q", restored, tc.want)
-			}
-		})
-	}
-}
-
-// TestRestore_UserLastTurnStaysIdle is the companion negative case for
-// TestRestore_RestsByEndReason: a restored session whose persisted transcript
-// ends with the user's turn (the daemon stopped before the agent replied —
-// simulated here the same way TestProcessInput_InterruptStaysIdle does, by
-// cancelling before the adapter responds) must stay idle, even though the
-// input before it ended on needs_response. This guards
-// recomputeRestoredState's backward-walk against reading past a dangling
-// user turn to an earlier needs_response.
 func TestRestore_UserLastTurnStaysIdle(t *testing.T) {
 	t.Parallel()
 	c := llm.NewClient()
 	blocker := make(chan struct{})
-	c.Register(newFakeAdapter("openai", func(llm.Request) llm.Response { return endReasonResponse("Merge it?", "needs_response") }, func(req llm.Request) llm.Response { <-blocker; return agenttest.FinalResponse("late") }))
+	c.Register(newFakeAdapter("openai", askAwaitingResponse, func(req llm.Request) llm.Response { <-blocker; return agenttest.FinalResponse("late") }))
 	dir := t.TempDir()
-	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("test-model")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir, testOnly: sharingHostProbe(immediateRestConfig())})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("test-model")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir, testOnly: sharingHostProbe(testConfig{})})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -380,7 +229,7 @@ func TestRestore_UserLastTurnStaysIdle(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got := sess.State(); got != SessionAwaiting {
-		t.Fatalf("state after needs_response = %q, want %q (test setup broken)", got, SessionAwaiting)
+		t.Fatalf("state after ask_user = %q, want %q (test setup broken)", got, SessionAwaiting)
 	}
 	done := make(chan struct{})
 	go func() { _, _ = sess.ProcessInput(ctx, "dangling question", nil); close(done) }()
@@ -408,47 +257,11 @@ func TestRestore_UserLastTurnStaysIdle(t *testing.T) {
 	}
 }
 
-// Live settle and restore read the same call: the first turn-ending
-// communicate the input accepted. A later needs_response call in the same
-// round loses the capture, so neither rests awaiting on it; the other order
-// rests awaiting on both sides.
-func TestSettleAndRestoreReadTheAcceptedCommunicate(t *testing.T) {
-	t.Parallel()
-	for _, tc := range []struct {
-		name          string
-		first, second string
-		want          SessionState
-	}{
-		{name: "done wins", first: "done", second: "needs_response", want: SessionIdle},
-		{name: "needs_response wins", first: "needs_response", second: "done", want: SessionAwaiting},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			live, restored := restoreAfter(t, []func(llm.Request) llm.Response{
-				func(llm.Request) llm.Response {
-					return agenttest.ToolCallResponse(
-						communicateCallArgs("c1", map[string]any{"message": "one", "end_reason": tc.first}),
-						communicateCallArgs("c2", map[string]any{"message": "two", "end_reason": tc.second}),
-					)
-				},
-			}, func(ctx context.Context, sess *Session) {
-				if _, err := sess.ProcessInput(ctx, "question", nil); err != nil {
-					t.Fatal(err)
-				}
-			})
-			if live != tc.want || restored != tc.want {
-				t.Fatalf("live %q, restored %q; want both %q", live, restored, tc.want)
-			}
-		})
-	}
-}
-
-// needs_response rests awaiting only when nothing autonomous is in flight: a
-// live child keeps the session idle, since its report will move it.
-func TestProcessInput_NeedsResponseWithLiveChildRestsIdle(t *testing.T) {
+// A live child must not replace the pending ask as the resting state.
+func TestAwaitingWithLiveChild(t *testing.T) {
 	t.Parallel()
 	c := llm.NewClient()
-	c.Register(newFakeAdapter("openai", func(req llm.Request) llm.Response { return endReasonResponse("which?", "needs_response") }))
+	c.Register(newFakeAdapter("openai", askAwaitingResponse))
 	sess := newSession(t, withClient(c), withProfile(NewOpenAIProfile("test-model")), withDir(t.TempDir()), withConfig(SessionConfig{}))
 	defer sess.Close()
 	child := newTestSessionForState(t)
@@ -459,8 +272,8 @@ func TestProcessInput_NeedsResponseWithLiveChildRestsIdle(t *testing.T) {
 	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
 		t.Fatal(err)
 	}
-	if got := sess.State(); got != SessionIdle {
-		t.Fatalf("state = %q, want idle while a child runs", got)
+	if got := sess.State(); got != SessionAwaiting {
+		t.Fatalf("state = %q, want awaiting while the question remains pending", got)
 	}
 }
 
@@ -481,7 +294,7 @@ func saveAfter(t *testing.T, steps []func(llm.Request) llm.Response, run func(co
 	c := llm.NewClient()
 	c.Register(newFakeAdapter("openai", steps...))
 	dir := t.TempDir()
-	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("test-model")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir, testOnly: sharingHostProbe(immediateRestConfig())})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("test-model")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir, testOnly: sharingHostProbe(testConfig{})})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -514,55 +327,7 @@ func restoreSaved(t *testing.T, dir string, meta schema.SessionMeta, cfg Restore
 	return sess
 }
 
-// A model re-asking the same question makes a byte-identical communicate
-// call, which the repeated-call breaker answers with a nudge appended to its
-// result text. Restore still reads the accepted needs_response.
-func TestRestore_RepeatedNeedsResponseQuestionRestsAwaiting(t *testing.T) {
-	t.Parallel()
-	ask := func(llm.Request) llm.Response { return endReasonResponse("Merge it?", "needs_response") }
-	live, restored := restoreAfter(t, []func(llm.Request) llm.Response{ask, ask}, func(ctx context.Context, sess *Session) {
-		for _, in := range []string{"q1", "not yet"} {
-			if _, err := sess.ProcessInput(ctx, in, nil); err != nil {
-				t.Fatal(err)
-			}
-		}
-		// The second, identical call's result carries the breaker's nudge.
-		sess.mu.Lock()
-		last := sess.history[len(sess.history)-1]
-		sess.mu.Unlock()
-		if text, _ := last.Message.Content[0].ToolResult.Content.(string); !strings.Contains(text, "same call") {
-			t.Fatalf("second result = %q, want the repeated-call nudge", text)
-		}
-	})
-	if live != SessionAwaiting || restored != SessionAwaiting {
-		t.Fatalf("live %q, restored %q; want both awaiting", live, restored)
-	}
-}
-
-// An input opened by a notification wake reads only its own accepted call,
-// never the needs_response of the input before it.
-func TestRestore_NotificationAfterNeedsResponseRestsIdle(t *testing.T) {
-	t.Parallel()
-	live, restored := restoreAfter(t, []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return endReasonResponse("Merge it?", "needs_response") },
-		func(llm.Request) llm.Response { return endReasonResponse("noted the job", "") },
-	}, func(ctx context.Context, sess *Session) {
-		if _, err := sess.ProcessInput(ctx, "q1", nil); err != nil {
-			t.Fatal(err)
-		}
-		sess.enqueueJobNotification(watchNotification("job_wake", "output_match: done"))
-		if _, err := sess.ProcessInputKind(ctx, "", nil, EntryNotification); err != nil {
-			t.Fatal(err)
-		}
-	})
-	if live != SessionIdle || restored != SessionIdle {
-		t.Fatalf("live %q, restored %q; want both idle", live, restored)
-	}
-}
-
-// A result replaced because its PostToolUse hook context could not be
-// delivered keeps its tool state: a turn-ending communicate's records the end
-// reason restore reads.
+// A tool result replaced by a failed PostToolUse hook keeps its typed state.
 func TestExecTool_HookContextFailureKeepsToolState(t *testing.T) {
 	t.Parallel()
 	sess, _ := intg_hookSession(t, `{
@@ -574,7 +339,8 @@ func TestExecTool_HookContextFailureKeepsToolState(t *testing.T) {
 	}`)
 	defer sess.Close()
 	sess.registerTool("stateful_probe", "returns tool state", map[string]any{"type": "object"}, func(context.Context, any) (any, error) {
-		return tool.StateResult{Output: "ok", State: communicateEndState{EndReason: "needs_response"}}, nil
+		quiet := true
+		return tool.StateResult{Output: "ok", State: communicateEndState{Quiet: &quiet}}, nil
 	})
 	// A retiring session refuses the hook context's steering.
 	retirement, err := NewRetirementController(0, clock.Real())
@@ -590,18 +356,16 @@ func TestExecTool_HookContextFailureKeepsToolState(t *testing.T) {
 	if !res.IsError {
 		t.Fatalf("result = %+v, want the hook-failure error", res)
 	}
-	if string(res.ToolState) != `{"communicate_end_reason":"needs_response"}` {
+	if string(res.ToolState) != `{"communicate_quiet":true}` {
 		t.Fatalf("tool state = %s, want the original kept", res.ToolState)
 	}
 }
 
-// A delegate's report already armed as root attention moves the parent on,
-// so a needs_response settle rests idle even once the reporter's runtime is
-// only warm: settle reads the same pending work restore does.
-func TestArmAwaitingAtSettle_PendingDelegateReportRestsIdle(t *testing.T) {
+// A delegate report must not displace a pending question.
+func TestAwaitingAtSettleWithPendingDelegateReport(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
-	f := newFakeAdapter("openai", func(req llm.Request) llm.Response { return endReasonResponse("which?", "needs_response") })
+	f := newFakeAdapter("openai", askAwaitingResponse)
 	sess := newSession(t, withDir(stateDir), withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1}), withAdapter(f))
 	ctx := tripwireCtx(t)
 	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
@@ -621,8 +385,76 @@ func TestArmAwaitingAtSettle_PendingDelegateReportRestsIdle(t *testing.T) {
 	if err := sess.armDelegateAttention(id); err != nil {
 		t.Fatal(err)
 	}
-	sess.armAwaitingAtSettle(true, false)
+	sess.armAwaitingAtSettle()
+	if got := sess.State(); got != SessionAwaiting {
+		t.Fatalf("state = %q, want awaiting with a pending ask and delegate report", got)
+	}
+}
+
+func askAwaitingResponse(llm.Request) llm.Response {
+	return agenttest.ToolCallResponse(askUserCall("ask-awaiting", askUserArgsValid()))
+}
+
+func TestPendingQuestionRestsAwaitingWithInputQueued(t *testing.T) {
+	t.Parallel()
+	sess := newSession(t, withSteps(askAwaitingResponse))
+	ctx := tripwireCtx(t)
+	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
+		t.Fatal(err)
+	}
+	// Settle again from idle with a message queued, as a human-note carrier
+	// round that left the question pending would.
+	sess.mu.Lock()
+	sess.state = SessionIdle
+	sess.mu.Unlock()
+	if err := sess.Enqueue(ctx, "later"); err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+	sess.armAwaitingAtSettle()
+	if got := sess.State(); got != SessionAwaiting {
+		t.Fatalf("state = %q, want awaiting while the question is pending", got)
+	}
+}
+
+// A pending question upgrades only an open, idle session: a settle that
+// finds the session still processing, or closing, leaves that state alone.
+func TestPendingQuestionUpgradesOnlyAnOpenIdleSession(t *testing.T) {
+	t.Parallel()
+	sess := newSession(t, withSteps(askAwaitingResponse))
+	ctx := tripwireCtx(t)
+	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
+		t.Fatal(err)
+	}
+	sess.mu.Lock()
+	sess.state = SessionProcessing
+	sess.mu.Unlock()
+	sess.armAwaitingAtSettle()
+	if got := sess.State(); got != SessionProcessing {
+		t.Fatalf("state = %q, want processing left alone", got)
+	}
+	// A retiring session is closing while its state still reads idle, so
+	// only the closing check keeps the settle from upgrading it.
+	sess.mu.Lock()
+	sess.state = SessionIdle
+	sess.closing = true
+	sess.mu.Unlock()
+	sess.armAwaitingAtSettle()
 	if got := sess.State(); got != SessionIdle {
-		t.Fatalf("state = %q, want idle while a delegate report is pending", got)
+		t.Fatalf("state = %q while closing, want idle left alone", got)
+	}
+}
+
+func TestFilteredWakeKeepsAnIdleRest(t *testing.T) {
+	t.Parallel()
+	sess := newSession(t, withSteps(func(llm.Request) llm.Response { return agenttest.FinalResponse("done") }))
+	ctx := tripwireCtx(t)
+	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sess.ProcessInputKind(ctx, "", nil, EntryNotification); err != nil {
+		t.Fatalf("filtered wake: %v", err)
+	}
+	if got := sess.State(); got != SessionIdle {
+		t.Fatalf("state after a filtered wake = %q, want idle", got)
 	}
 }

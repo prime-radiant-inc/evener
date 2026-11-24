@@ -128,7 +128,7 @@ measure rule of its own the ghosts start at the pane's raw left edge while
 every delivered message above sits clamped and centered - the same
 trailing-row rule `.intentGroup` and AskDock's `.dock` already carry. The
 horizontal-overflow scan cannot see this (nothing escapes a scroller), so
-this compares the `[data-testid="pending-message-stack"]` box against a
+this compares the `[data-testid="pending-row-stack"]` box against a
 `[data-testid="turn-block"]` box directly at 1024px. The fixture seeds its
 one ghost through the real durable outbox path (`enqueueIntent` + the shared
 projection refresh), never a direct store write.
@@ -148,6 +148,37 @@ the fixture mode disturbs nothing else.
 `held steer column ... PASS - trailing held-steer stack shares the turn content column`.
 
 **Verified:** 2026-09-27. **Expect:** fail.
+
+## First-reply skeleton column (`inspectColdStartSkeleton()`, the
+`?coldstart=1` fixture)
+
+Asserts that `ColdStartSkeleton` fills the shared reading column at the Wide
+transcript measure: its longest `skeleton-line` bar must fill the column's
+content box after `.coldStart`'s own padding, and the column must fill its
+parent's content box. The horizontal-overflow scan cannot see a narrow
+skeleton - nothing escapes a scroller, the bars simply stop short of the
+column. The fixture is an active thread with no turn and one pending send
+seeded through the real durable outbox path (`enqueueIntent` for `turn/start`
+plus the shared projection refresh).
+
+**Mutation performed:** appended `max-width: 42rem` to `.skeleton` in
+`widgets/skeleton/skeleton.module.css` - the inner cap the deleted
+`.coldStartMeasure` wrapper used to apply.
+
+**Result before restore:** FAIL -
+`cold start skeleton ... FAIL - {"measure":"wide","skeletonWidth":976,"contentWidth":944,"barWidth":672,"parentContentWidth":976}`
+(the bar held 672px inside a 944px column; the column itself stayed 976px).
+
+**Result after restore:** PASS -
+`cold start skeleton ... PASS - first-reply skeleton fills the wide reading column after its padding`
+with `measured bar 944.0px in column content 944.0px, column 976.0px of 976.0px at wide`.
+
+A cap on `.coldStart` itself is not a visible regression here: the composed
+`.measureColumn` rule is emitted after `session.module.css`, so its
+`max-width` wins the cascade (observed 2026-11-24 while mutation-testing this
+case).
+
+**Verified:** 2026-11-24. **Expect:** fail.
 
 ## Footer visibility predicate (`isElementVisible` in `src/dev/guardVisibility.ts`) — kata bsq9
 
@@ -350,3 +381,28 @@ composer safe-area=34 ... PASS - stacked controls and visible model, footer
 gap=12px, status clearance=34px`. The safe-area assertion reads the status bar's
 bottom edge and chip containment because smaller fine-pointer chips are centred
 in their 30px bar rather than filling its height.
+
+## Composer action tap floor on a coarse landscape phone (`assertDuoLandscapeComposer`)
+
+The 951x669 coarse Duo landscape fixture puts a 572px pane in a viewport past
+the 899px phone boundary. Its composer content box is below 559px, so the
+container query hides the Send/Stop words and only the icon remains. The guard
+measures whichever of Send or Stop fills the primary slot and requires the 44px
+tap floor in both axes.
+
+**Mutation performed:** reverted the Send/Stop width floor in
+`panes/session/composer/composer.module.css` to its pre-fix prelude
+(`@media (max-width: 899px)`, dropping `, (any-pointer: coarse)`).
+
+**Result before restore:** FAIL:
+`951x669 Duo landscape composer safe-area=34 focus=none ... FAIL - the icon-only landscape Send/Stop is 31.0x44.0px, below the 44px tap floor`,
+and the same measurement failed for `focus=editor`. Every other footer case
+stayed PASS in that run.
+
+**Result after restore:** PASS:
+`951x669 Duo landscape composer safe-area=34 focus=none ... PASS - one folded row, Send/Stop=44.0x44.0px, footer gap=12px, status clearance=34px`,
+and the editor-focus state likewise.
+
+**Command:** `node scripts/overflowguard/run.mjs --footer-only`.
+
+**Verified:** 2026-11-22. **Expect:** fail when the coarse-pointer arm is removed.

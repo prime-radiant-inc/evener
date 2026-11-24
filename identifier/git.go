@@ -68,7 +68,7 @@ func GitEntryResolvesToCommon(candidate, common string) bool {
 	if info.IsDir() {
 		return ResolveClean(gitPath) == common
 	}
-	content, err := os.ReadFile(gitPath)
+	content, err := ReadGitPointerFile(gitPath)
 	if err != nil {
 		return false
 	}
@@ -109,7 +109,7 @@ func mainCheckoutLocal(cwd string) (string, bool, error) {
 			if info.IsDir() {
 				return dir, true, nil
 			}
-			content, readErr := os.ReadFile(gitPath)
+			content, readErr := ReadGitPointerFile(gitPath)
 			if readErr != nil {
 				return "", true, fmt.Errorf("read Git pointer %q: %w", gitPath, readErr)
 			}

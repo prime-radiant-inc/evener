@@ -317,6 +317,7 @@ test("a working session offers Stop and Steer before its turn has announced a na
     runningTurnId: undefined,
   });
   expect(screen.queryByTestId("composer-stop")).not.toBeNull();
+  await type("draft");
   expect(screen.queryByTestId("composer-steer")).not.toBeNull();
 });
 
@@ -506,7 +507,7 @@ test.each(["closed", "ended", "notLoaded"])(
 
     expect(screen.getByRole("textbox", { name: /^message$/i })).toBe(editor);
     expect(document.activeElement).toBe(editor);
-    expect(editor.style.minHeight).toBe("3lh");
+    expect(editor.style.minHeight).toBe("1lh");
     expect(screen.queryByTestId("session-chrome-inline")).not.toBeNull();
     expect(screen.queryByTestId("model-switch-trigger")).not.toBeNull();
     expect(screen.queryByRole("button", { name: "Session actions" })).not.toBeNull();

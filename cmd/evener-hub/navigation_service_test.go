@@ -322,6 +322,9 @@ func hasNavigationTarget(targets []appwire.NavigationInvalidationTarget, kind ap
 		if target.Kind != kind {
 			continue
 		}
+		if kind == appwire.NavigationTargetManifest {
+			return true
+		}
 		if kind == appwire.NavigationTargetProject && target.ProjectKey == selector {
 			return true
 		}
@@ -330,6 +333,39 @@ func hasNavigationTarget(targets []appwire.NavigationInvalidationTarget, kind ap
 		}
 	}
 	return false
+}
+
+// A source-state hint must reach manifest readers even when the rebuilt
+// manifest is unchanged: the hub's projection can already carry the new
+// online state while a client's cached manifest predates it, so a fingerprint
+// delta alone would leave that client stale.
+func TestNavigationServiceSourceHintPublishesManifestWithoutDelta(t *testing.T) {
+	source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
+	service := newTestNavigationService(t, source)
+	if _, err := service.readV3(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}, nil); err != nil {
+		t.Fatal(err)
+	}
+	// Control: a forced rebuild with no hint and no source change publishes
+	// nothing, so the manifest target below comes from the hint.
+	noop, err := service.Refresh(t.Context(), navigationChangeHint{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(noop.Targets) != 0 || len(service.DrainPublications()) != 0 {
+		t.Fatalf("empty hint published %+v", noop.Targets)
+	}
+
+	mutation, err := service.Refresh(t.Context(), navigationChangeHint{Sources: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasNavigationTarget(mutation.Targets, appwire.NavigationTargetManifest, "") {
+		t.Fatalf("source hint targets = %+v, want manifest", mutation.Targets)
+	}
+	publications := service.DrainPublications()
+	if len(publications) != 1 || !hasNavigationTarget(publications[0].Targets, appwire.NavigationTargetManifest, "") {
+		t.Fatalf("source hint publications = %+v, want one manifest target", publications)
+	}
 }
 
 func TestNavigationServiceReusesRetainedProjectionAcrossResourceMisses(t *testing.T) {

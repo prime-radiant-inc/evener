@@ -16,6 +16,7 @@ import { hoverForTooltip } from "../../../../widgets/tooltip/tooltipTestUtils";
 import { readDraft } from "../../composer/draft";
 import { SessionNowContext } from "../../liveness";
 import { ignoringTurn, itemRendererFor } from "../types";
+import speakerStyles from "./speakerheader.module.css";
 import { UserMessageItem, UserMessageView } from "./UserMessageItem";
 import styles from "./usermessageitem.module.css";
 
@@ -79,15 +80,15 @@ test("message timestamp advances with the shared clock and preserves the exact i
 test("no time node at all (no placeholder) when startedAt is absent", () => {
   render(<UserMessageView item={item({ text: "hello" })} />);
   const root = screen.getByTestId("user-message-item");
-  const header = root.querySelector(`.${styles.header}`) as HTMLElement;
-  expect(header.querySelector(`.${styles.time}`)).toBeNull();
+  const header = root.querySelector(`.${speakerStyles.header}`) as HTMLElement;
+  expect(header.querySelector(`.${speakerStyles.meta}`)).toBeNull();
   expect(header.children).toHaveLength(1);
 });
 
 test("actions live in the speaker header row", () => {
   render(<UserMessageView item={item({ text: "hello" })} actions={<button type="button">act</button>} />);
   const root = screen.getByTestId("user-message-item");
-  const header = root.querySelector(`.${styles.header}`) as HTMLElement;
+  const header = root.querySelector(`.${speakerStyles.header}`) as HTMLElement;
   expect(header.contains(screen.getByRole("button", { name: "act" }))).toBe(true);
 });
 
@@ -113,7 +114,7 @@ test("the approved You row keeps identity, text, and attachments in one avatar +
   expect(message?.children[0]?.className).toBe(styles.avatar);
   const content = message?.children[1];
   expect(content?.className).toBe(styles.content);
-  expect(content?.children[0]?.className).toBe(styles.header);
+  expect(content?.children[0]?.className).toBe(speakerStyles.header);
   expect((message as HTMLElement | null)?.dataset.speaker).toBe("user");
   const body = content?.children[1];
   expect(body?.className).toBe(styles.body);
@@ -121,8 +122,9 @@ test("the approved You row keeps identity, text, and attachments in one avatar +
   expect(body?.querySelector('[data-testid="image-gallery-thumb"]')).toBeTruthy();
 });
 
-test("the slack-lean layout is token-backed and has no prose card treatment", () => {
+test("the speaker header and message column keep their alignment across widths", () => {
   const css = readModuleCss(import.meta.url, "usermessageitem.module.css");
+  const speaker = readModuleCss(import.meta.url, "speakerheader.module.css");
   // One flex row: avatar (flex:none) + the transcript's single-sourced
   // --speaker-gap (10px, declared on .turn in turnblock.module.css), so the
   // content column lands on the same 34px line the TurnBlock gutter uses for
@@ -143,14 +145,19 @@ test("the slack-lean layout is token-backed and has no prose card treatment", ()
   // the old 92% cap: "commit and merge" clamped to 133px and wrapped in a
   // 651px row).
   expect(css).toMatch(/\.content\s*\{[\s\S]*flex:\s*1 1 auto;[\s\S]*min-width:\s*0;/);
-  expect(css).toMatch(/\.header\s*\{[\s\S]*display:\s*flex;[\s\S]*align-items:\s*baseline;/);
-  // Speaker name at body size / semibold / --ink-hi (spec decision 1, weight
-  // raised by typography-spacing-critique-2026-09-06 R3 so the header is a
-  // landmark); clock time at ui size / --ink-mid (readable, not sub-AA).
-  expect(css).toMatch(
+  // The speaker header itself is shared with the agent message
+  // (speakerheader.module.css): one flex row naming the speaker, with the
+  // name at body size / semibold / --ink-hi (spec decision 1, weight raised
+  // by typography-spacing-critique-2026-09-06 R3 so the header is a
+  // landmark), and the meta slot composing the shared ui-size / --ink-mid
+  // recipe (pinned once in text.contract.test.ts).
+  expect(speaker).toMatch(/\.header\s*\{[\s\S]*display:\s*flex;[\s\S]*align-items:\s*baseline;/);
+  expect(speaker).toMatch(
     /\.name\s*\{[\s\S]*font-size:\s*var\(--font-size-body\);[\s\S]*font-weight:\s*var\(--font-weight-semibold\);[\s\S]*color:\s*var\(--ink-hi\);/,
   );
-  expect(css).toMatch(/\.time\s*\{[\s\S]*font-size:\s*var\(--font-size-ui\);[\s\S]*color:\s*var\(--ink-mid\);/);
+  expect(speaker).toMatch(
+    /\.meta\s*\{[\s\S]*composes:\s*textSecondary from "\.\.\/\.\.\/\.\.\/\.\.\/styles\/text\.module\.css";/,
+  );
   // Text at --ink-hi (spec decision 5 - the header now carries the
   // boundary-scannability the old --ink-mid demotion was buying).
   expect(css).toMatch(/\.text\s*\{[\s\S]*color:\s*var\(--ink-hi\);/);
@@ -170,8 +177,6 @@ test("the slack-lean layout is token-backed and has no prose card treatment", ()
   expect(phone![1]).toMatch(/\.message > \.content\s*\{[^}]*display:\s*contents;/);
   expect(phone![1]).toMatch(/\.message \.body\s*\{[^}]*grid-column:\s*1 \/ -1;/);
   expect(css.split("@media").length).toBe(2);
-  expect(css).not.toMatch(/\.message\s*\{[^}]*background\s*:/);
-  expect(css).not.toMatch(/\.message\s*\{[^}]*border\s*:/);
 });
 
 test("the speaker avatar starts at the top of the user message row", () => {
@@ -188,22 +193,12 @@ test("the body renders as a bubble wrapping the text and attachments", () => {
   expect(bubble.querySelector('[data-testid="image-gallery-thumb"]')).toBeTruthy();
 });
 
-// The user's own words sit on a paper slip (structural surface, one hairline,
-// the card lift) hugging the content. The corner toward the avatar is the
-// tight one; the other three share one rounder corner. Serif prose stays.
-test("the user reading surface is a paper slip hugging its content column", () => {
+test("user prose fits its content column and follows the reading preference", () => {
   const css = readModuleCss(import.meta.url, "usermessageitem.module.css");
   const body = /\.body\s*\{([^}]*)\}/.exec(css);
   expect(body).not.toBeNull();
-  expect(body![1]).toMatch(/background:\s*var\(--surface-1\)/);
-  expect(body![1]).toMatch(/border:\s*1px solid var\(--edge\)/);
-  expect(body![1]).toMatch(/box-shadow:\s*var\(--shadow-card\)/);
-  expect(body![1]).toMatch(
-    /border-radius:\s*var\(--radius-chip\)\s*var\(--radius-pane\)\s*var\(--radius-pane\)\s*var\(--radius-pane\)/,
-  );
   expect(body![1]).toMatch(/width:\s*fit-content/);
   expect(body![1]).toMatch(/max-width:\s*100%/);
-  expect(body![1]).toMatch(/padding:\s*var\(--space-2\)\s*var\(--space-3\)/);
   expect(body![1]).not.toMatch(/#[0-9a-fA-F]{3,8}\b/);
   const text = /\.text\s*\{([^}]*)\}/.exec(css);
   expect(text?.[1]).toMatch(/font-family:\s*var\(--font-prose\)/);
@@ -486,7 +481,7 @@ test("UserMessageView defaults are unchanged: user speaker, 'You' name, item.sta
   render(<UserMessageView item={item({ text: "hi" })} />);
   const root = screen.getByTestId("user-message-item");
   expect(root.dataset.speaker).toBe("user");
-  expect(root.querySelector(`.${styles.name}`)?.textContent ?? "").not.toBe("");
+  expect(root.querySelector(`.${speakerStyles.name}`)?.textContent ?? "").not.toBe("");
 });
 
 // --- the provisional register (steering-ghost live edge) ---------------------
@@ -511,7 +506,7 @@ test("a provisional caption renders in the meta slot instead of the item time", 
   // a relative label, never a clock string - while a timestamp rendered
   // alongside the caption would append its label here and fail.)
   const root = screen.getByTestId("user-message-item");
-  const header = root.querySelector(`.${styles.header}`) as HTMLElement;
+  const header = root.querySelector(`.${speakerStyles.header}`) as HTMLElement;
   expect(header.textContent).toBe("YouDelivers when this step finishes · held 42s");
 });
 

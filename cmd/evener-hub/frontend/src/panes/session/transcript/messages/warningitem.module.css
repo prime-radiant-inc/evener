@@ -10,15 +10,11 @@
 }
 
 .message {
-  font-family: var(--font-sans);
-  font-size: var(--font-size-ui);
-  color: var(--ink-mid);
+  composes: textSecondary from "../../../../styles/text.module.css";
 }
 
 .hint {
-  font-family: var(--font-sans);
-  font-size: var(--font-size-caption);
-  color: var(--ink-low);
+  composes: helpMuted from "../../../../styles/help.module.css";
 }
 
 /* An informational warning (a coded "no action needed" notice) renders as one

@@ -1,6 +1,7 @@
 package apptranscript
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -45,12 +46,57 @@ func CommunicateItem(turnID string, entryIndex int, entry schema.Turn) (appwire.
 			CausalKnown: entry.CausalKnown, Causal: provenance.Clone(entry.Causal),
 		},
 	}
+	// Older Hub watchers still recognize terminal replies by this wire value.
+	// It is a projection default, not an option in the communicate tool.
+	if item.Observation.EndTurn && item.Observation.EndReason == "" {
+		item.Observation.EndReason = "done"
+	}
+	if entry.AcceptedReply {
+		item.Observation.TerminalAccepted = new(true)
+	}
 	if p := entry.ConversationProvenance; p != nil {
 		item.ConversationProvenance = &appwire.ConversationOutputProvenance{Version: p.Version, InstanceID: p.InstanceID,
 			RunGeneration: p.RunGeneration, RequestID: p.RequestID, FrontierID: p.FrontierID, SourceItemID: item.ID}
 	}
 	item.StartedAt = entryStartedAt(entry)
 	return item, true
+}
+
+// IsCommunicateTool identifies the result tool in a recorded assistant or
+// tool-result turn. Older entries only knew the default name.
+func IsCommunicateTool(name, recordedName string) bool {
+	return name == "communicate" || name != "" && name == recordedName
+}
+
+// IsQuietCommunicate reports typed evidence of a successful quiet yield.
+func IsQuietCommunicate(result *llm.ToolResultData) bool {
+	return result != nil && !result.IsError && IsQuietCommunicateState(result.ToolState)
+}
+
+// IsQuietCommunicateState decodes the typed result state shared by replay
+// and the live tool-call end event.
+func IsQuietCommunicateState(raw json.RawMessage) bool {
+	if len(raw) == 0 || !bytes.Contains(raw, []byte("communicate_quiet")) {
+		return false
+	}
+	return schema.IsQuietCommunicateState(raw)
+}
+
+func markAcceptedAssistantReply(items []appwire.ThreadItem, turnID string, entry schema.Turn) {
+	if entry.Kind != schema.TurnAssistant || !entry.AcceptedReply {
+		return
+	}
+	// A response can contain multiple text runs. They remain separate cards,
+	// but only the last visible message carries the terminal observation.
+	for i := len(items) - 1; i >= 0; i-- {
+		if items[i].Type == "agentMessage" && strings.TrimSpace(items[i].Text) != "" {
+			items[i].Observation = &appwire.SessionObservationMetadata{
+				TurnID: turnID, EndTurn: true, EndReason: "done", TerminalAccepted: new(true),
+				CausalKnown: entry.CausalKnown, Causal: provenance.Clone(entry.Causal),
+			}
+			return
+		}
+	}
 }
 
 // CommunicateTerminalAccepted reads the result of exactly this communicate
@@ -68,12 +114,16 @@ func CommunicateTerminalAccepted(entry schema.Turn, callID string) *bool {
 		if result.ToolCallID != callID || result.IsError {
 			continue
 		}
-		var typedState struct {
-			Accepted *bool `json:"communicate_accepted"`
-			EndTurn  *bool `json:"communicate_end_turn"`
-		}
-		if json.Unmarshal(result.ToolState, &typedState) == nil && typedState.Accepted != nil && typedState.EndTurn != nil && *typedState.EndTurn {
-			return typedState.Accepted
+		if state, ok := schema.DecodeCommunicateToolState(result.ToolState); ok {
+			if state.IsQuiet() {
+				continue
+			}
+			if state.Accepted != nil && state.EndTurn != nil && *state.EndTurn {
+				if state.BoundaryPending {
+					return nil // Wait for the execution completion record, not tool arbitration.
+				}
+				return state.Accepted
+			}
 		}
 		var encoded []byte
 		switch value := result.Content.(type) {
@@ -296,4 +346,30 @@ func ApprovalDecisionAnnouncement(notice schema.ApprovalDecisionNotice) NoticeAn
 		}(notice),
 	})
 	return NoticeAnnouncement{EventKind: appwire.ThreadItemEventKindApprovalDecision, Description: "Approval", Text: text, Raw: raw}
+}
+
+// QuietYieldAnnouncement builds the muted notice for a successful quiet
+// communicate turn or bare-text live-work quiet park. When note is empty (such
+// as legacy empty-object records), it falls back to a neutral caption. When
+// companion assistant commentary prose was emitted in the same response (or the
+// full bare-text note was shortened), it rides in Raw under "commentary" so
+// clients keep it inspectable behind the muted notice instead of as an unread
+// chat bubble.
+func QuietYieldAnnouncement(note, commentary string) NoticeAnnouncement {
+	text := strings.TrimSpace(note)
+	if text == "" {
+		text = "Ended turn quietly"
+	}
+	var raw json.RawMessage
+	if trimmed := strings.TrimSpace(commentary); trimmed != "" {
+		raw, _ = json.Marshal(struct {
+			Commentary string `json:"commentary"`
+		}{Commentary: trimmed})
+	}
+	return NoticeAnnouncement{
+		EventKind:   appwire.ThreadItemEventKindQuietYield,
+		Description: "Quiet yield",
+		Text:        text,
+		Raw:         raw,
+	}
 }

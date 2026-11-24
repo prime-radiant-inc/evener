@@ -22,6 +22,10 @@ var (
 
 const (
 	authDirName = "auth"
+	// authFileSuffix names an auth record: auth/<instance>.json. A record's
+	// refresh-rejection note appends its own suffix, so it does not end in this
+	// one and can never be read as a record.
+	authFileSuffix = ".json"
 )
 
 var (
@@ -62,7 +66,7 @@ type AuthRecord struct {
 // check let evener/instance/remove delete arbitrary .json files — see the
 // ValidateInstanceName fix in cmd/evener-hub/app_instances.go).
 func AuthFilePath(stateDir, instanceName string) string {
-	return filepath.Join(stateDir, authDirName, filepath.Base(instanceName)+".json")
+	return filepath.Join(stateDir, authDirName, filepath.Base(instanceName)+authFileSuffix)
 }
 
 // DefaultStateDir returns the default Evener state directory, resolving the state
@@ -112,12 +116,25 @@ func LoadAuth(stateDir, instanceName string) (AuthRecord, error) {
 // 0600 temp file is synced and renamed into place, then the containing
 // directory is synced) so a reader never observes a partially written record
 // and the replacement survives a crash once SaveAuth returns.
+//
+// The write holds the store's cross-process lock (LockAuthStore), so it cannot
+// land between the two steps of an instance rename that is moving the record to
+// its new name and deleting it under the old one.
 func SaveAuth(stateDir, instanceName string, record AuthRecord) error {
-	path := AuthFilePath(stateDir, instanceName)
-	if err := authMkdirAll(filepath.Dir(path), 0o755); err != nil {
+	// Create the directory before locking: the lock is taken on the directory
+	// itself, so it has to exist first.
+	if err := authMkdirAll(filepath.Join(stateDir, authDirName), 0o755); err != nil {
 		return fmt.Errorf("create auth directory: %w", err)
 	}
+	return withAuthStoreLock(stateDir, func() error {
+		return saveAuthRecordLocked(stateDir, instanceName, record)
+	})
+}
 
+// saveAuthRecordLocked is SaveAuth's body with the store lock already held and
+// the auth directory already created.
+func saveAuthRecordLocked(stateDir, instanceName string, record AuthRecord) error {
+	path := AuthFilePath(stateDir, instanceName)
 	data, err := authMarshal(record, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal auth record: %w", err)
@@ -147,8 +164,28 @@ func WriteAuthFile(path string, data []byte) error {
 
 // DeleteAuth removes the stored auth file for instanceName under stateDir. It
 // reports whether a file was actually deleted; a missing file returns
-// (false, nil).
+// (false, nil). It holds the store's cross-process lock, so a refresh's save
+// cannot land between the lock's check and its delete.
 func DeleteAuth(stateDir, instanceName string) (bool, error) {
+	var deleted bool
+	err := withAuthStoreLock(stateDir, func() error {
+		var err error
+		deleted, err = deleteAuthRecordLocked(stateDir, instanceName)
+		return err
+	})
+	if errors.Is(err, os.ErrNotExist) {
+		// There is no auth directory, so there is no record and no refusal
+		// note to clear: the same answer a missing record gives.
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return deleted, nil
+}
+
+// deleteAuthRecordLocked is DeleteAuth's body with the store lock already held.
+func deleteAuthRecordLocked(stateDir, instanceName string) (bool, error) {
 	path := AuthFilePath(stateDir, instanceName)
 	if err := os.Remove(path); err != nil {
 		if errors.Is(err, os.ErrNotExist) {

@@ -94,13 +94,13 @@ func TestFixtureProviderCompletesTurnAndStops(t *testing.T) {
 	}
 	var args struct {
 		Message string `json:"message"`
-		EndTurn bool   `json:"end_turn"`
+		Next    string `json:"next"`
 	}
 	if err := json.Unmarshal([]byte(call.Arguments), &args); err != nil {
 		t.Fatalf("result-tool arguments are not JSON: %v", err)
 	}
-	if !args.EndTurn {
-		t.Fatal("result-tool call does not end the turn")
+	if args.Next != "send_and_end_turn" {
+		t.Fatalf("result-tool next = %q, want send_and_end_turn", args.Next)
 	}
 	for _, marker := range []string{"QUALIFICATION_prose_a7", "**QUALIFICATION_emphasis_b8**", "QUALIFICATION_code_c9"} {
 		if !strings.Contains(args.Message, marker) {

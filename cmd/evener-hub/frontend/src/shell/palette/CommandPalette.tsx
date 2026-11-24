@@ -32,11 +32,13 @@ import { navigationStore, useNavigationStore } from "../../stores/navigation/sto
 import { threadsStore } from "../../stores/threads";
 import { transcriptDisplayStore } from "../../stores/transcriptDisplay";
 import {
-  Chip,
+  CloseIcon,
   Dialog,
   EmptyState,
   Eyebrow,
+  IconButton,
   InlineNotice,
+  Input,
   ShortcutList,
   type ShortcutListItem,
   Skeleton,
@@ -78,9 +80,6 @@ import { fetchSearch, findInSessionMatches, type HighlightPart, highlightParts, 
 const CLASS = {
   palette: requireClass(styles.palette, "commandpalette.module.css", "palette"),
   pill: requireClass(styles.pill, "commandpalette.module.css", "pill"),
-  pillBack: requireClass(styles.pillBack, "commandpalette.module.css", "pillBack"),
-  input: requireClass(styles.input, "commandpalette.module.css", "input"),
-  error: requireClass(styles.error, "commandpalette.module.css", "error"),
   results: requireClass(styles.results, "commandpalette.module.css", "results"),
   sectionHeader: requireClass(styles.sectionHeader, "commandpalette.module.css", "sectionHeader"),
   row: requireClass(styles.row, "commandpalette.module.css", "row"),
@@ -665,10 +664,11 @@ function PaletteBody({
       return;
     }
     if (item.kind === "insession") {
-      // A message the conversation shows is handed to its own Find, which
-      // opens on these words, lands on that message, and from there steps
-      // through the rest. Find searches messages only, so any other row (a
-      // tool's output, a thought) stays a listing and only closes the palette.
+      // A message, thought or action the conversation shows is handed to its
+      // own Find, which opens on these words, lands on that entry, opens what
+      // hides it, and from there steps through the rest. A row Find cannot
+      // land on (a call's plain text, a thought the view hides) stays a
+      // listing and only closes the palette.
       const { sessionRef, sessionPaneId } = runContext();
       const words = query.trim();
       const model = focusedModel(sessionRef);
@@ -812,17 +812,14 @@ function PaletteBody({
       {selectedCommand && (
         <div className={CLASS.pill}>
           <span>{selectedCommand.title}</span>
-          <button type="button" className={CLASS.pillBack} aria-label="back to command list" onClick={exitArgsMode}>
-            ×
-          </button>
+          <IconButton label="back to command list" icon={<CloseIcon />} variant="quiet" onClick={exitArgsMode} />
         </div>
       )}
-      <input
+      <Input
         ref={inputRef}
-        // biome-ignore lint/a11y/noAutofocus: a command palette's whole purpose is an immediately-typable input on open
         autoFocus
-        className={CLASS.input}
-        type="text"
+        fill
+        padding="roomy"
         role="combobox"
         aria-label="Command palette"
         aria-expanded="true"
@@ -844,11 +841,7 @@ function PaletteBody({
         }}
         onKeyDown={onKeyDown}
       />
-      {error && (
-        <div className={CLASS.error} role="alert">
-          <Chip tone="danger">{error}</Chip>
-        </div>
-      )}
+      {error && <InlineNotice tone="danger">{error}</InlineNotice>}
       <div className={CLASS.results} id="palette-results" role="listbox" aria-label="Palette results">
         {renderResults({
           mode,
@@ -963,7 +956,7 @@ function buildView(args: {
     pushCommandMatches(query);
     const grouped = groupSearchResults(searchResp?.live ?? [], searchResp?.past ?? []);
     const model = focusedModel(ctx.sessionRef);
-    const inSession = model ? findInSessionMatches(model, trimmed) : [];
+    const inSession = model ? findInSessionMatches(model, trimmed, transcriptDisplayStore.getState().effective()) : [];
     if (grouped.live.length) {
       entries.push({ type: "header", section: "live", label: "Live" });
       for (const row of grouped.live) {

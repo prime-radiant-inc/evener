@@ -64,6 +64,7 @@
 }
 
 .option {
+  composes: tapFloor from "../../styles/tapfloor.module.css";
   position: relative;
   display: flex;
   align-items: center;
@@ -111,10 +112,24 @@
 }
 
 .optionLabel {
+  composes: truncate from "../../styles/text.module.css";
   min-inline-size: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+}
+
+/* Wrap: the category strip keeps its equal columns but breaks the label and
+ * its count onto more lines. The option is content-height, so the track grows
+ * in block size rather than shortening either line. */
+.option.wrap {
+  block-size: auto;
+  padding-block: var(--space-1);
+}
+
+.optionLabel.wrap,
+.optionDetail.wrap {
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .sm {
@@ -151,11 +166,9 @@
 }
 
 .optionDetail {
+  composes: truncate from "../../styles/text.module.css";
   min-inline-size: 0;
   max-inline-size: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   color: var(--ink-mid);
   /* A count is chrome, not reading text: it follows the font-size setting
    * down but stops at the unscaled caption size (the caption token divided by
@@ -164,12 +177,6 @@
   font-size: min(var(--font-size-caption), calc(var(--font-size-caption) / var(--font-scale)));
   font-variant-numeric: tabular-nums;
   font-weight: var(--font-weight-regular);
-}
-
-@media (max-width: 899px), (any-pointer: coarse) {
-  .option {
-    min-block-size: var(--tap-min);
-  }
 }
 
 @media (prefers-reduced-motion: reduce) {

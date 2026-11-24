@@ -103,6 +103,10 @@ type Manager struct {
 	// of char/4 for the bulk of history. Reset to 0 after compaction.
 	lastInputTokens     int // exact input token count from last API response
 	historyLenAtMeasure int // number of turns when lastInputTokens was recorded
+	// measuredAnchor fingerprints the turn at historyLenAtMeasure-1, and
+	// measuredTarget names the target that reported the count (issue #7154).
+	measuredAnchor string
+	measuredTarget string
 
 	// estimate is the memo behind EstimateStatusForRevision. It is only ever a
 	// cache of a value the full walk would produce: see estimateMemo. Guarded by

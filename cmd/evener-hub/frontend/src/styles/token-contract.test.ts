@@ -413,6 +413,10 @@ test("an issue-number reference that looks like a hex literal is not a false pos
 // selection and links), so gating it would grow this list with every
 // interactive widget forever while protecting nothing - the design thesis
 // guards the three ATTENTION-class hues' meanings, not focus chrome.
+// The tone families themselves live in styles/tone.module.css (see the path
+// exception below): Toast, Banner, and InlineNotice compose a family and
+// paint from its --tone-* properties rather than naming the companions
+// themselves, so they no longer hold a grant of their own.
 const SEMANTIC_USE_ALLOWLIST = [
   "cadence", // signature: state dot + trailing-edge tick tint
   "button", // danger variant
@@ -420,12 +424,8 @@ const SEMANTIC_USE_ALLOWLIST = [
   "badge", // tone prop
   "statusdot", // state color
   "meter", // danger/attention fill tone
-  "toast", // tone prop
-  "formrow", // error-state left border + message text (wave 7)
-  "collectioneditor", // inline add-validation error text (wave 7)
+  "formrow", // error-state left border + message text, the text in --danger-ink
   "failureglyph", // the ✗ that marks a failure - the hue IS the content
-  "banner", // overlay status strip: tone prop (attention/danger) — a connection banner's whole purpose is to carry a warning hue
-  "inlinenotice", // danger tone: an inline error message's ink is the "something failed" hue
   "card", // attention tone: the "a human is needed right now" envelope (ask batch, sandbox approval)
   "toolicon", // tone prop: a state glyph whose hue IS the state (the activity sidebar's agent and job rows)
 ];
@@ -486,19 +486,18 @@ const WIDGET_STYLESHEET_RE = /^widgets\/([a-z0-9-]+)\/\1\.module\.css$/;
 // the same meaning-per-hue split RailRow.module.css's signal-row family and
 // the subagent row's attribute-keyed state colors already established; every
 // terminal or neutral state stays on the ink ramp.
-//
-// attention-control: panes/session/nextNeedsYou.module.css earns the same
-// exact-path exception for the 6px dot that marks the floating needs-you
-// control. The dot IS the attention signal on a control whose text already
-// says "Needs you"; every word on the control stays on the ink scale.
 const SEMANTIC_PATH_EXCEPTIONS = new Set([
+  // The four tone families: the single place each family's -edge/-bg/-ink
+  // companions are named. Toast, Banner, and InlineNotice compose a family
+  // and paint from its --tone-* properties, so the hue decision stays in one
+  // module instead of being restated per consumer.
+  "styles/tone.module.css",
   "shell/rail/RailRow.module.css",
   "panes/session/transcript/tools/subagentmodule.module.css",
   "panes/session/composer/currentwork.module.css",
   "panes/session/transcript/tools/taskcheck.module.css",
   "panes/session/chrome/taskspanel.module.css",
   "panes/session/transcript/entityref.module.css",
-  "panes/session/nextNeedsYou.module.css",
 ]);
 
 function reachesSemanticHue(cssText: string): boolean {
@@ -996,6 +995,12 @@ test("the four -ink companions clear 4.5:1 on their theme's lightest text ground
       }
     }
   }
+});
+
+test("FormRow error text uses the -ink companion, not the bare hue", () => {
+  const css = STYLESHEETS["widgets/formrow/formrow.module.css"];
+  if (!css) throw new Error("Missing formrow stylesheet");
+  expect(declarationInRule(css, "errorText", "color")).toBe("var(--danger-ink)");
 });
 
 // --ink-low is documented as placeholder/disabled/timestamp ink, but 96

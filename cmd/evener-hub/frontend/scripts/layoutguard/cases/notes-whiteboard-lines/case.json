@@ -3,11 +3,23 @@
   "description": "Whiteboards keep their line breaks: the Notes panel's read-only agent note renders a three-line note as three visual lines, and the collapsed notes summary keeps a two-line note's breaks but clamps a five-line note to three visible lines, clipping the rest.",
   "cssFiles": [
     "styles/global.css",
+    "styles/text.module.css",
     "styles/tokens.css",
+    "styles/motion.module.css",
+    "widgets/internal/foldHeader.module.css",
+    "widgets/disclosure/disclosure.module.css",
     "widgets/eyebrow/eyebrow.module.css",
+    "panes/session/chrome/panelsection.module.css",
     "panes/session/chrome/notespanel.module.css",
     "panes/session/chrome/topnotespanel.module.css"
   ],
+  "cssClassPrefixes": {
+    "widgets/disclosure/disclosure.module.css": "disclosure-"
+  },
+  "allowlist": {
+    ".summary": "The case prefixes disclosure.module.css's classes to disclosure-*, so its summary and the notes bar's summary are distinct selectors here.",
+    ".chevron": "Same prefixing: Disclosure's chevron and the notes bar's leading chevron box resolve to different selectors."
+  },
   "viewport": { "width": 1200, "height": 800, "deviceScaleFactor": 1, "mobile": false },
   "mutation": {
     "declaration": "notespanel.module.css: .prose { white-space: pre-wrap } (deleted); topnotespanel.module.css: .clampedText { white-space: pre-line } and { -webkit-line-clamp: 3 } (each deleted)",

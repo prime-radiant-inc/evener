@@ -13,7 +13,7 @@ func inputRunning(s *Session, reply string) {
 	s.comm = communicateResult{}
 	s.mu.Unlock()
 	if reply != "" {
-		s.acceptCommunicateTerminal(context.Background(), reply, reply, reply, nil, "")
+		s.acceptCommunicateTerminal(context.Background(), reply, reply, reply, nil)
 	}
 }
 
@@ -26,10 +26,10 @@ func TestDrainTurnKeepsTheLatestAcceptedReport(t *testing.T) {
 	output := map[string]any{"message": "SUMMARY_B", "data": map[string]any{"generation": 2}}
 	process := s.keepingReport(func(context.Context, string, []ImageAttachment, EntryKind) (string, error) {
 		inputRunning(s, "")
-		if !s.acceptCommunicateTerminal(context.Background(), "REPORT_B", "REPLY_B", "OUTPUT_B", output, "") {
+		if !s.acceptCommunicateTerminal(context.Background(), "REPORT_B", "REPLY_B", "OUTPUT_B", output) {
 			t.Fatal("report B was not accepted")
 		}
-		if s.acceptCommunicateTerminal(context.Background(), "LOSING_REPORT", "LOSING_REPLY", "LOSING_OUTPUT", map[string]any{"lost": true}, "") {
+		if s.acceptCommunicateTerminal(context.Background(), "LOSING_REPORT", "LOSING_REPLY", "LOSING_OUTPUT", map[string]any{"lost": true}) {
 			t.Fatal("competing report was accepted")
 		}
 		inputRunning(s, "")

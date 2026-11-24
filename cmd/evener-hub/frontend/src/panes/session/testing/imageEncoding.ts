@@ -1,13 +1,13 @@
 import { vi } from "vitest";
-import * as encoding from "../composer/attachments/encodePng";
+import * as encoding from "../composer/attachments/encodeImage";
 
 /** Hold the browser decode boundary while the real attachment pipeline runs. */
 export function installControlledImageEncoding() {
   const images: ControlledImage[] = [];
-  const completions: Promise<encoding.EncodedPng>[] = [];
-  const reencode = encoding.reencodeToPng;
-  vi.spyOn(encoding, "reencodeToPng").mockImplementation((blob) => {
-    const completion = reencode(blob);
+  const completions: Promise<encoding.EncodedImage>[] = [];
+  const encode = encoding.encodeImage;
+  vi.spyOn(encoding, "encodeImage").mockImplementation((blob) => {
+    const completion = encode(blob);
     completions.push(completion);
     return completion;
   });
@@ -27,9 +27,10 @@ export function installControlledImageEncoding() {
   vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
   vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockImplementation((() => ({
     drawImage() {},
+    fillRect() {},
   })) as unknown as typeof HTMLCanvasElement.prototype.getContext);
-  vi.spyOn(HTMLCanvasElement.prototype, "toBlob").mockImplementation((callback) => {
-    callback(new Blob([new Uint8Array([1, 2, 3])], { type: "image/png" }));
+  vi.spyOn(HTMLCanvasElement.prototype, "toBlob").mockImplementation((callback, type) => {
+    callback(new Blob([new Uint8Array([1, 2, 3])], { type: type ?? "image/png" }));
   });
   return {
     async resolve(index = 0): Promise<void> {

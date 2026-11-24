@@ -121,11 +121,15 @@ func (*overflowRecoveryPeer) Invoke(context.Context, appwire.SessionOperationReq
 	return appwire.SessionOperationResponse{}, appwire.InvalidRequest("unused")
 }
 func (p *overflowRecoveryPeer) Watch(ctx context.Context, r appwire.SessionWatchRequest) (<-chan appwire.SessionWatchUpdate, error) {
-	p.started <- ctx
 	if r.Ref == "local:stalled" {
+		p.started <- ctx
 		return p.stalled, nil
 	}
+	// A real Manager stream delivers its authoritative snapshot as the first
+	// update. Queue it before announcing the watch, so the test's later updates
+	// cannot overtake the baseline a rebind validates.
 	p.healthy <- p.initial
+	p.started <- ctx
 	return p.healthy, nil
 }
 

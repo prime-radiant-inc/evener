@@ -1,20 +1,9 @@
 .root {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-4);
-}
-
-.heading {
-  font-size: var(--font-size-ui);
-  font-weight: var(--font-weight-semibold);
-  margin: 0;
-  color: var(--ink-hi);
+  composes: stack4 from "../../../styles/surface.module.css";
 }
 
 .meta {
-  font-size: var(--font-size-ui);
-  color: var(--ink-mid);
-  margin: 0;
+  composes: helpUi from "../../../styles/help.module.css";
 }
 
 /* Responsive horizontal scroll so the table doesn't overflow the pane on
@@ -45,9 +34,7 @@
 }
 
 .actions {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
+  composes: stack1 from "../../../styles/surface.module.css";
   align-items: flex-start;
 }
 

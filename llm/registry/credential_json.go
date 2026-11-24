@@ -11,8 +11,8 @@ import (
 )
 
 // AllowedCredentialJSONTypes are the Google credential JSON shapes evener
-// accepts for a gcp-adc instance (spec 2026-09-04 google-vertex-express §4):
-// a service-account key or an application-default authorized_user file.
+// accepts for a gcp-adc instance: a service-account key or an
+// application-default authorized_user file.
 // external_account and other types can name local files or executables as
 // credential sources and are refused.
 var AllowedCredentialJSONTypes = map[string]bool{"service_account": true, "authorized_user": true}

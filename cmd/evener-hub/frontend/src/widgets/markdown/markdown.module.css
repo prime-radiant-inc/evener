@@ -15,7 +15,12 @@
  *
  * --markdown-font is the family the --markdown-ink pattern already set:
  * serif is the conversation's reading voice, and report bubbles take the sans
- * face without reaching into this module's descendants. */
+ * face without reaching into this module's descendants.
+ *
+ * --markdown-strong-weight is the emphasis hook in the same family: strong
+ * defaults to semibold, which vanishes inside a host that already renders
+ * its body semibold (the ask question cards), so such a host opts strong
+ * into the bold token instead of styling this module's descendants. */
 .root {
   color: var(--markdown-ink, var(--ink-hi));
   /* Long unbreakable tokens (paths, URLs) wrap at any point rather than
@@ -93,7 +98,7 @@
 }
 
 .root strong {
-  font-weight: var(--font-weight-semibold);
+  font-weight: var(--markdown-strong-weight, var(--font-weight-semibold));
 }
 
 .root del {
@@ -108,10 +113,6 @@
   outline: var(--focus-ring);
   outline-offset: 2px;
 }
-
-/* Fenced code blocks are rendered through codeblock.module.css's own
- * classes (imported directly in index.tsx) so they're visually identical
- * to the standalone CodeBlock widget - nothing to style here for those. */
 
 /* Inline machine text stays mono, underlined rather than chipped, and
  * scales with the surrounding prose even when a caller overrides its size. */

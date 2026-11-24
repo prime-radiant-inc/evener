@@ -3,12 +3,25 @@
   "description": "The session notes panel is attached to the header: its top edge is flush to the header's bottom border (negative top margin cancels the body's top padding so there is no gap), its top corners are square (no radius) and its top border is omitted to avoid doubling the header's border, while the bottom corners carry the panel radius and the card has a border and shadow.",
   "cssFiles": [
     "styles/global.css",
+    "styles/text.module.css",
     "styles/tokens.css",
+    "styles/motion.module.css",
+    "widgets/internal/foldHeader.module.css",
+    "widgets/disclosure/disclosure.module.css",
     "widgets/eyebrow/eyebrow.module.css",
     "widgets/panescaffold/panescaffold.module.css",
+    "panes/session/chrome/panelsection.module.css",
     "panes/session/chrome/notespanel.module.css",
     "panes/session/chrome/topnotespanel.module.css"
   ],
+  "cssClassPrefixes": {
+    "widgets/disclosure/disclosure.module.css": "disclosure-"
+  },
+  "allowlist": {
+    ".summary": "The case prefixes disclosure.module.css's classes to disclosure-*, so its summary and the notes bar's summary are distinct selectors here.",
+    ".chevron": "Same prefixing: Disclosure's chevron and the notes bar's leading chevron box resolve to different selectors.",
+    ".body": "Same prefixing: Disclosure's body and PaneScaffold's body resolve to different selectors here, so one does not restyle the other."
+  },
   "viewport": {
     "width": 1200,
     "height": 900,

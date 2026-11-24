@@ -23,11 +23,10 @@
 /* Shared panel chassis - Dialog and Sheet (via OverlayPanel) both start
  * from this, then add their own geometry/animation class on top. */
 .panel {
+  composes: panel from "../internal/floatingSurface.module.css";
   position: relative;
   display: flex;
   flex-direction: column;
-  background: var(--surface-2);
-  box-shadow: var(--shadow-overlay);
   overflow: auto;
 }
 
@@ -39,6 +38,7 @@
 }
 
 .title {
+  composes: truncate from "../../styles/text.module.css";
   margin: 0;
   font-family: var(--font-sans);
   font-size: var(--font-size-pane-title);
@@ -46,9 +46,6 @@
   letter-spacing: var(--tracking-display);
   line-height: var(--line-height-title);
   color: var(--ink-hi);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .body {
@@ -72,58 +69,21 @@
   gap: var(--space-2);
 }
 
-/* Fixed at the panel's top-right regardless of DOM order - it is placed
- * LAST in markup (after body/footer) so FocusScope's initial "first
- * tabbable" focus lands on the dialog's own content, not this button; see
- * this task's report. */
-.closeButton {
+/* Positioning seat only: the close control itself is the shared IconButton,
+ * whose own square classes carry the desktop box and the phone tap floor.
+ * Fixed at the panel's top-right regardless of DOM order - it is placed LAST
+ * in markup (after body/footer) so FocusScope's initial "first tabbable"
+ * focus lands on the dialog's own content, not this button. */
+.closeSeat {
   position: absolute;
   top: var(--space-3);
   right: var(--space-3);
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 24px;
-  padding: 0;
-  border: none;
-  border-radius: var(--radius-control);
-  background: transparent;
-  color: var(--ink-mid);
-  cursor: pointer;
-}
-
-.closeButton:hover {
-  background: var(--surface-1);
-  color: var(--ink-hi);
-}
-
-.closeButton:focus-visible {
-  outline: var(--focus-ring);
-  outline-offset: 2px;
-}
-
-/* Touch target (FIX 5, real-phone measurement): a phone or any coarse
- * pointer needs the platform's 44px tap floor, the same treatment
- * Rail.module.css's own .actions button rule gets - .closeButton is a
- * plain <button>, not the shared IconButton widget (see OverlayPanel.tsx's
- * own comment on why), so it never inherited IconButton's own tap floor
- * (iconbutton.module.css). min-width/min-height, not
- * width/height, so this only ever grows the hit area beyond the 24px
- * glyph box, never changes its desktop sizing.
- */
-@media (max-width: 899px), (any-pointer: coarse) {
-  .closeButton {
-    min-width: var(--tap-min);
-    min-height: var(--tap-min);
-  }
 }
 
 /* --- dialog variant: centered, the Float recipe ---------------------- */
 
 .dialogVariant {
   composes: float from "../../styles/motion.module.css";
-  border-radius: var(--radius-pane);
   min-width: 320px;
   max-width: min(560px, calc(100vw - var(--space-8)));
   max-height: calc(100vh - var(--space-8));
@@ -134,7 +94,6 @@
  * is meant to fill almost the whole viewport, not sit in a form-sized box. */
 .dialogVariantLarge {
   composes: float from "../../styles/motion.module.css";
-  border-radius: var(--radius-pane);
   max-width: calc(100vw - var(--space-8));
   max-height: calc(100vh - var(--space-8));
 }

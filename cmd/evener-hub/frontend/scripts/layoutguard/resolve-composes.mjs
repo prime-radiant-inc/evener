@@ -58,6 +58,100 @@ const COMPOSES_RE = /composes:\s*([^;]+?)\s+from\s+["'][^"']*["'];?/g;
 const GLOBAL_RE = /:global\(\s*([^()]+?)\s*\)/g;
 const LEFTOVER_GLOBAL_RE = /:global\(/;
 
+function prefixSelectorList(selector, prefix) {
+  let out = "";
+  let i = 0;
+  while (i < selector.length) {
+    const ch = selector[i];
+    if (ch === '"' || ch === "'") {
+      const quote = ch;
+      let end = i + 1;
+      while (end < selector.length) {
+        if (selector[end] === "\\") end += 2;
+        else if (selector[end] === quote) {
+          end += 1;
+          break;
+        } else end += 1;
+      }
+      out += selector.slice(i, end);
+      i = end;
+      continue;
+    }
+    // A :global(...) inner is not this module's class, so it must survive
+    // unwrapGlobal unprefixed. Skip the whole balanced call.
+    if (selector.startsWith(":global(", i)) {
+      let depth = 1;
+      let end = i + ":global(".length;
+      while (end < selector.length && depth > 0) {
+        if (selector[end] === "(") depth += 1;
+        else if (selector[end] === ")") depth -= 1;
+        end += 1;
+      }
+      out += selector.slice(i, end);
+      i = end;
+      continue;
+    }
+    if (ch === "." && /[-_a-zA-Z]/.test(selector[i + 1] ?? "")) {
+      let end = i + 1;
+      while (end < selector.length && /[-_a-zA-Z0-9]/.test(selector[end])) end += 1;
+      out += `.${prefix}${selector.slice(i + 1, end)}`;
+      i = end;
+      continue;
+    }
+    out += ch;
+    i += 1;
+  }
+  return out;
+}
+
+/**
+ * Prefixes every class selector in one module's stylesheet, plus every
+ * same-file `composes:` target, so two modules whose unhashed class names
+ * collide can be loaded into one layoutguard sheet. A `composes: x from "..."`
+ * target belongs to the other module and is left alone, and a `:global(...)`
+ * inner is left for unwrapGlobal.
+ */
+export function prefixClassSelectors(cssText, prefix) {
+  if (!/^[-_a-zA-Z][-_a-zA-Z0-9]*$/.test(prefix)) {
+    throw new Error(`prefixClassSelectors: ${JSON.stringify(prefix)} is not a CSS identifier prefix`);
+  }
+  const css = cssText.replace(/\/\*[\s\S]*?\*\//g, "");
+  let out = "";
+  let start = 0;
+  let quote = null;
+  for (let i = 0; i < css.length; i++) {
+    const ch = css[i];
+    if (quote !== null) {
+      if (ch === "\\") i += 1;
+      else if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      continue;
+    }
+    if (ch === "{") {
+      const prelude = css.slice(start, i);
+      out += prelude.trimStart().startsWith("@") ? prelude : prefixSelectorList(prelude, prefix);
+      out += "{";
+      start = i + 1;
+    } else if (ch === "}") {
+      out += `${css.slice(start, i)}}`;
+      start = i + 1;
+    }
+  }
+  out += css.slice(start);
+  return out.replace(/composes:\s*([^;{}]+);/g, (whole, names) => {
+    if (/\bfrom\s+["']/.test(names)) return whole;
+    const list = names
+      .split(",")
+      .map((name) => name.trim())
+      .filter(Boolean);
+    if (list.length === 0) return whole;
+    return `composes: ${list.map((name) => `${prefix}${name}`).join(", ")};`;
+  });
+}
+
 export function unwrapGlobal(cssText) {
   const unwrapped = cssText.replace(GLOBAL_RE, (_whole, inner) => {
     if (!/^[a-zA-Z.*#:[\]]/.test(inner)) {
@@ -123,6 +217,16 @@ export function resolveComposes(cssTexts) {
   // built app).
   const bodies = new Map();
   for (const m of combined.matchAll(RULE_RE)) {
+    const entries = bodies.get(m[1]) ?? [];
+    entries.push({ body: m[2], gate: gateAt(m.index) });
+    bodies.set(m[1], entries);
+  }
+  // A zero-specificity wrapper (`:where(.panel)`) names the same class a
+  // composes line targets; the wrapper only lowers its specificity, so a
+  // consumer must still receive its declarations. The wrapper itself stays in
+  // the sheet untouched.
+  const WHERE_RULE_RE = /:where\((\.[A-Za-z0-9_-]+)\)[ \t]*\{([^}]*)\}/g;
+  for (const m of combined.matchAll(WHERE_RULE_RE)) {
     const entries = bodies.get(m[1]) ?? [];
     entries.push({ body: m[2], gate: gateAt(m.index) });
     bodies.set(m[1], entries);

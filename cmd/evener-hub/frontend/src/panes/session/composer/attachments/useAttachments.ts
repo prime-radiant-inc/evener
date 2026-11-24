@@ -2,16 +2,21 @@
 // m5-composer.md §G, contracts §Attachments): validate against the package's
 // attachmentLimits, reserve a marker + splice it into the composer text
 // synchronously (before any async work - test-composer-image-markers.js's
-// own "pending: true" contract), re-encode to PNG via encodePng.ts, then
-// settle the item in place. By default the bag belongs to the mounted
-// composer. A caller can supply an in-memory store to retain the bag and its
-// encode continuations across remounts. Image bytes never go through
-// localStorage.
+// own "pending: true" contract), decode + encode one at a time via
+// encodeImage.ts, then settle the item in place with its authoritative
+// mediaType. By default the bag belongs to the mounted composer. A caller can
+// supply an in-memory store to retain the bag and its encode continuations
+// across remounts. Image bytes never go through localStorage.
 import {
+  type ComposerMention,
   type ImageMarkerRange,
   insertMarker,
+  MAX_ATTACHMENT_BYTES,
+  MAX_SOURCE_BYTES,
+  MAX_SOURCE_PIXELS,
   markerText,
   nextComposerImageMarker,
+  type RejectableFile,
   rejectionReason,
   stripMarker,
   stripMarkerAt,
@@ -22,7 +27,31 @@ import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
 import type { InputAttachment } from "../../../../stores/threads";
 import { spelledImageMarkers } from "../submitProtocol";
-import { reencodeToPng } from "./encodePng";
+import { encodeImage, ImageEncodeError } from "./encodeImage";
+
+const MAX_SOURCE_MB = Math.round(MAX_SOURCE_BYTES / (1024 * 1024));
+const MAX_SOURCE_MEGAPIXELS = Math.floor(MAX_SOURCE_PIXELS / 1_000_000);
+const MAX_ATTACHMENT_MB = Math.round(MAX_ATTACHMENT_BYTES / (1024 * 1024));
+
+function preDecodeRejection(file: RejectableFile, reservedCount: number): string | undefined {
+  const admission = rejectionReason({ name: file.name, type: file.type, size: 0 }, reservedCount);
+  if (admission) return admission;
+  if (file.size > MAX_SOURCE_BYTES) return `${file.name || "unknown"} (maximum ${MAX_SOURCE_MB} MB)`;
+  return undefined;
+}
+
+function encodeFailureMessage(fileName: string, error: unknown): string {
+  const name = fileName || "unknown";
+  if (error instanceof ImageEncodeError) {
+    switch (error.code) {
+      case "tooManyPixels":
+        return `${name} (image too large; maximum ${MAX_SOURCE_MEGAPIXELS} MP)`;
+      case "tooLarge":
+        return `${name} (maximum ${MAX_ATTACHMENT_MB} MB)`;
+    }
+  }
+  return `${name} (image decode failed)`;
+}
 
 export interface PendingAttachment {
   marker: number;
@@ -33,6 +62,9 @@ export interface PendingAttachment {
   data?: string; // base64; undefined while pending === true
   pending: boolean;
 }
+
+/** The one refusal every guarded press shows while a staged image encodes. */
+const PENDING_ATTACHMENT_REFUSAL = "Image attachment is still processing";
 
 // Markers identify text references and may change when recovery merges around
 // a literal marker. Encode continuations instead own this stable item token.
@@ -88,7 +120,17 @@ export interface TextEditor {
    * untouched marker, and inferring the edit from that pair would put the
    * insertion INSIDE it and retire its provenance. Callers that know their own
    * coordinates should always say so. */
-  write(text: string, cursor: number, source?: TextEditSource, splice?: TextSplice): void;
+  write(
+    text: string,
+    cursor: number,
+    source?: TextEditSource,
+    splice?: TextSplice,
+    restoredMentions?: readonly ComposerMention[],
+  ): void;
+  /** Captures skill/command mention metadata wholly contained within `[start, end)`,
+   * with offsets relative to `start`, so a failed encode can restore both text
+   * and atom identity when rolling back a replaced selection. */
+  captureMentions?(start: number, end: number): readonly ComposerMention[];
   /** Returns the tracked staged occurrence range for `marker` (if still in
    * text) and whether `marker` ever had positional provenance. Used so tile
    * removal and cleanup delete only the staged occurrence, preserving literals. */
@@ -116,9 +158,12 @@ export interface UseAttachmentsResult {
   /** True while any item is still mid-encode - gates submit (parity §A: "a
    * staged attachment is still mid-encode" blocks send/steer alike). */
   hasPending: boolean;
+  /** Why submitting or restoring now must be refused - the shared message for
+   * a staged item that is still mid-encode - or undefined when none is. */
+  refusalReason(): string | undefined;
   /** Validates + stages every file, synchronously splicing one "[image N]"
    * marker per accepted file into the composer text, replacing the selection,
-   * then re-encodes each to PNG asynchronously. Every rejection reason from
+   * then encodes each serially via encodeImage. Every rejection reason from
    * this one call is combined into a single onRejected call (never one per
    * file) - the caller (Composer.tsx) wires this straight to
    * useToasts().push("error", ...), per the wave's failure-feedback
@@ -154,12 +199,20 @@ export interface UseAttachmentsResult {
   clearSubmitted(submittedMarkers: Set<number>): void;
 }
 
+export interface QueuedImageEncode {
+  generation: number;
+  token: symbol;
+  start: () => Promise<void>;
+}
+
 export function createAttachmentStore() {
   return createStore(() => ({
     items: [] as PendingAttachment[],
     nextMarkerRef: { current: 0 },
     removedWhilePendingRef: { current: new Set<symbol>() },
     generationRef: { current: 0 },
+    encodeQueueRef: { current: [] as QueuedImageEncode[] },
+    encodeInFlightRef: { current: false },
     // Numbers a staged image may not take: an adoption record this composer
     // carries (a draft it read but cannot back with bytes) still names them.
     // The composer source fills this from its own provenance; a store nothing
@@ -187,11 +240,18 @@ export function createAttachmentOperations(editor: TextEditor, store: Attachment
   // (which shrinks on removal) - a plain ref persists across renders without
   // re-triggering one, exactly mirroring composer-attachments.js's own
   // pendingState.__nextMarker bookkeeping.
-  const { nextMarkerRef, removedWhilePendingRef, generationRef, reservedMarkersRef } = store.getState();
+  const {
+    nextMarkerRef,
+    removedWhilePendingRef,
+    generationRef,
+    encodeQueueRef,
+    encodeInFlightRef,
+    reservedMarkersRef,
+  } = store.getState();
   // kata kt4j: operation tokens removed via removeItem while decode was still
   // in flight. The browser's Image/canvas pipeline has no cancellation hook,
-  // so a reencodeToPng call started before removal keeps running and still
-  // settles (success or failure) afterward - ingestFiles' own .then/.catch
+  // so an encodeImage call started before removal keeps running and still
+  // settles (success or failure) afterward - the queue continuation checks
   // below check this set before touching the editor or calling onRejected,
   // so a decode failure for something the user already discarded is
   // silently swallowed instead of toasted. Populated SYNCHRONOUSLY inside
@@ -231,11 +291,32 @@ export function createAttachmentOperations(editor: TextEditor, store: Attachment
     );
   };
 
-  const reset = () => {
-    generationRef.current += 1;
+  const invalidateEncodes = () => {
     removedWhilePendingRef.current.clear();
+    encodeQueueRef.current.length = 0;
+    generationRef.current += 1;
+  };
+
+  const reset = () => {
+    invalidateEncodes();
     nextMarkerRef.current = 0;
     setItems([]);
+  };
+
+  const drainEncodeQueue = () => {
+    if (encodeInFlightRef.current) return;
+    while (encodeQueueRef.current.length > 0) {
+      const next = encodeQueueRef.current.shift();
+      if (!next) continue;
+      if (generationRef.current !== next.generation) continue;
+      if (removedWhilePendingRef.current.delete(next.token)) continue;
+      encodeInFlightRef.current = true;
+      void next.start().finally(() => {
+        encodeInFlightRef.current = false;
+        drainEncodeQueue();
+      });
+      return;
+    }
   };
 
   const renumberOff = (text: string, reserved: readonly number[] = []) => {
@@ -283,7 +364,7 @@ export function createAttachmentOperations(editor: TextEditor, store: Attachment
     // not just across separate gestures.
     let reservedCount = store.getState().items.length;
     for (const file of files) {
-      const reason = rejectionReason({ type: file.type, size: file.size, name: file.name }, reservedCount);
+      const reason = preDecodeRejection(file, reservedCount);
       if (reason) {
         rejections.push(reason);
         continue;
@@ -306,6 +387,12 @@ export function createAttachmentOperations(editor: TextEditor, store: Attachment
         text,
         selection: { start, end },
       } = editor.read();
+      const replacedSelection = start < end ? text.slice(start, end) : "";
+      const replacedMentions = replacedSelection.length > 0 ? (editor.captureMentions?.(start, end) ?? []) : [];
+      const selectionBatch =
+        replacedSelection.length > 0
+          ? { text: replacedSelection, mentions: replacedMentions, pending: accepted.length, keepReplaced: false }
+          : null;
       // One write reaches the editor for the whole batch, so its splice is the
       // batch's own: the selection the gesture replaced, and the markers put
       // there. Reported as exact coordinates rather than left to be inferred -
@@ -333,36 +420,77 @@ export function createAttachmentOperations(editor: TextEditor, store: Attachment
       editor.write(text, start, undefined, splice);
 
       for (const { file, token } of accepted) {
-        reencodeToPng(file)
-          .then(({ data, width, height }) => {
-            if (generationRef.current !== generation) return;
-            // Discarded before it settled (kata kt4j) - nothing left to update.
-            if (removedWhilePendingRef.current.delete(token)) return;
-            setItems((prev) =>
-              prev.map((item) =>
-                operationToken(item) === token ? { ...item, data, width, height, pending: false } : item,
-              ),
-            );
-          })
-          .catch(() => {
-            if (generationRef.current !== generation) return;
-            // Same discard check as above - the user already removed this
-            // attachment, so its eventual decode failure is nothing to
-            // strip from the editor or tell them about.
-            if (removedWhilePendingRef.current.delete(token)) return;
-            const currentItem = store.getState().items.find((item) => operationToken(item) === token);
-            if (currentItem) {
-              // The tile leaves the store before the strip's own write, so the
-              // save that write performs never names this marker as staged
-              // (see removeItem).
-              setItems((prev) => prev.filter((item) => operationToken(item) !== token));
-              const current = editor.read();
-              const stripped = stripTrackedMarker(current.text, current.cursor, currentItem.marker);
-              editor.write(stripped.value, stripped.cursor ?? current.cursor, "cleanup", stripped.splice);
+        encodeQueueRef.current.push({
+          generation,
+          token,
+          start: async () => {
+            try {
+              const { data, mediaType, width, height } = await encodeImage(file);
+              if (generationRef.current !== generation) return;
+              // Discarded before it settled (kata kt4j) - nothing left to update.
+              if (removedWhilePendingRef.current.delete(token)) return;
+              if (selectionBatch) selectionBatch.keepReplaced = true;
+              setItems((prev) =>
+                prev.map((item) =>
+                  operationToken(item) === token ? { ...item, data, mediaType, width, height, pending: false } : item,
+                ),
+              );
+            } catch (error) {
+              if (generationRef.current !== generation) return;
+              // Same discard check as above - the user already removed this
+              // attachment, so its eventual decode failure is nothing to
+              // strip from the editor or tell them about.
+              if (removedWhilePendingRef.current.delete(token)) return;
+              if (selectionBatch) selectionBatch.pending -= 1;
+              const restoreBatch =
+                selectionBatch !== null && !selectionBatch.keepReplaced && selectionBatch.pending === 0
+                  ? selectionBatch
+                  : null;
+              const currentItem = store.getState().items.find((item) => operationToken(item) === token);
+              if (currentItem) {
+                // The tile leaves the store before the strip's own write, so the
+                // save that write performs never names this marker as staged
+                // (see removeItem).
+                setItems((prev) => prev.filter((item) => operationToken(item) !== token));
+                const current = editor.read();
+                const stripped = stripTrackedMarker(current.text, current.cursor, currentItem.marker);
+                const stripSplice = stripped.splice;
+                if (restoreBatch !== null && stripSplice) {
+                  const restoredText =
+                    stripped.value.slice(0, stripSplice.start) +
+                    restoreBatch.text +
+                    stripped.value.slice(stripSplice.start);
+                  const baseCursor = stripped.cursor ?? current.cursor;
+                  const restoredCursor =
+                    baseCursor >= stripSplice.start ? baseCursor + restoreBatch.text.length : baseCursor;
+                  const restoredMentions =
+                    restoreBatch.mentions.length > 0
+                      ? restoreBatch.mentions.map((mention) => ({
+                          ...mention,
+                          offset: mention.offset + stripSplice.start,
+                        }))
+                      : undefined;
+                  editor.write(
+                    restoredText,
+                    restoredCursor,
+                    "cleanup",
+                    {
+                      start: stripSplice.start,
+                      end: stripSplice.end,
+                      insertedLength: restoreBatch.text.length,
+                    },
+                    restoredMentions,
+                  );
+                } else {
+                  editor.write(stripped.value, stripped.cursor ?? current.cursor, "cleanup", stripSplice);
+                }
+              }
+              onRejected(encodeFailureMessage(file.name, error));
             }
-            onRejected(`${file.name || "unknown"} (image decode failed)`);
-          });
+          },
+        });
       }
+      drainEncodeQueue();
     }
 
     if (rejections.length > 0) {
@@ -412,8 +540,7 @@ export function createAttachmentOperations(editor: TextEditor, store: Attachment
         // generation, so neither an old removal nor an old settle can touch
         // the reused marker. Older invalidation (reset) does the same.
         nextMarkerRef.current = 0;
-        removedWhilePendingRef.current.clear();
-        generationRef.current += 1;
+        invalidateEncodes();
       }
       return next;
     });
@@ -438,6 +565,9 @@ export function createAttachmentOperations(editor: TextEditor, store: Attachment
       .map((item) => ({ marker: item.marker, mediaType: item.mediaType, data: item.data, name: item.name }));
   };
 
+  const refusalReason = (): string | undefined =>
+    store.getState().items.some((item) => item.pending) ? PENDING_ATTACHMENT_REFUSAL : undefined;
+
   return {
     get items() {
       return store.getState().items;
@@ -446,8 +576,9 @@ export function createAttachmentOperations(editor: TextEditor, store: Attachment
     renumberOff,
     reset,
     get hasPending() {
-      return store.getState().items.some((item) => item.pending);
+      return refusalReason() !== undefined;
     },
+    refusalReason,
     ingestFiles,
     removeItem,
     toInputAttachments,
@@ -460,5 +591,5 @@ export function useAttachments(editor: TextEditor, backingStore?: AttachmentStor
   const store = backingStore ?? localStore;
   const items = useStore(store, (state) => state.items);
   const operations = useMemo(() => createAttachmentOperations(editor, store), [editor, store]);
-  return { ...operations, items, hasPending: items.some((item) => item.pending) };
+  return { ...operations, items };
 }

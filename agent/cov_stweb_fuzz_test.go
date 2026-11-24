@@ -73,7 +73,7 @@ func stoolCommunicateRun(t *testing.T, data []byte) stoolCommunicateTrace {
 		reg := tool.NewRegistry()
 		_ = registerCommunicateTool(reg, deps)
 		_, err := reg.Get("communicate").Exec(context.Background(), nil, map[string]any{
-			"message": "abort " + token, "end_turn": true,
+			"message": "abort " + token, "next": tool.CommunicateNextSendAndEndTurn,
 		})
 		if !errors.Is(err, abortErr) || calls != abortAt {
 			t.Fatalf("abort %d: calls=%d err=%v", abortAt, calls, err)
@@ -82,23 +82,20 @@ func stoolCommunicateRun(t *testing.T, data []byte) stoolCommunicateTrace {
 
 	deps := stoolCommunicateDeps()
 	committed := false
-	deps.setCommunicateTerminal = func(context.Context, string, string, string, any, string) bool {
+	deps.setCommunicateTerminal = func(context.Context, string, string, string, any) bool {
 		committed = true
 		return true
 	}
 	reg := tool.NewRegistry()
 	_ = registerCommunicateTool(reg, deps)
 	handler := reg.Get("communicate").Exec
-	if _, err := handler(context.Background(), nil, map[string]any{"message": token}); err == nil || !strings.Contains(err.Error(), "end_turn") {
-		t.Fatalf("missing end_turn error = %v", err)
-	}
-	if _, err := handler(context.Background(), nil, map[string]any{"end_turn": false}); err == nil || !strings.Contains(err.Error(), "message") {
-		t.Fatalf("missing message error = %v", err)
+	if _, err := handler(context.Background(), nil, map[string]any{"next": tool.CommunicateNextSendAndContinue}); err == nil {
+		t.Fatal("message-less progress update was accepted")
 	}
 
 	// Nonterminal output may supply the message, but must not commit a result.
 	nonterminal, err := handler(context.Background(), nil, map[string]any{
-		"end_turn": false,
+		"next": tool.CommunicateNextSendAndContinue,
 		"output": map[string]any{
 			"message":   token,
 			"data":      map[string]any{"iteration": len(data)},
@@ -111,11 +108,15 @@ func stoolCommunicateRun(t *testing.T, data []byte) stoolCommunicateTrace {
 	}
 	// The durable verdict rides the typed state, independent of the display
 	// output: a nonterminal accept is an accepted message that does not end
-	// the turn and carries no end reason.
+	// the turn and is not a quiet yield.
 	if state, ok := typed.State.(communicateEndState); !ok ||
 		state.Accepted == nil || !*state.Accepted ||
-		state.EndTurn == nil || *state.EndTurn || state.EndReason != "" {
+		state.EndTurn == nil || *state.EndTurn || state.Quiet != nil {
 		t.Fatalf("nonterminal typed verdict = %#v", nonterminal)
+	}
+
+	if _, err := handler(context.Background(), nil, map[string]any{"message": token}); err != nil || !committed {
+		t.Fatalf("omitted next did not commit the report: err=%v committed=%v", err, committed)
 	}
 
 	var resultMessage, resultReply, resultOutput string
@@ -133,15 +134,15 @@ func stoolCommunicateRun(t *testing.T, data []byte) stoolCommunicateTrace {
 		}
 	}
 	deps.prependSteering = func(entries []steeringMessage) { deferred = append(deferred, entries...) }
-	deps.setCommunicateTerminal = func(_ context.Context, message, reply, output string, raw any, _ string) bool {
+	deps.setCommunicateTerminal = func(_ context.Context, message, reply, output string, raw any) bool {
 		resultMessage, resultReply, resultOutput = message, reply, output
 		structured = raw
 		return true
 	}
 
 	args := map[string]any{
-		"message":  " done " + token + " ",
-		"end_turn": true,
+		"message": " done " + token + " ",
+		"next":    tool.CommunicateNextSendAndEndTurn,
 		"output": map[string]any{
 			"message":   token,
 			"data":      map[string]any{"bytes": len(data)},
@@ -228,7 +229,7 @@ func stoolCommunicateDeps() *toolDeps {
 		drainSteering:          func() []steeringMessage { return nil },
 		prependSteering:        func([]steeringMessage) {},
 		resultToolName:         func() string { return "communicate" },
-		setCommunicateTerminal: func(context.Context, string, string, string, any, string) bool { return true },
+		setCommunicateTerminal: func(context.Context, string, string, string, any) bool { return true },
 	}
 }
 
@@ -237,18 +238,17 @@ func stoolCommunicateDeps() *toolDeps {
 // positive paths cannot reach HTTP; DenyEnv and a literal sandbox wrapper keep
 // every egress-policy case entirely local.
 //
-// It covers web_fetch's unconditional registration, Gemini-only web_search
-// registration, and all egressDeniedByNet outcomes: an env without a wrapper,
+// It covers web_fetch's unconditional registration and all egressDeniedByNet outcomes: an env without a wrapper,
 // a nil wrapper, a net-on wrapper, and a net-off wrapper. The net-off invariant
 // is particularly important: the dependency closure must never run.
 func FuzzStwebRegistrationEgress(f *testing.F) {
 	for _, seed := range [][]byte{
 		{},
-		{0, 0},                        // fetch only, env has no KernelWrapper
-		{1, 0, 1, 2, 3},               // both tools, unsandboxed
-		{1, 1, 4, 5, 6},               // both tools, nil wrapper
-		{1, 2, 7, 8, 9},               // both tools, network allowed
-		{1, 3, 10, 11, 12},            // both tools, network denied
+		{0, 0},                        // env has no KernelWrapper
+		{1, 0, 1, 2, 3},               // unsandboxed
+		{1, 1, 4, 5, 6},               // nil wrapper
+		{1, 2, 7, 8, 9},               // network allowed
+		{1, 3, 10, 11, 12},            // network denied
 		{255, 3, 255, 0, 128, 64, 32}, // long adversarial token, denied
 	} {
 		f.Add(seed)
@@ -281,12 +281,9 @@ type stweb_wrapperEnv struct {
 func (e *stweb_wrapperEnv) KernelWrapper() *sandbox.Wrapper { return e.stweb_wrapper }
 
 type stweb_trace struct {
-	Names        string
-	Fetch        stweb_result
-	Search       stweb_result
-	FetchCalls   int
-	SearchCalls  int
-	SearchActive bool
+	Names      string
+	Fetch      stweb_result
+	FetchCalls int
 }
 
 type stweb_result struct {
@@ -298,16 +295,14 @@ type stweb_result struct {
 func stweb_run(t *testing.T, data []byte) stweb_trace {
 	t.Helper()
 	r := &stweb_reader{data: data}
-	searchEnabled := r.stweb_bool()
+	_ = r.stweb_bool()
 	state := stweb_egressState(r.stweb_next() % 4)
 	token := r.stweb_token()
 
 	fetchURL := "https://fixture.invalid/" + token
 	question := "question-" + token
-	query := "query-" + token
-	var fetchCalls, searchCalls int
+	var fetchCalls int
 	deps := &toolDeps{
-		webSearchEnabled: searchEnabled,
 		web: webDeps{
 			fetch: func(_ context.Context, gotURL, gotQuestion string) (any, error) {
 				fetchCalls++
@@ -316,31 +311,19 @@ func stweb_run(t *testing.T, data []byte) stweb_trace {
 				}
 				return "fetched:" + gotURL + ":" + gotQuestion, nil
 			},
-			search: func(_ context.Context, gotQuery string) (any, error) {
-				searchCalls++
-				if gotQuery != query {
-					t.Fatalf("web_search dependency query = %q, want %q", gotQuery, query)
-				}
-				return "searched:" + gotQuery, nil
-			},
 		},
 	}
 	reg := tool.NewRegistry()
 	registerWebTools(reg, deps)
 
 	wantNames := "web_fetch"
-	if searchEnabled {
-		wantNames += ",web_search"
-	}
 	if got := strings.Join(reg.Names(), ","); got != wantNames {
 		t.Fatalf("registered web tools = %q, want %q", got, wantNames)
 	}
 	if registered := reg.Get("web_fetch"); registered == nil || registered.Exec == nil {
 		t.Fatal("web_fetch was not registered with an executor")
 	}
-	if registered := reg.Get("web_search"); searchEnabled && (registered == nil || registered.Exec == nil) {
-		t.Fatal("web_search was not registered with an executor")
-	} else if !searchEnabled && registered != nil {
+	if registered := reg.Get("web_search"); registered != nil {
 		t.Fatalf("web_search registration = %v, want false", registered != nil)
 	}
 
@@ -356,28 +339,11 @@ func stweb_run(t *testing.T, data []byte) stweb_trace {
 		t.Fatalf("web_fetch dependency calls = %d, want %d", got, want)
 	}
 
-	trace := stweb_trace{
-		Names:        wantNames,
-		Fetch:        stweb_projectResult(fetch),
-		FetchCalls:   fetchCalls,
-		SearchCalls:  searchCalls,
-		SearchActive: searchEnabled,
+	return stweb_trace{
+		Names:      wantNames,
+		Fetch:      stweb_projectResult(fetch),
+		FetchCalls: fetchCalls,
 	}
-	if !searchEnabled {
-		return trace
-	}
-
-	search := stweb_execute(t, reg, env, "stweb-search", "web_search", map[string]any{
-		"query":  query,
-		"intent": "search " + token,
-	})
-	stweb_assertResult(t, search, "web_search", "stweb-search", denied, "searched:"+query)
-	if got, want := searchCalls, stweb_callCount(denied); got != want {
-		t.Fatalf("web_search dependency calls = %d, want %d", got, want)
-	}
-	trace.Search = stweb_projectResult(search)
-	trace.SearchCalls = searchCalls
-	return trace
 }
 
 func stweb_env(t *testing.T, state stweb_egressState, seed uint64) execenv.ExecutionEnvironment {

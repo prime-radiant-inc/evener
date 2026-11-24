@@ -13,10 +13,10 @@ import (
 const (
 	FieldDeveloperRole = "developer_role"
 	FieldMaxTokens     = "max_tokens"
-	// FieldGoogleThinkingConfig names the object holding either of google's two
-	// thinking shapes, so a caller reading the send flag does not restate the
-	// path a second time.
-	FieldGoogleThinkingConfig = "generationConfig.thinkingConfig"
+	// FieldGoogleThinkingLevel and FieldGoogleThinkingSummaries name Google
+	// Interactions' thinking control paths under generation_config.
+	FieldGoogleThinkingLevel     = "generation_config.thinking_level"
+	FieldGoogleThinkingSummaries = "generation_config.thinking_summaries"
 )
 
 // prunable is the authoritative per-protocol table of optional wire fields
@@ -42,12 +42,19 @@ var prunable = map[string]map[string]bool{
 		"metadata": false, "service_tier": false, "fallbacks": false, "container": false,
 	},
 	ProtocolGoogle: {
-		"generationConfig.temperature": true, "generationConfig.topP": true, "generationConfig.stopSequences": true,
-		// thinkingConfig carries either thinkingLevel (Gemini 3.x) or
-		// thinkingBudget (2.5 era); clearing it suppresses thinking for a row
-		// whose model takes no thinking fields at all.
-		FieldGoogleThinkingConfig: true,
-		"toolConfig":              true, "safetySettings": true, "cachedContent": false, "labels": false,
+		"generation_config.temperature":       true,
+		"generation_config.top_p":             true,
+		"generation_config.stop_sequences":    true,
+		"generation_config.max_output_tokens": true,
+		FieldGoogleThinkingLevel:              true,
+		FieldGoogleThinkingSummaries:          true,
+		"generation_config.tool_choice":       true,
+		"safety_settings":                     true,
+		"store":                               true,
+		"generation_config.seed":              false,
+		"previous_interaction_id":             false,
+		"service_tier":                        false,
+		"labels":                              false,
 	},
 }
 
@@ -73,7 +80,7 @@ func PrunablePaths(protocol string) []string {
 func TemperaturePath(protocol string) string {
 	switch protocol {
 	case ProtocolGoogle:
-		return "generationConfig.temperature"
+		return "generation_config.temperature"
 	default:
 		if table, ok := prunable[protocol]; ok {
 			if _, has := table["temperature"]; has {
@@ -156,10 +163,36 @@ func ValidateFields(fields map[string]bool, protocol, where string) error {
 	sort.Strings(keys)
 	for _, k := range keys {
 		if _, ok := table[k]; !ok {
+			if protocol == ProtocolGoogle {
+				if hint, retired := retiredGoogleFieldHint(k); retired {
+					return fmt.Errorf("%s: fields.%s was retired with generateContent (%s); valid Interactions fields: %s", where, k, hint, strings.Join(PrunablePaths(protocol), ", "))
+				}
+			}
 			return fmt.Errorf("%s: fields.%s is not a prunable path of protocol %s (valid: %s)", where, k, protocol, strings.Join(PrunablePaths(protocol), ", "))
 		}
 	}
 	return nil
+}
+
+func retiredGoogleFieldHint(key string) (string, bool) {
+	switch key {
+	case "generationConfig.temperature":
+		return `replace with "generation_config.temperature"`, true
+	case "generationConfig.topP":
+		return `replace with "generation_config.top_p"`, true
+	case "generationConfig.stopSequences":
+		return `replace with "generation_config.stop_sequences"`, true
+	case "generationConfig.thinkingConfig":
+		return `replace with "generation_config.thinking_level" and "generation_config.thinking_summaries"`, true
+	case "toolConfig":
+		return `replace with "generation_config.tool_choice"`, true
+	case "safetySettings":
+		return `replace with "safety_settings"`, true
+	case "cachedContent":
+		return `remove "cachedContent" (no Interactions fields key)`, true
+	default:
+		return "", false
+	}
 }
 
 // seedFields fills every prunable path missing from c.Fields with its
@@ -205,7 +238,10 @@ func Prune(body map[string]any, caps Caps, protocol string) []string {
 // parent objects as needed (spec §8.2 step 3). Constants run after the
 // prune so they survive it, and they override any value the builder or a
 // caller's ProviderOptions put at the same path. Keys are applied in sorted
-// order so the result never depends on map iteration.
+// order so the result never depends on map iteration. Object and array
+// constants are installed as deep copies: Transport.Body is shared by every
+// request the instance serves, so a builder that edits the installed object
+// must not reach a later request or the registry's own data.
 func ApplyBodyConstants(body map[string]any, constants map[string]any) {
 	keys := make([]string, 0, len(constants))
 	for k := range constants {
@@ -213,7 +249,7 @@ func ApplyBodyConstants(body map[string]any, constants map[string]any) {
 	}
 	sort.Strings(keys)
 	for _, k := range keys {
-		setPath(body, k, constants[k])
+		setPath(body, k, cloneAnyValue(constants[k]))
 	}
 }
 

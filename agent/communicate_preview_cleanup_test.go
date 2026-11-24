@@ -2,9 +2,11 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"maps"
 	"slices"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -55,6 +57,11 @@ func TestProcessInputRetryDiscardsFailedPreviewAndCommitsFinalOnce(t *testing.T)
 	}
 	if !maps.Equal(lifecycle.resets, map[string]int{"failed-call": 1, "final-call": 1}) {
 		t.Fatalf("preview reset counts=%v; events=%v", lifecycle.resets, evs)
+	}
+	for _, ev := range evs {
+		if ev.Kind == events.EventCommunicatePreviewReset && ev.Data.(events.CommunicatePreviewResetData).Quiet {
+			t.Fatalf("stream-error/retry reset had Quiet=true: %+v", ev.Data)
+		}
 	}
 	if len(lifecycle.active) != 0 {
 		t.Fatalf("active previews after completion=%v; events=%v", lifecycle.active, evs)
@@ -110,6 +117,11 @@ func TestCallModelRetryResetsReusedPreviewCallIDGeneration(t *testing.T) {
 	}
 	if !maps.Equal(lifecycle.resets, map[string]int{"reused-call": 1}) {
 		t.Fatalf("preview reset counts=%v; events=%v", lifecycle.resets, evs)
+	}
+	for _, ev := range evs {
+		if ev.Kind == events.EventCommunicatePreviewReset && ev.Data.(events.CommunicatePreviewResetData).Quiet {
+			t.Fatalf("retry reset had Quiet=true: %+v", ev.Data)
+		}
 	}
 }
 
@@ -312,6 +324,143 @@ func TestCallModelWithFallbackRetainsOnlyActivePreviewIDs(t *testing.T) {
 	}
 }
 
+func TestCommunicatePreviewSuppressesAndResetsQuietYield(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name             string
+		kind             EntryKind
+		chunks           []string
+		wantStarts       int
+		wantResets       int
+		wantComms        int
+		wantResetPreEnd  bool
+		wantResetPreComm bool
+		wantResetQuiet   bool
+	}{
+		{
+			name:       "next_before_message_quiet_yield_emits_no_preview",
+			kind:       EntryNotification,
+			chunks:     []string{`{"next":"log_quietly_and_end_turn",`, `"message":"waiting on job"}`},
+			wantStarts: 0,
+			wantResets: 0,
+			wantComms:  0,
+		},
+		{
+			name:       "next_and_message_opening_in_same_delta_emits_no_preview",
+			kind:       EntryNotification,
+			chunks:     []string{`{"next":"log_quietly_and_end_turn","message":"waiting `, `on job"}`},
+			wantStarts: 0,
+			wantResets: 0,
+			wantComms:  0,
+		},
+		{
+			name:            "message_before_next_quiet_yield_resets_preview_once",
+			kind:            EntryNotification,
+			chunks:          []string{`{"message":"waiting `, `on job",`, `"next":"log_quietly_and_end_turn"}`},
+			wantStarts:      1,
+			wantResets:      1,
+			wantComms:       0,
+			wantResetPreEnd: true,
+			wantResetQuiet:  true,
+		},
+		{
+			name:            "trailing_next_split_past_closed_message_resets_at_end",
+			kind:            EntryNotification,
+			chunks:          []string{`{"message":"waiting on job"`, `,"next":"log_`, `quietly_and_end_turn"}`},
+			wantStarts:      1,
+			wantResets:      1,
+			wantComms:       0,
+			wantResetPreEnd: true,
+			wantResetQuiet:  true,
+		},
+		{
+			name:       "loud_message_mentioning_log_quietly_is_not_suppressed",
+			kind:       EntryUserInput,
+			chunks:     []string{`{"message":"Use \"next\":\"log_quietly_and_end_turn\" when waiting",`, `"next":"send_and_end_turn"}`},
+			wantStarts: 1,
+			wantResets: 1,
+			wantComms:  1,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			fullArgs := strings.Join(tc.chunks, "")
+			client := llm.NewClient()
+			client.Register(&streamingAdapter{name: "openai", streamScript: func(st *llm.ChanStream) {
+				st.Send(llm.StreamEvent{Type: llm.StreamEventToolCallStart, ToolCall: &llm.ToolCallData{ID: "preview-quiet", Name: "communicate"}})
+				for _, chunk := range tc.chunks {
+					st.Send(llm.StreamEvent{Type: llm.StreamEventToolCallDelta, ToolCall: &llm.ToolCallData{ID: "preview-quiet", Arguments: json.RawMessage(chunk)}})
+				}
+				endArgs := json.RawMessage(fullArgs)
+				if tc.name == "trailing_next_split_past_closed_message_resets_at_end" {
+					endArgs = nil
+				}
+				call := llm.ToolCallData{ID: "preview-quiet", Name: "communicate", Arguments: endArgs}
+				st.Send(llm.StreamEvent{Type: llm.StreamEventToolCallEnd, ToolCall: &call})
+				finish := llm.FinishReason{Reason: llm.FinishReasonToolCalls}
+				st.Send(llm.StreamEvent{Type: llm.StreamEventFinish, FinishReason: &finish})
+			}})
+			sess := newSession(t, withClient(client), withDir(t.TempDir()), withStateDir(t.TempDir()))
+			if tc.kind == EntryNotification {
+				enqueueCompletedJobNotification(t, sess, "quiet-preview-job")
+			}
+			recorder := startPreviewEventRecorder(sess)
+			input := "run"
+			if tc.kind == EntryNotification {
+				input = ""
+			}
+			if _, err := sess.ProcessInputKind(tripwireCtx(t), input, nil, tc.kind); err != nil {
+				t.Fatalf("ProcessInputKind: %v", err)
+			}
+			evs := recorder.stop(sess)
+
+			var starts, resets, comms int
+			var sawResetBeforeToolEnd, sawResetBeforeComm bool
+			var resetEvents []events.CommunicatePreviewResetData
+			sawToolEnd, sawComm := false, false
+			for _, ev := range evs {
+				switch ev.Kind {
+				case events.EventCommunicatePreviewStart:
+					starts++
+				case events.EventCommunicatePreviewReset:
+					resets++
+					resetEvents = append(resetEvents, ev.Data.(events.CommunicatePreviewResetData))
+					if !sawToolEnd {
+						sawResetBeforeToolEnd = true
+					}
+					if !sawComm {
+						sawResetBeforeComm = true
+					}
+				case events.EventToolCallEnd:
+					sawToolEnd = true
+				case events.EventCommunicate:
+					sawComm = true
+					comms++
+				}
+			}
+			if starts != tc.wantStarts || resets != tc.wantResets || comms != tc.wantComms {
+				t.Fatalf("starts=%d resets=%d comms=%d, want starts=%d resets=%d comms=%d",
+					starts, resets, comms, tc.wantStarts, tc.wantResets, tc.wantComms)
+			}
+			if sawResetBeforeToolEnd != tc.wantResetPreEnd {
+				t.Fatalf("sawResetBeforeToolEnd=%v, want %v", sawResetBeforeToolEnd, tc.wantResetPreEnd)
+			}
+			if tc.wantComms > 0 && sawResetBeforeComm != tc.wantResetPreComm {
+				t.Fatalf("sawResetBeforeComm=%v, want %v", sawResetBeforeComm, tc.wantResetPreComm)
+			}
+			for _, rd := range resetEvents {
+				if rd.Quiet != tc.wantResetQuiet {
+					t.Fatalf("reset event Quiet=%v, want %v (event=%+v)", rd.Quiet, tc.wantResetQuiet, rd)
+				}
+			}
+			lifecycle := inspectPreviewLifecycle(evs)
+			if len(lifecycle.active) != 0 {
+				t.Fatalf("dangling active previews: %v", lifecycle.active)
+			}
+		})
+	}
+}
+
 func TestCallModelWithFallbackPanicResetsTransferredPrimaryExactlyOnce(t *testing.T) {
 	var streams, hooks atomic.Int32
 	client := llm.NewClient()
@@ -466,4 +615,81 @@ func inspectPreviewLifecycle(evs []events.SessionEvent) previewLifecycle {
 		}
 	}
 	return result
+}
+
+func TestCommunicatePreviewWaitsForNonWhitespaceMessage(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name       string
+		kind       EntryKind
+		chunks     []string
+		wantStarts int
+		wantText   string
+	}{
+		{
+			name:       "whitespace_only_message_emits_no_preview",
+			kind:       EntryNotification,
+			chunks:     []string{`{"message":"   "}`},
+			wantStarts: 0,
+			wantText:   "",
+		},
+		{
+			name:       "leading_whitespace_streams_full_message_once_nonwhitespace_arrives",
+			kind:       EntryUserInput,
+			chunks:     []string{`{"message":"  `, `hello"}`},
+			wantStarts: 1,
+			wantText:   "  hello",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			fullArgs := strings.Join(tc.chunks, "")
+			client := llm.NewClient()
+			var streamAttempt atomic.Int32
+			client.Register(&streamingAdapter{name: "openai", streamScript: func(st *llm.ChanStream) {
+				if streamAttempt.Add(1) > 1 {
+					finishCall := llm.ToolCallData{ID: "preview-ws-finish", Name: "communicate", Arguments: json.RawMessage(`{"next":"log_quietly_and_end_turn","message":"no action needed"}`)}
+					sendCommunicatePreview(st, finishCall)
+					st.Send(llm.StreamEvent{Type: llm.StreamEventToolCallEnd, ToolCall: &finishCall})
+					finish := llm.FinishReason{Reason: llm.FinishReasonToolCalls}
+					st.Send(llm.StreamEvent{Type: llm.StreamEventFinish, FinishReason: &finish})
+					return
+				}
+				st.Send(llm.StreamEvent{Type: llm.StreamEventToolCallStart, ToolCall: &llm.ToolCallData{ID: "preview-ws", Name: "communicate"}})
+				for _, chunk := range tc.chunks {
+					st.Send(llm.StreamEvent{Type: llm.StreamEventToolCallDelta, ToolCall: &llm.ToolCallData{ID: "preview-ws", Arguments: json.RawMessage(chunk)}})
+				}
+				call := llm.ToolCallData{ID: "preview-ws", Name: "communicate", Arguments: json.RawMessage(fullArgs)}
+				st.Send(llm.StreamEvent{Type: llm.StreamEventToolCallEnd, ToolCall: &call})
+				finish := llm.FinishReason{Reason: llm.FinishReasonToolCalls}
+				st.Send(llm.StreamEvent{Type: llm.StreamEventFinish, FinishReason: &finish})
+			}})
+			sess := newSession(t, withClient(client), withDir(t.TempDir()), withStateDir(t.TempDir()))
+			if tc.kind == EntryNotification {
+				enqueueCompletedJobNotification(t, sess, "ws-job")
+			}
+			recorder := startPreviewEventRecorder(sess)
+			input := "run"
+			if tc.kind == EntryNotification {
+				input = ""
+			}
+			if _, err := sess.ProcessInputKind(tripwireCtx(t), input, nil, tc.kind); err != nil {
+				t.Fatalf("ProcessInputKind: %v", err)
+			}
+			evs := recorder.stop(sess)
+			var starts int
+			var streamed strings.Builder
+			for _, ev := range evs {
+				switch ev.Kind {
+				case events.EventCommunicatePreviewStart:
+					starts++
+				case events.EventCommunicatePreviewDelta:
+					streamed.WriteString(ev.Data.(events.CommunicatePreviewDeltaData).Delta)
+				}
+			}
+			if starts != tc.wantStarts || streamed.String() != tc.wantText {
+				t.Fatalf("starts=%d streamed=%q, want starts=%d streamed=%q", starts, streamed.String(), tc.wantStarts, tc.wantText)
+			}
+		})
+	}
 }

@@ -13,13 +13,6 @@
    for no --attention/--alive/--danger var and needs no token-contract
    exception. */
 
-.card {
-  background: var(--surface-1);
-  border: 1px solid var(--edge);
-  border-radius: var(--radius-pane);
-  overflow: hidden;
-}
-
 .section {
   padding: var(--space-3) var(--space-4);
 }
@@ -67,46 +60,12 @@
   border-top: 1px solid var(--edge);
 }
 
+/* Disclosure's summary owns the flex layout, hover wash, focus ring, and
+   phone tap floor; this row adds only its card geometry and ink. */
 .row {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
   padding: 9px var(--space-4);
-  width: 100%;
-  text-align: left;
-  /* Native <button> reset (toolcallitem.module.css idiom): the row draws
-     its own surfaces — hover wash, focus ring — never the platform chrome.
-     The font shorthand runs before font-size (a shorthand after the
-     longhand would reset it — noShorthandPropertyOverrides). */
-  margin: 0;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
   color: inherit;
-  font: inherit;
   font-size: var(--font-size-ui);
-  appearance: none;
-  cursor: pointer;
-}
-
-.row:hover {
-  background: color-mix(in oklab, var(--ink-mid) 8%, transparent);
-  border-radius: var(--radius-control);
-}
-
-.row:focus-visible {
-  outline: var(--focus-ring);
-  outline-offset: -2px;
-}
-
-/* The 44px tap floor lives under the coarse-pointer media query in
-   tokens.css, so it is only consumed under the same query here (the
-   RailRow treatment) — on desktop the token is undefined and the rows keep
-   their content height. */
-@media (any-pointer: coarse) {
-  .row {
-    min-height: var(--tap-min);
-  }
 }
 
 /* §C: a row that cannot expand is not a control — same layout as a row, no
@@ -131,8 +90,6 @@
 }
 
 .rowCondition {
+  composes: truncate from "../../../../styles/text.module.css";
   color: var(--ink-mid);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }

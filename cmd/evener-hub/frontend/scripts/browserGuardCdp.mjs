@@ -36,7 +36,7 @@ import os from "node:os";
  * @param {string} operation - Name of the operation for error message
  * @returns {Promise} - The operation result or a timeout error
  */
-function withTimeout(promise, ms, operation) {
+export function withTimeout(promise, ms, operation) {
   let timer;
   return Promise.race([
     promise,
@@ -952,16 +952,17 @@ export async function navigateTo(
 /**
  * Evaluate an expression in the page (awaitPromise + returnByValue). A page
  * exception is an error carrying the page's own details, never a silently
- * undefined measurement.
+ * undefined measurement. A caller with its own deadline passes timeoutMs to
+ * bound the command below the default CDP tripwire.
  */
-export async function evaluate(send, expression) {
+export async function evaluate(send, expression, { timeoutMs = CDP_EVALUATE_TRIPWIRE_MS } = {}) {
   const response = await withTimeout(
     send("Runtime.evaluate", {
       expression,
       awaitPromise: true,
       returnByValue: true,
     }),
-    CDP_EVALUATE_TRIPWIRE_MS,
+    timeoutMs,
     "Runtime.evaluate",
   );
   if (response.result.exceptionDetails) {

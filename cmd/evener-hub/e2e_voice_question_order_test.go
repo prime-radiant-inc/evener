@@ -52,7 +52,7 @@ func TestE2E_VoiceQuestionCompletionKeepsSpeechOrder(t *testing.T) {
 		map[string]any{"label": "BATCH-B-139", "detail": "BATCH-B-DETAIL-149"},
 	}}
 	message := communicateArgs("BATCH-COMMUNICATE-151")
-	message["end_turn"] = false
+	message["next"] = "send_and_continue"
 	batches <- []map[string]any{
 		voiceQuestionTool("batch-ask", "ask_user", question),
 		voiceQuestionTool("batch-communicate", "communicate", message),

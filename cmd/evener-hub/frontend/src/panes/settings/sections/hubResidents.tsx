@@ -20,12 +20,12 @@
 import type { DaemonBlocker, DaemonIdentity, DaemonResident, DaemonRetireResponse } from "@evener/appwire-client";
 import { friendlyErrorMessage } from "@evener/appwire-client";
 import { useCallback, useEffect, useState } from "react";
-import { usePaneDocument } from "../../../shell/paneDocument";
-import { useVisibleInterval } from "../../../shell/useVisibleInterval";
 import { daemonResidentsStore, residentRowKey, useDaemonResidentsStore } from "../../../stores/daemonResidents";
+import surfaceStyles from "../../../styles/surface.module.css";
 import { Button, ConfirmDialog, EmptyState, InlineNotice, Skeleton } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import styles from "./hubResidents.module.css";
+import { useSettingsPoll } from "./useSettingsPoll";
 
 const POLL_INTERVAL_MS = 2000;
 
@@ -38,7 +38,6 @@ const PRE_RETIRE_PHASE = "resident";
 
 const CLASS = {
   root: requireClass(styles.root, "hubResidents.module.css", "root"),
-  heading: requireClass(styles.heading, "hubResidents.module.css", "heading"),
   meta: requireClass(styles.meta, "hubResidents.module.css", "meta"),
   tableWrapper: requireClass(styles.tableWrapper, "hubResidents.module.css", "tableWrapper"),
   table: requireClass(styles.table, "hubResidents.module.css", "table"),
@@ -48,6 +47,8 @@ const CLASS = {
   compatibility: requireClass(styles.compatibility, "hubResidents.module.css", "compatibility"),
   archived: requireClass(styles.archived, "hubResidents.module.css", "archived"),
 };
+
+const HEADING = `${surfaceStyles.settingsSectionHeading} ${surfaceStyles.settingsSectionHeadingBody}`;
 
 // formatTimeout converts a millisecond timeout value to a human-readable
 // string. Unknown (no lifecycle) differs from disabled (explicit zero).
@@ -140,8 +141,7 @@ export function HubResidents() {
   useEffect(() => {
     void daemonResidentsStore.getState().refresh();
   }, []);
-  const ownerDocument = usePaneDocument();
-  useVisibleInterval(() => void daemonResidentsStore.getState().refresh(), POLL_INTERVAL_MS, true, ownerDocument);
+  useSettingsPoll(POLL_INTERVAL_MS, () => void daemonResidentsStore.getState().refresh());
 
   // Prune per-row retire results and action errors against the latest list.
   // A refusal is NOT superseded by a fresh snapshot: the list's lifecycle
@@ -282,7 +282,7 @@ export function HubResidents() {
 
   return (
     <section className={CLASS.root} aria-labelledby={headingId}>
-      <h3 id={headingId} className={CLASS.heading}>
+      <h3 id={headingId} className={HEADING}>
         Discovered resident daemons
       </h3>
 

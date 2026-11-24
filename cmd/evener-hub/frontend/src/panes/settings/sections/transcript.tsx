@@ -9,13 +9,15 @@ import {
 } from "@evener/appwire-client";
 import { useEffect, useRef, useState } from "react";
 import { isMobileViewport } from "../../../shell/useIsMobile";
+import { prefsStore, usePrefsStore } from "../../../stores/prefs";
 import {
   initTranscriptDisplay,
   transcriptDisplayStore,
   useTranscriptDisplayStore,
 } from "../../../stores/transcriptDisplay";
-import { Button, InlineNotice, SegmentedControl, useToasts } from "../../../widgets";
+import { Button, InlineNotice, SegmentedControl, Switch, useToasts } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
+import { SectionStatus } from "./sectionStatus";
 import { TranscriptDisplayCard } from "./TranscriptDisplayCard";
 import styles from "./transcript.module.css";
 
@@ -23,7 +25,6 @@ const CLASS = {
   root: requireClass(styles.root, "transcript.module.css", "root"),
   intro: requireClass(styles.intro, "transcript.module.css", "intro"),
   cards: requireClass(styles.cards, "transcript.module.css", "cards"),
-  status: requireClass(styles.status, "transcript.module.css", "status"),
 };
 
 type Layout = "desktop" | "mobile";
@@ -59,6 +60,10 @@ export function TranscriptSection() {
   const hubErrors = useTranscriptDisplayStore((state) => state.hubErrors);
   const storageWarning = useTranscriptDisplayStore((state) => state.storageWarning);
   const hubSupport = useTranscriptDisplayStore((state) => state.hubSupport);
+  // Browser-local, like the phone's Display choice of the same name, and
+  // deliberately outside the hub-backed cards below: an older hub's missing
+  // transcript defaults must not disable where this browser opens a session.
+  const openAtUnreadReplies = usePrefsStore((state) => state.openAtUnreadReplies);
   const [pending, setPending] = useState<PendingSaves>({});
   const saveOperations = useRef<Partial<Record<Layout, number>>>({});
   const { push } = useToasts();
@@ -141,11 +146,7 @@ export function TranscriptSection() {
       {storageWarning !== null && (
         <InlineNotice tone="danger">Browser-local storage warning: {storageWarning}</InlineNotice>
       )}
-      {status !== undefined && (
-        <p className={CLASS.status} role="status" aria-live="polite" data-reason={status.reason}>
-          {status.text}
-        </p>
-      )}
+      {status !== undefined && <SectionStatus reason={status.reason}>{status.text}</SectionStatus>}
       {serverIssue && (
         <InlineNotice
           tone="danger"
@@ -187,6 +188,16 @@ export function TranscriptSection() {
           onClearLocal={() => transcriptDisplayStore.getState().clearLocal(layout)}
         />
       </div>
+
+      <Switch
+        label="Open at unread replies"
+        checked={openAtUnreadReplies}
+        onChange={(value) => {
+          prefsStore.getState().setOpenAtUnreadReplies(value);
+          push("success", "Settings saved");
+        }}
+        description="When on, a session opens at the start of the first reply that finished since you last reached the end, instead of the latest message. Saved per-browser."
+      />
     </div>
   );
 }

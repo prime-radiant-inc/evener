@@ -8,6 +8,7 @@ import {
   CODE_INVALID_REQUEST,
   ConnectionClosedError,
   isMethodNotFound,
+  isUpgradeRequiredError,
   RequestTimeoutError,
   WireError,
 } from "./errors";
@@ -86,9 +87,27 @@ class HandshakeRejectedError extends Error {
   }
 }
 
+// HubBelowFloorError marks an initialize the server refused without naming
+// upgradeRequired. A hub names upgradeRequired when the CLIENT announced a
+// protocol older than the one the hub serves (appwire.UpgradeRequired from
+// internal/appserver/server.go), so its absence means the hub serves only a
+// protocol older than this client's floor: APPWIRE_PROTOCOL_VERSION is the
+// minimum this client speaks, and it never announces anything below it.
+// Neither a retry nor a page reload can fix that -- the hub has to be
+// upgraded on whichever host runs it -- so the close is terminal and carries
+// its own reason instead of the client-side "protocol" verdict.
+export class HubBelowFloorError extends Error {
+  constructor(cause: WireError) {
+    super(
+      `AppwireClient: the hub is older than the minimum supported protocol ${APPWIRE_PROTOCOL_VERSION} and must be upgraded on its host: ${cause.message}`,
+    );
+    this.name = "HubBelowFloorError";
+  }
+}
+
 // TerminalReason names a close a human has to resolve, as opposed to an
 // ordinary drop the client retries on its own.
-export type TerminalReason = "protocol" | null;
+export type TerminalReason = "protocol" | "hub-below-floor" | null;
 
 // Same values as legacy appwire.js. Browsers can't send WebSocket ping
 // frames from JS, so a silently-dropped connection leaves readyState OPEN
@@ -165,7 +184,7 @@ const FEATURE_KEYS = [
   "directoryComplete",
   "auth",
 ] as const;
-const FEATURE_OPTIONAL_KEYS = ["transcriptDisplaySettings", "keybindingsSettings"] as const;
+const FEATURE_OPTIONAL_KEYS = ["transcriptDisplaySettings", "keybindingsSettings", "threadStartIdempotency"] as const;
 
 function hasExactKeys(
   value: Record<string, unknown>,
@@ -609,8 +628,13 @@ export class AppwireClient {
   // noteProtocolFailure records the terminal reason when a handshake failure
   // is one no retry can fix (see terminalReasonValue). Shared by the initial
   // connect (performHandshake) and every reconnect attempt, so both paths
-  // leave the same evidence for ConnectionBanner's "reload this page" copy.
+  // leave the same evidence for the connection surfaces' verdict copy: a
+  // client that must reload, or a hub its host must upgrade.
   private noteProtocolFailure(error: unknown): boolean {
+    if (error instanceof HubBelowFloorError) {
+      this.terminalReasonValue = "hub-below-floor";
+      return true;
+    }
     if (
       error instanceof ProtocolVersionMismatchError ||
       error instanceof HandshakeRejectedError ||
@@ -656,6 +680,7 @@ export class AppwireClient {
       capabilities: DEFAULT_CAPABILITIES,
     }).catch((error: unknown) => {
       if (error instanceof WireError && error.code === CODE_INVALID_REQUEST) {
+        if (!isUpgradeRequiredError(error)) throw new HubBelowFloorError(error);
         throw new HandshakeRejectedError(error);
       }
       throw error;

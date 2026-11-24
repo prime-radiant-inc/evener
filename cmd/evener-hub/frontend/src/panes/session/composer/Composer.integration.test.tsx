@@ -2081,6 +2081,7 @@ test("while a strip-triggered drain is in flight, the composer's own classic ste
     receipt: appliedReceipt(params.clientMutationId, "thread_a"),
   }));
 
+  await user.type(textarea() as HTMLDivElement, "draft");
   await user.click(drainButton());
   await storage.commitStarted;
   expect(composerSteerButton().disabled).toBe(true);

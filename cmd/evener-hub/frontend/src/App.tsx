@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect } from "react";
+import { type ComponentType, lazy, Suspense, useEffect } from "react";
 import { syncThemeColor } from "./stores/prefs";
 
 const WorkspaceRoute = lazy(() => import("./shell/AppShell").then((module) => ({ default: module.AppShell })));
@@ -24,6 +24,8 @@ const TypeSpecimen = import.meta.env.DEV ? lazy(() => import("./dev/TypeSpecimen
 // contents, session launcher) rendered from the real widgets with fixture
 // data - see dev/PluginsMockups.tsx's own header.
 const PluginsMockups = import.meta.env.DEV ? lazy(() => import("./dev/PluginsMockups")) : null;
+// Real session transcripts and composers at phone, tablet and desktop widths.
+const ComposerResponsiveDemo = import.meta.env.DEV ? lazy(() => import("./dev/ComposerResponsiveDemo")) : null;
 // DevHarness is a named export (dev/DevHarness.tsx), not a default one -
 // React.lazy needs a Promise<{default}>, so this adapts the import rather
 // than changing DevHarness's own export shape (which dev/DevHarness.test.tsx
@@ -32,6 +34,17 @@ const DevHarnessRoute = import.meta.env.DEV
   ? lazy(() => import("./dev/DevHarness").then((m) => ({ default: m.DevHarness })))
   : null;
 
+// Every dev route is the same guard: a pathname, a lazy component, and a
+// null component in production builds that matches nothing.
+const devRoutes: ReadonlyArray<{ path: string; Component: ComponentType | null }> = [
+  { path: "/dev/widgets", Component: WidgetGallery },
+  { path: "/dev/surfaces", Component: SurfaceGallery },
+  { path: "/dev/type", Component: TypeSpecimen },
+  { path: "/dev/plugins-mockups", Component: PluginsMockups },
+  { path: "/dev/composer-responsive", Component: ComposerResponsiveDemo },
+  { path: "/dev/harness", Component: DevHarnessRoute },
+];
+
 export function App() {
   // The token sheet is loaded before this module (main.tsx's import order);
   // run the meta sync after mount so a dev-server stylesheet that arrives
@@ -39,38 +52,12 @@ export function App() {
   useEffect(() => {
     syncThemeColor();
   }, []);
-  if (WidgetGallery !== null && window.location.pathname === "/dev/widgets") {
+  const devRoute = devRoutes.find((route) => route.Component !== null && window.location.pathname === route.path);
+  if (devRoute !== undefined && devRoute.Component !== null) {
+    const DevComponent = devRoute.Component;
     return (
       <Suspense fallback={null}>
-        <WidgetGallery />
-      </Suspense>
-    );
-  }
-  if (SurfaceGallery !== null && window.location.pathname === "/dev/surfaces") {
-    return (
-      <Suspense fallback={null}>
-        <SurfaceGallery />
-      </Suspense>
-    );
-  }
-  if (TypeSpecimen !== null && window.location.pathname === "/dev/type") {
-    return (
-      <Suspense fallback={null}>
-        <TypeSpecimen />
-      </Suspense>
-    );
-  }
-  if (PluginsMockups !== null && window.location.pathname === "/dev/plugins-mockups") {
-    return (
-      <Suspense fallback={null}>
-        <PluginsMockups />
-      </Suspense>
-    );
-  }
-  if (DevHarnessRoute !== null && window.location.pathname === "/dev/harness") {
-    return (
-      <Suspense fallback={null}>
-        <DevHarnessRoute />
+        <DevComponent />
       </Suspense>
     );
   }

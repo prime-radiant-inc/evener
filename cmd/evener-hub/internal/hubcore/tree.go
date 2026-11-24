@@ -1428,8 +1428,8 @@ func (b *treeBuilder) needsYouTier() []TreeNode {
 	b.markArchivedTree(needsYou, b.nodeProjectKey)
 	// Three bands, oldest-first inside each band (Track A §2 ask-tiering):
 	// errored (broken beats blocked) > blocked on a person (a question, an
-	// approval, or a turn that ended on needs_response, #4093) > the rest of
-	// the tier (warnings and restarts). hubapi.NeedsYouBand owns the bands.
+	// approval, #4093) > the rest of the tier (warnings and restarts).
+	// hubapi.NeedsYouBand owns the bands.
 	sortNeedsYou(needsYou)
 	return needsYou
 }
@@ -1564,7 +1564,7 @@ func projectArchivedDecision(decisions map[ArchiveKey]bool, projectID string, so
 		sources = []string{""}
 	}
 	for _, source := range sources {
-		if v, ok := decisions[ArchiveKey{Kind: "project", ID: projectID, Source: source}]; ok && v {
+		if v, ok := decisions[ProjectDecisionKey(source, projectID)]; ok && v {
 			return true
 		}
 	}
@@ -1589,7 +1589,7 @@ func projectArchivedByEverySource(decisions map[ArchiveKey]bool, projectID strin
 		sources = []string{""}
 	}
 	for _, source := range sources {
-		if v, ok := decisions[ArchiveKey{Kind: "project", ID: projectID, Source: source}]; !ok || !v {
+		if v, ok := decisions[ProjectDecisionKey(source, projectID)]; !ok || !v {
 			return false
 		}
 	}
@@ -1608,6 +1608,10 @@ func sessionSourceFromID(id string) string {
 	return NormalizeDecisionSource(ref.SourceID)
 }
 
+// SessionSourceFromID is sessionSourceFromID for callers outside this
+// package: the source that owns a canonical session identity's decisions.
+func SessionSourceFromID(id string) string { return sessionSourceFromID(id) }
+
 // liveEntrySource returns a live entry's owning source, preferring the
 // rendezvous ref source when present and falling back to the session identity.
 func liveEntrySource(entry LiveEntry) string {
@@ -1616,6 +1620,10 @@ func liveEntrySource(entry LiveEntry) string {
 	}
 	return sessionSourceFromID(entry.SessionID)
 }
+
+// LiveEntrySource is liveEntrySource for callers outside this package: the
+// source that owns a live entry's decisions.
+func LiveEntrySource(entry LiveEntry) string { return liveEntrySource(entry) }
 
 // sortedDecisionSources returns a deterministic, source-only slice for a
 // project's accumulated source set. A nil map yields nil so controller-local

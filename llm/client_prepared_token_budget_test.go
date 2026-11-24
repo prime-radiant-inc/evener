@@ -85,8 +85,8 @@ func emittedPriceServer(t *testing.T) (*httptest.Server, func() []map[string]any
 			_, _ = w.Write([]byte(`{"id":"chatcmpl-1","model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
 		case "/messages":
 			_, _ = w.Write([]byte(`{"id":"msg_1","model":"model","content":[{"type":"text","text":"hi"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`))
-		case "/models/model:generateContent":
-			_, _ = w.Write([]byte(`{"candidates":[{"content":{"role":"model","parts":[{"text":"hi"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2},"modelVersion":"model"}`))
+		case "/interactions":
+			_, _ = w.Write([]byte(`{"id":"inter_1","model":"model","status":"completed","steps":[{"type":"model_output","content":[{"type":"text","text":"hi"}]}],"usage":{"total_input_tokens":1,"total_output_tokens":1,"total_tokens":2}}`))
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}

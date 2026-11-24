@@ -693,23 +693,27 @@ func marshalCompleteOrHandleResult(res shellResult, maxChars, maxLines int, turn
 
 	// The model sees only a small head+tail digest + the job_id; it reads the rest
 	// through the job transcript_ref. The full output is retained in the durable job.
-	// Reserve the rendered footer (and its newline) from the character bound so
-	// the registry never truncates away the digest's omission marker.
+	// Reserve the rendered footer (and its newline) from the character bound and
+	// count it against the line bound so the registry never truncates away the
+	// digest's omission marker and offset_bytes hint.
 	out.Output = nil
-	footerChars := 0
-	if maxChars > 0 {
-		footerChars = len([]rune(formatShellResult(out))) + 1
-	}
+	footer := formatShellResult(out)
 	charBudget := 0
 	if maxChars > 0 {
-		charBudget = max(maxChars-footerChars, 1)
+		charBudget = max(maxChars-(len([]rune(footer))+1), 1)
 	}
-	digest := shellInlineDigestFrom(res.Output, res.TotalBytes, res.DroppedBytes, res.RetainedStartPartial, maxLines, charBudget)
+	digest := shellInlineDigestWithin(res.Output, res.TotalBytes, res.DroppedBytes, maxLines, charBudget)
 	peekTruncated := true
 	out.Output = &digest
 	out.Truncated = &peekTruncated
+	rendered := formatShellResult(out)
+	if maxLines == 1 {
+		// With a one-line limit, put the marker and footer on the same line so
+		// the registry keeps exit status, job reference, and offset_bytes together.
+		rendered = strings.TrimSuffix(digest, "\n") + " " + footer
+	}
 	return tool.StateResult{
-		Output:  formatShellResult(out),
+		Output:  rendered,
 		State:   out,
 		IsError: res.Status == string(jobstore.StatusFailed),
 	}, nil
@@ -823,7 +827,10 @@ func formatShellResult(out shellToolResult) string {
 		// promise is false there. Keep the wording aligned with the system
 		// prompt's one-shot Background work section.
 		if out.TurnEndsProcess {
-			b.WriteString(systemReminder("This is a one-shot run: the process exits once this turn's work is drained, and a background job still running then is stopped unless a job_watch is set on it. Set a job_watch on this job if you need its result."))
+			b.WriteString(systemReminder(fmt.Sprintf(
+				`This is a one-shot run: the process exits once this turn's work is drained, and a background job still running then is stopped unless a job_watch is set on it. If you need its result, call job_watch(operation="create", source=%q, progress_interval_ms=180000) or pass output_match.`,
+				out.JobID,
+			)))
 		} else {
 			b.WriteString(systemReminder("This job will notify you when it completes. If your session is idle, the notification will wake it. You do not need to wait for it explicitly."))
 		}

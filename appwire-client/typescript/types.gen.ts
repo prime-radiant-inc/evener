@@ -143,10 +143,11 @@ export interface AttentionChanged {
   approvalPending?: boolean;
   /**
    * NeedsResponse is true while the session rests awaiting with no pending
-   * question: its turn ended with end_reason needs_response. The rest is
-   * informative rather than actionable — a plain reply and a finished turn
-   * both rest idle, and neither makes the session needs_you (#2629).
-   * Additive: an older hub omits it, decoding as false.
+   * question: the shape an older daemon reported for a turn that ended
+   * asking for a reply. The rest is informative rather than actionable — a
+   * plain reply and a finished turn both rest idle, and neither makes the
+   * session needs_you (#2629). Additive: an older hub omits it, decoding as
+   * false.
    */
   needsResponse?: boolean;
   pendingQuestion?: PendingQuestion;
@@ -1354,11 +1355,51 @@ export interface FeatureSet {
   auth: boolean;
   transcriptDisplaySettings?: boolean;
   keybindingsSettings?: boolean;
+  threadStartIdempotency?: boolean;
 }
 
 export interface FencingEpoch {
   bootId: string;
   opSeq: number;
+}
+
+export interface FileSearchItem {
+  /**
+   * Slash-separated path relative to the resolved root, never starting with "/" or "..".
+   */
+  path: string;
+  /**
+   * "file" or "dir".
+   */
+  kind: string;
+}
+
+export interface FilesSearchParams {
+  /**
+   * Exactly one of Ref or CWD must be set.
+   * Ref resolves a session's live working directory (local or single-hop remote).
+   */
+  ref?: string;
+  /**
+   * CWD resolves an explicit absolute directory on the target hub (Spawn).
+   */
+  cwd?: string;
+  query: string;
+  /**
+   * Limit bounds returned items; <= 0 defaults to 25, capped at 50.
+   */
+  limit?: number;
+}
+
+export interface FilesSearchResponse {
+  /**
+   * Non-nil empty slice on no matches so JSON always encodes [] rather than null.
+   */
+  items: FileSearchItem[];
+  /**
+   * True when the host walk hit its path, directory, or wall-clock budget.
+   */
+  truncated?: boolean;
 }
 
 export interface FireKey {
@@ -1562,15 +1603,12 @@ export interface HostOperationsParams {
   incarnationId?: string;
   id?: string;
   limit?: number;
-  cursor?: string;
 }
 
 export interface HostOperationsResponse {
   operations: OperationRecord[];
   generation?: number;
   incarnationId?: string;
-  hostBoundaries?: Record<string, unknown>;
-  nextCursor?: string;
 }
 
 export interface HostPlan {
@@ -3598,10 +3636,11 @@ export interface RosterEvent {
   approvalPending?: boolean;
   /**
    * NeedsResponse is true while the session rests awaiting with no pending
-   * question: its turn ended with end_reason needs_response. The rest is
-   * informative rather than actionable — a plain reply and a finished turn
-   * both rest idle, and neither makes the session needs_you (#2629).
-   * Additive: an older hub omits it, decoding as false.
+   * question: the shape an older daemon reported for a turn that ended
+   * asking for a reply. The rest is informative rather than actionable — a
+   * plain reply and a finished turn both rest idle, and neither makes the
+   * session needs_you (#2629). Additive: an older hub omits it, decoding as
+   * false.
    */
   needsResponse?: boolean;
   pendingQuestion?: PendingQuestion;
@@ -5471,11 +5510,18 @@ export interface ThreadStartParams {
    * with the session, so a resume keeps it and nothing can turn it off.
    */
   manager?: boolean;
+  /**
+   * Optional caller-generated idempotency key (1 to 128 UTF-8 bytes, no
+   * surrounding whitespace or ASCII control bytes). Empty runs keyless.
+   */
+  clientMutationId?: string;
 }
 
 export interface ThreadStartResponse {
   thread: Thread;
   turn: Turn;
+  clientMutationId?: string;
+  disposition?: string;
 }
 
 export interface ThreadStartedParams {
@@ -6116,6 +6162,7 @@ export const METHOD_NAMES = [
   "evener/thread/watches/list",
   "evener/subagentPreview",
   "evener/paths/complete",
+  "evener/files/search",
   "evener/dirs/create",
   "evener/projects/recent",
   "evener/path/validate",
@@ -6235,6 +6282,7 @@ export const HOST_REQUEST_METHODS = [
   "evener/auth/status",
   "evener/auth/test",
   "evener/dirs/create",
+  "evener/files/search",
   "evener/git/head",
   "evener/harnesses/list",
   "evener/instance/create",
@@ -6483,6 +6531,7 @@ export const THREAD_ITEM_EVENT_KINDS = [
   "interrupted",
   "approval_decision",
   "memory-context",
+  "quiet_yield",
 ] as const;
 
 export type ThreadItemEventKind = (typeof THREAD_ITEM_EVENT_KINDS)[number];
@@ -6798,6 +6847,7 @@ export interface MethodTypes {
   "evener/thread/watches/list": { params: SessionActivityListParams; result: SessionWatchesResponse };
   "evener/subagentPreview": { params: EvenerSubagentPreviewParams; result: EvenerSubagentPreviewResponse };
   "evener/paths/complete": { params: PathsCompleteParams; result: PathsCompleteResponse };
+  "evener/files/search": { params: FilesSearchParams; result: FilesSearchResponse };
   "evener/dirs/create": { params: DirsCreateParams; result: DirsCreateResponse };
   "evener/projects/recent": { params: ProjectsRecentParams; result: ProjectsRecentResponse };
   "evener/path/validate": { params: PathValidateParams; result: PathValidateResponse };

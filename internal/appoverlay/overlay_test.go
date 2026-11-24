@@ -406,6 +406,8 @@ func TestCommunicateCallsHaveNoToolState(t *testing.T) {
 	o.Event(events.New(events.RoundStartedData{RoundID: "r_1"}))
 	none(t, o.Event(events.New(events.ToolCallStartData{ToolName: "communicate", CallID: "c_1"})))
 	none(t, o.Event(events.New(events.ToolCallEndData{ToolName: "communicate", CallID: "c_1"})))
+	none(t, o.Event(events.New(events.ToolCallStartData{ToolName: "respond", CallID: "c_2", IsResultTool: true})))
+	none(t, o.Event(events.New(events.ToolCallEndData{ToolName: "respond", CallID: "c_2"})))
 }
 
 func TestHeldToolResultImagesArriveWhenPersisted(t *testing.T) {

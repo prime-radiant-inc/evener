@@ -50,6 +50,11 @@
 //                  declares __LAYOUTGUARD_WIDTH_MATRIX__, so the widths live
 //                  in exactly one place instead of N hand-copied fixtures
 //                  (see widthMatrix.mjs and cases/compact-session-footer)
+//                  and/or optional "cssClassPrefixes":
+//                  { "<cssFiles path>": "<class prefix>" } when two loaded
+//                  modules use the same unhashed class name (for example
+//                  .body); the harness markup uses the prefixed class names
+//                  from that module, and composes still resolves normally.
 //   - harness.html a hand-authored DOM fragment reproducing the real
 //                  component's markup/classnames (link tags for tokens.css
 //                  and resolved.css - both are generated fresh at run time,
@@ -84,7 +89,7 @@ import {
   waitForHttp,
 } from "../browserGuardCdp.mjs";
 import { describeBrowserStartupFailure, startBrowserGuard, waitForBrowserReady } from "../browserGuardProcess.mjs";
-import { resolveComposes } from "./resolve-composes.mjs";
+import { prefixClassSelectors, resolveComposes } from "./resolve-composes.mjs";
 import { diagnoseRealizedViewport, normalizeViewportSpec } from "./viewport.mjs";
 import { injectWidthMatrix } from "./widthMatrix.mjs";
 
@@ -144,7 +149,12 @@ function buildCaseFiles(name, caseJson) {
   writeFileSync(path.join(outDir, "tokens.css"), readFileSync(path.join(SRC_DIR, "styles/tokens.css"), "utf8"));
 
   const moduleCssFiles = caseJson.cssFiles.filter((p) => p !== "styles/tokens.css");
-  const sources = moduleCssFiles.map((rel) => readFileSync(path.join(SRC_DIR, rel), "utf8"));
+  const prefixes = caseJson.cssClassPrefixes ?? {};
+  const sources = moduleCssFiles.map((rel) => {
+    const css = readFileSync(path.join(SRC_DIR, rel), "utf8");
+    const prefix = prefixes[rel];
+    return prefix ? prefixClassSelectors(css, prefix) : css;
+  });
   writeFileSync(path.join(outDir, "resolved.css"), resolveComposes(sources));
 
   const harnessSource = readFileSync(path.join(CASES_DIR, name, "harness.html"), "utf8");

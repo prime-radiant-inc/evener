@@ -409,6 +409,28 @@ test("clearing the filter immediately collapses every node with no debounce", as
   expect(isExpanded("acme-plugins")).toBe(false);
 });
 
+test("a filter that names a marketplace keeps its row and opens its whole catalog", async () => {
+  useTestDrivenFakeTimers();
+  const user = userEvent.setup({ delay: null, advanceTimers: vi.advanceTimersByTime });
+  const fake = connectReadyFakeClient();
+  extensionsStore.setState({ marketplaces: [MARKETPLACE_A, MARKETPLACE_B], plugins: [] });
+  fake.on("evener/marketplace/browse", (params) =>
+    params.name === "acme-plugins"
+      ? { name: "acme-plugins", plugins: [{ name: "linter" }] }
+      : { name: "other-plugins", plugins: [{ name: "formatter" }] },
+  );
+  render(<Harness />);
+  await user.type(screen.getByPlaceholderText("Filter marketplaces and plugins…"), "acme");
+  await act(() => vi.advanceTimersByTimeAsync(150));
+
+  expect(isExpanded("acme-plugins")).toBe(true);
+  // The name match keeps the row without requiring a catalog match, so its
+  // whole catalog shows; the other marketplace's loaded zero-match catalog
+  // is hidden entirely.
+  expect(screen.getByText("linter")).toBeTruthy();
+  expect(screen.queryByRole("button", { name: /other-plugins/ })).toBeNull();
+});
+
 // The tree-wide "Loading marketplaces…" belongs to one query's catalog load,
 // and a keystroke can outrun that query mid-load. Both then wait on the same
 // in-flight catalogs; the newer query is the one that clears the flag and

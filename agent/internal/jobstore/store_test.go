@@ -283,6 +283,33 @@ func TestStoreOpenTruncatesTrailingPartialLine(t *testing.T) {
 	if string(recovered) != "{\"kind\":\"job_started\",\"seq\":1,\"job_id\":\"job_A\"}\n" {
 		t.Fatalf("recovered store = %q, want partial line truncated", recovered)
 	}
+
+	// Opening repaired the file, so the size the store will append to must be
+	// the repaired size it re-sampled, not the torn one it first saw.
+	s.mu.Lock()
+	size := s.journalSize
+	s.mu.Unlock()
+	if size != int64(len(recovered)) {
+		t.Fatalf("journalSize = %d after open, want the repaired size %d", size, len(recovered))
+	}
+
+	// The repaired journal must accept an append on its own line: a leftover
+	// fragment would make the next record join it rather than decode.
+	appendEvent(t, s, Event{Kind: EventJobFinished, JobID: "job_A"})
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read journal after append: %v", err)
+	}
+	if lines := strings.Count(string(after), "\n"); lines != 2 {
+		t.Fatalf("journal holds %d lines after append, want one line per event", lines)
+	}
+	events, err := s.LoadEvents()
+	if err != nil {
+		t.Fatalf("LoadEvents after append: %v", err)
+	}
+	if len(events) != 2 || events[0].Seq != 1 || events[1].Seq != 2 {
+		t.Fatalf("events after append = %+v, want seqs 1,2", events)
+	}
 }
 
 func TestStoreOpenTruncatesWholeFileTrailingPartialLine(t *testing.T) {

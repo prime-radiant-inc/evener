@@ -31,20 +31,14 @@
 
 /* Editorial page heading; controls and metadata keep the sans face. */
 .title {
+  composes: truncate from "../../styles/text.module.css";
+  /* biome-ignore lint/suspicious/noDuplicateProperties: css-modules composes takes one declaration per composed class, each with its own `from` */
+  composes: paneTitle from "../../styles/text.module.css";
   flex: 1 1 auto;
   /* min-width: 0 is required for ellipsis truncation inside a flex row -
    * without it a flex item won't shrink below its content's natural width. */
   min-width: 0;
   margin: 0;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-  color: var(--ink-hi);
-  font-family: var(--font-prose);
-  font-size: var(--font-size-pane-title);
-  font-weight: var(--font-weight-semibold);
-  letter-spacing: var(--tracking-display);
-  line-height: var(--line-height-title);
 }
 
 .desktopTitle {
@@ -176,15 +170,6 @@
     padding-bottom: var(--dock-clearance);
   }
 
-  /* The composer's activity line is the phone's bottom edge when it renders:
-   * its chips are already the tap-floor height, and reserving the
-   * home-indicator band below them spends that band twice. A phone pane
-   * renders no edge footer, so the composer sits in .footer itself - the
-   * session's flush-footer exemption above addresses the desktop status bar,
-   * not this one. */
-  .footer:has(:global([data-composer-activity-line="true"])) {
-    padding-bottom: 0;
-  }
 }
 
 /* A flush edge footer below this dock is the pane's bottom edge and owns the
@@ -202,10 +187,4 @@
     padding-bottom: var(--dock-clearance);
   }
 
-  /* The Duo cover's tighter dock already drops the band; the activity line
-   * repeats the rule so the two overrides cannot disagree about it. The
-   * specificity here must beat the cover rule above, hence the pane anchor. */
-  .pane:has(> .body[data-pane-scaffold^="session:"]) > .footer:has(:global([data-composer-activity-line="true"])) {
-    padding-bottom: 0;
-  }
 }

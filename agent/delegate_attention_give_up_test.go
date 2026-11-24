@@ -21,7 +21,13 @@ import (
 // caller today.
 func TestIsTransientStartFailure(t *testing.T) {
 	t.Parallel()
-	for _, err := range []error{errDelegateTargetBusy, ErrRetirementUnavailable, fmt.Errorf("restore: %w", errDelegateTargetBusy)} {
+	for _, err := range []error{
+		errDelegateTargetBusy,
+		ErrRetirementUnavailable,
+		errDelegateLaneHeld,
+		fmt.Errorf("restore: %w", errDelegateTargetBusy),
+		fmt.Errorf("restore: %w", errDelegateLaneHeld),
+	} {
 		if !isTransientStartFailure(err) {
 			t.Errorf("isTransientStartFailure(%v) = false, want true", err)
 		}
@@ -57,12 +63,13 @@ func TestUnrestorableDelegateAttentionIsHandedToTheRoot(t *testing.T) {
 	if got := rootFold.content[fenced.attentionID].Text(); got != "undelivered grandchild message" {
 		t.Fatalf("root attention content = %q, want the grandchild's original message handed over", got)
 	}
-	grandchildFold, err := readDelegateAttentionFold(transcriptPath(fixture.stateDir, fenced.grandchildSessionID), fenced.grandchildSessionID)
-	if err != nil {
-		t.Fatalf("read grandchild attention fold: %v", err)
-	}
-	if got := grandchildFold.resolutions[fenced.attentionID]; got != delegateAttentionDiscarded {
-		t.Fatalf("grandchild attention resolution = %q, want discarded", got)
+	// The hand-over resolves the source row in delegatestore alone; the
+	// grandchild transcript keeps the rendered message and no marker.
+	root.delegateController.mu.Lock()
+	_, sourceResolved := root.delegateController.durable[fenced.grandchildDelegateID].ResolvedAttention[fenced.attentionID]
+	root.delegateController.mu.Unlock()
+	if !sourceResolved {
+		t.Fatalf("grandchild attention %q was not resolved in the journal", fenced.attentionID)
 	}
 }
 
@@ -195,8 +202,7 @@ func TestLeavingThePendingSetClearsParkedAndCountedState(t *testing.T) {
 		c.recordDelegateAttentionRestoreFailure(id)
 	}
 	c.forgetDelegateAttention("dlg_forgotten", "delegate:dlg_forgotten")
-	c.mu.Lock()
-	c.replaceDelegateAttentionLocked("dlg_replaced", []string{"delegate:dlg_replaced-again"})
+	c.forgetDelegateAttention("dlg_replaced", "delegate:dlg_replaced")
 	for _, id := range []string{"dlg_forgotten", "dlg_replaced"} {
 		if attentionParkedOf(c, id) {
 			t.Errorf("%s still parked after leaving the pending set", id)
@@ -205,7 +211,6 @@ func TestLeavingThePendingSetClearsParkedAndCountedState(t *testing.T) {
 			t.Errorf("%s still counts %d failures after leaving the pending set", id, count)
 		}
 	}
-	c.mu.Unlock()
 }
 
 // A delegate whose transcript is gone has nothing to hand over: the

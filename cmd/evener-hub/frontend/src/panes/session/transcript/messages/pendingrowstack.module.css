@@ -5,7 +5,7 @@
  * applied by the `provisional` prop. */
 .stack {
   list-style: none;
-  margin: 0;
+  margin-block: 0;
   padding: 0;
   /* The stack renders as the transcript's trailing virtual-list row
    * (Session's trailingRow), WITHOUT TurnBlock's .turn wrapper, so it must
@@ -14,8 +14,6 @@
    * intent group (session.module.css's .intentGroup) and AskDock's .dock
    * carry for rows outside .turn. overflowguard's "held steer column" check
    * measures this against a live turn. */
-  width: 100%;
-  max-width: var(--session-measure);
-  margin-inline: auto;
+  composes: measureColumn from "../../../../styles/surface.module.css";
   min-width: 0;
 }

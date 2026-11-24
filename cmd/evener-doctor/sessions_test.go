@@ -38,7 +38,7 @@ func sessionsFixture(t *testing.T) (base, root, child string) {
 	mustWrite(t, filepath.Join(sess, root+".transcript.jsonl"), strings.Join([]string{
 		`{"kind":"header","format_version":2,"session_id":"` + root + `","created_at":"2026-08-01T00:00:00Z","model":"anthropic/claude-a"}`,
 		`{"kind":"entry","seq":1,"turn":{"kind":"USER_INPUT","message":{"role":"user","content":[{"kind":"text","text":"go"}]}}}`,
-		`{"kind":"entry","seq":2,"turn":{"kind":"ASSISTANT","message":{"role":"assistant","content":[{"kind":"tool_call","tool_call":{"id":"tc1","name":"communicate","arguments":{"message":"done","end_turn":true}}}]}}}`,
+		`{"kind":"entry","seq":2,"turn":{"kind":"ASSISTANT","message":{"role":"assistant","content":[{"kind":"tool_call","tool_call":{"id":"tc1","name":"communicate","arguments":{"message":"done","next":"send_and_end_turn"}}}]}}}`,
 	}, "\n")+"\n")
 	mustWrite(t, filepath.Join(sess, root+".meta.json"), `{"id":"`+root+`","model":"anthropic/claude-a","turn_count":2}`)
 	mustWrite(t, filepath.Join(sess, root, "jobs.jsonl"), "")

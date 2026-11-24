@@ -8,6 +8,18 @@
   color: var(--ink-low);
 }
 
+.quietYieldSummary {
+  font-family: var(--font-prose);
+  font-size: var(--font-size-prose);
+  line-height: var(--line-height-prose);
+  color: var(--ink-low);
+}
+
+.quietYield {
+  composes: quietYieldSummary;
+  padding: var(--rhythm-line) 0;
+}
+
 /* A human's Allow or Deny: the quiet line, its time after it. */
 .approval {
   composes: line;

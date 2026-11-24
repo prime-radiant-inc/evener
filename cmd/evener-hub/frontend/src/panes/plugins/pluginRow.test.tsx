@@ -2,6 +2,7 @@ import type { MarketplaceCatalogPlugin, PluginComponents, PluginEntry } from "@e
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { expect, test, vi } from "vitest";
+import { readModuleCss, topRuleBlock } from "../../styles/cssBlock";
 import { chipKinds } from "../settings/sections/marketplacesPlugins/marketplacesTestUtils";
 import { CatalogPluginRow, InstalledPluginRow, LauncherPluginRow } from "./PluginRow";
 
@@ -32,6 +33,15 @@ const CATALOG: MarketplaceCatalogPlugin = {
   description: "Session desks for every project",
   category: "productivity",
 };
+
+test("the plugin row's meta lines compose the shared truncation recipe", () => {
+  const css = readModuleCss(import.meta.url, "pluginRow.module.css");
+  for (const selector of [".source", ".counts"]) {
+    const rule = topRuleBlock(css, selector);
+    expect(rule, selector).toContain('composes: truncate from "../../styles/text.module.css"');
+    expect(rule, selector).not.toMatch(/overflow|text-overflow|white-space/);
+  }
+});
 
 test("an installed row with a broken entry shows the failed dot and its status chips", () => {
   render(

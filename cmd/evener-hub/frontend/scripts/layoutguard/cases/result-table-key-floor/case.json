@@ -5,6 +5,7 @@
     "styles/global.css",
     "styles/tokens.css",
     "styles/railseat.module.css",
+    "styles/text.module.css",
     "panes/session/transcript/messages/notificationcard.module.css"
   ],
   "widthMatrix": [{ "width": 456 }, { "width": 700 }],

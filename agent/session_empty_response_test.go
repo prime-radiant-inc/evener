@@ -3,6 +3,8 @@ package agent_test
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -355,6 +357,67 @@ func TestBareText_ExhaustsRetries(t *testing.T) {
 	// 1 initial + 3 retries = 4 total.
 	if got := len(f.Requests()); got != 4 {
 		t.Fatalf("requests: got %d want 4", got)
+	}
+}
+
+// TestBareText_TotalRetryCapAcrossToolCalls proves a single input turn cannot
+// spin forever by alternating rejected bare text and dummy tool calls: the 9th
+// bare-text response terminates with bare-text exhaustion even though
+// consecutiveBareText is only 1.
+func TestBareText_TotalRetryCapAcrossToolCalls(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	target := filepath.Join(dir, "probe.txt")
+	if err := os.WriteFile(target, []byte("ok\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	readArgs, _ := json.Marshal(map[string]any{"file_path": target})
+	var steps []func(llm.Request) llm.Response
+	for i := range 9 {
+		steps = append(steps, func(llm.Request) llm.Response {
+			// Non-empty text without FinishReasonStop is rejected bare text on EntryUserInput.
+			return llm.Response{Message: llm.Assistant("stuck bare text")}
+		})
+		if i < 8 {
+			callID := "read-" + string(rune('a'+i))
+			steps = append(steps, func(llm.Request) llm.Response {
+				return agenttest.ToolCallResponse(llm.ToolCallData{
+					ID:        callID,
+					Name:      "read_file",
+					Arguments: readArgs,
+					Type:      "function",
+				})
+			})
+		}
+	}
+	steps = append(steps, func(llm.Request) llm.Response {
+		t.Fatal("exceeded maxTotalBareTextResponses without terminating")
+		return agenttest.FinalResponse("unreachable")
+	})
+	f := &agenttest.FakeAdapter{Provider: "openai"}
+	f.SetSteps(steps)
+	c := llm.NewClient()
+	c.Register(f)
+
+	sess, err := agent.NewSession(c, agent.NewOpenAIProfile("gpt-5.3-codex"), execenv.NewLocalExecutionEnvironment(dir), agent.SessionConfig{NonInteractive: true})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	defer cancel()
+	out, err := sess.ProcessInput(ctx, "spiral", nil)
+	if err == nil {
+		t.Fatalf("expected bare-text contract error, got output %q", out)
+	}
+	if out != "" {
+		t.Fatalf("expected empty output on error, got %q", out)
+	}
+	if !strings.Contains(err.Error(), "bare text without calling communicate") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := len(f.Requests()); got != 17 {
+		t.Fatalf("requests = %d, want 17 (8 bare-text + 8 read_file + 9th bare-text)", got)
 	}
 }
 

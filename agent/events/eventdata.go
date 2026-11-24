@@ -63,6 +63,7 @@ func (QueueChangedData) eventKind() EventKind       { return EventQueueChanged }
 func (TaskUpdatedData) eventKind() EventKind        { return EventTaskUpdated }
 func (SessionNameChangedData) eventKind() EventKind { return EventSessionNameChanged }
 func (ModelChangedData) eventKind() EventKind       { return EventModelChanged }
+func (NextModelChangedData) eventKind() EventKind   { return EventNextModelChanged }
 func (ReasoningEffortChangedData) eventKind() EventKind {
 	return EventReasoningEffortChanged
 }
@@ -87,7 +88,6 @@ func (RoundTimings) eventKind() EventKind           { return EventRoundTimings }
 func (EnvironmentData) eventKind() EventKind        { return EventEnvironment }
 func (EnvironmentChangedData) eventKind() EventKind { return EventEnvironmentChanged }
 func (TurnEndedData) eventKind() EventKind          { return EventTurnEnded }
-func (StatusSettledData) eventKind() EventKind      { return EventStatusSettled }
 func (TurnStartedData) eventKind() EventKind        { return EventTurnStarted }
 func (GoalContinuationData) eventKind() EventKind   { return EventGoalContinuation }
 func (GoalEndedData) eventKind() EventKind          { return EventGoalEnded }
@@ -130,6 +130,7 @@ var (
 	_ EventData = TaskUpdatedData{}
 	_ EventData = SessionNameChangedData{}
 	_ EventData = ModelChangedData{}
+	_ EventData = NextModelChangedData{}
 	_ EventData = VisionModelChangedData{}
 	_ EventData = ReasoningEffortChangedData{}
 	_ EventData = TurnLimitData{}
@@ -152,7 +153,6 @@ var (
 	_ EventData = EnvironmentData{}
 	_ EventData = EnvironmentChangedData{}
 	_ EventData = TurnEndedData{}
-	_ EventData = StatusSettledData{}
 	_ EventData = TurnStartedData{}
 	_ EventData = GoalContinuationData{}
 	_ EventData = GoalEndedData{}

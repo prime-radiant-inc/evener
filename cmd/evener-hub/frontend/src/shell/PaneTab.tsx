@@ -19,6 +19,7 @@ import { DockviewDefaultTab } from "dockview-react";
 import { useThreadsStore } from "../stores/threads";
 import { StatusDot } from "../widgets";
 import styles from "./PaneTab.module.css";
+import { refParam } from "./routing";
 import { cadenceStateFor, SIGNAL_STATES } from "./sessionStatus";
 import type { PanePanelParams } from "./workspace";
 
@@ -27,8 +28,7 @@ import type { PanePanelParams } from "./workspace";
 // malformed/missing ref, either of which means "nothing to show a dot for".
 function sessionRef(params: PanePanelParams): string | undefined {
   if (params.paneType !== "session") return undefined;
-  const ref = (params.paneParams as { ref?: unknown } | undefined)?.ref;
-  return typeof ref === "string" ? ref : undefined;
+  return refParam(params.paneParams) ?? undefined;
 }
 
 export function PaneTab(props: IDockviewPanelHeaderProps<PanePanelParams>) {
@@ -48,11 +48,7 @@ export function PaneTab(props: IDockviewPanelHeaderProps<PanePanelParams>) {
     // the session-cycling chip positions itself over the first session tab.
     <span className={styles.tab} data-session-tab={ref !== undefined ? "" : undefined}>
       <DockviewDefaultTab {...props} />
-      {state !== undefined && SIGNAL_STATES.has(state) && (
-        <span className={styles.dot}>
-          <StatusDot state={state} />
-        </span>
-      )}
+      {state !== undefined && SIGNAL_STATES.has(state) && <StatusDot state={state} />}
     </span>
   );
 }

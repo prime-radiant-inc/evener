@@ -101,6 +101,14 @@ func remoteForwardMutation[R, P any](ctx context.Context, s *RemoteHubSource, me
 	return out, nil
 }
 
+type remoteNotSentError struct {
+	wire  appwire.WireError
+	cause error
+}
+
+func (e remoteNotSentError) Error() string   { return e.wire.Error() }
+func (e remoteNotSentError) Unwrap() []error { return []error{e.wire, e.cause} }
+
 // StartThread forwards thread/start, which the remote hub serves hub-scoped and
 // spawns on its own host. ThreadStartParams carries no ref, so its Harness field
 // is the controller's source selector and must not be forwarded verbatim: the
@@ -121,9 +129,44 @@ func (s *RemoteHubSource) StartThread(ctx context.Context, params appwire.Thread
 	// would spawn on remote-b on the remote hub); the remote hub's own local
 	// spawn is the intended target.
 	remote.Source = ""
+	if params.ClientMutationID == "" {
+		var out appwire.ThreadStartResponse
+		if err := s.call(ctx, appwire.MethodThreadStart, remote, &out); err != nil {
+			return appwire.ThreadStartResponse{}, s.fromRemoteThreadStartError(err)
+		}
+		return out, nil
+	}
+
+	id := params.ClientMutationID
+	client, err := s.resolveClient(ctx)
+	if err != nil {
+		if cerr := ctx.Err(); cerr != nil {
+			return appwire.ThreadStartResponse{}, cerr
+		}
+		mapped := s.mapConnectError(err)
+		if wire, ok := errors.AsType[appwire.WireError](mapped); ok {
+			return appwire.ThreadStartResponse{}, wire.NotAccepted(id)
+		}
+		return appwire.ThreadStartResponse{}, mapped
+	}
+	if !client.Features().ThreadStartIdempotency {
+		return appwire.ThreadStartResponse{}, appwire.InvalidParams("remote hub does not support idempotent thread/start").NotAccepted(id)
+	}
 	var out appwire.ThreadStartResponse
-	if err := s.call(ctx, appwire.MethodThreadStart, remote, &out); err != nil {
-		return appwire.ThreadStartResponse{}, s.fromRemoteThreadStartError(err)
+	if err := s.requestOn(ctx, client, appwire.MethodThreadStart, remote, &out); err != nil {
+		if _, notSent := errors.AsType[appwire.RequestNotSentError](err); notSent {
+			return appwire.ThreadStartResponse{}, remoteNotSentError{
+				wire:  appwire.Unavailable(err.Error()).NotAccepted(id),
+				cause: err,
+			}
+		}
+		if cerr := ctx.Err(); cerr != nil {
+			return appwire.ThreadStartResponse{}, cerr
+		}
+		return appwire.ThreadStartResponse{}, s.fromRemoteThreadStartError(s.mapCallError(err))
+	}
+	if err := s.translateOut(client, &out); err != nil {
+		return appwire.ThreadStartResponse{}, err
 	}
 	return out, nil
 }

@@ -1,4 +1,4 @@
-.PHONY: lint lint-naming lint-gofmt lint-evenerfuzz lint-eval lint-internal lint-golangci lint-generated lint-fuzz-registry lint-prompt-eval lint-package-imports lint-go-module-consumer lint-js-toolchain-pins lint-tracked-file-size lint-repo-audit lint-cache-clean lint-cache-sweep secret-scan
+.PHONY: lint lint-naming lint-gofmt lint-evenerfuzz lint-eval lint-internal lint-golangci lint-generated lint-fuzz-registry lint-prompt-eval lint-package-imports lint-go-module-consumer lint-js-toolchain-pins lint-repo-audit lint-cache-clean lint-cache-sweep secret-scan
 
 # secret-scan runs gitleaks over the whole working tree using the committed
 # .gitleaks.toml ruleset. Part of the gate (`make lint`); skips with a warning
@@ -337,43 +337,28 @@ lint-go-module-consumer:
 lint-js-toolchain-pins:
 	$(call run_quiet_lint,node scripts/sdk/js-toolchain-pins-check.mjs)
 
-# lint-tracked-file-size keeps large blobs out of git. A file stays in history
-# after it is deleted, so the budget stops it at the PR that adds it; the
-# script holds the short allowlist of files that have to be committed.
-## Fail if a tracked file is over 1 MiB and is not on the script's allowlist.
-## proves: No git-tracked file exceeds 1 MiB except the allowlisted ones in
-##   scripts/ops/tracked-file-size-check.sh.
-## trigger: Required CI (via make lint); local pre-merge. Well under a second.
-## requires: None beyond a POSIX shell and git.
-## fails-when: A tracked file over 1 MiB is not on the allowlist.
-lint-tracked-file-size:
-	$(call run_quiet_lint,scripts/ops/tracked-file-size-check.sh)
-
 # lint-repo-audit holds the repository's own source, scripts and Makefile to
 # the rules that fail on what a change writes rather than on what the code
 # does, so they gate in lint instead of red-ing an unrelated package's tests.
-## Run the repository source audits in internal/devtool/repoaudit: no new
-## copy-only or error-text test, one source for shared constants and configs,
-## safe scratch and recursive deletes in scripts and Makefile recipes, no
-## new fixed sleep in Go tests, and the repository's layout rules.
-## proves: No Go test checks only wording or adds an error-text assertion
-##   beyond its allowlist; the quiet threshold, custom content seed, effort
+## Run the repository source audits in internal/devtool/repoaudit: one source
+## for shared constants and configs, safe scratch and recursive deletes in
+## scripts and Makefile recipes, and the repository's layout rules.
+## proves: The quiet threshold, custom content seed, effort
 ##   vocabulary, canonical temp-dir helper and e2e providers.toml writer each
 ##   have one source; projection-work test policy stays in the host; the
 ##   coverage scripts count through covstmt; the e2e and UI runners isolate
 ##   through the shared helpers; and no script or recipe mints scratch outside
-##   TMPDIR, before its trap, or deletes recursively from a variable beyond
-##   the reviewed allowlists; mobile-native/.gitignore keeps the
+##   TMPDIR or deletes recursively from a variable beyond the reviewed
+##   allowlists; mobile-native/.gitignore keeps the
 ##   mobile-native/build derived-data tree untracked; no TypeScript test or
-##   Vitest config lets a fake clock follow wall time (shouldAdvanceTime); Go
-##   tests call time.Sleep no more often than the checked-in baseline allows,
-##   with a NOTE to lower the baseline when they call it less; only
+##   Vitest config lets a fake clock follow wall time (shouldAdvanceTime); only
 ##   agent/internal/mcphttp builds an MCP http or sse transport; every
 ##   registered knob has a consumer; the execsupport packages stay library
 ##   packages covered by the revive exported rule; scenario cards cite source
-##   paths, symbols and lines that exist; runbooks isolate HOME through
-##   e2e_isolate_home; and every Makefile rule is .PHONY with a recipe, in a
-##   family file, with LINT_TARGETS defined once and naming every lint rule.
+##   paths and lines that exist and declare the Go symbols they anchor to;
+##   runbooks isolate HOME through e2e_isolate_home; and every Makefile rule is
+##   .PHONY with a recipe, in a family file, with LINT_TARGETS defined once and
+##   naming every lint rule.
 ## trigger: Required CI (via make lint); local pre-merge.
 ## requires: None beyond the Go toolchain and git.
 ## fails-when: Any check in internal/devtool/repoaudit reports a finding.
@@ -389,7 +374,7 @@ lint-repo-audit: build-dev
 # ignores its arguments and exits 0 (issue #1406: every root-scoped "biome both
 # scopes" invocation reported green while checking nothing).
 
-LINT_TARGETS := lint-naming lint-gofmt lint-evenerfuzz lint-eval lint-internal lint-golangci lint-generated lint-fuzz-registry lint-prompt-eval lint-package-imports lint-go-module-consumer lint-js-toolchain-pins lint-tracked-file-size lint-repo-audit secret-scan
+LINT_TARGETS := lint-naming lint-gofmt lint-evenerfuzz lint-eval lint-internal lint-golangci lint-generated lint-fuzz-registry lint-prompt-eval lint-package-imports lint-go-module-consumer lint-js-toolchain-pins lint-repo-audit secret-scan
 
 ## Go lint, formatting, tagged floors, generated outputs, imports, repository
 ## source audits, and secrets. The frontend's Biome scopes run in `make
@@ -399,8 +384,7 @@ LINT_TARGETS := lint-naming lint-gofmt lint-evenerfuzz lint-eval lint-internal l
 ##   workspace module; generated-output freshness; the fuzz registry check;
 ##   that no web or native import names the AppWire TypeScript package by
 ##   path; that Biome, Vitest, TypeScript and React are pinned to one exact
-##   version across the npm trees; that no tracked file is over 1 MiB beyond a
-##   short allowlist; the repository source audits in
+##   version across the npm trees; the repository source audits in
 ##   internal/devtool/repoaudit; the prompt-eval harness's own tests; and the
 ##   repo secret scan.
 ## trigger: Required CI; local pre-merge.

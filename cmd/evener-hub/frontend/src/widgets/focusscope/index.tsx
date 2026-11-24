@@ -12,6 +12,9 @@ export interface FocusScopeProps {
    * anchoring input while the panel is open (Popover autoFocus={false}).
    * Default true (Dialog/Sheet/Menu behavior). */
   autoFocus?: boolean;
+  /** Extra class for the scope's root <div>. Defaults to none, so existing
+   * callers render exactly as before. */
+  className?: string;
   children: ReactNode;
 }
 
@@ -27,6 +30,8 @@ export interface FocusScopeProps {
  * Renders a plain wrapping <div tabIndex={-1}> (no styling of its own -
  * Dialog/Sheet/Menu own all visible chrome) so there is always a valid
  * fallback focus target even when the scope's content has nothing tabbable.
+ * A caller that owns the root's layout passes className (ActivitySidebar's
+ * flex body).
  */
 export function FocusScope(props: FocusScopeProps) {
   return <LayerFocusScope {...props} released={false} />;
@@ -46,6 +51,7 @@ export function LayerFocusScope({
   autoFocus = true,
   released,
   restoreWithoutScroll,
+  className,
   children,
 }: FocusScopeProps & {
   released: boolean;
@@ -142,7 +148,7 @@ export function LayerFocusScope({
   }, [trap, released]);
 
   return (
-    <div ref={ref} tabIndex={-1}>
+    <div ref={ref} tabIndex={-1} className={className}>
       {children}
     </div>
   );

@@ -2,12 +2,10 @@
 // to manage registered marketplaces and to install their plugins. Each row
 // expands inline to its catalog (the shared plugin rows, installed state and
 // Install action contextual) and to its management actions (Refresh, Edit,
-// Remove), replacing the old separate Browse tree and Sources sheet. The
-// filter auto-expands the marketplaces whose catalogs match.
+// Remove). The filter auto-expands the marketplaces whose catalogs match.
 
 import type { AppwireClientLike } from "@evener/appwire-client";
-import { errorText, marketplaceSourceLabel, marketplaceSourceTakesRef } from "@evener/appwire-client";
-import { HUB_WRITE_BUSY, isHubWriteBusy } from "@evener/appwire-client/state/extensions";
+import { marketplaceSourceLabel, marketplaceSourceTakesRef } from "@evener/appwire-client";
 import { type Dispatch, type FormEvent, type SetStateAction, useEffect, useId, useRef, useState } from "react";
 import {
   Button,
@@ -19,8 +17,6 @@ import {
   Input,
   ListRow,
   Loader,
-  PathField,
-  RadioGroup,
   useToasts,
 } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
@@ -30,9 +26,11 @@ import {
   useMarketplaceRowFocusRehome,
   usePluginRowFocusRehome,
 } from "../../../plugins/pluginRowFocus";
-import { useExtensionsHostState, useExtensionsHostStore, useHostDirectoryActions } from "./hostStore";
+import { marketplaceMatchesQuery, pluginMatchesQuery } from "../../../plugins/pluginSearch";
+import { writeFailureText } from "../../../plugins/writeFailure";
+import { useExtensionsHostState, useExtensionsHostStore } from "./hostStore";
 import { MarketplaceDetailBody } from "./MarketplaceDetailBody";
-import { MARKETPLACE_SOURCE_OPTIONS, type MarketplaceSourceKind } from "./marketplaceEdit";
+import { MarketplaceSourceFields, type MarketplaceSourceValue } from "./marketplaceSourceFields";
 import styles from "./marketplacesPlugins.module.css";
 import type { PluginDetailTarget } from "./PluginDetailBody";
 
@@ -45,11 +43,6 @@ const CLASS = {
 };
 
 const FILTER_DEBOUNCE_MS = 150;
-
-function pluginMatchesFilter(plugin: { name: string; description?: string }, query: string): boolean {
-  const q = query.toLowerCase();
-  return plugin.name.toLowerCase().includes(q) || (plugin.description ?? "").toLowerCase().includes(q);
-}
 
 export interface MarketplacesSectionProps {
   /** Every marketplace whose body is expanded; the filter opens several. */
@@ -77,7 +70,6 @@ export function MarketplacesSection({
   onAppliedRemoval,
 }: MarketplacesSectionProps) {
   const store = useExtensionsHostStore();
-  const directory = useHostDirectoryActions();
   const marketplaces = useExtensionsHostState((s) => s.marketplaces) ?? [];
   const plugins = useExtensionsHostState((s) => s.plugins) ?? [];
   const pluginsUnavailable = useExtensionsHostState(
@@ -101,16 +93,10 @@ export function MarketplacesSection({
   useMarketplaceRowFocusRehome(expandedMarketplaces, sectionRef);
 
   const [addOpen, setAddOpen] = useState(false);
-  const [kind, setKind] = useState<MarketplaceSourceKind>("url");
-  const [urlValue, setUrlValue] = useState("");
-  const [repoValue, setRepoValue] = useState("");
-  const [pathValue, setPathValue] = useState("");
+  const [source, setSource] = useState<MarketplaceSourceValue>({ kind: "url", url: "", repo: "", path: "" });
   const [refValue, setRefValue] = useState("");
   const [nameValue, setNameValue] = useState("");
 
-  const urlId = useId();
-  const repoId = useId();
-  const pathId = useId();
   const refId = useId();
   const nameId = useId();
 
@@ -151,8 +137,8 @@ export function MarketplacesSection({
           for (const m of current) {
             const cache = store.getState().browseCatalogs.get(m.name);
             const matches =
-              m.name.toLowerCase().includes(trimmedQuery.toLowerCase()) ||
-              (cache?.status === "loaded" && cache.plugins.some((p) => pluginMatchesFilter(p, trimmedQuery)));
+              marketplaceMatchesQuery(m.name, trimmedQuery) ||
+              (cache?.status === "loaded" && cache.plugins.some((p) => pluginMatchesQuery(p, trimmedQuery)));
             if (matches) next.add(m.name);
           }
           if (!cancelled) setExpandedMarketplaces(next);
@@ -198,13 +184,13 @@ export function MarketplacesSection({
       toasts.push("success", `Installed ${target.plugin}`);
       setPendingInstall(null);
     } catch (err) {
-      toasts.push("error", isHubWriteBusy(err) ? HUB_WRITE_BUSY : `Install failed: ${errorText(err)}`);
+      toasts.push("error", writeFailureText(err, "Install failed"));
     }
   }
 
   function marketplaceHasMatch(name: string): boolean {
     const cache = browseCatalogs.get(name);
-    return cache?.status === "loaded" && cache.plugins.some((p) => pluginMatchesFilter(p, trimmedQuery));
+    return cache?.status === "loaded" && cache.plugins.some((p) => pluginMatchesQuery(p, trimmedQuery));
   }
 
   function marketplaceUnresolved(name: string): boolean {
@@ -217,25 +203,22 @@ export function MarketplacesSection({
       ? marketplaces
       : marketplaces.filter(
           (m) =>
-            m.name.toLowerCase().includes(trimmedQuery.toLowerCase()) ||
+            marketplaceMatchesQuery(m.name, trimmedQuery) ||
             marketplaceUnresolved(m.name) ||
             marketplaceHasMatch(m.name),
         );
 
   function resetAddForm() {
-    setKind("url");
-    setUrlValue("");
-    setRepoValue("");
-    setPathValue("");
+    setSource({ kind: "url", url: "", repo: "", path: "" });
     setRefValue("");
     setNameValue("");
   }
 
   function buildSource(): import("@evener/appwire-client").MarketplaceSourceInput {
     const ref = refValue.trim();
-    if (kind === "github") return { kind: "github", repo: repoValue.trim(), ...(ref ? { ref } : {}) };
-    if (kind === "directory") return { kind: "directory", path: pathValue.trim() };
-    return { kind: "url", url: urlValue.trim(), ...(ref ? { ref } : {}) };
+    if (source.kind === "github") return { kind: "github", repo: source.repo.trim(), ...(ref ? { ref } : {}) };
+    if (source.kind === "directory") return { kind: "directory", path: source.path.trim() };
+    return { kind: "url", url: source.url.trim(), ...(ref ? { ref } : {}) };
   }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
@@ -248,7 +231,7 @@ export function MarketplacesSection({
       resetAddForm();
       toasts.push("success", `Added marketplace${trimmedName ? ` ${trimmedName}` : ""}`);
     } catch (err) {
-      toasts.push("error", isHubWriteBusy(err) ? HUB_WRITE_BUSY : `Add marketplace failed: ${errorText(err)}`);
+      toasts.push("error", writeFailureText(err, "Add marketplace failed"));
     }
   }
 
@@ -345,47 +328,11 @@ export function MarketplacesSection({
       {addOpen ? (
         <Card variant="outlined">
           <form className={CLASS.addForm} onSubmit={(event) => void handleSubmit(event)}>
-            <RadioGroup
-              label="Source"
-              value={kind}
-              onChange={(value) => setKind(value as MarketplaceSourceKind)}
-              options={MARKETPLACE_SOURCE_OPTIONS}
+            <MarketplaceSourceFields
+              value={source}
+              onChange={(patch) => setSource((current) => ({ ...current, ...patch }))}
             />
-            {kind === "url" && (
-              <FormRow label="Git URL" htmlFor={urlId}>
-                <Input
-                  id={urlId}
-                  value={urlValue}
-                  onChange={(event) => setUrlValue(event.target.value)}
-                  placeholder="https://github.com/owner/repo.git"
-                />
-              </FormRow>
-            )}
-            {kind === "github" && (
-              <FormRow label="owner/repo" htmlFor={repoId}>
-                <Input
-                  id={repoId}
-                  value={repoValue}
-                  onChange={(event) => setRepoValue(event.target.value)}
-                  placeholder="owner/repo"
-                />
-              </FormRow>
-            )}
-            {kind === "directory" && (
-              <FormRow label="Local path" htmlFor={pathId}>
-                <PathField
-                  ariaLabel="Local path"
-                  directory={directory}
-                  id={pathId}
-                  value={pathValue}
-                  onChange={setPathValue}
-                  kind="dir"
-                  complete={(prefix, includeFiles) => store.getState().completePaths(prefix, includeFiles)}
-                  placeholder="/absolute/path"
-                />
-              </FormRow>
-            )}
-            {marketplaceSourceTakesRef(kind) && (
+            {marketplaceSourceTakesRef(source.kind) && (
               <FormRow
                 label="Branch or tag (optional)"
                 htmlFor={refId}

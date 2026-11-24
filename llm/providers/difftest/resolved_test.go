@@ -9,7 +9,7 @@ import "primeradiant.com/evener/llm/registry"
 func resolvedFor(protocol, baseURL string) registry.Resolved {
 	endpoints := map[string][2]string{
 		registry.ProtocolAnthropic:       {"/messages", "/messages"},
-		registry.ProtocolGoogle:          {"/models/{model}:generateContent", "/models/{model}:streamGenerateContent?alt=sse"},
+		registry.ProtocolGoogle:          {"/interactions", "/interactions"},
 		registry.ProtocolOpenAIChat:      {"/chat/completions", "/chat/completions"},
 		registry.ProtocolOpenAIResponses: {"/responses", "/responses"},
 	}[protocol]

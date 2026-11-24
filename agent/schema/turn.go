@@ -1,14 +1,133 @@
 package schema
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"primeradiant.com/evener/agent/provenance"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
 )
+
+// CommunicateNext values select what happens after a communicate call.
+const (
+	CommunicateNextSendAndEndTurn       = "send_and_end_turn"
+	CommunicateNextSendAndContinue      = "send_and_continue"
+	CommunicateNextLogQuietlyAndEndTurn = "log_quietly_and_end_turn"
+)
+
+// CommunicateQuietNoteMaxRunes bounds normalized quiet-yield note summaries.
+const CommunicateQuietNoteMaxRunes = 240
+
+// NormalizeQuietNote collapses runs of whitespace into single spaces, trims
+// leading and trailing whitespace, and bounds the result to
+// CommunicateQuietNoteMaxRunes runes with a trailing ellipsis when longer.
+func NormalizeQuietNote(text string) string {
+	collapsed := strings.Join(strings.Fields(text), " ")
+	if utf8.RuneCountInString(collapsed) <= CommunicateQuietNoteMaxRunes {
+		return collapsed
+	}
+	runes := []rune(collapsed)
+	return strings.TrimRight(string(runes[:CommunicateQuietNoteMaxRunes-1]), " ") + "…"
+}
+
+// CommunicateNextValues lists all valid values of the communicate next enum.
+var CommunicateNextValues = []string{
+	CommunicateNextSendAndEndTurn,
+	CommunicateNextSendAndContinue,
+	CommunicateNextLogQuietlyAndEndTurn,
+}
+
+// CommunicateArgsOutcome classifies a communicate tool call's arguments,
+// resolving next (defaulting omitted/empty to send_and_end_turn) and
+// historical end_turn values. ok is false when raw is empty or malformed JSON.
+func CommunicateArgsOutcome(raw json.RawMessage) (endTurn, quiet, ok bool) {
+	if len(raw) == 0 {
+		return false, false, false
+	}
+	var args struct {
+		Next    string `json:"next"`
+		EndTurn *bool  `json:"end_turn"`
+	}
+	if json.Unmarshal(raw, &args) != nil {
+		return false, false, false
+	}
+	switch strings.TrimSpace(args.Next) {
+	case CommunicateNextLogQuietlyAndEndTurn:
+		return false, true, true
+	case CommunicateNextSendAndContinue:
+		return false, false, true
+	case CommunicateNextSendAndEndTurn:
+		return true, false, true
+	case "":
+		if args.EndTurn != nil {
+			return *args.EndTurn, false, true
+		}
+		return true, false, true
+	default:
+		return false, false, true
+	}
+}
+
+// CommunicateToolState records the tool verdict independently of display output.
+type CommunicateToolState struct {
+	Accepted        *bool  `json:"communicate_accepted,omitempty"`
+	EndTurn         *bool  `json:"communicate_end_turn,omitempty"`
+	Quiet           *bool  `json:"communicate_quiet,omitempty"`
+	QuietNote       string `json:"communicate_quiet_note,omitempty"`
+	QuietCommentary string `json:"communicate_quiet_commentary,omitempty"`
+	BoundaryPending bool   `json:"communicate_boundary_pending,omitempty"`
+}
+
+// DecodeCommunicateToolState reads the persisted tool state.
+func DecodeCommunicateToolState(raw json.RawMessage) (CommunicateToolState, bool) {
+	var state CommunicateToolState
+	err := json.Unmarshal(raw, &state)
+	return state, err == nil
+}
+
+// IsQuiet reports whether the tool yielded without replying.
+func (s CommunicateToolState) IsQuiet() bool {
+	return s.Quiet != nil && *s.Quiet
+}
+
+// IsQuietCommunicateState reports typed evidence of a quiet yield.
+func IsQuietCommunicateState(raw json.RawMessage) bool {
+	if len(raw) == 0 {
+		return false
+	}
+	state, ok := DecodeCommunicateToolState(raw)
+	return ok && state.IsQuiet()
+}
+
+// QuietCommunicateNote returns the normalized quiet note when raw records a
+// quiet yield, or "" otherwise.
+func QuietCommunicateNote(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	state, ok := DecodeCommunicateToolState(raw)
+	if !ok || !state.IsQuiet() {
+		return ""
+	}
+	return strings.TrimSpace(state.QuietNote)
+}
+
+// QuietCommunicateCommentary returns the assistant prose that accompanied a
+// quiet yield when raw records one, or "" otherwise.
+func QuietCommunicateCommentary(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	state, ok := DecodeCommunicateToolState(raw)
+	if !ok || !state.IsQuiet() {
+		return ""
+	}
+	return strings.TrimSpace(state.QuietCommentary)
+}
 
 // TurnKind identifies the category of a Turn in the Session history.
 type TurnKind string
@@ -179,6 +298,9 @@ type TurnCompletionInfo struct {
 	Status      TurnCompletionStatus `json:"status"`
 	CompletedAt time.Time            `json:"completed_at"`
 	DurationMS  int64                `json:"duration_ms"`
+	// Acceptance of an explicit reply deferred until Stop hooks settled.
+	AcceptedCommunicateCallID string  `json:"accepted_communicate_call_id,omitempty"`
+	ReplacementReply          *string `json:"replacement_reply,omitempty"`
 }
 
 // CommunicateInfo is the persisted form of one delivered communicate message.
@@ -188,9 +310,7 @@ type CommunicateInfo struct {
 	CallID  string `json:"call_id,omitempty"`
 	EndTurn bool   `json:"end_turn"`
 	Message string `json:"message"`
-	// EndReason is why a root session's call ended its turn (one of
-	// tool.CommunicateEndReasons); empty on a call that kept the turn going
-	// and wherever end_reason is not offered (delegates, headless roots).
+	// EndReason is retained for replay of historical communicate entries.
 	EndReason string `json:"end_reason,omitempty"`
 }
 
@@ -449,7 +569,10 @@ type AskResolution struct {
 // projected, so turns carrying them are not byte-identical by design;
 // they stay sorted here too so a future key lands in one obvious place.
 type Turn struct {
-	Actor SessionActor `json:"actor,omitzero"`
+	// AcceptedReply identifies bare assistant prose, or a Stop hook replacement,
+	// that settled the execution as a visible final reply.
+	AcceptedReply bool         `json:"accepted_reply,omitempty"`
+	Actor         SessionActor `json:"actor,omitzero"`
 	// AnswerToTurnIDs names the pending question executions resolved by this
 	// accepted input. Missing evidence never establishes continuation.
 	AnswerToTurnIDs []string       `json:"answer_to_turn_ids,omitempty"`
@@ -507,10 +630,23 @@ type Turn struct {
 	OriginalOrdinal *uint64 `json:"original_ordinal,omitempty"`
 	// OwningTurnID identifies the logical turn that owns an ordinary steering
 	// entry. It differs from StableTurnID, which identifies the client mutation.
-	OwningTurnID           string `json:"owning_turn_id,omitempty"`
-	ResponseContextMarker  string `json:"response_context_marker,omitempty"`
-	ResponseEndpoint       string `json:"response_endpoint,omitempty"`
-	ResponseEndpointFamily string `json:"response_endpoint_family,omitempty"`
+	OwningTurnID string `json:"owning_turn_id,omitempty"`
+	// QuietCompanion identifies an assistant response whose prose accompanied a
+	// quiet communicate call in the same round. The prose is hidden from the
+	// chat transcript, which shows the quiet yield notice instead.
+	QuietCompanion bool `json:"quiet_companion,omitempty"`
+	// QuietYield identifies a bare assistant response that parked the turn
+	// quietly while wakeable work remained live or after a wake needing no reply.
+	QuietYield bool `json:"quiet_yield,omitempty"`
+	// ResponseContextBoundary names the context boundary the request that
+	// produced this assistant turn was planned against: the latest checkpoint
+	// or summary turn at planning time, or "none" when history held none. It is
+	// empty on turns recorded before the field existed, which continuation
+	// eligibility leaves unchecked.
+	ResponseContextBoundary string `json:"response_context_boundary,omitempty"`
+	ResponseContextMarker   string `json:"response_context_marker,omitempty"`
+	ResponseEndpoint        string `json:"response_endpoint,omitempty"`
+	ResponseEndpointFamily  string `json:"response_endpoint_family,omitempty"`
 	// ResponseID is the provider's response identifier (from llm.Response.ID),
 	// recorded on assistant turns and surfaced in ATIF trajectory export.
 	ResponseID                      string `json:"response_id,omitempty"`
@@ -521,6 +657,8 @@ type Turn struct {
 	ResponseRequestFingerprint      string `json:"response_request_fingerprint,omitempty"`
 	ResponseRequestModel            string `json:"response_request_model,omitempty"`
 	ResponseStorageScopeFingerprint string `json:"response_storage_scope_fingerprint,omitempty"`
+	// ResultToolName identifies communicate when advertised under a custom name.
+	ResultToolName string `json:"result_tool_name,omitempty"`
 	// RoundID names the model round an ASSISTANT entry (including a salvage
 	// entry) records: every request from the round's first attempt up to the
 	// first recorded ASSISTANT entry shares it.

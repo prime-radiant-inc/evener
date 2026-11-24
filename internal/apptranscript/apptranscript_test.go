@@ -18,7 +18,7 @@ import (
 )
 
 func TestPreludeTurnUsesSemanticHeaderOnly(t *testing.T) {
-	turn := PreludeTurn(transcript.Header{SystemPrompt: "You are Evener."})
+	turn := PreludeTurn(transcript.Header{SystemPrompt: "You are Evener."}, "")
 	if turn == nil || len(turn.Items) != 1 {
 		t.Fatalf("prelude=%+v, want only system prompt", turn)
 	}
@@ -66,7 +66,7 @@ func TestMemoryContextProjection(t *testing.T) {
 // classifies it by wire type instead of guessing from the item's char count
 // (kata ckgw); ThreadItemEventKindSystemPrompt is that stable signal.
 func TestPreludeTurnTagsSystemPromptEventKind(t *testing.T) {
-	turn := PreludeTurn(transcript.Header{SystemPrompt: "You are Evener."})
+	turn := PreludeTurn(transcript.Header{SystemPrompt: "You are Evener."}, "")
 	if turn == nil || len(turn.Items) != 1 {
 		t.Fatalf("prelude=%+v, want only system prompt", turn)
 	}
@@ -984,6 +984,31 @@ func TestWebSearchResultLine(t *testing.T) {
 	}
 }
 
+func TestWebSearchProjection_PrefersSourcesAndFallsBackToLegacyGroundingChunks(t *testing.T) {
+	const searchSuggestionsHTML = `<div class="search-suggestions"><a href="https://go.dev">Go</a></div>`
+	ws := &llm.WebSearchData{
+		Query:   "go 1.24",
+		Sources: []llm.WebSearchSource{{Title: "Go", URL: "https://go.dev"}},
+		Raw:     json.RawMessage(`{"result":[{"search_suggestions":"` + searchSuggestionsHTML + `"}]}`),
+	}
+	q, r := WebSearchProjection(ws)
+	if q != "go 1.24" {
+		t.Errorf("query = %q, want %q", q, "go 1.24")
+	}
+	if r != "Go — https://go.dev" {
+		t.Errorf("results = %q, want the Sources citation %q", r, "Go — https://go.dev")
+	}
+
+	legacyGroundingChunks := json.RawMessage(`{"groundingChunks":[{"web":{"uri":"https://go.dev","title":"Go"}}]}`)
+	q, r = WebSearchProjection(&llm.WebSearchData{Raw: legacyGroundingChunks})
+	if q != "" {
+		t.Errorf("legacy query = %q, want empty", q)
+	}
+	if r != "Go — https://go.dev" {
+		t.Errorf("legacy results = %q, want the Raw grounding-chunk fallback %q", r, "Go — https://go.dev")
+	}
+}
+
 func TestFirstNonEmpty(t *testing.T) {
 	tests := []struct {
 		values []string
@@ -1000,6 +1025,41 @@ func TestFirstNonEmpty(t *testing.T) {
 		if got != tc.want {
 			t.Errorf("firstNonEmpty(%v) = %q, want %q", tc.values, got, tc.want)
 		}
+	}
+}
+
+func TestMetadataOnlyResponsesReasoning_GoogleSignatureOnlyThought(t *testing.T) {
+	signatureOnly := llm.ContentPart{
+		Kind:     llm.ContentThinking,
+		Thinking: &llm.ThinkingData{GoogleInteraction: true, Signature: "sig_abc"},
+	}
+	if !MetadataOnlyResponsesReasoning(signatureOnly) {
+		t.Fatal("signature-only Google thought = visible, want metadata-only")
+	}
+
+	// A metadata-only thought between two text parts leaves them in one bubble.
+	splitEntry := schema.Turn{Format: schema.TurnFormatIdentity, TurnID: "t_1", Kind: schema.TurnAssistant, Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+		{Kind: llm.ContentText, Text: "before"},
+		signatureOnly,
+		{Kind: llm.ContentText, Text: "after"},
+	}}}
+	items, parts := ProjectEntryParts("t_1", 0, splitEntry, nil, nil, nil)
+	if len(items) != 1 || items[0].Type != "agentMessage" || items[0].Text != "beforeafter" || !reflect.DeepEqual(parts, []int{0}) {
+		t.Fatalf("items = %+v parts = %v, want one agentMessage \"beforeafter\" at part 0", items, parts)
+	}
+
+	thoughtWithText := llm.ContentPart{
+		Kind:     llm.ContentThinking,
+		Thinking: &llm.ThinkingData{GoogleInteraction: true, Text: "plan", Summary: []string{"plan"}, Signature: "sig_abc"},
+	}
+	if MetadataOnlyResponsesReasoning(thoughtWithText) {
+		t.Fatal("Google thought carrying text = metadata-only, want visible")
+	}
+
+	textEntry := schema.Turn{Format: schema.TurnFormatIdentity, TurnID: "t_1", Kind: schema.TurnAssistant, Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{thoughtWithText}}}
+	items, parts = ProjectEntryParts("t_1", 0, textEntry, nil, nil, nil)
+	if len(items) != 1 || items[0].Type != "reasoning" || items[0].Text != "plan" || !reflect.DeepEqual(parts, []int{0}) {
+		t.Fatalf("items = %+v parts = %v, want one reasoning item \"plan\" at part 0", items, parts)
 	}
 }
 
@@ -1027,10 +1087,10 @@ func TestScanPrelude(t *testing.T) {
 }
 
 func TestPreludeTurn(t *testing.T) {
-	if got := PreludeTurn(transcript.Header{}); got != nil {
+	if got := PreludeTurn(transcript.Header{}, ""); got != nil {
 		t.Errorf("empty prelude = %+v, want nil", got)
 	}
-	turn := PreludeTurn(transcript.Header{SystemPrompt: "You are Evener."})
+	turn := PreludeTurn(transcript.Header{SystemPrompt: "You are Evener."}, "")
 	if turn == nil || len(turn.Items) != 1 || turn.Items[0].Text != "You are Evener." {
 		t.Errorf("system prompt only = %+v", turn)
 	}
@@ -1847,5 +1907,58 @@ func TestProjectTurn_HealedCommunicateStringOutputRendersMessage(t *testing.T) {
 	}
 	if resultItems[0].Text != "hello" {
 		t.Errorf("Text = %q, want %q (output string promoted and message extracted)", resultItems[0].Text, "hello")
+	}
+}
+
+func TestRootBareTextFallbackProjection(t *testing.T) {
+	for _, format := range []int{0, schema.TurnFormatIdentity} {
+		var turn schema.Turn
+		if err := json.Unmarshal([]byte(`{"accepted_reply":true}`), &turn); err != nil {
+			t.Fatal(err)
+		}
+		turn.Format = format
+		turn.Kind, turn.Message, turn.CausalKnown = schema.TurnAssistant, llm.Assistant("Root answer"), true
+		items, _ := ProjectEntryParts("turn", 2, turn, nil, nil, nil)
+		if len(items) != 1 || items[0].Type != "agentMessage" || items[0].Text != "Root answer" {
+			t.Fatalf("format %d: items=%+v", format, items)
+		}
+		obs := items[0].Observation
+		if obs == nil || obs.TurnID != "turn" || !obs.CausalKnown || !obs.EndTurn || obs.TerminalAccepted == nil || !*obs.TerminalAccepted {
+			t.Fatalf("format %d: observation=%+v", format, obs)
+		}
+	}
+}
+
+func TestRootBareTextFallbackQuietProjection(t *testing.T) {
+	for _, tc := range []struct {
+		raw, state    string
+		wantType      string
+		wantEventKind appwire.ThreadItemEventKind
+	}{
+		{`{}`, `{"communicate_accepted":true,"communicate_end_turn":true,"communicate_quiet":true}`, "systemMessage", appwire.ThreadItemEventKindQuietYield},
+		{`{}`, ``, "", ""},
+		{`{"end_turn":true,"message":" ","output":{"message":""}}`, ``, "", ""},
+		{`not valid JSON`, ``, "agentMessage", ""},
+		{`not valid JSON`, `{"communicate_quiet":true}`, "systemMessage", appwire.ThreadItemEventKindQuietYield},
+	} {
+		reg := NewToolCallRegistry()
+		ProjectTurn("turn", 1, schema.Turn{Kind: schema.TurnAssistant, Message: llm.Message{Content: []llm.ContentPart{{
+			Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "call", Name: "communicate", Arguments: json.RawMessage(`{}`), RawArguments: tc.raw},
+		}}}}, reg, nil, nil)
+		items := ProjectTurn("turn", 2, schema.Turn{Kind: schema.TurnToolResults, Message: llm.Message{Content: []llm.ContentPart{{
+			Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "call", Name: "communicate", ToolState: json.RawMessage(tc.state)},
+		}}}}, reg, nil, nil)
+		if tc.wantType == "" {
+			if len(items) != 0 {
+				t.Errorf("args=%q state=%q: items=%+v, want 0", tc.raw, tc.state, items)
+			}
+			continue
+		}
+		if len(items) != 1 || items[0].Type != tc.wantType || items[0].EventKind != tc.wantEventKind {
+			t.Errorf("args=%q state=%q: items=%+v, want type=%q eventKind=%q", tc.raw, tc.state, items, tc.wantType, tc.wantEventKind)
+		}
+		if tc.wantType == "agentMessage" && items[0].Text != tc.raw {
+			t.Errorf("args=%q state=%q: text=%q, want %q", tc.raw, tc.state, items[0].Text, tc.raw)
+		}
 	}
 }

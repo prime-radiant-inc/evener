@@ -14,6 +14,7 @@ import { cadenceStateFor } from "../../shell/sessionStatus";
 import { useIsMobile } from "../../shell/useIsMobile";
 import { workspaceStore } from "../../shell/workspace";
 import { controlsFor, recoveryFence } from "../../stores/liveControls";
+import { usePrefsStore } from "../../stores/prefs";
 import { ownerRetainedRef } from "../../stores/recoveryFence";
 import { threadsStore, useThreadsStore } from "../../stores/threads";
 import { transcriptDisplayStore, useTranscriptDisplayStore } from "../../stores/transcriptDisplay";
@@ -401,12 +402,17 @@ function LiveConversationBody({
   );
 
   const seenBoundary = useSeenDivider(ref, model);
+  const openAtUnreadReplies = usePrefsStore((state) => state.openAtUnreadReplies);
   const retainedCapture = seat.readView?.getCapture();
-  const openingTurnId = unseenOpeningTurnId(seenBoundary, {
-    thread: model,
-    askDockPending: askPending,
-    retained: retainedCapture,
-  });
+  const openingTurnId = unseenOpeningTurnId(
+    seenBoundary,
+    {
+      thread: model,
+      askDockPending: askPending,
+      retained: retainedCapture,
+    },
+    openAtUnreadReplies,
+  );
   const openAtRow = useMemo(
     () => (openingTurnId === null ? -1 : transcriptFirstRowIndexForTurn(renderRows, openingTurnId)),
     [renderRows, openingTurnId],
@@ -457,6 +463,9 @@ function LiveConversationBody({
     ref,
     paneId: seat.viewFallbackId,
     rows: renderRows,
+    config: displayConfig,
+    cwd: model?.cwd,
+    disclosureScope: seat.readView?.id ?? seat.viewFallbackId,
     listRef: virtualListRef,
     ownerDocument,
     jumpToRow: flow.jumpToRow,
@@ -674,9 +683,9 @@ function LiveConversationBody({
         {/* Recovery keeps the composer and its menu mounted. Retain the
             fallback for other local snapshots with no Send surface, and for
             remote ones on a phone: the composer never mounts for a
-            notLoaded remote share, the phone layout has no status bar to
-            carry the menu, and a single-pane phone hides the rail, so this
-            menu is the only remaining way into Overview and About.
+            notLoaded remote share, and a single-pane phone hides the rail.
+            This fallback keeps session actions available; StackHost's top bar
+            supplies Find and Overview.
             Owner-retained sessions still direct recovery to their owner. */}
         {model.status.type === "notLoaded" &&
           !recoveryOwnerRef &&
@@ -777,18 +786,26 @@ function RestartRequiredNotice({ sessionRef, ownerRef }: { sessionRef: string; o
     }
   };
   return (
-    <div role="alert" data-reason={ownerRef ? "owner-retained" : "version-mismatch"}>
+    <InlineNotice
+      tone="danger"
+      live="alert"
+      data-reason={ownerRef ? "owner-retained" : "version-mismatch"}
+      action={
+        ownerRef ? (
+          <>
+            <Button disabled={refreshing} onClick={() => void refresh()}>
+              Refresh session
+            </Button>
+            {error && <span>{error}</span>}
+          </>
+        ) : undefined
+      }
+    >
       {ownerRef
         ? "This session is retained by its owning session. Its uncertain messages cannot be checked here until the owner releases it."
         : DEGRADED_VERSION_NOTICE}
       {ownerRef && <a href={paneToURL("session", { ref: ownerRef }) ?? undefined}>Open owning session</a>}
-      {ownerRef && (
-        <Button disabled={refreshing} onClick={() => void refresh()}>
-          Refresh session
-        </Button>
-      )}
-      {error && <span>{error}</span>}
-    </div>
+    </InlineNotice>
   );
 }
 

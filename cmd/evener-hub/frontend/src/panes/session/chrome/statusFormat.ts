@@ -3,7 +3,7 @@
 // convention as protocol/displayFormat.ts,
 // deliberately not shared with it (see formatWorkDuration's own comment for
 // why).
-import { type EffectiveContextStatus, effectiveContextStatus } from "@evener/appwire-client";
+import { type EffectiveContextStatus, effectiveContextStatus, type ThreadModel } from "@evener/appwire-client";
 import type { MeterTone } from "../../../widgets";
 
 export { type EffectiveContextStatus, effectiveContextStatus };
@@ -67,6 +67,21 @@ export function formatWorkDuration(ms: number): string {
 // legacy model chip's own text.
 export function modelLabel(modelProvider: string, model: string): string {
   return model && model !== modelProvider ? `${modelProvider}/${model}` : modelProvider;
+}
+
+// modelIdentity is the picker's identity for the running model: the qualified
+// "provider/model" a catalog row is addressed by (modelCatalogView.ts's
+// toCatalogOptions). It deliberately does NOT collapse the cold-hydrate shape
+// the way modelLabel does - display copy may read an equal pair as one string,
+// but that string can never match the catalog's qualified id, so the running
+// row would draw unmarked. modelProfile is the snapshot's provider named apart
+// from the model id, and it is what makes an equal pair addressable. Same
+// rules as the phone sheet's qualifiedModelIdentity
+// (mobile-native/src/session/sessionFacts.ts).
+export function modelIdentity(model: Pick<ThreadModel, "modelProvider" | "model" | "modelProfile">): string {
+  const modelId = model.model || model.modelProvider;
+  const provider = model.modelProfile || (model.modelProvider !== modelId ? model.modelProvider : "");
+  return modelId && provider ? `${provider}/${modelId}` : modelId;
 }
 
 // totalWorkMillis adds the in-flight turn's live elapsed time (now minus

@@ -31,15 +31,22 @@ export const STATE_LABELS: Record<CadenceState, string> = {
   ended: "Ended",
 };
 
-type Family = "alive" | "attention" | "danger" | "neutral";
+export type StatusFamily = "alive" | "attention" | "danger" | "neutral";
 
-const STATE_FAMILY: Record<CadenceState, Family> = {
+/** The one session-state -> status-family map. StatusDot renders the same
+ * families without Cadence's activity trace, so it reads this table rather
+ * than carrying a copy. */
+export const STATE_FAMILY: Record<CadenceState, StatusFamily> = {
   working: "alive",
   "needs-you": "attention", // dot AND trailing (freshest) ticks go amber
   failed: "danger",
   idle: "neutral", // "quiet" — ticks (if any) read as already-aged
   ended: "neutral",
 };
+
+export function stateFamily(state: CadenceState): StatusFamily {
+  return STATE_FAMILY[state];
+}
 
 const BASE_CLASS = {
   cadence: requireClass(styles.cadence, "cadence.module.css", "cadence"),
@@ -48,7 +55,7 @@ const BASE_CLASS = {
   tick: requireClass(styles.tick, "cadence.module.css", "tick"),
 };
 
-const FAMILY_CLASS: Record<Family, string> = {
+const FAMILY_CLASS: Record<StatusFamily, string> = {
   alive: requireClass(styles.alive, "cadence.module.css", "alive"),
   attention: requireClass(styles.attention, "cadence.module.css", "attention"),
   danger: requireClass(styles.danger, "cadence.module.css", "danger"),
@@ -110,7 +117,7 @@ function ticksFor(frameTimes: number[], now: number): Tick[] {
  * SVG <title>, so it survives the trace's absence.
  */
 export function Cadence({ state, frameTimes, now }: CadenceProps) {
-  const familyClass = FAMILY_CLASS[STATE_FAMILY[state]];
+  const familyClass = FAMILY_CLASS[stateFamily(state)];
   const ticks = ticksFor(frameTimes, now);
 
   return (

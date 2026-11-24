@@ -10,8 +10,8 @@ import (
 
 // TestRestingStateLiveMatchesRestore replays every generated input history
 // through the live settle and through a restore of the saved session, and
-// requires the two to rest in the same state. Live settle decides from counters
-// and the accepted communicate; restore re-derives from the transcript, so a
+// requires the two to rest in the same state. Live settle reads pending asks;
+// restore re-derives them from the transcript, so a
 // divergence here is a session that rests differently after a daemon restart.
 func TestRestingStateLiveMatchesRestore(t *testing.T) {
 	t.Parallel()
@@ -19,15 +19,11 @@ func TestRestingStateLiveMatchesRestore(t *testing.T) {
 		name string
 		step func(llm.Request) llm.Response
 	}
-	communicate := func(reason string) move {
-		return move{name: "communicate " + reason, step: func(llm.Request) llm.Response { return endReasonResponse("answer", reason) }}
-	}
 	finals := []move{
 		{name: "plain reply", step: func(llm.Request) llm.Response { return agenttest.FinalResponse("answer") }},
-		communicate(""),
-		communicate("done"),
-		communicate("waiting_on_work"),
-		communicate("needs_response"),
+		{name: "quiet wait", step: func(llm.Request) llm.Response {
+			return quietYieldResponse("rest-wait", `{"message":"waiting on timer","next":"log_quietly_and_end_turn"}`)
+		}},
 		{name: "ask_user", step: func(llm.Request) llm.Response {
 			return agenttest.ToolCallResponse(askUserCall("ask1", askUserArgsValid()))
 		}},
@@ -36,9 +32,9 @@ func TestRestingStateLiveMatchesRestore(t *testing.T) {
 	// so the generated final input runs on top of a non-empty history.
 	preludes := []move{
 		{name: "fresh session"},
-		{name: "after a needs_response rest", step: communicate("needs_response").step},
-		{name: "after a done rest", step: communicate("done").step},
-		{name: "after a pending question", step: finals[5].step},
+		{name: "after a reply", step: finals[0].step},
+		{name: "after a quiet wait", step: finals[1].step},
+		{name: "after a pending question", step: finals[2].step},
 	}
 	for _, prelude := range preludes {
 		for _, final := range finals {
@@ -50,7 +46,7 @@ func TestRestingStateLiveMatchesRestore(t *testing.T) {
 				}
 				steps = append(steps, final.step)
 				live, restored := restoreAfter(t, steps, func(ctx context.Context, sess *Session) {
-					// A turn-ending waiting_on_work call is legitimate only while
+					// A quiet wait on an initiating turn is legitimate only while
 					// something can wake the session; arm a timer so every scripted
 					// ending is admitted. The watch does not affect the settle state
 					// this test compares.

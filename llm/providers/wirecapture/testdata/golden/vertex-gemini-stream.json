@@ -1,56 +1,48 @@
 {
   "case": "vertex-gemini-stream",
-  "ref": "google-vertex/gemini-2.5-flash",
+  "ref": "google-vertex/gemini-3.8-flash",
   "stream": true,
   "method": "POST",
-  "url": "https://aiplatform.googleapis.com/v1/projects/my-project/locations/global/publishers/google/models/gemini-2.5-flash:streamGenerateContent?alt=sse",
+  "url": "https://aiplatform.googleapis.com/v1/projects/my-project/locations/global/interactions",
   "headers": {
     "Authorization": "Bearer \u003ccredential\u003e",
     "Content-Type": "application/json",
     "X-Goog-User-Project": "my-project"
   },
   "body": {
-    "contents": [
+    "generation_config": {
+      "max_output_tokens": 65536,
+      "thinking_summaries": "auto",
+      "tool_choice": "any"
+    },
+    "input": [
       {
-        "parts": [
+        "content": [
           {
-            "text": "What is the weather in Oslo?"
+            "text": "What is the weather in Oslo?",
+            "type": "text"
           }
         ],
-        "role": "user"
+        "type": "user_input"
       }
     ],
-    "generationConfig": {
-      "maxOutputTokens": 65536
-    },
-    "systemInstruction": {
-      "parts": [
-        {
-          "text": "You are terse."
-        }
-      ]
-    },
-    "toolConfig": {
-      "functionCallingConfig": {
-        "mode": "ANY"
-      }
-    },
+    "model": "gemini-3.8-flash",
+    "store": false,
+    "stream": true,
+    "system_instruction": "You are terse.",
     "tools": [
       {
-        "functionDeclarations": [
-          {
-            "description": "Current weather",
-            "name": "weather",
-            "parameters": {
-              "properties": {
-                "city": {
-                  "type": "string"
-                }
-              },
-              "type": "object"
+        "description": "Current weather",
+        "name": "weather",
+        "parameters": {
+          "properties": {
+            "city": {
+              "type": "string"
             }
-          }
-        ]
+          },
+          "type": "object"
+        },
+        "type": "function"
       }
     ]
   },

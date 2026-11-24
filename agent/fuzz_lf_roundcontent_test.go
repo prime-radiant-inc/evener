@@ -81,7 +81,7 @@ func FuzzLfRouteNoToolCalls(f *testing.F) {
 	f.Add(uint8(3), false, false, true)  // EntryDelegateAttention, non-empty => runNoToolCalls
 	f.Add(uint8(3), false, false, false) // EntryDelegateAttention, non-empty, report-required => runNoToolCalls
 	f.Add(uint8(3), true, false, true)   // EntryDelegateAttention, empty, eligible => runNoToolCalls
-	f.Add(uint8(2), false, false, false) // EntryNotification, non-empty, no prior tools => finishIdle
+	f.Add(uint8(2), false, false, false) // EntryNotification, non-empty, no prior tools => runNoToolCalls
 	f.Add(uint8(2), false, false, true)  // EntryNotification, non-empty, prior tools => runNoToolCalls
 	f.Add(uint8(2), true, false, false)  // EntryNotification, empty => runNoToolCalls
 	f.Add(uint8(2), true, true, false)   // EntryNotification, empty, post-terminal => finishIdle (issue #329)
@@ -92,10 +92,10 @@ func FuzzLfRouteNoToolCalls(f *testing.F) {
 	f.Fuzz(func(t *testing.T, kindSel uint8, noContent bool, afterTerminal bool, priorToolActivity bool) {
 		kind := lf_entryKinds[int(kindSel)%len(lf_entryKinds)]
 
-		route := routeNoToolCalls(kind, priorToolActivity, noContent, afterTerminal)
+		route := routeNoToolCalls(kind, afterTerminal)
 
 		// Determinism.
-		if route2 := routeNoToolCalls(kind, priorToolActivity, noContent, afterTerminal); route != route2 {
+		if route2 := routeNoToolCalls(kind, afterTerminal); route != route2 {
 			t.Fatalf("nondeterministic route: %v vs %v", route, route2)
 		}
 		// Total function: exactly one of the two valid routes.
@@ -105,10 +105,9 @@ func FuzzLfRouteNoToolCalls(f *testing.F) {
 			t.Fatalf("invalid route %v", route)
 		}
 		// finishIdle is chosen ONLY for a notification turn after a terminal
-		// communicate (issue #329) or for a non-empty notification turn with no
-		// prior tool activity in this wake.
+		// communicate (issue #329).
 		want := runNoToolCalls
-		if kind == EntryNotification && (afterTerminal || (!noContent && !priorToolActivity)) {
+		if kind == EntryNotification && (afterTerminal) {
 			want = finishIdle
 		}
 		if route != want {

@@ -365,7 +365,7 @@ func TestCovDelegateFinish_NilSession(t *testing.T) {
 	const report = "accepted human report"
 	const reply = "generic reported result"
 	sess := &Session{}
-	if !sess.acceptCommunicateTerminal(context.Background(), report, reply, "", nil, "") {
+	if !sess.acceptCommunicateTerminal(context.Background(), report, reply, "", nil) {
 		t.Fatal("terminal report was not accepted")
 	}
 	reported := buildDelegateFinish(sess, reply, nil)
@@ -383,7 +383,7 @@ func TestCovDelegateFinish_NilSession(t *testing.T) {
 // TestCovDelegateFinish_WithError covers buildDelegateFinish with error
 func TestCovDelegateFinish_WithError(t *testing.T) {
 	t.Parallel()
-	finish := buildDelegateFinish(&Session{comm: communicateResult{called: true}}, "", context.DeadlineExceeded)
+	finish := buildDelegateFinish(&Session{comm: communicateResult{phase: commBoundarySettled}}, "", context.DeadlineExceeded)
 	if finish.outcome != delegatestore.OutcomeFailed || finish.disposition != delegatestore.DispositionTerminalError || finish.reason != "run_error" {
 		t.Fatalf("error finish = outcome:%q disposition:%q reason:%q", finish.outcome, finish.disposition, finish.reason)
 	}

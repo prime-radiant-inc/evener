@@ -155,6 +155,11 @@ type builder struct {
 	seedBuf     map[string]string
 	regNames    map[string]string
 	regCommArgs map[string]string
+	// entryAwaitingText carries the awaiting assistant entry's echo text for
+	// the one entry being projected: a COMMUNICATE entry that echoesAwaiting
+	// already decided is not a repeat seeds "" so the projection, which reads
+	// the same per-call text, cannot suppress the item on its own.
+	entryAwaitingText map[string]string
 	// itemBuf, turnBuf and updateBuf are the fixed-size encode scratch of the
 	// hot loop: the encode*Into functions fill them, and the table layer
 	// copies their bytes out synchronously, so reuse is safe.
@@ -166,7 +171,8 @@ type builder struct {
 func newBuilder(x *Index) builder {
 	return builder{
 		x: x, calls: map[string]uint64{}, names: map[string]toolName{}, open: map[string]uint64{}, models: map[string]strRef{},
-		commCalls: map[string]commState{}, seedBuf: map[string]string{}, regNames: map[string]string{}, regCommArgs: map[string]string{},
+		commCalls: map[string]commState{},
+		seedBuf:   map[string]string{}, regNames: map[string]string{}, regCommArgs: map[string]string{},
 		failures: transcript.NewFailureCounter(0),
 	}
 }
@@ -267,7 +273,7 @@ func (b *builder) applyLegacy(ordinal uint64, offset int64, length uint32, entry
 			}
 		}
 		var context strRef
-		if callID, ok := communicateResultCallID(entry, parts[i], seed); ok {
+		if callID, ok := b.resultContextTarget(entry, item, seed); ok {
 			if context, err = b.communicateContext(callID); err != nil {
 				return err
 			}
@@ -302,42 +308,47 @@ func (b *builder) registryNames(seed map[string]string) map[string]string {
 func (b *builder) registryCommArgs() map[string]string {
 	clear(b.regCommArgs)
 	for id, state := range b.commCalls {
-		b.regCommArgs[id] = state.rawArgs
+		if state.rawArgs != "" {
+			b.regCommArgs[id] = state.rawArgs
+		}
 	}
 	return b.regCommArgs
 }
 
-// communicateResultCallID reports the call id a TOOL/TOOL_RESULTS entry's
-// content part projects a communicate item for (a rejected or healed
-// communicate result), matching the name resolution apptranscript.ProjectTurn
-// itself applies (an explicit Name, or the seed's resolution of a blank one).
-func communicateResultCallID(entry *schema.Turn, part int, seed map[string]string) (string, bool) {
+// resultContextTarget reports whether item produced by entry needs a
+// Context contributor list for window.projectWithContext: a quiet_yield notice
+// or a communicate tool result.
+func (b *builder) resultContextTarget(entry *schema.Turn, item appwire.ThreadItem, seed map[string]string) (callID string, ok bool) {
 	if entry.Kind != schema.TurnTool && entry.Kind != schema.TurnToolResults {
 		return "", false
 	}
-	if part < 0 || part >= len(entry.Message.Content) {
+	if item.EventKind == appwire.ThreadItemEventKindQuietYield {
+		return item.CallID, true
+	}
+	if item.CallID == "" {
 		return "", false
 	}
-	content := entry.Message.Content[part]
-	if content.Kind != llm.ContentToolResult || content.ToolResult == nil {
-		return "", false
+	for _, content := range entry.Message.Content {
+		if content.Kind != llm.ContentToolResult || content.ToolResult == nil || content.ToolResult.ToolCallID != item.CallID {
+			continue
+		}
+		name := content.ToolResult.Name
+		if name == "" {
+			name = seed[content.ToolResult.ToolCallID]
+		}
+		if apptranscript.IsCommunicateTool(name, entry.ResultToolName) || apptranscript.IsQuietCommunicate(content.ToolResult) {
+			return item.CallID, true
+		}
 	}
-	name := content.ToolResult.Name
-	if name == "" {
-		name = seed[content.ToolResult.ToolCallID]
-	}
-	if name != "communicate" {
-		return "", false
-	}
-	return content.ToolResult.ToolCallID, true
+	return "", false
 }
 
 // communicateContext builds the Context an item at communicateResultCallID
-// needs: the assistant entry that set CommRawArgs for the call (always, if
-// known) and, when it differs, the assistant entry that most recently set
-// LastAssistantText (needed only by the healed-communicate echo check, but
-// harmless to include for a rejected one too) — sorted in file order, so a
-// reader replays them in the order they actually happened.
+// needs: the assistant entry that announced the call (always, if known) and,
+// when it differs, the assistant entry that most recently set LastAssistantText
+// (needed only by the healed-communicate echo check, but harmless to include
+// for a rejected one too) — sorted in file order, so a reader replays them in
+// the order they actually happened.
 func (b *builder) communicateContext(callID string) (strRef, error) {
 	var list []contextEntry
 	seen := map[int64]bool{}
@@ -353,9 +364,11 @@ func (b *builder) communicateContext(callID string) (strRef, error) {
 		list = append(list, contextEntry{contributor: pos, TurnID: ref})
 		return nil
 	}
-	if state, ok := b.commCalls[callID]; ok {
-		if err := add(state.pos, state.turnID); err != nil {
-			return strRef{}, err
+	if callID != "" {
+		if state, ok := b.commCalls[callID]; ok {
+			if err := add(state.pos, state.turnID); err != nil {
+				return strRef{}, err
+			}
 		}
 	}
 	if b.lastAssistantKnown {
@@ -377,13 +390,54 @@ func (b *builder) communicateContext(callID string) (strRef, error) {
 // comment). Called after the entry's items are recorded, so
 // communicateContext above still sees the state as it stood when this entry
 // was projected.
+//
+// A new-format quiet communicate call is tracked here too, with no raw
+// arguments: its quiet_yield item needs the assistant entry as Context, and
+// persisting the call in meta.CommCalls keeps that Context available to an
+// adopted or cut-reconstructed build.
+func (b *builder) recordCommState(entry *schema.Turn, turnID string, seed map[string]string, c contributor, items []appwire.ThreadItem) {
+	switch entry.Kind {
+	case schema.TurnAssistant:
+		for _, part := range entry.Message.Content {
+			if !deferredCommCall(entry, part) {
+				continue
+			}
+			state := commState{pos: c, turnID: turnID}
+			if entry.Format != schema.TurnFormatIdentity || (entry.Authorship != nil && entry.Authorship.Inherited) {
+				state.rawArgs = part.ToolCall.SentArguments()
+			}
+			b.commCalls[part.ToolCall.ID] = state
+		}
+		// Mirrors ProjectTurn: only a non-empty text updates the sticky
+		// value, and only the entry's own trailing text (never a healed
+		// communicate — main's fix defers that entirely to the result turn).
+		if lastText := agentMessageText(items); lastText != "" {
+			b.lastAssistantText, b.lastAssistantTurnID, b.lastAssistantPos, b.lastAssistantKnown = lastText, turnID, c, true
+		}
+	case schema.TurnTool, schema.TurnToolResults:
+		for _, part := range entry.Message.Content {
+			if part.Kind != llm.ContentToolResult || part.ToolResult == nil {
+				continue
+			}
+			id := part.ToolResult.ToolCallID
+			name := part.ToolResult.Name
+			if name == "" {
+				name = seed[id]
+			}
+			if apptranscript.IsCommunicateTool(name, entry.ResultToolName) || apptranscript.IsQuietCommunicate(part.ToolResult) {
+				delete(b.commCalls, id)
+			}
+		}
+	}
+}
+
 // deferredCommCall reports whether an assistant entry's tool call announces a
 // deferred communicate call — the one predicate both recordCommState records
 // pending calls by and the cut reconstruction's suffix scan answers, so the
 // two can never disagree on what counts as one.
 func deferredCommCall(entry *schema.Turn, part llm.ContentPart) bool {
-	return part.Kind == llm.ContentToolCall && part.ToolCall != nil && part.ToolCall.Name == "communicate" &&
-		(entry.Format != schema.TurnFormatIdentity || entry.Authorship != nil && entry.Authorship.Inherited)
+	return part.Kind == llm.ContentToolCall && part.ToolCall != nil && apptranscript.IsCommunicateTool(part.ToolCall.Name, entry.ResultToolName) &&
+		(entry.Format != schema.TurnFormatIdentity || entry.Authorship != nil)
 }
 
 // agentMessageText answers an entry's trailing agent-message text from its
@@ -398,45 +452,6 @@ func agentMessageText(items []appwire.ThreadItem) string {
 		}
 	}
 	return lastText
-}
-
-// recordCommState applies the entry's effects on the deferred-communicate
-// state ProjectTurn's ToolCallRegistry threads — the same effects
-// recordNames applies to tool names, kept separate because unlike names this
-// state is never reset at a legacy group boundary (see the builder doc
-// comment). Called after the entry's items are recorded, so
-// communicateContext above still sees the state as it stood when this entry
-// was projected.
-func (b *builder) recordCommState(entry *schema.Turn, turnID string, seed map[string]string, c contributor, items []appwire.ThreadItem) {
-	if entry.Kind == schema.TurnAssistant {
-		for _, part := range entry.Message.Content {
-			if deferredCommCall(entry, part) {
-				b.commCalls[part.ToolCall.ID] = commState{rawArgs: part.ToolCall.SentArguments(), pos: c, turnID: turnID}
-			}
-		}
-		// Mirrors ProjectTurn: only a non-empty text updates the sticky
-		// value, and only the entry's own trailing text (never a healed
-		// communicate — main's fix defers that entirely to the result turn).
-		if lastText := agentMessageText(items); lastText != "" {
-			b.lastAssistantText, b.lastAssistantTurnID, b.lastAssistantPos, b.lastAssistantKnown = lastText, turnID, c, true
-		}
-		return
-	}
-	if entry.Kind != schema.TurnTool && entry.Kind != schema.TurnToolResults {
-		return
-	}
-	for _, part := range entry.Message.Content {
-		if part.Kind != llm.ContentToolResult || part.ToolResult == nil {
-			continue
-		}
-		name := part.ToolResult.Name
-		if name == "" {
-			name = seed[part.ToolResult.ToolCallID]
-		}
-		if name == "communicate" {
-			delete(b.commCalls, part.ToolResult.ToolCallID)
-		}
-	}
 }
 
 // applyIdentity indexes a new-format entry: it joins the turn its TurnID
@@ -485,7 +500,15 @@ func (b *builder) applyIdentity(ordinal uint64, offset int64, length uint32, ent
 			return err
 		}
 		if !echoes {
-			if err := b.appendItems(slot, entry, c, nil, nil); err != nil {
+			// Seed the projection's echo check with the decision
+			// echoesAwaiting just made: present with no text means "not a
+			// repeat", so the delivery keeps its own item.
+			if entry.Communicate != nil {
+				b.entryAwaitingText = map[string]string{entry.Communicate.CallID: ""}
+			}
+			err := b.appendItems(slot, entry, c, nil, nil)
+			b.entryAwaitingText = nil
+			if err != nil {
 				return err
 			}
 		} else if err := b.attachCommunicationEcho(summary, entry, c); err != nil {
@@ -497,6 +520,11 @@ func (b *builder) applyIdentity(ordinal uint64, offset int64, length uint32, ent
 		}
 	}
 	if entry.Kind == schema.TurnCompletion {
+		if completion := entry.Completion; completion != nil && completion.AcceptedCommunicateCallID != "" {
+			if err := b.linkCommunicationEvidence(slot, completion.AcceptedCommunicateCallID, c); err != nil {
+				return err
+			}
+		}
 		delete(b.open, turnID)
 		if err := b.interruptAwaitedCalls(summary, c); err != nil {
 			return err
@@ -709,6 +737,7 @@ func (b *builder) appendItems(slot uint64, entry *schema.Turn, c contributor, se
 	reg := &apptranscript.ToolCallRegistry{
 		Names: b.registryNames(seed), CommRawArgs: b.registryCommArgs(),
 		LastAssistantText: b.lastAssistantText, LastAssistantTurnID: b.lastAssistantTurnID,
+		CommAwaitingText: b.entryAwaitingText,
 	}
 	items, parts := apptranscript.ProjectEntryParts(entry.TurnID, int(c.Ordinal)+1, *entry, reg, apptranscript.AddressedImageProjector, apptranscript.ToolResultOutputImages)
 	summary, err := b.load(slot)
@@ -727,7 +756,7 @@ func (b *builder) appendItems(slot uint64, entry *schema.Turn, c contributor, se
 			}
 		}
 		var context strRef
-		if callID, ok := communicateResultCallID(entry, parts[i], seed); ok {
+		if callID, ok := b.resultContextTarget(entry, item, seed); ok {
 			var err error
 			if context, err = b.communicateContext(callID); err != nil {
 				return err
@@ -790,37 +819,35 @@ func (b *builder) completeCommunications(slot uint64, entry *schema.Turn, c cont
 		if apptranscript.CommunicateTerminalAccepted(*entry, id) == nil {
 			continue
 		}
-		const batch = 128
-		for end := b.x.items.n; end > 0; {
-			start := end - min(end, batch)
-			buf, err := b.x.items.read(start, int(end-start))
+		if err := b.linkCommunicationEvidence(slot, id, c); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (b *builder) linkCommunicationEvidence(slot uint64, id string, c contributor) error {
+	const batch = 128
+	for end := b.x.items.n; end > 0; {
+		start := end - min(end, batch)
+		buf, err := b.x.items.read(start, int(end-start))
+		if err != nil {
+			return err
+		}
+		for position := end; position > start; position-- {
+			record := decodeItem(buf[(position-1-start)*itemRecordSize:])
+			if uint64(record.Turn) != slot || record.Call.Len == 0 || record.Opener.Ordinal >= c.Ordinal {
+				continue
+			}
+			matches, err := b.communicationMatches(record, id)
 			if err != nil {
 				return err
 			}
-			found := false
-			for position := end; position > start; position-- {
-				record := decodeItem(buf[(position-1-start)*itemRecordSize:])
-				if uint64(record.Turn) != slot || record.Call.Len == 0 || record.Opener.Ordinal >= c.Ordinal {
-					continue
-				}
-				matches, err := b.communicationMatches(record, id)
-				if err != nil {
-					return err
-				}
-				if !matches {
-					continue
-				}
-				if err := b.addContributor(position-1, c, c.Ordinal+1); err != nil {
-					return err
-				}
-				found = true
-				break
+			if matches {
+				return b.addContributor(position-1, c, c.Ordinal+1)
 			}
-			if found {
-				break
-			}
-			end = start
 		}
+		end = start
 	}
 	return nil
 }
@@ -876,7 +903,10 @@ func (b *builder) attachCommunicationEcho(summary turnRecord, entry *schema.Turn
 }
 
 // echoesAwaiting reports whether a COMMUNICATE entry's message repeats the
-// last text run of its turn's awaiting ASSISTANT entry, which already shows it.
+// text of the assistant entry that announced its call. A later round that
+// shows no text of its own delivers its own message even when it repeats an
+// earlier round's text, and a quiet entry (whose prose the transcript hides)
+// never suppresses a genuine delivery.
 func (b *builder) echoesAwaiting(summary turnRecord, entry *schema.Turn) (bool, error) {
 	if entry.Communicate == nil || summary.AwaitingLength == 0 {
 		return false, nil
@@ -885,26 +915,11 @@ func (b *builder) echoesAwaiting(summary turnRecord, entry *schema.Turn) (bool, 
 	if err != nil {
 		return false, err
 	}
-	return apptranscript.EchoesAssistantText(lastTextRun(awaiting.Message.Content), entry.Communicate.Message), nil
-}
-
-// lastTextRun is the text of the run the entry's last agentMessage shows.
-func lastTextRun(content []llm.ContentPart) string {
-	end := len(content)
-	for end > 0 && content[end-1].Kind != llm.ContentText {
-		end--
+	echoText := apptranscript.AssistantEchoText(*awaiting)
+	if echoText == "" {
+		return false, nil
 	}
-	start := end
-	for start > 0 && (content[start-1].Kind == llm.ContentText || apptranscript.MetadataOnlyResponsesReasoning(content[start-1])) {
-		start--
-	}
-	var run strings.Builder
-	for _, part := range content[start:end] {
-		if part.Kind == llm.ContentText {
-			run.WriteString(part.Text)
-		}
-	}
-	return run.String()
+	return apptranscript.EchoesAssistantText(echoText, entry.Communicate.Message), nil
 }
 
 func (b *builder) awaitingEntry(summary turnRecord) (*schema.Turn, error) {
@@ -983,7 +998,7 @@ func (b *builder) seed(entry *schema.Turn) (map[string]string, error) {
 				name = resolved.name
 			}
 		}
-		if name != "communicate" {
+		if !apptranscript.IsCommunicateTool(name, entry.ResultToolName) || apptranscript.IsQuietCommunicate(part.ToolResult) {
 			continue
 		}
 		// A rebuild-free extend also needs the deferred-communicate state
@@ -1025,7 +1040,7 @@ func (b *builder) recordNames(entry *schema.Turn, seed map[string]string) {
 			if name == "" {
 				name = seed[part.ToolResult.ToolCallID]
 			}
-			if name == "communicate" {
+			if apptranscript.IsCommunicateTool(name, entry.ResultToolName) || apptranscript.IsQuietCommunicate(part.ToolResult) {
 				b.setName(part.ToolResult.ToolCallID, toolName{})
 			}
 		}
