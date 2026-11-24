@@ -1,6 +1,6 @@
 ---
 name: reading-transcripts
-description: Choose live evidence vs. transcript tools and page archived sessions cleanly.
+description: Use when auditing prior sessions, recovering compacted context, reading missing delegate reports, or paging retained job or artifact output.
 user-invocable: false
 ---
 # Reading transcripts

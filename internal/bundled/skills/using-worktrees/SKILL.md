@@ -1,6 +1,6 @@
 ---
 name: using-worktrees
-description: Choose managed git worktrees vs. plain git, run local merges, and clean up task worktrees.
+description: Use when creating or retiring git worktrees, isolating parallel writers, or merging a branch locally.
 user-invocable: false
 ---
 # Using worktrees

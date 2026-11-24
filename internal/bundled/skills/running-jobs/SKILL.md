@@ -1,6 +1,6 @@
 ---
 name: running-jobs
-description: Size delegates, write briefs, pick worktree or sandbox isolation, manage background jobs, and verify results.
+description: Use when delegating work, running background or detached jobs, or setting job watches.
 user-invocable: false
 ---
 # Running jobs and delegates
