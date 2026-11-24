@@ -165,10 +165,14 @@ func SetMaxGlobMatchesForTesting(n int) (restore func()) {
 // a case that does not arise would cost the hot path for nothing; a caller
 // running globs concurrently gives each one its own budget.
 type GlobBudget struct {
-	listings  int
-	matches   int
-	truncated bool
-	op        string
+	listings            int
+	matches             int
+	truncated           bool
+	op                  string
+	maxListings         int
+	maxDirEntries       int
+	maxLiveEntries      int
+	maxIgnoreTotalBytes int
 	// peakDirEntries is the largest number of entries tooManyEntries has ever
 	// been asked to charge to a single listing. The per-listing bound exists
 	// to cap peak memory, not merely to end in a refusal eventually, so this
@@ -218,6 +222,46 @@ func NewGlobBudget() *GlobBudget {
 	return newGlobBudget("glob")
 }
 
+// newProjectFilesBudget constructs a GlobBudget carrying interactive project-file
+// walk bounds so search calls never inherit the million-listing agent glob cap.
+func newProjectFilesBudget(limits ProjectFilesLimits) *GlobBudget {
+	return &GlobBudget{
+		op:                  "files_search",
+		maxListings:         limits.MaxDirListings,
+		maxDirEntries:       limits.MaxDirEntries,
+		maxLiveEntries:      limits.MaxLiveEntries,
+		maxIgnoreTotalBytes: limits.MaxIgnoreTotalBytes,
+	}
+}
+
+func (b *GlobBudget) listingsLimit() int {
+	if b.maxListings > 0 {
+		return b.maxListings
+	}
+	return maxGlobDirListings
+}
+
+func (b *GlobBudget) dirEntriesLimit() int {
+	if b.maxDirEntries > 0 {
+		return b.maxDirEntries
+	}
+	return maxGlobDirEntries
+}
+
+func (b *GlobBudget) liveEntriesLimit() int {
+	if b.maxLiveEntries > 0 {
+		return b.maxLiveEntries
+	}
+	return maxGlobLiveEntries
+}
+
+func (b *GlobBudget) ignoreTotalBytesLimit() int {
+	if b.maxIgnoreTotalBytes > 0 {
+		return b.maxIgnoreTotalBytes
+	}
+	return maxGlobIgnoreTotalBytes
+}
+
 // listing charges one more directory listing to the budget regardless of
 // cycleSafe: an unbounded `**` over a huge tree costs unbounded work even
 // where the cycle check works, so the bound has to apply whether or not this
@@ -226,11 +270,12 @@ func NewGlobBudget() *GlobBudget {
 // that hit the bound could have detected a symlink cycle on its own (only
 // where the filesystem reports file identity), false when it could not.
 func (b *GlobBudget) listing(cycleSafe bool) error {
+	limit := b.listingsLimit()
 	b.listings++
-	if b.listings <= maxGlobDirListings {
+	if b.listings <= limit {
 		return nil
 	}
-	return &globBudgetError{count: b.listings, budget: maxGlobDirListings, cycleSafe: cycleSafe, op: b.op, kind: budgetListings}
+	return &globBudgetError{count: b.listings, budget: limit, cycleSafe: cycleSafe, op: b.op, kind: budgetListings}
 }
 
 // tooManyEntries reports the refusal for a listing that has read more entries
@@ -240,13 +285,14 @@ func (b *GlobBudget) listing(cycleSafe bool) error {
 // only the one that finally trips, so peakDirEntries reflects how far a
 // listing actually got even on the chunks that stay under the bound.
 func (b *GlobBudget) tooManyEntries(dir string, read int) error {
+	limit := b.dirEntriesLimit()
 	if read > b.peakDirEntries {
 		b.peakDirEntries = read
 	}
-	if read <= maxGlobDirEntries {
+	if read <= limit {
 		return nil
 	}
-	return &globBudgetError{count: read, dir: dir, budget: maxGlobDirEntries, cycleSafe: true, op: b.op, kind: budgetEntries}
+	return &globBudgetError{count: read, dir: dir, budget: limit, cycleSafe: true, op: b.op, kind: budgetEntries}
 }
 
 // isGlobWalkAncestor reports whether dir is a proper ancestor of name in the
@@ -266,6 +312,7 @@ func isGlobWalkAncestor(dir, name string) bool {
 // release rule drops any entry that is not a proper ancestor of dir, and dir
 // is not an ancestor of itself.
 func (b *GlobBudget) holdEntries(dir string, n int) error {
+	limit := b.liveEntriesLimit()
 	kept := 0
 	total := n
 	for _, d := range b.live {
@@ -279,8 +326,8 @@ func (b *GlobBudget) holdEntries(dir string, n int) error {
 	if total > b.peakLiveEntries {
 		b.peakLiveEntries = total
 	}
-	if total > maxGlobLiveEntries {
-		return &globBudgetError{count: total, budget: maxGlobLiveEntries, cycleSafe: true, op: b.op, kind: budgetLiveEntries}
+	if total > limit {
+		return &globBudgetError{count: total, budget: limit, cycleSafe: true, op: b.op, kind: budgetLiveEntries}
 	}
 	return nil
 }
@@ -334,12 +381,13 @@ func (c ignoreFileCost) charge() int {
 // because the matchers and the dedupe entries are never released before the
 // call ends.
 func (b *GlobBudget) retainIgnoreFile(c ignoreFileCost) error {
+	limit := b.ignoreTotalBytesLimit()
 	total := satAdd(int64(b.ruleBytes), int64(c.charge()))
 	b.ruleBytes = int(total)
-	if total <= int64(maxGlobIgnoreTotalBytes) {
+	if total <= int64(limit) {
 		return nil
 	}
-	return &globBudgetError{count: int(total), budget: maxGlobIgnoreTotalBytes, cycleSafe: true, op: b.op, kind: budgetRulesTotal}
+	return &globBudgetError{count: int(total), budget: limit, cycleSafe: true, op: b.op, kind: budgetRulesTotal}
 }
 
 // satAdd keeps the ignore-cost arithmetic from wrapping: it saturates at the
