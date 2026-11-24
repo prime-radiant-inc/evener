@@ -106,8 +106,9 @@ Needs-you row, and what a working row is waiting on or what the job it is
 running says it is for, falling back to that job's command. The words
 come from the shared
 [`whyLine`](../../appwire-client/typescript/state/navigation/liveAttention.ts);
-the rail prints its state word and leaves the sentence that only says to
-open the session to the phone.
+the desktop rail uses the attention word without the generic invitation to open the
+session. In the web phone drawer and tablet board, a nonblank question from the
+navigation summary replaces that word on the same line. This needs no detail read.
 
 The order on screen is the order the keyboard walks: the live-session chords
 (Alt+Shift+Arrow) follow the bands top to bottom

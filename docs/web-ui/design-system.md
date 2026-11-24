@@ -446,7 +446,9 @@ and a press is `--hover-2`. The selected row, the session the workspace is showi
 onto `--surface-1` with `--shadow-card-ringed` and semibold ink, the one selected-row
 recipe `Tree` and `ListRow` share. `Tree` owns the inset, all three states, the press and
 the nested levels' guide rails (§3); the rail contributes row content only. Section
-headings stay full-bleed above the rows.
+headings stay full-bleed above the rows. In the phone drawer and tablet board, session
+names are semibold UI text. Band names use caption size. Ages and explanations stay
+regular even on the selected surface, so the name is what the eye finds first.
 
 **Dock tabs, sashes and the status bar.** A dock tab is a pill seated in the tab strip
 with a hairline of strip around it and no divider between tabs. The focused group's
@@ -469,7 +471,9 @@ band that has sessions is a fold in the section's `Tree`, its name in medium ink
 animate when a session changes band. A Live row may carry one second line, in caption
 type and medium ink, that truncates and never wraps, and it prints only what the band
 and the dot have not already said: on a Needs-you row the kind of attention (question,
-approval, failure, warning, restart) in the dot's own ink; on a working row what it is
+approval, failure, warning, restart) in the dot's own ink. The phone drawer and tablet
+board use the actual pending question instead when the navigation row carries it, in
+ordinary caption ink beside the attention dot. On a working row the line says what it is
 waiting on or running, or its wait for a usage limit. A row that is simply working or
 idle keeps one line. The same line names the row's host where Live spans hosts and the
 row is away from this hub, or the host is offline. Rows outside Live keep the one-line
@@ -1503,7 +1507,7 @@ shows its first rows immediately, with no "show more" tap. The archive keeps
 its existing grouping (archived projects, then per-project archived lists)
 and loads itself: an archived overflow row that scrolls into view fetches
 its next page, so reaching the end of the list extends it rather than paging
-it. One search field; no ⌘K hint text anywhere in the UI.
+it. The board's Search action opens the palette's search field. No ⌘K hint text appears in the UI.
 
 **Tablet splits board and conversation side-by-side.** The 768–899px band is
 the tablet: StackHost keeps its phone anatomy, but the rail leaves the drawer
