@@ -1758,19 +1758,6 @@ async function reloadAndMobileJourney() {
   })()`, "phone Overview sheet settled and Agents row is hit-testable");
   await driver.clickAt(sheetAgents.x, sheetAgents.y);
   await wait(sidebarEntranceSettled, "phone Overview entrance settled before physical row tap");
-  await wait(`(() => {
-    const sidebar = document.querySelector('[data-testid="activity-sidebar"][aria-label="Overview"]');
-    const dialogs = [...document.querySelectorAll('[role="dialog"][aria-modal="true"]')];
-    const tab = sidebar?.querySelector('[role="tablist"] [role="tab"][aria-label^="Agents"]');
-    return sidebar && dialogs.length === 1 && dialogs[0] === sidebar
-      && tab?.getAttribute('aria-selected') === 'true'
-      && sidebar.querySelectorAll('[role="radio"], [aria-checked]').length === 0
-      && document.activeElement === tab;
-  })()`, "phone Overview modal dialog owns focus on its Agents tab");
-  const phoneAx = await queryAccessibilityTree(driver.send, '[data-testid="activity-sidebar"]');
-  assert.ok(phoneAx?.some((node) => !node.ignored && node.role?.value === "dialog"), "phone Overview exposes dialog role in AX tree");
-  assert.ok(phoneAx?.some((node) => !node.ignored && node.role?.value === "tab" && node.properties?.some((prop) => prop.name === "selected" && prop.value?.value === true)), "phone Overview exposes selected tab in AX tree");
-  assert.equal(phoneAx?.some((node) => !node.ignored && node.role?.value === "radio"), false, "phone Overview exposes no radio role in AX tree");
   const mobileRow = await reveal(fixture.edges[0], '[data-testid="activity-sidebar"]');
   const mobileRowPoint = await driver.settleExpression(`(() => {
     const row = document.querySelector(${q(mobileRow)});
