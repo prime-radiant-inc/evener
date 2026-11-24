@@ -35,19 +35,6 @@
     justify-content: flex-end;
     gap: var(--space-2);
   }
-  /* Local mirror of the shared IconButton's xs square for the close control:
-     the real control gets its box from iconbutton.module.css, which this
-     fixture does not load (its phone tap floor's media block is asserted in
-     iconbutton.test.tsx, and no assertion here measures the close control).
-     The dialog.module.css seat that positions it is real. */
-  .closeControl {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 24px;
-    height: 24px;
-    padding: 0;
-  }
 </style>
 </head>
 <body>
@@ -121,7 +108,7 @@
         </div>
       </div>
     </div>
-    <span class="closeSeat"><button type="button" class="closeControl" aria-label="Close">✕</button></span>
+    <span class="closeSeat"><button type="button" class="button quiet squareXs" aria-label="Close">✕</button></span>
   </div>
 </div>
 <script>
@@ -134,7 +121,7 @@ function scrollable(el) {
   return { ...rectOf(el), scrollHeight: el.scrollHeight, clientHeight: el.clientHeight, overflowY: getComputedStyle(el).overflowY };
 }
 
-window.measure = function () {
+window.measure = () => {
   const panel = document.getElementById("panel");
   const body = document.getElementById("body");
   const browser = document.getElementById("browser");
@@ -144,6 +131,7 @@ window.measure = function () {
   const newFolder = document.getElementById("new-folder");
   const useFolder = document.getElementById("use-folder");
   const cancel = document.getElementById("cancel");
+  const closeButton = document.querySelector(".closeSeat button");
 
   return {
     viewport: { w: window.innerWidth, h: window.innerHeight },
@@ -156,6 +144,7 @@ window.measure = function () {
     newFolder: rectOf(newFolder),
     useFolder: rectOf(useFolder),
     cancel: rectOf(cancel),
+    closeButton: rectOf(closeButton),
   };
 };
 </script>
