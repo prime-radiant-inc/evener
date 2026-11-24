@@ -119,3 +119,21 @@ test("the field seat is one ground for a tile's leading glyph", () => {
   expect(seat).toMatch(/background:\s*var\(--field\)/);
   expect(seat).toMatch(/width:\s*var\(--field-seat-size\)/);
 });
+
+test("the left-rail body is one recipe and both daemon notices compose it", () => {
+  const recipe = ruleBody(surface, ".railBody");
+  expect(recipe).toMatch(/padding:\s*var\(--space-2\)/);
+  expect(recipe).toMatch(/border-left:\s*2px solid var\(--edge\)/);
+  expect(recipe).toMatch(/font-family:\s*var\(--font-sans\)/);
+  expect(recipe).toMatch(/font-size:\s*var\(--font-size-body\)/);
+  expect(recipe).toMatch(/color:\s*var\(--ink-mid\)/);
+  for (const [file, selector] of [
+    ["panes/session/transcript/messages/steeringitem.module.css", ".body"],
+    ["panes/session/transcript/messages/memorycontextitem.module.css", ".body"],
+  ] as const) {
+    const consumer = ruleBody(read(file), selector);
+    expect(consumer).toMatch(/composes:\s*railBody from "[./]*styles\/surface\.module\.css"/);
+    expect(consumer).not.toMatch(/border-left:/);
+    expect(consumer).not.toMatch(/padding:\s*var\(--space-2\)/);
+  }
+});

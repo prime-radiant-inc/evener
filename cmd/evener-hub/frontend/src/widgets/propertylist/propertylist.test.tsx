@@ -86,10 +86,13 @@ test("eyebrowLabels labels rows with the eyebrow recipe, and only when asked", (
   expect(eyebrow).toHaveLength(plain.length + 1);
 
   const recipe = topRuleBlock(CSS, ".eyebrowLabel");
-  expect(recipe).toContain("font-size: var(--font-size-caption)");
-  expect(recipe).toContain("text-transform: uppercase");
-  expect(recipe).toContain("letter-spacing: var(--tracking-eyebrow)");
-  expect(recipe).toContain("font-weight: var(--font-weight-medium)");
+  expect(recipe).toContain('composes: eyebrowType from "../../styles/text.module.css"');
+
+  const type = topRuleBlock(readModuleCss(import.meta.url, "../../styles/text.module.css"), ".eyebrowType");
+  expect(type).toContain("font-size: var(--font-size-caption)");
+  expect(type).toContain("text-transform: uppercase");
+  expect(type).toContain("letter-spacing: var(--tracking-eyebrow)");
+  expect(type).toContain("font-weight: var(--font-weight-medium)");
 });
 
 test("stacked rows put the label over the value and wrap the value", () => {

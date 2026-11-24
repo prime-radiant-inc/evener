@@ -1165,10 +1165,7 @@ func TestDefGrepMaxResultsParam(t *testing.T) {
 	// Pin the default the way TestDefGrepContextLinesParam pins its range
 	// and default. Deriving the pin from
 	// execenv.DefaultGrepMaxResults — the constant every implementation site
-	// shares — keeps the advertised prose from drifting off the enforced
-	// default. The cap's own wording is prompt prose: it is pinned whole, as
-	// the memory_search description built from DefGrep, by the memoryprompt
-	// goldens, and never by substring here.
+	// shares — keeps the advertised default from drifting off the enforced one.
 	if !descriptionMentions(desc, execenv.DefaultGrepMaxResults) {
 		t.Errorf("max_results description should document the default of %d, got: %q", execenv.DefaultGrepMaxResults, desc)
 	}

@@ -416,6 +416,25 @@ func (c *delegateTreeController) delegateAttentionCommittedLocked(delegateID, at
 	return false
 }
 
+// delegateAttentionCommittedOrResolved reports whether attentionID has already
+// reached delegateID's attention rail: its wake is committed, or the receiver
+// has presented and resolved it. It is the lock-taking form for callers that
+// cannot prove they hold c.mu; the job manager asks it after releasing jm.mu,
+// because delegateController.mu must never nest inside jm.mu.
+func (c *delegateTreeController) delegateAttentionCommittedOrResolved(delegateID, attentionID string) bool {
+	if c == nil || delegateID == "" || attentionID == "" {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if aggregate := c.durable[delegateID]; aggregate != nil {
+		if _, resolved := aggregate.ResolvedAttention[attentionID]; resolved {
+			return true
+		}
+	}
+	return c.delegateAttentionCommittedLocked(delegateID, attentionID)
+}
+
 // delegateAttentionWillRaiseLocked reports whether queueing one more unheld row
 // would raise delegateID's NeedsAttention projection in the same Apply: the
 // flag is down and the delegate is eligible to need attention. Held rows keep

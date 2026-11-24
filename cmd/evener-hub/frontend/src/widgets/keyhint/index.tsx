@@ -1,5 +1,6 @@
 import { Fragment } from "react";
 import { requireClass } from "../internal/requireClass";
+import { VisuallyHidden } from "../visuallyhidden";
 import styles from "./keyhint.module.css";
 
 export interface KeyHintProps {
@@ -18,7 +19,6 @@ const BASE_CLASS = {
   key: requireClass(styles.key, "keyhint.module.css", "key"),
   separator: requireClass(styles.separator, "keyhint.module.css", "separator"),
   glyphs: requireClass(styles.glyphs, "keyhint.module.css", "glyphs"),
-  srOnly: requireClass(styles.srOnly, "keyhint.module.css", "srOnly"),
 };
 
 // "Mod" is the one platform-split key name this widget understands: the
@@ -70,7 +70,7 @@ export function KeyHint({ keys, compact = false }: KeyHintProps) {
         {/* The words, not the glyphs, are what an enclosing control's
             accessible name must carry - "Steer ⇧↵" is unspeakable. Same
             text the bordered form renders visibly. */}
-        <span className={BASE_CLASS.srOnly}>{keys.map(displayOf).join("+")}</span>
+        <VisuallyHidden>{keys.map(displayOf).join("+")}</VisuallyHidden>
       </span>
     );
   }
