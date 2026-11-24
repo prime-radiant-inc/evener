@@ -8,6 +8,7 @@ import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { useTestDrivenFakeTimers } from "../../testing/fakeTimers";
+import { Button } from "../../widgets";
 import { PluginSelectionPanel } from "./PluginSelectionPanel";
 
 const preview: PluginPreviewResponse = {
@@ -157,6 +158,17 @@ test("retry is reachable", async () => {
   renderPanel({ onRetry });
   await user.click(screen.getByRole("button", { name: "Retry" }));
   expect(onRetry).toHaveBeenCalledOnce();
+});
+
+test("the preview Retry uses the shared notice action treatment", () => {
+  renderPanel();
+  const retry = screen.getByRole("button", { name: "Retry" });
+  render(
+    <Button variant="quiet" size="sm">
+      reference
+    </Button>,
+  );
+  expect(retry.className).toBe(screen.getByRole("button", { name: "reference" }).className);
 });
 
 test("Details expands the candidate's details inline under its row, and again collapses", async () => {

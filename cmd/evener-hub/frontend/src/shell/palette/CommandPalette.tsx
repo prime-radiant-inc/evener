@@ -33,9 +33,11 @@ import { threadsStore } from "../../stores/threads";
 import { transcriptDisplayStore } from "../../stores/transcriptDisplay";
 import {
   Chip,
+  CloseIcon,
   Dialog,
   EmptyState,
   Eyebrow,
+  IconButton,
   InlineNotice,
   Input,
   ShortcutList,
@@ -79,7 +81,6 @@ import { fetchSearch, findInSessionMatches, type HighlightPart, highlightParts, 
 const CLASS = {
   palette: requireClass(styles.palette, "commandpalette.module.css", "palette"),
   pill: requireClass(styles.pill, "commandpalette.module.css", "pill"),
-  pillBack: requireClass(styles.pillBack, "commandpalette.module.css", "pillBack"),
   error: requireClass(styles.error, "commandpalette.module.css", "error"),
   results: requireClass(styles.results, "commandpalette.module.css", "results"),
   sectionHeader: requireClass(styles.sectionHeader, "commandpalette.module.css", "sectionHeader"),
@@ -813,9 +814,7 @@ function PaletteBody({
       {selectedCommand && (
         <div className={CLASS.pill}>
           <span>{selectedCommand.title}</span>
-          <button type="button" className={CLASS.pillBack} aria-label="back to command list" onClick={exitArgsMode}>
-            ×
-          </button>
+          <IconButton label="back to command list" icon={<CloseIcon />} variant="quiet" onClick={exitArgsMode} />
         </div>
       )}
       <Input

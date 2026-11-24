@@ -21,9 +21,10 @@
   min-width: 0;
 }
 
-/* errorRow: --danger is allowlisted for this widget in
+/* errorRoot: the danger family is allowlisted for this widget in
  * src/styles/token-contract.test.ts (a field validation error is exactly
  * the "genuine semantic state", not decoration, that allowlist exists for).
+ * Text uses the -ink companion, never the bare hue (design-system §2).
  */
 .errorRoot {
   border-left-color: var(--danger-edge);
@@ -48,5 +49,5 @@
 .errorText {
   margin: 0;
   font-size: var(--font-size-caption);
-  color: var(--danger);
+  color: var(--danger-ink);
 }

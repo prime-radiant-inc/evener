@@ -127,7 +127,7 @@ function ContentsBlockBody({ entry, onRetry }: PluginContentsBlockProps): ReactE
       tone="neutral"
       data-reason="components-degraded"
       action={
-        <Button size="sm" type="button" onClick={onRetry}>
+        <Button variant="quiet" size="sm" type="button" onClick={onRetry}>
           Retry
         </Button>
       }

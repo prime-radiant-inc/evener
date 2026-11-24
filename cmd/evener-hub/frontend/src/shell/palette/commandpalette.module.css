@@ -28,23 +28,6 @@
   font-weight: var(--font-weight-medium);
 }
 
-.pillBack {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border: none;
-  background: transparent;
-  color: var(--ink-mid);
-  cursor: pointer;
-  padding: 0;
-  line-height: 1;
-  font-size: var(--font-size-ui);
-}
-
-.pillBack:hover {
-  color: var(--ink-hi);
-}
-
 /* The inline error strip carries no color of its own: the danger hue is the
  * Chip widget's job (the design system gates the attention-family tokens to
  * allowlisted widgets), so this is a neutral, left-aligned wrapper that only
