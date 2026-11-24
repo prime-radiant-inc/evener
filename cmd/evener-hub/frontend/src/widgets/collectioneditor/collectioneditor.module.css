@@ -75,7 +75,3 @@
   min-width: 0;
 }
 
-/* --danger is allowlisted for this widget in
- * src/styles/token-contract.test.ts - inline add-validation failure is the
- * same "genuine semantic state" FormRow's own error text earns it for.
- */

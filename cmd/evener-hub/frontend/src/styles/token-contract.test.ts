@@ -422,7 +422,6 @@ const SEMANTIC_USE_ALLOWLIST = [
   "meter", // danger/attention fill tone
   "toast", // tone prop
   "formrow", // error-state left border + message text, the text in --danger-ink
-  "collectioneditor", // inline add-validation error text (wave 7)
   "failureglyph", // the ✗ that marks a failure - the hue IS the content
   "banner", // overlay status strip: tone prop (attention/danger) — a connection banner's whole purpose is to carry a warning hue
   "inlinenotice", // danger tone: an inline error message's ink is the "something failed" hue
