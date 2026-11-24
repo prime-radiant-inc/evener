@@ -55,7 +55,12 @@ func TestSessionReadFileSchema_Regime1_AnthropicClaude(t *testing.T) {
 
 	mr, ok := findToolDef(defs, "memory_read")
 	if !ok {
-		t.Fatal("memory_read not advertised")
+		sess.mu.Lock()
+		mr, ok = sess.deferredToolDefinitionLocked("memory_read")
+		sess.mu.Unlock()
+	}
+	if !ok {
+		t.Fatal("memory_read missing from both advertised and deferred definitions")
 	}
 	if _, hasVisionPrompt := toolProp(mr, "vision_prompt"); hasVisionPrompt {
 		t.Fatalf("memory_read advertised vision_prompt in Regime 1; def: %+v", mr)
@@ -122,7 +127,12 @@ func TestSessionReadFileSchema_Regime2_OpenAIGpt52(t *testing.T) {
 
 	mr, ok := findToolDef(defs, "memory_read")
 	if !ok {
-		t.Fatal("memory_read not advertised")
+		sess.mu.Lock()
+		mr, ok = sess.deferredToolDefinitionLocked("memory_read")
+		sess.mu.Unlock()
+	}
+	if !ok {
+		t.Fatal("memory_read missing from both advertised and deferred definitions")
 	}
 	if _, hasVPMR := toolProp(mr, "vision_prompt"); !hasVPMR {
 		t.Fatalf("memory_read omitted vision_prompt in Regime 2; def: %+v", mr)

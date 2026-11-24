@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -18,12 +19,18 @@ func TestContextLengthGuidanceFollowsTheCompactTool(t *testing.T) {
 				refreshModelFacingCaches(s)
 			}
 			data, _ := s.buildPromptData(s.env)
-			checkPromptInput(t, "HasTool compact_context", data.HasTool("compact_context"), tc.revoke == "")
+			checkPromptInput(t, "canInstructTool compact_context", s.canInstructTool("compact_context"), tc.revoke == "")
+			checkPromptInput(t, "HasTool compact_context (deferred on Turn 1)", data.HasTool("compact_context"), false)
 			prompt, warning, _ := s.renderSystemPrompt(s.env)
 			if warning != "" {
 				t.Fatalf("render system prompt: %s", warning)
 			}
-			systemPromptSection(t, prompt, "## How you work")
+			how := systemPromptSection(t, prompt, "## How you work")
+			if strings.Contains(how, "compact_context") {
+				t.Fatalf("## How you work unexpectedly named deferred compact_context:\n%s", how)
+			}
+			nudge := selfCompactNudge(s.canInstructTool("compact_context"), nil)
+			checkPromptInput(t, "selfCompactNudge names compact_context", strings.Contains(nudge, "compact_context"), tc.revoke == "")
 		})
 	}
 }

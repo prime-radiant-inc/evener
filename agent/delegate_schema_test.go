@@ -23,20 +23,19 @@ func TestDelegateAllowanceParamElidedWhenNoOp(t *testing.T) {
 			t.Fatalf("NewSession: %v", err)
 		}
 		t.Cleanup(sess.Close)
-		for _, td := range sess.cachedToolDefs {
-			props, ok := td.Parameters["properties"].(map[string]any)
-			if !ok {
-				continue
-			}
-			// Identify delegate by its signature params.
-			if _, hasPrompt := props["prompt"]; hasPrompt {
-				if _, hasAgentType := props["agent_type"]; hasAgentType {
-					return props
-				}
-			}
+		sess.mu.Lock()
+		td, ok := sess.deferredToolDefinitionLocked("delegate")
+		sess.mu.Unlock()
+		if !ok {
+			t.Fatal("deferred delegate tool def not found in session")
+			return nil
 		}
-		t.Fatal("delegate tool def not found in session")
-		return nil
+		props, ok := td.Parameters["properties"].(map[string]any)
+		if !ok {
+			t.Fatalf("delegate properties = %T, want map[string]any", td.Parameters["properties"])
+			return nil
+		}
+		return props
 	}
 
 	// Allowance 1 (depth 1): only legal grant is 0 → param elided.

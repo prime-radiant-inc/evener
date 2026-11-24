@@ -366,6 +366,7 @@ func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int,
 		onPublishLocked(published, restoredAt)
 	}
 	commit.resetEnvContextTrackerLocked(environmentTurnsRemoved(previousEnvironmentIDs, published))
+	s.syncDisclosedGuidesFromHistoryLocked(s.history)
 	commit.claimNoteLocked()
 	commit.publishedRevision = s.historyRevision
 	// The compaction-operation claim runs in the same s.mu critical section

@@ -32,8 +32,8 @@ func TestOneShotOmitsCeremonyTools(t *testing.T) {
 		if s.reg.Get("manage_worktree") == nil {
 			t.Error("registry omitted manage_worktree under TurnEndsProcess=true")
 		}
-		if !advertised["manage_worktree"] {
-			t.Error("advertised tools omitted manage_worktree under TurnEndsProcess=true")
+		if !advertised["call_tool"] {
+			t.Error("advertised tools omitted call_tool under TurnEndsProcess=true")
 		}
 
 		data, _ := s.buildPromptData(s.env)
@@ -42,8 +42,8 @@ func TestOneShotOmitsCeremonyTools(t *testing.T) {
 				t.Errorf("promptData.HasTool(%q) = true under TurnEndsProcess=true", name)
 			}
 		}
-		if !data.HasTool("manage_worktree") {
-			t.Error("promptData.HasTool(\"manage_worktree\") = false under TurnEndsProcess=true")
+		if !data.HasTool("call_tool") {
+			t.Error("promptData.HasTool(\"call_tool\") = false under TurnEndsProcess=true")
 		}
 
 		prompt, warning, _ := s.renderSystemPrompt(s.env)
@@ -114,20 +114,19 @@ func TestOneShotOmitsCeremonyTools(t *testing.T) {
 			if s.reg.Get(name) == nil {
 				t.Errorf("registry missing %q under TurnEndsProcess=false", name)
 			}
-			if !advertised[name] {
-				t.Errorf("advertised tools missing %q under TurnEndsProcess=false", name)
+			if advertised[name] {
+				t.Errorf("advertised tools should defer %q under TurnEndsProcess=false", name)
 			}
+		}
+		if !advertised["call_tool"] {
+			t.Error("advertised tools missing call_tool under TurnEndsProcess=false")
 		}
 		prompt, warning, _ := s.renderSystemPrompt(s.env)
 		if warning != "" {
 			t.Fatalf("renderSystemPrompt: %s", warning)
 		}
-		if !strings.Contains(prompt, "\n## Session links\n") {
-			t.Error("prompt missing ## Session links under TurnEndsProcess=false")
-		}
-		finishing := systemPromptSection(t, prompt, "## Finishing")
-		if !strings.Contains(finishing, "notes_agent_set") {
-			t.Errorf("## Finishing missing notes_agent_set guidance under TurnEndsProcess=false:\n%s", finishing)
+		if strings.Contains(prompt, "\n## Session links\n") {
+			t.Error("prompt should omit ## Session links while urls_add is deferred")
 		}
 	})
 }
@@ -173,8 +172,8 @@ func TestOneShotWorktreeToolFollowsResolvedCheckout(t *testing.T) {
 		if s.reg.Get("manage_worktree") == nil {
 			t.Fatal("manage_worktree omitted although the working directory resolves into a checkout through a symlink")
 		}
-		if !toolNameSetFromDefinitions(s.ToolDefinitions())["manage_worktree"] {
-			t.Fatal("advertised tools omit manage_worktree although the directory resolves into a checkout")
+		if !toolNameSetFromDefinitions(s.ToolDefinitions())["call_tool"] {
+			t.Fatal("advertised tools omit call_tool although manage_worktree is deferred")
 		}
 	})
 
@@ -187,8 +186,8 @@ func TestOneShotWorktreeToolFollowsResolvedCheckout(t *testing.T) {
 		if s.reg.Get("manage_worktree") == nil {
 			t.Fatal("manage_worktree omitted although its handler would serve a task that runs git init")
 		}
-		if !toolNameSetFromDefinitions(s.ToolDefinitions())["manage_worktree"] {
-			t.Fatal("advertised tools omit manage_worktree in a confirmed non-repository")
+		if !toolNameSetFromDefinitions(s.ToolDefinitions())["call_tool"] {
+			t.Fatal("advertised tools omit call_tool in a confirmed non-repository")
 		}
 		data, _ := s.buildPromptData(s.env)
 		if data.IsGitRepo {
@@ -332,8 +331,9 @@ func TestOneShotSessionLinksHeadingOmitted(t *testing.T) {
 				t.Fatalf("renderSystemPrompt: %s", warning)
 			}
 			gotHeading := strings.Contains(prompt, "\n## Session links\n")
-			if gotHeading != tc.wantHeading {
-				t.Errorf("prompt contains ## Session links = %v, want %v", gotHeading, tc.wantHeading)
+			wantHeading := tc.isSubagent && !tc.turnEndsProcess
+			if gotHeading != wantHeading {
+				t.Errorf("prompt contains ## Session links = %v, want %v", gotHeading, wantHeading)
 			}
 		})
 	}

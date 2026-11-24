@@ -36,14 +36,13 @@ func TestDelegateAdvertisesAgentTypeEnum(t *testing.T) {
 	sess.rebuildToolDefsCache()
 
 	var delegate *llm.ToolDefinition
-	for i := range sess.cachedToolDefs {
-		if sess.cachedToolDefs[i].Name == "delegate" {
-			delegate = &sess.cachedToolDefs[i]
-			break
-		}
+	sess.mu.Lock()
+	if td, ok := sess.deferredToolDefinitionLocked("delegate"); ok {
+		delegate = &td
 	}
+	sess.mu.Unlock()
 	if delegate == nil {
-		t.Fatal("delegate not advertised")
+		t.Fatal("deferred delegate definition missing")
 	}
 
 	props := delegate.Parameters["properties"].(map[string]any)
@@ -203,6 +202,9 @@ func TestDelegateSurfaceUsesAgentRegistryCapabilities(t *testing.T) {
 	defer sess.Close()
 
 	defs := sess.ToolDefinitions()
+	if !hasToolDef(defs, "call_tool") {
+		t.Fatal("call_tool not advertised")
+	}
 	var delegate *llm.ToolDefinition
 	for i := range defs {
 		if defs[i].Name == "delegate" {
@@ -211,7 +213,14 @@ func TestDelegateSurfaceUsesAgentRegistryCapabilities(t *testing.T) {
 		}
 	}
 	if delegate == nil {
-		t.Fatal("delegate not advertised")
+		sess.mu.Lock()
+		if td, ok := sess.deferredToolDefinitionLocked("delegate"); ok {
+			delegate = &td
+		}
+		sess.mu.Unlock()
+	}
+	if delegate == nil {
+		t.Fatal("deferred delegate definition missing")
 	}
 	props := delegate.Parameters["properties"].(map[string]any)
 	agentType := props["agent_type"].(map[string]any)

@@ -73,7 +73,7 @@ func DefMemoryWrite() llm.ToolDefinition {
 // readFileCoreDescription is the description every read_file vision regime
 // shares. A regime appends its own vision_prompt sentence, or none when the
 // model sees images and PDFs inline.
-const readFileCoreDescription = "Read a file: numbered text (up to 2000 lines or ~48 KB; limit=1 reads one long line uncut; negative offset reads from EOF), image, or PDF (pass pages over 10 pages/20 MiB). Prefer large parallel reads over shell cat/head/tail/sed."
+const readFileCoreDescription = "Read numbered text, an image, or a PDF; prefer parallel reads over shell `cat`/`head`/`tail`/`sed`."
 
 // defReadFile builds read_file's shared schema so the three vision regimes and
 // memory_read cannot drift on the core description, offset, limit, or pages.
@@ -82,10 +82,10 @@ const readFileCoreDescription = "Read a file: numbered text (up to 2000 lines or
 // entirely (#6190).
 func defReadFile(visionSuffix, visionParamDesc string) llm.ToolDefinition {
 	props := map[string]any{
-		"file_path": map[string]any{"type": "string", "description": "Path of the file to read."},
-		"offset":    map[string]any{"type": "integer", "description": "1-based start line (default 1), or negative to read from EOF."},
-		"limit":     map[string]any{"type": "integer", "description": "Max lines (default 2000, ~48 KB cap; 1 returns a single long line uncut)."},
-		"pages":     map[string]any{"type": "string", "description": "PDF page or range (e.g. \"1-5\", max 20 pages; required over 10 pages or 20 MiB)."},
+		"file_path": map[string]any{"type": "string", "description": "File path."},
+		"offset":    map[string]any{"type": "integer", "description": "1-based start line (default 1), or negative from EOF."},
+		"limit":     map[string]any{"type": "integer", "description": "Max lines (default 2000, ~48 KB; 1 reads one line uncut)."},
+		"pages":     map[string]any{"type": "string", "description": "PDF page range (e.g. \"1-5\", max 20; required over 10 pages/20 MiB)."},
 	}
 	if visionParamDesc != "" {
 		props["vision_prompt"] = map[string]any{"type": "string", "description": visionParamDesc}
@@ -105,7 +105,7 @@ func defReadFile(visionSuffix, visionParamDesc string) llm.ToolDefinition {
 // DefReadFile returns read_file for Regime 3, where images and PDFs both use
 // the vision side-channel.
 func DefReadFile() llm.ToolDefinition {
-	return defReadFile(" Pass `vision_prompt` when reading images or PDFs.", "Image/PDF reads only: concrete OCR or description ask (transcribe, list, extract, locate).")
+	return defReadFile(" Pass `vision_prompt` for images or PDFs.", "Image/PDF OCR or description ask (transcribe, list, extract, locate).")
 }
 
 // DefReadFileNativeVision returns read_file tailored for Regime 1: neither images
@@ -119,19 +119,19 @@ func DefReadFileNativeVision() llm.ToolDefinition {
 // native inline, while PDFs use the side-channel. vision_prompt is kept and
 // scoped to PDF files in both the tool description and parameter description (#6190).
 func DefReadFilePDFVisionOnly() llm.ToolDefinition {
-	return defReadFile(" Pass `vision_prompt` when reading PDFs.", "PDF reads only: concrete OCR or description ask (transcribe, list, extract, locate).")
+	return defReadFile(" Pass `vision_prompt` for PDFs.", "PDF OCR or description ask (transcribe, list, extract, locate).")
 }
 
 func DefWriteFile() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "write_file",
-		Description: "Write a file, creating parent directories if needed and replacing any existing content. Use for new files or full rewrites; prefer exact edits for small changes.",
+		Description: "Write or overwrite a file, creating parent directories if needed; prefer exact edits for small changes.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
-				"file_path": map[string]any{"type": "string", "description": "Destination file path."},
-				"content":   map[string]any{"type": "string", "description": "Complete new file content."},
+				"file_path": map[string]any{"type": "string", "description": "File path."},
+				"content":   map[string]any{"type": "string", "description": "Full file content."},
 			},
 			"required": []string{"file_path", "content"},
 		},
@@ -141,12 +141,12 @@ func DefWriteFile() llm.ToolDefinition {
 func DefListDir() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "list_dir",
-		Description: "List directory entries with type suffixes ('/', '@', '*'). Page truncated results with `offset` or narrow `path`/`depth`.",
+		Description: "List directory entries with type suffixes ('/', '@', '*'); page with `offset` or narrow `path` or `depth`.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
-				"path":   map[string]any{"type": "string", "description": "Directory (blank = root)."},
+				"path":   map[string]any{"type": "string", "description": "Directory (default root)."},
 				"depth":  map[string]any{"type": "integer", "description": "Depth (default 1, max 16)."},
 				"offset": map[string]any{"type": "integer", "description": "Start offset (default 0)."},
 				"limit":  map[string]any{"type": "integer", "description": "Max entries (default 1000)."},
@@ -159,7 +159,7 @@ func defEditFile(readTool, writeTool string) llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name: "edit_file",
 		Description: fmt.Sprintf(
-			"Apply disjoint exact edits atomically. Read with %s first, omit line prefixes, match edits[].old_string against the original file without overlaps, or use %s for full rewrites.",
+			"Apply non-overlapping `edits` atomically against the original file. Read with %s first, omit line-number prefixes, or use %s for rewrites.",
 			readTool, writeTool,
 		),
 		Parameters: map[string]any{
@@ -168,27 +168,27 @@ func defEditFile(readTool, writeTool string) llm.ToolDefinition {
 			"properties": map[string]any{
 				"file_path": map[string]any{
 					"type":        "string",
-					"description": "Existing file path.",
+					"description": "File path.",
 				},
 				"edits": map[string]any{
 					"type":        "array",
 					"minItems":    1,
-					"description": "Disjoint replacements applied atomically.",
+					"description": "Non-overlapping edits.",
 					"items": map[string]any{
 						"type":                 "object",
 						"additionalProperties": false,
 						"properties": map[string]any{
 							"old_string": map[string]any{
 								"type":        "string",
-								"description": "Exact text to replace (unique unless replace_all is true).",
+								"description": "Exact text (unique unless `replace_all` is true).",
 							},
 							"new_string": map[string]any{
 								"type":        "string",
-								"description": "Replacement text.",
+								"description": "New text.",
 							},
 							"replace_all": map[string]any{
 								"type":        "boolean",
-								"description": "Replace all occurrences (default false).",
+								"description": "Replace all matches (default false).",
 							},
 						},
 						"required": []string{"old_string", "new_string"},
@@ -221,12 +221,12 @@ func DefShell() llm.ToolDefinition {
 // accepts.
 func ShellModeProperty(detachAvailable bool) map[string]any {
 	modeEnum := []any{"foreground", "background"}
-	modeDescription := "foreground waits; background runs a session-owned job stopped on session end"
+	modeDescription := "foreground (default) waits for the command to finish (up to several minutes for builds, tests, and benchmarks); choose background for a session-owned job (stopped on session end) when executing independent parallel work concurrently or starting a service needing an immediate return"
 	if detachAvailable {
 		modeEnum = append(modeEnum, "detached")
-		modeDescription += "; detached survives session exit (not a job, no notice, discards unredirected output, $EVENER_SCRATCH_DIR unset, so pass absolute paths)."
+		modeDescription += "; detached outlives exit (not a job, no notice, drops unredirected output; $EVENER_SCRATCH_DIR unset, pass absolute paths)."
 	} else {
-		modeDescription += ". Detached mode is unavailable here; nothing can outlive the session."
+		modeDescription += "; detached mode is unavailable here."
 	}
 	return map[string]any{
 		"type":        "string",
@@ -244,15 +244,15 @@ func DefShellWithDetach(detachAvailable bool) llm.ToolDefinition {
 	}
 	return llm.ToolDefinition{
 		Name:        "shell",
-		Description: "Run Bash (pipefail). Large or background runs return a digest and `job_id`, notifying on exit; `&` cannot escape teardown, " + modeHint + ". Load `running-jobs` for details.",
+		Description: "Run Bash (pipefail). Large or background runs return a digest and `job_id` and notify on exit; `&` stops with the job, " + modeHint + ".",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
-				"command":     map[string]any{"type": "string", "description": "Bash command (pipefail)."},
+				"command":     map[string]any{"type": "string", "description": "Bash command."},
 				"description": map[string]any{"type": "string", "description": "Job summary."},
 				"mode":        ShellModeProperty(detachAvailable),
-				"cwd":         map[string]any{"type": "string", "description": "Working directory (default current)."},
+				"cwd":         map[string]any{"type": "string", "description": "Working directory."},
 			},
 			"required": []string{"command"},
 		},
@@ -360,8 +360,7 @@ func DefDelegateWithResultTool(agentTypes []string, sandboxSchema DelegateSandbo
 		Name: "delegate",
 		Description: "Start a NEW delegate conversation and return its `delegate_id` (follow up with `delegate_send(to=<delegate_id>)`). " +
 			"Set `watch_parent=true` for an observer calling `job_watch(source=\"parent\")`. " +
-			ObserverReporting(resultTool) + " " +
-			"Load `running-jobs` for sizing, briefs, sandboxes, and verification.",
+			ObserverReporting(resultTool),
 		Strict: &strictFalse,
 		Parameters: map[string]any{
 			"type":                 "object",
@@ -534,7 +533,7 @@ func DefJobWatchNamed(eventKinds []string, resultTool string) llm.ToolDefinition
 	if kinds == "" {
 		kinds = "none available this session"
 	}
-	desc := "Wake yourself later: `after_seconds` (60 to 86400) once or `repeat_seconds` (60 to 3600) recurring (`source` defaults to `self`; timers require a persistent session, not one-shot runs). Pass `operation` (create, list, inspect, or clear); `watch_id` is required for inspect or clear. For an ordinary `create` without `hub`, provide a trigger (`output_match`, `progress_interval_ms`, `events`, or a timer), except on a granted cross-session source like `parent` where omitting triggers watches all bounded public events. Progress and session-event watches require a running target; `output_match` also scans retained output of a finished shell job. `every` > 1 requires `events` to hold one kind. Watch a source you can observe (`self`, `parent`, `dlg_...`, or `job_id`). Delivery is implicit and coalesces. Events (available: " + kinds + "). " + ObserverReporting(resultTool) + " Load `running-jobs`."
+	desc := "Wake yourself later: `after_seconds` (60 to 86400) once or `repeat_seconds` (60 to 3600) recurring (`source` defaults to `self`; timers require a persistent session, not one-shot runs). Pass `operation` (create, list, inspect, or clear); `watch_id` is required for inspect or clear. For an ordinary `create` without `hub`, provide a trigger (`output_match`, `progress_interval_ms`, `events`, or a timer), except on a granted cross-session source like `parent` where omitting triggers watches all bounded public events. Progress and session-event watches require a running target; `output_match` also scans retained output of a finished shell job. `every` > 1 requires `events` to hold one kind. Watch a source you can observe (`self`, `parent`, `dlg_...`, or `job_id`). Delivery is implicit and coalesces. Events (available: " + kinds + "). " + ObserverReporting(resultTool)
 	return llm.ToolDefinition{
 		Name:        "job_watch",
 		Description: desc,
@@ -627,7 +626,7 @@ func DefJobListNamed(resultTool string) llm.ToolDefinition {
 	typeEnum := []any{"shell", "delegate"}
 	return llm.ToolDefinition{
 		Name:        "job_list",
-		Description: "List jobs, delegates, and watches, newest first. " + EndTurnToWait(resultTool) + " " + ObserverReporting(resultTool) + " Read transcripts for audit or diagnosis context. Terminal statuses include command_exited_nonzero and command_killed; load `running-jobs`.",
+		Description: "List jobs, delegates, and watches, newest first. " + EndTurnToWait(resultTool) + " " + ObserverReporting(resultTool) + " Read transcripts for audit or diagnosis context. Terminal statuses include command_exited_nonzero and command_killed.",
 		Strict:      &strictFalse,
 		Parameters: map[string]any{
 			"type":                 "object",
@@ -673,18 +672,18 @@ func DefJobStop() llm.ToolDefinition {
 func DefGrep() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "grep",
-		Description: "Search file contents by regex, skipping dotfiles, gitignored paths (unless named in `glob_filter`), and oversized files (pass oversized files directly).",
+		Description: "Search files by regex; skips dotfiles, gitignored paths (unless named in `glob_filter`), and oversized files (pass those via `path`).",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
 				"pattern":          map[string]any{"type": "string", "description": "Regex pattern."},
-				"path":             map[string]any{"type": "string", "description": "File or directory (blank = root)."},
-				"glob_filter":      map[string]any{"type": "string", "description": "Glob filter (e.g. `*.go`, `*.{go,md}`; malformed braces are rejected)."},
-				"case_insensitive": map[string]any{"type": "boolean", "description": "Case-insensitive match."},
+				"path":             map[string]any{"type": "string", "description": "File or directory (default root)."},
+				"glob_filter":      map[string]any{"type": "string", "description": "File glob (e.g. `*.go`, `*.{go,md}`); invalid braces fail."},
+				"case_insensitive": map[string]any{"type": "boolean", "description": "Ignore case."},
 				"max_results": map[string]any{
 					"type":        "integer",
-					"description": "Max lines (content) or files/entries (default 100).",
+					"description": "Max lines (content) or files (default 100).",
 				},
 				"context_lines": map[string]any{
 					"type":        "integer",
@@ -704,13 +703,13 @@ func DefGrep() llm.ToolDefinition {
 func DefGlob() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "glob",
-		Description: "Find files by recursive glob pattern (`*`, `?`, `[]`, `**`, `{a,b}`), excluding dotfiles and gitignored paths unless `include_ignored` is true.",
+		Description: "Find files by recursive glob (`*`, `?`, `[]`, `**`, `{a,b}`), skipping dotfiles and gitignored paths unless `include_ignored` is true.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
-				"pattern":         map[string]any{"type": "string", "description": "Glob pattern (e.g. `**/*.go`)."},
-				"path":            map[string]any{"type": "string", "description": "Base directory (blank = working root)."},
+				"pattern":         map[string]any{"type": "string", "description": "Glob (e.g. `**/*.go`)."},
+				"path":            map[string]any{"type": "string", "description": "Base directory (default root)."},
 				"include_ignored": map[string]any{"type": "boolean", "description": "Include dotfiles and gitignored paths (default false)."},
 			},
 			"required": []string{"pattern"},
@@ -817,11 +816,8 @@ func DefCommunicateNamed(name string) llm.ToolDefinition {
 	strictFalse := false
 	return llm.ToolDefinition{
 		Name: name,
-		Description: "Message your human partner or caller, or log a quiet wait note. " +
-			"`message` is required. Choose `next`: `send_and_end_turn` (default) delivers your final reply and ends the turn; " +
-			"`send_and_continue` sends a progress update (only when your partner must know or act) and continues; " +
-			"`log_quietly_and_end_turn` logs a muted one-line note while waiting on live background work or acknowledging a no-op notice or watch frame (never to skip replying to a message, and with no accompanying assistant prose). " +
-			"Include `output` only on `send_and_end_turn` for completed results (`result_schema` requires it on `send_and_end_turn`; omit it on `send_and_continue` and `log_quietly_and_end_turn`).",
+		Description: "Message your partner or caller, or log a quiet wait note. " +
+			"Never use `log_quietly_and_end_turn` to skip a reply or with assistant prose.",
 		Strict: &strictFalse,
 		Parameters: map[string]any{
 			"type":                 "object",
@@ -829,23 +825,23 @@ func DefCommunicateNamed(name string) llm.ToolDefinition {
 			"properties": map[string]any{
 				"message": map[string]any{
 					"type":        "string",
-					"description": "Text to send to your human partner or caller, or a brief one-line note of what you are waiting on or why no reply is needed when `next` is `log_quietly_and_end_turn`.",
+					"description": "Reply, update, or one-line wait note.",
 				},
 				"next": map[string]any{
 					"type":        "string",
 					"enum":        slices.Clone(schema.CommunicateNextValues),
 					"default":     CommunicateNextSendAndEndTurn,
-					"description": "What happens after this message: `send_and_end_turn` (default) delivers `message` as your final reply and ends this turn; `send_and_continue` delivers `message` as a progress update and continues working in the next round; `log_quietly_and_end_turn` records `message` as a muted one-line transcript note without waking anyone and ends this turn while waiting on live work or after a notification or watch frame that needs no reply.",
+					"description": "`send_and_end_turn` (default) replies and ends the turn; `send_and_continue` sends a needed update and continues; `log_quietly_and_end_turn` logs a quiet note and ends.",
 				},
 				"output": map[string]any{
 					"type":                 "object",
-					"description":          "Optional structured payload for completed work on `send_and_end_turn` (`result_schema` requires it on `send_and_end_turn`; omit on `send_and_continue` and `log_quietly_and_end_turn`).",
+					"description":          "Structured result on `send_and_end_turn` only (required by `result_schema`; omit otherwise).",
 					"additionalProperties": false,
 					"properties": map[string]any{
-						"message": map[string]any{"type": "string", "description": "Structured summary for automation."},
+						"message": map[string]any{"type": "string", "description": "Summary text."},
 						"data": map[string]any{
 							"type":                 "object",
-							"description":          "Machine-readable result payload.",
+							"description":          "JSON payload.",
 							"additionalProperties": true,
 							"properties":           map[string]any{},
 						},
@@ -874,11 +870,9 @@ func ObserverReporting(resultTool string) string {
 // started with result_schema gets that schema as its output parameter
 // (provider.WithCommunicateOutputSchema), so only the schema can say the shape.
 func communicateDelegateDescription(resultTool string) string {
-	return "Send a message to your parent agent, or log a quiet wait note when ending a turn without waking your parent (the only way your parent hears from you). " +
-		"Put the text (or quiet wait note) in `message`. Set `next=\"send_and_continue\"` for an update that wakes a waiting parent and keep working (`delivery` reports `delivered`, `queued`, or `not_delivered`). " +
-		"With `next=\"send_and_end_turn\"` (default), `message` ends your turn with your report or readiness line. " +
-		"Call `" + resultTool + "` with `next=\"log_quietly_and_end_turn\"` and a brief wait note in `message` to end quietly while background work runs or after a no-op notice or watch frame. " +
-		"Include `output` only on `send_and_end_turn` (`result_schema` requires it on `send_and_end_turn`; omit on `send_and_continue` and `log_quietly_and_end_turn`)."
+	_ = resultTool
+	return "Message your parent agent (your only channel to it), or log a quiet wait or no-op note. " +
+		"Never emit assistant prose with `log_quietly_and_end_turn`."
 }
 
 // WithCommunicateDelegateUpdates returns a copy of a communicate definition
@@ -890,10 +884,10 @@ func WithCommunicateDelegateUpdates(def llm.ToolDefinition) llm.ToolDefinition {
 	params := CloneSchemaMap(def.Parameters)
 	props, _ := params["properties"].(map[string]any)
 	if message, ok := props["message"].(map[string]any); ok {
-		message["description"] = "The text your parent agent receives, or a brief one-line note of what you are waiting on or why no action is needed when `next` is `log_quietly_and_end_turn`."
+		message["description"] = "Report, update, or one-line wait note."
 	}
 	if nextProp, ok := props["next"].(map[string]any); ok {
-		nextProp["description"] = "What happens after this message: `send_and_end_turn` (default) delivers `message` as your report or readiness line and ends this turn; `send_and_continue` delivers `message` as an update your parent receives (waking a waiting parent) and continues in the next round; `log_quietly_and_end_turn` records `message` as a muted one-line note without waking your parent and ends this turn while waiting on live work or after a notification or watch frame that needs no action."
+		nextProp["description"] = "`send_and_end_turn` (default) sends your report or readiness line and ends the turn; `send_and_continue` wakes a waiting parent (`delivery` reports `delivered`, `queued`, or `not_delivered`) and continues; `log_quietly_and_end_turn` logs a muted note without waking your parent."
 	}
 	def.Description = communicateDelegateDescription(def.Name)
 	def.Parameters = params
@@ -905,7 +899,7 @@ func WithCommunicateDelegateUpdates(def llm.ToolDefinition) llm.ToolDefinition {
 // delegates. communicate only reaches a human partner or a parent, so without
 // the pointer a model answering its delegate's question reaches for it.
 func WithCommunicateDelegatePointer(def llm.ToolDefinition) llm.ToolDefinition {
-	def.Description += " To message one of your delegates, use `delegate_send`."
+	def.Description += " To message your delegates, use `delegate_send`."
 	return def
 }
 
@@ -988,12 +982,12 @@ func DefTaskList(effortLevels []string) llm.ToolDefinition {
 func DefUseSkill() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "use_skill",
-		Description: "Load a skill from `<skill-catalog>` into context.",
+		Description: "Load a skill from `<skill-catalog>`.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
-				"skill_name": map[string]any{"type": "string", "description": "Catalog skill name."},
+				"skill_name": map[string]any{"type": "string", "description": "Skill name."},
 			},
 			"required": []string{"skill_name"},
 		},
@@ -1006,7 +1000,7 @@ func DefFindSessionTranscripts() llm.ToolDefinition {
 	strictFalse := false
 	return llm.ToolDefinition{
 		Name:        "find_session_transcripts",
-		Description: "Search archived sessions (`{}` for recent, `query` for substring, `children_of` for direct children; repeat on child refs for deeper levels) and return `transcript_ref` handles for `read_transcript`. Snippets with `seq: -1` are display markers only; load `reading-transcripts` for details.",
+		Description: "Search archived sessions (`{}` for recent, `query` for substring, `children_of` for direct children; repeat on child refs for deeper levels) and return `transcript_ref` handles for `read_transcript`. Snippets with `seq: -1` are display markers only.",
 		Strict:      &strictFalse,
 		Parameters: map[string]any{
 			"type":                 "object",
@@ -1113,7 +1107,7 @@ func DefDoctorEvener() llm.ToolDefinition {
 // description and enforced by the handler, not the schema. Each arg's own
 // description names the operations that read it.
 func DefManageWorktree() llm.ToolDefinition {
-	desc := "Manage git worktrees for isolated, parallel, or risky work (not ordinary branches; use plain git for those). `prune` removes lanes without unmerged work; exit and merge with plain git. Load `using-worktrees` for rules."
+	desc := "Manage git worktrees for isolated, parallel, or risky work (not ordinary branches; use plain git for those). `prune` removes lanes without unmerged work; exit and merge with plain git."
 	return llm.ToolDefinition{
 		Name:        "manage_worktree",
 		Description: desc,
@@ -1230,7 +1224,7 @@ func DefReadTranscript() llm.ToolDefinition {
 			"Session refs support `format`, `range`, and `expand_turn` (requires `format=\"markdown\"`, the default, and `offset_bytes` continues that expansion in fixed 16 KiB pages). " +
 			"`job:` (with `job_status` and `retained_start_bytes`) and `artifact:` refs byte-page via `offset_bytes` or search via `output_match` with `context_lines`. " +
 			"Session refs reject `output_match`; `job:` refs reject `range`, `expand_turn`, `outline`, and `jsonl`; `artifact:` refs reject explicit `format`, `range`, and `expand_turn`. " +
-			"Never poll this waiting for completion; load `reading-transcripts` for details.",
+			"Never poll this waiting for completion.",
 		Strict: &strictFalse,
 		Parameters: map[string]any{
 			"type":                 "object",
@@ -1268,11 +1262,12 @@ func DefAskUserNamed(resultTool string) llm.ToolDefinition {
 	strictFalse := false
 	return llm.ToolDefinition{
 		Name: "ask_user",
-		Description: "Ask the user structured questions. Asking yields the floor: when the round containing your `ask_user` call(s) completes, your turn ends and the session waits visibly for the reply (no timeout). Do the work that does not need answers first, then batch every question this decision point needs — several `ask_user` calls may share the round, and a `" + resultTool + "` in the same round still delivers its message. The answers arrive in the user's next message: either the numbered `[answers]` form (one resolution per question: a selection, free text, \"you decide\" — choose with your judgment, honoring any stated leaning —, your stated fallback, or skipped — proceed on your best judgment, state the assumption, and do not immediately re-ask) or free prose; treat either as the reply to everything you asked. Any answer may carry a user note — read it; it can qualify or override the selection.\n\n" +
-			"- `questions`: 1–4 per call, each with an optional display `header` (omitted headers display as `Question N`), the full `question`, and 2–5 `options` (`{label, detail}`, labels unique). Set `multi_select` to allow several; set `recommended: true` on at most one option and put it first.\n" +
-			"- Do not add an \"Other\" or free-text option; the UI always offers one, plus \"you decide\".\n" +
-			"- Optional per question: `why` (one line: what the answer changes) and `if_unanswered` (the fallback you would take; the user can accept it with one tap).\n\n" +
-			"First try to resolve the question yourself with tools. Asking is how you end your turn when only the user can unblock the rest — finish the answer-independent work before you ask.",
+		Description: "Ask structured questions. Asking yields the floor: your turn ends after the round and waits with no timeout. " +
+			"First try to resolve the question yourself with tools, and finish independent work before asking. " +
+			"Batch questions: several `ask_user` calls may share the round, and a `" + resultTool + "` in the same round still delivers its message. " +
+			"Give 1-4 `questions` with 2-5 unique-label `options`, putting any `recommended` option first. " +
+			"Do not add an \"Other\" or free-text option; the UI provides one plus \"you decide\". " +
+			"Replies arrive as `[answers]` (choice, free text, \"you decide\", fallback, or skipped: use best judgment, state assumptions, and do not re-ask) or prose; read any user note, which may override a choice.",
 		Strict: &strictFalse,
 		Parameters: map[string]any{
 			"type":                 "object",
@@ -1280,34 +1275,34 @@ func DefAskUserNamed(resultTool string) llm.ToolDefinition {
 			"properties": map[string]any{
 				"questions": map[string]any{
 					"type":        "array",
-					"description": "1-4 questions to ask this round.",
+					"description": "1-4 questions.",
 					"minItems":    1,
 					"maxItems":    4,
 					"items": map[string]any{
 						"type": "object",
 						"properties": map[string]any{
-							"header":   map[string]any{"type": "string", "description": "Display label; answer framing encodes delimiter characters when needed."},
-							"question": map[string]any{"type": "string", "description": "The full question text."},
+							"header":   map[string]any{"type": "string", "description": "Optional label (default Question N)."},
+							"question": map[string]any{"type": "string", "description": "Question text."},
 							"options": map[string]any{
 								"type":        "array",
-								"description": "2-5 options; labels must be unique within the question.",
+								"description": "2-5 unique-label options.",
 								"minItems":    2,
 								"maxItems":    5,
 								"items": map[string]any{
 									"type": "object",
 									"properties": map[string]any{
-										"label":       map[string]any{"type": "string", "description": "Unique option label within the question."},
-										"detail":      map[string]any{"type": "string", "description": "Explanatory text shown with the option."},
-										"recommended": map[string]any{"type": "boolean", "description": "At most one per question; marks the model's suggestion, shown first."},
+										"label":       map[string]any{"type": "string", "description": "Unique label."},
+										"detail":      map[string]any{"type": "string", "description": "Option detail."},
+										"recommended": map[string]any{"type": "boolean", "description": "Suggest at most one option (put it first)."},
 									},
 									"required": []string{"label", "detail"},
 								},
 							},
-							"multi_select": map[string]any{"type": "boolean", "default": false, "description": "Allow selecting more than one option."},
-							"why":          map[string]any{"type": "string", "description": "Optional one-line context: what the answer changes."},
+							"multi_select": map[string]any{"type": "boolean", "default": false, "description": "Allow multiple selections."},
+							"why":          map[string]any{"type": "string", "description": "What the answer changes."},
 							"if_unanswered": map[string]any{
 								"type":        "string",
-								"description": "Optional one-line fallback the user would take; the user can accept it with one tap.",
+								"description": "Fallback if skipped.",
 							},
 						},
 						"required": []string{"question", "options"},
@@ -1426,6 +1421,26 @@ func DefNotesRead() llm.ToolDefinition {
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties":           map[string]any{},
+		},
+	}
+}
+
+// DefCallTool defines the cache-invariant meta-tool that dispatches deferred
+// Tier-2 tools once their schemas have been disclosed.
+func DefCallTool() llm.ToolDefinition {
+	strictFalse := false
+	return llm.ToolDefinition{
+		Name:        "call_tool",
+		Description: "Invoke a deferred session tool by canonical name, or pass name=\"list\" to inspect available deferred tools and summaries.",
+		Strict:      &strictFalse,
+		Parameters: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"name":      map[string]any{"type": "string", "description": "Deferred tool name, or \"list\" to list available deferred tools."},
+				"arguments": map[string]any{"type": "object", "description": "JSON arguments matching the tool's schema (omit or pass {} to inspect a tool's schema when required args are unknown).", "additionalProperties": true},
+			},
+			"required": []string{"name"},
 		},
 	}
 }

@@ -176,6 +176,19 @@ func TestDefShellHasExecutionMode(t *testing.T) {
 	if _, exists := props["background"]; exists {
 		t.Fatal("legacy background property is still exposed")
 	}
+
+	noDetachProps := DefShellWithDetach(false).Parameters["properties"].(map[string]any)
+	noDetachMode, ok := noDetachProps["mode"].(map[string]any)
+	if !ok {
+		t.Fatal("DefShellWithDetach(false) missing mode property")
+	}
+	wantNoDetach := []any{"foreground", "background"}
+	if got := noDetachMode["enum"]; !reflect.DeepEqual(got, wantNoDetach) {
+		t.Fatalf("DefShellWithDetach(false) mode enum = %#v, want %#v", got, wantNoDetach)
+	}
+	if desc, _ := noDetachMode["description"].(string); strings.TrimSpace(desc) == "" {
+		t.Fatal("DefShellWithDetach(false) mode description is empty")
+	}
 }
 
 func TestDefDelegateParamsAndEnum(t *testing.T) {

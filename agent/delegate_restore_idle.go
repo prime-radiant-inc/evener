@@ -178,6 +178,9 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 	// list here would reject exactly the names that re-admission restored.
 	effective := effectiveChildToolCeiling(descriptor.ToolNameCeiling, descriptor.CeilingReachabilityExcluded, child.reg)
 	for name := range child.reg.RegisteredNames() {
+		if name == "call_tool" && child.hasDeferredToolsLocked() {
+			continue
+		}
 		if !hasString(effective, name) {
 			child.discardRestoredCandidate()
 			return nil, false, fmt.Errorf("restored delegate tool %q exceeds the committed ceiling", name)

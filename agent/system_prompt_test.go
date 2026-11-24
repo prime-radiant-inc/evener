@@ -79,8 +79,11 @@ func promptConfigs() []promptConfig {
 			checkPromptInput(t, "an available agent with tasks", withTasks, true)
 			checkPromptInput(t, "an available agent without tasks", withoutTasks, true)
 			checkPromptInput(t, "a task that inserts parent tasks", insertsParentTasks, true)
-			for _, name := range []string{"read_transcript", "find_session_transcripts", "job_watch", "compact_context", "edit_file"} {
+			for _, name := range []string{"edit_file", "call_tool"} {
 				checkPromptInput(t, "HasTool "+name, d.HasTool(name), true)
+			}
+			for _, name := range []string{"read_transcript", "find_session_transcripts", "job_watch", "compact_context"} {
+				checkPromptInput(t, "HasTool "+name+" (deferred)", d.HasTool(name), false)
 			}
 			checkPromptInput(t, "HasTool apply_patch", d.HasTool("apply_patch"), false)
 		}},
@@ -89,7 +92,8 @@ func promptConfigs() []promptConfig {
 			checkPromptInput(t, "HasAskUser", d.HasAskUser, false)
 			checkPromptInput(t, "NonInteractive", d.NonInteractive, true)
 			checkPromptInput(t, "TurnEndsProcess", d.TurnEndsProcess, true)
-			checkPromptInput(t, "HasTool job_watch", d.HasTool("job_watch"), true)
+			checkPromptInput(t, "HasTool call_tool", d.HasTool("call_tool"), true)
+			checkPromptInput(t, "HasTool job_watch (deferred)", d.HasTool("job_watch"), false)
 			checkPromptInput(t, "IsSubagent", d.IsSubagent, false)
 			checkPromptInput(t, "Surface is openai", d.Surface == "openai", true)
 			checkPromptInput(t, "Role is the coordinator plugin body",
@@ -136,7 +140,8 @@ func promptConfigs() []promptConfig {
 			checkPromptInput(t, "IsSubagent", d.IsSubagent, true)
 			checkPromptInput(t, "NonInteractive", d.NonInteractive, true)
 			checkPromptInput(t, "TurnEndsProcess", d.TurnEndsProcess, true)
-			checkPromptInput(t, "HasTool job_watch", d.HasTool("job_watch"), true)
+			checkPromptInput(t, "HasTool call_tool", d.HasTool("call_tool"), true)
+			checkPromptInput(t, "HasTool job_watch (deferred)", d.HasTool("job_watch"), false)
 			checkPromptInput(t, "Role is the implementer plugin body",
 				d.Role == strings.TrimSpace(coordinatorWorkflowAgentForTest(t, "implementer").SystemPrompt), true)
 		}},
@@ -394,7 +399,7 @@ func TestSystemPromptCarriesEachOperatorInputOnce(t *testing.T) {
 		session   *Session
 		sentinels []string
 	}{
-		{"root inputs", root, []string{sentinelProjectDoc, sentinelPersonalDoc, sentinelSkill, sentinelAgent}},
+		{"root inputs", root, []string{sentinelProjectDoc, sentinelPersonalDoc, sentinelSkill}},
 		{"root overrides", buildRootWithOverridesSession(t), []string{sentinelBaseInstructions, sentinelAppend, sentinelUserInstructions}},
 		{"delegate spawn inputs", buildDelegateWithRoleOverrideSession(t), []string{sentinelRole, sentinelActivatedSkill}},
 	}
@@ -408,6 +413,11 @@ func TestSystemPromptCarriesEachOperatorInputOnce(t *testing.T) {
 				t.Errorf("%s: %s appears %d times in the rendered prompt, want 1", tc.name, sentinel, got)
 			}
 		}
+	}
+	// Deferred available_agents (carrying sentinelAgent) is disclosed once via running-jobs.
+	disclosed := root.skillDisclosureSuffix("running-jobs")
+	if got := strings.Count(disclosed, sentinelAgent); got != 1 {
+		t.Errorf("running-jobs disclosure: %s appears %d times, want 1", sentinelAgent, got)
 	}
 }
 
@@ -466,17 +476,8 @@ func TestSystemPromptRendersTheSessionData(t *testing.T) {
 				for _, skill := range d.Skills {
 					values = append(values,
 						promptValue{"skill catalog name", skill.CatalogNameOrName()},
-						promptValue{"skill directory", skill.Dir},
+						promptValue{"skill description", skill.Description},
 					)
-				}
-				for _, agent := range d.AvailableAgents {
-					// The roster states the role and its tasks. A role's callable
-					// tools live in the delegate schema, so they are not a prompt
-					// value this test can require.
-					values = append(values, promptValue{"agent name", agent.Name})
-					for _, task := range agent.TaskList {
-						values = append(values, promptValue{"agent task", task.Title})
-					}
 				}
 				for _, doc := range d.ProjectDocs {
 					values = append(values, promptValue{"project doc path", doc.Path})

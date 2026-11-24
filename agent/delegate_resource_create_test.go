@@ -561,7 +561,12 @@ func TestDelegateResourceCreate_UsesFrozenDescriptorAfterCommit(t *testing.T) {
 		t.Fatalf("child skill bodies = %#v, want descriptor %#v", got, descriptor.FrozenSkillBodies)
 	}
 
-	wantTools := append([]string(nil), descriptor.ToolNameCeiling...)
+	wantTools := []string{"call_tool"}
+	for _, name := range descriptor.ToolNameCeiling {
+		if !child.isDeferredTool(name) {
+			wantTools = append(wantTools, name)
+		}
+	}
 	gotTools := make([]string, 0, len(request.Tools))
 	for _, definition := range request.Tools {
 		gotTools = append(gotTools, definition.Name)
