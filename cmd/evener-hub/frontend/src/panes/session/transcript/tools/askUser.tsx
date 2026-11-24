@@ -26,7 +26,7 @@ import {
   askUserSummary,
   parseAskUserQuestions,
 } from "@evener/appwire-client";
-import { Card } from "../../../../widgets";
+import { Card, InlineNotice } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { AskOptionCopy } from "../../AskOptionCopy";
 import { AgentMarkdown } from "../messages/AgentMarkdown";
@@ -43,7 +43,6 @@ const CLASS = {
 
   note: requireClass(styles.note, "askuser.module.css", "note"),
   footer: requireClass(styles.footer, "askuser.module.css", "footer"),
-  fallback: requireClass(styles.fallback, "askuser.module.css", "fallback"),
 };
 
 // isMalformedArgumentsJSON is true only for a genuine JSON syntax error in
@@ -119,13 +118,14 @@ function AskUserBody({ item }: ToolRenderProps) {
     // own, distinct wording.
     const malformed = isMalformedArgumentsJSON(item.argumentsJSON);
     return (
-      <div
-        className={CLASS.fallback}
+      <InlineNotice
+        tone="neutral"
+        live="off"
         data-testid="ask-user-fallback"
         data-reason={malformed ? "malformed" : "unavailable"}
       >
         {malformed ? "Couldn't read this question - the data looks malformed." : "Question data unavailable."}
-      </div>
+      </InlineNotice>
     );
   }
   return (
