@@ -13,6 +13,10 @@
   letter-spacing: var(--tracking-display);
   color: var(--ink-hi);
   overflow-wrap: anywhere;
+  /* The base is semibold, so the widget's own semibold strong would not
+   * stand out: markdown bold opts into the bold token through the
+   * widget's documented host seam. */
+  --markdown-strong-weight: var(--font-weight-bold);
 }
 
 .options {

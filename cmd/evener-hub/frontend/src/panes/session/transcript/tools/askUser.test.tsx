@@ -1,5 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import { expect, test } from "vitest";
+import { readModuleCss } from "../../../../styles/cssBlock";
 import { toolRendererFor } from "../toolRenderers";
 import "./askUser";
 import type { ItemModel } from "@evener/appwire-client";
@@ -162,6 +163,16 @@ test("body renders the why and if_unanswered notes as markdown", () => {
   const card = screen.getByTestId("ask-user-question");
   expect(card.querySelector('[data-note="why"] code')?.textContent).toBe("agent/deploy.go:81");
   expect(card.querySelector('[data-note="if-unanswered"] code')?.textContent).toBe("make deploy");
+});
+
+// The transcript question base is semibold like the dock's, so its strong
+// spans need the same opt-in into the widget's bold seam; jsdom computes
+// no cascade, so the stylesheet pin carries the contract.
+test("bold emphasis in the question out-weighs the semibold base", () => {
+  const css = readModuleCss(import.meta.url, "askuser.module.css");
+  const rule = css.match(/\.question\s*\{([^}]*)\}/);
+  expect(rule, "askuser.module.css must declare a .question rule").not.toBeNull();
+  expect(rule![1]).toContain("--markdown-strong-weight: var(--font-weight-bold)");
 });
 
 test("body notes the answer happens in the composer (this wave is read-only)", () => {

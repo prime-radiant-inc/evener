@@ -610,13 +610,15 @@ The `--font-size-caption/ui/body/pane-title/page-title/display` ramp is
 12/13/15/20/26/34px. **`--font-size-prose: calc(16px * var(--font-scale))`**, declared on
 `body` alongside that ramp so S/M/L/XL (0.9/1/1.1/1.25) scale reading text too. Phone body remains
 16px; editable phone controls use `max(16px, var(--font-size-body))`, even under S. The serif
-reading step is 16px at M in both viewports. Weights are 400/500/600; leading body/ui/title is
+reading step is 16px at M in both viewports. Weights are 400/500/600/700; leading body/ui/title is
 1.6/1.4/1.25. Reading surfaces use `--line-height-prose`, declared on `body` beside the size ramp so the
 comfortable-density preference scales its default 1.45 leading, independently of editor and general UI geometry. Display tracking remains −0.02em.
 
 Markdown keeps the prose face but composes with its host's size (the root falls back to `1em`);
 reading surfaces pin `--prose-font-size: var(--font-size-prose)` on the host that owns their
-prose, and `--markdown-ink` stays the ink hook. Inline code stays JetBrains Mono at 0.86em with a quiet underline; fenced code
+prose, `--markdown-ink` stays the ink hook, and `--markdown-strong-weight` is the emphasis hook:
+strong defaults to semibold, so a host that already renders its body semibold (the ask question
+cards) opts strong into the bold token. Inline code stays JetBrains Mono at 0.86em with a quiet underline; fenced code
 explicitly keeps the mono face. Markdown tables use the sans face at body size, tabular figures,
 wrapping labels and fine horizontal rules. PaneScaffold and EmptyState headings use the serif;
 buttons, fields, dialog labels and other compact operational headings do not inherit it globally.

@@ -72,6 +72,21 @@ test("renders the question text as markdown", () => {
   expect(code.tagName).toBe("CODE");
 });
 
+// The question text base is semibold (the neutral-frame question display),
+// so the Markdown widget's own semibold strong would render bold spans
+// indistinguishable from that base. The card opts the question's strong
+// spans into the bold weight through the widget's documented host seam;
+// jsdom computes no cascade, so the stylesheet pin carries the contract.
+test("bold emphasis in the question out-weighs the semibold base", () => {
+  render(<Harness q={question({ question: "Deploy to **staging** first?" })} />);
+  expect(screen.getByText("staging").tagName).toBe("STRONG");
+
+  const css = cardCss();
+  const rule = css.match(/\.questionText\s*\{([^}]*)\}/);
+  expect(rule, "askquestioncard.module.css must declare a .questionText rule").not.toBeNull();
+  expect(rule![1]).toContain("--markdown-strong-weight: var(--font-weight-bold)");
+});
+
 // The why line is model-authored prose too (the question's one-line
 // context), so it takes the same markdown pipeline as the question body.
 test("renders the why line as markdown", () => {
