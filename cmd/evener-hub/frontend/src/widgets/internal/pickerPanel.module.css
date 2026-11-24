@@ -45,6 +45,7 @@
 }
 
 .groupLabel {
+  font-size: var(--font-size-caption);
   text-transform: uppercase;
   letter-spacing: var(--tracking-eyebrow);
 }
