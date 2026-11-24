@@ -176,7 +176,7 @@ export function PluginSelectionPanel({
             live="status"
             title="Couldn't inspect plugins"
             action={
-              <Button variant="secondary" size="xs" type="button" onClick={onRetry}>
+              <Button variant="quiet" size="sm" type="button" onClick={onRetry}>
                 Retry
               </Button>
             }
@@ -190,7 +190,7 @@ export function PluginSelectionPanel({
             tone="danger"
             title="Selected plugins need attention"
             action={
-              <Button variant="secondary" size="xs" type="button" onClick={onRetry}>
+              <Button variant="quiet" size="sm" type="button" onClick={onRetry}>
                 Retry
               </Button>
             }

@@ -2996,7 +2996,7 @@ function SpawnForm({
                         Couldn't inspect plugins: {pluginPreview.state.message}
                       </span>
                       <div className={CLASS.quietSummaryAction}>
-                        <Button variant="quiet" size="xs" type="button" onClick={pluginPreview.retry}>
+                        <Button variant="quiet" size="sm" type="button" onClick={pluginPreview.retry}>
                           Retry
                         </Button>
                       </div>
