@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Button } from "../../widgets/button";
 import { ConfirmDialog } from "../../widgets/confirmdialog";
-import { ThemeFlip } from "../ThemeFlip";
+import { GallerySection } from "../GallerySection";
 import styles from "./confirmdialog.module.css";
 
 interface ConfirmDialogDemoProps {
@@ -44,32 +44,28 @@ function ConfirmDialogDemo({ title, confirmLabel, destructive, pendingLabel, bus
 
 export default function ConfirmDialogGallerySection() {
   return (
-    <section>
-      <h2>ConfirmDialog</h2>
-      <ThemeFlip>
+    <GallerySection
+      title="ConfirmDialog"
+      flips={[
         <ConfirmDialogDemo
           title='Remove instance "openai-work"?'
           confirmLabel="Remove"
           body="This will also clear its stored credentials."
-        />
-      </ThemeFlip>
-      <ThemeFlip>
+        />,
         <ConfirmDialogDemo
           title="Install evener-lint?"
           confirmLabel="Install"
           destructive={false}
           body="Plugins can run arbitrary code on the hub. Only install ones you trust."
-        />
-      </ThemeFlip>
-      <ThemeFlip>
+        />,
         <ConfirmDialogDemo
           title="Delete pin section?"
           confirmLabel="Delete section"
           pendingLabel="Deleting…"
           busy
           body="In flight: the confirm reads its pending label and both buttons are disabled."
-        />
-      </ThemeFlip>
-    </section>
+        />,
+      ]}
+    />
   );
 }

@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Button } from "../../widgets/button";
 import { Sheet, type SheetSide } from "../../widgets/sheet";
-import { ThemeFlip } from "../ThemeFlip";
+import { GallerySection } from "../GallerySection";
 import styles from "./sheet.module.css";
 
 // Same open-by-default, contained-frame approach as dialog.tsx (Sheet
@@ -35,17 +35,9 @@ function SheetDemo({ side }: { side: SheetSide }) {
 
 export default function SheetGallerySection() {
   return (
-    <section>
-      <h2>Sheet</h2>
-      <ThemeFlip>
-        <SheetDemo side="right" />
-      </ThemeFlip>
-      <ThemeFlip>
-        <SheetDemo side="bottom" />
-      </ThemeFlip>
-      <ThemeFlip>
-        <SheetDemo side="left" />
-      </ThemeFlip>
-    </section>
+    <GallerySection
+      title="Sheet"
+      flips={[<SheetDemo side="right" />, <SheetDemo side="bottom" />, <SheetDemo side="left" />]}
+    />
   );
 }

@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Button } from "../../widgets/button";
 import { Dialog } from "../../widgets/dialog";
-import { ThemeFlip } from "../ThemeFlip";
+import { GallerySection } from "../GallerySection";
 import styles from "./dialog.module.css";
 
 interface DialogDemoProps {
@@ -61,17 +61,13 @@ function DialogDemo({ title, danger, customClasses }: DialogDemoProps) {
 
 export default function DialogGallerySection() {
   return (
-    <section>
-      <h2>Dialog</h2>
-      <ThemeFlip>
-        <DialogDemo title="Session settings" />
-      </ThemeFlip>
-      <ThemeFlip>
-        <DialogDemo title="Delete session" danger />
-      </ThemeFlip>
-      <ThemeFlip>
-        <DialogDemo title="Custom panel and body classes" customClasses />
-      </ThemeFlip>
-    </section>
+    <GallerySection
+      title="Dialog"
+      flips={[
+        <DialogDemo title="Session settings" />,
+        <DialogDemo title="Delete session" danger />,
+        <DialogDemo title="Custom panel and body classes" customClasses />,
+      ]}
+    />
   );
 }

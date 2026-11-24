@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { type CollectionAddResult, CollectionEditor } from "../../widgets/collectioneditor";
 import { Input } from "../../widgets/input";
-import { ThemeFlip } from "../ThemeFlip";
+import { GallerySection } from "../GallerySection";
 
 interface DirItem {
   path: string;
@@ -78,12 +78,10 @@ function EnvCollectionEditor() {
 
 export default function CollectionEditorGallerySection() {
   return (
-    <section>
-      <h2>CollectionEditor</h2>
-      <ThemeFlip>
-        <LiveCollectionEditor />
-      </ThemeFlip>
-      <ThemeFlip>
+    <GallerySection
+      title="CollectionEditor"
+      flips={[
+        <LiveCollectionEditor />,
         <CollectionEditor<DirItem>
           label="Empty example"
           items={[]}
@@ -94,11 +92,9 @@ export default function CollectionEditorGallerySection() {
           emptyMessage="No plugin directories. Add one below."
           addPlaceholder="/opt/plugins"
           onAdd={async () => ({ ok: true })}
-        />
-      </ThemeFlip>
-      <ThemeFlip>
-        <EnvCollectionEditor />
-      </ThemeFlip>
-    </section>
+        />,
+        <EnvCollectionEditor />,
+      ]}
+    />
   );
 }
