@@ -238,9 +238,13 @@ func ShellModeProperty(detachAvailable bool) map[string]any {
 // DefShellWithDetach returns the shell definition for an environment whose
 // execenv.DetachSupportReporter reports detachAvailable.
 func DefShellWithDetach(detachAvailable bool) llm.ToolDefinition {
+	modeHint := "so use `background`"
+	if detachAvailable {
+		modeHint = "so use `background` or `detached`"
+	}
 	return llm.ToolDefinition{
 		Name:        "shell",
-		Description: "Run Bash (pipefail). Large or background runs return a digest and `job_id`, notifying on exit; `&` cannot escape teardown, so use `background` or `detached`. Load `running-jobs` for details.",
+		Description: "Run Bash (pipefail). Large or background runs return a digest and `job_id`, notifying on exit; `&` cannot escape teardown, " + modeHint + ". Load `running-jobs` for details.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
@@ -1002,14 +1006,14 @@ func DefFindSessionTranscripts() llm.ToolDefinition {
 	strictFalse := false
 	return llm.ToolDefinition{
 		Name:        "find_session_transcripts",
-		Description: "Search archived sessions (`{}` for recent, `query` for substring, `children_of` for descendants) and return `transcript_ref` handles for `read_transcript`. Snippets with `seq: -1` are display markers only; load `reading-transcripts` for details.",
+		Description: "Search archived sessions (`{}` for recent, `query` for substring, `children_of` for direct children; repeat on child refs for deeper levels) and return `transcript_ref` handles for `read_transcript`. Snippets with `seq: -1` are display markers only; load `reading-transcripts` for details.",
 		Strict:      &strictFalse,
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
 				"query":          map[string]any{"type": "string", "description": "Case-insensitive substring (no regex or boolean operators)."},
-				"children_of":    map[string]any{"type": "string", "description": "Parent transcript_ref (overrides query)."},
+				"children_of":    map[string]any{"type": "string", "description": "Parent transcript_ref for direct children (overrides query)."},
 				"kind":           map[string]any{"type": "string", "enum": []string{"root", "subagent", "fork", "any"}, "description": "Lineage kind."},
 				"has_children":   map[string]any{"type": "boolean", "description": "Require children (true/false)."},
 				"min_turns":      map[string]any{"type": "integer", "description": "Min turns."},

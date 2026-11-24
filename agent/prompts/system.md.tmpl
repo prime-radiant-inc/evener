@@ -112,7 +112,7 @@ Your parent owns any isolation worktree it supplied. Report that lane ready for 
 Use `manage_worktree` (`operation="dispose"`) to retire your own finished delegates' lanes (`force=true` once tip commits are verified upstream, keeping `force_dirty=false`).
 {{- else }}
 
-Load `using-worktrees` for `manage_worktree` cleanup (`remove` with `delete_branch=true`, `dispose`, `force=true`, keeping `force_dirty=false`).
+Load `using-worktrees` for `manage_worktree` cleanup (`remove` with `delete_branch=true` or `dispose`; use `force=true` only after verifying tip commits landed upstream, keeping `force_dirty=false`).
 {{- end }}{{ end }}
 
 {{ if .TurnEndsProcess }}Put temporary files in `$EVENER_SCRATCH_DIR` when one is set, delete each disposable file once you finish with it, and keep any deliverable or file needed for resume.{{ else }}Keep scratch in `$EVENER_SCRATCH_DIR`, clean up files you{{ if .HasTool "delegate" }} and finished delegates{{ end }} made before reporting, note kept files, and leave others' files untouched.{{ end }}

@@ -20,4 +20,4 @@ Use `manage_worktree` for isolated, parallel, or risky work, such as scratch exp
 
 ## Post-merge cleanup
 
-Once tip commits land upstream, remove owned task worktrees and branches before reporting unless asked to keep them. Confirm no dirty, untracked, or live work still needs that checkout, leave it (`exit`), run `remove` with `delete_branch=true` (`force=true` only after verifying squash/rebase tip commits landed, keeping `force_dirty=false`), and verify both the worktree and branch are gone while leaving shared, remote, and other sessions' work alone.
+Once tip commits land upstream, remove owned task worktrees and branches before reporting unless asked to keep them. Confirm no dirty, untracked, or live work still needs that checkout, leave it (`exit`), run `remove` with `delete_branch=true` or `dispose` (use `force=true` only after verifying tip commits landed upstream or when explicitly asked to discard them, keeping `force_dirty=false`), and verify both the worktree and branch are gone while leaving shared, remote, and other sessions' work alone.

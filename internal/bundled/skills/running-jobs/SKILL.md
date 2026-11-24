@@ -17,7 +17,7 @@ Share your checkout for read-only or single-writer work. Use `isolation="worktre
 
 ## Background work and turn ends
 
-Use `mode="background"` for session-owned jobs and `mode="detached"` only for processes that outlive the session. Keep user-requested services (including background jobs when detach is unavailable, which stop at session shutdown) and checks needed for a result alive across turns; stop unneeded helpers before ending your turn. In one-shot (`TurnEndsProcess`) runs, delegates survive turn end and wake you, while background shell jobs need an active `job_watch` (`progress_interval_ms` of a few minutes) to survive until completion. Keep parallel work within `<resource_caps>`, leaving memory for Evener.
+Use `mode="background"` for session-owned jobs and `mode="detached"` (when available) only for processes that outlive the session. Keep user-requested services (including background jobs when detach is unavailable, which stop at session shutdown) and checks needed for a result alive across turns; stop unneeded helpers before ending your turn. In one-shot (`TurnEndsProcess`) runs, delegates survive turn end and wake you, while background shell jobs need an active `job_watch` (`progress_interval_ms` of a few minutes) to survive until completion. Keep parallel work within `<resource_caps>`, leaving memory for Evener.
 
 ## Observers, watches, and verification
 
