@@ -194,13 +194,13 @@ export function AskQuestionCard({
         {question.header}
       </div>
       {/* Model-authored prose (question and why) renders through the
-          shared sanitized Markdown widget. Option label and detail stay
-          plain: the label is the answer value the reply echoes back
-          verbatim, and the detail sits inside a <label>, whose
-          phrasing-only content model cannot host the widget's block root.
-          The textId wrapper stays: it names the option group and the
-          shared text field, and the widget's root composes with this
-          host's prose sizing. */}
+          shared sanitized Markdown widget. The option label stays plain -
+          it is the answer value the reply echoes back verbatim - and the
+          shared AskOptionCopy renders label and detail inside spans within
+          this card's <label> rows, whose phrasing-only content model
+          cannot host the widget's block root. The textId wrapper stays: it
+          names the option group and the shared text field, and the
+          widget's root composes with this host's prose sizing. */}
       <div className={CLASS.questionText} id={textId}>
         <Markdown source={question.question} />
       </div>
