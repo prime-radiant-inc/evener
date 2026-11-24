@@ -8,13 +8,15 @@
 // supply an in-memory store to retain the bag and its encode continuations
 // across remounts. Image bytes never go through localStorage.
 import {
-  admissionRejection,
   type ImageMarkerRange,
   insertMarker,
-  MAX_ATTACHMENTS,
+  MAX_ATTACHMENT_BYTES,
   MAX_SOURCE_BYTES,
+  MAX_SOURCE_PIXELS,
   markerText,
   nextComposerImageMarker,
+  type RejectableFile,
+  rejectionReason,
   stripMarker,
   stripMarkerAt,
   type TextSplice,
@@ -26,12 +28,14 @@ import type { InputAttachment } from "../../../../stores/threads";
 import { spelledImageMarkers } from "../submitProtocol";
 import { encodeImage, ImageEncodeError } from "./encodeImage";
 
-function preDecodeRejection(file: Pick<File, "name" | "type" | "size">, reservedCount: number): string | undefined {
-  const name = file.name || "unknown";
-  const admission = admissionRejection({ type: file.type }, reservedCount);
-  if (admission === "notImage") return name;
-  if (admission === "tooMany") return `${name} (maximum ${MAX_ATTACHMENTS} images)`;
-  if (file.size > MAX_SOURCE_BYTES) return `${name} (maximum 25 MB)`;
+const MAX_SOURCE_MB = Math.round(MAX_SOURCE_BYTES / (1024 * 1024));
+const MAX_SOURCE_MEGAPIXELS = Math.floor(MAX_SOURCE_PIXELS / 1_000_000);
+const MAX_ATTACHMENT_MB = Math.round(MAX_ATTACHMENT_BYTES / (1024 * 1024));
+
+function preDecodeRejection(file: RejectableFile, reservedCount: number): string | undefined {
+  const admission = rejectionReason({ name: file.name, type: file.type, size: 0 }, reservedCount);
+  if (admission) return admission;
+  if (file.size > MAX_SOURCE_BYTES) return `${file.name || "unknown"} (maximum ${MAX_SOURCE_MB} MB)`;
   return undefined;
 }
 
@@ -40,11 +44,9 @@ function encodeFailureMessage(fileName: string, error: unknown): string {
   if (error instanceof ImageEncodeError) {
     switch (error.code) {
       case "tooManyPixels":
-        return `${name} (image too large; maximum 48 MP)`;
+        return `${name} (image too large; maximum ${MAX_SOURCE_MEGAPIXELS} MP)`;
       case "tooLarge":
-        return `${name} (maximum 8 MB)`;
-      case "decodeFailed":
-        return `${name} (image decode failed)`;
+        return `${name} (maximum ${MAX_ATTACHMENT_MB} MB)`;
     }
   }
   return `${name} (image decode failed)`;
@@ -278,10 +280,14 @@ export function createAttachmentOperations(editor: TextEditor, store: Attachment
     );
   };
 
-  const reset = () => {
-    generationRef.current += 1;
+  const invalidateEncodes = () => {
     removedWhilePendingRef.current.clear();
     encodeQueueRef.current.length = 0;
+    generationRef.current += 1;
+  };
+
+  const reset = () => {
+    invalidateEncodes();
     nextMarkerRef.current = 0;
     setItems([]);
   };
@@ -482,9 +488,7 @@ export function createAttachmentOperations(editor: TextEditor, store: Attachment
         // generation, so neither an old removal nor an old settle can touch
         // the reused marker. Older invalidation (reset) does the same.
         nextMarkerRef.current = 0;
-        removedWhilePendingRef.current.clear();
-        encodeQueueRef.current.length = 0;
-        generationRef.current += 1;
+        invalidateEncodes();
       }
       return next;
     });

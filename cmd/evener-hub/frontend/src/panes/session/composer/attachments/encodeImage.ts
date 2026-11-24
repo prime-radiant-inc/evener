@@ -141,7 +141,7 @@ export async function encodeImage(blob: Blob): Promise<EncodedImage> {
       throw new ImageEncodeError("tooManyPixels", "image exceeds 48 MP limit");
     }
 
-    const target = fitImageDimensions(width, height, MAX_IMAGE_LONG_EDGE);
+    const target = fitImageDimensions(width, height);
     const keepPng =
       blob.type === "image/png" && Math.max(width, height) <= MAX_IMAGE_LONG_EDGE && blob.size <= MAX_ATTACHMENT_BYTES;
 
