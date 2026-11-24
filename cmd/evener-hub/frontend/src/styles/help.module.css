@@ -11,3 +11,10 @@
   font-size: var(--font-size-caption);
   color: var(--ink-low);
 }
+/* The settings paragraph that explains a control at UI-text size: the same
+   ink as the help body, one size up, with its own paragraph margin. */
+.helpUi {
+  margin: 0;
+  color: var(--ink-mid);
+  font-size: var(--font-size-ui);
+}

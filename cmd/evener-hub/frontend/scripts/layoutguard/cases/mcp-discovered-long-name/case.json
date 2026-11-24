@@ -10,10 +10,12 @@
   "cssFiles": [
     "styles/global.css",
     "styles/tokens.css",
+    "styles/help.module.css",
     "widgets/listrow/listrow.module.css",
     "widgets/chip/chip.module.css",
     "panes/settings/sections/mcp.module.css"
   ],
+  "allowlist": { ".help": "mcp.module.css's .help composes help.module.css's .helpUi, so the de-scoped harness carries the one help recipe twice and no other selector is affected" },
   "widthMatrix": [
     { "width": 320, "name": "hyphenated" },
     { "width": 320, "name": "unbroken" },
