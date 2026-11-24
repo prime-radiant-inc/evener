@@ -1,8 +1,9 @@
 // The standalone dev harnesses mount their own React tree instead of going
 // through App.tsx; this is the one mount recipe they share.
 import type { ReactNode } from "react";
-import { createRoot, type Root } from "react-dom/client";
-import "./harnessStyles";
+import { createRoot } from "react-dom/client";
+import "../styles/tokens.css";
+import "../styles/global.css";
 
 /** The page element every harness HTML mounts into, or a named failure. */
 export function harnessRoot(harness: string): HTMLElement {
@@ -11,10 +12,7 @@ export function harnessRoot(harness: string): HTMLElement {
   return root;
 }
 
-/** Mounts `node` into the page's #root and returns the root for a harness that
- *  unmounts later (transcriptscrollguard's pane). */
-export function mountHarness(harness: string, node: ReactNode): Root {
-  const root = createRoot(harnessRoot(harness));
-  root.render(node);
-  return root;
+/** Mounts `node` into the page's #root. */
+export function mountHarness(harness: string, node: ReactNode): void {
+  createRoot(harnessRoot(harness)).render(node);
 }
