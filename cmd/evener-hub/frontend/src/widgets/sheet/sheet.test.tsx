@@ -565,7 +565,7 @@ test("unmounting a popout sheet mid-drag removes its listeners there", () => {
   }
 });
 
-// --- swipe-down dismissal (Task 3.2) -------------------------------------
+// --- swipe-down dismissal ------------------------------------------------
 
 interface TouchPointInit {
   identifier?: number;
@@ -753,6 +753,8 @@ test("detaching a touched body child mid-gesture does not wedge subsequent body 
 
     // Tapping header without moving recovers the orphaned offset cleanly via snap-back.
     dispatchPointer(header, "pointerdown", { pointerId: 9, clientY: 100 });
+    expect(panel.style.transform).toBe("translateY(50px)");
+    expect(panel.classList.contains(snapBackClass)).toBe(false);
     dispatchPointer(window, "pointerup", { pointerId: 9, clientY: 100 });
     expect(panel.classList.contains(snapBackClass)).toBe(true);
     fireEvent.transitionEnd(panel);
@@ -785,6 +787,7 @@ test("orphaned touch recovery works when the next single-finger touch reuses ide
         </div>
         <div data-testid="rowPending">Pending row</div>
         <div data-testid="rowDrag">Drag row</div>
+        <div data-testid="rowZero">Zero row</div>
         <p>Body</p>
       </Sheet>,
     );
@@ -794,6 +797,7 @@ test("orphaned touch recovery works when the next single-finger touch reuses ide
     const rowScroll = screen.getByTestId("rowScroll");
     const rowPending = screen.getByTestId("rowPending");
     const rowDrag = screen.getByTestId("rowDrag");
+    const rowZero = screen.getByTestId("rowZero");
     const body = screen.getByText("Body");
 
     // 1) pendingBody orphan with identifier 0: next touch (identifier 0) must use its own startY (200), not stale 100.
@@ -830,6 +834,17 @@ test("orphaned touch recovery works when the next single-finger touch reuses ide
     dispatchTouch(body, "touchend", { changedTouches: [{ identifier: 0, clientY: 220 }] });
     expect(onClose).not.toHaveBeenCalled();
     act(() => vi.advanceTimersByTime(250));
+
+    // 3b) Orphaned touch drag that returned to offsetY === 0 clears stale inline styles on next touchstart.
+    dispatchTouch(rowZero, "touchstart", { touches: [{ identifier: 0, clientY: 100 }] });
+    dispatchTouch(rowZero, "touchmove", { touches: [{ identifier: 0, clientY: 140 }] });
+    dispatchTouch(rowZero, "touchmove", { touches: [{ identifier: 0, clientY: 100 }] });
+    expect(panel.style.transform).toBe("translateY(0px)");
+    rowZero.remove();
+    dispatchTouch(body, "touchstart", { touches: [{ identifier: 0, clientY: 100 }] });
+    expect(panel.style.transform).toBe("");
+    expect(panel.classList.contains(snapBackClass)).toBe(false);
+    dispatchTouch(body, "touchend", { changedTouches: [{ identifier: 0, clientY: 100 }] });
 
     // 4) Genuine 2-finger secondary touch (touches.length === 2) keeps primary gesture intact.
     dispatchTouch(body, "touchstart", { touches: [{ identifier: 0, clientY: 100 }] });
@@ -938,35 +953,42 @@ test("grab pill and bottom sheet header declare touch-action: none and apply .bo
 });
 
 test("dismiss threshold uses min(panelHeight * 0.35, 160) with 120px fallback at height 0", () => {
-  const cases = [
-    { height: 0, below: 119, at: 120 },
-    { height: 400, below: 139, at: 140 },
-    { height: 600, below: 159, at: 160 },
-  ];
-  for (const c of cases) {
-    const onClose = vi.fn();
-    const view = render(
-      <Sheet open side="bottom" onClose={onClose} title="t">
-        <p>Body</p>
-      </Sheet>,
-    );
-    const panel = screen.getByRole("dialog");
-    mockPanelHeight(panel, c.height);
-    const pill = screen.getByTestId("sheet-grab-pill");
+  vi.useFakeTimers();
+  try {
+    const cases = [
+      { height: 0, below: 119, at: 120 },
+      { height: 400, below: 139, at: 140 },
+      { height: 600, below: 159, at: 160 },
+    ];
+    for (const c of cases) {
+      const onClose = vi.fn();
+      const view = render(
+        <Sheet open side="bottom" onClose={onClose} title="t">
+          <p>Body</p>
+        </Sheet>,
+      );
+      const panel = screen.getByRole("dialog");
+      mockPanelHeight(panel, c.height);
+      const pill = screen.getByTestId("sheet-grab-pill");
 
-    dispatchPointer(pill, "pointerdown", { clientY: 100 });
-    dispatchPointer(window, "pointermove", { clientY: 100 + c.below });
-    dispatchPointer(window, "pointerup", { clientY: 100 + c.below });
-    expect(onClose).not.toHaveBeenCalled();
-    expect(panel.classList.contains(snapBackClass)).toBe(true);
-    fireEvent.transitionEnd(panel);
-    expect(panel.classList.contains(snapBackClass)).toBe(false);
+      dispatchPointer(pill, "pointerdown", { clientY: 100 });
+      dispatchPointer(window, "pointermove", { clientY: 100 + c.below });
+      act(() => vi.advanceTimersByTime(90));
+      dispatchPointer(window, "pointerup", { clientY: 100 + c.below });
+      expect(onClose).not.toHaveBeenCalled();
+      expect(panel.classList.contains(snapBackClass)).toBe(true);
+      fireEvent.transitionEnd(panel);
+      expect(panel.classList.contains(snapBackClass)).toBe(false);
 
-    dispatchPointer(pill, "pointerdown", { clientY: 100 });
-    dispatchPointer(window, "pointermove", { clientY: 100 + c.at });
-    dispatchPointer(window, "pointerup", { clientY: 100 + c.at });
-    expect(onClose).toHaveBeenCalledOnce();
-    view.unmount();
+      dispatchPointer(pill, "pointerdown", { clientY: 100 });
+      dispatchPointer(window, "pointermove", { clientY: 100 + c.at });
+      act(() => vi.advanceTimersByTime(90));
+      dispatchPointer(window, "pointerup", { clientY: 100 + c.at });
+      expect(onClose).toHaveBeenCalledOnce();
+      view.unmount();
+    }
+  } finally {
+    vi.useRealTimers();
   }
 });
 
@@ -1099,6 +1121,34 @@ test("fast flick projects velocity forward to dismiss, while > 80ms hold before 
     expect(onClose).not.toHaveBeenCalled();
     expect(panel.classList.contains(snapBackClass)).toBe(true);
     expect(panel.style.transform).toBe("translateY(0)");
+    act(() => vi.advanceTimersByTime(230));
+
+    // 4) Slow multi-step upward reversal (120 Hz: y 100->220 in 40ms, then 7 frames of -2px over 56ms) snaps back.
+    dispatchTouch(body, "touchstart", { touches: [{ identifier: 4, clientY: 100 }] });
+    act(() => vi.advanceTimersByTime(40));
+    dispatchTouch(body, "touchmove", { touches: [{ identifier: 4, clientY: 220 }] });
+    for (let step = 1; step <= 7; step += 1) {
+      act(() => vi.advanceTimersByTime(8));
+      dispatchTouch(body, "touchmove", { touches: [{ identifier: 4, clientY: 220 - step * 2 }] });
+    }
+    dispatchTouch(body, "touchend", { changedTouches: [{ identifier: 4, clientY: 206 }] });
+    expect(onClose).not.toHaveBeenCalled();
+    expect(panel.classList.contains(snapBackClass)).toBe(true);
+    expect(panel.style.transform).toBe("translateY(0)");
+    act(() => vi.advanceTimersByTime(230));
+
+    // 5) Symmetric trough reversal: downward->upward to 180, then 7 frames of +2px over 56ms projects downward flick to dismiss.
+    dispatchTouch(body, "touchstart", { touches: [{ identifier: 5, clientY: 100 }] });
+    act(() => vi.advanceTimersByTime(20));
+    dispatchTouch(body, "touchmove", { touches: [{ identifier: 5, clientY: 200 }] });
+    act(() => vi.advanceTimersByTime(20));
+    dispatchTouch(body, "touchmove", { touches: [{ identifier: 5, clientY: 180 }] });
+    for (let step = 1; step <= 7; step += 1) {
+      act(() => vi.advanceTimersByTime(8));
+      dispatchTouch(body, "touchmove", { touches: [{ identifier: 5, clientY: 180 + step * 2 }] });
+    }
+    dispatchTouch(body, "touchend", { changedTouches: [{ identifier: 5, clientY: 194 }] });
+    expect(onClose).toHaveBeenCalledOnce();
   } finally {
     vi.useRealTimers();
   }
@@ -1149,6 +1199,39 @@ test("touchcancel, pointercancel, and declined close (open stays true after onCl
     expect(panel.classList.contains(snapBackClass)).toBe(true);
     expect(panel.style.transform).toBe("translateY(0)");
     expect(scrim.style.opacity).toBe("");
+    act(() => vi.advanceTimersByTime(230));
+    expect(panel.classList.contains(snapBackClass)).toBe(false);
+    expect(panel.style.transform).toBe("");
+    onClose.mockClear();
+
+    // Declined close + header tap before rAF fires still snaps back cleanly on pointerup.
+    dispatchPointer(header, "pointerdown", { pointerId: 5, clientY: 100 });
+    dispatchPointer(window, "pointermove", { pointerId: 5, clientY: 280 });
+    dispatchPointer(window, "pointerup", { pointerId: 5, clientY: 280 });
+    expect(onClose).toHaveBeenCalledOnce();
+    expect(panel.style.transform).toBe("translateY(180px)");
+    dispatchPointer(header, "pointerdown", { pointerId: 6, clientY: 100 });
+    dispatchPointer(window, "pointerup", { pointerId: 6, clientY: 100 });
+    expect(panel.classList.contains(snapBackClass)).toBe(true);
+    expect(panel.style.transform).toBe("translateY(0)");
+    expect(scrim.style.opacity).toBe("");
+    act(() => vi.advanceTimersByTime(230));
+    expect(panel.classList.contains(snapBackClass)).toBe(false);
+    expect(panel.style.transform).toBe("");
+    onClose.mockClear();
+
+    // Declined close + body touch straddling rAF then lifting without drag still snaps back cleanly.
+    dispatchPointer(header, "pointerdown", { pointerId: 7, clientY: 100 });
+    dispatchPointer(window, "pointermove", { pointerId: 7, clientY: 280 });
+    dispatchPointer(window, "pointerup", { pointerId: 7, clientY: 280 });
+    expect(onClose).toHaveBeenCalledOnce();
+    expect(panel.style.transform).toBe("translateY(180px)");
+    dispatchTouch(body, "touchstart", { touches: [{ identifier: 8, clientY: 100 }] });
+    act(() => vi.advanceTimersByTime(20));
+    expect(panel.classList.contains(snapBackClass)).toBe(true);
+    expect(panel.style.transform).toBe("translateY(0)");
+    expect(scrim.style.opacity).toBe("");
+    dispatchTouch(body, "touchend", { changedTouches: [{ identifier: 8, clientY: 100 }] });
     act(() => vi.advanceTimersByTime(230));
     expect(panel.classList.contains(snapBackClass)).toBe(false);
     expect(panel.style.transform).toBe("");
@@ -1502,7 +1585,91 @@ test("reopening (open false -> true) clears inline transform and scrim opacity",
     );
     expect(panel.style.transform).toBe("");
     expect(scrim.style.opacity).toBe("");
+
+    // Switching side away from "bottom" mid-drag while open stays true clears gesture and inline styles.
+    dispatchTouch(body, "touchstart", { touches: [{ identifier: 2, clientY: 100 }] });
+    dispatchTouch(body, "touchmove", { touches: [{ identifier: 2, clientY: 160 }] });
+    expect(panel.style.transform).toBe("translateY(60px)");
+    expect(scrim.style.opacity).not.toBe("");
+    rerender(
+      <Sheet open side="right" onClose={onClose} title="t">
+        <p>Body</p>
+      </Sheet>,
+    );
+    expect(panel.style.transform).toBe("");
+    expect(scrim.style.opacity).toBe("");
+    dispatchTouch(body, "touchmove", { touches: [{ identifier: 2, clientY: 320 }] });
+    dispatchTouch(body, "touchend", { changedTouches: [{ identifier: 2, clientY: 320 }] });
+    expect(panel.style.transform).toBe("");
+    expect(onClose).toHaveBeenCalledOnce();
   } finally {
+    exit.restore();
+  }
+});
+
+test("expandable handle tap before rAF on declined close snaps back cleanly", () => {
+  vi.useFakeTimers();
+  try {
+    const onClose = vi.fn();
+    render(
+      <Sheet open side="bottom" expandable={{ peekHeight: 200, fullScreenFirst: false }} onClose={onClose} title="Exp">
+        Body
+      </Sheet>,
+    );
+    const panel = screen.getByRole("dialog");
+    mockPanelHeight(panel, 200);
+    const handle = screen.getByTestId("sheet-handle");
+
+    dispatchPointer(handle, "pointerdown", { pointerId: 1, clientY: 100 });
+    dispatchPointer(window, "pointermove", { pointerId: 1, clientY: 200 });
+    dispatchPointer(window, "pointerup", { pointerId: 1, clientY: 200 });
+    expect(onClose).toHaveBeenCalledOnce();
+    expect(panel.style.transform).toBe("translateY(100px)");
+
+    dispatchPointer(handle, "pointerdown", { pointerId: 2, clientY: 100 });
+    dispatchPointer(window, "pointerup", { pointerId: 2, clientY: 100 });
+    expect(panel.classList.contains(snapBackClass)).toBe(true);
+    expect(panel.style.transform).toBe("translateY(0)");
+    act(() => vi.advanceTimersByTime(230));
+    expect(panel.style.transform).toBe("");
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("expandable handle ignores pointerdown while closing (open=false during exit)", () => {
+  const exit = withRunningExit();
+  const addSpy = vi.spyOn(window, "addEventListener");
+  try {
+    const { rerender } = render(
+      <Sheet open side="bottom" expandable={{ peekHeight: 200, fullScreenFirst: false }} onClose={vi.fn()} title="t">
+        Body
+      </Sheet>,
+    );
+    const handle = screen.getByTestId("sheet-handle");
+    const geometry = () => document.querySelector("[data-geometry]")?.getAttribute("data-geometry");
+    dispatchPointer(handle, "pointerdown", { pointerId: 1, clientY: 100 });
+    dispatchPointer(window, "pointerup", { pointerId: 1, clientY: 100 });
+    expect(geometry()).toBe("full");
+
+    rerender(
+      <Sheet
+        open={false}
+        side="bottom"
+        expandable={{ peekHeight: 200, fullScreenFirst: false }}
+        onClose={vi.fn()}
+        title="t"
+      >
+        Body
+      </Sheet>,
+    );
+    addSpy.mockClear();
+    dispatchPointer(handle, "pointerdown", { pointerId: 2, clientY: 100 });
+    expect(addSpy.mock.calls.filter(([type]) => type === "pointermove")).toHaveLength(0);
+    dispatchPointer(window, "pointerup", { pointerId: 2, clientY: 100 });
+    expect(geometry()).toBe("full");
+  } finally {
+    addSpy.mockRestore();
     exit.restore();
   }
 });

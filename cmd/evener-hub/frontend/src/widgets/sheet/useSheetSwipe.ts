@@ -1,10 +1,19 @@
-import { type PointerEvent as ReactPointerEvent, type RefObject, useCallback, useEffect, useRef } from "react";
+import {
+  type PointerEvent as ReactPointerEvent,
+  type RefObject,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+} from "react";
 import { motionDurationMs } from "../../motion/tokens";
 import { ownerDocumentOf, ownerWindowOf } from "../internal/documentRealm";
 import { requireClass } from "../internal/requireClass";
 import styles from "./sheet.module.css";
 
 const SNAP_BACK_CLASS = requireClass(styles.snapBack, "sheet.module.css", "snapBack");
+const HANDLE_CLASS = requireClass(styles.handle, "sheet.module.css", "handle");
+const GRAB_HANDLE_CLASS = requireClass(styles.grabHandle, "sheet.module.css", "grabHandle");
 
 const VELOCITY_WINDOW_MS = 100;
 const HOLD_CUTOFF_MS = 80;
@@ -58,18 +67,43 @@ type GestureState =
     }
   | { kind: "scrollOwned"; touchId: number }
   | {
-      kind: "dragging";
-      source: "touch" | "pointer";
-      id: number;
+      kind: "touchDrag";
+      touchId: number;
       startY: number;
       offsetY: number;
-      hasTranslated: boolean;
       samples: VelocitySample[];
+    }
+  | {
+      kind: "pointerDrag";
+      pointerId: number;
+      startY: number;
+      offsetY: number;
+      samples: VelocitySample[];
+      hasTranslated: boolean;
       expandableMode: "peek" | "full" | undefined;
       maxAbsDelta: number;
       switchedGeometry: boolean;
-      hadOrphanedDrag?: boolean;
+      recoveryOffsetY: number | undefined;
     };
+
+interface SwipeController {
+  gesture: GestureState;
+  lastScrollAt: number | null;
+  cancelPointer: (() => void) | null;
+  cancelSnapBack: (() => void) | null;
+  cancelDeclinedGuard: (() => void) | null;
+}
+
+function clearCallback(ctrl: SwipeController, key: "cancelPointer" | "cancelSnapBack" | "cancelDeclinedGuard"): void {
+  ctrl[key]?.();
+  ctrl[key] = null;
+}
+
+function cancelAll(ctrl: SwipeController): void {
+  clearCallback(ctrl, "cancelDeclinedGuard");
+  clearCallback(ctrl, "cancelPointer");
+  clearCallback(ctrl, "cancelSnapBack");
+}
 
 function targetElement(target: EventTarget | null): Element | null {
   const node = target as Node | null;
@@ -80,9 +114,8 @@ function targetElement(target: EventTarget | null): Element | null {
 function isHandleOrHeaderTarget(target: EventTarget | null, panel: HTMLElement): boolean {
   const el = targetElement(target);
   if (el === null) return false;
-  if (el.closest('[data-testid="sheet-handle"], [data-testid="sheet-grab-pill"]') !== null) return true;
-  const header = el.closest("header");
-  return header !== null && header.parentElement === panel;
+  const match = el.closest(`.${HANDLE_CLASS}, .${GRAB_HANDLE_CLASS}, header`);
+  return match !== null && match.parentElement === panel;
 }
 
 function isExcludedTarget(target: EventTarget | null, body: HTMLElement | null, inHeader: boolean): boolean {
@@ -112,6 +145,12 @@ function findTouchById(list: TouchList, id: number): Touch | undefined {
   return undefined;
 }
 
+function isTouchActive(event: TouchEvent, touchId: number): boolean {
+  return (
+    findTouchById(event.touches, touchId) !== undefined && findTouchById(event.changedTouches, touchId) === undefined
+  );
+}
+
 function dismissThreshold(panelHeight: number): number {
   return panelHeight > 0
     ? Math.min(panelHeight * DISMISS_RATIO, MAX_DISMISS_THRESHOLD_PX)
@@ -119,19 +158,30 @@ function dismissThreshold(panelHeight: number): number {
 }
 
 function pushSample(samples: VelocitySample[], y: number, time: number): void {
-  const prev = samples[samples.length - 1];
-  const oldest = samples[0];
-  if (prev !== undefined && oldest !== undefined) {
-    const step = y - prev.y;
-    // Discard pre-reversal samples so pulling back up before lift produces negative velocity.
-    if (step * (prev.y - oldest.y) < 0 && Math.abs(step) > DIRECTION_REVERSAL_SLOP_PX) {
-      samples.splice(0, samples.length, prev);
-    }
-  }
-  samples.push({ y, time });
   while (samples[0] !== undefined && time - samples[0].time > VELOCITY_WINDOW_MS) {
     samples.shift();
   }
+  const first = samples[0];
+  if (first !== undefined && samples.length >= 2) {
+    let peak = first;
+    let trough = first;
+    let peakFromDown = false;
+    let troughFromUp = false;
+    for (const s of samples) {
+      if (s.y >= peak.y) {
+        peakFromDown = trough.y < s.y;
+        peak = s;
+      }
+      if (s.y <= trough.y) {
+        troughFromUp = peak.y > s.y;
+        trough = s;
+      }
+    }
+    // Reset window to the extremum once cumulative reversal exceeds slop (handles 120 Hz small frames).
+    if (peakFromDown && peak.y - y > DIRECTION_REVERSAL_SLOP_PX) samples.splice(0, samples.length, peak);
+    else if (troughFromUp && y - trough.y > DIRECTION_REVERSAL_SLOP_PX) samples.splice(0, samples.length, trough);
+  }
+  samples.push({ y, time });
 }
 
 function computeVelocityY(samples: VelocitySample[], releaseTime: number): number {
@@ -148,12 +198,86 @@ function clearInlineStyles(panel: HTMLElement | null, scrim: HTMLElement | null)
   if (scrim !== null) scrim.style.opacity = "";
 }
 
-function applyDragStyles(panel: HTMLElement, scrim: HTMLElement | null, offsetY: number, panelHeight: number): void {
+function applyDragStyles(panel: HTMLElement, scrim: HTMLElement | null, offsetY: number): void {
   panel.style.transform = `translateY(${offsetY}px)`;
   if (scrim !== null) {
-    const ratio = offsetY / Math.max(panelHeight, 1);
+    const ratio = offsetY / Math.max(panel.getBoundingClientRect().height, 1);
     scrim.style.opacity = String(Math.max(0.4, 1 - ratio * 0.6));
   }
+}
+
+function snapBack(ctrl: SwipeController, panel: HTMLElement, scrim: HTMLElement | null): void {
+  clearCallback(ctrl, "cancelSnapBack");
+  if (scrim !== null) scrim.style.opacity = "";
+
+  const win = ownerWindowOf(panel);
+  if (win.matchMedia?.("(prefers-reduced-motion: reduce)").matches) {
+    panel.classList.remove(SNAP_BACK_CLASS);
+    panel.style.transform = "";
+    return;
+  }
+
+  panel.classList.add(SNAP_BACK_CLASS);
+  panel.style.transform = "translateY(0)";
+
+  let settled = false;
+  const finish = (clearTransform: boolean) => {
+    if (settled) return;
+    settled = true;
+    panel.removeEventListener("transitionend", onTransitionEnd);
+    win.clearTimeout(timer);
+    panel.classList.remove(SNAP_BACK_CLASS);
+    if (clearTransform) panel.style.transform = "";
+    ctrl.cancelSnapBack = null;
+  };
+  const onTransitionEnd = (event: TransitionEvent) => {
+    if (event.target !== panel) return;
+    if (event.propertyName && event.propertyName !== "transform") return;
+    finish(true);
+  };
+  const delay = motionDurationMs("--motion-duration-spatial-exit", panel) + SNAP_BACK_FALLBACK_SLACK_MS;
+  const timer = win.setTimeout(() => finish(true), delay);
+  panel.addEventListener("transitionend", onTransitionEnd);
+  ctrl.cancelSnapBack = () => finish(false);
+}
+
+function settleOrClear(
+  ctrl: SwipeController,
+  panel: HTMLElement | null,
+  scrim: HTMLElement | null,
+  offsetY: number,
+): void {
+  if (panel !== null && offsetY > 0) snapBack(ctrl, panel, scrim);
+  else clearInlineStyles(panel, scrim);
+}
+
+function settleSwipeDrag(
+  ctrl: SwipeController,
+  latestRef: RefObject<{ open: boolean; onClose: () => void }>,
+  state: { offsetY: number; samples: VelocitySample[] },
+  panel: HTMLElement,
+  scrimRef: RefObject<HTMLDivElement | null>,
+  cancelled: boolean,
+): void {
+  const scrim = scrimRef.current;
+  if (!cancelled && state.offsetY > 0) {
+    const threshold = dismissThreshold(panel.getBoundingClientRect().height);
+    const projectedY = state.offsetY + computeVelocityY(state.samples, performance.now()) * PROJECTION_MS;
+    if (projectedY >= threshold) {
+      latestRef.current.onClose();
+      clearCallback(ctrl, "cancelDeclinedGuard");
+      const win = ownerWindowOf(panel);
+      const rafId = win.requestAnimationFrame(() => {
+        ctrl.cancelDeclinedGuard = null;
+        if (latestRef.current.open && ctrl.gesture.kind !== "touchDrag" && ctrl.gesture.kind !== "pointerDrag") {
+          snapBack(ctrl, panel, scrimRef.current);
+        }
+      });
+      ctrl.cancelDeclinedGuard = () => win.cancelAnimationFrame(rafId);
+      return;
+    }
+  }
+  settleOrClear(ctrl, panel, scrim, state.offsetY);
 }
 
 /**
@@ -174,13 +298,7 @@ export function useSheetSwipe({
   const latestRef = useRef({ open, side, onClose, expandable });
   latestRef.current = { open, side, onClose, expandable };
 
-  const ctrlRef = useRef<{
-    gesture: GestureState;
-    lastScrollAt: number | null;
-    cancelPointer: (() => void) | null;
-    cancelSnapBack: (() => void) | null;
-    cancelDeclinedGuard: (() => void) | null;
-  }>({
+  const ctrlRef = useRef<SwipeController>({
     gesture: { kind: "idle" },
     lastScrollAt: null,
     cancelPointer: null,
@@ -188,104 +306,22 @@ export function useSheetSwipe({
     cancelDeclinedGuard: null,
   });
 
-  const cancelAllTimersAndListeners = useCallback(() => {
-    const ctrl = ctrlRef.current;
-    ctrl.cancelDeclinedGuard?.();
-    ctrl.cancelDeclinedGuard = null;
-    ctrl.cancelPointer?.();
-    ctrl.cancelPointer = null;
-    ctrl.cancelSnapBack?.();
-    ctrl.cancelSnapBack = null;
-  }, []);
-
-  const snapBack = useCallback((panel: HTMLElement, scrim: HTMLElement | null) => {
-    const ctrl = ctrlRef.current;
-    ctrl.cancelSnapBack?.();
-    ctrl.cancelSnapBack = null;
-    if (scrim !== null) scrim.style.opacity = "";
-
-    const win = ownerWindowOf(panel);
-    if (win.matchMedia?.("(prefers-reduced-motion: reduce)").matches) {
-      panel.classList.remove(SNAP_BACK_CLASS);
-      panel.style.transform = "";
-      return;
-    }
-
-    panel.classList.add(SNAP_BACK_CLASS);
-    panel.style.transform = "translateY(0)";
-
-    let settled = false;
-    const finish = (clearTransform: boolean) => {
-      if (settled) return;
-      settled = true;
-      panel.removeEventListener("transitionend", onTransitionEnd);
-      win.clearTimeout(timer);
-      panel.classList.remove(SNAP_BACK_CLASS);
-      if (clearTransform) panel.style.transform = "";
-      ctrl.cancelSnapBack = null;
-    };
-    const onTransitionEnd = (event: TransitionEvent) => {
-      if (event.target !== panel) return;
-      if (event.propertyName && event.propertyName !== "transform") return;
-      finish(true);
-    };
-    const delay = motionDurationMs("--motion-duration-spatial-exit", panel) + SNAP_BACK_FALLBACK_SLACK_MS;
-    const timer = win.setTimeout(() => finish(true), delay);
-    panel.addEventListener("transitionend", onTransitionEnd);
-    ctrl.cancelSnapBack = () => finish(false);
-  }, []);
-
-  const settleSwipeDrag = useCallback(
-    (state: Extract<GestureState, { kind: "dragging" }>, panel: HTMLElement, cancelled: boolean) => {
-      const scrim = scrimRef.current;
-      if (cancelled) {
-        if (state.offsetY > 0) snapBack(panel, scrim);
-        else clearInlineStyles(panel, scrim);
-        return;
-      }
-
-      const threshold = dismissThreshold(panel.getBoundingClientRect().height);
-      const velocityY = computeVelocityY(state.samples, performance.now());
-      const projectedY = state.offsetY + velocityY * PROJECTION_MS;
-
-      if (state.offsetY > 0 && projectedY >= threshold) {
-        latestRef.current.onClose();
-        const ctrl = ctrlRef.current;
-        ctrl.cancelDeclinedGuard?.();
-        const win = ownerWindowOf(panel);
-        const rafId = win.requestAnimationFrame(() => {
-          ctrl.cancelDeclinedGuard = null;
-          if (latestRef.current.open && ctrl.gesture.kind === "idle") {
-            snapBack(panel, scrimRef.current);
-          }
-        });
-        ctrl.cancelDeclinedGuard = () => win.cancelAnimationFrame(rafId);
-        return;
-      }
-
-      if (state.offsetY > 0) snapBack(panel, scrim);
-      else clearInlineStyles(panel, scrim);
-    },
-    [scrimRef, snapBack],
-  );
-
-  const prevOpenRef = useRef(open);
-  useEffect(() => {
-    const wasOpen = prevOpenRef.current;
-    prevOpenRef.current = open;
-    if (open && !wasOpen) {
-      cancelAllTimersAndListeners();
-      const panel = panelRef.current;
-      panel?.classList.remove(SNAP_BACK_CLASS);
-      clearInlineStyles(panel, scrimRef.current);
-      ctrlRef.current.gesture = { kind: "idle" };
-    } else if (!open) {
-      cancelAllTimersAndListeners();
+  const prevStateRef = useRef({ open, side });
+  useLayoutEffect(() => {
+    const prev = prevStateRef.current;
+    prevStateRef.current = { open, side };
+    const shouldResetStyles = (open && !prev.open) || (open && prev.side === "bottom" && side !== "bottom");
+    if (!open || shouldResetStyles) {
+      cancelAll(ctrlRef.current);
       ctrlRef.current.gesture = { kind: "idle" };
     }
-  }, [open, panelRef, scrimRef, cancelAllTimersAndListeners]);
+    if (shouldResetStyles) {
+      panelRef.current?.classList.remove(SNAP_BACK_CLASS);
+      clearInlineStyles(panelRef.current, scrimRef.current);
+    }
+  }, [open, side, panelRef, scrimRef]);
 
-  useEffect(() => cancelAllTimersAndListeners, [cancelAllTimersAndListeners]);
+  useEffect(() => () => cancelAll(ctrlRef.current), []);
 
   useEffect(() => {
     if (!open || side !== "bottom") return;
@@ -307,14 +343,9 @@ export function useSheetSwipe({
       const { open: isOpen, side: currentSide, expandable: exp } = latestRef.current;
       if (!isOpen || currentSide !== "bottom" || exp?.geometry === "full") return;
       if (ctrl.gesture.kind !== "idle") {
-        if (ctrl.gesture.kind === "dragging" && ctrl.gesture.source === "pointer") return;
-        const prevTouchId = ctrl.gesture.kind === "dragging" ? ctrl.gesture.id : ctrl.gesture.touchId;
-        const prevStillActive =
-          event.touches.length > 1 &&
-          findTouchById(event.touches, prevTouchId) !== undefined &&
-          findTouchById(event.changedTouches, prevTouchId) === undefined;
-        if (prevStillActive) return;
-        if (ctrl.gesture.kind === "dragging" && ctrl.gesture.offsetY > 0) snapBack(panel, scrimRef.current);
+        if (ctrl.gesture.kind === "pointerDrag") return;
+        if (event.touches.length > 1 && isTouchActive(event, ctrl.gesture.touchId)) return;
+        if (ctrl.gesture.kind === "touchDrag") settleOrClear(ctrl, panel, scrimRef.current, ctrl.gesture.offsetY);
         ctrl.gesture = { kind: "idle" };
       }
       if (event.touches.length !== 1) return;
@@ -341,15 +372,14 @@ export function useSheetSwipe({
     };
 
     const onTouchMove = (event: TouchEvent) => {
-      const state = ctrl.gesture;
+      let state = ctrl.gesture;
       if (state.kind === "idle" || state.kind === "scrollOwned") return;
-      if (state.kind === "dragging" && state.source === "pointer") {
+      if (state.kind === "pointerDrag") {
         if (event.cancelable) event.preventDefault();
         return;
       }
 
-      const touchId = state.kind === "pendingBody" ? state.touchId : state.id;
-      const touch = findTouchById(event.touches, touchId) ?? findTouchById(event.changedTouches, touchId);
+      const touch = findTouchById(event.touches, state.touchId) ?? findTouchById(event.changedTouches, state.touchId);
       if (touch === undefined) return;
 
       if (state.kind === "pendingBody") {
@@ -365,50 +395,31 @@ export function useSheetSwipe({
           return;
         }
 
-        ctrl.cancelSnapBack?.();
-        ctrl.cancelSnapBack = null;
-        ctrl.cancelDeclinedGuard?.();
-        ctrl.cancelDeclinedGuard = null;
-        const samples: VelocitySample[] = [];
-        pushSample(samples, state.startY, state.startTime);
-        pushSample(samples, touch.clientY, performance.now());
-        const offsetY = Math.max(0, dy);
-        ctrl.gesture = {
-          kind: "dragging",
-          source: "touch",
-          id: state.touchId,
+        clearCallback(ctrl, "cancelSnapBack");
+        clearCallback(ctrl, "cancelDeclinedGuard");
+        state = ctrl.gesture = {
+          kind: "touchDrag",
+          touchId: state.touchId,
           startY: state.startY,
-          offsetY,
-          hasTranslated: true,
-          samples,
-          expandableMode: undefined,
-          maxAbsDelta: Math.abs(dy),
-          switchedGeometry: false,
+          offsetY: 0,
+          samples: [{ y: state.startY, time: state.startTime }],
         };
-        if (event.cancelable) event.preventDefault();
-        applyDragStyles(panel, scrimRef.current, offsetY, panel.getBoundingClientRect().height);
-        return;
       }
 
       if (event.cancelable) event.preventDefault();
       const offsetY = Math.max(0, touch.clientY - state.startY);
       state.offsetY = offsetY;
-      state.hasTranslated = true;
       pushSample(state.samples, touch.clientY, performance.now());
-      applyDragStyles(panel, scrimRef.current, offsetY, panel.getBoundingClientRect().height);
+      applyDragStyles(panel, scrimRef.current, offsetY);
     };
 
     const finishTouch = (event: TouchEvent, cancelled: boolean) => {
       const state = ctrl.gesture;
-      if (state.kind === "idle" || (state.kind === "dragging" && state.source === "pointer")) return;
-      const touchId = state.kind === "dragging" ? state.id : state.touchId;
-      const stillActive =
-        findTouchById(event.touches, touchId) !== undefined &&
-        findTouchById(event.changedTouches, touchId) === undefined;
-      if (stillActive) return;
+      if (state.kind === "idle" || state.kind === "pointerDrag") return;
+      if (isTouchActive(event, state.touchId)) return;
 
       ctrl.gesture = { kind: "idle" };
-      if (state.kind === "dragging") settleSwipeDrag(state, panel, cancelled);
+      if (state.kind === "touchDrag") settleSwipeDrag(ctrl, latestRef, state, panel, scrimRef, cancelled);
     };
 
     const onTouchEnd = (event: TouchEvent) => finishTouch(event, false);
@@ -427,41 +438,42 @@ export function useSheetSwipe({
       doc.removeEventListener("touchcancel", onTouchCancel, { capture: true });
       panel.removeEventListener("scroll", onScroll, { capture: true });
     };
-  }, [open, side, panelRef, bodyRef, scrimRef, settleSwipeDrag, snapBack]);
+  }, [open, side, panelRef, bodyRef, scrimRef]);
 
   const startPointerDrag = useCallback(
     (e: ReactPointerEvent, origin: "handle" | "header") => {
       const ctrl = ctrlRef.current;
       const { open: isOpen, side: currentSide, expandable: exp } = latestRef.current;
       if (typeof e.button === "number" && e.button > 0) return;
-      let hadOrphanedDrag = false;
+      if (ctrl.gesture.kind === "pointerDrag") return;
+      if (ctrl.gesture.kind !== "idle" && e.isPrimary === false) return;
+
+      const orphanedTouch = ctrl.gesture.kind === "touchDrag" ? ctrl.gesture : null;
       if (ctrl.gesture.kind !== "idle") {
-        if (ctrl.gesture.kind === "dragging" && ctrl.gesture.source === "pointer") return;
-        if (e.isPrimary === false) return;
         // A primary pointerdown implies no primary touch remains active; clear orphaned touch state.
-        hadOrphanedDrag = ctrl.gesture.kind === "dragging" && ctrl.gesture.offsetY > 0;
         ctrl.gesture = { kind: "idle" };
-        if (hadOrphanedDrag && panelRef.current !== null) snapBack(panelRef.current, scrimRef.current);
       }
       if (
-        origin === "header"
-          ? !isOpen || currentSide !== "bottom" || exp?.geometry === "full"
-          : !exp && (!isOpen || currentSide !== "bottom")
+        !isOpen ||
+        (origin === "header"
+          ? currentSide !== "bottom" || exp?.geometry === "full"
+          : !exp && currentSide !== "bottom") ||
+        isExcludedTarget(e.target, bodyRef.current, origin === "header")
       ) {
+        if (orphanedTouch !== null) settleOrClear(ctrl, panelRef.current, scrimRef.current, orphanedTouch.offsetY);
         return;
       }
-      if (isExcludedTarget(e.target, bodyRef.current, origin === "header")) return;
 
       const win = ownerWindowOf(panelRef.current ?? e.currentTarget);
-      ctrl.cancelSnapBack?.();
-      ctrl.cancelSnapBack = null;
-      ctrl.cancelDeclinedGuard?.();
-      ctrl.cancelDeclinedGuard = null;
+      const recoveryOffsetY =
+        orphanedTouch?.offsetY ??
+        (ctrl.cancelDeclinedGuard !== null ? 1 : ctrl.cancelSnapBack !== null ? 0 : undefined);
+      clearCallback(ctrl, "cancelSnapBack");
+      clearCallback(ctrl, "cancelDeclinedGuard");
 
       ctrl.gesture = {
-        kind: "dragging",
-        source: "pointer",
-        id: e.pointerId ?? 0,
+        kind: "pointerDrag",
+        pointerId: e.pointerId ?? 0,
         startY: e.clientY,
         offsetY: 0,
         hasTranslated: false,
@@ -469,13 +481,12 @@ export function useSheetSwipe({
         expandableMode: origin === "handle" && exp !== undefined ? exp.geometry : undefined,
         maxAbsDelta: 0,
         switchedGeometry: false,
-        hadOrphanedDrag,
+        recoveryOffsetY,
       };
 
       const onPointerMove = (moveEvent: PointerEvent) => {
         const state = ctrl.gesture;
-        if (state.kind !== "dragging" || state.source !== "pointer") return;
-        if ((moveEvent.pointerId ?? 0) !== state.id) return;
+        if (state.kind !== "pointerDrag" || (moveEvent.pointerId ?? 0) !== state.pointerId) return;
 
         const delta = moveEvent.clientY - state.startY;
         state.maxAbsDelta = Math.max(state.maxAbsDelta, Math.abs(delta));
@@ -494,10 +505,11 @@ export function useSheetSwipe({
           if (state.switchedGeometry) return;
           if (delta < -EXPANDABLE_DRAG_PX) {
             state.switchedGeometry = true;
-            if (state.hasTranslated) {
+            if (state.hasTranslated || state.recoveryOffsetY !== undefined) {
               clearInlineStyles(panel, scrimRef.current);
               state.offsetY = 0;
               state.hasTranslated = false;
+              state.recoveryOffsetY = undefined;
             }
             latestRef.current.expandable?.onGeometryChange("full");
             return;
@@ -510,36 +522,37 @@ export function useSheetSwipe({
         if (offsetY > 0 || state.hasTranslated) {
           state.hasTranslated = true;
           state.offsetY = offsetY;
-          applyDragStyles(panel, scrimRef.current, offsetY, panel.getBoundingClientRect().height);
+          applyDragStyles(panel, scrimRef.current, offsetY);
         }
         pushSample(state.samples, moveEvent.clientY, performance.now());
       };
 
       const finishPointer = (endEvent: PointerEvent, cancelled: boolean) => {
         const state = ctrl.gesture;
-        if (state.kind !== "dragging" || state.source !== "pointer") return;
-        if ((endEvent.pointerId ?? 0) !== state.id) return;
+        if (state.kind !== "pointerDrag" || (endEvent.pointerId ?? 0) !== state.pointerId) return;
 
-        ctrl.cancelPointer?.();
-        ctrl.cancelPointer = null;
+        clearCallback(ctrl, "cancelPointer");
         ctrl.gesture = { kind: "idle" };
         const panel = panelRef.current;
 
-        if (state.expandableMode !== undefined && !state.hasTranslated) {
-          if (!cancelled && !state.switchedGeometry && state.maxAbsDelta <= EXPANDABLE_TAP_SLOP_PX) {
-            latestRef.current.expandable?.onGeometryChange((g) => (g === "peek" ? "full" : "peek"));
-          }
-          if (state.hadOrphanedDrag && panel !== null) snapBack(panel, scrimRef.current);
-          return;
+        if (
+          state.expandableMode !== undefined &&
+          !state.hasTranslated &&
+          !cancelled &&
+          !state.switchedGeometry &&
+          state.maxAbsDelta <= EXPANDABLE_TAP_SLOP_PX
+        ) {
+          latestRef.current.expandable?.onGeometryChange((g) => (g === "peek" ? "full" : "peek"));
         }
-        if (panel !== null && state.hasTranslated) settleSwipeDrag(state, panel, cancelled);
-        else if (state.hadOrphanedDrag && panel !== null) snapBack(panel, scrimRef.current);
+        if (panel !== null && state.hasTranslated) settleSwipeDrag(ctrl, latestRef, state, panel, scrimRef, cancelled);
+        else if (state.recoveryOffsetY !== undefined)
+          settleOrClear(ctrl, panel, scrimRef.current, state.recoveryOffsetY);
       };
 
       const onPointerUp = (upEvent: PointerEvent) => finishPointer(upEvent, false);
       const onPointerCancel = (cancelEvent: PointerEvent) => finishPointer(cancelEvent, true);
 
-      ctrl.cancelPointer?.();
+      clearCallback(ctrl, "cancelPointer");
       ctrl.cancelPointer = () => {
         win.removeEventListener("pointermove", onPointerMove);
         win.removeEventListener("pointerup", onPointerUp);
@@ -549,7 +562,7 @@ export function useSheetSwipe({
       win.addEventListener("pointerup", onPointerUp);
       win.addEventListener("pointercancel", onPointerCancel);
     },
-    [panelRef, bodyRef, scrimRef, settleSwipeDrag, snapBack],
+    [panelRef, bodyRef, scrimRef],
   );
 
   const onHandlePointerDown = useCallback((e: ReactPointerEvent) => startPointerDrag(e, "handle"), [startPointerDrag]);
