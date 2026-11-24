@@ -30,7 +30,39 @@ export async function measureEditorialTranscript() {
   const host = required(document.getElementById("root"));
   const root = createRoot(host);
   const model = makeEditorialTranscriptModel();
-  const config = makeTranscriptDisplayConfig({ kind: "preset", level: "full" });
+  function render(level: "intent" | "full", disclosureScope: string) {
+    flushSync(() =>
+      root.render(
+        createElement(TranscriptBody, {
+          model,
+          config: makeTranscriptDisplayConfig({ kind: "preset", level }),
+          surface: "preview",
+          disclosureScope,
+          sessionRef: "dev-editorial",
+        }),
+      ),
+    );
+  }
+
+  // In Intent the group can paint an edge; in Full the call itself can paint it.
+  const surfaces = [];
+  for (const level of ["intent", "full"] as const) {
+    render(level, `reading:${level}`);
+    for (const selector of [
+      '[data-testid="user-bubble"]',
+      '[data-testid="tool-call-item"][data-item-id="editorial_source"]',
+    ]) {
+      const sample = required(host.querySelector<HTMLElement>(selector));
+      if (!sample.getBoundingClientRect().height) throw new Error(`Hidden reading sample: ${level} ${selector}`);
+      const row = required(sample.closest('[data-testid="transcript-row"]'));
+      for (let el: HTMLElement | null = sample; el && el !== row; el = el.parentElement) {
+        if (!el.getClientRects().length) continue;
+        const { borderInlineStartWidth: edge, backgroundColor: fill, boxShadow: shadow } = getComputedStyle(el);
+        surfaces.push({ level, element: el.className, edge, fill, shadow });
+      }
+    }
+  }
+
   const results = [];
   for (const theme of ["light", "dark"]) {
     document.body.dataset.theme = theme;
@@ -40,17 +72,7 @@ export async function measureEditorialTranscript() {
         document.body.dataset.phoneDensity = density;
         for (const width of window.innerWidth > 899 ? [560, window.innerWidth] : [window.innerWidth]) {
           host.style.width = `${width}px`;
-          flushSync(() =>
-            root.render(
-              createElement(TranscriptBody, {
-                model,
-                config,
-                surface: "preview",
-                disclosureScope: `editorial:${theme}:${scale}:${density}:${width}`,
-                sessionRef: "dev-editorial",
-              }),
-            ),
-          );
+          render("full", `editorial:${theme}:${scale}:${density}:${width}`);
           await document.fonts.ready;
           const box = host.getBoundingClientRect();
           const tools = Array.from(host.querySelectorAll<HTMLElement>('[data-testid="tool-call-item"]'));
@@ -130,5 +152,5 @@ export async function measureEditorialTranscript() {
       }
     }
   }
-  return results;
+  return { measurements: results, surfaces };
 }

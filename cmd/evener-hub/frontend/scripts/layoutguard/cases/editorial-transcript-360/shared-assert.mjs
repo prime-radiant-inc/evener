@@ -1,5 +1,9 @@
-export default function assert(measurements) {
+export default function assert({ measurements, surfaces }) {
   const failures = [];
+  for (const { level, element, edge, fill, shadow } of surfaces) {
+    if (edge !== "0px" || fill !== "rgba(0, 0, 0, 0)" || shadow !== "none")
+      failures.push(`${level}: ${element} frames transcript content (leading edge ${edge}, fill ${fill}, shadow ${shadow})`);
+  }
   for (const m of measurements) {
     const id = `${m.theme}/${m.scale}/${m.density}/${m.width}`;
     if (m.outside.length || m.overflow > 1)
