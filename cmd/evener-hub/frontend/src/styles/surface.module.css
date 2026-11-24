@@ -35,6 +35,21 @@
   gap: var(--space-3);
 }
 
+/* --- the reading measure ---------------------------------------------
+ * The one centered column the transcript, the composer, the ask dock, the
+ * find bar and the spawn form stand in. --session-measure is declared on
+ * <body> in tokens.css (44rem, or 64rem under the Transcript width
+ * preference), so a surface that renders outside a TurnBlock - a
+ * virtual-list row, a docked bar, a whole pane form - reads the token
+ * itself and still lines up with every turn above it. Consumers compose
+ * this and add only their own layout. Settings' content column is bounded
+ * but not centered, so it does not compose this. */
+.measureColumn {
+  width: 100%;
+  max-width: var(--session-measure);
+  margin-inline: auto;
+}
+
 /* --- the summary tiles -----------------------------------------------
  * The two tiles under a page's primary task - a directory that is itself a
  * button and a status card that is not - share one inner layout: a row with

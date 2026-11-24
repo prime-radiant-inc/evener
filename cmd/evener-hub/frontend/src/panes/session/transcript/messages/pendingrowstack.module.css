@@ -14,8 +14,6 @@
    * intent group (session.module.css's .intentGroup) and AskDock's .dock
    * carry for rows outside .turn. overflowguard's "held steer column" check
    * measures this against a live turn. */
-  width: 100%;
-  max-width: var(--session-measure);
-  margin-inline: auto;
+  composes: measureColumn from "../../../../styles/surface.module.css";
   min-width: 0;
 }

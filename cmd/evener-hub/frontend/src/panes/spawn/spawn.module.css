@@ -3,12 +3,10 @@
  * at, so the form sits in the pane instead of pinned to its left edge
  * (typography-spacing-critique-2026-09-06 R7). */
 .form {
+  composes: measureColumn from "../../styles/surface.module.css";
   display: flex;
   flex-direction: column;
   gap: var(--space-5);
-  width: 100%;
-  max-width: var(--session-measure);
-  margin-inline: auto;
   /* The query container for the shared Start word collapse
    * (styles/sendbutton.module.css): pane width, not viewport width. */
   container-type: inline-size;

@@ -126,3 +126,31 @@ test("the field seat is one ground for a tile's leading glyph", () => {
     /composes:\s*fieldSeat from "[./]*styles\/surface\.module\.css"/,
   );
 });
+
+test("the reading measure is one centered column recipe", () => {
+  const measure = ruleBody(surface, ".measureColumn");
+  expect(measure).toMatch(/width:\s*100%/);
+  expect(measure).toMatch(/max-width:\s*var\(--session-measure\)/);
+  expect(measure).toMatch(/margin-inline:\s*auto/);
+  // These surfaces render outside .turn (virtual-list rows, a docked bar, the
+  // spawn form, the cold-start block), so each must read the measure itself.
+  // Settings' .content is bounded but not centered and is deliberately absent.
+  for (const [file, selector] of [
+    ["panes/session/transcript/turnblock.module.css", ".turn"],
+    ["panes/session/transcript/messages/pendingrowstack.module.css", ".stack"],
+    ["panes/session/find/findbar.module.css", ".dock"],
+    ["panes/session/composer/askDock/askdock.module.css", ".dock"],
+    ["panes/session/session.module.css", ".intentGroup"],
+    ["panes/session/session.module.css", ".coldStart"],
+    ["panes/session/session.module.css", ".loadingSkeleton"],
+    ["panes/session/session.module.css", ".measure"],
+    ["panes/spawn/spawn.module.css", ".form"],
+  ] as const) {
+    const body = ruleBody(read(file), selector);
+    expect(body, `${file} ${selector}`).toMatch(/composes:\s*measureColumn from "[./]*styles\/surface\.module\.css"/);
+    expect(body, `${file} ${selector}`).not.toMatch(/max-width:\s*var\(--session-measure\)/);
+  }
+  // The cold-start skeleton used to cap at a hard-coded 42rem instead of the
+  // shared measure.
+  expect(read("panes/session/session.module.css")).not.toMatch(/42rem/);
+});

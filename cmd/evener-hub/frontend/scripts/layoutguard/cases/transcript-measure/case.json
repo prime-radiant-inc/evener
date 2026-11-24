@@ -6,6 +6,7 @@
     "styles/tokens.css",
     "styles/motion.module.css",
     "styles/text.module.css",
+    "styles/surface.module.css",
     "panes/session/transcript/turnblock.module.css",
     "panes/session/transcript/messages/agentmessageitem.module.css",
     "panes/session/transcript/messages/speakerheader.module.css",
