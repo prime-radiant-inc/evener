@@ -2,7 +2,9 @@ import { basename, childrenPrefix, friendlyErrorMessage, parentOf } from "@evene
 import { type FormEvent, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Button } from "../button";
+import { Chevron } from "../chevron";
 import { Dialog } from "../dialog";
+import { Disclosure } from "../disclosure";
 import { ownerDocumentOf } from "../internal/documentRealm";
 import { requireClass } from "../internal/requireClass";
 import { usePortalDocument } from "../internal/usePortalDocument";
@@ -69,6 +71,7 @@ export function DirectoryPicker({
   const [creating, setCreating] = useState(false);
   const [folderName, setFolderName] = useState("");
   const [busy, setBusy] = useState(false);
+  const [earlierOpen, setEarlierOpen] = useState(false);
   const request = useRef(0);
   const mounted = useRef(true);
   const pathInput = useRef<HTMLInputElement>(null);
@@ -262,21 +265,25 @@ export function DirectoryPicker({
               disabled={busy || current === "/"}
               onClick={() => void browse(parentOf(current))}
             >
-              ↑
+              <Chevron direction="up" />
             </Button>
             <nav className={CLASS.crumbs} aria-label="Directory breadcrumbs">
               <Button variant="quiet" disabled={busy} onClick={() => void browse("/")}>
                 /
               </Button>
               {crumbs.length > 3 && (
-                <details>
-                  <summary aria-label="Earlier directories">…</summary>
+                <Disclosure
+                  summary="…"
+                  summaryAriaLabel={() => "Earlier directories"}
+                  open={earlierOpen}
+                  onOpenChange={setEarlierOpen}
+                >
                   {crumbs.slice(0, -3).map((crumb) => (
                     <Button key={crumb.path} variant="quiet" disabled={busy} onClick={() => void browse(crumb.path)}>
                       {crumb.label}
                     </Button>
                   ))}
-                </details>
+                </Disclosure>
               )}
               {crumbs.slice(-3).map((crumb) => (
                 <Button variant="quiet" key={crumb.path} disabled={busy} onClick={() => void browse(crumb.path)}>
