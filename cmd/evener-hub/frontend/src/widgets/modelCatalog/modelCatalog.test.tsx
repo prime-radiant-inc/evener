@@ -569,10 +569,13 @@ describe("keyboard", () => {
     const combo = await openPicker(user);
     await user.type(combo, "haiku");
     deliverCatalog(CATALOG);
-    await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(1));
-
-    const id = combo.getAttribute("aria-activedescendant");
-    expect(id ? document.getElementById(id)?.textContent : null).toContain("Claude Haiku 4.5");
+    // The catalog arrival renders the rows first, and the panel's first-match
+    // effect activates one in a later commit; wait for both states together.
+    await waitFor(() => {
+      expect(screen.getAllByRole("option")).toHaveLength(1);
+      const id = combo.getAttribute("aria-activedescendant");
+      expect(id ? document.getElementById(id)?.textContent : null).toContain("Claude Haiku 4.5");
+    });
     await user.keyboard("{Enter}");
     expect(onChange).toHaveBeenCalledWith("anthropic/claude-haiku-4-5");
   });
