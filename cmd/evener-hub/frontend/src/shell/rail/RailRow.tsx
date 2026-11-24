@@ -528,6 +528,9 @@ interface RailWhyProps {
   session: RailSession;
   state: BoardState;
   host?: { label: string; online: boolean };
+  // The phone's drawer and tablet board print the reason inside the title
+  // button; SessionRow reads the one shared viewport listener and says so here.
+  isMobile: boolean;
 }
 
 function RailWhy(props: RailWhyProps): ReactNode {
@@ -538,15 +541,14 @@ function RailWhyTicking(props: RailWhyProps): ReactNode {
   return <RailWhyLine {...props} now={useRailNow()} />;
 }
 
-function RailWhyLine({ session, state, host, now }: RailWhyProps & { now: number }): ReactNode {
+function RailWhyLine({ session, state, host, isMobile, now }: RailWhyProps & { now: number }): ReactNode {
   const line = whyLine({ row: session, state }, undefined, 0, now);
   // A pending question's own words are the row's useful second line on the
   // phone's drawer and tablet board: its text is a sentence in the row's
   // ordinary ink, while the attention dot names the state. No usable text,
   // and the desktop rail at every width, keep the shared state word.
-  // useIsMobile reads the one shared media-query listener, not its own.
   const questionText = session.question?.text.trim();
-  const asked = useIsMobile() && state === "question" && questionText ? questionText : undefined;
+  const asked = isMobile && state === "question" && questionText ? questionText : undefined;
   // A reason line's word names the attention; the sentence after it only
   // tells the reader to open the session, which the row already invites. The
   // bare state word repeats the band's own name.
@@ -686,11 +688,18 @@ function SessionTitle({
   effectiveState,
   notStarted,
   focusTarget,
+  isMobile,
+  detail,
 }: {
   session: RailSession;
   effectiveState: string;
   notStarted: boolean;
   focusTarget: () => HTMLElement | null;
+  isMobile: boolean;
+  // The phone's title trigger owns the row's second line too, so one 44px
+  // target and one session activation cover both lines. The desktop trigger
+  // keeps the name alone.
+  detail?: ReactNode;
 }) {
   const sideAnchor = useCallback(() => {
     const row = focusTarget();
@@ -721,7 +730,8 @@ function SessionTitle({
             target?.focus();
           }}
         >
-          {session.title}
+          {isMobile ? <span className={CLASS.label}>{session.title}</span> : session.title}
+          {detail}
         </button>
       )}
     </HoverCard>
@@ -737,8 +747,17 @@ function SessionRow({ node, info, actions }: { node: SessionRailNode; info: Tree
   });
   const hasSignal = SIGNAL_STATES.has(signalState);
   const notStarted = saysNotStarted(session, hasSignal);
+  // One shared viewport read for the row: the title trigger and the reason
+  // line both need to know whether the phone's layout owns the second line.
+  const isMobile = useIsMobile();
   const rowRef = useRef<HTMLSpanElement>(null);
   const focusTarget = useCallback(() => rowRef.current?.closest<HTMLElement>('[role="treeitem"]') ?? null, []);
+  const detail =
+    node.live !== undefined ? (
+      <RailWhy session={session} state={node.live} host={node.liveHost} isMobile={isMobile} />
+    ) : cadenceStateFor(effectiveState) === "working" ? (
+      <RailQuotaWait session={session} />
+    ) : null;
   return (
     // data-session-ref is the scroll target Rail's reveal effect (the palette's
     // /project command via railController) queries to bring a session's row
@@ -764,14 +783,12 @@ function SessionRow({ node, info, actions }: { node: SessionRailNode; info: Tree
             effectiveState={effectiveState}
             notStarted={notStarted}
             focusTarget={focusTarget}
+            isMobile={isMobile}
+            detail={isMobile ? detail : undefined}
           />
           <TrailingChevron info={info} />
         </span>
-        {node.live !== undefined ? (
-          <RailWhy session={session} state={node.live} host={node.liveHost} />
-        ) : (
-          cadenceStateFor(effectiveState) === "working" && <RailQuotaWait session={session} />
-        )}
+        {isMobile ? null : detail}
       </span>
       {/* The timestamp shares its slot with hover actions. */}
       <span className={CLASS.rightSlot}>
