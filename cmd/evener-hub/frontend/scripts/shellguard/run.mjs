@@ -882,6 +882,12 @@ function assertTabletSplit(result) {
 const OVERVIEW_VIEWPORTS = [VIEWPORT, MOBILE_VIEWPORT, { width: 320, height: 844, mobile: true, touch: true }];
 const OVERVIEW_THEMES = ["light", "dark"];
 const OVERVIEW = '[data-testid="activity-sidebar"][aria-label="Overview"]';
+// Desktop keeps the segmented radiogroup; a phone renders the activity strip
+// as a tablist of quiet Buttons (ActivitySidebar's MobileOverviewTabs). One
+// pair of locators keeps the phone arm from pinning the desktop widget and
+// vice versa.
+const overviewCategories = (mobile) => `${OVERVIEW} [role="${mobile ? "tab" : "radio"}"]`;
+const overviewSelected = (mobile) => (mobile ? "aria-selected" : "aria-checked");
 // The Overview sweep's tall task list renders this many live rows (40-row
 // fixture, every fourth settled into the collapsed fold). The wait gate and
 // the fixture-sanity assert below share it, so resizing the fixture cannot
@@ -1050,16 +1056,22 @@ async function choosePaneOverview(send, selector, mobile) {
     // The phone's one Overview entry opens the inspection sheet first
     // (design-system.md section 12): the sheet's activity row is what opens
     // the shared ActivitySidebar, on its tab, dismissing the sheet behind
-    // it - the drill StackHost's own test pins.
+    // it - the drill StackHost's own test pins. The sidebar is itself the
+    // phone's dialog, so the sheet is the dialog that is not the Overview.
+    const sheet = '[role="dialog"]:not([data-testid="activity-sidebar"])';
     await waitForDom(
       send,
-      `document.querySelector('[role="dialog"]')?.querySelector('[data-activity-tab="agents"]') !== null`,
+      `!!document.querySelector(${JSON.stringify(`${sheet} [data-activity-tab="agents"]`)})`,
       "phone Overview entry opened its inspection sheet",
     );
-    await clickControl(send, '[role="dialog"] [data-activity-tab="agents"]');
+    await clickControl(send, `${sheet} [data-activity-tab="agents"]`);
     await waitForDom(
       send,
-      `!document.querySelector('[role="dialog"]') && document.querySelector(${JSON.stringify(OVERVIEW)}) !== null`,
+      `(() => {
+      const dialogs = document.querySelectorAll('[role="dialog"]');
+      return document.querySelector(${JSON.stringify(OVERVIEW)}) !== null &&
+        dialogs.length === 1 && dialogs[0].matches(${JSON.stringify(OVERVIEW)});
+    })()`,
       "the sheet's activity row opened the shared Overview",
     );
   }
@@ -1067,7 +1079,7 @@ async function choosePaneOverview(send, selector, mobile) {
   await settleOverview(send);
 }
 
-async function openRailOverview(send) {
+async function openRailOverview(send, viewport) {
   const visible = await evaluate(
     send,
     `(() => {
@@ -1082,7 +1094,7 @@ async function openRailOverview(send) {
   if (!visible.width) await clickControl(send, 'button[aria-label="Sessions"]');
   await settleOverview(send);
   await chooseOverviewMenu(send, RAIL_ACTION);
-  await clickControl(send, `${OVERVIEW} [role="radio"][aria-label="About"]`);
+  await clickControl(send, `${overviewCategories(viewport.mobile)}[aria-label="About"]`);
   await waitForDom(
     send,
     `window.overviewGuardState().overview.tab === 'about' && document.querySelector(${JSON.stringify(OVERVIEW)})?.textContent.includes(${JSON.stringify(LONG_VALUES[1])})`,
@@ -1165,10 +1177,11 @@ async function measureOverview(send) {
     const mobile = matchMedia('(max-width: 899px)').matches;
     // A category is a label line over an optional detail line (the stacked
     // SegmentedControl); each line must show its whole text.
-    const categories = Array.from(aside.querySelectorAll('[role="radio"]'), element => {
+    const categories = Array.from(aside.querySelectorAll(mobile ? '[role="tab"]' : '[role="radio"]'), element => {
       const lines = Array.from(element.children);
       return {
-        text: lines.map(line => line.textContent).join('\\n'), checked: element.getAttribute('aria-checked'), box: box(element),
+        text: lines.map(line => line.textContent).join('\\n'),
+        checked: element.getAttribute(mobile ? 'aria-selected' : 'aria-checked'), box: box(element),
         label: measure(lines[0], lines[0]?.textContent),
         detail: lines[1] ? measure(lines[1], lines[1].textContent) : null,
       };
@@ -1251,8 +1264,8 @@ function overviewScrollContainers(root) {
 // bodies. The tab's scroll container must own the tall list, and the
 // document must not grow: a tall task list scrolling the whole page frame
 // is the bug this step exists to catch.
-async function measureOverviewTasks(send) {
-  await clickControl(send, `${OVERVIEW} [role="radio"][aria-label^="Tasks"]`);
+async function measureOverviewTasks(send, viewport) {
+  await clickControl(send, `${overviewCategories(viewport.mobile)}[aria-label^="Tasks"]`);
   await waitForDom(
     send,
     `document.querySelectorAll('[data-testid="task-row"]').length >= ${TALL_TASK_ROWS}`,
@@ -1392,9 +1405,12 @@ async function trustedOverviewFlow(send, viewport, childGesture) {
   );
   const trigger = (id) => `[data-session-actions-ref="local:p0-s0"][data-pane-id="${id}"]`;
   const overviewTrigger = (id, ref = "local:p0-s0") => `[data-session-overview-ref="${ref}"][data-pane-id="${id}"]`;
+  const categories = overviewCategories(viewport.mobile);
+  const categoryRole = viewport.mobile ? "tab" : "radio";
+  const selectedCategory = `[role="${categoryRole}"][${overviewSelected(viewport.mobile)}="true"]`;
   await evaluate(
     send,
-    `document.querySelector(${JSON.stringify(OVERVIEW)}).querySelector('[role="radio"][aria-checked="true"]').focus()`,
+    `document.querySelector(${JSON.stringify(OVERVIEW)}).querySelector(${JSON.stringify(selectedCategory)}).focus()`,
   );
   for (const [key, code, keyCode, tab] of [
     ["Home", "Home", 36, "agents"],
@@ -1413,13 +1429,13 @@ async function trustedOverviewFlow(send, viewport, childGesture) {
       `(() => {
       const active = document.activeElement;
       const style = getComputedStyle(active);
-      return { checked: active.getAttribute('aria-checked'), role: active.getAttribute('role'),
+      return { checked: active.getAttribute(${JSON.stringify(overviewSelected(viewport.mobile))}), role: active.getAttribute('role'),
         visible: active.matches(':focus-visible'), outline: style.outlineStyle,
         width: parseFloat(style.outlineWidth), color: style.outlineColor };
     })()`,
     );
     if (
-      focus.role !== "radio" ||
+      focus.role !== categoryRole ||
       focus.checked !== "true" ||
       !focus.visible ||
       focus.outline === "none" ||
@@ -1487,7 +1503,7 @@ async function trustedOverviewFlow(send, viewport, childGesture) {
     else {
       await evaluate(
         send,
-        `document.querySelector(${JSON.stringify(OVERVIEW)}).querySelector('[role="radio"][aria-checked="true"]').focus()`,
+        `document.querySelector(${JSON.stringify(OVERVIEW)}).querySelector(${JSON.stringify(selectedCategory)}).focus()`,
       );
       await pressKey(send, "Escape", "Escape", 27);
     }
@@ -1514,7 +1530,7 @@ async function trustedOverviewFlow(send, viewport, childGesture) {
   // The rail opener is removed when a phone's Sessions drawer closes.
   await dismiss("close", pane);
   await choosePaneOverview(send, overviewTrigger(pane), viewport.mobile);
-  await clickControl(send, `${OVERVIEW} [role="radio"][aria-label="About"]`);
+  await clickControl(send, `${categories}[aria-label="About"]`);
   // The phone's Overview entry carries its hook on the ⋯ glyph inside the
   // button, and the sheet passes that button as the sidebar's focus-return
   // element - so the expected landing is the button, not the glyph.
@@ -1572,7 +1588,7 @@ async function trustedOverviewFlow(send, viewport, childGesture) {
     await settleOverview(send);
     for (const origin of [pane, duplicate]) {
       await choosePaneOverview(send, overviewTrigger(origin));
-      await clickControl(send, `${OVERVIEW} [role="radio"][aria-label="About"]`);
+      await clickControl(send, `${categories}[aria-label="About"]`);
       await evaluate(
         send,
         `void (window.__overviewExpectedButton = document.querySelector(${JSON.stringify(overviewTrigger(origin))}))`,
@@ -1580,7 +1596,7 @@ async function trustedOverviewFlow(send, viewport, childGesture) {
       await dismiss("escape", origin, true);
     }
     await choosePaneOverview(send, overviewTrigger(duplicate));
-    await clickControl(send, `${OVERVIEW} [role="radio"][aria-label="About"]`);
+    await clickControl(send, `${categories}[aria-label="About"]`);
     await evaluate(send, `window.overviewPane('close', ${JSON.stringify(duplicate)})`);
     await settleOverview(send);
     await evaluate(
@@ -1592,7 +1608,7 @@ async function trustedOverviewFlow(send, viewport, childGesture) {
   if (viewport.mobile) {
     if (!(await evaluate(send, "window.overviewGuardState().overview.open")))
       await choosePaneOverview(send, overviewTrigger(pane), viewport.mobile);
-    await clickControl(send, `${OVERVIEW} [role="radio"][aria-label^="Agents"]`);
+    await clickControl(send, `${categories}[aria-label^="Agents"]`);
     await waitForDom(
       send,
       `Array.from(document.querySelectorAll(${JSON.stringify(`${OVERVIEW} button`)})).some(e => e.textContent.includes('Open Overview child'))`,
@@ -1623,7 +1639,7 @@ async function trustedOverviewFlow(send, viewport, childGesture) {
       throw new Error(`${error.message} child-open witness: ${JSON.stringify(witness)}`);
     }
     await settleOverview(send);
-    await clickControl(send, `${OVERVIEW} [role="radio"][aria-label="About"]`);
+    await clickControl(send, `${categories}[aria-label="About"]`);
     await waitForDom(
       send,
       `document.querySelector(${JSON.stringify(OVERVIEW)})?.textContent.includes(${JSON.stringify(LONG_VALUES[1])})`,
@@ -1801,11 +1817,15 @@ export async function overviewOnPage(cdpEndpoint, vitePort, viewport, theme, chi
     await evaluate(send, "window.settledShell");
     await evaluate(send, `window.configureOverview(${JSON.stringify(theme)})`);
     await settleOverview(send);
-    await openRailOverview(send);
-    const fixture = preparePage && (await preparePage(send));
     if (viewport.mobile) {
       const editor = '[data-testid="composer-form"] [role="textbox"]';
       const card = '[data-testid="composer-input-card"]';
+      // The phone boots with the Sessions drawer and no pane: choose the
+      // session first so its composer exists. The Overview is the phone's
+      // aria-modal dialog, so engaging the composer behind it would be input
+      // no reader could deliver.
+      await clickControl(send, '[data-session-ref="local:p0-s0"] [data-testid="rail-row-title"]');
+      await waitForDom(send, `document.querySelector(${JSON.stringify(card)})`, "phone session composer mounted");
       // The phone composer rests folded in its one-line shape; content
       // unfolds the card (design-system.md section 12). Measure the resting
       // card first, so the wait below asserts real growth, not just the
@@ -1833,6 +1853,8 @@ export async function overviewOnPage(cdpEndpoint, vitePort, viewport, theme, chi
         "content expands the phone composer",
       );
     }
+    await openRailOverview(send, viewport);
+    const fixture = preparePage && (await preparePage(send));
     const result = await measureOverview(send);
     if (process.env.EVENER_SCRATCH_DIR) {
       await evaluate(
@@ -1850,14 +1872,27 @@ export async function overviewOnPage(cdpEndpoint, vitePort, viewport, theme, chi
       );
     }
     const failures = assertOverview(result, viewport, theme);
-    result.tasksTab = await measureOverviewTasks(send);
+    result.tasksTab = await measureOverviewTasks(send, viewport);
     failures.push(...assertOverviewTasks(result.tasksTab, viewport));
     const padding = await measureActivityRowPadding(send, viewport);
     result.rowPadding = padding.result;
     failures.push(...padding.failures);
     if (viewport.mobile) {
       const editor = '[data-testid="composer-form"] [role="textbox"]';
-      await evaluate(send, `document.querySelector(${JSON.stringify(editor)}).focus()`);
+      // The Overview is the phone's aria-modal dialog: a reader cannot reach
+      // the composer behind it, so dismiss it before clearing the draft with
+      // real input, then reopen it for the trusted command journeys.
+      await evaluate(
+        send,
+        `document.querySelector(${JSON.stringify(OVERVIEW)}).querySelector('[role="tab"][aria-selected="true"]').focus()`,
+      );
+      await pressKey(send, "Escape", "Escape", 27);
+      await waitForDom(
+        send,
+        `!document.querySelector(${JSON.stringify(OVERVIEW)})`,
+        "Overview closes to clear the phone composer draft",
+      );
+      await clickControl(send, editor);
       await pressKey(send, "a", "KeyA", 65, process.platform === "darwin" ? 4 : 2);
       await pressKey(send, "Backspace", "Backspace", 8);
       await waitForDom(
@@ -1865,6 +1900,7 @@ export async function overviewOnPage(cdpEndpoint, vitePort, viewport, theme, chi
         `document.querySelector(${JSON.stringify(editor)}).textContent === ''`,
         "temporary composer draft cleared before trusted command journeys",
       );
+      await openRailOverview(send, viewport);
     }
     try {
       result.keyboard = await trustedOverviewFlow(send, viewport, childGesture);
