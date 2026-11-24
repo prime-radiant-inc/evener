@@ -74,59 +74,13 @@
   overflow-wrap: anywhere;
 }
 
-/* --- the tool card --------------------------------------------------
- * A run of tool rows reads as ONE grouped surface with hairline dividers.
- * Where one element holds the rows it composes .grouped and .groupedRows.
- * Inside a turn the rows are siblings of the turn's other items, so the card
- * is drawn across them instead: TurnBlock marks each row's wrapper with its
- * place in the run (data-tool-card: only, first, middle, last) and the
- * wrapper's child - the row's own root - carries its slice of the same
- * surface. The position is an attribute, not adjacency, because a suppressed
- * call leaves an empty wrapper between two rows of one card.
- *
- * Every row of a card reads its insets from here: the inline inset its
- * content keeps from the card's edge, and the block padding above and below
- * its lines, one item step so a row stays on the rhythm scale. */
+/* Calls and folded summaries share an inset so their kind icons line up. */
 .toolRowInsets {
   --tool-card-inset: var(--space-3);
   --tool-card-row-pad: var(--rhythm-item);
 }
 
-.toolRunSegment > * {
-  border-inline: 1px solid var(--edge);
-  border-top: 1px solid var(--edge);
-  border-radius: var(--tool-card-radius-top) var(--tool-card-radius-top) var(--tool-card-radius-bottom)
-    var(--tool-card-radius-bottom);
-  background: var(--surface-1);
-}
-
-/* The slice's corners are custom properties on the wrapper, so a row root
- * that paints to the card's edge from inside a shadow-slotted element (a
- * details' summary and content) can take the same corners: `inherit` stops
- * at the slot, an inherited custom property does not. */
-.toolRunSegment {
-  --tool-card-radius-top: 0;
-  --tool-card-radius-bottom: 0;
-}
-
-.toolRunSegment[data-tool-card="first"],
-.toolRunSegment[data-tool-card="only"] {
-  --tool-card-radius-top: var(--radius-pane);
-}
-
-.toolRunSegment[data-tool-card="last"],
-.toolRunSegment[data-tool-card="only"] {
-  --tool-card-radius-bottom: var(--radius-pane);
-}
-
-.toolRunSegment[data-tool-card="last"] > *,
-.toolRunSegment[data-tool-card="only"] > * {
-  border-bottom: 1px solid var(--edge);
-  box-shadow: var(--shadow-card);
-}
-
-/* The card keeps one item step clear of the prose around it; rows inside it
- * are separated by their dividers alone. */
+/* A run keeps one item step clear of the prose around it. */
 .toolRunSegment[data-tool-card="first"],
 .toolRunSegment[data-tool-card="only"] {
   padding-top: var(--rhythm-item);

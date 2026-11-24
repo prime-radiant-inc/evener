@@ -1,21 +1,27 @@
 {
   "name": "toolrun-corner-clip-phone",
-  "description": "A folded tool run that is a whole card (widgets/disclosure's details inside surface.module.css's tool-card segment) keeps both edge contracts on a phone without clipping. A control in the open run's last row that overhangs its line to the tap floor stays reachable at its bottom edge. The closed run's summary, which spans the card, and the last row's evidence band stay inside the card's rounded lower corners, and the open run's summary keeps square lower corners above its rows, with its first row seated on the body's hairline rather than below Disclosure's uncancelled top gap. The rows are stand-ins declared in the harness, because the tool row's stylesheet shares unhashed class names with the run's.",
+  "description": "A folded tool run that stands on its own (widgets/disclosure's details inside surface.module.css's tool-run segment) keeps the tool-row contracts in the real cascade on a phone. The Open control in the run's last row is 44px tall and overhangs its line; a tap one pixel inside its top or bottom edge reaches the control. The open run's first row sits flush with its summary, with Disclosure's --space-1 top gap cancelled, and the last row's evidence band spans its row with no unexpected inset.",
   "cssFiles": [
     "styles/global.css",
     "styles/tokens.css",
+    "styles/railseat.module.css",
     "styles/surface.module.css",
     "styles/motion.module.css",
     "widgets/chevron/chevron.module.css",
     "widgets/disclosure/disclosure.module.css",
-    "panes/session/transcript/toolrungroup.module.css"
+    "panes/session/transcript/toolcallitem.module.css",
+    "panes/session/transcript/toolrungroup.module.css",
+    "widgets/button/button.module.css",
+    "widgets/iconbutton/iconbutton.module.css",
+    "widgets/openbutton/openbutton.module.css"
   ],
   "cssClassPrefixes": {
-    "widgets/disclosure/disclosure.module.css": "disclosure-"
+    "widgets/disclosure/disclosure.module.css": "disclosure-",
+    "panes/session/transcript/toolcallitem.module.css": "toolcall-"
   },
   "allowlist": {
-    ".body": "The case prefixes disclosure.module.css's classes to disclosure-*, so resolved.css has no shared .body selector; the collision is only in the raw stylesheet.",
-    ".chevron": "The case prefixes disclosure.module.css's classes to disclosure-*, so resolved.css has no shared .chevron selector; the fixture's only chevron uses widgets/chevron/chevron.module.css.",
+    ".body": "The case prefixes disclosure.module.css's classes to disclosure-* and toolcallitem's to toolcall-*, so resolved.css has no shared .body selector; the collision is only in the raw stylesheets.",
+    ".chevron": "The case prefixes disclosure and toolcallitem classes, so resolved.css has no shared .chevron selector; the fixture's leading chevron uses widgets/chevron/chevron.module.css.",
     ".summary": "Same prefixing: Disclosure's summary and ToolRunGroup's summary resolve to different selectors in this case."
   },
   "viewport": {
@@ -26,9 +32,9 @@
     "touch": true
   },
   "mutation": {
-    "declaration": "widgets/disclosure/disclosure.module.css: .details { overflow: clip }, then the Disclosure body gap uncancelled by deleting toolrungroup.module.css's .body { margin-top: calc(-1 * var(--space-1)) }, then the .summary and .body corner rules reading `inherit` instead of the segment's --tool-card-radius-* properties",
-    "verified": "2026-11-23",
+    "declaration": "fixture-only, temporarily in harness.html, one at a time and restored after each run: .body { overflow: clip }, .toolcall-row { overflow: clip }, .toolcall-body { margin-inline: 0 }, .body { margin-top: 0 }",
+    "verified": "2026-11-24",
     "expect": "fail",
-    "note": "Three mutations, one at a time, each restored before the next. Clipping .details fails with the tap inside the last row's control landing on the row. Deleting the negative margin fails with the open run's first row starting 5px below the summary instead of the body's 1px hairline. Reading the .summary and .body corners with `inherit` fails with the closed summary and the evidence band both painting square corners outside the card: a details element slots its summary and content, and `inherit` stops at the slot."
+    "note": "Four mutations, one at a time, each restored before the next. Clipping the run body fails on the control's top edge; clipping the row fails on both edges, which covers the bottom-edge assertion (the details' own overhang outside its box is subpixel, so a one-pixel-inside tap there is not clipped). Zeroing the evidence band's inline bleed insets it inside its row; zeroing the run body's top margin restores Disclosure's uncancelled 4px gap above the first row. The production stylesheets were not modified."
   }
 }

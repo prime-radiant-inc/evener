@@ -72,8 +72,7 @@ const CLASS = {
   quietYieldGroupBody: requireClass(styles.quietYieldGroupBody, "turnblock.module.css", "quietYieldGroupBody"),
 };
 
-// A tool row's wrapper is also a segment of its tool card: the shared surface
-// module draws the card across the wrappers TurnBlock marks with a position.
+// Only the ends of a tool run add space between calls and surrounding prose.
 const TOOL_RUN_SEGMENT = `${CLASS.runContent} ${requireClass(surfaceStyles.toolRunSegment, "surface.module.css", "toolRunSegment")}`;
 
 // isItemLive is the per-item liveness signal every item renderer receives
@@ -320,9 +319,7 @@ function isProjectedTurn(turn: ProjectedTurn | TurnModel): turn is ProjectedTurn
   return "source" in turn && "entries" in turn && "visibleItems" in turn;
 }
 
-/** Where a row sits in a tool card: a run of adjacent tool rows reads as ONE
- * rounded surface with hairline dividers (styles/surface.module.css), so each
- * row's wrapper says whether it opens the card, continues it, or closes it. */
+/** Only the outer rows of adjacent tool calls leave space against prose. */
 type ToolCardPosition = "only" | "first" | "middle" | "last";
 
 /** How a laid-out entry relates to a tool card: "row" renders a tool row (a

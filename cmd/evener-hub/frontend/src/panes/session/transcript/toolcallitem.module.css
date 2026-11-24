@@ -1,17 +1,17 @@
-/* One tool call: a row of a tool card (styles/surface.module.css owns the
- * card and the insets every row of one reads). The
- * row owns its whole inset, including the seat column its kind icon sits in,
- * so it lays out the same wherever a card holds it and at every width: the
- * icon's slot pulls one --speaker-gutter left into the padding reserved here
- * (see .rowIconSlot), and the row's text lands one gutter in from the card's
- * inset. A call's own lines sit TIGHT (the row's row-gap below); separate
- * calls are separated by the card's hairline divider plus this padding. */
+/* The icon and text align across calls at every width. Space separates
+ * calls; the intent and result within each call stay together. */
 .call {
   composes: toolRowInsets from "../../../styles/surface.module.css";
   display: flex;
   flex-direction: column;
   padding: var(--tool-card-row-pad) var(--tool-card-inset);
   padding-left: calc(var(--tool-card-inset) + var(--speaker-gutter));
+}
+
+/* Keep a failed call visible even when its evidence is folded. The cross on
+ * its kind icon supplies the status independently of this contrast. */
+.call[data-failed="true"] {
+  background: var(--surface-1);
 }
 
 /* The shared row (ToolRow.tsx) - see that file for the row grammar it
@@ -681,23 +681,14 @@
   z-index: var(--z-raised);
 }
 
-/* The evidence band: an inset ground running edge to edge inside the card
- * under the row it belongs to, closed off by one hairline above. It bleeds
- * through .call's own padding to the card's edges and takes the card's lower
- * corners when it is the last thing in it, so the band never draws a card of
- * its own inside the card. Native renderers keep their own output boundaries.
- * Size is deliberately not declared: the Markdown widget composes with its
- * host (1em fallback), so a renderer's text inherits the ambient body step
- * (see widgets/markdown). The band fades in as it opens (the reveal recipe);
- * closing is instant. */
+/* Expanded evidence has its own inset ground, flush with the row edges.
+ * Native renderers keep their bounds and inherit the ambient type size. */
 .body {
   composes: bodyReveal from "../../../styles/motion.module.css";
   margin: var(--tool-card-row-pad) calc(-1 * var(--tool-card-inset)) calc(-1 * var(--tool-card-row-pad))
     calc(-1 * (var(--tool-card-inset) + var(--speaker-gutter)));
   padding: var(--tool-card-inset);
   border-top: 1px solid var(--edge);
-  border-bottom-left-radius: inherit;
-  border-bottom-right-radius: inherit;
   background: var(--surface-inset);
   min-width: 0;
 }

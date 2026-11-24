@@ -364,9 +364,10 @@ test("the phone fluency surfaces carry ladder radii, never a pill surface", () =
   const reads = (relative: string) => readFileSync(join(srcRoot, relative), "utf8").replace(/\/\*[\s\S]*?\*\//g, " ");
   const pillFree = (relative: string) =>
     expect(reads(relative), `${relative} still shapes a surface with the pill`).not.toContain("--radius-pill");
+  const askDock = "panes/session/composer/askDock/askdock.module.css";
   pillFree("widgets/promptcard/promptcard.module.css");
   pillFree("shell/mobile/StackHost.module.css");
-  pillFree("panes/session/composer/askdock/askdock.module.css");
+  pillFree(askDock);
   pillFree("panes/session/transcript/flow/loadolderrow.module.css");
   pillFree("panes/session/transcript/messages/usermessageitem.module.css");
   pillFree("shell/rail/RailResizeHandle.module.css");
@@ -377,9 +378,7 @@ test("the phone fluency surfaces carry ladder radii, never a pill surface", () =
   expect(stackHost.match(/\.boardHandle \{[^}]*\}/)?.[0]).toContain("var(--radius-pane)");
   expect(stackHost.match(/\.topBarCollapsed \.trailing \{[^}]*\}/)?.[0]).toContain("var(--radius-pane)");
   // The ask dock's answer tabs are controls, not capsules.
-  expect(reads("panes/session/composer/askdock/askdock.module.css").match(/\.tab \{[^}]*\}/)?.[0]).toContain(
-    "var(--radius-control)",
-  );
+  expect(reads(askDock).match(/\.tab \{[^}]*\}/)?.[0]).toContain("var(--radius-control)");
   expect(reads("panes/session/transcript/flow/loadolderrow.module.css").match(/\.row \{[^}]*\}/)?.[0]).toContain(
     "var(--radius-pane)",
   );

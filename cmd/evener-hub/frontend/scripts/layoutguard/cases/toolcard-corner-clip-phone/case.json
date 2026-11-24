@@ -1,6 +1,6 @@
 {
   "name": "toolcard-corner-clip-phone",
-  "description": "A tool card held by one element (session.module.css's .intentGroupRows) keeps both of its edge contracts on a phone. The Open control's touch target overhangs its text line by design and is taller than the row's block padding leaves room for, so the card must not clip it: a tap one pixel inside the control's top or bottom edge reaches the control. And the evidence band of the last rendered row runs to the card's lower edge without painting outside the card's rounded corner, including when a suppressed member leaves an empty wrapper after it.",
+  "description": "A one-element tool group (session.module.css's .intentGroupRows) keeps the tool-row contracts in the real cascade on a phone. The Open control's 44px touch target overhangs its text line, so a tap one pixel inside its top or bottom edge must reach the control. The last rendered row's evidence band spans its row edge to edge, and a suppressed member's empty wrapper adds no space below it.",
   "cssFiles": [
     "styles/global.css",
     "styles/tokens.css",
@@ -22,9 +22,9 @@
     "touch": true
   },
   "mutation": {
-    "declaration": "session.module.css: .intentGroupRows { overflow: clip } (restored), then the last-rendered-row border-bottom-*-radius: inherit rule (deleted)",
-    "verified": "2026-11-13",
+    "declaration": "fixture-only, temporarily in harness.html, one at a time and restored after each run: .intentGroupRows { overflow: clip }, .intentGroupRows > div { overflow: clip }, .row { overflow: clip }, .body { margin-inline: 0 }, #group-band > div:last-child { margin-top: 8px }",
+    "verified": "2026-11-24",
     "expect": "fail",
-    "note": "Two mutations, one at a time, each restored before the next. Restoring overflow: clip on the card fails with the tap inside the Open control's top edge landing on main. Deleting the last-rendered-row radius rule fails with the evidence band painting its square corner outside the card's rounded corner."
+    "note": "Five mutations, one at a time, each restored before the next. Clipping the group and clipping a member wrapper each fail on the Open control's top edge, the only edge their box cuts. Clipping the row fails on both edges, which covers the bottom-edge assertion. Zeroing the evidence band's inline bleed fails with the band inset inside its row. Giving the suppressed member's empty wrapper a top margin fails with the group extending 8px below the band. The production stylesheets were not modified."
   }
 }
