@@ -786,15 +786,19 @@ async function measureComposerAsk(cdpEndpoint, url, width) {
         send,
         `(() => {
           const pane = document.getElementById('oh-pane');
-          const chrome = pane?.querySelector('[data-testid="session-chrome-inline"]');
-          const model = pane?.querySelector('[data-testid="model-switch-trigger"]');
+          // The phone shell keeps only the session-actions chrome while a
+          // question is pending (the inline status row never mounts there);
+          // desktop keeps the inline chrome. Model and effort live in
+          // Overview and Settings, so no model trigger is required here.
+          const chrome = pane?.querySelector(
+            '[data-testid="session-chrome-inline"], [data-testid="session-chrome-menu"]',
+          );
           const askCount = pane?.querySelector('[data-testid="ask-dock-count"]');
           return JSON.stringify({
             mobile: matchMedia('(max-width: 899px)').matches,
             askRendered: Boolean(askCount),
             chromeHeight: chrome ? chrome.getBoundingClientRect().height : null,
             chromeVisible: chrome ? chrome.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }) : false,
-            modelVisible: model ? model.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }) : false,
           });
         })()`,
       ),
@@ -810,7 +814,7 @@ function assertComposerAsk(measurement, width) {
   const mobile = width < 900;
   if (measurement.mobile !== mobile) failures.push("realized ask viewport mismatch");
   if (!measurement.askRendered) failures.push("pending ask never rendered its dock");
-  if (!measurement.chromeVisible || !measurement.modelVisible) {
+  if (!measurement.chromeVisible) {
     failures.push(`pending-ask state lost its chrome (${JSON.stringify(measurement)})`);
   }
   // The pending-question mount stands alone in the composer's vertical
@@ -945,18 +949,6 @@ function assertDuoCompactStates(result) {
   if (!approval?.approval || approval.approval.height <= 0) failures.push("the real approval card did not mount");
   if (!result.approvalResolved) failures.push("Allow did not resolve the real approval card");
   for (const state of result.states) {
-    // The activity counts live above the expanded card. Empty and focused
-    // states stay folded and mount none; content-bearing states mount all four.
-    const expectedCount = state.state === "empty" || state.state === "focused" ? 0 : 4;
-    if (state.counters.length !== expectedCount)
-      failures.push(`${state.state}: expected ${expectedCount} mounted activity counters`);
-    for (const counter of state.counters) {
-      const hidden = state.editing || state.cardHidden;
-      if (!hidden && (counter.width < 44 || counter.height < 44))
-        failures.push(`${state.state}: activity target fell below 44px for ${counter.tab}`);
-      if (!counter.accessibleName?.includes(" of "))
-        failures.push(`${state.state}: activity target or full accessible fraction missing for ${counter.tab}`);
-    }
     for (const control of state.controls) {
       if (control.touchTarget && control.height > 0 && (control.width < 44 || control.height < 44))
         failures.push(`${state.state}: control ${control.name} fell below 44px`);
@@ -1215,20 +1207,32 @@ async function verifyAboutOverview(cdpEndpoint, url, width) {
           () => document.querySelector('[data-testid="activity-sidebar"]'),
           'activity sidebar',
         );
-        await until(
-          () => [...sidebar.querySelectorAll('[role="radio"]')].find(
-            (item) => item.getAttribute('aria-checked') === 'true' && item.textContent?.includes('About'),
+        // The phone Overview's category strip is a tablist; desktop keeps its
+        // wrapping radiogroup (design-system.md section 12). Read the role the
+        // control rendered, then require the phone's tab semantics.
+        const aboutTab = await until(
+          () => [...sidebar.querySelectorAll('[role="tab"], [role="radio"]')].find(
+            (item) => item.textContent?.includes('About'),
           ),
-          'selected About tab',
+          'About category control',
         );
         const branch = await until(
           () => document.querySelector('[data-testid="session-details-branch"]'),
           'About branch row',
         );
         await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        const panelId = aboutTab.getAttribute('aria-controls');
+        const panel = panelId ? document.getElementById(panelId) : null;
         const sidebarBox = sidebar.getBoundingClientRect();
         const branchBox = branch.getBoundingClientRect();
+        // The phone category strip is the one designed horizontal scroller
+        // (activitybar.module.css .tablist); everything else in the overlay
+        // must stay inside its own box.
+        const categoryStrip = sidebar.querySelector('[role="tablist"][aria-label="Overview kind"]');
+        const stripBox = categoryStrip?.getBoundingClientRect() ?? null;
+        const tabBox = aboutTab.getBoundingClientRect();
         const horizontallyOverflowing = [sidebar, ...sidebar.querySelectorAll('*')].filter((element) => {
+          if (element === categoryStrip) return false;
           const style = getComputedStyle(element);
           return element.clientWidth > 1 && element.scrollWidth > element.clientWidth + 1 &&
             (style.overflowX === 'auto' || style.overflowX === 'scroll');
@@ -1238,6 +1242,11 @@ async function verifyAboutOverview(cdpEndpoint, url, width) {
           sidebarLeft: sidebarBox.left,
           sidebarRight: sidebarBox.right,
           sidebarWidth: sidebarBox.width,
+          tabRole: aboutTab.getAttribute('role'),
+          tabSelected: aboutTab.getAttribute('aria-selected') === 'true',
+          tabScoped: panel?.contains(branch) ?? false,
+          tabVisibleInStrip:
+            stripBox !== null && tabBox.left >= stripBox.left - 1 && tabBox.right <= stripBox.right + 1,
           branchText: branch.textContent?.trim() ?? '',
           branchVisible: branch.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }),
           branchContained: branchBox.left >= sidebarBox.left - 1 && branchBox.right <= sidebarBox.right + 1,
@@ -1897,6 +1906,10 @@ async function runAboutOverviewGuard(cdpEndpoint, vitePort) {
     failures.push(`branch row=${JSON.stringify(aboutOverview.branchText)}, expected ${ABOUT_BRANCH}`);
   }
   if (!aboutOverview.branchVisible) failures.push("branch row is not visible");
+  if (aboutOverview.tabRole !== "tab") failures.push(`selected About control has role=${aboutOverview.tabRole}`);
+  if (!aboutOverview.tabSelected) failures.push("About tab is not the selected tab");
+  if (!aboutOverview.tabScoped) failures.push("selected About tab does not scope the About panel");
+  if (!aboutOverview.tabVisibleInStrip) failures.push("selected About tab is not in view in the category strip");
   if (Math.abs(aboutOverview.sidebarWidth - 390) > GEOMETRY_TOLERANCE) {
     failures.push(`sidebar=${aboutOverview.sidebarWidth}px wide, expected the 390px overlay`);
   }
@@ -2406,33 +2419,38 @@ async function main() {
             wrong.map(([name, want]) => `${name}=${probe[name]} (expected ${want})`).join(", "),
         );
       }
-      if (!result.footer.effortVisible || !result.footer.contextVisible || !result.footer.queueVisible) {
-        widthFailed = true;
-        console.log(
-          `${width}px ... FAIL - pressured footer facts missing: ` +
-            `effort=${result.footer.effortVisible}, context=${result.footer.contextVisible}, queue=${result.footer.queueVisible}`,
-        );
-      }
-      if (result.footer.queueLabel !== "12 queued") {
-        widthFailed = true;
-        console.log(
-          `${width}px ... FAIL - pressured footer queue label is ${JSON.stringify(result.footer.queueLabel)}`,
-        );
-      }
-      if (result.footer.statusScrollWidth > result.footer.statusClientWidth + 1) {
-        widthFailed = true;
-        console.log(
-          `${width}px ... FAIL - footer status facts are internally clipped: ` +
-            `${result.footer.statusScrollWidth}px in ${result.footer.statusClientWidth}px: ` +
-            JSON.stringify(result.footer.geometry),
-        );
-      }
-      if (result.footer.modelClientWidth <= 0) {
-        widthFailed = true;
-        console.log(
-          `${width}px ... FAIL - pressured footer model has zero visible width: ` +
-            JSON.stringify(result.footer.geometry),
-        );
+      // The phone shell retires the composer's status strip: activity counters
+      // live in the header Overview and model/reasoning effort in
+      // Overview/Settings, so those facts exist only in the desktop header.
+      if (width >= 900) {
+        if (!result.footer.effortVisible || !result.footer.contextVisible || !result.footer.queueVisible) {
+          widthFailed = true;
+          console.log(
+            `${width}px ... FAIL - pressured footer facts missing: ` +
+              `effort=${result.footer.effortVisible}, context=${result.footer.contextVisible}, queue=${result.footer.queueVisible}`,
+          );
+        }
+        if (result.footer.queueLabel !== "12 queued") {
+          widthFailed = true;
+          console.log(
+            `${width}px ... FAIL - pressured footer queue label is ${JSON.stringify(result.footer.queueLabel)}`,
+          );
+        }
+        if (result.footer.statusScrollWidth > result.footer.statusClientWidth + 1) {
+          widthFailed = true;
+          console.log(
+            `${width}px ... FAIL - footer status facts are internally clipped: ` +
+              `${result.footer.statusScrollWidth}px in ${result.footer.statusClientWidth}px: ` +
+              JSON.stringify(result.footer.geometry),
+          );
+        }
+        if (result.footer.modelClientWidth <= 0) {
+          widthFailed = true;
+          console.log(
+            `${width}px ... FAIL - pressured footer model has zero visible width: ` +
+              JSON.stringify(result.footer.geometry),
+          );
+        }
       }
       try {
         assertComposerContainment(result.currentWork, width < 900);

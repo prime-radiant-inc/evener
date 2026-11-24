@@ -99,7 +99,8 @@ fixture mode disturbs nothing else.
 Asserts the phone's replacement session-details surface: the local-session
 Overview opened on About resolves its branch row through the scoped
 `evener/git/head` answer, and the row, the sidebar and the page all stay inside
-a 390px viewport with no horizontal scroll container. The harness applies
+a 390px viewport with no unexpected horizontal scroll container (the category
+strip is the designed scroller, and the selected tab must stay in view). The harness applies
 `StackHost.module.css`'s real `.activityOverlay` class, so the overlay rule
 itself is measured. `node scripts/overflowguard/run.mjs --about-only` runs just
 this page; the full sweep runs it too.
@@ -189,6 +190,12 @@ CSS imports at the top of that file are hoisted and evaluated first, putting
 the mutation last. A mutation recipe whose wrong variant passes quietly is
 worth more warning than the recipe itself.
 
+**Widths:** the phone shell retires the composer's status strip (counters live
+in the header Overview, model and reasoning effort in Overview/Settings), so
+only desktop widths mount a target for this mutation. Read the line at 1024 and
+1400; `node scripts/overflowguard/run.mjs 1024 1400` is the shortest sweep that
+exercises it.
+
 **Result with the OLD predicate:** the line that never appeared is
 `pressured footer facts missing` — `effort`/`context`/`queue` all read visible
 with the row collapsed. That is the false green bsq9 describes, reproduced.
@@ -200,11 +207,11 @@ separate check that reads `clientWidth` directly, and the
 the fixture catching the predicate rather than the predicate catching the DOM.
 Read for the absence of `pressured footer facts missing`, not for a green run.
 
-**Result with the NEW predicate**, both lines, at 390, 700, 1024 and 1400:
+**Result with the NEW predicate**, both lines, at 1024 and 1400:
 
 ```
-390px ... FAIL - pressured footer facts missing: effort=false, context=false, queue=false
-390px ... FAIL - pressured footer model has zero visible width
+1024px ... FAIL - pressured footer facts missing: effort=false, context=false, queue=false
+1024px ... FAIL - pressured footer model has zero visible width
 ```
 
 **Verified:** 2026-08-17. **Expect:** fail.

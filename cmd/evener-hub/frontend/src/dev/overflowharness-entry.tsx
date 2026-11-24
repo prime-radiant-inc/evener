@@ -1723,10 +1723,9 @@ async function measure() {
       disclosure.restoredOpen = target?.details.open ?? false;
     }
   }
-  // The phone has no footer strip: the status facts and the compose controls
-  // the probes below measure live in the composer's ENGAGED control row, so
-  // focus the editor first (the same engagement a tap on the input produces)
-  // and let the row carry them before anything reads them.
+  // The phone has no footer strip: the composer's controls are measured in
+  // their ENGAGED row, so focus the editor first (the same engagement a tap on
+  // the input produces) and let the shape settle before anything reads it.
   // Never while a dialog or menu is visibly open: the focus steal would close
   // it and unmount the very editor these measurements exist to check. Closed
   // overlays stay in the tree (hidden), so a bare role match would never
@@ -1747,6 +1746,7 @@ async function measure() {
     ) {
       await new Promise((resolve) => requestAnimationFrame(resolve));
     }
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
   }
   const status = pane.querySelector<HTMLElement>('[data-testid="status-row"]');
   const effort = pane.querySelector<HTMLElement>('[data-testid="status-row-effort"]');
@@ -1901,6 +1901,26 @@ async function measure() {
       })(),
       composerFitsPane:
         !!composerCard && composerCard.scrollWidth <= composerCard.clientWidth + 1 && containedInPane(composerCardBox),
+      composerCard: composerCard
+        ? {
+            clientWidth: composerCard.clientWidth,
+            scrollWidth: composerCard.scrollWidth,
+            box: composerCardBox
+              ? {
+                  left: composerCardBox.left,
+                  right: composerCardBox.right,
+                  top: composerCardBox.top,
+                  bottom: composerCardBox.bottom,
+                }
+              : null,
+          }
+        : null,
+      paneBox: {
+        left: paneBox.left,
+        right: paneBox.right,
+        top: paneBox.top,
+        bottom: paneBox.bottom,
+      },
       currentWorkFitsPane:
         !!currentWork && currentWork.scrollWidth <= currentWork.clientWidth + 1 && containedInPane(currentWorkBox),
       orderedAboveComposer: !!currentWorkBox && !!composerCardBox && currentWorkBox.bottom <= composerCardBox.top + 1,
@@ -2110,11 +2130,6 @@ function measureDuoDraftState() {
     editing: pane?.querySelector("[data-composer]")?.hasAttribute("data-composer-editing") ?? false,
     controlPositions: pane ? duoControlPositions(pane) : null,
     attachment: null,
-    counters: Array.from(pane?.querySelectorAll<HTMLElement>("[data-activity-tab]") ?? []).map((counter) => ({
-      ...duoBox(counter),
-      tab: counter.getAttribute("data-activity-tab"),
-      accessibleName: counter.getAttribute("aria-label"),
-    })),
     controls: [],
     horizontalOverflow: pane ? pane.scrollWidth - pane.clientWidth : 0,
   };
@@ -2150,11 +2165,6 @@ async function measureDuoCompactStates(phase: "focus" | "rest") {
       attachmentControls: Array.from(pane.querySelectorAll<HTMLElement>('[data-testid="attachment-tile"] button')).map(
         (control) => duoBox(control),
       ),
-      counters: Array.from(pane.querySelectorAll<HTMLElement>("[data-activity-tab]")).map((counter) => ({
-        ...duoBox(counter),
-        tab: counter.getAttribute("data-activity-tab"),
-        accessibleName: counter.getAttribute("aria-label"),
-      })),
       controls: Array.from(
         pane.querySelectorAll<HTMLElement>(
           '[data-testid="composer-attach"], [data-testid="composer-stop"], [data-testid="composer-submit"], [data-sandbox-escalation-allow], [data-ask-question] input',
