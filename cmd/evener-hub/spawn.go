@@ -165,12 +165,39 @@ func (h *HubSpawner) ListLaunchModelContractForWorkingDir(ctx context.Context, w
 
 // projectEndpointEnvExclusions names the environment inputs that resolve a
 // configured provider's endpoint, so the checkout-controlled project layer
-// cannot redirect a launch. Nil when no registry has loaded yet.
-func (h *HubSpawner) projectEndpointEnvExclusions() []string {
-	if h.Registry == nil {
-		return nil
+// cannot redirect a launch. The names come from the configuration the child
+// actually reads: an explicit selection in its effective environment, otherwise
+// providersConfigPath; the built-in set when that configuration has no user
+// layer. A file that cannot be loaded fails the launch rather than falling back
+// to the hub's registry, which does not describe the child's trusted file. Nil
+// when no registry has loaded yet.
+func (h *HubSpawner) projectEndpointEnvExclusions(providersConfigPath string, noUserLayer bool, resolvedEnv map[string]string) ([]string, error) {
+	if value, ok := resolvedEnv[envvars.EVENERProvidersConfig.Name]; ok {
+		providersConfigPath = value
+		noUserLayer = value == ""
 	}
-	return h.Registry.Get().EndpointEnvNames()
+	if noUserLayer {
+		reg, err := registry.Load(registry.WithNoUserLayer(), registry.WithOffline(true), registry.WithoutCache())
+		if err != nil {
+			return nil, fmt.Errorf("load built-in provider endpoints: %w", err)
+		}
+		return reg.EndpointEnvNames(), nil
+	}
+	if providersConfigPath != "" {
+		reg, err := registry.Load(registry.WithConfigPath(providersConfigPath), registry.WithOffline(true), registry.WithoutCache())
+		if err != nil {
+			return nil, fmt.Errorf("load child provider configuration: %w", err)
+		}
+		return reg.EndpointEnvNames(), nil
+	}
+	if h.Registry == nil {
+		return nil, nil
+	}
+	reg := h.Registry.Get()
+	if reg == nil {
+		return nil, nil
+	}
+	return reg.EndpointEnvNames(), nil
 }
 
 func (h *HubSpawner) Spawn(ctx context.Context, req hubcore.SpawnRequest) (rendezvous.Entry, error) {
@@ -213,6 +240,10 @@ func (h *HubSpawner) Spawn(ctx context.Context, req hubcore.SpawnRequest) (rende
 		return rendezvous.Entry{}, err
 	}
 	defer childConfig.cleanupUnowned()
+	projectEnvExclusions, err := h.projectEndpointEnvExclusions(childConfig.path, childConfig.noUserLayer, req.Resolved.Effective.Env)
+	if err != nil {
+		return rendezvous.Entry{}, err
+	}
 	parentEnv := os.Environ()
 	req.Env = childConfig.environment(launchconfig.EnvInputs{
 		Resolved:             req.Resolved,
@@ -223,7 +254,7 @@ func (h *HubSpawner) Spawn(ctx context.Context, req hubcore.SpawnRequest) (rende
 		ProvidersConfigPath:  childConfig.path,
 		NoUserLayer:          childConfig.noUserLayer,
 		CredentialsPath:      h.CredentialsPath,
-		ProjectEnvExclusions: h.projectEndpointEnvExclusions(),
+		ProjectEnvExclusions: projectEnvExclusions,
 	})
 	if err := validateProviderCredentials(req.Provider, req.Resolved.Effective.Model, h.Registry); err != nil {
 		return rendezvous.Entry{}, err
@@ -270,6 +301,10 @@ func (h *HubSpawner) Resume(ctx context.Context, req hubcore.ResumeRequest) (ren
 		return rendezvous.Entry{}, err
 	}
 	defer childConfig.cleanupUnowned()
+	projectEnvExclusions, err := h.projectEndpointEnvExclusions(childConfig.path, childConfig.noUserLayer, req.Resolved.Effective.Env)
+	if err != nil {
+		return rendezvous.Entry{}, err
+	}
 	parentEnv := os.Environ()
 	req.Env = childConfig.environment(launchconfig.EnvInputs{
 		Resolved:             req.Resolved,
@@ -280,7 +315,7 @@ func (h *HubSpawner) Resume(ctx context.Context, req hubcore.ResumeRequest) (ren
 		ProvidersConfigPath:  childConfig.path,
 		NoUserLayer:          childConfig.noUserLayer,
 		CredentialsPath:      h.CredentialsPath,
-		ProjectEnvExclusions: h.projectEndpointEnvExclusions(),
+		ProjectEnvExclusions: projectEnvExclusions,
 	})
 	if req.Provider != "" {
 		// The resume request carries the model the session persisted
