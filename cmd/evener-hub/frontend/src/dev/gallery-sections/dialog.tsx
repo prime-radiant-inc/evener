@@ -64,9 +64,9 @@ export default function DialogGallerySection() {
     <GallerySection
       title="Dialog"
       flips={[
-        <DialogDemo title="Session settings" />,
-        <DialogDemo title="Delete session" danger />,
-        <DialogDemo title="Custom panel and body classes" customClasses />,
+        <DialogDemo key="session-settings" title="Session settings" />,
+        <DialogDemo key="delete-session" title="Delete session" danger />,
+        <DialogDemo key="custom-classes" title="Custom panel and body classes" customClasses />,
       ]}
     />
   );

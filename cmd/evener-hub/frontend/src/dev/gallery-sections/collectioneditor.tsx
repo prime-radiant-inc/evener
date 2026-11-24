@@ -81,8 +81,9 @@ export default function CollectionEditorGallerySection() {
     <GallerySection
       title="CollectionEditor"
       flips={[
-        <LiveCollectionEditor />,
+        <LiveCollectionEditor key="live" />,
         <CollectionEditor<DirItem>
+          key="empty"
           label="Empty example"
           items={[]}
           getKey={(item) => item.path}
@@ -93,7 +94,7 @@ export default function CollectionEditorGallerySection() {
           addPlaceholder="/opt/plugins"
           onAdd={async () => ({ ok: true })}
         />,
-        <EnvCollectionEditor />,
+        <EnvCollectionEditor key="env" />,
       ]}
     />
   );

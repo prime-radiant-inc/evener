@@ -15,7 +15,12 @@ test("renders the section heading and the demo children in both theme panes", ()
 
 test("renders the note once, the test id on the section, and every flip block twice", () => {
   render(
-    <GallerySection title="Sheet" testId="sheet-gallery" note={<p>fixture note</p>} flips={[<p>right</p>, <p>left</p>]}>
+    <GallerySection
+      title="Sheet"
+      testId="sheet-gallery"
+      note={<p>fixture note</p>}
+      flips={[<p key="right">right</p>, <p key="left">left</p>]}
+    >
       <p>unused child</p>
     </GallerySection>,
   );

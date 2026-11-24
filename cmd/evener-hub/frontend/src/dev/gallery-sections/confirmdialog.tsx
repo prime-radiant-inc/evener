@@ -48,17 +48,20 @@ export default function ConfirmDialogGallerySection() {
       title="ConfirmDialog"
       flips={[
         <ConfirmDialogDemo
+          key="remove-instance"
           title='Remove instance "openai-work"?'
           confirmLabel="Remove"
           body="This will also clear its stored credentials."
         />,
         <ConfirmDialogDemo
+          key="install"
           title="Install evener-lint?"
           confirmLabel="Install"
           destructive={false}
           body="Plugins can run arbitrary code on the hub. Only install ones you trust."
         />,
         <ConfirmDialogDemo
+          key="delete-subsection"
           title="Delete pin section?"
           confirmLabel="Delete section"
           pendingLabel="Deleting…"

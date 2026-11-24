@@ -45,5 +45,5 @@ function IconTriggerDemo() {
 }
 
 export default function MenuGallerySection() {
-  return <GallerySection title="Menu" flips={[<MenuDemo />, <IconTriggerDemo />]} />;
+  return <GallerySection title="Menu" flips={[<MenuDemo key="default" />, <IconTriggerDemo key="quiet" />]} />;
 }

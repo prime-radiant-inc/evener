@@ -37,7 +37,11 @@ export default function SheetGallerySection() {
   return (
     <GallerySection
       title="Sheet"
-      flips={[<SheetDemo side="right" />, <SheetDemo side="bottom" />, <SheetDemo side="left" />]}
+      flips={[
+        <SheetDemo key="right" side="right" />,
+        <SheetDemo key="bottom" side="bottom" />,
+        <SheetDemo key="left" side="left" />,
+      ]}
     />
   );
 }
