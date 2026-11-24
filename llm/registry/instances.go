@@ -555,19 +555,20 @@ func (r *Registry) credential(rec *record, t Transport) (Credential, []string) {
 }
 
 // AuthFingerprint is the hub's mint-free digest of the credential
-// material its views of one instance carry: the same transport and slots
-// the listing and the spawn gate read, hashed so a rotation of stable
-// material (a literal, an environment value, a stored key) changes the
-// digest while command-bearing material contributes its authored text —
+// material its views of one instance carry: the connection transport and
+// slots the listing and its cached roster read, hashed so a rotation of
+// stable material (a literal, an environment value, a stored key) changes
+// the digest while command-bearing material contributes its authored text —
 // the minted value rotates with the cache TTL, and an identity that
 // followed it would prune the cached live rows on every rollover and
 // force a re-fetch. It expands environment references only and never
 // executes a command; only the hex digest leaves this method, never the
 // material. The digest reads the provider-level slots, plus the default
-// row's own headers — the listing fetch resolves through that row and
-// sends its headers with the request, so they shape what the cached
-// live rows came through. Other rows' headers stay display material:
-// they never build a request.
+// row's own headers when that row is what the listing fetch resolves
+// through — it sends them with the request, so they shape what the cached
+// live rows came through. A Copilot roster resolves through the configured
+// transport instead, so only its provider-level headers hash. Other rows'
+// headers stay display material: they never build a request.
 func (r *Registry) AuthFingerprint(instance string) (string, bool) {
 	name := strings.ToLower(strings.TrimSpace(instance))
 	rec, ok := r.recordFor(name)
@@ -575,7 +576,7 @@ func (r *Registry) AuthFingerprint(instance string) (string, bool) {
 		return "", false
 	}
 	h := rec.head
-	t := r.listingTransport(rec)
+	t := r.connectionTransport(rec)
 	sum := sha256.New()
 	_, _ = fmt.Fprintf(sum, "%s\x01%s\x01", t.Auth, t.AuthHeader)
 	hashSlot := func(raw string) {
@@ -721,7 +722,7 @@ func (r *Registry) AuthFingerprint(instance string) (string, bool) {
 			hashSlot(h.Headers[k])
 		}
 	}
-	if res, ok := r.resolveDefaultRow(rec, resolveFacts); ok {
+	if res, ok := r.resolveDefaultRow(rec, resolveFacts); ok && !listsThroughConfiguredTransport(rec) {
 		// The listing fetch resolves through the default row and sends
 		// the merged headers with the request — provider, exact row,
 		// and every matching glob row, which merge at resolve time and
@@ -741,7 +742,9 @@ func (r *Registry) AuthFingerprint(instance string) (string, bool) {
 		// No default row names the launch — or it cannot resolve, or the
 		// config disabled it: the listing falls back to the provider's
 		// own transport, whose request carries the provider-level
-		// headers alone.
+		// headers alone. A Copilot roster takes this branch too: its
+		// configured listing transport never resolves through the
+		// default generation row.
 		hashProviderHeaders()
 	}
 	return hex.EncodeToString(sum.Sum(nil)), true
@@ -873,6 +876,19 @@ func (r *Registry) listingProtocol(rec *record) string {
 // account's listing and every credential probe actually serve.
 func listsThroughConfiguredTransport(rec *record) bool {
 	return rec.head.Transport.Auth == AuthOAuthGitHubCopilot
+}
+
+// connectionTransport is the transport an instance's connection identity
+// reads: the account's configured Copilot transport for a Copilot instance,
+// whose default row may route generation through a separate gateway with its
+// own auth scheme, and the bare launch's row-merged transport otherwise. The
+// roster fetch, the connection fields it publishes, and the credential
+// fingerprint the cached roster is keyed by all read this one transport.
+func (r *Registry) connectionTransport(rec *record) Transport {
+	if listsThroughConfiguredTransport(rec) {
+		return rec.head.Transport
+	}
+	return r.listingTransport(rec)
 }
 
 // authHeaderKey resolves which credential-header key carries the named
@@ -1177,7 +1193,7 @@ func (r *Registry) computeInstances() {
 		if !ok {
 			pos = custom
 		}
-		t := r.listingTransport(rec)
+		t := r.connectionTransport(rec)
 		r.instances[name] = &instance{name: name, rec: rec, rank: pos, autoSelectable: r.authReadyToLaunch(name, t)}
 	}
 	for id, rec := range r.curated {
@@ -1187,7 +1203,7 @@ func (r *Registry) computeInstances() {
 		if _, shadowed := r.explicit[id]; shadowed {
 			continue
 		}
-		t := r.listingTransport(rec)
+		t := r.connectionTransport(rec)
 		autoSelectable := true
 		if t.Auth == AuthOAuthGitHubCopilot {
 			// No record means the user never signed in. The row is listed
@@ -1302,9 +1318,12 @@ func (r *Registry) DefaultInstance() (string, []string, error) {
 }
 
 // Instances lists every instance in default ranking with its credential
-// source and warnings (spec §11.2). The auth scheme is the one the same
-// row-merged transport picks — the launch a bare instance name makes — so
-// a default row overriding auth moves the listing's scheme with it.
+// source and warnings (spec §11.2). The auth scheme and credential are the
+// connection's: a Copilot instance reports its account's configured
+// transport, whose roster fetch never resolves through the default generation
+// row, while every other scheme follows the bare launch's row-merged
+// transport, so a default row overriding auth moves the listing's scheme with
+// it.
 func (r *Registry) Instances() []Instance {
 	def, _, _ := r.DefaultInstance()
 	var out []Instance
@@ -1330,7 +1349,7 @@ func (r *Registry) Instance(name string) (Instance, bool) {
 // instanceView is one instance's listing row. Instances and Instance share it
 // so the single-row answer and the listing's row cannot drift.
 func (r *Registry) instanceView(inst *instance, def string) Instance {
-	t := r.listingTransport(inst.rec)
+	t := r.connectionTransport(inst.rec)
 	cred, warns := r.credential(inst.rec, t)
 	h := inst.rec.head
 	base := ""

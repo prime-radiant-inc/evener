@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -413,6 +414,49 @@ func TestCopilotRecordWatcherReportsCorruptionWithoutDeletingTheRecord(t *testin
 	}
 	if inst.CredentialSource != "none" {
 		t.Fatalf("credential source = %q, want the corrupt record to resolve no credential", inst.CredentialSource)
+	}
+}
+
+// TestCopilotReloadKeepsConnectionAndRosterBesideGatewayGeneration pins that a
+// reload reads the Copilot account, not the default row's gateway credential:
+// the listing row keeps the Copilot connection, and a gateway-key rotation
+// keeps the cached roster the account fetched.
+func TestCopilotReloadKeepsConnectionAndRosterBesideGatewayGeneration(t *testing.T) {
+	t.Parallel()
+	env := map[string]string{"GATEWAY_KEY": "gw-secret"}
+	f := newInstancesFixture(t, env)
+	writeProvidersToml(t, filepath.Dir(f.tomlPath), gatewayCopilotDeviceToml)
+	seedCopilotAccount(t, f.stateDir, "work", "1")
+	if err := f.ctl.auth.reloadRegistry(); err != nil {
+		t.Fatalf("reload the seeded registry: %v", err)
+	}
+
+	row := entry(t, f.ctl.List(), "work")
+	if row.Auth != registry.AuthOAuthGitHubCopilot {
+		t.Fatalf("listing auth = %q, want the Copilot account %q", row.Auth, registry.AuthOAuthGitHubCopilot)
+	}
+	if row.ActiveSource != "oauth" {
+		t.Fatalf("listing credential source = %q, want oauth", row.ActiveSource)
+	}
+	if row.BaseURL != "https://api.githubcopilot.com" {
+		t.Fatalf("listing base URL = %q, want the Copilot endpoint", row.BaseURL)
+	}
+	if want := []string{"oauth"}; !slices.Equal(row.AuthModes, want) {
+		t.Fatalf("listing auth modes = %v, want %v", row.AuthModes, want)
+	}
+	if row.EnvVar != "" {
+		t.Fatalf("listing EnvVar = %q, want no gateway variable on the Copilot connection", row.EnvVar)
+	}
+
+	f.ctl.reg.Get().ApplyLiveListing("work", registry.LiveListing{
+		Rows: []registry.Model{{ID: "live-row"}}, Authoritative: true,
+	})
+	env["GATEWAY_KEY"] = "gw-rotated"
+	if err := f.ctl.auth.reloadRegistry(); err != nil {
+		t.Fatalf("reload after the gateway key rotation: %v", err)
+	}
+	if got := f.ctl.reg.Get().LiveModels("work"); len(got) != 1 {
+		t.Fatalf("cached roster rows after a gateway key rotation = %d, want 1: the roster did not come from that key", len(got))
 	}
 }
 

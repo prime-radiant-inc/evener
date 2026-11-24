@@ -31,50 +31,58 @@ func seedCopilotAccount(t *testing.T, stateDir, instance, accountID string) {
 // read the new account. A switch must invalidate the instance's cached roster,
 // and a same-account sign-in must leave it alone.
 func TestCopilotDeviceLoginAccountSwitchDropsTheOldAccountsRoster(t *testing.T) {
-	for _, tt := range []struct {
-		name           string
-		oldAccount     string
-		newAccount     string
-		wantLiveRemain int
+	for _, cfg := range []struct {
+		name string
+		toml string
 	}{
-		{name: "account switch", oldAccount: "1", newAccount: "42", wantLiveRemain: 0},
-		{name: "same account renewal", oldAccount: "42", newAccount: "42", wantLiveRemain: 1},
+		{name: "configured transport", toml: copilotDeviceInstanceToml},
+		{name: "gateway generation", toml: gatewayCopilotDeviceToml},
 	} {
-		t.Run(tt.name, func(t *testing.T) {
-			ctrl, transport, now := newCopilotDeviceTestController(t, copilotDeviceInstanceToml)
-			seedCopilotAccount(t, ctrl.stateDir, "work", tt.oldAccount)
-			if err := ctrl.reloadRegistry(); err != nil {
-				t.Fatalf("reload the seeded registry: %v", err)
-			}
-			ctrl.registry().ApplyLiveListing("work", registry.LiveListing{
-				Rows: []registry.Model{{ID: "old-account-roster"}}, Authoritative: true,
-			})
-			// Mirror the server wiring: the device login adopts its own record
-			// as already observed, so the later notice sweep stays quiet.
-			instances := &hubInstancesController{reg: ctrl.reg, providersConfigPath: ctrl.providersConfigPath, auth: ctrl}
-			ctrl.copilotRecordAdopted = instances.adoptCopilotAuthSignature
+		for _, tt := range []struct {
+			name           string
+			oldAccount     string
+			newAccount     string
+			wantLiveRemain int
+		}{
+			{name: "account switch", oldAccount: "1", newAccount: "42", wantLiveRemain: 0},
+			{name: "same account renewal", oldAccount: "42", newAccount: "42", wantLiveRemain: 1},
+		} {
+			t.Run(cfg.name+"/"+tt.name, func(t *testing.T) {
+				ctrl, transport, now := newCopilotDeviceTestController(t, cfg.toml)
+				seedCopilotAccount(t, ctrl.stateDir, "work", tt.oldAccount)
+				if err := ctrl.reloadRegistry(); err != nil {
+					t.Fatalf("reload the seeded registry: %v", err)
+				}
+				ctrl.registry().ApplyLiveListing("work", registry.LiveListing{
+					Rows: []registry.Model{{ID: "old-account-roster"}}, Authoritative: true,
+				})
+				// Mirror the server wiring: the device login adopts its own record
+				// as already observed, so the later notice sweep stays quiet.
+				instances := &hubInstancesController{reg: ctrl.reg, providersConfigPath: ctrl.providersConfigPath, auth: ctrl}
+				ctrl.copilotRecordAdopted = instances.adoptCopilotAuthSignature
 
-			transport.user = `{"id":` + tt.newAccount + `,"login":"octocat","email":"octocat@example.test"}`
-			transport.polls = []string{`{"access_token":"github-access-token","token_type":"bearer","scope":"read:user"}`}
-			flowID := startCopilotDeviceFlow(t, ctrl, "work")
-			*now = now.Add(5 * time.Second)
-			resp, err := ctrl.DevicePoll(context.Background(), appwire.AuthDevicePollParams{Provider: "work", FlowID: flowID})
-			if err != nil {
-				t.Fatalf("DevicePoll: %v", err)
-			}
-			if resp.State != "authorized" {
-				t.Fatalf("DevicePoll state = %q, want authorized", resp.State)
-			}
-			record, err := githubcopilot.LoadAuth(ctrl.stateDir, "work")
-			if err != nil {
-				t.Fatalf("LoadAuth(work): %v", err)
-			}
-			if record.AccountID != tt.newAccount {
-				t.Fatalf("saved account = %q, want %q", record.AccountID, tt.newAccount)
-			}
-			if got := ctrl.registry().LiveModels("work"); len(got) != tt.wantLiveRemain {
-				t.Fatalf("cached roster rows = %d, want %d", len(got), tt.wantLiveRemain)
-			}
-		})
+				transport.user = `{"id":` + tt.newAccount + `,"login":"octocat","email":"octocat@example.test"}`
+				transport.polls = []string{`{"access_token":"github-access-token","token_type":"bearer","scope":"read:user"}`}
+				flowID := startCopilotDeviceFlow(t, ctrl, "work")
+				*now = now.Add(5 * time.Second)
+				resp, err := ctrl.DevicePoll(context.Background(), appwire.AuthDevicePollParams{Provider: "work", FlowID: flowID})
+				if err != nil {
+					t.Fatalf("DevicePoll: %v", err)
+				}
+				if resp.State != "authorized" {
+					t.Fatalf("DevicePoll state = %q, want authorized", resp.State)
+				}
+				record, err := githubcopilot.LoadAuth(ctrl.stateDir, "work")
+				if err != nil {
+					t.Fatalf("LoadAuth(work): %v", err)
+				}
+				if record.AccountID != tt.newAccount {
+					t.Fatalf("saved account = %q, want %q", record.AccountID, tt.newAccount)
+				}
+				if got := ctrl.registry().LiveModels("work"); len(got) != tt.wantLiveRemain {
+					t.Fatalf("cached roster rows = %d, want %d", len(got), tt.wantLiveRemain)
+				}
+			})
+		}
 	}
 }
