@@ -1083,6 +1083,9 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 	if cfg.RemoteHostRegistry == nil {
 		cfg.RemoteHostRegistry = hostRegistryFromConfig(cfg)
 	}
+	if cfg.CreationStore == nil && cfg.CreationStoreErr == nil {
+		cfg.CreationStore, cfg.CreationStoreErr = hubcore.NewCreationStore(cfg.HubStateRoot)
+	}
 	capability := &appwire.NavigationCapability{Version: 1}
 	var capabilityProvider func() *appwire.NavigationCapability
 	if navigation != nil {
@@ -1218,6 +1221,7 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 			Auth:                       true,
 			TranscriptDisplaySettings:  true,
 			KeybindingsSettings:        true,
+			ThreadStartIdempotency:     cfg.CreationStore != nil && cfg.CreationStoreErr == nil,
 		},
 	})
 	// One credentials store for every credential surface this server builds.
@@ -1569,8 +1573,11 @@ func registerThreadHandlers(
 		return subagentPreviewFromThread(resp.Thread, ref, params.Limit), nil
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadStart, func(ctx context.Context, params appwire.ThreadStartParams) (appwire.ThreadStartResponse, error) {
-		if err := validateHubVoicePresentation(ctx, params.Input, appwire.MethodThreadStart, ""); err != nil {
+		if err := appwire.ValidateOptionalClientMutationID(params.ClientMutationID); err != nil {
 			return appwire.ThreadStartResponse{}, err
+		}
+		if err := validateHubVoicePresentation(ctx, params.Input, appwire.MethodThreadStart, ""); err != nil {
+			return startRefused(err, params.ClientMutationID)
 		}
 		resp, err := hubThreadStart(ctx, cfg, sources, params)
 		if err != nil {

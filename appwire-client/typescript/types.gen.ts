@@ -1355,6 +1355,7 @@ export interface FeatureSet {
   auth: boolean;
   transcriptDisplaySettings?: boolean;
   keybindingsSettings?: boolean;
+  threadStartIdempotency?: boolean;
 }
 
 export interface FencingEpoch {
@@ -5509,11 +5510,18 @@ export interface ThreadStartParams {
    * with the session, so a resume keeps it and nothing can turn it off.
    */
   manager?: boolean;
+  /**
+   * Optional caller-generated idempotency key (1 to 128 UTF-8 bytes, no
+   * surrounding whitespace or ASCII control bytes). Empty runs keyless.
+   */
+  clientMutationId?: string;
 }
 
 export interface ThreadStartResponse {
   thread: Thread;
   turn: Turn;
+  clientMutationId?: string;
+  disposition?: string;
 }
 
 export interface ThreadStartedParams {
