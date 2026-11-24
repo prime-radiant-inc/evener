@@ -558,7 +558,7 @@ describe("CSS contract", () => {
     expect(css).not.toMatch(/\.root\s*\{[^}]*opacity\s*:/s);
     expect(css).not.toMatch(/\.track\s*\{[^}]*opacity\s*:/s);
     expect(css).toMatch(
-      /\.optionLabel\s*\{[^}]*min-inline-size:\s*0[^}]*overflow:\s*hidden[^}]*text-overflow:\s*ellipsis[^}]*white-space:\s*nowrap/s,
+      /\.optionLabel\s*\{[^}]*composes:\s*truncate from "\.\.\/\.\.\/styles\/text\.module\.css"[^}]*min-inline-size:\s*0/s,
     );
     expect(css).toMatch(/\.sm\s*\{[^}]*block-size:\s*28px/s);
     expect(css).toMatch(/\.md\s*\{[^}]*block-size:\s*32px/s);

@@ -126,20 +126,16 @@
 }
 
 .rowName {
+  composes: truncate from "../../styles/text.module.css";
   flex: 1;
   min-width: 0;
   color: var(--ink-hi);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .rowMeta {
+  composes: truncate from "../../styles/text.module.css";
   font-size: var(--font-size-caption);
   color: var(--ink-low);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .rowMono {

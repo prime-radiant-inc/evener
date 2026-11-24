@@ -10,3 +10,8 @@
   white-space: pre-wrap;
 }
 .verbatimWrap { word-break: break-word; }
+.truncate {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

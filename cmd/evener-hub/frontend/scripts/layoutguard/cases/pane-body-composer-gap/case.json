@@ -3,6 +3,7 @@
   "description": "A pane with any slot below its body closes its scrolling body on that surface's top hairline, with no dead band below the last content row (the session pane's composer footer, and a flush edge footer alone), while a footer-less pane keeps the body's end-of-scroll inset.",
   "cssFiles": [
     "styles/global.css",
+    "styles/text.module.css",
     "styles/tokens.css",
     "widgets/panescaffold/panescaffold.module.css"
   ],

@@ -27,11 +27,9 @@
 }
 
 .message {
+  composes: truncate from "../../styles/text.module.css";
   /* Truncate so a long closed-reason message never wraps the action off the
      strip; the action button must stay reachable at every width. */
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 /* --- tone -> token family --------------------------------------------

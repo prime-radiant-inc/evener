@@ -31,14 +31,12 @@
 
 /* Editorial page heading; controls and metadata keep the sans face. */
 .title {
+  composes: truncate from "../../styles/text.module.css";
   flex: 1 1 auto;
   /* min-width: 0 is required for ellipsis truncation inside a flex row -
    * without it a flex item won't shrink below its content's natural width. */
   min-width: 0;
   margin: 0;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
   color: var(--ink-hi);
   font-family: var(--font-prose);
   font-size: var(--font-size-pane-title);

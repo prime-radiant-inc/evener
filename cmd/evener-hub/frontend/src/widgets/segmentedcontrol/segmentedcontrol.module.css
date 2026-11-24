@@ -111,10 +111,8 @@
 }
 
 .optionLabel {
+  composes: truncate from "../../styles/text.module.css";
   min-inline-size: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 /* Wrap: the category strip keeps its equal columns but breaks the label and
@@ -167,11 +165,9 @@
 }
 
 .optionDetail {
+  composes: truncate from "../../styles/text.module.css";
   min-inline-size: 0;
   max-inline-size: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   color: var(--ink-mid);
   /* A count is chrome, not reading text: it follows the font-size setting
    * down but stops at the unscaled caption size (the caption token divided by

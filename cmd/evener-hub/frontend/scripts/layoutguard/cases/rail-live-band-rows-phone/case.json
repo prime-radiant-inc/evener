@@ -3,6 +3,7 @@
   "description": "rail Live band rows at a 360px touch viewport, where the max-width 899px right-slot rule (flex occupant beside always-visible actions) competes with the base shared-cell rule: the why line still never wraps, titles still align, and the why line still sits under the title text",
   "cssFiles": [
     "styles/global.css",
+    "styles/text.module.css",
     "styles/tokens.css",
     "widgets/tree/tree.module.css",
     "widgets/badge/badge.module.css",

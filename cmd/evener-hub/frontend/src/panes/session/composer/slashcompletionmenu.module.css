@@ -56,11 +56,9 @@
 }
 
 .hint {
+  composes: truncate from "../../../styles/text.module.css";
   flex: 1 1 auto;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   color: var(--ink-mid);
   font-size: var(--font-size-caption);
 }
