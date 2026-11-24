@@ -146,7 +146,7 @@ func adcAvailable(env func(string) (string, bool)) bool {
 // record carries either (the catalog conversion sets only api_key_env), and a
 // present higher-priority expression is terminal in credential() anyway, so it
 // never falls through to the candidates below. A non-implicit or hidden
-// curated provider resolves no instance of its own, and the OAuth scheme's
+// curated provider resolves no instance of its own, and the OAuth schemes'
 // only credential is the record the rename moves, so all answer false. False
 // for an id that is not curated.
 //
@@ -165,17 +165,18 @@ func (r *Registry) ProviderRenameLeavesInstance(id string) bool {
 		return false
 	}
 	// The scheme the listing derives the instance with — the same
-	// listingTransport computeInstances reads — decides the verdict, so a
+	// connectionTransport computeInstances reads — decides the verdict, so a
 	// default row or glob that overrides the head's auth scheme moves the
-	// rename verdict with the instance the listing shows. The header-key
-	// check below resolves it once here, with the switch, rather than
-	// re-deriving the default row and globs.
-	transport := r.listingTransport(rec)
+	// rename verdict with the instance the listing shows. A Copilot account's
+	// connection identity is its head's transport, whatever the row
+	// generates. The header-key check below resolves it once here, with the
+	// switch, rather than re-deriving the default row and globs.
+	transport := r.connectionTransport(rec)
 	switch transport.Auth {
 	case AuthNone, AuthOptionalBearer:
 		return true
-	case AuthOAuthOpenAICodex:
-		// The record is the only credential this scheme reads, and the rename
+	case AuthOAuthOpenAICodex, AuthOAuthGitHubCopilot:
+		// The record is the only credential these schemes read, and the rename
 		// moves it.
 		return false
 	case AuthGCPADC:

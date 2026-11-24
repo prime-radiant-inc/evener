@@ -957,6 +957,38 @@ auth = "none"
 			t.Fatal("openai-codex: want false, the only credential is the record the rename moves")
 		}
 	})
+	t.Run("copilot generation override does not survive the moved record", func(t *testing.T) {
+		// The curated github-copilot default row generates with auth none,
+		// which would be keyless on its own. The instance exists through its
+		// Copilot account, though: the connection identity is the provider
+		// head, and a rename moves the OAuth record, so the listing derives no
+		// row under the old id. The rename verdict must agree with it.
+		override := overlayWith(`
+[providers."github-copilot".models."gpt-5.6-sol"]
+auth = "none"
+`)
+		signedIn := t.TempDir()
+		saveCopilotRecordForTest(t, signedIn, "github-copilot", healthyCopilotRecord("github-copilot"))
+		before := fixtureLoad(t, baseEnv(t), "", WithOverlay(override), WithStateRoot(signedIn))
+		inst, ok := before.Instance("github-copilot")
+		if !ok {
+			t.Fatal("github-copilot: the signed-in instance is not listed, so the premise of the rename verdict fails")
+		}
+		if inst.Auth != AuthOAuthGitHubCopilot {
+			t.Fatalf("github-copilot: listed auth = %q, want the account's %q rather than the row's generation scheme", inst.Auth, AuthOAuthGitHubCopilot)
+		}
+
+		// The rename moves auth/github-copilot.json to the new name.
+		renamed := t.TempDir()
+		saveCopilotRecordForTest(t, renamed, "work-copilot", healthyCopilotRecord("work-copilot"))
+		after := fixtureLoad(t, baseEnv(t), "", WithOverlay(override), WithStateRoot(renamed))
+		if _, ok := after.Instance("github-copilot"); ok {
+			t.Fatal("github-copilot: the old id still lists an instance after the record moved, so the premise of the rename verdict fails")
+		}
+		if before.ProviderRenameLeavesInstance("github-copilot") {
+			t.Fatal("github-copilot: want false, the listing omits the old id once the record the scheme reads moves")
+		}
+	})
 	t.Run("gcp-adc with the ADC file re-derives", func(t *testing.T) {
 		env := baseEnv(t)
 		writeFakeADCFile(t, env)
