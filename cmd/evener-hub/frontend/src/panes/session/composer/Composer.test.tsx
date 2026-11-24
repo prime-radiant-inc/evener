@@ -3,7 +3,7 @@ import { nextMacrotask } from "@evener/appwire-client/testing/macrotask";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { IDBFactory } from "fake-indexeddb";
-import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, expect, onTestFinished, test, vi } from "vitest";
 import { MotionProvider } from "../../../motion";
 import {
   activitySidebarStore,
@@ -42,6 +42,7 @@ import {
   installStalledDecodeStub,
   mountComposer,
   mountComposerWithHandle,
+  PAST_THREAD_CAPABILITIES,
   pendingAskTurns,
   REVIEW_RELEASE_CATALOG,
   readResponse,
@@ -116,11 +117,6 @@ test.each([
       expect(card.getAttribute("data-folded-compact")).toBe(compact ? "true" : null);
       expect(screen.getByTestId("composer-attach")).toBeTruthy();
       expect(order()).toEqual(["composer-stop"]);
-      if (compact) {
-        expect(screen.queryByTestId("model-switch-trigger")).toBeNull();
-        expect(screen.queryByTestId("status-row")).toBeNull();
-        expect(screen.queryByTestId("status-row-effort")).toBeNull();
-      }
 
       act(() => editor.focus());
       expect(editor.style.minHeight).toBe("1lh");
@@ -133,12 +129,6 @@ test.each([
       expect(card.hasAttribute("data-folded")).toBe(false);
       expect(card.hasAttribute("data-folded-compact")).toBe(false);
       expect(order()).toEqual(inlineSteer ? ["composer-steer", "composer-submit"] : ["composer-submit"]);
-      if (compact) {
-        expect(screen.queryByTestId("model-switch-trigger")).toBeNull();
-        expect(screen.queryByTestId("status-row")).toBeNull();
-        expect(screen.queryByTestId("status-row-effort")).toBeNull();
-        expect(screen.getByTestId("session-chrome-menu")).toBeTruthy();
-      }
 
       act(() => editor.blur());
       expect(card.hasAttribute("data-folded")).toBe(false);
@@ -146,6 +136,55 @@ test.each([
       cleanup();
       restoreViewport?.();
     }
+  },
+);
+
+const PHONE_CHROME_CASES = [
+  { name: "phone portrait at rest", query: MOBILE_QUERY, state: "resting", cold: false },
+  { name: "phone portrait engaged", query: MOBILE_QUERY, state: "engaged", cold: false },
+  { name: "phone portrait ask-pending", query: MOBILE_QUERY, state: "ask", cold: false },
+  { name: "coarse landscape at rest", query: LANDSCAPE_PHONE_QUERY, state: "resting", cold: false },
+  { name: "coarse landscape engaged", query: LANDSCAPE_PHONE_QUERY, state: "engaged", cold: false },
+  { name: "coarse landscape ask-pending", query: LANDSCAPE_PHONE_QUERY, state: "ask", cold: false },
+  { name: "cold follow-up engaged", query: MOBILE_QUERY, state: "engaged", cold: true },
+] as const;
+
+// The phone shell keeps model, status, and effort out of the composer in every
+// state; those live in the Overview sheet and Settings (design-system.md
+// section 12). This table is the single owner of that assertion.
+test.each(PHONE_CHROME_CASES)(
+  "the phone composer mounts no model, status, or effort chrome: $name",
+  async ({ query, state, cold }) => {
+    onTestFinished(installMobileViewport(query));
+    await mountComposer(
+      "ref_a",
+      cold
+        ? {
+            status: { type: "notLoaded" },
+            evener: { ref: "ref_a", capabilities: PAST_THREAD_CAPABILITIES, queue: { revision: 0 } },
+          }
+        : state === "ask"
+          ? { ...pendingAskTurns(), evener: { ...currentWorkEvener({}), askPending: true } }
+          : {},
+    );
+
+    const card = screen.getByTestId("composer-input-card");
+    if (state === "resting") {
+      expect(card.getAttribute("data-folded")).toBe("true");
+      expect(card.getAttribute("data-folded-compact")).toBe("true");
+    } else if (state === "engaged") {
+      act(() => replaceEditorText(textarea(), "draft"));
+      await waitFor(() => expect(card.hasAttribute("data-folded")).toBe(false));
+      expect(card.hasAttribute("data-folded-compact")).toBe(false);
+    } else {
+      expect(card.hasAttribute("hidden")).toBe(true);
+      expect(screen.queryByRole("textbox", { name: /message/i })).toBeNull();
+    }
+
+    expect(screen.queryByTestId("model-switch-trigger")).toBeNull();
+    expect(screen.queryByTestId("status-row")).toBeNull();
+    expect(screen.queryByTestId("status-row-effort")).toBeNull();
+    expect(screen.getByTestId("session-chrome-menu")).toBeTruthy();
   },
 );
 
@@ -233,23 +272,6 @@ test("while ask_pending is open, the message textbox is hidden and the dock is n
   expect(document.querySelector("[data-ask-response-dock]")).toBeNull();
 });
 
-test("a phone ask-pending composer keeps only the session menu", async ({ onTestFinished }) => {
-  onTestFinished(installMobileViewport());
-  await mountComposer("ref_a", {
-    ...pendingAskTurns(),
-    evener: { ...currentWorkEvener({ task: true, goal: true }), askPending: true },
-  });
-
-  // The question owns the input; the composer's remaining surface is the
-  // menu-only row, not the status, model, or effort chrome.
-  expect(screen.queryByRole("textbox", { name: /message/i })).toBeNull();
-  expect(screen.queryByTestId("session-chrome-inline")).toBeNull();
-  expect(screen.queryByTestId("status-row")).toBeNull();
-  expect(screen.queryByTestId("status-row-effort")).toBeNull();
-  expect(screen.queryByTestId("model-switch-trigger")).toBeNull();
-  expect(screen.getByTestId("session-chrome-menu")).toBeTruthy();
-});
-
 test("renders current work directly before the compose card", async () => {
   await mountComposer("ref_a", {
     evener: currentWorkEvener({ task: true, goal: true }),
@@ -264,22 +286,28 @@ test("a phone composer hides the visible current-work rows but keeps their annou
   onTestFinished,
 }) => {
   onTestFinished(installMobileViewport());
+  const task = "task-4c1a";
+  const goal = "goal-7e92";
   await mountComposer("ref_a", {
-    evener: currentWorkEvener({ task: true, goal: true }),
+    evener: {
+      ...currentWorkEvener({}),
+      tasks: { total: 1, done: 0, current: { id: 1, description: task } },
+      goal: { objective: goal, status: "active", iterations: 1 },
+    },
   });
 
   // Nothing arrived above the card to move the phone's persistent controls.
   expect(screen.getByTestId("composer-input-card")).toBeTruthy();
   expect(screen.queryByTestId("current-work")).toBeNull();
-  // The live region still carries the fixture's task and goal, so a screen
-  // reader hears the current work the visual rows no longer show.
+  // The live region still carries the work, so a screen reader hears what the
+  // visual rows no longer show.
   const announcements = screen
     .getAllByRole("status")
     .filter((node) => node.getAttribute("aria-atomic") === "true")
     .map((node) => node.textContent ?? "");
   expect(announcements).toHaveLength(1);
-  expect(announcements[0]).toContain("Finish the focused composer test");
-  expect(announcements[0]).toContain("Keep the session focused");
+  expect(announcements[0]).toContain(task);
+  expect(announcements[0]).toContain(goal);
 });
 
 test("the current-work goal row carries the goal's live status", async () => {
@@ -728,10 +756,10 @@ test.each([false, true])("repeated composer /status targets its ref, phone=%s", 
   expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
 });
 
-// A phone's composer rests without the status and activity chips, and content
-// expands the card without bringing model or effort chrome back: those are
-// facts in the Overview sheet and Settings (design-system.md section 12).
-test("a phone composer keeps its menu-only chrome with content", async ({ onTestFinished }) => {
+// The phone's activity counts live in the top bar's Overview sheet
+// (design-system.md section 12), so the composer never grows an activity line,
+// resting or engaged.
+test("a phone composer never grows an activity line", async ({ onTestFinished }) => {
   onTestFinished(installMobileViewport());
   const fake = connectReadyFakeClient();
   fake.on("thread/read", () => readResponse("ref_a"));
@@ -745,26 +773,13 @@ test("a phone composer keeps its menu-only chrome with content", async ({ onTest
   await flushPendingTurnsProjectionForTests();
   await settleActivityDiscovery("ref_a");
 
-  // At rest: no status chrome or activity line. The menu-only chrome keeps
-  // session actions reachable, and Send stays.
-  expect(screen.queryByTestId("session-chrome-inline")).toBeNull();
   const form = screen.getByTestId("composer-form");
   expect(form.querySelector("[data-activity-tab]")).toBeNull();
   expect(screen.queryByTestId("composer-activity-line")).toBeNull();
-  expect(screen.getByTestId("session-chrome-menu")).toBeTruthy();
-  expect(screen.getByRole("button", { name: "Session actions" })).toBeTruthy();
   expect(screen.getByTestId("composer-submit")).toBeTruthy();
 
   act(() => replaceEditorText(screen.getByRole("textbox", { name: "Message" }), "draft"));
   expect(screen.getByTestId("composer-input-card").hasAttribute("data-folded")).toBe(false);
-  expect(screen.queryByTestId("session-chrome-inline")).toBeNull();
-  expect(screen.queryByTestId("status-row")).toBeNull();
-  expect(screen.queryByTestId("status-row-effort")).toBeNull();
-  expect(screen.queryByTestId("model-switch-trigger")).toBeNull();
-  expect(screen.getByTestId("session-chrome-menu")).toBeTruthy();
-  // The engaged row carries no activity counts either (design-system.md
-  // section 12): the top bar's Overview sheet owns them, so the composer
-  // never grows an activity line, engaged or not.
   expect(screen.queryByTestId("composer-activity-line")).toBeNull();
   expect(screen.getByTestId("composer-submit")).toBeTruthy();
   expect(form.querySelector("[data-activity-tab]")).toBeNull();
@@ -797,7 +812,6 @@ test("a phone composer leaves inspection actions to the top bar at rest and with
     if (withContent) {
       act(() => replaceEditorText(editor, "draft"));
       await waitFor(() => expect(screen.getByTestId("composer-input-card").hasAttribute("data-folded")).toBe(false));
-      expect(screen.queryByTestId("session-chrome-inline")).toBeNull();
     }
     await user.click(screen.getByRole("button", { name: "Session actions" }));
     expect(screen.queryByRole("menuitem", { name: /find/i })).toBeNull();

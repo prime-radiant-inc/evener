@@ -333,10 +333,8 @@ function ComposerWithSubmission({
   const [narrow, attachNarrowRef] = useNarrowComposer();
   const duoCoverLayout = useDuoCoverLayout();
   const landscapePhoneLayout = useLandscapePhoneLayout();
-  // The phone's one bottom surface keeps the same menu-only control row in
-  // every state. Model and effort are facts in the Overview sheet (effort is
-  // set on Settings), so a draft or a pending question never brings that
-  // chrome into the card (design-system.md section 12).
+  // The phone shell's control row is menu-only in every state; model and
+  // effort live in Overview and Settings (design-system.md section 12).
   const phoneShellLayout = isMobile || landscapePhoneLayout;
   const composerRootRef = useRef<HTMLDivElement | null>(null);
   const attachComposerRoot = useCallback(
@@ -1012,12 +1010,9 @@ function ComposerWithSubmission({
   else if (ended) minLines = followUpEngaged ? 3 : 1;
   else if (duoCoverLayout && !followUpEngaged) minLines = 1;
 
-  // The phone layout's one bottom surface is this card's own menu-only control
-  // row in every state. Attach, the session menu and Send or Stop stay
-  // reachable; model, effort, and activity chrome never return. These geometry
-  // keys stay keyed to the resting state, so the folded card's measurements do
-  // not move when a draft expands it. The actions slot never sheds, so Stop
-  // stays reachable while a turn runs.
+  // Geometry keys stay keyed to the resting state so the folded card's
+  // measurements do not move. The actions slot never sheds, so Stop stays
+  // reachable while a turn runs.
   const controlsCollapsed = phoneShellLayout && resting;
 
   function handleTextChange(value: SkillEditorValue, caret: number): void {
@@ -1302,10 +1297,9 @@ function ComposerWithSubmission({
   // accessible name - the naming style follows StatusRow's own
   // status-row-* testids.
   //
-  // On the phone shell the leading slot is the menu-only chrome in every
-  // state: the session menu stays reachable, and that placement's chrome keeps
-  // initial activity discovery following the pane on screen (issue #1335) with
-  // no status chips. Attach stays beside it; the status chrome never mounts.
+  // The phone shell's leading slot is Attach and the session menu in every
+  // state; the menu placement keeps activity discovery following the pane,
+  // and the status chrome never mounts.
   const leadingControls = (
     <div
       className={CLASS.leading}

@@ -453,7 +453,7 @@ test("an empty exited follow-up can pick its next model before entering the edit
   expect(screen.getByTestId("session-chrome-inline")).toBeTruthy();
 });
 
-test("a phone composer keeps its session menu usable with content and without model chrome", async () => {
+test("a phone composer keeps its session menu usable with content", async () => {
   const restoreViewport = installMobileViewport();
   try {
     const user = userEvent.setup();
@@ -466,13 +466,10 @@ test("a phone composer keeps its session menu usable with content and without mo
     expect(screen.queryByRole("menu")).not.toBeNull();
     await user.keyboard("{Escape}");
     // The phone's resting row stays compact on focus, and content expands the
-    // card without bringing the model picker back.
+    // card.
     await user.click(textarea());
-    expect(screen.queryByTestId("model-switch-trigger")).toBeNull();
     act(() => replaceEditorText(textarea(), "draft"));
     expect(screen.getByTestId("composer-input-card").hasAttribute("data-folded")).toBe(false);
-    expect(screen.queryByTestId("model-switch-trigger")).toBeNull();
-    expect(screen.queryByTestId("status-row")).toBeNull();
     // The one menu stays reachable in the expanded card.
     await user.click(screen.getByRole("button", { name: "Session actions" }));
     expect(screen.queryByRole("menu")).not.toBeNull();
