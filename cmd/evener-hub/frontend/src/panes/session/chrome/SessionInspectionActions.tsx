@@ -106,7 +106,7 @@ function OverviewSheetBody({
           onDismiss();
         }}
       />
-      {model && <DetailsPanelBody model={model} now={now} resolvedBranch={resolvedBranch} />}
+      {model && <DetailsPanelBody model={model} now={now} resolvedBranch={resolvedBranch} showGoal />}
       <section className={CLASS.group}>
         <Eyebrow as="h3">Activity</Eyebrow>
         <ul className={CLASS.list} aria-label="Session activity">

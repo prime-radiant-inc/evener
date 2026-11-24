@@ -473,6 +473,7 @@ test("the phone header keeps session facts, Find and same-session Tasks in one O
   const cwd = "/tmp/overview-project";
   const branch = "fixture-overview-branch";
   const link = "https://example.com/docs";
+  const goal = { objective: "Review the recorded fixture", status: "blocked", iterations: 2 };
   const user = userEvent.setup();
   const asked = renderHook(() => useFindRequest(ref, paneId));
   const fake = connectFakeClient();
@@ -486,6 +487,7 @@ test("the phone header keeps session facts, Find and same-session Tasks in one O
         ref,
         capabilities: CAPABILITIES,
         queue: { revision: 0 },
+        goal,
         tasks,
         sessionUrls: [{ id: "u1", url: link, label: "Example", addedBy: "human", addedAt: 7 }],
       },
@@ -509,6 +511,8 @@ test("the phone header keeps session facts, Find and same-session Tasks in one O
   await user.click(entry);
   const sheet = await screen.findByRole("dialog", { name: "Overview" });
   expect(within(sheet).getByTestId("session-details-model")).toBeTruthy();
+  expect(within(sheet).getByTestId("session-details-goal").textContent).toContain(goal.objective);
+  expect(within(sheet).getByTestId("session-details-goal-status").textContent).toBe(goal.status);
   expect((await within(sheet).findByTestId("session-details-branch")).textContent).toContain(branch);
   expect(fake.calls.find((call) => call.method === "evener/git/head")?.params).toEqual({ cwd });
   const savedLink = within(sheet).getByRole("link");
