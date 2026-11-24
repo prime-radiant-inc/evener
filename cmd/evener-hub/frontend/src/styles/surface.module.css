@@ -150,3 +150,12 @@
   border-radius: var(--radius-control);
   background: var(--field);
 }
+
+.railBody {
+  padding: var(--space-2);
+  border-left: 2px solid var(--edge);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-body);
+  color: var(--ink-mid);
+  overflow-wrap: break-word;
+}
