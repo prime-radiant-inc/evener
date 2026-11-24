@@ -35,6 +35,15 @@
   gap: var(--space-3);
 }
 
+/* The quiet status line a settings section shows while it waits on the hub
+ * or reports a save in flight: caption ink, no margin, in the flow. */
+.settingsSectionStatus {
+  margin: 0;
+  color: var(--ink-mid);
+  font-size: var(--font-size-caption);
+  line-height: var(--line-height-body);
+}
+
 /* A settings section opens at pane-title size, a subsection at body size. */
 .settingsSectionHeading {
   margin: 0;

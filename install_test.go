@@ -1244,11 +1244,29 @@ func expectedBundledAgents(t *testing.T, repoRoot string) []string {
 func expectedBundledSkills(t *testing.T, repoRoot string) []string {
 	t.Helper()
 
-	metas := map[string]skill.SkillMeta{}
-	skill.ScanSkillsDir(filepath.Join(repoRoot, "internal", "bundled", "skills"), metas)
-	names := make([]string, 0, len(metas))
-	for name := range metas {
-		names = append(names, name)
+	dir := filepath.Join(repoRoot, "internal", "bundled", "skills")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read bundled skills: %v", err)
+	}
+	var names []string
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		skillFile := filepath.Join(dir, entry.Name(), "SKILL.md")
+		data, err := os.ReadFile(skillFile)
+		if err != nil {
+			t.Fatalf("read bundled skill %s: %v", entry.Name(), err)
+		}
+		descriptor, _, err := skill.Parse(data, skillFile)
+		if err != nil {
+			t.Fatalf("parse bundled skill %s: %v", entry.Name(), err)
+		}
+		if descriptor.Unavailable || !descriptor.Controls.UserInvocable {
+			continue
+		}
+		names = append(names, descriptor.CatalogName)
 	}
 	sort.Strings(names)
 	return names

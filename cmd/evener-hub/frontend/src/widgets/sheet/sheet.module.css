@@ -38,6 +38,15 @@
   border-right: none;
   border-bottom: none;
   box-shadow: 0 -16px 40px var(--shadow-color);
+  /* Keeps a swipe that reaches the sheet's scroll edge from scrolling the
+   * page behind it. */
+  overscroll-behavior-y: contain;
+}
+
+/* The body is the sheet's scrollport: containing its overscroll keeps a
+ * downward swipe there owned by the sheet instead of the page. */
+.bottomBody {
+  overscroll-behavior-y: contain;
 }
 
 .left {
@@ -98,6 +107,29 @@
   background: var(--ink-low);
 }
 
+/* The decorative grab pill a non-expandable bottom Sheet shows in place of
+ * the expandable handle. It invites the swipe-down gesture and carries
+ * onPointerDown for touch drags, with no role or tab stop. Fine pointers have
+ * no swipe gesture to advertise, so it is hidden for them. */
+.grabHandle {
+  display: none;
+  justify-content: center;
+  padding: var(--space-2) 0 var(--space-1);
+  touch-action: none;
+}
+
+/* Prevents touch browsers from claiming a header downward drag for panning or
+ * selection and firing pointercancel before pointermove starts. */
+.bottomHeader {
+  touch-action: none;
+}
+
+@media (any-pointer: coarse) {
+  .grabHandle {
+    display: flex;
+  }
+}
+
 .expandableBottom {
   height: 100vh;
   /* Override .bottom's max-height: min(480px, 100vh): when expandable, the
@@ -127,5 +159,21 @@
 @media (prefers-reduced-motion: reduce) {
   .expandableBottom {
     transition: none;
+  }
+}
+
+/* While open and not actively dragged, clearing an inline drag transform
+ * glides the sheet back to rest on the spatial exit budget. Dragging sets
+ * data-swiping="true" so the panel tracks the finger 1:1, and closing flips
+ * data-motion to "closing" so the exit recipe owns the motion. */
+@media (prefers-reduced-motion: no-preference) {
+  .bottom[data-motion="open"]:not([data-swiping="true"]) {
+    transition: transform var(--motion-duration-spatial-exit) var(--motion-easing-standard);
+  }
+
+  .expandableBottom[data-motion="open"]:not([data-swiping="true"]) {
+    transition:
+      height var(--motion-duration-spatial) var(--motion-easing-standard),
+      transform var(--motion-duration-spatial-exit) var(--motion-easing-standard);
   }
 }

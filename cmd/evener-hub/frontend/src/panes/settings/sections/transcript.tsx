@@ -17,6 +17,7 @@ import {
 } from "../../../stores/transcriptDisplay";
 import { Button, InlineNotice, SegmentedControl, Switch, useToasts } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
+import { SectionStatus } from "./sectionStatus";
 import { TranscriptDisplayCard } from "./TranscriptDisplayCard";
 import styles from "./transcript.module.css";
 
@@ -24,7 +25,6 @@ const CLASS = {
   root: requireClass(styles.root, "transcript.module.css", "root"),
   intro: requireClass(styles.intro, "transcript.module.css", "intro"),
   cards: requireClass(styles.cards, "transcript.module.css", "cards"),
-  status: requireClass(styles.status, "transcript.module.css", "status"),
 };
 
 type Layout = "desktop" | "mobile";
@@ -146,11 +146,7 @@ export function TranscriptSection() {
       {storageWarning !== null && (
         <InlineNotice tone="danger">Browser-local storage warning: {storageWarning}</InlineNotice>
       )}
-      {status !== undefined && (
-        <p className={CLASS.status} role="status" aria-live="polite" data-reason={status.reason}>
-          {status.text}
-        </p>
-      )}
+      {status !== undefined && <SectionStatus reason={status.reason}>{status.text}</SectionStatus>}
       {serverIssue && (
         <InlineNotice
           tone="danger"

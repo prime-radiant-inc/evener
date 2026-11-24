@@ -2,6 +2,7 @@ import { type FormEvent, type ReactNode, useState } from "react";
 import { Button } from "../button";
 import { CloseIcon } from "../dialog/CloseIcon";
 import { IconButton } from "../iconbutton";
+import { InlineNotice } from "../inlinenotice";
 import { Input } from "../input";
 import { requireClass } from "../internal/requireClass";
 import { VisuallyHidden } from "../visuallyhidden";
@@ -75,7 +76,6 @@ const CLASS = {
   inheritedTag: requireClass(styles.inheritedTag, "collectioneditor.module.css", "inheritedTag"),
   addForm: requireClass(styles.addForm, "collectioneditor.module.css", "addForm"),
   addField: requireClass(styles.addField, "collectioneditor.module.css", "addField"),
-  error: requireClass(styles.error, "collectioneditor.module.css", "error"),
 };
 
 /**
@@ -185,11 +185,7 @@ export function CollectionEditor<T>({
           {addButtonLabel}
         </Button>
       </form>
-      {error !== null && (
-        <p role="alert" className={CLASS.error}>
-          {error}
-        </p>
-      )}
+      {error !== null && <InlineNotice tone="danger">{error}</InlineNotice>}
     </div>
   );
 }
