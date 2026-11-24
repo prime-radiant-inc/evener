@@ -56,6 +56,7 @@ test("shows a loading skeleton before the overview resolves", () => {
 
   render(<HubSection />);
   expect(screen.getByRole("status", { name: "Loading" })).toBeTruthy();
+  expect(screen.getAllByTestId("skeleton-line")).toHaveLength(3);
 });
 
 describe("on load failure", () => {

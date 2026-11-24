@@ -12,6 +12,7 @@ import { RepositoryConfigSection } from "./inrepo";
 import { type LoadState, launchFormPaths } from "./launchShared/fields";
 import { LaunchConfigForm } from "./launchShared/LaunchConfigForm";
 import styles from "./project.module.css";
+import { RefreshErrorNotice } from "./sectionGate";
 import { useHostScopedLoad, useLaunchConfigRefresh } from "./useConnectedEffect";
 
 const CLASS = {
@@ -174,18 +175,9 @@ export function ProjectSection({ host = LOCAL_HOST }: ProjectSectionProps) {
       {load.phase === "ready" && (
         <>
           {refreshError !== null && (
-            <InlineNotice
-              tone="danger"
-              live="status"
-              data-reason="refresh-failed"
-              action={
-                <Button type="button" onClick={() => reload()}>
-                  Retry
-                </Button>
-              }
-            >
+            <RefreshErrorNotice onRetry={() => reload()}>
               Could not re-read this host's project settings. {refreshError}
-            </InlineNotice>
+            </RefreshErrorNotice>
           )}
           <LaunchConfigForm
             options={load.options}

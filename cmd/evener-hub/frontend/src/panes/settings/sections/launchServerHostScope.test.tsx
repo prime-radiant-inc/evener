@@ -11,7 +11,7 @@ import { resetSettingsHostForTests, setSettingsHost } from "../../../stores/sett
 import { connectReadyFakeClient } from "../../../testing/connectionTestUtils";
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
 import { LaunchServerHostScope } from "./launchServer";
-import { shownReasons } from "./reasonTestUtils";
+import { shownReasons, statusReasons } from "./reasonTestUtils";
 import { LAUNCH_CONFIG_REFRESH_DEBOUNCE_MS } from "./useConnectedEffect";
 
 // The launch-evener settings surface's host scope (component 07b): the shared
@@ -574,6 +574,7 @@ test("a failed refresh keeps the form and the draft, reports itself beside it, a
   await act(() => hostsStore.getState().refresh());
 
   await waitFor(() => expect(shownReasons()).toContain("refresh-failed"));
+  expect(statusReasons(document.body)).toContain("refresh-failed");
   // The form, and the draft in it, are still here.
   expect((screen.getByLabelText("Agent") as HTMLInputElement).value).toBe("typed-on-beta");
 
