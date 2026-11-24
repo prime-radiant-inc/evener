@@ -653,7 +653,19 @@ function overlayTurnId(
     return toolHistoryTurn(overlayItem, turns)?.id ?? fallback;
   }
   if (overlayItem.kind === "notice" && overlayItem.anchor) {
-    return (noticeHistoryTurn(overlayItem.anchor, turns) ?? turns[0])?.id ?? (fallback || SYSTEM_PRELUDE_TURN_ID);
+    const held = noticeHistoryTurn(overlayItem.anchor, turns);
+    if (held) return held.id;
+    if (turns.length === 0) return fallback || SYSTEM_PRELUDE_TURN_ID;
+    // Nothing loaded precedes the anchor. Entries missing before the first
+    // visible item may be the notice's true owner, so the first visible turn
+    // is not evidence. Show the notice only where its own turn places it: a
+    // live warning's loaded or running turn, or the transcript's start once
+    // that start is loaded. Otherwise keep it in the overlay until a page
+    // supplies its predecessor.
+    if (fallback !== "" && (fallback === runningTurnId || turns.some((turn) => turn.id === fallback))) return fallback;
+    const earliest = earliestPosition(turns);
+    if (earliest === undefined) return turns[0]?.id ?? (fallback || SYSTEM_PRELUDE_TURN_ID);
+    return earliest.entry <= 1 ? (turns[0]?.id ?? "") : "";
   }
   return fallback;
 }

@@ -285,6 +285,17 @@ Every replacement bounds its own omissions by the highest entry ordinal the
 response reported: a held item recorded after that ordinal survives, while an
 item the response covered and did not return is omitted.
 
+## Live overlay notice placement
+
+An overlay notice belongs where its anchor places it: after the recorded entry
+it follows, or after the prelude items when it has no preceding entry. The
+shared projection retains a notice in the overlay while no held item precedes
+its anchor and the loaded window starts after the transcript's first entry, so
+the first visible turn never stands in for the notice's owner. A later page
+that supplies the anchor's neighbor renders the notice once, at that neighbor.
+A notice whose own turn is loaded or running, and a prelude notice once the
+transcript's start is loaded, render without a recorded predecessor.
+
 The browser repository persists normal-page omissions only inside the original
 wire interval. The cache commits rows, omission fences, certificates and header
 observations together, preserving newer item versions and rows outside that

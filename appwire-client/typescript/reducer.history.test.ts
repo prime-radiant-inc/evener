@@ -951,6 +951,63 @@ describe("the live overlay", () => {
     ]);
   });
 
+  test("a notice anchored before the loaded window waits for its page, then shows once at its turn", () => {
+    // The anchor follows entry 5 on t_old, but the model holds only a tail
+    // starting at entry 51. The first visible turn is no evidence of the
+    // notice's owner.
+    const notice = noticeOverlay(0, 5, "t_old");
+    const model = hydrate([turn("t_new", 51, [item("t_new", 50)])], { overlay: [notice] });
+    expect(shown(model)).toEqual([["t_new", [itemKey("t_new", 50)]]]);
+    expect(model.overlay?.[notice.key]).toBe(notice);
+
+    const placed = mergeOlderItemPage(model, page([turn("t_old", 5, [item("t_old", 0), item("t_old", 4)])]));
+    expect(placed.turns.flatMap((t) => t.items).filter((i) => i.id === notice.key)).toHaveLength(1);
+    expect(shown(placed)).toEqual([
+      ["t_old", [itemKey("t_old", 0), itemKey("t_old", 4), notice.key]],
+      ["t_new", [itemKey("t_new", 50)]],
+    ]);
+
+    // Later success on the newer turn neither moves nor copies the notice.
+    const later = applyNotification(placed, updated([item("t_new", 51, { text: "success" })]), NOW);
+    expect(shown(later)[0]).toEqual(shown(placed)[0]);
+    expect(later.turns.flatMap((t) => t.items).filter((i) => i.id === notice.key)).toHaveLength(1);
+  });
+
+  test("a notice before any recorded entry waits while the prelude is outside the window", () => {
+    const notice = noticeOverlay(0, 0, "");
+    const tail = hydrate([turn("t_new", 51, [item("t_new", 50)])], { overlay: [notice] });
+    expect(shown(tail)).toEqual([["t_new", [itemKey("t_new", 50)]]]);
+
+    const prelude = item("turn_system", 0, {
+      type: "systemMessage",
+      eventKind: "system_prompt",
+      position: { entry: 0, item: 0 },
+    });
+    const placed = mergeOlderItemPage(tail, page([turn("turn_system", 1, [prelude])]));
+    expect(shown(placed)).toEqual([
+      ["turn_system", [prelude.id, notice.key]],
+      ["t_new", [itemKey("t_new", 50)]],
+    ]);
+  });
+
+  test("a notice before any recorded entry shows at the start of the loaded transcript", () => {
+    const notice = noticeOverlay(0, 0, "");
+    const model = hydrate([turn("t1", 1, [item("t1", 0)])], { overlay: [notice] });
+    expect(shown(model)).toEqual([["t1", [notice.key, itemKey("t1", 0)]]]);
+  });
+
+  test("a running turn's warning with no recorded predecessor stays on the running turn", () => {
+    const notice = noticeOverlay(0, 5, "t_running");
+    const model = hydrate([turn("t_old", 51, [item("t_old", 50)])], {
+      overlay: [notice],
+      activeTurnId: "t_running",
+    });
+    expect(shown(model)).toEqual([
+      ["t_old", [itemKey("t_old", 50)]],
+      ["t_running", [notice.key]],
+    ]);
+  });
+
   test("an overlay delta leaves every other turn's reference untouched", () => {
     const model = hydrate([turn("t1", 1, [item("t1", 0)]), turn("t2", 3, [item("t2", 2)], "inProgress")], {
       activeTurnId: "t2",
