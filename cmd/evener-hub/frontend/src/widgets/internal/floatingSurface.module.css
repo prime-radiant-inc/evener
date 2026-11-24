@@ -1,0 +1,6 @@
+/* The floating-layer surface: raised fill, pane corner, and --shadow-overlay's edge ring plus drop. */
+.panel {
+  background: var(--surface-2);
+  border-radius: var(--radius-pane);
+  box-shadow: var(--shadow-overlay);
+}

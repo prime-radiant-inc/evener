@@ -15,11 +15,11 @@
  * transform origin inline with the placement. */
 .panel {
   composes: float from "../../styles/motion.module.css";
+  /* biome-ignore lint/suspicious/noDuplicateProperties: css-modules composes takes one declaration per composed class, each with its own `from` */
+  composes: panel from "../internal/floatingSurface.module.css";
   position: fixed;
   z-index: var(--z-menu);
   background: var(--surface-1);
-  border-radius: var(--radius-pane);
-  box-shadow: var(--shadow-overlay);
 }
 
 /* stretchTrigger: the wrapper fills its container instead of hugging, for a

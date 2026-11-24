@@ -13,11 +13,10 @@
  * Float recipe) from the corner its region is pinned to. */
 .toast {
   composes: float from "../../styles/motion.module.css";
+  /* biome-ignore lint/suspicious/noDuplicateProperties: css-modules composes takes one declaration per composed class, each with its own `from` */
+  composes: panel from "../internal/floatingSurface.module.css";
   transform-origin: right bottom;
   padding: var(--space-3) var(--space-4);
-  border-radius: var(--radius-pane);
-  background: var(--surface-2);
-  box-shadow: var(--shadow-overlay);
 }
 
 .text {

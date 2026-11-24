@@ -1,7 +1,6 @@
 .panel {
   width: min(760px, calc(100vw - var(--space-8)));
   max-height: calc(100dvh - var(--space-8));
-  border-radius: var(--radius-pane);
   overflow: hidden;
 }
 
