@@ -138,6 +138,31 @@ func TestCreationStoreRoundTripAllFourStatesAndStripsSnapshots(t *testing.T) {
 	}
 	store.ReleaseOwner(compRes.Owner, fullResp, nil)
 
+	// 3b. completed without Name must strip prompt-derived Preview, LastMessage, and PendingAsk
+	prevRes, err := store.Acquire(t.Context(), "m-completed-preview", hash, true, "turn-m-prev")
+	if err != nil || prevRes.Owner == nil {
+		t.Fatalf("Acquire m-completed-preview: %+v, %v", prevRes, err)
+	}
+	previewResp := appwire.ThreadStartResponse{
+		Thread: appwire.Thread{
+			ID:        "sess-preview",
+			SessionID: "sess-preview",
+			Preview:   "SECRET_PREVIEW_PROMPT",
+			CWD:       "/tmp/project",
+			Source:    "local",
+			Evener: appwire.EvenerThread{
+				Ref:         "local:sess-preview",
+				InstanceID:  "inst-prev",
+				LastMessage: "SECRET_LAST_MESSAGE_PROMPT",
+				PendingAsk:  &appwire.PendingAskState{Version: 1, InstanceID: "inst-prev", Calls: []appwire.PendingAskCall{{TurnID: "turn_1", CallID: "call_1"}}},
+			},
+		},
+	}
+	if err := store.CommitCompleted("m-completed-preview", previewResp); err != nil {
+		t.Fatalf("CommitCompleted preview: %v", err)
+	}
+	store.ReleaseOwner(prevRes.Owner, previewResp, nil)
+
 	// 4. uncertain persisted
 	uncRes, err := store.Acquire(t.Context(), "m-uncertain", hash, false, "")
 	if err != nil || uncRes.Owner == nil {
@@ -162,6 +187,8 @@ func TestCreationStoreRoundTripAllFourStatesAndStripsSnapshots(t *testing.T) {
 		[]byte("UEVORElOR19SQVdfSU1BR0VfQllURVM"),
 		[]byte("QUEUED_PREVIEW_SECRET"),
 		[]byte("QUEUED_FULL_TEXT_SECRET"),
+		[]byte("SECRET_PREVIEW_PROMPT"),
+		[]byte("SECRET_LAST_MESSAGE_PROMPT"),
 	} {
 		if bytes.Contains(rawBytes, forbidden) {
 			t.Fatalf("state.json leaked pending/queued prompt or image bytes (%s): %s", forbidden, rawBytes)
@@ -218,6 +245,18 @@ func TestCreationStoreRoundTripAllFourStatesAndStripsSnapshots(t *testing.T) {
 		!reflect.DeepEqual(gotComp.Response.Turn, appwire.Turn{ID: "turn_1", Status: "inProgress"}) {
 		t.Fatalf("unexpected replayed response: %+v", gotComp.Response)
 	}
+
+	gotPrev, err := reloaded.Acquire(t.Context(), "m-completed-preview", hash, true, "ignored")
+	if err != nil {
+		t.Fatalf("Acquire reloaded m-completed-preview: %v", err)
+	}
+	if gotPrev.Response == nil ||
+		gotPrev.Response.Thread.Preview != "sess-preview" ||
+		gotPrev.Response.Thread.Evener.LastMessage != "" ||
+		gotPrev.Response.Thread.Evener.PendingAsk != nil {
+		t.Fatalf("replayed preview snapshot leaked prompt/ask state: %+v", gotPrev.Response)
+	}
+	_ = previewResp
 
 	// Verify uncertain reload
 	_, err = reloaded.Acquire(t.Context(), "m-uncertain", hash, false, "")

@@ -1053,6 +1053,50 @@ func TestThreadStartIdempotencyPayloadConflictAndTargetDeleted(t *testing.T) {
 	if data.MutationOutcome != appwire.MutationOutcomeTargetDeleted || data.ClientMutationID != spawnedParams.ClientMutationID {
 		t.Fatalf("deleted spawned data = %+v, want MutationOutcomeTargetDeleted", data)
 	}
+
+	// Completed key retried after its original CWD is deleted still replays, and a missing CWD with mismatched payload returns ConflictingMutationID (not InvalidParams).
+	ephemeralWorkDir := filepath.Join(t.TempDir(), "ephemeral-cwd")
+	if err := os.MkdirAll(ephemeralWorkDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	delStore3, err := hubcore.NewDeletionStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	hubEphemeral := newHubRPCTestServer(t, testWebConfig(t, hubcore.WebConfig{
+		HubStateRoot:  t.TempDir(),
+		RunDir:        runDir,
+		DeletionStore: delStore3,
+		Roster:        hubcore.NewRoster(runDir, fakeProber{sessionID: sessionID, status: appwire.ThreadStatusIdle}),
+		Spawner:       spawner,
+	}))
+	defer hubEphemeral.Close()
+	cEph := dialHubRPCInitialized(t, hubEphemeral)
+	ephParams := appwire.ThreadStartParams{
+		ClientMutationID: "mut-deleted-cwd",
+		Model:            "openai/gpt-5",
+		CWD:              ephemeralWorkDir,
+	}
+	if _, err := appwiretest.ThreadStart(context.Background(), cEph, ephParams); err != nil {
+		t.Fatalf("initial start with ephemeralWorkDir: %v", err)
+	}
+	if err := os.Remove(ephemeralWorkDir); err != nil {
+		t.Fatal(err)
+	}
+	ephReplay, err := appwiretest.ThreadStart(context.Background(), cEph, ephParams)
+	if err != nil {
+		t.Fatalf("replay after CWD deleted failed: %v", err)
+	}
+	if ephReplay.Disposition != appwire.MutationDispositionReplayed || ephReplay.Thread.ID != sessionID {
+		t.Fatalf("ephemeral CWD replay resp = %+v", ephReplay)
+	}
+	badConflict := ephParams
+	badConflict.CWD = filepath.Join(t.TempDir(), "never-existed-cwd")
+	_, err = appwiretest.ThreadStart(context.Background(), cEph, badConflict)
+	_, data = wireErrorData(t, err)
+	if data.EvenerErrorInfo != appwire.ErrorConflictingMutationID || data.MutationOutcome != appwire.MutationOutcomeNotAccepted {
+		t.Fatalf("conflict with nonexistent CWD data = %+v, want ErrorConflictingMutationID", data)
+	}
 }
 
 func TestThreadStartIdempotencyRemoteOfflineNotAccepted(t *testing.T) {
@@ -1164,25 +1208,25 @@ func TestThreadStartIdempotencyRemoteCapableForwardsAndDedups(t *testing.T) {
 	}
 }
 
-type remoteSlotTransport struct {
+type gatedSendTransport struct {
+	appwire.Transport
 	firstStarted chan struct{}
 	once         sync.Once
+	gate         atomic.Bool
 	release      chan struct{}
 }
 
-func (t *remoteSlotTransport) Send(_ context.Context, _ appwire.Message) error {
-	t.once.Do(func() { close(t.firstStarted) })
-	<-t.release
-	return nil
+func (g *gatedSendTransport) Send(ctx context.Context, msg appwire.Message) error {
+	if g.gate.Load() {
+		g.once.Do(func() { close(g.firstStarted) })
+		<-g.release
+	}
+	return g.Transport.Send(ctx, msg)
 }
-func (t *remoteSlotTransport) Recv(ctx context.Context) (appwire.Message, error) {
-	<-ctx.Done()
-	return appwire.Message{}, ctx.Err()
-}
-func (t *remoteSlotTransport) Close() error { return nil }
 
 func TestThreadStartIdempotencyRemoteCapableErrorsAndNotSent(t *testing.T) {
 	remoteSessionID := hubtest.SessionID(t)
+	var remoteStartCalls atomic.Int32
 	var mode atomic.Int32 // 0 = partial error with createdRef, 1 = succeed
 	remoteServer := appserver.NewServer(appserver.ServerConfig{
 		ServerName: "remote-capable-errors",
@@ -1190,6 +1234,7 @@ func TestThreadStartIdempotencyRemoteCapableErrorsAndNotSent(t *testing.T) {
 		Features:   appwire.FeatureSet{ThreadStartIdempotency: true, TurnStart: true},
 	})
 	appserver.HandleTyped(remoteServer.Router(), appwire.MethodThreadStart, func(_ context.Context, params appwire.ThreadStartParams) (appwire.ThreadStartResponse, error) {
+		remoteStartCalls.Add(1)
 		if mode.Load() == 0 {
 			return appwire.ThreadStartResponse{}, appwire.WireError{
 				Code:    appwire.CodeUnavailable,
@@ -1222,8 +1267,21 @@ func TestThreadStartIdempotencyRemoteCapableErrorsAndNotSent(t *testing.T) {
 	defer remoteHTTP.Close()
 
 	remoteClient := dialHubRPCInitialized(t, remoteHTTP)
-	slotTransport := &remoteSlotTransport{firstStarted: make(chan struct{}), release: make(chan struct{})}
+	rawSlotTransport, err := appwire.DialWebSocket(t.Context(), "ws"+remoteHTTP.URL[len("http"):], remoteHTTP.Client())
+	if err != nil {
+		t.Fatalf("dial slot websocket: %v", err)
+	}
+	slotTransport := &gatedSendTransport{Transport: rawSlotTransport, firstStarted: make(chan struct{}), release: make(chan struct{})}
 	slotClient := appwire.NewClient(slotTransport)
+	slotClient.Start(t.Context())
+	var releaseOnce sync.Once
+	releaseSlot := func() { releaseOnce.Do(func() { close(slotTransport.release) }) }
+	t.Cleanup(func() {
+		releaseSlot()
+		_ = slotClient.Close()
+	})
+	mustInitializeHubClient(t, slotClient)
+	slotTransport.gate.Store(true)
 	go func() { _ = slotClient.Notify(t.Context(), appwire.NotifyEvenerAuthUpdated, map[string]string{}) }()
 	<-slotTransport.firstStarted
 
@@ -1249,7 +1307,7 @@ func TestThreadStartIdempotencyRemoteCapableErrorsAndNotSent(t *testing.T) {
 	client := dialHubRPCInitialized(t, hub)
 
 	// 1. Capable remote error fields and translated CreatedRef pass through intact.
-	_, err := appwiretest.ThreadStart(context.Background(), client, appwire.ThreadStartParams{
+	_, err = appwiretest.ThreadStart(context.Background(), client, appwire.ThreadStartParams{
 		ClientMutationID: "mut-cap-partial",
 		Source:           "remote-a",
 		Model:            "openai/gpt-5",
@@ -1289,10 +1347,14 @@ func TestThreadStartIdempotencyRemoteCapableErrorsAndNotSent(t *testing.T) {
 		CWD:              "/remote/work",
 	})
 	threadStartDetachedTimeout = origDetached
-	close(slotTransport.release)
-	_, data := wireErrorData(t, err)
-	if data.MutationOutcome != appwire.MutationOutcomeNotAccepted || data.ClientMutationID != "mut-cap-notsent" {
-		t.Fatalf("capable remote RequestNotSentError data=%+v, want NotAccepted", data)
+	releaseSlot()
+	wireNotSent, data := wireErrorData(t, err)
+	if wireNotSent.Code != appwire.CodeUnavailable ||
+		data.MutationOutcome != appwire.MutationOutcomeNotAccepted ||
+		data.RetryDisposition != appwire.RetryDispositionNone ||
+		data.ClientMutationID != "mut-cap-notsent" ||
+		remoteStartCalls.Load() != 1 {
+		t.Fatalf("capable remote RequestNotSentError = wire:%+v data:%+v calls:%d, want CodeUnavailable+NotAccepted+RetryNone", wireNotSent, data, remoteStartCalls.Load())
 	}
 
 	mode.Store(1)

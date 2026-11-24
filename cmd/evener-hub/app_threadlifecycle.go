@@ -105,14 +105,7 @@ func spawnRequestForPlan(cfg hubcore.WebConfig, params appwire.ThreadStartParams
 	}
 }
 
-func acquireCreation(ctx context.Context, cfg hubcore.WebConfig, id string, params appwire.ThreadStartParams, initialTurnMutationID string) (hubcore.CreationAcquireResult, error) {
-	if cfg.CreationStoreErr != nil || cfg.CreationStore == nil {
-		return hubcore.CreationAcquireResult{}, appwire.MutationUnknown(id, "creation store is unavailable")
-	}
-	payloadHash, err := hubcore.CreationPayloadHash(appwire.LocalSourceID, params)
-	if err != nil {
-		return hubcore.CreationAcquireResult{}, causedWireError{wire: appserver.WireError(err).NotAccepted(id), cause: err}
-	}
+func acquireCreation(ctx context.Context, cfg hubcore.WebConfig, id, payloadHash string, params appwire.ThreadStartParams, initialTurnMutationID string) (hubcore.CreationAcquireResult, error) {
 	acq, err := cfg.CreationStore.Acquire(ctx, id, payloadHash, len(params.Input) > 0, initialTurnMutationID)
 	if err != nil {
 		if _, isWire := errors.AsType[appwire.WireError](err); isWire || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
@@ -161,28 +154,45 @@ func keyedRemoteThreadStart(ctx context.Context, remote appsource.Source, forwar
 
 func localThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadStartParams) (response appwire.ThreadStartResponse, startErr error) {
 	id := params.ClientMutationID
-	plan, err := prepareLocalSpawn(ctx, cfg, params)
-	if err != nil {
-		return startRefused(err, id)
-	}
+	var plan localSpawnPlan
 	var initialTurnMutationID string
 	var acq hubcore.CreationAcquireResult
 	if id != "" {
-		if len(params.Input) > 0 {
-			initialTurnMutationID, err = identifier.NewClientMutationID()
-			if err != nil {
-				return startRefused(appwire.InternalError("create initial turn mutation id: "+err.Error()), id)
-			}
+		if cfg.CreationStoreErr != nil || cfg.CreationStore == nil {
+			return appwire.ThreadStartResponse{}, appwire.MutationUnknown(id, "creation store is unavailable")
 		}
-		acq, err = acquireCreation(ctx, cfg, id, params, initialTurnMutationID)
+		payloadHash, err := hubcore.CreationPayloadHash(appwire.LocalSourceID, params)
+		if err != nil {
+			return startRefused(err, id)
+		}
+		var found bool
+		acq, found, err = cfg.CreationStore.LookupExisting(ctx, id, payloadHash)
 		if err != nil {
 			return appwire.ThreadStartResponse{}, err
+		}
+		if !found {
+			if plan, err = prepareLocalSpawn(ctx, cfg, params); err != nil {
+				return startRefused(err, id)
+			}
+			if len(params.Input) > 0 {
+				if initialTurnMutationID, err = identifier.NewClientMutationID(); err != nil {
+					return startRefused(appwire.InternalError("create initial turn mutation id: "+err.Error()), id)
+				}
+			}
+			if acq, err = acquireCreation(ctx, cfg, id, payloadHash, params, initialTurnMutationID); err != nil {
+				return appwire.ThreadStartResponse{}, err
+			}
 		}
 		if acq.Response != nil {
 			if err := deletionFenceError(cfg, acq.Response.Thread.Evener.Ref, cmp.Or(acq.Response.Thread.SessionID, acq.Response.Thread.ID), id); err != nil {
 				return appwire.ThreadStartResponse{}, err
 			}
 			return *acq.Response, nil
+		}
+	} else {
+		var err error
+		if plan, err = prepareLocalSpawn(ctx, cfg, params); err != nil {
+			return startRefused(err, "")
 		}
 	}
 	// The mutation is admitted here: every validation has passed and the spawn

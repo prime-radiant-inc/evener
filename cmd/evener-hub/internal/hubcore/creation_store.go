@@ -165,51 +165,12 @@ func (s *CreationStore) Acquire(ctx context.Context, id, payloadHash string, has
 	}
 
 	s.mu.Lock()
-	if owner := s.owners[id]; owner != nil {
-		if owner.payloadHash != payloadHash {
-			s.mu.Unlock()
-			return CreationAcquireResult{}, conflictingCreationError(id)
-		}
-		owner.waiters++
-		onWait := s.faults.OnWait
+	if res, owner, onWait, handled, err := s.acquireExistingLocked(id, payloadHash); handled {
 		s.mu.Unlock()
-		if onWait != nil {
-			onWait()
+		if owner != nil {
+			return waitOnCreationOwner(ctx, id, owner, onWait)
 		}
-		select {
-		case <-owner.done:
-			if owner.err != nil {
-				return CreationAcquireResult{}, owner.err
-			}
-			resp := cloneThreadStartResponse(owner.resp)
-			resp.ClientMutationID = id
-			resp.Disposition = appwire.MutationDispositionReplayed
-			return CreationAcquireResult{Response: &resp}, nil
-		case <-ctx.Done():
-			return CreationAcquireResult{}, ctx.Err()
-		}
-	}
-
-	if rec, ok := s.records[id]; ok {
-		if rec.PayloadHash != payloadHash {
-			s.mu.Unlock()
-			return CreationAcquireResult{}, conflictingCreationError(id)
-		}
-		switch rec.State {
-		case CreationStateCompleted:
-			resp := creationReplayResponse(id, rec)
-			s.mu.Unlock()
-			return CreationAcquireResult{Response: &resp}, nil
-		case CreationStateSpawned:
-			owner := &CreationOwner{id: id, payloadHash: payloadHash, done: make(chan struct{})}
-			s.owners[id] = owner
-			cloned := cloneCreationRecord(rec)
-			s.mu.Unlock()
-			return CreationAcquireResult{Owner: owner, Record: &cloned}, nil
-		default:
-			s.mu.Unlock()
-			return CreationAcquireResult{}, appwire.MutationUnknown(id, "thread/start outcome is unknown; verify whether the session started before retrying")
-		}
+		return res, err
 	}
 
 	rec := CreationRecord{
@@ -228,6 +189,74 @@ func (s *CreationStore) Acquire(ctx context.Context, id, payloadHash string, has
 	cloned := cloneCreationRecord(rec)
 	s.mu.Unlock()
 	return CreationAcquireResult{Owner: owner, Record: &cloned}, nil
+}
+
+// LookupExisting resolves an active owner or persisted CreationRecord for id
+// without creating a record when id is unseen.
+func (s *CreationStore) LookupExisting(ctx context.Context, id, payloadHash string) (CreationAcquireResult, bool, error) {
+	if s == nil {
+		return CreationAcquireResult{}, false, nil
+	}
+	if err := ctx.Err(); err != nil {
+		return CreationAcquireResult{}, false, err
+	}
+	s.mu.Lock()
+	res, owner, onWait, handled, err := s.acquireExistingLocked(id, payloadHash)
+	s.mu.Unlock()
+	if !handled {
+		return CreationAcquireResult{}, false, nil
+	}
+	if owner != nil {
+		res, err = waitOnCreationOwner(ctx, id, owner, onWait)
+	}
+	return res, true, err
+}
+
+func (s *CreationStore) acquireExistingLocked(id, payloadHash string) (res CreationAcquireResult, waitOwner *CreationOwner, onWait func(), handled bool, err error) {
+	if owner := s.owners[id]; owner != nil {
+		if owner.payloadHash != payloadHash {
+			return CreationAcquireResult{}, nil, nil, true, conflictingCreationError(id)
+		}
+		owner.waiters++
+		return CreationAcquireResult{}, owner, s.faults.OnWait, true, nil
+	}
+	rec, ok := s.records[id]
+	if !ok {
+		return CreationAcquireResult{}, nil, nil, false, nil
+	}
+	if rec.PayloadHash != payloadHash {
+		return CreationAcquireResult{}, nil, nil, true, conflictingCreationError(id)
+	}
+	switch rec.State {
+	case CreationStateCompleted:
+		resp := creationReplayResponse(id, rec)
+		return CreationAcquireResult{Response: &resp}, nil, nil, true, nil
+	case CreationStateSpawned:
+		owner := &CreationOwner{id: id, payloadHash: payloadHash, done: make(chan struct{})}
+		s.owners[id] = owner
+		cloned := cloneCreationRecord(rec)
+		return CreationAcquireResult{Owner: owner, Record: &cloned}, nil, nil, true, nil
+	default:
+		return CreationAcquireResult{}, nil, nil, true, appwire.MutationUnknown(id, "thread/start outcome is unknown; verify whether the session started before retrying")
+	}
+}
+
+func waitOnCreationOwner(ctx context.Context, id string, owner *CreationOwner, onWait func()) (CreationAcquireResult, error) {
+	if onWait != nil {
+		onWait()
+	}
+	select {
+	case <-owner.done:
+		if owner.err != nil {
+			return CreationAcquireResult{}, owner.err
+		}
+		resp := cloneThreadStartResponse(owner.resp)
+		resp.ClientMutationID = id
+		resp.Disposition = appwire.MutationDispositionReplayed
+		return CreationAcquireResult{Response: &resp}, nil
+	case <-ctx.Done():
+		return CreationAcquireResult{}, ctx.Err()
+	}
 }
 
 // CommitSpawned persists the spawned ref, session ID, and instance ID before ReadThread/StartTurn.
@@ -414,9 +443,12 @@ func conflictingCreationError(id string) error {
 
 func sanitizeThreadSnapshot(thread appwire.Thread) appwire.Thread {
 	thread.Turns = nil
+	thread.Preview = cmp.Or(thread.Name, thread.SessionID, thread.ID)
 	thread.Evener.PendingMutations = nil
 	thread.Evener.Queue = appwire.QueueState{}
 	thread.Evener.MutationStateAuthoritative = false
+	thread.Evener.LastMessage = ""
+	thread.Evener.PendingAsk = nil
 	return thread
 }
 
