@@ -421,7 +421,7 @@ const SEMANTIC_USE_ALLOWLIST = [
   "statusdot", // state color
   "meter", // danger/attention fill tone
   "toast", // tone prop
-  "formrow", // error-state left border + message text (wave 7)
+  "formrow", // error-state left border + message text, the text in --danger-ink
   "collectioneditor", // inline add-validation error text (wave 7)
   "failureglyph", // the ✗ that marks a failure - the hue IS the content
   "banner", // overlay status strip: tone prop (attention/danger) — a connection banner's whole purpose is to carry a warning hue
@@ -988,6 +988,46 @@ test("the four -ink companions clear 4.5:1 on their theme's lightest text ground
         const ratio = contrastRatio(parseHexColor(ink), ground);
         expect(ratio, `${theme.name} --${family}-ink on ${groundName}`).toBeGreaterThanOrEqual(4.5);
       }
+    }
+  }
+});
+
+// FormRow's error message sits on whatever pane or page ground hosts the
+// form: formrow.module.css declares no background of its own. It is text,
+// so it takes the -ink companion like every other attention-family text
+// site (design-system §2: "Text uses -ink, never the bare hue"). The bare
+// --danger measures 4.40:1 on dark's --hover-1 and 3.72-3.98:1 on light's
+// text grounds, under AA for the caption size the message renders at.
+test("FormRow's error text takes the --danger-ink companion and clears AA on each theme's text grounds", () => {
+  const css = STYLESHEETS["widgets/formrow/formrow.module.css"];
+  if (!css) throw new Error("Missing formrow stylesheet");
+  const declared = declarationInRule(css, "errorText", "color");
+  expect(declared).toBe("var(--danger-ink)");
+  const tokenName = /^var\((--[\w-]+)\)$/.exec(declared ?? "")?.[1];
+  if (!tokenName) throw new Error(`Unsupported error-text color: ${declared}`);
+
+  const themes = [
+    {
+      name: "dark",
+      block: extractBlock(TOKENS_CSS, /(?:^|\n):root(?:\s*,\s*\[data-theme="dark"\])?\s*\{/),
+      grounds: ["--surface-2", "--hover-1"],
+    },
+    {
+      name: "light",
+      block: extractBlock(TOKENS_CSS, /\[data-theme="light"\][^{]*\{/),
+      grounds: ["--surface-0", "--surface-1"],
+    },
+  ];
+  for (const theme of themes) {
+    const ink = declaredToken(theme.block, tokenName);
+    if (!ink) throw new Error(`token-contract test: ${tokenName} is not declared in ${theme.name}`);
+    for (const groundName of theme.grounds) {
+      const ground = declaredToken(theme.block, groundName);
+      if (!ground) throw new Error(`token-contract test: ${groundName} is not declared in ${theme.name}`);
+      expect(
+        contrastRatio(parseHexColor(ink), parseHexColor(ground)),
+        `${theme.name} ${tokenName} on ${groundName}`,
+      ).toBeGreaterThanOrEqual(4.5);
     }
   }
 });
