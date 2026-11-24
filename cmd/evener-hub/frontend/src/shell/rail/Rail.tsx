@@ -3,9 +3,11 @@ import { errorText, LOCAL_HOST } from "@evener/appwire-client";
 import { keyID, LIVE_BAND_ORDER } from "@evener/appwire-client/state/navigation";
 import {
   type CSSProperties,
+  createContext,
   memo,
   type ReactNode,
   useCallback,
+  useContext,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -392,6 +394,9 @@ export interface RailProps {
    * the whole rail instead, so the rail grows with its content. */
   scrollOwner?: "rail" | "parent";
 }
+
+const RailHeaderActionContext = createContext<ReactNode>(null);
+export const RailHeaderActionProvider = RailHeaderActionContext.Provider;
 
 async function convergeMutation(result: unknown): Promise<void> {
   if (!isNavigationMutationReceipt(result)) return;
@@ -1019,6 +1024,7 @@ function NavigationRail({
   const settled = !!manifest && !manifest.loading && !manifest.stale && !manifest.error;
   const needsYou = attention?.needsYou ?? (settled ? (manifest.data?.attentionSummary.needsYou ?? 0) : 0);
   const parentOwnsScroll = scrollOwner === "parent";
+  const headerAction = useContext(RailHeaderActionContext);
   return (
     <div
       className={parentOwnsScroll ? `${CLASS.rail} ${CLASS.parentScrollRail}` : CLASS.rail}
@@ -1056,7 +1062,7 @@ function NavigationRail({
                   size="md"
                 />
               </Tooltip>
-              {onHide && (
+              {onHide ? (
                 <IconButton
                   data-rail-toggle=""
                   label="Hide sidebar"
@@ -1065,6 +1071,8 @@ function NavigationRail({
                   size="md"
                   onClick={onHide}
                 />
+              ) : (
+                headerAction
               )}
             </div>
           </div>
