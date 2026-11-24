@@ -21,11 +21,6 @@
 }
 
 .rowLabel {
-  width: 80px;
-  flex: none;
-  margin: 0;
+  composes: rowLabel from "../gallery-section.module.css";
   padding-top: var(--space-2);
-  color: var(--ink-mid);
-  font-family: var(--font-sans); /* a chrome label, never mono - see Direction */
-  font-size: var(--font-size-caption);
 }

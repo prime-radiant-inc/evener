@@ -17,16 +17,21 @@
 }
 
 .rowLabel {
-  /* Sized for the longest label across every section that uses this file
-   * (badge/chip's "attention", cadence's "needs-you" - both 9 characters)
-   * plus a little breathing room; shorter labels (button's "primary",
-   * etc.) just get a bit of extra alignment space. */
-  width: 80px;
-  flex: none;
   margin: 0;
   color: var(--ink-mid);
   font-family: var(--font-sans); /* a chrome label, never mono - see Direction */
   font-size: var(--font-size-caption);
+}
+
+/* Sized for the longest label across every section that uses this file
+ * (badge/chip's "attention", cadence's "needs-you" - both 9 characters)
+ * plus a little breathing room; shorter labels (button's "primary",
+ * etc.) just get a bit of extra alignment space. Zero specificity, so a
+ * composing module's own width/flex override wins whatever order the
+ * stylesheets load in. */
+:where(.rowLabel) {
+  width: 80px;
+  flex: none;
 }
 
 /* A narrow column for a state that only shows when space runs out (Button's
