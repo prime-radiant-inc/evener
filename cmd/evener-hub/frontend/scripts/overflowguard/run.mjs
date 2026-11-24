@@ -61,6 +61,7 @@ import {
 import { describeBrowserStartupFailure, startBrowserGuard, waitForBrowserReady } from "../browserGuardProcess.mjs";
 import { diagnoseRealizedViewport } from "../layoutguard/viewport.mjs";
 import {
+  assertComposerContainment,
   measureComposerPlacement,
   typeComposerDraft,
   verifyComposerGesture,
@@ -2433,19 +2434,11 @@ async function main() {
             JSON.stringify(result.footer.geometry),
         );
       }
-      if (
-        !result.currentWork.found ||
-        !result.currentWork.composerCardFound ||
-        !result.currentWork.controlsFound ||
-        !result.currentWork.controlsContained ||
-        !result.currentWork.controlsDoNotOverlap ||
-        !result.currentWork.sharedPaneWithoutOverflow ||
-        !result.currentWork.orderedAboveComposer
-      ) {
+      try {
+        assertComposerContainment(result.currentWork, width < 900);
+      } catch (error) {
         widthFailed = true;
-        console.log(
-          `${width}px ... FAIL - current work and compose controls geometry: ${JSON.stringify(result.currentWork)}`,
-        );
+        console.log(`${width}px ... FAIL - ${error.message}: ${JSON.stringify(result.currentWork)}`);
       }
       if (
         width === 390 &&
