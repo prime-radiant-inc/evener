@@ -540,11 +540,13 @@ function RailWhyTicking(props: RailWhyProps): ReactNode {
 
 function RailWhyLine({ session, state, host, now }: RailWhyProps & { now: number }): ReactNode {
   const line = whyLine({ row: session, state }, undefined, 0, now);
-  // The phone's drawer and tablet board have no hover card to open, so a
-  // pending question prints its own words there. The desktop row keeps the
-  // state word (docs/product/attention-navigation.md); useIsMobile reads the
-  // one shared media-query listener, not a listener of its own.
-  const asked = useIsMobile() && state === "question" ? session.question?.text : undefined;
+  // A pending question's own words are the row's useful second line on the
+  // phone's drawer and tablet board: its text is a sentence in the row's
+  // ordinary ink, while the attention dot names the state. No usable text,
+  // and the desktop rail at every width, keep the shared state word.
+  // useIsMobile reads the one shared media-query listener, not its own.
+  const questionText = session.question?.text.trim();
+  const asked = useIsMobile() && state === "question" && questionText ? questionText : undefined;
   // A reason line's word names the attention; the sentence after it only
   // tells the reader to open the session, which the row already invites. The
   // bare state word repeats the band's own name.
@@ -552,7 +554,9 @@ function RailWhyLine({ session, state, host, now }: RailWhyProps & { now: number
     line === null || line.kind === "state"
       ? undefined
       : line.kind === "reason"
-        ? { text: asked ?? line.word, hue: line.hue, kind: line.kind }
+        ? asked === undefined
+          ? { text: line.word, hue: line.hue, kind: line.kind }
+          : { text: asked, hue: undefined, kind: line.kind }
         : { text: line.text, hue: undefined, kind: line.kind };
   if (said === undefined && host === undefined) return null;
   return (
