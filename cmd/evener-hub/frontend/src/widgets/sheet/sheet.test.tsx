@@ -717,6 +717,140 @@ test("slow downward drag past threshold writes live transform/opacity, preserves
   }
 });
 
+test("detaching a touched body child mid-gesture does not wedge subsequent body swipes or handle/header drags", () => {
+  vi.useFakeTimers();
+  try {
+    const onClose = vi.fn();
+    render(
+      <Sheet open side="bottom" onClose={onClose} title="Header title">
+        <div data-testid="row1">Row 1</div>
+        <div data-testid="row2">Row 2</div>
+        <p>Body</p>
+      </Sheet>,
+    );
+    const panel = screen.getByRole("dialog");
+    const row1 = screen.getByTestId("row1");
+    const row2 = screen.getByTestId("row2");
+    const body = screen.getByText("Body");
+    const header = screen.getByText("Header title").parentElement!;
+    const pill = screen.getByTestId("sheet-grab-pill");
+
+    // 1) Child detaches while in pendingBody -> subsequent body touch swipe still dismisses.
+    dispatchTouch(row1, "touchstart", { touches: [{ identifier: 1, clientY: 100 }] });
+    row1.remove();
+    dispatchTouch(body, "touchstart", { touches: [{ identifier: 2, clientY: 100 }] });
+    dispatchTouch(body, "touchmove", { touches: [{ identifier: 2, clientY: 260 }] });
+    dispatchTouch(body, "touchend", { changedTouches: [{ identifier: 2, clientY: 260 }] });
+    expect(onClose).toHaveBeenCalledOnce();
+    onClose.mockClear();
+    act(() => vi.advanceTimersByTime(250));
+
+    // 2) Child detaches mid-drag -> subsequent header and grab-pill pointer drags still dismiss.
+    dispatchTouch(row2, "touchstart", { touches: [{ identifier: 3, clientY: 100 }] });
+    dispatchTouch(row2, "touchmove", { touches: [{ identifier: 3, clientY: 150 }] });
+    expect(panel.style.transform).toBe("translateY(50px)");
+    row2.remove();
+
+    // Tapping header without moving recovers the orphaned offset cleanly via snap-back.
+    dispatchPointer(header, "pointerdown", { pointerId: 9, clientY: 100 });
+    dispatchPointer(window, "pointerup", { pointerId: 9, clientY: 100 });
+    expect(panel.classList.contains(snapBackClass)).toBe(true);
+    fireEvent.transitionEnd(panel);
+    expect(panel.style.transform).toBe("");
+
+    dispatchPointer(header, "pointerdown", { pointerId: 10, clientY: 100 });
+    dispatchPointer(window, "pointermove", { pointerId: 10, clientY: 260 });
+    dispatchPointer(window, "pointerup", { pointerId: 10, clientY: 260 });
+    expect(onClose).toHaveBeenCalledOnce();
+    onClose.mockClear();
+    act(() => vi.advanceTimersByTime(250));
+
+    dispatchPointer(pill, "pointerdown", { pointerId: 11, clientY: 100 });
+    dispatchPointer(window, "pointermove", { pointerId: 11, clientY: 260 });
+    dispatchPointer(window, "pointerup", { pointerId: 11, clientY: 260 });
+    expect(onClose).toHaveBeenCalledOnce();
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("a descendant calling stopPropagation on touchend or touchcancel does not wedge subsequent gestures", () => {
+  const onClose = vi.fn();
+  render(
+    <Sheet open side="bottom" onClose={onClose} title="Header title">
+      <div data-testid="swallower">Swallower</div>
+      <p>Body</p>
+    </Sheet>,
+  );
+  const panel = screen.getByRole("dialog");
+  const swallower = screen.getByTestId("swallower");
+  const body = screen.getByText("Body");
+  const header = screen.getByText("Header title").parentElement!;
+  swallower.addEventListener("touchend", (event) => event.stopPropagation());
+  swallower.addEventListener("touchcancel", (event) => event.stopPropagation());
+
+  dispatchTouch(swallower, "touchstart", { touches: [{ identifier: 1, clientY: 100 }] });
+  dispatchTouch(swallower, "touchmove", { touches: [{ identifier: 1, clientY: 150 }] });
+  dispatchTouch(swallower, "touchend", { changedTouches: [{ identifier: 1, clientY: 150 }] });
+  expect(panel.classList.contains(snapBackClass)).toBe(true);
+  fireEvent.transitionEnd(panel);
+  expect(panel.classList.contains(snapBackClass)).toBe(false);
+
+  dispatchTouch(swallower, "touchstart", { touches: [{ identifier: 10, clientY: 100 }] });
+  dispatchTouch(swallower, "touchmove", { touches: [{ identifier: 10, clientY: 150 }] });
+  dispatchTouch(swallower, "touchcancel", { changedTouches: [{ identifier: 10, clientY: 150 }] });
+  expect(panel.classList.contains(snapBackClass)).toBe(true);
+  fireEvent.transitionEnd(panel);
+  expect(panel.classList.contains(snapBackClass)).toBe(false);
+
+  dispatchTouch(body, "touchstart", { touches: [{ identifier: 2, clientY: 100 }] });
+  dispatchTouch(body, "touchmove", { touches: [{ identifier: 2, clientY: 260 }] });
+  dispatchTouch(body, "touchend", { changedTouches: [{ identifier: 2, clientY: 260 }] });
+  expect(onClose).toHaveBeenCalledOnce();
+  onClose.mockClear();
+
+  dispatchPointer(header, "pointerdown", { pointerId: 3, clientY: 100 });
+  dispatchPointer(window, "pointermove", { pointerId: 3, clientY: 260 });
+  dispatchPointer(window, "pointerup", { pointerId: 3, clientY: 260 });
+  expect(onClose).toHaveBeenCalledOnce();
+});
+
+test("grab pill and bottom sheet header declare touch-action: none and apply .bottomHeader only to side=bottom", () => {
+  const css = readModuleCss(import.meta.url, "sheet.module.css");
+  expect(topRuleBlock(css, ".grabHandle")).toContain("touch-action: none");
+  expect(topRuleBlock(css, ".bottomHeader")).toContain("touch-action: none");
+  const bottomHeaderClass = requireClass(sheetStyles.bottomHeader, "sheet.module.css", "bottomHeader");
+  const expandableHeaderClass = requireClass(sheetStyles.expandableHeader, "sheet.module.css", "expandableHeader");
+
+  const plain = render(
+    <Sheet open side="bottom" onClose={vi.fn()} title="Plain">
+      Body
+    </Sheet>,
+  );
+  expect(screen.getByText("Plain").parentElement?.classList.contains(bottomHeaderClass)).toBe(true);
+  plain.unmount();
+
+  const exp = render(
+    <Sheet open side="bottom" expandable={{ peekHeight: 200 }} onClose={vi.fn()} title="Exp">
+      Body
+    </Sheet>,
+  );
+  const expHeader = screen.getByText("Exp").parentElement!;
+  expect(expHeader.classList.contains(bottomHeaderClass)).toBe(true);
+  expect(expHeader.classList.contains(expandableHeaderClass)).toBe(true);
+  exp.unmount();
+
+  for (const side of ["left", "right"] as const) {
+    const edge = render(
+      <Sheet open side={side} onClose={vi.fn()} title="Edge">
+        Body
+      </Sheet>,
+    );
+    expect(screen.getByText("Edge").parentElement?.classList.contains(bottomHeaderClass)).toBe(false);
+    edge.unmount();
+  }
+});
+
 test("dismiss threshold uses min(panelHeight * 0.35, 160) with 120px fallback at height 0", () => {
   const cases = [
     { height: 0, below: 119, at: 120 },

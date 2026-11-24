@@ -1,6 +1,6 @@
 import { type PointerEvent as ReactPointerEvent, type RefObject, useCallback, useEffect, useRef } from "react";
 import { motionDurationMs } from "../../motion/tokens";
-import { ownerWindowOf } from "../internal/documentRealm";
+import { ownerDocumentOf, ownerWindowOf } from "../internal/documentRealm";
 import { requireClass } from "../internal/requireClass";
 import styles from "./sheet.module.css";
 
@@ -68,6 +68,7 @@ type GestureState =
       expandableMode: "peek" | "full" | undefined;
       maxAbsDelta: number;
       switchedGeometry: boolean;
+      hadOrphanedDrag?: boolean;
     };
 
 function targetElement(target: EventTarget | null): Element | null {
@@ -290,6 +291,7 @@ export function useSheetSwipe({
     if (!open || side !== "bottom") return;
     const panel = panelRef.current;
     if (panel === null) return;
+    const doc = ownerDocumentOf(panel);
     const ctrl = ctrlRef.current;
 
     const inCooldown = () => ctrl.lastScrollAt !== null && performance.now() - ctrl.lastScrollAt < SCROLL_SETTLE_MS;
@@ -304,7 +306,15 @@ export function useSheetSwipe({
     const onTouchStart = (event: TouchEvent) => {
       const { open: isOpen, side: currentSide, expandable: exp } = latestRef.current;
       if (!isOpen || currentSide !== "bottom" || exp?.geometry === "full") return;
-      if (ctrl.gesture.kind !== "idle" || event.touches.length !== 1) return;
+      if (ctrl.gesture.kind !== "idle") {
+        if (ctrl.gesture.kind === "dragging" && ctrl.gesture.source === "pointer") return;
+        const prevTouchId = ctrl.gesture.kind === "dragging" ? ctrl.gesture.id : ctrl.gesture.touchId;
+        // Recover if the tracked touch disappeared from active touches (e.g. detached child).
+        if (findTouchById(event.touches, prevTouchId) !== undefined) return;
+        if (ctrl.gesture.kind === "dragging" && ctrl.gesture.offsetY > 0) snapBack(panel, scrimRef.current);
+        ctrl.gesture = { kind: "idle" };
+      }
+      if (event.touches.length !== 1) return;
       if (isHandleOrHeaderTarget(event.target, panel)) return;
       if (isExcludedTarget(event.target, bodyRef.current, false)) return;
 
@@ -403,25 +413,33 @@ export function useSheetSwipe({
 
     panel.addEventListener("touchstart", onTouchStart, { passive: false });
     panel.addEventListener("touchmove", onTouchMove, { passive: false });
-    panel.addEventListener("touchend", onTouchEnd, { passive: true });
-    panel.addEventListener("touchcancel", onTouchCancel, { passive: true });
+    doc.addEventListener("touchend", onTouchEnd, { capture: true, passive: true });
+    doc.addEventListener("touchcancel", onTouchCancel, { capture: true, passive: true });
     panel.addEventListener("scroll", onScroll, { capture: true, passive: true });
 
     return () => {
       panel.removeEventListener("touchstart", onTouchStart);
       panel.removeEventListener("touchmove", onTouchMove);
-      panel.removeEventListener("touchend", onTouchEnd);
-      panel.removeEventListener("touchcancel", onTouchCancel);
+      doc.removeEventListener("touchend", onTouchEnd, { capture: true });
+      doc.removeEventListener("touchcancel", onTouchCancel, { capture: true });
       panel.removeEventListener("scroll", onScroll, { capture: true });
     };
-  }, [open, side, panelRef, bodyRef, scrimRef, settleSwipeDrag]);
+  }, [open, side, panelRef, bodyRef, scrimRef, settleSwipeDrag, snapBack]);
 
   const startPointerDrag = useCallback(
     (e: ReactPointerEvent, origin: "handle" | "header") => {
       const ctrl = ctrlRef.current;
       const { open: isOpen, side: currentSide, expandable: exp } = latestRef.current;
       if (typeof e.button === "number" && e.button > 0) return;
-      if (ctrl.gesture.kind !== "idle") return;
+      let hadOrphanedDrag = false;
+      if (ctrl.gesture.kind !== "idle") {
+        if (ctrl.gesture.kind === "dragging" && ctrl.gesture.source === "pointer") return;
+        if (e.isPrimary === false) return;
+        // A primary pointerdown implies no primary touch remains active; clear orphaned touch state.
+        hadOrphanedDrag = ctrl.gesture.kind === "dragging" && ctrl.gesture.offsetY > 0;
+        ctrl.gesture = { kind: "idle" };
+        if (hadOrphanedDrag && panelRef.current !== null) snapBack(panelRef.current, scrimRef.current);
+      }
       if (
         origin === "header"
           ? !isOpen || currentSide !== "bottom" || exp?.geometry === "full"
@@ -448,6 +466,7 @@ export function useSheetSwipe({
         expandableMode: origin === "handle" && exp !== undefined ? exp.geometry : undefined,
         maxAbsDelta: 0,
         switchedGeometry: false,
+        hadOrphanedDrag,
       };
 
       const onPointerMove = (moveEvent: PointerEvent) => {
@@ -507,9 +526,11 @@ export function useSheetSwipe({
           if (!cancelled && !state.switchedGeometry && state.maxAbsDelta <= EXPANDABLE_TAP_SLOP_PX) {
             latestRef.current.expandable?.onGeometryChange((g) => (g === "peek" ? "full" : "peek"));
           }
+          if (state.hadOrphanedDrag && panel !== null) snapBack(panel, scrimRef.current);
           return;
         }
         if (panel !== null && state.hasTranslated) settleSwipeDrag(state, panel, cancelled);
+        else if (state.hadOrphanedDrag && panel !== null) snapBack(panel, scrimRef.current);
       };
 
       const onPointerUp = (upEvent: PointerEvent) => finishPointer(upEvent, false);
@@ -525,7 +546,7 @@ export function useSheetSwipe({
       win.addEventListener("pointerup", onPointerUp);
       win.addEventListener("pointercancel", onPointerCancel);
     },
-    [panelRef, bodyRef, scrimRef, settleSwipeDrag],
+    [panelRef, bodyRef, scrimRef, settleSwipeDrag, snapBack],
   );
 
   const onHandlePointerDown = useCallback((e: ReactPointerEvent) => startPointerDrag(e, "handle"), [startPointerDrag]);

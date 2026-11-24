@@ -61,6 +61,7 @@ const HANDLE_CLASS = requireClass(styles.handle, "sheet.module.css", "handle");
 const HANDLE_BAR_CLASS = requireClass(styles.handleBar, "sheet.module.css", "handleBar");
 const GRAB_HANDLE_CLASS = requireClass(styles.grabHandle, "sheet.module.css", "grabHandle");
 const BOTTOM_BODY_CLASS = requireClass(styles.bottomBody, "sheet.module.css", "bottomBody");
+const BOTTOM_HEADER_CLASS = requireClass(styles.bottomHeader, "sheet.module.css", "bottomHeader");
 const EXPANDABLE_BOTTOM_CLASS = requireClass(styles.expandableBottom, "sheet.module.css", "expandableBottom");
 const EXPANDABLE_HEADER_CLASS = requireClass(styles.expandableHeader, "sheet.module.css", "expandableHeader");
 const EXPANDABLE_BODY_CLASS = requireClass(styles.expandableBody, "sheet.module.css", "expandableBody");
@@ -148,8 +149,10 @@ export function Sheet({
     : `${SIDE_CLASS[side]} ${SIZE_CLASS[size]}`;
   const composedExpandablePanelClassName = panelClassName ? `${SIDE_CLASS[side]} ${panelClassName}` : SIDE_CLASS[side];
   const bottomBodyClassName = side === "bottom" ? BOTTOM_BODY_CLASS : undefined;
+  const bottomHeaderClassName = side === "bottom" ? BOTTOM_HEADER_CLASS : undefined;
   const plainBodyClassName = [bottomBodyClassName, bodyClassName].filter(Boolean).join(" ");
   const expandableBodyClassName = [EXPANDABLE_BODY_CLASS, bottomBodyClassName, bodyClassName].filter(Boolean).join(" ");
+  const expandableHeaderClassName = [EXPANDABLE_HEADER_CLASS, bottomHeaderClassName].filter(Boolean).join(" ");
   const bottomHeaderProps = side === "bottom" ? { onPointerDown: onHeaderPointerDown } : undefined;
 
   if (!expandable) {
@@ -161,6 +164,7 @@ export function Sheet({
         footer={footer}
         panelClassName={composedPanelClassName}
         handle={side === "bottom" ? <GrabPill onPointerDown={onHandlePointerDown} /> : undefined}
+        headerClassName={bottomHeaderClassName}
         bodyClassName={plainBodyClassName || undefined}
         motion="slide"
         panelRef={panelRef}
@@ -183,7 +187,7 @@ export function Sheet({
       title={title}
       footer={footer}
       handle={<DragHandle onPointerDown={onHandlePointerDown} />}
-      headerClassName={EXPANDABLE_HEADER_CLASS}
+      headerClassName={expandableHeaderClassName}
       bodyClassName={expandableBodyClassName}
       panelClassName={`${composedExpandablePanelClassName} ${EXPANDABLE_BOTTOM_CLASS}`}
       style={heightStyle}

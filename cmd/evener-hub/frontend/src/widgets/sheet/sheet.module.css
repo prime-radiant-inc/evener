@@ -114,6 +114,13 @@
   display: none;
   justify-content: center;
   padding: var(--space-2) 0 var(--space-1);
+  touch-action: none;
+}
+
+/* Prevents touch browsers from claiming a header downward drag for panning or
+ * selection and firing pointercancel before pointermove starts. */
+.bottomHeader {
+  touch-action: none;
 }
 
 @media (any-pointer: coarse) {
