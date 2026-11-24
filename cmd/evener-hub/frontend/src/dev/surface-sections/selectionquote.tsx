@@ -14,8 +14,8 @@
 // reliably shows the bar.)
 import { useEffect, useRef } from "react";
 import { SelectionQuote } from "../../panes/session/transcript/SelectionQuote";
+import { GallerySection } from "../GallerySection";
 import styles from "../gallery-section.module.css";
-import { ThemeFlip } from "../ThemeFlip";
 
 function SelectionQuoteDemo() {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -52,16 +52,17 @@ function SelectionQuoteDemo() {
 
 export default function SelectionQuoteSurfaceSection() {
   return (
-    <section>
-      <h2>Selection quote</h2>
-      <p className={styles.note}>
-        Real SelectionQuote bar, triggered by a genuine DOM selection made against sample message text on mount (a
-        synthesized pointerup, the same event a mouse drag-select fires) - no props or production code changed to force
-        it open.
-      </p>
-      <ThemeFlip>
-        <SelectionQuoteDemo />
-      </ThemeFlip>
-    </section>
+    <GallerySection
+      title="Selection quote"
+      note={
+        <p className={styles.note}>
+          Real SelectionQuote bar, triggered by a genuine DOM selection made against sample message text on mount (a
+          synthesized pointerup, the same event a mouse drag-select fires) - no props or production code changed to
+          force it open.
+        </p>
+      }
+    >
+      <SelectionQuoteDemo />
+    </GallerySection>
   );
 }
