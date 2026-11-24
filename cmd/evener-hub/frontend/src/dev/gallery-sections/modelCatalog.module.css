@@ -1,13 +1,12 @@
-/* Composed from sheet.module.css in this directory: Sheet's panel is
- * position:fixed, scoped here to the demo frame instead of the viewport, with
- * an explicit width because the frame's only in-flow child is entirely
- * position:fixed. See sheet.module.css's own derivation for the full trick. */
+/* Sheet's panel is position:fixed; the containing-block and explicit-width
+ * derivation lives in gallery-frame.module.css. */
 .demoFrame {
-  composes: demoFrame from "./sheet.module.css";
+  composes: frame from "./gallery-frame.module.css";
+  min-height: 280px;
 }
 
 .reopen {
-  composes: reopen from "./sheet.module.css";
+  composes: reopen from "./gallery-frame.module.css";
 }
 
 .sheetBody {
