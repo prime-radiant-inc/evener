@@ -229,21 +229,29 @@ export function resolveComposes(cssTexts) {
     bodies.set(m[1], entries);
   }
 
-  // The composed declarations one rule body contributes: its targets' own
-  // declarations, then their targets', recursively. Each composed class keeps
-  // its OWN media gate - the build merges class names, so a gate belongs to
-  // the class whose rule carries it, never to the consumer's chain.
-  const expandComposes = (body, consumerGate, stack, selfId) => {
-    const inline = [];
-    // Gated declarations, grouped by gate so one re-stated block carries all
-    // of that gate's declarations.
-    const gated = new Map();
+  // Resolves one rule body by replacing each composes line, IN PLACE, with the
+  // target rules' own resolved bodies. The position matters: declarations the
+  // consumer writes after `composes` come after the composed declarations and
+  // win, exactly as in the built app. Appending composed declarations at the
+  // end would silently reverse that cascade (directorypicker's `.input`
+  // composes input.module.css's sans-serif font and then sets its own
+  // monospace one, so appending measures the path field in the wrong font).
+  //
+  // Each composed class keeps its OWN media gate - the build merges class
+  // names, so a gate belongs to the class whose rule carries it, never to the
+  // consumer's chain - and gated declarations are re-stated after the
+  // consumer's rule on the consumer's selector.
+  const resolveBody = (body, consumerGate, stack, selfId, gated) => {
     const addGated = (gate, declarations) => {
       if (declarations === "") return;
       gated.set(gate, (gated.get(gate) ?? []).concat([declarations]));
     };
 
+    let out = "";
+    let last = 0;
     for (const match of body.matchAll(COMPOSES_RE)) {
+      out += body.slice(last, match.index);
+      last = match.index + match[0].length;
       const names = match[1];
       // One class per composes line. A comma list would not mean what it
       // looks like it means: the build (postcss-modules) binds `from` to the
@@ -269,9 +277,6 @@ export function resolveComposes(cssTexts) {
           `composes references .${name}, but no such rule was found in the provided CSS sources - add the module that defines it to the case's cssFiles`,
         );
       }
-      if (stack.has(name)) {
-        throw new Error(`composes cycle: ${[...stack, name].join(" -> ")}`);
-      }
       for (const entry of entries) {
         // A rule composing a same-named class from another module names that
         // other rule; its own rule is not a cycle.
@@ -285,20 +290,12 @@ export function resolveComposes(cssTexts) {
           throw new Error(`composes cycle through .${name}`);
         }
         const entryStack = new Set(stack).add(entry.id);
-        const own = entry.body.replace(COMPOSES_RE, "").trim();
-        if (entry.gate === null) {
-          if (own !== "") inline.push(own);
-        } else {
-          addGated(entry.gate, own);
-        }
-        const nested = expandComposes(entry.body, consumerGate, entryStack, entry.id);
-        inline.push(...nested.inline);
-        for (const [gate, declarations] of nested.gated) {
-          for (const declaration of declarations) addGated(gate, declaration);
-        }
+        const resolved = resolveBody(entry.body, entry.gate ?? consumerGate, entryStack, entry.id, gated);
+        if (entry.gate === null) out += resolved;
+        else addGated(entry.gate, resolved.trim());
       }
     }
-    return { inline, gated };
+    return out + body.slice(last);
   };
 
   return combined.replace(RULE_RE, (_whole, selector, body, offset) => {
@@ -308,9 +305,9 @@ export function resolveComposes(cssTexts) {
     // would perturb sheets this resolver has no business touching.
     if (own === body.trim()) return _whole;
     const selfId = ruleIdByOffset.get(offset);
-    const { inline, gated } = expandComposes(body, gateAt(offset), new Set([selfId]), selfId);
-    const declarations = [own, ...inline].filter((part) => part !== "");
-    let out = `${selector} {${declarations.length === 0 ? "" : `\n${declarations.join("\n")}`}}`;
+    const gated = new Map();
+    const resolvedBody = resolveBody(body, gateAt(offset), new Set([selfId]), selfId, gated);
+    let out = `${selector} {${resolvedBody}}`;
     for (const [gate, parts] of gated) {
       out += `\n\n${gate} {\n  ${selector} {\n${parts.map((d) => `    ${d}`).join("\n")}\n  }\n}`;
     }

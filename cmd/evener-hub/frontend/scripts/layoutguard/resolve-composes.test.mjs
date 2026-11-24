@@ -212,4 +212,19 @@ describe("resolveComposes", () => {
     expect(resolved).toContain("padding: 0");
     expect(resolved).toContain("border: 1px solid");
   });
+
+  test("splices composed declarations where the composes line sat, so later consumer declarations win", () => {
+    // directorypicker's .input composes the base input (sans-serif) and then
+    // sets its own monospace family. Appending the composed body at the end
+    // would put sans-serif last and measure the path field in the wrong font.
+    const out = resolveComposes([
+      ".base { font-family: var(--font-sans); color: red; }",
+      '.a { composes: base from "./base.module.css"; font-family: var(--font-mono); }',
+    ]);
+    const body = out.match(/\.a\s*\{([^}]*)\}/)?.[1] ?? "";
+    const sans = body.indexOf("--font-sans");
+    const mono = body.indexOf("--font-mono");
+    expect(sans).toBeGreaterThanOrEqual(0);
+    expect(mono).toBeGreaterThan(sans);
+  });
 });
