@@ -166,7 +166,7 @@ plus the shared projection refresh).
 `.coldStartMeasure` wrapper used to apply.
 
 **Result before restore:** FAIL -
-`cold start skeleton ... FAIL - {"found":true,"measure":"wide","skeletonWidth":976,"contentWidth":944,"barWidth":672,"contentLeft":40,"contentRight":984,"parentContentWidth":976,"padding":["32px","16px","32px","16px"]}`
+`cold start skeleton ... FAIL - {"measure":"wide","skeletonWidth":976,"contentWidth":944,"barWidth":672,"parentContentWidth":976}`
 (the bar held 672px inside a 944px column; the column itself stayed 976px).
 
 **Result after restore:** PASS -

@@ -1664,15 +1664,11 @@ async function inspectHeldSteerColumn(): Promise<HeldSteerColumnMeasurement> {
 }
 
 interface ColdStartSkeletonMeasurement {
-  found: boolean;
   measure: string | null;
-  skeletonWidth: number | null;
-  contentWidth: number | null;
-  barWidth: number | null;
-  contentLeft: number | null;
-  contentRight: number | null;
+  skeletonWidth: number;
+  contentWidth: number;
+  barWidth: number;
   parentContentWidth: number | null;
-  padding: string[] | null;
 }
 
 // The first-reply skeleton takes the shared reading measure as a column. Run
@@ -1695,32 +1691,17 @@ async function inspectColdStartSkeleton(): Promise<ColdStartSkeletonMeasurement>
     "skeleton bar",
   );
   await twoPaintedFrames();
-  const style = getComputedStyle(skeleton);
-  const paddingLeft = Number.parseFloat(style.paddingLeft) || 0;
-  const paddingRight = Number.parseFloat(style.paddingRight) || 0;
-  const box = skeleton.getBoundingClientRect();
   const bars = Array.from(skeleton.querySelectorAll<HTMLElement>('[data-testid="skeleton-line"]'));
   const longest = bars.reduce((widest, candidate) =>
     candidate.getBoundingClientRect().width > widest.getBoundingClientRect().width ? candidate : widest,
   );
-  const barBox = longest.getBoundingClientRect();
   const parent = skeleton.parentElement;
-  const parentStyle = parent ? getComputedStyle(parent) : null;
-  const parentContentWidth = parent
-    ? parent.getBoundingClientRect().width -
-      (Number.parseFloat(parentStyle?.paddingLeft ?? "0") || 0) -
-      (Number.parseFloat(parentStyle?.paddingRight ?? "0") || 0)
-    : null;
   return {
-    found: true,
     measure: document.body.dataset.transcriptMeasure ?? null,
-    skeletonWidth: box.width,
-    contentWidth: box.width - paddingLeft - paddingRight,
-    barWidth: barBox.width,
-    contentLeft: box.left + paddingLeft,
-    contentRight: box.right - paddingRight,
-    parentContentWidth,
-    padding: [style.paddingTop, style.paddingRight, style.paddingBottom, style.paddingLeft],
+    skeletonWidth: skeleton.getBoundingClientRect().width,
+    contentWidth: contentBoxWidth(skeleton),
+    barWidth: longest.getBoundingClientRect().width,
+    parentContentWidth: parent ? contentBoxWidth(parent) : null,
   };
 }
 

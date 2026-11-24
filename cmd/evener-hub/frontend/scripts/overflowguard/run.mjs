@@ -2355,15 +2355,12 @@ async function main() {
       coldStartSkeleton.parentContentWidth === null
         ? null
         : Math.min(coldStartSkeleton.parentContentWidth, wideMeasurePx);
-    const barGap =
-      coldStartSkeleton.barWidth === null || coldStartSkeleton.contentWidth === null
-        ? Number.POSITIVE_INFINITY
-        : Math.abs(coldStartSkeleton.barWidth - coldStartSkeleton.contentWidth);
-    const columnGap =
-      coldStartSkeleton.skeletonWidth === null || expectedColdStartWidth === null
-        ? Number.POSITIVE_INFINITY
-        : Math.abs(coldStartSkeleton.skeletonWidth - expectedColdStartWidth);
-    if (!coldStartSkeleton.found || coldStartSkeleton.measure !== "wide" || barGap > 1 || columnGap > 1) {
+    if (
+      coldStartSkeleton.measure !== "wide" ||
+      expectedColdStartWidth === null ||
+      !nearlyEqual(coldStartSkeleton.barWidth, coldStartSkeleton.contentWidth, 1) ||
+      !nearlyEqual(coldStartSkeleton.skeletonWidth, expectedColdStartWidth, 1)
+    ) {
       failed++;
       console.log(`cold start skeleton ... FAIL - ${JSON.stringify(coldStartSkeleton)}`);
     } else {
