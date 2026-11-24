@@ -12,7 +12,7 @@ import { useEffect, useRef, useState } from "react";
 import { Button, ConfirmDialog, Switch, useFocusRehome, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { PluginContentsBlock } from "../../../plugins/PluginContents";
-import { PluginDetail, type PluginMetadataRow } from "../../../plugins/PluginDetail";
+import { PluginDetail, pluginMetadataRows } from "../../../plugins/PluginDetail";
 import { pluginDetailBodyId } from "../../../plugins/pluginRowFocus";
 import { pluginStatusChips } from "../../../plugins/pluginStatusChips";
 import { writeFailureText } from "../../../plugins/writeFailure";
@@ -155,27 +155,14 @@ export function PluginDetailBody({ target, onCollapse, onInstall }: PluginDetail
   const description = catalogEntry?.description;
   const marketplaceEntry = marketplaces.find((m) => m.name === target.marketplace);
 
-  const metaRows: PluginMetadataRow[] = [
-    ...(mode === "installed" && entry !== undefined
-      ? [{ kind: "version" as const, label: "Version", value: `v${entry.version || "unknown"}`, mono: true }]
-      : []),
-    { kind: "marketplace", label: "Marketplace", value: target.marketplace },
-    ...(marketplaceEntry !== undefined
-      ? [
-          {
-            kind: "source" as const,
-            label: "Source",
-            value: marketplaceSourceLabel(marketplaceEntry.source),
-            mono: true,
-          },
-        ]
-      : []),
-    // Catalog metadata carries the author the browse catalog knows; an
-    // installed entry's metadata stays today's rows.
-    ...(mode === "catalog" && catalogEntry?.author !== undefined
-      ? [{ kind: "author" as const, label: "Author", value: catalogEntry.author }]
-      : []),
-  ];
+  // Catalog metadata carries the author the browse catalog knows; an
+  // installed entry's metadata stays today's rows.
+  const metaRows = pluginMetadataRows({
+    version: mode === "installed" && entry !== undefined ? `v${entry.version || "unknown"}` : undefined,
+    marketplace: target.marketplace,
+    source: marketplaceEntry !== undefined ? marketplaceSourceLabel(marketplaceEntry.source) : undefined,
+    author: mode === "catalog" ? catalogEntry?.author : undefined,
+  });
 
   // Where the Contents block goes, between the description and the metadata.
   // Only a settled inventory renders - the block appears when the answer
