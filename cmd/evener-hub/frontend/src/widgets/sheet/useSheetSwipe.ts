@@ -309,8 +309,11 @@ export function useSheetSwipe({
       if (ctrl.gesture.kind !== "idle") {
         if (ctrl.gesture.kind === "dragging" && ctrl.gesture.source === "pointer") return;
         const prevTouchId = ctrl.gesture.kind === "dragging" ? ctrl.gesture.id : ctrl.gesture.touchId;
-        // Recover if the tracked touch disappeared from active touches (e.g. detached child).
-        if (findTouchById(event.touches, prevTouchId) !== undefined) return;
+        const prevStillActive =
+          event.touches.length > 1 &&
+          findTouchById(event.touches, prevTouchId) !== undefined &&
+          findTouchById(event.changedTouches, prevTouchId) === undefined;
+        if (prevStillActive) return;
         if (ctrl.gesture.kind === "dragging" && ctrl.gesture.offsetY > 0) snapBack(panel, scrimRef.current);
         ctrl.gesture = { kind: "idle" };
       }

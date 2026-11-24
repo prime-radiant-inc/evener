@@ -774,6 +774,92 @@ test("detaching a touched body child mid-gesture does not wedge subsequent body 
   }
 });
 
+test("orphaned touch recovery works when the next single-finger touch reuses identifier 0, while genuine 2-finger touch keeps active gesture", () => {
+  vi.useFakeTimers();
+  try {
+    const onClose = vi.fn();
+    render(
+      <Sheet open side="bottom" onClose={onClose} title="Header title">
+        <div data-testid="scroller">
+          <div data-testid="rowScroll">Scroll row</div>
+        </div>
+        <div data-testid="rowPending">Pending row</div>
+        <div data-testid="rowDrag">Drag row</div>
+        <p>Body</p>
+      </Sheet>,
+    );
+    const panel = screen.getByRole("dialog");
+    mockPanelHeight(panel, 400); // threshold 140
+    const scroller = screen.getByTestId("scroller");
+    const rowScroll = screen.getByTestId("rowScroll");
+    const rowPending = screen.getByTestId("rowPending");
+    const rowDrag = screen.getByTestId("rowDrag");
+    const body = screen.getByText("Body");
+
+    // 1) pendingBody orphan with identifier 0: next touch (identifier 0) must use its own startY (200), not stale 100.
+    dispatchTouch(rowPending, "touchstart", { touches: [{ identifier: 0, clientY: 100 }] });
+    rowPending.remove();
+    dispatchTouch(body, "touchstart", { touches: [{ identifier: 0, clientY: 200 }] });
+    dispatchTouch(body, "touchmove", { touches: [{ identifier: 0, clientY: 250 }] });
+    expect(panel.style.transform).toBe("translateY(50px)");
+    dispatchTouch(body, "touchend", { changedTouches: [{ identifier: 0, clientY: 250 }] });
+    expect(onClose).not.toHaveBeenCalled();
+    act(() => vi.advanceTimersByTime(250));
+
+    // 2) scrollOwned orphan with identifier 0: next touch (identifier 0) recovers and can dismiss.
+    Object.defineProperty(scroller, "scrollTop", { configurable: true, writable: true, value: 40 });
+    dispatchTouch(rowScroll, "touchstart", { touches: [{ identifier: 0, clientY: 100 }] });
+    scroller.scrollTop = 0;
+    rowScroll.remove();
+    dispatchTouch(body, "touchstart", { touches: [{ identifier: 0, clientY: 100 }] });
+    dispatchTouch(body, "touchmove", { touches: [{ identifier: 0, clientY: 260 }] });
+    dispatchTouch(body, "touchend", { changedTouches: [{ identifier: 0, clientY: 260 }] });
+    expect(onClose).toHaveBeenCalledOnce();
+    onClose.mockClear();
+    act(() => vi.advanceTimersByTime(250));
+
+    // 3) touch dragging orphan with identifier 0: snaps back on next touchstart and resets origin.
+    dispatchTouch(rowDrag, "touchstart", { touches: [{ identifier: 0, clientY: 100 }] });
+    dispatchTouch(rowDrag, "touchmove", { touches: [{ identifier: 0, clientY: 160 }] });
+    expect(panel.style.transform).toBe("translateY(60px)");
+    rowDrag.remove();
+    dispatchTouch(body, "touchstart", { touches: [{ identifier: 0, clientY: 200 }] });
+    expect(panel.classList.contains(snapBackClass)).toBe(true);
+    dispatchTouch(body, "touchmove", { touches: [{ identifier: 0, clientY: 220 }] });
+    expect(panel.style.transform).toBe("translateY(20px)");
+    dispatchTouch(body, "touchend", { changedTouches: [{ identifier: 0, clientY: 220 }] });
+    expect(onClose).not.toHaveBeenCalled();
+    act(() => vi.advanceTimersByTime(250));
+
+    // 4) Genuine 2-finger secondary touch (touches.length === 2) keeps primary gesture intact.
+    dispatchTouch(body, "touchstart", { touches: [{ identifier: 0, clientY: 100 }] });
+    dispatchTouch(body, "touchmove", { touches: [{ identifier: 0, clientY: 140 }] });
+    dispatchTouch(body, "touchstart", {
+      touches: [
+        { identifier: 0, clientY: 140 },
+        { identifier: 1, clientY: 140 },
+      ],
+      changedTouches: [{ identifier: 1, clientY: 140 }],
+    });
+    dispatchTouch(body, "touchmove", {
+      touches: [
+        { identifier: 0, clientY: 140 },
+        { identifier: 1, clientY: 400 },
+      ],
+    });
+    expect(panel.style.transform).toBe("translateY(40px)");
+    dispatchTouch(body, "touchend", {
+      touches: [{ identifier: 0, clientY: 140 }],
+      changedTouches: [{ identifier: 1, clientY: 400 }],
+    });
+    dispatchTouch(body, "touchmove", { touches: [{ identifier: 0, clientY: 260 }] });
+    dispatchTouch(body, "touchend", { changedTouches: [{ identifier: 0, clientY: 260 }] });
+    expect(onClose).toHaveBeenCalledOnce();
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
 test("a descendant calling stopPropagation on touchend or touchcancel does not wedge subsequent gestures", () => {
   const onClose = vi.fn();
   render(
