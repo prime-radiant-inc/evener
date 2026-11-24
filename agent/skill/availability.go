@@ -1,8 +1,19 @@
 package skill
 
-// GardeningMemorySkillName is the bundled skill whose instructions correct
-// memory pages with the memory save tools.
-const GardeningMemorySkillName = "gardening-memory"
+const (
+	// GardeningMemorySkillName is the bundled skill whose instructions correct
+	// memory pages with the memory save tools.
+	GardeningMemorySkillName = "gardening-memory"
+	// RunningJobsSkillName is the bundled guide for delegates, background shell
+	// jobs, watches, and job inspection.
+	RunningJobsSkillName = "running-jobs"
+	// UsingWorktreesSkillName is the bundled guide for manage_worktree, local
+	// merges, and post-merge worktree cleanup.
+	UsingWorktreesSkillName = "using-worktrees"
+	// ReadingTranscriptsSkillName is the bundled guide for read_transcript and
+	// find_session_transcripts.
+	ReadingTranscriptsSkillName = "reading-transcripts"
+)
 
 // SessionAvailability is the session capability a skill advertisement needs
 // beyond the source's own controls. The owning Session computes it for a live
@@ -12,16 +23,30 @@ type SessionAvailability struct {
 	// MemorySaveAvailable reports that the session serves memory_write,
 	// memory_edit and memory_delete.
 	MemorySaveAvailable bool
+	// RunningJobsAvailable reports that the session serves delegate, job_watch, or job_list.
+	RunningJobsAvailable bool
+	// WorktreeAvailable reports that the session serves the full manage_worktree tool.
+	WorktreeAvailable bool
+	// TranscriptsAvailable reports that the session serves read_transcript or find_session_transcripts.
+	TranscriptsAvailable bool
 }
 
 // SkillAvailable reports whether a session with this availability may advertise
-// and load name. Every skill but gardening-memory is available as its source
-// controls say.
+// and load name. Capability-gated bundled skills require their matching tools;
+// every other skill is available as its source controls say.
 func (a SessionAvailability) SkillAvailable(name string) bool {
-	if name == GardeningMemorySkillName {
+	switch name {
+	case GardeningMemorySkillName:
 		return a.MemorySaveAvailable
+	case RunningJobsSkillName:
+		return a.RunningJobsAvailable
+	case UsingWorktreesSkillName:
+		return a.WorktreeAvailable
+	case ReadingTranscriptsSkillName:
+		return a.TranscriptsAvailable
+	default:
+		return true
 	}
-	return true
 }
 
 // UserEntriesForSession is UserEntries narrowed by a session's availability,
