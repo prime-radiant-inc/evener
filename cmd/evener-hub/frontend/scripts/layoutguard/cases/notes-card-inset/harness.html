@@ -15,7 +15,9 @@
      that hosts PaneScaffold. The pane body itself is the REAL
      panescaffold.module.css .pane > .body - the padded scrollport the notes
      card lives in, and the clipping ancestor whose top edge used to shave the
-     card. The card must stay INSIDE that body's padding. */
+     card's border. Expanded, the card's top edge rides that clip line (its
+     negative margin cancels the body's padding); collapsed, the quiet line
+     keeps the body's own top padding. */
   .paneHost {
     width: 560px;
     box-sizing: border-box;
@@ -41,13 +43,14 @@
 </style>
 </head>
 <body>
-<!-- TopNotesPanel.tsx, expanded: the card root, the shared Disclosure's
-     details/summary trigger, and the body content inside. -->
+<!-- TopNotesPanel.tsx, expanded: the card root carries data-expanded="true",
+     the shared Disclosure's details/summary trigger, and the body content
+     inside. -->
 <div class="paneHost">
 <div class="pane" id="expandedPane">
   <div class="body" id="expandedBody" data-pane-scaffold="session:local:notes-card-inset">
   <div class="contentColumn">
-    <div class="topNotesPanel" id="expandedPanel">
+    <div class="topNotesPanel" id="expandedPanel" data-expanded="true">
       <details class="disclosure-details" open>
         <summary class="disclosure-summary expandedHeader">
           <span class="chevron"><svg width="16" height="16" aria-hidden="true"></svg></span>
@@ -71,8 +74,9 @@
 </div>
 </div>
 
-<!-- TopNotesPanel.tsx, collapsed: the summary trigger alone. Its only boundary
-     is the card root's, so a root without a border reads as an edgeless strip. -->
+<!-- TopNotesPanel.tsx, collapsed: the quiet count line (design-system.md
+     section 12). The root draws no card chrome; the count line rides the
+     body's own top padding. -->
 <div class="paneHost">
 <div class="pane" id="collapsedPane">
   <div class="body" id="collapsedBody" data-pane-scaffold="session:local:notes-card-inset">
@@ -82,8 +86,7 @@
         <summary class="disclosure-summary summary">
           <span class="chevron"><svg width="16" height="16" aria-hidden="true"></svg></span>
           <span class="summaryLeft">
-            <span class="sourceIcon" aria-hidden="true"><svg width="14" height="14" aria-hidden="true"></svg></span>
-            <span class="clampedText">A saved note.</span>
+            <span class="summaryLine">— Notes · 1 note —</span>
           </span>
         </summary>
       </details>
