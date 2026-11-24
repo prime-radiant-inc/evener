@@ -619,7 +619,8 @@ func (s *WebServer) fetchLiveModels(ctx context.Context) []appwire.ModelDescript
 		// fetch: bind this client's own registry root (see
 		// withScopedOAuthAuth) so a custom root reads its own OAuth
 		// record instead of the process default's.
-		listCtx, cancel := context.WithTimeout(withScopedOAuthAuth(ctx, client.Registry()), instanceLiveListTimeout)
+		listCtx, cancel := context.WithTimeout(withScopedOAuthAuth(ctx, client.Registry()),
+			llm.LiveModelListTimeoutFor(client.Registry(), inst.Name))
 		listing, listErr := client.Models(listCtx, inst.Name)
 		cancel()
 		// An instance the hub's registry does not hold has no probe here,

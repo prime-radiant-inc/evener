@@ -11,10 +11,6 @@ import (
 	"primeradiant.com/evener/llm/registry"
 )
 
-// instanceLiveListTimeout bounds one instance's live /models fetch, the
-// same per-instance budget launch-check and the model picker use.
-const instanceLiveListTimeout = llm.LiveModelListTimeout
-
 // fetchInstanceLive fetches one instance's live listing into the holder,
 // so later InstanceModels calls include the live ids. It is the shared
 // core behind the manual refresh RPC and the background prefetch below.
@@ -110,7 +106,7 @@ func newLiveClient(reg *registry.Registry) *llm.Client {
 // token-validated path. live says the endpoint answered; usable says
 // the rows may become the live-authoritative catalog.
 func fetchInstanceLiveWith(ctx context.Context, client *llm.Client, name string) (rows []registry.Model, live, usable bool, err error) {
-	fetchCtx, cancel := context.WithTimeout(ctx, instanceLiveListTimeout)
+	fetchCtx, cancel := context.WithTimeout(ctx, llm.LiveModelListTimeoutFor(client.Registry(), name))
 	defer cancel()
 	rows, live, err = client.ListLive(fetchCtx, name)
 	if err != nil || !live {

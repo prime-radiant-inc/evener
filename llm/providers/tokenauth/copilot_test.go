@@ -3,6 +3,7 @@ package tokenauth
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -63,6 +64,15 @@ func copilotRes() registry.Resolved {
 		Credential: registry.Credential{Source: "oauth"},
 		Transport:  registry.Transport{Auth: registry.AuthOAuthGitHubCopilot},
 	}
+}
+
+// copilotVisionRes is the resolved live-proven Haiku row: the account
+// advertises image input for it, so an image may ride this route.
+func copilotVisionRes() registry.Resolved {
+	res := copilotRes()
+	res.ModelID = "claude-haiku-5.5"
+	res.Caps = registry.Caps{InputModalities: []string{"text", "image"}}
+	return res
 }
 
 func TestCopilotApplySetsValidatedHeaders(t *testing.T) {
@@ -299,22 +309,54 @@ func TestCopilotPrepareRequestVisionHeader(t *testing.T) {
 		name   string
 		msgs   []llm.Message
 		wanted string
+		res    registry.Resolved
 	}{
-		{name: "image part", msgs: []llm.Message{image}, wanted: "true"},
-		{name: "tool result image", msgs: []llm.Message{toolImage}, wanted: "true"},
-		{name: "no image", msgs: []llm.Message{llm.User("hi")}, wanted: ""},
+		{name: "image part", msgs: []llm.Message{image}, wanted: "true", res: copilotVisionRes()},
+		{name: "tool result image", msgs: []llm.Message{toolImage}, wanted: "true", res: copilotVisionRes()},
+		{name: "no image", msgs: []llm.Message{llm.User("hi")}, wanted: "", res: copilotRes()},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			httpReq, _ := http.NewRequest(http.MethodPost, "https://api.githubcopilot.com/chat/completions", nil)
 			httpReq.Header.Set("Copilot-Vision-Request", "stale")
-			if err := (&Copilot{}).PrepareRequest(context.Background(), httpReq, nil, llm.Request{Messages: tt.msgs}, copilotRes()); err != nil {
+			if err := (&Copilot{}).PrepareRequest(context.Background(), httpReq, nil, llm.Request{Messages: tt.msgs}, tt.res); err != nil {
 				t.Fatalf("PrepareRequest: %v", err)
 			}
 			if got := httpReq.Header.Get("Copilot-Vision-Request"); got != tt.wanted {
 				t.Fatalf("Copilot-Vision-Request = %q, want %q", got, tt.wanted)
 			}
 		})
+	}
+}
+
+// A Copilot row that advertises text only must refuse an attachment before the
+// wire sees it: the account answers that request with an image-not-supported
+// 400. The refusal is a configuration error naming the route so the caller can
+// switch models and resend, and the caller's own message slice is left intact.
+func TestCopilotPrepareRequestRefusesImageForTextOnlyModel(t *testing.T) {
+	image := llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{
+		{Kind: llm.ContentText, Text: "describe"},
+		{Kind: llm.ContentImage, Image: &llm.ImageData{Data: []byte("png"), MediaType: "image/png"}},
+	}}
+	req := llm.Request{Model: "gpt-5.6-sol", Messages: []llm.Message{image}}
+	httpReq, _ := http.NewRequest(http.MethodPost, "https://api.githubcopilot.com/chat/completions", nil)
+	res := copilotRes()
+	res.ModelID = "gpt-5.6-sol"
+	res.Caps = registry.Caps{InputModalities: []string{"text"}}
+
+	err := (&Copilot{}).PrepareRequest(context.Background(), httpReq, nil, req, res)
+	var configErr *llm.ConfigurationError
+	if !errors.As(err, &configErr) {
+		t.Fatalf("PrepareRequest error = %v, want a configuration error", err)
+	}
+	if configErr.ProviderInstance != res.Instance {
+		t.Fatalf("ProviderInstance = %q, want %q", configErr.ProviderInstance, res.Instance)
+	}
+	if got := httpReq.Header.Get("Copilot-Vision-Request"); got != "" {
+		t.Fatalf("Copilot-Vision-Request = %q, want it unset on a refused route", got)
+	}
+	if len(req.Messages) != 1 || len(req.Messages[0].Content) != 2 || req.Messages[0].Content[1].Image == nil {
+		t.Fatal("the caller's attachment was mutated; it must survive the refusal for a retry")
 	}
 }
 
@@ -399,6 +441,16 @@ func newCopilotClient(t *testing.T, srvURL string) *llm.Client {
 // the root its Copilot record lives under.
 func newCopilotClientAt(t *testing.T, srvURL, stateRoot string) *llm.Client {
 	t.Helper()
+	return newCopilotClientModelsAt(t, srvURL, stateRoot, registry.AuthOAuthGitHubCopilot, map[string]registry.Model{
+		"m": {ID: "m"},
+	})
+}
+
+// newCopilotClientModelsAt builds a client over one instance with the given
+// auth scheme and model rows, so a route can carry an image only when its row
+// advertises image input.
+func newCopilotClientModelsAt(t *testing.T, srvURL, stateRoot, auth string, models map[string]registry.Model) *llm.Client {
+	t.Helper()
 	r, err := registry.Load(
 		registry.WithOffline(true), registry.WithoutCache(), registry.WithNoUserLayer(),
 		registry.WithStateRoot(stateRoot),
@@ -410,11 +462,11 @@ func newCopilotClientAt(t *testing.T, srvURL, stateRoot string) *llm.Client {
 				Surface:  registry.SurfaceGeneric,
 				APIKey:   "unused-key",
 				Transport: registry.Transport{
-					Auth: registry.AuthOAuthGitHubCopilot, BaseURL: srvURL,
+					Auth: auth, BaseURL: srvURL,
 					Endpoint: "/chat/completions", StreamEndpoint: "/chat/completions",
 					ModelsEndpoint: "/models", CountTokensEndpoint: registry.EndpointUnsupported,
 				},
-				Models: map[string]registry.Model{"m": {ID: "m"}},
+				Models: models,
 			},
 		}),
 	)
@@ -422,6 +474,98 @@ func newCopilotClientAt(t *testing.T, srvURL, stateRoot string) *llm.Client {
 		t.Fatalf("registry: %v", err)
 	}
 	return llm.NewClient(llm.WithRegistry(r))
+}
+
+func imageRequest(model string) llm.Request {
+	return llm.Request{Model: model, Provider: "copilot", Messages: []llm.Message{{Role: llm.RoleUser, Content: []llm.ContentPart{
+		{Kind: llm.ContentText, Text: "describe"},
+		{Kind: llm.ContentImage, Image: &llm.ImageData{Data: []byte("png"), MediaType: "image/png"}},
+	}}}}
+}
+
+// The text-only refusal must happen before the request leaves the process: the
+// account's image-not-supported 400 is the failure this prevents.
+func TestCopilotClientRefusesTextOnlyImageBeforeSending(t *testing.T) {
+	stateDir := t.TempDir()
+	saveCopilotRecord(t, stateDir, "copilot", "token", "refresh")
+	var requests atomic.Int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		writeChatCompletion(w)
+	}))
+	t.Cleanup(ts.Close)
+
+	client := newCopilotClientAt(t, ts.URL, stateDir)
+	ctx := llm.WithScopedAuthenticator(context.Background(), registry.AuthOAuthGitHubCopilot, ScopedCopilot(stateDir))
+	_, err := client.Complete(ctx, imageRequest("m"))
+	var configErr *llm.ConfigurationError
+	if !errors.As(err, &configErr) {
+		t.Fatalf("Complete error = %v, want a configuration error", err)
+	}
+	if got := requests.Load(); got != 0 {
+		t.Fatalf("requests = %d, want 0: a text-only row must be refused before send", got)
+	}
+}
+
+// A live-proven image row keeps its route: the image is serialized and the
+// compatibility header still says the request carries vision input.
+func TestCopilotClientSendsImageForImageCapableModel(t *testing.T) {
+	stateDir := t.TempDir()
+	saveCopilotRecord(t, stateDir, "copilot", "token", "refresh")
+	var requests atomic.Int32
+	var vision atomic.Bool
+	var body atomic.Value
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		vision.Store(r.Header.Get("Copilot-Vision-Request") == "true")
+		raw, _ := io.ReadAll(r.Body)
+		body.Store(string(raw))
+		writeChatCompletion(w)
+	}))
+	t.Cleanup(ts.Close)
+
+	client := newCopilotClientModelsAt(t, ts.URL, stateDir, registry.AuthOAuthGitHubCopilot, map[string]registry.Model{
+		"claude-haiku-5.5": {ID: "claude-haiku-5.5", Caps: registry.Caps{InputModalities: []string{"text", "image"}}},
+	})
+	ctx := llm.WithScopedAuthenticator(context.Background(), registry.AuthOAuthGitHubCopilot, ScopedCopilot(stateDir))
+	if _, err := client.Complete(ctx, imageRequest("claude-haiku-5.5")); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if got := requests.Load(); got != 1 {
+		t.Fatalf("requests = %d, want 1", got)
+	}
+	if !vision.Load() {
+		t.Fatal("Copilot-Vision-Request missing on an image-capable route")
+	}
+	if got := body.Load().(string); !strings.Contains(got, `"image_url"`) {
+		t.Fatalf("request body does not carry the image: %s", got)
+	}
+}
+
+// Non-Copilot routes are untouched: a bearer image request still goes out
+// without the Copilot compatibility header.
+func TestBearerImageRequestStillSends(t *testing.T) {
+	var requests atomic.Int32
+	var vision atomic.Bool
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		vision.Store(r.Header.Get("Copilot-Vision-Request") != "")
+		writeChatCompletion(w)
+	}))
+	t.Cleanup(ts.Close)
+
+	client := newCopilotClientModelsAt(t, ts.URL, t.TempDir(), registry.AuthBearer, map[string]registry.Model{
+		"vision-model": {ID: "vision-model", Caps: registry.Caps{InputModalities: []string{"text", "image"}}},
+	})
+	if _, err := client.Complete(context.Background(), imageRequest("vision-model")); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if got := requests.Load(); got != 1 {
+		t.Fatalf("requests = %d, want 1", got)
+	}
+	if vision.Load() {
+		t.Fatal("a bearer route must not carry the Copilot vision header")
+	}
 }
 
 // isolateDefaultCopilot pins the process-global Copilot authenticator to an
