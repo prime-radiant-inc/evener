@@ -5766,3 +5766,60 @@ func TestInstances_RemoveDoesNotAdoptALoginAfterItsRestore(t *testing.T) {
 		t.Fatal("the sweep adopted a login that landed after the restore")
 	}
 }
+
+// fsatomic.Remove unlinks the record before it syncs the directory, so a sync
+// failure can leave the captured account deleted while the delete reports an
+// error. The removal must report that deletion to its rollback, which restores
+// the captured bytes; otherwise the removal fails and the account is gone.
+func TestInstances_RemoveRestoresACopilotRecordUnlinkedBeforeADeleteError(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	seedCopilotRecord(t, f, "github-copilot", "account-1")
+	f.ctl.deleteCopilotAuth = func(stateDir, instance string) error {
+		if err := os.Remove(githubcopilot.AuthFilePath(stateDir, instance)); err != nil {
+			return err
+		}
+		return errors.New("sync GitHub Copilot auth directory: injected failure")
+	}
+
+	if err := f.ctl.Remove(appwire.InstanceRemoveParams{Name: "github-copilot"}); err == nil {
+		t.Fatal("Remove = nil, want the injected delete failure")
+	}
+	record, err := githubcopilot.LoadAuth(f.stateDir, "github-copilot")
+	if err != nil {
+		t.Fatalf("the unlinked Copilot record was not restored: %v", err)
+	}
+	if record.AccountID != "account-1" {
+		t.Fatalf("restored account = %q, want the captured record", record.AccountID)
+	}
+}
+
+// The re-read after a delete error must not overwrite an account that signed
+// in while the removal was failing: the rollback restores only the captured
+// bytes, and the newer login stays.
+func TestInstances_RemoveKeepsANewerCopilotLoginAfterADeleteError(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	seedCopilotRecord(t, f, "github-copilot", "account-1")
+	f.ctl.deleteCopilotAuth = func(stateDir, instance string) error {
+		if err := os.Remove(githubcopilot.AuthFilePath(stateDir, instance)); err != nil {
+			return err
+		}
+		return errors.New("sync GitHub Copilot auth directory: injected failure")
+	}
+	newer := healthyCopilotRecordForTest("github-copilot", "account-2")
+	f.ctl.beforeCopilotRestore = func() {
+		if err := githubcopilot.SaveAuth(f.stateDir, "github-copilot", newer); err != nil {
+			t.Errorf("SaveAuth(newer login): %v", err)
+		}
+	}
+
+	if err := f.ctl.Remove(appwire.InstanceRemoveParams{Name: "github-copilot"}); err == nil {
+		t.Fatal("Remove = nil, want the injected delete failure")
+	}
+	record, err := githubcopilot.LoadAuth(f.stateDir, "github-copilot")
+	if err != nil {
+		t.Fatalf("the newer login was lost: %v", err)
+	}
+	if record.AccountID != "account-2" {
+		t.Fatalf("account = %q, want the newer login the rollback preserved", record.AccountID)
+	}
+}

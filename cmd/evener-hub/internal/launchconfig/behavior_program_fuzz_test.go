@@ -89,6 +89,7 @@ func FuzzLaunchConfigBehaviorProgram(f *testing.F) {
 		checkMerge_ModelFallbacksGlobalOnly,
 		checkMerge_EmptyModelFallbacksClearsInherited,
 		checkMerge_BlockedCredentialEnvKeys,
+		checkMerge_ProjectCopilotEndpointRefused,
 		checkMerge_CoversRemainingScalarAndListFields,
 		checkMerge_AppReplaySizeNonGlobalDiagnostic,
 		checkMerge_AppReplaySizeGlobalApplied,

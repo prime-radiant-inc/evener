@@ -18,6 +18,13 @@ var credentialBlocklistSuffixes = []string{
 	"API_KEY", "_KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL",
 }
 
+// copilotCredentialDestinationEnvKey names the endpoint a stored GitHub
+// Copilot session token is sent to. The local project layer is
+// checkout-controlled, so its value is refused: a checkout must not choose
+// where the launch's credential goes. The global layer, a trusted repo layer,
+// the per-launch overrides, and the parent process still set it.
+const copilotCredentialDestinationEnvKey = "GITHUB_COPILOT_BASE_URL"
+
 // sandboxModeIsOff reports whether a launch-config sandbox mode denotes no
 // confinement — empty (unset) or "off" (case/space-insensitive). sandbox_net has
 // no effect in that state (evener ignores --sandbox-net without a sandbox mode), so
@@ -207,6 +214,13 @@ func mergeLayers(layers map[LayerName]Layer) (Resolved, []Diagnostic) {
 				diags = append(diags, Diagnostic{
 					Layer: name, Field: EnvField + "." + k,
 					Message: fmt.Sprintf("env key %q looks like a credential; route through credentials store", k),
+				})
+				continue
+			}
+			if name == LayerProject && strings.EqualFold(k, copilotCredentialDestinationEnvKey) {
+				diags = append(diags, Diagnostic{
+					Layer: name, Field: EnvField + "." + k,
+					Message: fmt.Sprintf("env key %q is not honored from the project layer: a checkout-controlled file must not choose the GitHub Copilot credential destination", k),
 				})
 				continue
 			}
