@@ -117,9 +117,7 @@
 }
 
 .latestText {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  composes: truncate from "../../../styles/text.module.css";
   min-width: 0;
 }
 
@@ -194,11 +192,9 @@
 }
 
 .promptPreview {
+  composes: truncate from "../../../styles/text.module.css";
   flex: 1;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   color: var(--ink-low);
 }
 

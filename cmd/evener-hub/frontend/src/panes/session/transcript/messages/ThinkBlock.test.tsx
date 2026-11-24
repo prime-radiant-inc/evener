@@ -730,8 +730,7 @@ test("the live eyebrow is not a disclosure - there is nothing to disclose while 
 test("the summary text ellipsizes in its own span so the trailing chevron is never pushed out of view", () => {
   const rule = /\.summaryText\s*\{([^}]*)\}/.exec(thinkCss());
   expect(rule).not.toBeNull();
-  expect(rule![1]).toContain("overflow: hidden");
-  expect(rule![1]).toContain("text-overflow: ellipsis");
+  expect(rule![1]).toContain('composes: truncate from "../../../../styles/text.module.css"');
 });
 
 test("the collapsed summary keeps the final context and opening mounts the complete body", () => {

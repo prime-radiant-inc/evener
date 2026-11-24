@@ -3,6 +3,7 @@
   "description": "At a phone viewport the shared connection settings row stacks its label, control, and help in one column. PropertyList's settings variant puts the help inside .settingsValue under the control; without the mobile one-column reset of .settingsRow, the row keeps its 104px label track and the input and help sit beside the label instead of below it.",
   "cssFiles": [
     "styles/global.css",
+    "styles/text.module.css",
     "styles/tokens.css",
     "widgets/input/input.module.css",
     "widgets/propertylist/propertylist.module.css"

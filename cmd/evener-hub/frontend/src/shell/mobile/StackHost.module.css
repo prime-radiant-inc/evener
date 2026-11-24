@@ -38,13 +38,11 @@
 }
 
 .stackTitle {
+  composes: truncate from "../../styles/text.module.css";
   flex: 1 1 auto;
   /* min-width: 0 is required for ellipsis truncation inside a flex row -
    * the same rule PaneScaffold's own .title records. */
   min-width: 0;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
   text-align: center;
   color: var(--ink-hi);
   font-family: var(--font-prose);

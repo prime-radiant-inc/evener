@@ -50,14 +50,12 @@
 }
 
 .value {
+  composes: truncate from "../../styles/text.module.css";
   min-width: 0;
   margin: 0;
-  overflow: hidden;
   color: var(--ink-hi);
   font-family: var(--font-sans);
   font-size: var(--font-size-ui);
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .mono {

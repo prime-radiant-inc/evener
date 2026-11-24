@@ -3,6 +3,7 @@
   "description": "The session notes panel is attached to the header: its top edge is flush to the header's bottom border (negative top margin cancels the body's top padding so there is no gap), its top corners are square (no radius) and its top border is omitted to avoid doubling the header's border, while the bottom corners carry the panel radius and the card has a border and shadow.",
   "cssFiles": [
     "styles/global.css",
+    "styles/text.module.css",
     "styles/tokens.css",
     "widgets/eyebrow/eyebrow.module.css",
     "widgets/panescaffold/panescaffold.module.css",

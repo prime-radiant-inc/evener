@@ -3,6 +3,7 @@
   "description": "Single-column panes put the page title on the same left axis as the content they name: the session header joins the transcript measure, the spawn header joins the form, and the settings title stays on the nav axis rather than the content axis.",
   "cssFiles": [
     "styles/global.css",
+    "styles/text.module.css",
     "styles/tokens.css",
     "widgets/panescaffold/panescaffold.module.css",
     "panes/session/transcript/turnblock.module.css",

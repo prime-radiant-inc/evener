@@ -3,6 +3,7 @@
   "description": "An intent-less expandable ToolRow keeps its visible summary line and its inline controls as SIBLINGS of the disclosure button, and the button still owns the whole row: toolcallitem.module.css's .row:not([data-intent=\"true\"]) .trigger overlay (position: absolute; inset: 0) covers the summary line, the summary line itself ignores pointer input, and real links and buttons inside it opt back in. So a click on plain summary text reaches the disclosure trigger, a click on the summary's link reaches the link, and a click on an inline Open control reaches that control. Two shapes, both ToolRow's current render copied from its jsdom output: web_fetch's linked summary ('Fetched <a>url</a>') and a write row with a trailing OpenButton. These hit-area checks lived inside the deleted rdry-toolrow-contrast case; no other case covers intent-less rows.",
   "cssFiles": [
     "styles/global.css",
+    "styles/text.module.css",
     "styles/tokens.css",
     "styles/railseat.module.css",
     "styles/surface.module.css",

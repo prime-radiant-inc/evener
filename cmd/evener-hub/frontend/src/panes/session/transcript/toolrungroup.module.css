@@ -46,10 +46,8 @@ details[open] > .summary {
 }
 
 .label {
+  composes: truncate from "../../../styles/text.module.css";
   min-width: 0;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
 }
 
 /* The rows of an open run: divided from each other by the card's rows rule,

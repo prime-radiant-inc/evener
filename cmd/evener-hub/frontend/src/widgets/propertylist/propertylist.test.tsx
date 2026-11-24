@@ -51,8 +51,7 @@ test("an empty row list renders no terms", () => {
 });
 
 test("an inline value truncates by default", () => {
-  expect(topRuleBlock(CSS, ".value")).toContain("white-space: nowrap");
-  expect(topRuleBlock(CSS, ".value")).toContain("text-overflow: ellipsis");
+  expect(topRuleBlock(CSS, ".value")).toContain('composes: truncate from "../../styles/text.module.css"');
 });
 
 test("a wrap row's value wraps in full instead of truncating, and only that row's", () => {

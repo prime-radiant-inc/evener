@@ -520,20 +520,16 @@
 }
 
 .clampedHead {
+  composes: truncate from "../../../styles/text.module.css";
   flex: 0 1 auto;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .clampedTail {
+  composes: truncate from "../../../styles/text.module.css";
   flex: none;
   max-width: 60%;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 /* The row's trailing affordance (e.g. "Open beside"), riding INLINE at the

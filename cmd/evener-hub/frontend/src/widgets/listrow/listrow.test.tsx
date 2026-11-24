@@ -342,8 +342,7 @@ test("the split shape's CSS: the container washes on focus-within, the main butt
 test("the collection meta line is mono and truncates", () => {
   expect(rule(".collection .meta")).toContain("font-family: var(--font-mono)");
   const meta = rule(".meta");
-  expect(meta).toContain("text-overflow: ellipsis");
-  expect(meta).toContain("white-space: nowrap");
+  expect(meta).toContain('composes: truncate from "../../styles/text.module.css"');
 });
 
 test("mobile: interactive and collection rows reach the 44px tap floor", () => {

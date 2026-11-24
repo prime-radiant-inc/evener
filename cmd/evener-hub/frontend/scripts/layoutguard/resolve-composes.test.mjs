@@ -171,4 +171,45 @@ describe("resolveComposes", () => {
     expect(out).toContain("color: red");
     expect(out).not.toContain("composes");
   });
+
+  test("resolves a chain of composes the way the build's class merging does", () => {
+    // modelswitch/select `.value` composes quietValue, which now composes the
+    // shared truncate class: the build gives the element all three class
+    // names, so the browser applies every rule in the chain. Stopping after
+    // one level silently drops the nested declarations and the harness
+    // measures text that never truncates.
+    const out = resolveComposes([
+      ".truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }",
+      '.quietValue { composes: truncate from "../../styles/text.module.css"; min-width: 0; }',
+      '.value { composes: quietValue from "./quietTrigger.module.css"; display: block; }',
+    ]);
+    const value = out.match(/\.value\s*\{([^}]*)\}/)?.[1] ?? "";
+    expect(value).toContain("display: block");
+    expect(value).toContain("min-width: 0");
+    expect(value).toContain("text-overflow: ellipsis");
+    expect(value).toContain("white-space: nowrap");
+    expect(value).not.toContain("composes");
+  });
+
+  test("refuses a composes cycle instead of recursing forever", () => {
+    expect(() =>
+      resolveComposes([
+        '.a { composes: b from "./b.module.css"; color: red; }',
+        '.b { composes: a from "./a.module.css"; color: blue; }',
+      ]),
+    ).toThrow(/cycle/);
+  });
+
+  test("resolves a composed class that shares its name with the consumer", () => {
+    // directorypicker .input composes input.module.css's .input: the module
+    // name is local to its own file, so the consumer's same-named rule is a
+    // different rule, not a cycle.
+    const out = resolveComposes([
+      '.input { composes: input from "./input.module.css"; padding: 0; }',
+      ".input { border: 1px solid; }",
+    ]);
+    const resolved = out.match(/\.input\s*\{([^}]*)\}/)?.[1] ?? "";
+    expect(resolved).toContain("padding: 0");
+    expect(resolved).toContain("border: 1px solid");
+  });
 });

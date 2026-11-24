@@ -19,13 +19,11 @@
 // mirrors the build exactly for the simple element/class inners this
 // codebase uses.
 //
-// This does one level of inlining: for every simple `.class { ... }` rule
-// across ALL provided sources, if its body contains
-// `composes: a[, b] from "...";`, splice in the (already-defined) target
-// rule's own declarations in place of the composes line. Good enough for the
-// flat one-file-deep composes chains this codebase actually uses (verified:
-// fieldTrigger.module.css itself composes nothing, so there is no chain to
-// walk recursively).
+// For every simple `.class { ... }` rule across ALL provided sources, a
+// `composes: x from "...";` line is replaced with the target rule's own
+// declarations, and the target's own composes are resolved the same way: the
+// build merges class names, so a chain of compositions is just more classes
+// on the element. A cycle is refused rather than walked forever.
 //
 // The one refinement correctness demands: a composes target whose rule sits
 // INSIDE a media block must not have its body spliced ungated. The build step
@@ -215,19 +213,38 @@ export function resolveComposes(cssTexts) {
   // definition: a class may be defined both ungated and inside a block, and
   // composing it must carry both (the same element carries both rules in the
   // built app).
+  //
+  // Each rule also carries its position as an identity: `composes: input from
+  // "../input/input.module.css"` in a module that itself defines `.input`
+  // names a DIFFERENT rule, so cycle detection must compare rules, not class
+  // names.
+  const ruleIdByOffset = new Map();
   const bodies = new Map();
+  let nextRuleId = 0;
   for (const m of combined.matchAll(RULE_RE)) {
+    const id = nextRuleId++;
+    ruleIdByOffset.set(m.index, id);
     const entries = bodies.get(m[1]) ?? [];
-    entries.push({ body: m[2], gate: gateAt(m.index) });
+    entries.push({ id, body: m[2], gate: gateAt(m.index) });
     bodies.set(m[1], entries);
   }
 
-  return combined.replace(RULE_RE, (_whole, selector, body, offset) => {
-    const consumerGate = gateAt(offset);
-    // Gated composed bodies for this consumer, grouped by gate so one
-    // re-stated block carries all of that gate's declarations.
-    const gatedByGate = new Map();
-    const resolvedBody = body.replace(COMPOSES_RE, (_composesDecl, names) => {
+  // The composed declarations one rule body contributes: its targets' own
+  // declarations, then their targets', recursively. Each composed class keeps
+  // its OWN media gate - the build merges class names, so a gate belongs to
+  // the class whose rule carries it, never to the consumer's chain.
+  const expandComposes = (body, consumerGate, stack, selfId) => {
+    const inline = [];
+    // Gated declarations, grouped by gate so one re-stated block carries all
+    // of that gate's declarations.
+    const gated = new Map();
+    const addGated = (gate, declarations) => {
+      if (declarations === "") return;
+      gated.set(gate, (gated.get(gate) ?? []).concat([declarations]));
+    };
+
+    for (const match of body.matchAll(COMPOSES_RE)) {
+      const names = match[1];
       // One class per composes line. A comma list would not mean what it
       // looks like it means: the build (postcss-modules) binds `from` to the
       // last comma entry only, so every earlier name resolves as a LOCAL
@@ -247,31 +264,55 @@ export function resolveComposes(cssTexts) {
         // descendants, never the consumer's own box, so the consumer's
         // declarations have nothing to inherit from it; only a class defined
         // nowhere is an error.
-        if (new RegExp(`\\.${name}(?![A-Za-z0-9_-])`).test(combined)) return "";
+        if (new RegExp(`\\.${name}(?![A-Za-z0-9_-])`).test(combined)) continue;
         throw new Error(
           `composes references .${name}, but no such rule was found in the provided CSS sources - add the module that defines it to the case's cssFiles`,
         );
       }
-      const inlined = [];
+      if (stack.has(name)) {
+        throw new Error(`composes cycle: ${[...stack, name].join(" -> ")}`);
+      }
       for (const entry of entries) {
-        if (entry.gate === null) {
-          inlined.push(entry.body);
-        } else if (consumerGate === null) {
-          const decls = gatedByGate.get(entry.gate) ?? [];
-          decls.push(entry.body.trim());
-          gatedByGate.set(entry.gate, decls);
-        } else {
+        // A rule composing a same-named class from another module names that
+        // other rule; its own rule is not a cycle.
+        if (entry.id === selfId) continue;
+        if (entry.gate !== null && consumerGate !== null) {
           throw new Error(
             `composes in a rule gated by "${consumerGate}" references the media-gated .${name}: the composed class's gate must stay independent of the consumer's - extend resolveComposes instead`,
           );
         }
+        if (stack.has(entry.id)) {
+          throw new Error(`composes cycle through .${name}`);
+        }
+        const entryStack = new Set(stack).add(entry.id);
+        const own = entry.body.replace(COMPOSES_RE, "").trim();
+        if (entry.gate === null) {
+          if (own !== "") inline.push(own);
+        } else {
+          addGated(entry.gate, own);
+        }
+        const nested = expandComposes(entry.body, consumerGate, entryStack, entry.id);
+        inline.push(...nested.inline);
+        for (const [gate, declarations] of nested.gated) {
+          for (const declaration of declarations) addGated(gate, declaration);
+        }
       }
-      return inlined.join("\n");
-    });
+    }
+    return { inline, gated };
+  };
 
-    let out = `${selector} {${resolvedBody}}`;
-    for (const [gate, decls] of gatedByGate) {
-      out += `\n\n${gate} {\n  ${selector} {\n${decls.map((d) => `    ${d}`).join("\n")}\n  }\n}`;
+  return combined.replace(RULE_RE, (_whole, selector, body, offset) => {
+    const own = body.replace(COMPOSES_RE, "").trim();
+    // No composes: leave the rule text byte-identical. Cases assert on the
+    // resolved sheet's exact whitespace in places, and rewriting every rule
+    // would perturb sheets this resolver has no business touching.
+    if (own === body.trim()) return _whole;
+    const selfId = ruleIdByOffset.get(offset);
+    const { inline, gated } = expandComposes(body, gateAt(offset), new Set([selfId]), selfId);
+    const declarations = [own, ...inline].filter((part) => part !== "");
+    let out = `${selector} {${declarations.length === 0 ? "" : `\n${declarations.join("\n")}`}}`;
+    for (const [gate, parts] of gated) {
+      out += `\n\n${gate} {\n  ${selector} {\n${parts.map((d) => `    ${d}`).join("\n")}\n  }\n}`;
     }
     return out;
   });

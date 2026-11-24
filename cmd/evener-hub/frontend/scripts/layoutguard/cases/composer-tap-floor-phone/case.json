@@ -3,6 +3,7 @@
   "description": "At a phone viewport and in 320px composer cards the reasoning-effort trigger in the status row must still meet the app's 44px tap floor in both axes, and its full box must fit inside .identity's clip boundary instead of being clipped by a shrunken .control wrapper. A long model label must remain visible and the status row must not gain horizontal overflow to make room for it. The provider-default fixture covers the widest readout the control carries.",
   "cssFiles": [
     "styles/global.css",
+    "styles/text.module.css",
     "styles/tokens.css",
     "widgets/internal/quietTrigger.module.css",
     "styles/sendbutton.module.css",

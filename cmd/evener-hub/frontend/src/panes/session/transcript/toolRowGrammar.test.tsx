@@ -206,7 +206,7 @@ test("the collapsed head/tail split never leaves whitespace at a span boundary -
 
 test("the clamp mechanics: head ellipsis-clamps, tail never shrinks, and the clamp lives off .demoted", () => {
   const css = rowCss();
-  expect(css).toMatch(/\.clampedHead\s*\{[^}]*text-overflow:\s*ellipsis/);
+  expect(css).toMatch(/\.clampedHead\s*\{[^}]*composes:\s*truncate from "\.\.\/\.\.\/\.\.\/styles\/text\.module\.css"/);
   // The tail never SHRINKS (flex: none) - but a command whose tail alone
   // passes 60% of the line ellipsizes the tail too, because a glyph-less
   // clip at the container edge reads as a rendering bug, an ellipsis does
@@ -215,7 +215,7 @@ test("the clamp mechanics: head ellipsis-clamps, tail never shrinks, and the cla
   expect(tail).not.toBeNull();
   expect(tail![1]).toMatch(/flex:\s*none/);
   expect(tail![1]).toContain("max-width: 60%");
-  expect(tail![1]).toContain("text-overflow: ellipsis");
+  expect(tail![1]).toContain('composes: truncate from "../../../styles/text.module.css"');
   // The clamp is collapsed-only (the .clamped modifier); .demoted itself
   // must not reintroduce end-truncation for expanded rows.
   const demoted = /\.demoted\s*\{([^}]*)\}/.exec(css);
