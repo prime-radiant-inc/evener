@@ -111,6 +111,8 @@ func FuzzLaunchConfigBehaviorProgram(f *testing.F) {
 		checkSaveLayer_RenameError,
 		checkSaveMeta_RenameError,
 		checkLaunchConfigThreeStateRoundTrip,
+		checkMerge_ProjectProvidersConfigRefused,
+		checkToEnv_ProjectLayerCannotRedirectProviderResolution,
 	}
 	for i := range checks {
 		f.Add(uint8(i))

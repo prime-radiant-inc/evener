@@ -24,10 +24,6 @@ import (
 // calls cmdutil.LoadClient; tests may replace this to inject a stub client.
 var launchCheckLoadClient = cmdutil.LoadClient
 
-// launchCheckListTimeout bounds one instance's model listing. It is per
-// instance, not per command, so a slow endpoint costs only its own budget.
-const launchCheckListTimeout = llm.LiveModelListTimeout
-
 // supportedLaunchFlags advertises the serve/run flags this binary accepts
 // that a launcher (the hub) passes on the command line. Keep in sync with
 // the flag definitions in cmd/evener's run/serve commands: a launcher gates
@@ -177,7 +173,7 @@ func launchCheckModels() ([]appwire.ModelDescriptor, []appwire.ModelListDiagnost
 			}
 			continue
 		}
-		listCtx, cancel := context.WithTimeout(context.Background(), launchCheckListTimeout)
+		listCtx, cancel := context.WithTimeout(context.Background(), llm.LiveModelListTimeoutFor(client.Registry(), inst.Name))
 		listing, err := client.Models(listCtx, inst.Name)
 		cancel()
 		if err != nil {
@@ -300,13 +296,12 @@ func launchCheckSensitiveEnvKey(key string) bool {
 // answered with a live listing — membership in what it advertised. A
 // registry-only listing proves nothing about availability, so it passes.
 func validateLaunchCheckModel(ref cmdutil.ModelRef) error {
-	ctx, cancel := context.WithTimeout(context.Background(), launchCheckListTimeout)
-	defer cancel()
-
 	client, err := launchCheckLoadClient("")
 	if err != nil {
 		return nil
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), llm.LiveModelListTimeoutFor(client.Registry(), ref.Provider))
+	defer cancel()
 	if client.Registry().LaunchMintsCredentialCommand(ref.Provider) {
 		// The preflight never mints (spec §10.1): a command-credentialed
 		// launch's liveness is the child's first request to answer, so

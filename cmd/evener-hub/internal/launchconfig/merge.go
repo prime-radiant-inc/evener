@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/internal/commitprovenance"
 )
 
@@ -18,12 +19,26 @@ var credentialBlocklistSuffixes = []string{
 	"API_KEY", "_KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL",
 }
 
-// copilotCredentialDestinationEnvKey names the endpoint a stored GitHub
-// Copilot session token is sent to. The local project layer is
-// checkout-controlled, so its value is refused: a checkout must not choose
-// where the launch's credential goes. The global layer, a trusted repo layer,
-// the per-launch overrides, and the parent process still set it.
-const copilotCredentialDestinationEnvKey = "GITHUB_COPILOT_BASE_URL"
+// projectLayerRefusedEnvKeys maps each env key the checkout-controlled project
+// layer may not set to the part of provider resolution it would choose. A
+// checkout must not choose where the launch's credential goes or which
+// provider file defines every configured endpoint. The global layer, a trusted
+// repo layer, the per-launch overrides, and the parent process still set them.
+var projectLayerRefusedEnvKeys = map[string]string{
+	"GITHUB_COPILOT_BASE_URL":          "the GitHub Copilot credential destination",
+	envvars.EVENERProvidersConfig.Name: "the provider configuration, and with it every configured provider endpoint",
+}
+
+// projectLayerRefusedEnvKey reports the resolution a blocked project-layer key
+// would choose.
+func projectLayerRefusedEnvKey(key string) (string, bool) {
+	for blocked, purpose := range projectLayerRefusedEnvKeys {
+		if strings.EqualFold(key, blocked) {
+			return purpose, true
+		}
+	}
+	return "", false
+}
 
 // sandboxModeIsOff reports whether a launch-config sandbox mode denotes no
 // confinement — empty (unset) or "off" (case/space-insensitive). sandbox_net has
@@ -217,12 +232,14 @@ func mergeLayers(layers map[LayerName]Layer) (Resolved, []Diagnostic) {
 				})
 				continue
 			}
-			if name == LayerProject && strings.EqualFold(k, copilotCredentialDestinationEnvKey) {
-				diags = append(diags, Diagnostic{
-					Layer: name, Field: EnvField + "." + k,
-					Message: fmt.Sprintf("env key %q is not honored from the project layer: a checkout-controlled file must not choose the GitHub Copilot credential destination", k),
-				})
-				continue
+			if name == LayerProject {
+				if purpose, refused := projectLayerRefusedEnvKey(k); refused {
+					diags = append(diags, Diagnostic{
+						Layer: name, Field: EnvField + "." + k,
+						Message: fmt.Sprintf("env key %q is not honored from the project layer: a checkout-controlled file must not choose %s", k, purpose),
+					})
+					continue
+				}
 			}
 			eff.Env[k] = v
 		}

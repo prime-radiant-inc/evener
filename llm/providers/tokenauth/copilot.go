@@ -92,9 +92,12 @@ func (c *Copilot) AuthGeneration(_ context.Context, res registry.Resolved) (stri
 }
 
 // PrepareRequest implements llm.RequestPreparer: the spec's validated
-// compatibility headers and nothing that spoofs another client. The body is
-// left untouched.
-func (c *Copilot) PrepareRequest(_ context.Context, httpReq *http.Request, _ map[string]any, req llm.Request, _ registry.Resolved) error {
+// compatibility headers and nothing that spoofs another client. A request
+// carrying an attachment is refused before it leaves the process when the
+// resolved row advertises text only: the account answers that request with an
+// image-not-supported 400, and the caller needs the chance to switch models
+// and resend the same attachment. The body is left untouched.
+func (c *Copilot) PrepareRequest(_ context.Context, httpReq *http.Request, _ map[string]any, req llm.Request, res registry.Resolved) error {
 	httpReq.Header.Set("Openai-Intent", "conversation-edits")
 	httpReq.Header.Set("X-Interaction-Type", "conversation-agent")
 	if id := strings.TrimSpace(req.SessionID); id != "" {
@@ -106,6 +109,16 @@ func (c *Copilot) PrepareRequest(_ context.Context, httpReq *http.Request, _ map
 		httpReq.Header.Set("X-Initiator", initiator)
 	}
 	if copilotRequestHasImage(req.Messages) {
+		if !res.Caps.AcceptsModality("image") {
+			model := res.ModelID
+			if model == "" {
+				model = req.Model
+			}
+			return &llm.ConfigurationError{
+				Message:          fmt.Sprintf("instance %q: model %q does not accept image input; switch to a model that does and resend the attachment", res.Instance, model),
+				ProviderInstance: res.Instance,
+			}
+		}
 		httpReq.Header.Set("Copilot-Vision-Request", "true")
 	} else {
 		httpReq.Header.Del("Copilot-Vision-Request")
