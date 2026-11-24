@@ -66,11 +66,12 @@ import {
 import { holdLiveBands, liveBandNodes, railLiveBands } from "./liveBands";
 import { comparePinSections } from "./PinSectionPicker";
 import styles from "./Rail.module.css";
+import { RailNavigationActions } from "./RailNavigationActions";
 import { RAIL_WIDTH_PROPERTY, RailResizeHandle } from "./RailResizeHandle";
 import { RailRow, type RailRowActions } from "./RailRow";
 import { ARCHIVED_SECTION_KEY, LIVE_SECTION_KEY, PROJECTS_SECTION_KEY, TEST_RUNS_SECTION_KEY } from "./railExpansion";
 import { useRailHeaderAction } from "./railHeaderAction";
-import { GearIcon, SearchIcon, SidebarIcon, TuneIcon } from "./railIcons";
+import { SidebarIcon, TuneIcon } from "./railIcons";
 import {
   archivedCount,
   archivedProjectNodes,
@@ -1021,6 +1022,7 @@ function NavigationRail({
   // The split board supplies the header action and scrolls rows below it.
   // Only the Sheet lends the entire rail to its parent scrollport.
   const parentOwnsScroll = scrollOwner === "parent" && headerAction === null;
+  const showBrand = dismissNavigationChrome === null;
   return (
     <div
       className={parentOwnsScroll ? `${CLASS.rail} ${CLASS.parentScrollRail}` : CLASS.rail}
@@ -1033,52 +1035,41 @@ function NavigationRail({
         <RailResizeHandle width={width} onCommit={onWidthChange} railRef={railRef} />
       )}
       <div className={CLASS.header}>
-        <div className={CLASS.identity}>
-          <div data-testid="rail-brand" className={CLASS.brand}>
-            <EvenerMark />
-            <span data-testid="rail-wordmark" className={CLASS.wordmark}>
-              evener
-            </span>
-            <div className={CLASS.brandActions}>
-              <IconButton
-                data-testid="rail-settings"
-                label="Settings"
-                icon={<GearIcon />}
-                variant="quiet"
-                size="md"
-                onClick={() => navigate("/settings")}
-              />
-              <IconButton
-                data-testid="rail-search"
-                data-search-trigger="true"
-                label="Search"
-                icon={<SearchIcon />}
-                variant="quiet"
-                size="md"
-              />
-              {onHide ? (
-                <IconButton
-                  data-rail-toggle=""
-                  label="Hide sidebar"
-                  icon={<SidebarIcon />}
-                  variant="quiet"
-                  size="md"
-                  onClick={onHide}
-                />
-              ) : (
-                headerAction
-              )}
-            </div>
+        {(showBrand || needsYou > 0) && (
+          <div className={CLASS.identity}>
+            {showBrand && (
+              <div data-testid="rail-brand" className={CLASS.brand}>
+                <EvenerMark />
+                <span data-testid="rail-wordmark" className={CLASS.wordmark}>
+                  evener
+                </span>
+                <div className={CLASS.brandActions}>
+                  <RailNavigationActions />
+                  {onHide ? (
+                    <IconButton
+                      data-rail-toggle=""
+                      label="Hide sidebar"
+                      icon={<SidebarIcon />}
+                      variant="quiet"
+                      size="md"
+                      onClick={onHide}
+                    />
+                  ) : (
+                    headerAction
+                  )}
+                </div>
+              </div>
+            )}
+            {needsYou > 0 && (
+              <span className={CLASS.needsYou} data-testid="rail-needs-you">
+                <Chip tone="attention" kind="needs-you">
+                  <StatusDot state="needs-you" decorative />
+                  {needsYou} needs you
+                </Chip>
+              </span>
+            )}
           </div>
-          {needsYou > 0 && (
-            <span className={CLASS.needsYou} data-testid="rail-needs-you">
-              <Chip tone="attention" kind="needs-you">
-                <StatusDot state="needs-you" decorative />
-                {needsYou} needs you
-              </Chip>
-            </span>
-          )}
-        </div>
+        )}
         <Button block variant="secondary" data-testid="rail-new-session" onClick={() => navigate("/new")}>
           + New session
         </Button>

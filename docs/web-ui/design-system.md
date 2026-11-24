@@ -428,10 +428,11 @@ ring = Working. The shape difference keeps needs-you and failed distinct without
 accessible name carries the state for assistive tech. Precedence is failed, needs-you, working. Idle and ended rows reserve
 no indicator.
 
-**Rail header.** One row leads with the evener mark, a 24px `--accent` tile holding two
-level bars in `--on-accent` (an equals sign, the same mark the agent's `SpeakerAvatar`
-wears), then the `evener` wordmark, with the Settings, Search and Hide-sidebar icons hard
-right as one cluster with no gap between them, so the app's name and its global actions
+**Rail header.** In the persistent desktop rail and tablet board, one row leads with
+the evener mark, a 24px `--accent` tile holding two level bars in `--on-accent` (an equals
+sign, the same mark the agent's `SpeakerAvatar` wears), then the `evener` wordmark.
+Settings, Search and the hide control sit hard right as one cluster with no gap between
+them, so the app's name and its global actions
 share a line. The mark is decorative (`aria-hidden`); the wordmark names the product. The
 wordmark never truncates: the row is sized to fit at the 200px sidebar minimum, where the
 mark's gap to the wordmark tightens. A needs-you chip sits in the same identity block under
@@ -439,7 +440,8 @@ that row, a pill led by a decorative needs-you `StatusDot`, and the New-session 
 follows a run (8px) below. No rule closes the header: it shares the rail's one surface
 with the tree, and the first section's eyebrow does the dividing. The rail names the
 product once; it does not also print the hub's advertised server name, which is the
-constant `evener-hub` on every hub.
+constant `evener-hub` on every hub. The phone drawer uses its Sheet header instead of
+the brand row.
 
 **Rail rows.** Rows sit one `--space-2` in from both rail edges, so a row is a rounded
 pill (`--radius-control`) rather than an edge-to-edge band. Hover is the `--hover-1` wash
@@ -811,7 +813,7 @@ during implementation (noted inline); this table is the one to trust.
 | **Popover** | `{open; onClose; trigger: ReactElement; children; autoFocus? (true); closeOnScroll? (true); stretchTrigger? (false); "data-testid"?}` | The shared floating panel: `trigger` renders in flow and anchors a panel portaled to `document.body` at a fixed position (flip-then-clamp, shared with Menu), so opening never reflows the page. Outside click, Escape, and (unless `closeOnScroll={false}`) scroll or resize call `onClose`; toggling from the trigger is the caller's job. `autoFocus={false}` keeps focus in an anchoring input (the combobox pattern). |
 | **Dialog** | `{open; onClose; title; children; footer?; size?: "default"\|"large"}` | Modal: centered, enters and leaves on the Float recipe (§5), Escape/scrim-click close, trapped + restored focus. Shares its whole contract with Sheet via the internal `OverlayPanel`. `size="large"` fills almost the whole viewport for lightbox-style content. |
 | **ConfirmDialog** | `{open; title; children; confirmLabel: string; cancelLabel? ("Cancel"); destructive? (true); busy? (false); onConfirm(); onCancel()}` | A Dialog pre-composed for "every destructive action confirms": body copy plus a Cancel / confirm-verb footer, danger-toned unless `destructive={false}` (a consequential but non-destructive action like Install). Controlled — key `open` off one "what's pending" state. Escape and scrim-click call `onCancel`, never `onConfirm`; `busy` disables both buttons against a double submit. |
-| **Sheet** | `{side?: "right"\|"bottom"\|"left"; size?: "standard"\|"wide"; open; onClose; title; children; footer?; expandable?: {peekHeight: number; fullScreenFirst?: boolean}; panelClassName?; bodyClassName?}` | Same contract as Dialog (shared `OverlayPanel`); only geometry and its Slide-recipe edge animation differ. `bodyClassName` lands on the sheet's own body element, which is how the sessions drawer renders the Rail flush inside the sheet instead of as a bordered box nested in a bordered box. `side="bottom"` dismisses on a downward swipe from the grab pill, the header, or an unscrolled body: the panel follows the finger and the scrim fades with it; a drag past 35% of the panel's height (capped at 160px) or a fast flick (velocity measured over the last 100ms, discarded when the finger rests 80ms before lifting) projected 200ms ahead calls `onClose`, and the slide out continues from the dragged position; a shorter drag snaps back on the spatial exit budget, instantly under reduced motion. A drag never starts on an interactive control (a range, textarea, select or contenteditable in the body, a button or link in the header), and a touch that starts in a scrolled body or nested scroller, or within 180ms of the sheet's last scroll, stays a scroll, so scrolling an inner list to its top does not dismiss the sheet. A non-expandable bottom sheet shows a decorative grab pill (36×4px) above its header on coarse pointers only (`@media (any-pointer: coarse)`); it carries no role or tab stop, so keyboard and assistive-tech readers keep Escape and the close button. The swipe and the pill are behavior of the existing props: no new public prop. `expandable` instead adds a drag handle and a peek/full geometry (drag past a threshold or tap to toggle; `fullScreenFirst` opens full every time), and a downward drag from `peek` past the dismiss threshold closes it; the handle takes the grab pill's place. `side="left"` and `side="right"` sheets are unchanged. |
+| **Sheet** | `{side?: "right"\|"bottom"\|"left"; size?: "standard"\|"wide"; open; onClose; title; headerActions?: ReactNode; children; footer?; expandable?: {peekHeight: number; fullScreenFirst?: boolean}; panelClassName?; bodyClassName?}` | Same contract as Dialog (shared `OverlayPanel`); edge geometry and the Slide recipe place and animate it. Optional `headerActions` groups controls with the labelled title, followed by Close in visual and tab order. Without actions, Close keeps its top-right position and comes last in the DOM, so focus can enter the body first. `bodyClassName` lands on the sheet's own body element, which is how the sessions drawer renders the Rail flush inside the sheet instead of as a bordered box nested in a bordered box. `side="bottom"` dismisses on a downward swipe from the grab pill, the header, or an unscrolled body: the panel follows the finger and the scrim fades with it; a drag past 35% of the panel's height (capped at 160px) or a fast flick (velocity measured over the last 100ms, discarded when the finger rests 80ms before lifting) projected 200ms ahead calls `onClose`, and the slide out continues from the dragged position; a shorter drag snaps back on the spatial exit budget, instantly under reduced motion. A drag never starts on an interactive control (a range, textarea, select or contenteditable in the body, a button or link in the header), and a touch that starts in a scrolled body or nested scroller, or within 180ms of the sheet's last scroll, stays a scroll, so scrolling an inner list to its top does not dismiss the sheet. A non-expandable bottom sheet shows a decorative grab pill (36×4px) above its header on coarse pointers only (`@media (any-pointer: coarse)`); it carries no role or tab stop, so keyboard and assistive-tech readers keep Escape and the close button. The swipe and the pill are behavior of the existing props: no new public prop. `expandable` instead adds a drag handle and a peek/full geometry (drag past a threshold or tap to toggle; `fullScreenFirst` opens full every time), and a downward drag from `peek` past the dismiss threshold closes it; the handle takes the grab pill's place. `side="left"` and `side="right"` sheets do not swipe. |
 | **FocusScope** | `{trap?: boolean; autoFocus?: boolean (true); children}` | The focus-management primitive Dialog/Sheet/Menu build on: moves focus in on mount, restores on unmount; traps Tab/Shift+Tab when `trap`. `autoFocus={false}` skips both the move-in and the restore, for a popover whose focus must stay in its anchoring input. Does not (yet) set `inert` on anything outside the scope — see §4. |
 | **Tooltip** | `{label: string; children: ReactNode}` | Hover/focus-triggered, 300ms delay, neither triggered on touch (a tap fires both and dismisses neither) and hidden there via CSS. `aria-describedby` wired via `cloneElement` onto a single-element child — works for a native element or any widget that forwards a ref + spreads rest props (Button/IconButton both do, since the fix-wave in §4). |
 | **HoverCard** | `{label: ReactNode; children: ReactNode \| (association) => ReactNode; focusTarget?: () => HTMLElement \| null; longPressEnabled?: boolean; sideAnchor?: () => SideAnchor \| null}` (`HoverCardProps`, barrel-exported) | Rich, non-interactive hover/focus description on the shared floating-bubble lifecycle. Use for structured context that would overload a compact surface; function children place `aria-describedby` on the actual trigger, while `focusTarget` can associate and trigger from an owning composite widget. On a touch device neither hover nor the focus a tap takes reveals it; `longPressEnabled` adds a long press that does, a plain tap activates the trigger's own control, and keyboard or assistive-tech focus still reveals it. `sideAnchor` supplies a caller-measured side placement; without it placement is unchanged. |
@@ -1454,11 +1456,12 @@ underneath them, instead of being indented into the avatar's column for its
 whole height. Measured before this, agent prose got 260px of a 375px screen,
 28 characters a line.
 
-The sessions drawer renders the Rail flush inside the Sheet body (Sheet's
-`bodyClassName`, §3): no inner surface box, no inner radius, because the sheet
-already frames it. Selecting a session closes the drawer, including the
-session already being read: the tap chose a reader, and the list must not stay
-over it.
+**The phone drawer has one heading.** The Sheet's Sessions heading labels the dialog
+and shares one row with Settings, Search and Close, in that order. The drawer omits
+the rail's brand row. A nonzero needs-you count and the New session button remain
+in the body. The Rail fills the Sheet body without a second surface or frame
+(`bodyClassName`, §3). Selecting any session closes the drawer, including the
+session already being read.
 
 ## 12. Phone session controls
 

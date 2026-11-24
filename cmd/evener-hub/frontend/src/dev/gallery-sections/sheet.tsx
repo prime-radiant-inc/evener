@@ -1,6 +1,5 @@
 import { useState } from "react";
-import { Button } from "../../widgets/button";
-import { Sheet, type SheetSide } from "../../widgets/sheet";
+import { Button, IconButton, Sheet, type SheetSide, ToolIcon } from "../../widgets";
 import { GallerySection } from "../GallerySection";
 import styles from "./sheet.module.css";
 
@@ -8,6 +7,7 @@ import styles from "./sheet.module.css";
 // shares Dialog's exact contract) - see this task's report.
 function SheetDemo({ side }: { side: SheetSide }) {
   const [open, setOpen] = useState(true);
+  const [showDetails, setShowDetails] = useState(false);
   const description =
     side === "bottom"
       ? "Slides up from the bottom edge. On a coarse pointer, swipe down from the grab pill, the header, or an unscrolled body to dismiss; the pill itself is decorative. Escape, scrim click, and the close button all close it."
@@ -25,6 +25,17 @@ function SheetDemo({ side }: { side: SheetSide }) {
         open={open}
         onClose={() => setOpen(false)}
         title={`Side: ${side}`}
+        headerActions={
+          side === "left" ? (
+            <IconButton
+              label="Sheet details"
+              icon={<ToolIcon kind="info" />}
+              variant="quiet"
+              aria-pressed={showDetails}
+              onClick={() => setShowDetails((shown) => !shown)}
+            />
+          ) : undefined
+        }
         footer={
           <Button variant="primary" onClick={() => setOpen(false)}>
             Done
@@ -32,6 +43,7 @@ function SheetDemo({ side }: { side: SheetSide }) {
         }
       >
         <p>{description}</p>
+        {side === "left" && showDetails && <p>Header actions share the title row with Close.</p>}
       </Sheet>
     </div>
   );

@@ -2187,12 +2187,20 @@ describe("resource-backed Rail", () => {
     expect(screen.queryByRole("treeitem", { name: /keyboard child/i })).toBeNull();
   });
 
-  test("tapping the already-focused session in the mobile drawer closes it", () => {
+  test("the mobile drawer groups actions with its title and closes on the already-focused session", () => {
     installState([sectionResource("live", [summary({ ref: "local:active", session_id: "active", title: "Active" })])]);
     const paneId = workspaceStore.getState().openPane("session", { ref: "local:active" });
     expect(workspaceStore.getState().focusedPaneId).toBe(paneId);
     const onClose = vi.fn();
     render(<MobilePanel rail={<Rail />} open onClose={onClose} />);
+
+    const drawer = screen.getByRole("dialog");
+    const title = document.getElementById(drawer.getAttribute("aria-labelledby") ?? "");
+    const header = title?.closest("header");
+    expect(header?.contains(within(drawer).getByTestId("rail-settings"))).toBe(true);
+    expect(header?.contains(within(drawer).getByTestId("rail-search"))).toBe(true);
+    expect(header?.contains(within(drawer).getByRole("button", { name: "Close" }))).toBe(true);
+    expect(within(drawer).queryByTestId("rail-brand")).toBeNull();
 
     fireEvent.click(within(sectionRoot("Live")).getByText("Active"));
 
