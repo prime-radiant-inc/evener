@@ -6,13 +6,11 @@ import {
   useLayoutEffect,
   useRef,
 } from "react";
-import { motionDurationMs } from "../../motion/tokens";
 import dialogStyles from "../dialog/dialog.module.css";
 import { ownerDocumentOf, ownerWindowOf } from "../internal/documentRealm";
 import { requireClass } from "../internal/requireClass";
 import styles from "./sheet.module.css";
 
-const SNAP_BACK_CLASS = requireClass(styles.snapBack, "sheet.module.css", "snapBack");
 const HANDLE_CLASS = requireClass(styles.handle, "sheet.module.css", "handle");
 const GRAB_HANDLE_CLASS = requireClass(styles.grabHandle, "sheet.module.css", "grabHandle");
 const BOTTOM_HEADER_CLASS = requireClass(styles.bottomHeader, "sheet.module.css", "bottomHeader");
@@ -26,14 +24,12 @@ const SCROLL_SETTLE_MS = 180;
 const DISMISS_RATIO = 0.35;
 const MAX_DISMISS_THRESHOLD_PX = 160;
 const FALLBACK_DISMISS_THRESHOLD_PX = 120;
-const SNAP_BACK_FALLBACK_SLACK_MS = 50;
 const EXPANDABLE_DRAG_PX = 50;
 const EXPANDABLE_TAP_SLOP_PX = 10;
 const DIRECTION_REVERSAL_SLOP_PX = 2;
 
-const INTERACTIVE_EXCLUDE_SELECTOR =
-  'input[type="range"], textarea, select, [contenteditable]:not([contenteditable="false"])';
-const HEADER_INTERACTIVE_EXCLUDE_SELECTOR = `${INTERACTIVE_EXCLUDE_SELECTOR}, button, a[href], input`;
+const INTERACTIVE_EXCLUDE_SELECTOR = 'input, textarea, select, [contenteditable]:not([contenteditable="false"])';
+const HEADER_INTERACTIVE_EXCLUDE_SELECTOR = `${INTERACTIVE_EXCLUDE_SELECTOR}, button, a[href]`;
 
 export interface UseSheetSwipeOptions {
   open: boolean;
@@ -80,7 +76,9 @@ type GestureState =
   | {
       kind: "pointerDrag";
       pointerId: number;
+      startX: number;
       startY: number;
+      axis: "pending" | "vertical" | "horizontal";
       offsetY: number;
       panelHeight: number;
       samples: VelocitySample[];
@@ -88,18 +86,17 @@ type GestureState =
       expandableMode: "peek" | "full" | undefined;
       maxAbsDelta: number;
       switchedGeometry: boolean;
-      recoveryOffsetY: number | undefined;
+      needsResetOnRelease: boolean;
     };
 
 interface SwipeController {
   gesture: GestureState;
   lastScrollAt: number | null;
   cancelPointer: (() => void) | null;
-  cancelSnapBack: (() => void) | null;
   cancelDeclinedGuard: (() => void) | null;
 }
 
-function clearCallback(ctrl: SwipeController, key: "cancelPointer" | "cancelSnapBack" | "cancelDeclinedGuard"): void {
+function clearCallback(ctrl: SwipeController, key: "cancelPointer" | "cancelDeclinedGuard"): void {
   ctrl[key]?.();
   ctrl[key] = null;
 }
@@ -107,7 +104,6 @@ function clearCallback(ctrl: SwipeController, key: "cancelPointer" | "cancelSnap
 function cancelAll(ctrl: SwipeController): void {
   clearCallback(ctrl, "cancelDeclinedGuard");
   clearCallback(ctrl, "cancelPointer");
-  clearCallback(ctrl, "cancelSnapBack");
 }
 
 function targetElement(target: EventTarget | null): Element | null {
@@ -194,62 +190,21 @@ function computeVelocityY(samples: VelocitySample[], releaseTime: number): numbe
   return dt >= 1 ? (last.y - first.y) / dt : 0;
 }
 
-function clearInlineStyles(panel: HTMLElement | null, scrim: HTMLElement | null): void {
-  if (panel !== null) panel.style.transform = "";
+function clearDragState(panel: HTMLElement | null, scrim: HTMLElement | null): void {
+  if (panel !== null) {
+    delete panel.dataset.swiping;
+    panel.style.transform = "";
+  }
   if (scrim !== null) scrim.style.opacity = "";
 }
 
 function applyDragStyles(panel: HTMLElement, scrim: HTMLElement | null, offsetY: number, panelHeight: number): void {
+  panel.dataset.swiping = "true";
   panel.style.transform = `translateY(${offsetY}px)`;
   if (scrim !== null) {
     const ratio = offsetY / Math.max(panelHeight, 1);
     scrim.style.opacity = String(Math.max(0.4, 1 - ratio * 0.6));
   }
-}
-
-function snapBack(ctrl: SwipeController, panel: HTMLElement, scrim: HTMLElement | null): void {
-  clearCallback(ctrl, "cancelSnapBack");
-  if (scrim !== null) scrim.style.opacity = "";
-
-  const win = ownerWindowOf(panel);
-  if (win.matchMedia?.("(prefers-reduced-motion: reduce)").matches) {
-    panel.classList.remove(SNAP_BACK_CLASS);
-    panel.style.transform = "";
-    return;
-  }
-
-  panel.classList.add(SNAP_BACK_CLASS);
-  panel.style.transform = "translateY(0)";
-
-  let settled = false;
-  const finish = (clearTransform: boolean) => {
-    if (settled) return;
-    settled = true;
-    panel.removeEventListener("transitionend", onTransitionEnd);
-    win.clearTimeout(timer);
-    panel.classList.remove(SNAP_BACK_CLASS);
-    if (clearTransform) panel.style.transform = "";
-    ctrl.cancelSnapBack = null;
-  };
-  const onTransitionEnd = (event: TransitionEvent) => {
-    if (event.target !== panel) return;
-    if (event.propertyName && event.propertyName !== "transform") return;
-    finish(true);
-  };
-  const delay = motionDurationMs("--motion-duration-spatial-exit", panel) + SNAP_BACK_FALLBACK_SLACK_MS;
-  const timer = win.setTimeout(() => finish(true), delay);
-  panel.addEventListener("transitionend", onTransitionEnd);
-  ctrl.cancelSnapBack = () => finish(false);
-}
-
-function settleOrClear(
-  ctrl: SwipeController,
-  panel: HTMLElement | null,
-  scrim: HTMLElement | null,
-  offsetY: number,
-): void {
-  if (panel !== null && offsetY > 0) snapBack(ctrl, panel, scrim);
-  else clearInlineStyles(panel, scrim);
 }
 
 function settleSwipeDrag(
@@ -271,14 +226,14 @@ function settleSwipeDrag(
       const rafId = win.requestAnimationFrame(() => {
         ctrl.cancelDeclinedGuard = null;
         if (latestRef.current.open && ctrl.gesture.kind !== "touchDrag" && ctrl.gesture.kind !== "pointerDrag") {
-          snapBack(ctrl, panel, scrimRef.current);
+          clearDragState(panel, scrimRef.current);
         }
       });
       ctrl.cancelDeclinedGuard = () => win.cancelAnimationFrame(rafId);
       return;
     }
   }
-  settleOrClear(ctrl, panel, scrim, state.offsetY);
+  clearDragState(panel, scrim);
 }
 
 /**
@@ -303,7 +258,6 @@ export function useSheetSwipe({
     gesture: { kind: "idle" },
     lastScrollAt: null,
     cancelPointer: null,
-    cancelSnapBack: null,
     cancelDeclinedGuard: null,
   });
 
@@ -317,8 +271,7 @@ export function useSheetSwipe({
       ctrlRef.current.gesture = { kind: "idle" };
     }
     if (shouldResetStyles) {
-      panelRef.current?.classList.remove(SNAP_BACK_CLASS);
-      clearInlineStyles(panelRef.current, scrimRef.current);
+      clearDragState(panelRef.current, scrimRef.current);
     }
   }, [open, side, panelRef, scrimRef]);
 
@@ -346,7 +299,7 @@ export function useSheetSwipe({
       if (ctrl.gesture.kind !== "idle") {
         if (ctrl.gesture.kind === "pointerDrag") return;
         if (event.touches.length > 1 && isTouchActive(event, ctrl.gesture.touchId)) return;
-        if (ctrl.gesture.kind === "touchDrag") settleOrClear(ctrl, panel, scrimRef.current, ctrl.gesture.offsetY);
+        if (ctrl.gesture.kind === "touchDrag") clearDragState(panel, scrimRef.current);
         ctrl.gesture = { kind: "idle" };
       }
       if (event.touches.length !== 1) return;
@@ -396,7 +349,6 @@ export function useSheetSwipe({
           return;
         }
 
-        clearCallback(ctrl, "cancelSnapBack");
         clearCallback(ctrl, "cancelDeclinedGuard");
         state = ctrl.gesture = {
           kind: "touchDrag",
@@ -460,24 +412,21 @@ export function useSheetSwipe({
           ? currentSide === "bottom" && exp?.geometry !== "full"
           : currentSide === "bottom" || Boolean(exp);
       if (!isOpen || !originAllowsDrag || isExcludedTarget(e.target, bodyRef.current, origin === "header")) {
-        if (orphanedTouch !== null) settleOrClear(ctrl, panelRef.current, scrimRef.current, orphanedTouch.offsetY);
+        if (orphanedTouch !== null) clearDragState(panelRef.current, scrimRef.current);
         return;
       }
 
       const panelAtStart = panelRef.current;
       const win = ownerWindowOf(panelAtStart ?? e.currentTarget);
-      let recoveryOffsetY = orphanedTouch?.offsetY;
-      if (recoveryOffsetY === undefined) {
-        if (ctrl.cancelDeclinedGuard !== null) recoveryOffsetY = 1;
-        else if (ctrl.cancelSnapBack !== null) recoveryOffsetY = 0;
-      }
-      clearCallback(ctrl, "cancelSnapBack");
+      const needsResetOnRelease = orphanedTouch !== null || ctrl.cancelDeclinedGuard !== null;
       clearCallback(ctrl, "cancelDeclinedGuard");
 
       ctrl.gesture = {
         kind: "pointerDrag",
         pointerId: e.pointerId ?? 0,
+        startX: e.clientX,
         startY: e.clientY,
+        axis: "pending",
         offsetY: 0,
         panelHeight: panelAtStart?.getBoundingClientRect().height ?? 0,
         hasTranslated: false,
@@ -485,20 +434,26 @@ export function useSheetSwipe({
         expandableMode: origin === "handle" && exp !== undefined ? exp.geometry : undefined,
         maxAbsDelta: 0,
         switchedGeometry: false,
-        recoveryOffsetY,
+        needsResetOnRelease,
       };
 
       const onPointerMove = (moveEvent: PointerEvent) => {
         const state = ctrl.gesture;
         if (state.kind !== "pointerDrag" || (moveEvent.pointerId ?? 0) !== state.pointerId) return;
 
-        const delta = moveEvent.clientY - state.startY;
-        state.maxAbsDelta = Math.max(state.maxAbsDelta, Math.abs(delta));
+        const dx = moveEvent.clientX - state.startX;
+        const dy = moveEvent.clientY - state.startY;
+        state.maxAbsDelta = Math.max(state.maxAbsDelta, Math.abs(dx), Math.abs(dy));
+        if (state.axis === "pending" && (Math.abs(dx) > LOCK_DISTANCE_PX || Math.abs(dy) > LOCK_DISTANCE_PX)) {
+          state.axis = Math.abs(dx) >= Math.abs(dy) ? "horizontal" : "vertical";
+        }
+        if (state.axis === "horizontal") return;
+
         const panel = panelRef.current;
         const activeSide = latestRef.current.side;
 
         if (state.expandableMode === "full") {
-          if (!state.switchedGeometry && delta > EXPANDABLE_DRAG_PX) {
+          if (!state.switchedGeometry && dy > EXPANDABLE_DRAG_PX) {
             state.switchedGeometry = true;
             latestRef.current.expandable?.onGeometryChange("peek");
           }
@@ -507,22 +462,22 @@ export function useSheetSwipe({
 
         if (state.expandableMode === "peek") {
           if (state.switchedGeometry) return;
-          if (delta < -EXPANDABLE_DRAG_PX) {
+          if (dy < -EXPANDABLE_DRAG_PX) {
             state.switchedGeometry = true;
-            if (state.hasTranslated || state.recoveryOffsetY !== undefined) {
-              clearInlineStyles(panel, scrimRef.current);
+            if (state.hasTranslated || state.needsResetOnRelease) {
+              clearDragState(panel, scrimRef.current);
               state.offsetY = 0;
               state.hasTranslated = false;
-              state.recoveryOffsetY = undefined;
+              state.needsResetOnRelease = false;
             }
             latestRef.current.expandable?.onGeometryChange("full");
             return;
           }
-          if (activeSide !== "bottom" || (!state.hasTranslated && delta <= EXPANDABLE_TAP_SLOP_PX)) return;
+          if (activeSide !== "bottom" || (!state.hasTranslated && dy <= EXPANDABLE_TAP_SLOP_PX)) return;
         }
 
-        if (activeSide !== "bottom" || panel === null) return;
-        const offsetY = Math.max(0, delta);
+        if (activeSide !== "bottom" || panel === null || state.axis !== "vertical") return;
+        const offsetY = Math.max(0, dy);
         if (offsetY > 0 || state.hasTranslated) {
           state.hasTranslated = true;
           state.offsetY = offsetY;
@@ -549,8 +504,7 @@ export function useSheetSwipe({
           latestRef.current.expandable?.onGeometryChange((g) => (g === "peek" ? "full" : "peek"));
         }
         if (panel !== null && state.hasTranslated) settleSwipeDrag(ctrl, latestRef, state, panel, scrimRef, cancelled);
-        else if (state.recoveryOffsetY !== undefined)
-          settleOrClear(ctrl, panel, scrimRef.current, state.recoveryOffsetY);
+        else if (state.needsResetOnRelease) clearDragState(panel, scrimRef.current);
       };
 
       const onPointerUp = (upEvent: PointerEvent) => finishPointer(upEvent, false);

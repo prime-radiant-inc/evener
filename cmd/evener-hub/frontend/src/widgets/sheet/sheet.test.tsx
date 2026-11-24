@@ -10,8 +10,6 @@ import { requireClass } from "../internal/requireClass";
 import { Sheet } from "./index";
 import sheetStyles from "./sheet.module.css";
 
-const snapBackClass = requireClass(sheetStyles.snapBack, "sheet.module.css", "snapBack");
-
 test("renders nothing when closed", () => {
   render(
     <Sheet open={false} onClose={vi.fn()} title="Session settings">
@@ -332,9 +330,12 @@ test("a declined swipe returns the sheet on the spatial exit budget, behind the 
   const css = readModuleCss(import.meta.url, "sheet.module.css");
   const gate = mediaBlock(css, "prefers-reduced-motion: no-preference");
   expect(gate).toMatch(
-    /\.snapBack\s*\{[^}]*transition:\s*transform var\(--motion-duration-spatial-exit\) var\(--motion-easing-standard\);/,
+    /\.bottom\[data-motion="open"\]:not\(\[data-swiping="true"\]\)\s*\{[^}]*transition:\s*transform var\(--motion-duration-spatial-exit\) var\(--motion-easing-standard\);/,
   );
-  expect(css.search(/^\.snapBack\s*\{/m)).toBe(-1);
+  expect(gate).toMatch(
+    /\.expandableBottom\[data-motion="open"\]:not\(\[data-swiping="true"\]\)\s*\{[^}]*height var\(--motion-duration-spatial\) var\(--motion-easing-standard\)[\s\S]*transform var\(--motion-duration-spatial-exit\) var\(--motion-easing-standard\);/,
+  );
+  expect(css).not.toContain(".snapBack");
 });
 
 // The mobile sessions drawer is a full-height side="left" Sheet. jsdom has no
@@ -706,7 +707,7 @@ test("slow downward drag past threshold writes live transform/opacity, preserves
     expect(document.activeElement).toBe(trigger);
     // Advancing past one frame after open turns false must NOT snap back during exit.
     act(() => vi.advanceTimersByTime(32));
-    expect(panel.classList.contains(snapBackClass)).toBe(false);
+    expect(panel.dataset.swiping).toBe("true");
     expect(panel.style.transform).toBe("translateY(150px)");
 
     await exit.finish();
@@ -751,13 +752,12 @@ test("detaching a touched body child mid-gesture does not wedge subsequent body 
     expect(panel.style.transform).toBe("translateY(50px)");
     row2.remove();
 
-    // Tapping header without moving recovers the orphaned offset cleanly via snap-back.
+    // Tapping header without moving recovers the orphaned offset cleanly via resting CSS transition.
     dispatchPointer(header, "pointerdown", { pointerId: 9, clientY: 100 });
     expect(panel.style.transform).toBe("translateY(50px)");
-    expect(panel.classList.contains(snapBackClass)).toBe(false);
+    expect(panel.dataset.swiping).toBe("true");
     dispatchPointer(window, "pointerup", { pointerId: 9, clientY: 100 });
-    expect(panel.classList.contains(snapBackClass)).toBe(true);
-    fireEvent.transitionEnd(panel);
+    expect(panel.dataset.swiping).toBeUndefined();
     expect(panel.style.transform).toBe("");
 
     dispatchPointer(header, "pointerdown", { pointerId: 10, clientY: 100 });
@@ -822,18 +822,22 @@ test("orphaned touch recovery works when the next single-finger touch reuses ide
     onClose.mockClear();
     act(() => vi.advanceTimersByTime(250));
 
-    // 3) touch dragging orphan with identifier 0: snaps back on next touchstart and resets origin.
+    // 3) touch dragging orphan with identifier 0: clears drag state on next touchstart and resets origin.
     dispatchTouch(rowDrag, "touchstart", { touches: [{ identifier: 0, clientY: 100 }] });
     dispatchTouch(rowDrag, "touchmove", { touches: [{ identifier: 0, clientY: 160 }] });
     expect(panel.style.transform).toBe("translateY(60px)");
+    expect(panel.dataset.swiping).toBe("true");
     rowDrag.remove();
     dispatchTouch(body, "touchstart", { touches: [{ identifier: 0, clientY: 200 }] });
-    expect(panel.classList.contains(snapBackClass)).toBe(true);
+    expect(panel.dataset.swiping).toBeUndefined();
+    expect(panel.style.transform).toBe("");
     dispatchTouch(body, "touchmove", { touches: [{ identifier: 0, clientY: 220 }] });
+    expect(panel.dataset.swiping).toBe("true");
     expect(panel.style.transform).toBe("translateY(20px)");
     dispatchTouch(body, "touchend", { changedTouches: [{ identifier: 0, clientY: 220 }] });
     expect(onClose).not.toHaveBeenCalled();
-    act(() => vi.advanceTimersByTime(250));
+    expect(panel.dataset.swiping).toBeUndefined();
+    expect(panel.style.transform).toBe("");
 
     // 3b) Orphaned touch drag that returned to offsetY === 0 clears stale inline styles on next touchstart.
     dispatchTouch(rowZero, "touchstart", { touches: [{ identifier: 0, clientY: 100 }] });
@@ -843,7 +847,7 @@ test("orphaned touch recovery works when the next single-finger touch reuses ide
     rowZero.remove();
     dispatchTouch(body, "touchstart", { touches: [{ identifier: 0, clientY: 100 }] });
     expect(panel.style.transform).toBe("");
-    expect(panel.classList.contains(snapBackClass)).toBe(false);
+    expect(panel.dataset.swiping).toBeUndefined();
     dispatchTouch(body, "touchend", { changedTouches: [{ identifier: 0, clientY: 100 }] });
 
     // 4) Genuine 2-finger secondary touch (touches.length === 2) keeps primary gesture intact.
@@ -892,17 +896,17 @@ test("a descendant calling stopPropagation on touchend or touchcancel does not w
 
   dispatchTouch(swallower, "touchstart", { touches: [{ identifier: 1, clientY: 100 }] });
   dispatchTouch(swallower, "touchmove", { touches: [{ identifier: 1, clientY: 150 }] });
+  expect(panel.dataset.swiping).toBe("true");
   dispatchTouch(swallower, "touchend", { changedTouches: [{ identifier: 1, clientY: 150 }] });
-  expect(panel.classList.contains(snapBackClass)).toBe(true);
-  fireEvent.transitionEnd(panel);
-  expect(panel.classList.contains(snapBackClass)).toBe(false);
+  expect(panel.dataset.swiping).toBeUndefined();
+  expect(panel.style.transform).toBe("");
 
   dispatchTouch(swallower, "touchstart", { touches: [{ identifier: 10, clientY: 100 }] });
   dispatchTouch(swallower, "touchmove", { touches: [{ identifier: 10, clientY: 150 }] });
+  expect(panel.dataset.swiping).toBe("true");
   dispatchTouch(swallower, "touchcancel", { changedTouches: [{ identifier: 10, clientY: 150 }] });
-  expect(panel.classList.contains(snapBackClass)).toBe(true);
-  fireEvent.transitionEnd(panel);
-  expect(panel.classList.contains(snapBackClass)).toBe(false);
+  expect(panel.dataset.swiping).toBeUndefined();
+  expect(panel.style.transform).toBe("");
 
   dispatchTouch(body, "touchstart", { touches: [{ identifier: 2, clientY: 100 }] });
   dispatchTouch(body, "touchmove", { touches: [{ identifier: 2, clientY: 260 }] });
@@ -976,9 +980,8 @@ test("dismiss threshold uses min(panelHeight * 0.35, 160) with 120px fallback at
       act(() => vi.advanceTimersByTime(90));
       dispatchPointer(window, "pointerup", { clientY: 100 + c.below });
       expect(onClose).not.toHaveBeenCalled();
-      expect(panel.classList.contains(snapBackClass)).toBe(true);
-      fireEvent.transitionEnd(panel);
-      expect(panel.classList.contains(snapBackClass)).toBe(false);
+      expect(panel.dataset.swiping).toBeUndefined();
+      expect(panel.style.transform).toBe("");
 
       dispatchPointer(pill, "pointerdown", { clientY: 100 });
       dispatchPointer(window, "pointermove", { clientY: 100 + c.at });
@@ -992,89 +995,38 @@ test("dismiss threshold uses min(panelHeight * 0.35, 160) with 120px fallback at
   }
 });
 
-test("drag below threshold snaps back with .snapBack, resets transform and scrim opacity, and clears .snapBack on transitionend or fallback timer", () => {
-  vi.useFakeTimers();
-  try {
-    const onClose = vi.fn();
-    const { container } = render(
-      <Sheet open side="bottom" onClose={onClose} title="t">
-        <p>Body</p>
-      </Sheet>,
-    );
-    const scrim = container.firstElementChild as HTMLElement;
-    const panel = screen.getByRole("dialog");
-    mockPanelHeight(panel, 400);
-    const body = screen.getByText("Body");
+test("drag below threshold clears data-swiping, inline transform, and scrim opacity so resting CSS glides back", () => {
+  const onClose = vi.fn();
+  const { container } = render(
+    <Sheet open side="bottom" onClose={onClose} title="t">
+      <p>Body</p>
+    </Sheet>,
+  );
+  const scrim = container.firstElementChild as HTMLElement;
+  const panel = screen.getByRole("dialog");
+  mockPanelHeight(panel, 400);
+  const body = screen.getByText("Body");
 
-    // Drag below 140px threshold -> snap back, transitionend clears .snapBack (non-transform ignored).
-    dispatchTouch(body, "touchstart", { touches: [{ identifier: 1, clientY: 100 }] });
-    dispatchTouch(body, "touchmove", { touches: [{ identifier: 1, clientY: 160 }] });
-    expect(panel.style.transform).toBe("translateY(60px)");
-    dispatchTouch(body, "touchend", { changedTouches: [{ identifier: 1, clientY: 160 }] });
+  // Active drag sets data-swiping="true" to suspend the resting return transition; release clears both.
+  dispatchTouch(body, "touchstart", { touches: [{ identifier: 1, clientY: 100 }] });
+  dispatchTouch(body, "touchmove", { touches: [{ identifier: 1, clientY: 160 }] });
+  expect(panel.dataset.swiping).toBe("true");
+  expect(panel.style.transform).toBe("translateY(60px)");
+  dispatchTouch(body, "touchend", { changedTouches: [{ identifier: 1, clientY: 160 }] });
 
-    expect(onClose).not.toHaveBeenCalled();
-    expect(panel.classList.contains(snapBackClass)).toBe(true);
-    expect(panel.style.transform).toBe("translateY(0)");
-    expect(scrim.style.opacity).toBe("");
+  expect(onClose).not.toHaveBeenCalled();
+  expect(panel.dataset.swiping).toBeUndefined();
+  expect(panel.style.transform).toBe("");
+  expect(scrim.style.opacity).toBe("");
 
-    const heightTransition = new Event("transitionend", { bubbles: true });
-    Object.defineProperty(heightTransition, "propertyName", { value: "height" });
-    panel.dispatchEvent(heightTransition);
-    expect(panel.classList.contains(snapBackClass)).toBe(true);
-
-    const transformTransition = new Event("transitionend", { bubbles: true });
-    Object.defineProperty(transformTransition, "propertyName", { value: "transform" });
-    panel.dispatchEvent(transformTransition);
-    expect(panel.classList.contains(snapBackClass)).toBe(false);
-    expect(panel.style.transform).toBe("");
-
-    // Fallback timer (180ms + 50ms = 230ms) clears .snapBack when transitionend never arrives.
-    dispatchTouch(body, "touchstart", { touches: [{ identifier: 2, clientY: 100 }] });
-    dispatchTouch(body, "touchmove", { touches: [{ identifier: 2, clientY: 150 }] });
-    dispatchTouch(body, "touchend", { changedTouches: [{ identifier: 2, clientY: 150 }] });
-    expect(panel.classList.contains(snapBackClass)).toBe(true);
-
-    act(() => {
-      vi.advanceTimersByTime(229);
-    });
-    expect(panel.classList.contains(snapBackClass)).toBe(true);
-    act(() => {
-      vi.advanceTimersByTime(1);
-    });
-    expect(panel.classList.contains(snapBackClass)).toBe(false);
-    expect(panel.style.transform).toBe("");
-
-    // Starting a new drag mid-snap-back removes .snapBack immediately and cancels old timer.
-    dispatchTouch(body, "touchstart", { touches: [{ identifier: 3, clientY: 100 }] });
-    dispatchTouch(body, "touchmove", { touches: [{ identifier: 3, clientY: 150 }] });
-    dispatchTouch(body, "touchend", { changedTouches: [{ identifier: 3, clientY: 150 }] });
-    expect(panel.classList.contains(snapBackClass)).toBe(true);
-    dispatchTouch(body, "touchstart", { touches: [{ identifier: 4, clientY: 100 }] });
-    dispatchTouch(body, "touchmove", { touches: [{ identifier: 4, clientY: 130 }] });
-    expect(panel.classList.contains(snapBackClass)).toBe(false);
-    expect(panel.style.transform).toBe("translateY(30px)");
-    act(() => vi.advanceTimersByTime(250));
-    expect(panel.style.transform).toBe("translateY(30px)");
-    dispatchTouch(body, "touchend", { changedTouches: [{ identifier: 4, clientY: 130 }] });
-    act(() => vi.advanceTimersByTime(230));
-
-    // Under prefers-reduced-motion: reduce, snap-back clears immediately with no .snapBack wait.
-    const origMatchMedia = window.matchMedia;
-    window.matchMedia = ((q: string) =>
-      ({ matches: q === "(prefers-reduced-motion: reduce)" }) as MediaQueryList) as typeof window.matchMedia;
-    try {
-      dispatchTouch(body, "touchstart", { touches: [{ identifier: 5, clientY: 100 }] });
-      dispatchTouch(body, "touchmove", { touches: [{ identifier: 5, clientY: 150 }] });
-      dispatchTouch(body, "touchend", { changedTouches: [{ identifier: 5, clientY: 150 }] });
-      expect(panel.classList.contains(snapBackClass)).toBe(false);
-      expect(panel.style.transform).toBe("");
-      expect(scrim.style.opacity).toBe("");
-    } finally {
-      window.matchMedia = origMatchMedia;
-    }
-  } finally {
-    vi.useRealTimers();
-  }
+  // Starting a new drag immediately re-enables live tracking without fighting a return transition.
+  dispatchTouch(body, "touchstart", { touches: [{ identifier: 2, clientY: 100 }] });
+  dispatchTouch(body, "touchmove", { touches: [{ identifier: 2, clientY: 130 }] });
+  expect(panel.dataset.swiping).toBe("true");
+  expect(panel.style.transform).toBe("translateY(30px)");
+  dispatchTouch(body, "touchend", { changedTouches: [{ identifier: 2, clientY: 130 }] });
+  expect(panel.dataset.swiping).toBeUndefined();
+  expect(panel.style.transform).toBe("");
 });
 
 test("fast flick projects velocity forward to dismiss, while > 80ms hold before lift zeroes velocity and upward reversal snaps back", () => {
@@ -1107,8 +1059,8 @@ test("fast flick projects velocity forward to dismiss, while > 80ms hold before 
     act(() => vi.advanceTimersByTime(90));
     dispatchTouch(body, "touchend", { changedTouches: [{ identifier: 2, clientY: 150 }] });
     expect(onClose).not.toHaveBeenCalled();
-    expect(panel.classList.contains(snapBackClass)).toBe(true);
-    act(() => vi.advanceTimersByTime(230));
+    expect(panel.dataset.swiping).toBeUndefined();
+    expect(panel.style.transform).toBe("");
 
     // 3) Upward reversal before lift: dragged to 160px (past 140px), then pulled up to 145px in 15ms
     // => v = -1 px/ms, projectedY = 145 - 200 = -55 < 140 => snaps back.
@@ -1119,9 +1071,8 @@ test("fast flick projects velocity forward to dismiss, while > 80ms hold before 
     dispatchTouch(body, "touchmove", { touches: [{ identifier: 3, clientY: 245 }] });
     dispatchTouch(body, "touchend", { changedTouches: [{ identifier: 3, clientY: 245 }] });
     expect(onClose).not.toHaveBeenCalled();
-    expect(panel.classList.contains(snapBackClass)).toBe(true);
-    expect(panel.style.transform).toBe("translateY(0)");
-    act(() => vi.advanceTimersByTime(230));
+    expect(panel.dataset.swiping).toBeUndefined();
+    expect(panel.style.transform).toBe("");
 
     // 4) Slow multi-step upward reversal (120 Hz: y 100->220 in 40ms, then 7 frames of -2px over 56ms) snaps back.
     dispatchTouch(body, "touchstart", { touches: [{ identifier: 4, clientY: 100 }] });
@@ -1133,9 +1084,8 @@ test("fast flick projects velocity forward to dismiss, while > 80ms hold before 
     }
     dispatchTouch(body, "touchend", { changedTouches: [{ identifier: 4, clientY: 206 }] });
     expect(onClose).not.toHaveBeenCalled();
-    expect(panel.classList.contains(snapBackClass)).toBe(true);
-    expect(panel.style.transform).toBe("translateY(0)");
-    act(() => vi.advanceTimersByTime(230));
+    expect(panel.dataset.swiping).toBeUndefined();
+    expect(panel.style.transform).toBe("");
 
     // 5) Symmetric trough reversal: downward->upward to 180, then 7 frames of +2px over 56ms projects downward flick to dismiss.
     dispatchTouch(body, "touchstart", { touches: [{ identifier: 5, clientY: 100 }] });
@@ -1174,37 +1124,33 @@ test("touchcancel, pointercancel, and declined close (open stays true after onCl
     dispatchTouch(body, "touchmove", { touches: [{ identifier: 1, clientY: 260 }] });
     dispatchTouch(body, "touchcancel", { changedTouches: [{ identifier: 1, clientY: 260 }] });
     expect(onClose).not.toHaveBeenCalled();
-    expect(panel.classList.contains(snapBackClass)).toBe(true);
-    expect(panel.style.transform).toBe("translateY(0)");
+    expect(panel.dataset.swiping).toBeUndefined();
+    expect(panel.style.transform).toBe("");
     expect(scrim.style.opacity).toBe("");
-    act(() => vi.advanceTimersByTime(230));
 
     // pointercancel mid-drag
     dispatchPointer(header, "pointerdown", { pointerId: 3, clientY: 100 });
     dispatchPointer(window, "pointermove", { pointerId: 3, clientY: 260 });
     dispatchPointer(window, "pointercancel", { pointerId: 3, clientY: 260 });
     expect(onClose).not.toHaveBeenCalled();
-    expect(panel.classList.contains(snapBackClass)).toBe(true);
-    expect(panel.style.transform).toBe("translateY(0)");
+    expect(panel.dataset.swiping).toBeUndefined();
+    expect(panel.style.transform).toBe("");
     expect(scrim.style.opacity).toBe("");
-    act(() => vi.advanceTimersByTime(230));
 
-    // Declined close: caller leaves open={true} after onClose() -> snaps back one rAF later.
+    // Declined close: caller leaves open={true} after onClose() -> clears drag state one rAF later.
     dispatchPointer(header, "pointerdown", { pointerId: 4, clientY: 100 });
     dispatchPointer(window, "pointermove", { pointerId: 4, clientY: 280 });
     dispatchPointer(window, "pointerup", { pointerId: 4, clientY: 280 });
     expect(onClose).toHaveBeenCalledOnce();
+    expect(panel.dataset.swiping).toBe("true");
     expect(panel.style.transform).toBe("translateY(180px)");
     act(() => vi.advanceTimersByTime(20));
-    expect(panel.classList.contains(snapBackClass)).toBe(true);
-    expect(panel.style.transform).toBe("translateY(0)");
-    expect(scrim.style.opacity).toBe("");
-    act(() => vi.advanceTimersByTime(230));
-    expect(panel.classList.contains(snapBackClass)).toBe(false);
+    expect(panel.dataset.swiping).toBeUndefined();
     expect(panel.style.transform).toBe("");
+    expect(scrim.style.opacity).toBe("");
     onClose.mockClear();
 
-    // Declined close + header tap before rAF fires still snaps back cleanly on pointerup.
+    // Declined close + header tap before rAF fires still clears drag state cleanly on pointerup.
     dispatchPointer(header, "pointerdown", { pointerId: 5, clientY: 100 });
     dispatchPointer(window, "pointermove", { pointerId: 5, clientY: 280 });
     dispatchPointer(window, "pointerup", { pointerId: 5, clientY: 280 });
@@ -1212,15 +1158,12 @@ test("touchcancel, pointercancel, and declined close (open stays true after onCl
     expect(panel.style.transform).toBe("translateY(180px)");
     dispatchPointer(header, "pointerdown", { pointerId: 6, clientY: 100 });
     dispatchPointer(window, "pointerup", { pointerId: 6, clientY: 100 });
-    expect(panel.classList.contains(snapBackClass)).toBe(true);
-    expect(panel.style.transform).toBe("translateY(0)");
-    expect(scrim.style.opacity).toBe("");
-    act(() => vi.advanceTimersByTime(230));
-    expect(panel.classList.contains(snapBackClass)).toBe(false);
+    expect(panel.dataset.swiping).toBeUndefined();
     expect(panel.style.transform).toBe("");
+    expect(scrim.style.opacity).toBe("");
     onClose.mockClear();
 
-    // Declined close + body touch straddling rAF then lifting without drag still snaps back cleanly.
+    // Declined close + body touch straddling rAF then lifting without drag still clears drag state cleanly.
     dispatchPointer(header, "pointerdown", { pointerId: 7, clientY: 100 });
     dispatchPointer(window, "pointermove", { pointerId: 7, clientY: 280 });
     dispatchPointer(window, "pointerup", { pointerId: 7, clientY: 280 });
@@ -1228,13 +1171,10 @@ test("touchcancel, pointercancel, and declined close (open stays true after onCl
     expect(panel.style.transform).toBe("translateY(180px)");
     dispatchTouch(body, "touchstart", { touches: [{ identifier: 8, clientY: 100 }] });
     act(() => vi.advanceTimersByTime(20));
-    expect(panel.classList.contains(snapBackClass)).toBe(true);
-    expect(panel.style.transform).toBe("translateY(0)");
+    expect(panel.dataset.swiping).toBeUndefined();
+    expect(panel.style.transform).toBe("");
     expect(scrim.style.opacity).toBe("");
     dispatchTouch(body, "touchend", { changedTouches: [{ identifier: 8, clientY: 100 }] });
-    act(() => vi.advanceTimersByTime(230));
-    expect(panel.classList.contains(snapBackClass)).toBe(false);
-    expect(panel.style.transform).toBe("");
   } finally {
     vi.useRealTimers();
   }
@@ -1248,6 +1188,7 @@ test("scrolled ancestor, 180ms scroll cooldown, horizontal/upward swipes, second
       <Sheet open side="bottom" onClose={onClose} title="Header title">
         <div data-testid="scroller">
           <p>Scroll content</p>
+          <input type="text" aria-label="Provider name" />
           <input type="range" aria-label="Slider" />
           <textarea aria-label="Notes" />
           <select aria-label="Choice">
@@ -1324,6 +1265,17 @@ test("scrolled ancestor, 180ms scroll cooldown, horizontal/upward swipes, second
     dispatchTouch(content, "touchend", { changedTouches: [{ identifier: 5, clientY: 400 }] });
     expect(onClose).not.toHaveBeenCalled();
 
+    // 3b) Sideways pointer swipes across header or grab pill with slight downward angle never dismiss.
+    for (const [index, target] of [header, pill].entries()) {
+      const pointerId = 40 + index;
+      dispatchPointer(target, "pointerdown", { pointerId, clientX: 50, clientY: 100 });
+      act(() => vi.advanceTimersByTime(40));
+      dispatchPointer(window, "pointermove", { pointerId, clientX: 250, clientY: 130 });
+      dispatchPointer(window, "pointerup", { pointerId, clientX: 250, clientY: 130 });
+      expect(panel.style.transform).toBe("");
+      expect(onClose).not.toHaveBeenCalled();
+    }
+
     // 4) Secondary touch ID and secondary pointer ID are ignored.
     dispatchTouch(content, "touchstart", { touches: [{ identifier: 6, clientY: 100 }] });
     dispatchTouch(content, "touchmove", { touches: [{ identifier: 6, clientY: 140 }] });
@@ -1359,9 +1311,10 @@ test("scrolled ancestor, 180ms scroll cooldown, horizontal/upward swipes, second
     dispatchPointer(window, "pointerup", { pointerId: 11, clientY: 150 });
     act(() => vi.advanceTimersByTime(250));
 
-    // 5) Interactive exclusions: Close button, range, textarea, select, [contenteditable]
+    // 5) Interactive exclusions: Close button, text/range inputs, textarea, select, [contenteditable]
     const excluded = [
       screen.getByRole("button", { name: "Close" }),
+      screen.getByRole("textbox", { name: "Provider name" }),
       screen.getByRole("slider", { name: "Slider" }),
       screen.getByRole("textbox", { name: "Notes" }),
       screen.getByRole("combobox", { name: "Choice" }),
@@ -1472,9 +1425,8 @@ test("expandable keeps full->peek, peek->full, and tap-toggle, while dismissing 
   dispatchPointer(window, "pointerup", { clientY: 140 });
   expect(onClose).not.toHaveBeenCalled();
   expect(geometry()).toBe("peek");
-  expect(panel.classList.contains(snapBackClass)).toBe(true);
-  fireEvent.transitionEnd(panel);
-  expect(panel.classList.contains(snapBackClass)).toBe(false);
+  expect(panel.dataset.swiping).toBeUndefined();
+  expect(panel.style.transform).toBe("");
 
   // Downward drag in peek past threshold dismisses.
   dispatchPointer(handle, "pointerdown", { clientY: 100 });
@@ -1513,11 +1465,11 @@ test("bottom swipe in a Dockview popout binds and cleans up listeners on ownerWi
     // Body touch below threshold snaps back cleanly in the popout realm.
     dispatchTouch(bodyText, "touchstart", { touches: [{ identifier: 1, clientY: 100 }] });
     dispatchTouch(bodyText, "touchmove", { touches: [{ identifier: 1, clientY: 140 }] });
+    expect(panel.dataset.swiping).toBe("true");
     expect(panel.style.transform).toBe("translateY(40px)");
     dispatchTouch(bodyText, "touchend", { changedTouches: [{ identifier: 1, clientY: 140 }] });
-    expect(panel.classList.contains(snapBackClass)).toBe(true);
-    fireEvent.transitionEnd(panel);
-    expect(panel.classList.contains(snapBackClass)).toBe(false);
+    expect(panel.dataset.swiping).toBeUndefined();
+    expect(panel.style.transform).toBe("");
 
     dispatchPointer(header, "pointerdown", { pointerId: 1, clientY: 100 });
     const added = addSpy.mock.calls.filter(([type]) => type === "pointermove" || type === "pointerup");
@@ -1628,9 +1580,7 @@ test("expandable handle tap before rAF on declined close snaps back cleanly", ()
 
     dispatchPointer(handle, "pointerdown", { pointerId: 2, clientY: 100 });
     dispatchPointer(window, "pointerup", { pointerId: 2, clientY: 100 });
-    expect(panel.classList.contains(snapBackClass)).toBe(true);
-    expect(panel.style.transform).toBe("translateY(0)");
-    act(() => vi.advanceTimersByTime(230));
+    expect(panel.dataset.swiping).toBeUndefined();
     expect(panel.style.transform).toBe("");
   } finally {
     vi.useRealTimers();

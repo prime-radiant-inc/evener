@@ -161,10 +161,18 @@
   }
 }
 
-/* Applied while a declined swipe sends the panel back to rest: the move runs
- * on the spatial exit budget, and the gate keeps it instant under reduce. */
+/* While open and not actively dragged, clearing an inline drag transform
+ * glides the sheet back to rest on the spatial exit budget. Dragging sets
+ * data-swiping="true" so the panel tracks the finger 1:1, and closing flips
+ * data-motion to "closing" so the exit recipe owns the motion. */
 @media (prefers-reduced-motion: no-preference) {
-  .snapBack {
+  .bottom[data-motion="open"]:not([data-swiping="true"]) {
     transition: transform var(--motion-duration-spatial-exit) var(--motion-easing-standard);
+  }
+
+  .expandableBottom[data-motion="open"]:not([data-swiping="true"]) {
+    transition:
+      height var(--motion-duration-spatial) var(--motion-easing-standard),
+      transform var(--motion-duration-spatial-exit) var(--motion-easing-standard);
   }
 }
