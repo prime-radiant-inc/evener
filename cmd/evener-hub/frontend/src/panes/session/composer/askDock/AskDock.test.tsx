@@ -1,8 +1,8 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { Thread, ThreadReadResponse } from "@evener/appwire-client";
-import { hydrateThread } from "@evener/appwire-client";
+import type { ActivityJob, ActivityTree, Thread, ThreadReadResponse } from "@evener/appwire-client";
+import { buildEntityView, type EntityView, hydrateThread } from "@evener/appwire-client";
 import type { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -20,6 +20,7 @@ import {
 } from "../../../../stores/threads";
 import { connectReadyFakeClient } from "../../../../testing/connectionTestUtils";
 import { ALL_CAPABILITIES as CAPABILITIES } from "../../../../threadTestUtils";
+import { TranscriptRenderProvider } from "../../../../transcriptDisplay/renderContext";
 import "../../../doc";
 import { resetComposerFocusStoreForTests, useComposerFocusRequest } from "../composerFocus";
 import { AskDock, AskDockAnnouncements } from "./AskDock";
@@ -668,9 +669,9 @@ test("Mod+Enter on a focused link in the question prose opens the link, not the 
 });
 
 // Question prose resolves file:// report links through the transcript's
-// document machinery, same as assistant prose: the dock supplies its own
-// transcript render context (thread + paneId), so a report link opens
-// beside the answering surface instead of a browser-blocked raw anchor.
+// document machinery, same as assistant prose. The dock is
+// ConversationBody's trailing row inside TranscriptBody's own render
+// provider, so the test wraps it the same way production does.
 test("a file:// report link in the question opens the document beside", async () => {
   const fake = connectReadyFakeClient();
   fake.on("thread/read", () => readResponse("ref_a"));
@@ -683,13 +684,87 @@ test("a file:// report link in the question opens the document beside", async ()
       options: [{ label: "Yes", detail: "" }],
     },
   ]);
-  render(<AskDock ref="ref_a" paneId="pane_fixture" />);
+  const thread = threadsStore.getState().threads.get("ref_a");
+  render(
+    <TranscriptRenderProvider sessionRef="ref_a" thread={thread} sourcePaneId="pane_fixture">
+      <AskDock ref="ref_a" paneId="pane_fixture" />
+    </TranscriptRenderProvider>,
+  );
 
   const open = screen.getByRole("button", { name: "Open beside: docs/report.md" });
   fireEvent.click(open);
   expect(workspaceStore.getState().panes).toMatchObject([
     { type: "doc", params: { session: "ref_a", path: "docs/report.md", kind: "file" } },
   ]);
+});
+
+// A question can name a job or delegate the session already shows
+// (docs/product/session-activity.md's inline controls). The dock is
+// ConversationBody's trailing row INSIDE TranscriptBody's own render
+// provider, which carries the session model, the pane id and the shared
+// entity map - so the dock must INHERIT that context, never shadow it with
+// a thinner nested provider that clears the entity map.
+const ASK_ENTITY_OWNER = "02wMz5TxvEMoJEDTDGOTil";
+const ASK_JOB = `job_${ASK_ENTITY_OWNER}_000000000123`;
+
+function askEntityViews(): ReadonlyMap<string, EntityView> {
+  const job: ActivityJob = {
+    jobId: ASK_JOB,
+    ownerSessionId: ASK_ENTITY_OWNER,
+    ownerRef: "ref_a",
+    type: "shell",
+    status: "completed",
+    outcome: "success",
+    terminal: true,
+    background: false,
+    hasOutput: true,
+    description: "Compile the frontend",
+    command: "npm run build",
+    startedAt: "2026-09-13T20:00:00Z",
+    exitCode: 0,
+    outputBytes: 12,
+  };
+  const tree: ActivityTree = {
+    revision: 1,
+    root: {
+      kind: "session",
+      sessionId: ASK_ENTITY_OWNER,
+      ref: "ref_a",
+      label: "root",
+      aggregate: "completed",
+      counts: { active: 0, failed: 0, completed: 2, complete: true },
+      entries: [{ kind: "shell", job }],
+      branch: {},
+    },
+  };
+  return buildEntityView({ sessionRef: "ref_a", tree, turns: [], stale: false, ended: false });
+}
+
+test("a job id in the question prose resolves from the transcript's entity map", async () => {
+  const fake = connectReadyFakeClient();
+  fake.on("thread/read", () => readResponse("ref_a"));
+  await threadsStore.getState().ensureThread("ref_a");
+  startTurn(fake, "ref_a", "turn_1");
+  ackAskUserCall(fake, "ref_a", "turn_1", "item_1", "call_1", [
+    {
+      header: "Deploy?",
+      question: `What about job ${ASK_JOB} that just finished?`,
+      options: [{ label: "Yes", detail: "" }],
+    },
+  ]);
+  const thread = threadsStore.getState().threads.get("ref_a");
+  render(
+    <TranscriptRenderProvider
+      sessionRef="ref_a"
+      thread={thread}
+      sourcePaneId="pane_fixture"
+      entities={askEntityViews()}
+    >
+      <AskDock ref="ref_a" paneId="pane_fixture" />
+    </TranscriptRenderProvider>,
+  );
+
+  expect(screen.getByTestId("entity-trigger").textContent).toBe(ASK_JOB);
 });
 
 test("Mod+Enter advances rather than sends when another question is still unanswered", async () => {

@@ -73,8 +73,6 @@ import type { AskBatch, AskResolution } from "@evener/appwire-client";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { useCardPrimaryAction } from "../../../../keybindings/cardPrimaryAction";
 import { isIMECompositionKeydown } from "../../../../keybindings/dispatcher";
-import { useThreadsStore } from "../../../../stores/threads";
-import { TranscriptRenderProvider } from "../../../../transcriptDisplay/renderContext";
 import { Button, Card, StatusDot, ToolIcon, useToasts, VisuallyHidden } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { useRovingRadio } from "../../../../widgets/internal/rovingRadio";
@@ -471,13 +469,6 @@ export function AskDock({ ref: sessionRef, paneId }: AskDockProps) {
   const batches = useAskDockStore((s) => s.byRef.get(sessionRef)?.batches ?? NO_BATCHES);
   const answers = useAskDockStore((s) => s.byRef.get(sessionRef)?.answers ?? NO_ANSWERS);
   const pendingGreeted = useAskDockStore((s) => s.byRef.get(sessionRef)?.pendingGreeted ?? false);
-  // The dock's question prose renders through AgentMarkdown, whose file and
-  // entity resolution reads the thread's cwd/artifact roots and the owning
-  // pane. The dock already reconciles off the threads store (askDockStore),
-  // so it supplies the render context itself rather than waiting for a
-  // transcript item renderer that never wraps it (it is ConversationBody's
-  // trailing row, outside TurnBlock's per-item context).
-  const thread = useThreadsStore((s) => s.threads.get(sessionRef));
   const toasts = useToasts();
   const dockRef = useRef<HTMLDivElement>(null);
 
@@ -613,11 +604,13 @@ export function AskDock({ ref: sessionRef, paneId }: AskDockProps) {
   return (
     // biome-ignore lint/a11y/noStaticElementInteractions: catches Alt+PageUp/Down bubbling up from any control inside any batch - the div is a layout container, not itself interactive, same precedent as the batch-level Enter handler above
     <div className={CLASS.dock} ref={dockRef} data-ask-response-dock onKeyDown={handleDockKeyDown}>
-      <TranscriptRenderProvider thread={thread} sourcePaneId={paneId}>
-        {batches.map((batch) => (
-          <AskBatchCard key={batch.id} sessionRef={sessionRef} batch={batch} answers={answers} onSend={handleSend} />
-        ))}
-      </TranscriptRenderProvider>
+      {/* The question prose renders through AgentMarkdown and inherits the
+          transcript render context (session model, pane id, shared entity
+          map) from TranscriptBody's provider, which wraps this trailing
+          row; entity references in the questions need that shared map. */}
+      {batches.map((batch) => (
+        <AskBatchCard key={batch.id} sessionRef={sessionRef} batch={batch} answers={answers} onSend={handleSend} />
+      ))}
     </div>
   );
 }
