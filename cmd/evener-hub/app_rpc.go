@@ -1024,7 +1024,29 @@ func concurrentForwardedRequest(method string, params json.RawMessage) (pool str
 	if pool, ok := forwardedHostRead(method, params); ok {
 		return pool, true
 	}
+	if pool, ok := forwardedFilesSearch(method, params); ok {
+		return pool, true
+	}
 	return forwardedDaemonControl(method, params)
+}
+
+func forwardedFilesSearch(method string, params json.RawMessage) (string, bool) {
+	if method != appwire.MethodEvenerFilesSearch {
+		return "", false
+	}
+	var searchParams appwire.FilesSearchParams
+	if json.Unmarshal(params, &searchParams) != nil {
+		return "", false
+	}
+	ref := strings.TrimSpace(searchParams.Ref)
+	if ref == "" {
+		return "", false
+	}
+	parsed, err := appwire.ParseRef(ref)
+	if err != nil || parsed.SourceID == "" || parsed.SourceID == appwire.LocalSourceID {
+		return "", false
+	}
+	return parsed.SourceID, true
 }
 
 func newHubAppServer(cfg hubcore.WebConfig, sources *appsource.Registry) *appserver.Server {
@@ -2060,6 +2082,10 @@ func registerMiscHandlers(server *appserver.Server, cfg hubcore.WebConfig, sourc
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPathsComplete, func(_ context.Context, params appwire.PathsCompleteParams) (appwire.PathsCompleteResponse, error) {
 		return fspaths.CompletePaths(params)
+	})
+	fileSearch := newFileSearchService(cfg, sources)
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerFilesSearch, func(ctx context.Context, params appwire.FilesSearchParams) (appwire.FilesSearchResponse, error) {
+		return fileSearch.Search(ctx, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerDirsCreate, func(_ context.Context, params appwire.DirsCreateParams) (appwire.DirsCreateResponse, error) {
 		return hubDirsCreate(cfg, params)

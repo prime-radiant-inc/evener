@@ -1,6 +1,7 @@
 package hub
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -227,6 +228,17 @@ func (c *hubHostAdminController) Request(ctx context.Context, params appwire.Hos
 	// refused without consulting the source registry at all.
 	if !appwire.IsHostRequestMethod(params.Method) {
 		return nil, appwire.InvalidParams(fmt.Sprintf("method %q is not a permitted remote admin method", params.Method))
+	}
+	if params.Method == appwire.MethodEvenerFilesSearch {
+		if raw := bytes.TrimSpace(params.Params); len(raw) > 0 && !bytes.Equal(raw, []byte("null")) {
+			var searchParams appwire.FilesSearchParams
+			if err := json.Unmarshal(raw, &searchParams); err != nil {
+				return nil, appwire.InvalidParams(fmt.Sprintf("invalid %s params: %v", params.Method, err))
+			}
+			if strings.TrimSpace(searchParams.Ref) != "" {
+				return nil, appwire.InvalidParams(fmt.Sprintf("%s via %s does not permit ref", params.Method, appwire.MethodEvenerHostRequest))
+			}
+		}
 	}
 	remote, err := c.remoteSourceFor(host)
 	if err != nil {
