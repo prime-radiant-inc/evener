@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { ModelCatalog, type ModelCatalog as ModelCatalogEnvelope, ModelCatalogPanel } from "../../widgets/modelCatalog";
 import { Sheet } from "../../widgets/sheet";
-import { ThemeFlip } from "../ThemeFlip";
+import { GallerySection } from "../GallerySection";
 import styles from "./modelCatalog.module.css";
 
 // The rich model catalog widget (wave-8 T2 filled it: provider grouping,
@@ -55,16 +55,18 @@ function SheetDemo() {
 
 export default function ModelCatalogGallerySection() {
   return (
-    <section>
-      <h2>Model catalog</h2>
-      <ThemeFlip>
-        <ModelCatalog value="" onChange={() => {}} loadCatalog={loadCatalog} />
-        <ModelCatalog value="anthropic/claude-sonnet-4-5" onChange={() => {}} loadCatalog={loadCatalog} />
-      </ThemeFlip>
-      <h3>Mobile sheet variant</h3>
-      <ThemeFlip>
-        <SheetDemo />
-      </ThemeFlip>
-    </section>
+    <GallerySection
+      title="Model catalog"
+      flips={[
+        <>
+          <ModelCatalog value="" onChange={() => {}} loadCatalog={loadCatalog} />
+          <ModelCatalog value="anthropic/claude-sonnet-4-5" onChange={() => {}} loadCatalog={loadCatalog} />
+        </>,
+        <>
+          <h3>Mobile sheet variant</h3>
+          <SheetDemo />
+        </>,
+      ]}
+    />
   );
 }
