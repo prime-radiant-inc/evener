@@ -1,6 +1,8 @@
 .panel {
   width: min(760px, calc(100vw - var(--space-8)));
-  max-height: calc(100dvh - var(--space-8));
+  /* Outside the phone layout, the panel stops growing well before it would
+   * read as a full-height sheet; a long folder list scrolls inside it. */
+  max-height: min(720px, calc(100dvh - var(--space-8)));
   overflow: hidden;
 }
 

@@ -1,5 +1,5 @@
 import { Banner } from "../../widgets/banner";
-import { ThemeFlip } from "../ThemeFlip";
+import { GallerySection } from "../GallerySection";
 import styles from "./banner.module.css";
 
 // The banner is position: absolute, so each demo frames it in a relative
@@ -40,12 +40,12 @@ function BannerDemo() {
 
 export default function BannerGallerySection() {
   return (
-    <section data-testid="banner-gallery">
-      <h2>Banner</h2>
-      <p className={styles.note}>Overlay status strip — floats over content, never pushes it down.</p>
-      <ThemeFlip>
-        <BannerDemo />
-      </ThemeFlip>
-    </section>
+    <GallerySection
+      title="Banner"
+      testId="banner-gallery"
+      note={<p className={styles.note}>Overlay status strip — floats over content, never pushes it down.</p>}
+    >
+      <BannerDemo />
+    </GallerySection>
   );
 }

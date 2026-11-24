@@ -516,6 +516,13 @@ function RailQuotaWait({ session }: { session: RailSession }): ReactNode {
 // usage limit counts down, so only that row reads the rail's clock
 // (RailWhyTicking): every other line is a function of the summary alone and
 // stays asleep through a tick.
+
+// A host's plain name, plus the rail's one "(offline)" suffix where the
+// manifest says the host is unreachable.
+function offlineHostLabel(name: string, online: boolean): string {
+  return online ? name : `${name} (offline)`;
+}
+
 interface RailWhyProps {
   session: RailSession;
   state: BoardState;
@@ -557,7 +564,7 @@ function RailWhyLine({ session, state, host, now }: RailWhyProps & { now: number
       {said !== undefined && host !== undefined && " · "}
       {host !== undefined && (
         <span data-testid="rail-row-why-host" data-host-online={host.online ? "true" : "false"}>
-          {host.online ? host.label : `${host.label} (offline)`}
+          {offlineHostLabel(host.label, host.online)}
         </span>
       )}
     </span>
@@ -637,7 +644,12 @@ function SessionContextCard({
     <div className={CLASS.contextCard} data-state={state}>
       <div className={CLASS.contextHead}>
         <Eyebrow as="span">Session</Eyebrow>
-        <span className={CLASS.contextStatus} data-testid="rail-context-status" data-status-kind={status.kind}>
+        <span
+          className={CLASS.contextStatus}
+          data-testid="rail-context-status"
+          data-status-kind={status.kind}
+          data-hue={state === "needs-you" ? "attention" : state === "failed" ? "danger" : undefined}
+        >
           {status.text}
         </span>
       </div>
@@ -645,11 +657,7 @@ function SessionContextCard({
       <PropertyList
         rows={[
           ...contextRow("Project", session.project),
-          ...contextRow(
-            "Host",
-            session.host_id && !hostOnline ? `${session.host_id} (offline)` : session.host_id,
-            true,
-          ),
+          ...contextRow("Host", session.host_id ? offlineHostLabel(session.host_id, hostOnline) : undefined, true),
           ...contextRow("Branch", session.branch, true),
           ...contextRow("Jobs", jobs > 0 ? `${jobs} running` : undefined),
           ...contextRow("Subagents", subagentContext(session)),
@@ -929,7 +937,8 @@ function HostRow({ node, info }: { node: HostRailNode; info: TreeRowInfo }) {
 // The count rides a Badge so a collapsed band still says what it hides, and
 // only Needs you spends the attention hue - the same rule the project row's
 // rollup follows.
-const BAND_LABEL: Record<Band, string> = { needsYou: "Needs you", working: "Working", idle: "Idle" };
+// The rail's band words are the cadence state words, so they read one table.
+const bandLabel = (band: Band): string => STATE_LABELS[band === "needsYou" ? "needs-you" : band];
 
 function BandRow({ node, info }: { node: BandRailNode; info: TreeRowInfo }) {
   return (
@@ -939,7 +948,7 @@ function BandRow({ node, info }: { node: BandRailNode; info: TreeRowInfo }) {
           {/* biome-ignore lint/a11y/noStaticElementInteractions: redundant with the row's own Enter handling, see SessionRow */}
           {/* biome-ignore lint/a11y/useKeyWithClickEvents: redundant with the row's own Enter handling, see SessionRow */}
           <span className={`${CLASS.label} ${CLASS.bandLabel}`} onClick={info.activate}>
-            {BAND_LABEL[node.band]}
+            {bandLabel(node.band)}
           </span>
           <TrailingChevron info={info} />
         </span>
@@ -1008,7 +1017,7 @@ function OverflowRow({ node, info }: { node: OverflowRailNode; info: TreeRowInfo
       {/* biome-ignore lint/a11y/noStaticElementInteractions: treeitem owns keyboard activation and accessible semantics */}
       {/* biome-ignore lint/a11y/useKeyWithClickEvents: treeitem owns keyboard activation */}
       <span data-testid="rail-row-overflow" className={CLASS.overflow} onClick={info.activate}>
-        {node.scope ? `${BAND_LABEL[node.scope]} · +${node.count} older` : `+${node.count} older`}
+        {node.scope ? `${bandLabel(node.scope)} · +${node.count} older` : `+${node.count} older`}
       </span>
     </span>
   );

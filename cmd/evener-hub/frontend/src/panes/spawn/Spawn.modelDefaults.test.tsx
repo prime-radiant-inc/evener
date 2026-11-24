@@ -17,6 +17,7 @@ import { readModuleCss } from "../../styles/cssBlock";
 import { Toast } from "../../widgets";
 import Spawn from "./Spawn";
 import {
+  accessRowTrigger,
   chooseHost,
   effortControl,
   effortOptionValues,
@@ -435,8 +436,8 @@ test("Access mode names the resolved sandbox default once launch/resolve lands",
   renderSpawn(fake);
   await settled();
 
-  // The desktop Access mode select lives inside the Advanced panel.
-  await user.click(screen.getByText("Advanced options"));
+  // The desktop Access mode select is the access row's body.
+  await user.click(accessRowTrigger());
   const accessOptionLabels = () => {
     const select = screen.getByLabelText("Access mode") as HTMLSelectElement;
     return Array.from(select.options).map((o) => o.textContent);
@@ -457,11 +458,12 @@ test("Access mode names the resolved sandbox default once launch/resolve lands",
 
   // The desktop Access mode select's empty option names the inherited sandbox.
   await waitFor(() => expect(accessOptionLabels()[0]).toContain(workspaceWrite()));
-  // The mobile Access mode row derives its resting label from the same
-  // options list, so it inherits the resolved wording too.
+  // The mobile row reports the same resolved level as the desktop summary,
+  // not the picker's "(default)" wording for the unset option.
+  await waitFor(() => expect(screen.getByTestId("spawn-access-value").textContent).toBe(workspaceWrite()));
   const mobileConfig = screen.getByTestId("spawn-mobile-config");
   const accessRow = mobileConfig.querySelector('[data-label="Access mode"]');
-  expect(accessRow?.textContent).toContain(accessOptionLabels()[0]);
+  expect(accessRow?.textContent).toContain(screen.getByTestId("spawn-access-value").textContent ?? "");
 });
 
 test.each(["desktop", "mobile"])("%s access inheritance survives an explicit mode round trip", async (surface) => {
@@ -493,6 +495,7 @@ test.each(["desktop", "mobile"])("%s access inheritance survives an explicit mod
   renderSpawn(fake);
   await settled();
   await user.click(screen.getByText("Advanced options"));
+  await user.click(accessRowTrigger());
   const select = screen.getByLabelText("Access mode") as HTMLSelectElement;
   const option = (value: string) => Array.from(select.options).find((entry) => entry.value === value);
   const unqualifiedDefault = option("")?.textContent;
@@ -587,7 +590,7 @@ test.each([
 });
 
 test.each([false, true])(
-  "Change leaves an earlier unrelated disclosure closed and focuses this Spawn control, Advanced initially open=%s",
+  "opening Access mode leaves an earlier unrelated disclosure closed and focuses its select, Advanced initially open=%s",
   async (initiallyOpen) => {
     const user = setupUser();
     const unrelated = vi.fn();
@@ -611,10 +614,10 @@ test.each([false, true])(
     await waitFor(() => expect(screen.getByTestId("spawn-effective-access").getAttribute("data-state")).toBe("ready"));
     if (initiallyOpen) await user.click(screen.getByText("Advanced options"));
 
-    await user.click(within(screen.getByTestId("spawn-effective-access")).getByRole("button", { name: "Change" }));
+    await user.click(accessRowTrigger());
 
     expect(unrelated).not.toHaveBeenCalled();
-    expect((screen.getByTestId("spawn-advanced-options") as HTMLDetailsElement).open).toBe(true);
+    expect((screen.getByTestId("spawn-advanced-options") as HTMLDetailsElement).open).toBe(initiallyOpen);
     await waitFor(() => expect(document.activeElement).toBe(screen.getByLabelText("Access mode")));
   },
 );
@@ -659,7 +662,7 @@ test("effective access clears stale resolution while the next directory is pendi
   expect(start.disabled).toBe(eligibility);
 });
 
-test("effective access Change focuses Access mode", async () => {
+test("opening the access row focuses Access mode without opening Advanced options", async () => {
   const user = setupUser();
   const fake = readyClient((client) => {
     client.on("evener/launch/resolve", () => ({ effective: { sandbox: "read-only" }, layers: {}, provenance: {} }));
@@ -669,8 +672,9 @@ test("effective access Change focuses Access mode", async () => {
   await setWorkingDir(user, "/tmp/effective-access-focus");
   const summary = screen.getByTestId("spawn-effective-access");
   await waitFor(() => expect(summary.getAttribute("data-state")).toBe("ready"));
-  await user.click(within(summary).getByRole("button", { name: "Change" }));
+  await user.click(accessRowTrigger());
   await waitFor(() => expect(document.activeElement).toBe(screen.getByLabelText("Access mode")));
+  expect((screen.getByTestId("spawn-advanced-options") as HTMLDetailsElement).open).toBe(false);
 });
 
 test.each([false, true])("Advanced sandbox select owns Change focus, initially open=%s", async (initiallyOpen) => {
@@ -714,6 +718,7 @@ test.each([false, true])("Advanced sandbox select owns Change focus, initially o
   );
   await settled();
   await user.click(screen.getByText("Advanced options"));
+  await user.click(accessRowTrigger());
   await user.selectOptions(screen.getByLabelText("Access mode"), "full");
   await user.selectOptions(screen.getByLabelText("Sandbox"), "restricted");
   await setWorkingDir(user, "/tmp/advanced-effective-access");
@@ -730,7 +735,7 @@ test.each([false, true])("Advanced sandbox select owns Change focus, initially o
   expect(resolveCall?.params).toMatchObject({ launchOverrides: { sandbox: "restricted" } });
   expect((screen.getByLabelText("Access mode") as HTMLSelectElement).value).toBe("full");
   if (!initiallyOpen) await user.click(screen.getByText("Advanced options"));
-  await user.click(within(summary).getByRole("button", { name: "Change" }));
+  await user.click(within(summary).getByRole("button", { name: "Change in Advanced options" }));
   expect(unrelated).not.toHaveBeenCalled();
   expect((screen.getByTestId("spawn-advanced-options") as HTMLDetailsElement).open).toBe(true);
   await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("combobox", { name: "Sandbox" })));
@@ -761,6 +766,7 @@ test("Advanced sandbox override wins in effective access and Change focuses its 
   renderSpawn(fake);
   await settled();
   await user.click(screen.getByText("Advanced options"));
+  await user.click(accessRowTrigger());
   await user.selectOptions(screen.getByLabelText("Access mode"), "full");
   await user.click(screen.getByRole("radio", { name: "Restricted" }));
   await setWorkingDir(user, "/tmp/advanced-effective-access");
@@ -776,7 +782,7 @@ test("Advanced sandbox override wins in effective access and Change focuses its 
   );
   expect(resolveCall?.params).toMatchObject({ launchOverrides: { sandbox: "restricted" } });
   await user.click(screen.getByText("Advanced options"));
-  await user.click(within(summary).getByRole("button", { name: "Change" }));
+  await user.click(within(summary).getByRole("button", { name: "Change in Advanced options" }));
   await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("radio", { name: "Restricted" })));
 });
 

@@ -100,23 +100,29 @@
   font-size: var(--font-size-body);
 }
 
-/* The pair of summary tiles under the task: working directory and effective
- * access. Two columns while each keeps a readable width, one column below
- * that - by pane width, since auto-fit resolves against this row, not the
- * viewport. */
-.summaryRow {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 16rem), 1fr));
-  gap: var(--space-3);
+/* Git info is a property of the directory (HEAD there), so it suffixes the
+ * directory value in machine type. */
+.branch {
+  color: var(--ink-mid);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-caption);
+  overflow-wrap: anywhere;
 }
 
-.cfgDir {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-  min-width: 0;
+/* The branch is a short suffix on the directory value, so it keeps its own
+ * width instead of taking a share of the row like the path does. */
+.quietSummary .branch {
+  flex: none;
 }
 
+/* The access row's explanation of where the effective access comes from,
+ * under the select that changes it. */
+.accessNote {
+  margin: var(--space-1) 0 0;
+  color: var(--ink-mid);
+  font-size: var(--font-size-caption);
+  overflow-wrap: anywhere;
+}
 /* Positions SlashCompletionMenu (an absolutely-positioned child) above the
  * prompt card, without affecting this element's own layout - the same
  * anchored-float recipe as the session composer's own .formAnchor
@@ -126,46 +132,8 @@
 .promptAnchor {
   position: relative;
 }
-/* The access tile's layout: the shared summary-tile row and text recipe, with
- * the Card-filling height and inline inset that are this tile's own. The
- * directory tile in PathField's prominent variant composes the same recipe. */
-.accessTile {
-  composes: summaryTile from "../../styles/surface.module.css";
-  /* Fills the Card's content box, so the tile's content centres against the
-   * taller of the pair, and keeps the inline inset the directory tile has. */
-  height: 100%;
-  padding-inline: var(--space-1);
-}
-.tileSeat {
-  composes: fieldSeat from "../../styles/surface.module.css";
-  color: var(--ink-mid);
-}
-.tileText {
-  composes: summaryText from "../../styles/surface.module.css";
-}
-.tileHeadline {
-  composes: summaryHeadline from "../../styles/surface.module.css";
-}
-.tileCaption {
-  composes: summaryCaption from "../../styles/surface.module.css";
-}
-/* The unresolved states have no value to label yet: one sentence in the
- * tile's own text size. */
-.summaryPending {
-  color: var(--ink-mid);
-  overflow-wrap: anywhere;
-}
-/* Git info is a property of the directory (HEAD there), so it sits under the
- * directory tile in machine type. PathField's prominent trigger owns the
- * tile's own text column and has no detail slot for it. */
-.branch {
-  color: var(--ink-mid);
-  font-family: var(--font-mono);
-  font-size: var(--font-size-caption);
-  overflow-wrap: anywhere;
-}
 
-/* The secondary settings under the tiles: quiet disclosure rows separated by
+/* The settings the launch starts from: quiet disclosure rows separated by
  * hairlines, closed by one more under the last. Each row keeps a little
  * block padding so a row's hover wash floats between its hairlines. */
 .quietRows {
@@ -177,6 +145,14 @@
   min-width: 0;
   padding-block: var(--space-1);
   border-top: 1px solid var(--edge);
+}
+
+/* The directory row is a quiet Button, whose label type is medium; a
+ * disclosure summary's value is regular. The summary keeps its own padding
+ * because the Button's wrap step already supplies the row's block inset. */
+.quietButtonSummary {
+  padding-block: 0;
+  font-weight: var(--font-weight-regular);
 }
 
 /* A desktop-only surface: the phone's own settings rows carry the same
@@ -232,6 +208,17 @@
   flex: none;
 }
 
+/* The chevron that marks a row as opening a dialog rather than expanding in
+ * place, seated like the disclosure's own. */
+.quietSummary .rowChevron {
+  display: inline-flex;
+  flex: none;
+  align-self: flex-start;
+  align-items: center;
+  height: 1lh;
+  color: var(--ink-low);
+}
+
 /* The staged-attachment row. Holds AttachmentTiles, which carry their own
  * 80x80 box from composer.module.css - this only wraps them, exactly as the
  * composer's own .attachments row does. */
@@ -251,10 +238,6 @@
    * the question over three lines. */
   .promptHeading {
     font-size: var(--font-size-page-title);
-  }
-
-  .cfgDir {
-    display: none;
   }
 
   .mobileConfig {

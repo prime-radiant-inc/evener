@@ -45,7 +45,6 @@ test("grouped rows draw a hairline between rows that render something, and none 
 
 test.each([
   ["widgets/pathfield/pathfield.module.css", ".prominentTrigger", ["grouped", "summaryTile"]],
-  ["panes/spawn/spawn.module.css", ".accessTile", ["summaryTile"]],
   ["panes/spawn/MobileSettingRows.module.css", ".config", ["grouped", "groupedRows"]],
   ["panes/settings/settings.module.css", ".clusterRowsGrouped", ["grouped", "groupedRows"]],
   ["panes/session/session.module.css", ".intentGroupRows", ["grouped", "groupedRows"]],
@@ -69,9 +68,6 @@ test("the summary tiles share one row, text column, headline, and caption", () =
     ["widgets/pathfield/pathfield.module.css", ".prominentText", "summaryText"],
     ["widgets/pathfield/pathfield.module.css", ".prominentHeadline", "summaryHeadline"],
     ["widgets/pathfield/pathfield.module.css", ".prominentCaption", "summaryCaption"],
-    ["panes/spawn/spawn.module.css", ".tileText", "summaryText"],
-    ["panes/spawn/spawn.module.css", ".tileHeadline", "summaryHeadline"],
-    ["panes/spawn/spawn.module.css", ".tileCaption", "summaryCaption"],
   ] as const) {
     expect(ruleBody(read(file), selector)).toMatch(
       new RegExp(`composes:\\s*${shared} from "[./]*styles/surface\\.module\\.css"`),
@@ -122,7 +118,22 @@ test("the field seat is one ground for a tile's leading glyph", () => {
   expect(seat).toMatch(/border-radius:\s*var\(--radius-control\)/);
   expect(seat).toMatch(/background:\s*var\(--field\)/);
   expect(seat).toMatch(/width:\s*var\(--field-seat-size\)/);
-  expect(ruleBody(read("panes/spawn/spawn.module.css"), ".tileSeat")).toMatch(
-    /composes:\s*fieldSeat from "[./]*styles\/surface\.module\.css"/,
-  );
+});
+
+test("the left-rail body is one recipe and both daemon notices compose it", () => {
+  const recipe = ruleBody(surface, ".railBody");
+  expect(recipe).toMatch(/padding:\s*var\(--space-2\)/);
+  expect(recipe).toMatch(/border-left:\s*2px solid var\(--edge\)/);
+  expect(recipe).toMatch(/font-family:\s*var\(--font-sans\)/);
+  expect(recipe).toMatch(/font-size:\s*var\(--font-size-body\)/);
+  expect(recipe).toMatch(/color:\s*var\(--ink-mid\)/);
+  for (const [file, selector] of [
+    ["panes/session/transcript/messages/steeringitem.module.css", ".body"],
+    ["panes/session/transcript/messages/memorycontextitem.module.css", ".body"],
+  ] as const) {
+    const consumer = ruleBody(read(file), selector);
+    expect(consumer).toMatch(/composes:\s*railBody from "[./]*styles\/surface\.module\.css"/);
+    expect(consumer).not.toMatch(/border-left:/);
+    expect(consumer).not.toMatch(/padding:\s*var\(--space-2\)/);
+  }
 });

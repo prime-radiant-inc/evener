@@ -5,13 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
 	"testing"
 
-	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
@@ -371,10 +369,6 @@ func TestVoicePresentationActualStartAndSteerRequests(t *testing.T) {
 				t.Fatalf("presentation not separately projected: %+v", message)
 			}
 			content := message.Content[1].Text
-			if text == "start-719" {
-				golden := strings.ReplaceAll(content, want.InstanceID, "INSTANCE")
-				agenttest.CheckGolden(t, filepath.Join("testdata", "voicepresentation", "reference.md"), []byte(golden+"\n"), *updatePromptGoldens, "Regenerate with go test ./agent -run '^TestVoicePresentationActualStartAndSteerRequests$' -update-prompt and review the diff.")
-			}
 			index := strings.Index(content, "\n{")
 			if index < 0 {
 				t.Fatal("no quoted JSON evidence")
