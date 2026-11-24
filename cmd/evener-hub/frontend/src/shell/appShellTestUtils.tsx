@@ -78,6 +78,20 @@ export function installFailedLocation(ref: string): void {
   navigationStore.setState({ mode: "v3", resources });
 }
 
+export function stubViewportCapabilities({ mobile, fineHover }: { mobile: boolean; fineHover: boolean }): void {
+  const matchesQuery = (query: string): boolean => {
+    if (query === MOBILE_QUERY) return mobile;
+    if (query === FINE_HOVER_POINTER_QUERY) return fineHover;
+    return false;
+  };
+  vi.stubGlobal("matchMedia", ((query: string) => ({
+    matches: matchesQuery(query),
+    media: query,
+    addEventListener() {},
+    removeEventListener() {},
+  })) as unknown as typeof window.matchMedia);
+}
+
 // jsdom implements no matchMedia at all (useIsMobile.test.ts's own header
 // comment documents the probe), so a mobile-layout test installs one: the
 // mobile query matches and every other query - including the fine-pointer

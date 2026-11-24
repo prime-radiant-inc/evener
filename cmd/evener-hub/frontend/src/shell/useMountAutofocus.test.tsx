@@ -1,7 +1,7 @@
 import { cleanup, render } from "@testing-library/react";
 import { useRef } from "react";
 import { afterEach, expect, test, vi } from "vitest";
-import { FINE_HOVER_POINTER_QUERY, MOBILE_QUERY } from "./useIsMobile";
+import { stubViewportCapabilities } from "./appShellTestUtils";
 import { useMountAutofocus } from "./useMountAutofocus";
 
 afterEach(() => {
@@ -29,46 +29,23 @@ const NARROW_DESKTOP: Viewport = { mobile: true, fineHover: true };
 const PORTRAIT_PHONE: Viewport = { mobile: true, fineHover: false };
 const LANDSCAPE_PHONE: Viewport = { mobile: false, fineHover: false };
 
-function stubMatchMedia({ mobile, fineHover }: Viewport): void {
-  const matchesQuery = (query: string): boolean => {
-    if (query === MOBILE_QUERY) return mobile;
-    if (query === FINE_HOVER_POINTER_QUERY) return fineHover;
-    return false;
-  };
-  vi.stubGlobal("matchMedia", ((query: string) => ({
-    matches: matchesQuery(query),
-    media: query,
-    addEventListener() {},
-    removeEventListener() {},
-  })) as unknown as typeof window.matchMedia);
-}
-
-test("focuses the target on mount on a wide desktop", () => {
-  stubMatchMedia(WIDE_DESKTOP);
+test.each([
+  { label: "wide desktop", viewport: WIDE_DESKTOP, focuses: true },
+  { label: "narrow desktop window", viewport: NARROW_DESKTOP, focuses: true },
+  { label: "portrait phone", viewport: PORTRAIT_PHONE, focuses: false },
+  { label: "wide landscape phone", viewport: LANDSCAPE_PHONE, focuses: false },
+])("mount autofocus on $label (focuses=$focuses)", ({ viewport, focuses }) => {
+  stubViewportCapabilities(viewport);
   const view = render(<Harness enabled />);
-  expect(document.activeElement).toBe(view.container.querySelector("button"));
-});
-
-test("focuses the target on mount in a narrow desktop window", () => {
-  stubMatchMedia(NARROW_DESKTOP);
-  const view = render(<Harness enabled />);
-  expect(document.activeElement).toBe(view.container.querySelector("button"));
-});
-
-test("never focuses on a portrait phone, even when enabled", () => {
-  stubMatchMedia(PORTRAIT_PHONE);
-  const view = render(<Harness enabled />);
-  expect(document.activeElement).not.toBe(view.container.querySelector("button"));
-});
-
-test("never focuses on a wide landscape phone", () => {
-  stubMatchMedia(LANDSCAPE_PHONE);
-  const view = render(<Harness enabled />);
-  expect(document.activeElement).not.toBe(view.container.querySelector("button"));
+  if (focuses) {
+    expect(document.activeElement).toBe(view.container.querySelector("button"));
+  } else {
+    expect(document.activeElement).not.toBe(view.container.querySelector("button"));
+  }
 });
 
 test("never focuses when disabled", () => {
-  stubMatchMedia(WIDE_DESKTOP);
+  stubViewportCapabilities(WIDE_DESKTOP);
   const view = render(<Harness enabled={false} />);
   expect(document.activeElement).not.toBe(view.container.querySelector("button"));
 });
