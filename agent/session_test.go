@@ -69,10 +69,16 @@ func (a *fakeAdapter) LiveModels(ctx context.Context) ([]registry.Model, error) 
 
 func (a *fakeAdapter) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
 	_ = ctx
+	// Take the scripted step before the request mutex. A step replacement holds
+	// the Script mutex across its write, and the supervision failure snapshot
+	// reads the request list behind a.mu without blocking. Waiting for the
+	// script under a.mu would report a provider queued behind a replacement as
+	// one stuck inside a step, and omit the request evidence. The step itself
+	// still runs under a.mu, so a provider stuck inside it stays observable.
+	step, ok := a.script.Next()
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.requests = append(a.requests, req)
-	step, ok := a.script.Next()
 	if !ok {
 		return llm.Response{Provider: a.name, Model: req.Model, Message: llm.Assistant("done")}, nil
 	}
@@ -203,6 +209,40 @@ func completeText(t *testing.T, a *fakeAdapter) string {
 		t.Fatalf("Complete: %v", err)
 	}
 	return resp.Message.Text()
+}
+
+// A provider call waiting for the Script must not hold the request mutex. The
+// supervision failure snapshot reads the request list behind that mutex while
+// a step replacement holds the Script, so a call queued behind the replacement
+// must look like a busy provider without costing the snapshot the requests.
+func TestFakeAdapterCompleteLeavesRequestsReadableWhileScriptWaits(t *testing.T) {
+	t.Parallel()
+	a := newFakeAdapter("lock-order",
+		func(llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("scripted")} },
+	)
+	release := a.script.HoldForTest()
+	releaseScript := sync.OnceFunc(release)
+	defer releaseScript()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = a.Complete(context.Background(), llm.Request{})
+	}()
+	// The call reaches the Script within a few scheduler turns, and a call
+	// parked under the request mutex holds it for the rest of the bound, so a
+	// short poll catches the violation without slowing a healthy run much.
+	deadline := time.Now().Add(100 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if !a.mu.TryLock() {
+			releaseScript()
+			<-done
+			t.Fatal("Complete held the request mutex while waiting for the Script")
+		}
+		a.mu.Unlock()
+		time.Sleep(time.Millisecond)
+	}
+	releaseScript()
+	<-done
 }
 
 type compactionEventStrategy struct {

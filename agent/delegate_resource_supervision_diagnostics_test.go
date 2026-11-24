@@ -25,7 +25,11 @@ func TestStableSupervisionFailureSnapshotCapturesPendingAttention(t *testing.T) 
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
 	})
 	root := restoreSupervisionRoot(t, fixture, nil)
-	sub := warmStableSupervisionDelegate(t, root, fixture)
+	// The durable append below queues runnable attention, and a served root
+	// drives it on the paced retry, opening a second generation between the
+	// snapshot reads. Leave the root unserved so the reads see the pending
+	// row beside the finished warm run, which is the state this test reads.
+	sub := warmDelegateUnservedRoot(t, root, fixture)
 	waitForStableSupervisionRun(t, root, fixture.childID)
 	const attentionID = "attention:diagnostic-pending"
 	if appended, err := sub.sess.appendDelegateNotificationDurably(attentionID, "diagnostic-sentinel"); err != nil || !appended {
@@ -443,8 +447,8 @@ func stableSupervisionFailureSnapshot(root *Session, sub *subagent, adapter *fak
 			// step replacement can hold. TryState reads both without waiting, so
 			// this whole snapshot path is nonblocking: a busy Script reports
 			// through the same provider-lock key a busy adapter does, and the
-			// retry loop picks it up on its next pass. The script is taken second
-			// here, as in Complete.
+			// retry loop picks it up on its next pass. A provider waiting for the
+			// Script does not hold this mutex, so the request list stays readable.
 			if cursor, steps, ok := adapter.script.TryState(); ok {
 				snapshot["provider_cursor"], snapshot["provider_steps"] = cursor, steps
 			} else {
