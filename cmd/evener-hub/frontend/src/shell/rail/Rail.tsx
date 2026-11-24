@@ -1021,8 +1021,10 @@ function NavigationRail({
   // manifest has not said so yet.
   const settled = !!manifest && !manifest.loading && !manifest.stale && !manifest.error;
   const needsYou = attention?.needsYou ?? (settled ? (manifest.data?.attentionSummary.needsYou ?? 0) : 0);
-  const parentOwnsScroll = scrollOwner === "parent";
   const headerAction = useContext(RailHeaderActionContext);
+  // The split board supplies the header action and scrolls rows below it.
+  // Only the Sheet lends the entire rail to its parent scrollport.
+  const parentOwnsScroll = scrollOwner === "parent" && headerAction === null;
   return (
     <div
       className={parentOwnsScroll ? `${CLASS.rail} ${CLASS.parentScrollRail}` : CLASS.rail}

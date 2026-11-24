@@ -57,7 +57,14 @@ import {
   registerConversationHostVisibility,
   restrictConversationHandoff,
 } from "../../stores/conversationClaimHandoff";
-import { prefsStore, usePrefsStore } from "../../stores/prefs";
+import {
+  clampSidebarWidth,
+  type FontSizePref,
+  prefsStore,
+  SIDEBAR_WIDTH_MAX,
+  SIDEBAR_WIDTH_MIN_TOUCH,
+  usePrefsStore,
+} from "../../stores/prefs";
 import { Chevron, IconButton } from "../../widgets";
 import { ActivitySidebar } from "../activitybar/ActivitySidebar";
 import { useActivitySidebarStore } from "../activitybar/activitySidebarStore";
@@ -96,6 +103,11 @@ const TRANSITION_CLASSES = {
   leavingUnder: styles.leavingUnder ?? "",
   leavingOver: styles.leavingOver ?? "",
 };
+
+// The header uses full touch targets for every pointer in the tablet band.
+const BOARD_MIN_WIDTH = SIDEBAR_WIDTH_MIN_TOUCH;
+// Leave room for the Find query and its clear button beside the match controls.
+const READER_MIN_WIDTH: Record<FontSizePref, number> = { s: 392, m: 392, l: 408, xl: 432 };
 
 // Renders exactly one pane, full-screen: whichever OpenPaneRecord
 // useWorkspaceStore currently reports as focused. Uses the SAME registry
@@ -269,6 +281,20 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
   const [boardCollapsed, setBoardCollapsed] = useState(false);
   const boardVisible = tabletSplit && !boardCollapsed;
   const sidebarWidth = usePrefsStore((s) => s.sidebarWidth);
+  const fontSize = usePrefsStore((s) => s.fontSize);
+  const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth);
+  useLayoutEffect(() => {
+    if (!boardVisible) return;
+    const measure = () => setViewportWidth(window.innerWidth);
+    measure();
+    window.addEventListener("resize", measure);
+    return () => window.removeEventListener("resize", measure);
+  }, [boardVisible]);
+  const boardMaxWidth = Math.min(
+    SIDEBAR_WIDTH_MAX,
+    Math.max(BOARD_MIN_WIDTH, viewportWidth - READER_MIN_WIDTH[fontSize]),
+  );
+  const boardWidth = clampSidebarWidth(sidebarWidth, BOARD_MIN_WIDTH, boardMaxWidth);
   const boardRef = useRef<HTMLElement>(null);
   const boardToggleRef = useRef<HTMLButtonElement>(null);
   const restoreToggleFocusRef = useRef(false);
@@ -738,13 +764,13 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
             className={styles.boardColumn}
             data-testid="board-column"
             ref={boardRef}
-            style={{ [RAIL_WIDTH_PROPERTY]: `${sidebarWidth}px` } as CSSProperties}
+            style={{ [RAIL_WIDTH_PROPERTY]: `${boardWidth}px` } as CSSProperties}
           >
-            <div className={styles.boardScroll}>
-              <RailHeaderActionProvider value={boardToggle}>{railSlot}</RailHeaderActionProvider>
-            </div>
+            <RailHeaderActionProvider value={boardToggle}>{railSlot}</RailHeaderActionProvider>
             <RailResizeHandle
-              width={sidebarWidth}
+              width={boardWidth}
+              minWidth={BOARD_MIN_WIDTH}
+              maxWidth={boardMaxWidth}
               onCommit={(width) => prefsStore.getState().setSidebarWidth(width)}
               railRef={boardRef}
             />

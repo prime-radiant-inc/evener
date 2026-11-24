@@ -705,6 +705,10 @@ async function measureTabletSplit(page) {
     const pane = document.querySelector('[data-testid="pane-column"]');
     const topbar = document.querySelector('[data-testid="topbar"]');
     const title = document.querySelector('[data-testid="topbar-title"]');
+    const findInput = pane?.querySelector('[data-find-bar] input[type="search"]');
+    const findStyle = findInput && getComputedStyle(findInput);
+    const findText = findInput && document.createElement('canvas').getContext('2d');
+    if (findText) findText.font = findStyle.font;
     const overview = document.querySelector('[data-session-overview-ref]')?.closest('button') ?? null;
     const brand = document.querySelector('[data-testid="rail-brand"]');
     const wordmark = document.querySelector('[data-testid="rail-wordmark"]');
@@ -725,6 +729,15 @@ async function measureTabletSplit(page) {
       title: box(title),
       overview: box(overview),
       overviewHit: hit(overview),
+      find: findInput ? {
+        width: findInput.getBoundingClientRect().width,
+        editableWidth: findInput.clientWidth - parseFloat(findStyle.paddingLeft) - parseFloat(findStyle.paddingRight),
+        queryWidth: findText.measureText(findInput.value).width,
+        clearAllowance: parseFloat(findStyle.fontSize),
+        focused: document.activeElement === findInput,
+        hit: hit(findInput),
+        value: findInput.value,
+      } : null,
       brand: box(brand),
       wordmark: box(wordmark),
       settings: box(settings),
@@ -740,6 +753,10 @@ async function measureTabletSplit(page) {
       glyphTransform: glyph ? getComputedStyle(glyph).transform : null,
       resizeHandle: box(handle),
       resizeHandleHit: hit(handle),
+      range: handle ? {
+        min: Number(handle.getAttribute('aria-valuemin')), max: Number(handle.getAttribute('aria-valuemax')),
+        now: Number(handle.getAttribute('aria-valuenow')),
+      } : null,
     };
   })()`;
   const open = await evaluate(send, snapState);
@@ -770,6 +787,35 @@ async function measureTabletSplit(page) {
     };
   })()`,
   );
+  const rowFocusSample = `(() => {
+    const header = document.querySelector('[data-testid="rail-new-session"]')?.parentElement;
+    const row = document.activeElement?.closest('[role="treeitem"]');
+    const rows = row?.closest('[role="tree"]')?.querySelectorAll('[role="treeitem"]');
+    const rect = row?.getBoundingClientRect();
+    const target = rect && document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2);
+    return { headerBottom: header?.getBoundingClientRect().bottom, rowTop: rect?.top, rowBottom: rect?.bottom,
+      index: rows ? [...rows].indexOf(row) : -1,
+      hit: Boolean(row && target && row.contains(target)), coveredByHeader: Boolean(target && header?.contains(target)) };
+  })()`;
+  const startedAtVisibleRow = await evaluate(send, `(() => {
+    const header = document.querySelector('[data-testid="rail-new-session"]')?.parentElement;
+    if (!header) return false;
+    const bottom = header.getBoundingClientRect().bottom;
+    for (const tree of document.querySelectorAll('[data-testid="board-column"] [role="tree"]')) {
+      const rows = [...tree.querySelectorAll('[role="treeitem"]')];
+      const index = rows.findIndex(row => row.getBoundingClientRect().top >= bottom);
+      if (index <= 0 || rows[index].getBoundingClientRect().bottom >= innerHeight) continue;
+      rows[index].focus({ preventScroll: true });
+      return document.activeElement === rows[index];
+    }
+    return false;
+  })()`);
+  const beforeArrowUp = await evaluate(send, rowFocusSample);
+  const arrowUpRows = [];
+  for (let step = 0; startedAtVisibleRow && step < Math.min(5, beforeArrowUp.index); step++) {
+    await pressKey(send, "ArrowUp", "ArrowUp", 38);
+    arrowUpRows.push(await evaluate(send, rowFocusSample));
+  }
   await evaluate(
     send,
     `(() => {
@@ -780,15 +826,22 @@ async function measureTabletSplit(page) {
     if (scroller) scroller.scrollTop = 0;
   })()`,
   );
-  let resized = null;
-  if (open.resizeHandle && open.resizeHandle.width > 0 && open.resizeHandle.height > 0) {
-    const cx = open.resizeHandle.left + open.resizeHandle.width / 2;
-    const cy = open.resizeHandle.top + open.resizeHandle.height / 2;
+  async function dragDivider(handle, x) {
+    const cx = handle.left + handle.width / 2;
+    const cy = handle.top + handle.height / 2;
     await send("Input.dispatchMouseEvent", { type: "mouseMoved", x: cx, y: cy });
     await send("Input.dispatchMouseEvent", { type: "mousePressed", x: cx, y: cy, button: "left", clickCount: 1 });
-    await send("Input.dispatchMouseEvent", { type: "mouseMoved", x: cx + 60, y: cy, button: "left", buttons: 1 });
-    await send("Input.dispatchMouseEvent", { type: "mouseReleased", x: cx + 60, y: cy, button: "left", clickCount: 1 });
-    resized = await evaluate(send, snapState);
+    await send("Input.dispatchMouseEvent", { type: "mouseMoved", x, y: cy, button: "left", buttons: 1 });
+    await waitForDom(send, `(() => {
+      const board = document.querySelector('[data-testid="board-column"]');
+      return board?.getBoundingClientRect().width === Number(board?.querySelector('[role="separator"]')?.getAttribute('aria-valuenow'));
+    })()`, "tablet drag width published before pointerup");
+    await send("Input.dispatchMouseEvent", { type: "mouseReleased", x, y: cy, button: "left", clickCount: 1 });
+    return evaluate(send, snapState);
+  }
+  let resized = null;
+  if (open.resizeHandle && open.resizeHandle.width > 0 && open.resizeHandle.height > 0) {
+    resized = await dragDivider(open.resizeHandle, open.resizeHandle.left + open.resizeHandle.width / 2 + 60);
     const resetHandle = resized.resizeHandle ?? open.resizeHandle;
     const rx = resetHandle.left + resetHandle.width / 2;
     const ry = resetHandle.top + resetHandle.height / 2;
@@ -814,14 +867,66 @@ async function measureTabletSplit(page) {
     "tablet split session pane mounted",
   );
   const sessionOpen = await evaluate(send, snapState);
+  await send("Emulation.setTouchEmulationEnabled", { enabled: false });
+  await applyViewport(send, { width: 768, height: TABLET_VIEWPORT.height });
+  await waitForDom(send, "innerWidth === 768", "768px tablet viewport");
+  const pointer = await evaluate(send, `({ fine: matchMedia('(pointer: fine)').matches, coarse: matchMedia('(any-pointer: coarse)').matches })`);
+  const narrowest = await dragDivider(sessionOpen.resizeHandle, 1);
+  const wideDrag = await dragDivider(narrowest.resizeHandle, 700);
+  await evaluate(send, `document.querySelector('[data-testid="board-column"] [role="separator"]').focus({ preventScroll: true })`);
+  await pressKey(send, "Home", "Home", 36);
+  const home = await evaluate(send, snapState);
+  await pressKey(send, "End", "End", 35);
+  await clickControl(send, '[data-testid="topbar"] button[aria-label="Find in session"]');
+  await waitForDom(send, `document.activeElement?.matches('[data-find-bar] input[type="search"]')`, "Find query focus at maximum board width");
+  const findQuery = "session";
+  await send("Input.insertText", { text: findQuery });
+  await waitForDom(send, `document.querySelector('[data-find-bar]:not([data-find-status="idle"])')`, "Find query result at maximum board width");
+  const widest = await evaluate(send, snapState);
+  const largerText = [];
+  for (const font of ["l", "xl"]) {
+    await evaluate(send, `window.configureOverview('light', '${font}')`);
+    await waitForFonts(send);
+    largerText.push([font, await evaluate(send, snapState)]);
+  }
+  await evaluate(send, `window.configureOverview('light', 'm')`);
+  await pressKey(send, "Escape", "Escape", 27);
   await applyViewport(send, { ...MOBILE_VIEWPORT, width: 400 });
   await waitForDom(send, `innerWidth === 400 && !document.querySelector('[data-testid="board-split"]')`,
     "400px uses the phone stack without the tablet board");
-  await applyViewport(send, { ...TOUCH_DESKTOP_VIEWPORT, width: 1024, height: 768 });
-  await waitForDom(send, `innerWidth === 1024 && !document.querySelector('[data-stacked-pane-type]') &&
-    document.querySelector('[data-testid="rail"] [data-testid="rail-resize-handle"]')`,
-    "1024px uses the docked desktop rail without the tablet board");
-  return { open, scrolledBoard, resized, collapsed, reopened, sessionOpen };
+  const desktopDivider = '[data-testid="rail"] [data-testid="rail-resize-handle"]';
+  const desktopReady = `innerWidth === 1024 && !document.querySelector('[data-stacked-pane-type]') && document.querySelector('${desktopDivider}')`;
+  const desktopViewport = { ...TOUCH_DESKTOP_VIEWPORT, width: 1024, height: 768 };
+  const desktopMeasure = `(() => {
+    const divider = document.querySelector('${desktopDivider}');
+    return { width: divider.closest('[data-testid="rail"]').getBoundingClientRect().width,
+      max: Number(divider.getAttribute('aria-valuemax')) };
+  })()`;
+  await applyViewport(send, desktopViewport);
+  await waitForDom(send, desktopReady, "1024px uses the docked desktop rail without the tablet board");
+  await evaluate(send, `document.querySelector('${desktopDivider}').focus({ preventScroll: true })`);
+  await pressKey(send, "End", "End", 35);
+  const desktopBefore = await evaluate(send, desktopMeasure);
+  await applyViewport(send, { ...TABLET_VIEWPORT, width: 768 });
+  await waitForDom(send, `innerWidth === 768 && document.querySelector('[data-testid="board-column"]')`, "narrow tablet restores the board");
+  const narrowRestored = await evaluate(send, snapState);
+  const roomyViewport = { ...TABLET_VIEWPORT, width: 899 };
+  await applyViewport(send, roomyViewport);
+  await waitForDom(send, `innerWidth === 899`, "wider tablet viewport");
+  await settleFiniteAnimations(send);
+  const roomy = await evaluate(send, snapState);
+  await applyViewport(send, desktopViewport);
+  await waitForDom(send, desktopReady, "desktop restores the docked sidebar");
+  const desktopAfter = await evaluate(send, desktopMeasure);
+  await evaluate(send, `document.querySelector('${desktopDivider}').focus({ preventScroll: true })`);
+  for (let step = 0; step < 4; step++) await pressKey(send, "ArrowLeft", "ArrowLeft", 37);
+  const desktopFits = await evaluate(send, desktopMeasure);
+  await applyViewport(send, roomyViewport);
+  await waitForDom(send, `innerWidth === 899 && document.querySelector('[data-testid="board-column"]')`, "wide tablet restores a fitting desktop width");
+  const roomyFits = await evaluate(send, snapState);
+  return { open, scrolledBoard, resized, collapsed, reopened, sessionOpen,
+    beforeArrowUp, arrowUpRows, pointer, narrowest, home, wideDrag, widest, findQuery, largerText,
+    desktopBefore, narrowRestored, roomy, desktopAfter, desktopFits, roomyFits };
 }
 
 function assertTabletSplit(result) {
@@ -881,6 +986,35 @@ function assertTabletSplit(result) {
   }
   if (!result.sessionOpen?.topbarInPane || !result.sessionOpen.overviewHit || result.sessionOpen.topbar.left < result.sessionOpen.board.right - 1) {
     failures.push(`tablet session pane topbar/overview geometry failed: ${JSON.stringify(result.sessionOpen)}`);
+  }
+  const { beforeArrowUp, arrowUpRows, narrowest, widest, pointer, findQuery } = result;
+  if (!beforeArrowUp.hit || !arrowUpRows.length || arrowUpRows.some((row, i) => row.index !== beforeArrowUp.index - i - 1 || !row.hit || row.coveredByHeader)) {
+    failures.push(`tablet ArrowUp focus is not visible around the board header: ${JSON.stringify({ beforeArrowUp, arrowUpRows })}`);
+  }
+  for (const [label, sample, edge] of [
+    ["minimum drag", narrowest, "min"], ["Home", result.home, "min"],
+    ["maximum drag", result.wideDrag, "max"], ["End", widest, "max"],
+  ]) {
+    if (sample.board.width !== sample.range?.[edge] || sample.range.now !== sample.range[edge]) {
+      failures.push(`tablet divider ${label} did not reach the advertised limit: ${JSON.stringify({ range: sample.range, width: sample.board.width })}`);
+    }
+  }
+  if (pointer.coarse || !narrowest.settingsHit || !narrowest.searchHit || !narrowest.toggleHit || narrowest.toggle?.right > narrowest.board.right) {
+    failures.push(`tablet minimum divider hides a header control: ${JSON.stringify({ pointer, board: narrowest.board, toggle: narrowest.toggle, toggleHit: narrowest.toggleHit })}`);
+  }
+  for (const [font, sample] of [["m", widest], ...result.largerText]) {
+    const { board, pane, range, find } = sample;
+    if (board.width !== range?.max || !find?.focused || !find.hit || find.value !== findQuery ||
+        find.editableWidth < find.queryWidth + find.clearAllowance) {
+      failures.push(`tablet maximum divider starves the focused Find query at font ${font}: ${JSON.stringify({ board, pane, range, find })}`);
+    }
+  }
+  const { desktopBefore, narrowRestored, roomy, desktopAfter, desktopFits, roomyFits } = result;
+  if (desktopBefore.width !== desktopBefore.max || narrowRestored.board.width !== widest.board.width ||
+      roomy.pane.width !== narrowRestored.pane.width || desktopAfter.width !== desktopBefore.width ||
+      desktopFits.width >= roomy.range.max || roomyFits.board.width !== desktopFits.width) {
+    failures.push(`tablet did not show the usable part of the saved desktop width: ${JSON.stringify({ desktopBefore,
+      narrow: narrowRestored.board.width, roomy: roomy.board.width, desktopAfter, desktopFits, roomyFits: roomyFits.board.width })}`);
   }
   for (const [label, sample] of [["open", open], ["collapsed", collapsed]]) {
     if (sample.document.scrollWidth > TABLET_VIEWPORT.width + 1 || sample.document.scrollHeight > TABLET_VIEWPORT.height + 1) {
@@ -1987,6 +2121,11 @@ async function main() {
     const focusScrollFailures = assertFocusScroll(focusScroll);
     const tabletSplit = await measureOnPage(cdpEndpoint, sharedTab.id, vitePort, TABLET_VIEWPORT, measureTabletSplit);
     const tabletSplitFailures = assertTabletSplit(tabletSplit);
+    const { pointer, narrowest, widest, beforeArrowUp, arrowUpRows, largerText, roomy, desktopBefore, desktopAfter, roomyFits } = tabletSplit;
+    console.log(`shellguard tablet usability: ${JSON.stringify({ pointer, min: narrowest.board.width, minToggleHit: narrowest.toggleHit,
+      max: widest.board.width, pane: widest.pane.width, find: widest.find, beforeArrowUp, arrowUpRows,
+      largerText: largerText.map(([font, { find, pane }]) => ({ font, find, pane: pane.width })),
+      savedWidth: { desktopBefore, roomy: roomy.board.width, desktopAfter, fittingTablet: roomyFits.board.width } })}`);
     if (focusScrollFailures.length === 0) {
       console.log(
         `shellguard focus scroll: PASS - dismissed to rail row ${focusScroll.triggerRef}'s menu trigger ` +

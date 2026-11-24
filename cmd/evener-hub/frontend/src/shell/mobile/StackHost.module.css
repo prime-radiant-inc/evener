@@ -44,12 +44,6 @@
   flex-direction: column;
 }
 
-.boardScroll {
-  flex: 1 1 auto;
-  min-height: 0;
-  overflow-y: auto;
-}
-
 .paneColumn {
   flex: 1 1 auto;
   min-width: 0;

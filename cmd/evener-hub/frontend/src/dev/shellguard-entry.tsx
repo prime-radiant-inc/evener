@@ -38,7 +38,7 @@ import railRowStyles from "../shell/rail/RailRow.module.css";
 import { RailRenderObserver } from "../shell/rail/railRenderObserver";
 import { StatusBar } from "../shell/statusbar/StatusBar";
 import { workspaceStore } from "../shell/workspace";
-import { prefsStore, type ThemePref } from "../stores/prefs";
+import { type FontSizePref, prefsStore, type ThemePref } from "../stores/prefs";
 import {
   activityContext,
   activityDelegate,
@@ -831,7 +831,7 @@ const target = window as typeof window & {
   settledShell: Promise<unknown>;
   shellGuardCalls: () => string[] | undefined;
   activityRowFixture: (open: boolean) => void;
-  configureOverview: (theme: ThemePref) => void;
+  configureOverview: (theme: ThemePref, fontSize?: FontSizePref) => void;
   overviewGuardState: () => unknown;
   overviewPane: (action: "duplicate" | "other" | "focus" | "close", id?: string) => string | undefined;
   measureShell: typeof measureShell;
@@ -969,8 +969,8 @@ target.activityRowFixture = (open) => {
   };
 };
 target.shellGuardCalls = () => shellClient?.calls.map((call) => call.method);
-target.configureOverview = (theme) => {
-  prefsStore.getState().setFontSize("xl");
+target.configureOverview = (theme, fontSize = "xl") => {
+  prefsStore.getState().setFontSize(fontSize);
   prefsStore.getState().setTheme(theme);
 };
 target.overviewGuardState = () => ({
