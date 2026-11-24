@@ -937,7 +937,8 @@ function HostRow({ node, info }: { node: HostRailNode; info: TreeRowInfo }) {
 // The count rides a Badge so a collapsed band still says what it hides, and
 // only Needs you spends the attention hue - the same rule the project row's
 // rollup follows.
-const BAND_LABEL: Record<Band, string> = { needsYou: "Needs you", working: "Working", idle: "Idle" };
+// The rail's band words are the cadence state words, so they read one table.
+const bandLabel = (band: Band): string => STATE_LABELS[band === "needsYou" ? "needs-you" : band];
 
 function BandRow({ node, info }: { node: BandRailNode; info: TreeRowInfo }) {
   return (
@@ -947,7 +948,7 @@ function BandRow({ node, info }: { node: BandRailNode; info: TreeRowInfo }) {
           {/* biome-ignore lint/a11y/noStaticElementInteractions: redundant with the row's own Enter handling, see SessionRow */}
           {/* biome-ignore lint/a11y/useKeyWithClickEvents: redundant with the row's own Enter handling, see SessionRow */}
           <span className={`${CLASS.label} ${CLASS.bandLabel}`} onClick={info.activate}>
-            {BAND_LABEL[node.band]}
+            {bandLabel(node.band)}
           </span>
           <TrailingChevron info={info} />
         </span>
@@ -1016,7 +1017,7 @@ function OverflowRow({ node, info }: { node: OverflowRailNode; info: TreeRowInfo
       {/* biome-ignore lint/a11y/noStaticElementInteractions: treeitem owns keyboard activation and accessible semantics */}
       {/* biome-ignore lint/a11y/useKeyWithClickEvents: treeitem owns keyboard activation */}
       <span data-testid="rail-row-overflow" className={CLASS.overflow} onClick={info.activate}>
-        {node.scope ? `${BAND_LABEL[node.scope]} · +${node.count} older` : `+${node.count} older`}
+        {node.scope ? `${bandLabel(node.scope)} · +${node.count} older` : `+${node.count} older`}
       </span>
     </span>
   );
