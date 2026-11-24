@@ -68,13 +68,7 @@ func retainedProviderFixture(t *testing.T, config string) *instancesFixture {
 
 func loadChildRegistry(t *testing.T, env []string) *registry.Registry {
 	t.Helper()
-	values := map[string]string{}
-	for _, value := range env {
-		key, val, ok := strings.Cut(value, "=")
-		if ok {
-			values[key] = val
-		}
-	}
+	values := envToMap(env)
 	store, err := credentials.LoadStore(values["EVENER_CREDENTIALS_CONFIG"])
 	if err != nil {
 		t.Fatal(err)

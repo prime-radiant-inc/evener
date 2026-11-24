@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -426,13 +427,7 @@ func TestToEnvProjectEnvExclusionsFromAlternateProviderFile(t *testing.T) {
 		t.Fatalf("registry load: %v", err)
 	}
 	exclusions := reg.EndpointEnvNames()
-	found := false
-	for _, name := range exclusions {
-		if name == key {
-			found = true
-		}
-	}
-	if !found {
+	if !slices.Contains(exclusions, key) {
 		t.Fatalf("endpoint exclusions = %v, want the alternate file's %s", exclusions, key)
 	}
 
