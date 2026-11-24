@@ -3,6 +3,7 @@
   "description": "Menu's popup asks for its label's max-content width and the visible viewport caps it: a fixed popup whose offset leaves less room than its label still measures the label's natural width rather than collapsing, and the same popup under a narrower cap sits at the cap and wraps its label instead of clipping it",
   "cssFiles": [
     "styles/global.css",
+    "styles/tapfloor.module.css",
     "styles/tokens.css",
     "styles/motion.module.css",
     "widgets/internal/floatingSurface.module.css",

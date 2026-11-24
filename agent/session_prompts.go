@@ -241,6 +241,7 @@ func (s *Session) buildPromptData(env execenv.ExecutionEnvironment) (promptData,
 	data.ManagerEnabled = s.hubEnabled
 	data.ManagerDiscovery = s.hubEnabled && s.reg.Get("job_list") != nil
 	data.ManagerStatus = s.hubEnabled && s.reg.Get("job_status") != nil
+	data.WorktreeDisposeOnly = s.worktreeDisposeOnlySurface()
 
 	// The section-facing tool-availability set: canonical names that are both
 	// registered and advertised on this session's wire tool list (e.g. OpenAI
