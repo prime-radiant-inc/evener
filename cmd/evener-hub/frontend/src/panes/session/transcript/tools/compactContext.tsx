@@ -19,6 +19,7 @@ import { clip, parseArgs, str } from "@evener/appwire-client";
 import type { ReactNode } from "react";
 import { CodeBlock, Markdown } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
+import { MCPToolArguments } from "../MCPToolArguments";
 import { statedIntentOf } from "../ToolRow";
 import { registerToolRenderer, type ToolRenderProps } from "../toolRenderers";
 import { TOOL_BODY_MAX_CHARS, WriteFileBody } from "./bodies";
@@ -149,11 +150,7 @@ function CompactContextBody({ item, live }: ToolRenderProps) {
   const { intentText, noteText, instructionsText, skills, leftovers, rawArgs } = compactContextParts(item);
   return (
     <div>
-      {rawArgs !== undefined && (
-        <section aria-label="Tool call arguments">
-          <CodeBlock text={rawArgs} copyLabel="Copy arguments" fold={false} />
-        </section>
-      )}
+      {rawArgs !== undefined && <MCPToolArguments item={item} live={live} />}
       {noteText !== undefined && (
         <Field label="Note to self" section="note">
           <Markdown source={clip(noteText, TOOL_BODY_MAX_CHARS)} />

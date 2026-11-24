@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { PathField, type PathFieldKind } from "../../widgets/pathfield";
-import { ThemeFlip } from "../ThemeFlip";
+import { GallerySection } from "../GallerySection";
 import styles from "./pathfield.module.css";
 
 const CLASS = {
@@ -74,17 +74,18 @@ export function LivePathField({
 
 export default function PathFieldGallerySection() {
   return (
-    <section>
-      <h2>PathField</h2>
-      <p className={CLASS.hint}>
-        Directory fields share the responsive DirectoryPicker: browse, create a folder, then confirm with Use this
-        folder. Cancel preserves the selected directory. File and output-file fields use file completion and accept
-        literal paths.
-      </p>
-      <ThemeFlip>
-        <LivePathField kind="file" initial="/opt/evener.toml" />
-        <LivePathField kind="outputFile" initial="/tmp/atif.json" />
-      </ThemeFlip>
-    </section>
+    <GallerySection
+      title="PathField"
+      note={
+        <p className={CLASS.hint}>
+          Directory fields share the responsive DirectoryPicker: browse, create a folder, then confirm with Use this
+          folder. Cancel preserves the selected directory. File and output-file fields use file completion and accept
+          literal paths.
+        </p>
+      }
+    >
+      <LivePathField kind="file" initial="/opt/evener.toml" />
+      <LivePathField kind="outputFile" initial="/tmp/atif.json" />
+    </GallerySection>
   );
 }

@@ -55,7 +55,7 @@ describe("AgentsSection", () => {
       throw err;
     });
     render(<AgentsSection sectionId="agents" />);
-    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain(friendlyErrorMessage(err)));
+    await waitFor(() => expect(screen.getByRole("status").textContent).toContain(friendlyErrorMessage(err)));
     expect(screen.queryByRole("list")).toBeNull();
   });
 

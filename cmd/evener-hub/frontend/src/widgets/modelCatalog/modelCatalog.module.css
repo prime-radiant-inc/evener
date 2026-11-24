@@ -75,12 +75,9 @@
 
 /* Provider (and Recent) section eyebrow: small, quiet, not an option. */
 .groupRow {
+  composes: eyebrowType from "../../styles/text.module.css";
   padding: var(--space-2) var(--space-2) var(--space-1);
   color: var(--ink-mid);
-  font-size: var(--font-size-caption);
-  font-weight: var(--font-weight-medium);
-  text-transform: uppercase;
-  letter-spacing: var(--tracking-eyebrow);
 }
 
 .row {

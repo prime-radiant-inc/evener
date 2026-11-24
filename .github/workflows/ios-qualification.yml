@@ -144,7 +144,7 @@ jobs:
       - name: Select Xcode ${{ env.XCODE_VERSION }}
         run: sudo xcode-select --switch "/Applications/Xcode_${XCODE_VERSION}.app"
       - name: Set up Go from repository policy
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7
         with:
           go-version-file: go.work
           # No built-in toolchain cache: setup-go's saves from whichever ref
@@ -159,7 +159,7 @@ jobs:
         with:
           node-version: "22.13.1"
       - name: Set up Ruby 3.3.6 and locked gems
-        uses: ruby/setup-ruby@b3aaceaef7e0ee231b499e7b5f49c03fc1d32199 # v1
+        uses: ruby/setup-ruby@be3c7df29b3349ec6bcfc6b4792f1cf9f5237d18 # v1
         with:
           ruby-version: "3.3.6"
           bundler: "2.7.2"
@@ -321,7 +321,7 @@ jobs:
       - name: Select Xcode ${{ env.XCODE_VERSION }}
         run: sudo xcode-select --switch "/Applications/Xcode_${XCODE_VERSION}.app"
       - name: Set up Go from repository policy
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7
         with:
           go-version-file: go.work
           # No built-in toolchain cache: setup-go's saves from whichever ref
@@ -418,7 +418,7 @@ jobs:
       - name: Select Xcode ${{ env.XCODE_VERSION }}
         run: sudo xcode-select --switch "/Applications/Xcode_${XCODE_VERSION}.app"
       - name: Set up Go from repository policy
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7
         with:
           go-version-file: go.work
           # No built-in toolchain cache: setup-go's saves from whichever ref

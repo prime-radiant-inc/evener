@@ -19,6 +19,13 @@ function motionCss(): string {
   return readFileSync(path, "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
 }
 
+// The fold-header row recipe (flex row, hover wash, focus ring, tap floor) is
+// shared with DisclosureHeading; the assembly is what keeps it applying here.
+function foldHeaderCss(): string {
+  const path = join(dirname(fileURLToPath(import.meta.url)), "../internal/foldHeader.module.css");
+  return readFileSync(path, "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+}
+
 afterEach(() => {
   cleanup();
   resetDisclosureStoreForTests();
@@ -254,12 +261,14 @@ test("the rule variant declares two flex hairlines on --edge and no hover or ope
 // scroll port still shows all four sides; no variant overrides it.
 test("every variant's summary draws the token focus ring, inset", () => {
   const css = motionCss();
-  const shared = css.match(/(?:^|\})\s*\.summary:focus-visible\s*\{([^}]*)\}/)?.[1] ?? "";
-  expect(shared).toMatch(/outline:\s*var\(--focus-ring\)/);
-  expect(shared).toMatch(/outline-offset:\s*-2px/);
-  const focusRules = [...css.matchAll(/([^{}]*:focus-visible[^{}]*)\{([^}]*)\}/g)];
+  expect(css).toMatch(/composes:\s*foldRow from "\.\.\/internal\/foldHeader\.module\.css"/);
+  const shared = foldHeaderCss();
+  const rule = shared.match(/(?:^|\})\s*\.foldRow:focus-visible\s*\{([^}]*)\}/)?.[1] ?? "";
+  expect(rule).toMatch(/outline:\s*var\(--focus-ring\)/);
+  expect(rule).toMatch(/outline-offset:\s*-2px/);
+  const focusRules = [...shared.matchAll(/([^{}]*:focus-visible[^{}]*)\{([^}]*)\}/g)];
   expect(focusRules).toHaveLength(1);
-  expect(css).not.toMatch(/outline:\s*none/);
+  expect(shared).not.toMatch(/outline:\s*none/);
 });
 
 test("controlled harness owns the open state", () => {
@@ -408,7 +417,8 @@ test("disabled store-backed disclosure does not mutate a collapsed or open state
 
 test("disabled styling attenuates only the summary and suppresses its hover wash", () => {
   const css = motionCss();
-  expect(css).toMatch(/\.summary:hover:not\(\[aria-disabled="true"\]\)/);
+  expect(foldHeaderCss()).toMatch(/\.foldRow:hover\s*\{[^}]*background:\s*var\(--hover-1\)/);
+  expect(css).toMatch(/\.summary\[aria-disabled="true"\]:hover\s*\{[^}]*background:\s*none/);
   expect(css).toMatch(/\.summary\[aria-disabled="true"\]\s*\{[^}]*cursor:\s*not-allowed[^}]*opacity:\s*0\.5/);
   expect(css.match(/opacity:\s*0\.5\s*;/g) ?? []).toHaveLength(1);
   expect(css).not.toMatch(/\.summary:hover\s*\{/);
@@ -417,9 +427,9 @@ test("disabled styling attenuates only the summary and suppresses its hover wash
 });
 
 test("keeps the summary at the narrow-viewport tap floor", () => {
-  expect(motionCss()).toMatch(
+  expect(foldHeaderCss()).toMatch(
     new RegExp(
-      `@media ${escapeRegExp(MOBILE_QUERY)}, \\(any-pointer: coarse\\)\\s*\\{[\\s\\S]*?\\.summary\\s*\\{[^}]*min-height:\\s*var\\(--tap-min\\)`,
+      `@media ${escapeRegExp(MOBILE_QUERY)}, \\(any-pointer: coarse\\)\\s*\\{[\\s\\S]*?\\.foldRow\\s*\\{[^}]*min-height:\\s*var\\(--tap-min\\)`,
     ),
   );
 });
@@ -437,23 +447,24 @@ test("the body fade is declared with real motion; the chevron's rotation lives w
 });
 
 test("every motion declaration uses an existing motion token - no invented duration", () => {
-  const css = motionCss();
-  const durations = css.match(/(?:transition|animation):[^;]*?(\d+m?s)/g);
-  expect(durations).toBe(null); // no literal duration anywhere
-  // The summary's hover wash is the only transition left here, and it uses the
-  // shared hover duration.
-  expect(css).toMatch(/\.summary\s*\{[^}]*transition:\s*background-color var\(--motion-duration-hover\)/);
+  for (const css of [motionCss(), foldHeaderCss()]) {
+    expect(css.match(/(?:transition|animation):[^;]*?(\d+m?s)/g)).toBe(null); // no literal duration anywhere
+  }
+  // The row's hover wash is the only transition, and it uses the shared hover
+  // duration.
+  expect(foldHeaderCss()).toMatch(/\.foldRow\s*\{[^}]*transition:\s*background-color var\(--motion-duration-hover\)/);
 });
 
 test("no transform motion is left ungated in the disclosure's own stylesheet", () => {
   const css = motionCss();
-  // The chevron rotation moved to widgets/chevron, which gates its transition.
-  // Disclosure's remaining transitions are hover-feedback background-color
-  // responses, which are deliberately not gated (see chevron.test.tsx for the
-  // gated transform).
+  // The chevron rotation moved to widgets/chevron, which gates its transition,
+  // and the hover wash's transition to the shared fold-header recipe.
+  // Disclosure declares no motion of its own; the recipe's only transition is
+  // the ungated hover feedback (chevron.test.tsx covers the gated transform).
   expect(css).not.toMatch(/@media\s*\(prefers-reduced-motion:\s*no-preference\)/);
   expect(css).not.toMatch(/transition:\s*transform/);
-  const transitions = css.match(/transition:\s*[^;]+;/g) ?? [];
+  expect(css).not.toMatch(/transition:/);
+  const transitions = foldHeaderCss().match(/transition:\s*[^;]+;/g) ?? [];
   expect(transitions.length).toBeGreaterThan(0);
   for (const declaration of transitions) {
     expect(declaration).toMatch(/^transition:\s*background-color\b/);

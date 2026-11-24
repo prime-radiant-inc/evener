@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Chevron } from "../../widgets/chevron";
 import { Disclosure } from "../../widgets/disclosure";
-import { ThemeFlip } from "../ThemeFlip";
+import { GallerySection } from "../GallerySection";
 import styles from "./disclosure.module.css";
 
 // One row ships defaultOpen and one collapsed, so both an expanded and a
@@ -65,11 +65,8 @@ function DisclosureDemo() {
 
 export default function DisclosureGallerySection() {
   return (
-    <section data-testid="disclosure-gallery">
-      <h2>Disclosure</h2>
-      <ThemeFlip>
-        <DisclosureDemo />
-      </ThemeFlip>
-    </section>
+    <GallerySection title="Disclosure" testId="disclosure-gallery">
+      <DisclosureDemo />
+    </GallerySection>
   );
 }

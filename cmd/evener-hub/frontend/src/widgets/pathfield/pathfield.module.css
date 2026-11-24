@@ -149,10 +149,8 @@
 }
 
 .groupLabel {
-  font-size: var(--font-size-caption);
+  composes: eyebrowType from "../../styles/text.module.css";
   color: var(--ink-mid);
-  text-transform: uppercase;
-  letter-spacing: var(--tracking-eyebrow);
 }
 
 /* 94yg: a directory click both picks the value and descends into it (spec

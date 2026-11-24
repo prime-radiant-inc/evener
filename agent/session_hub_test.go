@@ -4,10 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"path/filepath"
-	"regexp"
-	"slices"
-	"strings"
 	"sync/atomic"
 	"testing"
 	"testing/synctest"
@@ -259,18 +255,12 @@ func TestManagerRequestActualPolicyMatrix(t *testing.T) {
 				// TRIPWIRE: scripted responses finish promptly; this guards a hung request.
 				ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 				defer cancel()
-				for _, stage := range []struct {
-					manager bool
-					golden  string
-				}{
-					{manager: false, golden: "manager-off.md"},
-					{manager: true, golden: "manager-on.md"},
-				} {
-					root, adapter := build(stage.manager)
+				for _, manager := range []bool{false, true} {
+					root, adapter := build(manager)
 					if _, err := root.ProcessInput(ctx, "capture request", nil); err != nil {
 						t.Fatal(err)
 					}
-					if stage.manager && (mode == "denied" || mode == "allowlist" || mode == "absent") {
+					if manager && (mode == "denied" || mode == "allowlist" || mode == "absent") {
 						args := json.RawMessage(`{}`)
 						if mode != "absent" {
 							if name == "job_list" {
@@ -291,8 +281,8 @@ func TestManagerRequestActualPolicyMatrix(t *testing.T) {
 							control = &controlDefinition
 						}
 					}
-					if (control != nil) != (stage.manager && mode != "allowlist") {
-						t.Fatalf("manager=%v: session_control exposure = %v", stage.manager, control != nil)
+					if (control != nil) != (manager && mode != "allowlist") {
+						t.Fatalf("manager=%v: session_control exposure = %v", manager, control != nil)
 					}
 					if control != nil {
 						props := control.Parameters["properties"].(map[string]any)
@@ -302,9 +292,6 @@ func TestManagerRequestActualPolicyMatrix(t *testing.T) {
 							t.Fatalf("session_control actions differ from the twenty implemented owners: %s", encoded)
 						}
 					}
-					if name == "job_list" && mode == "present" {
-						agenttest.CheckGolden(t, filepath.Join("testdata", "messagingprompt", stage.golden), managerRequestGolden(req), *updatePromptGoldens, "Regenerate with go test ./agent -run '^TestManagerRequestActualPolicyMatrix$' -count=1 -update-prompt and inspect the diff.")
-					}
 					var found *llm.ToolDefinition
 					for _, def := range req.Tools {
 						if def.Name == name {
@@ -313,17 +300,17 @@ func TestManagerRequestActualPolicyMatrix(t *testing.T) {
 						}
 					}
 					denied := mode == "denied" || mode == "allowlist"
-					expected := !denied && (mode != "absent" || stage.manager)
+					expected := !denied && (mode != "absent" || manager)
 					if (found != nil) != expected {
-						t.Fatalf("manager=%v, exposed=%v want %v", stage.manager, found != nil, expected)
+						t.Fatalf("manager=%v, exposed=%v want %v", manager, found != nil, expected)
 					}
 					if found != nil {
 						_, hub := found.Parameters["properties"].(map[string]any)["hub"]
-						if hub != stage.manager {
-							t.Fatalf("manager=%v hub=%v", stage.manager, hub)
+						if hub != manager {
+							t.Fatalf("manager=%v hub=%v", manager, hub)
 						}
 					}
-					if mode == "zero-allowance" && stage.manager {
+					if mode == "zero-allowance" && manager {
 						for _, def := range req.Tools {
 							if def.Name == "delegate" {
 								t.Fatal("Manager granted ordinary delegation")
@@ -334,7 +321,7 @@ func TestManagerRequestActualPolicyMatrix(t *testing.T) {
 					// session never executes hub arguments, and a Manager session
 					// never executes the ordinary branch of a denied tool.
 					call := llm.ToolCallData{ID: "forged-branch", Name: name, Arguments: json.RawMessage(`{"hub":{"mode":"discovery","ref":"local:a"}}`)}
-					if stage.manager {
+					if manager {
 						result := root.reg.ExecuteCall(ctx, root.currentEnv(), call)
 						if !result.IsError && denied {
 							t.Fatal("denied Manager branch executed")
@@ -346,33 +333,6 @@ func TestManagerRequestActualPolicyMatrix(t *testing.T) {
 			})
 		}
 	}
-}
-
-func managerRequestGolden(request llm.Request) []byte {
-	var out strings.Builder
-	for _, message := range request.Messages {
-		if message.Role == llm.RoleSystem {
-			out.WriteString(message.Text())
-			out.WriteByte('\n')
-		}
-	}
-	// Runtime facts and installed skill paths vary by machine, not by Manager mode.
-	text := regexp.MustCompile(`(?s)<environment>.*?</environment>`).ReplaceAllString(out.String(), "<environment>\n[runtime facts]\n</environment>")
-	text = regexp.MustCompile(`(?m)^Co-authored-by: Evener .*$`).ReplaceAllString(text, "Co-authored-by: Evener [version] ([instance]/[model]) <[session]@[host]>")
-	text = regexp.MustCompile(`\[/[^\]\n]+/doctoring-evener\]`).ReplaceAllString(text, "[skill-path/doctoring-evener]")
-	text = regexp.MustCompile(`\[/[^\]\n]+/doctoring-evener/SKILL\.md\]`).ReplaceAllString(text, "[skill-path/doctoring-evener/SKILL.md]")
-	var defs []llm.ToolDefinition
-	var descriptions []struct{ Name, Description string }
-	for _, definition := range request.Tools {
-		if definition.Name == "job_list" || definition.Name == "job_status" {
-			defs = append(defs, definition)
-		} else if slices.Contains([]string{"read_transcript", "model_list", "job_watch", "delegate_send", "delegate", "job_stop", "session_control"}, definition.Name) {
-			descriptions = append(descriptions, struct{ Name, Description string }{definition.Name, definition.Description})
-		}
-	}
-	schemas, _ := json.MarshalIndent(defs, "", "  ")
-	prose, _ := json.MarshalIndent(descriptions, "", "  ")
-	return []byte(text + "\n# Implemented Manager tool schemas\n\n```json\n" + string(schemas) + "\n```\n\n# Additional tool descriptions\n\n```json\n" + string(prose) + "\n```\n")
 }
 
 // These are composition/execution unit tests. The hub package separately

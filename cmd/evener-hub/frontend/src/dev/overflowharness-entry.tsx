@@ -14,7 +14,6 @@
 // far its content escapes its own content box, plus the deepest elements
 // responsible - which is the answer the fix has to be aimed at.
 import { flushSync } from "react-dom";
-import { createRoot } from "react-dom/client";
 import { MotionProvider } from "../motion";
 import { ActivitySidebar } from "../shell/activitybar/ActivitySidebar";
 import { activityContext, activitySummary } from "../stores/sessionActivityTestUtils";
@@ -46,8 +45,7 @@ import { MutationOutboxIndexedDB } from "../stores/mutationOutboxIndexedDB";
 import { navigationStore } from "../stores/navigation/store";
 import { putThreadModel, threadsStore } from "../stores/threads";
 import { initTranscriptDisplay, transcriptDisplayStore } from "../stores/transcriptDisplay";
-import "../styles/tokens.css";
-import "../styles/global.css";
+import { mountHarness } from "./mountHarness";
 
 const params = new URLSearchParams(window.location.search);
 window.addEventListener("error", (event) => {
@@ -640,14 +638,12 @@ transcriptDisplayStore.setState({
   local: { desktop: guardTranscriptConfig, mobile: guardTranscriptConfig },
 });
 
-const rootEl = document.getElementById("root");
-if (!rootEl) throw new Error("overflowharness.html is missing #root");
-
 document.body.style.margin = "0";
 document.body.style.background = "var(--surface-0)";
 
 if (settingsMode) {
-  createRoot(rootEl).render(
+  mountHarness(
+    "overflowharness",
     <ClientProvider client={fake}>
       <div id="oh-pane" style={{ width, height }}>
         <Settings params={{ section: "transcript" }} paneId="oh-settings" focused />
@@ -659,7 +655,8 @@ if (settingsMode) {
   if (params.get("activity") === "tasks" || aboutOverviewMode) {
     activitySidebarStore.getState().openWith(aboutOverviewMode ? "about" : "tasks");
   }
-  createRoot(rootEl).render(
+  mountHarness(
+    "overflowharness",
     <ClientProvider client={fake}>
       <MotionProvider>
         <div id="oh-pane" style={{ width, height: 900, display: "flex", position: "relative" }}>
@@ -685,7 +682,8 @@ if (settingsMode) {
     panes: [{ id: "oh", type: "session", params: { ref: activeRef }, slot: "main" }],
     focusedPaneId: "oh",
   });
-  createRoot(rootEl).render(
+  mountHarness(
+    "overflowharness",
     <ClientProvider client={fake}>
       <div id="oh-pane" style={{ width, height }}>
         <Session params={{ ref: activeRef }} paneId="oh" focused />

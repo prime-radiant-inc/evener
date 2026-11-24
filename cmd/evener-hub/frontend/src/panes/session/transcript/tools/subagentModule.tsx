@@ -18,7 +18,16 @@ import { useEffect } from "react";
 import { threadsStore, useThreadsStore } from "../../../../stores/threads";
 import { useEntityViews } from "../../../../transcriptDisplay/entityViews";
 import { useTranscriptRenderContext } from "../../../../transcriptDisplay/renderContext";
-import { Chevron, EmptyState, Eyebrow, IconButton, Timestamp, Tooltip, VisuallyHidden } from "../../../../widgets";
+import {
+  Chevron,
+  EmptyState,
+  Eyebrow,
+  IconButton,
+  InlineNotice,
+  Timestamp,
+  Tooltip,
+  VisuallyHidden,
+} from "../../../../widgets";
 import { isDisclosureOpen, toggleDisclosure } from "../../../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { formatUsagePair } from "../../chrome/activityFormat";
@@ -63,7 +72,6 @@ const CLASS = {
   quoteLive: requireClass(styles.quoteLive, "subagentmodule.module.css", "quoteLive"),
   quoteMsg: requireClass(styles.quoteMsg, "subagentmodule.module.css", "quoteMsg"),
   quoteMeta: requireClass(styles.quoteMeta, "subagentmodule.module.css", "quoteMeta"),
-  quotesEmpty: requireClass(styles.quotesEmpty, "subagentmodule.module.css", "quotesEmpty"),
   section: requireClass(styles.section, "subagentmodule.module.css", "section"),
   mandate: requireClass(styles.mandate, "subagentmodule.module.css", "mandate"),
 };
@@ -293,14 +301,14 @@ function SubagentCard({
         <em className={CLASS.quote} data-testid="subagent-quote">
           {quoteText}
         </em>
+      ) : model ? (
+        <div data-testid="subagent-quotes-empty">
+          <EmptyState size="compact" title="No activity yet" reason="empty" />
+        </div>
       ) : (
-        <span
-          className={CLASS.quotesEmpty}
-          data-testid="subagent-quotes-empty"
-          data-reason={model ? "no-activity" : "unavailable"}
-        >
-          {model ? "No activity yet" : "Child activity unavailable"}
-        </span>
+        <InlineNotice tone="neutral" live="off" data-testid="subagent-quotes-empty" data-reason="unavailable">
+          Child activity unavailable
+        </InlineNotice>
       )}
       {open && (
         <section

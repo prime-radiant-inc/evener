@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import { Menu, type MenuItem } from "../../widgets/menu";
-import { ThemeFlip } from "../ThemeFlip";
+import { GallerySection } from "../GallerySection";
 import styles from "./menu.module.css";
 
 const ITEMS: MenuItem[] = [
@@ -45,15 +45,5 @@ function IconTriggerDemo() {
 }
 
 export default function MenuGallerySection() {
-  return (
-    <section>
-      <h2>Menu</h2>
-      <ThemeFlip>
-        <MenuDemo />
-      </ThemeFlip>
-      <ThemeFlip>
-        <IconTriggerDemo />
-      </ThemeFlip>
-    </section>
-  );
+  return <GallerySection title="Menu" flips={[<MenuDemo key="default" />, <IconTriggerDemo key="quiet" />]} />;
 }

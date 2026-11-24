@@ -705,6 +705,23 @@ test("job_list: body renders stable direct raw state when the producer supplies 
   expect(screen.queryByText("formatted listing text")).toBeNull();
 });
 
+test("job_list: an empty list renders the shared empty state", () => {
+  const d = toolRendererFor("job_list");
+  const Body = d.body!;
+  render(
+    <Body
+      item={item({
+        toolName: "job_list",
+        output: "No jobs.\n0 job(s).",
+        raw: { items: [], count: 0, total: 0 },
+      })}
+      live={false}
+    />,
+  );
+  const structured = screen.getByTestId("job-list-structured");
+  expect(within(structured).getByTestId("empty-state").dataset.reason).toBe("empty");
+});
+
 test("job_list: body falls back to task when description is omitted", () => {
   const d = toolRendererFor("job_list");
   const Body = d.body!;

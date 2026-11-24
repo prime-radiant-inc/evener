@@ -16,12 +16,11 @@
 }
 
 .attentionCue {
+  composes: helpCaption from "../../../../styles/help.module.css";
   display: flex;
   align-items: center;
   gap: var(--space-1);
   margin-bottom: var(--space-2);
-  font-size: var(--font-size-caption);
-  color: var(--ink-mid);
 }
 
 /* A neutral outlined Card contains each pending batch. The small attention
@@ -44,7 +43,7 @@
   display: inline-flex;
   align-items: center;
   gap: var(--space-1);
-  font-family: var(--ask-tab-font, revert);
+  font-family: var(--font-sans);
   font-size: var(--font-size-ui);
   color: var(--ink-mid);
   background: var(--surface-1);
@@ -54,10 +53,12 @@
   overflow-wrap: anywhere;
 }
 
-/* Tabs use accent for ordinary control selection, matching checked answers. */
+/* The same ordinary selection recipe the answer rows use
+ * (askquestioncard.module.css .optionRow:has(:checked)): the softer
+ * --accent-edge hairline, the accent wash, and high ink. */
 .tab[aria-selected="true"] {
   color: var(--ink-hi);
-  border-color: var(--accent);
+  border-color: var(--accent-edge);
   background: var(--accent-bg);
 }
 
@@ -73,8 +74,7 @@
 }
 
 .count {
-  font-size: var(--font-size-caption);
-  color: var(--ink-mid);
+  composes: helpCaption from "../../../../styles/help.module.css";
 }
 
 /* Touch target floor (2026-07-30-mobile-session-layout-design.md, decision

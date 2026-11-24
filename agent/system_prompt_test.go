@@ -411,6 +411,18 @@ func TestSystemPromptCarriesEachOperatorInputOnce(t *testing.T) {
 	}
 }
 
+// systemPromptSection returns the section opened by heading through, but not
+// including, the next top-level section heading.
+func systemPromptSection(t *testing.T, prompt, heading string) string {
+	t.Helper()
+	_, rest, ok := strings.Cut(prompt, "\n"+heading+"\n")
+	if !ok {
+		t.Fatalf("system prompt has no %q section", heading)
+	}
+	section, _, _ := strings.Cut(rest, "\n## ")
+	return heading + "\n" + section + "\n"
+}
+
 // promptValue is one value the session computes for its prompt, named for the
 // failure message.
 type promptValue struct {

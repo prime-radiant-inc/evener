@@ -17,6 +17,7 @@ import {
   installSpawnTestHooks,
   modelListRequests,
   openDesktopPluginSelection,
+  openWorkingDir,
   pastePngInto,
   pickModel,
   promptField,
@@ -30,7 +31,6 @@ import {
   setWorkingDir,
   startResponse,
   visitSpawnURL,
-  workingDir,
 } from "./spawnTestUtils";
 
 installSpawnTestHooks();
@@ -772,7 +772,7 @@ test("typing a working directory reloads the model catalog only after confirmati
   // Global cleanup can run before the initial directory-scoped catalog load.
   await waitFor(() => expect(modelListRequests(fake).some((params) => Object.hasOwn(params, "cwd"))).toBe(true));
   const baseline = fake.calls.filter((call) => call.method === "model/list").length;
-  await user.click(workingDir());
+  await user.click(await openWorkingDir());
   const input = await screen.findByRole("textbox", { name: "Path" });
   await user.clear(input);
   await user.type(input, "/tmp/some/project{Enter}");
@@ -797,7 +797,7 @@ test.each(["desktop", "mobile"])("%s directory picker follows route directory ch
   await waitFor(() => expectWorkingDir("/home/me/app"));
   await user.click(
     surface === "desktop"
-      ? workingDir()
+      ? await openWorkingDir()
       : screen.getByLabelText(/^Working directory:/, { selector: "button:not(#spawn-cwd)" }),
   );
   const input = await screen.findByRole("textbox", { name: "Path" });

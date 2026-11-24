@@ -1,11 +1,9 @@
 import { AppwireClient, type WebSocketLike } from "@evener/appwire-client";
 import { flushSync } from "react-dom";
-import { createRoot } from "react-dom/client";
 import { MobileSection } from "../panes/settings/sections/mobile";
 import { ClientProvider } from "../shell/clientContext";
 import { connectionStore } from "../stores/connection";
-import "../styles/tokens.css";
-import "../styles/global.css";
+import { mountHarness } from "./mountHarness";
 
 declare global {
   interface Window {
@@ -136,9 +134,8 @@ AudioBufferSourceNode.prototype.start = function (when?: number, offset?: number
 const client = new AppwireClient({ url: `ws://${location.host}/rpc`, socketFactory: pairingSocket });
 await client.connect();
 connectionStore.getState().connect(client);
-const root = document.getElementById("root");
-if (!root) throw new Error("Missing fixture root");
-createRoot(root).render(
+mountHarness(
+  "devicepairingguard",
   <ClientProvider client={client}>
     <main style={{ maxWidth: 720, margin: "24px auto", padding: 20 }}>
       <h1>Connect a device</h1>

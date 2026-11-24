@@ -14,6 +14,7 @@ import { Toast } from "../../widgets";
 import { selectEditorText } from "../session/testing/editor";
 import Spawn from "./Spawn";
 import {
+  accessRowTrigger,
   completionDraft,
   completionNavigate,
   effortControl,
@@ -755,6 +756,7 @@ test("directory picker assigns the unscoped draft and restores each project's la
   await setWorkingDir(user, "/tmp/draft-a");
   await pickModel(user, "gpt-5", "openai/gpt-5");
   await user.click(screen.getByText("Advanced options"));
+  await user.click(accessRowTrigger());
   await user.selectOptions(screen.getByLabelText("Access mode"), "Read-only");
   await user.selectOptions(screen.getByLabelText("Harness"), "evener");
   await setWorkingDir(user, "/tmp/draft-b");
