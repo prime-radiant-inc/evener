@@ -8,7 +8,6 @@
     "widgets/input/input.module.css",
     "widgets/propertylist/propertylist.module.css"
   ],
-  "allowlist": { ".help": "propertylist's .help composes help.module.css's .help, so the de-scoped harness carries the one help recipe twice and no other selector is affected" },
   "viewport": { "width": 390, "height": 844, "deviceScaleFactor": 2, "mobile": true },
   "mutation": {
     "declaration": "widgets/propertylist/propertylist.module.css: the @media (max-width: 480px) .settingsRow { grid-template-columns: minmax(0, 1fr) } reset (removed from the media selector list), leaving the two-column settings grid at a phone width",

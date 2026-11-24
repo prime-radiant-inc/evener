@@ -1,7 +1,7 @@
 /* The quiet caption line that explains the content beside it: a field's help,
    a row's note, a gallery hint. The muted variant keeps the face and size for
    a caveat or footnote that must not compete with what it qualifies. */
-.help {
+.helpCaption {
   font-family: var(--font-sans);
   font-size: var(--font-size-caption);
   color: var(--ink-mid);

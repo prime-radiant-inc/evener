@@ -8,7 +8,6 @@
     "widgets/input/input.module.css",
     "widgets/propertylist/propertylist.module.css"
   ],
-  "allowlist": { ".help": "propertylist's .help composes help.module.css's .help, so the de-scoped harness carries the one help recipe twice and no other selector is affected" },
   "viewport": { "width": 390, "height": 844, "deviceScaleFactor": 2, "mobile": true },
   "mutation": {
     "declaration": "widgets/propertylist/propertylist.module.css: the @media (max-width: 480px) .controlRow { flex-direction: column; align-items: stretch; gap: var(--space-1) } stacking rule (deleted), leaving an editable fact beside its 96px label column",

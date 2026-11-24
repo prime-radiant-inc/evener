@@ -56,7 +56,7 @@
 }
 
 .hint {
-  composes: help from "../../../styles/help.module.css";
+  composes: helpCaption from "../../../styles/help.module.css";
   flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;

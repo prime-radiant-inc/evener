@@ -1,5 +1,5 @@
 .defaultHint {
-  composes: help from "../../../../styles/help.module.css";
+  composes: helpCaption from "../../../../styles/help.module.css";
   margin-left: var(--space-2);
 }
 

@@ -71,7 +71,7 @@
 }
 
 .note {
-  composes: help from "../../../styles/help.module.css";
+  composes: helpCaption from "../../../styles/help.module.css";
   flex-basis: 100%;
   margin: 0;
   line-height: var(--line-height-body);
@@ -119,7 +119,7 @@
 }
 
 .captureHint {
-  composes: help from "../../../styles/help.module.css";
+  composes: helpCaption from "../../../styles/help.module.css";
   line-height: var(--line-height-body);
   white-space: nowrap;
 }

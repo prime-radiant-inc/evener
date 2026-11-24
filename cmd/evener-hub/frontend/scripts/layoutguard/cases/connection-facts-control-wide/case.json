@@ -8,7 +8,6 @@
     "widgets/input/input.module.css",
     "widgets/propertylist/propertylist.module.css"
   ],
-  "allowlist": { ".help": "propertylist's .help composes help.module.css's .help, so the de-scoped harness carries the one help recipe twice and no other selector is affected" },
   "viewport": { "width": 900, "height": 800, "deviceScaleFactor": 2, "mobile": false },
   "mutation": {
     "declaration": "widgets/propertylist/propertylist.module.css: the .controlValue { flex: 1 1 auto } growth rule (deleted), leaving an editable fact's value at its intrinsic width",

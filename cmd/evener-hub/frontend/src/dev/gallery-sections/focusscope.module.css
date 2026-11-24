@@ -25,6 +25,6 @@
 }
 
 .hint {
-  composes: help from "../../styles/help.module.css";
+  composes: helpCaption from "../../styles/help.module.css";
   margin: 0;
 }

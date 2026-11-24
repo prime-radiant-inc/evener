@@ -133,7 +133,7 @@ test("a stacked row's help follows its value as a further definition of the same
   ]);
   const [runDir] = screen.getAllByRole("term");
   expect(runDir!.parentElement!.querySelectorAll("dd")).toHaveLength(2);
-  expect(topRuleBlock(CSS, ".help")).toContain('composes: help from "../../styles/help.module.css"');
+  expect(topRuleBlock(CSS, ".help")).toContain('composes: helpCaption from "../../styles/help.module.css"');
 });
 
 test("rowProps tag a row's wrapper and a muted row's value stays secondary", () => {

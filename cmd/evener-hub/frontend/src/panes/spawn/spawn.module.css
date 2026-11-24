@@ -18,7 +18,7 @@
  * rather than another notice, so the form gains a reason without gaining a
  * second status surface. */
 .startReason {
-  composes: help from "../../styles/help.module.css";
+  composes: helpCaption from "../../styles/help.module.css";
   margin: 0;
   line-height: var(--line-height-ui);
 }
