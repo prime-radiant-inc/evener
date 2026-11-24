@@ -12,6 +12,7 @@
   /* biome-ignore lint/suspicious/noDuplicateProperties: css-modules composes takes one declaration per composed class, each with its own `from` */
   composes: md from "../button/button.module.css";
   composes: secondary from "../button/button.module.css";
+  composes: tapFloor from "../../styles/tapfloor.module.css";
 }
 
 /* "quiet" variant (index.tsx's own MenuProps.variant doc comment): no
@@ -35,9 +36,9 @@
 
 /* Icon-only trigger: IconButton's sm square (widgets/iconbutton), glyph
  * centred. Declared after .trigger so its 28px box wins over the composed md
- * size at equal specificity; the tap-floor block below adds IconButton's tap
- * floor on both axes. */
+ * size at equal specificity; composing the tap floor widens it on a phone. */
 .triggerIcon {
+  composes: tapFloorWidth from "../../styles/tapfloor.module.css";
   justify-content: center;
   width: 28px;
   height: 28px;
@@ -84,6 +85,7 @@
 }
 
 .item {
+  composes: tapFloor from "../../styles/tapfloor.module.css";
   /* A zoomed-in viewport can leave a cap narrower than the two insets put
    * together - 52px of viewport caps the popup at 36, and the popup's own 4px
    * and the row's 12px leave 4px for a glyph, which cannot wrap. The widget
@@ -105,8 +107,8 @@
  * the one case where keeping it on one line would push it out of the scrollport
  * instead of shortening the popup. The widget writes that class itself, so
  * every other menu keeps the single-line rows that make a menu scannable. A
- * wrapped label makes the row taller, which the phone tap floor below already
- * permits: it is a MIN-height, not a height. */
+ * wrapped label makes the row taller, which the composed phone tap floor
+ * already permits: it is a MIN-height, not a height. */
 .popupNarrow .item {
   white-space: normal;
   overflow-wrap: anywhere;
@@ -130,19 +132,10 @@
 }
 
 @media (max-width: 899px), (any-pointer: coarse) {
-  .trigger {
-    min-height: var(--tap-min);
-  }
-
-  .triggerIcon {
-    min-width: var(--tap-min);
-  }
-
   .item {
     box-sizing: border-box;
     display: flex;
     align-items: center;
-    min-height: var(--tap-min);
   }
 }
 
