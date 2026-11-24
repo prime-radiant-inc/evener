@@ -4566,64 +4566,52 @@ func TestSessionOperationsRetiresRemoteCursorWhenControllerRetainsAgain(t *testi
 // within-entry positions (collapsed thinking parts followed by a tool call)
 // succeed across both initial thread/read and older thread/turns/list paging.
 func TestHubRPCRemoteSparseItemPositions(t *testing.T) {
-	appendTextTurn := func(w *transcript.Writer, turnID, prompt, reply string) {
-		t.Helper()
-		for _, entry := range []schema.Turn{
+	textTurnEntries := func(turnID, prompt, reply string) []schema.Turn {
+		return []schema.Turn{
 			{Format: schema.TurnFormatIdentity, TurnID: turnID, TurnKind: schema.TurnSpanExecution, Kind: schema.TurnUserInput, Message: llm.User(prompt)},
 			{Format: schema.TurnFormatIdentity, TurnID: turnID, RoundID: turnID + "-r1", Kind: schema.TurnAssistant, Message: llm.Assistant(reply)},
 			{Format: schema.TurnFormatIdentity, TurnID: turnID, Kind: schema.TurnCompletion, Completion: &schema.TurnCompletionInfo{Status: schema.TurnCompleted}},
-		} {
-			if err := w.Append(entry); err != nil {
-				t.Fatalf("append text turn %s: %v", turnID, err)
-			}
 		}
 	}
-	appendSparseTurn := func(w *transcript.Writer, turnID, prompt string) {
-		t.Helper()
-		for _, entry := range []schema.Turn{
+	sparseTurnEntries := func(turnID, prompt string) []schema.Turn {
+		return []schema.Turn{
 			{Format: schema.TurnFormatIdentity, TurnID: turnID, TurnKind: schema.TurnSpanExecution, Kind: schema.TurnUserInput, Message: llm.User(prompt)},
 			{
-				Format:  schema.TurnFormatIdentity,
-				TurnID:  turnID,
-				RoundID: turnID + "-r1",
-				Kind:    schema.TurnAssistant,
+				Format: schema.TurnFormatIdentity, TurnID: turnID, RoundID: turnID + "-r1", Kind: schema.TurnAssistant,
 				Message: llm.Message{
 					Role: llm.RoleAssistant,
 					Content: []llm.ContentPart{
 						{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: "first thought"}},
 						{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: "second thought"}},
 						{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
-							ID:        "call_sparse_" + turnID,
-							Name:      "shell",
-							Arguments: json.RawMessage(`{"command":"pwd"}`),
+							ID: "call_sparse_" + turnID, Name: "shell", Arguments: json.RawMessage(`{"command":"pwd"}`),
 						}},
 					},
 				},
 			},
 			{
-				Format:  schema.TurnFormatIdentity,
-				TurnID:  turnID,
-				RoundID: turnID + "-r1",
-				Kind:    schema.TurnToolResults,
+				Format: schema.TurnFormatIdentity, TurnID: turnID, RoundID: turnID + "-r1", Kind: schema.TurnToolResults,
 				Message: llm.Message{
-					Role:       llm.RoleTool,
-					ToolCallID: "call_sparse_" + turnID,
+					Role: llm.RoleTool, ToolCallID: "call_sparse_" + turnID,
 					Content: []llm.ContentPart{{
-						Kind: llm.ContentToolResult,
-						ToolResult: &llm.ToolResultData{
-							ToolCallID: "call_sparse_" + turnID,
-							Name:       "shell",
-							Content:    "/tmp/work",
-						},
+						Kind:       llm.ContentToolResult,
+						ToolResult: &llm.ToolResultData{ToolCallID: "call_sparse_" + turnID, Name: "shell", Content: "/tmp/work"},
 					}},
 				},
 			},
 			{Format: schema.TurnFormatIdentity, TurnID: turnID, Kind: schema.TurnCompletion, Completion: &schema.TurnCompletionInfo{Status: schema.TurnCompleted}},
-		} {
-			if err := w.Append(entry); err != nil {
-				t.Fatalf("append sparse turn %s: %v", turnID, err)
-			}
 		}
+	}
+	buildEntries := func(sparseOnInitial bool) []schema.Turn {
+		var entries []schema.Turn
+		if sparseOnInitial {
+			entries = append(entries, textTurnEntries("turn-1", "older prompt", "older reply")...)
+			entries = append(entries, textTurnEntries("turn-2", "middle prompt", "middle reply")...)
+			return append(entries, sparseTurnEntries("turn-3", "latest prompt")...)
+		}
+		entries = append(entries, sparseTurnEntries("turn-1", "older prompt")...)
+		entries = append(entries, textTurnEntries("turn-2", "middle prompt", "middle reply")...)
+		return append(entries, textTurnEntries("turn-3", "latest prompt", "latest reply")...)
 	}
 	assertSparsePair := func(t *testing.T, turns []appwire.Turn, turnID string, entry uint64) {
 		t.Helper()
@@ -4660,52 +4648,9 @@ func TestHubRPCRemoteSparseItemPositions(t *testing.T) {
 		{name: "sparse_on_initial_read", sparseOnInitial: true, sparseTurnID: "turn-3", sparseEntry: 8},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			root := t.TempDir()
-			stateDir := filepath.Join(root, "projects", "project-remote-sparse-0000000001")
-			cwd := t.TempDir()
-			sessionID := "02wMz5Txv1C3Hut0M8GCeB"
-			if err := os.MkdirAll(filepath.Join(stateDir, "sessions"), 0o755); err != nil {
-				t.Fatal(err)
-			}
-			now := time.Unix(1700000000, 0).UTC()
-			writer, err := transcript.NewWriter(filepath.Join(stateDir, "sessions", sessionID+".transcript.jsonl"), transcript.Header{
-				SessionID:  sessionID,
-				CreatedAt:  now,
-				ProfileID:  "openai",
-				Model:      "gpt-5",
-				WorkingDir: cwd,
-			})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if tc.sparseOnInitial {
-				appendTextTurn(writer, "turn-1", "older prompt", "older reply")
-				appendTextTurn(writer, "turn-2", "middle prompt", "middle reply")
-				appendSparseTurn(writer, "turn-3", "latest prompt")
-			} else {
-				appendSparseTurn(writer, "turn-1", "older prompt")
-				appendTextTurn(writer, "turn-2", "middle prompt", "middle reply")
-				appendTextTurn(writer, "turn-3", "latest prompt", "latest reply")
-			}
-			if err := writer.Close(); err != nil {
-				t.Fatal(err)
-			}
-			if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{
-				ID:             sessionID,
-				ProfileID:      "openai",
-				Model:          "gpt-5",
-				EnvInfo:        schema.EnvironmentInfo{WorkingDir: cwd},
-				CreatedAt:      now,
-				UpdatedAt:      now,
-				TurnCount:      3,
-				OriginalPrompt: "older prompt",
-			}); err != nil {
-				t.Fatal(err)
-			}
-			indexPastTranscriptForTest(t, stateDir, sessionID)
-			past := newRebuiltPastIndex(t, filepath.Join(root, "projects", "*"))
+			cfgB, entry, _ := seedIndexedPastSession(t, buildEntries(tc.sparseOnInitial)...)
 
-			serverB := newHubAppServer(testWebConfig(t, hubcore.WebConfig{Past: past}), appsource.NewRegistry())
+			serverB := newHubAppServer(testWebConfig(t, cfgB), appsource.NewRegistry())
 			t.Cleanup(func() { _ = serverB.Shutdown(context.Background()) })
 			hubB := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				serverB.ServeWebSocket(w, r.WithContext(withHostRoutingOrigin(r.Context(), hostRoutingOriginBridge)))
@@ -4723,7 +4668,7 @@ func TestHubRPCRemoteSparseItemPositions(t *testing.T) {
 			t.Cleanup(hubA.Close)
 			clientA := dialHubRPCInitialized(t, hubA)
 
-			ref := "host-b:" + sessionID
+			ref := "host-b:" + entry.ID
 			initial, err := clientA.ThreadRead(t.Context(), appwire.ThreadReadParams{
 				Ref:          ref,
 				IncludeTurns: true,
