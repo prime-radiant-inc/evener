@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 import { settingsOverviewStore, useSettingsOverviewStore } from "../../../stores/settingsOverview";
-import { CodeBlock, Disclosure } from "../../../widgets";
+import { CodeBlock, Disclosure, InlineNotice } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import styles from "./about.module.css";
 import { FieldDim } from "./settingsField";
@@ -71,9 +71,9 @@ export function AboutSection() {
         {hub?.commit !== undefined && <FieldDim> ({hub.commit})</FieldDim>}
       </p>
       {hub?.version === undefined && data === null && error !== null && (
-        <p className={CLASS.help} data-testid="about-version-unavailable">
+        <InlineNotice tone="neutral" data-reason="unavailable" data-testid="about-version-unavailable">
           Version unavailable: {error}
-        </p>
+        </InlineNotice>
       )}
 
       <p className={CLASS.help} data-testid="design-credit">

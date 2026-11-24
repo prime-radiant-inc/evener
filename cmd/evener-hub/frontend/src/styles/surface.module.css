@@ -35,6 +35,15 @@
   gap: var(--space-3);
 }
 
+/* The quiet status line a settings section shows while it waits on the hub
+ * or reports a save in flight: caption ink, no margin, in the flow. */
+.settingsSectionStatus {
+  margin: 0;
+  color: var(--ink-mid);
+  font-size: var(--font-size-caption);
+  line-height: var(--line-height-body);
+}
+
 /* --- the summary tiles -----------------------------------------------
  * The two tiles under a page's primary task - a directory that is itself a
  * button and a status card that is not - share one inner layout: a row with

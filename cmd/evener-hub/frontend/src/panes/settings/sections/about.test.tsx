@@ -81,6 +81,11 @@ test("omits version/commit gracefully, with no raw error text, when not connecte
   const storedError = settingsOverviewStore.getState().error;
   expect(storedError).not.toBeNull();
   expect(screen.getByTestId("about-version-unavailable").textContent).toContain(storedError);
+  // The failure arrives after first render, so it has to reach assistive
+  // technology as a polite status region rather than a silent caption.
+  const unavailable = screen.getByTestId("about-version-unavailable");
+  expect(unavailable.getAttribute("role")).toBe("status");
+  expect(unavailable.getAttribute("data-reason")).toBe("unavailable");
 });
 
 test("a fetch failure shows a friendly message, never the raw error", async () => {
