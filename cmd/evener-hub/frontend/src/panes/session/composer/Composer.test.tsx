@@ -116,7 +116,11 @@ test.each([
       expect(card.getAttribute("data-folded-compact")).toBe(compact ? "true" : null);
       expect(screen.getByTestId("composer-attach")).toBeTruthy();
       expect(order()).toEqual(["composer-stop"]);
-      if (compact) expect(screen.queryByTestId("model-switch-trigger")).toBeNull();
+      if (compact) {
+        expect(screen.queryByTestId("model-switch-trigger")).toBeNull();
+        expect(screen.queryByTestId("status-row")).toBeNull();
+        expect(screen.queryByTestId("status-row-effort")).toBeNull();
+      }
 
       act(() => editor.focus());
       expect(editor.style.minHeight).toBe("1lh");
@@ -129,7 +133,12 @@ test.each([
       expect(card.hasAttribute("data-folded")).toBe(false);
       expect(card.hasAttribute("data-folded-compact")).toBe(false);
       expect(order()).toEqual(inlineSteer ? ["composer-steer", "composer-submit"] : ["composer-submit"]);
-      if (compact) expect(screen.getByTestId("model-switch-trigger")).toBeTruthy();
+      if (compact) {
+        expect(screen.queryByTestId("model-switch-trigger")).toBeNull();
+        expect(screen.queryByTestId("status-row")).toBeNull();
+        expect(screen.queryByTestId("status-row-effort")).toBeNull();
+        expect(screen.getByTestId("session-chrome-menu")).toBeTruthy();
+      }
 
       act(() => editor.blur());
       expect(card.hasAttribute("data-folded")).toBe(false);
@@ -224,6 +233,23 @@ test("while ask_pending is open, the message textbox is hidden and the dock is n
   expect(document.querySelector("[data-ask-response-dock]")).toBeNull();
 });
 
+test("a phone ask-pending composer keeps only the session menu", async ({ onTestFinished }) => {
+  onTestFinished(installMobileViewport());
+  await mountComposer("ref_a", {
+    ...pendingAskTurns(),
+    evener: { ...currentWorkEvener({ task: true, goal: true }), askPending: true },
+  });
+
+  // The question owns the input; the composer's remaining surface is the
+  // menu-only row, not the status, model, or effort chrome.
+  expect(screen.queryByRole("textbox", { name: /message/i })).toBeNull();
+  expect(screen.queryByTestId("session-chrome-inline")).toBeNull();
+  expect(screen.queryByTestId("status-row")).toBeNull();
+  expect(screen.queryByTestId("status-row-effort")).toBeNull();
+  expect(screen.queryByTestId("model-switch-trigger")).toBeNull();
+  expect(screen.getByTestId("session-chrome-menu")).toBeTruthy();
+});
+
 test("renders current work directly before the compose card", async () => {
   await mountComposer("ref_a", {
     evener: currentWorkEvener({ task: true, goal: true }),
@@ -232,6 +258,28 @@ test("renders current work directly before the compose card", async () => {
   const currentWork = screen.getByTestId("current-work");
   const composerCard = screen.getByTestId("composer-input-card");
   expect(currentWork.compareDocumentPosition(composerCard) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+});
+
+test("a phone composer hides the visible current-work rows but keeps their announcement", async ({
+  onTestFinished,
+}) => {
+  onTestFinished(installMobileViewport());
+  await mountComposer("ref_a", {
+    evener: currentWorkEvener({ task: true, goal: true }),
+  });
+
+  // Nothing arrived above the card to move the phone's persistent controls.
+  expect(screen.getByTestId("composer-input-card")).toBeTruthy();
+  expect(screen.queryByTestId("current-work")).toBeNull();
+  // The live region still carries the fixture's task and goal, so a screen
+  // reader hears the current work the visual rows no longer show.
+  const announcements = screen
+    .getAllByRole("status")
+    .filter((node) => node.getAttribute("aria-atomic") === "true")
+    .map((node) => node.textContent ?? "");
+  expect(announcements).toHaveLength(1);
+  expect(announcements[0]).toContain("Finish the focused composer test");
+  expect(announcements[0]).toContain("Keep the session focused");
 });
 
 test("the current-work goal row carries the goal's live status", async () => {
@@ -509,8 +557,9 @@ test("goal replacement focus waits until an ended follow-up textarea mounts", as
 
 // Desktop Tasks everywhere is the activity sidebar, preselected to its tasks
 // tab (the same retarget the rail row and the chrome menu share) - the
-// current-task button opens no sessionTasks pane. Mobile keeps the Sheet (the
-// mobile test below pins that).
+// current-task button opens no sessionTasks pane. The phone shell hides the
+// visible current-work rows (the test above pins that); its Tasks entry is the
+// top bar's Overview sheet, and the composer keeps its TasksPanel mount.
 test("clicking the current task opens the activity sidebar's tasks tab, never a pane, on desktop", async () => {
   const user = userEvent.setup();
   await mountComposer("ref_a", {
@@ -537,24 +586,6 @@ test("clicking the current task opens the activity sidebar's tasks tab, never a 
       .getState()
       .panes.filter((pane) => pane.type === "sessionTasks" && (pane.params as { ref?: string }).ref === "ref_a"),
   ).toHaveLength(0);
-});
-
-test("clicking the current task opens the existing mobile tasks sheet for this session", async () => {
-  const restoreViewport = installMobileViewport();
-  const user = userEvent.setup();
-  const fake = await mountComposer("ref_a", {
-    evener: currentWorkEvener({ task: true }),
-  });
-  let calledRef: unknown;
-  fake.on("evener/tasks/list", (params) => {
-    calledRef = params.ref;
-    return { data: [] };
-  });
-
-  await user.click(screen.getByRole("button", { name: "Open tasks: Finish the focused composer test" }));
-  await waitFor(() => expect(calledRef).toBe("ref_a"));
-  expect(isPaneOpen(workspaceStore.getState(), "sessionTasks", { ref: "ref_a" })).toBe(false);
-  restoreViewport();
 });
 
 test("the composer region fills pane height and bottom-anchors the replacement slot", () => {
@@ -697,9 +728,10 @@ test.each([false, true])("repeated composer /status targets its ref, phone=%s", 
   expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
 });
 
-// A phone's composer rests without the status and activity chips, then
-// restores both with content.
-test("a phone composer restores status chrome and its activity line with content", async ({ onTestFinished }) => {
+// A phone's composer rests without the status and activity chips, and content
+// expands the card without bringing model or effort chrome back: those are
+// facts in the Overview sheet and Settings (design-system.md section 12).
+test("a phone composer keeps its menu-only chrome with content", async ({ onTestFinished }) => {
   onTestFinished(installMobileViewport());
   const fake = connectReadyFakeClient();
   fake.on("thread/read", () => readResponse("ref_a"));
@@ -724,14 +756,18 @@ test("a phone composer restores status chrome and its activity line with content
   expect(screen.getByTestId("composer-submit")).toBeTruthy();
 
   act(() => replaceEditorText(screen.getByRole("textbox", { name: "Message" }), "draft"));
-  expect(screen.getByTestId("session-chrome-inline")).toBeTruthy();
+  expect(screen.getByTestId("composer-input-card").hasAttribute("data-folded")).toBe(false);
+  expect(screen.queryByTestId("session-chrome-inline")).toBeNull();
+  expect(screen.queryByTestId("status-row")).toBeNull();
+  expect(screen.queryByTestId("status-row-effort")).toBeNull();
+  expect(screen.queryByTestId("model-switch-trigger")).toBeNull();
+  expect(screen.getByTestId("session-chrome-menu")).toBeTruthy();
   // The engaged row carries no activity counts either (design-system.md
   // section 12): the top bar's Overview sheet owns them, so the composer
   // never grows an activity line, engaged or not.
   expect(screen.queryByTestId("composer-activity-line")).toBeNull();
   expect(screen.getByTestId("composer-submit")).toBeTruthy();
   expect(form.querySelector("[data-activity-tab]")).toBeNull();
-  expect(screen.queryByTestId("session-chrome-menu")).toBeNull();
   await settleActivityDiscovery("ref_a");
 });
 
@@ -760,7 +796,8 @@ test("a phone composer leaves inspection actions to the top bar at rest and with
   for (const withContent of [false, true]) {
     if (withContent) {
       act(() => replaceEditorText(editor, "draft"));
-      await waitFor(() => expect(screen.getByTestId("session-chrome-inline")).toBeTruthy());
+      await waitFor(() => expect(screen.getByTestId("composer-input-card").hasAttribute("data-folded")).toBe(false));
+      expect(screen.queryByTestId("session-chrome-inline")).toBeNull();
     }
     await user.click(screen.getByRole("button", { name: "Session actions" }));
     expect(screen.queryByRole("menuitem", { name: /find/i })).toBeNull();

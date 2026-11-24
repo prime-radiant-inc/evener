@@ -453,31 +453,30 @@ test("an empty exited follow-up can pick its next model before entering the edit
   expect(screen.getByTestId("session-chrome-inline")).toBeTruthy();
 });
 
-test("an empty exited follow-up keeps its phone menus usable", async () => {
+test("a phone composer keeps its session menu usable with content and without model chrome", async () => {
   const restoreViewport = installMobileViewport();
   try {
     const user = userEvent.setup();
-    const fake = await mountComposer("ref_a", {
+    await mountComposer("ref_a", {
       status: { type: "notLoaded" },
       evener: { ref: "ref_a", capabilities: PAST_THREAD_CAPABILITIES, queue: { revision: 0 } },
     });
-    fake.on("model/list", () => ({ data: [{ provider: "openai", model: "gpt-5.5" }] }));
-    fake.on("thread/model/set", () => ({}));
     expect(textarea().style.minHeight).toBe("1lh");
     await user.click(screen.getByRole("button", { name: "Session actions" }));
     expect(screen.queryByRole("menu")).not.toBeNull();
     await user.keyboard("{Escape}");
-    // The phone's resting row stays compact on focus; content brings the
-    // model picker back.
+    // The phone's resting row stays compact on focus, and content expands the
+    // card without bringing the model picker back.
     await user.click(textarea());
     expect(screen.queryByTestId("model-switch-trigger")).toBeNull();
     act(() => replaceEditorText(textarea(), "draft"));
-    expect(screen.getByTestId("model-switch-trigger")).toBeTruthy();
-    await user.click(screen.getByTestId("model-switch-trigger"));
-    expect(screen.getByRole("dialog", { name: "Choose model" })).toBeTruthy();
-    await user.click(await screen.findByRole("option", { name: /gpt-5.5/ }));
-    await waitFor(() => expect(fake.calls.filter((call) => call.method === "thread/model/set")).toHaveLength(1));
-    expect(document.activeElement).toBe(screen.getByTestId("model-switch-trigger"));
+    expect(screen.getByTestId("composer-input-card").hasAttribute("data-folded")).toBe(false);
+    expect(screen.queryByTestId("model-switch-trigger")).toBeNull();
+    expect(screen.queryByTestId("status-row")).toBeNull();
+    // The one menu stays reachable in the expanded card.
+    await user.click(screen.getByRole("button", { name: "Session actions" }));
+    expect(screen.queryByRole("menu")).not.toBeNull();
+    await user.keyboard("{Escape}");
   } finally {
     cleanup();
     restoreViewport();
