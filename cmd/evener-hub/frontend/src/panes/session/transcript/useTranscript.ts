@@ -4,7 +4,7 @@
 
 import type { ThreadModel } from "@evener/appwire-client";
 import { sessionActionError } from "@evener/appwire-client";
-import { useCallback, useEffect, useLayoutEffect, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import { useConnectionStore } from "../../../stores/connection";
 import { olderTranscriptPageKey } from "../../../stores/entryTranscriptRoutes";
 import { useThreadsStore } from "../../../stores/threads";
@@ -24,6 +24,11 @@ export interface UseTranscriptResult {
   // surfaces (the live session pane and the read-only transcript pane) need
   // exactly this, so it lives here rather than being written twice.
   loadOlderReportingError(): void;
+  // Whether this pane is an active reader right now: its document is visible
+  // and its view and reader are readable, the same state paging activation is
+  // gated on below. An automatic affordance uses it to hold its re-check until
+  // the reader comes back rather than queueing demand nobody can see.
+  readerActive: boolean;
   // The last failed older-page fetch's finished sentence, or null when the
   // last attempt succeeded or none has been made. Cleared at the start of
   // every attempt, so a retry begins from a clean state. Retried automatically
@@ -85,6 +90,13 @@ function useTranscriptInternal(
     const retained = pagingByRef.get(ref);
     return matchesBinding(retained, binding) ? retained : createPaging(ref, binding);
   });
+  const [readerActive, setReaderActive] = useState(false);
+  // What the last render published. The activation effect re-runs whenever the
+  // owning document changes - a pane moved between windows rebinds without a
+  // visibility event in either document - and it must start from that value:
+  // seeding the effect's own tracker with "inactive" makes a hidden replacement
+  // document agree with it while the pane still reports an active reader.
+  const publishedActiveRef = useRef(false);
   // Only committed readers can install or bind shared demand. A suspended
   // first render must not retire a waiting reader's unknown binding.
   useLayoutEffect(() => {
@@ -113,7 +125,11 @@ function useTranscriptInternal(
     return () => view?.setReadable(false);
   }, [view]);
   useEffect(() => {
-    if (!ready) return;
+    if (!ready) {
+      publishedActiveRef.current = false;
+      setReaderActive(false);
+      return;
+    }
     if (pagingByRef.get(ref) === undefined) {
       // A remount above this hook can let the outgoing reader's store
       // subscription retire the idle entry between the layout install and this
@@ -123,12 +139,13 @@ function useTranscriptInternal(
       pagingByRef.set(ref, entry);
     } else if (pagingByRef.get(ref) !== entry) return;
     let release: (() => void) | undefined;
+    let active = publishedActiveRef.current;
     const sync = () => {
-      if (
+      const inactive =
         ownerDocument.visibilityState === "hidden" ||
         (view && !view.readable) ||
-        (typedReader && !typedReader.readable)
-      ) {
+        (typedReader && !typedReader.readable);
+      if (inactive) {
         release?.();
         release = undefined;
       } else if (!release) {
@@ -138,6 +155,12 @@ function useTranscriptInternal(
           releaseReader();
           releaseFind();
         };
+      }
+      const next = !inactive;
+      if (next !== active) {
+        active = next;
+        publishedActiveRef.current = next;
+        setReaderActive(next);
       }
     };
     sync();
@@ -189,6 +212,7 @@ function useTranscriptInternal(
     model,
     olderPageKey,
     hasOlder: olderPageKey != null,
+    readerActive,
     loadOlder,
     cancelOlder,
     loadingOlder: state.loading || (state.pending && state.error === null),
