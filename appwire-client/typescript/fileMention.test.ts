@@ -303,6 +303,34 @@ describe("parseFileMentionToken", () => {
       query: "src/routes/[id",
       quoted: false,
     });
+
+    const mdLink = "[@ma](https://example.com)";
+    const mdToken = parseFileMentionToken(mdLink, 4)!;
+    expect(mdToken).toEqual({
+      start: 1,
+      end: 4,
+      query: "ma",
+      quoted: false,
+    });
+    expect(spliceFileMention(mdLink, mdToken, { path: "src/main.go", kind: "file" })).toEqual({
+      text: "[@src/main.go](https://example.com)",
+      caret: 13,
+      keepOpen: false,
+    });
+
+    expect(parseFileMentionToken("@routes/[id]", 11)).toEqual({
+      start: 0,
+      end: 12,
+      query: "routes/[id",
+      quoted: false,
+    });
+    const mdNested = "[@routes/[id]](https://example.com)";
+    const mdNestedToken = parseFileMentionToken(mdNested, 12)!;
+    expect(spliceFileMention(mdNested, mdNestedToken, { path: "src/main.go", kind: "file" })).toEqual({
+      text: "[@src/main.go](https://example.com)",
+      caret: 13,
+      keepOpen: false,
+    });
   });
 
   it("rejects email addresses, URLs, double-@, mid-word @, spaces, and >256 queries", () => {

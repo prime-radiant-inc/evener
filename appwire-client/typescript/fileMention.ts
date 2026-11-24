@@ -17,7 +17,7 @@ const NEG_INF = -1_000_000_000;
 const VALID_AT_BOUNDARY_RE = /^[\s([{<"'`]$/u;
 const PUNCTUATION_OR_SPACE_HEAD_RE = /^(?:[\s.,;:!?)\]}'"])/u;
 const UNQUOTED_STOP_RE = /[\s",;:!?]/u;
-const UNQUOTED_TRAILING_PUNCT_RE = /[.,;:!?)\]}'"]/u;
+const UNQUOTED_TRAILING_PUNCT_RE = /[.,;:!?)}'"]/u;
 
 export interface FileMentionToken {
   start: number;
@@ -120,12 +120,15 @@ export function parseFileMentionToken(
     }
 
     let breakAt = -1;
+    let bracketDepth = 0;
     for (let j = openPos; j < caret; j += 1) {
       const ch = text.charAt(j);
       if (ch === '"' || /\s/u.test(ch)) {
         breakAt = j;
         break;
       }
+      if (ch === "[") bracketDepth += 1;
+      else if (ch === "]" && bracketDepth > 0) bracketDepth -= 1;
     }
     if (breakAt >= 0) {
       i = breakAt + 1;
@@ -143,7 +146,15 @@ export function parseFileMentionToken(
       }
     }
     let end = caret;
-    while (end < maxEnd && !UNQUOTED_STOP_RE.test(text.charAt(end))) {
+    while (end < maxEnd) {
+      const ch = text.charAt(end);
+      if (UNQUOTED_STOP_RE.test(ch)) break;
+      if (ch === "[") {
+        bracketDepth += 1;
+      } else if (ch === "]") {
+        if (bracketDepth === 0) break;
+        bracketDepth -= 1;
+      }
       end += 1;
     }
     while (end > caret && UNQUOTED_TRAILING_PUNCT_RE.test(text.charAt(end - 1))) {
