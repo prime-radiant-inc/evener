@@ -42,8 +42,7 @@ import { navigationStore, resetNavigationStoreForTests } from "../../stores/navi
 import { resetThreadsStoreForTests, setMutationStorageForTests, threadsStore } from "../../stores/threads";
 import { resetTranscriptDisplayStoreForTests, transcriptDisplayStore } from "../../stores/transcriptDisplay";
 import { chordLabel, Dialog, Toast } from "../../widgets";
-import buttonStyles from "../../widgets/button/button.module.css";
-import iconButtonStyles from "../../widgets/iconbutton/iconbutton.module.css";
+import chipStyles from "../../widgets/chip/chip.module.css";
 import { getToasts, resetToastStoreForTests } from "../../widgets/toast/store";
 import { currentAttentionEntryToken } from "../attentionHistory";
 import { NeedsYouProvider } from "../NeedsYouProvider";
@@ -1072,11 +1071,11 @@ test("selecting a free-arg APP-GLOBAL command enters args mode with a pill and p
   expect(screen.getByRole("option", { name: /Start with prompt/ })).toBeTruthy();
 });
 
-// The args-mode pill's back control is the shared IconButton, not a local
-// button: it carries button.module.css's base class and quiet variant, and
-// iconbutton.module.css's square md sizing. Its glyph is an SVG rather than
-// the "×" text character, whose weight and baseline shift with the font.
-test("the args-mode back control is the shared quiet IconButton and returns to the command list", async () => {
+// The args-mode pill is the shared Chip, and its back control is that Chip's
+// remove slot, not a local button: the chip carries chip.module.css's base and
+// accent classes, and the remove control carries the chip's own remove class.
+// Its glyph is an SVG rather than the "×" text character.
+test("the args-mode back control is the shared Chip remove control and returns to the command list", async () => {
   const user = userEvent.setup();
   render(
     <NeedsYouProvider>
@@ -1087,9 +1086,10 @@ test("the args-mode back control is the shared quiet IconButton and returns to t
   await user.click(screen.getByRole("option", { name: /Start with prompt/ }));
 
   const back = screen.getByRole("button", { name: "back to command list" });
-  expect(back.className.split(" ")).toContain(buttonStyles.button);
-  expect(back.className.split(" ")).toContain(buttonStyles.quiet);
-  expect(back.className.split(" ")).toContain(iconButtonStyles.squareMd);
+  expect(back.className.split(" ")).toContain(chipStyles.remove);
+  const chip = back.parentElement;
+  expect(chip?.className.split(" ")).toContain(chipStyles.chip);
+  expect(chip?.className.split(" ")).toContain(chipStyles.accent);
   expect(back.querySelector("svg")).not.toBeNull();
   expect(back.textContent).toBe("");
 
