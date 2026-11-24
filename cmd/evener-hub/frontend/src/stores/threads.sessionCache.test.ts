@@ -17,6 +17,7 @@ import type {
   Turn,
   TurnModel,
 } from "@evener/appwire-client";
+import { decodeTranscriptItem } from "@evener/appwire-client";
 import type { FakeClient, RequestHandler } from "@evener/appwire-client/testing/fakeClient";
 import { IDBObjectStore } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -669,6 +670,123 @@ describe("ordinary entry transcript route", () => {
       await deleteIndexedDatabase(entryDatabase);
     }
   });
+
+  // A warm reopen over a background lease's released bodies still owes the
+  // conversation from the durable record. The repository's display keeps the
+  // historical warning overlay but no recorded bodies, so publishing that
+  // snapshot as the selected session's conversation paints the warning alone
+  // until the local restore lands (#7683). The notice is anchored inside the
+  // loaded recorded window as well as outside it, so a corrected notice
+  // placement alone cannot make this pass.
+  it.each([
+    ["in-window", { entry: 1, item: 0 }],
+    ["out-of-window", { entry: 40, item: 0 }],
+  ] as const)(
+    "a warm reopen with a %s historical notice never publishes it alone while the local restore is pending",
+    async (_name, anchor) => {
+      const selected = "local:entry-warm-pruned-notice";
+      const entryDatabase = "entry-warm-pruned-notice-test";
+      const replyBody = "RECORDED_WARM_REPLY_BODY";
+      const warningText = "HISTORICAL_WARM_WARNING";
+      const entryCache = new SessionEntryCache({ databaseName: entryDatabase });
+      const fixture = observeProductionEntryForTests(entryCache, selected);
+      const fake = connectFakeClient();
+      fake.on("thread/read", (params) => {
+        const recorded = turnFixture("warm-recorded", replyBody);
+        const read = readResponse(params.ref ?? selected, {
+          status: { type: "idle" },
+          snapshot: { incarnation: "inc-1", length: 1 },
+          turns: [{ ...recorded, items: [{ ...recorded.items[0]!, transcriptKey: "warm-recorded-item", version: 1 }] }],
+          requestGeneration: params.requestGeneration,
+        });
+        read.overlay = [
+          {
+            key: "historical-warning",
+            kind: "notice",
+            anchor,
+            turnId: "warm-recorded",
+            item: { id: "historical-warning", type: "agentMessage", text: warningText },
+          },
+        ];
+        return read;
+      });
+      const lease = acquireBackgroundThread(selected);
+      try {
+        await lease.ready;
+        await fixture.settled();
+        await settleBackgroundTranscriptsForTests();
+        const historyKey = fixture.inspect().historyKey;
+        if (!historyKey) throw new Error("the background lease resolved no history key");
+        // The ordinary background lease committed the positioned recorded body
+        // to the real database and then released its display payload.
+        const rows = await entryCache.getLatest(historyKey, 10);
+        expect(rows.map((row) => decodeTranscriptItem(row.item)?.text)).toEqual([replyBody]);
+        const pruned = threadsStore.getState().threads.get(selected);
+        const prunedText = JSON.stringify(pruned ?? null);
+        expect({ warning: prunedText.includes(warningText), reply: prunedText.includes(replyBody) }).toEqual({
+          warning: true,
+          reply: false,
+        });
+
+        // Hold the local restore at its durable window read so the committed
+        // frames during the opening are deterministic.
+        const releases: Array<() => void> = [];
+        const realGetLatestWindow = entryCache.getLatestWindow.bind(entryCache);
+        entryCache.getLatestWindow = ((h: string, limit: number, boundary?: string) =>
+          new Promise((resolve, reject) => {
+            releases.push(() => {
+              void realGetLatestWindow(h, limit, boundary).then(resolve, reject);
+            });
+          })) as typeof entryCache.getLatestWindow;
+
+        // A committed frame is a model publication the pane could render; the
+        // opening's own hold publication replaces only the localOpenings map.
+        const frames: Array<{ pending: boolean; text: string }> = [];
+        let lastModel: unknown;
+        const record = () => {
+          const model = threadsStore.getState().threads.get(selected);
+          if (model === undefined || model === lastModel) return;
+          lastModel = model;
+          frames.push({ pending: threadsStore.getState().localOpenings.has(selected), text: JSON.stringify(model) });
+        };
+        const unsubscribe = threadsStore.subscribe(record);
+        const activationCalls = fake.calls.length;
+        const opening = threadsStore.getState().ensureThread(selected);
+        try {
+          await vi.waitFor(() => expect(releases.length).toBeGreaterThanOrEqual(1));
+          await vi.waitFor(() => expect(frames.some((frame) => frame.pending)).toBe(true));
+          const pendingFrames = frames.filter((frame) => frame.pending);
+          const noticeAloneFrames = pendingFrames.filter(
+            (frame) => frame.text.includes(warningText) && !frame.text.includes(replyBody),
+          );
+          expect(noticeAloneFrames).toEqual([]);
+        } finally {
+          for (const release of releases.splice(0)) release();
+          await opening;
+          await fixture.settled();
+          unsubscribe();
+        }
+        const opened = JSON.stringify(threadsStore.getState().threads.get(selected) ?? null);
+        expect({ reply: opened.includes(replyBody), warning: opened.includes(warningText) }).toEqual({
+          reply: true,
+          warning: true,
+        });
+        // A healthy local hit still needs no activation source read or page.
+        expect(
+          fake.calls
+            .slice(activationCalls)
+            .filter((call) => call.method === "thread/read" || call.method === "thread/turns/list"),
+        ).toEqual([]);
+      } finally {
+        await lease.release();
+        await fixture.settled();
+        await settleBackgroundTranscriptsForTests();
+        fixture.dispose();
+        entryCache.close();
+        await deleteIndexedDatabase(entryDatabase);
+      }
+    },
+  );
 
   it("owns a selected recorded update through the repository and keeps the ordinary recorded reducer from being a second owner", async () => {
     const selected = "local:entry-exclusive-owner";

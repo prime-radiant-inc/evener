@@ -360,6 +360,11 @@ export function beginEntryTranscriptLocalOpening(ref: string, quiet = false): nu
     entryTranscriptQuietOpenings.set(ref, token);
     return token;
   }
+  // Replace the stand-alone notice display BEFORE the hold becomes visible to
+  // consumers: a pane that reads the store between these two updates would
+  // otherwise paint the pruned notice as the session's conversation, which is
+  // the frame this opening exists to prevent.
+  publishHeldOpeningDisplay(ref);
   store().setState((state) => {
     const localOpenings = new Map(state.localOpenings);
     localOpenings.set(ref, token);
@@ -460,15 +465,65 @@ export function olderTranscriptPageKey(ref: string): string | null | undefined {
 export function publishEntryTranscriptModel(ref: string): void {
   const fixture = entryTranscriptRoute(ref);
   if (!fixture || fixture.ref !== ref || fixture.clearInert) return;
-  const snapshot = fixture?.repository?.getSnapshot();
-  if (!snapshot) return;
-  const displayed = fixture.localBefore
-    ? { ...snapshot, olderCursor: snapshot.olderCursor ?? `entry-local:${JSON.stringify(fixture.localBefore)}` }
-    : snapshot;
+  const displayed = displayedEntryTranscriptSnapshot(fixture);
+  if (!displayed) return;
   routeHost().putThreadModel(
     ref,
-    isEntryTranscriptBackgroundOnly(ref) ? pruneBackgroundHistoryBodies(displayed) : displayed,
+    isEntryTranscriptBackgroundOnly(ref) ? pruneBackgroundHistoryBodies(displayed) : heldOpeningDisplay(ref, displayed),
   );
+}
+
+function displayedEntryTranscriptSnapshot(fixture: EntryTranscriptRoute): ThreadModel | undefined {
+  const snapshot = fixture.repository?.getSnapshot();
+  if (!snapshot) return undefined;
+  return fixture.localBefore
+    ? { ...snapshot, olderCursor: snapshot.olderCursor ?? `entry-local:${JSON.stringify(fixture.localBefore)}` }
+    : snapshot;
+}
+
+function publishHeldOpeningDisplay(ref: string): void {
+  const fixture = entryTranscriptRoute(ref);
+  if (!fixture || fixture.ref !== ref || fixture.clearInert) return;
+  const displayed = displayedEntryTranscriptSnapshot(fixture);
+  const held = displayed && heldNoticeDisplay(displayed);
+  if (held) routeHost().putThreadModel(ref, held);
+}
+
+// While a published opening is restoring the recorded bodies, the notice
+// display stands in for content the store cannot paint: history holds the
+// recorded item as a bare identity, and the only display items are overlay
+// notices. Publishing that shape would present the notices as historical
+// conversation whose text is gone, ahead of the restore that supplies it.
+// Withhold the notices and their turns until the restore republishes the
+// reconciled display; the repository keeps them, so the settled frame still
+// carries them with their bodies. A genuinely empty session has no body-less
+// recorded item, and a live warning travels with body-bearing items, so
+// neither matches the hold shape.
+function heldOpeningDisplay(ref: string, model: ThreadModel): ThreadModel {
+  if (!isEntryTranscriptLocalOpening(ref)) return model;
+  return heldNoticeDisplay(model) ?? model;
+}
+
+function heldNoticeDisplay(model: ThreadModel): ThreadModel | undefined {
+  const overlay = model.overlay;
+  if (!overlay) return undefined;
+  const displayItems = model.turns.flatMap((turn) => turn.items);
+  if (displayItems.length === 0) return undefined;
+  const noticeKeys = new Set<string>();
+  for (const item of displayItems) {
+    const key = item.overlayKey;
+    if (key === undefined || overlay[key]?.kind !== "notice") return undefined;
+    noticeKeys.add(key);
+  }
+  const bodiesWithheld = (model.history?.turns ?? []).some((turn) =>
+    turn.items.some((item) => encodeTranscriptItem(item).identityOnly),
+  );
+  if (!bodiesWithheld) return undefined;
+  return {
+    ...model,
+    turns: [],
+    overlay: Object.fromEntries(Object.entries(overlay).filter(([key]) => !noticeKeys.has(key))),
+  };
 }
 
 /** The repository side of the owed-range verdict: a windowed baseline's
