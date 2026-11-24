@@ -114,7 +114,12 @@ func (s *Session) skillAvailableToSession(name string) bool {
 // supports. skillAvailableToSession is its name-scoped form; the role-preload
 // filter computes it once for every name it checks.
 func (s *Session) skillAvailability() skill.SessionAvailability {
-	return skill.SessionAvailability{MemorySaveAvailable: s.memorySaveInstructionsEnabled()}
+	return skill.SessionAvailability{
+		MemorySaveAvailable:  s.memorySaveInstructionsEnabled(),
+		RunningJobsAvailable: s.canInstructTool("delegate") || s.canInstructTool("job_watch") || s.canInstructTool("job_list"),
+		WorktreeAvailable:    s.canInstructTool("manage_worktree") && !s.worktreeDisposeOnlySurface(),
+		TranscriptsAvailable: s.canInstructTool("read_transcript") || s.canInstructTool("find_session_transcripts"),
+	}
 }
 
 // memorySaveInstructionsEnabled gates text that tells the model to write or

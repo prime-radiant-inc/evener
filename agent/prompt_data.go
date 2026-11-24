@@ -121,6 +121,7 @@ type promptData struct {
 	ManagerEnabled      bool
 	ManagerDiscovery    bool
 	ManagerStatus       bool
+	WorktreeDisposeOnly bool
 
 	// Available agents (for delegate)
 	AvailableAgents []agentEntry
