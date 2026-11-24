@@ -447,8 +447,8 @@ func stableSupervisionFailureSnapshot(root *Session, sub *subagent, adapter *fak
 			// step replacement can hold. TryState reads both without waiting, so
 			// this whole snapshot path is nonblocking: a busy Script reports
 			// through the same provider-lock key a busy adapter does, and the
-			// retry loop picks it up on its next pass. A provider waiting for the
-			// Script does not hold this mutex, so the request list stays readable.
+			// retry loop picks it up on its next pass. The script is taken second
+			// here, as in Complete.
 			if cursor, steps, ok := adapter.script.TryState(); ok {
 				snapshot["provider_cursor"], snapshot["provider_steps"] = cursor, steps
 			} else {
