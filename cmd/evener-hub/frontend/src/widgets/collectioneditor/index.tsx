@@ -1,6 +1,7 @@
 import { type FormEvent, type ReactNode, useState } from "react";
 import { Button } from "../button";
 import { CloseIcon } from "../dialog/CloseIcon";
+import { EmptyState } from "../emptystate";
 import { IconButton } from "../iconbutton";
 import { InlineNotice } from "../inlinenotice";
 import { Input } from "../input";
@@ -71,7 +72,6 @@ const CLASS = {
   list: requireClass(styles.list, "collectioneditor.module.css", "list"),
   row: requireClass(styles.row, "collectioneditor.module.css", "row"),
   content: requireClass(styles.content, "collectioneditor.module.css", "content"),
-  empty: requireClass(styles.empty, "collectioneditor.module.css", "empty"),
   inherited: requireClass(styles.inherited, "collectioneditor.module.css", "inherited"),
   inheritedTag: requireClass(styles.inheritedTag, "collectioneditor.module.css", "inheritedTag"),
   addForm: requireClass(styles.addForm, "collectioneditor.module.css", "addForm"),
@@ -141,8 +141,8 @@ export function CollectionEditor<T>({
     <div className={CLASS.root}>
       <ul aria-label={label} className={CLASS.list}>
         {items.length === 0 && inheritedItems.length === 0 ? (
-          <li className={CLASS.empty} data-reason="empty">
-            {emptyMessage}
+          <li>
+            <EmptyState title={emptyMessage} size="compact" reason="empty" />
           </li>
         ) : (
           <>

@@ -1307,6 +1307,36 @@ async function assertOverlap(ref, text, label) {
   assert.equal(typeof editedAt, 'number', `${label}, draft record carries its write stamp`);
 }
 
+async function verifyExifRotatedJpegStaging(ref) {
+  await driver.clearComposerDraft(ref);
+  await upload('exif-rotated.jpg');
+  await wait("document.querySelector('button[aria-label=\"View exif-rotated.jpg\"] img')?.src.startsWith('data:image/jpeg;base64,')", 'EXIF-rotated JPEG encoded to JPEG thumbnail');
+  const decoded = await read(`(async () => {
+    const src = document.querySelector('button[aria-label="View exif-rotated.jpg"] img')?.src;
+    if (!src) throw new Error('missing exif-rotated.jpg thumbnail');
+    const img = new Image();
+    await new Promise((resolve, reject) => {
+      img.onload = () => resolve();
+      img.onerror = () => reject(new Error('thumbnail decode failed'));
+      img.src = src;
+    });
+    const canvas = document.createElement('canvas');
+    canvas.width = img.naturalWidth;
+    canvas.height = img.naturalHeight;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(img, 0, 0);
+    const left = Array.from(ctx.getImageData(Math.floor(canvas.width * 0.25), Math.floor(canvas.height * 0.5), 1, 1).data);
+    const right = Array.from(ctx.getImageData(Math.floor(canvas.width * 0.75), Math.floor(canvas.height * 0.5), 1, 1).data);
+    return { width: img.naturalWidth, height: img.naturalHeight, left, right };
+  })()`);
+  assert.equal(decoded.width, 1024, 'EXIF Orientation=6 landscape 2400x1200 rotates and downscales to 1024px portrait width');
+  assert.equal(decoded.height, 2048, 'EXIF Orientation=6 landscape 2400x1200 rotates and downscales to 2048px portrait height');
+  assert.ok(decoded.left[2] > 200 && decoded.left[0] < 60, `rotated left pixel should be blue, got ${JSON.stringify(decoded.left)}`);
+  assert.ok(decoded.right[0] > 200 && decoded.right[2] < 60, `rotated right pixel should be red, got ${JSON.stringify(decoded.right)}`);
+  await driver.click('button[aria-label="Remove exif-rotated.jpg"]');
+  await wait(`document.querySelector('button[aria-label="Remove exif-rotated.jpg"]') === null`, 'EXIF test tile removed');
+}
+
 async function mixedSourceJourney() {
   const ref = fixture.rootRef;
   await driver.clearComposerDraft(ref);
@@ -1324,7 +1354,7 @@ async function mixedSourceJourney() {
   await driver.typeText(ref, ' /cascade-overlap');
   await completeOverlap(ref, 'skill');
   await upload('mixed-last.png');
-  await wait("document.querySelector('button[aria-label=\"View mixed-last.png\"] img')?.src.startsWith('data:image/png;base64,')", 'last real overlap image');
+  await wait(`document.querySelector('[role="img"][aria-label=${q('mixed-last.png (still processing)')}]') !== null`, 'last real overlap image queued pending while middle encode is held');
   await driver.focusComposer(ref);
   await driver.typeText(ref, ' /cascade-overlap');
   await key('Escape', 27);
@@ -1334,16 +1364,18 @@ async function mixedSourceJourney() {
   assert.equal(new Set(markers).size, 3, 'retained source allocates unique image markers');
   const [firstMarker, failedMarker, lastMarker] = markers;
   await assertOverlap(ref, before.text, 'before mounted image settlement');
-  const imageBytes = await read("['mixed-first.png','mixed-last.png'].map(name => document.querySelector(`button[aria-label=\"View ${name}\"] img`).src)");
+  const firstImageBytes = await read("document.querySelector('button[aria-label=\"View mixed-first.png\"] img').src");
   await driver.click(sourceAgents);
   await drill(fixture.edges[0], 1);
   await read('window.__cascadeEncode.release(false)');
   await wait(`${driver.toastExpr()}.includes('mixed-failure.png (image decode failed)')`, 'actual failed decode settles while source editor stays mounted');
   await returnToSource();
+  await wait("document.querySelector('button[aria-label=\"View mixed-last.png\"] img')?.src.startsWith('data:image/png;base64,')", 'last real overlap image settles after middle decode fails');
   const settledText = before.text.replace(failedMarker, '');
   await assertOverlap(ref, settledText, 'after mounted image settlement and Return');
   assert.equal((await driver.composerState(ref)).tiles, 2, 'only failed middle image is removed');
-  assert.deepEqual(await read("['mixed-first.png','mixed-last.png'].map(name => document.querySelector(`button[aria-label=\"View ${name}\"] img`).src)"), imageBytes, 'exact retained PNG bytes');
+  assert.equal(await read("document.querySelector('button[aria-label=\"View mixed-first.png\"] img').src"), firstImageBytes, 'exact retained first PNG bytes');
+  assert.ok(await read("document.querySelector('button[aria-label=\"View mixed-last.png\"] img')?.src.startsWith('data:image/png;base64,')"), 'last real overlap image settled as PNG');
   driver.milestone('mixed-mounted-image-return', { recipient:ref, mentions:overlapMentions(settledText) });
 
   await holdStorageAcknowledgement(ref, settledText);
@@ -1377,6 +1409,7 @@ async function mixedSourceJourney() {
   assert.equal(requests[0].params.ref, ref);
   driver.milestone('mixed-held-storage-return', { recipient:ref, clientMutationId:held.clientMutationId, mentions:overlapMentions(cleaned) });
   await capture('mixed-held-storage-return');
+  await verifyExifRotatedJpegStaging(ref);
 }
 
 const layoutExpr = "JSON.parse(localStorage.getItem('evener.workspace.layout.v2') || 'null')";

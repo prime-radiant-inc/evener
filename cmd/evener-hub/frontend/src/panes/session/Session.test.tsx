@@ -26,7 +26,7 @@ import type { SessionZoomParams } from "../zoom/intent";
 import Zoom from "../zoom/Zoom";
 import * as SessionChromeModule from "./chrome/SessionChrome";
 import { resetAskDockStoreForTests } from "./composer/askDock/askDockStore";
-import * as PngEncoding from "./composer/attachments/encodePng";
+import * as ImageEncoding from "./composer/attachments/encodeImage";
 import * as ComposerModule from "./composer/Composer";
 import { requestComposerFocus } from "./composer/composerFocus";
 import { writeComposerDraft } from "./composer/draft";
@@ -292,7 +292,7 @@ test("the real Session consumer retains its structured editor and pending images
   expect(source.attachments.getState().items).toEqual([
     expect.objectContaining({ marker: 1, name: "success.png", data: "AQID", pending: false }),
   ]);
-  expect(vi.mocked(PngEncoding.reencodeToPng)).toHaveBeenCalledTimes(2);
+  expect(vi.mocked(ImageEncoding.encodeImage)).toHaveBeenCalledTimes(2);
 
   const back = new Promise<void>((resolve) => window.addEventListener("popstate", () => resolve(), { once: true }));
   await act(async () => {
@@ -316,7 +316,7 @@ test("the real Session consumer retains its structured editor and pending images
   expect(source.attachments.getState().items).toEqual([
     expect.objectContaining({ marker: 1, name: "success.png", mediaType: "image/png", data: "AQID", pending: false }),
   ]);
-  expect(vi.mocked(PngEncoding.reencodeToPng)).toHaveBeenCalledTimes(2);
+  expect(vi.mocked(ImageEncoding.encodeImage)).toHaveBeenCalledTimes(2);
   expect(document.activeElement).not.toBe(returnedEditor);
   await userEvent.click(returnedEditor);
   expect(document.activeElement).toBe(returnedEditor);
@@ -372,7 +372,7 @@ test("the real Session consumer retains its structured editor and pending images
     target: { files: [new File([new Uint8Array([4, 3, 2, 1])], "secondary.png", { type: "image/png" })] },
   });
   expect(secondarySource.attachments.getState().items[0]).toMatchObject({ name: "secondary.png", pending: true });
-  expect(vi.mocked(PngEncoding.reencodeToPng)).toHaveBeenCalledTimes(3);
+  expect(vi.mocked(ImageEncoding.encodeImage)).toHaveBeenCalledTimes(3);
   const secondarySnapshot = secondarySource.getSnapshot();
   act(() => openAttentionSession("third"));
   const third = workspaceStore.getState().panes.find((pane) => pane.id === workspaceStore.getState().focusedPaneId);
@@ -409,7 +409,7 @@ test("the real Session consumer retains its structured editor and pending images
     }),
   ]);
   expect(focusedPaneMounts.filter((id) => id === secondary.id)).toHaveLength(2);
-  expect(vi.mocked(PngEncoding.reencodeToPng)).toHaveBeenCalledTimes(3);
+  expect(vi.mocked(ImageEncoding.encodeImage)).toHaveBeenCalledTimes(3);
   const thirdForward = new Promise<void>((resolve) =>
     window.addEventListener("popstate", () => resolve(), { once: true }),
   );
@@ -594,7 +594,7 @@ test("real same-URL readers preserve the exact owning reader through attention B
     { name: "cascade.png", data: "AQID", pending: false },
   ]);
   expect(mounts.filter((id) => id === session.id)).toHaveLength(3);
-  expect(vi.mocked(PngEncoding.reencodeToPng)).toHaveBeenCalledTimes(1);
+  expect(vi.mocked(ImageEncoding.encodeImage)).toHaveBeenCalledTimes(1);
   expect(document.activeElement).not.toBe(sessionEditor);
   const returnBack = new Promise<void>((resolve) =>
     window.addEventListener("popstate", () => resolve(), { once: true }),

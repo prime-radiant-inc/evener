@@ -4,8 +4,9 @@
 drop-zone wiring. The `Dropzone` widget (`widgets/dropzone/index.tsx:27-71`)
 wraps the spawn pane's prompt card and hands every dropped `File` to
 `useAttachments.ingestFiles` (`Spawn.tsx:512`). That splices an `[image N]`
-marker into the prompt text synchronously, then canvas-re-encodes each image to
-PNG off-thread (`attachments/encodePng.ts:43-73`). On submit the base64 bytes
+marker into the prompt text synchronously, then canvas-encodes each image
+(`attachments/encodeImage.ts:128-190`, keeping fitting PNGs as PNG and encoding
+larger or non-PNG images as JPEG). On submit the base64 bytes
 ride an appwire `thread/start` as `{type:"image", …}` input items
 (`panes/spawn/startThread.ts:39-46,66`) and land as an image part on the first
 `USER_INPUT` turn.
@@ -34,9 +35,9 @@ is no REST fallback on this path either: `startThread` goes to appwire
 - `superpowers-chrome:browsing` available, with your own Chrome profile claimed
   via `set_profile` before the first `use_browser` call (kata `8ecz`).
 - The CSP must include `blob:` in `img-src`
-  (`cmd/evener-hub/internal/httpsec/httpsec.go:40`) — the re-encode pipeline
-  loads a `URL.createObjectURL(blob)` reference into an `Image`
-  (`encodePng.ts:45,71`), and without it every drop fails decode. See Sharp
+  (`cmd/evener-hub/internal/httpsec/httpsec.go:40`) — the fallback `<img>` decode
+  loads a `URL.createObjectURL(blob)` reference (`encodeImage.ts:77-87`), and
+  without it SVG or fallback decodes fail. See Sharp
   edges.
 
 ## Steps
@@ -113,8 +114,8 @@ is no REST fallback on this path either: `startThread` goes to appwire
   active class, `dropzone/index.tsx:30-33`) and `afterDrop === atRest` (the
   drop handler cleared it, `:46-52`). `markerEarly` already contains
   `[image 1]` and `tilesEarly` is already 1: the marker is spliced and the item
-  staged **before** `reencodeToPng` is even called
-  (`useAttachments.ts:156-171`, `appwire-client/typescript/textareaMarkers.ts#markerText`), so the early read
+  staged **before** `encodeImage` settles
+  (`useAttachments.ts:365-436`, `appwire-client/typescript/textareaMarkers.ts#markerText`), so the early read
   — taken a macrotask after the drop, long before a canvas round-trip could
   finish — distinguishes "staged, then settled" from "never staged".
   `removeButtons` includes `Remove dropped.png`; while the decode is still in
@@ -136,8 +137,9 @@ is no REST fallback on this path either: `startThread` goes to appwire
   processing.` (`:433-435`, meaning submit raced the decode).
 - **Step 4 (transcript, exact)**: a `USER_INPUT` turn carries both a `text`
   part with the typed prompt and an `image` part whose `media_type` is
-  `image/png` and whose `data` is non-empty — every attachment is re-encoded to
-  PNG regardless of input type (`encodePng.ts:1-14`). A later assistant turn
+  `image/png` and whose `data` is non-empty — a fitting PNG (`<= 2048 px` and
+  `<= 8 MiB`) stays PNG through the canvas round-trip (`encodeImage.ts:144-170`),
+  while larger or non-PNG inputs encode as JPEG. A later assistant turn
   refers to the image. Falsify: no `image` part on `USER_INPUT` (the items
   never reached the daemon), or the model describes something other than a
   solid red square.
@@ -155,10 +157,10 @@ daemon running, poisoning the next run's `idle` poll.
 
 ## Sharp edges
 
-- **CSP must allow `blob:` in `img-src`** (kata `1pgw`). `reencodeToPng` calls
-  `URL.createObjectURL(blob)` and loads the result into an `Image` to decode it
-  before re-encoding (`encodePng.ts:45,71`); without `blob:` the `onerror` path
-  fires, the promise rejects, `ingestFiles` strips the marker back out and
+- **CSP must allow `blob:` in `img-src`** (kata `1pgw`). `encodeImage`'s `<img>`
+  fallback calls `URL.createObjectURL(blob)` and loads the result into an
+  `Image` to decode it (`encodeImage.ts:77-87`); without `blob:` the `onerror`
+  path fires, the promise rejects, `ingestFiles` strips the marker back out and
   toasts `Couldn't attach <name> (image decode failed)`
   (`useAttachments.ts:179-189`) for a perfectly valid PNG. The directive lives
   at `cmd/evener-hub/internal/httpsec/httpsec.go:40`.

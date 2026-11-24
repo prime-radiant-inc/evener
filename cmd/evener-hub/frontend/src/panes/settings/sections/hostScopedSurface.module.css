@@ -1,7 +1,5 @@
 .root {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-4);
+  composes: stack4 from "../../../styles/surface.module.css";
 }
 
 .note {

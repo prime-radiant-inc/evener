@@ -151,8 +151,7 @@ test("the dock sizes to its content as a transcript row, with no internal scroll
   const rule = css.match(/\.dock\s*\{([^}]*)\}/);
   expect(rule, "askdock.module.css must declare a .dock rule").not.toBeNull();
   const body = rule![1]!;
-  expect(body).toContain("max-width: var(--session-measure)");
-  expect(body).toContain("margin-inline: auto");
+  expect(body).toContain('composes: measureColumn from "../../../../styles/surface.module.css"');
   expect(body).not.toContain("max-height");
   expect(body).not.toContain("overflow");
   expect(body).not.toContain("flex:");

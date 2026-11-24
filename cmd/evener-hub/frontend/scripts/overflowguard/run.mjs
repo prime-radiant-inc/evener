@@ -1390,6 +1390,19 @@ async function verifyHeldSteerColumn(cdpEndpoint, url) {
   );
 }
 
+// The first-reply skeleton's column: ColdStartSkeleton composes the shared
+// measure recipe, so its longest bar must fill the column's content box (after
+// .coldStart's own padding), and the column must fill its parent's content box
+// at the Wide transcript measure. A hard-coded 42rem cap narrows the skeleton
+// inside a wider column, and the horizontal-overflow scan cannot see it.
+async function verifyColdStartSkeleton(cdpEndpoint, url) {
+  return inspectOnSettledPage(
+    cdpEndpoint,
+    url,
+    "window.__overflowGuardColdStartSkeleton = window.inspectColdStartSkeleton()",
+  );
+}
+
 function assertFieldsets(detail, label) {
   const failures = [];
   if (!detail || !Number.isFinite(detail.rootRemPx) || detail.rootRemPx <= 0) {
@@ -2330,6 +2343,38 @@ async function main() {
       console.log(`held steer column ... FAIL - ${JSON.stringify(heldSteerColumn)}`);
     } else {
       console.log("held steer column ... PASS - trailing held-steer stack shares the turn content column");
+      console.log(
+        `  measured stack [${heldSteerColumn.stackLeft.toFixed(1)}, ${heldSteerColumn.stackRight.toFixed(1)}] ` +
+          `against turn [${heldSteerColumn.turnLeft.toFixed(1)}, ${heldSteerColumn.turnRight.toFixed(1)}]`,
+      );
+    }
+
+    const coldStartSkeleton = await verifyColdStartSkeleton(
+      cdpEndpoint,
+      `http://127.0.0.1:${vitePort}/overflowharness.html?coldstart=1&w=1024`,
+    );
+    // The Wide measure is 64rem at the page's 16px root. When the pane is
+    // narrower than that, the column fills the pane instead.
+    const wideMeasurePx = 64 * 16;
+    const expectedColdStartWidth =
+      coldStartSkeleton.parentContentWidth === null
+        ? null
+        : Math.min(coldStartSkeleton.parentContentWidth, wideMeasurePx);
+    if (
+      coldStartSkeleton.measure !== "wide" ||
+      expectedColdStartWidth === null ||
+      !nearlyEqual(coldStartSkeleton.barWidth, coldStartSkeleton.contentWidth, 1) ||
+      !nearlyEqual(coldStartSkeleton.skeletonWidth, expectedColdStartWidth, 1)
+    ) {
+      failed++;
+      console.log(`cold start skeleton ... FAIL - ${JSON.stringify(coldStartSkeleton)}`);
+    } else {
+      console.log("cold start skeleton ... PASS - first-reply skeleton fills the wide reading column after its padding");
+      console.log(
+        `  measured bar ${coldStartSkeleton.barWidth.toFixed(1)}px in column content ` +
+          `${coldStartSkeleton.contentWidth.toFixed(1)}px, column ${coldStartSkeleton.skeletonWidth.toFixed(1)}px ` +
+          `of ${expectedColdStartWidth.toFixed(1)}px at ${coldStartSkeleton.measure}`,
+      );
     }
 
     const panelCollapse = await verifyPanelCollapse(
@@ -2367,6 +2412,15 @@ async function main() {
         width,
       );
       let widthFailed = false;
+      // Every sweep page must exercise the DEFAULT Reading column. A fixture
+      // that persists Wide would silently widen every page measured after it.
+      if (result.measure !== "reading") {
+        widthFailed = true;
+        console.log(
+          `${width}px ... FAIL - page reported measure ${JSON.stringify(result.measure)}, ` +
+            `expected the default reading column`,
+        );
+      }
       if (
         result.exceptionSafety.found !== 2 ||
         !result.exceptionSafety.threw ||

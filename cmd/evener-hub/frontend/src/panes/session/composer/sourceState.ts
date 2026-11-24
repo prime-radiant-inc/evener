@@ -39,6 +39,7 @@ import {
 import { compositionIsEmpty, mergeRecoveryComposerDraft, recoveryComposerDraft } from "./recovery/recoveryDraft";
 import { sameImageRanges, sameStrings } from "./selection";
 import {
+  extractMentionsInRange,
   materializeSelectionReferences,
   parseSkillDocument,
   patchSelectionText,
@@ -165,7 +166,13 @@ export interface ComposerSourceState {
   /** `splice` is the exact span the caller's own edit replaced, when it knows
    * it. Passing it keeps a marker the edit did not touch from being read as
    * spliced through (see TextEditor.write). */
-  writeDraft(text: string, mayPersist: boolean, source?: TextEditSource, splice?: TextSplice): void;
+  writeDraft(
+    text: string,
+    mayPersist: boolean,
+    source?: TextEditSource,
+    splice?: TextSplice,
+    restoredMentions?: readonly ComposerMention[],
+  ): void;
   refreshRecovery(): void;
   readonly compositionOwnerId: string;
   runRecoveryOperation<T>(operation: () => Promise<T>): Promise<T>;
@@ -588,7 +595,13 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
   function markRestore(): void {
     if (!disposed) state.setState((snapshot) => ({ restoreEpoch: snapshot.restoreEpoch + 1 }));
   }
-  function writeDraft(text: string, mayPersist: boolean, source?: TextEditSource, splice?: TextSplice): void {
+  function writeDraft(
+    text: string,
+    mayPersist: boolean,
+    source?: TextEditSource,
+    splice?: TextSplice,
+    restoredMentions?: readonly ComposerMention[],
+  ): void {
     if (disposed) return;
     const next = patchSelectionText(
       // The adoption travels with the patch: patchSelectionText re-derives the
@@ -604,7 +617,8 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
       },
       text,
       splice,
-      stagedImageRangesAddedBy(text, splice),
+      source === "cleanup" ? undefined : stagedImageRangesAddedBy(text, splice),
+      restoredMentions,
     );
     updateSkillNames(next.skillNames);
     updateSelectionMeta(next);
@@ -617,17 +631,23 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     // The staged occurrences move by the same rule, and any the splice itself
     // inserted arrive already naming their span.
     setStagedImageRanges(next.stagedImageRanges ?? []);
-    if (source === "submission") {
+    if (source === "submission" || (restoredMentions !== undefined && restoredMentions.length > 0)) {
       updateText(text);
-      // React can batch exact marker removals, so restore their already mapped atoms.
+      // React can batch exact marker removals or restored mentions, so sync their mapped atoms.
       markRestore();
     } else editText(text);
     if (mayPersist && currentRecoveryId() === null) persistDraft(text);
   }
-  function writeDetachedSourceDraft(text: string, _cursor: number, source?: TextEditSource, splice?: TextSplice): void {
+  function writeDetachedSourceDraft(
+    text: string,
+    _cursor: number,
+    source?: TextEditSource,
+    splice?: TextSplice,
+    restoredMentions?: readonly ComposerMention[],
+  ): void {
     // A detached continuation cannot claim another pane's newer draft.
     if (disposed || !ownsDraftRevision()) return;
-    writeDraft(text, true, source, splice);
+    writeDraft(text, true, source, splice, restoredMentions);
   }
   const editor: TextEditor = {
     read: () => {
@@ -636,11 +656,21 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
       const text = currentDraftText();
       return { text, cursor: text.length, selection: { start: text.length, end: text.length } };
     },
-    write: (text, cursor, source, splice) => {
+    write: (text, cursor, source, splice, restoredMentions) => {
       if (disposed) return;
-      if (boundEditor) boundEditor.write(text, cursor, source, splice);
-      else writeDetachedSourceDraft(text, cursor, source, splice);
+      if (boundEditor) boundEditor.write(text, cursor, source, splice, restoredMentions);
+      else writeDetachedSourceDraft(text, cursor, source, splice, restoredMentions);
     },
+    captureMentions: (start, end) =>
+      extractMentionsInRange(
+        {
+          text: textRef.current,
+          skillNames: skillNamesRef.current,
+          ...selectionMetaRef.current,
+        },
+        start,
+        end,
+      ),
     stagedRangeFor: (marker) => ({
       range: state.getState().stagedImageRanges.find((item) => item.marker === marker),
       positioned: positionedStagedMarkers.has(marker),

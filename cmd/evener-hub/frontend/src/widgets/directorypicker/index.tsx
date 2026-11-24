@@ -5,13 +5,17 @@ import { Button } from "../button";
 import { Chevron } from "../chevron";
 import { Dialog } from "../dialog";
 import { Disclosure } from "../disclosure";
+import { EmptyState } from "../emptystate";
 import { InlineNotice } from "../inlinenotice";
 import { ownerDocumentOf } from "../internal/documentRealm";
 import { requireClass } from "../internal/requireClass";
 import { usePortalDocument } from "../internal/usePortalDocument";
 import { ListRow } from "../listrow";
+import { Loader } from "../loader";
 import { ToolIcon } from "../toolicon";
 import styles from "./directorypicker.module.css";
+
+const EMPTY_FOLDERS_MESSAGE = "No subfolders to display.";
 
 export interface DirectoryPickerProps {
   value: string;
@@ -252,7 +256,9 @@ export function DirectoryPicker({
               onSelect={() => void browse(path)}
             />
           ))}
-          {listRecents && recents.length === 0 && <p className={CLASS.status}>No recent directories.</p>}
+          {listRecents && recents.length === 0 && (
+            <EmptyState title="No recent directories." size="compact" reason="empty" />
+          )}
           <h3>Locations</h3>
           <Button variant="quiet" disabled={busy} onClick={() => void browse("~")}>
             Home
@@ -385,21 +391,19 @@ export function DirectoryPicker({
             aria-label="Folders"
             aria-busy={!pathEdited && entries === null && error === null}
           >
+            <div role="status" data-state={entries !== null && entries.length === 0 ? "empty" : undefined}>
+              {entries !== null && entries.length === 0 && (
+                <EmptyState title={EMPTY_FOLDERS_MESSAGE} size="compact" reason="empty" />
+              )}
+            </div>
             {pathEdited ? (
               <p className={CLASS.status} role="status" data-state="edited">
                 Press Go to browse this path.
               </p>
             ) : entries === null ? (
-              !error && (
-                <p className={CLASS.status} role="status" data-state="loading">
-                  Loading directories…
-                </p>
-              )
-            ) : entries.length === 0 ? (
-              <p className={CLASS.status} role="status" data-state="empty">
-                No subfolders to display.
-              </p>
+              !error && <Loader label="Loading directories…" />
             ) : (
+              entries.length > 0 &&
               entries.map((path) => (
                 <ListRow
                   key={path}

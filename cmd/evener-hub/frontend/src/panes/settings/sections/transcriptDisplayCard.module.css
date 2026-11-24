@@ -1,7 +1,5 @@
 .content {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-4);
+  composes: stack4 from "../../../styles/surface.module.css";
   min-width: 0;
 }
 
@@ -28,9 +26,7 @@
 }
 
 .preview {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
+  composes: stack3 from "../../../styles/surface.module.css";
   min-width: 0;
 }
 

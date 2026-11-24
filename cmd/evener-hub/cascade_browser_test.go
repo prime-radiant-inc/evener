@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"image"
 	"image/color"
+	"image/jpeg"
 	"image/png"
 	"os"
 	"os/exec"
@@ -121,6 +122,9 @@ func TestAgentCascadeBrowser(t *testing.T) {
 		if encodeErr != nil || closeErr != nil {
 			t.Fatalf("real PNG input: encode %v, close %v", encodeErr, closeErr)
 		}
+	}
+	if err := writeExifRotatedJpegFixture(filepath.Join(artifacts, "exif-rotated.jpg")); err != nil {
+		t.Fatalf("real EXIF JPEG input: %v", err)
 	}
 
 	// Per-role phases tolerate interleaved requests. Tool IDs preserve routing
@@ -1341,4 +1345,46 @@ func cascadeRequestRole(call *fakellm.Call, toolOwners map[string]int) (int, err
 		}
 	}
 	return 0, errors.New("provider request has no cascade role sentinel or admitted tool identity")
+}
+
+// writeExifRotatedJpegFixture writes a 2400x1200 landscape JPEG (red top half,
+// blue bottom half) with an EXIF APP1 Orientation=6 (90° CW) tag. Applying
+// EXIF orientation and capping the long edge to 2048 px produces a 1024x2048
+// portrait image whose left half is blue and right half is red.
+func writeExifRotatedJpegFixture(path string) error {
+	const w, h = 2400, 1200
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	red := color.RGBA{R: 255, A: 255}
+	blue := color.RGBA{B: 255, A: 255}
+	for y := range h {
+		c := red
+		if y >= h/2 {
+			c = blue
+		}
+		for x := range w {
+			img.SetRGBA(x, y, c)
+		}
+	}
+	var encoded bytes.Buffer
+	if err := jpeg.Encode(&encoded, img, &jpeg.Options{Quality: 90}); err != nil {
+		return err
+	}
+	raw := encoded.Bytes()
+	if len(raw) < 2 || raw[0] != 0xff || raw[1] != 0xd8 {
+		return errors.New("unexpected JPEG header")
+	}
+	// APP1 marker (0xFFE1), length 34 (2 length bytes + 6 "Exif\0\0" + 8 TIFF header + 18 IFD0).
+	exifAPP1 := []byte{
+		0xff, 0xe1, 0x00, 0x22,
+		'E', 'x', 'i', 'f', 0x00, 0x00,
+		'I', 'I', 0x2a, 0x00, 0x08, 0x00, 0x00, 0x00,
+		0x01, 0x00,
+		0x12, 0x01, 0x03, 0x00, 0x01, 0x00, 0x00, 0x00, 0x06, 0x00, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00,
+	}
+	out := make([]byte, 0, len(raw)+len(exifAPP1))
+	out = append(out, raw[:2]...)
+	out = append(out, exifAPP1...)
+	out = append(out, raw[2:]...)
+	return os.WriteFile(path, out, 0600)
 }
