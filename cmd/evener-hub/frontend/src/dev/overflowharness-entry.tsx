@@ -44,7 +44,6 @@ import { workspaceStore } from "../shell/workspace";
 import { connectionStore } from "../stores/connection";
 import { MutationOutboxIndexedDB } from "../stores/mutationOutboxIndexedDB";
 import { navigationStore } from "../stores/navigation/store";
-import { prefsStore } from "../stores/prefs";
 import { putThreadModel, threadsStore } from "../stores/threads";
 import { initTranscriptDisplay, transcriptDisplayStore } from "../stores/transcriptDisplay";
 import "../styles/tokens.css";
@@ -620,7 +619,10 @@ navigationStore.setState({
   ]),
 });
 initTranscriptDisplay();
-if (coldStartMode) prefsStore.getState().setTranscriptMeasure("wide");
+// This fixture is measured at Wide, but the preference persists per origin
+// and the standard sweeps reuse it; override the attribute the layout reads
+// instead of writing the stored preference.
+if (coldStartMode) document.body.dataset.transcriptMeasure = "wide";
 // The browser guard must not inherit a developer's local transcript settings.
 // Tools plus both diagnostic families keeps the real system-prompt and raw
 // notification disclosure fixtures mounted in both layout classes. Tools
