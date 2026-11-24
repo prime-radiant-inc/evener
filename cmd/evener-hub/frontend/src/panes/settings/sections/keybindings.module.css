@@ -10,13 +10,6 @@
   line-height: var(--line-height-body);
 }
 
-.status {
-  margin: 0;
-  color: var(--ink-mid);
-  font-size: var(--font-size-caption);
-  line-height: var(--line-height-body);
-}
-
 .list {
   composes: stack2 from "../../../styles/surface.module.css";
   /* biome-ignore lint/suspicious/noDuplicateProperties: css-modules composes takes one declaration per composed class, each with its own `from` */
