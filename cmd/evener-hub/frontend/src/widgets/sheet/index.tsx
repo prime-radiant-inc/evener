@@ -8,9 +8,9 @@ import {
 } from "react";
 import dialogStyles from "../dialog/dialog.module.css";
 import { OverlayPanel } from "../dialog/OverlayPanel";
-import { ownerWindowOf } from "../internal/documentRealm";
 import { requireClass } from "../internal/requireClass";
 import styles from "./sheet.module.css";
+import { useSheetSwipe } from "./useSheetSwipe";
 
 export type SheetSide = "right" | "bottom" | "left";
 export type SheetSize = "standard" | "wide";
@@ -75,12 +75,13 @@ function DragHandle({ onPointerDown }: { onPointerDown: (e: ReactPointerEvent) =
 
 /**
  * The decorative grab pill a non-expandable bottom Sheet shows above its
- * header on a coarse pointer. It has no role, tab stop, or handler: it only
- * hints at the swipe-down gesture, which listens on the panel around it.
+ * header on a coarse pointer. It has no role or tab stop so keyboard and
+ * screen-reader users keep using Escape and the close button, while pointer
+ * drags on it invoke the shared swipe-down dismissal.
  */
-function GrabPill() {
+function GrabPill({ onPointerDown }: { onPointerDown: (e: ReactPointerEvent) => void }) {
   return (
-    <div className={GRAB_HANDLE_CLASS} data-testid="sheet-grab-pill" aria-hidden="true">
+    <div className={GRAB_HANDLE_CLASS} data-testid="sheet-grab-pill" aria-hidden="true" onPointerDown={onPointerDown}>
       <div className={HANDLE_BAR_CLASS} />
     </div>
   );
@@ -100,12 +101,11 @@ function GrabPill() {
  * The handle drags between the two geometries (pointermove past a threshold
  * on its own window) and taps to toggle. The current geometry is surfaced on a
  * wrapper div inside the body as a `data-geometry` attribute for tests and
- * for CSS to key off. When `expandable` is not set, this is the plain
- * Sheet - fixed geometry, no drag state. A `side="bottom"` one additionally
- * renders the decorative grab pill above its header (shown on coarse
- * pointers only) and marks its body as the scroll-containing region, the
- * affordances for swipe dismissal; left and right sheets render exactly as
- * before.
+ * for CSS to key off, and dragging down from "peek" dismisses via `onClose`.
+ * When `expandable` is not set, this is the plain Sheet - fixed geometry,
+ * with `side="bottom"` additionally supporting swipe-down dismissal from the
+ * grab pill, header, or unscrolled body (and rendering the coarse-pointer grab
+ * pill); left and right sheets render and behave exactly as before.
  */
 export function Sheet({
   side = "right",
@@ -120,13 +120,9 @@ export function Sheet({
   bodyClassName,
 }: SheetProps) {
   const [geometry, setGeometry] = useState<"peek" | "full">(expandable?.fullScreenFirst ? "full" : "peek");
-  const dragStartYRef = useRef<number | null>(null);
-  const dragStartGeometryRef = useRef<"peek" | "full">("peek");
-  // One closure owns the active pointermove/pointerup pair, bound to the
-  // window that accepted the pointerdown. handlePointerUp and the unmount
-  // effect both call it, so a mid-drag close removes from the same window the
-  // listeners were added to.
-  const dragCleanupRef = useRef<(() => void) | null>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const scrimRef = useRef<HTMLDivElement>(null);
 
   // Reset geometry to full on every open transition (false->true). An effect
   // keyed on `open` (and fullScreenFirst) is the only place that observes
@@ -137,51 +133,15 @@ export function Sheet({
     if (open && expandable?.fullScreenFirst) setGeometry("full");
   }, [open, expandable?.fullScreenFirst]);
 
-  // Remove any active drag listeners on unmount so a mid-drag close can't
-  // leak pointermove/pointerup handlers on the window the drag started in.
-  useEffect(() => {
-    return () => {
-      dragCleanupRef.current?.();
-      dragCleanupRef.current = null;
-    };
-  }, []);
-  function handlePointerMove(e: PointerEvent) {
-    if (dragStartYRef.current === null) return;
-    const delta = e.clientY - dragStartYRef.current;
-    // Dragging down from full toward peek, or up from peek toward full.
-    if (dragStartGeometryRef.current === "full" && delta > 50) setGeometry("peek");
-    else if (dragStartGeometryRef.current === "peek" && delta < -50) setGeometry("full");
-  }
-
-  function handlePointerUp(e: PointerEvent) {
-    if (dragStartYRef.current === null) return;
-    const delta = e.clientY - dragStartYRef.current;
-    const wasDrag = Math.abs(delta) > 10;
-    dragStartYRef.current = null;
-    if (!wasDrag) {
-      // Tap toggles between the two geometries.
-      setGeometry((g) => (g === "peek" ? "full" : "peek"));
-    }
-    dragCleanupRef.current?.();
-    dragCleanupRef.current = null;
-  }
-
-  function startDrag(e: ReactPointerEvent) {
-    dragStartYRef.current = e.clientY;
-    dragStartGeometryRef.current = geometry;
-    // The drag surface's own window: a Sheet in a Dockview popout must hear
-    // that window's pointer events, never the opener's.
-    const win = ownerWindowOf(e.currentTarget);
-    // A second pointerdown before a pointerup replaces the pair; drop the old
-    // pair from its own window first.
-    dragCleanupRef.current?.();
-    dragCleanupRef.current = () => {
-      win.removeEventListener("pointermove", handlePointerMove);
-      win.removeEventListener("pointerup", handlePointerUp);
-    };
-    win.addEventListener("pointermove", handlePointerMove);
-    win.addEventListener("pointerup", handlePointerUp);
-  }
+  const { onHandlePointerDown, onHeaderPointerDown } = useSheetSwipe({
+    open,
+    side,
+    onClose,
+    panelRef,
+    bodyRef,
+    scrimRef,
+    expandable: expandable ? { geometry, onGeometryChange: setGeometry } : undefined,
+  });
 
   const composedPanelClassName = panelClassName
     ? `${SIDE_CLASS[side]} ${SIZE_CLASS[size]} ${panelClassName}`
@@ -190,6 +150,7 @@ export function Sheet({
   const bottomBodyClassName = side === "bottom" ? BOTTOM_BODY_CLASS : undefined;
   const plainBodyClassName = [bottomBodyClassName, bodyClassName].filter(Boolean).join(" ");
   const expandableBodyClassName = [EXPANDABLE_BODY_CLASS, bottomBodyClassName, bodyClassName].filter(Boolean).join(" ");
+  const bottomHeaderProps = side === "bottom" ? { onPointerDown: onHeaderPointerDown } : undefined;
 
   if (!expandable) {
     return (
@@ -199,9 +160,13 @@ export function Sheet({
         title={title}
         footer={footer}
         panelClassName={composedPanelClassName}
-        handle={side === "bottom" ? <GrabPill /> : undefined}
-        bodyClassName={plainBodyClassName}
+        handle={side === "bottom" ? <GrabPill onPointerDown={onHandlePointerDown} /> : undefined}
+        bodyClassName={plainBodyClassName || undefined}
         motion="slide"
+        panelRef={panelRef}
+        bodyRef={bodyRef}
+        scrimRef={scrimRef}
+        headerProps={bottomHeaderProps}
       >
         {children}
       </OverlayPanel>
@@ -217,12 +182,16 @@ export function Sheet({
       onClose={onClose}
       title={title}
       footer={footer}
-      handle={<DragHandle onPointerDown={startDrag} />}
+      handle={<DragHandle onPointerDown={onHandlePointerDown} />}
       headerClassName={EXPANDABLE_HEADER_CLASS}
       bodyClassName={expandableBodyClassName}
       panelClassName={`${composedExpandablePanelClassName} ${EXPANDABLE_BOTTOM_CLASS}`}
       style={heightStyle}
       motion="slide"
+      panelRef={panelRef}
+      bodyRef={bodyRef}
+      scrimRef={scrimRef}
+      headerProps={bottomHeaderProps}
     >
       <div data-geometry={geometry}>{children}</div>
     </OverlayPanel>
