@@ -7,12 +7,19 @@ import { readModuleCss, topRuleBlock } from "../../styles/cssBlock";
 import { DirectoryIcon as FromBarrel } from "..";
 import { appendPopout } from "../internal/popoutTestUtils";
 import { requireClass } from "../internal/requireClass";
+import rawListRowStyles from "../listrow/listrow.module.css";
 import rawStyles from "./directorypicker.module.css";
 import { DirectoryIcon, DirectoryPicker, type DirectoryPickerProps } from "./index";
 
 const pickerClass = {
   panel: requireClass(rawStyles.panel, "directorypicker.module.css", "panel"),
   body: requireClass(rawStyles.body, "directorypicker.module.css", "body"),
+};
+
+const listRowClass = {
+  plain: requireClass(rawListRowStyles.plain, "listrow.module.css", "plain"),
+  interactive: requireClass(rawListRowStyles.interactive, "listrow.module.css", "interactive"),
+  label: requireClass(rawListRowStyles.label, "listrow.module.css", "label"),
 };
 
 function setup(overrides: Partial<DirectoryPickerProps> = {}, onCommit: () => void = () => {}) {
@@ -53,6 +60,48 @@ function setupPendingInitialValidation() {
 
 test("its folder glyph is exported from the widget barrel", () => {
   expect(FromBarrel).toBe(DirectoryIcon);
+});
+
+// Both row types are the shared plain ListRow: a framed surface would read as
+// a collection, and the picker's rows are choices inside the picker's own
+// surface. The browse row stays ONE <button>: the drill glyph is row content,
+// not a trailing control the row would split its target around.
+test("renders its folder and recent rows through the shared plain ListRow", async () => {
+  setup();
+  const browseRow = await screen.findByRole("button", { name: "Open /work/app" });
+  const recentRow = screen.getByRole("button", { name: "Open recent /recent/app" });
+  for (const row of [browseRow, recentRow]) {
+    expect(row.classList.contains(listRowClass.plain)).toBe(true);
+    expect(row.classList.contains(listRowClass.interactive)).toBe(true);
+  }
+  expect(browseRow.querySelector("button")).toBeNull();
+  // Two glyphs draw as SVGs: the leading folder and the drill chevron.
+  expect(browseRow.querySelectorAll("svg")).toHaveLength(2);
+});
+
+// ListRow's label slot ellipsizes its one line, which hides the end of two
+// sibling folders that differ only there before one is chosen. The browse
+// label therefore brings its own wrapping span; the recents sidebar keeps the
+// single line and its full-path title.
+test("the browse label wraps a long folder name inside the row", async () => {
+  setup();
+  const browseLabel = (await screen.findByRole("button", { name: "Open /work/app" })).querySelector(
+    `.${listRowClass.label}`,
+  );
+  const labelNode = browseLabel?.firstElementChild as HTMLElement | null;
+  expect(labelNode?.tagName).toBe("SPAN");
+  expect(labelNode?.className).toContain("rowLabel");
+
+  const recentLabel = screen
+    .getByRole("button", { name: "Open recent /recent/app" })
+    .querySelector(`.${listRowClass.label}`);
+  expect(recentLabel?.firstElementChild).toBeNull();
+
+  const css = readModuleCss(import.meta.url, "directorypicker.module.css");
+  const rowLabel = topRuleBlock(css, ".rowLabel");
+  expect(rowLabel).toContain("display: block");
+  expect(rowLabel).toContain("white-space: normal");
+  expect(rowLabel).toContain("overflow-wrap: anywhere");
 });
 
 // The picker keeps its own scrollport: its body class lands on the shared
@@ -523,4 +572,25 @@ test("initial validation in a popout reads focus from that document and preserve
     view.unmount();
     frame.remove();
   }
+});
+
+// The chooser draws both navigation glyphs from the shared widgets: the parent
+// control gets the chevron instead of a text arrow, and the fold of earlier
+// crumbs is the shared disclosure rather than a restyled <details>.
+test("the chooser draws its navigation glyphs with the shared chevron and disclosure", async () => {
+  const { user } = setup({ value: "/deep/a/b/c/d" });
+  await screen.findByRole("dialog", { name: "Choose directory" });
+
+  const parent = screen.getByRole("button", { name: "Parent directory" });
+  expect(parent.querySelector("svg")).toBeTruthy();
+  expect(parent.textContent).toBe("");
+
+  const summary = screen.getByLabelText("Earlier directories");
+  const details = summary.parentElement;
+  if (details === null) throw new Error("earlier-directories summary has no details parent");
+  expect(summary.querySelector("svg")).toBeTruthy();
+  // The disclosure renders its folded crumbs only while it is open.
+  expect(within(details).queryByRole("button")).toBeNull();
+  await user.click(summary);
+  expect(within(details).getAllByRole("button")).toHaveLength(2);
 });

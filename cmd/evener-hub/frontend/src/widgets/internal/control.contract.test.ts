@@ -2,11 +2,11 @@
 
 // Contract test for the shared form-control chrome
 // (widgets/internal/control.module.css): Input, Select, Textarea, the picker
-// trigger (fieldTrigger) and PathField's browse field all draw the same box,
-// so it is declared once there and each composes `.controlField`, keeping its
-// own metrics and its own disabled treatment. jsdom evaluates no cascade, so
-// these are declaration-level assertions over the stylesheet sources, comments
-// stripped.
+// trigger (fieldTrigger) and the rich pickers' shared search field
+// (pickerPanel) all draw the same box, so it is declared once there and each
+// composes `.controlField`, keeping its own metrics and its own disabled
+// treatment. jsdom evaluates no cascade, so these are declaration-level
+// assertions over the stylesheet sources, comments stripped.
 import { expect, test } from "vitest";
 import { escapeRegExp, readModuleCss, topRuleBlock } from "../../styles/cssBlock";
 
@@ -51,7 +51,7 @@ const CONSUMERS: [file: string, selector: string, source: string][] = [
   ["../select/select.module.css", ".select", "../internal/control.module.css"],
   ["../textarea/textarea.module.css", ".textarea", "../internal/control.module.css"],
   ["./fieldTrigger.module.css", ".trigger", "./control.module.css"],
-  ["../pathfield/pathfield.module.css", ".input", "../internal/control.module.css"],
+  ["./pickerPanel.module.css", ".input", "./control.module.css"],
 ];
 
 for (const [file, selector, source] of CONSUMERS) {

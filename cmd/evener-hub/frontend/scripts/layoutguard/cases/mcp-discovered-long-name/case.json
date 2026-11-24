@@ -9,6 +9,7 @@
   },
   "cssFiles": [
     "styles/global.css",
+    "styles/tapfloor.module.css",
     "styles/text.module.css",
     "styles/tokens.css",
     "styles/help.module.css",

@@ -3,6 +3,7 @@
   "description": "At a phone viewport an editable connection fact stacks its label over its full-width control, while a read-only fact keeps PropertyList's compact 96px label column. The New connection form renders Name, Endpoint URL and the credential through these inline control rows; without the .controlRow stacking rule the fixed label column and gap leave those fields beside their labels instead of below them.",
   "cssFiles": [
     "styles/global.css",
+    "styles/tapfloor.module.css",
     "styles/text.module.css",
     "styles/tokens.css",
     "styles/help.module.css",

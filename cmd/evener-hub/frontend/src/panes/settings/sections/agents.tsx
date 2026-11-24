@@ -5,6 +5,7 @@
 // so tests can supply a fixture; it defaults to the real
 // stores/settingsOverview adapter.
 import { type SettingsOverviewStoreState, useSettingsOverviewStore } from "../../../stores/settingsOverview";
+import surfaceStyles from "../../../styles/surface.module.css";
 import { Chip, EmptyState, ListRow, OpenButton } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import styles from "./agents.module.css";
@@ -39,7 +40,9 @@ export function AgentsSection({ useOverview = useSettingsOverviewStore }: Agents
 
   return (
     <div className={CLASS.root}>
-      <h2>Agents</h2>
+      <h2 className={`${surfaceStyles.settingsSectionHeading} ${surfaceStyles.settingsSectionHeadingPaneTitle}`}>
+        Agents
+      </h2>
       <p className={CLASS.help}>
         Agents discovered from plugin directories and built-in defaults. Open an agent file to view or edit its
         definition.

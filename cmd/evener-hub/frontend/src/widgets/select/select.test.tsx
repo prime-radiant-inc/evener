@@ -2,8 +2,7 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { expect, test, vi } from "vitest";
-import { MOBILE_QUERY } from "../../shell/useIsMobile";
-import { escapeRegExp, readModuleCss, topRuleBlock } from "../../styles/cssBlock";
+import { readModuleCss, topRuleBlock } from "../../styles/cssBlock";
 import { Select } from "./index";
 
 const OPTIONS = [
@@ -127,14 +126,11 @@ test("composes the shared control field for its box, hover edge, and focus ring"
   expect(rule).toContain('composes: controlField from "../internal/control.module.css"');
 });
 
-test("keeps the native select at 32px on desktop and the mobile touch floor", () => {
+test("keeps the native select at 32px on desktop and composes the shared touch floor", () => {
   const css = readModuleCss(import.meta.url, "select.module.css");
   expect(css).toMatch(/\.select\s*\{[^}]*height:\s*32px/);
-  expect(css).toMatch(
-    new RegExp(
-      `@media ${escapeRegExp(MOBILE_QUERY)}, \\(any-pointer: coarse\\) \\{[\\s\\S]*?\\.select\\s*\\{[^}]*min-height:\\s*var\\(--tap-min\\)`,
-    ),
-  );
+  const rule = topRuleBlock(css, ".select");
+  expect(rule).toContain('composes: tapFloor from "../../styles/tapfloor.module.css"');
 });
 
 // --- quiet variant ---------------------------------------------------------

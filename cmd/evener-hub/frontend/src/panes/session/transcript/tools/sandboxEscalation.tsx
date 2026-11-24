@@ -40,7 +40,7 @@ import { sessionActionError } from "@evener/appwire-client";
 import { createContext, type ReactNode, useCallback, useContext, useEffect, useRef, useState } from "react";
 import { useCardPrimaryAction } from "../../../../keybindings/cardPrimaryAction";
 import { threadsStore, useThreadsStore } from "../../../../stores/threads";
-import { Button, Card, Chip } from "../../../../widgets";
+import { Button, Card, InlineNotice } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import styles from "./sandboxescalation.module.css";
 
@@ -49,7 +49,6 @@ const CLASS = {
   rail: requireClass(styles.rail, "sandboxescalation.module.css", "rail"),
   label: requireClass(styles.label, "sandboxescalation.module.css", "label"),
   body: requireClass(styles.body, "sandboxescalation.module.css", "body"),
-  error: requireClass(styles.error, "sandboxescalation.module.css", "error"),
   actions: requireClass(styles.actions, "sandboxescalation.module.css", "actions"),
 };
 
@@ -94,13 +93,13 @@ export function SandboxEscalationCard({ escalation, onApprove, onDeny, resolved,
           {escalation.requestedPath ? ` (requested as ${escalation.requestedPath})` : ""} [--sandbox {escalation.mode}].
           Allow this one action?
         </div>
-        {/* Danger treatment comes entirely from Chip's own tone prop (already
-          allowlisted in token-contract.test.ts) - this file's own CSS module
-          stays tokens-only with no bare --danger reference of its own. */}
+        {/* A failed resolve is a real error, so it takes the shared danger
+          notice; the card is already a labelled group, so the notice stays
+          silent rather than opening a second live region. */}
         {error !== undefined && (
-          <div className={CLASS.error}>
-            <Chip tone="danger">Failed</Chip> {error}
-          </div>
+          <InlineNotice tone="danger" live="off" title="Failed" data-testid="sandbox-escalation-error">
+            {error}
+          </InlineNotice>
         )}
         <div className={CLASS.actions}>
           <Button variant="primary" size="sm" onClick={onApprove} disabled={resolved} data-sandbox-escalation-allow>

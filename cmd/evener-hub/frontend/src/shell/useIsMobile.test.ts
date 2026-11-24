@@ -6,6 +6,8 @@ import {
   transcriptDisplayStore,
 } from "../stores/transcriptDisplay";
 import {
+  FINE_HOVER_POINTER_QUERY,
+  hasFineHoverPointer,
   isMobileViewport,
   MOBILE_QUERY,
   resetMobileViewportForTests,
@@ -57,12 +59,15 @@ class FakeMediaQueryList {
   }
 }
 
-function installMatchMediaStub(initialMatches: boolean) {
+function installMatchMediaStub(initialMatches: boolean | Record<string, boolean>) {
   const lists = new Map<string, FakeMediaQueryList>();
   const matchMedia = vi.fn((query: string) => {
     let list = lists.get(query);
     if (!list) {
-      list = new FakeMediaQueryList(query, initialMatches);
+      list = new FakeMediaQueryList(
+        query,
+        typeof initialMatches === "boolean" ? initialMatches : (initialMatches[query] ?? false),
+      );
       lists.set(query, list);
     }
     return list;
@@ -301,4 +306,29 @@ test("isMobileViewport directly reads the current media query", () => {
   window.matchMedia = vi.fn(() => ({ matches: true })) as unknown as typeof window.matchMedia;
   expect(isMobileViewport()).toBe(true);
   expect(window.matchMedia).toHaveBeenCalledWith(MOBILE_QUERY);
+});
+
+// Mount autofocus asks whether the primary pointer can hover with fine
+// precision: that capability predicts a hardware keyboard, whatever width
+// the window happens to be. The width breakpoint stays its own separate
+// question, so the two must read their own query.
+test("hasFineHoverPointer reads the exact fine hover pointer capability query", () => {
+  const { matchMedia } = installMatchMediaStub({ [FINE_HOVER_POINTER_QUERY]: true });
+  expect(hasFineHoverPointer()).toBe(true);
+  expect(matchMedia).toHaveBeenCalledWith(FINE_HOVER_POINTER_QUERY);
+});
+
+test.each([
+  { viewport: "a narrow fine-pointer window", mobile: true, fineHover: true },
+  { viewport: "a wide coarse-pointer phone", mobile: false, fineHover: false },
+])("hasFineHoverPointer follows the pointer, not the width, on $viewport", ({ mobile, fineHover }) => {
+  installMatchMediaStub({ [MOBILE_QUERY]: mobile, [FINE_HOVER_POINTER_QUERY]: fineHover });
+  expect(isMobileViewport()).toBe(mobile);
+  expect(hasFineHoverPointer()).toBe(fineHover);
+});
+
+test("hasFineHoverPointer treats a matchMedia-less environment as capable", () => {
+  // @ts-expect-error simulates jsdom's honest no-matchMedia baseline.
+  delete window.matchMedia;
+  expect(hasFineHoverPointer()).toBe(true);
 });

@@ -5,13 +5,6 @@
   margin-top: var(--space-4);
 }
 
-.heading {
-  margin: 0;
-  color: var(--ink-hi);
-  font-size: var(--font-size-body);
-  font-weight: var(--font-weight-semibold);
-}
-
 .status {
   composes: helpUi from "../../../styles/help.module.css";
 }
