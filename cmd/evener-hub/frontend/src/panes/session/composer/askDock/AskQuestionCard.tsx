@@ -27,6 +27,7 @@ import { VisuallyHidden } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { AskOptionCopy } from "../../AskOptionCopy";
 import optionStyles from "../../askoptioncopy.module.css";
+import { AgentMarkdown } from "../../transcript/messages/AgentMarkdown";
 import type { AskAnswerState } from "./askDockStore";
 import styles from "./askquestioncard.module.css";
 
@@ -193,10 +194,25 @@ export function AskQuestionCard({
       <div className={CLASS.questionHeader} id={headerId}>
         {question.header}
       </div>
+      {/* Model-authored prose (question and why) renders through the
+          shared sanitized markdown pipeline plus the transcript's own
+          reference resolution (AgentMarkdown): file:// report links open
+          beside the answering surface, entity references resolve, like
+          assistant prose. The option label stays plain - it is the answer
+          value the reply echoes back verbatim - and the shared AskOptionCopy
+          renders label and detail inside spans within this card's <label>
+          rows, whose phrasing-only content model cannot host the widget's
+          block root. The textId wrapper stays: it names the option group
+          and the shared text field, and the widget's root composes with
+          this host's prose sizing. */}
       <div className={CLASS.questionText} id={textId}>
-        {question.question}
+        <AgentMarkdown source={question.question} />
       </div>
-      {question.why && <div className={CLASS.why}>{question.why}</div>}
+      {question.why && (
+        <div className={CLASS.why}>
+          <AgentMarkdown source={question.why} />
+        </div>
+      )}
 
       {multiSelect ? (
         <fieldset className={CLASS.optionGroup} aria-labelledby={optionsLabelledBy}>
