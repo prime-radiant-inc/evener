@@ -45,9 +45,7 @@
 }
 
 .groupLabel {
-  font-size: var(--font-size-caption);
-  text-transform: uppercase;
-  letter-spacing: var(--tracking-eyebrow);
+  composes: eyebrowType from "../../styles/text.module.css";
 }
 
 /* One option row: a wash on hover, a pressed wash for the virtual-focus
