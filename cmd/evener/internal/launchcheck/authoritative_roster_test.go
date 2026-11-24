@@ -33,14 +33,18 @@ func rosterServer(t *testing.T, status int, body string) string {
 }
 
 // loadRosterClient loads a client from a one-instance providers.toml.
-func loadRosterClient(t *testing.T, cfg string) *llm.Client {
+func loadRosterClient(t *testing.T, cfg string, roots ...string) *llm.Client {
 	t.Helper()
 	cfgPath := filepath.Join(t.TempDir(), "providers.toml")
 	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	stateRoot := t.TempDir()
+	if len(roots) > 0 {
+		stateRoot = roots[0]
+	}
 	r, err := registry.Load(
-		registry.WithConfigPath(cfgPath), registry.WithStateRoot(t.TempDir()),
+		registry.WithConfigPath(cfgPath), registry.WithStateRoot(stateRoot),
 		registry.WithOffline(true), registry.WithoutCache(),
 		registry.WithEnv(func(string) (string, bool) { return "", false }),
 	)
@@ -67,7 +71,7 @@ func authoritativeRosterClient(t *testing.T, status int, body string) *llm.Clien
 		t.Fatalf("SaveAuth: %v", err)
 	}
 	baseURL := rosterServer(t, status, body)
-	return loadRosterClient(t, "[providers.copilot-plan]\nbase = \"github-copilot\"\nbase_url = \""+baseURL+"\"\n")
+	return loadRosterClient(t, "[providers.copilot-plan]\nbase = \"github-copilot\"\nbase_url = \""+baseURL+"\"\n", stateRoot)
 }
 
 // TestLaunchCheckRejectsModelWhenAuthoritativeRosterIsEmpty pins the account
