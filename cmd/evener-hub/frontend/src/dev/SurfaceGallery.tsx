@@ -1,38 +1,11 @@
-import type { ComponentType } from "react";
 import styles from "./gallery.module.css";
+import { type GallerySectionEntry, SURFACE_GALLERY_SECTIONS } from "./galleryDiscovery";
 
-interface GallerySectionModule {
-  default: ComponentType;
-}
-
-export interface SurfaceGallerySection {
-  path: string;
-  Section: ComponentType;
-}
-
-// One module per surface, stream-owned (src/dev/surface-sections/<name>.tsx)
-// so adding a surface's gallery section never conflicts with another
-// stream's - the same discovery idiom WidgetGallery.tsx uses for
-// gallery-sections/*.tsx. Sorted by path so the page order is stable across
-// builds. The exclusion pattern keeps a section's own colocated
-// *.test.tsx (kata dw3s added the first one, surface-sections/transcript.test.tsx)
-// out of the glob - without it, a test module with no default export renders
-// as `undefined`, an invalid element type.
-const SECTION_MODULES = import.meta.glob<GallerySectionModule>(
-  ["./surface-sections/*.tsx", "!./surface-sections/*.test.tsx"],
-  { eager: true },
-);
-
-export const SURFACE_GALLERY_SECTIONS: SurfaceGallerySection[] = Object.keys(SECTION_MODULES)
-  .sort()
-  .map((path) => {
-    // path came from Object.keys(SECTION_MODULES) itself, so the lookup
-    // always hits - but that's this loop's own invariant, invisible to the
-    // indexed-access type. Checked, not asserted.
-    const mod = SECTION_MODULES[path];
-    if (!mod) throw new Error(`missing surface gallery section module for ${path}`);
-    return { path, Section: mod.default };
-  });
+// The shared discovery module owns the glob and the sort; these names stay
+// here so a caller (and the test) imports the section list and its type from
+// the gallery it configures.
+export { SURFACE_GALLERY_SECTIONS };
+export type SurfaceGallerySection = GallerySectionEntry;
 
 /**
  * `/dev/surfaces`: renders every registered PANE-LEVEL surface (transcript,
@@ -40,6 +13,8 @@ export const SURFACE_GALLERY_SECTIONS: SurfaceGallerySection[] = Object.keys(SEC
  * `/dev/widgets` does for individual widgets. Dev build only - see
  * src/App.tsx, which gates the route (and this whole module's import)
  * behind import.meta.env.DEV so it never reaches a production bundle.
+ * One module per surface, stream-owned (src/dev/surface-sections/<name>.tsx),
+ * so adding a section never conflicts with another stream's.
  *
  * Every section renders REAL production components. Nothing here fakes a
  * network call: a section either passes plain fixture props, or seeds a
