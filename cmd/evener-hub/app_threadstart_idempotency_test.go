@@ -20,7 +20,6 @@ import (
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/appwire/appwiretest"
-	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubtest"
@@ -1095,21 +1094,6 @@ func TestThreadStartIdempotencyPayloadConflictAndTargetDeleted(t *testing.T) {
 	}
 }
 
-func dialRemoteHubClient(t *testing.T, srv *httptest.Server) *appwire.Client {
-	t.Helper()
-	transport, err := appwire.DialWebSocket(t.Context(), "ws"+strings.TrimPrefix(srv.URL, "http"), srv.Client())
-	if err != nil {
-		t.Fatal(err)
-	}
-	client := appwire.NewClient(transport)
-	client.Start(t.Context())
-	t.Cleanup(func() { _ = client.Close() })
-	if _, err := client.Initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatal(err)
-	}
-	return client
-}
-
 func TestThreadStartIdempotencyRemoteOfflineNotAccepted(t *testing.T) {
 	stateRoot := t.TempDir()
 	hub := newHubRPCTestServer(t, testWebConfig(t, hubcore.WebConfig{
@@ -1179,7 +1163,7 @@ func TestThreadStartIdempotencyRemoteCapableForwardsAndDedups(t *testing.T) {
 	})
 	remoteHTTP := httptest.NewServer(http.HandlerFunc(remoteServer.ServeWebSocket))
 	defer remoteHTTP.Close()
-	remoteClient := dialRemoteHubClient(t, remoteHTTP)
+	remoteClient := dialHubRPCInitialized(t, remoteHTTP)
 
 	localHub := newHubRPCTestServer(t, testWebConfig(t, hubcore.WebConfig{
 		HubStateRoot:               t.TempDir(),
@@ -1281,7 +1265,7 @@ func TestThreadStartIdempotencyOlderRemoteFallback(t *testing.T) {
 	defer remoteHTTP.Close()
 
 	stateRoot := t.TempDir()
-	remoteClient := dialRemoteHubClient(t, remoteHTTP)
+	remoteClient := dialHubRPCInitialized(t, remoteHTTP)
 	remoteClientMu.Lock()
 	activeRemoteClient = remoteClient
 	remoteClientMu.Unlock()
@@ -1369,7 +1353,7 @@ func TestThreadStartIdempotencyOlderRemoteFallback(t *testing.T) {
 	<-slotTransport.firstStarted
 	var useWedged atomic.Bool
 	useWedged.Store(true)
-	remoteClient2 := dialRemoteHubClient(t, remoteHTTP)
+	remoteClient2 := dialHubRPCInitialized(t, remoteHTTP)
 	mode.Store(0)
 	slotHub := newHubRPCTestServer(t, testWebConfig(t, hubcore.WebConfig{
 		HubStateRoot: t.TempDir(),
@@ -1419,5 +1403,4 @@ func TestThreadStartIdempotencyOlderRemoteFallback(t *testing.T) {
 	if okResp.ClientMutationID != "mut-legacy-notsent" || okResp.Disposition != appwire.MutationDispositionApplied {
 		t.Fatalf("recovered okResp = %+v", okResp)
 	}
-	_ = appsource.ErrSourceNotFound
 }

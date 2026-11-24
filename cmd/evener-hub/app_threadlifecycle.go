@@ -126,7 +126,7 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 			localSpawnWorkspaceRef(entry), createdInstanceID)
 		startErr = causedWireError{wire: wire, cause: startErr}
 	}()
-	return finishLocalThreadStart(ctx, cfg, sources, params, plan, entry, "", &createdInstanceID)
+	return finishLocalThreadStart(ctx, cfg, sources, params, plan, entry, "", &createdInstanceID, false)
 }
 
 func spawnRequestForPlan(cfg hubcore.WebConfig, params appwire.ThreadStartParams, plan localSpawnPlan) hubcore.SpawnRequest {
@@ -264,15 +264,9 @@ func keyedLocalThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *
 		_ = cfg.CreationStore.MarkUncertain(id)
 		return appwire.ThreadStartResponse{}, appwire.MutationUnknown(id, err.Error())
 	}
+	rosterRefreshed := false
 	if entry.ThreadID == "" && entry.SessionID == "" && cfg.Roster != nil {
-		if err := hubRosterRefresh(ctx, cfg.Roster); err == nil {
-			for _, live := range hubRosterList(cfg.Roster) {
-				if live.PID == entry.PID {
-					entry.ThreadID, entry.SessionID = live.SessionID, live.SessionID
-					break
-				}
-			}
-		}
+		rosterRefreshed = refreshSpawnedEntryIdentity(ctx, cfg.Roster, &entry) == nil
 	}
 	if entry.ThreadID == "" && entry.SessionID == "" {
 		_ = cfg.CreationStore.MarkUncertain(id)
@@ -286,7 +280,7 @@ func keyedLocalThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *
 		return appwire.ThreadStartResponse{}, appwire.MutationUnknown(id, err.Error())
 	}
 	attachPartial = true
-	resp, err := finishLocalThreadStart(ctx, cfg, sources, params, plan, entry, initialTurnMutationID, &createdInstanceID)
+	resp, err := finishLocalThreadStart(ctx, cfg, sources, params, plan, entry, initialTurnMutationID, &createdInstanceID, rosterRefreshed)
 	if err != nil {
 		return appwire.ThreadStartResponse{}, err
 	}
@@ -319,7 +313,8 @@ func finishSpawnedLocalCreation(ctx context.Context, cfg hubcore.WebConfig, sour
 	}
 	if cfg.Roster == nil || live {
 		if s, err := sourceForThread(sources, rec.CreatedRef, rec.CreatedSessionID); err == nil {
-			if readResp, readErr := s.ReadThread(ctx, appwire.ThreadReadParams{Ref: rec.CreatedRef}); readErr == nil {
+			readResp, readErr := s.ReadThread(ctx, appwire.ThreadReadParams{Ref: rec.CreatedRef})
+			if readErr == nil {
 				thread = annotateThreadProject(applyHubCapabilities(cfg, readResp.Thread))
 				source = s
 			} else if live || !isDeadSessionError(readErr) {
@@ -432,12 +427,33 @@ func startInitialThreadTurn(
 	return turnResp.Turn, err
 }
 
-func finishLocalThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadStartParams, plan localSpawnPlan, entry rendezvous.Entry, initialTurnMutationID string, createdInstanceID *string) (appwire.ThreadStartResponse, error) {
+func refreshSpawnedEntryIdentity(ctx context.Context, roster *hubcore.Roster, entry *rendezvous.Entry) error {
+	if err := hubRosterRefresh(ctx, roster); err != nil {
+		return err
+	}
+	if entry.ThreadID != "" && entry.SessionID != "" {
+		return nil
+	}
+	for _, live := range hubRosterList(roster) {
+		if live.PID != entry.PID {
+			continue
+		}
+		if entry.ThreadID == "" {
+			entry.ThreadID = live.SessionID
+		}
+		if entry.SessionID == "" {
+			entry.SessionID = live.SessionID
+		}
+		break
+	}
+	return nil
+}
+
+func finishLocalThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadStartParams, plan localSpawnPlan, entry rendezvous.Entry, initialTurnMutationID string, createdInstanceID *string, rosterRefreshed bool) (appwire.ThreadStartResponse, error) {
 	var err error
 	canUseSpawnEntry := entry.Protocol == appwire.ProtocolVersion && entry.Endpoint != "" && entry.ThreadID != ""
-	if cfg.Roster != nil {
-		refreshErr := hubRosterRefresh(ctx, cfg.Roster)
-		if err := refreshErr; err != nil {
+	if cfg.Roster != nil && !rosterRefreshed {
+		if err := refreshSpawnedEntryIdentity(ctx, cfg.Roster, &entry); err != nil {
 			if !canUseSpawnEntry {
 				return appwire.ThreadStartResponse{}, appwire.Unavailable(err.Error())
 			}
@@ -445,19 +461,6 @@ func finishLocalThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources 
 			// discovery failure must not hide its identity or discard initial input.
 			componentlog.NewWriter("hub", hubDiagnosticOutput()).Info(fmt.Sprintf(
 				"spawned session %s; roster refresh failed: %v", entry.ThreadID, err))
-		}
-		if entry.ThreadID == "" || entry.SessionID == "" {
-			for _, live := range hubRosterList(cfg.Roster) {
-				if live.PID == entry.PID {
-					if entry.ThreadID == "" {
-						entry.ThreadID = live.SessionID
-					}
-					if entry.SessionID == "" {
-						entry.SessionID = live.SessionID
-					}
-					break
-				}
-			}
 		}
 	}
 	ref := localSpawnWorkspaceRef(entry)

@@ -73,6 +73,7 @@ type CreationOwner struct {
 	payloadHash string
 	done        chan struct{}
 	released    bool
+	waiters     int
 	resp        appwire.ThreadStartResponse
 	err         error
 }
@@ -140,12 +141,8 @@ type canonicalCreationPayload struct {
 // thread/start parameters before filesystem or launch resolution.
 func CreationPayloadHash(targetSource string, params appwire.ThreadStartParams) (string, error) {
 	harness := cmp.Or(params.Harness, "evener")
-	input := params.Input
-	if len(input) == 0 {
-		input = nil
-	}
 	raw, err := json.Marshal(canonicalCreationPayload{
-		TargetSource: targetSource, Harness: harness, CWD: params.CWD, Input: input,
+		TargetSource: targetSource, Harness: harness, CWD: params.CWD, Input: params.Input,
 		ModelProvider: params.ModelProvider, Model: params.Model, Profile: params.Profile,
 		ReasoningEffort: params.ReasoningEffort, NonInteractive: params.NonInteractive,
 		LaunchOverrides: params.LaunchOverrides, Manager: params.Manager,
@@ -174,6 +171,7 @@ func (s *CreationStore) Acquire(ctx context.Context, id, targetSource, payloadHa
 			s.mu.Unlock()
 			return CreationAcquireResult{}, conflictingCreationError(id)
 		}
+		owner.waiters++
 		onWait := s.faults.OnWait
 		s.mu.Unlock()
 		if onWait != nil {
@@ -248,8 +246,9 @@ func (s *CreationStore) CommitSpawned(id, createdRef, sessionID, instanceID stri
 // snapshot and ID/Status-only Turn snapshot for future idempotent replay.
 func (s *CreationStore) CommitCompleted(id string, resp appwire.ThreadStartResponse) error {
 	return s.updateRecord(id, func(rec *CreationRecord) {
-		thread := appwire.CloneThread(resp.Thread)
+		thread := resp.Thread
 		thread.Turns = nil
+		thread = appwire.CloneThread(thread)
 		turn := appwire.Turn{ID: resp.Turn.ID, Status: resp.Turn.Status}
 		rec.State = CreationStateCompleted
 		rec.CreatedRef = cmp.Or(rec.CreatedRef, thread.Evener.Ref)
@@ -294,7 +293,9 @@ func (s *CreationStore) ReleaseOwner(owner *CreationOwner, resp appwire.ThreadSt
 	s.mu.Lock()
 	if !owner.released {
 		owner.released = true
-		owner.resp = cloneThreadStartResponse(resp)
+		if owner.waiters > 0 {
+			owner.resp = cloneThreadStartResponse(resp)
+		}
 		owner.err = err
 		if s.owners[owner.id] == owner {
 			delete(s.owners, owner.id)
@@ -323,10 +324,7 @@ func (s *CreationStore) updateRecord(id string, edit func(*CreationRecord)) erro
 
 func (s *CreationStore) commitLocked(next map[string]CreationRecord) error {
 	pruneCreationRecords(next, s.now())
-	records := make([]CreationRecord, 0, len(next))
-	for _, rec := range next {
-		records = append(records, rec)
-	}
+	records := slices.Collect(maps.Values(next))
 	slices.SortFunc(records, func(a, b CreationRecord) int {
 		return cmp.Compare(a.ClientMutationID, b.ClientMutationID)
 	})

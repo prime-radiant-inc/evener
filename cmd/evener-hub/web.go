@@ -150,10 +150,8 @@ func newWebServer(cfg hubcore.WebConfig, appwireTrace *appserver.WebSocketTrace)
 	if cfg.KeybindingsStore == nil {
 		cfg.KeybindingsStore, keybindingsStoreErr = hubcore.NewKeybindingsStore(cfg.HubStateRoot)
 	}
-	creationStoreErr := cfg.CreationStoreErr
 	if cfg.CreationStore == nil && cfg.CreationStoreErr == nil {
-		cfg.CreationStore, creationStoreErr = hubcore.NewCreationStore(cfg.HubStateRoot)
-		cfg.CreationStoreErr = creationStoreErr
+		cfg.CreationStore, cfg.CreationStoreErr = hubcore.NewCreationStore(cfg.HubStateRoot)
 	}
 	// One live host registry shared by every host-dependent surface. An
 	// embedder or test that threads none gets a fallback built once here —
@@ -201,7 +199,7 @@ func newWebServer(cfg hubcore.WebConfig, appwireTrace *appserver.WebSocketTrace)
 		recoveryStoreErr:          recoveryStoreErr,
 		transcriptDisplayStoreErr: transcriptDisplayStoreErr,
 		keybindingsStoreErr:       keybindingsStoreErr,
-		creationStoreErr:          creationStoreErr,
+		creationStoreErr:          cfg.CreationStoreErr,
 	}
 	// Transcript-index repairs hang off the server's lifetime like the rest
 	// of its background work: construction arms the repair registry with the
