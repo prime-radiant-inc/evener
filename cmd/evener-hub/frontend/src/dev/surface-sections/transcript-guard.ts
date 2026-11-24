@@ -46,8 +46,19 @@ export async function measureEditorialTranscript() {
 
   // In Intent the group can paint an edge; in Full the call itself can paint it.
   const surfaces = [];
+  let collapsedFailure: { visible: boolean; collapsed: boolean; fill: string } | undefined;
   for (const level of ["intent", "full"] as const) {
     render(level, `reading:${level}`);
+    if (level === "intent") {
+      const call = required(
+        host.querySelector<HTMLElement>('[data-testid="tool-call-item"][data-item-id="preview-tool-failure"]'),
+      );
+      collapsedFailure = {
+        visible: visibleWithin(call, host.getBoundingClientRect()),
+        collapsed: !call.querySelector('[data-testid="tool-call-body"]'),
+        fill: getComputedStyle(call).backgroundColor,
+      };
+    }
     for (const selector of [
       '[data-testid="user-bubble"]',
       '[data-testid="tool-call-item"][data-item-id="editorial_source"]',
@@ -152,5 +163,5 @@ export async function measureEditorialTranscript() {
       }
     }
   }
-  return { measurements: results, surfaces };
+  return { measurements: results, surfaces, collapsedFailure };
 }
