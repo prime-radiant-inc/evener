@@ -3,6 +3,7 @@
   "description": "rail Live band header: the count Badge stays visible (opacity 1, visibility visible, non-zero width inside the row's right edge) while the header row is hovered on a hover-capable desktop layout - a band has no actions to swap into the right slot, so the hover-hide rule for .rightSlot occupants must not reach it",
   "cssFiles": [
     "styles/global.css",
+    "styles/text.module.css",
     "styles/tokens.css",
     "styles/help.module.css",
     "widgets/tree/tree.module.css",

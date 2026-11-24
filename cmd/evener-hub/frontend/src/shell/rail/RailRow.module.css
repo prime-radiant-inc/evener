@@ -248,9 +248,7 @@
 }
 
 .label {
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
+  composes: truncate from "../../styles/text.module.css";
   /* Same flex-shrink enabler as .textCol: the label sits inside .titleLine
    * beside the trailing chevron, and must give up its own overflow (not the
    * chevron's slot) when the row runs narrow. */
@@ -328,9 +326,7 @@
  * semantic hue: the wait is not an error, the session resumes by itself. It
  * truncates rather than wrapping so the row stays two lines tall. */
 .quotaWait {
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
+  composes: truncate from "../../styles/text.module.css";
   color: var(--ink-mid);
   font-size: var(--font-size-caption);
 }
@@ -340,9 +336,7 @@
  * same way so a row is never taller than two lines. Only the word naming a
  * Needs-you row's attention takes a hue, matching the row's own dot. */
 .why {
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
+  composes: truncate from "../../styles/text.module.css";
   color: var(--ink-mid);
   font-size: var(--font-size-caption);
 }

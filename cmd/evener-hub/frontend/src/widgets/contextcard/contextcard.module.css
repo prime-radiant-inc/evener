@@ -36,11 +36,9 @@ a.card:focus-visible {
 }
 
 .source {
+  composes: truncate from "../../styles/text.module.css";
   flex: 1 1 auto;
   min-width: 0;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
   color: var(--ink-low);
   font-family: var(--font-sans);
   font-size: var(--font-size-caption);

@@ -228,10 +228,10 @@ test("renders title, cadence, actions and children in that document order", () =
 // the same jsdom limitation for a different reason. Instead this reads the
 // CSS module's own source, the same way button.test.tsx verifies its
 // :focus-visible rule this way.
-test("the title rule truncates overflow with an ellipsis", () => {
+test("the title rule composes the shared truncation recipe", () => {
   const here = dirname(fileURLToPath(import.meta.url));
   const css = readFileSync(join(here, "panescaffold.module.css"), "utf8");
-  expect(css).toContain("text-overflow: ellipsis");
+  expect(css).toMatch(/\.title\s*\{[^}]*composes:\s*truncate from "\.\.\/\.\.\/styles\/text\.module\.css"/s);
 });
 
 test("the body rule scrolls independently of the header and footer", () => {

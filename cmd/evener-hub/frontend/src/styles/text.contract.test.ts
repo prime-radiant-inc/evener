@@ -1,8 +1,8 @@
 // @vitest-environment node
 
-// The shared secondary-text and verbatim recipes are pinned HERE, once, so
-// each consumer stylesheet can assert that its class composes the recipe
-// instead of repeating the declarations the recipe owns. Same off-disk
+// The shared secondary-text, verbatim and truncation recipes are pinned HERE,
+// once, so each consumer stylesheet can assert that its class composes the
+// recipe instead of repeating the declarations the recipe owns. Same off-disk
 // contract style as rhythm.test.ts.
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -33,4 +33,11 @@ test("verbatim carries the machine-text recipe; verbatimWrap adds word breaking"
   expect(verbatim).toMatch(/color: var\(--ink-mid\)/);
   expect(verbatim).toMatch(/white-space: pre-wrap/);
   expect(rule(".verbatimWrap")).toMatch(/word-break: break-word/);
+});
+
+test("truncate carries the single-line truncation recipe", () => {
+  const truncate = rule(".truncate");
+  expect(truncate).toMatch(/overflow: hidden/);
+  expect(truncate).toMatch(/text-overflow: ellipsis/);
+  expect(truncate).toMatch(/white-space: nowrap/);
 });

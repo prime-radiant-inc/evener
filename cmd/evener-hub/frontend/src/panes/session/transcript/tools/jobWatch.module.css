@@ -90,8 +90,6 @@
 }
 
 .rowCondition {
+  composes: truncate from "../../../../styles/text.module.css";
   color: var(--ink-mid);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }

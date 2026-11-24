@@ -57,9 +57,8 @@
 
 .hint {
   composes: helpCaption from "../../../styles/help.module.css";
+  /* biome-ignore lint/suspicious/noDuplicateProperties: css-modules composes takes one declaration per composed class, each with its own `from` */
+  composes: truncate from "../../../styles/text.module.css";
   flex: 1 1 auto;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }

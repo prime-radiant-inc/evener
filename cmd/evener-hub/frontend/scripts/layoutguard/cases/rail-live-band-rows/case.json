@@ -3,6 +3,7 @@
   "description": "rail Live band rows at the default 280px rail: a session row's second 'why' line never wraps (one caption line tall, truncating inside the row), a row with a why line starts its title at the same x as one without, and the why line sits under the title text rather than under the status dot",
   "cssFiles": [
     "styles/global.css",
+    "styles/text.module.css",
     "styles/tokens.css",
     "styles/help.module.css",
     "widgets/tree/tree.module.css",
