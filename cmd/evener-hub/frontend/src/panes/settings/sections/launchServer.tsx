@@ -8,6 +8,7 @@ import type { LaunchConfigDiagnostic, LaunchConfigLayer } from "@evener/appwire-
 import { friendlyErrorMessage, LOCAL_HOST } from "@evener/appwire-client";
 import { useState } from "react";
 import { launchConfigStoreForHost } from "../../../stores/launchConfig";
+import surfaceStyles from "../../../styles/surface.module.css";
 import { Button, InlineNotice, Loader } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { Diagnostics } from "./diagnostics";
@@ -17,6 +18,8 @@ import { type LoadState, launchFormPaths } from "./launchShared/fields";
 import { LaunchConfigForm } from "./launchShared/LaunchConfigForm";
 import { RefreshErrorNotice } from "./sectionGate";
 import { useHostScopedLoad, useLaunchConfigRefresh } from "./useConnectedEffect";
+
+const HEADING = `${surfaceStyles.settingsSectionHeading} ${surfaceStyles.settingsSectionHeadingPaneTitle}`;
 
 const CLASS = {
   root: requireClass(styles.root, "launchServer.module.css", "root"),
@@ -129,7 +132,7 @@ export function LaunchServerSection({ host = LOCAL_HOST }: LaunchServerSectionPr
 
   return (
     <div className={CLASS.root}>
-      <h2>Session defaults</h2>
+      <h2 className={HEADING}>Session defaults</h2>
       <p className={CLASS.help}>
         Defaults for new sessions. Project settings and choices made when starting a session can override them.
       </p>

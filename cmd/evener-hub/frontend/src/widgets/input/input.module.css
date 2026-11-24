@@ -1,5 +1,7 @@
 .input {
   composes: controlField from "../internal/control.module.css";
+  /* biome-ignore lint/suspicious/noDuplicateProperties: css-modules composes takes one declaration per composed class, each with its own `from` */
+  composes: tapFloor from "../../styles/tapfloor.module.css";
   height: 32px;
   padding: 0 var(--space-3);
   font-family: var(--font-sans);

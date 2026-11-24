@@ -1,6 +1,8 @@
 import { useCallback, useSyncExternalStore } from "react";
 
 export const MOBILE_QUERY = "(max-width: 899px)";
+/** The primary pointer's capability query: fine precision and hover. */
+export const FINE_HOVER_POINTER_QUERY = "(hover: hover) and (pointer: fine)";
 type ViewportListener = () => void;
 type MatchMediaFactory = typeof window.matchMedia;
 
@@ -69,6 +71,14 @@ function subscribe(query: string, listener: ViewportListener): () => void {
 /** The exact layout query shared by the shell and transcript-display state. */
 export function isMobileViewport(): boolean {
   return snapshot(MOBILE_QUERY);
+}
+
+/** Whether the primary pointer hovers with fine precision, the input a pane
+ * mount may safely move keyboard focus for. A missing matchMedia (jsdom, SSR)
+ * counts as capable, keeping the desktop default those environments render. */
+export function hasFineHoverPointer(): boolean {
+  if (typeof window === "undefined" || typeof window.matchMedia !== "function") return true;
+  return window.matchMedia(FINE_HOVER_POINTER_QUERY).matches;
 }
 
 /** Subscribe to the one shared MediaQueryList listener. */

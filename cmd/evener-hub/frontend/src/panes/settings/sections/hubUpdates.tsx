@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { useConnectionStore } from "../../../stores/connection";
 import { hubUpdateStore, RESTART_TIMEOUT_MS, type UpdateChannel, useHubUpdateStore } from "../../../stores/hubUpdate";
 import { useSettingsOverviewStore } from "../../../stores/settingsOverview";
+import surfaceStyles from "../../../styles/surface.module.css";
 import { Button, ConfirmDialog, InlineNotice, Loader, RadioGroup } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import styles from "./hubUpdates.module.css";
@@ -10,10 +11,11 @@ import { FieldDim } from "./settingsField";
 
 const CLASS = {
   root: requireClass(styles.root, "hubUpdates.module.css", "root"),
-  heading: requireClass(styles.heading, "hubUpdates.module.css", "heading"),
   status: requireClass(styles.status, "hubUpdates.module.css", "status"),
   actions: requireClass(styles.actions, "hubUpdates.module.css", "actions"),
 };
+
+const HEADING = `${surfaceStyles.settingsSectionHeading} ${surfaceStyles.settingsSectionHeadingBody}`;
 
 const CHANNEL_OPTIONS = [
   { value: "release", label: "Release" },
@@ -154,7 +156,7 @@ export function HubUpdates() {
 
   return (
     <section className={CLASS.root} aria-labelledby="hub-updates-heading">
-      <h3 id="hub-updates-heading" className={CLASS.heading}>
+      <h3 id="hub-updates-heading" className={HEADING}>
         Updates
       </h3>
       <p className={CLASS.status}>

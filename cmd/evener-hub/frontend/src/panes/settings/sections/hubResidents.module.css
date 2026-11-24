@@ -2,13 +2,6 @@
   composes: stack4 from "../../../styles/surface.module.css";
 }
 
-.heading {
-  font-size: var(--font-size-ui);
-  font-weight: var(--font-weight-semibold);
-  margin: 0;
-  color: var(--ink-hi);
-}
-
 .meta {
   composes: helpUi from "../../../styles/help.module.css";
 }

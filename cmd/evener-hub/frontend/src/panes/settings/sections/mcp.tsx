@@ -16,6 +16,7 @@ import type { MCPServerSpec, SettingsOverviewResponse } from "@evener/appwire-cl
 import { friendlyErrorMessage, isLocalHost, LOCAL_HOST } from "@evener/appwire-client";
 import { useEffect, useState } from "react";
 import { extensionsStoreForHost, useExtensionsStoreForHost } from "../../../stores/extensions";
+import surfaceStyles from "../../../styles/surface.module.css";
 import {
   Chip,
   type CollectionAddResult,
@@ -42,14 +43,15 @@ import { useHostScopedLoad, useLaunchConfigRefresh } from "./useConnectedEffect"
 
 const CLASS = {
   page: requireClass(styles.page, "mcp.module.css", "page"),
-  title: requireClass(styles.title, "mcp.module.css", "title"),
   help: requireClass(styles.help, "mcp.module.css", "help"),
   section: requireClass(styles.section, "mcp.module.css", "section"),
-  sectionTitle: requireClass(styles.sectionTitle, "mcp.module.css", "sectionTitle"),
   sectionHelp: requireClass(styles.sectionHelp, "mcp.module.css", "sectionHelp"),
   list: requireClass(styles.list, "mcp.module.css", "list"),
   serverName: requireClass(styles.serverName, "mcp.module.css", "serverName"),
 };
+
+const PANE_HEADING = `${surfaceStyles.settingsSectionHeading} ${surfaceStyles.settingsSectionHeadingPaneTitle}`;
+const BODY_HEADING = `${surfaceStyles.settingsSectionHeading} ${surfaceStyles.settingsSectionHeadingBody}`;
 
 /**
  * The pinned interface T4's stores/settingsOverview.ts implements
@@ -240,7 +242,7 @@ export function McpSection({ useOverviewStore, host = LOCAL_HOST }: McpSectionPr
 
   return (
     <section className={CLASS.page}>
-      <h2 className={CLASS.title}>MCP servers</h2>
+      <h2 className={PANE_HEADING}>MCP servers</h2>
       <p className={CLASS.help}>MCP servers evener spawns alongside each session. Stored in the global launch layer.</p>
 
       {/* Reachability probed from THIS hub: settings/overview is not on the
@@ -249,7 +251,7 @@ export function McpSection({ useOverviewStore, host = LOCAL_HOST }: McpSectionPr
           presenting this hub's probe as the selected host's own. */}
       {isLocalHost(host) && (
         <section className={CLASS.section} data-section="mcp-discovered">
-          <h3 className={CLASS.sectionTitle}>Discovered servers</h3>
+          <h3 className={BODY_HEADING}>Discovered servers</h3>
           <p className={CLASS.sectionHelp}>Reachability, as probed from the hub.</p>
           {discovered?.error !== undefined && <InlineNotice tone="danger">{discovered.error}</InlineNotice>}
           {overview.loading && overview.data === null ? (
@@ -298,7 +300,7 @@ export function McpSection({ useOverviewStore, host = LOCAL_HOST }: McpSectionPr
         <>
           {launchLayerError !== null && <InlineNotice tone="danger">{launchLayerError}</InlineNotice>}
           <section className={CLASS.section}>
-            <h3 className={CLASS.sectionTitle}>MCP config files</h3>
+            <h3 className={BODY_HEADING}>MCP config files</h3>
             <PathListEditor
               directory={{
                 validatePath: (path, kind) => store.getState().validatePath(path, kind),
@@ -319,7 +321,7 @@ export function McpSection({ useOverviewStore, host = LOCAL_HOST }: McpSectionPr
           </section>
 
           <section className={CLASS.section}>
-            <h3 className={CLASS.sectionTitle}>Inline MCP servers</h3>
+            <h3 className={BODY_HEADING}>Inline MCP servers</h3>
             {/* Removal is index-keyed (MCPServerSpec has no id of its own; the
                 legacy spliced by index too), so the confirm resolves the row's
                 own position rather than filtering every identical spec. */}

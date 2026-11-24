@@ -5,8 +5,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { describe, expect, test, vi } from "vitest";
-import { MOBILE_QUERY } from "../../shell/useIsMobile";
-import { escapeRegExp, readModuleCss } from "../../styles/cssBlock";
+import { readModuleCss } from "../../styles/cssBlock";
 import { SegmentedControl } from "./index";
 
 const OPTIONS = [
@@ -562,12 +561,7 @@ describe("CSS contract", () => {
     );
     expect(css).toMatch(/\.sm\s*\{[^}]*block-size:\s*28px/s);
     expect(css).toMatch(/\.md\s*\{[^}]*block-size:\s*32px/s);
-    expect(css).toMatch(
-      new RegExp(
-        `@media ${escapeRegExp(MOBILE_QUERY)}, \\(any-pointer: coarse\\) \\{[\\s\\S]*?\\.option\\s*\\{[^}]*min-block-size:\\s*var\\(--tap-min\\)`,
-        "s",
-      ),
-    );
+    expect(css).toMatch(/\.option\s*\{[^}]*composes:\s*tapFloor from "\.\.\/\.\.\/styles\/tapfloor\.module\.css"/s);
     expect(css).toMatch(
       /@media\s*\(prefers-reduced-motion:\s*reduce\)[^{]*\{[\s\S]*?\.option\s*\{[^}]*transition:\s*none/s,
     );

@@ -72,6 +72,15 @@
   list-style: none;
 }
 
+/* A settings section opens at pane-title size, a subsection at body size. */
+.settingsSectionHeading {
+  margin: 0;
+  color: var(--ink-hi);
+  font-weight: var(--font-weight-semibold);
+}
+.settingsSectionHeadingPaneTitle { font-size: var(--font-size-pane-title); }
+.settingsSectionHeadingBody { font-size: var(--font-size-body); }
+
 /* The prompt card's control-row leading cluster: the attach control, the
  * model trigger and effort in one row. The session composer and the spawn
  * form render the same PromptCard row and compose this; the composer adds

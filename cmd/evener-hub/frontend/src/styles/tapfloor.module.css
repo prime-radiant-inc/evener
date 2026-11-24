@@ -1,0 +1,19 @@
+/* The platform tap floor (2026-07-30-mobile-session-layout-design.md,
+ * decision 4): 44px under the same phone-or-coarse-pointer query that raises
+ * --tap-min. A control composes one of these classes and keeps its own
+ * desktop geometry; every class is a minimum, never a size, so a control that
+ * already rests larger stays larger. */
+@media (max-width: 899px), (any-pointer: coarse) {
+  .tapFloor {
+    min-height: var(--tap-min);
+  }
+
+  .tapFloorWidth {
+    min-width: var(--tap-min);
+  }
+
+  .tapFloorSquare {
+    min-width: var(--tap-min);
+    min-height: var(--tap-min);
+  }
+}
