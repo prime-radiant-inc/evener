@@ -2410,6 +2410,15 @@ async function main() {
         width,
       );
       let widthFailed = false;
+      // Every sweep page must exercise the DEFAULT Reading column. A fixture
+      // that persists Wide would silently widen every page measured after it.
+      if (result.measure !== "reading") {
+        widthFailed = true;
+        console.log(
+          `${width}px ... FAIL - page reported measure ${JSON.stringify(result.measure)}, ` +
+            `expected the default reading column`,
+        );
+      }
       if (
         result.exceptionSafety.found !== 2 ||
         !result.exceptionSafety.threw ||

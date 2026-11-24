@@ -1934,6 +1934,7 @@ async function measure() {
   const statusBox = statusGeometry(status);
   return {
     width,
+    measure: document.body.dataset.transcriptMeasure ?? null,
     scrollers,
     ignored,
     disclosures,
