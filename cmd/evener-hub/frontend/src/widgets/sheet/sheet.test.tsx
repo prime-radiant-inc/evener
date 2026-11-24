@@ -1113,6 +1113,30 @@ test("fast flick projects velocity forward to dismiss, while > 80ms hold before 
     }
     dispatchTouch(body, "touchend", { changedTouches: [{ identifier: 5, clientY: 194 }] });
     expect(onClose).toHaveBeenCalledOnce();
+    onClose.mockClear();
+    act(() => vi.advanceTimersByTime(250));
+
+    // 6) Upward pull-back arriving only on release (pointerup on header, and touchend on body)
+    // cancels dismissal even though the prior move exceeded the 160px cap.
+    mockPanelHeight(panel, 600); // threshold 160
+    const header = screen.getByText("t").parentElement!;
+    dispatchPointer(header, "pointerdown", { pointerId: 6, clientY: 100 });
+    act(() => vi.advanceTimersByTime(40));
+    dispatchPointer(window, "pointermove", { pointerId: 6, clientY: 270 });
+    act(() => vi.advanceTimersByTime(15));
+    dispatchPointer(window, "pointerup", { pointerId: 6, clientY: 250 });
+    expect(onClose).not.toHaveBeenCalled();
+    expect(panel.dataset.swiping).toBeUndefined();
+    expect(panel.style.transform).toBe("");
+
+    dispatchTouch(body, "touchstart", { touches: [{ identifier: 7, clientY: 100 }] });
+    act(() => vi.advanceTimersByTime(40));
+    dispatchTouch(body, "touchmove", { touches: [{ identifier: 7, clientY: 270 }] });
+    act(() => vi.advanceTimersByTime(15));
+    dispatchTouch(body, "touchend", { changedTouches: [{ identifier: 7, clientY: 250 }] });
+    expect(onClose).not.toHaveBeenCalled();
+    expect(panel.dataset.swiping).toBeUndefined();
+    expect(panel.style.transform).toBe("");
   } finally {
     vi.useRealTimers();
   }

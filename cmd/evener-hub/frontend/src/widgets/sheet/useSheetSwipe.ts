@@ -172,6 +172,17 @@ function computeVelocityY(samples: VelocitySample[], releaseTime: number): numbe
   return dt >= 1 ? (last.y - first.y) / dt : 0;
 }
 
+function incorporateReleaseY(
+  state: { startY: number; offsetY: number; samples: VelocitySample[] },
+  releaseY: number,
+  releaseTime: number,
+): void {
+  const last = state.samples[state.samples.length - 1];
+  if (!Number.isFinite(releaseY) || last === undefined || releaseY === last.y) return;
+  state.offsetY = Math.max(0, releaseY - state.startY);
+  pushSample(state.samples, releaseY, releaseTime);
+}
+
 function clearDragState(panel: HTMLElement | null, scrim: HTMLElement | null): void {
   if (panel !== null) {
     delete panel.dataset.swiping;
@@ -357,7 +368,13 @@ export function useSheetSwipe({
       if (isTouchActive(event, state.touchId)) return;
 
       ctrl.gesture = { kind: "idle" };
-      if (state.kind === "touchDrag") settleSwipeDrag(ctrl, latestRef, state, panel, scrimRef, cancelled);
+      if (state.kind === "touchDrag") {
+        if (!cancelled) {
+          const endTouch = findTouchById(event.changedTouches, state.touchId);
+          if (endTouch !== undefined) incorporateReleaseY(state, endTouch.clientY, performance.now());
+        }
+        settleSwipeDrag(ctrl, latestRef, state, panel, scrimRef, cancelled);
+      }
     };
 
     const onTouchEnd = (event: TouchEvent) => finishTouch(event, false);
@@ -487,8 +504,10 @@ export function useSheetSwipe({
         ) {
           latestRef.current.expandable?.onGeometryChange((g) => (g === "peek" ? "full" : "peek"));
         }
-        if (panel !== null && state.hasTranslated) settleSwipeDrag(ctrl, latestRef, state, panel, scrimRef, cancelled);
-        else if (state.needsResetOnRelease) clearDragState(panel, scrimRef.current);
+        if (panel !== null && state.hasTranslated) {
+          if (!cancelled) incorporateReleaseY(state, endEvent.clientY, performance.now());
+          settleSwipeDrag(ctrl, latestRef, state, panel, scrimRef, cancelled);
+        } else if (state.needsResetOnRelease) clearDragState(panel, scrimRef.current);
       };
 
       const onPointerUp = (upEvent: PointerEvent) => finishPointer(upEvent, false);
