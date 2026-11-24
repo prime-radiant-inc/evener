@@ -333,6 +333,9 @@ function ComposerWithSubmission({
   const [narrow, attachNarrowRef] = useNarrowComposer();
   const duoCoverLayout = useDuoCoverLayout();
   const landscapePhoneLayout = useLandscapePhoneLayout();
+  // The phone shell's control row is menu-only in every state; model and
+  // effort live in Overview and Settings (design-system.md section 12).
+  const phoneShellLayout = isMobile || landscapePhoneLayout;
   const composerRootRef = useRef<HTMLDivElement | null>(null);
   const attachComposerRoot = useCallback(
     (element: HTMLDivElement | null) => {
@@ -1007,12 +1010,10 @@ function ComposerWithSubmission({
   else if (ended) minLines = followUpEngaged ? 3 : 1;
   else if (duoCoverLayout && !followUpEngaged) minLines = 1;
 
-  // The phone layout's one bottom surface is this card's own control row,
-  // and a resting card sheds the status chrome and activity chips an empty
-  // editor does not need. Attach, the session menu and Send stay reachable.
-  // Content or a stalled storage write brings the full row back. The actions
-  // slot never sheds, so Stop stays reachable while a turn runs.
-  const controlsCollapsed = (isMobile || landscapePhoneLayout) && resting;
+  // Geometry keys stay keyed to the resting state so the folded card's
+  // measurements do not move. The actions slot never sheds, so Stop stays
+  // reachable while a turn runs.
+  const controlsCollapsed = phoneShellLayout && resting;
 
   function handleTextChange(value: SkillEditorValue, caret: number): void {
     editSkillNames(value.skillNames);
@@ -1279,6 +1280,11 @@ function ComposerWithSubmission({
     <MemoizedSessionChrome ref={ref} paneId={paneId} placement="composer" turnVerbs={turnVerbs} compactRung />
   );
   const askChrome = <MemoizedSessionChrome ref={ref} paneId={paneId} placement="composer" turnVerbs={turnVerbs} />;
+  const menuChrome = (
+    <div className={CLASS.menuSlot}>
+      <MemoizedSessionChrome ref={ref} paneId={paneId} placement="menu" turnVerbs={turnVerbs} />
+    </div>
+  );
   const attachControl = (
     <div className={CLASS.attachSlot}>
       <AttachImageControl inputRef={fileInputRef} testId="composer-attach" tooltip="Attach an image" />
@@ -1291,23 +1297,19 @@ function ComposerWithSubmission({
   // accessible name - the naming style follows StatusRow's own
   // status-row-* testids.
   //
-  // While the phone card rests (controlsCollapsed), the leading slot
-  // shrinks to the menu-only chrome: the session menu stays reachable, and
-  // that placement's chrome keeps initial activity discovery following the
-  // pane on screen (issue #1335) with no status chips.
-  // Attach stays in the folded row; only the status chrome sheds on phones.
+  // The phone shell's leading slot is Attach and the session menu in every
+  // state; the menu placement keeps activity discovery following the pane,
+  // and the status chrome never mounts.
   const leadingControls = (
     <div
       className={CLASS.leading}
       data-folded={folded ? "true" : undefined}
       data-compact={controlsCollapsed ? "true" : undefined}
     >
-      {controlsCollapsed ? (
+      {phoneShellLayout ? (
         <>
           {attachControl}
-          <div className={CLASS.menuSlot}>
-            <MemoizedSessionChrome ref={ref} paneId={paneId} placement="menu" turnVerbs={turnVerbs} />
-          </div>
+          {!askPending && menuChrome}
         </>
       ) : (
         <>
@@ -1357,7 +1359,7 @@ function ComposerWithSubmission({
           region (PendingRowStack, ConversationBody's trailingRow), so the
           composer's footer carries no message renderings. The queue count
           pill stays a count only (StatusRow's queue depth figure). */}
-      {askPending && askChrome}
+      {askPending && (phoneShellLayout ? menuChrome : askChrome)}
       {/* Staged attachments. One rendering for every state, so nothing here
           swaps element types under a user mid-gesture - AttachmentTile.tsx's
           own header comment has the mechanism and the bug it closed. */}
@@ -1375,6 +1377,7 @@ function ComposerWithSubmission({
             task={model.tasks?.current?.description}
             goal={model.goal?.objective}
             goalStatus={model.goal?.status}
+            phoneShellLayout={phoneShellLayout}
             onOpenTasks={showTasks}
             onEditGoal={() => editGoal((model.goal?.objective ?? "").trim())}
           />
