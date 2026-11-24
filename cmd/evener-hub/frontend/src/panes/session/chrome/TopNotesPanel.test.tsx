@@ -48,7 +48,14 @@ function makeModel(overrides: Partial<ThreadModel> = {}): ThreadModel {
 
 // Why the collapsed summary shows a placeholder (null when it previews content).
 function summaryPlaceholderReason(): string | null | undefined {
-  return screen.getByTestId("top-notes-summary").querySelector("[data-reason]")?.getAttribute("data-reason");
+  return panelSummary().querySelector("[data-reason]")?.getAttribute("data-reason");
+}
+
+/** The panel's one disclosure trigger, in either state. */
+function panelSummary(): HTMLElement {
+  const summary = screen.getByTestId("top-notes-panel").querySelector("summary");
+  if (summary === null) throw new Error("the notes panel rendered no summary");
+  return summary;
 }
 
 beforeEach(() => {
@@ -93,7 +100,7 @@ test("collapsed default shows first priority: human note with person icon", () =
   });
   render(<TopNotesPanel sessionRef={model.ref} model={model} />);
 
-  expect(screen.getByTestId("top-notes-summary")).toBeTruthy();
+  expect(panelSummary()).toBeTruthy();
   expect(screen.getByTestId("top-notes-icon-person")).toBeTruthy();
   expect(screen.queryByTestId("top-notes-icon-skill")).toBeNull();
   expect(screen.getByText(/First line of human note/)).toBeTruthy();
@@ -164,12 +171,12 @@ test("clicking the collapsed summary expands the panel, clicking header collapse
   expect(screen.queryByTestId("top-notes-expanded-content")).toBeNull();
 
   // Click to expand
-  await user.click(screen.getByTestId("top-notes-summary"));
+  await user.click(panelSummary());
   expect(screen.getByTestId("top-notes-expanded-content")).toBeTruthy();
   expect(topNotesStore.getState().isExpanded(model.ref)).toBe(true);
 
   // Click header to collapse
-  await user.click(screen.getByTestId("top-notes-collapse-trigger"));
+  await user.click(panelSummary());
   expect(screen.queryByTestId("top-notes-expanded-content")).toBeNull();
   expect(topNotesStore.getState().isExpanded(model.ref)).toBe(false);
 });
@@ -231,11 +238,11 @@ test("the read-only placeholder does not reuse the writable session's invitation
   const empty = { humanNote: "", agentNote: "", sessionUrls: [] };
   const writable = makeModel(empty);
   render(<TopNotesPanel sessionRef={writable.ref} model={writable} />);
-  const invitation = screen.getByTestId("top-notes-summary").textContent;
+  const invitation = panelSummary().textContent;
   cleanup();
   const readOnly = makeModel({ ...empty, status: { type: "ended" } });
   render(<TopNotesPanel sessionRef={readOnly.ref} model={readOnly} />);
-  expect(screen.getByTestId("top-notes-summary").textContent).not.toBe(invitation);
+  expect(panelSummary().textContent).not.toBe(invitation);
 });
 
 test("read-only sessions show a view-only empty state instead of a write invitation", async () => {
@@ -248,7 +255,7 @@ test("read-only sessions show a view-only empty state instead of a write invitat
   });
   render(<TopNotesPanel sessionRef={model.ref} model={model} />);
 
-  const summary = screen.getByTestId("top-notes-summary");
+  const summary = panelSummary();
   expect(summaryPlaceholderReason()).toBe("read-only");
   // The visible preview IS the accessible name - a generic label would hide
   // the content from screen readers. No hint text rides along in any state,
@@ -264,6 +271,24 @@ test("read-only sessions show a view-only empty state instead of a write invitat
   expect(screen.queryByRole("textbox", { name: "Human note" })).toBeNull();
 });
 
+test("the summary's accessible name tracks the collapsed preview and becomes an action label when expanded", async () => {
+  const user = userEvent.setup();
+  const model = makeModel({ humanNote: "Saved note" });
+  render(<TopNotesPanel sessionRef={model.ref} model={model} />);
+  const summary = panelSummary();
+
+  // Collapsed, the visible preview is the name: no label overrides it.
+  expect(summary.hasAttribute("aria-label")).toBe(false);
+
+  await user.click(summary);
+
+  // Expanded, the visible heading names the surface, not the action, so the
+  // disclosure supplies the action label for that state instead.
+  const expandedName = summary.getAttribute("aria-label");
+  expect(expandedName).not.toBeNull();
+  expect(expandedName).not.toBe(summary.textContent);
+});
+
 test("collapsed summary shows unsaved draft edits immediately, in phrasing content", async () => {
   const user = userEvent.setup();
   const model = makeModel({ humanNote: "Saved note" });
@@ -272,13 +297,13 @@ test("collapsed summary shows unsaved draft edits immediately, in phrasing conte
   // Type without committing: model.humanNote stays "Saved note" until the
   // 10s blur-save lands, but the summary must mirror the editor's draft the
   // moment the panel collapses.
-  await user.click(screen.getByTestId("top-notes-summary"));
+  await user.click(panelSummary());
   const textarea = screen.getByRole("textbox", { name: "Human note" }) as HTMLTextAreaElement;
   await user.type(textarea, " plus edits");
 
-  await user.click(screen.getByTestId("top-notes-collapse-trigger"));
+  await user.click(panelSummary());
   const summaryText = screen.getByText("Saved note plus edits");
-  // A button only admits phrasing content, so the clamped summary text is a
+  // A summary admits only phrasing content, so the clamped summary text is a
   // span, not a div.
   expect(summaryText.tagName).toBe("SPAN");
 });
@@ -316,7 +341,7 @@ test("focus requests stay scoped when a pane is reused for another session", asy
   // Pane reuse: the same component instance rerenders for session B
   // without unmounting. B starts collapsed.
   view.rerender(<TopNotesPanel sessionRef={modelB.ref} model={modelB} />);
-  expect(screen.getByTestId("top-notes-summary")).toBeTruthy();
+  expect(panelSummary()).toBeTruthy();
 
   // /notes on B must focus B's editor: the request belongs to B, not to a
   // numeric epoch compared against A's already-served baseline.
@@ -336,8 +361,8 @@ test("collapsed summary follows model updates after the draft record goes clean"
 
   // Expand once (the body mounts and creates the draft record), then
   // collapse: the record stays behind with the text it had at collapse.
-  await user.click(screen.getByTestId("top-notes-summary"));
-  await user.click(screen.getByTestId("top-notes-collapse-trigger"));
+  await user.click(panelSummary());
+  await user.click(panelSummary());
 
   // Another client saves a new note while the panel is collapsed. The
   // summary must show it, not the stale clean record.
@@ -350,9 +375,9 @@ test("a session that turns read-only shows the saved note, not the stranded draf
   const model = makeModel({ humanNote: "Saved note" });
   const view = render(<TopNotesPanel sessionRef={model.ref} model={model} />);
 
-  await user.click(screen.getByTestId("top-notes-summary"));
+  await user.click(panelSummary());
   await user.type(screen.getByRole("textbox", { name: "Human note" }), " never saved");
-  await user.click(screen.getByTestId("top-notes-collapse-trigger"));
+  await user.click(panelSummary());
 
   // The session ends with the edit unsaved: the read-only body shows the
   // saved note, so the summary must agree with what expanding will show.
@@ -527,13 +552,13 @@ test("no state carries an affordance hint", async () => {
   // Collapsed: the bar carries no "Click to expand" invite - the disclosure
   // affordance is the chevron and the row itself.
   expect(screen.queryByText("Click to expand")).toBeNull();
-  expect(screen.getByTestId("top-notes-summary").getAttribute("aria-describedby")).toBeNull();
+  expect(panelSummary().getAttribute("aria-describedby")).toBeNull();
 
-  await user.click(screen.getByTestId("top-notes-summary"));
+  await user.click(panelSummary());
 
   // Expanded: the header row carries no hint either.
   expect(screen.queryByText("Click to collapse")).toBeNull();
-  expect(screen.getByTestId("top-notes-collapse-trigger").getAttribute("aria-describedby")).toBeNull();
+  expect(panelSummary().getAttribute("aria-describedby")).toBeNull();
 });
 
 test("the panel is an inset card with a boundary that cannot clip", () => {
@@ -562,14 +587,9 @@ test("the panel is an inset card with a boundary that cannot clip", () => {
   // already draws that edge, and a second one doubles it.
   expect(topRuleBlock(css, ".summary")).not.toMatch(/border-bottom/);
 
-  // Keyboard focus must survive the clipping containers: the card's
-  // overflow:hidden and the body's scrollport cut an outside outline, so
-  // both trigger states carry the sanctioned inset ring (the same recipe
-  // sessionchrome.module.css documents for controls flush inside a clip
-  // boundary).
-  const focus = topRuleBlock(css, ".summary:focus-visible,\n.expandedHeader:focus-visible");
-  expect(focus).toContain("outline: var(--focus-ring)");
-  expect(focus).toContain("outline-offset: -2px");
+  // The shared Disclosure's summary owns the inset focus ring for both states
+  // (widgets/disclosure's own test asserts it); this card must not restate it.
+  expect(css).not.toMatch(/outline:/);
 });
 
 // --- dismissal: a press outside the panel collapses it ---------------------
@@ -594,7 +614,7 @@ test("pressing outside the expanded panel collapses it", async () => {
   const model = makeModel({ humanNote: "Saved note" });
   render(<TopNotesPanel sessionRef={model.ref} model={model} />);
   const user = userEvent.setup();
-  await user.click(screen.getByTestId("top-notes-summary"));
+  await user.click(panelSummary());
   expect(screen.getByTestId("top-notes-expanded-content")).toBeTruthy();
 
   const outside = outsideTarget();
@@ -612,7 +632,7 @@ test("an outside press collapses only once its click completes", async () => {
   const model = makeModel({ humanNote: "Saved note" });
   render(<TopNotesPanel sessionRef={model.ref} model={model} />);
   const user = userEvent.setup();
-  await user.click(screen.getByTestId("top-notes-summary"));
+  await user.click(panelSummary());
 
   const outside = outsideTarget();
   await user.pointer({ target: outside, keys: "[MouseLeft>]" });
@@ -628,7 +648,7 @@ test("pressing inside the expanded panel leaves it open", async () => {
   const model = makeModel({ humanNote: "Saved note" });
   render(<TopNotesPanel sessionRef={model.ref} model={model} />);
   const user = userEvent.setup();
-  await user.click(screen.getByTestId("top-notes-summary"));
+  await user.click(panelSummary());
 
   await user.click(screen.getByRole("textbox", { name: "Human note" }));
 
@@ -663,7 +683,7 @@ test("a drag that starts inside the panel and releases outside does not collapse
   const model = makeModel({ humanNote: "Saved note" });
   render(<TopNotesPanel sessionRef={model.ref} model={model} />);
   const user = userEvent.setup();
-  await user.click(screen.getByTestId("top-notes-summary"));
+  await user.click(panelSummary());
 
   const outside = outsideTarget();
   await user.pointer([
@@ -680,7 +700,7 @@ test("Escape inside the expanded panel collapses it and returns focus to the tri
   const model = makeModel({ humanNote: "Saved note" });
   render(<TopNotesPanel sessionRef={model.ref} model={model} />);
   const user = userEvent.setup();
-  await user.click(screen.getByTestId("top-notes-summary"));
+  await user.click(panelSummary());
   await user.click(screen.getByRole("textbox", { name: "Human note" }));
 
   await user.keyboard("{Escape}");
@@ -689,14 +709,14 @@ test("Escape inside the expanded panel collapses it and returns focus to the tri
   // A keyboard dismissal must not drop focus onto the document body. The
   // trigger takes it on the frame after the body unmounts.
   await act(() => new Promise((resolve) => requestAnimationFrame(resolve)));
-  expect(document.activeElement).toBe(screen.getByTestId("top-notes-summary"));
+  expect(document.activeElement).toBe(panelSummary());
 });
 
 test("a collapsed panel leaves Escape for an enclosing overlay", async () => {
   const model = makeModel({ humanNote: "Saved note" });
   render(<TopNotesPanel sessionRef={model.ref} model={model} />);
   const user = userEvent.setup();
-  const summary = screen.getByTestId("top-notes-summary");
+  const summary = panelSummary();
   summary.focus();
   const escaped = vi.fn();
   document.addEventListener("keydown", escaped);
@@ -720,7 +740,7 @@ test("Escape does not save a dirty draft it collapses", async () => {
   const model = makeModel({ humanNote: "Saved note" });
   const { result } = renderHook(() => useHumanNoteDraft(model.ref));
   render(<TopNotesPanel sessionRef={model.ref} model={model} />);
-  await user.click(screen.getByTestId("top-notes-summary"));
+  await user.click(panelSummary());
   const textarea = screen.getByRole("textbox", { name: "Human note" });
   await user.type(textarea, " plus edits");
   expect(result.current?.dirty).toBe(true);
@@ -743,7 +763,7 @@ test("an outside press keeps the draft and schedules the save it implies", async
   const { result } = renderHook(() => useHumanNoteDraft(model.ref));
   render(<TopNotesPanel sessionRef={model.ref} model={model} />);
   const user = userEvent.setup();
-  await user.click(screen.getByTestId("top-notes-summary"));
+  await user.click(panelSummary());
   const textarea = screen.getByRole("textbox", { name: "Human note" });
   await user.type(textarea, " plus edits");
 

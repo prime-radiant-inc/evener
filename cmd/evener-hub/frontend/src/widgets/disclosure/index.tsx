@@ -18,6 +18,10 @@ interface DisclosureCommonProps {
    * the built-in trailing chevron: one triangle, turned by the widget, with no
    * caller descendant selector. */
   leading?: (open: boolean) => ReactNode;
+  /** The summary's accessible name, for a caller whose visible summary content
+   * is not the name a reader needs. It receives the widget's open state;
+   * returning undefined leaves the visible content as the name. */
+  summaryAriaLabel?: (open: boolean) => string | undefined;
   /** Caller layout for the widget's summary (card-row geometry and the like). */
   summaryClassName?: string;
   children: ReactNode;
@@ -65,6 +69,7 @@ interface DisclosureViewProps extends DisclosureCommonProps {
 function DisclosureView({
   summary,
   leading,
+  summaryAriaLabel,
   summaryClassName,
   children,
   variant = "default",
@@ -78,6 +83,7 @@ function DisclosureView({
       {/* biome-ignore lint/a11y/noStaticElementInteractions: <summary> is natively keyboard-operable; see ToolCallItem.tsx */}
       <summary
         className={summaryClassName ? `${CLASS.summary} ${summaryClassName}` : CLASS.summary}
+        aria-label={summaryAriaLabel?.(open)}
         aria-disabled={disabled || undefined}
         tabIndex={disabled ? -1 : undefined}
         onClick={(event) => {
