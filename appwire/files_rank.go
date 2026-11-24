@@ -33,6 +33,38 @@ func ScoreFileMention(path, query string) (score int, positions []int, ok bool) 
 	if norm == "" {
 		return 0, nil, true
 	}
+	if prefix, _, frag, hasSlash := splitDirPrefixQuery(norm); hasSlash {
+		if strings.HasPrefix(path, prefix) {
+			prefixRuneLen := utf8.RuneCountInString(prefix)
+			prefixPos := make([]int, prefixRuneLen)
+			for k := range prefixRuneLen {
+				prefixPos[k] = k
+			}
+			if frag == "" {
+				return 0, prefixPos, true
+			}
+			relScore, relPos, matched := scoreNormalizedFileMention(path[len(prefix):], frag)
+			if !matched {
+				return 0, nil, false
+			}
+			positions = make([]int, 0, prefixRuneLen+len(relPos))
+			positions = append(positions, prefixPos...)
+			for _, pos := range relPos {
+				positions = append(positions, prefixRuneLen+pos)
+			}
+			return relScore, positions, true
+		}
+		if frag == "" {
+			return 0, nil, false
+		}
+	}
+	return scoreNormalizedFileMention(path, norm)
+}
+
+func scoreNormalizedFileMention(path, norm string) (score int, positions []int, ok bool) {
+	if norm == "" {
+		return 0, nil, true
+	}
 	if !isSubsequenceFold(path, norm) {
 		return 0, nil, false
 	}
@@ -115,42 +147,80 @@ func ScoreFileMention(path, query string) (score int, positions []int, ok bool) 
 	return score, positions, true
 }
 
+func splitDirPrefixQuery(norm string) (prefix, dirNoSlash, frag string, hasSlash bool) {
+	lastSlash := strings.LastIndexByte(norm, '/')
+	if lastSlash < 0 {
+		return "", "", "", false
+	}
+	return norm[:lastSlash+1], norm[:lastSlash], norm[lastSlash+1:], true
+}
+
+func hasExactDirPrefixScope(items []FileSearchItem, norm string) (prefix, frag string, scoped bool) {
+	prefix, dirNoSlash, frag, hasSlash := splitDirPrefixQuery(norm)
+	if !hasSlash {
+		return "", "", false
+	}
+	if frag == "" {
+		return prefix, "", true
+	}
+	for _, item := range items {
+		if strings.HasPrefix(item.Path, prefix) || (dirNoSlash != "" && item.Kind == "dir" && item.Path == dirNoSlash) {
+			return prefix, frag, true
+		}
+	}
+	return "", "", false
+}
+
+func rankEmptyFileSearchItems(items []FileSearchItem, limit int) []FileSearchItem {
+	if len(items) == 0 {
+		return []FileSearchItem{}
+	}
+	type emptyRankedItem struct {
+		item     FileSearchItem
+		segments int
+	}
+	decorated := make([]emptyRankedItem, len(items))
+	for i, item := range items {
+		decorated[i] = emptyRankedItem{
+			item:     item,
+			segments: strings.Count(item.Path, "/"),
+		}
+	}
+	slices.SortFunc(decorated, func(a, b emptyRankedItem) int {
+		if c := cmp.Compare(a.segments, b.segments); c != 0 {
+			return c
+		}
+		if c := cmp.Compare(fileKindRank(a.item.Kind), fileKindRank(b.item.Kind)); c != 0 {
+			return c
+		}
+		return strings.Compare(a.item.Path, b.item.Path)
+	})
+	if limit > 0 && len(decorated) > limit {
+		decorated = decorated[:limit]
+	}
+	out := make([]FileSearchItem, len(decorated))
+	for i, d := range decorated {
+		out[i] = d.item
+	}
+	return out
+}
+
 // RankFileSearchItems filters, scores, and sorts items against query, returning
 // up to limit items (all matches when limit <= 0) as a non-nil slice.
 func RankFileSearchItems(items []FileSearchItem, query string, limit int) []FileSearchItem {
 	norm := NormalizeFileSearchQuery(query)
 	if norm == "" {
-		if len(items) == 0 {
-			return []FileSearchItem{}
-		}
-		type emptyRankedItem struct {
-			item     FileSearchItem
-			segments int
-		}
-		decorated := make([]emptyRankedItem, len(items))
-		for i, item := range items {
-			decorated[i] = emptyRankedItem{
-				item:     item,
-				segments: strings.Count(item.Path, "/"),
+		return rankEmptyFileSearchItems(items, limit)
+	}
+	prefix, frag, scoped := hasExactDirPrefixScope(items, norm)
+	if scoped && frag == "" {
+		var underDir []FileSearchItem
+		for _, item := range items {
+			if strings.HasPrefix(item.Path, prefix) {
+				underDir = append(underDir, item)
 			}
 		}
-		slices.SortFunc(decorated, func(a, b emptyRankedItem) int {
-			if c := cmp.Compare(a.segments, b.segments); c != 0 {
-				return c
-			}
-			if c := cmp.Compare(fileKindRank(a.item.Kind), fileKindRank(b.item.Kind)); c != 0 {
-				return c
-			}
-			return strings.Compare(a.item.Path, b.item.Path)
-		})
-		if limit > 0 && len(decorated) > limit {
-			decorated = decorated[:limit]
-		}
-		out := make([]FileSearchItem, len(decorated))
-		for i, d := range decorated {
-			out[i] = d.item
-		}
-		return out
+		return rankEmptyFileSearchItems(underDir, limit)
 	}
 
 	type scoredItem struct {
@@ -161,6 +231,9 @@ func RankFileSearchItems(items []FileSearchItem, query string, limit int) []File
 	}
 	var scored []scoredItem
 	for _, item := range items {
+		if scoped && !strings.HasPrefix(item.Path, prefix) {
+			continue
+		}
 		score, _, ok := ScoreFileMention(item.Path, norm)
 		if !ok {
 			continue
@@ -216,7 +289,7 @@ func alignFileMentionDP(p, pFold, q, qFold []rune, posBonus []int) ([]int, int, 
 	currScore := make([]int, n)
 	back := make([]int16, m*n)
 
-	for j := 0; j < n; j++ {
+	for j := range n {
 		if pFold[j] == qFold[0] {
 			s := posBonus[j]
 			if p[j] == q[0] {
@@ -231,7 +304,7 @@ func alignFileMentionDP(p, pFold, q, qFold []rune, posBonus []int) ([]int, int, 
 	for i := 1; i < m; i++ {
 		bestGapScore := negInf
 		bestGapIdx := -1
-		for j := 0; j < n; j++ {
+		for j := range n {
 			currScore[j] = negInf
 			back[i*n+j] = -1
 			if j >= 2 {

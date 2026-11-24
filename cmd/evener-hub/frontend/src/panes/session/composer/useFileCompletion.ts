@@ -149,8 +149,7 @@ export function useFileCompletion({
       const editor = editorRef.current;
       if (!currentToken || !editor) return;
       const currentText = textRef.current;
-      const consumeQuote = currentToken.quoted && currentText.charAt(currentToken.end) === '"';
-      const replaceEnd = consumeQuote ? currentToken.end + 1 : currentToken.end;
+      const replaceEnd = currentToken.end;
       const spliced = spliceFileMention(currentText, currentToken, item);
       const insertedLength = spliced.text.length - (currentText.length - (replaceEnd - currentToken.start));
       const inserted = spliced.text.slice(currentToken.start, currentToken.start + insertedLength);

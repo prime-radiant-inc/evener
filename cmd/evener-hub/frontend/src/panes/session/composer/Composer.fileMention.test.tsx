@@ -7,7 +7,7 @@ import { appliedReceipt } from "../../../mutationReceiptTestUtils";
 import { resetWorkspaceStoreForTests } from "../../../shell/workspace";
 import { installLocalStorage, MemoryStorage } from "../../../storageTestUtils";
 import { resetConnectionStoreForTests } from "../../../stores/connection";
-import { resetPrefsStoreForTests } from "../../../stores/prefs";
+import { prefsStore, resetPrefsStoreForTests } from "../../../stores/prefs";
 import { resetThreadsStoreForTests } from "../../../stores/threads";
 import { ALL_CAPABILITIES as FULL_CAPABILITIES } from "../../../threadTestUtils";
 import { getToasts, resetToastStoreForTests } from "../../../widgets/toast/store";
@@ -372,4 +372,80 @@ test("inserted @path round-trips through draft persistence, queued-message Edit,
   });
   expect(textarea().textContent).toBe("Run /review on @cmd/main.go");
   expect(within(textarea()).getAllByTestId("composer-skill-chip")).toHaveLength(1);
+});
+
+test("accepting completion with caret inside @src/ma|in.go replaces the full reference cleanly", async () => {
+  const user = userEvent.setup();
+  const ref = "ref_file_mid_caret";
+  await mountComposerWithHandle(
+    ref,
+    {},
+    {
+      prepare: (client) => {
+        client.on("evener/files/search", () => ({
+          items: [{ path: "src/main.go", kind: "file" }],
+        }));
+      },
+    },
+  );
+
+  const editor = textarea();
+  await user.type(editor, "see @src/main.go, please");
+  selectEditorText(editor, "see @src/ma".length);
+  await waitFor(() => expect(fileOptions()).toHaveLength(1));
+
+  await user.keyboard("{Enter}");
+  expect(editor.textContent).toBe("see @src/main.go, please");
+  expect(queryFileMenu()).toBeNull();
+});
+
+test("Ctrl+Enter, Cmd+Enter, and Shift+Enter bypass file mention commit and reach composer shortcuts", async () => {
+  const user = userEvent.setup();
+  const ref = "ref_file_mod_enter";
+  const { fake } = await mountComposerWithHandle(
+    ref,
+    {},
+    {
+      prepare: (client) => {
+        client.on("evener/files/search", () => ({
+          items: [{ path: "src/main.go", kind: "file" }],
+        }));
+        client.on("turn/start", (params) => ({
+          receipt: appliedReceipt(params.clientMutationId, "thread_a"),
+          turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+        }));
+      },
+    },
+  );
+
+  const editor = textarea();
+  await user.type(editor, "check @ma");
+  await waitFor(() => expect(fileOptions()).toHaveLength(1));
+
+  await user.keyboard("{Control>}{Enter}{/Control}");
+  await waitFor(() => expect(fake.calls.filter((c) => c.method === "turn/start")).toHaveLength(1));
+  expect(editor.textContent).toBe("");
+
+  await user.type(editor, "check @ma");
+  await waitFor(() => expect(fileOptions()).toHaveLength(1));
+  await user.keyboard("{Meta>}{Enter}{/Meta}");
+  await waitFor(() => expect(fake.calls.filter((c) => c.method === "turn/start")).toHaveLength(2));
+  expect(editor.textContent).toBe("");
+
+  // With enterToSend enabled, Shift+Enter inserts a newline without committing or submitting.
+  act(() => prefsStore.getState().setEnterToSend(true));
+  await user.type(editor, "check @ma");
+  await waitFor(() => expect(fileOptions()).toHaveLength(1));
+  await user.keyboard("{Shift>}{Enter}{/Shift}");
+  expect(fake.calls.filter((c) => c.method === "turn/start")).toHaveLength(2);
+  expect(editor.textContent).not.toContain("@src/main.go");
+
+  // Plain Enter still commits the file completion when open.
+  await user.clear(editor);
+  await user.type(editor, "check @ma");
+  await waitFor(() => expect(fileOptions()).toHaveLength(1));
+  await user.keyboard("{Enter}");
+  expect(editor.textContent).toBe("check @src/main.go ");
+  expect(queryFileMenu()).toBeNull();
+  expect(fake.calls.filter((c) => c.method === "turn/start")).toHaveLength(2);
 });

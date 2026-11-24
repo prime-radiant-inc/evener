@@ -18,6 +18,8 @@ const NEG_INF = -1_000_000_000;
 
 const VALID_AT_BOUNDARY_RE = /^[\s([{<"'`]$/u;
 const PUNCTUATION_OR_SPACE_HEAD_RE = /^(?:[\s.,;:!?)\]}'"])/u;
+const UNQUOTED_STOP_RE = /[\s",;:!?]/u;
+const UNQUOTED_TRAILING_PUNCT_RE = /[.,;:!?)\]}'"]/u;
 
 export interface FileMentionToken {
   start: number;
@@ -98,18 +100,57 @@ export function parseFileMentionToken(text: string, caret: number): FileMentionT
     if (!VALID_AT_BOUNDARY_RE.test(prev)) return null;
   }
 
-  const tail = before.slice(atIndex + 1);
-  if (tail.startsWith('"')) {
-    const query = tail.slice(1);
+  const openPos = atIndex + 1;
+  if (text.charAt(openPos) === '"') {
+    let query = "";
+    let escaped = false;
+    let end = text.length;
+    for (let i = openPos + 1; i < text.length; i += 1) {
+      const ch = text.charAt(i);
+      if (ch === "\r" || ch === "\n") {
+        if (i < caret) return null;
+        end = i;
+        break;
+      }
+      if (escaped) {
+        escaped = false;
+        if (i < caret) {
+          query += ch === '"' || ch === "\\" ? ch : `\\${ch}`;
+        }
+        continue;
+      }
+      if (ch === "\\") {
+        escaped = true;
+        if (i + 1 === caret) {
+          query += "\\";
+        }
+        continue;
+      }
+      if (ch === '"') {
+        if (i < caret) return null;
+        end = i + 1;
+        break;
+      }
+      if (i < caret) {
+        query += ch;
+      }
+    }
     if (query.length > FILE_MENTION_MAX_QUERY_LENGTH) return null;
-    if (/["\r\n]/.test(query)) return null;
-    return { start: atIndex, end: caret, query, quoted: true };
+    return { start: atIndex, end, query, quoted: true };
   }
 
+  const tail = before.slice(openPos);
   if (tail.startsWith("@")) return null;
   if (/[\s"]/.test(tail)) return null;
   if (tail.length > FILE_MENTION_MAX_QUERY_LENGTH) return null;
-  return { start: atIndex, end: caret, query: tail, quoted: false };
+  let end = caret;
+  while (end < text.length && !UNQUOTED_STOP_RE.test(text.charAt(end))) {
+    end += 1;
+  }
+  while (end > caret && UNQUOTED_TRAILING_PUNCT_RE.test(text.charAt(end - 1))) {
+    end -= 1;
+  }
+  return { start: atIndex, end, query: tail, quoted: false };
 }
 
 export function spliceFileMention(
@@ -118,8 +159,7 @@ export function spliceFileMention(
   item: FileSearchItem,
 ): FileMentionSpliceResult {
   const before = text.slice(0, token.start);
-  const consumeQuote = token.quoted && text.charAt(token.end) === '"';
-  const suffix = text.slice(consumeQuote ? token.end + 1 : token.end);
+  const suffix = text.slice(token.end);
 
   const isDir = item.kind === "dir";
   const rawPath = isDir ? `${item.path.replace(/\/+$/, "")}/` : item.path;
@@ -188,8 +228,61 @@ function isSubsequenceFold(path: string, query: string): boolean {
   return false;
 }
 
+function splitDirPrefixQuery(norm: string): { prefix: string; dirNoSlash: string; frag: string } | null {
+  const lastSlash = norm.lastIndexOf("/");
+  if (lastSlash < 0) return null;
+  return {
+    prefix: norm.slice(0, lastSlash + 1),
+    dirNoSlash: norm.slice(0, lastSlash),
+    frag: norm.slice(lastSlash + 1),
+  };
+}
+
+function hasExactDirPrefixScope(
+  items: readonly FileSearchItem[],
+  norm: string,
+): { prefix: string; frag: string } | null {
+  const split = splitDirPrefixQuery(norm);
+  if (!split) return null;
+  if (split.frag === "") {
+    return { prefix: split.prefix, frag: "" };
+  }
+  for (const item of items) {
+    if (
+      item.path.startsWith(split.prefix) ||
+      (split.dirNoSlash !== "" && item.kind === "dir" && item.path === split.dirNoSlash)
+    ) {
+      return { prefix: split.prefix, frag: split.frag };
+    }
+  }
+  return null;
+}
+
 export function scoreFileMention(path: string, query: string): FileMentionMatch | null {
   const norm = normalizeQuery(query);
+  if (norm.length === 0) {
+    return { score: 0, positions: [] };
+  }
+  const split = splitDirPrefixQuery(norm);
+  if (split) {
+    if (path.startsWith(split.prefix)) {
+      const prefixPositions = Array.from({ length: split.prefix.length }, (_, k) => k);
+      if (split.frag === "") {
+        return { score: 0, positions: prefixPositions };
+      }
+      const relMatch = scoreNormalizedFileMention(path.slice(split.prefix.length), split.frag);
+      if (!relMatch) return null;
+      return {
+        score: relMatch.score,
+        positions: [...prefixPositions, ...relMatch.positions.map((pos) => split.prefix.length + pos)],
+      };
+    }
+    if (split.frag === "") return null;
+  }
+  return scoreNormalizedFileMention(path, norm);
+}
+
+function scoreNormalizedFileMention(path: string, norm: string): FileMentionMatch | null {
   if (norm.length === 0) {
     return { score: 0, positions: [] };
   }
@@ -429,21 +522,33 @@ function compareStringsLexical(a: string, b: string): number {
   return a < b ? -1 : a > b ? 1 : 0;
 }
 
+function rankEmptyFileMentions(items: readonly FileSearchItem[], limit?: number): FileSearchItem[] {
+  const out = [...items].sort((a, b) => {
+    const segDiff = countSlashes(a.path) - countSlashes(b.path);
+    if (segDiff !== 0) return segDiff;
+    const kDiff = kindRank(a.kind) - kindRank(b.kind);
+    if (kDiff !== 0) return kDiff;
+    return compareStringsLexical(a.path, b.path);
+  });
+  return limit !== undefined && limit > 0 ? out.slice(0, limit) : out;
+}
+
 export function rankFileMentions(items: readonly FileSearchItem[], query: string, limit?: number): FileSearchItem[] {
   const norm = normalizeQuery(query);
   if (norm === "") {
-    const out = [...items].sort((a, b) => {
-      const segDiff = countSlashes(a.path) - countSlashes(b.path);
-      if (segDiff !== 0) return segDiff;
-      const kDiff = kindRank(a.kind) - kindRank(b.kind);
-      if (kDiff !== 0) return kDiff;
-      return compareStringsLexical(a.path, b.path);
-    });
-    return limit !== undefined && limit > 0 ? out.slice(0, limit) : out;
+    return rankEmptyFileMentions(items, limit);
+  }
+  const dirScope = hasExactDirPrefixScope(items, norm);
+  if (dirScope && dirScope.frag === "") {
+    const underDir = items.filter((item) => item.path.startsWith(dirScope.prefix));
+    return rankEmptyFileMentions(underDir, limit);
   }
 
   const scored: Array<{ item: FileSearchItem; score: number; segments: number }> = [];
   for (const item of items) {
+    if (dirScope && !item.path.startsWith(dirScope.prefix)) {
+      continue;
+    }
     const match = scoreFileMention(item.path, norm);
     if (!match) continue;
     scored.push({

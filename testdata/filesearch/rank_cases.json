@@ -232,6 +232,64 @@
       ],
       "wantPaths": [],
       "wantPositions": {}
+    },
+    {
+      "name": "exact_dir_prefix_trailing_slash",
+      "query": "src/",
+      "limit": 10,
+      "items": [
+        { "path": "src", "kind": "dir" },
+        { "path": "src/sub/deep.ts", "kind": "file" },
+        { "path": "src/sub", "kind": "dir" },
+        { "path": "src/index.ts", "kind": "file" },
+        { "path": "src-old/index.ts", "kind": "file" }
+      ],
+      "wantPaths": ["src/index.ts", "src/sub", "src/sub/deep.ts"],
+      "wantPositions": {
+        "src/index.ts": [0, 1, 2, 3],
+        "src/sub": [0, 1, 2, 3],
+        "src/sub/deep.ts": [0, 1, 2, 3]
+      }
+    },
+    {
+      "name": "exact_dir_prefix_with_fragment",
+      "query": "src/in",
+      "limit": 10,
+      "items": [
+        { "path": "src", "kind": "dir" },
+        { "path": "src/index.ts", "kind": "file" },
+        { "path": "src/sub/main.ts", "kind": "file" },
+        { "path": "src-old/index.ts", "kind": "file" }
+      ],
+      "wantPaths": ["src/index.ts", "src/sub/main.ts"],
+      "wantPositions": {
+        "src/index.ts": [0, 1, 2, 3, 4, 5],
+        "src/sub/main.ts": [0, 1, 2, 3, 10, 11]
+      }
+    },
+    {
+      "name": "empty_dir_prefix_no_sibling_leak",
+      "query": "empty/",
+      "limit": 10,
+      "items": [
+        { "path": "empty", "kind": "dir" },
+        { "path": "empty-sibling/a.ts", "kind": "file" }
+      ],
+      "wantPaths": [],
+      "wantPositions": {}
+    },
+    {
+      "name": "non_dir_slash_query_stays_fuzzy",
+      "query": "s/m",
+      "limit": 10,
+      "items": [
+        { "path": "src/main.go", "kind": "file" },
+        { "path": "other.go", "kind": "file" }
+      ],
+      "wantPaths": ["src/main.go"],
+      "wantPositions": {
+        "src/main.go": [0, 3, 4]
+      }
     }
   ]
 }

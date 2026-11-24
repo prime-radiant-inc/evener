@@ -117,11 +117,35 @@ describe("parseFileMentionToken", () => {
         quoted: false,
       });
     }
-    // Caret in the middle of a longer token only considers text before caret.
+    // Mid-token caret keeps query before caret while spanning the full token end.
     expect(parseFileMentionToken("open @src/file.ts later", 10)).toEqual({
       start: 5,
-      end: 10,
+      end: 17,
       query: "src/",
+      quoted: false,
+    });
+    expect(parseFileMentionToken("@src/main.go", 7)).toEqual({
+      start: 0,
+      end: 12,
+      query: "src/ma",
+      quoted: false,
+    });
+    expect(parseFileMentionToken("see @src/main.go, please", 11)).toEqual({
+      start: 4,
+      end: 16,
+      query: "src/ma",
+      quoted: false,
+    });
+    expect(parseFileMentionToken("see (@src/main.go.)", 12)).toEqual({
+      start: 5,
+      end: 17,
+      query: "src/ma",
+      quoted: false,
+    });
+    expect(parseFileMentionToken("edit @src/routes/[id]/page.tsx now", 20)).toEqual({
+      start: 5,
+      end: 30,
+      query: "src/routes/[id",
       quoted: false,
     });
   });
@@ -135,8 +159,14 @@ describe("parseFileMentionToken", () => {
     });
     expect(parseFileMentionToken('open @"my notes"', 15)).toEqual({
       start: 5,
-      end: 15,
+      end: 16,
       query: "my notes",
+      quoted: true,
+    });
+    expect(parseFileMentionToken('open @"my notes" "other"', 10)).toEqual({
+      start: 5,
+      end: 16,
+      query: "my ",
       quoted: true,
     });
     // Past closing quote is no longer active.
@@ -144,6 +174,29 @@ describe("parseFileMentionToken", () => {
     expect(parseFileMentionToken('open @"my\nnotes', 15)).toBeNull();
     expect(parseFileMentionToken('open @"my\rnotes', 15)).toBeNull();
     expect(parseFileMentionToken('foo@"bar', 8)).toBeNull();
+  });
+
+  it('decodes escaped quotes and backslashes inside @"..." and supports dir drill-in round-trips', () => {
+    expect(parseFileMentionToken('@"Q1 \\"drafts\\"/"', 16)).toEqual({
+      start: 0,
+      end: 17,
+      query: 'Q1 "drafts"/',
+      quoted: true,
+    });
+    expect(parseFileMentionToken('@"dir\\\\a \\"b\\""', 14)).toEqual({
+      start: 0,
+      end: 15,
+      query: 'dir\\a "b"',
+      quoted: true,
+    });
+    expect(parseFileMentionToken('@"Q1 \\"drafts\\""', 10)).toEqual({
+      start: 0,
+      end: 16,
+      query: 'Q1 "dra',
+      quoted: true,
+    });
+    // Past unescaped closing quote on escaped string is inactive.
+    expect(parseFileMentionToken('@"Q1 \\"drafts\\""', 16)).toBeNull();
   });
 
   it("rejects email addresses, URLs, double-@, mid-word @, spaces, and >256 queries", () => {
@@ -181,6 +234,26 @@ describe("spliceFileMention", () => {
       caret: 18,
       keepOpen: false,
     });
+
+    // Mid-token splice replaces the entire reference without leaving tail fragments.
+    const midPlain = parseFileMentionToken("see @src/main.go, please", 11)!;
+    expect(spliceFileMention("see @src/main.go, please", midPlain, { path: "src/main.go", kind: "file" })).toEqual({
+      text: "see @src/main.go, please",
+      caret: 16,
+      keepOpen: false,
+    });
+    const midStandalone = parseFileMentionToken("@src/main.go", 7)!;
+    expect(spliceFileMention("@src/main.go", midStandalone, { path: "src/main.go", kind: "file" })).toEqual({
+      text: "@src/main.go ",
+      caret: 13,
+      keepOpen: false,
+    });
+    const midQuoted = parseFileMentionToken('read @"my notes" "other"', 10)!;
+    expect(spliceFileMention('read @"my notes" "other"', midQuoted, { path: "my notes.txt", kind: "file" })).toEqual({
+      text: 'read @"my notes.txt" "other"',
+      caret: 20,
+      keepOpen: false,
+    });
   });
 
   it("quotes paths with spaces or double quotes and escapes backslashes/quotes", () => {
@@ -205,19 +278,32 @@ describe("spliceFileMention", () => {
       keepOpen: true,
     });
 
-    const quotedDirToken: FileMentionToken = { start: 0, end: 4, query: "my", quoted: true };
+    const quotedDirToken: FileMentionToken = { start: 0, end: 5, query: "my", quoted: true };
     expect(spliceFileMention('@"my"', quotedDirToken, { path: "my dir", kind: "dir" })).toEqual({
       text: '@"my dir/"',
       caret: 9,
       keepOpen: true,
     });
 
-    const quotedFileToken: FileMentionToken = { start: 5, end: 14, query: "my file", quoted: true };
+    const quotedFileToken: FileMentionToken = { start: 5, end: 15, query: "my file", quoted: true };
     expect(spliceFileMention('read @"my file" now', quotedFileToken, { path: "my file.txt", kind: "file" })).toEqual({
       text: 'read @"my file.txt" now',
       caret: 19,
       keepOpen: false,
     });
+
+    const escapedDirSpliced = spliceFileMention(
+      "@Q1",
+      { start: 0, end: 3, query: "Q1", quoted: false },
+      { path: 'Q1 "drafts"', kind: "dir" },
+    );
+    expect(escapedDirSpliced).toEqual({
+      text: '@"Q1 \\"drafts\\"/"',
+      caret: 16,
+      keepOpen: true,
+    });
+    const reparsed = parseFileMentionToken(escapedDirSpliced.text, escapedDirSpliced.caret);
+    expect(reparsed).toEqual({ start: 0, end: 17, query: 'Q1 "drafts"/', quoted: true });
   });
 });
 
@@ -329,6 +415,60 @@ describe("createFileMentionStore", () => {
     // clear() and scope changes drop optimistic cache.
     store.clear();
     expect(store.getState()).toEqual({ items: [], loading: false, truncated: false, settledQuery: null });
+  });
+
+  it("applies exact directory-prefix scoping during optimistic narrowing from src to src/", async () => {
+    vi.useFakeTimers();
+    const store = createFileMentionStore();
+    const dirResp = makeDeferred<FilesSearchResponse>();
+    let callCount = 0;
+    const client = makeFakeRequestClient(() => {
+      callCount += 1;
+      if (callCount === 1) {
+        return Promise.resolve({
+          items: [
+            { path: "src", kind: "dir" },
+            { path: "src/index.ts", kind: "file" },
+            { path: "src-old/index.ts", kind: "file" },
+          ],
+          truncated: false,
+        });
+      }
+      return dirResp.promise;
+    });
+
+    store.search({
+      client,
+      target: { kind: "session", ref: "local:s1" },
+      query: "src",
+      enabled: true,
+      immediate: true,
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    await Promise.resolve();
+
+    // Narrowing to "src/" must immediately drop src-old/index.ts from optimistic rows.
+    store.search({
+      client,
+      target: { kind: "session", ref: "local:s1" },
+      query: "src/",
+      enabled: true,
+      immediate: true,
+    });
+    expect(store.getState().loading).toBe(true);
+    expect(store.getState().items).toEqual([{ path: "src/index.ts", kind: "file" }]);
+
+    // Narrowing to "src/in" with only exact dir + sibling in cache never flashes src-old/index.ts.
+    dirResp.resolve({
+      items: [
+        { path: "src", kind: "dir" },
+        { path: "src-old/index.ts", kind: "file" },
+      ],
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    await Promise.resolve();
+    store.search({ client, target: { kind: "session", ref: "local:s1" }, query: "src/in", enabled: true });
+    expect(store.getState().items).toEqual([]);
   });
 
   it("degrades quietly per (client, host) on MethodNotFound while keeping local and sibling hosts working", async () => {

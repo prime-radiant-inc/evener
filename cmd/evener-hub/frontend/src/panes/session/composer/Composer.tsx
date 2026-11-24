@@ -614,6 +614,7 @@ function ComposerWithSubmission({
     enabled: connectionReady && connectionClient !== null && !askPending,
     editorRef,
     textRef,
+    plainKeysOnly: true,
   });
   useLayoutEffect(() => {
     mountedRef.current = true;
