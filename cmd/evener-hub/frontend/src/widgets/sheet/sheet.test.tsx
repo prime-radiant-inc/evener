@@ -1199,7 +1199,17 @@ test("scrolled ancestor, 180ms scroll cooldown, horizontal/upward swipes, second
   try {
     const onClose = vi.fn();
     render(
-      <Sheet open side="bottom" onClose={onClose} title="Header title">
+      <Sheet
+        open
+        side="bottom"
+        onClose={onClose}
+        title="Header title"
+        footer={
+          <div data-testid="sheet-footer">
+            <button type="button">Save</button>
+          </div>
+        }
+      >
         <div data-testid="scroller">
           <p>Scroll content</p>
           <input type="text" aria-label="Provider name" />
@@ -1325,9 +1335,10 @@ test("scrolled ancestor, 180ms scroll cooldown, horizontal/upward swipes, second
     dispatchPointer(window, "pointerup", { pointerId: 11, clientY: 150 });
     act(() => vi.advanceTimersByTime(250));
 
-    // 5) Interactive exclusions: Close button, text/range inputs, textarea, select, [contenteditable]
+    // 5) Interactive exclusions and non-body regions: Close button, footer background, text/range inputs, textarea, select, [contenteditable]
     const excluded = [
       screen.getByRole("button", { name: "Close" }),
+      screen.getByTestId("sheet-footer"),
       screen.getByRole("textbox", { name: "Provider name" }),
       screen.getByRole("slider", { name: "Slider" }),
       screen.getByRole("textbox", { name: "Notes" }),

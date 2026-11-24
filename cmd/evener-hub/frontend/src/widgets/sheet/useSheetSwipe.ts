@@ -7,12 +7,6 @@ import {
   useRef,
 } from "react";
 import { ownerDocumentOf, ownerWindowOf } from "../internal/documentRealm";
-import { requireClass } from "../internal/requireClass";
-import styles from "./sheet.module.css";
-
-const HANDLE_CLASS = requireClass(styles.handle, "sheet.module.css", "handle");
-const GRAB_HANDLE_CLASS = requireClass(styles.grabHandle, "sheet.module.css", "grabHandle");
-const BOTTOM_HEADER_CLASS = requireClass(styles.bottomHeader, "sheet.module.css", "bottomHeader");
 
 const VELOCITY_WINDOW_MS = 100;
 const HOLD_CUTOFF_MS = 80;
@@ -110,19 +104,10 @@ function targetElement(target: EventTarget | null): Element | null {
   return node.nodeType === 1 ? (node as Element) : node.parentElement;
 }
 
-function isHandleOrHeaderTarget(target: EventTarget | null, panel: HTMLElement): boolean {
+function isExcludedTarget(target: EventTarget | null, inHeader: boolean): boolean {
   const el = targetElement(target);
   if (el === null) return false;
-  const match = el.closest(`.${HANDLE_CLASS}, .${GRAB_HANDLE_CLASS}, .${BOTTOM_HEADER_CLASS}`);
-  return match !== null && match.parentElement === panel;
-}
-
-function isExcludedTarget(target: EventTarget | null, body: HTMLElement | null, inHeader: boolean): boolean {
-  const el = targetElement(target);
-  if (el === null) return false;
-  if (inHeader) return el.closest(HEADER_INTERACTIVE_EXCLUDE_SELECTOR) !== null;
-  if (el.closest(INTERACTIVE_EXCLUDE_SELECTOR) !== null) return true;
-  return body !== null && !body.contains(el) && el.closest("button") !== null;
+  return el.closest(inHeader ? HEADER_INTERACTIVE_EXCLUDE_SELECTOR : INTERACTIVE_EXCLUDE_SELECTOR) !== null;
 }
 
 function hasScrolledAncestor(target: EventTarget | null, panel: HTMLElement): boolean {
@@ -300,8 +285,10 @@ export function useSheetSwipe({
         ctrl.gesture = { kind: "idle" };
       }
       if (event.touches.length !== 1) return;
-      if (isHandleOrHeaderTarget(event.target, panel)) return;
-      if (isExcludedTarget(event.target, bodyRef.current, false)) return;
+      const body = bodyRef.current;
+      const targetEl = targetElement(event.target);
+      if (body === null || targetEl === null || !body.contains(targetEl)) return;
+      if (isExcludedTarget(event.target, false)) return;
 
       const touch = event.touches[0];
       if (touch === undefined) return;
@@ -408,7 +395,7 @@ export function useSheetSwipe({
         origin === "header"
           ? currentSide === "bottom" && exp?.geometry !== "full"
           : currentSide === "bottom" || Boolean(exp);
-      if (!isOpen || !originAllowsDrag || isExcludedTarget(e.target, bodyRef.current, origin === "header")) {
+      if (!isOpen || !originAllowsDrag || isExcludedTarget(e.target, origin === "header")) {
         if (orphanedTouch !== null) clearDragState(panelRef.current, scrimRef.current);
         return;
       }
@@ -517,7 +504,7 @@ export function useSheetSwipe({
       win.addEventListener("pointerup", onPointerUp);
       win.addEventListener("pointercancel", onPointerCancel);
     },
-    [panelRef, bodyRef, scrimRef],
+    [panelRef, scrimRef],
   );
 
   const onHandlePointerDown = useCallback((e: ReactPointerEvent) => startPointerDrag(e, "handle"), [startPointerDrag]);
