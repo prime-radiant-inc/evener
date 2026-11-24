@@ -17,6 +17,8 @@
   composes: panel from "../internal/floatingSurface.module.css";
   transform-origin: right bottom;
   padding: var(--space-3) var(--space-4);
+  border-color: var(--tone-edge);
+  background: var(--tone-bg);
 }
 
 .text {
@@ -24,48 +26,28 @@
   font-family: var(--font-sans);
   font-size: var(--font-size-ui);
   line-height: var(--line-height-body);
-  color: var(--ink-hi);
+  color: var(--tone-ink);
 }
 
 /* --- kind -> semantic tone -------------------------------------------
- * success/error/warning/info map onto the app's four semantic hues
- * (alive/danger/attention/accent) - see this task's report for why (the
- * old UI's separate --success/--error tokens don't exist in the wave-2
- * token set; these are its closest semantic equivalents).
+ * success/error/warning/info map onto the app's four semantic families
+ * (alive/danger/attention/accent), whose companions live in
+ * styles/tone.module.css. Every toast has a kind, so the paint above can
+ * read the composed --tone-* properties unconditionally.
  */
 
 .success {
-  border-color: var(--alive-edge);
-  background: var(--alive-bg);
-}
-
-.success .text {
-  color: var(--alive-ink);
+  composes: toneAlive from "../../styles/tone.module.css";
 }
 
 .error {
-  border-color: var(--danger-edge);
-  background: var(--danger-bg);
-}
-
-.error .text {
-  color: var(--danger-ink);
+  composes: toneDanger from "../../styles/tone.module.css";
 }
 
 .warning {
-  border-color: var(--attention-edge);
-  background: var(--attention-bg);
-}
-
-.warning .text {
-  color: var(--attention-ink);
+  composes: toneAttention from "../../styles/tone.module.css";
 }
 
 .info {
-  border-color: var(--accent-edge);
-  background: var(--accent-bg);
-}
-
-.info .text {
-  color: var(--accent-ink);
+  composes: toneAccent from "../../styles/tone.module.css";
 }

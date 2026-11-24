@@ -132,12 +132,6 @@
   color: var(--ink-low);
   white-space: nowrap;
 }
-.quotesEmpty {
-  font-size: var(--font-size-caption);
-  color: var(--ink-low);
-  font-style: italic;
-}
-
 .section {
   display: flex;
   flex-direction: column;

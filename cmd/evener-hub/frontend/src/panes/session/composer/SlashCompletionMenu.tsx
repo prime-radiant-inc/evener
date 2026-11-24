@@ -13,7 +13,9 @@
 // row came from beyond rendering its already-resolved label/hint/invocation.
 
 import type { SlashMenuItem } from "@evener/appwire-client";
+import { ListboxOption } from "../../../widgets/internal/listbox";
 import { requireClass } from "../../../widgets/internal/requireClass";
+import { optionDomId } from "../../../widgets/internal/useListbox";
 import styles from "./slashcompletionmenu.module.css";
 
 const CLASS = {
@@ -27,49 +29,41 @@ const CLASS = {
 export interface SlashCompletionMenuProps {
   id: string;
   items: SlashMenuItem[];
-  highlightedIndex: number;
+  /** The row key the driving input's aria-activedescendant names. */
+  activeKey: string | undefined;
   onSelect: (item: SlashMenuItem) => void;
 }
 
-// optionId is exported so Composer.tsx's own aria-activedescendant wiring
-// (set imperatively on the textarea DOM node it already refs - Textarea
-// itself takes no aria-activedescendant prop, and widgets/ is out of this
-// stream's scope) can point at exactly the id this component renders,
-// without either side hand-duplicating the "<id>-option-<index>" scheme.
-export function optionId(listboxId: string, index: number): string {
-  return `${listboxId}-option-${index}`;
-}
-
-export function SlashCompletionMenu({ id, items, highlightedIndex, onSelect }: SlashCompletionMenuProps) {
+export function SlashCompletionMenu({ id, items, activeKey, onSelect }: SlashCompletionMenuProps) {
   return (
-    <div
+    /* ul role="listbox" with li role="option" rows: the WAI-ARIA APG
+       combobox-with-listbox-popup example markup, as in
+       widgets/internal/listbox.tsx. */
+    <ul
       className={CLASS.menu}
+      // biome-ignore lint/a11y/noNoninteractiveElementToInteractiveRole: ul/li is the ARIA APG's own listbox markup, see above
       role="listbox"
       id={id}
       aria-label="Slash commands and skills"
       data-testid="composer-slash-menu"
     >
-      {items.map((item, index) => {
-        const active = index === highlightedIndex;
+      {items.map((item) => {
+        const active = item.key === activeKey;
         return (
-          <button
+          <ListboxOption
             key={item.key}
-            type="button"
-            id={optionId(id, index)}
-            role="option"
-            aria-selected={active}
-            className={active ? `${CLASS.option} ${CLASS.optionActive}` : CLASS.option}
-            // Prevents the textarea from ever blurring on this click, so the
-            // composer's own blur-closes-the-menu handler never races the
-            // click's own onSelect - focus simply never leaves the field.
-            onMouseDown={(event) => event.preventDefault()}
-            onClick={() => onSelect(item)}
+            id={optionDomId(id, item.key)}
+            selected={active}
+            active={active}
+            className={CLASS.option}
+            activeClassName={CLASS.optionActive}
+            onSelect={() => onSelect(item)}
           >
             <span className={CLASS.name}>/{item.label}</span>
             {item.hint && <span className={CLASS.hint}>{item.hint}</span>}
-          </button>
+          </ListboxOption>
         );
       })}
-    </div>
+    </ul>
   );
 }

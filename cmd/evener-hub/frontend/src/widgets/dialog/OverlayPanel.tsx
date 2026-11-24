@@ -1,5 +1,6 @@
 import { type CSSProperties, type KeyboardEvent, type MouseEvent, type ReactNode, useId, useRef } from "react";
 import { LayerFocusScope } from "../focusscope";
+import { IconButton } from "../iconbutton";
 import { requireClass } from "../internal/requireClass";
 import { usePresence } from "../internal/usePresence";
 import { CloseIcon } from "./CloseIcon";
@@ -50,18 +51,18 @@ const CLASS = {
   title: requireClass(styles.title, "dialog.module.css", "title"),
   body: requireClass(styles.body, "dialog.module.css", "body"),
   footer: requireClass(styles.footer, "dialog.module.css", "footer"),
-  closeButton: requireClass(styles.closeButton, "dialog.module.css", "closeButton"),
+  closeSeat: requireClass(styles.closeSeat, "dialog.module.css", "closeSeat"),
 };
 
 /**
  * Shared modal skeleton for Dialog and Sheet ("otherwise the Dialog
  * contract" - see the wave-2 plan): scrim, aria-modal dialog role labelled
  * by its title, Escape-to-close, click-the-scrim-to-close, a trapped
- * FocusScope, and a close button. The close button is placed LAST in DOM
- * order (after body and footer) rather than in the header, so a dialog
- * with focusable body content focuses that content first on open - see
- * this task's report - while CSS pins it to the header's top-right corner
- * regardless of DOM position.
+ * FocusScope, and a close button (the shared IconButton, in a CSS seat that
+ * pins it to the header's top-right corner). The close button is placed LAST
+ * in DOM order (after body and footer) rather than in the header, so a dialog
+ * with focusable body content focuses that content first on open - see this
+ * task's report - while the seat positions it regardless of DOM order.
  */
 export function OverlayPanel({
   open,
@@ -177,9 +178,9 @@ export function OverlayPanel({
           </header>
           <div className={bodyClassName ? `${CLASS.body} ${bodyClassName}` : CLASS.body}>{shown.children}</div>
           {shown.footer !== undefined && <div className={CLASS.footer}>{shown.footer}</div>}
-          <button type="button" className={CLASS.closeButton} onClick={onClose} aria-label="Close">
-            <CloseIcon />
-          </button>
+          <span className={CLASS.closeSeat}>
+            <IconButton label="Close" icon={<CloseIcon />} variant="quiet" size="xs" onClick={onClose} />
+          </span>
         </div>
       </LayerFocusScope>
     </div>

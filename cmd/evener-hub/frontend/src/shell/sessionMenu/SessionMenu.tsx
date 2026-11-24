@@ -24,7 +24,7 @@
 
 import type { NavigationSessionSummary } from "@evener/appwire-client";
 import { type ChangeEvent, useEffect, useState } from "react";
-import { Button, Dialog, FormRow, Input, Menu, type MenuEntry } from "../../widgets";
+import { Button, ConfirmDialog, Dialog, FormRow, Input, Menu, type MenuEntry } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { PinSectionPicker } from "../rail/PinSectionPicker";
 import { isTopLevelSession } from "../rail/sessionKind";
@@ -286,55 +286,33 @@ export function SessionMenu({
         </FormRow>
       </Dialog>
 
-      <Dialog
+      <ConfirmDialog
         open={shutdownOpen}
-        onClose={() => setShutdownOpen(false)}
         title="Shut down this session?"
-        footer={
-          <>
-            <Button variant="quiet" onClick={() => setShutdownOpen(false)}>
-              Cancel
-            </Button>
-            <Button
-              variant="danger"
-              onClick={() => void run(actions.onShutdown, () => setShutdownOpen(false))}
-              disabled={busy}
-            >
-              Shut down
-            </Button>
-          </>
-        }
+        confirmLabel="Shut down"
+        busy={busy}
+        onConfirm={() => void run(actions.onShutdown, () => setShutdownOpen(false))}
+        onCancel={() => setShutdownOpen(false)}
       >
         <p className={CLASS.body}>
           The agent process for this session will stop. You can still read the transcript afterward.
         </p>
-      </Dialog>
+      </ConfirmDialog>
 
       {actions.onForceStop && (
         <ForceStopDialog open={forceStopOpen} onClose={() => setForceStopOpen(false)} onConfirm={actions.onForceStop} />
       )}
 
-      <Dialog
+      <ConfirmDialog
         open={deleteOpen}
-        onClose={() => setDeleteOpen(false)}
         title="Delete session?"
-        footer={
-          <>
-            <Button variant="quiet" onClick={() => setDeleteOpen(false)}>
-              Cancel
-            </Button>
-            <Button
-              variant="danger"
-              onClick={() => void run(actions.onDelete, () => setDeleteOpen(false))}
-              disabled={busy}
-            >
-              Delete
-            </Button>
-          </>
-        }
+        confirmLabel="Delete"
+        busy={busy}
+        onConfirm={() => void run(actions.onDelete, () => setDeleteOpen(false))}
+        onCancel={() => setDeleteOpen(false)}
       >
         <p className={CLASS.body}>Permanently delete "{title}"? This removes its transcript and cannot be undone.</p>
-      </Dialog>
+      </ConfirmDialog>
 
       {/* The picker reports its own assign errors inline; SessionMenu closes
           it only once onPin resolves - the same close-on-success contract as

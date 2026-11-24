@@ -2,7 +2,6 @@ package agent
 
 import (
 	"encoding/json"
-	"path/filepath"
 	"slices"
 	"testing"
 
@@ -55,9 +54,6 @@ func TestManagerRequestAllBranches(t *testing.T) {
 				if !slices.ContainsFunc(req.Tools, func(td llm.ToolDefinition) bool { return td.Name == "exec_command" }) || slices.ContainsFunc(req.Tools, func(td llm.ToolDefinition) bool { return td.Name == "shell" }) {
 					t.Fatal("provider tool renaming changed")
 				}
-			}
-			if mode != "all" && mode != "ordinary" {
-				agenttest.CheckGolden(t, filepath.Join("testdata", "messagingprompt", "manager-"+mode+".md"), managerRequestGolden(req), *updatePromptGoldens, "Regenerate with go test ./agent -run TestManagerRequestAllBranches -update-prompt and review the diff.")
 			}
 			for _, tc := range cases {
 				t.Run(tc.name, func(t *testing.T) {

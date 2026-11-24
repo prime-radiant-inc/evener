@@ -37,6 +37,7 @@ import {
   parseMcpServerEntry,
 } from "./launchShared/collectionFields";
 import styles from "./mcp.module.css";
+import { SectionGate } from "./sectionGate";
 import { useHostScopedLoad, useLaunchConfigRefresh } from "./useConnectedEffect";
 
 const CLASS = {
@@ -291,11 +292,11 @@ export function McpSection({ useOverviewStore, host = LOCAL_HOST }: McpSectionPr
           would save a layer holding only the new entry. Once loaded, a failed
           refresh keeps them mounted, so an entry the reader is typing survives
           the error and the recovery after it. */}
-      {launchLayerError !== null && <InlineNotice tone="danger">{launchLayerError}</InlineNotice>}
       {layer === null ? (
-        launchLayerError === null && <Skeleton />
+        <SectionGate loading={launchLayerError === null} error={launchLayerError} />
       ) : (
         <>
+          {launchLayerError !== null && <InlineNotice tone="danger">{launchLayerError}</InlineNotice>}
           <section className={CLASS.section}>
             <h3 className={CLASS.sectionTitle}>MCP config files</h3>
             <PathListEditor

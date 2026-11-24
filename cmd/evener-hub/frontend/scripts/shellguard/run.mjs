@@ -1475,17 +1475,23 @@ async function measureActivityRowPadding(send, viewport) {
       `Array.from(document.querySelectorAll('[data-row-case]')).map(container => {
       const kind = container.dataset.rowCase;
       const row = kind === 'watch' || kind === 'task' ? container.querySelector('summary') : container.firstElementChild;
+      // The watch row's own box is the ListRow inside its disclosure summary;
+      // the summary contributes no inset, but the glyph inset is measured from
+      // the summary so it counts both boxes.
+      const rowBox = kind === 'watch' ? row.firstElementChild : row;
       let glyph = row.firstElementChild;
       let nested = null;
       if (kind === 'task') {
         glyph = row.querySelector('[data-testid="task-check"]');
       } else if (kind === 'watch') {
         glyph = row.querySelector('[data-testid^="sidebar-watch-"]').parentElement;
-        nested = getComputedStyle(glyph.parentElement);
+        // The row box now lives on the ListRow inside the summary; the summary
+        // itself must stay unpadded so the effective inset is the row's alone.
+        nested = getComputedStyle(row);
       }
-      const style = getComputedStyle(row), box = row.getBoundingClientRect();
+      const style = getComputedStyle(rowBox), box = row.getBoundingClientRect();
       const time = row.querySelector('time[data-activity-time]');
-      const title = kind === 'watch' || kind === 'task'
+      const title = kind === 'task'
         ? time?.parentElement?.querySelector('[data-struck], [class*="rowName"], [class*="description"]')
         : row.querySelector('[title]');
       const timeBox = time?.getBoundingClientRect();
@@ -1537,7 +1543,7 @@ async function measureActivityRowPadding(send, viewport) {
         failures.push(`${row.kind} row must have 8px glyph inset and 4px/8px padding: ${JSON.stringify(row)}`);
       }
       if (row.nestedPadding?.some((padding) => padding !== "0px"))
-        failures.push(`watch nested row adds padding: ${JSON.stringify(row.nestedPadding)}`);
+        failures.push(`watch summary adds padding: ${JSON.stringify(row.nestedPadding)}`);
       const { time } = row;
       const centerDelta = Math.abs((time.top + time.bottom) / 2 - (time.titleTop + time.titleBottom) / 2);
       if (centerDelta > 2.5) failures.push(`${row.kind} timestamp is not on the title line: ${JSON.stringify(row)}`);
