@@ -109,6 +109,14 @@ func NewCreationStoreForTest(stateRoot string, onWait func()) (*CreationStore, e
 	return newCreationStoreFS(afero.NewOsFs(), stateRoot, creationStoreFaults{OnWait: onWait}, time.Now)
 }
 
+// SetFaultsForTest replaces atomic-write fault hooks for tests.
+func (s *CreationStore) SetFaultsForTest(beforeRename, afterRename func() error) {
+	s.mu.Lock()
+	s.faults.BeforeRename = beforeRename
+	s.faults.AfterRename = afterRename
+	s.mu.Unlock()
+}
+
 func newCreationStoreFS(fs afero.Fs, stateRoot string, faults creationStoreFaults, now func() time.Time) (*CreationStore, error) {
 	if now == nil {
 		now = time.Now
@@ -122,30 +130,13 @@ func newCreationStoreFS(fs afero.Fs, stateRoot string, faults creationStoreFault
 	}, nil
 }
 
-type canonicalCreationPayload struct {
-	TargetSource    string                     `json:"target_source"`
-	Harness         string                     `json:"harness"`
-	CWD             string                     `json:"cwd"`
-	Input           []appwire.InputItem        `json:"input,omitempty"`
-	ModelProvider   string                     `json:"model_provider,omitempty"`
-	Model           string                     `json:"model,omitempty"`
-	Profile         string                     `json:"profile,omitempty"`
-	ReasoningEffort string                     `json:"reasoning_effort,omitempty"`
-	NonInteractive  *bool                      `json:"non_interactive,omitempty"`
-	LaunchOverrides *appwire.LaunchConfigLayer `json:"launch_overrides,omitempty"`
-	Manager         bool                       `json:"manager,omitempty"`
-}
-
 // CreationPayloadHash computes the canonical SHA-256 hex digest over normalized
 // thread/start parameters before filesystem or launch resolution.
-func CreationPayloadHash(targetSource string, params appwire.ThreadStartParams) (string, error) {
-	harness := cmp.Or(params.Harness, "evener")
-	raw, err := json.Marshal(canonicalCreationPayload{
-		TargetSource: targetSource, Harness: harness, CWD: params.CWD, Input: params.Input,
-		ModelProvider: params.ModelProvider, Model: params.Model, Profile: params.Profile,
-		ReasoningEffort: params.ReasoningEffort, NonInteractive: params.NonInteractive,
-		LaunchOverrides: params.LaunchOverrides, Manager: params.Manager,
-	})
+func CreationPayloadHash(params appwire.ThreadStartParams) (string, error) {
+	params.ClientMutationID = ""
+	params.Source = ""
+	params.Harness = cmp.Or(params.Harness, "evener")
+	raw, err := json.Marshal(params)
 	if err != nil {
 		return "", fmt.Errorf("marshal canonical thread/start payload: %w", err)
 	}
@@ -180,7 +171,11 @@ func (s *CreationStore) Acquire(ctx context.Context, id, payloadHash string, has
 	}
 	next := maps.Clone(s.records)
 	next[id] = rec
-	if err := s.commitLocked(next); err != nil {
+	if committed, err := s.commitLocked(next); err != nil {
+		if committed {
+			delete(s.records, id)
+			_, _ = s.commitLocked(maps.Clone(s.records))
+		}
 		s.mu.Unlock()
 		return CreationAcquireResult{}, err
 	}
@@ -260,7 +255,8 @@ func waitOnCreationOwner(ctx context.Context, id string, owner *CreationOwner, o
 }
 
 // CommitSpawned persists the spawned ref, session ID, and instance ID before ReadThread/StartTurn.
-func (s *CreationStore) CommitSpawned(id, createdRef, sessionID, instanceID string) error {
+// published is true once the state file rename succeeded even if dir fsync failed.
+func (s *CreationStore) CommitSpawned(id, createdRef, sessionID, instanceID string) (bool, error) {
 	return s.updateRecord(id, func(rec *CreationRecord) {
 		rec.State = CreationStateSpawned
 		rec.CreatedRef = createdRef
@@ -272,7 +268,7 @@ func (s *CreationStore) CommitSpawned(id, createdRef, sessionID, instanceID stri
 // CommitCompleted records the finished creation with a turn-stripped Thread
 // snapshot and ID/Status-only Turn snapshot for future idempotent replay.
 func (s *CreationStore) CommitCompleted(id string, resp appwire.ThreadStartResponse) error {
-	return s.updateRecord(id, func(rec *CreationRecord) {
+	_, err := s.updateRecord(id, func(rec *CreationRecord) {
 		thread := appwire.CloneThread(sanitizeThreadSnapshot(resp.Thread))
 		turn := appwire.Turn{ID: resp.Turn.ID, Status: resp.Turn.Status}
 		rec.State = CreationStateCompleted
@@ -282,13 +278,15 @@ func (s *CreationStore) CommitCompleted(id string, resp appwire.ThreadStartRespo
 		rec.ThreadSnapshot = &thread
 		rec.TurnSnapshot = &turn
 	})
+	return err
 }
 
 // MarkUncertain transitions an existing record to CreationStateUncertain.
 func (s *CreationStore) MarkUncertain(id string) error {
-	return s.updateRecord(id, func(rec *CreationRecord) {
+	_, err := s.updateRecord(id, func(rec *CreationRecord) {
 		rec.State = CreationStateUncertain
 	})
+	return err
 }
 
 // RollbackSpawning deletes a CreationStateSpawning record refused before creating any session.
@@ -307,7 +305,8 @@ func (s *CreationStore) RollbackSpawning(id string) error {
 	}
 	next := maps.Clone(s.records)
 	delete(next, id)
-	return s.commitLocked(next)
+	_, err := s.commitLocked(next)
+	return err
 }
 
 // ReleaseOwner publishes the owner's outcome to coalesced waiters and clears the active owner.
@@ -330,15 +329,15 @@ func (s *CreationStore) ReleaseOwner(owner *CreationOwner, resp appwire.ThreadSt
 	s.mu.Unlock()
 }
 
-func (s *CreationStore) updateRecord(id string, edit func(*CreationRecord)) error {
+func (s *CreationStore) updateRecord(id string, edit func(*CreationRecord)) (bool, error) {
 	if s == nil {
-		return errors.New("creation store is not configured")
+		return false, errors.New("creation store is not configured")
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	rec, ok := s.records[id]
 	if !ok {
-		return fmt.Errorf("creation record %q not found", id)
+		return false, fmt.Errorf("creation record %q not found", id)
 	}
 	edit(&rec)
 	rec.UpdatedAt = s.now()
@@ -347,7 +346,7 @@ func (s *CreationStore) updateRecord(id string, edit func(*CreationRecord)) erro
 	return s.commitLocked(next)
 }
 
-func (s *CreationStore) commitLocked(next map[string]CreationRecord) error {
+func (s *CreationStore) commitLocked(next map[string]CreationRecord) (bool, error) {
 	pruneCreationRecords(next, s.now())
 	records := slices.Collect(maps.Values(next))
 	slices.SortFunc(records, func(a, b CreationRecord) int {
@@ -355,17 +354,17 @@ func (s *CreationStore) commitLocked(next map[string]CreationRecord) error {
 	})
 	data, err := json.Marshal(creationSnapshot{Version: creationSnapshotVersion, Records: records})
 	if err != nil {
-		return fmt.Errorf("marshal creation state: %w", err)
+		return false, fmt.Errorf("marshal creation state: %w", err)
 	}
 	if s.root == "" {
 		s.records = next
-		return nil
+		return true, nil
 	}
 	renamed, err := writeStateFileAtomic(s.fs, creationStatePath(s.root), "creation", data, s.faults.BeforeRename, s.faults.AfterRename)
 	if renamed {
 		s.records = next
 	}
-	return err
+	return renamed, err
 }
 
 func pruneCreationRecords(records map[string]CreationRecord, now time.Time) {

@@ -86,7 +86,9 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 	}
 	if remote != nil {
 		if params.ClientMutationID != "" {
-			return keyedRemoteThreadStart(ctx, remote, forward)
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithTimeout(ctx, threadStartDetachedTimeout)
+			defer cancel()
 		}
 		return remote.StartThread(ctx, forward)
 	}
@@ -125,33 +127,6 @@ func commitKeyedCompleted(store *hubcore.CreationStore, id string, resp appwire.
 	return resp, nil
 }
 
-func keyedRemoteThreadStart(ctx context.Context, remote appsource.Source, forward appwire.ThreadStartParams) (appwire.ThreadStartResponse, error) {
-	id := forward.ClientMutationID
-	probe, ok := remote.(interface {
-		ThreadStartIdempotencySupported(context.Context) (bool, error)
-	})
-	if !ok {
-		return appwire.ThreadStartResponse{}, appwire.InvalidParams("remote hub does not support idempotent thread/start").NotAccepted(id)
-	}
-	supported, err := probe.ThreadStartIdempotencySupported(ctx)
-	if err != nil {
-		return startRefused(err, id)
-	}
-	if !supported {
-		return appwire.ThreadStartResponse{}, appwire.InvalidParams("remote hub does not support idempotent thread/start").NotAccepted(id)
-	}
-	ctx, cancel := context.WithTimeout(ctx, threadStartDetachedTimeout)
-	defer cancel()
-	resp, err := remote.StartThread(ctx, forward)
-	if err != nil {
-		if _, notSent := errors.AsType[appwire.RequestNotSentError](err); notSent {
-			return appwire.ThreadStartResponse{}, causedWireError{wire: appwire.Unavailable(err.Error()).NotAccepted(id), cause: err}
-		}
-		return appwire.ThreadStartResponse{}, err
-	}
-	return resp, nil
-}
-
 func localThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadStartParams) (response appwire.ThreadStartResponse, startErr error) {
 	id := params.ClientMutationID
 	var plan localSpawnPlan
@@ -161,7 +136,7 @@ func localThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appso
 		if cfg.CreationStoreErr != nil || cfg.CreationStore == nil {
 			return appwire.ThreadStartResponse{}, appwire.MutationUnknown(id, "creation store is unavailable")
 		}
-		payloadHash, err := hubcore.CreationPayloadHash(appwire.LocalSourceID, params)
+		payloadHash, err := hubcore.CreationPayloadHash(params)
 		if err != nil {
 			return startRefused(err, id)
 		}
@@ -254,9 +229,14 @@ func localThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appso
 		}
 		createdRef = localSpawnWorkspaceRef(entry)
 		createdInstanceID = localSpawnInstanceID(entry, appwire.Thread{})
-		if err := cfg.CreationStore.CommitSpawned(id, createdRef, cmp.Or(entry.SessionID, entry.ThreadID), createdInstanceID); err != nil {
+		published, err := cfg.CreationStore.CommitSpawned(id, createdRef, cmp.Or(entry.SessionID, entry.ThreadID), createdInstanceID)
+		if err != nil {
+			if published {
+				attachPartial = true
+				return appwire.ThreadStartResponse{}, causedWireError{wire: appwire.Unavailable(err.Error()), cause: err}
+			}
 			_ = cfg.CreationStore.MarkUncertain(id)
-			return appwire.ThreadStartResponse{}, appwire.MutationUnknown(id, err.Error())
+			return appwire.ThreadStartResponse{}, appwire.MutationUnknown(id, err.Error()).WithThreadStartPartial(createdRef, createdInstanceID)
 		}
 		attachPartial = true
 	} else if entry.ThreadID != "" || entry.SessionID != "" {

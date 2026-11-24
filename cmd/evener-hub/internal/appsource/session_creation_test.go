@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"primeradiant.com/evener/appwire"
@@ -73,7 +74,11 @@ func TestRemoteThreadStartErrorPreservesIdempotencyFields(t *testing.T) {
 		{name: "retryable partial empty", mutationOutcome: "", retryDisposition: ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			owner := appserver.NewServer(appserver.ServerConfig{ServerName: "owner", SourceID: "local"})
+			owner := appserver.NewServer(appserver.ServerConfig{
+				ServerName: "owner",
+				SourceID:   "local",
+				Features:   appwire.FeatureSet{ThreadStartIdempotency: true, TurnStart: true},
+			})
 			appserver.HandleTyped(owner.Router(), appwire.MethodThreadStart, func(_ context.Context, _ appwire.ThreadStartParams) (appwire.ThreadStartResponse, error) {
 				return appwire.ThreadStartResponse{}, appwire.WireError{
 					Code:    appwire.CodeUnavailable,
@@ -122,23 +127,133 @@ func TestRemoteThreadStartErrorPreservesIdempotencyFields(t *testing.T) {
 }
 
 func TestRemoteThreadStartPreservesRequestNotSentError(t *testing.T) {
-	transport := &gatedSendTransport{firstSendEntered: make(chan struct{}), releaseFirst: make(chan struct{})}
+	capableServer := appserver.NewServer(appserver.ServerConfig{
+		ServerName: "capable",
+		SourceID:   "local",
+		Features:   appwire.FeatureSet{ThreadStartIdempotency: true, TurnStart: true},
+	})
+	httpSrv := httptest.NewServer(http.HandlerFunc(capableServer.ServeWebSocket))
+	defer httpSrv.Close()
+
+	rawTransport, err := appwire.DialWebSocket(t.Context(), "ws"+strings.TrimPrefix(httpSrv.URL, "http"), httpSrv.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	transport := &gatedWrapTransport{Transport: rawTransport, firstSendEntered: make(chan struct{}), releaseFirst: make(chan struct{})}
 	client := appwire.NewClient(transport)
+	client.Start(t.Context())
+	defer client.Close()
+	if _, err := client.Initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatal(err)
+	}
+	transport.armGate()
 	go func() { _ = client.Notify(t.Context(), appwire.NotifyEvenerAuthUpdated, map[string]string{}) }()
 	<-transport.firstSendEntered
 
 	source := NewRemoteHubSource("host", nil, func(context.Context, string) (*appwire.Client, error) { return client, nil })
 	ctx, cancel := context.WithCancel(t.Context())
 	ctx = appwire.WithRequestIDObserver(ctx, func(appwire.ID) { cancel() })
-	_, err := source.StartThread(ctx, appwire.ThreadStartParams{Source: "host", ClientMutationID: "mut-notsent"})
+	_, err = source.StartThread(ctx, appwire.ThreadStartParams{Source: "host", ClientMutationID: "mut-notsent"})
 	close(transport.releaseFirst)
-	if got := transport.sendCount(); got != 1 {
-		t.Fatalf("transport sends = %d, want 1", got)
-	}
 	if _, ok := errors.AsType[appwire.RequestNotSentError](err); !ok {
 		t.Fatalf("StartThread err = %T (%v), want appwire.RequestNotSentError", err, err)
 	}
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("StartThread err = %v, want context.Canceled in chain", err)
+	}
+	wire, ok := errors.AsType[appwire.WireError](err)
+	if !ok {
+		t.Fatalf("StartThread err = %T (%v), want WireError in chain", err, err)
+	}
+	data, ok := appwire.DecodedErrorData(wire.Data)
+	if wire.Code != appwire.CodeUnavailable || !ok || data.MutationOutcome != appwire.MutationOutcomeNotAccepted || data.ClientMutationID != "mut-notsent" {
+		t.Fatalf("RequestNotSent WireError = %+v data=%+v, want CodeUnavailable+NotAccepted", wire, data)
+	}
+}
+
+type gatedWrapTransport struct {
+	appwire.Transport
+	armed            atomic.Bool
+	firstSendEntered chan struct{}
+	releaseFirst     chan struct{}
+}
+
+func (g *gatedWrapTransport) armGate() { g.armed.Store(true) }
+
+func (g *gatedWrapTransport) Send(ctx context.Context, msg appwire.Message) error {
+	if g.armed.Load() {
+		select {
+		case <-g.firstSendEntered:
+		default:
+			close(g.firstSendEntered)
+		}
+		<-g.releaseFirst
+		return ctx.Err()
+	}
+	return g.Transport.Send(ctx, msg)
+}
+
+func TestRemoteThreadStartResolvesClientOnce(t *testing.T) {
+	owner := appserver.NewServer(appserver.ServerConfig{
+		ServerName: "capable",
+		SourceID:   "local",
+		Features:   appwire.FeatureSet{ThreadStartIdempotency: true, TurnStart: true},
+	})
+	appserver.HandleTyped(owner.Router(), appwire.MethodThreadStart, func(_ context.Context, params appwire.ThreadStartParams) (appwire.ThreadStartResponse, error) {
+		return appwire.ThreadStartResponse{
+			Thread:           appwire.Thread{ID: "sess-once", SessionID: "sess-once", Source: "local", Evener: appwire.EvenerThread{Ref: "local:sess-once", InstanceID: "sess-once"}},
+			ClientMutationID: params.ClientMutationID,
+			Disposition:      appwire.MutationDispositionApplied,
+		}, nil
+	})
+	srv := httptest.NewServer(http.HandlerFunc(owner.ServeWebSocket))
+	defer srv.Close()
+	raw, err := appwire.DialWebSocket(t.Context(), "ws"+strings.TrimPrefix(srv.URL, "http"), srv.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := appwire.NewClient(raw)
+	client.Start(t.Context())
+	defer client.Close()
+	if _, err := client.Initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatal(err)
+	}
+	var resolves atomic.Int32
+	src := NewRemoteHubSource("host", nil, func(context.Context, string) (*appwire.Client, error) {
+		resolves.Add(1)
+		return client, nil
+	})
+	if _, err := src.StartThread(t.Context(), appwire.ThreadStartParams{Source: "host", ClientMutationID: "mut-once"}); err != nil {
+		t.Fatalf("StartThread: %v", err)
+	}
+	if resolves.Load() != 1 {
+		t.Fatalf("resolveClient called %d times, want 1", resolves.Load())
+	}
+}
+
+func TestRemoteThreadStartRefusesOlderAndOfflineDirectly(t *testing.T) {
+	// Offline remote hub returns NotAccepted(id).
+	offlineSrc := NewRemoteHubSource("host", nil, nil)
+	offlineSrc.SetHostClientIfAttached(func(string) (*appwire.Client, bool) { return nil, false })
+	_, err := offlineSrc.StartThread(t.Context(), appwire.ThreadStartParams{Source: "host", ClientMutationID: "mut-offline"})
+	wire, ok := errors.AsType[appwire.WireError](err)
+	data, dataOK := appwire.DecodedErrorData(wire.Data)
+	if !ok || !dataOK || wire.Code != appwire.CodeUnavailable || data.MutationOutcome != appwire.MutationOutcomeNotAccepted || data.ClientMutationID != "mut-offline" {
+		t.Fatalf("offline keyed StartThread = err:%v wire:%+v data:%+v", err, wire, data)
+	}
+
+	// Older remote hub returns InvalidParams + NotAccepted(id) with zero RPCs sent.
+	olderSrc, calls := newScriptedRemote(t, "host", func(method string, _ json.RawMessage) scriptedReply {
+		t.Fatalf("unexpected RPC %q sent to older remote hub", method)
+		return scriptedReply{}
+	})
+	_, err = olderSrc.StartThread(t.Context(), appwire.ThreadStartParams{Source: "host", ClientMutationID: "mut-older"})
+	wire, ok = errors.AsType[appwire.WireError](err)
+	data, dataOK = appwire.DecodedErrorData(wire.Data)
+	if !ok || !dataOK || wire.Code != appwire.CodeInvalidParams || data.MutationOutcome != appwire.MutationOutcomeNotAccepted || data.ClientMutationID != "mut-older" {
+		t.Fatalf("older keyed StartThread = err:%v wire:%+v data:%+v", err, wire, data)
+	}
+	if got := wireCalls(calls()); len(got) != 0 {
+		t.Fatalf("wireCalls to older remote = %+v, want 0", got)
 	}
 }

@@ -184,22 +184,6 @@ func (s *RemoteHubSource) SessionToolsSupported(ctx context.Context) (supported,
 	return client.Features().SessionTools, true
 }
 
-// ThreadStartIdempotencySupported reports whether the attached remote hub
-// advertises threadStartIdempotency. An unattached host returns SessionUnavailable.
-func (s *RemoteHubSource) ThreadStartIdempotencySupported(ctx context.Context) (bool, error) {
-	client, err := s.resolveClient(ctx)
-	if err != nil {
-		if cerr := ctx.Err(); cerr != nil {
-			return false, cerr
-		}
-		return false, s.mapConnectError(err)
-	}
-	if client == nil {
-		return false, remoteHubUnavailable(s.id, "")
-	}
-	return client.Features().ThreadStartIdempotency, nil
-}
-
 // call forwards one request over the current remote client and translates any
 // refs in the response back into the controller namespace. Errors bypass
 // response translation; StartThread translates its createdRef error evidence
@@ -210,14 +194,9 @@ func (s *RemoteHubSource) ThreadStartIdempotencySupported(ctx context.Context) (
 // caller's own context ending is not host unavailability, so mapping it through
 // would fire the auto-resume gate for a request the caller abandoned.
 func (s *RemoteHubSource) call(ctx context.Context, method string, params any, out any) error {
-	return s.callMapped(ctx, method, params, out, false, nil)
-}
-
-func (s *RemoteHubSource) callPreservingNotSent(ctx context.Context, method string, params any, out any, mapErr func(error) error) error {
-	return s.callMapped(ctx, method, params, out, true, mapErr)
-}
-
-func (s *RemoteHubSource) callMapped(ctx context.Context, method string, params any, out any, preserveNotSent bool, mapErr func(error) error) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	client, err := s.resolveClient(ctx)
 	if err != nil {
 		if cerr := ctx.Err(); cerr != nil {
@@ -225,7 +204,7 @@ func (s *RemoteHubSource) callMapped(ctx context.Context, method string, params 
 		}
 		return s.mapConnectError(err)
 	}
-	return s.callOnMapped(ctx, client, method, params, out, preserveNotSent, mapErr)
+	return s.callOn(ctx, client, method, params, out)
 }
 
 // resolveClient returns the client to serve one call on. With the attached-only
@@ -263,27 +242,14 @@ func (s *RemoteHubSource) resolveClient(ctx context.Context) (*appwire.Client, e
 // runs on the exact client they resolved, not on whatever client the connector
 // returns between calls.
 func (s *RemoteHubSource) callOn(ctx context.Context, client *appwire.Client, method string, params any, out any) error {
-	return s.callOnMapped(ctx, client, method, params, out, false, nil)
-}
-
-func (s *RemoteHubSource) callOnMapped(ctx context.Context, client *appwire.Client, method string, params any, out any, preserveNotSent bool, mapErr func(error) error) error {
 	if err := ctx.Err(); err != nil {
 		return s.mapCallError(err)
 	}
 	if err := s.requestOn(ctx, client, method, params, out); err != nil {
-		if preserveNotSent {
-			if _, notSent := errors.AsType[appwire.RequestNotSentError](err); notSent {
-				return err
-			}
-		}
 		if cerr := ctx.Err(); cerr != nil {
 			return cerr
 		}
-		mapped := s.mapCallError(err)
-		if mapErr != nil {
-			return mapErr(mapped)
-		}
-		return mapped
+		return s.mapCallError(err)
 	}
 	return s.translateOut(client, out)
 }

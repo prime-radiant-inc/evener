@@ -33,7 +33,7 @@ func TestCreationStoreRoundTripAllFourStatesAndStripsSnapshots(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewCreationStore: %v", err)
 	}
-	hash, err := CreationPayloadHash("local", testCreationParams())
+	hash, err := CreationPayloadHash(testCreationParams())
 	if err != nil {
 		t.Fatalf("CreationPayloadHash: %v", err)
 	}
@@ -76,7 +76,7 @@ func TestCreationStoreRoundTripAllFourStatesAndStripsSnapshots(t *testing.T) {
 	if err != nil || spawnedRes.Owner == nil {
 		t.Fatalf("Acquire m-spawned: %+v, %v", spawnedRes, err)
 	}
-	if err := store.CommitSpawned("m-spawned", "local:sess-1", "sess-1", "inst-1"); err != nil {
+	if _, err := store.CommitSpawned("m-spawned", "local:sess-1", "sess-1", "inst-1"); err != nil {
 		t.Fatalf("CommitSpawned: %v", err)
 	}
 	store.ReleaseOwner(spawnedRes.Owner, appwire.ThreadStartResponse{}, errors.New("partial turn failure"))
@@ -86,7 +86,7 @@ func TestCreationStoreRoundTripAllFourStatesAndStripsSnapshots(t *testing.T) {
 	if err != nil || compRes.Owner == nil {
 		t.Fatalf("Acquire m-completed: %+v, %v", compRes, err)
 	}
-	if err := store.CommitSpawned("m-completed", "local:sess-2", "sess-2", "inst-2"); err != nil {
+	if _, err := store.CommitSpawned("m-completed", "local:sess-2", "sess-2", "inst-2"); err != nil {
 		t.Fatalf("CommitSpawned completed: %v", err)
 	}
 	fullResp := appwire.ThreadStartResponse{
@@ -279,7 +279,7 @@ func TestCreationStoreInMemoryMode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewCreationStore empty root: %v", err)
 	}
-	hash, err := CreationPayloadHash("local", testCreationParams())
+	hash, err := CreationPayloadHash(testCreationParams())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -303,13 +303,13 @@ func TestCreationStoreInMemoryMode(t *testing.T) {
 func TestCreationPayloadHashAndConflict(t *testing.T) {
 	t.Parallel()
 	base := testCreationParams()
-	hEmpty, err := CreationPayloadHash("local", base)
+	hEmpty, err := CreationPayloadHash(base)
 	if err != nil {
 		t.Fatal(err)
 	}
 	withEvener := base
 	withEvener.Harness = "evener"
-	hEvener, err := CreationPayloadHash("local", withEvener)
+	hEvener, err := CreationPayloadHash(withEvener)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -321,17 +321,27 @@ func TestCreationPayloadHashAndConflict(t *testing.T) {
 	emptySlice.Input = []appwire.InputItem{}
 	nilSlice := base
 	nilSlice.Input = nil
-	hEmptySlice, _ := CreationPayloadHash("local", emptySlice)
-	hNilSlice, _ := CreationPayloadHash("local", nilSlice)
+	hEmptySlice, _ := CreationPayloadHash(emptySlice)
+	hNilSlice, _ := CreationPayloadHash(nilSlice)
 	if hEmptySlice != hNilSlice {
 		t.Fatalf("empty slice %q != nil slice %q", hEmptySlice, hNilSlice)
 	}
 
-	diffSource, _ := CreationPayloadHash("remote-a", base)
+	withRoutingAndID := base
+	withRoutingAndID.ClientMutationID = "mut-ignored"
+	withRoutingAndID.Source = "local"
+	hRoutingAndID, _ := CreationPayloadHash(withRoutingAndID)
+	if hRoutingAndID != hEmpty {
+		t.Fatalf("routing/id hash %q != base hash %q", hRoutingAndID, hEmpty)
+	}
+
+	diffCWD := base
+	diffCWD.CWD = "/tmp/other"
 	diffModel := base
 	diffModel.Model = "openai/gpt-5-mini"
-	hDiffModel, _ := CreationPayloadHash("local", diffModel)
-	if diffSource == hEmpty || hDiffModel == hEmpty {
+	if hDiffCWD, _ := CreationPayloadHash(diffCWD); hDiffCWD == hEmpty {
+		t.Fatal("distinct CWD produced identical hash")
+	} else if hDiffModel, _ := CreationPayloadHash(diffModel); hDiffModel == hEmpty {
 		t.Fatal("distinct payloads produced identical hashes")
 	}
 
@@ -339,6 +349,7 @@ func TestCreationPayloadHashAndConflict(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	hDiffModel, _ := CreationPayloadHash(diffModel)
 	res, err := store.Acquire(t.Context(), "m-conflict", hEmpty, true, "tm1")
 	if err != nil {
 		t.Fatal(err)
@@ -432,7 +443,7 @@ func TestCreationStoreStartupNormalizesSpawningToUncertain(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	hash, err := CreationPayloadHash("local", testCreationParams())
+	hash, err := CreationPayloadHash(testCreationParams())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -458,7 +469,7 @@ func TestCreationStoreStartupNormalizesSpawningToUncertain(t *testing.T) {
 
 func TestCreationStoreAtomicWriteFaults(t *testing.T) {
 	t.Parallel()
-	hash, err := CreationPayloadHash("local", testCreationParams())
+	hash, err := CreationPayloadHash(testCreationParams())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -483,7 +494,7 @@ func TestCreationStoreAtomicWriteFaults(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := store.CommitSpawned("m-before", "local:s1", "s1", "inst-1"); err != nil {
+		if _, err := store.CommitSpawned("m-before", "local:s1", "s1", "inst-1"); err != nil {
 			t.Fatal(err)
 		}
 		failCommit = true
@@ -545,6 +556,35 @@ func TestCreationStoreAtomicWriteFaults(t *testing.T) {
 			t.Fatalf("in-memory state after AfterRename = %+v, %v; want completed replay", replay, err)
 		}
 	})
+
+	t.Run("AfterRename during Acquire leaves no stale spawning record", func(t *testing.T) {
+		t.Parallel()
+		root := t.TempDir()
+		failAcquire := true
+		store, err := newCreationStoreFS(afero.NewOsFs(), root, creationStoreFaults{
+			AfterRename: func() error {
+				if failAcquire {
+					return wantFault
+				}
+				return nil
+			},
+		}, time.Now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.Acquire(t.Context(), "m-acq-after", hash, false, ""); !errors.Is(err, wantFault) {
+			t.Fatalf("Acquire err = %v, want %v", err, wantFault)
+		}
+		failAcquire = false
+		retry, err := store.Acquire(t.Context(), "m-acq-after", hash, false, "")
+		if err != nil || retry.Owner == nil {
+			t.Fatalf("retry Acquire after cleared AfterRename = %+v, %v; want fresh owner", retry, err)
+		}
+		store.ReleaseOwner(retry.Owner, appwire.ThreadStartResponse{}, nil)
+		if _, err := NewCreationStore(root); err != nil {
+			t.Fatalf("reopen CreationStore: %v", err)
+		}
+	})
 }
 
 func TestCreationStorePruningSevenDaysAndMax200Terminal(t *testing.T) {
@@ -555,7 +595,7 @@ func TestCreationStorePruningSevenDaysAndMax200Terminal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	hash, err := CreationPayloadHash("local", testCreationParams())
+	hash, err := CreationPayloadHash(testCreationParams())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -569,7 +609,7 @@ func TestCreationStorePruningSevenDaysAndMax200Terminal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.CommitSpawned("keep-spawned", "local:keep", "keep", "keep"); err != nil {
+	if _, err := store.CommitSpawned("keep-spawned", "local:keep", "keep", "keep"); err != nil {
 		t.Fatal(err)
 	}
 	store.ReleaseOwner(spawnedOld.Owner, appwire.ThreadStartResponse{}, nil)
@@ -659,7 +699,7 @@ func TestCreationStoreConcurrentAcquireCoalescingAndWaiterCancellation(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	hash, err := CreationPayloadHash("local", testCreationParams())
+	hash, err := CreationPayloadHash(testCreationParams())
 	if err != nil {
 		t.Fatal(err)
 	}

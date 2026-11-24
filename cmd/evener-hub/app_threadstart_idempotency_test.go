@@ -724,7 +724,7 @@ func TestThreadStartIdempotencyHubRestartRecovery(t *testing.T) {
 			CWD:              workDir,
 			Input:            []appwire.InputItem{{Type: "text", Text: "hello"}},
 		}
-		hash, err := hubcore.CreationPayloadHash("local", params)
+		hash, err := hubcore.CreationPayloadHash(params)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -732,7 +732,7 @@ func TestThreadStartIdempotencyHubRestartRecovery(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := store1.CommitSpawned(params.ClientMutationID, "local:"+sessionID, sessionID, sessionID); err != nil {
+		if _, err := store1.CommitSpawned(params.ClientMutationID, "local:"+sessionID, sessionID, sessionID); err != nil {
 			t.Fatal(err)
 		}
 		store1.ReleaseOwner(acq.Owner, appwire.ThreadStartResponse{}, nil)
@@ -791,7 +791,7 @@ func TestThreadStartIdempotencyHubRestartRecovery(t *testing.T) {
 			Model:            "openai/gpt-5",
 			CWD:              workDir,
 		}
-		hash, err := hubcore.CreationPayloadHash("local", params)
+		hash, err := hubcore.CreationPayloadHash(params)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -799,7 +799,7 @@ func TestThreadStartIdempotencyHubRestartRecovery(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := store1.CommitSpawned(params.ClientMutationID, "local:"+sessionID, sessionID, sessionID); err != nil {
+		if _, err := store1.CommitSpawned(params.ClientMutationID, "local:"+sessionID, sessionID, sessionID); err != nil {
 			t.Fatal(err)
 		}
 		store1.ReleaseOwner(acq.Owner, appwire.ThreadStartResponse{}, nil)
@@ -843,7 +843,7 @@ func TestThreadStartIdempotencyHubRestartRecovery(t *testing.T) {
 			Model:            "openai/gpt-5",
 			CWD:              workDir,
 		}
-		hash, _ := hubcore.CreationPayloadHash("local", params)
+		hash, _ := hubcore.CreationPayloadHash(params)
 		if _, err := store1.Acquire(t.Context(), params.ClientMutationID, hash, false, ""); err != nil {
 			t.Fatal(err)
 		}
@@ -1039,9 +1039,9 @@ func TestThreadStartIdempotencyPayloadConflictAndTargetDeleted(t *testing.T) {
 		t.Fatal(err)
 	}
 	spawnedParams := appwire.ThreadStartParams{ClientMutationID: "mut-spawned-del", Model: "openai/gpt-5", CWD: cwd}
-	h, _ := hubcore.CreationPayloadHash("local", spawnedParams)
+	h, _ := hubcore.CreationPayloadHash(spawnedParams)
 	acq, _ := store.Acquire(t.Context(), spawnedParams.ClientMutationID, h, false, "")
-	_ = store.CommitSpawned(spawnedParams.ClientMutationID, "local:"+spawnedID, spawnedID, spawnedID)
+	_, _ = store.CommitSpawned(spawnedParams.ClientMutationID, "local:"+spawnedID, spawnedID, spawnedID)
 	store.ReleaseOwner(acq.Owner, appwire.ThreadStartResponse{}, nil)
 	hubDelSpawned := newHubRPCTestServer(t, testWebConfig(t, hubcore.WebConfig{
 		CreationStore: store, DeletionStore: delStore2, RunDir: t.TempDir(), Spawner: spawner,
@@ -1373,16 +1373,6 @@ func TestThreadStartIdempotencyRemoteCapableErrorsAndNotSent(t *testing.T) {
 	}
 }
 
-type sourceWithoutIdempotencyProbe struct {
-	relayLifecycleSource
-	id string
-}
-
-func (s *sourceWithoutIdempotencyProbe) ID() string { return s.id }
-func (s *sourceWithoutIdempotencyProbe) StartThread(context.Context, appwire.ThreadStartParams) (appwire.ThreadStartResponse, error) {
-	return appwire.ThreadStartResponse{}, errors.New("unexpected StartThread call")
-}
-
 func TestThreadStartIdempotencyOlderRemoteRefusesKeyedAllowsKeyless(t *testing.T) {
 	remoteSessionID := hubtest.SessionID(t)
 	var remoteCalls atomic.Int32
@@ -1409,14 +1399,13 @@ func TestThreadStartIdempotencyOlderRemoteRefusesKeyedAllowsKeyless(t *testing.T
 	remoteClient := dialHubRPCInitialized(t, remoteHTTP)
 
 	stateRoot := t.TempDir()
-	localHub, web := newHubRPCTestServerWithWeb(t, testWebConfig(t, hubcore.WebConfig{
+	localHub := newHubRPCTestServer(t, testWebConfig(t, hubcore.WebConfig{
 		HubStateRoot:               stateRoot,
 		RunDir:                     t.TempDir(),
 		RemoteHosts:                []hostreg.Host{{Name: "remote-a", SSH: "remote-a.example"}},
 		RemoteHostClient:           func(context.Context, string) (*appwire.Client, error) { return remoteClient, nil },
 		RemoteHostClientIfAttached: func(string) (*appwire.Client, bool) { return remoteClient, true },
 	}))
-	web.sources.Add(&sourceWithoutIdempotencyProbe{id: "remote-noprobe"})
 	defer localHub.Close()
 	client := dialHubRPCInitialized(t, localHub)
 
@@ -1454,16 +1443,102 @@ func TestThreadStartIdempotencyOlderRemoteRefusesKeyedAllowsKeyless(t *testing.T
 	if resp.Thread.Evener.Ref != "remote-a:"+remoteSessionID || resp.ClientMutationID != "" || resp.Disposition != "" || remoteCalls.Load() != 1 {
 		t.Fatalf("keyless older remote resp = %+v, remoteCalls=%d", resp, remoteCalls.Load())
 	}
+}
 
-	// 3. Keyed thread/start against a non-local source without probe capability also refuses NotAccepted.
-	_, err = appwiretest.ThreadStart(context.Background(), client, appwire.ThreadStartParams{
-		ClientMutationID: "mut-noprobe-remote",
-		Source:           "remote-noprobe",
-		Model:            "openai/gpt-5",
-		CWD:              "/remote/work",
+func TestThreadStartIdempotencyCommitSpawnedAfterRenameRetainsSpawnedAndFinishesTurn1(t *testing.T) {
+	stateRoot := t.TempDir()
+	runDir := t.TempDir()
+	sessionID := hubtest.SessionID(t)
+	var turnCalls atomic.Int32
+	var gotTurnMutationID string
+
+	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, _ appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{
+			ID: sessionID, SessionID: sessionID, Source: "local",
+			Status: appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
+			Evener: appwire.EvenerThread{Ref: "local:" + sessionID, InstanceID: sessionID, Capabilities: appwire.ThreadCapabilities{Send: true}},
+		}}, nil
 	})
-	wire, data = wireErrorData(t, err)
-	if wire.Code != appwire.CodeInvalidParams || data.MutationOutcome != appwire.MutationOutcomeNotAccepted || data.ClientMutationID != "mut-noprobe-remote" {
-		t.Fatalf("no-probe remote keyed refusal = wire:%+v data:%+v", wire, data)
+	appserver.HandleTyped(daemon.Router(), appwire.MethodTurnStart, func(_ context.Context, params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
+		turnCalls.Add(1)
+		gotTurnMutationID = params.ClientMutationID
+		return appwire.TurnStartResponse{
+			Turn:    appwire.Turn{ID: "turn_1", Status: "inProgress"},
+			Receipt: appwire.MutationReceipt{ClientMutationID: params.ClientMutationID, Disposition: appwire.MutationDispositionApplied, ThreadID: sessionID, TurnID: "turn_1"},
+		}, nil
+	})
+	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+	defer daemonHTTP.Close()
+
+	store, err := hubcore.NewCreationStore(stateRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var writeCount atomic.Int32
+	store.SetFaultsForTest(nil, func() error {
+		if writeCount.Add(1) == 2 { // 1 = Acquire (spawning), 2 = CommitSpawned (spawned)
+			return errors.New("dir fsync failed after rename")
+		}
+		return nil
+	})
+
+	entry := localEntry(daemonHTTP.URL, sessionID)
+	var spawns atomic.Int32
+	hub := newHubRPCTestServer(t, testWebConfig(t, hubcore.WebConfig{
+		HubStateRoot:  stateRoot,
+		CreationStore: store,
+		RunDir:        runDir,
+		Roster:        hubcore.NewRoster(runDir, fakeProber{sessionID: sessionID, status: appwire.ThreadStatusIdle}),
+		Spawner:       spawnerWritingEntry(t, runDir, entry, &spawns),
+	}))
+	defer hub.Close()
+	client := dialHubRPCInitialized(t, hub)
+
+	params := appwire.ThreadStartParams{
+		ClientMutationID: "mut-spawned-fsync",
+		Model:            "openai/gpt-5",
+		CWD:              t.TempDir(),
+		Input:            []appwire.InputItem{{Type: "text", Text: "finish turn 1"}},
+	}
+	_, err = appwiretest.ThreadStart(context.Background(), client, params)
+	wire := requireWireError(t, err, appwire.CodeUnavailable)
+	raw, _ := json.Marshal(wire.Data)
+	var partial appwire.ThreadStartPartialErrorData
+	_ = json.Unmarshal(raw, &partial)
+	if partial.CreatedRef != "local:"+sessionID || partial.CreatedInstanceID != sessionID || partial.ClientMutationID != params.ClientMutationID || partial.RetryDisposition == appwire.RetryDispositionBlocked {
+		t.Fatalf("CommitSpawned AfterRename partial = %+v (raw=%s)", partial, raw)
+	}
+	resp, err := appwiretest.ThreadStart(context.Background(), client, params)
+	if err != nil {
+		t.Fatalf("retry after CommitSpawned AfterRename failed: %v", err)
+	}
+	if spawns.Load() != 1 || turnCalls.Load() != 1 || gotTurnMutationID == "" || resp.Turn.ID != "turn_1" {
+		t.Fatalf("spawns=%d turnCalls=%d turnMut=%q resp=%+v", spawns.Load(), turnCalls.Load(), gotTurnMutationID, resp)
+	}
+
+	// BeforeRename on CommitSpawned marks uncertain (blocking retry) while still preserving createdRef/createdInstanceId.
+	var beforeCount atomic.Int32
+	store.SetFaultsForTest(func() error {
+		if beforeCount.Add(1) == 2 { // 1 = Acquire (spawning), 2 = CommitSpawned (spawned)
+			return errors.New("rename failed before publish")
+		}
+		return nil
+	}, nil)
+	paramsBefore := params
+	paramsBefore.ClientMutationID = "mut-spawned-beforerename"
+	_, err = appwiretest.ThreadStart(context.Background(), client, paramsBefore)
+	wireBefore := requireWireError(t, err, appwire.CodeInternalError)
+	rawBefore, _ := json.Marshal(wireBefore.Data)
+	var partialBefore appwire.ThreadStartPartialErrorData
+	_ = json.Unmarshal(rawBefore, &partialBefore)
+	if partialBefore.CreatedRef != "local:"+sessionID || partialBefore.CreatedInstanceID != sessionID ||
+		partialBefore.MutationOutcome != appwire.MutationOutcomeUnknown || partialBefore.RetryDisposition != appwire.RetryDispositionBlocked {
+		t.Fatalf("CommitSpawned BeforeRename partial = %+v (raw=%s)", partialBefore, rawBefore)
+	}
+	_, retryBeforeErr := appwiretest.ThreadStart(context.Background(), client, paramsBefore)
+	_, retryBeforeData := wireErrorData(t, retryBeforeErr)
+	if retryBeforeData.MutationOutcome != appwire.MutationOutcomeUnknown || retryBeforeData.RetryDisposition != appwire.RetryDispositionBlocked || spawns.Load() != 2 {
+		t.Fatalf("retry after CommitSpawned BeforeRename data=%+v spawns=%d", retryBeforeData, spawns.Load())
 	}
 }
