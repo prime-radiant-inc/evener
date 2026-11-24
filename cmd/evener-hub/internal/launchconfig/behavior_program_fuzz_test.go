@@ -113,6 +113,7 @@ func FuzzLaunchConfigBehaviorProgram(f *testing.F) {
 		checkLaunchConfigThreeStateRoundTrip,
 		checkMerge_ProjectProvidersConfigRefused,
 		checkToEnv_ProjectLayerCannotRedirectProviderResolution,
+		checkToEnv_ProjectMalformedEnvNameCannotAliasReservedNames,
 	}
 	for i := range checks {
 		f.Add(uint8(i))

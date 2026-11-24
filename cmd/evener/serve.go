@@ -1354,7 +1354,7 @@ func resolveInitialProfile(ctx context.Context, client *llm.Client, modelRef cmd
 		instance = client.DefaultProvider()
 	}
 	if client != nil && client.Registry().LiveListingAuthoritative(instance) {
-		listCtx, cancel := context.WithTimeout(ctx, llm.LiveModelListTimeoutFor(client.Registry(), instance))
+		listCtx, cancel := context.WithTimeout(ctx, llm.LiveModelListTimeout)
 		listing, listErr := client.Models(listCtx, instance)
 		cancel()
 		if listErr != nil {
@@ -1388,7 +1388,7 @@ func resolveInitialProfile(ctx context.Context, client *llm.Client, modelRef cmd
 	if err == nil || !errors.Is(err, registry.ErrCodexModelNotListed) {
 		return raw, nil, err
 	}
-	listCtx, cancel := context.WithTimeout(ctx, llm.LiveModelListTimeoutFor(client.Registry(), modelRef.Provider))
+	listCtx, cancel := context.WithTimeout(ctx, llm.LiveModelListTimeout)
 	defer cancel()
 	listing, listErr := client.Models(listCtx, modelRef.Provider)
 	if listErr != nil {

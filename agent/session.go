@@ -2741,7 +2741,7 @@ func (s *Session) primeCodexRoster(ref string) (string, *llm.ModelListing) {
 	if _, err := r.ResolveInstanceModelFacts(instance, model); err == nil || !errors.Is(err, registry.ErrCodexModelNotListed) {
 		return "", nil
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), llm.LiveModelListTimeoutFor(s.client.Registry(), instance))
+	ctx, cancel := context.WithTimeout(context.Background(), llm.LiveModelListTimeout)
 	defer cancel()
 	listing, err := s.client.Models(s.apiLogContext(ctx), instance)
 	if err != nil || !listing.Usable {

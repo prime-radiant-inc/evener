@@ -11,6 +11,7 @@ import (
 	"slices"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -724,6 +725,87 @@ func TestResolveSessionRenewalFailureWithCancelledContextReturnsError(t *testing
 	if errors.Is(err, ErrLoginRequired) {
 		t.Fatalf("cancellation was classified as login required: %v", err)
 	}
+}
+
+// stallingExchangeTransport answers every request only when its context ends.
+// It makes a session exchange consume the request context's whole deadline or
+// cancellation with no wall-clock sleep.
+type stallingExchangeTransport struct{}
+
+func (stallingExchangeTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	<-req.Context().Done()
+	return nil, req.Context().Err()
+}
+
+// TestResolveValidSessionFallbackFitsInsideCallerDeadline proves the
+// early-renewal exchange is bounded by its own budget rather than the caller's
+// deadline: a stalled exchange that spends the opportunistic budget must leave
+// an active caller long enough to answer with the still-valid stored session.
+func TestResolveValidSessionFallbackFitsInsideCallerDeadline(t *testing.T) {
+	at := time.Date(2026, 11, 22, 2, 0, 0, 0, time.UTC)
+	swapNow(t, at)
+	stateDir := t.TempDir()
+	record := testRecord(at, 10*time.Minute, 24*time.Hour)
+	record.AccessExpiry = time.Time{}
+	record.RefreshToken = ""
+	record.RefreshExpiry = time.Time{}
+	record.CopilotExpiry = at.Add(4 * time.Minute)
+	if err := SaveAuth(stateDir, record.Instance, record); err != nil {
+		t.Fatalf("SaveAuth() error = %v", err)
+	}
+	svc := NewService(DefaultConfig(), &http.Client{Transport: stallingExchangeTransport{}})
+
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+		defer cancel()
+		start := time.Now()
+		credentials, err := svc.ResolveRuntimeCredentials(ctx, stateDir, record.Instance)
+		if err != nil {
+			t.Fatalf("ResolveRuntimeCredentials() error = %v, want the still-valid stored session before the 8s caller deadline", err)
+		}
+		if credentials.BearerToken != record.CopilotToken || !credentials.Expiry.Equal(record.CopilotExpiry) {
+			t.Fatalf("runtime credentials = %q expiring %v, want the stored session %q expiring %v",
+				credentials.BearerToken, credentials.Expiry, record.CopilotToken, record.CopilotExpiry)
+		}
+		if elapsed := time.Since(start); elapsed != 5*time.Second {
+			t.Fatalf("resolve took %v, want the exchange bounded at 5s while the stored session stays valid", elapsed)
+		}
+	})
+}
+
+// TestResolveExpiredSessionRenewalSpendsCallerDeadline proves the bound covers
+// only the opportunistic early-renewal exchange: once the stored session is
+// actually expired, renewal is required and may spend the caller's deadline
+// before it fails.
+func TestResolveExpiredSessionRenewalSpendsCallerDeadline(t *testing.T) {
+	at := time.Date(2026, 11, 22, 2, 0, 0, 0, time.UTC)
+	swapNow(t, at)
+	stateDir := t.TempDir()
+	record := testRecord(at, 10*time.Minute, 24*time.Hour)
+	record.AccessExpiry = time.Time{}
+	record.RefreshToken = ""
+	record.RefreshExpiry = time.Time{}
+	record.CopilotExpiry = at.Add(-time.Minute)
+	if err := SaveAuth(stateDir, record.Instance, record); err != nil {
+		t.Fatalf("SaveAuth() error = %v", err)
+	}
+	svc := NewService(DefaultConfig(), &http.Client{Transport: stallingExchangeTransport{}})
+
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+		defer cancel()
+		start := time.Now()
+		credentials, err := svc.ResolveRuntimeCredentials(ctx, stateDir, record.Instance)
+		if err == nil {
+			t.Fatalf("ResolveRuntimeCredentials() = %+v, want an error for an expired session", credentials)
+		}
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("ResolveRuntimeCredentials() error = %v, want the caller deadline", err)
+		}
+		if elapsed := time.Since(start); elapsed != 8*time.Second {
+			t.Fatalf("resolve took %v, want the caller's 8s deadline for a required renewal", elapsed)
+		}
+	})
 }
 
 // TestResolvePreservesRefreshTokenWhenResponseOmitsRotation proves a refresh
