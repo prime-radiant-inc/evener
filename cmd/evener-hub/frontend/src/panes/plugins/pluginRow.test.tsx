@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { MarketplaceCatalogPlugin, PluginComponents, PluginEntry } from "@evener/appwire-client";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -32,6 +35,15 @@ const CATALOG: MarketplaceCatalogPlugin = {
   description: "Session desks for every project",
   category: "productivity",
 };
+
+test("the plugin row's meta lines compose the shared truncation recipe", () => {
+  const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "pluginRow.module.css"), "utf8");
+  for (const selector of ["source", "counts"]) {
+    const rule = new RegExp(`\\.${selector}\\s*\\{([^}]*)\\}`).exec(css);
+    expect(rule?.[1], selector).toContain('composes: truncate from "../../styles/text.module.css"');
+    expect(rule?.[1], selector).not.toMatch(/overflow|text-overflow|white-space/);
+  }
+});
 
 test("an installed row with a broken entry shows the failed dot and its status chips", () => {
   render(
