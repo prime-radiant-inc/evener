@@ -294,7 +294,9 @@ its anchor and the loaded window starts after the transcript's first entry, so
 the first visible turn never stands in for the notice's owner. A later page
 that supplies the anchor's neighbor renders the notice once, at that neighbor.
 A notice whose own turn is loaded or running, and a prelude notice once the
-transcript's start is loaded, render without a recorded predecessor.
+transcript's start is loaded, render without a recorded predecessor. A notice
+that names no turn is placed by its anchor alone; a different turn running now
+does not adopt it.
 
 The browser repository persists normal-page omissions only inside the original
 wire interval. The cache commits rows, omission fences, certificates and header

@@ -655,16 +655,22 @@ function overlayTurnId(
   if (overlayItem.kind === "notice" && overlayItem.anchor) {
     const held = noticeHistoryTurn(overlayItem.anchor, turns);
     if (held) return held.id;
-    if (turns.length === 0) return fallback || SYSTEM_PRELUDE_TURN_ID;
+    // The notice's own turn is the id its producer stamped on it. The running
+    // turn is not: a notice emitted while no turn ran names no turn, and a
+    // newer unrelated turn must not adopt it.
+    const ownTurnId = overlayItem.turnId || overlayItem.item.turnId || "";
+    if (turns.length === 0) return ownTurnId || SYSTEM_PRELUDE_TURN_ID;
     // Nothing loaded precedes the anchor. Entries missing before the first
     // visible item may be the notice's true owner, so the first visible turn
     // is not evidence. Show the notice only where its own turn places it: a
-    // live warning's loaded or running turn, or the transcript's start once
+    // not-yet-loaded own turn, or the transcript's start once
     // that start is loaded. Otherwise keep it in the overlay until a page
     // supplies its predecessor.
-    if (fallback !== "" && (fallback === runningTurnId || turns.some((turn) => turn.id === fallback))) return fallback;
+    if (ownTurnId !== "" && (ownTurnId === runningTurnId || turns.some((turn) => turn.id === ownTurnId))) {
+      return ownTurnId;
+    }
     const earliest = earliestPosition(turns);
-    if (earliest === undefined) return turns[0]?.id ?? (fallback || SYSTEM_PRELUDE_TURN_ID);
+    if (earliest === undefined) return turns[0]?.id ?? (ownTurnId || SYSTEM_PRELUDE_TURN_ID);
     return earliest.entry <= 1 ? (turns[0]?.id ?? "") : "";
   }
   return fallback;

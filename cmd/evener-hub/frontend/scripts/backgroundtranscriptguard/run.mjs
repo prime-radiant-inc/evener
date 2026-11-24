@@ -1775,6 +1775,11 @@ async function runEntryProductionJourney(driver, harnessUrl) {
   if (offWindowNotice.holderCount !== 0) {
     throw new Error(`the off-window notice was attached to a loaded turn: ${JSON.stringify(sanitizedNotice(offWindowNotice))}`);
   }
+  if (offWindowNotice.noticeOccurrences !== 0) {
+    throw new Error(
+      `the off-window notice was rendered ${offWindowNotice.noticeOccurrences} times: ${JSON.stringify(sanitizedNotice(offWindowNotice))}`,
+    );
+  }
   // Load at least two REAL older pages through the real scroll port. Each scroll
   // must issue a thread/turns/list request; a synthetic event or an ancestor
   // element would issue none.
@@ -1843,17 +1848,30 @@ async function runEntryProductionJourney(driver, harnessUrl) {
   if (!furtherCheck.ordered) {
     throw new Error(`further paging did not restore the produced history in order: ${JSON.stringify(furtherCheck)}`);
   }
-  // The page that holds the notice's recorded predecessor has arrived. The same
-  // overlay notice now shows exactly once, inside its own historical turn and
-  // after the turn's prompt.
-  const placedNotice = await driver.waitPage(
-    `(() => { const s = ${noticePlacementExpr(SESSION_B)}; return s && s.holderCount === 1 ? s : null; })()`,
-    { timeoutMs: 15000, label: "the historical warning notice at its recorded position" },
+  // The page that holds the notice's recorded predecessor has arrived. Prove
+  // that transport result first: the placement counts below are asserted on
+  // their own so a duplicate reports its count instead of only timing out.
+  const anchorLoadedNotice = await driver.waitPage(
+    `(() => { const s = ${noticePlacementExpr(SESSION_B)}; return s && s.windowCarriesPrompt ? s : null; })()`,
+    { timeoutMs: 15000, label: "the page holding the notice's recorded predecessor" },
   );
+  driver.milestone("notice-anchor-loaded", {
+    overlayNotices: anchorLoadedNotice.overlayNotices,
+    turnCount: anchorLoadedNotice.turnCount,
+    windowCarriesPrompt: anchorLoadedNotice.windowCarriesPrompt,
+  });
+  // The same overlay notice now shows exactly once, inside its own historical
+  // turn and after the turn's prompt.
+  const placedNotice = anchorLoadedNotice;
   const noticeKeyStable = offWindowNotice.noticeKey !== null && placedNotice.noticeKey === offWindowNotice.noticeKey;
   driver.milestone("notice-placed", sanitizedNotice(placedNotice, noticeKeyStable));
   if (!noticeKeyStable) {
     throw new Error(`the notice is not the same overlay record across paging: ${JSON.stringify(sanitizedNotice(placedNotice))}`);
+  }
+  if (placedNotice.noticeOccurrences !== 1) {
+    throw new Error(
+      `the historical notice has ${placedNotice.noticeOccurrences} rendered occurrences, want exactly one: ${JSON.stringify(sanitizedNotice(placedNotice, noticeKeyStable))}`,
+    );
   }
   if (placedNotice.holderCount !== 1) {
     throw new Error(`the historical notice shows ${placedNotice.holderCount} times, want exactly one: ${JSON.stringify(sanitizedNotice(placedNotice, noticeKeyStable))}`);
@@ -2715,12 +2733,19 @@ function noticePlacementExpr(ref) {
       : -1;
     const turns = model.turns ?? [];
     const holders = [];
+    let noticeOccurrences = 0;
     turns.forEach((turn, index) => {
       const items = turn.items ?? [];
-      const noticeIndex = key === null ? -1 : items.findIndex((item) => item?.overlayKey === key);
-      if (noticeIndex < 0) return;
+      const noticeIndexes = [];
+      items.forEach((item, itemIndex) => {
+        if (key !== null && item?.overlayKey === key) noticeIndexes.push(itemIndex);
+      });
+      // Every rendered copy counts, not just the first per turn: a duplicate
+      // inside the right turn must fail exactly like a copy in a wrong turn.
+      noticeOccurrences += noticeIndexes.length;
+      if (noticeIndexes.length === 0) return;
       const promptIndex = items.findIndex((item) => (item?.text ?? "").includes(${JSON.stringify(NOTICE_ANCHOR_PROMPT)}));
-      holders.push({ turnIndex: index, noticeIndex, promptIndex });
+      holders.push({ turnIndex: index, noticeIndex: noticeIndexes[0], noticeInTurn: noticeIndexes.length, promptIndex });
     });
     return {
       overlayNotices: notices.length,
@@ -2728,6 +2753,8 @@ function noticePlacementExpr(ref) {
       renderedNoticeLines,
       turnCount: turns.length,
       holderCount: holders.length,
+      noticeOccurrences,
+      holderInTurnCounts: holders.map((holder) => holder.noticeInTurn),
       holderIsFirstTurn: holders.some((holder) => holder.turnIndex === 0),
       holderCarriesPrompt: holders.some((holder) => holder.promptIndex >= 0),
       noticeAfterPrompt: holders.some((holder) => holder.promptIndex >= 0 && holder.noticeIndex > holder.promptIndex),
@@ -2747,6 +2774,8 @@ function sanitizedNotice(snapshot, keyStable) {
     renderedNoticeLines: snapshot.renderedNoticeLines,
     turnCount: snapshot.turnCount,
     holderCount: snapshot.holderCount,
+    noticeOccurrences: snapshot.noticeOccurrences,
+    holderInTurnCounts: snapshot.holderInTurnCounts,
     holderIsFirstTurn: snapshot.holderIsFirstTurn,
     holderCarriesPrompt: snapshot.holderCarriesPrompt,
     noticeAfterPrompt: snapshot.noticeAfterPrompt,

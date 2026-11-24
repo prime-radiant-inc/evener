@@ -7,7 +7,7 @@
 
 import { describe, expect, test } from "vitest";
 import { displayTurnStatus } from "./itemFailure";
-import type { ThreadModel } from "./model";
+import { SYSTEM_PRELUDE_TURN_ID, type ThreadModel } from "./model";
 import { applyNotification } from "./reducer";
 import { currentTranscriptState, decodeCurrentTranscriptState } from "./transcriptCache";
 import {
@@ -1005,6 +1005,58 @@ describe("the live overlay", () => {
     expect(shown(model)).toEqual([
       ["t_old", [itemKey("t_old", 50)]],
       ["t_running", [notice.key]],
+    ]);
+  });
+
+  test("a turnless historical notice is not adopted by an unrelated running turn", () => {
+    // The notice was emitted while no turn ran, so it names no turn. A newer
+    // unrelated turn running now is no evidence of where the notice belongs.
+    const notice = noticeOverlay(0, 5, "");
+    const model = hydrate([turn("t_new", 51, [item("t_new", 50)])], {
+      overlay: [notice],
+      activeTurnId: "t_running",
+    });
+    expect(shown(model)).toEqual([["t_new", [itemKey("t_new", 50)]]]);
+    expect(model.overlay?.[notice.key]).toBe(notice);
+
+    const placed = mergeOlderItemPage(model, page([turn("t_old", 5, [item("t_old", 0), item("t_old", 4)])]));
+    expect(shown(placed)).toEqual([
+      ["t_old", [itemKey("t_old", 0), itemKey("t_old", 4), notice.key]],
+      ["t_new", [itemKey("t_new", 50)]],
+    ]);
+    expect(
+      shown(placed)
+        .flatMap(([, ids]) => ids)
+        .filter((id) => id === notice.key),
+    ).toHaveLength(1);
+  });
+
+  test("a turnless prelude notice with an unrelated running turn stays at the transcript start", () => {
+    const notice = noticeOverlay(0, 0, "");
+    const model = hydrate([turn("t1", 1, [item("t1", 0)])], {
+      overlay: [notice],
+      activeTurnId: "t_running",
+    });
+    expect(shown(model)).toEqual([["t1", [notice.key, itemKey("t1", 0)]]]);
+  });
+
+  test("a turnless prelude notice with no loaded turns and an unrelated running turn stays at the start", () => {
+    const notice = noticeOverlay(0, 0, "");
+    const model = hydrate([], { overlay: [notice], activeTurnId: "t_running" });
+    expect(shown(model)).toEqual([[SYSTEM_PRELUDE_TURN_ID, [notice.key]]]);
+  });
+
+  test("a notice naming its own partially loaded turn stays in that turn", () => {
+    // The notice names t_old, whose loaded fragment starts after the anchor.
+    // An unrelated running turn changes nothing.
+    const notice = noticeOverlay(0, 5, "t_old");
+    const model = hydrate([turn("t_old", 51, [item("t_old", 50)]), turn("t_new", 60, [item("t_new", 59)])], {
+      overlay: [notice],
+      activeTurnId: "t_running",
+    });
+    expect(shown(model)).toEqual([
+      ["t_old", [notice.key, itemKey("t_old", 50)]],
+      ["t_new", [itemKey("t_new", 59)]],
     ]);
   });
 
