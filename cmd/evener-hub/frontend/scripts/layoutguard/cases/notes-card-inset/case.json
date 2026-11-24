@@ -4,12 +4,22 @@
   "cssFiles": [
     "styles/global.css",
     "styles/tokens.css",
+    "styles/motion.module.css",
+    "widgets/disclosure/disclosure.module.css",
     "widgets/eyebrow/eyebrow.module.css",
     "widgets/panescaffold/panescaffold.module.css",
     "panes/session/chrome/panelsection.module.css",
     "panes/session/chrome/notespanel.module.css",
     "panes/session/chrome/topnotespanel.module.css"
   ],
+  "cssClassPrefixes": {
+    "widgets/disclosure/disclosure.module.css": "disclosure-"
+  },
+  "allowlist": {
+    ".summary": "The case prefixes disclosure.module.css's classes to disclosure-*, so its summary and the notes bar's summary are distinct selectors here.",
+    ".chevron": "Same prefixing: Disclosure's chevron and the notes bar's leading chevron box resolve to different selectors.",
+    ".body": "Same prefixing: Disclosure's body and PaneScaffold's body resolve to different selectors here, so one does not restyle the other."
+  },
   "viewport": {
     "width": 1200,
     "height": 900,
