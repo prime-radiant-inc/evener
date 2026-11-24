@@ -1208,3 +1208,33 @@ api_key = "test"
 		t.Fatalf("EndpointEnvNames = %v, want no mapping no endpoint template reads", names)
 	}
 }
+
+// TestEndpointEnvNamesCoversLiveOnlyTopLevelGlob pins the scan against the ids
+// only the live roster names: generation replays a top-level glob row onto a
+// live-only id exactly as it does onto a static row, so an environment-backed
+// endpoint the glob supplies is a generation input a checkout launch file must
+// not set even when no static row matches the glob.
+func TestEndpointEnvNamesCoversLiveOnlyTopLevelGlob(t *testing.T) {
+	t.Parallel()
+	state := t.TempDir()
+	saveCopilotRecordForTest(t, state, "github-copilot", healthyCopilotRecord("github-copilot"))
+	r := fixtureLoad(t, map[string]string{"COPILOT_ROSTER_ENDPOINT": "https://checkout.example.test/v1"}, `
+[models."roster-only-*"]
+base_url = "{ROSTER_ENDPOINT}"
+vars_env = { ROSTER_ENDPOINT = "COPILOT_ROSTER_ENDPOINT" }
+`, WithStateRoot(state))
+	r.ApplyLiveListing("github-copilot", LiveListing{Rows: []Model{{ID: "roster-only-model"}}, Authoritative: true})
+	if names := r.EndpointEnvNames(); !slices.Contains(names, "COPILOT_ROSTER_ENDPOINT") {
+		t.Fatalf("EndpointEnvNames = %v, want the live-only glob's COPILOT_ROSTER_ENDPOINT", names)
+	}
+	res, err := r.Resolve("github-copilot/roster-only-model")
+	if err != nil {
+		t.Fatalf("Resolve(live-only): %v", err)
+	}
+	if got, want := res.Transport.BaseURL, "https://checkout.example.test/v1"; got != want {
+		t.Fatalf("Resolve(live-only) base URL = %q, want the injected %q", got, want)
+	}
+	if !r.LiveListingAuthoritative("github-copilot") {
+		t.Fatal("the Copilot roster must stay authoritative")
+	}
+}

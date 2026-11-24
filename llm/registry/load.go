@@ -1281,17 +1281,9 @@ func (r *Registry) EndpointEnvNames() []string {
 			}
 			transports = append(transports, t)
 		}
-		matchesRow := func(glob string) bool {
-			for rowID := range rec.head.Models {
-				if matchGlob(glob, rowID) {
-					return true
-				}
-			}
-			return false
-		}
 		for _, rows := range r.topGlobs {
-			for glob, row := range rows {
-				if row.Transport != nil && matchesRow(glob) {
+			for _, row := range rows {
+				if row.Transport != nil {
 					note(*row.Transport)
 				}
 			}
