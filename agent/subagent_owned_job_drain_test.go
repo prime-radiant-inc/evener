@@ -2151,7 +2151,7 @@ func TestSubagentOwnedJobDrainQuietYieldDefersSubagentStopHook(t *testing.T) {
 			// acknowledgement and the running-map delete. The notification wake
 			// must still refuse the post-check quiet yield: the completion is
 			// already the delegate's, so the finalizing job is not drainable
-			// work (#7605).
+			// work.
 			name:               "stop_blocked_report_then_quiet_yield_parked_finalization",
 			decision:           `{}`,
 			childStopDecisions: stopBlockedStopDecisions,

@@ -168,6 +168,7 @@ func (jm *jobManager) outstandingDrainJobIDsByBackground() (all, background []st
 		return nil, nil, err
 	}
 	stableOwner := jm.stableOwner
+	parentDelegateID := jm.parentDelegateID
 	counted := make(map[string]bool)
 	var ids []string
 	finalizing := make(map[string]string)
@@ -178,8 +179,7 @@ func (jm *jobManager) outstandingDrainJobIDsByBackground() (all, background []st
 			// attention rail, the delegate's un-presented attention row keeps
 			// the subtree drainable (subagentHasDrainableWork), so this job must
 			// not also read as work the completion wake still owes. Otherwise
-			// the woken delegate quietly yields instead of sending its report
-			// (#7605).
+			// the woken delegate quietly yields instead of sending its report.
 			if rec := recs[id]; rec != nil && run.terminal != nil &&
 				rec.TerminalGen == run.terminal.generation &&
 				(rec.NotifyState == jobstore.NotifyDelivered || rec.NotifyState == jobstore.NotifyConsumed) {
@@ -187,7 +187,8 @@ func (jm *jobManager) outstandingDrainJobIDsByBackground() (all, background []st
 			}
 			counted[id] = true
 			ids = append(ids, id)
-			if run.terminal != nil && stableOwner != nil {
+			if stableOwner != nil && parentDelegateID != "" && run.terminal != nil &&
+				run.rec != nil && run.rec.Type == jobstore.JobShell && run.rec.ParentDelegateID == parentDelegateID {
 				finalizing[id] = stableShellAttentionID(id, run.terminal.generation)
 			}
 			// A job whose terminal record exists is finalizing (armFinalizedJob
@@ -211,6 +212,10 @@ func (jm *jobManager) outstandingDrainJobIDsByBackground() (all, background []st
 		// armPendingTerminalNotifications).
 		if isOwnedDrainJob(rec, jm.sessionID) && rec.NotifyState == jobstore.NotifyPending {
 			ids = append(ids, id)
+			if stableOwner != nil && parentDelegateID != "" && rec.Type == jobstore.JobShell &&
+				rec.ParentDelegateID == parentDelegateID && rec.TerminalGen != "" {
+				finalizing[id] = stableShellAttentionID(id, rec.TerminalGen)
+			}
 		}
 	}
 	jm.mu.Unlock()
@@ -222,7 +227,7 @@ func (jm *jobManager) outstandingDrainJobIDsByBackground() (all, background []st
 		for _, id := range ids {
 			attentionID, isFinalizingShell := finalizing[id]
 			if isFinalizingShell &&
-				stableOwner.delegateController.delegateAttentionCommittedOrResolved(stableOwner.owningDelegateID, attentionID) {
+				stableOwner.delegateController.delegateAttentionCommittedOrResolved(parentDelegateID, attentionID) {
 				continue
 			}
 			kept = append(kept, id)
