@@ -2,6 +2,7 @@ import type { LaunchConfigResolved, RepoLaunchConfigStatus } from "@evener/appwi
 import { friendlyErrorMessage } from "@evener/appwire-client";
 import { useEffect, useRef, useState } from "react";
 import { launchConfigStoreForHost } from "../../../stores/launchConfig";
+import surfaceStyles from "../../../styles/surface.module.css";
 import { Button, CodeBlock, InlineNotice, Loader } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import styles from "./inrepo.module.css";
@@ -86,7 +87,9 @@ function RepositoryConfigContent({ host, cwd }: { host: string; cwd: string }) {
 
   return (
     <div className={CLASS.root}>
-      <h3>Repository settings</h3>
+      <h3 className={`${surfaceStyles.settingsSectionHeading} ${surfaceStyles.settingsSectionHeadingBody}`}>
+        Repository settings
+      </h3>
       <p className={CLASS.help}>
         Shared through <code>.evener/launch.toml</code>. Review this file before allowing it to configure sessions.
       </p>

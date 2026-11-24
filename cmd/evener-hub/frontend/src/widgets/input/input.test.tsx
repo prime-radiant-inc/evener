@@ -202,3 +202,10 @@ test("composes the shared control field for its box, hover edge, and focus ring"
   const rule = /\.input\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
   expect(rule).toContain('composes: controlField from "../internal/control.module.css"');
 });
+
+test("composes the shared phone tap floor", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const css = readFileSync(join(here, "input.module.css"), "utf8");
+  const rule = /\.input\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
+  expect(rule).toContain('composes: tapFloor from "../../styles/tapfloor.module.css"');
+});
