@@ -1,4 +1,14 @@
-import { type CSSProperties, type KeyboardEvent, type MouseEvent, type ReactNode, useId, useRef } from "react";
+import {
+  type CSSProperties,
+  type HTMLAttributes,
+  type KeyboardEvent,
+  type MouseEvent,
+  type ReactNode,
+  type RefObject,
+  useCallback,
+  useId,
+  useRef,
+} from "react";
 import { LayerFocusScope } from "../focusscope";
 import { IconButton } from "../iconbutton";
 import { requireClass } from "../internal/requireClass";
@@ -37,6 +47,18 @@ export interface OverlayPanelProps {
    * itself (not a child wrapper) so a `.bottom` max-height cap can't clamp
    * the full-screen geometry. */
   style?: CSSProperties;
+  /** Internal seam, not part of the widget surface: the panel element, for a
+   * gesture that reads or drives its transform directly. */
+  panelRef?: RefObject<HTMLDivElement | null>;
+  /** Internal seam: the body element, for a gesture that reads or releases
+   * its scroll. */
+  bodyRef?: RefObject<HTMLDivElement | null>;
+  /** Internal seam: the scrim element. It is assigned alongside OverlayPanel's
+   * own ref, which usePresence watches for the exit. */
+  scrimRef?: RefObject<HTMLDivElement | null>;
+  /** Internal seam: extra props for the header element, where a sheet's drag
+   * gesture starts. */
+  headerProps?: Pick<HTMLAttributes<HTMLElement>, "onPointerDown">;
 }
 
 const SCRIM = requireClass(styles.scrim, "dialog.module.css", "scrim");
@@ -76,10 +98,24 @@ export function OverlayPanel({
   headerClassName,
   style,
   motion,
+  panelRef,
+  bodyRef,
+  scrimRef,
+  headerProps,
 }: OverlayPanelProps) {
   const titleId = useId();
-  const scrimRef = useRef<HTMLDivElement>(null);
-  const { mounted, phase } = usePresence(open, scrimRef, {
+  const internalScrimRef = useRef<HTMLDivElement>(null);
+  // The scrim node has two readers: usePresence watches it for the exit, and
+  // a caller's gesture code may write its opacity. Assigning both refs from
+  // the DOM node keeps either one from going without.
+  const setScrimNode = useCallback(
+    (node: HTMLDivElement | null) => {
+      internalScrimRef.current = node;
+      if (scrimRef !== undefined) scrimRef.current = node;
+    },
+    [scrimRef],
+  );
+  const { mounted, phase } = usePresence(open, internalScrimRef, {
     exit: motion === "slide" ? "--motion-duration-spatial-exit" : "--motion-duration-exit",
   });
   // While the layer leaves it renders what it showed when it closed: a caller
@@ -152,7 +188,7 @@ export function OverlayPanel({
     // biome-ignore lint/a11y/noStaticElementInteractions: mouse-only scrim dismiss; Escape is the keyboard path, see above
     // biome-ignore lint/a11y/useKeyWithClickEvents: mouse-only scrim dismiss; Escape is the keyboard path, see above
     <div
-      ref={scrimRef}
+      ref={setScrimNode}
       className={SCRIM_CLASS[motion]}
       data-motion={phase}
       inert={closing}
@@ -166,17 +202,20 @@ export function OverlayPanel({
           aria-modal={closing ? undefined : "true"}
           aria-labelledby={titleId}
           className={panelClassName}
+          ref={panelRef}
           data-motion={phase}
           onKeyDown={handleKeyDown}
           style={style}
         >
           {shown.handle}
-          <header className={headerClassName ? `${CLASS.header} ${headerClassName}` : CLASS.header}>
+          <header className={headerClassName ? `${CLASS.header} ${headerClassName}` : CLASS.header} {...headerProps}>
             <h2 id={titleId} className={CLASS.title}>
               {shown.title}
             </h2>
           </header>
-          <div className={bodyClassName ? `${CLASS.body} ${bodyClassName}` : CLASS.body}>{shown.children}</div>
+          <div ref={bodyRef} className={bodyClassName ? `${CLASS.body} ${bodyClassName}` : CLASS.body}>
+            {shown.children}
+          </div>
           {shown.footer !== undefined && <div className={CLASS.footer}>{shown.footer}</div>}
           <span className={CLASS.closeSeat}>
             <IconButton label="Close" icon={<CloseIcon />} variant="quiet" size="xs" onClick={onClose} />
