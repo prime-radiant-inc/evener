@@ -60,6 +60,11 @@ test("disabled marks the native textarea inert (not focusable)", () => {
   expect(document.activeElement).not.toBe(textarea);
 });
 
+test("spellCheck reaches the native textarea", () => {
+  render(<Textarea value="{}" onChange={() => {}} spellCheck={false} />);
+  expect(screen.getByRole("textbox").getAttribute("spellcheck")).toBe("false");
+});
+
 test("is keyboard-focusable when enabled", () => {
   render(<Textarea value="" onChange={() => {}} />);
   const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
