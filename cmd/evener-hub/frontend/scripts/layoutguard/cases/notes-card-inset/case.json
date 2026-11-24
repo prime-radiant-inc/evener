@@ -17,7 +17,8 @@
   },
   "allowlist": {
     ".summary": "The case prefixes disclosure.module.css's classes to disclosure-*, so its summary and the notes bar's summary are distinct selectors here.",
-    ".chevron": "Same prefixing: Disclosure's chevron and the notes bar's leading chevron box resolve to different selectors."
+    ".chevron": "Same prefixing: Disclosure's chevron and the notes bar's leading chevron box resolve to different selectors.",
+    ".body": "Same prefixing: Disclosure's body and PaneScaffold's body resolve to different selectors here, so one does not restyle the other."
   },
   "viewport": {
     "width": 1200,
