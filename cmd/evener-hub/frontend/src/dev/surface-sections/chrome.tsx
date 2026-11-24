@@ -10,43 +10,18 @@
 // state - exactly what a disconnected client should show. Nothing here fakes
 // that response.
 
-import type { Thread, ThreadCapabilities } from "@evener/appwire-client";
+import type { Thread } from "@evener/appwire-client";
 import { hydrateThread } from "@evener/appwire-client";
 import { DetailsPanel } from "../../panes/session/chrome/DetailsPanel";
 import { StatusRow } from "../../panes/session/chrome/StatusRow";
 import { TasksPanel } from "../../panes/session/chrome/TasksPanel";
 import styles from "../gallery-section.module.css";
 import { ThemeFlip } from "../ThemeFlip";
-
-const FULL_CAPABILITIES: ThreadCapabilities = {
-  send: true,
-  steer: true,
-  interrupt: true,
-  compact: true,
-  clear: true,
-  forkFromTurn: true,
-  shutdown: true,
-  changeModel: true,
-  changeVisionModel: true,
-  queue: true,
-  goal: true,
-  sharedNotes: true,
-  rename: true,
-};
+import { FULL_CAPABILITIES, fixtureThread } from "./thread-fixture";
 
 const ref = "dev-surface-chrome";
-const fixtureThread: Thread = {
-  id: "thr_dev_chrome",
-  sessionId: "sess_dev_chrome",
-  preview: "dev fixture",
-  ephemeral: false,
-  modelProvider: "anthropic/claude-sonnet-4-5",
-  createdAt: 1000,
-  updatedAt: 1000,
-  status: { type: "idle" },
-  cwd: "/home/dev/project",
-  cliVersion: "1.0.0",
-  source: "evener",
+const chromeThread: Thread = {
+  ...fixtureThread(ref, { id: "thr_dev_chrome", sessionId: "sess_dev_chrome" }),
   evener: {
     ref,
     capabilities: FULL_CAPABILITIES,
@@ -75,7 +50,7 @@ const fixtureThread: Thread = {
   },
 };
 
-const model = hydrateThread({ thread: fixtureThread }, ref, Date.now());
+const model = hydrateThread({ thread: chromeThread }, ref, Date.now());
 
 // The session's start-time flag remains readable while disconnected.
 const managerFixtures = [
@@ -84,7 +59,7 @@ const managerFixtures = [
   { name: "existing", projection: {} },
 ].map(({ name, projection }) => ({
   name,
-  model: hydrateThread({ thread: { ...fixtureThread, evener: { ...fixtureThread.evener, ...projection } } }, ref, 1000),
+  model: hydrateThread({ thread: { ...chromeThread, evener: { ...chromeThread.evener, ...projection } } }, ref, 1000),
 }));
 
 export default function ChromeSurfaceSection() {
