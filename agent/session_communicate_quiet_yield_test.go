@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -20,7 +21,10 @@ import (
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/internal/apptranscript"
+	"primeradiant.com/evener/internal/transcriptindex"
 	"primeradiant.com/evener/llm"
 )
 
@@ -1561,4 +1565,118 @@ func TestQuietCompanionStampedAtProducer(t *testing.T) {
 			t.Fatalf("assistant turn QuietCompanion = true, want false for a loud call")
 		}
 	})
+}
+
+// A real dead-wait rejection exercises the whole contract: the producer stamps
+// the companion prose and the runtime error, both readers hide the prose and
+// the error item, and the next round's reply renders normally on both.
+func TestQuietCompanionRuntimeRejectionStaysOutOfHistory(t *testing.T) {
+	t.Parallel()
+	const (
+		companionSentinel = "CHECKING BEFORE THE QUIET YIELD"
+		replySentinel     = "FINAL ANSWER SENTINEL"
+	)
+	roundOne := llm.Response{
+		Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+			{Kind: llm.ContentText, Text: companionSentinel},
+			{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+				ID: "quiet-dead", Name: "communicate", Arguments: json.RawMessage(`{"message":"Waiting","next":"log_quietly_and_end_turn"}`), Type: "function",
+			}},
+		}},
+		Finish: llm.FinishReason{Reason: llm.FinishReasonStop},
+	}
+	adapter := newFakeAdapter("openai",
+		func(llm.Request) llm.Response { return roundOne },
+		func(llm.Request) llm.Response {
+			return quietYieldResponse("final", `{"message":"`+replySentinel+`","next":"send_and_end_turn"}`)
+		},
+	)
+	s := newSession(t, withAdapter(adapter), withStateDir(t.TempDir()))
+	reply, err := s.ProcessInput(tripwireCtx(t), "start", nil)
+	if err != nil || reply != replySentinel {
+		t.Fatalf("reply=%q err=%v, want the round 2 reply", reply, err)
+	}
+	path := s.TranscriptPath()
+	defer s.Close()
+
+	companionStamped := false
+	var rejection *llm.ToolResultData
+	for _, turn := range transcriptTurnsOf(t, s) {
+		if turn.Kind == schema.TurnAssistant && turn.QuietCompanion && turn.Message.Text() != "" {
+			companionStamped = true
+		}
+		if turn.Kind != schema.TurnToolResults {
+			continue
+		}
+		for _, part := range turn.Message.Content {
+			if part.ToolResult != nil && part.ToolResult.ToolCallID == "quiet-dead" {
+				rejection = part.ToolResult
+			}
+		}
+	}
+	if !companionStamped {
+		t.Fatal("no TurnAssistant carried QuietCompanion")
+	}
+	if rejection == nil || !rejection.IsError || rejection.PrevalOnly {
+		t.Fatalf("quiet-dead result=%+v, want IsError=true PrevalOnly=false", rejection)
+	}
+
+	reg := apptranscript.NewToolCallRegistry()
+	project := func(turn schema.Turn, turnID string, turnIndex int) []appwire.ThreadItem {
+		items, _ := apptranscript.ProjectEntryParts(turnID, turnIndex, turn, reg, nil, nil)
+		return items
+	}
+	appTurns, err := apptranscript.ItemTurnsFromFile(path, transcript.DefaultMaxLineBytes, project)
+	if err != nil {
+		t.Fatalf("apptranscript projection: %v", err)
+	}
+	var projected []appwire.ThreadItem
+	for _, turn := range appTurns {
+		projected = append(projected, turn.Items...)
+	}
+	idx, err := transcriptindex.Open(path, t.TempDir())
+	if err != nil {
+		t.Fatalf("transcriptindex.Open: %v", err)
+	}
+	defer func() {
+		if err := idx.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
+	window, err := idx.Latest(40)
+	if err != nil {
+		t.Fatalf("transcriptindex Latest: %v", err)
+	}
+	var indexed []appwire.ThreadItem
+	for _, candidate := range window.Candidates {
+		indexed = append(indexed, candidate.Item)
+	}
+
+	fingerprint := func(items []appwire.ThreadItem) []string {
+		out := make([]string, 0, len(items))
+		for _, item := range items {
+			out = append(out, item.Type+"|"+item.CallID+"|"+item.Text)
+		}
+		return out
+	}
+	if got, want := fingerprint(indexed), fingerprint(projected); !reflect.DeepEqual(got, want) {
+		t.Fatalf("apptranscript and transcriptindex diverge:\nprojected: %q\nindexed:   %q", want, got)
+	}
+	for _, items := range [][]appwire.ThreadItem{projected, indexed} {
+		replies := 0
+		for _, item := range items {
+			if item.Type == "commandExecution" {
+				t.Errorf("tool item=%+v, want the runtime rejection kept out of history", item)
+			}
+			if strings.Contains(item.Text, companionSentinel) {
+				t.Errorf("item text=%q, want companion prose suppressed", item.Text)
+			}
+			if item.Type == "agentMessage" && strings.Contains(item.Text, replySentinel) {
+				replies++
+			}
+		}
+		if replies != 1 {
+			t.Errorf("agentMessages carrying the reply=%d, want 1 in %+v", replies, items)
+		}
+	}
 }

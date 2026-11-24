@@ -320,23 +320,23 @@ func TestQuietYieldProjectionAndCompanionDemotion(t *testing.T) {
 
 	t.Run("companion_prose_stays_suppressed_when_quiet_call_never_settles", func(t *testing.T) {
 		t.Parallel()
-		t.Run("error_result", func(t *testing.T) {
+		t.Run("preval_rejection", func(t *testing.T) {
 			t.Parallel()
-			turnID := "turn_err_quiet"
+			turnID := "turn_preval_quiet"
 			inheritedAuthor := &schema.TranscriptAuthorship{Inherited: true, Author: schema.TranscriptAuthor{Kind: schema.TranscriptAuthorAgent, SessionID: "root-session"}}
 			items := projectQuietFixture(t, []schema.Turn{
 				{Format: schema.TurnFormatIdentity, TurnID: turnID, TurnKind: schema.TurnSpanExecution, Kind: schema.TurnUserInput, Message: llm.User("start"), Timestamp: ts},
 				{Format: schema.TurnFormatIdentity, TurnID: turnID, RoundID: "r1", Authorship: inheritedAuthor.Clone(), Kind: schema.TurnAssistant, QuietCompanion: true, Timestamp: ts.Add(time.Second), Message: llm.Message{
 					Role: llm.RoleAssistant,
 					Content: []llm.ContentPart{
-						{Kind: llm.ContentText, Text: "Companion before error"},
-						{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "call_q_err", Name: "communicate", Arguments: quietYieldArgs}},
+						{Kind: llm.ContentText, Text: "Companion before preval rejection"},
+						{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "call_q_preval", Name: "communicate", Arguments: json.RawMessage(`{"message":"Waiting","next":"log_quietly_and_end_turn","output":{"data":{"answer":1}}}`)}},
 					},
 				}},
 				{Format: schema.TurnFormatIdentity, TurnID: turnID, RoundID: "r1", Kind: schema.TurnToolResults, Timestamp: ts.Add(2 * time.Second), Message: llm.Message{
 					Role: llm.RoleTool,
 					Content: []llm.ContentPart{{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{
-						ToolCallID: "call_q_err", Name: "communicate", IsError: true, PrevalOnly: true, Content: "cannot end turn",
+						ToolCallID: "call_q_preval", Name: "communicate", IsError: true, PrevalOnly: true, Content: "cannot end turn",
 					}}},
 				}},
 				{Format: schema.TurnFormatIdentity, TurnID: turnID, Kind: schema.TurnCompletion, Completion: &schema.TurnCompletionInfo{Status: schema.TurnCompleted}},
@@ -351,10 +351,57 @@ func TestQuietYieldProjectionAndCompanionDemotion(t *testing.T) {
 				}
 			}
 			if len(msgs) != 0 {
-				t.Fatalf("agentMessages=%+v, want companion prose suppressed after the rejected quiet call", msgs)
+				t.Fatalf("agentMessages=%+v, want companion prose suppressed after the pre-validation rejection", msgs)
 			}
-			if len(errs) != 1 || errs[0].CallID != "call_q_err" {
-				t.Fatalf("errs=%+v, want preval error item", errs)
+			if len(errs) != 1 || errs[0].CallID != "call_q_preval" || errs[0].Status != appwire.TurnStatusFailed {
+				t.Fatalf("errs=%+v, want one failed pre-validation item for call_q_preval", errs)
+			}
+		})
+
+		t.Run("runtime_rejection", func(t *testing.T) {
+			t.Parallel()
+			turnID := "turn_runtime_quiet"
+			inheritedAuthor := &schema.TranscriptAuthorship{Inherited: true, Author: schema.TranscriptAuthor{Kind: schema.TranscriptAuthorAgent, SessionID: "root-session"}}
+			items := projectQuietFixture(t, []schema.Turn{
+				{Format: schema.TurnFormatIdentity, TurnID: turnID, TurnKind: schema.TurnSpanExecution, Kind: schema.TurnUserInput, Message: llm.User("start"), Timestamp: ts},
+				{Format: schema.TurnFormatIdentity, TurnID: turnID, RoundID: "r1", Authorship: inheritedAuthor.Clone(), Kind: schema.TurnAssistant, QuietCompanion: true, Timestamp: ts.Add(time.Second), Message: llm.Message{
+					Role: llm.RoleAssistant,
+					Content: []llm.ContentPart{
+						{Kind: llm.ContentText, Text: "Companion before runtime rejection"},
+						{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "call_q_runtime", Name: "communicate", Arguments: quietYieldArgs}},
+					},
+				}},
+				{Format: schema.TurnFormatIdentity, TurnID: turnID, RoundID: "r1", Kind: schema.TurnToolResults, Timestamp: ts.Add(2 * time.Second), Message: llm.Message{
+					Role: llm.RoleTool,
+					Content: []llm.ContentPart{{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{
+						ToolCallID: "call_q_runtime", Name: "communicate", IsError: true, PrevalOnly: false, Content: "no wake source",
+					}}},
+				}},
+				{Format: schema.TurnFormatIdentity, TurnID: turnID, RoundID: "r2", Authorship: inheritedAuthor.Clone(), Kind: schema.TurnAssistant, Timestamp: ts.Add(3 * time.Second), Message: llm.Message{
+					Role: llm.RoleAssistant,
+					Content: []llm.ContentPart{
+						{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "call_final", Name: "communicate", Arguments: json.RawMessage(`{"message":"Final answer","next":"send_and_end_turn"}`)}},
+					},
+				}},
+				{Format: schema.TurnFormatIdentity, TurnID: turnID, Kind: schema.TurnCommunicate, Timestamp: ts.Add(4 * time.Second), Communicate: &schema.CommunicateInfo{
+					CallID: "call_final", EndTurn: true, Message: "Final answer",
+				}},
+				{Format: schema.TurnFormatIdentity, TurnID: turnID, Kind: schema.TurnCompletion, Completion: &schema.TurnCompletionInfo{Status: schema.TurnCompleted}},
+			})
+			var msgs, tools []appwire.ThreadItem
+			for _, it := range items {
+				if it.Type == "agentMessage" {
+					msgs = append(msgs, it)
+				}
+				if it.Type == "commandExecution" {
+					tools = append(tools, it)
+				}
+			}
+			if len(msgs) != 1 || msgs[0].Text != "Final answer" || msgs[0].CallID != "call_final" {
+				t.Fatalf("agentMessages=%+v, want only the round 2 reply", msgs)
+			}
+			if len(tools) != 0 {
+				t.Fatalf("tool items=%+v, want the runtime rejection kept out of history", tools)
 			}
 		})
 
