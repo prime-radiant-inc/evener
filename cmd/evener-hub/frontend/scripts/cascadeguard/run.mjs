@@ -17,6 +17,7 @@ import { retainsNewerReadingPoint } from "./releaseRetained.mjs";
 import { attentionJourney } from "./attention.mjs";
 import { isHistoryReadMethod } from "../lib/historyMethods.mjs";
 import { readerWheelDelta, repositionReader } from "./nativeWheel.mjs";
+import { uncoveredCenter } from "../lib/pressPoint.mjs";
 
 const fixture = JSON.parse(readFileSync(0, "utf8"));
 const driver = new Driver(fixture);
@@ -1745,10 +1746,38 @@ async function reloadAndMobileJourney() {
   await readInsideTallEntry(sourcePortExpr, "phone source");
   await widthOnlyReflow(sourcePortExpr, 430, 844, "phone-reader-width-reflow");
   await widthOnlyReflow(sourcePortExpr, 390, 844, "phone-reader-width-return");
-  await driver.click('button[aria-label="Overview"]');
+  const phoneOverview = await wait(`(() => {
+    const button = document.querySelector(${q(`[data-session-overview-ref=${q(fixture.rootRef)}][data-pane-id=${q(fixture.sourcePaneId)}]`)})?.closest('button[aria-label="Overview"]');
+    return button ? (${uncoveredCenter})(button, "nearest") : null;
+  })()`, "phone Overview button is scoped and hit-testable");
+  await driver.clickAt(phoneOverview.x, phoneOverview.y);
+  const sheetAgents = await wait(`(() => {
+    const sheet = document.querySelector('[role="dialog"][aria-modal="true"]:not([data-testid="activity-sidebar"])');
+    const row = sheet?.querySelector(${q(`[data-activity-tab="agents"][data-session-ref=${q(fixture.rootRef)}][data-pane-id=${q(fixture.sourcePaneId)}]`)});
+    return sheet && row && getComputedStyle(sheet).transform === 'none' ? (${uncoveredCenter})(row, "center") : null;
+  })()`, "phone Overview sheet settled and Agents row is hit-testable");
+  await driver.clickAt(sheetAgents.x, sheetAgents.y);
   await wait(sidebarEntranceSettled, "phone Overview entrance settled before physical row tap");
+  await wait(`(() => {
+    const sidebar = document.querySelector('[data-testid="activity-sidebar"][aria-label="Overview"]');
+    const dialogs = [...document.querySelectorAll('[role="dialog"][aria-modal="true"]')];
+    const tab = sidebar?.querySelector('[role="tablist"] [role="tab"][aria-label^="Agents"]');
+    return sidebar && dialogs.length === 1 && dialogs[0] === sidebar
+      && tab?.getAttribute('aria-selected') === 'true'
+      && sidebar.querySelectorAll('[role="radio"], [aria-checked]').length === 0
+      && document.activeElement === tab;
+  })()`, "phone Overview modal dialog owns focus on its Agents tab");
+  const phoneAx = await queryAccessibilityTree(driver.send, '[data-testid="activity-sidebar"]');
+  assert.ok(phoneAx?.some((node) => !node.ignored && node.role?.value === "dialog"), "phone Overview exposes dialog role in AX tree");
+  assert.ok(phoneAx?.some((node) => !node.ignored && node.role?.value === "tab" && node.properties?.some((prop) => prop.name === "selected" && prop.value?.value === true)), "phone Overview exposes selected tab in AX tree");
+  assert.equal(phoneAx?.some((node) => !node.ignored && node.role?.value === "radio"), false, "phone Overview exposes no radio role in AX tree");
   const mobileRow = await reveal(fixture.edges[0], '[data-testid="activity-sidebar"]');
-  await driver.click(mobileRow);
+  const mobileRowPoint = await driver.settleExpression(`(() => {
+    const row = document.querySelector(${q(mobileRow)});
+    const button = row?.matches('button') ? row : row?.querySelector('button');
+    return button ? (${uncoveredCenter})(button, "center") : null;
+  })()`, { label: "phone child row is settled and hit-testable before physical tap" });
+  await driver.clickAt(mobileRowPoint.x, mobileRowPoint.y);
   await wait(`(() => {
     const scope = ${driver.paneScopeExpr(fixture.childRef)};
     return document.querySelectorAll("[data-testid=transcript-virtual-list]").length === 1
