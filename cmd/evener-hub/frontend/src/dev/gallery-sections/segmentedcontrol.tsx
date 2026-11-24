@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { SegmentedControl, type SegmentedControlOption } from "../../widgets/segmentedcontrol";
-import { ThemeFlip } from "../ThemeFlip";
+import { GallerySection } from "../GallerySection";
 import styles from "./segmentedcontrol.module.css";
 
 const OPTIONS: readonly SegmentedControlOption[] = [
@@ -113,74 +113,65 @@ function NarrowFrame({ width }: { width: 320 | 390 }) {
 
 export default function SegmentedControlGallerySection() {
   return (
-    <section data-testid="segmentedcontrol-gallery">
-      <h2>SegmentedControl</h2>
-      <ThemeFlip>
-        <div className={styles.stack}>
-          <div className={styles.row}>
-            <InteractiveControl />
-            <UnequalControl />
-            <SegmentedControl
-              label="Small detail"
-              value="intent"
-              options={SHORT_OPTIONS}
-              onChange={() => {}}
-              size="sm"
-            />
-          </div>
-          <div className={styles.fullWidthDemo} data-testid="segmentedcontrol-full-width-demo">
-            <SegmentedControl
-              label="Six-option transcript detail"
-              value="tools"
-              options={OPTIONS}
-              onChange={() => {}}
-              fullWidth
-            />
-          </div>
-          <div className={styles.row}>
-            <SelectedExample label="First selected" value="chat" />
-            <SelectedExample label="Middle selected" value="tools" />
-            <SelectedExample label="Last selected" value="custom" />
-            <SelectedExample label="Custom selected" value="custom" />
-            <SelectedExample label="Full selected" value="full" />
-          </div>
-          <div className={styles.row}>
-            <SegmentedControl
-              label="Disabled option"
-              value="chat"
-              options={[
-                { value: "chat", label: "Chat" },
-                { value: "intent", label: "Intent", disabled: true },
-                { value: "tools", label: "Tools" },
-              ]}
-              onChange={() => {}}
-            />
-            <SegmentedControl
-              label="Selected disabled option"
-              value="tools"
-              options={[
-                { value: "chat", label: "Chat" },
-                { value: "tools", label: "Tools", disabled: true },
-              ]}
-              onChange={() => {}}
-            />
-            <SegmentedControl
-              label="Disabled group"
-              value="intent"
-              options={SHORT_OPTIONS}
-              onChange={() => {}}
-              disabled
-            />
-            <FocusControl />
-          </div>
-          <StackedControl />
-          <div className={styles.frames}>
-            <WrapControl />
-            <NarrowFrame width={320} />
-            <NarrowFrame width={390} />
-          </div>
+    <GallerySection title="SegmentedControl" testId="segmentedcontrol-gallery">
+      <div className={styles.stack}>
+        <div className={styles.row}>
+          <InteractiveControl />
+          <UnequalControl />
+          <SegmentedControl label="Small detail" value="intent" options={SHORT_OPTIONS} onChange={() => {}} size="sm" />
         </div>
-      </ThemeFlip>
-    </section>
+        <div className={styles.fullWidthDemo} data-testid="segmentedcontrol-full-width-demo">
+          <SegmentedControl
+            label="Six-option transcript detail"
+            value="tools"
+            options={OPTIONS}
+            onChange={() => {}}
+            fullWidth
+          />
+        </div>
+        <div className={styles.row}>
+          <SelectedExample label="First selected" value="chat" />
+          <SelectedExample label="Middle selected" value="tools" />
+          <SelectedExample label="Last selected" value="custom" />
+          <SelectedExample label="Custom selected" value="custom" />
+          <SelectedExample label="Full selected" value="full" />
+        </div>
+        <div className={styles.row}>
+          <SegmentedControl
+            label="Disabled option"
+            value="chat"
+            options={[
+              { value: "chat", label: "Chat" },
+              { value: "intent", label: "Intent", disabled: true },
+              { value: "tools", label: "Tools" },
+            ]}
+            onChange={() => {}}
+          />
+          <SegmentedControl
+            label="Selected disabled option"
+            value="tools"
+            options={[
+              { value: "chat", label: "Chat" },
+              { value: "tools", label: "Tools", disabled: true },
+            ]}
+            onChange={() => {}}
+          />
+          <SegmentedControl
+            label="Disabled group"
+            value="intent"
+            options={SHORT_OPTIONS}
+            onChange={() => {}}
+            disabled
+          />
+          <FocusControl />
+        </div>
+        <StackedControl />
+        <div className={styles.frames}>
+          <WrapControl />
+          <NarrowFrame width={320} />
+          <NarrowFrame width={390} />
+        </div>
+      </div>
+    </GallerySection>
   );
 }

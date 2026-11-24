@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -10,7 +11,9 @@ import (
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/identifier"
+	"primeradiant.com/evener/internal/apptranscript"
 	"primeradiant.com/evener/llm"
 )
 
@@ -313,4 +316,119 @@ func forkContextToolCall(id, name string) llm.Message {
 		Kind:     llm.ContentToolCall,
 		ToolCall: &llm.ToolCallData{ID: id, Name: name, Arguments: []byte(`{}`), Type: "function"},
 	}}}
+}
+
+// A forked delegate inherits the parent's quiet rounds as conversation. The
+// assistant entry keeps its quiet flags so the child's projection hides the
+// companion prose and mutes the bare-text quiet park, while the model still
+// sees that text in the inherited message.
+func TestDelegateContextPreservesQuietCompanionAndQuietYield(t *testing.T) {
+	t.Parallel()
+	const (
+		companionProse = "COMPANION PROSE SENTINEL"
+		bareProse      = "BARE QUIET PARK SENTINEL"
+		commentary     = "QUIET COMMENTARY SENTINEL"
+		note           = "Waiting on CI"
+	)
+	yes := true
+	quietState, err := json.Marshal(schema.CommunicateToolState{
+		Accepted: &yes, EndTurn: &yes, Quiet: &yes,
+		QuietNote: note, QuietCommentary: commentary,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	author := &schema.TranscriptAuthorship{Author: schema.TranscriptAuthor{Kind: schema.TranscriptAuthorAgent, SessionID: "parent-session"}}
+	ts := time.Unix(1_790_000_000, 0).UTC()
+	parent := []schema.Turn{
+		{Format: schema.TurnFormatIdentity, TurnID: "turn_quiet", TurnKind: schema.TurnSpanExecution, Kind: schema.TurnUserInput, Authorship: author.Clone(), Message: llm.User("start"), Timestamp: ts},
+		{Format: schema.TurnFormatIdentity, TurnID: "turn_quiet", RoundID: "r1", TurnKind: schema.TurnSpanExecution, Kind: schema.TurnAssistant, Authorship: author.Clone(), QuietCompanion: true, Timestamp: ts.Add(time.Second), Message: llm.Message{
+			Role: llm.RoleAssistant,
+			Content: []llm.ContentPart{
+				{Kind: llm.ContentText, Text: companionProse},
+				{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "call_quiet", Name: "communicate", Arguments: json.RawMessage(`{"message":"Waiting","next":"log_quietly_and_end_turn"}`)}},
+			},
+		}},
+		{Format: schema.TurnFormatIdentity, TurnID: "turn_quiet", TurnKind: schema.TurnSpanExecution, Kind: schema.TurnToolResults, Authorship: author.Clone(), Timestamp: ts.Add(2 * time.Second), Message: llm.Message{
+			Role: llm.RoleTool,
+			Content: []llm.ContentPart{{
+				Kind:       llm.ContentToolResult,
+				ToolResult: &llm.ToolResultData{ToolCallID: "call_quiet", Name: "communicate", Content: `{"accepted":true,"end_turn":true}`, ToolState: quietState},
+			}},
+		}},
+		{Format: schema.TurnFormatIdentity, TurnID: "turn_park", TurnKind: schema.TurnSpanExecution, Kind: schema.TurnUserInput, Authorship: author.Clone(), Message: llm.User("next"), Timestamp: ts.Add(3 * time.Second)},
+		{Format: schema.TurnFormatIdentity, TurnID: "turn_park", RoundID: "r1", TurnKind: schema.TurnSpanExecution, Kind: schema.TurnAssistant, Authorship: author.Clone(), QuietYield: true, Timestamp: ts.Add(4 * time.Second), Message: llm.Assistant(bareProse)},
+	}
+
+	inherited := delegateContextEntries(entriesOf(parent))
+	if len(inherited) != len(parent) {
+		t.Fatalf("inherited %d entries, want %d completed rounds", len(inherited), len(parent))
+	}
+	companionTurn := inherited[1].Turn
+	parkTurn := inherited[4].Turn
+	if !companionTurn.QuietCompanion {
+		t.Fatalf("inherited quiet companion turn lost QuietCompanion: %+v", companionTurn)
+	}
+	if !parkTurn.QuietYield {
+		t.Fatalf("inherited bare-text quiet park lost QuietYield: %+v", parkTurn)
+	}
+	if got := forkContextMessageText(companionTurn.Message); !strings.Contains(got, companionProse) {
+		t.Fatalf("inherited quiet companion message text %q does not carry the prose for model context", got)
+	}
+	if got := forkContextMessageText(parkTurn.Message); !strings.Contains(got, bareProse) {
+		t.Fatalf("inherited quiet park message text %q does not carry the prose for model context", got)
+	}
+
+	reg := apptranscript.NewToolCallRegistry()
+	var items []appwire.ThreadItem
+	for i, entry := range inherited {
+		partItems, _ := apptranscript.ProjectEntryParts("parent-session", i, entry.Turn, reg, nil, nil)
+		items = append(items, partItems...)
+	}
+	var quiets []appwire.ThreadItem
+	for _, item := range items {
+		if item.Type == "agentMessage" && (strings.Contains(item.Text, companionProse) || strings.Contains(item.Text, bareProse)) {
+			t.Fatalf("inherited quiet prose rendered as a chat bubble: %+v", item)
+		}
+		if item.EventKind == appwire.ThreadItemEventKindQuietYield {
+			quiets = append(quiets, item)
+		}
+	}
+	if len(quiets) != 2 {
+		t.Fatalf("quiet items=%+v, want the companion notice and the bare-text park", quiets)
+	}
+	var companionNotice, parkNotice *appwire.ThreadItem
+	for i := range quiets {
+		switch quiets[i].CallID {
+		case "call_quiet":
+			companionNotice = &quiets[i]
+		case "":
+			parkNotice = &quiets[i]
+		}
+	}
+	if companionNotice == nil || companionNotice.Text != note {
+		t.Fatalf("companion notice=%+v, want quiet yield carrying note %q", companionNotice, note)
+	}
+	var payload struct {
+		Commentary string `json:"commentary"`
+	}
+	if err := json.Unmarshal(companionNotice.Raw, &payload); err != nil {
+		t.Fatalf("decode companion notice raw %s: %v", companionNotice.Raw, err)
+	}
+	if payload.Commentary != commentary {
+		t.Fatalf("companion notice commentary=%q, want stamped %q", payload.Commentary, commentary)
+	}
+	if parkNotice == nil || parkNotice.Text != bareProse {
+		t.Fatalf("park notice=%+v, want muted quiet yield carrying %q", parkNotice, bareProse)
+	}
+}
+
+func forkContextMessageText(message llm.Message) string {
+	var texts []string
+	for _, part := range message.Content {
+		if part.Kind == llm.ContentText {
+			texts = append(texts, part.Text)
+		}
+	}
+	return strings.Join(texts, "\n\n")
 }

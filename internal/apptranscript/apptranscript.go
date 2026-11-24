@@ -27,33 +27,10 @@ import (
 // turn. Kept as separate maps so name resolution and raw-argument display are
 // independent — a communicate result with Name="" must still resolve to
 // "communicate", not to deferred raw bytes.
-//
-// QuietAssistantEntry holds one TurnAssistant entry's companion prose and
-// authorship while any possibly-quiet communicate call in that response is
-// unresolved. A quiet result consumes it as Raw.commentary; a non-quiet result
-// or TurnCompletion flushes ProvisionalItems as ordinary agentMessage items.
-type QuietAssistantEntry struct {
-	EntryIndex        int
-	TurnID            string
-	Commentary        string
-	Authorship        *schema.TranscriptAuthorship
-	ProvisionalItems  []appwire.ThreadItem
-	DeliveredTexts    []string
-	LastAssistantText string
-	PendingQuiet      map[string]bool
-	Flushed           bool
-	Claimed           bool
-	WasProvisional    bool
-}
-
 type ToolCallRegistry struct {
 	Names             map[string]string
 	CommRawArgs       map[string]string
 	CommAuthorship    map[string]*schema.TranscriptAuthorship
-	QuietCalls        map[string]*QuietAssistantEntry
-	Provisional       []*QuietAssistantEntry
-	ForceProvisional  map[int]bool
-	UnexpectedQuiet   bool
 	LastAssistantText string
 	// LastAssistantTurnID is the logical turn ID of the ASSISTANT record that
 	// set LastAssistantText. The healed-communicate echo check scopes by turn
@@ -63,20 +40,22 @@ type ToolCallRegistry struct {
 	// round-8 StartsGroup snapshot the same way.
 	LastAssistantTurnID string
 	LastAssistantEntry  int
-	prevAssistantText   string
-	prevAssistantTurnID string
-	prevAssistantEntry  int
-	hasPrevAssistant    bool
+	// CommAwaitingText carries, per communicate call ID, the text of the
+	// assistant entry that announced the call (see AssistantEchoText). A
+	// communicate delivery only echoes the entry that announced it, so the
+	// check stays scoped to that entry rather than to whatever text the turn
+	// showed last.
+	CommAwaitingText map[string]string
 }
 
 // NewToolCallRegistry returns a ready-to-use ToolCallRegistry with both maps
 // initialized.
 func NewToolCallRegistry() *ToolCallRegistry {
 	return &ToolCallRegistry{
-		Names:          map[string]string{},
-		CommRawArgs:    map[string]string{},
-		CommAuthorship: map[string]*schema.TranscriptAuthorship{},
-		QuietCalls:     map[string]*QuietAssistantEntry{},
+		Names:            map[string]string{},
+		CommRawArgs:      map[string]string{},
+		CommAuthorship:   map[string]*schema.TranscriptAuthorship{},
+		CommAwaitingText: map[string]string{},
 	}
 }
 
@@ -274,6 +253,43 @@ func NormalizeCommunicateArguments(raw json.RawMessage) json.RawMessage {
 func EchoesAssistantText(shown, message string) bool {
 	shown = strings.TrimSpace(shown)
 	return shown != "" && shown == strings.TrimSpace(message)
+}
+
+// AssistantEchoText reports the text a communicate delivery must repeat to be
+// an echo of turn: the entry's last visible text run. A quiet yield or quiet
+// companion entry shows no prose, so nothing of it can be echoed.
+func AssistantEchoText(turn schema.Turn) string {
+	if turn.QuietYield || turn.QuietCompanion {
+		return ""
+	}
+	return lastTextRun(turn.Message.Content)
+}
+
+// lastTextRun is the text of the run the entry's last agentMessage shows:
+// consecutive text parts, which metadata-only reasoning parts do not break.
+// Surrounding whitespace never carries meaning here, so a trailing blank run
+// falls back to the prose before it.
+func lastTextRun(content []llm.ContentPart) string {
+	for end := len(content); end > 0; {
+		for end > 0 && content[end-1].Kind != llm.ContentText && !MetadataOnlyResponsesReasoning(content[end-1]) {
+			end--
+		}
+		start := end
+		for start > 0 && (content[start-1].Kind == llm.ContentText || MetadataOnlyResponsesReasoning(content[start-1])) {
+			start--
+		}
+		var run strings.Builder
+		for _, part := range content[start:end] {
+			if part.Kind == llm.ContentText {
+				run.WriteString(part.Text)
+			}
+		}
+		if trimmed := strings.TrimSpace(run.String()); trimmed != "" {
+			return trimmed
+		}
+		end = start
+	}
+	return ""
 }
 
 // ExitCodeFromToolState extracts a shell tool call's process exit code from
@@ -503,21 +519,32 @@ func ProjectEntryParts(turnID string, entryIndex int, turn schema.Turn, reg *Too
 	case schema.TurnCommunicate:
 		// Ordinary forks retain the dedicated delivery. Only context-only
 		// copies that omit it need reconstruction from the call and result.
+		awaitingText, hasAwaitingText := "", false
 		if reg != nil && turn.Communicate != nil {
 			delete(reg.CommRawArgs, turn.Communicate.CallID)
 			delete(reg.CommAuthorship, turn.Communicate.CallID)
+			if reg.CommAwaitingText != nil {
+				awaitingText, hasAwaitingText = reg.CommAwaitingText[turn.Communicate.CallID]
+				delete(reg.CommAwaitingText, turn.Communicate.CallID)
+			}
 		}
 		if item, ok := CommunicateItem(turnID, entryIndex, turn); ok {
 			// A delivery whose message repeats the assistant text already shown
 			// in this turn renders once, not twice — the index suppresses the
 			// same echo (build.go's echoesAwaiting).
-			if reg != nil && item.Text != "" && turnID == reg.LastAssistantTurnID && EchoesAssistantText(reg.LastAssistantText, item.Text) {
-				return nil, nil
-			}
-			if reg != nil && turn.Communicate != nil && item.Text != "" {
-				if qentry := reg.QuietCalls[turn.Communicate.CallID]; qentry != nil {
-					qentry.DeliveredTexts = append(qentry.DeliveredTexts, item.Text)
+			// The repeat must be of the entry that announced the call; a later
+			// textless round repeating an earlier round's text delivers its own
+			// message.
+			echoes := false
+			if item.Text != "" {
+				if hasAwaitingText {
+					echoes = awaitingText != "" && EchoesAssistantText(awaitingText, item.Text)
+				} else if reg != nil {
+					echoes = turnID == reg.LastAssistantTurnID && EchoesAssistantText(reg.LastAssistantText, item.Text)
 				}
+			}
+			if echoes {
+				return nil, nil
 			}
 			return []appwire.ThreadItem{item}, []int{0}
 		}
@@ -528,15 +555,6 @@ func ProjectEntryParts(turnID string, entryIndex int, turn schema.Turn, reg *Too
 		}
 		return nil, nil
 	case schema.TurnCompletion:
-		if reg != nil {
-			if flushed := reg.flushProvisionalForTurn(turnID); len(flushed) > 0 {
-				parts = make([]int, len(flushed))
-				for i := range flushed {
-					parts[i] = i
-				}
-				return flushed, parts
-			}
-		}
 		return nil, nil
 	case schema.TurnReopen:
 		// These set the turn's status; they display nothing.
@@ -769,21 +787,12 @@ func projectTurn(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRe
 		}}
 	case schema.TurnAssistant:
 		var items []appwire.ThreadItem
-		var provisionalItems []appwire.ThreadItem
-		var commentaryParts []string
 		var quietTexts []string
-		var toolCallIDs []string
 		// lastAssistantText feeds EchoesAssistantText: a communicate tool call
 		// whose message echoes the assistant text already shown in this turn is
 		// rendered once, not twice. Reload must collapse the echo the same way
 		// the live projector does.
 		var lastAssistantText string
-		var hasCommunicate bool
-		var possiblyQuietIDs []string
-		if !turn.QuietYield {
-			hasCommunicate, possiblyQuietIDs = AssistantCommunicateCallIDs(turn, reg != nil && reg.ForceProvisional[turnIndex])
-		}
-		holdProvisional := !turn.QuietYield && len(possiblyQuietIDs) > 0
 		for i, part := range turn.Message.Content {
 			switch part.Kind {
 			case llm.ContentText:
@@ -794,10 +803,11 @@ func projectTurn(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRe
 						}
 						continue
 					}
-					if hasCommunicate {
-						if trimmed := strings.TrimSpace(part.Text); trimmed != "" {
-							commentaryParts = append(commentaryParts, trimmed)
-						}
+					if turn.QuietCompanion {
+						// The producer stamped this prose as the companion of a
+						// quiet communicate call in the same round. The quiet
+						// yield notice shows instead of a chat bubble.
+						continue
 					}
 					item := appwire.ThreadItem{
 						Type:       "agentMessage",
@@ -807,12 +817,8 @@ func projectTurn(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRe
 						Text:       part.Text,
 						Status:     appwire.TurnStatusCompleted,
 					}
-					if holdProvisional {
-						provisionalItems = append(provisionalItems, item)
-					} else {
-						items = append(items, item)
-						recordPart(parts, i)
-					}
+					items = append(items, item)
+					recordPart(parts, i)
 					lastAssistantText = strings.TrimSpace(part.Text)
 				}
 			case llm.ContentThinking:
@@ -846,9 +852,6 @@ func projectTurn(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRe
 					continue
 				}
 				reg.Names[part.ToolCall.ID] = part.ToolCall.Name
-				if hasCommunicate {
-					toolCallIDs = append(toolCallIDs, part.ToolCall.ID)
-				}
 				if IsCommunicateTool(part.ToolCall.Name, turn.ResultToolName) {
 					// Defer ALL communicate messages to the paired tool result.
 					// The assistant turn alone cannot disambiguate: a valid-JSON
@@ -879,56 +882,18 @@ func projectTurn(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRe
 			}
 			return items
 		}
-		if hasCommunicate {
-			reg.recordQuietCompanion(turnID, turnIndex, commentaryParts, toolCallIDs, possiblyQuietIDs, provisionalItems, lastAssistantText, turn.Authorship, holdProvisional)
-		}
 		// Only record non-empty assistant text, mirroring the live projector's
 		// recordAssistantMessage (which returns early on empty text). A text-less
 		// ASSISTANT record must not zero LastAssistantText: doing so lets a later
 		// healed communicate echo the text of a PREVIOUS turn and renders a
 		// duplicate agentMessage on reload that live suppressed. The turnID scopes
 		// the echo check below so a cross-turn message is still rendered.
-		if !holdProvisional && lastAssistantText != "" {
+		if lastAssistantText != "" {
 			reg.noteAssistantText(lastAssistantText, turnID, turnIndex)
 		}
 		return items
 	case schema.TurnTool, schema.TurnToolResults:
 		var items []appwire.ThreadItem
-		// First pass: quiet results consume their entry's provisional prose.
-		for _, part := range turn.Message.Content {
-			if part.Kind == llm.ContentToolResult && part.ToolResult != nil && IsQuietCommunicate(part.ToolResult) {
-				if qentry := reg.QuietCalls[part.ToolResult.ToolCallID]; qentry != nil {
-					qentry.Flushed = true
-					delete(qentry.PendingQuiet, part.ToolResult.ToolCallID)
-					if !qentry.WasProvisional {
-						reg.UnexpectedQuiet = true
-						if reg.ForceProvisional == nil {
-							reg.ForceProvisional = map[int]bool{}
-						}
-						reg.ForceProvisional[qentry.EntryIndex] = true
-					}
-					reg.clearDemotedAssistantText(qentry.EntryIndex)
-				}
-			}
-		}
-		// Second pass: non-quiet results resolving the last pending possibly-quiet
-		// call flush that entry's provisional prose ahead of the result items.
-		partOffset := 0
-		for _, part := range turn.Message.Content {
-			if part.Kind != llm.ContentToolResult || part.ToolResult == nil || IsQuietCommunicate(part.ToolResult) {
-				continue
-			}
-			if qentry := reg.QuietCalls[part.ToolResult.ToolCallID]; qentry != nil && !qentry.Flushed {
-				delete(qentry.PendingQuiet, part.ToolResult.ToolCallID)
-				if len(qentry.PendingQuiet) == 0 {
-					for _, pitem := range reg.flushProvisionalEntry(qentry, turnID) {
-						items = append(items, pitem)
-						recordPart(parts, partOffset)
-						partOffset++
-					}
-				}
-			}
-		}
 		for i, part := range turn.Message.Content {
 			if part.Kind != llm.ContentToolResult || part.ToolResult == nil {
 				continue
@@ -967,7 +932,7 @@ func projectTurn(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRe
 							item.CompletedAt = &ms
 						}
 						items = append(items, item)
-						recordPart(parts, partOffset+i)
+						recordPart(parts, i)
 					}
 				}
 				// A healed communicate (IsError=false) delivered its message
@@ -998,7 +963,7 @@ func projectTurn(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRe
 								Text:    msg,
 								Status:  appwire.TurnStatusCompleted,
 							})
-							recordPart(parts, partOffset+i)
+							recordPart(parts, i)
 						} else if msg == "" && strings.TrimSpace(rawArgs) != "" && !CommunicateArgumentsWithoutMessage(json.RawMessage(rawArgs)) {
 							// Repair recovered no message (the healed bytes
 							// carry neither "message" nor output.message, or
@@ -1017,27 +982,17 @@ func projectTurn(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRe
 								Text:    communicateRawFallbackText(rawArgs),
 								Status:  appwire.TurnStatusCompleted,
 							})
-							recordPart(parts, partOffset+i)
+							recordPart(parts, i)
 						}
 					}
 				}
 				if quiet {
-					var commentary string
-					authorship := reg.CommAuthorship[part.ToolResult.ToolCallID]
-					if qentry := reg.QuietCalls[part.ToolResult.ToolCallID]; qentry != nil {
-						if qentry.Authorship != nil {
-							authorship = qentry.Authorship
-						}
-						if !qentry.Claimed && qentry.Commentary != "" {
-							commentary = qentry.Commentary
-							qentry.Claimed = true
-						}
-						reg.clearDemotedAssistantText(qentry.EntryIndex)
-					}
 					note := schema.QuietCommunicateNote(part.ToolResult.ToolState)
+					commentary := schema.QuietCommunicateCommentary(part.ToolResult.ToolState)
+					authorship := reg.CommAuthorship[part.ToolResult.ToolCallID]
 					if item, ok := quietYieldSystemItem(turnID, turnIndex, i, turn, part.ToolResult.ToolCallID, note, commentary, authorship); ok {
 						items = append(items, item)
-						recordPart(parts, partOffset+i)
+						recordPart(parts, i)
 					}
 				}
 				for j := first; j < len(items); j++ {
@@ -1048,10 +1003,9 @@ func projectTurn(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRe
 				delete(reg.CommAuthorship, part.ToolResult.ToolCallID)
 				delete(reg.Names, part.ToolResult.ToolCallID)
 				delete(reg.CommRawArgs, part.ToolResult.ToolCallID)
-				delete(reg.QuietCalls, part.ToolResult.ToolCallID)
+				delete(reg.CommAwaitingText, part.ToolResult.ToolCallID)
 				continue
 			}
-			delete(reg.QuietCalls, part.ToolResult.ToolCallID)
 			item := appwire.ThreadItem{
 				Type:     "commandExecution",
 				ID:       fmt.Sprintf("item_tool_result_%d_%d", turnIndex, i),
@@ -1080,7 +1034,7 @@ func projectTurn(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRe
 				item.OutputImages = outputImageProjector(part.ToolResult)
 			}
 			items = append(items, item)
-			recordPart(parts, partOffset+i)
+			recordPart(parts, i)
 		}
 		return items
 	default:
@@ -1138,17 +1092,8 @@ func answerObservation(turnID string, turn schema.Turn) *appwire.SessionObservat
 // names the entry's round.
 func projectIdentityAssistant(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRegistry, parts *[]int) []appwire.ThreadItem {
 	var items []appwire.ThreadItem
-	var provisionalItems []appwire.ThreadItem
 	var lastAssistantText string
-	var commentaryParts []string
 	var quietTexts []string
-	var toolCallIDs []string
-	var hasCommunicate bool
-	var possiblyQuietIDs []string
-	if !turn.QuietYield {
-		hasCommunicate, possiblyQuietIDs = AssistantCommunicateCallIDs(turn, reg != nil && reg.ForceProvisional[turnIndex])
-	}
-	holdProvisional := !turn.QuietYield && len(possiblyQuietIDs) > 0
 	reasoningPart, reasoningText := identityReasoning(turn.Message.Content)
 	var run strings.Builder
 	runStart := -1
@@ -1162,10 +1107,12 @@ func projectIdentityAssistant(turnID string, turnIndex int, turn schema.Turn, re
 				runStart = -1
 				return
 			}
-			if hasCommunicate {
-				if trimmed := strings.TrimSpace(run.String()); trimmed != "" {
-					commentaryParts = append(commentaryParts, trimmed)
-				}
+			if turn.QuietCompanion {
+				// The producer stamped this prose as the companion of a quiet
+				// communicate call in the same round.
+				run.Reset()
+				runStart = -1
+				return
 			}
 			item := appwire.ThreadItem{
 				Type:       "agentMessage",
@@ -1181,12 +1128,8 @@ func projectIdentityAssistant(turnID string, turnIndex int, turn schema.Turn, re
 				ms := turn.Timestamp.UnixMilli()
 				item.StartedAt = &ms
 			}
-			if holdProvisional {
-				provisionalItems = append(provisionalItems, item)
-			} else {
-				items = append(items, item)
-				recordPart(parts, runStart)
-			}
+			items = append(items, item)
+			recordPart(parts, runStart)
 			lastAssistantText = strings.TrimSpace(run.String())
 		}
 		run.Reset()
@@ -1227,18 +1170,26 @@ func projectIdentityAssistant(turnID string, turnIndex int, turn schema.Turn, re
 				continue
 			}
 			reg.Names[part.ToolCall.ID] = part.ToolCall.Name
-			if hasCommunicate {
-				toolCallIDs = append(toolCallIDs, part.ToolCall.ID)
-			}
 			if IsCommunicateTool(part.ToolCall.Name, turn.ResultToolName) {
-				if turn.Authorship != nil && turn.Authorship.Inherited {
+				if reg.CommAwaitingText == nil {
+					reg.CommAwaitingText = map[string]string{}
+				}
+				reg.CommAwaitingText[part.ToolCall.ID] = AssistantEchoText(turn)
+				if turn.Authorship != nil {
 					if reg.CommRawArgs == nil {
 						reg.CommRawArgs = map[string]string{}
 					}
 					if reg.CommAuthorship == nil {
 						reg.CommAuthorship = map[string]*schema.TranscriptAuthorship{}
 					}
-					reg.CommRawArgs[part.ToolCall.ID] = part.ToolCall.SentArguments()
+					// The result projects the quiet yield notice or the
+					// delivered message, and both need the announcing entry's
+					// authorship. Only inherited calls defer their delivered
+					// message bytes to the result; a non-inherited entry's
+					// message is already visible as the entry's own text.
+					if turn.Authorship.Inherited {
+						reg.CommRawArgs[part.ToolCall.ID] = part.ToolCall.SentArguments()
+					}
 					reg.CommAuthorship[part.ToolCall.ID] = turn.Authorship.Clone()
 				}
 				continue
@@ -1253,13 +1204,8 @@ func projectIdentityAssistant(turnID string, turnIndex int, turn schema.Turn, re
 			items = append(items, item)
 			recordPart(parts, qpart)
 		}
-	} else {
-		if hasCommunicate {
-			reg.recordQuietCompanion(turnID, turnIndex, commentaryParts, toolCallIDs, possiblyQuietIDs, provisionalItems, lastAssistantText, turn.Authorship, holdProvisional)
-		}
-		if !holdProvisional && lastAssistantText != "" {
-			reg.noteAssistantText(lastAssistantText, turnID, turnIndex)
-		}
+	} else if lastAssistantText != "" {
+		reg.noteAssistantText(lastAssistantText, turnID, turnIndex)
 	}
 	for i := range items {
 		items[i].RoundID = turn.RoundID
@@ -1297,111 +1243,10 @@ func quietYieldSystemItem(turnID string, turnIndex, part int, turn schema.Turn, 
 	return item, true
 }
 
-func (r *ToolCallRegistry) recordQuietCompanion(turnID string, turnIndex int, commentaryParts, toolCallIDs, possiblyQuietIDs []string, provisionalItems []appwire.ThreadItem, lastAssistantText string, authorship *schema.TranscriptAuthorship, wasProvisional bool) {
-	if len(toolCallIDs) == 0 {
-		return
-	}
-	if r.QuietCalls == nil {
-		r.QuietCalls = map[string]*QuietAssistantEntry{}
-	}
-	var pending map[string]bool
-	if len(possiblyQuietIDs) > 0 {
-		pending = make(map[string]bool, len(possiblyQuietIDs))
-		for _, id := range possiblyQuietIDs {
-			pending[id] = true
-		}
-	}
-	qentry := &QuietAssistantEntry{
-		EntryIndex:        turnIndex,
-		TurnID:            turnID,
-		Commentary:        strings.Join(commentaryParts, "\n\n"),
-		Authorship:        authorship.Clone(),
-		ProvisionalItems:  provisionalItems,
-		LastAssistantText: lastAssistantText,
-		PendingQuiet:      pending,
-		Flushed:           len(provisionalItems) == 0 || len(pending) == 0,
-		WasProvisional:    wasProvisional,
-	}
-	for _, id := range toolCallIDs {
-		r.QuietCalls[id] = qentry
-	}
-	if len(provisionalItems) > 0 && len(pending) > 0 {
-		r.Provisional = append(r.Provisional, qentry)
-	}
-}
-
-func (r *ToolCallRegistry) flushProvisionalEntry(qentry *QuietAssistantEntry, turnID string) []appwire.ThreadItem {
-	if qentry == nil || qentry.Flushed || len(qentry.ProvisionalItems) == 0 {
-		return nil
-	}
-	qentry.Flushed = true
-	deliveredLast := false
-	if qentry.LastAssistantText != "" {
-		for _, msg := range qentry.DeliveredTexts {
-			if EchoesAssistantText(msg, qentry.LastAssistantText) {
-				deliveredLast = true
-				break
-			}
-		}
-	}
-	items := qentry.ProvisionalItems
-	if deliveredLast {
-		items = items[:len(items)-1]
-	}
-	if len(items) == 0 {
-		return nil
-	}
-	out := make([]appwire.ThreadItem, len(items))
-	for i, item := range items {
-		item.TurnID = turnID
-		out[i] = item
-	}
-	if !deliveredLast && qentry.LastAssistantText != "" {
-		r.noteAssistantText(qentry.LastAssistantText, turnID, qentry.EntryIndex)
-	}
-	return out
-}
-
-func (r *ToolCallRegistry) flushProvisionalForTurn(turnID string) []appwire.ThreadItem {
-	var out []appwire.ThreadItem
-	for _, qentry := range r.Provisional {
-		if qentry.TurnID == turnID && !qentry.Flushed {
-			out = append(out, r.flushProvisionalEntry(qentry, turnID)...)
-		}
-	}
-	return out
-}
-
-// HasProvisionalAt reports whether the assistant entry at entryIndex held companion prose provisional.
-func (r *ToolCallRegistry) HasProvisionalAt(entryIndex int) bool {
-	for _, qentry := range r.Provisional {
-		if qentry.EntryIndex == entryIndex {
-			return true
-		}
-	}
-	return false
-}
-
 func (r *ToolCallRegistry) noteAssistantText(text, turnID string, entryIndex int) {
-	r.prevAssistantText = r.LastAssistantText
-	r.prevAssistantTurnID = r.LastAssistantTurnID
-	r.prevAssistantEntry = r.LastAssistantEntry
-	r.hasPrevAssistant = true
 	r.LastAssistantText = text
 	r.LastAssistantTurnID = turnID
 	r.LastAssistantEntry = entryIndex
-}
-
-func (r *ToolCallRegistry) clearDemotedAssistantText(entryIndex int) {
-	if entryIndex == 0 || r.LastAssistantEntry != entryIndex {
-		return
-	}
-	if r.hasPrevAssistant {
-		r.LastAssistantText, r.LastAssistantTurnID, r.LastAssistantEntry = r.prevAssistantText, r.prevAssistantTurnID, r.prevAssistantEntry
-		r.hasPrevAssistant = false
-		return
-	}
-	r.LastAssistantText, r.LastAssistantTurnID, r.LastAssistantEntry = "", "", 0
 }
 
 // redactedThinkingText stands in for a redacted-thinking part's content.

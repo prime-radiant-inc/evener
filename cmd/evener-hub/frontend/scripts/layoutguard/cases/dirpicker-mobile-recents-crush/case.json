@@ -3,6 +3,7 @@
   "description": "the directory picker on a phone: a long recent list must not collapse the browse pane (breadcrumbs, path input, Folders, New folder) into an unusable sliver; both columns scroll inside the bounded body, the panel stays within the viewport, and the footer buttons stay reachable",
   "cssFiles": [
     "styles/global.css",
+    "styles/text.module.css",
     "styles/tokens.css",
     "widgets/button/button.module.css",
     "styles/motion.module.css",

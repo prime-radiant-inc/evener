@@ -37,29 +37,27 @@ a scripted `llm.ProviderAdapter` response and assert the Evener side effects.
 
 ### Prompt Prose Is Not a Test Oracle
 
-Pin assembled/system prompts, prompt sections, model-facing tool and agent
-descriptions, and natural-language steering, reminder, warning, or tool-result
-prose only with a whole-output golden snapshot. `agenttest.CheckGolden` compares
-the complete rendered text with a file under `testdata/`, and a wording change
-regenerates the file with an `-update-prompt` flag so the diff is read in
-review. `agent/testdata/memoryprompt` and `agent/testdata/messagingprompt` are
-the pattern: one golden per session kind, rendered from the requests a real
-session sends.
+Do not test system prompts, prompt sections, tool descriptions, or
+model-facing prose by wording. Never pin prompt prose with whole-output golden
+snapshots (`agenttest.CheckGolden` or `-update-prompt`), and never assert on
+wording by presence, absence, substring, regex, token count, or clause order.
+Both break on legitimate edits without proving behavior. Review prompt wording
+in the diff instead.
 
-Never test prose by presence, absence, substring, regex match, token count, or
-order of words or clauses. Those assertions pin fragments of copy, not behavior,
-and they pass while the surrounding text drifts. If a test's only claim is that
-the prose contains a sentence, delete it and let the golden cover the text.
+Test prompt plumbing structurally:
 
-Assert behavior structurally: typed template inputs, section identity and order,
-schema properties and enums, capability metadata, route or branch selection,
-structured event or data fields, provider request shape, or downstream side
-effects. An opaque sentinel may prove that user or task data crosses a plumbing
-boundary, but it must not encode or pin natural-language copy.
+- typed template inputs and gating predicates;
+- section presence and omission by heading;
+- advertised tool lists, schema properties, and enums;
+- capability metadata and route or branch selection;
+- structured event or data fields, wire request shape, and downstream side
+  effects.
 
-Exact text assertions are allowed only when the text is itself a machine or API
-contract value, such as a JSON field name, enum token, error code, or CLI flag.
-Prefer asserting such values through their structured representation.
+An opaque sentinel may prove that caller or task data crosses a plumbing
+boundary, as long as it does not encode natural-language copy. Exact text
+assertions belong only on machine or API contract tokens (a JSON field name,
+enum value, error code, or CLI flag), checked through their structured form
+whenever possible.
 
 ### Copy Is Not a Test Oracle
 

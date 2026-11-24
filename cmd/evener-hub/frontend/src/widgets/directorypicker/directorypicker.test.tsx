@@ -70,6 +70,15 @@ test("the picker's body keeps its own scrolling inside the shared Dialog", async
   expect(topRuleBlock(css, ".browse")).toContain("overflow-y: auto");
 });
 
+// The panel stops growing well short of the viewport bottom: a long folder
+// list scrolls inside the picker instead of turning the dialog into a
+// full-height sheet.
+test("the panel's desktop height is capped below the viewport", () => {
+  const css = readModuleCss(import.meta.url, "directorypicker.module.css");
+  const panel = topRuleBlock(css, ".panel");
+  expect(panel).toMatch(/max-height:\s*min\(\s*720px\s*,\s*calc\(100dvh/);
+});
+
 test("navigation and recent folders stay draft until explicitly selected", async () => {
   const { user, onPick } = setup();
   await user.click(await screen.findByRole("button", { name: "Open /work/app" }));

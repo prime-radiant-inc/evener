@@ -105,6 +105,21 @@ func (s *Session) resultToolNameOverride() string {
 	return s.cfg.ResultToolName
 }
 
+// hasQuietCommunicateCall reports whether calls holds a communicate call that
+// asked to log quietly and end the turn.
+func (s *Session) hasQuietCommunicateCall(calls []llm.ToolCallData) bool {
+	name := s.resultToolName()
+	for _, call := range calls {
+		if s.canonicalToolName(call.Name) != name {
+			continue
+		}
+		if _, quiet, ok := schema.CommunicateArgsOutcome(json.RawMessage(call.SentArguments())); ok && quiet {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Session) newToolResultsTurn(m llm.Message) schema.Turn {
 	t := schema.NewTurn(schema.TurnToolResults, m)
 	t.ResultToolName = s.resultToolNameOverride()

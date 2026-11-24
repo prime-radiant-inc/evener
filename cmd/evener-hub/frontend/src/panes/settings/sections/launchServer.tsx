@@ -15,6 +15,7 @@ import { HostScopedSurface } from "./hostScopedSurface";
 import styles from "./launchServer.module.css";
 import { type LoadState, launchFormPaths } from "./launchShared/fields";
 import { LaunchConfigForm } from "./launchShared/LaunchConfigForm";
+import { RefreshErrorNotice } from "./sectionGate";
 import { useHostScopedLoad, useLaunchConfigRefresh } from "./useConnectedEffect";
 
 const CLASS = {
@@ -149,18 +150,9 @@ export function LaunchServerSection({ host = LOCAL_HOST }: LaunchServerSectionPr
       {load.phase === "ready" && (
         <>
           {refreshError !== null && (
-            <InlineNotice
-              tone="danger"
-              live="status"
-              data-reason="refresh-failed"
-              action={
-                <Button type="button" onClick={() => reload()}>
-                  Retry
-                </Button>
-              }
-            >
+            <RefreshErrorNotice onRetry={() => reload()}>
               Could not re-read this host's launch settings. {refreshError}
-            </InlineNotice>
+            </RefreshErrorNotice>
           )}
           <Diagnostics diagnostics={diagnostics.map((d) => (d.field ? `${d.field}: ${d.message}` : d.message))} />
           <LaunchConfigForm

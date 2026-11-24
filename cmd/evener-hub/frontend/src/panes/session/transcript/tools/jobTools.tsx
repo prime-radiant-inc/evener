@@ -16,7 +16,7 @@ import {
   parseArgs,
   str,
 } from "@evener/appwire-client";
-import { CopyButton } from "../../../../widgets";
+import { CopyButton, EmptyState } from "../../../../widgets";
 import { jobStatusDisplay } from "../../chrome/activityFormat";
 import { EntityRef } from "../EntityRef";
 import { UserMessageView } from "../messages/UserMessageItem";
@@ -75,7 +75,7 @@ function JobListBody({ item, live }: ToolRenderProps) {
   return (
     <div data-testid="job-list-structured">
       {state.items.length === 0 ? (
-        <div>No jobs.</div>
+        <EmptyState size="compact" title="No jobs" reason="empty" />
       ) : (
         state.items.map((job) => {
           const identity = textField(job, "id") ?? textField(job, "job_id");

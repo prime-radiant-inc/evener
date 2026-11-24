@@ -198,6 +198,13 @@ type jobManager struct {
 	// (still durable, not yet Delivered) and re-enqueues it during the drain's
 	// 250ms recheck, reproducing the issue-#140 finalization provider-request leak.
 	testOnlyAfterNotifyPendingAppend func(jobID string)
+	// testOnlyAfterStableAttentionArm fires inside persistStableShellAttention
+	// after it has armed the receiver's attention, but BEFORE it acknowledges
+	// the notification as delivered and before the job leaves the running map.
+	// It is nil in production; deterministic tests hold the finalization here to
+	// prove a receiver woken by the arm never treats the already-told completion
+	// as drainable work.
+	testOnlyAfterStableAttentionArm func(jobID string)
 	// testOnlyAfterRematerializeDurableLoad fires inside rematerializeDurablePendings
 	// after it has read the durable records, before it decides what to re-enqueue.
 	// It is nil in production; deterministic tests use it to hold a rematerialize
@@ -2141,8 +2148,16 @@ func (jm *jobManager) persistStableShellAttention(jobID string) (string, *Sessio
 	if _, err := owner.appendDelegateNotificationDurably(attentionID, content); err != nil {
 		return "", owner, err
 	}
+	// Arm before acknowledging delivery: a failed arm must leave the record
+	// NotifyPending so retry and recovery know the wake did not publish. Once
+	// the arm returns, the receiver can wake and ask whether this job is still
+	// drainable work; outstandingDrainJobIDsByBackground reads the committed
+	// attention row rather than waiting for the acknowledgement below.
 	if err := owner.armDelegateAttention(attentionID); err != nil {
 		return "", owner, err
+	}
+	if hook := jm.testOnlyAfterStableAttentionArm; hook != nil {
+		hook(record.JobID)
 	}
 	if record.NotifyState != jobstore.NotifyDelivered {
 		delivered := jobstore.Event{

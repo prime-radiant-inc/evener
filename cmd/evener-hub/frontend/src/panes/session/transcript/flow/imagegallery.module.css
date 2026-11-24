@@ -43,13 +43,11 @@
 }
 
 .caption {
+  composes: truncate from "../../../../styles/text.module.css";
   display: block;
   padding: 2px var(--space-1);
   font-size: var(--font-size-caption);
   color: var(--ink-mid);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 .lightboxImg {

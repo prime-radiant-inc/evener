@@ -3,13 +3,8 @@
  * styles only the expanded formatted body and its folded literal Source. */
 
 .body {
+  composes: railBody from "../../../../styles/surface.module.css";
   margin: var(--space-1) 0 0;
-  padding: var(--space-2);
-  border-left: 2px solid var(--edge);
-  font-family: var(--font-sans);
-  font-size: var(--font-size-body);
-  color: var(--ink-mid);
-  overflow-wrap: break-word;
 }
 
 .meta {

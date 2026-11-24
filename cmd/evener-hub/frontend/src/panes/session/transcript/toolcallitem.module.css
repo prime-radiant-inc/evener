@@ -45,14 +45,13 @@
 /* The visual header is a non-interactive layout wrapper. The real disclosure
  * button is kept separate from the summary line so links and action buttons
  * can remain siblings rather than becoming nested controls. */
+/* The summary trigger and the body-trigger chevron are both native buttons
+ * whose chrome is reset: one reset, declared once. */
+.bodyTrigger,
 .trigger {
   flex: none;
   display: inline-flex;
-  flex-wrap: wrap;
   align-items: baseline;
-  column-gap: var(--space-2);
-  row-gap: 0;
-  min-width: 0;
   margin: 0;
   padding: 0;
   border: 0;
@@ -63,6 +62,13 @@
   text-align: left;
   appearance: none;
   cursor: pointer;
+}
+
+.trigger {
+  flex-wrap: wrap;
+  column-gap: var(--space-2);
+  row-gap: 0;
+  min-width: 0;
 }
 
 .row[data-intent="true"] .trigger {
@@ -83,9 +89,14 @@
 /* One semantic disclosure button still owns the full intent-only line,
  * including the chevron after Open. Its visible siblings ignore pointer input;
  * the Open slot opts back in below and already stopPropagates. */
-.intentOverlayTrigger {
+.intentOverlayTrigger,
+.summaryLine[data-body-trigger="true"] .bodyTrigger,
+.row:not([data-intent="true"]) .trigger {
   position: absolute;
   inset: 0;
+}
+
+.intentOverlayTrigger {
   width: 100%;
   height: 100%;
 }
@@ -203,8 +214,6 @@
  * back into pointer hit testing. This restores the old full-row disclosure
  * target without nesting interactive controls. */
 .row:not([data-intent="true"]) .trigger {
-  position: absolute;
-  inset: 0;
   width: 100%;
   height: 100%;
   justify-content: flex-end;
@@ -238,22 +247,6 @@
   outline: var(--focus-ring);
   outline-offset: 2px;
   border-radius: var(--radius-control);
-}
-
-.bodyTrigger {
-  flex: none;
-  display: inline-flex;
-  align-items: baseline;
-  margin: 0;
-  padding: 0;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-  color: inherit;
-  font: inherit;
-  text-align: left;
-  appearance: none;
-  cursor: pointer;
 }
 
 .bodyTrigger:hover {
@@ -475,8 +468,6 @@
 }
 
 .summaryLine[data-body-trigger="true"] .bodyTrigger {
-  position: absolute;
-  inset: 0;
   justify-content: flex-end;
   overflow: hidden;
 }
@@ -520,20 +511,16 @@
 }
 
 .clampedHead {
+  composes: truncate from "../../../styles/text.module.css";
   flex: 0 1 auto;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .clampedTail {
+  composes: truncate from "../../../styles/text.module.css";
   flex: none;
   max-width: 60%;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 /* The row's trailing affordance (e.g. "Open beside"), riding INLINE at the

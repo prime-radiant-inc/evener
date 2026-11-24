@@ -11,6 +11,7 @@ import { hostsStore } from "../../stores/hosts";
 import { ownClientId } from "../../stores/mutationClientIdentity";
 import { setDraftField, spawnDraftsStore } from "./spawnDrafts";
 import {
+  accessRowTrigger,
   chooseHost,
   completionDraft,
   expectWorkingDir,
@@ -213,7 +214,7 @@ test("automatic connection completion adopts the connected instance's marked def
   const prompt = screen.getByRole("textbox", { name: "Prompt" });
   await act(async () => pastePngInto(prompt, "shot.png"));
   await waitFor(() => expect(screen.getByRole("button", { name: "View shot.png" })).toBeTruthy());
-  await user.click(screen.getByText("Advanced options"));
+  await user.click(accessRowTrigger());
   await user.selectOptions(screen.getByLabelText("Access mode"), "read-only");
 
   await openTeamProvider(user);

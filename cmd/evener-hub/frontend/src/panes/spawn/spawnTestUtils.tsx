@@ -114,7 +114,25 @@ export async function chooseHost(label: string): Promise<void> {
 }
 
 export function workingDir(): HTMLElement {
-  return screen.getByLabelText(/^Working directory:/, { selector: "#spawn-cwd" });
+  return screen.getByTestId("spawn-cwd-value");
+}
+
+/** The working-directory quiet row's trigger: one click opens the shared
+ * directory dialog. */
+export function cwdRowTrigger(): HTMLElement {
+  return screen.getByTestId("spawn-cwd-trigger");
+}
+
+/** The working-directory row's trigger, which opens the directory dialog. */
+export function openWorkingDir(): HTMLElement {
+  return cwdRowTrigger();
+}
+
+/** The access-mode quiet row's disclosure summary. */
+export function accessRowTrigger(): HTMLElement {
+  const summary = screen.getByTestId("spawn-access-summary").closest("summary");
+  if (!(summary instanceof HTMLElement)) throw new Error("access-mode disclosure summary is missing");
+  return summary;
 }
 
 // The DESKTOP Model control lives in the prompt card's own control row (the
@@ -163,7 +181,7 @@ export function expectWorkingDir(path: string): void {
 }
 
 export async function setWorkingDir(user: ReturnType<typeof userEvent.setup>, path: string): Promise<void> {
-  await user.click(workingDir());
+  await user.click(openWorkingDir());
   const input = await screen.findByRole("textbox", { name: "Path" });
   await user.clear(input);
   await enterText(user, input, path);

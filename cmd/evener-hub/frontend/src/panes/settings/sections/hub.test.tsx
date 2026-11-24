@@ -56,6 +56,7 @@ test("shows a loading skeleton before the overview resolves", () => {
 
   render(<HubSection />);
   expect(screen.getByRole("status", { name: "Loading" })).toBeTruthy();
+  expect(screen.getAllByTestId("skeleton-line")).toHaveLength(3);
 });
 
 describe("on load failure", () => {
@@ -74,7 +75,9 @@ describe("on load failure", () => {
     await waitFor(() => expect(statusReasons(document.body)).toEqual(["unavailable"]));
     const notice = document.querySelector<HTMLElement>('[role="status"][data-reason="unavailable"]');
     if (notice === null) throw new Error("load failure shows no notice");
-    expect(within(notice).getByRole("button", { name: "Retry" })).toBeTruthy();
+    // The region announces the failure; the retry control stays outside it.
+    expect(within(notice).queryByRole("button")).toBeNull();
+    expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
     expect(screen.queryByTestId("empty-state")).toBeNull();
     expect(screen.queryByText("raw-overview-failure", { exact: false })).toBeNull();
   });

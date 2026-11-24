@@ -42,7 +42,7 @@ import {
 } from "@evener/appwire-client";
 import type { ReactNode } from "react";
 import { useState } from "react";
-import { Button, Card, Chip, Disclosure } from "../../../../widgets";
+import { Button, Card, Chip, Disclosure, EmptyState } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { formatMonthDay } from "../../../../widgets/timestamp/formatAbsoluteTime";
 import { EntityRef } from "../EntityRef";
@@ -372,10 +372,8 @@ function ListBody({ raw }: { raw: JsonObject }) {
   }
   if (rows.length === 0) {
     return (
-      <div className={CLASS.section}>
-        <div className={CLASS.trigger} data-testid="job-watch-empty">
-          No watches.
-        </div>
+      <div data-testid="job-watch-empty">
+        <EmptyState size="compact" title="No watches" reason="empty" />
       </div>
     );
   }

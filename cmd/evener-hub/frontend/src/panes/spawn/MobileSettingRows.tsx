@@ -55,6 +55,11 @@ export interface MobileSettingRowsProps {
   onConnectHost: () => void;
   accessMode: string;
   accessOptions: MobilePickerOption[];
+  /** The access the launch will actually use, resolved from the requested mode
+   * and the Advanced sandbox override. */
+  effectiveAccessLabel: string;
+  /** The Advanced sandbox override is what sets the effective access. */
+  advancedAccessOverride: boolean;
   onAccessChange: (value: string) => void;
   pluginPreview: PluginPreviewLoadState;
   pluginSelection: PluginSelectionState;
@@ -212,6 +217,8 @@ export function MobileSettingRows({
   onConnectHost,
   accessMode,
   accessOptions,
+  effectiveAccessLabel,
+  advancedAccessOverride,
   onAccessChange,
   pluginPreview,
   pluginSelection,
@@ -253,7 +260,10 @@ export function MobileSettingRows({
   }
 
   const harnessLabel = harnessOptions.find((option) => option.value === harness)?.label ?? harness;
-  const accessLabel = accessOptions.find((option) => option.value === accessMode)?.label ?? "(default)";
+  // The row names the access the launch resolves to, not just the requested
+  // mode, and says when Advanced options is what decides it. The sheet below
+  // keeps the requested mode so it can still be changed there.
+  const accessLabel = advancedAccessOverride ? `${effectiveAccessLabel} (Advanced)` : effectiveAccessLabel;
   const pluginResponse =
     pluginPreview.status === "ready" || pluginPreview.status === "error" ? pluginPreview.response : undefined;
   const pluginSummary =
@@ -294,6 +304,7 @@ export function MobileSettingRows({
         <MobileSettingRow
           label="Access mode"
           value={accessLabel}
+          state={advancedAccessOverride ? "advanced" : undefined}
           onClick={() => open("Access mode")}
           expanded={openPicker === "Access mode"}
         />

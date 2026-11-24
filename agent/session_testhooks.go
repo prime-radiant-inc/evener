@@ -240,6 +240,13 @@ type testConfig struct {
 	// outstanding. It receives the parking session, since child sessions
 	// inherit the hook. Nil in production.
 	jobTreeDrainParked func(*Session)
+	// jobTreeDrainBeforeOutstanding observes a session's job-tree drain after
+	// a pass has established it owes no notification turn, immediately before
+	// it counts outstanding work. A completion whose attention commits in
+	// that interval must not let the pass return quiescent. It receives the
+	// draining session, since child sessions inherit the hook. Nil in
+	// production.
+	jobTreeDrainBeforeOutstanding func(*Session)
 	// delegateFinalizationWaitCeiling overrides how long a send waits for a
 	// finished generation's finalize tail to release the delegate
 	// (delegateFinalizationWaitCeiling), so a test can exercise a tail that

@@ -39,6 +39,7 @@ import { navigationStore, resetNavigationStoreForTests } from "../../stores/navi
 import { prefsStore, resetPrefsStoreForTests } from "../../stores/prefs";
 import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
 import buttonStyles from "../../widgets/button/button.module.css";
+import { SHOW_DELAY_MS } from "../../widgets/hovercard/useFloatingLabel";
 import { getToasts, resetToastStoreForTests } from "../../widgets/toast/store";
 import { toastKinds } from "../../widgets/toast/toastTestUtils";
 import { hoverForTooltip } from "../../widgets/tooltip/tooltipTestUtils";
@@ -882,6 +883,26 @@ describe("resource-backed Rail", () => {
       const button = brand.getByRole("button", { name: label });
       expect(button.querySelector("svg")).toBeTruthy();
       expect(button.textContent?.trim()).toBe("");
+    }
+  });
+
+  test("the header's three icon buttons all rest without a tooltip", () => {
+    installState();
+    render(<Rail onHide={vi.fn()} />);
+    const brand = within(screen.getByTestId("rail-brand"));
+    const buttons = ["Settings", "Search", "Hide sidebar"].map((label) => brand.getByRole("button", { name: label }));
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      for (const button of buttons) {
+        fireEvent.mouseEnter(button);
+        act(() => {
+          vi.advanceTimersByTime(SHOW_DELAY_MS);
+        });
+        expect(screen.queryByRole("tooltip")).toBeNull();
+        fireEvent.mouseLeave(button);
+      }
+    } finally {
+      vi.useRealTimers();
     }
   });
 

@@ -15,11 +15,10 @@
 }
 
 .hint {
+  composes: helpMuted from "../../styles/help.module.css";
   flex: 0 0 auto;
   margin: 0;
   padding: var(--space-2) var(--space-3);
-  color: var(--ink-low);
-  font-size: var(--font-size-caption);
 }
 
 .track {
@@ -78,12 +77,10 @@
 }
 
 .title {
-  overflow: hidden;
+  composes: truncate from "../../styles/text.module.css";
   margin: 0;
   color: var(--ink-hi);
   font-size: var(--font-size-caption);
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .heading {
@@ -91,12 +88,10 @@
 }
 
 .state {
+  composes: truncate from "../../styles/text.module.css";
   display: block;
-  overflow: hidden;
   color: var(--ink-low);
   font-size: var(--font-size-caption);
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .state[data-runtime-state="active"] {

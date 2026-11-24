@@ -6,7 +6,6 @@ import (
 	"cmp"
 	"encoding/json"
 	"fmt"
-	"maps"
 	"os"
 	"reflect"
 	"slices"
@@ -99,10 +98,6 @@ func referenceProjection(t testing.TB, path string) []referenceTurn {
 // ToolCallRegistry state the scan ended on, which flushProjection needs to
 // reproduce a trailing unpaired communicate call.
 func referenceProjectionAndRegistry(t testing.TB, path string) ([]referenceTurn, *apptranscript.ToolCallRegistry) {
-	return referenceProjectionWithForce(t, path, nil)
-}
-
-func referenceProjectionWithForce(t testing.TB, path string, forceProvisional map[int]bool) ([]referenceTurn, *apptranscript.ToolCallRegistry) {
 	t.Helper()
 	header, entries, unreadable := readFixtureFile(t, path)
 	type turnState struct {
@@ -133,8 +128,8 @@ func referenceProjectionWithForce(t testing.TB, path string, forceProvisional ma
 	var turns []*turnState
 	byID := map[string]*turnState{}
 	var grouper apptranscript.TurnGrouper
-	reg := &apptranscript.ToolCallRegistry{Names: map[string]string{}, CommRawArgs: map[string]string{}, CommAuthorship: map[string]*schema.TranscriptAuthorship{}, ForceProvisional: forceProvisional}
-	identityReg := &apptranscript.ToolCallRegistry{Names: map[string]string{}, CommRawArgs: map[string]string{}, CommAuthorship: map[string]*schema.TranscriptAuthorship{}, ForceProvisional: forceProvisional}
+	reg := &apptranscript.ToolCallRegistry{Names: map[string]string{}, CommRawArgs: map[string]string{}, CommAuthorship: map[string]*schema.TranscriptAuthorship{}}
+	identityReg := &apptranscript.ToolCallRegistry{Names: map[string]string{}, CommRawArgs: map[string]string{}, CommAuthorship: map[string]*schema.TranscriptAuthorship{}}
 	add := func(s *turnState, item appwire.ThreadItem, entryIndex, part int) int {
 		item.Version = uint64(entryIndex)
 		s.items = append(s.items, item)
@@ -220,6 +215,15 @@ func referenceProjectionWithForce(t testing.TB, path string, forceProvisional ma
 					info = *entry.Completion
 				}
 				s.open, s.completion = false, &info
+				if info.AcceptedCommunicateCallID != "" {
+					// The builder records the completion as a contributor of
+					// the accepted delivery's item, which advances its version.
+					for at := range s.items {
+						if s.items[at].CallID == info.AcceptedCommunicateCallID {
+							s.items[at].Version = uint64(entryIndex)
+						}
+					}
+				}
 				// Calls of the awaiting entry that no results completed
 				// were interrupted.
 				for _, at := range s.awaitingItem {
@@ -247,9 +251,14 @@ func referenceProjectionWithForce(t testing.TB, path string, forceProvisional ma
 				}
 			}
 		}
-		if entry.Kind == schema.TurnCommunicate && entry.Communicate != nil && s.awaiting != nil &&
-			!identityReg.HasProvisionalAt(s.awaitingEntry) &&
-			apptranscript.EchoesAssistantText(referenceLastTextRun(s.awaiting.Message.Content), entry.Communicate.Message) {
+		echoes := false
+		if entry.Kind == schema.TurnCommunicate && entry.Communicate != nil && s.awaiting != nil {
+			if _, announced := s.awaitingNames[entry.Communicate.CallID]; announced {
+				echoText := apptranscript.AssistantEchoText(*s.awaiting)
+				echoes = echoText != "" && apptranscript.EchoesAssistantText(echoText, entry.Communicate.Message)
+			}
+		}
+		if echoes {
 			reason := entry.Communicate.EndReason
 			if reason == "" && entry.Communicate.EndTurn {
 				reason = "done"
@@ -305,12 +314,6 @@ func referenceProjectionWithForce(t testing.TB, path string, forceProvisional ma
 				s.awaiting, s.awaitingItem, s.awaitingNames, s.awaitingEntry = &awaiting, calls, names, entryIndex
 			}
 		}
-	}
-	if (reg.UnexpectedQuiet || identityReg.UnexpectedQuiet) && forceProvisional == nil {
-		merged := map[int]bool{}
-		maps.Copy(merged, reg.ForceProvisional)
-		maps.Copy(merged, identityReg.ForceProvisional)
-		return referenceProjectionWithForce(t, path, merged)
 	}
 	var out []referenceTurn
 	launchPrompt := ""
@@ -424,28 +427,6 @@ func flushProjection(reg *apptranscript.ToolCallRegistry, projection []reference
 		out[lastShown] = last
 	}
 	return out
-}
-
-// referenceLastTextRun is the text of the last maximal run of consecutive
-// text parts.
-func referenceLastTextRun(content []llm.ContentPart) string {
-	var runs []string
-	inRun := false
-	for _, part := range content {
-		if part.Kind != llm.ContentText {
-			inRun = false
-			continue
-		}
-		if !inRun {
-			runs = append(runs, "")
-			inRun = true
-		}
-		runs[len(runs)-1] += part.Text
-	}
-	if len(runs) == 0 {
-		return ""
-	}
-	return runs[len(runs)-1]
 }
 
 // referenceTurns is the reference projection's wire turns that hold items:

@@ -4040,13 +4040,14 @@ func assistantHistoryMessage(message llm.Message) llm.Message {
 // appendAssistantTurn appends an assistant turn that carries the full response
 // metadata (usage stats and response ID) alongside the message content.
 func (s *Session) appendAssistantTurn(resp llm.Response, finalAttempt ModelAttemptMetadata) error {
-	return s.appendAssistantTurnWithAcceptance(resp, finalAttempt, false, false)
+	return s.appendAssistantTurnWithAcceptance(resp, finalAttempt, false, false, false)
 }
 
-func (s *Session) appendAssistantTurnWithAcceptance(resp llm.Response, finalAttempt ModelAttemptMetadata, acceptedReply, quietYield bool) error {
+func (s *Session) appendAssistantTurnWithAcceptance(resp llm.Response, finalAttempt ModelAttemptMetadata, acceptedReply, quietYield, quietCompanion bool) error {
 	t := schema.Turn{
 		AcceptedReply:                   acceptedReply,
 		QuietYield:                      quietYield,
+		QuietCompanion:                  quietCompanion,
 		Kind:                            schema.TurnAssistant,
 		Message:                         assistantHistoryMessage(resp.Message),
 		Timestamp:                       s.sclock().Now().UTC(),

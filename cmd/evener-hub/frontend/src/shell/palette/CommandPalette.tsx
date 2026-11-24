@@ -32,7 +32,6 @@ import { navigationStore, useNavigationStore } from "../../stores/navigation/sto
 import { threadsStore } from "../../stores/threads";
 import { transcriptDisplayStore } from "../../stores/transcriptDisplay";
 import {
-  Chip,
   CloseIcon,
   Dialog,
   EmptyState,
@@ -81,7 +80,6 @@ import { fetchSearch, findInSessionMatches, type HighlightPart, highlightParts, 
 const CLASS = {
   palette: requireClass(styles.palette, "commandpalette.module.css", "palette"),
   pill: requireClass(styles.pill, "commandpalette.module.css", "pill"),
-  error: requireClass(styles.error, "commandpalette.module.css", "error"),
   results: requireClass(styles.results, "commandpalette.module.css", "results"),
   sectionHeader: requireClass(styles.sectionHeader, "commandpalette.module.css", "sectionHeader"),
   row: requireClass(styles.row, "commandpalette.module.css", "row"),
@@ -843,11 +841,7 @@ function PaletteBody({
         }}
         onKeyDown={onKeyDown}
       />
-      {error && (
-        <div className={CLASS.error} role="alert">
-          <Chip tone="danger">{error}</Chip>
-        </div>
-      )}
+      {error && <InlineNotice tone="danger">{error}</InlineNotice>}
       <div className={CLASS.results} id="palette-results" role="listbox" aria-label="Palette results">
         {renderResults({
           mode,

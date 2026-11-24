@@ -51,8 +51,7 @@ test("an empty row list renders no terms", () => {
 });
 
 test("an inline value truncates by default", () => {
-  expect(topRuleBlock(CSS, ".value")).toContain("white-space: nowrap");
-  expect(topRuleBlock(CSS, ".value")).toContain("text-overflow: ellipsis");
+  expect(topRuleBlock(CSS, ".value")).toContain('composes: truncate from "../../styles/text.module.css"');
 });
 
 test("a wrap row's value wraps in full instead of truncating, and only that row's", () => {
@@ -67,7 +66,7 @@ test("a wrap row's value wraps in full instead of truncating, and only that row'
   const [target, installPath] = screen.getAllByRole("definition");
   expect(classesOf(installPath!)).toEqual(expect.arrayContaining(classesOf(target!)));
   expect(classesOf(installPath!).length).toBe(classesOf(target!).length + 1);
-  const wrap = topRuleBlock(CSS, ".wrap");
+  const wrap = topRuleBlock(CSS, ".value.wrap");
   expect(wrap).toContain("white-space: normal");
   expect(wrap).toContain("overflow-wrap: anywhere");
   expect(wrap).toContain("overflow: visible");
@@ -87,10 +86,13 @@ test("eyebrowLabels labels rows with the eyebrow recipe, and only when asked", (
   expect(eyebrow).toHaveLength(plain.length + 1);
 
   const recipe = topRuleBlock(CSS, ".eyebrowLabel");
-  expect(recipe).toContain("font-size: var(--font-size-caption)");
-  expect(recipe).toContain("text-transform: uppercase");
-  expect(recipe).toContain("letter-spacing: var(--tracking-eyebrow)");
-  expect(recipe).toContain("font-weight: var(--font-weight-medium)");
+  expect(recipe).toContain('composes: eyebrowType from "../../styles/text.module.css"');
+
+  const type = topRuleBlock(readModuleCss(import.meta.url, "../../styles/text.module.css"), ".eyebrowType");
+  expect(type).toContain("font-size: var(--font-size-caption)");
+  expect(type).toContain("text-transform: uppercase");
+  expect(type).toContain("letter-spacing: var(--tracking-eyebrow)");
+  expect(type).toContain("font-weight: var(--font-weight-medium)");
 });
 
 test("stacked rows put the label over the value and wrap the value", () => {
@@ -106,8 +108,8 @@ test("stacked rows put the label over the value and wrap the value", () => {
 
   expect(topRuleBlock(CSS, ".stackedRow")).toContain("flex-direction: column");
   expect(topRuleBlock(CSS, ".stackedLabel")).toContain("width: auto");
-  expect(topRuleBlock(CSS, ".stackedValue")).toContain("white-space: normal");
-  expect(topRuleBlock(CSS, ".stackedValue")).toContain("overflow-wrap: anywhere");
+  expect(topRuleBlock(CSS, ".value.stackedValue")).toContain("white-space: normal");
+  expect(topRuleBlock(CSS, ".value.stackedValue")).toContain("overflow-wrap: anywhere");
 });
 
 test("a stacked row's help follows its value as a further definition of the same term", () => {
@@ -133,8 +135,7 @@ test("a stacked row's help follows its value as a further definition of the same
   ]);
   const [runDir] = screen.getAllByRole("term");
   expect(runDir!.parentElement!.querySelectorAll("dd")).toHaveLength(2);
-  expect(topRuleBlock(CSS, ".help")).toContain("color: var(--ink-mid)");
-  expect(topRuleBlock(CSS, ".help")).toContain("font-size: var(--font-size-caption)");
+  expect(topRuleBlock(CSS, ".help")).toContain('composes: helpCaption from "../../styles/help.module.css"');
 });
 
 test("rowProps tag a row's wrapper and a muted row's value stays secondary", () => {

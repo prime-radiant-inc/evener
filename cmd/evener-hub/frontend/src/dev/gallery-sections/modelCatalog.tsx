@@ -1,9 +1,10 @@
 // ModelCatalog is both the component (value) and the envelope interface (type);
 // one import brings in both meanings via declaration merging.
 import { useState } from "react";
+import { Button } from "../../widgets/button";
 import { ModelCatalog, type ModelCatalog as ModelCatalogEnvelope, ModelCatalogPanel } from "../../widgets/modelCatalog";
 import { Sheet } from "../../widgets/sheet";
-import { ThemeFlip } from "../ThemeFlip";
+import { GallerySection } from "../GallerySection";
 import styles from "./modelCatalog.module.css";
 
 // The rich model catalog widget (wave-8 T2 filled it: provider grouping,
@@ -33,9 +34,11 @@ function SheetDemo() {
   return (
     <div className={styles.demoFrame}>
       {!open && (
-        <button type="button" className={styles.reopen} onClick={() => setOpen(true)}>
-          Reopen sheet
-        </button>
+        <div className={styles.reopen}>
+          <Button variant="quiet" size="sm" onClick={() => setOpen(true)}>
+            Reopen sheet
+          </Button>
+        </div>
       )}
       <Sheet open={open} side="bottom" onClose={() => setOpen(false)} title="Choose model">
         <div className={styles.sheetBody}>
@@ -55,16 +58,18 @@ function SheetDemo() {
 
 export default function ModelCatalogGallerySection() {
   return (
-    <section>
-      <h2>Model catalog</h2>
-      <ThemeFlip>
-        <ModelCatalog value="" onChange={() => {}} loadCatalog={loadCatalog} />
-        <ModelCatalog value="anthropic/claude-sonnet-4-5" onChange={() => {}} loadCatalog={loadCatalog} />
-      </ThemeFlip>
-      <h3>Mobile sheet variant</h3>
-      <ThemeFlip>
-        <SheetDemo />
-      </ThemeFlip>
-    </section>
+    <GallerySection
+      title="Model catalog"
+      flips={[
+        <>
+          <ModelCatalog value="" onChange={() => {}} loadCatalog={loadCatalog} />
+          <ModelCatalog value="anthropic/claude-sonnet-4-5" onChange={() => {}} loadCatalog={loadCatalog} />
+        </>,
+        <>
+          <h3>Mobile sheet variant</h3>
+          <SheetDemo />
+        </>,
+      ]}
+    />
   );
 }
