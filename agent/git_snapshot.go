@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/identifier"
 )
 
 // gitProductionExecTimeout bounds every git subprocess exec this file runs for
@@ -230,7 +231,11 @@ func hasGitMetadataAncestor(cwd string) bool {
 	if dir == "" || !filepath.IsAbs(dir) {
 		return true
 	}
-	dir = filepath.Clean(dir)
+	// A --dir symlink into a checkout has no .git above it on disk, while
+	// git itself resolves the link and answers from the repository. Walking
+	// the resolved path keeps the snapshot's answer and git's own answer the
+	// same, and display still uses the caller's spelling of the directory.
+	dir = identifier.ResolveClean(dir)
 	for {
 		if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
 			return true
