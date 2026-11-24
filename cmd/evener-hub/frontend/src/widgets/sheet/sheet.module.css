@@ -37,6 +37,15 @@
   border-right: none;
   border-bottom: none;
   box-shadow: 0 -16px 40px var(--shadow-color);
+  /* Keeps a swipe that reaches the sheet's scroll edge from scrolling the
+   * page behind it. */
+  overscroll-behavior-y: contain;
+}
+
+/* The body is the sheet's scrollport: containing its overscroll keeps a
+ * downward swipe there owned by the sheet instead of the page. */
+.bottomBody {
+  overscroll-behavior-y: contain;
 }
 
 .left {
@@ -97,6 +106,22 @@
   background: var(--ink-low);
 }
 
+/* The decorative grab pill a non-expandable bottom Sheet shows in place of
+ * the expandable handle. It only hints at the swipe-down gesture and carries
+ * no role, tab stop, or handler of its own. Fine pointers have no swipe
+ * gesture to advertise, so it is hidden for them. */
+.grabHandle {
+  display: none;
+  justify-content: center;
+  padding: var(--space-2) 0 var(--space-1);
+}
+
+@media (any-pointer: coarse) {
+  .grabHandle {
+    display: flex;
+  }
+}
+
 .expandableBottom {
   height: 100vh;
   /* Override .bottom's max-height: min(480px, 100vh): when expandable, the
@@ -126,5 +151,13 @@
 @media (prefers-reduced-motion: reduce) {
   .expandableBottom {
     transition: none;
+  }
+}
+
+/* Applied while a declined swipe sends the panel back to rest: the move runs
+ * on the spatial exit budget, and the gate keeps it instant under reduce. */
+@media (prefers-reduced-motion: no-preference) {
+  .snapBack {
+    transition: transform var(--motion-duration-spatial-exit) var(--motion-easing-standard);
   }
 }

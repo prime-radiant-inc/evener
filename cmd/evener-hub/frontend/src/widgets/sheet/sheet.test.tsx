@@ -2,7 +2,7 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createPortal } from "react-dom";
 import { expect, test, vi } from "vitest";
-import { readModuleCss, topRuleBlock } from "../../styles/cssBlock";
+import { mediaBlock, readModuleCss, topRuleBlock } from "../../styles/cssBlock";
 import { appendPopout } from "../internal/popoutTestUtils";
 import { Sheet } from "./index";
 import sheetStyles from "./sheet.module.css";
@@ -228,6 +228,108 @@ test("each side slides in from and out to its own edge by the shared recipe", ()
     /transition:\s*height var\(--motion-duration-spatial\) var\(--motion-easing-standard\)/,
   );
   expect(css).toMatch(/@media \(prefers-reduced-motion: reduce\)\s*\{\s*\.expandableBottom\s*\{\s*transition:\s*none/);
+});
+
+// --- touch-only grab pill ------------------------------------------------
+// A non-expandable bottom Sheet carries a decorative grab pill instead of the
+// expandable drag handle. It only hints at the swipe gesture, so it is hidden
+// from assistive tech and the tab order, and its CSS shows it for coarse
+// pointers only.
+
+test("a non-expandable bottom sheet renders a decorative grab pill, not a drag handle", () => {
+  render(
+    <Sheet open side="bottom" onClose={vi.fn()} title="t">
+      Body
+    </Sheet>,
+  );
+  const pill = screen.getByTestId("sheet-grab-pill");
+  expect(pill.getAttribute("aria-hidden")).toBe("true");
+  expect(pill.hasAttribute("tabindex")).toBe(false);
+  expect(pill.tabIndex).toBe(-1);
+  expect(pill.querySelector("button, a[href], input, select, textarea, [tabindex]")).toBeNull();
+  // The pill draws the expandable handle's own bar.
+  expect(pill.firstElementChild?.className.split(" ")).toContain(sheetStyles.handleBar);
+  expect(screen.queryByTestId("sheet-handle")).toBeNull();
+});
+
+test("expandable keeps the drag handle exclusively, with no grab pill beside it", () => {
+  render(
+    <Sheet open side="bottom" expandable={{ peekHeight: 200 }} onClose={vi.fn()} title="t">
+      Body
+    </Sheet>,
+  );
+  expect(screen.getByTestId("sheet-handle")).toBeTruthy();
+  expect(screen.queryByTestId("sheet-grab-pill")).toBeNull();
+});
+
+test("side=left and side=right render neither the handle nor the grab pill", () => {
+  for (const side of ["left", "right"] as const) {
+    const view = render(
+      <Sheet open side={side} onClose={vi.fn()} title="t">
+        Body
+      </Sheet>,
+    );
+    expect(screen.queryByTestId("sheet-grab-pill")).toBeNull();
+    expect(screen.queryByTestId("sheet-handle")).toBeNull();
+    view.unmount();
+  }
+});
+
+test("the body of a bottom sheet contains its overscroll, on both bottom geometries", () => {
+  const plain = render(
+    <Sheet open side="bottom" onClose={vi.fn()} title="t" bodyClassName="flush">
+      Body
+    </Sheet>,
+  );
+  const plainBody = screen.getByText("Body").className.split(" ");
+  expect(plainBody).toContain(sheetStyles.bottomBody);
+  expect(plainBody).toContain("flush");
+  plain.unmount();
+
+  const expandable = render(
+    <Sheet open side="bottom" expandable={{ peekHeight: 200 }} onClose={vi.fn()} title="t">
+      Body
+    </Sheet>,
+  );
+  // The expandable body wraps the caller's content in the geometry div.
+  expect(screen.getByText("Body").parentElement?.className.split(" ")).toContain(sheetStyles.bottomBody);
+  expandable.unmount();
+
+  for (const side of ["left", "right"] as const) {
+    const view = render(
+      <Sheet open side={side} onClose={vi.fn()} title="t">
+        Body
+      </Sheet>,
+    );
+    expect(screen.getByText("Body").className.split(" ")).not.toContain(sheetStyles.bottomBody);
+    view.unmount();
+  }
+});
+
+// jsdom applies no cascade and evaluates no media query, so the pill's
+// touch-only visibility and the bottom sheet's scroll containment are pinned
+// in the stylesheet source, the same off-disk idiom as the motion test above.
+test("the grab pill is hidden for fine pointers and shown on a coarse one", () => {
+  const css = readModuleCss(import.meta.url, "sheet.module.css");
+  expect(topRuleBlock(css, ".grabHandle")).toMatch(/display:\s*none/);
+  expect(mediaBlock(css, "any-pointer: coarse")).toMatch(/\.grabHandle\s*\{[^}]*display:\s*flex/);
+});
+
+test("bottom geometry contains overscroll without carrying motion of its own", () => {
+  const css = readModuleCss(import.meta.url, "sheet.module.css");
+  const bottom = topRuleBlock(css, ".bottom");
+  expect(bottom).toContain("overscroll-behavior-y: contain");
+  expect(bottom).not.toMatch(/\banimation\b|\btransition\b/);
+  expect(topRuleBlock(css, ".bottomBody")).toContain("overscroll-behavior-y: contain");
+});
+
+test("a declined swipe returns the sheet on the spatial exit budget, behind the reduced-motion gate", () => {
+  const css = readModuleCss(import.meta.url, "sheet.module.css");
+  const gate = mediaBlock(css, "prefers-reduced-motion: no-preference");
+  expect(gate).toMatch(
+    /\.snapBack\s*\{[^}]*transition:\s*transform var\(--motion-duration-spatial-exit\) var\(--motion-easing-standard\);/,
+  );
+  expect(css.search(/^\.snapBack\s*\{/m)).toBe(-1);
 });
 
 // The mobile sessions drawer is a full-height side="left" Sheet. jsdom has no

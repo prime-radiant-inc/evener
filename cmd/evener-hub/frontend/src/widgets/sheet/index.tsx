@@ -59,6 +59,8 @@ const SIZE_CLASS: Record<SheetSize, string> = {
 
 const HANDLE_CLASS = requireClass(styles.handle, "sheet.module.css", "handle");
 const HANDLE_BAR_CLASS = requireClass(styles.handleBar, "sheet.module.css", "handleBar");
+const GRAB_HANDLE_CLASS = requireClass(styles.grabHandle, "sheet.module.css", "grabHandle");
+const BOTTOM_BODY_CLASS = requireClass(styles.bottomBody, "sheet.module.css", "bottomBody");
 const EXPANDABLE_BOTTOM_CLASS = requireClass(styles.expandableBottom, "sheet.module.css", "expandableBottom");
 const EXPANDABLE_HEADER_CLASS = requireClass(styles.expandableHeader, "sheet.module.css", "expandableHeader");
 const EXPANDABLE_BODY_CLASS = requireClass(styles.expandableBody, "sheet.module.css", "expandableBody");
@@ -66,6 +68,19 @@ const EXPANDABLE_BODY_CLASS = requireClass(styles.expandableBody, "sheet.module.
 function DragHandle({ onPointerDown }: { onPointerDown: (e: ReactPointerEvent) => void }) {
   return (
     <div className={HANDLE_CLASS} data-testid="sheet-handle" onPointerDown={onPointerDown}>
+      <div className={HANDLE_BAR_CLASS} />
+    </div>
+  );
+}
+
+/**
+ * The decorative grab pill a non-expandable bottom Sheet shows above its
+ * header on a coarse pointer. It has no role, tab stop, or handler: it only
+ * hints at the swipe-down gesture, which listens on the panel around it.
+ */
+function GrabPill() {
+  return (
+    <div className={GRAB_HANDLE_CLASS} data-testid="sheet-grab-pill" aria-hidden="true">
       <div className={HANDLE_BAR_CLASS} />
     </div>
   );
@@ -86,8 +101,11 @@ function DragHandle({ onPointerDown }: { onPointerDown: (e: ReactPointerEvent) =
  * on its own window) and taps to toggle. The current geometry is surfaced on a
  * wrapper div inside the body as a `data-geometry` attribute for tests and
  * for CSS to key off. When `expandable` is not set, this is the plain
- * Sheet - no handle, no extra classes, fixed geometry - byte-for-byte the
- * pre-existing behavior.
+ * Sheet - fixed geometry, no drag state. A `side="bottom"` one additionally
+ * renders the decorative grab pill above its header (shown on coarse
+ * pointers only) and marks its body as the scroll-containing region, the
+ * affordances for swipe dismissal; left and right sheets render exactly as
+ * before.
  */
 export function Sheet({
   side = "right",
@@ -169,6 +187,9 @@ export function Sheet({
     ? `${SIDE_CLASS[side]} ${SIZE_CLASS[size]} ${panelClassName}`
     : `${SIDE_CLASS[side]} ${SIZE_CLASS[size]}`;
   const composedExpandablePanelClassName = panelClassName ? `${SIDE_CLASS[side]} ${panelClassName}` : SIDE_CLASS[side];
+  const bottomBodyClassName = side === "bottom" ? BOTTOM_BODY_CLASS : undefined;
+  const plainBodyClassName = [bottomBodyClassName, bodyClassName].filter(Boolean).join(" ");
+  const expandableBodyClassName = [EXPANDABLE_BODY_CLASS, bottomBodyClassName, bodyClassName].filter(Boolean).join(" ");
 
   if (!expandable) {
     return (
@@ -178,7 +199,8 @@ export function Sheet({
         title={title}
         footer={footer}
         panelClassName={composedPanelClassName}
-        bodyClassName={bodyClassName}
+        handle={side === "bottom" ? <GrabPill /> : undefined}
+        bodyClassName={plainBodyClassName}
         motion="slide"
       >
         {children}
@@ -197,7 +219,7 @@ export function Sheet({
       footer={footer}
       handle={<DragHandle onPointerDown={startDrag} />}
       headerClassName={EXPANDABLE_HEADER_CLASS}
-      bodyClassName={bodyClassName ? `${EXPANDABLE_BODY_CLASS} ${bodyClassName}` : EXPANDABLE_BODY_CLASS}
+      bodyClassName={expandableBodyClassName}
       panelClassName={`${composedExpandablePanelClassName} ${EXPANDABLE_BOTTOM_CLASS}`}
       style={heightStyle}
       motion="slide"
