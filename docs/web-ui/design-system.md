@@ -849,9 +849,8 @@ entry, no gallery section. It is what finally renders principle 2 of the mockup 
 (`decisions.md`, topic 06 Alt A). The rule, owned by `transcript/toolRuns.ts`: in a SETTLED
 turn, three or more consecutive completed, non-failed tool calls whose renderer has opted in
 collapse into one `<details>` row labelled `N steps · <last consequential summary>`. The
-folded run is one row of the tool card it sits in ("Inline tools and delegates"): closed, a
-quiet count and one name at the tool rows' inset; open, the header of the rows it stands
-for, which follow inside the same card behind hairline dividers. Folding is
+summary aligns with the tool rows and opens the calls directly below on the same reading
+surface. See [Inline tools and delegates](#inline-tools-and-delegates) for appearance. Folding is
 opt-in: `fold: "quiet"` (the reads, searches, web fetches, transcript reads) folds and only
 counts; `fold: "consequential"` (the edit tools, shell, worktree) folds and is the step the label
 names, being a mutation; `fold: "never"` (delegate, ask_user, task_list, use_skill, the `job_*`
