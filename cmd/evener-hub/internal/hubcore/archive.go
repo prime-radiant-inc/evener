@@ -59,6 +59,13 @@ func NormalizeDecisionSessionID(id string) string {
 	return ref.String()
 }
 
+// ProjectDecisionKey names a project's archive decision for one owning
+// source. The source is normalized, so "" and "local" both address the
+// controller's own entry.
+func ProjectDecisionKey(source, projectID string) ArchiveKey {
+	return ArchiveKey{Kind: "project", ID: projectID, Source: NormalizeDecisionSource(source)}
+}
+
 // ArchiveStore persists explicit user archive/unarchive decisions in index.db.
 // Auto-archive (by inactivity age) is computed at tree-build time and is NOT
 // stored here — only deliberate user decisions are recorded.
@@ -83,7 +90,7 @@ type ArchiveStore struct {
 	// writes and drops the cache; a read stores its result only if no write
 	// landed while it was reading.
 	cacheMu sync.Mutex
-	cache   map[ArchiveKey]bool
+	cache   map[ArchiveKey]ArchiveDecision
 	writes  uint64
 
 	// handle is the store's process-lifetime connection, created by the first
@@ -188,6 +195,36 @@ func (s *ArchiveStore) Set(source, kind, id string, archived bool, now time.Time
 	return nil
 }
 
+// SetIfArchived marks a row unarchived only while it still archives, so a
+// decision written after the caller's read is not overwritten. Reports
+// whether it changed a row. A no-op when the DB path is empty or the row is
+// already unarchived or absent.
+func (s *ArchiveStore) SetIfArchived(source, kind, id string, now time.Time) (bool, error) {
+	if s.dbPath == "" {
+		return false, nil
+	}
+	source = NormalizeDecisionSource(source)
+	db, err := s.db()
+	if err != nil {
+		return false, err
+	}
+	res, err := db.Exec( //nolint:noctx // local file DB
+		`UPDATE archive SET archived = 0, decided_at = ? WHERE source = ? AND kind = ? AND id = ? AND archived = 1`,
+		now.Unix(), source, kind, id)
+	if err != nil {
+		return false, err
+	}
+	changed, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	if changed > 0 {
+		s.invalidateCache()
+		s.fireChange()
+	}
+	return changed > 0, nil
+}
+
 func (s *ArchiveStore) invalidateCache() {
 	s.cacheMu.Lock()
 	s.writes++
@@ -198,6 +235,25 @@ func (s *ArchiveStore) invalidateCache() {
 // Decisions returns every explicit decision as a copy the caller may keep or
 // edit. Empty when no DB / no table.
 func (s *ArchiveStore) Decisions() (map[ArchiveKey]bool, error) {
+	all, err := s.allDecisions()
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[ArchiveKey]bool, len(all))
+	for key, decision := range all {
+		out[key] = decision.Archived
+	}
+	return out, nil
+}
+
+// DecisionStates returns every explicit decision with the instant it was
+// made. Callers that need to order a decision against another event (a
+// session's creation, say) read this form; Decisions carries only the flag.
+func (s *ArchiveStore) DecisionStates() (map[ArchiveKey]ArchiveDecision, error) {
+	return s.allDecisions()
+}
+
+func (s *ArchiveStore) allDecisions() (map[ArchiveKey]ArchiveDecision, error) {
 	s.cacheMu.Lock()
 	if s.cache != nil {
 		out := maps.Clone(s.cache)
@@ -217,8 +273,14 @@ func (s *ArchiveStore) Decisions() (map[ArchiveKey]bool, error) {
 	return out, err
 }
 
-func (s *ArchiveStore) readDecisions() (map[ArchiveKey]bool, error) {
-	out := make(map[ArchiveKey]bool)
+// ArchiveDecision is one row's durable verdict and the instant it was made.
+type ArchiveDecision struct {
+	Archived  bool
+	DecidedAt time.Time
+}
+
+func (s *ArchiveStore) readDecisions() (map[ArchiveKey]ArchiveDecision, error) {
+	out := make(map[ArchiveKey]ArchiveDecision)
 	if s.dbPath == "" {
 		return out, nil
 	}
@@ -229,7 +291,7 @@ func (s *ArchiveStore) readDecisions() (map[ArchiveKey]bool, error) {
 	if err != nil {
 		return out, err
 	}
-	rows, err := db.Query(`SELECT source, kind, id, archived FROM archive`) //nolint:noctx // local file DB
+	rows, err := db.Query(`SELECT source, kind, id, archived, decided_at FROM archive`) //nolint:noctx // local file DB
 	if err != nil {
 		return out, err
 	}
@@ -237,10 +299,14 @@ func (s *ArchiveStore) readDecisions() (map[ArchiveKey]bool, error) {
 	for rows.Next() {
 		var source, k, id string
 		var flag int
-		if err := rows.Scan(&source, &k, &id, &flag); err != nil {
+		var decidedAt int64
+		if err := rows.Scan(&source, &k, &id, &flag, &decidedAt); err != nil {
 			return out, err
 		}
-		out[ArchiveKey{Kind: k, ID: id, Source: source}] = flag == 1
+		out[ArchiveKey{Kind: k, ID: id, Source: source}] = ArchiveDecision{
+			Archived:  flag == 1,
+			DecidedAt: time.Unix(decidedAt, 0),
+		}
 	}
 	return out, rows.Err()
 }

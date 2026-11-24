@@ -267,7 +267,7 @@ func classifyFavoriteProject(key ArchiveKey, projects favoriteProjectIndex) Favo
 	// authority's source-qualified key so presentation lands on that host.
 	canonicalKey := key
 	if !exact {
-		canonicalKey = ArchiveKey{Kind: "project", ID: authority.ID, Source: NormalizeDecisionSource(authority.Source)}
+		canonicalKey = ProjectDecisionKey(authority.Source, authority.ID)
 	}
 	if authority.Quality != FavoriteAuthorityComplete {
 		return FavoriteDecisionClassification{State: FavoriteDecisionDormant, CanonicalKey: canonicalKey}
