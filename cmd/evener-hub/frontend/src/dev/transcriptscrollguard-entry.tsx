@@ -42,6 +42,8 @@ import { connectionStore } from "../stores/connection";
 import { prefsStore } from "../stores/prefs";
 import { threadsStore } from "../stores/threads";
 import { Toast } from "../widgets";
+import { harnessRoot } from "./mountHarness";
+import { mulberry32 } from "./mulberry32";
 import {
   createPagedOpenSettleTracker,
   createTranscriptSettleTracker,
@@ -49,9 +51,6 @@ import {
   SETTLE_OVERFLOW_FACTOR,
   type TranscriptGeometry,
 } from "./transcriptSettle";
-import "../styles/tokens.css";
-import "../styles/global.css";
-import { mulberry32 } from "./mulberry32";
 
 const consoleError = console.error;
 const consoleErrors: string[] = [];
@@ -323,8 +322,7 @@ prefsStore.getState().setOpenAtUnreadReplies(OPEN_AT_UNREAD);
 if (SEEN === null) localStorage.removeItem(seenWatermarkKey(REF));
 else writeSeenWatermark(REF, SEEN);
 
-const rootEl = document.getElementById("root");
-if (!rootEl) throw new Error("transcriptscrollguard.html is missing #root");
+const rootEl = harnessRoot("transcriptscrollguard");
 
 document.documentElement.style.height = "100%";
 document.body.style.height = "100%";

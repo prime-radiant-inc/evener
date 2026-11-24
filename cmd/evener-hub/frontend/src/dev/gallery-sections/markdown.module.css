@@ -15,10 +15,11 @@
 }
 
 .rowLabel {
-  margin: 0;
-  color: var(--ink-mid);
-  font-family: var(--font-sans);
-  font-size: var(--font-size-caption);
+  composes: rowLabel from "../gallery-section.module.css";
+  /* A full-width caption above its own frame, not a row label: the
+   * canonical 80px column would wrap these sentences. */
+  width: auto;
+  flex: initial;
 }
 
 /* The wide-diagram case is deliberately wider than the reading frame so the

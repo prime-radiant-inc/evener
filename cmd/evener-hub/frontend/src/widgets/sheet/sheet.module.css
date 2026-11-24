@@ -1,4 +1,5 @@
-/* Sheet reuses Dialog's scrim/header/title/body/footer/closeButton chrome
+/* Sheet reuses Dialog's scrim/header/title/body/footer chrome, and its
+ * shared IconButton close control,
  * wholesale (see index.tsx, which composes styles.panel from
  * ../dialog/dialog.module.css with the variant classes below) - this file
  * only adds the edge-anchored geometries, each composing the Slide recipe
