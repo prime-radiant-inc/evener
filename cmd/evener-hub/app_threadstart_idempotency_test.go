@@ -61,6 +61,28 @@ func (a *idempotencyTurnAdapter) Stream(context.Context, llm.Request) (llm.Strea
 	return nil, llm.ErrStreamUnsupported
 }
 
+func localEntry(httpURL, sessionID string) rendezvous.Entry {
+	return rendezvous.Entry{
+		PID:        os.Getpid(),
+		Protocol:   appwire.ProtocolVersion,
+		Endpoint:   "ws" + httpURL[len("http"):],
+		SourceID:   "local",
+		ThreadID:   sessionID,
+		SessionID:  sessionID,
+		InstanceID: sessionID,
+	}
+}
+
+func spawnerWritingEntry(t *testing.T, runDir string, entry rendezvous.Entry, spawns *atomic.Int32) *fakeRPCSpawner {
+	return &fakeRPCSpawner{spawn: func(context.Context, hubcore.SpawnRequest) (rendezvous.Entry, error) {
+		if spawns != nil {
+			spawns.Add(1)
+		}
+		writeRendezvous(t, runDir, entry)
+		return entry, nil
+	}}
+}
+
 func TestThreadStartIdempotencyInvalidClientMutationID(t *testing.T) {
 	stateRoot := t.TempDir()
 	var spawns atomic.Int32
@@ -111,15 +133,7 @@ func TestThreadStartIdempotencyPreSpawnAndPreExecRefusals(t *testing.T) {
 	runDir := t.TempDir()
 	sessionID := hubtest.SessionID(t)
 	daemon, _ := startSkillInputHubDaemon(t, sessionID, appwire.ThreadCapabilities{Send: true}, nil)
-	entry := rendezvous.Entry{
-		PID:        os.Getpid(),
-		Protocol:   appwire.ProtocolVersion,
-		Endpoint:   "ws" + daemon.URL[len("http"):],
-		SourceID:   "local",
-		ThreadID:   sessionID,
-		SessionID:  sessionID,
-		InstanceID: sessionID,
-	}
+	entry := localEntry(daemon.URL, sessionID)
 
 	var preExecFail atomic.Bool
 	preExecFail.Store(true)
@@ -280,17 +294,9 @@ func TestThreadStartIdempotencyCorruptJournalFailSoft(t *testing.T) {
 	runDir := t.TempDir()
 	sessionID := hubtest.SessionID(t)
 	daemon, _ := startSkillInputHubDaemon(t, sessionID, appwire.ThreadCapabilities{Send: true}, nil)
-	entry := rendezvous.Entry{
-		PID: os.Getpid(), Protocol: appwire.ProtocolVersion,
-		Endpoint: "ws" + daemon.URL[len("http"):], SourceID: "local",
-		ThreadID: sessionID, SessionID: sessionID, InstanceID: sessionID,
-	}
+	entry := localEntry(daemon.URL, sessionID)
 	var spawns atomic.Int32
-	spawner := &fakeRPCSpawner{spawn: func(context.Context, hubcore.SpawnRequest) (rendezvous.Entry, error) {
-		spawns.Add(1)
-		writeRendezvous(t, runDir, entry)
-		return entry, nil
-	}}
+	spawner := spawnerWritingEntry(t, runDir, entry, &spawns)
 	hub, web := newHubRPCTestServerWithWeb(t, testWebConfig(t, hubcore.WebConfig{
 		HubStateRoot: stateRoot,
 		RunDir:       runDir,
@@ -374,17 +380,9 @@ func TestThreadStartIdempotencyCompletedReplayAfterDroppedResponse(t *testing.T)
 	})
 	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
 	defer daemonHTTP.Close()
-	entry := rendezvous.Entry{
-		PID: os.Getpid(), Protocol: appwire.ProtocolVersion,
-		Endpoint: "ws" + daemonHTTP.URL[len("http"):], SourceID: "local",
-		ThreadID: sessionID, SessionID: sessionID, InstanceID: sessionID,
-	}
+	entry := localEntry(daemonHTTP.URL, sessionID)
 	var spawns atomic.Int32
-	spawner := &fakeRPCSpawner{spawn: func(context.Context, hubcore.SpawnRequest) (rendezvous.Entry, error) {
-		spawns.Add(1)
-		writeRendezvous(t, runDir, entry)
-		return entry, nil
-	}}
+	spawner := spawnerWritingEntry(t, runDir, entry, &spawns)
 	hub := newHubRPCTestServer(t, testWebConfig(t, hubcore.WebConfig{
 		HubStateRoot: stateRoot,
 		RunDir:       runDir,
@@ -496,17 +494,11 @@ func TestThreadStartIdempotencyTransientFailureAndRealDaemonTurn1Dedup(t *testin
 		wakeWG.Wait()
 	})
 
-	entry := rendezvous.Entry{
-		PID: os.Getpid(), Protocol: appwire.ProtocolVersion,
-		Endpoint: "ws" + daemonHTTP.URL[len("http"):] + "/rpc", SourceID: "local",
-		ThreadID: sessionID, SessionID: sessionID, InstanceID: sessionID, StateDir: sessionStateDir,
-	}
+	entry := localEntry(daemonHTTP.URL, sessionID)
+	entry.Endpoint += "/rpc"
+	entry.StateDir = sessionStateDir
 	var spawns atomic.Int32
-	spawner := &fakeRPCSpawner{spawn: func(context.Context, hubcore.SpawnRequest) (rendezvous.Entry, error) {
-		spawns.Add(1)
-		writeRendezvous(t, runDir, entry)
-		return entry, nil
-	}}
+	spawner := spawnerWritingEntry(t, runDir, entry, &spawns)
 	hub := newHubRPCTestServer(t, testWebConfig(t, hubcore.WebConfig{
 		HubStateRoot: stateRoot,
 		RunDir:       runDir,
@@ -611,16 +603,8 @@ func TestThreadStartIdempotencyTransientReadFailurePartialErrorAndRetry(t *testi
 	})
 	daemon2HTTP := httptest.NewServer(http.HandlerFunc(daemon2.ServeWebSocket))
 	defer daemon2HTTP.Close()
-	entry2 := rendezvous.Entry{
-		PID: os.Getpid(), Protocol: appwire.ProtocolVersion,
-		Endpoint: "ws" + daemon2HTTP.URL[len("http"):], SourceID: "local",
-		ThreadID: sessionID, SessionID: sessionID, InstanceID: sessionID,
-	}
-	spawner2 := &fakeRPCSpawner{spawn: func(context.Context, hubcore.SpawnRequest) (rendezvous.Entry, error) {
-		spawns.Add(1)
-		writeRendezvous(t, runDir, entry2)
-		return entry2, nil
-	}}
+	entry2 := localEntry(daemon2HTTP.URL, sessionID)
+	spawner2 := spawnerWritingEntry(t, runDir, entry2, &spawns)
 	roster := hubcore.NewRoster(runDir, failedRPCProber{}).SetProcessIdentity(func(rendezvous.Entry) hubcore.ProcessIdentity { return hubcore.ProcessOwnsEntry })
 	hub := newHubRPCTestServer(t, testWebConfig(t, hubcore.WebConfig{
 		HubStateRoot: stateRoot,
@@ -666,17 +650,9 @@ func TestThreadStartIdempotencyHubRestartRecovery(t *testing.T) {
 		runDir := t.TempDir()
 		sessionID := hubtest.SessionID(t)
 		daemon, _ := startSkillInputHubDaemon(t, sessionID, appwire.ThreadCapabilities{Send: true}, nil)
-		entry := rendezvous.Entry{
-			PID: os.Getpid(), Protocol: appwire.ProtocolVersion,
-			Endpoint: "ws" + daemon.URL[len("http"):], SourceID: "local",
-			ThreadID: sessionID, SessionID: sessionID, InstanceID: sessionID,
-		}
+		entry := localEntry(daemon.URL, sessionID)
 		var spawns atomic.Int32
-		spawner := &fakeRPCSpawner{spawn: func(context.Context, hubcore.SpawnRequest) (rendezvous.Entry, error) {
-			spawns.Add(1)
-			writeRendezvous(t, runDir, entry)
-			return entry, nil
-		}}
+		spawner := spawnerWritingEntry(t, runDir, entry, &spawns)
 		params := appwire.ThreadStartParams{
 			ClientMutationID: "mut-restart-completed",
 			Model:            "openai/gpt-5",
@@ -752,7 +728,7 @@ func TestThreadStartIdempotencyHubRestartRecovery(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		acq, err := store1.Acquire(t.Context(), params.ClientMutationID, "local", hash, true, "turn-mut-persisted")
+		acq, err := store1.Acquire(t.Context(), params.ClientMutationID, hash, true, "turn-mut-persisted")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -770,11 +746,7 @@ func TestThreadStartIdempotencyHubRestartRecovery(t *testing.T) {
 			},
 			resume: func(_ context.Context, req hubcore.ResumeRequest) (rendezvous.Entry, error) {
 				resumes.Add(1)
-				entry := rendezvous.Entry{
-					PID: os.Getpid(), Protocol: appwire.ProtocolVersion,
-					Endpoint: "ws" + resumedHTTP.URL[len("http"):], SourceID: "local",
-					ThreadID: req.SessionID, SessionID: req.SessionID, InstanceID: req.SessionID,
-				}
+				entry := localEntry(resumedHTTP.URL, req.SessionID)
 				writeRendezvous(t, runDir2, entry)
 				return entry, nil
 			},
@@ -823,7 +795,7 @@ func TestThreadStartIdempotencyHubRestartRecovery(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		acq, err := store1.Acquire(t.Context(), params.ClientMutationID, "local", hash, false, "")
+		acq, err := store1.Acquire(t.Context(), params.ClientMutationID, hash, false, "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -872,7 +844,7 @@ func TestThreadStartIdempotencyHubRestartRecovery(t *testing.T) {
 			CWD:              workDir,
 		}
 		hash, _ := hubcore.CreationPayloadHash("local", params)
-		if _, err := store1.Acquire(t.Context(), params.ClientMutationID, "local", hash, false, ""); err != nil {
+		if _, err := store1.Acquire(t.Context(), params.ClientMutationID, hash, false, ""); err != nil {
 			t.Fatal(err)
 		}
 		hub2 := newHubRPCTestServer(t, testWebConfig(t, hubcore.WebConfig{
@@ -909,11 +881,7 @@ func TestThreadStartIdempotencyCoalescingAndCancelledWaiter(t *testing.T) {
 	})
 	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
 	defer daemonHTTP.Close()
-	entry := rendezvous.Entry{
-		PID: os.Getpid(), Protocol: appwire.ProtocolVersion,
-		Endpoint: "ws" + daemonHTTP.URL[len("http"):], SourceID: "local",
-		ThreadID: sessionID, SessionID: sessionID, InstanceID: sessionID,
-	}
+	entry := localEntry(daemonHTTP.URL, sessionID)
 
 	spawnEntered := make(chan struct{})
 	releaseSpawn := make(chan struct{})
@@ -1008,19 +976,12 @@ func TestThreadStartIdempotencyPayloadConflictAndTargetDeleted(t *testing.T) {
 	runDir := t.TempDir()
 	sessionID := hubtest.SessionID(t)
 	daemon, _ := startSkillInputHubDaemon(t, sessionID, appwire.ThreadCapabilities{Send: true}, nil)
-	entry := rendezvous.Entry{
-		PID: os.Getpid(), Protocol: appwire.ProtocolVersion,
-		Endpoint: "ws" + daemon.URL[len("http"):], SourceID: "local",
-		ThreadID: sessionID, SessionID: sessionID, InstanceID: sessionID,
-	}
+	entry := localEntry(daemon.URL, sessionID)
 	delStore, err := hubcore.NewDeletionStore(stateRoot)
 	if err != nil {
 		t.Fatal(err)
 	}
-	spawner := &fakeRPCSpawner{spawn: func(context.Context, hubcore.SpawnRequest) (rendezvous.Entry, error) {
-		writeRendezvous(t, runDir, entry)
-		return entry, nil
-	}}
+	spawner := spawnerWritingEntry(t, runDir, entry, nil)
 	hub := newHubRPCTestServer(t, testWebConfig(t, hubcore.WebConfig{
 		HubStateRoot:  stateRoot,
 		RunDir:        runDir,
@@ -1079,7 +1040,7 @@ func TestThreadStartIdempotencyPayloadConflictAndTargetDeleted(t *testing.T) {
 	}
 	spawnedParams := appwire.ThreadStartParams{ClientMutationID: "mut-spawned-del", Model: "openai/gpt-5", CWD: cwd}
 	h, _ := hubcore.CreationPayloadHash("local", spawnedParams)
-	acq, _ := store.Acquire(t.Context(), spawnedParams.ClientMutationID, "local", h, false, "")
+	acq, _ := store.Acquire(t.Context(), spawnedParams.ClientMutationID, h, false, "")
 	_ = store.CommitSpawned(spawnedParams.ClientMutationID, "local:"+spawnedID, spawnedID, spawnedID)
 	store.ReleaseOwner(acq.Owner, appwire.ThreadStartResponse{}, nil)
 	hubDelSpawned := newHubRPCTestServer(t, testWebConfig(t, hubcore.WebConfig{

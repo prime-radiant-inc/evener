@@ -42,7 +42,6 @@ const (
 // without storing prompt text or image bytes.
 type CreationRecord struct {
 	ClientMutationID      string          `json:"client_mutation_id"`
-	TargetSource          string          `json:"target_source"`
 	PayloadHash           string          `json:"payload_hash"`
 	HasInitialInput       bool            `json:"has_initial_input,omitempty"`
 	InitialTurnMutationID string          `json:"initial_turn_mutation_id,omitempty"`
@@ -157,7 +156,7 @@ func CreationPayloadHash(targetSource string, params appwire.ThreadStartParams) 
 // Acquire claims ownership of a new or spawned keyed thread/start, waits on an
 // active in-flight owner, replays a completed record, or refuses conflicts and
 // uncertain outcomes.
-func (s *CreationStore) Acquire(ctx context.Context, id, targetSource, payloadHash string, hasInitialInput bool, initialTurnMutationID string) (CreationAcquireResult, error) {
+func (s *CreationStore) Acquire(ctx context.Context, id, payloadHash string, hasInitialInput bool, initialTurnMutationID string) (CreationAcquireResult, error) {
 	if s == nil {
 		return CreationAcquireResult{}, appwire.MutationUnknown(id, "creation store is unavailable")
 	}
@@ -198,10 +197,9 @@ func (s *CreationStore) Acquire(ctx context.Context, id, targetSource, payloadHa
 		}
 		switch rec.State {
 		case CreationStateCompleted:
-			cloned := cloneCreationRecord(rec)
-			resp := creationReplayResponse(id, cloned)
+			resp := creationReplayResponse(id, rec)
 			s.mu.Unlock()
-			return CreationAcquireResult{Record: &cloned, Response: &resp}, nil
+			return CreationAcquireResult{Response: &resp}, nil
 		case CreationStateSpawned:
 			owner := &CreationOwner{id: id, payloadHash: payloadHash, done: make(chan struct{})}
 			s.owners[id] = owner
@@ -215,7 +213,7 @@ func (s *CreationStore) Acquire(ctx context.Context, id, targetSource, payloadHa
 	}
 
 	rec := CreationRecord{
-		ClientMutationID: id, TargetSource: targetSource, PayloadHash: payloadHash,
+		ClientMutationID: id, PayloadHash: payloadHash,
 		HasInitialInput: hasInitialInput, InitialTurnMutationID: initialTurnMutationID,
 		State: CreationStateSpawning, UpdatedAt: s.now(),
 	}

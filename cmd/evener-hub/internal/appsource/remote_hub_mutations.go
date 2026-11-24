@@ -109,9 +109,6 @@ func remoteForwardMutation[R, P any](ctx context.Context, s *RemoteHubSource, me
 // harness ("evener" resolves to the remote's "local" source, hubThreadStart),
 // mirroring hubModelListInner, which clears the selector before ListModels.
 func (s *RemoteHubSource) StartThread(ctx context.Context, params appwire.ThreadStartParams) (appwire.ThreadStartResponse, error) {
-	if err := ctx.Err(); err != nil {
-		return appwire.ThreadStartResponse{}, err
-	}
 	remote := params
 	remote.Harness = "evener"
 	// Source and a non-"evener" Harness are both controller-side routing hints:
@@ -124,24 +121,8 @@ func (s *RemoteHubSource) StartThread(ctx context.Context, params appwire.Thread
 	// would spawn on remote-b on the remote hub); the remote hub's own local
 	// spawn is the intended target.
 	remote.Source = ""
-	client, err := s.resolveClient(ctx)
-	if err != nil {
-		if cerr := ctx.Err(); cerr != nil {
-			return appwire.ThreadStartResponse{}, cerr
-		}
-		return appwire.ThreadStartResponse{}, s.mapConnectError(err)
-	}
 	var out appwire.ThreadStartResponse
-	if err := s.requestOn(ctx, client, appwire.MethodThreadStart, remote, &out); err != nil {
-		if _, notSent := errors.AsType[appwire.RequestNotSentError](err); notSent {
-			return appwire.ThreadStartResponse{}, err
-		}
-		if cerr := ctx.Err(); cerr != nil {
-			return appwire.ThreadStartResponse{}, cerr
-		}
-		return appwire.ThreadStartResponse{}, s.fromRemoteThreadStartError(s.mapCallError(err))
-	}
-	if err := s.translateOut(client, &out); err != nil {
+	if err := s.callPreservingNotSent(ctx, appwire.MethodThreadStart, remote, &out, s.fromRemoteThreadStartError); err != nil {
 		return appwire.ThreadStartResponse{}, err
 	}
 	return out, nil

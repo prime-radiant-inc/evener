@@ -1549,7 +1549,7 @@ func registerThreadHandlers(
 			return appwire.ThreadStartResponse{}, err
 		}
 		if err := validateHubVoicePresentation(ctx, params.Input, appwire.MethodThreadStart, ""); err != nil {
-			return appwire.ThreadStartResponse{}, causedWireError{wire: appserver.WireError(err).NotAccepted(params.ClientMutationID), cause: err}
+			return startRefused(err, params.ClientMutationID)
 		}
 		resp, err := hubThreadStart(ctx, cfg, sources, params)
 		if err != nil {

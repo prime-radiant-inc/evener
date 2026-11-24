@@ -210,9 +210,14 @@ func (s *RemoteHubSource) ThreadStartIdempotencySupported(ctx context.Context) (
 // caller's own context ending is not host unavailability, so mapping it through
 // would fire the auto-resume gate for a request the caller abandoned.
 func (s *RemoteHubSource) call(ctx context.Context, method string, params any, out any) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
+	return s.callMapped(ctx, method, params, out, false, nil)
+}
+
+func (s *RemoteHubSource) callPreservingNotSent(ctx context.Context, method string, params any, out any, mapErr func(error) error) error {
+	return s.callMapped(ctx, method, params, out, true, mapErr)
+}
+
+func (s *RemoteHubSource) callMapped(ctx context.Context, method string, params any, out any, preserveNotSent bool, mapErr func(error) error) error {
 	client, err := s.resolveClient(ctx)
 	if err != nil {
 		if cerr := ctx.Err(); cerr != nil {
@@ -220,7 +225,7 @@ func (s *RemoteHubSource) call(ctx context.Context, method string, params any, o
 		}
 		return s.mapConnectError(err)
 	}
-	return s.callOn(ctx, client, method, params, out)
+	return s.callOnMapped(ctx, client, method, params, out, preserveNotSent, mapErr)
 }
 
 // resolveClient returns the client to serve one call on. With the attached-only
@@ -258,14 +263,27 @@ func (s *RemoteHubSource) resolveClient(ctx context.Context) (*appwire.Client, e
 // runs on the exact client they resolved, not on whatever client the connector
 // returns between calls.
 func (s *RemoteHubSource) callOn(ctx context.Context, client *appwire.Client, method string, params any, out any) error {
+	return s.callOnMapped(ctx, client, method, params, out, false, nil)
+}
+
+func (s *RemoteHubSource) callOnMapped(ctx context.Context, client *appwire.Client, method string, params any, out any, preserveNotSent bool, mapErr func(error) error) error {
 	if err := ctx.Err(); err != nil {
 		return s.mapCallError(err)
 	}
 	if err := s.requestOn(ctx, client, method, params, out); err != nil {
+		if preserveNotSent {
+			if _, notSent := errors.AsType[appwire.RequestNotSentError](err); notSent {
+				return err
+			}
+		}
 		if cerr := ctx.Err(); cerr != nil {
 			return cerr
 		}
-		return s.mapCallError(err)
+		mapped := s.mapCallError(err)
+		if mapErr != nil {
+			return mapErr(mapped)
+		}
+		return mapped
 	}
 	return s.translateOut(client, out)
 }

@@ -39,7 +39,7 @@ func TestCreationStoreRoundTripAllFourStatesAndStripsSnapshots(t *testing.T) {
 	}
 
 	// 1. spawning + rollback
-	res, err := store.Acquire(t.Context(), "m-rollback", "local", hash, true, "turn-m-0")
+	res, err := store.Acquire(t.Context(), "m-rollback", hash, true, "turn-m-0")
 	if err != nil {
 		t.Fatalf("Acquire m-rollback: %v", err)
 	}
@@ -64,7 +64,7 @@ func TestCreationStoreRoundTripAllFourStatesAndStripsSnapshots(t *testing.T) {
 		t.Fatalf("RollbackSpawning: %v", err)
 	}
 	store.ReleaseOwner(res.Owner, appwire.ThreadStartResponse{}, errors.New("rolled back"))
-	reacquire, err := store.Acquire(t.Context(), "m-rollback", "local", hash, true, "turn-m-0")
+	reacquire, err := store.Acquire(t.Context(), "m-rollback", hash, true, "turn-m-0")
 	if err != nil || reacquire.Owner == nil {
 		t.Fatalf("re-acquire after rollback = %+v, %v; want fresh unseen owner", reacquire, err)
 	}
@@ -72,7 +72,7 @@ func TestCreationStoreRoundTripAllFourStatesAndStripsSnapshots(t *testing.T) {
 	store.ReleaseOwner(reacquire.Owner, appwire.ThreadStartResponse{}, nil)
 
 	// 2. spawned persisted across reload
-	spawnedRes, err := store.Acquire(t.Context(), "m-spawned", "local", hash, true, "turn-m-1")
+	spawnedRes, err := store.Acquire(t.Context(), "m-spawned", hash, true, "turn-m-1")
 	if err != nil || spawnedRes.Owner == nil {
 		t.Fatalf("Acquire m-spawned: %+v, %v", spawnedRes, err)
 	}
@@ -82,7 +82,7 @@ func TestCreationStoreRoundTripAllFourStatesAndStripsSnapshots(t *testing.T) {
 	store.ReleaseOwner(spawnedRes.Owner, appwire.ThreadStartResponse{}, errors.New("partial turn failure"))
 
 	// 3. completed persisted with stripped turns & turn items
-	compRes, err := store.Acquire(t.Context(), "m-completed", "local", hash, true, "turn-m-2")
+	compRes, err := store.Acquire(t.Context(), "m-completed", hash, true, "turn-m-2")
 	if err != nil || compRes.Owner == nil {
 		t.Fatalf("Acquire m-completed: %+v, %v", compRes, err)
 	}
@@ -139,7 +139,7 @@ func TestCreationStoreRoundTripAllFourStatesAndStripsSnapshots(t *testing.T) {
 	store.ReleaseOwner(compRes.Owner, fullResp, nil)
 
 	// 4. uncertain persisted
-	uncRes, err := store.Acquire(t.Context(), "m-uncertain", "local", hash, false, "")
+	uncRes, err := store.Acquire(t.Context(), "m-uncertain", hash, false, "")
 	if err != nil || uncRes.Owner == nil {
 		t.Fatalf("Acquire m-uncertain: %+v, %v", uncRes, err)
 	}
@@ -179,7 +179,7 @@ func TestCreationStoreRoundTripAllFourStatesAndStripsSnapshots(t *testing.T) {
 	}
 
 	// Verify spawned reload
-	gotSpawned, err := reloaded.Acquire(t.Context(), "m-spawned", "local", hash, true, "ignored")
+	gotSpawned, err := reloaded.Acquire(t.Context(), "m-spawned", hash, true, "ignored")
 	if err != nil {
 		t.Fatalf("Acquire reloaded m-spawned: %v", err)
 	}
@@ -197,7 +197,7 @@ func TestCreationStoreRoundTripAllFourStatesAndStripsSnapshots(t *testing.T) {
 	reloaded.ReleaseOwner(gotSpawned.Owner, appwire.ThreadStartResponse{}, nil)
 
 	// Verify completed reload
-	gotComp, err := reloaded.Acquire(t.Context(), "m-completed", "local", hash, true, "ignored")
+	gotComp, err := reloaded.Acquire(t.Context(), "m-completed", hash, true, "ignored")
 	if err != nil {
 		t.Fatalf("Acquire reloaded m-completed: %v", err)
 	}
@@ -220,7 +220,7 @@ func TestCreationStoreRoundTripAllFourStatesAndStripsSnapshots(t *testing.T) {
 	}
 
 	// Verify uncertain reload
-	_, err = reloaded.Acquire(t.Context(), "m-uncertain", "local", hash, false, "")
+	_, err = reloaded.Acquire(t.Context(), "m-uncertain", hash, false, "")
 	var wire appwire.WireError
 	if !errors.As(err, &wire) {
 		t.Fatalf("uncertain Acquire err = %T (%v), want WireError", err, err)
@@ -244,7 +244,7 @@ func TestCreationStoreInMemoryMode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	res, err := store.Acquire(t.Context(), "mem-1", "local", hash, false, "")
+	res, err := store.Acquire(t.Context(), "mem-1", hash, false, "")
 	if err != nil || res.Owner == nil {
 		t.Fatalf("Acquire: %+v, %v", res, err)
 	}
@@ -255,7 +255,7 @@ func TestCreationStoreInMemoryMode(t *testing.T) {
 		t.Fatalf("CommitCompleted: %v", err)
 	}
 	store.ReleaseOwner(res.Owner, resp, nil)
-	replay, err := store.Acquire(t.Context(), "mem-1", "local", hash, false, "")
+	replay, err := store.Acquire(t.Context(), "mem-1", hash, false, "")
 	if err != nil || replay.Response == nil || replay.Response.Disposition != appwire.MutationDispositionReplayed {
 		t.Fatalf("replay = %+v, %v", replay, err)
 	}
@@ -300,13 +300,13 @@ func TestCreationPayloadHashAndConflict(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	res, err := store.Acquire(t.Context(), "m-conflict", "local", hEmpty, true, "tm1")
+	res, err := store.Acquire(t.Context(), "m-conflict", hEmpty, true, "tm1")
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	// Conflict while in-flight owner active
-	_, err = store.Acquire(t.Context(), "m-conflict", "local", hDiffModel, true, "tm2")
+	_, err = store.Acquire(t.Context(), "m-conflict", hDiffModel, true, "tm2")
 	assertConflictingMutationID(t, err, "m-conflict")
 
 	// Conflict when completed
@@ -315,11 +315,11 @@ func TestCreationPayloadHashAndConflict(t *testing.T) {
 		t.Fatal(err)
 	}
 	store.ReleaseOwner(res.Owner, resp, nil)
-	_, err = store.Acquire(t.Context(), "m-conflict", "local", hDiffModel, true, "tm2")
+	_, err = store.Acquire(t.Context(), "m-conflict", hDiffModel, true, "tm2")
 	assertConflictingMutationID(t, err, "m-conflict")
 
 	// Conflict when uncertain
-	res2, err := store.Acquire(t.Context(), "m-unc-conflict", "local", hEmpty, false, "")
+	res2, err := store.Acquire(t.Context(), "m-unc-conflict", hEmpty, false, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -327,7 +327,7 @@ func TestCreationPayloadHashAndConflict(t *testing.T) {
 		t.Fatal(err)
 	}
 	store.ReleaseOwner(res2.Owner, appwire.ThreadStartResponse{}, errors.New("uncertain"))
-	_, err = store.Acquire(t.Context(), "m-unc-conflict", "local", hDiffModel, false, "")
+	_, err = store.Acquire(t.Context(), "m-unc-conflict", hDiffModel, false, "")
 	assertConflictingMutationID(t, err, "m-unc-conflict")
 }
 
@@ -356,9 +356,9 @@ func TestCreationStoreStrictDecodeAndCorruptFileUntouched(t *testing.T) {
 		{name: "unknown field", content: `{"version":1,"records":[],"extra":true}`},
 		{name: "trailing json", content: `{"version":1,"records":[]}{}`},
 		{name: "unsupported version", content: `{"version":99,"records":[]}`},
-		{name: "invalid state", content: `{"version":1,"records":[{"client_mutation_id":"m1","target_source":"local","payload_hash":"h","state":"bogus","updated_at":"2026-11-24T00:00:00Z"}]}`},
-		{name: "empty id", content: `{"version":1,"records":[{"client_mutation_id":"","target_source":"local","payload_hash":"h","state":"completed","updated_at":"2026-11-24T00:00:00Z"}]}`},
-		{name: "duplicate id", content: `{"version":1,"records":[{"client_mutation_id":"m1","target_source":"local","payload_hash":"h","state":"completed","updated_at":"2026-11-24T00:00:00Z"},{"client_mutation_id":"m1","target_source":"local","payload_hash":"h","state":"completed","updated_at":"2026-11-24T00:00:00Z"}]}`},
+		{name: "invalid state", content: `{"version":1,"records":[{"client_mutation_id":"m1","payload_hash":"h","state":"bogus","updated_at":"2026-11-24T00:00:00Z"}]}`},
+		{name: "empty id", content: `{"version":1,"records":[{"client_mutation_id":"","payload_hash":"h","state":"completed","updated_at":"2026-11-24T00:00:00Z"}]}`},
+		{name: "duplicate id", content: `{"version":1,"records":[{"client_mutation_id":"m1","payload_hash":"h","state":"completed","updated_at":"2026-11-24T00:00:00Z"},{"client_mutation_id":"m1","payload_hash":"h","state":"completed","updated_at":"2026-11-24T00:00:00Z"}]}`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -397,7 +397,7 @@ func TestCreationStoreStartupNormalizesSpawningToUncertain(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	res, err := store.Acquire(t.Context(), "m-crash-spawning", "local", hash, false, "")
+	res, err := store.Acquire(t.Context(), "m-crash-spawning", hash, false, "")
 	if err != nil || res.Owner == nil {
 		t.Fatalf("Acquire: %+v, %v", res, err)
 	}
@@ -406,7 +406,7 @@ func TestCreationStoreStartupNormalizesSpawningToUncertain(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reopened NewCreationStore: %v", err)
 	}
-	_, err = reopened.Acquire(t.Context(), "m-crash-spawning", "local", hash, false, "")
+	_, err = reopened.Acquire(t.Context(), "m-crash-spawning", hash, false, "")
 	var wire appwire.WireError
 	if !errors.As(err, &wire) {
 		t.Fatalf("err = %T (%v), want WireError", err, err)
@@ -440,7 +440,7 @@ func TestCreationStoreAtomicWriteFaults(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		res, err := store.Acquire(t.Context(), "m-before", "local", hash, false, "")
+		res, err := store.Acquire(t.Context(), "m-before", hash, false, "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -455,7 +455,7 @@ func TestCreationStoreAtomicWriteFaults(t *testing.T) {
 		store.ReleaseOwner(res.Owner, appwire.ThreadStartResponse{}, err)
 
 		// In-memory and on-disk state must still be spawned.
-		next, err := store.Acquire(t.Context(), "m-before", "local", hash, false, "")
+		next, err := store.Acquire(t.Context(), "m-before", hash, false, "")
 		if err != nil || next.Record == nil || next.Record.State != CreationStateSpawned {
 			t.Fatalf("in-memory state after BeforeRename = %+v, %v; want spawned", next, err)
 		}
@@ -465,7 +465,7 @@ func TestCreationStoreAtomicWriteFaults(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		diskNext, err := reloaded.Acquire(t.Context(), "m-before", "local", hash, false, "")
+		diskNext, err := reloaded.Acquire(t.Context(), "m-before", hash, false, "")
 		if err != nil || diskNext.Record == nil || diskNext.Record.State != CreationStateSpawned {
 			t.Fatalf("disk state after BeforeRename = %+v, %v; want spawned", diskNext, err)
 		}
@@ -486,7 +486,7 @@ func TestCreationStoreAtomicWriteFaults(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		res, err := store.Acquire(t.Context(), "m-after", "local", hash, false, "")
+		res, err := store.Acquire(t.Context(), "m-after", hash, false, "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -501,7 +501,7 @@ func TestCreationStoreAtomicWriteFaults(t *testing.T) {
 		store.ReleaseOwner(res.Owner, resp, nil)
 
 		// In-memory state must reflect the renamed completed record.
-		replay, err := store.Acquire(t.Context(), "m-after", "local", hash, false, "")
+		replay, err := store.Acquire(t.Context(), "m-after", hash, false, "")
 		if err != nil || replay.Response == nil || replay.Response.Thread.ID != "s2" {
 			t.Fatalf("in-memory state after AfterRename = %+v, %v; want completed replay", replay, err)
 		}
@@ -522,11 +522,11 @@ func TestCreationStorePruningSevenDaysAndMax200Terminal(t *testing.T) {
 	}
 
 	// Old non-terminal spawning and spawned records must survive age pruning and cap.
-	spawningOld, err := store.Acquire(t.Context(), "keep-spawning", "local", hash, false, "")
+	spawningOld, err := store.Acquire(t.Context(), "keep-spawning", hash, false, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	spawnedOld, err := store.Acquire(t.Context(), "keep-spawned", "local", hash, false, "")
+	spawnedOld, err := store.Acquire(t.Context(), "keep-spawned", hash, false, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -536,11 +536,11 @@ func TestCreationStorePruningSevenDaysAndMax200Terminal(t *testing.T) {
 	store.ReleaseOwner(spawnedOld.Owner, appwire.ThreadStartResponse{}, nil)
 
 	// Old terminal records (> 7 days)
-	resOldComp, _ := store.Acquire(t.Context(), "old-completed", "local", hash, false, "")
+	resOldComp, _ := store.Acquire(t.Context(), "old-completed", hash, false, "")
 	_ = store.CommitCompleted("old-completed", appwire.ThreadStartResponse{Thread: appwire.Thread{ID: "old-c"}})
 	store.ReleaseOwner(resOldComp.Owner, appwire.ThreadStartResponse{}, nil)
 
-	resOldUnc, _ := store.Acquire(t.Context(), "old-uncertain", "local", hash, false, "")
+	resOldUnc, _ := store.Acquire(t.Context(), "old-uncertain", hash, false, "")
 	_ = store.MarkUncertain("old-uncertain")
 	store.ReleaseOwner(resOldUnc.Owner, appwire.ThreadStartResponse{}, nil)
 
@@ -549,7 +549,7 @@ func TestCreationStorePruningSevenDaysAndMax200Terminal(t *testing.T) {
 	for i := range 205 {
 		now = now.Add(time.Second)
 		id := fmt.Sprintf("term-%03d", i)
-		res, err := store.Acquire(t.Context(), id, "local", hash, false, "")
+		res, err := store.Acquire(t.Context(), id, hash, false, "")
 		if err != nil {
 			t.Fatalf("Acquire %s: %v", id, err)
 		}
@@ -624,7 +624,7 @@ func TestCreationStoreConcurrentAcquireCoalescingAndWaiterCancellation(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	ownerRes, err := store.Acquire(t.Context(), "m-coal", "local", hash, true, "turn-m-coal")
+	ownerRes, err := store.Acquire(t.Context(), "m-coal", hash, true, "turn-m-coal")
 	if err != nil || ownerRes.Owner == nil {
 		t.Fatalf("owner Acquire: %+v, %v", ownerRes, err)
 	}
@@ -633,7 +633,7 @@ func TestCreationStoreConcurrentAcquireCoalescingAndWaiterCancellation(t *testin
 	waiterCancelCtx, cancelWaiter := context.WithCancel(t.Context())
 	waiter1Err := make(chan error, 1)
 	go func() {
-		_, err := store.Acquire(waiterCancelCtx, "m-coal", "local", hash, true, "turn-m-coal")
+		_, err := store.Acquire(waiterCancelCtx, "m-coal", hash, true, "turn-m-coal")
 		waiter1Err <- err
 	}()
 	// Waiter 2 waits for completion.
@@ -641,7 +641,7 @@ func TestCreationStoreConcurrentAcquireCoalescingAndWaiterCancellation(t *testin
 	waiter2Err := make(chan error, 1)
 	var wg sync.WaitGroup
 	wg.Go(func() {
-		res, err := store.Acquire(t.Context(), "m-coal", "local", hash, true, "turn-m-coal")
+		res, err := store.Acquire(t.Context(), "m-coal", hash, true, "turn-m-coal")
 		waiter2Res <- res
 		waiter2Err <- err
 	})
@@ -675,13 +675,13 @@ func TestCreationStoreConcurrentAcquireCoalescingAndWaiterCancellation(t *testin
 	}
 
 	// Owner failure propagates to coalesced waiter and clears owner slot.
-	owner2, err := store.Acquire(t.Context(), "m-coal-fail", "local", hash, false, "")
+	owner2, err := store.Acquire(t.Context(), "m-coal-fail", hash, false, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	waitErrCh := make(chan error, 1)
 	go func() {
-		_, err := store.Acquire(t.Context(), "m-coal-fail", "local", hash, false, "")
+		_, err := store.Acquire(t.Context(), "m-coal-fail", hash, false, "")
 		waitErrCh <- err
 	}()
 	<-waitRegistered
