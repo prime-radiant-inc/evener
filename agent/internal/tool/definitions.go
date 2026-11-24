@@ -543,7 +543,7 @@ func DefJobWatchNamed(eventKinds []string, resultTool string) llm.ToolDefinition
 				"watch_id":             map[string]any{"type": "string", "description": "Watch ID (required for inspect or clear)."},
 				"source":               map[string]any{"type": []string{"string", "null"}, "description": "`self`, `parent`, `dlg_...`, or shell `job_id`."},
 				"output_match":         map[string]any{"type": []string{"string", "null"}, "description": "RE2 regex on rolling 4096-byte job output."},
-				"progress_interval_ms": map[string]any{"type": []string{"integer", "null"}, "description": "Job progress interval in ms (1000-3600000)."},
+				"progress_interval_ms": map[string]any{"type": []string{"integer", "null"}, "description": "Concrete shell job progress interval in ms (1000-3600000)."},
 				"after_seconds":        map[string]any{"type": []string{"integer", "null"}, "description": "One-shot delay in seconds (60-86400, source self only)."},
 				"repeat_seconds":       map[string]any{"type": []string{"integer", "null"}, "description": "Repeat interval in seconds (60-3600, source self only)."},
 				"note":                 map[string]any{"type": []string{"string", "null"}, "description": "Note delivered on each fire."},
@@ -559,7 +559,7 @@ func DefJobWatchNamed(eventKinds []string, resultTool string) llm.ToolDefinition
 				"event_filter": map[string]any{
 					"type":                 []string{"object", "null"},
 					"additionalProperties": false,
-					"description":          "`assistant.tool` filter.",
+					"description":          "`assistant.tool` filter (requires `events: [\"assistant.tool\"]`).",
 					"properties": map[string]any{
 						"tool_name": map[string]any{"type": "string", "description": "Canonical tool name."},
 						"status":    map[string]any{"type": "string", "description": "Outcome: ok or error.", "enum": []string{"ok", "error"}},
@@ -1223,8 +1223,8 @@ func DefReadTranscript() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name: "read_transcript",
 		Description: "Read retained evidence by `transcript_ref`: a session ref, `job:<job_id>` (from `job_status`, `job_list`, a windowed shell result, or a watch frame), or `artifact:<id>`. " +
-			"Session refs support `format`, `range`, and `expand_turn` in fixed 16 KiB pages via `offset_bytes`. " +
-			"`job:` (with `job_status` and `retained_start_bytes`) and `artifact:` refs support `offset_bytes` or `output_match` with `context_lines`. " +
+			"Session refs support `format`, `range`, and `expand_turn` (requires `format=\"markdown\"`, the default, and `offset_bytes` continues that expansion in fixed 16 KiB pages). " +
+			"`job:` (with `job_status` and `retained_start_bytes`) and `artifact:` refs byte-page via `offset_bytes` or search via `output_match` with `context_lines`. " +
 			"Session refs reject `output_match`; `job:` refs reject `range`, `expand_turn`, `outline`, and `jsonl`; `artifact:` refs reject explicit `format`, `range`, and `expand_turn`. " +
 			"Never poll this waiting for completion; load `reading-transcripts` for details.",
 		Strict: &strictFalse,
@@ -1235,8 +1235,8 @@ func DefReadTranscript() llm.ToolDefinition {
 				"transcript_ref": map[string]any{"type": "string", "description": "Session ref, ID, `current`, `job:<job_id>`, or `artifact:<id>`."},
 				"format":         map[string]any{"type": []any{"string", "null"}, "enum": []any{"outline", "markdown", "jsonl", nil}, "description": "Output format (default markdown)."},
 				"range":          map[string]any{"type": []any{"string", "null"}, "description": "Turn window (`12-40`, `last:40`, or `start:40`)."},
-				"expand_turn":    map[string]any{"type": []any{"integer", "null"}, "minimum": 0, "description": "Expand any semantic Turn N as byte-paged transcript_v2_jsonl."},
-				"offset_bytes":   map[string]any{"type": "integer", "minimum": 0, "description": "Lifetime byte offset."},
+				"expand_turn":    map[string]any{"type": []any{"integer", "null"}, "minimum": 0, "description": "Session markdown only: expand any semantic Turn N as byte-paged transcript_v2_jsonl."},
+				"offset_bytes":   map[string]any{"type": "integer", "minimum": 0, "description": "Continuation byte offset for session `expand_turn`, or raw page/search start for `job:`/`artifact:`."},
 				"output_match":   map[string]any{"type": []any{"string", "null"}, "maxLength": 65_536, "description": "RE2 regex for job:/artifact: search (max 65,536 chars)."},
 				"context_lines": map[string]any{
 					"type":        []any{"integer", "null"},

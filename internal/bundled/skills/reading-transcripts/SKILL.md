@@ -11,4 +11,4 @@ Use live tool results, job outputs, and notifications while work runs. Use trans
 
 ## Discovery and paging workflow
 
-Search sessions with `find_session_transcripts` (`{}`, `query`, or `children_of`); `seq: -1` snippets are metadata display markers, not turn addresses. On unfamiliar sessions, read `format="outline"` first to locate turns, then fetch focused `range` windows or page long turns with `expand_turn` and `offset_bytes`. Use `job:<job_id>` and `artifact:<id>` refs for bounded output/logs, and `doctor_evener` for API-log diagnostics.
+Search sessions with `find_session_transcripts` when available (`{}`, `query`, or `children_of`); `seq: -1` snippets are metadata display markers, not turn addresses. On unfamiliar sessions, read `format="outline"` first to locate turns, then fetch focused `range` windows or switch back to default `format="markdown"` to page long turns with `expand_turn` and `offset_bytes`. Use `job:<job_id>` and `artifact:<id>` refs for bounded output/logs, and `doctor_evener` for API-log diagnostics.

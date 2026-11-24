@@ -7,7 +7,7 @@ user-invocable: false
 
 ## Sizing and briefs
 
-Do small pieces yourself when briefing takes longer than the work. Delegate independent units in parallel, check `job_list` first to avoid duplicate workers, and keep external waits (CI, deploys) in your own session since delegate shell jobs end with their activation.
+When `delegate` is available, do small pieces yourself when briefing takes longer than the work, delegate independent units in parallel, check `job_list` first to avoid duplicate workers, and keep external waits (CI, deploys) in your own session since delegate shell jobs end with their activation.
 
 Start delegates clean by default (`fork_context=true` only when full history is required). Write a self-contained `prompt` covering the request, known facts and paths, owned vs. untouched files, exact acceptance checks, and expected evidence. Put multi-step plans in `task_list`, and ask research delegates for sources, dates, and confidence.
 
