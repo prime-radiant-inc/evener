@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { afterEach, expect, test, vi } from "vitest";
 import { useTestDrivenFakeTimers } from "../../testing/fakeTimers";
+import { PATHS } from "../toolicon";
 import { PathField, type PathFieldProps } from "./index";
 import styles from "./pathfield.module.css";
 
@@ -181,6 +182,23 @@ test("file browsing retains directory keyboard navigation", async () => {
   await user.keyboard("{End}{Enter}");
   await screen.findByRole("option", { name: /cert.pem/ });
   expect(complete).toHaveBeenCalledWith("/etc/ssl/", true);
+});
+
+// The browse rows and the prominent trigger's seat draw the shared ToolIcon,
+// so the folder and file glyphs are the app's one icon family, not local art.
+test("its browse rows and prominent seat draw the shared ToolIcon glyphs", async () => {
+  const { user } = setup({ kind: "file", value: "/etc/file", complete: async () => ["/etc/ssl/", "/etc/cert.pem"] });
+  await open(user);
+  const dirRow = await screen.findByRole("option", { name: /ssl/ });
+  const fileRow = await screen.findByRole("option", { name: /cert.pem/ });
+  expect(dirRow.querySelector("svg path")?.getAttribute("d")).toBe(PATHS.folder);
+  expect(fileRow.querySelector("svg path")?.getAttribute("d")).toBe(PATHS.file);
+  cleanup();
+
+  setup({ kind: "file", variant: "prominent", value: "/etc/file" });
+  const prominent = document.querySelector<HTMLElement>(`.${styles.prominentTrigger}`);
+  if (prominent === null) throw new Error("prominent trigger missing");
+  expect(prominent.querySelector("svg path")?.getAttribute("d")).toBe(PATHS.file);
 });
 
 test("file typing filters entries and relists for dotfiles", async () => {
