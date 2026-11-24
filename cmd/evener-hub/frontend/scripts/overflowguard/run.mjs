@@ -1207,30 +1207,27 @@ async function verifyAboutOverview(cdpEndpoint, url, width) {
           () => document.querySelector('[data-testid="activity-sidebar"]'),
           'activity sidebar',
         );
-        // The phone Overview's category strip is a tablist; desktop keeps its
-        // wrapping radiogroup (design-system.md section 12). Read the role the
-        // control rendered, then require the phone's tab semantics.
-        const aboutTab = await until(
-          () => [...sidebar.querySelectorAll('[role="tab"], [role="radio"]')].find(
-            (item) => item.textContent?.includes('About'),
-          ),
-          'About category control',
+        // The 390px Overview renders its categories as a tablist and the
+        // fixture opens on About. Role, selection and aria-controls identity
+        // belong to ActivitySidebar.test.tsx; this page measures the painted
+        // geometry the fixture's branch row lands in.
+        const selectedTab = await until(
+          () => sidebar.querySelector('[role="tab"][aria-selected="true"]'),
+          'selected Overview tab',
         );
         const branch = await until(
           () => document.querySelector('[data-testid="session-details-branch"]'),
           'About branch row',
         );
         await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-        const panelId = aboutTab.getAttribute('aria-controls');
-        const panel = panelId ? document.getElementById(panelId) : null;
+        const categoryStrip = selectedTab.closest('[role="tablist"]');
+        const stripBox = categoryStrip?.getBoundingClientRect() ?? null;
         const sidebarBox = sidebar.getBoundingClientRect();
         const branchBox = branch.getBoundingClientRect();
-        // The phone category strip is the one designed horizontal scroller
+        const tabBox = selectedTab.getBoundingClientRect();
+        // The category strip is the one designed horizontal scroller
         // (activitybar.module.css .tablist); everything else in the overlay
         // must stay inside its own box.
-        const categoryStrip = sidebar.querySelector('[role="tablist"][aria-label="Overview kind"]');
-        const stripBox = categoryStrip?.getBoundingClientRect() ?? null;
-        const tabBox = aboutTab.getBoundingClientRect();
         const horizontallyOverflowing = [sidebar, ...sidebar.querySelectorAll('*')].filter((element) => {
           if (element === categoryStrip) return false;
           const style = getComputedStyle(element);
@@ -1242,9 +1239,6 @@ async function verifyAboutOverview(cdpEndpoint, url, width) {
           sidebarLeft: sidebarBox.left,
           sidebarRight: sidebarBox.right,
           sidebarWidth: sidebarBox.width,
-          tabRole: aboutTab.getAttribute('role'),
-          tabSelected: aboutTab.getAttribute('aria-selected') === 'true',
-          tabScoped: panel?.contains(branch) ?? false,
           tabVisibleInStrip:
             stripBox !== null && tabBox.left >= stripBox.left - 1 && tabBox.right <= stripBox.right + 1,
           branchText: branch.textContent?.trim() ?? '',
@@ -1906,9 +1900,6 @@ async function runAboutOverviewGuard(cdpEndpoint, vitePort) {
     failures.push(`branch row=${JSON.stringify(aboutOverview.branchText)}, expected ${ABOUT_BRANCH}`);
   }
   if (!aboutOverview.branchVisible) failures.push("branch row is not visible");
-  if (aboutOverview.tabRole !== "tab") failures.push(`selected About control has role=${aboutOverview.tabRole}`);
-  if (!aboutOverview.tabSelected) failures.push("About tab is not the selected tab");
-  if (!aboutOverview.tabScoped) failures.push("selected About tab does not scope the About panel");
   if (!aboutOverview.tabVisibleInStrip) failures.push("selected About tab is not in view in the category strip");
   if (Math.abs(aboutOverview.sidebarWidth - 390) > GEOMETRY_TOLERANCE) {
     failures.push(`sidebar=${aboutOverview.sidebarWidth}px wide, expected the 390px overlay`);
