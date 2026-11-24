@@ -111,7 +111,7 @@ func walkProjectFiles(ctx context.Context, root string, opts ProjectFilesOptions
 			if isProjectPathMasked(ignoreAbs, maskedRoots) {
 				break
 			}
-			matcher, _, ierr := readIgnoreRules(ctx, fsys, canonical, ignoreRel, budget, cache)
+			matcher, rules, _, ierr := readIgnoreRules(ctx, fsys, canonical, ignoreRel, budget, cache)
 			if ierr != nil {
 				if _, ok := errors.AsType[*globBudgetError](ierr); ok {
 					return ProjectFilesResult{Entries: out, Truncated: true}, nil
@@ -125,7 +125,7 @@ func walkProjectFiles(ctx context.Context, root string, opts ProjectFilesOptions
 				return ProjectFilesResult{}, ierr
 			}
 			if matcher != nil {
-				ignores.dirs = append(ignores.dirs, ignoreDir{rel: dir, matcher: matcher})
+				ignores.dirs = append(ignores.dirs, ignoreDir{rel: dir, matcher: matcher, rules: rules})
 			}
 			break
 		}

@@ -86,6 +86,47 @@ func TestWalkProjectFilesSecurityAndDenylist(t *testing.T) {
 		}
 	})
 
+	t.Run("nested .gitignore negation re-includes directory and selected files", func(t *testing.T) {
+		t.Parallel()
+		root := t.TempDir()
+		mustWriteProjectFile(t, filepath.Join(root, ".gitignore"), "results/\n__pycache__/\n")
+		mustWriteProjectFile(t, filepath.Join(root, "results", "root_ignored.json"), "{}\n")
+		const nestedDir = "mobile-native/modules/evener-voice/tools/wake-word"
+		mustWriteProjectFile(
+			t,
+			filepath.Join(root, nestedDir, ".gitignore"),
+			"__pycache__/\n!results/\nresults/*\n!results/*.json\n",
+		)
+		mustWriteProjectFile(t, filepath.Join(root, nestedDir, "results", "calibration.json"), "{}\n")
+		mustWriteProjectFile(t, filepath.Join(root, nestedDir, "results", "scratch.bin"), "bin\n")
+		mustWriteProjectFile(t, filepath.Join(root, nestedDir, "__pycache__", "x.pyc"), "pyc\n")
+
+		res, err := WalkProjectFiles(t.Context(), root, ProjectFilesOptions{})
+		if err != nil {
+			t.Fatalf("WalkProjectFiles: %v", err)
+		}
+		got := projectEntryMap(res.Entries)
+		for _, want := range []string{
+			nestedDir + "/results",
+			nestedDir + "/results/calibration.json",
+		} {
+			if _, ok := got[want]; !ok {
+				t.Fatalf("expected re-included %q in walk results, got %v", want, res.Entries)
+			}
+		}
+		for _, forbidden := range []string{
+			"results",
+			"results/root_ignored.json",
+			nestedDir + "/results/scratch.bin",
+			nestedDir + "/__pycache__",
+			nestedDir + "/__pycache__/x.pyc",
+		} {
+			if _, ok := got[forbidden]; ok {
+				t.Fatalf("expected ignored %q to stay excluded, got %v", forbidden, res.Entries)
+			}
+		}
+	})
+
 	t.Run("skips DefaultDenylist descendants and masked root even with dotfiles enabled", func(t *testing.T) {
 		t.Parallel()
 		home := t.TempDir()

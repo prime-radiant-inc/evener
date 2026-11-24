@@ -208,6 +208,26 @@ describe("parseFileMentionToken", () => {
       query: "my ",
       quoted: true,
     });
+    // Unfinished quoted mention before another @"..." reference preserves the trailing @" reference.
+    expect(parseFileMentionToken('@"release @".env backups/config"', 9)).toEqual({
+      start: 0,
+      end: 9,
+      query: "release",
+      quoted: true,
+    });
+    expect(parseFileMentionToken('@"release @".env', 9)).toEqual({
+      start: 0,
+      end: 9,
+      query: "release",
+      quoted: true,
+    });
+    // Closed quoted mention before another @"..." reference still replaces [start, closeQuote + 1).
+    expect(parseFileMentionToken('@"my notes" @".env backups/config"', 5)).toEqual({
+      start: 0,
+      end: 11,
+      query: "my ",
+      quoted: true,
+    });
   });
 
   it('decodes escaped quotes and backslashes inside @"..." and supports dir drill-in round-trips', () => {
@@ -354,6 +374,42 @@ describe("spliceFileMention", () => {
     ).toEqual({
       text: 'check @"my notes.md" and "v2"',
       caret: 20,
+      keepOpen: false,
+    });
+
+    const beforeAtQuotedClosed = parseFileMentionToken('@"release @".env backups/config"', 9)!;
+    expect(
+      spliceFileMention('@"release @".env backups/config"', beforeAtQuotedClosed, {
+        path: "docs/release notes.md",
+        kind: "file",
+      }),
+    ).toEqual({
+      text: '@"docs/release notes.md" @".env backups/config"',
+      caret: 24,
+      keepOpen: false,
+    });
+
+    const beforeAtQuotedUnclosed = parseFileMentionToken('@"release @".env', 9)!;
+    expect(
+      spliceFileMention('@"release @".env', beforeAtQuotedUnclosed, {
+        path: "docs/release notes.md",
+        kind: "file",
+      }),
+    ).toEqual({
+      text: '@"docs/release notes.md" @".env',
+      caret: 24,
+      keepOpen: false,
+    });
+
+    const closedBeforeAtQuoted = parseFileMentionToken('@"my notes" @".env backups/config"', 5)!;
+    expect(
+      spliceFileMention('@"my notes" @".env backups/config"', closedBeforeAtQuoted, {
+        path: "my notes.md",
+        kind: "file",
+      }),
+    ).toEqual({
+      text: '@"my notes.md" @".env backups/config"',
+      caret: 14,
       keepOpen: false,
     });
   });

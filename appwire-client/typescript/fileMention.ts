@@ -105,7 +105,8 @@ export function parseFileMentionToken(text: string, caret: number): FileMentionT
       let escaped = false;
       let closedBeforeCaret = false;
       let abortedAt = -1;
-      let end = caret;
+      let quoteCount = 0;
+      let firstQuote = -1;
       for (let j = openPos + 1; j < text.length; j += 1) {
         const ch = text.charAt(j);
         if (ch === "\r" || ch === "\n") {
@@ -130,14 +131,11 @@ export function parseFileMentionToken(text: string, caret: number): FileMentionT
           if (j < caret) {
             closedBeforeCaret = true;
             abortedAt = j;
-          } else {
-            const atEndOrDelimiter = j + 1 === text.length || /[\s.,;:!?)\]}]/u.test(text.charAt(j + 1));
-            const precededBySpacePastCaret = j > caret && /\s/u.test(text.charAt(j - 1));
-            if (atEndOrDelimiter && !precededBySpacePastCaret) {
-              end = j + 1;
-            }
+            break;
           }
-          break;
+          if (firstQuote < 0) firstQuote = j;
+          quoteCount += 1;
+          continue;
         }
         if (j < caret) {
           query += ch;
@@ -148,6 +146,16 @@ export function parseFileMentionToken(text: string, caret: number): FileMentionT
         continue;
       }
       if (query.length > FILE_MENTION_MAX_QUERY_LENGTH) return null;
+      let end = caret;
+      if (
+        firstQuote >= 0 &&
+        quoteCount % 2 === 1 &&
+        !(firstQuote > caret && text.charAt(firstQuote - 1) === "@") &&
+        (firstQuote + 1 === text.length || /[\s.,;:!?)\]}]/u.test(text.charAt(firstQuote + 1))) &&
+        !(firstQuote > caret && /\s/u.test(text.charAt(firstQuote - 1)))
+      ) {
+        end = firstQuote + 1;
+      }
       return { start: i, end, query, quoted: true };
     }
 
