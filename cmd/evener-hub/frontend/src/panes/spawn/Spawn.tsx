@@ -137,7 +137,7 @@ import {
   runSpawnBuiltinAfterStart,
   spawnBuiltinCommands,
 } from "./spawnSlashMenu";
-import { buildThreadStartParams, type SpawnRequest, startThread } from "./startThread";
+import { type SpawnRequest, spawnRequestFingerprint, startThread } from "./startThread";
 import { usePluginPreview } from "./usePluginPreview";
 import { useProviderSetup } from "./useProviderSetup";
 import { useSpawnSlashCatalog } from "./useSpawnSlashCatalog";
@@ -2398,10 +2398,12 @@ function SpawnForm({
       (isLocalHost(submittedSource) || chosenSource?.threadStartIdempotency === true);
     let clientMutationId: string | undefined;
     if (supportsStartIdempotency) {
-      const fingerprint = JSON.stringify(buildThreadStartParams(spawnReq));
+      const fingerprint = spawnRequestFingerprint(spawnReq);
       const existing = draft.fields.getState().pendingStart;
-      clientMutationId = existing?.fingerprint === fingerprint ? existing.clientMutationId : createSecureUUID();
-      if (existing?.clientMutationId !== clientMutationId || existing.fingerprint !== fingerprint) {
+      if (existing?.fingerprint === fingerprint) {
+        clientMutationId = existing.clientMutationId;
+      } else {
+        clientMutationId = createSecureUUID();
         draft.fields.setState({ pendingStart: { clientMutationId, fingerprint } });
       }
     } else if (draft.fields.getState().pendingStart !== null) {

@@ -341,7 +341,7 @@ it("drops a removed hub's failed start, so no banner is left that can open nothi
 it("exposes live manifest sources through useManifestSources", async () => {
 	const hub = boundary();
 	connect(hub.client);
-	mount();
+	const { rerender } = mount();
 	expect(probe.sources).toBeNull();
 	const updatedSources = [
 		{ id: "local", label: "this host", kind: "local", online: true, threadStartIdempotency: true },
@@ -357,7 +357,6 @@ it("exposes live manifest sources through useManifestSources", async () => {
 	expect(probe.sources).toEqual(updatedSources);
 	// Clears back to null while disconnected.
 	connect(null, "reconnecting", "hub-1");
-	await act(async () => {
-		mount();
-	});
+	rerender();
+	expect(probe.sources).toBeNull();
 });

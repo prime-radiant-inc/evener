@@ -287,6 +287,12 @@ type WebConfig struct {
 	MobileRouteAddrs func() []netip.Addr
 }
 
+// CreationIdempotencyAvailable reports whether the creation store opened cleanly
+// and can accept keyed thread/start mutations.
+func (c WebConfig) CreationIdempotencyAvailable() bool {
+	return c.CreationStore != nil && c.CreationStoreErr == nil
+}
+
 // Spawner forks a evener serve subprocess and waits for its rendezvous file to appear.
 // Returns the discovered Entry on success.
 type Spawner interface {

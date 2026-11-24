@@ -1086,7 +1086,7 @@ func (s *WebServer) apiTreeSources() []hubapi.Source {
 		Label:                  localLabel,
 		Kind:                   "local",
 		Online:                 true,
-		ThreadStartIdempotency: s.cfg.CreationStore != nil && s.cfg.CreationStoreErr == nil,
+		ThreadStartIdempotency: s.cfg.CreationIdempotencyAvailable(),
 	}}
 	if s.sources == nil {
 		return sources
@@ -1096,8 +1096,8 @@ func (s *WebServer) apiTreeSources() []hubapi.Source {
 			continue
 		}
 		idempotentStart := false
-		if remote, ok := source.(*appsource.RemoteHubSource); ok {
-			idempotentStart = remote.ThreadStartIdempotencySupportedIfAttached()
+		if capSource, ok := source.(appsource.ThreadStartIdempotencySource); ok {
+			idempotentStart = capSource.ThreadStartIdempotencySupportedIfAttached()
 		}
 		sources = append(sources, hubapi.Source{
 			ID:                     source.ID(),

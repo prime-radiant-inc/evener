@@ -404,15 +404,8 @@ func navigationRawObjectWithOptional(raw json.RawMessage, required, optional []s
 			return false
 		}
 	}
-	allowed := make(map[string]bool, len(required)+len(optional))
-	for _, field := range required {
-		allowed[field] = true
-	}
-	for _, field := range optional {
-		allowed[field] = true
-	}
 	for field := range object {
-		if !allowed[field] {
+		if !slices.Contains(required, field) && !slices.Contains(optional, field) {
 			return false
 		}
 	}
@@ -420,16 +413,7 @@ func navigationRawObjectWithOptional(raw json.RawMessage, required, optional []s
 }
 
 func navigationRawObjectExact(raw json.RawMessage, fields []string) bool {
-	var object map[string]json.RawMessage
-	if json.Unmarshal(raw, &object) != nil || len(object) != len(fields) {
-		return false
-	}
-	for _, field := range fields {
-		if _, ok := object[field]; !ok {
-			return false
-		}
-	}
-	return true
+	return navigationRawObjectWithOptional(raw, fields, nil)
 }
 
 func navigationManifestValuesValid(metadata hubapi.NavigationManifest) bool {

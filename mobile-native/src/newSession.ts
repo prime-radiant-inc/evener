@@ -1,4 +1,3 @@
-import * as Crypto from "expo-crypto";
 import { createStore } from "zustand/vanilla";
 import {
 	buildComposerInput,
@@ -18,10 +17,7 @@ import type { NewSessionService } from "./conversation/services/newSession";
 import { type CreationDraft, type CreationDraftRepository, creationDraftMetadata } from "./creationDraftRepository";
 import { type DraftImageData, imageInput } from "./draftImages";
 import { type LaunchSetup, modelFromId, moveToHost, setupOf, withOwnedOverrides } from "./newSession/launchSetup";
-
-function newMutationId(): string {
-	return createSecureUUID({ randomUUID: Crypto.randomUUID, getRandomValues: Crypto.getRandomValues });
-}
+import { nativeRandomSource } from "./mutationOutboxStorage";
 
 /** Why Start holds a draft whose start may exist. Every message that leaves
  * such a draft ends with it, so the form shows one line that says what to do. */
@@ -234,10 +230,9 @@ export function createNewSessionStore(hubId: string, storage?: DraftStorage) {
 			modelError: null,
 		};
 		if (isUnconfirmedDraft()) {
-			const beforeContent = draftContent();
 			withoutSaving(() => store.setState(listed));
 			const afterContent = draftContent();
-			if (afterContent !== beforeContent) {
+			if (afterContent !== unconfirmedContent) {
 				clientMutationId = null;
 				lastStartBlocked = false;
 			}
@@ -331,11 +326,12 @@ export function createNewSessionStore(hubId: string, storage?: DraftStorage) {
 			catalog++;
 			hostMoves++;
 			const idempotent = targetSupportsIdempotency();
-			const nextError = uncertainCreation
-				? clientMutationId !== null && !lastStartBlocked
-					? RETRYABLE_START_NOTICE
-					: START_UNCONFIRMED
-				: reconciledRetryError(idempotent);
+			let nextError: string | undefined;
+			if (uncertainCreation) {
+				nextError = clientMutationId !== null && !lastStartBlocked ? RETRYABLE_START_NOTICE : START_UNCONFIRMED;
+			} else {
+				nextError = reconciledRetryError(idempotent);
+			}
 			set({
 				movingHost: false,
 				projects: [],
@@ -524,12 +520,13 @@ export function createNewSessionStore(hubId: string, storage?: DraftStorage) {
 				}
 				const idempotent = targetSupportsIdempotency(source);
 				const currentContent = draftContent();
-				const retryId =
-					idempotent && clientMutationId !== null && unconfirmedContent === currentContent
-						? clientMutationId
-						: idempotent
-							? newMutationId()
-							: null;
+				let retryId: string | null = null;
+				if (idempotent) {
+					retryId =
+						clientMutationId !== null && unconfirmedContent === currentContent
+							? clientMutationId
+							: createSecureUUID(nativeRandomSource());
+				}
 				const previouslyUnconfirmed = get().unconfirmedCreation;
 				const previousContent = unconfirmedContent;
 				const previousMutationId = clientMutationId;
@@ -570,13 +567,13 @@ export function createNewSessionStore(hubId: string, storage?: DraftStorage) {
 							// draft stays as it is, still held, rather than be cleared
 							// unmatched or started twice.
 							const stored = storage().read(hubId);
-							const comparable = stored
-								? (({ clientMutationId: _cid, ...rest }) => ({ ...rest, unconfirmed: false }))(stored)
-								: null;
-							if (comparable !== null && creationDraftMetadata(comparable) !== unconfirmedContent) {
-								lastStartBlocked = true;
-								set({ error: CREATED_NOT_CLEARED });
-								return;
+							if (stored !== null) {
+								const { clientMutationId: _cid, ...rest } = stored;
+								if (creationDraftMetadata({ ...rest, unconfirmed: false }) !== unconfirmedContent) {
+									lastStartBlocked = true;
+									set({ error: CREATED_NOT_CLEARED });
+									return;
+								}
 							}
 							storage().clear(hubId);
 							emptyForm();
@@ -748,9 +745,8 @@ export function createNewSessionStore(hubId: string, storage?: DraftStorage) {
 	/** The draft as saved. It says a start may exist only while its content is
 	 * still what that start sent: once edited, it is a new draft, and a reopened
 	 * app mustn't hold it as the one that may have started. */
-	function snapshot(): CreationDraft {
-		const draft = draftFields();
-		const unconfirmed = store.getState().unconfirmedCreation && isUnconfirmedDraft(creationDraftMetadata(draft));
+	function snapshot(draft = draftFields(), content = creationDraftMetadata(draft)): CreationDraft {
+		const unconfirmed = store.getState().unconfirmedCreation && isUnconfirmedDraft(content);
 		return {
 			...draft,
 			unconfirmed,
@@ -779,12 +775,10 @@ export function createNewSessionStore(hubId: string, storage?: DraftStorage) {
 			unconfirmed: false,
 		};
 	}
-	function saveDraft(): boolean {
+	function saveDraft(draft = snapshot(), signature = creationDraftMetadata(draft)): boolean {
 		// A removed hub's store writes nothing back.
 		if (!storage || store.getState().retired) return true;
 		if (!store.getState().storageLoaded) return false;
-		const draft = snapshot();
-		const signature = creationDraftMetadata(draft);
 		if (signature === lastSaved && !store.getState().storageError) return true;
 		return withoutSaving(() => {
 			try {
@@ -851,11 +845,16 @@ export function createNewSessionStore(hubId: string, storage?: DraftStorage) {
 	if (storage) restoreDraft();
 	store.subscribe(() => {
 		if (saving) return;
-		if (!isUnconfirmedDraft()) {
+		const draft = draftFields();
+		const content = creationDraftMetadata(draft);
+		if (!isUnconfirmedDraft(content)) {
 			clientMutationId = null;
 			lastStartBlocked = false;
 		}
-		if (storage && store.getState().storageLoaded && creationDraftMetadata(snapshot()) !== lastSaved) saveDraft();
+		if (!storage || !store.getState().storageLoaded) return;
+		const nextSnapshot = snapshot(draft, content);
+		const signature = nextSnapshot.unconfirmed ? creationDraftMetadata(nextSnapshot) : content;
+		if (signature !== lastSaved) saveDraft(nextSnapshot, signature);
 	});
 	return store;
 }

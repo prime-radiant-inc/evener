@@ -4,7 +4,7 @@ import type { Thread, ThreadCapabilities, ThreadStartResponse } from "@evener/ap
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { expect, test } from "vitest";
 
-import { buildThreadStartParams, startThread } from "./startThread";
+import { buildThreadStartParams, spawnRequestFingerprint, startThread } from "./startThread";
 
 // startThread never reads capabilities; all-false is a representative default.
 const NO_CAPABILITIES: ThreadCapabilities = {
@@ -297,4 +297,22 @@ test("buildThreadStartParams excludes clientMutationId and startThread sends it 
   });
   expect("clientMutationId" in ((fake.calls[0]?.params ?? {}) as Record<string, unknown>)).toBe(false);
   expect((fake.calls[1]?.params as Record<string, unknown> | undefined)?.clientMutationId).toBe("mut-123");
+});
+
+test("spawnRequestFingerprint omits clientMutationId and raw attachment bytes while detecting same-length image edits", () => {
+  const imageA = "A".repeat(4096);
+  const imageB = `${"A".repeat(4095)}B`;
+  const fpA = spawnRequestFingerprint({
+    cwd: "/tmp/p",
+    prompt: "look [image 1]",
+    attachments: [{ marker: 1, mediaType: "image/png", data: imageA, name: "shot.png" }],
+    clientMutationId: "mut-1",
+  });
+  const fpB = spawnRequestFingerprint({
+    cwd: "/tmp/p",
+    prompt: "look [image 1]",
+    attachments: [{ marker: 1, mediaType: "image/png", data: imageB, name: "shot.png" }],
+  });
+  expect(fpA).not.toContain(imageA);
+  expect(fpA).not.toBe(fpB);
 });

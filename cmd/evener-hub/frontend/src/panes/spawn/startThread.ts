@@ -38,22 +38,57 @@ export interface SpawnResult {
   ref: string;
 }
 
+function threadStartMeta(req: SpawnRequest): Omit<ThreadStartParams, "input" | "clientMutationId"> {
+  const meta: Omit<ThreadStartParams, "input" | "clientMutationId"> = { cwd: req.cwd };
+  if (req.harness) meta.harness = req.harness;
+  if (req.modelProvider) meta.modelProvider = req.modelProvider;
+  if (req.model) meta.model = req.model;
+  if (req.reasoningEffort) meta.reasoningEffort = req.reasoningEffort;
+  const launchOverrides = mergeAccessModeSandbox(req.launchOverrides, req.accessMode ?? "");
+  if (launchOverrides) meta.launchOverrides = launchOverrides;
+  if (req.source && req.source !== "local") meta.source = req.source;
+  if (req.manager) meta.manager = true;
+  return meta;
+}
+
+function hashAttachmentData(data: string): string {
+  let h1 = 0x811c9dc5;
+  let h2 = 5381;
+  for (let i = 0; i < data.length; i += 1) {
+    const code = data.charCodeAt(i);
+    h1 = Math.imul(h1 ^ code, 0x01000193);
+    h2 = (Math.imul(h2, 33) ^ code) | 0;
+  }
+  return `${data.length}:${(h1 >>> 0).toString(16)}-${(h2 >>> 0).toString(16)}`;
+}
+
+// Lightweight fingerprint covering every field sent on thread/start without
+// calling buildComposerInput twice or retaining base64 image payloads in state.
+export function spawnRequestFingerprint(req: SpawnRequest): string {
+  return JSON.stringify({
+    ...threadStartMeta(req),
+    prompt: req.prompt,
+    attachments: req.attachments?.length
+      ? req.attachments.map((item) => ({
+          marker: item.marker,
+          mediaType: item.mediaType,
+          ...(item.name !== undefined ? { name: item.name } : {}),
+          data: hashAttachmentData(item.data),
+        }))
+      : undefined,
+    skillNames: req.skillNames?.length ? req.skillNames : undefined,
+    commandNames: req.commandNames?.length ? req.commandNames : undefined,
+    mentions: req.mentions?.length ? req.mentions : undefined,
+  });
+}
+
 // buildComposerInput assembles the optional RAW text item and image items,
 // translating composer attachment markers at the wire boundary.
 export function buildThreadStartParams(req: SpawnRequest): ThreadStartParams {
-  const params: ThreadStartParams = {
-    cwd: req.cwd,
+  return {
+    ...threadStartMeta(req),
     input: buildComposerInput(req.prompt, req.attachments, req.skillNames, req.commandNames, req.mentions),
   };
-  if (req.harness) params.harness = req.harness;
-  if (req.modelProvider) params.modelProvider = req.modelProvider;
-  if (req.model) params.model = req.model;
-  if (req.reasoningEffort) params.reasoningEffort = req.reasoningEffort;
-  const launchOverrides = mergeAccessModeSandbox(req.launchOverrides, req.accessMode ?? "");
-  if (launchOverrides) params.launchOverrides = launchOverrides;
-  if (req.source && req.source !== "local") params.source = req.source;
-  if (req.manager) params.manager = true;
-  return params;
 }
 
 // The ref is thread.evener.ref VERBATIM - the qualified "<source>:<threadId>"

@@ -173,6 +173,7 @@ async function mount(options: Options = {}) {
 		? creationStore("hub-1", () => repository)
 		: createNewSessionStore("hub-1", () => repository);
 	store.getState().bind(createNewSessionService(client as never));
+	if (options.manifestSources !== undefined) store.getState().setSources(options.manifestSources);
 	void store.getState().loadMetadata();
 	void store.getState().loadModels(true);
 	const hosts = new HostsController(client as never, undefined, options.hostPollMs);
@@ -218,20 +219,12 @@ async function mount(options: Options = {}) {
 	}
 	const first = sheetNavigation();
 	const { parent, focus, navigation, header } = first;
-	const sourcesPort =
-		options.manifestSources !== undefined
-			? {
-					getSnapshot: () => options.manifestSources ?? null,
-					subscribe: () => () => {},
-				}
-			: undefined;
 	const form = (nav = navigation) => (
 		<AlertsContext.Provider
 			value={{
 				center: alerts,
 				reportRoutes: () => {},
 				noticeFor: () => undefined,
-				...(sourcesPort ? { sources: sourcesPort } : {}),
 			}}
 		>
 			<TestSheet value={context}>

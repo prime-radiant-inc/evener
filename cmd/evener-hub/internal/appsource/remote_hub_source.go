@@ -105,9 +105,10 @@ type RemoteHubSource struct {
 }
 
 var (
-	_ Source                  = (*RemoteHubSource)(nil)
-	_ ItemCandidateSource     = (*RemoteHubSource)(nil)
-	_ ItemReadCandidateSource = (*RemoteHubSource)(nil)
+	_ Source                       = (*RemoteHubSource)(nil)
+	_ ItemCandidateSource          = (*RemoteHubSource)(nil)
+	_ ItemReadCandidateSource      = (*RemoteHubSource)(nil)
+	_ ThreadStartIdempotencySource = (*RemoteHubSource)(nil)
 )
 
 func NewRemoteHubSource(id string, roots []string, client RemoteHubClientFunc) *RemoteHubSource {
