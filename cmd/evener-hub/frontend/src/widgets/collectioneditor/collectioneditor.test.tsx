@@ -227,7 +227,8 @@ describe("inheritedItems", () => {
     expect(rows.map((row) => row.getAttribute("data-kind"))).toEqual(["local", "local", "inherited"]);
     rerender(<CollectionEditor<DirItem> {...baseProps({ items: [], inheritedItems: [] })} />);
     const [empty] = within(screen.getByRole("list")).getAllByRole("listitem");
-    expect(empty?.getAttribute("data-reason")).toBe("empty");
+    if (empty === undefined) throw new Error("empty list item missing");
+    expect(within(empty).getByTestId("empty-state").getAttribute("data-reason")).toBe("empty");
   });
 });
 
