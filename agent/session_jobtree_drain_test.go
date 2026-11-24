@@ -1142,8 +1142,7 @@ func TestDrainJobTreeRechecksUndrivenAttentionBeforeReturningQuiescent(t *testin
 
 	turns := 0
 	stopAfterTurn := errors.New("drain recheck test: completion turn recorded")
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	ctx := tripwireCtx(t)
 	_, err := sess.drainJobTreeWith(ctx, make(chan time.Time), func(context.Context) error { return nil },
 		func(_ context.Context, _ string, _ []ImageAttachment, kind EntryKind) (string, error) {
 			turns++
