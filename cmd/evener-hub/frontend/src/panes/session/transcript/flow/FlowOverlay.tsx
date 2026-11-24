@@ -23,9 +23,6 @@ export interface FlowOverlayProps {
   pill?: ReactNode;
   attentionOverlay?: ReactNode;
   onOverlayHeightChange?: (height: number) => void;
-  /** Height of the floating chrome below the stack; a change re-measures the
-   * clearance the stylesheet lifts the stack by. */
-  floatingChromeHeight?: number;
 }
 
 const CLASS = {
@@ -36,29 +33,15 @@ const CLASS = {
   attentionSlot: requireClass(styles.attentionSlot, "flowoverlay.module.css", "attentionSlot"),
 };
 
-export function FlowOverlay({
-  children,
-  top,
-  pill,
-  attentionOverlay,
-  onOverlayHeightChange,
-  floatingChromeHeight,
-}: FlowOverlayProps) {
+export function FlowOverlay({ children, top, pill, attentionOverlay, onOverlayHeightChange }: FlowOverlayProps) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const stackRef = useRef<HTMLDivElement>(null);
   const reportRef = useRef(onOverlayHeightChange);
   reportRef.current = onOverlayHeightChange;
   const hasStack = pill !== undefined || attentionOverlay !== undefined;
 
-  // One measured stack owns both floating controls. Next sits at the trailing
-  // bottom edge and New Content above it. What this reports is the end
-  // clearance ConversationBody reserves in its synthetic trailing row: the
-  // distance from the reader's own bottom edge up to the stack's top. That is
-  // the stack's height plus the inset the stylesheet floats it above the
-  // bottom (`bottom: calc(var(--space-3) + var(--floating-composer-reserve))`);
-  // reserving only the height would leave the last content row under the stack
-  // by that inset.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: hasStack and floatingChromeHeight are the deliberate triggers: the body reads the ref the stack mount writes, and the effect must re-report when the stack appears or goes away and when the chrome it clears changes height
+  // The last turn must scroll above both the controls and their bottom inset.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: hasStack attaches the observer when the stack mounts and clears the reserve when it unmounts
   useLayoutEffect(() => {
     const wrap = wrapRef.current;
     const stack = stackRef.current;
@@ -73,9 +56,9 @@ export function FlowOverlay({
     report();
     if (typeof ResizeObserver === "undefined") return;
     const observer = new ResizeObserver(report);
-    observer.observe(stack);
+    observer.observe(stack, { box: "border-box" });
     return () => observer.disconnect();
-  }, [hasStack, floatingChromeHeight]);
+  }, [hasStack]);
 
   return (
     <div ref={wrapRef} className={CLASS.wrap}>

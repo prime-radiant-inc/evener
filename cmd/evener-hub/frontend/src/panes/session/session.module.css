@@ -53,8 +53,8 @@
     /* The chrome's own measured height (ConversationBody's footer), so the
      * reserve is the card's real boundary: a staged attachment strip or a
      * grown draft pushes it - and every control that rides on it - up with the
-     * card, and a folded card leaves only the normal gutter. 150px is the
-     * first frame's pre-measure fallback, the resting composer's height. */
+     * card, and a folded card leaves only the normal gutter. The fallback
+     * applies only until the first measurement. */
     --floating-composer-reserve: calc(var(--floating-chrome-height, 150px) + var(--dock-clearance));
   }
 

@@ -650,7 +650,6 @@ function LiveConversationBody({
         }
         attentionOverlay={attentionOverlay}
         onOverlayHeightChange={handleOverlayHeightChange}
-        floatingChromeHeight={chromeHeight ?? 0}
         listRef={virtualListRef}
         onMeasurementsChange={flow.restoreViewAnchorAfterMeasurement}
         trailingContent={showColdStartSkeleton && <ColdStartSkeleton />}

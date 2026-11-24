@@ -594,22 +594,14 @@ export async function attentionJourney(ctx) {
   await controlVisible(null, { timeoutMs: 90000 });
   driver.milestone("attention-tier-visible", { refs: needsYouWire()?.rows.length ?? 0 });
 
-  // The resting phone shape: an empty, folded composer. The stack's reserve is
-  // the footer's measured height, so the control clears the card by the
-  // footer's own gutter. A fixed reserve parked the control far above a folded
-  // card, which is what the before/after gap recorded here measures.
+  // With no attachment or draft, only the normal gutter separates Next and the card.
   await driver.send("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 1, mobile: false });
   await controlVisible(null, { timeoutMs: 15000 });
   const restingGeometry = await settledGeometry("attention geometry 390 resting");
-  driver.milestone("attention-390-resting", {
-    next: restingGeometry.next,
-    stack: restingGeometry.stack,
-    composer: restingGeometry.composer,
-    nextGap:
-      restingGeometry.composer && restingGeometry.next
-        ? restingGeometry.composer.top - restingGeometry.next.bottom
-        : null,
-  });
+  const gutter = await read(`parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--space-3'))`);
+  const nextGap = restingGeometry.composer.top - restingGeometry.next.bottom;
+  assert.ok(Math.abs(nextGap - gutter) <= 1, `the resting card clears Next by one gutter, got ${nextGap} vs ${gutter}`);
+  driver.milestone("attention-390-resting", { next: restingGeometry.next, composer: restingGeometry.composer, nextGap });
   await driver.send("Emulation.setDeviceMetricsOverride", { width: 1000, height: 900, deviceScaleFactor: 1, mobile: false });
   await controlVisible(null, { timeoutMs: 15000 });
 
@@ -917,6 +909,21 @@ export async function attentionJourney(ctx) {
         return last.contains(hit) && box.bottom <= stackBox.top + 1
           ? { lastBottom: box.bottom, stackTop: stackBox.top, stackBottom: stackBox.bottom } : null;
       })()`, `${label}: final transcript content scrolls above the floating controls`);
+      // A keyboard can uncover the home-indicator band without resizing the card.
+      // The control and the room beneath the last turn must move together.
+      if (width === 390 && theme === "light") {
+        const before = await settledGeometry(`${label} before inset change`);
+        await read(`document.documentElement.style.setProperty('--dock-clearance', '34px')`);
+        try {
+          const after = await settledGeometry(`${label} with home indicator`);
+          const lift = before.stack.top - after.stack.top;
+          const extraRoom = after.clearanceHeight - before.clearanceHeight;
+          assert.ok(Math.abs(lift - 34) <= 1, `the home-indicator change lifts the controls by 34px, got ${lift}`);
+          assert.ok(Math.abs(extraRoom - lift) <= 1, `the last turn gains the same clearance, got ${extraRoom} vs ${lift}`);
+        } finally {
+          await read(`document.documentElement.style.removeProperty('--dock-clearance')`);
+        }
+      }
       geometry.push({ width, theme, next: sample.next, more: sample.more, stack: sample.stack, pill: sample.pill, send: sample.send, clearance: sample.clearanceHeight, lastRowBottom: bottom.lastBottom, stackTop: bottom.stackTop, stackBottom: bottom.stackBottom });
       // `nextGap` is the measured button-to-footer boundary: the reserve the
       // stylesheet lifts the stack by should track the composer's own box, so

@@ -1480,9 +1480,10 @@ hint row. The outer container is transparent; the card itself is
 `--field` on `--radius-panel` — the same radius the desktop card carries —
 with a 16px backdrop blur and a soft shadow, centered with a comfortable
 max-width, and concentric with its `--radius-control` verbs (the 16px corner
-sits 8px out from their 8px corner). The transcript's scroll carries
-bottom padding so the last turn slides under the card instead of stopping
-above a boxed footer.
+sits 8px out from their 8px corner). Content scrolls behind the floating card.
+At the end, the last turn clears the card and any floating reading controls.
+Those controls sit one gutter above the card, whether a draft grows or the
+keyboard closes and exposes the home indicator.
 
 **Session notes (the whiteboard) are one quiet line above the
 transcript**, not a bar: a centered, em-dash-framed `Notes · N notes ·
