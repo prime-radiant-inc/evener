@@ -42,40 +42,20 @@
 }
 
 .row {
+  composes: reset from "../../widgets/internal/rowChrome.module.css";
+  /* biome-ignore lint/suspicious/noDuplicateProperties: css-modules composes takes one declaration per composed class, each with its own `from` */
+  composes: interactive from "../../widgets/internal/rowChrome.module.css";
   display: flex;
   align-items: baseline;
   gap: var(--space-2);
-  width: 100%;
-  box-sizing: border-box;
   padding: var(--space-2) var(--space-3);
-  border-radius: var(--radius-control);
   background: transparent;
-  color: var(--ink-hi);
-  font-family: var(--font-sans);
-  font-size: var(--font-size-ui);
-  text-align: left;
   border: none;
-  cursor: pointer;
   min-width: 0;
-  transition:
-    background-color var(--motion-duration-hover) var(--motion-easing-standard),
-    transform var(--motion-duration-press) var(--motion-easing-standard);
-}
-
-.row:hover {
-  background: var(--hover-1);
 }
 
 .row[aria-selected="true"] {
   background: var(--hover-2);
-}
-
-/* The press, as ListRow's: transform only, gentle because the row is wide.
- * A row the hub refuses does not give under the pointer. */
-@media (prefers-reduced-motion: no-preference) {
-  .row:active:not([aria-disabled="true"]) {
-    transform: scale(var(--press-scale-row));
-  }
 }
 
 /* A command the hub says it will not carry out right now. It recedes to the
