@@ -31,6 +31,7 @@ export interface SpawnRequest {
   // ThreadStartParams.manager; false is OMITTED from the wire so an ordinary
   // launch stays byte-identical to before this control existed.
   manager?: boolean;
+  clientMutationId?: string;
 }
 
 export interface SpawnResult {
@@ -39,17 +40,7 @@ export interface SpawnResult {
 
 // buildComposerInput assembles the optional RAW text item and image items,
 // translating composer attachment markers at the wire boundary.
-// The ref is thread.evener.ref VERBATIM - the qualified "<source>:<threadId>"
-// form (e.g. "local:abc123"), NOT the legacy server's "local:"-stripped bare
-// id (floor §1.14 describes that legacy routing). The SPA
-// routes and reads every session by this qualified ref: thread/read resolves
-// it through appwire.ParseRef, which REQUIRES the ":" separator (appwire/
-// refs.go; cmd/evener-hub/internal/appsource/registry.go SourceForRef), so a
-// stripped bare id is rejected outright. Every other shipped session-open path
-// uses the same verbatim ref (Rail.tsx:177 node.session.ref;
-// SessionActionsMenu.tsx resp.thread.evener.ref for fork children). Stripping
-// here would open a dead-on-arrival session pane.
-export async function startThread(client: AppwireClientLike, req: SpawnRequest): Promise<SpawnResult> {
+export function buildThreadStartParams(req: SpawnRequest): ThreadStartParams {
   const params: ThreadStartParams = {
     cwd: req.cwd,
     input: buildComposerInput(req.prompt, req.attachments, req.skillNames, req.commandNames, req.mentions),
@@ -62,6 +53,22 @@ export async function startThread(client: AppwireClientLike, req: SpawnRequest):
   if (launchOverrides) params.launchOverrides = launchOverrides;
   if (req.source && req.source !== "local") params.source = req.source;
   if (req.manager) params.manager = true;
+  return params;
+}
+
+// The ref is thread.evener.ref VERBATIM - the qualified "<source>:<threadId>"
+// form (e.g. "local:abc123"), NOT the legacy server's "local:"-stripped bare
+// id (floor §1.14 describes that legacy routing). The SPA
+// routes and reads every session by this qualified ref: thread/read resolves
+// it through appwire.ParseRef, which REQUIRES the ":" separator (appwire/
+// refs.go; cmd/evener-hub/internal/appsource/registry.go SourceForRef), so a
+// stripped bare id is rejected outright. Every other shipped session-open path
+// uses the same verbatim ref (Rail.tsx:177 node.session.ref;
+// SessionActionsMenu.tsx resp.thread.evener.ref for fork children). Stripping
+// here would open a dead-on-arrival session pane.
+export async function startThread(client: AppwireClientLike, req: SpawnRequest): Promise<SpawnResult> {
+  const params = buildThreadStartParams(req);
+  if (req.clientMutationId) params.clientMutationId = req.clientMutationId;
   const resp = await client.request("thread/start", params);
   return { ref: resp.thread.evener.ref };
 }

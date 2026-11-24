@@ -4,7 +4,7 @@ import type { Thread, ThreadCapabilities, ThreadStartResponse } from "@evener/ap
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { expect, test } from "vitest";
 
-import { startThread } from "./startThread";
+import { buildThreadStartParams, startThread } from "./startThread";
 
 // startThread never reads capabilities; all-false is a representative default.
 const NO_CAPABILITIES: ThreadCapabilities = {
@@ -276,4 +276,25 @@ test("choosing Manager sends manager:true on thread/start", async () => {
   const params = fake.calls[0]?.params as Record<string, unknown>;
   expect(params.manager).toBe(true);
   expect(result.ref).toBe("local:boss");
+});
+
+test("buildThreadStartParams excludes clientMutationId and startThread sends it only when supplied", async () => {
+  const req = { cwd: "/tmp/p", prompt: "hello", clientMutationId: "mut-123" };
+  expect(buildThreadStartParams(req)).toEqual({
+    cwd: "/tmp/p",
+    input: [{ type: "text", text: "hello" }],
+  });
+  expect("clientMutationId" in buildThreadStartParams(req)).toBe(false);
+
+  const fake = new FakeClient("ready");
+  fake.on("thread/start", () => startResponse("local:idem"));
+  await startThread(fake, { cwd: "/tmp/p", prompt: "hello" });
+  await startThread(fake, req);
+
+  expect(fake.calls[0]?.params).toEqual({
+    cwd: "/tmp/p",
+    input: [{ type: "text", text: "hello" }],
+  });
+  expect("clientMutationId" in ((fake.calls[0]?.params ?? {}) as Record<string, unknown>)).toBe(false);
+  expect((fake.calls[1]?.params as Record<string, unknown> | undefined)?.clientMutationId).toBe("mut-123");
 });
