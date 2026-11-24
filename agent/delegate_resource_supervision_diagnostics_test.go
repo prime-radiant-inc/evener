@@ -25,7 +25,11 @@ func TestStableSupervisionFailureSnapshotCapturesPendingAttention(t *testing.T) 
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
 	})
 	root := restoreSupervisionRoot(t, fixture, nil)
-	sub := warmStableSupervisionDelegate(t, root, fixture)
+	// The durable append below queues runnable attention, and a served root
+	// drives it on the paced retry, opening a second generation between the
+	// snapshot reads. Leave the root unserved so the reads see the pending
+	// row beside the finished warm run, which is the state this test reads.
+	sub := warmDelegateUnservedRoot(t, root, fixture)
 	waitForStableSupervisionRun(t, root, fixture.childID)
 	const attentionID = "attention:diagnostic-pending"
 	if appended, err := sub.sess.appendDelegateNotificationDurably(attentionID, "diagnostic-sentinel"); err != nil || !appended {
