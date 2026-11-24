@@ -221,3 +221,188 @@ func builtinSkillNames(skills map[string]skill.SkillMeta) []string {
 	}
 	return names
 }
+
+func TestBundledGuideSkills_LoadedAndUserHidden(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	markGitRoot(t, root)
+
+	catalog := skill.Discover(execenv.NewLocalExecutionEnvironment(root), skill.DiscoverOptions{})
+	wantSkills := []string{
+		skill.RunningJobsSkillName,
+		skill.UsingWorktreesSkillName,
+		skill.ReadingTranscriptsSkillName,
+	}
+	for _, name := range wantSkills {
+		desc, ok := catalog.Entries[name]
+		if !ok {
+			t.Fatalf("missing bundled guide skill %q in catalog", name)
+		}
+		if desc.Unavailable {
+			t.Fatalf("bundled guide skill %q is marked unavailable", name)
+		}
+		if desc.Controls.DisableModelInvocation {
+			t.Fatalf("bundled guide skill %q must allow model invocation", name)
+		}
+		if desc.Controls.UserInvocable {
+			t.Fatalf("bundled guide skill %q must set user-invocable: false", name)
+		}
+		body, err := loadSkillBody(desc.Meta)
+		if err != nil {
+			t.Fatalf("loadSkillBody(%q): %v", name, err)
+		}
+		if strings.TrimSpace(body) == "" {
+			t.Fatalf("bundled guide skill %q has empty body", name)
+		}
+	}
+}
+
+func TestBundledGuideSkills_CapabilityGatedInPromptAndUseSkill(t *testing.T) {
+	t.Parallel()
+	hasPromptSkill := func(s *Session, name string) bool {
+		data, _ := s.buildPromptData(s.currentEnv())
+		return slices.ContainsFunc(data.Skills, func(e skillEntry) bool { return e.CatalogNameOrName() == name })
+	}
+	for _, tc := range []struct {
+		skillName      string
+		revokeTool     []string
+		wantBodyMarker string
+	}{
+		{skill.RunningJobsSkillName, []string{"delegate", "job_watch", "job_list"}, "# Running jobs and delegates"},
+		{skill.UsingWorktreesSkillName, []string{"manage_worktree"}, "# Using worktrees"},
+		{skill.ReadingTranscriptsSkillName, []string{"read_transcript", "find_session_transcripts"}, "# Reading transcripts"},
+	} {
+		t.Run(tc.skillName, func(t *testing.T) {
+			t.Parallel()
+			root := t.TempDir()
+			markGitRoot(t, root)
+			capableClient := llm.NewClient()
+			capableCall := useSkillCall("cap-s1", tc.skillName)
+			capableComm := communicateCall("cap-c1", "done")
+			var capableSawError bool
+			var capableBody string
+			capableClient.Register(newFakeAdapter("anthropic",
+				func(llm.Request) llm.Response { return agenttest.ToolCallResponse(capableCall) },
+				func(req llm.Request) llm.Response {
+					for _, msg := range req.Messages {
+						for _, part := range msg.Content {
+							if part.Kind == llm.ContentToolResult && part.ToolResult != nil && part.ToolResult.ToolCallID == "cap-s1" {
+								capableSawError = part.ToolResult.IsError
+								if s, ok := part.ToolResult.Content.(string); ok {
+									capableBody = s
+								}
+							}
+						}
+					}
+					return agenttest.ToolCallResponse(capableComm)
+				},
+			))
+			capableSess := newSession(t, withClient(capableClient), withProfile(newAnthropicProfile("claude-test")), withDir(root), withConfig(SessionConfig{
+				MaxSubagentDepth: 1,
+				StateDir:         t.TempDir(),
+			}))
+			if !hasPromptSkill(capableSess, tc.skillName) {
+				t.Fatalf("capable root session missing %q in <skill-catalog>", tc.skillName)
+			}
+			if _, err := capableSess.ProcessInput(tripwireCtx(t), "activate", nil); err != nil {
+				t.Fatalf("capable ProcessInput: %v", err)
+			}
+			if capableSawError || !strings.Contains(capableBody, tc.wantBodyMarker) {
+				t.Fatalf("capable use_skill(%q) err=%v body=%q, want marker %q", tc.skillName, capableSawError, capableBody, tc.wantBodyMarker)
+			}
+
+			c := llm.NewClient()
+			call := useSkillCall("s1", tc.skillName)
+			comm := communicateCall("c1", "done")
+			var sawError bool
+			f := newFakeAdapter("anthropic",
+				func(llm.Request) llm.Response { return agenttest.ToolCallResponse(call) },
+				func(req llm.Request) llm.Response {
+					for _, msg := range req.Messages {
+						for _, part := range msg.Content {
+							if part.Kind == llm.ContentToolResult && part.ToolResult != nil && part.ToolResult.ToolCallID == "s1" {
+								sawError = part.ToolResult.IsError
+							}
+						}
+					}
+					return agenttest.ToolCallResponse(comm)
+				},
+			)
+			c.Register(f)
+			sess := newSession(t, withClient(c), withProfile(newAnthropicProfile("claude-test")), withDir(root), withConfig(SessionConfig{
+				MaxSubagentDepth: 1,
+				StateDir:         t.TempDir(),
+			}))
+			for _, toolName := range tc.revokeTool {
+				sess.reg.Remove(toolName)
+			}
+			refreshModelFacingCaches(sess)
+			if hasPromptSkill(sess, tc.skillName) {
+				t.Fatalf("session lacking %v still advertises %q in <skill-catalog>", tc.revokeTool, tc.skillName)
+			}
+			if _, err := sess.ProcessInput(tripwireCtx(t), "test", nil); err != nil {
+				t.Fatalf("ProcessInput: %v", err)
+			}
+			if !sawError {
+				t.Fatalf("use_skill(%q) succeeded despite lacking %v", tc.skillName, tc.revokeTool)
+			}
+		})
+	}
+}
+
+func TestBundledGuideSkills_DisposeOnlyWorktreeExcludesUsingWorktrees(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	markGitRoot(t, root)
+	c := llm.NewClient()
+	call := useSkillCall("s1", skill.UsingWorktreesSkillName)
+	comm := communicateCall("c1", "done")
+	var sawError bool
+	f := newFakeAdapter("anthropic",
+		func(llm.Request) llm.Response { return agenttest.ToolCallResponse(call) },
+		func(req llm.Request) llm.Response {
+			for _, msg := range req.Messages {
+				for _, part := range msg.Content {
+					if part.Kind == llm.ContentToolResult && part.ToolResult != nil && part.ToolResult.ToolCallID == "s1" {
+						sawError = part.ToolResult.IsError
+					}
+				}
+			}
+			return agenttest.ToolCallResponse(comm)
+		},
+	)
+	c.Register(f)
+	sess := newSession(t, withClient(c), withProfile(newAnthropicProfile("claude-test")), withDir(root), withConfig(SessionConfig{
+		MaxSubagentDepth: 3,
+		StateDir:         t.TempDir(),
+		spawn: spawnConfig{
+			parentSessionID:     "parent-session",
+			depth:               1,
+			delegationAllowance: 1,
+			isolation:           "worktree",
+		},
+	}))
+	if !sess.worktreeDisposeOnlySurface() || sess.reg.Get("manage_worktree") == nil {
+		t.Fatalf("expected dispose-only manage_worktree surface on isolated coordinator")
+	}
+	data, _ := sess.buildPromptData(sess.currentEnv())
+	if !data.WorktreeDisposeOnly {
+		t.Fatal("expected WorktreeDisposeOnly prompt input to be true")
+	}
+	if slices.ContainsFunc(data.Skills, func(e skillEntry) bool { return e.CatalogNameOrName() == skill.UsingWorktreesSkillName }) {
+		t.Fatalf("dispose-only coordinator still advertises %q in <skill-catalog>", skill.UsingWorktreesSkillName)
+	}
+	prompt, warning, _ := sess.renderSystemPrompt(sess.env)
+	if warning != "" {
+		t.Fatalf("renderSystemPrompt: %s", warning)
+	}
+	if strings.Contains(prompt, skill.UsingWorktreesSkillName) {
+		t.Fatalf("dispose-only coordinator prompt still points to %q", skill.UsingWorktreesSkillName)
+	}
+	if _, err := sess.ProcessInput(tripwireCtx(t), "test", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	if !sawError {
+		t.Fatalf("use_skill(%q) succeeded on dispose-only coordinator", skill.UsingWorktreesSkillName)
+	}
+}

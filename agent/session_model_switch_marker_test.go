@@ -313,8 +313,9 @@ func TestSetModel_KnownWindowMarkerStaysUnassumed(t *testing.T) {
 		withAdapter(&fakeAdapter{name: "openai"}),
 		withAdapter(&fakeAdapter{name: "win"}),
 		withConfig(SessionConfig{
-			ResolveProfile: declaredWindowResolver,
-			testOnly:       testConfig{skipGitSnapshot: true},
+			ResolveProfile:          declaredWindowResolver,
+			UserInstructionOverride: strings.Repeat("x", 4000),
+			testOnly:                testConfig{skipGitSnapshot: true},
 		}),
 	)
 
