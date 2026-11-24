@@ -412,6 +412,11 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 	if call.ItemID != "" {
 		ctx = context.WithValue(ctx, ctxToolItemID, call.ItemID)
 	}
+	var callToolCarrier *callToolResultCarrier
+	if call.Name == "call_tool" {
+		callToolCarrier = &callToolResultCarrier{}
+		ctx = context.WithValue(ctx, callToolCarrierKey{}, callToolCarrier)
+	}
 	toolStart := s.sclock().Now()
 	if err := s.abortIfClosing(ctx); err != nil {
 		emitCanceledEnd(err)
@@ -452,6 +457,11 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 			res = s.reg.ExecutePreparedCall(ctx, s.currentEnv(), call)
 		} else {
 			res = s.reg.ExecuteCall(ctx, s.currentEnv(), call)
+		}
+		if callToolCarrier != nil && callToolCarrier.res != nil {
+			res = *callToolCarrier.res
+			res.ToolName = call.Name
+			res.CallID = call.ID
 		}
 		// The result tool's own call is the completion the next Stop dispatch
 		// judges, not work a block asked for. A call the breaker parked never
@@ -544,8 +554,12 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 	s.responseSideEffectsMu.Unlock()
 	closeToolEvent()
 
-	if early := s.runPostToolHooks(ctx, call, res); early != nil {
-		return *early
+	s.steerReactiveToolDisclosure(call.Name, res, outputRef)
+
+	if callToolCarrier == nil || callToolCarrier.res == nil {
+		if early := s.runPostToolHooks(ctx, call, res); early != nil {
+			return *early
+		}
 	}
 
 	return res

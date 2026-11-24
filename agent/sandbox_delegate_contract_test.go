@@ -295,6 +295,13 @@ func delegateDefinitionParameters(t *testing.T, s *Session) map[string]any {
 		}
 		return def.Parameters
 	}
+	s.mu.Lock()
+	def, ok := s.deferredToolDefinitionLocked("delegate")
+	s.mu.Unlock()
+	if ok {
+		def = tool.WithIntentParameterRequired(def)
+		return def.Parameters
+	}
 	t.Fatal("delegate definition not found")
 	return nil
 }

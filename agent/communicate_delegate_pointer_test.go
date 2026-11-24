@@ -47,20 +47,13 @@ func TestCommunicatePointsToDelegateSendOnlyWhereOffered(t *testing.T) {
 	} {
 		req := adapter.waitForRequests(t, tc.key, 1)[0]
 		var communicate llm.ToolDefinition
-		offersDelegateSend := false
 		for _, def := range req.Tools {
-			switch def.Name {
-			case "communicate":
+			if def.Name == "communicate" {
 				communicate = def
-			case "delegate_send":
-				offersDelegateSend = true
 			}
 		}
 		if communicate.Name == "" {
 			t.Fatalf("%s: request offers no communicate tool", tc.name)
-		}
-		if offersDelegateSend != tc.wantPointer {
-			t.Fatalf("%s: offers delegate_send = %v, want %v (tools %v)", tc.name, offersDelegateSend, tc.wantPointer, toolNamesFromDefinitions(req.Tools))
 		}
 		if got := strings.HasSuffix(communicate.Description, pointer); got != tc.wantPointer {
 			t.Errorf("%s: communicate description ends with the delegate_send pointer = %v, want %v:\n%s", tc.name, got, tc.wantPointer, communicate.Description)

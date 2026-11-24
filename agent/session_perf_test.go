@@ -15,6 +15,7 @@ import (
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/skill"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/llm"
 )
@@ -48,7 +49,7 @@ func TestCachedToolDefs_MatchUncached(t *testing.T) {
 	nameMap := sess.profile.ToolNameMap() // canonical → wire; nil means identity
 	wantNames := make(map[string]bool)
 	for _, td := range sess.profile.ToolDefinitions() {
-		if !registered[td.Name] {
+		if !registered[td.Name] || sess.isDeferredTool(td.Name) {
 			continue
 		}
 		wireName := td.Name
@@ -56,6 +57,9 @@ func TestCachedToolDefs_MatchUncached(t *testing.T) {
 			wireName = n
 		}
 		wantNames[wireName] = true
+	}
+	if sess.hasDeferredToolsLocked() {
+		wantNames["call_tool"] = true
 	}
 	if len(wantNames) == 0 {
 		t.Fatal("no registered profile tools found — test precondition violated")
@@ -437,8 +441,14 @@ func TestCachedSystemPromptComponents_SkillList(t *testing.T) {
 	if len(sess.skills.Entries) == 0 {
 		t.Fatal("no skills discovered; the length comparison below would be vacuous")
 	}
-	if got := len(data.Skills); got != len(sess.skills.Entries) {
-		t.Errorf("buildPromptData skills length %d != discovered %d", got, len(sess.skills.Entries))
+	want := 0
+	for _, d := range sess.skills.ModelEntries() {
+		if !skill.IsAutoDisclosedGuideSkill(d.CatalogName) {
+			want++
+		}
+	}
+	if got := len(data.Skills); got != want {
+		t.Errorf("buildPromptData skills length %d != expected non-auto-disclosed %d", got, want)
 	}
 }
 

@@ -1657,9 +1657,12 @@ func TestMemoryDelegatesReadButNeverSave(t *testing.T) {
 				t.Errorf("delegate has %s", name)
 			}
 		}
+		if !hasToolDef(defs, "call_tool") {
+			t.Errorf("delegate missing call_tool for deferred memory read/search")
+		}
 		for _, name := range []string{"memory_read", "memory_search"} {
-			if child.reg.Get(name) == nil || !hasToolDef(defs, name) {
-				t.Errorf("delegate lost %s", name)
+			if child.reg.Get(name) == nil {
+				t.Errorf("delegate lost %s from registry", name)
 			}
 		}
 		data, _ := child.buildPromptData(child.currentEnv())
@@ -3443,12 +3446,19 @@ func TestMemoryWarningDeliveryRestricted(t *testing.T) {
 func TestMemorySchemaAndOutputAliases(t *testing.T) {
 	t.Parallel()
 	pairs := map[string]string{"memory_read": "read_file", "memory_write": "write_file", "memory_edit": "edit_file", "memory_search": "grep", "memory_delete": "write_file"}
+	var sess *Session
 	s := newSession(t, withConfig(SessionConfig{MemoryStateRoot: t.TempDir()}), withSteps(func(req llm.Request) llm.Response {
+		if !hasToolDef(req.Tools, "call_tool") {
+			t.Fatal("request missing call_tool for deferred memory tools")
+		}
 		seen := 0
-		for _, def := range req.Tools {
-			if _, memory := pairs[def.Name]; !memory {
+		sess.mu.Lock()
+		for name := range pairs {
+			def, ok := sess.deferredToolDefinitionLocked(name)
+			if !ok {
 				continue
 			}
+			def = tool.WithIntentParameterRequired(def)
 			seen++
 			required := def.Parameters["required"].([]string)
 			for _, field := range []string{"scope", "intent"} {
@@ -3457,11 +3467,13 @@ func TestMemorySchemaAndOutputAliases(t *testing.T) {
 				}
 			}
 		}
+		sess.mu.Unlock()
 		if seen != len(pairs) {
-			t.Fatalf("advertised memory tools=%d want=%d", seen, len(pairs))
+			t.Fatalf("deferred memory tools=%d want=%d", seen, len(pairs))
 		}
 		return agenttest.FinalResponse("schemas checked")
 	}))
+	sess = s
 	for name, base := range pairs {
 		memory, ordinary := s.reg.Get(name), s.reg.Get(base)
 		if memory == nil || ordinary == nil || memory.Limit != ordinary.Limit {

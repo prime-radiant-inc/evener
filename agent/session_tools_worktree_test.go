@@ -101,15 +101,17 @@ func TestManageWorktreeToolRegisteredRegistryOnlyNonReadOnly(t *testing.T) {
 		}
 	}
 
-	found := false
+	foundCallTool := false
 	for _, td := range s.ToolDefinitions() {
 		if td.Name == "manage_worktree" {
-			found = true
-			break
+			t.Error("manage_worktree should be deferred from upfront ToolDefinitions()")
+		}
+		if td.Name == "call_tool" {
+			foundCallTool = true
 		}
 	}
-	if !found {
-		t.Error("manage_worktree not advertised in ToolDefinitions()")
+	if !foundCallTool {
+		t.Error("call_tool not advertised in ToolDefinitions() when manage_worktree is deferred")
 	}
 }
 

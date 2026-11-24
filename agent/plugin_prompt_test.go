@@ -226,3 +226,27 @@ func TestAvailableAgentsSectionSuppressedWhenDelegationSurfaceUnavailable(t *tes
 		t.Fatalf("available agents should be hidden when the delegation surface is incomplete, got %+v", got)
 	}
 }
+
+func TestAvailableAgentsTagGatedOnDelegateTool(t *testing.T) {
+	t.Parallel()
+	data := promptData{
+		AvailableAgents: []agentEntry{{Name: "reviewer", Description: "Reviews code."}},
+		CallableTools:   map[string]bool{},
+	}
+	withoutDelegate, err := executeSystemPromptTemplate(data)
+	if err != nil {
+		t.Fatalf("render without delegate: %v", err)
+	}
+	if strings.Contains(withoutDelegate, "<available_agents>") {
+		t.Fatalf("<available_agents> rendered without delegate tool:\n%s", withoutDelegate)
+	}
+
+	data.CallableTools["delegate"] = true
+	withDelegate, err := executeSystemPromptTemplate(data)
+	if err != nil {
+		t.Fatalf("render with delegate: %v", err)
+	}
+	if !strings.Contains(withDelegate, "<available_agents>") {
+		t.Fatalf("<available_agents> omitted despite delegate tool")
+	}
+}

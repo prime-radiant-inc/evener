@@ -687,11 +687,17 @@ func TestSpawnAgent_TaskListPreservedForNamedAgent(t *testing.T) {
 	// Spawn an explorer (named agent with explicit tool list that doesn't include task_list).
 	agentID := spawnRuntimeAgent(t, sess, delegateArgs{Task: "explore the code", AgentType: "explorer"})
 	waitForRuntimeSubagent(t, sess, agentID)
+	child := sess.getSub(agentID)
+	if child == nil || child.sess == nil {
+		t.Fatal("spawned explorer subagent missing")
+	}
 
-	// task_list should be in the subagent's tools even though explorer.md doesn't list it.
-	hasTaskList := slices.Contains(subagentTools, "task_list")
-	if !hasTaskList {
-		t.Errorf("named subagent should have task_list, got tools: %v", subagentTools)
+	// task_list should be registered in the subagent's registry (and callable via call_tool) even though explorer.md doesn't list it.
+	if child.sess.reg.Get("task_list") == nil {
+		t.Errorf("named subagent missing task_list in registry, got: %v", child.sess.reg.Names())
+	}
+	if !slices.Contains(subagentTools, "call_tool") {
+		t.Errorf("named subagent tools missing call_tool for deferred task_list: %v", subagentTools)
 	}
 }
 
@@ -721,18 +727,25 @@ func TestSpawnAgent_BuiltinSubagentKeepsDelegateSendTool(t *testing.T) {
 	agentID := spawnRuntimeAgent(t, sess, delegateArgs{Task: "observe and call back", AgentType: "subagent"})
 	waitForRuntimeSubagent(t, sess, agentID)
 
+	child := sess.getSub(agentID)
+	if child == nil || child.sess == nil {
+		t.Fatal("spawned subagent missing")
+	}
 	toolSet := map[string]bool{}
 	for _, name := range subagentTools {
 		toolSet[name] = true
 	}
-	if !toolSet["delegate_send"] {
-		t.Fatalf("built-in subagent tools = %v, want delegate_send for child delegate follow-up", subagentTools)
+	if !toolSet["call_tool"] {
+		t.Fatalf("built-in subagent tools = %v, want call_tool for deferred tools", subagentTools)
 	}
-	if !toolSet["job_watch"] {
-		t.Fatalf("built-in subagent tools = %v, want job_watch so a leaf that runs jobs can await its own promoted job (#2645)", subagentTools)
+	if child.sess.reg.Get("delegate_send") == nil {
+		t.Fatalf("built-in subagent registry missing delegate_send for child delegate follow-up: %v", child.sess.reg.Names())
 	}
-	if toolSet["delegate"] {
-		t.Fatalf("built-in subagent tools = %v, must keep leaf role without delegate", subagentTools)
+	if child.sess.reg.Get("job_watch") == nil {
+		t.Fatalf("built-in subagent registry missing job_watch so a leaf that runs jobs can await its own promoted job (#2645): %v", child.sess.reg.Names())
+	}
+	if toolSet["delegate"] || child.sess.reg.Get("delegate") != nil {
+		t.Fatalf("built-in subagent tools = %v / reg = %v, must keep leaf role without delegate", subagentTools, child.sess.reg.Names())
 	}
 }
 
@@ -762,11 +775,15 @@ func TestSpawnAgent_AllToolsAgentStripsAgentManagementTools(t *testing.T) {
 	agentID := spawnRuntimeAgent(t, sess, delegateArgs{Task: "help with the task", AgentType: "default", DelegationAllowance: new(0)})
 	waitForRuntimeSubagent(t, sess, agentID)
 
-	for _, want := range []string{"task_list"} {
-		found := slices.Contains(subagentTools, want)
-		if !found {
-			t.Errorf("all-tools agent should retain %q, got tools: %v", want, subagentTools)
-		}
+	child := sess.getSub(agentID)
+	if child == nil || child.sess == nil {
+		t.Fatal("spawned default subagent missing")
+	}
+	if child.sess.reg.Get("task_list") == nil {
+		t.Errorf("all-tools agent should retain task_list in registry, got: %v", child.sess.reg.Names())
+	}
+	if !slices.Contains(subagentTools, "call_tool") {
+		t.Errorf("all-tools agent tools missing call_tool for deferred task_list: %v", subagentTools)
 	}
 	for _, forbidden := range rootOnlySubagentTools() {
 		for _, name := range subagentTools {

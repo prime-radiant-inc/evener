@@ -309,6 +309,64 @@ func (s *Session) profileWireToolDefs() []llm.ToolDefinition {
 // rebuildToolDefsCache builds the cached tool definition lists from the
 // current profile, MCP tools, and registry state. Called once at session init
 // and again if tools are added at runtime (e.g. MCP or custom tools).
+var tier2DeferredGroups = map[string]string{
+	"job_list":                 "jobs",
+	"job_status":               "jobs",
+	"job_stop":                 "jobs",
+	"job_watch":                "jobs",
+	"delegate":                 "jobs",
+	"delegate_send":            "jobs",
+	"manage_worktree":          "worktrees",
+	"read_transcript":          "transcripts",
+	"find_session_transcripts": "transcripts",
+	"doctor_evener":            "doctor",
+	"compact_context":          "compact",
+	"task_list":                "secondary",
+	"web_fetch":                "secondary",
+	"model_list":               "secondary",
+	"notes_agent_set":          "secondary",
+	"notes_read":               "secondary",
+	"urls_add":                 "secondary",
+	"urls_remove":              "secondary",
+	"memory_read":              "secondary",
+	"memory_write":             "secondary",
+	"memory_edit":              "secondary",
+	"memory_delete":            "secondary",
+	"memory_search":            "secondary",
+}
+
+// isDeferredToolLocked reports whether canonicalName is deferred to Tier-2
+// (omitted from upfront req.Tools and invoked via call_tool). Manager
+// sessions and parent observers keep job-group tools upfront in Tier-1.
+func (s *Session) isDeferredToolLocked(canonicalName string) bool {
+	if s == nil {
+		return false
+	}
+	group, ok := tier2DeferredGroups[canonicalName]
+	if !ok {
+		return false
+	}
+	if group == "jobs" && (s.hubEnabled || s.cfg.spawn.parentWatchGranted) {
+		return false
+	}
+	if s.hubEnabled && (canonicalName == "read_transcript" || canonicalName == "model_list") {
+		return false
+	}
+	return true
+}
+
+func (s *Session) hasDeferredToolsLocked() bool {
+	if s == nil || s.reg == nil {
+		return false
+	}
+	for _, name := range s.reg.Names() {
+		if s.isDeferredToolLocked(name) {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Session) rebuildToolDefsCache() {
 	if s == nil || s.reg == nil {
 		if s != nil {
@@ -319,6 +377,7 @@ func (s *Session) rebuildToolDefsCache() {
 		return
 	}
 	s.composeHubRegistry()
+	hasDeferred := s.syncCallToolRegistrationLocked()
 	registered := s.reg.RegisteredNames()
 
 	// Profile tool definitions are canonical (e.g. "shell"); the registry is also
@@ -379,6 +438,11 @@ func (s *Session) rebuildToolDefsCache() {
 					_ = s.reg.Register(*regTool)
 				}
 			}
+			if s.isDeferredToolLocked(td.Name) {
+				included[td.Name] = true
+				included[providerToolName(td.Name, nameMap)] = true
+				continue
+			}
 			switch td.Name {
 			case "shell":
 				td = s.sessionShellDefinition()
@@ -414,6 +478,15 @@ func (s *Session) rebuildToolDefsCache() {
 	for _, td := range s.reg.Definitions() {
 		if included[td.Name] {
 			continue
+		}
+		if s.isDeferredToolLocked(td.Name) {
+			continue
+		}
+		if td.Name == "call_tool" {
+			if !hasDeferred {
+				continue
+			}
+			td = s.callToolDefinitionLocked()
 		}
 		// Never expose both apply_patch and edit_file in the same session; both
 		// stay registered in s.reg for mid-session model switching.

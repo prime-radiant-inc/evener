@@ -289,8 +289,16 @@ func TestSession_TaskListRejectsInvalidEffortBeforeActivatingTask(t *testing.T) 
 	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
+	var sess *Session
 
 	f := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		if sess != nil {
+			sess.mu.Lock()
+			if def, ok := sess.deferredToolDefinitionLocked("task_list"); ok {
+				req.Tools = append(slices.Clone(req.Tools), def)
+			}
+			sess.mu.Unlock()
+		}
 		requireTaskEffortSchemaLevel(t, req, "update", "ultra")
 		return taskEffortToolCall("c1", `{"add":[{"type":"implement","description":"first guard","prompt":"keep the first request valid","reasoning_effort":"high"},{"type":"implement","description":"second guard","prompt":"keep the second request valid","reasoning_effort":"low"}]}`)
 	}, func(req llm.Request) llm.Response {
@@ -306,7 +314,8 @@ func TestSession_TaskListRejectsInvalidEffortBeforeActivatingTask(t *testing.T) 
 	// than trusting the schema enum as its only validation.
 	profile := withEffortLevels(provider.NewOpenAIProfile("gpt-5.2"),
 		"minimal", "low", "medium", "high", "xhigh", "max", "ultra")
-	sess, err := NewSession(c, profile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	var err error
+	sess, err = NewSession(c, profile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		ReasoningEffort: "max",
 	})
 	if err != nil {
@@ -336,7 +345,15 @@ func TestSession_TaskListRejectsInvalidEffortBeforeAppendingTask(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
+	var sess *Session
 	f := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		if sess != nil {
+			sess.mu.Lock()
+			if def, ok := sess.deferredToolDefinitionLocked("task_list"); ok {
+				req.Tools = append(slices.Clone(req.Tools), def)
+			}
+			sess.mu.Unlock()
+		}
 		requireTaskEffortSchemaLevel(t, req, "add", "ultra")
 		return taskEffortToolCall("c1", `{"add":[{"type":"implement","description":"valid step","prompt":"must roll back with the batch","reasoning_effort":"high"},{"type":"implement","description":"poisoned step","prompt":"must not persist","reasoning_effort":"ultra"}]}`)
 	}, func(req llm.Request) llm.Response {
@@ -346,7 +363,8 @@ func TestSession_TaskListRejectsInvalidEffortBeforeAppendingTask(t *testing.T) {
 	c.Register(f)
 	profile := withEffortLevels(provider.NewOpenAIProfile("gpt-5.2"),
 		"minimal", "low", "medium", "high", "xhigh", "max", "ultra")
-	sess, err := NewSession(c, profile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{ReasoningEffort: "max"})
+	var err error
+	sess, err = NewSession(c, profile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{ReasoningEffort: "max"})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}

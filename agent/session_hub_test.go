@@ -300,14 +300,25 @@ func TestManagerRequestActualPolicyMatrix(t *testing.T) {
 						}
 					}
 					denied := mode == "denied" || mode == "allowlist"
-					expected := !denied && (mode != "absent" || manager)
+					expected := manager && !denied
 					if (found != nil) != expected {
 						t.Fatalf("manager=%v, exposed=%v want %v", manager, found != nil, expected)
 					}
-					if found != nil {
-						_, hub := found.Parameters["properties"].(map[string]any)["hub"]
-						if hub != manager {
-							t.Fatalf("manager=%v hub=%v", manager, hub)
+					if !manager {
+						root.mu.Lock()
+						def, ok := root.deferredToolDefinitionLocked(name)
+						root.mu.Unlock()
+						if ok != (!denied && mode != "absent") {
+							t.Fatalf("manager=false deferred=%v, want %v", ok, !denied && mode != "absent")
+						}
+						if ok {
+							if _, hub := def.Parameters["properties"].(map[string]any)["hub"]; hub {
+								t.Fatal("manager=false deferred schema carries hub")
+							}
+						}
+					} else if found != nil {
+						if _, hub := found.Parameters["properties"].(map[string]any)["hub"]; !hub {
+							t.Fatalf("manager=true missing hub property")
 						}
 					}
 					if mode == "zero-allowance" && manager {

@@ -147,6 +147,15 @@ func prepareRequestSnapshot(t *testing.T, s *Session) requestSnapshot {
 		snapshot.delegateRoster = description
 	}
 	if snapshot.delegateRoster == "" {
+		s.mu.Lock()
+		if def, ok := s.deferredToolDefinitionLocked("delegate"); ok {
+			properties, _ := def.Parameters["properties"].(map[string]any)
+			agentType, _ := properties["agent_type"].(map[string]any)
+			snapshot.delegateRoster, _ = agentType["description"].(string)
+		}
+		s.mu.Unlock()
+	}
+	if snapshot.delegateRoster == "" {
 		t.Fatal("the prepared request has no delegate tool definition with an agent_type description, so the schema half cannot be observed")
 	}
 	snapshot.rosterExcludesCLIMCP = s.rosterExclusion()

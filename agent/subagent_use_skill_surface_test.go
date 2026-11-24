@@ -71,11 +71,24 @@ func TestRootSystemPromptRetainsProjectDocsAndAvailableAgentsWithoutSkills(t *te
 	if strings.Contains(prompt, "<skill-catalog>") {
 		t.Error("prompt unexpectedly contains <skill-catalog> when zero skills exist")
 	}
-	if !strings.Contains(prompt, "<available_agents>") || !strings.Contains(prompt, "</available_agents>") {
-		t.Error("prompt missing <available_agents> when zero skills exist")
+	if strings.Contains(prompt, "<available_agents>") {
+		t.Error("ordinary root Turn 1 prompt unexpectedly contains <available_agents> while delegate is deferred")
 	}
 	if !strings.Contains(prompt, docSentinel) {
 		t.Error("prompt missing ProjectDocs sentinel when zero skills exist")
+	}
+
+	// When delegate is upfront (Manager mode), Turn 1 renders <available_agents> even with zero skills.
+	s.mu.Lock()
+	s.hubEnabled = true
+	s.rebuildToolDefsCache()
+	s.mu.Unlock()
+	mgrPrompt, warning, _ := s.renderSystemPrompt(s.env)
+	if warning != "" {
+		t.Fatalf("renderSystemPrompt (manager): %s", warning)
+	}
+	if !strings.Contains(mgrPrompt, "<available_agents>") || !strings.Contains(mgrPrompt, "</available_agents>") {
+		t.Error("manager prompt missing <available_agents> when zero skills exist")
 	}
 }
 

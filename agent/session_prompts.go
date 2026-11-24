@@ -11,6 +11,7 @@ import (
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/skill"
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/internal/bundled"
 	"primeradiant.com/evener/internal/commitprovenance"
@@ -214,7 +215,7 @@ func (s *Session) buildPromptData(env execenv.ExecutionEnvironment) (promptData,
 	// Skills. A skill this session cannot follow is left out, so the catalog
 	// only offers usable skills.
 	for _, descriptor := range s.skills.ModelEntries() {
-		if !s.skillAvailableToSession(descriptor.CatalogName) {
+		if !s.skillAvailableToSession(descriptor.CatalogName) || skill.IsAutoDisclosedGuideSkill(descriptor.CatalogName) {
 			continue
 		}
 		skillName, sm := descriptor.CatalogName, descriptor.Meta
@@ -232,7 +233,7 @@ func (s *Session) buildPromptData(env execenv.ExecutionEnvironment) (promptData,
 	actualDefs := append([]llm.ToolDefinition(nil), s.cachedToolDefs...)
 	data.HasUseSkill = toolNameSetFromDefinitions(actualDefs)["use_skill"]
 	data.CallableToolNames = toolNamesFromDefinitions(actualDefs)
-	data.UnavailableProfileToolNames = unavailableToolNames(profileDefs, actualDefs)
+	data.UnavailableProfileToolNames = s.unavailableProfileToolNames(profileDefs, actualDefs)
 
 	// Delegation capability: a positive allowance unlocks the delegation
 	// and background-jobs prompt surface only when those tools are callable.
@@ -289,6 +290,23 @@ func (s *Session) buildPromptData(env execenv.ExecutionEnvironment) (promptData,
 	}
 
 	return data, sources
+}
+
+func (s *Session) unavailableProfileToolNames(profileDefs, actualDefs []llm.ToolDefinition) []string {
+	actual := toolNameSetFromDefinitions(actualDefs)
+	nameMap := s.toolNameMap()
+	missing := make([]string, 0)
+	for _, td := range profileDefs {
+		if td.Name == "" || actual[td.Name] {
+			continue
+		}
+		canonical := canonicalToolName(td.Name, nameMap)
+		if s != nil && s.reg != nil && s.reg.Get(canonical) != nil && s.isDeferredToolLocked(canonical) {
+			continue
+		}
+		missing = append(missing, td.Name)
+	}
+	return missing
 }
 
 // includeProjectDocs reports whether the system prompt renders the personal and

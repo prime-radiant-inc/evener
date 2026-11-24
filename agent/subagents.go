@@ -645,6 +645,7 @@ func delegateToolNameCeilingFromRegistered(registered map[string]bool, reg *tool
 	if isolation == "worktree" && !canDelegate {
 		delete(selected, "manage_worktree")
 	}
+	delete(selected, "call_tool")
 	names := make([]string, 0, len(selected))
 	for name := range selected {
 		names = append(names, name)

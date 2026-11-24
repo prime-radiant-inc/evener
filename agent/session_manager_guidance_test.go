@@ -59,19 +59,35 @@ func TestManagerRequestAllBranches(t *testing.T) {
 				t.Run(tc.name, func(t *testing.T) {
 					index := slices.IndexFunc(req.Tools, func(td llm.ToolDefinition) bool { return td.Name == tc.name })
 					want := mode != "denied" && (allowed == nil || slices.Contains(allowed, tc.name)) && (mode != "ordinary" || tc.ordinary != "")
+					if mode == "ordinary" {
+						want = false
+					}
 					if (index >= 0) != want {
 						t.Fatalf("advertised=%t, want %t", index >= 0, want)
 					}
-					if index < 0 {
+					var params map[string]any
+					if index >= 0 {
+						params = req.Tools[index].Parameters
+					} else if mode == "ordinary" && tc.ordinary != "" {
+						root.mu.Lock()
+						def, ok := root.deferredToolDefinitionLocked(tc.name)
+						root.mu.Unlock()
+						if !ok {
+							t.Fatalf("ordinary deferred schema missing for %s", tc.name)
+						}
+						params = def.Parameters
+					} else {
 						return
 					}
-					compiled := compileProjectionSchema(t, req.Tools[index].Parameters)
+					compiled := compileProjectionSchema(t, params)
 					validate := func(raw string) error {
 						var args map[string]any
 						if err := json.Unmarshal([]byte(raw), &args); err != nil {
 							t.Fatal(err)
 						}
-						args["intent"] = "sentinel"
+						if index >= 0 {
+							args["intent"] = "sentinel"
+						}
 						return compiled.Validate(args)
 					}
 					if err := validate(tc.manager); mode != "ordinary" && err != nil {

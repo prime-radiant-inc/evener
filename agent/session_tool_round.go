@@ -367,6 +367,9 @@ func (s *Session) persistToolResults(ctx context.Context, calls []llm.ToolCallDa
 		return abortErr
 	}
 	s.consumePersistedTerminalJobNotifications(calls, results)
+	if abortErr := s.maybeDiscloseGuidesForToolRound(ctx, calls, results); abortErr != nil {
+		return abortErr
+	}
 
 	for i, r := range results {
 		if len(r.ImageData) > 0 {
@@ -442,7 +445,11 @@ func hasTerminalJobResult(calls []llm.ToolCallData, results []tool.ExecResult) b
 // caller the job carries on and will notify (a foreground runtime timeout
 // whose finalization failed replies failed/finalize_failed that way).
 func terminalJobResult(call llm.ToolCallData, result tool.ExecResult) (string, bool) {
-	if result.IsError || (call.Name != "job_status" && call.Name != "shell") {
+	effectiveName := call.Name
+	if effectiveName == "call_tool" {
+		effectiveName = callToolTargetName(call.Arguments)
+	}
+	if result.IsError || (effectiveName != "job_status" && effectiveName != "shell") {
 		return "", false
 	}
 	var reply struct {
@@ -453,7 +460,7 @@ func terminalJobResult(call llm.ToolCallData, result tool.ExecResult) (string, b
 	if err := json.Unmarshal(result.ToolState, &reply); err != nil || reply.JobID == "" || !jobstore.Status(reply.Status).IsTerminal() {
 		return "", false
 	}
-	if call.Name == "shell" && reply.Mode != string(shellModeForeground) {
+	if effectiveName == "shell" && reply.Mode != string(shellModeForeground) {
 		return "", false
 	}
 	return reply.JobID, true

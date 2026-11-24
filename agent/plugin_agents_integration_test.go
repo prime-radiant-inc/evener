@@ -456,6 +456,9 @@ func TestSpawnAgent_PluginAgentType_RestrictsTools(t *testing.T) {
 	}
 	regNames := sub.sess.reg.Names()
 	for _, name := range regNames {
+		if name == "call_tool" && sub.sess.hasDeferredToolsLocked() {
+			continue
+		}
 		if !allowed[name] {
 			t.Errorf("unexpected tool %q in restricted subagent (allowed: read_file, grep, read_transcript, task_list, compact_context, use_skill, job_list, job_status, job_stop, job_watch, communicate)", name)
 		}

@@ -189,6 +189,26 @@ func TestStableShellAttentionContent(t *testing.T) {
 	if got == "" {
 		t.Fatal("expected non-empty content")
 	}
+
+	largeContent := "HEAD_MARKER_" + string(make([]byte, 8000)) + "_TAIL_MARKER"
+	largePath := filepath.Join(dir, "large.log")
+	if err := os.WriteFile(largePath, []byte(largeContent), 0o644); err != nil {
+		t.Fatalf("write large output: %v", err)
+	}
+	largeRec := &jobstore.JobRecord{
+		JobID:       "j2",
+		Status:      jobstore.StatusCompleted,
+		Type:        jobstore.JobShell,
+		OutputPath:  largePath,
+		OutputBytes: int64(len(largeContent)),
+	}
+	largeGot := stableShellAttentionContent("/store/jobs.jsonl", desc, largeRec)
+	if !contains(largeGot, "HEAD_MARKER_") || !contains(largeGot, "_TAIL_MARKER") {
+		t.Fatalf("expected head and tail markers in large stable shell attention, got %q", largeGot)
+	}
+	if !contains(largeGot, `read_transcript(transcript_ref="job:j2", offset_bytes=2048)`) {
+		t.Fatalf("expected offset_bytes=2048 continuation in large stable shell attention, got %q", largeGot)
+	}
 }
 
 func TestStableShellAttentionContent_NoReadTranscriptCeiling(t *testing.T) {

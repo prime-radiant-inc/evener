@@ -1476,21 +1476,47 @@ func TestFormatShellResultBackgroundReminderOneShot(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			normal := formatShellResult(tc.res)
-			if !strings.Contains(normal, "You do not need to wait for it explicitly") {
-				t.Fatalf("serve-mode reminder = %q, want the notify-and-wake wording", normal)
+			normalRes, err := marshalShellToolResult(shellResult{
+				JobID: tc.res.JobID, Type: tc.res.Type, Status: tc.res.Status,
+				Reason: func() string {
+					if tc.res.Reason != nil {
+						return *tc.res.Reason
+					}
+					return ""
+				}(),
+				RunningInBackground: true, TimedOut: tc.res.TimedOut, WaitElapsedMS: tc.res.WaitElapsedMS,
+			}, 30000, 0, false)
+			if err != nil {
+				t.Fatalf("marshalShellToolResult(normal): %v", err)
+			}
+			normal := normalRes.Output
+			if !strings.Contains(normal, "<system-reminder>") || !strings.Contains(normal, "</system-reminder>") {
+				t.Fatalf("serve-mode reminder = %q, want <system-reminder> wrapper", normal)
 			}
 			if strings.Contains(normal, "job_watch") {
 				t.Fatalf("serve-mode reminder = %q, must not mention the one-shot job_watch remedy", normal)
 			}
-
-			oneShotRes := tc.res
-			oneShotRes.TurnEndsProcess = true
-			oneShot := formatShellResult(oneShotRes)
-			if strings.Contains(oneShot, "You do not need to wait for it explicitly") {
-				t.Fatalf("one-shot reminder = %q, must not claim no wait is needed", oneShot)
+			if !strings.Contains(normal, tc.res.JobID) {
+				t.Fatalf("serve-mode result = %q, want job id %q", normal, tc.res.JobID)
 			}
+
+			oneShotOut, err := marshalShellToolResult(shellResult{
+				JobID: tc.res.JobID, Type: tc.res.Type, Status: tc.res.Status,
+				Reason: func() string {
+					if tc.res.Reason != nil {
+						return *tc.res.Reason
+					}
+					return ""
+				}(),
+				RunningInBackground: true, TimedOut: tc.res.TimedOut, WaitElapsedMS: tc.res.WaitElapsedMS,
+			}, 30000, 0, true)
+			if err != nil {
+				t.Fatalf("marshalShellToolResult(one-shot): %v", err)
+			}
+			oneShot := oneShotOut.Output
 			for _, token := range []string{
+				"<system-reminder>",
+				"</system-reminder>",
 				"job_watch",
 				`operation="create"`,
 				fmt.Sprintf(`source=%q`, tc.res.JobID),
@@ -1863,4 +1889,60 @@ func TestShellCwdWithShellOperatorsGetsPathHint(t *testing.T) {
 	if !errors.Is(err, errShellCwdNotFound) || errors.Is(err, errShellCwdIsCommand) {
 		t.Fatalf("plain missing path error = %v, want only errShellCwdNotFound", err)
 	}
+}
+
+func TestShellTimeoutPolicyOneShotDefaults(t *testing.T) {
+	t.Parallel()
+
+	t.Run("policy helper", func(t *testing.T) {
+		t.Parallel()
+		interactive := &toolDeps{cmdTimeouts: func() (int, int) { return defaultShellBlockTimeoutMS, maxShellBlockTimeoutMS }}
+		oneShot := &toolDeps{turnEndsProcess: true, cmdTimeouts: func() (int, int) { return defaultShellBlockTimeoutMS, maxShellBlockTimeoutMS }}
+		oneShotCustomDef := &toolDeps{turnEndsProcess: true, cmdTimeouts: func() (int, int) { return 30_000, maxShellBlockTimeoutMS }}
+
+		if got := applyShellTimeoutPolicy(interactive, shellArgs{Mode: shellModeForeground}); got.BlockTimeoutMS != defaultShellBlockTimeoutMS {
+			t.Fatalf("interactive foreground BlockTimeoutMS = %d, want %d", got.BlockTimeoutMS, defaultShellBlockTimeoutMS)
+		}
+		if got := applyShellTimeoutPolicy(oneShot, shellArgs{Mode: shellModeForeground}); got.BlockTimeoutMS != maxShellBlockTimeoutMS {
+			t.Fatalf("one-shot foreground BlockTimeoutMS = %d, want %d", got.BlockTimeoutMS, maxShellBlockTimeoutMS)
+		}
+		if got := applyShellTimeoutPolicy(oneShot, shellArgs{Mode: shellModeForeground, BlockTimeoutMS: 45_000}); got.BlockTimeoutMS != 45_000 {
+			t.Fatalf("one-shot explicit BlockTimeoutMS = %d, want 45000", got.BlockTimeoutMS)
+		}
+		if got := applyShellTimeoutPolicy(oneShot, shellArgs{Mode: shellModeBackground}); got.BlockTimeoutMS != defaultShellBlockTimeoutMS {
+			t.Fatalf("one-shot background BlockTimeoutMS = %d, want %d", got.BlockTimeoutMS, defaultShellBlockTimeoutMS)
+		}
+		if got := applyShellTimeoutPolicy(oneShotCustomDef, shellArgs{Mode: shellModeForeground}); got.BlockTimeoutMS != 30_000 {
+			t.Fatalf("one-shot custom default BlockTimeoutMS = %d, want 30000", got.BlockTimeoutMS)
+		}
+	})
+
+	t.Run("session tool execution", func(t *testing.T) {
+		t.Parallel()
+		for _, tc := range []struct {
+			name            string
+			turnEndsProcess bool
+			want            int
+		}{
+			{name: "interactive", turnEndsProcess: false, want: defaultShellBlockTimeoutMS},
+			{name: "one-shot", turnEndsProcess: true, want: maxShellBlockTimeoutMS},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
+				env := &captureEnv{wd: t.TempDir()}
+				s := newSession(t, withEnv(env), withConfig(SessionConfig{TurnEndsProcess: tc.turnEndsProcess}))
+				res := s.reg.ExecuteCall(context.Background(), env, llm.ToolCallData{
+					ID:        "c1",
+					Name:      "shell",
+					Arguments: json.RawMessage(`{"command":"echo hi"}`),
+				})
+				if res.IsError {
+					t.Fatalf("shell returned error: %s", res.Output)
+				}
+				if got := env.LastTimeoutMS(); got != tc.want {
+					t.Fatalf("timeout = %d, want %d", got, tc.want)
+				}
+			})
+		}
+	})
 }

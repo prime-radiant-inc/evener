@@ -832,7 +832,7 @@ func formatShellResult(out shellToolResult) string {
 				out.JobID,
 			)))
 		} else {
-			b.WriteString(systemReminder("This job will notify you when it completes. If your session is idle, the notification will wake it. You do not need to wait for it explicitly."))
+			b.WriteString(systemReminder("Evener notifies you automatically when this job finishes and wakes your session if idle. Do not wait, listen, sleep, or poll for completion; move on to other work or end your turn."))
 		}
 		b.WriteByte(' ')
 	}
@@ -894,6 +894,9 @@ func applyShellTimeoutPolicy(deps *toolDeps, args shellArgs) shellArgs {
 		return args
 	}
 	defTimeout, maxTimeout := deps.cmdTimeouts()
+	if deps.turnEndsProcess && args.Mode == shellModeForeground && (defTimeout <= 0 || defTimeout == defaultShellBlockTimeoutMS) {
+		defTimeout = maxShellBlockTimeoutMS
+	}
 	timeout := defTimeout
 	if args.BlockTimeoutMS > 0 {
 		timeout = args.BlockTimeoutMS

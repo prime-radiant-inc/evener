@@ -260,6 +260,7 @@ Stopping is handled by `job_stop(target=...)`. Retention is policy-based, not
 model-acknowledgement-based. Waiting, when needed, is bounded —
 `max_wait_ms` on `delegate_send` / `job_stop`, or `mode` on shell — not a
 separate wait tool. Reads never wait.
+In ordinary sessions, `delegate`, `delegate_send`, `job_list`, `job_status`, `job_stop`, `job_watch`, and `read_transcript` remain registered and are invoked through the cache-invariant `call_tool(name, arguments)` meta-tool with reactive schema and guide disclosures (Manager and `watch_parent` observer sessions keep them upfront in `req.Tools`).
 
 ## Model-facing guidance requirements
 
@@ -503,7 +504,7 @@ Canonical foreground shape for ordinary commands:
 }
 ```
 
-Shell defaults to `mode="foreground"` because most shell calls are short and decision-producing. It waits up to the session command timeout (120s standard), then promotes the command to a durable background job if it is still running. Set `mode="background"` to launch-and-return immediately for deliberate background work that terminates on its own, such as a long build or test run the agent should not wait on inline. A background job is session-owned and dies with the session — a server or any other process that must keep running belongs in `mode="detached"` where the environment supports it, which immediately disowns the process; it returns only a PID and cannot be discovered or controlled through job tools. Where the environment cannot detach — a sandboxed session with a wrapper refuses `DetachCommand` — the shell schema omits `mode="detached"` and the process must run as a session-owned background job, stopping with the session.
+Shell defaults to `mode="foreground"` because most shell calls are short and decision-producing. It waits up to the session command timeout (120s standard, or 600s in one-shot `TurnEndsProcess` runs unless a custom default or `block_timeout_ms` applies), then promotes the command to a durable background job if it is still running. Set `mode="background"` to launch-and-return immediately for deliberate background work that terminates on its own, such as a long build or test run the agent should not wait on inline. A background job is session-owned and dies with the session — a server or any other process that must keep running belongs in `mode="detached"` where the environment supports it, which immediately disowns the process; it returns only a PID and cannot be discovered or controlled through job tools. Where the environment cannot detach — a sandboxed session with a wrapper refuses `DetachCommand` — the shell schema omits `mode="detached"` and the process must run as a session-owned background job, stopping with the session.
 
 Launch-and-return (immediate background) shape:
 
@@ -528,7 +529,7 @@ model-facing parameter):
 
 Defaults and timeout semantics:
 
-- `mode="foreground"` (the default): the call runs the command in the foreground and waits up to the session command timeout (120s in stock provider profiles) for it to finish.
+- `mode="foreground"` (the default): the call runs the command in the foreground and waits up to the session command timeout (120s in stock interactive profiles, or 600s in one-shot `TurnEndsProcess` runs when `default_command_timeout_ms` is unset or equals 120000) for it to finish.
 - A foreground shell command that completes within that wait returns inline output and is ephemeral by default: no durable `job_id` is required and it does not appear in `job_list`.
 - A foreground shell command still running at the session command timeout is promoted to a durable background job: Evener returns the current bounded output/status with a `job_id`, and the normal terminal notification remains armed for the eventual terminal state.
 - `mode="background"`: Evener starts the command and returns a `job_id` immediately without waiting. The terminal notification fires when it finishes.
@@ -542,7 +543,7 @@ Defaults and timeout semantics:
 
 Foreground-wait bounds:
 
-- The foreground wait is the session command timeout (`DefaultCommandTimeoutMS`, 120000 by default), clamped to `MaxCommandTimeoutMS`. Shell has no per-call wait parameter; `mode` selects foreground (wait, then promote), session-owned background, or immediate detached return where the environment supports detaching.
+- The foreground wait is the session command timeout (`DefaultCommandTimeoutMS`, 120000 by default, promoted to `MaxCommandTimeoutMS` = 600000 in one-shot `TurnEndsProcess` runs when unset or equal to 120000), clamped to `MaxCommandTimeoutMS`. Shell has no per-call wait parameter; `mode` selects foreground (wait, then promote), session-owned background, or immediate detached return where the environment supports detaching.
 - These values belong to the internal [session Config](../agent/session_config.go) (`default_command_timeout_ms` and `max_command_timeout_ms`), not job-watch policy or per-call wait arguments. The session default is 120000 ms. These field names are not advertised CLI options.
 
 Compatibility runtime-limit bounds:
@@ -1709,8 +1710,9 @@ Shell notification example:
 <job-notification job_id="job_..." event="completed" job_type="shell" status="completed" reason="exit_zero" output_bytes="12345">
 Job job_... completed. Output is available through read_transcript(transcript_ref="job:job_...") if needed.
 excerpt:
-<bounded 8000-character shell-output tail>
-[excerpt truncated]
+<2048-byte head>
+[... 6201 bytes elided; inspect with read_transcript(transcript_ref="job:job_...", offset_bytes=2048) or output_match=... ...]
+<4096-byte tail>
 </job-notification>
 ```
 
@@ -1786,8 +1788,12 @@ points to `job:<job_id>`.
 Rules:
 
 - Shell notifications carry concrete `job_id`, `job_type="shell"`, lifecycle
-  event/status/reason, output bytes, and exit code when known. Their bounded
-  excerpt is the retained output tail. Watch notifications continue to use
+  event/status/reason, output bytes, and exit code when known. Shell outputs up
+  to 6 KiB (`6144` bytes) are inlined in full; larger retained outputs stitch a
+  2 KiB (`2048` byte) head and 4 KiB (`4096` byte) tail around an elision line
+  pointing to `read_transcript` (`offset_bytes` / `output_match`) when
+  `read_transcript` is callable (delegate notifications keep a bounded 8000-byte
+  head excerpt). Watch notifications continue to use
   `event="watch"` and `job_type="watch"`, with typed source identity.
 - Direct-delegate notifications carry `delegate_id` and the bounded canonical
   terminal packet folded in the stable aggregate. `job_status(dlg_...)` remains
