@@ -141,7 +141,14 @@ func (s *Session) guideSlots() [3]guideSlot {
 }
 
 func (s *Session) maybeDiscloseGuidesForToolRound(ctx context.Context, calls []llm.ToolCallData, results []tool.ExecResult) error {
-	wants, slots := s.detectToolRoundGuideTriggers(calls, results), s.guideSlots()
+	slots := s.guideSlots()
+	s.mu.Lock()
+	allDisclosed := !slices.ContainsFunc(slots[:], func(slot guideSlot) bool { return !*slot.flag })
+	s.mu.Unlock()
+	if allDisclosed {
+		return nil
+	}
+	wants := s.detectToolRoundGuideTriggers(calls, results)
 	s.mu.Lock()
 	pending := slices.ContainsFunc([]int{0, 1, 2}, func(i int) bool { return wants[i] && !*slots[i].flag })
 	s.mu.Unlock()
@@ -173,18 +180,28 @@ func (s *Session) syncDisclosedGuidesFromHistory() {
 
 func (s *Session) syncDisclosedGuidesFromHistoryLocked(history []schema.Turn) {
 	slots := s.guideSlots()
-	for _, slot := range slots {
+	var openTags [3]string
+	for i, slot := range slots {
 		*slot.flag = false
+		openTags[i] = guideNotificationOpenTag(slot.topic)
 	}
+	remaining := len(slots)
 	for _, turn := range history {
 		if turn.Kind != schema.TurnSystem {
 			continue
 		}
 		text := turn.Message.Text()
-		for _, slot := range slots {
-			if strings.Contains(text, guideNotificationOpenTag(slot.topic)) {
-				*slot.flag = true
+		for i, slot := range slots {
+			if *slot.flag {
+				continue
 			}
+			if strings.Contains(text, openTags[i]) {
+				*slot.flag = true
+				remaining--
+			}
+		}
+		if remaining == 0 {
+			break
 		}
 	}
 }

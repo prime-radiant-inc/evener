@@ -22,6 +22,7 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/clock"
 	"primeradiant.com/evener/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/internal/runetrim"
 	"primeradiant.com/evener/agent/provenance"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/envvars"
@@ -2400,9 +2401,18 @@ func readJobOutputHeadTail(readEdge outputEdgeReader, inlineMaxBytes, headBytes,
 	if err != nil {
 		return jobOutputExcerptParts{}, err
 	}
-	tail, tailTotal, tailRetainedStart, _, err := readEdge(tailBytes, false)
-	if err != nil {
-		return jobOutputExcerptParts{}, err
+	var tail string
+	tailTotal, tailRetainedStart := total, retainedStart
+	switch {
+	case tailBytes == 0:
+		tail = ""
+	case tailBytes > 0 && tailBytes <= inlineMaxBytes && len(content) >= tailBytes:
+		tail = string(runetrim.TrimLeadingPartial([]byte(content[len(content)-tailBytes:])))
+	default:
+		tail, tailTotal, tailRetainedStart, _, err = readEdge(tailBytes, false)
+		if err != nil {
+			return jobOutputExcerptParts{}, err
+		}
 	}
 	return jobOutputExcerptParts{head: head, tail: tail, totalBytes: max(headTotal, tailTotal), retainedStart: tailRetainedStart, truncated: true}, nil
 }

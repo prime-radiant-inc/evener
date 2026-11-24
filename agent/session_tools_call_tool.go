@@ -325,6 +325,10 @@ func (s *Session) markToolSchemasDisclosed(names []string) {
 }
 
 func formatDeferredToolSchemas(defs []llm.ToolDefinition) string {
+	return formatDeferredToolSchemasWithLead("", defs)
+}
+
+func formatDeferredToolSchemasWithLead(leadNote string, defs []llm.ToolDefinition) string {
 	if len(defs) == 0 {
 		return ""
 	}
@@ -358,17 +362,28 @@ func formatDeferredToolSchemas(defs []llm.ToolDefinition) string {
 	if err := enc.Encode(items); err != nil {
 		return ""
 	}
-	return systemNotification("Deferred tool schemas (invoke via `call_tool(name=..., arguments=...)`):\n" + strings.TrimSpace(buf.String()))
+	body := "Deferred tool schemas (invoke via `call_tool(name=..., arguments=...)`):\n" + strings.TrimSpace(buf.String())
+	if leadNote != "" {
+		body = leadNote + "\n" + body
+	}
+	return systemNotification(body)
+}
+
+func (s *Session) discloseDeferredTools(leadNote string, names []string) (string, []string) {
+	defs := s.deferredToolDefsForDisclosure(names, true)
+	if len(defs) == 0 {
+		return "", nil
+	}
+	claimed := make([]string, 0, len(defs))
+	for _, d := range defs {
+		claimed = append(claimed, d.Name)
+	}
+	return formatDeferredToolSchemasWithLead(leadNote, defs), claimed
 }
 
 func (s *Session) discloseDeferredToolsNotification(leadNote string, names []string) string {
-	block := formatDeferredToolSchemas(s.deferredToolDefsForDisclosure(names, true))
-	if block == "" || leadNote == "" {
-		return block
-	}
-	inner := strings.TrimPrefix(block, llm.SystemNotificationOpenTag)
-	inner = strings.TrimSuffix(inner, llm.SystemNotificationCloseTag)
-	return systemNotification(leadNote + "\n" + inner)
+	note, _ := s.discloseDeferredTools(leadNote, names)
+	return note
 }
 
 func formatAvailableAgentsBlock(entries []agentEntry) string {
@@ -457,20 +472,17 @@ func (s *Session) steerReactiveToolDisclosure(toolName string, res tool.ExecResu
 	var blocks []string
 	if needJobControl {
 		jobNames := []string{"job_watch", "job_status", "job_stop", "job_list"}
-		if defs := s.deferredToolDefsForDisclosure(jobNames, true); len(defs) > 0 {
-			for _, d := range defs {
-				claimed = append(claimed, d.Name)
-			}
-			if note := formatDeferredToolSchemas(defs); note != "" {
-				inner := strings.TrimSuffix(strings.TrimPrefix(note, llm.SystemNotificationOpenTag), llm.SystemNotificationCloseTag)
-				blocks = append(blocks, systemNotification("Background job started. Manage or inspect jobs via `call_tool`:\n"+inner))
+		if note, names := s.discloseDeferredTools("Background job started. Manage or inspect jobs via `call_tool`:", jobNames); len(names) > 0 {
+			claimed = append(claimed, names...)
+			if note != "" {
+				blocks = append(blocks, note)
 			}
 		}
 	}
 	if needReadTranscript {
-		if defs := s.deferredToolDefsForDisclosure([]string{"read_transcript"}, true); len(defs) > 0 {
-			claimed = append(claimed, "read_transcript")
-			if note := formatDeferredToolSchemas(defs); note != "" {
+		if note, names := s.discloseDeferredTools("", []string{"read_transcript"}); len(names) > 0 {
+			claimed = append(claimed, names...)
+			if note != "" {
 				blocks = append(blocks, note)
 			}
 		}
