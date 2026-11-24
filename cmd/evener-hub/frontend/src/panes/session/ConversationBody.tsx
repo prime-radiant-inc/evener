@@ -270,6 +270,7 @@ function LiveConversationBody({
     readerActive,
     loadOlder,
     loadingOlder,
+    olderReadInFlight,
     loadOlderReportingError,
     olderError,
     olderPermanent,
@@ -604,6 +605,7 @@ function LiveConversationBody({
             <LoadOlderRow
               onLoad={loadOlderReportingError}
               loading={loadingOlder}
+              readInFlight={olderReadInFlight}
               error={olderError}
               pageKey={olderPageKey ?? null}
               readerActive={readerActive}
