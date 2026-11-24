@@ -168,11 +168,14 @@ const SANITIZE_CONFIG = {
   // already rejected are still stripped, which the widget's own tests pin.
   //
   // The scheme is allowed for every consumer of this widget, but only the
-  // transcript resolves it. Elsewhere a file:// anchor is a destination the
-  // browser will not follow from an http(s) page, which is honest - it shows
-  // where the link goes - where a stripped href showed nothing. Scoping the
-  // scheme to the transcript needs a caller-supplied link policy on this
-  // widget, which the design system makes Jesse's call, not a local edit.
+  // transcript's AgentMarkdown layer resolves it - the ask dock's question
+  // cards render through that same layer, so a report link in a question
+  // opens beside the answering surface. Elsewhere a file:// anchor is a
+  // destination the browser will not follow from an http(s) page, which is
+  // honest - it shows where the link goes - where a stripped href showed
+  // nothing. Scoping the scheme further needs a caller-supplied link policy
+  // on this widget, which the design system makes Jesse's call, not a local
+  // edit.
   ALLOWED_URI_REGEXP:
     /^(?:(?:(?:f|ht)tps?|mailto|tel|callto|sms|cid|xmpp|matrix|file):|[^a-z]|[a-z+.-]+(?:[^a-z+.\-:]|$))/i,
 };

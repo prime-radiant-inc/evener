@@ -221,6 +221,16 @@ export function resolveComposes(cssTexts) {
     entries.push({ body: m[2], gate: gateAt(m.index) });
     bodies.set(m[1], entries);
   }
+  // A zero-specificity wrapper (`:where(.panel)`) names the same class a
+  // composes line targets; the wrapper only lowers its specificity, so a
+  // consumer must still receive its declarations. The wrapper itself stays in
+  // the sheet untouched.
+  const WHERE_RULE_RE = /:where\((\.[A-Za-z0-9_-]+)\)[ \t]*\{([^}]*)\}/g;
+  for (const m of combined.matchAll(WHERE_RULE_RE)) {
+    const entries = bodies.get(m[1]) ?? [];
+    entries.push({ body: m[2], gate: gateAt(m.index) });
+    bodies.set(m[1], entries);
+  }
 
   return combined.replace(RULE_RE, (_whole, selector, body, offset) => {
     const consumerGate = gateAt(offset);

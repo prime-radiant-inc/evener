@@ -35,7 +35,6 @@
  * out like every dialog. */
 .viewerPanel {
   composes: float from "../../styles/motion.module.css";
-  border-radius: var(--radius-pane);
   width: calc(100vw - var(--space-8));
   height: calc(100vh - var(--space-8));
   max-width: calc(100vw - var(--space-8));

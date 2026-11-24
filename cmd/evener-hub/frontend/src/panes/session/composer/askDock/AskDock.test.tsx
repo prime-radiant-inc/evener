@@ -1,14 +1,15 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { Thread, ThreadReadResponse } from "@evener/appwire-client";
-import { hydrateThread } from "@evener/appwire-client";
+import type { ActivityJob, ActivityTree, Thread, ThreadReadResponse } from "@evener/appwire-client";
+import { buildEntityView, type EntityView, hydrateThread } from "@evener/appwire-client";
 import type { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { IDBFactory } from "fake-indexeddb";
 import { beforeEach, describe, expect, onTestFinished, test, vi } from "vitest";
 import { appliedReceipt } from "../../../../mutationReceiptTestUtils";
+import { resetWorkspaceStoreForTests, workspaceStore } from "../../../../shell/workspace";
 import { resetConnectionStoreForTests } from "../../../../stores/connection";
 import {
   putThreadModel,
@@ -19,6 +20,8 @@ import {
 } from "../../../../stores/threads";
 import { connectReadyFakeClient } from "../../../../testing/connectionTestUtils";
 import { ALL_CAPABILITIES as CAPABILITIES } from "../../../../threadTestUtils";
+import { TranscriptRenderProvider } from "../../../../transcriptDisplay/renderContext";
+import "../../../doc";
 import { resetComposerFocusStoreForTests, useComposerFocusRequest } from "../composerFocus";
 import { AskDock, AskDockAnnouncements } from "./AskDock";
 import { askDockStore, resetAskDockStoreForTests } from "./askDockStore";
@@ -110,6 +113,7 @@ beforeEach(() => {
   resetThreadsStoreForTests();
   resetAskDockStoreForTests();
   resetComposerFocusStoreForTests();
+  resetWorkspaceStoreForTests();
 });
 
 test("renders nothing when there is no pending ask for this ref", async () => {
@@ -631,6 +635,136 @@ test("Mod+Enter with ctrlKey also invokes the primary action", async () => {
 
   const [record] = (await readMutationPersistence("ref_a")).outbox;
   expect(record?.payload).toMatchObject({ ref: "ref_a" });
+});
+
+// The question prose renders markdown, so its links are focusable: the
+// platform chord on a focused link opens the link, and the batch's
+// Mod+Enter-anywhere submit must not convert it into an answer send -
+// submitting would ship the preselected recommendation before the reader
+// opened the material the question links to.
+test("Mod+Enter on a focused link in the question prose opens the link, not the answer", async () => {
+  const fake = connectReadyFakeClient();
+  fake.on("thread/read", () => readResponse("ref_a"));
+  await threadsStore.getState().ensureThread("ref_a");
+  startTurn(fake, "ref_a", "turn_1");
+  ackAskUserCall(fake, "ref_a", "turn_1", "item_1", "call_1", [
+    {
+      header: "Deploy?",
+      question: "Ship now, per [the runbook](https://example.com/runbook)?",
+      options: [{ label: "Yes", detail: "" }],
+    },
+  ]);
+  render(<AskDock ref="ref_a" />);
+
+  const link = screen.getByRole("link", { name: "the runbook" });
+  link.focus();
+  // fireEvent returns false when a handler prevented the default action;
+  // the browser must keep the link activation.
+  const defaultPreserved = fireEvent.keyDown(link, { key: "Enter", ctrlKey: true });
+
+  expect(defaultPreserved).toBe(true);
+  expect(fake.calls.some((c) => c.method === "turn/start")).toBe(false);
+  const { outbox } = await readMutationPersistence("ref_a");
+  expect(outbox).toHaveLength(0);
+});
+
+// Question prose resolves file:// report links through the transcript's
+// document machinery, same as assistant prose. The dock is
+// ConversationBody's trailing row inside TranscriptBody's own render
+// provider, so the test wraps it the same way production does.
+test("a file:// report link in the question opens the document beside", async () => {
+  const fake = connectReadyFakeClient();
+  fake.on("thread/read", () => readResponse("ref_a"));
+  await threadsStore.getState().ensureThread("ref_a");
+  startTurn(fake, "ref_a", "turn_1");
+  ackAskUserCall(fake, "ref_a", "turn_1", "item_1", "call_1", [
+    {
+      header: "Deploy?",
+      question: "See [the report](file:///tmp/project/docs/report.md) first?",
+      options: [{ label: "Yes", detail: "" }],
+    },
+  ]);
+  const thread = threadsStore.getState().threads.get("ref_a");
+  render(
+    <TranscriptRenderProvider sessionRef="ref_a" thread={thread} sourcePaneId="pane_fixture">
+      <AskDock ref="ref_a" paneId="pane_fixture" />
+    </TranscriptRenderProvider>,
+  );
+
+  const open = screen.getByRole("button", { name: "Open beside: docs/report.md" });
+  fireEvent.click(open);
+  expect(workspaceStore.getState().panes).toMatchObject([
+    { type: "doc", params: { session: "ref_a", path: "docs/report.md", kind: "file" } },
+  ]);
+});
+
+// A question can name a job or delegate the session already shows
+// (docs/product/session-activity.md's inline controls). The dock is
+// ConversationBody's trailing row INSIDE TranscriptBody's own render
+// provider, which carries the session model, the pane id and the shared
+// entity map - so the dock must INHERIT that context, never shadow it with
+// a thinner nested provider that clears the entity map.
+const ASK_ENTITY_OWNER = "02wMz5TxvEMoJEDTDGOTil";
+const ASK_JOB = `job_${ASK_ENTITY_OWNER}_000000000123`;
+
+function askEntityViews(): ReadonlyMap<string, EntityView> {
+  const job: ActivityJob = {
+    jobId: ASK_JOB,
+    ownerSessionId: ASK_ENTITY_OWNER,
+    ownerRef: "ref_a",
+    type: "shell",
+    status: "completed",
+    outcome: "success",
+    terminal: true,
+    background: false,
+    hasOutput: true,
+    description: "Compile the frontend",
+    command: "npm run build",
+    startedAt: "2026-09-13T20:00:00Z",
+    exitCode: 0,
+    outputBytes: 12,
+  };
+  const tree: ActivityTree = {
+    revision: 1,
+    root: {
+      kind: "session",
+      sessionId: ASK_ENTITY_OWNER,
+      ref: "ref_a",
+      label: "root",
+      aggregate: "completed",
+      counts: { active: 0, failed: 0, completed: 2, complete: true },
+      entries: [{ kind: "shell", job }],
+      branch: {},
+    },
+  };
+  return buildEntityView({ sessionRef: "ref_a", tree, turns: [], stale: false, ended: false });
+}
+
+test("a job id in the question prose resolves from the transcript's entity map", async () => {
+  const fake = connectReadyFakeClient();
+  fake.on("thread/read", () => readResponse("ref_a"));
+  await threadsStore.getState().ensureThread("ref_a");
+  startTurn(fake, "ref_a", "turn_1");
+  ackAskUserCall(fake, "ref_a", "turn_1", "item_1", "call_1", [
+    {
+      header: "Deploy?",
+      question: `What about job ${ASK_JOB} that just finished?`,
+      options: [{ label: "Yes", detail: "" }],
+    },
+  ]);
+  const thread = threadsStore.getState().threads.get("ref_a");
+  render(
+    <TranscriptRenderProvider
+      sessionRef="ref_a"
+      thread={thread}
+      sourcePaneId="pane_fixture"
+      entities={askEntityViews()}
+    >
+      <AskDock ref="ref_a" paneId="pane_fixture" />
+    </TranscriptRenderProvider>,
+  );
+
+  expect(screen.getByTestId("entity-trigger").textContent).toBe(ASK_JOB);
 });
 
 test("Mod+Enter advances rather than sends when another question is still unanswered", async () => {

@@ -604,6 +604,10 @@ export function AskDock({ ref: sessionRef, paneId }: AskDockProps) {
   return (
     // biome-ignore lint/a11y/noStaticElementInteractions: catches Alt+PageUp/Down bubbling up from any control inside any batch - the div is a layout container, not itself interactive, same precedent as the batch-level Enter handler above
     <div className={CLASS.dock} ref={dockRef} data-ask-response-dock onKeyDown={handleDockKeyDown}>
+      {/* The question prose renders through AgentMarkdown and inherits the
+          transcript render context (session model, pane id, shared entity
+          map) from TranscriptBody's provider, which wraps this trailing
+          row; entity references in the questions need that shared map. */}
       {batches.map((batch) => (
         <AskBatchCard key={batch.id} sessionRef={sessionRef} batch={batch} answers={answers} onSend={handleSend} />
       ))}
