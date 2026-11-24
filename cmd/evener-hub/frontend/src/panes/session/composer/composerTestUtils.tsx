@@ -343,9 +343,10 @@ export function foldStatusFrame(fake: FakeClient, statusType: string): void {
 export function installCanvasStubs(): void {
   HTMLCanvasElement.prototype.getContext = (() => ({
     drawImage() {},
+    fillRect() {},
   })) as unknown as typeof HTMLCanvasElement.prototype.getContext;
-  HTMLCanvasElement.prototype.toBlob = (callback: BlobCallback): void => {
-    callback(new Blob([new Uint8Array([9, 9, 9])], { type: "image/png" }));
+  HTMLCanvasElement.prototype.toBlob = (callback: BlobCallback, type?: string): void => {
+    callback(new Blob([new Uint8Array([9, 9, 9])], { type: type ?? "image/png" }));
   };
   class FakeImage {
     onload: (() => void) | null = null;
@@ -385,6 +386,7 @@ export function installCanvasStubs(): void {
 export function installStalledDecodeStub(): void {
   HTMLCanvasElement.prototype.getContext = (() => ({
     drawImage() {},
+    fillRect() {},
   })) as unknown as typeof HTMLCanvasElement.prototype.getContext;
   HTMLCanvasElement.prototype.toBlob = () => {}; // never invokes its callback
   class NeverLoadsImage {
@@ -407,6 +409,7 @@ export function installStalledDecodeStub(): void {
 export function installGatedDecodeStub(): { release: () => Promise<void> } {
   HTMLCanvasElement.prototype.getContext = (() => ({
     drawImage() {},
+    fillRect() {},
   })) as unknown as typeof HTMLCanvasElement.prototype.getContext;
   let markDelivered!: () => void;
   const delivered = new Promise<void>((resolve) => {

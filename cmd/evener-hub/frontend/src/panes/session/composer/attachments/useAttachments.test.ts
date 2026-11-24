@@ -1,20 +1,31 @@
+import { MAX_ATTACHMENT_BYTES, MAX_SOURCE_BYTES, MAX_SOURCE_PIXELS } from "@evener/appwire-client";
 import { act, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import * as ImageEncoding from "./encodeImage";
 import { type TextEditor, useAttachments } from "./useAttachments";
 
-// Same jsdom canvas-stub technique as encodePng.test.ts (see that file's
-// own header comment) - useAttachments calls the REAL reencodeToPng
+// Same jsdom canvas-stub technique as encodeImage.test.ts (see that file's
+// own header comment) - useAttachments calls the REAL encodeImage
 // internally, so its tests exercise the real orchestration end to end
 // rather than mocking the module it depends on.
+const realEncodeImage = ImageEncoding.encodeImage;
 let originalGetContext: typeof HTMLCanvasElement.prototype.getContext;
 let originalToBlob: typeof HTMLCanvasElement.prototype.toBlob;
 let originalImage: typeof Image;
 let originalCreateObjectURL: typeof URL.createObjectURL;
 let originalRevokeObjectURL: typeof URL.revokeObjectURL;
 let decodes: Promise<void>[];
+let pendingEncodes: Promise<unknown>[];
+let encodeSpy: ReturnType<typeof vi.spyOn>;
 
 beforeEach(() => {
   decodes = [];
+  pendingEncodes = [];
+  encodeSpy = vi.spyOn(ImageEncoding, "encodeImage").mockImplementation((blob) => {
+    const completion = realEncodeImage(blob);
+    pendingEncodes.push(completion);
+    return completion;
+  });
   originalGetContext = HTMLCanvasElement.prototype.getContext;
   originalToBlob = HTMLCanvasElement.prototype.toBlob;
   originalImage = globalThis.Image;
@@ -23,9 +34,12 @@ beforeEach(() => {
   URL.createObjectURL = () => "blob:fake";
   URL.revokeObjectURL = () => {};
 
-  HTMLCanvasElement.prototype.getContext = (() => ({ drawImage() {} })) as unknown as typeof originalGetContext;
-  HTMLCanvasElement.prototype.toBlob = function (this: HTMLCanvasElement, callback: BlobCallback): void {
-    callback(new Blob([new Uint8Array([1, 2, 3])], { type: "image/png" }));
+  HTMLCanvasElement.prototype.getContext = (() => ({
+    drawImage() {},
+    fillRect() {},
+  })) as unknown as typeof originalGetContext;
+  HTMLCanvasElement.prototype.toBlob = function (this: HTMLCanvasElement, callback: BlobCallback, type?: string): void {
+    callback(new Blob([new Uint8Array([1, 2, 3])], { type: type ?? "image/png" }));
   };
   class FakeImage {
     onload: (() => void) | null = null;
@@ -54,6 +68,27 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+function installImageDimensionsStub(width: number, height: number): void {
+  class SizedImage {
+    onload: (() => void) | null = null;
+    onerror: (() => void) | null = null;
+    naturalWidth = width;
+    naturalHeight = height;
+    width = width;
+    height = height;
+    private _src = "";
+    set src(value: string) {
+      this._src = value;
+      decodes.push(Promise.resolve().then(() => this.onload?.()));
+    }
+    get src(): string {
+      return this._src;
+    }
+  }
+  // @ts-expect-error stubbing the global Image constructor for this test file only
+  globalThis.Image = SizedImage;
+}
+
 function installDecodeErrorStub(): void {
   class FailingImage {
     onload: (() => void) | null = null;
@@ -71,8 +106,13 @@ function installDecodeErrorStub(): void {
   globalThis.Image = FailingImage;
 }
 
-function installControlledImageStub(): { resolve(): void; reject(): void } {
-  let image: ControlledImage | undefined;
+function installControlledImageStub(): {
+  resolve(index?: number): Promise<void>;
+  reject(index?: number): Promise<void>;
+  count(): number;
+} {
+  const images: ControlledImage[] = [];
+  const baseEncodeIndex = pendingEncodes.length;
   class ControlledImage {
     onload: (() => void) | null = null;
     onerror: (() => void) | null = null;
@@ -81,14 +121,35 @@ function installControlledImageStub(): { resolve(): void; reject(): void } {
     src = "";
 
     constructor() {
-      image = this;
+      images.push(this);
     }
   }
   // @ts-expect-error stubbing the global Image constructor for this test file only
   globalThis.Image = ControlledImage;
   return {
-    resolve: () => image?.onload?.(),
-    reject: () => image?.onerror?.(),
+    count: () => images.length,
+    resolve: (index = images.length - 1) => {
+      const image = images[index];
+      if (!image) throw new Error(`No controlled image at ${index}`);
+      const completion = pendingEncodes[baseEncodeIndex + index];
+      image.onload?.();
+      return Promise.resolve(completion).then(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+    },
+    reject: (index = images.length - 1) => {
+      const image = images[index];
+      if (!image) throw new Error(`No controlled image at ${index}`);
+      const completion = pendingEncodes[baseEncodeIndex + index];
+      image.onerror?.();
+      return Promise.resolve(completion)
+        .catch(() => {})
+        .then(async () => {
+          await Promise.resolve();
+          await Promise.resolve();
+        });
+    },
   };
 }
 
@@ -144,9 +205,15 @@ function makeFile(name: string, type = "image/png", size = 1024): File {
 
 async function flush(): Promise<void> {
   await act(async () => {
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
+    for (;;) {
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      const settledDecodes = decodes.splice(0);
+      const settledEncodes = pendingEncodes.splice(0);
+      if (settledDecodes.length === 0 && settledEncodes.length === 0) break;
+      await Promise.allSettled([...settledDecodes, ...settledEncodes]);
+    }
   });
 }
 
@@ -236,9 +303,7 @@ test("reset clears settled items and restarts markers at one", async () => {
 
   expect(result.current.items).toHaveLength(1);
   expect(result.current.items[0]).toMatchObject({ marker: 1, name: "new.png" });
-  await act(async () => {
-    await Promise.all(decodes);
-  });
+  await flush();
 });
 
 test("reset invalidates a pending encode success", async () => {
@@ -351,9 +416,7 @@ test("ingesting an image synchronously splices its marker into the editor text a
   expect(result.current.items[0]).toMatchObject({ marker: 1, pending: true, name: "a.png" });
   expect(result.current.hasPending).toBe(true);
   expect(result.current.refusalReason()).toBeDefined();
-  await act(async () => {
-    await Promise.all(decodes);
-  });
+  await flush();
 });
 
 test("after the async re-encode resolves, the item flips to settled with data/width/height", async () => {
@@ -406,12 +469,13 @@ test("an oversized image is rejected before decode, naming the file", () => {
   const onRejected = vi.fn();
 
   act(() => {
-    result.current.ingestFiles([makeFile("big.png", "image/png", 8 * 1024 * 1024 + 1)], onRejected);
+    result.current.ingestFiles([makeFile("big.png", "image/png", MAX_SOURCE_BYTES + 1)], onRejected);
   });
 
   expect(result.current.items).toHaveLength(0);
   expect(onRejected).toHaveBeenCalledTimes(1);
   expect(onRejected.mock.calls[0]?.[0]).toContain("big.png");
+  expect(encodeSpy).not.toHaveBeenCalled();
 });
 
 test("a mixed accept+reject batch combines all rejections into one onRejected call while still accepting the good file", async () => {
@@ -431,9 +495,7 @@ test("a mixed accept+reject batch combines all rejections into one onRejected ca
   const message = onRejected.mock.calls[0]?.[0] as string;
   expect(message).toContain("a.txt");
   expect(message).toContain("b.pdf");
-  await act(async () => {
-    await Promise.all(decodes);
-  });
+  await flush();
 });
 
 test("the 9th image in one session is rejected on the count cap, naming the file", async () => {
@@ -455,9 +517,7 @@ test("the 9th image in one session is rejected on the count cap, naming the file
   expect(result.current.items).toHaveLength(8);
   expect(onRejected).toHaveBeenCalledTimes(1);
   expect(onRejected.mock.calls[0]?.[0]).toContain("ninth.png");
-  await act(async () => {
-    await Promise.all(decodes);
-  });
+  await flush();
 });
 
 test("a decode failure strips the marker from the editor text, drops the item, and reports via onRejected", async () => {
@@ -538,9 +598,7 @@ test("marker numbering never reuses a number removed via removeItem", async () =
     result.current.ingestFiles([makeFile("b.png")], () => {});
   });
   expect(result.current.items[0]?.marker).toBe(2);
-  await act(async () => {
-    await Promise.all(decodes);
-  });
+  await flush();
 });
 
 test("clearSubmitted removes exactly the submitted markers, leaving items added mid-flight intact", async () => {
@@ -622,9 +680,7 @@ test("clearSubmitted resets the marker counter to restart at 1 once the result i
     result.current.ingestFiles([makeFile("fresh.png")], () => {});
   });
   expect(result.current.items[0]?.marker).toBe(1);
-  await act(async () => {
-    await Promise.all(decodes);
-  });
+  await flush();
 });
 
 test("clearSubmitted does NOT reset the counter when surviving (mid-flight) items remain", async () => {
@@ -652,9 +708,7 @@ test("clearSubmitted does NOT reset the counter when surviving (mid-flight) item
   });
   // b.png kept marker 2; c.png must be 3, never reusing 1.
   expect(result.current.items.map((i) => i.marker)).toEqual([2, 3]);
-  await act(async () => {
-    await Promise.all(decodes);
-  });
+  await flush();
 });
 
 test("toInputAttachments maps settled items to the {marker, mediaType, data, name} shape only", async () => {
@@ -826,4 +880,245 @@ test("renumberOff leaves the numbering high-water mark above every number it ass
   // 1 is spelled by the text AND held by the moved tile at 2, so the fresh
   // gesture starts at 3 rather than reusing either.
   expect(result.current.items.map((item) => item.marker)).toEqual([2, 3]);
+});
+
+test("a 10 MB JPEG passes pre-decode admission and settles with image/jpeg mediaType and resized dimensions", async () => {
+  installImageDimensionsStub(4032, 3024);
+  const editor = makeFakeEditor("", 0);
+  const onRejected = vi.fn();
+  const { result } = renderHook(() => useAttachments(editor));
+
+  act(() => {
+    result.current.ingestFiles([makeFile("photo.jpg", "image/jpeg", 10 * 1024 * 1024)], onRejected);
+  });
+
+  expect(onRejected).not.toHaveBeenCalled();
+  expect(editor.getText()).toBe("[image 1]");
+  expect(encodeSpy).toHaveBeenCalledTimes(1);
+
+  await flush();
+
+  expect(onRejected).not.toHaveBeenCalled();
+  expect(result.current.hasPending).toBe(false);
+  expect(result.current.items).toEqual([
+    {
+      marker: 1,
+      name: "photo.jpg",
+      mediaType: "image/jpeg",
+      width: 2048,
+      height: 1536,
+      data: "AQID",
+      pending: false,
+    },
+  ]);
+  expect(result.current.toInputAttachments()).toEqual([
+    {
+      marker: 1,
+      name: "photo.jpg",
+      mediaType: "image/jpeg",
+      data: "AQID",
+    },
+  ]);
+});
+
+test("a 26 MB JPEG fails pre-decode admission with zero staged markers", () => {
+  const editor = makeFakeEditor("keep ", 5);
+  const onRejected = vi.fn();
+  const { result } = renderHook(() => useAttachments(editor));
+
+  act(() => {
+    result.current.ingestFiles([makeFile("huge.jpg", "image/jpeg", 26 * 1024 * 1024)], onRejected);
+  });
+
+  expect(editor.getText()).toBe("keep ");
+  expect(result.current.items).toEqual([]);
+  expect(onRejected).toHaveBeenCalledTimes(1);
+  expect(onRejected.mock.calls[0]?.[0]).toContain("huge.jpg");
+  expect(encodeSpy).not.toHaveBeenCalled();
+});
+
+test("post-decode ImageEncodeError maps tooManyPixels, tooLarge, and decodeFailed, stripping tile and marker", async () => {
+  const reasons: string[] = [];
+
+  for (const mode of ["tooManyPixels", "tooLarge", "decodeFailed"] as const) {
+    if (mode === "tooManyPixels") {
+      expect(8064 * 6049).toBeGreaterThan(MAX_SOURCE_PIXELS);
+      installImageDimensionsStub(8064, 6049);
+    } else if (mode === "tooLarge") {
+      installImageDimensionsStub(800, 600);
+      HTMLCanvasElement.prototype.toBlob = (callback: BlobCallback): void => {
+        callback(new Blob([new Uint8Array(MAX_ATTACHMENT_BYTES + 1)], { type: "image/jpeg" }));
+      };
+    } else {
+      installDecodeErrorStub();
+    }
+
+    const editor = makeFakeEditor("keep ", 5);
+    const onRejected = vi.fn();
+    const { result } = renderHook(() => useAttachments(editor));
+
+    act(() => {
+      result.current.ingestFiles([makeFile("bad.jpg", "image/jpeg", 1024)], onRejected);
+    });
+    expect(editor.getText()).toBe("keep [image 1]");
+    expect(result.current.items).toHaveLength(1);
+
+    await flush();
+
+    expect(editor.getText()).toBe("keep ");
+    expect(result.current.items).toEqual([]);
+    expect(result.current.hasPending).toBe(false);
+    expect(onRejected).toHaveBeenCalledTimes(1);
+    const reason = onRejected.mock.calls[0]?.[0] as string;
+    expect(reason).toContain("bad.jpg");
+    reasons.push(reason);
+  }
+
+  expect(new Set(reasons).size).toBe(3);
+});
+
+test("a multi-file batch runs one encodeImage call at a time in FIFO order", async () => {
+  const gate = installControlledImageStub();
+  const editor = makeFakeEditor("", 0);
+  const onRejected = vi.fn();
+  const { result } = renderHook(() => useAttachments(editor));
+
+  act(() => {
+    result.current.ingestFiles([makeFile("first.png"), makeFile("second.png"), makeFile("third.png")], onRejected);
+  });
+
+  expect(editor.getText()).toBe("[image 1][image 2][image 3]");
+  expect(result.current.items.map((item) => ({ marker: item.marker, pending: item.pending }))).toEqual([
+    { marker: 1, pending: true },
+    { marker: 2, pending: true },
+    { marker: 3, pending: true },
+  ]);
+  expect(encodeSpy).toHaveBeenCalledTimes(1);
+  expect(gate.count()).toBe(1);
+
+  await act(async () => {
+    await gate.resolve(0);
+  });
+  expect(result.current.items.map((item) => item.pending)).toEqual([false, true, true]);
+  expect(encodeSpy).toHaveBeenCalledTimes(2);
+  expect(gate.count()).toBe(2);
+
+  await act(async () => {
+    await gate.resolve(1);
+  });
+  expect(result.current.items.map((item) => item.pending)).toEqual([false, false, true]);
+  expect(encodeSpy).toHaveBeenCalledTimes(3);
+  expect(gate.count()).toBe(3);
+
+  await act(async () => {
+    await gate.resolve(2);
+  });
+  expect(result.current.items.map((item) => item.pending)).toEqual([false, false, false]);
+  expect(result.current.hasPending).toBe(false);
+  expect(onRejected).not.toHaveBeenCalled();
+});
+
+test("removing a queued attachment before its serial turn starts skips encodeImage and suppresses onRejected", async () => {
+  const gate = installControlledImageStub();
+  const editor = makeFakeEditor("", 0);
+  const onRejected = vi.fn();
+  const { result } = renderHook(() => useAttachments(editor));
+
+  act(() => {
+    result.current.ingestFiles([makeFile("first.png"), makeFile("queued.png"), makeFile("third.png")], onRejected);
+  });
+  expect(encodeSpy).toHaveBeenCalledTimes(1);
+
+  act(() => {
+    result.current.removeItem(2);
+  });
+  expect(editor.getText()).toBe("[image 1][image 3]");
+  expect(result.current.items.map((item) => item.marker)).toEqual([1, 3]);
+
+  await act(async () => {
+    await gate.resolve(0);
+  });
+  expect(encodeSpy).toHaveBeenCalledTimes(2);
+  expect(gate.count()).toBe(2);
+
+  await act(async () => {
+    await gate.resolve(1);
+  });
+  expect(encodeSpy).toHaveBeenCalledTimes(2);
+  expect(result.current.items.map((item) => ({ marker: item.marker, name: item.name, pending: item.pending }))).toEqual(
+    [
+      { marker: 1, name: "first.png", pending: false },
+      { marker: 3, name: "third.png", pending: false },
+    ],
+  );
+  expect(editor.getText()).toBe("[image 1][image 3]");
+  expect(onRejected).not.toHaveBeenCalled();
+  expect(result.current.hasPending).toBe(false);
+});
+
+test("resetting before queued attachments start skips encodeImage, preserves replacement text, and suppresses onRejected", async () => {
+  const gate = installControlledImageStub();
+  const editor = makeFakeEditor("", 0);
+  const onRejected = vi.fn();
+  const { result } = renderHook(() => useAttachments(editor));
+
+  act(() => {
+    result.current.ingestFiles([makeFile("first.png"), makeFile("queued.png")], onRejected);
+  });
+  expect(encodeSpy).toHaveBeenCalledTimes(1);
+
+  act(() => {
+    result.current.reset();
+    editor.write("/goal replacement", "/goal replacement".length);
+  });
+
+  await act(async () => {
+    await gate.reject(0);
+  });
+
+  expect(encodeSpy).toHaveBeenCalledTimes(1);
+  expect(result.current.items).toEqual([]);
+  expect(editor.getText()).toBe("/goal replacement");
+  expect(onRejected).not.toHaveBeenCalled();
+  expect(result.current.hasPending).toBe(false);
+});
+
+test("resetting while an encode is in flight still serializes a subsequent ingest behind it", async () => {
+  const gate = installControlledImageStub();
+  const editor = makeFakeEditor("", 0);
+  const onRejected = vi.fn();
+  const { result } = renderHook(() => useAttachments(editor));
+
+  act(() => {
+    result.current.ingestFiles([makeFile("stale.png"), makeFile("queued-stale.png")], onRejected);
+  });
+  expect(encodeSpy).toHaveBeenCalledTimes(1);
+
+  act(() => {
+    result.current.reset();
+    editor.write("/goal ", "/goal ".length);
+    result.current.ingestFiles([makeFile("fresh.png")], onRejected);
+  });
+  expect(editor.getText()).toBe("/goal [image 1]");
+  expect(result.current.items.map((item) => ({ marker: item.marker, name: item.name, pending: item.pending }))).toEqual(
+    [{ marker: 1, name: "fresh.png", pending: true }],
+  );
+  // stale.png is still decoding in the browser, so fresh.png waits until it settles.
+  expect(encodeSpy).toHaveBeenCalledTimes(1);
+
+  await act(async () => {
+    await gate.resolve(0);
+  });
+  expect(encodeSpy).toHaveBeenCalledTimes(2);
+  expect(gate.count()).toBe(2);
+
+  await act(async () => {
+    await gate.resolve(1);
+  });
+  expect(encodeSpy).toHaveBeenCalledTimes(2);
+  expect(result.current.items).toEqual([
+    { marker: 1, name: "fresh.png", mediaType: "image/png", width: 8, height: 4, data: "AQID", pending: false },
+  ]);
+  expect(editor.getText()).toBe("/goal [image 1]");
+  expect(onRejected).not.toHaveBeenCalled();
 });

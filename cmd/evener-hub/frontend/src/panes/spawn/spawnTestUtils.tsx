@@ -303,10 +303,11 @@ export function pastePngInto(el: HTMLElement, name = "shot.png"): void {
 }
 
 // Mirrors Composer.test.tsx's own installCanvasStubs - the same
-// useAttachments/reencodeToPng pipeline underlies both panes' image staging.
+// useAttachments/encodeImage pipeline underlies both panes' image staging.
 export function installCanvasStubs(): void {
   HTMLCanvasElement.prototype.getContext = (() => ({
     drawImage() {},
+    fillRect() {},
   })) as unknown as typeof HTMLCanvasElement.prototype.getContext;
   HTMLCanvasElement.prototype.toBlob = (callback: BlobCallback): void => {
     callback(new Blob([new Uint8Array([9, 9, 9])], { type: "image/png" }));

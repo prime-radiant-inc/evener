@@ -2,17 +2,19 @@
 // m5-composer.md §G, contracts §Attachments): validate against the package's
 // attachmentLimits, reserve a marker + splice it into the composer text
 // synchronously (before any async work - test-composer-image-markers.js's
-// own "pending: true" contract), re-encode to PNG via encodePng.ts, then
-// settle the item in place. By default the bag belongs to the mounted
-// composer. A caller can supply an in-memory store to retain the bag and its
-// encode continuations across remounts. Image bytes never go through
-// localStorage.
+// own "pending: true" contract), decode + encode one at a time via
+// encodeImage.ts, then settle the item in place with its authoritative
+// mediaType. By default the bag belongs to the mounted composer. A caller can
+// supply an in-memory store to retain the bag and its encode continuations
+// across remounts. Image bytes never go through localStorage.
 import {
+  admissionRejection,
   type ImageMarkerRange,
   insertMarker,
+  MAX_ATTACHMENTS,
+  MAX_SOURCE_BYTES,
   markerText,
   nextComposerImageMarker,
-  rejectionReason,
   stripMarker,
   stripMarkerAt,
   type TextSplice,
@@ -22,7 +24,31 @@ import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
 import type { InputAttachment } from "../../../../stores/threads";
 import { spelledImageMarkers } from "../submitProtocol";
-import { reencodeToPng } from "./encodePng";
+import { encodeImage, ImageEncodeError } from "./encodeImage";
+
+function preDecodeRejection(file: Pick<File, "name" | "type" | "size">, reservedCount: number): string | undefined {
+  const name = file.name || "unknown";
+  const admission = admissionRejection({ type: file.type }, reservedCount);
+  if (admission === "notImage") return name;
+  if (admission === "tooMany") return `${name} (maximum ${MAX_ATTACHMENTS} images)`;
+  if (file.size > MAX_SOURCE_BYTES) return `${name} (maximum 25 MB)`;
+  return undefined;
+}
+
+function encodeFailureMessage(fileName: string, error: unknown): string {
+  const name = fileName || "unknown";
+  if (error instanceof ImageEncodeError) {
+    switch (error.code) {
+      case "tooManyPixels":
+        return `${name} (image too large; maximum 48 MP)`;
+      case "tooLarge":
+        return `${name} (maximum 8 MB)`;
+      case "decodeFailed":
+        return `${name} (image decode failed)`;
+    }
+  }
+  return `${name} (image decode failed)`;
+}
 
 export interface PendingAttachment {
   marker: number;
@@ -124,7 +150,7 @@ export interface UseAttachmentsResult {
   refusalReason(): string | undefined;
   /** Validates + stages every file, synchronously splicing one "[image N]"
    * marker per accepted file into the composer text, replacing the selection,
-   * then re-encodes each to PNG asynchronously. Every rejection reason from
+   * then encodes each serially via encodeImage. Every rejection reason from
    * this one call is combined into a single onRejected call (never one per
    * file) - the caller (Composer.tsx) wires this straight to
    * useToasts().push("error", ...), per the wave's failure-feedback
@@ -160,12 +186,20 @@ export interface UseAttachmentsResult {
   clearSubmitted(submittedMarkers: Set<number>): void;
 }
 
+export interface QueuedImageEncode {
+  generation: number;
+  token: symbol;
+  start: () => Promise<void>;
+}
+
 export function createAttachmentStore() {
   return createStore(() => ({
     items: [] as PendingAttachment[],
     nextMarkerRef: { current: 0 },
     removedWhilePendingRef: { current: new Set<symbol>() },
     generationRef: { current: 0 },
+    encodeQueueRef: { current: [] as QueuedImageEncode[] },
+    encodeInFlightRef: { current: false },
     // Numbers a staged image may not take: an adoption record this composer
     // carries (a draft it read but cannot back with bytes) still names them.
     // The composer source fills this from its own provenance; a store nothing
@@ -193,11 +227,18 @@ export function createAttachmentOperations(editor: TextEditor, store: Attachment
   // (which shrinks on removal) - a plain ref persists across renders without
   // re-triggering one, exactly mirroring composer-attachments.js's own
   // pendingState.__nextMarker bookkeeping.
-  const { nextMarkerRef, removedWhilePendingRef, generationRef, reservedMarkersRef } = store.getState();
+  const {
+    nextMarkerRef,
+    removedWhilePendingRef,
+    generationRef,
+    encodeQueueRef,
+    encodeInFlightRef,
+    reservedMarkersRef,
+  } = store.getState();
   // kata kt4j: operation tokens removed via removeItem while decode was still
   // in flight. The browser's Image/canvas pipeline has no cancellation hook,
-  // so a reencodeToPng call started before removal keeps running and still
-  // settles (success or failure) afterward - ingestFiles' own .then/.catch
+  // so an encodeImage call started before removal keeps running and still
+  // settles (success or failure) afterward - the queue continuation checks
   // below check this set before touching the editor or calling onRejected,
   // so a decode failure for something the user already discarded is
   // silently swallowed instead of toasted. Populated SYNCHRONOUSLY inside
@@ -240,8 +281,25 @@ export function createAttachmentOperations(editor: TextEditor, store: Attachment
   const reset = () => {
     generationRef.current += 1;
     removedWhilePendingRef.current.clear();
+    encodeQueueRef.current.length = 0;
     nextMarkerRef.current = 0;
     setItems([]);
+  };
+
+  const drainEncodeQueue = () => {
+    if (encodeInFlightRef.current) return;
+    while (encodeQueueRef.current.length > 0) {
+      const next = encodeQueueRef.current.shift();
+      if (!next) continue;
+      if (generationRef.current !== next.generation) continue;
+      if (removedWhilePendingRef.current.delete(next.token)) continue;
+      encodeInFlightRef.current = true;
+      void next.start().finally(() => {
+        encodeInFlightRef.current = false;
+        drainEncodeQueue();
+      });
+      return;
+    }
   };
 
   const renumberOff = (text: string, reserved: readonly number[] = []) => {
@@ -289,7 +347,7 @@ export function createAttachmentOperations(editor: TextEditor, store: Attachment
     // not just across separate gestures.
     let reservedCount = store.getState().items.length;
     for (const file of files) {
-      const reason = rejectionReason({ type: file.type, size: file.size, name: file.name }, reservedCount);
+      const reason = preDecodeRejection(file, reservedCount);
       if (reason) {
         rejections.push(reason);
         continue;
@@ -339,36 +397,42 @@ export function createAttachmentOperations(editor: TextEditor, store: Attachment
       editor.write(text, start, undefined, splice);
 
       for (const { file, token } of accepted) {
-        reencodeToPng(file)
-          .then(({ data, width, height }) => {
-            if (generationRef.current !== generation) return;
-            // Discarded before it settled (kata kt4j) - nothing left to update.
-            if (removedWhilePendingRef.current.delete(token)) return;
-            setItems((prev) =>
-              prev.map((item) =>
-                operationToken(item) === token ? { ...item, data, width, height, pending: false } : item,
-              ),
-            );
-          })
-          .catch(() => {
-            if (generationRef.current !== generation) return;
-            // Same discard check as above - the user already removed this
-            // attachment, so its eventual decode failure is nothing to
-            // strip from the editor or tell them about.
-            if (removedWhilePendingRef.current.delete(token)) return;
-            const currentItem = store.getState().items.find((item) => operationToken(item) === token);
-            if (currentItem) {
-              // The tile leaves the store before the strip's own write, so the
-              // save that write performs never names this marker as staged
-              // (see removeItem).
-              setItems((prev) => prev.filter((item) => operationToken(item) !== token));
-              const current = editor.read();
-              const stripped = stripTrackedMarker(current.text, current.cursor, currentItem.marker);
-              editor.write(stripped.value, stripped.cursor ?? current.cursor, "cleanup", stripped.splice);
+        encodeQueueRef.current.push({
+          generation,
+          token,
+          start: async () => {
+            try {
+              const { data, mediaType, width, height } = await encodeImage(file);
+              if (generationRef.current !== generation) return;
+              // Discarded before it settled (kata kt4j) - nothing left to update.
+              if (removedWhilePendingRef.current.delete(token)) return;
+              setItems((prev) =>
+                prev.map((item) =>
+                  operationToken(item) === token ? { ...item, data, mediaType, width, height, pending: false } : item,
+                ),
+              );
+            } catch (error) {
+              if (generationRef.current !== generation) return;
+              // Same discard check as above - the user already removed this
+              // attachment, so its eventual decode failure is nothing to
+              // strip from the editor or tell them about.
+              if (removedWhilePendingRef.current.delete(token)) return;
+              const currentItem = store.getState().items.find((item) => operationToken(item) === token);
+              if (currentItem) {
+                // The tile leaves the store before the strip's own write, so the
+                // save that write performs never names this marker as staged
+                // (see removeItem).
+                setItems((prev) => prev.filter((item) => operationToken(item) !== token));
+                const current = editor.read();
+                const stripped = stripTrackedMarker(current.text, current.cursor, currentItem.marker);
+                editor.write(stripped.value, stripped.cursor ?? current.cursor, "cleanup", stripped.splice);
+              }
+              onRejected(encodeFailureMessage(file.name, error));
             }
-            onRejected(`${file.name || "unknown"} (image decode failed)`);
-          });
+          },
+        });
       }
+      drainEncodeQueue();
     }
 
     if (rejections.length > 0) {
@@ -419,6 +483,7 @@ export function createAttachmentOperations(editor: TextEditor, store: Attachment
         // the reused marker. Older invalidation (reset) does the same.
         nextMarkerRef.current = 0;
         removedWhilePendingRef.current.clear();
+        encodeQueueRef.current.length = 0;
         generationRef.current += 1;
       }
       return next;

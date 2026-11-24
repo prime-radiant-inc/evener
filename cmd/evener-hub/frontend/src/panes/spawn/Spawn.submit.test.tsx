@@ -488,6 +488,7 @@ test("a remote /model value without a provider leaves Start usable", async () =>
 function installStalledDecodeStub(): void {
   HTMLCanvasElement.prototype.getContext = (() => ({
     drawImage() {},
+    fillRect() {},
   })) as unknown as typeof HTMLCanvasElement.prototype.getContext;
   HTMLCanvasElement.prototype.toBlob = () => {}; // never invokes its callback
   class NeverLoadsImage {
@@ -509,6 +510,7 @@ function installStalledDecodeStub(): void {
 function installGatedDecodeStub(): { release: () => Promise<void> } {
   HTMLCanvasElement.prototype.getContext = (() => ({
     drawImage() {},
+    fillRect() {},
   })) as unknown as typeof HTMLCanvasElement.prototype.getContext;
   let markDelivered!: () => void;
   const delivered = new Promise<void>((resolve) => {
