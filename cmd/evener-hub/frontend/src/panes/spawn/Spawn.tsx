@@ -201,7 +201,7 @@ const CLASS = {
   quietRow: requireClass(styles.quietRow, "spawn.module.css", "quietRow"),
   desktopOnly: requireClass(styles.desktopOnly, "spawn.module.css", "desktopOnly"),
   quietSummary: requireClass(styles.quietSummary, "spawn.module.css", "quietSummary"),
-  quietButton: requireClass(styles.quietButton, "spawn.module.css", "quietButton"),
+  quietButtonSummary: requireClass(styles.quietButtonSummary, "spawn.module.css", "quietButtonSummary"),
   rowChevron: requireClass(styles.rowChevron, "spawn.module.css", "rowChevron"),
   quietSummaryAction: requireClass(styles.quietSummaryAction, "spawn.module.css", "quietSummaryAction"),
   attachments: requireClass(styles.attachments, "spawn.module.css", "attachments"),
@@ -2888,6 +2888,8 @@ function SpawnForm({
             onConnectHost={openHostsSettings}
             accessMode={accessMode}
             accessOptions={accessOptions}
+            effectiveAccessLabel={accessValue}
+            advancedAccessOverride={advancedSandboxOverride}
             onAccessChange={setAccessMode}
             pluginPreview={pluginPreview.state}
             pluginSelection={pluginSelection}
@@ -2939,18 +2941,21 @@ function SpawnForm({
             </div>
           )}
           <div className={`${CLASS.desktopOnly} ${CLASS.quietRow}`} data-testid="spawn-cwd-desktop">
-            <button
+            <Button
               ref={cwdTriggerRef}
               id="spawn-cwd"
               type="button"
-              className={CLASS.quietButton}
+              variant="quiet"
+              size="xs"
+              block
+              wrap
               data-testid="spawn-cwd-trigger"
               aria-haspopup="dialog"
               aria-expanded={cwdPickerOpen}
-              aria-label={`Working directory: ${cwdText} — browse`}
+              aria-label={`Working directory: ${cwdText}${branch !== "" ? `, branch ${branch}` : ""} — browse`}
               onClick={() => setCwdPickerOpen(true)}
             >
-              <span className={CLASS.quietSummary}>
+              <span className={`${CLASS.quietSummary} ${CLASS.quietButtonSummary}`}>
                 <strong>Working directory</strong>
                 <span data-testid="spawn-cwd-value" data-state={cwd ? "chosen" : "unset"} title={cwd}>
                   {cwdText}
@@ -2966,7 +2971,7 @@ function SpawnForm({
                   <Chevron direction="right" />
                 </span>
               </span>
-            </button>
+            </Button>
             {cwdPickerOpen && (
               <DirectoryPicker
                 key={cwd}

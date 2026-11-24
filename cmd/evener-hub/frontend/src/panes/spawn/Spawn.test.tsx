@@ -152,6 +152,14 @@ test("the desktop settings list carries the working directory and access as quie
   await user.click(within(picker).getByRole("button", { name: "Cancel" }));
   await setWorkingDir(user, "/tmp/rows");
   expect(workingDir().textContent).toBe("/tmp/rows");
+  // The phone row reports the same resolved access the desktop summary does,
+  // rather than falling back to the requested mode's "(default)".
+  await waitFor(() => expect(screen.getByTestId("spawn-effective-access").dataset.state).toBe("ready"));
+  const desktopAccess = screen.getByTestId("spawn-access-value").textContent ?? "";
+  const mobileAccessRow = screen
+    .getAllByTestId("mobile-spawn-row")
+    .find((candidate) => candidate.dataset.label === "Access mode") as HTMLElement;
+  expect(within(mobileAccessRow).getByTitle(desktopAccess).textContent).toBe(desktopAccess);
 
   await user.click(accessRowTrigger());
   await user.selectOptions(screen.getByLabelText("Access mode"), "read-only");
@@ -417,6 +425,11 @@ test("branch renders as a suffix on the directory row, not as an editable peer f
   await settled();
 
   await waitFor(() => expect(screen.getByTestId("spawn-branch").textContent).toContain("main"));
+  // The branch sits inside the picker button, so the button's own accessible
+  // name has to carry it too.
+  expect(
+    screen.getByLabelText(/^Working directory: \/home\/me\/app, branch main/, { selector: "#spawn-cwd" }),
+  ).toBeTruthy();
   // Not a text box: it is a readout of the directory's HEAD.
   expect(screen.queryByLabelText("Branch")).toBeNull();
   expect(screen.getByTestId("spawn-branch").querySelector("input")).toBeNull();

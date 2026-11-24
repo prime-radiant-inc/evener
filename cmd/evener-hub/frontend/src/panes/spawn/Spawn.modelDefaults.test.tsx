@@ -458,11 +458,12 @@ test("Access mode names the resolved sandbox default once launch/resolve lands",
 
   // The desktop Access mode select's empty option names the inherited sandbox.
   await waitFor(() => expect(accessOptionLabels()[0]).toContain(workspaceWrite()));
-  // The mobile Access mode row derives its resting label from the same
-  // options list, so it inherits the resolved wording too.
+  // The mobile row reports the same resolved level as the desktop summary,
+  // not the picker's "(default)" wording for the unset option.
+  await waitFor(() => expect(screen.getByTestId("spawn-access-value").textContent).toBe(workspaceWrite()));
   const mobileConfig = screen.getByTestId("spawn-mobile-config");
   const accessRow = mobileConfig.querySelector('[data-label="Access mode"]');
-  expect(accessRow?.textContent).toContain(accessOptionLabels()[0]);
+  expect(accessRow?.textContent).toContain(screen.getByTestId("spawn-access-value").textContent ?? "");
 });
 
 test.each(["desktop", "mobile"])("%s access inheritance survives an explicit mode round trip", async (surface) => {

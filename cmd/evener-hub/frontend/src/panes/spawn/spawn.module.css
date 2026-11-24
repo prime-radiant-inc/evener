@@ -149,27 +149,12 @@
   border-top: 1px solid var(--edge);
 }
 
-/* A quiet row whose whole surface is the control that opens a dialog: same
- * geometry as a disclosure summary, without the disclosure's body. */
-.quietButton {
-  display: block;
-  width: 100%;
-  margin: 0;
-  padding: var(--space-1) var(--space-2);
-  border: 0;
-  border-radius: var(--radius-control);
-  background: none;
-  color: inherit;
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
-}
-.quietButton:hover {
-  background: var(--hover-1);
-}
-.quietButton:focus-visible {
-  outline: var(--focus-ring);
-  outline-offset: -2px;
+/* The directory row is a quiet Button, whose label type is medium; a
+ * disclosure summary's value is regular. The summary keeps its own padding
+ * because the Button's wrap step already supplies the row's block inset. */
+.quietButtonSummary {
+  padding-block: 0;
+  font-weight: var(--font-weight-regular);
 }
 
 /* A desktop-only surface: the phone's own settings rows carry the same
