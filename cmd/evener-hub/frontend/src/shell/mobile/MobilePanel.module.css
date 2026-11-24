@@ -7,4 +7,11 @@
  * already drops the rail's width and border for the same reason). */
 .flushBody {
   padding: 0;
+  /* The shared dialog chrome leaves the body content-sized, which strands
+   * dead space below it inside the full-height sheet. Stretch it to the
+   * panel's bottom (min-height: 0 keeps it the scroll owner when content
+   * runs long) so the rail's min-height: 100% has a full box to fill and
+   * the New-session action can glue to the drawer's bottom edge. */
+  flex: 1 1 auto;
+  min-height: 0;
 }

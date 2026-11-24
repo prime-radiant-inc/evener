@@ -416,7 +416,7 @@ test("the rail's New-session action is a sticky bottom-right floating row above 
   const rule = css.match(/\.newSessionRow\s*\{([^}]*)\}/)?.[1];
   expect(rule, "Rail.module.css must carry the floating action's sticky row").toBeDefined();
   expect(rule).toMatch(/position:\s*sticky/);
-  expect(rule).toMatch(/bottom:\s*var\(--space-2\)/);
+  expect(rule).toMatch(/bottom:\s*calc\(var\(--space-2\) \+ var\(--dock-clearance\)\)/);
   expect(rule).toMatch(/display:\s*flex/);
   expect(rule).toMatch(/justify-content:\s*flex-end/);
   expect(rule).toMatch(/z-index:\s*var\(--z-raised\)/);
@@ -424,4 +424,35 @@ test("the rail's New-session action is a sticky bottom-right floating row above 
   const optIn = css.match(/\.newSessionRow\s*>\s*\*\s*\{([^}]*)\}/)?.[1];
   expect(optIn, "the floating row's children must opt back into pointer events").toBeDefined();
   expect(optIn).toMatch(/pointer-events:\s*auto/);
+});
+
+test("the rail's New-session action rests at the bottom edge even when the list is short", () => {
+  const srcRoot = dirname(dirname(fileURLToPath(import.meta.url)));
+  const css = readFileSync(join(srcRoot, "shell/rail/Rail.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, " ");
+  // The glue needs the scroll body to be a column with free space to
+  // distribute and the row to claim it; otherwise the row parks after the
+  // last row instead of the rail's bottom.
+  const body = css.match(/\.body\s*\{([^}]*)\}/)?.[1];
+  expect(body, "Rail.module.css must carry the scroll body rule").toBeDefined();
+  expect(body).toMatch(/display:\s*flex/);
+  expect(body).toMatch(/flex-direction:\s*column/);
+  const row = css.match(/\.newSessionRow\s*\{([^}]*)\}/)?.[1];
+  expect(row).toMatch(/margin-top:\s*auto/);
+  // Parent-owns-scroll hosts (the phone drawer's sheet body, the tablet
+  // band's column) must stretch the rail to their own height so the body
+  // has the free space the glue consumes.
+  const hostRail = css.match(/\.parentScrollRail\s*\{([^}]*)\}/)?.[1];
+  expect(hostRail, "Rail.module.css must carry the parent-scroll rail rule").toBeDefined();
+  expect(hostRail).toMatch(/min-height:\s*100%/);
+  // In the phone drawer the sheet body element is the scroll owner, and the
+  // shared dialog chrome leaves it content-sized; unless it stretches to the
+  // panel's bottom the rail has no box to fill and the glue has no space.
+  const panelCss = readFileSync(join(srcRoot, "shell/mobile/MobilePanel.module.css"), "utf8").replace(
+    /\/\*[\s\S]*?\*\//g,
+    " ",
+  );
+  const flushBody = panelCss.match(/\.flushBody\s*\{([^}]*)\}/)?.[1];
+  expect(flushBody, "MobilePanel.module.css must carry the drawer's flush body rule").toBeDefined();
+  expect(flushBody).toMatch(/flex:\s*1 1 auto/);
+  expect(flushBody).toMatch(/min-height:\s*0/);
 });

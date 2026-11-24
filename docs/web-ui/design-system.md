@@ -492,7 +492,13 @@ The rail's New-session control is the session list's floating action: an icon-on
 `Button variant="primary"` (a plus glyph named by its `aria-label`) in a right-aligned row
 pinned sticky to the scroll owner's bottom-right corner, so it holds its place while rows
 scroll under it in every surface the rail renders; the docked rail, the tablet column and
-the phone drawer share the one rule. It is the list's primary verb, one ladder step above
+the phone drawer share the one rule. The row rests at that same bottom corner when the
+list is short, rather than parking after the last row: the scroll body is a column that
+hands its free space to the row (`margin-top: auto`), the parent-scroll rail fills its
+host (`min-height: 100%`), and the drawer's sheet body stretches to the panel's bottom so
+the rail has a box to fill. The pinned position clears the home-indicator band with the
+dock token every dock reads (`--dock-clearance`), so the action never rides over the
+system bar. It is the list's primary verb, one ladder step above
 the rows it floats over, wearing the same accent-filled shape as the composer's Send. The
 task surface still keeps at most one filled primary of its own: `scripts/shellguard`
 (`run.mjs`'s `railNewSession`/`primaryButtons` probes) fails if the floating action loses

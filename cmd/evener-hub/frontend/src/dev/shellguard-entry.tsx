@@ -1134,7 +1134,11 @@ target.focusScrollFixture = {
     spacer.setAttribute("aria-hidden", "true");
     // Taller than the scrollport, so the trigger leaves through the BOTTOM
     // however near the top of the client area it started.
+    // flex: none keeps the spacer's height authoritative: the rail body is a
+    // column flex container, and an empty item with a set height would
+    // otherwise shrink toward zero and stop pushing the trigger out.
     spacer.style.height = `${Math.ceil(body.clientHeight + 40)}px`;
+    spacer.style.flex = "none";
     body.prepend(spacer);
     const after = clientArea(body);
     return {

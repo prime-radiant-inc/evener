@@ -145,6 +145,13 @@
   /* min-height: 0 is required for a flex child to actually be able to
    * scroll instead of stretching its column parent to fit its content. */
   min-height: 0;
+  /* Column flex so the sticky New-session row can claim the space below a
+   * short list with margin-top: auto - without it the row parks after the
+   * last row instead of the rail's bottom. The section children keep their
+   * own sizes: a flex item's min-height: auto floor stops them shrinking,
+   * so overflow still scrolls. */
+  display: flex;
+  flex-direction: column;
   /* This is also the box that absorbs the tree's width: `flex: none` plus
    * `min-width: 0` above means a row wider than the rail (a deep
    * subagent branch, a long title beside a long branch name) has to go
@@ -162,6 +169,10 @@
  * region; the default desktop rail keeps the rules above unchanged. */
 .parentScrollRail {
   height: auto;
+  /* Fill the host (the drawer's sheet body, the tablet band's column) so a
+   * short list still leaves the body free space the New-session row glues
+   * into; long content grows past it, since min-height does not cap. */
+  min-height: 100%;
 }
 
 .parentScrollBody {
@@ -193,7 +204,12 @@
  * is the same pass-through the session overlay dock uses. */
 .newSessionRow {
   position: sticky;
-  bottom: var(--space-2);
+  /* The pin and the resting edge are the same point: margin-top: auto rests
+   * the row at the body's bottom when the list is short, and the pin - when
+   * rows overflow - clears the home-indicator band with the same token every
+   * dock reads (0px on desktop, so the docked rail is unchanged). */
+  bottom: calc(var(--space-2) + var(--dock-clearance));
+  margin-top: auto;
   z-index: var(--z-raised);
   display: flex;
   justify-content: flex-end;
