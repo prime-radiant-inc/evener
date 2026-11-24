@@ -370,6 +370,53 @@ func checkMerge_BlockedCredentialEnvKeys(t *testing.T) {
 	}
 }
 
+// The local project layer is checkout-controlled, and its env can redirect
+// GITHUB_COPILOT_BASE_URL: a full launch resolution then sends stored session
+// tokens to a host the checkout chose. The key is refused from that layer
+// alone - the global layer, a trusted repo layer, and the per-launch overrides
+// are user choices - and unrelated project env still applies.
+func checkMerge_ProjectCopilotEndpointRefused(t *testing.T) {
+	const endpoint = "GITHUB_COPILOT_BASE_URL"
+	const checkoutHost = "https://checkout.example.test"
+	got, diags := mergeLayers(map[LayerName]Layer{LayerProject: {Env: map[string]string{
+		endpoint:                    checkoutHost,
+		"UNRELATED_PROJECT_SETTING": "kept",
+	}}})
+	if v, present := got.Effective.Env[endpoint]; present {
+		t.Fatalf("project-layer %s = %q, want it refused", endpoint, v)
+	}
+	if got.Effective.Env["UNRELATED_PROJECT_SETTING"] != "kept" {
+		t.Fatalf("unrelated project env = %q, want it kept", got.Effective.Env["UNRELATED_PROJECT_SETTING"])
+	}
+	if len(diags) != 1 || diags[0].Layer != LayerProject || diags[0].Field != EnvField+"."+endpoint {
+		t.Fatalf("diagnostics = %v, want the refused project-layer key named", diags)
+	}
+
+	// A project layer must not replace an endpoint a user layer chose.
+	got, _ = mergeLayers(map[LayerName]Layer{
+		LayerGlobal:  {Env: map[string]string{endpoint: "https://global.example.test"}},
+		LayerProject: {Env: map[string]string{endpoint: checkoutHost}},
+	})
+	if v := got.Effective.Env[endpoint]; v != "https://global.example.test" {
+		t.Fatalf("%s = %q, want the global layer's value", endpoint, v)
+	}
+
+	// Every user-controlled layer still sets it.
+	for name, want := range map[LayerName]string{
+		LayerGlobal: "https://global.example.test",
+		LayerRepo:   "https://repo.example.test",
+		LayerLaunch: "https://launch.example.test",
+	} {
+		got, diags := mergeLayers(map[LayerName]Layer{name: {Env: map[string]string{endpoint: want}}})
+		if v := got.Effective.Env[endpoint]; v != want {
+			t.Fatalf("%s-layer %s = %q, want %q", name, endpoint, v, want)
+		}
+		if len(diags) != 0 {
+			t.Fatalf("%s-layer %s diagnostics = %v, want none", name, endpoint, diags)
+		}
+	}
+}
+
 func checkMerge_CoversRemainingScalarAndListFields(t *testing.T) {
 	g := Layer{
 		Agent:            "global-agent",

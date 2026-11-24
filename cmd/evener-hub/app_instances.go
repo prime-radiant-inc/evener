@@ -87,6 +87,11 @@ type hubInstancesController struct {
 	// adopts them. A test lands a login inside that window deterministically.
 	// Nil in production.
 	afterCopilotRestore func()
+	// deleteCopilotAuth removes one Copilot record. It is a test seam:
+	// fsatomic.Remove unlinks the record before it syncs the directory, and a
+	// real filesystem cannot be made to fail that sync deterministically. Nil
+	// means githubcopilot.DeleteAuth.
+	deleteCopilotAuth func(stateDir, instance string) error
 
 	commitMu    sync.Mutex
 	onCommitted func(instanceCommitted)
@@ -2795,10 +2800,13 @@ func (c *hubInstancesController) removeCredentialsAndCopilot(name string, copilo
 		c.applied.markApplied()
 	}
 	removedCopilot, err := c.deleteCopilotRecord(name, copilotBytes, hasCopilot)
+	// A delete error can still have removed the record (fsatomic.Remove
+	// unlinks before it syncs), and the rollback restores exactly the layers
+	// this call reports as deleted.
+	deleted.copilotRecord = removedCopilot
 	if err != nil {
 		return deleted, fmt.Errorf("remove %s: delete the Copilot OAuth record: %w", name, err)
 	}
-	deleted.copilotRecord = removedCopilot
 	if removedCopilot {
 		c.applied.markApplied()
 		c.forgetCopilotAuthSignature(name)
@@ -2817,6 +2825,10 @@ func (c *hubInstancesController) deleteCopilotRecord(name string, captured []byt
 	if !hasCaptured {
 		return false, nil
 	}
+	deleteAuth := c.deleteCopilotAuth
+	if deleteAuth == nil {
+		deleteAuth = githubcopilot.DeleteAuth
+	}
 	removed := false
 	err := githubcopilot.WithRecordLock(c.auth.stateDir, name, func() error {
 		raw, err := os.ReadFile(githubcopilot.AuthFilePath(c.auth.stateDir, name))
@@ -2829,7 +2841,14 @@ func (c *hubInstancesController) deleteCopilotRecord(name string, captured []byt
 		if !bytes.Equal(raw, captured) {
 			return errCopilotRecordChanged
 		}
-		if err := githubcopilot.DeleteAuth(c.auth.stateDir, name); err != nil {
+		if err := deleteAuth(c.auth.stateDir, name); err != nil {
+			// fsatomic.Remove unlinks the record before it syncs the
+			// directory, so a sync failure leaves the captured account gone.
+			// Report that deletion to the caller's rollback, which restores
+			// the captured bytes under the same rule.
+			if _, readErr := os.ReadFile(githubcopilot.AuthFilePath(c.auth.stateDir, name)); errors.Is(readErr, os.ErrNotExist) {
+				removed = true
+			}
 			return err
 		}
 		removed = true

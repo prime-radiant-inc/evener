@@ -11,6 +11,7 @@ import (
 	"testing/synctest"
 	"time"
 
+	"primeradiant.com/evener/auth/githubcopilot"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/apilog"
 	"primeradiant.com/evener/llm/providers/anthropic"
@@ -19,6 +20,22 @@ import (
 	"primeradiant.com/evener/llm/providers/responses"
 	"primeradiant.com/evener/llm/registry"
 )
+
+// A Copilot listing resolves the stored session before it fetches models, and
+// that resolution may spend a whole session exchange under the listing
+// context: the auth service bounds one exchange by its HTTP timeout. The
+// shared listing budget must contain that exchange with headroom, or a slow
+// exchange kills the listing deadline before the still-valid stored session
+// can answer. The budget stays a maximum: a caller's earlier deadline still
+// cancels the listing through the context, and a session past its actual
+// expiry is still renewed rather than reused.
+func TestLiveModelListBudgetOutlastsCopilotSessionExchange(t *testing.T) {
+	t.Parallel()
+	exchange := githubcopilot.DefaultConfig().HTTPTimeout
+	if headroom := llm.LiveModelListTimeout - exchange; headroom < 5*time.Second {
+		t.Fatalf("LiveModelListTimeout = %s leaves %s beyond the %s Copilot session-exchange window, want at least 5s of headroom", llm.LiveModelListTimeout, headroom, exchange)
+	}
+}
 
 type modelListTransport func(*http.Request) (*http.Response, error)
 

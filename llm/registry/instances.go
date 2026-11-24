@@ -276,7 +276,7 @@ func (r *Registry) firstPartyEndpoint(rec *record, transport Transport, proto, r
 	}
 	var row Model
 	if rowID != "" || ref != "" {
-		row = r.canonicalRow(base, ref, altID, rowID, proto)
+		row = r.canonicalRow(base, ref, altID, rowID)
 	}
 	canonical := r.transportShape(base, row, proto)
 	lookup := r.canonicalVarLookup(rec, base, canonical)
@@ -301,7 +301,7 @@ func (r *Registry) firstPartyEndpoint(rec *record, transport Transport, proto, r
 // resolution matched. base's layers are curated by construction, so no
 // LayerConfig contribution - the channel the gate exists to judge - can
 // reach the result.
-func (r *Registry) canonicalRow(base *record, ref, altID, rowID, proto string) Model {
+func (r *Registry) canonicalRow(base *record, ref, altID, rowID string) Model {
 	var row Model
 	if rowID != "" {
 		if m, ok := base.head.Models[rowID]; ok {
@@ -309,17 +309,17 @@ func (r *Registry) canonicalRow(base *record, ref, altID, rowID, proto string) M
 		}
 	}
 	// The caps and provenance sinks are discarded: only the transport
-	// fields applyGlobs and applyRowScalars merge matter here.
+	// fields applyGlobs and applyRowScalars merge matter here. The glob
+	// field collector is nil for the same reason.
 	caps := Caps{}
 	prov := map[string]string{}
-	crossProto := proto != base.head.Protocol
 	seenTag := map[string]bool{}
 	for _, layer := range base.layers {
 		if !seenTag[layer.tag] {
 			seenTag[layer.tag] = true
-			r.applyGlobs(&caps, &row, r.topGlobs[layer.tag], layer.tag, ref, altID, proto, crossProto, prov)
+			r.applyGlobs(&caps, &row, r.topGlobs[layer.tag], layer.tag, ref, altID, prov, nil)
 		}
-		r.applyGlobs(&caps, &row, layer.rows, layer.tag, ref, altID, proto, crossProto, prov)
+		r.applyGlobs(&caps, &row, layer.rows, layer.tag, ref, altID, prov, nil)
 		if rowID != "" {
 			if lr, ok := layer.rows[rowID]; ok {
 				applyRowScalars(&row, lr, layer.tag, prov)

@@ -1016,24 +1016,20 @@ func (r *Registry) resolveLayersModeLive(rec *record, ref Ref, warnings []string
 			altID = aliasAltID(altID, target.Model.ID)
 		}
 	}
-	rowProto := row.Protocol
-	if rowProto == "" {
-		rowProto = rec.head.Protocol
+	// Field flags are held until the replay settles the protocol that wins:
+	// the live layer lands after the bundled layers and an authored row after
+	// that, so a protocol seen mid-replay is not the one the row resolves
+	// with.
+	var contributions []fieldContribution
+	collect := func(contribution fieldContribution) {
+		if len(contribution.fields) > 0 {
+			contributions = append(contributions, contribution)
+		}
 	}
-	crossProto := rowProto != rec.head.Protocol
-
 	var liveReplay func()
 	if includeLive {
 		liveReplay = func() {
 			r.applyLive(&caps, &row, rec, ref.Model, hit, prov)
-			// Live routing may have moved the row's protocol. Every layer
-			// after it — config provider caps and config globs — judges its
-			// field table against the protocol the account chose.
-			rowProto = rec.head.Protocol
-			if row.Protocol != "" {
-				rowProto = row.Protocol
-			}
-			crossProto = rowProto != rec.head.Protocol
 		}
 	}
 	r.replayOrdered(rec, replayScope{ref: ref.Model, altID: altID, exact: hit.rowID}, replayHooks{
@@ -1041,22 +1037,29 @@ func (r *Registry) resolveLayersModeLive(rec *record, ref Ref, warnings []string
 		provider: func(layer capLayer) {
 			if layer.resetFields {
 				resetLayerFields(&caps, prov)
+				contributions = nil
 			}
 			pc := layer.provider
-			if crossProto {
-				pc.Fields = nil
-			}
+			fields := pc.Fields
+			pc.Fields = nil
 			mergeCaps(&caps, pc, layer.tag+"/provider", prov)
+			collect(fieldContribution{tag: layer.tag + "/provider", fields: fields, provider: true})
 		},
 		visit: func(step replayStep) {
 			for _, g := range step.globs {
-				r.applyGlobRow(&caps, &row, step.rows[g], step.tag, g, rowProto, crossProto, prov)
+				r.applyGlobRow(&caps, &row, step.rows[g], step.tag, g, prov, func(tag string, fields map[string]bool) {
+					collect(fieldContribution{tag: tag, fields: fields, glob: true})
+				})
 			}
 			if step.exact == "" {
 				return
 			}
 			if lr, ok := step.rows[step.exact]; ok {
-				mergeCaps(&caps, lr.Caps, step.tag+"/row", prov)
+				lc := lr.Caps
+				fields := lc.Fields
+				lc.Fields = nil
+				mergeCaps(&caps, lc, step.tag+"/row", prov)
+				collect(fieldContribution{tag: step.tag + "/row", fields: fields})
 				applyRowScalars(&row, lr, step.tag+"/row", prov)
 			}
 		},
@@ -1065,10 +1068,11 @@ func (r *Registry) resolveLayersModeLive(rec *record, ref Ref, warnings []string
 	// the bundled layers and an authored row after that. Everything below —
 	// the protocol field table, the transport shape, the endpoint gate — reads
 	// the protocol that actually won.
-	rowProto = rec.head.Protocol
+	rowProto := rec.head.Protocol
 	if row.Protocol != "" {
 		rowProto = row.Protocol
 	}
+	applyFieldContributions(&caps, prov, contributions, rec.head.Protocol, rowProto)
 	seedFields(&caps, rowProto)
 	if aliasLockstep {
 		row.Disabled = aliasDisabled
@@ -1297,28 +1301,65 @@ func orderedGlobKeys(rows map[string]Model, ref, altID string) []string {
 	return out
 }
 
+// fieldContribution is one layer's Fields values, held until the replay knows
+// the protocol that wins. Provider-layer fields describe the record's own
+// protocol, glob-row fields describe the provider protocol, and exact-row
+// fields are authored for the protocol the row states.
+type fieldContribution struct {
+	tag      string
+	fields   map[string]bool
+	provider bool
+	glob     bool
+}
+
+// applyFieldContributions replays the held Fields in layer order against the
+// protocol that finally won. Provider fields belong to the record's own
+// protocol, so they apply only when that protocol wins; a cross-protocol glob
+// row keeps only the keys the winning protocol knows. Exact-row fields state
+// the row's protocol, which is the winning one.
+func applyFieldContributions(caps *Caps, prov map[string]string, contributions []fieldContribution, headProtocol, finalProtocol string) {
+	crossProto := finalProtocol != headProtocol
+	for _, contribution := range contributions {
+		fields := contribution.fields
+		if crossProto {
+			switch {
+			case contribution.provider:
+				continue
+			case contribution.glob:
+				table := prunable[finalProtocol]
+				filtered := make(map[string]bool, len(fields))
+				for k, v := range fields {
+					if _, ok := table[k]; ok {
+						filtered[k] = v
+					}
+				}
+				fields = filtered
+			}
+		}
+		if len(fields) == 0 {
+			continue
+		}
+		mergeCaps(caps, Caps{Fields: fields}, contribution.tag, prov)
+	}
+}
+
 // applyGlobs applies matching glob rows in spec §4.1 order: shorter
 // patterns first, target-matching globs before reference-matching ones, each
-// glob at most once. Cross-protocol rows take only Fields keys their own
-// protocol knows.
-func (r *Registry) applyGlobs(c *Caps, row *Model, rows map[string]Model, tag, ref, altID, rowProto string, crossProto bool, prov map[string]string) {
+// glob at most once. A glob row's Fields are handed to collect instead of
+// merged, because the protocol that finally wins decides which apply.
+func (r *Registry) applyGlobs(c *Caps, row *Model, rows map[string]Model, tag, ref, altID string, prov map[string]string, collect func(tag string, fields map[string]bool)) {
 	for _, g := range orderedGlobKeys(rows, ref, altID) {
-		r.applyGlobRow(c, row, rows[g], tag, g, rowProto, crossProto, prov)
+		r.applyGlobRow(c, row, rows[g], tag, g, prov, collect)
 	}
 }
 
 // applyGlobRow applies one matching glob row, g, under tag.
-func (r *Registry) applyGlobRow(c *Caps, row *Model, gr Model, tag, g, rowProto string, crossProto bool, prov map[string]string) {
+func (r *Registry) applyGlobRow(c *Caps, row *Model, gr Model, tag, g string, prov map[string]string, collect func(tag string, fields map[string]bool)) {
 	gc := gr.Caps
-	if crossProto && len(gc.Fields) > 0 {
-		table := prunable[rowProto]
-		filtered := map[string]bool{}
-		for k, v := range gc.Fields {
-			if _, ok := table[k]; ok {
-				filtered[k] = v
-			}
-		}
-		gc.Fields = filtered
+	fields := gc.Fields
+	gc.Fields = nil
+	if len(fields) > 0 && collect != nil {
+		collect(tag+"/glob:"+g, fields)
 	}
 	mergeCaps(c, gc, tag+"/glob:"+g, prov)
 	applyRowScalars(row, gr, tag+"/glob:"+g, prov)
