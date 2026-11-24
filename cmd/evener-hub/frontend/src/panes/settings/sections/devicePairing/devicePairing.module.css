@@ -5,10 +5,6 @@
   max-width: 40rem;
 }
 
-.root > button {
-  align-self: flex-start;
-}
-
 .root > h3,
 .root > p {
   margin: 0;
