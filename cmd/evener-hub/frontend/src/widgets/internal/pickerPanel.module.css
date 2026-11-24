@@ -1,0 +1,101 @@
+/* The floating picker's shared anatomy: both rich pickers (ModelCatalog and
+ * PathField) render a Popover panel holding a search field over one
+ * internally-scrolling Listbox, and both drew that panel, field, and row from
+ * the same declarations before they drifted. Each consumer composes these and
+ * adds only its own face and row content. Tokens only. */
+
+/* The panel's own content padding/sizing - widgets/popover's shared chassis
+ * supplies position/background/border/radius/animation. The width cap
+ * reserves both of computePosition's EDGE_MARGINs (8px a side). */
+.popoverPanel {
+  padding: var(--space-3);
+  width: 380px;
+  max-width: calc(100dvw - var(--space-4));
+}
+
+/* The open picker: the search field over one internally-scrolling list. */
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+/* The picker's search field: the shared form-control box, filling the panel,
+ * with the control metrics every other field uses. The type face stays with
+ * the composing widget - a model id reads as prose, a path as a path. */
+.input {
+  composes: controlField from "./control.module.css";
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  height: 32px;
+  padding: 0 var(--space-3);
+  font-size: var(--font-size-control);
+}
+
+/* A section head inside the list. It ellipsizes: a directory path can run
+ * long, and the list must not widen for it. .groupLabel is the uppercase
+ * eyebrow form; a path keeps its own face and mixed case. */
+.groupRow {
+  composes: truncate from "../../styles/text.module.css";
+  padding: var(--space-2) var(--space-2) var(--space-1);
+  color: var(--ink-mid);
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-medium);
+}
+
+.groupLabel {
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-eyebrow);
+}
+
+/* One option row: a wash on hover, a pressed wash for the virtual-focus
+ * (aria-activedescendant) row - real DOM focus stays on the input, so the
+ * active row is a plain background, never :focus-visible. */
+.row {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-control);
+  color: var(--ink-hi);
+  font-size: var(--font-size-ui);
+  cursor: pointer;
+  transition: background-color var(--motion-duration-hover) var(--motion-easing-standard);
+}
+
+.row:hover {
+  background: var(--hover-1);
+}
+
+.rowActive {
+  background: var(--hover-2);
+}
+
+/* The row's name never yields: flex-shrink 0 keeps it at its natural width
+ * and the metadata absorbs the overflow (see .meta). It still ellipsizes
+ * rather than overflowing, for a pathologically long name. */
+.rowName {
+  composes: truncate from "../../styles/text.module.css";
+  flex: 0 0 auto;
+  max-width: 100%;
+}
+
+/* The current value's marker. Paired with aria-selected on the row, never
+ * carrying the meaning alone. */
+.check {
+  color: var(--accent);
+  font-size: var(--font-size-caption);
+}
+
+/* Per-row metadata at the trailing edge: passive small text. min-width: 0 is
+ * what lets a nowrap flex item shrink at all - without it this long line
+ * would refuse to give and would starve the name instead. */
+.meta {
+  composes: truncate from "../../styles/text.module.css";
+  flex: 0 1 auto;
+  min-width: 0;
+  margin-left: auto;
+  color: var(--ink-mid);
+  font-size: var(--font-size-caption);
+}
