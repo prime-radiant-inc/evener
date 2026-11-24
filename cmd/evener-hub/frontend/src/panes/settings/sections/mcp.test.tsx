@@ -10,10 +10,28 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { connectionStore, resetConnectionStoreForTests } from "../../../stores/connection";
 import { extensionsStore, resetExtensionsStoreForTests } from "../../../stores/extensions";
+import surfaceStyles from "../../../styles/surface.module.css";
 import { connectReadyFakeClient } from "../../../testing/connectionTestUtils";
+import { requireClass } from "../../../widgets/internal/requireClass";
 import { getToasts, resetToastStoreForTests } from "../../../widgets/toast/store";
 import { McpSection } from "./mcp";
 import { overviewHook } from "./mcpTestUtils";
+
+const SHARED_HEADING = requireClass(
+  surfaceStyles.settingsSectionHeading,
+  "surface.module.css",
+  "settingsSectionHeading",
+);
+const PANE_TITLE_SIZE = requireClass(
+  surfaceStyles.settingsSectionHeadingPaneTitle,
+  "surface.module.css",
+  "settingsSectionHeadingPaneTitle",
+);
+const BODY_SIZE = requireClass(
+  surfaceStyles.settingsSectionHeadingBody,
+  "surface.module.css",
+  "settingsSectionHeadingBody",
+);
 
 // Both launch-layer editors mount together once the layer has loaded.
 async function launchLayerLoaded(): Promise<void> {
@@ -76,6 +94,21 @@ test("shows the discovered-servers empty state", async () => {
   const fetch = fetchLaunchLayer.mock.results[0];
   if (fetch?.type !== "return") throw new Error("MCP section did not start its launch-layer fetch");
   await act(() => fetch.value);
+});
+
+test("headings compose the shared settings heading recipe at pane-title and body sizes", async () => {
+  connectReadyFakeClient();
+  const fetchLaunchLayer = vi.spyOn(extensionsStore.getState(), "fetchLaunchLayer");
+  render(<McpSection useOverviewStore={overviewHook({ data: { mcpDiscovered: { servers: [] } } })} />);
+  const fetch = fetchLaunchLayer.mock.results[0];
+  if (fetch?.type !== "return") throw new Error("MCP section did not start its launch-layer fetch");
+  await act(() => fetch.value);
+  const paneHeading = screen.getByRole("heading", { level: 2 });
+  expect(paneHeading.classList.contains(SHARED_HEADING)).toBe(true);
+  expect(paneHeading.classList.contains(PANE_TITLE_SIZE)).toBe(true);
+  const discoveredHeading = within(discoveredBlock() as HTMLElement).getByRole("heading", { level: 3 });
+  expect(discoveredHeading.classList.contains(SHARED_HEADING)).toBe(true);
+  expect(discoveredHeading.classList.contains(BODY_SIZE)).toBe(true);
 });
 
 test("shows a loading state for discovered servers before the overview resolves", async () => {
