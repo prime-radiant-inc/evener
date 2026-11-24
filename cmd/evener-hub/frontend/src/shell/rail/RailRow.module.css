@@ -297,14 +297,6 @@
   overflow-wrap: anywhere;
 }
 
-.contextCard[data-state="needs-you"] .contextStatus {
-  color: var(--attention-ink);
-}
-
-.contextCard[data-state="failed"] .contextStatus {
-  color: var(--danger-ink);
-}
-
 .contextSummary {
   color: var(--ink-hi);
   overflow-wrap: anywhere;
@@ -341,10 +333,14 @@
   font-size: var(--font-size-caption);
 }
 
+/* The one attention/danger ink pair: the row's why word and the session
+ * context status both name their hue on data-hue. */
+.contextStatus[data-hue="attention"],
 .whyReason[data-hue="attention"] {
   color: var(--attention-ink);
 }
 
+.contextStatus[data-hue="danger"],
 .whyReason[data-hue="danger"] {
   color: var(--danger-ink);
 }

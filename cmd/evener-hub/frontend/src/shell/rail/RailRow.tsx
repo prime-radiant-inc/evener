@@ -644,7 +644,12 @@ function SessionContextCard({
     <div className={CLASS.contextCard} data-state={state}>
       <div className={CLASS.contextHead}>
         <Eyebrow as="span">Session</Eyebrow>
-        <span className={CLASS.contextStatus} data-testid="rail-context-status" data-status-kind={status.kind}>
+        <span
+          className={CLASS.contextStatus}
+          data-testid="rail-context-status"
+          data-status-kind={status.kind}
+          data-hue={state === "needs-you" ? "attention" : state === "failed" ? "danger" : undefined}
+        >
           {status.text}
         </span>
       </div>
