@@ -12,7 +12,6 @@ import {
   type CachedSessionRecord,
   type ConditionSpec,
   cachedSessionRecord,
-  clearUnsupportedFileSearchHost,
   conditionSpec,
   createFileMentionStore,
   type DelegateEntityView,
@@ -345,7 +344,6 @@ describe("protocol package root public exports", () => {
       matchFileMentionPositions,
       rankFileMentions,
       createFileMentionStore,
-      clearUnsupportedFileSearchHost,
     ]) {
       expect(typeof fn).toBe("function");
     }

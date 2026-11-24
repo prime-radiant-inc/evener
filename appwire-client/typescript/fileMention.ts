@@ -2,10 +2,8 @@
 // ranking, and debounced search state for browser and native composers.
 
 import type { AppwireClientLike } from "./clientLike";
-import { isMethodNotFound } from "./errors";
 import { createFrameworkFreeStore, type FrameworkFreeStore } from "./frameworkFreeStore";
 import { hostRequest, normalizeHost } from "./hostRouting";
-import { hostIdOf } from "./sessionFacts";
 import type { FileSearchItem, FilesSearchParams } from "./types.gen";
 
 export const FILE_MENTION_DEBOUNCE_MS = 80;
@@ -64,32 +62,11 @@ export interface FileMentionStore extends FrameworkFreeStore<FileMentionSnapshot
   clear(): void;
 }
 
-// Tracks (client, host) pairs where the remote/local hub rejected
-// evener/files/search with CodeMethodNotFound so older hubs degrade quietly.
-const unsupportedHostsByClient = new WeakMap<object, Set<string>>();
-
-export function clearUnsupportedFileSearchHost(client: object, host?: string): void {
-  if (host === undefined) {
-    unsupportedHostsByClient.delete(client);
-    return;
-  }
-  unsupportedHostsByClient.get(client)?.delete(normalizeHost(host));
-}
-
-function isFileSearchSupported(client: object, host: string): boolean {
-  return !unsupportedHostsByClient.get(client)?.has(host);
-}
-
-function markUnsupportedFileSearchHost(client: object, host: string): void {
-  let set = unsupportedHostsByClient.get(client);
-  if (!set) {
-    set = new Set<string>();
-    unsupportedHostsByClient.set(client, set);
-  }
-  set.add(host);
-}
-
-export function parseFileMentionToken(text: string, caret: number): FileMentionToken | null {
+export function parseFileMentionToken(
+  text: string,
+  caret: number,
+  protectedRanges?: readonly { start: number; end: number }[],
+): FileMentionToken | null {
   if (caret <= 0 || caret > text.length) return null;
 
   let i = 0;
@@ -103,21 +80,16 @@ export function parseFileMentionToken(text: string, caret: number): FileMentionT
     if (openPos < caret && text.charAt(openPos) === '"') {
       let query = "";
       let escaped = false;
-      let closedBeforeCaret = false;
       let abortedAt = -1;
-      let quoteCount = 0;
-      let firstQuote = -1;
-      for (let j = openPos + 1; j < text.length; j += 1) {
+      for (let j = openPos + 1; j < caret; j += 1) {
         const ch = text.charAt(j);
         if (ch === "\r" || ch === "\n") {
-          if (j < caret) abortedAt = j;
+          abortedAt = j;
           break;
         }
         if (escaped) {
           escaped = false;
-          if (j < caret) {
-            query += ch === '"' || ch === "\\" ? ch : `\\${ch}`;
-          }
+          query += ch === '"' || ch === "\\" ? ch : `\\${ch}`;
           continue;
         }
         if (ch === "\\") {
@@ -128,34 +100,17 @@ export function parseFileMentionToken(text: string, caret: number): FileMentionT
           continue;
         }
         if (ch === '"') {
-          if (j < caret) {
-            closedBeforeCaret = true;
-            abortedAt = j;
-            break;
-          }
-          if (firstQuote < 0) firstQuote = j;
-          quoteCount += 1;
-          continue;
+          abortedAt = j;
+          break;
         }
-        if (j < caret) {
-          query += ch;
-        }
+        query += ch;
       }
-      if (closedBeforeCaret || abortedAt >= 0) {
+      if (abortedAt >= 0) {
         i = abortedAt + 1;
         continue;
       }
       if (query.length > FILE_MENTION_MAX_QUERY_LENGTH) return null;
-      let end = caret;
-      if (
-        firstQuote >= 0 &&
-        quoteCount % 2 === 1 &&
-        !(firstQuote > caret && text.charAt(firstQuote - 1) === "@") &&
-        (firstQuote + 1 === text.length || /[\s.,;:!?)\]}]/u.test(text.charAt(firstQuote + 1))) &&
-        !(firstQuote > caret && /\s/u.test(text.charAt(firstQuote - 1)))
-      ) {
-        end = firstQuote + 1;
-      }
+      const end = !escaped && text.charAt(caret) === '"' ? caret + 1 : caret;
       return { start: i, end, query, quoted: true };
     }
 
@@ -179,8 +134,16 @@ export function parseFileMentionToken(text: string, caret: number): FileMentionT
 
     const query = text.slice(openPos, caret);
     if (query.length > FILE_MENTION_MAX_QUERY_LENGTH) return null;
+    let maxEnd = text.length;
+    if (protectedRanges) {
+      for (const range of protectedRanges) {
+        if (range.start >= caret && range.start < maxEnd) {
+          maxEnd = range.start;
+        }
+      }
+    }
     let end = caret;
-    while (end < text.length && !UNQUOTED_STOP_RE.test(text.charAt(end))) {
+    while (end < maxEnd && !UNQUOTED_STOP_RE.test(text.charAt(end))) {
       end += 1;
     }
     while (end > caret && UNQUOTED_TRAILING_PUNCT_RE.test(text.charAt(end - 1))) {
@@ -603,10 +566,6 @@ export function rankFileMentions(items: readonly FileSearchItem[], query: string
   return limit !== undefined && limit > 0 ? sortedItems.slice(0, limit) : sortedItems;
 }
 
-function hostKeyOfTarget(target: FileMentionTarget): string {
-  return target.kind === "session" ? hostIdOf(target.ref) : normalizeHost(target.host ?? null);
-}
-
 function scopeKeyOfTarget(target: FileMentionTarget): string {
   if (target.kind === "session") {
     return `session\u0000${target.ref}`;
@@ -657,13 +616,6 @@ export function createFileMentionStore(): FileMentionStore {
 
       const { client, target, query, enabled, immediate = false, limit } = inputs;
       if (!enabled || client === null || target === null) {
-        lastCache = null;
-        store.setState({ items: [], loading: false, truncated: false, settledQuery: null });
-        return () => {};
-      }
-
-      const hostKey = hostKeyOfTarget(target);
-      if (!isFileSearchSupported(client, hostKey)) {
         lastCache = null;
         store.setState({ items: [], loading: false, truncated: false, settledQuery: null });
         return () => {};
@@ -726,11 +678,8 @@ export function createFileMentionStore(): FileMentionStore {
             lastCache = { client, scopeKey, query: normQuery, items, truncated };
             store.setState({ items, loading: false, truncated, settledQuery: normQuery });
           },
-          (err: unknown) => {
+          () => {
             if (!active || seq !== requestSeq) return;
-            if (isMethodNotFound(err)) {
-              markUnsupportedFileSearchHost(client, hostKey);
-            }
             lastCache = null;
             store.setState({ items: [], loading: false, truncated: false, settledQuery: normQuery });
           },

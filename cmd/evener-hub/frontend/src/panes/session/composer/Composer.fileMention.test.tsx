@@ -11,11 +11,11 @@ import { prefsStore, resetPrefsStoreForTests } from "../../../stores/prefs";
 import { resetThreadsStoreForTests } from "../../../stores/threads";
 import { ALL_CAPABILITIES as FULL_CAPABILITIES } from "../../../threadTestUtils";
 import { getToasts, resetToastStoreForTests } from "../../../widgets/toast/store";
-import { selectEditorText } from "../testing/editor";
+import { pastePngInto, selectEditorText } from "../testing/editor";
 import { resetAskDockStoreForTests } from "./askDock/askDockStore";
 import { resetComposerFocusStoreForTests } from "./composerFocus";
 import { installCanvasStubs, mountComposerWithHandle, testThread, textarea } from "./composerTestUtils";
-import { readComposerDraft, writeComposerDraft } from "./draft";
+import { readComposerDraft, readComposerDraftSnapshot, writeComposerDraft } from "./draft";
 import { resetPendingTurnsStoreForTests } from "./queue/pendingTurnsStore";
 import { flushPendingTurnsProjectionForTests } from "./queue/testing/flushPendingTurnsProjection";
 import { resetQuoteInsertStoreForTests } from "./quoteInsert";
@@ -451,4 +451,39 @@ test("Ctrl+Enter, Cmd+Enter, and Shift+Enter bypass file mention commit and reac
   expect(editor.textContent).toBe("check @src/main.go ");
   expect(queryFileMenu()).toBeNull();
   expect(fake.calls.filter((c) => c.method === "turn/start")).toHaveLength(2);
+});
+
+test("accepting unquoted @ma immediately before staged [image 1] preserves image marker, tile, and stagedImageRanges", async () => {
+  installCanvasStubs();
+  const user = userEvent.setup();
+  const ref = "ref_file_before_image";
+  await mountComposerWithHandle(
+    ref,
+    {},
+    {
+      prepare: (client) => {
+        client.on("evener/files/search", () => ({
+          items: [{ path: "src/main.go", kind: "file" }],
+        }));
+      },
+    },
+  );
+
+  const editor = textarea();
+  await user.type(editor, "@m");
+  pastePngInto(editor, "shot.png");
+  await waitFor(() => expect(editor.textContent).toBe("@m[image 1]"));
+  await waitFor(() => expect(screen.getByRole("button", { name: "Remove shot.png" })).toBeTruthy());
+
+  selectEditorText(editor, "@m".length);
+  await user.keyboard("a");
+  expect(editor.textContent).toBe("@ma[image 1]");
+  await waitFor(() => expect(fileOptions()).toHaveLength(1));
+
+  await user.keyboard("{Enter}");
+  expect(editor.textContent).toBe("@src/main.go [image 1]");
+  expect(screen.getByRole("button", { name: "Remove shot.png" })).toBeTruthy();
+  expect(readComposerDraftSnapshot(ref).stagedImageRanges).toEqual([
+    { marker: 1, start: "@src/main.go ".length, end: "@src/main.go [image 1]".length },
+  ]);
 });

@@ -314,7 +314,6 @@ export type {
   FileMentionToken,
 } from "./fileMention";
 export {
-  clearUnsupportedFileSearchHost,
   createFileMentionStore,
   FILE_MENTION_DEBOUNCE_MS,
   FILE_MENTION_DEFAULT_LIMIT,

@@ -595,6 +595,10 @@ function ComposerWithSubmission({
   });
   const askPending = useAskDockPending(ref);
   const fileTarget = useMemo<FileMentionTarget>(() => ({ kind: "session", ref }), [ref]);
+  const getProtectedFileMentionRanges = useCallback(() => {
+    const snap = source.getSnapshot();
+    return [...snap.stagedImageRanges, ...snap.adoptedImageRanges];
+  }, [source]);
   const {
     token: fileToken,
     setToken: setFileToken,
@@ -615,6 +619,7 @@ function ComposerWithSubmission({
     editorRef,
     textRef,
     plainKeysOnly: true,
+    getProtectedRanges: getProtectedFileMentionRanges,
   });
   useEffect(() => {
     if (text === "") resetFileCompletion();
@@ -1048,8 +1053,13 @@ function ComposerWithSubmission({
   // returns the counts above the expanded card without moving its controls.
   const showActivityLine = isMobile && !ownsActivityCounts && !folded && (!ended || showFollowUpCard);
 
-  function updateCompletionTokens(masked: string, caret: number, isPaste: boolean): void {
-    const tokens = resolveCompletionTokens(masked, caret, isPaste);
+  function updateCompletionTokens(
+    masked: string,
+    caret: number,
+    isPaste: boolean,
+    protectedRanges?: readonly { start: number; end: number }[],
+  ): void {
+    const tokens = resolveCompletionTokens(masked, caret, isPaste, protectedRanges);
     setSlashToken(tokens.slashToken);
     setFileToken(tokens.fileToken);
   }
@@ -1071,7 +1081,10 @@ function ComposerWithSubmission({
     // Every keystroke re-evaluates the trailing-token match fresh - a token
     // Escape just closed (useSlashCompletion's token) reopens on the
     // very next text change rather than staying closed indefinitely.
-    updateCompletionTokens(maskSkillAtoms(value), caret, Boolean(meta?.isPaste));
+    updateCompletionTokens(maskSkillAtoms(value), caret, Boolean(meta?.isPaste), [
+      ...(value.stagedImageRanges ?? []),
+      ...(value.adoptedImageRanges ?? []),
+    ]);
   }
 
   function handleSelectionChange(caret: number): void {
@@ -1080,7 +1093,7 @@ function ComposerWithSubmission({
       skillNames: skillNamesRef.current,
       ...selectionMetaRef.current,
     });
-    updateCompletionTokens(masked, caret, false);
+    updateCompletionTokens(masked, caret, false, getProtectedFileMentionRanges());
   }
 
   // The repair the notice offers. It removes the exact occurrences that carry

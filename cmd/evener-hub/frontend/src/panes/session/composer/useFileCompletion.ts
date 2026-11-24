@@ -29,11 +29,12 @@ export function resolveCompletionTokens(
   maskedText: string,
   caret: number,
   isPaste = false,
+  protectedRanges?: readonly { start: number; end: number }[],
 ): { slashToken: SlashToken | null; fileToken: FileMentionToken | null } {
   const slashToken = parseSlashToken(maskedText, caret);
   return {
     slashToken,
-    fileToken: isPaste || slashToken !== null ? null : parseFileMentionToken(maskedText, caret),
+    fileToken: isPaste || slashToken !== null ? null : parseFileMentionToken(maskedText, caret, protectedRanges),
   };
 }
 
@@ -44,6 +45,7 @@ export interface UseFileCompletionOptions {
   editorRef: RefObject<SkillEditorHandle | null>;
   textRef: RefObject<string>;
   plainKeysOnly?: boolean;
+  getProtectedRanges?: () => readonly { start: number; end: number }[];
 }
 
 export function useFileCompletion({
@@ -53,6 +55,7 @@ export function useFileCompletion({
   editorRef,
   textRef,
   plainKeysOnly = false,
+  getProtectedRanges,
 }: UseFileCompletionOptions) {
   const listboxId = useId();
   const [store] = useState(() => createFileMentionStore());
@@ -69,6 +72,8 @@ export function useFileCompletion({
   const committingRef = useRef(false);
   const tokenRef = useRef<FileMentionToken | null>(null);
   tokenRef.current = tokenState.token;
+  const getProtectedRangesRef = useRef(getProtectedRanges);
+  getProtectedRangesRef.current = getProtectedRanges;
 
   const targetRef = useRef<FileMentionTarget | null>(target);
   targetRef.current = target;
@@ -165,7 +170,7 @@ export function useFileCompletion({
       if (!replaced) return;
 
       if (spliced.keepOpen) {
-        const nextToken = parseFileMentionToken(spliced.text, spliced.caret);
+        const nextToken = parseFileMentionToken(spliced.text, spliced.caret, getProtectedRangesRef.current?.());
         setTokenState({ token: nextToken, immediate: true });
       } else {
         setTokenState({ token: null, immediate: false });

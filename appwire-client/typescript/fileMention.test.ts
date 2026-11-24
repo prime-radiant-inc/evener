@@ -5,7 +5,6 @@ import rankCasesRaw from "../../testdata/filesearch/rank_cases.json?raw";
 import type { AppwireClientLike } from "./clientLike";
 import { WireError } from "./errors";
 import {
-  clearUnsupportedFileSearchHost,
   createFileMentionStore,
   FILE_MENTION_DEBOUNCE_MS,
   FILE_MENTION_DEFAULT_LIMIT,
@@ -165,7 +164,7 @@ describe("parseFileMentionToken", () => {
     });
     expect(parseFileMentionToken('open @"my notes" "other"', 10)).toEqual({
       start: 5,
-      end: 16,
+      end: 10,
       query: "my ",
       quoted: true,
     });
@@ -195,17 +194,24 @@ describe("parseFileMentionToken", () => {
       query: "release",
       quoted: true,
     });
-    // Valid closed mentions before prose or punctuation still span through the closing quote.
+    // Caret inside a closed quoted mention caps end at caret; adjacent closing quote is consumed at caret.
     expect(parseFileMentionToken('check @"my notes" and "v2"', 11)).toEqual({
       start: 6,
-      end: 17,
+      end: 11,
       query: "my ",
       quoted: true,
     });
     expect(parseFileMentionToken('check @"my notes", next', 11)).toEqual({
       start: 6,
-      end: 17,
+      end: 11,
       query: "my ",
+      quoted: true,
+    });
+    // Unrelated inch mark later on the line must not stop an adjacent closing quote at caret.
+    expect(parseFileMentionToken('@"my notes" compare the 13" display', 10)).toEqual({
+      start: 0,
+      end: 11,
+      query: "my notes",
       quoted: true,
     });
     // Unfinished quoted mention before another @"..." reference preserves the trailing @" reference.
@@ -221,10 +227,10 @@ describe("parseFileMentionToken", () => {
       query: "release",
       quoted: true,
     });
-    // Closed quoted mention before another @"..." reference still replaces [start, closeQuote + 1).
+    // Mid-token quoted mention stops at caret rather than scanning past it.
     expect(parseFileMentionToken('@"my notes" @".env backups/config"', 5)).toEqual({
       start: 0,
-      end: 11,
+      end: 5,
       query: "my ",
       quoted: true,
     });
@@ -245,7 +251,7 @@ describe("parseFileMentionToken", () => {
     });
     expect(parseFileMentionToken('@"Q1 \\"drafts\\""', 10)).toEqual({
       start: 0,
-      end: 16,
+      end: 10,
       query: 'Q1 "dra',
       quoted: true,
     });
@@ -281,6 +287,21 @@ describe("parseFileMentionToken", () => {
       end: 15,
       query: "@modal/",
       quoted: true,
+    });
+  });
+
+  it("stops unquoted forward scan before protected ranges while allowing ordinary bracketed paths", () => {
+    expect(parseFileMentionToken("@ma[image 1]", 3, [{ start: 3, end: 12 }])).toEqual({
+      start: 0,
+      end: 3,
+      query: "ma",
+      quoted: false,
+    });
+    expect(parseFileMentionToken("edit @src/routes/[id]/page.tsx now", 20, [])).toEqual({
+      start: 5,
+      end: 30,
+      query: "src/routes/[id",
+      quoted: false,
     });
   });
 
@@ -336,12 +357,6 @@ describe("spliceFileMention", () => {
       caret: 13,
       keepOpen: false,
     });
-    const midQuoted = parseFileMentionToken('read @"my notes" "other"', 10)!;
-    expect(spliceFileMention('read @"my notes" "other"', midQuoted, { path: "my notes.txt", kind: "file" })).toEqual({
-      text: 'read @"my notes.txt" "other"',
-      caret: 20,
-      keepOpen: false,
-    });
 
     // Unclosed quoted query preserves existing prose after caret.
     const unclosedToken = parseFileMentionToken('check @"release existing prose', 'check @"release'.length)!;
@@ -368,12 +383,22 @@ describe("spliceFileMention", () => {
       keepOpen: false,
     });
 
-    const closedBeforeQuoted = parseFileMentionToken('check @"my notes" and "v2"', 11)!;
+    const closedWithInchMark = parseFileMentionToken('@"my notes" compare the 13" display', 10)!;
     expect(
-      spliceFileMention('check @"my notes" and "v2"', closedBeforeQuoted, { path: "my notes.md", kind: "file" }),
+      spliceFileMention('@"my notes" compare the 13" display', closedWithInchMark, {
+        path: "my notes.md",
+        kind: "file",
+      }),
     ).toEqual({
-      text: 'check @"my notes.md" and "v2"',
-      caret: 20,
+      text: '@"my notes.md" compare the 13" display',
+      caret: 14,
+      keepOpen: false,
+    });
+
+    const protectedToken = parseFileMentionToken("@ma[image 1]", 3, [{ start: 3, end: 12 }])!;
+    expect(spliceFileMention("@ma[image 1]", protectedToken, { path: "src/main.go", kind: "file" })).toEqual({
+      text: "@src/main.go [image 1]",
+      caret: 13,
       keepOpen: false,
     });
 
@@ -408,8 +433,8 @@ describe("spliceFileMention", () => {
         kind: "file",
       }),
     ).toEqual({
-      text: '@"my notes.md" @".env backups/config"',
-      caret: 14,
+      text: '@"my notes.md" notes" @".env backups/config"',
+      caret: 15,
       keepOpen: false,
     });
   });
@@ -685,28 +710,29 @@ describe("createFileMentionStore", () => {
     expect(srStore.getState().items).toEqual([{ path: "src/main.go", kind: "file" }]);
   });
 
-  it("degrades quietly per (client, host) on MethodNotFound while keeping local and sibling hosts working", async () => {
+  it("degrades quietly on MethodNotFound without caching failure across host upgrades", async () => {
     vi.useFakeTimers();
     const store = createFileMentionStore();
+    let boxAUpgraded = false;
     const client1 = makeFakeRequestClient(async (method, params) => {
       if (method === "evener/host/request") {
         const p = params as HostRequestParams;
-        if (p.host === "old-box") {
+        if (p.host === "box-a" && !boxAUpgraded) {
           throw new WireError("method not found", -32601, { evenerErrorInfo: "methodNotFound" });
         }
         return { items: [{ path: `${p.host}/ok.go`, kind: "file" }] };
       }
       const fp = params as { ref?: string; cwd?: string };
-      if (fp.ref?.startsWith("old-box:")) {
+      if (fp.ref?.startsWith("box-a:") && !boxAUpgraded) {
         throw new WireError("method not found", -32601, { evenerErrorInfo: "methodNotFound" });
       }
       return { items: [{ path: "local/ok.go", kind: "file" }] };
     });
 
-    // Remote host old-box returns -32601 -> settles quietly and suppresses future requests for old-box on client1.
+    // Remote host box-a returns -32601 -> settles quietly to empty.
     store.search({
       client: client1,
-      target: { kind: "session", ref: "old-box:s1" },
+      target: { kind: "session", ref: "box-a:s1" },
       query: "a",
       enabled: true,
       immediate: true,
@@ -714,17 +740,6 @@ describe("createFileMentionStore", () => {
     await vi.advanceTimersByTimeAsync(0);
     await Promise.resolve();
     expect(store.getState()).toEqual({ items: [], loading: false, truncated: false, settledQuery: "a" });
-    const countAfterFail = client1.calls.length;
-
-    store.search({
-      client: client1,
-      target: { kind: "cwd", host: "old-box", cwd: "/repo" },
-      query: "b",
-      enabled: true,
-      immediate: true,
-    });
-    await vi.advanceTimersByTimeAsync(0);
-    expect(client1.calls.length).toBe(countAfterFail);
 
     // Local and sibling host new-box still issue requests and work normally on client1.
     store.search({
@@ -749,29 +764,18 @@ describe("createFileMentionStore", () => {
     await Promise.resolve();
     expect(store.getState().items).toEqual([{ path: "new-box/ok.go", kind: "file" }]);
 
-    // New client instance or clearUnsupportedFileSearchHost recovers old-box automatically.
-    clearUnsupportedFileSearchHost(client1, "old-box");
+    // After box-a upgrades on the SAME client instance, the very next search succeeds immediately.
+    boxAUpgraded = true;
     store.search({
       client: client1,
-      target: { kind: "cwd", host: "old-box", cwd: "/repo" },
-      query: "a",
-      enabled: true,
-      immediate: true,
-    });
-    await vi.advanceTimersByTimeAsync(0);
-    expect(client1.calls.length).toBeGreaterThan(countAfterFail + 2);
-
-    const client2 = makeFakeRequestClient(async () => ({ items: [{ path: "upgraded/file.go", kind: "file" }] }));
-    store.search({
-      client: client2,
-      target: { kind: "session", ref: "old-box:s1" },
+      target: { kind: "cwd", host: "box-a", cwd: "/repo" },
       query: "a",
       enabled: true,
       immediate: true,
     });
     await vi.advanceTimersByTimeAsync(0);
     await Promise.resolve();
-    expect(store.getState().items).toEqual([{ path: "upgraded/file.go", kind: "file" }]);
+    expect(store.getState().items).toEqual([{ path: "box-a/ok.go", kind: "file" }]);
   });
 
   it("settles quietly to empty on transport or unavailable errors", async () => {

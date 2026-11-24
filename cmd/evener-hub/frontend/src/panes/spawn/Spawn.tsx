@@ -16,6 +16,7 @@ import {
   harnessUsesEvenerModels,
   hostRequest,
   isLocalHost,
+  markerRanges,
   matchBuiltinInvocation,
   mergeSlashCommands,
   type PathValidation,
@@ -988,6 +989,15 @@ function SpawnForm({
     () => (cwd.trim() !== "" ? ({ kind: "cwd", host: submittedSource, cwd } as const) : null),
     [submittedSource, cwd],
   );
+  const protectedMarkerRangesFor = useCallback(
+    (maskedText: string) => {
+      const items = draft.attachments.getState().items;
+      if (items.length === 0) return [];
+      const activeMarkers = new Set(items.map((item) => item.marker));
+      return markerRanges(maskedText).filter((range) => activeMarkers.has(range.marker));
+    },
+    [draft.attachments],
+  );
   const {
     token: fileToken,
     setToken: setFileToken,
@@ -1008,6 +1018,7 @@ function SpawnForm({
     editorRef: textareaRef,
     textRef,
     plainKeysOnly: true,
+    getProtectedRanges: () => protectedMarkerRangesFor(textRef.current),
   });
   const prevFileCompletionScopeRef = useRef({ submittedSource, cwd, draft });
   useEffect(() => {
@@ -2748,7 +2759,13 @@ function SpawnForm({
                       mentions: value.mentions,
                       promptRevision: fields.promptRevision + 1,
                     });
-                    const tokens = resolveCompletionTokens(maskSkillAtoms(value), caret, Boolean(meta?.isPaste));
+                    const masked = maskSkillAtoms(value);
+                    const tokens = resolveCompletionTokens(
+                      masked,
+                      caret,
+                      Boolean(meta?.isPaste),
+                      protectedMarkerRangesFor(masked),
+                    );
                     setSlashToken(tokens.slashToken);
                     setFileToken(tokens.fileToken);
                   }}
@@ -2760,7 +2777,7 @@ function SpawnForm({
                       commandNames: fields.commandNames,
                       mentions: fields.mentions,
                     });
-                    const tokens = resolveCompletionTokens(masked, caret, false);
+                    const tokens = resolveCompletionTokens(masked, caret, false, protectedMarkerRangesFor(masked));
                     setSlashToken(tokens.slashToken);
                     setFileToken(tokens.fileToken);
                   }}
