@@ -1127,3 +1127,63 @@ test("resetting while an encode is in flight still serializes a subsequent inges
   expect(editor.getText()).toBe("/goal [image 1]");
   expect(onRejected).not.toHaveBeenCalled();
 });
+
+test("restores replaced selection when a staged image fails pixel-limit encoding while preserving later edits elsewhere", async () => {
+  const initial = "before important draft after";
+  const selectionStart = "before ".length;
+  const selectionEnd = "before important draft".length;
+  const editor = makeFakeEditor(initial, selectionEnd, { start: selectionStart, end: selectionEnd });
+  const onRejected = vi.fn();
+  const { result } = renderHook(() => useAttachments(editor));
+
+  let rejectEncode!: () => void;
+  const heldEncode = new Promise<never>((_, reject) => {
+    rejectEncode = () => reject(new ImageEncoding.ImageEncodeError("tooManyPixels", "over 48 MP"));
+  });
+  encodeSpy.mockReturnValueOnce(heldEncode);
+
+  act(() => {
+    result.current.ingestFiles([makeFile("panorama.jpg", "image/jpeg", 12 * 1024 * 1024)], onRejected);
+  });
+  expect(editor.getText()).toBe("before [image 1] after");
+
+  // User keeps typing elsewhere in the draft while the oversized panorama decodes.
+  act(() => {
+    const edited = `${editor.getText()} tail`;
+    editor.write(edited, edited.length);
+  });
+  expect(editor.getText()).toBe("before [image 1] after tail");
+
+  await act(async () => {
+    rejectEncode();
+    await heldEncode.catch(() => {});
+    await Promise.resolve();
+  });
+
+  expect(result.current.items).toEqual([]);
+  expect(editor.getText()).toBe("before important draft after tail");
+  expect(editor.getCursor()).toBe("before important draft after tail".length);
+  expect(onRejected).toHaveBeenCalledWith("panorama.jpg (image too large; maximum 48 MP)");
+});
+
+test("keeps replaced selection removed when a staged image encodes successfully", async () => {
+  const gate = installControlledImageStub();
+  const initial = "before replace me after";
+  const selectionStart = "before ".length;
+  const selectionEnd = "before replace me".length;
+  const editor = makeFakeEditor(initial, selectionEnd, { start: selectionStart, end: selectionEnd });
+  const onRejected = vi.fn();
+  const { result } = renderHook(() => useAttachments(editor));
+
+  act(() => {
+    result.current.ingestFiles([makeFile("ok.png")], onRejected);
+  });
+  expect(editor.getText()).toBe("before [image 1] after");
+
+  await act(async () => {
+    await gate.resolve(0);
+  });
+
+  expect(editor.getText()).toBe("before [image 1] after");
+  expect(onRejected).not.toHaveBeenCalled();
+});

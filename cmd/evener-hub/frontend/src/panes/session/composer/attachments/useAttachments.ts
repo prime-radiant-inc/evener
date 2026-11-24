@@ -376,6 +376,11 @@ export function createAttachmentOperations(editor: TextEditor, store: Attachment
         text,
         selection: { start, end },
       } = editor.read();
+      const replacedSelection = start < end ? text.slice(start, end) : "";
+      const selectionBatch =
+        replacedSelection.length > 0
+          ? { text: replacedSelection, pending: accepted.length, keepReplaced: false }
+          : null;
       // One write reaches the editor for the whole batch, so its splice is the
       // batch's own: the selection the gesture replaced, and the markers put
       // there. Reported as exact coordinates rather than left to be inferred -
@@ -412,6 +417,7 @@ export function createAttachmentOperations(editor: TextEditor, store: Attachment
               if (generationRef.current !== generation) return;
               // Discarded before it settled (kata kt4j) - nothing left to update.
               if (removedWhilePendingRef.current.delete(token)) return;
+              if (selectionBatch) selectionBatch.keepReplaced = true;
               setItems((prev) =>
                 prev.map((item) =>
                   operationToken(item) === token ? { ...item, data, mediaType, width, height, pending: false } : item,
@@ -423,6 +429,11 @@ export function createAttachmentOperations(editor: TextEditor, store: Attachment
               // attachment, so its eventual decode failure is nothing to
               // strip from the editor or tell them about.
               if (removedWhilePendingRef.current.delete(token)) return;
+              if (selectionBatch) selectionBatch.pending -= 1;
+              const restoreSelection =
+                selectionBatch !== null && !selectionBatch.keepReplaced && selectionBatch.pending === 0
+                  ? selectionBatch.text
+                  : "";
               const currentItem = store.getState().items.find((item) => operationToken(item) === token);
               if (currentItem) {
                 // The tile leaves the store before the strip's own write, so the
@@ -431,7 +442,22 @@ export function createAttachmentOperations(editor: TextEditor, store: Attachment
                 setItems((prev) => prev.filter((item) => operationToken(item) !== token));
                 const current = editor.read();
                 const stripped = stripTrackedMarker(current.text, current.cursor, currentItem.marker);
-                editor.write(stripped.value, stripped.cursor ?? current.cursor, "cleanup", stripped.splice);
+                if (restoreSelection.length > 0 && stripped.splice) {
+                  const restoredText =
+                    stripped.value.slice(0, stripped.splice.start) +
+                    restoreSelection +
+                    stripped.value.slice(stripped.splice.start);
+                  const baseCursor = stripped.cursor ?? current.cursor;
+                  const restoredCursor =
+                    baseCursor >= stripped.splice.start ? baseCursor + restoreSelection.length : baseCursor;
+                  editor.write(restoredText, restoredCursor, "cleanup", {
+                    start: stripped.splice.start,
+                    end: stripped.splice.end,
+                    insertedLength: restoreSelection.length,
+                  });
+                } else {
+                  editor.write(stripped.value, stripped.cursor ?? current.cursor, "cleanup", stripped.splice);
+                }
               }
               onRejected(encodeFailureMessage(file.name, error));
             }
