@@ -880,44 +880,51 @@ test("orphaned touch recovery works when the next single-finger touch reuses ide
 });
 
 test("a descendant calling stopPropagation on touchend or touchcancel does not wedge subsequent gestures", () => {
-  const onClose = vi.fn();
-  render(
-    <Sheet open side="bottom" onClose={onClose} title="Header title">
-      <div data-testid="swallower">Swallower</div>
-      <p>Body</p>
-    </Sheet>,
-  );
-  const panel = screen.getByRole("dialog");
-  const swallower = screen.getByTestId("swallower");
-  const body = screen.getByText("Body");
-  const header = screen.getByText("Header title").parentElement!;
-  swallower.addEventListener("touchend", (event) => event.stopPropagation());
-  swallower.addEventListener("touchcancel", (event) => event.stopPropagation());
+  vi.useFakeTimers();
+  try {
+    const onClose = vi.fn();
+    render(
+      <Sheet open side="bottom" onClose={onClose} title="Header title">
+        <div data-testid="swallower">Swallower</div>
+        <p>Body</p>
+      </Sheet>,
+    );
+    const panel = screen.getByRole("dialog");
+    const swallower = screen.getByTestId("swallower");
+    const body = screen.getByText("Body");
+    const header = screen.getByText("Header title").parentElement!;
+    swallower.addEventListener("touchend", (event) => event.stopPropagation());
+    swallower.addEventListener("touchcancel", (event) => event.stopPropagation());
 
-  dispatchTouch(swallower, "touchstart", { touches: [{ identifier: 1, clientY: 100 }] });
-  dispatchTouch(swallower, "touchmove", { touches: [{ identifier: 1, clientY: 150 }] });
-  expect(panel.dataset.swiping).toBe("true");
-  dispatchTouch(swallower, "touchend", { changedTouches: [{ identifier: 1, clientY: 150 }] });
-  expect(panel.dataset.swiping).toBeUndefined();
-  expect(panel.style.transform).toBe("");
+    dispatchTouch(swallower, "touchstart", { touches: [{ identifier: 1, clientY: 100 }] });
+    dispatchTouch(swallower, "touchmove", { touches: [{ identifier: 1, clientY: 150 }] });
+    expect(panel.dataset.swiping).toBe("true");
+    act(() => vi.advanceTimersByTime(90));
+    dispatchTouch(swallower, "touchend", { changedTouches: [{ identifier: 1, clientY: 150 }] });
+    expect(panel.dataset.swiping).toBeUndefined();
+    expect(panel.style.transform).toBe("");
 
-  dispatchTouch(swallower, "touchstart", { touches: [{ identifier: 10, clientY: 100 }] });
-  dispatchTouch(swallower, "touchmove", { touches: [{ identifier: 10, clientY: 150 }] });
-  expect(panel.dataset.swiping).toBe("true");
-  dispatchTouch(swallower, "touchcancel", { changedTouches: [{ identifier: 10, clientY: 150 }] });
-  expect(panel.dataset.swiping).toBeUndefined();
-  expect(panel.style.transform).toBe("");
+    dispatchTouch(swallower, "touchstart", { touches: [{ identifier: 10, clientY: 100 }] });
+    dispatchTouch(swallower, "touchmove", { touches: [{ identifier: 10, clientY: 150 }] });
+    expect(panel.dataset.swiping).toBe("true");
+    act(() => vi.advanceTimersByTime(90));
+    dispatchTouch(swallower, "touchcancel", { changedTouches: [{ identifier: 10, clientY: 150 }] });
+    expect(panel.dataset.swiping).toBeUndefined();
+    expect(panel.style.transform).toBe("");
 
-  dispatchTouch(body, "touchstart", { touches: [{ identifier: 2, clientY: 100 }] });
-  dispatchTouch(body, "touchmove", { touches: [{ identifier: 2, clientY: 260 }] });
-  dispatchTouch(body, "touchend", { changedTouches: [{ identifier: 2, clientY: 260 }] });
-  expect(onClose).toHaveBeenCalledOnce();
-  onClose.mockClear();
+    dispatchTouch(body, "touchstart", { touches: [{ identifier: 2, clientY: 100 }] });
+    dispatchTouch(body, "touchmove", { touches: [{ identifier: 2, clientY: 260 }] });
+    dispatchTouch(body, "touchend", { changedTouches: [{ identifier: 2, clientY: 260 }] });
+    expect(onClose).toHaveBeenCalledOnce();
+    onClose.mockClear();
 
-  dispatchPointer(header, "pointerdown", { pointerId: 3, clientY: 100 });
-  dispatchPointer(window, "pointermove", { pointerId: 3, clientY: 260 });
-  dispatchPointer(window, "pointerup", { pointerId: 3, clientY: 260 });
-  expect(onClose).toHaveBeenCalledOnce();
+    dispatchPointer(header, "pointerdown", { pointerId: 3, clientY: 100 });
+    dispatchPointer(window, "pointermove", { pointerId: 3, clientY: 260 });
+    dispatchPointer(window, "pointerup", { pointerId: 3, clientY: 260 });
+    expect(onClose).toHaveBeenCalledOnce();
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 test("grab pill and bottom sheet header declare touch-action: none and apply .bottomHeader only to side=bottom", () => {
@@ -996,37 +1003,44 @@ test("dismiss threshold uses min(panelHeight * 0.35, 160) with 120px fallback at
 });
 
 test("drag below threshold clears data-swiping, inline transform, and scrim opacity so resting CSS glides back", () => {
-  const onClose = vi.fn();
-  const { container } = render(
-    <Sheet open side="bottom" onClose={onClose} title="t">
-      <p>Body</p>
-    </Sheet>,
-  );
-  const scrim = container.firstElementChild as HTMLElement;
-  const panel = screen.getByRole("dialog");
-  mockPanelHeight(panel, 400);
-  const body = screen.getByText("Body");
+  vi.useFakeTimers();
+  try {
+    const onClose = vi.fn();
+    const { container } = render(
+      <Sheet open side="bottom" onClose={onClose} title="t">
+        <p>Body</p>
+      </Sheet>,
+    );
+    const scrim = container.firstElementChild as HTMLElement;
+    const panel = screen.getByRole("dialog");
+    mockPanelHeight(panel, 400);
+    const body = screen.getByText("Body");
 
-  // Active drag sets data-swiping="true" to suspend the resting return transition; release clears both.
-  dispatchTouch(body, "touchstart", { touches: [{ identifier: 1, clientY: 100 }] });
-  dispatchTouch(body, "touchmove", { touches: [{ identifier: 1, clientY: 160 }] });
-  expect(panel.dataset.swiping).toBe("true");
-  expect(panel.style.transform).toBe("translateY(60px)");
-  dispatchTouch(body, "touchend", { changedTouches: [{ identifier: 1, clientY: 160 }] });
+    // Active drag sets data-swiping="true" to suspend the resting return transition; release clears both.
+    dispatchTouch(body, "touchstart", { touches: [{ identifier: 1, clientY: 100 }] });
+    dispatchTouch(body, "touchmove", { touches: [{ identifier: 1, clientY: 160 }] });
+    expect(panel.dataset.swiping).toBe("true");
+    expect(panel.style.transform).toBe("translateY(60px)");
+    act(() => vi.advanceTimersByTime(90));
+    dispatchTouch(body, "touchend", { changedTouches: [{ identifier: 1, clientY: 160 }] });
 
-  expect(onClose).not.toHaveBeenCalled();
-  expect(panel.dataset.swiping).toBeUndefined();
-  expect(panel.style.transform).toBe("");
-  expect(scrim.style.opacity).toBe("");
+    expect(onClose).not.toHaveBeenCalled();
+    expect(panel.dataset.swiping).toBeUndefined();
+    expect(panel.style.transform).toBe("");
+    expect(scrim.style.opacity).toBe("");
 
-  // Starting a new drag immediately re-enables live tracking without fighting a return transition.
-  dispatchTouch(body, "touchstart", { touches: [{ identifier: 2, clientY: 100 }] });
-  dispatchTouch(body, "touchmove", { touches: [{ identifier: 2, clientY: 130 }] });
-  expect(panel.dataset.swiping).toBe("true");
-  expect(panel.style.transform).toBe("translateY(30px)");
-  dispatchTouch(body, "touchend", { changedTouches: [{ identifier: 2, clientY: 130 }] });
-  expect(panel.dataset.swiping).toBeUndefined();
-  expect(panel.style.transform).toBe("");
+    // Starting a new drag immediately re-enables live tracking without fighting a return transition.
+    dispatchTouch(body, "touchstart", { touches: [{ identifier: 2, clientY: 100 }] });
+    dispatchTouch(body, "touchmove", { touches: [{ identifier: 2, clientY: 130 }] });
+    expect(panel.dataset.swiping).toBe("true");
+    expect(panel.style.transform).toBe("translateY(30px)");
+    act(() => vi.advanceTimersByTime(90));
+    dispatchTouch(body, "touchend", { changedTouches: [{ identifier: 2, clientY: 130 }] });
+    expect(panel.dataset.swiping).toBeUndefined();
+    expect(panel.style.transform).toBe("");
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 test("fast flick projects velocity forward to dismiss, while > 80ms hold before lift zeroes velocity and upward reversal snaps back", () => {
@@ -1366,83 +1380,90 @@ test("side=left and side=right ignore downward swipes", () => {
 });
 
 test("expandable keeps full->peek, peek->full, and tap-toggle, while dismissing on downward drag from peek", () => {
-  const onClose = vi.fn();
-  render(
-    <Sheet
-      open
-      side="bottom"
-      expandable={{ peekHeight: 200, fullScreenFirst: true }}
-      onClose={onClose}
-      title="Expandable"
-    >
-      <p>Body</p>
-    </Sheet>,
-  );
-  const panel = screen.getByRole("dialog");
-  const handle = screen.getByTestId("sheet-handle");
-  const body = screen.getByText("Body");
-  const header = screen.getByText("Expandable").parentElement!;
-  const geometry = () => panel.querySelector("[data-geometry]")?.getAttribute("data-geometry");
+  vi.useFakeTimers();
+  try {
+    const onClose = vi.fn();
+    render(
+      <Sheet
+        open
+        side="bottom"
+        expandable={{ peekHeight: 200, fullScreenFirst: true }}
+        onClose={onClose}
+        title="Expandable"
+      >
+        <p>Body</p>
+      </Sheet>,
+    );
+    const panel = screen.getByRole("dialog");
+    const handle = screen.getByTestId("sheet-handle");
+    const body = screen.getByText("Body");
+    const header = screen.getByText("Expandable").parentElement!;
+    const geometry = () => panel.querySelector("[data-geometry]")?.getAttribute("data-geometry");
 
-  expect(geometry()).toBe("full");
+    expect(geometry()).toBe("full");
 
-  // Downward body/header swipes do not dismiss from full.
-  dispatchTouch(body, "touchstart", { touches: [{ identifier: 1, clientY: 100 }] });
-  dispatchTouch(body, "touchmove", { touches: [{ identifier: 1, clientY: 300 }] });
-  dispatchTouch(body, "touchend", { changedTouches: [{ identifier: 1, clientY: 300 }] });
-  dispatchPointer(header, "pointerdown", { clientY: 100 });
-  dispatchPointer(window, "pointermove", { clientY: 300 });
-  dispatchPointer(window, "pointerup", { clientY: 300 });
-  expect(panel.style.transform).toBe("");
-  expect(onClose).not.toHaveBeenCalled();
+    // Downward body/header swipes do not dismiss from full.
+    dispatchTouch(body, "touchstart", { touches: [{ identifier: 1, clientY: 100 }] });
+    dispatchTouch(body, "touchmove", { touches: [{ identifier: 1, clientY: 300 }] });
+    dispatchTouch(body, "touchend", { changedTouches: [{ identifier: 1, clientY: 300 }] });
+    dispatchPointer(header, "pointerdown", { clientY: 100 });
+    dispatchPointer(window, "pointermove", { clientY: 300 });
+    dispatchPointer(window, "pointerup", { clientY: 300 });
+    expect(panel.style.transform).toBe("");
+    expect(onClose).not.toHaveBeenCalled();
 
-  // Downward drag in full collapses to peek without translating or dismissing.
-  dispatchPointer(handle, "pointerdown", { clientY: 100 });
-  dispatchPointer(window, "pointermove", { clientY: 300 });
-  expect(geometry()).toBe("peek");
-  expect(panel.style.transform).toBe("");
-  dispatchPointer(window, "pointerup", { clientY: 300 });
-  expect(onClose).not.toHaveBeenCalled();
+    // Downward drag in full collapses to peek without translating or dismissing.
+    dispatchPointer(handle, "pointerdown", { clientY: 100 });
+    dispatchPointer(window, "pointermove", { clientY: 300 });
+    expect(geometry()).toBe("peek");
+    expect(panel.style.transform).toBe("");
+    dispatchPointer(window, "pointerup", { clientY: 300 });
+    expect(onClose).not.toHaveBeenCalled();
 
-  // Upward drag in peek expands to full.
-  dispatchPointer(handle, "pointerdown", { clientY: 300 });
-  dispatchPointer(window, "pointermove", { clientY: 200 });
-  expect(geometry()).toBe("full");
-  dispatchPointer(window, "pointerup", { clientY: 200 });
-  expect(onClose).not.toHaveBeenCalled();
+    // Upward drag in peek expands to full.
+    dispatchPointer(handle, "pointerdown", { clientY: 300 });
+    dispatchPointer(window, "pointermove", { clientY: 200 });
+    expect(geometry()).toBe("full");
+    dispatchPointer(window, "pointerup", { clientY: 200 });
+    expect(onClose).not.toHaveBeenCalled();
 
-  // Tap-toggle full -> peek -> full.
-  dispatchPointer(handle, "pointerdown", { clientY: 100 });
-  dispatchPointer(window, "pointermove", { clientY: 105 });
-  dispatchPointer(window, "pointerup", { clientY: 105 });
-  expect(geometry()).toBe("peek");
+    // Tap-toggle full -> peek -> full.
+    dispatchPointer(handle, "pointerdown", { clientY: 100 });
+    dispatchPointer(window, "pointermove", { clientY: 105 });
+    dispatchPointer(window, "pointerup", { clientY: 105 });
+    expect(geometry()).toBe("peek");
 
-  // Small downward drag in peek below threshold snaps back and stays in peek (does not tap-toggle).
-  mockPanelHeight(panel, 200); // threshold 70
-  dispatchPointer(handle, "pointerdown", { clientY: 100 });
-  dispatchPointer(window, "pointermove", { clientY: 140 });
-  expect(panel.style.transform).toBe("translateY(40px)");
-  dispatchPointer(window, "pointerup", { clientY: 140 });
-  expect(onClose).not.toHaveBeenCalled();
-  expect(geometry()).toBe("peek");
-  expect(panel.dataset.swiping).toBeUndefined();
-  expect(panel.style.transform).toBe("");
+    // Small downward drag in peek below threshold snaps back and stays in peek (does not tap-toggle).
+    mockPanelHeight(panel, 200); // threshold 70
+    dispatchPointer(handle, "pointerdown", { clientY: 100 });
+    dispatchPointer(window, "pointermove", { clientY: 140 });
+    expect(panel.style.transform).toBe("translateY(40px)");
+    act(() => vi.advanceTimersByTime(90));
+    dispatchPointer(window, "pointerup", { clientY: 140 });
+    expect(onClose).not.toHaveBeenCalled();
+    expect(geometry()).toBe("peek");
+    expect(panel.dataset.swiping).toBeUndefined();
+    expect(panel.style.transform).toBe("");
 
-  // Downward drag in peek past threshold dismisses.
-  dispatchPointer(handle, "pointerdown", { clientY: 100 });
-  dispatchPointer(window, "pointermove", { clientY: 200 });
-  dispatchPointer(window, "pointerup", { clientY: 200 });
-  expect(onClose).toHaveBeenCalledOnce();
-  onClose.mockClear();
+    // Downward drag in peek past threshold dismisses.
+    dispatchPointer(handle, "pointerdown", { clientY: 100 });
+    dispatchPointer(window, "pointermove", { clientY: 200 });
+    dispatchPointer(window, "pointerup", { clientY: 200 });
+    expect(onClose).toHaveBeenCalledOnce();
+    onClose.mockClear();
 
-  // Downward body swipe in peek also dismisses.
-  dispatchTouch(body, "touchstart", { touches: [{ identifier: 1, clientY: 100 }] });
-  dispatchTouch(body, "touchmove", { touches: [{ identifier: 1, clientY: 200 }] });
-  dispatchTouch(body, "touchend", { changedTouches: [{ identifier: 1, clientY: 200 }] });
-  expect(onClose).toHaveBeenCalledOnce();
+    // Downward body swipe in peek also dismisses.
+    dispatchTouch(body, "touchstart", { touches: [{ identifier: 1, clientY: 100 }] });
+    dispatchTouch(body, "touchmove", { touches: [{ identifier: 1, clientY: 200 }] });
+    dispatchTouch(body, "touchend", { changedTouches: [{ identifier: 1, clientY: 200 }] });
+    expect(onClose).toHaveBeenCalledOnce();
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 test("bottom swipe in a Dockview popout binds and cleans up listeners on ownerWindowOf(panel), including mid-drag unmount", () => {
+  vi.useFakeTimers();
   const { frame, doc, win } = appendPopout();
   const addSpy = vi.spyOn(win, "addEventListener");
   const removeSpy = vi.spyOn(win, "removeEventListener");
@@ -1467,7 +1488,9 @@ test("bottom swipe in a Dockview popout binds and cleans up listeners on ownerWi
     dispatchTouch(bodyText, "touchmove", { touches: [{ identifier: 1, clientY: 140 }] });
     expect(panel.dataset.swiping).toBe("true");
     expect(panel.style.transform).toBe("translateY(40px)");
+    act(() => vi.advanceTimersByTime(90));
     dispatchTouch(bodyText, "touchend", { changedTouches: [{ identifier: 1, clientY: 140 }] });
+    expect(onClose).not.toHaveBeenCalled();
     expect(panel.dataset.swiping).toBeUndefined();
     expect(panel.style.transform).toBe("");
 
@@ -1495,6 +1518,7 @@ test("bottom swipe in a Dockview popout binds and cleans up listeners on ownerWi
       expect(removeSpy.mock.calls.some(([t, f]) => t === type && f === listener)).toBe(true);
     }
   } finally {
+    vi.useRealTimers();
     view.unmount();
     frame.remove();
     addSpy.mockRestore();

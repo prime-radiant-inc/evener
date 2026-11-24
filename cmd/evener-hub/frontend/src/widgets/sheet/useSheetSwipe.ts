@@ -6,7 +6,6 @@ import {
   useLayoutEffect,
   useRef,
 } from "react";
-import dialogStyles from "../dialog/dialog.module.css";
 import { ownerDocumentOf, ownerWindowOf } from "../internal/documentRealm";
 import { requireClass } from "../internal/requireClass";
 import styles from "./sheet.module.css";
@@ -14,7 +13,6 @@ import styles from "./sheet.module.css";
 const HANDLE_CLASS = requireClass(styles.handle, "sheet.module.css", "handle");
 const GRAB_HANDLE_CLASS = requireClass(styles.grabHandle, "sheet.module.css", "grabHandle");
 const BOTTOM_HEADER_CLASS = requireClass(styles.bottomHeader, "sheet.module.css", "bottomHeader");
-const CLOSE_BUTTON_CLASS = requireClass(dialogStyles.closeButton, "dialog.module.css", "closeButton");
 
 const VELOCITY_WINDOW_MS = 100;
 const HOLD_CUTOFF_MS = 80;
@@ -124,7 +122,6 @@ function isExcludedTarget(target: EventTarget | null, body: HTMLElement | null, 
   if (el === null) return false;
   if (inHeader) return el.closest(HEADER_INTERACTIVE_EXCLUDE_SELECTOR) !== null;
   if (el.closest(INTERACTIVE_EXCLUDE_SELECTOR) !== null) return true;
-  if (el.closest(`.${CLOSE_BUTTON_CLASS}`) !== null) return true;
   return body !== null && !body.contains(el) && el.closest("button") !== null;
 }
 
