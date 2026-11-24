@@ -5,7 +5,7 @@
  * applied by the `provisional` prop. */
 .stack {
   list-style: none;
-  margin: 0;
+  margin-block: 0;
   padding: 0;
   /* The stack renders as the transcript's trailing virtual-list row
    * (Session's trailingRow), WITHOUT TurnBlock's .turn wrapper, so it must

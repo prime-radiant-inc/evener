@@ -2325,6 +2325,10 @@ async function main() {
       console.log(`held steer column ... FAIL - ${JSON.stringify(heldSteerColumn)}`);
     } else {
       console.log("held steer column ... PASS - trailing held-steer stack shares the turn content column");
+      console.log(
+        `  measured stack [${heldSteerColumn.stackLeft.toFixed(1)}, ${heldSteerColumn.stackRight.toFixed(1)}] ` +
+          `against turn [${heldSteerColumn.turnLeft.toFixed(1)}, ${heldSteerColumn.turnRight.toFixed(1)}]`,
+      );
     }
 
     const panelCollapse = await verifyPanelCollapse(
