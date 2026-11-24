@@ -175,6 +175,18 @@
   min-height: 100%;
 }
 
+/* Tablet band only: when the board column owns scrolling, pin the board
+ * header so evener, Settings, Search, and the collapse toggle remain reachable
+ * while rows scroll beneath it; phone drawer (<768px) and desktop are untouched. */
+@media (min-width: 768px) {
+  .parentScrollRail > .header {
+    position: sticky;
+    top: 0;
+    z-index: var(--z-raised);
+    background: var(--surface-canvas);
+  }
+}
+
 .parentScrollBody {
   overflow: visible;
   /* The drawer's scroll ends at the visible viewport bottom (the Sheet follows

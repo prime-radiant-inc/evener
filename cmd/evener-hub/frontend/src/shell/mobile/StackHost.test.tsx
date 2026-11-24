@@ -35,6 +35,7 @@ import { chromeStore, resetChromeStoreForTests } from "../chromeStore";
 import { ClientProvider } from "../clientContext";
 import { type PaneProps, registerPaneForTests } from "../paneRegistry";
 import { usePaneVisible } from "../paneVisibility";
+import { RailHost } from "../rail/RailHost";
 import { openTopLevelSession } from "../sessionPlacement";
 import {
   documentPaneState,
@@ -2204,49 +2205,117 @@ test("a slide away from a scrolled pane keeps the discarded pane's scroller out 
 test("in the tablet band the rail renders as a persistent board column and the drawer trigger is gone", async () => {
   const restoreViewport = installMobileViewport([MOBILE_QUERY, TABLET_QUERY]);
   workspaceStore.getState().openPane("doc", { ref: "tablet_band" });
+  const client = activityClient();
   try {
-    render(<StackHost railSlot={<div data-testid="rail-slot" />} />);
+    render(
+      <ClientProvider client={client}>
+        <StackHost railSlot={<RailHost />} />
+      </ClientProvider>,
+    );
     const board = await screen.findByTestId("board-column");
-    expect(within(board).getByTestId("rail-slot")).toBeTruthy();
+    const brand = within(board).getByTestId("rail-brand");
+    const settings = within(brand).getByTestId("rail-settings");
+    const search = within(brand).getByTestId("rail-search");
+    const toggle = within(brand).getByTestId("board-toggle");
+    expect(search.compareDocumentPosition(toggle) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(within(brand).getAllByRole("button")).toEqual([settings, search, toggle]);
     // Exactly one toggle glyph on the interior seam; the phone's drawer
     // trigger does not exist anywhere in the band - the column is the nav.
     expect(screen.getAllByTestId("board-toggle")).toHaveLength(1);
     expect(screen.queryByRole("button", { name: "Sessions" })).toBeNull();
-    // The conversation column is the board column's sibling inside the split.
+    // The conversation column holds the top bar beside the full-height board.
     const split = board.parentElement;
     if (!split) throw new Error("the board column has no split parent");
-    expect(split.querySelector('[data-testid="pane-column"]')).toBeTruthy();
+    const paneColumn = split.querySelector('[data-testid="pane-column"]');
+    expect(paneColumn?.contains(screen.getByTestId("topbar"))).toBe(true);
   } finally {
     restoreViewport();
   }
 });
 
-test("the board toggle is one control that collapses the column and re-expands it", async () => {
-  const restoreViewport = installMobileViewport([MOBILE_QUERY, TABLET_QUERY]);
-  workspaceStore.getState().openPane("doc", { ref: "tablet_toggle" });
-  const user = userEvent.setup();
-  try {
-    render(<StackHost />);
-    const split = (await screen.findByTestId("board-column")).parentElement;
-    if (!split) throw new Error("the board column has no split parent");
-    expect(split.getAttribute("data-board")).toBe("visible");
-    expect(screen.getByTestId("board-toggle").getAttribute("aria-expanded")).toBe("true");
+test.each([
+  { paneType: "session", hasBack: false },
+  { paneType: "sessionZoom", hasBack: true },
+  { paneType: "transcript", hasBack: true },
+] as const)(
+  "the board toggle collapses $paneType in the tablet band without unmounting or losing focus",
+  async ({ paneType, hasBack }) => {
+    const restoreViewport = installMobileViewport([MOBILE_QUERY, TABLET_QUERY]);
+    let mounts = 0;
+    const restorePane = registerPaneForTests({
+      id: paneType,
+      component: lazy(() =>
+        Promise.resolve({
+          default: () => {
+            useEffect(() => {
+              mounts++;
+            }, []);
+            return (
+              <div data-testid="tablet-pane-scroll" style={{ height: "100%", overflowY: "auto" }}>
+                <div style={{ height: 2400 }} />
+              </div>
+            );
+          },
+        }),
+      ),
+      title: () => paneType,
+    });
+    const params =
+      paneType === "sessionZoom"
+        ? { ref: "local:leaf", source: { type: "session", params: { ref: "local:root" } }, edges: [] }
+        : { ref: `local:${paneType}`, parentRef: "local:root" };
+    workspaceStore.getState().openPane(paneType, params);
+    const user = userEvent.setup();
+    const client = activityClient();
+    try {
+      render(
+        <ClientProvider client={client}>
+          <StackHost railSlot={<RailHost />} />
+        </ClientProvider>,
+      );
+      const split = (await screen.findByTestId("board-column")).parentElement;
+      if (!split) throw new Error("the board column has no split parent");
+      const paneColumn = split.querySelector('[data-testid="pane-column"]');
+      const topbar = screen.getByTestId("topbar");
+      expect(paneColumn?.contains(topbar)).toBe(true);
+      const scroller = await screen.findByTestId("tablet-pane-scroll");
+      act(() => {
+        scroller.scrollTop = 200;
+        scroller.dispatchEvent(new Event("scroll"));
+      });
+      await waitFor(() => expect(topbar.getAttribute("data-collapsed")).toBe("true"));
+      expect(split.getAttribute("data-board")).toBe("visible");
+      const openToggle = within(screen.getByTestId("rail-brand")).getByTestId("board-toggle");
+      expect(openToggle.getAttribute("aria-expanded")).toBe("true");
+      expect(mounts).toBe(1);
 
-    await user.click(screen.getByTestId("board-toggle"));
-    expect(screen.queryByTestId("board-column")).toBeNull();
-    expect(split.getAttribute("data-board")).toBe("collapsed");
-    // Never two collapse controls: the same single glyph slides to the
-    // conversation's leading edge and flips to announce the expand.
-    expect(screen.getAllByTestId("board-toggle")).toHaveLength(1);
-    expect(screen.getByTestId("board-toggle").getAttribute("aria-expanded")).toBe("false");
+      openToggle.focus();
+      await user.keyboard("{Enter}");
+      expect(screen.queryByTestId("board-column")).toBeNull();
+      expect(split.getAttribute("data-board")).toBe("collapsed");
+      expect(screen.getAllByTestId("board-toggle")).toHaveLength(1);
+      const collapsedToggle = within(topbar).getByTestId("board-toggle");
+      expect(collapsedToggle.getAttribute("aria-expanded")).toBe("false");
+      if (hasBack) {
+        const back = within(topbar).getByRole("button", { name: "Back" });
+        expect(collapsedToggle.compareDocumentPosition(back) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      } else {
+        expect(within(topbar).queryByRole("button", { name: "Back" })).toBeNull();
+      }
+      expect(document.activeElement).toBe(collapsedToggle);
+      expect(mounts).toBe(1);
 
-    await user.click(screen.getByTestId("board-toggle"));
-    expect(screen.getByTestId("board-column")).toBeTruthy();
-    expect(split.getAttribute("data-board")).toBe("visible");
-  } finally {
-    restoreViewport();
-  }
-});
+      await user.keyboard("{Enter}");
+      expect(within(screen.getByTestId("rail-brand")).getByTestId("board-toggle")).toBeTruthy();
+      expect(split.getAttribute("data-board")).toBe("visible");
+      expect(document.activeElement).toBe(screen.getByTestId("board-toggle"));
+      expect(mounts).toBe(1);
+    } finally {
+      restorePane();
+      restoreViewport();
+    }
+  },
+);
 
 test("in the tablet band a blank stack shows the board column, not the auto-opened drawer sheet", async () => {
   const restoreViewport = installMobileViewport([MOBILE_QUERY, TABLET_QUERY]);
@@ -2276,7 +2345,7 @@ test("below the tablet band the phone anatomy is unchanged: drawer sheet, no boa
   }
 });
 
-test("the split carries the §12 geometry: shared sidebar width, hairline divider, sliding rotating toggle", () => {
+test("the split carries the §12 geometry: shared sidebar width, hairline divider, rotating toggle glyph", () => {
   const css = readModuleCss(import.meta.url, "StackHost.module.css");
   // The board column is as wide as the sidebar's one width - the sidebarWidth
   // pref the desktop rail also reads, default 280 - carried by the inherited
@@ -2289,19 +2358,10 @@ test("the split carries the §12 geometry: shared sidebar width, hairline divide
   // the pane at its content's width.
   const paneRule = css.match(/\.paneColumn \{([^}]*)\}/)?.[1] ?? "";
   expect(paneRule).toContain("min-width: 0");
-  // The toggle rides the interior seam: 8px off the divider while the board
-  // is visible, 8px off the screen's leading edge while collapsed.
-  const visibleRule = css.match(/\.split\[data-board="visible"\] \.boardHandle \{([^}]*)\}/)?.[1] ?? "";
-  // The seam position reads the same shared property, so a dragged width
-  // moves the toggle with the divider instead of stranding it at a constant.
-  expect(visibleRule).toContain("calc(var(--board-width, 280px)");
   // The same glyph rotates 180° to announce the expand - the control never
   // duplicates and the direction never changes icon.
   const collapsedGlyph = css.match(/\.split\[data-board="collapsed"\] \.boardGlyph \{([^}]*)\}/)?.[1] ?? "";
   expect(collapsedGlyph).toContain("rotate(180deg)");
-  // One base rule each - line-anchored, so the data-board-scoped rules above
-  // do not double-count: the control never duplicates.
-  expect((css.match(/(?:^|\n)\.boardHandle \{/g) ?? []).length).toBe(1);
   expect((css.match(/(?:^|\n)\.boardGlyph \{/g) ?? []).length).toBe(1);
 });
 

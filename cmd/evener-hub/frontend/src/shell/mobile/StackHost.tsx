@@ -67,6 +67,7 @@ import { ConversationHandoffBoundary } from "../ConversationHandoffBoundary";
 import { useChromeStore } from "../chromeStore";
 import { paneFor } from "../paneRegistry";
 import { PaneVisibilityContext } from "../paneVisibility";
+import { RailHeaderActionProvider } from "../rail/Rail";
 import { RailResizeHandle } from "../rail/RailResizeHandle";
 import { navigate, paneToURL, refParam, urlToPane } from "../routing";
 import { openSessionByRef } from "../sessionPlacement";
@@ -361,6 +362,19 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
   // Mirror of focusedPane for the same reason as topBarCollapsedRef.
   const focusedPaneRef = useRef(focusedPane);
   focusedPaneRef.current = focusedPane;
+  const boardToggleRef = useRef<HTMLButtonElement>(null);
+  const restoreToggleFocusRef = useRef(false);
+
+  const toggleBoard = useCallback(() => {
+    restoreToggleFocusRef.current = document.activeElement === boardToggleRef.current;
+    setBoardCollapsed((v) => !v);
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!restoreToggleFocusRef.current) return;
+    restoreToggleFocusRef.current = false;
+    boardToggleRef.current?.focus({ preventScroll: true });
+  });
 
   // The resting bar height (safe-area padding included), read once on mount:
   // the fold threshold below needs it BEFORE the first collapse, not after.
@@ -488,16 +502,16 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
   // declines to publish over, see its own comment).
   useEffect(() => {
     if (routeDeferred) return;
-    if (boardVisible) return;
+    if (tabletSplit) return;
     if (nothingFocused) setPanelOpen(true);
-  }, [nothingFocused, routeDeferred, boardVisible]);
+  }, [nothingFocused, routeDeferred, tabletSplit]);
 
   // Crossing into the band while the sheet hangs open would show the same
   // rail twice - the column behind it, the sheet in front - so the sheet
   // closes; the column is the board now.
   useEffect(() => {
-    if (boardVisible) setPanelOpen(false);
-  }, [boardVisible]);
+    if (tabletSplit) setPanelOpen(false);
+  }, [tabletSplit]);
 
   useEffect(() => {
     if (activityOpen) setPanelOpen(false);
@@ -874,37 +888,57 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
     </div>
   );
 
+  // One toggle for both directions: when the board is open it sits at the
+  // right end of the board's own header; when collapsed it moves to the
+  // conversation's leading edge and rotates 180°.
+  const boardToggle = tabletSplit ? (
+    <IconButton
+      ref={boardToggleRef}
+      data-testid="board-toggle"
+      label="Board"
+      aria-expanded={boardVisible}
+      variant="quiet"
+      icon={<span className={styles.boardGlyph}>◧</span>}
+      onClick={toggleBoard}
+    />
+  ) : null;
+
+  const topBar = (
+    <div
+      ref={topBarRef}
+      data-testid="topbar"
+      className={topBarCollapsed ? `${styles.topBar} ${styles.topBarCollapsed}` : styles.topBar}
+      data-collapsed={topBarCollapsed ? "true" : undefined}
+      data-session={focusedSessionRef === undefined ? undefined : "true"}
+    >
+      <div className={styles.leading}>
+        {tabletSplit && !boardVisible && boardToggle}
+        {showBack ? (
+          <IconButton
+            label="Back"
+            icon={<Chevron direction="left" size={16} />}
+            variant="quiet"
+            onClick={isPanelPane ? handlePanelBack : (paneBack ?? handleBack)}
+          />
+        ) : (
+          focusedSessionRef !== undefined && drawer
+        )}
+      </div>
+      <span className={styles.stackTitle} data-testid="topbar-title">
+        {paneTitle}
+      </span>
+      <div className={styles.trailing}>
+        {focusedSessionRef !== undefined && (
+          <SessionInspectionActions sessionRef={focusedSessionRef} paneId={focusedPane?.id} />
+        )}
+        {focusedSessionRef === undefined && drawer}
+      </div>
+    </div>
+  );
+
   return (
     <div className={styles.host} onPointerDownCapture={clearPendingPop} onKeyDownCapture={clearPendingPop}>
-      <div
-        ref={topBarRef}
-        data-testid="topbar"
-        className={topBarCollapsed ? `${styles.topBar} ${styles.topBarCollapsed}` : styles.topBar}
-        data-collapsed={topBarCollapsed ? "true" : undefined}
-        data-session={focusedSessionRef === undefined ? undefined : "true"}
-      >
-        <div className={styles.leading}>
-          {showBack ? (
-            <IconButton
-              label="Back"
-              icon={<Chevron direction="left" size={16} />}
-              variant="quiet"
-              onClick={isPanelPane ? handlePanelBack : (paneBack ?? handleBack)}
-            />
-          ) : (
-            focusedSessionRef !== undefined && drawer
-          )}
-        </div>
-        <span className={styles.stackTitle} data-testid="topbar-title">
-          {paneTitle}
-        </span>
-        <div className={styles.trailing}>
-          {focusedSessionRef !== undefined && (
-            <SessionInspectionActions sessionRef={focusedSessionRef} paneId={focusedPane?.id} />
-          )}
-          {focusedSessionRef === undefined && drawer}
-        </div>
-      </div>
+      {!tabletSplit && topBar}
       {tabletSplit ? (
         <div
           className={styles.split}
@@ -919,7 +953,9 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
         >
           {boardVisible && (
             <aside className={styles.boardColumn} data-testid="board-column">
-              {railSlot}
+              <div className={styles.boardScroll}>
+                <RailHeaderActionProvider value={boardToggle}>{railSlot}</RailHeaderActionProvider>
+              </div>
               {/* The divider drags like the desktop rail's edge (§12): the
                   same separator, live-painting the width with no per-frame
                   store writes, committing the shared width on release; a
@@ -935,22 +971,8 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
             </aside>
           )}
           <div className={styles.paneColumn} data-testid="pane-column">
+            {topBar}
             {stackBody}
-          </div>
-          {/* One toggle for both directions (§12): the same glyph slides
-              along the interior seam - hugging the divider while the board
-              is visible, the conversation's leading edge while collapsed -
-              and rotates 180° to announce the expand, so the control never
-              duplicates and the icon never changes. */}
-          <div className={styles.boardHandle}>
-            <IconButton
-              data-testid="board-toggle"
-              label="Board"
-              aria-expanded={boardVisible}
-              variant="quiet"
-              icon={<span className={styles.boardGlyph}>◧</span>}
-              onClick={() => setBoardCollapsed((v) => !v)}
-            />
           </div>
         </div>
       ) : (

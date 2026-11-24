@@ -372,11 +372,13 @@ test("the phone fluency surfaces carry ladder radii, never a pill surface", () =
   pillFree("panes/session/transcript/messages/usermessageitem.module.css");
   pillFree("shell/rail/RailResizeHandle.module.css");
 
-  // The phone's floating chrome (back/menu capsules, the board toggle) sits
+  // The phone's floating chrome (back/collapsed-board leading capsule, trailing menu capsule) sits
   // one ladder step above the buttons inside it: pane around control.
   const stackHost = reads("shell/mobile/StackHost.module.css");
-  expect(stackHost.match(/\.boardHandle \{[^}]*\}/)?.[0]).toContain("var(--radius-pane)");
-  expect(stackHost.match(/\.topBarCollapsed \.trailing \{[^}]*\}/)?.[0]).toContain("var(--radius-pane)");
+  const collapsedCapsules = stackHost.match(
+    /\.topBarCollapsed \.leading:not\(:empty\),\s*\.topBarCollapsed \.trailing \{[^}]*\}/,
+  )?.[0];
+  expect(collapsedCapsules).toContain("var(--radius-pane)");
   // The ask dock's answer tabs are controls, not capsules.
   expect(reads(askDock).match(/\.tab \{[^}]*\}/)?.[0]).toContain("var(--radius-control)");
   expect(reads("panes/session/transcript/flow/loadolderrow.module.css").match(/\.row \{[^}]*\}/)?.[0]).toContain(

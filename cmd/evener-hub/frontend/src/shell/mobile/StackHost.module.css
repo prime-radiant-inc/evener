@@ -77,6 +77,10 @@
     box-shadow var(--motion-duration-spatial) var(--motion-easing-standard);
 }
 
+.topBar[data-session="true"] .leading:empty {
+  min-width: 0;
+}
+
 .trailing {
   display: flex;
   align-items: center;
@@ -204,12 +208,22 @@
   width: var(--board-width, 280px);
   border-right: 1px solid var(--edge);
   min-height: 0;
+  padding-top: env(safe-area-inset-top);
+  background: var(--surface-canvas);
+  position: relative;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
+}
+
+.boardScroll {
+  flex: 1 1 auto;
+  min-height: 0;
   /* The mobile rail is built parent-owns-scroll (RailHost's scrollOwner
    * "parent": .parentScrollRail grows to content and the host scrolls) -
    * in the drawer that host is the Sheet body; in the band it is this
-   * column. One scroll region for header and rows, same as the drawer. */
+   * scroll wrapper inside boardColumn so the resize handle stays pinned
+   * to the divider across the column's full height. */
   overflow-y: auto;
 }
 
@@ -220,36 +234,9 @@
   flex: 1 1 auto;
   min-width: 0;
   min-height: 0;
+  position: relative;
   display: flex;
   flex-direction: column;
-}
-
-/* One toggle for both directions (§12): the glyph rides the interior seam -
- * hugging the divider's conversation lip while the board is visible, the
- * conversation's leading edge while it is collapsed - floating as a blur
- * capsule (the same recipe as the collapsed top bar's) over the pane's own
- * content, so it never occludes a single rail control. IconButton takes no
- * className, so this wrapper owns the ride. */
-.boardHandle {
-  position: absolute;
-  top: var(--space-2);
-  left: 0;
-  z-index: var(--z-raised);
-  padding: var(--space-1);
-  transform: translateX(var(--space-2));
-  /* Pane around the control-radius IconButton inside - same ladder step as
- * the collapsed bar's capsules. */
-  border-radius: var(--radius-pane);
-  background: color-mix(in oklab, var(--surface-1) 88%, transparent);
-  -webkit-backdrop-filter: blur(16px);
-  backdrop-filter: blur(16px);
-  box-shadow: var(--shadow-card);
-}
-
-.split[data-board="visible"] .boardHandle {
-  /* The seam position reads the same shared property the column sizes off,
-   * so a dragged width carries the toggle with the divider. */
-  transform: translateX(calc(var(--board-width, 280px) + var(--space-2)));
 }
 
 /* The glyph rotates - never swaps icons - to announce the expand. */
@@ -262,7 +249,6 @@
 }
 
 @media (prefers-reduced-motion: no-preference) {
-  .boardHandle,
   .boardGlyph {
     transition: transform var(--motion-duration-spatial) var(--motion-easing-standard);
   }
