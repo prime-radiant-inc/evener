@@ -390,9 +390,6 @@ test("the title renders as a sentence-case pane-title heading, not an uppercase 
   const here = dirname(fileURLToPath(import.meta.url));
   const css = readFileSync(join(here, "panescaffold.module.css"), "utf8");
   const rule = css.match(/\.title \{([^}]*)\}/)?.[1] ?? "";
-  expect(rule).toContain("font-size: var(--font-size-pane-title)");
-  expect(rule).toContain("font-weight: var(--font-weight-semibold)");
+  expect(rule).toContain('composes: paneTitle from "../../styles/text.module.css"');
   expect(rule).not.toContain("text-transform");
-  expect(rule).toContain("letter-spacing: var(--tracking-display)");
-  expect(rule).toContain("color: var(--ink-hi)");
 });

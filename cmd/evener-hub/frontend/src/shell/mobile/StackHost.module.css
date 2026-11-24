@@ -39,17 +39,13 @@
 
 .stackTitle {
   composes: truncate from "../../styles/text.module.css";
+  /* biome-ignore lint/suspicious/noDuplicateProperties: css-modules composes takes one declaration per composed class, each with its own `from` */
+  composes: paneTitle from "../../styles/text.module.css";
   flex: 1 1 auto;
   /* min-width: 0 is required for ellipsis truncation inside a flex row -
    * the same rule PaneScaffold's own .title records. */
   min-width: 0;
   text-align: center;
-  color: var(--ink-hi);
-  font-family: var(--font-prose);
-  font-size: var(--font-size-pane-title);
-  font-weight: var(--font-weight-semibold);
-  line-height: var(--line-height-title);
-  letter-spacing: var(--tracking-display);
 }
 
 .topBar[data-session="true"] .stackTitle {
