@@ -75,7 +75,7 @@ export function clearUnsupportedFileSearchHost(client: object, host?: string): v
 }
 
 function isFileSearchSupported(client: object, host: string): boolean {
-  return !(unsupportedHostsByClient.get(client)?.has(host) ?? false);
+  return !unsupportedHostsByClient.get(client)?.has(host);
 }
 
 function markUnsupportedFileSearchHost(client: object, host: string): void {

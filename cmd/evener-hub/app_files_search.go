@@ -91,9 +91,6 @@ func (s *fileSearchService) Search(ctx context.Context, params appwire.FilesSear
 		return appwire.FilesSearchResponse{}, appwire.InvalidParams("query exceeds maximum length")
 	}
 	query := stripASCIIControlChars(params.Query)
-	if utf8.RuneCountInString(query) > fileSearchMaxQueryRunes {
-		return appwire.FilesSearchResponse{}, appwire.InvalidParams("query exceeds maximum length")
-	}
 
 	limit := params.Limit
 	if limit <= 0 {
@@ -254,12 +251,8 @@ func (s *fileSearchService) putCached(key fileSearchCacheKey, val fileSearchCach
 }
 
 func rankFilesSearchResult(val fileSearchCacheValue, normQuery string, limit int) appwire.FilesSearchResponse {
-	ranked := appwire.RankFileSearchItems(val.items, normQuery, limit)
-	if ranked == nil {
-		ranked = []appwire.FileSearchItem{}
-	}
 	return appwire.FilesSearchResponse{
-		Items:     ranked,
+		Items:     appwire.RankFileSearchItems(val.items, normQuery, limit),
 		Truncated: val.truncated,
 	}
 }

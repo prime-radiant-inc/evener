@@ -1,7 +1,9 @@
 import { type FileSearchItem, matchFileMentionPositions } from "@evener/appwire-client";
-import { type ReactNode, useEffect, useRef } from "react";
+import { type ReactNode, useEffect, useMemo, useRef } from "react";
 import { Loader } from "../../../widgets";
 import styles from "./filecompletionmenu.module.css";
+
+const EMPTY_POSITION_SET = new Set<number>();
 
 export function fileOptionId(listboxId: string, index: number): string {
   return `${listboxId}-opt-${index}`;
@@ -53,6 +55,14 @@ export function FileCompletionMenu({
   onSelect,
 }: FileCompletionMenuProps) {
   const listboxRef = useRef<HTMLDivElement>(null);
+  const positionSets = useMemo(
+    () =>
+      items.map((item) => {
+        const positions = matchFileMentionPositions(item.path, query);
+        return positions.length === 0 ? EMPTY_POSITION_SET : new Set(positions);
+      }),
+    [items, query],
+  );
 
   useEffect(() => {
     if (highlightedIndex < 0 || items.length === 0) return;
@@ -76,7 +86,7 @@ export function FileCompletionMenu({
         const dirPart = lastSlash >= 0 ? item.path.slice(0, lastSlash) : "";
         const baseStart = lastSlash >= 0 ? lastSlash + 1 : 0;
         const basePart = displayPath.slice(baseStart);
-        const posSet = new Set(matchFileMentionPositions(item.path, query));
+        const posSet = positionSets[index] ?? EMPTY_POSITION_SET;
 
         return (
           // biome-ignore lint/a11y/useFocusableInteractive: WAI-ARIA combobox keeps DOM focus in SkillEditor and tracks virtual focus via aria-activedescendant

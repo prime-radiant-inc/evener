@@ -25,8 +25,6 @@ import {
   mergeDraftText,
   mergeSlashCommands,
   NO_ACTIVE_TURN,
-  parseFileMentionToken,
-  parseSlashToken,
   SHUT_DOWN_STATUSES,
   sessionActionError,
   slashCommandInvocation,
@@ -116,7 +114,7 @@ import type { ComposerSourceState } from "./sourceState";
 import { recordStoplessComposer } from "./stoplessComposer";
 import { pushRecoveryRefusal, unbackedImageMarkersIn } from "./submitProtocol";
 import { type ComposerSubmission, useBuiltinSubmission } from "./useBuiltinSubmission";
-import { useFileCompletion } from "./useFileCompletion";
+import { resolveCompletionTokens, useFileCompletion } from "./useFileCompletion";
 import { useInlineStopReady } from "./useInlineStopReady";
 import { useSlashCompletion } from "./useSlashCompletion";
 
@@ -1047,13 +1045,9 @@ function ComposerWithSubmission({
   const showActivityLine = isMobile && !ownsActivityCounts && !folded && (!ended || showFollowUpCard);
 
   function updateCompletionTokens(masked: string, caret: number, isPaste: boolean): void {
-    const nextSlash = parseSlashToken(masked, caret);
-    setSlashToken(nextSlash);
-    if (isPaste || nextSlash !== null) {
-      setFileToken(null);
-    } else {
-      setFileToken(parseFileMentionToken(masked, caret));
-    }
+    const tokens = resolveCompletionTokens(masked, caret, isPaste);
+    setSlashToken(tokens.slashToken);
+    setFileToken(tokens.fileToken);
   }
 
   function handleTextChange(value: SkillEditorValue, caret: number, meta?: { isPaste?: boolean }): void {

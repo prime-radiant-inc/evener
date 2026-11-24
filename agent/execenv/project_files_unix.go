@@ -122,9 +122,6 @@ func walkProjectFiles(ctx context.Context, root string, opts ProjectFilesOptions
 				if errors.Is(ierr, context.DeadlineExceeded) {
 					return ProjectFilesResult{Entries: out, Truncated: true}, nil
 				}
-				if errors.Is(ierr, context.Canceled) {
-					return ProjectFilesResult{}, ierr
-				}
 				return ProjectFilesResult{}, ierr
 			}
 			if matcher != nil {

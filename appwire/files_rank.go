@@ -1,6 +1,7 @@
 package appwire
 
 import (
+	"cmp"
 	"slices"
 	"strings"
 	"unicode"
@@ -37,9 +38,6 @@ func ScoreFileMention(path, query string) (score int, positions []int, ok bool) 
 	}
 	p := []rune(path)
 	q := []rune(norm)
-	if len(q) > len(p) {
-		return 0, nil, false
-	}
 
 	pFold := make([]rune, len(p))
 	slashCount := 0
@@ -122,11 +120,35 @@ func ScoreFileMention(path, query string) (score int, positions []int, ok bool) 
 func RankFileSearchItems(items []FileSearchItem, query string, limit int) []FileSearchItem {
 	norm := NormalizeFileSearchQuery(query)
 	if norm == "" {
-		out := make([]FileSearchItem, len(items))
-		copy(out, items)
-		slices.SortFunc(out, compareEmptyFileSearchItems)
-		if limit > 0 && len(out) > limit {
-			out = out[:limit]
+		if len(items) == 0 {
+			return []FileSearchItem{}
+		}
+		type emptyRankedItem struct {
+			item     FileSearchItem
+			segments int
+		}
+		decorated := make([]emptyRankedItem, len(items))
+		for i, item := range items {
+			decorated[i] = emptyRankedItem{
+				item:     item,
+				segments: strings.Count(item.Path, "/"),
+			}
+		}
+		slices.SortFunc(decorated, func(a, b emptyRankedItem) int {
+			if c := cmp.Compare(a.segments, b.segments); c != 0 {
+				return c
+			}
+			if c := cmp.Compare(fileKindRank(a.item.Kind), fileKindRank(b.item.Kind)); c != 0 {
+				return c
+			}
+			return strings.Compare(a.item.Path, b.item.Path)
+		})
+		if limit > 0 && len(decorated) > limit {
+			decorated = decorated[:limit]
+		}
+		out := make([]FileSearchItem, len(decorated))
+		for i, d := range decorated {
+			out[i] = d.item
 		}
 		return out
 	}
@@ -154,20 +176,17 @@ func RankFileSearchItems(items []FileSearchItem, query string, limit int) []File
 		return []FileSearchItem{}
 	}
 	slices.SortFunc(scored, func(a, b scoredItem) int {
-		if a.score != b.score {
-			if a.score > b.score {
-				return -1
-			}
-			return 1
+		if c := cmp.Compare(b.score, a.score); c != 0 {
+			return c
 		}
-		if aKind, bKind := fileKindRank(a.item.Kind), fileKindRank(b.item.Kind); aKind != bKind {
-			return aKind - bKind
+		if c := cmp.Compare(fileKindRank(a.item.Kind), fileKindRank(b.item.Kind)); c != 0 {
+			return c
 		}
-		if a.segments != b.segments {
-			return a.segments - b.segments
+		if c := cmp.Compare(a.segments, b.segments); c != 0 {
+			return c
 		}
-		if a.length != b.length {
-			return a.length - b.length
+		if c := cmp.Compare(a.length, b.length); c != 0 {
+			return c
 		}
 		return strings.Compare(a.item.Path, b.item.Path)
 	})
@@ -179,17 +198,6 @@ func RankFileSearchItems(items []FileSearchItem, query string, limit int) []File
 		out[i] = s.item
 	}
 	return out
-}
-
-func compareEmptyFileSearchItems(a, b FileSearchItem) int {
-	aSeg, bSeg := strings.Count(a.Path, "/"), strings.Count(b.Path, "/")
-	if aSeg != bSeg {
-		return aSeg - bSeg
-	}
-	if aKind, bKind := fileKindRank(a.Kind), fileKindRank(b.Kind); aKind != bKind {
-		return aKind - bKind
-	}
-	return strings.Compare(a.Path, b.Path)
 }
 
 func fileKindRank(kind string) int {

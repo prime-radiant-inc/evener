@@ -6,6 +6,8 @@ import {
   type FileSearchItem,
   normalizeHost,
   parseFileMentionToken,
+  parseSlashToken,
+  type SlashToken,
   spliceFileMention,
 } from "@evener/appwire-client";
 import {
@@ -22,6 +24,18 @@ import { fileOptionId } from "./FileCompletionMenu";
 import type { SkillEditorHandle } from "./SkillEditor";
 
 const FILE_LOADER_DELAY_MS = 150;
+
+export function resolveCompletionTokens(
+  maskedText: string,
+  caret: number,
+  isPaste = false,
+): { slashToken: SlashToken | null; fileToken: FileMentionToken | null } {
+  const slashToken = parseSlashToken(maskedText, caret);
+  return {
+    slashToken,
+    fileToken: isPaste || slashToken !== null ? null : parseFileMentionToken(maskedText, caret),
+  };
+}
 
 export interface UseFileCompletionOptions {
   client: Pick<AppwireClientLike, "request"> | null;

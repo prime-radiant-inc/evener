@@ -20,7 +20,6 @@ import {
   mergeSlashCommands,
   type PathValidation,
   type PluginSelectionState,
-  parseFileMentionToken,
   parseSlashToken,
   perLaunchEvenerOptions,
   pluginSelectionIssues,
@@ -87,7 +86,7 @@ import { FileCompletionMenu } from "../session/composer/FileCompletionMenu";
 import { SkillEditor, type SkillEditorHandle, type SkillEditorValue } from "../session/composer/SkillEditor";
 import { SlashCompletionMenu } from "../session/composer/SlashCompletionMenu";
 import { maskSkillAtoms, patchSelectionText } from "../session/composer/skillDocument";
-import { useFileCompletion } from "../session/composer/useFileCompletion";
+import { resolveCompletionTokens, useFileCompletion } from "../session/composer/useFileCompletion";
 import { useSlashCompletion } from "../session/composer/useSlashCompletion";
 import {
   ConnectProviderDialogBoundary,
@@ -2748,10 +2747,9 @@ function SpawnForm({
                       mentions: value.mentions,
                       promptRevision: fields.promptRevision + 1,
                     });
-                    const masked = maskSkillAtoms(value);
-                    const nextSlash = parseSlashToken(masked, caret);
-                    setSlashToken(nextSlash);
-                    setFileToken(meta?.isPaste || nextSlash !== null ? null : parseFileMentionToken(masked, caret));
+                    const tokens = resolveCompletionTokens(maskSkillAtoms(value), caret, Boolean(meta?.isPaste));
+                    setSlashToken(tokens.slashToken);
+                    setFileToken(tokens.fileToken);
                   }}
                   onSelectionChange={(caret) => {
                     const fields = draft.fields.getState();
@@ -2761,9 +2759,9 @@ function SpawnForm({
                       commandNames: fields.commandNames,
                       mentions: fields.mentions,
                     });
-                    const nextSlash = parseSlashToken(masked, caret);
-                    setSlashToken(nextSlash);
-                    setFileToken(nextSlash !== null ? null : parseFileMentionToken(masked, caret));
+                    const tokens = resolveCompletionTokens(masked, caret, false);
+                    setSlashToken(tokens.slashToken);
+                    setFileToken(tokens.fileToken);
                   }}
                   onKeyDown={handlePromptKeyDown}
                   onPaste={handlePaste}

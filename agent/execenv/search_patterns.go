@@ -234,32 +234,11 @@ func newProjectFilesBudget(limits ProjectFilesLimits) *GlobBudget {
 	}
 }
 
-func (b *GlobBudget) listingsLimit() int {
-	if b.maxListings > 0 {
-		return b.maxListings
+func intOrDefault(v, def int) int {
+	if v > 0 {
+		return v
 	}
-	return maxGlobDirListings
-}
-
-func (b *GlobBudget) dirEntriesLimit() int {
-	if b.maxDirEntries > 0 {
-		return b.maxDirEntries
-	}
-	return maxGlobDirEntries
-}
-
-func (b *GlobBudget) liveEntriesLimit() int {
-	if b.maxLiveEntries > 0 {
-		return b.maxLiveEntries
-	}
-	return maxGlobLiveEntries
-}
-
-func (b *GlobBudget) ignoreTotalBytesLimit() int {
-	if b.maxIgnoreTotalBytes > 0 {
-		return b.maxIgnoreTotalBytes
-	}
-	return maxGlobIgnoreTotalBytes
+	return def
 }
 
 // listing charges one more directory listing to the budget regardless of
@@ -270,7 +249,7 @@ func (b *GlobBudget) ignoreTotalBytesLimit() int {
 // that hit the bound could have detected a symlink cycle on its own (only
 // where the filesystem reports file identity), false when it could not.
 func (b *GlobBudget) listing(cycleSafe bool) error {
-	limit := b.listingsLimit()
+	limit := intOrDefault(b.maxListings, maxGlobDirListings)
 	b.listings++
 	if b.listings <= limit {
 		return nil
@@ -285,7 +264,7 @@ func (b *GlobBudget) listing(cycleSafe bool) error {
 // only the one that finally trips, so peakDirEntries reflects how far a
 // listing actually got even on the chunks that stay under the bound.
 func (b *GlobBudget) tooManyEntries(dir string, read int) error {
-	limit := b.dirEntriesLimit()
+	limit := intOrDefault(b.maxDirEntries, maxGlobDirEntries)
 	if read > b.peakDirEntries {
 		b.peakDirEntries = read
 	}
@@ -312,7 +291,7 @@ func isGlobWalkAncestor(dir, name string) bool {
 // release rule drops any entry that is not a proper ancestor of dir, and dir
 // is not an ancestor of itself.
 func (b *GlobBudget) holdEntries(dir string, n int) error {
-	limit := b.liveEntriesLimit()
+	limit := intOrDefault(b.maxLiveEntries, maxGlobLiveEntries)
 	kept := 0
 	total := n
 	for _, d := range b.live {
@@ -381,7 +360,7 @@ func (c ignoreFileCost) charge() int {
 // because the matchers and the dedupe entries are never released before the
 // call ends.
 func (b *GlobBudget) retainIgnoreFile(c ignoreFileCost) error {
-	limit := b.ignoreTotalBytesLimit()
+	limit := intOrDefault(b.maxIgnoreTotalBytes, maxGlobIgnoreTotalBytes)
 	total := satAdd(int64(b.ruleBytes), int64(c.charge()))
 	b.ruleBytes = int(total)
 	if total <= int64(limit) {
