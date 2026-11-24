@@ -35,7 +35,10 @@
 // would sit unrequested while the port is still short. The page key
 // (UseTranscriptResult.olderPageKey) is the settled page's identity, so a key
 // that advances after the row's own fetch settled re-decides the same measured
-// predicate. historyPaging still owns single-flight, backoff, and the key.
+// predicate. That re-check waits for an active reader: a pane can stay mounted
+// with geometry while its document is hidden, and queueing demand there would
+// hand historyPaging a page nobody can see. historyPaging still owns
+// single-flight, backoff, and the key.
 import { useEffect, useRef } from "react";
 import { Button } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
@@ -59,6 +62,12 @@ export interface LoadOlderRowProps {
   // The older-page identity the model holds now. It advances when a page
   // succeeds and is null once history is exhausted.
   pageKey: string | null;
+  // Whether the reader can see this pane right now, read from the same state
+  // paging activation is gated on (UseTranscriptResult.readerActive). While it
+  // is false the row adds no demand at all: an advance it notices then is
+  // re-decided once the reader is back, and the geometry check runs against
+  // whatever the port is short of at that point.
+  readerActive: boolean;
 }
 
 const CLASS = {
@@ -67,7 +76,7 @@ const CLASS = {
   error: requireClass(styles.error, "loadolderrow.module.css", "error"),
 };
 
-export function LoadOlderRow({ onLoad, loading, error, scrollElement, pageKey }: LoadOlderRowProps) {
+export function LoadOlderRow({ onLoad, loading, error, scrollElement, pageKey, readerActive }: LoadOlderRowProps) {
   // Latest-ref so the observer - attached once - never calls a stale
   // onLoad/scrollElement pair. loadOlder's identity changes on every
   // loadingOlder flip (useTranscript.ts), and a stale closure would read a
@@ -76,6 +85,9 @@ export function LoadOlderRow({ onLoad, loading, error, scrollElement, pageKey }:
   onLoadRef.current = onLoad;
   const scrollElementRef = useRef(scrollElement);
   scrollElementRef.current = scrollElement;
+  // Also a latest-ref: the observer callback reads it on every notification.
+  const readerActiveRef = useRef(readerActive);
+  readerActiveRef.current = readerActive;
   // A failed fetch stops the automatic retry loop: without this the observer
   // would re-fire against a still-too-short port and hammer a failing
   // endpoint. The retry button (and any later successful fetch, which grows
@@ -93,9 +105,13 @@ export function LoadOlderRow({ onLoad, loading, error, scrollElement, pageKey }:
   // mount key so the mount's own observer notification stays the only mount
   // check.
   const pageKeyRef = useRef<string | null>(pageKey);
+  // Whether the last render had an active reader, so coming back can re-decide
+  // the check the row skipped while the pane was hidden.
+  const wasActiveRef = useRef(readerActive);
 
   useEffect(() => {
     const maybeLoad = () => {
+      if (!readerActiveRef.current) return;
       if (blockedRef.current) return;
       const el = scrollElementRef.current();
       if (el === null || !shouldAutoLoadOlder(el)) return;
@@ -149,16 +165,26 @@ export function LoadOlderRow({ onLoad, loading, error, scrollElement, pageKey }:
 
   // A settled page can leave every observed border box exactly where it was
   // (an older page of hidden rows), so the advance is the only signal that
-  // arrives. Re-decide when it does, but only for a page that has settled: a
-  // key that moves while a fetch is still in flight or an error is showing is
-  // handled once that clears, and the key is only marked handled by a real
-  // check.
+  // arrives. Re-decide when it does, but only for a page that has settled and
+  // only for an active reader: a key that moves while the pane is hidden, or
+  // while a fetch is still in flight or an error is showing, is handled once
+  // that clears. The key is only marked handled by a real check, and a reader
+  // coming back re-decides the check the row skipped while it was away.
+  // Activation with a page still in flight is left to historyPaging: activating
+  // the consumer is what schedules the demand it already holds.
   useEffect(() => {
-    if (pageKey === null || pageKey === pageKeyRef.current) return;
+    if (!readerActive) {
+      wasActiveRef.current = false;
+      return;
+    }
+    const becameActive = !wasActiveRef.current;
+    wasActiveRef.current = true;
     if (loading || error !== null) return;
-    pageKeyRef.current = pageKey;
+    const advanced = pageKey !== null && pageKey !== pageKeyRef.current;
+    if (advanced) pageKeyRef.current = pageKey;
+    if (!advanced && !becameActive) return;
     maybeLoadRef.current();
-  }, [pageKey, loading, error]);
+  }, [pageKey, readerActive, loading, error]);
 
   return (
     <div

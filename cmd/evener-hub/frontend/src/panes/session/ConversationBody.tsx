@@ -267,6 +267,7 @@ function LiveConversationBody({
     model,
     hasOlder,
     olderPageKey,
+    readerActive,
     loadOlder,
     loadingOlder,
     loadOlderReportingError,
@@ -605,6 +606,7 @@ function LiveConversationBody({
               loading={loadingOlder}
               error={olderError}
               pageKey={olderPageKey ?? null}
+              readerActive={readerActive}
               scrollElement={() => virtualListRef.current?.getScrollElement() ?? null}
             />
           )

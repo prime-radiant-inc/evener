@@ -3,9 +3,13 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { LoadOlderRow as LoadOlderRowImpl, type LoadOlderRowProps } from "./LoadOlderRow";
 
 // The row's page key is the model's older cursor. The geometry cases below do
-// not page, so they run with none; the keyed cases pass it explicitly.
-function LoadOlderRow(props: Omit<LoadOlderRowProps, "pageKey"> & { pageKey?: string | null }) {
-  return <LoadOlderRowImpl {...props} pageKey={props.pageKey ?? null} />;
+// not page, so they run with none; the keyed cases pass it explicitly. The
+// reader is active unless a case says otherwise, which is the mount state of a
+// pane the reader is looking at.
+function LoadOlderRow(
+  props: Omit<LoadOlderRowProps, "pageKey" | "readerActive"> & { pageKey?: string | null; readerActive?: boolean },
+) {
+  return <LoadOlderRowImpl {...props} pageKey={props.pageKey ?? null} readerActive={props.readerActive ?? true} />;
 }
 
 // jsdom implements no ResizeObserver at all (the same gap the row's earlier
@@ -346,6 +350,172 @@ test("a new page key adds no demand while the transcript already overflows", () 
   );
 
   expect(onLoad).not.toHaveBeenCalled();
+});
+
+// A pane stays mounted with geometry while its document is hidden. The advance
+// it notices then must not become demand: the reader sees nothing of it, and
+// the page would be asked for out of a state nobody can look at. Coming back
+// re-decides the same measured predicate, so the page the reader still needs is
+// asked for exactly once at that point.
+test("holds the re-check of an advanced page key until the reader is active", () => {
+  const port = scrollPort(300, 500);
+  const onLoad = vi.fn();
+  const { rerender } = render(
+    <LoadOlderRow
+      onLoad={onLoad}
+      loading={false}
+      error={null}
+      pageKey="server:cursor_a"
+      readerActive={false}
+      scrollElement={() => port.el}
+    />,
+  );
+  latestObserver().resize();
+  expect(onLoad).not.toHaveBeenCalled();
+
+  rerender(
+    <LoadOlderRow
+      onLoad={onLoad}
+      loading={false}
+      error={null}
+      pageKey="server:cursor_b"
+      readerActive={false}
+      scrollElement={() => port.el}
+    />,
+  );
+  expect(onLoad).not.toHaveBeenCalled();
+
+  rerender(
+    <LoadOlderRow
+      onLoad={onLoad}
+      loading={false}
+      error={null}
+      pageKey="server:cursor_b"
+      readerActive
+      scrollElement={() => port.el}
+    />,
+  );
+
+  expect(onLoad).toHaveBeenCalledTimes(1);
+});
+
+// Activation adds no demand of its own: the geometry the reader returns to
+// decides. A port that grew while the pane was hidden owes the reader nothing,
+// and the advance the row marked handled is not re-asked on the next
+// activation.
+test("checks an advance seen while hidden against the geometry the reader returns to", () => {
+  const port = scrollPort(300, 500);
+  const onLoad = vi.fn();
+  const { rerender } = render(
+    <LoadOlderRow
+      onLoad={onLoad}
+      loading={false}
+      error={null}
+      pageKey="server:cursor_a"
+      readerActive={false}
+      scrollElement={() => port.el}
+    />,
+  );
+  rerender(
+    <LoadOlderRow
+      onLoad={onLoad}
+      loading={false}
+      error={null}
+      pageKey="server:cursor_b"
+      readerActive={false}
+      scrollElement={() => port.el}
+    />,
+  );
+  port.set(5000, 500);
+
+  rerender(
+    <LoadOlderRow
+      onLoad={onLoad}
+      loading={false}
+      error={null}
+      pageKey="server:cursor_b"
+      readerActive
+      scrollElement={() => port.el}
+    />,
+  );
+  expect(onLoad).not.toHaveBeenCalled();
+
+  rerender(
+    <LoadOlderRow
+      onLoad={onLoad}
+      loading={false}
+      error={null}
+      pageKey="server:cursor_b"
+      readerActive={false}
+      scrollElement={() => port.el}
+    />,
+  );
+  rerender(
+    <LoadOlderRow
+      onLoad={onLoad}
+      loading={false}
+      error={null}
+      pageKey="server:cursor_b"
+      readerActive
+      scrollElement={() => port.el}
+    />,
+  );
+  expect(onLoad).not.toHaveBeenCalled();
+});
+
+// The advance can land while the page it belongs to is still in flight, with
+// the pane hidden in between. The settled render arrives out of the reader's
+// view, so the demand is asked for once when they return, not from the hidden
+// settle.
+test("asks once when the reader returns after a page settled while hidden", () => {
+  const port = scrollPort(300, 500);
+  const onLoad = vi.fn();
+  const { rerender } = render(
+    <LoadOlderRow
+      onLoad={onLoad}
+      loading={false}
+      error={null}
+      pageKey="server:cursor_a"
+      scrollElement={() => port.el}
+    />,
+  );
+  latestObserver().resize();
+  expect(onLoad).toHaveBeenCalledTimes(1);
+
+  rerender(
+    <LoadOlderRow
+      onLoad={onLoad}
+      loading={true}
+      error={null}
+      pageKey="server:cursor_b"
+      readerActive={false}
+      scrollElement={() => port.el}
+    />,
+  );
+  rerender(
+    <LoadOlderRow
+      onLoad={onLoad}
+      loading={false}
+      error={null}
+      pageKey="server:cursor_b"
+      readerActive={false}
+      scrollElement={() => port.el}
+    />,
+  );
+  expect(onLoad).toHaveBeenCalledTimes(1);
+
+  rerender(
+    <LoadOlderRow
+      onLoad={onLoad}
+      loading={false}
+      error={null}
+      pageKey="server:cursor_b"
+      readerActive
+      scrollElement={() => port.el}
+    />,
+  );
+
+  expect(onLoad).toHaveBeenCalledTimes(2);
 });
 
 test("a null scroll element never loads", () => {

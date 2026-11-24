@@ -358,12 +358,6 @@ interface StallCallRecord {
   itemsBefore: number;
   /** Geometry read before the page is handed back to the store. */
   geometryBefore: TranscriptGeometry | null;
-  /**
-   * Geometry two frames after the response, once the store merged the page and
-   * the virtualizer settled. Null until those frames have run.
-   */
-  geometryAfter: TranscriptGeometry | null;
-  itemsAfter: number | null;
 }
 const stallCalls: StallCallRecord[] = [];
 
@@ -502,27 +496,17 @@ if (PAGED) {
 if (STALL) {
   fake.on("thread/turns/list", (params: { cursor?: string; itemLimit?: number }) => {
     const el = findScrollElement();
-    const record: StallCallRecord = {
+    // Recorded at the request, because that is the only moment a sample
+    // describes this page: the cursor asked for, the production item limit, the
+    // item count the model holds going in, and the port's geometry then. A
+    // later sample would describe whatever commit happened to run next.
+    stallCalls.push({
       cursor: params.cursor ?? null,
       itemLimit: params.itemLimit ?? null,
       itemsBefore: stallTurnItemCount(),
       geometryBefore: el === null ? null : geometryOf(el),
-      geometryAfter: null,
-      itemsAfter: null,
-    };
-    stallCalls.push(record);
-    const response = stallOlderPage(record.cursor);
-    // The page lands after the response resolves: let the store merge it and
-    // the virtualizer settle before the height is read, so the causal record
-    // says what this page changed rather than what the previous frame left.
-    requestAnimationFrame(() =>
-      requestAnimationFrame(() => {
-        const after = findScrollElement();
-        record.geometryAfter = after === null ? null : geometryOf(after);
-        record.itemsAfter = stallTurnItemCount();
-      }),
-    );
-    return response;
+    });
+    return stallOlderPage(params.cursor ?? null);
   });
 }
 connectionStore.getState().connect(fake);
@@ -905,10 +889,10 @@ async function waitForEndedPage(merged: boolean) {
 
 // --- #7682 compact-history probe -----------------------------------------
 // The pass's whole evidence in one read: the causal older-page series (each
-// call's cursor plus the geometry and item count it started and ended with),
-// the live model's cursor, and whether the older reply the third page carries
-// is actually inside the viewport. No input of any kind drives it: the
-// automatic trigger under test is the only thing that may request a page.
+// call's cursor, item limit, item count going in, and the port geometry it was
+// made from), the live model's cursor, and whether the older reply the third
+// page carries is actually inside the viewport. No input of any kind drives it:
+// the automatic trigger under test is the only thing that may request a page.
 interface StallPageState {
   ref: string;
   mode: string | null;

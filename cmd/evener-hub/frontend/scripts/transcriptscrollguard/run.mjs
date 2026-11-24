@@ -56,6 +56,11 @@ const UNSEEN_OPEN = { seen: "turn_35", opensAt: "turn_36" };
 // carrying the visible older reply. The dock's compact outer height bounds what
 // counts as a compact port here.
 const STALL_CURSORS = ["cursor_stall_a", "cursor_stall_b", "cursor_stall_c"];
+// The model's item count going into each request: 40 installed, then one 40-item
+// hidden page merged before each next ask. The third page's 5 items (one visible
+// reply, four hidden) make 125.
+const STALL_ITEMS_BEFORE = [40, 80, 120];
+const STALL_FINAL_ITEMS = 125;
 const STALL_DOCK_HEIGHT_PX = 420;
 
 // Every post-settle wait, with the setup each needs to reach its own read of the
@@ -601,7 +606,14 @@ async function main() {
       };
       const assertStallPass = (label, state) => {
         const series = state.calls.map((call) => call.cursor);
-        const first = state.calls[0]?.geometryBefore ?? null;
+        const boundaries = state.calls.map((call) => call.geometryBefore ?? null);
+        const first = boundaries[0] ?? null;
+        const sameBoundary = (a, b) =>
+          a !== null &&
+          b !== null &&
+          a.scrollTop === b.scrollTop &&
+          a.scrollHeight === b.scrollHeight &&
+          a.clientHeight === b.clientHeight;
         if (state.errors.length > 0) failures.push(`page errors on ${label}: ${state.errors.join("; ")}`);
         if (!state.settledStill) failures.push(`${label} never quiesced within 10s`);
         if (!(state.clientHeight > 0 && state.clientHeight < STALL_DOCK_HEIGHT_PX)) {
@@ -617,40 +629,52 @@ async function main() {
               `${JSON.stringify(STALL_CURSORS)} - the automatic trigger stopped after a successful page`,
           );
         } else {
+          // Each page is requested from a real boundary: the port is readable
+          // when the demand is made, the request carries the production
+          // 40-item limit, and the model holds 40, then 80, then 120 items
+          // going in - so each page landed before the next was asked for.
+          const unreadable = boundaries.indexOf(null);
+          if (unreadable >= 0) failures.push(`${label} requested page ${unreadable + 1} with no readable scroll port`);
+          const limits = state.calls.map((call) => call.itemLimit);
+          if (limits.some((limit) => limit !== 40))
+            failures.push(`${label} requested older pages with item limits ${JSON.stringify(limits)}, expected 40`);
+          const counts = state.calls.map((call) => call.itemsBefore);
+          if (JSON.stringify(counts) !== JSON.stringify(STALL_ITEMS_BEFORE))
+            failures.push(
+              `${label} requested older pages holding ${JSON.stringify(counts)} items, expected ` +
+                `${JSON.stringify(STALL_ITEMS_BEFORE)} - a page was asked for before the previous one landed`,
+            );
           if (first === null || first.scrollHeight > first.clientHeight) {
             failures.push(
               `${label} did not open underfilled (scrollHeight ${first?.scrollHeight}, ` +
                 `clientHeight ${first?.clientHeight}) - the short-page trigger was not exercised`,
             );
           }
-          const firstAfter = state.calls[0]?.geometryAfter ?? null;
-          const secondBefore = state.calls[1]?.geometryBefore ?? null;
-          const secondAfter = state.calls[1]?.geometryAfter ?? null;
-          const thirdItemsAfter = state.calls[2]?.itemsAfter ?? null;
-          if (first !== null && firstAfter !== null && firstAfter.scrollHeight !== first.scrollHeight) {
-            failures.push(
-              `${label}'s first older page changed the height (${first.scrollHeight} -> ` +
-                `${firstAfter.scrollHeight}); the fixture must add none`,
-            );
+          // The first two pages add hidden rows only and the pass supplies no
+          // input of any kind, so each later request must be made from the port
+          // exactly as it was: a scroll, a resize, or a page that moved the
+          // height all show up here.
+          for (let index = 1; index < boundaries.length; index += 1) {
+            if (!sameBoundary(first, boundaries[index]))
+              failures.push(
+                `${label}'s page ${index + 1} was requested at ${JSON.stringify(boundaries[index])}, not the ` +
+                  `unchanged ${JSON.stringify(first)} - an earlier page was not height-free or the port moved`,
+              );
           }
-          if (first !== null && secondBefore !== null && secondBefore.scrollHeight !== first.scrollHeight) {
+          // The settled end is reached with the port still at the top: the third
+          // page prepends the visible reply above the reader, so its height is
+          // not asserted here - the merged count and the reply's visibility are.
+          if (first !== null && state.scrollTop !== first.scrollTop)
             failures.push(
-              `${label}'s second older page began at ${secondBefore.scrollHeight}px, not the unchanged ` +
-                `${first.scrollHeight}px - the first page was not height-free`,
+              `${label} settled at scrollTop ${state.scrollTop}, not the unmoved ${first.scrollTop} - ` +
+                "something scrolled the transcript",
             );
-          }
-          if (secondAfter !== null && first !== null && secondAfter.scrollHeight !== first.scrollHeight) {
-            failures.push(
-              `${label}'s second older page changed the height (${first.scrollHeight} -> ` +
-                `${secondAfter.scrollHeight}); the fixture must add none`,
-            );
-          }
           // The oldest page is the one that carries visible dialogue: the turn
           // must have merged all 125 items (40 + 40 + 40 + 5) for the reply the
           // assertion above sees to be the real one.
-          if (thirdItemsAfter !== 125) {
+          if (state.itemCount !== STALL_FINAL_ITEMS) {
             failures.push(
-              `${label}'s oldest page merged ${thirdItemsAfter} turn items, expected 125 - ` +
+              `${label} merged ${state.itemCount} turn items, expected ${STALL_FINAL_ITEMS} - ` +
                 "its visible older dialogue did not land in the model",
             );
           }
@@ -681,6 +705,12 @@ async function main() {
       console.log("compact overflowing control", JSON.stringify(stallControl));
       if (stallControl.errors.length > 0)
         failures.push(`page errors on the compact overflowing control: ${stallControl.errors.join("; ")}`);
+      // The zero-call credit only holds for a control that really settled: an
+      // unmeasured or still-moving port could have failed to trigger for a
+      // reason other than the overflow the control exists to prove.
+      if (!stallControl.settledStill) failures.push("the compact overflowing control never quiesced within 10s");
+      if (!stallControl.measuredLayout)
+        failures.push("the compact overflowing control settled without measured natural row geometry");
       if (stallControl.clientHeight <= 0)
         failures.push(`the compact overflowing control rendered no scroll port (clientHeight 0)`);
       if (stallControl.scrollHeight <= stallControl.clientHeight)
@@ -761,9 +791,9 @@ async function main() {
           `opened at that reply with it on; ` +
           `a large ended dock session merged older history and preserved its measured keyed-row geometry; ` +
           `the session-ref transcript pane recovered as the live conversation and did the same; deferred hydration waited for the mounted paged viewport; ` +
-          `a compact Chat and a compact Intent transcript each demanded one older page per cursor through two ` +
-          `height-free advances until the oldest page's visible reply and exhaustion, while an overflowing ` +
-          `compact control made no request on open; ` +
+          `a compact Chat and a compact Intent transcript each demanded one 40-item older page per cursor with ` +
+          `40, 80, and 120 items held from an unmoved port through two height-free advances, until the oldest ` +
+          `page's visible reply and exhaustion, while a settled overflowing compact control made no request on open; ` +
           `all ${MID_PASS_UNMOUNT_WAITS.length} post-settle waits named a pane that unmounted under them`,
       );
     } else {
