@@ -3,7 +3,15 @@
 import assert from "node:assert/strict";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { applyViewport, closePage, connectPage, evaluate, navigateTo, openPage, waitForFonts } from "../browserGuardCdp.mjs";
+import {
+  applyViewport,
+  closePage,
+  connectPage,
+  evaluate,
+  navigateTo,
+  openPage,
+  waitForFonts,
+} from "../browserGuardCdp.mjs";
 import { startBrowserGuard, waitForBrowserReady } from "../browserGuardProcess.mjs";
 
 async function wait(send, predicate) {
@@ -20,6 +28,12 @@ async function wait(send, predicate) {
   await waitForFonts(send);
 }
 
+// The desktop control metrics the phone tap floor must not disturb: the
+// Settings filter is the 32px shared control field, and a stack radio option
+// is its caption line plus the option's own padding (28px in this fixture).
+const DESKTOP_FILTER_HEIGHT = 32;
+const DESKTOP_RADIO_HEIGHT = 28;
+
 async function measureSearch(send) {
   return evaluate(
     send,
@@ -32,11 +46,30 @@ async function measureSearch(send) {
     const style = getComputedStyle(input);
     const ring = parseFloat(style.outlineWidth) + Math.max(0, parseFloat(style.outlineOffset));
     return {
-      field: { left: field.left, right: field.right, width: field.width },
+      field: { left: field.left, right: field.right, width: field.width, height: field.height },
       nav: { left: bounds.left, right: bounds.right, width: bounds.width },
       scrollWidth: nav.scrollWidth, clientWidth: nav.clientWidth,
       focused: document.activeElement === input, ring, fontSize: style.fontSize,
     };
+  })()`,
+  );
+}
+
+// The Appearance pane's RadioGroups in the stack variant render one
+// role=radio button per option. Their HEIGHTS are the rendered proof that the
+// widget's composed tap floor reaches the control: the source-only guard in
+// radiogroup.test.tsx can only see the composes line, never the box.
+async function measureRadioOptions(send) {
+  return evaluate(
+    send,
+    `(() => {
+    const root = document.querySelector("[data-testid='settings-content']");
+    if (root === null) return null;
+    return [...root.querySelectorAll('[role="radio"]')].map(option => {
+      const rect = option.getBoundingClientRect();
+      return { label: (option.getAttribute('aria-label') ?? option.textContent ?? '').trim(),
+        width: rect.width, height: rect.height };
+    });
   })()`,
   );
 }
@@ -122,6 +155,45 @@ export async function checkSettingsGeometry(endpoint, vitePort) {
           );
         } catch (error) {
           failures.push(`search ${label}: ${error.message}`);
+        }
+
+        await evaluate(
+          send,
+          `(async () => {
+          const { navigate } = await import('/src/shell/routing.ts');
+          navigate('/settings/theme');
+        })()`,
+        );
+        await wait(send, `document.querySelectorAll("[data-testid='settings-content'] [role='radio']").length >= 3`);
+        const appearance = await measureRadioOptions(send);
+        console.log(`settings appearance ${label}: ${JSON.stringify(appearance)}`);
+        try {
+          assert.ok(
+            appearance !== null && appearance.length >= 3,
+            "the Appearance pane renders its RadioGroup options",
+          );
+          if (viewport.mobile) {
+            assert.ok(search.field.height >= 44, `phone filter field retains tap floor (${search.field.height}px)`);
+            for (const option of appearance)
+              assert.ok(
+                option.height >= 44,
+                `phone ${option.label} radio option retains tap floor (${option.height}px)`,
+              );
+          } else {
+            assert.equal(
+              search.field.height,
+              DESKTOP_FILTER_HEIGHT,
+              `desktop filter field keeps its ${DESKTOP_FILTER_HEIGHT}px control height (${search.field.height}px)`,
+            );
+            for (const option of appearance)
+              assert.equal(
+                option.height,
+                DESKTOP_RADIO_HEIGHT,
+                `desktop ${option.label} radio option keeps its ${DESKTOP_RADIO_HEIGHT}px row (${option.height}px)`,
+              );
+          }
+        } catch (error) {
+          failures.push(`appearance ${label}: ${error.message}`);
         }
 
         await evaluate(

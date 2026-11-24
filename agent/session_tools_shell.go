@@ -827,7 +827,10 @@ func formatShellResult(out shellToolResult) string {
 		// promise is false there. Keep the wording aligned with the system
 		// prompt's one-shot Background work section.
 		if out.TurnEndsProcess {
-			b.WriteString(systemReminder("This is a one-shot run: the process exits once this turn's work is drained, and a background job still running then is stopped unless a job_watch is set on it. Set a job_watch on this job if you need its result."))
+			b.WriteString(systemReminder(fmt.Sprintf(
+				`This is a one-shot run: the process exits once this turn's work is drained, and a background job still running then is stopped unless a job_watch is set on it. If you need its result, call job_watch(operation="create", source=%q, progress_interval_ms=180000) or pass output_match.`,
+				out.JobID,
+			)))
 		} else {
 			b.WriteString(systemReminder("This job will notify you when it completes. If your session is idle, the notification will wake it. You do not need to wait for it explicitly."))
 		}

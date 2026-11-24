@@ -16,6 +16,7 @@
 import { friendlyErrorMessage, LOCAL_HOST } from "@evener/appwire-client";
 import { useEffect, useState } from "react";
 import { agentsDocStoreForHost, useAgentsDocStoreForHost } from "../../../stores/agentsDoc";
+import surfaceStyles from "../../../styles/surface.module.css";
 import { Button, InlineNotice, Textarea, useToasts } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import styles from "./agentsDoc.module.css";
@@ -159,7 +160,9 @@ export function AgentsDocSection({ host = LOCAL_HOST }: AgentsDocSectionProps) {
 
   return (
     <div className={CLASS.root}>
-      <h2>AGENTS.md</h2>
+      <h2 className={`${surfaceStyles.settingsSectionHeading} ${surfaceStyles.settingsSectionHeadingPaneTitle}`}>
+        AGENTS.md
+      </h2>
       <p className={CLASS.help}>
         Personal instructions loaded into every session, ahead of the repo's own AGENTS.md. Stored at{" "}
         <Code>{doc.path}</Code>.
