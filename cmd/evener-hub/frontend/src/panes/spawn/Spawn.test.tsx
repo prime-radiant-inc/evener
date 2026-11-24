@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import type { LaunchOption } from "@evener/appwire-client";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { expect, onTestFinished, test, vi } from "vitest";
-import { MOBILE_QUERY } from "../../shell/useIsMobile";
+import { FINE_HOVER_POINTER_QUERY, MOBILE_QUERY } from "../../shell/useIsMobile";
 import { connectionStore } from "../../stores/connection";
 import { readModuleCss, topRuleBlock } from "../../styles/cssBlock";
 import popoverStyles from "../../widgets/popover/popover.module.css";
@@ -321,6 +321,20 @@ test("the prompt field is focused on mount", async () => {
   expect(document.activeElement).toBe(screen.getByRole("textbox", { name: "Prompt" }));
 });
 
+function stubViewportCapabilities({ mobile, fineHover }: { mobile: boolean; fineHover: boolean }): void {
+  const matchesQuery = (query: string): boolean => {
+    if (query === MOBILE_QUERY) return mobile;
+    if (query === FINE_HOVER_POINTER_QUERY) return fineHover;
+    return false;
+  };
+  vi.stubGlobal("matchMedia", ((query: string) => ({
+    matches: matchesQuery(query),
+    media: query,
+    addEventListener() {},
+    removeEventListener() {},
+  })) as unknown as typeof window.matchMedia);
+}
+
 // An unfocused spawn pane (a background tab) must never yank keyboard focus,
 // and mobile must never pop the on-screen keyboard on load.
 test("an unfocused pane never focuses the prompt field on mount", async () => {
@@ -330,12 +344,17 @@ test("an unfocused pane never focuses the prompt field on mount", async () => {
 });
 
 test("a focused pane never focuses the prompt field on mount on mobile", async () => {
-  vi.stubGlobal("matchMedia", ((query: string) => ({
-    matches: true,
-    media: query,
-    addEventListener() {},
-    removeEventListener() {},
-  })) as unknown as typeof window.matchMedia);
+  stubViewportCapabilities({ mobile: true, fineHover: false });
+  renderSpawn(readyClient());
+  await settled();
+  expect(document.activeElement).not.toBe(screen.getByRole("textbox", { name: "Prompt" }));
+});
+
+// A 951x669 landscape phone is past the 899px phone breakpoint and still a
+// phone: the width gate focused its prompt and popped the on-screen keyboard.
+// The mount decision follows the primary pointer's coarse capability instead.
+test("a focused pane never focuses the prompt field on mount on a wide landscape phone", async () => {
+  stubViewportCapabilities({ mobile: false, fineHover: false });
   renderSpawn(readyClient());
   await settled();
   expect(document.activeElement).not.toBe(screen.getByRole("textbox", { name: "Prompt" }));

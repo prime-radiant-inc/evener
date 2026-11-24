@@ -15,7 +15,7 @@ import { vi } from "vitest";
 import { navigationStore } from "../stores/navigation/store";
 import { resetSettingsOverviewStoreForTests } from "../stores/settingsOverview";
 import { AppShell } from "./AppShell";
-import { MOBILE_QUERY } from "./useIsMobile";
+import { FINE_HOVER_POINTER_QUERY, MOBILE_QUERY } from "./useIsMobile";
 import { resetWorkspaceStoreForTests, workspaceStore } from "./workspace";
 
 // Session-title queries in this file target navigation, so keep them scoped to
@@ -80,8 +80,8 @@ export function installFailedLocation(ref: string): void {
 
 // jsdom implements no matchMedia at all (useIsMobile.test.ts's own header
 // comment documents the probe), so a mobile-layout test installs one: the
-// mobile query matches, every other query does not. Only useIsMobile reads
-// this surface, and only ever at mount here - no test in this file crosses
+// mobile query matches and every other query - including the fine-pointer
+// capability mount autofocus reads - does not. No test in this file crosses
 // the breakpoint mid-run, so the listeners are inert stubs.
 export function installMobileViewport(): void {
   vi.stubGlobal(
@@ -110,13 +110,24 @@ export function installSwitchableViewport(): (mobile: boolean) => void {
       listeners.delete(listener as (event: MediaQueryListEvent) => void);
     },
   } as MediaQueryList;
+  // One viewport toggled between a desktop window and a phone: the desktop
+  // phase has a fine hovering pointer and the phone phase's touch pointer is
+  // coarse, the pairing the shell's own capability gate reads.
+  const finePointerQuery = {
+    media: FINE_HOVER_POINTER_QUERY,
+    get matches() {
+      return !mobile;
+    },
+    addEventListener: () => {},
+    removeEventListener: () => {},
+  } as unknown as MediaQueryList;
   vi.stubGlobal(
     "matchMedia",
-    vi.fn((query: string) =>
-      query === mediaQuery.media
-        ? mediaQuery
-        : { matches: false, media: query, addEventListener: () => {}, removeEventListener: () => {} },
-    ),
+    vi.fn((query: string) => {
+      if (query === mediaQuery.media) return mediaQuery;
+      if (query === FINE_HOVER_POINTER_QUERY) return finePointerQuery;
+      return { matches: false, media: query, addEventListener: () => {}, removeEventListener: () => {} };
+    }),
   );
   return (nextMobile: boolean) => {
     mobile = nextMobile;
