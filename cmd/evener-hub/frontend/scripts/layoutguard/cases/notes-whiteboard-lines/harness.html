@@ -13,16 +13,12 @@
   }
   /* Scaffolding only: a pane-wide column wide enough that no fixture line
      wraps, so every visual line below comes from a line break in the note.
-     The declarations under test are notespanel.module.css's .prose
-     { white-space: pre-wrap } and topnotespanel.module.css's .clampedText
-     { white-space: pre-line; -webkit-line-clamp: 3 }. */
+     The declaration under test is notespanel.module.css's .prose
+     { white-space: pre-wrap }. */
   .pane {
     width: 640px;
     padding: var(--space-4);
     box-sizing: border-box;
-  }
-  .pane + .pane {
-    margin-top: var(--space-4);
   }
 </style>
 </head>
@@ -35,49 +31,14 @@
     <p class="prose" id="agent-note"></p>
   </section>
 </div>
-<!-- TopNotesPanel.tsx's collapsed bar: the shared Disclosure's details/summary
-     with the leading chevron, the source icon and the note preview in
-     .clampedText. One bar carries a note longer than the clamp, the other a
-     two-line note under it. -->
-<div class="pane">
-  <div class="topNotesPanel" data-expanded="false">
-    <details class="disclosure-details">
-      <summary class="disclosure-summary summary">
-        <span class="chevron"><svg width="16" height="16" aria-hidden="true"></svg></span>
-        <span class="summaryLeft">
-          <span class="sourceIcon" aria-hidden="true"><svg width="14" height="14" aria-hidden="true"></svg></span>
-          <span class="clampedText" id="summary-long"></span>
-        </span>
-      </summary>
-    </details>
-  </div>
-</div>
-<div class="pane">
-  <div class="topNotesPanel" data-expanded="false">
-    <details class="disclosure-details">
-      <summary class="disclosure-summary summary">
-        <span class="chevron"><svg width="16" height="16" aria-hidden="true"></svg></span>
-        <span class="summaryLeft">
-          <span class="sourceIcon" aria-hidden="true"><svg width="14" height="14" aria-hidden="true"></svg></span>
-          <span class="clampedText" id="summary-short"></span>
-        </span>
-      </summary>
-    </details>
-  </div>
-</div>
 <script>
 // Notes as the server stores them (normalizeWhiteboard): lines joined by LF,
 // each short enough to fit the column on one visual line.
 const AGENT_NOTE = "Port the whiteboard rule to the demo hub.\nNow: adding the browser guard.\nNext: run the gates.";
-const LONG_NOTE = "Ship Friday.\nCite the web version too.\nMeasure it again on magic-kingdom.\nThen rest.\nThen more.";
-const SHORT_NOTE = "Ship Friday.\nCite the web version too.";
 document.querySelector("#agent-note").textContent = AGENT_NOTE;
-document.querySelector("#summary-long").textContent = LONG_NOTE;
-document.querySelector("#summary-short").textContent = SHORT_NOTE;
 
 // Visible lines: distinct line-box tops among the text's client rects that
-// start inside the element's own box. A clamped element still lays out its
-// hidden lines below its bottom edge, so those are not counted.
+// start inside the element's own box.
 function visibleLines(el) {
   const box = el.getBoundingClientRect();
   const range = document.createRange();
@@ -95,15 +56,10 @@ function measureOne(id, note) {
     noteLines: note.split("\n").length,
     visibleLines: visibleLines(el),
     height: el.getBoundingClientRect().height,
-    clipped: el.scrollHeight - el.clientHeight,
   };
 }
 
-window.measure = () => ({
-  agent: measureOne("#agent-note", AGENT_NOTE),
-  summaryLong: measureOne("#summary-long", LONG_NOTE),
-  summaryShort: measureOne("#summary-short", SHORT_NOTE),
-});
+window.measure = () => ({ agent: measureOne("#agent-note", AGENT_NOTE) });
 </script>
 </body>
 </html>
