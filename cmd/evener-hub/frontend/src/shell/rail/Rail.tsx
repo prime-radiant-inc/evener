@@ -64,6 +64,7 @@ import {
   unpinSession,
 } from "./actions";
 import { holdLiveBands, liveBandNodes, railLiveBands } from "./liveBands";
+import { comparePinSections } from "./PinSectionPicker";
 import styles from "./Rail.module.css";
 import { RAIL_WIDTH_PROPERTY, RailResizeHandle } from "./RailResizeHandle";
 import { RailRow, type RailRowActions } from "./RailRow";
@@ -891,9 +892,7 @@ function NavigationRail({
   }
 
   const archivedOpen = isExpanded(ARCHIVED_SECTION_KEY, false);
-  const pinSections = [...resources.pinSections].sort(
-    (a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }) || a.id.localeCompare(b.id),
-  );
+  const pinSections = [...resources.pinSections].sort(comparePinSections);
   const unarchived = [...resources.projects, ...resources.testRuns];
   const archivedNodes: RailNode[] = [
     ...archivedProjectNodes(
