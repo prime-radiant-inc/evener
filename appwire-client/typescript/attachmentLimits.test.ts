@@ -2,8 +2,13 @@
 import { expect, test } from "vitest";
 import {
   admissionRejection,
+  fitImageDimensions,
+  IMAGE_JPEG_QUALITY,
   MAX_ATTACHMENT_BYTES,
   MAX_ATTACHMENTS,
+  MAX_IMAGE_LONG_EDGE,
+  MAX_SOURCE_BYTES,
+  MAX_SOURCE_PIXELS,
   rejectionReason,
   sizeRejection,
 } from "./attachmentLimits";
@@ -67,4 +72,48 @@ test("admits an image by type and count alone, whatever its size", () => {
 test("measures size alone, up to and including the limit", () => {
   expect(sizeRejection(MAX_ATTACHMENT_BYTES)).toBeUndefined();
   expect(sizeRejection(MAX_ATTACHMENT_BYTES + 1)).toBe("tooLarge");
+});
+
+// Composers that decode an image before sending it bound the decode with the
+// source's own bytes and pixels, then scale the result and encode it. These
+// shared values keep the phone and the web composer on the same bounds.
+test("pins the shared source and encoding limits", () => {
+  expect(MAX_SOURCE_BYTES).toBe(25 * 1024 * 1024);
+  expect(MAX_SOURCE_PIXELS).toBe(8064 * 6048);
+  expect(MAX_IMAGE_LONG_EDGE).toBe(2048);
+  expect(IMAGE_JPEG_QUALITY).toBe(0.85);
+});
+
+test("fits a landscape image's long edge to the shared cap", () => {
+  expect(fitImageDimensions(4032, 3024)).toEqual({ width: 2048, height: 1536 });
+});
+
+test("fits a portrait image's long edge to the shared cap", () => {
+  expect(fitImageDimensions(3024, 4032)).toEqual({ width: 1536, height: 2048 });
+});
+
+test("fits a square image to the shared cap on both edges", () => {
+  expect(fitImageDimensions(4096, 4096)).toEqual({ width: 2048, height: 2048 });
+});
+
+test("leaves an image that already fits its dimensions", () => {
+  expect(fitImageDimensions(800, 600)).toEqual({ width: 800, height: 600 });
+  expect(fitImageDimensions(2048, 1536)).toEqual({ width: 2048, height: 1536 });
+});
+
+test("clamps a zero-sized image to one pixel on both edges", () => {
+  expect(fitImageDimensions(0, 0)).toEqual({ width: 1, height: 1 });
+});
+
+test("clamps a non-positive edge to one pixel and keeps the other edge", () => {
+  expect(fitImageDimensions(-5, 100)).toEqual({ width: 1, height: 100 });
+});
+
+test("rounds fractional dimensions to whole pixels", () => {
+  expect(fitImageDimensions(800.4, 600.6)).toEqual({ width: 800, height: 601 });
+});
+
+test("never scales an edge below one pixel", () => {
+  expect(fitImageDimensions(10000, 1)).toEqual({ width: 2048, height: 1 });
+  expect(fitImageDimensions(1, 10000)).toEqual({ width: 1, height: 2048 });
 });

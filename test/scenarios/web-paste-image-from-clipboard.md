@@ -5,8 +5,8 @@ kata `r6a1` paste handler. The `paste` event on the spawn prompt textarea
 runs `imageFilesFromClipboard`
 (`panes/session/composer/attachments/clipboard.ts:7-17`), which pulls every
 `kind === "file" && type.startsWith("image/")` item off `clipboardData`;
-each file is canvas-re-encoded to PNG by `reencodeToPng`
-(`attachments/encodePng.ts:44`) and staged by `useAttachments.ingestFiles`.
+each file is canvas-encoded by `encodeImage` (`attachments/encodeImage.ts:128`)
+and staged by `useAttachments.ingestFiles`.
 On submit the bytes flow through the appwire `thread/start` and land as an
 image part on the first user message.
 
@@ -179,10 +179,10 @@ curl -s -X POST -H "Content-Type: application/json" \
 
 ## Sharp edges
 
-- **CSP must allow `blob:` in `img-src`** (kata `1pgw`). `reencodeToPng`
-  (`attachments/encodePng.ts:44-50`) calls `URL.createObjectURL(blob)` and
-  loads the result into an `Image` element to derive width/height before
-  re-encoding to PNG. Without `blob:`, `Image.onerror` fires, the re-encode
+- **CSP must allow `blob:` in `img-src`** (kata `1pgw`). `encodeImage`'s `<img>`
+  fallback (`attachments/encodeImage.ts:77-87`) calls `URL.createObjectURL(blob)`
+  and loads the result into an `Image` element to derive width/height before
+  encoding. Without `blob:`, `Image.onerror` fires, the encode
   rejects, and the `.catch` path (`useAttachments.ts:179-189`) strips the
   `[image N]` marker back out of the textarea, drops the chip, and toasts
   `<name> (image decode failed)` — for what is in fact a perfectly valid
