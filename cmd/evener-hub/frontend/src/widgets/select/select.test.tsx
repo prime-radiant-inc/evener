@@ -124,7 +124,7 @@ test("an id prop passes through for external <label htmlFor> association", () =>
 // own metrics.
 test("composes the shared control field for its box, hover edge, and focus ring", () => {
   const rule = topRuleBlock(readModuleCss(import.meta.url, "select.module.css"), ".select");
-  expect(rule).toContain('composes: field from "../internal/control.module.css"');
+  expect(rule).toContain('composes: controlField from "../internal/control.module.css"');
 });
 
 test("keeps the native select at 32px on desktop and the mobile touch floor", () => {

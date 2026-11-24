@@ -5,7 +5,7 @@
  * No custom dropdown: the pickers that need rich rows own their own.
  */
 .select {
-  composes: field from "../internal/control.module.css";
+  composes: controlField from "../internal/control.module.css";
   height: 32px;
   padding: 0 var(--space-3);
   font-family: var(--font-sans);

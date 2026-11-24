@@ -118,7 +118,7 @@
  * control box, composed); monospace, like the trigger, because it holds a
  * path. */
 .input {
-  composes: field from "../internal/control.module.css";
+  composes: controlField from "../internal/control.module.css";
   display: block;
   box-sizing: border-box;
   width: 100%;

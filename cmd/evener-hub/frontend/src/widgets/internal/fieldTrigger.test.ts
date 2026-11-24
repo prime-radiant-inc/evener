@@ -25,7 +25,7 @@ const SHARED = declarations("internal/fieldTrigger.module.css");
 // for free, so the shared module has to actually carry them.
 test("the shared recipe declares the control-shaped box", () => {
   const trigger = SHARED.match(/\.trigger\s*\{([^}]*)\}/)?.[1] ?? "";
-  expect(trigger).toContain('composes: field from "./control.module.css"');
+  expect(trigger).toContain('composes: controlField from "./control.module.css"');
   expect(trigger).toContain("box-sizing: border-box");
   expect(trigger).toContain("width: 100%");
   expect(trigger).toContain("height: 32px");
@@ -38,7 +38,7 @@ test("the shared recipe declares the control-shaped box", () => {
 // them.
 test("the shared recipe composes the shared control field", () => {
   const trigger = SHARED.match(/\.trigger\s*\{([^}]*)\}/)?.[1] ?? "";
-  expect(trigger).toContain('composes: field from "./control.module.css"');
+  expect(trigger).toContain('composes: controlField from "./control.module.css"');
 });
 
 // A button does NOT inherit the body font, so the face is the one thing each

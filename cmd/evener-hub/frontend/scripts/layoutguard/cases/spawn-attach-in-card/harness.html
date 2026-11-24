@@ -77,10 +77,19 @@ window.measure = () => {
   const gate = document.querySelector("[data-model-gate]");
   const modelValue = document.querySelector("[data-model-value]");
   const effort = document.querySelector("[data-effort]");
+  const field = document.querySelector("[data-field]");
   return {
     viewport: { width: window.innerWidth, height: window.innerHeight },
     card: box("[data-card]"),
-    field: box("[data-field]"),
+    field:
+      field === null
+        ? null
+        : {
+            ...box("[data-field]"),
+            computedDisplay: getComputedStyle(field).display,
+            computedBorderStyle: getComputedStyle(field).borderTopStyle,
+            computedBackground: getComputedStyle(field).backgroundColor,
+          },
     controls: controls === null ? null : { ...box("[data-controls]"), position: getComputedStyle(controls).position },
     attach: box("[data-attach]"),
     start: box("[data-start]"),

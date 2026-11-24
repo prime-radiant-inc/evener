@@ -7,7 +7,7 @@
  * no inline height at all. */
 .textarea {
   --textarea-min-lines: 2;
-  composes: field from "../internal/control.module.css";
+  composes: controlField from "../internal/control.module.css";
   padding: var(--space-2) var(--space-3);
   font-family: var(--font-sans);
   /* Prose input reads at the body size on desktop (the control step is the

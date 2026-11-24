@@ -200,5 +200,5 @@ test("composes the shared control field for its box, hover edge, and focus ring"
   const here = dirname(fileURLToPath(import.meta.url));
   const css = readFileSync(join(here, "input.module.css"), "utf8");
   const rule = /\.input\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
-  expect(rule).toContain('composes: field from "../internal/control.module.css"');
+  expect(rule).toContain('composes: controlField from "../internal/control.module.css"');
 });

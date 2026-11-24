@@ -13,7 +13,7 @@
  * tracked its value read as a stray tag wedged between two full-width fields.
  * Tokens only. */
 .trigger {
-  composes: field from "./control.module.css";
+  composes: controlField from "./control.module.css";
   display: flex;
   align-items: center;
   gap: var(--space-1);

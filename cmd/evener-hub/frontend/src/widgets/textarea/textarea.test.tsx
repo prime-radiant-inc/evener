@@ -121,7 +121,7 @@ test("without autoGrow, no inline height style is ever applied - sizing stays ro
 // prose metrics and its seamless opt-out.
 test("composes the shared control field for its box, hover edge, and focus ring", () => {
   const rule = /\.textarea\s*\{([^}]*)\}/.exec(moduleCss())?.[1] ?? "";
-  expect(rule).toContain('composes: field from "../internal/control.module.css"');
+  expect(rule).toContain('composes: controlField from "../internal/control.module.css"');
 });
 
 // --- seamless: opt-in only, and only ADDS a class ------------------------
