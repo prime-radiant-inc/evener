@@ -25,8 +25,7 @@
 }
 
 .why {
-  font-size: var(--font-size-caption);
-  color: var(--ink-mid);
+  composes: helpCaption from "../../../../styles/help.module.css";
   /* The why line renders through the Markdown widget, whose root sets its
    * own color and family and would otherwise shadow this host's muted
    * caption treatment with the reading-surface defaults. */
@@ -71,8 +70,10 @@
 
 /* The chosen option carries a rounded wash and an accent hairline, so the
  * selection reads across the whole row and not only in the native control.
- * --accent: ordinary selection state (design-system.md §4). */
+ * The same recipe as the dock's selected tab (askdock.module.css
+ * .tab[aria-selected="true"]). */
 .optionRow:has(:checked) {
+  color: var(--ink-hi);
   border-color: var(--accent-edge);
   background: var(--accent-bg);
 }
