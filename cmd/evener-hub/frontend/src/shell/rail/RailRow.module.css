@@ -430,3 +430,27 @@
   min-width: 0;
 }
 
+/* Phone drawer and tablet board: the name leads even in an unselected row.
+ * Tree supplies the selected surface; its weight must not lift the age or
+ * the explanation to the same level as the name. */
+@media (max-width: 899px) {
+  .sessionTitleButton {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    font-weight: var(--font-weight-semibold);
+    line-height: var(--line-height-ui);
+  }
+
+  .bandLabel {
+    font-size: var(--font-size-caption);
+  }
+
+  .meta,
+  .why,
+  .quotaWait {
+    font-weight: var(--font-weight-regular);
+    line-height: var(--line-height-ui);
+  }
+}
+

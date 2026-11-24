@@ -487,6 +487,11 @@ idle keeps one line. The same line names the row's host where Live spans hosts a
 row is away from this hub, or the host is offline. Rows outside Live keep the one-line
 face; their only second line is the usage-limit wait.
 
+In the narrow shell, every session name is semibold. The reason and age stay regular
+even on the selected row. A pending question shows its own words when supplied and
+falls back to the attention label otherwise. The title and reason share one control:
+tap either line to open the session, or hold either line to reveal the full name and context.
+
 The rail's New-session control is a `Button variant="secondary"`, and the shell keeps at most
 one filled primary on screen: the rail is chrome, so its CTA must not outrank the current
 task's primary action. `scripts/shellguard` (`run.mjs`'s `railNewSession`/`primaryButtons`
