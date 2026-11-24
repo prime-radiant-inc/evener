@@ -234,7 +234,7 @@ describe("pressRailRowExpr finds, hit-tests and presses in one turn", () => {
 // the point, never measured a turn earlier (#4071).
 describe("slashRowPointExpr hit-tests the skill's own row", () => {
   function renderMenu() {
-    document.body.innerHTML = `<div data-testid="composer-slash-menu"><button><span>/other</span></button><button><span>/review</span></button></div>`;
+    document.body.innerHTML = `<ul role="listbox" data-testid="composer-slash-menu"><li role="option"><span>/other</span></li><li role="option"><span>/review</span></li></ul>`;
     for (const el of document.querySelectorAll("*")) {
       el.scrollIntoView = () => {};
       el.getBoundingClientRect = () => ({ x: 0, y: 0, width: 10, height: 10 });
@@ -243,18 +243,18 @@ describe("slashRowPointExpr hit-tests the skill's own row", () => {
 
   test("returns the row's center while the row is topmost there", () => {
     renderMenu();
-    document.elementFromPoint = () => document.querySelectorAll("button span")[1];
+    document.elementFromPoint = () => document.querySelectorAll("[role='option'] span")[1];
     expect(evaluateExpr(driver.slashRowPointExpr("/review"))).toEqual({ x: 5, y: 5 });
   });
 
   test("reports not ready while another row is at its center", () => {
     renderMenu();
-    document.elementFromPoint = () => document.querySelector("button span");
+    document.elementFromPoint = () => document.querySelector("[role='option'] span");
     expect(evaluateExpr(driver.slashRowPointExpr("/review"))).toBeNull();
   });
 
   test("reports not ready while the row is absent", () => {
-    document.body.innerHTML = `<div data-testid="composer-slash-menu"><button><span>/other</span></button></div>`;
+    document.body.innerHTML = `<ul role="listbox" data-testid="composer-slash-menu"><li role="option"><span>/other</span></li></ul>`;
     expect(evaluateExpr(driver.slashRowPointExpr("/review"))).toBeNull();
   });
 });
