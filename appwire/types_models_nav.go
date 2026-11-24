@@ -20,6 +20,35 @@ type PathsCompleteResponse struct {
 	Data []string `json:"data"`
 }
 
+// FilesSearchParams searches files and directories under either an active
+// session's live working directory (Ref) or an explicit host directory (CWD).
+type FilesSearchParams struct {
+	// Exactly one of Ref or CWD must be set.
+	// Ref resolves a session's live working directory (local or single-hop remote).
+	Ref string `json:"ref,omitempty"`
+	// CWD resolves an explicit absolute directory on the target hub (Spawn).
+	CWD   string `json:"cwd,omitempty"`
+	Query string `json:"query"`
+	// Limit bounds returned items; <= 0 defaults to 25, capped at 50.
+	Limit int `json:"limit,omitempty"`
+}
+
+// FileSearchItem is one ranked file or directory completion result.
+type FileSearchItem struct {
+	// Slash-separated path relative to the resolved root, never starting with "/" or "..".
+	Path string `json:"path"`
+	// "file" or "dir".
+	Kind string `json:"kind"`
+}
+
+// FilesSearchResponse returns ranked file-mention matches and truncation state.
+type FilesSearchResponse struct {
+	// Non-nil empty slice on no matches so JSON always encodes [] rather than null.
+	Items []FileSearchItem `json:"items"`
+	// True when the host walk hit its path, directory, or wall-clock budget.
+	Truncated bool `json:"truncated,omitempty"`
+}
+
 // DirsCreateParams requests creation of a working directory and any missing
 // parents for a Spawn preflight.
 type DirsCreateParams struct {

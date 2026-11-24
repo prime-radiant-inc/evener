@@ -1,0 +1,237 @@
+{
+  "cases": [
+    {
+      "name": "empty_query_ordering",
+      "query": "",
+      "limit": 10,
+      "items": [
+        { "path": "sub/z.go", "kind": "file" },
+        { "path": "dir", "kind": "dir" },
+        { "path": "b.go", "kind": "file" },
+        { "path": "a.go", "kind": "file" },
+        { "path": "sub", "kind": "dir" }
+      ],
+      "wantPaths": ["a.go", "b.go", "dir", "sub", "sub/z.go"],
+      "wantPositions": {}
+    },
+    {
+      "name": "exact_basename_beats_prefix_and_full_prefix",
+      "query": "foo.go",
+      "limit": 10,
+      "items": [
+        { "path": "foo.go/helper.txt", "kind": "file" },
+        { "path": "src/foo.go.bak", "kind": "file" },
+        { "path": "src/foo.go", "kind": "file" },
+        { "path": "foo.go", "kind": "file" }
+      ],
+      "wantPaths": ["foo.go", "src/foo.go", "src/foo.go.bak", "foo.go/helper.txt"],
+      "wantPositions": {
+        "foo.go": [0, 1, 2, 3, 4, 5],
+        "src/foo.go": [4, 5, 6, 7, 8, 9],
+        "src/foo.go.bak": [4, 5, 6, 7, 8, 9],
+        "foo.go/helper.txt": [0, 1, 2, 3, 4, 5]
+      }
+    },
+    {
+      "name": "basename_prefix_and_contained_beat_dir_prefix",
+      "query": "comp",
+      "limit": 10,
+      "items": [
+        { "path": "components/button/index.ts", "kind": "file" },
+        { "path": "src/my_component.ts", "kind": "file" },
+        { "path": "src/comp.ts", "kind": "file" }
+      ],
+      "wantPaths": ["src/comp.ts", "src/my_component.ts", "components/button/index.ts"],
+      "wantPositions": {
+        "src/comp.ts": [4, 5, 6, 7],
+        "src/my_component.ts": [7, 8, 9, 10],
+        "components/button/index.ts": [0, 1, 2, 3]
+      }
+    },
+    {
+      "name": "camel_case_boundary_bonus",
+      "query": "fm",
+      "limit": 10,
+      "items": [
+        { "path": "src/fxxxxxmx.ts", "kind": "file" },
+        { "path": "src/fileMention.ts", "kind": "file" }
+      ],
+      "wantPaths": ["src/fileMention.ts", "src/fxxxxxmx.ts"],
+      "wantPositions": {
+        "src/fileMention.ts": [4, 8],
+        "src/fxxxxxmx.ts": [4, 10]
+      }
+    },
+    {
+      "name": "word_boundary_separator_bonus",
+      "query": "ab",
+      "limit": 10,
+      "items": [
+        { "path": "foo_bar/axb.txt", "kind": "file" },
+        { "path": "foo_bar/a_b.txt", "kind": "file" }
+      ],
+      "wantPaths": ["foo_bar/a_b.txt", "foo_bar/axb.txt"],
+      "wantPositions": {
+        "foo_bar/a_b.txt": [8, 10],
+        "foo_bar/axb.txt": [8, 10]
+      }
+    },
+    {
+      "name": "exact_case_bonus",
+      "query": "FM",
+      "limit": 10,
+      "items": [
+        { "path": "src/fm.ts", "kind": "file" },
+        { "path": "src/FM.ts", "kind": "file" }
+      ],
+      "wantPaths": ["src/FM.ts", "src/fm.ts"],
+      "wantPositions": {
+        "src/FM.ts": [4, 5],
+        "src/fm.ts": [4, 5]
+      }
+    },
+    {
+      "name": "gap_penalty_and_depth_length",
+      "query": "ac",
+      "limit": 10,
+      "items": [
+        { "path": "x/y/z/axxxxxc.go", "kind": "file" },
+        { "path": "src/axxxxxc.go", "kind": "file" },
+        { "path": "src/axc.go", "kind": "file" }
+      ],
+      "wantPaths": ["src/axc.go", "src/axxxxxc.go", "x/y/z/axxxxxc.go"],
+      "wantPositions": {
+        "src/axc.go": [4, 6],
+        "src/axxxxxc.go": [4, 10],
+        "x/y/z/axxxxxc.go": [6, 12]
+      }
+    },
+    {
+      "name": "leading_dot_slash_trimmed",
+      "query": "./app",
+      "limit": 10,
+      "items": [
+        { "path": "src/other.tsx", "kind": "file" },
+        { "path": "src/app.tsx", "kind": "file" }
+      ],
+      "wantPaths": ["src/app.tsx"],
+      "wantPositions": {
+        "src/app.tsx": [4, 5, 6]
+      }
+    },
+    {
+      "name": "leftmost_earlier_end_on_dp_ties",
+      "query": "ba",
+      "limit": 10,
+      "items": [
+        { "path": "src/xbaba.go", "kind": "file" }
+      ],
+      "wantPaths": ["src/xbaba.go"],
+      "wantPositions": {
+        "src/xbaba.go": [5, 6]
+      }
+    },
+    {
+      "name": "leftmost_earlier_prev_on_dp_ties",
+      "query": "abc",
+      "limit": 10,
+      "items": [
+        { "path": "xabbc", "kind": "file" }
+      ],
+      "wantPaths": ["xabbc"],
+      "wantPositions": {
+        "xabbc": [1, 2, 4]
+      }
+    },
+    {
+      "name": "tiebreak_file_before_dir",
+      "query": "mod",
+      "limit": 10,
+      "items": [
+        { "path": "a/mod", "kind": "dir" },
+        { "path": "b/mod", "kind": "file" }
+      ],
+      "wantPaths": ["b/mod", "a/mod"],
+      "wantPositions": {
+        "b/mod": [2, 3, 4],
+        "a/mod": [2, 3, 4]
+      }
+    },
+    {
+      "name": "tiebreak_fewer_segments_on_equal_score",
+      "query": "A",
+      "limit": 10,
+      "items": [
+        { "path": "x/y/A", "kind": "file" },
+        { "path": "x/a", "kind": "file" }
+      ],
+      "wantPaths": ["x/a", "x/y/A"],
+      "wantPositions": {
+        "x/a": [2],
+        "x/y/A": [4]
+      }
+    },
+    {
+      "name": "tiebreak_shorter_then_lexical",
+      "query": "ab",
+      "limit": 10,
+      "items": [
+        { "path": "d/ab123", "kind": "file" },
+        { "path": "d/ab2", "kind": "file" },
+        { "path": "d/ab1", "kind": "file" }
+      ],
+      "wantPaths": ["d/ab1", "d/ab2", "d/ab123"],
+      "wantPositions": {
+        "d/ab1": [2, 3],
+        "d/ab2": [2, 3],
+        "d/ab123": [2, 3]
+      }
+    },
+    {
+      "name": "over_512_char_greedy_fallback",
+      "query": "tgt",
+      "limit": 10,
+      "items": [
+        {
+          "path": "a/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx/other.go",
+          "kind": "file"
+        },
+        {
+          "path": "a/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx/target_file.go",
+          "kind": "file"
+        }
+      ],
+      "wantPaths": [
+        "a/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx/target_file.go"
+      ],
+      "wantPositions": {
+        "a/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx/target_file.go": [515, 518, 520]
+      }
+    },
+    {
+      "name": "limit_and_no_matches",
+      "query": "main",
+      "limit": 2,
+      "items": [
+        { "path": "main.go", "kind": "file" },
+        { "path": "cmd/main.go", "kind": "file" },
+        { "path": "pkg/domain.go", "kind": "file" }
+      ],
+      "wantPaths": ["main.go", "cmd/main.go"],
+      "wantPositions": {
+        "main.go": [0, 1, 2, 3],
+        "cmd/main.go": [4, 5, 6, 7]
+      }
+    },
+    {
+      "name": "zero_matches_returns_empty",
+      "query": "zzzznotfound",
+      "limit": 10,
+      "items": [
+        { "path": "main.go", "kind": "file" }
+      ],
+      "wantPaths": [],
+      "wantPositions": {}
+    }
+  ]
+}
