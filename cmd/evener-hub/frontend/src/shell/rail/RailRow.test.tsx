@@ -24,7 +24,6 @@ import { navigationStore, resetNavigationStoreForTests } from "../../stores/navi
 import { resetThreadsStoreForTests } from "../../stores/threads";
 import { blockBody, mediaBlock, readModuleCss, topRuleBlock } from "../../styles/cssBlock";
 import { LONG_PRESS_MS } from "../../widgets/hovercard";
-import { installHoverlessMatchMedia } from "../../widgets/hovercard/hovercardTestUtils";
 import { hoverForTooltip } from "../../widgets/tooltip/tooltipTestUtils";
 import { Tree, type TreeRowInfo } from "../../widgets/tree";
 import { activitySidebarStore, resetActivitySidebarStoreForTests } from "../activitybar/activitySidebarStore";
@@ -816,39 +815,62 @@ describe("compact session status", () => {
   // The bug this pins: on a touch-only device the row's own tap must open the
   // session, and only a long press may expose the context card. A real tap
   // first fires mousedown, which RailRow uses to focus the owning tree row -
-  // exactly the focus that used to pop the card on its own.
+  // exactly the focus that used to pop the card on its own. On the phone the
+  // title and the reason under it are one target: a hold on either line opens
+  // the card, and the tap it lifts still opens the session exactly once.
   test("a hoverless tap opens the session and only a long press opens the context panel", () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-    installHoverlessMatchMedia();
+    const restoreViewport = installMobileViewport([MOBILE_QUERY, "(hover: none)"]);
     const rowInfo = info();
-    render(
-      <div role="treeitem" tabIndex={0}>
-        <RailRow node={sessionRailNode(apiNode({ state: "active" }))} info={rowInfo} actions={actions()} />
-      </div>,
-    );
-    const title = screen.getByTestId("rail-row-title");
+    const asked = "Cut the release from main or the stable branch?";
+    try {
+      render(
+        <div role="treeitem" tabIndex={0}>
+          <RailRow
+            node={sessionRailNode(
+              apiNode({ state: "awaiting", ask_pending: true, question: { text: asked, count: 1 } }),
+              { live: "question" },
+            )}
+            info={rowInfo}
+            actions={actions()}
+          />
+        </div>,
+      );
+      const title = screen.getByTestId("rail-row-title");
+      // One trigger carries both lines: the name and the question it asks.
+      const reason = screen.getByTestId("rail-row-why-text");
+      expect(reason.textContent).toBe(asked);
+      expect(title.contains(reason)).toBe(true);
+      // The button keeps the class pair the coarse tap floor targets, and its
+      // own content is the name followed by the row's one reason.
+      expect(title.className).toBe(`${railStyles.label} ${railStyles.sessionTitleButton}`);
+      expect(title.firstElementChild?.textContent).toBe("Fix flaky test");
+      expect(screen.getAllByTestId("rail-row-why")).toHaveLength(1);
 
-    // Real touch order: the pointer lifts, then the compatibility mousedown
-    // focuses the row. That focus must not open the card on its own.
-    fireEvent.pointerDown(title, { button: 0 });
-    fireEvent.pointerUp(title, { button: 0 });
-    fireEvent.mouseDown(title, { button: 0 });
-    expect(screen.queryByRole("tooltip")).toBeNull();
+      // Real touch order: the pointer lifts, then the compatibility mousedown
+      // focuses the row. That focus must not open the card on its own.
+      fireEvent.pointerDown(title, { button: 0 });
+      fireEvent.pointerUp(title, { button: 0 });
+      fireEvent.mouseDown(title, { button: 0 });
+      expect(screen.queryByRole("tooltip")).toBeNull();
 
-    fireEvent.click(title);
-    expect(rowInfo.activate).toHaveBeenCalledOnce();
-    expect(screen.queryByRole("tooltip")).toBeNull();
+      fireEvent.click(title);
+      expect(rowInfo.activate).toHaveBeenCalledOnce();
+      expect(screen.queryByRole("tooltip")).toBeNull();
 
-    fireEvent.pointerDown(title, { button: 0, clientX: 5, clientY: 5 });
-    act(() => {
-      vi.advanceTimersByTime(LONG_PRESS_MS);
-    });
-    expect(screen.getByRole("tooltip")).toBeTruthy();
+      fireEvent.pointerDown(reason, { button: 0, clientX: 5, clientY: 5 });
+      act(() => {
+        vi.advanceTimersByTime(LONG_PRESS_MS);
+      });
+      expect(screen.getByRole("tooltip")).toBeTruthy();
 
-    fireEvent.pointerUp(title, { clientX: 5, clientY: 5 });
-    fireEvent.click(title);
-    expect(rowInfo.activate).toHaveBeenCalledOnce();
-    expect(screen.getByRole("tooltip")).toBeTruthy();
+      fireEvent.pointerUp(reason, { clientX: 5, clientY: 5 });
+      fireEvent.click(reason);
+      expect(rowInfo.activate).toHaveBeenCalledOnce();
+      expect(screen.getByRole("tooltip")).toBeTruthy();
+    } finally {
+      restoreViewport();
+    }
   });
 
   test.each([
