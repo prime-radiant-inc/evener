@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=900, initial-scale=1">
+<title>settings-heading-scale layoutguard harness</title>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="resolved.css">
+<style>
+  * { transition: none !important; animation: none !important; }
+
+  body {
+    margin: 0;
+    padding: 16px;
+    background: var(--surface-0);
+    color: var(--ink-hi);
+    font-family: var(--font-sans);
+  }
+
+  .probe { display: block; font-size: var(--font-size-pane-title); }
+  .probeBody { display: block; font-size: var(--font-size-body); }
+</style>
+</head>
+<body data-font-size="m">
+<!-- Settings sections render an <h2> with the shared section-heading recipe,
+     and their subsections an <h3> with the body-size modifier (for example
+     hosts.tsx and dirListSetting.tsx). -->
+<h2 class="settingsSectionHeading settingsSectionHeadingPaneTitle" data-section-heading>Sources</h2>
+<h3 class="settingsSectionHeading settingsSectionHeadingBody" data-subsection-heading>Installed plugins</h3>
+<span class="probe" data-pane-title-probe>pane title</span>
+<span class="probeBody" data-body-probe>body</span>
+<script>
+function computed(element) {
+  const style = getComputedStyle(element);
+  return {
+    fontSize: parseFloat(style.fontSize),
+    marginTop: parseFloat(style.marginTop),
+    marginBottom: parseFloat(style.marginBottom),
+  };
+}
+
+window.measure = () => ({
+  section: computed(document.querySelector("[data-section-heading]")),
+  subsection: computed(document.querySelector("[data-subsection-heading]")),
+  paneTitleProbe: computed(document.querySelector("[data-pane-title-probe]")),
+  bodyProbe: computed(document.querySelector("[data-body-probe]")),
+});
+</script>
+</body>
+</html>
