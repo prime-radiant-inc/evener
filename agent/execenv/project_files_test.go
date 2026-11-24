@@ -662,6 +662,39 @@ func TestWalkProjectFilesAncestorIgnoreCacheAndSymlink(t *testing.T) {
 	}
 }
 
+func TestGlobPreservesIgnoredDirRuleOverNestedNegation(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	mustWriteProjectFile(t, filepath.Join(root, ".gitignore"), "dist/\n")
+	mustWriteProjectFile(t, filepath.Join(root, "dist", ".gitignore"), "!README.md\n")
+	mustWriteProjectFile(t, filepath.Join(root, "dist", "README.md"), "ignored by root\n")
+	mustWriteProjectFile(t, filepath.Join(root, "src", "README.md"), "kept\n")
+
+	hasSuffix := func(s, suffix string) bool { return strings.HasSuffix(filepath.ToSlash(s), suffix) }
+	matches, excluded, err := NewLocalExecutionEnvironment(root).GlobWithExclusions(t.Context(), "**/*.md", root, false)
+	if err != nil {
+		t.Fatalf("GlobWithExclusions: %v", err)
+	}
+	if slices.ContainsFunc(matches, func(m string) bool { return hasSuffix(m, "/dist/README.md") }) {
+		t.Fatalf("GlobWithExclusions returned dist/README.md despite root .gitignore dist/: matches=%v", matches)
+	}
+	if !slices.ContainsFunc(matches, func(m string) bool { return hasSuffix(m, "/src/README.md") }) || excluded == 0 {
+		t.Fatalf("GlobWithExclusions = (%v, excluded=%d), want src/README.md and excluded > 0", matches, excluded)
+	}
+
+	walkRes, err := WalkProjectFiles(t.Context(), root, ProjectFilesOptions{})
+	if err != nil {
+		t.Fatalf("WalkProjectFiles: %v", err)
+	}
+	got := projectEntryMap(walkRes.Entries)
+	if _, ok := got["dist/README.md"]; ok {
+		t.Fatalf("WalkProjectFiles leaked dist/README.md: %v", walkRes.Entries)
+	}
+	if _, ok := got["src/README.md"]; !ok {
+		t.Fatalf("WalkProjectFiles missing src/README.md: %v", walkRes.Entries)
+	}
+}
+
 func mustWriteProjectFile(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

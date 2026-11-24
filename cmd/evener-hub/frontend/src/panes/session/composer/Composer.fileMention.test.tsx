@@ -487,3 +487,37 @@ test("accepting unquoted @ma immediately before staged [image 1] preserves image
     { marker: 1, start: "@src/main.go ".length, end: "@src/main.go [image 1]".length },
   ]);
 });
+
+test("pasting an image while file menu is open dismisses completion and prevents stale-offset corruption of [image 1]", async () => {
+  installCanvasStubs();
+  const user = userEvent.setup();
+  const ref = "ref_file_paste_image_dismiss";
+  await mountComposerWithHandle(
+    ref,
+    {},
+    {
+      prepare: (client) => {
+        client.on("evener/files/search", () => ({
+          items: [{ path: "src/main.go", kind: "file" }],
+        }));
+      },
+    },
+  );
+
+  const editor = textarea();
+  await user.type(editor, "see @src/main.go");
+  selectEditorText(editor, "see @src/ma".length);
+  await waitFor(() => expect(fileOptions()).toHaveLength(1));
+
+  pastePngInto(editor, "shot.png");
+  await waitFor(() => expect(editor.textContent).toBe("see @src/ma[image 1]in.go"));
+  await waitFor(() => expect(screen.getByRole("button", { name: "Remove shot.png" })).toBeTruthy());
+  expect(queryFileMenu()).toBeNull();
+
+  await user.keyboard("{Tab}");
+  expect(editor.textContent).toBe("see @src/ma[image 1]in.go");
+  expect(screen.getByRole("button", { name: "Remove shot.png" })).toBeTruthy();
+  expect(readComposerDraftSnapshot(ref).stagedImageRanges).toEqual([
+    { marker: 1, start: "see @src/ma".length, end: "see @src/ma[image 1]".length },
+  ]);
+});

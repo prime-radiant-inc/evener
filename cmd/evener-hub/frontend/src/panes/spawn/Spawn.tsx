@@ -1017,6 +1017,7 @@ function SpawnForm({
     enabled: fileCompletionEnabled,
     editorRef: textareaRef,
     textRef,
+    draft: prompt,
     plainKeysOnly: true,
     getProtectedRanges: () => protectedMarkerRangesFor(textRef.current),
   });

@@ -5,9 +5,13 @@ import { expect, test, vi } from "vitest";
 import { readModuleCss, topRuleBlock } from "../../styles/cssBlock";
 import { getToasts } from "../../widgets/toast/store";
 import "../session/testing/editorGeometry";
+import { selectEditorText } from "../session/testing/editor";
 import {
   chooseHost,
+  fillPrompt,
+  installCanvasStubs,
   installSpawnTestHooks,
+  pastePngInto,
   promptField,
   readyClient,
   renderSpawn,
@@ -142,4 +146,39 @@ test("file completion stylesheet anchors upward by default and opens downward fo
   const belowRule = topRuleBlock(css, ".below");
   expect(belowRule).toContain("top: calc(100% + var(--space-half));");
   expect(belowRule).toContain("bottom: auto;");
+});
+
+test("pasting an image while spawn file menu is open dismisses completion and prevents stale-offset corruption of [image 1]", async () => {
+  installCanvasStubs();
+  const user = setupUser();
+  seedSources([{ id: "local", label: "Local", online: true, kind: "local" }]);
+  window.history.pushState({}, "", "/new?dir=/srv/local-repo");
+
+  const fake = readyClient((f) => {
+    f.on("evener/files/search", () => ({
+      items: [{ path: "src/main.go", kind: "file" }],
+    }));
+  });
+
+  renderSpawn(fake);
+  await settled();
+
+  await fillPrompt(user, "see @src/main.go");
+  const editor = promptField();
+  selectEditorText(editor, "see @src/ma".length);
+  await act(async () => {
+    vi.advanceTimersByTime(FILE_MENTION_DEBOUNCE_MS);
+  });
+  await waitFor(() => expect(fileOptions()).toHaveLength(1));
+
+  await act(async () => {
+    pastePngInto(editor, "shot.png");
+  });
+  await waitFor(() => expect(editor.textContent).toBe("see @src/ma[image 1]in.go"));
+  await waitFor(() => expect(screen.getByRole("button", { name: "Remove shot.png" })).toBeTruthy());
+  expect(queryFileMenu()).toBeNull();
+
+  await user.keyboard("{Tab}");
+  expect(editor.textContent).toBe("see @src/ma[image 1]in.go");
+  expect(screen.getByRole("button", { name: "Remove shot.png" })).toBeTruthy();
 });

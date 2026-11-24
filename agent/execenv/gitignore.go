@@ -2,13 +2,11 @@ package execenv
 
 import (
 	"bytes"
-	"cmp"
 	"context"
 	"errors"
 	"io/fs"
 	"path"
 	"path/filepath"
-	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -263,32 +261,28 @@ func ignoreFileVersion(ctx context.Context, fsys fs.FS, path string, cache *igno
 // works uniformly for both the off and sandboxed search paths.
 //
 // It is a best-effort approximation of git's own precedence: patterns from a
-// deeper .gitignore are consulted after (and so can override, including via
-// "!" negation) patterns from a shallower one. Traversal callers (such as
-// WalkProjectFiles and grep) prune ignored directories before descending, so a
-// .gitignore inside an un-negated excluded directory is never read, matching
-// git's directory-pruning semantics. WalkProjectFiles also seeds dirs with
-// ancestor .gitignore layers from the enclosing Git worktree root down to the
-// walk base via ancestorPrefix; directory-scoped glob/grep callers leave
-// ancestorPrefix empty.
+// deeper .gitignore are consulted after (and so can override) patterns from a
+// shallower one, but a match found in a shallower directory can only be
+// reversed by a negating ("!") pattern within that SAME .gitignore file, not
+// by an unrelated file further down — matching git's documented restriction
+// that a file excluded by a parent directory's rule generally cannot be
+// re-included from below. Patterns from .gitignore files outside the search
+// base (e.g. a repo root .gitignore when base is a subdirectory) are not
+// consulted; this is a known simplification for a directory-scoped search.
 type ignoreSet struct {
-	// dirs is ordered shallowest-to-deepest (BFS / depth-sorted) so deeper
-	// .gitignore files override shallower ones.
+	// dirs is in collection order, which is root-first only for a
+	// single-prefix scope: a call scoped to several prefixes appends each
+	// prefix's ancestors and subtree in turn, so {a,b}/*.txt yields ".", "b",
+	// "b/c", "a". Nothing depends on the order today, because matches ORs
+	// every rule that applies and never resets. Anything that later gives a
+	// deeper rule precedence over a shallower one has to sort first rather
+	// than rely on this slice.
 	dirs []ignoreDir
 }
 
 type ignoreDir struct {
-	rel            string // "." for the base itself, else slash-separated relative dir
-	ancestorPrefix string // non-empty when matching a strict ancestor .gitignore (base relative to that ancestor)
-	matcher        *gitignore.GitIgnore
-	rules          []compiledIgnoreRule
-}
-
-func ignoreRelDepth(rel string) int {
-	if rel == "." {
-		return 0
-	}
-	return strings.Count(rel, "/") + 1
+	rel     string // "." for the base itself, else slash-separated relative dir
+	matcher *gitignore.GitIgnore
 }
 
 // ignoreScope is one region of the base discovery has to inspect: a literal
@@ -693,7 +687,7 @@ func loadIgnoreSetCached(ctx context.Context, fsys fs.FS, skip func(relPath stri
 			if cerr := ctx.Err(); cerr != nil {
 				return set, cerr
 			}
-			matcher, rules, read, berr := readIgnoreRules(ctx, fsys, root, p, budget, cache)
+			matcher, _, read, berr := readIgnoreRules(ctx, fsys, root, p, budget, cache)
 			if berr != nil {
 				return set, berr
 			}
@@ -706,7 +700,7 @@ func loadIgnoreSetCached(ctx context.Context, fsys fs.FS, skip func(relPath stri
 			if matcher == nil {
 				continue
 			}
-			set.dirs = append(set.dirs, ignoreDir{rel: dir, matcher: matcher, rules: rules})
+			set.dirs = append(set.dirs, ignoreDir{rel: dir, matcher: matcher})
 		}
 	}
 
@@ -800,7 +794,7 @@ func loadIgnoreSetCached(ctx context.Context, fsys fs.FS, skip func(relPath stri
 			if loadedRules[p] {
 				return nil
 			}
-			matcher, rules, read, berr := readIgnoreRules(ctx, fsys, root, p, budget, cache)
+			matcher, _, read, berr := readIgnoreRules(ctx, fsys, root, p, budget, cache)
 			if berr != nil {
 				budgetErr = berr
 				return berr
@@ -812,7 +806,7 @@ func loadIgnoreSetCached(ctx context.Context, fsys fs.FS, skip func(relPath stri
 				return nil
 			}
 			dir := path.Dir(p)
-			set.dirs = append(set.dirs, ignoreDir{rel: dir, matcher: matcher, rules: rules})
+			set.dirs = append(set.dirs, ignoreDir{rel: dir, matcher: matcher})
 			return nil
 		})
 		// The walk's own return is the backstop for a failure the callback
@@ -830,9 +824,6 @@ func loadIgnoreSetCached(ctx context.Context, fsys fs.FS, skip func(relPath stri
 			break
 		}
 	}
-	slices.SortStableFunc(set.dirs, func(a, b ignoreDir) int {
-		return cmp.Compare(ignoreRelDepth(a.rel), ignoreRelDepth(b.rel))
-	})
 	return set, budgetErr
 }
 
@@ -848,12 +839,9 @@ func (s *ignoreSet) matches(relPath string, isDir bool) bool {
 	if s == nil {
 		return false
 	}
-	ignored := false
 	for _, id := range s.dirs {
 		var rel string
 		switch {
-		case id.ancestorPrefix != "":
-			rel = id.ancestorPrefix + "/" + relPath
 		case id.rel == ".":
 			rel = relPath
 		case relPath == id.rel:
@@ -866,22 +854,11 @@ func (s *ignoreSet) matches(relPath string, isDir bool) bool {
 		if isDir {
 			rel += "/"
 		}
-		if len(id.rules) > 0 {
-			for _, rule := range id.rules {
-				if isDir && rule.dirChildrenOnly != "" && (rel == rule.dirChildrenOnly || (!rule.anchored && strings.HasSuffix(rel, "/"+rule.dirChildrenOnly))) {
-					continue
-				}
-				if rule.matcher.MatchesPath(rel) {
-					ignored = !rule.negate
-				}
-			}
-			continue
-		}
-		if id.matcher != nil && id.matcher.MatchesPath(rel) {
-			ignored = true
+		if id.matcher.MatchesPath(rel) {
+			return true
 		}
 	}
-	return ignored
+	return false
 }
 
 // globMatchIsDir reports whether m (a path relative to fsys, as returned by

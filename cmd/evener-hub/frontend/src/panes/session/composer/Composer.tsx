@@ -618,6 +618,7 @@ function ComposerWithSubmission({
     enabled: connectionReady && connectionClient !== null && !askPending,
     editorRef,
     textRef,
+    draft: text,
     plainKeysOnly: true,
     getProtectedRanges: getProtectedFileMentionRanges,
   });

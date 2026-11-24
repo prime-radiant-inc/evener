@@ -16,6 +16,7 @@ import {
   useCallback,
   useEffect,
   useId,
+  useLayoutEffect,
   useRef,
   useState,
   useSyncExternalStore,
@@ -44,6 +45,7 @@ export interface UseFileCompletionOptions {
   enabled?: boolean;
   editorRef: RefObject<SkillEditorHandle | null>;
   textRef: RefObject<string>;
+  draft: string;
   plainKeysOnly?: boolean;
   getProtectedRanges?: () => readonly { start: number; end: number }[];
 }
@@ -54,6 +56,7 @@ export function useFileCompletion({
   enabled = true,
   editorRef,
   textRef,
+  draft,
   plainKeysOnly = false,
   getProtectedRanges,
 }: UseFileCompletionOptions) {
@@ -74,6 +77,7 @@ export function useFileCompletion({
   tokenRef.current = tokenState.token;
   const getProtectedRangesRef = useRef(getProtectedRanges);
   getProtectedRangesRef.current = getProtectedRanges;
+  const lastObservedDraftRef = useRef(draft);
 
   const targetRef = useRef<FileMentionTarget | null>(target);
   targetRef.current = target;
@@ -82,31 +86,48 @@ export function useFileCompletion({
     target === null ? "" : target.kind === "session" ? target.ref : normalizeHost(target.host ?? null);
   const targetCwd = target?.kind === "cwd" ? target.cwd.trim() : "";
 
-  const setToken = useCallback((next: FileMentionToken | null, opts?: { immediate?: boolean }) => {
-    if (committingRef.current) return;
-    setTokenState((prev) => {
-      if (next === null) {
-        if (prev.token === null && !prev.immediate) return prev;
-        return { token: null, immediate: false };
-      }
-      const initialBareAt = prev.token === null && next.query === "";
-      const immediate = Boolean(opts?.immediate) || initialBareAt;
-      if (
-        prev.token !== null &&
-        prev.token.start === next.start &&
-        prev.token.end === next.end &&
-        prev.token.query === next.query &&
-        prev.token.quoted === next.quoted &&
-        prev.immediate === immediate
-      ) {
-        return prev;
-      }
-      return { token: next, immediate };
-    });
-  }, []);
+  const dismiss = useCallback(() => {
+    setTokenState({ token: null, immediate: false });
+    store.clear();
+  }, [store]);
+
+  const setToken = useCallback(
+    (next: FileMentionToken | null, opts?: { immediate?: boolean }) => {
+      if (committingRef.current) return;
+      lastObservedDraftRef.current = textRef.current;
+      setTokenState((prev) => {
+        if (next === null) {
+          if (prev.token === null && !prev.immediate) return prev;
+          return { token: null, immediate: false };
+        }
+        const initialBareAt = prev.token === null && next.query === "";
+        const immediate = Boolean(opts?.immediate) || initialBareAt;
+        if (
+          prev.token !== null &&
+          prev.token.start === next.start &&
+          prev.token.end === next.end &&
+          prev.token.query === next.query &&
+          prev.token.quoted === next.quoted &&
+          prev.immediate === immediate
+        ) {
+          return prev;
+        }
+        return { token: next, immediate };
+      });
+    },
+    [textRef],
+  );
 
   const token = tokenState.token;
   const tokenPresent = token !== null;
+
+  // Controlled draft mutations (image paste, marker removal, quote insert, resets)
+  // change `draft` without firing editor onChange; drop stale token offsets immediately.
+  useLayoutEffect(() => {
+    if (draft === lastObservedDraftRef.current) return;
+    lastObservedDraftRef.current = draft;
+    dismiss();
+  }, [draft, dismiss]);
 
   // Reset highlight index to 0 whenever the active token, query, presence, or target changes.
   // biome-ignore lint/correctness/useExhaustiveDependencies: trigger-only deps reset highlight index to 0 when token or scope shifts
@@ -154,6 +175,11 @@ export function useFileCompletion({
       const editor = editorRef.current;
       if (!currentToken || !editor) return;
       const currentText = textRef.current;
+      if (currentText !== lastObservedDraftRef.current) {
+        lastObservedDraftRef.current = currentText;
+        dismiss();
+        return;
+      }
       const replaceEnd = currentToken.end;
       const spliced = spliceFileMention(currentText, currentToken, item);
       const insertedLength = spliced.text.length - (currentText.length - (replaceEnd - currentToken.start));
@@ -168,6 +194,7 @@ export function useFileCompletion({
         committingRef.current = false;
       }
       if (!replaced) return;
+      lastObservedDraftRef.current = textRef.current;
 
       if (spliced.keepOpen) {
         const nextToken = parseFileMentionToken(spliced.text, spliced.caret, getProtectedRangesRef.current?.());
@@ -177,7 +204,7 @@ export function useFileCompletion({
       }
       editor.focus();
     },
-    [editorRef, textRef],
+    [dismiss, editorRef, textRef],
   );
 
   const handleKeyDown = useCallback(
@@ -216,9 +243,9 @@ export function useFileCompletion({
   );
 
   const reset = useCallback(() => {
-    setTokenState({ token: null, immediate: false });
-    store.clear();
-  }, [store]);
+    lastObservedDraftRef.current = textRef.current;
+    dismiss();
+  }, [dismiss, textRef]);
 
   return {
     token,

@@ -62,7 +62,7 @@ func walkProjectFiles(ctx context.Context, root string, opts ProjectFilesOptions
 	}
 
 	queue := []string{"."}
-	ignores := &ignoreSet{}
+	ignores := &projectIgnoreSet{}
 	var out []ProjectFileEntry
 	if truncated, aerr := loadAncestorProjectIgnores(ctx, canonical, maskedRoots, budget, cache, ignores); aerr != nil {
 		return ProjectFilesResult{}, aerr
@@ -124,8 +124,8 @@ func walkProjectFiles(ctx context.Context, root string, opts ProjectFilesOptions
 				}
 				return ProjectFilesResult{}, cerr
 			}
-			if matcher != nil {
-				ignores.dirs = append(ignores.dirs, ignoreDir{rel: dir, matcher: matcher, rules: rules})
+			if matcher != nil && len(rules) > 0 {
+				ignores.dirs = append(ignores.dirs, projectIgnoreDir{rel: dir, rules: rules})
 			}
 			break
 		}
@@ -192,13 +192,60 @@ func classifyIgnoreReadErr(ctx context.Context, out []ProjectFileEntry, err erro
 // loadAncestorProjectIgnores loads .gitignore layers from the enclosing Git
 // worktree root down through each strict parent directory of canonical (never
 // canonical itself, which the BFS loop reads at ".").
+type projectIgnoreDir struct {
+	rel            string // "." for walk root, else slash-separated relative dir
+	ancestorPrefix string // non-empty for strict ancestor .gitignore layers (walk root relative to ancestor)
+	rules          []compiledIgnoreRule
+}
+
+// projectIgnoreSet evaluates .gitignore rules in ancestor-to-descendant order
+// for WalkProjectFiles, which prunes excluded directories before descending so
+// a child .gitignore inside an un-negated ignored directory is never visited.
+type projectIgnoreSet struct {
+	dirs []projectIgnoreDir
+}
+
+func (s *projectIgnoreSet) matches(relPath string, isDir bool) bool {
+	if s == nil {
+		return false
+	}
+	ignored := false
+	for _, id := range s.dirs {
+		var rel string
+		switch {
+		case id.ancestorPrefix != "":
+			rel = id.ancestorPrefix + "/" + relPath
+		case id.rel == ".":
+			rel = relPath
+		case relPath == id.rel:
+			rel = "."
+		case strings.HasPrefix(relPath, id.rel+"/"):
+			rel = strings.TrimPrefix(relPath, id.rel+"/")
+		default:
+			continue
+		}
+		if isDir {
+			rel += "/"
+		}
+		for _, rule := range id.rules {
+			if isDir && rule.dirChildrenOnly != "" && (rel == rule.dirChildrenOnly || (!rule.anchored && strings.HasSuffix(rel, "/"+rule.dirChildrenOnly))) {
+				continue
+			}
+			if rule.matcher.MatchesPath(rel) {
+				ignored = !rule.negate
+			}
+		}
+	}
+	return ignored
+}
+
 func loadAncestorProjectIgnores(
 	ctx context.Context,
 	canonical string,
 	maskedRoots []string,
 	budget *GlobBudget,
 	cache *ignoreMatcherCache,
-	ignores *ignoreSet,
+	ignores *projectIgnoreSet,
 ) (bool, error) {
 	gitRoot, ok := structuralWorktreeRoot(canonical)
 	if !ok || gitRoot == "" {
@@ -251,11 +298,10 @@ func loadAncestorProjectIgnores(
 			}
 			return false, cerr
 		}
-		if matcher != nil {
-			ignores.dirs = append(ignores.dirs, ignoreDir{
+		if matcher != nil && len(rules) > 0 {
+			ignores.dirs = append(ignores.dirs, projectIgnoreDir{
 				rel:            ".",
 				ancestorPrefix: filepath.ToSlash(rel),
-				matcher:        matcher,
 				rules:          rules,
 			})
 		}
