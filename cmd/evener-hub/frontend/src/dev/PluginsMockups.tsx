@@ -13,8 +13,11 @@
 // marketplace indexes. Contents shown for NOT-YET-INSTALLED plugins are
 // illustrative - that read does not exist yet (open question 2).
 
+import type { PluginEntry } from "@evener/appwire-client";
 import { type ReactElement, type ReactNode, useState } from "react";
 import { CatalogPluginRow as SharedCatalogPluginRow } from "../panes/plugins/PluginRow";
+import { countsSummary as pluginCountsSummary } from "../panes/plugins/pluginCounts";
+import { pluginStatusChips } from "../panes/plugins/pluginStatusChips";
 import mpStyles from "../panes/settings/sections/marketplacesPlugins/marketplacesPlugins.module.css";
 import psStyles from "../panes/spawn/pluginSelection.module.css";
 import {
@@ -366,49 +369,34 @@ const BROWSE_TREES: { marketplace: string; plugins: MockPlugin[] }[] = [
   },
 ];
 
-// The shared vocabulary: counts in the launcher's own pluralized form.
+// Adapters from this mockup's proposed view model to the production plugin
+// vocabulary. MockPlugin is design-only (no production PluginView type exists
+// yet), so the shape crossing is here while the labels, tones, order, and
+// pluralization stay owned by the production helpers.
 function countsSummary(contents: MockContents): string {
-  const parts: string[] = [];
-  const add = (n: number, word: string) => {
-    if (n > 0) parts.push(`${n} ${word}${n === 1 ? "" : "s"}`);
-  };
-  add(contents.skills.length, "skill");
-  add(contents.agents.length, "agent");
-  add(contents.commands.length, "command");
-  add(contents.hooks.length, "hook");
-  add(contents.mcpServers.length, "MCP server");
-  return parts.length > 0 ? parts.join(" · ") : "no components";
+  return pluginCountsSummary(
+    contents.skills.length,
+    contents.agents.length,
+    contents.commands.length,
+    contents.hooks.length,
+    contents.mcpServers.length,
+  );
 }
 
-// The status chips a row/sheet carries - same vocabulary and tones as
-// pluginStatusChips (broken / off by default / auto-upgrade / update available).
 function statusChips(plugin: MockPlugin): ReactElement[] {
-  const chips: ReactElement[] = [];
-  if (plugin.broken)
-    chips.push(
-      <Chip key="broken" tone="danger" kind="broken">
-        broken
-      </Chip>,
-    );
-  if (plugin.installed && !plugin.enabled)
-    chips.push(
-      <Chip key="disabled" tone="neutral" kind="disabled">
-        off by default
-      </Chip>,
-    );
-  if (plugin.installed && plugin.autoUpgrade)
-    chips.push(
-      <Chip key="auto" tone="neutral" kind="auto-upgrade">
-        auto-upgrade
-      </Chip>,
-    );
-  if (plugin.updateAvailable)
-    chips.push(
-      <Chip key="update" tone="attention" kind="update-available">
-        update available
-      </Chip>,
-    );
-  return chips;
+  const entry: PluginEntry = {
+    plugin: plugin.name,
+    marketplace: plugin.marketplace,
+    version: plugin.version,
+    enabled: plugin.enabled,
+    autoUpgrade: plugin.autoUpgrade,
+    broken: plugin.broken,
+    installPath: "",
+    installedAt: 0,
+    lastUpdated: 0,
+    updateAvailable: plugin.updateAvailable,
+  };
+  return pluginStatusChips(entry);
 }
 
 function dotState(plugin: MockPlugin): "idle" | "failed" | "ended" {
