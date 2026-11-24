@@ -140,9 +140,10 @@ losing the conversation that made the evidence relevant.
   “Overview kind” label. About is the fifth category and has no footer counter.
   At the narrow shell breakpoint (899px and below), phones keep one bottom surface:
   the pane renders no separate footer strip below the
-  composer, so the composer's own control row carries Attach, the model and reasoning
-  chrome line, and Send or Stop. The activity counts sit on a quiet line above the card,
-  so their arrival never moves the card's persistent controls. The card remains the
+  composer, so the composer's own control row carries Attach, the session menu and
+  Send or Stop. The activity counts are rows in the Overview sheet (§12), so the card
+  carries no chips and no counts line in any state, and nothing arrives above it to
+  move the persistent controls. The card remains the
   lowest interactive surface. The composer dock owns the home-indicator band, and that band is one
   token: `--dock-clearance` in `tokens.css` (`max(0px, env(safe-area-inset-bottom) -
   var(--keyboard-inset, 0px))`). Every dock reads that one value, and it yields when the
@@ -170,8 +171,9 @@ losing the conversation that made the evidence relevant.
   gap in every state; the field's own text inset remains, leaving half the card
   for writing beside three tap targets without moving them when content arrives.
   A phone's resting composer is one line too, keeping Attach, the session menu and Send
-  or Stop while shedding the model chrome and activity line. Content restores the full
-  row, including the model picker and activity counts. This phone treatment also holds
+  or Stop. Content expands it to the stacked card without returning model or activity
+  chrome: model and effort are facts in the Overview sheet (§12), effort is set on
+  Settings, and the counts stay off the composer. This phone treatment also holds
   on a primary-touch landscape viewport up to 1000px wide and 700px tall, including the
   Duo's 951×669pt inner display, even though that width uses the desktop shell. A
   fine-pointer desktop card under 620px keeps the stacked control row and the folded
