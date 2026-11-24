@@ -1288,7 +1288,7 @@ func TestThreadStartIdempotencyRemoteCapableErrorsAndNotSent(t *testing.T) {
 	client := dialHubRPCInitialized(t, hub)
 
 	// 1. Capable remote error fields and translated CreatedRef pass through intact.
-	_, err = appwiretest.ThreadStart(context.Background(), client, appwire.ThreadStartParams{
+	_, err := appwiretest.ThreadStart(context.Background(), client, appwire.ThreadStartParams{
 		ClientMutationID: "mut-cap-partial",
 		Source:           "remote-a",
 		Model:            "openai/gpt-5",
@@ -1318,14 +1318,16 @@ func TestThreadStartIdempotencyRemoteCapableErrorsAndNotSent(t *testing.T) {
 
 	// 2. RequestNotSentError on capable remote returns NotAccepted(id), allowing retry to succeed.
 	useWedged.Store(true)
-	reqCtx, cancelReq := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer cancelReq()
-	_, err = appwiretest.ThreadStart(reqCtx, client, appwire.ThreadStartParams{
+	origDetached := threadStartDetachedTimeout
+	threadStartDetachedTimeout = 100 * time.Millisecond
+	t.Cleanup(func() { threadStartDetachedTimeout = origDetached })
+	_, err = appwiretest.ThreadStart(context.Background(), client, appwire.ThreadStartParams{
 		ClientMutationID: "mut-cap-notsent",
 		Source:           "remote-a",
 		Model:            "openai/gpt-5",
 		CWD:              "/remote/work",
 	})
+	threadStartDetachedTimeout = origDetached
 	close(slotTransport.release)
 	_, data := wireErrorData(t, err)
 	if data.MutationOutcome != appwire.MutationOutcomeNotAccepted || data.ClientMutationID != "mut-cap-notsent" {

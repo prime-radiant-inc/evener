@@ -183,6 +183,8 @@ func keyedRemoteThreadStart(ctx context.Context, remote appsource.Source, forwar
 	if !supported {
 		return appwire.ThreadStartResponse{}, appwire.InvalidParams("remote hub does not support idempotent thread/start").NotAccepted(id)
 	}
+	ctx, cancel := context.WithTimeout(ctx, threadStartDetachedTimeout)
+	defer cancel()
 	resp, err := remote.StartThread(ctx, forward)
 	if err != nil {
 		if _, notSent := errors.AsType[appwire.RequestNotSentError](err); notSent {
