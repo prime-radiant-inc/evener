@@ -1,10 +1,8 @@
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import type { MarketplaceCatalogPlugin, PluginComponents, PluginEntry } from "@evener/appwire-client";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { expect, test, vi } from "vitest";
+import { readModuleCss, topRuleBlock } from "../../styles/cssBlock";
 import { chipKinds } from "../settings/sections/marketplacesPlugins/marketplacesTestUtils";
 import { CatalogPluginRow, InstalledPluginRow, LauncherPluginRow } from "./PluginRow";
 
@@ -37,11 +35,11 @@ const CATALOG: MarketplaceCatalogPlugin = {
 };
 
 test("the plugin row's meta lines compose the shared truncation recipe", () => {
-  const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "pluginRow.module.css"), "utf8");
-  for (const selector of ["source", "counts"]) {
-    const rule = new RegExp(`\\.${selector}\\s*\\{([^}]*)\\}`).exec(css);
-    expect(rule?.[1], selector).toContain('composes: truncate from "../../styles/text.module.css"');
-    expect(rule?.[1], selector).not.toMatch(/overflow|text-overflow|white-space/);
+  const css = readModuleCss(import.meta.url, "pluginRow.module.css");
+  for (const selector of [".source", ".counts"]) {
+    const rule = topRuleBlock(css, selector);
+    expect(rule, selector).toContain('composes: truncate from "../../styles/text.module.css"');
+    expect(rule, selector).not.toMatch(/overflow|text-overflow|white-space/);
   }
 });
 
