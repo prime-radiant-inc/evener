@@ -62,18 +62,22 @@
   border-bottom: 1px solid var(--edge);
 }
 
-.columnFooterBar {
+/* A bar that closes its column: the header recipe with the border moved to
+ * the bottom edge. Both the phone footer and its desktop twin compose it. */
+.columnBar {
   composes: header;
   border-bottom: 0;
   border-top: 1px solid var(--edge);
 }
 
+.columnFooterBar {
+  composes: columnBar;
+}
+
 /* The desktop twin of the phone footer bar: the conversation's composer
  * measure rides below the transcript inside the column. */
 .columnComposerBar {
-  composes: header;
-  border-bottom: 0;
-  border-top: 1px solid var(--edge);
+  composes: columnBar;
 }
 
 .title {
@@ -190,12 +194,8 @@
 }
 
 .peekHead {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-2);
+  composes: header;
   padding: var(--space-2);
-  border-bottom: 1px solid var(--edge);
   color: var(--ink-hi);
   font-size: var(--font-size-caption);
 }
