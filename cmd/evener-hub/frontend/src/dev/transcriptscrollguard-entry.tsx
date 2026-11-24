@@ -893,26 +893,32 @@ async function waitForEndedPage(merged: boolean) {
 // made from), the live model's cursor, and whether the older reply the third
 // page carries is actually inside the viewport. No input of any kind drives it:
 // the automatic trigger under test is the only thing that may request a page.
-interface StallPageState {
+// The port's geometry, the paging row, the measured-layout verdict and the
+// captured errors are the harness's shared metrics fields, read exactly as
+// every other pass reads them.
+interface StallPageState
+  extends Pick<
+    TranscriptScrollMetrics,
+    "scrollTop" | "scrollHeight" | "clientHeight" | "pagingRow" | "measuredLayout" | "errors"
+  > {
   ref: string;
   mode: string | null;
   fill: boolean;
   calls: StallCallRecord[];
-  scrollTop: number;
-  scrollHeight: number;
-  clientHeight: number;
   itemCount: number;
   cursor: string | null;
-  pagingRow: boolean;
-  measuredLayout: boolean;
   oldDialogue: { anchorId: string | null; top: number | null; bottom: number | null; visible: boolean };
-  errors: string[];
 }
 
 function stallPageState(): StallPageState {
   const model = threadsStore.getState().threads.get(REF);
   const el = findScrollElement();
-  const geometry = el === null ? null : geometryOf(el);
+  // The fields this probe shares with every other pass come from the harness's
+  // one read of them: the port's geometry, the paging row's presence, the
+  // measured-layout verdict and the captured errors. The zeros and the direct
+  // row read stand in only while the port is unmounted, which is what this
+  // probe reported before the shared read existed.
+  const metrics = el === null ? null : metricsFrom(el);
   const anchor = el?.querySelector<HTMLElement>(`[data-view-anchor-id="${STALL_OLD_AGENT_ID}"]`) ?? null;
   const port = el?.getBoundingClientRect();
   const rect = anchor?.getBoundingClientRect();
@@ -921,50 +927,49 @@ function stallPageState(): StallPageState {
     mode: STALL_MODE,
     fill: STALL_FILL,
     calls: stallCalls.map((call) => ({ ...call })),
-    scrollTop: geometry?.scrollTop ?? 0,
-    scrollHeight: geometry?.scrollHeight ?? 0,
-    clientHeight: geometry?.clientHeight ?? 0,
+    scrollTop: metrics?.scrollTop ?? 0,
+    scrollHeight: metrics?.scrollHeight ?? 0,
+    clientHeight: metrics?.clientHeight ?? 0,
     itemCount: stallTurnItemCount(),
     cursor: model?.olderCursor ?? null,
-    pagingRow: document.querySelector('[data-testid="load-older-row"]') !== null,
-    measuredLayout: el !== null && hasMeasuredRowGeometry(el),
+    pagingRow: metrics?.pagingRow ?? document.querySelector('[data-testid="load-older-row"]') !== null,
+    measuredLayout: metrics?.measuredLayout ?? false,
     oldDialogue: {
       anchorId: anchor?.getAttribute("data-view-anchor-id") ?? null,
       top: rect && port ? rect.top - port.top : null,
       bottom: rect && port ? rect.bottom - port.top : null,
       visible: rect !== undefined && port !== undefined && rect.bottom > port.top && rect.top < port.bottom,
     },
-    errors: pageErrors(),
+    errors: metrics?.errors ?? pageErrors(),
   };
 }
 
-// Readiness is quiescence, not success: the geometry and the causal counters
-// must hold for STALL_STILL_FRAMES consecutive frames. A pass that stalls after
-// its first page therefore returns the stalled state instead of timing out, and
-// the runner reports the missing pages as the finding they are.
-const STALL_STILL_FRAMES = 30;
+// Readiness is quiescence, not success: the merged item count and the measured
+// geometry must hold for the shared paged-open tracker's consecutive still
+// frames. A pass that stalls after its first page therefore returns the stalled
+// state instead of timing out, and the runner reports the missing pages as the
+// finding they are. The tripwire is shorter than the readiness bound because
+// this wait returns its state to be asserted rather than driving the pass from
+// it.
 const STALL_TRIPWIRE_MS = 10_000;
 
 async function waitForStallPagedSettled(): Promise<StallPageState & { settledStill: boolean }> {
+  // The ?paged=1 tracker, with the compact fixture's merged item count as its
+  // progress dimension: a page landing restarts the still run, and geometry
+  // counts only once it is measured.
+  const tracker = createPagedOpenSettleTracker(stallInitialItems().length);
   const deadline = performance.now() + STALL_TRIPWIRE_MS;
-  let previous: string | undefined;
-  let still = 0;
   for (;;) {
     await nextFrame();
     throwOnPageErrors("compact paging");
     const state = stallPageState();
-    const sample = JSON.stringify({
-      scrollTop: state.scrollTop,
-      scrollHeight: state.scrollHeight,
-      clientHeight: state.clientHeight,
-      itemCount: state.itemCount,
-      cursor: state.cursor,
-      calls: state.calls.length,
-      measuredLayout: state.measuredLayout,
+    const settled = tracker.observe({
+      turns: state.itemCount,
+      geometry: state.measuredLayout
+        ? { scrollTop: state.scrollTop, scrollHeight: state.scrollHeight, clientHeight: state.clientHeight }
+        : null,
     });
-    still = sample === previous ? still + 1 : 0;
-    previous = sample;
-    if (still >= STALL_STILL_FRAMES) return { ...state, settledStill: true };
+    if (settled) return { ...state, settledStill: true };
     if (performance.now() > deadline) return { ...state, settledStill: false };
   }
 }
@@ -1214,7 +1219,6 @@ declare global {
     unmountTranscriptScrollGuardPane: () => void;
     waitForTranscriptSettled: typeof waitForTranscriptSettled;
     waitForPagedOpenSettled: typeof waitForPagedOpenSettled;
-    stallPageState: typeof stallPageState;
     waitForStallPagedSettled: typeof waitForStallPagedSettled;
     waitForUnseenOpenSettled: typeof waitForUnseenOpenSettled;
     transcriptScrollMetrics: typeof metrics;
@@ -1240,7 +1244,6 @@ window.releaseEndedOlderPage = () => {
 window.unmountTranscriptScrollGuardPane = () => root.unmount();
 window.waitForTranscriptSettled = waitForTranscriptSettled;
 window.waitForPagedOpenSettled = waitForPagedOpenSettled;
-window.stallPageState = stallPageState;
 window.waitForStallPagedSettled = waitForStallPagedSettled;
 window.waitForUnseenOpenSettled = waitForUnseenOpenSettled;
 window.transcriptScrollMetrics = metrics;

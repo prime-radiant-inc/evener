@@ -604,6 +604,14 @@ async function main() {
           await evaluate(send, "(async () => JSON.stringify(await window.waitForStallPagedSettled()))()"),
         );
       };
+      // A stall pass is evidence only once it settled and measured: a moving or
+      // unmeasured port fails the later assertions for the wrong reason, and a
+      // page error must never be lost behind them.
+      const assertStallSettled = (label, state) => {
+        if (state.errors.length > 0) failures.push(`page errors on ${label}: ${state.errors.join("; ")}`);
+        if (!state.settledStill) failures.push(`${label} never quiesced within 10s`);
+        if (!state.measuredLayout) failures.push(`${label} settled without measured natural row geometry`);
+      };
       const assertStallPass = (label, state) => {
         const series = state.calls.map((call) => call.cursor);
         const boundaries = state.calls.map((call) => call.geometryBefore ?? null);
@@ -614,15 +622,13 @@ async function main() {
           a.scrollTop === b.scrollTop &&
           a.scrollHeight === b.scrollHeight &&
           a.clientHeight === b.clientHeight;
-        if (state.errors.length > 0) failures.push(`page errors on ${label}: ${state.errors.join("; ")}`);
-        if (!state.settledStill) failures.push(`${label} never quiesced within 10s`);
+        assertStallSettled(label, state);
         if (!(state.clientHeight > 0 && state.clientHeight < STALL_DOCK_HEIGHT_PX)) {
           failures.push(
             `${label} did not render a compact nonzero scroll port (clientHeight ${state.clientHeight}, ` +
               `scrollHeight ${state.scrollHeight}, dock height ${STALL_DOCK_HEIGHT_PX})`,
           );
         }
-        if (!state.measuredLayout) failures.push(`${label} settled without measured natural row geometry`);
         if (JSON.stringify(series) !== JSON.stringify(STALL_CURSORS)) {
           failures.push(
             `${label} requested older pages ${JSON.stringify(series)}, expected exactly ` +
@@ -703,14 +709,10 @@ async function main() {
       // until the reader approaches the top.
       const stallControl = await runStallPass("stall=chat&dock=1&fill=1");
       console.log("compact overflowing control", JSON.stringify(stallControl));
-      if (stallControl.errors.length > 0)
-        failures.push(`page errors on the compact overflowing control: ${stallControl.errors.join("; ")}`);
       // The zero-call credit only holds for a control that really settled: an
       // unmeasured or still-moving port could have failed to trigger for a
       // reason other than the overflow the control exists to prove.
-      if (!stallControl.settledStill) failures.push("the compact overflowing control never quiesced within 10s");
-      if (!stallControl.measuredLayout)
-        failures.push("the compact overflowing control settled without measured natural row geometry");
+      assertStallSettled("the compact overflowing control", stallControl);
       if (stallControl.clientHeight <= 0)
         failures.push(`the compact overflowing control rendered no scroll port (clientHeight 0)`);
       if (stallControl.scrollHeight <= stallControl.clientHeight)
