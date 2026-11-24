@@ -303,9 +303,8 @@ func (s *CreationStore) RollbackSpawning(id string) error {
 	if rec.State != CreationStateSpawning {
 		return fmt.Errorf("cannot rollback creation %q in state %q", id, rec.State)
 	}
-	next := maps.Clone(s.records)
-	delete(next, id)
-	_, err := s.commitLocked(next)
+	delete(s.records, id)
+	_, err := s.commitLocked(maps.Clone(s.records))
 	return err
 }
 

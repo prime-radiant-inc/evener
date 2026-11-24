@@ -585,6 +585,38 @@ func TestCreationStoreAtomicWriteFaults(t *testing.T) {
 			t.Fatalf("reopen CreationStore: %v", err)
 		}
 	})
+
+	t.Run("BeforeRename during RollbackSpawning clears in-memory reservation", func(t *testing.T) {
+		t.Parallel()
+		root := t.TempDir()
+		failRollback := false
+		store, err := newCreationStoreFS(afero.NewOsFs(), root, creationStoreFaults{
+			BeforeRename: func() error {
+				if failRollback {
+					return wantFault
+				}
+				return nil
+			},
+		}, time.Now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		res, err := store.Acquire(t.Context(), "m-rb-before", hash, false, "")
+		if err != nil || res.Owner == nil {
+			t.Fatalf("Acquire = %+v, %v", res, err)
+		}
+		failRollback = true
+		if err := store.RollbackSpawning("m-rb-before"); !errors.Is(err, wantFault) {
+			t.Fatalf("RollbackSpawning err = %v, want %v", err, wantFault)
+		}
+		store.ReleaseOwner(res.Owner, appwire.ThreadStartResponse{}, wantFault)
+		failRollback = false
+		retry, err := store.Acquire(t.Context(), "m-rb-before", hash, false, "")
+		if err != nil || retry.Owner == nil {
+			t.Fatalf("retry Acquire after RollbackSpawning BeforeRename = %+v, %v; want fresh owner", retry, err)
+		}
+		store.ReleaseOwner(retry.Owner, appwire.ThreadStartResponse{}, nil)
+	})
 }
 
 func TestCreationStorePruningSevenDaysAndMax200Terminal(t *testing.T) {

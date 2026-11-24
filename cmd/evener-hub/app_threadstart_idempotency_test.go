@@ -247,6 +247,39 @@ func TestThreadStartIdempotencyPreSpawnAndPreExecRefusals(t *testing.T) {
 		t.Fatalf("recovered resp = %+v", resp)
 	}
 
+	// Pre-exec spawn error whose RollbackSpawning also fails BeforeRename still allows retry once storage recovers.
+	var rbStore *hubcore.CreationStore
+	rbStore, err = hubcore.NewCreationStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var writeCount atomic.Int32
+	rbStore.SetFaultsForTest(func() error {
+		if writeCount.Add(1) == 2 { // 1 = Acquire, 2 = RollbackSpawning
+			return errors.New("disk full during rollback")
+		}
+		return nil
+	}, nil)
+	preExecFail.Store(true)
+	rbHub := newHubRPCTestServer(t, testWebConfig(t, hubcore.WebConfig{
+		CreationStore: rbStore,
+		RunDir:        runDir,
+		Roster:        hubcore.NewRoster(runDir, fakeProber{sessionID: sessionID, status: appwire.ThreadStatusIdle}),
+		Spawner:       spawner,
+	}))
+	defer rbHub.Close()
+	rbClient := dialHubRPCInitialized(t, rbHub)
+	_, err = appwiretest.ThreadStart(context.Background(), rbClient, appwire.ThreadStartParams{ClientMutationID: "mut-preexec-rb-fault", Model: "openai/gpt-5", CWD: cwd})
+	_, data = wireErrorData(t, err)
+	if data.MutationOutcome != appwire.MutationOutcomeNotAccepted {
+		t.Fatalf("preExec rollback-fault data=%+v, want NotAccepted", data)
+	}
+	preExecFail.Store(false)
+	rbResp, err := appwiretest.ThreadStart(context.Background(), rbClient, appwire.ThreadStartParams{ClientMutationID: "mut-preexec-rb-fault", Model: "openai/gpt-5", CWD: cwd})
+	if err != nil || rbResp.ClientMutationID != "mut-preexec-rb-fault" || rbResp.Disposition != appwire.MutationDispositionApplied {
+		t.Fatalf("retry after RollbackSpawning BeforeRename failed: resp=%+v err=%v", rbResp, err)
+	}
+
 	// Post-exec spawn failure transitions to uncertain + Blocked.
 	postSpawner := &fakeRPCSpawner{spawn: func(context.Context, hubcore.SpawnRequest) (rendezvous.Entry, error) {
 		return rendezvous.Entry{}, errors.New("daemon exited after start before rendezvous")
