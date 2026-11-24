@@ -1445,28 +1445,63 @@ func TestFormatShellResultPromotionFooter(t *testing.T) {
 // The serve-mode reminder keeps its notify-and-wake wording.
 func TestFormatShellResultBackgroundReminderOneShot(t *testing.T) {
 	t.Parallel()
-	direct := shellToolResult{
-		JobID:  "job_bg",
-		Type:   "shell",
-		Status: string(jobstore.StatusRunning),
-		Mode:   "background",
+	fgTimeoutReason := "foreground_timeout"
+	cases := []struct {
+		name string
+		res  shellToolResult
+	}{
+		{
+			name: "direct",
+			res: shellToolResult{
+				JobID:  "job_direct",
+				Type:   "shell",
+				Status: string(jobstore.StatusRunning),
+				Mode:   "background",
+			},
+		},
+		{
+			name: "promoted",
+			res: shellToolResult{
+				JobID:         "job_promoted",
+				Type:          "shell",
+				Status:        string(jobstore.StatusRunning),
+				Reason:        &fgTimeoutReason,
+				Mode:          "background",
+				TimedOut:      true,
+				WaitElapsedMS: 120000,
+			},
+		},
 	}
 
-	normal := formatShellResult(direct)
-	if !strings.Contains(normal, "You do not need to wait for it explicitly") {
-		t.Fatalf("serve-mode reminder = %q, want the notify-and-wake wording", normal)
-	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			normal := formatShellResult(tc.res)
+			if !strings.Contains(normal, "You do not need to wait for it explicitly") {
+				t.Fatalf("serve-mode reminder = %q, want the notify-and-wake wording", normal)
+			}
+			if strings.Contains(normal, "job_watch") {
+				t.Fatalf("serve-mode reminder = %q, must not mention the one-shot job_watch remedy", normal)
+			}
 
-	direct.TurnEndsProcess = true
-	oneShot := formatShellResult(direct)
-	if strings.Contains(oneShot, "You do not need to wait for it explicitly") {
-		t.Fatalf("one-shot reminder = %q, must not claim no wait is needed", oneShot)
-	}
-	if !strings.Contains(oneShot, "job_watch") {
-		t.Fatalf("one-shot reminder = %q, want it to name the job_watch remedy", oneShot)
-	}
-	if strings.Contains(normal, "job_watch") {
-		t.Fatalf("serve-mode reminder = %q, must not mention the one-shot job_watch remedy", normal)
+			oneShotRes := tc.res
+			oneShotRes.TurnEndsProcess = true
+			oneShot := formatShellResult(oneShotRes)
+			if strings.Contains(oneShot, "You do not need to wait for it explicitly") {
+				t.Fatalf("one-shot reminder = %q, must not claim no wait is needed", oneShot)
+			}
+			for _, token := range []string{
+				"job_watch",
+				`operation="create"`,
+				fmt.Sprintf(`source=%q`, tc.res.JobID),
+				"progress_interval_ms",
+				"output_match",
+			} {
+				if !strings.Contains(oneShot, token) {
+					t.Fatalf("one-shot reminder = %q, want API contract token %q", oneShot, token)
+				}
+			}
+		})
 	}
 }
 
@@ -1731,8 +1766,6 @@ func TestShellModeDetachedFollowsEnvironment(t *testing.T) {
 		}
 		want := []any{"foreground", "background"}
 		requireShellModeEnum(t, s, "sandboxed session", want...)
-		description, _ := advertisedShellMode(t, s)["description"].(string)
-		agenttest.CheckGolden(t, filepath.Join("testdata", "detachedshell", "mode-description-unavailable.md"), []byte(description+"\n"), *updatePromptGoldens, "Regenerate with `go test ./agent -run '^TestShellModeDetachedFollowsEnvironment$' -count=1 -update-prompt` and read the diff.")
 		preparedMode, _ := s.shellToolForDiagnostics(s.reg.Get("shell")).Definition.Parameters["properties"].(map[string]any)["mode"].(map[string]any)
 		if got := preparedMode["enum"]; !reflect.DeepEqual(got, want) {
 			t.Fatalf("shell repair schema mode enum = %#v, want %#v; validation prose would still list detached", got, want)

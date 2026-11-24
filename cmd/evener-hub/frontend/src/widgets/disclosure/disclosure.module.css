@@ -2,44 +2,27 @@
   display: block;
 }
 
+/* The row anatomy is shared with DisclosureHeading; the face below is this widget's. */
 .summary {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  padding: var(--space-1) var(--space-2);
+  composes: foldRow from "../internal/foldHeader.module.css";
+  padding-inline: var(--space-2);
   border-radius: var(--radius-control);
   cursor: pointer;
   list-style: none;
-  color: var(--ink-mid);
-  transition: background-color var(--motion-duration-hover) var(--motion-easing-standard);
 }
 
 .summary::-webkit-details-marker {
   display: none;
 }
 
-.summary:hover:not([aria-disabled="true"]) {
-  background: var(--hover-1);
-}
-
-/* Every variant's ring. Inset because quiet and rule summaries sit flush with
- * the column inside the transcript's clipping scroll port, where an outset
- * ring would lose its sides (topnotespanel.module.css insets for the same
- * reason). */
-.summary:focus-visible {
-  outline: var(--focus-ring);
-  outline-offset: -2px;
+/* A disabled row keeps its attenuated face and drops the shared hover wash. */
+.summary[aria-disabled="true"]:hover {
+  background: none;
 }
 
 .summary[aria-disabled="true"] {
   cursor: not-allowed;
   opacity: 0.5;
-}
-
-@media (max-width: 899px), (any-pointer: coarse) {
-  .summary {
-    min-height: var(--tap-min);
-  }
 }
 
 /* The open disclosure's own persistent affordance - the same "which one is

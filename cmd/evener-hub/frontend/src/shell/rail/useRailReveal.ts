@@ -129,28 +129,30 @@ export function useRailReveal({
 
   useEffect(() => {
     if (!revealTarget) return;
-    const row = Array.from(bodyRef.current?.querySelectorAll<HTMLElement>("[data-session-ref]") ?? []).find(
-      (element) => element.dataset.sessionRef === revealTarget,
-    );
-    if (row && revealCompletedTarget.current !== revealTarget) {
-      row.scrollIntoView({ block: "center", behavior: scrollBehavior });
-      consumeReveal();
-      return;
-    }
+    const findRowBySessionRef = (ref: string) =>
+      Array.from(bodyRef.current?.querySelectorAll<HTMLElement>("[data-session-ref]") ?? []).find(
+        (element) => element.dataset.sessionRef === ref,
+      );
     // The chain must name folds that actually render: only the Projects
     // section honors the grouping, so grouped ids apply to it alone while
     // the always-flat tiers keep flat ids whatever the mode. A test run's
     // archived rows still route to the archived-group fold; a whole-archived
     // project renders every row under its own node instead.
     const liveFoldOf = (ref: string) => liveBandFoldOf(liveBands, ref);
-    const chain = [
-      ...revealExpansionIds(resources.projects, liveFoldOf, revealTarget, groupingMode),
-      ...revealExpansionIds(resources.testRuns, noLiveFold, revealTarget, "flat"),
-      ...revealExpansionIds(resources.archivedProjects, noLiveFold, revealTarget, "flat", {
+    const revealChainFor = (ref: string) => [
+      ...revealExpansionIds(resources.projects, liveFoldOf, ref, groupingMode),
+      ...revealExpansionIds(resources.testRuns, noLiveFold, ref, "flat"),
+      ...revealExpansionIds(resources.archivedProjects, noLiveFold, ref, "flat", {
         rowsUnderProjectNode: true,
       }),
     ];
-    const nextFold = chain.find((id) => expansion.get(id) !== true);
+    const row = findRowBySessionRef(revealTarget);
+    if (row && revealCompletedTarget.current !== revealTarget) {
+      row.scrollIntoView({ block: "center", behavior: scrollBehavior });
+      consumeReveal();
+      return;
+    }
+    const nextFold = revealChainFor(revealTarget).find((id) => expansion.get(id) !== true);
     if (nextFold) {
       setRowExpanded(nextFold, true);
       return;
@@ -205,22 +207,13 @@ export function useRailReveal({
         : null;
     const archivedForkOriginal = location.tier === "archived" && location.session.kind === "fork";
     if (carrierRef !== null && !archivedForkOriginal) {
-      const carrierRow = Array.from(bodyRef.current?.querySelectorAll<HTMLElement>("[data-session-ref]") ?? []).find(
-        (element) => element.dataset.sessionRef === carrierRef,
-      );
+      const carrierRow = findRowBySessionRef(carrierRef);
       if (carrierRow && revealCompletedTarget.current !== revealTarget) {
         carrierRow.scrollIntoView({ block: "center", behavior: scrollBehavior });
         consumeReveal();
         return;
       }
-      const carrierChain = [
-        ...revealExpansionIds(resources.projects, liveFoldOf, carrierRef, groupingMode),
-        ...revealExpansionIds(resources.testRuns, noLiveFold, carrierRef, "flat"),
-        ...revealExpansionIds(resources.archivedProjects, noLiveFold, carrierRef, "flat", {
-          rowsUnderProjectNode: true,
-        }),
-      ];
-      const nextCarrierFold = carrierChain.find((id) => expansion.get(id) !== true);
+      const nextCarrierFold = revealChainFor(carrierRef).find((id) => expansion.get(id) !== true);
       if (nextCarrierFold) {
         setRowExpanded(nextCarrierFold, true);
         return;

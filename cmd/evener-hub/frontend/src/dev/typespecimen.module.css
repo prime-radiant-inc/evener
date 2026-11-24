@@ -144,12 +144,9 @@
 /* --- the eyebrow recipe ----------------------------------------------- */
 
 .eyebrow {
+  composes: eyebrowType from "../styles/text.module.css";
   margin: 0;
   color: var(--ink-mid);
-  font-size: var(--font-size-caption);
-  font-weight: var(--font-weight-medium);
-  letter-spacing: var(--tracking-eyebrow);
-  text-transform: uppercase;
 }
 
 /* --- the rhythm steps -------------------------------------------------

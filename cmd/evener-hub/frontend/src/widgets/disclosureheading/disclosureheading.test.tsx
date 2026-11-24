@@ -51,6 +51,14 @@ test("the chevron trails the label and is hidden from assistive tech", () => {
   expect(button.firstChild?.nodeType).toBe(Node.TEXT_NODE);
 });
 
+test("the chevron reports the open state through the shared disclosure cue", () => {
+  const { rerender } = render(<DisclosureHeading level={3} label="Live" open onOpenChange={() => {}} />);
+  const chevron = () => screen.getByRole("button", { name: "Live" }).querySelector("svg");
+  expect(chevron()?.getAttribute("data-open")).toBe("true");
+  rerender(<DisclosureHeading level={3} label="Live" open={false} onOpenChange={() => {}} />);
+  expect(chevron()?.getAttribute("data-open")).toBe("false");
+});
+
 test("an eyebrow label is wrapped as a group label while a plain label stays bare text", () => {
   render(<DisclosureHeading level={3} label="Projects" eyebrow open onOpenChange={() => {}} />);
   const button = screen.getByRole("button", { name: "Projects" });

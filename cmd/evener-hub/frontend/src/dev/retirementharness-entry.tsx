@@ -33,14 +33,13 @@ import { ClientProvider } from "../shell/clientContext";
 import { workspaceStore } from "../shell/workspace";
 import { connectionStore } from "../stores/connection";
 import { readMutationPersistence, subscribeMutationPersistence, threadsStore } from "../stores/threads";
+import { harnessRoot } from "./mountHarness";
 import {
   observeRestartSubmission,
   type RestartMutationSnapshot,
   type RestartSubmissionObserver,
   type RestartSubmissionSnapshot,
 } from "./retirementharness-persistence";
-import "../styles/tokens.css";
-import "../styles/global.css";
 
 // ---- Error collection (runner probes this before asserting) ----------------
 
@@ -127,8 +126,7 @@ void boot();
 
 // ---- Mount -----------------------------------------------------------------
 
-const rootEl = document.getElementById("root");
-if (!rootEl) throw new Error("retirementharness.html is missing #root");
+const rootEl = harnessRoot("retirementharness");
 
 document.documentElement.style.height = "100%";
 document.body.style.height = "100%";

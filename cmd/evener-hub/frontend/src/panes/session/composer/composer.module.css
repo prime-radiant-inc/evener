@@ -28,11 +28,7 @@
 }
 
 .leading {
-  display: flex;
-  align-items: center;
-  gap: var(--space-1);
-  flex: 1 1 auto;
-  min-width: 0;
+  composes: cardLeading from "../../../styles/surface.module.css";
   padding-inline-start: calc(var(--tap-min, var(--space-5)) + var(--space-1));
   /* The attach control and the chrome's compact rung cannot share one line
      with the verbs at the narrowest engaged panes; the chrome takes the next
@@ -95,9 +91,7 @@
 }
 
 .attachments {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-2);
+  composes: attachmentStrip from "../../../styles/surface.module.css";
 }
 
 /* Same author-vs-UA cascade hole as promptcard's .card[hidden] (see that

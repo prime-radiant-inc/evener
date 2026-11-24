@@ -673,7 +673,9 @@ test("a scroll does not dismiss the open picker", async () => {
 
 test("a row hovers with the resting wash and transitions on background-color", () => {
   const here = dirname(fileURLToPath(import.meta.url));
-  const css = readFileSync(join(here, "modelCatalog.module.css"), "utf8");
+  const css = readFileSync(join(here, "../internal/pickerPanel.module.css"), "utf8");
+  const local = readFileSync(join(here, "modelCatalog.module.css"), "utf8");
+  expect(/\.row\s*\{[^}]*composes: row from "\.\.\/internal\/pickerPanel\.module\.css"/.test(local)).toBe(true);
   const rowRule = /\.row\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
   expect(rowRule).toContain("transition: background-color var(--motion-duration-hover) var(--motion-easing-standard)");
   const hoverRule = /\.row:hover\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
@@ -682,7 +684,11 @@ test("a row hovers with the resting wash and transitions on background-color", (
 
 test("the active (virtual-focus) row carries the selected wash", () => {
   const here = dirname(fileURLToPath(import.meta.url));
-  const css = readFileSync(join(here, "modelCatalog.module.css"), "utf8");
+  const css = readFileSync(join(here, "../internal/pickerPanel.module.css"), "utf8");
+  const local = readFileSync(join(here, "modelCatalog.module.css"), "utf8");
+  expect(/\.rowActive\s*\{[^}]*composes: rowActive from "\.\.\/internal\/pickerPanel\.module\.css"/.test(local)).toBe(
+    true,
+  );
   const rule = /\.rowActive\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
   expect(rule).toContain("background: var(--hover-2)");
 });

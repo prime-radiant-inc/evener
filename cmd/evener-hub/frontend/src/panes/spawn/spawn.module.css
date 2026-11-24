@@ -39,11 +39,7 @@
  * surfaces, so its leading slot lays out the same way rather than resembling
  * it (issue #198). */
 .leading {
-  display: flex;
-  flex: 1 1 auto;
-  min-width: 0;
-  align-items: center;
-  gap: var(--space-1);
+  composes: cardLeading from "../../styles/surface.module.css";
 }
 
 /* The card's own model slot: the session composer's ModelSwitchTrigger at
@@ -223,9 +219,7 @@
  * 80x80 box from composer.module.css - this only wraps them, exactly as the
  * composer's own .attachments row does. */
 .attachments {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-2);
+  composes: attachmentStrip from "../../styles/surface.module.css";
 }
 
 @media (max-width: 899px) {

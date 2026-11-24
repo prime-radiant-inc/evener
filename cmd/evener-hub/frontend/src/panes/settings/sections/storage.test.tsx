@@ -114,9 +114,12 @@ test("a load failure is a polite danger notice whose Retry re-requests the overv
   expect(screen.queryByText("raw-overview-failure", { exact: false })).toBeNull();
   const notice = document.querySelector<HTMLElement>('[role="status"][data-reason="unavailable"]');
   if (notice === null) throw new Error("load failure shows no notice");
+  // The region announces the failure; the retry control stays outside it.
+  expect(within(notice).queryByRole("button")).toBeNull();
+  expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
 
   fake.on("evener/settings/overview", () => ({ hub: {}, storage: {} }) as SettingsOverviewResponse);
-  await user.click(within(notice).getByRole("button", { name: "Retry" }));
+  await user.click(screen.getByRole("button", { name: "Retry" }));
   await user.click(await screen.findByText("Technical details", { selector: "summary" }));
 
   await waitFor(() => expect(settingsFieldIds()).toContain("hub-config"));

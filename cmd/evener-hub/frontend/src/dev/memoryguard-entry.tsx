@@ -21,11 +21,9 @@ import {
   type Thread,
   type ThreadItem,
 } from "@evener/appwire-client";
-import { createRoot } from "react-dom/client";
 import { TurnBlock } from "../panes/session/transcript/TurnBlock";
 import { TranscriptRenderProvider } from "../transcriptDisplay/renderContext";
-import "../styles/tokens.css";
-import "../styles/global.css";
+import { mountHarness } from "./mountHarness";
 
 const params = new URLSearchParams(window.location.search);
 const width = Number(params.get("w") ?? "1024");
@@ -118,12 +116,11 @@ declare global {
   }
 }
 
-const rootEl = document.getElementById("root");
-if (!rootEl) throw new Error("memoryguard.html is missing #root");
 document.body.style.margin = "0";
 document.body.style.background = "var(--surface-0)";
 
-createRoot(rootEl).render(
+mountHarness(
+  "memoryguard",
   <div id="mg-pane" style={{ width, minHeight: 900 }}>
     <TranscriptRenderProvider config={config} surface="readOnly" disclosureScope="memoryguard" sessionRef="memoryguard">
       <TurnBlock turn={turn} sessionRef="memoryguard" />
