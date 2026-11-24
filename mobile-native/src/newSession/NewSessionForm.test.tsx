@@ -1,4 +1,4 @@
-import type { LaunchOptionSchemaResponse } from "@evener/appwire-client";
+import type { InitializeResponse, LaunchOptionSchemaResponse, Source } from "@evener/appwire-client";
 import { type HostRow, type ModelDescriptor, type PluginPreviewResponse, WireError } from "@evener/appwire-client";
 import type { NativeStackNavigationOptions, NativeStackScreenProps } from "@react-navigation/native-stack";
 import type { ReactElement } from "react";
@@ -101,6 +101,8 @@ interface Options {
 	refuseDefaults?: boolean;
 	/** The hub's launch schema for the chosen host; null while unanswered. */
 	schema?: LaunchOptionSchemaResponse | null;
+	initializeResult?: InitializeResponse | null;
+	manifestSources?: readonly Source[] | null;
 }
 
 /** The form inside a context as NewSessionSheet builds it: a real creation
@@ -118,6 +120,7 @@ async function mount(options: Options = {}) {
 	let releaseStart = () => {};
 	const held = new Promise<void>((resolve) => (releaseStart = resolve));
 	const client = {
+		...(options.initializeResult !== undefined ? { initializeResult: options.initializeResult } : {}),
 		request: async (method: string, params: unknown) => {
 			calls.push({ method, params });
 			const forwarded = method === "evener/host/request" ? (params as { method: string }).method : method;
@@ -215,8 +218,22 @@ async function mount(options: Options = {}) {
 	}
 	const first = sheetNavigation();
 	const { parent, focus, navigation, header } = first;
+	const sourcesPort =
+		options.manifestSources !== undefined
+			? {
+					getSnapshot: () => options.manifestSources ?? null,
+					subscribe: () => () => {},
+				}
+			: undefined;
 	const form = (nav = navigation) => (
-		<AlertsContext.Provider value={{ center: alerts, reportRoutes: () => {}, noticeFor: () => undefined }}>
+		<AlertsContext.Provider
+			value={{
+				center: alerts,
+				reportRoutes: () => {},
+				noticeFor: () => undefined,
+				...(sourcesPort ? { sources: sourcesPort } : {}),
+			}}
+		>
 			<TestSheet value={context}>
 				<NewSessionForm
 					navigation={nav as unknown as NativeStackScreenProps<NewSessionRoutes, "Form">["navigation"]}
@@ -888,6 +905,102 @@ it("raises no alert for a failure the form in front already shows", async () => 
 	await settle();
 	expect(form.text()).toContain("the hub is shutting down");
 	expect(form.alerts.getSnapshot().banner).toBeNull();
+	form.dispose();
+});
+
+const CAPABLE_INIT: InitializeResponse = {
+	serverInfo: { name: "hub", version: "1.0.0" },
+	protocolVersion: "evener-appwire-v7",
+	sourceId: "local",
+	features: {
+		threadList: true,
+		threadTurnsList: true,
+		turnStart: true,
+		turnSteer: true,
+		threadClear: true,
+		threadShutdown: true,
+		forkFromTurn: true,
+		tasks: true,
+		transcriptList: true,
+		modelList: true,
+		directoryComplete: true,
+		auth: true,
+		threadStartIdempotency: true,
+	},
+};
+
+it("keeps Start enabled and retries with the identical clientMutationId on capable local and remote targets, while holding older remote targets", async () => {
+	let failOnce = true;
+	const form = await mount({
+		initializeResult: CAPABLE_INIT,
+		hosts: [hostRow("cap-host", { attached: true }), hostRow("old-host", { attached: true })],
+		manifestSources: [
+			{ id: "local", label: "this host", kind: "local", online: true, threadStartIdempotency: true },
+			{ id: "cap-host", label: "cap-host", kind: "appwire", online: true, threadStartIdempotency: true },
+			{ id: "old-host", label: "old-host", kind: "appwire", online: true, threadStartIdempotency: false },
+		],
+		draft: { source: "cap-host", cwd: "/Users/jesse/git/evener", prompt: "go" },
+	});
+	// Override thread/start via refuseStart-free intercept on store.bind:
+	const starts: Record<string, unknown>[] = [];
+	const service = createNewSessionService({
+		state: "ready",
+		onReady: () => () => {},
+		onStateChange: () => () => {},
+		initializeResult: CAPABLE_INIT,
+		request: async (method: string, params: unknown) => {
+			if (method === "thread/start") {
+				starts.push(params as Record<string, unknown>);
+				if (failOnce) {
+					failOnce = false;
+					throw new Error("ssh drop");
+				}
+				return { thread: { id: "t", name: "Recovered", evener: { ref: "cap-host:t" } }, turn: {} };
+			}
+			if (method === "evener/host/request") {
+				const req = params as { method: string };
+				if (req.method === "evener/path/validate") return { path: "/Users/jesse/git/evener", valid: true };
+			}
+			return { data: [] };
+		},
+		onNotification: () => () => {},
+	} as never);
+	await act(async () => form.store.getState().bind(service));
+	await settle();
+
+	await act(async () => form.header("headerRight").props.onPress());
+	await settle();
+	expect(form.header("headerRight").props.disabled).toBe(false);
+	expect(form.store.getState().startMayRepeat()).toBe(false);
+	expect(startErrors(form.tree)).toHaveLength(1);
+	expect(starts[0]?.clientMutationId).toBeTruthy();
+
+	// Tap Start again: reuses identical clientMutationId and opens session.
+	await act(async () => form.header("headerRight").props.onPress());
+	await settle();
+	expect(starts).toHaveLength(2);
+	expect(starts[1]?.clientMutationId).toBe(starts[0]?.clientMutationId);
+	expect(form.parent.dispatch).toHaveBeenCalledWith({
+		type: "REPLACE",
+		payload: {
+			name: "Conversation",
+			params: { hubId: "hub-1", ref: "cap-host:t", title: "Recovered" },
+		},
+	});
+
+	// Older remote host stays keyless and holds Start after failure.
+	failOnce = true;
+	await act(async () => {
+		await form.store.getState().changeHost("old-host", "old-host");
+		await form.store.getState().setCwd("/Users/jesse/git/evener", false);
+		form.store.getState().setPrompt("old host");
+	});
+	await settle();
+	await act(async () => form.header("headerRight").props.onPress());
+	await settle();
+	expect("clientMutationId" in (starts[2] ?? {})).toBe(false);
+	expect(form.store.getState().startMayRepeat()).toBe(true);
+	expect(form.header("headerRight").props.disabled).toBe(true);
 	form.dispose();
 });
 

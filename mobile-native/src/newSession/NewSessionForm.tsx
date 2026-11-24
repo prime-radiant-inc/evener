@@ -9,7 +9,7 @@ import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import { Alert, Pressable, Text, TextInput, View } from "react-native";
 import { useStore } from "zustand";
-import { useOfferAlert, useStartFailureSeen } from "../alerts/alertsContext";
+import { useManifestSources, useOfferAlert, useStartFailureSeen } from "../alerts/alertsContext";
 import { creationImageDraft } from "../creationImageDraft";
 import { space } from "../design/tokens";
 import { destructiveButton } from "../haptics";
@@ -44,6 +44,10 @@ export function NewSessionForm({ navigation }: NativeStackScreenProps<NewSession
 	const { store, hubId, hubName, client, ready, hosts, memory, hostLabel, plugins, launchDefaults, launchSchema } =
 		useNewSession();
 	const { palette } = useColors();
+	const manifestSources = useManifestSources();
+	useEffect(() => {
+		if (manifestSources !== undefined) store.getState().setSources(manifestSources);
+	}, [store, manifestSources]);
 	const scale = useTextScale();
 	const form = useStore(store);
 	const imageDocument = useMemo(() => creationImageDraft(store), [store]);

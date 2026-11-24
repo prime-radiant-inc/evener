@@ -8,6 +8,7 @@
 // Session pause theirs out of view (phase 3 ruling 33), and alerts must hear
 // about sessions wherever you are. That is a second set of navigation reads
 // while the Board or a Session is in front.
+import type { Source } from "@evener/appwire-client";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { liveBands } from "@evener/appwire-client/state/navigation";
 import { createBoardController } from "../board/boardData";
@@ -32,6 +33,22 @@ export function AlertsProvider({ children }: { children: ReactNode }) {
 	const [center] = useState(() => new AlertCenter(realClock, haptic));
 	const [feed] = useState(() => new AlertFeed(center));
 	const noticesByKey = useRef(new Map<string, Notice>());
+	const [sourcesStore] = useState(() => {
+		let current: readonly Source[] | null = null;
+		const listeners = new Set<() => void>();
+		return {
+			getSnapshot: () => current,
+			subscribe: (listener: () => void) => {
+				listeners.add(listener);
+				return () => listeners.delete(listener);
+			},
+			setSources: (next: readonly Source[] | null) => {
+				if (current === next) return;
+				current = next;
+				for (const listener of listeners) listener();
+			},
+		};
+	});
 
 	// Hub > In-app alerts, as it changes.
 	useEffect(() => {
@@ -85,11 +102,15 @@ export function AlertsProvider({ children }: { children: ReactNode }) {
 	useEffect(() => () => board?.dispose(), [board]);
 	useEffect(() => {
 		feed.rebaseline();
-		if (!board || hubId === null) return;
+		if (!board || hubId === null) {
+			sourcesStore.setSources(null);
+			return;
+		}
 		// Read in the callback, never in a render: a snapshot a render took
 		// before the client changed could otherwise reach the new baseline.
 		const stop = board.subscribe(() => {
 			const snapshot = board.getSnapshot();
+			sourcesStore.setSources(snapshot.manifest?.sources ?? null);
 			const { live, needsYou } = snapshot;
 			const rows = [...live.rows, ...needsYou.rows];
 			// A Needs you section still paging is never observed, so its later
@@ -112,7 +133,7 @@ export function AlertsProvider({ children }: { children: ReactNode }) {
 			}
 		});
 		return stop;
-	}, [board, feed, hubId]);
+	}, [board, feed, hubId, sourcesStore]);
 	// A client refuses requests until it's ready; ready again after a drop, it
 	// gets fresh readers that catch up on what it missed.
 	useEffect(() => {
@@ -120,8 +141,8 @@ export function AlertsProvider({ children }: { children: ReactNode }) {
 	}, [board, client, state]);
 
 	const value = useMemo<Alerts>(
-		() => ({ center, reportRoutes, noticeFor: (key) => noticesByKey.current.get(key) }),
-		[center, reportRoutes],
+		() => ({ center, reportRoutes, noticeFor: (key) => noticesByKey.current.get(key), sources: sourcesStore }),
+		[center, reportRoutes, sourcesStore],
 	);
 	return <AlertsContext.Provider value={value}>{children}</AlertsContext.Provider>;
 }

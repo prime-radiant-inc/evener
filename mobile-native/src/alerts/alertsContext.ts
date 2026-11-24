@@ -2,6 +2,7 @@
 // provider (AlertsProvider.tsx), which reads the fleet and the connection: a
 // component that only holds banners (HoldingModal, the composer, the Reader)
 // loads none of that.
+import type { Source } from "@evener/appwire-client";
 import { createContext, useCallback, useContext, useEffect, useSyncExternalStore } from "react";
 import type { Notice } from "../board/notices";
 import type { Alert, AlertCenter, AlertSnapshot, HoldKind } from "./alertCenter";
@@ -13,6 +14,10 @@ export interface Alerts {
 	center: AlertCenter;
 	reportRoutes(routes: readonly ReportedRoute[]): void;
 	noticeFor(key: string): Notice | undefined;
+	sources?: {
+		getSnapshot(): readonly Source[] | null;
+		subscribe(listener: () => void): () => void;
+	};
 }
 
 export const AlertsContext = createContext<Alerts | null>(null);
@@ -87,4 +92,13 @@ export function useReportRoutes(): (routes: readonly ReportedRoute[]) => void {
 /** The notice alerts last read under a key, for a tapped notice banner. */
 export function useNoticeFor(): (key: string) => Notice | undefined {
 	return useAlerts().noticeFor;
+}
+
+const noManifestSources = () => undefined;
+
+/** The hub's current manifest sources when provided by AlertsProvider:
+ * undefined outside one, null before the manifest settles. */
+export function useManifestSources(): readonly Source[] | null | undefined {
+	const port = useContext(AlertsContext)?.sources;
+	return useSyncExternalStore(port?.subscribe ?? noSubscription, port?.getSnapshot ?? noManifestSources);
 }

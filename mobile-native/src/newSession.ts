@@ -1,3 +1,4 @@
+import * as Crypto from "expo-crypto";
 import { createStore } from "zustand/vanilla";
 import {
 	buildComposerInput,
@@ -10,12 +11,17 @@ import {
 	stripMarker,
 	WireError,
 } from "@evener/appwire-client";
-import type { LaunchConfigLayer, ModelDescriptor, Thread } from "@evener/appwire-client";
-import { LOCAL_HOST } from "@evener/appwire-client";
+import type { LaunchConfigLayer, ModelDescriptor, Source, Thread } from "@evener/appwire-client";
+import { isLocalHost, LOCAL_HOST } from "@evener/appwire-client";
+import { createSecureUUID } from "@evener/appwire-client/state/mutation";
 import type { NewSessionService } from "./conversation/services/newSession";
 import { type CreationDraft, type CreationDraftRepository, creationDraftMetadata } from "./creationDraftRepository";
 import { type DraftImageData, imageInput } from "./draftImages";
 import { type LaunchSetup, modelFromId, moveToHost, setupOf, withOwnedOverrides } from "./newSession/launchSetup";
+
+function newMutationId(): string {
+	return createSecureUUID({ randomUUID: Crypto.randomUUID, getRandomValues: Crypto.getRandomValues });
+}
 
 /** Why Start holds a draft whose start may exist. Every message that leaves
  * such a draft ends with it, so the form shows one line that says what to do. */
@@ -23,6 +29,8 @@ const MAY_HAVE_STARTED = "It may have started: check the Board before starting t
 /** A new connection took over mid-start, or a draft reopened with such a start. */
 const START_UNCONFIRMED = `Creation could not be confirmed. ${MAY_HAVE_STARTED}`;
 const EARLIER_START_UNCONFIRMED = `An earlier creation could not be confirmed. ${MAY_HAVE_STARTED}`;
+const RETRYABLE_START_NOTICE =
+	"Could not confirm whether the session started. Tap Start to retry safely without duplicating it.";
 /** A start landed but its draft couldn't be cleared: the draft stays, held,
  * and this says why for as long as it does. */
 const CREATED_NOT_CLEARED =
@@ -37,6 +45,8 @@ interface Form {
 	storageLoaded: boolean;
 	storageError: string | null;
 	unconfirmedCreation: boolean;
+	supportsStartIdempotency: boolean;
+	setSources(sources: readonly Source[] | null): void;
 	retryStorage(): void;
 	/** The host the session starts on: "local" is the hub's own machine. */
 	source: string;
@@ -162,6 +172,22 @@ export function createNewSessionStore(hubId: string, storage?: DraftStorage) {
 	// The draft's content when its start became unconfirmed (isUnconfirmedDraft),
 	// moved along by the host's own fill-ins, never by the person's edits.
 	let unconfirmedContent: string | null = null;
+	let sources: readonly Source[] | null = null;
+	let clientMutationId: string | null = null;
+	let lastStartBlocked = false;
+	function targetSupportsIdempotency(targetSource = store.getState().source): boolean {
+		if (!service?.supportsStartIdempotency?.()) return false;
+		if (isLocalHost(targetSource)) return true;
+		return sources?.find((candidate) => candidate.id === targetSource)?.threadStartIdempotency === true;
+	}
+	function reconciledRetryError(idempotent: boolean): string | undefined {
+		const state = store.getState();
+		if (!state.unconfirmedCreation || !isUnconfirmedDraft() || lastStartBlocked) return undefined;
+		if (clientMutationId !== null && idempotent) return RETRYABLE_START_NOTICE;
+		if (state.error === RETRYABLE_START_NOTICE && (isLocalHost(state.source) || sources !== null))
+			return EARLIER_START_UNCONFIRMED;
+		return undefined;
+	}
 	/** Runs `fn` with the draft's autosave off, for changes the store saves
 	 * itself or must not save at all. */
 	function withoutSaving<T>(fn: () => T): T {
@@ -208,8 +234,14 @@ export function createNewSessionStore(hubId: string, storage?: DraftStorage) {
 			modelError: null,
 		};
 		if (isUnconfirmedDraft()) {
+			const beforeContent = draftContent();
 			withoutSaving(() => store.setState(listed));
-			unconfirmedContent = draftContent();
+			const afterContent = draftContent();
+			if (afterContent !== beforeContent) {
+				clientMutationId = null;
+				lastStartBlocked = false;
+			}
+			unconfirmedContent = afterContent;
 			saveDraft();
 		} else store.setState(listed);
 	}
@@ -224,6 +256,16 @@ export function createNewSessionStore(hubId: string, storage?: DraftStorage) {
 		storageLoaded: !storage,
 		storageError: null,
 		unconfirmedCreation: false,
+		supportsStartIdempotency: false,
+		setSources(next) {
+			sources = next;
+			const idempotent = targetSupportsIdempotency();
+			const nextError = reconciledRetryError(idempotent);
+			set({
+				supportsStartIdempotency: idempotent,
+				...(nextError !== undefined ? { error: nextError } : {}),
+			});
+		},
 		retryStorage() {
 			if (get().storageLoaded) saveDraft();
 			else {
@@ -288,6 +330,12 @@ export function createNewSessionStore(hubId: string, storage?: DraftStorage) {
 			loadedContext = null;
 			catalog++;
 			hostMoves++;
+			const idempotent = targetSupportsIdempotency();
+			const nextError = uncertainCreation
+				? clientMutationId !== null && !lastStartBlocked
+					? RETRYABLE_START_NOTICE
+					: START_UNCONFIRMED
+				: reconciledRetryError(idempotent);
 			set({
 				movingHost: false,
 				projects: [],
@@ -295,11 +343,8 @@ export function createNewSessionStore(hubId: string, storage?: DraftStorage) {
 				recentModels: [],
 				loadingModels: false,
 				submitting: false,
-				...(uncertainCreation
-					? {
-							error: START_UNCONFIRMED,
-						}
-					: {}),
+				supportsStartIdempotency: idempotent,
+				...(nextError !== undefined ? { error: nextError } : {}),
 			});
 		},
 		async setCwd(cwd, refresh = true) {
@@ -477,14 +522,28 @@ export function createNewSessionStore(hubId: string, storage?: DraftStorage) {
 						return { status: "blocked" };
 					}
 				}
+				const idempotent = targetSupportsIdempotency(source);
+				const currentContent = draftContent();
+				const retryId =
+					idempotent && clientMutationId !== null && unconfirmedContent === currentContent
+						? clientMutationId
+						: idempotent
+							? newMutationId()
+							: null;
 				const previouslyUnconfirmed = get().unconfirmedCreation;
 				const previousContent = unconfirmedContent;
+				const previousMutationId = clientMutationId;
+				const previousBlocked = lastStartBlocked;
 				// Recorded before the save, which marks the saved draft unconfirmed
 				// only while its content is what this start sends.
-				unconfirmedContent = draftContent();
+				unconfirmedContent = currentContent;
+				clientMutationId = retryId;
+				lastStartBlocked = false;
 				withoutSaving(() => set({ unconfirmedCreation: true }));
 				if (!saveDraft()) {
 					unconfirmedContent = previousContent;
+					clientMutationId = previousMutationId;
+					lastStartBlocked = previousBlocked;
 					withoutSaving(() => set({ unconfirmedCreation: previouslyUnconfirmed }));
 					return { status: "blocked" };
 				}
@@ -499,6 +558,7 @@ export function createNewSessionStore(hubId: string, storage?: DraftStorage) {
 					...(scalars.reasoningEffort ? { reasoningEffort: scalars.reasoningEffort } : {}),
 					...(manager ? { manager: true } : {}),
 					...(Object.keys(launchOverrides).length ? { launchOverrides } : {}),
+					...(retryId ? { clientMutationId: retryId } : {}),
 				});
 				if (generation !== connection) return { status: "obsolete" };
 				if (storage)
@@ -510,7 +570,11 @@ export function createNewSessionStore(hubId: string, storage?: DraftStorage) {
 							// draft stays as it is, still held, rather than be cleared
 							// unmatched or started twice.
 							const stored = storage().read(hubId);
-							if (stored !== null && creationDraftMetadata({ ...stored, unconfirmed: false }) !== unconfirmedContent) {
+							const comparable = stored
+								? (({ clientMutationId: _cid, ...rest }) => ({ ...rest, unconfirmed: false }))(stored)
+								: null;
+							if (comparable !== null && creationDraftMetadata(comparable) !== unconfirmedContent) {
+								lastStartBlocked = true;
 								set({ error: CREATED_NOT_CLEARED });
 								return;
 							}
@@ -518,33 +582,47 @@ export function createNewSessionStore(hubId: string, storage?: DraftStorage) {
 							emptyForm();
 							lastSaved = creationDraftMetadata(snapshot());
 						} catch {
+							lastStartBlocked = true;
 							set({ error: CREATED_NOT_CLEARED });
 						}
 					});
+				else {
+					unconfirmedContent = null;
+					clientMutationId = null;
+					lastStartBlocked = false;
+					set({ unconfirmedCreation: false });
+				}
 				return { status: "created", hubId, thread: result.thread };
 			} catch (error) {
 				if (generation !== connection) return { status: "obsolete" };
+				const data = error instanceof WireError ? mutationErrorData(error) : null;
+				const wireMessage = error instanceof WireError ? error.message : "";
 				// The hub says when it refused a start before any session existed
 				// (#3184): the draft isn't one that may have started, so Start stays.
-				if (
-					startDispatched &&
-					error instanceof WireError &&
-					mutationErrorData(error)?.mutationOutcome === "notAccepted"
-				) {
+				if (startDispatched && data?.mutationOutcome === "notAccepted") {
 					unconfirmedContent = null;
+					clientMutationId = null;
+					lastStartBlocked = false;
 					set({
 						unconfirmedCreation: false,
-						error: `${error.message}\n\nNo session was started. Your input is kept.`,
+						error: `${wireMessage}\n\nNo session was started. Your input is kept.`,
 					});
 					return { status: "failed" };
+				}
+				if (startDispatched && data?.retryDisposition === "blocked") {
+					clientMutationId = null;
+					lastStartBlocked = true;
 				}
 				// Any other failure of a start the hub was sent leaves it uncertain:
 				// the hub can refuse one after its session exists (a refusal of the
 				// initial input comes after the spawn), and an older hub never says.
+				const retryableNotice =
+					clientMutationId !== null && !lastStartBlocked
+						? RETRYABLE_START_NOTICE
+						: `Creation failed or could not be confirmed. Your input is kept. ${MAY_HAVE_STARTED}`;
 				set({
 					error: startDispatched
-						? (error instanceof WireError ? `${error.message}\n\n` : "") +
-							`Creation failed or could not be confirmed. Your input is kept. ${MAY_HAVE_STARTED}`
+						? (error instanceof WireError ? `${error.message}\n\n` : "") + retryableNotice
 						: "Couldn't check the selected plugins, so no session was started. Your selection is kept.",
 				});
 				return { status: "failed" };
@@ -565,6 +643,7 @@ export function createNewSessionStore(hubId: string, storage?: DraftStorage) {
 			catalog++;
 			refreshingModels = false;
 			set({
+				supportsStartIdempotency: targetSupportsIdempotency(host),
 				source: host,
 				hostNote: null,
 				movingHost: !!current,
@@ -597,6 +676,7 @@ export function createNewSessionStore(hubId: string, storage?: DraftStorage) {
 			if (previous.submitting) return;
 			movePlacement();
 			set({
+				supportsStartIdempotency: targetSupportsIdempotency(setup.host),
 				source: setup.host,
 				// Another host's recent projects are read below; the old host's go.
 				...(setup.host !== previous.source ? { projects: [] } : {}),
@@ -617,7 +697,9 @@ export function createNewSessionStore(hubId: string, storage?: DraftStorage) {
 			get().bind(null);
 		},
 		startMayRepeat() {
-			return get().unconfirmedCreation && isUnconfirmedDraft();
+			if (!(get().unconfirmedCreation && isUnconfirmedDraft())) return false;
+			if (clientMutationId !== null && get().supportsStartIdempotency && !lastStartBlocked) return false;
+			return true;
 		},
 		discard() {
 			if (get().submitting) return;
@@ -641,8 +723,11 @@ export function createNewSessionStore(hubId: string, storage?: DraftStorage) {
 	function emptyForm(): void {
 		movePlacement();
 		unconfirmedContent = null;
+		clientMutationId = null;
+		lastStartBlocked = false;
 		store.setState({
 			source: LOCAL_HOST,
+			supportsStartIdempotency: targetSupportsIdempotency(LOCAL_HOST),
 			hostNote: null,
 			cwd: "",
 			prompt: "",
@@ -665,9 +750,11 @@ export function createNewSessionStore(hubId: string, storage?: DraftStorage) {
 	 * app mustn't hold it as the one that may have started. */
 	function snapshot(): CreationDraft {
 		const draft = draftFields();
+		const unconfirmed = store.getState().unconfirmedCreation && isUnconfirmedDraft(creationDraftMetadata(draft));
 		return {
 			...draft,
-			unconfirmed: store.getState().unconfirmedCreation && isUnconfirmedDraft(creationDraftMetadata(draft)),
+			unconfirmed,
+			...(unconfirmed && clientMutationId !== null ? { clientMutationId } : {}),
 		};
 	}
 	/** Whether the draft (`content`, the form's by default) is still what a
@@ -720,7 +807,15 @@ export function createNewSessionStore(hubId: string, storage?: DraftStorage) {
 			try {
 				const draft = storage().read(hubId);
 				if (draft) {
-					const { unconfirmed, source, harness: _harness, launchOverrides, ...fields } = draft;
+					const {
+						unconfirmed,
+						source,
+						harness: _harness,
+						launchOverrides,
+						clientMutationId: restoredId,
+						...fields
+					} = draft;
+					clientMutationId = unconfirmed ? (restoredId ?? null) : null;
 					// A per-launch model or effort, which only an older build could set,
 					// becomes the form's own choice: the host's list finds the model,
 					// or the form says Hub default and sends none, so the form never
@@ -738,7 +833,7 @@ export function createNewSessionStore(hubId: string, storage?: DraftStorage) {
 						// (ruling 28).
 						source: source || LOCAL_HOST,
 						unconfirmedCreation: unconfirmed,
-						error: unconfirmed ? EARLIER_START_UNCONFIRMED : null,
+						error: unconfirmed ? (clientMutationId ? RETRYABLE_START_NOTICE : EARLIER_START_UNCONFIRMED) : null,
 					});
 				}
 				if (draft?.unconfirmed) unconfirmedContent = draftContent();
@@ -753,11 +848,14 @@ export function createNewSessionStore(hubId: string, storage?: DraftStorage) {
 			}
 		});
 	}
-	if (storage) {
-		restoreDraft();
-		store.subscribe(() => {
-			if (!saving && store.getState().storageLoaded && creationDraftMetadata(snapshot()) !== lastSaved) saveDraft();
-		});
-	}
+	if (storage) restoreDraft();
+	store.subscribe(() => {
+		if (saving) return;
+		if (!isUnconfirmedDraft()) {
+			clientMutationId = null;
+			lastStartBlocked = false;
+		}
+		if (storage && store.getState().storageLoaded && creationDraftMetadata(snapshot()) !== lastSaved) saveDraft();
+	});
 	return store;
 }
