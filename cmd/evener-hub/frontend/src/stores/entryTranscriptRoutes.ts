@@ -338,6 +338,12 @@ export function isEntryTranscriptLocalOpening(ref: string): boolean {
 // that newer opening finished.
 const entryTranscriptLatestOpening = new Map<string, number>();
 
+// The notices the pruned publication already carried when its opening became
+// pending. Only these stand in for content the restore owes: a notice upserted
+// while the open runs is new information (a fresh `notice:<n>` key) and stays
+// visible. Cleared with the opening it belongs to.
+const heldPrunedNoticeKeys = new Map<string, ReadonlySet<string>>();
+
 // A quiet opening's ownership token: present while the open runs, invisible
 // to the consumer gate. The certification open a claim runs over a display
 // its own publication already completed, and whose older frontier is still
@@ -356,6 +362,7 @@ export function beginEntryTranscriptLocalOpening(ref: string, quiet = false): nu
   entryTranscriptOpeningSequence += 1;
   const token = entryTranscriptOpeningSequence;
   entryTranscriptLatestOpening.set(ref, token);
+  heldPrunedNoticeKeys.delete(ref);
   if (quiet) {
     entryTranscriptQuietOpenings.set(ref, token);
     return token;
@@ -378,6 +385,7 @@ export function beginEntryTranscriptLocalOpening(ref: string, quiet = false): nu
 // publishing, strand a port. Called on success, failure and no-model alike.
 export function settleEntryTranscriptLocalOpening(ref: string, token: number): void {
   if (entryTranscriptQuietOpenings.get(ref) === token) entryTranscriptQuietOpenings.delete(ref);
+  heldPrunedNoticeKeys.delete(ref);
   store().setState((state) => {
     if (state.localOpenings.get(ref) !== token) return {};
     const localOpenings = new Map(state.localOpenings);
@@ -396,6 +404,7 @@ export function settleEntryTranscriptLocalOpening(ref: string, token: number): v
 function retireSupersededPublishedOpening(ref: string, token: number): boolean {
   const superseded = store().getState().localOpenings.get(ref);
   if (superseded === undefined || superseded >= token) return false;
+  heldPrunedNoticeKeys.delete(ref);
   store().setState((state) => {
     if (state.localOpenings.get(ref) !== superseded) return {};
     const localOpenings = new Map(state.localOpenings);
@@ -410,6 +419,7 @@ function retireSupersededPublishedOpening(ref: string, token: number): boolean {
 // for a frame that will never arrive.
 export function clearEntryTranscriptLocalOpening(ref: string): void {
   entryTranscriptQuietOpenings.delete(ref);
+  heldPrunedNoticeKeys.delete(ref);
   store().setState((state) => {
     if (!state.localOpenings.has(ref)) return {};
     const localOpenings = new Map(state.localOpenings);
@@ -485,8 +495,12 @@ function publishHeldOpeningDisplay(ref: string): void {
   const fixture = entryTranscriptRoute(ref);
   if (!fixture || fixture.ref !== ref || fixture.clearInert) return;
   const displayed = displayedEntryTranscriptSnapshot(fixture);
-  const held = displayed && heldNoticeDisplay(displayed);
-  if (held) routeHost().putThreadModel(ref, held);
+  const pruned = displayed && prunedNoticeKeys(displayed);
+  const held = displayed && pruned && heldNoticeDisplay(displayed, pruned);
+  if (held) {
+    heldPrunedNoticeKeys.set(ref, pruned);
+    routeHost().putThreadModel(ref, held);
+  }
 }
 
 // While a published opening is restoring the recorded bodies, the notice
@@ -501,10 +515,19 @@ function publishHeldOpeningDisplay(ref: string): void {
 // neither matches the hold shape.
 function heldOpeningDisplay(ref: string, model: ThreadModel): ThreadModel {
   if (!isEntryTranscriptLocalOpening(ref)) return model;
-  return heldNoticeDisplay(model) ?? model;
+  const pruned = heldPrunedNoticeKeys.get(ref);
+  if (pruned === undefined || pruned.size === 0) return model;
+  const present = prunedNoticeKeys(model);
+  if (present === undefined) return model;
+  const withheld = new Set([...pruned].filter((key) => present.has(key)));
+  return heldNoticeDisplay(model, withheld) ?? model;
 }
 
-function heldNoticeDisplay(model: ThreadModel): ThreadModel | undefined {
+// prunedNoticeKeys reports the overlay keys of a display that stands in for
+// recorded bodies the store cannot paint: every display item is an overlay
+// notice and history still records a body-less identity. Any other shape owes
+// nothing to a publish hold.
+function prunedNoticeKeys(model: ThreadModel): Set<string> | undefined {
   const overlay = model.overlay;
   if (!overlay) return undefined;
   const displayItems = model.turns.flatMap((turn) => turn.items);
@@ -519,10 +542,20 @@ function heldNoticeDisplay(model: ThreadModel): ThreadModel | undefined {
     turn.items.some((item) => encodeTranscriptItem(item).identityOnly),
   );
   if (!bodiesWithheld) return undefined;
+  return noticeKeys;
+}
+
+function heldNoticeDisplay(model: ThreadModel, withheld: ReadonlySet<string>): ThreadModel | undefined {
+  if (withheld.size === 0) return undefined;
   return {
     ...model,
-    turns: [],
-    overlay: Object.fromEntries(Object.entries(overlay).filter(([key]) => !noticeKeys.has(key))),
+    turns: model.turns
+      .map((turn) => ({
+        ...turn,
+        items: turn.items.filter((item) => item.overlayKey === undefined || !withheld.has(item.overlayKey)),
+      }))
+      .filter((turn) => turn.items.length > 0),
+    overlay: Object.fromEntries(Object.entries(model.overlay ?? {}).filter(([key]) => !withheld.has(key))),
   };
 }
 

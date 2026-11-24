@@ -178,6 +178,12 @@ function structuralStateExpr(ref) {
       noticeDisplay,
       contentItems: items.filter((item) =>
         (item.text ?? "") !== "" || (item.output ?? "") !== "").length,
+      // bodyItems counts displayed items that carry text AND are not
+      // overlay-projected notices: notice text must never stand in for the
+      // recorded body the restore owes.
+      bodyItems: items.filter((item) =>
+        item.overlayKey === undefined &&
+        ((item.text ?? "") !== "" || (item.output ?? "") !== "")).length,
       overlayNotices: Object.values(overlay).filter((entry) => entry?.kind === "notice").length,
       historyItems: (model?.history?.turns ?? []).flatMap((turn) => turn.items ?? []).length,
       turns: (model?.turns ?? []).length,
@@ -255,6 +261,7 @@ function startStructuralSampler(driver) {
       frame.displayItems,
       frame.noticeDisplay,
       frame.contentItems,
+      frame.bodyItems,
       frame.overlayNotices,
       frame.historyItems,
       frame.turns,
@@ -454,6 +461,7 @@ async function main() {
           displayItems: frame.displayItems,
           noticeDisplay: frame.noticeDisplay,
           contentItems: frame.contentItems,
+          bodyItems: frame.bodyItems,
           overlayNotices: frame.overlayNotices,
           historyItems: frame.historyItems,
         })),
@@ -471,7 +479,7 @@ async function main() {
       await evaluate(driver.send, `window.backgroundTranscriptEvidence.entrySettled(${JSON.stringify(SESSION_B)})`);
       const restored = await waitForStructural(
         driver,
-        (value) => value.contentItems > 0 && value.overlayNotices > 0 && !value.pending,
+        (value) => value.bodyItems > 0 && value.overlayNotices > 0 && !value.pending,
         "the restored display (recorded bodies with the historical notice)",
       );
       const traceAfter = statSync(TRACE_PATH).size;
@@ -482,9 +490,11 @@ async function main() {
           `the healthy warm reopen issued ${activation.reads} thread/read and ${activation.pages} thread/turns/list request(s)`,
         );
       }
-      // The control session holds no released recorded body the restore owes, so
-      // the hold must not apply to it: its own notices settle the local opening
-      // instead of a pending display.
+      // The control holds no recorded body at all, so the hold owes it nothing:
+      // before its pane opens (and can persist anything) its entry cache has no
+      // durable metadata for the ref, and the settle it publishes is its own
+      // retained notice rather than a restore.
+      const controlNative = await evaluate(driver.send, nativeEntryEvidenceExpression(SESSION_A));
       await driver.openSession(SESSION_A);
       const controlDeadline = Date.now() + 30000;
       let controlState;
@@ -493,15 +503,23 @@ async function main() {
         if (controlState && controlState.localOpening === false) break;
         await delay(100);
       }
-      milestone("warm-no-bodies-control", { ref: SESSION_A, ...controlState });
+      milestone("warm-no-bodies-control", {
+        ref: SESSION_A,
+        ...controlState,
+        nativeMetadata: controlNative === null ? "absent" : "present",
+        nativeRows: controlNative === null ? 0 : controlNative.rows.length,
+      });
       if (!controlState || controlState.localOpening) {
         throw new Error("the no-bodies control session never settled its local opening");
       }
       if (controlState.pending) {
         throw new Error("the no-bodies control session held a pending display it owes nothing for");
       }
-      if (!controlState.modelPresent || controlState.displayItems < 1) {
-        throw new Error("the no-bodies control session settled without publishing its own notices");
+      if (!controlState.modelPresent || controlState.noticeDisplay < 1) {
+        throw new Error("the no-bodies control session settled without a retained notice");
+      }
+      if (controlNative !== null && controlNative.rows.length > 0) {
+        throw new Error("the no-bodies control session has recorded rows in native entry storage");
       }
 
       // A clear retires the durable cache and the entry route's publication

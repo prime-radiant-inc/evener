@@ -147,16 +147,19 @@ func runWarmReturnDriver(ctx context.Context, t *testing.T, fixture *skillGuardF
 // warmReturnStructural is one committed model's shape, decoded from a
 // milestone. It counts items and notices, never their text.
 type warmReturnStructural struct {
-	Ref            string `json:"ref"`
-	LocalOpening   bool   `json:"localOpening"` //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field localOpening.
-	Pending        bool   `json:"pending"`
-	ModelPresent   bool   `json:"modelPresent"`
-	DisplayItems   int    `json:"displayItems"`
-	NoticeDisplay  int    `json:"noticeDisplay"`
-	ContentItems   int    `json:"contentItems"`
-	OverlayNotices int    `json:"overlayNotices"`
-	HistoryItems   int    `json:"historyItems"`
-	Turns          int    `json:"turns"`
+	Ref           string `json:"ref"`
+	LocalOpening  bool   `json:"localOpening"` //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field localOpening.
+	Pending       bool   `json:"pending"`
+	ModelPresent  bool   `json:"modelPresent"`
+	DisplayItems  int    `json:"displayItems"`
+	NoticeDisplay int    `json:"noticeDisplay"`
+	ContentItems  int    `json:"contentItems"`
+	// BodyItems counts displayed text-bearing items that are not overlay
+	// notices. Notice text must never stand in for the recorded body.
+	BodyItems      int `json:"bodyItems"` //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field bodyItems.
+	OverlayNotices int `json:"overlayNotices"`
+	HistoryItems   int `json:"historyItems"`
+	Turns          int `json:"turns"`
 }
 
 // pruned reports the background lease's released display: the notice overlay
@@ -197,6 +200,7 @@ type warmReturnPendingShape struct {
 	DisplayItems   int  `json:"displayItems"`   //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field displayItems.
 	NoticeDisplay  int  `json:"noticeDisplay"`  //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field noticeDisplay.
 	ContentItems   int  `json:"contentItems"`   //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field contentItems.
+	BodyItems      int  `json:"bodyItems"`      //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field bodyItems.
 	OverlayNotices int  `json:"overlayNotices"` //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field overlayNotices.
 	HistoryItems   int  `json:"historyItems"`   //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field historyItems.
 }
@@ -205,7 +209,7 @@ type warmReturnPendingShape struct {
 // historical notice over a history that records bodies it can no longer show.
 func (s warmReturnPendingShape) noticeOnly() bool {
 	return s.ModelPresent && s.DisplayItems > 0 && s.DisplayItems == s.NoticeDisplay &&
-		s.OverlayNotices > 0 && s.HistoryItems > 0
+		s.BodyItems == 0 && s.OverlayNotices > 0 && s.HistoryItems > 0
 }
 
 type warmReturnRestored struct {
@@ -267,8 +271,11 @@ func assertWarmReturnTranscript(t *testing.T, fixture *skillGuardFixture, milest
 	if !restored.ModelPresent || restored.Pending {
 		t.Errorf("warm-restored: the restored model is missing or still pending: %+v", restored)
 	}
-	if restored.ContentItems == 0 {
-		t.Error("warm-restored: the restored display carries no recorded body")
+	// The restored display must carry a text-bearing item that is not an
+	// overlay notice; the historical notice's own text cannot stand in for the
+	// recorded body the restore owes.
+	if restored.BodyItems == 0 {
+		t.Errorf("warm-restored: no non-notice recorded body in the restored display: %+v", restored)
 	}
 	if restored.OverlayNotices == 0 {
 		t.Error("warm-restored: the historical notice did not settle with its bodies")
@@ -304,15 +311,24 @@ func assertWarmReturnTranscript(t *testing.T, fixture *skillGuardFixture, milest
 		t.Errorf("warm-restored: activation reads were split as %+v", restored.Activation)
 	}
 
-	var empty warmReturnStructural
+	var empty struct {
+		warmReturnStructural
+		NativeMetadata string `json:"nativeMetadata"` //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field nativeMetadata.
+		NativeRows     int    `json:"nativeRows"`     //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field nativeRows.
+	}
 	if !skillGuardMilestoneDetail(t, milestones, "warm-no-bodies-control", &empty) {
 		t.Fatal("missing warm-no-bodies-control milestone")
 	}
 	if empty.LocalOpening || empty.Pending {
 		t.Errorf("warm-no-bodies-control: the session's local opening never settled: %+v", empty)
 	}
-	if !empty.ModelPresent || empty.DisplayItems < 1 {
-		t.Errorf("warm-no-bodies-control: the session settled without publishing its own notices: %+v", empty)
+	if !empty.ModelPresent || empty.NoticeDisplay < 1 {
+		t.Errorf("warm-no-bodies-control: the session settled without a retained notice: %+v", empty)
+	}
+	// The control genuinely holds no recorded body: its entry cache never had
+	// durable metadata for the ref, so nothing was ever restored for it.
+	if empty.NativeMetadata == "present" && empty.NativeRows > 0 {
+		t.Errorf("warm-no-bodies-control: the control has %d recorded row(s) in native entry storage", empty.NativeRows)
 	}
 
 	var cleared struct {
@@ -334,12 +350,12 @@ func assertWarmReturnTranscript(t *testing.T, fixture *skillGuardFixture, milest
 	t.Logf(
 		"warm return: native={rows:%d turns:%d} pruned={items:%d notices:%d history:%d} "+
 			"opening={parked:%d frames:%d pending:%d noticeOnly:%d} "+
-			"restored={items:%d content:%d notices:%d reads:%d pages:%d} "+
-			"noBodies={items:%d notices:%d} clear={metadata:%s}",
+			"restored={items:%d bodies:%d notices:%d reads:%d pages:%d} "+
+			"noBodies={items:%d notices:%d native:%s} clear={metadata:%s}",
 		native.Rows, native.Turns,
 		pruned.DisplayItems, pruned.OverlayNotices, pruned.HistoryItems,
 		opening.Parked, opening.Frames, opening.PendingFrames, opening.NoticeOnlyFrames,
-		restored.DisplayItems, restored.ContentItems, restored.OverlayNotices, reads, pages,
-		empty.DisplayItems, empty.OverlayNotices, cleared.NativeMetadata,
+		restored.DisplayItems, restored.BodyItems, restored.OverlayNotices, reads, pages,
+		empty.DisplayItems, empty.OverlayNotices, empty.NativeMetadata, cleared.NativeMetadata,
 	)
 }
