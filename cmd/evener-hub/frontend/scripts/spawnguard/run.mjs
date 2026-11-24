@@ -67,6 +67,8 @@ async function measureAt(cdpEndpoint, vitePort, width) {
     await evaluate(send, "window.settledSpawn");
     const fieldFailures = await evaluate(send, "window.exerciseDirectoryField()");
     if (fieldFailures.length) throw new Error(`Shared directory field at ${width}px: ${fieldFailures.join("; ")}`);
+    const washFailures = await evaluate(send, "window.exerciseFileFieldWash()");
+    if (washFailures.length) throw new Error(`Path field active wash at ${width}px: ${washFailures.join("; ")}`);
     const directoryFailures = await evaluate(send, "window.exerciseDirectoryPicker()");
     if (directoryFailures.length) throw new Error(`Directory picker at ${width}px: ${directoryFailures.join("; ")}`);
     await navigateTo(page, `http://127.0.0.1:${vitePort}/spawnguard.html`, BOOT);

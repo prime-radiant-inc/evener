@@ -1,0 +1,29 @@
+/* The fold header: the row a DisclosureHeading or a Disclosure summary is.
+ * Each consumer keeps its own face (inline inset, radius, cursor, heading
+ * reset) and composes this. Tokens only. */
+
+.foldRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding-block: var(--space-1);
+  color: var(--ink-mid);
+  transition: background-color var(--motion-duration-hover) var(--motion-easing-standard);
+}
+
+.foldRow:hover {
+  background: var(--hover-1);
+}
+
+/* Inset: a fold header usually spans a clipping column edge to edge. */
+.foldRow:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: -2px;
+}
+
+/* Touch target: min-height, so the tap floor only ever grows the header. */
+@media (max-width: 899px), (any-pointer: coarse) {
+  .foldRow {
+    min-height: var(--tap-min);
+  }
+}

@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import dialogStyles from "../dialog/dialog.module.css";
 import { requireClass } from "../internal/requireClass";
 import { DiagramViewer } from "./DiagramViewer";
 import styles from "./mermaid.module.css";
@@ -15,6 +16,8 @@ import styles from "./mermaid.module.css";
 const FIXTURE_DIR = "src/widgets/mermaid/testdata";
 const FIXTURE_SVG = readFileSync(`${FIXTURE_DIR}/flowchart.svg`, "utf8");
 const ZOOM_CONTENT_CLASS = requireClass(styles.zoomContent, "mermaid.module.css", "zoomContent");
+const VIEWER_PANEL_CLASS = requireClass(styles.viewerPanel, "mermaid.module.css", "viewerPanel");
+const DIALOG_LARGE_CLASS = requireClass(dialogStyles.dialogVariantLarge, "dialog.module.css", "dialogVariantLarge");
 
 // jsdom implements neither the Pointer Capture API nor any layout. The capture
 // calls are recorded (and a no-op is enough) so the drag path can run; layout
@@ -30,6 +33,15 @@ afterEach(() => {
 });
 
 describe("DiagramViewer", () => {
+  // The viewer's panel is the shared Dialog's large chassis plus its own
+  // near-viewport geometry, not an OverlayPanel reached into from outside.
+  it("renders its panel through the shared Dialog's large size", () => {
+    render(<DiagramViewer open svg={FIXTURE_SVG} source={"graph TD; A-->B"} onClose={vi.fn()} />);
+    const dialog = screen.getByRole("dialog", { name: "Diagram" });
+    expect(dialog.classList.contains(DIALOG_LARGE_CLASS)).toBe(true);
+    expect(dialog.classList.contains(VIEWER_PANEL_CLASS)).toBe(true);
+  });
+
   it("opens, toggles to source and back, and closes", async () => {
     const user = userEvent.setup();
     const onClose = vi.fn();

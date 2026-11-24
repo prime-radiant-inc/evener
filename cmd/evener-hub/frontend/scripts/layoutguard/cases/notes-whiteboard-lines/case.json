@@ -6,6 +6,7 @@
     "styles/text.module.css",
     "styles/tokens.css",
     "styles/motion.module.css",
+    "widgets/internal/foldHeader.module.css",
     "widgets/disclosure/disclosure.module.css",
     "widgets/eyebrow/eyebrow.module.css",
     "panes/session/chrome/panelsection.module.css",

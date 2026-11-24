@@ -119,3 +119,48 @@ test("the field seat is one ground for a tile's leading glyph", () => {
   expect(seat).toMatch(/background:\s*var\(--field\)/);
   expect(seat).toMatch(/width:\s*var\(--field-seat-size\)/);
 });
+
+test("the left-rail body is one recipe and both daemon notices compose it", () => {
+  const recipe = ruleBody(surface, ".railBody");
+  expect(recipe).toMatch(/padding:\s*var\(--space-2\)/);
+  expect(recipe).toMatch(/border-left:\s*2px solid var\(--edge\)/);
+  expect(recipe).toMatch(/font-family:\s*var\(--font-sans\)/);
+  expect(recipe).toMatch(/font-size:\s*var\(--font-size-body\)/);
+  expect(recipe).toMatch(/color:\s*var\(--ink-mid\)/);
+  for (const [file, selector] of [
+    ["panes/session/transcript/messages/steeringitem.module.css", ".body"],
+    ["panes/session/transcript/messages/memorycontextitem.module.css", ".body"],
+  ] as const) {
+    const consumer = ruleBody(read(file), selector);
+    expect(consumer).toMatch(/composes:\s*railBody from "[./]*styles\/surface\.module\.css"/);
+    expect(consumer).not.toMatch(/border-left:/);
+    expect(consumer).not.toMatch(/padding:\s*var\(--space-2\)/);
+  }
+});
+
+test("the prompt card's leading cluster and attachment strip are one recipe each", () => {
+  const leading = ruleBody(surface, ".cardLeading");
+  expect(leading).toMatch(/display:\s*flex/);
+  expect(leading).toMatch(/flex:\s*1 1 auto/);
+  expect(leading).toMatch(/min-width:\s*0/);
+  expect(leading).toMatch(/align-items:\s*center/);
+  expect(leading).toMatch(/gap:\s*var\(--space-1\)/);
+  const strip = ruleBody(surface, ".attachmentStrip");
+  expect(strip).toMatch(/display:\s*flex/);
+  expect(strip).toMatch(/flex-wrap:\s*wrap/);
+  expect(strip).toMatch(/gap:\s*var\(--space-2\)/);
+  // The session composer and the spawn form render the same PromptCard row
+  // and the same staged-tile strip; each keeps only its own local additions.
+  for (const [file, selector, recipe] of [
+    ["panes/session/composer/composer.module.css", ".leading", "cardLeading"],
+    ["panes/spawn/spawn.module.css", ".leading", "cardLeading"],
+    ["panes/session/composer/composer.module.css", ".attachments", "attachmentStrip"],
+    ["panes/spawn/spawn.module.css", ".attachments", "attachmentStrip"],
+  ] as const) {
+    const body = ruleBody(read(file), selector);
+    expect(body, `${file} ${selector}`).toMatch(
+      new RegExp(`composes:\\s*${recipe} from "[./]*styles/surface\\.module\\.css"`),
+    );
+    expect(body, `${file} ${selector}`).not.toMatch(/display:\s*flex/);
+  }
+});

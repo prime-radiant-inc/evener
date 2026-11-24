@@ -9,6 +9,7 @@
     "styles/motion.module.css",
     "widgets/internal/floatingSurface.module.css",
     "widgets/dialog/dialog.module.css",
+    "widgets/iconbutton/iconbutton.module.css",
     "widgets/internal/control.module.css",
     "widgets/input/input.module.css",
     "widgets/directorypicker/directorypicker.module.css"

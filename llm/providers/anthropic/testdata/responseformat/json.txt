@@ -1,3 +1,0 @@
-sys prompt
-
-Output only valid JSON. Do not include any extra text.

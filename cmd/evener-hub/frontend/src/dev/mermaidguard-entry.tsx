@@ -19,11 +19,9 @@
 // the img-src MutationObserver both see. new Image()/fetch() are wrapped too, so
 // a programmatic fetch attempt is recorded even when it never produces a
 // resource timing entry.
-import { createRoot } from "react-dom/client";
 import { MermaidDiagram } from "../widgets/mermaid";
 import { MERMAID_DIAGRAM_ATTR } from "../widgets/mermaid/markers";
-import "../styles/tokens.css";
-import "../styles/global.css";
+import { mountHarness } from "./mountHarness";
 
 // The handle Chrome needs to report that this page booted (see navigateTo's
 // boot seam in scripts/browserGuardCdp.mjs): a page whose load event fired but
@@ -176,10 +174,8 @@ async function waitForMermaidGuardSettled(): Promise<ReturnType<typeof mermaidGu
   return mermaidGuardResult();
 }
 
-const rootEl = document.getElementById("root");
-if (!rootEl) throw new Error("mermaidguard.html is missing #root");
-
-createRoot(rootEl).render(
+mountHarness(
+  "mermaidguard",
   <main>
     <MermaidDiagram source={BENIGN_SOURCE} />
     <MermaidDiagram source={HOSTILE_SOURCE} />

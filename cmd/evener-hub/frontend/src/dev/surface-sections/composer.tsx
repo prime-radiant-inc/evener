@@ -12,7 +12,7 @@
 // on an unanswered ask_user call is what makes the real dock populate -
 // exactly the mechanism a live ask_user call would use.
 
-import type { Thread, ThreadCapabilities, ThreadReadResponse } from "@evener/appwire-client";
+import type { Thread, ThreadReadResponse } from "@evener/appwire-client";
 import { hydrateThread } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { useEffect, useState } from "react";
@@ -25,40 +25,7 @@ import { putThreadModel } from "../../stores/threads";
 import styles from "../gallery-section.module.css";
 import { ThemeFlip } from "../ThemeFlip";
 import layout from "./composer-surface.module.css";
-
-const FULL_CAPABILITIES: ThreadCapabilities = {
-  send: true,
-  steer: true,
-  interrupt: true,
-  compact: true,
-  clear: true,
-  forkFromTurn: true,
-  shutdown: true,
-  changeModel: true,
-  changeVisionModel: true,
-  queue: true,
-  goal: true,
-  sharedNotes: true,
-  rename: true,
-};
-
-function fixtureThread(ref: string, overrides: Partial<Thread> = {}): Thread {
-  return {
-    id: `thr_${ref}`,
-    sessionId: `sess_${ref}`,
-    preview: "dev fixture",
-    ephemeral: false,
-    modelProvider: "anthropic/claude-sonnet-4-5",
-    createdAt: 1000,
-    updatedAt: 1000,
-    status: { type: "idle" },
-    cwd: "/home/dev/project",
-    cliVersion: "1.0.0",
-    source: "evener",
-    evener: { ref, capabilities: FULL_CAPABILITIES, queue: { revision: 0 } },
-    ...overrides,
-  };
-}
+import { FULL_CAPABILITIES, fixtureThread } from "./thread-fixture";
 
 const RESTING_REF = "dev-surface-composer-resting";
 const DRAFTED_REF = "dev-surface-composer-drafted";

@@ -49,9 +49,8 @@ import {
   activityWatch,
 } from "../stores/sessionActivityTestUtils";
 import buttonStyles from "../widgets/button/button.module.css";
-import "../styles/tokens.css";
-import "../styles/global.css";
 import { PaneScaffold } from "../widgets/panescaffold";
+import { harnessRoot, mountHarness } from "./mountHarness";
 
 window.addEventListener("error", (event) => {
   const target = window as typeof window & { __shellGuardErrors?: string[] };
@@ -401,10 +400,6 @@ async function navigationRead(params: NavigationReadParams): Promise<NavigationR
   }
 }
 
-const rootEl = document.getElementById("root");
-if (!rootEl) throw new Error("shellguard.html is missing #root");
-const root = rootEl;
-
 // The guard's own URL (/shellguard.html) resolves to no pane, which would
 // render NotFound and no rail. Stand on the welcome route instead - no
 // navigation, just the pathname AppShell's router reads at first render.
@@ -508,7 +503,8 @@ async function boot(): Promise<void> {
     },
     navigation: { version: 1, readVersions: [3], generationId: "shellguard-generation", sequence: 0 },
   });
-  createRoot(root).render(
+  mountHarness(
+    "shellguard",
     <RailRenderObserver value={(id) => renderCounts.set(id, (renderCounts.get(id) ?? 0) + 1)}>
       <AppShell client={fake} />
     </RailRenderObserver>,
@@ -611,7 +607,7 @@ function leakingElements(viewportBottom: number): { selector: string; top: numbe
 
 function measureShell() {
   const de = document.documentElement;
-  const shell = root.firstElementChild;
+  const shell = harnessRoot("shellguard").firstElementChild;
   // Select the rail directly, independently of header control placement.
   const rail = document.querySelector(`.${railStyles.rail}`);
   const newSession = rail === null ? null : rail.querySelector<HTMLButtonElement>('[data-testid="rail-new-session"]');
@@ -1208,7 +1204,7 @@ target.settledShell = (async () => {
           `pane activity controls: ${activityControlCount}, ` +
           `pane repository links: ${repositoryLinkCount}, ` +
           `body children: ${[...document.body.children].map((el) => el.tagName).join(",")}, ` +
-          `root children: ${root.children.length}, pathname: ${window.location.pathname})`,
+          `root children: ${harnessRoot("shellguard").children.length}, pathname: ${window.location.pathname})`,
       );
     }
     await new Promise((resolve) => setTimeout(resolve, 50));

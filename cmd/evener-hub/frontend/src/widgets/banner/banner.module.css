@@ -24,6 +24,9 @@
   font-family: var(--font-sans);
   font-size: var(--font-size-ui);
   line-height: var(--line-height-body);
+  background: var(--tone-bg);
+  border-bottom: 1px solid var(--tone-edge);
+  color: var(--tone-ink);
 }
 
 .message {
@@ -35,16 +38,12 @@
 /* --- tone -> token family --------------------------------------------
  * attention: "a human is needed" (reconnecting — heads-up, may need you).
  * danger: "something failed" (closed — truly broken, action required).
- * Uses -bg fill + -edge bottom border + -ink text: the tinted companions,
- * so the hue reads as a wash, not a loud flat fill. */
+ * The families' companions live in styles/tone.module.css; every banner
+ * has a tone, so the strip above paints from the composed properties. */
 .attention {
-  background: var(--attention-bg);
-  border-bottom: 1px solid var(--attention-edge);
-  color: var(--attention-ink);
+  composes: toneAttention from "../../styles/tone.module.css";
 }
 
 .danger {
-  background: var(--danger-bg);
-  border-bottom: 1px solid var(--danger-edge);
-  color: var(--danger-ink);
+  composes: toneDanger from "../../styles/tone.module.css";
 }

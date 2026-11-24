@@ -2,9 +2,10 @@
    and the action keeps to the trailing edge, dropping below the text when
    the row is too narrow to hold both.
 
-   inlinenotice is allowlisted (src/styles/token-contract.test.ts) for its
-   danger tone: an error message's ink is the "something failed" hue. Text
-   uses the -ink companion, never the bare hue (design-system §2). */
+   The danger tone composes the shared danger family
+   (styles/tone.module.css); an error message's ink is the "something
+   failed" hue, and it uses the -ink companion, never the bare hue
+   (design-system §2). */
 .notice {
   display: flex;
   flex-wrap: wrap;
@@ -47,5 +48,6 @@
 }
 
 .danger {
-  color: var(--danger-ink);
+  composes: toneDanger from "../../styles/tone.module.css";
+  color: var(--tone-ink);
 }

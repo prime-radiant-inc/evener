@@ -22,9 +22,7 @@ import {
   InlineNotice,
   Input,
   Loader,
-  PathField,
   PropertyList,
-  RadioGroup,
   useFocusRehome,
   useToasts,
 } from "../../../../widgets";
@@ -38,16 +36,15 @@ import {
 } from "../../../plugins/pluginRowFocus";
 import { marketplaceMatchesQuery, pluginMatchesQuery } from "../../../plugins/pluginSearch";
 import { writeFailureText } from "../../../plugins/writeFailure";
-import { useExtensionsHostState, useExtensionsHostStore, useHostDirectoryActions } from "./hostStore";
+import { useExtensionsHostState, useExtensionsHostStore } from "./hostStore";
 import {
-  MARKETPLACE_SOURCE_OPTIONS,
   type MarketplaceDraft,
-  type MarketplaceSourceKind,
   marketplaceDraftFor,
   marketplaceDraftIncomplete,
   marketplaceEditParams,
   marketplaceSourceTouched,
 } from "./marketplaceEdit";
+import { MarketplaceSourceFields } from "./marketplaceSourceFields";
 import styles from "./marketplacesPlugins.module.css";
 import { PluginDetailBody, type PluginDetailTarget } from "./PluginDetailBody";
 
@@ -104,7 +101,6 @@ export function MarketplaceDetailBody({
   onAppliedRemoval,
 }: MarketplaceDetailBodyProps) {
   const store = useExtensionsHostStore();
-  const directory = useHostDirectoryActions();
   const readError = useExtensionsHostState((s) => s.marketplacesError);
   const reading = useExtensionsHostState((s) => s.marketplacesLoading);
   const hubWriteBusy = useExtensionsHostState((s) => s.hubWriteBusy);
@@ -357,50 +353,7 @@ export function MarketplaceDetailBody({
               disabled={hubWriteBusy}
             />
           </FormRow>
-          <RadioGroup
-            label="Source"
-            value={draft.kind}
-            onChange={(value) => update({ kind: value as MarketplaceSourceKind })}
-            options={MARKETPLACE_SOURCE_OPTIONS}
-            disabled={hubWriteBusy}
-          />
-          {draft.kind === "url" && (
-            <FormRow label="Git URL" htmlFor={`${ids}-url`}>
-              <Input
-                id={`${ids}-url`}
-                value={draft.url}
-                onChange={(event) => update({ url: event.target.value })}
-                placeholder="https://github.com/owner/repo.git"
-                disabled={hubWriteBusy}
-              />
-            </FormRow>
-          )}
-          {draft.kind === "github" && (
-            <FormRow label="owner/repo" htmlFor={`${ids}-repo`}>
-              <Input
-                id={`${ids}-repo`}
-                value={draft.repo}
-                onChange={(event) => update({ repo: event.target.value })}
-                placeholder="owner/repo"
-                disabled={hubWriteBusy}
-              />
-            </FormRow>
-          )}
-          {draft.kind === "directory" && (
-            <FormRow label="Local path" htmlFor={`${ids}-path`}>
-              <PathField
-                ariaLabel="Local path"
-                directory={directory}
-                id={`${ids}-path`}
-                value={draft.path}
-                onChange={(value) => update({ path: value })}
-                kind="dir"
-                complete={(prefix, includeFiles) => store.getState().completePaths(prefix, includeFiles)}
-                placeholder="/absolute/path"
-                disabled={hubWriteBusy}
-              />
-            </FormRow>
-          )}
+          <MarketplaceSourceFields value={draft} onChange={update} disabled={hubWriteBusy} />
           {sourceTouched && (
             <InlineNotice data-testid="marketplace-refetch-note">
               Saving re-fetches the marketplace. Installed plugins are unaffected.

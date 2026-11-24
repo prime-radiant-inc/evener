@@ -108,7 +108,7 @@
         </div>
       </div>
     </div>
-    <button type="button" class="closeButton" aria-label="Close">✕</button>
+    <span class="closeSeat"><button type="button" class="button quiet squareXs" aria-label="Close">✕</button></span>
   </div>
 </div>
 <script>
@@ -121,7 +121,7 @@ function scrollable(el) {
   return { ...rectOf(el), scrollHeight: el.scrollHeight, clientHeight: el.clientHeight, overflowY: getComputedStyle(el).overflowY };
 }
 
-window.measure = function () {
+window.measure = () => {
   const panel = document.getElementById("panel");
   const body = document.getElementById("body");
   const browser = document.getElementById("browser");
@@ -131,6 +131,7 @@ window.measure = function () {
   const newFolder = document.getElementById("new-folder");
   const useFolder = document.getElementById("use-folder");
   const cancel = document.getElementById("cancel");
+  const closeButton = document.querySelector(".closeSeat button");
 
   return {
     viewport: { w: window.innerWidth, h: window.innerHeight },
@@ -143,6 +144,7 @@ window.measure = function () {
     newFolder: rectOf(newFolder),
     useFolder: rectOf(useFolder),
     cancel: rectOf(cancel),
+    closeButton: rectOf(closeButton),
   };
 };
 </script>

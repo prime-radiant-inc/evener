@@ -95,7 +95,7 @@ test.each([
   });
   connectionStore.getState().connect(fake);
   renderSection();
-  await waitFor(() => expect(screen.getByRole("alert").textContent).toContain(friendlyErrorMessage(err)));
+  await waitFor(() => expect(screen.getByRole("status").textContent).toContain(friendlyErrorMessage(err)));
   expect(screen.queryByText(/AppwireClient internal detail/)).toBeNull();
 });
 

@@ -1,7 +1,7 @@
 // The rail's drawn icons, on the app's 16x16 icon grid (the same grammar
-// as widgets/chevron, openbutton's OpenIcon and TreeDrawer's
-// SessionsIcon). Gear/Search/Sidebar lead the header; TuneIcon is the rail
-// body's organize-by control.
+// as widgets/chevron, openbutton's OpenIcon and the Sessions icon below).
+// Gear/Search/Sidebar lead the header; TuneIcon is the rail body's
+// organize-by control.
 //
 // They replace the text glyphs the header used to render. global.css subsets
 // Inter to Latin, so those code points came from whatever system fallback
@@ -49,6 +49,14 @@ export function SidebarIcon() {
     <svg {...ICON} aria-hidden="true">
       <rect x="2" y="3" width="12" height="10" rx="1.5" {...STROKE} />
       <path d="M6 3v10" {...STROKE} />
+    </svg>
+  );
+}
+
+export function SessionsIcon() {
+  return (
+    <svg {...ICON} aria-hidden="true">
+      <path d="M2 4 H14 M2 8 H14 M2 12 H14" {...STROKE} />
     </svg>
   );
 }
