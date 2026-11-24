@@ -630,7 +630,11 @@ func (a *skillBrowserAdapter) scriptBackgroundStream(ctx context.Context, st *ll
 		// target's before/after/tool gates and exactly-once checks cannot pass
 		// on history content. They complete immediately, without phase gates.
 		st.Send(llm.StreamEvent{Type: llm.StreamEventTextDelta, Delta: backgroundHistoryReply})
-		if carriesBackgroundWarning(req) {
+		// Only the current turn's user message is scanned: every later request
+		// also carries BACKGROUND_HISTORY_01 in its conversation history, so
+		// the warning belongs to the request whose last user message is the
+		// first seeded history prompt.
+		if strings.Contains(lastUserMessageText(req), backgroundWarningPrompt) {
 			sendScriptedCommunicateWithWarnings(st, []llm.Warning{{
 				Code:    llm.WarningCodeImageColorUnmanaged,
 				Message: backgroundWarningSentinel,
@@ -707,20 +711,6 @@ func sendScriptedCommunicateWithWarnings(st *llm.ChanStream, warnings []llm.Warn
 		finish.Response = &llm.Response{Warnings: warnings}
 	}
 	st.Send(finish)
-}
-
-// carriesBackgroundWarning reports whether this request is the first seeded
-// history turn. Only the current turn's user message is scanned: every later
-// request also carries BACKGROUND_HISTORY_01 in its conversation history.
-func carriesBackgroundWarning(req llm.Request) bool {
-	last := -1
-	for i := len(req.Messages) - 1; i >= 0; i-- {
-		if req.Messages[i].Role == llm.RoleUser {
-			last = i
-			break
-		}
-	}
-	return last >= 0 && strings.Contains(req.Messages[last].Text(), backgroundWarningPrompt)
 }
 
 // backgroundRole returns the adapter's scripted role under the lock.
