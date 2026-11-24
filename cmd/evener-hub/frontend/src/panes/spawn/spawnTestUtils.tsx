@@ -309,8 +309,8 @@ export function installCanvasStubs(): void {
     drawImage() {},
     fillRect() {},
   })) as unknown as typeof HTMLCanvasElement.prototype.getContext;
-  HTMLCanvasElement.prototype.toBlob = (callback: BlobCallback): void => {
-    callback(new Blob([new Uint8Array([9, 9, 9])], { type: "image/png" }));
+  HTMLCanvasElement.prototype.toBlob = (callback: BlobCallback, type?: string): void => {
+    callback(new Blob([new Uint8Array([9, 9, 9])], { type: type ?? "image/png" }));
   };
   class FakeImage {
     onload: (() => void) | null = null;

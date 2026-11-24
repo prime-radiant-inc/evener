@@ -941,37 +941,42 @@ test("post-decode ImageEncodeError maps tooManyPixels, tooLarge, and decodeFaile
   const reasons: string[] = [];
 
   for (const mode of ["tooManyPixels", "tooLarge", "decodeFailed"] as const) {
-    if (mode === "tooManyPixels") {
-      expect(8064 * 6049).toBeGreaterThan(MAX_SOURCE_PIXELS);
-      installImageDimensionsStub(8064, 6049);
-    } else if (mode === "tooLarge") {
-      installImageDimensionsStub(800, 600);
-      HTMLCanvasElement.prototype.toBlob = (callback: BlobCallback): void => {
-        callback(new Blob([new Uint8Array(MAX_ATTACHMENT_BYTES + 1)], { type: "image/jpeg" }));
-      };
-    } else {
-      installDecodeErrorStub();
+    const defaultToBlob = HTMLCanvasElement.prototype.toBlob;
+    try {
+      if (mode === "tooManyPixels") {
+        expect(8064 * 6049).toBeGreaterThan(MAX_SOURCE_PIXELS);
+        installImageDimensionsStub(8064, 6049);
+      } else if (mode === "tooLarge") {
+        installImageDimensionsStub(800, 600);
+        HTMLCanvasElement.prototype.toBlob = (callback: BlobCallback): void => {
+          callback(new Blob([new Uint8Array(MAX_ATTACHMENT_BYTES + 1)], { type: "image/jpeg" }));
+        };
+      } else {
+        installDecodeErrorStub();
+      }
+
+      const editor = makeFakeEditor("keep ", 5);
+      const onRejected = vi.fn();
+      const { result } = renderHook(() => useAttachments(editor));
+
+      act(() => {
+        result.current.ingestFiles([makeFile("bad.jpg", "image/jpeg", 1024)], onRejected);
+      });
+      expect(editor.getText()).toBe("keep [image 1]");
+      expect(result.current.items).toHaveLength(1);
+
+      await flush();
+
+      expect(editor.getText()).toBe("keep ");
+      expect(result.current.items).toEqual([]);
+      expect(result.current.hasPending).toBe(false);
+      expect(onRejected).toHaveBeenCalledTimes(1);
+      const reason = onRejected.mock.calls[0]?.[0] as string;
+      expect(reason).toContain("bad.jpg");
+      reasons.push(reason);
+    } finally {
+      HTMLCanvasElement.prototype.toBlob = defaultToBlob;
     }
-
-    const editor = makeFakeEditor("keep ", 5);
-    const onRejected = vi.fn();
-    const { result } = renderHook(() => useAttachments(editor));
-
-    act(() => {
-      result.current.ingestFiles([makeFile("bad.jpg", "image/jpeg", 1024)], onRejected);
-    });
-    expect(editor.getText()).toBe("keep [image 1]");
-    expect(result.current.items).toHaveLength(1);
-
-    await flush();
-
-    expect(editor.getText()).toBe("keep ");
-    expect(result.current.items).toEqual([]);
-    expect(result.current.hasPending).toBe(false);
-    expect(onRejected).toHaveBeenCalledTimes(1);
-    const reason = onRejected.mock.calls[0]?.[0] as string;
-    expect(reason).toContain("bad.jpg");
-    reasons.push(reason);
   }
 
   expect(new Set(reasons).size).toBe(3);

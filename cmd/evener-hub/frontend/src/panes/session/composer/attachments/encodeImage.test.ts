@@ -3,8 +3,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { arrayBufferToBase64, encodeImage, ImageEncodeError } from "./encodeImage";
 
 // jsdom has no canvas 2d backend, no image decoder and no createImageBitmap, so
-// every browser primitive this encoder touches is stubbed at that boundary -
-// the same technique encodePng.test.ts and the legacy jstest harness use. The
+// every browser primitive this encoder touches is stubbed at that boundary. The
 // real encodeImage below the boundary is what each test exercises.
 
 type CreateImageBitmap = typeof globalThis.createImageBitmap;
@@ -16,6 +15,7 @@ interface FakeCanvasContext {
   fillStyle: string | CanvasGradient | CanvasPattern;
   drawImageCalls: unknown[][];
   fillRectCalls: { x: number; y: number; width: number; height: number; fillStyle: string }[];
+  ops: ("drawImage" | "fillRect")[];
   drawImage(...args: unknown[]): void;
   fillRect(x: number, y: number, width: number, height: number): void;
 }
@@ -23,6 +23,8 @@ interface FakeCanvasContext {
 interface ToBlobCall {
   type: string | undefined;
   quality: number | undefined;
+  width: number;
+  height: number;
 }
 
 interface CanvasProbe {
@@ -134,10 +136,13 @@ function installCanvas(
       fillStyle: "#000000",
       drawImageCalls: [],
       fillRectCalls: [],
+      ops: [],
       drawImage(...args: unknown[]) {
+        context.ops.push("drawImage");
         context.drawImageCalls.push(args);
       },
       fillRect(x: number, y: number, width: number, height: number) {
+        context.ops.push("fillRect");
         context.fillRectCalls.push({ x, y, width, height, fillStyle: String(context.fillStyle) });
       },
     };
@@ -150,7 +155,7 @@ function installCanvas(
     type?: string,
     quality?: number,
   ): void {
-    const call = { type, quality };
+    const call = { type, quality, width: this.width, height: this.height };
     probe.toBlobCalls.push(call);
     callback(options.toBlob ? options.toBlob(call) : null);
   } as typeof HTMLCanvasElement.prototype.toBlob;
@@ -246,7 +251,7 @@ describe("encodeImage decoding", () => {
     const result = await encodeImage(blob);
 
     expect(result).toEqual({ data: "AQIDBA==", mediaType: "image/png", width: 800, height: 600, byteLength: 4 });
-    expect(probe.toBlobCalls).toEqual([{ type: "image/png", quality: undefined }]);
+    expect(probe.toBlobCalls).toEqual([{ type: "image/png", quality: undefined, width: 800, height: 600 }]);
     const context = firstContext(probe);
     expect(context.drawImageCalls).toEqual([[bitmap, 0, 0, 800, 600]]);
     expect(context.fillRectCalls).toEqual([]);
@@ -348,8 +353,8 @@ describe("encodeImage format selection", () => {
     const result = await encodeImage(blob);
 
     expect(probe.toBlobCalls).toEqual([
-      { type: "image/png", quality: undefined },
-      { type: "image/jpeg", quality: 0.85 },
+      { type: "image/png", quality: undefined, width: 800, height: 600 },
+      { type: "image/jpeg", quality: 0.85, width: 800, height: 600 },
     ]);
     const context = firstContext(probe);
     expect(context.fillRectCalls).toEqual([{ x: 0, y: 0, width: 800, height: 600, fillStyle: "#ffffff" }]);
@@ -360,6 +365,32 @@ describe("encodeImage format selection", () => {
     expect(result).toEqual({ data: "CQgH", mediaType: "image/jpeg", width: 800, height: 600, byteLength: 3 });
   });
 
+  test("rejects with tooLarge when the inflated PNG and its fallback JPEG both exceed 8 MB", async () => {
+    const blob = blobOf("image/png", [1]);
+    const { bitmap, close } = installBitmap(800, 600);
+    const oversized = new Blob([new Uint8Array(MAX_ATTACHMENT_BYTES + 1)]);
+    const probe = installCanvas({ toBlob: () => oversized });
+
+    const error = await captureEncodeError(blob);
+
+    expect(error.code).toBe("tooLarge");
+    const context = firstContext(probe);
+    expect(context.ops).toEqual(["drawImage", "fillRect", "drawImage"]);
+    expect(context.fillRectCalls).toEqual([{ x: 0, y: 0, width: 800, height: 600, fillStyle: "#ffffff" }]);
+    expect(context.drawImageCalls).toEqual([
+      [bitmap, 0, 0, 800, 600],
+      [bitmap, 0, 0, 800, 600],
+    ]);
+    expect(probe.toBlobCalls).toEqual([
+      { type: "image/png", quality: undefined, width: 800, height: 600 },
+      { type: "image/jpeg", quality: 0.85, width: 800, height: 600 },
+    ]);
+    expect(close).toHaveBeenCalledTimes(1);
+    const canvas = firstCanvas(probe);
+    expect(canvas.width).toBe(0);
+    expect(canvas.height).toBe(0);
+  });
+
   test("encodes a raw PNG over 8 MB as JPEG even when it fits the long edge", async () => {
     const blob = new Blob([new Uint8Array(MAX_ATTACHMENT_BYTES + 1)], { type: "image/png" });
     installBitmap(800, 600);
@@ -367,7 +398,7 @@ describe("encodeImage format selection", () => {
 
     const result = await encodeImage(blob);
 
-    expect(probe.toBlobCalls).toEqual([{ type: "image/jpeg", quality: 0.85 }]);
+    expect(probe.toBlobCalls).toEqual([{ type: "image/jpeg", quality: 0.85, width: 800, height: 600 }]);
     expect(firstContext(probe).fillRectCalls).toHaveLength(1);
     expect(result).toEqual({ data: "AQID", mediaType: "image/jpeg", width: 800, height: 600, byteLength: 3 });
   });
@@ -388,7 +419,7 @@ describe("encodeImage format selection", () => {
       expect(context.imageSmoothingQuality).toBe("high");
       expect(context.drawImageCalls).toHaveLength(1);
       expect(firstDrawImageCall(context).slice(1)).toEqual([0, 0, 2048, 1536]);
-      expect(probe.toBlobCalls).toEqual([{ type: "image/jpeg", quality: 0.85 }]);
+      expect(probe.toBlobCalls).toEqual([{ type: "image/jpeg", quality: 0.85, width: 2048, height: 1536 }]);
       const canvas = firstCanvas(probe);
       expect(canvas.width).toBe(0);
       expect(canvas.height).toBe(0);

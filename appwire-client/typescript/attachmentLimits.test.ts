@@ -101,6 +101,18 @@ test("leaves an image that already fits its dimensions", () => {
   expect(fitImageDimensions(2048, 1536)).toEqual({ width: 2048, height: 1536 });
 });
 
+test("clamps a zero-sized image to one pixel on both edges", () => {
+  expect(fitImageDimensions(0, 0)).toEqual({ width: 1, height: 1 });
+});
+
+test("clamps a non-positive edge to one pixel and keeps the other edge", () => {
+  expect(fitImageDimensions(-5, 100)).toEqual({ width: 1, height: 100 });
+});
+
+test("rounds fractional dimensions to whole pixels", () => {
+  expect(fitImageDimensions(800.4, 600.6)).toEqual({ width: 800, height: 601 });
+});
+
 test("fits to an explicit maxEdge when one is given", () => {
   expect(fitImageDimensions(4032, 3024, 1024)).toEqual({ width: 1024, height: 768 });
 });

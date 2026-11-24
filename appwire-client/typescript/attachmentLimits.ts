@@ -67,16 +67,18 @@ export function rejectionReason(file: RejectableFile, reservedCount: number): st
 // fitImageDimensions is the size an image is redrawn at before encoding: its
 // long edge capped to maxEdge (MAX_IMAGE_LONG_EDGE by default) and the short
 // edge scaled by the same ratio, rounded to whole pixels and never below one.
-// An image that already fits keeps its dimensions unchanged.
+// An image that already fits is still rounded and clamped to whole pixels.
 export function fitImageDimensions(
   width: number,
   height: number,
   maxEdge: number = MAX_IMAGE_LONG_EDGE,
 ): { width: number; height: number } {
-  const longEdge = Math.max(width, height);
-  if (longEdge <= maxEdge) return { width, height };
+  const safeW = Math.max(1, Math.round(width));
+  const safeH = Math.max(1, Math.round(height));
+  const longEdge = Math.max(safeW, safeH);
+  if (longEdge <= maxEdge) return { width: safeW, height: safeH };
   return {
-    width: Math.max(1, Math.round((width * maxEdge) / longEdge)),
-    height: Math.max(1, Math.round((height * maxEdge) / longEdge)),
+    width: Math.max(1, Math.round((safeW * maxEdge) / longEdge)),
+    height: Math.max(1, Math.round((safeH * maxEdge) / longEdge)),
   };
 }
