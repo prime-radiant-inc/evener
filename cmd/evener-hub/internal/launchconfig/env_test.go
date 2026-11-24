@@ -400,3 +400,112 @@ func checkToEnv_ProjectEndpointExclusionsKeepTrustedValues(t *testing.T) {
 		t.Fatalf("%s = %q, want the inherited parent value kept", key, got)
 	}
 }
+
+// TestToEnvProjectEnvExclusionsFromAlternateProviderFile derives the excluded
+// endpoint inputs from the trusted alternate provider file the child reads
+// rather than from a hub registry that never saw it. The project layer may not
+// choose the variable, while the global, trusted repo, per-launch and parent
+// values all still reach the child, and an unrelated project key survives.
+func TestToEnvProjectEnvExclusionsFromAlternateProviderFile(t *testing.T) {
+	const (
+		key      = "COPILOT_UPSTREAM_URL"
+		trusted  = "https://trusted.example.test"
+		checkout = "https://checkout.example.test"
+		launch   = "https://launch.example.test"
+	)
+	providers := filepath.Join(t.TempDir(), "providers.toml")
+	if err := os.WriteFile(providers, []byte("[providers.cp]\nbase = \"github-copilot\"\nvars_env = { BASE_URL = \""+key+"\" }\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	reg, err := registry.Load(
+		registry.WithConfigPath(providers),
+		registry.WithStateRoot(t.TempDir()),
+		registry.WithOffline(true), registry.WithoutCache(),
+	)
+	if err != nil {
+		t.Fatalf("registry load: %v", err)
+	}
+	exclusions := reg.EndpointEnvNames()
+	found := false
+	for _, name := range exclusions {
+		if name == key {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("endpoint exclusions = %v, want the alternate file's %s", exclusions, key)
+	}
+
+	projectEnv := map[string]string{key: checkout, "PROJECT_KEPT": "kept"}
+	cases := []struct {
+		name   string
+		layers map[LayerName]Layer
+		parent []string
+		want   string
+	}{
+		{
+			name: "global override",
+			layers: map[LayerName]Layer{
+				LayerGlobal:  {Env: map[string]string{key: trusted, "GLOBAL_KEPT": "global"}},
+				LayerProject: {Env: projectEnv},
+			},
+			parent: []string{"PATH=/usr/bin"},
+			want:   trusted,
+		},
+		{
+			name: "trusted repo override",
+			layers: map[LayerName]Layer{
+				LayerGlobal:  {Env: map[string]string{key: "https://global.example.test", "GLOBAL_KEPT": "global"}},
+				LayerRepo:    {Env: map[string]string{key: trusted}},
+				LayerProject: {Env: projectEnv},
+			},
+			parent: []string{"PATH=/usr/bin"},
+			want:   trusted,
+		},
+		{
+			name: "per-launch override",
+			layers: map[LayerName]Layer{
+				LayerProject: {Env: projectEnv},
+				LayerLaunch:  {Env: map[string]string{key: launch}},
+			},
+			parent: []string{"PATH=/usr/bin"},
+			want:   launch,
+		},
+		{
+			name: "parent override",
+			layers: map[LayerName]Layer{
+				LayerProject: {Env: projectEnv},
+			},
+			parent: []string{"PATH=/usr/bin", key + "=" + trusted},
+			want:   trusted,
+		},
+		{
+			name: "project only",
+			layers: map[LayerName]Layer{
+				LayerProject: {Env: projectEnv},
+			},
+			parent: []string{"PATH=/usr/bin"},
+			want:   "https://api.githubcopilot.com",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resolved, diags := mergeLayers(tc.layers)
+			if len(diags) != 0 {
+				t.Fatalf("merge diagnostics = %v, want none", diags)
+			}
+			env := envSliceToMap(ToEnv(EnvInputs{
+				Resolved:             resolved,
+				ParentEnv:            tc.parent,
+				ProvidersConfigPath:  providers,
+				ProjectEnvExclusions: exclusions,
+			}))
+			if got := resolvedCopilotBaseURL(t, env); got != tc.want {
+				t.Fatalf("Copilot base URL = %q, want %q: the project layer chose the endpoint input", got, tc.want)
+			}
+			if env["PROJECT_KEPT"] != "kept" {
+				t.Fatalf("PROJECT_KEPT = %q, want the unrelated project key preserved", env["PROJECT_KEPT"])
+			}
+		})
+	}
+}
