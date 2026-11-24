@@ -1,0 +1,10 @@
+/* The four semantic tone families, as one shared recipe: each class sets the
+ * tone's three companions - its edge, its wash, and its ink. Toast, Banner,
+ * and InlineNotice compose these and paint from the --tone-* properties. */
+.toneAlive { --tone-edge: var(--alive-edge); --tone-bg: var(--alive-bg); --tone-ink: var(--alive-ink); }
+
+.toneDanger { --tone-edge: var(--danger-edge); --tone-bg: var(--danger-bg); --tone-ink: var(--danger-ink); }
+
+.toneAttention { --tone-edge: var(--attention-edge); --tone-bg: var(--attention-bg); --tone-ink: var(--attention-ink); }
+
+.toneAccent { --tone-edge: var(--accent-edge); --tone-bg: var(--accent-bg); --tone-ink: var(--accent-ink); }
