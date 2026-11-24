@@ -90,16 +90,6 @@
   gap: var(--space-1);
 }
 
-.rowContent {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--space-2);
-  min-width: 0;
-  color: inherit;
-  font: inherit;
-  text-align: left;
-}
-
 .rowGlyph {
   flex: none;
   width: 14px;
@@ -109,27 +99,10 @@
   color: var(--ink-low);
 }
 
-.rowBody {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  min-width: 0;
-  flex: 1;
-}
-
-.rowTitle {
-  display: flex;
-  align-items: baseline;
-  gap: var(--space-2);
-  min-width: 0;
-  flex: 1;
-}
-
-.rowName {
-  composes: truncate from "../../styles/text.module.css";
-  flex: 1;
-  min-width: 0;
-  color: var(--ink-hi);
+/* The row owns its box and hover treatment; the summary drops its own padding
+ * so the ListRow's plain variant is the only inset. */
+.watchSummary {
+  padding: 0;
 }
 
 .rowMeta {
