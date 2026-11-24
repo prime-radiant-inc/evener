@@ -26,6 +26,53 @@
   pointer-events: auto;
 }
 
+.split {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+}
+
+.boardColumn {
+  flex: none;
+  width: var(--rail-width, 280px);
+  border-right: 1px solid var(--edge);
+  min-height: 0;
+  padding-top: env(safe-area-inset-top);
+  background: var(--surface-canvas);
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
+
+.boardScroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.paneColumn {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
+
+.boardGlyph {
+  display: inline-block;
+}
+
+.split[data-board="collapsed"] .boardGlyph {
+  transform: rotate(180deg);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .boardGlyph {
+    transition: transform var(--motion-duration-spatial) var(--motion-easing-standard);
+  }
+}
+
 .topBar {
   flex: none;
   display: flex;

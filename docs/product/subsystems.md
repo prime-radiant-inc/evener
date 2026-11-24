@@ -235,6 +235,11 @@ document pointerdown outside-dismissal. Scroll and viewport resize cancel both
 visible and pending reveals without changing navigation state. See the
 [sidebar placement contract](../web-ui/design-system.md).
 
+At 768–899px, [StackHost](../../cmd/evener-hub/frontend/src/shell/mobile/StackHost.tsx)
+places that same Rail in a scrolling board column rather than a drawer.
+The board uses the desktop sidebar width preference and leaves the active
+reader mounted through the phone-to-tablet layout change.
+
 For shared-notes transcript updates, S05's shared projector owns the
 Conversation/System events visibility rule and prevents terminal fallback from
 restoring hidden snapshots. S01 records `NOTES_CONTEXT` transcript snapshots for

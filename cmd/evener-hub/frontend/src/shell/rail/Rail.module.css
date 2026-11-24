@@ -168,6 +168,16 @@
   height: auto;
 }
 
+/* A docked tablet board keeps its controls above the independently scrolling rows. */
+@media (min-width: 768px) {
+  .parentScrollRail > .header {
+    position: sticky;
+    top: 0;
+    z-index: var(--z-raised);
+    background: var(--surface-canvas);
+  }
+}
+
 .parentScrollBody {
   overflow: visible;
   /* The drawer's scroll ends at the visible viewport bottom (the Sheet follows

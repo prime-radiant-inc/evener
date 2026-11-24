@@ -38,7 +38,7 @@ export interface RailResizeHandleProps {
   width: number;
   onCommit: (width: number) => void;
   // The element being resized: the drag paints its --rail-width directly.
-  railRef: RefObject<HTMLDivElement | null>;
+  railRef: RefObject<HTMLElement | null>;
 }
 
 export function RailResizeHandle({ width, onCommit, railRef }: RailResizeHandleProps) {

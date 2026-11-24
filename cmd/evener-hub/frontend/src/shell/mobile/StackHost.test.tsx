@@ -10,7 +10,7 @@ import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { MotionProvider } from "../../motion";
 import { openDocBeside } from "../../panes/doc/openDoc";
 import { installMobileViewport } from "../../panes/session/testing/mobileViewport";
-import { MOBILE_QUERY } from "../useIsMobile";
+import { MOBILE_QUERY, TABLET_QUERY } from "../useIsMobile";
 import "../../panes/transcript";
 import { cascadeClient, cascadeContext } from "../../panes/zoom/cascadeTestUtils";
 import { recordCascadeOrigin } from "../../panes/zoom/inspectionOrigin";
@@ -2007,14 +2007,30 @@ test("with no slide running, as under reduced motion, a step deeper is the insta
   expect(stackBody().textContent).not.toContain("instant_a");
 });
 
-test("a slide away from a scrolled pane keeps the discarded pane's scroller out of the offsets map", async () => {
+test.each(["phone", "tablet to phone"])("a slide discards the leaving scroller after %s layout", async (layout) => {
   const slides = installSlideAnimations();
+  const originalMedia = window.matchMedia;
+  const tablet = new EventTarget();
+  const tabletMedia = Object.assign(tablet, { matches: true, media: TABLET_QUERY });
+  if (layout === "tablet to phone") {
+    window.matchMedia = (query) =>
+      (query === TABLET_QUERY ? tabletMedia : { matches: query === MOBILE_QUERY, media: query }) as MediaQueryList;
+  }
   try {
     workspaceStore.getState().openPane("doc", { ref: "scrolled_from" });
     render(<StackHost />);
     await screen.findByText(/doc pane: scrolled_from /);
     const offsets = scrollOffsetsForTests();
     if (!offsets) throw new Error("StackHost did not expose its scroll offsets");
+    if (layout === "tablet to phone") {
+      expect(screen.getByTestId("board-column")).toBeTruthy();
+      await act(async () => {
+        tabletMedia.matches = false;
+        tabletMedia.dispatchEvent(Object.assign(new Event("change"), { matches: false }));
+      });
+      expect(screen.queryByTestId("board-column")).toBeNull();
+      await screen.findByText(/doc pane: scrolled_from /);
+    }
     const scroller = paneScroller("scrolled_from");
 
     scroller.scrollTop = 48;
@@ -2046,5 +2062,6 @@ test("a slide away from a scrolled pane keeps the discarded pane's scroller out 
     expect(offsets.has(scroller)).toBe(false);
   } finally {
     slides.restore();
+    window.matchMedia = originalMedia;
   }
 });

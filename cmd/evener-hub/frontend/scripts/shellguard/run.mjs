@@ -51,6 +51,10 @@ const VIEWPORT = { width: 1400, height: 900 };
 // styled out of the page.
 const MOBILE_VIEWPORT = { width: 390, height: 844, mobile: true, touch: true };
 
+// Inside the 768-899px tablet band: StackHost keeps mobile/touch emulation
+// while splitting the board column beside the conversation.
+const TABLET_VIEWPORT = { width: 800, height: 1025, mobile: true, touch: true };
+
 // A touch device the desktop layout still applies to (a tablet or a touch
 // laptop). The rail renders docked and resizable here, so its width floor is
 // the one that has to hold 44px tap targets.
@@ -672,6 +676,217 @@ function assertMobileResult(result) {
   if (result.searchBox) failures.push("mobile inline search box is still rendered");
   if (result.resume) failures.push("mobile Jump back in action is still rendered");
   if (result.hints) failures.push("mobile key-binding hints are still rendered");
+  return failures;
+}
+
+async function measureTabletSplit(page) {
+  const { send } = page;
+  await waitForDom(
+    send,
+    "Boolean(document.querySelector('[data-testid=\"board-column\"]') && document.querySelector('[data-testid=\"topbar-title\"]')?.textContent?.trim())",
+    "tablet split initial topbar title settled",
+  );
+  await settleFiniteAnimations(send);
+  const snapState = `(() => {
+    const box = (el) => {
+      if (!el) return null;
+      const r = el.getBoundingClientRect();
+      return { left: r.left, top: r.top, right: r.right, bottom: r.bottom, width: r.width, height: r.height };
+    };
+    const hit = (el) => {
+      if (!el) return false;
+      const r = el.getBoundingClientRect();
+      if (r.width <= 0 || r.height <= 0) return false;
+      const target = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+      return target !== null && el.contains(target);
+    };
+    const split = document.querySelector('[data-testid="board-split"]');
+    const board = document.querySelector('[data-testid="board-column"]');
+    const pane = document.querySelector('[data-testid="pane-column"]');
+    const topbar = document.querySelector('[data-testid="topbar"]');
+    const title = document.querySelector('[data-testid="topbar-title"]');
+    const overview = document.querySelector('[data-session-overview-ref]')?.closest('button') ?? null;
+    const brand = document.querySelector('[data-testid="rail-brand"]');
+    const wordmark = document.querySelector('[data-testid="rail-wordmark"]');
+    const settings = document.querySelector('[data-testid="rail-settings"]');
+    const search = document.querySelector('[data-testid="rail-search"]');
+    const toggles = [...document.querySelectorAll('[data-testid="board-toggle"]')];
+    const toggle = toggles[0] ?? null;
+    const glyph = toggle?.querySelector('span span') ?? null;
+    const handle = board?.querySelector('[role="separator"]');
+    return {
+      viewport: { width: innerWidth, height: innerHeight },
+      document: { scrollWidth: document.documentElement.scrollWidth, scrollHeight: document.documentElement.scrollHeight },
+      dataBoard: split?.getAttribute('data-board') ?? null,
+      board: box(board),
+      pane: box(pane),
+      topbar: box(topbar),
+      topbarInPane: Boolean(pane && topbar && pane.contains(topbar)),
+      title: box(title),
+      overview: box(overview),
+      overviewHit: hit(overview),
+      brand: box(brand),
+      wordmark: box(wordmark),
+      settings: box(settings),
+      settingsHit: hit(settings),
+      search: box(search),
+      searchHit: hit(search),
+      toggleCount: toggles.length,
+      toggle: box(toggle),
+      toggleHit: hit(toggle),
+      toggleInBoard: Boolean(board && toggle && board.contains(toggle)),
+      toggleInBrand: Boolean(brand && toggle && brand.contains(toggle)),
+      toggleInTopbar: Boolean(topbar && toggle && topbar.contains(toggle)),
+      glyphTransform: glyph ? getComputedStyle(glyph).transform : null,
+      resizeHandle: box(handle),
+      resizeHandleHit: hit(handle),
+    };
+  })()`;
+  const open = await evaluate(send, snapState);
+  const scrolledBoard = await evaluate(
+    send,
+    `(() => {
+    const board = document.querySelector('[data-testid="board-column"]');
+    if (!board) return null;
+    const scroller = [board, ...board.querySelectorAll('*')].find(
+      el => el.scrollHeight > el.clientHeight + 1 && ['auto', 'scroll'].includes(getComputedStyle(el).overflowY)
+    );
+    if (!scroller) return { scrolled: false };
+    scroller.scrollTop = 200;
+    const brand = document.querySelector('[data-testid="rail-brand"]');
+    const toggle = document.querySelector('[data-testid="board-toggle"]');
+    const handle = board.querySelector('[role="separator"]');
+    const br = brand?.getBoundingClientRect();
+    const tr = toggle?.getBoundingClientRect();
+    const hr = handle?.getBoundingClientRect();
+    const target = tr ? document.elementFromPoint(tr.left + tr.width / 2, tr.top + tr.height / 2) : null;
+    return {
+      scrolled: scroller.scrollTop > 0,
+      scrollTop: scroller.scrollTop,
+      brandTop: br?.top ?? null,
+      toggleTop: tr?.top ?? null,
+      toggleHit: Boolean(toggle && target && toggle.contains(target)),
+      handleTop: hr?.top ?? null,
+    };
+  })()`,
+  );
+  await evaluate(
+    send,
+    `(() => {
+    const board = document.querySelector('[data-testid="board-column"]');
+    const scroller = board && [board, ...board.querySelectorAll('*')].find(
+      el => el.scrollHeight > el.clientHeight + 1 && ['auto', 'scroll'].includes(getComputedStyle(el).overflowY)
+    );
+    if (scroller) scroller.scrollTop = 0;
+  })()`,
+  );
+  let resized = null;
+  if (open.resizeHandle && open.resizeHandle.width > 0 && open.resizeHandle.height > 0) {
+    const cx = open.resizeHandle.left + open.resizeHandle.width / 2;
+    const cy = open.resizeHandle.top + open.resizeHandle.height / 2;
+    await send("Input.dispatchMouseEvent", { type: "mouseMoved", x: cx, y: cy });
+    await send("Input.dispatchMouseEvent", { type: "mousePressed", x: cx, y: cy, button: "left", clickCount: 1 });
+    await send("Input.dispatchMouseEvent", { type: "mouseMoved", x: cx + 60, y: cy, button: "left", buttons: 1 });
+    await send("Input.dispatchMouseEvent", { type: "mouseReleased", x: cx + 60, y: cy, button: "left", clickCount: 1 });
+    resized = await evaluate(send, snapState);
+    const resetHandle = resized.resizeHandle ?? open.resizeHandle;
+    const rx = resetHandle.left + resetHandle.width / 2;
+    const ry = resetHandle.top + resetHandle.height / 2;
+    await send("Input.dispatchMouseEvent", { type: "mousePressed", x: rx, y: ry, button: "left", clickCount: 2 });
+    await send("Input.dispatchMouseEvent", { type: "mouseReleased", x: rx, y: ry, button: "left", clickCount: 2 });
+  }
+  await evaluate(send, `document.querySelector('[data-testid="board-toggle"]').focus({ preventScroll: true })`);
+  await pressKey(send, "Enter", "Enter", 13);
+  await waitForDom(send, "document.querySelector('[data-testid=\"board-split\"]')?.dataset.board === 'collapsed'", "tablet board collapsed");
+  await settleFiniteAnimations(send);
+  const collapsed = await evaluate(send, snapState);
+  const focusedToggle = `document.activeElement === document.querySelector('[data-testid="board-toggle"]')`;
+  if (!(await evaluate(send, focusedToggle))) throw new Error("collapsing the tablet board lost keyboard focus");
+  await pressKey(send, "Enter", "Enter", 13);
+  await waitForDom(send, "document.querySelector('[data-testid=\"board-split\"]')?.dataset.board === 'visible'", "tablet board re-expanded");
+  await settleFiniteAnimations(send);
+  const reopened = await evaluate(send, snapState);
+  if (!(await evaluate(send, focusedToggle))) throw new Error("expanding the tablet board lost keyboard focus");
+  await evaluate(send, "window.overviewPane('other')");
+  await waitForDom(
+    send,
+    "Boolean(document.querySelector('[data-pane-scaffold=\"session:local:p0-s1\"]') && document.querySelector('[data-session-overview-ref=\"local:p0-s1\"][data-pane-id]'))",
+    "tablet split session pane mounted",
+  );
+  const sessionOpen = await evaluate(send, snapState);
+  await applyViewport(send, { ...MOBILE_VIEWPORT, width: 400 });
+  await waitForDom(send, `innerWidth === 400 && !document.querySelector('[data-testid="board-split"]')`,
+    "400px uses the phone stack without the tablet board");
+  await applyViewport(send, { ...TOUCH_DESKTOP_VIEWPORT, width: 1024, height: 768 });
+  await waitForDom(send, `innerWidth === 1024 && !document.querySelector('[data-stacked-pane-type]') &&
+    document.querySelector('[data-testid="rail"] [data-testid="rail-resize-handle"]')`,
+    "1024px uses the docked desktop rail without the tablet board");
+  return { open, scrolledBoard, resized, collapsed, reopened, sessionOpen };
+}
+
+function assertTabletSplit(result) {
+  const failures = [];
+  const { open, scrolledBoard, resized, collapsed, reopened } = result;
+  const centerY = (box) => (box.top + box.bottom) / 2;
+  if (!open.board || !open.topbar || !open.title || !open.toggle) {
+    failures.push(`tablet split open missing required nodes: ${JSON.stringify(open)}`);
+    return failures;
+  }
+  if (Math.abs(open.board.top) > 1 || Math.abs(open.board.bottom - TABLET_VIEWPORT.height) > 1) {
+    failures.push(`tablet board does not span full height from y=0: ${JSON.stringify(open.board)}`);
+  }
+  if (!open.topbarInPane || open.topbar.left < open.board.right - 1 || Math.abs(open.topbar.top - open.board.top) > 1) {
+    failures.push(`tablet topbar is not beside board at y=0: board=${JSON.stringify(open.board)} topbar=${JSON.stringify(open.topbar)}`);
+  }
+  if (open.title.left < open.board.right - 1 || open.title.right > open.pane.right + 1 || open.title.width <= 0) {
+    failures.push(`tablet title is not beside board: board=${JSON.stringify(open.board)} title=${JSON.stringify(open.title)}`);
+  }
+  if (open.toggleCount !== 1 || !open.toggleInBoard || !open.toggleInBrand || open.toggleInTopbar) {
+    failures.push(`tablet open toggle must sit inside rail brand only: ${JSON.stringify({ count: open.toggleCount, inBoard: open.toggleInBoard, inBrand: open.toggleInBrand, inTopbar: open.toggleInTopbar })}`);
+  }
+  if (open.search.right > open.toggle.left + 0.5 || open.toggle.right > open.board.right + 0.5 || Math.abs(centerY(open.search) - centerY(open.toggle)) > 1.5) {
+    failures.push(`tablet open toggle misaligned or overlapping board header: search=${JSON.stringify(open.search)} toggle=${JSON.stringify(open.toggle)} board=${JSON.stringify(open.board)}`);
+  }
+  if (!open.settingsHit || !open.searchHit || !open.toggleHit) {
+    failures.push(`tablet open header control failed hit-test: ${JSON.stringify({ settings: open.settingsHit, search: open.searchHit, toggle: open.toggleHit })}`);
+  }
+  if (open.toggle.width < 44 || open.toggle.height < 44) {
+    failures.push(`tablet toggle below 44px touch floor: ${JSON.stringify(open.toggle)}`);
+  }
+  if (!open.resizeHandle || Math.abs(open.resizeHandle.right - open.board.right) > 2 || open.resizeHandle.left < open.board.right - 20 || !open.resizeHandleHit) {
+    failures.push(`tablet divider resize handle not hit-testable at board seam: board=${JSON.stringify(open.board)} handle=${JSON.stringify(open.resizeHandle)} hit=${open.resizeHandleHit}`);
+  }
+  if (!scrolledBoard?.scrolled || scrolledBoard.brandTop === null || Math.abs(scrolledBoard.brandTop - open.brand.top) > 1 || !scrolledBoard.toggleHit) {
+    failures.push(`tablet board header did not stay sticky on scroll: openBrand=${JSON.stringify(open.brand)} scrolled=${JSON.stringify(scrolledBoard)}`);
+  }
+  if (scrolledBoard?.handleTop !== null && Math.abs(scrolledBoard.handleTop - open.resizeHandle.top) > 1) {
+    failures.push(`tablet resize handle scrolled off seam top: open=${open.resizeHandle.top} scrolled=${scrolledBoard.handleTop}`);
+  }
+  if (!resized?.board || resized.board.width <= open.board.width + 20 || !resized.toggleInBrand || !resized.toggleHit) {
+    failures.push(`tablet divider drag did not widen board cleanly: before=${open.board.width} after=${resized?.board?.width}`);
+  }
+  if (collapsed.board !== null || collapsed.dataBoard !== "collapsed" || collapsed.toggleCount !== 1 || !collapsed.toggleInTopbar) {
+    failures.push(`tablet collapsed toggle must move into topbar leading edge: ${JSON.stringify(collapsed)}`);
+  }
+  if (!collapsed.toggle || collapsed.toggle.left < collapsed.pane.left - 1 || collapsed.toggle.left > collapsed.pane.left + 20 || collapsed.toggle.right > collapsed.title.left + 0.5 || !collapsed.toggleHit || collapsed.title.height <= 0) {
+    failures.push(`tablet collapsed toggle overlaps or escapes leading conversation edge: ${JSON.stringify({ toggle: collapsed.toggle, title: collapsed.title, toggleHit: collapsed.toggleHit })}`);
+  }
+  if (collapsed.glyphTransform !== "matrix(-1, 0, 0, -1, 0, 0)") {
+    failures.push(`tablet collapsed glyph did not rotate 180deg: ${collapsed.glyphTransform}`);
+  }
+  if (!reopened.board || reopened.dataBoard !== "visible" || !reopened.toggleInBrand || !reopened.toggleHit) {
+    failures.push(`tablet re-expanded board did not return toggle to board header: ${JSON.stringify(reopened)}`);
+  } else if (Math.abs(reopened.board.width - open.board.width) > 1) {
+    failures.push(`tablet divider reset did not restore the initial width: ${reopened.board.width} vs ${open.board.width}`);
+  }
+  if (!result.sessionOpen?.topbarInPane || !result.sessionOpen.overviewHit || result.sessionOpen.topbar.left < result.sessionOpen.board.right - 1) {
+    failures.push(`tablet session pane topbar/overview geometry failed: ${JSON.stringify(result.sessionOpen)}`);
+  }
+  for (const [label, sample] of [["open", open], ["collapsed", collapsed]]) {
+    if (sample.document.scrollWidth > TABLET_VIEWPORT.width + 1 || sample.document.scrollHeight > TABLET_VIEWPORT.height + 1) {
+      failures.push(`tablet ${label} document overflow: ${JSON.stringify(sample.document)}`);
+    }
+  }
   return failures;
 }
 
@@ -1770,11 +1985,22 @@ async function main() {
     // in the page the page-height measurement above reads.
     const focusScroll = await measureOnPage(cdpEndpoint, sharedTab.id, vitePort, VIEWPORT, measureFocusScroll);
     const focusScrollFailures = assertFocusScroll(focusScroll);
+    const tabletSplit = await measureOnPage(cdpEndpoint, sharedTab.id, vitePort, TABLET_VIEWPORT, measureTabletSplit);
+    const tabletSplitFailures = assertTabletSplit(tabletSplit);
     if (focusScrollFailures.length === 0) {
       console.log(
         `shellguard focus scroll: PASS - dismissed to rail row ${focusScroll.triggerRef}'s menu trigger ` +
           `with the row's actions reveal held by the fixture and the rail body's scrollTop unchanged at ` +
           `${focusScroll.pushed.scrollTopBefore}`,
+      );
+    }
+    if (tabletSplitFailures.length === 0) {
+      console.log(
+        `shellguard tablet split: PASS - board y=${tabletSplit.open.board.top}..${tabletSplit.open.board.bottom} ` +
+          `w=${tabletSplit.open.board.width}px (resized=${tabletSplit.resized?.board?.width}px), ` +
+          `topbar x=${tabletSplit.open.topbar.left}, handle x=${tabletSplit.open.resizeHandle.left}..${tabletSplit.open.resizeHandle.right}, ` +
+          `open toggle in rail-brand x=${tabletSplit.open.toggle.left}, collapsed toggle in topbar x=${tabletSplit.collapsed.toggle.left} ` +
+          `glyph=${tabletSplit.collapsed.glyphTransform}`,
       );
     }
     const failures = [
@@ -1787,6 +2013,7 @@ async function main() {
       ...assertTapTargets(mobile.tap),
       ...assertTouchRailMinimum(touchMin),
       ...focusScrollFailures,
+      ...tabletSplitFailures,
     ];
     for (const viewport of OVERVIEW_VIEWPORTS) {
       for (const theme of OVERVIEW_THEMES) {
