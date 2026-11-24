@@ -883,3 +883,163 @@ base_url = "http://127.0.0.1:9/v1"
 		})
 	}
 }
+
+const retainedNoUserLayerDaemonScript = `#!/bin/sh
+if [ "$1" = "launch-check" ]; then
+ printf 'EVENER_PROVIDERS_CONFIG=%s\nCOPILOT_UPSTREAM_URL=%s\nGITHUB_COPILOT_BASE_URL=%s\nPROJECT_KEPT=%s\n' "$EVENER_PROVIDERS_CONFIG" "$COPILOT_UPSTREAM_URL" "$GITHUB_COPILOT_BASE_URL" "$PROJECT_KEPT" > "$(dirname "$0")/launchcheck-env"
+ printf '{"protocol":"evener-appwire-v7","launch_flags":["api-log"]}\n'
+ exit 0
+fi
+mkdir -p "$EVENER_RUN_DIR"
+printf 'EVENER_PROVIDERS_CONFIG=%s\nEVENER_CREDENTIALS_CONFIG=%s\nCOPILOT_UPSTREAM_URL=%s\nGITHUB_COPILOT_BASE_URL=%s\nPROJECT_KEPT=%s\n' "$EVENER_PROVIDERS_CONFIG" "$EVENER_CREDENTIALS_CONFIG" "$COPILOT_UPSTREAM_URL" "$GITHUB_COPILOT_BASE_URL" "$PROJECT_KEPT" > "$EVENER_RUN_DIR/child-env"
+cat > "$EVENER_RUN_DIR/$$.json" <<RENDEZVOUS
+{"pid":$$,"address":"127.0.0.1:1","started_at":"2999-01-01T00:00:00Z"}
+RENDEZVOUS
+exec tail -f /dev/null
+`
+
+// TestRetainedNoUserLayerLaunchKeepsBuiltInExclusionsOnly pins the exclusion
+// source to the child's effective configuration. A failed load that retains no
+// user layer must keep the built-in endpoint inputs excluded even when a
+// readable file sits at the configured path, and it must not strip an
+// environment input from a file the child does not read.
+func TestRetainedNoUserLayerLaunchKeepsBuiltInExclusionsOnly(t *testing.T) {
+	clearProviderKeysFromEnvironment(t)
+	for _, name := range []string{"COPILOT_UPSTREAM_URL", "GITHUB_COPILOT_BASE_URL"} {
+		if value, ok := os.LookupEnv(name); ok {
+			t.Cleanup(func() { _ = os.Setenv(name, value) })
+			if err := os.Unsetenv(name); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	const (
+		customKey    = "COPILOT_UPSTREAM_URL"
+		builtinKey   = "GITHUB_COPILOT_BASE_URL"
+		checkout     = "https://checkout.example.test"
+		builtinValue = "https://builtin-checkout.example.test"
+		defaultCPURL = "https://api.githubcopilot.com"
+	)
+	f := newInstancesFixture(t, map[string]string{})
+	if err := os.WriteFile(f.tomlPath, []byte("[providers.invalid\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.ctl.reg.Reload(); err == nil {
+		t.Fatal("invalid config loaded")
+	}
+	// The file is readable at launch, but the retained state says the failed
+	// load left no user layer for the child.
+	if err := os.WriteFile(f.tomlPath, []byte(alternateCopilotProviderConfig), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	projectEnv := map[string]string{customKey: checkout, builtinKey: builtinValue, "PROJECT_KEPT": "kept"}
+	resolved := launchconfig.Resolved{
+		Effective: launchconfig.Layer{Model: "cp", Env: projectEnv},
+		Layers: map[launchconfig.LayerName]launchconfig.Layer{
+			launchconfig.LayerProject: {Env: projectEnv},
+		},
+	}
+	for _, mode := range []string{"spawn", "resume"} {
+		t.Run(mode, func(t *testing.T) {
+			root := t.TempDir()
+			binary := filepath.Join(root, "evener")
+			runDir := filepath.Join(root, "run")
+			writeFakeEvener(t, binary, retainedNoUserLayerDaemonScript)
+			h := &HubSpawner{Cfg: DefaultConfig(), Registry: f.ctl.reg, ProvidersConfigPath: f.tomlPath, CredentialsPath: f.credsPath, EvenerBinary: binary, RunDir: runDir}
+			var entry rendezvous.Entry
+			var err error
+			if mode == "spawn" {
+				entry, err = h.Spawn(t.Context(), hubcore.SpawnRequest{StateDir: f.stateDir, WorkingDir: root, Resolved: resolved})
+			} else {
+				entry, err = h.Resume(t.Context(), hubcore.ResumeRequest{SessionID: "01JNOUSER", StateDir: f.stateDir, WorkingDir: root, Resolved: resolved})
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			process, err := os.FindProcess(entry.PID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = process.Kill() })
+
+			childEnv := readDaemonEnv(t, filepath.Join(runDir, "child-env"))
+			if got, _ := envLookup(childEnv, "EVENER_PROVIDERS_CONFIG"); got != "" {
+				t.Fatalf("child EVENER_PROVIDERS_CONFIG = %q, want no user layer", got)
+			}
+			if got, _ := envLookup(childEnv, customKey); got != checkout {
+				t.Fatalf("child %s = %q, want %q: a file the child does not read supplied the exclusion", customKey, got, checkout)
+			}
+			if got, _ := envLookup(childEnv, builtinKey); got != "" {
+				t.Fatalf("child %s = %q, want unset: the built-in endpoint input must stay excluded", builtinKey, got)
+			}
+			if got, _ := envLookup(childEnv, "PROJECT_KEPT"); got != "kept" {
+				t.Fatalf("child PROJECT_KEPT = %q, want the unrelated project key preserved", got)
+			}
+			if got := resolveChildInstanceTransport(t, childEnv, "github-copilot").Transport.BaseURL; got != defaultCPURL {
+				t.Fatalf("child resolved Copilot endpoint = %q, want the built-in endpoint %q", got, defaultCPURL)
+			}
+
+			launchCheckEnv := readDaemonEnv(t, filepath.Join(root, "launchcheck-env"))
+			if got, _ := envLookup(launchCheckEnv, customKey); got != checkout {
+				t.Fatalf("launch-check %s = %q, want %q: a file the child does not read supplied the exclusion", customKey, got, checkout)
+			}
+			if got, _ := envLookup(launchCheckEnv, builtinKey); got != "" {
+				t.Fatalf("launch-check %s = %q, want unset: the built-in endpoint input must stay excluded", builtinKey, got)
+			}
+		})
+	}
+}
+
+// TestSpawnResumeFailWhenChildProviderFileCannotLoad proves an unreadable
+// effective child provider file cannot fall back to hub-derived exclusions and
+// launch a child with a checkout-selected endpoint.
+func TestSpawnResumeFailWhenChildProviderFileCannotLoad(t *testing.T) {
+	clearProviderKeysFromEnvironment(t)
+	f := newInstancesFixture(t, map[string]string{})
+	if err := os.WriteFile(f.tomlPath, []byte(`default = "work"
+[providers.work]
+base = "openai-compatible"
+base_url = "http://127.0.0.1:9/v1"
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.ctl.reg.Reload(); err != nil {
+		t.Fatalf("hub registry reload: %v", err)
+	}
+	unloadable := filepath.Join(t.TempDir(), "providers.toml")
+	if err := os.WriteFile(unloadable, []byte("[providers.cp\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	projectEnv := map[string]string{"COPILOT_UPSTREAM_URL": "https://checkout.example.test", "PROJECT_KEPT": "kept"}
+	resolved := launchconfig.Resolved{
+		Effective: launchconfig.Layer{Model: "cp", Env: projectEnv},
+		Layers: map[launchconfig.LayerName]launchconfig.Layer{
+			launchconfig.LayerProject: {Env: projectEnv},
+		},
+	}
+	for _, mode := range []string{"spawn", "resume"} {
+		t.Run(mode, func(t *testing.T) {
+			root := t.TempDir()
+			binary := filepath.Join(root, "evener")
+			runDir := filepath.Join(root, "run")
+			writeFakeEvener(t, binary, endpointDaemonScript("COPILOT_UPSTREAM_URL"))
+			h := &HubSpawner{Cfg: DefaultConfig(), Registry: f.ctl.reg, ProvidersConfigPath: unloadable, CredentialsPath: f.credsPath, EvenerBinary: binary, RunDir: runDir}
+			var err error
+			if mode == "spawn" {
+				_, err = h.Spawn(t.Context(), hubcore.SpawnRequest{StateDir: f.stateDir, WorkingDir: root, Resolved: resolved})
+			} else {
+				_, err = h.Resume(t.Context(), hubcore.ResumeRequest{SessionID: "01JUNLOADABLE", StateDir: f.stateDir, WorkingDir: root, Resolved: resolved})
+			}
+			if err == nil {
+				t.Fatalf("%s launched with an unloadable child provider file", mode)
+			}
+			if _, statErr := os.Stat(filepath.Join(runDir, "child-env")); !errors.Is(statErr, os.ErrNotExist) {
+				t.Fatalf("%s launched a child despite the unloadable provider file", mode)
+			}
+			if _, statErr := os.Stat(filepath.Join(root, "launchcheck-env")); !errors.Is(statErr, os.ErrNotExist) {
+				t.Fatalf("%s ran the launch check despite the unloadable provider file", mode)
+			}
+		})
+	}
+}
