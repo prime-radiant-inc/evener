@@ -2,6 +2,7 @@ import { act, fireEvent, render, waitFor } from "@testing-library/react";
 import { createRef, useState } from "react";
 import { describe, expect, it, vi } from "vitest";
 import "../testing/editorGeometry";
+import { selectEditorText } from "../testing/editor";
 import { SkillEditor, type SkillEditorHandle, type SkillEditorProps, type SkillEditorValue } from "./SkillEditor";
 
 function mount(initial: SkillEditorValue, extra: Partial<SkillEditorProps> = {}) {
@@ -498,7 +499,7 @@ describe("SkillEditor real ProseMirror view", () => {
     fireEvent.compositionEnd(result.editor);
   });
 
-  it("passes { isPaste: true } on paste and fires onSelectionChange on caret-only movement", () => {
+  it("passes { isPaste: true } on paste, suppresses onSelectionChange for programmatic setSelection, and fires on user caret movement", () => {
     const onChange = vi.fn();
     const onSelectionChange = vi.fn();
     const ref = createRef<SkillEditorHandle>();
@@ -521,6 +522,9 @@ describe("SkillEditor real ProseMirror view", () => {
     act(() => {
       ref.current?.setSelection(2);
     });
-    expect(onSelectionChange).toHaveBeenCalledWith(2);
+    expect(onSelectionChange).not.toHaveBeenCalled();
+
+    selectEditorText(editor, 4);
+    expect(onSelectionChange).toHaveBeenCalledWith(4);
   });
 });
