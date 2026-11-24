@@ -1,4 +1,4 @@
-import type { NavigationSessionSummary } from "@evener/appwire-client";
+import type { NavigationManifest, NavigationSessionSummary } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { capability, manifest, wireSnapshot } from "@evener/appwire-client/testing/navigation";
 import { navigationInvalidatedNotification } from "@evener/appwire-client/testing/notifications";
@@ -20,7 +20,7 @@ import { NeedsYouProvider } from "../NeedsYouProvider";
 import { resetMobileViewportForTests } from "../useIsMobile";
 import { resetWorkspaceStoreForTests } from "../workspace";
 import { liveBandRefs, railLiveBands } from "./liveBands";
-import { Rail } from "./Rail";
+import { Rail, type RailProps } from "./Rail";
 
 beforeEach(() => {
   localStorage.clear();
@@ -65,8 +65,12 @@ function session(id: string, overrides: Partial<NavigationSessionSummary> = {}):
 type NeedsYouPage = { sessions: NavigationSessionSummary[]; remaining: number; fail?: boolean };
 type NeedsYouPages = ReadonlyMap<number, NeedsYouPage>;
 async function mountRail(
-  initial: { live: NavigationSessionSummary[]; needsYou?: NavigationSessionSummary[] },
-  props: { revealTarget?: string; onRevealConsumed?: () => void } = {},
+  initial: {
+    live: NavigationSessionSummary[];
+    needsYou?: NavigationSessionSummary[];
+    sources?: NavigationManifest["sources"];
+  },
+  props: RailProps = {},
   // The phone renders the rail inside the Sessions drawer, itself a modal.
   frame: (rail: ReactElement) => ReactElement = (rail) => rail,
   needsYouPages?: NeedsYouPages,
@@ -79,7 +83,7 @@ async function mountRail(
     if (params.resource === "manifest") {
       data = manifest({
         revision,
-        sources: [{ id: "local", label: "This host", kind: "local", online: true }],
+        sources: initial.sources ?? [{ id: "local", label: "This host", kind: "local", online: true }],
         sections: {
           live: { count: hub.live.length },
           needs_you: {
@@ -285,6 +289,57 @@ test("a pending question's row says its usable words on the phone and its word a
   expect(whyText("local:blank")).toBe(whyText("local:asked"));
   expect(whyText("local:asked")).not.toBe(ASKED);
   expect(whyFor("local:asked").dataset.hue).toBe("attention");
+});
+
+test.each([
+  { narrow: true, appearance: undefined, flat: true },
+  { narrow: false, appearance: undefined, flat: false },
+  { narrow: true, appearance: "classic" as const, flat: false },
+  { narrow: false, appearance: "flat" as const, flat: true },
+])("the row's reading target follows its appearance ($narrow, $appearance)", async ({ narrow, appearance, flat }) => {
+  const restore = installMobileViewport(narrow ? undefined : []);
+  try {
+    const project = "Release engineering";
+    const updated_at = new Date(Date.now() - 60_000).toISOString();
+    const remote = { id: "buildbox", label: "Build box", kind: "appwire", online: true } as const;
+    const asked = session("asked", {
+      ref: "buildbox:asked",
+      host_id: remote.id,
+      state: "awaiting",
+      ask_pending: true,
+      question: { text: ASKED, count: 2 },
+      project,
+      updated_at,
+    });
+    const quiet = session("quiet", { updated_at });
+    await mountRail(
+      {
+        live: [asked, quiet],
+        sources: [{ id: "local", label: "This host", kind: "local", online: true }, remote],
+      },
+      { appearance },
+    );
+    for (const entry of [asked, quiet]) {
+      const row = within(rowFor(entry.ref));
+      const target = within(row.getByTestId("rail-row-title"));
+      expect(row.getAllByTestId("rail-row-time")).toHaveLength(1);
+      expect(target.queryByTestId("rail-row-time") !== null).toBe(flat);
+      expect(target.queryByText(project) !== null).toBe(flat && entry === asked);
+      expect(target.queryByText(ASKED) !== null).toBe((flat || narrow) && entry === asked);
+      if (flat) {
+        const status = target.getByTestId("rail-row-status");
+        if (entry === quiet) expect(status.textContent).toBe("");
+        else {
+          expect(within(status).queryByTestId("rail-row-why-host")).toBeNull();
+          expect(target.getByTestId("rail-row-why-host").textContent).toBe(remote.label);
+        }
+      }
+    }
+  } finally {
+    cleanup();
+    restore();
+    resetMobileViewportForTests();
+  }
 });
 
 test("a working row names its running job's intent, falling back to the command", async () => {

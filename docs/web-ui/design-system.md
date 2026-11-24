@@ -443,13 +443,22 @@ product once; it does not also print the hub's advertised server name, which is 
 constant `evener-hub` on every hub. The phone drawer uses its Sheet header instead of
 the brand row.
 
-**Rail rows.** Rows sit one `--space-2` in from both rail edges, so a row is a rounded
+**Rail rows.** Compact rows sit one `--space-2` in from both rail edges, so a row is a rounded
 pill (`--radius-control`) rather than an edge-to-edge band. Hover is the `--hover-1` wash
 and a press is `--hover-2`. The selected row, the session the workspace is showing, lifts
 onto `--surface-1` with `--shadow-card-ringed` and semibold ink, the one selected-row
 recipe `Tree` and `ListRow` share. `Tree` owns the inset, all three states, the press and
 the nested levels' guide rails (§3); the rail contributes row content only. Section
 headings stay full-bleed above the rows.
+
+Three lines is the default on the phone drawer and tablet board. One reading target
+holds the semibold title, one status line, and quiet metadata: the age once, then the
+actual project name and any host cue. Reserve the status line even when it is empty.
+Use the question or work from the navigation summary when available, and omit missing
+metadata and its separator. A session that has never run says so in the status line
+instead of showing an age. The flat `Tree` drops the left guides and selected-row lift,
+using a modest selection tint and a separate keyboard focus ring. The menu and
+disclosure remain separate controls.
 
 **Dock tabs, sashes and the status bar.** A dock tab is a pill seated in the tab strip
 with a hairline of strip around it and no divider between tabs. The focused group's
@@ -460,28 +469,29 @@ the rail's resize handle draws. A floating group takes `--shadow-overlay`. The s
 status bar sits on the pane's own surface, and each activity counter is a
 `--surface-canvas` pill on it.
 
-The visible face is indicator, title, and age/actions only. Project,
-host, branch, running jobs, subagent tally, watches, tier and age move into a shared `HoverCard` on
+Compact shows the indicator, title, and age/actions, plus any Live reason below.
+The full title and facts are available in a shared `HoverCard` on
 the title. Hovering the title or focusing the owning tree row exposes it; on a hoverless device a
 long press on the title exposes it and a tap activates the row. Session pin stars
 do not appear on the row.
 
 **Live bands.** The Live section reads top to bottom as Needs you, Working, Idle: each
 band that has sessions is a fold in the section's `Tree`, its name in medium ink with a
-`Badge` count (attention tone on Needs you only), and all three start open. Rows do not
+count (plain in Three lines, `Badge` in Compact; attention tone on Needs you only),
+and all three start open. Rows do not
 animate when a session changes band. A Live row may carry one second line, in caption
 type and medium ink, that truncates and never wraps, and it prints only what the band
 and the dot have not already said: on a Needs-you row the kind of attention (question,
 approval, failure, warning, restart) in the dot's own ink; on a working row what it is
 waiting on or running, or its wait for a usage limit. A row that is simply working or
-idle keeps one line. The same line names the row's host where Live spans hosts and the
-row is away from this hub, or the host is offline. Rows outside Live keep the one-line
-face; their only second line is the usage-limit wait.
+idle has no reason text. In Compact, the reason line also names the row's host where
+Live spans hosts and the row is away from this hub, or the host is offline. Compact
+rows outside Live show a second line only for the usage-limit wait.
 
-In the narrow shell, every session name is semibold. The reason and age stay regular
-even on the selected row. A pending question shows its own words when supplied and
-falls back to the attention label otherwise. The title and reason share one control:
-tap either line to open the session, or hold either line to reveal the full name and context.
+In the narrow shell and in Three lines, the reason and age stay regular even on the
+selected row. A pending question shows its own words when supplied and falls back to
+the attention label otherwise. The title and reason share one control: tap either line
+to open the session, or hold either line to reveal the full name and context.
 
 The rail's New-session control is a `Button variant="secondary"`, and the shell keeps at most
 one filled primary on screen: the rail is chrome, so its CTA must not outrank the current
@@ -825,7 +835,7 @@ during implementation (noted inline); this table is the one to trust.
 | **Markdown** (+ **MarkdownBubble**) | `{source: string; live?: boolean; ref?: Ref<HTMLDivElement>}`; bubble: `{source; density?: "default"\|"compact"; dataTestId?}` | `marked` → DOMPurify-sanitized HTML → `innerHTML`; fenced code renders through CodeBlock's stylesheet; links open in a new tab with no opener access; mermaid fences render through MermaidDiagram. `live` closes constructs left open at a streaming tail so formatting renders mid-stream — settled renders must not pass it. MarkdownBubble wraps a Markdown in a bubble frame. |
 | **MermaidDiagram** | `{source: string; renderTimeoutMs?: number (10000)}` (`MermaidDiagramProps`) | Renders one model-authored mermaid diagram inline through the two-layer sanitize in `security.ts`, themed to the resolved scheme. Once rendered the container is a button that opens the fullscreen DiagramViewer; while loading it is an inert box, and a failed or timed-out render falls back to the source in CodeBlock styling plus "Couldn't render this diagram." Exported from the barrel like every other widget; Markdown, a sibling, still imports it from `../mermaid`, and the mermaid guard entry (`src/dev/mermaidguard-entry.tsx`) imports the directory so its standalone bundle does not pull in the whole barrel. |
 | **DiffBlock** | `{unified: string}` | Per-line domain notation on already-diffed text (dedicated add/remove tints plus `+`/`−` markers); does not compute a diff itself. |
-| **Tree** | `{nodes: T[]; onActivate; onToggle; renderRow; releaseModifierKeys?: boolean; isSelected?: (node) => boolean \| undefined}` (generic over `T extends {id; children?; expanded?}`) | Keyboard-navigable (`role="tree"`), roving tabindex, Up/Down/Right/Left/Enter. Fully controlled — `renderRow(node, {depth, expanded, hasChildren, focused, toggle, activate})` owns each row's visible content; Tree owns structure/ARIA/keyboard path only. Tree owns the row's box: its root keeps the rows one `--space-2` in from both edges of its container, so each `--radius-control` row is a pill; a `--hover-1` hover wash and a `--hover-2` pressed wash; the press (`--press-scale-row`, reduced-motion gated, and not while a control inside the row is the one pressed); a 1px `--edge` guide rail down each nested level; and, for a row `isSelected` marks, the shared selected-row lift (`--surface-1`, `--shadow-card-ringed`, semibold ink — one recipe with ListRow, `widgets/internal/selectableRow.module.css`), which holds under hover and press. A caller wraps nothing around it and styles nothing on its elements: `renderRow`'s info carries `focused`, true while the treeitem itself (not a control inside it) holds focus, so row content can reveal focus-only affordances (the rail's row actions). A focused row keeps focus when the caller's next `nodes` move it to another branch, and focus falls to a neighbour when its row leaves the tree. `isSelected` adds `aria-selected`; `releaseModifierKeys` lets Alt-held arrows and Alt+Home/End through to the desktop global chords. |
+| **Tree** | `{nodes: T[]; onActivate; onToggle; renderRow; appearance?: "flat"; releaseModifierKeys?: boolean; isSelected?: (node) => boolean \| undefined}` (generic over `T extends {id; children?; expanded?}`) | Keyboard-navigable (`role="tree"`), roving tabindex, Up/Down/Right/Left/Enter. Fully controlled: `renderRow(node, {depth, expanded, hasChildren, focused, toggle, activate})` owns the content; Tree owns its outer box, structure, ARIA and keyboard path. By default the inset, rounded rows and nested `--edge` guides frame the tree; selected rows use the shared ListRow lift. `appearance="flat"` removes the outer inset, guides and rounded lift; selection uses `--hover-1` as a flat tint. Both keep nesting, hover and pressed washes, reduced-motion-aware press and a distinct keyboard ring. A caller styles only the content it supplies: `focused` reflects focus on the treeitem itself, so row content can reveal focus-only affordances. A row keeps focus when it moves to another branch, and focus falls to a neighbour when its row leaves the tree. `isSelected` adds `aria-selected`; `releaseModifierKeys` lets Alt-held arrows and Alt+Home/End through to the desktop global chords. |
 | **VirtualList** | `{count; estimateSize; renderRow; dynamic?; getItemKey?; onChange?; onLayout?; anchorToEnd?; followEnd?; ref?: Ref<VirtualListHandle>}` | Wraps `@tanstack/react-virtual`; `ref` exposes `{scrollToIndex, getScrollElement, isLayoutCurrent, getVisibleRange, scrollToOffset?, isMeasurementReady?}` via the React 19 ref-as-prop pattern (not a `forwardRef` wrapper). Sizes come from `estimateSize` alone unless `dynamic` opts in to `measureElement`. `getItemKey` keys rows by identity, needed by any consumer that prepends; `anchorToEnd` keeps a live-append list pinned to its end while the reader is there (requires `getItemKey`). |
 | **Chevron** | `{direction?: "right"\|"down"\|"left"\|"up" ("right"); size?: number (14)}` | The app's one chevron: every disclosure triangle, tree twisty and dropdown caret draws from it. A square block-level SVG box, so rotating it in CSS cannot overhang its layout box; a fixed direction draws a different path rather than transforming. Decorative, stroke in currentColor. |
 | **ToolIcon** | `{kind: ToolIconKind; size?: number (14); tone?: "alive"\|"attention"\|"danger"}` | The transcript row-kind glyph: one line-art icon per tool family (terminal, file, edit, search, …, with `wrench` for every unregistered or MCP tool), plus `person`/`thought`, the status shapes `check`/`cross`/`alert`/`info`, and two chrome glyphs: `mark`, the evener mark (two level bars) that the rail's brand tile and the agent's SpeakerAvatar both draw, and `shield`, effective access (the New session access tile). They are kinds here so the product mark and the tile glyphs share the family's grid and stroke weight. Same 16-grid stroke grammar and square box as Chevron; single-colour, currentColor. `tone` is for a glyph whose hue IS the state (the activity sidebar's agent and job rows: working, needs you, failed); it is reported as `data-tone` on the `<svg>`. Omitted, the icon inherits the surrounding ink, so a settled row stays in its caller's quiet ink. On the semantic allowlist for its tones. |
@@ -1462,6 +1472,11 @@ the rail's brand row. A nonzero needs-you count and the New session button remai
 in the body. The Rail fills the Sheet body without a second surface or frame
 (`bodyClassName`, §3). Selecting any session closes the drawer, including the
 session already being read.
+
+**The tablet board and phone drawer keep the same groups.** Live folds Needs you,
+Working and Idle, in that order. Each user-named pin category has its own disclosure
+and Rename and Delete actions. There is no umbrella Pinned section. Projects or
+Hosts, Test runs and Archived sessions follow.
 
 ## 12. Phone session controls
 

@@ -6,6 +6,7 @@ import {
   memo,
   type ReactNode,
   useCallback,
+  useContext,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -68,7 +69,7 @@ import { comparePinSections } from "./PinSectionPicker";
 import styles from "./Rail.module.css";
 import { RailNavigationActions } from "./RailNavigationActions";
 import { RAIL_WIDTH_PROPERTY, RailResizeHandle } from "./RailResizeHandle";
-import { RailRow, type RailRowActions } from "./RailRow";
+import { RailFlatContext, RailRow, type RailRowActions } from "./RailRow";
 import { ARCHIVED_SECTION_KEY, LIVE_SECTION_KEY, PROJECTS_SECTION_KEY, TEST_RUNS_SECTION_KEY } from "./railExpansion";
 import { useRailHeaderAction } from "./railHeaderAction";
 import { SidebarIcon, TuneIcon } from "./railIcons";
@@ -325,7 +326,8 @@ function projectsTierFor(
 // history navigation, so the tree keeps them tree-owned.
 function RailTree(props: Omit<TreeProps<RailNode>, "releaseModifierKeys">) {
   const isMobile = useIsMobile();
-  return <Tree {...props} releaseModifierKeys={!isMobile} />;
+  const flat = useContext(RailFlatContext);
+  return <Tree {...props} appearance={flat ? "flat" : undefined} releaseModifierKeys={!isMobile} />;
 }
 
 // The evener mark on the rail's accent tile: the same ToolIcon glyph the
@@ -385,6 +387,8 @@ function PinnedRailSection({ section, open, onToggleOpen, onRename, onDelete, ..
 }
 
 export interface RailProps {
+  /** Override the phone/tablet flat and desktop classic defaults. */
+  appearance?: "classic" | "flat";
   onHide?: () => void;
   width?: number;
   onWidthChange?: (width: number) => void;
@@ -1188,6 +1192,11 @@ function NavigationRail({
   );
 }
 
-export function Rail(props: RailProps = {}) {
-  return <NavigationRail {...props} />;
+export function Rail({ appearance, ...props }: RailProps = {}) {
+  const isMobile = useIsMobile();
+  return (
+    <RailFlatContext.Provider value={appearance === undefined ? isMobile : appearance === "flat"}>
+      <NavigationRail {...props} />
+    </RailFlatContext.Provider>
+  );
 }

@@ -59,3 +59,19 @@
    * level's own indentation, compounding as groups nest. */
   border-left: 1px solid var(--edge);
 }
+
+.flatTree {
+  padding-inline: 0;
+}
+
+.flatTree .row {
+  border-radius: 0;
+}
+
+.flatTree .row[aria-selected="true"] {
+  background: var(--hover-1);
+}
+
+.flatTree .group {
+  border-left: 0;
+}

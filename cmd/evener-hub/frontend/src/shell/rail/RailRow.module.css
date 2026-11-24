@@ -430,6 +430,64 @@
   min-width: 0;
 }
 
+.flatSession {
+  border-block-end: 1px solid color-mix(in oklab, var(--edge) 28%, transparent);
+}
+
+.flatSession .titleLine {
+  align-items: flex-start;
+}
+
+.flatSession :is(.signal, .chevronButton) {
+  margin-block-start: var(--space-3);
+  height: 1lh;
+  font-size: var(--font-size-ui);
+  line-height: var(--line-height-ui);
+}
+
+.flatSession .sessionTitleButton {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  row-gap: calc(var(--space-1) / 2);
+  padding-block: var(--space-3);
+  font-weight: var(--font-weight-semibold);
+  line-height: var(--line-height-ui);
+}
+
+.flatStatus,
+.flatMeta {
+  min-height: 1lh;
+  color: var(--ink-mid);
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-regular);
+  line-height: var(--line-height-ui);
+}
+
+.flatStatus > span {
+  display: block;
+}
+
+.flatMeta {
+  margin-block-start: calc(var(--space-1) / 2);
+}
+
+.flatMeta,
+.flatMeta .time {
+  color: var(--ink-low);
+}
+
+.metaText {
+  composes: truncate from "../../styles/text.module.css";
+  min-width: 0;
+}
+
+.flatMeta > [data-host-online] {
+  flex: none;
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* Phone drawer and tablet board: the name leads even in an unselected row.
  * Tree supplies the selected surface; its weight must not lift the age or
  * the explanation to the same level as the name. */
