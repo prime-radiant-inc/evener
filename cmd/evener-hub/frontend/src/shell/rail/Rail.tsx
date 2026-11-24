@@ -1044,16 +1044,14 @@ function NavigationRail({
                 size="md"
                 onClick={() => navigate("/settings")}
               />
-              <Tooltip label="Search sessions and commands">
-                <IconButton
-                  data-testid="rail-search"
-                  data-search-trigger="true"
-                  label="Search"
-                  icon={<SearchIcon />}
-                  variant="quiet"
-                  size="md"
-                />
-              </Tooltip>
+              <IconButton
+                data-testid="rail-search"
+                data-search-trigger="true"
+                label="Search"
+                icon={<SearchIcon />}
+                variant="quiet"
+                size="md"
+              />
               {onHide && (
                 <IconButton
                   data-rail-toggle=""
