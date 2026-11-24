@@ -17,10 +17,11 @@ import { friendlyErrorMessage, LOCAL_HOST } from "@evener/appwire-client";
 import { useEffect, useState } from "react";
 import { agentsDocStoreForHost, useAgentsDocStoreForHost } from "../../../stores/agentsDoc";
 import surfaceStyles from "../../../styles/surface.module.css";
-import { Button, InlineNotice, Skeleton, Textarea, useToasts } from "../../../widgets";
+import { Button, InlineNotice, Textarea, useToasts } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import styles from "./agentsDoc.module.css";
 import { HostScopedSurface } from "./hostScopedSurface";
+import { SectionGate } from "./sectionGate";
 import { Code } from "./settingsField";
 import { useHostScopedLoad } from "./useConnectedEffect";
 
@@ -152,12 +153,10 @@ export function AgentsDocSection({ host = LOCAL_HOST }: AgentsDocSectionProps) {
     setSaveError(null);
   }
 
-  if (doc === null && loading) return <Skeleton />;
   // The store has already flattened the rejection to text, and for a file
   // editor that text IS the fix - "permission denied", "is a directory" -
   // so it goes to the user as it stands (inrepo.tsx does the same).
-  if (doc === null && error) return <InlineNotice tone="danger">Failed to load: {error}</InlineNotice>;
-  if (doc === null) return null; // not yet fetched: the connected effect hasn't run
+  if (doc === null) return <SectionGate loading={loading} error={error && `Failed to load: ${error}`} />;
 
   return (
     <div className={CLASS.root}>

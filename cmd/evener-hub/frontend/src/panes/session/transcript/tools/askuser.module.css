@@ -47,7 +47,3 @@
   color: var(--ink-low);
 }
 
-.fallback {
-  color: var(--ink-low);
-  font-size: var(--font-size-ui);
-}

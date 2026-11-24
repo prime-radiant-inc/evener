@@ -12,20 +12,19 @@
   min-width: 0;
   flex-direction: column;
   gap: var(--space-half);
-}
-
-.source,
-.counts {
-  min-width: 0;
-  overflow: hidden;
   color: var(--ink-low);
   font-size: var(--font-size-caption);
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .source {
+  composes: truncate from "../../styles/text.module.css";
+  min-width: 0;
   color: var(--ink-mid);
+}
+
+.counts {
+  composes: truncate from "../../styles/text.module.css";
+  min-width: 0;
 }
 
 .description {

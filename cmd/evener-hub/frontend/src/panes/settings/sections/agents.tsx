@@ -6,9 +6,10 @@
 // stores/settingsOverview adapter.
 import { type SettingsOverviewStoreState, useSettingsOverviewStore } from "../../../stores/settingsOverview";
 import surfaceStyles from "../../../styles/surface.module.css";
-import { Chip, EmptyState, InlineNotice, ListRow, OpenButton, Skeleton } from "../../../widgets";
+import { Chip, EmptyState, ListRow, OpenButton } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import styles from "./agents.module.css";
+import { SectionGate } from "./sectionGate";
 import { useConnectedEffect } from "./useConnectedEffect";
 
 const CLASS = {
@@ -46,14 +47,11 @@ export function AgentsSection({ useOverview = useSettingsOverviewStore }: Agents
         Agents discovered from plugin directories and built-in defaults. Open an agent file to view or edit its
         definition.
       </p>
-      {loading && <Skeleton />}
       {/* The overview store already holds the friendly text (it translates
           the error while it still has its type); converting again would turn
           a hub-reported explanation into the generic fallback. */}
-      {error && <InlineNotice tone="danger">Failed to load: {error}</InlineNotice>}
-      {!loading &&
-        !error &&
-        (agents.length === 0 ? (
+      <SectionGate loading={loading} error={error && `Failed to load: ${error}`}>
+        {agents.length === 0 ? (
           <EmptyState title="No agents discovered." />
         ) : (
           <ul className={CLASS.list}>
@@ -67,7 +65,8 @@ export function AgentsSection({ useOverview = useSettingsOverviewStore }: Agents
               </li>
             ))}
           </ul>
-        ))}
+        )}
+      </SectionGate>
     </div>
   );
 }

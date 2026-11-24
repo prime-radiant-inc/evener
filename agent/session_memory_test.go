@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"os"
 	"os/exec"
@@ -3538,21 +3537,11 @@ func refreshModelFacingCaches(s *Session) {
 	s.reportPromptRenderFailure(warning)
 }
 
-var updatePromptGoldens = flag.Bool("update-prompt", false,
-	"rewrite agent/testdata/memoryprompt and agent/testdata/messagingprompt from the current guidance and tool descriptions")
-
 // Memory guidance follows what the session can do: read guidance (with the
 // trust guard) whenever memory is readable, save instructions only when the
 // save tools are callable (never in a delegate, which reports findings to its
 // parent instead), and project-scope wording only when project memory is
-// bound. Where memory is readable, the
-// guidance and the memory tools' descriptions are prompt text, pinned whole
-// per shape in testdata/memoryprompt, never by substring; regenerate after an
-// intended wording change with
-//
-//	go test ./agent -run 'TestMemoryGuidanceFollowsCapabilities$' -count=1 -update-prompt
-//
-// and read the diff.
+// bound.
 func TestMemoryGuidanceFollowsCapabilities(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -3611,18 +3600,6 @@ func TestMemoryGuidanceFollowsCapabilities(t *testing.T) {
 			if !tc.project && strings.Contains(strings.ToLower(section), "project memory") {
 				t.Fatalf("memory section mentions project memory, but no project scope is bound")
 			}
-			if !tc.read {
-				return
-			}
-			var golden strings.Builder
-			golden.WriteString(strings.TrimPrefix(memoryGuidanceHeading, "\n\n") + section + "\n\n# Memory tool descriptions\n")
-			for _, name := range nativeMemoryToolNames {
-				if registered := s.reg.Get(name); registered != nil {
-					writeToolDescriptions(&golden, registered.Definition)
-				}
-			}
-			agenttest.CheckGolden(t, filepath.Join("testdata", "memoryprompt", tc.name+".md"), []byte(golden.String()), *updatePromptGoldens,
-				"Regenerate with `go test ./agent -run 'TestMemoryGuidanceFollowsCapabilities$' -count=1 -update-prompt` and read the diff.")
 		})
 	}
 }

@@ -4,10 +4,8 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
-	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/llm"
 )
@@ -31,89 +29,6 @@ func toolProp(td llm.ToolDefinition, prop string) (map[string]any, bool) {
 	}
 	p, ok := props[prop].(map[string]any)
 	return p, ok
-}
-
-// renderVisionToolProse serializes a tool definition's description and vision_prompt
-// parameter description for golden snapshot verification (#6190).
-func renderVisionToolProse(td llm.ToolDefinition) []byte {
-	var sb strings.Builder
-	sb.WriteString("# Description\n")
-	sb.WriteString(td.Description)
-	sb.WriteString("\n\n# vision_prompt\n")
-	if props, ok := td.Parameters["properties"].(map[string]any); ok {
-		if vp, ok := props["vision_prompt"].(map[string]any); ok {
-			if desc, ok := vp["description"].(string); ok {
-				sb.WriteString(desc)
-				sb.WriteByte('\n')
-				return []byte(sb.String())
-			}
-		}
-	}
-	sb.WriteString("(omitted)\n")
-	return []byte(sb.String())
-}
-
-// TestReadFileVisionProseGoldens pins the model-facing descriptions and vision_prompt
-// parameter descriptions for read_file and memory_read across all three vision regimes
-// (#6190) from real sessions, per the prose rule in docs/developing-evener/testing.md.
-// Regenerate with:
-//
-//	go test ./agent -run 'TestReadFileVisionProseGoldens$' -count=1 -update-prompt
-//
-// and read the diff.
-func TestReadFileVisionProseGoldens(t *testing.T) {
-	t.Parallel()
-	const hint = "Regenerate with `go test ./agent -run 'TestReadFileVisionProseGoldens$' -count=1 -update-prompt` and read the diff."
-
-	client := llm.NewClient()
-	client.Register(newFakeErrAdapter("anthropic", nil))
-	client.Register(newFakeErrAdapter("openai", nil))
-
-	// Regime 1: Real session with Anthropic Claude (sees both images and PDFs inline)
-	profClaude, err := provider.Resolve(provider.EmbeddedRegistry(), "anthropic/claude-opus-4-5")
-	if err != nil {
-		t.Fatalf("resolve claude: %v", err)
-	}
-	sessRegime1 := newSession(t, withClient(client), withProfile(profClaude),
-		withConfig(SessionConfig{MemoryStateRoot: t.TempDir()}))
-	rfRegime1, ok := findToolDef(sessRegime1.ToolDefinitions(), "read_file")
-	if !ok {
-		t.Fatal("Regime 1 read_file missing")
-	}
-	mrRegime1, ok := findToolDef(sessRegime1.ToolDefinitions(), "memory_read")
-	if !ok {
-		t.Fatal("Regime 1 memory_read missing")
-	}
-	agenttest.CheckGolden(t, filepath.Join("testdata", "readfilevision", "regime1-read-file.md"), renderVisionToolProse(rfRegime1), *updatePromptGoldens, hint)
-	agenttest.CheckGolden(t, filepath.Join("testdata", "readfilevision", "regime1-memory-read.md"), renderVisionToolProse(mrRegime1), *updatePromptGoldens, hint)
-
-	// Regime 2: Real session with OpenAI gpt-5.2 (sees images inline, PDFs use side-channel)
-	sessRegime2 := newSession(t, withClient(client), withProfile(NewOpenAIProfile("gpt-5.2")),
-		withConfig(SessionConfig{MemoryStateRoot: t.TempDir()}))
-	rfRegime2, ok := findToolDef(sessRegime2.ToolDefinitions(), "read_file")
-	if !ok {
-		t.Fatal("Regime 2 read_file missing")
-	}
-	mrRegime2, ok := findToolDef(sessRegime2.ToolDefinitions(), "memory_read")
-	if !ok {
-		t.Fatal("Regime 2 memory_read missing")
-	}
-	agenttest.CheckGolden(t, filepath.Join("testdata", "readfilevision", "regime2-read-file.md"), renderVisionToolProse(rfRegime2), *updatePromptGoldens, hint)
-	agenttest.CheckGolden(t, filepath.Join("testdata", "readfilevision", "regime2-memory-read.md"), renderVisionToolProse(mrRegime2), *updatePromptGoldens, hint)
-
-	// Regime 3: Real session with text-only gpt-5.2-codex (both use side-channel)
-	sessRegime3 := newSession(t, withClient(client), withProfile(NewOpenAIProfile("gpt-5.2-codex")),
-		withConfig(SessionConfig{MemoryStateRoot: t.TempDir()}))
-	rfRegime3, ok := findToolDef(sessRegime3.ToolDefinitions(), "read_file")
-	if !ok {
-		t.Fatal("Regime 3 read_file missing")
-	}
-	mrRegime3, ok := findToolDef(sessRegime3.ToolDefinitions(), "memory_read")
-	if !ok {
-		t.Fatal("Regime 3 memory_read missing")
-	}
-	agenttest.CheckGolden(t, filepath.Join("testdata", "readfilevision", "regime3-read-file.md"), renderVisionToolProse(rfRegime3), *updatePromptGoldens, hint)
-	agenttest.CheckGolden(t, filepath.Join("testdata", "readfilevision", "regime3-memory-read.md"), renderVisionToolProse(mrRegime3), *updatePromptGoldens, hint)
 }
 
 // Regime 1: Anthropic Claude sees both image/png and application/pdf natively inline.

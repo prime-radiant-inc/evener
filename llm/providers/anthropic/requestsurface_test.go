@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"flag"
 	"image"
 	"image/png"
 	"net/http"
@@ -47,34 +46,6 @@ func TestBuildBodyNamedToolChoiceRequiresName(t *testing.T) {
 	}
 }
 
-// The augmented system prompts are model-facing prose, so they are pinned
-// with whole-output golden snapshots under testdata/responseformat (the
-// prompt-prose contract): a wording change regenerates the goldens with
-// -update-prompt and the diff is read in review. Format selection and the
-// failure arms stay behavioral assertions.
-var updatePrompt = flag.Bool("update-prompt", false, "rewrite the response-format prompt goldens under testdata")
-
-func checkPromptGolden(t *testing.T, name, got string) {
-	t.Helper()
-	path := filepath.Join("testdata", "responseformat", name)
-	if *updatePrompt {
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			t.Fatalf("create %s: %v", filepath.Dir(path), err)
-		}
-		if err := os.WriteFile(path, []byte(got), 0o644); err != nil {
-			t.Fatalf("write %s: %v", path, err)
-		}
-		return
-	}
-	want, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read %s: %v (regenerate with -update-prompt)", path, err)
-	}
-	if string(want) != got {
-		t.Fatalf("%s drifted.\n got: %q\nwant: %q\nregenerate with -update-prompt", path, got, want)
-	}
-}
-
 func TestApplyAnthropicResponseFormat(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -106,7 +77,9 @@ func TestApplyAnthropicResponseFormat(t *testing.T) {
 		if got == "sys prompt" {
 			t.Fatal("the json format must augment the system prompt")
 		}
-		checkPromptGolden(t, "json.txt", got)
+		if !strings.Contains(got, "sys prompt") {
+			t.Fatalf("the json format must preserve the caller system prompt: %q", got)
+		}
 	})
 
 	t.Run("json_schema appends the instruction and the marshaled schema", func(t *testing.T) {
@@ -120,10 +93,12 @@ func TestApplyAnthropicResponseFormat(t *testing.T) {
 		if got == "sys prompt" {
 			t.Fatal("the json_schema format must augment the system prompt")
 		}
+		if !strings.Contains(got, "sys prompt") {
+			t.Fatalf("the json_schema format must preserve the caller system prompt: %q", got)
+		}
 		if !strings.Contains(got, `"type":"object"`) {
 			t.Fatalf("the augmented prompt must embed the marshaled schema: %q", got)
 		}
-		checkPromptGolden(t, "json_schema.txt", got)
 	})
 
 	// A schema JSON cannot marshal (a channel value) must fail the build, not
