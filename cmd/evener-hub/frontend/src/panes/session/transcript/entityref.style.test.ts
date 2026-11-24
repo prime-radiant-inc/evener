@@ -33,3 +33,16 @@ test("the card's hierarchy comes from the ink ramp", () => {
 test("no opacity fades fake the hierarchy", () => {
   expect(CSS).not.toMatch(/(^|\s)opacity:/);
 });
+
+// A group the line cannot fit - a long job id at the question's pane-title
+// prose size on a 390px phone - must wrap inside its row instead of painting
+// past the transcript's clip and leaving the open control untappable: the id
+// breaks like any other long token (the same escape table cells get, where
+// the column owns the width), and a group that fits a full line still moves
+// there as one unit because anywhere only breaks when nothing else fits.
+test("a group wider than its line wraps like a long token instead of clipping", () => {
+  const group = topRuleBlock(CSS, ".group");
+  expect(group).toMatch(/white-space:\s*normal/);
+  expect(group).toMatch(/max-width:\s*100%/);
+  expect(group).toMatch(/overflow-wrap:\s*anywhere/);
+});
