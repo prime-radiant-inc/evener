@@ -1043,15 +1043,13 @@ describe the executable proof and presentation contract.
 The [browser binding](../../cmd/evener-hub/frontend/src/stores/sessionActivity.ts)
 shares a store by actual client object, requested ref and scope. A committed view
 acquires its holder; an abandoned render starts no read. Every visible ordinary
-session pane observes that pane's
-summary and its subtree summary (for the Agents count) by explicit ref on both
-viewports, through its flush status footer on desktop and through the
-activity line above the composer card on the phone, which renders no footer
-strip. A folded resting composer hides that line but keeps observing through
-the session menu's hidden discovery owner, so a pane's counts are current the
-moment its card expands. Side-by-side panes retain independent counts while duplicate consumers of one
-ref and scope share
-the same owner. The Agents tab shares the `subtree` delegate collection on the
+session pane observes its session summary and subtree summary (for Agents) by
+explicit ref. On desktop the flush status footer owns discovery. On phone the
+composer's session menu keeps discovery active at rest and while editing,
+without a visible activity line or status footer. Opening the phone Overview
+sheet mounts its activity rows as another consumer of those same scoped
+summaries. Side-by-side panes retain independent counts while duplicate
+consumers of one ref and scope share the same owner. The Agents tab shares the `subtree` delegate collection on the
 same subtree store that supplies the count, while Jobs and Watches tabs observe
 their own session-scoped collection. A visible page boundary supplies further demand,
 while the shared store retains and retries an interrupted continuation. The

@@ -28,3 +28,15 @@
 .glyph {
   color: var(--ink-low);
 }
+
+.webLink {
+  composes: tapFloor from "../../../styles/tapfloor.module.css";
+  display: grid;
+  align-items: center;
+  border-radius: var(--radius-control);
+}
+
+.webLink:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: -2px;
+}

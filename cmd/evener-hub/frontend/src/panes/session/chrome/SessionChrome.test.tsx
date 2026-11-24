@@ -511,7 +511,12 @@ test("the phone header keeps session facts, Find and same-session Tasks in one O
   expect(within(sheet).getByTestId("session-details-model")).toBeTruthy();
   expect((await within(sheet).findByTestId("session-details-branch")).textContent).toContain(branch);
   expect(fake.calls.find((call) => call.method === "evener/git/head")?.params).toEqual({ cwd });
-  expect(within(sheet).getByTestId("overview-sheet-link-u1").textContent).toContain(link);
+  const savedLink = within(sheet).getByRole("link");
+  expect(savedLink).toBe(within(sheet).getByTestId("overview-sheet-link-u1"));
+  expect(savedLink.getAttribute("href")).toBe(link);
+  expect(savedLink.getAttribute("target")).toBe("_blank");
+  expect(savedLink.getAttribute("rel")?.split(/\s+/)).toEqual(expect.arrayContaining(["noopener", "noreferrer"]));
+  expect(within(savedLink).getByText(link)).toBeTruthy();
   expect(within(sheet).queryByRole("button", { name: /^Tasks,/ })).toBeNull();
   act(() => setLocation(ref, { total: 0, done: 0 }));
   expect(within(within(sheet).getByRole("button", { name: /^Tasks,/ })).getByText("0/0")).toBeTruthy();

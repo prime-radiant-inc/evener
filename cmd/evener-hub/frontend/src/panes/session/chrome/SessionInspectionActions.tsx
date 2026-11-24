@@ -39,6 +39,7 @@ const CLASS = {
   group: requireClass(styles.group, "sessioninspectionsheet.module.css", "group"),
   list: requireClass(styles.list, "sessioninspectionsheet.module.css", "list"),
   glyph: requireClass(styles.glyph, "sessioninspectionsheet.module.css", "glyph"),
+  webLink: requireClass(styles.webLink, "sessioninspectionsheet.module.css", "webLink"),
 };
 
 export function openSessionOverview(sessionRef: string, paneId: string | undefined, isMobile: boolean): void {
@@ -141,13 +142,19 @@ function OverviewSheetBody({
                   // label (the shared file-link and notes rule: a trusted-
                   // looking label over a phishing URL must never display the
                   // label alone).
-                  <ListRow
-                    variant="plain"
+                  <a
+                    className={CLASS.webLink}
                     data-testid={`overview-sheet-link-${url.id}`}
-                    label={url.label || url.url}
-                    meta={url.label ? url.url : undefined}
-                    onSelect={() => window.open(url.url, "_blank", "noopener,noreferrer")}
-                  />
+                    href={url.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    <ListRow
+                      variant="plain"
+                      label={url.label || url.url}
+                      meta={url.label !== url.url && url.label ? url.url : undefined}
+                    />
+                  </a>
                 ) : /^file:\/\//.test(url.url) ? (
                   // Local file references open through the in-app
                   // document/open-beside flow, the same control the notes
