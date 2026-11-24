@@ -218,6 +218,15 @@ test("takes its body ink from --markdown-ink, defaulting to --ink-hi", () => {
   expect(css).toContain("color: var(--markdown-ink, var(--ink-hi))");
 });
 
+test("strong emphasis composes through --markdown-strong-weight, defaulting to semibold", () => {
+  // Same comment-stripped stylesheet read as the ink seam above: a host
+  // that already renders its body at the semibold weight (the ask question
+  // cards) opts strong into the bold token through this seam, or bold
+  // spans would be indistinguishable from the surrounding text.
+  const css = readModuleCss(import.meta.url, "markdown.module.css");
+  expect(css).toContain("font-weight: var(--markdown-strong-weight, var(--font-weight-semibold))");
+});
+
 test("compact bubbles override the Markdown body ink with the quiet token", () => {
   const css = readModuleCss(import.meta.url, "markdown.module.css");
   const rule = css.match(/\.markdownBubbleCompact\s*\{[^}]*\}/)?.[0] ?? "";

@@ -3,6 +3,7 @@
   "description": "At a desktop viewport an editable inline connection fact keeps its label beside a value cell that grows to the row's right edge, so the instance sheet's Name and Base URL inputs span the rest of the row instead of sitting at the input's intrinsic width. A read-only fact keeps the compact label column and does not grow.",
   "cssFiles": [
     "styles/global.css",
+    "styles/text.module.css",
     "styles/tokens.css",
     "widgets/internal/control.module.css",
     "widgets/input/input.module.css",

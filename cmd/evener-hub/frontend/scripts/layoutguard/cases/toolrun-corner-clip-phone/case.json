@@ -3,6 +3,7 @@
   "description": "A folded tool run that is a whole card (widgets/disclosure's details inside surface.module.css's tool-card segment) keeps both edge contracts on a phone without clipping. A control in the open run's last row that overhangs its line to the tap floor stays reachable at its bottom edge. The closed run's summary, which spans the card, and the last row's evidence band stay inside the card's rounded lower corners, and the open run's summary keeps square lower corners above its rows, with its first row seated on the body's hairline rather than below Disclosure's uncancelled top gap. The rows are stand-ins declared in the harness, because the tool row's stylesheet shares unhashed class names with the run's.",
   "cssFiles": [
     "styles/global.css",
+    "styles/text.module.css",
     "styles/tokens.css",
     "styles/surface.module.css",
     "styles/motion.module.css",

@@ -107,12 +107,10 @@
 }
 
 .label {
+  composes: truncate from "../../styles/text.module.css";
   flex: 1 1 12ch;
   min-width: 0;
   max-width: max-content;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 /* Chips wrap among themselves on a line too narrow for all of them, rather
@@ -146,14 +144,12 @@
 }
 
 .meta {
+  composes: truncate from "../../styles/text.module.css";
   grid-row: 2;
   grid-column: -3 / -2;
   min-width: 0;
-  overflow: hidden;
   color: var(--ink-mid);
   font-size: var(--font-size-caption);
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .collection .meta {

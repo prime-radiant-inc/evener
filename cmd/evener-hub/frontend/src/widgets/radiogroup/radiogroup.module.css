@@ -95,7 +95,5 @@
 }
 
 .optionLabel {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  composes: truncate from "../../styles/text.module.css";
 }

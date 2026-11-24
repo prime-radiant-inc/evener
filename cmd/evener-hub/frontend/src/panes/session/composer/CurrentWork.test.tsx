@@ -172,8 +172,7 @@ test("gives the status word the row's containment contract", () => {
   // objective instead of pushing the row past the pane, and it must render
   // as written rather than case-mangled by a text transform.
   expect(status).toContain("min-width: 0");
-  expect(status).toContain("overflow: hidden");
-  expect(status).toContain("text-overflow: ellipsis");
+  expect(status).toContain('composes: truncate from "../../../styles/text.module.css"');
   expect(status).not.toContain("text-transform: uppercase");
 
   expect(currentWorkCssRule("statusBlocked")).toContain("color: var(--attention-ink)");

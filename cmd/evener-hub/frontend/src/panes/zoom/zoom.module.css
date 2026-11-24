@@ -78,12 +78,10 @@
 }
 
 .title {
-  overflow: hidden;
+  composes: truncate from "../../styles/text.module.css";
   margin: 0;
   color: var(--ink-hi);
   font-size: var(--font-size-caption);
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .heading {
@@ -91,12 +89,10 @@
 }
 
 .state {
+  composes: truncate from "../../styles/text.module.css";
   display: block;
-  overflow: hidden;
   color: var(--ink-low);
   font-size: var(--font-size-caption);
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .state[data-runtime-state="active"] {

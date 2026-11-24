@@ -25,13 +25,11 @@
 }
 
 .content {
+  composes: truncate from "../../styles/text.module.css";
   min-width: 0;
-  overflow: hidden;
   color: var(--ink-hi);
   font-family: var(--font-mono);
   font-size: var(--font-size-ui);
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .empty {
