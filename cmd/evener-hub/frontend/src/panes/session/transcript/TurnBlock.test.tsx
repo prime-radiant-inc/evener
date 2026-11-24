@@ -279,9 +279,8 @@ test("the trace journey: thoughts disclose at tools, the switch opens them, and 
 
 test("the turn root remains a centered, shrinkable reading column", () => {
   const css = readModuleCss(import.meta.url, "turnblock.module.css");
-  expect(css).toMatch(
-    /\.turn\s*\{[\s\S]*width:\s*100%;[\s\S]*max-width:\s*var\(--session-measure\);[\s\S]*margin-inline:\s*auto;/,
-  );
+  expect(css).toMatch(/\.turn\s*\{[\s\S]*composes:\s*measureColumn from "[./]*styles\/surface\.module\.css"/);
+  expect(css).toMatch(/\.turn\s*\{[\s\S]*min-width:\s*0;/);
 });
 
 test("showSeenDivider defaults to false: no divider marker rendered", () => {

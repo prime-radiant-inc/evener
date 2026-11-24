@@ -49,9 +49,7 @@ export function useColdStartSkeleton(sessionRef: string, model: ThreadModel | nu
 export function ColdStartSkeleton() {
   return (
     <div className={styles.coldStart} data-testid="cold-start-skeleton">
-      <div className={styles.coldStartMeasure}>
-        <Skeleton lines={3} />
-      </div>
+      <Skeleton lines={3} />
     </div>
   );
 }
