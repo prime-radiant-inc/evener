@@ -41,12 +41,6 @@
   font-family: var(--font-sans);
 }
 
-.error {
-  margin: 0;
-  color: var(--ink-mid);
-  font-size: var(--font-size-ui);
-}
-
 /* Provider (and Recent) section eyebrow: small, quiet, not an option. */
 .groupRow {
   composes: groupRow from "../internal/pickerPanel.module.css";

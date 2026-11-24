@@ -74,12 +74,6 @@
   line-height: var(--line-height-body);
 }
 
-.status {
-  margin: 0;
-  color: var(--ink-mid);
-  font-size: var(--font-size-caption);
-}
-
 @media (max-width: 899px) {
   .heading {
     align-items: flex-start;
