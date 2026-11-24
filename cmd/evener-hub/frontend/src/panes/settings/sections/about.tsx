@@ -70,10 +70,14 @@ export function AboutSection() {
         {hub?.version !== undefined && <> {hub.version}</>}
         {hub?.commit !== undefined && <FieldDim> ({hub.commit})</FieldDim>}
       </p>
-      {hub?.version === undefined && data === null && error !== null && (
-        <InlineNotice tone="neutral" data-reason="unavailable" data-testid="about-version-unavailable">
-          Version unavailable: {error}
-        </InlineNotice>
+      {data === null && (
+        <div aria-live="polite" data-testid="about-version-status">
+          {hub?.version === undefined && error !== null && (
+            <InlineNotice tone="neutral" live="off" data-reason="unavailable" data-testid="about-version-unavailable">
+              Version unavailable: {error}
+            </InlineNotice>
+          )}
+        </div>
       )}
 
       <p className={CLASS.help} data-testid="design-credit">
