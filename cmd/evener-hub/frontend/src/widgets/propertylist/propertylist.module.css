@@ -68,7 +68,7 @@
 
 /* A value the reader is confirming shows in full: it wraps, breaking a long
    path or host name anywhere rather than overflowing the column. */
-.wrap {
+.value.wrap {
   overflow: visible;
   overflow-wrap: anywhere;
   white-space: normal;
@@ -101,7 +101,7 @@
   width: auto;
 }
 
-.stackedValue {
+.value.stackedValue {
   overflow: visible;
   overflow-wrap: anywhere;
   white-space: normal;

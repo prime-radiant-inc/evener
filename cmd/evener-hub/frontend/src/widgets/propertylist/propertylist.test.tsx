@@ -66,7 +66,7 @@ test("a wrap row's value wraps in full instead of truncating, and only that row'
   const [target, installPath] = screen.getAllByRole("definition");
   expect(classesOf(installPath!)).toEqual(expect.arrayContaining(classesOf(target!)));
   expect(classesOf(installPath!).length).toBe(classesOf(target!).length + 1);
-  const wrap = topRuleBlock(CSS, ".wrap");
+  const wrap = topRuleBlock(CSS, ".value.wrap");
   expect(wrap).toContain("white-space: normal");
   expect(wrap).toContain("overflow-wrap: anywhere");
   expect(wrap).toContain("overflow: visible");
@@ -105,8 +105,8 @@ test("stacked rows put the label over the value and wrap the value", () => {
 
   expect(topRuleBlock(CSS, ".stackedRow")).toContain("flex-direction: column");
   expect(topRuleBlock(CSS, ".stackedLabel")).toContain("width: auto");
-  expect(topRuleBlock(CSS, ".stackedValue")).toContain("white-space: normal");
-  expect(topRuleBlock(CSS, ".stackedValue")).toContain("overflow-wrap: anywhere");
+  expect(topRuleBlock(CSS, ".value.stackedValue")).toContain("white-space: normal");
+  expect(topRuleBlock(CSS, ".value.stackedValue")).toContain("overflow-wrap: anywhere");
 });
 
 test("a stacked row's help follows its value as a further definition of the same term", () => {
