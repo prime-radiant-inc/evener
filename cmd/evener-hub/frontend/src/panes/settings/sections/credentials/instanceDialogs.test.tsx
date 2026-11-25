@@ -84,6 +84,18 @@ describe("AddInstanceDialog", () => {
     expect(screen.getByRole("option", { name: "Anthropic" })).toBeTruthy();
   });
 
+  test("an option pairs a distinct display name with its registry id", () => {
+    connectReadyFakeClient();
+    render(
+      <AddInstanceDialog
+        availableProviders={[provider({ id: "kimi-code-plan-global", name: "Kimi For Coding (kimi.ai)" })]}
+        onCancel={() => {}}
+        onSuccess={() => {}}
+      />,
+    );
+    expect(screen.getByRole("option", { name: "Kimi For Coding (kimi.ai) · kimi-code-plan-global" })).toBeTruthy();
+  });
+
   test("no variable inputs until a base with vars is selected", () => {
     connectReadyFakeClient();
     render(<AddInstanceDialog availableProviders={[ANTHROPIC, VERTEX]} onCancel={() => {}} onSuccess={() => {}} />);
