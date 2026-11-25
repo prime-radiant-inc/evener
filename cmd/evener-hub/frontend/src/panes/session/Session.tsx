@@ -179,6 +179,14 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
     [readView, composerSource, paneId, paneFocused, ref],
   );
 
+  const scaffold = {
+    paneId,
+    focused: paneFocused,
+    scaffoldMarker: `session:${ref}`,
+    title,
+    edgeFooter,
+  };
+
   return (
     <ConversationBody
       ref={ref}
@@ -189,14 +197,7 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
         // is stale.
         if (state === "deleted") {
           return (
-            <PaneScaffold
-              paneId={paneId}
-              focused={paneFocused}
-              scaffoldMarker={`session:${ref}`}
-              title={title}
-              footer={footer}
-              edgeFooter={edgeFooter}
-            >
+            <PaneScaffold {...scaffold} footer={footer}>
               <EmptyState
                 title="This session was deleted"
                 hint="Its transcript is gone. You can close this pane."
@@ -212,28 +213,18 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
         }
         if (state === "loading") {
           return (
-            <PaneScaffold
-              paneId={paneId}
-              focused={paneFocused}
-              scaffoldMarker={`session:${ref}`}
-              title={title}
-              edgeFooter={edgeFooter}
-            >
+            <PaneScaffold {...scaffold}>
               <SessionLoading key={ref} sessionRef={ref} repairing={repairingRef} />
             </PaneScaffold>
           );
         }
         return (
           <PaneScaffold
-            paneId={paneId}
-            focused={paneFocused}
+            {...scaffold}
             focusSelector='[data-composer] [role="textbox"]'
-            scaffoldMarker={`session:${ref}`}
-            title={title}
             cadence={cadence}
             actions={isMobile ? undefined : <SessionInspectionActions sessionRef={ref} paneId={paneId} />}
             footer={footer}
-            edgeFooter={edgeFooter}
           >
             {content}
           </PaneScaffold>
