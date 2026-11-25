@@ -2322,7 +2322,7 @@ async function waitForPaneText(driver, ref, marker, timeoutMs, label) {
 
 // recordReaderAtClose keeps the reader intent measured just before the sockets
 // close. A passing run's artifact tree is removed by the fixture cleanup, so the
-// Actions step summary is the surviving copy; failures never change the outcome.
+// Actions step summary is the surviving copy; its errors never change the outcome.
 function recordReaderAtClose(driver, evidence) {
   const readers = Array.isArray(evidence.readers) ? evidence.readers.slice(0, 4) : (evidence.readers ?? null);
   const record = { at: Date.now(), ref: SESSION_B, closedSockets: evidence.closedSockets, readers,
@@ -2333,8 +2333,8 @@ function recordReaderAtClose(driver, evidence) {
   try {
     if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY,
       `\n\`\`\`json\n${JSON.stringify({ "backgroundtranscriptguard reader-at-close": record })}\n\`\`\`\n`);
+    driver.milestone("reader-at-close", { ref: SESSION_B, closedSockets: record.closedSockets, readers: record.readers });
   } catch (error) { console.log(`reader-at-close step summary unavailable: ${String(error)}`); }
-  driver.milestone("reader-at-close", { ref: SESSION_B, closedSockets: record.closedSockets, readers: record.readers });
 }
 
 // captureReconnectFailureSnapshot records what the selected pane's model and DOM
