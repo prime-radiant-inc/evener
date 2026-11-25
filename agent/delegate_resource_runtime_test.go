@@ -1133,7 +1133,6 @@ func TestDelegateResourceRuntime_CanonicalInlineDeliveryPreservesPacketSemantics
 				CacheReadTokens: 7,
 				TotalTokens:     130,
 			},
-			warnings: []string{"worktree validation retained"},
 			worktree: &delegateWorktreeReport{
 				Path:    "/repo/.worktrees/dlg_target",
 				Branch:  "delegate/dlg_target",
@@ -1142,6 +1141,7 @@ func TestDelegateResourceRuntime_CanonicalInlineDeliveryPreservesPacketSemantics
 				Dirty:   true,
 			},
 		})
+		finish.packet.Warnings = []string{"worktree validation retained"}
 		marshaled, err := marshalDelegateSendResult(runDelegateInlinePacket(t, finish), 64*1024)
 		if err != nil {
 			t.Fatalf("marshal inline operational metadata: %v", err)
@@ -1995,7 +1995,6 @@ func TestDelegateResourceRuntime_TerminalPacketPreservesTaskModelEffortTimingUsa
 			CacheReadTokens: 7,
 			TotalTokens:     130,
 		},
-		warnings: []string{"worktree validation retained"},
 		worktree: &delegateWorktreeReport{
 			Path:    "/repo/.worktrees/dlg_target",
 			Branch:  "delegate/dlg_target",
@@ -2004,6 +2003,7 @@ func TestDelegateResourceRuntime_TerminalPacketPreservesTaskModelEffortTimingUsa
 			Dirty:   true,
 		},
 	})
+	finish.packet.Warnings = []string{"worktree validation retained"}
 	packet := finish.packet
 	if packet == nil {
 		t.Fatal("terminal packet is nil")

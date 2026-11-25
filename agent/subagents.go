@@ -3351,7 +3351,6 @@ type delegateTerminalRunInputs struct {
 	endedAt                 time.Time
 	latestActivityAt        time.Time
 	usage                   schema.CumulativeUsage
-	warnings                []string
 	worktree                *delegateWorktreeReport
 	scratchPath             string
 	// stoppedByUser: the run was cancelled on request (requestRunCancel), so a
@@ -3426,9 +3425,8 @@ func delegateFinishFromRun(inputs delegateTerminalRunInputs) delegateFinish {
 	}
 	rawMessage, _ := json.Marshal(message)
 	packet := delegatestore.TerminalPacket{
-		Kind:     delegatestore.PacketTerminalError,
-		Message:  rawMessage,
-		Warnings: append([]string(nil), inputs.warnings...),
+		Kind:    delegatestore.PacketTerminalError,
+		Message: rawMessage,
 	}
 	// A failure's reason says which failure it was; the branches below
 	// replace it for a run that reported, exhausted, or was cancelled.

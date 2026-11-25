@@ -60,11 +60,11 @@ func TestDelegateReadOnly_ActivityPreservesTimingUsageQuietWorktreeAndDiagnostic
 		usage: schema.CumulativeUsage{
 			InputTokens: 7, OutputTokens: 11, CacheReadTokens: 3, TotalTokens: 21,
 		},
-		warnings: []string{"cleanup retained one diagnostic"},
 		worktree: &delegateWorktreeReport{
 			Path: "/tmp/delegate-rich", Branch: "delegate-rich", HeadSHA: "abc123", Ahead: 2, Dirty: true,
 		},
 	})
+	finish.packet.Warnings = []string{"cleanup retained one diagnostic"}
 	seedStableReadonlyFinish(t, s, "dlg_rich", descriptor, startedAt, finish, true)
 
 	tree, err := s.JobActivityTree(t.Context(), appwire.JobsListParams{})
