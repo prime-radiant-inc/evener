@@ -93,6 +93,11 @@
   line-height: var(--line-height-ui);
 }
 
+.summaryLine {
+  color: var(--ink-low);
+  line-height: var(--line-height-ui);
+}
+
 .expandedHeader {
   height: 28px;
   min-height: 28px;
@@ -111,8 +116,50 @@
   overflow-x: clip;
 }
 
+/* Below 900px, the collapsed whiteboard rests as one quiet centered line on
+ * the reading surface: no card chrome, keeping the body's own top spacing.
+ * The card chrome and attach-to-header negative margin apply only while
+ * expanded. */
 @media (max-width: 899px) {
+  .topNotesPanel:not([data-expanded="true"]) {
+    position: static;
+    z-index: auto;
+    border: none;
+    border-radius: 0;
+    box-shadow: none;
+    overflow: visible;
+    background: transparent;
+  }
+
   :global([data-pane-scaffold^="session:"]) .topNotesPanel {
+    margin-top: 0;
+  }
+
+  :global([data-pane-scaffold^="session:"]) .topNotesPanel[data-expanded="true"] {
     margin-top: calc(-1 * var(--space-4));
+  }
+
+  .summary {
+    align-items: center;
+    padding: var(--space-1) var(--space-2);
+    /* The hover wash is Disclosure's; the rounded control shape keeps that
+     * wash a soft pill on the reading surface rather than a square slab. */
+    border-radius: var(--radius-control);
+  }
+
+  /* Collapsed on mobile, the chevron hides so the centered em-dash count line
+   * stays balanced; the expanded header keeps it. */
+  .summary .chevron {
+    display: none;
+  }
+
+  .summary .summaryLeft {
+    justify-content: center;
+  }
+}
+
+@media (max-width: 899px), (any-pointer: coarse) {
+  .summary {
+    min-height: var(--tap-min);
   }
 }
