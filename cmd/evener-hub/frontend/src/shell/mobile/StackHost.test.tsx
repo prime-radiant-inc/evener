@@ -2168,8 +2168,10 @@ function registerScrollablePaneForTests(id: "session" | "sessionZoom" | "transcr
     component: lazy(() =>
       Promise.resolve({
         default: () => (
-          <div data-testid="pane-scroll" style={{ height: "100%", overflowY: "auto" }}>
-            <div style={{ height: 2400 }} />
+          <div data-reading-scroll-host="" style={{ height: "100%" }}>
+            <div data-testid="pane-scroll" style={{ height: "100%", overflowY: "auto" }}>
+              <div style={{ height: 2400 }} />
+            </div>
           </div>
         ),
       }),
@@ -2460,5 +2462,146 @@ test("resizing across the tablet breakpoint keeps the mounted scroll body active
     restoreSession();
     window.matchMedia = originalMedia;
     if (originalWidth) Object.defineProperty(window, "innerWidth", originalWidth);
+  }
+});
+
+test("scrolling a nested list inside a session pane leaves the top bar and nested scroll position untouched", async () => {
+  window.history.replaceState({}, "", "/");
+  const restoreSession = registerPaneForTests({
+    id: "session",
+    component: lazy(() =>
+      Promise.resolve({
+        default: () => (
+          <div style={{ height: "100%" }}>
+            <div data-reading-scroll-host="" style={{ height: "100%" }}>
+              <div data-testid="pane-scroll" style={{ height: "100%", overflowY: "auto" }}>
+                <div style={{ height: 2400 }}>
+                  <div data-testid="nested-rail" style={{ maxHeight: 220, overflowY: "auto" }}>
+                    <div style={{ height: 800 }} />
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div data-composer="">
+              <div data-testid="nested-menu" style={{ maxHeight: 220, overflowY: "auto" }}>
+                <div style={{ height: 800 }} />
+              </div>
+            </div>
+          </div>
+        ),
+      }),
+    ),
+    title: () => "session",
+  });
+  try {
+    const host = await act(async () => render(<StackHost routeDeferred />));
+    await act(async () => {
+      workspaceStore.getState().openPane("session", { ref: "local:nested" });
+    });
+    const bar = screen.getByTestId("topbar");
+    Object.defineProperty(bar, "offsetHeight", { configurable: true, value: 56 });
+    const reader = await screen.findByTestId("pane-scroll");
+    const nestedMenu = screen.getByTestId("nested-menu");
+    const nestedRail = screen.getByTestId("nested-rail");
+
+    // Scrolling a nested composer menu or inline rail past barHeight + 12
+    // must never float the bar or rewrite the nested list's scrollTop.
+    act(() => {
+      nestedMenu.scrollTop = 140;
+      nestedMenu.dispatchEvent(new Event("scroll"));
+    });
+    expect(bar.getAttribute("data-collapsed")).not.toBe("true");
+    expect(nestedMenu.scrollTop).toBe(140);
+
+    act(() => {
+      nestedRail.scrollTop = 150;
+      nestedRail.dispatchEvent(new Event("scroll"));
+    });
+    expect(bar.getAttribute("data-collapsed")).not.toBe("true");
+    expect(nestedRail.scrollTop).toBe(150);
+
+    // Scrolling the primary reading scroller still collapses and compensates.
+    act(() => {
+      reader.scrollTop = 260;
+      reader.dispatchEvent(new Event("scroll"));
+    });
+    await waitFor(() => expect(bar.getAttribute("data-collapsed")).toBe("true"));
+    expect(reader.scrollTop).toBe(204);
+
+    // While collapsed, scrolling the nested menu upward must keep the bar
+    // collapsed and leave both scroll positions untouched.
+    act(() => {
+      nestedMenu.scrollTop = 120;
+      nestedMenu.dispatchEvent(new Event("scroll"));
+    });
+    expect(bar.getAttribute("data-collapsed")).toBe("true");
+    expect(nestedMenu.scrollTop).toBe(120);
+    expect(reader.scrollTop).toBe(204);
+
+    // An upward gesture on the primary reading scroller still reveals the bar.
+    act(() => {
+      reader.scrollTop = 194;
+      reader.dispatchEvent(new Event("scroll"));
+    });
+    await waitFor(() => expect(bar.getAttribute("data-collapsed")).not.toBe("true"));
+    expect(reader.scrollTop).toBe(250);
+    host.unmount();
+  } finally {
+    restoreSession();
+  }
+});
+
+test("near-bottom collapse compensates from the pre-flip scroll offset instead of post-layout clamped scrollTop", async () => {
+  window.history.replaceState({}, "", "/");
+  const restoreSession = registerScrollablePaneForTests("session");
+  try {
+    const host = await act(async () => render(<StackHost routeDeferred />));
+    await act(async () => {
+      workspaceStore.getState().openPane("session", { ref: "local:near-bottom" });
+    });
+    const bar = screen.getByTestId("topbar");
+    Object.defineProperty(bar, "offsetHeight", { configurable: true, value: 56 });
+    const scroller = await screen.findByTestId("pane-scroll");
+    Object.defineProperty(scroller, "scrollHeight", { configurable: true, value: 1000 });
+
+    // Simulate browser viewport growth on float: solid bar maxScroll is 500,
+    // collapsed bar grows the viewport by 56px so maxScroll clamps to 444.
+    let rawScrollTop = 0;
+    const maxScroll = () => (bar.getAttribute("data-collapsed") === "true" ? 444 : 500);
+    Object.defineProperty(scroller, "scrollTop", {
+      configurable: true,
+      get: () => Math.min(rawScrollTop, maxScroll()),
+      set: (value: number) => {
+        rawScrollTop = Math.max(0, Math.min(value, maxScroll()));
+      },
+    });
+
+    // Initial height observation (0 -> 1000) is position-neutral.
+    act(() => {
+      scroller.scrollTop = 100;
+      scroller.dispatchEvent(new Event("scroll"));
+    });
+    expect(bar.getAttribute("data-collapsed")).not.toBe("true");
+
+    // Scroll within one barHeight of the bottom (490 of 500): on float the
+    // browser clamps scrollTop to 444 before useLayoutEffect runs, so
+    // compensation must compute 490 - 56 = 434 rather than 444 - 56 = 388.
+    act(() => {
+      scroller.scrollTop = 490;
+      scroller.dispatchEvent(new Event("scroll"));
+    });
+    await waitFor(() => expect(bar.getAttribute("data-collapsed")).toBe("true"));
+    expect(scroller.scrollTop).toBe(434);
+
+    // Scrolling up 14px reveals and compensates from 420 -> 420 + 56 = 476.
+    act(() => {
+      scroller.scrollTop = 420;
+      scroller.dispatchEvent(new Event("scroll"));
+    });
+    await waitFor(() => expect(bar.getAttribute("data-collapsed")).not.toBe("true"));
+    expect(scroller.scrollTop).toBe(476);
+    host.unmount();
+  } finally {
+    restoreSession();
   }
 });

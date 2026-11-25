@@ -110,6 +110,10 @@ const TRANSITION_CLASSES = {
 const FLOAT_COLLAPSE_PAST = 48;
 const FLOAT_REVEAL_STEP = 8;
 const FLOAT_REVEAL_AT_TOP = 12;
+// Only a session-family pane's primary reading scroll port (the VirtualList
+// root directly inside a reading scroll host) drives the floating header;
+// nested scrollers like composer menus and escalation rails stay independent.
+const READING_SCROLLER_SELECTOR = "[data-reading-scroll-host] > *";
 
 // The header uses full touch targets for every pointer in the tablet band.
 const BOARD_MIN_WIDTH = SIDEBAR_WIDTH_MIN_TOUCH;
@@ -566,8 +570,15 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
     if (!body) return;
     const onScroll = (event: Event) => {
       const target = event.target;
-      if (!(target instanceof Element) || !paneSlotRef.current?.contains(target)) return;
+      if (
+        !(target instanceof Element) ||
+        !paneSlotRef.current?.contains(target) ||
+        !target.matches(READING_SCROLLER_SELECTOR)
+      )
+        return;
       const scrollTop = target.scrollTop;
+      const prevScrollTop = lastScrollTopRef.current;
+      lastScrollTopRef.current = scrollTop;
       const heightChanged = target.scrollHeight !== lastScrollHeightRef.current;
       lastScrollHeightRef.current = target.scrollHeight;
       const type = focusedPaneRef.current?.type;
@@ -581,9 +592,8 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
         // clamp to 0 would bounce straight back out (st < 12 reveals).
         const foldPast = Math.max(FLOAT_COLLAPSE_PAST, barHeightRef.current + FLOAT_REVEAL_AT_TOP);
         let next = topBarCollapsedRef.current;
-        if (scrollTop > foldPast && scrollTop > lastScrollTopRef.current) next = true;
-        else if (scrollTop < lastScrollTopRef.current - FLOAT_REVEAL_STEP || scrollTop < FLOAT_REVEAL_AT_TOP)
-          next = false;
+        if (scrollTop > foldPast && scrollTop > prevScrollTop) next = true;
+        else if (scrollTop < prevScrollTop - FLOAT_REVEAL_STEP || scrollTop < FLOAT_REVEAL_AT_TOP) next = false;
         if (next !== topBarCollapsedRef.current) {
           topBarCollapsedRef.current = next;
           // Resting height, read while the bar still sits in the flow: the
@@ -593,7 +603,6 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
           setTopBarCollapsed(next);
         }
       }
-      lastScrollTopRef.current = scrollTop;
     };
     body.addEventListener("scroll", onScroll, { capture: true, passive: true });
     return () => body.removeEventListener("scroll", onScroll, { capture: true });
@@ -604,6 +613,8 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
   // direction, before paint, so no frame shows the content jump - and write
   // the scroll memory first, so the shift's own scroll event reads as "no
   // change" instead of a large step that would instantly flip the bar back.
+  // Compute from the pre-flip offset rather than post-layout scroller.scrollTop:
+  // near the bottom, viewport growth clamps scrollTop before this effect runs.
   useLayoutEffect(() => {
     const prev = prevTopBarCollapsedRef.current;
     prevTopBarCollapsedRef.current = topBarCollapsed;
@@ -611,9 +622,10 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
     const scroller = collapseScrollerRef.current;
     const barHeight = barHeightRef.current;
     if (scroller === null || !scroller.isConnected || barHeight <= 0) return;
-    const adjusted = Math.max(0, scroller.scrollTop + (topBarCollapsed ? -barHeight : barHeight));
+    const adjusted = Math.max(0, lastScrollTopRef.current + (topBarCollapsed ? -barHeight : barHeight));
     lastScrollTopRef.current = adjusted;
     scroller.scrollTop = adjusted;
+    lastScrollTopRef.current = scroller.scrollTop;
   }, [topBarCollapsed]);
 
   // Classifies each focus change and slides it (docs/web-ui/motion.md, recipe

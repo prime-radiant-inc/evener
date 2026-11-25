@@ -390,6 +390,7 @@ function JobLogBody({ reader, jobId, paneId }: { reader: JobLogReader; jobId: st
         <div
           className={CLASS.joblog}
           data-testid="joblog-content"
+          data-reading-scroll-host=""
           data-joblog-older-bytes={older?.bytes.length ?? 0}
           data-joblog-live-bytes={live?.bytes.length ?? 0}
           data-joblog-source-bytes={sourceBytes}
