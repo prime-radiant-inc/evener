@@ -5,6 +5,7 @@ import {
   activeSourceLabel,
   credentialLayers,
   filterModels,
+  fingerprintUnavailable,
   fromEnvironment,
   groupByProvider,
   keylessByDesign,
@@ -627,5 +628,19 @@ describe("filterModels", () => {
 
   test("a blank search keeps every model", () => {
     expect(filterModels(models, "   ")).toEqual(models);
+  });
+});
+
+describe("fingerprintUnavailable", () => {
+  test("flags healthy rows with a baseUrl and missing fingerprint, but not isolated broken rows", () => {
+    const healthy = instance({ name: "work", providerId: "openai", baseUrl: "https://gw.example/v1" });
+    expect(fingerprintUnavailable(healthy)).toBe(true);
+    expect(fingerprintUnavailable({ ...healthy, endpointFingerprint: "fp-1" })).toBe(false);
+    expect(
+      fingerprintUnavailable({
+        ...healthy,
+        loadError: 'providers.work: base "removed-id" is not a registry id',
+      }),
+    ).toBe(false);
   });
 });

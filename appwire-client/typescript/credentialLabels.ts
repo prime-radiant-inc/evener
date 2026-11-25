@@ -269,13 +269,13 @@ export const FINGERPRINT_UNAVAILABLE_ERROR = endpointUncheckable("the key wasn't
 // way).
 export const FINGERPRINT_UNAVAILABLE_TEST_MESSAGE = endpointUncheckable("the test didn't run");
 
-// fingerprintUnavailable reports the row a credential test must not run for: it
-// has a destination, and the listing could not key a fingerprint for it. A row
-// with no destination - a provider without a base URL - is not this case, and
-// keeps testing as before: there is nothing for the hub to check, which is the
-// rule instanceDialogs applies to a write.
+// fingerprintUnavailable reports the row a credential test or guarded action
+// must not run for: it has a resolved destination, and the listing could not
+// key a fingerprint for it. A row with no destination (no base URL) or an
+// isolated broken row (loadError set, which never resolves an endpoint and
+// whose empty assertion the hub explicitly accepts) is not this case.
 export function fingerprintUnavailable(row: InstanceEntry | undefined): boolean {
-  return row !== undefined && (row.baseUrl ?? "") !== "" && (row.endpointFingerprint ?? "") === "";
+  return row !== undefined && !row.loadError && (row.baseUrl ?? "") !== "" && (row.endpointFingerprint ?? "") === "";
 }
 
 // A provider such as OpenRouter lists hundreds of models. Each app mounts at
