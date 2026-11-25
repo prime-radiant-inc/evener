@@ -428,13 +428,13 @@ func (r *Registry) codexValidRowIDs(rec *record) []string {
 // Resolve is the single lookup path (spec §7): reference → instance record →
 // row → layered caps → transport, headers, credential → derived caps.
 func (r *Registry) Resolve(ref string) (Resolved, error) {
-	return r.resolveMode(ref, true, false)
+	return r.resolveMode(ref, resolveFull, true, false)
 }
 
 // ResolveFallback resolves a model from the snapshot/cache, curated overlay,
 // and user config without reading or changing the cached live listing.
 func (r *Registry) ResolveFallback(ref string) (Resolved, error) {
-	return r.resolveMode(ref, false, false)
+	return r.resolveMode(ref, resolveFull, false, false)
 }
 
 // ResolveLiveCandidate resolves a model whose existence a fresh live listing
@@ -442,10 +442,17 @@ func (r *Registry) ResolveFallback(ref string) (Resolved, error) {
 // otherwise unknown Codex id, so config globs can hide or disable that candidate
 // before any live snapshot is published.
 func (r *Registry) ResolveLiveCandidate(ref string) (Resolved, error) {
-	return r.resolveMode(ref, false, true)
+	return r.resolveMode(ref, resolveFull, false, true)
 }
 
-func (r *Registry) resolveMode(ref string, includeLive, allowCodexCandidate bool) (Resolved, error) {
+// ResolveListingRow resolves a listing's row without the credential stage:
+// live and candidate select the Resolve, ResolveFallback, or candidate shape,
+// so displaying a roster runs no command (spec §10.1).
+func (r *Registry) ResolveListingRow(ref string, live, candidate bool) (Resolved, error) {
+	return r.resolveMode(ref, resolveFacts, live, candidate)
+}
+
+func (r *Registry) resolveMode(ref string, depth resolveDepth, includeLive, allowCodexCandidate bool) (Resolved, error) {
 	pr := ParseRef(ref)
 	if pr.Model == "" {
 		return Resolved{}, fmt.Errorf("%q: empty model reference", ref)
@@ -463,7 +470,7 @@ func (r *Registry) resolveMode(ref string, includeLive, allowCodexCandidate bool
 	if !ok {
 		return Resolved{}, r.unknownInstance(pr.Instance)
 	}
-	return r.resolveOnMode(rec, pr, warnings, includeLive, allowCodexCandidate)
+	return r.resolveOnMode(rec, pr, warnings, depth, includeLive, allowCodexCandidate)
 }
 
 // ErrUnknownInstance reports a name the registry has no instance for.
@@ -612,7 +619,7 @@ func stripCopilotCost(caps *Caps, row *Model, prov map[string]string, auth strin
 	delete(prov, "Cost")
 }
 
-// recordMintsCommandCredential reports whether a full-depth resolve of
+// recordMintsCommandCredential reports whether a resolve of
 // this record would execute a command expression: api_key under a scheme
 // that sends it, or any credential-header entry — each goes on the wire
 // map whatever the scheme, and the auth header's expansion runs before
@@ -642,8 +649,13 @@ func (r *Registry) recordMintsCommandCredential(rec *record) bool {
 		}
 		return !r.authorizationMode(rec, t, true).present
 	}
-	if apiKeyEvaluates(r.listingTransport(rec)) {
+	// A Copilot roster replays no row or glob: its rows' generation routing,
+	// a gateway included, is the child launch's to run.
+	if apiKeyEvaluates(r.connectionTransport(rec)) {
 		return true
+	}
+	if listsThroughConfiguredTransport(rec) {
+		return false
 	}
 	liveListing, _ := r.LiveListingFor(rec.name)
 	for _, id := range modelIDs(rec, liveListing) {
@@ -895,11 +907,11 @@ func (r *Registry) gateWebSearch(caps *Caps, prov map[string]string, rec *record
 }
 
 func (r *Registry) resolveOn(rec *record, ref Ref, warnings []string) (Resolved, error) {
-	return r.resolveOnMode(rec, ref, warnings, true, false)
+	return r.resolveOnMode(rec, ref, warnings, resolveFull, true, false)
 }
 
-func (r *Registry) resolveOnMode(rec *record, ref Ref, warnings []string, includeLive, allowCodexCandidate bool) (Resolved, error) {
-	res, err := r.resolveLayersModeLive(rec, ref, warnings, resolveFull, includeLive, allowCodexCandidate)
+func (r *Registry) resolveOnMode(rec *record, ref Ref, warnings []string, depth resolveDepth, includeLive, allowCodexCandidate bool) (Resolved, error) {
+	res, err := r.resolveLayersModeLive(rec, ref, warnings, depth, includeLive, allowCodexCandidate)
 	if err != nil {
 		return Resolved{}, err
 	}

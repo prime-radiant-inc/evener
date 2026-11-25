@@ -299,3 +299,113 @@ func TestCopilotRosterStaysOnTheConfiguredTransportBesideGatewayGeneration(t *te
 		t.Fatal("the empty account roster did not prove unavailability; the static catalog was resurrected")
 	}
 }
+
+// gatewayCommandRoster is one account answer carrying a live-only id and the
+// instance's gateway-backed default row, whose merged generation transport
+// sends the instance's command-backed api_key.
+const gatewayCommandRoster = `{"data":[
+ {"id":"gateway-gen","supported_endpoints":["/chat/completions"],"model_picker_enabled":true,"capabilities":{"family":"gpt","supports":{"tool_calls":true}}},
+ {"id":"roster-only","supported_endpoints":["/chat/completions"],"model_picker_enabled":true,"capabilities":{"family":"gpt","supports":{"tool_calls":true}}}
+]}`
+
+// commandRuns reports how many times the credential command appended to
+// marker, zero when it never ran.
+func commandRuns(t *testing.T, marker string) int {
+	t.Helper()
+	data, err := os.ReadFile(marker)
+	if err != nil {
+		return 0
+	}
+	return len(data)
+}
+
+// TestCopilotRosterListingRunsNoGenerationCommand pins the listing half of the
+// gateway boundary: the roster lists, the live-only id it advertises is
+// returned, and no listing pass executes the default row's generation command —
+// neither the live resolve, LiveListingUsable's candidate judgment, nor the
+// fallback a failed fetch takes. Generation through the gateway still runs it.
+func TestCopilotRosterListingRunsNoGenerationCommand(t *testing.T) {
+	t.Parallel()
+	marker := filepath.Join(t.TempDir(), "cred-ran")
+	var mu sync.Mutex
+	fail := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/models") {
+			http.NotFound(w, r)
+			return
+		}
+		mu.Lock()
+		down := fail
+		mu.Unlock()
+		if down {
+			http.Error(w, "roster unavailable", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(gatewayCommandRoster))
+	}))
+	t.Cleanup(srv.Close)
+
+	cfgPath := filepath.Join(t.TempDir(), "providers.toml")
+	cfg := "[providers.work]\nbase = \"github-copilot\"\nbase_url = \"" + srv.URL + "/v1\"\n" +
+		"api_key = '''$(sh -c 'printf x >> " + marker + "; printf gw-secret')'''\n" +
+		"default_model = \"gateway-gen\"\n" +
+		"[providers.work.models.\"gateway-gen\"]\nauth = \"bearer\"\nbase_url = \"https://gateway.example.com/v1\"\n"
+	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r, err := registry.Load(
+		registry.WithConfigPath(cfgPath), registry.WithStateRoot(t.TempDir()),
+		registry.WithOffline(true), registry.WithoutCache(),
+		registry.WithEnv(func(string) (string, bool) { return "", false }),
+	)
+	if err != nil {
+		t.Fatalf("registry: %v", err)
+	}
+	c := NewClient(WithRegistry(r))
+	ctx := WithScopedAuthenticator(context.Background(), registry.AuthOAuthGitHubCopilot, copilotTestAuthenticator{})
+
+	listing, err := c.Models(ctx, "work")
+	if err != nil {
+		t.Fatalf("listing: %v", err)
+	}
+	if !listing.Live || !listing.Usable {
+		t.Fatalf("listing = live %v usable %v, want a usable account listing", listing.Live, listing.Usable)
+	}
+	for _, want := range []string{"roster-only", "gateway-gen"} {
+		if !slices.Contains(modelIDs(listing.Models), want) {
+			t.Fatalf("listing ids = %v, want the roster's %q", modelIDs(listing.Models), want)
+		}
+	}
+	if got := commandRuns(t, marker); got != 0 {
+		t.Fatalf("the live listing executed the generation command %d time(s), want 0", got)
+	}
+
+	mu.Lock()
+	fail = true
+	mu.Unlock()
+	fallback, err := c.Models(ctx, "work")
+	if err == nil {
+		t.Fatal("a failed roster fetch must surface its error beside the fallback")
+	}
+	if fallback.Live || !slices.Contains(modelIDs(fallback.Models), "gateway-gen") {
+		t.Fatalf("fallback listing = live %v ids %v, want the static rows including gateway-gen",
+			fallback.Live, modelIDs(fallback.Models))
+	}
+	if got := commandRuns(t, marker); got != 0 {
+		t.Fatalf("the fallback listing executed the generation command %d time(s), want 0", got)
+	}
+
+	// Control: the launch's own resolve still runs the gateway's command.
+	gen, err := c.Resolve("work/gateway-gen")
+	if err != nil {
+		t.Fatalf("Resolve(work/gateway-gen): %v", err)
+	}
+	if gen.Transport.Auth != registry.AuthBearer || gen.Credential.Value != "gw-secret" {
+		t.Fatalf("generation transport/credential = %q/%q, want the gateway's bearer key",
+			gen.Transport.Auth, gen.Credential.Value)
+	}
+	if got := commandRuns(t, marker); got != 1 {
+		t.Fatalf("generation ran the command %d time(s), want 1", got)
+	}
+}

@@ -597,7 +597,7 @@ func (c *Client) LiveListingUsable(instance string, rows []registry.Model) bool 
 		if !registry.IsChatModelID(listed.ID) || listed.Hidden {
 			continue
 		}
-		static, err := c.Registry().ResolveLiveCandidate(instance + "/" + listed.ID)
+		static, err := c.Registry().ResolveListingRow(instance+"/"+listed.ID, false, true)
 		if err != nil {
 			if errors.Is(err, registry.ErrModelDisabled) {
 				continue
@@ -739,15 +739,20 @@ func (c *Client) listLive(ctx context.Context, instance string) ([]registry.Mode
 // after the caller applied the live rows -- and filters by the §5
 // visibility rule. A lookup failure is an error, not an empty
 // listing: swallowing it would silently drop a fetched live listing
-// under a mismatched key.
+// under a mismatched key. Rows resolve at facts depth, so displaying the roster
+// runs no credential command (spec §10.1).
 func (c *Client) resolveListing(instance string) (ModelListing, error) {
 	ids, err := c.Registry().ModelIDs(instance)
-	return c.resolveListingIDs(instance, true, true, ids, err, c.Registry().Resolve)
+	return c.resolveListingIDs(instance, true, true, ids, err, func(ref string) (registry.Resolved, error) {
+		return c.Registry().ResolveListingRow(ref, true, false)
+	})
 }
 
 func (c *Client) resolveFallbackListing(instance string, live bool) (ModelListing, error) {
 	ids, err := c.Registry().FallbackModelIDs(instance)
-	return c.resolveListingIDs(instance, live, false, ids, err, c.Registry().ResolveFallback)
+	return c.resolveListingIDs(instance, live, false, ids, err, func(ref string) (registry.Resolved, error) {
+		return c.Registry().ResolveListingRow(ref, false, false)
+	})
 }
 
 func (c *Client) resolveListingIDs(instance string, live, usable bool, ids []string, err error, resolveModel func(string) (registry.Resolved, error)) (ModelListing, error) {
