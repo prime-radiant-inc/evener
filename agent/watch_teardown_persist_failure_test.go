@@ -71,7 +71,7 @@ func TestClearWatchPersistFailureLeavesWatchLiveAndRetryable(t *testing.T) {
 
 	appendErr := errors.New("teardown persist failed")
 	restore := failWatchClearedAppends(jm, appendErr)
-	if _, err := jm.clearWatch(key); !errors.Is(err, appendErr) {
+	if _, err := jm.clearWatchByID(cfg.watchID); !errors.Is(err, appendErr) {
 		t.Fatalf("clear error = %v, want the persist failure", err)
 	}
 	if live, rejecting := watchLiveAndAcceptingDelivery(jm, key, cfg); !live || rejecting {
@@ -79,7 +79,7 @@ func TestClearWatchPersistFailureLeavesWatchLiveAndRetryable(t *testing.T) {
 	}
 
 	restore()
-	if _, err := jm.clearWatch(key); err != nil {
+	if _, err := jm.clearWatchByID(cfg.watchID); err != nil {
 		t.Fatalf("retry clear: %v", err)
 	}
 	if live, _ := watchLiveAndAcceptingDelivery(jm, key, cfg); live {

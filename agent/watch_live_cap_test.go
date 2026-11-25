@@ -112,12 +112,11 @@ func TestConfigureWatch_LiveWatchCapAdmitsClearAndFreesTheSlot(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)
 	seedLiveWatches(t, jm, maxLiveWatches-1)
-	if _, err := jm.configureWatch(callerEventWatch()); err != nil {
+	installed, err := jm.configureWatch(callerEventWatch())
+	if err != nil {
 		t.Fatalf("create to the cap: %v", err)
 	}
-	clearArgs := callerEventWatch()
-	clearArgs.Clear = true
-	if _, err := jm.configureWatch(clearArgs); err != nil {
+	if _, err := jm.clearWatchByID(installed.WatchID); err != nil {
 		t.Fatalf("clear at the cap: %v", err)
 	}
 	if live := liveWatchCount(jm); live != maxLiveWatches-1 {

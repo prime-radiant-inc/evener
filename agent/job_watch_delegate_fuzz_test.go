@@ -219,11 +219,12 @@ func watchdel_sessionFlow(t *testing.T, data []byte) {
 		closeSession()
 		t.Fatalf("watchdel install watch: %v", err)
 	}
-	if _, err := jm.configureWatch(watchArgs{
+	replacedWatch, err := jm.configureWatch(watchArgs{
 		Target:      rec.JobID,
 		OutputMatch: "(?i)ready",
 		Send:        &watchSendArgs{To: runtimeMessageAliasCaller, Message: "observe"},
-	}); err != nil {
+	})
+	if err != nil {
 		closeSession()
 		t.Fatalf("watchdel replace watch: %v", err)
 	}
@@ -282,11 +283,7 @@ func watchdel_sessionFlow(t *testing.T, data []byte) {
 	watchdel_checkSessionState(t, jm, monotonic)
 	watchdel_checkAcceptedWatchDeliveries(t, jm, wantWatchDeliveries)
 
-	if _, err := jm.configureWatch(watchArgs{
-		Target: rec.JobID,
-		Send:   &watchSendArgs{To: runtimeMessageAliasCaller},
-		Clear:  true,
-	}); err != nil {
+	if _, err := jm.clearWatchByID(replacedWatch.WatchID); err != nil {
 		closeSession()
 		t.Fatalf("watchdel clear watch: %v", err)
 	}
@@ -493,7 +490,6 @@ func watchdel_drawWatchArgs(r *watchdel_reader, watchedJobID, observerJobID stri
 		OutputMatch:        r.pick(watchdel_outputMatches),
 		ProgressIntervalMS: watchdel_progress[r.intn(len(watchdel_progress))],
 		Every:              r.intn(3),
-		Clear:              r.boolean(),
 	}
 	nEvents := r.intn(3)
 	for i := 0; i < nEvents; i++ {

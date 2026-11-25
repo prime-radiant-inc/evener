@@ -300,27 +300,32 @@ func wrcExerciseClearAndDurability(t *testing.T, r *wrcReader) {
 	wrcInstall(jm, keyA, cfgA)
 	wrcInstall(jm, keyB, cfgB)
 	wrcInstall(jm, keyOther, cfgOther)
-	if !jm.hasWatchClearState(keyA) {
+	if exists, err := jm.hasWatchID(cfgA.watchID); err != nil || !exists {
 		t.Fatal("installed watch is not clearable")
 	}
 
-	res, err := jm.clearWatch(keyA)
+	res, err := jm.clearWatchByID(cfgA.watchID)
 	if err != nil {
 		t.Fatalf("clear exact watch: %v", err)
 	}
-	if res.Watching || res.Source != "self" || res.Target != target {
+	if res.Watching || res.WatchID != cfgA.watchID || res.Source != "self" || res.Target != target {
 		t.Fatalf("exact clear result = %+v", res)
 	}
-	if jm.hasWatchClearState(keyA) || !jm.hasWatchClearState(keyB) {
-		t.Fatalf("exact clear affected the wrong watch: A=%t B=%t", jm.hasWatchClearState(keyA), jm.hasWatchClearState(keyB))
+	if existsA, errA := jm.hasWatchID(cfgA.watchID); errA != nil || existsA {
+		t.Fatalf("cleared watch A still active: %t, %v", existsA, errA)
+	}
+	if existsB, errB := jm.hasWatchID(cfgB.watchID); errB != nil || !existsB {
+		t.Fatalf("clearing watch A removed sibling watch B: %t, %v", existsB, errB)
 	}
 
-	res, err = jm.clearWatch(watchKey{VisibleSessionID: jm.sessionID, Target: target})
+	res, err = jm.clearWatchByID(cfgB.watchID)
 	if err != nil {
-		t.Fatalf("clear all matching watches: %v", err)
+		t.Fatalf("clear sibling watch: %v", err)
 	}
-	if res.Watching || res.Source != "self" || jm.hasWatchClearState(keyB) || !jm.hasWatchClearState(keyOther) {
-		t.Fatalf("broad clear result/state = %+v, other=%t", res, jm.hasWatchClearState(keyOther))
+	existsB, errB := jm.hasWatchID(cfgB.watchID)
+	existsOther, errOther := jm.hasWatchID(cfgOther.watchID)
+	if res.Watching || res.WatchID != cfgB.watchID || res.Source != "self" || errB != nil || existsB || errOther != nil || !existsOther {
+		t.Fatalf("clear sibling result/state = %+v, B=%t/%v, other=%t/%v", res, existsB, errB, existsOther, errOther)
 	}
 
 	// A failed teardown must leave the watch callable and accepting delivery so a
@@ -346,18 +351,24 @@ func wrcExerciseClearAndDurability(t *testing.T, r *wrcReader) {
 		t.Fatalf("live hasWatchID = %t, %v", exists, err)
 	}
 
-	// clearWatch has the same retry promise when callers use a key rather than
-	// a public watch id.
-	failingByKey := wrcConfig("watch-failing-key", "self", "job_failing_key", "dlg_fk", "", "")
-	failingByKeyKey := watchKey{VisibleSessionID: jm.sessionID, Target: "job_failing_key", SendTo: "dlg_fk"}
-	wrcInstall(jm, failingByKeyKey, failingByKey)
+	// clearWatchByID has the same retry promise and clears cleanly once the
+	// store recovers.
+	failingRetry := wrcConfig("watch-failing-retry", "self", "job_failing_retry", "dlg_fr", "", "")
+	failingRetryKey := watchKey{VisibleSessionID: jm.sessionID, Target: "job_failing_retry", SendTo: "dlg_fr"}
+	wrcInstall(jm, failingRetryKey, failingRetry)
 	jm.appendEvents = func([]jobstore.Event) error { return failErr }
-	if _, err := jm.clearWatch(failingByKeyKey); !errors.Is(err, failErr) {
-		t.Fatalf("failed key teardown error = %v, want %v", err, failErr)
+	if _, err := jm.clearWatchByID(failingRetry.watchID); !errors.Is(err, failErr) {
+		t.Fatalf("failed id teardown error = %v, want %v", err, failErr)
 	}
 	jm.appendEvents = originalAppendEvents
-	if !jm.hasWatchClearState(failingByKeyKey) || failingByKey.rejectingDelivery {
-		t.Fatalf("failed key teardown lost retryable state: clearable=%t rejecting=%t", jm.hasWatchClearState(failingByKeyKey), failingByKey.rejectingDelivery)
+	if exists, err := jm.hasWatchID(failingRetry.watchID); err != nil || !exists || failingRetry.rejectingDelivery {
+		t.Fatalf("failed id teardown lost retryable state: exists=%t err=%v rejecting=%t", exists, err, failingRetry.rejectingDelivery)
+	}
+	if _, err := jm.clearWatchByID(failingRetry.watchID); err != nil {
+		t.Fatalf("retry clearWatchByID: %v", err)
+	}
+	if exists, err := jm.hasWatchID(failingRetry.watchID); err != nil || exists {
+		t.Fatalf("retried clearWatchByID left watch active: exists=%t err=%v", exists, err)
 	}
 
 	// The durable fall-back handles a runtime-lost watch without making the
@@ -428,9 +439,6 @@ func wrcExerciseClearAndDurability(t *testing.T, r *wrcReader) {
 	if res, err := jm.clearReceiverWatchByID("not-a-watch", "receiver", "dlg_receiver"); err != nil || res.Watching {
 		t.Fatalf("missing receiver clear = %+v, %v", res, err)
 	}
-	if got := sourcePublicForClearedWatch(watchKey{VisibleSessionID: jm.sessionID, Target: "missing"}, nil); got != "" {
-		t.Fatalf("missing cleared source = %q", got)
-	}
 
 	// Store-closed reads are an explicit error contract rather than an implicit
 	// empty watch registry. This manager owns only a test temp directory.
@@ -494,18 +502,6 @@ func wrcExerciseClearHelpers(t *testing.T, r *wrcReader) {
 	}
 	jm.terminalFlush[detached] = true
 	jm.mu.Unlock()
-	if !jm.hasWatchClearState(watchKey{VisibleSessionID: jm.sessionID, Target: key.Target, SendTo: key.SendTo, ReceiverSessionID: "receiver", ReceiverDelegateID: "dlg_receiver"}) {
-		t.Fatal("matching detached pending watch is not clearable")
-	}
-	if watchConfigHasPendingMatchingKey(detached, watchKey{VisibleSessionID: jm.sessionID, Target: key.Target, SendTo: "other", ReceiverSessionID: "receiver", ReceiverDelegateID: "dlg_receiver"}) {
-		t.Fatal("detached pending matched an unrelated send target")
-	}
-	if watchConfigHasPendingMatchingKey(nil, key) || watchConfigHasPendingMatchingKey(detached, watchKey{VisibleSessionID: jm.sessionID, Target: key.Target, SendTo: key.SendTo, ReceiverSessionID: "other", ReceiverDelegateID: "dlg_receiver"}) {
-		t.Fatal("detached pending ignored its nil or receiver boundary")
-	}
-	if !watchConfigHasPendingMatchingKey(detached, watchKey{VisibleSessionID: jm.sessionID, Target: key.Target, SendTo: key.SendTo, ReceiverSessionID: "receiver", ReceiverDelegateID: "dlg_receiver"}) {
-		t.Fatal("detached pending did not match its exact key")
-	}
 
 	if _, err := jm.clearReceiverWatchByID(detached.watchID, "", "dlg_receiver"); err == nil {
 		t.Fatal("empty receiver clear succeeded")
@@ -595,16 +591,6 @@ func wrcExerciseClearHelpers(t *testing.T, r *wrcReader) {
 	}
 	if events := watchSendTerminalEvents([]watchSendTerminalSnapshot{terminal}); len(events) != 1 || events[0].Kind != jobstore.EventWatchCleared {
 		t.Fatalf("terminal event flattening = %+v", events)
-	}
-
-	if !watchKeyMatchesClearRequest(key, key) || watchKeyMatchesClearRequest(key, watchKey{VisibleSessionID: "other", Target: key.Target}) || watchKeyMatchesClearRequest(key, watchKey{VisibleSessionID: key.VisibleSessionID, Target: "other"}) {
-		t.Fatal("watch clear-key matching lost its identity constraints")
-	}
-	if !watchKeyMatchesClearRequest(key, watchKey{VisibleSessionID: key.VisibleSessionID, Target: key.Target}) || watchKeyMatchesClearRequest(key, watchKey{VisibleSessionID: key.VisibleSessionID, Target: key.Target, SendTo: "other"}) {
-		t.Fatal("watch clear-key matching lost its wildcard send semantics")
-	}
-	if watchKeyMatchesClearRequest(key, watchKey{VisibleSessionID: key.VisibleSessionID, Target: key.Target, ReceiverSessionID: "other"}) || watchKeyMatchesClearRequest(key, watchKey{VisibleSessionID: key.VisibleSessionID, Target: key.Target, ReceiverDelegateID: "other"}) {
-		t.Fatal("watch clear-key matching ignored receiver identity")
 	}
 }
 
