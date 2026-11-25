@@ -1,17 +1,3 @@
-/* Quiet trigger: no border/background until hover, so the model label itself
- * reads as the interactive element rather than a separate button beside it. */
-.triggerWrapper {
-  composes: trigger from "../../../widgets/popover/popover.module.css";
-}
-
-/* fill: the wrapper spans the slot the caller gave it instead of hugging the
- * label. Desktop's Popover supplies the same shape through its own
- * stretchTrigger; this is the mobile span wrapper's equivalent. */
-.triggerWrapperFill {
-  display: flex;
-  width: 100%;
-}
-
 .trigger {
   composes: quietTrigger from "../../../widgets/internal/quietTrigger.module.css";
 }
