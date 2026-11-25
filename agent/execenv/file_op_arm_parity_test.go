@@ -62,7 +62,7 @@ var armOps = []armOp{
 		return err
 	}},
 	{"edit", func(env *LocalExecutionEnvironment, p string) error {
-		_, err := env.EditFileWithCtx(context.Background(), p, "old", "new", false, nil)
+		_, err := env.EditFileCtx(context.Background(), p, "old", "new", false)
 		return err
 	}},
 	{"rawRead", func(env *LocalExecutionEnvironment, p string) error {

@@ -293,24 +293,18 @@ var MaxEditFileOutputBytes int64 = MaxWholeFileReadBytes
 // replaceAll is true, oldString must match exactly once. It returns a summary
 // of the number of replacements made.
 func (e *LocalExecutionEnvironment) EditFile(path string, oldString string, newString string, replaceAll bool) (string, error) {
-	return e.EditFileWithCtx(context.Background(), path, oldString, newString, replaceAll, nil)
+	return e.EditFileCtx(context.Background(), path, oldString, newString, replaceAll)
 }
 
 // EditFileCtx is EditFile with the caller's context threaded to its read, so a
 // cancelled edit ends a read parked on a stream. It is the interface-visible
 // entry of ContextualFileReader.
 func (e *LocalExecutionEnvironment) EditFileCtx(ctx context.Context, path string, oldString string, newString string, replaceAll bool) (string, error) {
-	return e.EditFileWithCtx(ctx, path, oldString, newString, replaceAll, nil)
-}
-
-// EditFileWithCtx is EditFileCtx, except that finish, when not nil, turns the
-// edited bytes into the bytes written, inside the same read and write.
-func (e *LocalExecutionEnvironment) EditFileWithCtx(ctx context.Context, path string, oldString string, newString string, replaceAll bool, finish func(edited []byte) []byte) (string, error) {
 	return e.EditFileBatchWithCtx(ctx, path, []FileEdit{{
 		OldString:  oldString,
 		NewString:  newString,
 		ReplaceAll: replaceAll,
-	}}, finish)
+	}}, nil)
 }
 
 // EditFileBatchCtx applies multiple non-overlapping replacements to path
