@@ -11,3 +11,24 @@
    * shell gap's. */
   margin: var(--space-2);
 }
+
+/* Desktop slide frame: inherits the rail's own width so RailResizeHandle's
+ * live --rail-width updates stay authoritative. */
+.railFrame {
+  flex: none;
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+}
+
+/* Lift the leaving rail out of flex flow so Show sidebar and the workspace
+ * settle immediately, and pass pointer hits through for mid-exit reversal. */
+.railFrameExiting {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  z-index: var(--z-raised);
+  pointer-events: none;
+}

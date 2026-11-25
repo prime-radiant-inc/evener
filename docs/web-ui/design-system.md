@@ -1122,8 +1122,18 @@ reduced motion, and each is defined once:
 Every other idle pulse, shimmer on live data and animation that invents progress is banned.
 Data arriving (a job finishing, a watch firing, a new row) never animates geometry: the
 attention hues carry that news. User-initiated geometry (the composer fold, an expandable
-sheet, a zoom column) runs through the one `src/motion` wrapper, which reads the tokens;
-components import the wrapper, never the library.
+sheet, a zoom column) and docked shell edge panes run through the one `src/motion`
+wrapper, which reads the tokens; components import the wrapper, never the library.
+
+Docked shell edge panes (the desktop left Sessions rail, the desktop right Overview
+sidebar, and the tablet persistent Sessions board column) and edge-attached overlays
+follow Slide symmetrically (`-100%` on the left edge, `+100%` on the right edge) on
+`--motion-duration-spatial` / `--motion-easing-standard` in and
+`--motion-duration-spatial-exit` / `--motion-easing-exit` out, clipped by the shell
+container (`overflow-x: clip`), interruptible at any point, `inert` while exiting, and
+instant under `prefers-reduced-motion: reduce`. Initial mount and restoration, breakpoint
+crossings, data or reconnect updates, and non-edge content swaps (tab switches, dock pane
+changes, settings sections) change immediately without sliding.
 
 ---
 
