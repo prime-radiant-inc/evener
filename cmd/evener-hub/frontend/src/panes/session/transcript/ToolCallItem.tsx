@@ -28,6 +28,7 @@ import {
   holdsNeedle,
   toolCallTexts,
 } from "../find/toolCallHits";
+import { clipCodePoints } from "./clipCodePoints";
 import { FileOpenBesideButton, fileDocParams } from "./fileOpenBeside";
 import { ImageGallery } from "./flow/ImageGallery";
 import { OpenTranscriptButton } from "./openTranscript";
@@ -53,11 +54,6 @@ const CLASS = {
 
 const DELEGATE_INTENT_PREVIEW_MAX = 120;
 
-function clipDelegateIntent(text: string, max: number): string {
-  const codePoints = Array.from(text);
-  return codePoints.length <= max ? text : `${codePoints.slice(0, max).join("")}…`;
-}
-
 function delegateIntentOf(item: ItemModel): string | undefined {
   const statedIntent = statedIntentOf(item);
   if (statedIntent !== undefined) return statedIntent;
@@ -65,7 +61,7 @@ function delegateIntentOf(item: ItemModel): string | undefined {
   const args = parseArgs(item.argumentsJSON);
   // Transcripts recorded before the rename carry the brief under `task`.
   const brief = (str(args, "prompt") ?? str(args, "task"))?.replace(/\s+/g, " ").trim();
-  return brief === undefined || brief === "" ? undefined : clipDelegateIntent(brief, DELEGATE_INTENT_PREVIEW_MAX);
+  return brief === undefined || brief === "" ? undefined : clipCodePoints(brief, DELEGATE_INTENT_PREVIEW_MAX);
 }
 
 /** The words a row's intent line shows: the delegate's own brief (which the

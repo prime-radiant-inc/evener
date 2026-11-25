@@ -3,6 +3,7 @@
 
 import type { Token, Tokens } from "marked";
 import { markdownLexer } from "../../../../widgets/markdown/lexer";
+import { clipCodePoints } from "../clipCodePoints";
 
 // Lexer-only use of the app's shared Markdown tokenizer (see
 // widgets/markdown/lexer.ts) so nested links, block prefixes, and emphasis
@@ -192,9 +193,7 @@ export function lastMeaningfulThoughtLine(paragraphs: string[], maxLength: numbe
     for (let lineIndex = lines.length - 1; lineIndex >= 0; lineIndex--) {
       const line = plainThoughtLine(lines[lineIndex] ?? "");
       if (line.length === 0) continue;
-      const codePoints = Array.from(line);
-      if (codePoints.length <= maxLength) return line;
-      return `${codePoints.slice(0, maxLength).join("").trimEnd()}…`;
+      return clipCodePoints(line, maxLength, { trimEnd: true });
     }
   }
   return "";
