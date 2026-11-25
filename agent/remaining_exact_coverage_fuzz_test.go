@@ -5,7 +5,6 @@ package agent
 import (
 	"errors"
 	"strings"
-	"sync"
 	"testing"
 
 	"primeradiant.com/evener/agent/execenv"
@@ -38,40 +37,7 @@ func remainingManagerCoverage(t *testing.T) {
 		t.Fatalf("existing reconstruction = (%p, %p, %v, %v)", got, pending, leader, err)
 	}
 
-	closing := newSubagentManager(0)
-	tracked := &subagent{id: "tracked"}
-	closing.track(tracked)
-	closing.closing = true
-	if finish, err := closing.beginReconstructionSideEffects(tracked.id, tracked); finish != nil || !errors.Is(err, errSubagentManagerClosing) || closing.get(tracked.id) != nil {
-		t.Fatalf("closing side effects = (%v, %v, %p)", finish != nil, err, closing.get(tracked.id))
-	}
-	other := &subagent{id: "other"}
-	closing.track(other)
-	if _, err := closing.beginReconstructionSideEffects(other.id, tracked); !errors.Is(err, errSubagentManagerClosing) || closing.get(other.id) != other {
-		t.Fatalf("closing side effects removed nonmatching runtime: %v", err)
-	}
-
 	waiting := newSubagentManager(0)
-	finish, err := waiting.beginReconstructionSideEffects("child", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	entered := make(chan struct{})
-	done := make(chan struct{})
-	oldWait := restoreSideEffectsWait
-	restoreSideEffectsWait = func(cond *sync.Cond) {
-		close(entered)
-		cond.Wait()
-	}
-	t.Cleanup(func() { restoreSideEffectsWait = oldWait })
-	go func() {
-		waiting.waitForReconstructionSideEffects()
-		close(done)
-	}()
-	<-entered
-	finish()
-	<-done
-
 	completed := &subagentReconstruction{done: make(chan struct{})}
 	close(completed.done)
 	waiting.reconstructing["completed"] = completed

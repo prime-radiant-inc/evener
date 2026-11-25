@@ -26,26 +26,6 @@ func (jm *jobManager) recordWatchSendPending(state jobstore.WatchSendState, d wa
 	return record
 }
 
-func (m *subagentManager) beginReconstructionSideEffects(childID string, sub *subagent) (func(), error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.closing {
-		if m.subs[childID] == sub {
-			delete(m.subs, childID)
-		}
-		return nil, errSubagentManagerClosing
-	}
-	m.activeRestoreSideEffects++
-	return func() {
-		m.mu.Lock()
-		m.activeRestoreSideEffects--
-		if m.activeRestoreSideEffects == 0 {
-			m.restoreSideEffectsCond.Broadcast()
-		}
-		m.mu.Unlock()
-	}, nil
-}
-
 func (jm *jobManager) noteJobActivity(jobID, phase string) {
 	if jm == nil || strings.TrimSpace(jobID) == "" {
 		return

@@ -1097,9 +1097,8 @@ func (s *Session) rescheduleIdleRuntimeReleaseRetry() {
 // opportunistic release must not abandon a subagent mid-execution — and
 // none of the session-local residue retirement refuses on: a
 // delegate-delivery parcel the pump has not consumed, a manager already
-// closing, or restore side effects still settling on this manager's
-// children. A turn in flight on the runtime (a parent's notification drive)
-// is refused earlier, by claimableRuntimeSubtreeLocked, for both releases.
+// closing. A turn in flight on the runtime (a parent's notification drive) is
+// refused earlier, by claimableRuntimeSubtreeLocked, for both releases.
 func (s *Session) idleReleasePregatesClear() bool {
 	if s.peekNotifications() != 0 {
 		return false
@@ -1115,9 +1114,9 @@ func (s *Session) idleReleasePregatesClear() bool {
 	}
 	if s.subagents != nil {
 		s.subagents.mu.Lock()
-		residue := s.subagents.closeOrRestoreResiduePending()
+		closing := s.subagents.closing
 		s.subagents.mu.Unlock()
-		if residue {
+		if closing {
 			return false
 		}
 	}
