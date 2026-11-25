@@ -1150,7 +1150,7 @@ func (c *hubInstancesController) create(params appwire.InstanceCreateParams, out
 	if err := c.writeLoadable(l); err != nil {
 		return err
 	}
-	if err := c.reg.Reload(); err != nil {
+	if err := c.reloadAndCheckProvider(name); err != nil {
 		// writeLoadable's dry parse only checks the layer against the registry
 		// schema; Reload resolves it, so a config that parses can still fail to
 		// load - a protocol or transport the base does not offer, for instance.
@@ -1327,7 +1327,11 @@ func (c *hubInstancesController) edit(params appwire.InstanceEditParams, out *ap
 	}
 	// writeAndReload restores before when the reload fails (see #711
 	// on its comment); a rename continues below on success.
-	if err := c.writeAndReload(before, l, name, "edit"); err != nil {
+	targetName := name
+	if renaming {
+		targetName = req.newName
+	}
+	if err := c.writeAndReload(before, l, targetName, "edit"); err != nil {
 		// A write that landed although its rollback could not run is standing:
 		// retire the probes of the access it replaced. A clean rollback leaves
 		// the old access in place, and its probes remain current. The reload
@@ -3072,22 +3076,26 @@ func (c *hubInstancesController) RefreshModels(ctx context.Context, params appwi
 	return fetchInstanceLive(ctx, c.reg, c.auth, name)
 }
 
-// writeAndReload persists a mutated layer and reloads the registry: the
-// tail Edit and SetModelDisabled share. writeLoadable's dry parse only
-// checks TOML syntax against the registry schema; it does not resolve the
-// config the way Reload does. A standalone instance (no base, and its own
-// name is not a registry id either) that just lost its only base_url is a
-// config that parses fine but cannot resolve an endpoint (llm/registry:
-// "no base URL: set base_url = … or base = <registry id>"), and one bad
-// instance record fails the whole reload, not just this one (#711).
-// Restore the file this call just overwrote instead of leaving every
-// instance operation refused by a config only this write produced. verb
-// names the write in the refusal ("edit", "toggle").
+// reloadAndCheckProvider reloads the registry and rejects the mutation if the
+// targeted provider entry was isolated as broken.
+func (c *hubInstancesController) reloadAndCheckProvider(name string) error {
+	if err := c.reg.Reload(); err != nil {
+		return err
+	}
+	return c.reg.Get().ProviderError(name)
+}
+
+// writeAndReload persists a mutated layer and reloads the registry, rolling
+// back to before if the reload fails or leaves name broken. writeLoadable's
+// dry parse only checks TOML syntax against the registry schema; it does not
+// resolve endpoints or validate provider rules the way Reload does. Restore
+// the previous file instead of committing a broken provider stanza. verb names
+// the write in the refusal ("edit", "toggle").
 func (c *hubInstancesController) writeAndReload(before, l *registry.Layer, name, verb string, validate ...func(*registry.Registry) error) error {
 	if err := c.writeLoadable(l); err != nil {
 		return err
 	}
-	err := c.reg.Reload()
+	err := c.reloadAndCheckProvider(name)
 	if err == nil && len(validate) > 0 && validate[0] != nil {
 		err = validate[0](c.reg.Get())
 	}
