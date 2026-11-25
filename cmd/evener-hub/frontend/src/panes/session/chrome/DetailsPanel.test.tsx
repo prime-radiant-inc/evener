@@ -1,14 +1,19 @@
 import type { ThreadModel, TurnModel } from "@evener/appwire-client";
 import { effectiveContextStatus, tokenUnitLabel } from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { manifest as navigationManifest } from "@evener/appwire-client/testing/navigation";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, test, vi } from "vitest";
 import { connectionStore, resetConnectionStoreForTests } from "../../../stores/connection";
 import { navigationStore, resetNavigationStoreForTests } from "../../../stores/navigation/store";
+import { resetThreadsStoreForTests } from "../../../stores/threads";
 import { ALL_CAPABILITIES as CAPABILITIES } from "../../../threadTestUtils";
+import { Toast } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import rawMeterStyles from "../../../widgets/meter/meter.module.css";
+import { resetToastStoreForTests } from "../../../widgets/toast/store";
+import { toastKinds } from "../../../widgets/toast/toastTestUtils";
 import { DetailsPanel, DetailsPanelBody } from "./DetailsPanel";
 
 function testModel(overrides: Partial<ThreadModel> = {}): ThreadModel {
@@ -72,6 +77,8 @@ function rowTerm(value: HTMLElement): string | null | undefined {
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+  resetToastStoreForTests();
+  resetThreadsStoreForTests();
   resetNavigationStoreForTests();
   resetConnectionStoreForTests();
 });
@@ -544,10 +551,23 @@ test("an active goal does not duplicate the session's active status indicator", 
   expect(screen.getByTestId("session-details-state").querySelector('[data-state="working"]')).toBeTruthy();
 });
 
-test("goal is inline-editable with explicit Save, Clear, Cancel, and empty-state prompt when supported", async () => {
+test("goal is inline-editable through goal/set with explicit Save, Clear, Cancel, and error preservation", async () => {
   const user = userEvent.setup();
-  const onSetGoal = vi.fn().mockResolvedValue({ started: false });
-  const view = render(<DetailsPanelBody model={testModel({ goal: null })} now={0} onSetGoal={onSetGoal} />);
+  const fake = new FakeClient();
+  let failNext = false;
+  fake.on("goal/set", () => {
+    if (failNext) throw new Error("daemon offline");
+    return { started: false };
+  });
+  connectionStore.getState().connect(fake);
+
+  const model = testModel({ goal: null });
+  const view = render(
+    <>
+      <DetailsPanelBody model={model} now={0} />
+      <Toast />
+    </>,
+  );
 
   const field = screen.getByRole("textbox", { name: /goal/i }) as HTMLTextAreaElement;
   expect(field.value).toBe("");
@@ -558,17 +578,20 @@ test("goal is inline-editable with explicit Save, Clear, Cancel, and empty-state
   await user.type(field, "Ship 6-tab Overview");
   expect(setButton.hasAttribute("disabled")).toBe(false);
   await user.click(setButton);
-  expect(onSetGoal).toHaveBeenCalledWith("Ship 6-tab Overview");
+  expect(fake.calls.filter((call) => call.method === "goal/set").map((call) => call.params)).toEqual([
+    { ref: model.ref, objective: "Ship 6-tab Overview" },
+  ]);
 
-  // Unchanged active goal keeps Save disabled, Escape cancels without calling onSetGoal,
+  // Unchanged active goal keeps Save disabled, Escape cancels without calling goal/set,
   // and Clear sends an empty objective.
-  onSetGoal.mockClear();
   view.rerender(
-    <DetailsPanelBody
-      model={testModel({ goal: { objective: "Ship 6-tab Overview", status: "active", iterations: 1 } })}
-      now={0}
-      onSetGoal={onSetGoal}
-    />,
+    <>
+      <DetailsPanelBody
+        model={testModel({ goal: { objective: "Ship 6-tab Overview", status: "active", iterations: 1 } })}
+        now={0}
+      />
+      <Toast />
+    </>,
   );
   const editField = screen.getByRole("textbox", { name: /goal/i }) as HTMLTextAreaElement;
   expect(editField.value).toBe("Ship 6-tab Overview");
@@ -576,12 +599,25 @@ test("goal is inline-editable with explicit Save, Clear, Cancel, and empty-state
   expect(screen.getByRole("button", { name: "Save" }).hasAttribute("disabled")).toBe(true);
   await user.type(editField, " extra");
   await user.keyboard("{Escape}");
-  expect(onSetGoal).not.toHaveBeenCalled();
+  expect(fake.calls.filter((call) => call.method === "goal/set")).toHaveLength(1);
   expect(editField.value).toBe("Ship 6-tab Overview");
 
   await user.click(editField);
   await user.click(screen.getByRole("button", { name: "Clear" }));
-  expect(onSetGoal).toHaveBeenCalledWith("");
+  expect(fake.calls.filter((call) => call.method === "goal/set").map((call) => call.params)).toEqual([
+    { ref: model.ref, objective: "Ship 6-tab Overview" },
+    { ref: model.ref, objective: "" },
+  ]);
+
+  // A failing goal/set surfaces an error toast and keeps the editor open with the user's draft intact.
+  failNext = true;
+  await user.click(editField);
+  await user.clear(editField);
+  await user.type(editField, "Keep my unsaved draft");
+  await user.click(screen.getByRole("button", { name: "Save" }));
+  await waitFor(() => expect(toastKinds()).toEqual(["error"]));
+  expect(screen.getByRole("button", { name: "Save" })).toBeTruthy();
+  expect((screen.getByRole("textbox", { name: /goal/i }) as HTMLTextAreaElement).value).toBe("Keep my unsaved draft");
 });
 
 test("working directory and session id each carry a click-to-copy control", () => {

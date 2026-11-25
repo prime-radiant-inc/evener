@@ -187,16 +187,16 @@
   font-variant-numeric: tabular-nums;
 }
 
-.truncateValue {
-  composes: truncate from "../../../styles/text.module.css";
+.wrapValue {
   display: block;
   min-inline-size: 0;
   flex: 1 1 auto;
+  overflow-wrap: anywhere;
 }
 
 .copyableValue {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: var(--space-1);
   min-inline-size: 0;
   width: 100%;

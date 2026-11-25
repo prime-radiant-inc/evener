@@ -87,8 +87,6 @@ export interface DetailsPanelBodyProps {
    * gitBranch wins when present; empty means "looked, nothing to show" and
    * renders no row. */
   resolvedBranch?: string;
-  /** Overrides goal persistence (defaults to threadsStore.setGoal). */
-  onSetGoal?: (objective: string) => Promise<unknown>;
 }
 
 /** Opens the standalone Details Sheet while keeping its open state local. */
@@ -119,7 +117,7 @@ const CLASS = {
   metricLabelCapitalize: requireClass(styles.metricLabelCapitalize, "detailspanel.module.css", "metricLabelCapitalize"),
   metricValue: requireClass(styles.metricValue, "detailspanel.module.css", "metricValue"),
   value: requireClass(styles.value, "detailspanel.module.css", "value"),
-  truncateValue: requireClass(styles.truncateValue, "detailspanel.module.css", "truncateValue"),
+  wrapValue: requireClass(styles.wrapValue, "detailspanel.module.css", "wrapValue"),
   copyableValue: requireClass(styles.copyableValue, "detailspanel.module.css", "copyableValue"),
   dim: requireClass(styles.dim, "detailspanel.module.css", "dim"),
   effortInline: requireClass(styles.effortInline, "detailspanel.module.css", "effortInline"),
@@ -150,13 +148,13 @@ function detailRow(
     wrap,
     value: copyAction ? (
       <span className={CLASS.copyableValue}>
-        <span className={CLASS.truncateValue} data-testid={testId} title={title}>
+        <span className={CLASS.wrapValue} data-testid={testId} title={title}>
           {value}
         </span>
         {copyAction}
       </span>
     ) : (
-      <span className={wrap ? CLASS.value : CLASS.truncateValue} data-testid={testId} title={title}>
+      <span className={CLASS.value} data-testid={testId} title={title}>
         {value}
       </span>
     ),
@@ -168,13 +166,11 @@ function GoalSection({
   objective,
   goalStatus,
   canEdit,
-  onSetGoal,
 }: {
   sessionRef: string;
   objective: string;
   goalStatus: string;
   canEdit: boolean;
-  onSetGoal?: (objective: string) => Promise<unknown>;
 }) {
   const toasts = useToasts();
   const reducedMotion = useReducedMotion();
@@ -268,8 +264,7 @@ function GoalSection({
     if (saving) return;
     setSaving(true);
     try {
-      const save = onSetGoal ?? ((next: string) => threadsStore.getState().setGoal(sessionRef, next));
-      await save(nextObjective);
+      await threadsStore.getState().setGoal(sessionRef, nextObjective);
       setEditingWithMotion(false);
       textareaRef.current?.blur();
     } catch (err) {
@@ -374,7 +369,7 @@ function GoalSection({
 
 /** Shared details body used by the Overview About tab, mobile Sheet, and
  * standalone Details pane. */
-export function DetailsPanelBody({ model, now, resolvedBranch = "", onSetGoal }: DetailsPanelBodyProps) {
+export function DetailsPanelBody({ model, now, resolvedBranch = "" }: DetailsPanelBodyProps) {
   const [launchOpen, setLaunchOpen] = useState(false);
   // biome-ignore lint/correctness/useExhaustiveDependencies: model.ref resets the launch disclosure when switching sessions
   useEffect(() => {
@@ -473,7 +468,7 @@ export function DetailsPanelBody({ model, now, resolvedBranch = "", onSetGoal }:
     model.cwd
       ? detailRow("Directory", "session-details-cwd", model.cwd, {
           mono: true,
-          wrap: false,
+          wrap: true,
           title: model.cwd,
           copyAction: <CopyButton text={model.cwd} label="Copy working directory" size="xs" />,
         })
@@ -520,7 +515,7 @@ export function DetailsPanelBody({ model, now, resolvedBranch = "", onSetGoal }:
     ),
     detailRow("Session ID", "session-details-id", model.threadId, {
       mono: true,
-      wrap: false,
+      wrap: true,
       title: model.threadId,
       copyAction: <CopyButton text={model.threadId} label="Copy session ID" size="xs" />,
     }),
@@ -548,7 +543,6 @@ export function DetailsPanelBody({ model, now, resolvedBranch = "", onSetGoal }:
         objective={objective}
         goalStatus={goalStatus}
         canEdit={model.capabilities.goal}
-        onSetGoal={onSetGoal}
       />
 
       {showUsage ? (
