@@ -3,7 +3,8 @@
 // directory picker binds to the host-scoped extensions store.
 
 import { useId } from "react";
-import { FormRow, Input, PathField, RadioGroup } from "../../../../widgets";
+import { FormRow, Input, RadioGroup } from "../../../../widgets";
+import { PathFieldWithPaths } from "../launchShared/fields";
 import { useExtensionsHostStore, useHostDirectoryActions } from "./hostStore";
 import { MARKETPLACE_SOURCE_OPTIONS, type MarketplaceSourceKind } from "./marketplaceEdit";
 
@@ -62,14 +63,16 @@ export function MarketplaceSourceFields({
       )}
       {value.kind === "directory" && (
         <FormRow label="Local path" htmlFor={`${ids}-path`}>
-          <PathField
+          <PathFieldWithPaths
             ariaLabel="Local path"
-            directory={directory}
             id={`${ids}-path`}
             value={value.path}
             onChange={(path) => onChange({ path })}
             kind="dir"
-            complete={(prefix, includeFiles) => store.getState().completePaths(prefix, includeFiles)}
+            paths={{
+              directory,
+              complete: (prefix, includeFiles) => store.getState().completePaths(prefix, includeFiles),
+            }}
             placeholder="/absolute/path"
             disabled={disabled}
           />
