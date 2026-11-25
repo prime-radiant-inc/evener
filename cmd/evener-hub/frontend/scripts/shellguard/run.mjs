@@ -1425,14 +1425,19 @@ async function measureOverview(send) {
       return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: r.width, height: r.height };
     };
     const mobile = matchMedia('(max-width: 899px)').matches;
+    const tablist = aside.querySelector('[role="tablist"]');
+    const tablistScrollsX = Boolean(tablist && tablist.scrollWidth > tablist.clientWidth + 1);
+    const tabElements = Array.from(aside.querySelectorAll('[role="tab"]'));
+    // Capture resting boxes before fullTextMeasurement calls scrollIntoView.
+    const initialTabBoxes = tabElements.map(box);
     // A category is a label plus optional detail in the shared underline
     // tablist; each piece must show its whole text.
-    const categories = Array.from(aside.querySelectorAll('[role="tab"]'), element => {
+    const categories = tabElements.map((element, index) => {
       const lines = Array.from(element.children);
       return {
         text: lines.map(line => line.textContent).join('\\n'),
         checked: element.getAttribute('aria-selected'),
-        box: box(element),
+        box: initialTabBoxes[index],
         label: measure(lines[0], lines[0]?.textContent),
         detail: lines[1] ? measure(lines[1], lines[1].textContent) : null,
       };
@@ -1448,7 +1453,7 @@ async function measureOverview(send) {
     const chips = surface ? Array.from(surface.querySelectorAll('[data-activity-tab]')) : [];
     return {
       theme: document.documentElement.dataset.theme, font: document.body.dataset.fontSize,
-      sidebar: box(aside), categories, values, close: close && box(close),
+      sidebar: box(aside), tablistScrollsX, categories, values, close: close && box(close),
       tapMin: parseFloat(getComputedStyle(aside).getPropertyValue('--tap-min')),
       footerTabs: surface ? [chips.map(button => button.dataset.activityTab)] : [],
       document: { width: document.documentElement.scrollWidth, height: document.documentElement.scrollHeight },
@@ -1562,7 +1567,16 @@ function assertOverview(result, viewport, theme) {
       .join() !== "About"
   )
     failures.push("About is not exclusively selected");
+  if (!viewport.mobile && result.tablistScrollsX)
+    failures.push("desktop Overview tablist overflows horizontally instead of keeping every tab visible");
   for (const category of result.categories) {
+    if (
+      !viewport.mobile &&
+      (category.box.left < result.sidebar.left - 1 || category.box.right > result.sidebar.right + 1)
+    )
+      failures.push(
+        `desktop category ${category.text} sits outside the sidebar: ${JSON.stringify(category.box)} vs ${JSON.stringify(result.sidebar)}`,
+      );
     for (const line of [category.label, category.detail]) {
       if (line === null) continue;
       if (

@@ -205,11 +205,12 @@ losing the conversation that made the evidence relevant.
   intended session, preferring the originating pane. Desktop remains nonmodal. Existing
   standalone Details views and the `/tasks` pane toggle retain their behavior.
 - **Keep inspection readable at larger text sizes.** Desktop Overview stays 320px wide.
-  Both desktop and mobile use one horizontally scrolling underline tablist without shortening
-  labels or counts at narrow widths and XL text. About presents session facts in a compact
-  inline meta table whose model, session ID, branch, paths, and saved link URLs wrap as
-  selectable text. Its body scrolls vertically while the page stays fixed. Phone controls
-  retain the tap floor.
+  Both desktop and mobile use one underline tablist without shortening labels or counts
+  at narrow widths and XL text: desktop wraps onto rows so every category stays visible
+  inside the 320px sidebar without a horizontal scrollbar, while narrow viewports scroll
+  horizontally. About presents session facts in a compact inline meta table whose model,
+  session ID, branch, paths, and saved link URLs wrap as selectable text. Its body
+  scrolls vertically while the page stays fixed. Phone controls retain the tap floor.
 - **Keep Overview's activity lists on one loading and spacing contract.** Agents,
   Jobs and Watches page automatically at their visible boundary, with a static
   Skeleton rather than a Load more control. Their inactive/completed folds show

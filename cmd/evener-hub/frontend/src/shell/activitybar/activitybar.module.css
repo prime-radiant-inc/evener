@@ -66,6 +66,16 @@
   display: none;
 }
 
+/* Desktop keeps every category visible inside the fixed 320px sidebar without
+ * a hidden horizontal scrollbar; phones keep the single swipeable row. */
+@media (min-width: 900px) {
+  .tablist {
+    flex-wrap: wrap;
+    row-gap: var(--space-1);
+    overflow-x: visible;
+  }
+}
+
 .tab {
   display: inline-flex;
   flex: none;
