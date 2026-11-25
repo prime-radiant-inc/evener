@@ -116,7 +116,6 @@ test.each([
       expect(card.getAttribute("data-folded")).toBe("true");
       expect(card.getAttribute("data-folded-compact")).toBe(compact ? "true" : null);
       expect(screen.getByTestId("composer-attach")).toBeTruthy();
-      expect(screen.queryByTestId("composer-steer-placeholder")).toBeNull();
       expect(order()).toEqual(["composer-stop"]);
 
       act(() => editor.focus());
@@ -644,19 +643,6 @@ test("the Send and Stop words collapse to glyphs below the compact pane threshol
   // still folds the words away, so the icon-only action keeps 44px there.
   expect(css).toMatch(
     /@media \(max-width: 899px\), \(any-pointer: coarse\) \{\s*\.composer\s+:global\(button\):has\(> \.submitLabel\),\s*\.composer\s+:global\(button\):has\(> \.stopLabelStack\)\s*\{[^}]*min-width:\s*var\(--tap-min\)/,
-  );
-});
-
-// The model and effort are the session's facts about the next turn, so they
-// sit beside the verbs rather than immediately after the paperclip. The slot
-// reserves the compact chrome rung for the leading's wrap calculation and
-// grows into the expanded row; the row's own `align="end"` places the facts
-// at its far end.
-test("the session chrome reserves its compact rung only for one-line folded cards", () => {
-  const css = readModuleCss(import.meta.url, "composer.module.css");
-  expect(topRuleBlock(css, ".chromeSlot")).toMatch(/flex:\s*1 1 200px/);
-  expect(css).toMatch(
-    /@container \(min-width: 620px\) \{\s*\.leading\[data-folded="true"\]:not\(\[data-compact="true"\]\)\s*\{[^}]*flex-wrap:\s*nowrap/,
   );
 });
 

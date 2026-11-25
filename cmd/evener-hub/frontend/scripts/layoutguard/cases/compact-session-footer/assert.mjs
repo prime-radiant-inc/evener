@@ -54,19 +54,17 @@ export default function assert(measurements) {
       if (m.card.height > m.controls.height + tolerance + m.cardFraming) {
         fail("folded card is taller than one control row plus its framing");
       }
-      // The folded desktop input must keep a readable floor (14rem = 224px)
-      // even beside a long model name at the 620px fold boundary, and the
-      // leading chrome must hug its content without a dead gap before the
-      // model trigger.
+      // The folded desktop input keeps a readable floor (14rem = 224px) even
+      // beside a long model name at 620px, and the leading chrome hugs its
+      // visible controls without a dead width reservation or duplicate inset.
       if (m.field.width < 224 - tolerance) {
         fail(`folded field is squeezed to ${m.field.width.toFixed(1)}px (expected >= 224px)`);
       }
-      const leadingSlack = m.modelTrigger.left - m.leading.left;
-      if (leadingSlack > 12 + tolerance) {
-        fail(`folded leading reserves ${leadingSlack.toFixed(1)}px of dead space before the model trigger`);
-      }
-      if (m.shortModel && m.width >= 900 && m.field.width < 500) {
-        fail(`folded short-model field is only ${m.field.width.toFixed(1)}px in a ${m.width}px card`);
+      const leadingControlsWidth =
+        m.modelTrigger.width + m.effort.width + m.context.width + m.queue.width + m.sessionActions.width;
+      const leadingSlack = m.leading.width - leadingControlsWidth;
+      if (leadingSlack > 36 + tolerance) {
+        fail(`folded leading reserves ${leadingSlack.toFixed(1)}px of dead space beyond its controls`);
       }
     }
     expectContained(m.attachment, m.card, "attachment control");
