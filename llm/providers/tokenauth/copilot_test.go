@@ -263,6 +263,9 @@ func TestScopedOAuthAuthenticatorsUseSeparateStateRoots(t *testing.T) {
 }
 
 func TestCopilotPrepareRequestInteractionHeaders(t *testing.T) {
+	toolCall := llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{
+		Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "call-1", Name: "tool"},
+	}}}
 	tests := []struct {
 		name      string
 		req       llm.Request
@@ -274,6 +277,9 @@ func TestCopilotPrepareRequestInteractionHeaders(t *testing.T) {
 		{name: "no identity", req: llm.Request{Messages: []llm.Message{llm.User("hi")}}, wantIniti: "user"},
 		{name: "assistant tail is agent", req: llm.Request{Messages: []llm.Message{llm.User("hi"), llm.Assistant("ok")}}, wantIniti: "agent"},
 		{name: "tool result is agent", req: llm.Request{Messages: []llm.Message{llm.User("hi"), llm.ToolResultNamed("call-1", "tool", "done", false)}}, wantIniti: "agent"},
+		{name: "tool loop notes are agent", req: llm.Request{Messages: []llm.Message{llm.User("hi"), toolCall, llm.ToolResultNamed("call-1", "tool", "done", false), llm.User("notes")}}, wantIniti: "agent"},
+		{name: "skill after tool call is agent", req: llm.Request{Messages: []llm.Message{llm.User("hi"), toolCall, llm.User("skill")}}, wantIniti: "agent"},
+		{name: "new prompt and notes are user", req: llm.Request{Messages: []llm.Message{llm.Assistant("done"), llm.User("next"), llm.User("notes")}}, wantIniti: "user"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

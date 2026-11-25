@@ -131,18 +131,37 @@ func (c *Copilot) PrepareRequest(_ context.Context, httpReq *http.Request, _ map
 func (*Copilot) RequiresStreamingComplete() bool { return false }
 
 // copilotInitiator reports whether the latest conversational input is the
-// user's message or a tool-driven step. System and developer messages are not
-// conversational input, so they are skipped.
+// user's message or a tool-driven step. A trailing user-role run can contain
+// harness notes or skill carriers, so what precedes that run determines its
+// initiator. System and developer messages are not conversational input.
 func copilotInitiator(messages []llm.Message) string {
+	userRun := false
 	for _, message := range slices.Backward(messages) {
 		switch message.Role {
 		case llm.RoleUser:
-			return "user"
-		case llm.RoleAssistant, llm.RoleTool:
+			userRun = true
+		case llm.RoleAssistant:
+			if userRun && !copilotHasToolCall(message) {
+				return "user"
+			}
+			return "agent"
+		case llm.RoleTool:
 			return "agent"
 		}
 	}
+	if userRun {
+		return "user"
+	}
 	return ""
+}
+
+func copilotHasToolCall(message llm.Message) bool {
+	for _, part := range message.Content {
+		if part.Kind == llm.ContentToolCall {
+			return true
+		}
+	}
+	return false
 }
 
 // copilotRequestHasImage reports whether any message carries an image, either
