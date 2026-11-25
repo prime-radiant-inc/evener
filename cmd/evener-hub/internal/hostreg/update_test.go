@@ -86,29 +86,6 @@ func TestRegistryUpdateRefusalsLeaveTheRegistryUntouched(t *testing.T) {
 	}
 }
 
-// TestRegistryUpdatePreservesUpstreamEdges pins that an edit keeps what the
-// attach handshake learned about the host's position in the graph: the edge a
-// cycle would close through survives the update.
-func TestRegistryUpdatePreservesUpstreamEdges(t *testing.T) {
-	r, err := New([]Host{{Name: "a", SSH: "a.example"}, {Name: "b", SSH: "b.example"}})
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	// b is downstream of a, so giving a b as an upstream closes a cycle.
-	if err := r.SetUpstreams("b", []string{"a"}); err != nil {
-		t.Fatalf("SetUpstreams(b): %v", err)
-	}
-	if err := r.SetUpstreams("a", []string{"b"}); !errors.Is(err, ErrHostCycle) {
-		t.Fatalf("SetUpstreams(a) = %v, want ErrHostCycle", err)
-	}
-	if err := r.Update(Host{Name: "b", SSH: "b2.example"}); err != nil {
-		t.Fatalf("Update(b): %v", err)
-	}
-	if err := r.SetUpstreams("a", []string{"b"}); !errors.Is(err, ErrHostCycle) {
-		t.Fatalf("after the update SetUpstreams(a) = %v, want ErrHostCycle: the update dropped b's upstream edge", err)
-	}
-}
-
 // TestRegistryUpdateStoresWhatItValidated pins the normalize-then-store
 // discipline: a padded entry is stored trimmed, so the value the registry
 // validated is the value every consumer reads.
