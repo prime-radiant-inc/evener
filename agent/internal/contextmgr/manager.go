@@ -22,8 +22,7 @@ import (
 // The session populates this before each ManageContext call so that checkpoint
 // and summarize have access to data outside the turn history.
 type CompactionMeta struct {
-	SessionID       string   // session id; non-empty only when the session is persistent (has a stateDir)
-	ActivatedSkills []string // skill names activated during this session
+	SessionID string // session id; non-empty only when the session is persistent (has a stateDir)
 	// PendingAskTurnIDs is an operation-local snapshot from the session's
 	// pending owner. Folds retain that execution tail, not a reconstructed ask.
 	PendingAskTurnIDs []string
