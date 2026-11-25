@@ -85,6 +85,10 @@ function RepositoryConfigContent({ host, cwd }: { host: string; cwd: string }) {
     }
   }
 
+  // Kept local rather than SectionGate/RefreshErrorNotice: one polite region
+  // carries the empty, loading, error, and resolved states together with
+  // data-state, the loading arm is a labelled Loader, and a failed review
+  // retries itself as "Retry repository review".
   return (
     <div className={CLASS.root}>
       <h3 className={`${surfaceStyles.settingsSectionHeading} ${surfaceStyles.settingsSectionHeadingBody}`}>
