@@ -264,7 +264,7 @@ func referenceProjectionAndRegistry(t testing.TB, path string) ([]referenceTurn,
 				reason = "done"
 			}
 			for at := len(s.items) - 1; at >= 0; at-- {
-				if s.items[at].Type == "agentMessage" {
+				if s.items[at].Type == "agentMessage" && strings.TrimSpace(s.items[at].Text) != "" {
 					s.items[at].CallID = entry.Communicate.CallID
 					s.items[at].Observation = &appwire.SessionObservationMetadata{
 						TurnID: s.id, EndTurn: entry.Communicate.EndTurn, EndReason: reason,

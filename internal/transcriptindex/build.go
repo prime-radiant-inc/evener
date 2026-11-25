@@ -888,7 +888,7 @@ func (b *builder) attachCommunicationEcho(summary turnRecord, entry *schema.Turn
 	}
 	items, parts := apptranscript.ProjectEntryParts(entry.TurnID, int(summary.AwaitingOrdinal)+1, *awaiting, nil, nil, nil)
 	for i := range slices.Backward(items) {
-		if items[i].Type != "agentMessage" {
+		if items[i].Type != "agentMessage" || strings.TrimSpace(items[i].Text) == "" {
 			continue
 		}
 		slot, found, err := b.x.findItem(appwire.ThreadItemPosition{Entry: summary.AwaitingOrdinal + 1, Item: uint32(parts[i])})

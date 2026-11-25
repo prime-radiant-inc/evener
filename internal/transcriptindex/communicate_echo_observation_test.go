@@ -9,85 +9,110 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/provenance"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
 )
 
 func TestEchoingCommunicateRetainsTerminalEvidence(t *testing.T) {
 	t.Parallel()
-	for _, outcome := range []string{"accepted", "rejected", "nonterminal"} {
+	for _, outcome := range []string{"accepted", "completion-accepted", "rejected", "nonterminal"} {
 		for _, reopen := range []bool{false, true} {
-			t.Run(outcome+map[bool]string{false: "/fresh", true: "/reopened"}[reopen], func(t *testing.T) {
-				fx := newFormatFixture(t, "communicate echoes")
-				fx.lines = fx.lines[:4]
-				assistant := &fx.lines[1].turn.Message
-				assistant.Content = slices.Insert(assistant.Content, 1, llm.ContentPart{Kind: llm.ContentThinking,
-					Thinking: &llm.ThinkingData{ResponsesSummaryParts: []llm.ResponsesReasoningPart{{Type: "summary_text"}}}})
-				comm := &fx.lines[2].turn
-				comm.CausalKnown = true
-				comm.Causal = provenance.WithWatch(nil, "watch-A", "generation-A", "delivery-A", "source-A", "job-A")
-				comm.Communicate.EndTurn = outcome != "nonterminal"
-				comm.Communicate.EndReason = "done"
-				result := fx.lines[3].turn.Message.Content[0].ToolResult
-				result.Content = `{"accepted":true,"end_turn":true}`
-				if outcome == "rejected" {
-					result.Content = `{"accepted":false,"end_turn":true}`
-				}
-				if outcome == "nonterminal" {
-					result.Content = `{"accepted":true,"end_turn":false}`
-				}
-				path := writeFixture(t, fx)
-				dir := filepath.Join(t.TempDir(), "index")
-				if reopen {
-					header, lines := fx.encode(t)
-					if err := os.WriteFile(path, append(append(header, lines[0]...), lines[1]...), 0600); err != nil {
-						t.Fatal(err)
+			for _, trailingWhitespace := range []bool{false, true} {
+				name := outcome + map[bool]string{false: "/fresh", true: "/reopened"}[reopen] + map[bool]string{false: "", true: "/trailing-whitespace"}[trailingWhitespace]
+				t.Run(name, func(t *testing.T) {
+					fx := newFormatFixture(t, "communicate echoes")
+					fx.lines = fx.lines[:4]
+					assistant := &fx.lines[1].turn.Message
+					assistant.Content = slices.Insert(assistant.Content, 1, llm.ContentPart{Kind: llm.ContentThinking,
+						Thinking: &llm.ThinkingData{ResponsesSummaryParts: []llm.ResponsesReasoningPart{{Type: "summary_text"}}}})
+					if trailingWhitespace {
+						assistant.Content = append(assistant.Content, llm.ContentPart{Kind: llm.ContentText, Text: " \n "})
+					}
+					comm := &fx.lines[2].turn
+					comm.CausalKnown = true
+					comm.Causal = provenance.WithWatch(nil, "watch-A", "generation-A", "delivery-A", "source-A", "job-A")
+					comm.Communicate.EndTurn = outcome != "nonterminal"
+					comm.Communicate.EndReason = "done"
+					result := fx.lines[3].turn.Message.Content[0].ToolResult
+					result.Content = `{"accepted":true,"end_turn":true}`
+					switch outcome {
+					case "completion-accepted":
+						result.ToolState = json.RawMessage(`{"communicate_accepted":true,"communicate_end_turn":true,"communicate_boundary_pending":true}`)
+						done := completion("turn_m20", schema.TurnCompleted, 60, 10)
+						done.Completion.AcceptedCommunicateCallID = "ek1"
+						fx.lines = append(fx.lines, entryLine(done))
+					case "rejected":
+						result.Content = `{"accepted":false,"end_turn":true}`
+					case "nonterminal":
+						result.Content = `{"accepted":true,"end_turn":false}`
+					}
+					path := writeFixture(t, fx)
+					dir := filepath.Join(t.TempDir(), "index")
+					if reopen {
+						header, lines := fx.encode(t)
+						if err := os.WriteFile(path, append(append(header, lines[0]...), lines[1]...), 0600); err != nil {
+							t.Fatal(err)
+						}
+						x := openIndex(t, path, dir)
+						if err := x.Close(); err != nil {
+							t.Fatal(err)
+						}
+						f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0600)
+						if err != nil {
+							t.Fatal(err)
+						}
+						for _, tail := range lines[2:] {
+							if _, err := f.Write(tail); err != nil {
+								t.Fatal(err)
+							}
+						}
+						if err := f.Close(); err != nil {
+							t.Fatal(err)
+						}
 					}
 					x := openIndex(t, path, dir)
-					if err := x.Close(); err != nil {
-						t.Fatal(err)
-					}
-					f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0600)
+					window, err := x.Latest(20)
 					if err != nil {
 						t.Fatal(err)
 					}
-					if _, err := f.Write(append(lines[2], lines[3]...)); err != nil {
-						t.Fatal(err)
+					var messages []appwire.ThreadItem
+					for _, candidate := range window.Candidates {
+						if candidate.Item.Type == "agentMessage" {
+							messages = append(messages, candidate.Item)
+						}
 					}
-					if err := f.Close(); err != nil {
-						t.Fatal(err)
+					wantMessages := 1
+					if trailingWhitespace {
+						wantMessages = 2
 					}
-				}
-				x := openIndex(t, path, dir)
-				window, err := x.Latest(20)
-				if err != nil {
-					t.Fatal(err)
-				}
-				var messages []appwire.ThreadItem
-				for _, candidate := range window.Candidates {
-					if candidate.Item.Type == "agentMessage" {
-						messages = append(messages, candidate.Item)
+					if len(messages) != wantMessages {
+						t.Fatalf("visible messages = %d, want %d: %+v", len(messages), wantMessages, messages)
 					}
-				}
-				if len(messages) != 1 {
-					t.Fatalf("visible messages = %d, want one", len(messages))
-				}
-				item := messages[0]
-				if item.Position.Entry != 2 || item.Text != "same words" {
-					t.Fatalf("echo changed visible message identity/text: %+v", item)
-				}
-				obs := item.Observation
-				if obs == nil || !obs.CausalKnown || obs.Causal == nil || obs.TurnID != "turn_m20" || item.CallID != "ek1" {
-					t.Fatalf("echo lost recorded observation: %+v", item)
-				}
-				if outcome == "nonterminal" {
-					if obs.EndTurn || obs.TerminalAccepted != nil {
-						t.Fatalf("nonterminal became completion: %+v", obs)
+					item := messages[0]
+					if trailingWhitespace {
+						blank := messages[1]
+						if strings.TrimSpace(blank.Text) != "" || blank.CallID != "" || blank.Observation != nil {
+							t.Fatalf("trailing whitespace row unexpectedly received echo evidence: %+v", blank)
+						}
 					}
-				} else if obs.TerminalAccepted == nil || *obs.TerminalAccepted != (outcome == "accepted") {
-					t.Fatalf("terminal acceptance = %+v", obs)
-				}
-			})
+					if item.Position.Entry != 2 || item.Text != "same words" {
+						t.Fatalf("echo changed visible message identity/text: %+v", item)
+					}
+					obs := item.Observation
+					if obs == nil || !obs.CausalKnown || obs.Causal == nil || obs.TurnID != "turn_m20" || item.CallID != "ek1" {
+						t.Fatalf("echo lost recorded observation: %+v", item)
+					}
+					wantAccepted := outcome == "accepted" || outcome == "completion-accepted"
+					if outcome == "nonterminal" {
+						if obs.EndTurn || obs.TerminalAccepted != nil {
+							t.Fatalf("nonterminal became completion: %+v", obs)
+						}
+					} else if obs.TerminalAccepted == nil || *obs.TerminalAccepted != wantAccepted {
+						t.Fatalf("terminal acceptance = %+v", obs)
+					}
+				})
+			}
 		}
 	}
 }
