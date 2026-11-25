@@ -513,12 +513,9 @@ func (s *LocalDaemonSource) AcquireRelaySession(ref appwire.Ref) (RelaySessionRo
 					observe(epoch, message, err)
 				})
 				client.Start(ctx)
-				if _, initializeErr := client.Initialize(ctx, appwire.InitializeParams{ClientInfo: appwire.ClientInfo{Name: "evener-hub"}, Capabilities: appwire.Capabilities{SessionTools: binding.BindingID != ""}}); initializeErr != nil {
+				if initializeErr := initializeDaemonClient(ctx, client, appwire.Capabilities{SessionTools: binding.BindingID != ""}); initializeErr != nil {
 					_ = transport.Close()
-					if callerErr := ctx.Err(); callerErr != nil {
-						return nil, nil, callerErr
-					}
-					return nil, nil, localDaemonInitializeError(initializeErr)
+					return nil, nil, initializeErr
 				}
 				if binding.BindingID != "" {
 					if !client.Features().SessionTools {
@@ -1775,11 +1772,8 @@ func (s *LocalDaemonSource) withClientCallMapper(
 	client := appwire.NewClient(transport)
 	client.SetLogger(hubLog)
 	client.Start(ctx)
-	if _, err := client.Initialize(ctx, appwire.InitializeParams{ClientInfo: appwire.ClientInfo{Name: "evener-hub"}}); err != nil {
-		if cerr := ctx.Err(); cerr != nil {
-			return cerr
-		}
-		return localDaemonInitializeError(err)
+	if err := initializeDaemonClient(ctx, client, appwire.Capabilities{}); err != nil {
+		return err
 	}
 	if err := ctx.Err(); err != nil {
 		return err
@@ -1883,6 +1877,28 @@ func localDaemonInitializeError(err error) error {
 		return DaemonInitializeError{Err: mapped}
 	}
 	return DaemonInitializeError{Err: localDaemonDialError(mapped)}
+}
+
+// initializeDaemonClient runs the AppWire initialize handshake with a local
+// daemon and rejects evener-hub peers so a stale rendezvous entry whose freed
+// loopback port was later bound by a hub cannot self-dial into a relay deadlock.
+func initializeDaemonClient(ctx context.Context, client *appwire.Client, capabilities appwire.Capabilities) error {
+	resp, err := client.Initialize(ctx, appwire.InitializeParams{
+		ClientInfo:   appwire.ClientInfo{Name: "evener-hub"},
+		Capabilities: capabilities,
+	})
+	if err != nil {
+		if cerr := ctx.Err(); cerr != nil {
+			return cerr
+		}
+		return localDaemonInitializeError(err)
+	}
+	if strings.TrimSpace(resp.ServerInfo.Name) == "evener-hub" {
+		return DaemonInitializeError{
+			Err: appwire.RetryableSessionUnavailable("local daemon endpoint answered as hub"),
+		}
+	}
+	return nil
 }
 
 func localDaemonSubscribeReadError(err error) error {

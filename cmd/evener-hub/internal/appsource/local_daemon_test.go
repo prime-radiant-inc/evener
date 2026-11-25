@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -1490,5 +1491,48 @@ func TestLocalDaemonSourceListThreadsHonorsCanceledContext(t *testing.T) {
 	_, err := source.ListThreads(ctx, appwire.ThreadListParams{})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("ListThreads error=%v, want context cancellation", err)
+	}
+}
+
+func TestLocalDaemonSourceRejectsHubEndpoint(t *testing.T) {
+	var threadReadCalls atomic.Int32
+	hub := appserver.NewServer(appserver.ServerConfig{ServerName: "evener-hub", SourceID: "local"})
+	appserver.HandleTyped(hub.Router(), appwire.MethodThreadRead, func(context.Context, appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		threadReadCalls.Add(1)
+		return appwire.ThreadReadResponse{}, appwire.SessionUnavailable("thread/read must not reach a hub")
+	})
+	hubHTTP := httptest.NewServer(http.HandlerFunc(hub.ServeWebSocket))
+	defer hubHTTP.Close()
+
+	entry := rendezvous.Entry{
+		Protocol:     appwire.ProtocolVersion,
+		Endpoint:     "ws" + hubHTTP.URL[len("http"):],
+		SourceID:     "local",
+		ThreadID:     "thread-1",
+		SessionID:    "thread-1",
+		WorkspaceRef: "local:thread-1",
+	}
+	source := NewLocalDaemonSourceWithEntries("local", func() []LocalDaemonEntry {
+		return []LocalDaemonEntry{{Entry: entry, SessionID: "thread-1"}}
+	}, hubHTTP.Client())
+
+	for _, subscribe := range []bool{false, true} {
+		name := "non-subscribing"
+		if subscribe {
+			name = "subscribing"
+		}
+		t.Run(name, func(t *testing.T) {
+			_, err := source.ReadThread(t.Context(), appwire.ThreadReadParams{
+				Ref:       "local:thread-1",
+				Subscribe: subscribe,
+			})
+			if _, ok := errors.AsType[DaemonInitializeError](err); !ok {
+				t.Fatalf("ReadThread(subscribe=%t) error = %T (%v), want DaemonInitializeError", subscribe, err, err)
+			}
+			assertSessionUnavailable(t, err, name)
+			if got := threadReadCalls.Load(); got != 0 {
+				t.Fatalf("hub received %d thread/read calls, want 0", got)
+			}
+		})
 	}
 }

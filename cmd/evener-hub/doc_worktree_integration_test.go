@@ -560,56 +560,69 @@ func TestDocumentWorktree_LiveSourceUnavailableDoesNotReadPast(t *testing.T) {
 		t.Fatal("stale past fixture was not indexed")
 	}
 
-	deadDaemon := httptest.NewServer(http.NotFoundHandler())
-	endpoint := deadDaemon.URL
-	httpClient := deadDaemon.Client()
-	deadDaemon.Close()
-	entry := rendezvous.Entry{
-		Protocol: appwire.ProtocolVersion, Endpoint: endpoint, SourceID: "local",
-		ThreadID: sessionID, SessionID: sessionID, WorkspaceRef: "local:" + sessionID,
-		WorkingDir: rootA, StateDir: stateDir,
-	}
-	source := appsource.NewLocalDaemonSourceWithEntries("local", func() []appsource.LocalDaemonEntry {
-		return []appsource.LocalDaemonEntry{{Entry: entry, SessionID: sessionID}}
-	}, httpClient)
-	sources := appsource.NewRegistry()
-	sources.Add(source)
-	cfg := testWebConfig(t, hubcore.WebConfig{
-		Past:   past,
-		Roster: hubcore.NewRosterWithEntries(hubcore.LiveEntry{Entry: entry, SessionID: sessionID, Status: appwire.ThreadStatusIdle}),
-	})
-
-	hostApp := newHubAppServer(cfg, sources)
-	hostHTTP := httptest.NewServer(http.HandlerFunc(hostApp.ServeWebSocket))
-	defer hostHTTP.Close()
-	if response, err := requestSessionDocument(t, hostHTTP, appwire.SessionDocumentParams{SessionID: sessionID, Path: "plan.md"}); err == nil {
-		t.Fatalf("direct host read returned %q, want transient unavailable", response.Data)
-	} else if got := sessionImageErrorInfo(t, err); got != string(appwire.ErrorSessionUnavailable) {
-		t.Fatalf("direct host error = %q (%v), want %q", got, err, appwire.ErrorSessionUnavailable)
-	}
-
-	hostClient := dialHubRPC(t, hostHTTP)
-	defer hostClient.Close() //nolint:errcheck // test cleanup
-	mustInitializeHubClient(t, hostClient)
-	web := NewWebServer(cfg)
-	web.sources = sources
-	localHTTP := httptest.NewServer(web.Handler())
-	defer localHTTP.Close()
-	controllerHTTP := controllerOverHost(t, hubcore.WebConfig{}, hostClient)
-	defer controllerHTTP.Close()
-
-	for name, endpoint := range map[string]string{
-		"local":  localHTTP.URL + "/doc/file",
-		"remote": controllerHTTP.URL + "/doc/file",
+	for _, tc := range []struct {
+		name      string
+		reusedHub bool
+	}{
+		{name: "unreachable daemon"},
+		{name: "port reused by hub", reusedHub: true},
 	} {
-		session := sessionID
-		if name == "remote" {
-			session = "h1:" + sessionID
-		}
-		status, body := readWorktreeDocumentHTTP(t, endpoint, session, "plan.md")
-		if status != http.StatusServiceUnavailable || bytes.Contains(body, []byte("stale launch A")) {
-			t.Fatalf("%s unavailable read = %d %q, want 503 without stale A bytes", name, status, body)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			endpoint := "ws://127.0.0.1:1/rpc"
+			hostHTTP := httptest.NewUnstartedServer(nil)
+			var entry rendezvous.Entry
+			source := appsource.NewLocalDaemonSourceWithEntries("local", func() []appsource.LocalDaemonEntry {
+				return []appsource.LocalDaemonEntry{{Entry: entry, SessionID: sessionID}}
+			}, http.DefaultClient)
+			if tc.reusedHub {
+				endpoint = "http://" + hostHTTP.Listener.Addr().String()
+			}
+			entry = rendezvous.Entry{
+				Protocol: appwire.ProtocolVersion, Endpoint: endpoint, SourceID: "local",
+				ThreadID: sessionID, SessionID: sessionID, WorkspaceRef: "local:" + sessionID,
+				WorkingDir: rootA, StateDir: stateDir,
+			}
+			sources := appsource.NewRegistry()
+			sources.Add(source)
+			cfg := testWebConfig(t, hubcore.WebConfig{
+				Past:   past,
+				Roster: hubcore.NewRosterWithEntries(hubcore.LiveEntry{Entry: entry, SessionID: sessionID, Status: appwire.ThreadStatusIdle}),
+			})
+
+			hostApp := newHubAppServer(cfg, sources)
+			hostHTTP.Config.Handler = http.HandlerFunc(hostApp.ServeWebSocket)
+			hostHTTP.Start()
+			defer hostHTTP.Close()
+			if response, err := requestSessionDocument(t, hostHTTP, appwire.SessionDocumentParams{SessionID: sessionID, Path: "plan.md"}); err == nil {
+				t.Fatalf("direct host read returned %q, want transient unavailable", response.Data)
+			} else if got := sessionImageErrorInfo(t, err); got != string(appwire.ErrorSessionUnavailable) {
+				t.Fatalf("direct host error = %q (%v), want %q", got, err, appwire.ErrorSessionUnavailable)
+			}
+
+			hostClient := dialHubRPC(t, hostHTTP)
+			defer hostClient.Close() //nolint:errcheck // test cleanup
+			mustInitializeHubClient(t, hostClient)
+			web := NewWebServer(cfg)
+			web.sources = sources
+			localHTTP := httptest.NewServer(web.Handler())
+			defer localHTTP.Close()
+			controllerHTTP := controllerOverHost(t, hubcore.WebConfig{}, hostClient)
+			defer controllerHTTP.Close()
+
+			for name, endpoint := range map[string]string{
+				"local":  localHTTP.URL + "/doc/file",
+				"remote": controllerHTTP.URL + "/doc/file",
+			} {
+				session := sessionID
+				if name == "remote" {
+					session = "h1:" + sessionID
+				}
+				status, body := readWorktreeDocumentHTTP(t, endpoint, session, "plan.md")
+				if status != http.StatusServiceUnavailable || bytes.Contains(body, []byte("stale launch A")) {
+					t.Fatalf("%s unavailable read = %d %q, want 503 without stale A bytes", name, status, body)
+				}
+			}
+		})
 	}
 }
 
