@@ -75,11 +75,6 @@ func (jm *jobManager) buildWatchFrame(cfg *watchConfig, jobID string, trigger st
 	}
 
 	var b strings.Builder
-	message := limitWatchText(strings.TrimSpace(cfg.send.Message), watchMessageMaxChars)
-	if message != "" {
-		b.WriteString(message)
-		b.WriteString("\n\n")
-	}
 	b.WriteString("Watch frame\n")
 	if cfg.watchID != "" {
 		b.WriteString("watch_id: ")
@@ -108,19 +103,6 @@ func (jm *jobManager) buildWatchFrame(cfg *watchConfig, jobID string, trigger st
 		writeWatchFrameEvent(&b, ev)
 	}
 
-	if !isWatchSessionTarget(jobID) && cfg.send.IncludeExcerpt {
-		excerpt, _, truncated, err := jm.readOutput(jobID, watchExcerptTailBytes)
-		b.WriteString("excerpt:\n")
-		if err != nil {
-			writeWatchFrameIndentedBlock(&b, "output_read_error: "+limitWatchText(err.Error(), watchReadErrorMaxChars))
-		} else {
-			writeWatchFrameIndentedBlock(&b, limitWatchText(excerpt, watchExcerptMaxChars))
-			if truncated {
-				writeWatchFrameIndentedBlock(&b, "[excerpt truncated]")
-			}
-		}
-	}
-
 	return limitWatchText(b.String(), watchFrameMaxChars)
 }
 
@@ -135,15 +117,6 @@ func appendWatchFrameJobRead(frame, jobID string) string {
 		frame += "\n"
 	}
 	return frame + `read with: read_transcript(transcript_ref="job:` + jobID + `")` + "\n"
-}
-
-func writeWatchFrameIndentedBlock(b *strings.Builder, text string) {
-	text = lineend.Normalize(text)
-	for line := range strings.SplitSeq(text, "\n") {
-		b.WriteString("  ")
-		b.WriteString(line)
-		b.WriteString("\n")
-	}
 }
 
 // writeWatchFrameListEntry writes one entry of a frame's YAML-like list,

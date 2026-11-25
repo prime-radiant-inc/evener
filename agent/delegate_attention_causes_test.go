@@ -257,7 +257,7 @@ func TestSendWatchFrameMarksAnEventCausedByTheWatchersOwnMessage(t *testing.T) {
 	installWatchBelowValidation(t, jm, watchArgs{
 		Target: runtimeMessageAliasCaller,
 		Events: []string{"communicate"},
-		Send:   &watchSendArgs{To: runtimeMessageAliasCaller, Message: "observe"},
+		Send:   &watchSendArgs{To: runtimeMessageAliasCaller},
 	})
 	cause := provenance.WithMessage(nil, jm.sessionID, "delegate:dlg_x/update/1")
 	jm.onSessionEvent(events.SessionEvent{Kind: events.EventCommunicate, SessionID: jm.sessionID, Data: events.CommunicateData{Message: "reply"}, Provenance: cause})

@@ -2093,7 +2093,7 @@ func TestRetirementWatchTerminalPendingSend(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	registered, err := jm.configureWatch(watchArgs{Target: rec.JobID, Source: rec.JobID, OutputMatch: "never-seen", Send: &watchSendArgs{To: "caller", Message: "original-send-message"}})
+	registered, err := jm.configureWatch(watchArgs{Target: rec.JobID, Source: rec.JobID, OutputMatch: "never-seen", Note: "original-send-message", Send: &watchSendArgs{To: "caller"}})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -506,27 +506,18 @@ func TestCovWatchSendArg(t *testing.T) {
 	}
 
 	// Send with "to" — valid.
-	s, err = watchSendArg(map[string]any{"send": map[string]any{"to": "caller", "message": "hi"}})
+	s, err = watchSendArg(map[string]any{"send": map[string]any{"to": "caller"}})
 	if err != nil {
 		t.Fatalf("valid send: %v", err)
 	}
-	if s == nil || s.To != "caller" || s.Message != "hi" {
+	if s == nil || s.To != "caller" {
 		t.Fatalf("send: %+v", s)
 	}
 
 	// Send without "to" — error.
-	_, err = watchSendArg(map[string]any{"send": map[string]any{"message": "hi"}})
+	_, err = watchSendArg(map[string]any{"send": map[string]any{"to": "   "}})
 	if err == nil || !strings.Contains(err.Error(), "to is required") {
 		t.Fatalf("no to: %v", err)
-	}
-
-	// Send with include_excerpt.
-	s, err = watchSendArg(map[string]any{"send": map[string]any{"to": "caller", "include_excerpt": true}})
-	if err != nil {
-		t.Fatalf("include_excerpt: %v", err)
-	}
-	if s == nil || !s.IncludeExcerpt {
-		t.Fatal("include_excerpt should be true")
 	}
 }
 
@@ -541,16 +532,6 @@ func TestCovIsEmptyWatchSend(t *testing.T) {
 	// With "to" — false.
 	if isEmptyWatchSend(map[string]any{"to": "caller"}) {
 		t.Fatal("with to should be false")
-	}
-
-	// With "message" — false.
-	if isEmptyWatchSend(map[string]any{"message": "hi"}) {
-		t.Fatal("with message should be false")
-	}
-
-	// With "include_excerpt" — false.
-	if isEmptyWatchSend(map[string]any{"include_excerpt": true}) {
-		t.Fatal("with include_excerpt should be false")
 	}
 }
 

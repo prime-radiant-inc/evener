@@ -47,8 +47,6 @@ func watchConfigSnapshot(cfg *watchConfig) *jobstore.WatchConfigSnapshot {
 	}
 	if cfg.send != nil {
 		snapshot.SendTo = cfg.send.To
-		snapshot.SendMessage = cfg.send.Message
-		snapshot.IncludeExcerpt = cfg.send.IncludeExcerpt
 	}
 	return snapshot
 }

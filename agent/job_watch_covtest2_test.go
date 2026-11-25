@@ -149,7 +149,7 @@ func TestCovRecordWatchSendPending(t *testing.T) {
 	installWatchBelowValidation(t, jm, watchArgs{
 		Target: runtimeMessageAliasCaller,
 		Events: []string{"communicate"},
-		Send:   &watchSendArgs{To: runtimeMessageAliasCaller, Message: "ping"},
+		Send:   &watchSendArgs{To: runtimeMessageAliasCaller},
 	})
 	key := watchKey{
 		VisibleSessionID: jm.sessionID,
@@ -203,7 +203,7 @@ func TestCovRemoveRuntimePendingWatchSend(t *testing.T) {
 	installWatchBelowValidation(t, jm, watchArgs{
 		Target: runtimeMessageAliasCaller,
 		Events: []string{"communicate"},
-		Send:   &watchSendArgs{To: runtimeMessageAliasCaller, Message: "ping"},
+		Send:   &watchSendArgs{To: runtimeMessageAliasCaller},
 	})
 	onSessionEventKD(jm, events.EventCommunicate, nil)
 	key := watchKey{
@@ -597,7 +597,7 @@ func TestCovHasPendingWatchSends(t *testing.T) {
 	installWatchBelowValidation(t, jm, watchArgs{
 		Target: runtimeMessageAliasCaller,
 		Events: []string{"communicate"},
-		Send:   &watchSendArgs{To: runtimeMessageAliasCaller, Message: "ping"},
+		Send:   &watchSendArgs{To: runtimeMessageAliasCaller},
 	})
 	if jm.hasPendingWatchSends() {
 		t.Fatal("watch with no pending should return false")

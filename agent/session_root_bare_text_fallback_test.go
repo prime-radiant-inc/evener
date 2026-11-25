@@ -537,7 +537,7 @@ func TestRootBareTextFallbackNotifiesCommunicateWatches(t *testing.T) {
 		installWatchBelowValidation(t, s.jobManager, watchArgs{
 			Target: runtimeMessageAliasCaller,
 			Events: []string{"communicate"},
-			Send:   &watchSendArgs{To: runtimeMessageAliasCaller, Message: "observe"},
+			Send:   &watchSendArgs{To: runtimeMessageAliasCaller},
 		})
 		cfg := onlyWatchConfigForTest(t, s.jobManager)
 		const priorDeliveryID = "wd_prior_1"

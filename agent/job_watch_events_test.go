@@ -282,7 +282,8 @@ func TestConcreteJobEventWatchSendsFrame(t *testing.T) {
 	_, err := jm.configureWatch(watchArgs{
 		Target: rec.JobID,
 		Events: []string{"assistant.tool"},
-		Send:   &watchSendArgs{To: runtimeMessageAliasCaller, Message: "observe"},
+		Note:   "observe",
+		Send:   &watchSendArgs{To: runtimeMessageAliasCaller},
 	})
 	if err != nil {
 		t.Fatalf("configure: %v", err)
@@ -308,7 +309,7 @@ func TestConcreteJobEventWatchSendsFrame(t *testing.T) {
 	if !strings.Contains(state.Frame, "observe") ||
 		!strings.Contains(state.Frame, rec.JobID) ||
 		!strings.Contains(state.Frame, "event: TOOL_CALL_END") {
-		t.Fatalf("pending frame = %q, want configured message, job id, and trigger", state.Frame)
+		t.Fatalf("pending frame = %q, want configured note, job id, and trigger", state.Frame)
 	}
 }
 
@@ -532,7 +533,7 @@ func TestAttachScanSendArmFiresOnce(t *testing.T) {
 	res, err := jm.configureWatch(watchArgs{
 		Target:      rec.JobID,
 		OutputMatch: "ready",
-		Send:        &watchSendArgs{To: runtimeMessageAliasCaller, Message: "observe"},
+		Send:        &watchSendArgs{To: runtimeMessageAliasCaller},
 	})
 	if err != nil {
 		t.Fatalf("configure: %v", err)

@@ -23,7 +23,7 @@ func installCallerCommunicateWatch(t *testing.T) (*Session, *jobManager, watchKe
 	installWatchBelowValidation(t, jm, watchArgs{
 		Target: runtimeMessageAliasCaller,
 		Events: []string{"communicate"},
-		Send:   &watchSendArgs{To: runtimeMessageAliasCaller, Message: "observe"},
+		Send:   &watchSendArgs{To: runtimeMessageAliasCaller},
 	})
 	key := watchKey{VisibleSessionID: jm.sessionID, Target: runtimeMessageAliasCaller, SendTo: runtimeMessageAliasCaller}
 	return s, jm, key
@@ -348,7 +348,7 @@ func TestSendWatchBackstopNoticeRidesTheFrame(t *testing.T) {
 	installWatchBelowValidation(t, jm, watchArgs{
 		Target: runtimeMessageAliasCaller,
 		Events: []string{"communicate"},
-		Send:   &watchSendArgs{To: runtimeMessageAliasCaller, Message: "observe"},
+		Send:   &watchSendArgs{To: runtimeMessageAliasCaller},
 	})
 	frameOfFire := func() string {
 		t.Helper()
@@ -388,7 +388,7 @@ func TestSendWatchBackstopExpiresDeliveriesOutsideTheWindow(t *testing.T) {
 	installWatchBelowValidation(t, jm, watchArgs{
 		Target: runtimeMessageAliasCaller,
 		Events: []string{"communicate"},
-		Send:   &watchSendArgs{To: runtimeMessageAliasCaller, Message: "observe"},
+		Send:   &watchSendArgs{To: runtimeMessageAliasCaller},
 	})
 	deliverFrame := func() string {
 		t.Helper()
@@ -442,7 +442,7 @@ func TestSendRunawayDiagnosticCarriesTheLineageAndTheChainStaysStopped(t *testin
 	installWatchBelowValidation(t, jm, watchArgs{
 		Target: runtimeMessageAliasCaller,
 		Events: []string{"communicate"},
-		Send:   &watchSendArgs{To: "dlg_observer", Message: "observe"},
+		Send:   &watchSendArgs{To: "dlg_observer"},
 	})
 	cfg := onlyWatchConfigForTest(t, jm)
 	ownFires := func(p *provenance.Causal) int {
@@ -494,7 +494,7 @@ func TestSendWatchBackstopCountsDeliveredFramesAcrossCoalescing(t *testing.T) {
 	installWatchBelowValidation(t, jm, watchArgs{
 		Target: runtimeMessageAliasCaller,
 		Events: []string{"communicate"},
-		Send:   &watchSendArgs{To: runtimeMessageAliasCaller, Message: "observe"},
+		Send:   &watchSendArgs{To: runtimeMessageAliasCaller},
 	})
 	deliverPending := func() string {
 		t.Helper()
@@ -538,7 +538,7 @@ func TestSendWatchConditionMarkersNameDeliveriesThatCanStillSettle(t *testing.T)
 	installWatchBelowValidation(t, jm, watchArgs{
 		Target: runtimeMessageAliasCaller,
 		Events: []string{"communicate"},
-		Send:   &watchSendArgs{To: runtimeMessageAliasCaller, Message: "observe"},
+		Send:   &watchSendArgs{To: runtimeMessageAliasCaller},
 	})
 	// No drain: the receiver settles nothing, so each match supersedes the
 	// pending frame and no delivery ever settles.

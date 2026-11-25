@@ -144,7 +144,7 @@ func TestW2Conc_FireProgressTickSendPathSnapshots(t *testing.T) {
 	installWatchBelowValidation(t, jm, watchArgs{
 		Target:             rec.JobID,
 		ProgressIntervalMS: minWatchProgressIntervalMS,
-		Send:               &watchSendArgs{To: "dlg_obs", Message: "observe"},
+		Send:               &watchSendArgs{To: "dlg_obs"},
 	})
 	cfg := onlyWatchConfigForTest(t, jm)
 	key := watchKey{VisibleSessionID: jm.sessionID, Target: rec.JobID, SendTo: "dlg_obs"}

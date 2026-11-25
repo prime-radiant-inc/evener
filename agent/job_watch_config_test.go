@@ -141,7 +141,7 @@ func TestConfigureWatchSendToMissingDelegateFailsTargetNotFound(t *testing.T) {
 	_, err := jm.configureWatch(watchArgs{
 		Target: "caller",
 		Events: []string{"job.notification"},
-		Send:   &watchSendArgs{To: "dlg_missing_delegate", Message: "observe"},
+		Send:   &watchSendArgs{To: "dlg_missing_delegate"},
 	})
 
 	if err == nil || !strings.Contains(err.Error(), "target_not_found") {
@@ -407,7 +407,7 @@ func TestJobWatchSendToMainAliasFailsTargetNotFound(t *testing.T) {
 	_, err := jm.configureWatch(watchArgs{
 		Target:      rec.JobID,
 		OutputMatch: "ready",
-		Send:        &watchSendArgs{To: "main", Message: "observe"},
+		Send:        &watchSendArgs{To: "main"},
 	})
 
 	if err == nil || !strings.Contains(err.Error(), "target_not_found") {
@@ -427,7 +427,7 @@ func TestJobWatchSendToKnownShellJobFailsJobIDGuidance(t *testing.T) {
 	_, err := jm.configureWatch(watchArgs{
 		Target:      watched.JobID,
 		OutputMatch: "ready",
-		Send:        &watchSendArgs{To: observer.JobID, Message: "observe"},
+		Send:        &watchSendArgs{To: observer.JobID},
 	})
 
 	if err == nil || !strings.Contains(err.Error(), "job_id is a job/turn handle") {
@@ -446,7 +446,7 @@ func TestJobWatchSendToWatchedFailsV1TargetValidation(t *testing.T) {
 	_, err := jm.configureWatch(watchArgs{
 		Target:      watched.JobID,
 		OutputMatch: "ready",
-		Send:        &watchSendArgs{To: "watched", Message: "observe"},
+		Send:        &watchSendArgs{To: "watched"},
 	})
 
 	if err == nil || !strings.Contains(err.Error(), "watched is not a v1 delivery target") {
@@ -725,29 +725,6 @@ func TestConfigureWatchRejectsEveryWithWildcardEvent(t *testing.T) {
 	}
 }
 
-func TestConfigureWatchRejectsIncludeExcerptOnSessionTargets(t *testing.T) {
-	t.Parallel()
-	jm := newTestJM(t)
-	for _, target := range []string{"caller", "*"} {
-		t.Run(target, func(t *testing.T) {
-			_, err := jm.configureWatch(watchArgs{
-				Target: target,
-				Events: []string{"job.notification"},
-				Send:   &watchSendArgs{To: "dlg_obs", IncludeExcerpt: true},
-			})
-			if err == nil {
-				t.Fatal("session target include_excerpt watch must error")
-			}
-			if !strings.Contains(err.Error(), "include_excerpt requires a concrete job target") {
-				t.Fatalf("error = %v, want include_excerpt concrete-target validation", err)
-			}
-			if jm.watchCount() != 0 {
-				t.Fatalf("watch count = %d, want 0", jm.watchCount())
-			}
-		})
-	}
-}
-
 func TestJobManagerCloseDurablyClearsActiveWatches(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)
@@ -860,7 +837,7 @@ func TestWatchIdempotentReconfigureWithDetachedPendingDoesNotRegisterNewWatch(t 
 	args := watchArgs{
 		Target:      rec.JobID,
 		OutputMatch: "ready",
-		Send:        &watchSendArgs{To: runtimeMessageAliasCaller, Message: "observe"},
+		Send:        &watchSendArgs{To: runtimeMessageAliasCaller},
 	}
 	res, err := jm.configureWatch(args)
 	if err != nil {
@@ -884,7 +861,7 @@ func TestWatchIdempotentReconfigureWithDetachedPendingDoesNotRegisterNewWatch(t 
 	}
 	detached := &watchConfig{
 		target:     rec.JobID,
-		send:       &watchSendArgs{To: runtimeMessageAliasCaller, Message: "observe"},
+		send:       &watchSendArgs{To: runtimeMessageAliasCaller},
 		generation: pendingKey.WatchGeneration,
 		pending: map[jobstore.WatchSendKey]*jobstore.WatchSendState{
 			pendingKey: {

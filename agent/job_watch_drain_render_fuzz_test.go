@@ -77,7 +77,7 @@ func jdrExercisePendingAndRender(t *testing.T, s *Session) {
 	jm := s.jobManager
 	key := jobstore.WatchSendKey{ResolvedWatchedIdentity: "missing", ResolvedSendTo: runtimeMessageAliasCaller, VisibleSessionID: testOwnerSessionID}
 	state := &jobstore.WatchSendState{Key: key, UpdateSeq: 1, TriggerReason: "trigger"}
-	cfg := &watchConfig{watchID: "w", send: &watchSendArgs{Message: "hello", IncludeExcerpt: true}, pending: map[jobstore.WatchSendKey]*jobstore.WatchSendState{key: state}, pendingOrder: []jobstore.WatchSendKey{key, {}}}
+	cfg := &watchConfig{watchID: "w", send: &watchSendArgs{To: runtimeMessageAliasCaller}, pending: map[jobstore.WatchSendKey]*jobstore.WatchSendState{key: state}, pendingOrder: []jobstore.WatchSendKey{key, {}}}
 	jm.mu.Lock()
 	jm.watches[watchKey{VisibleSessionID: testOwnerSessionID, Target: "missing"}] = cfg
 	if jm.terminalFlush == nil {
@@ -118,29 +118,22 @@ func jdrExercisePendingAndRender(t *testing.T, s *Session) {
 		t.Fatal(got)
 	}
 	frame := jm.buildWatchFrameForTest(cfg, "missing", "a\r\nb", "delivery", events.SessionEvent{}, nil)
-	if !strings.Contains(frame, "output_read_error") {
-		t.Fatalf("missing read error: %q", frame)
+	if !strings.Contains(frame, "Watch frame") || strings.Contains(frame, "\r") {
+		t.Fatalf("unexpected frame: %q", frame)
 	}
 	var b strings.Builder
 	writeWatchFrameBoolField(&b, "x", true)
 	writeWatchFrameBoolField(&b, "x", false)
 	_ = limitWatchText("abcdef", 2)
 	_ = limitWatchText("abcdef", 20)
-	outputRec, err := jm.createShell(createShellOpts{Command: "output", Description: "truncated excerpt"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	jm.mu.Lock()
-	outputRun := jm.running[outputRec.JobID]
-	jm.mu.Unlock()
-	if outputRun == nil {
-		t.Fatal("running output fixture disappeared")
-	}
-	if _, err := jm.appendJobOutput(outputRec.JobID, outputRun.output, []byte(strings.Repeat("x", watchExcerptTailBytes+100))); err != nil {
-		t.Fatal(err)
-	}
-	truncatedFrame := jm.buildWatchFrameForTest(cfg, outputRec.JobID, "output", "delivery-output", events.SessionEvent{}, nil)
-	if !strings.Contains(truncatedFrame, "[excerpt truncated]") && !strings.HasSuffix(truncatedFrame, watchTruncatedIndicator) {
+	truncatedCfg := &watchConfig{watchID: "w", note: strings.Repeat("x", watchFrameMaxChars+100), send: &watchSendArgs{To: runtimeMessageAliasCaller}}
+	truncatedEv := events.New(events.ToolCallEndData{
+		ToolName:      "bash",
+		ArgumentsJSON: strings.Repeat("a", watchTriggerMaxChars),
+		Output:        strings.Repeat("o", watchFrameMaxChars),
+	})
+	truncatedFrame := jm.buildWatchFrameForTest(truncatedCfg, "missing", strings.Repeat("t", watchTriggerMaxChars), "delivery-output", truncatedEv, nil)
+	if !strings.HasSuffix(truncatedFrame, watchTruncatedIndicator) {
 		t.Fatalf("missing truncated marker: %q", truncatedFrame)
 	}
 	jm.enqueueWatchNotifications(nil)

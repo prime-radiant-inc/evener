@@ -150,9 +150,7 @@ func FuzzWobsBuildWatchFrame(f *testing.F) {
 		cfg := &watchConfig{
 			watchID: r.str(),
 			send: &watchSendArgs{
-				To:             r.pick([]string{"caller", "dlg_obs", ""}),
-				Message:        r.str(),
-				IncludeExcerpt: r.boolean(),
+				To: r.pick([]string{"caller", "dlg_obs", ""}),
 			},
 		}
 		jobIDs := []string{shell.JobID, "caller", "*", "", "job_missing"}
@@ -303,7 +301,7 @@ func FuzzWobsRestoreWatchSendPending(f *testing.F) {
 // ==========================================================================
 
 // FuzzWobsConfigureWatchSession drives configureWatch through its session-target
-// and receiver-observer paths — caller/"*" targets, output_match/include_excerpt
+// and receiver-observer paths — caller/"*" targets, output_match
 // session-target rejections, receiver_session_id / receiver_delegate_id parent
 // observers, and clears — asserting the watch state stays internally consistent
 // after each op regardless of the fuzzed shape.
@@ -350,7 +348,7 @@ func FuzzWobsConfigureWatchSession(f *testing.F) {
 			}
 			switch r.intn(4) {
 			case 1:
-				a.Send = &watchSendArgs{To: r.pick([]string{"caller", "dlg_obs"}), Message: "m", IncludeExcerpt: r.boolean()}
+				a.Send = &watchSendArgs{To: r.pick([]string{"caller", "dlg_obs"})}
 			case 2:
 				a.ReceiverSessionID = "S-observer"
 			case 3:

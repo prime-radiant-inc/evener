@@ -220,9 +220,6 @@ func (jm *jobManager) validateWatchRequest(a watchArgs, key watchKey) (result wa
 		}
 		return watchResult{}, true, errors.New(`invalid_request: output_match watches concrete job output; session-source watches use events and, for assistant.tool, event_filter`)
 	}
-	if a.Send != nil && a.Send.IncludeExcerpt && isWatchSessionTarget(a.Target) {
-		return watchResult{}, true, errors.New("invalid_request: include_excerpt requires a concrete job target; session-target frames carry bounded event payloads, not output excerpts")
-	}
 	return watchResult{}, false, nil
 }
 
@@ -771,8 +768,6 @@ func normalizedWatchConfigHash(a watchArgs) string {
 	}
 	if a.Send != nil {
 		snapshot.SendTo = a.Send.To
-		snapshot.SendMessage = a.Send.Message
-		snapshot.IncludeExcerpt = a.Send.IncludeExcerpt
 	}
 	// snapshot contains only strings, ints, bools, and slices of strings, so the
 	// standard encoder cannot fail. The receiver fields are hashed in place rather
@@ -854,6 +849,5 @@ func cloneWatchSendArgs(send *watchSendArgs) *watchSendArgs {
 	if send == nil {
 		return nil
 	}
-	clone := *send
-	return &clone
+	return &watchSendArgs{To: send.To}
 }

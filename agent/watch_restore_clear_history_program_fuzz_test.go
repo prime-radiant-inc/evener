@@ -86,7 +86,7 @@ func wrcConfig(id, source, target, sendTo, receiverSessionID, receiverDelegateID
 		createdAt:          frozenTestTime,
 	}
 	if sendTo != "" {
-		cfg.send = &watchSendArgs{To: sendTo, Message: "observe " + id, IncludeExcerpt: true}
+		cfg.send = &watchSendArgs{To: sendTo}
 	}
 	cfg.stableReceiver = receiverSessionID != "" && receiverDelegateID != ""
 	return cfg
@@ -542,8 +542,8 @@ func wrcExerciseClearHelpers(t *testing.T, r *wrcReader) {
 	if progressResult.Send == nil || progressResult.Send == progressCfg.send {
 		t.Fatalf("watch result did not clone send args: %+v", progressResult)
 	}
-	progressResult.Send.Message = "mutated"
-	if progressCfg.send.Message == "mutated" {
+	progressResult.Send.To = "mutated"
+	if progressCfg.send.To == "mutated" {
 		t.Fatal("watch result leaked mutable send args")
 	}
 	internalCfg := wrcConfig("watch-internal", "parent", "caller", "dlg_internal", "child", "dlg_internal")

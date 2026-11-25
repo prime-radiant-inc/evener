@@ -32,8 +32,8 @@ func FuzzWatchTimersObserveProgram(f *testing.F) {
 				t.Fatalf("nil-config notification = %+v", n)
 			}
 		case 1:
-			d := watchSendDelivery{message: "unchanged"}
-			if got := jm.snapshotWatchSendFrame(d); got.message != d.message || got.frame != "" {
+			d := watchSendDelivery{trigger: "unchanged"}
+			if got := jm.snapshotWatchSendFrame(d); got.trigger != d.trigger || got.frame != "" {
 				t.Fatalf("nil-send snapshot changed delivery: %+v", got)
 			}
 		case 2:
@@ -75,7 +75,7 @@ func FuzzWatchTimersObserveProgram(f *testing.F) {
 			}
 		case 5:
 			got := jm.snapshotWatchSendFrame(watchSendDelivery{
-				send: &watchSendArgs{Message: "observe"}, selfInfluence: true, gradientDepth: 2,
+				send: &watchSendArgs{To: runtimeMessageAliasCaller}, selfInfluence: true, gradientDepth: 2,
 			})
 			if !strings.HasPrefix(got.frame, "<system-reminder>") {
 				t.Fatalf("self-influence notice missing from frame: %q", got.frame)

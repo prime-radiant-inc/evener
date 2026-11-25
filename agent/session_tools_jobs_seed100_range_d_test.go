@@ -49,8 +49,8 @@ func seed100ToolsRangeD(t *testing.T) {
 	}
 	for _, args := range []map[string]any{
 		{}, {"send": "bad"}, {"send": map[string]any{}},
-		{"send": map[string]any{"message": "x"}},
-		{"send": map[string]any{"to": " dlg_1 ", "message": "hi", "include_excerpt": true}},
+		{"send": map[string]any{"to": "   "}},
+		{"send": map[string]any{"to": " dlg_1 "}},
 	} {
 		_, _ = watchSendArg(args)
 	}

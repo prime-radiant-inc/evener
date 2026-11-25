@@ -385,13 +385,14 @@ func TestClassifySelfInfluenceRecreatedWatchStartsFresh(t *testing.T) {
 		return watchArgs{
 			Target: "caller",
 			Events: []string{"job.notification"},
-			Send:   &watchSendArgs{To: runtimeMessageAliasCaller, Message: "v1"},
+			Note:   "v1",
+			Send:   &watchSendArgs{To: runtimeMessageAliasCaller},
 		}
 	}
 	recreates := map[string]func(t *testing.T, jm *jobManager){
 		"replaced": func(t *testing.T, jm *jobManager) {
 			replaced := newArgs()
-			replaced.Send.Message = "v2 changed"
+			replaced.Note = "v2 changed"
 			if _, err := jm.configureWatch(replaced); err != nil {
 				t.Fatalf("configure v2 (replace): %v", err)
 			}
