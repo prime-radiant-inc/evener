@@ -109,8 +109,27 @@ test("the composer card becomes the floating surface on the phone, and only the 
   // framed look inside a scrolling form body.
   const card = ruleIn(phone, /\[data-composer\][^{]*\.card\s*\{/);
   expect(card).toMatch(/border:\s*none/);
-  expect(card).toMatch(/background:\s*color-mix\(in oklab, var\(--field\)/);
-  expect(card).toMatch(/backdrop-filter:\s*blur\(16px\)/);
+  expect(card).toMatch(/background:\s*transparent/);
+  // Never put backdrop-filter on .card itself: a non-none backdrop-filter makes
+  // .card a containing block for position: fixed descendants, trapping inline
+  // SessionMenu dialogs (Rename, Shut down, Force stop, Delete) inside the card.
+  expect(card).not.toMatch(/backdrop-filter/);
+
+  const surface = ruleIn(phone, /\[data-composer\][^{]*\.card::before\s*\{/);
+  expect(surface).toMatch(/position:\s*absolute/);
+  expect(surface).toMatch(/inset:\s*0/);
+  expect(surface).toMatch(/border-radius:\s*inherit/);
+  expect(surface).toMatch(/pointer-events:\s*none/);
+  expect(surface).toMatch(/background:\s*color-mix\(in oklab, var\(--field\)/);
+  expect(surface).toMatch(/backdrop-filter:\s*blur\(16px\)/);
+
+  // Direct flex children (.field, .controls) take z-index: 0 so they paint
+  // above ::before in tree order without isolation: isolate (which would form
+  // a backdrop root and stop ::before from blurring the transcript) and
+  // without position: relative (which would trap .attachSlot inside .controls).
+  const children = ruleIn(phone, /\[data-composer\][^{]*\.card\s*>\s*\*\s*\{/);
+  expect(children).toMatch(/z-index:\s*0/);
+  expect(children).not.toMatch(/position:\s*relative/);
 
   // The card keeps the panel radius in every state: the pill is control
   // geometry, never a surface shape, so the folded one-row shape stays

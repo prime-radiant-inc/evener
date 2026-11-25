@@ -1,7 +1,6 @@
 import { resolveEffectiveConfig, type ViewportClass } from "@evener/appwire-client";
 import type { RefObject } from "react";
-import { useLayoutEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
+import { useRef } from "react";
 import { ResponsiveModal } from "../../../shell/ResponsiveModal";
 import { transcriptDisplayStore, useTranscriptDisplayStore } from "../../../stores/transcriptDisplay";
 import { Button, InlineNotice } from "../../../widgets";
@@ -132,12 +131,6 @@ function DetailPanel({
 export function TranscriptDetailControl({ open, onClose, layout, onEditHubDefaults }: TranscriptDetailControlProps) {
   const editButtonRef = useRef<HTMLButtonElement>(null);
   const isMobile = layout === "mobile";
-  // Portal out of the composer's inline-size container into the owning document.
-  const hostRef = useRef<HTMLSpanElement>(null);
-  const [panelDocument, setPanelDocument] = useState<Document | null>(null);
-  useLayoutEffect(() => {
-    if (open && isMobile) setPanelDocument(hostRef.current?.ownerDocument ?? document);
-  }, [open, isMobile]);
   const local = useTranscriptDisplayStore((state) => state.local[layout]);
   const hub = useTranscriptDisplayStore((state) => state.hub[layout]);
   const hubLoading = useTranscriptDisplayStore((state) => state.hubLoading);
@@ -185,7 +178,7 @@ export function TranscriptDetailControl({ open, onClose, layout, onEditHubDefaul
     />
   );
 
-  const modal = (
+  return (
     <ResponsiveModal
       open={open}
       onClose={onClose}
@@ -196,13 +189,5 @@ export function TranscriptDetailControl({ open, onClose, layout, onEditHubDefaul
     >
       {panel}
     </ResponsiveModal>
-  );
-
-  if (!isMobile) return modal;
-  return (
-    <>
-      <span ref={hostRef} hidden />
-      {panelDocument !== null && createPortal(modal, panelDocument.body)}
-    </>
   );
 }
