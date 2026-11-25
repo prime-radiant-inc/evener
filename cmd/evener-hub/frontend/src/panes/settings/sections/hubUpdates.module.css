@@ -1,6 +1,7 @@
 .root {
   display: flex;
   flex-direction: column;
+  line-height: var(--line-height-ui);
 }
 
 .header {

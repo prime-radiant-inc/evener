@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { render, screen } from "@testing-library/react";
 import { expect, test } from "vitest";
 import { requireClass } from "../internal/requireClass";
@@ -52,4 +55,13 @@ test("declares no :focus-visible rule - badge is not interactive", () => {
   // focus ring - this test documents that as deliberate, not an oversight.
   render(<Badge count={1} />);
   expect(screen.getByText("1").getAttribute("tabindex")).toBeNull();
+});
+
+test("uses a compact 20px pill with a bordered inset neutral tone", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const css = readFileSync(join(here, "badge.module.css"), "utf8");
+  expect(css).toMatch(/\.badge\s*\{[^}]*min-width:\s*20px[^}]*height:\s*20px/s);
+  expect(css).toMatch(
+    /\.badgeNeutral\s*\{[^}]*background:\s*var\(--surface-inset\)[^}]*border-color:\s*var\(--edge\)/s,
+  );
 });

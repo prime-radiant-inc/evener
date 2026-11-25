@@ -1,5 +1,6 @@
 .root {
   composes: stack3 from "../../../styles/surface.module.css";
+  line-height: var(--line-height-ui);
 }
 
 .header {
@@ -48,7 +49,7 @@
   flex-wrap: wrap;
   align-items: baseline;
   gap: var(--space-half) var(--space-3);
-  padding-top: var(--space-half);
+  padding-top: var(--space-1);
   font-variant-numeric: tabular-nums;
 }
 

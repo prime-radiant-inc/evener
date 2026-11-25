@@ -533,9 +533,10 @@ describe("CSS contract", () => {
       /\.track\s*\{[^}]*--segmented-gap:\s*2px[^}]*position:\s*relative[^}]*display:\s*inline-grid[^}]*align-items:\s*stretch[^}]*box-sizing:\s*border-box[^}]*overflow:\s*visible[^}]*padding:\s*2px[^}]*gap:\s*var\(--segmented-gap\)[^}]*border:\s*1px solid var\(--edge\)[^}]*border-radius:\s*var\(--radius-pill\)[^}]*background:\s*var\(--surface-canvas\)[^}]*box-shadow:\s*var\(--shadow-inset-field\)/s,
     );
     expect(css).toMatch(
-      /\.option\s*\{[^}]*display:\s*flex[^}]*align-items:\s*center[^}]*justify-content:\s*center[^}]*min-inline-size:\s*0[^}]*inline-size:\s*100%[^}]*border:\s*1px solid transparent[^}]*border-radius:\s*var\(--radius-pill\)[^}]*padding-block:\s*0[^}]*padding-inline:\s*var\(--space-1\)[^}]*background:\s*transparent[^}]*color:\s*var\(--ink-mid\)/s,
+      /\.option\s*\{[^}]*display:\s*flex[^}]*align-items:\s*center[^}]*justify-content:\s*center[^}]*min-inline-size:\s*0[^}]*inline-size:\s*100%[^}]*border:\s*1px solid transparent[^}]*border-radius:\s*var\(--radius-pill\)[^}]*padding-block:\s*0[^}]*padding-inline:\s*var\(--space-3\)[^}]*background:\s*transparent[^}]*color:\s*var\(--ink-mid\)/s,
     );
     expect(css).toMatch(/\.fullWidth\s*\{[^}]*inline-size:\s*100%/s);
+    expect(css).toMatch(/\.fullWidth\s*>\s*\.option\s*\{[^}]*padding-inline:\s*var\(--space-1\)/s);
     expect(css).toMatch(
       /\.option\s*\{[^}]*font-family:\s*var\(--font-sans\)[^}]*font-size:\s*var\(--font-size-ui\)[^}]*line-height:\s*var\(--line-height-body\)[^}]*font-weight:\s*var\(--font-weight-medium\)[^}]*text-align:\s*center[^}]*cursor:\s*pointer/s,
     );
@@ -559,7 +560,7 @@ describe("CSS contract", () => {
     expect(css).toMatch(
       /\.optionLabel\s*\{[^}]*composes:\s*truncate from "\.\.\/\.\.\/styles\/text\.module\.css"[^}]*min-inline-size:\s*0/s,
     );
-    expect(css).toMatch(/\.sm\s*\{[^}]*block-size:\s*28px/s);
+    expect(css).toMatch(/\.sm\s*\{[^}]*block-size:\s*26px[^}]*font-size:\s*var\(--font-size-caption\)/s);
     expect(css).toMatch(/\.md\s*\{[^}]*block-size:\s*32px/s);
     expect(css).toMatch(/\.option\s*\{[^}]*composes:\s*tapFloor from "\.\.\/\.\.\/styles\/tapfloor\.module\.css"/s);
     expect(css).toMatch(
@@ -572,7 +573,7 @@ describe("CSS contract", () => {
     expect(mdMatch).toBeTruthy();
     expect(tapMatch).toBeTruthy();
     const trackEdges = 2 * 2 + 2 * 1;
-    expect(Number(smMatch?.[1]) + trackEdges).toBe(34);
+    expect(Number(smMatch?.[1]) + trackEdges).toBe(32);
     expect(Number(mdMatch?.[1]) + trackEdges).toBe(38);
     expect(Number(tapMatch?.[1]) + trackEdges).toBe(50);
     expect(css).not.toMatch(/min-inline-size:\s*var\(--tap-min\)/);
