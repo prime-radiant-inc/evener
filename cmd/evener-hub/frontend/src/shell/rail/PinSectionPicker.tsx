@@ -1,12 +1,13 @@
 import type { NavigationSessionSummary } from "@evener/appwire-client";
 import { friendlyErrorMessage } from "@evener/appwire-client";
-import { type ChangeEvent, useEffect, useId, useState } from "react";
+import { useEffect, useState } from "react";
 import { selectPinSectionSummaries } from "../../stores/navigation/selectors";
 import { navigationStore } from "../../stores/navigation/store";
-import { Button, Dialog, FormRow, InlineNotice, Input, ListRow, Sheet, Skeleton } from "../../widgets";
+import { Button, Dialog, InlineNotice, ListRow, Sheet, Skeleton } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { useIsMobile } from "../useIsMobile";
 import { isPinSectionNotFound, type PinSectionSummary } from "./actions";
+import { PinSectionNameField, validatePinSectionName } from "./pinSectionForm";
 import styles from "./railDialog.module.css";
 
 export interface PinSectionPickerProps {
@@ -29,7 +30,6 @@ function sortedPinSectionSummaries(): PinSectionSummary[] {
 }
 
 export function PinSectionPicker({ session, onAssign, onClose }: PinSectionPickerProps) {
-  const inputID = useId();
   const isMobile = useIsMobile();
   const [sections, setSections] = useState<PinSectionSummary[]>([]);
   const [loading, setLoading] = useState(true);
@@ -80,16 +80,12 @@ export function PinSectionPicker({ session, onAssign, onClose }: PinSectionPicke
   }
 
   async function assignNew(): Promise<void> {
+    const invalid = validatePinSectionName(name);
+    if (invalid !== undefined) {
+      setError(invalid);
+      return;
+    }
     const normalized = name.trim();
-    const count = Array.from(normalized).length;
-    if (count === 0) {
-      setError("Section name is required");
-      return;
-    }
-    if (count > 80) {
-      setError("Section names must be 80 characters or fewer");
-      return;
-    }
     setError("");
     setSubmitting(true);
     try {
@@ -120,18 +116,15 @@ export function PinSectionPicker({ session, onAssign, onClose }: PinSectionPicke
   const body = (
     <div className={CLASS.pickerBody}>
       {nameMode ? (
-        <FormRow label="Section name" htmlFor={inputID} error={error || undefined}>
-          <Input
-            id={inputID}
-            value={name}
-            onChange={(event: ChangeEvent<HTMLInputElement>) => {
-              setName(event.target.value);
-              setError("");
-            }}
-            disabled={submitting}
-            aria-describedby={error ? `${inputID}-error` : undefined}
-          />
-        </FormRow>
+        <PinSectionNameField
+          value={name}
+          onChange={(value) => {
+            setName(value);
+            setError("");
+          }}
+          error={error || undefined}
+          disabled={submitting}
+        />
       ) : (
         <>
           {loading && <Skeleton lines={2} />}
