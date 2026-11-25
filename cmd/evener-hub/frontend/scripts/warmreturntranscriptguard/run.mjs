@@ -12,7 +12,8 @@
 // ones the app ships.
 //
 // The run records STRUCTURAL COUNTS only (item, notice and body counts per
-// committed model) and never writes transcript text to a milestone.
+// committed model) plus a boolean for the fixture's exact recorded body, and
+// never writes transcript text or an item identity to a milestone.
 //
 // Arguments:
 //   --url            the hub's real /auth/<token> URL
@@ -55,7 +56,7 @@ const BOOT = {
 };
 // The scripted target turn's own text, used only to locate the durable row that
 // proves the recorded body was committed. It is fixture data, never milestone
-// content.
+// content. The row's identity, never this text, is the restored-body oracle.
 const RECORDED_BODY = "BACKGROUND_BEFORE_EVICTION";
 
 let URL = "";
@@ -157,17 +158,58 @@ async function waitForEvidenceGlobal(driver, timeoutMs = 30000) {
   throw new Error("the production-entry dev entry never exposed its evidence global");
 }
 
+// recordedBodyIdentity returns the durable identity of the fixture's synthetic
+// recorded body: the one native row whose item text carries the fixture
+// sentinel. A caller follows the same identity into the restored display, so a
+// body-shaped item belonging to any other record cannot stand in for it.
+function recordedBodyIdentity(native) {
+  const matches = (native?.rows ?? []).filter((row) => row.item?.text?.includes(RECORDED_BODY));
+  if (matches.length !== 1) {
+    throw new Error(
+      `the durable store held ${matches.length} rows for the fixture's recorded body, want exactly one`,
+    );
+  }
+  const row = matches[0];
+  // transcriptKey is the record's stable identity across the historical and
+  // live projections; a display id may be minted differently for the same
+  // persisted item.
+  if (typeof row.transcriptKey !== "string" || row.transcriptKey === "") {
+    throw new Error("the fixture's durable recorded row carried no transcript key");
+  }
+  return { transcriptKey: row.transcriptKey };
+}
+
+// recordedBodyDisplayed reports whether a committed display carries the exact
+// fixture record, non-notice and with its body still present. It is
+// self-contained (no closure) because the browser expression embeds it with
+// toString(), and the pre-restore wait runs before any recorder installs.
+function recordedBodyDisplayed(turns, overlay, identity) {
+  if (identity === null || identity === undefined) return false;
+  return (turns ?? []).some((turn) =>
+    (turn.items ?? []).some(
+      (item) =>
+        item.transcriptKey === identity.transcriptKey &&
+        !(item.overlayKey !== undefined && overlay?.[item.overlayKey]?.kind === "notice") &&
+        ((item.text ?? "") !== "" || (item.output ?? "") !== ""),
+    ),
+  );
+}
+
 // structuralStateExpr is the store model's shape, never its text: the guard's
 // claim is about what a pane could render, so it counts notices against
-// content-bearing items. It is self-contained (no recorder dependency) because
-// the pre-restore wait observes the background lease before the recorder
-// installs, and the harness evidence global is frozen.
-function structuralStateExpr(ref) {
+// content-bearing items and reports whether the fixture's exact recorded body
+// is displayed. It is self-contained (no recorder dependency) because the
+// pre-restore wait observes the background lease before the recorder installs,
+// and the harness evidence global is frozen.
+function structuralStateExpr(ref, identity = null) {
   return `(() => {
+    const recordedIdentity = ${JSON.stringify(identity)};
     const state = window.backgroundTranscriptEvidence;
     const model = state.model(${JSON.stringify(ref)});
-    const items = (model?.turns ?? []).flatMap((turn) => turn.items ?? []);
+    const turns = model?.turns ?? [];
+    const items = turns.flatMap((turn) => turn.items ?? []);
     const overlay = model?.overlay ?? {};
+    ${recordedBodyDisplayed.toString()}
     const noticeDisplay = items.filter((item) =>
       item.overlayKey !== undefined && overlay[item.overlayKey]?.kind === "notice").length;
     return {
@@ -184,9 +226,10 @@ function structuralStateExpr(ref) {
       bodyItems: items.filter((item) =>
         item.overlayKey === undefined &&
         ((item.text ?? "") !== "" || (item.output ?? "") !== "")).length,
+      recordedBodyShown: recordedBodyDisplayed(turns, overlay, recordedIdentity),
       overlayNotices: Object.values(overlay).filter((entry) => entry?.kind === "notice").length,
       historyItems: (model?.history?.turns ?? []).flatMap((turn) => turn.items ?? []).length,
-      turns: (model?.turns ?? []).length,
+      turns: turns.length,
     };
   })()`;
 }
@@ -226,10 +269,10 @@ const PARK_EXPR = `(async () => {
   return true;
 })()`;
 
-async function waitForStructural(driver, predicate, label, timeoutMs = 30000) {
+async function waitForStructural(driver, predicate, label, timeoutMs = 30000, identity = null) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const value = await evaluate(driver.send, structuralStateExpr(SESSION_B));
+    const value = await evaluate(driver.send, structuralStateExpr(SESSION_B, identity));
     if (value && predicate(value)) return value;
     await delay(100);
   }
@@ -246,11 +289,12 @@ async function waitForParked(driver, timeoutMs = 30000) {
   throw new Error("the warm open never parked a durable window read");
 }
 
-// startStructuralSampler samples the app's own evidence global from Node, so
-// the frame cadence is a driver cadence rather than a throttled page timer. It
-// records every distinct structural state of the target ref, including the
+// startStructuralSampler samples the app's own evidence global from Node every
+// 20 ms and deduplicates, so the evidence is model-publication states, not DOM
+// paints; the cadence is a driver cadence rather than a throttled page timer.
+// It records every distinct structural state of the target ref, including the
 // opening's pending flag, and never reads text.
-function startStructuralSampler(driver) {
+function startStructuralSampler(driver, identity = null) {
   const frames = [];
   let lastKey = "";
   let stopped = false;
@@ -262,6 +306,7 @@ function startStructuralSampler(driver) {
       frame.noticeDisplay,
       frame.contentItems,
       frame.bodyItems,
+      frame.recordedBodyShown,
       frame.overlayNotices,
       frame.historyItems,
       frame.turns,
@@ -270,7 +315,7 @@ function startStructuralSampler(driver) {
     while (!stopped) {
       let frame;
       try {
-        frame = await evaluate(driver.send, structuralStateExpr(SESSION_B));
+        frame = await evaluate(driver.send, structuralStateExpr(SESSION_B, identity));
       } catch {
         break;
       }
@@ -419,10 +464,15 @@ async function main() {
       // The background lease commits the recorded body to native storage and
       // publishes the pruned store model: overlay notices only.
       const native = await waitForNativeBody(driver);
+      // The durable row proves which record is the fixture's recorded body;
+      // its identity is what the restore owes, so no other text-bearing item
+      // can satisfy the oracle below.
+      const recordedBody = recordedBodyIdentity(native);
       milestone("warm-pruned-native", {
         rows: native.rows.length,
         turns: native.turns.length,
         coverage: native.coverage.length,
+        recordedBodyCaptured: true,
       });
       const pruned = await waitForStructural(
         driver,
@@ -430,14 +480,17 @@ async function main() {
           value.modelPresent &&
           value.historyItems > 0 &&
           value.overlayNotices > 0 &&
-          value.displayItems === value.noticeDisplay,
+          value.displayItems === value.noticeDisplay &&
+          !value.recordedBodyShown,
         "the pruned background display (overlay notices, no recorded bodies)",
+        30000,
+        recordedBody,
       );
       milestone("warm-pruned", { ref: SESSION_B, ...pruned });
 
       await evaluate(driver.send, PARK_EXPR);
       await evaluate(driver.send, "window.__warmReturn.arm()");
-      const sampler = startStructuralSampler(driver);
+      const sampler = startStructuralSampler(driver, recordedBody);
       const traceBefore = statSync(TRACE_PATH).size;
       // The production rail press opens the pane; the entry route restores the
       // released bodies from the same native database.
@@ -462,6 +515,7 @@ async function main() {
           noticeDisplay: frame.noticeDisplay,
           contentItems: frame.contentItems,
           bodyItems: frame.bodyItems,
+          recordedBodyShown: frame.recordedBodyShown,
           overlayNotices: frame.overlayNotices,
           historyItems: frame.historyItems,
         })),
@@ -479,8 +533,10 @@ async function main() {
       await evaluate(driver.send, `window.backgroundTranscriptEvidence.entrySettled(${JSON.stringify(SESSION_B)})`);
       const restored = await waitForStructural(
         driver,
-        (value) => value.bodyItems > 0 && value.overlayNotices > 0 && !value.pending,
-        "the restored display (recorded bodies with the historical notice)",
+        (value) => value.recordedBodyShown && value.overlayNotices > 0 && !value.pending,
+        "the restored display (the fixture's exact recorded body with the historical notice)",
+        30000,
+        recordedBody,
       );
       const traceAfter = statSync(TRACE_PATH).size;
       const activation = countTargetRequestsInWindow(SESSION_B, traceBefore, traceAfter, TRACE_PATH);
@@ -579,4 +635,4 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   );
 }
 
-export { noticeOnlyFrame, structuralStateExpr };
+export { noticeOnlyFrame, recordedBodyDisplayed, recordedBodyIdentity, structuralStateExpr };

@@ -15,8 +15,9 @@
 // open, the app's ordinary background lease hydrates it through the real
 // AppWire, commits the recorded bodies to the real entry cache database, and
 // releases them from display. The driver then opens the pane and asserts only
-// STRUCTURAL COUNTS of the committed models and of the hub's AppWire trace. No
-// transcript text, session identifier or screenshot enters a milestone.
+// STRUCTURAL COUNTS of the committed models, a boolean for the fixture's exact
+// recorded body, and the hub's AppWire trace. No transcript text, session
+// identifier or screenshot enters a milestone.
 //
 // This is a disjoint new guard: it neither edits nor runs #7684's
 // backgroundtranscriptguard runner, and it registers no shared fixture hunk.
@@ -156,23 +157,29 @@ type warmReturnStructural struct {
 	ContentItems  int    `json:"contentItems"`
 	// BodyItems counts displayed text-bearing items that are not overlay
 	// notices. Notice text must never stand in for the recorded body.
-	BodyItems      int `json:"bodyItems"` //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field bodyItems.
-	OverlayNotices int `json:"overlayNotices"`
-	HistoryItems   int `json:"historyItems"`
-	Turns          int `json:"turns"`
+	BodyItems int `json:"bodyItems"` //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field bodyItems.
+	// RecordedBodyShown reports the fixture's exact synthetic recorded body in
+	// the display: same transcript identity, non-notice, body present. A
+	// body-shaped item of any other identity does not satisfy it.
+	RecordedBodyShown bool `json:"recordedBodyShown"` //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field recordedBodyShown.
+	OverlayNotices    int  `json:"overlayNotices"`
+	HistoryItems      int  `json:"historyItems"`
+	Turns             int  `json:"turns"`
 }
 
 // pruned reports the background lease's released display: the notice overlay
 // alone, over a history that still records the bodies as bare identities.
 func (s warmReturnStructural) pruned() bool {
 	return s.ModelPresent && s.DisplayItems > 0 && !s.Pending &&
-		s.DisplayItems == s.NoticeDisplay && s.OverlayNotices > 0 && s.HistoryItems > 0
+		s.DisplayItems == s.NoticeDisplay && s.OverlayNotices > 0 && s.HistoryItems > 0 &&
+		!s.RecordedBodyShown
 }
 
 type warmReturnNative struct {
-	Rows     int `json:"rows"`
-	Turns    int `json:"turns"`
-	Coverage int `json:"coverage"`
+	Rows                 int  `json:"rows"`
+	Turns                int  `json:"turns"`
+	Coverage             int  `json:"coverage"`
+	RecordedBodyCaptured bool `json:"recordedBodyCaptured"` //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field recordedBodyCaptured.
 }
 
 type warmReturnActivation struct {
@@ -196,20 +203,21 @@ type warmReturnOpening struct {
 // the Go side can re-judge the notice-only shape independently of the driver's
 // own predicate.
 type warmReturnPendingShape struct {
-	ModelPresent   bool `json:"modelPresent"`   //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field modelPresent.
-	DisplayItems   int  `json:"displayItems"`   //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field displayItems.
-	NoticeDisplay  int  `json:"noticeDisplay"`  //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field noticeDisplay.
-	ContentItems   int  `json:"contentItems"`   //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field contentItems.
-	BodyItems      int  `json:"bodyItems"`      //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field bodyItems.
-	OverlayNotices int  `json:"overlayNotices"` //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field overlayNotices.
-	HistoryItems   int  `json:"historyItems"`   //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field historyItems.
+	ModelPresent      bool `json:"modelPresent"`      //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field modelPresent.
+	DisplayItems      int  `json:"displayItems"`      //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field displayItems.
+	NoticeDisplay     int  `json:"noticeDisplay"`     //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field noticeDisplay.
+	ContentItems      int  `json:"contentItems"`      //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field contentItems.
+	BodyItems         int  `json:"bodyItems"`         //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field bodyItems.
+	RecordedBodyShown bool `json:"recordedBodyShown"` //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field recordedBodyShown.
+	OverlayNotices    int  `json:"overlayNotices"`    //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field overlayNotices.
+	HistoryItems      int  `json:"historyItems"`      //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field historyItems.
 }
 
 // noticeOnly reports the display the bug published ahead of the restore: the
 // historical notice over a history that records bodies it can no longer show.
 func (s warmReturnPendingShape) noticeOnly() bool {
 	return s.ModelPresent && s.DisplayItems > 0 && s.DisplayItems == s.NoticeDisplay &&
-		s.BodyItems == 0 && s.OverlayNotices > 0 && s.HistoryItems > 0
+		s.BodyItems == 0 && !s.RecordedBodyShown && s.OverlayNotices > 0 && s.HistoryItems > 0
 }
 
 type warmReturnRestored struct {
@@ -231,6 +239,9 @@ func assertWarmReturnTranscript(t *testing.T, fixture *skillGuardFixture, milest
 	if skillGuardMilestoneDetail(t, milestones, "warm-pruned-native", &native) {
 		if native.Rows == 0 {
 			t.Error("warm-pruned-native: the background lease committed no durable row")
+		}
+		if !native.RecordedBodyCaptured {
+			t.Error("warm-pruned-native: the driver did not capture the fixture's exact recorded body identity")
 		}
 	}
 	var pruned warmReturnStructural
@@ -271,11 +282,11 @@ func assertWarmReturnTranscript(t *testing.T, fixture *skillGuardFixture, milest
 	if !restored.ModelPresent || restored.Pending {
 		t.Errorf("warm-restored: the restored model is missing or still pending: %+v", restored)
 	}
-	// The restored display must carry a text-bearing item that is not an
-	// overlay notice; the historical notice's own text cannot stand in for the
-	// recorded body the restore owes.
-	if restored.BodyItems == 0 {
-		t.Errorf("warm-restored: no non-notice recorded body in the restored display: %+v", restored)
+	// The restored display must carry the exact record the durable row proved
+	// was the fixture's recorded body, not merely some body-shaped item: a
+	// notice-only publication, or a different recorded item, must fail here.
+	if !restored.RecordedBodyShown {
+		t.Errorf("warm-restored: the fixture's exact recorded body is not in the restored display: %+v", restored)
 	}
 	if restored.OverlayNotices == 0 {
 		t.Error("warm-restored: the historical notice did not settle with its bodies")
@@ -350,14 +361,14 @@ func assertWarmReturnTranscript(t *testing.T, fixture *skillGuardFixture, milest
 	}
 	// The passing run's own evidence: structural counts only, never refs or text.
 	t.Logf(
-		"warm return: native={rows:%d turns:%d} pruned={items:%d notices:%d history:%d} "+
+		"warm return: native={rows:%d turns:%d recordedBodyCaptured:%t} pruned={items:%d notices:%d history:%d recordedBodyShown:%t} "+
 			"opening={parked:%d frames:%d pending:%d noticeOnly:%d} "+
-			"restored={items:%d bodies:%d notices:%d reads:%d pages:%d} "+
+			"restored={items:%d bodies:%d recordedBodyShown:%t notices:%d reads:%d pages:%d} "+
 			"control={items:%d notices:%d native:%s rows:%d} clear={metadata:%s}",
-		native.Rows, native.Turns,
-		pruned.DisplayItems, pruned.OverlayNotices, pruned.HistoryItems,
+		native.Rows, native.Turns, native.RecordedBodyCaptured,
+		pruned.DisplayItems, pruned.OverlayNotices, pruned.HistoryItems, pruned.RecordedBodyShown,
 		opening.Parked, opening.Frames, opening.PendingFrames, opening.NoticeOnlyFrames,
-		restored.DisplayItems, restored.BodyItems, restored.OverlayNotices, reads, pages,
+		restored.DisplayItems, restored.BodyItems, restored.RecordedBodyShown, restored.OverlayNotices, reads, pages,
 		control.DisplayItems, control.OverlayNotices, control.NativeMetadata, control.NativeRows,
 		cleared.NativeMetadata,
 	)
