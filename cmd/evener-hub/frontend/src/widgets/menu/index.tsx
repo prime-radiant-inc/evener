@@ -918,7 +918,7 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
 
   // Escape closes the menu and stops there, so an enclosing overlay does not
   // also close.
-  const handleEscape = useEscapeToClose(closeMenu, { stopPropagation: true });
+  const handleEscape = useEscapeToClose(closeMenu);
 
   // Lay the trigger out of sight and the menu must still give focus back to
   // it - the reader was on it a moment ago - but the scope's restore is a

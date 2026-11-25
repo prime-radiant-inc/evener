@@ -190,6 +190,66 @@ test("places the panel from its untransformed layout box, not its mid-animation 
   }
 });
 
+// A phone browser pans its visual viewport over the layout viewport - the
+// on-screen keyboard, or a pinch zoom. The placement answers to the visible
+// region, then translates back into the layout coordinates position:fixed
+// uses, so the panel still sits against its trigger after the pan.
+test("a panned visual viewport places the panel in layout coordinates", () => {
+  const fakeViewport = new EventTarget() as EventTarget & {
+    width: number;
+    height: number;
+    offsetLeft: number;
+    offsetTop: number;
+  };
+  fakeViewport.width = 800;
+  fakeViewport.height = 400;
+  fakeViewport.offsetLeft = 0;
+  fakeViewport.offsetTop = 400;
+  vi.stubGlobal("visualViewport", fakeViewport);
+
+  // The trigger in layout coordinates: 500..528, i.e. 100..128 in the visible
+  // region, which starts 400 down.
+  const TRIGGER = { left: 100, right: 140, top: 500, bottom: 528, width: 40, height: 28 };
+  const isPanel = (el: Element) => (el as HTMLElement).dataset?.testid === "panel";
+  const originalRect = Element.prototype.getBoundingClientRect;
+  const originalOffsetWidth = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "offsetWidth");
+  const originalOffsetHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "offsetHeight");
+
+  Element.prototype.getBoundingClientRect = function stubbedRect(this: Element) {
+    if (this.tagName === "SPAN") return { ...TRIGGER } as DOMRect;
+    return originalRect.call(this);
+  };
+  Object.defineProperty(HTMLElement.prototype, "offsetWidth", {
+    configurable: true,
+    get(this: HTMLElement) {
+      return isPanel(this) ? 160 : 0;
+    },
+  });
+  Object.defineProperty(HTMLElement.prototype, "offsetHeight", {
+    configurable: true,
+    get(this: HTMLElement) {
+      return isPanel(this) ? 120 : 0;
+    },
+  });
+
+  try {
+    render(
+      <Popover open onClose={() => {}} trigger={<button type="button">open</button>} data-testid="panel">
+        <div>panel body</div>
+      </Popover>,
+    );
+    // Placed below the trigger in the visible region (128 + 4) and translated
+    // back across the 400px pan: 132 + 400. Dropping the translation would
+    // leave the panel at 132, a pan-distance above its trigger.
+    expect(screen.getByTestId("panel").style.top).toBe("532px");
+  } finally {
+    vi.unstubAllGlobals();
+    Element.prototype.getBoundingClientRect = originalRect;
+    restoreOwnProperty(HTMLElement.prototype, "offsetWidth", originalOffsetWidth);
+    restoreOwnProperty(HTMLElement.prototype, "offsetHeight", originalOffsetHeight);
+  }
+});
+
 // Puts back exactly what was there, including "nothing at all" - a stub left
 // installed on HTMLElement.prototype would follow every later test file in the
 // same worker.

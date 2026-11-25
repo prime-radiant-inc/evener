@@ -183,10 +183,9 @@ export function TranscriptDetailControl({ open, onClose, layout, onEditHubDefaul
       open={open}
       onClose={onClose}
       title="Verbosity"
-      footer={footer}
+      footer={isMobile ? footer : undefined}
       mobile={isMobile}
       sheetSize="wide"
-      showDialogFooter={false}
     >
       {panel}
     </ResponsiveModal>

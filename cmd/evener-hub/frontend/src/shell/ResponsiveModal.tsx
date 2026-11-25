@@ -7,15 +7,14 @@ export interface ResponsiveModalProps {
   onClose: () => void;
   title: string;
   children: ReactNode;
-  /** The Sheet's footer; the Dialog shows it too unless showDialogFooter is false. */
+  /** The actions row both surfaces show; a caller that puts them in the body
+   * omits it. */
   footer?: ReactNode;
   /** The caller's own layout answer, for a surface that follows stored layout
    * state rather than the live viewport. Defaults to `useIsMobile`. */
   mobile?: boolean;
   /** Sheet geometry, for a caller that needs the wide sheet. */
   sheetSize?: SheetProps["size"];
-  /** False when the caller puts its actions in the dialog body instead. */
-  showDialogFooter?: boolean;
 }
 
 /**
@@ -23,16 +22,7 @@ export interface ResponsiveModalProps {
  * the centered Dialog everywhere else. Both are the same OverlayPanel
  * contract (scrim, Escape, focus trap/restore).
  */
-export function ResponsiveModal({
-  open,
-  onClose,
-  title,
-  children,
-  footer,
-  mobile,
-  sheetSize,
-  showDialogFooter = true,
-}: ResponsiveModalProps) {
+export function ResponsiveModal({ open, onClose, title, children, footer, mobile, sheetSize }: ResponsiveModalProps) {
   const viewportMobile = useIsMobile();
   if (mobile ?? viewportMobile) {
     return (
@@ -42,7 +32,7 @@ export function ResponsiveModal({
     );
   }
   return (
-    <Dialog open={open} onClose={onClose} title={title} footer={showDialogFooter ? footer : undefined}>
+    <Dialog open={open} onClose={onClose} title={title} footer={footer}>
       {children}
     </Dialog>
   );

@@ -182,7 +182,7 @@ export function Popover({
     };
   }, [open, onClose, closeOnScroll, panelWindow]);
 
-  const handlePanelKeyDown = useEscapeToClose(onClose, { stopPropagation: true });
+  const handlePanelKeyDown = useEscapeToClose(onClose);
 
   return (
     <span ref={triggerRef} className={`${CLASS.trigger} ${stretchTrigger ? CLASS.triggerStretch : ""}`}>
