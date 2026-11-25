@@ -919,7 +919,16 @@ async function measureTabletSplit(page) {
   await pressKey(send, "Home", "Home", 36);
   const home = await evaluate(send, snapState);
   await pressKey(send, "End", "End", 35);
-  await clickControl(send, '[data-testid="topbar"] button[aria-label="Find in session"]');
+  await clickControl(send, '[data-testid="topbar"] button[aria-label="Overview"]');
+  await waitForDom(
+    send,
+    `(() => {
+      const sheet = document.querySelector(${JSON.stringify(PHONE_INSPECTION)});
+      return Boolean(sheet && getComputedStyle(sheet).transform === 'none' && sheet.contains(document.activeElement) && document.activeElement.matches('button'));
+    })()`,
+    "tablet Overview sheet settles with Find focused",
+  );
+  await pressKey(send, "Enter", "Enter", 13);
   await waitForDom(send, `document.activeElement?.matches('[data-find-bar] input[type="search"]')`, "Find query focus at maximum board width");
   const findQuery = "session";
   await send("Input.insertText", { text: findQuery });
