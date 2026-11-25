@@ -10,15 +10,8 @@
   display: none;
 }
 
-.rowValueGroup {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
-  min-width: 0;
-}
-
 /* The caller's typography for ListRow's value slot: quiet, right-aligned, and
- * truncated before the caret. */
+ * truncated. */
 .rowValue {
   composes: truncate from "../../styles/text.module.css";
   min-width: 0;
@@ -26,13 +19,6 @@
   color: var(--ink-mid);
   font-size: var(--font-size-body);
   text-align: right;
-}
-
-.caret {
-  display: inline-flex;
-  flex: 0 0 auto;
-  align-items: center;
-  color: var(--ink-mid);
 }
 
 .sheetBody {

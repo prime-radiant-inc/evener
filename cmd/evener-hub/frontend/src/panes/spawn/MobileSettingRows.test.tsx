@@ -69,6 +69,18 @@ test("renders all Treatment A rows in order with full-row controls", () => {
   expect(rows[2]!.tagName).not.toBe("BUTTON");
 });
 
+test("each picker row ends in one drill-in chevron; the read-only row has none", () => {
+  renderRows();
+
+  const rows = within(screen.getByTestId("mobile-spawn-config")).getAllByTestId("mobile-spawn-row");
+  for (const row of rows) {
+    // ListRow draws the row's one drill-in chevron; the row must not draw a
+    // second one of its own before it.
+    const picker = row.getAttribute("aria-haspopup") === "dialog";
+    expect(row.querySelectorAll("svg")).toHaveLength(picker ? 1 : 0);
+  }
+});
+
 test("a picker row exposes its value and its disclosure state", async () => {
   const user = userEvent.setup();
   renderRows();
