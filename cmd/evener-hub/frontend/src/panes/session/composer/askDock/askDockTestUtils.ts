@@ -7,13 +7,12 @@
 // wrap these calls in their own `act()` after mount, exactly as before this
 // file existed - this module only builds and emits notifications.
 import type { AnyNotification } from "@evener/appwire-client";
+import { askUserArgs, askUserQuestion } from "@evener/appwire-client/testing/askUserFixtures";
 import type { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 
-export function askArgs(questions: Array<Record<string, unknown>>): string {
-  return JSON.stringify({ questions });
-}
-
-export const ONE_QUESTION = [{ header: "Deploy?", question: "Ship now?", options: [{ label: "Yes", detail: "" }] }];
+// AskDock tests expect an unrecommended question so batches start unanswered,
+// and match the "Ship now?" prompt text.
+export const ONE_QUESTION = [askUserQuestion({ question: "Ship now?", recommended: false })] as const;
 
 // The hub stamps askPending onto the thread/status/changed frame that goes
 // with the turn ending on an ask_user call (server/appwire_status_stamps.go's
@@ -34,7 +33,7 @@ export function ackAskUserCall(
   turnId: string,
   itemId: string,
   callId: string,
-  questions: Array<Record<string, unknown>> = ONE_QUESTION,
+  questions: readonly unknown[] = ONE_QUESTION,
 ): void {
   const base = {
     threadId: `thr_${ref}`,
@@ -46,7 +45,7 @@ export function ackAskUserCall(
       turnId,
       toolName: "ask_user",
       callId,
-      argumentsJson: askArgs(questions),
+      argumentsJson: askUserArgs(questions),
     },
   };
   fake.emitNotification({
