@@ -1422,15 +1422,6 @@ func (r *Registry) ProviderError(name string) error {
 	return r.broken[name]
 }
 
-// BrokenProviders returns a copy of the user-layer provider entries that
-// failed to load and were isolated from the active instance set.
-func (r *Registry) BrokenProviders() map[string]error {
-	if r == nil || len(r.broken) == 0 {
-		return nil
-	}
-	return maps.Clone(r.broken)
-}
-
 // Catalog reports which upstream layer is in use and its fetch metadata.
 func (r *Registry) Catalog() (string, Meta) { return r.catalogTag, r.catalogMeta }
 

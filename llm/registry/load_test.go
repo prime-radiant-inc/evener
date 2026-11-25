@@ -731,9 +731,6 @@ func TestLoad_Errors(t *testing.T) {
 			if !errors.As(perr, &loadErr) || loadErr.Provider != tc.broken {
 				t.Fatalf("ProviderError(%q) = %v (%T), want *ProviderLoadError for %q", tc.broken, perr, perr, tc.broken)
 			}
-			if broken := r.BrokenProviders(); broken[tc.broken] == nil {
-				t.Fatalf("BrokenProviders() = %v, want %q recorded", broken, tc.broken)
-			}
 			if len(r.Warnings()) == 0 {
 				t.Fatalf("Warnings() = empty, want warning for broken provider %q", tc.broken)
 			}

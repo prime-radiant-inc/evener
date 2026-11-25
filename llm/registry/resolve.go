@@ -2028,12 +2028,9 @@ func (r *Registry) recordMayDisableSeen(rec *record, seen map[*record]bool) bool
 // A toggle on a live-only id authors an exact config row, which precedes live
 // lookup, so the exception takes effect.
 func (r *Registry) InstanceModels(instance string) ([]InstanceModel, error) {
-	rec, ok := r.recordFor(instance)
-	if !ok {
-		if err := r.ProviderError(instance); err != nil {
-			return nil, err
-		}
-		return nil, fmt.Errorf("%w %q", ErrUnknownInstance, instance)
+	rec, err := r.requireRecord(instance)
+	if err != nil {
+		return nil, err
 	}
 	live, authoritative := r.liveListingState(rec.name)
 	ids := modelIDsFromMap(rec, live, authoritative)
@@ -2240,12 +2237,9 @@ func (r *Registry) modelSummary(rec *record, ref Ref, hit lookupHit, live map[st
 // instanceRecordIDs resolves an instance to its record plus its visible model
 // ids — the prologue InstanceModels and ModelIDs share.
 func (r *Registry) instanceRecordIDs(instance string) (*record, []string, error) {
-	rec, ok := r.recordFor(instance)
-	if !ok {
-		if err := r.ProviderError(instance); err != nil {
-			return nil, nil, err
-		}
-		return nil, nil, fmt.Errorf("%w %q", ErrUnknownInstance, instance)
+	rec, err := r.requireRecord(instance)
+	if err != nil {
+		return nil, nil, err
 	}
 	live, authoritative := r.liveListingState(instance)
 	return rec, modelIDsFromMap(rec, live, authoritative), nil

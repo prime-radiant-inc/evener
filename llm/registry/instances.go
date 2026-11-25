@@ -779,12 +779,9 @@ func (r *Registry) ResolveGateCredential(instance, model string) (Resolved, erro
 
 func (r *Registry) resolveGateCredential(instance, model string, allowCodexCandidate bool) (Resolved, error) {
 	name := strings.ToLower(strings.TrimSpace(instance))
-	rec, ok := r.recordFor(name)
-	if !ok {
-		if err := r.ProviderError(name); err != nil {
-			return Resolved{}, err
-		}
-		return Resolved{}, fmt.Errorf("%w %q", ErrUnknownInstance, name)
+	rec, err := r.requireRecord(name)
+	if err != nil {
+		return Resolved{}, err
 	}
 	if ref := ParseRef(strings.TrimSpace(model)); strings.EqualFold(ref.Instance, name) {
 		model = ref.Model
@@ -1268,6 +1265,18 @@ func (r *Registry) recordFor(name string) (*record, bool) {
 	return nil, false
 }
 
+// requireRecord resolves name through recordFor and distinguishes an isolated
+// broken user provider (ProviderLoadError) from an unknown instance.
+func (r *Registry) requireRecord(name string) (*record, error) {
+	if rec, ok := r.recordFor(name); ok {
+		return rec, nil
+	}
+	if err := r.ProviderError(name); err != nil {
+		return nil, err
+	}
+	return nil, fmt.Errorf("%w %q", ErrUnknownInstance, name)
+}
+
 // validateDefault enforces spec §5.1 at load: `default` must name an
 // explicit instance or a curated implicit id. A default naming an isolated
 // broken user provider degrades to a warning so unrelated providers still load.
@@ -1302,18 +1311,16 @@ func (r *Registry) DefaultInstance() (string, []string, error) {
 		if _, ok := r.instances[r.userDefault]; ok {
 			return r.userDefault, nil, nil
 		}
-		if err := r.broken[r.userDefault]; err != nil {
-			warnings = append(warnings, fmt.Sprintf("default = %q: %v; falling through", r.userDefault, err))
-		} else {
-			rec := r.curated[r.userDefault]
-			switch {
-			case rec == nil:
-				return "", nil, fmt.Errorf("default = %q is not an instance", r.userDefault)
-			case rec.head.Hidden:
-				warnings = append(warnings, fmt.Sprintf("default = %q: provider is hidden (base URL variable unset); falling through", r.userDefault))
-			default:
-				warnings = append(warnings, fmt.Sprintf("default = %q: no credential in this environment; falling through", r.userDefault))
-			}
+		rec := r.curated[r.userDefault]
+		switch {
+		case r.broken[r.userDefault] != nil:
+			warnings = append(warnings, fmt.Sprintf("default = %q: %v; falling through", r.userDefault, r.broken[r.userDefault]))
+		case rec == nil:
+			return "", nil, fmt.Errorf("default = %q is not an instance", r.userDefault)
+		case rec.head.Hidden:
+			warnings = append(warnings, fmt.Sprintf("default = %q: provider is hidden (base URL variable unset); falling through", r.userDefault))
+		default:
+			warnings = append(warnings, fmt.Sprintf("default = %q: no credential in this environment; falling through", r.userDefault))
 		}
 	}
 	ranked := r.rankedInstances()
