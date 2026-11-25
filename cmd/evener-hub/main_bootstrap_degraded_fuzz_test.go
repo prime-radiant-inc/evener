@@ -36,7 +36,6 @@ func FuzzMainBootstrapDegradedProviders(f *testing.F) {
 		cfg.PastIndexDB = filepath.Join(root, "hub", "index.db")
 		cfg.HubStateRoot = filepath.Join(root, "hub")
 		cfg.PluginAutoUpgrade = false
-		cfg.Providers = []ProviderConfig{{Name: "fake", Models: []string{"one", "two"}}}
 		if err := os.MkdirAll(cfg.HubStateRoot, 0o700); err != nil {
 			t.Fatal(err)
 		}

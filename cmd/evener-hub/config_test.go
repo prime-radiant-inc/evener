@@ -260,9 +260,6 @@ func TestLoadConfig_DefaultsWhenMissing(t *testing.T) {
 	if cfg.HubStateRoot != wantHubStateRoot {
 		t.Errorf("HubStateRoot default: got %q, want %q", cfg.HubStateRoot, wantHubStateRoot)
 	}
-	if len(cfg.Providers) != 0 {
-		t.Errorf("expected no providers by default, got %d", len(cfg.Providers))
-	}
 	if !cfg.PluginAutoUpgrade {
 		t.Error("PluginAutoUpgrade default: got false, want true (per-plugin autoUpgrade opt-in is the real gate)")
 	}
@@ -432,14 +429,6 @@ past_index_db = "/tmp/evener-index.db"
 spawn_timeout = "10s"
 past_results_per_page = 25
 future_option = "ignored"
-
-[[providers]]
-name = "openai"
-models = ["gpt-5", "gpt-5-mini"]
-
-[[providers]]
-name = "anthropic"
-models = ["claude-opus-4-7", "claude-sonnet-4-6"]
 `
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
@@ -456,15 +445,6 @@ models = ["claude-opus-4-7", "claude-sonnet-4-6"]
 	}
 	if cfg.PastIndexDB != "/tmp/evener-index.db" {
 		t.Errorf("PastIndexDB: got %q", cfg.PastIndexDB)
-	}
-	if len(cfg.Providers) != 2 {
-		t.Fatalf("providers: got %d, want 2", len(cfg.Providers))
-	}
-	if cfg.Providers[0].Name != "openai" || len(cfg.Providers[0].Models) != 2 {
-		t.Errorf("providers[0] mismatch: %+v", cfg.Providers[0])
-	}
-	if cfg.Providers[1].Name != "anthropic" || cfg.Providers[1].Models[0] != "claude-opus-4-7" {
-		t.Errorf("providers[1] mismatch: %+v", cfg.Providers[1])
 	}
 }
 
