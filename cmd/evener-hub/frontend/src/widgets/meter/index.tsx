@@ -1,4 +1,4 @@
-import type { CSSProperties } from "react";
+import type { CSSProperties, ReactNode } from "react";
 import { requireClass } from "../internal/requireClass";
 import styles from "./meter.module.css";
 
@@ -44,57 +44,45 @@ const RING_DASH_ARRAY = RING_CIRCUMFERENCE.toFixed(3);
 export function Meter({ label, value, max, tone = "neutral", variant = "bar" }: MeterProps) {
   const safeMax = Number.isFinite(max) && max > 0 ? max : 0;
   const safeValue = Number.isFinite(value) ? value : 0;
-  const clamped = safeMax > 0 ? Math.min(safeMax, Math.max(0, safeValue)) : 0;
+  const clamped = Math.min(safeMax, Math.max(0, safeValue));
   const percent = safeMax > 0 ? (clamped / safeMax) * 100 : 0;
 
+  let content: ReactNode;
   if (variant === "ring") {
     const isEmpty = percent <= 0;
     const rawOffset = RING_CIRCUMFERENCE * (1 - percent / 100);
-    const dashOffset = percent >= 100 || rawOffset <= 0.0005 ? "0" : rawOffset.toFixed(3);
-    const fillClass = isEmpty
-      ? `${BASE_CLASS.ringFill} ${TONE_CLASS[tone]} ${BASE_CLASS.ringFillEmpty}`
-      : `${BASE_CLASS.ringFill} ${TONE_CLASS[tone]}`;
+    const dashOffset = rawOffset <= 0.0005 ? "0" : rawOffset.toFixed(3);
+    const fillClass = [BASE_CLASS.ringFill, TONE_CLASS[tone], isEmpty && BASE_CLASS.ringFillEmpty]
+      .filter(Boolean)
+      .join(" ");
 
-    return (
-      // Native <meter> can't be restyled cross-browser (its fill/track are
-      // closed to CSS) - this div+role IS the deliberate themed-gauge escape
-      // hatch (see this file's top doc comment for the widget's own intent).
-      // biome-ignore lint/a11y/useSemanticElements: div+role is deliberate, see above
-      <div
-        className={BASE_CLASS.ring}
-        data-variant={variant}
-        role="meter"
-        aria-label={label}
-        aria-valuenow={clamped}
-        aria-valuemin={0}
-        aria-valuemax={safeMax}
+    content = (
+      <svg
+        className={BASE_CLASS.ringSvg}
+        viewBox="0 0 16 16"
+        width={14}
+        height={14}
+        aria-hidden="true"
+        focusable="false"
       >
-        <svg
-          className={BASE_CLASS.ringSvg}
-          viewBox="0 0 16 16"
-          width={14}
-          height={14}
-          aria-hidden="true"
-          focusable="false"
-        >
-          <circle className={BASE_CLASS.ringTrack} cx={8} cy={8} r={RING_RADIUS} strokeWidth={RING_STROKE_WIDTH} />
-          <circle
-            data-testid="meter-fill"
-            className={fillClass}
-            cx={8}
-            cy={8}
-            r={RING_RADIUS}
-            strokeWidth={RING_STROKE_WIDTH}
-            strokeDasharray={RING_DASH_ARRAY}
-            strokeDashoffset={dashOffset}
-            transform="rotate(-90 8 8)"
-          />
-        </svg>
-      </div>
+        <circle className={BASE_CLASS.ringTrack} cx={8} cy={8} r={RING_RADIUS} strokeWidth={RING_STROKE_WIDTH} />
+        <circle
+          data-testid="meter-fill"
+          className={fillClass}
+          cx={8}
+          cy={8}
+          r={RING_RADIUS}
+          strokeWidth={RING_STROKE_WIDTH}
+          strokeDasharray={RING_DASH_ARRAY}
+          strokeDashoffset={dashOffset}
+          transform="rotate(-90 8 8)"
+        />
+      </svg>
     );
+  } else {
+    const fillStyle = { "--fill": `${percent}%` } as CSSProperties;
+    content = <div data-testid="meter-fill" className={`${BASE_CLASS.fill} ${TONE_CLASS[tone]}`} style={fillStyle} />;
   }
-
-  const fillStyle = { "--fill": `${percent}%` } as CSSProperties;
 
   return (
     // Native <meter> can't be restyled cross-browser (its fill/track are
@@ -102,7 +90,7 @@ export function Meter({ label, value, max, tone = "neutral", variant = "bar" }: 
     // hatch (see this file's top doc comment for the widget's own intent).
     // biome-ignore lint/a11y/useSemanticElements: div+role is deliberate, see above
     <div
-      className={BASE_CLASS.track}
+      className={variant === "ring" ? BASE_CLASS.ring : BASE_CLASS.track}
       data-variant={variant}
       role="meter"
       aria-label={label}
@@ -110,7 +98,7 @@ export function Meter({ label, value, max, tone = "neutral", variant = "bar" }: 
       aria-valuemin={0}
       aria-valuemax={safeMax}
     >
-      <div data-testid="meter-fill" className={`${BASE_CLASS.fill} ${TONE_CLASS[tone]}`} style={fillStyle} />
+      {content}
     </div>
   );
 }

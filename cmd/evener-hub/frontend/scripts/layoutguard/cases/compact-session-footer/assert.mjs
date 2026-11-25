@@ -121,9 +121,9 @@ export default function assert(measurements) {
     expectTwoPixelOutline(m.focus.sendOutlineStyle, m.focus.sendOutlineWidth, "Send control");
 
     // Boundary fixtures declare the exact StatusRow query-container width they
-    // must produce. This makes 399/400, 479/480, and 559/560 falsifiable: moving
-    // a CSS boundary even when the outer composer still fits changes visibility
-    // at one of these pinned fixtures and fails below.
+    // must produce. This makes 399/400 (compact row gap / effort shrink),
+    // 479/480 (queue label), and 559/560 (work time) falsifiable: moving a CSS
+    // boundary even when the outer composer still fits fails below.
     if (m.expectedStatusWidth !== null && Math.abs(m.statusBody.width - m.expectedStatusWidth) > tolerance) {
       fail(
         `status query container should be ${m.expectedStatusWidth}px, got ${m.statusBody.width}px rect/${m.statusBody.clientWidth}px client`,
@@ -143,13 +143,17 @@ export default function assert(measurements) {
       fail(
         `context ring is not visible at full ring dimensions (${context.meterBox === null ? "missing" : `${context.meterBox.width.toFixed(1)}x${context.meterBox.height.toFixed(1)}px`})`,
       );
+    } else {
+      if (
+        m.context.width < context.meterBox.width - tolerance ||
+        m.context.height < context.meterBox.height - tolerance
+      ) {
+        fail(
+          `context wrapper shrank below the 14px ring (${m.context.width.toFixed(1)}x${m.context.height.toFixed(1)}px for ${context.meterBox.width.toFixed(1)}x${context.meterBox.height.toFixed(1)}px ring)`,
+        );
+      }
+      expectContained(context.meterBox, m.context, "context ring inside context wrapper");
     }
-    if (m.context.width < context.meterBox.width - tolerance || m.context.height < context.meterBox.height - tolerance) {
-      fail(
-        `context wrapper shrank below the 14px ring (${m.context.width.toFixed(1)}x${m.context.height.toFixed(1)}px for ${context.meterBox.width.toFixed(1)}x${context.meterBox.height.toFixed(1)}px ring)`,
-      );
-    }
-    expectContained(context.meterBox, m.context, "context ring inside context wrapper");
     // The resolver inlines composed @container rules ungated, so only the narrow hide is observable here.
     if (m.width <= 559) expectDisplay(m.stopLabelDisplay, false, "Stop label stack");
     if (full) expectContained(m.work, m.status, "work time");
