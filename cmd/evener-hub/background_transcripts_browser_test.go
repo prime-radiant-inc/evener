@@ -209,7 +209,7 @@ func startBackgroundGuardHub(t *testing.T, fixture *skillGuardFixture, past *hub
 	})
 	token := hex.EncodeToString(tokenBytes)
 	web := newWebServer(hubcore.WebConfig{AuthToken: token, HubStateRoot: hubStateRoot, RunDir: fixture.runDir, Past: past, Roster: roster, PluginDirs: []string{filepath.Join(fixture.root, "controller-plugin")}, StateDir: fixture.stateRoot, PastIndexPath: filepath.Join(hubStateRoot, "index.db")}, appwireTrace)
-	past.SetOnChange(func() { web.navigation.Invalidate(navigationChangeHint{}) })
+	past.SetOnRootChange(func() { web.navigation.Invalidate(navigationChangeHint{}) })
 	roster.SetOnChange(func() { web.navigation.Invalidate(navigationChangeHint{}) })
 	return web, token
 }

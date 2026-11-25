@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/binary"
 	"errors"
-	"hash/fnv"
 	"os"
 	"path/filepath"
 	"sort"
@@ -123,18 +122,12 @@ type PastIndex struct {
 	// missing something the next scan has to retry".
 	covered bool
 
-	// onChange, when set via SetOnChange, is fired by Rebuild only when the
-	// indexed content's fingerprint actually changes.
-	onChange func()
-	// onRootChange is fired, under the same generation gating as onChange, only
+	// onRootChange, when set via SetOnRootChange, is fired by a publish only
 	// when a root's shown fields change or the set of subagents changes (see
 	// rootFingerprint).
 	onRootChange func()
-	// fingerprint is the content hash from the most recent Rebuild (see
-	// contentFingerprint), used to gate onChange against no-op rebuilds.
-	fingerprint uint64
 	// rootFingerprint is the rootFingerprint hash from the most recent publish,
-	// gating onRootChange the way fingerprint gates onChange.
+	// gating onRootChange against no-op rebuilds and non-root writes.
 	rootFingerprint uint64
 	// afterFindProbe, when non-nil, runs in Find after a miss's probe and before
 	// foldOne folds the row. Instance-scoped test seam for interleaving a
@@ -209,23 +202,17 @@ func (i *PastIndex) StateGlob() string {
 	return i.stateGlob
 }
 
-// SetOnChange registers a callback fired by Rebuild/UpdateMeta only when the
-// indexed content actually changes (a Find-miss rebuild with no delta does not
-// fire — round-3 G5). Nil disables the hook.
+// SetOnRootChange registers a callback fired by Rebuild/UpdateMeta only when
+// what a navigation row shows can have changed: a root's shown fields moved, or
+// a subagent appeared or disappeared (nil disables the hook). A running
+// subagent's autosave or rename does not fire it, so consumers that read a
+// roots-only projection stay quiet through delegate writes.
 //
 // Ordering hazard: call this after an initial Rebuild, not before. An
 // unseeded index's first-ever Rebuild always looks like a delta — even zero
-// entries fingerprint to a non-zero constant, never equal to the zero-value
-// initial fingerprint — so wiring the hook first fires a spurious "change"
-// on nothing (runMain always seeds via the startup Rebuild before wiring).
-func (i *PastIndex) SetOnChange(fn func()) { i.onChange = fn }
-
-// SetOnRootChange registers a callback fired only when what a navigation row
-// shows can have changed: a root's shown fields moved, or a subagent appeared
-// or disappeared. A running subagent's autosave or rename does not fire it, so
-// consumers that read a roots-only projection stay quiet through delegate
-// writes. It shares SetOnChange's ordering hazard: call it after the initial
-// Rebuild.
+// entries fingerprint to a non-zero FNV constant, never equal to the zero-value
+// initial rootFingerprint — so wiring the hook first fires a spurious "change"
+// on nothing (hub startup seeds via the initial Rebuild before wiring).
 func (i *PastIndex) SetOnRootChange(fn func()) { i.onRootChange = fn }
 
 // SetSearchProbeForTest installs an observer for the limit and offset of each
@@ -241,39 +228,12 @@ func (i *PastIndex) SetSearchProbeForTest(fn func(limit, offset int)) { i.search
 // the Rebuild it should park, never concurrently with one.
 func (i *PastIndex) SetBeforeRebuildSwapForTest(fn func()) { i.beforeRebuildSwap = fn }
 
-// contentFingerprint hashes the consumer-visible fields of the sorted entries so
-// a publish can detect a genuine content delta without a deep compare. It
-// deliberately covers ForkLabel and ObservedBy: a fork tag or an observer append
-// re-saves the meta without moving UpdatedAt, and a fold that adopts such a row
-// must still fire onChange so the Hub bumps/invalidates navigation.
-func contentFingerprint(all []PastEntry) uint64 {
-	h := fnv.New64a()
-	for _, e := range all {
-		_, _ = h.Write([]byte(e.ID))
-		_, _ = h.Write([]byte{0})
-		_, _ = h.Write([]byte(e.Meta.Name))
-		_, _ = h.Write([]byte{0})
-		_, _ = h.Write([]byte(e.Meta.ForkLabel))
-		_, _ = h.Write([]byte{0})
-		for _, observer := range e.Meta.ObservedBy {
-			_, _ = h.Write([]byte(observer))
-			_, _ = h.Write([]byte{0})
-		}
-		var b [8]byte
-		binary.LittleEndian.PutUint64(b[:], uint64(e.Meta.UpdatedAt.UnixNano()))
-		_, _ = h.Write(b[:])
-	}
-	return h.Sum64()
-}
-
 // Rebuild scans every project under stateGlob and reloads the index. The
-// bool return reports whether the reload's content actually differed from
-// what was already indexed AND a registered hook (onChange or onRootChange)
-// fired for it (false on a no-op reload, a glob error, or when neither
-// SetOnChange nor SetOnRootChange was called; production subscribes with
-// SetOnRootChange) — so a caller relying on that hook to signal the change elsewhere
-// (e.g. a broadcast) can tell whether that already happened, or whether it
-// needs to compensate.
+// bool return reports whether the reload changed the root fingerprint from
+// what was already indexed AND onRootChange fired for it (false on a no-op
+// reload, a glob error, or when SetOnRootChange was not called) — so a caller
+// relying on that hook to signal the change elsewhere (e.g. a broadcast) can
+// tell whether that already happened, or whether it needs to compensate.
 //
 // The disk scan runs unlocked, so a concurrent fold or rename can leave the
 // scan's view stale before it takes the lock to swap. Rebuild captures the
@@ -440,7 +400,7 @@ func (i *PastIndex) scanAll() ([]PastEntry, map[string]PastEntry, map[string]str
 	// project: appending as the loop scanned would keep the FIRST project's
 	// row while byID keeps the LAST's, leaving the replace-one-row writers
 	// below (UpdateMeta, foldOne) and the next Rebuild fighting over the
-	// duplicate forever, firing onChange every tick on unchanged disk.
+	// duplicate forever, firing onRootChange every tick on unchanged disk.
 	all := make([]PastEntry, 0, len(byID))
 	for _, pe := range byID {
 		all = append(all, pe)
@@ -570,13 +530,13 @@ func (i *PastIndex) reportSkips(skipped map[string]string) {
 // swapped into i.all under the lock — mirroring Rebuild's own
 // allocate-then-swap discipline — rather than mutated in place. Rebuild
 // publishes i.all and then, after releasing the lock, keeps reading that same
-// slice's backing array (for rebuildFTS/contentFingerprint). An in-place
+// slice's backing array (for publishFTS/rootFingerprint). An in-place
 // append/copy here would write into a backing array a concurrent, unlocked
 // Rebuild may still be reading, which is a data race.
 //
-// The bool return reports whether the edit actually differed from what was
-// already indexed AND a registered hook (onChange or onRootChange) fired for
-// it (false on the untracked-id no-op, a no-op edit, or when neither was
+// The bool return reports whether the edit changed the root fingerprint from
+// what was already indexed AND onRootChange fired for it (false on the
+// untracked-id no-op, a no-op edit, or when SetOnRootChange was not
 // registered) — see Rebuild's return for why a caller needs this.
 func (i *PastIndex) UpdateMeta(id string, meta schema.SessionMeta) bool {
 	i.mu.Lock()
@@ -623,42 +583,34 @@ func insertSorted(entries []PastEntry, pe PastEntry) []PastEntry {
 }
 
 // publishAndSignal mirrors a freshly-swapped index snapshot into the FTS
-// index and the content fingerprint, firing onChange when the content
-// actually changed. all must be an immutable snapshot of i.all taken under
-// the lock (publishFTS and contentFingerprint run unlocked), and gen the
-// generation that snapshot belongs to (see PastIndex.gen). The bool is
-// Rebuild/UpdateMeta's contract: whether content changed AND a registered
-// hook (onChange or onRootChange) fired for it.
+// index and rootFingerprint, firing onRootChange when the root fingerprint
+// changed. all must be an immutable snapshot of i.all taken under the lock
+// (publishFTS and rootFingerprint run unlocked), and gen the generation that
+// snapshot belongs to (see PastIndex.gen). The bool is Rebuild/UpdateMeta's
+// contract: whether the root fingerprint changed AND onRootChange fired for it.
 //
 // A newer mutation (a fold or update landing after this snapshot was taken)
 // bumps i.gen. This publisher then abandons its tail entirely: the newer
-// publisher owns both the FTS mirror and the fingerprint, so writing this stale
-// snapshot would regress the fingerprint (a spurious onChange on unchanged
-// disk) and could lock stale rows into the mirror — the fold-vs-Rebuild
-// stale-publish race (#724).
+// publisher owns both the FTS mirror and rootFingerprint, so writing this
+// stale snapshot would regress rootFingerprint (a spurious onRootChange on
+// unchanged disk) and could lock stale rows into the mirror.
 func (i *PastIndex) publishAndSignal(all []PastEntry, gen uint64) bool {
 	if i.dbPath != "" {
 		i.publishFTS(all, gen)
 	}
-	fp := contentFingerprint(all)
 	rootFP := rootFingerprint(all)
 	i.mu.Lock()
 	if i.gen != gen {
 		i.mu.Unlock()
 		return false
 	}
-	changed := fp != i.fingerprint
 	rootChanged := rootFP != i.rootFingerprint
-	i.fingerprint = fp
 	i.rootFingerprint = rootFP
 	i.mu.Unlock()
-	if changed && i.onChange != nil {
-		i.onChange()
-	}
 	if rootChanged && i.onRootChange != nil {
 		i.onRootChange()
 	}
-	return changed && i.onChange != nil || rootChanged && i.onRootChange != nil
+	return rootChanged && i.onRootChange != nil
 }
 
 // RefreshOne re-reads one already-indexed session's on-disk meta and folds it
@@ -794,8 +746,8 @@ func (i *PastIndex) searchProbeNotify(limit, offset int) {
 // fold's or rebuild's rebuildFTS lost its SQLITE_BUSY race, or the db was
 // briefly unwritable) is repaired here so the FTS path serves every indexed id
 // again. While the mirror stays broken every caller re-attempts the full FTS
-// write; the first success flips i.fts and the repair stops. The fingerprint
-// gate keeps the redundant publish from firing onChange.
+// write; the first success flips i.fts and the repair stops. The rootFingerprint
+// gate keeps the redundant publish from firing onRootChange.
 func (i *PastIndex) ensureFTSFresh() {
 	i.mu.RLock()
 	ftsStale := i.dbPath != "" && !i.fts

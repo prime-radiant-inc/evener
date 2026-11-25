@@ -366,7 +366,7 @@ func TestSkillComposerBrowser(t *testing.T) {
 	}, appwireTrace)
 	// Navigation invalidation wiring mirrors runMain so the SPA actually
 	// receives evener/navigation/invalidated when the roster or index changes.
-	past.SetOnChange(func() { web.navigation.Invalidate(navigationChangeHint{}) })
+	past.SetOnRootChange(func() { web.navigation.Invalidate(navigationChangeHint{}) })
 	roster.SetOnChange(func() { web.navigation.Invalidate(navigationChangeHint{}) })
 	hub := httptest.NewServer(web.Handler())
 	defer hub.Close()
