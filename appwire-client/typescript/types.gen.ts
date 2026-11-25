@@ -5242,8 +5242,6 @@ export interface ThreadItemPosition {
 export interface ThreadListParams {
   cursor?: string;
   limit?: number;
-  sortKey?: string;
-  sortDirection?: string;
   searchTerm?: string;
   statuses?: string[];
   sourceIds?: string[];
