@@ -23,8 +23,8 @@ import { useIsMobile } from "../../shell/useIsMobile";
 import { carryComposerSeatForPlacement, workspaceStore } from "../../shell/workspace";
 import { useNavigationStore } from "../../stores/navigation/store";
 import { useThreadsStore } from "../../stores/threads";
-import { Button, EmptyState, InlineNotice, Loader, PaneScaffold, Skeleton } from "../../widgets";
-import { ConversationBody, type ConversationSeat } from "./ConversationBody";
+import { Button, InlineNotice, Loader, PaneScaffold, Skeleton } from "../../widgets";
+import { ConversationBody, ConversationDeletedFace, type ConversationSeat } from "./ConversationBody";
 import { SessionInspectionActions } from "./chrome/SessionInspectionActions";
 import { RepoLocation } from "./composer/RepoLocation";
 import { forceStopAndRefresh } from "./forceStop";
@@ -129,12 +129,11 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
 
   const footerCwd = !deletedRef && model ? model.cwd : null;
   const edgeFooter = useMemo(() => {
-    // The phone layout keeps one bottom surface, the composer: its activity
-    // counts render on a line above the card instead, and the
-    // working-directory line stays a desktop-line concern (a phone reads the
-    // working directory and branch through the session menu's Overview), so
-    // a landscape phone spends its height on content rather than chrome
-    // strips.
+    // The phone layout keeps one bottom surface, the composer: the activity
+    // counts live in the top bar's Overview sheet, and the working-directory
+    // line stays a desktop-line concern (a phone reads the working directory
+    // and branch through that sheet's session facts), so a landscape phone
+    // spends its height on content rather than chrome strips.
     if (isMobile) return undefined;
     const location = footerCwd === null ? null : <RepoLocation cwd={footerCwd} local={ref.startsWith("local:")} />;
     return <StatusBar sessionRef={ref} paneId={paneId} leading={location} />;
@@ -197,10 +196,8 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
               footer={footer}
               edgeFooter={edgeFooter}
             >
-              <EmptyState
-                title="This session was deleted"
+              <ConversationDeletedFace
                 hint="Its transcript is gone. You can close this pane."
-                reason="deleted"
                 action={
                   <Button variant="quiet" onClick={handleCloseDeleted}>
                     Close

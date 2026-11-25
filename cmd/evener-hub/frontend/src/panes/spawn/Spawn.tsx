@@ -19,6 +19,7 @@ import {
   markerRanges,
   matchBuiltinInvocation,
   mergeSlashCommands,
+  mutationErrorData,
   type PathValidation,
   type PluginSelectionState,
   parseSlashToken,
@@ -48,6 +49,7 @@ import { useExtensionsStore } from "../../stores/extensions";
 import { withLaunchConfig } from "../../stores/launchConfig";
 import { selectDisplaySources, selectSources } from "../../stores/navigation/selectors";
 import { useNavigationStore } from "../../stores/navigation/store";
+import { createSecureUUID } from "../../stores/secureUUID";
 import {
   Button,
   Chevron,
@@ -82,6 +84,7 @@ import { ReasoningEffortControl } from "../session/chrome/ReasoningEffortControl
 import { AttachmentTile } from "../session/composer/AttachmentTile";
 import { AttachImageControl } from "../session/composer/attachments/AttachImageControl";
 import { imageFilesFromClipboard } from "../session/composer/attachments/clipboard";
+import { ImagePickerInput } from "../session/composer/attachments/ImagePickerInput";
 import { type TextEditor, useAttachments } from "../session/composer/attachments/useAttachments";
 import { FileCompletionMenu } from "../session/composer/FileCompletionMenu";
 import { SkillEditor, type SkillEditorHandle, type SkillEditorValue } from "../session/composer/SkillEditor";
@@ -135,7 +138,7 @@ import {
   runSpawnBuiltinAfterStart,
   spawnBuiltinCommands,
 } from "./spawnSlashMenu";
-import { startThread } from "./startThread";
+import { type SpawnRequest, spawnRequestFingerprint, startThread } from "./startThread";
 import { usePluginPreview } from "./usePluginPreview";
 import { useProviderSetup } from "./useProviderSetup";
 import { useSpawnSlashCatalog } from "./useSpawnSlashCatalog";
@@ -2254,12 +2257,6 @@ function SpawnForm({
     if (files.length > 0) attachments.ingestFiles(files, (message) => toasts.push("error", message));
   }
 
-  function handleFilePicker(event: React.ChangeEvent<HTMLInputElement>): void {
-    const files = Array.from(event.target.files ?? []);
-    if (files.length > 0) attachments.ingestFiles(files, (message) => toasts.push("error", message));
-    event.target.value = ""; // re-picking the identical file must re-fire change
-  }
-
   // A valid /model invocation supplies the missing model itself, so it
   // bootstraps past the required-model guard: the value rides thread/start
   // (doSpawn's launch-scalar path below), and neither the button nor
@@ -2367,7 +2364,7 @@ function SpawnForm({
     // clearSubmitted removes below - it survives untouched, same contract
     // useAttachments.ts documents for the composer.
     const submittedMarkers = new Set(attachments.items.map((item) => item.marker));
-    const { ref } = await startThread(client, {
+    const spawnReq: SpawnRequest = {
       cwd,
       // A matched builtin is consumed: its invocation text is stripped so the
       // session starts dormant/configured rather than with a literal slash
@@ -2390,7 +2387,28 @@ function SpawnForm({
       source: submittedSource,
       // Start-time role: an ordinary launch omits it entirely.
       manager,
+    };
+    const supportsStartIdempotency =
+      client.initializeResult?.features?.threadStartIdempotency === true &&
+      (isLocalHost(submittedSource) || chosenSource?.threadStartIdempotency === true);
+    let clientMutationId: string | undefined;
+    if (supportsStartIdempotency) {
+      const fingerprint = spawnRequestFingerprint(spawnReq);
+      const existing = draft.fields.getState().pendingStart;
+      if (existing?.fingerprint === fingerprint) {
+        clientMutationId = existing.clientMutationId;
+      } else {
+        clientMutationId = createSecureUUID();
+        draft.fields.setState({ pendingStart: { clientMutationId, fingerprint } });
+      }
+    } else if (draft.fields.getState().pendingStart !== null) {
+      draft.fields.setState({ pendingStart: null });
+    }
+    const { ref } = await startThread(client, {
+      ...spawnReq,
+      ...(clientMutationId ? { clientMutationId } : {}),
     });
+    draft.fields.setState({ pendingStart: null });
     if (builtinMatch && builtinMatch.command.id === "goal") {
       // Post-start application runs AFTER navigation below: awaiting goal/set
       // here would hold the UI in "Starting…" for the RPC timeout on a
@@ -2445,6 +2463,10 @@ function SpawnForm({
   // agent daemon could be reached for cwd (the first-run worst moment, T3), the
   // launch-check's own raw text is replaced with actionable copy instead.
   function reportStartFailure(err: unknown): void {
+    const data = mutationErrorData(err);
+    if (data?.mutationOutcome === "notAccepted" || data?.retryDisposition === "blocked") {
+      draft.fields.setState({ pendingStart: null });
+    }
     toasts.push("error", `Start failed: ${friendlyLaunchErrorMessage(err)}`);
     finishBusy();
   }
@@ -2948,7 +2970,10 @@ function SpawnForm({
             </Suspense>
           </ConnectProviderDialogBoundary>
         )}
-        <input ref={fileInputRef} type="file" accept="image/*" multiple hidden onChange={handleFilePicker} />
+        <ImagePickerInput
+          inputRef={fileInputRef}
+          onFiles={(files) => attachments.ingestFiles(files, (message) => toasts.push("error", message))}
+        />
 
         <div className={CLASS.mobileConfig} data-testid="spawn-mobile-config">
           <MobileSettingRows

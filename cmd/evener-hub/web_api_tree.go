@@ -1082,10 +1082,11 @@ func (s *WebServer) apiTreeSources() []hubapi.Source {
 		localLabel = s.cfg.LocalHostName + " (hub)"
 	}
 	sources := []hubapi.Source{{
-		ID:     "local",
-		Label:  localLabel,
-		Kind:   "local",
-		Online: true,
+		ID:                     "local",
+		Label:                  localLabel,
+		Kind:                   "local",
+		Online:                 true,
+		ThreadStartIdempotency: s.cfg.CreationIdempotencyAvailable(),
 	}}
 	if s.sources == nil {
 		return sources
@@ -1094,11 +1095,16 @@ func (s *WebServer) apiTreeSources() []hubapi.Source {
 		if source.ID() == appwire.LocalSourceID {
 			continue
 		}
+		idempotentStart := false
+		if capSource, ok := source.(appsource.ThreadStartIdempotencySource); ok {
+			idempotentStart = capSource.ThreadStartIdempotencySupportedIfAttached()
+		}
 		sources = append(sources, hubapi.Source{
-			ID:     source.ID(),
-			Label:  source.ID(),
-			Kind:   "appwire",
-			Online: s.sourceOnline(source.ID()),
+			ID:                     source.ID(),
+			Label:                  source.ID(),
+			Kind:                   "appwire",
+			Online:                 s.sourceOnline(source.ID()),
+			ThreadStartIdempotency: idempotentStart,
 		})
 	}
 	return sources

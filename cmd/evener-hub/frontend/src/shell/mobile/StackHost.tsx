@@ -37,7 +37,17 @@
 // restored anywhere. A reload lands wherever the URL says (see the URL-
 // sync effect below), the same as any other fresh navigation - there is no
 // separate "last mobile screen" memory to restore independently of that.
-import { type ReactNode, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  type CSSProperties,
+  type ReactNode,
+  Suspense,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { SessionInspectionActions } from "../../panes/session/chrome/SessionInspectionActions";
 import { returnFromAgentCascade } from "../../panes/zoom/actions";
 import { isCascadeReturnedOrigin } from "../../panes/zoom/inspectionOrigin";
@@ -47,6 +57,14 @@ import {
   registerConversationHostVisibility,
   restrictConversationHandoff,
 } from "../../stores/conversationClaimHandoff";
+import {
+  clampSidebarWidth,
+  type FontSizePref,
+  prefsStore,
+  SIDEBAR_WIDTH_MAX,
+  SIDEBAR_WIDTH_MIN_TOUCH,
+  usePrefsStore,
+} from "../../stores/prefs";
 import { Chevron, IconButton } from "../../widgets";
 import { ActivitySidebar } from "../activitybar/ActivitySidebar";
 import { useActivitySidebarStore } from "../activitybar/activitySidebarStore";
@@ -55,9 +73,12 @@ import { ConversationHandoffBoundary } from "../ConversationHandoffBoundary";
 import { useChromeStore } from "../chromeStore";
 import { paneFor } from "../paneRegistry";
 import { PaneVisibilityContext } from "../paneVisibility";
+import { RAIL_WIDTH_PROPERTY, RailResizeHandle } from "../rail/RailResizeHandle";
+import { RailHeaderActionProvider } from "../rail/railHeaderAction";
 import { navigate, paneToURL, refParam, urlToPane } from "../routing";
 import { openSessionByRef } from "../sessionPlacement";
 import { isSinglePaneRoute } from "../singlePane";
+import { TABLET_QUERY, useMediaQuery } from "../useIsMobile";
 import {
   conversationOpenParentRef,
   documentPaneState,
@@ -82,6 +103,11 @@ const TRANSITION_CLASSES = {
   leavingUnder: styles.leavingUnder ?? "",
   leavingOver: styles.leavingOver ?? "",
 };
+
+// The header uses full touch targets for every pointer in the tablet band.
+const BOARD_MIN_WIDTH = SIDEBAR_WIDTH_MIN_TOUCH;
+// Leave room for the Find query and its clear button beside the match controls.
+const READER_MIN_WIDTH: Record<FontSizePref, number> = { s: 392, m: 392, l: 408, xl: 432 };
 
 // Renders exactly one pane, full-screen: whichever OpenPaneRecord
 // useWorkspaceStore currently reports as focused. Uses the SAME registry
@@ -250,6 +276,40 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
   const activityOpen = useActivitySidebarStore((s) => s.open);
   const [panelOpen, setPanelOpen] = useState(false);
   const closePanel = useCallback(() => setPanelOpen(false), []);
+  const tabletBand = useMediaQuery(TABLET_QUERY);
+  const tabletSplit = tabletBand && !singlePane;
+  const [boardCollapsed, setBoardCollapsed] = useState(false);
+  const boardVisible = tabletSplit && !boardCollapsed;
+  const sidebarWidth = usePrefsStore((s) => s.sidebarWidth);
+  const fontSize = usePrefsStore((s) => s.fontSize);
+  const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth);
+  useLayoutEffect(() => {
+    if (!boardVisible) return;
+    const measure = () => setViewportWidth(window.innerWidth);
+    measure();
+    window.addEventListener("resize", measure);
+    return () => window.removeEventListener("resize", measure);
+  }, [boardVisible]);
+  const boardMaxWidth = Math.min(
+    SIDEBAR_WIDTH_MAX,
+    Math.max(BOARD_MIN_WIDTH, viewportWidth - READER_MIN_WIDTH[fontSize]),
+  );
+  const boardWidth = clampSidebarWidth(sidebarWidth, BOARD_MIN_WIDTH, boardMaxWidth);
+  const boardRef = useRef<HTMLElement>(null);
+  const boardToggleRef = useRef<HTMLButtonElement>(null);
+  const restoreToggleFocusRef = useRef(false);
+
+  function toggleBoard() {
+    restoreToggleFocusRef.current = boardToggleRef.current === document.activeElement;
+    setBoardCollapsed((collapsed) => !collapsed);
+  }
+
+  useLayoutEffect(() => {
+    if (!restoreToggleFocusRef.current) return;
+    restoreToggleFocusRef.current = false;
+    boardToggleRef.current?.focus({ preventScroll: true });
+  });
+
   // True when no real pane is focused: either nothing at all, or the
   // welcome pane (the app's "nothing open" landing screen). The mobile
   // panel auto-opens in this state (see the effect below) so the rail —
@@ -404,9 +464,9 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
   // stays closed until the route resolves (the same beat the URL-sync effect
   // declines to publish over, see its own comment).
   useEffect(() => {
-    if (routeDeferred) return;
-    if (nothingFocused) setPanelOpen(true);
-  }, [nothingFocused, routeDeferred]);
+    if (tabletSplit) setPanelOpen(false);
+    else if (!routeDeferred && nothingFocused) setPanelOpen(true);
+  }, [nothingFocused, routeDeferred, tabletSplit]);
 
   useEffect(() => {
     if (activityOpen) setPanelOpen(false);
@@ -669,7 +729,18 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
       backStackRef.current.some((id) => id !== focusedPane.id && livePaneIds.has(id)));
   const showBack =
     focusedPane !== null && focusedPane.type !== "welcome" && (focusedSessionRef === undefined || sessionBackAvailable);
-  const drawer = !singlePane ? <TreeDrawer onToggle={() => setPanelOpen((v) => !v)} /> : null;
+  const drawer = !singlePane && !tabletSplit ? <TreeDrawer onToggle={() => setPanelOpen((v) => !v)} /> : null;
+  const boardToggle = tabletSplit ? (
+    <IconButton
+      ref={boardToggleRef}
+      data-testid="board-toggle"
+      label="Board"
+      aria-expanded={boardVisible}
+      variant="quiet"
+      icon={<span className={styles.boardGlyph}>◧</span>}
+      onClick={toggleBoard}
+    />
+  ) : null;
 
   function handlePanelBack(): void {
     if (!focusedPane) return;
@@ -683,48 +754,70 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
 
   return (
     <div className={styles.host} onPointerDownCapture={clearPendingPop} onKeyDownCapture={clearPendingPop}>
-      <div className={styles.topBar} data-session={focusedSessionRef === undefined ? undefined : "true"}>
-        <div className={styles.leading}>
-          {showBack ? (
-            <IconButton
-              label="Back"
-              icon={<Chevron direction="left" size={16} />}
-              variant="quiet"
-              onClick={isPanelPane ? handlePanelBack : (paneBack ?? handleBack)}
+      <div
+        className={styles.split}
+        data-board={tabletSplit ? (boardVisible ? "visible" : "collapsed") : undefined}
+        data-testid={tabletSplit ? "board-split" : undefined}
+      >
+        {boardVisible && (
+          <aside
+            className={styles.boardColumn}
+            data-testid="board-column"
+            ref={boardRef}
+            style={{ [RAIL_WIDTH_PROPERTY]: `${boardWidth}px` } as CSSProperties}
+          >
+            <RailHeaderActionProvider value={boardToggle}>{railSlot}</RailHeaderActionProvider>
+            <RailResizeHandle
+              width={boardWidth}
+              minWidth={BOARD_MIN_WIDTH}
+              maxWidth={boardMaxWidth}
+              onCommit={(width) => prefsStore.getState().setSidebarWidth(width)}
+              railRef={boardRef}
             />
-          ) : (
-            focusedSessionRef !== undefined && drawer
-          )}
-        </div>
-        <span className={styles.stackTitle} data-testid="topbar-title">
-          {paneTitle}
-        </span>
-        {focusedSessionRef !== undefined && (
-          <SessionInspectionActions sessionRef={focusedSessionRef} paneId={focusedPane?.id} />
+          </aside>
         )}
-        {focusedSessionRef === undefined && drawer}
-      </div>
-      <div ref={stackBodyRef} className={styles.stackBody} data-stacked-pane-type={focusedPane?.type}>
-        {focusedPane && (
-          // key forces a fresh mount on every distinct pane id, including
-          // switching BACK to a previously-seen one - without it, two
-          // panes of the SAME registered type (same Component reference)
-          // would just re-render in place instead of remounting, breaking
-          // the unmount-not-hide contract every pane is designed around
-          // (see StackedPane's own comment). Two different pane TYPES
-          // already remount naturally (React unmounts on element type
-          // change), but same-type-different-params (e.g. two session
-          // panes) would not, without this. The slot is keyed with it, so
-          // the slot React detaches is the old pane's whole last frame.
-          <div key={focusedPane.id} ref={paneSlotRef} className={styles.paneSlot} data-stack-pane={focusedPane.id}>
-            <StackedPane pane={focusedPane} />
+        {/* Keep the same pane slot and scroll listener on both sides of the tablet floor. */}
+        <div className={styles.paneColumn} data-testid={tabletSplit ? "pane-column" : undefined}>
+          <div
+            className={styles.topBar}
+            data-testid="topbar"
+            data-session={focusedSessionRef === undefined ? undefined : "true"}
+          >
+            <div className={styles.leading}>
+              {!boardVisible && boardToggle}
+              {showBack ? (
+                <IconButton
+                  label="Back"
+                  icon={<Chevron direction="left" size={16} />}
+                  variant="quiet"
+                  onClick={isPanelPane ? handlePanelBack : (paneBack ?? handleBack)}
+                />
+              ) : (
+                focusedSessionRef !== undefined && drawer
+              )}
+            </div>
+            <span className={styles.stackTitle} data-testid="topbar-title">
+              {paneTitle}
+            </span>
+            {focusedSessionRef !== undefined && (
+              <SessionInspectionActions sessionRef={focusedSessionRef} paneId={focusedPane?.id} />
+            )}
+            {focusedSessionRef === undefined && drawer}
           </div>
-        )}
+          <div ref={stackBodyRef} className={styles.stackBody} data-stacked-pane-type={focusedPane?.type}>
+            {focusedPane && (
+              // Only a distinct pane id detaches the outgoing pane's last frame.
+              <div key={focusedPane.id} ref={paneSlotRef} className={styles.paneSlot} data-stack-pane={focusedPane.id}>
+                <StackedPane pane={focusedPane} />
+              </div>
+            )}
+          </div>
+        </div>
       </div>
       <div className={styles.activityOverlay}>
         <ActivitySidebar mobile />
       </div>
-      <MobilePanel rail={railSlot} open={panelOpen} onClose={closePanel} />
+      {!tabletSplit && <MobilePanel rail={railSlot} open={panelOpen} onClose={closePanel} />}
     </div>
   );
 }

@@ -1,4 +1,3 @@
-import { sessionActionError } from "@evener/appwire-client";
 import { useEffect, useLayoutEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import { useStore } from "zustand";
 import { useShallow } from "zustand/react/shallow";
@@ -14,9 +13,14 @@ import { navigationStore } from "../../stores/navigation/store";
 import { useSessionActivity, useSubagentCounts } from "../../stores/sessionActivity";
 import { useThreadsStore } from "../../stores/threads";
 import { useTranscriptDisplayStore } from "../../stores/transcriptDisplay";
-import { Button, EmptyState, Loader, PaneScaffold, Skeleton } from "../../widgets";
+import { Button, Loader, PaneScaffold, Skeleton } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
-import { ConversationBody, type ConversationSeat } from "../session/ConversationBody";
+import {
+  ConversationBody,
+  ConversationDeletedFace,
+  type ConversationSeat,
+  ConversationUnavailableFace,
+} from "../session/ConversationBody";
 import { retainedConversationComposer } from "../session/composer/retainedComposer";
 import { retainedTranscriptReadView } from "../session/transcript/transcriptReadView";
 import {
@@ -124,10 +128,6 @@ function ScopeConversation({
       // autofocuses its composer — the user taps in, or the pane's own
       // focus plumbing acts.
       focused: false,
-      // CascadeColumn renders this scope's activity controls below the
-      // conversation footer, so the composer's phone row adds no second
-      // set of chips beside the status chrome.
-      ownsActivityCounts: true,
       // A resumed conversation replaces its path entry in place; a cascade
       // column has no route of its own to navigate. The seat declares the
       // fallback session menu so the conversation's own gate can render it in
@@ -169,14 +169,10 @@ function ScopeConversation({
                 selected={selected}
                 content={
                   state === "deleted" ? (
-                    <EmptyState title="This session was deleted" hint="Its transcript is gone." reason="deleted" />
+                    <ConversationDeletedFace />
                   ) : state === "loading" ? (
                     snapshot?.summaryState?.permanent && snapshot.summaryState.unavailable ? (
-                      <EmptyState
-                        title="Transcript unavailable"
-                        reason="unavailable"
-                        hint={sessionActionError("Couldn't load transcript", snapshot.summaryState.error)}
-                      />
+                      <ConversationUnavailableFace error={snapshot.summaryState.error} />
                     ) : (
                       <Loader label="Loading transcript" />
                     )

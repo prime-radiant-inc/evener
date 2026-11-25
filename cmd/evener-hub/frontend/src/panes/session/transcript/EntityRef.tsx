@@ -66,6 +66,41 @@ function ViewCaptions({ view }: { view: EntityView }) {
   return <span className={CLASS.caption}>{view.ended ? "ended" : "stale"}</span>;
 }
 
+// The three entity kinds share one card shell: a head naming the kind and its
+// state, an optional one-line summary, and the fact rows. Keeping the shell in
+// one place keeps every hover card's structure identical across kinds.
+function EntityCardShell({
+  kind,
+  label,
+  status,
+  captions,
+  summary,
+  rows,
+}: {
+  kind: "job" | "delegate" | "watch";
+  label: string;
+  status?: { text: ReactNode; state?: string };
+  captions?: ReactNode;
+  summary?: ReactNode;
+  rows: { field: string; label: string; value: ReactNode; mono?: boolean }[];
+}) {
+  return (
+    <div className={CLASS.card} data-entity-kind={kind}>
+      <div className={CLASS.head}>
+        <Eyebrow as="span">{label}</Eyebrow>
+        {status ? (
+          <span className={CLASS.status} data-state={status.state}>
+            {status.text}
+          </span>
+        ) : null}
+        {captions}
+      </div>
+      {summary ? <div className={CLASS.summary}>{summary}</div> : null}
+      <CardRows rows={rows} />
+    </div>
+  );
+}
+
 function elapsedBetween(startedAt: string | undefined, endedAt: string | undefined): string | undefined {
   if (!startedAt || !endedAt) return undefined;
   const start = Date.parse(startedAt);
@@ -95,31 +130,24 @@ function JobCard({ view, live }: { view: Extract<EntityView, { kind: "job" }>; l
       ? display
       : undefined;
   return (
-    <div className={CLASS.card} data-entity-kind="job">
-      <div className={CLASS.head}>
-        <Eyebrow as="span">Job</Eyebrow>
-        {status ? (
-          <span className={CLASS.status} data-state={failed ? "failed" : statusKind}>
-            {status}
-          </span>
-        ) : null}
-        <ViewCaptions view={view} />
-      </div>
-      {detail ? <div className={CLASS.summary}>{detail}</div> : null}
-      <CardRows
-        rows={[
-          { field: "type", label: "Type", value: job.type },
-          { field: "command", label: "Command", value: command, mono: true },
-          {
-            field: duration ? "duration" : "started",
-            label: duration ? "Duration" : "Started",
-            value: duration ?? started,
-          },
-          { field: "exit", label: "Exit", value: job.exitCode === undefined ? undefined : `exit ${job.exitCode}` },
-          { field: "output", label: "Output", value: formatByteCount(job.outputBytes) },
-        ]}
-      />
-    </div>
+    <EntityCardShell
+      kind="job"
+      label="Job"
+      status={status ? { text: status, state: failed ? "failed" : statusKind } : undefined}
+      captions={<ViewCaptions view={view} />}
+      summary={detail}
+      rows={[
+        { field: "type", label: "Type", value: job.type },
+        { field: "command", label: "Command", value: command, mono: true },
+        {
+          field: duration ? "duration" : "started",
+          label: duration ? "Duration" : "Started",
+          value: duration ?? started,
+        },
+        { field: "exit", label: "Exit", value: job.exitCode === undefined ? undefined : `exit ${job.exitCode}` },
+        { field: "output", label: "Output", value: formatByteCount(job.outputBytes) },
+      ]}
+    />
   );
 }
 
@@ -158,31 +186,24 @@ function DelegateCard({ view, live }: { view: Extract<EntityView, { kind: "deleg
   const running = live && duration === undefined && runningForMs != null ? formatElapsed(runningForMs) : undefined;
   const quiet = live && quietForMs != null ? compactDuration(quietForMs) : undefined;
   return (
-    <div className={CLASS.card} data-entity-kind="delegate">
-      <div className={CLASS.head}>
-        <Eyebrow as="span">Delegate</Eyebrow>
-        {displayedStatus ? (
-          <span className={CLASS.status} data-state={statusKind}>
-            {displayedStatus}
-          </span>
-        ) : null}
-        <ViewCaptions view={view} />
-      </div>
-      {mandate ? <div className={CLASS.summary}>{mandate}</div> : null}
-      <CardRows
-        rows={[
-          { field: "agent", label: "Agent", value: agent },
-          { field: "model", label: "Model", value: model, mono: true },
-          {
-            field: duration ? "duration" : "running",
-            label: duration ? "Duration" : "Running",
-            value: duration ?? running,
-          },
-          { field: "quiet", label: "Quiet", value: quiet },
-          { field: "usage", label: "Usage", value: usageText(view.row?.delegate.usage ?? view.stable?.usage) },
-        ]}
-      />
-    </div>
+    <EntityCardShell
+      kind="delegate"
+      label="Delegate"
+      status={displayedStatus ? { text: displayedStatus, state: statusKind } : undefined}
+      captions={<ViewCaptions view={view} />}
+      summary={mandate}
+      rows={[
+        { field: "agent", label: "Agent", value: agent },
+        { field: "model", label: "Model", value: model, mono: true },
+        {
+          field: duration ? "duration" : "running",
+          label: duration ? "Duration" : "Running",
+          value: duration ?? running,
+        },
+        { field: "quiet", label: "Quiet", value: quiet },
+        { field: "usage", label: "Usage", value: usageText(view.row?.delegate.usage ?? view.stable?.usage) },
+      ]}
+    />
   );
 }
 
@@ -213,29 +234,26 @@ function WatchCard({ view }: { view: Extract<EntityView, { kind: "watch" }> }) {
       ? sourceLabel(watch.source)
       : undefined;
   return (
-    <div className={CLASS.card} data-entity-kind="watch">
-      <div className={CLASS.head}>
-        <Eyebrow as="span">Watch</Eyebrow>
-        <span className={CLASS.status}>{watch.state}</span>
-        <span className={CLASS.caption}>last-known</span>
-      </div>
-      {condition.summary ? <div className={CLASS.summary}>{condition.summary}</div> : null}
-      <CardRows
-        rows={[
-          { field: "note", label: "Note", value: condition.note },
-          {
-            field: "deliveries",
-            label: "Deliveries",
-            value:
-              watch.deliveries === undefined
-                ? undefined
-                : `${watch.deliveries} ${watch.deliveries === 1 ? "delivery" : "deliveries"}`,
-          },
-          { field: "source", label: "Source", value: source, mono: true },
-          { field: "ended", label: "Ended", value: watch.endReason },
-        ]}
-      />
-    </div>
+    <EntityCardShell
+      kind="watch"
+      label="Watch"
+      status={{ text: watch.state }}
+      captions={<span className={CLASS.caption}>last-known</span>}
+      summary={condition.summary}
+      rows={[
+        { field: "note", label: "Note", value: condition.note },
+        {
+          field: "deliveries",
+          label: "Deliveries",
+          value:
+            watch.deliveries === undefined
+              ? undefined
+              : `${watch.deliveries} ${watch.deliveries === 1 ? "delivery" : "deliveries"}`,
+        },
+        { field: "source", label: "Source", value: source, mono: true },
+        { field: "ended", label: "Ended", value: watch.endReason },
+      ]}
+    />
   );
 }
 

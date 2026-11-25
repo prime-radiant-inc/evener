@@ -133,7 +133,7 @@ func localThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appso
 	var initialTurnMutationID string
 	var acq hubcore.CreationAcquireResult
 	if id != "" {
-		if cfg.CreationStoreErr != nil || cfg.CreationStore == nil {
+		if !cfg.CreationIdempotencyAvailable() {
 			return appwire.ThreadStartResponse{}, appwire.MutationUnknown(id, "creation store is unavailable")
 		}
 		payloadHash, err := hubcore.CreationPayloadHash(params)

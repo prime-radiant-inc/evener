@@ -136,10 +136,10 @@ afterEach(() => {
   else Reflect.deleteProperty(Range.prototype, "getBoundingClientRect");
 });
 
-// A steer the human typed is a prompt bubble: its words are on screen as typed,
-// with no fold to open.
+// A steer the human typed is a prompt bubble rendered as Markdown: its words
+// are on screen as rendered, with no fold to open.
 test("a steer the human typed is counted and painted with nothing to open", async () => {
-  const model = modelOf([steer("s1", { text: "stop and rethink the parser", source: "user" })]);
+  const model = modelOf([steer("s1", { text: "stop and **rethink** the `parser`", source: "user" })]);
   requestFindInSession(REF, { query: "rethink the parser" });
   render(<Harness model={model} config={TOOLS} />);
 
@@ -150,6 +150,10 @@ test("a steer the human typed is counted and painted with nothing to open", asyn
     expect(painted("evener-find-current")).toContain("rethink the parser");
   });
   expect(currentAnchor()?.querySelector("details")).toBeNull();
+
+  act(() => requestFindInSession(REF, { query: "**rethink**" }));
+  await waitFor(() => expect(bar().getAttribute("data-find-status")).toBe("none"));
+  expect(count()).toBe(0);
 });
 
 // A human note renders the labeled divider, folded. Its body is the one region

@@ -15,8 +15,8 @@ import { hydrateThread } from "@evener/appwire-client";
 import { DetailsPanel } from "../../panes/session/chrome/DetailsPanel";
 import { StatusRow } from "../../panes/session/chrome/StatusRow";
 import { TasksPanel } from "../../panes/session/chrome/TasksPanel";
+import { GallerySection } from "../GallerySection";
 import styles from "../gallery-section.module.css";
-import { ThemeFlip } from "../ThemeFlip";
 import { FULL_CAPABILITIES, fixtureThread } from "./thread-fixture";
 
 const ref = "dev-surface-chrome";
@@ -64,28 +64,29 @@ const managerFixtures = [
 
 export default function ChromeSurfaceSection() {
   return (
-    <section>
-      <h2>Session chrome</h2>
-      <p className={styles.note}>
-        StatusRow / TasksPanel, fed a fixture ThreadModel built through the real hydrateThread(). The panel trigger
-        opens a real Sheet; its body fetch fails honestly with no live connection behind this gallery.
-      </p>
-      <ThemeFlip>
-        <div className={styles.row}>
-          <p className={styles.rowLabel}>status</p>
-          <StatusRow sessionRef={ref} model={model} now={Date.now()} />
+    <GallerySection
+      title="Session chrome"
+      note={
+        <p className={styles.note}>
+          StatusRow / TasksPanel, fed a fixture ThreadModel built through the real hydrateThread(). The panel trigger
+          opens a real Sheet; its body fetch fails honestly with no live connection behind this gallery.
+        </p>
+      }
+    >
+      <div className={styles.row}>
+        <p className={styles.rowLabel}>status</p>
+        <StatusRow sessionRef={ref} model={model} now={Date.now()} />
+      </div>
+      <div className={styles.row}>
+        <p className={styles.rowLabel}>tasks</p>
+        <TasksPanel sessionRef={ref} model={model} />
+      </div>
+      {managerFixtures.map((fixture) => (
+        <div key={fixture.name} className={styles.row} data-testid={`manager-fixture-${fixture.name}`}>
+          <p className={styles.rowLabel}>Manager {fixture.name}, disconnected</p>
+          <DetailsPanel model={fixture.model} now={1000} />
         </div>
-        <div className={styles.row}>
-          <p className={styles.rowLabel}>tasks</p>
-          <TasksPanel sessionRef={ref} model={model} />
-        </div>
-        {managerFixtures.map((fixture) => (
-          <div key={fixture.name} className={styles.row} data-testid={`manager-fixture-${fixture.name}`}>
-            <p className={styles.rowLabel}>Manager {fixture.name}, disconnected</p>
-            <DetailsPanel model={fixture.model} now={1000} />
-          </div>
-        ))}
-      </ThemeFlip>
-    </section>
+      ))}
+    </GallerySection>
   );
 }

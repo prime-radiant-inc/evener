@@ -24,7 +24,15 @@
 // true bottom, with the pill cleared by the landing's own native scroll
 // event.
 
-import type { AnyNotification, Thread, ThreadCapabilities, ThreadReadResponse, Turn } from "@evener/appwire-client";
+import type {
+  AnyNotification,
+  Thread,
+  ThreadCapabilities,
+  ThreadItem,
+  ThreadReadResponse,
+  ThreadTurnsListResponse,
+  Turn,
+} from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { createRoot } from "react-dom/client";
 import "../panes/session";
@@ -41,6 +49,7 @@ import { workspaceStore } from "../shell/workspace";
 import { connectionStore } from "../stores/connection";
 import { prefsStore } from "../stores/prefs";
 import { threadsStore } from "../stores/threads";
+import { transcriptDisplayStore } from "../stores/transcriptDisplay";
 import { Toast } from "../widgets";
 import { harnessRoot } from "./mountHarness";
 import { mulberry32 } from "./mulberry32";
@@ -77,13 +86,32 @@ function throwOnPageErrors(context: string): void {
   if (errors.length > 0) throw new Error(`transcriptscrollguard page errors during ${context}: ${errors.join("\n")}`);
 }
 
-const ENDED = new URLSearchParams(window.location.search).get("ended") === "1";
+const SEARCH = new URLSearchParams(window.location.search);
+const ENDED = SEARCH.get("ended") === "1";
+// ?stall=chat|intent: the compact-history paging pass (#7682). One positioned
+// turn whose older pages carry hidden rows only, so each successful page
+// advances the cursor without adding height. The pass needs the real Session
+// dock at a fixed compact port, so the flag implies ?dock=1.
+const STALL_MODE = SEARCH.get("stall");
+const STALL = STALL_MODE === "chat" || STALL_MODE === "intent";
+const STALL_INTENT = STALL_MODE === "intent";
+// ?fill=1 (with ?stall=): the same 40-item turn with every item visible, so the
+// open genuinely overflows. The control: the paging row mounts and makes no
+// request on open.
+const STALL_FILL = STALL && SEARCH.get("fill") === "1";
+const DOCK = SEARCH.get("dock") === "1" || STALL;
 const REF = ENDED
   ? "local:transcriptscrollguard-ended"
-  : new URLSearchParams(window.location.search).get("dock") === "1"
-    ? "local:transcriptscrollguard-dock"
-    : "local:transcriptscrollguard";
-const THREAD_ID = ENDED ? "thr_transcriptscrollguard_ended" : "thr_transcriptscrollguard";
+  : STALL
+    ? "local:transcriptscrollguard-stall"
+    : DOCK
+      ? "local:transcriptscrollguard-dock"
+      : "local:transcriptscrollguard";
+const THREAD_ID = ENDED
+  ? "thr_transcriptscrollguard_ended"
+  : STALL
+    ? "thr_transcriptscrollguard_stall"
+    : "thr_transcriptscrollguard";
 
 // The transcript's row heights must be variable AND identical on every run -
 // a guard whose geometry depends on Math.random() cannot be bisected or
@@ -157,7 +185,6 @@ const initialTurns: Turn[] = Array.from({ length: INITIAL_TURN_COUNT }, (_, i) =
 // useTranscriptScroll coordinator (#2963) - and its paging and landing must
 // behave identically, with the conversation's pane footer rendered.
 const PAGED = new URLSearchParams(window.location.search).get("paged") === "1";
-const DOCK = new URLSearchParams(window.location.search).get("dock") === "1";
 const READONLY = new URLSearchParams(window.location.search).get("readonly") === "1";
 // Hold hydration explicitly so the browser guard exercises pre-mount frames.
 const DEFER_READ = new URLSearchParams(window.location.search).get("deferRead") === "1";
@@ -241,6 +268,166 @@ const THREAD: Thread = {
   turns: initialTurns,
 };
 
+// --- #7682 compact-history fixture ---------------------------------------
+// The shape the issue measured: a transcript too short to scroll, one
+// positioned turn, and older history whose next page adds hidden rows only.
+// The Chat preset hides reasoning rows and the Intent preset hides routine
+// system rows, so at either detail level a merged page can advance the cursor
+// while the rendered content keeps its exact height. The third and oldest page
+// carries the visible older reply and ends the history, which is what makes the
+// stall observable: after two height-free advances the reader still has older
+// dialogue to reach, with a cursor already in hand.
+const STALL_CURSOR_A = "cursor_stall_a";
+const STALL_CURSOR_B = "cursor_stall_b";
+const STALL_CURSOR_C = "cursor_stall_c";
+const STALL_TURN_ID = "turn_stall";
+const STALL_OLD_AGENT_ID = "stall_old_agent";
+const STALL_TURN_ENTRY = 10;
+const STALL_PAGE_ENTRIES = [9, 8, 7] as const;
+// The dock's fixed outer height. The issue's port was ~209px under the pane
+// chrome; this leaves a compact port of the same order: the two visible rows
+// fit (so the open does not auto-load) while later pages have nowhere to show.
+const STALL_DOCK_HEIGHT = 420;
+
+function stallHiddenItem(entry: number, index: number): ThreadItem {
+  const id = `stall_hidden_${entry}_${index}`;
+  if (STALL_INTENT) {
+    return {
+      type: "systemMessage",
+      id,
+      turnId: STALL_TURN_ID,
+      eventKind: "environment",
+      text: `stall environment ${index}`,
+      position: { entry, item: index },
+    };
+  }
+  return {
+    type: "reasoning",
+    id,
+    turnId: STALL_TURN_ID,
+    text: `stall reasoning ${index}`,
+    position: { entry, item: index },
+  };
+}
+
+function stallInitialItems(): ThreadItem[] {
+  const tail = Array.from({ length: 38 }, (_, offset): ThreadItem => {
+    const index = offset + 2;
+    if (!STALL_FILL) return stallHiddenItem(STALL_TURN_ENTRY, index);
+    // The overflowing control: the same item count, all visible.
+    return {
+      type: "agentMessage",
+      id: `stall_item_${index}`,
+      turnId: STALL_TURN_ID,
+      text: "stall visible item",
+      position: { entry: STALL_TURN_ENTRY, item: index },
+    };
+  });
+  return [
+    {
+      type: "userMessage",
+      id: "stall_user",
+      turnId: STALL_TURN_ID,
+      text: "stall ask",
+      position: { entry: STALL_TURN_ENTRY, item: 0 },
+    },
+    {
+      type: "agentMessage",
+      id: "stall_agent",
+      turnId: STALL_TURN_ID,
+      text: "stall reply",
+      position: { entry: STALL_TURN_ENTRY, item: 1 },
+    },
+    ...tail,
+  ];
+}
+
+const STALL_INITIAL_TURNS: Turn[] = [
+  {
+    id: STALL_TURN_ID,
+    itemsView: "fragment",
+    hasEarlierItems: true,
+    status: "completed",
+    items: stallInitialItems(),
+  },
+];
+
+interface StallCallRecord {
+  cursor: string | null;
+  itemLimit: number | null;
+  itemsBefore: number;
+  /** Geometry read before the page is handed back to the store. */
+  geometryBefore: TranscriptGeometry | null;
+}
+const stallCalls: StallCallRecord[] = [];
+
+function stallTurnItemCount(): number {
+  const model = threadsStore.getState().threads.get(REF);
+  const turn = model?.turns.find((candidate) => candidate.id === STALL_TURN_ID);
+  return turn?.items.length ?? 0;
+}
+
+function stallOlderPage(cursor: string | null): ThreadTurnsListResponse {
+  if (cursor === STALL_CURSOR_A) {
+    return {
+      data: [
+        {
+          id: STALL_TURN_ID,
+          itemsView: "fragment",
+          hasEarlierItems: true,
+          hasLaterItems: true,
+          status: "completed",
+          items: Array.from({ length: 40 }, (_, index) => stallHiddenItem(STALL_PAGE_ENTRIES[0], index)),
+        },
+      ],
+      nextCursor: STALL_CURSOR_B,
+    };
+  }
+  if (cursor === STALL_CURSOR_B) {
+    return {
+      data: [
+        {
+          id: STALL_TURN_ID,
+          itemsView: "fragment",
+          hasEarlierItems: true,
+          hasLaterItems: true,
+          status: "completed",
+          items: Array.from({ length: 40 }, (_, index) => stallHiddenItem(STALL_PAGE_ENTRIES[1], index)),
+        },
+      ],
+      nextCursor: STALL_CURSOR_C,
+    };
+  }
+  if (cursor === STALL_CURSOR_C) {
+    // The oldest page: the visible older reply, then the end of history. The
+    // transcript stays too short to scroll, so the reply appears in place
+    // rather than arriving below the reader's view.
+    return {
+      data: [
+        {
+          id: STALL_TURN_ID,
+          itemsView: "fragment",
+          hasEarlierItems: false,
+          hasLaterItems: true,
+          status: "completed",
+          items: [
+            {
+              type: "agentMessage",
+              id: STALL_OLD_AGENT_ID,
+              turnId: STALL_TURN_ID,
+              text: "stall older reply",
+              position: { entry: STALL_PAGE_ENTRIES[2], item: 0 },
+            },
+            ...Array.from({ length: 4 }, (_, offset) => stallHiddenItem(STALL_PAGE_ENTRIES[2], offset + 1)),
+          ],
+        },
+      ],
+    };
+  }
+  // Anything else is demand the pass must never make: one request per key.
+  throw new Error(`stall fixture received an unexpected older cursor: ${String(cursor)}`);
+}
+
 const fake = new FakeClient("ready");
 // The read's identity must match the history/updated notifications
 // appendLargeTurns emits below (same bootGeneration/epoch/incarnation): a
@@ -258,6 +445,16 @@ const INCARNATION = "inc-1";
 fake.on("thread/read", async (params) => {
   await readAdmission;
   if (!params.ref) throw new Error("transcript fixture requires a session ref");
+  if (STALL && params.ref === REF) {
+    return {
+      thread: { ...THREAD, turns: STALL_INITIAL_TURNS },
+      bootGeneration: BOOT_GENERATION,
+      epoch: EPOCH,
+      snapshot: { incarnation: INCARNATION, length: 1 },
+      requestGeneration: params.requestGeneration,
+      olderCursor: STALL_CURSOR_A,
+    } satisfies ThreadReadResponse;
+  }
   return {
     thread:
       params.ref === REF
@@ -294,6 +491,22 @@ if (PAGED) {
     }
     await olderAdmission;
     return { data: olderPageTurns, nextCursor: undefined };
+  });
+}
+if (STALL) {
+  fake.on("thread/turns/list", (params: { cursor?: string; itemLimit?: number }) => {
+    const el = findScrollElement();
+    // Recorded at the request, because that is the only moment a sample
+    // describes this page: the cursor asked for, the production item limit, the
+    // item count the model holds going in, and the port's geometry then. A
+    // later sample would describe whatever commit happened to run next.
+    stallCalls.push({
+      cursor: params.cursor ?? null,
+      itemLimit: params.itemLimit ?? null,
+      itemsBefore: stallTurnItemCount(),
+      geometryBefore: el === null ? null : geometryOf(el),
+    });
+    return stallOlderPage(params.cursor ?? null);
   });
 }
 connectionStore.getState().connect(fake);
@@ -342,10 +555,34 @@ else
     focusedPaneId: "transcriptscrollguard",
   });
 
+// The pass's own display detail, not the harness's: Chat hides reasoning rows
+// and Intent hides routine system rows, which is what makes an older page
+// height-free. Set on the store directly (not through setLocal) so the preset
+// cannot persist in this origin and change another pass's geometry.
+if (STALL) {
+  transcriptDisplayStore.setState({
+    local: {
+      ...transcriptDisplayStore.getState().local,
+      desktop: {
+        version: 1,
+        content: { kind: "preset", level: STALL_INTENT ? "intent" : "chat" },
+        advanced: {
+          roundTimings: false,
+          tokenCounts: false,
+          estimatedCost: false,
+          systemEvents: false,
+          promptEvents: false,
+          hookExits: "none",
+        },
+      },
+    },
+  });
+}
+
 const root = createRoot(rootEl);
 root.render(
   <ClientProvider client={fake}>
-    <div id="transcriptscrollguard-pane" style={{ height: "100%" }}>
+    <div id="transcriptscrollguard-pane" style={{ height: STALL ? `${STALL_DOCK_HEIGHT}px` : "100%" }}>
       {DOCK ? (
         <>
           <div style={{ position: "fixed", bottom: 0, right: 0, zIndex: 10000 }}>
@@ -650,6 +887,93 @@ async function waitForEndedPage(merged: boolean) {
   }
 }
 
+// --- #7682 compact-history probe -----------------------------------------
+// The pass's whole evidence in one read: the causal older-page series (each
+// call's cursor, item limit, item count going in, and the port geometry it was
+// made from), the live model's cursor, and whether the older reply the third
+// page carries is actually inside the viewport. No input of any kind drives it:
+// the automatic trigger under test is the only thing that may request a page.
+// The port's geometry, the paging row, the measured-layout verdict and the
+// captured errors are the harness's shared metrics fields, read exactly as
+// every other pass reads them.
+interface StallPageState
+  extends Pick<
+    TranscriptScrollMetrics,
+    "scrollTop" | "scrollHeight" | "clientHeight" | "pagingRow" | "measuredLayout" | "errors"
+  > {
+  ref: string;
+  mode: string | null;
+  fill: boolean;
+  calls: StallCallRecord[];
+  itemCount: number;
+  cursor: string | null;
+  oldDialogue: { anchorId: string | null; top: number | null; bottom: number | null; visible: boolean };
+}
+
+function stallPageState(): StallPageState {
+  const model = threadsStore.getState().threads.get(REF);
+  const el = findScrollElement();
+  // The fields this probe shares with every other pass come from the harness's
+  // one read of them: the port's geometry, the paging row's presence, the
+  // measured-layout verdict and the captured errors. The zeros and the direct
+  // row read stand in only while the port is unmounted, which is what this
+  // probe reported before the shared read existed.
+  const metrics = el === null ? null : metricsFrom(el);
+  const anchor = el?.querySelector<HTMLElement>(`[data-view-anchor-id="${STALL_OLD_AGENT_ID}"]`) ?? null;
+  const port = el?.getBoundingClientRect();
+  const rect = anchor?.getBoundingClientRect();
+  return {
+    ref: REF,
+    mode: STALL_MODE,
+    fill: STALL_FILL,
+    calls: stallCalls.map((call) => ({ ...call })),
+    scrollTop: metrics?.scrollTop ?? 0,
+    scrollHeight: metrics?.scrollHeight ?? 0,
+    clientHeight: metrics?.clientHeight ?? 0,
+    itemCount: stallTurnItemCount(),
+    cursor: model?.olderCursor ?? null,
+    pagingRow: metrics?.pagingRow ?? document.querySelector('[data-testid="load-older-row"]') !== null,
+    measuredLayout: metrics?.measuredLayout ?? false,
+    oldDialogue: {
+      anchorId: anchor?.getAttribute("data-view-anchor-id") ?? null,
+      top: rect && port ? rect.top - port.top : null,
+      bottom: rect && port ? rect.bottom - port.top : null,
+      visible: rect !== undefined && port !== undefined && rect.bottom > port.top && rect.top < port.bottom,
+    },
+    errors: metrics?.errors ?? pageErrors(),
+  };
+}
+
+// Readiness is quiescence, not success: the merged item count and the measured
+// geometry must hold for the shared paged-open tracker's consecutive still
+// frames. A pass that stalls after its first page therefore returns the stalled
+// state instead of timing out, and the runner reports the missing pages as the
+// finding they are. The tripwire is shorter than the readiness bound because
+// this wait returns its state to be asserted rather than driving the pass from
+// it.
+const STALL_TRIPWIRE_MS = 10_000;
+
+async function waitForStallPagedSettled(): Promise<StallPageState & { settledStill: boolean }> {
+  // The ?paged=1 tracker, with the compact fixture's merged item count as its
+  // progress dimension: a page landing restarts the still run, and geometry
+  // counts only once it is measured.
+  const tracker = createPagedOpenSettleTracker(stallInitialItems().length);
+  const deadline = performance.now() + STALL_TRIPWIRE_MS;
+  for (;;) {
+    await nextFrame();
+    throwOnPageErrors("compact paging");
+    const state = stallPageState();
+    const settled = tracker.observe({
+      turns: state.itemCount,
+      geometry: state.measuredLayout
+        ? { scrollTop: state.scrollTop, scrollHeight: state.scrollHeight, clientHeight: state.clientHeight }
+        : null,
+    });
+    if (settled) return { ...state, settledStill: true };
+    if (performance.now() > deadline) return { ...state, settledStill: false };
+  }
+}
+
 // Callable, not a module-load one-shot: the runner awaits webfonts FIRST
 // (waitForFonts over CDP) and only then calls this, because a late-arriving
 // font changes row geometry after load - settling must measure the
@@ -895,6 +1219,7 @@ declare global {
     unmountTranscriptScrollGuardPane: () => void;
     waitForTranscriptSettled: typeof waitForTranscriptSettled;
     waitForPagedOpenSettled: typeof waitForPagedOpenSettled;
+    waitForStallPagedSettled: typeof waitForStallPagedSettled;
     waitForUnseenOpenSettled: typeof waitForUnseenOpenSettled;
     transcriptScrollMetrics: typeof metrics;
     scrollAwayAndWaitForPill: typeof scrollAwayAndWaitForPill;
@@ -919,6 +1244,7 @@ window.releaseEndedOlderPage = () => {
 window.unmountTranscriptScrollGuardPane = () => root.unmount();
 window.waitForTranscriptSettled = waitForTranscriptSettled;
 window.waitForPagedOpenSettled = waitForPagedOpenSettled;
+window.waitForStallPagedSettled = waitForStallPagedSettled;
 window.waitForUnseenOpenSettled = waitForUnseenOpenSettled;
 window.transcriptScrollMetrics = metrics;
 window.scrollAwayAndWaitForPill = scrollAwayAndWaitForPill;

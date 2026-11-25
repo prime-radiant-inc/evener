@@ -24,6 +24,26 @@ const CLASS = {
   help: requireClass(styles.help, "marketplacesPlugins.module.css", "help"),
 };
 
+/** One list's load-failure notice: its friendly error, noun, and Retry. */
+type LoadErrorNoticeProps = { label: string; error: string; retrying: boolean; onRetry: () => void };
+
+function LoadErrorNotice({ label, error, retrying, onRetry }: LoadErrorNoticeProps) {
+  return (
+    <InlineNotice
+      tone="danger"
+      live="status"
+      data-reason="unavailable"
+      action={
+        <Button size="sm" onClick={onRetry} disabled={retrying}>
+          Retry {label}
+        </Button>
+      }
+    >
+      Failed to load {label}: {error}
+    </InlineNotice>
+  );
+}
+
 type SegmentId = "installed" | "marketplaces" | "directories";
 
 type AppliedRemovalGuard = {
@@ -194,32 +214,20 @@ function MarketplacesPluginsBody({ host }: { host: string }) {
         plugin selection; custom launches choose their own plugins. Existing sessions keep their selected plugins.
       </p>
       {pluginsError !== null && (
-        <InlineNotice
-          tone="danger"
-          live="status"
-          data-reason="unavailable"
-          action={
-            <Button size="sm" onClick={() => void store.getState().fetchPlugins()} disabled={pluginsLoading}>
-              Retry plugins
-            </Button>
-          }
-        >
-          Failed to load plugins: {pluginsError}
-        </InlineNotice>
+        <LoadErrorNotice
+          label="plugins"
+          error={pluginsError}
+          retrying={pluginsLoading}
+          onRetry={() => void store.getState().fetchPlugins()}
+        />
       )}
       {marketplacesError !== null && (
-        <InlineNotice
-          tone="danger"
-          live="status"
-          data-reason="unavailable"
-          action={
-            <Button size="sm" onClick={() => void store.getState().fetchMarketplaces()} disabled={marketplacesLoading}>
-              Retry marketplaces
-            </Button>
-          }
-        >
-          Failed to load marketplaces: {marketplacesError}
-        </InlineNotice>
+        <LoadErrorNotice
+          label="marketplaces"
+          error={marketplacesError}
+          retrying={marketplacesLoading}
+          onRetry={() => void store.getState().fetchMarketplaces()}
+        />
       )}
       {activeSegment === "directories" && <PluginsDirsSection host={host} />}
       {activeSegment === "installed" &&

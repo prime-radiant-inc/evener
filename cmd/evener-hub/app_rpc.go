@@ -1221,7 +1221,7 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 			Auth:                       true,
 			TranscriptDisplaySettings:  true,
 			KeybindingsSettings:        true,
-			ThreadStartIdempotency:     cfg.CreationStore != nil && cfg.CreationStoreErr == nil,
+			ThreadStartIdempotency:     cfg.CreationIdempotencyAvailable(),
 		},
 	})
 	// One credentials store for every credential surface this server builds.

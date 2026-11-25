@@ -34,12 +34,8 @@
   border-right: 1px solid var(--edge);
 }
 
-/* On mobile the same Rail renders inside StackHost's TreeDrawer Sheet, which
- * already frames and borders the panel — fill its width instead of imposing
- * the desktop fixed width (a narrower, independently-bordered box floating
- * inside a wider one reads as a panel nested inside a panel). Same 899px
- * boundary as useIsMobile.ts: at-or-below it, the only Rail that exists is
- * the drawer-hosted one. */
+/* Below 900px either the drawer or the tablet board frames the Rail.
+ * Fill that width and leave the border to its host. */
 @media (max-width: 899px) {
   .rail {
     width: 100%;
@@ -136,6 +132,13 @@
   flex: none;
   display: flex;
   align-items: center;
+}
+
+.fallbackHeader {
+  flex: none;
+  display: flex;
+  justify-content: flex-end;
+  padding: var(--space-3) var(--space-2) var(--space-2) var(--space-4);
 }
 
 .needsYou {

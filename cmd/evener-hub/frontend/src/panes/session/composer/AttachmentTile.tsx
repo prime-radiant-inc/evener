@@ -30,7 +30,7 @@
 // refuses any file whose type is not image/*, and recovery/recoveryDraft.ts
 // only lifts input items of type "image" out of a recovered mutation.
 import { useState } from "react";
-import { CloseIcon, Dialog, IconButton, ZoomableMedia } from "../../../widgets";
+import { CloseIcon, IconButton, ImageThumbnail, MediaLightbox } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import type { PendingAttachment } from "./attachments/useAttachments";
 import styles from "./composer.module.css";
@@ -46,7 +46,6 @@ const CLASS = {
   imageThumbnail: requireClass(styles.imageThumbnail, "composer.module.css", "imageThumbnail"),
   dimensionsOverlay: requireClass(styles.dimensionsOverlay, "composer.module.css", "dimensionsOverlay"),
   removeSlot: requireClass(styles.removeSlot, "composer.module.css", "removeSlot"),
-  lightboxImage: requireClass(styles.lightboxImage, "composer.module.css", "lightboxImage"),
 };
 
 export function AttachmentTile({ item, onRemove }: AttachmentTileProps) {
@@ -59,43 +58,53 @@ export function AttachmentTile({ item, onRemove }: AttachmentTileProps) {
   const source = item.data === undefined ? undefined : `data:${item.mediaType};base64,${item.data}`;
 
   return (
-    // data-testid, not the CSS-module class, is what the browser guards
-    // select on (scripts/spawnguard): a hashed module class is a build
-    // detail, and a guard that measures the real tree needs a selector the
-    // component owns.
-    <div className={CLASS.imageTile} data-testid="attachment-tile">
-      {source === undefined ? (
-        // Named, so a screen reader hears which attachment is holding
-        // things up. Not a live region: eight of those announcing at once
-        // is noise, and the state resolves on its own in a few frames.
-        <div className={CLASS.imagePending} role="img" aria-label={`${item.name} (still processing)`} />
-      ) : (
-        <ZoomableMedia label={`View ${item.name}`} onOpen={() => setLightboxOpen(true)} fill radius="inherit">
-          {/* Decorative: the button around it already carries the name, and
-              a second announcement of the same filename is just noise. */}
-          <img className={CLASS.imageThumbnail} src={source} alt="" />
-        </ZoomableMedia>
-      )}
-      {item.width !== undefined && item.height !== undefined && (
-        <div className={CLASS.dimensionsOverlay}>
-          {item.width}×{item.height}
-        </div>
-      )}
-      {/* Last, always, in both states - see this file's header comment. */}
-      <span className={CLASS.removeSlot}>
-        <IconButton
-          label={`Remove ${item.name}`}
-          icon={<CloseIcon size={10} />}
-          variant="secondary"
-          size="sm"
-          onClick={onRemove}
-        />
-      </span>
+    <>
+      {/* data-testid, not the CSS-module class, is what the browser guards
+          select on (scripts/spawnguard): a hashed module class is a build
+          detail, and a guard that measures the real tree needs a selector the
+          component owns. */}
+      <ImageThumbnail
+        frameClassName={CLASS.imageTile}
+        frameTestId="attachment-tile"
+        src={source}
+        // Decorative: the trigger's label already carries the name, and a
+        // second announcement of the same filename is just noise.
+        alt=""
+        label={`View ${item.name}`}
+        onOpen={() => setLightboxOpen(true)}
+        imageClassName={CLASS.imageThumbnail}
+        radius="inherit"
+        placeholder={
+          source === undefined ? (
+            // Named, so a screen reader hears which attachment is holding
+            // things up. Not a live region: eight of those announcing at once
+            // is noise, and the state resolves on its own in a few frames.
+            <div className={CLASS.imagePending} role="img" aria-label={`${item.name} (still processing)`} />
+          ) : undefined
+        }
+        // Last, always, in both states - see this file's header comment.
+        overlay={
+          <>
+            {item.width !== undefined && item.height !== undefined && (
+              <div className={CLASS.dimensionsOverlay}>
+                {item.width}×{item.height}
+              </div>
+            )}
+            <span className={CLASS.removeSlot}>
+              <IconButton
+                label={`Remove ${item.name}`}
+                icon={<CloseIcon size={10} />}
+                variant="secondary"
+                size="sm"
+                onClick={onRemove}
+              />
+            </span>
+          </>
+        }
+      />
       {source !== undefined && lightboxOpen && (
-        <Dialog open onClose={() => setLightboxOpen(false)} title={item.name} size="large">
-          <img className={CLASS.lightboxImage} src={source} alt={item.name} />
-        </Dialog>
+        <MediaLightbox open onClose={() => setLightboxOpen(false)} title={item.name} src={source} alt={item.name} />
       )}
-    </div>
+    </>
   );
 }

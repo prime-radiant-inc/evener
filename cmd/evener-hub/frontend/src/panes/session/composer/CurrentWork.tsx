@@ -7,6 +7,9 @@ export interface CurrentWorkProps {
   task?: string;
   goal?: string;
   goalStatus?: string;
+  // On the phone shell only the live announcement remains; the top bar's
+  // Overview keeps Tasks and the composer's inline /goal keeps the goal editable.
+  phoneShellLayout?: boolean;
   onOpenTasks(): void;
   onEditGoal(): void;
 }
@@ -34,7 +37,14 @@ const GOAL_STATUS_DISPLAY: Record<string, string> = {
   blocked: "Blocked",
 };
 
-export function CurrentWork({ task, goal, goalStatus, onOpenTasks, onEditGoal }: CurrentWorkProps) {
+export function CurrentWork({
+  task,
+  goal,
+  goalStatus,
+  phoneShellLayout = false,
+  onOpenTasks,
+  onEditGoal,
+}: CurrentWorkProps) {
   const currentTask = task?.trim() ?? "";
   const currentGoal = goal?.trim() ?? "";
   const currentGoalStatus = goalStatus?.trim() ?? "";
@@ -57,7 +67,7 @@ export function CurrentWork({ task, goal, goalStatus, onOpenTasks, onEditGoal }:
           {announcement}
         </span>
       </VisuallyHidden>
-      {(currentTask || currentGoal) && (
+      {!phoneShellLayout && (currentTask || currentGoal) && (
         <div className={CLASS.currentWork} data-testid="current-work">
           {currentTask && (
             <div className={CLASS.task} data-testid="current-work-task">

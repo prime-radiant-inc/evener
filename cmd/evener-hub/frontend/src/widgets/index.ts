@@ -19,6 +19,7 @@ export type { ChipProps, ChipTone } from "./chip";
 export { Chip } from "./chip";
 export type { CodeBlockProps } from "./codeblock";
 export { CodeBlock } from "./codeblock";
+export { AnsiLineContent } from "./codeblock/ansiLine";
 export type { CollectionAddResult, CollectionEditorProps } from "./collectioneditor";
 export { CollectionEditor } from "./collectioneditor";
 export type { ConfirmDialogProps } from "./confirmdialog";
@@ -40,6 +41,7 @@ export type { DirectoryPickerProps } from "./directorypicker";
 export { DirectoryIcon, DirectoryPicker } from "./directorypicker";
 export type { DisclosureProps } from "./disclosure";
 export { Disclosure } from "./disclosure";
+export { disclosureDefault, isDisclosureOpen, setDisclosureOpen } from "./disclosure/disclosureStore";
 export type { DisclosureHeadingProps } from "./disclosureheading";
 export { DisclosureHeading } from "./disclosureheading";
 export type { DropzoneProps } from "./dropzone";
@@ -60,6 +62,8 @@ export { HoverCard } from "./hovercard";
 export type { IconButtonProps } from "./iconbutton";
 // --- primitives batch (W2T2) ---
 export { IconButton } from "./iconbutton";
+export type { ImageThumbnailProps } from "./imagethumbnail";
+export { ImageThumbnail } from "./imagethumbnail";
 export type { InlineNoticeLive, InlineNoticeProps, InlineNoticeTone } from "./inlinenotice";
 export { InlineNotice } from "./inlinenotice";
 export type { InputProps } from "./input";
@@ -70,6 +74,9 @@ export type {
   PickerTriggerProps,
 } from "./internal/pickerTrigger";
 export { PickerTrigger } from "./internal/pickerTrigger";
+// Public hook for non-widget surfaces that own a floating layer themselves;
+// widgets compose it from ../internal directly.
+export { useDismissOnOutsidePress } from "./internal/useDismissOnOutsidePress";
 export type { KeyHintProps } from "./keyhint";
 export { chordLabel, KeyHint } from "./keyhint";
 export type { ListRowProps, ListRowVariant } from "./listrow";
@@ -78,6 +85,8 @@ export type { LoaderProps } from "./loader";
 export { Loader } from "./loader";
 export type { MarkdownProps } from "./markdown";
 export { Markdown, MarkdownBubble } from "./markdown";
+export type { MediaLightboxProps } from "./medialightbox";
+export { MediaLightbox } from "./medialightbox";
 export type { MenuEntry, MenuItem, MenuProps, MenuSeparator } from "./menu";
 export { isSeparator, Menu } from "./menu";
 export type { MermaidDiagramProps } from "./mermaid";

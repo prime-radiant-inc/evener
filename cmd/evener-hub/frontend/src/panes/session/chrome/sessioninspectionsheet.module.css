@@ -1,0 +1,42 @@
+/* The Overview sheet's own chrome (docs/web-ui/design-system.md section
+ * 12). The facts body (DetailsPanelBody) carries its own section grouping
+ * and spacing; these rules frame only the action, activity, and link groups
+ * so the sheet reads as one quiet list. No new tokens: the groups separate
+ * by space and the heading, never by a border or a box. */
+
+.body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+}
+
+/* The tabs' glyphs match the chips they replace: quiet ink, no box. */
+.glyph {
+  color: var(--ink-low);
+}
+
+.webLink {
+  composes: tapFloor from "../../../styles/tapfloor.module.css";
+  display: grid;
+  align-items: center;
+  border-radius: var(--radius-control);
+}
+
+.webLink:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: -2px;
+}

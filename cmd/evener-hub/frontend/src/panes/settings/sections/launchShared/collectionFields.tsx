@@ -34,10 +34,10 @@ import {
 } from "@evener/appwire-client";
 import type { ReactNode } from "react";
 import type { CollectionAddResult, PathFieldKind } from "../../../../widgets";
-import { CollectionEditor, FormRow, Input, PathField, Switch } from "../../../../widgets";
+import { CollectionEditor, FormRow, Input, Switch } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import styles from "./collectionFields.module.css";
-import { controllerLaunchFormPaths, type LaunchFormPaths } from "./fields";
+import { controllerLaunchFormPaths, type LaunchFormPaths, PathFieldWithPaths } from "./fields";
 import { SettingsModelCatalog } from "./SettingsModelCatalog";
 
 const CLASS = {
@@ -154,8 +154,10 @@ export function PathListField({ option, items, onChange, validatePath, inherited
       emptyMessage={`No ${option.label.toLowerCase()} configured.`}
       validateAdd={(trimmed) => validatePathListAdd(option, items, trimmed, validatePath)}
       inheritedItems={inheritedItems}
+      // ariaLabel names each trigger: CollectionEditor skips its own
+      // visually-hidden label wrapper in renderAddField mode.
       renderAddField={({ value, onChange: setDraft, disabled }) => (
-        <PathAddField
+        <PathFieldWithPaths
           value={value}
           onChange={setDraft}
           kind={kind}
@@ -165,55 +167,6 @@ export function PathListField({ option, items, onChange, validatePath, inherited
           paths={formPaths}
         />
       )}
-    />
-  );
-}
-
-/**
- * The pathList add field: the shared path picker, beside CollectionEditor's
- * own Add button. `complete` is the extensions store's evener/paths/complete
- * call, imported directly the way ModelAddField imports its own catalog
- * loader rather than threading a prop through StringListField - and no
- * `listRecents`, since a skills- or config-file list has no meaningful
- * "recent" of its own (that belongs to the spawn working directory alone).
- *
- * A confirmed directory lands in CollectionEditor's draft. Add separately
- * validates and submits it. The directory picker stops its own submit events
- * so navigation and creation cannot submit this enclosing form.
- *
- * `ariaLabel` carries the option's own label into the trigger's accessible
- * name: CollectionEditor skips its own visually-hidden label wrapper in
- * renderAddField mode (naming is the caller's job), and all three pathList
- * fields sit in the same "Resources" group, so without it their triggers would
- * all be named by the same placeholder text.
- */
-function PathAddField({
-  value,
-  onChange,
-  kind,
-  placeholder,
-  ariaLabel,
-  disabled,
-  paths,
-}: {
-  value: string;
-  onChange: (value: string) => void;
-  kind: PathFieldKind;
-  placeholder: string;
-  ariaLabel: string;
-  disabled: boolean;
-  paths: LaunchFormPaths;
-}) {
-  return (
-    <PathField
-      directory={paths.directory}
-      value={value}
-      onChange={onChange}
-      kind={kind}
-      complete={paths.complete}
-      placeholder={placeholder}
-      ariaLabel={ariaLabel}
-      disabled={disabled}
     />
   );
 }

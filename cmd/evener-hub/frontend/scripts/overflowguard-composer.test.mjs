@@ -16,7 +16,9 @@ function measurement(width, ids, { stop = true, steer = false, statusBottom = 40
       controlsFound: true,
       controlsContained: true,
       controlsDoNotOverlap: true,
-      sharedPaneWithoutOverflow: true,
+      composerCardFound: true,
+      composerFitsPane: true,
+      found: false,
     },
     trigger: { left: 0, right: 44, top: triggerTop, bottom: triggerTop + 44 },
     scrollers: [],
@@ -30,6 +32,9 @@ test("a compact folded composer checks menu alignment when no status row exists"
   assertComposerPlacement(aligned, expected);
   const wrapped = measurement(358, ["composer-attach", "composer-stop"], { statusBottom: null, triggerTop: 64 });
   assert.throws(() => assertComposerPlacement(wrapped, expected), assert.AssertionError);
+  const staleWork = structuredClone(aligned);
+  staleWork.currentWork.found = true;
+  assert.throws(() => assertComposerPlacement(staleWork, expected), assert.AssertionError);
 });
 
 for (const contentWidth of [399, 400]) {
@@ -71,6 +76,9 @@ test("placement rejects overflow, overlapping controls and wrapped verbs", () =>
     },
     (m) => {
       m.currentWork.controlsDoNotOverlap = false;
+    },
+    (m) => {
+      m.currentWork.composerFitsPane = false;
     },
     (m) => {
       m.currentWork.verbCluster.top = 40;

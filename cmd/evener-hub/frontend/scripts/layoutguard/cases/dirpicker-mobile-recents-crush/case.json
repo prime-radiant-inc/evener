@@ -14,6 +14,7 @@
     "widgets/internal/control.module.css",
     "widgets/internal/selectableRow.module.css",
     "widgets/input/input.module.css",
+    "widgets/internal/rowChrome.module.css",
     "widgets/listrow/listrow.module.css",
     "widgets/directorypicker/directorypicker.module.css"
   ],

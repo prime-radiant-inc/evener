@@ -1,9 +1,13 @@
-import { cleanup, type RenderOptions, render, screen } from "@testing-library/react";
+import { cleanup, type RenderOptions, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { Component, type ReactNode } from "react";
+import { Component, lazy, type ReactNode } from "react";
 import { afterEach, beforeEach, expect, onTestFinished, test, vi } from "vitest";
 import { holdChunk } from "../../lazyChunkTestUtils";
+import { StackHost } from "../mobile/StackHost";
 import * as pageReload from "../pageReload";
+import { registerPaneForTests } from "../paneRegistry";
+import { MOBILE_QUERY, TABLET_QUERY } from "../useIsMobile";
+import { resetWorkspaceStoreForTests } from "../workspace";
 import { RailHost, resetRailChunkForTests } from "./index";
 import * as railHostChunk from "./railHostChunk";
 import { type RailHostModule, resetRailHostLoaderForTests } from "./railHostChunk";
@@ -232,4 +236,75 @@ test("a logic bug in the resolved chunk keeps unwinding past the rail boundary",
   expect(onCaughtError).toHaveBeenCalledTimes(1);
   expect(onCaughtError.mock.calls[0]?.[0]).toBe(renderError);
   expect(onCaughtError.mock.calls[0]?.[1].errorBoundary).toBeInstanceOf(RailTestOuterBoundary);
+});
+
+test("tablet board keeps its collapse control while the sidebar chunk loads or fails", async () => {
+  const originalMatchMedia = window.matchMedia;
+  window.matchMedia = vi.fn((query: string) => ({
+    matches: query === MOBILE_QUERY || query === TABLET_QUERY,
+    media: query,
+    onchange: null,
+    addListener: () => {},
+    removeListener: () => {},
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    dispatchEvent: () => false,
+  })) as typeof window.matchMedia;
+  onTestFinished(() => {
+    window.matchMedia = originalMatchMedia;
+    resetWorkspaceStoreForTests();
+  });
+  onTestFinished(
+    registerPaneForTests({
+      id: "welcome",
+      title: () => "Welcome",
+      component: lazy(() => Promise.resolve({ default: () => <div>Welcome</div> })),
+    }),
+  );
+
+  const chunkError = new Error(CHUNK_ERROR);
+  const onCaughtError = captureExpectedError(chunkError);
+  const firstChunk = holdChunk<RailHostModule>();
+  const retryChunk = holdChunk<RailHostModule>();
+  vi.mocked(loadRailHost).mockReturnValueOnce(firstChunk.promise).mockReturnValueOnce(retryChunk.promise);
+  const user = userEvent.setup();
+
+  render(<StackHost railSlot={<RailHost />} />, { onCaughtError });
+
+  // While the sidebar chunk is still loading, the tablet board can collapse and restore focus.
+  const loadingBoard = screen.getByTestId("board-column");
+  const loadingToggle = within(loadingBoard).getByTestId("board-toggle");
+  loadingToggle.focus();
+  await user.keyboard("{Enter}");
+  expect(screen.queryByTestId("board-column")).toBeNull();
+  expect(document.activeElement).toBe(screen.getByTestId("board-toggle"));
+
+  // Expanding again keeps the chunk boundary active; a chunk rejection still exposes Board alongside Retry.
+  await user.keyboard("{Enter}");
+  await firstChunk.reject(chunkError);
+  const failedBoard = screen.getByTestId("board-column");
+  expect(within(failedBoard).getByRole("button", { name: "Retry" })).toBeTruthy();
+  const failedToggle = within(failedBoard).getByTestId("board-toggle");
+  failedToggle.focus();
+  await user.keyboard("{Enter}");
+  expect(screen.queryByTestId("board-column")).toBeNull();
+  expect(document.activeElement).toBe(screen.getByTestId("board-toggle"));
+
+  // Re-expanding returns to the failure fallback so Retry can still recover the rail.
+  await user.keyboard("{Enter}");
+  await user.click(within(screen.getByTestId("board-column")).getByRole("button", { name: "Retry" }));
+  await retryChunk.resolve({ RailHost: StubRailHost });
+  expect(screen.getByText("rail host mounted")).toBeTruthy();
+  // Re-expanding remounts the boundary over the same rejected lazy payload, so
+  // React catches the same chunkError a second time before Retry recovers it.
+  expect(onCaughtError).toHaveBeenCalledTimes(2);
+  expect(onCaughtError.mock.calls[0]?.[0]).toBe(chunkError);
+  expect(onCaughtError.mock.calls[1]?.[0]).toBe(chunkError);
+});
+
+test("desktop rail keeps an empty Suspense fallback while loading", () => {
+  const chunk = holdChunk<RailHostModule>();
+  vi.mocked(loadRailHost).mockReturnValue(chunk.promise);
+  const { container } = render(<RailHost />);
+  expect(container.firstChild).toBeNull();
 });

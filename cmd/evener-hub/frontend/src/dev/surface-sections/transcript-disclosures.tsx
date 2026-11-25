@@ -1,8 +1,8 @@
 import { type ItemModel, makeTranscriptDisplayConfig, type ThreadModel } from "@evener/appwire-client";
 import { TranscriptBody } from "../../panes/session/transcript/TranscriptBody";
 import { makeTranscriptPreviewModel } from "../../transcriptDisplay/previewFixture";
+import { GallerySection } from "../GallerySection";
 import styles from "../gallery-section.module.css";
-import { ThemeFlip } from "../ThemeFlip";
 
 const TURN_ID = "disclosure-turn";
 const SESSION_REF = "dev-surface-transcript-disclosures";
@@ -102,29 +102,31 @@ function config(expandByDefault: boolean) {
  */
 export default function TranscriptDisclosuresSurfaceSection() {
   return (
-    <section data-testid="transcript-disclosures-surface">
-      <h2>Transcript disclosures</h2>
-      <p className={styles.note}>
-        Every transcript row that folds behind a disclosure: the intent group, settled and live thoughts, a steering
-        divider, job and delegate notification cards, the system prompt, and a grouped run of system events. Collapsed
-        first, then expanded.
-      </p>
-      <ThemeFlip>
-        <TranscriptBody
-          model={makeDisclosureModel()}
-          config={config(false)}
-          surface="preview"
-          disclosureScope="preview:dev-transcript-disclosures-collapsed"
-          sessionRef={`${SESSION_REF}-collapsed`}
-        />
-        <TranscriptBody
-          model={makeDisclosureModel()}
-          config={config(true)}
-          surface="preview"
-          disclosureScope="preview:dev-transcript-disclosures-expanded"
-          sessionRef={`${SESSION_REF}-expanded`}
-        />
-      </ThemeFlip>
-    </section>
+    <GallerySection
+      title="Transcript disclosures"
+      testId="transcript-disclosures-surface"
+      note={
+        <p className={styles.note}>
+          Every transcript row that folds behind a disclosure: the intent group, settled and live thoughts, a steering
+          divider, job and delegate notification cards, the system prompt, and a grouped run of system events. Collapsed
+          first, then expanded.
+        </p>
+      }
+    >
+      <TranscriptBody
+        model={makeDisclosureModel()}
+        config={config(false)}
+        surface="preview"
+        disclosureScope="preview:dev-transcript-disclosures-collapsed"
+        sessionRef={`${SESSION_REF}-collapsed`}
+      />
+      <TranscriptBody
+        model={makeDisclosureModel()}
+        config={config(true)}
+        surface="preview"
+        disclosureScope="preview:dev-transcript-disclosures-expanded"
+        sessionRef={`${SESSION_REF}-expanded`}
+      />
+    </GallerySection>
   );
 }
