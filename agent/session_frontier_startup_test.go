@@ -10,6 +10,7 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
@@ -297,11 +298,15 @@ func TestExecutionFrontierStartupRecoveryPublication(t *testing.T) {
 		defer mu.Unlock()
 		observed = append(observed, ev)
 	}
-	cfg.OnRestoredTranscript = func(_ transcript.Header, entries []transcript.Entry, opened bool) {
-		if !opened || sample == nil {
-			t.Fatal("constructor did not open and register its transcript")
+	cfg.testOnly.contextStrategyOverride = restoreToolsHookStrategy{tools: func() []tool.RegisteredTool {
+		if sample == nil {
+			t.Fatal("constructor did not register its transcript")
 		}
-		for _, entry := range entries {
+		onDisk, err := readTranscriptFull(context.Background(), original.TranscriptPath(), original.stateDir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, entry := range onDisk.Entries {
 			if entry.Turn.OriginalOrdinal == nil && entry.Turn.TurnKind == schema.TurnSpanExecution {
 				committed = append(committed, entry.Turn.TurnID)
 			}
@@ -327,7 +332,8 @@ func TestExecutionFrontierStartupRecoveryPublication(t *testing.T) {
 		if len(observed) != 0 {
 			t.Errorf("construction published before SessionStart: %v", observed)
 		}
-	}
+		return nil
+	}}
 	restored, err := RestoreSessionFromMetaWithConfig(original.client, original.profile, execenv.NewLocalExecutionEnvironment(t.TempDir()), meta, cfg)
 	if err != nil {
 		t.Fatal(err)
