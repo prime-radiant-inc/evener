@@ -34,7 +34,7 @@ packages and test files do not count.
 | `EVENER_HUB_LISTEN_ADDR` | public | [developing-evener/environment.md](../developing-evener/environment.md) | `cmd/evener-hub`, `scripts/ops/deploy-hub-endpoint-test.sh` |
 | `EVENER_HUB_SPAWNED` | internal | [developing-evener/environment.md](../developing-evener/environment.md) | `cmd/evener` |
 | `EVENER_HUB_TOKEN` | internal | [developing-evener/environment.md](../developing-evener/environment.md) | `cmd/evener` |
-| `EVENER_HUB_URL` | public | [developing-evener/environment.md](../developing-evener/environment.md) | `cmd/evener-hub`, `cmd/evener-hub/frontend/scripts/backgroundtranscriptguard/run.mjs`, `cmd/evener-hub/frontend/vite.config.ts` |
+| `EVENER_HUB_URL` | public | [developing-evener/environment.md](../developing-evener/environment.md) | `cmd/evener-hub`, `cmd/evener-hub/frontend/scripts/backgroundtranscriptguard/run.mjs`, `cmd/evener-hub/frontend/scripts/warmreturntranscriptguard/run.mjs` and 1 more |
 | `EVENER_LOGIN_HEADLESS` | public | [developing-evener/environment.md](../developing-evener/environment.md) | `cmd/evener` |
 | `EVENER_MODEL` | public | [developing-evener/environment.md](../developing-evener/environment.md) | `cmd/evener`, `cmd/evener-hub/internal/launchconfig`, `cmd/llmcall` and 2 more |
 | `EVENER_NO_USER_SKILLS` | tooling | [developing-evener/environment.md](../developing-evener/environment.md) | `agent`, `agent/mcpconfig`, `agent/plugin` and 1 more |
