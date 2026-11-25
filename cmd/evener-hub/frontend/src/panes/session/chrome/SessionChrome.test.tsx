@@ -31,6 +31,7 @@ import { resetTranscriptDisplayStoreForTests, transcriptDisplayStore } from "../
 import { escapeRegExp } from "../../../styles/cssBlock";
 import { ALL_CAPABILITIES as CAPABILITIES } from "../../../threadTestUtils";
 import type { SessionZoomParams } from "../../zoom/intent";
+import { LANDSCAPE_PHONE_QUERY } from "../composer/narrowComposer";
 import { resetFindRequestsForTests, useFindRequest } from "../find/findRequest";
 import { settleActivityDiscovery } from "../testing/activityDiscovery";
 import { installMobileViewport } from "../testing/mobileViewport";
@@ -548,6 +549,53 @@ test("the phone header keeps session facts, Find and same-session Tasks in one O
   await waitFor(() => expect(sidebar.contains(document.activeElement)).toBe(true));
   await user.keyboard("{Escape}");
   await waitFor(() => expect(document.activeElement).toBe(entry));
+});
+
+test("landscape phone header Overview reaches the current session's goal through About", async ({ onTestFinished }) => {
+  const originalMatchMedia = window.matchMedia;
+  window.matchMedia = vi.fn((query: string) => ({
+    matches: query === LANDSCAPE_PHONE_QUERY,
+    media: query,
+    onchange: null,
+    addListener: () => {},
+    removeListener: () => {},
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    dispatchEvent: () => false,
+  })) as typeof window.matchMedia;
+  onTestFinished(() => {
+    window.matchMedia = originalMatchMedia;
+  });
+
+  const ref = "local:duo_landscape_goal";
+  const paneId = "pane_duo_landscape_goal";
+  const goal = { objective: "Verify Duo landscape goal", status: "blocked", iterations: 1 };
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("thread/read", () =>
+    readResponse(ref, {
+      evener: { ref, capabilities: CAPABILITIES, queue: { revision: 0 }, goal },
+    }),
+  );
+  workspaceStore.setState({
+    panes: [{ id: paneId, type: "session", params: { ref }, slot: "main" }],
+    focusedPaneId: paneId,
+  });
+  await threadsStore.getState().ensureThread(ref);
+
+  render(
+    <MotionProvider>
+      <SessionInspectionActions sessionRef={ref} paneId={paneId} />
+      <ActivitySidebar />
+    </MotionProvider>,
+  );
+
+  await user.click(screen.getByRole("button", { name: "Overview" }));
+  await user.click(await screen.findByRole("radio", { name: "About" }));
+  const sidebar = screen.getByTestId("activity-sidebar");
+  await within(sidebar).findByTestId("session-details-model");
+  expect(within(sidebar).getByTestId("session-details-goal").textContent).toContain(goal.objective);
+  expect(within(sidebar).getByTestId("session-details-goal-status").textContent).toBe(goal.status);
 });
 
 test("an ordinary session's composer leaves Find and Overview to the header but keeps Verbosity", async () => {

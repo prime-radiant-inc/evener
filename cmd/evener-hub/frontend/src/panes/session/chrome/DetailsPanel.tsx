@@ -83,7 +83,6 @@ export interface DetailsPanelBodyProps {
    * gitBranch wins when present; empty means "looked, nothing to show" and
    * renders no row. */
   resolvedBranch?: string;
-  showGoal?: boolean;
 }
 
 /** Opens the standalone Details Sheet while keeping its open state local. */
@@ -144,9 +143,9 @@ function Section({ title, rows }: { title: string; rows: (StackedPropertyListRow
 }
 
 /** Shared details body used by the mobile Sheet and desktop pane. */
-export function DetailsPanelBody({ model, now, resolvedBranch = "", showGoal = false }: DetailsPanelBodyProps) {
+export function DetailsPanelBody({ model, now, resolvedBranch = "" }: DetailsPanelBodyProps) {
   const status = effectiveContextStatus(model);
-  const objective = showGoal && model.goal?.objective?.trim();
+  const objective = model.goal?.objective?.trim();
   const goalStatus = model.goal?.status.trim();
   const showContext = status.ceiling > 0 && !isEndedStatus(model.status.type);
   const remaining = status.remaining;
