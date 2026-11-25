@@ -76,8 +76,8 @@ func TestHostManageRemoveHoldsTheReservationThroughTheTeardown(t *testing.T) {
 	if done.err != nil {
 		t.Fatalf("Remove: %v", done.err)
 	}
-	if !done.resp.Host.Removed {
-		t.Fatalf("remove row = %+v, want Removed", done.resp.Host)
+	if !done.row.Removed {
+		t.Fatalf("remove row = %+v, want Removed", done.row)
 	}
 	assertGateFree(t, mgr, "side")
 }
@@ -141,8 +141,8 @@ func TestHostManageUpdateHoldsTheReservationThroughTheRebind(t *testing.T) {
 	params := updateRequest(t, m, "side", appwire.HostEntry{Address: "edited.example"})
 	done := make(chan updateOutcome, 1)
 	go func() {
-		resp, err := m.Update(context.Background(), params)
-		done <- updateOutcome{resp: resp, err: err}
+		row, err := m.Update(context.Background(), params)
+		done <- updateOutcome{row: row, err: err}
 	}()
 
 	<-postCommitEntered
@@ -162,8 +162,8 @@ func TestHostManageUpdateHoldsTheReservationThroughTheRebind(t *testing.T) {
 		if out.err != nil {
 			t.Fatalf("Update: %v", out.err)
 		}
-		if out.resp.Host.Address != "edited.example" {
-			t.Fatalf("update row = %+v, want the edited entry", out.resp.Host)
+		if out.row.Address != "edited.example" {
+			t.Fatalf("update row = %+v, want the edited entry", out.row)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("the update never returned after its rebind was released")
