@@ -49,10 +49,24 @@ func (s *RemoteHubSource) mutationCall(ctx context.Context, method string, clien
 // provenance before mapCallError replaces a transport failure with an ordinary
 // SessionUnavailable WireError.
 func (s *RemoteHubSource) remoteHubMutationCallError(clientMutationID string, err error) error {
+	return s.remoteHubMutationError(clientMutationID, err, false)
+}
+
+// remoteHubMutationError maps a post-send mutation failure through
+// remoteHubMutationCallError's classification. Keyed StartThread passes
+// deadlineAsLoss=true because the controller wraps the forward in a forwarding
+// deadline after admission; once the request is on the wire, hitting that
+// deadline leaves the remote outcome unknown.
+func (s *RemoteHubSource) remoteHubMutationError(clientMutationID string, err error, deadlineAsLoss bool) error {
 	if _, delivered := errors.AsType[appwire.WireError](err); delivered && !appwire.IsTransportFailure(err) {
 		return err
 	}
-	mapped := s.mapCallError(err)
+	var mapped error
+	if deadlineAsLoss && errors.Is(err, context.DeadlineExceeded) {
+		mapped = s.transportUnavailable(err)
+	} else {
+		mapped = s.mapCallError(err)
+	}
 	wire, ok := errors.AsType[appwire.WireError](mapped)
 	if !ok || wire.Code != appwire.CodeUnavailable {
 		return mapped
@@ -160,10 +174,10 @@ func (s *RemoteHubSource) StartThread(ctx context.Context, params appwire.Thread
 				cause: err,
 			}
 		}
-		if cerr := ctx.Err(); cerr != nil {
+		if cerr := ctx.Err(); errors.Is(cerr, context.Canceled) {
 			return appwire.ThreadStartResponse{}, cerr
 		}
-		return appwire.ThreadStartResponse{}, s.fromRemoteThreadStartError(s.mapCallError(err))
+		return appwire.ThreadStartResponse{}, s.fromRemoteThreadStartError(s.remoteHubMutationError(id, err, true))
 	}
 	if err := s.translateOut(client, &out); err != nil {
 		return appwire.ThreadStartResponse{}, err

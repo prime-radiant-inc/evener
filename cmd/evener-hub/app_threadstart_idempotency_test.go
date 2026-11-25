@@ -1408,6 +1408,126 @@ func TestThreadStartIdempotencyRemoteCapableErrorsAndNotSent(t *testing.T) {
 	}
 }
 
+func TestThreadStartIdempotencyRemoteCapablePostSendDropAndRetry(t *testing.T) {
+	remoteSessionID := hubtest.SessionID(t)
+	var spawns atomic.Int32
+	received := make(chan struct{})
+	dropDone := make(chan struct{})
+	t.Cleanup(func() {
+		select {
+		case <-dropDone:
+		default:
+			close(dropDone)
+		}
+	})
+
+	remoteServer := appserver.NewServer(appserver.ServerConfig{
+		ServerName: "remote-capable-drop",
+		SourceID:   "local",
+		Features:   appwire.FeatureSet{ThreadStartIdempotency: true, TurnStart: true},
+	})
+	appserver.HandleTyped(remoteServer.Router(), appwire.MethodThreadStart, func(_ context.Context, params appwire.ThreadStartParams) (appwire.ThreadStartResponse, error) {
+		n := spawns.Add(1)
+		disp := appwire.MutationDispositionApplied
+		if n > 1 {
+			spawns.Add(-1)
+			disp = appwire.MutationDispositionReplayed
+		} else {
+			close(received)
+			<-dropDone
+		}
+		return appwire.ThreadStartResponse{
+			Thread: appwire.Thread{
+				ID:        remoteSessionID,
+				SessionID: remoteSessionID,
+				Source:    "local",
+				Evener:    appwire.EvenerThread{Ref: "local:" + remoteSessionID, InstanceID: remoteSessionID},
+			},
+			Turn:             appwire.Turn{ID: "turn_1", Status: "inProgress"},
+			ClientMutationID: params.ClientMutationID,
+			Disposition:      disp,
+		}, nil
+	})
+	remoteHTTP := httptest.NewServer(http.HandlerFunc(remoteServer.ServeWebSocket))
+	defer remoteHTTP.Close()
+
+	raw1, err := appwire.DialWebSocket(t.Context(), "ws"+remoteHTTP.URL[len("http"):], remoteHTTP.Client())
+	if err != nil {
+		t.Fatalf("dial remote 1: %v", err)
+	}
+	remoteClient1 := appwire.NewClient(raw1)
+	remoteClient1.Start(t.Context())
+	defer remoteClient1.Close()
+	mustInitializeHubClient(t, remoteClient1)
+
+	remoteClient2 := dialHubRPCInitialized(t, remoteHTTP)
+	var mu sync.Mutex
+	attached := remoteClient1
+
+	hub := newHubRPCTestServer(t, testWebConfig(t, hubcore.WebConfig{
+		HubStateRoot: t.TempDir(),
+		RunDir:       t.TempDir(),
+		RemoteHosts:  []hostreg.Host{{Name: "remote-a", SSH: "remote-a.example"}},
+		RemoteHostClient: func(context.Context, string) (*appwire.Client, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			return attached, nil
+		},
+		RemoteHostClientIfAttached: func(string) (*appwire.Client, bool) {
+			mu.Lock()
+			defer mu.Unlock()
+			return attached, true
+		},
+	}))
+	defer hub.Close()
+	client := dialHubRPCInitialized(t, hub)
+
+	params := appwire.ThreadStartParams{
+		ClientMutationID: "mut-cap-drop",
+		Source:           "remote-a",
+		Model:            "openai/gpt-5",
+		CWD:              "/remote/work",
+	}
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := appwiretest.ThreadStart(context.Background(), client, params)
+		errCh <- err
+	}()
+	select {
+	case <-received:
+	case <-time.After(5 * time.Second):
+		t.Fatal("remote never received thread/start")
+	}
+	_ = raw1.Close()
+	close(dropDone)
+
+	var firstErr error
+	select {
+	case firstErr = <-errCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("controller thread/start did not return after transport drop")
+	}
+	wire, data := wireErrorData(t, firstErr)
+	if wire.Code != appwire.CodeInternalError ||
+		data.EvenerErrorInfo != appwire.ErrorMutationOutcomeUnknown ||
+		data.ClientMutationID != "mut-cap-drop" ||
+		data.MutationOutcome != appwire.MutationOutcomeUnknown ||
+		data.RetryDisposition != appwire.RetryDispositionAutomatic {
+		t.Fatalf("post-send drop error = wire:%+v data:%+v, want MutationOutcomeUnknown+Automatic", wire, data)
+	}
+
+	mu.Lock()
+	attached = remoteClient2
+	mu.Unlock()
+	replay, err := appwiretest.ThreadStart(context.Background(), client, params)
+	if err != nil {
+		t.Fatalf("retry after post-send drop failed: %v", err)
+	}
+	if replay.Thread.Evener.Ref != "remote-a:"+remoteSessionID || replay.ClientMutationID != "mut-cap-drop" || replay.Disposition != appwire.MutationDispositionReplayed || spawns.Load() != 1 {
+		t.Fatalf("replay resp = %+v spawns=%d, want Replayed and 1 spawn", replay, spawns.Load())
+	}
+}
+
 func TestThreadStartIdempotencyOlderRemoteRefusesKeyedAllowsKeyless(t *testing.T) {
 	remoteSessionID := hubtest.SessionID(t)
 	var remoteCalls atomic.Int32
