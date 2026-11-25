@@ -1784,13 +1784,17 @@ async function reloadAndMobileJourney() {
     return button ? (${uncoveredCenter})(button, "nearest") : null;
   })()`, "phone Overview button is scoped and hit-testable");
   await driver.clickAt(phoneOverview.x, phoneOverview.y);
-  const sheetAgents = await wait(`(() => {
-    const sheet = document.querySelector('[role="dialog"][aria-modal="true"]:not([data-testid="activity-sidebar"])');
-    const row = sheet?.querySelector(${q(`[data-activity-tab="agents"][data-session-ref=${q(fixture.rootRef)}][data-pane-id=${q(fixture.sourcePaneId)}]`)});
-    return sheet && row && getComputedStyle(sheet).transform === 'none' ? (${uncoveredCenter})(row, "center") : null;
-  })()`, "phone Overview sheet settled and Agents row is hit-testable");
-  await driver.clickAt(sheetAgents.x, sheetAgents.y);
-  await wait(sidebarEntranceSettled, "phone Overview entrance settled before physical row tap");
+  await wait(sidebarEntranceSettled, "phone Overview entrance settled before tab selection");
+  const agentsTab = await wait(`(() => {
+    const tab = document.querySelector('[data-testid="activity-sidebar"] [role="tab"][aria-label^="Agents"]');
+    if (!tab) return null;
+    if (tab.getAttribute('aria-selected') === 'true') return { selected: true };
+    const point = (${uncoveredCenter})(tab, "center");
+    return point ? { selected: false, point } : null;
+  })()`, "phone Overview Agents tab is hit-testable");
+  if (!agentsTab.selected) {
+    await driver.clickAt(agentsTab.point.x, agentsTab.point.y);
+  }
   const mobileRow = await reveal(fixture.edges[0], '[data-testid="activity-sidebar"]');
   const mobileRowPoint = await driver.settleExpression(`(() => {
     const row = document.querySelector(${q(mobileRow)});

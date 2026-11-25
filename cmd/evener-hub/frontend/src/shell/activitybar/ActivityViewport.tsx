@@ -35,11 +35,13 @@ export function ActivityViewport({
   sessionRef,
   tab,
   className,
+  panel,
   children,
 }: {
   sessionRef: string;
   tab: ActivityTab;
   className: string;
+  panel?: { id: string; labelledBy: string };
   children: ReactNode;
 }) {
   const element = useRef<HTMLDivElement>(null);
@@ -129,11 +131,13 @@ export function ActivityViewport({
     capture();
   };
   const view = useMemo(() => ({ isCurrent, contentChanged }), [isCurrent, contentChanged]);
+  const panelAttrs = panel ? { id: panel.id, role: "tabpanel" as const, "aria-labelledby": panel.labelledBy } : {};
   return (
     <ViewportContext.Provider value={view}>
       <div
         ref={element}
         className={className}
+        {...panelAttrs}
         onWheelCapture={cancel}
         onTouchStartCapture={cancel}
         onPointerDownCapture={cancel}

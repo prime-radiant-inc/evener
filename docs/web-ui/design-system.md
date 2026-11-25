@@ -125,8 +125,8 @@ losing the conversation that made the evidence relevant.
   Phones reflow speaker rows, controls and evidence rather than shrinking a desktop page;
   wide evidence scrolls within its surface instead of widening the page or shrinking targets.
 - **Keep session reading controls in the header.** Find in session, then Overview, occupy the
-  desktop pane header's action slot. Below 900px the header has one Overview entry with the
-  ordinary touch floor; its sheet includes Find (§12). The ordinary composer menu leaves those
+  session pane header's action slot at every width: labeled controls on desktop, and 44px
+  icon controls below 900px (§12). The ordinary composer menu leaves those
   actions to the header and retains Verbosity, turn verbs, and session management. Rail and
   embedded-column menus keep their existing inspection access. Mobile session titles align
   left. A session with no real Back
@@ -138,10 +138,10 @@ losing the conversation that made the evidence relevant.
   session's working directory and repository/branch, then its Agents, Jobs, Watches and Tasks
   counts. A count click focuses the owning pane before opening the matching Overview category.
   The shared sidebar retains its scope breadcrumb and an accessible, visually hidden
-  “Overview kind” label. About is the fifth category and has no footer counter.
+  “Overview kind” label. About is the first category and has no footer counter.
   At the narrow shell breakpoint (899px and below), phones keep one bottom surface:
   the pane renders no separate footer strip below the composer. The control row carries
-  Attach, the session menu and Send or Stop. Overview holds the activity counts and
+  Attach, the session menu and Send or Stop. Overview holds the activity tabs and
   session facts, so their arrival never moves the card's persistent controls. The card remains the
   lowest interactive surface. The composer dock owns the home-indicator band, and that band is one
   token: `--dock-clearance` in `tokens.css` (`max(0px, env(safe-area-inset-bottom) -
@@ -149,9 +149,7 @@ losing the conversation that made the evidence relevant.
   on-screen keyboard covers the band. The working-directory strip follows that shell breakpoint:
   the narrow phone reads the session's working directory and branch through the top bar's
   Overview (About), while a primary-touch phone whose wider landscape viewport uses the desktop
-  shell retains the separate status footer. A phone Overview activity row shows its
-  glyph and a single active count (settled for Tasks); its accessible name includes
-  the category and full fraction. An empty composer
+  shell retains the separate status footer. An empty composer
   with room folds to one row: Attach keeps its leading utility slot, the message field
   stays left of the session menu, and the menu and Send or Stop keep their trailing
   slots. Steer enters to the primary action's left. These positions do not move when
@@ -176,7 +174,7 @@ losing the conversation that made the evidence relevant.
   fine-pointer desktop card under 620px keeps the stacked control row and the folded
   one-line field. At the 466px Duo cover width the control row tightens; drafts,
   attachments, and question/approval docks keep their writing and response space. The
-  four activity counters stay in the app's Overview sheet. The
+  four activity categories stay in the app's Overview tabs. The
   OS-owned Duo system rail is not a public customization surface, so no counters move
   there. The 466px cover treatment is a fit pass on that existing session screen, not
   a new mode: content, controls and workflow stay, and an empty folded card gives
@@ -184,7 +182,7 @@ losing the conversation that made the evidence relevant.
   (`promptcard.module.css`'s 440–500px portrait query, with the matching dock gap
   in `composer.module.css`). Every Duo card keeps zero bottom padding and a zero
   Attach inset, so persistent controls do not move when content expands the card.
-  The Overview activity rows meet the 44px `--tap-min` floor.
+  The Overview underline tabs meet the 44px `--tap-min` floor.
 - **Let the lowest footer own the safe area.** A pane with a flush `edgeFooter`
   below its padded composer footer gives that edge footer the home-indicator band
   at every width. The composer footer keeps only its ordinary `--space-3` gap, so a
@@ -207,8 +205,11 @@ losing the conversation that made the evidence relevant.
   intended session, preferring the originating pane. Desktop remains nonmodal. Existing
   standalone Details views and the `/tasks` pane toggle retain their behavior.
 - **Keep inspection readable at larger text sizes.** Desktop Overview stays 320px wide.
-  Its category strip wraps without shortening labels or counts at narrow widths and XL
-  text. About's model, session ID, branch and paths wrap as selectable text. Its body
+  Both desktop and mobile use one underline tablist without shortening labels or counts
+  at narrow widths and XL text: desktop wraps onto rows so every category stays visible
+  inside the 320px sidebar without a horizontal scrollbar, while narrow viewports scroll
+  horizontally. About presents session facts in a compact inline meta table whose model,
+  session ID, branch, paths, and saved link URLs wrap as selectable text. Its body
   scrolls vertically while the page stays fixed. Phone controls retain the tap floor.
 - **Keep Overview's activity lists on one loading and spacing contract.** Agents,
   Jobs and Watches page automatically at their visible boundary, with a static
@@ -1462,12 +1463,18 @@ over it.
 
 ## 12. Phone session controls
 
-Below 900px, the session header's Overview button opens a bottom sheet with
-Find in session directly under the title, then session facts, activity counts and links.
-Session facts include the current goal and its status when a goal is set.
-An activity row opens its category for that same session. Tasks has a direct
-row when a task list is known. The sheet and activity overlay return focus
-to the header entry when dismissed and the entry still belongs to that session.
+Below 900px, the session header carries Find in session beside Overview as
+44px icon buttons. Overview opens the shared full-screen activity overlay
+directly for that session, sharing the same horizontally scrolling underline
+tablist (About, Agents, Jobs, Watches, Tasks; never pills) used on desktop and
+meeting the 44px tap floor on touch devices. A newly inspected session opens on
+About; a revisited session keeps its last tab; drilling while open keeps the
+active tab. About renders shared session facts in a compact inline meta table
+(including the current goal with its quiet state chip when set, model, reasoning
+effort, live status indicator, context meter, and local branch) and full
+wrapping saved session links (native links for web URLs, open-beside rows for
+local files) on both desktop and mobile. Dismissing Overview returns focus to
+the header entry when it still belongs to that session.
 
 The phone composer keeps Attach, Session actions and Send or Stop while
 collapsed or expanded. It announces current work to assistive technology

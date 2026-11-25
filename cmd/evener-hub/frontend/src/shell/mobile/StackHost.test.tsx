@@ -486,7 +486,7 @@ test("Activity opened from the mobile drawer supersedes the drawer", async () =>
   expect(sidebar).toBeTruthy();
   // The drawer's close restores focus to its own opener; the sidebar's
   // selected category must take focus back after that restore.
-  await waitFor(() => expect(document.activeElement).toBe(within(sidebar).getByRole("radio", { name: /Jobs/ })));
+  await waitFor(() => expect(document.activeElement).toBe(within(sidebar).getByRole("tab", { name: /Jobs/ })));
 });
 
 test("renders the new activity sidebar over the mobile stack with the selected tab", async () => {
@@ -509,7 +509,7 @@ test("renders the new activity sidebar over the mobile stack with the selected t
   );
 
   expect(await screen.findByTestId("activity-sidebar")).toBeTruthy();
-  expect(screen.getByRole("radio", { name: /Jobs/ })).toBeTruthy();
+  expect(screen.getByRole("tab", { name: /Jobs/ })).toBeTruthy();
 });
 
 test.each(["Close", "Escape"])(
@@ -550,19 +550,18 @@ test.each(["Close", "Escape"])(
         </ClientProvider>,
       );
       await user.click(await screen.findByRole("button", { name: "Overview" }));
-      const inspection = await screen.findByRole("dialog", { name: "Overview" });
-      await user.click(within(inspection).getByRole("button", { name: /^Agents,/ }));
-      await user.click(await screen.findByRole("button", { name: /Open child/ }));
       const sidebar = await screen.findByTestId("activity-sidebar");
+      await user.click(within(sidebar).getByRole("tab", { name: /^Agents,/ }));
+      await user.click(await screen.findByRole("button", { name: /Open child/ }));
       // Drilling changes the inspected scope. The new scope's selected
       // category must own focus inside the trap before the reader touches
       // another control.
       // Entry focus lands in one queued frame, so the short bound reports a
       // regression as the focus mismatch, not as the test's own deadline.
-      await waitFor(() => expect(document.activeElement).toBe(within(sidebar).getByRole("radio", { name: /Agents/ })), {
+      await waitFor(() => expect(document.activeElement).toBe(within(sidebar).getByRole("tab", { name: /Agents/ })), {
         timeout: 2_000,
       });
-      await user.click(within(sidebar).getByRole("radio", { name: "About" }));
+      await user.click(within(sidebar).getByRole("tab", { name: "About" }));
       await within(sidebar).findByText("~$1.00");
       await screen.findByRole("heading", { name: "Child work" });
       const before = workspaceStore.getState();

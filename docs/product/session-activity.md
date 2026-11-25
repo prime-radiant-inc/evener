@@ -1183,19 +1183,21 @@ cause an `evener/thread/*` activity read for every session in the navigation
 rail; the rail's open title card makes only its own one-ref pulse read, as
 described under [Navigation session status](#navigation-session-status).
 
-The phone session header opens an Overview sheet with session facts, Find,
-links and activity counts. Choosing a count opens the full-screen shared
-activity sidebar at that category for the same session. The navigation rail
-and embedded session action menus still open the activity sidebar directly.
-Direct entry preserves the focused session's last selected category. The menu's
+The session header carries Find in session beside Overview at every width (44px
+icon buttons below 900px, labeled controls on desktop). Opening Overview from
+the session header, navigation rail, or embedded session action menu opens the
+shared activity sidebar directly for that session (a newly inspected session
+opens on About; a revisited session keeps its last selected tab; an open
+inspection keeps its active tab while drilling; both desktop and mobile use the
+same underline tablist). The menu's
 optional active count sums the subagents running at every depth and the
 session's own running jobs, only when both are known; watches and completed work
 are not part of that number. The sidebar's Jobs, Watches and Tasks tabs use
 session-scoped reads on both viewports, while About uses the shared session
-model. The Agents tab and all Agents counts (the desktop pane's activity chip,
-the phone Overview activity row, the sidebar's Agents tab label, each cascade
-scope's Agents chip, the Overview
-action count, and the conversation's liveness line) read the same
+model and renders saved session links alongside session facts on both desktop
+and mobile. The Agents tab and all Agents counts (the desktop pane's activity
+chip, the sidebar's Agents tab label, each cascade scope's Agents chip, the
+Overview action count, and the conversation's liveness line) read the same
 subtree store
 ([`useSubagentCounts`](../../cmd/evener-hub/frontend/src/stores/sessionActivity.ts)
 and `AgentsTab`): the tab renders the subtree's active branches nested beneath
