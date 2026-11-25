@@ -1788,6 +1788,25 @@ func checkAssertion(asserted string, refuseEmpty bool, current func() string, re
 	return nil
 }
 
+func (c *hubAuthController) hasStoredOpenAIOAuth(name string) bool {
+	_, err := c.loadAuth(c.stateDir, name)
+	return !errors.Is(err, authopenai.ErrAuthNotFound)
+}
+
+func (c *hubAuthController) hasStoredCopilotOAuth(name string) bool {
+	if c.stateDir == "" {
+		return false
+	}
+	_, err := githubcopilot.LoadAuth(c.stateDir, name)
+	return !errors.Is(err, githubcopilot.ErrAuthNotFound)
+}
+
+func (c *hubAuthController) storedCredentialPresence(name string) (hasFile, hasOAuth bool) {
+	_, hasFile = c.storedKey(name)
+	hasOAuth = c.hasStoredOpenAIOAuth(name) || c.hasStoredCopilotOAuth(name)
+	return hasFile, hasOAuth
+}
+
 // verifyConfigRevision refuses a conditional credential write whose client
 // captured a configuration revision the host no longer matches, and refuses to
 // fence at all while the hub cannot key a revision it has a state root for.

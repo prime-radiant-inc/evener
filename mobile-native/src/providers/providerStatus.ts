@@ -13,9 +13,10 @@ export interface ProviderStatus {
 }
 
 export function providerStatus(
-	instance: Pick<InstanceEntry, "activeSource" | "authModes" | "credentialRequired">,
+	instance: Pick<InstanceEntry, "activeSource" | "authModes" | "credentialRequired" | "loadError">,
 	auth: Pick<AuthStatusResponse, "needsLogin" | "error"> | undefined,
 ): ProviderStatus {
+	if (instance.loadError) return { word: "Error", tone: "danger", detail: instance.loadError };
 	// Signing in again is the fix for an expired sign-in, whatever else failed.
 	if (auth?.needsLogin) return { word: "Sign-in expired", tone: "attention" };
 	// The hub's error: a credential the provider rejected, or one it could not
@@ -34,9 +35,10 @@ export function providerStatus(
  * account, whose "Signed in" or "Sign-in expired" only the statuses can tell
  * apart. A key's state is on its row. */
 export function statusOf(
-	instance: Pick<InstanceEntry, "name" | "activeSource" | "authModes" | "credentialRequired">,
+	instance: Pick<InstanceEntry, "name" | "activeSource" | "authModes" | "credentialRequired" | "loadError">,
 	statuses: ReadonlyMap<string, Pick<AuthStatusResponse, "needsLogin" | "error">> | null,
 ): ProviderStatus | null {
+	if (instance.loadError) return providerStatus(instance, undefined);
 	if (statuses === null && instance.activeSource === "oauth") return null;
 	return providerStatus(instance, statuses?.get(instance.name));
 }

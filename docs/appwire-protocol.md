@@ -2150,6 +2150,8 @@ Underlying Go kind: `struct` (no struct fields).
 |-------|---------|-----------|----------|
 | `name` | string |  |  |
 | `newName` | string | yes |  |
+| `base` | string | yes |  |
+| `clearBase` | bool | yes |  |
 | `baseUrl` | string | yes |  |
 | `clearBaseUrl` | bool | yes |  |
 | `protocol` | string | yes |  |
@@ -2197,6 +2199,7 @@ Underlying Go kind: `struct` (no struct fields).
 | `configRevision` | string | yes |  |
 | `credentialRequired` | bool |  |  |
 | `warnings` | []string | yes |  |
+| `loadError` | string | yes |  |
 | `models` | [][appwire.InstanceModelEntry](#instancemodelentry) | yes |  |
 
 

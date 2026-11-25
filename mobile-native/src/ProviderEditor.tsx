@@ -80,7 +80,7 @@ export function ProviderEditor({
 	}, []);
 	const [opened] = useState<ProviderDraft>(() => ({
 		name: instance?.name ?? "",
-		base: "",
+		base: instance ? (instance.base ?? instance.providerId ?? "") : "",
 		baseUrl: instance?.baseUrl ?? "",
 		vars: {},
 		apiKeyEnv: "",
@@ -125,7 +125,11 @@ export function ProviderEditor({
 		let edit: ReturnType<typeof editProviderParams> | undefined;
 		try {
 			if (instance)
-				edit = editProviderParams({ ...instance, endpointFingerprint: assertedFingerprint.current }, draft.baseUrl);
+				edit = editProviderParams(
+					{ ...instance, endpointFingerprint: assertedFingerprint.current },
+					draft.baseUrl,
+					instance.implicit ? undefined : draft.base,
+				);
 			else create = createProviderParams(draft, providers);
 		} catch (failure) {
 			setError(failure instanceof Error ? failure.message : "Check the form fields.");
@@ -168,7 +172,8 @@ export function ProviderEditor({
 		}
 	}
 	const base = providers.find((provider) => provider.id === draft.base);
-	const baseName = base ? base.name || base.id : null;
+	const baseName = base ? base.name || base.id : instance && draft.base ? `${draft.base} (unavailable)` : null;
+	const showBasePicker = !instance || (!instance.implicit && (providers.length > 0 || Boolean(instance.loadError)));
 	const matches = providers.filter((provider) =>
 		`${provider.id} ${provider.name ?? ""}`.toLowerCase().includes(query.trim().toLowerCase()),
 	);
@@ -206,7 +211,7 @@ export function ProviderEditor({
 		>
 			<GroupedPage scrollRef={page}>
 				<FormError error={error} />
-				{!instance && (
+				{showBasePicker && (
 					<>
 						<Group label="Base provider">
 							<Row
@@ -226,35 +231,46 @@ export function ProviderEditor({
 								</View>
 								{matches.length > 0 ? (
 									<Group>
-										{matches.map((provider) => (
-											<Row
-												key={provider.id}
-												label={provider.name || provider.id}
-												checked={draft.base === provider.id}
-												disabled={busy}
-												onPress={() => {
-													setDraft({ ...draft, base: provider.id, vars: {} });
-													setChoosing(false);
-													setQuery("");
-												}}
-											/>
-										))}
+										{matches.map((provider) => {
+											const label = provider.name || provider.id;
+											const sub =
+												provider.name && provider.name.toLowerCase() !== provider.id.toLowerCase()
+													? provider.id
+													: undefined;
+											return (
+												<Row
+													key={provider.id}
+													label={label}
+													sub={sub}
+													accessibilityLabel={label}
+													checked={draft.base === provider.id}
+													disabled={busy}
+													onPress={() => {
+														setDraft({ ...draft, base: provider.id, vars: {} });
+														setChoosing(false);
+														setQuery("");
+													}}
+												/>
+											);
+										})}
 									</Group>
 								) : (
 									<GroupFooter testID="provider-picker-empty">No providers match.</GroupFooter>
 								)}
 							</>
 						) : null}
-						<Group label="Name">
-							<TextFieldRow
-								label="Instance name"
-								value={draft.name}
-								onChangeText={(name) => setDraft({ ...draft, name })}
-								disabled={busy}
-								{...chain("name")}
-							/>
-						</Group>
 					</>
+				)}
+				{!instance && (
+					<Group label="Name">
+						<TextFieldRow
+							label="Instance name"
+							value={draft.name}
+							onChangeText={(name) => setDraft({ ...draft, name })}
+							disabled={busy}
+							{...chain("name")}
+						/>
+					</Group>
 				)}
 				<Group label="Base URL">
 					<TextFieldRow

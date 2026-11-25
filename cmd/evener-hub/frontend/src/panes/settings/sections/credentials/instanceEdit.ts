@@ -35,6 +35,7 @@ export const SURFACE_OPTIONS: SelectOption[] = [
 
 export interface InstanceDraft {
   name: string;
+  base: string;
   baseUrl: string;
   protocol: string;
   surface: string;
@@ -53,6 +54,7 @@ export function draftFor(instance: InstanceEntry, template: ProviderDescriptor |
   for (const [key, value] of Object.entries(instance.vars ?? {})) vars[key] = value;
   return {
     name: instance.name,
+    base: instance.base ?? instance.providerId,
     baseUrl: instance.baseUrl ?? "",
     protocol: instance.protocol,
     surface: instance.surface ?? "",
@@ -104,6 +106,12 @@ export function instanceEditParams(initial: InstanceDraft, draft: InstanceDraft)
   const name = draft.name.trim();
   if (name !== "" && name !== initial.name.trim()) {
     params.newName = name;
+    changed = true;
+  }
+  const base = draft.base.trim();
+  if (base !== initial.base.trim()) {
+    if (base === "") params.clearBase = true;
+    else params.base = base;
     changed = true;
   }
   const baseUrl = draft.baseUrl.trim();

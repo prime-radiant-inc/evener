@@ -11,7 +11,7 @@ import type { CadenceState } from "../../../../widgets";
 export type CredentialState = "error" | "configured" | "keyless" | "missing";
 
 export function credentialState(instance: InstanceEntry, authError: string | undefined): CredentialState {
-  if (authError) return "error";
+  if (instance.loadError || authError) return "error";
   if (credentialLayers(instance).length > 0) return "configured";
   return keylessByDesign(instance) ? "keyless" : "missing";
 }

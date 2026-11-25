@@ -80,3 +80,22 @@ it("reads a rejected credential as Error", () => {
 		detail: error,
 	});
 });
+
+it("reads an isolated broken provider loadError as Error without waiting on auth status", () => {
+	const loadError = 'providers.kimi: base "kimi-code-plan-global" is not a registry id';
+	const broken = {
+		...instance({ activeSource: "none", credentialRequired: false }),
+		name: "kimi",
+		loadError,
+	};
+	expect(providerStatus(broken, undefined)).toEqual({
+		word: "Error",
+		tone: "danger",
+		detail: loadError,
+	});
+	expect(statusOf(broken, null)).toEqual({
+		word: "Error",
+		tone: "danger",
+		detail: loadError,
+	});
+});

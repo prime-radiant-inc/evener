@@ -19,6 +19,7 @@ describe("changedFields maps each clear flag to its entry field", () => {
   test("every clear flag normalizes to its entry field", () => {
     const params: InstanceEditParams = {
       name: "a",
+      clearBase: true,
       clearBaseUrl: true,
       clearProtocol: true,
       clearSurface: true,
@@ -27,7 +28,7 @@ describe("changedFields maps each clear flag to its entry field", () => {
       clearCodexClientVersion: true,
     };
     expect(changedFields(params)).toEqual(
-      new Set(["baseUrl", "protocol", "surface", "apiKeyEnv", "credentialHeader", "codexClientVersion"]),
+      new Set(["base", "baseUrl", "protocol", "surface", "apiKeyEnv", "credentialHeader", "codexClientVersion"]),
     );
   });
 
@@ -37,6 +38,7 @@ describe("changedFields maps each clear flag to its entry field", () => {
   // Record declaration, and a mapping whose target drifts is caught here.
   test("the map covers exactly the clear flags the params type carries", () => {
     expect(CLEAR_FIELD_NAMES).toEqual({
+      clearBase: "base",
       clearBaseUrl: "baseUrl",
       clearProtocol: "protocol",
       clearSurface: "surface",

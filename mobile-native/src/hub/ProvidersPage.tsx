@@ -583,6 +583,7 @@ function Providers({
 	// The selected provider's detail, which ProviderDetailPage shows pushed over
 	// this page (spec 12; device audit N3). It is built here, beside the writes
 	// and the credential editor it drives, and published on every render.
+	const broken = Boolean(instance?.loadError);
 	const detail = instance ? (
 		<GroupedPage>
 			<SheetStatus />
@@ -601,49 +602,51 @@ function Providers({
 				checkHeld={!ready}
 				onCheckModels={whenReady(canUseConnection, () => void checkModels(instance.name))}
 			/>
-			<Group>
-				{instance.authModes?.includes("oauth") && (
+			{!broken && (
+				<Group>
+					{instance.authModes?.includes("oauth") && (
+						<Row
+							label={instance.hasStoredOAuth ? "Sign in again" : "Sign in"}
+							tone="accent"
+							disabled={surface.busy || stale}
+							onPress={() => {
+								const name = instance.name;
+								close();
+								onSignIn(name);
+							}}
+						/>
+					)}
+					{instance.authModes?.includes("apiKey") && (
+						<Row
+							label={credentialTitle("apiKey", instance)}
+							tone="accent"
+							disabled={surface.busy || stale || !ready}
+							onPress={whenReady(canUseConnection, () => editCredential("apiKey", instance))}
+						/>
+					)}
+					{instance.authModes?.includes("credentialJson") && (
+						<Row
+							label={credentialTitle("credentialJson", instance)}
+							tone="accent"
+							disabled={surface.busy || stale || !ready}
+							onPress={whenReady(canUseConnection, () => editCredential("credentialJson", instance))}
+						/>
+					)}
 					<Row
-						label={instance.hasStoredOAuth ? "Sign in again" : "Sign in"}
+						label={
+							surface.credentialTest?.provider === instance.name && surface.credentialTest.pending
+								? "Testing…"
+								: "Test connection"
+						}
+						accessibilityLabel="Test connection"
 						tone="accent"
-						disabled={surface.busy || stale}
-						onPress={() => {
-							const name = instance.name;
-							close();
-							onSignIn(name);
-						}}
+						disabled={surface.busy || core.loading || stale || !!surface.credentialTest?.pending || !ready}
+						onPress={whenReady(canUseConnection, () => {
+							probeCredentials(instance.name);
+						})}
 					/>
-				)}
-				{instance.authModes?.includes("apiKey") && (
-					<Row
-						label={credentialTitle("apiKey", instance)}
-						tone="accent"
-						disabled={surface.busy || stale || !ready}
-						onPress={whenReady(canUseConnection, () => editCredential("apiKey", instance))}
-					/>
-				)}
-				{instance.authModes?.includes("credentialJson") && (
-					<Row
-						label={credentialTitle("credentialJson", instance)}
-						tone="accent"
-						disabled={surface.busy || stale || !ready}
-						onPress={whenReady(canUseConnection, () => editCredential("credentialJson", instance))}
-					/>
-				)}
-				<Row
-					label={
-						surface.credentialTest?.provider === instance.name && surface.credentialTest.pending
-							? "Testing…"
-							: "Test connection"
-					}
-					accessibilityLabel="Test connection"
-					tone="accent"
-					disabled={surface.busy || core.loading || stale || !!surface.credentialTest?.pending || !ready}
-					onPress={whenReady(canUseConnection, () => {
-						probeCredentials(instance.name);
-					})}
-				/>
-			</Group>
+				</Group>
+			)}
 			{surface.credentialTest?.provider === instance.name && surface.credentialTest.result ? (
 				surface.credentialTest.result.status === "success" ? (
 					<GroupFooter testID="provider-test-success">Works</GroupFooter>
@@ -672,7 +675,7 @@ function Providers({
 					disabled={writeHeld}
 					onPress={whenReady(canUseConnection, () => setConfiguration("edit"))}
 				/>
-				{!instance.isDefault && (
+				{!broken && !instance.isDefault && (
 					<Row
 						label="Make default"
 						tone="accent"
@@ -682,7 +685,7 @@ function Providers({
 						}}
 					/>
 				)}
-				{instance.hasStoredFile && instance.activeSource !== "store" && (
+				{!broken && instance.hasStoredFile && instance.activeSource !== "store" && (
 					<Row
 						label={json ? "Clear stored credential JSON" : "Clear stored key"}
 						tone="danger"
@@ -704,7 +707,7 @@ function Providers({
 						}}
 					/>
 				)}
-				{["store", "oauth"].includes(instance.activeSource) && (
+				{!broken && ["store", "oauth"].includes(instance.activeSource) && (
 					<Row
 						label="Clear credentials"
 						tone="danger"
@@ -867,7 +870,9 @@ function ProviderFacts({
 	onCheckModels(): void;
 }) {
 	const status = statusOf(instance, auth);
+	const broken = Boolean(instance.loadError);
 	const defaultTag = instance.isDefault ? ({ text: "Default", tone: "gray" } as const) : null;
+	const endpointText = styleInfoText(instance);
 	const models = instance.models ?? [];
 	const [modelSearch, setModelSearch] = useState("");
 	const modelQuery = modelSearch.trim();
@@ -888,22 +893,23 @@ function ProviderFacts({
 					value={<RowValue text={instance.providerId} tag={defaultTag} />}
 					accessibilityLabel={defaultTag ? `Type, ${instance.providerId}, Default` : `Type, ${instance.providerId}`}
 				/>
-				<Row label="Sign-in" value={signInKind(instance)} />
-				<Row label="Endpoint" sub={styleInfoText(instance)} machineSub />
-				{fromEnvironment(instance) ? <Row label="Defined in" value="Environment" /> : null}
-				{credentialLayers(instance).map((layer) =>
-					layer.effective ? (
-						<Row key={layer.source} label="Credential" sub={layer.label} />
-					) : (
-						<Row
-							key={layer.source}
-							label={layer.source === "store" ? "Also stored" : "Also in the environment"}
-							testID={layer.source === "store" ? "credential-layer-store" : "credential-layer-env"}
-							sub={layer.label}
-							value="Not used"
-						/>
-					),
-				)}
+				{!broken && <Row label="Sign-in" value={signInKind(instance)} />}
+				{(!broken || endpointText !== "") && <Row label="Endpoint" sub={endpointText} machineSub />}
+				{!broken && fromEnvironment(instance) ? <Row label="Defined in" value="Environment" /> : null}
+				{!broken &&
+					credentialLayers(instance).map((layer) =>
+						layer.effective ? (
+							<Row key={layer.source} label="Credential" sub={layer.label} />
+						) : (
+							<Row
+								key={layer.source}
+								label={layer.source === "store" ? "Also stored" : "Also in the environment"}
+								testID={layer.source === "store" ? "credential-layer-store" : "credential-layer-env"}
+								sub={layer.label}
+								value="Not used"
+							/>
+						),
+					)}
 			</Group>
 			{status?.detail ? <GroupFooter tone="danger">{status.detail}</GroupFooter> : null}
 			{instance.warnings?.map((message) => (
@@ -911,43 +917,47 @@ function ProviderFacts({
 					{message}
 				</GroupFooter>
 			))}
-			{models.length > MODEL_LIST_CAP || modelSearch !== "" ? (
-				<View style={{ marginHorizontal: space.margin, marginTop: space.groupGap }}>
-					<SearchField label="Search models" value={modelSearch} onChangeText={setModelSearch} />
-				</View>
-			) : null}
-			<Group label="Models">
-				{shownModels.map((model) => (
-					// A model name is a name, not machine text: SF Pro (spec 16.2).
-					<SwitchRow
-						key={model.id}
-						label={model.id}
-						value={!model.disabled}
-						disabled={togglesHeld}
-						onChange={(on) => onToggleModel(model.id, !on)}
-					/>
-				))}
-				{/* An action the hub doesn't take on its own: it asks the provider
+			{!broken && (
+				<>
+					{models.length > MODEL_LIST_CAP || modelSearch !== "" ? (
+						<View style={{ marginHorizontal: space.margin, marginTop: space.groupGap }}>
+							<SearchField label="Search models" value={modelSearch} onChangeText={setModelSearch} />
+						</View>
+					) : null}
+					<Group label="Models">
+						{shownModels.map((model) => (
+							// A model name is a name, not machine text: SF Pro (spec 16.2).
+							<SwitchRow
+								key={model.id}
+								label={model.id}
+								value={!model.disabled}
+								disabled={togglesHeld}
+								onChange={(on) => onToggleModel(model.id, !on)}
+							/>
+						))}
+						{/* An action the hub doesn't take on its own: it asks the provider
 				    for its current catalogue. The list itself follows the hub. */}
-				<Row
-					label={checking ? "Checking for new models…" : "Check for new models"}
-					tone="accent"
-					disabled={checking || checkHeld}
-					onPress={onCheckModels}
-				/>
-			</Group>
-			{models.length === 0 ? <GroupFooter testID="models-empty-none">No models listed.</GroupFooter> : null}
-			{modelQuery !== "" && matchingModels.length === 0 ? (
-				<GroupFooter testID="models-empty-filtered">No matching models.</GroupFooter>
-			) : null}
-			{shownModels.length < matchingModels.length ? (
-				<GroupFooter>{`Showing ${shownModels.length} of ${matchingModels.length} models — search to narrow.`}</GroupFooter>
-			) : null}
-			{checkFailed ? (
-				<GroupFooter tone="danger" testID="models-check-failed">
-					{MODELS_NOT_CHECKED}
-				</GroupFooter>
-			) : null}
+						<Row
+							label={checking ? "Checking for new models…" : "Check for new models"}
+							tone="accent"
+							disabled={checking || checkHeld}
+							onPress={onCheckModels}
+						/>
+					</Group>
+					{models.length === 0 ? <GroupFooter testID="models-empty-none">No models listed.</GroupFooter> : null}
+					{modelQuery !== "" && matchingModels.length === 0 ? (
+						<GroupFooter testID="models-empty-filtered">No matching models.</GroupFooter>
+					) : null}
+					{shownModels.length < matchingModels.length ? (
+						<GroupFooter>{`Showing ${shownModels.length} of ${matchingModels.length} models — search to narrow.`}</GroupFooter>
+					) : null}
+					{checkFailed ? (
+						<GroupFooter tone="danger" testID="models-check-failed">
+							{MODELS_NOT_CHECKED}
+						</GroupFooter>
+					) : null}
+				</>
+			)}
 		</>
 	);
 }

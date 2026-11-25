@@ -778,6 +778,139 @@ base_url = "http://127.0.0.1:9/v1"
 	}
 }
 
+// TestInstances_BrokenProviderListedEditableAndRemovable verifies that an
+// isolated broken providers.toml entry appears in evener/instance/list with
+// LoadError set, can be repaired by changing its base (preserving stored
+// credentials), can switch base again once healthy, refuses invalid base or
+// set+clear pairs, refuses stale endpoint fingerprints, and can be removed
+// cleanly along with its stored key and default pointer.
+func TestInstances_BrokenProviderListedEditableAndRemovable(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := os.WriteFile(f.tomlPath, []byte(`default = "dead"
+
+[providers.kimi]
+base = "kimi-code-plan-global"
+protocol = "openai-responses"
+
+[providers.dead]
+base = "gone-base"
+
+[providers.work]
+base = "openai-compatible"
+base_url = "http://127.0.0.1:9/v1"
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.store.Set("kimi", "sk-kimi-kept"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.store.Set("dead", "sk-dead-removed"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.ctl.reg.Reload(); err != nil {
+		t.Fatalf("Reload with broken siblings: %v", err)
+	}
+
+	list := f.ctl.List()
+	if list.WritesRefused {
+		t.Fatal("WritesRefused = true, want false when only individual providers are broken")
+	}
+	kimi := entry(t, list, "kimi")
+	if kimi.LoadError == "" {
+		t.Fatal("broken kimi row omitted LoadError")
+	}
+	if !kimi.Hidden {
+		t.Fatal("broken kimi row must be marked Hidden")
+	}
+	if kimi.Base != "kimi-code-plan-global" || kimi.ProviderID != "kimi-code-plan-global" || kimi.Protocol != "openai-responses" {
+		t.Fatalf("broken kimi metadata = %+v", kimi)
+	}
+	if !kimi.HasStoredFile || kimi.EndpointFingerprint != "" {
+		t.Fatalf("broken kimi credential/fingerprint = stored:%v fp:%q", kimi.HasStoredFile, kimi.EndpointFingerprint)
+	}
+
+	// Stale endpoint fingerprint assertion on a broken provider must be refused.
+	if err := f.ctl.Edit(appwire.InstanceEditParams{Name: "kimi", Base: "openai-compatible", BaseURL: "https://api.kimi.com/coding/v1", ExpectedEndpointFingerprint: "stale-fp"}); err == nil {
+		t.Fatal("Edit with stale fingerprint on broken provider succeeded, want conflict")
+	} else {
+		requireWireError(t, err, appwire.CodeConflict)
+	}
+	if err := f.ctl.Remove(appwire.InstanceRemoveParams{Name: "dead", ExpectedEndpointFingerprint: "stale-fp"}); err == nil {
+		t.Fatal("Remove with stale fingerprint on broken provider succeeded, want conflict")
+	} else {
+		requireWireError(t, err, appwire.CodeConflict)
+	}
+
+	// Unknown base and set+clear pair are refused.
+	if err := f.ctl.Edit(appwire.InstanceEditParams{Name: "kimi", Base: "no-such-registry-base"}); err == nil {
+		t.Fatal("Edit accepted unknown base provider")
+	} else {
+		requireWireError(t, err, appwire.CodeInvalidParams)
+	}
+	if err := refuseEditSetClearPair(appwire.InstanceEditParams{Name: "kimi", Base: "openai", ClearBase: true}); err == nil {
+		t.Fatal("refuseEditSetClearPair accepted Base + ClearBase")
+	} else {
+		requireWireError(t, err, appwire.CodeInvalidParams)
+	}
+
+	// Repairing kimi by changing base and supplying a base URL heals it and
+	// preserves its stored API key.
+	if err := f.ctl.Edit(appwire.InstanceEditParams{
+		Name:    "kimi",
+		Base:    "openai-compatible",
+		BaseURL: "https://api.kimi.com/coding/v1",
+	}); err != nil {
+		t.Fatalf("repairing broken kimi via Edit(Base): %v", err)
+	}
+	healed := entry(t, f.ctl.List(), "kimi")
+	if healed.LoadError != "" {
+		t.Fatalf("repaired kimi still carries LoadError %q", healed.LoadError)
+	}
+	if healed.Base != "openai-compatible" || healed.ProviderID != "openai-compatible" || healed.BaseURL != "https://api.kimi.com/coding/v1" {
+		t.Fatalf("repaired kimi = %+v", healed)
+	}
+	if v, ok := f.store.Get("kimi"); !ok || v != "sk-kimi-kept" {
+		t.Fatalf("repair lost stored key for kimi: %q %v", v, ok)
+	}
+
+	// Switching base on an already-healthy authored instance also works.
+	if err := f.ctl.Edit(appwire.InstanceEditParams{Name: "kimi", Base: "openai", ClearBaseURL: true}); err != nil {
+		t.Fatalf("switching base on healthy kimi: %v", err)
+	}
+	switched := entry(t, f.ctl.List(), "kimi")
+	if switched.Base != "openai" || switched.ProviderID != "openai" || switched.LoadError != "" {
+		t.Fatalf("switched kimi = %+v", switched)
+	}
+
+	// Removing a broken provider deletes its stanza, clears default, and
+	// removes its stored key while leaving healthy siblings intact.
+	if err := f.ctl.Remove(appwire.InstanceRemoveParams{Name: "dead"}); err != nil {
+		t.Fatalf("removing broken dead provider: %v", err)
+	}
+	afterList := f.ctl.List()
+	for _, row := range afterList.Instances {
+		if row.Name == "dead" {
+			t.Fatal("removed broken provider dead still appears in listing")
+		}
+	}
+	if _, ok := f.store.Get("dead"); ok {
+		t.Fatal("removing broken provider dead left its stored key behind")
+	}
+	l, _, err := registry.ReadConfigFile(f.tomlPath)
+	if err != nil {
+		t.Fatalf("ReadConfigFile: %v", err)
+	}
+	if _, exists := l.Providers["dead"]; exists {
+		t.Fatal("removing broken provider dead left stanza in providers.toml")
+	}
+	if l.Default != "" {
+		t.Fatalf("removing broken default provider left default = %q, want cleared", l.Default)
+	}
+	if entry(t, afterList, "work").BaseURL != "http://127.0.0.1:9/v1" {
+		t.Fatal("removing broken provider disturbed healthy sibling work")
+	}
+}
+
 func TestInstances_EditMergesVarsIntoAuthoredEntry(t *testing.T) {
 	f := newInstancesFixture(t, map[string]string{"AWS_ACCESS_KEY_ID": "id", "AWS_SECRET_ACCESS_KEY": "secret"})
 	if err := f.ctl.Create(appwire.InstanceCreateParams{

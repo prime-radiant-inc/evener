@@ -298,6 +298,14 @@ func (c *hubInstancesController) listLocked(key []byte, keyErr error) appwire.In
 			entries = append(entries, entry)
 			builtEntries[inst.Name] = entry
 		}
+		broken := r.BrokenProviders()
+		for _, name := range slices.Sorted(maps.Keys(broken)) {
+			var authored *registry.Provider
+			if p, ok := r.AuthoredProvider(name); ok {
+				authored = &p
+			}
+			entries = append(entries, c.brokenEntryFor(name, broken[name], authored))
+		}
 		for _, id := range r.ProviderIDs() {
 			p, ok := r.Provider(id)
 			if !ok {
@@ -440,15 +448,51 @@ func (c *hubInstancesController) entryFor(r *registry.Registry, inst registry.In
 		Models:              instanceModels(r, inst.Name),
 	}
 	if authored != nil {
-		entry.CodexClientVersion = authored.Transport.CodexClientVersion
-		// api_key_env names an environment variable, and the loader takes
-		// whatever string the TOML grammar spells, so a key pasted into that
-		// field loads. It is omitted rather than sent, exactly as
-		// credentialHeaderField omits a header the authoring rule refuses.
-		if len(authored.APIKeyEnv) > 0 && registry.CheckAPIKeyEnvName(authored.APIKeyEnv[0]) == nil {
-			entry.APIKeyEnv = authored.APIKeyEnv[0]
+		populateAuthoredEntryFields(&entry, authored)
+	}
+	return entry
+}
+
+func populateAuthoredEntryFields(entry *appwire.InstanceEntry, authored *registry.Provider) {
+	entry.CodexClientVersion = authored.Transport.CodexClientVersion
+	// api_key_env names an environment variable, and the loader takes
+	// whatever string the TOML grammar spells, so a key pasted into that
+	// field loads. It is omitted rather than sent, exactly as
+	// credentialHeaderField omits a header the authoring rule refuses.
+	if len(authored.APIKeyEnv) > 0 && registry.CheckAPIKeyEnvName(authored.APIKeyEnv[0]) == nil {
+		entry.APIKeyEnv = authored.APIKeyEnv[0]
+	}
+	entry.CredentialHeader = credentialHeaderField(authored.CredentialHeaders)
+}
+
+// brokenEntryFor builds the Settings row for an isolated broken providers.toml
+// stanza so the user can inspect the load error, repair its base/fields, or
+// remove it. Hidden is true and ActiveSource is "none" so clients that do not
+// read LoadError never treat it as a usable provider.
+func (c *hubInstancesController) brokenEntryFor(name string, loadErr error, authored *registry.Provider) appwire.InstanceEntry {
+	entry := appwire.InstanceEntry{
+		Name:               name,
+		ProviderID:         name,
+		Hidden:             true,
+		ActiveSource:       "none",
+		CredentialRequired: false,
+		LoadError:          loadErr.Error(),
+	}
+	if authored != nil {
+		entry.Base = authored.Base
+		if authored.Base != "" {
+			entry.ProviderID = authored.Base
 		}
-		entry.CredentialHeader = credentialHeaderField(authored.CredentialHeaders)
+		entry.Protocol = authored.Protocol
+		entry.Surface = authored.Surface
+		entry.BaseURL = sanitizeEndpointURL(authored.Transport.BaseURL)
+		if len(authored.Transport.Vars) > 0 {
+			entry.Vars = maps.Clone(authored.Transport.Vars)
+		}
+		populateAuthoredEntryFields(&entry, authored)
+	}
+	if c.auth != nil {
+		entry.HasStoredFile, entry.HasStoredOAuth = c.auth.storedCredentialPresence(name)
 	}
 	return entry
 }
@@ -1253,10 +1297,9 @@ func (c *hubInstancesController) edit(params appwire.InstanceEditParams, out *ap
 		}
 		p = registry.Provider{ID: name}
 	}
-	if strings.TrimSpace(params.CodexClientVersion) != "" {
-		inst, ok := c.reg.Get().Instance(name)
-		if !ok || inst.Auth != registry.AuthOAuthOpenAICodex {
-			return appwire.InvalidParams("codexClientVersion requires a Codex provider")
+	if !params.ClearBase && req.base != "" {
+		if _, ok := c.reg.Get().Provider(req.base); !ok {
+			return appwire.InvalidParams(fmt.Sprintf("unknown base provider %q", params.Base))
 		}
 	}
 	// The edit is applied to the row the client listed, so the endpoint that row
@@ -1282,6 +1325,17 @@ func (c *hubInstancesController) edit(params appwire.InstanceEditParams, out *ap
 		}
 	}
 	applyEditFields(&p, params, req)
+	if strings.TrimSpace(params.CodexClientVersion) != "" && !params.ClearCodexClientVersion {
+		baseID := p.Base
+		if baseID == "" {
+			baseID = name
+		}
+		baseP, ok := c.reg.Get().Provider(baseID)
+		isCodex := p.Transport.Auth == registry.AuthOAuthOpenAICodex || (ok && baseP.Transport.Auth == registry.AuthOAuthOpenAICodex)
+		if !isCodex {
+			return appwire.InvalidParams("codexClientVersion requires a Codex provider")
+		}
+	}
 	// A clear-only edit on an implicit instance (one the environment or a
 	// curated provider supplies, with no authored entry) has no authored
 	// value to change: the entry it would write carries nothing but its id.
@@ -1386,6 +1440,7 @@ func (c *hubInstancesController) edit(params appwire.InstanceEditParams, out *ap
 type editRequest struct {
 	name    string
 	newName string
+	base    string
 	// apiKeyEnv is the trimmed environment variable name, "" when unset.
 	apiKeyEnv string
 	// credentialHeaders is nil when the request clears the header or sends none.
@@ -1405,6 +1460,7 @@ func refuseEditSetClearPair(params appwire.InstanceEditParams) error {
 		set   string
 		clear bool
 	}{
+		{"base", params.Base, params.ClearBase},
 		{"baseUrl", params.BaseURL, params.ClearBaseURL},
 		{"protocol", params.Protocol, params.ClearProtocol},
 		{"surface", params.Surface, params.ClearSurface},
@@ -1426,6 +1482,7 @@ func parseEditRequest(params appwire.InstanceEditParams) (editRequest, error) {
 	req := editRequest{
 		name:    strings.TrimSpace(params.Name),
 		newName: strings.TrimSpace(params.NewName),
+		base:    strings.TrimSpace(params.Base),
 	}
 	if err := validVarSets(params.Vars); err != nil {
 		return req, invalidParamsFor(err)
@@ -1498,6 +1555,11 @@ func (c *hubInstancesController) checkRenameTarget(l *registry.Layer, params app
 
 // applyEditFields lays the request's field changes over p.
 func applyEditFields(p *registry.Provider, params appwire.InstanceEditParams, req editRequest) {
+	if params.ClearBase {
+		p.Base = ""
+	} else if req.base != "" {
+		p.Base = req.base
+	}
 	if params.ClearBaseURL {
 		// Drops the authored override and goes back to the registry
 		// default, restoring spec §10's credential inheritance from the
@@ -1748,13 +1810,11 @@ func (c *hubInstancesController) credentialsUnder(name string) []string {
 	if _, ok := c.auth.storedKey(name); ok {
 		held = append(held, fmt.Sprintf("a credentials.toml entry for %q", name))
 	}
-	if _, err := c.auth.loadAuth(c.auth.stateDir, name); !errors.Is(err, authopenai.ErrAuthNotFound) {
+	if c.auth.hasStoredOpenAIOAuth(name) {
 		held = append(held, fmt.Sprintf("an OAuth record for %q", name))
 	}
-	if c.auth.stateDir != "" {
-		if _, err := githubcopilot.LoadAuth(c.auth.stateDir, name); !errors.Is(err, githubcopilot.ErrAuthNotFound) {
-			held = append(held, fmt.Sprintf("a Copilot OAuth record for %q", name))
-		}
+	if c.auth.hasStoredCopilotOAuth(name) {
+		held = append(held, fmt.Sprintf("a Copilot OAuth record for %q", name))
 	}
 	return held
 }
@@ -2171,10 +2231,11 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) (er
 	// between the two would hand the deletion to whatever holds the name
 	// afterwards.
 	inst, ok := c.reg.Get().Instance(name)
-	if !ok {
+	broken := !ok && c.reg.Get().ProviderError(name) != nil
+	if !ok && !broken {
 		return instanceNotFound(name)
 	}
-	if environmentBacked(inst) {
+	if ok && environmentBacked(inst) {
 		return invalidParamsFor(newEnvironmentBackedError(name, inst))
 	}
 
@@ -2216,10 +2277,11 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) (er
 	// this call - existence first, because a rename landing between the two
 	// would have taken the name away entirely.
 	locked, ok := c.reg.Get().Instance(name)
-	if !ok {
+	lockedBroken := !ok && c.reg.Get().ProviderError(name) != nil
+	if !ok && !lockedBroken {
 		return instanceNotFound(name)
 	}
-	if environmentBacked(locked) {
+	if ok && environmentBacked(locked) {
 		// The same caller-fixable condition the pre-lock check classified as
 		// InvalidParams, so the locked re-check answers the same way rather than
 		// letting a concurrent credential clear change the wire class of one
@@ -2231,9 +2293,13 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) (er
 	// a name another client has re-pointed since (a removal and a recreation
 	// under it, or an edit to its base_url) is refused rather than having its
 	// replacement instance removed. Asked here, under the exclusive lock, so it
-	// describes the instance the cleanup below acts on.
-	if err := c.auth.verifyEndpointFingerprint(name, params.ExpectedEndpointFingerprint, key, keyErr); err != nil {
-		return err
+	// describes the instance the cleanup below acts on. A broken entry serves
+	// no fingerprint, so an empty assertion is accepted without a key, while a
+	// stale non-empty assertion is still refused as an endpoint conflict.
+	if !lockedBroken || strings.TrimSpace(params.ExpectedEndpointFingerprint) != "" {
+		if err := c.auth.verifyEndpointFingerprint(name, params.ExpectedEndpointFingerprint, key, keyErr); err != nil {
+			return err
+		}
 	}
 
 	// The credential cleanup below reads and clears the store, and a removal

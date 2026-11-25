@@ -1933,6 +1933,8 @@ export interface InstanceCreateParams {
 export interface InstanceEditParams {
   name: string;
   newName?: string;
+  base?: string;
+  clearBase?: boolean;
   baseUrl?: string;
   clearBaseUrl?: boolean;
   protocol?: string;
@@ -2065,6 +2067,14 @@ export interface InstanceEntry {
    * what is missing and how to supply it.
    */
   warnings?: string[];
+  /**
+   * LoadError is non-empty when this authored providers.toml entry failed
+   * load or validation and was isolated from active instances. Hidden is
+   * also true so clients that do not read LoadError never treat the row as
+   * usable, while Settings can inspect, repair (including changing Base),
+   * or remove it.
+   */
+  loadError?: string;
   /**
    * Models is the instance's known models with their effective
    * disabled state, for the sheet's per-model toggles: live ids plus

@@ -78,6 +78,52 @@ it("reports success when the save is confirmed", async () => {
 	expect(onSaved).toHaveBeenCalledWith("alpha");
 });
 
+it("lets an existing authored or broken provider change its base provider", async () => {
+	const broken = {
+		...instance,
+		name: "kimi",
+		base: "kimi-code-plan-global",
+		providerId: "kimi-code-plan-global",
+		baseUrl: "",
+		hidden: true,
+		loadError: 'providers.kimi: base "kimi-code-plan-global" is not a registry id',
+	} as unknown as InstanceEntry;
+	const providers: ProviderDescriptor[] = [
+		{ id: "openai-compatible", name: "OpenAI-compatible", protocol: "openai-chat", auth: "bearer", implicit: false },
+	];
+	const onEdit = vi.fn(async () => true);
+	const onSaved = vi.fn();
+	const tree = render(
+		<ProviderEditor
+			instance={broken}
+			providers={providers}
+			onCreate={async () => true}
+			onEdit={onEdit}
+			disabled={false}
+			canUseConnection={() => true}
+			onSaved={onSaved}
+			onEndpointConflict={() => {}}
+			onCancel={() => {}}
+		/>,
+	);
+
+	pressLabel(tree, "Base provider, kimi-code-plan-global (unavailable)");
+	pressLabel(tree, "OpenAI-compatible");
+	const baseUrl = tree.root.findByProps({ accessibilityLabel: "Base URL" });
+	act(() => {
+		baseUrl.props.onChangeText("https://api.kimi.com/coding/v1");
+	});
+	pressLabel(tree, "Save");
+	await act(async () => {});
+
+	expect(onEdit).toHaveBeenCalledWith({
+		name: "kimi",
+		base: "openai-compatible",
+		baseUrl: "https://api.kimi.com/coding/v1",
+	});
+	expect(onSaved).toHaveBeenCalledWith("kimi");
+});
+
 it("keeps the draft when readiness is lost before the save runs", async () => {
 	// The render said ready; readiness is lost before the save runs - the
 	// window every other mutation entry on the providers screen guards at

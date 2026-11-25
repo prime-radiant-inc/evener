@@ -31,6 +31,7 @@ describe("draftFor", () => {
     );
     expect(draft).toEqual({
       name: "a",
+      base: "openai",
       baseUrl: "https://x",
       protocol: "openai-chat",
       surface: "generic",
@@ -38,6 +39,21 @@ describe("draftFor", () => {
       apiKeyEnv: "",
       credentialHeader: "",
       codexClientVersion: "",
+    });
+  });
+
+  test("instanceEditParams sends base when changed and clearBase when cleared", () => {
+    const initial = draftFor(
+      instance({ name: "kimi", base: "kimi-code-plan-global", providerId: "kimi-code-plan-global" }),
+      undefined,
+    );
+    expect(instanceEditParams(initial, { ...initial, base: "openai-compatible" })).toEqual({
+      name: "kimi",
+      base: "openai-compatible",
+    });
+    expect(instanceEditParams(initial, { ...initial, base: "" })).toEqual({
+      name: "kimi",
+      clearBase: true,
     });
   });
 

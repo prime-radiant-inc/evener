@@ -28,8 +28,9 @@ export function createProviderParams(draft: ProviderDraft, providers: ProviderDe
 	};
 }
 export function editProviderParams(
-	instance: { name: string; baseUrl?: string; endpointFingerprint?: string },
+	instance: { name: string; base?: string; providerId?: string; baseUrl?: string; endpointFingerprint?: string },
 	value: string,
+	nextBase?: string,
 ): InstanceEditParams {
 	const baseUrl = value.trim();
 	const params: InstanceEditParams =
@@ -38,6 +39,14 @@ export function editProviderParams(
 			: baseUrl
 				? { name: instance.name, baseUrl }
 				: { name: instance.name, clearBaseUrl: true };
+	if (nextBase !== undefined) {
+		const trimmedBase = nextBase.trim();
+		const initialBase = (instance.base ?? instance.providerId ?? "").trim();
+		if (trimmedBase !== initialBase) {
+			if (trimmedBase) params.base = trimmedBase;
+			else params.clearBase = true;
+		}
+	}
 	// The endpoint the row resolved to when this editor was opened travels with
 	// the save as the assertion the hub checks: a name another client has
 	// re-pointed since must not have its replacement edited. A row the hub could
