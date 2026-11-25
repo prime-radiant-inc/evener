@@ -163,9 +163,9 @@ func (s *sandboxFS) globCached(ctx context.Context, tool, base, pattern string, 
 // walking a secureDirFS so symlinks are never followed and refusing to descend
 // into masked subtrees. cancelFS makes the walk and file opens observe ctx. The
 // per-file matching/formatting is shared with the off path via grepAccum, so
-// output semantics are identical. It never searches a file skip names (see
-// LocalExecutionEnvironment.GrepSkipping). A base that names a file is
-// searched alone (see grepNamedFile).
+// output semantics are identical. When skip is non-nil, files for which skip
+// reports true are excluded before the result cap. A base that names a file
+// is searched alone (see grepNamedFile).
 // displayRoot, when non-empty, formats returned file paths relative to
 // displayRoot when under it, or as absolute paths when outside it (#6176).
 func (s *sandboxFS) grepNative(ctx context.Context, pattern, base, globFilter string, caseInsensitive bool, maxResults int, outputMode string, ctxLines int, skip func(rel string) bool, cache *ignoreMatcherCache, displayRoot ...string) (string, error) {
