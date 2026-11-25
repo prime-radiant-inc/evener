@@ -16,6 +16,14 @@ import Zoom from "../../panes/zoom/Zoom";
 import "../../panes/zoom";
 import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
 import { connectionStore, resetConnectionStoreForTests } from "../../stores/connection";
+import {
+  OVERVIEW_WIDTH_DEFAULT,
+  OVERVIEW_WIDTH_MAX,
+  OVERVIEW_WIDTH_MIN,
+  overviewWidthMax,
+  prefsStore,
+  resetPrefsStoreForTests,
+} from "../../stores/prefs";
 import { acquireSessionActivity, sessionActivitySnapshot } from "../../stores/sessionActivity";
 import {
   activityClient,
@@ -34,7 +42,7 @@ import { conversationPaneLifetime } from "../paneLifetime";
 import { installFocusedScope } from "../statusbar/scopeTestUtils";
 import { resetMobileViewportForTests } from "../useIsMobile";
 import { currentSessionRef, type OpenPaneRecord, resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
-import { ActivitySidebar } from "./ActivitySidebar";
+import { ActivitySidebar, OVERVIEW_WIDTH_PROPERTY } from "./ActivitySidebar";
 import styles from "./activitybar.module.css";
 import { ActivityBoundaryObserver } from "./activityPagingTestUtils";
 import { activitySidebarStore, resetActivitySidebarStoreForTests } from "./activitySidebarStore";
@@ -47,6 +55,7 @@ beforeAll(async () => {
 beforeEach(() => {
   installLocalStorage(new MemoryStorage());
   resetDisclosureStoreForTests();
+  resetPrefsStoreForTests();
 });
 
 const ref = "remote:owner";
@@ -870,7 +879,7 @@ test("activity tabs keep a named keyboard tablist without a visible heading", as
   expect(activitySidebarStore.getState().tab).toBe("agents");
 });
 
-test("activity tabs show each fraction as a detail element and About stays a single label", async () => {
+test("activity tabs stack label over fraction inside a single row and About stays a single label", async () => {
   connectionStore.getState().connect(activityClient());
   installFocusedScope(ref);
   activitySidebarStore.getState().openWith("agents");
@@ -878,12 +887,63 @@ test("activity tabs show each fraction as a detail element and About stays a sin
   await screen.findByRole("button", { name: /inspect/ });
   const tabs = screen.getAllByRole("tab");
   expect(tabs).toHaveLength(5);
+  const stackClass = requireClass(styles.tabStack, "activitybar.module.css", "tabStack");
   for (const tab of tabs.slice(1)) {
-    const spans = tab.querySelectorAll("span");
-    expect(spans).toHaveLength(2);
+    const stack = tab.firstElementChild;
+    expect(stack?.classList.contains(stackClass)).toBe(true);
+    expect(stack?.children).toHaveLength(2);
     expect(tab.textContent).not.toContain("\n");
   }
-  expect(screen.getByRole("tab", { name: "About" }).querySelectorAll("span")).toHaveLength(1);
+  const aboutStack = screen.getByRole("tab", { name: "About" }).firstElementChild;
+  expect(aboutStack?.classList.contains(stackClass)).toBe(true);
+  expect(aboutStack?.children).toHaveLength(1);
+});
+
+test("desktop Overview mounts a left-edge resize handle that persists width and clamps to the viewport; mobile omits it", async () => {
+  const originalInnerWidth = window.innerWidth;
+  try {
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 1400 });
+    connectionStore.getState().connect(activityClient());
+    installFocusedScope(ref);
+    activitySidebarStore.getState().openWith("about");
+    const desktop = mount(false);
+    const sidebar = await screen.findByTestId("activity-sidebar");
+    const separator = screen.getByRole("separator", { name: "Resize Overview" });
+    expect(separator).toBe(screen.getByTestId("overview-resize-handle"));
+    expect(separator.getAttribute("aria-valuenow")).toBe(String(OVERVIEW_WIDTH_DEFAULT));
+    expect(separator.getAttribute("aria-valuemin")).toBe(String(OVERVIEW_WIDTH_MIN));
+    expect(separator.getAttribute("aria-valuemax")).toBe(String(OVERVIEW_WIDTH_MAX));
+    expect(sidebar.style.getPropertyValue(OVERVIEW_WIDTH_PROPERTY)).toBe(`${OVERVIEW_WIDTH_DEFAULT}px`);
+
+    // ArrowLeft widens the left-edge separator and persists to evener.prefs.overviewWidth.
+    fireEvent.keyDown(separator, { key: "ArrowLeft" });
+    expect(prefsStore.getState().overviewWidth).toBe(OVERVIEW_WIDTH_DEFAULT + 16);
+    expect(localStorage.getItem("evener.prefs.overviewWidth")).toBe(String(OVERVIEW_WIDTH_DEFAULT + 16));
+    expect(sidebar.style.getPropertyValue(OVERVIEW_WIDTH_PROPERTY)).toBe(`${OVERVIEW_WIDTH_DEFAULT + 16}px`);
+
+    // Double-click resets back to default; End jumps to max.
+    fireEvent.doubleClick(separator);
+    expect(prefsStore.getState().overviewWidth).toBe(OVERVIEW_WIDTH_DEFAULT);
+    fireEvent.keyDown(separator, { key: "End" });
+    expect(prefsStore.getState().overviewWidth).toBe(OVERVIEW_WIDTH_MAX);
+
+    // Narrowing the viewport clamps rendered width without discarding the persisted preference.
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 960 });
+    act(() => window.dispatchEvent(new Event("resize")));
+    const clampedMax = overviewWidthMax(960);
+    expect(separator.getAttribute("aria-valuemax")).toBe(String(clampedMax));
+    expect(sidebar.style.getPropertyValue(OVERVIEW_WIDTH_PROPERTY)).toBe(`${clampedMax}px`);
+    expect(prefsStore.getState().overviewWidth).toBe(OVERVIEW_WIDTH_MAX);
+    desktop.unmount();
+
+    // Mobile Overview is full-screen with no resize handle and no inline desktop width.
+    mount(true);
+    const mobileSidebar = await screen.findByTestId("activity-sidebar");
+    expect(screen.queryByTestId("overview-resize-handle")).toBeNull();
+    expect(mobileSidebar.style.getPropertyValue(OVERVIEW_WIDTH_PROPERTY)).toBe("");
+  } finally {
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: originalInnerWidth });
+  }
 });
 
 test("phone Overview enters its selected category and contains sequential keyboard focus", async () => {

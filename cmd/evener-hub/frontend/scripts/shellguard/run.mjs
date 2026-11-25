@@ -1477,8 +1477,9 @@ async function choosePaneOverview(send, selector, mobile = false, measure = fals
       const tapMin = parseFloat(getComputedStyle(aside).getPropertyValue('--tap-min'));
       const tabs = [...aside.querySelectorAll('[role="tablist"] [role="tab"]')].map(element => {
         const box = element.getBoundingClientRect();
+        const labelNode = element.firstElementChild?.firstElementChild ?? element.firstElementChild;
         return {
-          label: element.firstElementChild?.textContent?.trim() ?? element.textContent?.trim() ?? '',
+          label: labelNode?.textContent?.trim() ?? element.textContent?.trim() ?? '',
           selected: element.getAttribute('aria-selected') === 'true',
           fits: box.height >= tapMin - 1 && box.width >= tapMin - 1,
         };
@@ -1611,7 +1612,7 @@ async function measureOverview(send) {
     // A category is a label plus optional detail in the shared underline
     // tablist; each piece must show its whole text.
     const categories = tabElements.map((element, index) => {
-      const lines = Array.from(element.children);
+      const lines = Array.from(element.firstElementChild?.children ?? element.children);
       return {
         text: lines.map(line => line.textContent).join('\\n'),
         checked: element.getAttribute('aria-selected'),
@@ -1626,12 +1627,20 @@ async function measureOverview(send) {
       return measure(element, expected);
     });
     const close = aside.querySelector('button[aria-label="Close Overview"]');
+    const resizeHandle = aside.querySelector('[data-testid="overview-resize-handle"]');
     const surface = mobile ? null : Array.from(document.querySelectorAll('[data-testid="statusbar"]'))
       .find(e => !e.closest('[data-pane-footer-fixture]')) ?? null;
     const chips = surface ? Array.from(surface.querySelectorAll('[data-activity-tab]')) : [];
     return {
       theme: document.documentElement.dataset.theme, font: document.body.dataset.fontSize,
       sidebar: box(aside), tablistScrollsX, categories, values, close: close && box(close),
+      resizeHandle: resizeHandle ? {
+        role: resizeHandle.getAttribute('role'),
+        min: Number(resizeHandle.getAttribute('aria-valuemin')),
+        max: Number(resizeHandle.getAttribute('aria-valuemax')),
+        now: Number(resizeHandle.getAttribute('aria-valuenow')),
+        box: box(resizeHandle),
+      } : null,
       tapMin: parseFloat(getComputedStyle(aside).getPropertyValue('--tap-min')),
       footerTabs: surface ? [chips.map(button => button.dataset.activityTab)] : [],
       document: { width: document.documentElement.scrollWidth, height: document.documentElement.scrollHeight },
@@ -1745,16 +1754,35 @@ function assertOverview(result, viewport, theme) {
       .join() !== "About"
   )
     failures.push("About is not exclusively selected");
-  if (!viewport.mobile && result.tablistScrollsX)
-    failures.push("desktop Overview tablist overflows horizontally instead of keeping every tab visible");
+  if (!viewport.mobile) {
+    if (!result.resizeHandle || result.resizeHandle.role !== "separator") {
+      failures.push(`desktop Overview missing resize handle: ${JSON.stringify(result.resizeHandle)}`);
+    } else if (
+      result.resizeHandle.min !== 280 ||
+      result.resizeHandle.max !== 640 ||
+      result.resizeHandle.now !== 320
+    ) {
+      failures.push(`desktop Overview resize handle bounds unexpected: ${JSON.stringify(result.resizeHandle)}`);
+    }
+  } else if (result.resizeHandle !== null) {
+    failures.push(`mobile Overview unexpectedly rendered a resize handle: ${JSON.stringify(result.resizeHandle)}`);
+  }
+  const firstTabTop = result.categories[0]?.box.top;
   for (const category of result.categories) {
-    if (
-      !viewport.mobile &&
-      (category.box.left < result.sidebar.left - 1 || category.box.right > result.sidebar.right + 1)
-    )
+    if (firstTabTop !== undefined && Math.abs(category.box.top - firstTabTop) > 1) {
       failures.push(
-        `desktop category ${category.text} sits outside the sidebar: ${JSON.stringify(category.box)} vs ${JSON.stringify(result.sidebar)}`,
+        `Overview category ${category.text} wrapped onto a second row: top=${category.box.top} vs firstTop=${firstTabTop}`,
       );
+    }
+    if (category.detail !== null) {
+      const labelBottom = category.label?.textRects?.[0]?.bottom;
+      const detailTop = category.detail?.textRects?.[0]?.top;
+      if (labelBottom === undefined || detailTop === undefined || detailTop < labelBottom - 2) {
+        failures.push(
+          `Overview category ${category.text} is not two-level stacked: labelBottom=${labelBottom} detailTop=${detailTop}`,
+        );
+      }
+    }
     for (const line of [category.label, category.detail]) {
       if (line === null) continue;
       if (
@@ -1842,6 +1870,40 @@ async function trustedOverviewFlow(send, viewport, childGesture) {
     `document.querySelector(${JSON.stringify(OVERVIEW)})?.textContent.includes(${JSON.stringify(LONG_VALUES[1])})`,
     "About restored after keyboard selection",
   );
+  if (!viewport.mobile) {
+    // Exercise real desktop Overview resizing via keyboard and double-click reset:
+    // widening fits all five XL 100/100 two-level tabs with zero horizontal scroll.
+    await evaluate(
+      send,
+      `document.querySelector(${JSON.stringify(`${OVERVIEW} [data-testid="overview-resize-handle"]`)}).focus()`,
+    );
+    await pressKey(send, "End", "End", 35);
+    await waitForDom(
+      send,
+      `Math.abs(document.querySelector(${JSON.stringify(OVERVIEW)}).getBoundingClientRect().width - 640) <= 1`,
+      "desktop Overview widens to maximum width",
+    );
+    const widened = await evaluate(
+      send,
+      `(() => {
+        const aside = document.querySelector(${JSON.stringify(OVERVIEW)});
+        const tablist = aside.querySelector('[role="tablist"]');
+        return { width: aside.getBoundingClientRect().width, scrollsX: tablist.scrollWidth > tablist.clientWidth + 1 };
+      })()`,
+    );
+    if (widened.scrollsX) {
+      throw new Error(`widened desktop Overview tablist still scrolls horizontally: ${JSON.stringify(widened)}`);
+    }
+    await evaluate(
+      send,
+      `document.querySelector(${JSON.stringify(`${OVERVIEW} [data-testid="overview-resize-handle"]`)}).dispatchEvent(new MouseEvent('dblclick', { bubbles: true }))`,
+    );
+    await waitForDom(
+      send,
+      `Math.abs(document.querySelector(${JSON.stringify(OVERVIEW)}).getBoundingClientRect().width - 320) <= 1`,
+      "desktop Overview double-click resets to default width",
+    );
+  }
   await settleOverview(send);
   const tabStops = await evaluate(
     send,
