@@ -70,6 +70,9 @@ export type {
   PickerTriggerProps,
 } from "./internal/pickerTrigger";
 export { PickerTrigger } from "./internal/pickerTrigger";
+// Public hook for non-widget surfaces that own a floating layer themselves;
+// widgets compose it from ../internal directly.
+export { useDismissOnOutsidePress } from "./internal/useDismissOnOutsidePress";
 export type { KeyHintProps } from "./keyhint";
 export { chordLabel, KeyHint } from "./keyhint";
 export type { ListRowProps, ListRowVariant } from "./listrow";

@@ -45,10 +45,11 @@
  * margin spends the space after the attach button - so the model and the
  * effort that belongs to it read as one pair instead of splitting the row.
  * The slot must still shrink (min-width: 0 + overflow: hidden); the trigger's
- * own nested spans - the Popover wrapper or the mobile triggerWrapper, then
- * the button, then the value - carry that contract through the component's
- * fill/shrink props, down to the value span whose ellipsis turns a ~100-char
- * qualified id into "…" instead of pushing effort and Start out of the card. */
+ * own nested spans - PickerTrigger's slot box (inside Popover's wrapper on
+ * desktop), then the button, then the value - carry that contract through the
+ * component's fill/shrink props, down to the value span whose ellipsis turns a
+ * ~100-char qualified id into "…" instead of pushing effort and Start out of
+ * the card. */
 .modelTrigger {
   display: flex;
   flex: 0 1 auto;
