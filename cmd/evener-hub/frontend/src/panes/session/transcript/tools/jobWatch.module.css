@@ -21,7 +21,7 @@
 .note {
   font-size: var(--font-size-body);
   color: var(--ink-hi);
-  line-height: 1.6;
+  line-height: var(--line-height-body);
   overflow-wrap: anywhere;
   white-space: pre-wrap;
 }
@@ -41,7 +41,7 @@
 .trigger {
   font-size: var(--font-size-body);
   color: var(--ink-hi);
-  line-height: 1.6;
+  line-height: var(--line-height-body);
   overflow-wrap: anywhere;
 }
 

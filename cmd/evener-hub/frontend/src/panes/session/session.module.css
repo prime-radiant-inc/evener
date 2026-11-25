@@ -121,12 +121,7 @@
 }
 
 .loadingHint {
-  margin: 0;
-  max-width: 40ch;
-  color: var(--ink-mid);
-  font-family: var(--font-sans);
-  font-size: var(--font-size-body);
-  line-height: var(--line-height-body);
+  composes: bodyHint from "../../styles/surface.module.css";
 }
 
 .loadingSkeleton {

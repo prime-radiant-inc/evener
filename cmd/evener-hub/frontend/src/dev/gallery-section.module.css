@@ -16,6 +16,13 @@
   gap: var(--space-3);
 }
 
+/* The same row with its cases top-aligned, for a section whose samples are
+ * taller than one line (a card, a drop zone). */
+.rowStart {
+  composes: row;
+  align-items: flex-start;
+}
+
 .rowLabel {
   margin: 0;
   color: var(--ink-mid);

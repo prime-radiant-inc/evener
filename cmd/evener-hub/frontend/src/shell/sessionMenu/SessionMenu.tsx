@@ -25,12 +25,10 @@
 import type { NavigationSessionSummary } from "@evener/appwire-client";
 import { type ChangeEvent, useEffect, useState } from "react";
 import { Button, ConfirmDialog, Dialog, FormRow, Input, Menu, type MenuEntry } from "../../widgets";
-import { requireClass } from "../../widgets/internal/requireClass";
 import { PinSectionPicker } from "../rail/PinSectionPicker";
 import { isTopLevelSession } from "../rail/sessionKind";
 import { useAsyncConfirm } from "../useAsyncConfirm";
 import { ForceStopDialog } from "./ForceStopDialog";
-import styles from "./sessionmenu.module.css";
 
 export type PinTarget = { section_id: string } | { section_name: string };
 export interface NavigationSessionModel {
@@ -100,10 +98,6 @@ export interface SessionMenuProps {
    * when the last one closes or the menu unmounts with one open. */
   onDialogOpenChange?: (open: boolean) => void;
 }
-
-const CLASS = {
-  body: requireClass(styles.body, "sessionmenu.module.css", "body"),
-};
 
 const checked = (label: string, open: boolean) => (open ? `${label} ✓` : label);
 
@@ -294,9 +288,7 @@ export function SessionMenu({
         onConfirm={() => void run(actions.onShutdown, () => setShutdownOpen(false))}
         onCancel={() => setShutdownOpen(false)}
       >
-        <p className={CLASS.body}>
-          The agent process for this session will stop. You can still read the transcript afterward.
-        </p>
+        <p>The agent process for this session will stop. You can still read the transcript afterward.</p>
       </ConfirmDialog>
 
       {actions.onForceStop && (
@@ -311,7 +303,7 @@ export function SessionMenu({
         onConfirm={() => void run(actions.onDelete, () => setDeleteOpen(false))}
         onCancel={() => setDeleteOpen(false)}
       >
-        <p className={CLASS.body}>Permanently delete "{title}"? This removes its transcript and cannot be undone.</p>
+        <p>Permanently delete "{title}"? This removes its transcript and cannot be undone.</p>
       </ConfirmDialog>
 
       {/* The picker reports its own assign errors inline; SessionMenu closes

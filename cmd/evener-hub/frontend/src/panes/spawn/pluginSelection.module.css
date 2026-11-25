@@ -27,24 +27,6 @@
   min-width: 0;
 }
 
-.row {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-  min-width: 0;
-  padding: var(--space-2) 0;
-  border-top: 1px solid var(--edge);
-}
-
-.metadata {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-  gap: var(--space-half);
-}
-
-.source,
-.counts,
 .resultCount {
   min-width: 0;
   overflow: hidden;
@@ -52,23 +34,6 @@
   font-size: var(--font-size-caption);
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.source {
-  color: var(--ink-mid);
-}
-
-.description {
-  composes: helpMuted from "../../styles/help.module.css";
-  min-width: 0;
-}
-
-/* The quiet Details action that ends a row's description: the span wrapping
- * the link-button (the Button widget takes no class of its own), holding it
- * at the column's left edge like the text above it - not a trailing control;
- * the switch keeps the row's one-tap job. */
-.details {
-  align-self: flex-start;
 }
 
 /* The inline detail body a row's Details action expands under it. */

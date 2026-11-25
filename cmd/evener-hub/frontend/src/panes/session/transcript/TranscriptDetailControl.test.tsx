@@ -12,6 +12,7 @@ import { useState } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { resetTranscriptDisplayStoreForTests, transcriptDisplayStore } from "../../../stores/transcriptDisplay";
 import { readModuleCss } from "../../../styles/cssBlock";
+import sheetStyles from "../../../widgets/sheet/sheet.module.css";
 import { TranscriptDetailControl } from "./TranscriptDetailControl";
 
 const hubDesktop: HubTranscriptDisplayDefault = {
@@ -222,6 +223,7 @@ test("uses a controlled bottom mobile Sheet and restores focus to the external t
   expect(dialog).toBeTruthy();
   expect(dialog.getAttribute("aria-modal")).toBe("true");
   expect(dialog.className).toContain("bottom");
+  expect(dialog.className.split(" ")).toContain(sheetStyles.wide);
   expect(screen.getByRole("radio", { name: "Intent" })).toBeTruthy();
   expect(screen.getByRole("button", { name: "Use hub default" }).className).toMatch(/secondary/);
   expect(screen.getByRole("button", { name: "Edit hub defaults" }).className).toMatch(/quiet/);
@@ -288,6 +290,7 @@ test("composes the controlled overlay only from shared controls and Dialog/Sheet
   const here = dirname(fileURLToPath(import.meta.url));
   const source = readFileSync(join(here, "TranscriptDetailControl.tsx"), "utf8");
 
+  expect(source).toMatch(/import \{ ResponsiveModal \} from "\.\.\/\.\.\/\.\.\/shell\/ResponsiveModal";/);
   expect(source).not.toMatch(/<button\b/);
   expect(source.match(/<Button\b/g)).toHaveLength(2);
   expect(source.match(/variant="secondary"/g)).toHaveLength(1);

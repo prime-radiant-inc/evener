@@ -179,3 +179,40 @@
   font-size: var(--font-size-ui);
   max-width: 100ch;
 }
+
+/* The launcher's plugin rows. Only this mockup draws them, so they live here
+ * rather than in the launcher's own sheet. */
+.launcherRow {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+  padding: var(--space-2) 0;
+  border-top: 1px solid var(--edge);
+}
+
+.launcherMetadata {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: var(--space-half);
+}
+
+.launcherSource,
+.launcherCounts {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink-low);
+  font-size: var(--font-size-caption);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.launcherSource {
+  color: var(--ink-mid);
+}
+
+.launcherDescription {
+  composes: helpMuted from "../styles/help.module.css";
+  min-width: 0;
+}

@@ -37,7 +37,7 @@ import type { CollectionAddResult, PathFieldKind } from "../../../../widgets";
 import { CollectionEditor, FormRow, Input, Switch } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import styles from "./collectionFields.module.css";
-import { controllerLaunchFormPaths, type LaunchFormPaths, PathFieldWithPaths } from "./fields";
+import { browsablePathKind, controllerLaunchFormPaths, type LaunchFormPaths, PathFieldWithPaths } from "./fields";
 import { SettingsModelCatalog } from "./SettingsModelCatalog";
 
 const CLASS = {
@@ -129,8 +129,7 @@ function pathAddPlaceholder(kind: PathFieldKind): string {
  * mcpConfigs is a file - so anything else falls back to browsing directories,
  * which is the only kind that lists nothing a list of paths can't hold. */
 function pathFieldKind(pathKind: string | undefined): PathFieldKind {
-  if (pathKind === "file" || pathKind === "outputFile") return pathKind;
-  return "dir";
+  return browsablePathKind(pathKind) ?? "dir";
 }
 
 /** pathList kind: skillsDirs/pluginDirs/mcpConfigs. Adds come from the shared

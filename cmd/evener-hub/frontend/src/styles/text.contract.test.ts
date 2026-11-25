@@ -50,3 +50,17 @@ test.each([
     /composes:[^;]*\bpaneTitle\b[^;]*from "[./]*styles\/text\.module\.css"/,
   );
 });
+
+test("the dialog title keeps its sans face in its own sheet", () => {
+  // paneTitle's serif face is emitted from this sheet's chunk, which can load
+  // after the dialog's own sheet: a composes reference would tie on
+  // specificity and lose to whichever copy lands later. The dialog title
+  // therefore declares the full type itself.
+  const title = topRuleBlock(readModuleCss(import.meta.url, "../widgets/dialog/dialog.module.css"), ".title");
+  expect(title).not.toMatch(/composes:[^;]*\bpaneTitle\b/);
+  expect(title).toMatch(/font-family:\s*var\(--font-sans\)/);
+  expect(title).toMatch(/font-size:\s*var\(--font-size-pane-title\)/);
+  expect(title).toMatch(/font-weight:\s*var\(--font-weight-semibold\)/);
+  expect(title).toMatch(/letter-spacing:\s*var\(--tracking-display\)/);
+  expect(title).toMatch(/line-height:\s*var\(--line-height-title\)/);
+});

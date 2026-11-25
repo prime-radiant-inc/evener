@@ -83,13 +83,6 @@
   composes: attachmentStrip from "../../../styles/surface.module.css";
 }
 
-/* Same author-vs-UA cascade hole as promptcard's .card[hidden] (see that
- * file's comment): display:flex here outranks the UA [hidden] display:none,
- * so the askPending hide (Composer.tsx) must be re-asserted explicitly. */
-.attachments[hidden] {
-  display: none;
-}
-
 /* One box for a staged attachment in every state - see AttachmentTile.tsx's
  * header comment. It holds exactly one image-sized child, which fills it, so
  * it lays that child out directly rather than centring a stack: two stacked

@@ -5,13 +5,13 @@ import { useClient } from "../../../shell/clientContext";
 import { Button, EmptyState, InlineNotice, Skeleton } from "../../../widgets";
 import { copyText } from "../../../widgets/copybutton/clipboard";
 import { requireClass } from "../../../widgets/internal/requireClass";
-import styles from "./devicePairing/devicePairing.module.css";
+import styles from "./mobile.module.css";
 import { useConnectedEffect } from "./useConnectedEffect";
 
-const rootClass = requireClass(styles.root, "devicePairing.module.css", "root");
-const controlsClass = requireClass(styles.controls, "devicePairing.module.css", "controls");
-const soundOptionClass = requireClass(styles.soundOption, "devicePairing.module.css", "soundOption");
-const helpClass = requireClass(styles.help, "devicePairing.module.css", "help");
+const rootClass = requireClass(styles.root, "mobile.module.css", "root");
+const controlsClass = requireClass(styles.controls, "mobile.module.css", "controls");
+const soundOptionClass = requireClass(styles.soundOption, "mobile.module.css", "soundOption");
+const helpClass = requireClass(styles.help, "mobile.module.css", "help");
 
 // qrcode.react rides its own split chunk: MobileSection itself stays in the
 // Settings chunk (Settings.tsx imports it statically), but the QR renderer

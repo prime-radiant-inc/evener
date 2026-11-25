@@ -15,6 +15,28 @@ export interface PluginMetadataRow extends PropertyListRow {
   kind: "version" | "marketplace" | "source" | "author";
 }
 
+/** The metadata rows every plugin detail renders. Callers format the values
+ * (the version prefix, the marketplace source label) and omit a fact they do
+ * not have, so the one place that orders and types the rows stays shared. */
+export function pluginMetadataRows({
+  version,
+  marketplace,
+  source,
+  author,
+}: {
+  version?: string;
+  marketplace?: string;
+  source?: string;
+  author?: string;
+}): PluginMetadataRow[] {
+  const rows: PluginMetadataRow[] = [];
+  if (version !== undefined) rows.push({ kind: "version", label: "Version", value: version, mono: true });
+  if (marketplace !== undefined) rows.push({ kind: "marketplace", label: "Marketplace", value: marketplace });
+  if (source !== undefined) rows.push({ kind: "source", label: "Source", value: source, mono: true });
+  if (author !== undefined) rows.push({ kind: "author", label: "Author", value: author });
+  return rows;
+}
+
 export interface PluginDetailProps {
   /** The expanded region's DOM id, so the row's opener can point here with
    * aria-controls. */

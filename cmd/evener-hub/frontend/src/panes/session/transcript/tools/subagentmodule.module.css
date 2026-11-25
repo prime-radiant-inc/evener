@@ -113,7 +113,7 @@
 }
 .quoteLive {
   color: var(--ink-hi);
-  font-weight: 600;
+  font-weight: var(--font-weight-semibold);
 }
 .quoteMsg {
   font-family: var(--font-prose);
