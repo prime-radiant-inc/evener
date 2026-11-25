@@ -170,6 +170,31 @@
     padding-bottom: var(--dock-clearance);
   }
 
+  /* Floating composer (docs/web-ui/design-system.md §12): a session pane's
+   * footer is not a boxed strip on the phone - the composer card floats over
+   * the transcript. The footer root overlays the pane's bottom edge: a
+   * gradient scrim fades the content out behind the floating chrome (a
+   * painted fade, not a strip with an edge), and the root passes pointer
+   * events through so its transparent gutters never eat a scroll gesture -
+   * the footer's own children take taps again. The body keeps its flush
+   * bottom so the transcript's scroll port runs the full height and content
+   * slides under the card; the scrollable reserve lives inside the list as
+   * the end inset row (TranscriptBody), not as padding here. Other panes keep
+   * the padded footer: this is the session composer's shape, keyed the same
+   * way as the Duo-cover rule below. */
+  .pane:has(> .body[data-pane-scaffold^="session:"]) > .footer {
+    position: absolute;
+    inset-inline: 0;
+    bottom: 0;
+    z-index: var(--z-sticky-bar);
+    border-top: none;
+    background: linear-gradient(to bottom, transparent, var(--surface-0) var(--space-5));
+    pointer-events: none;
+  }
+
+  .pane:has(> .body[data-pane-scaffold^="session:"]) > .footer > * {
+    pointer-events: auto;
+  }
 }
 
 /* A flush edge footer below this dock is the pane's bottom edge and owns the

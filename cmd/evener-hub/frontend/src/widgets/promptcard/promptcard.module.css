@@ -63,6 +63,24 @@
     var(--shadow-raised);
 }
 
+/* The phone's composer card is the floating composer (docs/web-ui/
+ * design-system.md §12): no border and no framed surface - a translucent
+ * field color over a 16px backdrop blur, carried by PaneScaffold's footer
+ * overlay over the transcript. Keyed on [data-composer] so the spawn pane's
+ * shared card keeps its framed look inside its scrolling form body. The
+ * card keeps the panel radius in every state: the pill is control geometry,
+ * never a surface shape, so the card stays concentric with its
+ * control-radius verbs at every width. */
+@media (max-width: 899px) {
+  :global([data-composer]) .card {
+    border: none;
+    background: color-mix(in oklab, var(--field) 88%, transparent);
+    -webkit-backdrop-filter: blur(16px);
+    backdrop-filter: blur(16px);
+    transition: background-color var(--motion-duration-spatial) var(--motion-easing-standard);
+  }
+}
+
 /* On the Duo cover, an empty, folded composer gives its extra inset back to
  * the transcript. Focus does not change that shape; content does. */
 @media (min-width: 440px) and (max-width: 500px) and (max-aspect-ratio: 3 / 4) {

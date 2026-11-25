@@ -655,7 +655,7 @@ The radius ladder has five steps, and each has named users:
 | `--radius-control` | 8px | buttons, fields, rail and tree rows, dock tabs, menu items, tooltips, icon seats, an inset band inside a card |
 | `--radius-pane` | 12px | `Card`, code and diff blocks, menus, dialogs, popovers, toasts, hover cards, grouped phone lists |
 | `--radius-panel` | 16px | the largest surfaces: the prompt card, the notes panel's lower corners, the bottom sheet's top corners |
-| `--radius-pill` | 999px | chips, badges, count and status pills, switch, meter and segmented-control tracks, round avatars |
+| `--radius-pill` | 999px | control geometry only — chips, badges, count pills, switch, meter and segmented-control tracks, round avatars. Never a surface shape: surfaces take the ladder (`--radius-control` for controls and small chrome, `--radius-pane` for floating chrome one step above the buttons inside it, `--radius-panel` for cards). |
 
 A surface nested in another takes the next step down, so the two arcs stay concentric:
 a `--radius-control` button one `--space-2` inside the `--radius-panel` prompt card, a
@@ -1474,6 +1474,15 @@ collapsed or expanded. It announces current work to assistive technology
 without adding a visible row. Model and reasoning effort are session facts in
 Overview; Settings owns the default choices. The desktop header, model and
 effort controls, and pane footer keep their independent behavior.
+
+The phone composer floats as one card over the transcript with no outer
+rectangle or border-top: the card is `--field` on `--radius-panel` (the same
+radius the desktop card carries, concentric with its `--radius-control` verbs)
+with a 16px backdrop blur and a soft shadow over a transparent gradient scrim.
+Content scrolls behind the floating card. At the end, the last turn clears the
+card and any floating reading controls. Those controls sit one gutter above the
+card, whether a draft grows or the keyboard closes and exposes the home
+indicator.
 
 ## Source Serif 4 license notice
 

@@ -40,14 +40,8 @@ export function FlowOverlay({ children, top, pill, attentionOverlay, onOverlayHe
   reportRef.current = onOverlayHeightChange;
   const hasStack = pill !== undefined || attentionOverlay !== undefined;
 
-  // One measured stack owns both floating controls. Next sits at the trailing
-  // bottom edge and New Content above it. What this reports is the end
-  // clearance ConversationBody reserves in its synthetic trailing row: the
-  // distance from the reader's own bottom edge up to the stack's top. That is
-  // the stack's height plus the inset the stylesheet floats it above the
-  // bottom (`bottom: var(--space-3)`); reserving only the height would leave
-  // the last content row under the stack by that inset.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: hasStack is the deliberate trigger: the body reads the ref the stack mount writes, and the effect must re-report when the stack appears or goes away
+  // The last turn must scroll above both the controls and their bottom inset.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: hasStack attaches the observer when the stack mounts and clears the reserve when it unmounts
   useLayoutEffect(() => {
     const wrap = wrapRef.current;
     const stack = stackRef.current;
@@ -62,7 +56,7 @@ export function FlowOverlay({ children, top, pill, attentionOverlay, onOverlayHe
     report();
     if (typeof ResizeObserver === "undefined") return;
     const observer = new ResizeObserver(report);
-    observer.observe(stack);
+    observer.observe(stack, { box: "border-box" });
     return () => observer.disconnect();
   }, [hasStack]);
 
