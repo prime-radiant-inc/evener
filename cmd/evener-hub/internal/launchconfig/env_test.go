@@ -131,6 +131,38 @@ func checkToEnv_DoesNotIntroduceObsoleteRawHTTPLogging(t *testing.T) {
 	}
 }
 
+func TestToEnv_HubEnv(t *testing.T) {
+	t.Run("nil HubEnv adds no extra vars", func(t *testing.T) {
+		got := envSliceToMap(ToEnv(EnvInputs{ParentEnv: []string{"PATH=/usr/bin"}}))
+		for _, k := range []string{"EVENER_HARNESS_FEEDBACK_WEBHOOK", "EVENER_HARNESS_FEEDBACK_COMMAND", "EVENER_HARNESS_FEEDBACK_FILE"} {
+			if _, ok := got[k]; ok {
+				t.Errorf("%s unexpectedly present: %q", k, got[k])
+			}
+		}
+	})
+	t.Run("HubEnv applies over parent env and yields to per-launch env", func(t *testing.T) {
+		got := envSliceToMap(ToEnv(EnvInputs{
+			ParentEnv: []string{"PATH=/usr/bin", "EVENER_HARNESS_FEEDBACK_FILE=/parent.jsonl"},
+			Resolved:  Resolved{Effective: Layer{Env: map[string]string{"EVENER_HARNESS_FEEDBACK_COMMAND": "launch-cmd"}}},
+			HubEnv: map[string]string{
+				"EVENER_HARNESS_FEEDBACK_WEBHOOK": "https://hooks.example.test/services/T/B/S",
+				"EVENER_HARNESS_FEEDBACK_COMMAND": "hub-cmd",
+				"EVENER_HARNESS_FEEDBACK_FILE":    "/tmp/fb.jsonl",
+			},
+		}))
+		want := map[string]string{
+			"EVENER_HARNESS_FEEDBACK_WEBHOOK": "https://hooks.example.test/services/T/B/S",
+			"EVENER_HARNESS_FEEDBACK_COMMAND": "launch-cmd",
+			"EVENER_HARNESS_FEEDBACK_FILE":    "/tmp/fb.jsonl",
+		}
+		for k, v := range want {
+			if got[k] != v {
+				t.Errorf("%s = %q, want %q", k, got[k], v)
+			}
+		}
+	})
+}
+
 func envSliceToMap(env []string) map[string]string {
 	out := map[string]string{}
 	for _, kv := range env {

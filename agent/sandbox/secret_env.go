@@ -6,15 +6,16 @@ import "strings"
 // credential that must not survive into a spawned process. It is the single deny
 // predicate shared by every spawn surface (execenv shell/exec, plugin command
 // hooks, stdio MCP servers), matching *API_KEY* / *SECRET* / *TOKEN* /
-// *PASSWORD* / *CREDENTIAL* case-insensitively so a spawned command never
-// inherits evener's provider key or other ambient secrets.
+// *PASSWORD* / *CREDENTIAL* / *WEBHOOK* case-insensitively so a spawned command
+// never inherits evener's provider key, webhook URL, or other ambient secrets.
 func IsSecretEnvName(name string) bool {
 	u := strings.ToUpper(name)
 	return strings.Contains(u, "API_KEY") ||
 		strings.Contains(u, "SECRET") ||
 		strings.Contains(u, "TOKEN") ||
 		strings.Contains(u, "PASSWORD") ||
-		strings.Contains(u, "CREDENTIAL")
+		strings.Contains(u, "CREDENTIAL") ||
+		strings.Contains(u, "WEBHOOK")
 }
 
 // ScrubSecretEnv returns a copy of env ("NAME=VALUE" entries) with every

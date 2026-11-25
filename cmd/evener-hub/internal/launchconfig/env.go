@@ -21,6 +21,9 @@ type EnvInputs struct {
 	// resolves credentials out of the same credentials.toml the hub's pane
 	// writes.
 	CredentialsPath string
+	// HubEnv carries hub-level daemon environment controls applied ahead of
+	// per-launch env (which still wins on conflict).
+	HubEnv map[string]string
 }
 
 // ToEnv produces the env slice for the spawned `evener serve`. Order of
@@ -53,6 +56,7 @@ func ToEnv(in EnvInputs) []string {
 	if in.CredentialsPath != "" {
 		out = envvars.Set(out, envvars.EVENERCredentialsConfig.Name, in.CredentialsPath)
 	}
+	out = envvars.ApplyOverlay(out, in.HubEnv)
 
 	// 1. Per-launch env: applied last so it wins, in sorted key order
 	//    for determinism.

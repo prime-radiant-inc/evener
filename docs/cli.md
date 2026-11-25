@@ -237,6 +237,9 @@ runtime meaning across flags.
 | `--sandbox-net` | `"on"` | sandbox network egress on\|off (default on; only applies with a non-off --sandbox mode) |
 | `--commit-provenance` | `""` | record Evener session details in commit messages the model writes: `coauthor` or `off` (default coauthor) |
 | `--api-log` | `"off"` | durable API request logging on\|off (default off; on records every provider request and response to `<state-dir>/sessions/<id>.api.jsonl`) |
+| `--harness-feedback-webhook` | `""` | HTTP(S) webhook URL (for example a Slack incoming webhook) for the opt-in `harness_feedback` tool; falls back to `EVENER_HARNESS_FEEDBACK_WEBHOOK` (preferred for secrets) |
+| `--harness-feedback-command` | `""` | shell command run via `sh -c` receiving `harness_feedback` JSON reports on stdin; falls back to `EVENER_HARNESS_FEEDBACK_COMMAND` |
+| `--harness-feedback-file` | `""` | JSONL file path where `harness_feedback` reports are appended; falls back to `EVENER_HARNESS_FEEDBACK_FILE` |
 | `--timeout` | `0` | overall one-shot run timeout (0 disables; rate-limit retries use their finite fallback) |
 | `--ask-responder` | `""` | Command run through sh -c to answer ask_user, questions JSON on stdin and reply on stdout. Enables interactive behavior, with at most three responder rounds per input. |
 

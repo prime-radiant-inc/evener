@@ -102,6 +102,29 @@ func defReadFile(visionSuffix, visionParamDesc string) llm.ToolDefinition {
 	}
 }
 
+// DefHarnessFeedback returns the tool definition for harness_feedback.
+func DefHarnessFeedback() llm.ToolDefinition {
+	return llm.ToolDefinition{
+		Name:        "harness_feedback",
+		Description: "Report a harness rough edge, confusing tool error, missing affordance, or workaround in Evener so maintainers can fix it.",
+		Parameters: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"summary": map[string]any{"type": "string", "description": "One-line summary of the harness issue."},
+				"details": map[string]any{"type": "string", "description": "What happened, what you expected, and any workaround used."},
+				"category": map[string]any{
+					"type":        "string",
+					"enum":        []string{"tool_error", "schema_gap", "prompt_gap", "performance", "bug", "other"},
+					"description": "Issue category.",
+				},
+				"tool_name": map[string]any{"type": "string", "description": "Name of the tool involved, if any."},
+			},
+			"required": []string{"summary", "details"},
+		},
+	}
+}
+
 // DefReadFile returns read_file for Regime 3, where images and PDFs both use
 // the vision side-channel.
 func DefReadFile() llm.ToolDefinition {

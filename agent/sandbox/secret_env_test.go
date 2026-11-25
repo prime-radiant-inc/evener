@@ -8,7 +8,7 @@ import (
 func TestIsSecretEnvName(t *testing.T) {
 	secret := []string{
 		"OPENAI_API_KEY", "openai_api_key", "MY_SECRET", "GITHUB_TOKEN",
-		"DB_PASSWORD", "AWS_CREDENTIAL_FILE", "ANTHROPIC_API_KEY",
+		"DB_PASSWORD", "AWS_CREDENTIAL_FILE", "ANTHROPIC_API_KEY", "EVENER_HARNESS_FEEDBACK_WEBHOOK",
 	}
 	for _, name := range secret {
 		if !IsSecretEnvName(name) {
@@ -29,6 +29,7 @@ func TestScrubSecretEnv(t *testing.T) {
 		"OPENAI_API_KEY=sk-leak",
 		"HOME=/fixture-home/u",
 		"MY_SECRET=nope",
+		"EVENER_HARNESS_FEEDBACK_WEBHOOK=https://hooks.slack.com/services/T0/B0/secret",
 		"MALFORMED_NO_EQUALS",
 	}
 	got := ScrubSecretEnv(in)
@@ -37,7 +38,7 @@ func TestScrubSecretEnv(t *testing.T) {
 		t.Errorf("ScrubSecretEnv(%v) = %v, want %v", in, got, want)
 	}
 	// The input slice must not be mutated.
-	if len(in) != 5 || in[1] != "OPENAI_API_KEY=sk-leak" {
+	if len(in) != 6 || in[1] != "OPENAI_API_KEY=sk-leak" {
 		t.Errorf("ScrubSecretEnv mutated its input: %v", in)
 	}
 }

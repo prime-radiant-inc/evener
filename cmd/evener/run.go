@@ -69,6 +69,7 @@ type runConfig struct {
 	commitProvenance            string        // --commit-provenance coauthor|off (empty keeps the default or a resumed value)
 	apiLog                      string        // --api-log on|off (default off)
 	askResponder                string        // --ask-responder command; non-empty makes the session interactive
+	harnessFeedback             harnessFeedbackFlags
 
 	// Resume options.
 	resume       string // session ID to resume
@@ -368,11 +369,16 @@ func run(ctx context.Context, cfg runConfig) error {
 	if err != nil {
 		return err
 	}
+	harnessFeedback, err := resolveHarnessFeedbackConfig(cfg.harnessFeedback.webhook, cfg.harnessFeedback.command, cfg.harnessFeedback.file)
+	if err != nil {
+		return err
+	}
 	var sess *agent.Session
 	baseSessionCfg := agent.SessionConfig{
 		MemoryStateRoot:             memoryStateRoot,
 		MemoryProjectID:             memoryProjectID,
 		DisableMemory:               cfg.disableMemory,
+		HarnessFeedback:             harnessFeedback,
 		LifetimeContext:             ctx,
 		MaxToolRoundsPerInput:       cmdutil.MaxRoundsToConfig(cfg.maxRounds),
 		ShareTasksWithChildren:      cfg.shareTaskStore,
@@ -441,6 +447,7 @@ func run(ctx context.Context, cfg runConfig) error {
 		sess, err = runRestoreSession(client, profile, env, *meta, agent.RestoreSessionConfig{
 			MemoryStateRoot:             baseSessionCfg.MemoryStateRoot,
 			DisableMemory:               cfg.disableMemory,
+			HarnessFeedback:             baseSessionCfg.HarnessFeedback,
 			LifetimeContext:             ctx,
 			StateDir:                    stateDir,
 			Project:                     project,

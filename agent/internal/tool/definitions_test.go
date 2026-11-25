@@ -1230,6 +1230,7 @@ func TestAllBuiltinParametersCarryDescriptions(t *testing.T) {
 		DefDoctorEvener(), DefManageWorktree(), DefManageWorktreeDisposeOnly(),
 		DefReadTranscript(), DefAskUser(), DefUpdateGoal(), DefNotesAgentSet(),
 		DefUrlsAdd(), DefUrlsRemove(), DefNotesRead(),
+		DefHarnessFeedback(),
 	}
 	for _, def := range defs {
 		if missing := UndocumentedProperties(def); len(missing) > 0 {
@@ -1424,5 +1425,39 @@ func TestDefDelegatePromptAndTaskListSchema(t *testing.T) {
 	}
 	if items["additionalProperties"] != false {
 		t.Errorf("task_list items additionalProperties = %v, want false", items["additionalProperties"])
+	}
+}
+
+func TestDefHarnessFeedbackSchema(t *testing.T) {
+	t.Parallel()
+	def := DefHarnessFeedback()
+	if def.Name != "harness_feedback" {
+		t.Fatalf("Name = %q, want %q", def.Name, "harness_feedback")
+	}
+	if def.Description == "" {
+		t.Fatal("Description must be non-empty")
+	}
+	if def.Parameters["additionalProperties"] != false {
+		t.Fatalf("additionalProperties = %v, want false", def.Parameters["additionalProperties"])
+	}
+	required(t, def, "harness_feedback", []string{"summary", "details"})
+	props := def.Parameters["properties"].(map[string]any)
+	for _, key := range []string{"summary", "details", "category", "tool_name"} {
+		pm, ok := props[key].(map[string]any)
+		if !ok {
+			t.Fatalf("missing property %q", key)
+		}
+		if pm["type"] != "string" {
+			t.Errorf("%s type = %v, want string", key, pm["type"])
+		}
+		if desc, _ := pm["description"].(string); desc == "" {
+			t.Errorf("%s missing description", key)
+		}
+	}
+	cat := props["category"].(map[string]any)
+	enumVals, ok := cat["enum"].([]string)
+	wantEnum := []string{"tool_error", "schema_gap", "prompt_gap", "performance", "bug", "other"}
+	if !ok || !slices.Equal(enumVals, wantEnum) {
+		t.Fatalf("category enum = %#v, want %v", cat["enum"], wantEnum)
 	}
 }

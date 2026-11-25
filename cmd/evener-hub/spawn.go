@@ -94,6 +94,25 @@ type HubSpawner struct {
 	NoUserLayer         bool                      // the tri-state from EVENER_PROVIDERS_CONFIG: present and empty means no user layer (spec §10)
 }
 
+// hubEnv returns hub.toml-sourced daemon env vars (such as harness_feedback
+// sinks) so secrets stay off daemon CLI args.
+func (h *HubSpawner) hubEnv() map[string]string {
+	var out map[string]string
+	set := func(name, value string) {
+		if value == "" {
+			return
+		}
+		if out == nil {
+			out = map[string]string{}
+		}
+		out[name] = value
+	}
+	set(envvars.EVENERHarnessFeedbackWebhook.Name, h.Cfg.HarnessFeedbackWebhook)
+	set(envvars.EVENERHarnessFeedbackCommand.Name, h.Cfg.HarnessFeedbackCommand)
+	set(envvars.EVENERHarnessFeedbackFile.Name, h.Cfg.HarnessFeedbackFile)
+	return out
+}
+
 type EvenerLaunchModelLister interface {
 	ListLaunchModels(context.Context) ([]appwire.ModelDescriptor, error)
 }
@@ -233,6 +252,7 @@ func (h *HubSpawner) Spawn(ctx context.Context, req hubcore.SpawnRequest) (_ ren
 		ProvidersConfigPath: childConfig.path,
 		NoUserLayer:         childConfig.noUserLayer,
 		CredentialsPath:     h.CredentialsPath,
+		HubEnv:              h.hubEnv(),
 	})
 	if err := validateProviderCredentials(req.Provider, req.Resolved.Effective.Model, h.Registry); err != nil {
 		return rendezvous.Entry{}, err
@@ -290,6 +310,7 @@ func (h *HubSpawner) Resume(ctx context.Context, req hubcore.ResumeRequest) (ren
 		ProvidersConfigPath: childConfig.path,
 		NoUserLayer:         childConfig.noUserLayer,
 		CredentialsPath:     h.CredentialsPath,
+		HubEnv:              h.hubEnv(),
 	})
 	if req.Provider != "" {
 		// The resume request carries the model the session persisted

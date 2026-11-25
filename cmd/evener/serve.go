@@ -686,10 +686,16 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	if err != nil {
 		return err
 	}
+	fbFlags := lf.harnessFeedback()
+	harnessFeedback, err := resolveHarnessFeedbackConfig(fbFlags.webhook, fbFlags.command, fbFlags.file)
+	if err != nil {
+		return err
+	}
 	sessionCfg := agent.SessionConfig{
 		MemoryStateRoot: memoryStateRoot,
 		MemoryProjectID: memoryProjectID,
 		DisableMemory:   *lf.disableMemory,
+		HarnessFeedback: harnessFeedback,
 		// The session tree lives exactly as long as this daemon does. Shutdown
 		// waits for the input loop before it closes the session, so work that
 		// runs synchronously on that loop -- a Notification hook, which runs
@@ -769,6 +775,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		sess, err = deps.restoreSession(client, profile, env, resumedMeta, agent.RestoreSessionConfig{
 			MemoryStateRoot:             sessionCfg.MemoryStateRoot,
 			DisableMemory:               *lf.disableMemory,
+			HarnessFeedback:             sessionCfg.HarnessFeedback,
 			LifetimeContext:             ctx,
 			StateDir:                    sd,
 			RendezvousDir:               runDir,
@@ -1303,6 +1310,9 @@ func printServeEnvVars(w io.Writer) {
 		envvars.EVENERHubSpawned,
 		envvars.EVENERAllowedDecisions,
 		envvars.EVENERProvidersConfig,
+		envvars.EVENERHarnessFeedbackWebhook,
+		envvars.EVENERHarnessFeedbackCommand,
+		envvars.EVENERHarnessFeedbackFile,
 		envvars.EVENERPprofAddr,
 	} {
 		_, _ = fmt.Fprintf(tw, "  %s\t%s\n", v.Name, v.Summary)

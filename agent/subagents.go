@@ -456,6 +456,7 @@ func baseSubagentToolPolicy(agent *plugin.Agent, canDelegate bool) (allTools boo
 			allowed = appendUniqueStrings(allowed, memoryReadToolNames...)
 		}
 		allowed = appendUniqueStrings(allowed, intrinsicSubagentTools...)
+		allowed = appendUniqueStrings(allowed, harnessFeedbackToolName)
 		allowed = removeStrings(allowed, protectedGrantTools())
 		// Delegation tools in a typed role's list are allowance-gated: a role
 		// granted delegation keeps delegate; a leaf loses it on every spawn
@@ -1401,6 +1402,7 @@ func subagentConfigFromFrozenDescriptor(frozenConfig schema.ConfigSnapshot, pare
 	subCfg.MemoryStateRoot = parentCfg.MemoryStateRoot
 	subCfg.DisableMemory = subCfg.DisableMemory || parentCfg.DisableMemory
 	subCfg.MemoryProjectID = parentCfg.MemoryProjectID
+	subCfg.HarnessFeedback = parentCfg.HarnessFeedback
 	subCfg.Project = parentCfg.Project
 	subCfg.LifetimeContext = parentCfg.LifetimeContext
 	subCfg.LLMRetryPolicy = parentCfg.LLMRetryPolicy

@@ -132,6 +132,7 @@ func TestNewSessionRejectsResultToolNameCollidingWithNativeTool(t *testing.T) {
 		{"skill tool", SessionConfig{ResultToolName: "use_skill"}},
 		{"transcript tool", SessionConfig{ResultToolName: "doctor_evener", StateDir: t.TempDir()}},
 		{"compact tool", SessionConfig{ResultToolName: "compact_context"}},
+		{"harness feedback tool when enabled", SessionConfig{ResultToolName: "harness_feedback", HarnessFeedback: HarnessFeedbackConfig{FilePath: filepath.Join(t.TempDir(), "fb.jsonl")}}},
 		// One-shot runs drop ceremony tools after the result tool's collision
 		// check, so their names must still be refused rather than adopted.
 		{"one-shot notes_agent_set tool", SessionConfig{ResultToolName: "notes_agent_set", TurnEndsProcess: true}},

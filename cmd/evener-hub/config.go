@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/BurntSushi/toml"
+	"primeradiant.com/evener/agent"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/envvars"
@@ -126,6 +127,13 @@ type Config struct {
 	// `list` between those writes. Default DefaultHostTombstoneRetention; a
 	// value at or below zero is floored back to the default at load.
 	HostTombstoneRetention time.Duration `toml:"host_tombstone_retention"`
+	// HarnessFeedbackWebhook, HarnessFeedbackCommand, and HarnessFeedbackFile
+	// configure optional sinks for the harness_feedback tool on hub-spawned
+	// and resumed daemons. Passed through daemon environment variables (never
+	// CLI args) so webhook URLs stay off process command lines.
+	HarnessFeedbackWebhook string `toml:"harness_feedback_webhook,omitempty"`
+	HarnessFeedbackCommand string `toml:"harness_feedback_command,omitempty"`
+	HarnessFeedbackFile    string `toml:"harness_feedback_file,omitempty"`
 }
 
 const (
@@ -335,6 +343,12 @@ func decodeConfig(name, data string) (Config, error) {
 	}
 	applyConfigDefaults(&cfg)
 	cfg.Roots = normalizeMachineRoots(cfg.Roots)
+	cfg.HarnessFeedbackWebhook = strings.TrimSpace(cfg.HarnessFeedbackWebhook)
+	cfg.HarnessFeedbackCommand = strings.TrimSpace(cfg.HarnessFeedbackCommand)
+	cfg.HarnessFeedbackFile = strings.TrimSpace(cfg.HarnessFeedbackFile)
+	if err := agent.ValidateHarnessFeedbackWebhookURL(cfg.HarnessFeedbackWebhook); err != nil {
+		return cfg, fmt.Errorf("validate harness_feedback_webhook: %w", err)
+	}
 	if cfg.DaemonIdleTimeout < 0 {
 		return cfg, fmt.Errorf("daemon_idle_timeout must not be negative (got %v)", cfg.DaemonIdleTimeout)
 	}

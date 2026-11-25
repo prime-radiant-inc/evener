@@ -48,6 +48,7 @@ func TestRestoredDelegateChildConfigMatchesFreshChild(t *testing.T) {
 			}
 			memoryRoot := t.TempDir()
 			project := identifier.Project{ID: "proj-differential", CanonicalPath: workspace}
+			feedbackCfg := HarnessFeedbackConfig{FilePath: filepath.Join(t.TempDir(), "feedback.jsonl")}
 			adapter := newFakeAdapter("openai", func(llm.Request) llm.Response { return agenttest.FinalResponse("child done") })
 			client := llm.NewClient()
 			client.Register(adapter)
@@ -59,6 +60,7 @@ func TestRestoredDelegateChildConfigMatchesFreshChild(t *testing.T) {
 				ForceRealIO:             true,
 				MemoryStateRoot:         memoryRoot,
 				MemoryProjectID:         "memory-project-differential",
+				HarnessFeedback:         feedbackCfg,
 				Project:                 project,
 				AgentsDocPath:           agentsDoc,
 				TurnEndsProcess:         true,
@@ -100,6 +102,7 @@ func TestRestoredDelegateChildConfigMatchesFreshChild(t *testing.T) {
 				StateDir:        stateDir,
 				ForceRealIO:     true,
 				MemoryStateRoot: memoryRoot,
+				HarnessFeedback: feedbackCfg,
 				Project:         project,
 				AgentsDocPath:   agentsDoc,
 				TurnEndsProcess: true,

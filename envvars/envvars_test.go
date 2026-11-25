@@ -22,3 +22,22 @@ func TestGoogleVertexExpressVariablesAreRetired(t *testing.T) {
 		t.Fatalf("GOOGLE_VERTEX_EXPRESS_BASE_URL must be retired, still found %+v", v)
 	}
 }
+
+func TestHarnessFeedbackVariablesAreRegistered(t *testing.T) {
+	for _, tc := range []struct {
+		v      Var
+		name   string
+		secret bool
+	}{
+		{EVENERHarnessFeedbackWebhook, "EVENER_HARNESS_FEEDBACK_WEBHOOK", true},
+		{EVENERHarnessFeedbackCommand, "EVENER_HARNESS_FEEDBACK_COMMAND", false},
+		{EVENERHarnessFeedbackFile, "EVENER_HARNESS_FEEDBACK_FILE", false},
+	} {
+		if tc.v.Name != tc.name || tc.v.Visibility != Public || tc.v.Secret != tc.secret {
+			t.Fatalf("%+v mismatch: want name=%q visibility=public secret=%v", tc.v, tc.name, tc.secret)
+		}
+		if got, ok := Find(tc.name); !ok || got != tc.v {
+			t.Fatalf("Find(%q) = %+v, %v", tc.name, got, ok)
+		}
+	}
+}

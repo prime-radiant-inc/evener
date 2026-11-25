@@ -62,6 +62,11 @@ type SessionConfig struct {
 	MemoryProjectID string `json:"memory_project_id,omitempty"`
 	DisableMemory   bool   `json:"disable_memory,omitempty"`
 
+	// HarnessFeedback configures optional runtime-only sinks for the
+	// harness_feedback tool. Never persisted in session metadata or
+	// transcripts; re-supplied by the launcher on restore and inherited by delegates.
+	HarnessFeedback HarnessFeedbackConfig `json:"-"`
+
 	// CommitProvenance controls whether the system prompt tells the model to
 	// end commit messages with the Evener provenance trailer. Empty and
 	// "coauthor" enable it; "off" disables it. Persisted with the session.

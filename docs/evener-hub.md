@@ -293,6 +293,9 @@ field is absent.
 | `host_min_free_space_bytes` | 512 MiB | Free space each state root needs before the hub reports itself healthy. |
 | `host_tombstone_retention` | `"168h"` | How long a removed host's tombstone is retained before pruning. |
 | `public_url` | unset | HTTP(S) origin advertised for pairing and browser login; otherwise use the observed browser origin for pairing and the bound listener for startup login. |
+| `harness_feedback_webhook` | unset | HTTP(S) webhook URL (for example a Slack incoming webhook) enabling the `harness_feedback` tool on spawned and resumed daemons. Passed via `EVENER_HARNESS_FEEDBACK_WEBHOOK`, never CLI args or session metadata. |
+| `harness_feedback_command` | unset | Shell command run via `sh -c` receiving `harness_feedback` JSON reports on stdin. Passed via `EVENER_HARNESS_FEEDBACK_COMMAND`. |
+| `harness_feedback_file` | unset | JSONL file path where `harness_feedback` reports are appended. Passed via `EVENER_HARNESS_FEEDBACK_FILE`. |
 
 Write every duration as a TOML string, such as `"30s"` or `"1h"`. A bare integer
 is read by TOML as a nanosecond count, so `spawn_timeout = 30` arms 30ns rather

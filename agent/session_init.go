@@ -817,6 +817,7 @@ type RestoreSessionConfig struct {
 	LifetimeContext context.Context
 	MemoryStateRoot string
 	DisableMemory   bool
+	HarnessFeedback HarnessFeedbackConfig
 	// parentMemoryProjectID is a delegate's binding (spawn names its parent):
 	// the live parent's, replacing whatever the delegate saved.
 	parentMemoryProjectID string
@@ -1022,6 +1023,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	cfg := configFromSnapshot(meta.Config)
 	cfg.MemoryStateRoot = restoreCfg.MemoryStateRoot
 	cfg.DisableMemory = cfg.DisableMemory || restoreCfg.DisableMemory
+	cfg.HarnessFeedback = restoreCfg.HarnessFeedback
 	if restoreCfg.spawn.parentSessionID != "" {
 		cfg.MemoryProjectID = restoreCfg.parentMemoryProjectID
 	} else if cfg.MemoryProjectID == "" && cfg.MemoryStateRoot != "" && !cfg.DisableMemory && !meta.IsSubagent {

@@ -1,10 +1,13 @@
 package main
 
 import (
+	"cmp"
 	"flag"
 	"strconv"
+	"strings"
 
 	"primeradiant.com/evener/agent"
+	"primeradiant.com/evener/envvars"
 )
 
 // launchFlags are the flags `evener` and `evener serve` both take to describe
@@ -49,6 +52,9 @@ type launchFlags struct {
 	sandboxNet                  *string
 	commitProvenance            *string
 	apiLog                      *string
+	harnessFeedbackWebhook      *string
+	harnessFeedbackCommand      *string
+	harnessFeedbackFile         *string
 }
 
 func registerLaunchFlags(fs *flag.FlagSet) *launchFlags {
@@ -92,6 +98,9 @@ func registerLaunchFlags(fs *flag.FlagSet) *launchFlags {
 	flags.sandboxNet = fs.String("sandbox-net", "on", "sandbox network egress `on|off` (default on; only applies with a non-off --sandbox mode)")
 	flags.commitProvenance = fs.String("commit-provenance", "", "record Evener session details in commit messages the model writes: `coauthor` or `off` (default coauthor)")
 	flags.apiLog = fs.String("api-log", "off", "durable API request logging `on|off` (default off; on records every provider request and response to <state-dir>/sessions/<id>.api.jsonl)")
+	flags.harnessFeedbackWebhook = fs.String("harness-feedback-webhook", "", "HTTP(S) webhook `url` for the harness_feedback tool (prefer "+envvars.EVENERHarnessFeedbackWebhook.Name+" for secrets)")
+	flags.harnessFeedbackCommand = fs.String("harness-feedback-command", "", "shell `command` run via sh -c receiving harness_feedback JSON reports on stdin")
+	flags.harnessFeedbackFile = fs.String("harness-feedback-file", "", "JSONL `path` where harness_feedback reports are appended")
 	return flags
 }
 
@@ -105,4 +114,28 @@ func applyMaxSubagentDepth(cfg *agent.SessionConfig, depth int) {
 	case depth > 0:
 		cfg.MaxSubagentDepth = depth
 	}
+}
+
+// harnessFeedbackFlags groups raw CLI flag values for harness_feedback so
+// main, run, and serve pass one struct instead of three parallel strings.
+type harnessFeedbackFlags struct {
+	webhook, command, file string
+}
+
+func (lf *launchFlags) harnessFeedback() harnessFeedbackFlags {
+	return harnessFeedbackFlags{*lf.harnessFeedbackWebhook, *lf.harnessFeedbackCommand, *lf.harnessFeedbackFile}
+}
+
+// resolveHarnessFeedbackConfig resolves the runtime-only harness_feedback sink
+// configuration with CLI flags overriding environment variables.
+func resolveHarnessFeedbackConfig(webhookFlag, commandFlag, fileFlag string) (agent.HarnessFeedbackConfig, error) {
+	webhook := cmp.Or(strings.TrimSpace(webhookFlag), envvars.EVENERHarnessFeedbackWebhook.Trimmed())
+	if err := agent.ValidateHarnessFeedbackWebhookURL(webhook); err != nil {
+		return agent.HarnessFeedbackConfig{}, err
+	}
+	return agent.HarnessFeedbackConfig{
+		WebhookURL: webhook,
+		Command:    cmp.Or(strings.TrimSpace(commandFlag), envvars.EVENERHarnessFeedbackCommand.Trimmed()),
+		FilePath:   cmp.Or(strings.TrimSpace(fileFlag), envvars.EVENERHarnessFeedbackFile.Trimmed()),
+	}, nil
 }
