@@ -92,16 +92,37 @@ async function measureOnPage(cdpEndpoint, sharedTabId, vitePort, viewport, expre
       await evaluate(
         send,
         `JSON.stringify((() => {
+      const box = (el, container) => {
+        if (!el || !container?.contains(el)) return null;
+        const r = el.getBoundingClientRect();
+        return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: r.width, height: r.height };
+      };
       const brand = document.querySelector('[data-testid="rail-brand"]');
+      if (window.innerWidth < 768) {
+        const dialog = document.querySelector('[role="dialog"]');
+        const sheetHeader = dialog?.querySelector("header");
+        const titleId = dialog?.getAttribute("aria-labelledby");
+        const title = titleId ? document.getElementById(titleId) : sheetHeader?.querySelector("h2");
+        const settings = sheetHeader?.querySelector('[data-testid="rail-settings"]');
+        const search = sheetHeader?.querySelector('[data-testid="rail-search"]');
+        const close = sheetHeader?.querySelector('[aria-label="Close"]');
+        return {
+          mode: "sheet",
+          hasBrand: brand !== null,
+          containerRight: dialog ? dialog.getBoundingClientRect().right : null,
+          items: [title, settings, search, close].map((el) => box(el, sheetHeader)),
+        };
+      }
       const settings = document.querySelector('[data-testid="rail-settings"]');
       const search = document.querySelector('[data-testid="rail-search"]');
       const hide = brand?.querySelector('[aria-label="Hide sidebar"]');
       const wordmark = document.querySelector('[data-testid="rail-wordmark"]');
-      return [wordmark, settings, search, ...(window.innerWidth > 899 ? [hide] : [])].map(el => {
-        if (!el || !brand?.contains(el)) return null;
-        const r = el.getBoundingClientRect();
-        return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: r.width, height: r.height };
-      });
+      return {
+        mode: "brand",
+        hasBrand: brand !== null,
+        containerRight: null,
+        items: [wordmark, settings, search, ...(window.innerWidth > 899 ? [hide] : [])].map((el) => box(el, brand)),
+      };
     })())`,
       ),
     );
@@ -129,32 +150,38 @@ async function measureOnPage(cdpEndpoint, sharedTabId, vitePort, viewport, expre
     })())`,
       ),
     );
-    for (let i = 0; i < header.length; i++) {
-      const box = header[i];
+    if (header.mode === "sheet" && header.hasBrand) {
+      throw new Error(`rail header at ${viewport.width}px: unexpected rail-brand inside phone drawer`);
+    }
+    const labels =
+      header.mode === "sheet" ? ["title", "Settings", "Search", "Close"] : ["wordmark", "Settings", "Search", "Hide sidebar"];
+    const containerRight = header.mode === "sheet" ? header.containerRight : railBox?.right ?? null;
+    for (let i = 0; i < header.items.length; i++) {
+      const box = header.items[i];
       if (!box || box.width <= 0 || box.height <= 0) {
         throw new Error(
-          `rail header at ${viewport.width}px: missing visible ${["wordmark", "Settings", "Search", "Hide sidebar"][i]}`,
+          `rail header at ${viewport.width}px: missing visible ${labels[i]}`,
         );
       }
       if (box.left < 0 || box.right > viewport.width)
         throw new Error(`rail header escapes ${viewport.width}px viewport`);
       // Per-element, not just the viewport: an item pushed past the rail's edge
       // paints over the workspace beside it.
-      if (railBox && box.right > railBox.right + 0.5) {
+      if (containerRight !== null && box.right > containerRight + 0.5) {
         throw new Error(
-          `rail header at ${viewport.width}px (rail ${railBox.width.toFixed(1)}px, min ${railBox.ariaValueMin}): ` +
-            `${["wordmark", "Settings", "Search", "Hide sidebar"][i]} ends at ${box.right.toFixed(1)}px, ` +
-            `past the rail's ${railBox.right.toFixed(1)}px edge`,
+          `rail header at ${viewport.width}px (rail ${railBox?.width.toFixed(1) ?? "?"}px, min ${railBox?.ariaValueMin ?? null}): ` +
+            `${labels[i]} ends at ${box.right.toFixed(1)}px, ` +
+            `past the ${header.mode === "sheet" ? "drawer" : "rail"}'s ${containerRight.toFixed(1)}px edge`,
         );
       }
       if (i > 0) {
-        const previous = header[i - 1];
+        const previous = header.items[i - 1];
         if (
           previous.right > box.left ||
           Math.abs((previous.top + previous.bottom) / 2 - (box.top + box.bottom) / 2) > 1
         ) {
           throw new Error(
-            `rail header at ${viewport.width}px: wordmark, Settings, Search, Hide sidebar must align on one row in order`,
+            `rail header at ${viewport.width}px: ${labels.slice(0, header.items.length).join(", ")} must align on one row in order`,
           );
         }
       }
