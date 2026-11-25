@@ -1940,16 +1940,25 @@ async function runEntryProductionJourney(driver, harnessUrl) {
   // Let Chrome consume the peer's close frame before offline emulation blocks
   // incoming traffic. Otherwise a native socket can stay CLOSING and the app
   // never observes its loss. Offline then holds the gap until the turn completes.
-  const closedSockets = await evaluate(
+  // The reader's pre-close intent rides the same evaluate, read before the
+  // sockets close; each read guards itself so the close actions survive.
+  const closeEvidence = await evaluate(
     driver.send,
     `(() => {
+       const e = window.backgroundTranscriptEvidence, ref = ${JSON.stringify(SESSION_B)};
+       const read = (name) => { try { return e[name](ref); } catch (error) { return { error: String((error && error.message) || error) }; } };
+       const port = ${SCROLL_PORT_EXPR(SESSION_B)};
+       const scroll = port === null ? null : { scrollTop: port.scrollTop, clientHeight: port.clientHeight, scrollHeight: port.scrollHeight };
+       const readers = read("readerState"), panes = read("panes");
        const open = (window.__backgroundTranscriptSockets ?? []).filter(
          (socket) => socket.readyState === WebSocket.OPEN && new URL(socket.url).pathname === "/rpc",
        );
        for (const socket of open) socket.close(4000, "background transcript guard transport boundary");
-       return open.length;
+       return { closedSockets: open.length, readers, panes, scroll };
      })()`,
-  ).catch(() => -1);
+  ).catch(() => ({ closedSockets: -1, readers: null, panes: null, scroll: null }));
+  const closedSockets = closeEvidence.closedSockets;
+  recordReaderAtClose(driver, closeEvidence);
   const disconnected = await waitForDisconnected(driver);
   await driver.send("Network.emulateNetworkConditions", {
     offline: true,
@@ -2311,6 +2320,23 @@ async function waitForPaneText(driver, ref, marker, timeoutMs, label) {
   return driver.waitPage(paneContainsExpr(ref, [marker]), { timeoutMs, label });
 }
 
+// recordReaderAtClose keeps the reader intent measured just before the sockets
+// close. A passing run's artifact tree is removed by the fixture cleanup, so the
+// Actions step summary is the surviving copy; failures never change the outcome.
+function recordReaderAtClose(driver, evidence) {
+  const readers = Array.isArray(evidence.readers) ? evidence.readers.slice(0, 4) : (evidence.readers ?? null);
+  const record = { at: Date.now(), ref: SESSION_B, closedSockets: evidence.closedSockets, readers,
+    panes: evidence.panes ?? null, scroll: evidence.scroll ?? null };
+  try {
+    writeFileSync(path.join(ARTIFACT_DIR, "reader-at-close.json"), `${JSON.stringify(record, null, 2)}\n`, { mode: 0o600 });
+  } catch (error) { console.log(`reader-at-close artifact unavailable: ${String(error)}`); }
+  try {
+    if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY,
+      `\n\`\`\`json\n${JSON.stringify({ "backgroundtranscriptguard reader-at-close": record })}\n\`\`\`\n`);
+  } catch (error) { console.log(`reader-at-close step summary unavailable: ${String(error)}`); }
+  driver.milestone("reader-at-close", { ref: SESSION_B, closedSockets: record.closedSockets, readers: record.readers });
+}
+
 // captureReconnectFailureSnapshot records what the selected pane's model and DOM
 // hold when the strict gap pane wait times out. Read-only: one evaluate over the
 // existing evidence global and the existing scroll port selector. It reports
@@ -2326,8 +2352,9 @@ async function captureReconnectFailureSnapshot(driver, error) {
        const panePresent = pane !== null, paneGap = (pane?.textContent ?? "").includes(${JSON.stringify(GAP_SENTINEL)});
        const scroll = port === null ? null : { scrollTop: port.scrollTop, clientHeight: port.clientHeight, scrollHeight: port.scrollHeight };
        const route = e.entryRoute(ref), recovery = e.entryRecovery(ref), connection = e.connectionState();
+       const reader = (() => { try { return e.readerState(ref); } catch (readerError) { return { error: String((readerError && readerError.message) || readerError) }; } })();
        if (model === undefined) return { modelPresent: false, modelGap: null, synthetic: [], history: null,
-         olderCursor: null, route, recovery, connection, panePresent, paneGap, scroll };
+         olderCursor: null, route, recovery, connection, reader, panePresent, paneGap, scroll };
        const history = model.history === undefined ? null : {
          bootGeneration: model.history.bootGeneration, epoch: model.history.epoch, length: model.history.length,
          issuedGeneration: model.history.issuedGeneration, appliedGeneration: model.history.appliedGeneration,
@@ -2341,7 +2368,7 @@ async function captureReconnectFailureSnapshot(driver, error) {
            transcriptKey: item.transcriptKey ?? null, transcriptEntryIndex: item.transcriptEntryIndex ?? null, position: item.position ?? null });
        }));
        return { modelPresent: true, modelGap: matches.length > 0, synthetic: matches.slice(0, 10), history,
-         olderCursor: model.olderCursor ?? null, route, recovery, connection, panePresent, paneGap, scroll };
+         olderCursor: model.olderCursor ?? null, route, recovery, connection, reader, panePresent, paneGap, scroll };
      })()`,
   ).catch((snapshotError) => ({ snapshotError: snapshotError instanceof Error ? snapshotError.message : String(snapshotError) }));
   const snapshot = { at, ref: SESSION_B, error: error instanceof Error ? error.message : String(error), observed };
