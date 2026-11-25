@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -35,12 +36,12 @@ func TestRestoreFailureEnvironmentIsSeededWithoutLiveReplay(t *testing.T) {
 	}
 	sess.Close()
 
-	var captured restoredTranscriptCapture
-	restored := restoreQueuePersistTestSessionWith(t, dir, id, RestoreSessionConfig{OnRestoredTranscript: captured.record})
-	if !captured.opened {
-		t.Fatal("restore did not hand over its transcript for projection")
+	restored := restoreQueuePersistTestSession(t, dir, id)
+	onDisk, err := readTranscriptFull(context.Background(), transcriptPath(restored.stateDir, restored.id), "")
+	if err != nil {
+		t.Fatalf("readTranscriptFull: %v", err)
 	}
-	entries := captured.entries
+	entries := onDisk.Entries
 	environments, inputs := 0, 0
 	for _, entry := range entries {
 		switch entry.Turn.Kind {

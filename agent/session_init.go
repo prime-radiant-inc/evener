@@ -908,20 +908,6 @@ type RestoreSessionConfig struct {
 	// never called discovery leaves.
 	StartupMCPProjectEvidence *mcpconfig.LayerEvidence
 
-	// OnRestoredTranscript, when set, receives the transcript this resume
-	// validated: the header (its SessionID already checked against the
-	// session's id), the final decoded entry list after every restore-time
-	// append, and whether a transcript was opened at all (true for a
-	// header-only one). It exists so serve can project its app identity from
-	// the one strict decode restore already did instead of re-reading the
-	// file. The session itself keeps no reference to the entries: a
-	// transcript can decode to more memory than the file holds, and a
-	// restored session -- a delegate child, a one-shot run -- would otherwise
-	// carry it for its whole life. The entries alias the slice restore goes
-	// on to fold for the delegate attention rearm right after the call, so
-	// the receiver must not mutate them.
-	OnRestoredTranscript func(header transcript.Header, entries []transcript.Entry, opened bool)
-
 	// ForceRealIO carries through to the restored Session's SessionConfig.
 	// See SessionConfig.ForceRealIO's own comment (session_config.go) - the
 	// same exported escape valve for a black-box/live test in another
@@ -1114,9 +1100,6 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	var resumeTranscript *transcript.Writer
 	var transcriptEntries []transcript.Entry
 	var restoredTranscriptHeader transcript.Header
-	// opened flag for OnRestoredTranscript; captured at the open so the
-	// refresh below can't flip it.
-	restoredTranscriptOpened := false
 	if cfg.StateDir != "" {
 		tpath := schema.SessionTranscriptPath(cfg.StateDir, meta.ID)
 		var openErr error
@@ -1127,7 +1110,6 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		if resumeTranscript != nil {
 			restoredTranscriptHeader = resumeTranscript.Header()
 		}
-		restoredTranscriptOpened = openErr == nil
 	}
 	// A fork's copied prefix names turns this session's store never reserved;
 	// its own turns are named above them.
@@ -1629,11 +1611,9 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	}
 	s.attachTranscript(tw, transcriptEntries)
 	// refreshFromDisk re-reads the transcript file whenever a restore-time
-	// replay appended turns it did not decode: the retained entry list would
-	// otherwise end at the last pre-append entry, and serve (which projects
-	// exactly this list) would seed its turn snapshot and live-turn-id fence
-	// one turn behind the file. Both refresh triggers share it so there is
-	// one refresh, not two mechanisms.
+	// replay appended turns it did not decode, so later restore steps
+	// (crash closure, skill reconciliation, delegate attention rearm, and
+	// SessionStart TranscriptEntries) see the full file.
 	refreshFromDisk := func(reason string) error {
 		refreshed, err := readTranscriptFull(context.Background(), transcriptPath(s.stateDir, s.id), s.stateDir)
 		if err != nil {
@@ -1643,7 +1623,6 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 			return fmt.Errorf("refresh transcript after %s: header session %q does not match %q", reason, refreshed.Header.SessionID, s.id)
 		}
 		transcriptEntries = refreshed.Entries
-		restoredTranscriptHeader = refreshed.Header
 		return nil
 	}
 	// An execution the crashed process left open ended when it died: record
@@ -1692,19 +1671,15 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// survived but whose admission did not (a metadata save failure or a
 	// crash between the input turn and the obligation persist). It runs over
 	// ALL decoded entries — after the catalog is discovered and the
-	// transcript is attached, before OnRestoredTranscript receives the
+	// transcript is attached, before the delegate attention rearm folds the
 	// final entry list — and never repeats a covered invocation.
 	if s.reconcilePendingSkillSelections(context.Background(), transcriptEntries) && tw != nil {
 		if err := refreshFromDisk("skill selection reconciliation"); err != nil {
 			return nil, err
 		}
 	}
-	// OnRestoredTranscript and the attention rearm both run after every
-	// restore-time transcript append, so serve and the fold see the same
-	// final entry list the file holds.
-	if restoreCfg.OnRestoredTranscript != nil {
-		restoreCfg.OnRestoredTranscript(restoredTranscriptHeader, transcriptEntries, restoredTranscriptOpened)
-	}
+	// Run the attention rearm after every restore-time transcript append so
+	// the fold sees the same final entry list the file holds.
 	if err := s.rearmRootDelegateAttentionFromTranscript(transcriptEntries); err != nil {
 		return nil, fmt.Errorf("rearm root delegate attention: %w", err)
 	}
