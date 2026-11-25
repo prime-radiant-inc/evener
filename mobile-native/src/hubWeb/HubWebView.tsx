@@ -143,11 +143,11 @@ export function HubWebView({ profile, token, initialPath, onPath, onHubMenu, onD
 			</SafeAreaView>
 		);
 	return (
-		<SafeAreaView edges={["left", "right"]} style={{ flex: 1, backgroundColor: palette.canvas }}>
+		<SafeAreaView edges={["top", "left", "right"]} style={{ flex: 1, backgroundColor: palette.canvas }}>
 			{loaded && (!bridgeReady || currentPath.current.startsWith("/thread/")) && (
-				<SafeAreaView edges={["top"]} style={{ alignItems: "flex-end" }}>
+				<View style={{ alignItems: "flex-end" }}>
 					<HeaderButton label="iPhone settings" onPress={onHubMenu} />
-				</SafeAreaView>
+				</View>
 			)}
 			<WebView<unknown>
 				ref={web}
