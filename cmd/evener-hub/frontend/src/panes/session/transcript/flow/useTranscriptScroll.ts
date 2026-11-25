@@ -333,12 +333,6 @@ export function useTranscriptScroll({
   // the same effect pass, before the scroll listener is attached, so no handler
   // can ever read the previous session's geometry.
   const lastScrollGeometryRef = useRef<ScrollMetrics>({ scrollTop: 0, scrollHeight: 0, clientHeight: 0 });
-  const programmaticScrollTopRef = useRef<number | null>(null);
-  const writeProgrammaticScrollTop = useCallback((el: HTMLElement, next: number) => {
-    const before = el.scrollTop;
-    el.scrollTop = next;
-    if (el.scrollTop !== before) programmaticScrollTopRef.current = el.scrollTop;
-  }, []);
   const {
     pointerDraggingRef,
     middleButtonHeldRef,
@@ -362,7 +356,6 @@ export function useTranscriptScroll({
     readerGestureRef,
     readerCallbacksRef,
     lastScrollGeometryRef,
-    programmaticScrollTopRef,
     pendingViewAnchorRef,
     pendingBottomJumpRef,
     pendingInitialEndRef,
@@ -690,12 +683,12 @@ export function useTranscriptScroll({
             scrollHeight: live.scrollHeight,
             clientHeight: live.clientHeight,
           };
-          writeProgrammaticScrollTop(el, Math.max(0, live.scrollHeight - live.clientHeight));
+          el.scrollTop = Math.max(0, live.scrollHeight - live.clientHeight);
         }
       }
     }
     clearPill();
-  }, [listRef, clearPill, measure, cancelOlder, setHeld, writeProgrammaticScrollTop]);
+  }, [listRef, clearPill, measure, cancelOlder, setHeld]);
 
   const captureViewAnchor = useCallback(() => {
     pendingInitialEndRef.current = null;
@@ -725,7 +718,7 @@ export function useTranscriptScroll({
           pendingEndTargetRef.current = true;
           scrollToLastRow(listRef, renderedRowCountRef.current);
           const metrics = measure(el);
-          writeProgrammaticScrollTop(el, Math.max(0, metrics.scrollHeight - metrics.clientHeight));
+          el.scrollTop = Math.max(0, metrics.scrollHeight - metrics.clientHeight);
         }
       }
       const pending = pendingViewAnchorRef.current;
@@ -754,7 +747,7 @@ export function useTranscriptScroll({
         const placesOnce = list?.isMeasurementReady === undefined;
         const inPlace = Math.abs(landing - el.scrollTop) <= LANDING_TOLERANCE_PX;
         if (!inPlace) {
-          writeProgrammaticScrollTop(el, landing);
+          el.scrollTop = landing;
           // An absolute placement replaces the row target the virtualizer is
           // still reconciling, which would otherwise pull back to the row's top.
           list?.scrollToOffset?.(landing);
@@ -779,14 +772,14 @@ export function useTranscriptScroll({
       const restored = pending.target ?? (pending.anchor ? restoreTopAnchor(pending.anchor, positions) : undefined);
       if (!restored) {
         const m = measure(el);
-        writeProgrammaticScrollTop(el, pending.proportion * Math.max(0, m.scrollHeight - m.clientHeight));
+        el.scrollTop = pending.proportion * Math.max(0, m.scrollHeight - m.clientHeight);
         pendingViewAnchorRef.current = null;
         return;
       }
 
       const current = measured.find((position) => position.id === restored.id);
       if (current) {
-        writeProgrammaticScrollTop(el, el.scrollTop + current.offset - restored.offset);
+        el.scrollTop += current.offset - restored.offset;
         pendingViewAnchorRef.current = null;
         return;
       }
@@ -800,7 +793,7 @@ export function useTranscriptScroll({
         listRef.current?.scrollToIndex(restored.index, { align: "start" });
       }
     },
-    [ref, listRef, measure, measureAnchors, measureUnseenLanding, anchorEntries, writeProgrammaticScrollTop],
+    [ref, listRef, measure, measureAnchors, measureUnseenLanding, anchorEntries],
   );
 
   const restoreViewAnchorAfterMeasurement = useCallback(
@@ -850,7 +843,6 @@ export function useTranscriptScroll({
       pendingViewAnchorRef.current = null;
       pendingBottomJumpRef.current = null;
       wheelAwayOffsetRef.current = null;
-      programmaticScrollTopRef.current = null;
       resolvedFailedTurnIdsRef.current = new Set();
       setErrorAnchorIndex(null);
       errorAnchorIndexRef.current = null;
@@ -935,7 +927,6 @@ export function useTranscriptScroll({
       if (!el) return;
       const m = measure(el);
       const jump = pendingBottomJumpRef.current;
-      programmaticScrollTopRef.current = null;
       pendingBottomJumpRef.current = null;
       const jumpLanded =
         jump?.element === el && jump.scrollHeight === m.scrollHeight && jump.clientHeight === m.clientHeight;
@@ -1055,7 +1046,7 @@ export function useTranscriptScroll({
         listRef.current?.scrollToOffset?.(m.scrollTop);
       }
       if (!gestured && wasAtBottomRef.current && contentGrewBelowViewport(previous, m)) {
-        writeProgrammaticScrollTop(el, Math.max(0, m.scrollHeight - m.clientHeight));
+        el.scrollTop = Math.max(0, m.scrollHeight - m.clientHeight);
         return;
       }
       // A measurement write can reach the old sizer's end before it commits.
@@ -1239,10 +1230,9 @@ export function useTranscriptScroll({
         scheduleReanchorRetry();
         return;
       }
-      programmaticScrollTopRef.current = null;
       lastScrollGeometryRef.current = m;
       if (shouldReanchor) {
-        writeProgrammaticScrollTop(el, Math.max(0, m.scrollHeight - m.clientHeight));
+        el.scrollTop = Math.max(0, m.scrollHeight - m.clientHeight);
       }
     }
 
@@ -1355,7 +1345,6 @@ export function useTranscriptScroll({
     endAutoscrollOnFocusLoss,
     forgetGesturesWhenHidden,
     forgetPendingMarker,
-    writeProgrammaticScrollTop,
   ]);
 
   // A mode change commits a different row set into the same VirtualList. This

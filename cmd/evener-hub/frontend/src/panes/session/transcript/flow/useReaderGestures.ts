@@ -18,8 +18,6 @@ export interface UseReaderGesturesOptions {
   }>;
   /** The previous measurement's geometry; a wheel is attributed to the position the reader left. */
   lastScrollGeometryRef: RefObject<ScrollMetrics>;
-  /** Offset written directly by a programmatic scroll while its scroll event is pending, or null. */
-  programmaticScrollTopRef: RefObject<number | null>;
   /** Cleared when the reader takes over: their gesture supersedes these pending requests. */
   pendingViewAnchorRef: RefObject<PendingViewAnchor | null>;
   pendingBottomJumpRef: RefObject<{ element: HTMLElement; scrollHeight: number; clientHeight: number } | null>;
@@ -40,7 +38,6 @@ export function useReaderGestures({
   readerGestureRef,
   readerCallbacksRef,
   lastScrollGeometryRef,
-  programmaticScrollTopRef,
   pendingViewAnchorRef,
   pendingBottomJumpRef,
   pendingInitialEndRef,
@@ -79,7 +76,6 @@ export function useReaderGestures({
     (readerIntent = true, beforeOffset?: number, frames = 1) => {
       const el = listRef.current?.getScrollElement();
       if (readerIntent && el) {
-        programmaticScrollTopRef.current = null;
         pendingViewAnchorRef.current = null;
         pendingBottomJumpRef.current = null;
         readerCallbacksRef.current.onReaderIntent?.();
@@ -276,20 +272,15 @@ export function useReaderGestures({
       const metrics = measure(port);
       const previous = lastScrollGeometryRef.current;
       const direction = event.deltaY > 0 ? 1 : -1;
-      const programmaticAtOffset =
-        programmaticScrollTopRef.current === metrics.scrollTop ||
-        listRef.current?.pendingProgrammaticScrollTop?.() === metrics.scrollTop;
       // A passive wheel handler can run after the compositor has already
       // scrolled the port from a positive offset to 0, before the scroll event
-      // lands. Use the pre-wheel sample for the movement check only when
-      // heights held and no pending programmatic write accounts for that offset.
+      // lands. Use the pre-wheel sample for the movement check when heights held.
       const reachedTopBeforeHandler =
         direction === -1 &&
         metrics.scrollTop <= 0 &&
         previous.scrollTop > 0 &&
         metrics.scrollHeight === previous.scrollHeight &&
-        metrics.clientHeight === previous.clientHeight &&
-        !programmaticAtOffset;
+        metrics.clientHeight === previous.clientHeight;
       if (!verticalInputCanMovePort(port, reachedTopBeforeHandler ? previous : metrics, event.target, direction))
         return;
       // An upward wheel from the end is the reader leaving it, and says so
