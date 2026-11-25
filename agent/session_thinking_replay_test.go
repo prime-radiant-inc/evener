@@ -18,20 +18,24 @@ import (
 	"primeradiant.com/evener/llm/registry"
 )
 
-// TestExpandHistory_OpenAIChat_DropThinkingStripsPriorAndInFlight covers both
+// TestProjectThinkingForTarget_OpenAIChat_StripsPriorAndInFlight covers both
 // halves of the replay: a completed prior turn and the in-flight turn's own
 // earlier round. The in-flight exemption belongs to the N4 provenance rules;
 // the chat drop is a target policy and applies to every replayed message.
-func TestExpandHistory_OpenAIChat_DropThinkingStripsPriorAndInFlight(t *testing.T) {
+func TestProjectThinkingForTarget_OpenAIChat_StripsPriorAndInFlight(t *testing.T) {
 	t.Parallel()
 	turns := []schema.Turn{
 		assistantThinkingTurn("work", "kimi-k2", "kimi-k2"),
 		assistantThinkingTurn("work", "kimi-k2", "kimi-k2"),
 	}
-	out := expandHistory(turns, replayScope{
+	expanded := expandHistory(turns, replayScope{
 		Instance: "work", Model: "kimi-k2", Protocol: registry.ProtocolOpenAIChat,
-		InFlightFrom: 1, DropThinking: true, protocolOf: replayProtocolOf,
+		InFlightFrom: 1, protocolOf: replayProtocolOf,
 	})
+	if !hasContentKind(expanded, llm.ContentThinking) {
+		t.Fatal("test premise: expandHistory must preserve thinking before target projection")
+	}
+	out := projectThinkingForTarget(nonReasoningProfile(t, "tiny-chat"), expanded)
 	if hasContentKind(out, llm.ContentThinking) {
 		t.Fatal("chat target replayed assistant thinking; the wire carries no continuation state in it")
 	}
@@ -39,7 +43,7 @@ func TestExpandHistory_OpenAIChat_DropThinkingStripsPriorAndInFlight(t *testing.
 		t.Fatal("answer text must survive the thinking drop")
 	}
 	if got := len(out); got != len(turns) {
-		t.Fatalf("expanded messages = %d, want %d: the drop must not remove whole turns", got, len(turns))
+		t.Fatalf("projected messages = %d, want %d: the drop must not remove whole turns", got, len(turns))
 	}
 }
 
@@ -96,22 +100,23 @@ func TestSession_ChatTargetRequestCarriesNoReplayedThinking(t *testing.T) {
 	}
 }
 
-// TestExpandHistory_OpenAIChat_DropThinkingKeepsEncryptedDetails pins the
+// TestProjectThinkingForTarget_OpenAIChat_KeepsEncryptedDetails pins the
 // continuation-state exception: an OpenRouter-style reasoning_details array is
-// not the display text #4563 measured. The chat adapter must round-trip it, so
-// the part survives with only its text cleared. (A signature-bearing item that
-// needs the text is the next test's case.)
-func TestExpandHistory_OpenAIChat_DropThinkingKeepsEncryptedDetails(t *testing.T) {
+// not display text. The chat adapter must round-trip it, so the part survives
+// projectThinkingForTarget with only its text cleared. (A signature-bearing
+// item that needs the text is the next test's case.)
+func TestProjectThinkingForTarget_OpenAIChat_KeepsEncryptedDetails(t *testing.T) {
 	t.Parallel()
 	const compat = `[{"type":"reasoning.encrypted","data":"abc"}]`
 	turns := []schema.Turn{{Kind: schema.TurnAssistant, Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
 		{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: "display reasoning", EncryptedContent: compat}},
 		{Kind: llm.ContentText, Text: "answer"},
 	}}}}
-	out := expandHistory(turns, replayScope{
+	expanded := expandHistory(turns, replayScope{
 		Instance: "work", Model: "kimi-k2", Protocol: registry.ProtocolOpenAIChat,
-		InFlightFrom: len(turns), DropThinking: true, protocolOf: replayProtocolOf,
+		InFlightFrom: len(turns), protocolOf: replayProtocolOf,
 	})
+	out := projectThinkingForTarget(nonReasoningProfile(t, "tiny-chat"), expanded)
 	for _, m := range out {
 		for _, p := range m.Content {
 			if p.Kind != llm.ContentThinking {
@@ -129,21 +134,22 @@ func TestExpandHistory_OpenAIChat_DropThinkingKeepsEncryptedDetails(t *testing.T
 	t.Fatal("the encrypted reasoning_details part was dropped; the chat adapter needs it for continuation")
 }
 
-// TestExpandHistory_OpenAIChat_SignatureItemKeepsItsText covers the signed
+// TestProjectThinkingForTarget_OpenAIChat_SignatureItemKeepsItsText covers the signed
 // variant: when the reasoning_details array carries a reasoning.text item with
 // an empty text field, ThinkingData.Text is the text the builder merges into
-// that signed item, so the trim must keep it.
-func TestExpandHistory_OpenAIChat_SignatureItemKeepsItsText(t *testing.T) {
+// that signed item, so projectThinkingForTarget must keep it.
+func TestProjectThinkingForTarget_OpenAIChat_SignatureItemKeepsItsText(t *testing.T) {
 	t.Parallel()
 	const compat = `[{"type":"reasoning.text","text":"","signature":"sig"}]`
 	turns := []schema.Turn{{Kind: schema.TurnAssistant, Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
 		{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: "signed reasoning", EncryptedContent: compat}},
 		{Kind: llm.ContentText, Text: "answer"},
 	}}}}
-	out := expandHistory(turns, replayScope{
+	expanded := expandHistory(turns, replayScope{
 		Instance: "work", Model: "kimi-k2", Protocol: registry.ProtocolOpenAIChat,
-		InFlightFrom: len(turns), DropThinking: true, protocolOf: replayProtocolOf,
+		InFlightFrom: len(turns), protocolOf: replayProtocolOf,
 	})
+	out := projectThinkingForTarget(nonReasoningProfile(t, "tiny-chat"), expanded)
 	for _, m := range out {
 		for _, p := range m.Content {
 			if p.Kind != llm.ContentThinking {
