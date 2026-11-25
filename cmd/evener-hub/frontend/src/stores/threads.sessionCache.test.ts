@@ -680,9 +680,9 @@ describe("ordinary entry transcript route", () => {
   // conversation from the durable record. The repository's display keeps the
   // historical warning overlay but no recorded bodies, so publishing that
   // snapshot as the selected session's conversation paints the warning alone
-  // until the local restore lands (#7683). The notice is anchored inside the
-  // loaded recorded window as well as outside it, so a corrected notice
-  // placement alone cannot make this pass.
+  // until the local restore lands. The notice is anchored inside the loaded
+  // recorded window as well as outside it, so a corrected notice placement
+  // alone cannot make this pass.
   it.each([
     ["in-window", { entry: 1, item: 0 }],
     ["out-of-window", { entry: 40, item: 0 }],
@@ -796,7 +796,7 @@ describe("ordinary entry transcript route", () => {
   // A warning the session generates during the pending warm open is new
   // information, not the pruned publication's historical notice. It must be
   // visible at once while the historical notice stays held, and the restore
-  // then settles both notices beside the recorded body (#7683 review).
+  // then settles both notices beside the recorded body.
   it("publishes a warning generated during the pending warm open while its historical notice stays held", async () => {
     const selected = "local:entry-warm-live-warning";
     const entryDatabase = "entry-warm-live-warning-test";
@@ -929,7 +929,7 @@ describe("ordinary entry transcript route", () => {
   // opening B, then A's own late completion settles. That stale settlement must
   // not drop B's hold over the pruned notice: the next repository publication
   // still owes B's recorded bodies, so the carried warning must stay withheld
-  // until B's own restore supplies them (#7683).
+  // until B's own restore supplies them.
   it("a stale opening settlement keeps the newer opening's carried notice held until its restore", async () => {
     const selected = "local:entry-warm-stale-settle";
     const entryDatabase = "entry-warm-stale-settle-test";
@@ -1057,7 +1057,7 @@ describe("ordinary entry transcript route", () => {
   // Withholding a pruned historical notice during a pending warm reopen must
   // preserve the recorded turn shells (matching pruneBackgroundHistoryBodies),
   // so isDormantTranscript(model.turns) stays false and the mounted reader is
-  // not torn down and captured at scrollTop: 0 (#7683).
+  // not torn down and captured at scrollTop: 0.
   it("a warm reopen's held notice display preserves recorded turn shells so the reader stays mounted", async () => {
     const selected = "local:entry-warm-keep-shells";
     const entryDatabase = "entry-warm-keep-shells-test";
@@ -1183,7 +1183,7 @@ describe("ordinary entry transcript route", () => {
   // settles without republishing (for example a failing recovery re-open after
   // a structured history failure), settling the opening must republish the
   // withheld historical notice while foreground-owned instead of stranding it
-  // hidden (#7683).
+  // hidden.
   it("a settled warm reopen whose local restore fails without republishing restores its withheld historical notice", async () => {
     const selected = "local:entry-warm-restore-fails";
     const entryDatabase = "entry-warm-restore-fails-test";
@@ -1256,6 +1256,86 @@ describe("ordinary entry transcript route", () => {
       setSessionCacheOpenBackstopForTests(10000);
       setSessionCacheStalledOpenForTests(5000);
       threadsStore.getState().releaseThread(selected);
+      await lease.release();
+      await fixture.settled();
+      await settleBackgroundTranscriptsForTests();
+      fixture.dispose();
+      entryCache.close();
+      await deleteIndexedDatabase(entryDatabase);
+    }
+  });
+
+  // Releasing a foreground pane back to background ownership while a pending
+  // warm opening is still withholding historical notices must prune the
+  // repository snapshot rather than the withheld store model so those notices
+  // remain present while held in the background.
+  it("releasing a foreground pane while a warm opening holds notices retains the historical notices in background", async () => {
+    const selected = "local:entry-warm-release-while-held";
+    const entryDatabase = "entry-warm-release-while-held-test";
+    const replyBody = "RECORDED_WARM_RELEASE_BODY";
+    const warningText = "HISTORICAL_RELEASE_WARNING";
+    const entryCache = new SessionEntryCache({ databaseName: entryDatabase });
+    const fixture = observeProductionEntryForTests(entryCache, selected);
+    const fake = connectFakeClient();
+    fake.on("thread/read", (params) => {
+      const recorded = turnFixture("warm-release-recorded", replyBody);
+      const read = readResponse(params.ref ?? selected, {
+        status: { type: "idle" },
+        snapshot: { incarnation: "inc-1", length: 1 },
+        turns: [
+          { ...recorded, items: [{ ...recorded.items[0]!, transcriptKey: "warm-release-recorded-item", version: 1 }] },
+        ],
+        requestGeneration: params.requestGeneration,
+      });
+      read.overlay = [
+        {
+          key: "historical-warning",
+          kind: "notice",
+          anchor: { entry: 1, item: 0 },
+          turnId: "warm-release-recorded",
+          item: { id: "historical-warning", type: "agentMessage", text: warningText },
+        },
+      ];
+      return read;
+    });
+    const lease = acquireBackgroundThread(selected);
+    const releases: Array<() => void> = [];
+    let opening: Promise<unknown> | undefined;
+    try {
+      await lease.ready;
+      await fixture.settled();
+      await settleBackgroundTranscriptsForTests();
+      const pruned = threadsStore.getState().threads.get(selected);
+      expect(pruned?.overlay?.["historical-warning"]).toBeDefined();
+
+      const realGetLatestWindow = entryCache.getLatestWindow.bind(entryCache);
+      entryCache.getLatestWindow = ((h: string, limit: number, boundary?: string) =>
+        new Promise((resolve, reject) => {
+          releases.push(() => {
+            void realGetLatestWindow(h, limit, boundary).then(resolve, reject);
+          });
+        })) as typeof entryCache.getLatestWindow;
+
+      opening = threadsStore.getState().ensureThread(selected);
+      await vi.waitFor(() => expect(releases.length).toBeGreaterThanOrEqual(1));
+      await vi.waitFor(() => expect(isEntryTranscriptLocalOpening(selected)).toBe(true));
+      expect(threadsStore.getState().threads.get(selected)?.overlay?.["historical-warning"]).toBeUndefined();
+
+      threadsStore.getState().releaseThread(selected);
+      expect(isEntryTranscriptLocalOpening(selected)).toBe(false);
+
+      const backgroundAfterRelease = threadsStore.getState().threads.get(selected);
+      expect(backgroundAfterRelease?.overlay?.["historical-warning"]).toBeDefined();
+      expect(
+        backgroundAfterRelease?.turns
+          .flatMap((turn) => turn.items)
+          .some((item) => item.overlayKey === "historical-warning"),
+      ).toBe(true);
+      expect(JSON.stringify(backgroundAfterRelease ?? null)).not.toContain(replyBody);
+    } finally {
+      for (const release of releases.splice(0)) release();
+      threadsStore.getState().releaseThread(selected);
+      await Promise.allSettled([opening]);
       await lease.release();
       await fixture.settled();
       await settleBackgroundTranscriptsForTests();

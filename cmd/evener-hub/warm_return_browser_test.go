@@ -1,7 +1,7 @@
 //go:build browserguard
 
-// TestWarmReturnTranscriptBrowser is the real-Chrome acceptance proof for
-// #7683: a warm tab reopen of a background-warmed session must not publish the
+// TestWarmReturnTranscriptBrowser is the real-Chrome acceptance proof that a
+// warm tab reopen of a background-warmed session never publishes the
 // background lease's pruned notice-only display ahead of the local restore that
 // supplies the recorded bodies.
 //
@@ -19,9 +19,9 @@
 // recorded body, and the hub's AppWire trace. No transcript text, session
 // identifier or screenshot enters a milestone.
 //
-// This is a disjoint new guard: it neither edits nor runs #7684's
-// backgroundtranscriptguard runner, and it registers no shared fixture hunk.
-// The build tag keeps Chrome out of the default suites.
+// This is a disjoint guard: it neither edits nor runs the
+// backgroundtranscriptguard runner, and it registers no shared fixture hunk. The
+// build tag keeps Chrome out of the default suites.
 package hub
 
 import (

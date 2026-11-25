@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// warmreturntranscriptguard — the Chrome proof for #7683: a warm reopen of a
-// background-warmed session must not publish a pruned historical notice
+// warmreturntranscriptguard — Chrome guard verifying that a warm reopen of a
+// background-warmed session does not publish a pruned historical notice
 // display ahead of the local restore that supplies its recorded bodies.
 //
 // It drives the REAL hub web app in Vite development mode in real Chrome

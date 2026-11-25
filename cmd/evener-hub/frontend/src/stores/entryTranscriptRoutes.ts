@@ -1417,13 +1417,15 @@ export function releaseEntryTranscriptReader(ref: string, releaseDisplay = false
   if (heldCountsAtStore(ref)) return;
   const fixture = entryTranscriptRoute(ref);
   if (!fixture || fixture.ref !== ref) return;
+  const hadHeldNotices = heldPrunedNoticeKeys.has(ref);
   clearEntryTranscriptLocalOpening(ref);
   fixture.reader?.dispose();
   fixture.reader = undefined;
   const model = store().getState().threads.get(ref);
-  if (releaseDisplay && model && isEntryTranscriptBackgroundOnly(ref)) {
-    routeHost().putThreadModel(ref, pruneBackgroundHistoryBodies(model));
-  }
+  if (!model || !isEntryTranscriptBackgroundOnly(ref)) return;
+  if (!releaseDisplay && !hadHeldNotices) return;
+  const source = hadHeldNotices && !fixture.clearInert ? (displayedEntryTranscriptSnapshot(fixture) ?? model) : model;
+  routeHost().putThreadModel(ref, pruneBackgroundHistoryBodies(source));
 }
 
 export function retireEntryTranscriptIfUnowned(ref: string): Promise<TranscriptRetirementOutcome> | undefined {
