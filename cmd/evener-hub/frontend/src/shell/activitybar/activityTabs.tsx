@@ -11,6 +11,7 @@ import { AboutTab } from "./AboutTab";
 import { AgentsTab } from "./AgentsTab";
 import styles from "./activitybar.module.css";
 import { JobsTab } from "./JobsTab";
+import { LinksTab } from "./LinksTab";
 import { TasksTab } from "./TasksTab";
 import { WatchesTab } from "./WatchesTab";
 
@@ -52,6 +53,16 @@ export const ACTIVITY_TABS: readonly ActivityTabSpec[] = [
     chipLabel: () => "About",
     chipVisible: () => false,
     Body: AboutTab,
+  },
+  {
+    id: "links",
+    glyph: null,
+    label: "Links",
+    chipCount: () => "",
+    chipLabel: (c) => (c.linksTotal === null ? "Links" : `Links, ${c.linksTotal}`),
+    tabDetail: (c) => (c.linksTotal !== null && c.linksTotal > 0 ? String(c.linksTotal) : "—"),
+    chipVisible: () => false,
+    Body: LinksTab,
   },
   {
     id: "agents",

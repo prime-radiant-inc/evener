@@ -83,7 +83,7 @@ export function ScopeActivityControls({
   const [tab, setTab] = useState<ActivityTab | null>(null);
   return (
     <div className={CLASS.activityControls} data-testid="cascade-activity-controls">
-      {ACTIVITY_TABS.filter((spec) => spec.id !== "about").map((spec) => (
+      {ACTIVITY_TABS.filter((spec) => spec.glyph !== null).map((spec) => (
         <ActivityPeek
           key={spec.id}
           paneId={paneId}

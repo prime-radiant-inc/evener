@@ -1,24 +1,71 @@
+.root {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-block-size: 100%;
+}
+
+.toolbar {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.filterWrap {
+  flex: 1 1 var(--space-9);
+  min-inline-size: 0;
+}
+
+.groups {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.groupHeader {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.groupCount {
+  font-size: var(--font-size-caption);
+  color: var(--ink-low);
+  font-variant-numeric: tabular-nums;
+}
+
 .list {
   list-style: none;
   margin: 0;
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: var(--space-1);
+  gap: var(--space-half);
 }
 
 .webLink,
 .row {
   display: flex;
-  align-items: center;
+  align-items: baseline;
   justify-content: space-between;
   gap: var(--space-2);
   padding: var(--space-1) var(--space-2);
+  margin: 0 calc(var(--space-2) * -1);
   border-radius: var(--radius-control);
   font-family: var(--font-sans);
   font-size: var(--font-size-ui);
   line-height: var(--line-height-ui);
   color: var(--ink-hi);
+  transition: background-color var(--motion-duration-hover) var(--motion-easing-standard);
 }
 
 .webLink {
@@ -26,37 +73,48 @@
   text-decoration: none;
 }
 
-.webLink:hover {
-  background: var(--hover-1);
-}
-
-.webLink:focus-visible {
-  outline: var(--focus-ring);
-  outline-offset: -2px;
-}
-
-.text {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
+.label {
+  color: var(--ink-hi);
   min-inline-size: 0;
   flex: 1 1 auto;
   overflow-wrap: anywhere;
 }
 
-.label {
-  color: var(--ink-hi);
-  overflow-wrap: anywhere;
+.webLink:hover,
+.row:hover {
+  background: var(--hover-1);
 }
 
-/* Always wrap full destinations so long prefixes never hide differing hosts or
- * paths on narrow viewports. */
-.url {
-  color: var(--ink-low);
-  font-size: var(--font-size-caption);
-  overflow-wrap: anywhere;
+.webLink:hover .label,
+.webLink:focus-visible .label {
+  text-decoration: underline;
+  text-underline-offset: var(--space-half);
+}
+
+.webLink:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: calc(var(--space-half) * -1);
 }
 
 .action {
   flex: none;
+}
+
+.destinationBar {
+  position: sticky;
+  bottom: calc(var(--space-3) * -1);
+  margin: auto calc(var(--space-3) * -1) calc(var(--space-3) * -1);
+  padding: var(--space-2) var(--space-3);
+  border-top: 1px solid var(--edge);
+  background: var(--surface-canvas);
+  pointer-events: none;
+}
+
+.destinationText {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-caption);
+  color: var(--ink-mid);
+  overflow-wrap: anywhere;
+  white-space: normal;
 }

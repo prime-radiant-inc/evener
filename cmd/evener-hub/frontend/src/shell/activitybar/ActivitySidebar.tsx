@@ -7,16 +7,7 @@
 // glyphs, and their counts come from the one ACTIVITY_TABS table - the same
 // table the status bar's chips read, so the two surfaces cannot drift.
 
-import {
-  type CSSProperties,
-  type KeyboardEvent as ReactKeyboardEvent,
-  useCallback,
-  useEffect,
-  useId,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { type CSSProperties, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { AnimatePresence, m, spatialExitTransition, spatialTransition } from "../../motion";
 import { ActivityBodyClock } from "../../panes/session/chrome/activityTime";
 import { popAgentCascade } from "../../panes/zoom/actions";
@@ -31,11 +22,11 @@ import {
   usePrefsStore,
 } from "../../stores/prefs";
 import { useSessionActivity, useSubagentCounts } from "../../stores/sessionActivity";
+import { useThreadsStore } from "../../stores/threads";
 import { EntityViewsProvider, sessionEntityViews } from "../../transcriptDisplay/entityViews";
-import { Button, CloseIcon, FocusScope, IconButton } from "../../widgets";
+import { CloseIcon, FocusScope, IconButton, type TabOption, Tabs } from "../../widgets";
 import { DisclosurePersistenceContext } from "../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../widgets/internal/requireClass";
-import { useRovingRadio } from "../../widgets/internal/rovingRadio";
 import { EdgeResizeHandle } from "../EdgeResizeHandle";
 import { ScopeCrumbs } from "../statusbar/ScopeCrumbs";
 import { type ActivityTab, deriveScope } from "../statusbar/statusScope";
@@ -61,25 +52,13 @@ const CLASS = {
   scope: requireClass(styles.scope, "activitybar.module.css", "scope"),
   pending: requireClass(styles.pending, "activitybar.module.css", "pending"),
   head: requireClass(styles.head, "activitybar.module.css", "head"),
-  tablist: requireClass(styles.tablist, "activitybar.module.css", "tablist"),
-  tab: requireClass(styles.tab, "activitybar.module.css", "tab"),
-  tabStack: requireClass(styles.tabStack, "activitybar.module.css", "tabStack"),
-  tabLabel: requireClass(styles.tabLabel, "activitybar.module.css", "tabLabel"),
-  tabDetail: requireClass(styles.tabDetail, "activitybar.module.css", "tabDetail"),
   body: requireClass(styles.body, "activitybar.module.css", "body"),
   focusBody: requireClass(styles.focusBody, "activitybar.module.css", "focusBody"),
 };
 
-interface OverviewTabOption {
-  value: ActivityTab;
-  label: string;
-  detail?: string;
-  accessibleLabel?: string;
-}
-
-// Shared Overview category strip for desktop and mobile: horizontally scrolling
-// underline tabs. Quiet Button is the tab itself; the wrapper span draws only
-// the selected underline so one tab holds one interactive control.
+// AnimatePresence renders the exiting aside from the element captured while
+// `open` was still true, so subscribing inside the child re-arms entry focus
+// when the store closes and reopens during that exit.
 function OverviewTabs({
   value,
   options,
@@ -88,82 +67,23 @@ function OverviewTabs({
   entryFocus,
 }: {
   value: ActivityTab;
-  options: readonly OverviewTabOption[];
+  options: readonly TabOption<ActivityTab>[];
   panelId: string;
   tabDomId(id: ActivityTab): string;
   entryFocus: boolean;
 }) {
-  // AnimatePresence renders the exiting aside from the element captured while
-  // `open` was still true, so subscribing here re-arms entry focus when the
-  // store reopens during that exit.
   const open = useActivitySidebarStore((state) => state.open);
-  const tabRefs = useRef<(HTMLButtonElement | null)[]>([]);
-  const selectedIndex = options.findIndex((option) => option.value === value);
-  function reveal(tab: HTMLButtonElement | null) {
-    tab?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
-  }
-  function choose(index: number) {
-    const option = options[index];
-    if (!option) return;
-    activitySidebarStore.getState().setTab(option.value);
-    const tab = tabRefs.current[index];
-    tab?.focus();
-    reveal(tab ?? null);
-  }
-  const move = useRovingRadio({ items: options, mode: "tablist", onMove: choose });
-  // biome-ignore lint/correctness/useExhaustiveDependencies: selectedIndex is read once when entry focus is armed.
-  useEffect(() => {
-    if (!open || !entryFocus) return;
-    const frame = requestAnimationFrame(() => {
-      const tab = tabRefs.current[selectedIndex];
-      tab?.focus();
-      reveal(tab ?? null);
-    });
-    return () => cancelAnimationFrame(frame);
-  }, [open, entryFocus]);
-  function handleKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
-    // Modifier chords belong to the global dispatcher; claim only bare keys.
-    if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
-    move(event, selectedIndex >= 0 ? selectedIndex : 0);
-  }
   return (
-    <div
-      className={CLASS.tablist}
-      role="tablist"
-      aria-label="Overview kind"
-      aria-orientation="horizontal"
-      onKeyDown={handleKeyDown}
-    >
-      {options.map((option, index) => {
-        const selected = option.value === value;
-        return (
-          <span key={option.value} className={CLASS.tab} data-selected={selected ? "" : undefined}>
-            <Button
-              ref={(node) => {
-                tabRefs.current[index] = node;
-              }}
-              variant="quiet"
-              size="xs"
-              wrap
-              role="tab"
-              id={tabDomId(option.value)}
-              aria-selected={selected}
-              aria-controls={panelId}
-              aria-label={option.accessibleLabel ?? option.label}
-              tabIndex={selected ? 0 : -1}
-              onClick={() => choose(index)}
-            >
-              <span className={CLASS.tabStack}>
-                <span className={CLASS.tabLabel}>{option.label}</span>
-                {option.detail !== undefined && option.detail.trim() !== "" ? (
-                  <span className={CLASS.tabDetail}>{option.detail}</span>
-                ) : null}
-              </span>
-            </Button>
-          </span>
-        );
-      })}
-    </div>
+    <Tabs<ActivityTab>
+      label="Overview kind"
+      value={value}
+      options={options}
+      onChange={(next) => activitySidebarStore.getState().setTab(next)}
+      panelId={panelId}
+      tabDomId={tabDomId}
+      autoFocusSelected={entryFocus && open}
+      focusTrigger={open}
+    />
   );
 }
 
@@ -231,13 +151,16 @@ export function ActivitySidebar({ mobile = false }: { mobile?: boolean }) {
     [open, tab, ref, snapshot],
   );
   const subagents = useSubagentCounts(open ? ref : null);
+  const linksCount = useThreadsStore((state) =>
+    open && ref !== null ? (state.threads.get(ref)?.sessionUrls.length ?? null) : null,
+  );
   // Closed derives nothing: the sidebar is mounted for the whole desktop
   // session, and a location lookup plus recursive walk per polling update
   // duplicates the StatusBar's own derivation for a surface nothing shows.
   // biome-ignore lint/correctness/useExhaustiveDependencies: `resources` is the memo's invalidation key, not a value the memo reads (the store is read imperatively inside)
   const scope = useMemo(() => {
     if (!open || ref === null) return null;
-    const derived = deriveScope(navigationStore.getState(), ref, snapshot, subagents);
+    const derived = deriveScope(navigationStore.getState(), ref, snapshot, subagents, linksCount);
     if (focusedPane?.type !== "sessionZoom" || !derived.ancestryKnown) return derived;
     const params = parseZoomParams(focusedPane.params);
     if (!params) return derived;
@@ -265,7 +188,7 @@ export function ActivitySidebar({ mobile = false }: { mobile?: boolean }) {
     // A held parent column keeps its whole ancestry, whose origin crumb routes
     // to the retained origin pane instead.
     return { ...derived, path: leaf ? path.filter((crumb) => crumb.ref !== originRef) : path };
-  }, [open, resources, ref, snapshot, subagents, focusedPane]);
+  }, [open, resources, ref, snapshot, subagents, linksCount, focusedPane]);
   const Body = scope === null ? null : activityTabSpec(tab).Body;
   const tabOptions =
     scope === null

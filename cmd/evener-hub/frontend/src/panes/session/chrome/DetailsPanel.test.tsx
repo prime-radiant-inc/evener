@@ -1,14 +1,19 @@
 import type { ThreadModel, TurnModel } from "@evener/appwire-client";
 import { effectiveContextStatus, tokenUnitLabel } from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { manifest as navigationManifest } from "@evener/appwire-client/testing/navigation";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, test, vi } from "vitest";
 import { connectionStore, resetConnectionStoreForTests } from "../../../stores/connection";
 import { navigationStore, resetNavigationStoreForTests } from "../../../stores/navigation/store";
+import { resetThreadsStoreForTests } from "../../../stores/threads";
 import { ALL_CAPABILITIES as CAPABILITIES } from "../../../threadTestUtils";
+import { Toast } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import rawMeterStyles from "../../../widgets/meter/meter.module.css";
+import { resetToastStoreForTests } from "../../../widgets/toast/store";
+import { toastKinds } from "../../../widgets/toast/toastTestUtils";
 import { DetailsPanel, DetailsPanelBody } from "./DetailsPanel";
 
 function testModel(overrides: Partial<ThreadModel> = {}): ThreadModel {
@@ -72,6 +77,8 @@ function rowTerm(value: HTMLElement): string | null | undefined {
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+  resetToastStoreForTests();
+  resetThreadsStoreForTests();
   resetNavigationStoreForTests();
   resetConnectionStoreForTests();
 });
@@ -178,9 +185,10 @@ test("a live session's context row shows percent used, used / window, and how mu
   for (const figure of ["42%", "42K", "100K", "58K"]) expect(row.textContent).toContain(figure);
 });
 
-test("the context row carries a meter at the session's pressure", async () => {
+test("the context row carries a circular ring meter at the session's pressure", async () => {
   await openPanel(testModel());
   const meter = screen.getByRole("meter", { name: /Context/ });
+  expect(meter.dataset.variant).toBe("ring");
   expect(meter.getAttribute("aria-valuenow")).toBe("42000");
   expect(meter.getAttribute("aria-valuemax")).toBe("100000");
 });
@@ -449,16 +457,15 @@ test("no created/updated rows when the source did not know the instants", async 
 
 // The legacy panel grouped its rows under titled sections (Session / Usage /
 // Runtime), which is what keeps a dozen rows scannable.
-test("rows are grouped under titled sections", async () => {
+test("rows are grouped into semantic regions", async () => {
   await openPanel(testModel());
-  expect(screen.getByRole("heading", { level: 3, name: "Session" })).toBeTruthy();
-  expect(screen.getByRole("heading", { level: 3, name: "Usage" })).toBeTruthy();
-  expect(screen.getByRole("heading", { level: 3, name: "Location" })).toBeTruthy();
+  expect(screen.getByRole("region", { name: "Session" })).toBeTruthy();
+  expect(screen.getByRole("region", { name: "Usage" })).toBeTruthy();
+  expect(screen.getByRole("region", { name: "Workspace" })).toBeTruthy();
 });
 
-// A section whose every row was omitted for want of data must not leave a bare
-// heading behind.
-test("a section with no rows to show is dropped, heading included", async () => {
+// A section whose every row was omitted for want of data is dropped completely.
+test("a section with no rows to show is dropped", async () => {
   await openPanel(
     testModel({
       status: { type: "ended" },
@@ -469,7 +476,7 @@ test("a section with no rows to show is dropped, heading included", async () => 
       turns: [],
     }),
   );
-  expect(screen.queryByRole("heading", { name: "Usage" })).toBeNull();
+  expect(screen.queryByRole("region", { name: "Usage" })).toBeNull();
 });
 
 // The whole failure this panel is being fixed for: a session with no accounting
@@ -491,7 +498,7 @@ test("a session with no accounting data at all keeps its identity rows and drops
     }),
   );
   expect(screen.getByTestId("session-details-model").textContent).toBeTruthy();
-  expect(screen.queryByRole("heading", { name: "Usage" })).toBeNull();
+  expect(screen.queryByRole("region", { name: "Usage" })).toBeNull();
 });
 
 // An ended session has no live context pressure - work time, tokens, and cost
@@ -512,7 +519,7 @@ test("no host row on a hub whose only host is its own", () => {
   expect(screen.queryByTestId("session-details-host")).toBeNull();
 });
 
-test("a session on a remote host names that host by its manifest label and says it is online", () => {
+test("a session on a remote host names that host by its manifest label without duplicating an online indicator", () => {
   seedHosts([LOCAL_SOURCE, { id: "studio", label: "Studio Mac", kind: "appwire", online: true }]);
   render(
     <DetailsPanelBody
@@ -525,10 +532,100 @@ test("a session on a remote host names that host by its manifest label and says 
     />,
   );
   expect(screen.getByTestId("session-details-host").textContent).toContain("Studio Mac");
-  expect(screen.getByTestId("session-details-host-state").dataset.online).toBe("true");
-  expect(screen.getByTestId("session-details-host-state").dataset.variant).toBe("quiet");
-  expect(screen.getByTestId("session-details-goal-status").dataset.variant).toBe("quiet");
+  expect(screen.queryByTestId("session-details-host-state")).toBeNull();
+  expect(screen.getByTestId("session-details-goal-status").dataset.state).toBe("blocked");
   expect(screen.getByTestId("session-details-state").querySelector('[data-state="working"]')).toBeTruthy();
+});
+
+test("an active goal does not duplicate the session's active status indicator", () => {
+  render(
+    <DetailsPanelBody
+      model={testModel({
+        status: { type: "active" },
+        goal: { objective: "Ship overview", status: "active", iterations: 1 },
+      })}
+      now={0}
+    />,
+  );
+  expect(screen.queryByTestId("session-details-goal-status")).toBeNull();
+  expect(screen.getByTestId("session-details-state").querySelector('[data-state="working"]')).toBeTruthy();
+});
+
+test("goal is inline-editable through goal/set with explicit Save, Clear, Cancel, and error preservation", async () => {
+  const user = userEvent.setup();
+  const fake = new FakeClient();
+  let failNext = false;
+  fake.on("goal/set", () => {
+    if (failNext) throw new Error("daemon offline");
+    return { started: false };
+  });
+  connectionStore.getState().connect(fake);
+
+  const model = testModel({ goal: null });
+  const view = render(
+    <>
+      <DetailsPanelBody model={model} now={0} />
+      <Toast />
+    </>,
+  );
+
+  const field = screen.getByRole("textbox", { name: /goal/i }) as HTMLTextAreaElement;
+  expect(field.value).toBe("");
+  await user.click(field);
+  const setButton = screen.getByRole("button", { name: "Set goal" });
+  expect(setButton.hasAttribute("disabled")).toBe(true);
+
+  await user.type(field, "Ship 6-tab Overview");
+  expect(setButton.hasAttribute("disabled")).toBe(false);
+  await user.click(setButton);
+  expect(fake.calls.filter((call) => call.method === "goal/set").map((call) => call.params)).toEqual([
+    { ref: model.ref, objective: "Ship 6-tab Overview" },
+  ]);
+
+  // Unchanged active goal keeps Save disabled, Escape cancels without calling goal/set,
+  // and Clear sends an empty objective.
+  view.rerender(
+    <>
+      <DetailsPanelBody
+        model={testModel({ goal: { objective: "Ship 6-tab Overview", status: "active", iterations: 1 } })}
+        now={0}
+      />
+      <Toast />
+    </>,
+  );
+  const editField = screen.getByRole("textbox", { name: /goal/i }) as HTMLTextAreaElement;
+  expect(editField.value).toBe("Ship 6-tab Overview");
+  await user.click(editField);
+  expect(screen.getByRole("button", { name: "Save" }).hasAttribute("disabled")).toBe(true);
+  await user.type(editField, " extra");
+  await user.keyboard("{Escape}");
+  expect(fake.calls.filter((call) => call.method === "goal/set")).toHaveLength(1);
+  expect(editField.value).toBe("Ship 6-tab Overview");
+
+  await user.click(editField);
+  await user.click(screen.getByRole("button", { name: "Clear" }));
+  expect(fake.calls.filter((call) => call.method === "goal/set").map((call) => call.params)).toEqual([
+    { ref: model.ref, objective: "Ship 6-tab Overview" },
+    { ref: model.ref, objective: "" },
+  ]);
+
+  // A failing goal/set surfaces an error toast and keeps the editor open with the user's draft intact.
+  failNext = true;
+  await user.click(editField);
+  await user.clear(editField);
+  await user.type(editField, "Keep my unsaved draft");
+  await user.click(screen.getByRole("button", { name: "Save" }));
+  await waitFor(() => expect(toastKinds()).toEqual(["error"]));
+  expect(screen.getByRole("button", { name: "Save" })).toBeTruthy();
+  expect((screen.getByRole("textbox", { name: /goal/i }) as HTMLTextAreaElement).value).toBe("Keep my unsaved draft");
+});
+
+test("working directory and session id each carry a click-to-copy control", () => {
+  render(
+    <DetailsPanelBody model={testModel({ cwd: "/Users/jesse/evener", threadId: "033uaztQj6XPP6eF7pS0OW" })} now={0} />,
+  );
+  expect(screen.getByRole("button", { name: "Copy working directory" })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Copy session ID" })).toBeTruthy();
 });
 
 test("a session whose host has dropped reads offline", () => {
@@ -547,7 +644,7 @@ test("a local session on a hub with other hosts gets a host row too", () => {
   seedHosts([LOCAL_SOURCE, { id: "studio", label: "Studio Mac", kind: "appwire", online: true }]);
   render(<DetailsPanelBody model={testModel()} now={0} />);
   expect(screen.getByTestId("session-details-host").textContent).toContain(LOCAL_SOURCE.label);
-  expect(screen.getByTestId("session-details-host-state").dataset.online).toBe("true");
+  expect(screen.queryByTestId("session-details-host-state")).toBeNull();
 });
 
 test("a host the manifest does not list is named by its id, with no claim about its connection", () => {
@@ -557,46 +654,55 @@ test("a host the manifest does not list is named by its id, with no claim about 
   expect(screen.queryByTestId("session-details-host-state")).toBeNull();
 });
 
-test("the sandbox and network a session was started with each get a row", () => {
+test("the sandbox and network a session was started with sit inside Launch settings", async () => {
+  const user = userEvent.setup();
   render(<DetailsPanelBody model={testModel({ access: { sandbox: "workspace-write", network: false } })} now={0} />);
+  expect(screen.queryByTestId("session-details-sandbox")).toBeNull();
+  await user.click(screen.getByText("Launch settings"));
   const sandbox = screen.getByTestId("session-details-sandbox").textContent;
   const network = screen.getByTestId("session-details-network").textContent;
   cleanup();
   render(<DetailsPanelBody model={testModel({ access: { sandbox: "read-only", network: true } })} now={0} />);
+  await user.click(screen.getByText("Launch settings"));
   expect(sandbox).toBeTruthy();
   expect(screen.getByTestId("session-details-sandbox").textContent).not.toBe(sandbox);
   expect(network).toBeTruthy();
   expect(screen.getByTestId("session-details-network").textContent).not.toBe(network);
 });
 
-test("the plugins a session loaded are listed by name", () => {
+test("the plugins a session loaded are listed by name inside Launch settings", async () => {
+  const user = userEvent.setup();
   render(
     <DetailsPanelBody
       model={testModel({ diagnostics: { plugins: [{ name: "superpowers" }, { name: "go" }] } })}
       now={0}
     />,
   );
+  await user.click(screen.getByText("Launch settings"));
   const text = screen.getByTestId("session-details-plugins").textContent ?? "";
   expect(text).toContain("superpowers");
   expect(text).toContain("go");
 });
 
-test("a session that loaded no plugins says so, and one whose inventory is unknown says nothing", () => {
+test("a session that loaded no plugins says so, and one whose inventory is unknown says nothing", async () => {
+  const user = userEvent.setup();
   render(<DetailsPanelBody model={testModel({ diagnostics: { plugins: [] } })} now={0} />);
+  await user.click(screen.getByText("Launch settings"));
   expect(screen.getByTestId("session-details-plugins").textContent).toBeTruthy();
   cleanup();
   render(<DetailsPanelBody model={testModel({ diagnostics: {} })} now={0} />);
+  expect(screen.queryByText("Launch settings")).toBeNull();
   expect(screen.queryByTestId("session-details-plugins")).toBeNull();
 });
 
-// A daemon that predates access and plugin reporting sends neither; the group
-// they would sit in must not leave a bare heading.
-test("a session that reports neither access nor plugins has no launch group", () => {
+// A daemon that predates access and plugin reporting sends neither; the launch
+// disclosure is omitted rather than rendered empty.
+test("a session that reports neither access nor plugins has no launch disclosure", () => {
   render(<DetailsPanelBody model={testModel()} now={0} />);
-  expect(screen.getAllByRole("heading")).toHaveLength(3);
+  expect(screen.queryByText("Launch settings")).toBeNull();
   cleanup();
   render(<DetailsPanelBody model={testModel({ access: { sandbox: "off", network: true } })} now={0} />);
-  expect(screen.getAllByRole("heading")).toHaveLength(4);
+  expect(screen.getByText("Launch settings")).toBeTruthy();
 });
 
 test("failed tool calls are counted in the usage group once there are any", () => {

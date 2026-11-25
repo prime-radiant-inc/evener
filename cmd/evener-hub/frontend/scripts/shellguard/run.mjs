@@ -1276,8 +1276,8 @@ const LONG_VALUES = [
   "sessionidentifier".repeat(12),
   `feature/${"branchidentifier".repeat(12)}`,
   `/work/${"directorysegment".repeat(12)}/session`,
-  `https://artifacts.example.test/p/${"linksegment".repeat(8)}/final-suffix`,
 ];
+const LONG_LINK_URL = `https://artifacts.example.test/p/${"linksegment".repeat(8)}/final-suffix`;
 
 async function waitForDom(send, expression, label) {
   // Presence predicates can return DOM nodes, which must not cross CDP by value.
@@ -1497,7 +1497,7 @@ async function choosePaneOverview(send, selector, mobile = false, measure = fals
     if (
       !inspection.fits ||
       JSON.stringify(inspection.tabs.map((tab) => tab.label)) !==
-        JSON.stringify(["About", "Agents", "Jobs", "Watches", "Tasks"]) ||
+        JSON.stringify(["About", "Links", "Agents", "Jobs", "Watches", "Tasks"]) ||
       inspection.tabs.some((tab) => !tab.fits) ||
       !inspection.tabs[0]?.selected
     ) {
@@ -1725,7 +1725,7 @@ function assertOverviewTasks(result, viewport) {
 
 function assertOverview(result, viewport, theme) {
   const failures = [];
-  const labels = ["About", "Agents\n100/100", "Jobs\n100/100", "Watches\n100/100", "Tasks\n100/100"];
+  const labels = ["About", "Links\n1", "Agents\n100/100", "Jobs\n100/100", "Watches\n100/100", "Tasks\n100/100"];
   if (result.theme !== theme || result.font !== "xl") failures.push("XL/theme preferences did not apply");
   if (!viewport.mobile && Math.abs(result.sidebar.width - 320) > 1)
     failures.push(`desktop sidebar width ${result.sidebar.width}`);
@@ -1806,7 +1806,7 @@ function assertOverview(result, viewport, theme) {
       value.scrollContainers?.length ||
       !value.textRects?.length
     )
-      failures.push(`unreadable ${["model", "session ID", "branch", "path", "saved link URL"][i]}: ${JSON.stringify(value)}`);
+      failures.push(`unreadable ${["model", "session ID", "branch", "path"][i]}: ${JSON.stringify(value)}`);
   }
   if (viewport.mobile) {
     if (!(result.tapMin >= 44)) failures.push(`missing phone tap floor: ${result.tapMin}`);
@@ -1836,7 +1836,9 @@ async function trustedOverviewFlow(send, viewport, childGesture) {
   for (const [key, code, keyCode, tab] of [
     ["End", "End", 35, "tasks"],
     ["Home", "Home", 36, "about"],
+    ["ArrowRight", "ArrowRight", 39, "links"],
     ["ArrowRight", "ArrowRight", 39, "agents"],
+    ["ArrowLeft", "ArrowLeft", 37, "links"],
     ["ArrowLeft", "ArrowLeft", 37, "about"],
   ]) {
     await pressKey(send, key, code, keyCode);
@@ -1864,6 +1866,44 @@ async function trustedOverviewFlow(send, viewport, childGesture) {
       focus.color === "rgba(0, 0, 0, 0)"
     )
       throw new Error(`${key} has no visible selected-${expectedTabRole} focus: ${JSON.stringify(focus)}`);
+    if (tab === "links" && key === "ArrowRight") {
+      await waitForDom(
+        send,
+        `document.querySelector(${JSON.stringify(`${OVERVIEW} [data-testid^="about-link-"]`)})`,
+        "Links tab rendered saved link",
+      );
+      await evaluate(
+        send,
+        `document.querySelector(${JSON.stringify(`${OVERVIEW} [data-testid^="about-link-"]`)}).focus()`,
+      );
+      await waitForDom(
+        send,
+        `document.querySelector(${JSON.stringify(`${OVERVIEW} [data-testid="session-links-destination"]`)})`,
+        "Links destination bar rendered on focus",
+      );
+      const linkUrlMeasure = await evaluate(
+        send,
+        `(() => {
+          const aside = document.querySelector(${JSON.stringify(OVERVIEW)});
+          const measure = ${fullTextMeasurement.toString()};
+          const bar = aside.querySelector('[data-testid="session-links-destination"] span');
+          const result = measure(bar, ${JSON.stringify(LONG_LINK_URL)});
+          aside.querySelector(${JSON.stringify(OVERVIEW_SELECTED_TAB)}).focus();
+          return result;
+        })()`,
+      );
+      if (
+        !linkUrlMeasure.fullText ||
+        !linkUrlMeasure.selectable ||
+        linkUrlMeasure.inlineOverflow ||
+        linkUrlMeasure.clips?.length ||
+        linkUrlMeasure.unselectable?.length ||
+        linkUrlMeasure.scrollContainers?.length ||
+        !linkUrlMeasure.textRects?.length
+      ) {
+        throw new Error(`unreadable saved link URL on Links tab: ${JSON.stringify(linkUrlMeasure)}`);
+      }
+    }
   }
   await waitForDom(
     send,

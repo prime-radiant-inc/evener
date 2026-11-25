@@ -13,7 +13,7 @@ import { currentSessionRef, presentedPanes, workspaceStore } from "../workspace"
 
 export const ACTIVITY_VIEW_STORAGE_KEY = "evener.activity-sidebar.v1";
 export const ACTIVITY_VIEW_LIMIT = 100;
-const TABS: readonly ActivityTab[] = ["about", "agents", "jobs", "watches", "tasks"];
+const TABS: readonly ActivityTab[] = ["about", "links", "agents", "jobs", "watches", "tasks"];
 let hydrated = false;
 let saveTimer: ReturnType<typeof setTimeout> | undefined;
 const SAVE_DELAY_MS = 400;

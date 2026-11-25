@@ -133,6 +133,8 @@ export { StatusDot, SubagentDot } from "./statusdot";
 export { SteeringGlyph } from "./steeringglyph";
 export type { SwitchProps } from "./switch";
 export { Switch } from "./switch";
+export type { TabOption, TabsProps } from "./tabs";
+export { Tabs } from "./tabs";
 export type { TextareaProps } from "./textarea";
 export { Textarea } from "./textarea";
 export type { TimestampProps } from "./timestamp";

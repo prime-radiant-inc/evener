@@ -1062,18 +1062,25 @@ a store another holder keeps alive takes in no late page for a view that has
 closed. Its retained rows stay, and the next observer reconciles them with a
 fresh walk, as for any retained store.
 
-About is the last sidebar category and has no count or chip. Its
-[adapter](../../cmd/evener-hub/frontend/src/shell/activitybar/AboutTab.tsx)
-holds the shared thread model for the sidebar's explicit public session ref and
-renders the existing details body. That model owner supplies hydration,
-accounting, subscriptions and reconnect recovery. About adds no collection
-demand, lifecycle mutation or cache of its own: a local session's branch row
-resolves at view time through the [shared git-head
+About and Links are the first two Overview categories and carry no footer chip.
+Their adapters
+([`AboutTab.tsx`](../../cmd/evener-hub/frontend/src/shell/activitybar/AboutTab.tsx)
+and
+[`LinksTab.tsx`](../../cmd/evener-hub/frontend/src/shell/activitybar/LinksTab.tsx))
+hold the shared thread model for the sidebar's explicit public session ref,
+rendering the shared details body (with inline-editable Goal when the session
+supports goals) and the dedicated Links view (recency/grouped toggle, inline
+filter, hover-underlined labels, hover/focus destination bar, and Open beside
+for local files). The Links tab count reads any already-tracked thread model
+without starting a read of its own. That model owner supplies hydration,
+accounting, subscriptions and reconnect recovery. About and Links add no
+collection demand or cache of their own: a local session's branch row resolves
+at view time through the [shared git-head
 lookup](../../cmd/evener-hub/frontend/src/shell/gitLocation.ts) the session
 location line rides — for local refs only, suppressed while the wire's own
-gitBranch answers, and failing soft to no row. Its category
-choice uses the same per-session persistence without changing another category's
-disclosure or scroll intent.
+gitBranch answers, and failing soft to no row. Their category choices use the
+same per-session persistence without changing another category's disclosure or
+scroll intent.
 
 The composer names its receiving conversation even when a child or output pane
 has focus. Job rows and output tabs use the job description when present, and
@@ -1193,9 +1200,10 @@ same underline tablist). The menu's
 optional active count sums the subagents running at every depth and the
 session's own running jobs, only when both are known; watches and completed work
 are not part of that number. The sidebar's Jobs, Watches and Tasks tabs use
-session-scoped reads on both viewports, while About uses the shared session
-model and renders saved session links alongside session facts on both desktop
-and mobile. The Agents tab and all Agents counts (the desktop pane's activity
+session-scoped reads on both viewports, while About and Links use the shared
+session model on both desktop and mobile (About rendering the calm five-group
+details body with inline-editable Goal, and Links rendering saved session links
+with recency/grouped organization). The Agents tab and all Agents counts (the desktop pane's activity
 chip, the sidebar's Agents tab label, each cascade scope's Agents chip, the
 Overview action count, and the conversation's liveness line) read the same
 subtree store

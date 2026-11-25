@@ -210,13 +210,26 @@ losing the conversation that made the evidence relevant.
 - **Keep inspection readable at larger text sizes.** Desktop Overview defaults to 320px
   wide and is user-resizable (`280–640px`, clamped against narrow desktop viewports)
   from its left edge using the same edge-resize separator contract as the Sessions rail.
-  Both desktop and mobile use one single-row underline tablist with two-level headings
-  (label on top, count underneath; About stays a single centered label) without wrapping
-  onto multiple rows or shortening labels or counts, scrolling horizontally when larger
-  text sizes or narrow widths exceed the strip. About presents session facts in a compact
-  inline meta table whose model, session ID, branch, paths, and saved link URLs wrap as
-  selectable text. Its body
-  scrolls vertically while the page stays fixed. Phone controls retain the tap floor.
+  Both desktop and mobile use one shared `Tabs` underline tablist with six
+  two-level headings (About, Links, Agents, Jobs, Watches, Tasks: label on top,
+  count underneath; About stays a single centered label) without wrapping onto
+  multiple rows or shortening labels or counts, scrolling horizontally when
+  larger text sizes or narrow widths exceed the strip. Links has its own tab
+  with its inline filter field and Recent / Grouped mode switch on one row,
+  per-link relative timestamps via `ActivityTime` in Recent mode when `addedAt`
+  is set, hover-underlined label rows (with Open beside for local files), and a
+  sticky bottom destination bar (`pointer-events: none`) that reveals the full
+  wrapped URL on hover or keyboard focus instead of stacking multi-line URLs
+  under every row. About presents five pill-free, hairline-divided groups:
+  inline-editable Goal (with a quiet empty row when the session supports goals,
+  explicit Save/Clear/Cancel without blur-save, and zero text shift when
+  converting to edit), Usage (circular ring `Meter` plus a 2×2 metric grid),
+  Workspace (wrapping click-to-copy Directory, Project, Branch, and Host with
+  state shown only when offline), Session (the single `StatusDot` on State,
+  Model with inline reasoning effort, wrapping click-to-copy Session ID, Role,
+  Started, Updated), and a collapsed Launch settings Disclosure. Its body
+  scrolls vertically while the page stays fixed. Phone controls retain the tap
+  floor.
 - **Keep Overview's activity lists on one loading and spacing contract.** Agents,
   Jobs and Watches page automatically at their visible boundary, with a static
   Skeleton rather than a Load more control. Their inactive/completed folds show
@@ -879,6 +892,7 @@ during implementation (noted inline); this table is the one to trust.
 | **ZoomableMedia** | `{label?: string; onOpen(): void; children: ReactNode} & Omit<ButtonHTMLAttributes, "type"\|"onClick"\|"className"\|"aria-label"\|"children"\|"disabled">` | Media that opens a larger view of itself: the whole image or diagram is one block `<button>` with every user-agent control default neutralized, a zoom-in cursor and an inset focus ring (thumbnail tiles clip their overflow). Fills its container's width, and its height when the container has one (a fixed thumbnail tile). `label` becomes `aria-label` ("Zoom image", "View shot.png", "Open diagram fullscreen"); omit it only when the media's own text alternative plus any caption inside already names it (the transcript gallery's thumbnails). The larger view stays the caller's — a single image's `Dialog size="large"`, the gallery's stepping lightbox, the mermaid DiagramViewer — so this owns only the trigger. `forwardRef` + rest-spread (`data-testid`, `data-mermaid-diagram`). Used by ImageThumbnail, DocPane and MermaidDiagram. |
 | **ImageThumbnail** | `{src?; alt?; onOpen?; label?; frameClassName?; imageClassName?; caption?; captionClassName?; captionTestId?; width?; height?; loading?; decoding?; onImageError?; overlay?; placeholder?; frameTestId?; triggerTestId?; fill? (true); radius?}` | One image in a framed tile: the caller's frame class around a `ZoomableMedia` trigger, the `<img>` (optional intrinsic box, lazy-decode hints and an error callback), and an optional caption inside the trigger. Two slots keep caller chrome without copying the markup: `overlay` renders in the frame after the trigger (a remove control, dimensions), and `placeholder` replaces the trigger while the image is not ready. The placeholder keeps the frame and overlay at the same positions, so a focused overlay control is updated rather than remounted across the pending-to-settled transition (kata 39xe). The larger view stays the caller's: pair it with MediaLightbox. Used by the transcript's ImageGallery and the composer's AttachmentTile. |
 | **MediaLightbox** | `{open; onClose; title; src; alt; caption?; captionTestId?; imageTestId?; children?}` | The one-image lightbox: `Dialog size="large"` around the whole image at the shared lightbox size (`widgets/internal/lightbox.module.css`), with an optional caption line and caller-supplied content below the image (a gallery's Previous/Next). The trigger and any stepping between images stay with the caller. |
+| **Tabs** | `{label: string; value: T; options: readonly {value: T; label: string; detail?: string; accessibleLabel?: string}[]; onChange(value: T); panelId?: string; tabDomId?(value: T): string; autoFocusSelected?: boolean; focusTrigger?: unknown}` | Horizontal underline tablist (`role="tablist"` / `role="tab"`, `aria-orientation="horizontal"`) with roving Arrow/Home/End focus (`useRovingRadio`, releasing modifier chords) and optional two-level count details beneath each label. Each tab is one flush rectangular button anchored to the strip's bottom hairline: pointer and touch clicks show only the flat bottom underline with no focus ring, while keyboard focus (`:focus-visible`) paints an inset square focus ring (`outline-offset: -2px`) inside the cell so it never collides with the underline. Enforces the 44px `--tap-min` floor on phones and coarse pointers and scrolls horizontally if zoomed labels exceed the strip. Used by Overview (`ActivitySidebar`). |
 
 **ToolRunGroup is deliberately not a widget.** It lives at
 `src/panes/session/transcript/ToolRunGroup.tsx` with its own stylesheet, not under
@@ -1528,13 +1542,15 @@ and the tablet Sessions board always keep a solid header.
 Below 900px, the session header carries Find in session beside Overview as
 44px icon buttons. Overview opens the shared full-screen activity overlay
 directly for that session, sharing the same horizontally scrolling underline
-tablist (About, Agents, Jobs, Watches, Tasks; never pills) used on desktop and
-meeting the 44px tap floor on touch devices. A newly inspected session opens on
-About; a revisited session keeps its last tab; drilling while open keeps the
-active tab. About renders shared session facts in a compact inline meta table
-(including the current goal with its quiet state chip when set, model, reasoning
-effort, live status indicator, context meter, and local branch) and full
-wrapping saved session links (native links for web URLs, open-beside rows for
+tablist (About, Links, Agents, Jobs, Watches, Tasks; never pills) used on
+desktop and meeting the 44px tap floor on touch devices. A newly inspected
+session opens on About; a revisited session keeps its last tab; drilling while
+open keeps the active tab. About renders shared session facts in five calm,
+pill-free groups (inline-editable Goal with zero text shift, Usage with the
+circular `Meter` ring, Workspace with click-to-copy Directory, Session with one
+`StatusDot` and click-to-copy Session ID, and collapsed Launch settings); saved
+session links live in the dedicated Links tab (Recent or Grouped, filterable,
+hover-underlined labels with hover/focus destination bar and Open beside for
 local files) on both desktop and mobile. Dismissing Overview returns focus to
 the header entry when it still belongs to that session.
 

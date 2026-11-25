@@ -153,6 +153,7 @@ User-initiated geometry: something the user resized, folded or opened changes sh
 place. These are the only places a layout property is animated.
 
 - The composer folding and unfolding (height).
+- The inline Goal editor in Overview → About unfolding and folding its action bar (height, keeping the goal text itself stationary at zero shift while its field border responds on `--motion-duration-hover` and its action row reveals via `bodyReveal`).
 - An expandable bottom sheet growing to full height (height).
 - A zoom column opening, or narrowing into its spine (width).
 - `--motion-duration-spatial`, `--motion-easing-standard`, both directions.
