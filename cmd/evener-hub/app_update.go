@@ -121,14 +121,18 @@ func hubUpdateCheck(ctx context.Context, params appwire.UpdateCheckParams) (appw
 		return appwire.UpdateCheckResponse{}, err
 	}
 	resp := appwire.UpdateCheckResponse{
-		Channel:        channel,
-		BuildChannel:   buildinfo.BuildChannel(),
-		CurrentVersion: buildinfo.Version(),
-		CurrentCommit:  buildinfo.GitSHA,
-		Applicable:     true,
+		Channel:           channel,
+		BuildChannel:      buildinfo.BuildChannel(),
+		CurrentVersion:    buildinfo.Version(),
+		CurrentCommit:     buildinfo.GitSHA,
+		CurrentReleaseTag: buildinfo.ReleaseTag,
+		CurrentBuildTime:  buildinfo.BuildTime,
+		RepoURL:           selfupdate.DefaultRepoURL(),
+		Applicable:        true,
 	}
-	onDiskCommit, onDiskErr := probeLaunchBuild()
+	onDiskCommit, onDiskBuildTime, onDiskErr := probeLaunchBuild()
 	resp.OnDiskCommit = onDiskCommit
+	resp.OnDiskBuildTime = onDiskBuildTime
 	if onDiskErr != nil {
 		resp.OnDiskError = onDiskErr.Error()
 	}
@@ -159,6 +163,10 @@ func hubUpdateCheck(ctx context.Context, params appwire.UpdateCheckParams) (appw
 	}
 	resp.LatestTag = result.LatestTag
 	resp.LatestCommit = result.LatestCommit
+	resp.LatestPublishedAt = result.LatestPublishedAt
+	if result.RepoURL != "" {
+		resp.RepoURL = result.RepoURL
+	}
 	resp.UpdateAvailable = result.UpdateAvailable
 	onDiskCurrent := selfupdate.CommitIsCurrent(result.LatestCommit, commitToken(onDiskCommit))
 	// A local build is not the channel's published build even when both come
@@ -267,18 +275,18 @@ func commitToken(version string) string {
 }
 
 // probeLaunchBuild reads the on-disk build at the recorded launch path. The
-// probe is bounded by probeHubBinary's deadline.
-func probeLaunchBuild() (string, error) {
+// probe is bounded by probeHubBinaryInfo's deadline.
+func probeLaunchBuild() (string, string, error) {
 	if errHubLaunchEntrypoint != nil {
-		return "", errHubLaunchEntrypoint
+		return "", "", errHubLaunchEntrypoint
 	}
 	if hubLaunchEntrypoint == "" {
-		return "", errHubRestartLaunchPath
+		return "", "", errHubRestartLaunchPath
 	}
 	if _, err := regularLaunchTarget(hubLaunchEntrypoint); err != nil {
-		return "", err
+		return "", "", err
 	}
-	return probeHubBinary(hubLaunchEntrypoint)
+	return probeHubBinaryInfo(hubLaunchEntrypoint)
 }
 
 // hubRestartUsable reports whether a restart could be attempted at all.

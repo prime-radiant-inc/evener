@@ -1,58 +1,87 @@
 .root {
-  composes: stack4 from "../../../styles/surface.module.css";
+  composes: stack3 from "../../../styles/surface.module.css";
 }
 
-.meta {
-  composes: helpUi from "../../../styles/help.module.css";
+.header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2) var(--space-3);
 }
 
-/* Responsive horizontal scroll so the table doesn't overflow the pane on
-   narrow viewports — mirrors the existing responsive overflow convention. */
-.tableWrapper {
-  overflow-x: auto;
-  width: 100%;
+.titleGroup {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
 }
 
-.table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: var(--font-size-ui);
-}
-
-.table th,
-.table td {
-  padding: var(--space-2) var(--space-3);
-  text-align: left;
-  vertical-align: top;
-  border-bottom: 1px solid var(--edge);
-}
-
-.table th {
-  font-weight: var(--font-weight-semibold);
-  color: var(--ink-mid);
+.timeout {
+  color: var(--ink-low);
+  font-size: var(--font-size-caption);
+  font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
 
-.actions {
+.list {
+  composes: listReset from "../../../styles/surface.module.css";
+  /* biome-ignore lint/suspicious/noDuplicateProperties: css-modules composes takes one declaration per composed class */
+  composes: stack2 from "../../../styles/surface.module.css";
+  transition: opacity var(--motion-duration-hover) var(--motion-easing-standard);
+}
+
+.listRestarting {
+  opacity: 0.6;
+}
+
+.sheetBody {
+  composes: stack4 from "../../../styles/surface.module.css";
+}
+
+.statusRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.blockerBox {
   composes: stack1 from "../../../styles/surface.module.css";
-  align-items: flex-start;
+  padding: var(--space-3);
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-control);
+  background: var(--surface-inset);
 }
 
-.blockers {
-  font-size: var(--font-size-ui);
+.blockerHeading {
   color: var(--ink-mid);
-  margin-top: var(--space-1);
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-medium);
 }
 
-.phase {
-  font-size: var(--font-size-ui);
+.blockerItem {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-caption);
+  color: var(--ink-hi);
+  overflow-wrap: anywhere;
 }
 
-.compatibility {
-  color: var(--ink-mid);
+.sheetFooter {
+  composes: stack2 from "../../../styles/surface.module.css";
+  width: 100%;
 }
 
-.archived {
-  font-size: var(--font-size-ui);
-  color: var(--ink-mid);
+.sheetFooterActions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  width: 100%;
+}
+
+.sheetFooterNote {
+  margin: 0;
+  color: var(--ink-low);
+  font-size: var(--font-size-caption);
 }

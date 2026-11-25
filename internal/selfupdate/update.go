@@ -22,6 +22,10 @@ import (
 
 const defaultRepoURL = "https://github.com/prime-radiant-inc/evener"
 
+// DefaultRepoURL returns the default GitHub repository URL used for update
+// checks and user-facing release/commit links.
+func DefaultRepoURL() string { return defaultRepoURL }
+
 // defaultUpgradeTimeout bounds the whole release-archive download when the
 // caller passes no HTTP client. Archives are ~40MB; a stalled connection
 // must fail instead of holding the hub's hubUpdateMu forever. A var so

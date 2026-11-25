@@ -120,12 +120,14 @@ list must not be read as a complete inventory of OS processes. Archived and
 incompatible rows remain visible with explicitly unknown status and
 `CanRetire:false`.
 
-Rows show the root reference/name, PID, start time, reported protocol and
-compatibility, archive status, effective timeout, retirement phase/deadline and
-blocker categories. Tokens and raw process environments are never exposed, and
-there is no arbitrary-PID targeting: an action addresses a rendered identity and
-rechecks it, so a changed or reused PID refuses the stale target instead of
-stopping a replacement.
+Rows show status, name, exceptional state chips (archived, incompatible, stale
+probe, retiring), PID, uptime, and live retirement or blocker summary. Clicking
+any row opens a detail sheet with the full root reference, start timestamp,
+reported protocol and compatibility, effective timeout, retirement phase and
+deadline, and exact blocker identifiers. Tokens and raw process environments
+are never exposed, and there is no arbitrary-PID targeting: an action addresses
+a rendered identity and rechecks it, so a changed or reused PID refuses the
+stale target instead of stopping a replacement.
 
 Controls:
 
@@ -159,8 +161,9 @@ Controls:
   the explicit **Resume** requirement — a force-stopped session does not resume
   automatically; the next action must be an explicit resume.
 - **Refresh/retry** follows the existing UI patterns. Polling runs only while
-  the section is mounted, reuses discovery snapshots, and never counts as
-  activity.
+  the section is mounted and pauses during an in-progress hub restart; refresh
+  and action errors surface as system toasts rather than inline error blocks.
+  Polls reuse discovery snapshots and never count as activity.
 
 ## Failures an operator should report
 

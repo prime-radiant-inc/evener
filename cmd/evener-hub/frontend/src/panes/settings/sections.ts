@@ -79,7 +79,7 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
   { id: "mobile", searchTerms: ["pairing", "phone", "device", "mobile"], label: "Devices", cluster: "system" },
   {
     id: "hub",
-    searchTerms: ["runtime", "listen", "token", "workers"],
+    searchTerms: ["updates", "restart", "daemons", "workers"],
     label: "Hub",
     cluster: "system",
   },
