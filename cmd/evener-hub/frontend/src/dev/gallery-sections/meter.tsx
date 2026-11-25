@@ -19,6 +19,10 @@ function ToneRow({ tone, label }: { tone: MeterTone; label: string }) {
       <div className={styles.track}>
         <Meter label={label} value={65} max={100} tone={tone} />
       </div>
+      <Meter label={`${label} ring`} value={65} max={100} tone={tone} variant="ring" />
+      <span className={styles.ringPill}>
+        <Meter label={`${label} pill ring`} value={65} max={100} tone={tone} variant="ring" />
+      </span>
     </div>
   );
 }
@@ -29,6 +33,16 @@ export default function MeterGallerySection() {
       {SAMPLES.map(({ tone, label }) => (
         <ToneRow key={tone} tone={tone} label={label} />
       ))}
+      <div className={styles.row}>
+        <p className={styles.rowLabel}>0% empty</p>
+        <div className={styles.track}>
+          <Meter label="Empty bar" value={0} max={100} />
+        </div>
+        <Meter label="Empty ring" value={0} max={100} variant="ring" />
+        <span className={styles.ringPill}>
+          <Meter label="Empty pill ring" value={0} max={100} variant="ring" />
+        </span>
+      </div>
     </GallerySection>
   );
 }

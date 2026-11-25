@@ -802,6 +802,31 @@ test("Meter track sinks into --field, distinct from both surfaces in both themes
   }
 });
 
+test("Meter ringTrack uses --edge, distinct from --field and --surface-1 in both themes", () => {
+  expect(METER_STYLESHEET).toBeDefined();
+  if (!METER_STYLESHEET) return;
+  expect(declarationInRule(METER_STYLESHEET, "ringTrack", "stroke")).toBe("var(--edge)");
+  const themes = [
+    { name: "dark", block: extractBlock(TOKENS_CSS, /(?:^|\n):root(?:\s*,\s*\[data-theme="dark"\])?\s*\{/) },
+    { name: "light", block: extractBlock(TOKENS_CSS, /\[data-theme="light"\][^{]*\{/) },
+  ];
+  for (const theme of themes) {
+    const edge = declaredToken(theme.block, "--edge");
+    const field = declaredToken(theme.block, "--field");
+    const surface1 = declaredToken(theme.block, "--surface-1");
+    expect([edge, field, surface1], `${theme.name} theme declares ring track contrast tokens`).not.toContain(undefined);
+    if (!edge || !field || !surface1) continue;
+    const edgeRgb = parseHexColor(edge);
+    expect(contrastRatio(edgeRgb, parseHexColor(field)), `${theme.name} ringTrack vs field`).toBeGreaterThanOrEqual(
+      1.15,
+    );
+    expect(
+      contrastRatio(edgeRgb, parseHexColor(surface1)),
+      `${theme.name} ringTrack vs surface-1`,
+    ).toBeGreaterThanOrEqual(1.15);
+  }
+});
+
 test("tokens.css dark and light blocks declare the same color token names", () => {
   const darkBlock = extractBlock(TOKENS_CSS, /(?:^|\n):root(?:\s*,\s*\[data-theme="dark"\])?\s*\{/);
   const lightBlock = extractBlock(TOKENS_CSS, /\[data-theme="light"\][^{]*\{/);

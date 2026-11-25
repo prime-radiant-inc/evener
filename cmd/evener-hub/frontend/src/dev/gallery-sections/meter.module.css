@@ -1,14 +1,23 @@
 .row {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: var(--space-3);
 }
 
 .rowLabel {
   composes: rowLabel from "../gallery-section.module.css";
-  width: 60px;
+  width: 72px;
 }
 
 .track {
   width: 160px;
+}
+
+.ringPill {
+  display: inline-flex;
+  align-items: center;
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-pill);
+  background: var(--field);
 }
