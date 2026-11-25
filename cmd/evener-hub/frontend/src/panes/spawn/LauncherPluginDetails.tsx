@@ -16,7 +16,7 @@ import { type ReactElement, useRef } from "react";
 import { Switch, useFocusRehome } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { PluginContentsBlock } from "../plugins/PluginContents";
-import { PluginDetail, type PluginMetadataRow } from "../plugins/PluginDetail";
+import { PluginDetail, pluginMetadataRows } from "../plugins/PluginDetail";
 import { pluginDetailBodyId } from "../plugins/pluginRowFocus";
 import styles from "./pluginSelection.module.css";
 import { usePluginComponents } from "./usePluginComponents";
@@ -69,15 +69,11 @@ export function LauncherPluginDetails({
   const focusRoot = useRef<HTMLDivElement>(null);
   useFocusRehome(focusRoot);
 
-  const metaRows: PluginMetadataRow[] = [
-    ...(candidate.version
-      ? [{ kind: "version" as const, label: "Version", value: `v${candidate.version}`, mono: true }]
-      : []),
-    ...(candidate.marketplace !== undefined
-      ? [{ kind: "marketplace" as const, label: "Marketplace", value: candidate.marketplace }]
-      : []),
-    { kind: "source", label: "Source", value: candidate.source, mono: true },
-  ];
+  const metaRows = pluginMetadataRows({
+    version: candidate.version ? `v${candidate.version}` : undefined,
+    marketplace: candidate.marketplace,
+    source: candidate.source,
+  });
 
   // Where the Contents block goes, above the metadata. Only a settled read
   // renders: the block appears when the answer lands, and a failure - the

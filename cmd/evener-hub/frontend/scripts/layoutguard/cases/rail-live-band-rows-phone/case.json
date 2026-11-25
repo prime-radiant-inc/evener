@@ -7,6 +7,7 @@
     "styles/text.module.css",
     "styles/tapfloor.module.css",
     "styles/tokens.css",
+    "styles/surface.module.css",
     "styles/help.module.css",
     "widgets/internal/floatingSurface.module.css",
     "widgets/internal/selectableRow.module.css",

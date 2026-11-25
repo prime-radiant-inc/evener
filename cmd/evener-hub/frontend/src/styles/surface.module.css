@@ -60,6 +60,28 @@
   gap: var(--space-5);
 }
 
+/* The pill geometry Badge and Chip share: caption type on a rounded inline
+ * box. Each widget keeps its own tone map and height. */
+.pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-pill);
+  font-size: var(--font-size-caption);
+}
+
+/* A centered block's explanatory hint: body-size sans copy, no margin, held
+ * to a 40ch reading width. EmptyState and the session loading column share
+ * it. */
+.bodyHint {
+  margin: 0;
+  max-width: 40ch;
+  color: var(--ink-mid);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-body);
+  line-height: var(--line-height-body);
+}
+
 /* The reading measure a settings section keeps its children inside. */
 .sectionMeasure {
   max-width: 720px;

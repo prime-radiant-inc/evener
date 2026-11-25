@@ -6,6 +6,7 @@
     "styles/tapfloor.module.css",
     "styles/text.module.css",
     "styles/tokens.css",
+    "styles/surface.module.css",
     "styles/help.module.css",
     "shell/rail/RailRow.module.css",
     "styles/motion.module.css",

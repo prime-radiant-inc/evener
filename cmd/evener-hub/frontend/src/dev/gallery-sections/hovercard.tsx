@@ -5,6 +5,7 @@ import {
   SUMMARY_ENTITY_JOB,
   summaryEntityView,
 } from "../../panes/session/transcript/entityView.testFixture";
+import { Button } from "../../widgets/button";
 import { HoverCard } from "../../widgets/hovercard";
 import { GallerySection } from "../GallerySection";
 import styles from "./tooltip.module.css";
@@ -27,7 +28,9 @@ function HoverCardDemo() {
       </p>
       <p>
         <HoverCard label={<div>Tests passed in 14 seconds</div>}>
-          <button type="button">job_01HZX7P9</button>
+          <Button variant="quiet" size="sm">
+            job_01HZX7P9
+          </Button>
         </HoverCard>{" "}
         · <EntityRef view={jobDemo} id={SUMMARY_ENTITY_JOB} triggerOnly /> ·{" "}
         <EntityRef view={delegateDemo} id="dlg_gallery_demo" triggerOnly />
@@ -44,9 +47,9 @@ function HoverCardDemo() {
         }}
       >
         <HoverCard label={<div>Shrink-wrapped trigger</div>}>
-          <button type="button" style={{ width: "100%" }}>
+          <Button variant="quiet" size="sm" style={{ width: "100%" }}>
             Shrink-wrapped
-          </button>
+          </Button>
         </HoverCard>
       </div>
       <div
@@ -58,9 +61,9 @@ function HoverCardDemo() {
         }}
       >
         <HoverCard label={<div>Block trigger</div>} block>
-          <button type="button" style={{ width: "100%" }}>
+          <Button variant="quiet" size="sm" block>
             Block fills the row
-          </button>
+          </Button>
         </HoverCard>
       </div>
     </div>

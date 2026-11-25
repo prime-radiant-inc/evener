@@ -81,7 +81,7 @@ const BROWSABLE_PATH_KINDS: Record<string, PathFieldKind> = {
   outputFile: "outputFile",
 };
 
-function browsablePathKind(pathKind: string | undefined): PathFieldKind | undefined {
+export function browsablePathKind(pathKind: string | undefined): PathFieldKind | undefined {
   return BROWSABLE_PATH_KINDS[pathKind ?? ""];
 }
 

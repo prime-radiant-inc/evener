@@ -447,10 +447,10 @@ function LauncherSwitchRow({ plugin }: { plugin: MockPlugin }) {
       label={plugin.name}
       onChange={() => {}}
       description={
-        <span className={psStyles.metadata}>
-          <span className={psStyles.source}>{`installed from ${plugin.marketplace}`}</span>
-          <span className={psStyles.counts}>{countsSummary(plugin.contents)}</span>
-          <span className={psStyles.description}>{plugin.description}</span>
+        <span className={styles.launcherMetadata}>
+          <span className={styles.launcherSource}>{`installed from ${plugin.marketplace}`}</span>
+          <span className={styles.launcherCounts}>{countsSummary(plugin.contents)}</span>
+          <span className={styles.launcherDescription}>{plugin.description}</span>
           <Button variant="link" size="xs" onClick={() => {}}>
             Details
           </Button>
@@ -710,7 +710,7 @@ function LauncherCard({ renderRow }: { renderRow: (plugin: MockPlugin) => ReactN
         </div>
         <div className={psStyles.list}>
           {LAUNCHER.map((p) => (
-            <div className={psStyles.row} key={p.name}>
+            <div className={styles.launcherRow} key={p.name}>
               {renderRow(p)}
             </div>
           ))}

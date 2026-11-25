@@ -40,12 +40,12 @@
 .title {
   composes: truncate from "../../styles/text.module.css";
   margin: 0;
+  color: var(--ink-hi);
   font-family: var(--font-sans);
   font-size: var(--font-size-pane-title);
   font-weight: var(--font-weight-semibold);
   letter-spacing: var(--tracking-display);
   line-height: var(--line-height-title);
-  color: var(--ink-hi);
 }
 
 .body {
