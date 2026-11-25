@@ -118,8 +118,7 @@ export interface ConversationParts {
   cadence: React.ReactNode;
 }
 
-// Diagnostic contract for the backgroundtranscriptguard diagnostic branches.
-// Only that guard document installs the probe, before it imports the app.
+// Diagnostic probe contract; only the backgroundtranscriptguard document installs it.
 type BackgroundTranscriptReaderProbe = { register(read: () => Record<string, unknown>): () => void };
 
 // Whether a workspace view other than `exceptPaneId` still retains `ref` and so
@@ -451,27 +450,24 @@ function LiveConversationBody({
     heldEpoch,
   });
 
-  // Diagnostic only: this mounted conversation's live reader intent and commit.
-  const readerCommit = {
-    ref,
-    paneId: seat.viewFallbackId,
-    viewId: seat.readView?.id ?? seat.viewFallbackId,
-    openingTurnId,
-    openAtRow: openAtRow >= 0 ? openAtRow : null,
-    retainedFollowing: retainedCapture?.followingBottom ?? null,
-    initialViewFollowing: initialViewCapture?.followingBottom ?? null,
-  };
-  const readerRef = useRef({ flow, commit: readerCommit });
-  readerRef.current = { flow, commit: readerCommit };
-  useEffect(() => {
+  // Diagnostic only: committed reader inputs, live intent read at sample time.
+  useLayoutEffect(() => {
     const probe = (window as Window & { backgroundTranscriptReaderProbe?: BackgroundTranscriptReaderProbe })
       .backgroundTranscriptReaderProbe;
     return probe?.register(() => ({
-      ...readerRef.current.commit,
-      followingBottom: readerRef.current.flow.isFollowingBottom(),
-      holdsPlace: readerRef.current.flow.holdsPlace,
+      ref,
+      paneId: seat.viewFallbackId,
+      readViewId: seat.readView?.id ?? null,
+      openingTurnId,
+      openAtRow: openAtRow >= 0 ? openAtRow : null,
+      retainedPresent: retainedCapture !== undefined,
+      retainedFollowing: retainedCapture?.followingBottom ?? null,
+      initialViewPresent: initialViewCapture !== undefined,
+      initialViewFollowing: initialViewCapture?.followingBottom ?? null,
+      followingBottom: flow.isFollowingBottom(),
+      holdsPlace: flow.holdsPlace,
     }));
-  }, []);
+  });
 
   // Find shares the transcript's rows, its scroll owner and its paging owner.
   // The chord reaches only the conversation the keyboard is in, read at keydown.
