@@ -180,26 +180,30 @@ func (h *HubSpawner) ListLaunchModelContractForWorkingDir(ctx context.Context, w
 
 // projectEndpointEnvExclusions names the environment inputs that resolve a
 // configured provider's endpoint, so the checkout-controlled project layer
-// cannot redirect a launch. The names come from the configuration the child
-// actually reads: an explicit selection in its effective environment, otherwise
-// providersConfigPath; the built-in set when that configuration has no user
-// layer. A file that cannot be loaded fails the launch rather than falling back
-// to the hub's registry, which does not describe the child's trusted file. Nil
-// when no registry has loaded yet.
-func (h *HubSpawner) projectEndpointEnvExclusions(providersConfigPath string, noUserLayer bool, resolvedEnv map[string]string) ([]string, error) {
-	if value, ok := resolvedEnv[envvars.EVENERProvidersConfig.Name]; ok {
+// cannot redirect a launch. When the project layer sets no env vars, nothing
+// can be stripped and the scan is skipped. Otherwise the names come from the
+// configuration the child actually reads — using the runtime catalog cache so
+// cache-only bases resolve the same way the hub and child do — without letting
+// the project layer redirect XDG_STATE_HOME or HOME. A syntactically unreadable
+// file fails the launch rather than falling back to the hub's registry.
+func (h *HubSpawner) projectEndpointEnvExclusions(providersConfigPath string, noUserLayer bool, resolved launchconfig.Resolved) ([]string, error) {
+	if len(resolved.Layers[launchconfig.LayerProject].Env) == 0 {
+		return nil, nil
+	}
+	if value, ok := resolved.Effective.Env[envvars.EVENERProvidersConfig.Name]; ok {
 		providersConfigPath = value
 		noUserLayer = value == ""
 	}
+	trustedEnv := trustedLaunchEnvLookup(resolved)
 	if noUserLayer {
-		reg, err := registry.Load(registry.WithNoUserLayer(), registry.WithOffline(true), registry.WithoutCache())
+		reg, err := registry.Load(registry.WithNoUserLayer(), registry.WithOffline(true), registry.WithEnv(trustedEnv))
 		if err != nil {
 			return nil, fmt.Errorf("load built-in provider endpoints: %w", err)
 		}
 		return reg.EndpointEnvNames(), nil
 	}
 	if providersConfigPath != "" {
-		reg, err := registry.Load(registry.WithConfigPath(providersConfigPath), registry.WithOffline(true), registry.WithoutCache())
+		reg, err := registry.Load(registry.WithConfigPath(providersConfigPath), registry.WithOffline(true), registry.WithEnv(trustedEnv))
 		if err != nil {
 			return nil, fmt.Errorf("load child provider configuration: %w", err)
 		}
@@ -213,6 +217,20 @@ func (h *HubSpawner) projectEndpointEnvExclusions(providersConfigPath string, no
 		return nil, nil
 	}
 	return reg.EndpointEnvNames(), nil
+}
+
+// trustedLaunchEnvLookup resolves environment variables from trusted launch
+// layers (per-launch, trusted repo, global) and the hub process environment,
+// excluding the checkout-controlled project layer.
+func trustedLaunchEnvLookup(resolved launchconfig.Resolved) func(string) (string, bool) {
+	return func(key string) (string, bool) {
+		for _, layer := range []launchconfig.LayerName{launchconfig.LayerLaunch, launchconfig.LayerRepo, launchconfig.LayerGlobal} {
+			if v, ok := resolved.Layers[layer].Env[key]; ok {
+				return v, true
+			}
+		}
+		return os.LookupEnv(key)
+	}
 }
 
 func (h *HubSpawner) Spawn(ctx context.Context, req hubcore.SpawnRequest) (_ rendezvous.Entry, spawnErr error) {
@@ -261,7 +279,7 @@ func (h *HubSpawner) Spawn(ctx context.Context, req hubcore.SpawnRequest) (_ ren
 		return rendezvous.Entry{}, err
 	}
 	defer childConfig.cleanupUnowned()
-	projectEnvExclusions, err := h.projectEndpointEnvExclusions(childConfig.path, childConfig.noUserLayer, req.Resolved.Effective.Env)
+	projectEnvExclusions, err := h.projectEndpointEnvExclusions(childConfig.path, childConfig.noUserLayer, req.Resolved)
 	if err != nil {
 		return rendezvous.Entry{}, err
 	}
@@ -328,7 +346,7 @@ func (h *HubSpawner) Resume(ctx context.Context, req hubcore.ResumeRequest) (ren
 		return rendezvous.Entry{}, err
 	}
 	defer childConfig.cleanupUnowned()
-	projectEnvExclusions, err := h.projectEndpointEnvExclusions(childConfig.path, childConfig.noUserLayer, req.Resolved.Effective.Env)
+	projectEnvExclusions, err := h.projectEndpointEnvExclusions(childConfig.path, childConfig.noUserLayer, req.Resolved)
 	if err != nil {
 		return rendezvous.Entry{}, err
 	}
@@ -1018,6 +1036,9 @@ func validateProviderCredentials(provider, model string, reg *hubcore.ProviderRe
 		return nil
 	}
 	r := reg.Get()
+	if err := r.ProviderError(name); err != nil {
+		return wireRefusal(appwire.HubLaunchError, err)
+	}
 	// The launch's model arrives as launchconfig materialized it:
 	// provider-qualified (cmdutil.ModelRef.Qualified()). Strip this
 	// instance's own prefix once, for the refusal message and the judgment

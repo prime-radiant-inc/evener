@@ -1601,6 +1601,29 @@ func TestValidateProviderCredentials_UnknownInstance(t *testing.T) {
 	}
 }
 
+// TestValidateProviderCredentials_BrokenUserProvider surfaces the isolated
+// provider's own load error rather than reporting it as undeclared or letting
+// it fall through to a curated implicit provider of the same name, while a
+// healthy sibling still passes.
+func TestValidateProviderCredentials_BrokenUserProvider(t *testing.T) {
+	reg := newSpawnGateRegistry(t, t.TempDir(), map[string]string{"OPENAI_API_KEY": "sk-openai"}, map[string]registry.Provider{
+		"kimi":   {Base: "not-a-registry-id"},
+		"openai": {Base: "not-a-registry-id"},
+		"work":   {Base: "openai-compatible", Transport: registry.Transport{BaseURL: "http://127.0.0.1:9/v1"}, APIKey: "sk-work"},
+	})
+	for _, broken := range []string{"kimi", "openai"} {
+		err := validateProviderCredentials(broken, broken+"/any-model", reg)
+		assertHubLaunchError(t, err)
+		loadErr, ok := errors.AsType[*registry.ProviderLoadError](err)
+		if !ok || loadErr.Provider != broken {
+			t.Fatalf("validateProviderCredentials(%q) = %v (%T), want *registry.ProviderLoadError for %q", broken, err, err, broken)
+		}
+	}
+	if err := validateProviderCredentials("work", "work/house", reg); err != nil {
+		t.Fatalf("healthy sibling work refused alongside broken providers: %v", err)
+	}
+}
+
 // TestValidateProviderCredentials_NoRegistryOrProviderSkips keeps the gate
 // open where there is nothing to check: no launched instance, or a hub whose
 // registry never loaded.
