@@ -64,7 +64,8 @@
 
 .tab {
   display: inline-flex;
-  flex: none;
+  flex: 1 0 auto;
+  justify-content: center;
   align-items: stretch;
   border-bottom: 2px solid transparent;
 }

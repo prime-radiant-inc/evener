@@ -876,6 +876,8 @@ test("activity tabs keep a named keyboard tablist without a visible heading", as
   );
   expect(activitySidebarStore.getState().tab).toBe("about");
   await act(async () => fireEvent.keyDown(screen.getByRole("tab", { name: "About" }), { key: "ArrowRight" }));
+  expect(activitySidebarStore.getState().tab).toBe("links");
+  await act(async () => fireEvent.keyDown(screen.getByRole("tab", { name: /^Links/ }), { key: "ArrowRight" }));
   expect(activitySidebarStore.getState().tab).toBe("agents");
 });
 
@@ -886,7 +888,7 @@ test("activity tabs stack label over fraction inside a single row and About stay
   mount();
   await screen.findByRole("button", { name: /inspect/ });
   const tabs = screen.getAllByRole("tab");
-  expect(tabs).toHaveLength(5);
+  expect(tabs).toHaveLength(6);
   const stackClass = requireClass(styles.tabStack, "activitybar.module.css", "tabStack");
   for (const tab of tabs.slice(1)) {
     const stack = tab.firstElementChild;
@@ -961,7 +963,7 @@ test("phone Overview enters its selected category and contains sequential keyboa
     expect(screen.queryByRole("radiogroup")).toBeNull();
     const tablist = screen.getByRole("tablist", { name: "Overview kind" });
     const tabs = within(tablist).getAllByRole("tab");
-    expect(tabs).toHaveLength(5);
+    expect(tabs).toHaveLength(6);
     const about = within(tablist).getByRole("tab", { name: "About" });
     const panel = within(sidebar).getByRole("tabpanel");
     expect(panel.getAttribute("aria-labelledby")).toBe(about.id);
@@ -972,6 +974,10 @@ test("phone Overview enters its selected category and contains sequential keyboa
     await act(async () => fireEvent.keyDown(about, { key: "ArrowRight", altKey: true }));
     expect(activitySidebarStore.getState().tab).toBe("about");
     await act(async () => fireEvent.keyDown(about, { key: "ArrowRight" }));
+    expect(activitySidebarStore.getState().tab).toBe("links");
+    await act(async () =>
+      fireEvent.keyDown(within(tablist).getByRole("tab", { name: /^Links/ }), { key: "ArrowRight" }),
+    );
     expect(activitySidebarStore.getState().tab).toBe("agents");
     await act(async () => fireEvent.keyDown(within(tablist).getByRole("tab", { name: /^Agents/ }), { key: "End" }));
     expect(activitySidebarStore.getState().tab).toBe("tasks");

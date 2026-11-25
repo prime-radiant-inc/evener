@@ -526,7 +526,8 @@ test("the phone header pairs Find with Overview opening the tabbed inspector dir
   expect(within(sidebar).getByTestId("session-details-goal-status").textContent).toBe(goal.status);
   expect((await within(sidebar).findByTestId("session-details-branch")).textContent).toContain(branch);
   expect(fake.calls.find((call) => call.method === "evener/git/head")?.params).toEqual({ cwd });
-  const savedLink = within(sidebar).getByTestId("about-link-u1");
+  await user.click(within(sidebar).getByRole("tab", { name: /^Links/ }));
+  const savedLink = await within(sidebar).findByTestId("about-link-u1");
   expect(savedLink.getAttribute("href")).toBe(link);
 
   await user.click(within(sidebar).getByRole("tab", { name: /^Tasks/ }));

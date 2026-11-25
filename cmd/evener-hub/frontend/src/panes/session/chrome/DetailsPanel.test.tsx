@@ -449,16 +449,15 @@ test("no created/updated rows when the source did not know the instants", async 
 
 // The legacy panel grouped its rows under titled sections (Session / Usage /
 // Runtime), which is what keeps a dozen rows scannable.
-test("rows are grouped under titled sections", async () => {
+test("rows are grouped into semantic regions", async () => {
   await openPanel(testModel());
-  expect(screen.getByRole("heading", { level: 3, name: "Session" })).toBeTruthy();
-  expect(screen.getByRole("heading", { level: 3, name: "Usage" })).toBeTruthy();
-  expect(screen.getByRole("heading", { level: 3, name: "Location" })).toBeTruthy();
+  expect(screen.getByRole("region", { name: "Session" })).toBeTruthy();
+  expect(screen.getByRole("region", { name: "Usage" })).toBeTruthy();
+  expect(screen.getByRole("region", { name: "Workspace" })).toBeTruthy();
 });
 
-// A section whose every row was omitted for want of data must not leave a bare
-// heading behind.
-test("a section with no rows to show is dropped, heading included", async () => {
+// A section whose every row was omitted for want of data is dropped completely.
+test("a section with no rows to show is dropped", async () => {
   await openPanel(
     testModel({
       status: { type: "ended" },
@@ -469,7 +468,7 @@ test("a section with no rows to show is dropped, heading included", async () => 
       turns: [],
     }),
   );
-  expect(screen.queryByRole("heading", { name: "Usage" })).toBeNull();
+  expect(screen.queryByRole("region", { name: "Usage" })).toBeNull();
 });
 
 // The whole failure this panel is being fixed for: a session with no accounting
@@ -491,7 +490,7 @@ test("a session with no accounting data at all keeps its identity rows and drops
     }),
   );
   expect(screen.getByTestId("session-details-model").textContent).toBeTruthy();
-  expect(screen.queryByRole("heading", { name: "Usage" })).toBeNull();
+  expect(screen.queryByRole("region", { name: "Usage" })).toBeNull();
 });
 
 // An ended session has no live context pressure - work time, tokens, and cost
@@ -512,7 +511,7 @@ test("no host row on a hub whose only host is its own", () => {
   expect(screen.queryByTestId("session-details-host")).toBeNull();
 });
 
-test("a session on a remote host names that host by its manifest label and says it is online", () => {
+test("a session on a remote host names that host by its manifest label without duplicating an online indicator", () => {
   seedHosts([LOCAL_SOURCE, { id: "studio", label: "Studio Mac", kind: "appwire", online: true }]);
   render(
     <DetailsPanelBody
@@ -525,10 +524,71 @@ test("a session on a remote host names that host by its manifest label and says 
     />,
   );
   expect(screen.getByTestId("session-details-host").textContent).toContain("Studio Mac");
-  expect(screen.getByTestId("session-details-host-state").dataset.online).toBe("true");
-  expect(screen.getByTestId("session-details-host-state").dataset.variant).toBe("quiet");
-  expect(screen.getByTestId("session-details-goal-status").dataset.variant).toBe("quiet");
+  expect(screen.queryByTestId("session-details-host-state")).toBeNull();
+  expect(screen.getByTestId("session-details-goal-status").dataset.state).toBe("blocked");
   expect(screen.getByTestId("session-details-state").querySelector('[data-state="working"]')).toBeTruthy();
+});
+
+test("an active goal does not duplicate the session's active status indicator", () => {
+  render(
+    <DetailsPanelBody
+      model={testModel({
+        status: { type: "active" },
+        goal: { objective: "Ship overview", status: "active", iterations: 1 },
+      })}
+      now={0}
+    />,
+  );
+  expect(screen.queryByTestId("session-details-goal-status")).toBeNull();
+  expect(screen.getByTestId("session-details-state").querySelector('[data-state="working"]')).toBeTruthy();
+});
+
+test("goal is inline-editable with explicit Save, Clear, Cancel, and empty-state prompt when supported", async () => {
+  const user = userEvent.setup();
+  const onSetGoal = vi.fn().mockResolvedValue({ started: false });
+  const view = render(<DetailsPanelBody model={testModel({ goal: null })} now={0} onSetGoal={onSetGoal} />);
+
+  const field = screen.getByRole("textbox", { name: /goal/i }) as HTMLTextAreaElement;
+  expect(field.value).toBe("");
+  await user.click(field);
+  const setButton = screen.getByRole("button", { name: "Set goal" });
+  expect(setButton.hasAttribute("disabled")).toBe(true);
+
+  await user.type(field, "Ship 6-tab Overview");
+  expect(setButton.hasAttribute("disabled")).toBe(false);
+  await user.click(setButton);
+  expect(onSetGoal).toHaveBeenCalledWith("Ship 6-tab Overview");
+
+  // Unchanged active goal keeps Save disabled, Escape cancels without calling onSetGoal,
+  // and Clear sends an empty objective.
+  onSetGoal.mockClear();
+  view.rerender(
+    <DetailsPanelBody
+      model={testModel({ goal: { objective: "Ship 6-tab Overview", status: "active", iterations: 1 } })}
+      now={0}
+      onSetGoal={onSetGoal}
+    />,
+  );
+  const editField = screen.getByRole("textbox", { name: /goal/i }) as HTMLTextAreaElement;
+  expect(editField.value).toBe("Ship 6-tab Overview");
+  await user.click(editField);
+  expect(screen.getByRole("button", { name: "Save" }).hasAttribute("disabled")).toBe(true);
+  await user.type(editField, " extra");
+  await user.keyboard("{Escape}");
+  expect(onSetGoal).not.toHaveBeenCalled();
+  expect(editField.value).toBe("Ship 6-tab Overview");
+
+  await user.click(editField);
+  await user.click(screen.getByRole("button", { name: "Clear" }));
+  expect(onSetGoal).toHaveBeenCalledWith("");
+});
+
+test("working directory and session id each carry a click-to-copy control", () => {
+  render(
+    <DetailsPanelBody model={testModel({ cwd: "/Users/jesse/evener", threadId: "033uaztQj6XPP6eF7pS0OW" })} now={0} />,
+  );
+  expect(screen.getByRole("button", { name: "Copy working directory" })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Copy session ID" })).toBeTruthy();
 });
 
 test("a session whose host has dropped reads offline", () => {
@@ -547,7 +607,7 @@ test("a local session on a hub with other hosts gets a host row too", () => {
   seedHosts([LOCAL_SOURCE, { id: "studio", label: "Studio Mac", kind: "appwire", online: true }]);
   render(<DetailsPanelBody model={testModel()} now={0} />);
   expect(screen.getByTestId("session-details-host").textContent).toContain(LOCAL_SOURCE.label);
-  expect(screen.getByTestId("session-details-host-state").dataset.online).toBe("true");
+  expect(screen.queryByTestId("session-details-host-state")).toBeNull();
 });
 
 test("a host the manifest does not list is named by its id, with no claim about its connection", () => {
@@ -557,46 +617,55 @@ test("a host the manifest does not list is named by its id, with no claim about 
   expect(screen.queryByTestId("session-details-host-state")).toBeNull();
 });
 
-test("the sandbox and network a session was started with each get a row", () => {
+test("the sandbox and network a session was started with sit inside Launch settings", async () => {
+  const user = userEvent.setup();
   render(<DetailsPanelBody model={testModel({ access: { sandbox: "workspace-write", network: false } })} now={0} />);
+  expect(screen.queryByTestId("session-details-sandbox")).toBeNull();
+  await user.click(screen.getByText("Launch settings"));
   const sandbox = screen.getByTestId("session-details-sandbox").textContent;
   const network = screen.getByTestId("session-details-network").textContent;
   cleanup();
   render(<DetailsPanelBody model={testModel({ access: { sandbox: "read-only", network: true } })} now={0} />);
+  await user.click(screen.getByText("Launch settings"));
   expect(sandbox).toBeTruthy();
   expect(screen.getByTestId("session-details-sandbox").textContent).not.toBe(sandbox);
   expect(network).toBeTruthy();
   expect(screen.getByTestId("session-details-network").textContent).not.toBe(network);
 });
 
-test("the plugins a session loaded are listed by name", () => {
+test("the plugins a session loaded are listed by name inside Launch settings", async () => {
+  const user = userEvent.setup();
   render(
     <DetailsPanelBody
       model={testModel({ diagnostics: { plugins: [{ name: "superpowers" }, { name: "go" }] } })}
       now={0}
     />,
   );
+  await user.click(screen.getByText("Launch settings"));
   const text = screen.getByTestId("session-details-plugins").textContent ?? "";
   expect(text).toContain("superpowers");
   expect(text).toContain("go");
 });
 
-test("a session that loaded no plugins says so, and one whose inventory is unknown says nothing", () => {
+test("a session that loaded no plugins says so, and one whose inventory is unknown says nothing", async () => {
+  const user = userEvent.setup();
   render(<DetailsPanelBody model={testModel({ diagnostics: { plugins: [] } })} now={0} />);
+  await user.click(screen.getByText("Launch settings"));
   expect(screen.getByTestId("session-details-plugins").textContent).toBeTruthy();
   cleanup();
   render(<DetailsPanelBody model={testModel({ diagnostics: {} })} now={0} />);
+  expect(screen.queryByText("Launch settings")).toBeNull();
   expect(screen.queryByTestId("session-details-plugins")).toBeNull();
 });
 
-// A daemon that predates access and plugin reporting sends neither; the group
-// they would sit in must not leave a bare heading.
-test("a session that reports neither access nor plugins has no launch group", () => {
+// A daemon that predates access and plugin reporting sends neither; the launch
+// disclosure is omitted rather than rendered empty.
+test("a session that reports neither access nor plugins has no launch disclosure", () => {
   render(<DetailsPanelBody model={testModel()} now={0} />);
-  expect(screen.getAllByRole("heading")).toHaveLength(3);
+  expect(screen.queryByText("Launch settings")).toBeNull();
   cleanup();
   render(<DetailsPanelBody model={testModel({ access: { sandbox: "off", network: true } })} now={0} />);
-  expect(screen.getAllByRole("heading")).toHaveLength(4);
+  expect(screen.getByText("Launch settings")).toBeTruthy();
 });
 
 test("failed tool calls are counted in the usage group once there are any", () => {

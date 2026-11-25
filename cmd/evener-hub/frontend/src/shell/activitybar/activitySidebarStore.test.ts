@@ -39,6 +39,11 @@ test("a newly inspected session defaults to About while revisited and explicit o
   expect(store.getState()).toMatchObject({ open: true, ref: "remote:explicit", tab: "agents" });
   store.getState().openFor("remote:fresh");
   expect(store.getState()).toMatchObject({ open: true, ref: "remote:fresh", tab: "jobs" });
+  store.getState().setTab("links");
+  store.getState().close();
+  resetActivitySidebarStoreForTests({ preserveStorage: true });
+  store.getState().openFor("remote:fresh");
+  expect(store.getState()).toMatchObject({ open: true, ref: "remote:fresh", tab: "links" });
 });
 
 test("About reload preserves another category's view intent", () => {

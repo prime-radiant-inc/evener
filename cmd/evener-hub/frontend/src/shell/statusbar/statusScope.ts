@@ -4,7 +4,7 @@ import type { NavigationSessionSummary, SessionActivitySnapshot, SessionActivity
 import { taskSettledCount } from "@evener/appwire-client";
 import { type NavigationStoreState, selectSessionSummary } from "../../stores/navigation/selectors";
 
-export type ActivityTab = "agents" | "jobs" | "watches" | "tasks" | "about";
+export type ActivityTab = "about" | "links" | "agents" | "jobs" | "watches" | "tasks";
 export interface ScopeCrumb {
   ref: string;
   title: string;

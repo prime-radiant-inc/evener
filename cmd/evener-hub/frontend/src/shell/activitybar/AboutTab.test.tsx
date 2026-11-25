@@ -85,20 +85,9 @@ test("About renders the explicit remote session's hydrated accounting", async ()
   await screen.findByText("about-owner");
   expect(screen.getByTestId("session-details-goal").textContent).toContain("Ship the release notes");
   expect(screen.getByTestId("session-details-goal-status").textContent).toBe("blocked");
-  const webLink = screen.getByTestId("about-link-u-web");
-  expect(webLink.tagName).toBe("A");
-  expect(webLink.getAttribute("href")).toBe("https://example.com/pr/1");
-  expect(webLink.getAttribute("target")).toBe("_blank");
-  expect(webLink.getAttribute("rel")?.split(/\s+/)).toEqual(expect.arrayContaining(["noopener", "noreferrer"]));
-  expect(within(webLink).getByText("https://example.com/pr/1")).toBeTruthy();
-  const fileRow = screen.getByTestId("about-link-u-file");
-  expect(within(fileRow).getByRole("button")).toBeTruthy();
-  const customRow = screen.getByTestId("about-link-u-custom");
-  expect(within(customRow).queryByRole("link")).toBeNull();
-  expect(within(customRow).queryByRole("button")).toBeNull();
-  expect(screen.getByText("anthropic/claude-sonnet")).toBeTruthy();
-  expect(screen.getByText("idle")).toBeTruthy();
-  expect(screen.getByTestId("session-details-context").textContent).toContain("42% used");
+  expect(screen.getByTestId("session-details-model").textContent).toContain("anthropic/claude-sonnet");
+  expect(screen.getByTestId("session-details-state").textContent).toContain("idle");
+  expect(screen.getByTestId("session-details-context").textContent).toContain("42%");
   expect(screen.getByTestId("session-details-context").textContent).toContain("58K left");
   expect(screen.getByTestId("session-details-tokens").textContent).toContain("↑100K");
   expect(screen.getByTestId("session-details-tokens").textContent).toContain("↓20K");
@@ -111,12 +100,39 @@ test("About renders the explicit remote session's hydrated accounting", async ()
   expect(screen.getByTestId("session-details-updated")).toBeTruthy();
   expect(screen.getAllByRole("tab").map((el) => el.firstElementChild?.firstElementChild?.textContent)).toEqual([
     "About",
+    "Links",
     "Agents",
     "Jobs",
     "Watches",
     "Tasks",
   ]);
   expect(screen.getByRole("tab", { name: "About" }).textContent).toBe("About");
+  expect(screen.getByRole("tab", { name: /^Links/ }).textContent).toContain("3");
+  // About no longer buries links beneath metadata; they live on the dedicated Links tab.
+  expect(screen.queryByTestId("about-link-u-web")).toBeNull();
+  fireEvent.click(screen.getByRole("tab", { name: /^Links/ }));
+  const webLink = await screen.findByTestId("about-link-u-web");
+  expect(webLink.tagName).toBe("A");
+  expect(webLink.getAttribute("href")).toBe("https://example.com/pr/1");
+  expect(webLink.getAttribute("target")).toBe("_blank");
+  expect(webLink.getAttribute("rel")?.split(/\s+/)).toEqual(expect.arrayContaining(["noopener", "noreferrer"]));
+  // Label-only at rest (no raw multi-line URL rendered inside the anchor),
+  // with full destination revealed on hover/focus in the verification bar.
+  expect(within(webLink).queryByText("https://example.com/pr/1")).toBeNull();
+  fireEvent.focus(webLink);
+  expect(screen.getByTestId("session-links-destination").textContent).toContain("https://example.com/pr/1");
+  const fileRow = screen.getByTestId("about-link-u-file");
+  expect(within(fileRow).getByRole("button")).toBeTruthy();
+  const customRow = screen.getByTestId("about-link-u-custom");
+  expect(within(customRow).queryByRole("link")).toBeNull();
+  expect(within(customRow).queryByRole("button")).toBeNull();
+  // Mode toggle switches cleanly between Recent and Grouped categories, and filter narrows the list.
+  fireEvent.click(screen.getByRole("radio", { name: "Grouped" }));
+  expect(screen.getByText("Pull Requests")).toBeTruthy();
+  expect(screen.getByText("Local files")).toBeTruthy();
+  fireEvent.change(screen.getByRole("searchbox", { name: "Filter links" }), { target: { value: "Spec" } });
+  expect(screen.queryByTestId("about-link-u-web")).toBeNull();
+  expect(screen.getByTestId("about-link-u-file")).toBeTruthy();
   // The shell's eager catalog warm (stores/commandCatalog) reads
   // evener/command/list on connect; About's own contract is no collection
   // reads, which is what the remaining /list methods would be.
@@ -152,8 +168,8 @@ test("About omits unavailable accounting and empty sections", async () => {
   activitySidebarStore.getState().openWith("about");
   mountSidebar(client);
   await screen.findByText("owner");
-  expect(screen.queryByRole("heading", { name: "Usage" })).toBeNull();
-  expect(screen.queryByRole("heading", { name: "Links" })).toBeNull();
+  expect(screen.queryByRole("region", { name: "Usage" })).toBeNull();
+  expect(screen.queryByTestId("about-link-u-web")).toBeNull();
   // This session runs on another host, which its ref alone establishes, so
   // Location keeps that one row; the directory the read left out stays absent.
   expect(screen.queryByTestId("session-details-cwd")).toBeNull();

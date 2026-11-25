@@ -31,6 +31,7 @@ import {
   usePrefsStore,
 } from "../../stores/prefs";
 import { useSessionActivity, useSubagentCounts } from "../../stores/sessionActivity";
+import { useThreadsStore } from "../../stores/threads";
 import { EntityViewsProvider, sessionEntityViews } from "../../transcriptDisplay/entityViews";
 import { Button, CloseIcon, FocusScope, IconButton } from "../../widgets";
 import { DisclosurePersistenceContext } from "../../widgets/disclosure/disclosureStore";
@@ -231,6 +232,9 @@ export function ActivitySidebar({ mobile = false }: { mobile?: boolean }) {
     [open, tab, ref, snapshot],
   );
   const subagents = useSubagentCounts(open ? ref : null);
+  const linksCount = useThreadsStore((state) =>
+    open && ref !== null ? (state.threads.get(ref)?.sessionUrls.length ?? null) : null,
+  );
   // Closed derives nothing: the sidebar is mounted for the whole desktop
   // session, and a location lookup plus recursive walk per polling update
   // duplicates the StatusBar's own derivation for a surface nothing shows.
@@ -270,12 +274,22 @@ export function ActivitySidebar({ mobile = false }: { mobile?: boolean }) {
   const tabOptions =
     scope === null
       ? []
-      : ACTIVITY_TABS.map((spec) => ({
-          value: spec.id,
-          label: spec.label,
-          detail: spec.tabDetail?.(scope.counts),
-          accessibleLabel: spec.chipLabel(scope.counts),
-        }));
+      : ACTIVITY_TABS.map((spec) => {
+          if (spec.id === "links") {
+            return {
+              value: spec.id,
+              label: spec.label,
+              detail: linksCount !== null && linksCount > 0 ? String(linksCount) : "—",
+              accessibleLabel: linksCount === null ? "Links" : `Links, ${linksCount}`,
+            };
+          }
+          return {
+            value: spec.id,
+            label: spec.label,
+            detail: spec.tabDetail?.(scope.counts),
+            accessibleLabel: spec.chipLabel(scope.counts),
+          };
+        });
   // Resolved once per mount: spatialTransition reads getComputedStyle (a
   // style pass), and the token changes with the theme at most, so paying
   // that read on every render taxes each scope change for nothing.
