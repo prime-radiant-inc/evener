@@ -21,8 +21,7 @@
 }
 
 .channelLabel {
-  color: var(--ink-low);
-  font-size: var(--font-size-caption);
+  composes: helpMuted from "../../../styles/help.module.css";
 }
 
 .ledger {
@@ -58,8 +57,7 @@
 }
 
 .rowDate {
-  color: var(--ink-low);
-  font-size: var(--font-size-caption);
+  composes: helpMuted from "../../../styles/help.module.css";
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
   text-align: right;
@@ -124,8 +122,7 @@
 }
 
 .muted {
-  color: var(--ink-low);
-  font-size: var(--font-size-caption);
+  composes: helpMuted from "../../../styles/help.module.css";
   font-variant-numeric: tabular-nums;
 }
 

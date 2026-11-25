@@ -5,7 +5,7 @@
 
 import type { DaemonBlocker, DaemonIdentity, DaemonResident, DaemonRetireResponse } from "@evener/appwire-client";
 import { friendlyErrorMessage } from "@evener/appwire-client";
-import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { usePaneDocument } from "../../../shell/paneDocument";
 import { useIsMobile } from "../../../shell/useIsMobile";
 import { useVisibleInterval } from "../../../shell/useVisibleInterval";
@@ -32,6 +32,7 @@ import {
 } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import styles from "./hubResidents.module.css";
+import { formatHubStamp } from "./hubStamp";
 
 const POLL_INTERVAL_MS = 2000;
 
@@ -67,18 +68,6 @@ const CLASS = {
 };
 
 const HEADING = `${surfaceStyles.settingsSectionHeading} ${surfaceStyles.settingsSectionHeadingBody}`;
-
-const ABS_DATE = new Intl.DateTimeFormat("en-US", {
-  year: "numeric",
-  month: "short",
-  day: "numeric",
-});
-
-const ABS_CLOCK = new Intl.DateTimeFormat("en-US", {
-  hour: "2-digit",
-  minute: "2-digit",
-  hour12: false,
-});
 
 // formatTimeout converts a millisecond timeout value to a human-readable
 // string. Unknown (no lifecycle) differs from disabled (explicit zero).
@@ -126,10 +115,7 @@ function formatDeadlineCountdown(deadline: string | undefined, nowMs: number): s
 
 function formatStamp(iso: string | undefined): string | null {
   if (!iso) return null;
-  const parsed = Date.parse(iso);
-  if (Number.isNaN(parsed)) return iso;
-  const date = new Date(parsed);
-  return `${ABS_DATE.format(date)}, ${ABS_CLOCK.format(date)}`;
+  return formatHubStamp(iso) ?? iso;
 }
 
 function effectiveTimeout(daemon: DaemonResident): string {
@@ -150,20 +136,19 @@ function summarizeBlockers(blockers: readonly DaemonBlocker[]): string {
   let turns = 0;
   let delegates = 0;
   let others = 0;
+  let firstOtherCategory: string | undefined;
   for (const b of blockers) {
     if (b.category === "turn") turns += 1;
     else if (b.category === "delegate") delegates += 1;
-    else others += 1;
+    else {
+      others += 1;
+      if (firstOtherCategory === undefined) firstOtherCategory = b.category;
+    }
   }
   const parts: string[] = [];
   if (turns > 0) parts.push(turns === 1 ? "active turn" : `${turns} active turns`);
   if (delegates > 0) parts.push(delegates === 1 ? "1 delegate" : `${delegates} delegates`);
-  if (others > 0)
-    parts.push(
-      others === 1
-        ? (blockers.find((b) => b.category !== "turn" && b.category !== "delegate")?.category ?? "1 blocker")
-        : `${others} blockers`,
-    );
+  if (others > 0) parts.push(others === 1 ? (firstOtherCategory ?? "1 blocker") : `${others} blockers`);
   return parts.join(", ");
 }
 
@@ -237,17 +222,9 @@ export function HubResidents() {
   // Per-generation retire responses (accepted "retiring" or refused blockers).
   const [retireResults, setRetireResults] = useState<Map<string, DaemonRetireResponse>>(() => new Map());
   const lastRefreshErrorRef = useRef<string | null>(null);
-  const wasRestartingRef = useRef(hubRestarting);
 
   useEffect(() => {
-    if (!hubRestarting) void daemonResidentsStore.getState().refresh();
-  }, [hubRestarting]);
-
-  // Refresh promptly once a hub restart finishes and the connection is ready.
-  useEffect(() => {
-    const finishedRestart = wasRestartingRef.current && !hubRestarting;
-    wasRestartingRef.current = hubRestarting;
-    if (finishedRestart && connectionState === "ready") {
+    if (!hubRestarting && connectionState === "ready") {
       void daemonResidentsStore.getState().refresh();
     }
   }, [hubRestarting, connectionState]);
@@ -256,7 +233,7 @@ export function HubResidents() {
   useVisibleInterval(
     () => void daemonResidentsStore.getState().refresh(),
     POLL_INTERVAL_MS,
-    !hubRestarting,
+    !hubRestarting && connectionState === "ready",
     ownerDocument,
   );
 
@@ -302,15 +279,19 @@ export function HubResidents() {
     setSelectedKey((prev) => (prev !== null && !daemonByKey.has(prev) ? null : prev));
   }, [data]);
 
+  const clearRetireResult = useCallback((key: string) => {
+    setRetireResults((prev) => {
+      if (!prev.has(key)) return prev;
+      const next = new Map(prev);
+      next.delete(key);
+      return next;
+    });
+  }, []);
+
   const handleRetire = useCallback(
     async (daemon: DaemonResident) => {
       const key = residentRowKey(daemon.identity);
-      setRetireResults((prev) => {
-        if (!prev.has(key)) return prev;
-        const next = new Map(prev);
-        next.delete(key);
-        return next;
-      });
+      clearRetireResult(key);
       try {
         const result = await daemonResidentsStore.getState().retire(daemon.identity);
         setRetireResults((prev) => {
@@ -331,37 +312,33 @@ export function HubResidents() {
         toasts.push("error", `Retire failed: ${friendlyErrorMessage(err)}`);
       }
     },
-    [toasts],
+    [clearRetireResult, toasts],
   );
 
   const handleForceStopConfirm = useCallback(async () => {
     const identity = confirmForceStop;
     if (!identity) return;
     setConfirmForceStop(null);
-    const key = residentRowKey(identity);
-    setRetireResults((prev) => {
-      if (!prev.has(key)) return prev;
-      const next = new Map(prev);
-      next.delete(key);
-      return next;
-    });
+    clearRetireResult(residentRowKey(identity));
     try {
       await daemonResidentsStore.getState().forceStop(identity);
     } catch (err: unknown) {
       toasts.push("error", `Force stop failed: ${friendlyErrorMessage(err)}`);
     }
-  }, [confirmForceStop, toasts]);
+  }, [clearRetireResult, confirmForceStop, toasts]);
 
   const headingId = "hub-residents-heading";
   const nowMs = Date.now();
 
-  const nameCounts = new Map<string, number>();
-  if (data) {
+  const nameCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    if (!data) return counts;
     for (const d of data.daemons) {
       const label = d.name || d.identity.ref;
-      nameCounts.set(label, (nameCounts.get(label) ?? 0) + 1);
+      counts.set(label, (counts.get(label) ?? 0) + 1);
     }
-  }
+    return counts;
+  }, [data]);
 
   const selectedDaemon =
     data !== null && selectedKey !== null

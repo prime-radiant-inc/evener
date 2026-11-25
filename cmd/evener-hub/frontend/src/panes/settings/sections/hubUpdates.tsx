@@ -1,3 +1,4 @@
+import type { UpdateCheckResponse } from "@evener/appwire-client";
 import { useEffect, useRef, useState } from "react";
 import { usePaneDocument } from "../../../shell/paneDocument";
 import { useVisibleInterval } from "../../../shell/useVisibleInterval";
@@ -17,6 +18,7 @@ import {
   useToasts,
 } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
+import { formatHubStamp } from "./hubStamp";
 import styles from "./hubUpdates.module.css";
 
 const CLASS = {
@@ -47,23 +49,6 @@ const CHANNEL_OPTIONS = [
   { value: "release" as const, label: "Release" },
   { value: "snapshot" as const, label: "Snapshot" },
 ];
-
-const BUILD_DATE_SAME_YEAR = new Intl.DateTimeFormat("en-US", {
-  month: "short",
-  day: "numeric",
-});
-
-const BUILD_DATE_WITH_YEAR = new Intl.DateTimeFormat("en-US", {
-  year: "numeric",
-  month: "short",
-  day: "numeric",
-});
-
-const BUILD_CLOCK = new Intl.DateTimeFormat("en-US", {
-  hour: "2-digit",
-  minute: "2-digit",
-  hour12: false,
-});
 
 function isChannel(value: string | undefined): value is UpdateChannel {
   return value === "release" || value === "snapshot";
@@ -109,14 +94,30 @@ function commitsMatch(a: string | undefined, b: string | undefined): boolean {
   return a.startsWith(b) || b.startsWith(a);
 }
 
-function formatBuildStamp(iso: string | undefined, nowMs: number): string | null {
-  if (!iso) return null;
-  const parsed = Date.parse(iso);
-  if (Number.isNaN(parsed)) return null;
-  const date = new Date(parsed);
-  const sameYear = date.getFullYear() === new Date(nowMs).getFullYear();
-  const dayPart = sameYear ? BUILD_DATE_SAME_YEAR.format(date) : BUILD_DATE_WITH_YEAR.format(date);
-  return `${dayPart}, ${BUILD_CLOCK.format(date)}`;
+function deriveUpdateState(input: {
+  restarting: boolean;
+  restartTimedOut: boolean;
+  checking: boolean;
+  hasError: boolean;
+  check: UpdateCheckResponse | null;
+}): string | undefined {
+  if (input.restarting) return "restarting";
+  if (input.restartTimedOut) return "restart-timed-out";
+  if (input.checking) return "checking";
+  if (input.hasError) return "check-failed";
+  if (input.check === null) return undefined;
+  return input.check.updateAvailable ? "update-available" : "up-to-date";
+}
+
+function runningChipLabelFor(
+  localBuild: boolean,
+  buildChannel: string | undefined,
+  runningReleaseTag: string | undefined,
+): string | null {
+  if (localBuild) return "local build";
+  if (buildChannel === "snapshot") return "snapshot";
+  if (buildChannel === "release" && !runningReleaseTag) return "release";
+  return null;
 }
 
 function ExternalArrow() {
@@ -153,7 +154,7 @@ function BuildReference({
   const label = displayBuild(version ?? commit);
   const commitForLink = dirty ? undefined : commit && isLinkableCommit(commit) ? commit : version;
   const canLinkCommit = repoBase !== null && !dirty && isLinkableCommit(commitForLink);
-  const canLinkTag = repoBase !== null && releaseTag !== undefined && releaseTag !== "" && releaseTag !== "snapshot";
+  const canLinkTag = repoBase !== null && releaseTag !== undefined && releaseTag !== "";
 
   return (
     <>
@@ -185,14 +186,111 @@ function BuildReference({
   );
 }
 
-function BuildTimestamp({ iso, nowMs }: { iso: string | undefined; nowMs: number }) {
-  const formatted = formatBuildStamp(iso, nowMs);
+function BuildTimestamp({ iso }: { iso: string | undefined }) {
+  const formatted = formatHubStamp(iso, { omitCurrentYear: true });
   if (!iso || !formatted) return <span className={CLASS.rowDate} />;
   return (
     <time className={CLASS.rowDate} dateTime={iso} title={iso}>
       {formatted}
     </time>
   );
+}
+
+function LastCheckedStamp({ value }: { value: number }) {
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  const ownerDocument = usePaneDocument();
+  useVisibleInterval(() => setNowMs(Date.now()), 30_000, true, ownerDocument);
+  return (
+    <span className={CLASS.muted}>
+      Checked <Timestamp value={value} now={Math.max(nowMs, value)} />
+    </span>
+  );
+}
+
+function ChannelStatusValue({
+  channel,
+  checking,
+  hasError,
+  check,
+  onDiskMatchesLatest,
+  localBuild,
+  installAvailable,
+  repoBase,
+  runningCommit,
+  showCompareLink,
+}: {
+  channel: UpdateChannel;
+  checking: boolean;
+  hasError: boolean;
+  check: UpdateCheckResponse | null;
+  onDiskMatchesLatest: boolean;
+  localBuild: boolean;
+  installAvailable: boolean;
+  repoBase: string | null;
+  runningCommit: string | undefined;
+  showCompareLink: boolean;
+}) {
+  if (checking) return <Loader label={`Checking ${channel}…`} />;
+  if (hasError) return <span className={CLASS.muted}>Unavailable</span>;
+  if (check === null) return null;
+
+  const showLatestBuild = onDiskMatchesLatest || check.updateAvailable || (localBuild && installAvailable);
+  if (!showLatestBuild) {
+    return (
+      <Chip tone="alive" variant="quiet">
+        Up to date
+      </Chip>
+    );
+  }
+
+  return (
+    <>
+      <BuildReference
+        version={check.latestCommit}
+        commit={check.latestCommit}
+        releaseTag={check.channel === "release" ? check.latestTag : undefined}
+        repoBase={repoBase}
+      />
+      {onDiskMatchesLatest ? (
+        <Chip tone="attention" data-testid="hub-restart-pending">
+          Ready on disk
+        </Chip>
+      ) : (
+        <Chip tone="accent">{check.updateAvailable ? "Update available" : "Published build"}</Chip>
+      )}
+      {showCompareLink && repoBase !== null && runningCommit !== undefined && check.latestCommit !== undefined && (
+        <a
+          className={CLASS.linkQuiet}
+          href={`${repoBase}/compare/${encodeURIComponent(runningCommit)}...${encodeURIComponent(check.latestCommit)}`}
+          target="_blank"
+          rel="noreferrer"
+        >
+          Compare
+          <ExternalArrow />
+        </a>
+      )}
+    </>
+  );
+}
+
+function FooterActivity({
+  installing,
+  applying,
+  restarting,
+  restartTimedOut,
+  lastCheckedAt,
+}: {
+  installing: boolean;
+  applying: boolean;
+  restarting: boolean;
+  restartTimedOut: boolean;
+  lastCheckedAt: number | null;
+}) {
+  if (installing || applying) return <Loader label="Installing update…" />;
+  if (restarting) return <Loader label="Restarting hub…" />;
+  if (restartTimedOut) return <span className={CLASS.muted}>Hub didn't come back</span>;
+  if (lastCheckedAt !== null) return <LastCheckedStamp value={lastCheckedAt} />;
+  return null;
 }
 
 /**
@@ -218,9 +316,13 @@ export function HubUpdates() {
   const restartTimedOut = useHubUpdateStore((s) => s.restartTimedOut);
   const [confirmingRestart, setConfirmingRestart] = useState(false);
   const [lastCheckedAt, setLastCheckedAt] = useState<number | null>(null);
-  const [nowMs, setNowMs] = useState(() => Date.now());
   const toasts = useToasts();
   const manualCheckRef = useRef(false);
+  const prevCheckTrigger = useRef<{ channel: UpdateChannel | null; ready: boolean; reconcile: boolean }>({
+    channel: null,
+    ready: false,
+    reconcile: false,
+  });
   const announcedErrors = useRef({
     check: null as string | null,
     install: null as string | null,
@@ -241,25 +343,27 @@ export function HubUpdates() {
     }
   }, [channel, seededChannel]);
 
-  // Check whenever a channel is selected (mount and every change), and when
-  // the connection becomes ready again: the cached answer belongs to the
-  // previous connection and may name a different hub's build.
+  // Run one update check whenever the selected channel changes, the socket
+  // transitions to ready, or a lost install asks to reconcile on a ready
+  // socket — collapsing reconnect + reconcile into a single request.
   useEffect(() => {
-    if (channel !== null && connectionState === "ready") void hubUpdateStore.getState().runCheck();
-  }, [channel, connectionState]);
-
-  // A lost install response is reconciled once the socket is ready again.
-  useEffect(() => {
-    if (installReconcile && connectionState === "ready") void hubUpdateStore.getState().runCheck();
-  }, [installReconcile, connectionState]);
+    const ready = connectionState === "ready";
+    const prev = prevCheckTrigger.current;
+    const channelChanged = channel !== prev.channel;
+    const becameReady = ready && !prev.ready;
+    const needsReconcile = installReconcile && !prev.reconcile;
+    prevCheckTrigger.current = { channel, ready, reconcile: installReconcile };
+    const shouldCheck =
+      ready &&
+      ((channel !== null && (channelChanged || becameReady)) || (installReconcile && (becameReady || needsReconcile)));
+    if (shouldCheck) void hubUpdateStore.getState().runCheck();
+  }, [channel, connectionState, installReconcile]);
 
   // Track check settlement time and inform manual re-checks that find no update.
   useEffect(() => {
     if (checking) return;
     if (check !== null && checkError === null && !check.checkError) {
-      const stamp = Date.now();
-      setLastCheckedAt(stamp);
-      setNowMs(stamp);
+      setLastCheckedAt(Date.now());
       if (manualCheckRef.current) {
         manualCheckRef.current = false;
         if (!check.updateAvailable && !check.installAvailable && !check.restartPending) {
@@ -271,37 +375,22 @@ export function HubUpdates() {
     }
   }, [checking, check, checkError, toasts]);
 
-  const ownerDocument = usePaneDocument();
-  useVisibleInterval(() => setNowMs(Date.now()), 30_000, lastCheckedAt !== null, ownerDocument);
-
   // Route transient update errors to system toasts instead of inline danger
   // blocks above the buttons. Suppress check failures while a restart is
   // actively dropping the socket.
   const effectiveCheckError = restarting ? null : (checkError ?? check?.checkError ?? null);
   useEffect(() => {
     const prev = announcedErrors.current;
-    if (effectiveCheckError !== prev.check) {
-      prev.check = effectiveCheckError;
-      if (effectiveCheckError !== null) {
-        toasts.push("error", `Couldn't check for updates: ${effectiveCheckError}`);
-      }
-    }
-    if (installError !== prev.install) {
-      prev.install = installError;
-      if (installError !== null) {
-        toasts.push("error", `Update failed: ${installError}`);
-      }
-    }
-    if (applyError !== prev.apply) {
-      prev.apply = applyError;
-      if (applyError !== null) {
-        toasts.push("error", `Update failed: ${applyError}`);
-      }
-    }
-    if (restartError !== prev.restart) {
-      prev.restart = restartError;
-      if (restartError !== null) {
-        toasts.push("error", `Restart failed: ${restartError}`);
+    const entries: Array<["check" | "install" | "apply" | "restart", string | null, string]> = [
+      ["check", effectiveCheckError, "Couldn't check for updates"],
+      ["install", installError, "Update failed"],
+      ["apply", applyError, "Update failed"],
+      ["restart", restartError, "Restart failed"],
+    ];
+    for (const [slot, value, prefix] of entries) {
+      if (value !== prev[slot]) {
+        prev[slot] = value;
+        if (value !== null) toasts.push("error", `${prefix}: ${value}`);
       }
     }
     if (restartTimedOut !== prev.timedOut) {
@@ -317,11 +406,12 @@ export function HubUpdates() {
   const running = check?.currentVersion ?? hub.commit;
   const runningCommit = check?.currentCommit ?? hub.commit;
   const runningBuildTime = check?.currentBuildTime ?? hub.buildTime;
-  const runningReleaseTag = check?.currentReleaseTag ?? hub.releaseTag;
+  const runningReleaseTag = buildChannel === "release" ? (check?.currentReleaseTag ?? hub.releaseTag) : undefined;
   const onDisk = check?.onDiskCommit;
   const onDiskBuildTime = check?.onDiskBuildTime;
   const repoBase = safeRepoBase(check?.repoUrl);
   const channelError = check?.checkError ?? null;
+  const hasCheckError = checkError !== null || channelError !== null;
   const restartSupported = check?.restartSupported === true;
   // An older hub omits the field entirely; a current hub that cannot restart
   // sends false. The generated type requires the field, so read it as optional
@@ -343,20 +433,32 @@ export function HubUpdates() {
     isLinkableCommit(check?.latestCommit) &&
     !commitsMatch(runningCommit, check?.latestCommit);
   const promoteRestartPrimary = restartPending && !installAvailable && restartSupported && !legacyApply;
+  const updateState = deriveUpdateState({
+    restarting,
+    restartTimedOut,
+    checking,
+    hasError: hasCheckError,
+    check,
+  });
+  const runningChipLabel = runningChipLabelFor(localBuild, buildChannel, runningReleaseTag);
 
-  const updateState = restarting
-    ? "restarting"
-    : restartTimedOut
-      ? "restart-timed-out"
-      : checking
-        ? "checking"
-        : checkError !== null || channelError !== null
-          ? "check-failed"
-          : check === null
-            ? undefined
-            : check.updateAvailable
-              ? "update-available"
-              : "up-to-date";
+  let primaryAction: { label: string; onClick: () => void } | null = null;
+  if (legacyApply) {
+    primaryAction = {
+      label: "Update and restart",
+      onClick: () => void hubUpdateStore.getState().apply(),
+    };
+  } else if (promoteRestartPrimary) {
+    primaryAction = {
+      label: "Restart to apply",
+      onClick: () => setConfirmingRestart(true),
+    };
+  } else if (installAvailable) {
+    primaryAction = {
+      label: restartSupported ? "Update and restart" : "Install update",
+      onClick: () => void hubUpdateStore.getState().installAndRestart(),
+    };
+  }
 
   const restartDialog = (
     <ConfirmDialog
@@ -415,21 +517,13 @@ export function HubUpdates() {
                 releaseTag={runningReleaseTag}
                 repoBase={repoBase}
               />
-              {localBuild ? (
-                <Chip tone="neutral" variant="quiet" data-testid="hub-update-dev-note">
-                  local build
+              {runningChipLabel !== null && (
+                <Chip tone="neutral" variant="quiet" data-testid={localBuild ? "hub-update-dev-note" : undefined}>
+                  {runningChipLabel}
                 </Chip>
-              ) : buildChannel === "snapshot" ? (
-                <Chip tone="neutral" variant="quiet">
-                  snapshot
-                </Chip>
-              ) : buildChannel === "release" && !runningReleaseTag ? (
-                <Chip tone="neutral" variant="quiet">
-                  release
-                </Chip>
-              ) : null}
+              )}
             </div>
-            <BuildTimestamp iso={runningBuildTime} nowMs={nowMs} />
+            <BuildTimestamp iso={runningBuildTime} />
           </div>
 
           {showSeparateOnDiskRow && (
@@ -441,7 +535,7 @@ export function HubUpdates() {
                   Restart pending
                 </Chip>
               </div>
-              <BuildTimestamp iso={onDiskBuildTime} nowMs={nowMs} />
+              <BuildTimestamp iso={onDiskBuildTime} />
             </div>
           )}
 
@@ -449,67 +543,25 @@ export function HubUpdates() {
             <div className={CLASS.row} data-testid="hub-update-status" data-state={updateState}>
               <span className={CLASS.rowLabel}>{channel === "release" ? "Release" : "Snapshot"}</span>
               <div className={CLASS.rowValue}>
-                {checking ? (
-                  <Loader label={`Checking ${channel}…`} />
-                ) : checkError !== null || channelError !== null ? (
-                  <span className={CLASS.muted}>Unavailable</span>
-                ) : check !== null && onDiskMatchesLatest ? (
-                  <>
-                    <BuildReference
-                      version={check.latestCommit}
-                      commit={check.latestCommit}
-                      releaseTag={check.channel === "release" ? check.latestTag : undefined}
-                      repoBase={repoBase}
-                    />
-                    <Chip tone="attention" data-testid="hub-restart-pending">
-                      Ready on disk
-                    </Chip>
-                    {showCompareLink && check.latestCommit && (
-                      <a
-                        className={CLASS.linkQuiet}
-                        href={`${repoBase}/compare/${encodeURIComponent(runningCommit)}...${encodeURIComponent(check.latestCommit)}`}
-                        target="_blank"
-                        rel="noreferrer"
-                      >
-                        Compare
-                        <ExternalArrow />
-                      </a>
-                    )}
-                  </>
-                ) : check !== null && (check.updateAvailable || (localBuild && installAvailable)) ? (
-                  <>
-                    <BuildReference
-                      version={check.latestCommit}
-                      commit={check.latestCommit}
-                      releaseTag={check.channel === "release" ? check.latestTag : undefined}
-                      repoBase={repoBase}
-                    />
-                    <Chip tone="accent">{check.updateAvailable ? "Update available" : "Published build"}</Chip>
-                    {showCompareLink && check.latestCommit && (
-                      <a
-                        className={CLASS.linkQuiet}
-                        href={`${repoBase}/compare/${encodeURIComponent(runningCommit)}...${encodeURIComponent(check.latestCommit)}`}
-                        target="_blank"
-                        rel="noreferrer"
-                      >
-                        Compare
-                        <ExternalArrow />
-                      </a>
-                    )}
-                  </>
-                ) : check !== null ? (
-                  <Chip tone="alive" variant="quiet">
-                    Up to date
-                  </Chip>
-                ) : null}
+                <ChannelStatusValue
+                  channel={channel}
+                  checking={checking}
+                  hasError={hasCheckError}
+                  check={check}
+                  onDiskMatchesLatest={onDiskMatchesLatest}
+                  localBuild={localBuild}
+                  installAvailable={installAvailable}
+                  repoBase={repoBase}
+                  runningCommit={runningCommit}
+                  showCompareLink={showCompareLink}
+                />
               </div>
               <BuildTimestamp
                 iso={
-                  checking || checkError !== null || channelError !== null
+                  checking || hasCheckError
                     ? undefined
                     : (check?.latestPublishedAt ?? (onDiskMatchesLatest ? onDiskBuildTime : undefined))
                 }
-                nowMs={nowMs}
               />
             </div>
           )}
@@ -535,29 +587,11 @@ export function HubUpdates() {
         {channel !== null && (
           <div className={CLASS.footer}>
             <div className={CLASS.actions}>
-              {legacyApply ? (
-                <Button
-                  variant="primary"
-                  size="sm"
-                  onClick={() => void hubUpdateStore.getState().apply()}
-                  disabled={busy}
-                >
-                  Update and restart
+              {primaryAction !== null && (
+                <Button variant="primary" size="sm" onClick={primaryAction.onClick} disabled={busy}>
+                  {primaryAction.label}
                 </Button>
-              ) : promoteRestartPrimary ? (
-                <Button variant="primary" size="sm" onClick={() => setConfirmingRestart(true)} disabled={busy}>
-                  Restart to apply
-                </Button>
-              ) : installAvailable ? (
-                <Button
-                  variant="primary"
-                  size="sm"
-                  onClick={() => void hubUpdateStore.getState().installAndRestart()}
-                  disabled={busy}
-                >
-                  {restartSupported ? "Update and restart" : "Install update"}
-                </Button>
-              ) : null}
+              )}
 
               <Button variant="secondary" size="sm" onClick={handleManualCheck} disabled={busy}>
                 Check for updates
@@ -571,17 +605,13 @@ export function HubUpdates() {
             </div>
 
             <div className={CLASS.activity}>
-              {installing || applying ? (
-                <Loader label="Installing update…" />
-              ) : restarting ? (
-                <Loader label="Restarting hub…" />
-              ) : restartTimedOut ? (
-                <span className={CLASS.muted}>Hub didn't come back</span>
-              ) : lastCheckedAt !== null ? (
-                <span className={CLASS.muted}>
-                  Checked <Timestamp value={lastCheckedAt} now={nowMs} />
-                </span>
-              ) : null}
+              <FooterActivity
+                installing={installing}
+                applying={applying}
+                restarting={restarting}
+                restartTimedOut={restartTimedOut}
+                lastCheckedAt={lastCheckedAt}
+              />
             </div>
           </div>
         )}

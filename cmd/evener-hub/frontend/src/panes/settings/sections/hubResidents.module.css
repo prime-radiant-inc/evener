@@ -19,8 +19,7 @@
 }
 
 .timeout {
-  color: var(--ink-low);
-  font-size: var(--font-size-caption);
+  composes: helpMuted from "../../../styles/help.module.css";
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
@@ -122,7 +121,6 @@
 }
 
 .sheetFooterNote {
+  composes: helpMuted from "../../../styles/help.module.css";
   margin: 0;
-  color: var(--ink-low);
-  font-size: var(--font-size-caption);
 }
