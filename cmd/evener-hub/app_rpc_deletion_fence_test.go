@@ -8,6 +8,7 @@ import (
 	"sync"
 	"testing"
 
+	"primeradiant.com/evener/agent"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
@@ -485,7 +486,7 @@ func TestDeletionFenceRejectsForkBeforeLaunchingChild(t *testing.T) {
 	oldAside := hubAsideSession
 	t.Cleanup(func() { hubAsideSession = oldAside })
 	launchCalls := 0
-	hubAsideSession = func(string, string) (string, error) {
+	hubAsideSession = func(string, string, ...agent.ForkOption) (string, error) {
 		launchCalls++
 		return "", errors.New("deleting fork launched child")
 	}

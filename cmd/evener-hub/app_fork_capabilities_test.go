@@ -1101,6 +1101,12 @@ func TestHubForkValidatesParamsBeforeFencingOrDiscovery(t *testing.T) {
 		{name: "unparseable source turn", params: appwire.ThreadForkParams{SourceItemKey: "turn_zero", EditedInput: "forked input"}},
 		{name: "no edited input", params: appwire.ThreadForkParams{SourceItemKey: "apptranscript-item-v2:t_1:0:0"}},
 		{name: "edited input with deferred input", params: appwire.ThreadForkParams{SourceItemKey: "apptranscript-item-v2:t_1:0:0", EditedInput: "forked input", DeferInput: true}},
+		{name: "modelProvider without model", params: appwire.ThreadForkParams{SourceItemKey: "apptranscript-item-v2:t_1:0:0", EditedInput: "forked input", ModelProvider: "anthropic"}},
+		{name: "aside modelProvider without model", params: appwire.ThreadForkParams{Aside: true, ModelProvider: "anthropic"}},
+		{name: "unqualified model without modelProvider", params: appwire.ThreadForkParams{SourceItemKey: "apptranscript-item-v2:t_1:0:0", EditedInput: "forked input", Model: "claude-opus-4-6"}},
+		{name: "aside unqualified model without modelProvider", params: appwire.ThreadForkParams{Aside: true, Model: "claude-opus-4-6"}},
+		{name: "trailing slash model", params: appwire.ThreadForkParams{Aside: true, Model: "anthropic/"}},
+		{name: "provider with slash-only model", params: appwire.ThreadForkParams{Aside: true, ModelProvider: "openai", Model: "/"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			const sessionID = "02fencedForkTarget0000"
