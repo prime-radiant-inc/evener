@@ -28,7 +28,7 @@
 // owns what every other action DOES (opening an editor, a confirm, or
 // calling the store), the same division of labor as before.
 
-import type { AuthTestResponse, InstanceEditParams, InstanceEntry } from "@evener/appwire-client";
+import type { AuthTestResponse, InstanceEditParams, InstanceEntry, ProviderDescriptor } from "@evener/appwire-client";
 import {
   CONNECTION_REPLACED_ERROR,
   credentialLayers,
@@ -192,6 +192,19 @@ function renameNote(instance: InstanceEntry): string {
   return renameLeavesEnvironmentRow(instance)
     ? `Renaming adds a new instance and leaves this one in place, because the environment supplies it. ${keepsOldName}`
     : keepsOldName;
+}
+
+function baseSelectOptions(base: string, availableProviders: readonly ProviderDescriptor[]): SelectOption[] {
+  const options: SelectOption[] = [];
+  if (base === "") {
+    options.push({ value: "", label: "(none)" });
+  } else if (!availableProviders.some((p) => p.id === base)) {
+    options.push({ value: base, label: `${base} (unavailable)` });
+  }
+  for (const provider of availableProviders) {
+    options.push({ value: provider.id, label: formatProviderLabel(provider.id, provider.name) });
+  }
+  return options;
 }
 
 export interface InstanceSheetProps {
@@ -903,17 +916,7 @@ export function InstanceSheet({
   // over nothing reads as a rendering bug.
   const showDangerZone =
     instance !== undefined && ((!isBroken && showClear) || showClearStoredKey || !fromEnvironment(instance));
-  const baseOptions: SelectOption[] =
-    draft === null
-      ? []
-      : [
-          ...(draft.base === ""
-            ? [{ value: "", label: "(none)" }]
-            : availableProviders.some((p) => p.id === draft.base)
-              ? []
-              : [{ value: draft.base, label: `${draft.base} (unavailable)` }]),
-          ...availableProviders.map((p) => ({ value: p.id, label: formatProviderLabel(p.id, p.name) })),
-        ];
+  const baseOptions = draft === null ? [] : baseSelectOptions(draft.base, availableProviders);
   const layers = instance === undefined ? [] : credentialLayers(instance);
   const unconfigured = instance === undefined ? null : unconfiguredLabel(instance);
   // The sheet's per-model toggles read the registry's own inventory. The

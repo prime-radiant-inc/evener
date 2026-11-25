@@ -492,14 +492,7 @@ func (c *hubInstancesController) brokenEntryFor(name string, loadErr error, auth
 		populateAuthoredEntryFields(&entry, authored)
 	}
 	if c.auth != nil {
-		_, entry.HasStoredFile = c.auth.storedKey(name)
-		_, oauthErr := c.auth.loadAuth(c.auth.stateDir, name)
-		copilotFound := false
-		if c.auth.stateDir != "" {
-			_, copilotErr := githubcopilot.LoadAuth(c.auth.stateDir, name)
-			copilotFound = !errors.Is(copilotErr, githubcopilot.ErrAuthNotFound)
-		}
-		entry.HasStoredOAuth = !errors.Is(oauthErr, authopenai.ErrAuthNotFound) || copilotFound
+		entry.HasStoredFile, entry.HasStoredOAuth = c.auth.storedCredentialPresence(name)
 	}
 	return entry
 }
@@ -1309,23 +1302,6 @@ func (c *hubInstancesController) edit(params appwire.InstanceEditParams, out *ap
 			return appwire.InvalidParams(fmt.Sprintf("unknown base provider %q", params.Base))
 		}
 	}
-	if strings.TrimSpace(params.CodexClientVersion) != "" {
-		var isCodex bool
-		switch {
-		case !params.ClearBase && req.base != "":
-			baseP, ok := c.reg.Get().Provider(req.base)
-			isCodex = ok && baseP.Transport.Auth == registry.AuthOAuthOpenAICodex
-		case params.ClearBase:
-			baseP, ok := c.reg.Get().Provider(name)
-			isCodex = ok && baseP.Transport.Auth == registry.AuthOAuthOpenAICodex
-		default:
-			inst, ok := c.reg.Get().Instance(name)
-			isCodex = ok && inst.Auth == registry.AuthOAuthOpenAICodex
-		}
-		if !isCodex {
-			return appwire.InvalidParams("codexClientVersion requires a Codex provider")
-		}
-	}
 	// The edit is applied to the row the client listed, so the endpoint that row
 	// was served with is asserted before anything is written: a name another
 	// client has re-pointed since - or replaced with a different instance - must
@@ -1349,6 +1325,17 @@ func (c *hubInstancesController) edit(params appwire.InstanceEditParams, out *ap
 		}
 	}
 	applyEditFields(&p, params, req)
+	if strings.TrimSpace(params.CodexClientVersion) != "" && !params.ClearCodexClientVersion {
+		baseID := p.Base
+		if baseID == "" {
+			baseID = name
+		}
+		baseP, ok := c.reg.Get().Provider(baseID)
+		isCodex := p.Transport.Auth == registry.AuthOAuthOpenAICodex || (ok && baseP.Transport.Auth == registry.AuthOAuthOpenAICodex)
+		if !isCodex {
+			return appwire.InvalidParams("codexClientVersion requires a Codex provider")
+		}
+	}
 	// A clear-only edit on an implicit instance (one the environment or a
 	// curated provider supplies, with no authored entry) has no authored
 	// value to change: the entry it would write carries nothing but its id.
@@ -1823,13 +1810,11 @@ func (c *hubInstancesController) credentialsUnder(name string) []string {
 	if _, ok := c.auth.storedKey(name); ok {
 		held = append(held, fmt.Sprintf("a credentials.toml entry for %q", name))
 	}
-	if _, err := c.auth.loadAuth(c.auth.stateDir, name); !errors.Is(err, authopenai.ErrAuthNotFound) {
+	if c.auth.hasStoredOpenAIOAuth(name) {
 		held = append(held, fmt.Sprintf("an OAuth record for %q", name))
 	}
-	if c.auth.stateDir != "" {
-		if _, err := githubcopilot.LoadAuth(c.auth.stateDir, name); !errors.Is(err, githubcopilot.ErrAuthNotFound) {
-			held = append(held, fmt.Sprintf("a Copilot OAuth record for %q", name))
-		}
+	if c.auth.hasStoredCopilotOAuth(name) {
+		held = append(held, fmt.Sprintf("a Copilot OAuth record for %q", name))
 	}
 	return held
 }

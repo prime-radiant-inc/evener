@@ -38,6 +38,7 @@ func TestHubRPCInstanceEditRefusesASetAndClearPair(t *testing.T) {
 		field  string
 		params appwire.InstanceEditParams
 	}{
+		{"base", appwire.InstanceEditParams{Name: "base", Base: "openai", ClearBase: true}},
 		{"baseUrl", appwire.InstanceEditParams{Name: "base", BaseURL: "https://example.test/v1", ClearBaseURL: true}},
 		{"protocol", appwire.InstanceEditParams{Name: "base", Protocol: "openai-responses", ClearProtocol: true}},
 		{"surface", appwire.InstanceEditParams{Name: "base", Surface: "generic", ClearSurface: true}},
