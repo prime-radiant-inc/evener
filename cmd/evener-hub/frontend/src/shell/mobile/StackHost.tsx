@@ -347,12 +347,15 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
   // chromeWasOpenRef is whether the drawer or the Overview was open at the
   // last commit: a pane chosen there replaces the stack's top, it is not a
   // step deeper, and the same tap usually closes the surface it came from.
+  // boardInputRef tracks whether the latest pointer/key/click intent landed in
+  // the docked tablet board, which stays open beside the reader.
   const stackBodyRef = useRef<HTMLDivElement>(null);
   const paneSlotRef = useRef<HTMLDivElement>(null);
   const committedSlotRef = useRef<HTMLDivElement | null>(null);
   const transitionFocusRef = useRef<string | null>(focusedPaneId);
   const popPendingRef = useRef(false);
   const chromeWasOpenRef = useRef(false);
+  const boardInputRef = useRef(false);
   const endTransitionRef = useRef<(() => void) | null>(null);
   const scrollOffsetsRef = useRef<ScrollOffsets>(new Map());
 
@@ -500,11 +503,11 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
   // Classifies each focus change and slides it (docs/web-ui/motion.md, recipe
   // 4). A pop is a focus change a Back tap caused. A push is any other change
   // the user made from inside the shown pane to a pane beyond the landing
-  // screen; everything else replaces the pane without motion: the first
-  // pane, a choice made in the drawer or the Overview, browser history
-  // (whose own back gesture already animates on some phones), an attention
-  // entry being restored, the shown pane closing under the user, and a deep
-  // link still resolving.
+  // screen; everything else replaces the pane without motion: the first pane,
+  // a choice made in the Sessions drawer, tablet board, or Overview, browser
+  // history (whose own back gesture already animates on some phones), an
+  // attention entry being restored, the shown pane closing under the user, and
+  // a deep link still resolving.
   useLayoutEffect(() => {
     const chromeOpen = panelOpen || activityOpen;
     const chromeWasOpen = chromeWasOpenRef.current;
@@ -513,7 +516,12 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
     const incoming = paneSlotRef.current;
     committedSlotRef.current = incoming;
     const previousId = transitionFocusRef.current;
-    if (previousId === focusedPaneId) return;
+    if (previousId === focusedPaneId) {
+      if (!boardVisible) boardInputRef.current = false;
+      return;
+    }
+    const fromBoard = boardInputRef.current;
+    boardInputRef.current = false;
     transitionFocusRef.current = focusedPaneId;
     endTransitionRef.current?.();
     const popped = popPendingRef.current;
@@ -525,6 +533,7 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
     else if (
       !chromeOpen &&
       !chromeWasOpen &&
+      !fromBoard &&
       !lastPopstateWasTrusted &&
       !routeDeferred &&
       previousPane !== undefined &&
@@ -552,13 +561,24 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
       );
     }
     offsets.clear();
-  }, [focusedPaneId, focusedPane, panes, panelOpen, activityOpen, routeDeferred]);
+  }, [focusedPaneId, focusedPane, panes, panelOpen, activityOpen, routeDeferred, boardVisible]);
 
   useLayoutEffect(() => () => endTransitionRef.current?.(), []);
 
-  // A press starts a new intent: a Back tap's pending pop does not outlive it.
-  const clearPendingPop = useCallback(() => {
+  // A press starts a new intent: a Back tap's pending pop does not outlive it,
+  // and only input inside the board column marks the next focus change as a
+  // board replacement.
+  const clearPendingIntent = useCallback(() => {
     popPendingRef.current = false;
+    boardInputRef.current = false;
+  }, []);
+
+  const clearBoardInput = useCallback(() => {
+    boardInputRef.current = false;
+  }, []);
+
+  const markBoardInput = useCallback(() => {
+    boardInputRef.current = true;
   }, []);
 
   function handleBack(): void {
@@ -753,7 +773,12 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
   }
 
   return (
-    <div className={styles.host} onPointerDownCapture={clearPendingPop} onKeyDownCapture={clearPendingPop}>
+    <div
+      className={styles.host}
+      onPointerDownCapture={clearPendingIntent}
+      onKeyDownCapture={clearPendingIntent}
+      onClickCapture={clearBoardInput}
+    >
       <div
         className={styles.split}
         data-board={tabletSplit ? (boardVisible ? "visible" : "collapsed") : undefined}
@@ -764,6 +789,9 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
             className={styles.boardColumn}
             data-testid="board-column"
             ref={boardRef}
+            onPointerDownCapture={markBoardInput}
+            onKeyDownCapture={markBoardInput}
+            onClickCapture={markBoardInput}
             style={{ [RAIL_WIDTH_PROPERTY]: `${boardWidth}px` } as CSSProperties}
           >
             <RailHeaderActionProvider value={boardToggle}>{railSlot}</RailHeaderActionProvider>
