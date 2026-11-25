@@ -87,7 +87,7 @@ test("an explicit plugin preview names the loading wait, then the selection issu
   expect(screen.getByTestId("spawn-start-reason").textContent).toContain("Resolve the plugin selection");
 });
 
-test("desktop plugin summary lists the configured plugin names", async () => {
+test("desktop plugin summary tracks the enabled plugin count and keeps full names in its tooltip", async () => {
   const user = setupUser();
   const fake = readyClient((f) => {
     f.on("evener/plugin/preview", () => SPAWN_PLUGIN_PREVIEW);
@@ -96,12 +96,18 @@ test("desktop plugin summary lists the configured plugin names", async () => {
   await settled();
   await setWorkingDir(user, "/tmp/project");
 
-  await waitFor(() => expect(screen.getByTestId("spawn-plugin-summary").textContent).toContain("alpha, beta"));
+  const value = () => screen.getByTestId("spawn-plugin-value");
+  await waitFor(() => expect(value().textContent).toContain("2"));
+  expect(value().getAttribute("title")).toBe("alpha, beta");
 
   await openDesktopPluginSelection(user);
   await user.click(screen.getByRole("switch", { name: "beta" }));
-  await waitFor(() => expect(screen.getByTestId("spawn-plugin-summary").textContent).not.toContain("beta"));
-  expect(screen.getByTestId("spawn-plugin-summary").textContent).toContain("alpha");
+  await waitFor(() => expect(value().textContent).toContain("1 of 2"));
+  expect(value().getAttribute("title")).toBe("alpha");
+
+  await user.click(screen.getByRole("switch", { name: "alpha" }));
+  await waitFor(() => expect(value().textContent).not.toContain("1"));
+  expect(value().getAttribute("title")).toBeNull();
 });
 
 // A known issue belongs to the selected plugin in this draft, not the mounted
@@ -255,7 +261,7 @@ test.each(["remove plugin", "unsupported harness"])(
       await user.click(screen.getByRole("button", { name: "Remove alpha" }));
       await waitForPluginPreviewState("error");
     } else {
-      await user.click(screen.getByText("Advanced options"));
+      await user.click(screen.getByText("Advanced"));
       await user.selectOptions(screen.getByLabelText("Harness"), "external");
     }
     await waitFor(() => expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false));
@@ -308,7 +314,7 @@ for (const navigation of ["picker", "URL"] as const) {
     await waitFor(() => expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false));
 
     await navigate(user, projectA);
-    await waitFor(() => expect(screen.getByTestId("spawn-plugin-summary").textContent).toContain("a-only"));
+    await waitFor(() => expect(screen.getByTestId("spawn-plugin-value").getAttribute("title")).toContain("a-only"));
     returningToB = true;
     await navigate(user, projectB);
     await waitFor(() => expect(rejectB).toBeTypeOf("function"));
@@ -339,7 +345,7 @@ for (const navigation of ["picker", "URL"] as const) {
       );
     });
     renderSpawn(fake);
-    await waitFor(() => expect(screen.getByTestId("spawn-plugin-summary").textContent).toContain("a-only"));
+    await waitFor(() => expect(screen.getByTestId("spawn-plugin-value").getAttribute("title")).toContain("a-only"));
     expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(true);
 
     await navigate(user, projectB);
@@ -471,7 +477,7 @@ test("explicit selection blocks while refresh is pending but preview failure sti
   // The refresh must not unmount the list: the previous plugins stay visible
   // (and toggleable) while the new inspection is in flight.
   expect(screen.getByRole("switch", { name: "alpha" })).toBeTruthy();
-  expect(screen.getByTestId("spawn-plugin-summary").textContent).toContain("alpha");
+  expect(screen.getByTestId("spawn-plugin-value").getAttribute("title")).toContain("alpha");
 
   rejectRefresh(new Error("preview unavailable"));
   await waitForPluginPreviewState("error");
@@ -577,7 +583,7 @@ test("selection survives Advanced-options updates and failed Start", async () =>
   await user.click(screen.getByRole("switch", { name: "beta" }));
   await waitFor(() => expect(screen.getByRole("switch", { name: "beta" }).getAttribute("aria-checked")).toBe("false"));
 
-  await user.click(screen.getByText("Advanced options"));
+  await user.click(screen.getByText("Advanced"));
   await user.clear(screen.getByLabelText("Max rounds"));
   await user.type(screen.getByLabelText("Max rounds"), "7");
   await waitFor(() => {
@@ -644,7 +650,7 @@ test("retained stale plugin names block every submit path until removed", async 
   await user.click(screen.getByRole("switch", { name: "beta" }));
   await waitFor(() => expect(screen.getByTestId("spawn-plugin-disclosure")).toBeTruthy());
 
-  await user.click(screen.getByText("Advanced options"));
+  await user.click(screen.getByText("Advanced"));
   await user.clear(screen.getByLabelText("Max rounds"));
   await user.type(screen.getByLabelText("Max rounds"), "7");
   await waitFor(() => expect(screen.getByRole("button", { name: "Remove gone" })).toBeTruthy());
@@ -682,7 +688,7 @@ test("switching to a non-Evener harness hides plugins and clears explicit select
     }),
   );
 
-  await user.click(screen.getByText("Advanced options"));
+  await user.click(screen.getByText("Advanced"));
   await user.selectOptions(screen.getByLabelText("Harness"), "external");
 
   expect(screen.queryByTestId("spawn-plugin-desktop")).toBeNull();

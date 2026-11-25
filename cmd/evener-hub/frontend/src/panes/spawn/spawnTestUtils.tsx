@@ -222,7 +222,7 @@ export function setupUser() {
  * it renders unconditionally. */
 export async function settled(): Promise<void> {
   await act(async () => {});
-  screen.getByText("Advanced options");
+  screen.getByText("Advanced");
 }
 
 export async function visitSpawnURL(url: string): Promise<void> {

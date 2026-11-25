@@ -542,7 +542,7 @@ test("automatic connection completion preserves an Advanced-options model choice
   await settled();
   await setWorkingDir(user, "/tmp/auto-advanced");
 
-  await user.click(screen.getByText("Advanced options"));
+  await user.click(screen.getByText("Advanced"));
   const pickers = screen.getAllByRole("button", { name: /change model/i });
   await user.click(pickers[pickers.length - 1]!);
   const combo = await screen.findByRole("combobox", { name: "Model" });
@@ -1460,7 +1460,7 @@ test.each([
   await openTeamProvider(user);
   await saveAndCheckProvider();
   await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
-  await user.click(screen.getByText("Advanced options"));
+  await user.click(screen.getByText("Advanced"));
   const toggle = await screen.findByRole("switch", { name: "Start as Manager" });
   expect(toggle.getAttribute("aria-checked")).toBe("false");
   if (choose) {

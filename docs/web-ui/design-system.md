@@ -391,8 +391,10 @@ Corners come from the radius ladder (§2) and nest concentrically: an inner corn
 outer corner less the inset between them, so a control inside a card never crowds the
 card's arc.
 Do not shrink targets or hide overflow as a substitute for containing wide evidence.
-The page frame follows the column it names: a session or spawn header shares its content
-measure, while the settings header stays on the nav axis. The header takes this from the
+The page frame follows the column it names: a session header shares its content
+measure, while the settings header stays on the nav axis, and the spawn pane omits its
+desktop header bar because its tab already names it while keeping `mobileTitle` for the
+phone top bar. The header takes this from the
 pane's existing scaffold marker, not a second layout prop. The layoutguard case
 `page-frame-alignment` pins it: without the header padding rule the session title sits
 hundreds of pixels left of the reading column.

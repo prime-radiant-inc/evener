@@ -120,27 +120,20 @@ function assertResult(result, expectedWidth) {
   // clauses on the way, so an element under a display:none ANCESTOR - own
   // display intact, box collapsed to zero - read as visible (kata bsq9).
   const visible = (value) => !("error" in value) && value.visible === true;
-  // The title spans are a breakpoint SWAP, and the swap is all this can
-  // honestly claim about them here. On mobile, PaneScaffold's entire .header
-  // row is display:none - the pane title moves into StackHost's top bar, which
-  // this harness does not render - so NEITHER span has a box at 390 or 899px.
-  // The old ancestor-blind check read the mobile span's own `inline` and called
-  // it visible, which is precisely the false green bsq9 is about: it had been
-  // asserting a title was on screen inside a header that is switched off.
-  // Which span the media query turns on is a real contract; read exactly that.
-  const displayed = (value) => !("error" in value) && value.display !== "none";
+  // Spawn omits PaneScaffold's header bar because desktop tabs already carry
+  // "New session" from the pane registry and StackHost's mobile bar reads
+  // publishedTitle from chromeStore. Verify the header stays absent while
+  // publishedTitle remains populated.
   if (result.viewport.width !== expectedWidth)
     failures.push(`viewport is ${result.viewport.width}px, expected ${expectedWidth}px`);
   if (visible(result.mobileConfig) !== mobile) failures.push(`mobile config visibility is wrong at ${expectedWidth}px`);
   if (visible(result.desktopConfig) === mobile)
     failures.push(`desktop config visibility is wrong at ${expectedWidth}px`);
-  if (displayed(result.mobileTitle) !== mobile)
-    failures.push(`mobile title is not the span the ${expectedWidth}px breakpoint selects`);
-  if (displayed(result.desktopTitle) === mobile)
-    failures.push(`desktop title is not the span the ${expectedWidth}px breakpoint selects`);
-  // The prompt heading and subtitle show at EVERY width now (the desktop
-  // pane used to hide them behind a 12px uppercase title - critique R7), so
-  // the intro must be visible whether or not the layout is the phone's.
+  if (!("error" in result.desktopTitle) || !("error" in result.mobileTitle))
+    failures.push(`spawn pane rendered a duplicate scaffold header at ${expectedWidth}px`);
+  if (!result.publishedTitle)
+    failures.push(`spawn pane did not publish its mobile bar title at ${expectedWidth}px`);
+  // The prompt heading shows at every width.
   if (!visible(result.promptIntro)) failures.push(`prompt intro is not visible at ${expectedWidth}px`);
   // Issue #198: the prompt card is the composer, so its control row holds the
   // composer's controls in the composer's place - at EVERY width, which is why
@@ -256,8 +249,8 @@ function assertResult(result, expectedWidth) {
   if (staged.tiles.length !== STAGED_ATTACHMENTS) {
     failures.push(`expected ${STAGED_ATTACHMENTS} staged attachment tiles in the tree, found ${staged.tiles.length}`);
   }
-  // Persistently accessible at every width, not only the phone's: the heading
-  // is the page's own (an h2 under the pane title), never aria-hidden.
+  // Persistently accessible at every width, not only the phone's: one heading
+  // above the prompt card with no subtitle below it, never aria-hidden.
   const prompt = result.accessiblePrompt;
   if (
     prompt.headingCount !== 1 ||
@@ -265,14 +258,8 @@ function assertResult(result, expectedWidth) {
     !prompt.headingHasName ||
     !prompt.headingVisible ||
     !prompt.headingIsDirectChild ||
-    prompt.subtitleCount !== 1 ||
-    prompt.subtitleTag !== "p" ||
-    !prompt.subtitleHasContent ||
-    !prompt.subtitleVisible ||
-    !prompt.subtitleIsDirectChild ||
-    !prompt.headingBeforeSubtitle ||
-    prompt.headingHiddenFromAT ||
-    prompt.subtitleHiddenFromAT
+    prompt.subtitleCount !== 0 ||
+    prompt.headingHiddenFromAT
   ) {
     failures.push(`prompt orientation is not persistently accessible: ${JSON.stringify(prompt)}`);
   }
