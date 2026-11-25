@@ -96,8 +96,6 @@ const CLASS = {
   rawBody: requireClass(styles.rawBody, "notificationcard.module.css", "rawBody"),
   statusIcon: requireClass(styles.statusIcon, "notificationcard.module.css", "statusIcon"),
   statusIconError: requireClass(styles.statusIconError, "notificationcard.module.css", "statusIconError"),
-  summaryIcon: requireClass(styles.summaryIcon, "notificationcard.module.css", "summaryIcon"),
-  summaryIconError: requireClass(styles.summaryIconError, "notificationcard.module.css", "summaryIconError"),
   resultTable: requireClass(styles.resultTable, "notificationcard.module.css", "resultTable"),
   resultKey: requireClass(styles.resultKey, "notificationcard.module.css", "resultKey"),
   resultValue: requireClass(styles.resultValue, "notificationcard.module.css", "resultValue"),
@@ -120,29 +118,25 @@ const STATUS_ICON_KIND: Record<Exclude<NotificationTone, "error">, ToolIconKind>
 // The error tone's presentation decision in one place: the FailureGlyph cross
 // seated at full strength, never the quiet rail's kind icon - the red cross
 // IS the failure signal. Every other tone draws its kind from the table above.
-function statusIconSeat(tone: NotificationTone): { className: string; summaryClassName: string; glyph: ReactNode } {
+function statusIconSeat(tone: NotificationTone): { className: string; glyph: ReactNode } {
   if (tone === "error") {
-    return { className: CLASS.statusIconError, summaryClassName: CLASS.summaryIconError, glyph: <FailureGlyph /> };
+    return { className: CLASS.statusIconError, glyph: <FailureGlyph /> };
   }
   return {
     className: CLASS.statusIcon,
-    summaryClassName: CLASS.summaryIcon,
     glyph: <ToolIcon kind={STATUS_ICON_KIND[tone]} />,
   };
 }
 
-// The card's one head: status glyph, the warning chip a warning tone earns,
-// title and secondary line. The static line wraps it, every other card passes
-// it as the Disclosure summary; `inSummary` selects the glyph's seat and
-// nothing else differs.
+// The card's one head: status glyph in the shared icon rail, the warning chip
+// a warning tone earns, title and secondary line. Both static heads and
+// collapsible Disclosure summaries share this exact head and seat.
 function NotificationHead({
   tone,
-  inSummary = false,
   title,
   secondary,
 }: {
   tone: NotificationTone;
-  inSummary?: boolean;
   title: string;
   secondary?: ReactNode;
 }) {
@@ -150,11 +144,7 @@ function NotificationHead({
   const showWarningChip = tone === "warning";
   return (
     <>
-      <span
-        className={inSummary ? seat.summaryClassName : seat.className}
-        data-testid="notification-status-icon"
-        aria-hidden="true"
-      >
+      <span className={seat.className} data-testid="notification-status-icon" aria-hidden="true">
         {seat.glyph}
       </span>
       {showWarningChip && (
@@ -500,9 +490,7 @@ export function NotificationCard({
           variant="quiet"
           id={disclosure.key}
           defaultOpen={disclosure.fallback}
-          summary={
-            <NotificationHead tone={notification.tone} inSummary title={notification.title} secondary={secondary} />
-          }
+          summary={<NotificationHead tone={notification.tone} title={notification.title} secondary={secondary} />}
         >
           <div className={CLASS.expanded}>
             <Card>

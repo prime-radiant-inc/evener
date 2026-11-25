@@ -1,21 +1,47 @@
 {
   "name": "transcript-rail-icon-seats",
-  "description": "transcript rail: the full live thought's bulb, compact settled thought's bulb, compact live thought's Loader grid, and notification head's status glyph all seat in one avatar column - above 700px every slot starts at the turn's left edge with its row's text at the content edge and a 10px speaker gap (ToolRow's kind icon composes the same seat box but sits in its tool card's own column, covered by toolrow-failure-badge-corner), and below it every slot leads its line inline with the text one full gutter later; no seat ever escapes the turn's box",
+  "description": "transcript icon rail (Option A): every railed transcript row — live thought, compact settled thought, full settled thought, compact live thought Loader, static notification, collapsible notification, steering divider, tool call, folded tool run, and turn failure — seats its leading icon in one 0-24px avatar column above 700px with every row's text (and tool call second line + collapsible notification expanded card) starting on the shared 34px content edge with a 10px speaker gap; below 700px every slot leads its line inline at the content edge with text 34px later, and no seat escapes the turn's box",
   "cssFiles": [
     "styles/global.css",
     "styles/tokens.css",
     "styles/railseat.module.css",
     "styles/text.module.css",
     "styles/surface.module.css",
-    "panes/session/transcript/turnblock.module.css",
+    "styles/motion.module.css",
+    "widgets/chevron/chevron.module.css",
+    "widgets/internal/foldHeader.module.css",
+    "widgets/disclosure/disclosure.module.css",
     "widgets/loader/loader.module.css",
-    "panes/session/transcript/messages/notificationcard.module.css"
+    "panes/session/transcript/turnblock.module.css",
+    "panes/session/transcript/messages/thinkblock.module.css",
+    "panes/session/transcript/messages/notificationcard.module.css",
+    "panes/session/transcript/messages/steeringitem.module.css",
+    "panes/session/transcript/messages/systemnoticeitem.module.css",
+    "panes/session/transcript/toolcallitem.module.css",
+    "panes/session/transcript/toolrungroup.module.css"
   ],
+  "cssClassPrefixes": {
+    "widgets/disclosure/disclosure.module.css": "disclosure-",
+    "widgets/loader/loader.module.css": "loader-",
+    "panes/session/transcript/messages/thinkblock.module.css": "think-",
+    "panes/session/transcript/messages/notificationcard.module.css": "notif-",
+    "panes/session/transcript/messages/steeringitem.module.css": "steer-",
+    "panes/session/transcript/messages/systemnoticeitem.module.css": "sys-",
+    "panes/session/transcript/toolcallitem.module.css": "toolcall-",
+    "panes/session/transcript/toolrungroup.module.css": "toolrun-"
+  },
+  "allowlist": {
+    ".body": "Every component module defining .body is prefixed via cssClassPrefixes, so resolved.css emits distinct selectors with no collision.",
+    ".chevron": "disclosure and toolcallitem are prefixed via cssClassPrefixes; widgets/chevron keeps bare .chevron.",
+    ".label": "loader, thinkblock, steeringitem, and toolrungroup are each prefixed via cssClassPrefixes, so resolved.css has no shared .label selector.",
+    ".summary": "disclosure, notificationcard, toolcallitem, and toolrungroup are each prefixed via cssClassPrefixes, so resolved.css has no shared .summary selector.",
+    ".summaryText": "thinkblock is prefixed to think-summaryText via cssClassPrefixes, keeping it distinct from styles/surface.module.css's .summaryText."
+  },
   "viewport": { "width": 1200, "height": 1200, "deviceScaleFactor": 1, "mobile": false },
   "mutation": {
-    "declaration": "styles/railseat.module.css: the @media (min-width: 700px) .gutterPull { margin-left: calc(-1 * var(--speaker-gutter)) } shared pull reverted to 0 (one composed source now serves the Loader rail row and the notification head); separately, harness.html: the reproduced .thinkLabel and .compactThinkSummary pulls reverted to 0 one at a time",
-    "verified": "2026-11-21",
+    "declaration": "styles/railseat.module.css: @media (min-width: 700px) .gutterPull { margin-left: calc(-1 * var(--speaker-gutter)) } reverted to 0, and thinkblock.module.css .label pull reverted to 0",
+    "verified": "2026-11-25",
     "expect": "fail",
-    "note": "Verified the shared pull and each reproduced thinking-row pull independently. The shared .gutterPull and .thinkLabel mutations were verified 2026-09-21. On 2026-11-21, reverting .compactThinkSummary's pull to 0 failed the desktop rail-origin assertion naming the compact row (slot.left 34px right of turn.left); restoring it returned the four-row case to PASS. Each row is caught through its own source, so the cross-row comparisons and per-row origin arithmetic both carry the case."
+    "note": "Verified on 2026-11-25 against all 10 real-module rows: (1) reverting styles/railseat.module.css @media (min-width: 700px) .gutterPull to margin-left: 0 failed desktop alignment immediately on think-settled (slot.left=214.0 vs turn.left=180.0); (2) phone assertions caught toolDemoted at 35.0 vs rationale 69.0 before the @media (max-width: 699px) .row[data-intent=\"true\"] .summaryLine margin-left fix, and caught -3.6px to -7.2px vertical slot drift on Disclosure-hosted rows before adding align-self: center. Restoring/applying fixes returned all 10 rows across desktop (920px) and phone (390px) to PASS."
   }
 }

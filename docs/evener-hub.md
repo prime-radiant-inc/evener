@@ -429,22 +429,24 @@ not a listener or permission to start a hub. See [hub endpoints](evener-hub-endp
 
 ### Updating the hub from Settings
 
-Settings → Hub → Updates shows the running build (commit and channel), the
-build on disk, and whether the selected channel is ahead of the on-disk build.
-Install and Restart are separate actions:
+Settings → Hub → Updates displays the running build, the selected channel's
+latest build (with GitHub commit/release links, a compare link, and date
+stamps), and any differing binary already staged on disk in one card:
 
-- **Install update** downloads and installs the channel's archive with the
-  same code as `evener upgrade`. Every managed installer — the hub's own
-  Install action, `evener upgrade`, and another hub installing into the same
-  prefix — shares one install transaction
+- **Update and restart** downloads and installs the selected channel's archive
+  with the same code as `evener upgrade`, then automatically runs
+  `evener/hub/restart` so the new binary takes over in one click. Every managed
+  installer — the hub's own update action, `evener upgrade`, and another hub
+  installing into the same prefix — shares one install transaction
   ([`acquireInstallLock`](../internal/selfupdate/install_lock_unix.go),
   [`installExtractedBinaries`](../internal/selfupdate/update.go)): an
   exclusive `flock` on `.install.lock` in the managed bin directory
   serializes concurrent installs, each binary is staged under a temporary
   name, and a commit failure rolls back to the captured pre-install binaries
-  and entrypoint links. It does not restart the hub. The section then
-  shows "Installed `<build>`, running `<build>`" until Restart is used.
-- **Restart hub** execs the binary at the hub's launch path in place: same PID,
+  and entrypoint links. When a hub reports in-place restart unsupported, the
+  button degrades to **Install update** without restarting.
+- **Restart hub** (or **Restart to apply** when a different binary is already
+  staged on disk) execs the binary at the hub's launch path in place: same PID,
   arguments, working directory, environment, and stdio. Before answering, the
   hub probes that binary with `--version` and refuses a missing, unreadable, or
   non-Evener target; the running hub stays up on a refusal. On Unix the
@@ -453,16 +455,13 @@ Install and Restart are separate actions:
   restarted with the final digest check alone.
 - A restart is confirmed by process incarnation (`/api/health` `started_at`),
   not by version. A rebuild at the same commit still reloads the page.
+- Transient check, install, and restart errors surface as system toasts so the
+  action buttons stay anchored in place.
 - `evener hub restart` runs the same restart from a terminal and waits for the
   new process to answer. A lost response is ambiguous: the command succeeds
   only when the new incarnation appears, and fails on a refusal or timeout.
-- `evener/update/apply` remains for older installed clients; the Settings UI
-  no longer calls it.
-- A hub that predates separate restart shows the original combined **Update and
-  restart** action instead.
-- A current hub that reports restart disabled keeps the two-step controls; the
-  combined action is only for a hub whose response has no restart capability
-  field at all.
+- `evener/update/apply` remains for older installed clients and hubs whose
+  check response omits `restartSupported`.
 - A channel-lookup failure is reported in `checkError` while the local build,
   incarnation, and restart facts stay populated. Clients older than that field
   read the answer as "up to date" during the failure; the hub does not

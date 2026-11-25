@@ -551,9 +551,55 @@ test("the measured attention stack becomes transcript end clearance", async ({ o
   const clearance = screen.getByTestId("transcript-end-clearance");
   expect(clearance.style.height).toBe("96px");
   expect(clearance.closest('[data-row-id="live-edge"]')).toBeTruthy();
+  // The same measurement sizes the phone's composer reserve: the column
+  // publishes it so the end inset row takes the larger of the two reserves
+  // instead of stacking a second full composer band above the stack.
+  const reserveOwner = [...view.container.querySelectorAll<HTMLElement>("[style]")].find(
+    (node) => node.style.getPropertyValue("--overlay-clearance") !== "",
+  );
+  expect(reserveOwner?.style.getPropertyValue("--overlay-clearance")).toBe("96px");
   const pill = screen.getByTestId("flow-overlay-pill");
   const attention = screen.getByTestId("flow-overlay-attention");
   expect(pill.compareDocumentPosition(attention) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  view.unmount();
+});
+
+test("measures the phone footer and publishes --floating-chrome-height on the content column", async ({
+  onTestFinished,
+}) => {
+  onTestFinished(installMobileViewport());
+  vi.mocked(ComposerModule.Composer).mockRestore();
+  onTestFinished(() => {
+    vi.restoreAllMocks();
+    stubSessionSlots();
+  });
+  const fake = connectReadyFakeClient();
+  fake.on("thread/read", () => attentionRead("ref_a"));
+  const originalRect = HTMLElement.prototype.getBoundingClientRect;
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    if (
+      typeof this.className === "string" &&
+      this.className.includes("footer") &&
+      this.querySelector?.('[data-testid="composer-form"]')
+    ) {
+      return { top: 611, bottom: 844, height: 233, width: 390, left: 0, right: 390 } as DOMRect;
+    }
+    return originalRect.call(this);
+  });
+  const pane = attentionSession("mobile-chrome-height-pane");
+  workspaceStore.setState({ panes: [pane], focusedPaneId: pane.id });
+  window.history.replaceState({}, "", "/s/ref_a");
+
+  const view = renderAttentionSession(fake, pane);
+  await screen.findByRole("textbox", { name: "Message" });
+  await flushPendingTurnsProjectionForTests();
+
+  await waitFor(() => {
+    const owner = [...view.container.querySelectorAll<HTMLElement>("[style]")].find(
+      (node) => node.style.getPropertyValue("--floating-chrome-height") !== "",
+    );
+    expect(owner?.style.getPropertyValue("--floating-chrome-height")).toBe("233px");
+  });
   view.unmount();
 });
 

@@ -19,6 +19,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubtest"
 	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/internal/transcriptindex"
+	"primeradiant.com/evener/rendezvous"
 )
 
 // The #4344 regression shape: a hub serving a storm of expensive thread/reads
@@ -471,5 +472,97 @@ func awaitRepairsSettled(t *testing.T, path string, arms, recorded *atomic.Uint6
 	}
 	if !settled() {
 		t.Errorf("repair join timed out after %s: %d armed, %d recorded, in flight = %v — the cleanup cannot prove the last repair joined", joinBudget, arms.Load(), recorded.Load(), transcriptIndexRepairs.inFlight(path))
+	}
+}
+
+// TestResumeConfirmationSurvivesConcurrentUnconfirmedRefresh reproduces the
+// #7762 interleaving deterministically: a spawned daemon's direct ThreadRead
+// confirmation overlaps a concurrent RefreshAndWait (such as the read-storm
+// fallback path) whose StatusProber probe misses while the daemon is alive.
+func TestResumeConfirmationSurvivesConcurrentUnconfirmedRefresh(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "projects", "project-7762-0000000000")
+	workDir := t.TempDir()
+	resumeID := hubtest.SessionID(t)
+	buildRPCSessionWithWorkingDir(t, stateDir, resumeID, workDir)
+	past := newRebuiltPastIndex(t, filepath.Join(root, "projects", "*"))
+
+	readEntered := make(chan struct{})
+	releaseRead := make(chan struct{})
+	// Like TestResumeRendezvousSurvivesAReadStorm's peer, this fake daemon serves
+	// only ThreadRead so StatusProber's ThreadList probe misses and leaves the
+	// alive entry unconfirmed across concurrent RefreshAndWait calls.
+	daemon := appserver.NewServer(appserver.ServerConfig{SourceID: appwire.LocalSourceID})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(context.Context, appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		close(readEntered)
+		<-releaseRead
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{
+			ID:        resumeID,
+			SessionID: resumeID,
+			Status:    appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
+			Evener:    appwire.EvenerThread{Ref: localAppRef(resumeID), InstanceID: resumeID, Capabilities: appwire.ThreadCapabilities{Send: true}},
+		}}, nil
+	})
+	peer := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+	defer peer.Close()
+
+	runDir := filepath.Join(root, "run")
+	if err := os.MkdirAll(runDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	entry := rendezvous.Entry{
+		PID:          1001,
+		Protocol:     appwire.ProtocolVersion,
+		Endpoint:     "ws" + strings.TrimPrefix(peer.URL, "http"),
+		Address:      strings.TrimPrefix(peer.URL, "http://"),
+		SourceID:     appwire.LocalSourceID,
+		ThreadID:     resumeID,
+		SessionID:    resumeID,
+		WorkspaceRef: localAppRef(resumeID),
+		WorkingDir:   workDir,
+		StartedAt:    time.Now().UTC(),
+	}
+	roster := hubcore.NewRoster(runDir, &hubcore.StatusProber{})
+	roster.SetProcessAlive(func(int) bool { return true })
+	spawner := &fakeRPCSpawner{resume: func(_ context.Context, req hubcore.ResumeRequest) (rendezvous.Entry, error) {
+		if req.SessionID != resumeID {
+			t.Fatalf("resume session=%q, want %q", req.SessionID, resumeID)
+		}
+		writeRendezvous(t, runDir, entry)
+		return entry, nil
+	}}
+	cfg := hubcore.WebConfig{
+		RunDir:      runDir,
+		Past:        past,
+		Roster:      roster,
+		ResumeLocks: hubcore.NewResumeLocks(),
+		Spawner:     spawner,
+	}
+	sources := newHubSourceRegistry(cfg)
+
+	type resumeResult struct {
+		resp appwire.ThreadResumeResponse
+		err  error
+	}
+	done := make(chan resumeResult, 1)
+	go func() {
+		resp, err := resumeThreadLocked(t.Context(), cfg, sources, appwire.ThreadResumeParams{Ref: localAppRef(resumeID)})
+		done <- resumeResult{resp: resp, err: err}
+	}()
+	<-readEntered
+	if err := roster.RefreshAndWait(t.Context()); err != nil {
+		t.Fatalf("concurrent refresh: %v", err)
+	}
+	close(releaseRead)
+	res := <-done
+	if res.err != nil {
+		t.Fatalf("resume failed across concurrent unconfirmed refresh: %v", res.err)
+	}
+	if res.resp.Thread.ID != resumeID {
+		t.Fatalf("resumed thread ID = %q, want %q", res.resp.Thread.ID, resumeID)
+	}
+	if !roster.HasConfirmedEntry(entry) {
+		t.Fatal("resumed daemon was not confirmed in roster")
 	}
 }

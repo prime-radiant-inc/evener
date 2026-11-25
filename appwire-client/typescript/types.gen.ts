@@ -4529,6 +4529,14 @@ export interface SettingsHubOverview {
    */
   buildChannel?: string;
   /**
+   * BuildTime is the ISO8601 timestamp embedded at build time (buildinfo.BuildTime).
+   */
+  buildTime?: string;
+  /**
+   * ReleaseTag is the GitHub release tag this build was published from (buildinfo.ReleaseTag).
+   */
+  releaseTag?: string;
+  /**
    * ListenAddr is the hub HTTP server's bind address.
    * Source: web_settings.go settingsData.HubAddr (cfg.HubAddr).
    */
@@ -6014,11 +6022,16 @@ export interface UpdateCheckResponse {
   buildChannel: string;
   currentVersion: string;
   currentCommit: string;
+  currentReleaseTag?: string;
+  currentBuildTime?: string;
   latestTag?: string;
   latestCommit?: string;
+  latestPublishedAt?: string;
+  repoUrl?: string;
   updateAvailable: boolean;
   applicable: boolean;
   onDiskCommit?: string;
+  onDiskBuildTime?: string;
   onDiskError?: string;
   installAvailable: boolean;
   restartPending: boolean;

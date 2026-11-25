@@ -33,6 +33,7 @@ export default function assert(measurements) {
       badgePosition,
       intentLeft,
       cleanIntentLeft,
+      railBoxLeft,
       rowLeft,
       cleanRowLeft,
     } = m;
@@ -91,23 +92,37 @@ export default function assert(measurements) {
         `${mode} (${width}px): the failed row's rationale starts at ${intentLeft.toFixed(1)}, a clean row's at ${cleanIntentLeft.toFixed(1)} - the badge is taking layout space`,
       );
     }
-    // At every width the slot seats the text on the row's content edge: the
-    // pull (--speaker-gutter) cancels the seat's own width plus the row's
-    // column gap, into the seat column the tool row reserves in its own
-    // padding. The column belongs to the row, not to a breakpoint-gated turn
-    // gutter, so the phone leg nets to the content edge exactly as desktop does.
-    if (Math.abs(intentLeft - rowLeft) > TOLERANCE_PX) {
+    // Above 700px the icon slot pulls into the turn's --speaker-gutter so the
+    // rationale lands on the shared content edge (rowLeft) while the slot sits
+    // at railBoxLeft. Below 700px the gutter collapses, so the slot leads
+    // inline at rowLeft and the rationale starts one full gutter (34px) later.
+    if (slot.left < railBoxLeft - TOLERANCE_PX) {
       failures.push(
-        `${mode} (${width}px): the rationale starts at ${intentLeft.toFixed(1)} but the row's content edge is ${rowLeft.toFixed(1)} - the slot no longer nets the seat's width and the seat-column pull`,
+        `${mode} (${width}px): the icon slot starts at ${slot.left.toFixed(1)}, left of the turn container at ${railBoxLeft.toFixed(1)} - a gutter pull is eating padding that does not exist`,
       );
     }
-    // The icon stays inside the tool row's own box: the seat column is the
-    // row's padding, so a pull with no column to land in would hang the glyph
-    // outside the card.
-    if (m.callLeft !== undefined && slot.left < m.callLeft - TOLERANCE_PX) {
-      failures.push(
-        `${mode} (${width}px): the icon slot starts at ${slot.left.toFixed(1)}, left of its tool row's box at ${m.callLeft.toFixed(1)} - the row is not reserving the seat column the slot pulls into`,
-      );
+    if (mode === "desktop") {
+      if (Math.abs(slot.left - railBoxLeft) > TOLERANCE_PX) {
+        failures.push(
+          `${mode} (${width}px): the icon slot starts at ${slot.left.toFixed(1)}, not the rail origin ${railBoxLeft.toFixed(1)}`,
+        );
+      }
+      if (Math.abs(intentLeft - rowLeft) > TOLERANCE_PX) {
+        failures.push(
+          `${mode} (${width}px): the rationale starts at ${intentLeft.toFixed(1)} but the row's content edge is ${rowLeft.toFixed(1)} - the slot no longer nets the seat's width and the gutter pull`,
+        );
+      }
+    } else {
+      if (Math.abs(slot.left - rowLeft) > TOLERANCE_PX) {
+        failures.push(
+          `${mode} (${width}px): the icon slot starts at ${slot.left.toFixed(1)}, not inline at the content edge ${rowLeft.toFixed(1)}`,
+        );
+      }
+      if (Math.abs(intentLeft - (slot.left + 34)) > TOLERANCE_PX) {
+        failures.push(
+          `${mode} (${width}px): the rationale starts ${(intentLeft - slot.left).toFixed(1)}px right of the inline slot, expected one full gutter (34px)`,
+        );
+      }
     }
     if (Math.abs(rowLeft - cleanRowLeft) > TOLERANCE_PX) {
       failures.push(

@@ -85,6 +85,10 @@ body {
    * own scale included, so the engine's guess only ever departs from it. */
   -webkit-text-size-adjust: 100%;
   text-size-adjust: 100%;
+  /* Disable CoreText stem thickening on macOS so light ink on dark surfaces
+   * renders at its designed weights and open counterforms instead of heavier. */
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 ::selection {

@@ -944,7 +944,6 @@ function AppShellContent({ client: injectedClient, bannerDelayMs, bannerCreateCl
             onClientReplaced={onClientReplaced}
           />
           <ToastRegion />
-          <CommandPalette />
           {/* The cheatsheet overlay and the hold-modifier hints (Phase 4a):
             desktop-only, so on a touch viewport no cheatsheet action is ever
             registered and its trigger chords stay inert - RailHost's
@@ -980,6 +979,10 @@ function AppShellContent({ client: injectedClient, bannerDelayMs, bannerCreateCl
               StackHost mounts the same surface as its full-screen overlay. */}
             {viewportReady && !isMobile && route !== null && <ActivitySidebar />}
           </div>
+          {/* Render after CheatsheetOverlay and .content so the palette's
+            --z-dialog scrim paints above open drawers and modals while staying
+            below --z-toast. */}
+          <CommandPalette />
         </div>
       </MotionProvider>
     </ClientProvider>

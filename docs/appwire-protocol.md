@@ -4485,6 +4485,8 @@ Underlying Go kind: `string` (no struct fields).
 | `version` | string | yes |  |
 | `commit` | string | yes |  |
 | `buildChannel` | string | yes |  |
+| `buildTime` | string | yes |  |
+| `releaseTag` | string | yes |  |
 | `listenAddr` | string | yes |  |
 | `runDir` | string | yes |  |
 | `spawnTimeout` | string | yes |  |
@@ -5644,11 +5646,16 @@ Underlying Go kind: `string` (no struct fields).
 | `buildChannel` | string |  |  |
 | `currentVersion` | string |  |  |
 | `currentCommit` | string |  |  |
+| `currentReleaseTag` | string | yes |  |
+| `currentBuildTime` | string | yes |  |
 | `latestTag` | string | yes |  |
 | `latestCommit` | string | yes |  |
+| `latestPublishedAt` | string | yes |  |
+| `repoUrl` | string | yes |  |
 | `updateAvailable` | bool |  |  |
 | `applicable` | bool |  |  |
 | `onDiskCommit` | string | yes |  |
+| `onDiskBuildTime` | string | yes |  |
 | `onDiskError` | string | yes |  |
 | `installAvailable` | bool |  |  |
 | `restartPending` | bool |  |  |

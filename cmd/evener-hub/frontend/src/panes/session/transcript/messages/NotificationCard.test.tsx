@@ -230,6 +230,27 @@ test("the status icon is decorative: aria-hidden, no accessible name of its own"
   expect(screen.getByTestId("notification-status-icon").getAttribute("aria-hidden")).toBe("true");
 });
 
+test("collapsible and static notification heads share the exact same statusIcon seat class", () => {
+  const collapsible = render(<NotificationCard notification={notif({ tone: "success", message: "Report body" })} />);
+  const collapsibleClass = collapsible.getByTestId("notification-status-icon").className;
+  collapsible.unmount();
+
+  const staticHead = render(
+    <NotificationCard
+      notification={notif({
+        type: "delegate",
+        tone: "success",
+        title: "Delegate completed",
+        secondary: "stopped",
+        message: undefined,
+        excerpt: "",
+      })}
+    />,
+  );
+  const staticClass = staticHead.getByTestId("notification-status-icon").className;
+  expect(collapsibleClass).toBe(staticClass);
+});
+
 test("renders stable delegate identity as Delegate while shell identity remains Job", async () => {
   const _user = userEvent.setup();
   const { rerender } = render(

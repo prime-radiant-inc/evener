@@ -1,36 +1,36 @@
 /* The icon-rail seat: the shared geometry of the transcript's leading glyph
- * slots. Every "run" row (layoutRoles.ts) sits inside .runContent's reserved
- * --speaker-gutter padding above the 700px breakpoint (turnblock.module.css),
- * and each row's leading glyph seats in the SAME avatar column the speaker
- * avatars occupy. Three things are separately composable here:
+ * slots. Every "run" row (layoutRoles.ts) sits inside .runContent's or
+ * .intentGroupItems' reserved --speaker-gutter padding above the 700px
+ * breakpoint (turnblock.module.css / session.module.css), and each row's
+ * leading glyph seats in the SAME avatar column the speaker avatars occupy so
+ * every line of readable text aligns on one vertical margin. Three things are
+ * separately composable here:
  *
  * - .seat is the geometry and the ink: the avatar-column box pinned to the
  *   row's first line.
  * - .ambient is the strength of a glyph that sits bare in the rail: context,
  *   not content, so it recedes to half opacity.
- * - the pull into the seat column: .gutterPull where the column is the
- *   turn's gutter (it exists only above the breakpoint), .columnPull where
- *   the row reserves the column in its own padding (it exists at every
- *   width).
+ * - .gutterPull is the breakpoint-gated pull into the turn/group gutter above
+ *   700px; below 700px the gutter collapses and the slot leads its line inline.
  *
- * The notification head's .statusIcon composes the seat, the ambient
- * strength and the gutter pull. ToolRow's .rowIcon composes the seat alone -
- * its bare glyph stays at full strength - and its slot composes the column
- * pull. Loader's rail row composes the gutter pull alone (its slot is a grid
- * of cells, not a glyph box). ThinkBlock's bulb and SteeringItem's diamond
- * compose nothing: both are single-line, centred rows whose pull rides the
- * container (see thinkblock.module.css's .icon and
- * steeringitem.module.css's .railIcon). railseat.contract.test.ts pins the
- * seat and every consumer's wiring, and the layoutguard case
- * transcript-rail-icon-seats measures the column they must share.
+ * Notification heads (.statusIcon), settled thoughts (.summaryIcon), and
+ * steering dividers (.railIcon) compose the seat, ambient strength, and gutter
+ * pull. ToolRow (.rowIcon + .rowIconSlot), ToolRunGroup (.railChevron), and
+ * turn failures (.failureIcon) compose the seat and gutter pull at full
+ * strength. Loader's rail row composes the gutter pull alone (its slot is a
+ * grid of cells, not a glyph box). Live/compact thoughts' .icon is a
+ * single-line variant whose container (.label / .compactSummary) owns the
+ * desktop pull. railseat.contract.test.ts pins the seat and every consumer's
+ * wiring, and the layoutguard case transcript-rail-icon-seats measures the
+ * column they share.
  *
  * align-self: flex-start + height: 1lh pin the seat to line 1 no matter how
  * the row wraps below it. font-size matches the rows' first text line because
  * 1lh is the computed line-height of THIS element - without the match the
  * glyph box is a different height than the line it seats against, and the
- * glyph sits off the text's centre. (ToolRow narrows the box on
- * intent-bearing rows with a local line-height override - see
- * toolcallitem.module.css.) */
+ * glyph sits off the text's centre. (Body-sized rows override font-size to
+ * --font-size-body; ToolRow narrows the box on intent-bearing rows with a
+ * local line-height override - see toolcallitem.module.css.) */
 .seat {
   flex: none;
   align-self: flex-start;
@@ -54,20 +54,13 @@
   opacity: 0.5;
 }
 
-/* The pull into a seat column the row reserves in its own padding: one
- * --speaker-gutter, the width the seat's geometry sums to. Ungated, because
- * the row's own padding exists at every width. */
-.columnPull {
-  margin-left: calc(-1 * var(--speaker-gutter));
-}
-
-/* The desktop gutter pull, composed by the notification head's glyph and by
- * Loader's rail row. Above the breakpoint the row sits inside runContent's
+/* The desktop gutter pull, shared by every railed transcript row. Above the
+ * 700px breakpoint the row sits inside .runContent's or .intentGroupItems'
  * --speaker-gutter of reserved padding: pulling one gutter to the left seats
  * the glyph in the rail while the row's text stays at the content edge. The
  * negative margin would push the row out of the pane if the padding were not
- * there, which is why this pull shares runContent's exact breakpoint - below
- * it the gutter collapses and the slot simply leads its line inline. */
+ * there, which is why this pull shares .runContent's exact breakpoint - below
+ * it the gutter collapses and the slot leads its line inline. */
 @media (min-width: 700px) {
   .gutterPull {
     margin-left: calc(-1 * var(--speaker-gutter));

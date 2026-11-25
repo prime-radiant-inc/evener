@@ -50,6 +50,7 @@ const VIEWPORT = { width: 1400, height: 900 };
 // never matches and the tap-target floors this guard exists to measure are
 // styled out of the page.
 const MOBILE_VIEWPORT = { width: 390, height: 844, mobile: true, touch: true };
+const PHONE_PALETTE_VIEWPORT = { ...MOBILE_VIEWPORT, width: 400 };
 
 // Inside the 768-899px tablet band: StackHost keeps mobile/touch emulation
 // while splitting the board column beside the conversation.
@@ -728,6 +729,120 @@ function assertMobileResult(result) {
   if (!result.searchBox) failures.push("mobile inline search box is not rendered");
   if (result.resume) failures.push("mobile Jump back in action is still rendered");
   if (result.hints) failures.push("mobile key-binding hints are still rendered");
+  return failures;
+}
+
+async function measurePhoneSearchPalette(page) {
+  const { send } = page;
+  const dialogByTitleExpr = `(title) => [...document.querySelectorAll('[role="dialog"]')].find((el) => {
+    const id = el.getAttribute('aria-labelledby');
+    return id && document.getElementById(id)?.textContent?.trim() === title;
+  }) ?? null`;
+  await waitForDom(
+    send,
+    `Boolean((${dialogByTitleExpr})("Sessions") && document.querySelector('[data-testid="rail-search"]'))`,
+    "phone Sessions drawer and Search button mounted",
+  );
+  await clickControl(send, '[data-testid="rail-search"]');
+  await waitForDom(
+    send,
+    `Boolean((${dialogByTitleExpr})("Command palette"))`,
+    "Command palette opened from phone Sessions drawer",
+  );
+  await settleFiniteAnimations(send);
+  const hitProbe = `(() => {
+    const dialogByTitle = ${dialogByTitleExpr};
+    const sessions = dialogByTitle("Sessions");
+    const palette = dialogByTitle("Command palette");
+    const input = palette?.querySelector('[role="combobox"]');
+    const toast = document.querySelector('[aria-label="Notifications"] [data-kind="error"]');
+    const hitAt = (x, y) => {
+      const target = document.elementFromPoint(x, y);
+      const labelId = target?.getAttribute?.('aria-labelledby');
+      const labelledTitle = labelId ? document.getElementById(labelId)?.textContent?.trim() ?? null : null;
+      return {
+        tag: target?.tagName ?? null,
+        ariaLabel: target?.getAttribute?.('aria-label') ?? null,
+        labelledTitle,
+        inPalette: Boolean(palette && target && palette.contains(target)),
+        inSessions: Boolean(sessions && target && sessions.contains(target)),
+        isInput: Boolean(input && target && (target === input || input.contains(target))),
+        inToast: Boolean(toast && target && toast.contains(target)),
+      };
+    };
+    const ir = input?.getBoundingClientRect();
+    const tr = toast?.getBoundingClientRect();
+    return {
+      viewport: { width: innerWidth, height: innerHeight },
+      center: hitAt(innerWidth / 2, innerHeight / 2),
+      input: ir ? { ...hitAt(ir.left + ir.width / 2, ir.top + ir.height / 2), focused: document.activeElement === input } : null,
+      toast: tr ? hitAt(tr.left + tr.width / 2, tr.top + tr.height / 2) : null,
+    };
+  })()`;
+  const beforeToast = await evaluate(send, hitProbe);
+  await evaluate(
+    send,
+    "import('/src/widgets/toast/store.ts').then(({ pushToast }) => pushToast('error', 'Palette toast check'))",
+  );
+  await waitForDom(
+    send,
+    'Boolean(document.querySelector(\'[aria-label="Notifications"] [data-kind="error"]\'))',
+    "Toast rendered over open Command palette",
+  );
+  await settleFiniteAnimations(send);
+  const withToast = await evaluate(send, hitProbe);
+  await evaluate(
+    send,
+    "import('/src/widgets/toast/store.ts').then(({ resetToastStoreForTests }) => resetToastStoreForTests())",
+  );
+  await pressKey(send, "Escape", "Escape", 27);
+  await waitForDom(
+    send,
+    `!(${dialogByTitleExpr})("Command palette")`,
+    "Escape closes phone Command palette",
+  );
+  await settleFiniteAnimations(send);
+  const afterEscape = await evaluate(
+    send,
+    `(() => {
+      const sessions = (${dialogByTitleExpr})("Sessions");
+      const search = document.querySelector('[data-testid="rail-search"]');
+      const sr = search?.getBoundingClientRect();
+      const hit = sr ? document.elementFromPoint(sr.left + sr.width / 2, sr.top + sr.height / 2) : null;
+      return {
+        sessionsOpen: Boolean(sessions),
+        searchFocused: document.activeElement === search,
+        searchHit: Boolean(search && hit && search.contains(hit)),
+      };
+    })()`,
+  );
+  return { ...beforeToast, toast: withToast.toast, afterEscape };
+}
+
+function assertPhoneSearchPalette(result) {
+  const failures = [];
+  if (
+    result.viewport.width !== PHONE_PALETTE_VIEWPORT.width ||
+    result.viewport.height !== PHONE_PALETTE_VIEWPORT.height
+  ) {
+    failures.push(
+      `phone palette viewport is ${result.viewport.width}x${result.viewport.height}, expected ${PHONE_PALETTE_VIEWPORT.width}x${PHONE_PALETTE_VIEWPORT.height}`,
+    );
+  }
+  if (!result.center.inPalette || result.center.inSessions) {
+    failures.push(`phone Command palette center hit-test was occluded: ${JSON.stringify(result.center)}`);
+  }
+  if (!result.input?.isInput || !result.input.focused) {
+    failures.push(`phone Command palette input is not hit-testable/focused: ${JSON.stringify(result.input)}`);
+  }
+  if (!result.toast?.inToast) {
+    failures.push(`toast did not paint above Command palette: ${JSON.stringify(result.toast)}`);
+  }
+  if (!result.afterEscape.sessionsOpen || !result.afterEscape.searchFocused || !result.afterEscape.searchHit) {
+    failures.push(
+      `dismissing Command palette did not restore phone Sessions drawer/focus: ${JSON.stringify(result.afterEscape)}`,
+    );
+  }
   return failures;
 }
 
@@ -2234,6 +2349,13 @@ async function main() {
       MOBILE_VIEWPORT,
       "JSON.stringify({ sidebar: window.measureMobileSidebar(), tap: window.measureTapTargets() })",
     );
+    const phoneSearchPalette = await measureOnPage(
+      cdpEndpoint,
+      sharedTab.id,
+      vitePort,
+      PHONE_PALETTE_VIEWPORT,
+      measurePhoneSearchPalette,
+    );
     // The header at the rail's own width floor on a coarse pointer. measureOnPage
     // already fails the whole case when the row overflows the rail, so this
     // measurement's job is to put the rail AT that floor and report what the
@@ -2300,6 +2422,7 @@ async function main() {
       ...assertFloatingDock(floatingDock),
       ...assertMobileResult(mobile.sidebar),
       ...assertTapTargets(mobile.tap),
+      ...assertPhoneSearchPalette(phoneSearchPalette),
       ...assertTouchRailMinimum(touchMin),
       ...focusScrollFailures,
       ...tabletSplitFailures,

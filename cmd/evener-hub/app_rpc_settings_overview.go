@@ -58,6 +58,8 @@ func settingsHubOverview(cfg hubcore.WebConfig) *appwire.SettingsHubOverview {
 		Version:        Version,
 		Commit:         buildinfo.GitSHA,
 		BuildChannel:   buildinfo.BuildChannel(),
+		BuildTime:      buildinfo.BuildTime,
+		ReleaseTag:     buildinfo.ReleaseTag,
 		ListenAddr:     cfg.HubAddr,
 		RunDir:         cfg.RunDir,
 		SpawnTimeout:   cfg.SpawnTimeout.String(),

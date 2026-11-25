@@ -1,5 +1,5 @@
 import type { SettingsOperationStoreQuarantine } from "@evener/appwire-client";
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import { connectionStore, readyConnectionTransition } from "../../../stores/connection";
 import {
   loadSettingsOverview,
@@ -7,24 +7,19 @@ import {
   settingsOverviewStore,
   useSettingsOverviewStore,
 } from "../../../stores/settingsOverview";
-import { Disclosure, InlineNotice, PropertyList } from "../../../widgets";
+import { InlineNotice, PropertyList } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import styles from "./hub.module.css";
 import { HubResidents } from "./hubResidents";
 import { HubUpdates } from "./hubUpdates";
 import { SectionGate } from "./sectionGate";
-import { Code, FieldDim } from "./settingsField";
 
 const CLASS = {
   root: requireClass(styles.root, "hub.module.css", "root"),
 };
 
-// Never derive the mask from a credential. The overview carries only its age.
-const BEARER_TOKEN_MASK = "••••••••••••";
-
-/** Hub runtime, authentication status, updates and resident daemons. */
+/** Hub updates, resident daemons, and store health notices. */
 export function HubSection() {
-  const [detailsOpen, setDetailsOpen] = useState(false);
   const data = useSettingsOverviewStore((s) => s.data);
   const loading = useSettingsOverviewStore((s) => s.loading);
   const error = useSettingsOverviewStore((s) => s.error);
@@ -65,45 +60,6 @@ export function HubSection() {
       <HubUpdates />
       <HubResidents />
       <OperationStoreQuarantineNotice quarantine={hub?.operationStoreQuarantine} />
-      <Disclosure summary="Technical details" open={detailsOpen} onOpenChange={setDetailsOpen}>
-        <PropertyList
-          layout="stacked"
-          rows={[
-            {
-              label: "Listen address",
-              value: hub?.listenAddr ?? "",
-              rowProps: { "data-field": "listen-address" },
-              help: (
-                <>
-                  Address and port the hub HTTP server binds to. Change via <Code>addr</Code> in{" "}
-                  <Code>~/.config/evener/hub.toml</Code> or <Code>--addr</Code>.
-                </>
-              ),
-            },
-            {
-              label: "Bearer token",
-              value: (
-                <>
-                  {BEARER_TOKEN_MASK} {hub?.bearerTokenAge !== undefined && <FieldDim>{hub.bearerTokenAge}</FieldDim>}
-                </>
-              ),
-              rowProps: { "data-field": "bearer-token" },
-              help: (
-                <>
-                  Used to authenticate the TUI or a remote browser. Stored as <Code>auth-token</Code> in the hub state
-                  directory and reused across restarts.
-                </>
-              ),
-            },
-            {
-              label: "Spawn timeout",
-              value: hub?.spawnTimeout ?? "",
-              rowProps: { "data-field": "spawn-timeout" },
-              help: "How long the hub waits for a daemon to report ready after spawn before treating it as failed.",
-            },
-          ]}
-        />
-      </Disclosure>
     </div>
   );
 }

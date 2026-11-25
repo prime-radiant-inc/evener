@@ -53,10 +53,12 @@ type CheckOptions struct {
 // CheckResult reports what the channel currently points at and whether the
 // running build (CurrentSHA) differs from it.
 type CheckResult struct {
-	Channel         string `json:"channel"`
-	LatestTag       string `json:"latest_tag"`
-	LatestCommit    string `json:"latest_commit"`
-	UpdateAvailable bool   `json:"update_available"`
+	Channel           string `json:"channel"`
+	LatestTag         string `json:"latest_tag"`
+	LatestCommit      string `json:"latest_commit"`
+	LatestPublishedAt string `json:"latest_published_at,omitempty"`
+	RepoURL           string `json:"repo_url,omitempty"`
+	UpdateAvailable   bool   `json:"update_available"`
 }
 
 // Check resolves the channel's latest commit through GitHub (public repo,
@@ -79,10 +81,10 @@ func Check(ctx context.Context, opts CheckOptions) (CheckResult, error) {
 	}
 	apiBase := fmt.Sprintf("%s/repos/%s/%s", apiURL, owner, repo)
 
-	var tag, latestCommit string
+	var tag, latestCommit, latestPublishedAt string
 	switch opts.Channel {
 	case "snapshot":
-		body, err := getText(ctx, client, releaseURL(repoURL, "snapshot", snapshotVersionAsset))
+		body, headers, err := getTextWithHeaders(ctx, client, releaseURL(repoURL, "snapshot", snapshotVersionAsset))
 		if err != nil {
 			return CheckResult{}, err
 		}
@@ -91,9 +93,15 @@ func Check(ctx context.Context, opts CheckOptions) (CheckResult, error) {
 		if latestCommit == "" {
 			return CheckResult{}, fmt.Errorf("%s %w", snapshotVersionAsset, errSnapshotNamesNoCommit)
 		}
+		if lm := strings.TrimSpace(headers.Get("Last-Modified")); lm != "" {
+			if parsed, err := http.ParseTime(lm); err == nil {
+				latestPublishedAt = parsed.UTC().Format(time.RFC3339)
+			}
+		}
 	case "release":
 		var latest struct {
-			TagName string `json:"tag_name"`
+			TagName     string `json:"tag_name"`
+			PublishedAt string `json:"published_at"`
 		}
 		if err := getJSON(ctx, client, apiBase+"/releases/latest", &latest); err != nil {
 			return CheckResult{}, err
@@ -102,8 +110,14 @@ func Check(ctx context.Context, opts CheckOptions) (CheckResult, error) {
 			return CheckResult{}, errors.New("latest release has no tag_name")
 		}
 		tag = latest.TagName
+		latestPublishedAt = strings.TrimSpace(latest.PublishedAt)
 		var commit struct {
-			SHA string `json:"sha"`
+			SHA    string `json:"sha"`
+			Commit struct {
+				Committer struct {
+					Date string `json:"date"`
+				} `json:"committer"`
+			} `json:"commit"`
 		}
 		if err := getJSON(ctx, client, apiBase+"/commits/"+url.PathEscape(tag), &commit); err != nil {
 			return CheckResult{}, err
@@ -112,6 +126,9 @@ func Check(ctx context.Context, opts CheckOptions) (CheckResult, error) {
 			return CheckResult{}, fmt.Errorf("tag %s resolved to no commit", tag)
 		}
 		latestCommit = commit.SHA
+		if latestPublishedAt == "" {
+			latestPublishedAt = strings.TrimSpace(commit.Commit.Committer.Date)
+		}
 	default:
 		return CheckResult{}, fmt.Errorf("unknown update channel %q; use release or snapshot", opts.Channel)
 	}
@@ -120,10 +137,12 @@ func Check(ctx context.Context, opts CheckOptions) (CheckResult, error) {
 	// collision would report up to date and hide an available update.
 	// Fail open — such an input is always treated as stale.
 	return CheckResult{
-		Channel:         opts.Channel,
-		LatestTag:       tag,
-		LatestCommit:    latestCommit,
-		UpdateAvailable: !CommitIsCurrent(latestCommit, opts.CurrentSHA),
+		Channel:           opts.Channel,
+		LatestTag:         tag,
+		LatestCommit:      latestCommit,
+		LatestPublishedAt: latestPublishedAt,
+		RepoURL:           strings.TrimRight(repoURL, "/"),
+		UpdateAvailable:   !CommitIsCurrent(latestCommit, opts.CurrentSHA),
 	}, nil
 }
 
@@ -144,9 +163,14 @@ func repoOwnerName(repoURL string) (string, string, error) {
 // become an error carrying the status and GitHub's own "message" field, so
 // a rate-limit response reads as such instead of a bare 403.
 func httpGet(ctx context.Context, client *http.Client, u, accept string) ([]byte, error) {
+	body, _, err := httpGetWithHeaders(ctx, client, u, accept)
+	return body, err
+}
+
+func httpGetWithHeaders(ctx context.Context, client *http.Client, u, accept string) ([]byte, http.Header, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	req.Header.Set("Accept", accept)
 	// GitHub requires a User-Agent (403 without one). Go's default
@@ -156,12 +180,12 @@ func httpGet(ctx context.Context, client *http.Client, u, accept string) ([]byte
 	req.Header.Set("User-Agent", "evener/"+buildinfo.Version())
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("GET %s: %w", u, err)
+		return nil, nil, fmt.Errorf("GET %s: %w", u, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
-		return nil, fmt.Errorf("GET %s: read body: %w", u, err)
+		return nil, nil, fmt.Errorf("GET %s: read body: %w", u, err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		var gh struct {
@@ -169,11 +193,11 @@ func httpGet(ctx context.Context, client *http.Client, u, accept string) ([]byte
 		}
 		_ = json.Unmarshal(body, &gh)
 		if gh.Message != "" {
-			return nil, fmt.Errorf("GET %s: %s: %s", u, resp.Status, gh.Message)
+			return nil, nil, fmt.Errorf("GET %s: %s: %s", u, resp.Status, gh.Message)
 		}
-		return nil, fmt.Errorf("GET %s: %s", u, resp.Status)
+		return nil, nil, fmt.Errorf("GET %s: %s", u, resp.Status)
 	}
-	return body, nil
+	return body, resp.Header, nil
 }
 
 // getJSON performs one GET and decodes a 2xx JSON body.
@@ -188,12 +212,11 @@ func getJSON(ctx context.Context, client *http.Client, u string, out any) error 
 	return nil
 }
 
-// getText performs one GET and returns the body as a string, through the
-// same transport, bounds, and error surface as getJSON.
-func getText(ctx context.Context, client *http.Client, u string) (string, error) {
-	body, err := httpGet(ctx, client, u, "application/octet-stream")
+// getTextWithHeaders performs one GET and returns the body and response headers.
+func getTextWithHeaders(ctx context.Context, client *http.Client, u string) (string, http.Header, error) {
+	body, headers, err := httpGetWithHeaders(ctx, client, u, "application/octet-stream")
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
-	return string(body), nil
+	return string(body), headers, nil
 }

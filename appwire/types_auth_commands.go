@@ -1018,6 +1018,10 @@ type SettingsHubOverview struct {
 	Commit string `json:"commit,omitempty"`
 	// BuildChannel is buildinfo.BuildChannel(): release, snapshot, or dev.
 	BuildChannel string `json:"buildChannel,omitempty"`
+	// BuildTime is the ISO8601 timestamp embedded at build time (buildinfo.BuildTime).
+	BuildTime string `json:"buildTime,omitempty"`
+	// ReleaseTag is the GitHub release tag this build was published from (buildinfo.ReleaseTag).
+	ReleaseTag string `json:"releaseTag,omitempty"`
 	// ListenAddr is the hub HTTP server's bind address.
 	// Source: web_settings.go settingsData.HubAddr (cfg.HubAddr).
 	ListenAddr string `json:"listenAddr,omitempty"`

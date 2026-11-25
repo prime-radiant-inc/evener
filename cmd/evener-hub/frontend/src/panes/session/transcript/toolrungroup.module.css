@@ -1,10 +1,18 @@
-/* A folded run's count and name align with the calls it reveals. */
+/* A folded run's chevron seats in the shared icon rail so its label aligns
+ * with the calls it reveals. */
 
 .summary {
   composes: toolRowInsets from "../../../styles/surface.module.css";
-  padding: var(--tool-card-row-pad) var(--tool-card-inset);
+  padding: var(--tool-card-row-pad) 0;
   font-family: var(--font-sans);
   font-size: var(--font-size-ui);
+}
+
+.railChevron {
+  composes: seat from "../../../styles/railseat.module.css";
+  /* biome-ignore lint/suspicious/noDuplicateProperties: css-modules composes takes one declaration per composed class */
+  composes: gutterPull from "../../../styles/railseat.module.css";
+  align-self: center;
 }
 
 .summary:focus-visible {

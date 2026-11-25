@@ -53,10 +53,12 @@ losing the conversation that made the evidence relevant.
   Open navigates independently. Neither action should accidentally trigger the other.
   Progressive disclosure costs an extra action to inspect detail; it must not conceal
   the reason to inspect it.
+- **Shared desktop icon rail (Option A).** Above `700px`, every transcript run row sits inside `.runContent` or `.intentGroupItems` (`--speaker-gutter`, 34px) and seats its leading icon in the `0–24px` speaker-avatar column via `styles/railseat.module.css` (`.seat` + `.gutterPull`) — live/compact/settled thoughts, tool calls, folded tool runs, static and collapsible notifications, steering dividers, and turn failures — so every line of readable text aligns on one unbroken vertical margin at `34px`. Below `700px`, the gutter collapses and leading icons sit inline ahead of their line.
 - **Keep thinking at intent density.** Chat omits reasoning rows. At Intent and above,
   compact live and settled summaries share the icon rail, sans UI type, title line
   height, and a `--rhythm-item` vertical inset. Their chevrons disclose the same quiet,
-  italic reading text. Full keeps the richer reasoning presentation.
+  italic reading text. Full keeps the richer reasoning presentation with its settled
+  bulb seated in the same icon rail.
 - **Keep different facts distinct.** Delegate lifecycle, attention, immutable launch receipt
   and child-authored report answer different questions. A successful launch is not finished
   work; an earlier report is not current activity. Prefer an honest unknown to an inferred
@@ -687,7 +689,7 @@ The radius ladder has five steps, and each has named users:
 | `--radius-control` | 8px | buttons, fields, rail and tree rows, dock tabs, menu items, tooltips, icon seats, an inset band inside a card |
 | `--radius-pane` | 12px | `Card`, code and diff blocks, menus, dialogs, popovers, toasts, hover cards, grouped phone lists |
 | `--radius-panel` | 16px | the largest surfaces: the prompt card, the notes panel's lower corners, the bottom sheet's top corners |
-| `--radius-pill` | 999px | chips, badges, count and status pills, switch, meter and segmented-control tracks, round avatars |
+| `--radius-pill` | 999px | control geometry only — chips, badges, count pills, switch, meter and segmented-control tracks, round avatars. Never a surface shape: surfaces take the ladder (`--radius-control` for controls and small chrome, `--radius-pane` for floating chrome one step above the buttons inside it, `--radius-panel` for cards). |
 
 A surface nested in another takes the next step down, so the two arcs stay concentric:
 a `--radius-control` button one `--space-2` inside the `--radius-panel` prompt card, a
@@ -812,7 +814,7 @@ during implementation (noted inline); this table is the one to trust.
 | **OpenButton** | `{label?: string ("Open"); onClick?; tabIndex?; describedBy?: string; href?: string; word?: string ("open")}` | The standard "open out of this surface" affordance, one treatment everywhere: a quiet `sm` IconButton carrying the box-arrow **OpenIcon** glyph (exported alongside), tooltip "Open", accessible name `label` — keep it specific ("Open transcript", "Open beside: src/a.ts"), since many open controls share a screen. `href` renders an `<a>` instead (new tab, no opener, no referrer) showing `word` before the glyph — settings' "open in editor". Owns `stopPropagation` because it always rides something clickable (a disclosure head, a tool row, a tree row). |
 | **Cadence** | `{state: "idle"\|"working"\|"needs-you"\|"failed"\|"ended"; frameTimes: number[]; now: number}` | The signature widget — see §1. Pure (no timers, no `Date.now()`); ticks render as SVG `<rect>`s, age→opacity in 4 buckets (15s each, half-open `Math.floor` boundaries); needs-you tints the freshest ticks amber too ("trailing edge"), not just the dot. |
 | **Chip** | `{children: ReactNode; tone?: "neutral"\|"attention"\|"alive"\|"danger"; onRemove?: () => void}` | Small labeled pill (`--radius-pill`); `onRemove` renders a remove button, `aria-label` derived from string children or `"Remove"`. |
-| **Badge** | `{count: number; tone?: "neutral"\|"attention"\|"alive"\|"danger"}` | Numeric count pill (`--radius-pill`), caps display at "99+". The neutral tone sits on `--field`, so the pill reads on a `--surface-1` card. |
+| **Badge** | `{count: number; tone?: "neutral"\|"attention"\|"alive"\|"danger"}` | Compact 20px numeric count pill (`--radius-pill`, tabular figures), caps display at "99+". The neutral tone uses `--surface-inset` with a `--edge` hairline so it reads cleanly on both `--surface-0` headers and `--surface-1` cards. |
 | **StatusDot** | `{state: CadenceState; decorative?: boolean}`; also exports `STATUS_LABEL: Record<CadenceState, string>` | The one session/agent status indicator (imports `CadenceState` from Cadence, doesn't redeclare it) — for tighter contexts than Cadence's full trace: rail rows, the rail header's needs-you chip, pane tabs, ancestor spines, the command palette, delegate rows. Carries its own accessible name since nothing else labels it standalone; the names (`Idle` / `Working` / `Needs you` / `Failed` / `Ended`) are the one status vocabulary, exported as `STATUS_LABEL` for text that names a session's state (a hover card's status line). A caller whose own adjacent text already names the status passes `decorative`, which drops the glyph's role and name (kept: its shape, geometry and motion) so assistive tech hears one label, not two — the compact ancestor spine, whose exact runtime label is the one that stays, uses it. `working` is an activity indicator: an open `--alive` ring that turns continuously (`--motion-duration-activity`, linear), the one continuous motion sanctioned for agent liveness (§5); under `prefers-reduced-motion: reduce` it is the static alive dot. `failed` is a `--danger` diamond (`data-shape="diamond"`, a 7px square turned 45°) so it never differs from needs-you by hue alone (§1); every other state is a round dot (`data-shape="dot"`: `--attention`, `--ink-low`). Callers that show only signal states (working / needs-you / failed) gate rendering themselves (`SIGNAL_STATES` in `shell/sessionStatus.ts`). |
 | **FailureGlyph** | none | The `--danger` ✗ that marks something as failed, sized to sit on a line of text. In a tool row it badges the kind icon's bottom-right corner rather than taking an inline seat of its own; in a notification or turn-failure line it leads the text. A widget because `--danger` may only be referenced from an allowlisted widget stylesheet; carries its own accessible name ("Failed") since it is often a row's only failure signal. Passive: no interaction, no focus. |
 | **SteeringGlyph** | none | The hollow ◇ that marks a system steering message, drawn as SVG because the subsetted Plex Sans has no U+25xx glyphs. Decorative (`aria-hidden`) — the row's own text says "System steered: …" — and inherits currentColor. |
@@ -1162,11 +1164,12 @@ steering the agent. The first two are marked. This section marks the third.
 **The rule: a glyph in the gutter means the agent's instructions changed. An
 empty gutter means it is a passive fact.**
 
-The transcript already has a 10px glyph gutter, sized to `SteeringGlyph` and
-`FailureGlyph`'s own SVG (`viewBox="0 0 10 10"` — neither widget declares a wider
-box) — `toolcallitem`'s `.row` and `systemnoticeitem`'s `.failure` share one
-`display: flex; align-items: baseline; gap: var(--space-2)` grammar. This section
-assigns that column.
+The transcript shares one desktop icon rail (`styles/railseat.module.css`) in
+the `0–24px` speaker-avatar column above `700px`, collapsing inline below
+`700px`. `SteeringDivider` (`.railIcon`) and `SystemNoticeItem` (`.failureIcon`)
+compose `.seat` and `.gutterPull` into that column so their text aligns on the
+same `34px` reading margin as prose, thoughts, notifications, and tool rows.
+This section assigns the system-voice glyphs in that column.
 
 | gutter | member | treatment |
 |---|---|---|
@@ -1526,6 +1529,15 @@ collapsed or expanded. It announces current work to assistive technology
 without adding a visible row. Model and reasoning effort are session facts in
 Overview; Settings owns the default choices. The desktop header, model and
 effort controls, and pane footer keep their independent behavior.
+
+The phone composer floats as one card over the transcript with no outer
+rectangle or border-top: the card is `--field` on `--radius-panel` (the same
+radius the desktop card carries, concentric with its `--radius-control` verbs)
+with a 16px backdrop blur and a soft shadow over a transparent gradient scrim.
+Content scrolls behind the floating card. At the end, the last turn clears the
+card and any floating reading controls. Those controls sit one gutter above the
+card, whether a draft grows or the keyboard closes and exposes the home
+indicator.
 
 **One search field per Sessions surface.** Below 900px (both the phone Sessions
 drawer and the persistent tablet Sessions board), the rail header omits the

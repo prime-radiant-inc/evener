@@ -149,10 +149,12 @@ test("variant quiet marks the chip quiet", () => {
   expect(container.firstElementChild?.getAttribute("data-variant")).toBe("quiet");
 });
 
-test("the quiet variant declares a fill-free rule for its variant attribute", () => {
+test("the quiet variant declares a fill-free rule without narrowing the shared pill padding", () => {
   const here = dirname(fileURLToPath(import.meta.url));
   const css = readFileSync(join(here, "chip.module.css"), "utf8");
+  expect(css).toMatch(/\.chip\s*\{[^}]*height:\s*20px[^}]*font-weight:\s*var\(--font-weight-medium\)/s);
   expect(css).toMatch(/\.chip\[data-variant="quiet"\]\s*\{[^}]*background:\s*transparent/);
+  expect(css).not.toMatch(/\.chip\[data-variant="quiet"\]\s*\{[^}]*padding:\s*0\s+var\(--space-1\)/);
 });
 
 test("forwards a caller className after its own classes", () => {
