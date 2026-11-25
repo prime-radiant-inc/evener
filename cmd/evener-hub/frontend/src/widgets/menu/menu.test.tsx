@@ -531,6 +531,40 @@ test("a pinch zoom that caps the popup leaves the menu open", async () => {
   }
 });
 
+// The visible viewport can be a panned sub-rect of the layout viewport.
+// Placement runs in the sub-rect's coordinates and is translated back, so a
+// trigger near its edge stays where the reader sees it instead of being
+// clamped against layout area nobody can see.
+test("a panned visual viewport places the menu in layout coordinates", async () => {
+  const user = userEvent.setup();
+  const fakeViewport = new EventTarget() as EventTarget & {
+    width: number;
+    height: number;
+    offsetLeft: number;
+    offsetTop: number;
+  };
+  fakeViewport.width = 800;
+  fakeViewport.height = 400;
+  fakeViewport.offsetLeft = 0;
+  fakeViewport.offsetTop = 400;
+  vi.stubGlobal("visualViewport", fakeViewport);
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "BUTTON") return box(100, 500, 40, 28);
+    if (this.tagName === "UL") return box(0, 0, 160, 120);
+    return box(0, 0, 0, 0);
+  });
+  stubPopupLayoutBox(window, 160, 120);
+  try {
+    render(<Menu trigger="Actions" items={items()} />);
+    await user.click(screen.getByRole("button", { name: "Actions" }));
+    // The trigger sits 100 into the visible region, which starts at 400.
+    expect(screen.getByRole("menu").style.top).toBe("532px"); // 500 + 28 + 4
+  } finally {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  }
+});
+
 // One window resize can reach the widget twice: the observer delivers the rail
 // that shrank, and a second box delivers the popup re-placed beside it. The
 // second delivery must not be read as a fresh layout change - it is the same

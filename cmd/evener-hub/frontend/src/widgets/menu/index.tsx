@@ -15,9 +15,11 @@ import { ownerWindowOf } from "../internal/documentRealm";
 import { requireClass } from "../internal/requireClass";
 import { firstEnabledIndex, lastEnabledIndex, useRovingRadio } from "../internal/rovingRadio";
 import { useDismissOnOutsidePress } from "../internal/useDismissOnOutsidePress";
+import { useEscapeToClose } from "../internal/useEscapeToClose";
 import { useOwnedDocument } from "../internal/useOwnedDocument";
 import { usePresence } from "../internal/usePresence";
 import { watchViewport } from "../internal/viewportWatch";
+import { positionFromVisibleViewport, rectInVisibleViewport, visibleViewportBounds } from "../internal/visibleViewport";
 // Flip-then-clamp overlay placement, shared verbatim with the Popover
 // primitive (§3.4). computeMenuPosition/resolveAxis/EDGE_MARGIN/TRIGGER_GAP
 // were extracted from here into widgets/popover/computePosition.ts so Menu
@@ -163,15 +165,6 @@ function triggerVisibleOnScreen(element: HTMLElement, ownerWindow: Window): bool
   const rect = element.getBoundingClientRect();
   if (rect.width <= 0 || rect.height <= 0) return false;
   return intersectsRegion(rect, visibleRegionAround(element, ownerWindow, rect));
-}
-
-/** The window's visible region: the VISUAL viewport where there is one, and the
- * layout viewport where there is not (jsdom, and any engine predating it), the
- * two being one region there. */
-function visibleViewportBounds(ownerWindow: Window): { left: number; top: number; width: number; height: number } {
-  const viewport = ownerWindow.visualViewport;
-  if (!viewport) return { left: 0, top: 0, width: ownerWindow.innerWidth, height: ownerWindow.innerHeight };
-  return { left: viewport.offsetLeft, top: viewport.offsetTop, width: viewport.width, height: viewport.height };
 }
 
 function visibleRegionAround(element: HTMLElement, ownerWindow: Window, rect: DOMRect): VisibleRegion {
@@ -909,6 +902,10 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
     [ownerDocument],
   );
 
+  // Escape closes the menu and stops there, so an enclosing overlay does not
+  // also close.
+  const handleEscape = useEscapeToClose(closeMenu);
+
   // Lay the trigger out of sight and the menu must still give focus back to
   // it - the reader was on it a moment ago - but the scope's restore is a
   // plain focus(), and focusing an element the reader cannot see scrolls its
@@ -1221,13 +1218,7 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
     // flip-then-clamp math unchanged. Without a visual viewport the two are
     // the same region and the translation is zero.
     const visible = visibleViewportBounds(ownerWindow);
-    const localTriggerRect = {
-      ...triggerRect,
-      left: triggerRect.left - visible.left,
-      right: triggerRect.right - visible.left,
-      top: triggerRect.top - visible.top,
-      bottom: triggerRect.bottom - visible.top,
-    } as DOMRect;
+    const localTriggerRect = rectInVisibleViewport(triggerRect, visible);
     // The stylesheet caps the popup at 100dvh minus both margins, which is the
     // LAYOUT viewport. After a pinch zoom the visible area can be half of that,
     // so the popup keeps a height it cannot show: it is placed at the visible
@@ -1320,7 +1311,7 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
     // mutation that changes nothing about placement (a text node elsewhere in
     // the same scroller), and a state write per notification would re-render
     // the open popup on every one of them.
-    const next = { left: placed.left + visible.left, top: placed.top + visible.top };
+    const next = positionFromVisibleViewport(placed, visible);
     setPosition((current) =>
       current !== null && current.left === next.left && current.top === next.top ? current : next,
     );
@@ -1602,6 +1593,8 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
   }
 
   function handleMenuKeyDown(event: KeyboardEvent<HTMLUListElement>) {
+    // Escape is the shared close gesture, consumed before the switch below.
+    if (handleEscape(event)) return;
     // Roving and activation both start from the item that is actually
     // focused, resolved against the list as it is NOW - not from a stored
     // index. See activeId's own comment: an index written before the caller
@@ -1615,7 +1608,7 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
     // then be open with focus outside it and Escape would no longer reach the
     // popup. preventDefault alone does not stop that: the enclosing handler is
     // looking at the key, not at the default action.
-    const handled = ["ArrowDown", "ArrowUp", "Home", "End", "Enter", " ", "Escape"];
+    const handled = ["ArrowDown", "ArrowUp", "Home", "End", "Enter", " "];
     if (handled.includes(event.key)) event.stopPropagation();
     switch (event.key) {
       case "ArrowDown":
@@ -1657,16 +1650,6 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
         }
         break;
       }
-      case "Escape":
-        // This handler only exists in the tree while the menu is open
-        // (it's on the popup <ul>, which {isOpen && ...} gates), so
-        // reaching this case always means there's a popup here to close -
-        // stop the event from also reaching an enclosing overlay (e.g. a
-        // Dialog this menu is nested in).
-        event.preventDefault();
-        event.stopPropagation();
-        closeMenu();
-        break;
       case "Tab":
         // Tab is FocusScope's job while focus sits on a TABBABLE menu item, and
         // its trap wraps at the ends of that list. Two states are not one of
