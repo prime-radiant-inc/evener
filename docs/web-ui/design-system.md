@@ -1484,6 +1484,13 @@ without adding a visible row. Model and reasoning effort are session facts in
 Overview; Settings owns the default choices. The desktop header, model and
 effort controls, and pane footer keep their independent behavior.
 
+Below 900px, the collapsed whiteboard (session notes) rests as one quiet
+centered line above the transcript — an em-dash-framed count in caption ink
+with no card chrome, keeping the body's own top spacing and growing to the
+44px tap floor on touch. Its first-priority content rides the trigger's
+accessible name, and expanding opens the header-attached notes card with full
+read and edit controls; desktop keeps its collapsed preview card.
+
 ## Source Serif 4 license notice
 
 From `@fontsource-variable/source-serif-4` 5.3.0, distributed unmodified.
