@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent"
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/schema"
 	taskpkg "primeradiant.com/evener/agent/task"
@@ -273,7 +274,14 @@ func TestServerAppWireGoalSetWithoutGoalFuncIsUnavailable(t *testing.T) {
 func TestServerAppWireTurnStartAcceptsCodexInput(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
-	installProjectedMutationCallbacksForTest(srv, RetrySafeTurnFunctions{})
+	var gotText string
+	var gotImages []agent.ImageAttachment
+	installProjectedMutationCallbacksForTest(srv, RetrySafeTurnFunctions{
+		Start: func(params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
+			gotText, gotImages = inputFromItems("", params.Input)
+			return appwire.TurnStartResponse{Turn: appwire.Turn{ID: "turn_started_1", Status: appwire.TurnStatusInProgress}}, nil
+		},
+	})
 
 	conn := srv.AppServer().NewConnection("test")
 	init := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
@@ -290,16 +298,11 @@ func TestServerAppWireTurnStartAcceptsCodexInput(t *testing.T) {
 	if resp.Kind() != appwire.MessageResponse {
 		t.Fatalf("resp=%v", resp.Kind())
 	}
-	select {
-	case msg := <-srv.InputCh():
-		if msg.Text != "hello" {
-			t.Fatalf("text=%q", msg.Text)
-		}
-		if len(msg.Images) != 1 || msg.Images[0].MediaType != "image/png" || string(msg.Images[0].Data) != "png" || msg.Images[0].Name != "shot.png" {
-			t.Fatalf("images=%+v", msg.Images)
-		}
-	default:
-		t.Fatal("input was not queued")
+	if gotText != "hello" {
+		t.Fatalf("text=%q", gotText)
+	}
+	if len(gotImages) != 1 || gotImages[0].MediaType != "image/png" || string(gotImages[0].Data) != "png" || gotImages[0].Name != "shot.png" {
+		t.Fatalf("images=%+v", gotImages)
 	}
 }
 
@@ -474,7 +477,7 @@ func TestServerAppWireTurnSteerPreservesImages(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
 	var gotText string
-	var gotImages []ImageAttachment
+	var gotImages []agent.ImageAttachment
 	installProjectedMutationCallbacksForTest(srv, RetrySafeTurnFunctions{
 		Steer: func(params appwire.TurnSteerParams) (appwire.TurnSteerResponse, error) {
 			gotText, gotImages = inputFromItems("", params.Input)
@@ -2346,7 +2349,7 @@ func TestServerAppWireTurnDrainAsSteerDispatchesInputAtomically(t *testing.T) {
 	srv.SetProcessing(true)
 	seedStatus(srv, StatusInfo{SessionID: "th_1", State: "active"})
 	var gotText string
-	var gotImages []ImageAttachment
+	var gotImages []agent.ImageAttachment
 	setEnvelope(srv, func(e *stubThreadEnvelopeSource) { e.queue.Depth = 0 })
 	installProjectedMutationCallbacksForTest(srv, RetrySafeTurnFunctions{
 		Drain: func(params appwire.TurnDrainAsSteerParams) (appwire.TurnDrainAsSteerResponse, error) {
