@@ -10,6 +10,7 @@ import {
   rebindFileReference,
 } from "@evener/appwire-client/docContent";
 import { type ReactNode, useLayoutEffect, useState } from "react";
+import { iPhoneHost, tellIPhoneHost } from "../../shell/iPhoneHost";
 import type { PaneProps } from "../../shell/paneRegistry";
 import { usePaneVisible } from "../../shell/paneVisibility";
 import { documentPaneState, recordDocumentPaneState, useWorkspaceStore } from "../../shell/workspace";
@@ -132,6 +133,17 @@ function BoundDocument({
       title={filenameOf(reference.path)}
       paneId={paneId}
       focused={focused}
+      footer={
+        hasContent && iPhoneHost() ? (
+          <Button
+            block
+            variant="secondary"
+            onClick={() => tellIPhoneHost({ type: "shareDocument", ref: params.session, path: reference.readTarget })}
+          >
+            Open in…
+          </Button>
+        ) : undefined
+      }
       actions={
         <Button size="sm" variant="quiet" onClick={read.reload}>
           Reload

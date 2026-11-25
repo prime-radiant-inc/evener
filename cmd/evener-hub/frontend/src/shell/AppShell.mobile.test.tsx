@@ -1,3 +1,4 @@
+import "../panes/session/testing/editorGeometry";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -227,6 +228,51 @@ test("ordinary mobile Sessions opens the panel without publishing a route transi
   } finally {
     push.mockRestore();
     replace.mockRestore();
+  }
+});
+
+test("the iPhone Sessions drawer hands off hub selection and accepts a native route in place", async () => {
+  vi.stubGlobal("innerWidth", 390);
+  installMobileViewport();
+  const agent = vi.spyOn(navigator, "userAgent", "get").mockReturnValue("EvenerNative/1");
+  const messages: unknown[] = [];
+  vi.stubGlobal("ReactNativeWebView", { postMessage: (json: string) => messages.push(JSON.parse(json)) });
+  const ref = "local:from-alert";
+  const sessionPath = `/s/${encodeURIComponent(ref)}`;
+  installLocationForRoute(ref);
+  window.history.replaceState({}, "", sessionPath);
+  const client = navClient();
+  client.on("thread/read", () => ({ thread: threadStartResponse(ref).thread }));
+  try {
+    render(<AppShell client={client} />);
+    const composer = await screen.findByRole("textbox", { name: "Message" });
+    await userEvent.type(composer, "z");
+    expect(messages).toContainEqual({ type: "editing", active: true });
+    await userEvent.click(screen.getByRole("button", { name: /^Sessions/ }));
+    expect(messages).toContainEqual({ type: "editing", active: false });
+    await userEvent.click(await screen.findByRole("button", { name: "Hubs on this iPhone" }));
+    expect(messages).toContainEqual({ type: "ready" });
+    expect(messages).toContainEqual({ type: "hubMenu" });
+
+    const data = JSON.stringify({ type: "navigate", path: "/new" });
+    act(() => {
+      window.dispatchEvent(new MessageEvent("message", { data, origin: "https://another.site" }));
+    });
+    expect(window.location.pathname).toBe(sessionPath);
+    act(() => {
+      window.dispatchEvent(new MessageEvent("message", { data }));
+    });
+    expect(await screen.findByRole("button", { name: "Start" })).toBeTruthy();
+    expect(messages).toContainEqual({ type: "route", path: "/new" });
+    act(() => {
+      window.dispatchEvent(
+        new MessageEvent("message", { data: JSON.stringify({ type: "navigate", path: sessionPath }) }),
+      );
+    });
+    await screen.findByRole("textbox", { name: "Message" });
+    expect(messages.at(-1)).toEqual({ type: "route", path: sessionPath });
+  } finally {
+    agent.mockRestore();
   }
 });
 

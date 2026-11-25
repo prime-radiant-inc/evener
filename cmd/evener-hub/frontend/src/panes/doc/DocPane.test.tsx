@@ -158,6 +158,9 @@ test("the doc pane's markdown body text reads at the prose step, pinned on the p
   expect(css).toMatch(/\.markdown\s*\{[^}]*--prose-font-size:\s*var\(--font-size-prose\);/);
 });
 test("a text file renders as a copyable code block, with normalized title and an absolute requested target", async () => {
+  vi.spyOn(navigator, "userAgent", "get").mockReturnValue("EvenerNative/1");
+  const messages: unknown[] = [];
+  vi.stubGlobal("ReactNativeWebView", { postMessage: (json: string) => messages.push(JSON.parse(json)) });
   respond("plain body line");
   renderDoc("./src//notes.txt");
   expect((await screen.findByText("plain body line")).closest("pre")).toBeTruthy();
@@ -165,6 +168,8 @@ test("a text file renders as a copyable code block, with normalized title and an
   expect(screen.getByRole("heading", { name: "notes.txt" })).toBeTruthy();
   expect(requests[0]?.searchParams.get("path")).toBe("/work/a/src/notes.txt");
   expect(requests[0]?.searchParams.get("session")).toBe(ref);
+  await userEvent.click(screen.getByRole("button", { name: "Open in…" }));
+  expect(messages).toEqual([{ type: "shareDocument", ref, path: "/work/a/src/notes.txt" }]);
 });
 test("a long text file shows every line, never folded to its tail", async () => {
   // Well past CodeBlock's fold threshold, so a fold would hide the head.

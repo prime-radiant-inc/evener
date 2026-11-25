@@ -44,6 +44,7 @@ import { DockRegion } from "./DockRegion";
 import { focusedSessionPaneId, focusedSessionRef, modalOpenInFocusedWindows } from "./focusedSession";
 import { HoldHints } from "./holdhints/HoldHints";
 import { installKeybindings } from "./installKeybindings";
+import { connectIPhoneHost, tellIPhoneHost } from "./iPhoneHost";
 import { createLiveSessionController } from "./liveSessionController";
 import { StackHost } from "./mobile/StackHost";
 import { NeedsYouProvider, useNeedsYou } from "./NeedsYouProvider";
@@ -524,6 +525,8 @@ function AppShellContent({ client: injectedClient, bannerDelayMs, bannerCreateCl
   const connectionState = useConnectionStore((s) => s.state);
   const interactiveNavigationRef = useRef<string | null>(null);
   const [pathname, historyRevision] = usePathname(interactiveNavigationRef);
+  useEffect(connectIPhoneHost, []);
+  useEffect(() => tellIPhoneHost({ type: "route", path: pathname }), [pathname]);
   const route = urlToPane(pathname);
   const sessionRouteRef = route?.type === "session" ? refParam(route.params) : null;
   const restoredSessionRef = route?.type === "welcome" ? refParam(workspaceStore.getState().mainPane()?.params) : null;
