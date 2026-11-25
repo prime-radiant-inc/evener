@@ -1487,7 +1487,7 @@ whole height. Measured before this, agent prose got 260px of a 375px screen,
 28 characters a line.
 
 **The phone drawer has one heading.** The Sheet's Sessions heading labels the dialog
-and shares one row with Settings, Search and Close, in that order. The drawer omits
+and shares one row with Settings and Close, in that order. The drawer omits
 the rail's brand row. A nonzero needs-you count and the New session button remain
 in the body. The Rail fills the Sheet body without a second surface or frame
 (`bodyClassName`, §3). Selecting any session closes the drawer, including the
@@ -1526,6 +1526,18 @@ collapsed or expanded. It announces current work to assistive technology
 without adding a visible row. Model and reasoning effort are session facts in
 Overview; Settings owns the default choices. The desktop header, model and
 effort controls, and pane footer keep their independent behavior.
+
+**One search field per Sessions surface.** Below 900px (both the phone Sessions
+drawer and the persistent tablet Sessions board), the rail header omits the
+duplicate Search magnifier button (`rail-search`) and renders an inline filter
+field (`Input type="search"` with a quiet clear control when non-empty) directly
+below the header. Typing filters sessions in place (case-insensitive substring
+match across titles, status/subtitle text, project names, and remote host names),
+hides empty sections and groups, auto-expands matching ancestor groups without
+mutating saved disclosure state, and restores prior expansion when cleared.
+Pressing `Escape` clears a non-empty query before dismissing the drawer, and
+`ArrowDown` moves focus into the filtered tree. Desktop (`>= 900px`) keeps the
+header Search palette trigger (`rail-search`) and global `⌘K` shortcut unchanged.
 
 Below 900px, the collapsed whiteboard (session notes) rests as one quiet
 centered line above the transcript — an em-dash-framed count in caption ink

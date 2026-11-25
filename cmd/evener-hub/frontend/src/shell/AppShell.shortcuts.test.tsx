@@ -382,7 +382,7 @@ test("clicking the rail's own Search button opens the command palette", async ()
 });
 
 test.each(["click", "unfocused-click", "Enter"] as const)(
-  "mobile: dismissing the command palette opened via %s from the Sessions drawer restores focus to Search and keeps Tab inside the drawer",
+  "mobile: dismissing the command palette opened via %s from inside the Sessions drawer restores focus and keeps Tab inside the drawer",
   async (activation) => {
     installMobileViewport();
     const user = userEvent.setup();
@@ -393,31 +393,43 @@ test.each(["click", "unfocused-click", "Enter"] as const)(
     await user.click(sessionsButton);
 
     const drawer = await screen.findByRole("dialog", { name: "Sessions" });
-    const searchButton = within(drawer).getByRole("button", { name: "Search" });
-    if (activation === "click") {
-      await user.click(searchButton);
-    } else if (activation === "unfocused-click") {
-      searchButton.addEventListener("mousedown", (event) => event.preventDefault(), { once: true });
-      await user.click(searchButton);
-    } else {
-      act(() => searchButton.focus());
-      await user.keyboard("{Enter}");
+    expect(within(drawer).queryByTestId("rail-search")).toBeNull();
+    const filterInput = within(drawer).getByRole("searchbox");
+    expect(filterInput).toBeTruthy();
+
+    const trigger = document.createElement("button");
+    trigger.type = "button";
+    trigger.setAttribute("data-search-trigger", "true");
+    trigger.textContent = "Palette trigger";
+    drawer.appendChild(trigger);
+    try {
+      if (activation === "click") {
+        await user.click(trigger);
+      } else if (activation === "unfocused-click") {
+        trigger.addEventListener("mousedown", (event) => event.preventDefault(), { once: true });
+        await user.click(trigger);
+      } else {
+        act(() => trigger.focus());
+        await user.keyboard("{Enter}");
+      }
+      await screen.findByRole("dialog", { name: "Command palette" });
+
+      await user.keyboard("{Escape}");
+      expect(screen.queryByRole("dialog", { name: "Command palette" })).toBeNull();
+      expect(screen.getByRole("dialog", { name: "Sessions" })).toBe(drawer);
+      expect(document.activeElement).toBe(trigger);
+
+      await user.tab();
+      expect(drawer.contains(document.activeElement)).toBe(true);
+      await user.tab({ shift: true });
+      expect(drawer.contains(document.activeElement)).toBe(true);
+      await user.tab({ shift: true });
+      await user.tab({ shift: true });
+      expect(drawer.contains(document.activeElement)).toBe(true);
+      expect(document.activeElement).not.toBe(sessionsButton);
+    } finally {
+      trigger.remove();
     }
-    await screen.findByRole("dialog", { name: "Command palette" });
-
-    await user.keyboard("{Escape}");
-    expect(screen.queryByRole("dialog", { name: "Command palette" })).toBeNull();
-    expect(screen.getByRole("dialog", { name: "Sessions" })).toBe(drawer);
-    expect(document.activeElement).toBe(searchButton);
-
-    await user.tab();
-    expect(drawer.contains(document.activeElement)).toBe(true);
-    await user.tab({ shift: true });
-    expect(drawer.contains(document.activeElement)).toBe(true);
-    await user.tab({ shift: true });
-    await user.tab({ shift: true });
-    expect(drawer.contains(document.activeElement)).toBe(true);
-    expect(document.activeElement).not.toBe(sessionsButton);
   },
 );
 
