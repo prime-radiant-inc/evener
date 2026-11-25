@@ -1,0 +1,10 @@
+.demoFrame {
+  composes: frame from "./gallery-frame.module.css";
+  min-height: 280px;
+}
+
+.nav {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
