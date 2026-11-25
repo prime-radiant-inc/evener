@@ -106,18 +106,17 @@ const PREPEND_PASS = SEARCH.get("prepend");
 const HELD_PREPEND = PREPEND_PASS === "follower" || PREPEND_PASS === "replacement";
 const REPLACEMENT_REF = "local:transcriptscrollguard-replacement-target";
 const DOCK = SEARCH.get("dock") === "1" || STALL || PREPEND_PASS === "replacement";
-const REF = ENDED
-  ? "local:transcriptscrollguard-ended"
-  : STALL
-    ? "local:transcriptscrollguard-stall"
-    : HELD_PREPEND || DOCK
-      ? `local:transcriptscrollguard-${HELD_PREPEND ? PREPEND_PASS : "dock"}`
-      : "local:transcriptscrollguard";
-const THREAD_ID = ENDED
-  ? "thr_transcriptscrollguard_ended"
-  : STALL
-    ? "thr_transcriptscrollguard_stall"
-    : `thr_transcriptscrollguard${HELD_PREPEND ? `_${PREPEND_PASS}` : ""}`;
+function fixtureIdentity() {
+  if (ENDED) return { refSuffix: "-ended", idSuffix: "_ended", sessionSuffix: "_ended" };
+  if (STALL) return { refSuffix: "-stall", idSuffix: "_stall", sessionSuffix: "" };
+  if (PREPEND_PASS === "follower" || PREPEND_PASS === "replacement")
+    return { refSuffix: `-${PREPEND_PASS}`, idSuffix: `_${PREPEND_PASS}`, sessionSuffix: `_${PREPEND_PASS}` };
+  if (DOCK) return { refSuffix: "-dock", idSuffix: "", sessionSuffix: "" };
+  return { refSuffix: "", idSuffix: "", sessionSuffix: "" };
+}
+const FIXTURE = fixtureIdentity();
+const REF = `local:transcriptscrollguard${FIXTURE.refSuffix}`;
+const THREAD_ID = `thr_transcriptscrollguard${FIXTURE.idSuffix}`;
 
 // The transcript's row heights must be variable AND identical on every run -
 // a guard whose geometry depends on Math.random() cannot be bisected or
@@ -264,7 +263,7 @@ const CAPABILITIES: ThreadCapabilities = {
 
 const THREAD: Thread = {
   id: THREAD_ID,
-  sessionId: `sess_transcriptscrollguard${ENDED ? "_ended" : HELD_PREPEND ? `_${PREPEND_PASS}` : ""}`,
+  sessionId: `sess_transcriptscrollguard${FIXTURE.sessionSuffix}`,
   preview: "transcript scroll guard",
   ephemeral: false,
   modelProvider: "anthropic/claude-sonnet-4-5",
