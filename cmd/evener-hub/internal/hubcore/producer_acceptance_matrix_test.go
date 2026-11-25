@@ -41,7 +41,7 @@ func TestProducerAcceptancePastNoopAndOneChange(t *testing.T) {
 	root := t.TempDir()
 	idx := closeOnCleanup(t, NewPastIndex(filepath.Join(root, "projects", "*")))
 	var calls atomic.Int32
-	idx.SetOnChange(func() {
+	idx.SetOnRootChange(func() {
 		calls.Add(1)
 		_ = idx.All() // callback must be outside the index lock.
 	})

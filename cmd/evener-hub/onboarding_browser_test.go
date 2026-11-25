@@ -549,7 +549,7 @@ func newOnboardingGuardHub(t *testing.T, g *onboardingGuardEnv, oauthSetup func(
 	past := newRebuiltPastIndex(t, filepath.Join(state, "projects", "*"))
 	spawner := &HubSpawner{EvenerBinary: g.binary, RunDir: g.run, HubToken: g.token, Registry: reg, ProvidersConfigPath: os.Getenv("EVENER_PROVIDERS_CONFIG"), CredentialsPath: os.Getenv("EVENER_CREDENTIALS_CONFIG")}
 	web := newWebServer(hubcore.WebConfig{AuthToken: g.token, HubStateRoot: filepath.Join(g.root, "hub"), LaunchConfigRoot: filepath.Join(g.root, "launch"), RunDir: g.run, StateDir: state, Past: past, Roster: roster, Spawner: spawner, Registry: reg, CredsStore: store, ProvidersConfigPath: spawner.ProvidersConfigPath, CredentialsPath: spawner.CredentialsPath}, nil)
-	past.SetOnChange(func() { web.navigation.Invalidate(navigationChangeHint{}) })
+	past.SetOnRootChange(func() { web.navigation.Invalidate(navigationChangeHint{}) })
 	roster.SetOnChange(func() { web.navigation.Invalidate(navigationChangeHint{}) })
 	server := httptest.NewServer(web.Handler())
 	t.Cleanup(server.Close)

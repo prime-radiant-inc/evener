@@ -56,7 +56,7 @@ func fuzzScenarioPastIndex_FoldReplacesStalerIndexedRow(t *testing.T) {
 		t.Fatal(err)
 	}
 	fired := 0
-	idx.SetOnChange(func() { fired++ })
+	idx.SetOnRootChange(func() { fired++ })
 
 	writeMeta(t, proj, schema.SessionMeta{ID: id, Name: "probed-v2", UpdatedAt: time.Unix(1_700_000_100, 0).UTC()})
 	probe, ok, _ := idx.probeOne(id)
@@ -73,7 +73,7 @@ func fuzzScenarioPastIndex_FoldReplacesStalerIndexedRow(t *testing.T) {
 		t.Fatalf("fold kept the staler indexed row: Name=%q, want %q", got.Meta.Name, "probed-v2")
 	}
 	if fired != 1 {
-		t.Fatalf("onChange fired %d times for the fold replacement, want 1", fired)
+		t.Fatalf("onRootChange fired %d times for the fold replacement, want 1", fired)
 	}
 }
 
@@ -123,7 +123,7 @@ func fuzzScenarioPastIndex_FoldReplacesStalerIndexedRowOnRename(t *testing.T) {
 		t.Fatal(err)
 	}
 	fired := 0
-	idx.SetOnChange(func() { fired++ })
+	idx.SetOnRootChange(func() { fired++ })
 
 	// Rename-only update: same UpdatedAt, newer NameUpdatedAt.
 	writeMeta(t, proj, schema.SessionMeta{ID: id, Name: "new-name", NameUpdatedAt: base.Add(time.Minute), UpdatedAt: base})
@@ -141,7 +141,7 @@ func fuzzScenarioPastIndex_FoldReplacesStalerIndexedRowOnRename(t *testing.T) {
 		t.Fatalf("fold discarded the rename-only update: Name=%q, want %q", got.Meta.Name, "new-name")
 	}
 	if fired != 1 {
-		t.Fatalf("onChange fired %d times for the rename fold, want 1", fired)
+		t.Fatalf("onRootChange fired %d times for the rename fold, want 1", fired)
 	}
 }
 
@@ -370,7 +370,7 @@ func fuzzScenarioPastIndex_IndeterminateProbeMissDoesNotEvict(t *testing.T) {
 }
 
 // fuzzScenarioPastIndex_TimestampNeutralFoldFiresOnChange pins that a fold which
-// adopts a fork-label re-save (same timestamps) still fires onChange, so the Hub
+// adopts a fork-label re-save (same timestamps) still fires onRootChange, so the Hub
 // bumps/invalidates navigation.
 func fuzzScenarioPastIndex_TimestampNeutralFoldFiresOnChange(t *testing.T) {
 	root := t.TempDir()
@@ -386,7 +386,7 @@ func fuzzScenarioPastIndex_TimestampNeutralFoldFiresOnChange(t *testing.T) {
 		t.Fatal(err)
 	}
 	fired := 0
-	idx.SetOnChange(func() { fired++ })
+	idx.SetOnRootChange(func() { fired++ })
 
 	// A fork tag re-saves without moving either timestamp.
 	writeMeta(t, proj, schema.SessionMeta{ID: id, Name: "s", UpdatedAt: base, NameUpdatedAt: base, ForkLabel: "child"})
@@ -397,7 +397,7 @@ func fuzzScenarioPastIndex_TimestampNeutralFoldFiresOnChange(t *testing.T) {
 	foldNow(t, idx, probe)
 
 	if fired != 1 {
-		t.Fatalf("timestamp-neutral fold fired onChange %d times, want 1", fired)
+		t.Fatalf("timestamp-neutral fold fired onRootChange %d times, want 1", fired)
 	}
 }
 
@@ -1433,7 +1433,7 @@ func fuzzScenarioPastIndex_FindProbeKeepsLastProject(t *testing.T) {
 
 // fuzzScenarioPastIndex_FindFoldsProbedEntry pins the fold: a session the
 // probe surfaces must enter the sorted index (All/Find see it afterward) and
-// fire onChange exactly once for the content delta — the same gating a full
+// fire onRootChange exactly once for the root delta — the same gating a full
 // Rebuild applies.
 func fuzzScenarioPastIndex_FindFoldsProbedEntry(t *testing.T) {
 	root := t.TempDir()
@@ -1448,7 +1448,7 @@ func fuzzScenarioPastIndex_FindFoldsProbedEntry(t *testing.T) {
 		t.Fatal(err)
 	}
 	fired := 0
-	idx.SetOnChange(func() { fired++ })
+	idx.SetOnRootChange(func() { fired++ })
 
 	writeMeta(t, proj, schema.SessionMeta{
 		ID:        "02wMz5Txv2enqVTitaig6F",
@@ -1465,7 +1465,7 @@ func fuzzScenarioPastIndex_FindFoldsProbedEntry(t *testing.T) {
 		t.Fatalf("index holds %d entries after the probe fold, want 2", len(all))
 	}
 	if fired != 1 {
-		t.Fatalf("onChange fired %d times for the probe fold, want 1", fired)
+		t.Fatalf("onRootChange fired %d times for the probe fold, want 1", fired)
 	}
 	// A second Find of the now-indexed id must be a pure cache hit: no
 	// further delta, no further fire.
@@ -1473,7 +1473,7 @@ func fuzzScenarioPastIndex_FindFoldsProbedEntry(t *testing.T) {
 		t.Fatal("expected the folded entry to be cached")
 	}
 	if fired != 1 {
-		t.Fatalf("onChange fired %d times after a cache-hit Find, want 1", fired)
+		t.Fatalf("onRootChange fired %d times after a cache-hit Find, want 1", fired)
 	}
 }
 
@@ -1628,7 +1628,7 @@ func fuzzScenarioPastIndex_FailedPublishMarksFTSStale(t *testing.T) {
 // id in i.all when the same session id is persisted under two projects:
 // byID keeps the LAST project's entry, and i.all must agree. A duplicated
 // row made UpdateMeta's remove-all-rows filter and the next Rebuild fight
-// over the shape (2 rows → 1 → 2 …), firing onChange every cycle on
+// over the shape (2 rows → 1 → 2 …), firing onRootChange every cycle on
 // unchanged disk.
 func fuzzScenarioPastIndex_RebuildDedupesDuplicateSessionIDs(t *testing.T) {
 	root := t.TempDir()
@@ -1658,9 +1658,9 @@ func fuzzScenarioPastIndex_RebuildDedupesDuplicateSessionIDs(t *testing.T) {
 	}
 
 	// Steady state: repeated UpdateMeta (RefreshOne's path) + Rebuild rounds
-	// must not fire onChange — nothing on disk is changing.
+	// must not fire onRootChange — nothing on disk is changing.
 	fired := 0
-	idx.SetOnChange(func() { fired++ })
+	idx.SetOnRootChange(func() { fired++ })
 	for range 3 {
 		idx.UpdateMeta(dupID, schema.SessionMeta{ID: dupID, Name: "from-b", UpdatedAt: time.Unix(1_700_000_000, 0).UTC()})
 		if _, err := idx.Rebuild(); err != nil {
@@ -1668,7 +1668,7 @@ func fuzzScenarioPastIndex_RebuildDedupesDuplicateSessionIDs(t *testing.T) {
 		}
 	}
 	if fired != 0 {
-		t.Fatalf("onChange fired %d times over steady-state rounds on unchanged disk, want 0", fired)
+		t.Fatalf("onRootChange fired %d times over steady-state rounds on unchanged disk, want 0", fired)
 	}
 }
 
@@ -1677,7 +1677,7 @@ func fuzzScenarioPastIndex_RebuildDedupesDuplicateSessionIDs(t *testing.T) {
 // makes Rebuild's ListSessionMetas fail (project skipped) while reading the
 // meta by its known path still succeeds. The probe must apply the same gate,
 // or Find would fold a session Rebuild keeps dropping — flapping the index
-// and firing onChange every 60s cycle on unchanged disk.
+// and firing onRootChange every 60s cycle on unchanged disk.
 func fuzzScenarioPastIndex_FindSkipsUnlistableSessionsDir(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("os.Chmod on a directory is a no-op on Windows; the permission gate cannot be exercised")
@@ -1853,7 +1853,7 @@ func fuzzScenarioPastIndexOnChangeFiresOnContentDeltaOnly(t *testing.T) {
 	writeMeta("02wMz5Txv1C3Hut0M8GCeB")
 	idx := closeOnCleanup(t, NewPastIndex(filepath.Join(dir, "*")))
 	fired := 0
-	idx.SetOnChange(func() { fired++ })
+	idx.SetOnRootChange(func() { fired++ })
 	_, _ = idx.Rebuild() // first content load: delta vs empty → fires
 	if fired != 1 {
 		t.Fatalf("first rebuild with content should fire once, got %d", fired)
@@ -1905,7 +1905,7 @@ func fuzzScenarioUpdateMetaReordersAndPreservesStateDir(t *testing.T) {
 // TestUpdateMetaConcurrentWithRebuildIsRaceFree pins the fix for a latent
 // data race: Rebuild publishes i.all and then, AFTER releasing the lock,
 // keeps reading that same slice's backing array for its slow
-// rebuildFTS/contentFingerprint work. UpdateMeta used to mutate i.all's
+// publishFTS/rootFingerprint work. UpdateMeta used to mutate i.all's
 // backing array in place (re-slicing append for removal, append+copy for
 // insert), so a concurrent UpdateMeta could write into the very array an
 // in-flight, unlocked Rebuild was still reading. This test has no
@@ -2039,7 +2039,7 @@ func fuzzScenarioPastIndex_RefreshOneRereadsChangedMetaAndReorders(t *testing.T)
 }
 
 // TestPastIndex_RefreshOneOnChangeFires pins that RefreshOne's UpdateMeta call
-// still fires the content-delta onChange hook (the version-bump path the tree
+// still fires the root-delta onRootChange hook (the version-bump path the tree
 // memo depends on), same as a direct UpdateMeta call.
 func fuzzScenarioPastIndex_RefreshOneOnChangeFires(t *testing.T) {
 	dir := t.TempDir()
@@ -2051,12 +2051,12 @@ func fuzzScenarioPastIndex_RefreshOneOnChangeFires(t *testing.T) {
 		t.Fatal(err)
 	}
 	fired := 0
-	idx.SetOnChange(func() { fired++ })
+	idx.SetOnRootChange(func() { fired++ })
 
 	writeMeta(t, proj, schema.SessionMeta{ID: "02wMz5Txv1C3Hut0M8GCeB", UpdatedAt: time.Unix(1_700_000_100, 0), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w"}})
 	idx.RefreshOne("02wMz5Txv1C3Hut0M8GCeB")
 	if fired != 1 {
-		t.Fatalf("expected RefreshOne to fire onChange once for a genuine delta, got %d", fired)
+		t.Fatalf("expected RefreshOne to fire onRootChange once for a genuine delta, got %d", fired)
 	}
 }
 
