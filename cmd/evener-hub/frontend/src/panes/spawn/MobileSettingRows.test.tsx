@@ -76,7 +76,8 @@ test("each picker row ends in one drill-in chevron; the read-only row has none",
   for (const row of rows) {
     // ListRow draws the row's one drill-in chevron; the row must not draw a
     // second one of its own before it.
-    expect(row.querySelectorAll('[aria-hidden="true"] svg')).toHaveLength(row.tagName === "BUTTON" ? 1 : 0);
+    const picker = row.getAttribute("aria-haspopup") === "dialog";
+    expect(row.querySelectorAll("svg")).toHaveLength(picker ? 1 : 0);
   }
 });
 
