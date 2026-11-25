@@ -43,6 +43,7 @@ import {
   Input,
   PathField,
   type PathFieldKind,
+  type PathFieldProps,
   RadioGroup,
   type RadioGroupOption,
   Select,
@@ -118,6 +119,16 @@ export type LoadState =
   | { phase: "error"; message: string }
   | { phase: "ready"; options: LaunchOption[]; current: LaunchConfigLayer; globalDefaults?: LaunchConfigLayer };
 
+/** A PathField whose two filesystem helpers come from one LaunchFormPaths pair,
+ * which every launch, collection, marketplace, and directory-list form already
+ * holds. The kind still decides whether the directory actions are consulted. */
+export function PathFieldWithPaths({
+  paths,
+  ...props
+}: Omit<PathFieldProps, "directory" | "complete"> & { paths: LaunchFormPaths }) {
+  return <PathField directory={paths.directory} complete={paths.complete} {...props} />;
+}
+
 /** A path field: PathField in a FormRow, so the row's label, help, error, and
  * default hint all behave exactly as the plain-Input rows around it do. The
  * trigger is a `<button id>`, which a `<label htmlFor>` labels like any other
@@ -148,14 +159,13 @@ function PathFieldRow({
 }) {
   return (
     <FormRow label={label} htmlFor={fieldId} help={help} error={error}>
-      <PathField
+      <PathFieldWithPaths
         ariaLabel={label}
-        directory={paths.directory}
         id={fieldId}
         value={value}
         onChange={onChange}
         kind={kind}
-        complete={paths.complete}
+        paths={paths}
         placeholder={placeholder}
       />
       <DefaultHint text={globalDefaultHint} />
