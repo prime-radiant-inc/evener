@@ -545,8 +545,11 @@ func (s *Session) subagentToolNameCeilingAndExcluded(ctx context.Context, agent 
 		registered = s.reg.RegisteredNames()
 	}
 	allTools, allowedTools, deniedTools := baseSubagentToolPolicy(agent, canDelegate)
-	ceiling = delegateToolNameCeilingFromRegistered(registered, s.reg, s.resultToolName(), allTools, allowedTools, deniedTools, canDelegate, isolationName)
+	ceiling = delegateToolNameCeilingFromRegistered(s.registeredWithOneShotOmitted(registered), s.reg, s.resultToolName(), allTools, allowedTools, deniedTools, canDelegate, isolationName)
 	kept := s.removeChildUnreachableTools(ceiling, isolationName, excludeCLIMCP)
+	if s.cfg.TurnEndsProcess {
+		kept = removeStrings(kept, oneShotCeremonyToolNames)
+	}
 	return kept, diffToolNames(ceiling, kept)
 }
 
@@ -961,6 +964,49 @@ func (s *Session) setCLIMCPToolNames(names map[string]bool) {
 	s.delegateExclusionsMu.Lock()
 	defer s.delegateExclusionsMu.Unlock()
 	s.cliMCPToolNames = names
+}
+
+func (s *Session) setOneShotOmittedTools(names map[string]bool) {
+	s.delegateExclusionsMu.Lock()
+	defer s.delegateExclusionsMu.Unlock()
+	s.oneShotOmittedTools = names
+}
+
+// pruneDisallowedOneShotOmittedTools removes ceremony tools from
+// oneShotOmittedTools when spawn policy or subagent protection also forbids
+// them, so a one-shot parent's own restrictions stay enforced if a child is
+// later resumed in persistent mode.
+func (s *Session) pruneDisallowedOneShotOmittedTools(effectiveAllowed []string) {
+	s.delegateExclusionsMu.Lock()
+	defer s.delegateExclusionsMu.Unlock()
+	if len(s.oneShotOmittedTools) == 0 {
+		return
+	}
+	for name := range s.oneShotOmittedTools {
+		disallowed := (len(effectiveAllowed) > 0 && !hasString(effectiveAllowed, name)) ||
+			hasString(s.cfg.spawn.deniedToolNames, name) ||
+			(len(s.cfg.spawn.toolNameCeiling) > 0 && !hasString(s.cfg.spawn.toolNameCeiling, name) && !hasString(s.cfg.spawn.ceilingReachabilityExcluded, name)) ||
+			(s.isSubagentSession() && isProtectedGrantTool(name))
+		if disallowed {
+			delete(s.oneShotOmittedTools, name)
+		}
+	}
+}
+
+func (s *Session) registeredWithOneShotOmitted(registered map[string]bool) map[string]bool {
+	if !s.cfg.TurnEndsProcess || registered == nil {
+		return registered
+	}
+	s.delegateExclusionsMu.RLock()
+	defer s.delegateExclusionsMu.RUnlock()
+	if len(s.oneShotOmittedTools) == 0 {
+		return registered
+	}
+	merged := maps.Clone(registered)
+	for name := range s.oneShotOmittedTools {
+		merged[name] = true
+	}
+	return merged
 }
 
 // setCLIMCPServers installs a classification together with the evidence it was

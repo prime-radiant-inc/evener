@@ -539,10 +539,18 @@ func registerCoreTools(reg *tool.Registry, s *Session) error {
 var oneShotCeremonyToolNames = []string{"notes_agent_set", "notes_read", "urls_add", "urls_remove"}
 
 func omitOneShotCeremonyTools(reg *tool.Registry, s *Session) {
-	if !s.cfg.TurnEndsProcess {
+	if s == nil || !s.cfg.TurnEndsProcess {
 		return
 	}
+	var omitted map[string]bool
 	for _, name := range oneShotCeremonyToolNames {
-		reg.Remove(name)
+		if reg.Get(name) != nil {
+			if omitted == nil {
+				omitted = make(map[string]bool, len(oneShotCeremonyToolNames))
+			}
+			omitted[name] = true
+			reg.Remove(name)
+		}
 	}
+	s.setOneShotOmittedTools(omitted)
 }

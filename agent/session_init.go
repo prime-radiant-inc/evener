@@ -2017,6 +2017,7 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 		}
 	}
 	s.filterUnavailableMemoryTools()
+	s.pruneDisallowedOneShotOmittedTools(effectiveAllowedToolNames)
 	// A role preload is prepared on the creating parent and a frozen descriptor
 	// replays the body frozen at creation; drop what this session cannot follow
 	// before the permanent prompt and inventory carry it.
