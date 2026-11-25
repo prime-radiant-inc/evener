@@ -1854,7 +1854,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		var bareStop hooks.StopResult
 		quietCompanion := !bareQuiet && strings.TrimSpace(txt) != "" && s.hasQuietCommunicateCall(calls)
 		if quietCompanion {
-			roundCtx = context.WithValue(roundCtx, communicateCompanionKey{}, &communicateCompanion{text: strings.TrimSpace(txt)})
+			roundCtx = context.WithValue(roundCtx, communicateCompanionKey{}, &communicateCompanion{text: quietCompanionText(resp.Message.Content)})
 		}
 		if bareReply {
 			bareStop = s.runReplyStopHook(ctx, lastText)

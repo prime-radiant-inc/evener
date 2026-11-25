@@ -1495,6 +1495,19 @@ func assistantTurnWithText(t *testing.T, turns []schema.Turn, want string) schem
 	return schema.Turn{}
 }
 
+func assistantTurnWithToolCall(t *testing.T, turns []schema.Turn, callID string) schema.Turn {
+	t.Helper()
+	for _, turn := range entriesOfKind(turns, schema.TurnAssistant) {
+		for _, part := range turn.Message.Content {
+			if part.Kind == llm.ContentToolCall && part.ToolCall != nil && part.ToolCall.ID == callID {
+				return turn
+			}
+		}
+	}
+	t.Fatalf("no assistant turn carried tool call %q", callID)
+	return schema.Turn{}
+}
+
 func TestQuietCompanionStampedAtProducer(t *testing.T) {
 	t.Parallel()
 	run := func(t *testing.T, args string) []schema.Turn {
@@ -1563,6 +1576,169 @@ func TestQuietCompanionStampedAtProducer(t *testing.T) {
 		turn := assistantTurnWithText(t, turns, "Running the suite.")
 		if turn.QuietCompanion {
 			t.Fatalf("assistant turn QuietCompanion = true, want false for a loud call")
+		}
+	})
+
+	t.Run("content part run boundaries", func(t *testing.T) {
+		t.Parallel()
+		quietCall := llm.ContentPart{
+			Kind: llm.ContentToolCall,
+			ToolCall: &llm.ToolCallData{
+				ID: "probe", Name: "communicate",
+				Arguments: json.RawMessage(`{"message":"waiting on go test","next":"log_quietly_and_end_turn"}`),
+				Type:      "function",
+			},
+		}
+		jobListCall := func(id string) llm.ContentPart {
+			return llm.ContentPart{
+				Kind:     llm.ContentToolCall,
+				ToolCall: &llm.ToolCallData{ID: id, Name: "job_list", Arguments: json.RawMessage(`{}`), Type: "function"},
+			}
+		}
+		cases := []struct {
+			name               string
+			parts              []llm.ContentPart
+			wantCommentary     string
+			wantQuietCompanion bool
+		}{
+			{
+				name: "split across tool call joins trimmed runs with blank line",
+				parts: []llm.ContentPart{
+					{Kind: llm.ContentText, Text: "  alpha-run"},
+					jobListCall("jobs-1"),
+					{Kind: llm.ContentText, Text: "beta-run  "},
+					quietCall,
+				},
+				wantCommentary:     "alpha-run\n\nbeta-run",
+				wantQuietCompanion: true,
+			},
+			{
+				name: "adjacent text parts stay in one run",
+				parts: []llm.ContentPart{
+					{Kind: llm.ContentText, Text: "  alpha-"},
+					{Kind: llm.ContentText, Text: "run  "},
+					quietCall,
+				},
+				wantCommentary:     "alpha-run",
+				wantQuietCompanion: true,
+			},
+			{
+				name: "whitespace-only runs omitted across tool calls",
+				parts: []llm.ContentPart{
+					{Kind: llm.ContentText, Text: " \n\t "},
+					jobListCall("jobs-1"),
+					{Kind: llm.ContentText, Text: "  alpha-run  "},
+					jobListCall("jobs-2"),
+					{Kind: llm.ContentText, Text: "  \n  "},
+					jobListCall("jobs-3"),
+					{Kind: llm.ContentText, Text: "  beta-run  "},
+					jobListCall("jobs-4"),
+					{Kind: llm.ContentText, Text: "\t "},
+					quietCall,
+				},
+				wantCommentary:     "alpha-run\n\nbeta-run",
+				wantQuietCompanion: true,
+			},
+			{
+				name: "all-whitespace text across tool calls stamps no companion",
+				parts: []llm.ContentPart{
+					{Kind: llm.ContentText, Text: "  \n "},
+					jobListCall("jobs-1"),
+					{Kind: llm.ContentText, Text: "\t "},
+					quietCall,
+				},
+				wantCommentary:     "",
+				wantQuietCompanion: false,
+			},
+			{
+				name: "metadata-only reasoning keeps text in one run",
+				parts: []llm.ContentPart{
+					{Kind: llm.ContentText, Text: "alpha-"},
+					{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{GoogleInteraction: true, Signature: "sig_1"}},
+					{Kind: llm.ContentText, Text: "run"},
+					quietCall,
+				},
+				wantCommentary:     "alpha-run",
+				wantQuietCompanion: true,
+			},
+			{
+				name: "visible thinking separates text runs",
+				parts: []llm.ContentPart{
+					{Kind: llm.ContentText, Text: "alpha-run"},
+					{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: "thought-sentinel"}},
+					{Kind: llm.ContentText, Text: "beta-run"},
+					quietCall,
+				},
+				wantCommentary:     "alpha-run\n\nbeta-run",
+				wantQuietCompanion: true,
+			},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
+				env := newHeldJobEnvironment(t.TempDir())
+				adapter := newFakeAdapter("openai",
+					func(llm.Request) llm.Response {
+						return agenttest.ToolCallResponse(llm.ToolCallData{ID: "shell", Name: "shell", Arguments: json.RawMessage(`{"command":"go test","mode":"background"}`)})
+					},
+					func(llm.Request) llm.Response {
+						return llm.Response{Message: llm.Message{Role: llm.RoleAssistant, Content: tc.parts}}
+					},
+					func(llm.Request) llm.Response { return agenttest.FinalResponse("recovered") },
+				)
+				s := newSession(t, withEnv(env), withAdapter(adapter), withStateDir(t.TempDir()))
+				t.Cleanup(env.releaseJob)
+				installCommunicateStopHook(s, func() string { return `{}` })
+				if _, err := s.ProcessInputKind(tripwireCtx(t), "start", nil, EntryUserInput); err != nil {
+					t.Fatal(err)
+				}
+				res := communicateToolResult(t, s, "probe")
+				state, ok := schema.DecodeCommunicateToolState(res.ToolState)
+				if !ok || !state.IsQuiet() {
+					t.Fatalf("probe tool state = %+v, decode ok=%v", state, ok)
+				}
+				if state.QuietCommentary != tc.wantCommentary {
+					t.Fatalf("QuietCommentary = %q, want %q", state.QuietCommentary, tc.wantCommentary)
+				}
+				env.releaseJob()
+				turns := transcriptTurnsOf(t, s)
+				turn := assistantTurnWithToolCall(t, turns, "probe")
+				if turn.QuietCompanion != tc.wantQuietCompanion {
+					t.Fatalf("assistant turn QuietCompanion = %v, want %v", turn.QuietCompanion, tc.wantQuietCompanion)
+				}
+				reg := apptranscript.NewToolCallRegistry()
+				appTurns, err := apptranscript.ItemTurnsFromFile(s.TranscriptPath(), transcript.DefaultMaxLineBytes, func(turn schema.Turn, turnID string, turnIndex int) []appwire.ThreadItem {
+					items, _ := apptranscript.ProjectEntryParts(turnID, turnIndex, turn, reg, nil, nil)
+					return items
+				})
+				if err != nil {
+					t.Fatalf("apptranscript projection: %v", err)
+				}
+				var gotCommentary string
+				foundQuiet := false
+				for _, appTurn := range appTurns {
+					for _, item := range appTurn.Items {
+						if item.EventKind == appwire.ThreadItemEventKindQuietYield && item.CallID == "probe" {
+							foundQuiet = true
+							if len(item.Raw) > 0 {
+								var raw struct {
+									Commentary string `json:"commentary"`
+								}
+								if err := json.Unmarshal(item.Raw, &raw); err != nil {
+									t.Fatalf("decode quiet_yield raw %s: %v", item.Raw, err)
+								}
+								gotCommentary = raw.Commentary
+							}
+						}
+					}
+				}
+				if !foundQuiet {
+					t.Fatal("projected transcript missing quiet_yield item for probe")
+				}
+				if gotCommentary != tc.wantCommentary {
+					t.Fatalf("projected quiet_yield commentary = %q, want %q", gotCommentary, tc.wantCommentary)
+				}
+			})
 		}
 	})
 }
