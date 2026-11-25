@@ -105,8 +105,9 @@ func isOwnedDrainJob(rec *jobstore.JobRecord, sessionID string) bool {
 // notification that is pending but not yet delivered. A finalizing job has
 // handed its completion to the owner once its record reads NotifyDelivered or
 // NotifyConsumed, or, for a stable delegate owner, once its exact completion
-// attention is committed or resolved in the delegate store. Either state means
-// the wake published or the receiver presented it, so the job only waits for
+// attention is committed or resolved in the delegate store or already presented
+// in the owner's active turn. Any of those states means the wake published or
+// the receiver already presented it, so the job only waits for
 // its running-map delete and no longer counts.
 //
 // Both halves are needed to be race-free against the finalization sequence
@@ -221,13 +222,17 @@ func (jm *jobManager) outstandingDrainJobIDsByBackground() (all, background []st
 	jm.mu.Unlock()
 	// Probe the delegate store only after releasing jm.mu: the controller lock
 	// must never nest inside the job manager's, and a committed attention row
-	// already means the wake published (the arm commits before it notifies).
+	// already means the wake published (the arm commits before it notifies). A
+	// drain recheck can also present an uncommitted row queued by
+	// appendDelegateNotificationDurably before the arm commits, so active-turn
+	// coverage of that attention ID already hands the completion off too.
 	if stableOwner != nil && len(finalizing) > 0 {
 		kept := ids[:0]
 		for _, id := range ids {
 			attentionID, isFinalizingShell := finalizing[id]
 			if isFinalizingShell &&
-				stableOwner.delegateController.delegateAttentionCommittedOrResolved(parentDelegateID, attentionID) {
+				(stableOwner.delegateController.delegateAttentionCommittedOrResolved(parentDelegateID, attentionID) ||
+					stableOwner.hasPresentedAttentionInActiveTurn(attentionID)) {
 				continue
 			}
 			kept = append(kept, id)
