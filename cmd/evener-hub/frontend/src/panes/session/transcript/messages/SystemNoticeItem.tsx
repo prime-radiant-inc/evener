@@ -43,8 +43,7 @@ import {
   expandDetailsByDefault,
   useTranscriptRenderContext,
 } from "../../../../transcriptDisplay/renderContext";
-import { Disclosure, FailureGlyph, Markdown } from "../../../../widgets";
-import { disclosureDefault } from "../../../../widgets/disclosure/disclosureStore";
+import { Disclosure, disclosureDefault, FailureGlyph, Markdown } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { SYSTEM_PROMPT_ITEM_ID } from "../transcriptVisibility";
 import { FAILURE_FALLBACK_LABEL, failureText } from "../turnFailure";

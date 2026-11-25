@@ -1,0 +1,10 @@
+/* The description under a job row's ListRow. It reads in full - a delegate's
+ * mandate is what the row means - so it wraps instead of taking ListRow's
+ * truncating meta line, and it starts at the row's content edge so the two
+ * read as one item. */
+.description {
+  padding: 0 var(--space-2);
+  color: var(--ink-mid);
+  font-size: var(--font-size-caption);
+  overflow-wrap: anywhere;
+}

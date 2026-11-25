@@ -46,12 +46,10 @@
 }
 
 .rowMeta {
-  overflow: hidden;
+  composes: truncate from "../../../../styles/text.module.css";
   color: var(--ink-mid);
   font-family: var(--font-mono);
   font-size: var(--font-size-caption);
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .rowActions {

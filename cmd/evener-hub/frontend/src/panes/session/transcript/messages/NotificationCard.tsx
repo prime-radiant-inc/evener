@@ -41,10 +41,18 @@ import {
   expandDetailsByDefault,
   useTranscriptRenderContext,
 } from "../../../../transcriptDisplay/renderContext";
-import { Card, Chip, Disclosure, Markdown, MarkdownBubble, ToolIcon, type ToolIconKind } from "../../../../widgets";
-import { AnsiLineContent } from "../../../../widgets/codeblock/ansiLine";
-import { setDisclosureOpen } from "../../../../widgets/disclosure/disclosureStore";
-import { FailureGlyph } from "../../../../widgets/failureglyph";
+import {
+  AnsiLineContent,
+  Card,
+  Chip,
+  Disclosure,
+  FailureGlyph,
+  Markdown,
+  MarkdownBubble,
+  setDisclosureOpen,
+  ToolIcon,
+  type ToolIconKind,
+} from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { EntityRef } from "../EntityRef";
 import { OpenTranscriptButton } from "../openTranscript";
