@@ -70,7 +70,7 @@ import { RAIL_WIDTH_PROPERTY, RailResizeHandle } from "./RailResizeHandle";
 import { RailRow, type RailRowActions } from "./RailRow";
 import { ARCHIVED_SECTION_KEY, LIVE_SECTION_KEY, PROJECTS_SECTION_KEY, TEST_RUNS_SECTION_KEY } from "./railExpansion";
 import { useRailHeaderAction } from "./railHeaderAction";
-import { GearIcon, SearchIcon, SidebarIcon, TuneIcon } from "./railIcons";
+import { GearIcon, PlusIcon, SearchIcon, SidebarIcon, TuneIcon } from "./railIcons";
 import {
   archivedCount,
   archivedProjectNodes,
@@ -124,6 +124,8 @@ const CLASS = {
   section: requireClass(styles.section, "Rail.module.css", "section"),
   organizeRow: requireClass(styles.organizeRow, "Rail.module.css", "organizeRow"),
   organizePanel: requireClass(styles.organizePanel, "Rail.module.css", "organizePanel"),
+  newSessionRow: requireClass(styles.newSessionRow, "Rail.module.css", "newSessionRow"),
+  archiveOverflowObserver: requireClass(styles.archiveOverflowObserver, "Rail.module.css", "archiveOverflowObserver"),
 };
 
 interface RailSectionProps {
@@ -249,17 +251,72 @@ function ProjectNavigationRailRow({
     />
   );
 }
+// Archived overflow rows load their next page automatically when scrolled into
+// view (200px margin), while non-archive overflow rows keep explicit demand
+// activation. Keying observation on the serialized page descriptor re-arms once
+// a loaded page advances the cursor/offset without looping on unchanged errors.
+function OverflowNavigationRailRow({
+  node,
+  info,
+  actions,
+}: Omit<NavigationRailRowProps, "projectRetryCallback"> & {
+  node: OverflowRailNode;
+}) {
+  const pagesArchive = node.pages.some((page) => page.tier === "archived" || page.catalog === "archived_projects");
+  const pageKey = pagesArchive ? JSON.stringify(node.pages) : "";
+  const activateRef = useRef(info.activate);
+  activateRef.current = info.activate;
+  const element = useRef<HTMLSpanElement>(null);
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: pageKey re-arms observation after a loaded page advances the descriptor so a row still in view loads the next page while one pushed off-screen waits for scroll
+  useEffect(() => {
+    if (!pagesArchive || typeof IntersectionObserver !== "function") return;
+    const target = element.current;
+    if (target === null) return;
+    let active = true;
+    let triggered = false;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (!active) return;
+        const intersecting = entries.some((entry) => entry.isIntersecting);
+        if (intersecting && !triggered) {
+          triggered = true;
+          activateRef.current();
+        } else if (!intersecting) {
+          triggered = false;
+        }
+      },
+      { rootMargin: "200px" },
+    );
+    observer.observe(target);
+    return () => {
+      active = false;
+      observer.disconnect();
+    };
+  }, [pagesArchive, pageKey]);
+
+  if (!pagesArchive) return <RailRow node={node} info={info} actions={actions} />;
+  return (
+    <span ref={element} className={CLASS.archiveOverflowObserver}>
+      <RailRow node={node} info={info} actions={actions} />
+    </span>
+  );
+}
 const NavigationRailRow = memo(function NavigationRailRow({
   node,
   info,
   actions,
   projectRetryCallback,
 }: NavigationRailRowProps) {
-  return node.kind === "project" ? (
-    <ProjectNavigationRailRow node={node} info={info} actions={actions} projectRetryCallback={projectRetryCallback} />
-  ) : (
-    <RailRow node={node} info={info} actions={actions} />
-  );
+  if (node.kind === "project") {
+    return (
+      <ProjectNavigationRailRow node={node} info={info} actions={actions} projectRetryCallback={projectRetryCallback} />
+    );
+  }
+  if (node.kind === "overflow") {
+    return <OverflowNavigationRailRow node={node} info={info} actions={actions} />;
+  }
+  return <RailRow node={node} info={info} actions={actions} />;
 });
 function renderRailRow(actions: RailRowActions, projectRetryCallback: (key: string) => () => void) {
   return (node: RailNode, info: TreeRowInfo) => (
@@ -1032,7 +1089,7 @@ function NavigationRail({
       {width !== undefined && onWidthChange && (
         <RailResizeHandle width={width} onCommit={onWidthChange} railRef={railRef} />
       )}
-      <div className={CLASS.header}>
+      <div className={CLASS.header} data-testid="rail-header">
         <div className={CLASS.identity}>
           <div data-testid="rail-brand" className={CLASS.brand}>
             <EvenerMark />
@@ -1079,9 +1136,6 @@ function NavigationRail({
             </span>
           )}
         </div>
-        <Button block variant="secondary" data-testid="rail-new-session" onClick={() => navigate("/new")}>
-          + New session
-        </Button>
       </div>
       {/* The rail's clock (railNow.tsx): rows derive their relative stamps from
           it. It wraps the tree only - the header and the dialogs render no
@@ -1102,7 +1156,7 @@ function NavigationRail({
             />
           )}
           {!loading && !displayed && !loadError && manifest && (
-            <EmptyState title="No sessions yet" hint="Start one with the button above." />
+            <EmptyState title="No sessions yet" hint="Start one with the button below." />
           )}
           {displayed && (
             <>
@@ -1180,6 +1234,20 @@ function NavigationRail({
               )}
             </>
           )}
+          {/* The session list's floating New-session action. Last child of the
+              scroll body across desktop, tablet, and mobile so its sticky row
+              pins to whichever box owns scrolling while rows scroll beneath it
+              and clear it at maximum scroll. */}
+          <div className={CLASS.newSessionRow}>
+            <IconButton
+              variant="primary"
+              size="md"
+              data-testid="rail-new-session"
+              label="New session"
+              icon={<PlusIcon />}
+              onClick={() => navigate("/new")}
+            />
+          </div>
         </div>
       </RailTickProvider>
       {pinSectionDialogs.dialogs}

@@ -38,6 +38,7 @@ import { connectionStore, resetConnectionStoreForTests } from "../../stores/conn
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
 import { prefsStore, resetPrefsStoreForTests } from "../../stores/prefs";
 import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
+import buttonStyles from "../../widgets/button/button.module.css";
 import { SHOW_DELAY_MS } from "../../widgets/hovercard/useFloatingLabel";
 import { getToasts, resetToastStoreForTests } from "../../widgets/toast/store";
 import { toastKinds } from "../../widgets/toast/toastTestUtils";
@@ -933,6 +934,65 @@ describe("resource-backed Rail", () => {
     );
     const rule = css.match(/\.parentScrollBody\s*\{([^}]*)\}/)?.[1];
     expect(rule).toContain("padding-bottom: calc(var(--space-2) + var(--dock-clearance))");
+  });
+
+  test.each(["rail", "parent"] as const)(
+    "the New-session action floats as the body's last row in %s scroll mode, not in the header",
+    (scrollOwner) => {
+      installState([sectionResource("live", [summary({ title: "Live resource" })])]);
+      const { container } = render(<Rail scrollOwner={scrollOwner} />);
+
+      const button = screen.getByRole("button", { name: "New session" });
+      expect(button.getAttribute("data-testid")).toBe("rail-new-session");
+      const body = container.querySelector(`.${railStyles.body}`);
+      expect(body?.contains(button)).toBe(true);
+      expect(body?.lastElementChild?.className.split(/\s+/)).toContain(railStyles.newSessionRow);
+      expect(container.querySelector(`.${railStyles.header}`)?.contains(button)).toBe(false);
+      expect(button.classList.contains(buttonStyles.primary ?? "")).toBe(true);
+      expect(button.classList.contains(buttonStyles.secondary ?? "")).toBe(false);
+      expect(button.querySelector("svg")).toBeTruthy();
+      expect(button.textContent).toBe("");
+
+      fireEvent.click(button);
+      expect(`${window.location.pathname}${window.location.search}`).toBe("/new");
+      window.history.replaceState({}, "", "/");
+    },
+  );
+
+  test("the floating New-session row stays sticky, pass-through, dock-aware, and glued to the bottom on short lists", () => {
+    const railDir = dirname(fileURLToPath(import.meta.url));
+    const css = readFileSync(join(railDir, "Rail.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, " ");
+    const body = css.match(/\.body\s*\{([^}]*)\}/)?.[1];
+    expect(body).toBeDefined();
+    expect(body).toMatch(/display:\s*flex/);
+    expect(body).toMatch(/flex-direction:\s*column/);
+    expect(body).toMatch(/padding:\s*var\(--space-2\)\s+0\s+calc\(var\(--space-2\)\s*\+\s*var\(--dock-clearance\)\)/);
+
+    const hostRail = css.match(/\.parentScrollRail\s*\{([^}]*)\}/)?.[1];
+    expect(hostRail).toBeDefined();
+    expect(hostRail).toMatch(/min-height:\s*100%/);
+
+    const row = css.match(/\.newSessionRow\s*\{([^}]*)\}/)?.[1];
+    expect(row).toBeDefined();
+    expect(row).toMatch(/position:\s*sticky/);
+    expect(row).toMatch(/bottom:\s*calc\(var\(--space-2\)\s*\+\s*var\(--dock-clearance\)\)/);
+    expect(row).toMatch(/flex:\s*none/);
+    expect(row).toMatch(/margin-top:\s*auto/);
+    expect(row).toMatch(/display:\s*flex/);
+    expect(row).toMatch(/justify-content:\s*flex-end/);
+    expect(row).toMatch(/z-index:\s*var\(--z-raised\)/);
+    expect(row).toMatch(/pointer-events:\s*none/);
+    const optIn = css.match(/\.newSessionRow\s*>\s*\*\s*\{([^}]*)\}/)?.[1];
+    expect(optIn).toBeDefined();
+    expect(optIn).toMatch(/pointer-events:\s*auto/);
+
+    const panelCss = readFileSync(join(railDir, "../mobile/MobilePanel.module.css"), "utf8").replace(
+      /\/\*[\s\S]*?\*\//g,
+      " ",
+    );
+    const flushBody = panelCss.match(/\.flushBody\s*\{([^}]*)\}/)?.[1];
+    expect(flushBody).toMatch(/flex:\s*1 1 auto/);
+    expect(flushBody).toMatch(/min-height:\s*0/);
   });
   test("shows the settled empty state in v2 mode", () => {
     const empty = emptyManifest();
@@ -3905,5 +3965,148 @@ describe("archived rows come from evener/archived/list", () => {
     fireEvent.click(within(archived).getByText(/1 older/));
     await waitFor(() => expect(seen.some((params) => params.cursor === "cursor-1")).toBe(true));
     await waitFor(() => expect(within(archived).getByText("Old run 2")).toBeTruthy());
+  });
+
+  class RailBoundaryObserver {
+    static observers: RailBoundaryObserver[] = [];
+    target: Element | null = null;
+    disconnected = false;
+    constructor(
+      private readonly callback: IntersectionObserverCallback,
+      readonly options?: IntersectionObserverInit,
+    ) {
+      RailBoundaryObserver.observers.push(this);
+    }
+    observe(target: Element): void {
+      this.target = target;
+    }
+    disconnect(): void {
+      this.disconnected = true;
+    }
+    emit(visible: boolean): void {
+      if (this.disconnected) return;
+      this.callback(
+        [{ isIntersecting: visible } as IntersectionObserverEntry],
+        this as unknown as IntersectionObserver,
+      );
+    }
+  }
+
+  test("an archived overflow row auto-loads its next pages as it scrolls into view", async () => {
+    vi.stubGlobal("IntersectionObserver", RailBoundaryObserver);
+    try {
+      const client = new FakeClient("ready");
+      const cursors: Array<string | undefined> = [];
+      client.on("evener/archived/list", (params) => {
+        cursors.push(params.cursor);
+        if (params.cursor === "cursor-1") return { sessions: [archivedRow(2)], total: 4, nextCursor: "cursor-2" };
+        return { sessions: [archivedRow(3)], total: 4 };
+      });
+      connectionStore.getState().connect(client);
+      installState([archivedCatalog(4), projectResource("p", [summary({ ref: "local:now", title: "Now" })])]);
+      installList([archivedRow(0), archivedRow(1)], 4, "cursor-1");
+      render(<Rail />, client);
+
+      fireEvent.click(sectionDisclosure(/Archived sessions/));
+      const archived = sectionRoot(/Archived sessions/);
+      fireEvent.click(within(archived).getByText("Proj"));
+      expect(within(archived).getByTestId("rail-row-overflow")).toBeTruthy();
+
+      const firstObserver = RailBoundaryObserver.observers.at(-1);
+      expect(firstObserver?.options?.rootMargin).toBe("200px");
+      await act(async () => {
+        firstObserver?.emit(true);
+      });
+      await waitFor(() => expect(cursors).toEqual(["cursor-1"]));
+      await waitFor(() => expect(document.querySelector('[data-session-ref="local:old-2"]')).not.toBeNull());
+
+      // After page 2 advances the descriptor, a fresh observer re-arms for the remaining row.
+      const secondObserver = RailBoundaryObserver.observers.at(-1);
+      expect(secondObserver).not.toBe(firstObserver);
+      await act(async () => {
+        secondObserver?.emit(true);
+      });
+      await waitFor(() => expect(cursors).toEqual(["cursor-1", "cursor-2"]));
+      await waitFor(() => expect(document.querySelector('[data-session-ref="local:old-3"]')).not.toBeNull());
+    } finally {
+      vi.unstubAllGlobals();
+      RailBoundaryObserver.observers = [];
+    }
+  });
+
+  test("a failing archived overflow auto-load does not retry in a loop while the row stays visible", async () => {
+    vi.stubGlobal("IntersectionObserver", RailBoundaryObserver);
+    try {
+      const client = new FakeClient("ready");
+      const cursors: Array<string | undefined> = [];
+      client.on("evener/archived/list", (params) => {
+        cursors.push(params.cursor);
+        throw new Error("network down");
+      });
+      connectionStore.getState().connect(client);
+      installState([archivedCatalog(3), projectResource("p", [summary({ ref: "local:now", title: "Now" })])]);
+      installList([archivedRow(0), archivedRow(1)], 3, "cursor-1");
+      render(<Rail />, client);
+
+      fireEvent.click(sectionDisclosure(/Archived sessions/));
+      const archived = sectionRoot(/Archived sessions/);
+      fireEvent.click(within(archived).getByText("Proj"));
+
+      await act(async () => {
+        RailBoundaryObserver.observers.at(-1)?.emit(true);
+      });
+      await waitFor(() => expect(cursors).toEqual(["cursor-1"]));
+      await act(async () => {
+        RailBoundaryObserver.observers.at(-1)?.emit(true);
+      });
+      expect(cursors).toEqual(["cursor-1"]);
+    } finally {
+      vi.unstubAllGlobals();
+      RailBoundaryObserver.observers = [];
+    }
+  });
+
+  test("an archived projects catalog overflow row auto-loads when it scrolls into view", async () => {
+    vi.stubGlobal("IntersectionObserver", RailBoundaryObserver);
+    try {
+      const loadCatalog = vi.fn().mockResolvedValue(undefined);
+      installState([
+        resource(
+          { kind: "catalog", catalog: "archived_projects", offset: 0, limit: 100 },
+          {
+            generation_id: "g1",
+            revision: 1,
+            projects: [{ key: "ap", name: "OldProj", session_count: 1 }],
+            remaining: 5,
+          },
+        ),
+      ]);
+      navigationStore.setState({ loadCatalog });
+      render(<Rail />);
+      fireEvent.click(sectionDisclosure(/Archived sessions/));
+      await act(async () => {
+        RailBoundaryObserver.observers.at(-1)?.emit(true);
+      });
+      await waitFor(() => expect(loadCatalog).toHaveBeenCalledWith("archived_projects", 1, 100));
+    } finally {
+      vi.unstubAllGlobals();
+      RailBoundaryObserver.observers = [];
+    }
+  });
+
+  test("a live section overflow row does not auto-load when it scrolls into view", async () => {
+    vi.stubGlobal("IntersectionObserver", RailBoundaryObserver);
+    try {
+      const loadSection = vi.fn().mockResolvedValue({ error: null });
+      installState([sectionResource("live", [summary({ title: "Live 1" })], 5)]);
+      navigationStore.setState({ loadSection });
+      render(<Rail />);
+      expect(screen.getByTestId("rail-row-overflow")).toBeTruthy();
+      expect(RailBoundaryObserver.observers).toHaveLength(0);
+      expect(loadSection).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+      RailBoundaryObserver.observers = [];
+    }
   });
 });

@@ -435,11 +435,10 @@ right as one cluster with no gap between them, so the app's name and its global 
 share a line. The mark is decorative (`aria-hidden`); the wordmark names the product. The
 wordmark never truncates: the row is sized to fit at the 200px sidebar minimum, where the
 mark's gap to the wordmark tightens. A needs-you chip sits in the same identity block under
-that row, a pill led by a decorative needs-you `StatusDot`, and the New-session button
-follows a run (8px) below. No rule closes the header: it shares the rail's one surface
-with the tree, and the first section's eyebrow does the dividing. The rail names the
-product once; it does not also print the hub's advertised server name, which is the
-constant `evener-hub` on every hub.
+that row, a pill led by a decorative needs-you `StatusDot`. No rule closes the header: it
+shares the rail's one surface with the tree, and the first section's eyebrow does the
+dividing. The rail names the product once; it does not also print the hub's advertised
+server name, which is the constant `evener-hub` on every hub.
 
 **Rail rows.** Rows sit one `--space-2` in from both rail edges, so a row is a rounded
 pill (`--radius-control`) rather than an edge-to-edge band. Hover is the `--hover-1` wash
@@ -481,10 +480,24 @@ even on the selected row. A pending question shows its own words when supplied a
 falls back to the attention label otherwise. The title and reason share one control:
 tap either line to open the session, or hold either line to reveal the full name and context.
 
-The rail's New-session control is a `Button variant="secondary"`, and the shell keeps at most
-one filled primary on screen: the rail is chrome, so its CTA must not outrank the current
-task's primary action. `scripts/shellguard` (`run.mjs`'s `railNewSession`/`primaryButtons`
-probes) fails if the rail CTA turns primary or the shell route shows two.
+The rail's New-session control is the session list's floating action across desktop, tablet,
+and mobile: an icon-only `IconButton variant="primary"` (a plus glyph named `"New session"`)
+in a right-aligned, pointer-pass-through row pinned sticky to the scroll owner's
+bottom-right corner, so it holds its place while rows scroll beneath it and reserves its own
+in-flow row below the final section at maximum scroll. The row rests at that same bottom
+corner on short lists instead of parking mid-list: the rail scroll body is a column that
+hands free space to the row (`margin-top: auto`), the parent-scroll rail fills its host
+(`min-height: 100%`), and the mobile drawer's sheet body stretches to the panel's bottom.
+The pinned offset clears the home-indicator band with `--dock-clearance` (`0px` on desktop).
+It is the list's primary verb, one ladder step above the rows it floats over; the task
+surface still keeps at most one filled primary of its own, and `scripts/shellguard`
+(`run.mjs`'s `railNewSession`/`primaryButtons` probes) fails if the floating action loses
+its primary treatment or the shell route shows two filled primaries outside it.
+
+The archived section keeps its existing grouping (archived projects, then per-project
+archived lists) and loads automatically as you reach it: an archived overflow row that
+scrolls into view (within a 200px margin) fetches its next page through the same activation
+path as a tap, while Live and other active tiers keep explicit demand paging.
 
 Ancestor spines share this compact renderer, not the rail's status authority.
 The rail retains navigation-summary arbitration, including running jobs and
