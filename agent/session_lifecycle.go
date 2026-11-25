@@ -1155,6 +1155,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	// apart from images an earlier vision-capable model accepted (#7629).
 	s.mu.Lock()
 	s.turnInputCarriesImages = len(images) > 0
+	s.turnBaselineCaptured = false
 	s.mu.Unlock()
 	// A speculative document strip that this input never resolves must not
 	// outlive it: cancellation, a round cap, or a recovery branch can exit
@@ -2477,6 +2478,15 @@ func (s *Session) acceptUserInputWithSkillSelection(ctx context.Context, input s
 			return fmt.Errorf("incorporate claimed user input: %w", err)
 		}
 	}
+	// The opening user turn is durable now, and this capture must precede
+	// UserPromptSubmit: a steer admitted while that hook blocks lands after
+	// this index, so it stays part of the in-flight turn and an image-blind
+	// target keeps its attachments in the first request. Round zero must not
+	// overwrite the boundary with one that already includes that steer.
+	s.mu.Lock()
+	s.turnHistoryBaseline = len(s.history)
+	s.turnBaselineCaptured = true
+	s.mu.Unlock()
 	if queuedIdentity.ClientMutationID == "" {
 		// The direct user turn is durable (or was durably preseeded) at this
 		// point. Earlier admission failures intentionally leave askPending set.

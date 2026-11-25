@@ -233,7 +233,7 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	// boundary for whatever it folds.
 	if !baselineSynced {
 		s.mu.Lock()
-		if round == 0 {
+		if round == 0 && !s.turnBaselineCaptured {
 			s.turnHistoryBaseline = len(s.history)
 		}
 		s.mu.Unlock()
@@ -767,7 +767,7 @@ func (s *Session) foldHistoryBeforeRequest(ctx context.Context, round, sysLen in
 			// overwritten by round 0's absolute SET or misapplied against
 			// the wrong version.
 			ok, refused := s.publishFoldTransaction(preManageLen, snapRevision, snapAppends, historyTurns, commit, func(published []schema.Turn, restoredAt []int) {
-				if round == 0 {
+				if round == 0 && !s.turnBaselineCaptured {
 					s.turnHistoryBaseline = len(published)
 				} else {
 					s.rebaseTurnHistoryBaselineAfterFilteredFold(filteredDroppedAt, filteredPreLen, managedLen, injectedTurns, restoredAt)

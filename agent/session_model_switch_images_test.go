@@ -9,6 +9,9 @@ package agent
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -18,6 +21,8 @@ import (
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/skill"
+	"primeradiant.com/evener/execsupport/shellquote"
+	"primeradiant.com/evener/internal/testwait"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/registry"
 )
@@ -681,6 +686,128 @@ func TestImageBlindTargetKeepsOpeningPromptAndSteeringImages(t *testing.T) {
 	}
 	if !sawSecondRound {
 		t.Fatal("the round after the steering admission never ran, so the assertion was vacuous")
+	}
+}
+
+// TestImageBlindTargetKeepsImageSteeredDuringOpeningPromptHook reproduces the
+// opening-hook steering defect: the opening prompt is appended, the
+// UserPromptSubmit hook runs, and only then is pending steering drained. A
+// steer admitted while that hook blocks is therefore already history when
+// round zero records the in-flight boundary, so the image-blind target strips
+// it from the first request. The attachment belongs to the in-flight turn and
+// must reach the target for its actionable refusal, while the older transcript
+// image stays out and the transcript keeps both.
+func TestImageBlindTargetKeepsImageSteeredDuringOpeningPromptHook(t *testing.T) {
+	t.Parallel()
+	steeringImage := []byte("steering-png")
+	promptImage := []byte("prompt-png")
+	for _, tc := range []struct {
+		name        string
+		images      []ImageAttachment
+		wantImages  [][]byte
+		wantHistory int
+	}{
+		{
+			name:        "text-only opening prompt",
+			wantImages:  [][]byte{steeringImage},
+			wantHistory: 2,
+		},
+		{
+			name:        "opening prompt carries an image",
+			images:      []ImageAttachment{{MediaType: "image/png", Data: promptImage}},
+			wantImages:  [][]byte{promptImage, steeringImage},
+			wantHistory: 3,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			profile := newMiniMaxProfile("MiniMax-M2.7")
+			if profile.AcceptsImageInput() {
+				t.Fatal("test premise: the MiniMax fixture row must not accept image input")
+			}
+			dir := t.TempDir()
+			entered := filepath.Join(dir, "opening-hook-entered")
+			released := filepath.Join(dir, "opening-hook-released")
+			hooksJSON, err := json.Marshal(map[string]any{"hooks": map[string]any{
+				"UserPromptSubmit": []any{map[string]any{"hooks": []any{map[string]any{
+					"type": "command",
+					"command": "touch " + shellquote.Literal(entered) +
+						"; while [ ! -e " + shellquote.Literal(released) + " ]; do sleep 0.02; done",
+				}}}},
+			}})
+			if err != nil {
+				t.Fatalf("encode hooks.json: %v", err)
+			}
+			pluginDir := writePluginHooks(t, "opening-steer-plugin", string(hooksJSON))
+			adapter := &fakeAdapter{name: "minimax"}
+			sess := newSession(t,
+				withProfile(profile),
+				withAdapter(adapter),
+				withStateDir(t.TempDir()),
+				withConfig(SessionConfig{
+					PluginDirs: []string{pluginDir},
+					testOnly:   testConfig{skipGitSnapshot: true},
+				}),
+			)
+			if sess.hookRunner == nil {
+				t.Fatal("test setup: the plugin's UserPromptSubmit hook did not reach a hook runner")
+			}
+			sess.appendTurn(schema.TurnUserInput, userImageMessage("what was in the old image?"))
+
+			adapter.setSteps([]func(req llm.Request) llm.Response{
+				func(req llm.Request) llm.Response {
+					got := userMessageImages(req)
+					if len(got) != len(tc.wantImages) {
+						t.Errorf("first request received %d user image(s), want %d", len(got), len(tc.wantImages))
+					}
+					for i := range tc.wantImages {
+						if i >= len(got) || !bytes.Equal(got[i], tc.wantImages[i]) {
+							t.Errorf("first request image %d does not match the in-flight attachment it should carry", i)
+						}
+					}
+					return agenttest.ToolCallResponse(communicateCall("done", "ok"))
+				},
+			})
+
+			// TRIPWIRE: the hook blocks on a marker file this test controls; the
+			// 30s context and testwait's budget only catch a genuine hang.
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			done := make(chan error, 1)
+			go func() {
+				_, err := sess.ProcessInput(ctx, "keep going", tc.images)
+				done <- err
+			}()
+			testwait.Until(t, "the opening UserPromptSubmit hook to block", func() bool {
+				_, statErr := os.Stat(entered)
+				return statErr == nil
+			})
+			if ok, err := sess.trySteerWithImages("look at the new one", []ImageAttachment{{MediaType: "image/png", Data: steeringImage}}); err != nil || !ok {
+				t.Fatalf("trySteerWithImages = %t, %v; want the steering admitted while the opening hook blocks", ok, err)
+			}
+			if err := os.WriteFile(released, nil, 0o600); err != nil {
+				t.Fatalf("release the opening hook: %v", err)
+			}
+			if err := <-done; err != nil {
+				t.Fatalf("ProcessInput: %v", err)
+			}
+			if got := len(adapter.Requests()); got == 0 {
+				t.Fatal("no provider request recorded")
+			}
+
+			sess.mu.Lock()
+			history := append([]schema.Turn(nil), sess.history...)
+			sess.mu.Unlock()
+			if got := userImagesInHistory(history); len(got) != tc.wantHistory {
+				t.Fatalf("live history carries %d user image(s), want %d: the request projection must not mutate stored turns", len(got), tc.wantHistory)
+			}
+			data, err := readTranscriptFull(context.Background(), sess.TranscriptPath(), "")
+			if err != nil {
+				t.Fatalf("readTranscriptFull: %v", err)
+			}
+			if got := userImagesInHistory(ResumeHistory(data.Entries)); len(got) != tc.wantHistory {
+				t.Fatalf("reloaded history carries %d user image(s), want %d", len(got), tc.wantHistory)
+			}
+		})
 	}
 }
 
