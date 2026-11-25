@@ -6,7 +6,7 @@
  * selectableRow.module.css, the palette's aria-selected wash stays local -
  * never to a class here. Tokens only. */
 
-.reset {
+.rowReset {
   box-sizing: border-box;
   width: 100%;
   margin: 0;
@@ -17,7 +17,7 @@
   text-align: start;
 }
 
-.interactive {
+.rowInteractive {
   cursor: pointer;
   transition:
     background-color var(--motion-duration-hover) var(--motion-easing-standard),
@@ -27,14 +27,14 @@
 /* The wash stays off a current or selected row, so the selected state holds
  * under the pointer. A refused row never washes: its caller's refusal look
  * owns it. */
-.interactive:hover:not(:disabled):not([aria-disabled="true"]):not([aria-current]):not([aria-selected="true"]) {
+.rowInteractive:hover:not(:disabled):not([aria-disabled="true"]):not([aria-current]):not([aria-selected="true"]) {
   background: var(--hover-1);
 }
 
 /* The press, as Button's: transform only, and gentler than a button's
  * because a row is wide and the same ratio would move its ends much further. */
 @media (prefers-reduced-motion: no-preference) {
-  .interactive:active:not(:disabled):not([aria-disabled="true"]) {
+  .rowInteractive:active:not(:disabled):not([aria-disabled="true"]) {
     transform: scale(var(--press-scale-row));
   }
 }

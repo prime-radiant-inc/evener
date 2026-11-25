@@ -326,10 +326,10 @@ test("an interactive row washes on hover and rings inset on keyboard focus", () 
   expect(
     topRuleBlock(
       chrome,
-      '.interactive:hover:not(:disabled):not([aria-disabled="true"]):not([aria-current]):not([aria-selected="true"])',
+      '.rowInteractive:hover:not(:disabled):not([aria-disabled="true"]):not([aria-current]):not([aria-selected="true"])',
     ),
   ).toContain("background: var(--hover-1)");
-  expect(rule(".interactive")).toContain('composes: interactive from "../internal/rowChrome.module.css"');
+  expect(rule(".interactive")).toContain('composes: rowInteractive from "../internal/rowChrome.module.css"');
   const focus = rule(".interactive:focus-visible");
   expect(focus).toContain("outline: var(--focus-ring)");
   expect(focus).toContain("outline-offset: -2px");

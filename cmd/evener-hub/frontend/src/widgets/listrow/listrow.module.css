@@ -4,7 +4,7 @@
  * second-to-last column and the trailing slot the last one, which holds with
  * or without a leading column. */
 .row {
-  composes: reset from "../internal/rowChrome.module.css";
+  composes: rowReset from "../internal/rowChrome.module.css";
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
@@ -40,7 +40,7 @@
 .interactive {
   composes: tapFloor from "../../styles/tapfloor.module.css";
   /* biome-ignore lint/suspicious/noDuplicateProperties: css-modules composes takes one declaration per composed class, each with its own `from` */
-  composes: interactive from "../internal/rowChrome.module.css";
+  composes: rowInteractive from "../internal/rowChrome.module.css";
 }
 
 /* Inset: rows sit flush in scrolling lists that would clip an outside ring. */
