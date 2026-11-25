@@ -44,62 +44,6 @@
   flex: none;
 }
 
-/* Desktop and mobile: the category strip is a horizontally scrolling row of
- * underline tabs, flush against the header hairline. */
-.tablist {
-  display: flex;
-  flex: none;
-  min-inline-size: 0;
-  padding: var(--space-1) var(--space-half) 0;
-  border-bottom: 1px solid var(--edge);
-  overflow-x: auto;
-  overflow-y: hidden;
-  overscroll-behavior-x: contain;
-  scrollbar-width: none;
-}
-
-.tablist::-webkit-scrollbar {
-  display: none;
-}
-
-.tab {
-  display: inline-flex;
-  flex: 1 0 auto;
-  justify-content: center;
-  align-items: stretch;
-  margin-inline: calc(var(--space-half) * -1);
-  border-bottom: 2px solid transparent;
-}
-
-.tab[data-selected] {
-  border-bottom-color: var(--ink-hi);
-}
-
-.tabStack {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  line-height: var(--line-height-title);
-  white-space: nowrap;
-}
-
-.tabLabel {
-  font-size: var(--font-size-caption);
-  font-weight: var(--font-weight-medium);
-  color: var(--ink-mid);
-}
-
-.tab[data-selected] .tabLabel {
-  color: var(--ink-hi);
-}
-
-.tabDetail {
-  font-size: var(--font-size-caption);
-  font-weight: var(--font-weight-regular);
-  color: var(--ink-low);
-  font-variant-numeric: tabular-nums;
-}
-
 .body {
   flex: 1;
   overflow-y: auto;

@@ -71,9 +71,15 @@ test("About renders the explicit remote session's hydrated accounting", async ()
     if (response.thread.evener) {
       response.thread.evener.goal = { objective: "Ship the release notes", status: "blocked", iterations: 1 };
       response.thread.evener.sessionUrls = [
-        { id: "u-web", url: "https://example.com/pr/1", label: "Pull request", addedBy: "human", addedAt: 1 },
-        { id: "u-file", url: "file:///work/session/README.md", label: "Spec", addedBy: "human", addedAt: 2 },
-        { id: "u-custom", url: "custom://item/42", label: "Custom ref", addedBy: "human", addedAt: 3 },
+        {
+          id: "u-web",
+          url: "https://example.com/pr/1",
+          label: "Pull request",
+          addedBy: "human",
+          addedAt: Math.floor(Date.now() / 1000) - 120,
+        },
+        { id: "u-file", url: "file:///work/session/README.md", label: "Spec", addedBy: "human", addedAt: 0 },
+        { id: "u-custom", url: "custom://item/42", label: "Custom ref", addedBy: "human" },
       ];
     }
     return response;
@@ -117,17 +123,25 @@ test("About renders the explicit remote session's hydrated accounting", async ()
   expect(webLink.getAttribute("target")).toBe("_blank");
   expect(webLink.getAttribute("rel")?.split(/\s+/)).toEqual(expect.arrayContaining(["noopener", "noreferrer"]));
   // Label-only at rest (no raw multi-line URL rendered inside the anchor),
-  // with full destination revealed on hover/focus in the verification bar.
+  // with full destination revealed on hover/focus in the verification bar, and
+  // relative timestamps shown in Recent mode when addedAt is present.
   expect(within(webLink).queryByText("https://example.com/pr/1")).toBeNull();
+  const webTime = webLink.querySelector('[data-activity-time][data-meaning="added"]');
+  expect(webTime).toBeTruthy();
+  expect(webTime?.textContent?.trim()).toBeTruthy();
   fireEvent.focus(webLink);
   expect(screen.getByTestId("session-links-destination").textContent).toContain("https://example.com/pr/1");
   const fileRow = screen.getByTestId("about-link-u-file");
+  expect(fileRow.querySelector("[data-activity-time]")).toBeNull();
   expect(within(fileRow).getByRole("button")).toBeTruthy();
   const customRow = screen.getByTestId("about-link-u-custom");
+  expect(customRow.querySelector("[data-activity-time]")).toBeNull();
   expect(within(customRow).queryByRole("link")).toBeNull();
   expect(within(customRow).queryByRole("button")).toBeNull();
-  // Mode toggle switches cleanly between Recent and Grouped categories, and filter narrows the list.
+  // Mode toggle switches cleanly between Recent and Grouped categories (hiding timestamps in Grouped),
+  // and filter narrows the list.
   fireEvent.click(screen.getByRole("radio", { name: "Grouped" }));
+  expect(screen.getByTestId("about-link-u-web").querySelector("[data-activity-time]")).toBeNull();
   expect(screen.getByText("Pull Requests")).toBeTruthy();
   expect(screen.getByText("Local files")).toBeTruthy();
   fireEvent.change(screen.getByRole("searchbox", { name: "Filter links" }), { target: { value: "Spec" } });

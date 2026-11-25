@@ -7,11 +7,14 @@
 
 .toolbar {
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
+  align-items: center;
+  flex-wrap: wrap;
   gap: var(--space-2);
 }
 
 .filterWrap {
+  flex: 1 1 var(--space-9);
   min-inline-size: 0;
 }
 
@@ -52,7 +55,7 @@
 .webLink,
 .row {
   display: flex;
-  align-items: center;
+  align-items: baseline;
   justify-content: space-between;
   gap: var(--space-2);
   padding: var(--space-1) var(--space-2);

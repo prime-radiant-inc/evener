@@ -889,15 +889,12 @@ test("activity tabs stack label over fraction inside a single row and About stay
   await screen.findByRole("button", { name: /inspect/ });
   const tabs = screen.getAllByRole("tab");
   expect(tabs).toHaveLength(6);
-  const stackClass = requireClass(styles.tabStack, "activitybar.module.css", "tabStack");
   for (const tab of tabs.slice(1)) {
     const stack = tab.firstElementChild;
-    expect(stack?.classList.contains(stackClass)).toBe(true);
     expect(stack?.children).toHaveLength(2);
     expect(tab.textContent).not.toContain("\n");
   }
   const aboutStack = screen.getByRole("tab", { name: "About" }).firstElementChild;
-  expect(aboutStack?.classList.contains(stackClass)).toBe(true);
   expect(aboutStack?.children).toHaveLength(1);
 });
 

@@ -5,7 +5,7 @@ import { refParam } from "../routing";
 import type { ActivityScope } from "../statusbar/statusScope";
 import { useWorkspaceStore } from "../workspace";
 
-export function LinksTab({ scope }: { scope: ActivityScope }) {
+export function LinksTab({ scope, now }: { scope: ActivityScope; now: number }) {
   const model = useThreadModel(scope.leaf.ref);
   const sourcePaneId = useWorkspaceStore((state) => {
     const matches = (pane: (typeof state.panes)[number]) =>
@@ -15,5 +15,5 @@ export function LinksTab({ scope }: { scope: ActivityScope }) {
     return state.panes.find(matches)?.id;
   });
   if (!model) return <Skeleton lines={2} />;
-  return <SessionLinksSection sessionRef={scope.leaf.ref} model={model} sourcePaneId={sourcePaneId} />;
+  return <SessionLinksSection sessionRef={scope.leaf.ref} model={model} sourcePaneId={sourcePaneId} now={now} />;
 }

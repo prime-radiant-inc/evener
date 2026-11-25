@@ -10,6 +10,7 @@ import {
 import { EmptyState, Eyebrow, Input, isWebHref, SegmentedControl } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { FileOpenBesideButton } from "../transcript/fileOpenBeside";
+import { ActivityTime, type ActivityTimeValue, unixSecondsActivityTime } from "./activityTime";
 import { isFileHref } from "./NotesPanel";
 import styles from "./sessionlinkssection.module.css";
 
@@ -22,6 +23,7 @@ interface PreparedLink {
   categoryLower: string;
   labelLower: string;
   urlLower: string;
+  addedTime: ActivityTimeValue | undefined;
 }
 
 const CATEGORY_ORDER: readonly LinkCategory[] = [
@@ -101,6 +103,7 @@ function prepareLinksByRecency(urls: readonly SessionURL[]): PreparedLink[] {
         categoryLower: category.toLowerCase(),
         labelLower: (entry.label ?? "").toLowerCase(),
         urlLower: entry.url.toLowerCase(),
+        addedTime: unixSecondsActivityTime(entry.addedAt, "added"),
       };
     });
 }
@@ -108,15 +111,18 @@ function prepareLinksByRecency(urls: readonly SessionURL[]): PreparedLink[] {
 /** Dedicated Overview Links view: switch between recency and grouped
  * categories, filter by label/URL/category, render clean hover-underlined
  * labels without multi-line raw URLs underneath, keep Open beside for local
- * files, and reveal the exact destination on hover or focus. */
+ * files, show relative timestamps in Recent mode when available, and reveal
+ * the exact destination on hover or focus. */
 export function SessionLinksSection({
   sessionRef,
   model,
   sourcePaneId,
+  now = Date.now(),
 }: {
   sessionRef: string;
   model: ThreadModel;
   sourcePaneId?: string;
+  now?: number;
 }): JSX.Element {
   const [mode, setMode] = useState<LinksOrderMode>("recent");
   const [query, setQuery] = useState("");
@@ -172,8 +178,9 @@ export function SessionLinksSection({
     },
   };
 
-  function renderItem({ entry }: PreparedLink) {
+  function renderItem({ entry, addedTime }: PreparedLink, showTime: boolean) {
     const title = entry.label || entry.url;
+    const timestamp = showTime && addedTime ? <ActivityTime value={addedTime} now={now} /> : null;
 
     if (isWebHref(entry.url)) {
       return (
@@ -187,6 +194,7 @@ export function SessionLinksSection({
             rel="noopener noreferrer"
           >
             <span className={CLASS.label}>{title}</span>
+            {timestamp}
           </a>
         </li>
       );
@@ -206,6 +214,7 @@ export function SessionLinksSection({
       <li key={entry.id} data-link-url={entry.url}>
         <div className={CLASS.row} data-testid={`about-link-${entry.id}`} title={entry.url}>
           <span className={CLASS.label}>{title}</span>
+          {timestamp}
           {fileAction !== undefined ? <span className={CLASS.action}>{fileAction}</span> : null}
         </div>
       </li>
@@ -218,7 +227,7 @@ export function SessionLinksSection({
   } else if (mode === "recent") {
     listContent = (
       <ul className={CLASS.list} aria-label="Session links" {...inspectHandlers}>
-        {filteredLinks.map(renderItem)}
+        {filteredLinks.map((item) => renderItem(item, true))}
       </ul>
     );
   } else {
@@ -230,7 +239,7 @@ export function SessionLinksSection({
               <Eyebrow as="h3">{category}</Eyebrow>
               <span className={CLASS.groupCount}>{items.length}</span>
             </div>
-            <ul className={CLASS.list}>{items.map(renderItem)}</ul>
+            <ul className={CLASS.list}>{items.map((item) => renderItem(item, false))}</ul>
           </section>
         ))}
       </section>
@@ -240,14 +249,6 @@ export function SessionLinksSection({
   return (
     <div className={CLASS.root}>
       <div className={CLASS.toolbar}>
-        <SegmentedControl<LinksOrderMode>
-          label="Link order"
-          hideLabel
-          size="sm"
-          value={mode}
-          onChange={setMode}
-          options={MODE_OPTIONS}
-        />
         <div className={CLASS.filterWrap}>
           <Input
             type="search"
@@ -258,6 +259,14 @@ export function SessionLinksSection({
             aria-label="Filter links"
           />
         </div>
+        <SegmentedControl<LinksOrderMode>
+          label="Link order"
+          hideLabel
+          size="sm"
+          value={mode}
+          onChange={setMode}
+          options={MODE_OPTIONS}
+        />
       </div>
 
       {listContent}
