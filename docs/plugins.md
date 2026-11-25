@@ -171,16 +171,16 @@ session daemons keep reading the same content paths.
 ## Bundled plugins
 
 Evener ships optional bundled plugins inside the binary under `internal/bundled/plugins/`.
-Bundled plugins stay off on default launches and join launch resolution only when named explicitly (for example, `--enabled-plugins=harness-feedback`).
+Bundled plugins stay off on default launches and join launch resolution only when named explicitly (for example, `--enabled-plugins=evener-feedback`).
 Each requested bundled plugin is materialized into a content-addressed directory under the plugin store's `bundled/` root and audited with the same Git-metadata rules as managed marketplace installs.
 
 | Plugin | Purpose |
 | --- | --- |
 | `coordinator-workflow` | Coordinator-oriented orchestration and implementation delegate roles. |
-| `harness-feedback` | Provides the `harness-feedback:harness-feedback` skill and a bundled Python 3 helper that searches `prime-radiant-inc/evener` issues before posting, upvotes open duplicates (`+1`), checks whether a newer build is available via `evener upgrade`, and attaches running build metadata to new comments and issues. |
+| `evener-feedback` | Provides the `evener-feedback:reporting-feedback` skill and a bundled Python 3 helper that searches `prime-radiant-inc/evener` issues and recent merged PRs before posting, upvotes open duplicates (`+1`), checks whether a newer build is available via `evener upgrade`, and attaches running build metadata to new comments and issues. |
 
 ```bash
-evener --enabled-plugins=harness-feedback --model provider/model "..."
+evener --enabled-plugins=evener-feedback --model provider/model "..."
 ```
 
 ## Maintain installed plugins

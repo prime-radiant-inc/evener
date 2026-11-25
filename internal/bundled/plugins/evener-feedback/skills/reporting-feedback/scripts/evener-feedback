@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CLI helper for deduplicated Evener harness feedback and update checks."""
+"""CLI helper for deduplicated Evener feedback and update checks."""
 
 from __future__ import annotations
 
@@ -112,23 +112,38 @@ def gh_json(args: list[str]) -> Any:
         raise CliError(f"could not parse JSON from gh output: {exc}") from exc
 
 
-def fetch_optional_api(endpoint: str) -> dict[str, Any] | None:
+def fetch_optional_json(args: list[str]) -> Any:
     try:
-        data = gh_json(["api", endpoint])
+        return gh_json(args)
     except GhUnavailableError:
         raise
     except CliError:
         return None
+
+
+def fetch_optional_api(endpoint: str) -> dict[str, Any] | None:
+    data = fetch_optional_json(["api", endpoint])
     return data if isinstance(data, dict) else None
+
+
+def compact_snippet(raw_body: Any) -> str:
+    body = " ".join(raw_body.split()) if isinstance(raw_body, str) else ""
+    return body if len(body) <= 160 else body[:159] + "..."
 
 
 def normalize_issue(raw: dict[str, Any]) -> dict[str, Any]:
     labels = [item["name"] for item in (raw.get("labels") or []) if isinstance(item, dict) and item.get("name")]
-    body = " ".join(raw["body"].split()) if isinstance(raw.get("body"), str) else ""
     return {
         "number": raw.get("number"), "title": raw.get("title", ""), "state": str(raw.get("state", "")).upper(),
         "url": raw.get("url", ""), "labels": labels, "updated_at": raw.get("updatedAt"), "closed_at": raw.get("closedAt"),
-        "snippet": body if len(body) <= 160 else body[:159] + "...",
+        "snippet": compact_snippet(raw.get("body")),
+    }
+
+
+def normalize_pr(raw: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "number": raw.get("number"), "title": raw.get("title", ""),
+        "url": raw.get("url", ""), "merged_at": raw.get("mergedAt"), "snippet": compact_snippet(raw.get("body")),
     }
 
 
@@ -148,17 +163,24 @@ def cmd_check(args: argparse.Namespace) -> None:
         "--limit", str(args.limit), "--search", query,
         "--json", "number,title,state,url,labels,updatedAt,closedAt,body",
     ])
+    prs_raw = fetch_optional_json([
+        "pr", "list", "--repo", repo, "--state", "merged",
+        "--limit", str(args.limit), "--search", query,
+        "--json", "number,title,url,mergedAt,body",
+    ])
     normalized = [normalize_issue(item) for item in (issues or []) if isinstance(item, dict)]
     open_issues = [item for item in normalized if item["state"] == "OPEN"]
     closed_issues = [item for item in normalized if item["state"] != "OPEN"]
+    merged_prs = [normalize_pr(item) for item in (prs_raw if isinstance(prs_raw, list) else []) if isinstance(item, dict)]
     payload = {
         "repo": repo, "query": query, "evener_version": version,
-        "open_issues": open_issues, "closed_issues": closed_issues, "has_possible_fixed": bool(closed_issues),
+        "open_issues": open_issues, "closed_issues": closed_issues, "merged_prs": merged_prs,
+        "has_possible_fixed": bool(closed_issues or merged_prs),
     }
     lines = [
         f"Repository: {repo}",
         f"Evener version: {version['raw'] or 'unknown (evener not on PATH)'}",
-        f"Matches for {query!r}: {len(open_issues)} open, {len(closed_issues)} closed",
+        f"Matches for {query!r}: {len(open_issues)} open, {len(closed_issues)} closed, {len(merged_prs)} merged PRs",
     ]
     if open_issues:
         lines.extend(["\nOpen issues:"] + [f"  #{i['number']} {i['title']} ({i['url']})" for i in open_issues])
@@ -167,8 +189,13 @@ def cmd_check(args: argparse.Namespace) -> None:
         for item in closed_issues:
             closed = f" closed {item['closed_at']}" if item["closed_at"] else ""
             lines.append(f"  #{item['number']}{closed} {item['title']} ({item['url']})")
-    if not open_issues and not closed_issues:
-        lines.append("No matching issues found.")
+    if merged_prs:
+        lines.append("\nRecently merged PRs (possible already-fixed candidates; run `check-update`):")
+        for item in merged_prs:
+            merged = f" merged {item['merged_at']}" if item["merged_at"] else ""
+            lines.append(f"  PR #{item['number']}{merged} {item['title']} ({item['url']})")
+    if not open_issues and not closed_issues and not merged_prs:
+        lines.append("No matching issues or merged PRs found.")
     emit(payload, args.json, lines)
 
 
@@ -232,6 +259,7 @@ def cmd_check_update(args: argparse.Namespace) -> None:
         lines.append(f"Snapshot build: {snapshot_cmd}")
     emit(payload, args.json, lines)
 
+
 def cmd_upvote(args: argparse.Namespace) -> None:
     repo = validate_repo(args.repo)
     payload: dict[str, Any] = {"action": "upvote", "dry_run": args.dry_run, "repo": repo, "issue_number": args.issue_number, "reaction": "+1"}
@@ -242,6 +270,7 @@ def cmd_upvote(args: argparse.Namespace) -> None:
     if isinstance(resp, dict) and resp.get("id") is not None:
         payload["reaction_id"] = resp["id"]
     emit(payload, args.json, [f"Added +1 reaction to {repo}#{args.issue_number}"])
+
 
 def cmd_comment(args: argparse.Namespace) -> None:
     repo, details = validate_repo(args.repo), require_text("details", args.details)
@@ -256,6 +285,7 @@ def cmd_comment(args: argparse.Namespace) -> None:
         return
     payload["url"] = run_gh(["issue", "comment", str(args.issue_number), "--repo", repo, "--body", body]).strip()
     emit(payload, args.json, [f"Commented on {repo}#{args.issue_number}: {payload['url']}"])
+
 
 def cmd_report(args: argparse.Namespace) -> None:
     repo = validate_repo(args.repo)
@@ -272,8 +302,9 @@ def cmd_report(args: argparse.Namespace) -> None:
     payload["url"] = run_gh(["issue", "create", "--repo", repo, "--title", title, "--body", body]).strip()
     emit(payload, args.json, [f"Opened issue on {repo}: {payload['url']}"])
 
+
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="harness-feedback", description="Evener harness feedback and update-check helper.")
+    parser = argparse.ArgumentParser(prog="evener-feedback", description="Evener feedback and update-check helper.")
     parser.add_argument("--repo", default=DEFAULT_REPO, help=f"GitHub repository slug (default: {DEFAULT_REPO})")
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -286,9 +317,9 @@ def build_parser() -> argparse.ArgumentParser:
         p.set_defaults(func=func)
         return p
 
-    p_check = add_sub("check", "search open and closed issues and report running Evener version", cmd_check)
-    p_check.add_argument("--query", required=True, help="search terms for existing issues")
-    p_check.add_argument("--limit", type=positive_int, default=10, help="maximum issues to return (default: 10)")
+    p_check = add_sub("check", "search open/closed issues and merged PRs and report running Evener version", cmd_check)
+    p_check.add_argument("--query", required=True, help="search terms for existing issues and merged PRs")
+    p_check.add_argument("--limit", type=positive_int, default=10, help="maximum results per list (default: 10)")
     add_sub("check-update", "compare running Evener version with latest release and main", cmd_check_update)
     p_up = add_sub("upvote", "add a +1 reaction to an existing issue", cmd_upvote, mutating=True)
     p_up.add_argument("issue_number", type=positive_int, help="GitHub issue number")
@@ -304,12 +335,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_report.add_argument("--tool", help="Evener tool name involved, if applicable")
     return parser
 
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         args.func(args)
     except CliError as exc:
-        print(f"harness-feedback: {exc}", file=sys.stderr)
+        print(f"evener-feedback: {exc}", file=sys.stderr)
         return 1
     return 0
 
