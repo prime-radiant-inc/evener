@@ -1,13 +1,16 @@
 {
   "name": "joblog-long-command-starves-output",
-  "description": "A job log pane in a narrow workspace column keeps a real output viewport under a long command. The command block is bounded and scrolls inside itself, the virtual list keeps at least half of the log column and a nonzero height, and a short command stays fully visible rather than clipped. The fixtures reproduce JobLog.tsx's PaneScaffold > transcript column > command block > .joblog chain with the real component stylesheets; the long command is the 832-character barrier script the background-jobs browser guard renders, recovered from its retained failure DOM.",
+  "description": "A job log pane in a narrow workspace column keeps a real output viewport under a long command, and keeps CodeBlock's header (language label and Copy button) reachable when scrolling the command. The command container is bounded and CodeBlock's <pre> scrolls inside it, the virtual list keeps at least half of the log column and a nonzero height, and a short command stays fully visible rather than clipped. The fixtures reproduce JobLog.tsx's PaneScaffold > transcript column > command block > .joblog chain with the real component stylesheets; the long command is the 832-character barrier script the background-jobs browser guard renders, recovered from its retained failure DOM.",
   "cssFiles": [
     "styles/global.css",
+    "styles/tapfloor.module.css",
     "styles/text.module.css",
     "styles/tokens.css",
     "widgets/panescaffold/panescaffold.module.css",
     "widgets/codeblock/codeblock.module.css",
     "widgets/virtuallist/virtuallist.module.css",
+    "widgets/button/button.module.css",
+    "widgets/iconbutton/iconbutton.module.css",
     "panes/transcript/transcript.module.css"
   ],
   "cssClassPrefixes": {
@@ -27,9 +30,9 @@
     "mobile": false
   },
   "mutation": {
-    "declaration": "panes/transcript/transcript.module.css: remove .joblogCommand's max-height and its overflow-y/overflow-x pair, leaving flex: 0 0 auto so the command grows to its full wrapped content height",
-    "verified": "2026-11-23",
+    "declaration": "panes/transcript/transcript.module.css: remove .joblogCommand's max-height (starves output), drop --codeblock-overflow-y: auto (clips command), or move overflow-y: auto back onto .joblogCommand itself (scrolls Copy and language label out of view)",
+    "verified": "2026-11-25",
     "expect": "fail",
-    "note": "Measured 2026-11-23 at the 402px-wide, 700px-tall pane the guard screenshotted: without the cap the long fixture's list viewport collapses to 0px and its command block is 802px of the 602px log column (the pane body then scrolls by 204px); restoring the cap returns the list to 334px and bounds the command to 240px, while the short fixture stays at a 468px list and an unscrolled 106px command either way. Dropping min-height:0 leaves the case green: overflow-y:auto already makes the block a scroll container, whose automatic minimum size is zero, so max-height plus the overflow pair is the whole fix."
+    "note": "Verified 2026-11-25 at the 402px-wide, 700px-tall pane: removing max-height: 40% collapses the list to 0px and grows the command block to 802px of 602px (bodyScrollHeight 854px); dropping --codeblock-overflow-y: auto leaves pre unscrollable (overflow-y: visible, clientHeight === scrollHeight === 240px); moving overflow-y: auto back onto .joblogCommand keeps the 334px/240px split but scrolls .code-header (-427.8..-395.5) and Copy button (-423.8..-399.8) out of the 121.2..362.0 command box (copyHitClickable: false). With all declarations intact, the long command keeps list 334px / command 240px while pre scrolls and Copy stays hit-testable inside the command box; short stays at list 468px / command 106px."
   }
 }
