@@ -118,6 +118,10 @@ export interface ConversationParts {
   cadence: React.ReactNode;
 }
 
+// Diagnostic contract for the backgroundtranscriptguard diagnostic branches.
+// Only that guard document installs the probe, before it imports the app.
+type BackgroundTranscriptReaderProbe = { register(read: () => Record<string, unknown>): () => void };
+
 // Whether a workspace view other than `exceptPaneId` still retains `ref` and so
 // still has to follow a resume published for it: a session pane naming the ref
 // in its params, or a cascade pane whose path covers it. The seat's own hosting
@@ -446,6 +450,29 @@ function LiveConversationBody({
     pendingRowsVisible,
     heldEpoch,
   });
+
+  // Diagnostic only: this mounted conversation's live reader intent and commit.
+  const readerCommit = {
+    ref,
+    paneId: seat.viewFallbackId,
+    viewId: seat.readView?.id ?? seat.viewFallbackId,
+    openingTurnId,
+    openAtRow: openAtRow >= 0 ? openAtRow : null,
+    retainedFollowing: retainedCapture?.followingBottom ?? null,
+    initialViewFollowing: initialViewCapture?.followingBottom ?? null,
+  };
+  const readerRef = useRef({ flow, commit: readerCommit });
+  readerRef.current = { flow, commit: readerCommit };
+  useEffect(() => {
+    const probe = (window as Window & { backgroundTranscriptReaderProbe?: BackgroundTranscriptReaderProbe })
+      .backgroundTranscriptReaderProbe;
+    return probe?.register(() => ({
+      ...readerRef.current.commit,
+      followingBottom: readerRef.current.flow.isFollowingBottom(),
+      holdsPlace: readerRef.current.flow.holdsPlace,
+    }));
+  }, []);
+
   // Find shares the transcript's rows, its scroll owner and its paging owner.
   // The chord reaches only the conversation the keyboard is in, read at keydown.
   const keyboardPaneId = seat.keyboardScrollPaneId;

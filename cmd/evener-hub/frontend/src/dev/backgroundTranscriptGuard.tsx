@@ -59,6 +59,16 @@ installBackgroundTranscriptOptionsForTests({
 // Display documents retain their distinct source URLs for native storage proof.
 window.history.replaceState(null, "", displayDocument ? `/?${query}` : "/");
 
+// Diagnostic-only reader intent: the mounted conversation registers a live projection.
+const readerProbes = new Set<() => Record<string, unknown>>();
+const registerReaderProbe = (read: () => Record<string, unknown>) => {
+  readerProbes.add(read);
+  return () => readerProbes.delete(read);
+};
+Object.defineProperty(window, "backgroundTranscriptReaderProbe", {
+  value: Object.freeze({ register: registerReaderProbe }),
+});
+
 try {
   await import("../main");
   const threads = await import("../stores/threads");
@@ -126,6 +136,8 @@ try {
             }
             return { id: pane.id, identity };
           }),
+      // Read-only reader intent for the reconnect close; [] means none mounted.
+      readerState: (ref: string) => [...readerProbes].map((read) => read()).filter((record) => record.ref === ref),
       snapshot: threads.backgroundTranscriptSnapshotForTests,
       settled: threads.settleBackgroundTranscriptsForTests,
       entrySettled: (ref: string) => threads.settleEntryTranscriptForTests(ref),
