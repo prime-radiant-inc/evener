@@ -597,7 +597,7 @@ func (c *Client) LiveListingUsable(instance string, rows []registry.Model) bool 
 		if !registry.IsChatModelID(listed.ID) || listed.Hidden {
 			continue
 		}
-		static, err := c.Registry().ResolveListingRow(instance+"/"+listed.ID, false, true)
+		static, err := c.Registry().ResolveLiveCandidateListing(instance + "/" + listed.ID)
 		if err != nil {
 			if errors.Is(err, registry.ErrModelDisabled) {
 				continue
@@ -743,16 +743,12 @@ func (c *Client) listLive(ctx context.Context, instance string) ([]registry.Mode
 // runs no credential command (spec §10.1).
 func (c *Client) resolveListing(instance string) (ModelListing, error) {
 	ids, err := c.Registry().ModelIDs(instance)
-	return c.resolveListingIDs(instance, true, true, ids, err, func(ref string) (registry.Resolved, error) {
-		return c.Registry().ResolveListingRow(ref, true, false)
-	})
+	return c.resolveListingIDs(instance, true, true, ids, err, c.Registry().ResolveListing)
 }
 
 func (c *Client) resolveFallbackListing(instance string, live bool) (ModelListing, error) {
 	ids, err := c.Registry().FallbackModelIDs(instance)
-	return c.resolveListingIDs(instance, live, false, ids, err, func(ref string) (registry.Resolved, error) {
-		return c.Registry().ResolveListingRow(ref, false, false)
-	})
+	return c.resolveListingIDs(instance, live, false, ids, err, c.Registry().ResolveFallbackListing)
 }
 
 func (c *Client) resolveListingIDs(instance string, live, usable bool, ids []string, err error, resolveModel func(string) (registry.Resolved, error)) (ModelListing, error) {

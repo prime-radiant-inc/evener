@@ -445,11 +445,24 @@ func (r *Registry) ResolveLiveCandidate(ref string) (Resolved, error) {
 	return r.resolveMode(ref, resolveFull, false, true)
 }
 
-// ResolveListingRow resolves a listing's row without the credential stage:
-// live and candidate select the Resolve, ResolveFallback, or candidate shape,
-// so displaying a roster runs no command (spec §10.1).
-func (r *Registry) ResolveListingRow(ref string, live, candidate bool) (Resolved, error) {
-	return r.resolveMode(ref, resolveFacts, live, candidate)
+// ResolveListing resolves like Resolve at facts depth: the whole replay
+// except the credential stage, so displaying a roster runs no command
+// (spec §10.1).
+func (r *Registry) ResolveListing(ref string) (Resolved, error) {
+	return r.resolveMode(ref, resolveFacts, true, false)
+}
+
+// ResolveFallbackListing resolves like ResolveFallback at facts depth, so
+// a fallback listing runs no credential command (spec §10.1).
+func (r *Registry) ResolveFallbackListing(ref string) (Resolved, error) {
+	return r.resolveMode(ref, resolveFacts, false, false)
+}
+
+// ResolveLiveCandidateListing resolves like ResolveLiveCandidate at facts
+// depth, so judging a live listing's candidates runs no credential command
+// (spec §10.1).
+func (r *Registry) ResolveLiveCandidateListing(ref string) (Resolved, error) {
+	return r.resolveMode(ref, resolveFacts, false, true)
 }
 
 func (r *Registry) resolveMode(ref string, depth resolveDepth, includeLive, allowCodexCandidate bool) (Resolved, error) {
