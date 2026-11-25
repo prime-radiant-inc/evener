@@ -1577,11 +1577,11 @@ func hubThreadFork(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 	// ownershipEntry's scan of every project directory while a recovery is
 	// unconfirmed — so a bad parameter combination would otherwise be reported
 	// as an unavailable session, after that scan.
-	turn, err := validateThreadForkParams(params)
+	turn, modelOverride, err := validateThreadForkParams(params)
 	if err != nil {
 		return appwire.ThreadForkResponse{}, err
 	}
-	fork := forkRequest{cfg: cfg, params: params, ref: ref}
+	fork := forkRequest{cfg: cfg, params: params, ref: ref, modelOverride: modelOverride}
 	if err := fork.refuseDeletedTarget(); err != nil {
 		return appwire.ThreadForkResponse{}, err
 	}
@@ -1602,9 +1602,10 @@ func hubThreadFork(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 
 // forkRequest is one local thread/fork call.
 type forkRequest struct {
-	cfg    hubcore.WebConfig
-	params appwire.ThreadForkParams
-	ref    appwire.Ref
+	cfg           hubcore.WebConfig
+	params        appwire.ThreadForkParams
+	ref           appwire.Ref
+	modelOverride cmdutil.ModelRef
 }
 
 // forkLocked is the state a fork holds once its per-session locks are taken:
@@ -1806,20 +1807,42 @@ func forkThreadResponse(childID, originalInput string) appwire.ThreadForkRespons
 	}
 }
 
+func (f forkRequest) buildForkResponse(childID, originalInput string) appwire.ThreadForkResponse {
+	resp := forkThreadResponse(childID, originalInput)
+	model := f.modelOverride.Model
+	profile := f.modelOverride.Provider
+	if (model == "" || profile == "") && f.cfg.Past != nil {
+		if pe, ok := f.cfg.Past.Find(childID); ok {
+			model = cmp.Or(model, pe.Meta.Model)
+			profile = cmp.Or(profile, pe.Meta.ProfileID)
+		}
+	}
+	resp.Thread.ModelProvider = model
+	resp.Thread.Evener.Profile = profile
+	return resp
+}
+
+func (f forkRequest) forkOptions() []agent.ForkOption {
+	if f.modelOverride.Model == "" {
+		return nil
+	}
+	return []agent.ForkOption{agent.WithForkModel(f.modelOverride.Provider, f.modelOverride.Model)}
+}
+
 // forkAside starts an aside session beside the parent.
 func (f forkRequest) forkAside(entry hubcore.PastEntry, sessionID string) (appwire.ThreadForkResponse, error) {
 	stateDir, err := forkStateDir(f.cfg, entry)
 	if err != nil {
 		return appwire.ThreadForkResponse{}, err
 	}
-	childID, err := hubAsideSession(stateDir, sessionID)
+	childID, err := hubAsideSession(stateDir, sessionID, f.forkOptions()...)
 	if err != nil {
 		return appwire.ThreadForkResponse{}, err
 	}
 	if f.cfg.Past != nil {
 		_, _ = f.cfg.Past.Rebuild()
 	}
-	return forkThreadResponse(childID, ""), nil
+	return f.buildForkResponse(childID, ""), nil
 }
 
 // forkBranch branches the parent session at the divergence turn.
@@ -1830,9 +1853,9 @@ func (f forkRequest) forkBranch(entry hubcore.PastEntry, sessionID string, turn 
 	}
 	var childID, originalInput string
 	if f.params.DeferInput {
-		childID, originalInput, err = hubForkSessionAt(stateDir, sessionID, turn, f.params.Label)
+		childID, originalInput, err = hubForkSessionAt(stateDir, sessionID, turn, f.params.Label, f.forkOptions()...)
 	} else {
-		childID, err = hubForkSession(stateDir, sessionID, turn, f.params.EditedInput, f.params.Label)
+		childID, err = hubForkSession(stateDir, sessionID, turn, f.params.EditedInput, f.params.Label, f.forkOptions()...)
 	}
 	if err != nil {
 		return appwire.ThreadForkResponse{}, forkDivergencePositionWireError(err)
@@ -1840,7 +1863,7 @@ func (f forkRequest) forkBranch(entry hubcore.PastEntry, sessionID string, turn 
 	if f.cfg.Past != nil {
 		_, _ = f.cfg.Past.Rebuild()
 	}
-	return forkThreadResponse(childID, originalInput), nil
+	return f.buildForkResponse(childID, originalInput), nil
 }
 
 // forkRemoteThread forks a thread owned by another host through its source.
@@ -1866,24 +1889,48 @@ func forkRemoteThread(ctx context.Context, cfg hubcore.WebConfig, sources *appso
 // out, and returns the source turn a divergent fork branches from. It reads only
 // the request, so the handler can answer a malformed one without refreshing
 // daemon ownership or resolving the target's transcript.
-func validateThreadForkParams(params appwire.ThreadForkParams) (int, error) {
+func validateThreadForkParams(params appwire.ThreadForkParams) (int, cmdutil.ModelRef, error) {
+	modelOverride, err := parseForkModelOverride(params.ModelProvider, params.Model)
+	if err != nil {
+		return 0, cmdutil.ModelRef{}, appwire.InvalidParams(err.Error())
+	}
 	if params.Aside {
 		if strings.TrimSpace(params.SourceItemKey) != "" || strings.TrimSpace(params.EditedInput) != "" || strings.TrimSpace(params.Label) != "" || params.DeferInput {
-			return 0, appwire.InvalidParams("aside does not accept sourceItemKey, editedInput, deferInput, or label")
+			return 0, cmdutil.ModelRef{}, appwire.InvalidParams("aside does not accept sourceItemKey, editedInput, deferInput, or label")
 		}
-		return 0, nil
+		return 0, modelOverride, nil
 	}
 	turn, err := parseSourceItemKey(params.SourceItemKey)
 	if err != nil {
-		return 0, appwire.InvalidParams(err.Error())
+		return 0, cmdutil.ModelRef{}, appwire.InvalidParams(err.Error())
 	}
 	if params.DeferInput && strings.TrimSpace(params.EditedInput) != "" {
-		return 0, appwire.InvalidParams("editedInput and deferInput are mutually exclusive")
+		return 0, cmdutil.ModelRef{}, appwire.InvalidParams("editedInput and deferInput are mutually exclusive")
 	}
 	if !params.DeferInput && strings.TrimSpace(params.EditedInput) == "" {
-		return 0, appwire.InvalidParams("editedInput is required")
+		return 0, cmdutil.ModelRef{}, appwire.InvalidParams("editedInput is required")
 	}
-	return turn, nil
+	return turn, modelOverride, nil
+}
+
+func parseForkModelOverride(modelProvider, model string) (cmdutil.ModelRef, error) {
+	provider := strings.TrimSpace(modelProvider)
+	rawModel := strings.TrimSpace(model)
+	if provider != "" && rawModel == "" {
+		return cmdutil.ModelRef{}, errors.New("model is required when modelProvider is set")
+	}
+	if rawModel == "" {
+		return cmdutil.ModelRef{}, nil
+	}
+	if provider != "" {
+		if strings.HasPrefix(rawModel, "/") {
+			return cmdutil.ModelRef{}, fmt.Errorf("model %q must use provider/model", rawModel)
+		}
+		if !strings.HasPrefix(strings.ToLower(rawModel), strings.ToLower(provider)+"/") {
+			rawModel = provider + "/" + rawModel
+		}
+	}
+	return hubParseModelRef(rawModel)
 }
 
 // forkThreadOwner is the roster's answer about one thread. liveDaemonForThread
