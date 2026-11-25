@@ -2529,11 +2529,6 @@ type replayScope struct {
 	// turns were already filtered against the full history slice.
 	notesSelfEchoFiltered bool
 
-	// DropThinking strips assistant thinking/redacted_thinking from every
-	// replayed message, including the in-flight turn. See dropsReplayedThinking
-	// for the policy and its exception; provenance rules only apply when this
-	// is false.
-	DropThinking bool
 	// dropsToolResult reports whether the outgoing request must omit this tool
 	// result's media payload — a document the provider already rejected this
 	// session (#4465). Nil keeps every payload.
@@ -2731,14 +2726,13 @@ func omitLegacyWebSearchToolCall(tc *llm.ToolCallData) *llm.ToolCallData {
 	return &cloned
 }
 
-// projectThinkingPart applies the N4 provenance rule and the target's thinking
-// policy to one part. provenanceKeeps is the per-turn rule; false drops every
-// thinking part, except that a Responses target takes the portable plaintext of
-// a foreign turn without its opaque state (#6891). Otherwise the target policy
-// drops plain reasoning, but keeps an encrypted reasoning_details array — wire
-// continuation state the chat adapter must round-trip, not the text #4563
-// measured — with its display text removed. The returned part is the input
-// unchanged when nothing applies.
+// projectThinkingPart applies the N4 provenance rule to one content part.
+// provenanceKeeps is the per-turn eligibility; false drops every thinking part,
+// except that a Responses target keeps the portable plaintext of a foreign turn
+// without its opaque state. Google Interactions thoughts require matching
+// (Instance, WireID) provenance, and non-Interactions thinking parts drop on
+// ProtocolGoogle targets. Otherwise the part returns unchanged; target-level
+// thinking dropping runs separately in projectThinkingForTarget.
 func (rs replayScope) projectThinkingPart(p llm.ContentPart, provenanceKeeps bool) (llm.ContentPart, bool) {
 	if p.Kind != llm.ContentThinking && p.Kind != llm.ContentRedThinking {
 		return p, false
@@ -2747,7 +2741,7 @@ func (rs replayScope) projectThinkingPart(p llm.ContentPart, provenanceKeeps boo
 		if rs.Protocol != registry.ProtocolGoogle || p.Kind != llm.ContentThinking || !p.Thinking.ReplayableGoogleThoughtFor(rs.Instance, rs.WireID) {
 			return p, true
 		}
-		return llm.TrimThinkingForReplay(p, rs.DropThinking)
+		return p, false
 	}
 	if rs.active() && rs.Protocol == registry.ProtocolGoogle {
 		return p, true
@@ -2758,18 +2752,18 @@ func (rs replayScope) projectThinkingPart(p llm.ContentPart, provenanceKeeps boo
 		}
 		return llm.StripOpaqueThinkingForCrossProvider(p)
 	}
-	return llm.TrimThinkingForReplay(p, rs.DropThinking)
+	return p, false
 }
 
-// projectTurnMessage returns t.Message with provider/model-scoped content
-// filtered per the N4 rules for the scope, plus the target's own thinking
-// policy. An inactive scope passes through unchanged (identical to legacy
-// expansion) unless the target policy drops thinking. In-flight turns keep the
-// N4 exemption for non-Google producers but still lose thinking the target does
-// not want, and Google Interactions thoughts always require matching
+// projectTurnMessage returns t.Message with voice presentation, frame escaping,
+// and provider/model-scoped content filtered per the N4 rules for the scope.
+// An inactive scope returns the frame-escaped message without provenance
+// filtering. In-flight turns keep the N4 exemption for non-Google producers,
+// while Google Interactions thoughts always require matching
 // (Instance, WireID) provenance. Completed ProtocolGoogle Grounding outputs,
 // web_search parts, and legacy unprefixed web_search tool pairs are omitted
-// when projecting prior turns.
+// when projecting prior turns. Target-level thinking dropping runs separately
+// in projectThinkingForTarget.
 //
 // Image and non-web_search tool content is never touched. Text content is
 // copied as stored (apart from prior ProtocolGoogle grounded output omission)
@@ -2780,17 +2774,14 @@ func (rs replayScope) projectThinkingPart(p llm.ContentPart, provenanceKeeps boo
 // inherited unknown-authorship copy, is never rewritten.
 func (rs replayScope) projectTurnMessage(t schema.Turn, inFlight bool) llm.Message {
 	t.Message = escapeTurnFrames(t, projectVoicePresentation(t))
-	if !rs.active() && !rs.DropThinking {
+	if !rs.active() {
 		return t.Message
 	}
-	// N4 provenance and the target's thinking policy are independent gates: an
-	// inactive scope keeps the provenance rules off, while a target that does
-	// not want thinking still gets the drop.
 	provenanceKeepsThinking := true
 	keepWebSearch := true
 	omitGoogleGroundedText := false
 	omitLegacyWebSearchTool := false
-	if rs.active() && !inFlight {
+	if !inFlight {
 		provenanceKeepsThinking = rs.thinkingReplayEligible(t)
 		keepWebSearch = rs.webSearchReplayEligible(t)
 		omitGoogleGroundedText = !keepWebSearch && t.Kind == schema.TurnAssistant &&
@@ -2798,8 +2789,7 @@ func (rs replayScope) projectTurnMessage(t schema.Turn, inFlight bool) llm.Messa
 			responseHasServerWebSearch(t.Message.Content)
 	}
 	omitLegacyWebSearchTool = rs.omitsLegacyWebSearchTool(inFlight)
-	// Allocate only when a part actually has to go: the chat drop visits every
-	// replayed message, and most carry no thinking part at all.
+	// Allocate only when a part actually has to change or drop.
 	needsFilter := false
 	for _, p := range t.Message.Content {
 		switch p.Kind {
