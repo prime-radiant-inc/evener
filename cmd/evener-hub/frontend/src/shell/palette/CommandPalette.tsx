@@ -32,11 +32,10 @@ import { navigationStore, useNavigationStore } from "../../stores/navigation/sto
 import { threadsStore } from "../../stores/threads";
 import { transcriptDisplayStore } from "../../stores/transcriptDisplay";
 import {
-  CloseIcon,
+  Chip,
   Dialog,
   EmptyState,
   Eyebrow,
-  IconButton,
   InlineNotice,
   Input,
   ShortcutList,
@@ -79,7 +78,7 @@ import { fetchSearch, findInSessionMatches, type HighlightPart, highlightParts, 
 
 const CLASS = {
   palette: requireClass(styles.palette, "commandpalette.module.css", "palette"),
-  pill: requireClass(styles.pill, "commandpalette.module.css", "pill"),
+  commandChip: requireClass(styles.commandChip, "commandpalette.module.css", "commandChip"),
   results: requireClass(styles.results, "commandpalette.module.css", "results"),
   sectionHeader: requireClass(styles.sectionHeader, "commandpalette.module.css", "sectionHeader"),
   row: requireClass(styles.row, "commandpalette.module.css", "row"),
@@ -810,10 +809,9 @@ function PaletteBody({
   return (
     <div className={CLASS.palette}>
       {selectedCommand && (
-        <div className={CLASS.pill}>
-          <span>{selectedCommand.title}</span>
-          <IconButton label="back to command list" icon={<CloseIcon />} variant="quiet" onClick={exitArgsMode} />
-        </div>
+        <Chip tone="accent" removeLabel="back to command list" onRemove={exitArgsMode} className={CLASS.commandChip}>
+          {selectedCommand.title}
+        </Chip>
       )}
       <Input
         ref={inputRef}

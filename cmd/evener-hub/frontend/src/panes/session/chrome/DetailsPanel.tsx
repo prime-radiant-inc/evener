@@ -41,7 +41,13 @@
 // honest unknown and renders no row at all.
 
 import type { ThreadModel } from "@evener/appwire-client";
-import { accessFacts, formatTokenCount, loadedPluginNames } from "@evener/appwire-client";
+import {
+  accessFacts,
+  effortReadout,
+  formatTokenCount,
+  loadedPluginNames,
+  sessionEffortLevels,
+} from "@evener/appwire-client";
 import { forwardRef, type ReactNode, useImperativeHandle, useState } from "react";
 import { Button, Meter, PropertyList, Sheet, type StackedPropertyListRow } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
@@ -139,6 +145,8 @@ function Section({ title, rows }: { title: string; rows: (StackedPropertyListRow
 /** Shared details body used by the mobile Sheet and desktop pane. */
 export function DetailsPanelBody({ model, now, resolvedBranch = "" }: DetailsPanelBodyProps) {
   const status = effectiveContextStatus(model);
+  const objective = model.goal?.objective?.trim();
+  const goalStatus = model.goal?.status.trim();
   const showContext = status.ceiling > 0 && !isEndedStatus(model.status.type);
   const remaining = status.remaining;
   const percent = Math.round(status.pressure * 100);
@@ -170,13 +178,38 @@ export function DetailsPanelBody({ model, now, resolvedBranch = "" }: DetailsPan
   const access = accessFacts(model);
   const plugins = loadedPluginNames(model);
   const host = useSessionHost(model.ref);
+  // The effort fact, the same readout the status row shows - display-only
+  // here: setting effort stays on the settings surface (design-system.md
+  // section 12), and a model with no ladder has no fact to state.
+  const effortLevels = sessionEffortLevels(model.reasoningEffortLevels, model.supportsReasoning);
+  const effort =
+    effortLevels.length > 0
+      ? effortReadout(model.reasoningEffort ?? "", effortLevels, model.defaultReasoningEffort)
+      : null;
+  // Queue depth, absent at zero like the status row's own figure: an empty
+  // queue is the normal case and a "0 queued" row would be noise.
+  const queueDepth = model.queue?.depth ?? 0;
 
   return (
     <>
       <Section
         title="Session"
         rows={[
+          !!objective &&
+            detailRow(
+              "goal",
+              "session-details-goal",
+              <>
+                <span>{objective}</span>
+                {goalStatus && (
+                  <span className={CLASS.dim} data-testid="session-details-goal-status">
+                    {goalStatus}
+                  </span>
+                )}
+              </>,
+            ),
           detailRow("model", "session-details-model", modelLabel(model.modelProvider, model.model), true),
+          effort ? detailRow("effort", "session-details-effort", effort) : null,
           detailRow("state", "session-details-state", model.status.type),
           detailRow("session id", "session-details-id", model.threadId, true),
           model.manager && detailRow("role", "session-details-manager", "Manager"),
@@ -211,6 +244,7 @@ export function DetailsPanelBody({ model, now, resolvedBranch = "" }: DetailsPan
               </>,
             ),
           workMs > 0 && detailRow("work time", "session-details-work-time", formatWorkDuration(workMs)),
+          queueDepth > 0 && detailRow("queue", "session-details-queue", `${queueDepth} queued`),
           tokens &&
             detailRow(
               tokensLabel,

@@ -1388,3 +1388,30 @@ test("committing a builtin immediately before a missing reference keeps that ref
   expect(screen.getByTestId("composer-unbacked-image")).toBeTruthy();
   expect(submitButton().disabled).toBe(true);
 });
+
+test("accepting built-in /goal before existing arguments keeps the slash menu closed so Ctrl+Enter submits", async () => {
+  const user = userEvent.setup();
+  const fake = await mountComposer("ref_builtin_goal_mid_draft");
+  let goalCall: unknown;
+  fake.on("goal/set", (params) => {
+    goalCall = params;
+    return { started: false };
+  });
+
+  const editor = textarea();
+  await user.type(editor, "/go existing goal");
+  selectEditorText(editor, "/go".length);
+  expect(slashOptions()[0]?.textContent).toContain("/goal");
+
+  await user.keyboard("{Tab}");
+
+  expect(editor.textContent).toBe("/goal existing goal");
+  expect(editorCursor(editor)).toBe("/goal".length);
+  expect(screen.queryByRole("listbox")).toBeNull();
+
+  await user.keyboard("{Control>}{Enter}{/Control}");
+
+  await waitFor(() => expect(goalCall).toEqual({ ref: "ref_builtin_goal_mid_draft", objective: "existing goal" }));
+  expect(editor.textContent).toBe("");
+  expect(fake.calls.some((call) => call.method === "turn/start")).toBe(false);
+});

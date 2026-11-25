@@ -171,13 +171,16 @@ interface ShownSpan {
 // What a steer's or a memory refresh's row shows, read through the same
 // helpers its renderer routes with (SteeringItem's source/kind order and
 // MemoryContextItem's body), so Find, the palette and the row cannot disagree.
-// Null for any other entry.
-function dividerSpans(item: ItemModel): readonly ShownSpan[] | null {
+// Null for any other entry. Cached per item and diagram render version, matching
+// haystacks/thoughtHaystacks, so keystrokes do not re-lex Markdown.
+const dividerSpanCache = new WeakMap<ItemModel, { version: number; spans: readonly ShownSpan[] | null }>();
+
+function computeDividerSpans(item: ItemModel): readonly ShownSpan[] | null {
   if (item.type === "steering") {
     // The human-note kind routes before source: it renders the labeled divider.
     if (item.steeringKind === "human-note") return item.text ? [{ text: item.text, divider: item.id }] : [];
-    // A steer the human typed is a prompt bubble: plain visible text.
-    if (item.source === "user") return item.text ? [{ text: item.text }] : [];
+    // A steer the human typed renders as a Markdown prompt bubble.
+    if (item.source === "user") return item.text ? [{ text: markdownAsRead(item.text) }] : [];
     if (!item.text || isSuppressedSteeringKind(item.steeringKind)) return [];
     // A parent's message is conversation: quoted notification tags in it are
     // text, never cards. Any other steer renders one divider per interstitial
@@ -205,6 +208,14 @@ function dividerSpans(item: ItemModel): readonly ShownSpan[] | null {
     return text === "" ? [] : [{ text, divider: item.id }];
   }
   return null;
+}
+
+function dividerSpans(item: ItemModel, version: number): readonly ShownSpan[] | null {
+  const cached = dividerSpanCache.get(item);
+  if (cached !== undefined && cached.version === version) return cached.spans;
+  const spans = computeDividerSpans(item);
+  dividerSpanCache.set(item, { version, spans });
+  return spans;
 }
 
 /** Whether a row decides what its words are, so its raw `text` is never one of
@@ -273,7 +284,7 @@ function shownTexts(
   }
   // A steer's or a memory refresh's row decides its words (its body folds
   // behind a session-scoped divider), so it never reads its raw text.
-  const spans = dividerSpans(entry.item);
+  const spans = dividerSpans(entry.item, version);
   // A steer paints its interstitial text as dividers and its notification
   // cards beside them; both are words a match can land on.
   if (spans !== null) return [...spans.map((span) => span.text), ...notificationShownTexts(entry.item, version)];
@@ -411,7 +422,7 @@ export function findHits(rows: readonly TranscriptBodyRow[], query: string, view
       placement = systemNoticePlacement(entry, turn, view.config);
     const { id, callId, roundId } = entry.item;
     const itemId = entry.kind === "intent" ? entry.sourceItemId : id;
-    const opensSession = dividerSpans(entry.item)?.flatMap((span) =>
+    const opensSession = dividerSpans(entry.item, version)?.flatMap((span) =>
       span.divider !== undefined && readable(span.text).includes(needle) ? [span.divider] : [],
     );
     hits.push({

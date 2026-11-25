@@ -1,7 +1,7 @@
 import { makeTranscriptDisplayConfig } from "@evener/appwire-client";
 import { TranscriptBody } from "../../panes/session/transcript/TranscriptBody";
+import { GallerySection } from "../GallerySection";
 import styles from "../gallery-section.module.css";
-import { ThemeFlip } from "../ThemeFlip";
 import { makeEditorialTranscriptModel } from "./transcript-fixture";
 
 const SESSION_REF = "dev-surface-transcript";
@@ -24,22 +24,23 @@ const PREVIEW_CONFIG = makeTranscriptDisplayConfig(
  */
 export default function TranscriptSurfaceSection() {
   return (
-    <section>
-      <h2>Transcript</h2>
-      <p className={styles.note}>
-        A fixed user request, successful and failed tool calls, reasoning, an agent response, and optional metrics and
-        system events, plus durable collaborators with failure, exhaustion, and unavailable lifecycle data. Rendered
-        through the production TranscriptBody preview surface with no store or network.
-      </p>
-      <ThemeFlip>
-        <TranscriptBody
-          model={makeEditorialTranscriptModel()}
-          config={PREVIEW_CONFIG}
-          surface="preview"
-          disclosureScope="preview:dev-transcript"
-          sessionRef={SESSION_REF}
-        />
-      </ThemeFlip>
-    </section>
+    <GallerySection
+      title="Transcript"
+      note={
+        <p className={styles.note}>
+          A fixed user request, successful and failed tool calls, reasoning, an agent response, and optional metrics and
+          system events, plus durable collaborators with failure, exhaustion, and unavailable lifecycle data. Rendered
+          through the production TranscriptBody preview surface with no store or network.
+        </p>
+      }
+    >
+      <TranscriptBody
+        model={makeEditorialTranscriptModel()}
+        config={PREVIEW_CONFIG}
+        surface="preview"
+        disclosureScope="preview:dev-transcript"
+        sessionRef={SESSION_REF}
+      />
+    </GallerySection>
   );
 }

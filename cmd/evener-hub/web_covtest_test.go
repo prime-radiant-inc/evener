@@ -417,7 +417,7 @@ func TestCovSplitProviderModelNoSlash(t *testing.T) {
 func TestCovAPITreeSourcesLocalOnly(t *testing.T) {
 	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", LocalHostName: "magic-kingdom"})
 	sources := web.apiTreeSources()
-	want := []hubapi.Source{{ID: "local", Label: "magic-kingdom (hub)", Kind: "local", Online: true}}
+	want := []hubapi.Source{{ID: "local", Label: "magic-kingdom (hub)", Kind: "local", Online: true, ThreadStartIdempotency: true}}
 	if !reflect.DeepEqual(sources, want) {
 		t.Fatalf("sources = %#v, want %#v", sources, want)
 	}
@@ -429,7 +429,7 @@ func TestCovAPITreeSourcesLocalOnly(t *testing.T) {
 func TestCovAPITreeSourcesLocalLabelWithoutHostName(t *testing.T) {
 	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180"})
 	sources := web.apiTreeSources()
-	want := []hubapi.Source{{ID: "local", Label: "this host", Kind: "local", Online: true}}
+	want := []hubapi.Source{{ID: "local", Label: "this host", Kind: "local", Online: true, ThreadStartIdempotency: true}}
 	if !reflect.DeepEqual(sources, want) {
 		t.Fatalf("sources = %#v, want %#v", sources, want)
 	}
@@ -446,7 +446,7 @@ func TestCovAPITreeSourcesReportsOfflineSource(t *testing.T) {
 	web.sources = registry
 	sources := web.apiTreeSources()
 	want := []hubapi.Source{
-		{ID: "local", Label: "magic-kingdom (hub)", Kind: "local", Online: true},
+		{ID: "local", Label: "magic-kingdom (hub)", Kind: "local", Online: true, ThreadStartIdempotency: true},
 		{ID: "remote-offline", Label: "remote-offline", Kind: "appwire", Online: false},
 		{ID: "remote-online", Label: "remote-online", Kind: "appwire", Online: true},
 	}

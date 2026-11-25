@@ -2,7 +2,7 @@ import { Chip, type ChipTone } from "../../widgets/chip";
 import { GallerySection } from "../GallerySection";
 import styles from "../gallery-section.module.css";
 
-const TONES: ChipTone[] = ["neutral", "attention", "alive", "danger"];
+const TONES: ChipTone[] = ["neutral", "attention", "alive", "danger", "accent"];
 
 function ToneRow({ tone }: { tone: ChipTone }) {
   return (

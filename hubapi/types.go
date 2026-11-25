@@ -37,10 +37,11 @@ type HealthCapabilities struct {
 type AttentionSummary = appwire.AttentionSummary
 
 type Source struct {
-	ID     string `json:"id"`
-	Label  string `json:"label"`
-	Kind   string `json:"kind"`
-	Online bool   `json:"online"`
+	ID                     string `json:"id"`
+	Label                  string `json:"label"`
+	Kind                   string `json:"kind"`
+	Online                 bool   `json:"online"`
+	ThreadStartIdempotency bool   `json:"threadStartIdempotency,omitempty"` //nolint:tagliatelle // mirrors appwire.FeatureSet.ThreadStartIdempotency
 }
 
 type ErrorResponse struct {

@@ -140,6 +140,16 @@ async function tabTo(send, selector) {
   throw new Error(`keyboard Tab did not reach ${selector}`);
 }
 
+export function assertComposerContainment(work, phone) {
+  assert.ok(work.composerCardFound && work.composerFitsPane, "composer card fits the pane");
+  assert.ok(work.controlsFound && work.controlsContained && work.controlsDoNotOverlap, "controls fit without overlap");
+  if (phone) {
+    assert.equal(work.found, false, "phone omits the visible current work row");
+  } else {
+    assert.ok(work.found && work.currentWorkFitsPane && work.orderedAboveComposer, "current work fits above the card");
+  }
+}
+
 // Expected placement is explicit input from the runner, never a production
 // constant or a verdict returned by the fixture.
 export function assertComposerPlacement(measurement, { contentWidth, primary, inlineSteer, menuSteer, touch = true }) {
@@ -179,10 +189,7 @@ export function assertComposerPlacement(measurement, { contentWidth, primary, in
   } else {
     assert.ok(work.verbCluster.top < work.verbCluster.statusRowBottom - 1, "verb row must not wrap");
   }
-  assert.ok(
-    work.controlsFound && work.controlsContained && work.controlsDoNotOverlap && work.sharedPaneWithoutOverflow,
-    "controls contained without overlap or overflow",
-  );
+  assertComposerContainment(work, touch);
   assert.equal(measurement.scrollers.length, 0, "no horizontal scroll containers");
   assert.equal(measurement.menuVerbs.open, true);
   assert.equal(measurement.menuVerbs.stop, true, "menu Stop at every width and draft state");

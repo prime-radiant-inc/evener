@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 )
 
 type Turn struct {
@@ -872,11 +873,40 @@ type ThreadStartParams struct {
 	// reach. It is a start-time property, not a setting: the daemon persists it
 	// with the session, so a resume keeps it and nothing can turn it off.
 	Manager bool `json:"manager,omitempty"`
+	// Optional caller-generated idempotency key (1 to 128 UTF-8 bytes, no
+	// surrounding whitespace or ASCII control bytes). Empty runs keyless.
+	ClientMutationID string `json:"clientMutationId,omitempty"`
 }
 
 type ThreadStartResponse struct {
-	Thread Thread `json:"thread"`
-	Turn   Turn   `json:"turn"`
+	Thread           Thread              `json:"thread"`
+	Turn             Turn                `json:"turn"`
+	ClientMutationID string              `json:"clientMutationId,omitempty"`
+	Disposition      MutationDisposition `json:"disposition,omitempty"`
+}
+
+// ValidateOptionalClientMutationID validates an optional caller-generated
+// idempotency key (empty, or 1 to 128 valid UTF-8 bytes with no surrounding
+// whitespace or ASCII control bytes).
+func ValidateOptionalClientMutationID(id string) error {
+	if id == "" {
+		return nil
+	}
+	if len(id) > 128 {
+		return InvalidParams("clientMutationId must be at most 128 bytes").NotAccepted("")
+	}
+	if !utf8.ValidString(id) {
+		return InvalidParams("clientMutationId must be valid UTF-8").NotAccepted("")
+	}
+	if strings.TrimSpace(id) != id {
+		return InvalidParams("clientMutationId must not have surrounding whitespace").NotAccepted("")
+	}
+	for i := range len(id) {
+		if id[i] < 0x20 || id[i] == 0x7f {
+			return InvalidParams("clientMutationId must not contain control characters").NotAccepted("")
+		}
+	}
+	return nil
 }
 
 type ThreadResumeParams struct {

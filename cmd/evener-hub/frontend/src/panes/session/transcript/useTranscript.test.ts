@@ -1,7 +1,7 @@
 import type { Thread, ThreadTurnsListResponse } from "@evener/appwire-client";
 import { hydrateThread, WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { act, render, renderHook } from "@testing-library/react";
+import { act, fireEvent, render, renderHook, screen } from "@testing-library/react";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { createElement, type PropsWithChildren, StrictMode, Suspense, useEffect } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
@@ -19,8 +19,10 @@ import {
   threadsStore,
 } from "../../../stores/threads";
 import { connectReadyFakeClient } from "../../../testing/connectionTestUtils";
+import { useTestDrivenFakeTimers } from "../../../testing/fakeTimers";
 import { ALL_CAPABILITIES as CAPABILITIES } from "../../../threadTestUtils";
 import { enterAgentCascade, returnFromAgentCascade } from "../../zoom/actions";
+import { LoadOlderRow } from "./flow/LoadOlderRow";
 import { useTranscriptScroll } from "./flow/useTranscriptScroll";
 import { retainedTranscriptReadView } from "./transcriptReadView";
 import {
@@ -146,6 +148,246 @@ test("Find reads an older page in a visible popout while the opener is hidden", 
     frame.remove();
   }
 });
+
+// ConversationBody's older-paging wiring, in the shape a pane that moves
+// between windows meets: the owner document is a prop (useOwnedDocument's
+// resolved value), and the row gets the same calls the pane makes, including
+// the reader state paging activation is gated on.
+function OlderPagingProbe(props: { owner: Document; port: HTMLElement; step: number }) {
+  const transcript = useTranscript("ref_a", "pane_probe", props.owner);
+  return createElement(
+    "div",
+    {
+      "data-step": props.step,
+      "data-reader-active": String(transcript.readerActive),
+      "data-loading": String(transcript.loadingOlder),
+      "data-read-in-flight": String(transcript.olderReadInFlight),
+      "data-older-error": String(transcript.olderError !== null),
+      "data-page-key": transcript.olderPageKey ?? "none",
+    },
+    // The pane renders the row only while older history remains, so an
+    // exhausted page removes it rather than leaving a short port demanding a
+    // page that does not exist.
+    transcript.hasOlder &&
+      createElement(LoadOlderRow, {
+        onLoad: transcript.loadOlderReportingError,
+        loading: transcript.loadingOlder,
+        readInFlight: transcript.olderReadInFlight,
+        error: transcript.olderError,
+        pageKey: transcript.olderPageKey ?? null,
+        readerActive: transcript.readerActive,
+        scrollElement: () => props.port,
+      }),
+  );
+}
+
+// A pane moved between windows rebinds its owner document, and neither document
+// fires a visibility event for the move. The replacement can already be hidden,
+// so the pane must publish an inactive reader: the tracker that decides whether
+// to publish starts from what it last published, not from "inactive", or a
+// hidden replacement agrees with the fresh tracker while the render before it
+// still says the reader is here.
+test("a pane rebound to an already-hidden owner reports an inactive reader", async () => {
+  const fake = connectReadyFakeClient();
+  fake.on("thread/read", () => ({ thread: testThread("ref_a"), olderCursor: "older" }));
+  await act(async () => {
+    await threadsStore.getState().ensureThread("ref_a");
+  });
+  const frame = document.createElement("iframe");
+  document.body.append(frame);
+  const popdoc = frame.contentDocument;
+  if (!popdoc) throw new Error("missing popout document");
+  vi.spyOn(popdoc, "visibilityState", "get").mockReturnValue("hidden");
+  try {
+    const mounted = renderHook(({ owner }: { owner: Document }) => useTranscript("ref_a", "pane_a", owner), {
+      initialProps: { owner: document },
+    });
+    try {
+      expect(mounted.result.current.readerActive).toBe(true);
+      act(() => mounted.rerender({ owner: popdoc }));
+      expect(mounted.result.current.readerActive).toBe(false);
+    } finally {
+      mounted.unmount();
+    }
+  } finally {
+    vi.restoreAllMocks();
+    frame.remove();
+  }
+});
+
+// The demand the hidden settle must not create. A request made while no
+// consumer is active is not sent - it is retained and scheduled on
+// reacquisition, without re-reading the viewport. Zero network while hidden
+// therefore proves nothing; what proves it is the return to a port that now
+// overflows, where a replayed request would reach the wire.
+test("a pane moved to a hidden window keeps no older-page demand to replay on return", async () => {
+  const fake = connectReadyFakeClient();
+  fake.on("thread/read", () => ({ thread: testThread("ref_a"), olderCursor: "older" }));
+  const page: { resolve: ((response: ThreadTurnsListResponse) => void) | null } = { resolve: null };
+  fake.on("thread/turns/list", () => new Promise<ThreadTurnsListResponse>((resolve) => (page.resolve = resolve)));
+  await act(async () => {
+    await threadsStore.getState().ensureThread("ref_a");
+  });
+  const listCalls = () => fake.calls.filter((call) => call.method === "thread/turns/list").length;
+  // Reacquisition schedules the retained demand on a timer, so a replay only
+  // reaches the wire after the macrotask queue drains.
+  const flushTimer = async () => {
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+  };
+  let view!: ReturnType<typeof render>;
+  const probe = (query: string) => view.container.querySelector(query) !== null;
+  const port = document.createElement("div");
+  port.appendChild(document.createElement("div"));
+  const setPort = (scrollHeight: number, clientHeight: number) => {
+    Object.defineProperty(port, "scrollHeight", { value: scrollHeight, configurable: true });
+    Object.defineProperty(port, "clientHeight", { value: clientHeight, configurable: true });
+  };
+  // The pane opens short, so the row's geometry check fills it.
+  setPort(300, 500);
+  const frame = document.createElement("iframe");
+  document.body.append(frame);
+  const hiddenDoc = frame.contentDocument;
+  if (!hiddenDoc) throw new Error("missing popout document");
+  vi.spyOn(hiddenDoc, "visibilityState", "get").mockReturnValue("hidden");
+  try {
+    view = render(createElement(OlderPagingProbe, { owner: document, port, step: 0 }));
+    try {
+      await act(async () => {
+        await flushUntil(() => probe("[data-reader-active='true']") && listCalls() === 1);
+      });
+      expect(listCalls()).toBe(1);
+
+      // The pane is moved into a window that is already hidden, with no
+      // visibility event in either document.
+      view.rerender(createElement(OlderPagingProbe, { owner: hiddenDoc, port, step: 1 }));
+      await act(async () => {});
+
+      // The page lands while the pane is hidden.
+      await act(async () => {
+        page.resolve?.({
+          data: [{ id: "older-turn", status: "completed", itemsView: "full", items: [] }],
+          nextCursor: "older_next",
+        });
+        await flushUntil(() => probe("[data-loading='false']"));
+      });
+      await flushTimer();
+
+      // The reader comes back to a port that now overflows.
+      setPort(2000, 500);
+      view.rerender(createElement(OlderPagingProbe, { owner: document, port, step: 2 }));
+      await flushTimer();
+      expect(listCalls(), "a request queued by a hidden owner must not be replayed").toBe(1);
+
+      // The gate must not stop the fill itself: a visible short port still asks.
+      setPort(300, 500);
+      view.rerender(createElement(OlderPagingProbe, { owner: document, port, step: 3 }));
+      await act(async () => {
+        await flushUntil(() => listCalls() === 2);
+      });
+      await flushTimer();
+      expect(listCalls()).toBe(2);
+    } finally {
+      view.unmount();
+    }
+  } finally {
+    vi.restoreAllMocks();
+    frame.remove();
+  }
+});
+
+// #7691: `loadingOlder` is paging demand, not I/O. It stays true between reads
+// - after a page settles without advancing the cursor, and while a paced retry
+// waits - so the row's fetching line must track the read itself. The row's
+// structured state is the observable; its label is copy.
+test("a retained demand between reads shows no fetching affordance and recovers without a stale error", async () => {
+  useTestDrivenFakeTimers();
+  const fake = connectReadyFakeClient();
+  fake.on("thread/read", () => ({ thread: testThread("ref_a"), olderCursor: "older" }));
+  await act(async () => {
+    await threadsStore.getState().ensureThread("ref_a");
+  });
+  const held: { resolve: ((response: ThreadTurnsListResponse) => void) | null } = { resolve: null };
+  let attempts = 0;
+  fake.on("thread/turns/list", () => {
+    attempts += 1;
+    if (attempts === 1) return new Promise<ThreadTurnsListResponse>((resolve) => (held.resolve = resolve));
+    if (attempts === 2) return Promise.reject(new Error("network error"));
+    return {
+      data: [{ id: "older-turn", status: "completed", itemsView: "full", items: [] }],
+      nextCursor: undefined,
+    };
+  });
+  const port = document.createElement("div");
+  port.appendChild(document.createElement("div"));
+  Object.defineProperty(port, "scrollHeight", { value: 300, configurable: true });
+  Object.defineProperty(port, "clientHeight", { value: 500, configurable: true });
+  const view = render(createElement(OlderPagingProbe, { owner: document, port, step: 0 }));
+  const has = (selector: string) => view.container.querySelector(selector) !== null;
+  const row = () => screen.getByTestId("load-older-row");
+  const olderTurnLanded = () =>
+    threadsStore
+      .getState()
+      .threads.get("ref_a")
+      ?.turns.some((turn) => turn.id === "older-turn") === true;
+  try {
+    // An actual read is on the wire: the fetching affordance is honest.
+    await act(async () => {
+      await flushUntil(() => held.resolve !== null);
+    });
+    expect(attempts).toBe(1);
+    expect(has("[data-read-in-flight='true']")).toBe(true);
+    expect(row().getAttribute("data-state")).toBe("loading");
+    expect(row().textContent).not.toBe("");
+
+    // The read fulfils without advancing the cursor. historyPaging keeps the
+    // demand and paces the next attempt, so nothing is on the wire now.
+    await act(async () => {
+      held.resolve?.({ data: [], nextCursor: "older" });
+      await flushUntil(() => has("[data-read-in-flight='false']"));
+    });
+    expect(has("[data-loading='true']"), "the retained demand must not be dropped").toBe(true);
+    expect(has("[data-read-in-flight='false']")).toBe(true);
+    expect(row().getAttribute("data-state")).toBe("idle");
+    expect(row().textContent).toBe("");
+
+    // Nothing is on the wire while the pacer waits, so nothing announces a
+    // failure yet. The pacer's first delay is one second; advancing the test
+    // clock triggers it without depending on the host's wall clock.
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+      await flushUntil(() => attempts >= 2, 100);
+    });
+    // The paced attempt rejects: the failure is visible, announced, and
+    // recoverable without pixel-precise scrolling.
+    expect(attempts).toBe(2);
+    expect(row().getAttribute("data-state")).toBe("failed");
+    expect(screen.getByRole("alert")).toBeTruthy();
+    const retry = screen.getByRole("button", { name: "Retry" });
+    expect(has("[data-read-in-flight='false']")).toBe(true);
+
+    // The accessible escape hatch succeeds and leaves no stale failure. The
+    // row unmounts when the page exhausts history, so assert the hook's own
+    // error state too: absence alone would hide a stale error.
+    await act(async () => {
+      fireEvent.click(retry);
+      await flushUntil(olderTurnLanded);
+    });
+    expect(has("[data-older-error='false']")).toBe(true);
+    expect(attempts).toBe(3);
+    expect(screen.queryByTestId("load-older-row")).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+    expect(has("[data-loading='false']")).toBe(true);
+    expect(has("[data-read-in-flight='false']")).toBe(true);
+    expect(olderTurnLanded()).toBe(true);
+  } finally {
+    view.unmount();
+  }
+}, 15_000);
 
 test("retiring one reader preserves another reader's demand", async () => {
   vi.useFakeTimers();

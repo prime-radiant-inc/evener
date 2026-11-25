@@ -33,7 +33,7 @@ and should not be presented as reproduced production incidents.
 | Case | Priority | User-visible consequence | Owning subsystems |
 | --- | --- | --- | --- |
 | [C01](#c01-browser-first-connection) | High | First browser connection failure needs Retry | S02, S05 |
-| [C02](#c02-uncertain-session-creation) | High | Lost creation response means hunting for a session or creating a duplicate | S02, S03, S05, S06 |
+| [C02](#c02-uncertain-session-creation) | High (deferred) | Retry-safe `thread/start` shipped for open forms; background auto-retry, multi-draft queues, and cancel tombstones deferred | S02, S03, S05, S06 |
 | [C03](#c03-transcript-repair-rereads) | Medium | A retained transcript can stay failed after its backing condition heals | S02, S03, S10 |
 | [C05](#c05-native-outbox-convergence) | High | A queued message can remain parked after one proof-read failure | S03, S05, S11 |
 | [C06](#c06-rejected-image-message-recovery) | Medium | Rejected image messages cannot be restored intact for correction | S03, S11 |
@@ -104,36 +104,48 @@ overwrite the active client's state. Successful connection retires recovery.
 
 ### C02 Uncertain session creation
 
-**Current behavior.** If session creation commits but its response is lost,
-native holds an unconfirmed draft and suggests checking the Board or changing the
-draft. Browser reports an error and permits another Start. Neither can identify
-the result by a durable creation request ID. The user must investigate or risk a
-duplicate; editing the draft does not resolve the first attempt.
+**Current behavior.** Keyed `thread/start` deduplicates retries by optional
+`clientMutationId` across local hubs and capable remote hubs. `CreationStore`
+(`<HubStateRoot>/creations/state.json`) coalesces concurrent requests, persists
+`spawning`/`spawned`/`completed`/`uncertain` records plus one
+`initialTurnMutationId` so Turn 1 executes at most once, replays completed
+results, finishes `spawned` partial errors without re-spawning, rolls back
+`preExecSpawnError` refusals as `notAccepted`, and marks post-exec spawn
+failures or pre-spawn crashes `uncertain` (`retryDisposition: "blocked"`).
+Browser (`pendingStart` in memory) and mobile-native (`CreationDraft.clientMutationId`
+in `creation_drafts`) reuse the key across transport drops and transient errors
+while the draft stays unchanged, clear or refresh it on edits or host switches,
+clear it on `notAccepted` and `blocked`, and leave older hubs and older or offline
+remote hosts keyless using `features.threadStartIdempotency` and
+`hubapi.Source.threadStartIdempotency` (keyed remote forwarding refuses
+unsupported or offline remote hosts as `notAccepted`).
 
-**Evidence.** [ThreadStartParams](../../appwire/types_turn.go) has no client
-creation key. The hub
-[detaches creation from peer cancellation](../../cmd/evener-hub/app_threadlifecycle.go#L82).
-Native [submit](../../mobile-native/src/newSession.ts#L429) persists uncertainty;
-browser [creation failure](../../cmd/evener-hub/frontend/src/panes/spawn/Spawn.tsx#L2333)
-clears the busy state. Native `newSession.test.ts` tests the held unchanged draft.
+**Evidence.** [ThreadStartParams and ValidateOptionalClientMutationID](../../appwire/types_turn.go),
+[CreationStore](../../cmd/evener-hub/internal/hubcore/creation_store.go),
+[hubThreadStart](../../cmd/evener-hub/app_threadlifecycle.go),
+[RemoteHubSource.StartThread](../../cmd/evener-hub/internal/appsource/remote_hub_mutations.go),
+[apiTreeSources](../../cmd/evener-hub/web_api_tree.go),
+browser [Spawn.tsx](../../cmd/evener-hub/frontend/src/panes/spawn/Spawn.tsx), and
+native [newSession.ts](../../mobile-native/src/newSession.ts). Covered by
+deterministic unit and integration tests (`creation_store_test.go`,
+`app_threadstart_idempotency_test.go`, `Spawn.submit.test.tsx`,
+`creationDraftRepository.test.ts`, and `newSession.test.ts`).
 
-**Decision.** Treat each Start submission as one durable request. Preserve its
-original prompt and attachments and retain its identity across reconnection and
-retry. Reconcile the authoritative creation outcome: recover the existing chat
-if it was created, or continue trying to complete the request without creating a
-duplicate. Keep the request pending until success, explicit cancellation or a
-specific problem that genuinely requires user input. Editing another draft does
-not discard or silently replace the unresolved submission. A pending state with
-cancellation during an outage is preferable to asking the user to hunt for a
-chat or press Start again. Implementation remains pending.
+**Resolved — retry-safe manual recovery.** Retrying Start on the unchanged open
+browser Spawn pane or native New session form against a capable hub and target
+host recovers the exact created session and Turn 1 without creating duplicates,
+and native persists the key in `creation_drafts` across app restarts until the
+draft is edited or cleared.
 
-**Acceptance.** Drop the response after creation commits. Reconnecting recovers
-exactly one chat with its original input; repeated attempts retain the same
-identity and do not duplicate the initial turn. Lose a request before acceptance
-and recover automatically when service returns. Preserve the submitted text and
-images independently of any newer draft. Cancellation stops further creation
-attempts and reconciles any already-created result; a genuine input problem
-preserves the request and identifies the needed correction.
+**Deferred.** Background auto-retry after closing the new-session form, a
+multi-draft pending-launches queue or UI, `evener/thread/start/cancel`
+tombstones, and controller-side fallback caching for older remote hubs remain
+deferred unless real-world usage shows manual form retry is not enough.
+
+**Acceptance if revisited.** Background auto-retry and multi-draft queuing
+complete or cancel pending submissions independently of editing another draft or
+closing the form, and reconcile any already-created session without duplicating
+the initial turn.
 
 ### C03 Transcript repair rereads
 

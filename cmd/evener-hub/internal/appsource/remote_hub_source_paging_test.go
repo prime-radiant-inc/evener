@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net"
 	"strings"
 	"sync"
@@ -1575,57 +1576,139 @@ func TestRemoteHubSourceRejectsDuplicateKeyRemoteItemRead(t *testing.T) {
 	}
 }
 
-// Item-mode positions index a turn's projected items densely inside one entry
-// (apptranscript.ProjectTurn and server.positionAppItems number them from 0), so a
-// page that carries (10,0) and (10,2) but not (10,1) is missing an item the remote
-// holds. Every consumer trusts the run between a page's endpoints — the recorded
-// span, and the local continuation served from it — so accepting the page would let
-// that item be skipped silently. It is refused before anything is merged or
-// retained, exactly like an out-of-order page.
-func TestRemoteHubSourceRejectsNonAdjacentRemoteItemPage(t *testing.T) {
-	page := itemPageWithItemPositions(remoteItemCursorAt(t, appwire.ThreadItemPosition{Entry: 10}),
-		appwire.ThreadItemPosition{Entry: 10},
-		appwire.ThreadItemPosition{Entry: 10, Item: 2},
-	)
-	source, _ := newScriptedRemote(t, "host", func(_ string, _ json.RawMessage) scriptedReply {
-		return scriptedReply{result: page}
+// Sparse within-entry item positions are valid: transcriptindex indexes each
+// visible item by its content-part slot (apptranscript.ProjectEntryParts), so
+// collapsed thinking runs, suppressed parts, and flushed items remapped to
+// math.MaxUint32 leave legitimate gaps inside an entry. Fresh reads, item
+// paging, and compatibility reads must all accept strictly increasing sparse
+// positions, retain the window, and mint a decodable cursor at the oldest
+// position.
+func TestRemoteHubSourceAcceptsSparseRemoteItemPage(t *testing.T) {
+	sparsePositions := []appwire.ThreadItemPosition{
+		{Entry: 10, Item: 0},
+		{Entry: 10, Item: 2},
+		{Entry: 11, Item: 1},
+		{Entry: 12, Item: 0},
+		{Entry: 12, Item: math.MaxUint32},
+	}
+	remoteCursor := remoteItemCursorAt(t, sparsePositions[0])
+	page := itemPageWithItemPositions(remoteCursor, sparsePositions...)
+
+	assertPositions := func(t *testing.T, label string, candidates []appitempaging.TranscriptItemCandidate) {
+		t.Helper()
+		if len(candidates) != len(sparsePositions) {
+			t.Fatalf("%s candidate count = %d, want %d", label, len(candidates), len(sparsePositions))
+		}
+		for i, want := range sparsePositions {
+			if candidates[i].Position != want {
+				t.Fatalf("%s candidate[%d].Position = %+v, want %+v", label, i, candidates[i].Position, want)
+			}
+		}
+	}
+	assertDecodesOldest := func(t *testing.T, label, cursor string, identity appitempaging.CursorIdentity) {
+		t.Helper()
+		if cursor == "" {
+			t.Fatalf("%s returned empty OlderCursor", label)
+		}
+		got, err := appitempaging.DecodeCursor(cursor, identity)
+		if err != nil {
+			t.Fatalf("%s DecodeCursor: %v", label, err)
+		}
+		if got != sparsePositions[0] {
+			t.Fatalf("%s cursor boundary = %+v, want oldest %+v", label, got, sparsePositions[0])
+		}
+	}
+
+	t.Run("ListItemCandidates", func(t *testing.T) {
+		source, _ := newScriptedRemote(t, "host", func(_ string, _ json.RawMessage) scriptedReply {
+			return scriptedReply{result: page}
+		})
+		listed, err := source.ListItemCandidates(context.Background(), appwire.ThreadTurnsListParams{Ref: "host:t1", ItemsView: "fragment"})
+		if err != nil {
+			t.Fatalf("ListItemCandidates: %v", err)
+		}
+		if listed.Exhausted {
+			t.Fatal("ListItemCandidates reported Exhausted with a live remote cursor")
+		}
+		assertPositions(t, "ListItemCandidates", listed.Candidates.Candidates)
+		assertDecodesOldest(t, "ListItemCandidates", listed.Candidates.OlderCursor, listed.Identity)
+		if retained, ok := source.itemPaging.peek(remoteItemPagingKey("host", "t1")); !ok || retained.identity != listed.Identity || retained.native != remoteCursor {
+			t.Fatalf("ListItemCandidates retained state = (%+v, %v), want identity %+v and native %q", retained, ok, listed.Identity, remoteCursor)
+		} else {
+			assertPositions(t, "ListItemCandidates retained", retained.candidates)
+		}
 	})
-	if _, err := source.ListItemCandidates(context.Background(), appwire.ThreadTurnsListParams{Ref: "host:t1", ItemsView: "fragment"}); err == nil {
-		t.Fatal("a remote item page that skips an item inside one entry was accepted")
-	} else if !strings.Contains(err.Error(), "skips item positions") {
-		t.Fatalf("error = %v, want an interior-gap rejection", err)
-	}
-	if _, ok := source.itemPaging.peek(remoteItemPagingKey("host", "t1")); ok {
-		t.Fatal("a rejected page was retained")
-	}
-	// The materialized read path is held to the same contract.
-	if _, err := NewRemoteHubSource("host", nil, nil).ItemCandidatesFromRead(context.Background(), appwire.ThreadReadParams{Ref: "host:t1"}, appwire.ThreadReadResponse{
-		Thread:      appwire.Thread{Turns: page.Data},
-		OlderCursor: remoteItemCursorAt(t, appwire.ThreadItemPosition{Entry: 10}),
-	}); err == nil {
-		t.Fatal("a remote item read that skips an item inside one entry was accepted")
-	} else if !strings.Contains(err.Error(), "skips item positions") {
-		t.Fatalf("read error = %v, want an interior-gap rejection", err)
-	}
+
+	t.Run("ItemCandidatesFromRead", func(t *testing.T) {
+		readSource := NewRemoteHubSource("host", nil, nil)
+		readResult, err := readSource.ItemCandidatesFromRead(context.Background(), appwire.ThreadReadParams{Ref: "host:t1"}, appwire.ThreadReadResponse{
+			Thread:      appwire.Thread{Turns: page.Data},
+			OlderCursor: remoteCursor,
+		})
+		if err != nil {
+			t.Fatalf("ItemCandidatesFromRead: %v", err)
+		}
+		if readResult.Exhausted {
+			t.Fatal("ItemCandidatesFromRead reported Exhausted with a live remote cursor")
+		}
+		assertPositions(t, "ItemCandidatesFromRead", readResult.Candidates.Candidates)
+		assertDecodesOldest(t, "ItemCandidatesFromRead", readResult.Candidates.OlderCursor, readResult.Identity)
+		if retained, ok := readSource.itemPaging.peek(remoteItemPagingKey("host", "t1")); !ok || retained.identity != readResult.Identity || retained.native != remoteCursor {
+			t.Fatalf("ItemCandidatesFromRead retained state = (%+v, %v), want identity %+v and native %q", retained, ok, readResult.Identity, remoteCursor)
+		} else {
+			assertPositions(t, "ItemCandidatesFromRead retained", retained.candidates)
+		}
+	})
+
+	t.Run("ItemCandidatesFromLegacyPage", func(t *testing.T) {
+		legacySource := NewRemoteHubSource("host", nil, nil)
+		legacyResult, err := legacySource.ItemCandidatesFromLegacyPage(context.Background(), appwire.ThreadReadParams{Ref: "host:t1"}, appwire.ThreadReadResponse{
+			Thread:      appwire.Thread{Turns: page.Data},
+			OlderCursor: remoteCursor,
+		})
+		if err != nil {
+			t.Fatalf("ItemCandidatesFromLegacyPage: %v", err)
+		}
+		if legacyResult.Exhausted {
+			t.Fatal("ItemCandidatesFromLegacyPage reported Exhausted with a live remote cursor")
+		}
+		if legacyResult.Identity.ThreadRef == "" || legacyResult.Identity.Incarnation == "" || legacyResult.Identity.ProjectionVersion == 0 {
+			t.Fatalf("ItemCandidatesFromLegacyPage identity = %+v, want complete identity", legacyResult.Identity)
+		}
+		assertPositions(t, "ItemCandidatesFromLegacyPage", legacyResult.Candidates.Candidates)
+	})
 }
 
-// A continuation page is held to the same contract, and a page refused for the gap
-// leaves the retained window and the cursors minted over it exactly as they were:
-// the refusal happens before the read-modify-write commits, so a live continuation
-// is not replaced by a window built from a page that never observed its middle.
-func TestRemoteHubSourceRejectsNonAdjacentRemoteContinuationPage(t *testing.T) {
-	source, _ := newScriptedRemote(t, "host", func(_ string, params json.RawMessage) scriptedReply {
+// A continuation page carrying sparse within-entry positions merges into the
+// retained window under the same controller identity and continues paging
+// cleanly, including local replay after the remote cursor is exhausted.
+func TestRemoteHubSourceAcceptsSparseRemoteContinuationPage(t *testing.T) {
+	cursor5 := remoteItemCursor(t, 5)
+	cursor4 := remoteItemCursorAt(t, appwire.ThreadItemPosition{Entry: 4, Item: 0})
+	page2Positions := []appwire.ThreadItemPosition{
+		{Entry: 4, Item: 0},
+		{Entry: 4, Item: 2},
+	}
+	page3Positions := []appwire.ThreadItemPosition{
+		{Entry: 2, Item: 1},
+		{Entry: 3, Item: 0},
+	}
+	source, calls := newScriptedRemote(t, "host", func(_ string, params json.RawMessage) scriptedReply {
 		var remote appwire.ThreadTurnsListParams
 		if err := json.Unmarshal(params, &remote); err != nil {
 			t.Errorf("decode turns params: %v", err)
 		}
-		if remote.Cursor == "" {
-			return scriptedReply{result: itemPageWithKeyedEntries(remoteItemCursor(t, 5), 5, 6, 7, 8)}
+		switch remote.Cursor {
+		case "":
+			return scriptedReply{result: itemPageWithKeyedEntries(cursor5, 5, 6, 7, 8)}
+		case cursor5:
+			return scriptedReply{result: itemPageWithItemPositions(cursor4, page2Positions...)}
+		case cursor4:
+			return scriptedReply{result: itemPageWithItemPositions("", page3Positions...)}
+		default:
+			t.Errorf("unexpected remote cursor %q", remote.Cursor)
+			return scriptedReply{result: appwire.ThreadTurnsListResponse{}}
 		}
-		return scriptedReply{result: itemPageWithItemPositions("",
-			appwire.ThreadItemPosition{Entry: 4},
-			appwire.ThreadItemPosition{Entry: 4, Item: 2},
-		)}
 	})
 
 	first, err := source.ListItemCandidates(context.Background(), appwire.ThreadTurnsListParams{Ref: "host:t1", ItemsView: "fragment"})
@@ -1635,25 +1718,86 @@ func TestRemoteHubSourceRejectsNonAdjacentRemoteContinuationPage(t *testing.T) {
 	if first.Candidates.OlderCursor == "" {
 		t.Fatalf("first page = %+v, want a live cursor", first)
 	}
+
+	second, err := source.ListItemCandidates(context.Background(), appwire.ThreadTurnsListParams{
+		Ref: "host:t1", ItemsView: "fragment", Cursor: first.Candidates.OlderCursor,
+	})
+	if err != nil {
+		t.Fatalf("sparse continuation page: %v", err)
+	}
+	if second.Identity != first.Identity {
+		t.Fatalf("continuation rotated identity from %+v to %+v", first.Identity, second.Identity)
+	}
+	if second.Exhausted || second.Candidates.OlderCursor == "" {
+		t.Fatalf("second page = %+v, want a live cursor", second)
+	}
+	if len(second.Candidates.Candidates) != len(page2Positions) ||
+		second.Candidates.Candidates[0].Position != page2Positions[0] ||
+		second.Candidates.Candidates[1].Position != page2Positions[1] {
+		t.Fatalf("second page candidates = %+v, want sparse positions %+v", second.Candidates.Candidates, page2Positions)
+	}
+	decodedSecond, err := appitempaging.DecodeCursor(second.Candidates.OlderCursor, first.Identity)
+	if err != nil {
+		t.Fatalf("decode second cursor: %v", err)
+	}
+	if decodedSecond != page2Positions[0] {
+		t.Fatalf("second cursor boundary = %+v, want %+v", decodedSecond, page2Positions[0])
+	}
+
 	key := remoteItemPagingKey("host", "t1")
 	retained, ok := source.itemPaging.peek(key)
 	if !ok {
-		t.Fatal("no retained paging state")
+		t.Fatal("no retained paging state after sparse continuation")
+	}
+	wantMerged := []appwire.ThreadItemPosition{
+		{Entry: 4, Item: 0},
+		{Entry: 4, Item: 2},
+		{Entry: 5, Item: 0},
+		{Entry: 6, Item: 0},
+		{Entry: 7, Item: 0},
+		{Entry: 8, Item: 0},
+	}
+	if retained.identity != first.Identity || len(retained.candidates) != len(wantMerged) {
+		t.Fatalf("retained window = (%+v, len=%d), want identity %+v and len=%d", retained.identity, len(retained.candidates), first.Identity, len(wantMerged))
+	}
+	for i, want := range wantMerged {
+		if retained.candidates[i].Position != want {
+			t.Fatalf("retained[%d].Position = %+v, want %+v", i, retained.candidates[i].Position, want)
+		}
 	}
 
-	if _, err := source.ListItemCandidates(context.Background(), appwire.ThreadTurnsListParams{
-		Ref: "host:t1", ItemsView: "fragment", Cursor: first.Candidates.OlderCursor,
-	}); err == nil {
-		t.Fatal("a remote continuation page that skips an item inside one entry was accepted")
-	} else if !strings.Contains(err.Error(), "skips item positions") {
-		t.Fatalf("continuation error = %v, want an interior-gap rejection", err)
+	third, err := source.ListItemCandidates(context.Background(), appwire.ThreadTurnsListParams{
+		Ref: "host:t1", ItemsView: "fragment", Cursor: second.Candidates.OlderCursor,
+	})
+	if err != nil {
+		t.Fatalf("third page after sparse continuation: %v", err)
 	}
-	after, ok := source.itemPaging.peek(key)
-	if !ok {
-		t.Fatal("the refused continuation dropped the retained window")
+	if third.Identity != first.Identity {
+		t.Fatalf("third page rotated identity from %+v to %+v", first.Identity, third.Identity)
 	}
-	if after.identity != retained.identity || len(after.candidates) != len(retained.candidates) || after.native != retained.native {
-		t.Fatalf("retained window changed across a refused continuation: %+v, want %+v", after, retained)
+	if !third.Exhausted || third.Candidates.OlderCursor != "" {
+		t.Fatalf("third page = %+v, want exhaustion", third)
+	}
+	if len(third.Candidates.Candidates) != len(page3Positions) ||
+		third.Candidates.Candidates[0].Position != page3Positions[0] ||
+		third.Candidates.Candidates[1].Position != page3Positions[1] {
+		t.Fatalf("third page candidates = %+v, want %+v", third.Candidates.Candidates, page3Positions)
+	}
+
+	callsBeforeReplay := len(calls())
+	replayed, err := source.ListItemCandidates(context.Background(), appwire.ThreadTurnsListParams{
+		Ref: "host:t1", ItemsView: "fragment", Cursor: second.Candidates.OlderCursor,
+	})
+	if err != nil {
+		t.Fatalf("replay cursor after exhausted sparse continuation: %v", err)
+	}
+	if len(calls()) != callsBeforeReplay {
+		t.Fatalf("replay made %d remote calls, want 0 from complete retained window", len(calls())-callsBeforeReplay)
+	}
+	if !replayed.Exhausted || len(replayed.Candidates.Candidates) != len(page3Positions) ||
+		replayed.Candidates.Candidates[0].Position != page3Positions[0] ||
+		replayed.Candidates.Candidates[1].Position != page3Positions[1] {
+		t.Fatalf("replayed candidates = %+v, want %+v", replayed.Candidates.Candidates, page3Positions)
 	}
 }
 
