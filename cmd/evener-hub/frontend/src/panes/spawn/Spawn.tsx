@@ -84,6 +84,7 @@ import { ReasoningEffortControl } from "../session/chrome/ReasoningEffortControl
 import { AttachmentTile } from "../session/composer/AttachmentTile";
 import { AttachImageControl } from "../session/composer/attachments/AttachImageControl";
 import { imageFilesFromClipboard } from "../session/composer/attachments/clipboard";
+import { ImagePickerInput } from "../session/composer/attachments/ImagePickerInput";
 import { type TextEditor, useAttachments } from "../session/composer/attachments/useAttachments";
 import { FileCompletionMenu } from "../session/composer/FileCompletionMenu";
 import { SkillEditor, type SkillEditorHandle, type SkillEditorValue } from "../session/composer/SkillEditor";
@@ -2256,12 +2257,6 @@ function SpawnForm({
     if (files.length > 0) attachments.ingestFiles(files, (message) => toasts.push("error", message));
   }
 
-  function handleFilePicker(event: React.ChangeEvent<HTMLInputElement>): void {
-    const files = Array.from(event.target.files ?? []);
-    if (files.length > 0) attachments.ingestFiles(files, (message) => toasts.push("error", message));
-    event.target.value = ""; // re-picking the identical file must re-fire change
-  }
-
   // A valid /model invocation supplies the missing model itself, so it
   // bootstraps past the required-model guard: the value rides thread/start
   // (doSpawn's launch-scalar path below), and neither the button nor
@@ -2975,7 +2970,10 @@ function SpawnForm({
             </Suspense>
           </ConnectProviderDialogBoundary>
         )}
-        <input ref={fileInputRef} type="file" accept="image/*" multiple hidden onChange={handleFilePicker} />
+        <ImagePickerInput
+          inputRef={fileInputRef}
+          onFiles={(files) => attachments.ingestFiles(files, (message) => toasts.push("error", message))}
+        />
 
         <div className={CLASS.mobileConfig} data-testid="spawn-mobile-config">
           <MobileSettingRows

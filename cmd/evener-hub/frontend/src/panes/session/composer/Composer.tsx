@@ -79,6 +79,7 @@ import { AttachmentTile } from "./AttachmentTile";
 import { useAskDockPending } from "./askDockPending";
 import { AttachImageControl } from "./attachments/AttachImageControl";
 import { imageFilesFromClipboard } from "./attachments/clipboard";
+import { ImagePickerInput } from "./attachments/ImagePickerInput";
 import { type TextEditor, useAttachments } from "./attachments/useAttachments";
 import { CurrentWork } from "./CurrentWork";
 import styles from "./composer.module.css";
@@ -1265,12 +1266,6 @@ function ComposerWithSubmission({
     // composer.md §G).
   }
 
-  function handleFilePickerChange(event: { target: HTMLInputElement }): void {
-    const files = Array.from(event.target.files ?? []);
-    if (files.length > 0) attachments.ingestFiles(files, (message) => toasts.push("error", message));
-    event.target.value = ""; // re-picking the identical file must re-fire change
-  }
-
   function handleFollowUpFocus(event: ReactFocusEvent<HTMLDivElement>): void {
     if ((event.target as Element).closest('[role="textbox"]')) {
       formAnchorRef.current?.setAttribute("data-composer-editing", "");
@@ -1651,7 +1646,10 @@ function ComposerWithSubmission({
                 }
               />
             </Dropzone>
-            <input ref={fileInputRef} type="file" accept="image/*" multiple hidden onChange={handleFilePickerChange} />
+            <ImagePickerInput
+              inputRef={fileInputRef}
+              onFiles={(files) => attachments.ingestFiles(files, (message) => toasts.push("error", message))}
+            />
           </form>
         </div>
       )}
