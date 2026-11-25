@@ -107,7 +107,7 @@ func TestSchemaWaitKnobs(t *testing.T) {
 		name string
 		def  func() map[string]any
 	}{
-		{"delegate", func() map[string]any { return DefDelegate(nil).Parameters }},
+		{"delegate", func() map[string]any { return DefDelegate().Parameters }},
 		{"shell", func() map[string]any { return DefShell().Parameters }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -180,7 +180,10 @@ func TestDefShellHasExecutionMode(t *testing.T) {
 
 func TestDefDelegateParamsAndEnum(t *testing.T) {
 	agentTypes := []string{"explorer", "implementer"}
-	def := DefDelegate(agentTypes)
+	def := DefDelegateWithResultTool(agentTypes, DelegateSandboxSchema{
+		Available: true,
+		Modes:     []string{"off", "read-only", "workspace-write", "restricted"},
+	}, DefaultResultToolName)
 	if def.Name != "delegate" {
 		t.Fatalf("name = %q, want delegate", def.Name)
 	}
@@ -242,7 +245,7 @@ func TestDefDelegateParamsAndEnum(t *testing.T) {
 // schema shape the whole job-control surface follows — type integer, no
 // minimum/maximum/default keywords (absent/0 = no grant).
 func TestDefDelegateHasDelegationAllowance(t *testing.T) {
-	props := DefDelegate(nil).Parameters["properties"].(map[string]any)
+	props := DefDelegate().Parameters["properties"].(map[string]any)
 	da, ok := props["delegation_allowance"]
 	if !ok {
 		t.Fatalf("DefDelegate missing param delegation_allowance")
@@ -266,7 +269,10 @@ func TestDefDelegateHasDelegationAllowance(t *testing.T) {
 }
 
 func TestDefDelegateHasWatchParent(t *testing.T) {
-	def := DefDelegate([]string{"subagent"})
+	def := DefDelegateWithResultTool([]string{"subagent"}, DelegateSandboxSchema{
+		Available: true,
+		Modes:     []string{"off", "read-only", "workspace-write", "restricted"},
+	}, DefaultResultToolName)
 	props := def.Parameters["properties"].(map[string]any)
 	watchParent, ok := props["watch_parent"].(map[string]any)
 	if !ok {
@@ -287,7 +293,7 @@ func TestDefDelegateHasWatchParent(t *testing.T) {
 // documenting the no-escalation floor (you may only pick a box at least as
 // restrictive as your own) so the model self-selects a legal request.
 func TestDefDelegateHasSandboxParams(t *testing.T) {
-	props := DefDelegate(nil).Parameters["properties"].(map[string]any)
+	props := DefDelegate().Parameters["properties"].(map[string]any)
 
 	sb, ok := props["sandbox"].(map[string]any)
 	if !ok {
@@ -328,13 +334,13 @@ func TestDefDelegateHasSandboxParams(t *testing.T) {
 	if _, hasNet := props["sandbox_net"]; hasNet {
 		t.Fatal("DefDelegate must not expose a separate sandbox_net param")
 	}
-	if _, hasOneOf := DefDelegate(nil).Parameters["oneOf"]; hasOneOf {
+	if _, hasOneOf := DefDelegate().Parameters["oneOf"]; hasOneOf {
 		t.Fatal("DefDelegate must not carry a oneOf constraint")
 	}
 }
 
 func TestDefDelegateNoEnumWhenNoTypes(t *testing.T) {
-	def := DefDelegate(nil)
+	def := DefDelegate()
 	props := def.Parameters["properties"].(map[string]any)
 	at := props["agent_type"].(map[string]any)
 	if _, ok := at["enum"]; ok {
@@ -343,7 +349,7 @@ func TestDefDelegateNoEnumWhenNoTypes(t *testing.T) {
 }
 
 func TestDefDelegateResultSchemaDescriptionIncludesResumeFailureShape(t *testing.T) {
-	props := DefDelegate(nil).Parameters["properties"].(map[string]any)
+	props := DefDelegate().Parameters["properties"].(map[string]any)
 	desc := props["result_schema"].(map[string]any)["description"].(string)
 	for _, want := range []string{"resumed", "structured_result", "structured_result_reason"} {
 		if !strings.Contains(desc, want) {
@@ -417,7 +423,7 @@ func TestDefTaskListEffortEnumIncludesInherit(t *testing.T) {
 // A schema narrower than the handler rejected a spawn at "max" at argument
 // validation even though createDelegate validates against the full vocabulary.
 func TestDefDelegateEffortEnumMatchesHandlerVocabulary(t *testing.T) {
-	def := DefDelegate(nil)
+	def := DefDelegate()
 	props := def.Parameters["properties"].(map[string]any)
 	want := llm.AcceptedReasoningEfforts()
 
@@ -1222,7 +1228,7 @@ func TestDefModelListBoundsMatchContract(t *testing.T) {
 func TestAllBuiltinParametersCarryDescriptions(t *testing.T) {
 	defs := []llm.ToolDefinition{
 		DefReadFile(), DefWriteFile(), DefListDir(), DefEditFile(), DefShell(),
-		DefDelegate(nil), DefDelegateWithSandbox(nil, DelegateSandboxSchema{}),
+		DefDelegate(), DefDelegateWithResultTool(nil, DelegateSandboxSchema{}, DefaultResultToolName),
 		DefDelegateSend(), DefModelList(), DefJobWatch(nil),
 		DefJobStatus(), DefJobList(), DefJobStop(), DefGrep(), DefGlob(),
 		DefApplyPatch(), DefWebFetch(), DefCommunicate(),
@@ -1305,11 +1311,11 @@ func TestDefAskUserDescriptionIsSpecVerbatim(t *testing.T) {
 }
 
 func TestDefDelegateWithSandboxIncludesVerifiedModelChoices(t *testing.T) {
-	def := DefDelegateWithSandbox(nil, DelegateSandboxSchema{
+	def := DefDelegateWithResultTool(nil, DelegateSandboxSchema{
 		Available:        true,
 		Modes:            []string{"off"},
 		ModelDescription: "Verified at startup (snapshot v1): openai/gpt-5, vertex/gemini-2.5.",
-	})
+	}, DefaultResultToolName)
 	props := def.Parameters["properties"].(map[string]any)
 	model := props["model"].(map[string]any)
 	if got := model["description"].(string); !strings.Contains(got, "openai/gpt-5") {
@@ -1318,9 +1324,9 @@ func TestDefDelegateWithSandboxIncludesVerifiedModelChoices(t *testing.T) {
 }
 
 func TestDefDelegateWithoutSandboxIncludesVerifiedModelChoices(t *testing.T) {
-	def := DefDelegateWithSandbox(nil, DelegateSandboxSchema{
+	def := DefDelegateWithResultTool(nil, DelegateSandboxSchema{
 		ModelDescription: "Verified at startup (snapshot v1): openai/gpt-5.",
-	})
+	}, DefaultResultToolName)
 	props := def.Parameters["properties"].(map[string]any)
 	model := props["model"].(map[string]any)
 	if got := model["description"].(string); !strings.Contains(got, "openai/gpt-5") {
@@ -1390,7 +1396,7 @@ func TestDefTaskList_PresenceBased(t *testing.T) {
 // nothing but this string and its role prompt), and `task_list` seeds the
 // delegate's task list with title+prompt items.
 func TestDefDelegatePromptAndTaskListSchema(t *testing.T) {
-	props := DefDelegate(nil).Parameters["properties"].(map[string]any)
+	props := DefDelegate().Parameters["properties"].(map[string]any)
 	prompt := props["prompt"].(map[string]any)
 	if prompt["type"] != "string" {
 		t.Errorf("prompt type = %v, want string", prompt["type"])
