@@ -9,7 +9,6 @@ import { overviewOnPage } from "./run.mjs";
 
 const frontend = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const viewport = { width: 390, height: 844, mobile: true, touch: true };
-const phone320 = { width: 320, height: 844, mobile: true, touch: true };
 const key = "evener.activity-sidebar.v1";
 
 test("Overview journeys isolate outgoing saved child views and dispose failed fixtures", async () => {
@@ -67,25 +66,6 @@ test("Overview journeys isolate outgoing saved child views and dispose failed fi
   } finally {
     old?.close();
     browser?.close();
-    await guard.cleanup();
-  }
-});
-
-// The composer is its own inline-size container on a phone. A statusbar
-// collapse query that forgets its container name resolves against the
-// composer at 320px and hides every counter glyph, leaving bare numbers.
-test("a 320px phone keeps every activity counter glyph beside its count", async () => {
-  const guard = await startBrowserGuard({ frontend, profilePrefix: "overview-glyph-320-" });
-  try {
-    const endpoint = await waitForBrowserReady(guard);
-    const { result, failures } = await overviewOnPage(endpoint, guard.vitePort, phone320, "light", "close");
-    assert.deepEqual(failures, []);
-    assert.equal(result.footer.chips.length, 4);
-    assert.deepEqual(
-      result.footer.chips.filter((chip) => !chip.glyphVisible).map((chip) => chip.tab),
-      [],
-    );
-  } finally {
     await guard.cleanup();
   }
 });

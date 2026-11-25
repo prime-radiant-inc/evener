@@ -545,6 +545,8 @@ test.each(["Close", "Escape"])(
         </ClientProvider>,
       );
       await user.click(await screen.findByRole("button", { name: "Overview" }));
+      const inspection = await screen.findByRole("dialog", { name: "Overview" });
+      await user.click(within(inspection).getByRole("button", { name: /^Agents,/ }));
       await user.click(await screen.findByRole("button", { name: /Open child/ }));
       const sidebar = await screen.findByTestId("activity-sidebar");
       // Drilling changes the inspected scope. The new scope's selected

@@ -152,6 +152,12 @@ type CachedThreadCapabilitySource interface {
 	CachedThreadCapabilities(ref, threadID string) (capabilities appwire.ThreadCapabilities, known bool)
 }
 
+// ThreadStartIdempotencySource reports whether an attached source supports
+// keyed thread/start deduplication without dialing.
+type ThreadStartIdempotencySource interface {
+	ThreadStartIdempotencySupportedIfAttached() bool
+}
+
 // LegacyPageCandidateSource converts one already-materialized legacy page
 // without following its native cursor or consulting a retained full snapshot.
 // Hub compatibility uses this seam because its contract is exactly one page.

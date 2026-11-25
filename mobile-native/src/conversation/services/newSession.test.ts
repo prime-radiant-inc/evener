@@ -294,4 +294,34 @@ describe("NewSessionService", () => {
 			{ cwd: "/home/jesse/git/evener" },
 		]);
 	});
+
+	it("forwards clientMutationId only when supplied and reports supportsStartIdempotency from initializeResult", async () => {
+		const olderClient = new FakeAppwireClient();
+		olderClient.on("thread/start", () => ({ thread: makeThread(), turn: makeTurn() }) as ThreadStartResponse);
+		const olderService = createNewSessionService(olderClient);
+		expect(olderService.supportsStartIdempotency?.()).toBe(false);
+
+		await olderService.start({ cwd: "/tmp" });
+		expect(olderClient.calls[0]?.params).toEqual({ cwd: "/tmp" });
+		expect("clientMutationId" in (olderClient.calls[0]?.params as Record<string, unknown>)).toBe(false);
+
+		const capableClient = new FakeAppwireClient();
+		const init = capableClient.initializeResult;
+		if (!init) throw new Error("missing initializeResult");
+		capableClient.scriptHandshake({
+			...init,
+			features: { ...init.features, threadStartIdempotency: true },
+		});
+		capableClient.on("thread/start", () => ({ thread: makeThread(), turn: makeTurn() }) as ThreadStartResponse);
+		const capableService = createNewSessionService(capableClient);
+		expect(capableService.supportsStartIdempotency?.()).toBe(true);
+
+		await capableService.start({ cwd: "/tmp", clientMutationId: "mut-svc-1" });
+		expect(capableClient.calls[0]?.params).toEqual({ cwd: "/tmp", clientMutationId: "mut-svc-1" });
+
+		const noInitService = createNewSessionService({
+			request: async () => ({ thread: makeThread(), turn: makeTurn() }),
+		} as never);
+		expect(noInitService.supportsStartIdempotency?.()).toBe(false);
+	});
 });

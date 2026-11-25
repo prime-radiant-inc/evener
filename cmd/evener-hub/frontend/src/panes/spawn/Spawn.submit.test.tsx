@@ -1,6 +1,7 @@
 import type { ThreadStartParams, ThreadStartResponse } from "@evener/appwire-client";
 import { WireError } from "@evener/appwire-client";
 import { deferred } from "@evener/appwire-client/testing/deferred";
+import type { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { expect, test, vi } from "vitest";
 import { toastKinds } from "../../widgets/toast/toastTestUtils";
@@ -817,4 +818,238 @@ test.each(["desktop", "mobile"])("%s directory picker follows route directory ch
   await waitFor(() => expect((confirm as HTMLButtonElement).disabled).toBe(false));
   await user.click(confirm);
   expectWorkingDir("/home/other");
+});
+
+function capableClient(configure?: (fake: FakeClient) => void) {
+  return readyClient((fake) => {
+    const init = fake.initializeResult;
+    if (!init) throw new Error("missing initializeResult");
+    fake.scriptHandshake({
+      ...init,
+      features: { ...init.features, threadStartIdempotency: true },
+    });
+    configure?.(fake);
+  });
+}
+
+test("reuses clientMutationId across transient failures, rotates on edit, and clears on success", async () => {
+  installCanvasStubs();
+  const user = setupUser();
+  let attempts = 0;
+  const fake = capableClient((f) => {
+    f.on("thread/start", () => {
+      attempts += 1;
+      if (attempts <= 2) throw new Error("socket dropped");
+      return startResponse("local:recovered");
+    });
+  });
+  window.history.pushState({}, "", "/new?dir=/tmp/retry-web");
+  renderSpawn(fake);
+  await settled();
+
+  await fillPrompt(user, "first attempt");
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(toastKinds()).toContain("error"));
+  const draft = selectSpawnDirectory("/tmp/retry-web");
+  const firstId = (fake.calls.filter((c) => c.method === "thread/start")[0]?.params as ThreadStartParams | undefined)
+    ?.clientMutationId;
+  expect(firstId).toBeTruthy();
+  expect(draft.fields.getState().pendingStart?.clientMutationId).toBe(firstId);
+
+  // Unchanged retry reuses the exact same clientMutationId.
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(fake.calls.filter((c) => c.method === "thread/start")).toHaveLength(2));
+  const secondId = (fake.calls.filter((c) => c.method === "thread/start")[1]?.params as ThreadStartParams | undefined)
+    ?.clientMutationId;
+  expect(secondId).toBe(firstId);
+
+  // Editing any field (prompt, manager, overrides, attachments, model, cwd) mints a fresh clientMutationId.
+  await fillPrompt(user, "edited prompt");
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Arecovered"));
+  const thirdId = (fake.calls.filter((c) => c.method === "thread/start")[2]?.params as ThreadStartParams | undefined)
+    ?.clientMutationId;
+  expect(thirdId).toBeTruthy();
+  expect(thirdId).not.toBe(firstId);
+  expect(draft.fields.getState().pendingStart).toBeNull();
+});
+
+test("mints a fresh clientMutationId when non-prompt launch fields change after a transient failure", async () => {
+  installCanvasStubs();
+  const user = setupUser();
+  const fake = capableClient((f) => {
+    f.on("evener/launch/schema", () => ({
+      options: [
+        {
+          field: "maxRounds",
+          wireField: "maxRounds",
+          label: "Max rounds",
+          group: "general",
+          kind: "integer",
+          perLaunch: true,
+        },
+      ],
+    }));
+    f.on("thread/start", () => {
+      throw new Error("transient drop");
+    });
+  });
+  window.history.pushState({}, "", "/new?dir=/tmp/retry-fields");
+  renderSpawn(fake);
+  await settled();
+
+  await fillPrompt(user, "keep prompt");
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(fake.calls.filter((c) => c.method === "thread/start")).toHaveLength(1));
+
+  // Edit manager switch -> fresh ID.
+  await user.click(screen.getByText("Advanced options"));
+  await user.click(screen.getByRole("switch", { name: /manager/i }));
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(fake.calls.filter((c) => c.method === "thread/start")).toHaveLength(2));
+
+  // Edit advanced override -> fresh ID.
+  await user.clear(screen.getByLabelText("Max rounds"));
+  await user.type(screen.getByLabelText("Max rounds"), "9");
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(fake.calls.filter((c) => c.method === "thread/start")).toHaveLength(3));
+
+  // Edit attachment -> fresh ID.
+  act(() => pastePngInto(promptField(), "shot.png"));
+  await screen.findByRole("button", { name: "View shot.png" });
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(fake.calls.filter((c) => c.method === "thread/start")).toHaveLength(4));
+
+  // Change model -> fresh ID.
+  await pickModel(user, "gpt-5", "openai/gpt-5");
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(fake.calls.filter((c) => c.method === "thread/start")).toHaveLength(5));
+
+  // Change cwd -> fresh ID.
+  await setWorkingDir(user, "/tmp/retry-fields-2");
+  await fillPrompt(user, "keep prompt");
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(fake.calls.filter((c) => c.method === "thread/start")).toHaveLength(6));
+
+  const ids = fake.calls
+    .filter((c) => c.method === "thread/start")
+    .map((c) => (c.params as ThreadStartParams).clientMutationId);
+  expect(new Set(ids).size).toBe(6);
+});
+
+test("clears pendingStart on notAccepted and blocked failures, and omits clientMutationId on older hubs", async () => {
+  const user = setupUser();
+  let attempt = 0;
+  const fake = capableClient((f) => {
+    f.on("thread/start", () => {
+      attempt += 1;
+      if (attempt === 1) {
+        throw new WireError("bad cwd", -32602, { evenerErrorInfo: "invalidParams", mutationOutcome: "notAccepted" });
+      }
+      if (attempt === 2) {
+        throw new WireError("uncertain", -32000, {
+          evenerErrorInfo: "mutationOutcomeUnknown",
+          mutationOutcome: "unknown",
+          retryDisposition: "blocked",
+        });
+      }
+      return startResponse("local:after-clear");
+    });
+  });
+  window.history.pushState({}, "", "/new?dir=/tmp/clear-web");
+  const mounted = renderSpawn(fake);
+  await settled();
+
+  await fillPrompt(user, "same text");
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(fake.calls.filter((c) => c.method === "thread/start")).toHaveLength(1));
+  const draft = selectSpawnDirectory("/tmp/clear-web");
+  expect(draft.fields.getState().pendingStart).toBeNull();
+
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(fake.calls.filter((c) => c.method === "thread/start")).toHaveLength(2));
+  expect(draft.fields.getState().pendingStart).toBeNull();
+
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Aafter-clear"));
+  const ids = fake.calls
+    .filter((c) => c.method === "thread/start")
+    .map((c) => (c.params as ThreadStartParams).clientMutationId);
+  expect(new Set(ids).size).toBe(3);
+
+  // Older hub without threadStartIdempotency omits clientMutationId.
+  mounted.unmount();
+  const olderFake = readyClient();
+  renderSpawn(olderFake);
+  await settled();
+  await fillPrompt(user, "legacy");
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(olderFake.calls.filter((c) => c.method === "thread/start")).toHaveLength(1));
+  const legacyParams = olderFake.calls.find((c) => c.method === "thread/start")?.params as Record<string, unknown>;
+  expect("clientMutationId" in legacyParams).toBe(false);
+});
+
+test("keys capable remote hosts across retries while keeping older and unsettled remote hosts keyless", async () => {
+  const user = setupUser();
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true, threadStartIdempotency: true },
+    { id: "cap-host", label: "cap-host", kind: "appwire", online: true, threadStartIdempotency: true },
+    { id: "old-host", label: "old-host", kind: "appwire", online: true, threadStartIdempotency: false },
+  ]);
+  let capAttempts = 0;
+  const fake = capableClient((f) => {
+    f.on("thread/start", (params) => {
+      if (params.source === "cap-host") {
+        capAttempts += 1;
+        if (capAttempts === 1) throw new Error("ssh drop");
+        return startResponse("cap-host:ok1");
+      }
+      return startResponse("old-host:ok1");
+    });
+  });
+  window.history.pushState({}, "", "/new?dir=/tmp/remote-idem");
+  renderSpawn(fake);
+  await settled();
+
+  // Capable remote: keyed and retried with identical clientMutationId.
+  await chooseHost("cap-host");
+  await fillPrompt(user, "run on cap");
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(toastKinds()).toContain("error"));
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(window.location.pathname).toBe("/s/cap-host%3Aok1"));
+  const capStarts = fake.calls.filter((c) => c.method === "thread/start").map((c) => c.params as ThreadStartParams);
+  expect(capStarts).toHaveLength(2);
+  expect(capStarts[0]?.source).toBe("cap-host");
+  expect(capStarts[0]?.clientMutationId).toBeTruthy();
+  expect(capStarts[1]?.clientMutationId).toBe(capStarts[0]?.clientMutationId);
+
+  // Older remote: omitted / keyless.
+  await visitSpawnURL("/new?dir=/tmp/remote-legacy");
+  await settled();
+  await chooseHost("old-host");
+  await fillPrompt(user, "run on old");
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(window.location.pathname).toBe("/s/old-host%3Aok1"));
+  const oldParams = fake.calls.filter((c) => c.method === "thread/start").at(-1)?.params as Record<string, unknown>;
+  expect(oldParams.source).toBe("old-host");
+  expect("clientMutationId" in oldParams).toBe(false);
+
+  // Unsettled manifest for a remote draft stays keyless.
+  await visitSpawnURL("/new?dir=/tmp/remote-unsettled&host=cap-host");
+  await act(async () => seedSources([]));
+  await settled();
+  await fillPrompt(user, "run while manifest unsettled");
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() =>
+    expect(
+      fake.calls.filter((c) => c.method === "thread/start" && (c.params as ThreadStartParams).source === "cap-host"),
+    ).toHaveLength(3),
+  );
+  const unsettledParams = fake.calls.filter((c) => c.method === "thread/start").at(-1)?.params as Record<
+    string,
+    unknown
+  >;
+  expect(unsettledParams.source).toBe("cap-host");
+  expect("clientMutationId" in unsettledParams).toBe(false);
 });

@@ -57,6 +57,8 @@ type WebConfig struct {
 	TranscriptDisplayStoreErr error                    // diagnostic returned while loading the injected store; retained for startup diagnostics
 	KeybindingsStore          *KeybindingsStore        // hub-authoritative user keybinding overrides; nil → load from HubStateRoot
 	KeybindingsStoreErr       error                    // diagnostic returned while loading the injected store; retained for startup diagnostics
+	CreationStore             *CreationStore           // durable thread/start idempotency journal; nil → load from HubStateRoot
+	CreationStoreErr          error                    // diagnostic returned while loading the injected store; retained for startup diagnostics
 	DaemonProcesses           daemonprocess.Controller // nil selects verified native process operations
 	RunDir                    string                   // run directory where rendezvous files live
 	SpawnTimeout              time.Duration            // how long the Hub waits for a spawned daemon to report ready; surfaced in settings
@@ -283,6 +285,12 @@ type WebConfig struct {
 	// MobileRouteAddrs supplies the local addresses used by outbound routes.
 	// nil asks the OS through UDP sockets without sending packets.
 	MobileRouteAddrs func() []netip.Addr
+}
+
+// CreationIdempotencyAvailable reports whether the creation store opened cleanly
+// and can accept keyed thread/start mutations.
+func (c WebConfig) CreationIdempotencyAvailable() bool {
+	return c.CreationStore != nil && c.CreationStoreErr == nil
 }
 
 // Spawner forks a evener serve subprocess and waits for its rendezvous file to appear.

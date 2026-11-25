@@ -46,7 +46,7 @@ import { type SqliteSync, type SqliteSyncRunResult, withSavepoint } from "./sqli
 // getRandomValues, the native module every other id-generating call site in
 // this app already uses (credentialStore.ts, nativeOrganization.ts) instead
 // of a bare Web Crypto global React Native does not guarantee.
-function nativeRandomSource(): SecureRandomSource {
+export function nativeRandomSource(): SecureRandomSource {
 	return { randomUUID: Crypto.randomUUID, getRandomValues: Crypto.getRandomValues };
 }
 

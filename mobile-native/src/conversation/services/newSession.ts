@@ -37,10 +37,12 @@ export interface NewSessionParams {
 	/** Start the session with the Manager role. False is omitted from the wire. */
 	manager?: boolean;
 	launchOverrides?: LaunchConfigLayer;
+	clientMutationId?: string;
 }
 
 export interface NewSessionService {
 	start(params: NewSessionParams): Promise<{ thread: Thread; turn: Turn }>;
+	supportsStartIdempotency?(): boolean;
 	recentProjects(host?: string): Promise<string[]>;
 	models(params?: ModelListParams, host?: string): Promise<ModelListResponse>;
 	previewPlugins(params: PluginPreviewParams, host?: string): Promise<PluginPreviewResponse>;
@@ -54,6 +56,9 @@ export interface NewSessionService {
 
 export function createNewSessionService(client: ConversationClientLike): NewSessionService {
 	return {
+		supportsStartIdempotency() {
+			return client.initializeResult?.features?.threadStartIdempotency === true;
+		},
 		async start(params) {
 			const wireParams: MethodTypes["thread/start"]["params"] = {
 				cwd: params.cwd,
@@ -80,6 +85,9 @@ export function createNewSessionService(client: ConversationClientLike): NewSess
 			}
 			if (params.launchOverrides !== undefined) {
 				wireParams.launchOverrides = params.launchOverrides;
+			}
+			if (params.clientMutationId !== undefined && params.clientMutationId !== "") {
+				wireParams.clientMutationId = params.clientMutationId;
 			}
 			const response: ThreadStartResponse = await client.request("thread/start", wireParams);
 			return { thread: response.thread, turn: response.turn };

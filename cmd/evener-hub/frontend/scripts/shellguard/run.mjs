@@ -1085,6 +1085,7 @@ function assertTabletSplit(result) {
 const OVERVIEW_VIEWPORTS = [VIEWPORT, MOBILE_VIEWPORT, { width: 320, height: 844, mobile: true, touch: true }];
 const OVERVIEW_THEMES = ["light", "dark"];
 const OVERVIEW = '[data-testid="activity-sidebar"][aria-label="Overview"]';
+const PHONE_INSPECTION = '[role="dialog"][aria-modal="true"]:not([data-testid="activity-sidebar"])';
 // The Overview sweep's tall task list renders this many live rows (40-row
 // fixture, every fourth settled into the collapsed fold). The wait gate and
 // the fixture-sanity assert below share it, so resizing the fixture cannot
@@ -1247,10 +1248,59 @@ async function chooseOverviewMenu(send, selector) {
   await settleOverview(send);
 }
 
-async function choosePaneOverview(send, selector) {
-  await clickControl(send, selector);
+async function choosePaneOverview(send, selector, mobile = false, measure = false) {
+  if (mobile && measure) {
+    await waitForDom(send, `document.querySelector(${JSON.stringify(selector)})`, "mounted phone Overview trigger");
+    await evaluate(send, `document.querySelector(${JSON.stringify(selector)}).closest('button').focus({ preventScroll: true })`);
+    await pressKey(send, "Enter", "Enter", 13);
+  } else {
+    await clickControl(send, selector);
+  }
+  let inspection;
+  if (mobile) {
+    await waitForDom(send, `(() => {
+      const sheet = document.querySelector(${JSON.stringify(PHONE_INSPECTION)});
+      return sheet && getComputedStyle(sheet).transform === 'none';
+    })()`, "phone Overview sheet settles");
+    if (measure) {
+      inspection = await evaluate(send, `(() => {
+        const sheet = document.querySelector(${JSON.stringify(PHONE_INSPECTION)});
+        const rect = sheet.getBoundingClientRect();
+        // Hit-test before clickControl can scroll an off-screen target into view.
+        const active = document.activeElement;
+        const focus = active.getBoundingClientRect();
+        const hit = document.elementFromPoint(focus.left + focus.width / 2, focus.top + focus.height / 2);
+        const initialFocus = {
+          visible: sheet.contains(active) && active.matches('button:focus-visible') && active.contains(hit),
+          box: focus.toJSON(),
+          sheet: rect.toJSON(),
+        };
+        const tapMin = parseFloat(getComputedStyle(sheet).getPropertyValue('--tap-min'));
+        const rows = [...sheet.querySelectorAll('[data-activity-tab]')].map(element => {
+          const box = element.getBoundingClientRect();
+          const glyph = element.querySelector('[aria-hidden="true"]');
+          const glyphBox = glyph?.getBoundingClientRect();
+          return { tab: element.dataset.activityTab,
+            glyphVisible: glyphBox?.width > 0 && glyphBox.height > 0 && getComputedStyle(glyph).visibility === 'visible',
+            fits: box.height >= tapMin - 1 && box.width >= tapMin - 1 &&
+              box.left >= rect.left - 1 && box.right <= rect.right + 1 && element.scrollWidth <= element.clientWidth + 1 };
+        });
+        return { initialFocus, rows, fits: rect.left >= -1 && rect.right <= innerWidth + 1 && rect.top >= -1 &&
+          rect.bottom <= innerHeight + 1 };
+      })()`);
+      if (!inspection.initialFocus.visible) {
+        throw new Error(`phone Overview starts with clipped keyboard focus: ${JSON.stringify(inspection.initialFocus)}`);
+      }
+      if (!inspection.fits || JSON.stringify(inspection.rows.map(row => row.tab)) !== JSON.stringify(["agents", "jobs", "watches", "tasks"]) ||
+          inspection.rows.some(row => !row.fits || !row.glyphVisible)) {
+        throw new Error(`phone Overview misses its activity geometry: ${JSON.stringify(inspection)}`);
+      }
+    }
+    await clickControl(send, `${PHONE_INSPECTION} [data-activity-tab="agents"]`);
+  }
   await waitForDom(send, `document.querySelector(${JSON.stringify(OVERVIEW)})`, "opened pane Overview");
   await settleOverview(send);
+  return inspection;
 }
 
 async function openRailOverview(send) {
@@ -1268,16 +1318,17 @@ async function openRailOverview(send) {
   if (!visible.width) await clickControl(send, 'button[aria-label="Sessions"]');
   await settleOverview(send);
   await chooseOverviewMenu(send, RAIL_ACTION);
+  await waitForDom(
+    send,
+    `document.querySelector('[data-session-actions-ref="local:p0-s0"][data-pane-id]')`,
+    "hydrated receiving Session",
+  );
+  await settleOverview(send);
   await clickControl(send, `${OVERVIEW} [role="radio"][aria-label="About"]`);
   await waitForDom(
     send,
     `window.overviewGuardState().overview.tab === 'about' && document.querySelector(${JSON.stringify(OVERVIEW)})?.textContent.includes(${JSON.stringify(LONG_VALUES[1])})`,
     "hydrated About",
-  );
-  await waitForDom(
-    send,
-    `document.querySelector('[data-session-actions-ref="local:p0-s0"][data-pane-id]')`,
-    "hydrated receiving Session",
   );
   await settleOverview(send);
 }
@@ -1365,43 +1416,14 @@ async function measureOverview(send) {
       return measure(element, expected);
     });
     const close = aside.querySelector('button[aria-label="Close Overview"]');
-    // The activity surface: the pane's status bar on desktop, the quiet line
-    // above the composer card on a phone (the phone pane renders no footer
-    // strip).
-    const surface = mobile
-      ? document.querySelector('[data-testid="composer-activity-line"]')
-      : Array.from(document.querySelectorAll('[data-testid="statusbar"]'))
-          .find(e => !e.closest('[data-pane-footer-fixture]')) ?? null;
+    const surface = mobile ? null : Array.from(document.querySelectorAll('[data-testid="statusbar"]'))
+      .find(e => !e.closest('[data-pane-footer-fixture]')) ?? null;
     const chips = surface ? Array.from(surface.querySelectorAll('[data-activity-tab]')) : [];
-    const chipRow = chips[0]?.parentElement ?? null;
-    const path = surface?.querySelector('[data-testid="composer-repo-path"]');
     return {
       theme: document.documentElement.dataset.theme, font: document.body.dataset.fontSize,
       sidebar: box(aside), categories, values, close: close && box(close),
       tapMin: parseFloat(getComputedStyle(aside).getPropertyValue('--tap-min')),
       footerTabs: surface ? [chips.map(button => button.dataset.activityTab)] : [],
-      footer: surface ? (() => {
-        return {
-          box: box(mobile ? (chipRow ?? surface) : surface),
-          path: !mobile && path ? box(path) : null,
-          chips: chips.map(element => {
-            // The category glyph is the CountButton's decorative wrapper. A
-            // phone keeps it at every width; only the statusbar's own named
-            // 320px container may drop it.
-            const glyph = element.querySelector('[aria-hidden="true"]');
-            const style = glyph ? getComputedStyle(glyph) : null;
-            const glyphBox = glyph ? glyph.getBoundingClientRect() : null;
-            return {
-              tab: element.dataset.activityTab, box: box(element),
-              glyphVisible: !!style && style.display !== 'none' && style.visibility !== 'hidden' &&
-                glyphBox.width > 0 && glyphBox.height > 0,
-            };
-          }),
-          chipRow: chipRow && {
-            box: box(chipRow), scrollWidth: chipRow.scrollWidth, clientWidth: chipRow.clientWidth
-          },
-        };
-      })() : null,
       document: { width: document.documentElement.scrollWidth, height: document.documentElement.scrollHeight },
       errors: window.__shellGuardErrors || [], state: window.overviewGuardState()
     };
@@ -1497,12 +1519,11 @@ function assertOverview(result, viewport, theme) {
     result.close.bottom > viewport.height + 1
   )
     failures.push(`close control escapes viewport: ${JSON.stringify(result.close)}`);
-  // The focused session pane carries its activity tabs on both viewports:
-  // desktop draws them in the pane's status bar, a phone keeps them in the
-  // engaged composer's control row, which is the pane's one bottom surface.
+  // Desktop activity retains its own pane footer. The trusted phone path
+  // measures those rows at their replacement owner, the inspection sheet.
   if (
-    result.footerTabs.length !== 1 ||
-    JSON.stringify(result.footerTabs[0]) !== JSON.stringify(["agents", "jobs", "watches", "tasks"])
+    !viewport.mobile && (result.footerTabs.length !== 1 ||
+      JSON.stringify(result.footerTabs[0]) !== JSON.stringify(["agents", "jobs", "watches", "tasks"]))
   )
     failures.push(`actual pane footer identities ${JSON.stringify(result.footerTabs)}`);
   if (JSON.stringify(result.categories.map((c) => c.text)) !== JSON.stringify(labels))
@@ -1545,41 +1566,6 @@ function assertOverview(result, viewport, theme) {
     for (const control of [...result.categories.map((c) => c.box), result.close]) {
       if (!control || control.width < result.tapMin - 1 || control.height < result.tapMin - 1)
         failures.push(`sub-floor Overview target: ${JSON.stringify(control)}`);
-    }
-    const footer = result.footer;
-    if (!footer) {
-      failures.push("engaged phone composer does not render its activity line");
-    } else {
-      // The phone pane renders no footer strip: the quiet line above the
-      // composer card carries the same four activity tabs, each at the tap
-      // floor and never clipped.
-      if (footer.chips.length !== 4) failures.push(`phone composer activity chips: ${JSON.stringify(footer.chips)}`);
-      for (const chip of footer.chips) {
-        if (!chip.glyphVisible)
-          failures.push(`phone composer activity chip ${chip.tab} lost its glyph: ${JSON.stringify(chip)}`);
-        if (
-          chip.box.width < result.tapMin - 1 ||
-          chip.box.height < result.tapMin - 1 ||
-          chip.box.top < footer.box.top - 1 ||
-          chip.box.bottom > footer.box.bottom + 1
-        )
-          failures.push(`phone composer activity chip ${chip.tab} misses the tap floor: ${JSON.stringify(chip.box)}`);
-      }
-      const row = footer.chipRow;
-      if (!row || row.box === null) {
-        failures.push(`phone composer chip row is missing: ${JSON.stringify(footer)}`);
-      } else {
-        if (row.scrollWidth > row.clientWidth + 1)
-          failures.push(
-            `phone composer chip row clips its chips (${row.scrollWidth}px in ${row.clientWidth}px): ${JSON.stringify(row)}`,
-          );
-        for (const chip of footer.chips) {
-          if (chip.box.left < row.box.left - 1 || chip.box.right > row.box.right + 1)
-            failures.push(
-              `phone composer activity chip ${chip.tab} is clipped by its row: ${JSON.stringify(chip.box)}`,
-            );
-        }
-      }
     }
   }
   if (result.document.width > viewport.width + 1 || result.document.height > viewport.height + 1)
@@ -1715,13 +1701,33 @@ async function trustedOverviewFlow(send, viewport, childGesture) {
   };
   // The rail opener is removed when a phone's Sessions drawer closes.
   await dismiss("close", pane);
-  await choosePaneOverview(send, overviewTrigger(pane));
+  const inspection = await choosePaneOverview(send, overviewTrigger(pane), viewport.mobile, true);
   await clickControl(send, `${OVERVIEW} [role="radio"][aria-label="About"]`);
   await evaluate(
     send,
-    `void (window.__overviewExpectedButton = document.querySelector(${JSON.stringify(overviewTrigger(pane))}))`,
+    `void (window.__overviewExpectedButton = document.querySelector(${JSON.stringify(overviewTrigger(pane))}).closest('button'))`,
   );
   await dismiss("escape", pane, true);
+
+  if (viewport.width === MOBILE_VIEWPORT.width && childGesture === "close") {
+    await evaluate(send, `(() => {
+      const button = window.__overviewExpectedButton;
+      button.blur();
+      // Keep the real click, but suppress Chromium's default mousedown focus.
+      button.addEventListener('mousedown', event => event.preventDefault(), { once: true });
+      button.addEventListener('click', event => {
+        window.__overviewUnfocusedClick = event.isTrusted && document.activeElement !== button;
+      }, { once: true });
+    })()`);
+    await clickControl(send, overviewTrigger(pane));
+    await waitForDom(send, `document.querySelector(${JSON.stringify(PHONE_INSPECTION)})`, "pointer opens phone Overview");
+    if (!(await evaluate(send, "window.__overviewUnfocusedClick")))
+      throw new Error("phone Overview pointer fixture did not activate without default focus");
+    await pressKey(send, "Escape", "Escape", 27);
+    await waitForDom(send, `!document.querySelector(${JSON.stringify(PHONE_INSPECTION)})`, "Escape dismisses phone Overview");
+    const returned = await evaluate(send, "document.activeElement === window.__overviewExpectedButton");
+    if (!returned) throw new Error("phone Overview did not return focus to its header after an unfocused pointer activation");
+  }
 
   const submitStatus = async (wrongFocusedPane = null) => {
     const editor =
@@ -1790,7 +1796,7 @@ async function trustedOverviewFlow(send, viewport, childGesture) {
   }
   if (viewport.mobile) {
     if (!(await evaluate(send, "window.overviewGuardState().overview.open")))
-      await choosePaneOverview(send, overviewTrigger(pane));
+      await choosePaneOverview(send, overviewTrigger(pane), true);
     await clickControl(send, `${OVERVIEW} [role="radio"][aria-label^="Agents"]`);
     await waitForDom(
       send,
@@ -1834,7 +1840,7 @@ async function trustedOverviewFlow(send, viewport, childGesture) {
     const childActions = overviewTrigger(childPaneId, "local:overview-child");
     await evaluate(
       send,
-      `void (window.__overviewExpectedButton = document.querySelector(${JSON.stringify(childActions)}))`,
+      `void (window.__overviewExpectedButton = document.querySelector(${JSON.stringify(childActions)}).closest('button'))`,
     );
     await waitForDom(
       send,
@@ -1854,7 +1860,7 @@ async function trustedOverviewFlow(send, viewport, childGesture) {
     );
     await settleOverview(send);
   }
-  return { tabStops, status: true, phoneTrap: !!viewport.mobile, childReturn: childGesture, originalPane: pane };
+  return { tabStops, status: true, phoneTrap: !!viewport.mobile, childReturn: childGesture, originalPane: pane, inspection };
 }
 
 async function measureActivityRowPadding(send, viewport) {
@@ -2008,16 +2014,6 @@ export async function overviewOnPage(cdpEndpoint, vitePort, viewport, theme, chi
     await settleOverview(send);
     await openRailOverview(send);
     const fixture = preparePage && (await preparePage(send));
-    if (viewport.mobile) {
-      const editor = '[data-testid="composer-form"] [role="textbox"]';
-      await evaluate(send, `document.querySelector(${JSON.stringify(editor)}).focus()`);
-      await send("Input.insertText", { text: "overview phone draft" });
-      await waitForDom(
-        send,
-        `document.querySelector('[data-testid="composer-activity-line"]') !== null`,
-        "content expands the phone composer for its activity-line measurement",
-      );
-    }
     const result = await measureOverview(send);
     if (process.env.EVENER_SCRATCH_DIR) {
       await evaluate(
@@ -2040,17 +2036,6 @@ export async function overviewOnPage(cdpEndpoint, vitePort, viewport, theme, chi
     const padding = await measureActivityRowPadding(send, viewport);
     result.rowPadding = padding.result;
     failures.push(...padding.failures);
-    if (viewport.mobile) {
-      const editor = '[data-testid="composer-form"] [role="textbox"]';
-      await evaluate(send, `document.querySelector(${JSON.stringify(editor)}).focus()`);
-      await pressKey(send, "a", "KeyA", 65, process.platform === "darwin" ? 4 : 2);
-      await pressKey(send, "Backspace", "Backspace", 8);
-      await waitForDom(
-        send,
-        `document.querySelector(${JSON.stringify(editor)}).textContent === ''`,
-        "temporary activity-line draft cleared before trusted command journeys",
-      );
-    }
     try {
       result.keyboard = await trustedOverviewFlow(send, viewport, childGesture);
     } catch (error) {

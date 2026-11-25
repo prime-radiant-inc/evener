@@ -1,0 +1,12 @@
+/* The lightbox image size shared with every other whole-image dialog
+ * (widgets/internal/lightbox.module.css), and the caption line below it. */
+.image {
+  composes: image from "../internal/lightbox.module.css";
+}
+
+.caption {
+  margin-top: var(--space-2);
+  text-align: center;
+  font-size: var(--font-size-caption);
+  color: var(--ink-mid);
+}

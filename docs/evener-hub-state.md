@@ -59,6 +59,7 @@ or paste private files into diagnostics.
 | `auth-token` | Preserve exact bytes and private access modes, do not rotate it. |
 | `deletions/state.json` | Preserve durable deletion fences. |
 | `recovery/state.json` | Preserve session/exit/alias recovery authority, including paths. |
+| `creations/state.json` | Preserve durable `thread/start` idempotency state (`clientMutationId` outcomes and Turn 1 mutation keys). |
 | Entire `hostops/` directory | Preserve journal, allocator/history, epochs, custody, quarantined payloads and companions, subject to the bounded adjustment below. |
 | `transcript-display/state.json`, `keybindings/state.json` | Preserve durable preferences and revisions. |
 | `search.db` and SQLite companions | Derived full-text search data, either copy the complete offline set or omit the set and rebuild. |

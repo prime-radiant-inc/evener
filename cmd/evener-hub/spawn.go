@@ -41,6 +41,20 @@ const evenerLaunchCheckWaitDelay = time.Second
 // quoted back to the operator as the reason it would not start.
 const daemonLaunchOutputLimit = 64 * 1024
 
+// preExecSpawnError marks a Spawn error that happened before cmd.Start()
+// succeeded, proving no child process was started.
+type preExecSpawnError struct{ err error }
+
+func (e preExecSpawnError) Error() string { return e.err.Error() }
+func (e preExecSpawnError) Unwrap() error { return e.err }
+
+func wrapPreExecSpawnError(err error) error {
+	if _, already := errors.AsType[preExecSpawnError](err); already {
+		return err
+	}
+	return preExecSpawnError{err: err}
+}
+
 var (
 	spawnMkdirAll                   = os.MkdirAll
 	spawnMkdirTemp                  = os.MkdirTemp
@@ -163,7 +177,13 @@ func (h *HubSpawner) ListLaunchModelContractForWorkingDir(ctx context.Context, w
 	return listEvenerLaunchModelContractFn(ctx, h.EvenerBinary, env)
 }
 
-func (h *HubSpawner) Spawn(ctx context.Context, req hubcore.SpawnRequest) (rendezvous.Entry, error) {
+func (h *HubSpawner) Spawn(ctx context.Context, req hubcore.SpawnRequest) (_ rendezvous.Entry, spawnErr error) {
+	preExec := true
+	defer func() {
+		if preExec && spawnErr != nil {
+			spawnErr = wrapPreExecSpawnError(spawnErr)
+		}
+	}()
 	timeout := h.Cfg.SpawnTimeout
 	if timeout == 0 {
 		timeout = 30 * time.Second
@@ -220,6 +240,7 @@ func (h *HubSpawner) Spawn(ctx context.Context, req hubcore.SpawnRequest) (rende
 	if err := validateEvenerLaunchContract(ctx, h.EvenerBinary, req.Resolved.Effective.Model, req.Env); err != nil {
 		return rendezvous.Entry{}, err
 	}
+	preExec = false
 	return spawnDaemonWithProviderConfig(ctx, h.EvenerBinary, h.RunDir, req, timeout, os.Stderr, childConfig)
 }
 
@@ -455,6 +476,12 @@ func buildResumeArgs(req hubcore.ResumeRequest) []string {
 // Caller does NOT manage the subprocess lifecycle: the spawned daemon
 // runs independently and lives until killed or sent /shutdown.
 func spawnDaemonWithProviderConfig(ctx context.Context, evenerBinary string, runDir string, req hubcore.SpawnRequest, timeout time.Duration, hubLog io.Writer, providerConfig *childProviderConfig) (entry rendezvous.Entry, launchErr error) {
+	preExec := true
+	defer func() {
+		if preExec && launchErr != nil {
+			launchErr = wrapPreExecSpawnError(launchErr)
+		}
+	}()
 	if evenerBinary == "" {
 		evenerBinary = "evener"
 	}
@@ -480,6 +507,7 @@ func spawnDaemonWithProviderConfig(ctx context.Context, evenerBinary string, run
 		dlog.removeIfPending()
 		return rendezvous.Entry{}, fmt.Errorf("start daemon: %w", err)
 	}
+	preExec = false
 	cleanupProvider := providerConfig.transferToChild()
 	// The child holds its own descriptor from here on.
 	dlog.close()

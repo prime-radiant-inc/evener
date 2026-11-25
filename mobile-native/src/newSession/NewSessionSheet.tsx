@@ -11,6 +11,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef } from "react"
 import { useStore } from "zustand";
 import { LOCAL_HOST } from "@evener/appwire-client";
 import { hasHub } from "../connection";
+import { useManifestSources } from "../alerts/alertsContext";
 import { useConnection } from "../ConnectionProvider";
 import { isReady } from "../connectionDisplay";
 import { useHubFleet, useOptionalSnapshot } from "../hosts/useHubFleet";
@@ -122,6 +123,11 @@ function NewSessionSheetBody({ route }: NativeStackScreenProps<Routes, "NewSessi
 		},
 		[share],
 	);
+
+	const manifestSources = useManifestSources();
+	useEffect(() => {
+		if (manifestSources !== undefined) store.getState().setSources(manifestSources);
+	}, [store, manifestSources]);
 
 	const bindTo = ready && client ? client : null;
 	// A new or lost connection rebinds the store, which makes anything in

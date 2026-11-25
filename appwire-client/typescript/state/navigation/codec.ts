@@ -284,6 +284,7 @@ const SOURCE_KEYS = valueRecordKeys<Source>({
   label: "required",
   kind: "required",
   online: "required",
+  threadStartIdempotency: "optional",
 });
 const COUNT_KEYS = valueRecordKeys<NavigationResourceDescriptor>({ count: "required" });
 const ATTENTION_SUMMARY_KEYS = valueRecordKeys<AttentionSummary>({
@@ -577,7 +578,8 @@ function manifestMetadata(value: Record<string, unknown>): boolean {
         identity(source.id) &&
         boundedString(source.label, 512) &&
         identity(source.kind) &&
-        bool(source.online),
+        bool(source.online) &&
+        optional(source.threadStartIdempotency, bool),
     ) ||
     !knownKeys(value.attentionSummary, ATTENTION_SUMMARY_KEYS) ||
     !count(value.attentionSummary.needsYou) ||

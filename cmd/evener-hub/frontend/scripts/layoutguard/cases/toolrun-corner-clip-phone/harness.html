@@ -15,113 +15,42 @@
     color: var(--ink-hi);
   }
   .fixtures { display: flex; flex-direction: column; gap: 32px; padding: 24px 12px; }
-  /* Stand-ins for a tool row, which this case cannot load: toolcallitem's
-   * stylesheet shares unhashed class names with the run's. They keep the three
-   * properties the run's own rules answer to - the row's block padding, a
-   * control that overhangs its line to the phone tap floor, and an evidence
-   * band that runs to the row's edges and inherits its lower corners. */
-  .standInRow { padding: var(--rhythm-item) var(--space-3); line-height: 20px; }
-  .standInOpen {
-    display: inline-block;
-    width: var(--tap-min);
-    height: var(--tap-min);
-    margin-block: calc((20px - var(--tap-min)) / 2);
-    vertical-align: top;
-    border: 0;
-    padding: 0;
-    background: var(--hover-1);
-  }
-  .standInBand {
-    margin: var(--rhythm-item) calc(-1 * var(--space-3)) calc(-1 * var(--rhythm-item));
-    padding: var(--space-3);
-    border-bottom-left-radius: inherit;
-    border-bottom-right-radius: inherit;
-    background: var(--surface-inset);
-  }
 </style>
 </head>
 <body data-font-size="m">
-<!-- ToolRunGroup.tsx's render through widgets/disclosure's Disclosure, inside
-     the wrapper TurnBlock.tsx gives a run that is a whole card on its own:
-
-       <div class="toolRunSegment" data-tool-card="only">
-         <details class="disclosure-details" open data-variant="default">
-           <summary class="disclosure-summary summary">
-             <svg class="chevron" … data-open="true"></svg>
-             <span class="label">…</span>
-           </summary>
-           <div class="disclosure-body">
-             <div class="body">{rows}</div>
-           </div>
-         </details>
-       </div>
-
-     The details, summary, leading chevron, and body wrapper are the real
-     Disclosure structure the transcript renders. `disclosure-*` are that
-     module's class names after this case prefixes them (case.json's
-     cssClassPrefixes), so its .body and .summary can load next to
-     toolrungroup.module.css's without colliding. The body is mounted only
-     while the run is open. -->
+<!-- A ToolRunGroup is a Disclosure inside TurnBlock's standalone run segment.
+     case.json prefixes the Disclosure and ToolRow classes so their summary,
+     body and chevron rules stay independent as they do in the product. -->
 <main class="fixtures">
   <div class="toolRunSegment" data-tool-card="only">
-    <details class="disclosure-details" id="closed" data-testid="tool-run" data-variant="default">
-      <summary class="disclosure-summary summary" id="closed-summary"><svg class="chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false" data-open="false" style="display: block;"><path d="M6 3.5 L10.5 8 L6 12.5" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"></path></svg><span class="label">Read 2 files</span></summary>
-    </details>
-  </div>
-  <div class="toolRunSegment" data-tool-card="only">
     <details class="disclosure-details" id="open" data-testid="tool-run" data-variant="default" open>
-      <summary class="disclosure-summary summary" id="open-summary"><svg class="chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false" data-open="true" style="display: block;"><path d="M6 3.5 L10.5 8 L6 12.5" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"></path></svg><span class="label">Read 2 files</span></summary>
+      <summary class="disclosure-summary summary" id="open-summary"><span class="disclosure-chevron" aria-hidden="true"><svg class="chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false" data-open="true" style="display: block;"><path d="M6 3.5 L10.5 8 L6 12.5" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"></path></svg></span><span class="label">Wrote 2 files</span></summary>
       <div class="disclosure-body">
         <div class="body">
-          <div class="standInRow">Read a.go</div>
-          <div class="standInRow">Read b.go <button type="button" class="standInOpen" id="open-control" aria-label="Open b.go beside"></button></div>
+          <div class="toolcall-call" data-testid="tool-call-item" data-row-fixture="collapsed"></div>
         </div>
       </div>
     </details>
   </div>
   <div class="toolRunSegment" data-tool-card="only">
     <details class="disclosure-details" id="banded" data-testid="tool-run" data-variant="default" open>
-      <summary class="disclosure-summary summary"><svg class="chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false" data-open="true" style="display: block;"><path d="M6 3.5 L10.5 8 L6 12.5" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"></path></svg><span class="label">Read 2 files</span></summary>
+      <summary class="disclosure-summary summary"><span class="disclosure-chevron" aria-hidden="true"><svg class="chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false" data-open="true" style="display: block;"><path d="M6 3.5 L10.5 8 L6 12.5" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"></path></svg></span><span class="label">Wrote 2 files</span></summary>
       <div class="disclosure-body">
         <div class="body">
-          <div class="standInRow">Read a.go</div>
-          <div class="standInRow">Read b.go<div class="standInBand" id="band">evidence</div></div>
+          <div class="toolcall-call" data-testid="tool-call-item" data-row-fixture="expanded"></div>
         </div>
       </div>
     </details>
   </div>
 </main>
-<script>
-window.measure = () => {
-  const name = (el) => (el ? `${el.tagName.toLowerCase()}${el.id ? `#${el.id}` : ""}` : "nothing");
-  const owns = (target, hit) => hit !== null && (hit === target || target.contains(hit));
-  const radius = (el) => parseFloat(getComputedStyle(el).borderBottomLeftRadius);
-  const cornerOwned = (el) => {
-    const r = el.getBoundingClientRect();
-    return owns(el, document.elementFromPoint(r.left + 0.5, r.bottom - 0.5));
-  };
-  const control = document.getElementById("open-control");
-  const o = control.getBoundingClientRect();
-  const bottomHit = document.elementFromPoint(o.left + o.width / 2, o.bottom - 1);
-  const band = document.getElementById("band");
-  const banded = document.getElementById("banded");
-  const b = band.getBoundingClientRect();
-  const g = banded.getBoundingClientRect();
-  const openSummary = document.getElementById("open-summary");
-  const firstRow = document.querySelector("#open > .disclosure-body > .body > .standInRow");
-  const firstRowGap = firstRow.getBoundingClientRect().top - openSummary.getBoundingClientRect().bottom;
-  return {
-    cardRadius: radius(document.getElementById("closed")),
-    controlHeight: o.height,
-    controlBottomReachesControl: owns(control, bottomHit),
-    controlBottomHit: name(bottomHit),
-    closedSummaryCornerPainted: cornerOwned(document.getElementById("closed-summary")),
-    openSummaryRadius: radius(openSummary),
-    firstRowGap,
-    bandReachesCardEdge: Math.abs(b.bottom - (g.bottom - 1)) <= 0.5 && Math.abs(b.left - (g.left + 1)) <= 0.5,
-    bandCornerPainted: cornerOwned(band),
-  };
-};
+<script type="module">
+import { mountToolRows, measureToolRows } from "/scripts/layoutguard/cases/toolcard-corner-clip-phone/row-contracts.mjs";
+mountToolRows("toolcall-");
+window.measure = () => ({
+  ...measureToolRows(),
+  firstRowGap: document.querySelector('#open [data-testid="tool-call-item"]').getBoundingClientRect().top -
+    document.getElementById("open-summary").getBoundingClientRect().bottom,
+});
 </script>
 </body>
 </html>

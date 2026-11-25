@@ -294,15 +294,8 @@ test("the phone's activity line keeps every chip a tappable glyph", () => {
     /\/\*[\s\S]*?\*\//g,
     " ",
   );
-  const activityRow = /\.activityRow\s*\{[^}]*display:\s*flex[^}]*min-height:\s*var\(--tap-min\)/.exec(composerCss);
-  expect(activityRow, "composer.module.css must give the phone's activity line the tap floor").not.toBeNull();
-  // The line break itself is decided by honest bases, not a threshold query:
-  // the chrome's .body container containment hides its status content from
-  // the flex algorithm, so the composer placement's .inline must carry its
-  // measured compact rung as the basis. With the rung honest, the leading's
-  // flex-wrap breaks the line - the strip takes its own line - exactly when
-  // one line cannot hold both the rung and the strip, and no band of widths
-  // starves the model picker beside the counts.
+  // The removal is the contract: no counts row may return over the composer.
+  expect(composerCss).not.toMatch(/activityRow/);
   const chromeCss = readFileSync(join(srcRoot, "panes/session/chrome/sessionchrome.module.css"), "utf8").replace(
     /\/\*[\s\S]*?\*\//g,
     " ",
