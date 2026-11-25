@@ -20,9 +20,9 @@
 // would leave a transcript that starts out overflowing and later fits with
 // older history it can never scroll to reach.
 //
-// The row renders a quiet "Loading older turns…" while a page is in flight, an
-// error with a retry button when one failed, and nothing when idle: paging is
-// automatic, so a standing "Older turns" banner would only narrate work the
+// The row renders a quiet "Loading older turns…" while a read is on the wire,
+// an error with a retry button when one failed, and nothing when idle: paging
+// is automatic, so a standing "Older turns" banner would only narrate work the
 // reader never asked about. The only pressable thing here is the retry, which
 // exists because Jesse ruled out a fallback "load more" button but silent
 // failure is not an option. Retry is also the accessible escape hatch: a
@@ -49,7 +49,13 @@ export interface LoadOlderRowProps {
   // Fetches the next older page. Called automatically by the geometry check
   // below, and by the retry button after a failure.
   onLoad: () => void;
+  // Whether paging still owes the reader a page. This is paging demand, not
+  // I/O: it stays true while a retry is paced and after a page settles without
+  // advancing the cursor, and the geometry check below must wait for it.
   loading: boolean;
+  // Whether an older-page read is actually on the wire right now. The visual
+  // status reads this one: demand waiting out a paced retry is not fetching.
+  readInFlight: boolean;
   // The last failed fetch's finished sentence, or null when the last attempt
   // succeeded (or none has been made). Rendered verbatim: useTranscript
   // already labelled it, and only useTranscript can tell a failed page fetch
@@ -76,7 +82,15 @@ const CLASS = {
   error: requireClass(styles.error, "loadolderrow.module.css", "error"),
 };
 
-export function LoadOlderRow({ onLoad, loading, error, scrollElement, pageKey, readerActive }: LoadOlderRowProps) {
+export function LoadOlderRow({
+  onLoad,
+  loading,
+  readInFlight,
+  error,
+  scrollElement,
+  pageKey,
+  readerActive,
+}: LoadOlderRowProps) {
   // Latest-ref so the observer - attached once - never calls a stale
   // onLoad/scrollElement pair. loadOlder's identity changes on every
   // loadingOlder flip (useTranscript.ts), and a stale closure would read a
@@ -167,7 +181,7 @@ export function LoadOlderRow({ onLoad, loading, error, scrollElement, pageKey, r
   // (an older page of hidden rows), so the advance is the only signal that
   // arrives. Re-decide when it does, but only for a page that has settled and
   // only for an active reader: a key that moves while the pane is hidden, or
-  // while a fetch is still in flight or an error is showing, is handled once
+  // while a page is still unsettled or an error is showing, is handled once
   // that clears. The key is only marked handled by a real check, and a reader
   // coming back re-decides the check the row skipped while it was away.
   // Activation with a page still in flight is left to historyPaging: activating
@@ -190,7 +204,7 @@ export function LoadOlderRow({ onLoad, loading, error, scrollElement, pageKey, r
     <div
       className={CLASS.row}
       data-testid="load-older-row"
-      data-state={error !== null ? "failed" : loading ? "loading" : "idle"}
+      data-state={error !== null ? "failed" : readInFlight ? "loading" : "idle"}
     >
       {error !== null ? (
         <>
@@ -204,7 +218,7 @@ export function LoadOlderRow({ onLoad, loading, error, scrollElement, pageKey, r
           </Button>
         </>
       ) : (
-        loading && <span className={CLASS.label}>Loading older turns…</span>
+        readInFlight && <span className={CLASS.label}>Loading older turns…</span>
       )}
     </div>
   );

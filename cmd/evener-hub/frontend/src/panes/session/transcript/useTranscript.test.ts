@@ -1,7 +1,7 @@
 import type { Thread, ThreadTurnsListResponse } from "@evener/appwire-client";
 import { hydrateThread, WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { act, render, renderHook } from "@testing-library/react";
+import { act, fireEvent, render, renderHook, screen } from "@testing-library/react";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { createElement, type PropsWithChildren, StrictMode, Suspense, useEffect } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
@@ -19,6 +19,7 @@ import {
   threadsStore,
 } from "../../../stores/threads";
 import { connectReadyFakeClient } from "../../../testing/connectionTestUtils";
+import { useTestDrivenFakeTimers } from "../../../testing/fakeTimers";
 import { ALL_CAPABILITIES as CAPABILITIES } from "../../../threadTestUtils";
 import { enterAgentCascade, returnFromAgentCascade } from "../../zoom/actions";
 import { LoadOlderRow } from "./flow/LoadOlderRow";
@@ -160,16 +161,23 @@ function OlderPagingProbe(props: { owner: Document; port: HTMLElement; step: num
       "data-step": props.step,
       "data-reader-active": String(transcript.readerActive),
       "data-loading": String(transcript.loadingOlder),
+      "data-read-in-flight": String(transcript.olderReadInFlight),
+      "data-older-error": String(transcript.olderError !== null),
       "data-page-key": transcript.olderPageKey ?? "none",
     },
-    createElement(LoadOlderRow, {
-      onLoad: transcript.loadOlderReportingError,
-      loading: transcript.loadingOlder,
-      error: transcript.olderError,
-      pageKey: transcript.olderPageKey ?? null,
-      readerActive: transcript.readerActive,
-      scrollElement: () => props.port,
-    }),
+    // The pane renders the row only while older history remains, so an
+    // exhausted page removes it rather than leaving a short port demanding a
+    // page that does not exist.
+    transcript.hasOlder &&
+      createElement(LoadOlderRow, {
+        onLoad: transcript.loadOlderReportingError,
+        loading: transcript.loadingOlder,
+        readInFlight: transcript.olderReadInFlight,
+        error: transcript.olderError,
+        pageKey: transcript.olderPageKey ?? null,
+        readerActive: transcript.readerActive,
+        scrollElement: () => props.port,
+      }),
   );
 }
 
@@ -288,6 +296,98 @@ test("a pane moved to a hidden window keeps no older-page demand to replay on re
     frame.remove();
   }
 });
+
+// #7691: `loadingOlder` is paging demand, not I/O. It stays true between reads
+// - after a page settles without advancing the cursor, and while a paced retry
+// waits - so the row's fetching line must track the read itself. The row's
+// structured state is the observable; its label is copy.
+test("a retained demand between reads shows no fetching affordance and recovers without a stale error", async () => {
+  useTestDrivenFakeTimers();
+  const fake = connectReadyFakeClient();
+  fake.on("thread/read", () => ({ thread: testThread("ref_a"), olderCursor: "older" }));
+  await act(async () => {
+    await threadsStore.getState().ensureThread("ref_a");
+  });
+  const held: { resolve: ((response: ThreadTurnsListResponse) => void) | null } = { resolve: null };
+  let attempts = 0;
+  fake.on("thread/turns/list", () => {
+    attempts += 1;
+    if (attempts === 1) return new Promise<ThreadTurnsListResponse>((resolve) => (held.resolve = resolve));
+    if (attempts === 2) return Promise.reject(new Error("network error"));
+    return {
+      data: [{ id: "older-turn", status: "completed", itemsView: "full", items: [] }],
+      nextCursor: undefined,
+    };
+  });
+  const port = document.createElement("div");
+  port.appendChild(document.createElement("div"));
+  Object.defineProperty(port, "scrollHeight", { value: 300, configurable: true });
+  Object.defineProperty(port, "clientHeight", { value: 500, configurable: true });
+  const view = render(createElement(OlderPagingProbe, { owner: document, port, step: 0 }));
+  const has = (selector: string) => view.container.querySelector(selector) !== null;
+  const row = () => screen.getByTestId("load-older-row");
+  const olderTurnLanded = () =>
+    threadsStore
+      .getState()
+      .threads.get("ref_a")
+      ?.turns.some((turn) => turn.id === "older-turn") === true;
+  try {
+    // An actual read is on the wire: the fetching affordance is honest.
+    await act(async () => {
+      await flushUntil(() => held.resolve !== null);
+    });
+    expect(attempts).toBe(1);
+    expect(has("[data-read-in-flight='true']")).toBe(true);
+    expect(row().getAttribute("data-state")).toBe("loading");
+    expect(row().textContent).not.toBe("");
+
+    // The read fulfils without advancing the cursor. historyPaging keeps the
+    // demand and paces the next attempt, so nothing is on the wire now.
+    await act(async () => {
+      held.resolve?.({ data: [], nextCursor: "older" });
+      await flushUntil(() => has("[data-read-in-flight='false']"));
+    });
+    expect(has("[data-loading='true']"), "the retained demand must not be dropped").toBe(true);
+    expect(has("[data-read-in-flight='false']")).toBe(true);
+    expect(row().getAttribute("data-state")).toBe("idle");
+    expect(row().textContent).toBe("");
+
+    // Nothing is on the wire while the pacer waits, so nothing announces a
+    // failure yet. The pacer's first delay is one second; advancing the test
+    // clock triggers it without depending on the host's wall clock.
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+      await flushUntil(() => attempts >= 2, 100);
+    });
+    // The paced attempt rejects: the failure is visible, announced, and
+    // recoverable without pixel-precise scrolling.
+    expect(attempts).toBe(2);
+    expect(row().getAttribute("data-state")).toBe("failed");
+    expect(screen.getByRole("alert")).toBeTruthy();
+    const retry = screen.getByRole("button", { name: "Retry" });
+    expect(has("[data-read-in-flight='false']")).toBe(true);
+
+    // The accessible escape hatch succeeds and leaves no stale failure. The
+    // row unmounts when the page exhausts history, so assert the hook's own
+    // error state too: absence alone would hide a stale error.
+    await act(async () => {
+      fireEvent.click(retry);
+      await flushUntil(olderTurnLanded);
+    });
+    expect(has("[data-older-error='false']")).toBe(true);
+    expect(attempts).toBe(3);
+    expect(screen.queryByTestId("load-older-row")).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+    expect(has("[data-loading='false']")).toBe(true);
+    expect(has("[data-read-in-flight='false']")).toBe(true);
+    expect(olderTurnLanded()).toBe(true);
+  } finally {
+    view.unmount();
+  }
+}, 15_000);
 
 test("retiring one reader preserves another reader's demand", async () => {
   vi.useFakeTimers();
