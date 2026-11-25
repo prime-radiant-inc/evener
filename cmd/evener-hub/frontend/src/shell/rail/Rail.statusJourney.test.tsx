@@ -147,7 +147,7 @@ test("parent status recovers through navigation updates without losing failed-ch
   await waitFor(() => {
     expect(activitySidebarStore.getState().open).toBe(true);
     expect(activitySidebarStore.getState().ref).toBe("local:parent");
-    expect(activitySidebarStore.getState().tab).toBe("agents");
+    expect(activitySidebarStore.getState().tab).toBe("about");
   });
   expect(workspaceStore.getState().panes).toEqual(
     expect.arrayContaining([expect.objectContaining({ type: "session", params: { ref: "local:parent" } })]),

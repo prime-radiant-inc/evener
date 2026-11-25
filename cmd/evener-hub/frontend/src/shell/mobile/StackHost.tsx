@@ -57,6 +57,8 @@ import {
   registerConversationHostVisibility,
   restrictConversationHandoff,
 } from "../../stores/conversationClaimHandoff";
+import { selectNeedsYouCount } from "../../stores/navigation/selectors";
+import { type NavigationStoreState, useNavigationStore } from "../../stores/navigation/store";
 import {
   clampSidebarWidth,
   type FontSizePref,
@@ -296,6 +298,12 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
   const tabletSplit = tabletBand && !singlePane;
   const [boardCollapsed, setBoardCollapsed] = useState(false);
   const boardVisible = tabletSplit && !boardCollapsed;
+  const needsYou = useNavigationStore(
+    useCallback(
+      (state: NavigationStoreState) => (tabletSplit && !boardVisible ? selectNeedsYouCount(state) : 0),
+      [tabletSplit, boardVisible],
+    ),
+  );
   const sidebarWidth = usePrefsStore((s) => s.sidebarWidth);
   const fontSize = usePrefsStore((s) => s.fontSize);
   const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth);
@@ -882,10 +890,11 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
     <IconButton
       ref={boardToggleRef}
       data-testid="board-toggle"
-      label="Board"
+      label={needsYou > 0 ? `Board (${needsYou} need attention)` : "Board"}
       aria-expanded={boardVisible}
       variant="quiet"
       icon={<span className={styles.boardGlyph}>◧</span>}
+      badge={needsYou > 0 ? { count: needsYou, tone: "attention" } : undefined}
       onClick={toggleBoard}
     />
   ) : null;

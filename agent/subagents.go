@@ -545,8 +545,11 @@ func (s *Session) subagentToolNameCeilingAndExcluded(ctx context.Context, agent 
 		registered = s.reg.RegisteredNames()
 	}
 	allTools, allowedTools, deniedTools := baseSubagentToolPolicy(agent, canDelegate)
-	ceiling = delegateToolNameCeilingFromRegistered(registered, s.reg, s.resultToolName(), allTools, allowedTools, deniedTools, canDelegate, isolationName)
+	ceiling = delegateToolNameCeilingFromRegistered(s.registeredWithOneShotOmitted(registered), s.reg, s.resultToolName(), allTools, allowedTools, deniedTools, canDelegate, isolationName)
 	kept := s.removeChildUnreachableTools(ceiling, isolationName, excludeCLIMCP)
+	if s.cfg.TurnEndsProcess {
+		kept = removeStrings(kept, oneShotCeremonyToolNames)
+	}
 	return kept, diffToolNames(ceiling, kept)
 }
 
@@ -961,6 +964,28 @@ func (s *Session) setCLIMCPToolNames(names map[string]bool) {
 	s.delegateExclusionsMu.Lock()
 	defer s.delegateExclusionsMu.Unlock()
 	s.cliMCPToolNames = names
+}
+
+func (s *Session) setOneShotOmittedTools(names map[string]bool) {
+	s.delegateExclusionsMu.Lock()
+	defer s.delegateExclusionsMu.Unlock()
+	s.oneShotOmittedTools = names
+}
+
+func (s *Session) registeredWithOneShotOmitted(registered map[string]bool) map[string]bool {
+	if !s.cfg.TurnEndsProcess || registered == nil {
+		return registered
+	}
+	s.delegateExclusionsMu.RLock()
+	defer s.delegateExclusionsMu.RUnlock()
+	if len(s.oneShotOmittedTools) == 0 {
+		return registered
+	}
+	merged := maps.Clone(registered)
+	for name := range s.oneShotOmittedTools {
+		merged[name] = true
+	}
+	return merged
 }
 
 // setCLIMCPServers installs a classification together with the evidence it was

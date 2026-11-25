@@ -434,7 +434,23 @@ async function boot(): Promise<void> {
       gitInfo: { branch: `feature/${"branchidentifier".repeat(12)}` },
       ...(turns ? { turns } : {}),
     });
-    return { ...response, thread: { ...response.thread, tasks: { total: 100, done: 100 } } };
+    return {
+      ...response,
+      thread: {
+        ...response.thread,
+        tasks: { total: 100, done: 100 },
+        evener: {
+          ...response.thread.evener,
+          sessionUrls: [
+            {
+              id: "guard-web-link",
+              label: "Saved review gallery",
+              url: `https://artifacts.example.test/p/${"linksegment".repeat(8)}/final-suffix`,
+            },
+          ],
+        },
+      },
+    };
   });
   fake.on("thread/unsubscribe", () => ({}));
   fake.on("evener/thread/activity/read", ({ ref, scope }) => ({

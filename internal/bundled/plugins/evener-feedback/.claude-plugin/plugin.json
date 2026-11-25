@@ -1,0 +1,5 @@
+{
+  "name": "evener-feedback",
+  "version": "1.0.0",
+  "description": "Skill and CLI helper for deduplicated Evener feedback and self-update checks."
+}

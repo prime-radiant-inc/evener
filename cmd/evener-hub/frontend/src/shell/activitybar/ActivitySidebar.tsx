@@ -7,7 +7,7 @@
 // glyphs, and their counts come from the one ACTIVITY_TABS table - the same
 // table the status bar's chips read, so the two surfaces cannot drift.
 
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { type KeyboardEvent as ReactKeyboardEvent, useCallback, useEffect, useId, useMemo, useRef } from "react";
 import { AnimatePresence, m, spatialExitTransition, spatialTransition } from "../../motion";
 import { ActivityBodyClock } from "../../panes/session/chrome/activityTime";
 import { popAgentCascade } from "../../panes/zoom/actions";
@@ -16,9 +16,10 @@ import { deriveCascadePath, parseZoomParams } from "../../panes/zoom/intent";
 import { navigationStore, useNavigationStore } from "../../stores/navigation/store";
 import { useSessionActivity, useSubagentCounts } from "../../stores/sessionActivity";
 import { EntityViewsProvider, sessionEntityViews } from "../../transcriptDisplay/entityViews";
-import { CloseIcon, FocusScope, IconButton, SegmentedControl, type SegmentedControlOption } from "../../widgets";
+import { Button, CloseIcon, FocusScope, IconButton } from "../../widgets";
 import { DisclosurePersistenceContext } from "../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../widgets/internal/requireClass";
+import { useRovingRadio } from "../../widgets/internal/rovingRadio";
 import { ScopeCrumbs } from "../statusbar/ScopeCrumbs";
 import { type ActivityTab, deriveScope } from "../statusbar/statusScope";
 import { isMobileViewport } from "../useIsMobile";
@@ -39,47 +40,114 @@ const CLASS = {
   scope: requireClass(styles.scope, "activitybar.module.css", "scope"),
   pending: requireClass(styles.pending, "activitybar.module.css", "pending"),
   head: requireClass(styles.head, "activitybar.module.css", "head"),
-  tabs: requireClass(styles.tabs, "activitybar.module.css", "tabs"),
+  tablist: requireClass(styles.tablist, "activitybar.module.css", "tablist"),
+  tab: requireClass(styles.tab, "activitybar.module.css", "tab"),
+  tabLabel: requireClass(styles.tabLabel, "activitybar.module.css", "tabLabel"),
+  tabDetail: requireClass(styles.tabDetail, "activitybar.module.css", "tabDetail"),
   body: requireClass(styles.body, "activitybar.module.css", "body"),
   focusBody: requireClass(styles.focusBody, "activitybar.module.css", "focusBody"),
 };
 
-function OverviewStrip({
-  mobile,
-  scopeRef,
+interface OverviewTabOption {
+  value: ActivityTab;
+  label: string;
+  detail?: string;
+  accessibleLabel?: string;
+}
+
+// Shared Overview category strip for desktop and mobile: horizontally scrolling
+// underline tabs. Quiet Button is the tab itself; the wrapper span draws only
+// the selected underline so one tab holds one interactive control.
+function OverviewTabs({
   value,
   options,
+  panelId,
+  tabDomId,
+  entryFocus,
 }: {
-  mobile: boolean;
-  scopeRef: string;
   value: ActivityTab;
-  options: readonly SegmentedControlOption<ActivityTab>[];
+  options: readonly OverviewTabOption[];
+  panelId: string;
+  tabDomId(id: ActivityTab): string;
+  entryFocus: boolean;
 }) {
   // AnimatePresence renders the exiting aside from the element captured while
-  // `open` was still true, so ActivitySidebar's prop updates cannot reach the
-  // strip until the exit finishes. Subscribing here, inside the mounted
-  // subtree, drops autoFocus to false on close and raises it again on reopen,
-  // re-arming the widget's queued entry focus without remounting the strip.
+  // `open` was still true, so subscribing here re-arms entry focus when the
+  // store reopens during that exit.
   const open = useActivitySidebarStore((state) => state.open);
+  const tabRefs = useRef<(HTMLButtonElement | null)[]>([]);
+  const selectedIndex = options.findIndex((option) => option.value === value);
+  function reveal(tab: HTMLButtonElement | null) {
+    tab?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
+  }
+  function choose(index: number) {
+    const option = options[index];
+    if (!option) return;
+    activitySidebarStore.getState().setTab(option.value);
+    const tab = tabRefs.current[index];
+    tab?.focus();
+    reveal(tab ?? null);
+  }
+  const move = useRovingRadio({ items: options, mode: "tablist", onMove: choose });
+  // biome-ignore lint/correctness/useExhaustiveDependencies: selectedIndex is read once when entry focus is armed.
+  useEffect(() => {
+    if (!open || !entryFocus) return;
+    const frame = requestAnimationFrame(() => {
+      const tab = tabRefs.current[selectedIndex];
+      tab?.focus();
+      reveal(tab ?? null);
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [open, entryFocus]);
+  function handleKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
+    // Modifier chords belong to the global dispatcher; claim only bare keys.
+    if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+    move(event, selectedIndex >= 0 ? selectedIndex : 0);
+  }
   return (
-    <SegmentedControl<ActivityTab>
-      key={mobile ? scopeRef : undefined}
-      label="Overview kind"
-      hideLabel
-      size="sm"
-      fullWidth
-      wrap
-      autoFocus={mobile && open}
-      value={value}
-      onChange={(next) => activitySidebarStore.getState().setTab(next)}
-      options={options}
-    />
+    <div
+      className={CLASS.tablist}
+      role="tablist"
+      aria-label="Overview kind"
+      aria-orientation="horizontal"
+      onKeyDown={handleKeyDown}
+    >
+      {options.map((option, index) => {
+        const selected = option.value === value;
+        return (
+          <span key={option.value} className={CLASS.tab} data-selected={selected ? "" : undefined}>
+            <Button
+              ref={(node) => {
+                tabRefs.current[index] = node;
+              }}
+              variant="quiet"
+              size="xs"
+              role="tab"
+              id={tabDomId(option.value)}
+              aria-selected={selected}
+              aria-controls={panelId}
+              aria-label={option.accessibleLabel ?? option.label}
+              tabIndex={selected ? 0 : -1}
+              onClick={() => choose(index)}
+            >
+              <span className={CLASS.tabLabel}>{option.label}</span>
+              {option.detail !== undefined && option.detail.trim() !== "" ? (
+                <span className={CLASS.tabDetail}>{option.detail}</span>
+              ) : null}
+            </Button>
+          </span>
+        );
+      })}
+    </div>
   );
 }
 
 export function ActivitySidebar({ mobile = false }: { mobile?: boolean }) {
   const open = useActivitySidebarStore((state) => state.open);
   const tab = useActivitySidebarStore((state) => state.tab);
+  const idPrefix = useId();
+  const tabPanelId = `${idPrefix}-panel`;
+  const tabDomId = (id: ActivityTab) => `${idPrefix}-tab-${id}`;
   const sidebar = useRef<HTMLElement>(null);
   const returnFrame = useRef<number | null>(null);
   useEffect(
@@ -160,6 +228,15 @@ export function ActivitySidebar({ mobile = false }: { mobile?: boolean }) {
     return { ...derived, path: leaf ? path.filter((crumb) => crumb.ref !== originRef) : path };
   }, [open, resources, ref, snapshot, subagents, focusedPane]);
   const Body = scope === null ? null : activityTabSpec(tab).Body;
+  const tabOptions =
+    scope === null
+      ? []
+      : ACTIVITY_TABS.map((spec) => ({
+          value: spec.id,
+          label: spec.label,
+          detail: spec.tabDetail?.(scope.counts),
+          accessibleLabel: spec.chipLabel(scope.counts),
+        }));
   // Resolved once per mount: spatialTransition reads getComputedStyle (a
   // style pass), and the token changes with the theme at most, so paying
   // that read on every render taxes each scope change for nothing.
@@ -228,19 +305,14 @@ export function ActivitySidebar({ mobile = false }: { mobile?: boolean }) {
               </div>
               <IconButton label="Close Overview" icon={<CloseIcon />} variant="quiet" size="sm" onClick={close} />
             </div>
-            <div className={CLASS.tabs}>
-              <OverviewStrip
-                mobile={mobile}
-                scopeRef={scope.leaf.ref}
-                value={tab}
-                options={ACTIVITY_TABS.map((spec) => ({
-                  value: spec.id,
-                  label: spec.label,
-                  detail: spec.tabDetail?.(scope.counts),
-                  accessibleLabel: spec.chipLabel(scope.counts),
-                }))}
-              />
-            </div>
+            <OverviewTabs
+              key={scope.leaf.ref}
+              value={tab}
+              options={tabOptions}
+              panelId={tabPanelId}
+              tabDomId={tabDomId}
+              entryFocus={mobile}
+            />
             <DisclosurePersistenceContext.Provider value={JSON.stringify([scope.leaf.ref, tab])}>
               <ActivityBodyClock>
                 {(now) => (
@@ -250,6 +322,7 @@ export function ActivitySidebar({ mobile = false }: { mobile?: boolean }) {
                       sessionRef={scope.leaf.ref}
                       tab={tab}
                       className={CLASS.body}
+                      panel={{ id: tabPanelId, labelledBy: tabDomId(tab) }}
                     >
                       {Body === null ? null : <Body scope={scope} now={now} />}
                     </ActivityViewport>

@@ -32,6 +32,11 @@ export default function assert({ viewportHeight, documentHeight, long, short }) 
   ];
   const nonFinite = readings.flatMap(([label, reading]) =>
     Object.entries(reading)
+      .flatMap(([field, value]) =>
+        value && typeof value === "object"
+          ? Object.entries(value).map(([sub, n]) => [`${field}.${sub}`, n])
+          : [[field, value]],
+      )
       .filter(([, value]) => typeof value === "number" && !Number.isFinite(value))
       .map(([field, value]) => `${label}: ${field} is not a finite number (${value})`),
   );
@@ -80,6 +85,24 @@ export default function assert({ viewportHeight, documentHeight, long, short }) 
     reasons.push(
       `${label}: list ${reading.listClientHeight}px, command ${reading.commandClientHeight}px of ${reading.logClientHeight}px`,
     );
+    for (const [boxName, box] of [
+      ["header", reading.headerRect],
+      ["Copy button", reading.copyRect],
+    ]) {
+      if (box.top < reading.commandRect.top - TOLERANCE_PX || box.bottom > reading.commandRect.bottom + TOLERANCE_PX) {
+        failures.push(
+          `${label}: ${boxName} escaped command vertical bounds (${box.top.toFixed(1)}..${box.bottom.toFixed(1)} vs ${reading.commandRect.top.toFixed(1)}..${reading.commandRect.bottom.toFixed(1)})`,
+        );
+      }
+      if (box.left < reading.commandRect.left - TOLERANCE_PX || box.right > reading.commandRect.right + TOLERANCE_PX) {
+        failures.push(
+          `${label}: ${boxName} escaped command horizontal bounds (${box.left.toFixed(1)}..${box.right.toFixed(1)} vs ${reading.commandRect.left.toFixed(1)}..${reading.commandRect.right.toFixed(1)})`,
+        );
+      }
+    }
+    if (!reading.copyHitClickable) {
+      failures.push(`${label}: Copy button is not hit-testable at its center`);
+    }
   }
 
   // The long command is taller than its block, so the rest stays reachable by
@@ -91,15 +114,18 @@ export default function assert({ viewportHeight, documentHeight, long, short }) 
       `the long command's block is overflow-y:${long.commandOverflowY} - its overflow must scroll, not clip`,
     );
   }
-  if (!(long.commandScrollHeight > long.commandClientHeight + TOLERANCE_PX)) {
+  if (!(long.commandScrollHeight > long.commandScrollerClientHeight + TOLERANCE_PX)) {
     failures.push(
-      `the long command is not scrollable inside its block (client ${long.commandClientHeight}px, scroll ${long.commandScrollHeight}px) - its overflow must stay reachable`,
+      `the long command is not scrollable inside its block (client ${long.commandScrollerClientHeight}px, scroll ${long.commandScrollHeight}px) - its overflow must stay reachable`,
     );
   }
+  if (!(long.scrollTopAfter > long.scrollTopBefore)) {
+    failures.push(`scrolling the long command did not move scrollTop (${long.scrollTopBefore} -> ${long.scrollTopAfter})`);
+  }
   // A command that fits must not be clipped by the same bound.
-  if (short.commandScrollHeight > short.commandClientHeight + TOLERANCE_PX) {
+  if (short.commandScrollHeight > short.commandScrollerClientHeight + TOLERANCE_PX) {
     failures.push(
-      `the short command is clipped (client ${short.commandClientHeight}px, scroll ${short.commandScrollHeight}px) - the bound must bite only when the command would starve the output`,
+      `the short command is clipped (client ${short.commandScrollerClientHeight}px, scroll ${short.commandScrollHeight}px) - the bound must bite only when the command would starve the output`,
     );
   }
 

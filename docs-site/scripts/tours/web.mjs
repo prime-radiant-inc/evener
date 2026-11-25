@@ -104,6 +104,10 @@ export function newSessionButton(page) {
  return page.getByTestId('rail').getByRole('button', { name: /^(?:\+ )?New session$/ });
 }
 
+export function directoryButton(page) {
+ return page.getByRole('button', { name: /^Directory:/ });
+}
+
 export async function open(options) {
  const { url, authURL, workspace, viewport, outputDir } = options;
  assert.deepEqual(viewport, { width: 1280, height: 900 });
@@ -141,7 +145,7 @@ export async function open(options) {
   requestedPaths.splice(0,requestedPaths.length,...workspaceLabels(selectedWorkspace));
   await page.evaluate(installDirectoryProbe,requestedPaths);
   phase = 'directory-open';
-  await page.getByRole('button', { name: /^Working directory:/ }).click();
+  await directoryButton(page).click();
   phase = 'directory-path';
   await page.getByRole('textbox', { name: 'Path', exact: true }).fill(selectedWorkspace);
   await page.getByRole('textbox', { name: 'Path', exact: true }).press('Enter');
