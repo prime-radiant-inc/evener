@@ -388,18 +388,16 @@ func TestClassifySelfInfluenceRecreatedWatchStartsFresh(t *testing.T) {
 			Send:   &watchSendArgs{To: runtimeMessageAliasCaller, Message: "v1"},
 		}
 	}
-	recreates := map[string]func(t *testing.T, jm *jobManager){
-		"replaced": func(t *testing.T, jm *jobManager) {
+	recreates := map[string]func(t *testing.T, jm *jobManager, oldID string){
+		"replaced": func(t *testing.T, jm *jobManager, _ string) {
 			replaced := newArgs()
 			replaced.Send.Message = "v2 changed"
 			if _, err := jm.configureWatch(replaced); err != nil {
 				t.Fatalf("configure v2 (replace): %v", err)
 			}
 		},
-		"cleared and recreated": func(t *testing.T, jm *jobManager) {
-			clearArgs := newArgs()
-			clearArgs.Clear = true
-			if _, err := jm.configureWatch(clearArgs); err != nil {
+		"cleared and recreated": func(t *testing.T, jm *jobManager, oldID string) {
+			if _, err := jm.clearWatchByID(oldID); err != nil {
 				t.Fatalf("clear: %v", err)
 			}
 			if _, err := jm.configureWatch(newArgs()); err != nil {
@@ -416,7 +414,7 @@ func TestClassifySelfInfluenceRecreatedWatchStartsFresh(t *testing.T) {
 			}
 			oldCfg := onlyWatchConfigForTest(t, jm)
 			oldID, oldGen := oldCfg.watchID, oldCfg.generation
-			recreate(t, jm)
+			recreate(t, jm, oldID)
 			cfg := onlyWatchConfigForTest(t, jm)
 			if cfg.watchID == oldID {
 				t.Fatal("test premise broken: re-create did not mint a fresh watchID")

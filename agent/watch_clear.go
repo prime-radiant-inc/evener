@@ -8,53 +8,6 @@ import (
 	"primeradiant.com/evener/agent/internal/jobstore"
 )
 
-func (jm *jobManager) clearWatch(key watchKey) (watchResult, error) {
-	defer jm.publishWatchActivity()
-	var targets []watchConfigTerminalSnapshot
-	jm.mu.Lock()
-	detachedCfgs, detached := jm.detachedWatchSendTerminalSnapshotsLocked(key, jobstore.EventWatchSendDropped, "watch cleared", jm.now())
-	if key.SendTo != "" {
-		if cfg := jm.watches[key]; cfg != nil {
-			targets = append(targets, watchConfigTerminalSnapshot{
-				key:        key,
-				cfg:        cfg,
-				terminal:   watchSendTerminalSnapshotsLocked(cfg, jobstore.EventWatchSendDropped, "watch cleared", jm.now()),
-				endReason:  "cleared",
-				deliveries: cfg.deliveries,
-			})
-		}
-	} else {
-		for existingKey, cfg := range jm.watches {
-			if watchKeyMatchesClearRequest(existingKey, key) {
-				targets = append(targets, watchConfigTerminalSnapshot{
-					key:        existingKey,
-					cfg:        cfg,
-					terminal:   watchSendTerminalSnapshotsLocked(cfg, jobstore.EventWatchSendDropped, "watch cleared", jm.now()),
-					endReason:  "cleared",
-					deliveries: cfg.deliveries,
-				})
-			}
-		}
-	}
-	teardown := watchTeardown{targets: targets, detachedCfgs: detachedCfgs}
-	teardown.markRejectingLocked()
-	jm.mu.Unlock()
-	dropped := append(terminalSnapshots(targets), detached...)
-	if err := jm.appendWatchTeardownBatch(dropped, targets); err != nil {
-		teardown.rollback(jm)
-		return watchResult{}, err
-	}
-	jm.detachWatchConfigSnapshots(targets)
-	jm.removeWatchSendTerminalSnapshots(dropped)
-	jm.forgetDetachedWatchSendConfigsIfEmpty(detachedCfgs)
-
-	return watchResult{
-		Source:   sourcePublicForClearedWatch(key, targets),
-		Target:   key.Target,
-		Watching: false,
-	}, nil
-}
-
 func (jm *jobManager) clearWatchByID(watchID string) (watchResult, error) {
 	return jm.clearWatchByIDMatching(watchID, func(cfg *watchConfig) bool {
 		return watchConfigVisibleToSession(cfg, jm.sessionID)
@@ -226,34 +179,6 @@ func (jm *jobManager) clearReceiverWatchByID(watchID, receiverSessionID, receive
 	}, false)
 }
 
-func sourcePublicForClearedWatch(key watchKey, targets []watchConfigTerminalSnapshot) string {
-	for _, target := range targets {
-		if watchKeyMatchesClearRequest(target.key, key) && target.cfg != nil && target.cfg.sourcePublic != "" {
-			return target.cfg.sourcePublic
-		}
-	}
-	return ""
-}
-
-func watchKeyMatchesClearRequest(candidate, request watchKey) bool {
-	if candidate.Slot != request.Slot {
-		return false
-	}
-	if candidate.VisibleSessionID != request.VisibleSessionID || candidate.Target != request.Target {
-		return false
-	}
-	if request.SendTo != "" && candidate.SendTo != request.SendTo {
-		return false
-	}
-	if request.ReceiverSessionID != "" && candidate.ReceiverSessionID != request.ReceiverSessionID {
-		return false
-	}
-	if request.ReceiverDelegateID != "" && candidate.ReceiverDelegateID != request.ReceiverDelegateID {
-		return false
-	}
-	return true
-}
-
 func (jm *jobManager) durableWatchClearEvent(watchID, endReason string) (*jobstore.Event, string, error) {
 	watches, err := jm.store.LoadWatches()
 	if err != nil {
@@ -303,43 +228,6 @@ func watchKeyForConfigLocked(jm *jobManager, cfg *watchConfig) (watchKey, bool) 
 		}
 	}
 	return watchKey{}, false
-}
-
-func (jm *jobManager) hasWatchClearState(key watchKey) bool {
-	jm.mu.Lock()
-	defer jm.mu.Unlock()
-	if key.SendTo != "" {
-		if jm.watches[key] != nil {
-			return true
-		}
-	} else {
-		for existingKey := range jm.watches {
-			if watchKeyMatchesClearRequest(existingKey, key) {
-				return true
-			}
-		}
-	}
-	for cfg := range jm.terminalFlush {
-		if watchConfigHasPendingMatchingKey(cfg, key) {
-			return true
-		}
-	}
-	return false
-}
-
-func watchConfigHasPendingMatchingKey(cfg *watchConfig, key watchKey) bool {
-	if cfg == nil || len(cfg.pending) == 0 {
-		return false
-	}
-	if !watchConfigReceiverMatchesWatchKey(cfg, key) {
-		return false
-	}
-	for pendingKey := range cfg.pending {
-		if watchSendKeyMatchesWatchKey(pendingKey, key) {
-			return true
-		}
-	}
-	return false
 }
 
 // liveTimerCountLocked counts installed timer watches. Caller holds jm.mu.
