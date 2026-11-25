@@ -7,19 +7,36 @@
 // glyphs, and their counts come from the one ACTIVITY_TABS table - the same
 // table the status bar's chips read, so the two surfaces cannot drift.
 
-import { type KeyboardEvent as ReactKeyboardEvent, useCallback, useEffect, useId, useMemo, useRef } from "react";
+import {
+  type CSSProperties,
+  type KeyboardEvent as ReactKeyboardEvent,
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { AnimatePresence, m, spatialExitTransition, spatialTransition } from "../../motion";
 import { ActivityBodyClock } from "../../panes/session/chrome/activityTime";
 import { popAgentCascade } from "../../panes/zoom/actions";
 import { cascadeOrigin, cascadeOriginRef } from "../../panes/zoom/inspectionOrigin";
 import { deriveCascadePath, parseZoomParams } from "../../panes/zoom/intent";
 import { navigationStore, useNavigationStore } from "../../stores/navigation/store";
+import {
+  clampOverviewWidth,
+  OVERVIEW_WIDTH_DEFAULT,
+  OVERVIEW_WIDTH_MIN,
+  overviewWidthMax,
+  usePrefsStore,
+} from "../../stores/prefs";
 import { useSessionActivity, useSubagentCounts } from "../../stores/sessionActivity";
 import { EntityViewsProvider, sessionEntityViews } from "../../transcriptDisplay/entityViews";
 import { Button, CloseIcon, FocusScope, IconButton } from "../../widgets";
 import { DisclosurePersistenceContext } from "../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { useRovingRadio } from "../../widgets/internal/rovingRadio";
+import { EdgeResizeHandle } from "../EdgeResizeHandle";
 import { ScopeCrumbs } from "../statusbar/ScopeCrumbs";
 import { type ActivityTab, deriveScope } from "../statusbar/statusScope";
 import { isMobileViewport } from "../useIsMobile";
@@ -34,6 +51,10 @@ import {
 } from "./activitySidebarStore";
 import { ACTIVITY_TABS, activityTabSpec } from "./activityTabs";
 
+// Custom property read by activitybar.module.css's `.sidebar`. Set inline on
+// render from persisted overviewWidth and imperatively mid-drag.
+export const OVERVIEW_WIDTH_PROPERTY = "--overview-width";
+
 const CLASS = {
   sidebar: requireClass(styles.sidebar, "activitybar.module.css", "sidebar"),
   sidebarMobile: requireClass(styles.sidebarMobile, "activitybar.module.css", "sidebarMobile"),
@@ -42,6 +63,7 @@ const CLASS = {
   head: requireClass(styles.head, "activitybar.module.css", "head"),
   tablist: requireClass(styles.tablist, "activitybar.module.css", "tablist"),
   tab: requireClass(styles.tab, "activitybar.module.css", "tab"),
+  tabStack: requireClass(styles.tabStack, "activitybar.module.css", "tabStack"),
   tabLabel: requireClass(styles.tabLabel, "activitybar.module.css", "tabLabel"),
   tabDetail: requireClass(styles.tabDetail, "activitybar.module.css", "tabDetail"),
   body: requireClass(styles.body, "activitybar.module.css", "body"),
@@ -122,6 +144,7 @@ function OverviewTabs({
               }}
               variant="quiet"
               size="xs"
+              wrap
               role="tab"
               id={tabDomId(option.value)}
               aria-selected={selected}
@@ -130,10 +153,12 @@ function OverviewTabs({
               tabIndex={selected ? 0 : -1}
               onClick={() => choose(index)}
             >
-              <span className={CLASS.tabLabel}>{option.label}</span>
-              {option.detail !== undefined && option.detail.trim() !== "" ? (
-                <span className={CLASS.tabDetail}>{option.detail}</span>
-              ) : null}
+              <span className={CLASS.tabStack}>
+                <span className={CLASS.tabLabel}>{option.label}</span>
+                {option.detail !== undefined && option.detail.trim() !== "" ? (
+                  <span className={CLASS.tabDetail}>{option.detail}</span>
+                ) : null}
+              </span>
             </Button>
           </span>
         );
@@ -145,11 +170,25 @@ function OverviewTabs({
 export function ActivitySidebar({ mobile = false }: { mobile?: boolean }) {
   const open = useActivitySidebarStore((state) => state.open);
   const tab = useActivitySidebarStore((state) => state.tab);
+  const overviewWidth = usePrefsStore((state) => state.overviewWidth);
+  const setOverviewWidth = usePrefsStore((state) => state.setOverviewWidth);
+  const [viewportWidth, setViewportWidth] = useState<number | undefined>(() =>
+    typeof window === "undefined" ? undefined : window.innerWidth,
+  );
   const idPrefix = useId();
   const tabPanelId = `${idPrefix}-panel`;
   const tabDomId = (id: ActivityTab) => `${idPrefix}-tab-${id}`;
   const sidebar = useRef<HTMLElement>(null);
   const returnFrame = useRef<number | null>(null);
+  useEffect(() => {
+    if (mobile || !open) return;
+    const measure = () => setViewportWidth(window.innerWidth);
+    measure();
+    window.addEventListener("resize", measure);
+    return () => window.removeEventListener("resize", measure);
+  }, [mobile, open]);
+  const maxWidth = overviewWidthMax(viewportWidth);
+  const displayWidth = clampOverviewWidth(overviewWidth, viewportWidth);
   useEffect(
     () => () => {
       if (returnFrame.current !== null) cancelAnimationFrame(returnFrame.current);
@@ -265,6 +304,7 @@ export function ActivitySidebar({ mobile = false }: { mobile?: boolean }) {
         <m.aside
           ref={sidebar}
           className={mobile ? CLASS.sidebarMobile : CLASS.sidebar}
+          style={mobile ? undefined : ({ [OVERVIEW_WIDTH_PROPERTY]: `${displayWidth}px` } as CSSProperties)}
           // The Slide recipe: in from the right edge it lives on and back out
           // to it, by the sidebar's own width.
           initial={{ x: "100%" }}
@@ -331,6 +371,20 @@ export function ActivitySidebar({ mobile = false }: { mobile?: boolean }) {
               </ActivityBodyClock>
             </DisclosurePersistenceContext.Provider>
           </FocusScope>
+          {!mobile ? (
+            <EdgeResizeHandle
+              edge="left"
+              width={displayWidth}
+              minWidth={OVERVIEW_WIDTH_MIN}
+              maxWidth={maxWidth}
+              defaultWidth={OVERVIEW_WIDTH_DEFAULT}
+              cssProperty={OVERVIEW_WIDTH_PROPERTY}
+              label="Resize Overview"
+              testId="overview-resize-handle"
+              onCommit={setOverviewWidth}
+              targetRef={sidebar}
+            />
+          ) : null}
         </m.aside>
       ) : null}
     </AnimatePresence>

@@ -1,0 +1,52 @@
+/* Shared drag-to-resize strip for docked sidebars (the left rail's right edge
+ * and the right Overview sidebar's left edge). Positioned against a
+ * `position: relative` host so the hit strip stays completely inside the host
+ * box without overhanging neighboring workspace sashes. */
+
+.resizeHandle {
+  position: absolute;
+  top: 0;
+  width: var(--space-2);
+  height: 100%;
+  cursor: col-resize;
+  touch-action: none;
+  z-index: var(--z-raised);
+}
+
+.edgeRight {
+  right: 0;
+}
+
+.edgeLeft {
+  left: 0;
+}
+
+.resizeHandle::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  border-radius: var(--radius-control);
+  background: var(--accent);
+  opacity: 0;
+  transition: opacity var(--motion-duration-hover) var(--motion-easing-standard);
+}
+
+.edgeRight::after {
+  right: 0;
+}
+
+.edgeLeft::after {
+  left: 0;
+}
+
+.resizeHandle:hover::after,
+.resizeHandle:active::after {
+  opacity: 1;
+}
+
+.resizeHandle:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: 1px;
+}

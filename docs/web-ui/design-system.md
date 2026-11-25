@@ -206,12 +206,15 @@ losing the conversation that made the evidence relevant.
   until close. Return to a visible, connected opener, then a visible control for the
   intended session, preferring the originating pane. Desktop remains nonmodal. Existing
   standalone Details views and the `/tasks` pane toggle retain their behavior.
-- **Keep inspection readable at larger text sizes.** Desktop Overview stays 320px wide.
-  Both desktop and mobile use one underline tablist without shortening labels or counts
-  at narrow widths and XL text: desktop wraps onto rows so every category stays visible
-  inside the 320px sidebar without a horizontal scrollbar, while narrow viewports scroll
-  horizontally. About presents session facts in a compact inline meta table whose model,
-  session ID, branch, paths, and saved link URLs wrap as selectable text. Its body
+- **Keep inspection readable at larger text sizes.** Desktop Overview defaults to 320px
+  wide and is user-resizable (`280–640px`, clamped against narrow desktop viewports)
+  from its left edge using the same edge-resize separator contract as the Sessions rail.
+  Both desktop and mobile use one single-row underline tablist with two-level headings
+  (label on top, count underneath; About stays a single centered label) without wrapping
+  onto multiple rows or shortening labels or counts, scrolling horizontally when larger
+  text sizes or narrow widths exceed the strip. About presents session facts in a compact
+  inline meta table whose model, session ID, branch, paths, and saved link URLs wrap as
+  selectable text. Its body
   scrolls vertically while the page stays fixed. Phone controls retain the tap floor.
 - **Keep Overview's activity lists on one loading and spacing contract.** Agents,
   Jobs and Watches page automatically at their visible boundary, with a static
