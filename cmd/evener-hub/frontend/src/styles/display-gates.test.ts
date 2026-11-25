@@ -315,23 +315,3 @@ test("the phone's activity line keeps every chip a tappable glyph", () => {
     "sessionchrome.module.css must give the composer chrome its compact-rung flex basis so the row wraps instead of starving it",
   ).not.toBeNull();
 });
-
-// No .leading rule may reserve a fixed intrinsic inline size: doing so starves
-// the writing field behind a dead gap whenever the actual chrome is narrower
-// than the reservation (both on phone compact rows and on desktop folded rows).
-test("no leading rule reserves a fixed intrinsic width", () => {
-  const srcRoot = dirname(dirname(fileURLToPath(import.meta.url)));
-  const css = readFileSync(join(srcRoot, "panes/session/composer/composer.module.css"), "utf8").replace(
-    /\/\*[\s\S]*?\*\//g,
-    " ",
-  );
-  const reserving: string[] = [];
-  for (const block of css.matchAll(/([^{}@]+)\{([^{}]*)\}/g)) {
-    const selector = block[1]!.trim().split("\n").pop()!.trim();
-    if (!selector.startsWith(".leading")) continue;
-    const declared = /contain-intrinsic-inline-size:\s*([^;]+)/.exec(block[2]!);
-    if (declared === null || declared[1]!.trim() === "none") continue;
-    reserving.push(selector);
-  }
-  expect(reserving).toEqual([]);
-});

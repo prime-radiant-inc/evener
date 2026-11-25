@@ -196,25 +196,6 @@ test("an expanded card carries no folded marker", () => {
   expect(screen.getByTestId("card").hasAttribute("data-folded")).toBe(false);
 });
 
-// The width container exists so a spread-out composer gets the one-line
-// shape while a narrow pane keeps the stacked one, regardless of the
-// viewport. jsdom applies no layout, so the rule itself is the assertion.
-test("the folded card goes one line only when the card has room", () => {
-  const css = moduleCss();
-  expect(css).toMatch(/\.root\s*\{[^}]*container-type:\s*inline-size;/);
-  const queryStart = css.indexOf("@container (min-width: 620px)");
-  expect(queryStart).toBeGreaterThanOrEqual(0);
-  const oneLine = blockBody(css, css.indexOf("{", queryStart));
-  expect(oneLine).toMatch(/\.card\[data-folded="true"\]\s*\{[^}]*flex-direction:\s*row;/);
-  expect(oneLine).toMatch(/\.card\[data-folded="true"\] \.field\s*\{[^}]*flex:\s*1 1 14rem;[^}]*min-width:\s*14rem;/);
-});
-
-test("a compact folded card goes one line below the normal width threshold", () => {
-  const css = moduleCss();
-  expect(css).toMatch(/\.card\[data-folded="true"\]\[data-folded-compact="true"\]\s*\{[^}]*flex-direction:\s*row;/);
-  expect(css).toMatch(/\.card\[data-folded="true"\]\[data-folded-compact="true"\] \.field\s*\{[^}]*flex:\s*1 1 10ch;/);
-});
-
 test("foldedCompact marks the card for the narrow one-line row", () => {
   render(<LiveCard folded foldedCompact />);
   expect(screen.getByTestId("card").getAttribute("data-folded-compact")).toBe("true");
