@@ -492,6 +492,9 @@ var ErrUnknownInstance = errors.New("unknown instance")
 // unknownInstance reports a reference or ResolveInstance call naming an
 // instance the registry does not have, listing the available ones.
 func (r *Registry) unknownInstance(name string) error {
+	if err := r.ProviderError(name); err != nil {
+		return err
+	}
 	names := make([]string, 0, len(r.instances))
 	for _, inst := range r.rankedInstances() {
 		names = append(names, inst.name)
@@ -2027,6 +2030,9 @@ func (r *Registry) recordMayDisableSeen(rec *record, seen map[*record]bool) bool
 func (r *Registry) InstanceModels(instance string) ([]InstanceModel, error) {
 	rec, ok := r.recordFor(instance)
 	if !ok {
+		if err := r.ProviderError(instance); err != nil {
+			return nil, err
+		}
 		return nil, fmt.Errorf("%w %q", ErrUnknownInstance, instance)
 	}
 	live, authoritative := r.liveListingState(rec.name)
@@ -2236,6 +2242,9 @@ func (r *Registry) modelSummary(rec *record, ref Ref, hit lookupHit, live map[st
 func (r *Registry) instanceRecordIDs(instance string) (*record, []string, error) {
 	rec, ok := r.recordFor(instance)
 	if !ok {
+		if err := r.ProviderError(instance); err != nil {
+			return nil, nil, err
+		}
 		return nil, nil, fmt.Errorf("%w %q", ErrUnknownInstance, instance)
 	}
 	live, authoritative := r.liveListingState(instance)

@@ -122,6 +122,28 @@ func WithOverlay(data []byte) Option { return func(o *options) { o.overlay = dat
 // (default: the "[registry] " component logger on stderr).
 func WithLogger(log *slog.Logger) Option { return func(o *options) { o.log = log } }
 
+// ProviderLoadError reports a user-layer [providers.<name>] entry that failed
+// to load or validate. Load isolates the broken entry so unrelated providers
+// remain usable; lookups targeting Provider surface this error directly.
+type ProviderLoadError struct {
+	Provider string
+	Err      error
+}
+
+func (e *ProviderLoadError) Error() string {
+	if e == nil || e.Err == nil {
+		return ""
+	}
+	return e.Err.Error()
+}
+
+func (e *ProviderLoadError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
+
 // Registry is the loaded, layered provider registry (spec §5). It is
 // immutable after Load except for the live listings Resolve consults.
 type Registry struct {
@@ -130,6 +152,7 @@ type Registry struct {
 	topGlobs       map[string]map[string]Model // layer tag → glob rows
 	curated        map[string]*record          // registry ids (layers 1–3)
 	explicit       map[string]*record          // user-layer and injected instances
+	broken         map[string]error            // isolated user-layer entries that failed load/validation
 	userDefault    string
 	userNote       string
 	userConfigPath string
@@ -235,6 +258,7 @@ func Load(opts ...Option) (*Registry, error) {
 	r := &Registry{
 		presets: map[string]Transport{}, topGlobs: map[string]map[string]Model{},
 		curated: map[string]*record{}, explicit: map[string]*record{},
+		broken: map[string]error{},
 		env: o.env, creds: o.creds, stateRoot: o.stateRoot,
 	}
 	var upstream []Provider
@@ -320,6 +344,11 @@ func Load(opts ...Option) (*Registry, error) {
 			return nil, err
 		}
 	}
+	for _, id := range sortedKeys(r.curated) {
+		if err := r.validateRecord(r.curated[id]); err != nil {
+			return nil, err
+		}
+	}
 	if user != nil {
 		names := make([]string, 0, len(user.Providers))
 		for name := range user.Providers {
@@ -328,18 +357,19 @@ func Load(opts ...Option) (*Registry, error) {
 		sort.Strings(names)
 		for _, name := range names {
 			rec, err := r.instanceRecord(user.Providers[name])
+			if err == nil {
+				err = r.validateRecord(rec)
+			}
 			if err != nil {
-				return nil, err
+				loadErr := &ProviderLoadError{Provider: name, Err: err}
+				r.broken[name] = loadErr
+				r.warnings = append(r.warnings, loadErr.Error())
+				continue
 			}
 			if o.instances != nil {
 				_, rec.injected = o.instances[name]
 			}
 			r.explicit[name] = rec
-		}
-	}
-	for _, rec := range r.allRecords() {
-		if err := r.validateRecord(rec); err != nil {
-			return nil, err
 		}
 	}
 	for _, rec := range r.allRecords() {
@@ -1379,8 +1409,27 @@ func (r *Registry) UserConfigSnapshot() (string, []byte) {
 	return r.userConfigPath, bytes.Clone(r.userConfig)
 }
 
-// Warnings returns load-level warnings (curated dangling aliases, …).
+// Warnings returns load-level warnings (curated dangling aliases, isolated
+// broken user providers, …).
 func (r *Registry) Warnings() []string { return append([]string(nil), r.warnings...) }
+
+// ProviderError returns the load error recorded for an isolated broken
+// user-layer provider entry, or nil when name loaded cleanly or is not broken.
+func (r *Registry) ProviderError(name string) error {
+	if r == nil {
+		return nil
+	}
+	return r.broken[name]
+}
+
+// BrokenProviders returns a copy of the user-layer provider entries that
+// failed to load and were isolated from the active instance set.
+func (r *Registry) BrokenProviders() map[string]error {
+	if r == nil || len(r.broken) == 0 {
+		return nil
+	}
+	return maps.Clone(r.broken)
+}
 
 // Catalog reports which upstream layer is in use and its fetch metadata.
 func (r *Registry) Catalog() (string, Meta) { return r.catalogTag, r.catalogMeta }

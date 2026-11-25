@@ -684,31 +684,76 @@ func TestLoad_PresetExpansion(t *testing.T) {
 
 func TestLoad_Errors(t *testing.T) {
 	t.Parallel()
-	cases := map[string]string{
-		"unknown base":              "[providers.x]\nbase = \"nope\"\n",
-		"unknown preset":            "[providers.x]\nbase = \"openai\"\ntransport = \"nope\"\n",
-		"no protocol":               "[providers.x]\nbase_url = \"https://x/v1\"\n",
-		"no base url":               "[providers.x]\nprotocol = \"openai-chat\"\n",
-		"dangling alias":            "[providers.anthropic.models.\"mine\"]\nalias_of = \"claude-nope\"\n",
-		"alias of alias":            "[providers.anthropic.models.\"mine\"]\nalias_of = \"claude-sonnet-4-5[1m]\"\n",
-		"cross-provider unknown":    "[providers.anthropic.models.\"mine\"]\nalias_of = \"nope/claude-opus-5\"\n",
-		"cross-provider glob alias": "[providers.anthropic.models.\"mine\"]\nalias_of = \"openai/gpt-5*\"\n",
-		"fields key wrong protocol": "[providers.groq.fields]\ninclude = true\n",
-		"row fields wrong protocol": "[providers.groq.models.\"llama-3.3-70b-versatile\"]\nfields = { include = true }\n",
+	cases := []struct {
+		name   string
+		broken string
+		cfg    string
+	}{
+		{"unknown base", "x", "[providers.x]\nbase = \"nope\"\n"},
+		{"unknown preset", "x", "[providers.x]\nbase = \"openai\"\ntransport = \"nope\"\n"},
+		{"no protocol", "x", "[providers.x]\nbase_url = \"https://x/v1\"\n"},
+		{"no base url", "x", "[providers.x]\nprotocol = \"openai-chat\"\n"},
+		{"dangling alias", "anthropic", "[providers.anthropic.models.\"mine\"]\nalias_of = \"claude-nope\"\n"},
+		{"alias of alias", "anthropic", "[providers.anthropic.models.\"mine\"]\nalias_of = \"claude-sonnet-4-5[1m]\"\n"},
+		{"cross-provider unknown", "anthropic", "[providers.anthropic.models.\"mine\"]\nalias_of = \"nope/claude-opus-5\"\n"},
+		{"cross-provider glob alias", "anthropic", "[providers.anthropic.models.\"mine\"]\nalias_of = \"openai/gpt-5*\"\n"},
+		{"fields key wrong protocol", "groq", "[providers.groq.fields]\ninclude = true\n"},
+		{"row fields wrong protocol", "groq", "[providers.groq.models.\"llama-3.3-70b-versatile\"]\nfields = { include = true }\n"},
 	}
-	for name, cfg := range cases {
-		t.Run(name, func(t *testing.T) {
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "providers.toml")
-			if err := os.WriteFile(path, []byte(cfg), 0o600); err != nil {
+			full := tc.cfg + "\n[providers.healthy]\nbase = \"openai\"\n"
+			if err := os.WriteFile(path, []byte(full), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			data, _ := os.ReadFile("testdata/models.dev.sample.json")
-			_, err := Load(WithSnapshot(data), WithEnv(mapEnv(nil)), WithConfigPath(path), WithStateRoot(t.TempDir()))
-			if err == nil {
-				t.Fatalf("expected error for %s", name)
+			env := mapEnv(map[string]string{
+				"ANTHROPIC_API_KEY": "sk-anthropic",
+				"GROQ_API_KEY":      "sk-groq",
+				"OPENAI_API_KEY":    "sk-openai",
+			})
+			r, err := Load(WithSnapshot(data), WithEnv(env), WithConfigPath(path), WithStateRoot(t.TempDir()))
+			if err != nil {
+				t.Fatalf("Load must isolate broken provider %q instead of failing: %v", tc.broken, err)
 			}
-			if strings.Contains(name, "fields") && !strings.Contains(err.Error(), "include") {
-				t.Fatalf("fields error must name the key: %v", err)
+			if !r.HasInstance("healthy") {
+				t.Fatal("healthy sibling instance did not load")
+			}
+			if r.HasInstance(tc.broken) {
+				t.Fatalf("broken provider %q must not load as an instance", tc.broken)
+			}
+			perr := r.ProviderError(tc.broken)
+			if perr == nil {
+				t.Fatalf("ProviderError(%q) = nil, want recorded load error", tc.broken)
+			}
+			var loadErr *ProviderLoadError
+			if !errors.As(perr, &loadErr) || loadErr.Provider != tc.broken {
+				t.Fatalf("ProviderError(%q) = %v (%T), want *ProviderLoadError for %q", tc.broken, perr, perr, tc.broken)
+			}
+			if broken := r.BrokenProviders(); broken[tc.broken] == nil {
+				t.Fatalf("BrokenProviders() = %v, want %q recorded", broken, tc.broken)
+			}
+			if len(r.Warnings()) == 0 {
+				t.Fatalf("Warnings() = empty, want warning for broken provider %q", tc.broken)
+			}
+			if _, rerr := r.ResolveInstance(tc.broken); !errors.As(rerr, &loadErr) || loadErr.Provider != tc.broken {
+				t.Fatalf("ResolveInstance(%q) = %v, want *ProviderLoadError", tc.broken, rerr)
+			}
+			if _, rerr := r.Resolve(tc.broken + "/any-model"); !errors.As(rerr, &loadErr) || loadErr.Provider != tc.broken {
+				t.Fatalf("Resolve(%q/any-model) = %v, want *ProviderLoadError", tc.broken, rerr)
+			}
+			if _, rerr := r.ResolveGateCredential(tc.broken, ""); !errors.As(rerr, &loadErr) || loadErr.Provider != tc.broken {
+				t.Fatalf("ResolveGateCredential(%q) = %v, want *ProviderLoadError", tc.broken, rerr)
+			}
+			if _, rerr := r.InstanceModels(tc.broken); !errors.As(rerr, &loadErr) || loadErr.Provider != tc.broken {
+				t.Fatalf("InstanceModels(%q) = %v, want *ProviderLoadError", tc.broken, rerr)
+			}
+			if _, rerr := r.ModelIDs(tc.broken); !errors.As(rerr, &loadErr) || loadErr.Provider != tc.broken {
+				t.Fatalf("ModelIDs(%q) = %v, want *ProviderLoadError", tc.broken, rerr)
+			}
+			if strings.Contains(tc.name, "fields") && !strings.Contains(perr.Error(), "include") {
+				t.Fatalf("fields error must name the key: %v", perr)
 			}
 		})
 	}
@@ -717,6 +762,59 @@ func TestLoad_Errors(t *testing.T) {
 	// base chain (openai-codex inherits openai's Responses-only fields).
 	fixtureLoad(t, nil, "[providers.work]\nbase = \"openai\"\nprotocol = \"openai-chat\"\nbase_url = \"https://gw/v1\"\n")
 	fixtureLoad(t, nil, "[providers.openai]\nbase = \"openai-codex\"\nprotocol = \"anthropic\"\nbase_url = \"https://gw/v1\"\n")
+}
+
+func TestLoad_BrokenDefaultAndOAuthPreservation(t *testing.T) {
+	t.Parallel()
+	stateRoot := t.TempDir()
+	authDir := filepath.Join(stateRoot, "auth")
+	if err := os.MkdirAll(authDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(authDir, "kimi.json"), []byte(`{"access_token":"t"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "providers.toml")
+	cfg := `
+default = "kimi"
+[providers.kimi]
+base = "kimi-code-plan-global"
+[providers.work]
+base = "openai"
+api_key = "k"
+`
+	if err := os.WriteFile(path, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile("testdata/models.dev.sample.json")
+	r, err := Load(
+		WithSnapshot(data),
+		WithEnv(mapEnv(nil)),
+		WithConfigPath(path),
+		WithStateRoot(stateRoot),
+		WithOffline(true),
+		WithoutCache(),
+	)
+	if err != nil {
+		t.Fatalf("Load must survive broken default provider: %v", err)
+	}
+	var loadErr *ProviderLoadError
+	if !errors.As(r.ProviderError("kimi"), &loadErr) || loadErr.Provider != "kimi" {
+		t.Fatalf("ProviderError(kimi) = %v, want *ProviderLoadError", r.ProviderError("kimi"))
+	}
+	def, warns, err := r.DefaultInstance()
+	if err != nil {
+		t.Fatalf("DefaultInstance() = %v, want fallback to healthy provider", err)
+	}
+	if def != "work" {
+		t.Fatalf("DefaultInstance() = %q, want %q", def, "work")
+	}
+	if len(warns) == 0 {
+		t.Fatal("DefaultInstance() returned no warning for broken default")
+	}
+	if stray := r.StrayOAuthRecords(); len(stray) != 0 {
+		t.Fatalf("StrayOAuthRecords() = %v, want broken provider's OAuth record preserved", stray)
+	}
 }
 
 func TestLoad_OverlayBaseCycleAndCuratedDanglingAlias(t *testing.T) {
