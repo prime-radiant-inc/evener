@@ -161,11 +161,16 @@ type UpdateCheckResponse struct {
 	BuildChannel               string    `json:"buildChannel"`
 	CurrentVersion             string    `json:"currentVersion"`
 	CurrentCommit              string    `json:"currentCommit"`
+	CurrentReleaseTag          string    `json:"currentReleaseTag,omitempty"`
+	CurrentBuildTime           string    `json:"currentBuildTime,omitempty"`
 	LatestTag                  string    `json:"latestTag,omitempty"`
 	LatestCommit               string    `json:"latestCommit,omitempty"`
+	LatestPublishedAt          string    `json:"latestPublishedAt,omitempty"`
+	RepoURL                    string    `json:"repoUrl,omitempty"`
 	UpdateAvailable            bool      `json:"updateAvailable"`
 	Applicable                 bool      `json:"applicable"`
 	OnDiskCommit               string    `json:"onDiskCommit,omitempty"`
+	OnDiskBuildTime            string    `json:"onDiskBuildTime,omitempty"`
 	OnDiskError                string    `json:"onDiskError,omitempty"`
 	InstallAvailable           bool      `json:"installAvailable"`
 	RestartPending             bool      `json:"restartPending"`

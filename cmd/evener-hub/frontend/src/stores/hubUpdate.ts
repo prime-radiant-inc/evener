@@ -36,6 +36,7 @@ export interface HubUpdateStoreState extends HubUpdateState {
   setChannel(channel: UpdateChannel): void;
   runCheck(): Promise<void>;
   install(): Promise<void>;
+  installAndRestart(): Promise<void>;
   restart(): Promise<void>;
   apply(): Promise<void>;
 }
@@ -103,6 +104,7 @@ export const hubUpdateStore = createStore<HubUpdateStoreState>(() => ({
   setChannel: (channel) => controller.setChannel(channel),
   runCheck: () => controller.runCheck(),
   install: () => controller.install(),
+  installAndRestart: () => controller.installAndRestart(),
   restart: () => controller.restart(),
   apply: () => controller.apply(),
 }));

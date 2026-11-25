@@ -75,7 +75,7 @@
   border: 1px solid transparent;
   border-radius: var(--radius-pill);
   padding-block: 0;
-  padding-inline: var(--space-1);
+  padding-inline: var(--space-3);
   background: transparent;
   color: var(--ink-mid);
   font-family: var(--font-sans);
@@ -132,8 +132,15 @@
   overflow-wrap: anywhere;
 }
 
+/* Full-width controls can hold up to six options in a narrow column, so keep
+ * horizontal padding compact there instead of crowding short labels. */
+.fullWidth > .option {
+  padding-inline: var(--space-1);
+}
+
 .sm {
-  block-size: 28px;
+  block-size: 26px;
+  font-size: var(--font-size-caption);
 }
 
 .md {

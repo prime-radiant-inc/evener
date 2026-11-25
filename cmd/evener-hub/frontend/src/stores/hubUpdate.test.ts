@@ -621,4 +621,58 @@ describe("restart", () => {
     expect(reload).toHaveBeenCalledTimes(1);
     expect(hubUpdateStore.getState().restartTimedOut).toBe(false);
   });
+
+  test("installAndRestart installs, restarts, and reloads when the new hub incarnation comes up", async () => {
+    vi.useFakeTimers();
+    const reload = vi.fn();
+    const fetchImpl = healthIdentityFetch([
+      { version: "3b1c5f8", started_at: "2026-10-21T12:00:00Z" },
+      { version: "be70029", started_at: "2026-10-21T12:00:05Z" },
+    ]);
+    resetHubUpdateStoreForTests({ fetchImpl, reload });
+    const fake = connectReadyFakeClient();
+    fake.on("evener/update/check", () => ({
+      ...UP_TO_DATE,
+      updateAvailable: true,
+      installAvailable: true,
+      startedAt: "2026-10-21T12:00:00Z",
+      restartSupported: true,
+      installTargetMatchesLaunch: true,
+    }));
+    fake.on("evener/upgrade", () => ({
+      release: "snapshot",
+      channel: "snapshot",
+      url: "https://github.com/prime-radiant-inc/evener/releases/tag/snapshot",
+      archive: "evener.tar.gz",
+      prefix: "/tmp",
+      binDir: "/tmp/bin",
+      shareBinDir: "/tmp/share/evener/bin",
+      installed: ["/tmp/share/evener/bin/evener"],
+      restartMessage: "restart to apply",
+    }));
+    fake.on("evener/hub/restart", () => ({
+      restarting: true,
+      incarnation: "2026-10-21T12:00:00Z",
+      currentVersion: "3b1c5f8",
+      targetVersion: "be70029",
+    }));
+    hubUpdateStore.getState().setChannel("snapshot");
+    await act(() => hubUpdateStore.getState().runCheck());
+
+    let updating: Promise<void>;
+    act(() => {
+      updating = hubUpdateStore.getState().installAndRestart();
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(hubUpdateStore.getState().restarting).toBe(true);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(RESTART_POLL_MS);
+      await updating!;
+    });
+    expect(fake.calls.map((c) => c.method)).toEqual(["evener/update/check", "evener/upgrade", "evener/hub/restart"]);
+    expect(reload).toHaveBeenCalledTimes(1);
+  });
 });

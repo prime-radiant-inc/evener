@@ -356,8 +356,10 @@ func TestHubUpdateCheckDefaultsToBuildChannelAndFillsCurrent(t *testing.T) {
 	wantTarget, _ := hubInstallTarget()
 	want := appwire.UpdateCheckResponse{
 		Channel: "snapshot", BuildChannel: "snapshot", CurrentVersion: "3b1c5f8", CurrentCommit: "3b1c5f8",
-		LatestTag: "snapshot", LatestCommit: "be70029abc", UpdateAvailable: true, Applicable: true,
-		OnDiskCommit: "3b1c5f8", InstallAvailable: true, StartedAt: hubProcessStartedAt, RestartSupported: true,
+		LatestTag: "snapshot", LatestCommit: "be70029abc", RepoURL: selfupdate.DefaultRepoURL(),
+		UpdateAvailable: true, Applicable: true,
+		OnDiskCommit: "3b1c5f8", OnDiskBuildTime: "2026-10-21T00:00:00Z",
+		InstallAvailable: true, StartedAt: hubProcessStartedAt, RestartSupported: true,
 		InstallTarget: wantTarget, InstallTargetMatchesLaunch: true,
 	}
 	if got != want {

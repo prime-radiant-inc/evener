@@ -506,6 +506,89 @@ describe("restart", () => {
   });
 });
 
+describe("installAndRestart", () => {
+  test("installs the update and automatically restarts the hub when restart is supported", async () => {
+    const hub = scripted();
+    hub.controller.setChannel("snapshot");
+    const checkRun = hub.controller.runCheck();
+    hub.take("evener/update/check").resolve(WAITING);
+    await checkRun;
+    const updating = hub.controller.installAndRestart();
+    const upgrade = hub.take("evener/upgrade");
+    expect(upgrade.params).toEqual({ requested: "snapshot" });
+    expect(upgrade.opts).toEqual({ timeoutMs: APPLY_TIMEOUT_MS });
+    expect(hub.controller.getState()).toMatchObject({ installing: true, restarting: false });
+
+    upgrade.resolve({});
+    await settle();
+    await settle();
+    expect(hub.controller.getState()).toMatchObject({ installing: false, restarting: true });
+    const restartReq = hub.take("evener/hub/restart");
+    expect(restartReq.params).toEqual({});
+    expect(restartReq.opts).toEqual({ timeoutMs: RESTART_REQUEST_TIMEOUT_MS });
+    restartReq.resolve({ restarting: true, incarnation: "2026-10-21T11:00:00Z" });
+    await settle();
+    expect(hub.restarts.map((r) => r.previous)).toEqual([{ version: "be70029", incarnation: "2026-10-21T11:00:00Z" }]);
+    hub.restarts[0]?.resolve(true);
+    await updating;
+    expect(hub.controller.getState()).toMatchObject({
+      installing: false,
+      restarting: false,
+      installError: null,
+      restartError: null,
+      restartTimedOut: false,
+    });
+  });
+
+  test("falls back to re-checking without restarting when restart is unsupported", async () => {
+    const hub = await checked({ ...WAITING, restartSupported: false });
+    const updating = hub.controller.installAndRestart();
+    hub.take("evener/upgrade").resolve({});
+    await settle();
+    const recheck = hub.take("evener/update/check");
+    recheck.resolve({ ...WAITING, restartSupported: false, installAvailable: false, restartPending: true });
+    await updating;
+    expect(hub.pending.some((r) => r.method === "evener/hub/restart")).toBe(false);
+    expect(hub.controller.getState()).toMatchObject({
+      installing: false,
+      restarting: false,
+      restartError: null,
+      check: { restartPending: true },
+    });
+  });
+
+  test("does not restart when the install itself fails", async () => {
+    const hub = await checked(WAITING);
+    const updating = hub.controller.installAndRestart();
+    hub.take("evener/upgrade").reject(new WireError("checksum mismatch", -32000));
+    await updating;
+    expect(hub.pending.some((r) => r.method === "evener/hub/restart")).toBe(false);
+    expect(hub.controller.getState()).toMatchObject({
+      installing: false,
+      restarting: false,
+      installError: "checksum mismatch",
+    });
+  });
+
+  test("re-checks on-disk state if restart is refused after install succeeded", async () => {
+    const hub = await checked(WAITING);
+    const updating = hub.controller.installAndRestart();
+    hub.take("evener/upgrade").resolve({});
+    await settle();
+    await settle();
+    hub.take("evener/hub/restart").reject(new WireError("launch path missing", -32000));
+    await settle();
+    hub.take("evener/update/check").resolve({ ...WAITING, installAvailable: false, restartPending: true });
+    await updating;
+    expect(hub.controller.getState()).toMatchObject({
+      installing: false,
+      restarting: false,
+      restartError: "launch path missing",
+      check: { restartPending: true },
+    });
+  });
+});
+
 describe("an app's own state store", () => {
   test("keeps its state there, so the app's own writes are what the controller reads", async () => {
     const store = createFrameworkFreeStore<HubUpdateState & { label: string }>(() => ({

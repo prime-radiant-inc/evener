@@ -1,14 +1,174 @@
 .root {
-  composes: stack3 from "../../../styles/surface.module.css";
-  margin-top: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  line-height: var(--line-height-ui);
 }
 
-.status {
-  composes: helpUi from "../../../styles/help.module.css";
+.header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--edge);
+}
+
+.channelControl {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.channelLabel {
+  composes: helpMuted from "../../../styles/help.module.css";
+}
+
+.ledger {
+  display: flex;
+  flex-direction: column;
+}
+
+.row {
+  display: grid;
+  grid-template-columns: 76px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+  min-height: 44px;
+  padding: var(--space-2) var(--space-4);
+}
+
+.row + .row {
+  border-top: 1px solid color-mix(in oklab, var(--edge) 65%, transparent);
+}
+
+.rowLabel {
+  color: var(--ink-mid);
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-medium);
+}
+
+.rowValue {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.rowDate {
+  composes: helpMuted from "../../../styles/help.module.css";
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  text-align: right;
+}
+
+.link,
+.linkMono,
+.linkQuiet {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  border-radius: var(--radius-chip);
+  text-decoration: none;
+}
+
+.link,
+.linkMono {
+  color: var(--accent-ink);
+  font-weight: var(--font-weight-medium);
+}
+
+.link {
+  font-size: var(--font-size-ui);
+}
+
+.linkMono,
+.mono {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-caption);
+}
+
+.mono {
+  color: var(--ink-hi);
+}
+
+.linkQuiet {
+  color: var(--ink-mid);
+  font-size: var(--font-size-caption);
+}
+
+.link:hover,
+.linkMono:hover,
+.linkQuiet:hover {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.linkQuiet:hover {
+  color: var(--accent-ink);
+}
+
+.link:focus-visible,
+.linkMono:focus-visible,
+.linkQuiet:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.linkIcon {
+  opacity: 0.72;
+  flex: none;
+}
+
+.muted {
+  composes: helpMuted from "../../../styles/help.module.css";
+  font-variant-numeric: tabular-nums;
+}
+
+.structuralNotice {
+  padding: var(--space-3) var(--space-4);
+  border-top: 1px solid var(--edge);
+  background: var(--surface-inset);
+}
+
+.footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2) var(--space-3);
+  min-height: 52px;
+  padding: var(--space-3) var(--space-4);
+  border-top: 1px solid var(--edge);
+  background: var(--surface-inset);
 }
 
 .actions {
   display: flex;
-  gap: var(--space-2);
+  flex-wrap: wrap;
   align-items: center;
+  gap: var(--space-2);
+}
+
+.activity {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 20px;
+}
+
+@media (max-width: 899px) {
+  .channelLabel {
+    display: none;
+  }
+
+  .row {
+    grid-template-columns: 68px minmax(0, 1fr);
+  }
+
+  .rowDate {
+    grid-column: 2;
+    text-align: left;
+  }
 }

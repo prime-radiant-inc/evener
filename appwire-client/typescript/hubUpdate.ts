@@ -87,8 +87,9 @@ export interface HubUpdateController {
   setChannel(channel: UpdateChannel): void;
   runCheck(): Promise<void>;
   install(): Promise<void>;
+  installAndRestart(): Promise<void>;
   restart(): Promise<void>;
-  /** @deprecated Use install() then restart(). Kept for older hubs and
+  /** @deprecated Use installAndRestart() or install() then restart(). Kept for older hubs and
    * out-of-tree hosts that still call the combined RPC. */
   apply(): Promise<void>;
   /** Stops telling listeners and sends nothing more; answers still in
@@ -175,52 +176,84 @@ export function createHubUpdateController(
     }
   }
 
-  async function install(): Promise<void> {
-    if (disposed || get().installing || get().restarting || get().applying) return;
+  // Shared install step for install() and installAndRestart(). Returns the
+  // baseline check on success, or null when refused, failed, lost, or disposed.
+  async function runInstall(): Promise<UpdateCheckResponse | null> {
+    if (disposed || get().installing || get().restarting || get().applying) return null;
     const check = get().check;
     if (!check) {
       set({ installError: CHECK_FIRST });
-      return;
+      return null;
     }
     if (isStale(check)) {
       set({ installError: STALE_CHECK });
-      return;
+      return null;
     }
     if (!check.applicable) {
       set({ installError: DEV_INSTALL });
-      return;
+      return null;
     }
     // An older hub omits installAvailable; its updateAvailable is the fallback.
     if (!(check.installAvailable ?? check.updateAvailable)) {
       set({ installError: ALREADY_UP_TO_DATE });
-      return;
+      return null;
     }
-    set({ installing: true, installError: null, restartTimedOut: false });
+    set({ installing: true, installError: null, restartError: null, restartTimedOut: false });
     let client: Pick<AppwireClientLike, "request">;
     try {
       client = ports.client();
     } catch (err) {
       set({ installing: false, installError: friendlyErrorMessage(err) });
-      return;
+      return null;
     }
     try {
       await client.request("evener/upgrade", { requested: get().channel ?? "" }, { timeoutMs: APPLY_TIMEOUT_MS });
     } catch (err) {
       if (requestOutcome(err) !== "lost") {
         set({ installing: false, installError: friendlyErrorMessage(err) });
-        return;
+        return null;
       }
       // The hub may have installed the artifact before the response frame was
       // lost. Ask the host to reconcile once its connection is ready; an
       // immediate check races a reconnect and is lost with the socket.
       set({ installing: false, installReconcile: true });
-      return;
+      return null;
     }
-    if (disposed) return;
+    if (disposed) return null;
+    return check;
+  }
+
+  async function install(): Promise<void> {
+    const check = await runInstall();
+    if (!check) return;
     set({ installing: false });
     // The check owns installAvailable, onDiskCommit, and restartPending; a
     // fresh one is what turns the section into "installed but not running".
     await runCheck();
+  }
+
+  async function installAndRestart(): Promise<void> {
+    if (restartClaimed) return;
+    const check = await runInstall();
+    if (!check) return;
+    if (check.restartSupported !== true) {
+      set({ installing: false });
+      await runCheck();
+      return;
+    }
+    restartClaimed = true;
+    try {
+      // Transition directly from installing -> restarting so the UI never
+      // flickers back to an idle state between the two RPCs.
+      const restarted = await execRestart(check, { installing: false });
+      if (!restarted && !disposed) {
+        // The binary is already on disk; refresh the check so the UI surfaces
+        // the pending restart beside the error.
+        await runCheck();
+      }
+    } finally {
+      restartClaimed = false;
+    }
   }
 
   async function restart(): Promise<void> {
@@ -250,20 +283,26 @@ export function createHubUpdateController(
       set({ restartError: NO_RESTART });
       return;
     }
-    set({ restarting: true, restartError: null, restartTimedOut: false });
+    await execRestart(check);
+  }
+
+  // Returns true when restart was handed off to waitForRestart (or disposed),
+  // false when the restart RPC was refused or could not be sent.
+  async function execRestart(check: UpdateCheckResponse, extra: Partial<HubUpdateState> = {}): Promise<boolean> {
+    set({ ...extra, restarting: true, restartError: null, restartTimedOut: false });
     let capturedIncarnation: string | null = null;
     try {
       capturedIncarnation = await ports.currentIncarnation();
     } catch {
       capturedIncarnation = null;
     }
-    if (disposed) return;
+    if (disposed) return true;
     let client: Pick<AppwireClientLike, "request">;
     try {
       client = ports.client();
     } catch (err) {
       set({ restarting: false, restartError: friendlyErrorMessage(err) });
-      return;
+      return false;
     }
     let responseIncarnation: string | null = null;
     try {
@@ -273,10 +312,10 @@ export function createHubUpdateController(
     } catch (err) {
       if (requestOutcome(err) !== "lost") {
         set({ restarting: false, restartError: friendlyErrorMessage(err) });
-        return;
+        return false;
       }
     }
-    if (disposed) return;
+    if (disposed) return true;
     // The response names the process that is being replaced. Use it instead
     // of a possibly stale check baseline; a lost response falls back to the
     // check.
@@ -285,6 +324,7 @@ export function createHubUpdateController(
       incarnation: responseIncarnation ?? capturedIncarnation ?? check.startedAt ?? null,
     };
     await waitForRestart(previous);
+    return true;
   }
 
   async function apply(): Promise<void> {
@@ -365,6 +405,7 @@ export function createHubUpdateController(
 
     runCheck,
     install,
+    installAndRestart,
     restart,
     apply,
 

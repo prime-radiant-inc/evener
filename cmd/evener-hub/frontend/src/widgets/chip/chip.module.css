@@ -1,9 +1,11 @@
 .chip {
   composes: pill from "../../styles/surface.module.css";
   gap: var(--space-1);
-  height: 24px;
+  height: 20px;
   border: 1px solid transparent;
   font-family: var(--font-sans);
+  font-weight: var(--font-weight-medium);
+  line-height: 1;
 }
 
 /* Machine-text labels (tool names, ids) switch to the mono face; the
@@ -73,7 +75,6 @@
 /* Quiet: no fill, a hairline edge and low ink, for a state marker inside a row. */
 .chip[data-variant="quiet"] {
   flex: none;
-  padding: 0 var(--space-1);
   background: transparent;
   border-color: var(--edge);
   color: var(--ink-low);
