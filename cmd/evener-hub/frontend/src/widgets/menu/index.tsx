@@ -13,6 +13,7 @@ import { createPortal } from "react-dom";
 import { LayerFocusScope } from "../focusscope";
 import { ownerWindowOf } from "../internal/documentRealm";
 import { requireClass } from "../internal/requireClass";
+import { firstEnabledIndex, lastEnabledIndex, useRovingRadio } from "../internal/rovingRadio";
 import { useDismissOnOutsidePress } from "../internal/useDismissOnOutsidePress";
 import { useOwnedDocument } from "../internal/useOwnedDocument";
 import { usePresence } from "../internal/usePresence";
@@ -262,13 +263,9 @@ const CLAMP_ROUNDING = 1;
 // difference within this distance is the reading, not the view.
 const CLIP_ROUNDING = 1;
 
-function firstEnabledIndex(items: readonly MenuEntry[]): number {
-  return items.findIndex(isActionable);
-}
-
 /** The id of the first entry roving focus can land on, if the list has one. */
 function firstEnabledId(items: readonly MenuEntry[]): string | undefined {
-  return items[firstEnabledIndex(items)]?.id;
+  return items[firstEnabledIndex(items, isActionable)]?.id;
 }
 
 /** Scroll `popup` the least that brings `row` back inside its scrollport, and
@@ -760,26 +757,6 @@ function itemAt(items: MenuEntry[], i: number): MenuEntry {
   return item;
 }
 
-function lastEnabledIndex(items: MenuEntry[]): number {
-  for (let i = items.length - 1; i >= 0; i--) {
-    if (isActionable(itemAt(items, i))) return i;
-  }
-  return -1;
-}
-
-// Next enabled index stepping by `delta` (+1/-1) from `from`, wrapping
-// around the ends. Returns `from` unchanged if every item is disabled.
-function stepEnabledIndex(items: MenuEntry[], from: number, delta: 1 | -1): number {
-  const n = items.length;
-  if (n === 0) return -1;
-  let i = from;
-  for (let step = 0; step < n; step++) {
-    i = (i + delta + n) % n;
-    if (isActionable(itemAt(items, i))) return i;
-  }
-  return from;
-}
-
 // MenuPosition, EDGE_MARGIN, TRIGGER_GAP, resolveAxis, and computeMenuPosition
 // now live in widgets/popover/computePosition.ts (imported above), shared with
 // the Popover primitive - see that module and this file's import comment.
@@ -848,6 +825,15 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
   const ownerDocument = useOwnedDocument(rootRef, mounted);
   const itemRefs = useRef<(HTMLLIElement | null)[]>([]);
   const triggerId = useId();
+  // The menu's key map is the shared roving one in its vertical-only mode:
+  // ArrowUp/Down, Home, and End, skipping separators and disabled rows.
+  // Activation (Enter/Space) and dismissals (Escape, Tab) stay local.
+  const moveFocus = useRovingRadio({
+    items,
+    onMove: (index) => focusIndex(index, true),
+    mode: "menu",
+    isEnabled: isActionable,
+  });
 
   // Resolve the tracked id against the list as it is NOW. The id may name an
   // entry this render no longer has (the caller removed it) or one that has
@@ -856,7 +842,7 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
   const indexOfActive = useCallback(() => {
     const index = items.findIndex((entry) => !isSeparator(entry) && entry.id === activeId);
     if (index !== -1 && isActionable(itemAt(items, index))) return index;
-    return firstEnabledIndex(items);
+    return firstEnabledIndex(items, isActionable);
   }, [items, activeId]);
 
   // Opens with a naive, unflipped position (left-aligned to the trigger,
@@ -1633,34 +1619,16 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
     if (handled.includes(event.key)) event.stopPropagation();
     switch (event.key) {
       case "ArrowDown":
-        event.preventDefault();
-        // From the popup ITSELF there is no row to step away from: that is the
-        // state a removed focused row leaves behind (see the recovery effect),
-        // and the APG's own answer for a menu holding focus is its first item.
-        // Stepping from the roving id instead would skip whichever row the id
-        // resolution names, because that resolution is where a step from
-        // "nothing" would have arrived.
-        if (focused === -1) {
-          focusIndex(firstEnabledIndex(items), true);
-          break;
-        }
-        focusIndex(stepEnabledIndex(items, current, 1), true);
-        break;
       case "ArrowUp":
-        event.preventDefault();
-        if (focused === -1) {
-          focusIndex(lastEnabledIndex(items), true);
-          break;
-        }
-        focusIndex(stepEnabledIndex(items, current, -1), true);
-        break;
       case "Home":
-        event.preventDefault();
-        focusIndex(firstEnabledIndex(items), true);
-        break;
       case "End":
         event.preventDefault();
-        focusIndex(lastEnabledIndex(items), true);
+        // From the popup ITSELF there is no row to step away from: that is the
+        // state a removed focused row leaves behind (see the recovery effect).
+        // The shared hook's forward keys land on the first enabled row and its
+        // backward keys on the last, which is the APG's own answer for a menu
+        // holding focus.
+        moveFocus(event, focused);
         break;
       case "Enter":
       case " ": {
@@ -1722,7 +1690,10 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
         // the popup (see the case above) until the reader picks a row.
         if (focused === -1) {
           event.preventDefault();
-          focusIndex(event.shiftKey ? lastEnabledIndex(items) : firstEnabledIndex(items), true);
+          focusIndex(
+            event.shiftKey ? lastEnabledIndex(items, isActionable) : firstEnabledIndex(items, isActionable),
+            true,
+          );
         } else if (!isActionable(itemAt(items, focused))) {
           event.preventDefault();
           focusIndex(indexOfActive(), true);

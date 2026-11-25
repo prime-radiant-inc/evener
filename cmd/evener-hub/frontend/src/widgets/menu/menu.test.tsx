@@ -1088,6 +1088,35 @@ test("ArrowDown/ArrowUp roving skips disabled items", async () => {
   expect(document.activeElement).toBe(screen.getByRole("menuitem", { name: "Rename" }));
 });
 
+test("ArrowLeft/ArrowRight do not rove: the menu's key map is vertical-only", async () => {
+  const user = userEvent.setup();
+  render(<Menu trigger="Actions" items={items()} />);
+  await user.click(screen.getByRole("button", { name: "Actions" }));
+  expect(document.activeElement).toBe(screen.getByRole("menuitem", { name: "Rename" }));
+  await user.keyboard("{ArrowRight}");
+  expect(document.activeElement).toBe(screen.getByRole("menuitem", { name: "Rename" }));
+  await user.keyboard("{ArrowLeft}");
+  expect(document.activeElement).toBe(screen.getByRole("menuitem", { name: "Rename" }));
+});
+
+test("navigation keys are a no-op when every item is disabled", async () => {
+  const user = userEvent.setup();
+  render(
+    <Menu
+      trigger="Actions"
+      items={items({
+        rename: { disabled: true },
+        duplicate: { disabled: true },
+        delete: { disabled: true },
+      })}
+    />,
+  );
+  await user.click(screen.getByRole("button", { name: "Actions" }));
+  const before = document.activeElement;
+  await user.keyboard("{ArrowDown}{ArrowUp}{Home}{End}");
+  expect(document.activeElement).toBe(before);
+});
+
 test("Enter activates the focused item and closes the menu", async () => {
   const user = userEvent.setup();
   const list = items();

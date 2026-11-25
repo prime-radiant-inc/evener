@@ -37,10 +37,12 @@ import { reloadPage } from "../pageReload";
 import styles from "./Rail.module.css";
 import { RAIL_WIDTH_PROPERTY } from "./RailResizeHandle";
 import { noteRailWrapperMounted, noteRailWrapperUnmounted } from "./railController";
+import { useRailHeaderAction } from "./railHeaderAction";
 import { isStaleRailHostChunkError, loadRailHost } from "./railHostChunk";
 
 const CLASS = {
   failureShell: requireClass(styles.rail, "Rail.module.css", "rail"),
+  fallbackHeader: requireClass(styles.fallbackHeader, "Rail.module.css", "fallbackHeader"),
 };
 
 // The failure state stands exactly where the rail stood: the same .rail
@@ -51,12 +53,14 @@ const CLASS = {
 // row's only other child - the flex:1 workspace - to fill the window.
 function RailFailure({ failure, retry, canReload }: ChunkFailureFallbackProps): JSX.Element {
   const sidebarWidth = usePrefsStore((s) => s.sidebarWidth);
+  const headerAction = useRailHeaderAction();
   return (
     <div
       className={CLASS.failureShell}
       style={{ [RAIL_WIDTH_PROPERTY]: `${sidebarWidth}px` } as CSSProperties}
       data-testid="rail-chunk-failure"
     >
+      {headerAction !== null && <div className={CLASS.fallbackHeader}>{headerAction}</div>}
       <EmptyState
         title="Couldn't load the sidebar"
         hint={failure}
@@ -73,6 +77,16 @@ function RailFailure({ failure, retry, canReload }: ChunkFailureFallbackProps): 
           </>
         }
       />
+    </div>
+  );
+}
+
+function RailLoading(): JSX.Element | null {
+  const headerAction = useRailHeaderAction();
+  if (headerAction === null) return null;
+  return (
+    <div className={CLASS.failureShell} data-testid="rail-chunk-loading">
+      <div className={CLASS.fallbackHeader}>{headerAction}</div>
     </div>
   );
 }
@@ -123,7 +137,7 @@ export function RailHost(_props: { railSlot?: never } = {}): JSX.Element {
       reloadAvailable={reloadAvailable}
       renderFailure={(state) => <RailFailure {...state} />}
     >
-      <Suspense fallback={null}>
+      <Suspense fallback={<RailLoading />}>
         <Host />
       </Suspense>
     </RailChunkBoundary>

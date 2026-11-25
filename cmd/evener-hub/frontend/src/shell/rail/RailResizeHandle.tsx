@@ -1,8 +1,6 @@
 // The docked rail's drag-to-resize handle: a role=separator strip on the
-// rail's right edge, over the border it appears to grab. Desktop only —
-// RailHost renders it (and the width it reports) exclusively on the non-mobile
-// path, because the mobile Rail fills TreeDrawer's sheet and has no edge to
-// drag (Rail.module.css's own <=899px block owns that width).
+// rail's right edge, over the border it appears to grab. The desktop rail
+// and tablet board have dividers. The phone drawer fills its sheet.
 //
 // TWO WRITE PATHS, deliberately:
 //   - during a drag, each pointermove sets the --rail-width custom property
@@ -34,17 +32,29 @@ const KEY_STEP = 16;
 const KEY_STEP_COARSE = 64;
 
 export interface RailResizeHandleProps {
-  // The persisted width, and where a released drag / keyboard step lands.
+  // The currently displayed width, and where a released drag / keyboard step lands.
   width: number;
+  minWidth?: number;
+  maxWidth?: number;
   onCommit: (width: number) => void;
   // The element being resized: the drag paints its --rail-width directly.
-  railRef: RefObject<HTMLDivElement | null>;
+  railRef: RefObject<HTMLElement | null>;
 }
 
-export function RailResizeHandle({ width, onCommit, railRef }: RailResizeHandleProps) {
+export function RailResizeHandle({
+  width,
+  minWidth,
+  maxWidth = SIDEBAR_WIDTH_MAX,
+  onCommit,
+  railRef,
+}: RailResizeHandleProps) {
   // Non-null only mid-drag; the live value aria-valuenow reports.
   const [dragWidth, setDragWidth] = useState<number | null>(null);
   const shownWidth = dragWidth ?? width;
+
+  function clamp(value: number): number {
+    return clampSidebarWidth(value, minWidth, maxWidth);
+  }
 
   function paint(value: number): void {
     railRef.current?.style.setProperty(RAIL_WIDTH_PROPERTY, `${value}px`);
@@ -61,7 +71,7 @@ export function RailResizeHandle({ width, onCommit, railRef }: RailResizeHandleP
     // way for a pane's own handlers to swallow the drag.
     event.currentTarget.setPointerCapture(event.pointerId);
     event.preventDefault(); // suppress the text-selection drag the gesture would otherwise start
-    setDragWidth(clampSidebarWidth(rail.getBoundingClientRect().width));
+    setDragWidth(clamp(rail.getBoundingClientRect().width));
   }
 
   function handlePointerMove(event: PointerEvent<HTMLDivElement>): void {
@@ -72,7 +82,7 @@ export function RailResizeHandle({ width, onCommit, railRef }: RailResizeHandleP
     // captured start offset, so the handle tracks the pointer exactly even if
     // something else (a font-size pref change, a scrollbar) shifts the rail
     // mid-drag.
-    const next = clampSidebarWidth(event.clientX - rail.getBoundingClientRect().left);
+    const next = clamp(event.clientX - rail.getBoundingClientRect().left);
     setDragWidth(next);
     paint(next);
   }
@@ -85,7 +95,7 @@ export function RailResizeHandle({ width, onCommit, railRef }: RailResizeHandleP
   }
 
   function step(delta: number): void {
-    const next = clampSidebarWidth(shownWidth + delta);
+    const next = clamp(shownWidth + delta);
     paint(next);
     onCommit(next);
   }
@@ -105,10 +115,10 @@ export function RailResizeHandle({ width, onCommit, railRef }: RailResizeHandleP
         step(coarse);
         break;
       case "Home":
-        step(sidebarWidthMin() - shownWidth);
+        step((minWidth ?? sidebarWidthMin()) - shownWidth);
         break;
       case "End":
-        step(SIDEBAR_WIDTH_MAX - shownWidth);
+        step(maxWidth - shownWidth);
         break;
       default:
         return; // every other key keeps its default behaviour (Tab moves on, etc.)
@@ -131,8 +141,8 @@ export function RailResizeHandle({ width, onCommit, railRef }: RailResizeHandleP
       aria-orientation="vertical"
       aria-label="Resize sidebar"
       aria-valuenow={shownWidth}
-      aria-valuemin={sidebarWidthMin()}
-      aria-valuemax={SIDEBAR_WIDTH_MAX}
+      aria-valuemin={minWidth ?? sidebarWidthMin()}
+      aria-valuemax={maxWidth}
       tabIndex={0}
       className={CLASS.resizeHandle}
       onPointerDown={handlePointerDown}
@@ -141,8 +151,9 @@ export function RailResizeHandle({ width, onCommit, railRef }: RailResizeHandleP
       onPointerCancel={endDrag}
       onKeyDown={handleKeyDown}
       onDoubleClick={() => {
-        paint(SIDEBAR_WIDTH_DEFAULT);
-        onCommit(SIDEBAR_WIDTH_DEFAULT);
+        const defaultWidth = clamp(SIDEBAR_WIDTH_DEFAULT);
+        paint(defaultWidth);
+        onCommit(defaultWidth);
       }}
     />
   );

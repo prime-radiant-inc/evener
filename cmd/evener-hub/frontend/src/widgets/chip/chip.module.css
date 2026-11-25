@@ -68,6 +68,12 @@
   color: var(--danger-ink);
 }
 
+.accent {
+  background: var(--accent-bg);
+  border-color: var(--accent-edge);
+  color: var(--accent-ink);
+}
+
 /* Quiet: no fill, a hairline edge and low ink, for a state marker inside a row. */
 .chip[data-variant="quiet"] {
   flex: none;
