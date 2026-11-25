@@ -51,6 +51,7 @@ const LONG_COMMAND_LINES = [
 // A command that fits the column: the bound must not clip it.
 const SHORT_COMMAND_LINES = ["printf 'BACKGROUND_LATE_INITIAL\\n'; ", "do sleep 0.02; ", "exit 0"];
 const OUTPUT_LINES = ["BACKGROUND_LATE_INITIAL", "BACKGROUND_LATE_REFRESH", "BACKGROUND_LATE_RECONNECT", "BACKGROUND_LATE_FINAL"];
+const COPY_SVG = '<svg viewBox="0 0 14 14" width="12" height="12" aria-hidden="true"><rect x="4.5" y="1.5" width="8" height="8" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.2" /><path d="M9.5 12.5H3A1.5 1.5 0 0 1 1.5 11V4.5" fill="none" stroke="currentColor" stroke-width="1.2" /></svg>';
 
 // JobLog.tsx's real chain: PaneScaffold's pane/header/body, the transcript
 // column's .body holding the status note, the command block (CodeBlock's real
@@ -73,7 +74,7 @@ const HTML = `
           <div class="log-joblogCommand" data-command>
             <div class="code-root">
               <div class="code-codeArea">
-                <div class="code-header"><span class="code-language">shell</span></div>
+                <div class="code-header" data-code-header><span class="code-language">shell</span><span class="code-copy"><button type="button" class="button quiet squareXs" data-copy-button aria-label="Copy command"><span class="icon">${COPY_SVG}</span></button></span></div>
                 <pre class="code-pre"><code class="code-code"></code></pre>
               </div>
             </div>
@@ -115,17 +116,46 @@ window.measure = () => {
     const body = scope.querySelector("[data-pane-body]");
     const log = scope.querySelector("[data-log]");
     const command = scope.querySelector("[data-command]");
+    const pre = command.querySelector("pre");
+    const header = command.querySelector("[data-code-header]");
+    const copyButton = command.querySelector("[data-copy-button]");
     const list = scope.querySelector("[data-list]");
     const height = (element) => element.getBoundingClientRect().height;
+    const scroller = [command, pre].find((el) => {
+      const overflowY = getComputedStyle(el).overflowY;
+      return overflowY === "auto" || overflowY === "scroll";
+    }) ?? command;
+    const scrollTopBefore = scroller.scrollTop;
+    const maxScrollTop = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+    if (maxScrollTop > 0) scroller.scrollTop = maxScrollTop;
+    const scrollTopAfter = scroller.scrollTop;
+    const rect = (element) => {
+      const { top, right, bottom, left } = element.getBoundingClientRect();
+      return { top, right, bottom, left };
+    };
+    const commandRect = rect(command);
+    const headerRect = rect(header);
+    const copyRect = rect(copyButton);
+    const copyCenterX = (copyRect.left + copyRect.right) / 2;
+    const copyCenterY = (copyRect.top + copyRect.bottom) / 2;
+    const hitAtCopyCenter = document.elementFromPoint(copyCenterX, copyCenterY);
+    const copyHitClickable = hitAtCopyCenter !== null && copyButton.contains(hitAtCopyCenter);
     return {
       bodyClientHeight: body.clientHeight,
       bodyScrollHeight: body.scrollHeight,
       logClientHeight: log.clientHeight,
       commandClientHeight: command.clientHeight,
-      commandScrollHeight: command.scrollHeight,
-      commandOverflowY: getComputedStyle(command).overflowY,
+      commandScrollHeight: scroller.scrollHeight,
+      commandOverflowY: getComputedStyle(scroller).overflowY,
+      commandScrollerClientHeight: scroller.clientHeight,
+      scrollTopBefore,
+      scrollTopAfter,
       listClientHeight: list.clientHeight,
       sizerHeight: height(scope.querySelector("[data-sizer]")),
+      commandRect,
+      headerRect,
+      copyRect,
+      copyHitClickable,
     };
   };
   return {
