@@ -187,9 +187,10 @@ test("renders the footer when provided", () => {
 });
 
 test("renders a flush edge footer after the padded footer", () => {
-  render(
+  const { container, rerender } = render(
     <PaneScaffold
       title="Sessions"
+      scaffoldMarker="session:local:test"
       footer={<span data-testid="my-footer" />}
       edgeFooter={<span data-testid="my-edge-footer" />}
     >
@@ -197,10 +198,21 @@ test("renders a flush edge footer after the padded footer", () => {
     </PaneScaffold>,
   );
 
+  const body = container.querySelector('[data-pane-scaffold="session:local:test"]');
   const footer = screen.getByTestId("pane-footer");
   const edgeFooter = screen.getByTestId("pane-edge-footer");
+  expect(body?.getAttribute("data-has-edge-footer")).toBe("true");
   expect(footer.contains(edgeFooter)).toBe(false);
   expect(footer.compareDocumentPosition(edgeFooter) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+  rerender(
+    <PaneScaffold title="Sessions" scaffoldMarker="session:local:test" footer={<span data-testid="my-footer" />}>
+      content
+    </PaneScaffold>,
+  );
+  expect(
+    container.querySelector('[data-pane-scaffold="session:local:test"]')?.getAttribute("data-has-edge-footer"),
+  ).toBeNull();
 });
 
 test("renders title, cadence, actions and children in that document order", () => {
