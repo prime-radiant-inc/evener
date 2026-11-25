@@ -444,7 +444,7 @@ test("a remote target's advanced path value is not dropped for being invisible h
   window.history.pushState({}, "", "/new?dir=/tmp/remote-advanced-path");
   renderSpawn(fake);
   await settled();
-  await user.click(screen.getByText("Advanced options"));
+  await user.click(screen.getByText("Advanced"));
 
   // Local: unchanged. The controller's verdict marks the field invalid, the
   // reason is shown, and the value is excluded from the launch.
@@ -529,7 +529,7 @@ test.each([false, true])(
     renderSpawn(fake);
     if (pollInFlight) await act(async () => void hostsStore.getState().refresh());
     await settled();
-    fireEvent.click(screen.getByText("Advanced options"));
+    fireEvent.click(screen.getByText("Advanced"));
     fireEvent.change(screen.getByLabelText("Agent"), { target: { value: "host-only-agent" } });
     await waitFor(() =>
       expect(completionDraft("/tmp/registry-lag-path").fields.getState().advancedOverrides).toEqual({}),
@@ -750,7 +750,7 @@ test("a path marked invalid while local reaches the launch after switching host 
   window.history.pushState({}, "", "/new?dir=/tmp/remote-switch-path");
   renderSpawn(fake);
   await settled();
-  await user.click(screen.getByText("Advanced options"));
+  await user.click(screen.getByText("Advanced"));
 
   // Local: the controller's verdict marks the field invalid, shows the reason,
   // and excludes the value from the launch.
@@ -1013,7 +1013,7 @@ test("a failed remote catalog load shows an empty harness list, not the previous
   renderSpawn(fake);
   await settled();
 
-  await user.click(screen.getByText("Advanced options"));
+  await user.click(screen.getByText("Advanced"));
   const harness = screen.getByLabelText("Harness") as HTMLSelectElement;
   expect(within(harness).getByRole("option", { name: "external" })).toBeTruthy();
 
@@ -1546,7 +1546,7 @@ test("a host switch drops an explicit plugin selection the new host never previe
   // An explicit selection on the controller.
   await openDesktopPluginSelection(user);
   await user.click(screen.getByRole("switch", { name: "beta" }));
-  await waitFor(() => expect(screen.getByTestId("spawn-plugin-summary").textContent).toContain("alpha"));
+  await waitFor(() => expect(screen.getByTestId("spawn-plugin-value").getAttribute("title")).toContain("alpha"));
   expect(draft.fields.getState().pluginSelection).toEqual({ mode: "explicit", names: ["alpha"] });
 
   await chooseHost("buildbox");
@@ -1801,7 +1801,7 @@ test("a refused host catalog read says so and Retry reads it again", async () =>
   await user.click(within(notice).getByRole("button", { name: "Retry" }));
   await waitFor(() => expect(routedHostCalls(fake, "evener/harnesses/list")).toHaveLength(2));
   await waitFor(() => expect(screen.queryByTestId("spawn-host-catalog-error")).toBeNull());
-  await user.click(screen.getByText("Advanced options"));
+  await user.click(screen.getByText("Advanced"));
   const harness = screen.getByLabelText("Harness") as HTMLSelectElement;
   await waitFor(() => expect(within(harness).getByRole("option", { name: "external" })).toBeTruthy());
 });
@@ -1858,7 +1858,7 @@ test("Retry re-reads the launch schema and keeps the answered harness list", asy
   await settled();
 
   const notice = await screen.findByTestId("spawn-host-catalog-error");
-  await user.click(screen.getByText("Advanced options"));
+  await user.click(screen.getByText("Advanced"));
   const harness = screen.getByLabelText("Harness") as HTMLSelectElement;
   await waitFor(() => expect(within(harness).getByRole("option", { name: "external" })).toBeTruthy());
 
@@ -2032,7 +2032,7 @@ test("a late path validation from the previous host never marks the field on the
   window.history.pushState({}, "", "/new?dir=/tmp/host-path-validation");
   renderSpawn(fake);
   await settled();
-  await user.click(screen.getByText("Advanced options"));
+  await user.click(screen.getByText("Advanced"));
   fireEvent.change(screen.getByLabelText("Agent"), { target: { value: "review-agent" } });
   await waitFor(() => expect(fake.calls.filter((call) => call.method === "evener/path/validate")).toHaveLength(1));
 
@@ -2109,7 +2109,7 @@ test("a late pathList validation from the previous host cannot re-add its entry 
   window.history.pushState({}, "", "/new?dir=/tmp/host-pathlist");
   renderSpawn(fake);
   await settled();
-  await user.click(screen.getByText("Advanced options"));
+  await user.click(screen.getByText("Advanced"));
   await user.type(screen.getByPlaceholderText("Add a plugin dir"), "review-dir");
   await user.click(screen.getByRole("button", { name: "Add" }));
   await waitFor(() => expect(fake.calls.filter((call) => call.method === "evener/path/validate")).toHaveLength(1));

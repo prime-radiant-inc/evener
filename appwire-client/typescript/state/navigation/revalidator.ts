@@ -283,7 +283,11 @@ export class NavigationRevalidator {
   }
   private raise(e: Entry, revision: number | undefined, forced: boolean): void {
     const nextRevision = forced ? e.state.targetRevision : Math.max(e.state.targetRevision ?? -1, revision ?? -1);
-    if (!forced && nextRevision === e.state.targetRevision && e.state.stale) return;
+    // Coalesce duplicate same-revision invalidations while a read is in flight
+    // (no error) or a rerun is already queued, while letting a settled error
+    // at the same target revision retry.
+    if (!forced && nextRevision === e.state.targetRevision && e.state.stale && (e.state.error === null || e.rerun))
+      return;
     const forceToken = forced ? ++this.forceSequence : e.state.forceToken;
     e.state = frozen({ ...e.state, targetRevision: nextRevision, forceToken, stale: true, error: null });
     this.emit(e.state);

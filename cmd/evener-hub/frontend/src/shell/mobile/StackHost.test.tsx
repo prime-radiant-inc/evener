@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { bindFilePath } from "@evener/appwire-client/docContent";
+import { manifest as navigationManifest } from "@evener/appwire-client/testing/navigation";
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { DockviewApi } from "dockview-core";
@@ -17,6 +18,7 @@ import { recordCascadeOrigin } from "../../panes/zoom/inspectionOrigin";
 import type { SessionZoomParams } from "../../panes/zoom/intent";
 import "../../panes/zoom";
 import { connectionStore, resetConnectionStoreForTests } from "../../stores/connection";
+import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
 import {
   activityClient,
   activityContext,
@@ -26,6 +28,7 @@ import {
 } from "../../stores/sessionActivityTestUtils";
 import { initTranscriptDisplay, resetTranscriptDisplayStoreForTests } from "../../stores/transcriptDisplay";
 import { readModuleCss } from "../../styles/cssBlock";
+import { Badge } from "../../widgets";
 import { activitySidebarStore, resetActivitySidebarStoreForTests } from "../activitybar/activitySidebarStore";
 import { openAttentionSession } from "../attentionHistory";
 import { captureAttentionPlacement, presentAttentionTarget, restoreAttentionPlacement } from "../attentionPlacement";
@@ -34,7 +37,7 @@ import { ClientProvider } from "../clientContext";
 import { type PaneProps, registerPaneForTests } from "../paneRegistry";
 import { usePaneVisible } from "../paneVisibility";
 import { useRailHeaderAction } from "../rail/railHeaderAction";
-import { openTopLevelSession } from "../sessionPlacement";
+import { openSessionByRef, openTopLevelSession } from "../sessionPlacement";
 import {
   documentPaneState,
   recordConversationOpenParent,
@@ -369,6 +372,7 @@ async function warmPane(open: () => void, findLandmark: (timeout: number) => Pro
   cleanup();
   resetWorkspaceStoreForTests();
   resetActivitySidebarStoreForTests();
+  resetNavigationStoreForTests();
   setLastPopstateWasTrustedForTests(false);
   window.history.pushState({}, "", "/");
 }
@@ -376,6 +380,7 @@ async function warmPane(open: () => void, findLandmark: (timeout: number) => Pro
 beforeEach(() => {
   resetWorkspaceStoreForTests();
   resetActivitySidebarStoreForTests();
+  resetNavigationStoreForTests();
   resetConnectionStoreForTests();
   resetChromeStoreForTests();
   setLastPopstateWasTrustedForTests(false);
@@ -481,7 +486,7 @@ test("Activity opened from the mobile drawer supersedes the drawer", async () =>
   expect(sidebar).toBeTruthy();
   // The drawer's close restores focus to its own opener; the sidebar's
   // selected category must take focus back after that restore.
-  await waitFor(() => expect(document.activeElement).toBe(within(sidebar).getByRole("radio", { name: /Jobs/ })));
+  await waitFor(() => expect(document.activeElement).toBe(within(sidebar).getByRole("tab", { name: /Jobs/ })));
 });
 
 test("renders the new activity sidebar over the mobile stack with the selected tab", async () => {
@@ -504,7 +509,7 @@ test("renders the new activity sidebar over the mobile stack with the selected t
   );
 
   expect(await screen.findByTestId("activity-sidebar")).toBeTruthy();
-  expect(screen.getByRole("radio", { name: /Jobs/ })).toBeTruthy();
+  expect(screen.getByRole("tab", { name: /Jobs/ })).toBeTruthy();
 });
 
 test.each(["Close", "Escape"])(
@@ -545,19 +550,18 @@ test.each(["Close", "Escape"])(
         </ClientProvider>,
       );
       await user.click(await screen.findByRole("button", { name: "Overview" }));
-      const inspection = await screen.findByRole("dialog", { name: "Overview" });
-      await user.click(within(inspection).getByRole("button", { name: /^Agents,/ }));
-      await user.click(await screen.findByRole("button", { name: /Open child/ }));
       const sidebar = await screen.findByTestId("activity-sidebar");
+      await user.click(within(sidebar).getByRole("tab", { name: /^Agents,/ }));
+      await user.click(await screen.findByRole("button", { name: /Open child/ }));
       // Drilling changes the inspected scope. The new scope's selected
       // category must own focus inside the trap before the reader touches
       // another control.
       // Entry focus lands in one queued frame, so the short bound reports a
       // regression as the focus mismatch, not as the test's own deadline.
-      await waitFor(() => expect(document.activeElement).toBe(within(sidebar).getByRole("radio", { name: /Agents/ })), {
+      await waitFor(() => expect(document.activeElement).toBe(within(sidebar).getByRole("tab", { name: /Agents/ })), {
         timeout: 2_000,
       });
-      await user.click(within(sidebar).getByRole("radio", { name: "About" }));
+      await user.click(within(sidebar).getByRole("tab", { name: "About" }));
       await within(sidebar).findByText("~$1.00");
       await screen.findByRole("heading", { name: "Child work" });
       const before = workspaceStore.getState();
@@ -2014,6 +2018,72 @@ function TabletRailActionSlot() {
   return <>{useRailHeaderAction()}</>;
 }
 
+function setNeedsYouCount(needsYou: number): void {
+  navigationStore.setState({
+    mode: "v3",
+    manifest: {
+      key: { kind: "manifest" },
+      data: navigationManifest({
+        sections: { live: { count: 0 }, needs_you: { count: needsYou }, pin_sections: { count: 0 } },
+      }),
+      loadedRevision: 1,
+      targetRevision: 1,
+      forceToken: 0,
+      etag: '"manifest"',
+      loading: false,
+      stale: false,
+      error: null,
+      generationID: "test-generation",
+    },
+  });
+}
+
+test("collapsed tablet Board toggle carries the Needs You badge and count only while hidden with attention waiting", async () => {
+  const originalMedia = window.matchMedia;
+  window.matchMedia = (query) =>
+    ({ matches: query === MOBILE_QUERY || query === TABLET_QUERY, media: query }) as MediaQueryList;
+  try {
+    const attentionSample = render(<Badge count={3} tone="attention" />);
+    const attentionBadgeClass = attentionSample.container.firstElementChild?.className;
+    attentionSample.unmount();
+
+    const user = userEvent.setup();
+    setNeedsYouCount(3);
+    workspaceStore.getState().openPane("doc", { ref: "tablet_badge" });
+    render(<StackHost railSlot={<TabletRailActionSlot />} />);
+    await screen.findByText(/doc pane: tablet_badge /);
+
+    const expandedToggle = within(screen.getByTestId("board-column")).getByTestId("board-toggle");
+    expect(expandedToggle.getAttribute("aria-expanded")).toBe("true");
+    expect(within(expandedToggle).queryByText("3")).toBeNull();
+    expect(expandedToggle.getAttribute("aria-label")).not.toMatch(/\d/);
+
+    await user.click(expandedToggle);
+    expect(screen.queryByTestId("board-column")).toBeNull();
+    const collapsedToggle = within(screen.getByTestId("topbar")).getByTestId("board-toggle");
+    expect(collapsedToggle.getAttribute("aria-expanded")).toBe("false");
+    expect(within(collapsedToggle).getByText("3").className).toBe(attentionBadgeClass);
+    expect(within(screen.getByTestId("topbar")).getByRole("button", { name: /\b3\b/ })).toBe(collapsedToggle);
+
+    act(() => setNeedsYouCount(0));
+    expect(within(collapsedToggle).queryByText("3")).toBeNull();
+    expect(within(collapsedToggle).queryByText("0")).toBeNull();
+    expect(collapsedToggle.getAttribute("aria-label")).not.toMatch(/\d/);
+
+    act(() => setNeedsYouCount(2));
+    expect(within(collapsedToggle).getByText("2").className).toBe(attentionBadgeClass);
+    expect(within(screen.getByTestId("topbar")).getByRole("button", { name: /\b2\b/ })).toBe(collapsedToggle);
+
+    await user.click(collapsedToggle);
+    const reopenedToggle = within(screen.getByTestId("board-column")).getByTestId("board-toggle");
+    expect(reopenedToggle.getAttribute("aria-expanded")).toBe("true");
+    expect(within(reopenedToggle).queryByText("2")).toBeNull();
+    expect(reopenedToggle.getAttribute("aria-label")).not.toMatch(/\d/);
+  } finally {
+    window.matchMedia = originalMedia;
+  }
+});
+
 test.each(["phone", "tablet to phone"])("a slide discards the leaving scroller after %s layout", async (layout) => {
   const slides = installSlideAnimations();
   const originalMedia = window.matchMedia;
@@ -2086,5 +2156,76 @@ test.each(["phone", "tablet to phone"])("a slide discards the leaving scroller a
   } finally {
     slides.restore();
     window.matchMedia = originalMedia;
+  }
+});
+
+test("picking from the open tablet board replaces without sliding, while non-board steps still push", async () => {
+  const slides = installSlideAnimations();
+  const restoreViewport = installMobileViewport([MOBILE_QUERY, TABLET_QUERY]);
+  try {
+    const user = userEvent.setup();
+    workspaceStore.getState().openPane("session", { ref: "local:board_a" });
+    render(
+      <StackHost
+        railSlot={
+          <div>
+            <TabletRailActionSlot />
+            <button type="button" onClick={() => openSessionByRef("local:board_b")}>
+              Board session B
+            </button>
+            <div
+              role="treeitem"
+              aria-selected={false}
+              tabIndex={0}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") openSessionByRef("local:board_c");
+              }}
+            >
+              Board session C
+            </div>
+          </div>
+        }
+      />,
+    );
+    await screen.findByRole("heading", { name: "local:board_a" });
+    const board = screen.getByTestId("board-column");
+
+    // Pointer pick from the open tablet board replaces without a push slide.
+    await user.click(within(board).getByRole("button", { name: "Board session B" }));
+    await screen.findByRole("heading", { name: "local:board_b" });
+    expect(leavingFrames()).toEqual([]);
+    expect(stackBody().hasAttribute("data-stack-transition")).toBe(false);
+
+    // Keyboard Enter inside the board replaces without a push slide too.
+    const itemC = within(board).getByRole("treeitem", { name: "Board session C" });
+    itemC.focus();
+    await user.keyboard("{Enter}");
+    await screen.findByRole("heading", { name: "local:board_c" });
+    expect(leavingFrames()).toEqual([]);
+    expect(stackBody().hasAttribute("data-stack-transition")).toBe(false);
+
+    // A non-board forward navigation after a board pick still pushes.
+    await showDoc("from_pane");
+    expect(stackBody().getAttribute("data-stack-transition")).toBe("push");
+    expect(leavingFrames()).toHaveLength(1);
+    await slides.finish();
+
+    // Board input followed by input inside the pane column still pushes.
+    itemC.focus();
+    await user.keyboard("{ArrowDown}");
+    await user.click(screen.getByRole("button", { name: "clicks: 0" }));
+    await showDoc("after_pane_input");
+    expect(stackBody().getAttribute("data-stack-transition")).toBe("push");
+    await slides.finish();
+
+    // Collapsing the board from inside board-column clears board input so the next push runs.
+    await user.click(within(board).getByTestId("board-toggle"));
+    expect(screen.queryByTestId("board-column")).toBeNull();
+    await showDoc("after_collapse");
+    expect(stackBody().getAttribute("data-stack-transition")).toBe("push");
+    await slides.finish();
+  } finally {
+    slides.restore();
+    restoreViewport();
   }
 });

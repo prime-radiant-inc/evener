@@ -1071,6 +1071,16 @@ func TestCommunicateEchoIgnoresTrailingWhitespace(t *testing.T) {
 				{Kind: llm.ContentText, Text: " \n "},
 			},
 		},
+		{
+			name: "preceding_prose_and_trailing_whitespace",
+			content: []llm.ContentPart{
+				{Kind: llm.ContentText, Text: "Working on it."},
+				{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "call_read", Name: "read_file", Arguments: json.RawMessage(`{"path":"a.go"}`)}},
+				{Kind: llm.ContentText, Text: "All done."},
+				call,
+				{Kind: llm.ContentText, Text: " \n\t "},
+			},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -1097,17 +1107,24 @@ func TestCommunicateEchoIgnoresTrailingWhitespace(t *testing.T) {
 			if !reflect.DeepEqual(w.Candidates, ref) {
 				t.Fatalf("candidates diverge from reference:\nindex: %s\nref:   %s", dump(w.Candidates), dump(ref))
 			}
-			shown := 0
+			var matched []appwire.ThreadItem
 			for _, c := range w.Candidates {
 				if c.Item.Type != "agentMessage" {
 					continue
 				}
 				if strings.TrimSpace(c.Item.Text) == "All done." {
-					shown++
+					matched = append(matched, c.Item)
+					continue
+				}
+				if c.Item.CallID != "" || c.Item.Observation != nil {
+					t.Fatalf("non-matching agentMessage %+v unexpectedly received echo attachment", c.Item)
 				}
 			}
-			if shown != 1 {
+			if len(matched) != 1 {
 				t.Fatalf("candidates=%s, want the prose shown once", dump(w.Candidates))
+			}
+			if matched[0].CallID != "call_msg" || matched[0].Observation == nil || !matched[0].Observation.EndTurn || matched[0].Observation.TurnID != "turn_1" {
+				t.Fatalf("echo attachment landed away from visible prose: %+v", matched[0])
 			}
 		})
 	}

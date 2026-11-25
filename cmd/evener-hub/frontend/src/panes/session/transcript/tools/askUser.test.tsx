@@ -1,4 +1,5 @@
 import type { ThreadModel } from "@evener/appwire-client";
+import { askUserArgs, ONE_ASK_QUESTION } from "@evener/appwire-client/testing/askUserFixtures";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { expect, test } from "vitest";
 import { workspaceStore } from "../../../../shell/workspace";
@@ -29,26 +30,13 @@ function questionCards(): HTMLElement[] {
   return screen.queryAllByTestId("ask-user-question");
 }
 
-function askUserArgs(questions: unknown[]): string {
-  return JSON.stringify({ questions });
-}
-
-const ONE_QUESTION = [
-  {
-    header: "Deploy?",
-    question: "Should I deploy this to production now?",
-    options: [
-      { label: "Yes", detail: "Ship it", recommended: true },
-      { label: "No", detail: "Wait" },
-    ],
-  },
-];
-
 // --- summary ----------------------------------------------------------
 
 test("summary lists each question's header, bracketed and comma-joined", () => {
   const d = toolRendererFor("ask_user");
-  expect(d.summary(item({ toolName: "ask_user", argumentsJSON: askUserArgs(ONE_QUESTION) }))).toContain("[Deploy?]");
+  expect(d.summary(item({ toolName: "ask_user", argumentsJSON: askUserArgs(ONE_ASK_QUESTION) }))).toContain(
+    "[Deploy?]",
+  );
 });
 
 test("summary joins multiple question headers", () => {
@@ -95,13 +83,13 @@ function threadModel(items: ItemModel[]) {
 
 test("summarySuffix returns undefined while the question is still unanswered (no model)", () => {
   const d = toolRendererFor("ask_user");
-  const ask = item({ toolName: "ask_user", argumentsJSON: askUserArgs(ONE_QUESTION) });
+  const ask = item({ toolName: "ask_user", argumentsJSON: askUserArgs(ONE_ASK_QUESTION) });
   expect(d.summarySuffix?.(ask, undefined)).toBeUndefined();
 });
 
 test("summarySuffix returns the answered recap once a later [answers] reply resolves the call", () => {
   const d = toolRendererFor("ask_user");
-  const ask = item({ toolName: "ask_user", argumentsJSON: askUserArgs(ONE_QUESTION) });
+  const ask = item({ toolName: "ask_user", argumentsJSON: askUserArgs(ONE_ASK_QUESTION) });
   const reply: ItemModel = {
     id: "item_2",
     turnId: "turn_1",
@@ -116,7 +104,7 @@ test("summarySuffix returns the answered recap once a later [answers] reply reso
 test("body renders the question text, options with detail, and the recommended marker", () => {
   const d = toolRendererFor("ask_user");
   const Body = d.body!;
-  render(<Body item={item({ toolName: "ask_user", argumentsJSON: askUserArgs(ONE_QUESTION) })} live={false} />);
+  render(<Body item={item({ toolName: "ask_user", argumentsJSON: askUserArgs(ONE_ASK_QUESTION) })} live={false} />);
 
   expect(screen.getByText("Should I deploy this to production now?")).toBeTruthy();
   expect(screen.getByText("No")).toBeTruthy();
@@ -146,7 +134,7 @@ test("body renders the question text, options with detail, and the recommended m
 test("body renders the question text as markdown", () => {
   const d = toolRendererFor("ask_user");
   const Body = d.body!;
-  const questions = [{ ...ONE_QUESTION[0], question: "Deploy `agent/deploy.go:81` now?" }];
+  const questions = [{ ...ONE_ASK_QUESTION[0], question: "Deploy `agent/deploy.go:81` now?" }];
   render(<Body item={item({ toolName: "ask_user", argumentsJSON: askUserArgs(questions) })} live={false} />);
   expect(screen.getByText("agent/deploy.go:81").tagName).toBe("CODE");
 });
@@ -158,7 +146,7 @@ test("body renders the why and if_unanswered notes as markdown", () => {
   const Body = d.body!;
   const questions = [
     {
-      ...ONE_QUESTION[0],
+      ...ONE_ASK_QUESTION[0],
       why: "Changes `agent/deploy.go:81` behavior",
       if_unanswered: "assume the `make deploy` default",
     },
@@ -234,7 +222,9 @@ const fileLinkThread: ThreadModel = {
 test("body resolves a file:// report link in the question into a document request", () => {
   const d = toolRendererFor("ask_user");
   const Body = d.body!;
-  const questions = [{ ...ONE_QUESTION[0], question: "See [the report](file:///tmp/project/docs/report.md) first?" }];
+  const questions = [
+    { ...ONE_ASK_QUESTION[0], question: "See [the report](file:///tmp/project/docs/report.md) first?" },
+  ];
   render(
     <TranscriptRenderProvider thread={fileLinkThread} sourcePaneId="pane_fixture">
       <Body item={item({ toolName: "ask_user", argumentsJSON: askUserArgs(questions) })} live={false} />
@@ -251,14 +241,14 @@ test("body resolves a file:// report link in the question into a document reques
 test("body notes the answer happens in the composer (this wave is read-only)", () => {
   const d = toolRendererFor("ask_user");
   const Body = d.body!;
-  render(<Body item={item({ toolName: "ask_user", argumentsJSON: askUserArgs(ONE_QUESTION) })} live={false} />);
+  render(<Body item={item({ toolName: "ask_user", argumentsJSON: askUserArgs(ONE_ASK_QUESTION) })} live={false} />);
   expect(screen.getByTestId("ask-user-answer-hint")).toBeTruthy();
 });
 
 test("body shows a multi_select note when the question allows multiple answers", () => {
   const d = toolRendererFor("ask_user");
   const Body = d.body!;
-  const questions = [{ ...ONE_QUESTION[0], multi_select: true }];
+  const questions = [{ ...ONE_ASK_QUESTION[0], multi_select: true }];
   render(<Body item={item({ toolName: "ask_user", argumentsJSON: askUserArgs(questions) })} live={false} />);
   expect(screen.getByTestId("ask-user-question").querySelector('[data-note="multi-select"]')).not.toBeNull();
 });
@@ -266,7 +256,7 @@ test("body shows a multi_select note when the question allows multiple answers",
 test("body shows why/if_unanswered notes when present", () => {
   const d = toolRendererFor("ask_user");
   const Body = d.body!;
-  const questions = [{ ...ONE_QUESTION[0], why: "affects the release", if_unanswered: "assume yes" }];
+  const questions = [{ ...ONE_ASK_QUESTION[0], why: "affects the release", if_unanswered: "assume yes" }];
   render(<Body item={item({ toolName: "ask_user", argumentsJSON: askUserArgs(questions) })} live={false} />);
   const card = screen.getByTestId("ask-user-question");
   // Markdown serialization ends with a newline after the closing block tag

@@ -1835,6 +1835,19 @@ func (s *Session) endAttentionCoverageRounds() {
 	s.attentionMu.Unlock()
 }
 
+func (s *Session) hasPresentedAttentionInActiveTurn(attentionID string) bool {
+	if s == nil || attentionID == "" {
+		return false
+	}
+	s.attentionMu.Lock()
+	defer s.attentionMu.Unlock()
+	if !s.attentionCoverageActive {
+		return false
+	}
+	_, covered := s.attentionCoveredIDs[attentionID]
+	return covered
+}
+
 // resetAttentionCoverage clears the per-turn coverage at turn start. It runs
 // for every turn, so a turn that covers nothing never inherits an earlier
 // turn's coverage.

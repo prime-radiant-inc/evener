@@ -120,27 +120,20 @@ function assertResult(result, expectedWidth) {
   // clauses on the way, so an element under a display:none ANCESTOR - own
   // display intact, box collapsed to zero - read as visible (kata bsq9).
   const visible = (value) => !("error" in value) && value.visible === true;
-  // The title spans are a breakpoint SWAP, and the swap is all this can
-  // honestly claim about them here. On mobile, PaneScaffold's entire .header
-  // row is display:none - the pane title moves into StackHost's top bar, which
-  // this harness does not render - so NEITHER span has a box at 390 or 899px.
-  // The old ancestor-blind check read the mobile span's own `inline` and called
-  // it visible, which is precisely the false green bsq9 is about: it had been
-  // asserting a title was on screen inside a header that is switched off.
-  // Which span the media query turns on is a real contract; read exactly that.
-  const displayed = (value) => !("error" in value) && value.display !== "none";
+  // Spawn omits PaneScaffold's header bar because desktop tabs already carry
+  // "New session" from the pane registry and StackHost's mobile bar reads
+  // publishedTitle from chromeStore. Verify the header stays absent while
+  // publishedTitle remains populated.
   if (result.viewport.width !== expectedWidth)
     failures.push(`viewport is ${result.viewport.width}px, expected ${expectedWidth}px`);
   if (visible(result.mobileConfig) !== mobile) failures.push(`mobile config visibility is wrong at ${expectedWidth}px`);
   if (visible(result.desktopConfig) === mobile)
     failures.push(`desktop config visibility is wrong at ${expectedWidth}px`);
-  if (displayed(result.mobileTitle) !== mobile)
-    failures.push(`mobile title is not the span the ${expectedWidth}px breakpoint selects`);
-  if (displayed(result.desktopTitle) === mobile)
-    failures.push(`desktop title is not the span the ${expectedWidth}px breakpoint selects`);
-  // The prompt heading and subtitle show at EVERY width now (the desktop
-  // pane used to hide them behind a 12px uppercase title - critique R7), so
-  // the intro must be visible whether or not the layout is the phone's.
+  if (!("error" in result.desktopTitle) || !("error" in result.mobileTitle))
+    failures.push(`spawn pane rendered a duplicate scaffold header at ${expectedWidth}px`);
+  if (!result.publishedTitle)
+    failures.push(`spawn pane did not publish its mobile bar title at ${expectedWidth}px`);
+  // The prompt heading shows at every width.
   if (!visible(result.promptIntro)) failures.push(`prompt intro is not visible at ${expectedWidth}px`);
   // Issue #198: the prompt card is the composer, so its control row holds the
   // composer's controls in the composer's place - at EVERY width, which is why
@@ -256,8 +249,8 @@ function assertResult(result, expectedWidth) {
   if (staged.tiles.length !== STAGED_ATTACHMENTS) {
     failures.push(`expected ${STAGED_ATTACHMENTS} staged attachment tiles in the tree, found ${staged.tiles.length}`);
   }
-  // Persistently accessible at every width, not only the phone's: the heading
-  // is the page's own (an h2 under the pane title), never aria-hidden.
+  // Persistently accessible at every width, not only the phone's: one heading
+  // above the prompt card with no subtitle below it, never aria-hidden.
   const prompt = result.accessiblePrompt;
   if (
     prompt.headingCount !== 1 ||
@@ -265,14 +258,8 @@ function assertResult(result, expectedWidth) {
     !prompt.headingHasName ||
     !prompt.headingVisible ||
     !prompt.headingIsDirectChild ||
-    prompt.subtitleCount !== 1 ||
-    prompt.subtitleTag !== "p" ||
-    !prompt.subtitleHasContent ||
-    !prompt.subtitleVisible ||
-    !prompt.subtitleIsDirectChild ||
-    !prompt.headingBeforeSubtitle ||
-    prompt.headingHiddenFromAT ||
-    prompt.subtitleHiddenFromAT
+    prompt.subtitleCount !== 0 ||
+    prompt.headingHiddenFromAT
   ) {
     failures.push(`prompt orientation is not persistently accessible: ${JSON.stringify(prompt)}`);
   }
@@ -364,6 +351,70 @@ function assertResult(result, expectedWidth) {
   return failures;
 }
 
+async function checkWorkingDirectoryStability(cdpEndpoint, vitePort) {
+  const page = await connectOnlyPage(cdpEndpoint);
+  const { send } = page;
+  const failures = [];
+  try {
+    await applyViewport(send, { width: 1280, height: 900 });
+    await send("Emulation.setFocusEmulationEnabled", { enabled: true });
+    for (const mode of ["cold", "remount"]) {
+      if (mode === "cold") {
+        await navigateTo(page, `http://127.0.0.1:${vitePort}/spawnguard.html?pendingProvider=1`, BOOT);
+      } else {
+        await evaluate(send, "window.remountPendingProvider()");
+      }
+      const before = JSON.parse(
+        await evaluate(
+          send,
+          `JSON.stringify((() => {
+            const el = document.querySelector('#spawn-cwd');
+            return el ? el.getBoundingClientRect().toJSON() : null;
+          })())`,
+        ),
+      );
+      if (!before) {
+        failures.push(`${mode}: #spawn-cwd missing before provider check settled`);
+        continue;
+      }
+      const cx = before.left + before.width / 2;
+      const cy = before.top + before.height / 2;
+      await send("Input.dispatchMouseEvent", { type: "mouseMoved", x: cx, y: cy });
+      await evaluate(
+        send,
+        "window.resolvePendingProvider(); new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))",
+      );
+      const after = JSON.parse(
+        await evaluate(
+          send,
+          `JSON.stringify(document.querySelector('#spawn-cwd').getBoundingClientRect().toJSON())`,
+        ),
+      );
+      await send("Input.dispatchMouseEvent", { type: "mousePressed", x: cx, y: cy, button: "left", clickCount: 1 });
+      await send("Input.dispatchMouseEvent", { type: "mouseReleased", x: cx, y: cy, button: "left", clickCount: 1 });
+      const dialogOpen = await evaluate(
+        send,
+        `new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(Boolean(document.querySelector('[role="dialog"] input[aria-label="Path"]'))))))`,
+      );
+      if (Math.abs(after.top - before.top) >= 1) {
+        failures.push(
+          `${mode}: #spawn-cwd shifted vertically from top=${before.top.toFixed(1)} to ${after.top.toFixed(1)} (height=${before.height.toFixed(1)}) when provider check settled`,
+        );
+      }
+      if (!dialogOpen) {
+        failures.push(`${mode}: click at pre-settlement #spawn-cwd center (${cx.toFixed(1)}, ${cy.toFixed(1)}) did not open DirectoryPicker`);
+      }
+      if (dialogOpen) {
+        await evaluate(send, `document.querySelector('[role="dialog"] button[aria-label="Close"]')?.click()`);
+      }
+    }
+  } finally {
+    await clearViewportOverride(send);
+    page.close();
+  }
+  return failures;
+}
+
 async function main() {
   let guard;
   try {
@@ -407,6 +458,14 @@ async function main() {
         console.log(`${width}px ... FAIL`);
         for (const failure of failures) console.log(`    ${failure}`);
       }
+    }
+    const stabilityFailures = await checkWorkingDirectoryStability(cdpEndpoint, vitePort);
+    if (stabilityFailures.length === 0) {
+      console.log("1280px ... PASS - #spawn-cwd stays stationary and clickable while provider check settles");
+    } else {
+      failed++;
+      console.log("1280px ... FAIL");
+      for (const failure of stabilityFailures) console.log(`    ${failure}`);
     }
   } finally {
     // A rejecting teardown is a FAILING RUN, not a warning: cleanup only

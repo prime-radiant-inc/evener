@@ -1,5 +1,6 @@
 import type { Thread, ThreadCapabilities, ThreadReadResponse } from "@evener/appwire-client";
 import { WireError } from "@evener/appwire-client";
+import { askUserArgs, askUserQuestion } from "@evener/appwire-client/testing/askUserFixtures";
 import type { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { render, screen, within } from "@testing-library/react";
 import { expect } from "vitest";
@@ -225,15 +226,8 @@ export async function stampRecoveryOwner(
 // user message. There was no way to reach that state from this file before -
 // nothing here ever gave a thread any turns at all - so every gate keyed on
 // askPending (the timing caption's own !askPending clause, the input row's
-// hidden/inert) went untested in both directions (kata yh13). Mirrors
-// askDockStore.test.ts's own ONE_QUESTION/askArgs fixture, the file that
-// already proves this exact turns shape reconciles into a pending batch.
-export const ONE_ASK_QUESTION = [{ header: "Deploy?", question: "Ship now?", options: [{ label: "Yes", detail: "" }] }];
-
-export function askUserArgs(questions: Array<Record<string, unknown>> = ONE_ASK_QUESTION): string {
-  return JSON.stringify({ questions });
-}
-
+// hidden/inert) went untested in both directions (kata yh13).
+//
 // pendingAskTurns is a Partial<Thread> overrides fragment - spread it into
 // mountComposer's own `overrides` (alongside a "status"/"evener" override, if
 // the test also needs the session busy) rather than calling it standalone,
@@ -254,7 +248,7 @@ export function pendingAskTurns(): Pick<Thread, "turns"> {
             toolName: "ask_user",
             callId: "call_ask_1",
             status: "completed",
-            argumentsJson: askUserArgs(),
+            argumentsJson: askUserArgs([askUserQuestion({ recommended: false })]),
           },
         ],
       },

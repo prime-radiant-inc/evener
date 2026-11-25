@@ -49,7 +49,17 @@ import {
   sessionEffortLevels,
 } from "@evener/appwire-client";
 import { forwardRef, type ReactNode, useImperativeHandle, useState } from "react";
-import { Button, Meter, PropertyList, Sheet, type StackedPropertyListRow } from "../../../widgets";
+import { cadenceStateFor } from "../../../shell/sessionStatus";
+import {
+  Button,
+  Chip,
+  type ChipTone,
+  Meter,
+  PropertyList,
+  type PropertyListRow,
+  Sheet,
+  StatusDot,
+} from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { formatTimestamp, sessionTokens, tokenUnitLabel } from "./detailsAccounting";
 import styles from "./detailspanel.module.css";
@@ -106,20 +116,25 @@ function isEndedStatus(type: string): boolean {
   return type === "ended" || type === "closed";
 }
 
-// detailRow builds one PropertyList row whose value carries the row's own
-// testid, so a caller can find a fact without matching its label text.
-// `scope` says what the row's figure counts, when that can vary (the token
-// total).
-function detailRow(
-  label: string,
-  testId: string,
-  value: ReactNode,
-  mono = false,
-  scope?: string,
-): StackedPropertyListRow {
+function goalStatusTone(status: string): ChipTone {
+  switch (status.toLowerCase()) {
+    case "blocked":
+      return "attention";
+    case "active":
+      return "alive";
+    default:
+      return "neutral";
+  }
+}
+
+// detailRow builds one inline meta-table PropertyList row whose value wraps in
+// full and carries the row's own testid, so callers can find a fact without
+// matching its label text.
+function detailRow(label: string, testId: string, value: ReactNode, mono = false, scope?: string): PropertyListRow {
   return {
     label,
     mono,
+    wrap: true,
     value: (
       <span className={CLASS.value} data-testid={testId} data-scope={scope}>
         {value}
@@ -132,12 +147,12 @@ function detailRow(
 // was omitted for want of data - a heading over an empty list would advertise
 // facts the panel does not have. The caller's `value && detailRow(...)`
 // guards arrive here as falsy entries, which is what gets filtered out.
-function Section({ title, rows }: { title: string; rows: (StackedPropertyListRow | false | null | undefined)[] }) {
-  const present = rows.filter((row): row is StackedPropertyListRow => Boolean(row));
+function Section({ title, rows }: { title: string; rows: (PropertyListRow | false | null | undefined)[] }) {
+  const present = rows.filter((row): row is PropertyListRow => Boolean(row));
   if (present.length === 0) return null;
   return (
     <PanelSection title={title}>
-      <PropertyList layout="stacked" rows={present} />
+      <PropertyList layout="inline" rows={present} />
     </PanelSection>
   );
 }
@@ -202,15 +217,22 @@ export function DetailsPanelBody({ model, now, resolvedBranch = "" }: DetailsPan
               <>
                 <span>{objective}</span>
                 {goalStatus && (
-                  <span className={CLASS.dim} data-testid="session-details-goal-status">
+                  <Chip variant="quiet" tone={goalStatusTone(goalStatus)} data-testid="session-details-goal-status">
                     {goalStatus}
-                  </span>
+                  </Chip>
                 )}
               </>,
             ),
           detailRow("model", "session-details-model", modelLabel(model.modelProvider, model.model), true),
           effort ? detailRow("effort", "session-details-effort", effort) : null,
-          detailRow("state", "session-details-state", model.status.type),
+          detailRow(
+            "state",
+            "session-details-state",
+            <>
+              <StatusDot state={cadenceStateFor(model.status.type, { askPending: model.askPending })} decorative />
+              <span>{model.status.type}</span>
+            </>,
+          ),
           detailRow("session id", "session-details-id", model.threadId, true),
           model.manager && detailRow("role", "session-details-manager", "Manager"),
         ]}
@@ -289,9 +311,14 @@ export function DetailsPanelBody({ model, now, resolvedBranch = "" }: DetailsPan
                     reader checks, so an online host says so instead of leaving
                     it to the absence of a warning. Unknown says nothing. */}
                 {host.online !== null && (
-                  <span className={CLASS.dim} data-testid="session-details-host-state" data-online={host.online}>
+                  <Chip
+                    variant="quiet"
+                    tone={host.online ? "alive" : "danger"}
+                    data-testid="session-details-host-state"
+                    data-online={host.online}
+                  >
                     {host.online ? "online" : "offline"}
-                  </span>
+                  </Chip>
                 )}
               </>,
             ),

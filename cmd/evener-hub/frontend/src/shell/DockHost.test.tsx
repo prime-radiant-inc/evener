@@ -2722,7 +2722,7 @@ test.each([
       expect(activitySidebarStore.getState()).toMatchObject({ open: overviewOpen, tab: "about", ref: "remote:a" });
       if (overviewOpen) {
         const sidebar = within(await screen.findByTestId("activity-sidebar"));
-        expect(sidebar.getByRole("radio", { name: "About" }).getAttribute("aria-checked")).toBe("true");
+        expect(sidebar.getByRole("tab", { name: "About" }).getAttribute("aria-selected")).toBe("true");
         expect(await sidebar.findByText("about-owner")).toBeTruthy();
       } else expect(screen.queryByTestId("activity-sidebar")).toBeNull();
       expect(screen.queryByText("Couldn't load the workspace")).toBeNull();

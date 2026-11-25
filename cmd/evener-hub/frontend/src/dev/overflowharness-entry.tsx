@@ -170,7 +170,7 @@ const snapshot: ThreadReadResponse = {
       goal: {
         objective:
           "Keep the session focused on proving the current task and goal remain independently ellipsized across every supported composer width",
-        status: "awaiting stakeholder approval for compact session footer geometry",
+        status: "blocked",
         iterations: 12,
       },
       reasoningEffort: "high",

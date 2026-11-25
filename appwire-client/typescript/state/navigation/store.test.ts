@@ -35,6 +35,7 @@ import type {
 } from "../../types.gen";
 import {
   findSessionNode,
+  selectDisplaySources,
   selectExpanded,
   selectGlobalRows,
   selectLocation,
@@ -46,6 +47,7 @@ import {
   selectProjectPage,
   selectProjectResource,
   selectSectionRemaining,
+  selectSources,
 } from "./selectors";
 import { createNavigationStore, type NavigationStore, projectNodeExpansionKey } from "./store";
 import {
@@ -230,6 +232,54 @@ test("manifest invalidation hydrates resources that become nonempty", async () =
     limit: 100,
     representationVersion: 3,
   });
+});
+
+test("repeat same-revision manifest invalidation retries after a failed manifest read and updates sources", async () => {
+  const offlineSource = { id: "remote", label: "Remote", kind: "ssh" as const, online: false };
+  const onlineSource = { id: "remote", label: "Remote", kind: "ssh" as const, online: true };
+  let manifestCalls = 0;
+  const client = await init((params) => {
+    if (params.resource !== "manifest") throw new Error(`unexpected navigation read ${params.resource}`);
+    manifestCalls++;
+    if (manifestCalls === 1) {
+      return wireSnapshot(params, emptyManifest({ revision: 1, sources: [offlineSource] }), '"manifest-1"', 1);
+    }
+    if (manifestCalls === 2) {
+      throw new Error("manifest timeout");
+    }
+    return wireSnapshot(params, emptyManifest({ revision: 1, sources: [onlineSource] }), '"manifest-1-online"', 1);
+  });
+
+  expect(manifestCalls).toBe(1);
+  expect(selectSources(store.getState())).toEqual([offlineSource]);
+
+  client.emitNotification(
+    navigationInvalidatedNotification({
+      generationId: generation,
+      sequence: 1,
+      targets: [{ kind: "manifest", revision: 1 }],
+    }),
+  );
+  await flush();
+  expect(manifestCalls).toBe(2);
+  expect(store.getState().manifest?.error).not.toBeNull();
+  expect(store.getState().manifest?.stale).toBe(true);
+  expect(selectDisplaySources(store.getState())).toEqual([offlineSource]);
+  expect(selectSources(store.getState())).toEqual([]);
+
+  client.emitNotification(
+    navigationInvalidatedNotification({
+      generationId: generation,
+      sequence: 2,
+      targets: [{ kind: "manifest", revision: 1 }],
+    }),
+  );
+  await flush();
+  expect(manifestCalls).toBe(3);
+  expect(store.getState().manifest?.error).toBeNull();
+  expect(store.getState().manifest?.stale).toBe(false);
+  expect(selectDisplaySources(store.getState())).toEqual([onlineSource]);
+  expect(selectSources(store.getState())).toEqual([onlineSource]);
 });
 
 test("a failed section page keeps demand after the manifest count drains to zero", async () => {

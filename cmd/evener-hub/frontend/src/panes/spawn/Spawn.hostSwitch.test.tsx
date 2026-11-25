@@ -536,7 +536,7 @@ test("a Memory Off kept across an unoffering host rides the submission again onc
   await settled();
 
   // Choose Memory Off on local, whose schema offers the field, through the panel.
-  await user.click(screen.getByText("Advanced options"));
+  await user.click(screen.getByText("Advanced"));
   await user.selectOptions(screen.getByLabelText("Memory"), "false");
   await fillPrompt(user, "typed before the switch");
   await waitFor(() => expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false));
@@ -546,7 +546,7 @@ test("a Memory Off kept across an unoffering host rides the submission again onc
   await chooseHost("buildbox");
   await settled();
   if (screen.queryByLabelText("API log") === null) {
-    await user.click(screen.getByText("Advanced options"));
+    await user.click(screen.getByText("Advanced"));
   }
   await user.selectOptions(screen.getByLabelText("API log"), "true");
 
@@ -598,7 +598,7 @@ test("a Memory Off kept across a host switch still rides the submission when its
   await settled();
 
   // Choose Memory Off and a command value on local, whose schema offers both.
-  await user.click(screen.getByText("Advanced options"));
+  await user.click(screen.getByText("Advanced"));
   await user.selectOptions(screen.getByLabelText("Memory"), "false");
   fireEvent.change(screen.getByLabelText("Agent command"), { target: { value: command } });
   await waitFor(() => expect(commandValidations.length).toBe(1));

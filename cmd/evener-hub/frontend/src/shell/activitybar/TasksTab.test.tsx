@@ -134,7 +134,7 @@ function numbersIn(text: string | null | undefined): number[] {
 // The open tab is the Tasks tab; its visible label and accessible name both
 // carry the settled and total counts, in that order.
 function expectTabCounts(settled: number, total: number) {
-  const tab = screen.getByRole("radio", { checked: true });
+  const tab = screen.getByRole("tab", { selected: true });
   expect(numbersIn(tab.textContent)).toEqual([settled, total]);
   expect(tab.getAttribute("aria-label") ?? "").toMatch(new RegExp(`\\b${settled}\\b\\D+\\b${total}\\b`));
 }
@@ -162,7 +162,7 @@ function expectNoSummaries(counts: { done: number; total: number; cancelled?: nu
   const restating = [...sidebar.querySelectorAll("*")].filter(
     (element) =>
       element.children.length === 0 &&
-      element.closest('[role="radio"]') === null &&
+      element.closest('[role="tab"]') === null &&
       restates.test(element.textContent ?? ""),
   );
   expect(restating).toEqual([]);

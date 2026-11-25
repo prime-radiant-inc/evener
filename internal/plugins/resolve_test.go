@@ -398,6 +398,39 @@ func TestResolveForLaunch_BundledPluginByName(t *testing.T) {
 	}
 }
 
+func TestResolveForLaunch_EvenerFeedbackBundledPlugin(t *testing.T) {
+	m := NewManager(t.TempDir())
+	preview, err := m.PreviewForLaunch(context.Background(), nil, &[]string{"evener-feedback"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := preview.ValidateSelection(); err != nil {
+		t.Fatalf("preview ValidateSelection: %v", err)
+	}
+	if len(preview.Candidates) != 1 || preview.Candidates[0].Name != "evener-feedback" || preview.Candidates[0].Source != LaunchPluginSourceBundled || preview.Candidates[0].SkillCount != 1 {
+		t.Fatalf("preview candidates = %+v, want bundled evener-feedback with 1 skill", preview.Candidates)
+	}
+
+	res, err := m.ResolveForLaunch(context.Background(), nil, &[]string{"evener-feedback"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := res.ValidateSelection(); err != nil {
+		t.Fatalf("resolve ValidateSelection: %v", err)
+	}
+	instance, err := enabledLoad(res.SelectedDirs[0])
+	if err != nil {
+		t.Fatalf("load materialized evener-feedback plugin: %v", err)
+	}
+	meta, ok := instance.Skills["evener-feedback:reporting-feedback"]
+	if !ok {
+		t.Fatalf("skills = %v, want evener-feedback:reporting-feedback", instance.Skills)
+	}
+	if _, err := os.Stat(filepath.Join(meta.Dir, "scripts", "evener-feedback")); err != nil {
+		t.Fatalf("skill base directory missing scripts/evener-feedback: %v", err)
+	}
+}
+
 // Bundled plugins publish into an immutable content-addressed directory, so a
 // launch never rewrites a copy an earlier session may still be reading.
 func TestMaterializeBundledPlugin_PublishesContentAddressedDir(t *testing.T) {
