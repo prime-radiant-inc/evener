@@ -69,6 +69,15 @@ export function LayerFocusScope({
   const ref = useRef<HTMLDivElement>(null);
   const restoreTargetRef = useRef<Element | null>(null);
   const ownerDocumentRef = useRef<Document | null>(null);
+  const preCommitRestoreRef = useRef<{ doc: Document; target: Element | null } | null>(null);
+  const activeRef = useRef(false);
+  const childFocusedOnMountRef = useRef<Element | null>(null);
+
+  if (!activeRef.current && autoFocus && !released) {
+    const preDoc = ref.current?.ownerDocument ?? (typeof document !== "undefined" ? document : null);
+    preCommitRestoreRef.current = preDoc ? { doc: preDoc, target: preDoc.activeElement } : null;
+    childFocusedOnMountRef.current = null;
+  }
 
   // Mount (or un-release): capture the restore target, then move focus in.
   // Unmount (or release): restore, if the target is still focusable and still
@@ -78,22 +87,40 @@ export function LayerFocusScope({
   // biome-ignore lint/correctness/useExhaustiveDependencies: restoreWithoutScroll is read at the CLOSE, by design - putting a ref's .current in the dependency list would re-run this effect whenever the value changed, and re-running it re-captures the restore target and moves focus a second time. The close that sets it is the only thing that should decide it.
   useEffect(() => {
     if (!autoFocus || released) return;
+    activeRef.current = true;
     const scope = ref.current;
     // The scope's own document: in a Dockview popout the active element and the
     // focus target both belong to that window, and the opener's document knows
     // neither.
     const doc = scope?.ownerDocument ?? document;
     ownerDocumentRef.current = doc;
-    restoreTargetRef.current = doc.activeElement;
+    const liveActive = doc.activeElement;
+    const preCommit = preCommitRestoreRef.current;
+    const preTarget =
+      preCommit !== null && preCommit.doc === doc && preCommit.target !== null && !scope?.contains(preCommit.target)
+        ? preCommit.target
+        : null;
+    // Child autoFocus or mount effects run before this parent effect and move
+    // activeElement inside the scope; keep the pre-commit opener so closing
+    // never tries to restore to an unmounted or inert child.
+    restoreTargetRef.current = scope?.contains(liveActive) ? preTarget : liveActive;
     if (scope) {
-      const first = tabbable(scope)[0];
-      // preventScroll: the layer is already placed where the user is looking
-      // (a fixed or anchored overlay); a plain focus() of the unstyled scope
-      // wrapper at the end of <body> scrolls the page to it, and the scroll
-      // closes a Popover or Menu that was just opened.
-      (first ?? scope).focus({ preventScroll: true });
+      if (scope.contains(liveActive) && liveActive !== scope) {
+        childFocusedOnMountRef.current = liveActive;
+      } else {
+        const list = tabbable(scope);
+        const retained = childFocusedOnMountRef.current;
+        const initial =
+          retained !== null && list.includes(retained as HTMLElement) ? (retained as HTMLElement) : list[0];
+        // preventScroll: the layer is already placed where the user is looking
+        // (a fixed or anchored overlay); a plain focus() of the unstyled scope
+        // wrapper at the end of <body> scrolls the page to it, and the scroll
+        // closes a Popover or Menu that was just opened.
+        (initial ?? scope).focus({ preventScroll: true });
+      }
     }
     return () => {
+      activeRef.current = false;
       const target = restoreTargetRef.current;
       // Realm-independent: a node adopted into another window keeps its original
       // prototype, so `instanceof HTMLElement` from either window rejects it.
