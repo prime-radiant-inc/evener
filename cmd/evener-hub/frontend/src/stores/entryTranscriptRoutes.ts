@@ -501,7 +501,6 @@ function publishHeldOpeningDisplay(ref: string, token: number): void {
   const held = displayed && pruned && heldNoticeDisplay(displayed, pruned);
   if (pruned && held) {
     heldPrunedNoticeKeys.set(ref, { openingToken: token, keys: pruned });
-    routeHost().putThreadModel(ref, held);
   }
 }
 
