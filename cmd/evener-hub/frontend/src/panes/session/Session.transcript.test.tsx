@@ -538,9 +538,10 @@ test("a pending ask counts the dock row in the scroll coordinator's rendered row
     });
 
     // The dock row is on screen (placement contract), and the last options
-    // the coordinator saw count it: one turn row + the synthetic dock row.
+    // the coordinator saw count it: one turn row + the synthetic dock row +
+    // the end inset row (the floating-composer reserve, always last).
     await waitFor(() => expect(document.querySelector("[data-ask-response-dock]")).not.toBeNull());
-    expect(capturedCounts.at(-1)).toBe(2);
+    expect(capturedCounts.at(-1)).toBe(3);
   } finally {
     spy.mockRestore();
   }

@@ -102,3 +102,27 @@ test("reports the reader's bottom-to-stack-top clearance, inset included, and cl
     rect.mockRestore();
   }
 });
+
+test("observes the stack border box so padding-bottom inset changes re-measure clearance", () => {
+  const observed: Array<{ target: Element; options?: ResizeObserverOptions }> = [];
+  class RecordingResizeObserver {
+    observe(target: Element, options?: ResizeObserverOptions) {
+      observed.push({ target, options });
+    }
+    unobserve() {}
+    disconnect() {}
+  }
+  const previous = globalThis.ResizeObserver;
+  globalThis.ResizeObserver = RecordingResizeObserver as unknown as typeof ResizeObserver;
+  try {
+    render(
+      <FlowOverlay attentionOverlay={<span data-testid="attention-content">next</span>} onOverlayHeightChange={vi.fn()}>
+        <div />
+      </FlowOverlay>,
+    );
+    const stack = screen.getByTestId("flow-overlay-stack");
+    expect(observed).toEqual([{ target: stack, options: { box: "border-box" } }]);
+  } finally {
+    globalThis.ResizeObserver = previous;
+  }
+});

@@ -5,7 +5,16 @@ import {
   resolveEffectiveConfig,
   sessionActionError,
 } from "@evener/appwire-client";
-import { type ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  type CSSProperties,
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useStore } from "zustand";
 import { chromeStore } from "../../shell/chromeStore";
 import { focusedSessionRef } from "../../shell/focusedSession";
@@ -325,6 +334,32 @@ function LiveConversationBody({
     (height: number) => setOverlayHeight((current) => (current === height ? current : Math.max(0, height))),
     [],
   );
+  // The height of the chrome the phone floats over the transcript: the footer
+  // holding the composer and its notices. The reserve that lifts the floating
+  // controls is sized from it (session.module.css --floating-chrome-height), so
+  // a staged attachment strip or a grown draft moves the controls with the
+  // composer instead of leaving them underneath it. Null until measured: the
+  // stylesheet's own fallback is the reserve for that first frame.
+  const [chromeHeight, setChromeHeight] = useState<number | null>(null);
+  const footerRef = useRef<HTMLDivElement>(null);
+  // The footer (and its ref) exists only while the live surface renders; the
+  // effect must run again when a loading surface hands it back a footer.
+  const footerPresent = !deletedRef && model !== undefined;
+  useLayoutEffect(() => {
+    const node = footerRef.current;
+    if (!footerPresent || !isMobile || node === null) {
+      setChromeHeight(null);
+      return;
+    }
+    const measure = () => setChromeHeight(node.getBoundingClientRect().height);
+    measure();
+    // jsdom has no ResizeObserver; the mount measurement above is the whole
+    // behavior there.
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [footerPresent, isMobile]);
   // Only the actual focused conversation participates: a session pane, or a
   // cascade's active leaf (its keyboard-scroll pane id plus the exact focused
   // ref). A parent column's broad seat.focused value never grants it.
@@ -463,9 +498,15 @@ function LiveConversationBody({
     cancelOlder,
     viewKey: configFingerprint(displayConfig),
     anchorEntries,
-    // The trailing row is a real virtual row, so every end-targeted scroll
-    // path must count it or it lands one row short.
-    renderedRowCount: renderRows.length + (trailingRow !== undefined ? 1 : 0),
+    // The synthetic rows are real virtual rows, so every end-targeted scroll
+    // path must count them or it lands short: the trailing row when present,
+    // and the end inset row whenever any content exists (the phone's
+    // floating-composer reserve, always the list's last row - an empty
+    // transcript keeps zero rows).
+    renderedRowCount:
+      renderRows.length +
+      (trailingRow !== undefined ? 1 : 0) +
+      (renderRows.length > 0 || trailingRow !== undefined ? 1 : 0),
     sourceTurnRowIndexes,
     // An ask batch completing changes no turn/item shape: without this
     // signal a scrolled-away reader would get no new-content pill.
@@ -674,8 +715,22 @@ function LiveConversationBody({
       </div>
     ) : null;
 
+  // The stack's committed clearance (its measured height plus the inset it
+  // floats above the reader's bottom edge) is published as a property so the
+  // end inset row can top up the phone's composer reserve instead of adding a
+  // second full reserve above the stack. The chrome's own measured height is
+  // published too: the reserve that lifts the floating controls is sized from
+  // it, never from a constant that a taller composer outgrows.
   const content = (
-    <div className={styles.contentColumn}>
+    <div
+      className={styles.contentColumn}
+      style={
+        {
+          "--overlay-clearance": `${overlayHeight}px`,
+          ...(chromeHeight === null ? {} : { "--floating-chrome-height": `${chromeHeight}px` }),
+        } as CSSProperties
+      }
+    >
       <TopNotesPanel sessionRef={ref} model={model} sourcePaneId={seat.viewFallbackId} />
       <SandboxEscalationRail sessionRef={ref} />
       {find.view && <FindBar view={find.view} />}
@@ -694,7 +749,7 @@ function LiveConversationBody({
   );
 
   const footer = (
-    <div className={styles.footer}>
+    <div className={styles.footer} ref={footerRef}>
       <div className={styles.measure}>
         <LivenessLine
           lastFrameAt={model.lastFrameAt}
