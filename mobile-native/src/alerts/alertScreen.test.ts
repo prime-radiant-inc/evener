@@ -9,6 +9,11 @@ const reader = { name: "Reader", params: { hubId: "hub-1", sessionRef: "local:a"
 
 it.each([
 	["the Board", [board], { kind: "board" }],
+	[
+		"the web welcome page with the drawer closed",
+		[{ name: "Workspace", params: { hubId: "hub-1", path: "/" } }],
+		{ kind: "other" },
+	],
 	["a session", [board, session("local:a")], { kind: "session", ref: "local:a" }],
 	[
 		"a web session",

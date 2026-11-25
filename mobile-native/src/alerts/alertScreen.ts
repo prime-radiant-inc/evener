@@ -27,7 +27,6 @@ export function alertScreenFor(routes: readonly Route[], hubId: string | null): 
 	if (screen?.name === "Workspace" && params?.hubId === hubId && typeof params.path === "string") {
 		const ref = workspaceSessionRef(params.path);
 		if (ref) return { kind: "session", ref };
-		if (params.path === "/") return { kind: "board" };
 	}
 	if (screen?.name === "Conversation" && params?.hubId === hubId && typeof params.ref === "string")
 		return { kind: "session", ref: params.ref };
