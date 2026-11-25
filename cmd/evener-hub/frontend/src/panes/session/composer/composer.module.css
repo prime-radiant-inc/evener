@@ -73,17 +73,6 @@
   min-width: 0;
 }
 
-/* The phone's activity counts sit on a glance line above the composer card,
- * not as controls in the writing row. Appearing there leaves the card and its
- * persistent controls stationary. The chips keep the tap floor. */
-.activityRow {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  min-height: var(--tap-min);
-  flex: none;
-}
-
 /* An empty folded row hides Steer but reserves its slot, so the session menu
  * and primary action do not move when content arrives. */
 .steerSlot[data-hidden="true"] {
@@ -135,10 +124,6 @@
   width: 100%;
   height: 100%;
   background: var(--surface-1);
-}
-
-.lightboxImage {
-  composes: image from "../../../widgets/internal/lightbox.module.css";
 }
 
 .dimensionsOverlay {
@@ -321,4 +306,10 @@
 .menuSlot {
   flex: 0 0 var(--tap-min);
   min-width: var(--tap-min);
+}
+
+/* The leading row grows when a draft expands the card. Keep the menu beside
+ * the verbs, with the spare space on the Attach side. */
+.leading > .menuSlot {
+  margin-inline-start: auto;
 }

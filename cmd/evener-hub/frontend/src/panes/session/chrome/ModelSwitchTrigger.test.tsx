@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { expect, test, vi } from "vitest";
 import { Button, Dialog, type ModelCatalog } from "../../../widgets";
+import pickerTriggerStyles from "../../../widgets/internal/pickerTrigger.module.css";
 import rawPopoverStyles from "../../../widgets/popover/popover.module.css";
 import { installMobileViewport } from "../testing/mobileViewport";
 import { ModelSwitchTrigger } from "./ModelSwitchTrigger";
@@ -91,14 +92,15 @@ test("the desktop trigger announces a listbox popup and whether it is open", asy
 
 test("fill stretches the desktop Popover wrapper", () => {
   renderTrigger({ fill: true });
-  expect(screen.getByTestId("trigger").parentElement?.className.split(" ")).toContain(rawPopoverStyles.triggerStretch);
+  expect(screen.getByTestId("trigger").closest(`.${rawPopoverStyles.triggerStretch}`)).not.toBeNull();
 });
 
 test("without fill the trigger wrapper hugs its label", () => {
   renderTrigger();
-  expect(screen.getByTestId("trigger").parentElement?.className.split(" ")).not.toContain(
-    rawPopoverStyles.triggerStretch,
-  );
+  const wrapper = screen.getByTestId("trigger").parentElement;
+  expect(wrapper?.className.split(" ")).toContain(pickerTriggerStyles.wrapper);
+  expect(wrapper?.className.split(" ")).not.toContain(pickerTriggerStyles.wrapperFill);
+  expect(screen.getByTestId("trigger").closest(`.${rawPopoverStyles.triggerStretch}`)).toBeNull();
 });
 
 test("fill stretches the mobile span wrapper", () => {
@@ -106,8 +108,8 @@ test("fill stretches the mobile span wrapper", () => {
   try {
     renderTrigger({ fill: true });
     const wrapper = screen.getByTestId("trigger").parentElement;
-    expect(wrapper?.className.split(" ")).toContain(rawStyles.triggerWrapper);
-    expect(wrapper?.className.split(" ")).toContain(rawStyles.triggerWrapperFill);
+    expect(wrapper?.className.split(" ")).toContain(pickerTriggerStyles.wrapper);
+    expect(wrapper?.className.split(" ")).toContain(pickerTriggerStyles.wrapperFill);
   } finally {
     restoreViewport();
   }

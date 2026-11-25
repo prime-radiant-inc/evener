@@ -560,6 +560,7 @@ export function PathField({
       ariaMode={kind === "dir" ? "dialog" : "listbox"}
       actionLabel="browse"
       value={shownValue}
+      fill
       classes={{
         trigger: `${CLASS.trigger}${kind === "dir" ? ` ${CLASS.directoryTrigger}` : ""}`,
         value: `${CLASS.triggerValue} ${kind === "dir" ? CLASS.directoryValue : ""} ${value === "" ? CLASS.triggerDefault : ""}`,

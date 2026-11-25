@@ -1,6 +1,12 @@
 // Ported from Beautiful UI (https://www.beautifului.dev, MIT (c) 2026 Shane
 // Levine; see LICENSES/beautiful-ui.txt) - adapts their DiffTable showcase
 // (AI-proposed tabular edits) into a generic widget.
+//
+// Gallery-only by ownership decision (W3-F17): no production surface mounts
+// it. src/dev/gallery-sections/difftable.tsx is its one caller, and
+// WidgetGallery.test.tsx keeps that section registered. Deleting it means
+// removing this widget, its test, that gallery section, and the barrel export
+// together; a real production caller would promote it out of this state.
 import { requireClass } from "../internal/requireClass";
 import styles from "./difftable.module.css";
 

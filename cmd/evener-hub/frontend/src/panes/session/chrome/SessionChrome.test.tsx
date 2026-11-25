@@ -31,6 +31,7 @@ import { resetTranscriptDisplayStoreForTests, transcriptDisplayStore } from "../
 import { escapeRegExp } from "../../../styles/cssBlock";
 import { ALL_CAPABILITIES as CAPABILITIES } from "../../../threadTestUtils";
 import type { SessionZoomParams } from "../../zoom/intent";
+import { LANDSCAPE_PHONE_QUERY } from "../composer/narrowComposer";
 import { resetFindRequestsForTests, useFindRequest } from "../find/findRequest";
 import { settleActivityDiscovery } from "../testing/activityDiscovery";
 import { installMobileViewport } from "../testing/mobileViewport";
@@ -98,9 +99,10 @@ function locationWithSession(ref: string): NavigationSessionLocation {
     },
   };
 }
-function setLocation(ref: string): void {
+function setLocation(ref: string, tasks?: NonNullable<NavigationSessionLocation["session"]>["tasks"]): void {
   const key = { kind: "location", ref } as const;
   const data = locationWithSession(ref);
+  if (data.session && tasks) data.session.tasks = tasks;
   navigationStore.setState({
     mode: "v3",
     clientGenerationID: "generation_test",
@@ -461,6 +463,139 @@ test("header Overview toggles the session's sidebar and selected state", async (
   await user.click(overview);
   expect(activitySidebarStore.getState().open).toBe(false);
   expect(overview.getAttribute("aria-pressed")).toBe("false");
+});
+
+test("the phone header keeps session facts, Find and same-session Tasks in one Overview", async ({
+  onTestFinished,
+}) => {
+  onTestFinished(installMobileViewport());
+  const ref = "local:phone_sheet";
+  const paneId = "pane_phone_sheet";
+  const cwd = "/tmp/overview-project";
+  const branch = "fixture-overview-branch";
+  const link = "https://example.com/docs";
+  const goal = { objective: "Review the recorded fixture", status: "blocked", iterations: 2 };
+  const user = userEvent.setup();
+  const asked = renderHook(() => useFindRequest(ref, paneId));
+  const fake = connectFakeClient();
+  fake.on("evener/git/head", () => ({ head: branch }));
+  fake.on("evener/tasks/list", () => ({ data: [] }));
+  let tasks: NonNullable<Thread["evener"]>["tasks"];
+  fake.on("thread/read", () =>
+    readResponse(ref, {
+      cwd,
+      evener: {
+        ref,
+        capabilities: CAPABILITIES,
+        queue: { revision: 0 },
+        goal,
+        tasks,
+        sessionUrls: [{ id: "u1", url: link, label: "Example", addedBy: "human", addedAt: 7 }],
+      },
+    }),
+  );
+  workspaceStore.setState({
+    panes: [{ id: paneId, type: "session", params: { ref }, slot: "main" }],
+    focusedPaneId: paneId,
+  });
+  const panes = workspaceStore.getState().panes;
+  await threadsStore.getState().ensureThread(ref);
+  render(
+    <MotionProvider>
+      <SessionInspectionActions sessionRef={ref} paneId={paneId} />
+      <ActivitySidebar mobile />
+    </MotionProvider>,
+  );
+
+  expect(screen.queryByRole("button", { name: "Find in session" })).toBeNull();
+  const entry = screen.getByRole("button", { name: "Overview" });
+  await user.click(entry);
+  const sheet = await screen.findByRole("dialog", { name: "Overview" });
+  expect(within(sheet).getByTestId("session-details-model")).toBeTruthy();
+  expect(within(sheet).getByTestId("session-details-goal").textContent).toContain(goal.objective);
+  expect(within(sheet).getByTestId("session-details-goal-status").textContent).toBe(goal.status);
+  expect((await within(sheet).findByTestId("session-details-branch")).textContent).toContain(branch);
+  expect(fake.calls.find((call) => call.method === "evener/git/head")?.params).toEqual({ cwd });
+  const savedLink = within(sheet).getByRole("link");
+  expect(savedLink).toBe(within(sheet).getByTestId("overview-sheet-link-u1"));
+  expect(savedLink.getAttribute("href")).toBe(link);
+  expect(savedLink.getAttribute("target")).toBe("_blank");
+  expect(savedLink.getAttribute("rel")?.split(/\s+/)).toEqual(expect.arrayContaining(["noopener", "noreferrer"]));
+  expect(within(savedLink).getByText(link)).toBeTruthy();
+  expect(within(sheet).queryByRole("button", { name: /^Tasks,/ })).toBeNull();
+  act(() => setLocation(ref, { total: 0, done: 0 }));
+  expect(within(within(sheet).getByRole("button", { name: /^Tasks,/ })).getByText("0/0")).toBeTruthy();
+  act(() => resetNavigationStoreForTests());
+
+  await user.click(within(sheet).getByRole("button", { name: "Find in session" }));
+  expect(asked.result.current?.target).toBe(paneId);
+  await waitFor(() => expect(sheet.isConnected).toBe(false));
+
+  // The thread can know its task list is empty before a navigation row loads.
+  tasks = { total: 0, done: 0 };
+  await act(async () => {
+    fake.emitNotification({ method: "evener/thread/resync", params: { threadId: `thr_${ref}`, ref } });
+  });
+  await waitFor(() => expect(threadsStore.getState().threads.get(ref)?.tasks).toMatchObject(tasks));
+  await user.click(entry);
+  const reopened = await screen.findByRole("dialog", { name: "Overview" });
+  const tasksRow = within(reopened).getByRole("button", { name: /^Tasks,/ });
+  expect(within(tasksRow).getByText("0/0")).toBeTruthy();
+  await user.click(tasksRow);
+  const sidebar = await screen.findByTestId("activity-sidebar");
+  expect(activitySidebarStore.getState()).toMatchObject({ open: true, ref, tab: "tasks" });
+  await waitFor(() => expect(fake.calls.find((call) => call.method === "evener/tasks/list")?.params).toEqual({ ref }));
+  expect(workspaceStore.getState().panes).toEqual(panes);
+  await waitFor(() => expect(sidebar.contains(document.activeElement)).toBe(true));
+  await user.keyboard("{Escape}");
+  await waitFor(() => expect(document.activeElement).toBe(entry));
+});
+
+test("landscape phone header Overview reaches the current session's goal through About", async ({ onTestFinished }) => {
+  const originalMatchMedia = window.matchMedia;
+  window.matchMedia = vi.fn((query: string) => ({
+    matches: query === LANDSCAPE_PHONE_QUERY,
+    media: query,
+    onchange: null,
+    addListener: () => {},
+    removeListener: () => {},
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    dispatchEvent: () => false,
+  })) as typeof window.matchMedia;
+  onTestFinished(() => {
+    window.matchMedia = originalMatchMedia;
+  });
+
+  const ref = "local:duo_landscape_goal";
+  const paneId = "pane_duo_landscape_goal";
+  const goal = { objective: "Verify Duo landscape goal", status: "blocked", iterations: 1 };
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("thread/read", () =>
+    readResponse(ref, {
+      evener: { ref, capabilities: CAPABILITIES, queue: { revision: 0 }, goal },
+    }),
+  );
+  workspaceStore.setState({
+    panes: [{ id: paneId, type: "session", params: { ref }, slot: "main" }],
+    focusedPaneId: paneId,
+  });
+  await threadsStore.getState().ensureThread(ref);
+
+  render(
+    <MotionProvider>
+      <SessionInspectionActions sessionRef={ref} paneId={paneId} />
+      <ActivitySidebar />
+    </MotionProvider>,
+  );
+
+  await user.click(screen.getByRole("button", { name: "Overview" }));
+  await user.click(await screen.findByRole("radio", { name: "About" }));
+  const sidebar = screen.getByTestId("activity-sidebar");
+  await within(sidebar).findByTestId("session-details-model");
+  expect(within(sidebar).getByTestId("session-details-goal").textContent).toContain(goal.objective);
+  expect(within(sidebar).getByTestId("session-details-goal-status").textContent).toBe(goal.status);
 });
 
 test("an ordinary session's composer leaves Find and Overview to the header but keeps Verbosity", async () => {

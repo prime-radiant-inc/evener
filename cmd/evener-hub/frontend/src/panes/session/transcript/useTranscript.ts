@@ -18,6 +18,11 @@ export interface UseTranscriptResult {
   hasOlder: boolean;
   loadOlder(): Promise<void>; // thread/turns/list via olderCursor -> prependOlderTurns
   loadingOlder: boolean;
+  // Whether an older-page read is on the wire right now. Distinct from
+  // loadingOlder, which also counts retained demand while a retry is paced or
+  // a settled page has not advanced the cursor: a fetching affordance must
+  // read this one, or it claims I/O that is not happening.
+  olderReadInFlight: boolean;
   cancelOlder(): void;
   // The fire-and-forget form paging affordances use: same fetch, but the
   // rejection lands in olderError instead of propagating. Both transcript
@@ -216,6 +221,7 @@ function useTranscriptInternal(
     loadOlder,
     cancelOlder,
     loadingOlder: state.loading || (state.pending && state.error === null),
+    olderReadInFlight: state.loading,
     loadOlderReportingError: () => {
       if (reader === null || view?.alive === false || typedReader?.alive === false) return;
       const owner = rememberConsumer(committedEntry(), viewId, view, standalone);

@@ -7,9 +7,20 @@ import { LoadOlderRow as LoadOlderRowImpl, type LoadOlderRowProps } from "./Load
 // reader is active unless a case says otherwise, which is the mount state of a
 // pane the reader is looking at.
 function LoadOlderRow(
-  props: Omit<LoadOlderRowProps, "pageKey" | "readerActive"> & { pageKey?: string | null; readerActive?: boolean },
+  props: Omit<LoadOlderRowProps, "pageKey" | "readerActive" | "readInFlight"> & {
+    pageKey?: string | null;
+    readerActive?: boolean;
+    readInFlight?: boolean;
+  },
 ) {
-  return <LoadOlderRowImpl {...props} pageKey={props.pageKey ?? null} readerActive={props.readerActive ?? true} />;
+  return (
+    <LoadOlderRowImpl
+      {...props}
+      readInFlight={props.readInFlight ?? false}
+      pageKey={props.pageKey ?? null}
+      readerActive={props.readerActive ?? true}
+    />
+  );
 }
 
 // jsdom implements no ResizeObserver at all (the same gap the row's earlier
@@ -580,10 +591,23 @@ test("there is no 'load more' button to press - paging is automatic", () => {
 
 test("shows a quiet loading state while a page is in flight", () => {
   const port = OVERFLOWING();
-  render(<LoadOlderRow onLoad={() => {}} loading={true} error={null} scrollElement={() => port.el} />);
+  render(
+    <LoadOlderRow onLoad={() => {}} loading={true} readInFlight={true} error={null} scrollElement={() => port.el} />,
+  );
   const row = screen.getByTestId("load-older-row");
   expect(row.getAttribute("data-state")).toBe("loading");
   expect(row.textContent).not.toBe("");
+});
+
+// #7691: `loading` also carries paging demand that is waiting out a paced
+// retry, or a page that settled without advancing the cursor. No read is on
+// the wire then, so the fetching line would claim I/O that is not happening.
+test("retained demand between reads shows no fetching affordance", () => {
+  const port = OVERFLOWING();
+  render(<LoadOlderRow onLoad={() => {}} loading={true} error={null} scrollElement={() => port.el} />);
+  const row = screen.getByTestId("load-older-row");
+  expect(row.getAttribute("data-state")).toBe("idle");
+  expect(row.textContent).toBe("");
 });
 
 test("idle with more history to fetch, it shows no banner at all", () => {

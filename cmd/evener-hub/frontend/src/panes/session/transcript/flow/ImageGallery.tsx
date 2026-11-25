@@ -24,7 +24,7 @@
 
 import type { ItemImage } from "@evener/appwire-client";
 import { useCallback, useEffect, useState } from "react";
-import { Button, Dialog, ZoomableMedia } from "../../../../widgets";
+import { Button, ImageThumbnail, MediaLightbox } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import styles from "./imagegallery.module.css";
 
@@ -44,8 +44,6 @@ const CLASS = {
   thumbImg: requireClass(styles.thumbImg, "imagegallery.module.css", "thumbImg"),
   thumbImgLarge: requireClass(styles.thumbImgLarge, "imagegallery.module.css", "thumbImgLarge"),
   caption: requireClass(styles.caption, "imagegallery.module.css", "caption"),
-  lightboxImg: requireClass(styles.lightboxImg, "imagegallery.module.css", "lightboxImg"),
-  lightboxCaption: requireClass(styles.lightboxCaption, "imagegallery.module.css", "lightboxCaption"),
   nav: requireClass(styles.nav, "imagegallery.module.css", "nav"),
 };
 
@@ -133,56 +131,47 @@ export function ImageGallery({ images: supplied, size }: ImageGalleryProps) {
           // on its own; +i here is belt-and-suspenders against a literal
           // duplicate (two entries hashing the same, which would collide as
           // a bare-src key), not standing in for a missing real id.
-          <div
+          <ImageThumbnail
             // biome-ignore lint/suspicious/noArrayIndexKey: src is already content-stable, see above
             key={image.src + i}
-            className={size === "large" ? `${CLASS.thumb} ${CLASS.thumbLarge}` : CLASS.thumb}
-          >
-            {/* No label: the thumbnail's alt text and caption name it. */}
-            <ZoomableMedia data-testid="image-gallery-thumb" onOpen={() => setOpenIndex(i)} fill>
-              <img
-                className={size === "large" ? `${CLASS.thumbImg} ${CLASS.thumbImgLarge}` : CLASS.thumbImg}
-                src={image.src}
-                alt={altFor(i, total)}
-                // Decode-scheduling only: thumbnails below the fold must not
-                // force the browser to fetch/decode full bytes up front. The
-                // lightbox img below stays eager - opening it is an explicit
-                // user request for the full image. src/onError/data-URI
-                // handling is unchanged.
-                loading="lazy"
-                decoding="async"
-                // Reserve the 96px box before CSS/decode so lazy thumbnails
-                // don't shift layout on load. Only the default cover-crop
-                // thumbnails have a fixed box - size="large" preserves each
-                // image's own aspect ratio (unknown up front), so no attrs
-                // there (React omits undefined attributes).
-                width={size === "large" ? undefined : 96}
-                height={size === "large" ? undefined : 96}
-                onError={() => markUnloadable(image.src)}
-              />
-              {caption !== undefined && (
-                <span className={CLASS.caption} data-testid="image-gallery-caption">
-                  {caption}
-                </span>
-              )}
-            </ZoomableMedia>
-          </div>
+            src={image.src}
+            alt={altFor(i, total)}
+            // No label: the thumbnail's alt text and caption name it.
+            onOpen={() => setOpenIndex(i)}
+            frameClassName={size === "large" ? `${CLASS.thumb} ${CLASS.thumbLarge}` : CLASS.thumb}
+            imageClassName={size === "large" ? `${CLASS.thumbImg} ${CLASS.thumbImgLarge}` : CLASS.thumbImg}
+            caption={caption}
+            captionClassName={CLASS.caption}
+            captionTestId="image-gallery-caption"
+            triggerTestId="image-gallery-thumb"
+            // Decode-scheduling only: thumbnails below the fold must not force
+            // the browser to fetch/decode full bytes up front. Opening the
+            // lightbox is an explicit request for the full image, so its
+            // image stays eager.
+            loading="lazy"
+            decoding="async"
+            // Reserve the 96px box before CSS/decode so lazy thumbnails don't
+            // shift layout on load. Only the default cover-crop thumbnails
+            // have a fixed box - size="large" preserves each image's own
+            // aspect ratio (unknown up front), so no attrs there.
+            width={size === "large" ? undefined : 96}
+            height={size === "large" ? undefined : 96}
+            onImageError={() => markUnloadable(image.src)}
+          />
         );
       })}
 
       {openIndex !== null && activeImage !== undefined && (
-        <Dialog open onClose={() => setOpenIndex(null)} title={altFor(openIndex, total)} size="large">
-          <img
-            data-testid="image-gallery-lightbox-img"
-            className={CLASS.lightboxImg}
-            src={activeImage.src}
-            alt={altFor(openIndex, total)}
-          />
-          {activeCaption !== undefined && (
-            <div className={CLASS.lightboxCaption} data-testid="image-gallery-lightbox-caption">
-              {activeCaption}
-            </div>
-          )}
+        <MediaLightbox
+          open
+          onClose={() => setOpenIndex(null)}
+          title={altFor(openIndex, total)}
+          src={activeImage.src}
+          alt={altFor(openIndex, total)}
+          caption={activeCaption}
+          captionTestId="image-gallery-lightbox-caption"
+          imageTestId="image-gallery-lightbox-img"
+        >
           {total > 1 && (
             <div className={CLASS.nav}>
               <Button variant="quiet" size="sm" data-testid="image-gallery-prev" onClick={() => step(-1)}>
@@ -193,7 +182,7 @@ export function ImageGallery({ images: supplied, size }: ImageGalleryProps) {
               </Button>
             </div>
           )}
-        </Dialog>
+        </MediaLightbox>
       )}
     </div>
   );

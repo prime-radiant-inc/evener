@@ -15,6 +15,7 @@ import {
   effortLabel,
   effortOptionLevels,
   NO_ACTIVE_TURN,
+  sessionEffortLevels,
   slashCommandInvocation,
   visibleCatalogCommands,
 } from "@evener/appwire-client";
@@ -513,7 +514,7 @@ export function buildCommands(): Command[] {
         // ladder lists it, labelled so it can't be mistaken for the default.
         source: (ctx) => {
           const model = focusedModel(ctx.sessionRef);
-          const levels = model?.supportsReasoning ? model.reasoningEffortLevels : [];
+          const levels = model?.supportsReasoning ? sessionEffortLevels(model.reasoningEffortLevels, true) : [];
           if (!levels.length) return [];
           return effortOptionLevels(levels, model?.reasoningEffort ?? "").map((l) => ({
             id: l,

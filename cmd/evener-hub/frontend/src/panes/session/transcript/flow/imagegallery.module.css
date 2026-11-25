@@ -50,17 +50,6 @@
   color: var(--ink-mid);
 }
 
-.lightboxImg {
-  composes: image from "../../../../widgets/internal/lightbox.module.css";
-}
-
-.lightboxCaption {
-  margin-top: var(--space-2);
-  text-align: center;
-  font-size: var(--font-size-caption);
-  color: var(--ink-mid);
-}
-
 .nav {
   display: flex;
   justify-content: space-between;

@@ -72,9 +72,10 @@ export interface ModelSwitchTriggerProps {
    * kind of reload, not a scope change. */
   refreshKey?: unknown;
   disabled?: boolean;
-  /** Stretch the trigger's wrapper across the slot it was given instead of
-   * hugging the label. The Popover path uses its own stretchTrigger; the
-   * mobile span wrapper gets the equivalent class. Default false. */
+  /** Stretch the trigger's slot box across what it was given instead of
+   * hugging the label. The Popover path also stretches its own wrapper so the
+   * panel anchors to the field; PickerTrigger owns the slot box on both
+   * branches. Default false. */
   fill?: boolean;
   /** The caller's slot may squeeze this trigger: the button and value
    * truncate instead of reserving the model id's full width and widening the
@@ -95,8 +96,6 @@ const CLASS = {
   triggerShrink: requireClass(styles.triggerShrink, "modelswitch.module.css", "triggerShrink"),
   popoverPanel: requireClass(styles.popoverPanel, "modelswitch.module.css", "popoverPanel"),
   sheetBody: requireClass(styles.sheetBody, "modelswitch.module.css", "sheetBody"),
-  triggerWrapper: requireClass(styles.triggerWrapper, "modelswitch.module.css", "triggerWrapper"),
-  triggerWrapperFill: requireClass(styles.triggerWrapperFill, "modelswitch.module.css", "triggerWrapperFill"),
 };
 
 export function ModelSwitchTrigger({
@@ -272,7 +271,9 @@ export function ModelSwitchTrigger({
   // One trigger button, whichever overlay sits behind it: the visible control
   // must not change identity across the breakpoint, or the spawn pane's
   // phone-only trigger slot and the status row's chip would both re-mount on
-  // a viewport crossing.
+  // a viewport crossing. PickerTrigger owns the one span around it on both
+  // branches, so the row's direct-child sizing reaches the same shape here as
+  // it does through Popover's wrapper.
   const triggerButton = (
     <PickerTrigger
       ref={triggerRef}
@@ -286,6 +287,7 @@ export function ModelSwitchTrigger({
       ariaMode={isMobile ? "dialog" : "listbox"}
       actionLabel={actionLabel}
       value={label}
+      fill={fill}
       classes={{
         trigger: shrink ? `${CLASS.trigger} ${CLASS.triggerShrink}` : CLASS.trigger,
         value: CLASS.value,
@@ -301,15 +303,7 @@ export function ModelSwitchTrigger({
   if (isMobile) {
     return (
       <>
-        {/* A span wrapper matching Popover's own trigger wrapper
-            (widgets/popover's .trigger: inline-flex, hugging): the status
-            row sizes that one span as the trigger's slot, so the trigger
-            must stay one span deep on both sides of the breakpoint.
-            triggerWrapperFill is Popover's stretchTrigger equivalent for a
-            caller that needs the wrapper to span its slot (the spawn card). */}
-        <span className={fill ? `${CLASS.triggerWrapper} ${CLASS.triggerWrapperFill}` : CLASS.triggerWrapper}>
-          {triggerButton}
-        </span>
+        {triggerButton}
         <Sheet open={open} side="bottom" onClose={closePicker} title="Choose model">
           <div className={CLASS.sheetBody}>{panel}</div>
         </Sheet>
