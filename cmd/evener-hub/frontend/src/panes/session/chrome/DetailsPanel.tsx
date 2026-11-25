@@ -116,8 +116,11 @@ const CLASS = {
   metricGrid: requireClass(styles.metricGrid, "detailspanel.module.css", "metricGrid"),
   metricCell: requireClass(styles.metricCell, "detailspanel.module.css", "metricCell"),
   metricLabel: requireClass(styles.metricLabel, "detailspanel.module.css", "metricLabel"),
+  metricLabelCapitalize: requireClass(styles.metricLabelCapitalize, "detailspanel.module.css", "metricLabelCapitalize"),
   metricValue: requireClass(styles.metricValue, "detailspanel.module.css", "metricValue"),
   value: requireClass(styles.value, "detailspanel.module.css", "value"),
+  truncateValue: requireClass(styles.truncateValue, "detailspanel.module.css", "truncateValue"),
+  copyableValue: requireClass(styles.copyableValue, "detailspanel.module.css", "copyableValue"),
   dim: requireClass(styles.dim, "detailspanel.module.css", "dim"),
   effortInline: requireClass(styles.effortInline, "detailspanel.module.css", "effortInline"),
   hostOffline: requireClass(styles.hostOffline, "detailspanel.module.css", "hostOffline"),
@@ -138,16 +141,22 @@ function detailRow(
   label: string,
   testId: string,
   value: ReactNode,
-  options: { mono?: boolean; wrap?: boolean; actions?: ReactNode; title?: string } = {},
+  options: { mono?: boolean; wrap?: boolean; copyAction?: ReactNode; title?: string } = {},
 ): PropertyListRow {
-  const { mono = false, wrap = true, actions, title } = options;
+  const { mono = false, wrap = true, copyAction, title } = options;
   return {
     label,
     mono,
     wrap,
-    actions,
-    value: (
-      <span className={CLASS.value} data-testid={testId} title={title}>
+    value: copyAction ? (
+      <span className={CLASS.copyableValue}>
+        <span className={CLASS.truncateValue} data-testid={testId} title={title}>
+          {value}
+        </span>
+        {copyAction}
+      </span>
+    ) : (
+      <span className={wrap ? CLASS.value : CLASS.truncateValue} data-testid={testId} title={title}>
         {value}
       </span>
     ),
@@ -466,7 +475,7 @@ export function DetailsPanelBody({ model, now, resolvedBranch = "", onSetGoal }:
           mono: true,
           wrap: false,
           title: model.cwd,
-          actions: <CopyButton text={model.cwd} label="Copy working directory" size="xs" />,
+          copyAction: <CopyButton text={model.cwd} label="Copy working directory" size="xs" />,
         })
       : null,
     projectPath ? detailRow("Project", "session-details-project", projectPath, { mono: true, wrap: true }) : null,
@@ -513,7 +522,7 @@ export function DetailsPanelBody({ model, now, resolvedBranch = "", onSetGoal }:
       mono: true,
       wrap: false,
       title: model.threadId,
-      actions: <CopyButton text={model.threadId} label="Copy session ID" size="xs" />,
+      copyAction: <CopyButton text={model.threadId} label="Copy session ID" size="xs" />,
     }),
     model.manager ? detailRow("Role", "session-details-manager", "Manager") : null,
     createdAt ? detailRow("Started", "session-details-created", createdAt) : null,
@@ -574,7 +583,9 @@ export function DetailsPanelBody({ model, now, resolvedBranch = "", onSetGoal }:
             <dl className={CLASS.metricGrid}>
               {usageMetrics.map((item) => (
                 <div key={item.key} className={CLASS.metricCell}>
-                  <dt className={CLASS.metricLabel}>{item.label}</dt>
+                  <dt className={item.key === "tokens" ? CLASS.metricLabelCapitalize : CLASS.metricLabel}>
+                    {item.label}
+                  </dt>
                   <dd className={CLASS.metricValue} data-testid={item.testId} data-scope={item.scope}>
                     {item.value}
                   </dd>

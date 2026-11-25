@@ -51,7 +51,7 @@
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
-  margin: calc(var(--space-1) * -1) calc(var(--space-2) * -1);
+  margin: calc(var(--space-1) * -1) calc(var(--space-3) * -1);
   padding: var(--space-1);
 }
 
@@ -159,6 +159,11 @@
   color: var(--ink-low);
 }
 
+.metricLabelCapitalize {
+  composes: metricLabel;
+  text-transform: capitalize;
+}
+
 .metricValue {
   margin: 0;
   display: flex;
@@ -180,6 +185,21 @@
   min-inline-size: 0;
   gap: var(--space-1) var(--space-2);
   font-variant-numeric: tabular-nums;
+}
+
+.truncateValue {
+  composes: truncate from "../../../styles/text.module.css";
+  display: block;
+  min-inline-size: 0;
+  flex: 1 1 auto;
+}
+
+.copyableValue {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-inline-size: 0;
+  width: 100%;
 }
 
 .dim {

@@ -22,7 +22,6 @@ interface PreparedLink {
   categoryLower: string;
   labelLower: string;
   urlLower: string;
-  hostHint: string;
 }
 
 const CATEGORY_ORDER: readonly LinkCategory[] = [
@@ -50,24 +49,22 @@ const CLASS = {
   webLink: requireClass(styles.webLink, "sessionlinkssection.module.css", "webLink"),
   row: requireClass(styles.row, "sessionlinkssection.module.css", "row"),
   label: requireClass(styles.label, "sessionlinkssection.module.css", "label"),
-  hostHint: requireClass(styles.hostHint, "sessionlinkssection.module.css", "hostHint"),
   action: requireClass(styles.action, "sessionlinkssection.module.css", "action"),
   destinationBar: requireClass(styles.destinationBar, "sessionlinkssection.module.css", "destinationBar"),
   destinationText: requireClass(styles.destinationText, "sessionlinkssection.module.css", "destinationText"),
 };
 
-function parseLinkMetadata(rawUrl: string): { category: LinkCategory; hostHint: string } {
-  if (isFileHref(rawUrl)) return { category: "Local files", hostHint: "" };
+function linkCategory(rawUrl: string): LinkCategory {
+  if (isFileHref(rawUrl)) return "Local files";
   try {
     const parsed = new URL(rawUrl);
     const host = parsed.hostname.toLowerCase();
     const path = parsed.pathname.toLowerCase();
-    const hostHint = isWebHref(rawUrl) ? parsed.hostname.replace(/^www\./i, "") : "";
     if (/\/(?:pull|pulls|merge_requests)\b/.test(path) || /\/pr\/\d+/.test(path)) {
-      return { category: "Pull Requests", hostHint };
+      return "Pull Requests";
     }
     if (/\/(?:issues|issue)\b/.test(path)) {
-      return { category: "Issues", hostHint };
+      return "Issues";
     }
     if (
       host.startsWith("artifacts.") ||
@@ -79,11 +76,11 @@ function parseLinkMetadata(rawUrl: string): { category: LinkCategory; hostHint: 
       path.startsWith("/doc/") ||
       path.endsWith(".md")
     ) {
-      return { category: "Artifacts & Docs", hostHint };
+      return "Artifacts & Docs";
     }
-    return { category: "Other links", hostHint };
+    return "Other links";
   } catch {
-    return { category: "Other links", hostHint: "" };
+    return "Other links";
   }
 }
 
@@ -97,14 +94,13 @@ function prepareLinksByRecency(urls: readonly SessionURL[]): PreparedLink[] {
       return b.index - a.index;
     })
     .map(({ entry }) => {
-      const { category, hostHint } = parseLinkMetadata(entry.url);
+      const category = linkCategory(entry.url);
       return {
         entry,
         category,
         categoryLower: category.toLowerCase(),
         labelLower: (entry.label ?? "").toLowerCase(),
         urlLower: entry.url.toLowerCase(),
-        hostHint,
       };
     });
 }
@@ -176,7 +172,7 @@ export function SessionLinksSection({
     },
   };
 
-  function renderItem({ entry, hostHint }: PreparedLink) {
+  function renderItem({ entry }: PreparedLink) {
     const title = entry.label || entry.url;
 
     if (isWebHref(entry.url)) {
@@ -191,7 +187,6 @@ export function SessionLinksSection({
             rel="noopener noreferrer"
           >
             <span className={CLASS.label}>{title}</span>
-            {hostHint ? <span className={CLASS.hostHint}>{hostHint}</span> : null}
           </a>
         </li>
       );

@@ -93,22 +93,15 @@
   outline-offset: calc(var(--space-half) * -1);
 }
 
-.hostHint {
-  flex: none;
-  font-size: var(--font-size-caption);
-  color: var(--ink-low);
-  white-space: nowrap;
-}
-
 .action {
   flex: none;
 }
 
 .destinationBar {
   position: sticky;
-  bottom: 0;
-  margin-top: auto;
-  padding: var(--space-1) var(--space-2);
+  bottom: calc(var(--space-3) * -1);
+  margin: auto calc(var(--space-3) * -1) calc(var(--space-3) * -1);
+  padding: var(--space-2) var(--space-3);
   border-top: 1px solid var(--edge);
   background: var(--surface-canvas);
 }
