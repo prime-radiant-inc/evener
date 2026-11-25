@@ -293,7 +293,56 @@ function asDockviewApi(fake: RestoreDockviewApi): DockviewApi {
   return fake as unknown as DockviewApi;
 }
 
+// motion-dom initializes its prefers-reduced-motion listener once per module
+// load against window.matchMedia("(prefers-reduced-motion)"). Installing a
+// MediaQueryList with real change notifications up front lets the reduced-
+// motion test toggle the preference through the library's own listener.
+let reducedMotionMatches = false;
+const reducedMotionListeners = new Set<() => void>();
+
+function setReducedMotionPreference(matches: boolean): void {
+  reducedMotionMatches = matches;
+  for (const listener of reducedMotionListeners) listener();
+}
+
+const defaultMatchMedia: typeof window.matchMedia = (media) => {
+  const isReducedMotion = media === "(prefers-reduced-motion)" || media === "(prefers-reduced-motion: reduce)";
+  return {
+    media,
+    get matches() {
+      return isReducedMotion ? reducedMotionMatches : false;
+    },
+    onchange: null,
+    addListener: () => {},
+    removeListener: () => {},
+    addEventListener: (_type: string, listener: EventListenerOrEventListenerObject | null) => {
+      if (isReducedMotion && typeof listener === "function") reducedMotionListeners.add(listener as () => void);
+    },
+    removeEventListener: (_type: string, listener: EventListenerOrEventListenerObject | null) => {
+      if (isReducedMotion && typeof listener === "function") reducedMotionListeners.delete(listener as () => void);
+    },
+    dispatchEvent: () => false,
+  };
+};
+
+function installTabletMatchMedia(): () => void {
+  const originalMedia = window.matchMedia;
+  window.matchMedia = ((media: string) =>
+    media === "(prefers-reduced-motion)" || media === "(prefers-reduced-motion: reduce)"
+      ? defaultMatchMedia(media)
+      : ({
+          media,
+          matches: media === MOBILE_QUERY || media === TABLET_QUERY,
+          addEventListener() {},
+          removeEventListener() {},
+        } as unknown as MediaQueryList)) as typeof window.matchMedia;
+  return () => {
+    window.matchMedia = originalMedia;
+  };
+}
+
 beforeAll(async () => {
+  window.matchMedia = defaultMatchMedia;
   registerPaneForTests<{ ref?: string; path?: string }>({
     id: "doc",
     title: (params) => `Doc ${params.ref ?? params.path ?? "unknown"}`,
@@ -391,6 +440,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   window.history.pushState({}, "", "/");
+  setReducedMotionPreference(false);
   setLastPopstateWasTrustedForTests(false); // defensive: no test should leak this into the next
 });
 
@@ -2480,9 +2530,14 @@ test("floating top bar accumulates small upward scroll steps and resets on downw
 test("tablet board column slides out inert on collapse and slides in from the left on reopen", async () => {
   const css = readModuleCss(import.meta.url, "StackHost.module.css");
   const splitRule = css.match(/\.split\s*\{([^}]*)\}/)?.[1] ?? "";
+  expect(splitRule).toContain("position: relative");
   expect(splitRule).toContain("overflow-x: clip");
+  const closingRule = css.match(/\.boardColumn\[data-motion="closing"\]\s*\{([^}]*)\}/)?.[1] ?? "";
+  expect(closingRule).toContain("position: absolute");
+  expect(closingRule).toContain("pointer-events: none");
+  expect(closingRule).toContain("z-index: var(--z-raised)");
 
-  const restoreViewport = installMobileViewport([MOBILE_QUERY, TABLET_QUERY]);
+  const restoreViewport = installTabletMatchMedia();
   try {
     const user = userEvent.setup();
     workspaceStore.getState().openPane("doc", { ref: "tablet_slide" });
@@ -2531,6 +2586,42 @@ test("tablet board column slides out inert on collapse and slides in from the le
     });
   } finally {
     cleanup();
+    restoreViewport();
+  }
+});
+
+test("tablet board column unmounts and reopens immediately without sliding under prefers-reduced-motion", async () => {
+  // motion/react emits a one-time dev warning when reduced motion is active.
+  const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  const restoreViewport = installTabletMatchMedia();
+  setReducedMotionPreference(true);
+  try {
+    const user = userEvent.setup();
+    workspaceStore.getState().openPane("doc", { ref: "tablet_reduced" });
+    render(
+      <MotionProvider>
+        <StackHost railSlot={<TabletRailActionSlot />} />
+      </MotionProvider>,
+    );
+    await screen.findByText(/doc pane: tablet_reduced /);
+
+    const expandedToggle = within(screen.getByTestId("board-column")).getByTestId("board-toggle");
+    expandedToggle.focus();
+    await user.keyboard("{Enter}");
+
+    // Under reduced motion the board skips exit animation and unmounts at once.
+    expect(screen.queryByTestId("board-column")).toBeNull();
+    expect(document.activeElement).toBe(within(screen.getByTestId("topbar")).getByTestId("board-toggle"));
+
+    await user.keyboard("{Enter}");
+    const reopenedBoard = screen.getByTestId("board-column");
+    expect(reopenedBoard.getAttribute("style") ?? "").not.toContain("-100%");
+    expect(warn.mock.calls.every(([msg]) => typeof msg === "string" && msg.includes("reduced-motion-disabled"))).toBe(
+      true,
+    );
+  } finally {
+    cleanup();
+    warn.mockRestore();
     restoreViewport();
   }
 });

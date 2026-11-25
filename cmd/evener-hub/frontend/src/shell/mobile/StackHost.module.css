@@ -27,6 +27,7 @@
 }
 
 .split {
+  position: relative;
   flex: 1 1 auto;
   min-height: 0;
   display: flex;
@@ -45,7 +46,14 @@
   flex-direction: column;
 }
 
+/* Lift the leaving column out of flex flow so the reader and collapsed toggle
+ * settle immediately at the leading edge while the board slides off left. */
 .boardColumn[data-motion="closing"] {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  z-index: var(--z-raised);
   pointer-events: none;
 }
 

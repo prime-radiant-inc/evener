@@ -728,7 +728,7 @@ async function measureTabletSplit(page) {
       return target !== null && el.contains(target);
     };
     const split = document.querySelector('[data-testid="board-split"]');
-    const board = document.querySelector('[data-testid="board-column"]');
+    const board = document.querySelector('[data-testid="board-column"]:not([inert])');
     const pane = document.querySelector('[data-testid="pane-column"]');
     const topbar = document.querySelector('[data-testid="topbar"]');
     const title = document.querySelector('[data-testid="topbar-title"]');

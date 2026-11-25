@@ -51,7 +51,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { AnimatePresence, m, spatialExitTransition, spatialTransition } from "../../motion";
+import { AnimatePresence, m, spatialExitTransition, spatialTransition, useReducedMotion } from "../../motion";
 import { SessionInspectionActions } from "../../panes/session/chrome/SessionInspectionActions";
 import { returnFromAgentCascade } from "../../panes/zoom/actions";
 import { isCascadeReturnedOrigin } from "../../panes/zoom/inspectionOrigin";
@@ -153,6 +153,7 @@ function TabletBoardColumn({
   onBoardInput: () => void;
 }) {
   const present = useContext(BoardPresentContext);
+  const reducedMotion = useReducedMotion() === true;
   return (
     <m.aside
       className={styles.boardColumn}
@@ -161,9 +162,9 @@ function TabletBoardColumn({
       inert={!present}
       aria-hidden={present ? undefined : true}
       ref={present ? boardRef : undefined}
-      initial={{ x: "-100%" }}
+      initial={reducedMotion ? false : { x: "-100%" }}
       animate={{ x: 0 }}
-      exit={{ x: "-100%", transition: exitTransition }}
+      exit={reducedMotion ? undefined : { x: "-100%", transition: exitTransition }}
       transition={transition}
       onPointerDownCapture={present ? onBoardInput : undefined}
       onKeyDownCapture={present ? onBoardInput : undefined}
