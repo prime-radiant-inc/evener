@@ -13,7 +13,7 @@ index 2be7877..c2ac878 100644
          [source setValue:RCTNSStringFromString(newViewProps.newSource.uri) forKey:@"uri"];
      }
 diff --git a/node_modules/react-native-webview/apple/RNCWebViewImpl.m b/node_modules/react-native-webview/apple/RNCWebViewImpl.m
-index 3890426..86c26c5 100644
+index 3890426..b8dbff8 100644
 --- a/node_modules/react-native-webview/apple/RNCWebViewImpl.m
 +++ b/node_modules/react-native-webview/apple/RNCWebViewImpl.m
 @@ -461,6 +461,15 @@ - (WKWebViewConfiguration *)setUpWkWebViewConfig
@@ -40,6 +40,34 @@ index 3890426..86c26c5 100644
      if (_onMessage) {
        NSMutableDictionary<NSString *, id> *event = [self baseEvent];
        [event addEntriesFromDictionary: @{@"data": message.body}];
+@@ -1840,4 +1850,27 @@
+ - (void)syncCookiesToWebView:(void (^)(void))completion {
++  if (_source[@"websiteDataStoreIdentifier"]) {
++    // The saved credential is authoritative for this profile. WebKit can keep
++    // an older hub cookie across process restarts and credential edits.
++    NSDictionary *source = _source;
++    WKWebView *webView = _webView;
++    WKHTTPCookieStore *store = webView.configuration.websiteDataStore.httpCookieStore;
++    NSString *credential = source[@"headers"][@"Cookie"];
++    [store getAllCookies:^(NSArray<NSHTTPCookie *> *cookies) {
++      if (self->_source != source || self->_webView != webView) return;
++      dispatch_group_t changes = dispatch_group_create();
++      for (NSHTTPCookie *cookie in cookies) {
++        if (![cookie.name hasPrefix:@"evener_hub_auth_"]) continue;
++        NSString *pair = [NSString stringWithFormat:@"%@=%@", cookie.name, cookie.value];
++        if ([pair isEqualToString:credential]) continue;
++        dispatch_group_enter(changes);
++        [store deleteCookie:cookie completionHandler:^{ dispatch_group_leave(changes); }];
++      }
++      dispatch_group_notify(changes, dispatch_get_main_queue(), ^{
++        if (self->_source == source && self->_webView == webView) completion();
++      });
++    }];
++    return;
++  }
+   NSArray<NSHTTPCookie *> *cookies = [[NSHTTPCookieStorage sharedHTTPCookieStorage] cookies];
+   [self writeCookiesToWebView:cookies completion:completion];
+ }
 diff --git a/node_modules/react-native-webview/apple/RNCWebViewModule.mm b/node_modules/react-native-webview/apple/RNCWebViewModule.mm
 index 547b95f..6d1fc92 100644
 --- a/node_modules/react-native-webview/apple/RNCWebViewModule.mm
