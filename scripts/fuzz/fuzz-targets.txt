@@ -215,6 +215,7 @@ native:llm:./providers/internal/openaichat:FuzzParseChatUsage
 native:auth:./openai:FuzzParseIDTokenClaims
 native:auth:./openai:FuzzResolveRuntimeCredentials
 native:auth:./openai:FuzzTokenEndpointResponse
+native:auth:./githubcopilot:FuzzGitHubResponseDecoding
 native:invariant:.:FuzzInvariantHold
 native:envvars:.:FuzzEnvvarsSurface
 native:fuzz:./edgeseeds:FuzzSeedRegeneration
