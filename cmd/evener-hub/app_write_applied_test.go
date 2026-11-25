@@ -483,11 +483,10 @@ func TestInstances_RemoveMarksAppliedWhenTheRollbackSucceedsButTheCredentialCann
 		t.Fatalf("Set: %v", err)
 	}
 
-	// The layer the removal's reload is made to fail on: an entry that parses
-	// but cannot resolve an endpoint (#711), the same technique
-	// TestInstances_RemoveRestoresTheCredentialBeforeTheRollbackReload uses.
+	// The layer the removal's reload is made to fail on: a default naming a
+	// non-implicit curated provider parses cleanly and fails validateDefault.
 	brokenPath := filepath.Join(filepath.Dir(f.tomlPath), "broken.toml")
-	if err := os.WriteFile(brokenPath, []byte("[providers.standalone]\nprotocol = \"openai-chat\"\n"), 0o600); err != nil {
+	if err := os.WriteFile(brokenPath, []byte("default = \"huggingface\"\n"), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 	var loads int
@@ -813,23 +812,14 @@ func TestLaunch_TrustRepoWhoseResolutionFailsIsStillApplied(t *testing.T) {
 // SetDefault writes the new default and then reloads the registry. A failed
 // reload leaves the new default on disk, so it is applied however the call ends.
 func TestInstances_SetDefaultWhoseReloadFailsIsStillApplied(t *testing.T) {
-	f := newInstancesFixture(t, nil)
+	// Load 1 primes the fixture, load 2 is Create's reload, load 3 is
+	// SetDefault's reload after the new default has landed on disk.
+	f := newFlakyReloadFixture(t, "", func(load int) bool { return load == 3 })
 	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	before, err := os.ReadFile(f.tomlPath)
-	if err != nil {
-		t.Fatalf("ReadFile: %v", err)
-	}
-	// An entry that parses but cannot resolve an endpoint (#711): the registry
-	// loaded before it appeared, so the write still lands, and the reload that
-	// follows it fails.
-	raw := append(append([]byte(nil), before...), []byte("\n[providers.standalone]\nprotocol = \"openai-chat\"\n")...)
-	if err := os.WriteFile(f.tomlPath, raw, 0o600); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
 
-	err = f.ctl.SetDefault(appwire.InstanceSetDefaultParams{Name: "work"})
+	err := f.ctl.SetDefault(appwire.InstanceSetDefaultParams{Name: "work"})
 	if err == nil {
 		t.Fatal("SetDefault = nil, want the failed reload reported")
 	}

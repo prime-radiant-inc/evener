@@ -42,3 +42,28 @@ test("the props type rejects onHostSignIn on the interactive variant", () => {
   // @ts-expect-error onHostSignIn belongs to the read-only variant only
   render(<ProviderInstanceGroups instances={[]} availableProviders={[]} onSelect={() => {}} onHostSignIn={() => {}} />);
 });
+
+test("group header pairs a distinct display name with the registry id", () => {
+  render(
+    <ProviderInstanceGroups
+      instances={[
+        instance({ name: "kimi", providerId: "kimi-code-plan-global" }),
+        instance({ name: "claude", providerId: "anthropic" }),
+      ]}
+      availableProviders={[
+        {
+          id: "kimi-code-plan-global",
+          name: "Kimi For Coding (kimi.ai)",
+          protocol: "openai-chat",
+          auth: "bearer",
+          implicit: false,
+        },
+        { id: "anthropic", name: "Anthropic", protocol: "anthropic", auth: "bearer", implicit: true },
+      ]}
+      onSelect={() => {}}
+    />,
+  );
+
+  expect(screen.getByText("Kimi For Coding (kimi.ai) · kimi-code-plan-global")).toBeTruthy();
+  expect(screen.getByText("Anthropic")).toBeTruthy();
+});

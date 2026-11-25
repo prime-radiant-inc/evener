@@ -492,6 +492,9 @@ var ErrUnknownInstance = errors.New("unknown instance")
 // unknownInstance reports a reference or ResolveInstance call naming an
 // instance the registry does not have, listing the available ones.
 func (r *Registry) unknownInstance(name string) error {
+	if err := r.ProviderError(name); err != nil {
+		return err
+	}
 	names := make([]string, 0, len(r.instances))
 	for _, inst := range r.rankedInstances() {
 		names = append(names, inst.name)
@@ -2025,9 +2028,9 @@ func (r *Registry) recordMayDisableSeen(rec *record, seen map[*record]bool) bool
 // A toggle on a live-only id authors an exact config row, which precedes live
 // lookup, so the exception takes effect.
 func (r *Registry) InstanceModels(instance string) ([]InstanceModel, error) {
-	rec, ok := r.recordFor(instance)
-	if !ok {
-		return nil, fmt.Errorf("%w %q", ErrUnknownInstance, instance)
+	rec, err := r.requireRecord(instance)
+	if err != nil {
+		return nil, err
 	}
 	live, authoritative := r.liveListingState(rec.name)
 	ids := modelIDsFromMap(rec, live, authoritative)
@@ -2234,9 +2237,9 @@ func (r *Registry) modelSummary(rec *record, ref Ref, hit lookupHit, live map[st
 // instanceRecordIDs resolves an instance to its record plus its visible model
 // ids — the prologue InstanceModels and ModelIDs share.
 func (r *Registry) instanceRecordIDs(instance string) (*record, []string, error) {
-	rec, ok := r.recordFor(instance)
-	if !ok {
-		return nil, nil, fmt.Errorf("%w %q", ErrUnknownInstance, instance)
+	rec, err := r.requireRecord(instance)
+	if err != nil {
+		return nil, nil, err
 	}
 	live, authoritative := r.liveListingState(instance)
 	return rec, modelIDsFromMap(rec, live, authoritative), nil
