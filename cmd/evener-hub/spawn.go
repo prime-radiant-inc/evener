@@ -238,11 +238,7 @@ func (h *HubSpawner) Spawn(ctx context.Context, req hubcore.SpawnRequest) (_ ren
 	if err := validateProviderCredentials(req.Provider, req.Resolved.Effective.Model, h.Registry); err != nil {
 		return rendezvous.Entry{}, err
 	}
-	primaryProvider := req.Provider
-	if strings.TrimSpace(primaryProvider) == "" {
-		primaryProvider = registry.ParseRef(req.Resolved.Effective.Model).Instance
-	}
-	if cheapProvider, cheapModel, ok := cmdutil.CrossProviderFastCheapRef(req.Resolved.Effective.FastCheapModel, primaryProvider); ok {
+	if cheapProvider, cheapModel, ok := cmdutil.CrossProviderFastCheapRef(req.Resolved.Effective.FastCheapModel, req.Provider); ok {
 		if err := validateProviderCredentials(cheapProvider, cheapModel, h.Registry); err != nil {
 			return rendezvous.Entry{}, err
 		}

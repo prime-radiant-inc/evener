@@ -2121,33 +2121,4 @@ func TestHubSpawnerFastCheapCredentialPreflight(t *testing.T) {
 			})
 		}
 	})
-
-	t.Run("empty req.Provider infers primary provider from Effective.Model", func(t *testing.T) {
-		dir := t.TempDir()
-		execMarker := filepath.Join(dir, "evener-executed")
-		bin := writeStubEvener(t, dir, execMarker)
-		reg := newSpawnGateRegistry(t, t.TempDir(), map[string]string{"PRIMARY_KEY": "pk"}, map[string]registry.Provider{
-			"primary": {Base: "openai-compatible", Transport: registry.Transport{BaseURL: "http://127.0.0.1:9/v1"}, APIKeyEnv: []string{"PRIMARY_KEY"}},
-		})
-		spawner := HubSpawner{
-			Cfg:          DefaultConfig(),
-			EvenerBinary: bin,
-			RunDir:       filepath.Join(dir, "run"),
-			Registry:     reg,
-		}
-		entry, err := spawner.Spawn(t.Context(), hubcore.SpawnRequest{
-			StateDir:   filepath.Join(dir, "state"),
-			WorkingDir: dir,
-			Resolved: launchconfig.Resolved{Effective: launchconfig.Layer{
-				Model:          primaryModel,
-				FastCheapModel: "primary/fast-model",
-			}},
-		})
-		if err != nil {
-			t.Fatalf("same-provider with empty req.Provider failed: %v", err)
-		}
-		if proc, findErr := os.FindProcess(entry.PID); findErr == nil {
-			_ = proc.Kill()
-		}
-	})
 }
