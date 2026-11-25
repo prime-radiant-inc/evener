@@ -60,6 +60,7 @@
  * out and hide an element would keep painting it. Assert the attribute's
  * meaning once here rather than re-declaring it in each module. */
 [hidden] {
+  /* biome-ignore lint/complexity/noImportantStyles: [hidden] has to beat any authored display rule; see the comment above */
   display: none !important;
 }
 
