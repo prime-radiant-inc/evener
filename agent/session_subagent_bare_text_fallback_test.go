@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"primeradiant.com/evener/agent/events"
@@ -81,6 +82,105 @@ func assertReportedDelegatePacket(t *testing.T, parent *Session, delegateID, wan
 		t.Fatalf("packet.Message = %q, want %q", gotMessage, wantReport)
 	}
 	return packet
+}
+
+func runSubagentLiveOwnedWorkCase(t *testing.T, parkPreArm bool) {
+	t.Helper()
+	env := newHeldJobEnvironment(t.TempDir())
+	armEntered := make(chan struct{})
+	releaseArm := make(chan struct{})
+	var armOnce, releaseArmOnce sync.Once
+	t.Cleanup(func() {
+		releaseArmOnce.Do(func() { close(releaseArm) })
+		env.releaseJob()
+	})
+	adapter := newFakeAdapter("openai",
+		func(llm.Request) llm.Response {
+			return agenttest.ToolCallResponse(llm.ToolCallData{
+				ID:        "bg-shell",
+				Name:      "shell",
+				Arguments: json.RawMessage(`{"command":"go test","mode":"background"}`),
+				Type:      "function",
+			})
+		},
+		func(llm.Request) llm.Response {
+			return bareTextResponse("Waiting for background shell...", llm.FinishReasonStop)
+		},
+		func(llm.Request) llm.Response {
+			return bareTextResponse("Prose acknowledgment on notification wake", llm.FinishReasonStop)
+		},
+		func(llm.Request) llm.Response {
+			releaseArmOnce.Do(func() { close(releaseArm) })
+			return agenttest.FinalResponse("Verified after job completed")
+		},
+	)
+	parent := newSession(t, withEnv(env), withAdapter(adapter), withStateDir(t.TempDir()))
+	res := parent.createDelegate(tripwireCtx(t), delegateArgs{Task: "run shell and report"})
+	if res.Err != nil {
+		t.Fatalf("createDelegate: %v", res.Err)
+	}
+	_, childID, err := decodeRef(res.TranscriptRef)
+	if err != nil {
+		t.Fatalf("decodeRef: %v", err)
+	}
+	child := parent.subagents.get(childID)
+	if child == nil {
+		t.Fatalf("subagent %s not found", childID)
+	}
+
+	ctx := tripwireCtx(t)
+	select {
+	case <-env.started:
+	case <-ctx.Done():
+		t.Fatal("child background shell did not start")
+	}
+	// Bare text while live work runs must park quietly automatically (zero
+	// premature report to parent, zero no-tool-calls spin) until job wakes.
+	testwait.Until(t, "subagent bare text to park quietly while background job runs", func() bool {
+		return len(adapter.Requests()) >= 2 && child.sess.quietlyYielded() && child.sess.drainHeld.Load()
+	})
+	if noTool, _, _, _, accAsst, _ := countSubagentTranscriptTurns(t, child.sess); noTool != 0 || accAsst != 0 {
+		t.Fatalf("while live job running: noTool=%d accAsst=%d, want 0/0", noTool, accAsst)
+	}
+	var sawQuietTurn bool
+	for _, turn := range transcriptTurnsOf(t, child.sess) {
+		if turn.Kind == schema.TurnAssistant && turn.QuietYield {
+			sawQuietTurn = true
+		}
+	}
+	if !sawQuietTurn {
+		t.Fatal("bare-text quiet park did not record TurnAssistant.QuietYield=true")
+	}
+	if parkPreArm {
+		updateSessionTestConfig(child.sess, func(cfg *testConfig) {
+			cfg.delegateAttentionArmFault = func() error {
+				armOnce.Do(func() {
+					close(armEntered)
+					<-releaseArm
+				})
+				return nil
+			}
+		})
+	}
+	// Release the background shell so the drain runs EntryNotification.
+	env.releaseJob()
+	if parkPreArm {
+		select {
+		case <-armEntered:
+		case <-ctx.Done():
+			t.Fatal("child shell finalization did not reach pre-arm boundary")
+		}
+	}
+	waitForLiveSubagentRun(t, child)
+
+	if got := len(adapter.Requests()); got != 4 {
+		t.Fatalf("provider requests = %d, want 4", got)
+	}
+	assertReportedDelegatePacket(t, parent, res.DelegateID, "Verified after job completed")
+	noTool, nudges, _, _, _, _ := countSubagentTranscriptTurns(t, child.sess)
+	if noTool != 1 || nudges != 0 {
+		t.Fatalf("noToolSteers = %d (want 1 after job completed), delegateNudges = %d (want 0)", noTool, nudges)
+	}
 }
 
 func TestSubagentBareTextFallback(t *testing.T) {
@@ -241,76 +341,12 @@ func TestSubagentBareTextFallback(t *testing.T) {
 
 	t.Run("subagent_live_owned_work", func(t *testing.T) {
 		t.Parallel()
-		env := newHeldJobEnvironment(t.TempDir())
-		t.Cleanup(env.releaseJob)
-		adapter := newFakeAdapter("openai",
-			func(llm.Request) llm.Response {
-				return agenttest.ToolCallResponse(llm.ToolCallData{
-					ID:        "bg-shell",
-					Name:      "shell",
-					Arguments: json.RawMessage(`{"command":"go test","mode":"background"}`),
-					Type:      "function",
-				})
-			},
-			func(llm.Request) llm.Response {
-				return bareTextResponse("Waiting for background shell...", llm.FinishReasonStop)
-			},
-			func(llm.Request) llm.Response {
-				return bareTextResponse("Prose acknowledgment on notification wake", llm.FinishReasonStop)
-			},
-			func(llm.Request) llm.Response {
-				return agenttest.FinalResponse("Verified after job completed")
-			},
-		)
-		parent := newSession(t, withEnv(env), withAdapter(adapter), withStateDir(t.TempDir()))
-		res := parent.createDelegate(tripwireCtx(t), delegateArgs{Task: "run shell and report"})
-		if res.Err != nil {
-			t.Fatalf("createDelegate: %v", res.Err)
-		}
-		_, childID, err := decodeRef(res.TranscriptRef)
-		if err != nil {
-			t.Fatalf("decodeRef: %v", err)
-		}
-		child := parent.subagents.get(childID)
-		if child == nil {
-			t.Fatalf("subagent %s not found", childID)
-		}
+		runSubagentLiveOwnedWorkCase(t, false)
+	})
 
-		ctx := tripwireCtx(t)
-		select {
-		case <-env.started:
-		case <-ctx.Done():
-			t.Fatal("child background shell did not start")
-		}
-		// Bare text while live work runs must park quietly automatically (zero
-		// premature report to parent, zero no-tool-calls spin) until job wakes.
-		testwait.Until(t, "subagent bare text to park quietly while background job runs", func() bool {
-			return len(adapter.Requests()) >= 2 && child.sess.quietlyYielded() && child.sess.drainHeld.Load()
-		})
-		if noTool, _, _, _, accAsst, _ := countSubagentTranscriptTurns(t, child.sess); noTool != 0 || accAsst != 0 {
-			t.Fatalf("while live job running: noTool=%d accAsst=%d, want 0/0", noTool, accAsst)
-		}
-		var sawQuietTurn bool
-		for _, turn := range transcriptTurnsOf(t, child.sess) {
-			if turn.Kind == schema.TurnAssistant && turn.QuietYield {
-				sawQuietTurn = true
-			}
-		}
-		if !sawQuietTurn {
-			t.Fatal("bare-text quiet park did not record TurnAssistant.QuietYield=true")
-		}
-		// Release the background shell so the drain runs EntryNotification.
-		env.releaseJob()
-		waitForLiveSubagentRun(t, child)
-
-		if got := len(adapter.Requests()); got != 4 {
-			t.Fatalf("provider requests = %d, want 4", got)
-		}
-		assertReportedDelegatePacket(t, parent, res.DelegateID, "Verified after job completed")
-		noTool, nudges, _, _, _, _ := countSubagentTranscriptTurns(t, child.sess)
-		if noTool != 1 || nudges != 0 {
-			t.Fatalf("noToolSteers = %d (want 1 after job completed), delegateNudges = %d (want 0)", noTool, nudges)
-		}
+	t.Run("subagent_live_owned_work_pre_arm_recheck", func(t *testing.T) {
+		t.Parallel()
+		runSubagentLiveOwnedWorkCase(t, true)
 	})
 
 	t.Run("result_schema_rejected", func(t *testing.T) {
