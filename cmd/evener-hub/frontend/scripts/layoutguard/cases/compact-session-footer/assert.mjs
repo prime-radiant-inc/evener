@@ -57,13 +57,13 @@ export default function assert(measurements) {
       // The folded desktop input must keep a readable floor (14rem = 224px)
       // even beside a long model name at the 620px fold boundary, and the
       // leading chrome must hug its content without a dead gap before the
-      // model trigger.
+      // identity pill's leading context ring.
       if (m.field.width < 224 - tolerance) {
         fail(`folded field is squeezed to ${m.field.width.toFixed(1)}px (expected >= 224px)`);
       }
-      const leadingSlack = m.modelTrigger.left - m.leading.left;
+      const leadingSlack = m.context.left - m.leading.left;
       if (leadingSlack > 12 + tolerance) {
-        fail(`folded leading reserves ${leadingSlack.toFixed(1)}px of dead space before the model trigger`);
+        fail(`folded leading reserves ${leadingSlack.toFixed(1)}px of dead space before the context ring`);
       }
       if (m.shortModel && m.width >= 900 && m.field.width < 500) {
         fail(`folded short-model field is only ${m.field.width.toFixed(1)}px in a ${m.width}px card`);
