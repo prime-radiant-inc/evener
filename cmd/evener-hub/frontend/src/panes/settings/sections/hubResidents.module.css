@@ -36,7 +36,7 @@
 }
 
 .rowItem {
-  padding: var(--space-1) var(--space-2);
+  padding: var(--space-2);
 }
 
 .daemonName {
@@ -48,6 +48,7 @@
   flex-wrap: wrap;
   align-items: baseline;
   gap: var(--space-half) var(--space-3);
+  padding-top: var(--space-half);
   font-variant-numeric: tabular-nums;
 }
 
