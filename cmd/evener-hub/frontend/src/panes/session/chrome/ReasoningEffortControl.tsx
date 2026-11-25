@@ -61,14 +61,12 @@ export function ReasoningEffortControl({
   id,
   offerNone = false,
 }: ReasoningEffortControlProps) {
-  const offered = effortOptionLevels(offerNone ? levels.filter((level) => level !== "none") : levels, current);
+  const ladder = offerNone ? levels.filter((level) => level !== "none") : levels;
+  const offered = effortOptionLevels(ladder, current, offerNone);
   const options = offered.map((level) => ({
     value: level,
     label: level === "" ? effortDefaultLabel(defaultLevel, levels) : effortLabel(level, levels),
   }));
-  if (offerNone && !offered.includes("none")) {
-    options.push({ value: "none", label: effortLabel("none", levels) });
-  }
 
   return (
     <span

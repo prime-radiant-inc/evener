@@ -40,16 +40,9 @@ export function resolveSpawnModelItems(catalog: ModelCatalog | null): CommandArg
 }
 
 export function resolveSpawnEffortItems(levels: string[], current: string): CommandArgsEnumItem[] {
-  // Mirrors the Spawn effort selector's own option set (Spawn.tsx's
-  // effortOptions): the ladder levels plus an unconditional explicit "none"
-  // entry. A fresh form whose ladder excludes "none" still offers it, and the
-  // backend accepts it — so slash pre-start validation must too, or
-  // "/reasoning-effort none" fail-closes a value the selector happily sends.
-  // The presence check runs against the resolved list (not just the ladder):
-  // effortOptionLevels already appends `current`, so a current value of
-  // "none" on a none-less ladder must not produce two identical entries.
-  const base = effortOptionLevels(levels, current).map((l) => ({ id: l, label: effortLabel(l, levels) }));
-  return base.some((item) => item.id === "none") ? base : [...base, { id: "none", label: effortLabel("none", levels) }];
+  // The shared picker's option set, so "/reasoning-effort none" validates a
+  // value the spawn card's selector happily sends.
+  return effortOptionLevels(levels, current, true).map((l) => ({ id: l, label: effortLabel(l, levels) }));
 }
 
 export async function runSpawnBuiltinAfterStart(
