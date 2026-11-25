@@ -129,6 +129,7 @@
   flex: none;
   display: flex;
   align-items: center;
+  margin-left: auto;
 }
 
 .fallbackHeader {
