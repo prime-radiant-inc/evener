@@ -307,7 +307,6 @@ func (s *Session) closeTerminal(ctx context.Context, options closeOptions) {
 	// restart silently loses them.
 	s.maybeAutoSave()
 	s.subagents.waitForReconstructions()
-	s.subagents.waitForReconstructionSideEffects()
 
 	// Mark and stop durable jobs before environment cleanup can reap process
 	// handles and make deliberate shutdown look like runtime failure. Keep the

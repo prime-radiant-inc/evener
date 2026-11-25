@@ -136,24 +136,6 @@ func TestSubagentManager_AdmitReconstructed_NilSub(t *testing.T) {
 	}
 }
 
-// TestSubagentManager_BeginReconstructionSideEffects_Closing covers the
-// closing path (line 161-165).
-func TestSubagentManager_BeginReconstructionSideEffects_Closing(t *testing.T) {
-	t.Parallel()
-	m := newSubagentManager(0)
-	m.closing = true
-	sub := &subagent{id: "child1"}
-	m.subs["child1"] = sub
-	_, err := m.beginReconstructionSideEffects("child1", sub)
-	if !errors.Is(err, errSubagentManagerClosing) {
-		t.Fatalf("error = %v, want errSubagentManagerClosing", err)
-	}
-	// The sub should be deleted from the map.
-	if m.get("child1") != nil {
-		t.Fatal("expected child1 to be removed after closing")
-	}
-}
-
 // TestSubagentManager_Sessions covers the sessions accessor.
 func TestSubagentManager_Sessions_Empty(t *testing.T) {
 	t.Parallel()

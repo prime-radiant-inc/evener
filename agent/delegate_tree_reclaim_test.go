@@ -1563,11 +1563,10 @@ func TestDelegateIdleRelease_FiredArmIsNeverInstalled(t *testing.T) {
 
 // TestDelegateIdleRelease_PregateRefusesLocalRetirementResidue: the idle
 // release pre-gate must refuse on the same session-local residue retirement
-// refuses on — a delegate-delivery parcel the pump has not consumed, restore
-// side effects still settling on the manager's children, and a manager that
-// has begun closing — because a teardown through any of them would abandon
-// work mid-flight. Each refusal re-arms the retry, so the settled runtime
-// still releases through the timer, never through a forced teardown.
+// refuses on — a delegate-delivery parcel the pump has not consumed and a
+// manager that has begun closing — because a teardown through either would
+// abandon work mid-flight. Each refusal re-arms the retry, so the settled
+// runtime still releases through the timer, never through a forced teardown.
 func TestDelegateIdleRelease_PregateRefusesLocalRetirementResidue(t *testing.T) {
 	t.Parallel()
 	workspace := t.TempDir()
@@ -1633,21 +1632,7 @@ func TestDelegateIdleRelease_PregateRefusesLocalRetirementResidue(t *testing.T) 
 	runtime.pendingDelegateDeliveries = nil
 	runtime.delegateDeliveryMu.Unlock()
 
-	// Residue 2: restore side effects still settling on this manager.
-	runtime.subagents.mu.Lock()
-	runtime.subagents.activeRestoreSideEffects++
-	runtime.subagents.mu.Unlock()
-	if runtime.releaseIdleRuntimeAfterFinalize() {
-		t.Fatal("release succeeded with restore side effects settling; the pre-gate must refuse")
-	}
-	if !stillResident() {
-		t.Fatal("refused release released the runtime anyway")
-	}
-	runtime.subagents.mu.Lock()
-	runtime.subagents.activeRestoreSideEffects--
-	runtime.subagents.mu.Unlock()
-
-	// Residue 3: the manager has begun closing.
+	// Residue 2: the manager has begun closing.
 	runtime.subagents.mu.Lock()
 	runtime.subagents.closing = true
 	runtime.subagents.mu.Unlock()

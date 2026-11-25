@@ -47,7 +47,7 @@ func (s *Session) retirementDelegateBlockers() []RetirementBlocker {
 	blocked := s.delegateDeliveryResiduePending()
 	if m := s.subagents; m != nil {
 		m.mu.Lock()
-		blocked = blocked || len(m.reconstructing) != 0 || m.closeOrRestoreResiduePending()
+		blocked = blocked || len(m.reconstructing) != 0 || m.closing
 		for _, sub := range m.subs {
 			sub.mu.Lock()
 			blocked = blocked || sub.running || sub.driving || sub.finalizing
