@@ -60,6 +60,17 @@
   gap: var(--space-5);
 }
 
+/* The pill geometry Badge and Chip share: caption type on a rounded inline
+ * box. Each widget keeps its own tone map and height. */
+.pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-pill);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-caption);
+}
+
 /* The reading measure a settings section keeps its children inside. */
 .sectionMeasure {
   max-width: 720px;
