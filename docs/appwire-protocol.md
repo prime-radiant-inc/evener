@@ -4900,8 +4900,6 @@ Underlying Go kind: `string` (no struct fields).
 |-------|---------|-----------|----------|
 | `cursor` | string | yes |  |
 | `limit` | int | yes |  |
-| `sortKey` | string | yes |  |
-| `sortDirection` | string | yes |  |
 | `searchTerm` | string | yes |  |
 | `statuses` | []string | yes |  |
 | `sourceIds` | []string | yes |  |

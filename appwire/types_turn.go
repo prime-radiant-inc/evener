@@ -318,8 +318,6 @@ type InputItem struct {
 type ThreadListParams struct {
 	Cursor           string   `json:"cursor,omitempty"`
 	Limit            int      `json:"limit,omitempty"`
-	SortKey          string   `json:"sortKey,omitempty"`
-	SortDirection    string   `json:"sortDirection,omitempty"`
 	SearchTerm       string   `json:"searchTerm,omitempty"`
 	Statuses         []string `json:"statuses,omitempty"`
 	SourceIDs        []string `json:"sourceIds,omitempty"`
