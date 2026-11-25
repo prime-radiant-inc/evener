@@ -81,7 +81,7 @@ Dev tooling and test rigs declare these themselves.
 	b.WriteString(`
 ## hub.toml keys
 
-Scalar keys only; the ` + "`[[hosts]]`" + ` and ` + "`[[providers]]`" + ` tables and the
+Scalar keys only; the ` + "`[[hosts]]`" + ` table and the
 machine-managed host records are described in [the hub guide](../evener-hub.md).
 
 | Key | Default | Doc row | Consumer |

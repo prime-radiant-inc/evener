@@ -830,7 +830,7 @@ func tomlKey(f *ast.Field) string {
 }
 
 // isScalarKnob excludes the machine-managed record tables (maps) and the
-// [[hosts]] and [[providers]] arrays of tables; strings, numbers, booleans,
+// [[hosts]] array of tables; strings, numbers, booleans,
 // durations and string lists are operator knobs.
 func isScalarKnob(t ast.Expr) bool {
 	switch v := t.(type) {

@@ -163,6 +163,7 @@ export function PaneScaffold({
         className={bodyScroll ? BODY_CLASS_NAME.scrollable : BODY_CLASS_NAME.flush}
         tabIndex={-1}
         data-pane-scaffold={scaffoldMarker}
+        data-has-edge-footer={edgeFooter !== undefined ? "true" : undefined}
       >
         {children}
       </div>

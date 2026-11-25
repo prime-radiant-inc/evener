@@ -108,6 +108,7 @@ export interface PrefsStoreState {
   phoneDensity: PhoneDensityPref;
   sidebarHidden: boolean;
   sidebarWidth: number;
+  overviewWidth: number;
   sidebarGrouping: SidebarGroupingPref;
   sessionListStyle: Record<WebLayout, SessionListStylePref>;
   fontSize: FontSizePref;
@@ -142,6 +143,7 @@ export interface PrefsStoreState {
   setPhoneDensity(value: PhoneDensityPref): void;
   setSidebarHidden(value: boolean): void;
   setSidebarWidth(value: number): void;
+  setOverviewWidth(value: number): void;
   setSidebarGrouping(value: SidebarGroupingPref): void;
   setSessionListStyle(layout: WebLayout, value: SessionListStylePref): void;
   setFontSize(value: FontSizePref): void;
@@ -320,6 +322,28 @@ export function sidebarWidthMin(): number {
 export function clampSidebarWidth(value: number, min = sidebarWidthMin(), max = SIDEBAR_WIDTH_MAX): number {
   if (!Number.isFinite(value)) return SIDEBAR_WIDTH_DEFAULT;
   return Math.round(Math.min(max, Math.max(min, value)));
+}
+
+// Desktop Overview sidebar width bounds, in CSS pixels. Narrow desktop
+// viewports (900-1200px) cap below OVERVIEW_WIDTH_MAX so the rail and
+// workspace column keep a comfortable reading floor.
+export const OVERVIEW_WIDTH_MIN = 280;
+export const OVERVIEW_WIDTH_MAX = 640;
+export const OVERVIEW_WIDTH_DEFAULT = 320;
+const OVERVIEW_VIEWPORT_RESERVE = 560;
+
+export function overviewWidthMax(viewportWidth?: number): number {
+  if (viewportWidth === undefined || !Number.isFinite(viewportWidth)) return OVERVIEW_WIDTH_MAX;
+  return Math.min(
+    OVERVIEW_WIDTH_MAX,
+    Math.max(OVERVIEW_WIDTH_MIN, Math.round(viewportWidth - OVERVIEW_VIEWPORT_RESERVE)),
+  );
+}
+
+export function clampOverviewWidth(value: number, viewportWidth?: number): number {
+  const max = overviewWidthMax(viewportWidth);
+  if (!Number.isFinite(value)) return Math.min(max, OVERVIEW_WIDTH_DEFAULT);
+  return Math.round(Math.min(max, Math.max(OVERVIEW_WIDTH_MIN, value)));
 }
 
 // Numeric prefs persist as a plain base-10 string. Anything unparseable
@@ -501,6 +525,7 @@ function loadInitialState(): Omit<
   | "setPhoneDensity"
   | "setSidebarHidden"
   | "setSidebarWidth"
+  | "setOverviewWidth"
   | "setSidebarGrouping"
   | "setSessionListStyle"
   | "setFontSize"
@@ -525,6 +550,7 @@ function loadInitialState(): Omit<
     phoneDensity,
     sidebarHidden: readBool("sidebarHidden", false),
     sidebarWidth: readNumber("sidebarWidth", SIDEBAR_WIDTH_DEFAULT, clampSidebarWidth),
+    overviewWidth: readNumber("overviewWidth", OVERVIEW_WIDTH_DEFAULT, (value) => clampOverviewWidth(value)),
     sidebarGrouping: readEnum("sidebarGrouping", SIDEBAR_GROUPING_VALUES, "project-host"),
     sessionListStyle: {
       phone: readSessionListStyle("phone"),
@@ -574,6 +600,12 @@ export const prefsStore = createStore<PrefsStoreState>((set) => ({
     const width = clampSidebarWidth(value);
     writeNumber("sidebarWidth", width);
     set({ sidebarWidth: width });
+  },
+
+  setOverviewWidth(value) {
+    const width = clampOverviewWidth(value);
+    writeNumber("overviewWidth", width);
+    set({ overviewWidth: width });
   },
 
   setSidebarGrouping(value) {
