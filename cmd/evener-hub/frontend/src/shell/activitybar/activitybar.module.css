@@ -86,7 +86,7 @@
   color: var(--ink-mid);
 }
 
-.tabLabelSelected {
+.tab[data-selected] .tabLabel {
   color: var(--ink-hi);
 }
 

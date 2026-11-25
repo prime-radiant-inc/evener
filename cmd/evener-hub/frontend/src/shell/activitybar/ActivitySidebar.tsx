@@ -51,7 +51,6 @@ const CLASS = {
   tablist: requireClass(styles.tablist, "activitybar.module.css", "tablist"),
   tab: requireClass(styles.tab, "activitybar.module.css", "tab"),
   tabLabel: requireClass(styles.tabLabel, "activitybar.module.css", "tabLabel"),
-  tabLabelSelected: requireClass(styles.tabLabelSelected, "activitybar.module.css", "tabLabelSelected"),
   tabDetail: requireClass(styles.tabDetail, "activitybar.module.css", "tabDetail"),
   body: requireClass(styles.body, "activitybar.module.css", "body"),
   focusBody: requireClass(styles.focusBody, "activitybar.module.css", "focusBody"),
@@ -151,7 +150,7 @@ function MobileOverviewTabs({
               tabIndex={selected ? 0 : -1}
               onClick={() => choose(index)}
             >
-              <span className={selected ? CLASS.tabLabelSelected : CLASS.tabLabel}>{option.label}</span>
+              <span className={CLASS.tabLabel}>{option.label}</span>
               {option.detail !== undefined && option.detail.trim() !== "" ? (
                 <span className={CLASS.tabDetail}>{option.detail}</span>
               ) : null}

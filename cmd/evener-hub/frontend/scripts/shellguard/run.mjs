@@ -1262,11 +1262,13 @@ async function choosePaneOverview(send, selector, mobile = false, measure = fals
       const findBox = find.getBoundingClientRect();
       const overviewBox = overview.getBoundingClientRect();
       const hit = (box, el) => el.contains(document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2));
+      const fits = (box, el) =>
+        box.width >= tapMin - 1 && box.height >= tapMin - 1 && box.left >= -1 && box.right <= innerWidth + 1 && hit(box, el);
       return {
         present: true,
         tapMin,
-        findFits: findBox.width >= tapMin - 1 && findBox.height >= tapMin - 1 && findBox.left >= -1 && findBox.right <= innerWidth + 1 && hit(findBox, find),
-        overviewFits: overviewBox.width >= tapMin - 1 && overviewBox.height >= tapMin - 1 && overviewBox.left >= -1 && overviewBox.right <= innerWidth + 1 && hit(overviewBox, overview),
+        findFits: fits(findBox, find),
+        overviewFits: fits(overviewBox, overview),
         findBox: findBox.toJSON(),
         overviewBox: overviewBox.toJSON(),
       };
