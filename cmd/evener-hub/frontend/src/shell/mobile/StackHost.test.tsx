@@ -33,6 +33,7 @@ import { chromeStore, resetChromeStoreForTests } from "../chromeStore";
 import { ClientProvider } from "../clientContext";
 import { type PaneProps, registerPaneForTests } from "../paneRegistry";
 import { usePaneVisible } from "../paneVisibility";
+import { useRailHeaderAction } from "../rail/railHeaderAction";
 import { openTopLevelSession } from "../sessionPlacement";
 import {
   documentPaneState,
@@ -2007,6 +2008,10 @@ test("with no slide running, as under reduced motion, a step deeper is the insta
   expect(stackBody().textContent).not.toContain("instant_a");
 });
 
+function TabletRailActionSlot() {
+  return <>{useRailHeaderAction()}</>;
+}
+
 test.each(["phone", "tablet to phone"])("a slide discards the leaving scroller after %s layout", async (layout) => {
   const slides = installSlideAnimations();
   const originalMedia = window.matchMedia;
@@ -2017,20 +2022,12 @@ test.each(["phone", "tablet to phone"])("a slide discards the leaving scroller a
       (query === TABLET_QUERY ? tabletMedia : { matches: query === MOBILE_QUERY, media: query }) as MediaQueryList;
   }
   try {
+    const user = userEvent.setup();
     workspaceStore.getState().openPane("doc", { ref: "scrolled_from" });
-    render(<StackHost />);
+    render(<StackHost railSlot={<TabletRailActionSlot />} />);
     await screen.findByText(/doc pane: scrolled_from /);
     const offsets = scrollOffsetsForTests();
     if (!offsets) throw new Error("StackHost did not expose its scroll offsets");
-    if (layout === "tablet to phone") {
-      expect(screen.getByTestId("board-column")).toBeTruthy();
-      await act(async () => {
-        tabletMedia.matches = false;
-        tabletMedia.dispatchEvent(Object.assign(new Event("change"), { matches: false }));
-      });
-      expect(screen.queryByTestId("board-column")).toBeNull();
-      await screen.findByText(/doc pane: scrolled_from /);
-    }
     const scroller = paneScroller("scrolled_from");
 
     scroller.scrollTop = 48;
@@ -2038,6 +2035,30 @@ test.each(["phone", "tablet to phone"])("a slide discards the leaving scroller a
       scroller.dispatchEvent(new Event("scroll"));
     });
     expect(offsets.get(scroller)).toEqual([48, 0]);
+
+    if (layout === "tablet to phone") {
+      expect(screen.getByTestId("board-column")).toBeTruthy();
+      await user.click(screen.getByTestId("board-toggle"));
+      expect(screen.queryByTestId("board-column")).toBeNull();
+      expect(paneScroller("scrolled_from")).toBe(scroller);
+      expect(scroller.scrollTop).toBe(48);
+      expect(offsets.get(scroller)).toEqual([48, 0]);
+
+      await user.click(screen.getByTestId("board-toggle"));
+      expect(screen.getByTestId("board-column")).toBeTruthy();
+      expect(paneScroller("scrolled_from")).toBe(scroller);
+      expect(scroller.scrollTop).toBe(48);
+      expect(offsets.get(scroller)).toEqual([48, 0]);
+
+      await act(async () => {
+        tabletMedia.matches = false;
+        tabletMedia.dispatchEvent(Object.assign(new Event("change"), { matches: false }));
+      });
+      expect(screen.queryByTestId("board-column")).toBeNull();
+      expect(paneScroller("scrolled_from")).toBe(scroller);
+      expect(scroller.scrollTop).toBe(48);
+      expect(offsets.get(scroller)).toEqual([48, 0]);
+    }
 
     await showDoc("scrolled_to");
     expect(stackBody().getAttribute("data-stack-transition")).toBe("push");

@@ -409,13 +409,31 @@ async function boot(): Promise<void> {
   const { AppShell } = await import("../shell/AppShell");
   const fake = new FakeClient("ready");
   fake.on("evener/navigation/read", navigationRead);
-  fake.on("thread/read", ({ ref }) => {
+  fake.on("thread/read", ({ ref, includeTurns }) => {
+    const turns =
+      includeTurns && ref === "local:p0-s1"
+        ? Array.from({ length: 24 }, (_, i) => ({
+            id: `tablet-turn-${i + 1}`,
+            status: "completed" as const,
+            itemsView: "full" as const,
+            items: [
+              {
+                id: `tablet-item-${i + 1}`,
+                turnId: `tablet-turn-${i + 1}`,
+                type: "agentMessage" as const,
+                text: `Tablet reading paragraph ${i + 1}. Keep the conversation mounted and preserve its reading position while the board toggles or resizes.`,
+              },
+            ],
+          }))
+        : undefined;
     const response = activityDetailsThread(ref, {
       id: "sessionidentifier".repeat(12),
+      ...(ref === "local:p0-s1" ? { name: "Tablet session" } : {}),
       modelProvider: `anthropic/${"modelidentifier".repeat(12)}`,
       cwd: `/work/${"directorysegment".repeat(12)}/session`,
       projectPath: "/work",
       gitInfo: { branch: `feature/${"branchidentifier".repeat(12)}` },
+      ...(turns ? { turns } : {}),
     });
     return { ...response, thread: { ...response.thread, tasks: { total: 100, done: 100 } } };
   });

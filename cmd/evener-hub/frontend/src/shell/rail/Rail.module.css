@@ -134,6 +134,13 @@
   align-items: center;
 }
 
+.fallbackHeader {
+  flex: none;
+  display: flex;
+  justify-content: flex-end;
+  padding: var(--space-3) var(--space-2) var(--space-2) var(--space-4);
+}
+
 .needsYou {
   display: flex;
   max-width: 100%;

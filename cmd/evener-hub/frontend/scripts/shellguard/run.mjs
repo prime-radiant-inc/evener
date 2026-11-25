@@ -707,6 +707,7 @@ async function measureTabletSplit(page) {
     const title = document.querySelector('[data-testid="topbar-title"]');
     const findInput = pane?.querySelector('[data-find-bar] input[type="search"]');
     const findStyle = findInput && getComputedStyle(findInput);
+    const findRectWidth = findInput ? findInput.getBoundingClientRect().width : 0;
     const findText = findInput && document.createElement('canvas').getContext('2d');
     if (findText) findText.font = findStyle.font;
     const overview = document.querySelector('[data-session-overview-ref]')?.closest('button') ?? null;
@@ -730,8 +731,13 @@ async function measureTabletSplit(page) {
       overview: box(overview),
       overviewHit: hit(overview),
       find: findInput ? {
-        width: findInput.getBoundingClientRect().width,
-        editableWidth: findInput.clientWidth - parseFloat(findStyle.paddingLeft) - parseFloat(findStyle.paddingRight),
+        width: findRectWidth,
+        editableWidth:
+          findRectWidth -
+          parseFloat(findStyle.borderLeftWidth) -
+          parseFloat(findStyle.borderRightWidth) -
+          parseFloat(findStyle.paddingLeft) -
+          parseFloat(findStyle.paddingRight),
         queryWidth: findText.measureText(findInput.value).width,
         clearAllowance: parseFloat(findStyle.fontSize),
         focused: document.activeElement === findInput,
@@ -848,25 +854,61 @@ async function measureTabletSplit(page) {
     await send("Input.dispatchMouseEvent", { type: "mousePressed", x: rx, y: ry, button: "left", clickCount: 2 });
     await send("Input.dispatchMouseEvent", { type: "mouseReleased", x: rx, y: ry, button: "left", clickCount: 2 });
   }
+  await evaluate(send, "window.overviewPane('other')");
+  await waitForDom(
+    send,
+    `(() => {
+      const scaffold = document.querySelector('[data-pane-scaffold="session:local:p0-s1"]');
+      if (!scaffold || !document.querySelector('[data-session-overview-ref="local:p0-s1"][data-pane-id]')) return false;
+      const scroller = [scaffold, ...scaffold.querySelectorAll('*')].find(
+        el => el.scrollHeight > el.clientHeight + 80 && ['auto', 'scroll'].includes(getComputedStyle(el).overflowY)
+      );
+      return Boolean(scroller);
+    })()`,
+    "tablet split session pane mounted with scrollable transcript",
+  );
+  const paneScrollCapture = await evaluate(
+    send,
+    `(() => {
+      const scaffold = document.querySelector('[data-pane-scaffold="session:local:p0-s1"]');
+      const scroller = scaffold && [scaffold, ...scaffold.querySelectorAll('*')].find(
+        el => el.scrollHeight > el.clientHeight + 80 && ['auto', 'scroll'].includes(getComputedStyle(el).overflowY)
+      );
+      if (!scroller) return null;
+      const target = Math.min(180, Math.floor((scroller.scrollHeight - scroller.clientHeight) / 2));
+      scroller.scrollTop = target;
+      scroller.dispatchEvent(new Event('scroll'));
+      window.__tabletPaneScroller = scroller;
+      return { scrollTop: scroller.scrollTop, maxScroll: scroller.scrollHeight - scroller.clientHeight };
+    })()`,
+  );
+  const readPaneScroll = `(() => {
+    const scaffold = document.querySelector('[data-pane-scaffold="session:local:p0-s1"]');
+    const scroller = scaffold && [scaffold, ...scaffold.querySelectorAll('*')].find(
+      el => el.scrollHeight > el.clientHeight + 80 && ['auto', 'scroll'].includes(getComputedStyle(el).overflowY)
+    );
+    const saved = window.__tabletPaneScroller ?? null;
+    return {
+      sameNode: Boolean(saved && scroller && scroller === saved && saved.isConnected),
+      scrollTop: scroller?.scrollTop ?? null,
+      maxScroll: scroller ? scroller.scrollHeight - scroller.clientHeight : null,
+    };
+  })()`;
+  const sessionOpen = await evaluate(send, snapState);
   await evaluate(send, `document.querySelector('[data-testid="board-toggle"]').focus({ preventScroll: true })`);
   await pressKey(send, "Enter", "Enter", 13);
   await waitForDom(send, "document.querySelector('[data-testid=\"board-split\"]')?.dataset.board === 'collapsed'", "tablet board collapsed");
   await settleFiniteAnimations(send);
   const collapsed = await evaluate(send, snapState);
+  const paneScrollCollapsed = await evaluate(send, readPaneScroll);
   const focusedToggle = `document.activeElement === document.querySelector('[data-testid="board-toggle"]')`;
   if (!(await evaluate(send, focusedToggle))) throw new Error("collapsing the tablet board lost keyboard focus");
   await pressKey(send, "Enter", "Enter", 13);
   await waitForDom(send, "document.querySelector('[data-testid=\"board-split\"]')?.dataset.board === 'visible'", "tablet board re-expanded");
   await settleFiniteAnimations(send);
   const reopened = await evaluate(send, snapState);
+  const paneScrollReopened = await evaluate(send, readPaneScroll);
   if (!(await evaluate(send, focusedToggle))) throw new Error("expanding the tablet board lost keyboard focus");
-  await evaluate(send, "window.overviewPane('other')");
-  await waitForDom(
-    send,
-    "Boolean(document.querySelector('[data-pane-scaffold=\"session:local:p0-s1\"]') && document.querySelector('[data-session-overview-ref=\"local:p0-s1\"][data-pane-id]'))",
-    "tablet split session pane mounted",
-  );
-  const sessionOpen = await evaluate(send, snapState);
   await send("Emulation.setTouchEmulationEnabled", { enabled: false });
   await applyViewport(send, { width: 768, height: TABLET_VIEWPORT.height });
   await waitForDom(send, "innerWidth === 768", "768px tablet viewport");
@@ -894,6 +936,8 @@ async function measureTabletSplit(page) {
   await applyViewport(send, { ...MOBILE_VIEWPORT, width: 400 });
   await waitForDom(send, `innerWidth === 400 && !document.querySelector('[data-testid="board-split"]')`,
     "400px uses the phone stack without the tablet board");
+  await settleFiniteAnimations(send);
+  const paneScrollPhone = await evaluate(send, readPaneScroll);
   const desktopDivider = '[data-testid="rail"] [data-testid="rail-resize-handle"]';
   const desktopReady = `innerWidth === 1024 && !document.querySelector('[data-stacked-pane-type]') && document.querySelector('${desktopDivider}')`;
   const desktopViewport = { ...TOUCH_DESKTOP_VIEWPORT, width: 1024, height: 768 };
@@ -925,6 +969,7 @@ async function measureTabletSplit(page) {
   await waitForDom(send, `innerWidth === 899 && document.querySelector('[data-testid="board-column"]')`, "wide tablet restores a fitting desktop width");
   const roomyFits = await evaluate(send, snapState);
   return { open, scrolledBoard, resized, collapsed, reopened, sessionOpen,
+    paneScrollCapture, paneScrollCollapsed, paneScrollReopened, paneScrollPhone,
     beforeArrowUp, arrowUpRows, pointer, narrowest, home, wideDrag, widest, findQuery, largerText,
     desktopBefore, narrowRestored, roomy, desktopAfter, desktopFits, roomyFits };
 }
@@ -986,6 +1031,19 @@ function assertTabletSplit(result) {
   }
   if (!result.sessionOpen?.topbarInPane || !result.sessionOpen.overviewHit || result.sessionOpen.topbar.left < result.sessionOpen.board.right - 1) {
     failures.push(`tablet session pane topbar/overview geometry failed: ${JSON.stringify(result.sessionOpen)}`);
+  }
+  const { paneScrollCapture, paneScrollCollapsed, paneScrollReopened, paneScrollPhone } = result;
+  if (!paneScrollCapture || paneScrollCapture.scrollTop <= 0) {
+    failures.push(`tablet session pane did not scroll before layout changes: ${JSON.stringify(paneScrollCapture)}`);
+  }
+  for (const [phase, sample] of [
+    ["collapsed", paneScrollCollapsed],
+    ["reopened", paneScrollReopened],
+    ["phone", paneScrollPhone],
+  ]) {
+    if (!sample?.sameNode || sample.scrollTop === null || sample.scrollTop <= 0) {
+      failures.push(`tablet ${phase} remounted the active session scroller or lost its reading position: ${JSON.stringify({ capture: paneScrollCapture, sample })}`);
+    }
   }
   const { beforeArrowUp, arrowUpRows, narrowest, widest, pointer, findQuery } = result;
   if (!beforeArrowUp.hit || !arrowUpRows.length || arrowUpRows.some((row, i) => row.index !== beforeArrowUp.index - i - 1 || !row.hit || row.coveredByHeader)) {
@@ -2121,9 +2179,10 @@ async function main() {
     const focusScrollFailures = assertFocusScroll(focusScroll);
     const tabletSplit = await measureOnPage(cdpEndpoint, sharedTab.id, vitePort, TABLET_VIEWPORT, measureTabletSplit);
     const tabletSplitFailures = assertTabletSplit(tabletSplit);
-    const { pointer, narrowest, widest, beforeArrowUp, arrowUpRows, largerText, roomy, desktopBefore, desktopAfter, roomyFits } = tabletSplit;
+    const { pointer, narrowest, widest, beforeArrowUp, arrowUpRows, largerText, roomy, desktopBefore, desktopAfter, roomyFits, paneScrollCapture, paneScrollCollapsed, paneScrollReopened, paneScrollPhone } = tabletSplit;
     console.log(`shellguard tablet usability: ${JSON.stringify({ pointer, min: narrowest.board.width, minToggleHit: narrowest.toggleHit,
       max: widest.board.width, pane: widest.pane.width, find: widest.find, beforeArrowUp, arrowUpRows,
+      paneScroll: { capture: paneScrollCapture, collapsed: paneScrollCollapsed, reopened: paneScrollReopened, phone: paneScrollPhone },
       largerText: largerText.map(([font, { find, pane }]) => ({ font, find, pane: pane.width })),
       savedWidth: { desktopBefore, roomy: roomy.board.width, desktopAfter, fittingTablet: roomyFits.board.width } })}`);
     if (focusScrollFailures.length === 0) {
