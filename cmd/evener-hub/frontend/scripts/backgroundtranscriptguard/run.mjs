@@ -2313,33 +2313,38 @@ async function waitForPaneText(driver, ref, marker, timeoutMs, label) {
 
 // captureReconnectFailureSnapshot records what the selected pane's model and DOM
 // hold when the strict gap pane wait times out. Read-only: one evaluate over the
-// existing evidence global and the existing scroll port selector, plus the wire
-// trace already on disk. It never replaces the original failure.
+// existing evidence global and the existing scroll port selector. It reports
+// named scalar identities only, never transcript bodies. It never replaces the
+// original failure.
 async function captureReconnectFailureSnapshot(driver, error) {
   const at = Date.now();
-  const wire = targetPagingEvidence(SESSION_B);
   const observed = await evaluate(
     driver.send,
     `(() => {
        const e = window.backgroundTranscriptEvidence, ref = ${JSON.stringify(SESSION_B)}, model = e.model(ref);
        const pane = document.querySelector("[data-pane-scaffold='session:${SESSION_B}']"), port = ${SCROLL_PORT_EXPR(SESSION_B)};
-       const shape = { modelPresent: model !== undefined, modelGap: false, synthetic: [],
-         entryRoute: e.entryRoute(ref), entryRecovery: e.entryRecovery(ref), connectionState: e.connectionState(),
-         panePresent: pane !== null, paneGap: (pane?.textContent ?? "").includes(${JSON.stringify(GAP_SENTINEL)}),
-         scroll: port === null ? null : { scrollTop: port.scrollTop, clientHeight: port.clientHeight, scrollHeight: port.scrollHeight } };
-       if (model === undefined) return shape;
-       const matched = [];
+       const panePresent = pane !== null, paneGap = (pane?.textContent ?? "").includes(${JSON.stringify(GAP_SENTINEL)});
+       const scroll = port === null ? null : { scrollTop: port.scrollTop, clientHeight: port.clientHeight, scrollHeight: port.scrollHeight };
+       const route = e.entryRoute(ref), recovery = e.entryRecovery(ref), connection = e.connectionState();
+       if (model === undefined) return { modelPresent: false, modelGap: null, synthetic: [], history: null,
+         olderCursor: null, route, recovery, connection, panePresent, paneGap, scroll };
+       const history = model.history === undefined ? null : {
+         bootGeneration: model.history.bootGeneration, epoch: model.history.epoch, length: model.history.length,
+         issuedGeneration: model.history.issuedGeneration, appliedGeneration: model.history.appliedGeneration,
+         invalidatedAtGeneration: model.history.invalidatedAtGeneration ?? null };
+       const matches = [];
        (model.turns ?? []).forEach((turn, turnIndex) => (turn.items ?? []).forEach((item, itemIndex) => {
-         if (!((item.text ?? "") + (item.output ?? "")).includes(${JSON.stringify(GAP_SENTINEL)})) return;
-         matched.push({ turnIndex, itemIndex, id: item.id ?? null, turnId: item.turnId ?? null,
+         const inText = (item.text ?? "").includes(${JSON.stringify(GAP_SENTINEL)});
+         const inOutput = (item.output ?? "").includes(${JSON.stringify(GAP_SENTINEL)});
+         if (!inText && !inOutput) return;
+         matches.push({ turnIndex, itemIndex, id: item.id ?? null, turnId: item.turnId ?? null,
            transcriptKey: item.transcriptKey ?? null, transcriptEntryIndex: item.transcriptEntryIndex ?? null, position: item.position ?? null });
        }));
-       shape.modelGap = matched.length > 0;
-       shape.synthetic = matched.slice(0, 10);
-       return shape;
+       return { modelPresent: true, modelGap: matches.length > 0, synthetic: matches.slice(0, 10), history,
+         olderCursor: model.olderCursor ?? null, route, recovery, connection, panePresent, paneGap, scroll };
      })()`,
   ).catch((snapshotError) => ({ snapshotError: snapshotError instanceof Error ? snapshotError.message : String(snapshotError) }));
-  const snapshot = { at, ref: SESSION_B, error: error instanceof Error ? error.message : String(error), wire, observed };
+  const snapshot = { at, ref: SESSION_B, error: error instanceof Error ? error.message : String(error), observed };
   try {
     writeFileSync(path.join(ARTIFACT_DIR, "reconnect-failure-snapshot.json"), `${JSON.stringify(snapshot, null, 2)}\n`, { mode: 0o600 });
   } catch (writeError) {
