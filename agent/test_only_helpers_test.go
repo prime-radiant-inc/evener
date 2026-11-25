@@ -220,16 +220,12 @@ func watchSendArg(args map[string]any) (*watchSendArgs, error) {
 		return nil, errors.New("invalid_request: send.to is required")
 	}
 	return &watchSendArgs{
-		To:             to,
-		Message:        stringArg(values, "message"),
-		IncludeExcerpt: shellBoolArg(values, "include_excerpt"),
+		To: to,
 	}, nil
 }
 
 func isEmptyWatchSend(values map[string]any) bool {
-	return strings.TrimSpace(stringArg(values, "to")) == "" &&
-		stringArg(values, "message") == "" &&
-		!shellBoolArg(values, "include_excerpt")
+	return len(values) == 0
 }
 
 func projectJobRecord(s *Session, rec *jobstore.JobRecord) jobListEntry {

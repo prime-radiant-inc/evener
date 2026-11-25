@@ -154,7 +154,7 @@ func TestEventWatchDeliversWatchOriginatedSubagentEventsClassified(t *testing.T)
 	installWatchBelowValidation(t, jm, watchArgs{
 		Target: "caller",
 		Events: []string{"job.notification"},
-		Send:   &watchSendArgs{To: "dlg_obs", Message: "observe"},
+		Send:   &watchSendArgs{To: "dlg_obs"},
 	})
 	cfg := onlyWatchConfigForTest(t, jm)
 
@@ -235,7 +235,7 @@ func TestWatchOriginDeliversDelegateLifecycleWatchSendsClassified(t *testing.T) 
 	installWatchBelowValidation(t, jm, watchArgs{
 		Target: "*",
 		Events: []string{"job.notification"},
-		Send:   &watchSendArgs{To: "dlg_obs", Message: "observe"},
+		Send:   &watchSendArgs{To: "dlg_obs"},
 	})
 	cfg := onlyWatchConfigForTest(t, jm)
 	own := provenance.WithWatch(nil, cfg.watchID, cfg.generation, "wd_obs", jm.sessionID, "*")
@@ -350,7 +350,7 @@ func TestOutputMatchDeliversSameWatchProvenanceOnTerminalFlushClassified(t *test
 	installWatchBelowValidation(t, jm, watchArgs{
 		Target:      rec.JobID,
 		OutputMatch: "ready",
-		Send:        &watchSendArgs{To: "dlg_obs", Message: "observe"},
+		Send:        &watchSendArgs{To: "dlg_obs"},
 	})
 	cfg := onlyWatchConfigForTest(t, jm)
 	p := provenance.WithWatch(nil, cfg.watchID, cfg.generation, "wd_1", jm.sessionID, rec.JobID)
@@ -409,7 +409,7 @@ func TestWatchWatchedAliasSendRejectsConcreteTarget(t *testing.T) {
 	if _, err := jm.configureWatch(watchArgs{
 		Target:      target.JobID,
 		OutputMatch: "ready",
-		Send:        &watchSendArgs{To: runtimeMessageAliasWatched, Message: "observe"},
+		Send:        &watchSendArgs{To: runtimeMessageAliasWatched},
 	}); err == nil || !strings.Contains(err.Error(), "watched is not a v1 delivery target") {
 		t.Fatalf("error = %v, want watched alias rejection", err)
 	}
@@ -427,7 +427,7 @@ func TestWatchWatchedAliasSendRejectsWildcardJobNotification(t *testing.T) {
 	if _, err := jm.configureWatch(watchArgs{
 		Target: "*",
 		Events: []string{"job.notification"},
-		Send:   &watchSendArgs{To: runtimeMessageAliasWatched, Message: "observe"},
+		Send:   &watchSendArgs{To: runtimeMessageAliasWatched},
 	}); err == nil || !strings.Contains(err.Error(), "watched is not a v1 delivery target") {
 		t.Fatalf("error = %v, want watched alias rejection", err)
 	}
@@ -680,7 +680,7 @@ func TestJobWatchDeliversSameWatchProvenanceClassifiedSelfInfluenced(t *testing.
 	installWatchBelowValidation(t, jm, watchArgs{
 		Target: runtimeMessageAliasCaller,
 		Events: []string{"communicate"},
-		Send:   &watchSendArgs{To: "dlg_1", Message: "observe"},
+		Send:   &watchSendArgs{To: "dlg_1"},
 	})
 	cfg := onlyWatchConfigForTest(t, jm)
 
@@ -707,7 +707,7 @@ func TestJobWatchDoesNotSuppressDifferentGeneration(t *testing.T) {
 	installWatchBelowValidation(t, jm, watchArgs{
 		Target: runtimeMessageAliasCaller,
 		Events: []string{"communicate"},
-		Send:   &watchSendArgs{To: "dlg_1", Message: "observe"},
+		Send:   &watchSendArgs{To: "dlg_1"},
 	})
 	cfg := onlyWatchConfigForTest(t, jm)
 	oldGeneration := cfg.generation
@@ -730,7 +730,7 @@ func TestWatchSendFrameRendersTriggerProvenanceNotDeliveryProvenance(t *testing.
 	installWatchBelowValidation(t, jm, watchArgs{
 		Target: runtimeMessageAliasCaller,
 		Events: []string{"communicate"},
-		Send:   &watchSendArgs{To: "dlg_1", Message: "observe"},
+		Send:   &watchSendArgs{To: "dlg_1"},
 	})
 	cfg := onlyWatchConfigForTest(t, jm)
 

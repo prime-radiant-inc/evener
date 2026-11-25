@@ -24,7 +24,6 @@ func (jm *jobManager) snapshotWatchSendFrame(d watchSendDelivery) watchSendDeliv
 	if d.send == nil {
 		return d
 	}
-	d.message = limitWatchText(strings.TrimSpace(d.send.Message), watchMessageMaxChars)
 	watchID := ""
 	generation := ""
 	note := ""
@@ -250,7 +249,6 @@ func (jm *jobManager) watchSendState(d watchSendDelivery, resolvedSendTo string)
 		},
 		DeliveryID:               deliveryID,
 		UpdateSeq:                d.updateSeq,
-		Message:                  d.message,
 		Frame:                    d.frame,
 		TriggerIdentity:          d.watchedIdentity,
 		TriggerReason:            d.trigger,

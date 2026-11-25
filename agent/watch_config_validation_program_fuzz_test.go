@@ -202,7 +202,8 @@ func wcvpAssertPureContracts(t *testing.T, r *wcvpReader) {
 		Events:             []string{"assistant.tool"},
 		Every:              2,
 		EventFilter:        &watchEventFilter{ToolName: "read_file", Status: "ok"},
-		Send:               &watchSendArgs{To: "dlg_wcvp", Message: r.text(), IncludeExcerpt: true},
+		Note:               r.text(),
+		Send:               &watchSendArgs{To: "dlg_wcvp"},
 		ReceiverSessionID:  " receiver ",
 		ReceiverDelegateID: " dlg_wcvp ",
 	}
@@ -216,10 +217,10 @@ func wcvpAssertPureContracts(t *testing.T, r *wcvpReader) {
 	if cfg.send == a.Send || cfg.eventFilter == a.EventFilter || strings.Join(cfg.events, ",") != "assistant.tool" {
 		t.Fatalf("config did not snapshot mutable arguments: %+v", cfg)
 	}
-	a.Send.Message = "mutated"
+	a.Send.To = "mutated"
 	a.EventFilter.ToolName = "mutated"
 	a.Events[0] = "job.notification"
-	if cfg.send.Message == "mutated" || cfg.eventFilter.ToolName == "mutated" || cfg.events[0] != "assistant.tool" {
+	if cfg.send.To == "mutated" || cfg.eventFilter.ToolName == "mutated" || cfg.events[0] != "assistant.tool" {
 		t.Fatalf("config changed after caller mutation: %+v", cfg)
 	}
 	permuted := watchArgs{
@@ -228,7 +229,8 @@ func wcvpAssertPureContracts(t *testing.T, r *wcvpReader) {
 		Events:             []string{"assistant.tool"},
 		Every:              2,
 		EventFilter:        &watchEventFilter{ToolName: "read_file", Status: "ok"},
-		Send:               &watchSendArgs{To: "dlg_wcvp", Message: cfg.send.Message, IncludeExcerpt: true},
+		Note:               cfg.note,
+		Send:               &watchSendArgs{To: "dlg_wcvp"},
 		ReceiverSessionID:  "receiver",
 		ReceiverDelegateID: "dlg_wcvp",
 	}
@@ -463,12 +465,11 @@ func wcvpAssertConfigureLifecycle(t *testing.T, r *wcvpReader) {
 		{Target: "job_wcvp_missing", OutputMatch: "ready"},
 		{Target: runtimeMessageAliasCaller, OutputMatch: "ready"},
 		{Target: runtimeMessageAliasCaller, OutputMatch: "ready", Events: []string{"communicate"}},
-		{Target: runtimeMessageAliasCaller, Events: []string{"communicate"}, Send: &watchSendArgs{To: runtimeMessageAliasCaller, IncludeExcerpt: true}},
 		{Target: runtimeMessageAliasCaller, Events: []string{"not-real"}},
 		{Target: runtimeMessageAliasCaller, Events: []string{"communicate", "job.notification"}, Every: 2},
 		{Target: runtimeMessageAliasCaller, ProgressIntervalMS: 1000, Events: []string{"communicate"}},
 		{Target: run.JobID, OutputMatch: "("},
-		{Target: runtimeMessageAliasCaller, Events: []string{"job.notification"}, Send: &watchSendArgs{To: "dlg_missing", Message: r.text()}},
+		{Target: runtimeMessageAliasCaller, Events: []string{"job.notification"}, Send: &watchSendArgs{To: "dlg_missing"}},
 	}
 	for _, args := range rejects {
 		before := jm.watchCount()
@@ -498,7 +499,8 @@ func wcvpAssertConfigureLifecycle(t *testing.T, r *wcvpReader) {
 	callerArgs := watchArgs{
 		Target: runtimeMessageAliasCaller,
 		Events: []string{"job.notification", "assistant.tool"},
-		Send:   &watchSendArgs{To: runtimeMessageAliasCaller, Message: "watch " + r.text()},
+		Note:   "watch " + r.text(),
+		Send:   &watchSendArgs{To: runtimeMessageAliasCaller},
 	}
 	first := wcvpConfigure(t, jm, callerArgs)
 	if !first.Watching || first.WatchID == "" || first.Send == nil || first.Send.To != runtimeMessageAliasCaller {
@@ -509,7 +511,7 @@ func wcvpAssertConfigureLifecycle(t *testing.T, r *wcvpReader) {
 		t.Fatalf("idempotent caller configure = %+v, first=%+v", again, first)
 	}
 	replacementArgs := callerArgs
-	replacementArgs.Send = &watchSendArgs{To: runtimeMessageAliasCaller, Message: "replacement " + r.text()}
+	replacementArgs.Note = "replacement " + r.text()
 	replacement := wcvpConfigure(t, jm, replacementArgs)
 	if replacement.WatchID == first.WatchID || !replacement.ReplacedExisting {
 		t.Fatalf("caller replacement = %+v, first=%+v", replacement, first)
@@ -564,7 +566,7 @@ func wcvpAssertConfigureLifecycle(t *testing.T, r *wcvpReader) {
 	if got := wcvpClearByID(t, jm, terminalWatch.WatchID); got.Watching {
 		t.Fatalf("terminal clear = %+v", got)
 	}
-	if _, err := jm.configureWatch(watchArgs{Target: run.JobID, OutputMatch: "ready", Send: &watchSendArgs{To: "dlg_missing", Message: r.text()}}); err == nil {
+	if _, err := jm.configureWatch(watchArgs{Target: run.JobID, OutputMatch: "ready", Send: &watchSendArgs{To: "dlg_missing"}}); err == nil {
 		t.Fatal("terminal catch-up send to a missing delegate unexpectedly succeeded")
 	}
 	if got := wcvpClearByID(t, jm, "wch_wcvp_missing"); got.Watching {
@@ -689,7 +691,7 @@ func wcvpAssertTokenAndSnapshotContracts(t *testing.T, r *wcvpReader) {
 		t.Fatalf("settlement ledger delivered=%v pending=%v", delivered, pending)
 	}
 
-	watchCfg, err := newWatchConfig(watchArgs{Target: "job_wcvp", Events: []string{"assistant.tool"}, Send: &watchSendArgs{To: runtimeMessageAliasCaller, Message: r.text()}}, frozenTestTime, "")
+	watchCfg, err := newWatchConfig(watchArgs{Target: "job_wcvp", Events: []string{"assistant.tool"}, Send: &watchSendArgs{To: runtimeMessageAliasCaller}}, frozenTestTime, "")
 	if err != nil {
 		t.Fatalf("new snapshot config: %v", err)
 	}

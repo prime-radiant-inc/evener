@@ -230,7 +230,7 @@ func installCallerSendWatchWithPending(t *testing.T, jm *jobManager) *watchConfi
 	installWatchBelowValidation(t, jm, watchArgs{
 		Target: runtimeMessageAliasCaller,
 		Events: []string{"communicate"},
-		Send:   &watchSendArgs{To: runtimeMessageAliasCaller, Message: "ping"},
+		Send:   &watchSendArgs{To: runtimeMessageAliasCaller},
 	})
 	onSessionEventKD(jm, events.EventCommunicate, nil)
 	key := watchKey{

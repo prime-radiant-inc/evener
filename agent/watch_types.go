@@ -41,8 +41,6 @@ const (
 	// message cap because this is context for the wake, not the payload.
 	watchEventExcerptMaxChars  = 1000
 	watchTriggerMaxChars       = 1024
-	watchExcerptTailBytes      = 4096
-	watchExcerptMaxChars       = 4096
 	watchReadErrorMaxChars     = 256
 	watchTruncatedIndicator    = "\n[truncated]"
 	defaultWatchSendPendingCap = 32
@@ -425,9 +423,7 @@ type watchEventFilter struct {
 }
 
 type watchSendArgs struct {
-	To             string
-	Message        string
-	IncludeExcerpt bool
+	To string
 }
 
 type watchResult struct {
@@ -476,7 +472,6 @@ type watchSendDelivery struct {
 	allowAfterTerminalExpiry bool
 	send                     *watchSendArgs
 	deliveryID               string
-	message                  string
 	frame                    string
 	// ownMessageHops, when set, is how many of the receiving session's own
 	// messages the event descends from, and the frame leads with

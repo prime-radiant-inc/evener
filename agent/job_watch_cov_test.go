@@ -20,7 +20,8 @@ func TestTerminalCatchupWithSendCoversSendPath(t *testing.T) {
 	res, err := jm.configureWatch(watchArgs{
 		Target:      jobID,
 		OutputMatch: "ready",
-		Send:        &watchSendArgs{To: runtimeMessageAliasCaller, Message: "observe"},
+		Note:        "observe",
+		Send:        &watchSendArgs{To: runtimeMessageAliasCaller},
 	})
 	if err != nil {
 		t.Fatalf("configureWatch terminal catch-up with send: %v", err)
@@ -50,7 +51,7 @@ func TestTerminalCatchupWithSendCoversSendPath(t *testing.T) {
 		t.Fatalf("pending send target = %q, want caller", state.Key.ResolvedSendTo)
 	}
 	if !strings.Contains(state.Frame, "observe") {
-		t.Fatalf("pending frame = %q, want configured message", state.Frame)
+		t.Fatalf("pending frame = %q, want configured note", state.Frame)
 	}
 	if !strings.Contains(state.TriggerReason, "output_match: server ready") {
 		t.Fatalf("trigger reason = %q, want last matching line", state.TriggerReason)
@@ -191,7 +192,7 @@ func TestClearReceiverWatchByIDTerminalFlushLookup(t *testing.T) {
 		Events:             []string{"assistant.tool"},
 		ReceiverSessionID:  "recv_session",
 		ReceiverDelegateID: "dlg_recv",
-		Send:               &watchSendArgs{To: runtimeMessageAliasCaller, Message: "m"},
+		Send:               &watchSendArgs{To: runtimeMessageAliasCaller},
 	}, jm.now(), "")
 	if err != nil {
 		t.Fatalf("newWatchConfig: %v", err)

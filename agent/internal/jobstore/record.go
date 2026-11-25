@@ -92,8 +92,6 @@ type WatchConfigSnapshot struct {
 	Every              int                       `json:"every,omitempty"`
 	EventFilter        *WatchEventFilterSnapshot `json:"event_filter,omitempty"`
 	SendTo             string                    `json:"send_to,omitempty"`
-	SendMessage        string                    `json:"send_message,omitempty"`
-	IncludeExcerpt     bool                      `json:"include_excerpt,omitempty"`
 	// Receiver identity is part of the watch's configured identity — two watches
 	// that differ only in who receives them are different watches — so it belongs
 	// in the hashed snapshot rather than beside it. These stay LAST because the

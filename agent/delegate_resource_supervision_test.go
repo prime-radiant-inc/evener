@@ -1345,7 +1345,7 @@ func TestDelegateResourceSupervision_CompletionGateRecoversEveryCleanExit(t *tes
 				installWatchBelowValidation(t, jm, watchArgs{
 					Target: runtimeMessageAliasCaller,
 					Events: []string{"error"},
-					Send:   &watchSendArgs{To: receiver, Message: "observer handoff"},
+					Send:   &watchSendArgs{To: receiver},
 				})
 				key := watchKey{VisibleSessionID: jm.sessionID, Target: runtimeMessageAliasCaller, SendTo: receiver}
 				cfg := jm.watches[key]

@@ -17,7 +17,7 @@ func teardownFailureConfig(id, target, sendTo string) (watchKey, *watchConfig) {
 		watchID:          id,
 		sourcePublic:     "self",
 		target:           target,
-		send:             &watchSendArgs{To: sendTo, Message: "observe"},
+		send:             &watchSendArgs{To: sendTo},
 		generation:       "gen-" + id,
 		outputMatch:      "ready",
 		createdAt:        frozenTestTime,

@@ -24,7 +24,7 @@ func w2watch_seedDetachedPending(t *testing.T, jm *jobManager, watchID, target, 
 	detached := &watchConfig{
 		watchID:    watchID,
 		target:     target,
-		send:       &watchSendArgs{To: sendTo, Message: "observe"},
+		send:       &watchSendArgs{To: sendTo},
 		generation: pendingKey.WatchGeneration,
 		pending: map[jobstore.WatchSendKey]*jobstore.WatchSendState{
 			pendingKey: {
@@ -105,7 +105,7 @@ func TestW2Watch_configureWatchNewWithDetachedAppendError(t *testing.T) {
 	if _, err := jm.configureWatch(watchArgs{
 		Target:      rec.JobID,
 		OutputMatch: "ready",
-		Send:        &watchSendArgs{To: runtimeMessageAliasCaller, Message: "observe"},
+		Send:        &watchSendArgs{To: runtimeMessageAliasCaller},
 	}); err == nil {
 		t.Fatal("install succeeded, want the detached snapshot append failure")
 	}
@@ -132,7 +132,7 @@ func TestW2Watch_configureWatchEqualWithDetachedAppendError(t *testing.T) {
 	args := watchArgs{
 		Target:      rec.JobID,
 		OutputMatch: "ready",
-		Send:        &watchSendArgs{To: runtimeMessageAliasCaller, Message: "observe"},
+		Send:        &watchSendArgs{To: runtimeMessageAliasCaller},
 	}
 	res, err := jm.configureWatch(args)
 	if err != nil {

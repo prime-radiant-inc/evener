@@ -37,7 +37,7 @@ func TestW2Watch_configureWatchTerminalCatchupRejectsBadSendTarget(t *testing.T)
 	_, err := jm.configureWatch(watchArgs{
 		Target:      jobID,
 		OutputMatch: "ready",
-		Send:        &watchSendArgs{To: "job_not_a_delegate", Message: "m"},
+		Send:        &watchSendArgs{To: "job_not_a_delegate"},
 	})
 	if err == nil {
 		t.Fatal("terminal catch-up with a job_ send target succeeded, want send-target rejection")

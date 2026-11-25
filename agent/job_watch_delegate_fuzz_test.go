@@ -214,7 +214,7 @@ func watchdel_sessionFlow(t *testing.T, data []byte) {
 	if _, err := jm.configureWatch(watchArgs{
 		Target:      rec.JobID,
 		OutputMatch: "ready",
-		Send:        &watchSendArgs{To: runtimeMessageAliasCaller, Message: "observe"},
+		Send:        &watchSendArgs{To: runtimeMessageAliasCaller},
 	}); err != nil {
 		closeSession()
 		t.Fatalf("watchdel install watch: %v", err)
@@ -222,7 +222,7 @@ func watchdel_sessionFlow(t *testing.T, data []byte) {
 	replacedWatch, err := jm.configureWatch(watchArgs{
 		Target:      rec.JobID,
 		OutputMatch: "(?i)ready",
-		Send:        &watchSendArgs{To: runtimeMessageAliasCaller, Message: "observe"},
+		Send:        &watchSendArgs{To: runtimeMessageAliasCaller},
 	})
 	if err != nil {
 		closeSession()
@@ -503,9 +503,7 @@ func watchdel_drawWatchArgs(r *watchdel_reader, watchedJobID, observerJobID stri
 	}
 	if r.boolean() {
 		a.Send = &watchSendArgs{
-			To:             r.pick(watchdel_sendTargets),
-			Message:        "observe",
-			IncludeExcerpt: r.boolean(),
+			To: r.pick(watchdel_sendTargets),
 		}
 	}
 	return a
@@ -613,7 +611,7 @@ func FuzzWatchdelWatchOps(f *testing.F) {
 		if _, err := jm.configureWatch(watchArgs{
 			Target:      watched.JobID,
 			OutputMatch: "seed-match",
-			Send:        &watchSendArgs{To: runtimeMessageAliasCaller, Message: "observe"},
+			Send:        &watchSendArgs{To: runtimeMessageAliasCaller},
 		}); err != nil {
 			return
 		}
