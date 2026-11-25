@@ -53,10 +53,12 @@ losing the conversation that made the evidence relevant.
   Open navigates independently. Neither action should accidentally trigger the other.
   Progressive disclosure costs an extra action to inspect detail; it must not conceal
   the reason to inspect it.
+- **Shared desktop icon rail (Option A).** Above `700px`, every transcript run row sits inside `.runContent` or `.intentGroupItems` (`--speaker-gutter`, 34px) and seats its leading icon in the `0–24px` speaker-avatar column via `styles/railseat.module.css` (`.seat` + `.gutterPull`) — live/compact/settled thoughts, tool calls, folded tool runs, static and collapsible notifications, steering dividers, and turn failures — so every line of readable text aligns on one unbroken vertical margin at `34px`. Below `700px`, the gutter collapses and leading icons sit inline ahead of their line.
 - **Keep thinking at intent density.** Chat omits reasoning rows. At Intent and above,
   compact live and settled summaries share the icon rail, sans UI type, title line
   height, and a `--rhythm-item` vertical inset. Their chevrons disclose the same quiet,
-  italic reading text. Full keeps the richer reasoning presentation.
+  italic reading text. Full keeps the richer reasoning presentation with its settled
+  bulb seated in the same icon rail.
 - **Keep different facts distinct.** Delegate lifecycle, attention, immutable launch receipt
   and child-authored report answer different questions. A successful launch is not finished
   work; an earlier report is not current activity. Prefer an honest unknown to an inferred
@@ -1162,11 +1164,12 @@ steering the agent. The first two are marked. This section marks the third.
 **The rule: a glyph in the gutter means the agent's instructions changed. An
 empty gutter means it is a passive fact.**
 
-The transcript already has a 10px glyph gutter, sized to `SteeringGlyph` and
-`FailureGlyph`'s own SVG (`viewBox="0 0 10 10"` — neither widget declares a wider
-box) — `toolcallitem`'s `.row` and `systemnoticeitem`'s `.failure` share one
-`display: flex; align-items: baseline; gap: var(--space-2)` grammar. This section
-assigns that column.
+The transcript shares one desktop icon rail (`styles/railseat.module.css`) in
+the `0–24px` speaker-avatar column above `700px`, collapsing inline below
+`700px`. `SteeringDivider` (`.railIcon`) and `SystemNoticeItem` (`.failureIcon`)
+compose `.seat` and `.gutterPull` into that column so their text aligns on the
+same `34px` reading margin as prose, thoughts, notifications, and tool rows.
+This section assigns the system-voice glyphs in that column.
 
 | gutter | member | treatment |
 |---|---|---|

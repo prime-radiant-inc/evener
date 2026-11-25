@@ -70,6 +70,7 @@ const CLASS = {
   quietYield: requireClass(styles.quietYield, "systemnoticeitem.module.css", "quietYield"),
   quietYieldSummary: requireClass(styles.quietYieldSummary, "systemnoticeitem.module.css", "quietYieldSummary"),
   failure: requireClass(styles.failure, "systemnoticeitem.module.css", "failure"),
+  failureIcon: requireClass(styles.failureIcon, "systemnoticeitem.module.css", "failureIcon"),
   failureText: requireClass(styles.failureText, "systemnoticeitem.module.css", "failureText"),
   groupBody: requireClass(styles.groupBody, "systemnoticeitem.module.css", "groupBody"),
   scaffoldBody: requireClass(styles.scaffoldBody, "systemnoticeitem.module.css", "scaffoldBody"),
@@ -229,7 +230,9 @@ function FailureLine({ item, turn }: { item: ItemModel; turn: TurnModel }) {
       data-attention="error"
       data-fallback={text ? undefined : "true"}
     >
-      <FailureGlyph />
+      <span className={CLASS.failureIcon}>
+        <FailureGlyph />
+      </span>
       <span className={CLASS.failureText} data-message-body="">
         {text ?? FAILURE_FALLBACK_LABEL}
       </span>

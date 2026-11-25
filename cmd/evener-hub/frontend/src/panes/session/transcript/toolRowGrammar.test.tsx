@@ -687,11 +687,18 @@ test("the rail icon seats via the shared rail-seat module - composed, not restat
   // glyph or the Loader's rail row.
   expect(iconRule?.[1]).toContain('composes: seat from "../../../styles/railseat.module.css"');
   // The pull rides the SLOT (the row's flex item, and the failure badge's
-  // positioning context) into the seat column the row itself reserves, so
-  // the slot and the seat together still place the icon: one pull, one owner.
+  // positioning context) into the shared turn/group gutter above 700px, so the
+  // slot and the seat together place the icon in the avatar column: one pull,
+  // one owner.
   const slotRule = css.match(/\.rowIconSlot\s*\{([^}]*)\}/);
   expect(slotRule).not.toBe(null);
-  expect(slotRule?.[1]).toContain('composes: columnPull from "../../../styles/railseat.module.css"');
+  expect(slotRule?.[1]).toContain('composes: gutterPull from "../../../styles/railseat.module.css"');
+  // Below 700px the icon leads inline ahead of the rationale, so the wrapped
+  // second line (.summaryLine) offsets by --speaker-gutter to share one left
+  // edge with the rationale above it.
+  expect(css).toMatch(
+    /@media\s*\(max-width:\s*699px\)\s*\{[^}]*\.row\[data-intent="true"\]\s+\.summaryLine\s*\{[^}]*margin-left:\s*var\(--speaker-gutter\)/,
+  );
   // The retired inline grammar (the icon inside the summary's text flow) is
   // gone entirely.
   expect(css).not.toContain(".summaryIcon");
@@ -1127,7 +1134,7 @@ test("the rationale-to-call gap is tightened to line-leading only, still tighter
   const call = /\.call\s*\{([^}]*)\}/.exec(css);
   expect(call).not.toBeNull();
   expect(call![1]).toContain('composes: toolRowInsets from "../../../styles/surface.module.css"');
-  expect(call![1]).toContain("padding: var(--tool-card-row-pad) var(--tool-card-inset)");
+  expect(call![1]).toContain("padding: var(--tool-card-row-pad) 0");
 });
 
 // The intent is the agent's stated rationale for the call - commentary on

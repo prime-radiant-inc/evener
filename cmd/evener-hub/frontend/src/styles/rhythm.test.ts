@@ -30,7 +30,7 @@ test("exchange boundaries, runs and pane bodies use the rhythm and space tokens"
   // declared once by the card's owner.
   const surface = read("styles/surface.module.css");
   expect(rule(surface, ".toolRowInsets")).toMatch(/--tool-card-row-pad: var\(--rhythm-item\)/);
-  expect(rule(tool, ".call")).toMatch(/padding: var\(--tool-card-row-pad\) var\(--tool-card-inset\)/);
+  expect(rule(tool, ".call")).toMatch(/padding: var\(--tool-card-row-pad\) 0/);
   const scaffold = read("widgets/panescaffold/panescaffold.module.css");
   expect(rule(scaffold, ".body")).toMatch(/padding: var\(--space-5\)/);
   const separator = read("panes/session/transcript/messages/turnseparator.module.css");
@@ -46,7 +46,7 @@ test("every tool card row takes one padding step, open or collapsed", () => {
   expect(rule(run, ".summary")).toMatch(
     /composes: toolRowInsets from "\.\.\/\.\.\/\.\.\/styles\/surface\.module\.css"/,
   );
-  expect(rule(run, ".summary")).toMatch(/padding: var\(--tool-card-row-pad\) var\(--tool-card-inset\)/);
+  expect(rule(run, ".summary")).toMatch(/padding: var\(--tool-card-row-pad\) 0/);
 });
 
 test("the most-read quiet text sits in --ink-mid, not --ink-low", () => {
