@@ -48,6 +48,13 @@ function ruleIn(block: string, selectorPattern: RegExp): string {
 
 test("a phone session pane floats its footer over the transcript", () => {
   const phone = mediaBlock(scaffoldCss, "max-width: 899px");
+  // The pane itself must establish a non-scrolling containing block so an
+  // absolutely positioned footer anchors to the pane in narrow/split hosts
+  // rather than escaping to the viewport, and focus-into-view on a bottom-flush
+  // button cannot scroll .pane and lift the footer off the bottom edge.
+  const pane = ruleIn(phone, new RegExp(`${SESSION_PANE}\\s*\\{`));
+  expect(pane).toMatch(/position:\s*relative/);
+  expect(pane).toMatch(/overflow:\s*clip/);
   const footer = ruleIn(phone, new RegExp(`${SESSION_PANE} > \\.footer\\s*\\{`));
   expect(footer).toMatch(/position:\s*absolute/);
   expect(footer).toMatch(/border-top:\s*none/);
@@ -64,7 +71,13 @@ test("a phone session pane floats its footer over the transcript", () => {
 
 test("the transcript carries a scrollable reserve under the floating composer on the phone", () => {
   const phone = mediaBlock(sessionCss, "max-width: 899px");
-  const column = ruleIn(phone, /\.contentColumn\s*\{/);
+  // Scoped to session panes so cascade columns (data-pane-scaffold="cascade",
+  // which keep an in-flow footer) retain --floating-composer-reserve: 0px.
+  expect(phone, "phone reserve must not match an unscoped .contentColumn (such as a cascade column)").not.toMatch(
+    /(?:^|[}\n])\s*\.contentColumn\s*\{/,
+  );
+  const SESSION_BODY = escapeRegExp(':global([data-pane-scaffold^="session:"])');
+  const column = ruleIn(phone, new RegExp(`${SESSION_BODY}\\s+\\.contentColumn\\s*\\{`));
   // The reserve is the chrome's measured height - the footer ConversationBody
   // publishes - plus the home-indicator band, with the resting composer's
   // height as its pre-measure fallback.

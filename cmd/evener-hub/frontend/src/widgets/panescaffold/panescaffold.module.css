@@ -182,6 +182,15 @@
    * the end inset row (TranscriptBody), not as padding here. Other panes keep
    * the padded footer: this is the session composer's shape, keyed the same
    * way as the Duo-cover rule below. */
+  .pane:has(> .body[data-pane-scaffold^="session:"]) {
+    position: relative;
+    /* Keep .pane a true non-scroller (superseding .pane's overflow: hidden
+     * fallback): once .footer is positioned inside .pane, focusing a control
+     * flush with the pane's bottom edge (such as Duo cover's Stop button)
+     * must not scroll .pane via :focus-visible scroll-margin and lift the footer. */
+    overflow: clip;
+  }
+
   .pane:has(> .body[data-pane-scaffold^="session:"]) > .footer {
     position: absolute;
     inset-inline: 0;
