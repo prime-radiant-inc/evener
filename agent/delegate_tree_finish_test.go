@@ -698,10 +698,10 @@ func TestDelegateControllerFinishNoActionStopUsesRetainedFallback(t *testing.T) 
 		endedAt:          endedAt,
 		latestActivityAt: activityAt,
 		usage:            schema.CumulativeUsage{InputTokens: 11, OutputTokens: 7, CacheReadTokens: 3, TotalTokens: 21},
-		warnings:         []string{"retained warning"},
 		worktree:         &delegateWorktreeReport{Path: "/tmp/worktree", Branch: "task-3", HeadSHA: "deadbeef", Ahead: 2, Dirty: true},
 		scratchPath:      "/tmp/scratch",
 	})
+	fallback.packet.Warnings = []string{"retained warning"}
 	if prepared, err := c.prepareNoAction(claim, fallback); err != nil || !prepared {
 		t.Fatalf("prepareNoAction = %t, %v", prepared, err)
 	}
