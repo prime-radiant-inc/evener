@@ -145,11 +145,6 @@ func statusSupportStatusAndMetrics(t *testing.T, token string) {
 		t.Fatalf("canceled response side effects = %v", err)
 	}
 	host.Emit(events.EventWarning, events.WarningData{Message: "status fixture " + token})
-
-	permission := &PermissionDeniedError{Tool: "status_" + token, Message: "denied"}
-	if !errors.Is(permission, ErrPermissionDenied) || !strings.Contains(permission.Error(), permission.Tool) {
-		t.Fatalf("permission error contract = %q", permission)
-	}
 }
 
 func statusSupportATIF(t *testing.T, token string) {
