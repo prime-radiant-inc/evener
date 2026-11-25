@@ -206,7 +206,7 @@ test("the folded card goes one line only when the card has room", () => {
   expect(queryStart).toBeGreaterThanOrEqual(0);
   const oneLine = blockBody(css, css.indexOf("{", queryStart));
   expect(oneLine).toMatch(/\.card\[data-folded="true"\]\s*\{[^}]*flex-direction:\s*row;/);
-  expect(css).toMatch(/\.card\[data-folded="true"\] \.field\s*\{[^}]*flex:\s*1 1 10ch;/);
+  expect(oneLine).toMatch(/\.card\[data-folded="true"\] \.field\s*\{[^}]*flex:\s*1 1 14rem;[^}]*min-width:\s*14rem;/);
 });
 
 test("a compact folded card goes one line below the normal width threshold", () => {

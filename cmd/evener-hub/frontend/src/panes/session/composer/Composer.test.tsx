@@ -116,6 +116,7 @@ test.each([
       expect(card.getAttribute("data-folded")).toBe("true");
       expect(card.getAttribute("data-folded-compact")).toBe(compact ? "true" : null);
       expect(screen.getByTestId("composer-attach")).toBeTruthy();
+      expect(screen.queryByTestId("composer-steer-placeholder")).toBeNull();
       expect(order()).toEqual(["composer-stop"]);
 
       act(() => editor.focus());

@@ -1,17 +1,17 @@
 // @vitest-environment node
 import { expect, test } from "vitest";
-import { blockBody, escapeRegExp, mediaBlock, readModuleCss } from "../../../styles/cssBlock";
+import { blockBody, escapeRegExp, mediaBlock, readModuleCss, topRuleBlock } from "../../../styles/cssBlock";
 import { DUO_COVER_QUERY } from "./narrowComposer";
 
 // The floating composer (docs/web-ui/design-system.md §12) is pure stylesheet
 // geometry - jsdom lays out nothing, so the phone rules are pinned off disk
 // the same way display-gates.test.ts pins its gates. What is pinned:
 //
-//  - PaneScaffold's phone block floats a session pane's footer over the body:
-//    no border-top rectangle, a gradient scrim that fades the transcript out
-//    behind the floating chrome (a painted fade, not a boxed strip), and a
-//    root that passes pointer events through to the scroll behind it in its
-//    gutters (its children take taps again).
+//  - PaneScaffold's footer carries no border-top rectangle, and its phone block
+//    floats a session pane's footer over the body: a gradient scrim that fades
+//    the transcript out behind the floating chrome (a painted fade, not a boxed
+//    strip), and a root that passes pointer events through to the scroll behind
+//    it in its gutters (its children take taps again).
 //  - The session pane's own stylesheet sizes the scrollable reserve that lets
 //    the last turn clear the floating composer: the end inset row measures to
 //    the chrome's measured height plus the home-indicator band only under the
@@ -58,9 +58,11 @@ test("a phone session pane floats its footer over the transcript", () => {
   const pane = ruleIn(phone, new RegExp(`${SESSION_PANE}\\s*\\{`));
   expect(pane).toMatch(/position:\s*relative/);
   expect(pane).toMatch(/overflow:\s*clip/);
+  const baseFooter = topRuleBlock(scaffoldCss, ".footer");
+  expect(baseFooter).not.toMatch(/border-top/);
   const footer = ruleIn(phone, new RegExp(`${SESSION_PANE} > \\.footer\\s*\\{`));
   expect(footer).toMatch(/position:\s*absolute/);
-  expect(footer).toMatch(/border-top:\s*none/);
+  expect(footer).not.toMatch(/border-top/);
   // A fade, not a strip: the scrim starts transparent so content visibly
   // slides under the floating chrome.
   expect(footer).toMatch(/background:\s*linear-gradient\(to bottom, transparent,/);

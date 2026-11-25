@@ -126,7 +126,6 @@
   padding: var(--space-3) var(--space-5);
   /* This dock owns the home-indicator band. */
   padding-bottom: calc(var(--space-3) + var(--dock-clearance));
-  border-top: 1px solid var(--edge);
 }
 
 .edgeFooter {
@@ -197,7 +196,6 @@
     inset-inline: 0;
     bottom: 0;
     z-index: var(--z-sticky-bar);
-    border-top: none;
     background: linear-gradient(to bottom, transparent, var(--surface-0) var(--space-5));
     pointer-events: none;
   }

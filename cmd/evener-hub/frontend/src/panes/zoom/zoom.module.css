@@ -62,12 +62,11 @@
   border-bottom: 1px solid var(--edge);
 }
 
-/* A bar that closes its column: the header recipe with the border moved to
- * the bottom edge. Both the phone footer and its desktop twin compose it. */
+/* A bar that closes its column: the header layout without its dividing rule.
+ * Both the phone footer and its desktop twin compose it. */
 .columnBar {
   composes: header;
   border-bottom: 0;
-  border-top: 1px solid var(--edge);
 }
 
 .columnFooterBar {
@@ -173,18 +172,15 @@
   align-items: center;
   gap: var(--space-1);
   padding: var(--space-2) var(--space-3);
-  border-top: 1px solid var(--edge);
 }
 
 .spine .activityControls {
   flex-direction: column;
   padding: var(--space-2) var(--space-1);
-  border: 0;
 }
 
 .header .activityControls {
   padding: 0;
-  border-top: 0;
 }
 
 .peek {
