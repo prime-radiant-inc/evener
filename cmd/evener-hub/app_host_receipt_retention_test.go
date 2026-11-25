@@ -149,11 +149,11 @@ func TestHostReceiptSupersededCountBound(t *testing.T) {
 		Name: "side", Entry: appwire.HostEntry{Address: "retained.example"},
 		MutationID: keys[len(keys)-1], ExpectedGeneration: generation, ExpectedIncarnationID: incarnation,
 	}
-	resp, err := f.m.Update(context.Background(), params)
+	row, err := f.m.Update(context.Background(), params)
 	if err != nil {
 		t.Fatalf("replay of a retained superseded key: %v", err)
 	}
-	if resp.Host.Address == "retained.example" {
+	if row.Address == "retained.example" {
 		t.Fatal("a superseded replay re-applied its mutation")
 	}
 }
@@ -283,12 +283,12 @@ func TestHostReceiptReAddRetainsNewestRemove(t *testing.T) {
 	replay := appwire.HostRemoveParams{
 		Name: "side", MutationID: removeKey, ExpectedGeneration: generation, ExpectedIncarnationID: incarnation,
 	}
-	resp, err := f.m.Remove(context.Background(), replay)
+	row, err := f.m.Remove(context.Background(), replay)
 	if err != nil {
 		t.Fatalf("remove replay after re-add: %v", err)
 	}
-	if !resp.Host.Removed || resp.Host.Address != "side.example" {
-		t.Fatalf("remove replay row = %+v, want the recorded removed row", resp.Host)
+	if !row.Removed || row.Address != "side.example" {
+		t.Fatalf("remove replay row = %+v, want the recorded removed row", row)
 	}
 	live, ok := f.m.cfg.hosts.Get("side")
 	if !ok {

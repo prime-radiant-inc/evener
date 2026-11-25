@@ -201,13 +201,6 @@ type HostUpdateParams struct {
 	ExpectedIncarnationID string    `json:"expectedIncarnationId"`
 }
 
-// HostUpdateResponse is evener/host/update's result: the updated row, which the
-// dialog's caller re-reads like every other mutation's result. An edit never
-// dials, so the row's live state is whatever the teardown left it.
-type HostUpdateResponse struct {
-	Host HostRow `json:"host"`
-}
-
 // HostRow is one host as evener/host/list and evener/host/status render it
 // (component 08 slice 2): the effective entry plus live state. A dialog prefills
 // from this row, and list/status remain the one source of truth for what a host
@@ -302,13 +295,6 @@ type HostRemoveParams struct {
 	MutationID            string `json:"mutationId"`
 	ExpectedGeneration    uint64 `json:"expectedGeneration"`
 	ExpectedIncarnationID string `json:"expectedIncarnationId"`
-}
-
-// HostRemoveResponse is evener/host/remove's result (component 08 slice 1):
-// the removed row, rendered detached. Removed stays removed: the name is gone
-// until re-added.
-type HostRemoveResponse struct {
-	Host HostRow `json:"host"`
 }
 
 // HostPlanParams is the evener/host/plan payload (deploy pipeline 08b §10): the
