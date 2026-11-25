@@ -1099,6 +1099,7 @@ const LONG_VALUES = [
   "sessionidentifier".repeat(12),
   `feature/${"branchidentifier".repeat(12)}`,
   `/work/${"directorysegment".repeat(12)}/session`,
+  `https://artifacts.example.test/p/${"linksegment".repeat(8)}/final-suffix`,
 ];
 
 async function waitForDom(send, expression, label) {
@@ -1586,7 +1587,7 @@ function assertOverview(result, viewport, theme) {
       value.scrollContainers?.length ||
       !value.textRects?.length
     )
-      failures.push(`unreadable ${["model", "session ID", "branch", "path"][i]}: ${JSON.stringify(value)}`);
+      failures.push(`unreadable ${["model", "session ID", "branch", "path", "saved link URL"][i]}: ${JSON.stringify(value)}`);
   }
   if (viewport.mobile) {
     if (!(result.tapMin >= 44)) failures.push(`missing phone tap floor: ${result.tapMin}`);

@@ -7,18 +7,56 @@
   gap: var(--space-1);
 }
 
-.webLink {
-  display: block;
-  color: inherit;
-  text-decoration: none;
+.webLink,
+.row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-2);
   border-radius: var(--radius-control);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-ui);
+  line-height: var(--line-height-ui);
+  color: var(--ink-hi);
+}
+
+.webLink {
+  composes: tapFloor from "../../../styles/tapfloor.module.css";
+  text-decoration: none;
 }
 
 .webLink:hover {
-  background: var(--hover-wash);
+  background: var(--hover-1);
 }
 
 .webLink:focus-visible {
   outline: var(--focus-ring);
-  outline-offset: 2px;
+  outline-offset: -2px;
+}
+
+.text {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-inline-size: 0;
+  flex: 1 1 auto;
+  overflow-wrap: anywhere;
+}
+
+.label {
+  color: var(--ink-hi);
+  overflow-wrap: anywhere;
+}
+
+/* Always wrap full destinations so long prefixes never hide differing hosts or
+ * paths on narrow viewports. */
+.url {
+  color: var(--ink-low);
+  font-size: var(--font-size-caption);
+  overflow-wrap: anywhere;
+}
+
+.action {
+  flex: none;
 }
