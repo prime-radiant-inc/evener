@@ -1526,8 +1526,7 @@ func TestLocalDaemonSourceRejectsHubEndpoint(t *testing.T) {
 				Ref:       "local:thread-1",
 				Subscribe: subscribe,
 			})
-			var initErr DaemonInitializeError
-			if !errors.As(err, &initErr) {
+			if _, ok := errors.AsType[DaemonInitializeError](err); !ok {
 				t.Fatalf("ReadThread(subscribe=%t) error = %T (%v), want DaemonInitializeError", subscribe, err, err)
 			}
 			assertSessionUnavailable(t, err, name)
