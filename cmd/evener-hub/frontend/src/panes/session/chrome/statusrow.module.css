@@ -21,23 +21,10 @@
   overflow: hidden;
 }
 
-/* Where the triggers keep their compact desktop size, the model and effort
- * read as one quiet --field pill: a single control-shaped object describing
- * where the prompt goes, set back from the verbs beside it. Touch layouts
- * leave the ground off - their triggers grow to the tap floor, and a pill
- * that tall would outweigh the Send button it sits next to. */
-@media (min-width: 900px) and (not (any-pointer: coarse)) {
-  .identity {
-    padding-inline: var(--space-1);
-    border-radius: var(--radius-pill);
-    background: var(--field);
-  }
-}
-
 /* The composer's inline mount packs its facts against the far end, beside
  * the verbs. The footer row keeps its leading edge. The auto margin spends
- * the free space before the identity, so the whole run - model, effort,
- * context and queue - moves right as a group; when there is no free space
+ * the free space before the identity, so the whole run - context ring, model,
+ * effort, and queue - moves right as a group; when there is no free space
  * the identity still shrinks and ellipsizes from its own end rather than
  * clipping its start. */
 .rowEnd .identity {
@@ -46,12 +33,12 @@
 }
 
 /* The model and vision-model switches hug their labels but may both shrink when
- * the status row runs narrow. The effort control is the other direct span in
- * this run and keeps its own sizing from reasoningeffortcontrol.module.css.
- * Both popover wrappers need min-width: 0, otherwise the newly added vision
- * trigger keeps its min-content width and squeezes the active-model trigger to
- * zero. */
-.identity > span:not([data-effort-control]) {
+ * the status row runs narrow. The effort control and .context ring are the
+ * other direct spans in this run: effort keeps its own sizing from
+ * reasoningeffortcontrol.module.css, and .context stays flex: none at 14px.
+ * Both popover wrappers need min-width: 0, otherwise a second trigger keeps its
+ * min-content width and squeezes the active-model trigger to zero. */
+.identity > span:not([data-effort-control]):not(.context) {
   flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
@@ -61,11 +48,34 @@
   display: flex;
   align-items: center;
   gap: var(--space-1);
+  flex: none;
 }
 
-.item,
 .context {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   flex: none;
+  padding-right: var(--space-1);
+}
+
+/* Where the triggers keep their compact desktop size, the context ring, model,
+ * and effort read as one quiet --field pill: a single control-shaped object
+ * describing where the prompt goes, set back from the verbs beside it. Touch
+ * layouts leave the ground off - their triggers grow to the tap floor, and a
+ * pill that tall would outweigh the Send button it sits next to. Placed after
+ * .context so the desktop pill padding overrides .context's base padding. */
+@media (min-width: 900px) and (not (any-pointer: coarse)) {
+  .identity {
+    padding-inline: var(--space-1);
+    border-radius: var(--radius-pill);
+    background: var(--field);
+  }
+
+  .context {
+    padding-left: var(--space-1);
+    padding-right: var(--space-half);
+  }
 }
 
 /* Figures and timings: the sans face with tabular digits, so a changing
@@ -76,12 +86,6 @@
   font-variant-numeric: tabular-nums;
 }
 
-.contextMeter {
-  display: block;
-  width: 64px;
-}
-
-.contextPercent,
 .queueCompact {
   display: none;
 }
@@ -129,20 +133,6 @@
   .row {
     gap: var(--space-1);
   }
-
-  /* Clip, don't unrender: this is the compact row's only spoken reading. */
-  .contextMeter {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    overflow: hidden;
-    clip: rect(0, 0, 0, 0);
-  }
-
-  .contextPercent {
-    display: inline;
-  }
-
 }
 
 /* Above the phone floor the effort control keeps its fixed width: shrinking
