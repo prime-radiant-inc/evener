@@ -33,9 +33,7 @@ func TestToolRegistry_GrepCharacterCapDropsWholeNotes(t *testing.T) {
 				rows[i] = "x"
 			}
 			grep := func(ctx context.Context) (string, error) {
-				// A skip predicate selects the real deterministic native reader,
-				// independent of whether ripgrep is installed on the host.
-				return env.GrepSkipping(ctx, "x", path, "", false, 197, "content", 0, func(string) bool { return false })
+				return env.Grep(ctx, "x", path, "", false, 197, "content")
 			}
 			writeRows := func() {
 				t.Helper()

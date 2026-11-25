@@ -31,8 +31,7 @@ func grepThroughRegistry(t *testing.T, lines []string, args string) ExecResult {
 			if v, ok := args["max_results"].(float64); ok {
 				limit = int(v)
 			}
-			// A skip predicate selects the deterministic native reader.
-			return env.(*execenv.LocalExecutionEnvironment).GrepSkipping(ctx, "x", "matches.txt", "", false, limit, "content", 0, func(string) bool { return false })
+			return env.Grep(ctx, "x", "matches.txt", "", false, limit, "content")
 		},
 		Limit: defaultToolLimit("grep"),
 	}); err != nil {
