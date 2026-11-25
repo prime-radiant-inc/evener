@@ -27,10 +27,6 @@
   flex-wrap: wrap;
 }
 
-.row[hidden] {
-  display: none;
-}
-
 .label {
   display: flex;
   align-items: center;
