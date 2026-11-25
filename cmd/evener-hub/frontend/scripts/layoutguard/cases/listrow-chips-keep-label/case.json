@@ -12,6 +12,7 @@
     "styles/tapfloor.module.css",
     "styles/text.module.css",
     "styles/tokens.css",
+    "widgets/internal/rowChrome.module.css",
     "widgets/listrow/listrow.module.css",
     "widgets/chip/chip.module.css"
   ],
