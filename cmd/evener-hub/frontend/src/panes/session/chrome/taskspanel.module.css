@@ -31,9 +31,12 @@
 }
 
 .description {
+  composes: truncate from "../../../styles/text.module.css";
   font-family: var(--font-sans);
   font-size: var(--font-size-ui);
   color: var(--ink-hi);
+  flex: 1;
+  min-width: 0;
 }
 
 .groupCount {
@@ -73,16 +76,6 @@
   text-decoration: line-through;
 }
 
-.description,
-.descDim,
-.descStruck {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  flex: 1;
-  min-width: 0;
-}
-
 .time {
   font-family: var(--font-sans);
   font-variant-numeric: tabular-nums;
@@ -97,11 +90,11 @@
  * the same quiet caption as the row's time. */
 .statusWord {
   composes: time;
+  /* biome-ignore lint/suspicious/noDuplicateProperties: css-modules composes takes one declaration per composed class, each with its own `from` */
+  composes: truncate from "../../../styles/text.module.css";
   /* The word is untrusted and unbounded: cap it rather than let it squeeze
    * the description and time out of the row. */
   max-width: 12ch;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 .latest {
