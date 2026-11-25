@@ -94,7 +94,8 @@
         "id": "local",
         "label": "magic-kingdom",
         "kind": "local",
-        "online": true
+        "online": true,
+        "threadStartIdempotency": true
       }
     ],
     "attentionSummary": {

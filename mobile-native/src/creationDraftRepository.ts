@@ -16,6 +16,9 @@ export interface CreationDraft {
 	launchOverrides: LaunchConfigLayer;
 	images: DraftImageData[];
 	unconfirmed: boolean;
+	/** Idempotency key for an in-flight or interrupted Start of this exact draft.
+	 * Absent in drafts saved before idempotent starts or against older hubs. */
+	clientMutationId?: string;
 }
 type SavedDraft = Omit<CreationDraft, "images"> & { images: DraftImage[] };
 function decode(raw: string): SavedDraft {
@@ -30,6 +33,7 @@ function decode(raw: string): SavedDraft {
 		typeof value.reasoning !== "string" ||
 		(value.manager !== undefined && typeof value.manager !== "boolean") ||
 		typeof value.unconfirmed !== "boolean" ||
+		(value.clientMutationId !== undefined && typeof value.clientMutationId !== "string") ||
 		!value.launchOverrides ||
 		typeof value.launchOverrides !== "object" ||
 		Array.isArray(value.launchOverrides) ||

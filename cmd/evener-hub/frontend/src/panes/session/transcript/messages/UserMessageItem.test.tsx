@@ -122,7 +122,7 @@ test("the approved You row keeps identity, text, and attachments in one avatar +
   expect(body?.querySelector('[data-testid="image-gallery-thumb"]')).toBeTruthy();
 });
 
-test("the slack-lean layout is token-backed and has no prose card treatment", () => {
+test("the speaker header and message column keep their alignment across widths", () => {
   const css = readModuleCss(import.meta.url, "usermessageitem.module.css");
   const speaker = readModuleCss(import.meta.url, "speakerheader.module.css");
   // One flex row: avatar (flex:none) + the transcript's single-sourced
@@ -177,8 +177,6 @@ test("the slack-lean layout is token-backed and has no prose card treatment", ()
   expect(phone![1]).toMatch(/\.message > \.content\s*\{[^}]*display:\s*contents;/);
   expect(phone![1]).toMatch(/\.message \.body\s*\{[^}]*grid-column:\s*1 \/ -1;/);
   expect(css.split("@media").length).toBe(2);
-  expect(css).not.toMatch(/\.message\s*\{[^}]*background\s*:/);
-  expect(css).not.toMatch(/\.message\s*\{[^}]*border\s*:/);
 });
 
 test("the speaker avatar starts at the top of the user message row", () => {
@@ -195,22 +193,12 @@ test("the body renders as a bubble wrapping the text and attachments", () => {
   expect(bubble.querySelector('[data-testid="image-gallery-thumb"]')).toBeTruthy();
 });
 
-// The user's own words sit on a paper slip (structural surface, one hairline,
-// the card lift) hugging the content. The corner toward the avatar is the
-// tight one; the other three share one rounder corner. Serif prose stays.
-test("the user reading surface is a paper slip hugging its content column", () => {
+test("user prose fits its content column and follows the reading preference", () => {
   const css = readModuleCss(import.meta.url, "usermessageitem.module.css");
   const body = /\.body\s*\{([^}]*)\}/.exec(css);
   expect(body).not.toBeNull();
-  expect(body![1]).toMatch(/background:\s*var\(--surface-1\)/);
-  expect(body![1]).toMatch(/border:\s*1px solid var\(--edge\)/);
-  expect(body![1]).toMatch(/box-shadow:\s*var\(--shadow-card\)/);
-  expect(body![1]).toMatch(
-    /border-radius:\s*var\(--radius-chip\)\s*var\(--radius-pane\)\s*var\(--radius-pane\)\s*var\(--radius-pane\)/,
-  );
   expect(body![1]).toMatch(/width:\s*fit-content/);
   expect(body![1]).toMatch(/max-width:\s*100%/);
-  expect(body![1]).toMatch(/padding:\s*var\(--space-2\)\s*var\(--space-3\)/);
   expect(body![1]).not.toMatch(/#[0-9a-fA-F]{3,8}\b/);
   const text = /\.text\s*\{([^}]*)\}/.exec(css);
   expect(text?.[1]).toMatch(/font-family:\s*var\(--font-prose\)/);

@@ -20,8 +20,8 @@ import { useEffect } from "react";
 import { ClientProvider } from "../../shell/clientContext";
 import { Rail } from "../../shell/rail/Rail";
 import { navigationStore } from "../../stores/navigation/store";
+import { GallerySection } from "../GallerySection";
 import styles from "../gallery-section.module.css";
-import { ThemeFlip } from "../ThemeFlip";
 
 const GENERATION = "gallery-generation";
 
@@ -206,18 +206,19 @@ export default function RailSurfaceSection() {
   }, []);
 
   return (
-    <section>
-      <h2>Rail</h2>
-      <p className={styles.note}>
-        Real Rail, with navigationStore seeded directly (fixture navigation resources — no network). Live sessions in
-        attention bands: needs-you (failed, a pending question, a pending approval), working (plain, running a job,
-        waiting on subagents) and idle (rested, dormant), plus one nested under a project.
-      </p>
-      <ThemeFlip>
-        <ClientProvider client={new FakeClient()}>
-          <Rail width={280} />
-        </ClientProvider>
-      </ThemeFlip>
-    </section>
+    <GallerySection
+      title="Rail"
+      note={
+        <p className={styles.note}>
+          Real Rail, with navigationStore seeded directly (fixture navigation resources — no network). Live sessions in
+          attention bands: needs-you (failed, a pending question, a pending approval), working (plain, running a job,
+          waiting on subagents) and idle (rested, dormant), plus one nested under a project.
+        </p>
+      }
+    >
+      <ClientProvider client={new FakeClient()}>
+        <Rail width={280} />
+      </ClientProvider>
+    </GallerySection>
   );
 }

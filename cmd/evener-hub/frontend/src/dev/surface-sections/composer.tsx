@@ -22,8 +22,8 @@ import { writeDraft } from "../../panes/session/composer/draft";
 import { type ComposerSourceState, createComposerSourceState } from "../../panes/session/composer/sourceState";
 import { ClientProvider } from "../../shell/clientContext";
 import { putThreadModel } from "../../stores/threads";
+import { GallerySection } from "../GallerySection";
 import styles from "../gallery-section.module.css";
-import { ThemeFlip } from "../ThemeFlip";
 import layout from "./composer-surface.module.css";
 import { FULL_CAPABILITIES, fixtureThread } from "./thread-fixture";
 
@@ -109,18 +109,21 @@ export default function ComposerSurfaceSection() {
   }, []);
 
   return (
-    <section>
-      <h2>Composer</h2>
-      <p className={styles.note}>
-        Real Composer, fed by a threadsStore seeded directly (hydrateThread over fixture wire data - no network).
-        Resting, with drafted text, and with a pending ask_user question. The answering surface (AskDock) renders as the
-        transcript's trailing row in a real session pane (Session.tsx), so it is shown directly here; AskDock reconciles
-        itself off the seeded thread's transcript, the same way it would off a live ask_user call, and the composer's
-        own input row hides while the question is pending.
-      </p>
+    <GallerySection
+      title="Composer"
+      note={
+        <p className={styles.note}>
+          Real Composer, fed by a threadsStore seeded directly (hydrateThread over fixture wire data - no network).
+          Resting, with drafted text, and with a pending ask_user question. The answering surface (AskDock) renders as
+          the transcript's trailing row in a real session pane (Session.tsx), so it is shown directly here; AskDock
+          reconciles itself off the seeded thread's transcript, the same way it would off a live ask_user call, and the
+          composer's own input row hides while the question is pending.
+        </p>
+      }
+    >
       <ClientProvider client={client}>
         {seeded && (
-          <ThemeFlip>
+          <>
             <div className={layout.paneFixture}>
               <p className={styles.rowLabel}>resting</p>
               <FixtureComposer ref={RESTING_REF} />
@@ -133,9 +136,9 @@ export default function ComposerSurfaceSection() {
               <p className={styles.rowLabel}>ask pending (transcript trailing row)</p>
               <AskDock ref={ASK_REF} />
             </div>
-          </ThemeFlip>
+          </>
         )}
       </ClientProvider>
-    </section>
+    </GallerySection>
   );
 }

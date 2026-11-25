@@ -249,6 +249,7 @@ no router (reserved).
 | `evener/thread/watches/list` | both | [SessionActivityListParams](#sessionactivitylistparams) | [SessionWatchesResponse](#sessionwatchesresponse) | Pages receiver-owned watches and bounded retained history for a session or its subtree. |
 | `evener/subagentPreview` | hub | [EvenerSubagentPreviewParams](#evenersubagentpreviewparams) | [EvenerSubagentPreviewResponse](#evenersubagentpreviewresponse) | Reads a bounded lazy preview of a subagent transcript's latest direct items. |
 | `evener/paths/complete` | hub | [PathsCompleteParams](#pathscompleteparams) | [PathsCompleteResponse](#pathscompleteresponse) | Path autocompletion for a prefix. |
+| `evener/files/search` | hub | [FilesSearchParams](#filessearchparams) | [FilesSearchResponse](#filessearchresponse) | Fuzzy-searches files and directories under a session's live working directory or an explicit host directory, honoring .gitignore and secret-path masks. |
 | `evener/dirs/create` | hub | [DirsCreateParams](#dirscreateparams) | [DirsCreateResponse](#dirscreateresponse) | Creates a missing working directory and its parents for Spawn preflight. |
 | `evener/projects/recent` | hub | [ProjectsRecentParams](#projectsrecentparams) | [ProjectsRecentResponse](#projectsrecentresponse) | Lists the most recently used project working directories (session creation path-dropdown options; default cap 15). |
 | `evener/path/validate` | hub | [PathValidateParams](#pathvalidateparams) | [PathValidateResponse](#pathvalidateresponse) | Validates a launch path. |
@@ -1452,6 +1453,7 @@ Underlying Go kind: `string` (no struct fields).
 | `auth` | bool |  |  |
 | `transcriptDisplaySettings` | bool | yes |  |
 | `keybindingsSettings` | bool | yes |  |
+| `threadStartIdempotency` | bool | yes |  |
 
 
 ### `FencingEpoch`
@@ -1460,6 +1462,32 @@ Underlying Go kind: `string` (no struct fields).
 |-------|---------|-----------|----------|
 | `bootId` | string |  |  |
 | `opSeq` | uint64 |  |  |
+
+
+### `FileSearchItem`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `path` | string |  |  |
+| `kind` | string |  |  |
+
+
+### `FilesSearchParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `ref` | string | yes |  |
+| `cwd` | string | yes |  |
+| `query` | string |  |  |
+| `limit` | int | yes |  |
+
+
+### `FilesSearchResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `items` | [][appwire.FileSearchItem](#filesearchitem) |  |  |
+| `truncated` | bool | yes |  |
 
 
 ### `GitHeadParams`
@@ -5077,6 +5105,7 @@ Underlying Go kind: `string` (no struct fields).
 | `nonInteractive` | \*bool | yes |  |
 | `launchOverrides` | \*[appwire.LaunchConfigLayer](#launchconfiglayer) | yes |  |
 | `manager` | bool | yes |  |
+| `clientMutationId` | string | yes |  |
 
 
 ### `ThreadStartResponse`
@@ -5085,6 +5114,8 @@ Underlying Go kind: `string` (no struct fields).
 |-------|---------|-----------|----------|
 | `thread` | [appwire.Thread](#thread) |  |  |
 | `turn` | [appwire.Turn](#turn) |  |  |
+| `clientMutationId` | string | yes |  |
+| `disposition` | [appwire.MutationDisposition](#mutationdisposition) | yes |  |
 
 
 ### `ThreadStartedParams`

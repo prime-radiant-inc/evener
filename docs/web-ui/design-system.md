@@ -109,15 +109,16 @@ losing the conversation that made the evidence relevant.
   [desktop recovery](../../cmd/evener-hub/frontend/src/shell/DockHost.tsx).
   The phone shell (`StackHost`) slides between panes as the Slide recipe
   (recipe 4 in [motion.md](motion.md)).
-- **Quiet the frame, lift what you act on.** The page frame stays flat: pane scaffolds and
-  tables are square, and fine rules and aligned columns carry the structure. The objects a
-  reader handles are enclosed and sit one step up: a run of tool calls is one rounded card,
-  a section is a `Card`, and the prompt card, the selected rail row, the user's message slip
-  and a secondary button carry a soft shadow. One object gets one edge; a card never draws
-  a second card inside itself. Fields still look editable, overlays retain boundaries, focus
-  remains visible, and semantic color distinguishes attention, activity, failure and
-  selection with text or shape as well as hue. Minimalism is not permission to hide an
-  affordance.
+- **Quiet the frame, lift what you act on.** Pane scaffolds and tables stay square and flat;
+  fine rules and aligned columns carry the structure. A section is a `Card`. The composer,
+  selected rail row and secondary buttons keep their lift. One object gets one edge. Fields
+  look editable, overlays retain boundaries and keyboard focus remains visible. Distinguish
+  attention, activity, failure and selection with text or shape as well as color.
+- **Let the conversation read as conversation.** At every width, the speaker row
+  introduces the words that follow. Delivered messages sit directly on the page. Spacing
+  and aligned icons group routine tool calls. A failed call stands out before the reader
+  opens it. Keep native evidence inspectable and the Open action separate from the
+  disclosure. Pending delivery keeps its own cue.
 - **Optimize readable density, not maximum density.** Prose gets a reading face and measure;
   operations use compact sans; machine evidence uses mono. Larger prose occupies more space
   but separates reading from scanning. Shared size and width preferences remain available.
@@ -246,25 +247,15 @@ Keep disclosure separate from file/transcript opening; retain existing folding a
 disclosure persistence. Evidence stays in its native code, diff, output or structured
 renderer rather than becoming a second prose summary.
 
-**A run of tool rows is one card.** Adjacent tool rows in a turn share one rounded
-(`--radius-pane`) `--surface-1` surface with a `--edge` hairline around it, a hairline
-between rows and `--shadow-card` under the last row.
-[TurnBlock](../../cmd/evener-hub/frontend/src/panes/session/transcript/TurnBlock.tsx)
-marks each tool row's wrapper with its place in the run (`data-tool-card` =
-`only`/`first`/`middle`/`last`); the row's own root, a tool call or a folded run,
-carries the surface, so the card starts at the content edge under the speaker's name at
-every width. A single call is a card of one row. Prose, a notification or any other
-non-tool entry ends the card. The card has one owner,
-[`styles/surface.module.css`](../../cmd/evener-hub/frontend/src/styles/surface.module.css):
-the grouped surface and its rows rule, the slices a turn draws across sibling rows, and
-the two insets every row reads (`--tool-card-inset`, and `--tool-card-row-pad`, one
-`--rhythm-item`). An intent group and an open folded run compose the same classes.
+**Group routine work by spacing and alignment.** Leave the page visible between calls,
+with no card or vertical line around the run. A prose or notification row breaks the
+run. Intent groups and calls inside a turn share their [row insets](../../cmd/evener-hub/frontend/src/styles/surface.module.css)
+on desktop and phone.
 
-The kind icon sits bare at full strength at the head of its row, in the avatar column
-the row reserves for it, so a one-line row stays one line tall. Expanded evidence is
-a band inside the same card: `--surface-inset`, one hairline above it, running to the
-card's edges and taking the card's lower corners when it is the last thing in it. The
-band never draws a card of its own; native renderers keep their own output boundaries.
+Keep each kind icon at the head of its row. A failed call gets a quiet `--surface-1`
+band and its failure glyph even while collapsed. Opening evidence reveals it directly
+under the call on `--surface-inset`, with one hairline above. Keep the native code,
+diff and output boundaries, including their internal scrolling.
 
 A failed call badges its kind icon: the `--danger` ✗ overlays the icon's
 bottom-right corner instead of opening a second inline column beside it, so the
@@ -487,6 +478,11 @@ idle keeps one line. The same line names the row's host where Live spans hosts a
 row is away from this hub, or the host is offline. Rows outside Live keep the one-line
 face; their only second line is the usage-limit wait.
 
+In the narrow shell, every session name is semibold. The reason and age stay regular
+even on the selected row. A pending question shows its own words when supplied and
+falls back to the attention label otherwise. The title and reason share one control:
+tap either line to open the session, or hold either line to reveal the full name and context.
+
 The rail's New-session control is a `Button variant="secondary"`, and the shell keeps at most
 one filled primary on screen: the rail is chrome, so its CTA must not outrank the current
 task's primary action. `scripts/shellguard` (`run.mjs`'s `railNewSession`/`primaryButtons`
@@ -541,7 +537,7 @@ web's custom properties, and `@evener/appwire-client/palette` for the values the
 | Accent as text `--accent-ink` | `#96A1FF` | `#3A44D6` |
 | On a solid accent fill `--on-accent` | `#111214` | `#FFFFFF` |
 
-PaneScaffold shares the page ground. `Card`, the tool card, the prompt card and the
+PaneScaffold shares the page ground. `Card`, the prompt card and the
 selected rail row sit on `--surface-1`, one step up from the page and two from the rail's
 canvas. Evidence and overlays still have their own grounds. Fine borders are structure,
 not text. Low ink clears 4.5:1 on page and evidence surfaces: dark 7.20/6.56, light 5.72/6.14.
@@ -573,9 +569,8 @@ browser chrome does not stay dark.
 The neutral grounds are the cool-neutral ruling, not a preference: no warm or beige ground
 may replace them. The accent is the one chromatic signature laid over them. The rail stays
 one visible step from the page (`--surface-canvas` over
-`--surface-0`), and the user's message slip sits on `--surface-1` with a `--edge` hairline,
-`--shadow-card` and a tight top-left corner pointing at the speaker's avatar: the corners
-are ladder steps, `--radius-chip` toward the avatar and `--radius-pane` on the other three.
+`--surface-0`). Delivered user and agent messages share the page ground; the speaker
+row identifies the voice. Keep the dashed accent edge for a message awaiting delivery.
 `token-contract.test.ts`, `pwa-manifest-colors.test.ts`, `prefs.test.ts` and the
 `zscn-theme-flip-dark-surface` layoutguard case pin the palette; change them together
 with the tokens, never one at a time.
@@ -660,7 +655,7 @@ The radius ladder has five steps, and each has named users:
 |---|---|---|
 | `--radius-chip` | 6px | keycaps, small inline tags, tight inner corners such as a tab's close button |
 | `--radius-control` | 8px | buttons, fields, rail and tree rows, dock tabs, menu items, tooltips, icon seats, an inset band inside a card |
-| `--radius-pane` | 12px | `Card`, the tool card, code and diff blocks, menus, dialogs, popovers, toasts, hover cards, grouped phone lists |
+| `--radius-pane` | 12px | `Card`, code and diff blocks, menus, dialogs, popovers, toasts, hover cards, grouped phone lists |
 | `--radius-panel` | 16px | the largest surfaces: the prompt card, the notes panel's lower corners, the bottom sheet's top corners |
 | `--radius-pill` | 999px | chips, badges, count and status pills, switch, meter and segmented-control tracks, round avatars |
 
@@ -738,7 +733,7 @@ declared in both theme blocks, because the shadow ink differs by theme.
 
 | Token | Value (light / dark shadow ink) | Used by |
 |---|---|---|
-| `--shadow-card` | `0 1px 2px` at 6% ink / 35% black | things that sit on the page and carry their own border: the outlined `Card`, the tool card, the user's message slip, the raised segmented-control thumb, secondary buttons, summary tiles, grouped phone lists |
+| `--shadow-card` | `0 1px 2px` at 6% ink / 35% black | outlined `Card`, a provisional message awaiting delivery, raised segmented-control thumb, secondary buttons, summary tiles, grouped phone lists |
 | `--shadow-card-ringed` | a 1px `--edge` ring plus `--shadow-card` | a raised surface with no border of its own, so the ring costs no box size: the flat `Card`, the selected row (rail and settings nav), the active dock tab |
 | `--shadow-raised` | `--shadow-card` plus a wide soft ambient, `0 8px 24px` at 6% ink / 40% black | the one surface a pane is about: the prompt card (the session composer and the New session task card) |
 | `--shadow-overlay` | a 1px `--edge` ring plus `0 12px 40px` | floating layers: menus, popovers, toasts, dialogs, sheets, hover cards, floating dock groups |
@@ -845,7 +840,9 @@ during implementation (noted inline); this table is the one to trust.
 | **CloseIcon** | none | The close ✕ glyph Dialog and Sheet draw in their close button (lives at `src/widgets/dialog/CloseIcon.tsx`), for any other icon-only close or dismiss control (the settings pane's close, Spawn's dismiss, an InlineNotice dismiss action). Decorative (`aria-hidden`), stroke in currentColor; the IconButton's `label` names the action. |
 | **DirectoryIcon** | none | The folder glyph DirectoryPicker draws beside folder rows (exported from `src/widgets/directorypicker`), for a control that opens or names a directory (Spawn's working-directory tile): ToolIcon `folder` at 16px, so it shares the icon grammar. Decorative (`aria-hidden`), stroke in currentColor. |
 | **DisclosureHeading** | `{level: 2\|3\|4\|5\|6; label: string; open: boolean; onOpenChange(open: boolean); eyebrow?: boolean; action?: ReactNode}` | A heading that folds the group below it: an `<hN>` wrapping an `aria-expanded` button with a trailing Chevron, plus an optional `action` (a section's icon-only Menu) rendered beside the heading, never inside it. Controlled only; the caller renders the group, and only while `open`. The heading's name is the label (the chevron is `aria-hidden`). `eyebrow` sets the label as an Eyebrow group label; leave it off for an authored name that keeps its casing (a pinned section). Inset focus ring; phones and coarse pointers get the 44px tap floor. It is not a Disclosure variant because a heading inside `<summary>` loses its heading role and a summary may not hold the action. Used by the rail's Live, Hosts/Projects, pinned and Archived sections. |
-| **ZoomableMedia** | `{label?: string; onOpen(): void; children: ReactNode} & Omit<ButtonHTMLAttributes, "type"\|"onClick"\|"className"\|"aria-label"\|"children"\|"disabled">` | Media that opens a larger view of itself: the whole image or diagram is one block `<button>` with every user-agent control default neutralized, a zoom-in cursor and an inset focus ring (thumbnail tiles clip their overflow). Fills its container's width, and its height when the container has one (a fixed thumbnail tile). `label` becomes `aria-label` ("Zoom image", "View shot.png", "Open diagram fullscreen"); omit it only when the media's own text alternative plus any caption inside already names it (the transcript gallery's thumbnails). The larger view stays the caller's — a single image's `Dialog size="large"`, the gallery's stepping lightbox, the mermaid DiagramViewer — so this owns only the trigger. `forwardRef` + rest-spread (`data-testid`, `data-mermaid-diagram`). Used by AttachmentTile, ImageGallery, DocPane and MermaidDiagram. |
+| **ZoomableMedia** | `{label?: string; onOpen(): void; children: ReactNode} & Omit<ButtonHTMLAttributes, "type"\|"onClick"\|"className"\|"aria-label"\|"children"\|"disabled">` | Media that opens a larger view of itself: the whole image or diagram is one block `<button>` with every user-agent control default neutralized, a zoom-in cursor and an inset focus ring (thumbnail tiles clip their overflow). Fills its container's width, and its height when the container has one (a fixed thumbnail tile). `label` becomes `aria-label` ("Zoom image", "View shot.png", "Open diagram fullscreen"); omit it only when the media's own text alternative plus any caption inside already names it (the transcript gallery's thumbnails). The larger view stays the caller's — a single image's `Dialog size="large"`, the gallery's stepping lightbox, the mermaid DiagramViewer — so this owns only the trigger. `forwardRef` + rest-spread (`data-testid`, `data-mermaid-diagram`). Used by ImageThumbnail, DocPane and MermaidDiagram. |
+| **ImageThumbnail** | `{src?; alt?; onOpen?; label?; frameClassName?; imageClassName?; caption?; captionClassName?; captionTestId?; width?; height?; loading?; decoding?; onImageError?; overlay?; placeholder?; frameTestId?; triggerTestId?; fill? (true); radius?}` | One image in a framed tile: the caller's frame class around a `ZoomableMedia` trigger, the `<img>` (optional intrinsic box, lazy-decode hints and an error callback), and an optional caption inside the trigger. Two slots keep caller chrome without copying the markup: `overlay` renders in the frame after the trigger (a remove control, dimensions), and `placeholder` replaces the trigger while the image is not ready. The placeholder keeps the frame and overlay at the same positions, so a focused overlay control is updated rather than remounted across the pending-to-settled transition (kata 39xe). The larger view stays the caller's: pair it with MediaLightbox. Used by the transcript's ImageGallery and the composer's AttachmentTile. |
+| **MediaLightbox** | `{open; onClose; title; src; alt; caption?; captionTestId?; imageTestId?; children?}` | The one-image lightbox: `Dialog size="large"` around the whole image at the shared lightbox size (`widgets/internal/lightbox.module.css`), with an optional caption line and caller-supplied content below the image (a gallery's Previous/Next). The trigger and any stepping between images stay with the caller. |
 
 **ToolRunGroup is deliberately not a widget.** It lives at
 `src/panes/session/transcript/ToolRunGroup.tsx` with its own stylesheet, not under
@@ -854,9 +851,8 @@ entry, no gallery section. It is what finally renders principle 2 of the mockup 
 (`decisions.md`, topic 06 Alt A). The rule, owned by `transcript/toolRuns.ts`: in a SETTLED
 turn, three or more consecutive completed, non-failed tool calls whose renderer has opted in
 collapse into one `<details>` row labelled `N steps · <last consequential summary>`. The
-folded run is one row of the tool card it sits in ("Inline tools and delegates"): closed, a
-quiet count and one name at the tool rows' inset; open, the header of the rows it stands
-for, which follow inside the same card behind hairline dividers. Folding is
+summary aligns with the tool rows and opens the calls directly below on the same reading
+surface. See [Inline tools and delegates](#inline-tools-and-delegates) for appearance. Folding is
 opt-in: `fold: "quiet"` (the reads, searches, web fetches, transcript reads) folds and only
 counts; `fold: "consequential"` (the edit tools, shell, worktree) folds and is the step the label
 names, being a mutation; `fold: "never"` (delegate, ask_user, task_list, use_skill, the `job_*`

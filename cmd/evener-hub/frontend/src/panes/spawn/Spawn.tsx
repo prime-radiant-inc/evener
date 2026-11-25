@@ -16,8 +16,10 @@ import {
   harnessUsesEvenerModels,
   hostRequest,
   isLocalHost,
+  markerRanges,
   matchBuiltinInvocation,
   mergeSlashCommands,
+  mutationErrorData,
   type PathValidation,
   type PluginSelectionState,
   parseSlashToken,
@@ -30,7 +32,7 @@ import {
   slashCommandInvocation,
   withPluginSelection,
 } from "@evener/appwire-client";
-import { type JSX, memo, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { type JSX, memo, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { useStore } from "zustand";
 import { useClient } from "../../shell/clientContext";
@@ -47,6 +49,7 @@ import { useExtensionsStore } from "../../stores/extensions";
 import { withLaunchConfig } from "../../stores/launchConfig";
 import { selectDisplaySources, selectSources } from "../../stores/navigation/selectors";
 import { useNavigationStore } from "../../stores/navigation/store";
+import { createSecureUUID } from "../../stores/secureUUID";
 import {
   Button,
   Chevron,
@@ -82,9 +85,11 @@ import { AttachmentTile } from "../session/composer/AttachmentTile";
 import { AttachImageControl } from "../session/composer/attachments/AttachImageControl";
 import { imageFilesFromClipboard } from "../session/composer/attachments/clipboard";
 import { type TextEditor, useAttachments } from "../session/composer/attachments/useAttachments";
+import { FileCompletionMenu } from "../session/composer/FileCompletionMenu";
 import { SkillEditor, type SkillEditorHandle, type SkillEditorValue } from "../session/composer/SkillEditor";
 import { SlashCompletionMenu } from "../session/composer/SlashCompletionMenu";
 import { maskSkillAtoms, patchSelectionText } from "../session/composer/skillDocument";
+import { resolveCompletionTokens, useFileCompletion } from "../session/composer/useFileCompletion";
 import { useSlashCompletion } from "../session/composer/useSlashCompletion";
 import {
   ConnectProviderDialogBoundary,
@@ -132,7 +137,7 @@ import {
   runSpawnBuiltinAfterStart,
   spawnBuiltinCommands,
 } from "./spawnSlashMenu";
-import { startThread } from "./startThread";
+import { type SpawnRequest, spawnRequestFingerprint, startThread } from "./startThread";
 import { usePluginPreview } from "./usePluginPreview";
 import { useProviderSetup } from "./useProviderSetup";
 import { useSpawnSlashCatalog } from "./useSpawnSlashCatalog";
@@ -979,19 +984,69 @@ function SpawnForm({
     textEditor,
     plainKeysOnly: true,
   });
+  const fileCompletionHostReady =
+    isLocalHost(submittedSource) || Boolean(sources.find((candidate) => candidate.id === submittedSource)?.online);
+  const fileCompletionEnabled = client !== null && cwd.trim() !== "" && fileCompletionHostReady;
+  const fileTarget = useMemo(
+    () => (cwd.trim() !== "" ? ({ kind: "cwd", host: submittedSource, cwd } as const) : null),
+    [submittedSource, cwd],
+  );
+  const protectedMarkerRangesFor = useCallback(
+    (maskedText: string) => {
+      const items = draft.attachments.getState().items;
+      if (items.length === 0) return [];
+      const activeMarkers = new Set(items.map((item) => item.marker));
+      return markerRanges(maskedText).filter((range) => activeMarkers.has(range.marker));
+    },
+    [draft.attachments],
+  );
+  const {
+    token: fileToken,
+    setToken: setFileToken,
+    items: fileItems,
+    open: fileOpen,
+    showLoader: fileShowLoader,
+    truncated: fileTruncated,
+    activeIndex: fileActiveIndex,
+    activeId: fileActiveId,
+    listboxId: fileListboxId,
+    commit: commitFileCompletion,
+    handleKeyDown: handleFileKeyDown,
+    reset: resetFileCompletion,
+  } = useFileCompletion({
+    client,
+    target: fileTarget,
+    enabled: fileCompletionEnabled,
+    editorRef: textareaRef,
+    textRef,
+    draft: prompt,
+    plainKeysOnly: true,
+    getProtectedRanges: () => protectedMarkerRangesFor(textRef.current),
+  });
+  const prevFileCompletionScopeRef = useRef({ submittedSource, cwd, draft });
+  useEffect(() => {
+    const prev = prevFileCompletionScopeRef.current;
+    if (prev.submittedSource === submittedSource && prev.cwd === cwd && prev.draft === draft) return;
+    prevFileCompletionScopeRef.current = { submittedSource, cwd, draft };
+    resetFileCompletion();
+  }, [submittedSource, cwd, draft, resetFileCompletion]);
   // URL writes bypass the keystroke path, including a prefill for the current
   // project. A restored draft should offer the same completion as typed text.
   // biome-ignore lint/correctness/useExhaustiveDependencies: prefillRevision triggers URL-only writes independently of keystrokes
   useEffect(() => {
     const text = draft.fields.getState().prompt;
     setSlashToken(parseSlashToken(text, text.length));
+    setFileToken(null);
     cursorRef.current = null;
   }, [draft, prefillRevision]);
   // Completion can clear this draft through an older, unmounted form. Retire
   // the token from the current prompt, not from that form's stale continuation.
   useEffect(() => {
-    if (prompt === "") setSlashToken(null);
-  }, [prompt, setSlashToken]);
+    if (prompt === "") {
+      setSlashToken(null);
+      setFileToken(null);
+    }
+  }, [prompt, setSlashToken, setFileToken]);
   const attachments = useAttachments(textEditor, draft.attachments);
 
   // Every catalog and readiness signal this form reads - provider instances,
@@ -2188,7 +2243,7 @@ function SpawnForm({
     // Mod/Ctrl+Enter always falls through to the submit branch below even
     // with the menu open. Shift+Enter, Alt+Enter, and composing Enter keep
     // their existing behavior (newline/composition).
-    if (handleSlashKeyDown(event)) return;
+    if (handleSlashKeyDown(event) || handleFileKeyDown(event)) return;
     // ⌘/Ctrl+Enter submits (floor §1.12).
     if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
       event.preventDefault();
@@ -2314,7 +2369,7 @@ function SpawnForm({
     // clearSubmitted removes below - it survives untouched, same contract
     // useAttachments.ts documents for the composer.
     const submittedMarkers = new Set(attachments.items.map((item) => item.marker));
-    const { ref } = await startThread(client, {
+    const spawnReq: SpawnRequest = {
       cwd,
       // A matched builtin is consumed: its invocation text is stripped so the
       // session starts dormant/configured rather than with a literal slash
@@ -2337,7 +2392,28 @@ function SpawnForm({
       source: submittedSource,
       // Start-time role: an ordinary launch omits it entirely.
       manager,
+    };
+    const supportsStartIdempotency =
+      client.initializeResult?.features?.threadStartIdempotency === true &&
+      (isLocalHost(submittedSource) || chosenSource?.threadStartIdempotency === true);
+    let clientMutationId: string | undefined;
+    if (supportsStartIdempotency) {
+      const fingerprint = spawnRequestFingerprint(spawnReq);
+      const existing = draft.fields.getState().pendingStart;
+      if (existing?.fingerprint === fingerprint) {
+        clientMutationId = existing.clientMutationId;
+      } else {
+        clientMutationId = createSecureUUID();
+        draft.fields.setState({ pendingStart: { clientMutationId, fingerprint } });
+      }
+    } else if (draft.fields.getState().pendingStart !== null) {
+      draft.fields.setState({ pendingStart: null });
+    }
+    const { ref } = await startThread(client, {
+      ...spawnReq,
+      ...(clientMutationId ? { clientMutationId } : {}),
     });
+    draft.fields.setState({ pendingStart: null });
     if (builtinMatch && builtinMatch.command.id === "goal") {
       // Post-start application runs AFTER navigation below: awaiting goal/set
       // here would hold the UI in "Starting…" for the RPC timeout on a
@@ -2392,6 +2468,10 @@ function SpawnForm({
   // agent daemon could be reached for cwd (the first-run worst moment, T3), the
   // launch-check's own raw text is replaced with actionable copy instead.
   function reportStartFailure(err: unknown): void {
+    const data = mutationErrorData(err);
+    if (data?.mutationOutcome === "notAccepted" || data?.retryDisposition === "blocked") {
+      draft.fields.setState({ pendingStart: null });
+    }
     toasts.push("error", `Start failed: ${friendlyLaunchErrorMessage(err)}`);
     finishBusy();
   }
@@ -2666,6 +2746,18 @@ function SpawnForm({
               onSelect={commitSlashCompletion}
             />
           )}
+          {fileOpen && (
+            <FileCompletionMenu
+              id={fileListboxId}
+              query={fileToken?.query ?? ""}
+              items={fileItems}
+              highlightedIndex={fileActiveIndex}
+              placement="below"
+              showLoader={fileShowLoader}
+              truncated={fileTruncated}
+              onSelect={commitFileCompletion}
+            />
+          )}
           <Dropzone onFiles={(files) => attachments.ingestFiles(files, (message) => toasts.push("error", message))}>
             <PromptCard
               data-testid="spawn-prompt-card"
@@ -2675,8 +2767,8 @@ function SpawnForm({
                   ref={textareaRef}
                   value={{ text: prompt, skillNames, commandNames, mentions }}
                   restoreEpoch={restoreEpoch + selectionRestoreRevision}
-                  aria-controls={slashActiveId ? slashListboxId : undefined}
-                  aria-activedescendant={slashActiveId ?? undefined}
+                  aria-controls={slashActiveId ? slashListboxId : fileOpen ? fileListboxId : undefined}
+                  aria-activedescendant={slashActiveId ?? fileActiveId ?? undefined}
                   skillDetails={(name) =>
                     catalogResponse.skills?.find((item) => item.name === name)?.description ??
                     `${name} — no longer in this launch catalog`
@@ -2685,7 +2777,7 @@ function SpawnForm({
                     catalogResponse.commands.find((item) => slashCommandInvocation(item) === `/${name}`)?.description ??
                     `${name} — no longer in this launch catalog`
                   }
-                  onChange={(value: SkillEditorValue, caret) => {
+                  onChange={(value: SkillEditorValue, caret, meta) => {
                     textRef.current = value.text;
                     const fields = draft.fields.getState();
                     draft.fields.setState({
@@ -2695,7 +2787,27 @@ function SpawnForm({
                       mentions: value.mentions,
                       promptRevision: fields.promptRevision + 1,
                     });
-                    setSlashToken(parseSlashToken(maskSkillAtoms(value), caret));
+                    const masked = maskSkillAtoms(value);
+                    const tokens = resolveCompletionTokens(
+                      masked,
+                      caret,
+                      Boolean(meta?.isPaste),
+                      protectedMarkerRangesFor(masked),
+                    );
+                    setSlashToken(tokens.slashToken);
+                    setFileToken(tokens.fileToken);
+                  }}
+                  onSelectionChange={(caret) => {
+                    const fields = draft.fields.getState();
+                    const masked = maskSkillAtoms({
+                      text: fields.prompt,
+                      skillNames: fields.skillNames,
+                      commandNames: fields.commandNames,
+                      mentions: fields.mentions,
+                    });
+                    const tokens = resolveCompletionTokens(masked, caret, false, protectedMarkerRangesFor(masked));
+                    setSlashToken(tokens.slashToken);
+                    setFileToken(tokens.fileToken);
                   }}
                   onKeyDown={handlePromptKeyDown}
                   onPaste={handlePaste}
@@ -2706,7 +2818,10 @@ function SpawnForm({
                   // option never reaches this handler in the first place -
                   // see that component's own comment - so this only ever
                   // fires for a genuine "focus left the field".
-                  onBlur={() => setSlashToken(null)}
+                  onBlur={() => {
+                    setSlashToken(null);
+                    setFileToken(null);
+                  }}
                   // Short, because the intro above the card already asks the
                   // question and states the dormant-start rule; a placeholder
                   // that repeats them spends the field's one line on nothing.
