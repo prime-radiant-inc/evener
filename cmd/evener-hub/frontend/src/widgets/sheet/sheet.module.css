@@ -146,7 +146,6 @@
   position: sticky;
   top: 0;
   z-index: var(--z-sticky-bar);
-  background: var(--surface-inset);
 }
 
 .expandableBody {
