@@ -20,6 +20,8 @@ export interface OverlayPanelProps {
   open: boolean;
   onClose: () => void;
   title: string;
+  /** Internal seam: Sheet actions and Close share a row with the title. */
+  headerActions?: ReactNode;
   children: ReactNode;
   footer?: ReactNode;
   /** Caller-composed class for the panel element: a shared base class plus
@@ -70,6 +72,8 @@ const SCRIM_CLASS: Record<OverlayPanelProps["motion"], string> = {
 
 const CLASS = {
   header: requireClass(styles.header, "dialog.module.css", "header"),
+  headerWithActions: requireClass(styles.headerWithActions, "dialog.module.css", "headerWithActions"),
+  headerActions: requireClass(styles.headerActions, "dialog.module.css", "headerActions"),
   title: requireClass(styles.title, "dialog.module.css", "title"),
   body: requireClass(styles.body, "dialog.module.css", "body"),
   footer: requireClass(styles.footer, "dialog.module.css", "footer"),
@@ -80,16 +84,16 @@ const CLASS = {
  * Shared modal skeleton for Dialog and Sheet ("otherwise the Dialog
  * contract" - see the wave-2 plan): scrim, aria-modal dialog role labelled
  * by its title, Escape-to-close, click-the-scrim-to-close, a trapped
- * FocusScope, and a close button (the shared IconButton, in a CSS seat that
- * pins it to the header's top-right corner). The close button is placed LAST
- * in DOM order (after body and footer) rather than in the header, so a dialog
- * with focusable body content focuses that content first on open - see this
- * task's report - while the seat positions it regardless of DOM order.
+ * FocusScope, and one shared IconButton to close. Without header actions,
+ * Close comes last in DOM order so initial focus can go to the content.
+ * A sheet with header actions groups Close after those controls in the header,
+ * in visual and keyboard order.
  */
 export function OverlayPanel({
   open,
   onClose,
   title,
+  headerActions,
   children,
   footer,
   panelClassName,
@@ -121,7 +125,7 @@ export function OverlayPanel({
   // While the layer leaves it renders what it showed when it closed: a caller
   // that clears its own state on close must not see its dialog empty out
   // mid-exit.
-  const shown = useShownWhileClosing(open, { title, children, footer, handle });
+  const shown = useShownWhileClosing(open, { title, headerActions, children, footer, handle });
   // Radix-style pointer-down-outside semantics: the gesture that decides
   // whether this counts as "outside the panel" is where the PRESS
   // started, not where it ends. scrimPressStartedOnScrimRef records that
@@ -144,6 +148,11 @@ export function OverlayPanel({
 
   if (!mounted) return null;
   const closing = phase === "closing";
+  const hasHeaderActions = Boolean(shown.headerActions);
+  const headerClass = [CLASS.header, headerClassName, hasHeaderActions && CLASS.headerWithActions]
+    .filter(Boolean)
+    .join(" ");
+  const closeButton = <IconButton label="Close" icon={<CloseIcon />} variant="quiet" size="xs" onClick={onClose} />;
 
   function handleScrimMouseDown(event: MouseEvent<HTMLDivElement>) {
     scrimPressStartedOnScrimRef.current = event.target === event.currentTarget;
@@ -206,18 +215,22 @@ export function OverlayPanel({
           style={style}
         >
           {shown.handle}
-          <header className={headerClassName ? `${CLASS.header} ${headerClassName}` : CLASS.header} {...headerProps}>
+          <header className={headerClass} {...headerProps}>
             <h2 id={titleId} className={CLASS.title}>
               {shown.title}
             </h2>
+            {hasHeaderActions && (
+              <div className={CLASS.headerActions}>
+                {shown.headerActions}
+                {closeButton}
+              </div>
+            )}
           </header>
           <div ref={bodyRef} className={bodyClassName ? `${CLASS.body} ${bodyClassName}` : CLASS.body}>
             {shown.children}
           </div>
           {shown.footer !== undefined && <div className={CLASS.footer}>{shown.footer}</div>}
-          <span className={CLASS.closeSeat}>
-            <IconButton label="Close" icon={<CloseIcon />} variant="quiet" size="xs" onClick={onClose} />
-          </span>
+          {!hasHeaderActions && <span className={CLASS.closeSeat}>{closeButton}</span>}
         </div>
       </LayerFocusScope>
     </div>

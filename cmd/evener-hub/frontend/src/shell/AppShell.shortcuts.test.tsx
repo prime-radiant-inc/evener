@@ -1,5 +1,5 @@
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
@@ -377,6 +377,46 @@ test("clicking the rail's own Search button opens the command palette", async ()
 
   expect(await screen.findByRole("dialog", { name: "Command palette" })).toBeTruthy();
 });
+
+test.each(["click", "unfocused-click", "Enter"] as const)(
+  "mobile: dismissing the command palette opened via %s from the Sessions drawer restores focus to Search and keeps Tab inside the drawer",
+  async (activation) => {
+    installMobileViewport();
+    const user = userEvent.setup();
+    window.history.pushState({}, "", "/s/local:ref_abc123");
+    installLocationForRoute("local:ref_abc123");
+    render(<AppShell client={navClient()} />);
+    const sessionsButton = await screen.findByRole("button", { name: "Sessions" });
+    await user.click(sessionsButton);
+
+    const drawer = await screen.findByRole("dialog", { name: "Sessions" });
+    const searchButton = within(drawer).getByRole("button", { name: "Search" });
+    if (activation === "click") {
+      await user.click(searchButton);
+    } else if (activation === "unfocused-click") {
+      searchButton.addEventListener("mousedown", (event) => event.preventDefault(), { once: true });
+      await user.click(searchButton);
+    } else {
+      act(() => searchButton.focus());
+      await user.keyboard("{Enter}");
+    }
+    await screen.findByRole("dialog", { name: "Command palette" });
+
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog", { name: "Command palette" })).toBeNull();
+    expect(screen.getByRole("dialog", { name: "Sessions" })).toBe(drawer);
+    expect(document.activeElement).toBe(searchButton);
+
+    await user.tab();
+    expect(drawer.contains(document.activeElement)).toBe(true);
+    await user.tab({ shift: true });
+    expect(drawer.contains(document.activeElement)).toBe(true);
+    await user.tab({ shift: true });
+    await user.tab({ shift: true });
+    expect(drawer.contains(document.activeElement)).toBe(true);
+    expect(document.activeElement).not.toBe(sessionsButton);
+  },
+);
 
 // FIX 1 (real-browser bug): Settings' Escape/close used to call
 // workspaceStore.closePane directly, which replaces the main pane with

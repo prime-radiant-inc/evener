@@ -23,6 +23,20 @@ test('new session activates the rail control when the workspace also offers laun
  } finally {await browser.close();}
 });
 
+test('directory button opens the visible desktop trigger while the mobile row is hidden',async()=>{
+ const browser=await chromium.launch({headless:true});
+ try {
+  const page=await browser.newPage();
+  await page.setContent('<div style="display:none"><button aria-label="Working directory: Choose a folder">Working directory</button></div><button id="spawn-cwd" aria-label="Directory: Choose a folder — browse">Directory</button>');
+  await page.evaluate(()=>{
+   window.dirClicks=[];
+   document.addEventListener('click',event=>window.dirClicks.push({id:event.target.id,trusted:event.isTrusted}));
+  });
+  await web.directoryButton(page).click({timeout:500});
+  assert.deepEqual(await page.evaluate(()=>window.dirClicks),[{id:'spawn-cwd',trusted:true}]);
+ } finally {await browser.close();}
+});
+
 test('real browser launch failure retains private diagnostics without leaking driver inputs',async t=>{
  const root=await mkdtemp(join(tmpdir(),'tour-launch-failure-'));
  t.after(()=>rm(root,{recursive:true,force:true}));

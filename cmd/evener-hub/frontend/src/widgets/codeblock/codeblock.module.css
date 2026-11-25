@@ -1,10 +1,19 @@
 /* A fine boundary on the evidence ground separates code from reading text
- * without adding structural elevation. */
+ * without adding structural elevation.
+ *
+ * --codeblock-flex-shrink, --codeblock-overflow, --codeblock-overflow-y, and
+ * --codeblock-overflow-x let a bounded flex host (JobLog's .joblogCommand)
+ * cap the block and scroll <pre> inside .codeArea so .header stays pinned. */
 .root {
+  display: flex;
+  flex-direction: column;
+  flex: 0 var(--codeblock-flex-shrink, 0) auto;
+  min-height: 0;
   position: relative;
   border: 1px solid var(--edge);
   border-radius: var(--radius-pane);
   background: var(--surface-1);
+  overflow: var(--codeblock-overflow, visible);
 }
 
 /* The positioning context .header's absolute offset is relative to - split
@@ -12,6 +21,10 @@
  * banner (.fold) can sit in normal flow ABOVE this without the copy control
  * jumping to overlay it instead of the code. */
 .codeArea {
+  display: flex;
+  flex-direction: column;
+  flex: 0 1 auto;
+  min-height: 0;
   position: relative;
 }
 
@@ -70,6 +83,9 @@
  * prose-shaped far more often than table-shaped. The extra right padding
  * leaves room for the inset copy control so a first line never runs under it. */
 .pre {
+  flex: 0 1 auto;
+  overflow-y: var(--codeblock-overflow-y, visible);
+  overflow-x: var(--codeblock-overflow-x, visible);
   margin: 0;
   font-family: var(--font-mono);
   padding: var(--space-2) var(--space-3);
@@ -136,6 +152,7 @@
 /* Full-width row, not inset like .header - this is a real interactive
  * control the reader is meant to notice and use, not chrome to recede. */
 .fold {
+  flex: none;
   display: flex;
   padding: var(--space-1) var(--space-3);
 }

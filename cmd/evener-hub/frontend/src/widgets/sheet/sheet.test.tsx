@@ -654,6 +654,33 @@ function withRunningExit(): { finish: () => Promise<void>; restore: () => void }
   };
 }
 
+test("retains an expandable sheet's header action until its inert exit ends", async () => {
+  const exit = withRunningExit();
+  try {
+    const config = { side: "bottom", expandable: { peekHeight: 200 }, title: "Example", onClose: vi.fn() } as const;
+    const { rerender } = render(
+      <Sheet {...config} open headerActions={<button type="button">Save</button>}>
+        Body
+      </Sheet>,
+    );
+    const action = screen.getByRole("button", { name: "Save" });
+
+    rerender(
+      <Sheet {...config} open={false}>
+        Body
+      </Sheet>,
+    );
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(action.isConnected).toBe(true);
+    expect(action.closest("[inert]")).not.toBeNull();
+
+    await exit.finish();
+    expect(action.isConnected).toBe(false);
+  } finally {
+    exit.restore();
+  }
+});
+
 test("slow downward drag past threshold writes live transform/opacity, preserves them for exit continuation, restores focus, and calls onClose once", async () => {
   vi.useFakeTimers();
   const exit = withRunningExit();

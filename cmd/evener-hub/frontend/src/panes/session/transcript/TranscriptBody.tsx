@@ -716,6 +716,7 @@ export function TranscriptBody({
       ref={focusFallbackRef}
       className={styles.transcriptList}
       data-testid="transcript-virtual-list"
+      data-reading-scroll-host=""
       aria-label="Transcript"
       tabIndex={-1}
     >

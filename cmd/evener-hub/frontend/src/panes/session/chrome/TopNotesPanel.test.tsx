@@ -2,11 +2,13 @@ import type { ThreadModel } from "@evener/appwire-client";
 import { act, cleanup, render, renderHook, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { resetMobileViewportForTests } from "../../../shell/useIsMobile";
 import { resetHumanNoteDrafts, useHumanNoteDraft } from "../../../stores/humanNoteDrafts";
 import { putThreadModel, resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
 import { topNotesStore } from "../../../stores/topNotes";
-import { readModuleCss, topRuleBlock } from "../../../styles/cssBlock";
+import { mediaBlock, readModuleCss, topRuleBlock } from "../../../styles/cssBlock";
 import { ALL_CAPABILITIES } from "../../../threadTestUtils";
+import { installMobileViewport } from "../testing/mobileViewport";
 import { TopNotesPanel } from "./TopNotesPanel";
 
 function makeModel(overrides: Partial<ThreadModel> = {}): ThreadModel {
@@ -58,7 +60,10 @@ function panelSummary(): HTMLElement {
   return summary;
 }
 
+let restoreViewport: (() => void) | null = null;
+
 beforeEach(() => {
+  resetMobileViewportForTests();
   topNotesStore.getState().resetForTests();
   // openAndFocus judges a request's origin era from the threads store, so
   // tests hydrate real models and must start from none.
@@ -71,6 +76,11 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  if (restoreViewport !== null) {
+    restoreViewport();
+    restoreViewport = null;
+  }
+  resetMobileViewportForTests();
   // A dismissal test's outside target is a plain DOM node, not a React
   // container: testing-library's cleanup() leaves it behind, so a failed
   // assertion would otherwise leak an "elsewhere" button into the next test.
@@ -590,6 +600,175 @@ test("the panel is an inset card with a boundary that cannot clip", () => {
   // The shared Disclosure's summary owns the inset focus ring for both states
   // (widgets/disclosure's own test asserts it); this card must not restate it.
   expect(css).not.toMatch(/outline:/);
+
+  // Mobile (<=899px): collapsed rests as one quiet centered line on the reading
+  // surface with no card chrome and the body's own top spacing; only the
+  // expanded card attaches to the header.
+  expect(topRuleBlock(css, ".summaryLine")).toContain("color: var(--ink-low)");
+  const mobile = mediaBlock(css, "max-width: 899px");
+  expect(mobile).toMatch(/\.topNotesPanel:not\(\[data-expanded="true"\]\)\s*\{[^}]*border:\s*none/);
+  expect(mobile).toMatch(/\.topNotesPanel:not\(\[data-expanded="true"\]\)\s*\{[^}]*box-shadow:\s*none/);
+  expect(mobile).toMatch(/\.topNotesPanel:not\(\[data-expanded="true"\]\)\s*\{[^}]*background:\s*transparent/);
+  expect(mobile).toMatch(/:global\(\[data-pane-scaffold\^="session:"\]\)\s*\.topNotesPanel\s*\{[^}]*margin-top:\s*0/);
+  expect(mobile).toMatch(
+    /:global\(\[data-pane-scaffold\^="session:"\]\)\s*\.topNotesPanel\[data-expanded="true"\]\s*\{[^}]*margin-top:\s*calc\(-1 \* var\(--space-4\)\)/,
+  );
+  expect(mobile).toMatch(/\.summary\s+\.chevron\s*\{[^}]*display:\s*none/);
+  expect(mobile).toMatch(/\.summary\s+\.summaryLeft\s*\{[^}]*justify-content:\s*center/);
+  expect(mobile).toMatch(/\.summary\s*\{[^}]*border-radius:\s*var\(--radius-control\)/);
+
+  // Touch tap floor: the quiet line grows to the 44px target on phones and
+  // coarse pointers.
+  expect(css).toMatch(
+    /@media\s*\(max-width:\s*899px\),\s*\(any-pointer:\s*coarse\)\s*\{[^}]*\.summary\s*\{[^}]*min-height:\s*var\(--tap-min\)/,
+  );
+});
+
+test("mobile collapsed whiteboard rests as one quiet count line and carries first-priority content on aria-label", () => {
+  restoreViewport = installMobileViewport();
+  resetMobileViewportForTests();
+
+  const cases = [
+    {
+      name: "human + agent + link",
+      overrides: {
+        humanNote: "human-sentinel-alpha\nsecond-line",
+        agentNote: "agent-sentinel-beta",
+        sessionUrls: [{ id: "u1", url: "https://example.com", label: "Example" }],
+      },
+      expectedCounts: ["2", "1"],
+      hiddenSentinels: ["human-sentinel-alpha", "agent-sentinel-beta"],
+      expectedAriaSentinel: "human-sentinel-alpha",
+      placeholderReason: null,
+    },
+    {
+      name: "agent + link when human note is empty",
+      overrides: {
+        humanNote: "",
+        agentNote: "agent-sentinel-gamma",
+        sessionUrls: [{ id: "u1", url: "https://example.com", label: "Example" }],
+      },
+      expectedCounts: ["1", "1"],
+      hiddenSentinels: ["agent-sentinel-gamma"],
+      expectedAriaSentinel: "agent-sentinel-gamma",
+      placeholderReason: null,
+    },
+    {
+      name: "links alone when both notes are empty",
+      overrides: {
+        humanNote: "",
+        agentNote: "",
+        sessionUrls: [
+          { id: "u1", url: "https://example.com", label: "Example" },
+          { id: "u2", url: "https://foo.bar", label: "Foo" },
+        ],
+      },
+      expectedCounts: ["2"],
+      hiddenSentinels: [],
+      expectedAriaSentinel: "2",
+      placeholderReason: null,
+    },
+    {
+      name: "empty writable session",
+      overrides: { humanNote: "", agentNote: "", sessionUrls: [] },
+      expectedCounts: [],
+      hiddenSentinels: [],
+      expectedAriaSentinel: null,
+      placeholderReason: "empty",
+    },
+    {
+      name: "empty read-only session",
+      overrides: { status: { type: "ended" as const }, humanNote: "", agentNote: "", sessionUrls: [] },
+      expectedCounts: [],
+      hiddenSentinels: [],
+      expectedAriaSentinel: null,
+      placeholderReason: "read-only",
+    },
+  ];
+
+  let writableEmptyText = "";
+  for (const item of cases) {
+    const model = makeModel(item.overrides);
+    render(<TopNotesPanel sessionRef={model.ref} model={model} />);
+    const root = screen.getByTestId("top-notes-panel");
+    const summary = panelSummary();
+
+    expect(root.getAttribute("data-expanded"), item.name).toBeNull();
+    expect(screen.queryByTestId("top-notes-icon-person"), item.name).toBeNull();
+    expect(screen.queryByTestId("top-notes-icon-skill"), item.name).toBeNull();
+    expect(screen.queryByTestId("top-notes-icon-globe"), item.name).toBeNull();
+
+    const visibleText = summary.textContent ?? "";
+    for (const sentinel of item.hiddenSentinels) {
+      expect(visibleText, `${item.name} must not preview note content`).not.toContain(sentinel);
+    }
+    expect(visibleText.match(/\d+/g) ?? [], item.name).toEqual(item.expectedCounts);
+    expect(summaryPlaceholderReason() ?? null, item.name).toBe(item.placeholderReason);
+
+    const ariaLabel = summary.getAttribute("aria-label");
+    if (item.expectedAriaSentinel === null) {
+      expect(ariaLabel, item.name).toBeNull();
+    } else {
+      expect(ariaLabel, item.name).not.toBeNull();
+      expect(ariaLabel, item.name).toContain(item.expectedAriaSentinel);
+      expect(ariaLabel, item.name).not.toBe(visibleText);
+    }
+
+    if (item.placeholderReason === "empty") writableEmptyText = visibleText;
+    if (item.placeholderReason === "read-only") expect(visibleText).not.toBe(writableEmptyText);
+    cleanup();
+  }
+});
+
+test("mobile whiteboard expands to full editor and tracks draft, remote updates, and read-only fallback on aria-label", async () => {
+  restoreViewport = installMobileViewport();
+  resetMobileViewportForTests();
+  const user = userEvent.setup();
+  const model = makeModel({
+    humanNote: "saved-sentinel",
+    agentNote: "agent-body-sentinel",
+    sessionUrls: [{ id: "u1", url: "https://example.com", label: "Example Docs" }],
+  });
+  const view = render(<TopNotesPanel sessionRef={model.ref} model={model} />);
+
+  const collapsedAria = panelSummary().getAttribute("aria-label");
+  expect(collapsedAria).toContain("saved-sentinel");
+
+  // Expanding sets data-expanded="true", mounts full edit/read body, and
+  // switches the summary accessible name to the collapse action.
+  await user.click(panelSummary());
+  expect(screen.getByTestId("top-notes-panel").getAttribute("data-expanded")).toBe("true");
+  expect(screen.getByTestId("top-notes-expanded-content")).toBeTruthy();
+  expect(screen.getByText("agent-body-sentinel")).toBeTruthy();
+  expect(screen.getByText("Example Docs")).toBeTruthy();
+  const expandedAria = panelSummary().getAttribute("aria-label");
+  expect(expandedAria).not.toBeNull();
+  expect(expandedAria).not.toBe(collapsedAria);
+  expect(expandedAria).not.toBe(panelSummary().textContent);
+
+  // Collapse clean, then receive a remote update: aria-label tracks the new note.
+  await user.click(panelSummary());
+  expect(screen.getByTestId("top-notes-panel").getAttribute("data-expanded")).toBeNull();
+  const updatedModel = { ...model, humanNote: "remote-update-sentinel" };
+  view.rerender(<TopNotesPanel sessionRef={model.ref} model={updatedModel} />);
+  expect(panelSummary().getAttribute("aria-label")).toContain("remote-update-sentinel");
+
+  // Unsaved draft edits stay out of the quiet line and land on aria-label.
+  await user.click(panelSummary());
+  const textarea = screen.getByRole("textbox", { name: "Human note" });
+  await user.type(textarea, " draft-delta");
+  await user.click(panelSummary());
+  expect(screen.getByTestId("top-notes-panel").getAttribute("data-expanded")).toBeNull();
+  expect(panelSummary().textContent).not.toContain("draft-delta");
+  expect(panelSummary().getAttribute("aria-label")).toContain("remote-update-sentinel draft-delta");
+  const lineSpan = panelSummary().querySelector("span span");
+  expect(lineSpan?.tagName).toBe("SPAN");
+
+  // Turning read-only while a draft is unsaved falls back to the saved note.
+  view.rerender(<TopNotesPanel sessionRef={model.ref} model={{ ...updatedModel, status: { type: "ended" } }} />);
+  const readOnlyAria = panelSummary().getAttribute("aria-label") ?? "";
+  expect(readOnlyAria).toContain("remote-update-sentinel");
+  expect(readOnlyAria).not.toContain("draft-delta");
 });
 
 // --- dismissal: a press outside the panel collapses it ---------------------

@@ -746,7 +746,7 @@ test.each([false, true])("repeated composer /status targets its ref, phone=%s", 
         ref: "ref_a",
       }),
     );
-    expect(screen.getByRole("radio", { name: "About", checked: true })).toBeTruthy();
+    expect(screen.getByRole("tab", { name: "About", selected: true })).toBeTruthy();
     if (mobile && invocation === 0) {
       await waitFor(() => expect(screen.getByTestId("activity-sidebar").contains(document.activeElement)).toBe(true));
     }

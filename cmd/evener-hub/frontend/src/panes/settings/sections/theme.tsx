@@ -1,4 +1,5 @@
-import { prefsStore, usePrefsStore } from "../../../stores/prefs";
+import { useWebLayout } from "../../../shell/useIsMobile";
+import { defaultSessionListStyle, prefsStore, type SessionListStylePref, usePrefsStore } from "../../../stores/prefs";
 import { RadioGroup, type RadioGroupOption, useToasts } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import styles from "./theme.module.css";
@@ -31,8 +32,14 @@ const TRANSCRIPT_MEASURE_OPTIONS: RadioGroupOption[] = [
   { value: "wide", label: "Wide" },
 ];
 
+const SESSION_LIST_OPTIONS: RadioGroupOption[] = [
+  { value: "auto", label: "Automatic" },
+  { value: "flat", label: "Three lines" },
+  { value: "compact", label: "Compact rows" },
+];
+
 /**
- * Settings -> Theme (parity-m7-settings.md §3): 3 localStorage-only
+ * Settings -> Appearance: browser-local
  * preferences, no wire access - every control here reads/writes prefs.ts
  * directly. A RadioGroup driven straight off usePrefsStore is always correct
  * on every render; there is no separate "reapply" step. (The former Sidebar
@@ -56,11 +63,14 @@ export function ThemeSection() {
   const phoneDensity = usePrefsStore((s) => s.phoneDensity);
   const fontSize = usePrefsStore((s) => s.fontSize);
   const transcriptMeasure = usePrefsStore((s) => s.transcriptMeasure);
+  const layout = useWebLayout();
+  const sessionListStyle = usePrefsStore((s) => s.sessionListStyle[layout]);
+  const automaticStyle = defaultSessionListStyle(layout) === "flat" ? "three lines" : "compact rows";
   const { push } = useToasts();
 
   return (
     <div className={CLASS.root}>
-      <p className={CLASS.intro}>Theme, density, font size and transcript width are saved per-browser.</p>
+      <p className={CLASS.intro}>These choices are saved in this browser.</p>
 
       <RadioGroup
         label="Color theme"
@@ -96,6 +106,16 @@ export function ThemeSection() {
         onChange={(value) => prefsStore.getState().setTranscriptMeasure(value as "reading" | "wide")}
         description="Reading keeps lines near 90 characters. Wide uses more of the window."
       />
+
+      <div data-testid="session-list-style" data-layout={layout}>
+        <RadioGroup
+          label="Session list style"
+          value={sessionListStyle}
+          options={SESSION_LIST_OPTIONS}
+          onChange={(value) => prefsStore.getState().setSessionListStyle(layout, value as SessionListStylePref)}
+          description={`Applies only to the ${layout} layout in this browser. Automatic uses ${automaticStyle}.`}
+        />
+      </div>
     </div>
   );
 }

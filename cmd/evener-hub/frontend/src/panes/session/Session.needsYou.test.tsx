@@ -1021,10 +1021,9 @@ test("the phone session opens its live Jobs count from Overview above a composer
   const user = userEvent.setup();
   const overview = screen.getByRole("button", { name: "Overview" });
   await user.click(overview);
-  const sheet = await screen.findByRole("dialog", { name: "Overview" });
-  const jobs = await within(sheet).findByRole("button", { name: /Jobs, 1 of 3 running/ });
-  await user.click(jobs);
   const sidebar = await screen.findByTestId("activity-sidebar");
+  const jobs = await within(sidebar).findByRole("tab", { name: /Jobs, 1 of 3 running/ });
+  await user.click(jobs);
   expect(activitySidebarStore.getState()).toMatchObject({ open: true, ref: "ref_a", tab: "jobs" });
   await waitFor(() => expect(sidebar.contains(document.activeElement)).toBe(true));
   await user.keyboard("{Escape}");

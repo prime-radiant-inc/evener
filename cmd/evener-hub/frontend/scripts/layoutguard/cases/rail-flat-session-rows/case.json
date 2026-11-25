@@ -1,0 +1,19 @@
+{
+  "name": "rail-flat-session-rows",
+  "description": "A flat rail keeps the same title and metadata positions with and without status text, without giving up selection or restoring nested guide lines.",
+  "cssFiles": [
+    "styles/global.css",
+    "styles/tokens.css",
+    "styles/text.module.css",
+    "styles/help.module.css",
+    "shell/rail/RailRow.module.css",
+    "widgets/tree/tree.module.css"
+  ],
+  "viewport": { "width": 1024, "height": 768, "deviceScaleFactor": 1, "mobile": false },
+  "mutation": {
+    "declaration": "RailRow.module.css: remove min-height from the flat status line",
+    "verified": "2026-11-24",
+    "expect": "fail",
+    "note": "Without its empty status line, the quiet row shrank by 16.8px and its metadata moved that much closer to its title. The host check separately failed with the remote host 125.4px outside the metadata box when the host and project shared one ellipsis."
+  }
+}

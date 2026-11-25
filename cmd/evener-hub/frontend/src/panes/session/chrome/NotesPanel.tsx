@@ -24,7 +24,7 @@ import { FileOpenBesideButton } from "../transcript/fileOpenBeside";
 import styles from "./notespanel.module.css";
 import { PanelSection } from "./PanelSection";
 
-function isFileHref(href: string): boolean {
+export function isFileHref(href: string): boolean {
   return /^file:\/\//.test(href);
 }
 

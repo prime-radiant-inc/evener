@@ -26,6 +26,8 @@ export interface SheetProps {
   open: boolean;
   onClose: () => void;
   title: string;
+  /** Actions beside the title, before the sheet's Close control. */
+  headerActions?: ReactNode;
   children: ReactNode;
   footer?: ReactNode;
   /** When set, the Sheet renders a drag handle and manages a "peek" | "full"
@@ -110,6 +112,7 @@ export function Sheet({
   open,
   onClose,
   title,
+  headerActions,
   children,
   footer,
   expandable,
@@ -157,6 +160,7 @@ export function Sheet({
         open={open}
         onClose={onClose}
         title={title}
+        headerActions={headerActions}
         footer={footer}
         panelClassName={composedPanelClassName}
         handle={
@@ -190,6 +194,7 @@ export function Sheet({
       open={open}
       onClose={onClose}
       title={title}
+      headerActions={headerActions}
       footer={footer}
       handle={<SheetHandle className={HANDLE_CLASS} testId="sheet-handle" onPointerDown={onHandlePointerDown} />}
       headerClassName={expandableHeaderClassName}

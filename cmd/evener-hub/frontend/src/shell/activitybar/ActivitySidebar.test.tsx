@@ -233,7 +233,7 @@ test("closed sidebar owns no read and an open tab observes only its own collecti
   await screen.findByRole("button", { name: /inspect/ });
   expect(client.calls.filter((c) => c.method === "evener/thread/delegates/list")).toHaveLength(1);
   expect(client.calls.filter((c) => c.method === "evener/thread/jobs/list")).toHaveLength(0);
-  fireEvent.click(screen.getByRole("radio", { name: "Jobs, 2 of 201 running" }));
+  fireEvent.click(screen.getByRole("tab", { name: "Jobs, 2 of 201 running" }));
   await screen.findByText("No jobs at this level.");
   expect(client.calls.filter((c) => c.method === "evener/thread/jobs/list")).toHaveLength(1);
   expect(client.calls.filter((c) => c.method === "thread/read")).toHaveLength(1);
@@ -626,7 +626,7 @@ test("desktop delegate rows build six nested edges beside the mounted center and
     const footer = within(screen.getByTestId(`inspection-${inspectorId}`)).getByTestId("statusbar");
     expect(within(footer).getByRole("button", { name: "Jobs, 7 of 107 running - open Overview" })).toBeTruthy();
     const sidebar = within(screen.getByTestId("activity-sidebar"));
-    fireEvent.click(sidebar.getByRole("radio", { name: "About" }));
+    fireEvent.click(sidebar.getByRole("tab", { name: "About" }));
     await sidebar.findByText("wire-remote:seventh");
     expect(sidebar.queryByText("wire-remote:sixth")).toBeNull();
     window.getSelection()?.selectAllChildren(within(parent).getByText("remote:sixth real content"));
@@ -636,7 +636,7 @@ test("desktop delegate rows build six nested edges beside the mounted center and
     fireEvent.click(sidebar.getByRole("button", { name: "child work" }));
     await sidebar.findByRole("button", { name: /Open remote:grandchild/ });
     expect(currentSessionRef(workspaceStore.getState())).toBe("remote:child");
-    fireEvent.click(sidebar.getByRole("radio", { name: "About" }));
+    fireEvent.click(sidebar.getByRole("tab", { name: "About" }));
     await sidebar.findByText("wire-remote:child");
     // The origin root never renders in the pane, so its crumb is not offered
     // and the cascade cannot pop to it: the drilled branch stays selected.
@@ -645,11 +645,11 @@ test("desktop delegate rows build six nested edges beside the mounted center and
     expect(activitySidebarStore.getState().tab).toBe("about");
     // Re-drilling from the retained Agents view keeps the per-scope view
     // state working across the ref change.
-    fireEvent.click(sidebar.getByRole("radio", { name: /^Agents,/ }));
+    fireEvent.click(sidebar.getByRole("tab", { name: /^Agents,/ }));
     fireEvent.click(await sidebar.findByRole("button", { name: /Open remote:grandchild/ }));
     await waitFor(() => expect(currentSessionRef(workspaceStore.getState())).toBe("remote:grandchild"));
     expect(activitySidebarStore.getState().tab).toBe("agents");
-    fireEvent.click(sidebar.getByRole("radio", { name: "About" }));
+    fireEvent.click(sidebar.getByRole("tab", { name: "About" }));
     await sidebar.findByText("wire-remote:grandchild");
     const inspectorChip = within(
       within(screen.getByTestId(`inspection-${inspectorId}`)).getByTestId("statusbar"),
@@ -775,20 +775,19 @@ test("an embedded column's Overview describes that column, then the sidebar foll
     // focused, not the ordinary pane for the same conversation.
     expect(workspaceStore.getState().focusedPaneId).toBe("zoom");
     // The request named the parent column, so the sidebar describes it:
-    // its delegates, its wire identity, and its own ancestry - never the
+    // its wire identity, its delegates, and its own ancestry - never the
     // focused leaf's.
-    await sidebar.findByRole("button", { name: /delegate owned by child/ });
-    expect(sidebar.queryByRole("button", { name: /delegate owned by grandchild/ })).toBeNull();
-    fireEvent.click(sidebar.getByRole("radio", { name: "About" }));
     await sidebar.findByText("wire-child");
     expect(sidebar.queryByText("wire-grandchild")).toBeNull();
     expect(sidebar.getByRole("button", { name: "root" })).toBeTruthy();
+    fireEvent.click(sidebar.getByRole("tab", { name: /^Agents,/ }));
+    await sidebar.findByRole("button", { name: /delegate owned by child/ });
+    expect(sidebar.queryByRole("button", { name: /delegate owned by grandchild/ })).toBeNull();
     // The checkmark marks the scope the sidebar shows: the column's own menu
     // offers Overview as checked.
     await user.click(screen.getByRole("button", { name: /session actions/i }));
     expect(screen.getByRole("menuitem", { name: /^Overview.*✓$/ })).toBeTruthy();
     await user.keyboard("{Escape}");
-    fireEvent.click(sidebar.getByRole("radio", { name: /^Agents,/ }));
     // The held scope releases when the workspace scope moves: the sidebar
     // goes back to following focus.
     act(() => workspaceStore.getState().openPane("session", { ref: "remote:other" }));
@@ -848,7 +847,7 @@ test("the held column's origin crumb routes to the retained origin pane", async 
   await sidebar.findByRole("button", { name: /delegate owned by root/ });
 });
 
-test("activity tabs keep a named keyboard radio group without a visible heading", async () => {
+test("activity tabs keep a named keyboard tablist without a visible heading", async () => {
   connectionStore.getState().connect(activityClient());
   installFocusedScope(ref);
   activitySidebarStore.getState().openWith("agents");
@@ -857,31 +856,34 @@ test("activity tabs keep a named keyboard radio group without a visible heading"
   expect(screen.getByRole("complementary", { name: "Overview" })).toBeTruthy();
   expect(screen.queryByRole("dialog", { name: "Overview" })).toBeNull();
   expect(screen.getByTestId("activity-sidebar").getAttribute("aria-modal")).toBeNull();
-  expect(screen.getByRole("radiogroup", { name: "Overview kind" })).toBeTruthy();
+  expect(screen.getByRole("tablist", { name: "Overview kind" })).toBeTruthy();
   expect(screen.queryByText("Overview kind")).toBeNull();
-  await act(async () => fireEvent.keyDown(screen.getByRole("radio", { name: /Agents/ }), { key: "End" }));
+  await act(async () => fireEvent.keyDown(screen.getByRole("tab", { name: /Agents/ }), { key: "End" }));
+  expect(activitySidebarStore.getState().tab).toBe("tasks");
+  await act(async () => fireEvent.keyDown(screen.getByRole("tab", { name: /Tasks/ }), { key: "Home" }));
   expect(activitySidebarStore.getState().tab).toBe("about");
-  await act(async () => fireEvent.keyDown(screen.getByRole("radio", { name: "About" }), { key: "Home" }));
+  await act(async () =>
+    fireEvent.keyDown(screen.getByRole("tab", { name: "About" }), { key: "ArrowRight", shiftKey: true }),
+  );
+  expect(activitySidebarStore.getState().tab).toBe("about");
+  await act(async () => fireEvent.keyDown(screen.getByRole("tab", { name: "About" }), { key: "ArrowRight" }));
   expect(activitySidebarStore.getState().tab).toBe("agents");
-  await act(async () => fireEvent.keyDown(screen.getByRole("radio", { name: /Agents/ }), { key: "ArrowRight" }));
-  expect(activitySidebarStore.getState().tab).toBe("jobs");
 });
 
-test("activity tabs show each fraction as a detail line and About stays a single line", async () => {
+test("activity tabs show each fraction as a detail element and About stays a single label", async () => {
   connectionStore.getState().connect(activityClient());
   installFocusedScope(ref);
   activitySidebarStore.getState().openWith("agents");
   mount();
   await screen.findByRole("button", { name: /inspect/ });
-  const tabs = screen.getAllByRole("radio");
+  const tabs = screen.getAllByRole("tab");
   expect(tabs).toHaveLength(5);
-  expect(tabs[0]?.className).toContain("wrap");
-  for (const tab of tabs.slice(0, 4)) {
+  for (const tab of tabs.slice(1)) {
     const spans = tab.querySelectorAll("span");
     expect(spans).toHaveLength(2);
     expect(tab.textContent).not.toContain("\n");
   }
-  expect(screen.getByRole("radio", { name: "About" }).querySelectorAll("span")).toHaveLength(1);
+  expect(screen.getByRole("tab", { name: "About" }).querySelectorAll("span")).toHaveLength(1);
 });
 
 test("phone Overview enters its selected category and contains sequential keyboard focus", async () => {
@@ -896,8 +898,26 @@ test("phone Overview enters its selected category and contains sequential keyboa
     const sidebar = await screen.findByTestId("activity-sidebar");
     expect(screen.getByRole("dialog", { name: "Overview" })).toBe(sidebar);
     expect(sidebar.getAttribute("aria-modal")).toBe("true");
-    const about = screen.getByRole("radio", { name: "About" });
+    expect(screen.queryByRole("radiogroup")).toBeNull();
+    const tablist = screen.getByRole("tablist", { name: "Overview kind" });
+    const tabs = within(tablist).getAllByRole("tab");
+    expect(tabs).toHaveLength(5);
+    const about = within(tablist).getByRole("tab", { name: "About" });
+    const panel = within(sidebar).getByRole("tabpanel");
+    expect(panel.getAttribute("aria-labelledby")).toBe(about.id);
+    expect(about.getAttribute("aria-selected")).toBe("true");
+    expect(about.tabIndex).toBe(0);
     await waitFor(() => expect(document.activeElement).toBe(about));
+    // Bare navigation keys rove across the underline tabs; modifier chords pass through.
+    await act(async () => fireEvent.keyDown(about, { key: "ArrowRight", altKey: true }));
+    expect(activitySidebarStore.getState().tab).toBe("about");
+    await act(async () => fireEvent.keyDown(about, { key: "ArrowRight" }));
+    expect(activitySidebarStore.getState().tab).toBe("agents");
+    await act(async () => fireEvent.keyDown(within(tablist).getByRole("tab", { name: /^Agents/ }), { key: "End" }));
+    expect(activitySidebarStore.getState().tab).toBe("tasks");
+    await act(async () => fireEvent.keyDown(within(tablist).getByRole("tab", { name: /^Tasks/ }), { key: "Home" }));
+    expect(activitySidebarStore.getState().tab).toBe("about");
+    expect(document.activeElement).toBe(about);
     for (let step = 0; step < 20; step += 1) {
       await user.tab();
       expect(sidebar.contains(document.activeElement)).toBe(true);
@@ -960,8 +980,8 @@ test("phone Overview reopening during its exit returns focus to its selected cat
     opener.click();
     mount(true);
     const sidebar = await screen.findByTestId("activity-sidebar");
-    const strip = screen.getByRole("radiogroup");
-    const about = screen.getByRole("radio", { name: "About" });
+    const strip = screen.getByRole("tablist");
+    const about = screen.getByRole("tab", { name: "About" });
     await waitFor(() => expect(document.activeElement).toBe(about));
     // Close and reopen in separate synchronous commits. No timer or frame can
     // run between them, so the exit animation cannot finish and the aside
@@ -979,7 +999,7 @@ test("phone Overview reopening during its exit returns focus to its selected cat
     });
     expect(activitySidebarStore.getState().open).toBe(true);
     expect(screen.getByTestId("activity-sidebar")).toBe(sidebar);
-    expect(screen.getByRole("radiogroup")).toBe(strip);
+    expect(screen.getByRole("tablist")).toBe(strip);
     await waitFor(() => expect(document.activeElement).toBe(about), { timeout: 1_500 });
   } finally {
     opener.remove();
@@ -998,7 +1018,7 @@ test("desktop Overview leaves focus with the opener and permits Tab beyond the s
     mount();
     await screen.findByText("owner");
     expect(document.activeElement).toBe(opener);
-    screen.getByRole("radio", { name: "About" }).focus();
+    screen.getByRole("tab", { name: "About" }).focus();
     let escaped = false;
     for (let step = 0; step < 20 && !escaped; step += 1) {
       await user.tab();
@@ -1111,6 +1131,7 @@ test("an embedded parent column's Overview rebases its ancestor crumb onto the c
     await user.click(screen.getByRole("button", { name: /session actions/i }));
     await user.click(screen.getByRole("menuitem", { name: /^Overview/ }));
     const sidebar = within(screen.getByTestId("activity-sidebar"));
+    fireEvent.click(sidebar.getByRole("tab", { name: /^Agents,/ }));
     // The held scope is the parent column "child", whose own ancestry is
     // proven against the canonical refs.
     await sidebar.findByRole("button", { name: /delegate owned by child/ });
@@ -1184,6 +1205,7 @@ test("a held parent in a cascade opened from a nested session keeps its ancestor
     await user.click(screen.getByRole("button", { name: /session actions/i }));
     await user.click(screen.getByRole("menuitem", { name: /^Overview/ }));
     const sidebar = within(screen.getByTestId("activity-sidebar"));
+    fireEvent.click(sidebar.getByRole("tab", { name: /^Agents,/ }));
     await sidebar.findByRole("button", { name: /delegate owned by parent/ });
     const crumbs = within(sidebar.getByRole("navigation", { name: "Scope" }));
     // The held scope is the parent column: its two ancestors above the
