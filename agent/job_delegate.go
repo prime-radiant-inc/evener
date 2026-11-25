@@ -127,7 +127,6 @@ type sendMessageResult struct {
 	RunEndedAt               string
 	LatestActivityAt         string
 	CumulativeUsage          *schema.CumulativeUsage
-	WaitIgnoredReason        string
 	Name                     string
 	// Earlier holds results of the same delegate the caller had not yet
 	// received, oldest first, that an inline reply carries ahead of its own.

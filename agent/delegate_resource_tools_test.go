@@ -17,6 +17,7 @@ import (
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	toolpkg "primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/fuzz/reflectfill"
 	"primeradiant.com/evener/llm"
 )
 
@@ -389,21 +390,17 @@ func TestDelegateTools_StopIgnoresIncludeChildrenAndRemainsRecursive(t *testing.
 	<-stop.done
 }
 
-func TestDelegateTools_WaitIgnoredReasonIsOwnField(t *testing.T) {
+func TestDelegateTools_SendResultOmitsWaitIgnoredReason(t *testing.T) {
 	t.Parallel()
-	value, err := marshalDelegateSendResult(sendMessageResult{
-		DelegateID: "dlg_live", Type: "delegate", Status: jobstore.StatusRunning, Action: "steered",
-		WaitIgnoredReason: "live steer returns on delivery",
-	}, 1<<20)
+	var res sendMessageResult
+	reflectfill.Fill(t, reflect.ValueOf(&res).Elem(), "sendMessageResult")
+	value, err := marshalDelegateSendResult(res, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	state := stableToolStateMap(t, value)
-	if state["wait_ignored_reason"] != "live steer returns on delivery" {
-		t.Fatalf("delegate_send state = %#v", state)
-	}
-	if _, exists := state["warnings"]; exists {
-		t.Fatalf("call-scoped wait reason leaked into warnings: %#v", state)
+	if _, exists := state["wait_ignored_reason"]; exists {
+		t.Fatalf("delegate_send state unexpectedly emitted wait_ignored_reason: %#v", state)
 	}
 }
 
