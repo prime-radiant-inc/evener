@@ -259,7 +259,7 @@ func Load(opts ...Option) (*Registry, error) {
 		presets: map[string]Transport{}, topGlobs: map[string]map[string]Model{},
 		curated: map[string]*record{}, explicit: map[string]*record{},
 		broken: map[string]error{},
-		env: o.env, creds: o.creds, stateRoot: o.stateRoot,
+		env:    o.env, creds: o.creds, stateRoot: o.stateRoot,
 	}
 	var upstream []Provider
 	meta := Meta{}
