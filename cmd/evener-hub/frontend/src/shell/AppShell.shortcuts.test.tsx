@@ -383,58 +383,39 @@ test("clicking the rail's own Search button opens the command palette", async ()
   expect(await screen.findByRole("dialog", { name: "Command palette" })).toBeTruthy();
 });
 
-test.each(["click", "unfocused-click", "Enter"] as const)(
-  "mobile: dismissing the command palette opened via %s from inside the Sessions drawer restores focus and keeps Tab inside the drawer",
-  async (activation) => {
-    installMobileViewport();
-    const user = userEvent.setup();
-    window.history.pushState({}, "", "/s/local:ref_abc123");
-    installLocationForRoute("local:ref_abc123");
-    render(<AppShell client={navClient()} />);
-    const sessionsButton = await screen.findByRole("button", { name: "Sessions" });
-    await user.click(sessionsButton);
+test("mobile: dismissing the command palette opened via Ctrl+K from the Sessions drawer filter restores focus and keeps Tab inside the drawer", async () => {
+  installMobileViewport();
+  const user = userEvent.setup();
+  window.history.pushState({}, "", "/s/local:ref_abc123");
+  installLocationForRoute("local:ref_abc123");
+  render(<AppShell client={navClient()} />);
+  const sessionsButton = await screen.findByRole("button", { name: "Sessions" });
+  await user.click(sessionsButton);
 
-    const drawer = await screen.findByRole("dialog", { name: "Sessions" });
-    expect(within(drawer).queryByTestId("rail-search")).toBeNull();
-    const filterInput = within(drawer).getByRole("searchbox");
-    expect(filterInput).toBeTruthy();
+  const drawer = await screen.findByRole("dialog", { name: "Sessions" });
+  expect(within(drawer).queryByTestId("rail-search")).toBeNull();
+  const filterInput = within(drawer).getByTestId("rail-filter");
+  expect(filterInput).toBe(within(drawer).getByRole("searchbox"));
 
-    const trigger = document.createElement("button");
-    trigger.type = "button";
-    trigger.setAttribute("data-search-trigger", "true");
-    trigger.textContent = "Palette trigger";
-    drawer.appendChild(trigger);
-    try {
-      if (activation === "click") {
-        await user.click(trigger);
-      } else if (activation === "unfocused-click") {
-        trigger.addEventListener("mousedown", (event) => event.preventDefault(), { once: true });
-        await user.click(trigger);
-      } else {
-        act(() => trigger.focus());
-        await user.keyboard("{Enter}");
-      }
-      const palette = await screen.findByRole("dialog", { name: "Command palette" });
-      expect(drawer.compareDocumentPosition(palette) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+  await user.click(filterInput);
+  await user.keyboard("{Control>}k{/Control}");
+  const palette = await screen.findByRole("dialog", { name: "Command palette" });
+  expect(drawer.compareDocumentPosition(palette) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
 
-      await user.keyboard("{Escape}");
-      expect(screen.queryByRole("dialog", { name: "Command palette" })).toBeNull();
-      expect(screen.getByRole("dialog", { name: "Sessions" })).toBe(drawer);
-      expect(document.activeElement).toBe(trigger);
+  await user.keyboard("{Escape}");
+  expect(screen.queryByRole("dialog", { name: "Command palette" })).toBeNull();
+  expect(screen.getByRole("dialog", { name: "Sessions" })).toBe(drawer);
+  expect(document.activeElement).toBe(filterInput);
 
-      await user.tab();
-      expect(drawer.contains(document.activeElement)).toBe(true);
-      await user.tab({ shift: true });
-      expect(drawer.contains(document.activeElement)).toBe(true);
-      await user.tab({ shift: true });
-      await user.tab({ shift: true });
-      expect(drawer.contains(document.activeElement)).toBe(true);
-      expect(document.activeElement).not.toBe(sessionsButton);
-    } finally {
-      trigger.remove();
-    }
-  },
-);
+  await user.tab();
+  expect(drawer.contains(document.activeElement)).toBe(true);
+  await user.tab({ shift: true });
+  expect(drawer.contains(document.activeElement)).toBe(true);
+  await user.tab({ shift: true });
+  await user.tab({ shift: true });
+  expect(drawer.contains(document.activeElement)).toBe(true);
+  expect(document.activeElement).not.toBe(sessionsButton);
+});
 
 test("desktop: opening Command palette from inside Keyboard shortcuts places it after the shortcuts dialog in DOM order", async () => {
   const user = userEvent.setup();
