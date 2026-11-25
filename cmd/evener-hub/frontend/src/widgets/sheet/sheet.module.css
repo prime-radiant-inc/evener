@@ -9,17 +9,25 @@
  * position: fixed to escape that centering and anchor to an edge instead.
  */
 
-.right {
-  composes: slideRight from "../../styles/motion.module.css";
+/* The two vertical edges differ only in which side they anchor to, the
+ * border they drop and the direction of the shadow; everything else is one
+ * geometry. */
+.edgeVertical {
   position: fixed;
   top: 0;
-  right: 0;
-  height: 100vh;
   width: min(var(--sheet-inline-size), 100vw);
   border-radius: 0;
   border-top: none;
-  border-right: none;
   border-bottom: none;
+}
+
+.right {
+  composes: edgeVertical;
+  /* biome-ignore lint/suspicious/noDuplicateProperties: css-modules composes takes one declaration per composed class, each with its own `from` */
+  composes: slideRight from "../../styles/motion.module.css";
+  right: 0;
+  height: 100vh;
+  border-right: none;
   /* .panel's --shadow-modal falls downward, which suits only the centered
    * dialog; each edge variant redirects the same geometry toward its one
    * visible edge so the shadow actually reads. */
@@ -50,16 +58,12 @@
 }
 
 .left {
+  composes: edgeVertical;
+  /* biome-ignore lint/suspicious/noDuplicateProperties: css-modules composes takes one declaration per composed class, each with its own `from` */
   composes: slideLeft from "../../styles/motion.module.css";
-  position: fixed;
-  top: 0;
   left: 0;
   height: 100vh;
-  width: min(var(--sheet-inline-size), 100vw);
-  border-radius: 0;
-  border-top: none;
   border-left: none;
-  border-bottom: none;
   box-shadow: 16px 0 40px var(--shadow-color);
 }
 
