@@ -512,6 +512,21 @@ export interface TranscriptBodyProps {
   onAnnounceViewChange?: (summary: string) => void;
 }
 
+// Every rendered row carries the same identity attributes, and every live
+// column the same class. One wrapper each keeps that contract in one place
+// for all row kinds and both column branches.
+function TranscriptRow({ id, children }: { id: string; children: ReactNode }) {
+  return (
+    <div data-testid="transcript-row" data-row-id={id}>
+      {children}
+    </div>
+  );
+}
+
+function TranscriptColumn({ children }: { children: ReactNode }) {
+  return <div className={styles.transcriptContent}>{children}</div>;
+}
+
 export function TranscriptBody({
   model,
   config,
@@ -606,7 +621,7 @@ export function TranscriptBody({
     const showSeenDivider = index === seenDividerRowIndex;
     if (row.kind === "intentGroup") {
       return (
-        <div data-testid="transcript-row" data-row-id={row.id}>
+        <TranscriptRow id={row.id}>
           <ProjectedIntentGroup
             entries={row.entries}
             rowId={row.id}
@@ -618,12 +633,12 @@ export function TranscriptBody({
             renderContext={itemRenderContext}
             thread={model}
           />
-        </div>
+        </TranscriptRow>
       );
     }
     if (row.kind === "quietYieldGroup") {
       return (
-        <div data-testid="transcript-row" data-row-id={row.id}>
+        <TranscriptRow id={row.id}>
           <ProjectedQuietYieldGroup
             entries={row.entries}
             turns={row.turns}
@@ -637,11 +652,11 @@ export function TranscriptBody({
             renderContext={itemRenderContext}
             thread={model}
           />
-        </div>
+        </TranscriptRow>
       );
     }
     return (
-      <div data-testid="transcript-row" data-row-id={row.id}>
+      <TranscriptRow id={row.id}>
         <TurnBlock
           turn={row.turn}
           sessionRef={sessionRef}
@@ -654,7 +669,7 @@ export function TranscriptBody({
           renderContext={itemRenderContext}
           thread={model}
         />
-      </div>
+      </TranscriptRow>
     );
   };
 
@@ -693,9 +708,7 @@ export function TranscriptBody({
         getItemKey={(index) => (isTrailingRowIndex(index) && trailingRow ? trailingRow.id : rowAt(index).id)}
         renderRow={(index) =>
           isTrailingRowIndex(index) && trailingRow ? (
-            <div data-testid="transcript-row" data-row-id={trailingRow.id}>
-              {trailingRow.content}
-            </div>
+            <TranscriptRow id={trailingRow.id}>{trailingRow.content}</TranscriptRow>
           ) : (
             renderRow(rowAt(index), index)
           )
@@ -735,20 +748,20 @@ export function TranscriptBody({
           attentionOverlay={attentionOverlay}
           onOverlayHeightChange={onOverlayHeightChange}
         >
-          <div className={styles.transcriptContent}>
+          <TranscriptColumn>
             {list}
             {trailingContent}
-          </div>
+          </TranscriptColumn>
         </FlowOverlay>
       );
     } else {
       transcriptContent = (
         <>
           {loadOlderRow}
-          <div className={styles.transcriptContent}>
+          <TranscriptColumn>
             {list}
             {trailingContent}
-          </div>
+          </TranscriptColumn>
         </>
       );
     }
