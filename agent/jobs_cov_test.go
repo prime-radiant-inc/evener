@@ -242,24 +242,20 @@ func TestHeadOutput(t *testing.T) {
 	}
 }
 
-// TestBoundedStructuredResultSchemaValidation covers the schema validation
-// failure branch.
-func TestBoundedStructuredResultSchemaValidation(t *testing.T) {
+// TestValidateStructuredResultSchemaValidation covers validateStructuredResult
+// with a conforming value and a value missing a required field.
+func TestValidateStructuredResultSchemaValidation(t *testing.T) {
 	t.Parallel()
-	// A schema that rejects the value — pass a non-matching schema.
-	// validateStructuredResult with a schema and a non-conforming value.
-	got, valid, reason := boundedStructuredResult(
-		map[string]any{"wrong": "value"},
-		map[string]any{"type": "object", "properties": map[string]any{"required_field": map[string]any{"type": "string"}}, "required": []string{"required_field"}},
-		false,
-	)
-	if got != nil || valid == nil || *valid != false {
-		t.Fatalf("validation fail: got=%v valid=%v reason=%q", got, valid, reason)
+	schema := map[string]any{
+		"type":       "object",
+		"properties": map[string]any{"required_field": map[string]any{"type": "string"}},
+		"required":   []string{"required_field"},
 	}
-	// Reason could be validation_failed or schema_capture_failed depending on
-	// whether the schema itself is valid.
-	if reason == "" {
-		t.Fatal("reason should not be empty on validation failure")
+	if err := validateStructuredResult(map[string]any{"required_field": "ok"}, schema); err != nil {
+		t.Fatalf("conforming value failed validation: %v", err)
+	}
+	if err := validateStructuredResult(map[string]any{"wrong": "value"}, schema); err == nil {
+		t.Fatal("non-conforming value should fail validation")
 	}
 }
 

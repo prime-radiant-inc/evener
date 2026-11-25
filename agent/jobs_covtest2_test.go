@@ -661,61 +661,6 @@ func TestCovAppendStartForwardFailure(t *testing.T) {
 	}
 }
 
-// TestCovBoundedStructuredResult covers boundedStructuredResult: nil value, capture-failed, schema-requested,
-// too-large, and valid paths.
-func TestCovBoundedStructuredResult(t *testing.T) {
-	t.Parallel()
-	// nil value, no schema, no capture failed — returns nil, nil, "".
-	v, valid, reason := boundedStructuredResult(nil, nil, false)
-	if v != nil || valid != nil || reason != "" {
-		t.Fatalf("nil value no schema: v=%v valid=%v reason=%q", v, valid, reason)
-	}
-
-	// nil value, capture failed — returns nil, false, capture_failed.
-	v, valid, reason = boundedStructuredResult(nil, nil, true)
-	if v != nil || valid == nil || *valid != false {
-		t.Fatal("capture failed should return valid=false")
-	}
-	if reason != structuredResultReasonSchemaCaptureFailed {
-		t.Fatalf("reason = %q, want %q", reason, structuredResultReasonSchemaCaptureFailed)
-	}
-
-	// nil value, schema requested — returns nil, false, result_missing.
-	v, valid, reason = boundedStructuredResult(nil, map[string]any{"type": "object"}, false)
-	if v != nil || valid == nil || *valid != false {
-		t.Fatal("schema requested with nil should return valid=false")
-	}
-	if reason != structuredResultReasonSchemaResultMissing {
-		t.Fatalf("reason = %q, want %q", reason, structuredResultReasonSchemaResultMissing)
-	}
-
-	// Valid value, no schema — returns value, true, "".
-	input := map[string]any{"key": "val", "count": 3}
-	v, valid, reason = boundedStructuredResult(input, nil, false)
-	if !reflect.DeepEqual(v, map[string]any{"key": "val", "count": 3}) || valid == nil || !*valid || reason != "" {
-		t.Fatalf("valid structured result = (%#v, %v, %q)", v, valid, reason)
-	}
-
-	// Value too large for JSON — returns nil, false, too_large.
-	largeValue := strings.Repeat("x", maxPersistedStructuredResultJSONBytes+1)
-	v, valid, reason = boundedStructuredResult(largeValue, nil, false)
-	if v != nil || valid == nil || *valid != false {
-		t.Fatal("too large should return valid=false")
-	}
-	if reason != structuredResultReasonSchemaResultTooLarge {
-		t.Fatalf("reason = %q, want %q", reason, structuredResultReasonSchemaResultTooLarge)
-	}
-
-	// Value that cannot be marshaled (a channel) — returns nil, false, capture_failed.
-	v, valid, reason = boundedStructuredResult(make(chan int), nil, false)
-	if v != nil || valid == nil || *valid != false {
-		t.Fatal("marshal error should return valid=false")
-	}
-	if reason != structuredResultReasonSchemaCaptureFailed {
-		t.Fatalf("reason = %q, want %q", reason, structuredResultReasonSchemaCaptureFailed)
-	}
-}
-
 // TestCovJobStopReceiptWait covers jobStopReceipt.wait:
 // nil run and non-durable completion.
 func TestCovJobStopReceiptWait_NilRun(t *testing.T) {

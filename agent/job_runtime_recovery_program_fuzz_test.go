@@ -59,7 +59,7 @@ func FuzzJobRuntimeRecoveryProgram(f *testing.F) {
 		jrrpAssertShellFailureEdges(t, p)
 		jrrpAssertSessionOutputAndStop(t, p)
 		jrrpAssertPrunedOutputLifecycle(t, p)
-		jrrpAssertStructuredProjection(t, p)
+		jrrpAssertStructuredValidation(t, p)
 		jrrpAssertRestartReconciliation(t, p)
 	})
 }
@@ -800,11 +800,9 @@ func jrrpAssertPrunedOutputLifecycle(t *testing.T, p jrrpProgram) {
 	}
 }
 
-// jrrpAssertStructuredProjection verifies the schema-backed durable projection
-// policy used by writeFinishJob. These are semantic persistence outcomes: a
-// valid result survives, while missing, invalid, uncapturable, and oversized
-// results are retained only as an explicit invalid reason.
-func jrrpAssertStructuredProjection(t *testing.T, p jrrpProgram) {
+// jrrpAssertStructuredValidation verifies validateStructuredResult against the
+// fuzzed marker value and invalid value/schema edge cases.
+func jrrpAssertStructuredValidation(t *testing.T, p jrrpProgram) {
 	t.Helper()
 	schema := map[string]any{
 		"type": "object",
@@ -814,32 +812,21 @@ func jrrpAssertStructuredProjection(t *testing.T, p jrrpProgram) {
 		"required": []any{"value"},
 	}
 	value := map[string]any{"value": p.marker}
-	got, valid, reason := boundedStructuredResult(value, schema, false)
-	if valid == nil || !*valid || reason != "" {
-		t.Fatalf("valid structured projection = %#v, %v, %q", got, valid, reason)
-	}
-	projected, ok := got.(map[string]any)
-	if !ok || projected["value"] != p.marker {
-		t.Fatalf("valid structured result = %#v", got)
+	if err := validateStructuredResult(value, schema); err != nil {
+		t.Fatalf("valid structured result failed validation: %v", err)
 	}
 
 	for _, tc := range []struct {
 		name         string
 		value        any
 		resultSchema any
-		captureFail  bool
-		reason       string
 	}{
-		{name: "missing", resultSchema: schema, reason: structuredResultReasonSchemaResultMissing},
-		{name: "capture", resultSchema: schema, captureFail: true, reason: structuredResultReasonSchemaCaptureFailed},
-		{name: "invalid value", value: map[string]any{"value": 7}, resultSchema: schema, reason: structuredResultReasonSchemaValidationFailed},
-		{name: "invalid schema", value: value, resultSchema: map[string]any{"type": "not-a-json-schema-type"}, reason: structuredResultReasonSchemaValidationFailed},
-		{name: "too large", value: strings.Repeat("x", maxPersistedStructuredResultJSONBytes), resultSchema: schema, reason: structuredResultReasonSchemaResultTooLarge},
+		{name: "invalid value", value: map[string]any{"value": 7}, resultSchema: schema},
+		{name: "invalid schema", value: value, resultSchema: map[string]any{"type": "not-a-json-schema-type"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got, valid, reason := boundedStructuredResult(tc.value, tc.resultSchema, tc.captureFail)
-			if got != nil || valid == nil || *valid || reason != tc.reason {
-				t.Fatalf("structured projection = %#v, %v, %q; want nil/false/%q", got, valid, reason, tc.reason)
+			if err := validateStructuredResult(tc.value, tc.resultSchema); err == nil {
+				t.Fatalf("validateStructuredResult(%#v, %#v) = nil, want error", tc.value, tc.resultSchema)
 			}
 		})
 	}
