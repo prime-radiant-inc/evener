@@ -1,9 +1,10 @@
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { manifest as navigationManifest } from "@evener/appwire-client/testing/navigation";
-import { act, cleanup, fireEvent, render as renderUI, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render as renderUI, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactElement } from "react";
 import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
+import { MotionProvider } from "../../motion";
 import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
 import { prefsStore, resetPrefsStoreForTests, SIDEBAR_WIDTH_MAX } from "../../stores/prefs";
@@ -33,8 +34,41 @@ function render(ui: ReactElement, client = new FakeClient()) {
   return renderUI(<ClientProvider client={client}>{ui}</ClientProvider>);
 }
 
+// motion-dom initializes its prefers-reduced-motion listener once per module
+// load against window.matchMedia("(prefers-reduced-motion)"). Installing a
+// MediaQueryList with real change notifications up front lets the reduced-
+// motion test toggle the preference through the library's own listener.
+let reducedMotionMatches = false;
+const reducedMotionListeners = new Set<() => void>();
+
+function setReducedMotionPreference(matches: boolean): void {
+  reducedMotionMatches = matches;
+  for (const listener of reducedMotionListeners) listener();
+}
+
+const defaultMatchMedia: typeof window.matchMedia = (media) => {
+  const isReducedMotion = media === "(prefers-reduced-motion)" || media === "(prefers-reduced-motion: reduce)";
+  return {
+    media,
+    get matches() {
+      return isReducedMotion ? reducedMotionMatches : false;
+    },
+    onchange: null,
+    addListener: () => {},
+    removeListener: () => {},
+    addEventListener: (_type: string, listener: EventListenerOrEventListenerObject | null) => {
+      if (isReducedMotion && typeof listener === "function") reducedMotionListeners.add(listener as () => void);
+    },
+    removeEventListener: (_type: string, listener: EventListenerOrEventListenerObject | null) => {
+      if (isReducedMotion && typeof listener === "function") reducedMotionListeners.delete(listener as () => void);
+    },
+    dispatchEvent: () => false,
+  };
+};
+
 beforeAll(() => {
   installLocalStorage(new MemoryStorage());
+  window.matchMedia = defaultMatchMedia;
 });
 
 beforeEach(() => {
@@ -54,6 +88,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   setRailRevealHandler(null);
+  setReducedMotionPreference(false);
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
@@ -264,5 +299,97 @@ describe("reveal seam (railController /project)", () => {
     unmount();
     // No RailHost mounted: a reveal is a no-op-safe call (railController stub).
     expect(() => revealSessionInRail("local:x")).not.toThrow();
+  });
+});
+
+describe("slide transition", () => {
+  test("desktop rail slides in from the left edge and exits back to it without sliding on initial mount", async () => {
+    const first = render(
+      <MotionProvider>
+        <RailHost />
+      </MotionProvider>,
+    );
+    const initialFrame = screen.getByRole("complementary", { name: "Sessions" });
+    expect(initialFrame.style.transform).not.toMatch(/translateX\(-100%\)/);
+    first.unmount();
+
+    prefsStore.getState().setSidebarHidden(true);
+    render(
+      <MotionProvider>
+        <RailHost />
+      </MotionProvider>,
+    );
+    expect(screen.queryByRole("complementary", { name: "Sessions" })).toBeNull();
+
+    act(() => prefsStore.getState().setSidebarHidden(false));
+    const frame = screen.getByRole("complementary", { name: "Sessions" });
+    expect(frame.style.transform).toMatch(/translateX\(-100%\)/);
+
+    act(() => prefsStore.getState().setSidebarHidden(true));
+    expect(screen.getByRole("button", { name: /show sidebar/i })).toBeTruthy();
+    expect(frame.isConnected).toBe(true);
+    expect(frame.hasAttribute("inert")).toBe(true);
+    await waitFor(() => expect(screen.queryByRole("complementary", { name: "Sessions" })).toBeNull());
+  });
+
+  test("clicking Show sidebar mid-exit interrupts the slide and keeps the rail mounted", () => {
+    render(
+      <MotionProvider>
+        <RailHost />
+      </MotionProvider>,
+    );
+    const frame = screen.getByRole("complementary", { name: "Sessions" });
+
+    act(() => fireEvent.click(screen.getByRole("button", { name: /hide sidebar/i })));
+    expect(prefsStore.getState().sidebarHidden).toBe(true);
+    expect(frame.isConnected).toBe(true);
+    expect(frame.hasAttribute("inert")).toBe(true);
+
+    act(() => fireEvent.click(screen.getByRole("button", { name: /show sidebar/i })));
+    expect(prefsStore.getState().sidebarHidden).toBe(false);
+    expect(screen.getByRole("complementary", { name: "Sessions" })).toBe(frame);
+    expect(frame.hasAttribute("inert")).toBe(false);
+    expect(screen.queryByRole("button", { name: /show sidebar/i })).toBeNull();
+  });
+
+  test("prefers-reduced-motion swaps the desktop rail without translating from offscreen", () => {
+    // motion/react emits a one-time dev warning when reduced motion is active.
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    setReducedMotionPreference(true);
+    prefsStore.getState().setSidebarHidden(true);
+    render(
+      <MotionProvider>
+        <RailHost />
+      </MotionProvider>,
+    );
+
+    act(() => prefsStore.getState().setSidebarHidden(false));
+    const frame = screen.getByRole("complementary", { name: "Sessions" });
+    expect(frame.style.transform).not.toMatch(/translateX\(-100%\)/);
+
+    act(() => prefsStore.getState().setSidebarHidden(true));
+    expect(screen.queryByRole("complementary", { name: "Sessions" })).toBeNull();
+    expect(warn.mock.calls.every(([msg]) => typeof msg === "string" && msg.includes("reduced-motion-disabled"))).toBe(
+      true,
+    );
+  });
+
+  test("mobile rail stays unwrapped so StackHost owns its drawer/board chrome", () => {
+    vi.stubGlobal(
+      "matchMedia",
+      vi.fn((media: string) => ({
+        media,
+        matches: media === MOBILE_QUERY,
+        addEventListener: () => {},
+        removeEventListener: () => {},
+      })),
+    );
+    render(
+      <MotionProvider>
+        <RailHost />
+      </MotionProvider>,
+    );
+    expect(screen.getByTestId("rail")).toBeTruthy();
+    expect(screen.queryByRole("complementary", { name: "Sessions" })).toBeNull();
   });
 });

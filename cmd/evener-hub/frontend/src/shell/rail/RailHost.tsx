@@ -14,8 +14,9 @@
 // (railController) hands it a session ref; if the rail is hidden, revealing
 // docks it first so there's a mounted Rail to expand + scroll.
 import { ACTIONS } from "@evener/appwire-client";
-import { type JSX, useCallback, useEffect, useState } from "react";
+import { type JSX, useCallback, useEffect, useMemo, useState } from "react";
 import { keybindingsRegistry } from "../../keybindings/appRegistry";
+import { AnimatePresence, m, spatialExitTransition, spatialTransition, useReducedMotion } from "../../motion";
 import { selectNeedsYouCount } from "../../stores/navigation/selectors";
 import { useNavigationStore } from "../../stores/navigation/store";
 import { prefsStore, usePrefsStore } from "../../stores/prefs";
@@ -30,7 +31,53 @@ import { SidebarIcon } from "./railIcons";
 
 const CLASS = {
   chipBar: requireClass(styles.chipBar, "RailHost.module.css", "chipBar"),
+  railFrame: requireClass(styles.railFrame, "RailHost.module.css", "railFrame"),
+  railFrameExiting: requireClass(styles.railFrameExiting, "RailHost.module.css", "railFrameExiting"),
 };
+
+interface DesktopRailFrameProps {
+  sidebarWidth: number;
+  revealTarget: string | null;
+  onRevealConsumed: () => void;
+  transition: ReturnType<typeof spatialTransition>;
+  exitTransition: ReturnType<typeof spatialExitTransition>;
+}
+
+// AnimatePresence replays the captured element while exiting; subscribing to
+// sidebarHidden here marks the leaving rail inert and pointer-transparent on
+// the first exit frame, and restores it immediately if reopened mid-exit.
+function DesktopRailFrame({
+  sidebarWidth,
+  revealTarget,
+  onRevealConsumed,
+  transition,
+  exitTransition,
+}: DesktopRailFrameProps): JSX.Element {
+  const exiting = usePrefsStore((s) => s.sidebarHidden);
+  const reducedMotion = useReducedMotion() === true;
+  return (
+    <m.aside
+      className={exiting ? `${CLASS.railFrame} ${CLASS.railFrameExiting}` : CLASS.railFrame}
+      aria-label="Sessions"
+      inert={exiting || undefined}
+      // The Slide recipe: in from the left edge it lives on and back out to it,
+      // by the rail's own width (docs/web-ui/motion.md, recipe 4).
+      initial={reducedMotion ? false : { x: "-100%" }}
+      animate={{ x: 0 }}
+      exit={reducedMotion ? undefined : { x: "-100%", transition: exitTransition }}
+      transition={transition}
+    >
+      <Rail
+        onHide={() => prefsStore.getState().setSidebarHidden(true)}
+        width={sidebarWidth}
+        onWidthChange={(width) => prefsStore.getState().setSidebarWidth(width)}
+        revealTarget={revealTarget}
+        onRevealConsumed={onRevealConsumed}
+        scrollOwner="rail"
+      />
+    </m.aside>
+  );
+}
 
 export function RailHost(_props: { railSlot?: never } = {}): JSX.Element {
   const isMobile = useIsMobile();
@@ -40,6 +87,8 @@ export function RailHost(_props: { railSlot?: never } = {}): JSX.Element {
   const needsYou = selectNeedsYouCount(navigation);
   const [revealTarget, setRevealTarget] = useState<string | null>(null);
   const clearReveal = useCallback(() => setRevealTarget(null), []);
+  const transition = useMemo(() => spatialTransition(), []);
+  const exitTransition = useMemo(() => spatialExitTransition(), []);
 
   // ⌘B toggles the sidebar (desktop only — mobile's drawer is its own
   // show/hide, and with no action registered the binding is inert there).
@@ -70,34 +119,39 @@ export function RailHost(_props: { railSlot?: never } = {}): JSX.Element {
     return () => setRailRevealHandler(null);
   }, [hostHidden]);
 
-  if (hostHidden) {
-    const label = needsYou > 0 ? `Show sidebar (${needsYou} need attention)` : "Show sidebar";
-    return (
-      <div className={CLASS.chipBar}>
-        <IconButton
-          data-rail-toggle=""
-          label={label}
-          icon={<SidebarIcon />}
-          variant="secondary"
-          badge={needsYou > 0 ? { count: needsYou, tone: "attention" } : undefined}
-          onClick={() => prefsStore.getState().setSidebarHidden(false)}
-        />
-      </div>
-    );
+  // Width/handle/slide are the desktop docked rail's alone: mobile's Rail fills
+  // TreeDrawer's sheet or StackHost's board column without an extra landmark.
+  if (isMobile) {
+    return <Rail revealTarget={revealTarget} onRevealConsumed={clearReveal} scrollOwner="parent" />;
   }
 
-  // Width/handle are the desktop docked rail's alone: mobile's Rail fills
-  // TreeDrawer's sheet. Because the width lives in the pref rather than in this
-  // component, hiding and re-showing the rail (or a reload) restores exactly
-  // the dragged width.
+  const label = needsYou > 0 ? `Show sidebar (${needsYou} need attention)` : "Show sidebar";
   return (
-    <Rail
-      onHide={isMobile ? undefined : () => prefsStore.getState().setSidebarHidden(true)}
-      width={isMobile ? undefined : sidebarWidth}
-      onWidthChange={isMobile ? undefined : (width) => prefsStore.getState().setSidebarWidth(width)}
-      revealTarget={revealTarget}
-      onRevealConsumed={clearReveal}
-      scrollOwner={isMobile ? "parent" : "rail"}
-    />
+    <>
+      <AnimatePresence initial={false}>
+        {!hidden ? (
+          <DesktopRailFrame
+            key="desktop-rail"
+            sidebarWidth={sidebarWidth}
+            revealTarget={revealTarget}
+            onRevealConsumed={clearReveal}
+            transition={transition}
+            exitTransition={exitTransition}
+          />
+        ) : null}
+      </AnimatePresence>
+      {hidden ? (
+        <div className={CLASS.chipBar}>
+          <IconButton
+            data-rail-toggle=""
+            label={label}
+            icon={<SidebarIcon />}
+            variant="secondary"
+            badge={needsYou > 0 ? { count: needsYou, tone: "attention" } : undefined}
+            onClick={() => prefsStore.getState().setSidebarHidden(false)}
+          />
+        </div>
+      ) : null}
+    </>
   );
 }
