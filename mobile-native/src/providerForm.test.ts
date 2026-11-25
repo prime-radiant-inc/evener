@@ -90,6 +90,20 @@ it("asserts the endpoint the edited row was opened on", () => {
 	});
 });
 
+it("sends base when changed and clearBase when cleared on edit", () => {
+	const broken = { name: "kimi", base: "kimi-code-plan-global", providerId: "kimi-code-plan-global" };
+	expect(editProviderParams(broken, "", "kimi-code-plan-global")).toEqual({ name: "kimi" });
+	expect(editProviderParams(broken, "https://api.kimi.com/coding/v1", "openai-compatible")).toEqual({
+		name: "kimi",
+		base: "openai-compatible",
+		baseUrl: "https://api.kimi.com/coding/v1",
+	});
+	expect(editProviderParams(broken, "", "")).toEqual({
+		name: "kimi",
+		clearBase: true,
+	});
+});
+
 it("does not treat environment variable names as template keys", () => {
 	expect(
 		createProviderParams({ ...draft, vars: { REGION: "us", REGION_ENV: "wrong", TENANT_ENV: "wrong" } }, providers)

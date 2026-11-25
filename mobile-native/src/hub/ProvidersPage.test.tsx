@@ -1469,6 +1469,29 @@ it("says a connection test's result under the actions", async () => {
 	expect(testIDSuffixes(tree, "provider-test-")).toEqual(["failure"]);
 });
 
+it("offers Edit and Remove on a broken provider while hiding live credential and model actions", async () => {
+	providersHub([
+		instance({
+			name: "kimi",
+			base: "kimi-code-plan-global",
+			providerId: "kimi-code-plan-global",
+			activeSource: "none",
+			credentialRequired: false,
+			hidden: true,
+			loadError: 'providers.kimi: base "kimi-code-plan-global" is not a registry id',
+		}),
+	]);
+	const { tree } = mountPage();
+	await act(async () => {});
+	press(tree, (label) => label.startsWith("kimi,"));
+	await act(async () => {});
+	expect(hasControl(tree, "Edit")).toBe(true);
+	expect(hasControl(tree, "Remove")).toBe(true);
+	expect(hasControl(tree, "Test connection")).toBe(false);
+	expect(hasControl(tree, "Make default")).toBe(false);
+	expect(hasControl(tree, "Check for new models")).toBe(false);
+});
+
 async function openWork(tree: ReactTestRenderer) {
 	press(tree, (label) => label.startsWith("work"));
 	await act(async () => {});
