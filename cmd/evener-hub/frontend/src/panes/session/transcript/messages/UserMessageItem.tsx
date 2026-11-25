@@ -20,9 +20,9 @@ import { threadsStore } from "../../../../stores/threads";
 import { IconButton, SpeakerAvatar, type SpeakerAvatarSpeaker, Tooltip, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { writeDraft } from "../../composer/draft";
-import { EntityText } from "../EntityText";
 import { ImageGallery } from "../flow/ImageGallery";
 import { type ItemRenderProps, ignoringTurn, registerItemRenderer } from "../types";
+import { AgentMarkdown } from "./AgentMarkdown";
 import { MessageTimestamp } from "./MessageTimestamp";
 import { SpeakerHeader } from "./SpeakerHeader";
 import styles from "./usermessageitem.module.css";
@@ -103,7 +103,7 @@ export function UserMessageView({
   speaker = "user",
   name = "You",
   timeIso,
-  entityText = false,
+  markdown = true,
   provisional,
   footer,
 }: {
@@ -117,8 +117,8 @@ export function UserMessageView({
   speaker?: SpeakerAvatarSpeaker;
   name?: string;
   timeIso?: string;
-  /** Reserved for real user messages; tool-output callers keep literal text. */
-  entityText?: boolean;
+  /** Render through AgentMarkdown (default). Tool-output callers pass false to keep literal text. */
+  markdown?: boolean;
   /** Held-steer ghost caption (steering-ghost spec §2): presence applies the provisional register and renders in the meta slot; absence renders exactly the delivered form. */
   provisional?: string;
   /** Pending-row actions, rendered under the bubble in the same content column. */
@@ -130,6 +130,9 @@ export function UserMessageView({
   // never both, and never a placeholder.
   const timestamp = Number.isFinite(time) ? <MessageTimestamp value={time} /> : undefined;
   const meta = provisional !== undefined ? provisional : timestamp;
+  let body: ReactNode = null;
+  if (!markdown) body = <div className={CLASS.text}>{item.text}</div>;
+  else if (item.text) body = <AgentMarkdown source={item.text} />;
   return (
     <div
       className={provisional === undefined ? CLASS.message : `${CLASS.message} ${CLASS.provisional}`}
@@ -148,7 +151,7 @@ export function UserMessageView({
           actions={actions !== undefined ? <div className={CLASS.actions}>{actions}</div> : undefined}
         />
         <div className={CLASS.body} data-testid="user-bubble" data-message-body="">
-          <div className={CLASS.text}>{entityText ? <EntityText text={item.text} /> : item.text}</div>
+          {body}
           {provisional !== undefined && <span className={CLASS.railmark} aria-hidden="true" />}
           <ImageGallery images={item.images} />
         </div>
@@ -178,7 +181,7 @@ export const UserMessageItem = memo(function UserMessageItem({ item, sessionRef 
     sessionRef && transcriptKey ? (
       <ForkFromHereButton sessionRef={sessionRef} transcriptKey={transcriptKey} />
     ) : undefined;
-  return <UserMessageView item={item} actions={actions} entityText />;
+  return <UserMessageView item={item} actions={actions} />;
 }, ignoringTurn);
 
 registerItemRenderer("userMessage", UserMessageItem);

@@ -309,9 +309,9 @@ export function sidebarWidthMin(): number {
   return window.matchMedia("(any-pointer: coarse)").matches ? SIDEBAR_WIDTH_MIN_TOUCH : SIDEBAR_WIDTH_MIN;
 }
 
-export function clampSidebarWidth(value: number): number {
+export function clampSidebarWidth(value: number, min = sidebarWidthMin(), max = SIDEBAR_WIDTH_MAX): number {
   if (!Number.isFinite(value)) return SIDEBAR_WIDTH_DEFAULT;
-  return Math.round(Math.min(SIDEBAR_WIDTH_MAX, Math.max(sidebarWidthMin(), value)));
+  return Math.round(Math.min(max, Math.max(min, value)));
 }
 
 // Numeric prefs persist as a plain base-10 string. Anything unparseable

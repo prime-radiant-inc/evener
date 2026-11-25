@@ -3,7 +3,6 @@ import { type ReactNode, type ReactPortal, type RefObject, useLayoutEffect, useS
 import { createPortal } from "react-dom";
 import { MERMAID_DIAGRAM_ATTR } from "../../../widgets/mermaid/markers";
 import { EntityRef } from "./EntityRef";
-import { segmentEntityIds } from "./entitySegments";
 import type { AnalysisCache } from "./messages/analysisCache";
 
 const ENTITY_SKIP_SELECTOR = `code, pre, script, style, a, [data-entity-host], [${MERMAID_DIAGRAM_ATTR}]`;
@@ -84,22 +83,4 @@ export function useEntityTextEnhancement(rootRef: RefObject<HTMLElement | null>,
   );
 
   return portals;
-}
-
-export function EntityText({ text }: { text: string }) {
-  const out: ReactNode[] = [];
-  // The segment's own offset in `text`, accumulated as we walk: it is the
-  // segment's identity for React's keys (segments are derived
-  // deterministically from `text`, and offsets never repeat).
-  let offset = 0;
-  for (const segment of segmentEntityIds(text)) {
-    if (segment.kind === "entity") {
-      out.push(<EntityRef key={`${offset}:${segment.id}`} id={segment.id} />);
-      offset += segment.id.length;
-    } else {
-      out.push(segment.text);
-      offset += segment.text.length;
-    }
-  }
-  return <>{out}</>;
 }

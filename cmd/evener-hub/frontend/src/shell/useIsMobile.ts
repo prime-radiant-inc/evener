@@ -1,6 +1,8 @@
 import { useCallback, useSyncExternalStore } from "react";
 
 export const MOBILE_QUERY = "(max-width: 899px)";
+// StackHost already owns the mobile ceiling, so this query only adds the floor.
+export const TABLET_QUERY = "(min-width: 768px)";
 /** The primary pointer's capability query: fine precision and hover. */
 export const FINE_HOVER_POINTER_QUERY = "(hover: hover) and (pointer: fine)";
 type ViewportListener = () => void;

@@ -1043,15 +1043,13 @@ describe the executable proof and presentation contract.
 The [browser binding](../../cmd/evener-hub/frontend/src/stores/sessionActivity.ts)
 shares a store by actual client object, requested ref and scope. A committed view
 acquires its holder; an abandoned render starts no read. Every visible ordinary
-session pane observes that pane's
-summary and its subtree summary (for the Agents count) by explicit ref on both
-viewports, through its flush status footer on desktop and through the
-activity line above the composer card on the phone, which renders no footer
-strip. A folded resting composer hides that line but keeps observing through
-the session menu's hidden discovery owner, so a pane's counts are current the
-moment its card expands. Side-by-side panes retain independent counts while duplicate consumers of one
-ref and scope share
-the same owner. The Agents tab shares the `subtree` delegate collection on the
+session pane observes its session summary and subtree summary (for Agents) by
+explicit ref. On desktop the flush status footer owns discovery. On phone the
+composer's session menu keeps discovery active at rest and while editing,
+without a visible activity line or status footer. Opening the phone Overview
+sheet mounts its activity rows as another consumer of those same scoped
+summaries. Side-by-side panes retain independent counts while duplicate
+consumers of one ref and scope share the same owner. The Agents tab shares the `subtree` delegate collection on the
 same subtree store that supplies the count, while Jobs and Watches tabs observe
 their own session-scoped collection. A visible page boundary supplies further demand,
 while the shared store retains and retries an interrupted continuation. The
@@ -1185,15 +1183,18 @@ cause an `evener/thread/*` activity read for every session in the navigation
 rail; the rail's open title card makes only its own one-ref pulse read, as
 described under [Navigation session status](#navigation-session-status).
 
-Session chrome and the navigation rail expose Overview through their session
-action menus. On the phone, that action opens the full-screen shared activity
-sidebar, preserving the last selected category for the focused session. Its
+The phone session header opens an Overview sheet with session facts, Find,
+links and activity counts. Choosing a count opens the full-screen shared
+activity sidebar at that category for the same session. The navigation rail
+and embedded session action menus still open the activity sidebar directly.
+Direct entry preserves the focused session's last selected category. The menu's
 optional active count sums the subagents running at every depth and the
 session's own running jobs, only when both are known; watches and completed work
 are not part of that number. The sidebar's Jobs, Watches and Tasks tabs use
 session-scoped reads on both viewports, while About uses the shared session
-model. The Agents tab and all Agents counts (the pane's activity chip, the
-sidebar's Agents tab label, each cascade scope's Agents chip, the Overview
+model. The Agents tab and all Agents counts (the desktop pane's activity chip,
+the phone Overview activity row, the sidebar's Agents tab label, each cascade
+scope's Agents chip, the Overview
 action count, and the conversation's liveness line) read the same
 subtree store
 ([`useSubagentCounts`](../../cmd/evener-hub/frontend/src/stores/sessionActivity.ts)

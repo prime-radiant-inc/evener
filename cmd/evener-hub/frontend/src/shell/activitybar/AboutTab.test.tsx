@@ -66,12 +66,20 @@ afterEach(() => {
 
 test("About renders the explicit remote session's hydrated accounting", async () => {
   const client = activityClient();
-  client.on("thread/read", ({ ref }) => activityDetailsThread(ref));
+  client.on("thread/read", ({ ref }) => {
+    const response = activityDetailsThread(ref);
+    if (response.thread.evener) {
+      response.thread.evener.goal = { objective: "Ship the release notes", status: "blocked", iterations: 1 };
+    }
+    return response;
+  });
   connectionStore.getState().connect(client);
   installFocusedScope(ref);
   activitySidebarStore.getState().openWith("about");
   mountSidebar(client);
   await screen.findByText("about-owner");
+  expect(screen.getByTestId("session-details-goal").textContent).toContain("Ship the release notes");
+  expect(screen.getByTestId("session-details-goal-status").textContent).toBe("blocked");
   expect(screen.getByText("anthropic/claude-sonnet")).toBeTruthy();
   expect(screen.getByText("idle")).toBeTruthy();
   expect(screen.getByTestId("session-details-context").textContent).toContain("42% used");
@@ -133,6 +141,7 @@ test("About omits unavailable accounting and empty sections", async () => {
   // Location keeps that one row; the directory the read left out stays absent.
   expect(screen.queryByTestId("session-details-cwd")).toBeNull();
   expect(screen.getByTestId("session-details-host").textContent).toContain("remote");
+  expect(screen.queryByTestId("session-details-goal")).toBeNull();
   expect(screen.queryByTestId("session-details-context")).toBeNull();
   expect(screen.queryByTestId("session-details-cost")).toBeNull();
   expect(screen.queryByTestId("session-details-tokens")).toBeNull();

@@ -14,18 +14,8 @@
   min-width: 0;
 }
 
-.pill {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
+.commandChip {
   align-self: flex-start;
-  padding: var(--space-1) var(--space-3);
-  border-radius: var(--radius-pill);
-  background: var(--accent-bg);
-  color: var(--ink-hi);
-  font-family: var(--font-sans);
-  font-size: var(--font-size-caption);
-  font-weight: var(--font-weight-medium);
 }
 
 .results {

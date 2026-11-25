@@ -26,17 +26,14 @@
     .attachmentControl { min-width: var(--tap-min); min-height: var(--tap-min); }
   }
 
-  /* Same collision, other direction: widgets/popover and modelswitch both own
-     a local `.trigger`. popover.module.css's whole rule is one declaration
-     (`display: inline-flex`, popover.module.css:6-8), so the wrapper span it
-     renders around the trigger carries it here under its own name and
-     popover.module.css stays out of cssFiles. */
-  .popoverTrigger { display: inline-flex; }
+  /* PickerTrigger's slot box (widgets/internal/pickerTrigger.module.css),
+     spelled here because its `.wrapper` name collides with Button's. This is
+     the phone branch, where the slot box is the trigger's only wrapper. */
+  .pickerWrapper { display: inline-flex; min-width: 0; max-width: 100%; }
 
-  /* Popover's stretchTrigger rule, spelled here for the same reason: the
-     runtime class is popover.module.css's `.triggerStretch`, and the shared
-     trigger's fill prop sets it for the spawn card's slot. */
-  .triggerStretch { display: flex; width: 100%; }
+  /* The same slot box with the shared trigger's fill prop, which the spawn
+     card sets: widgets/internal/pickerTrigger.module.css's `.wrapperFill`. */
+  .pickerWrapperFill { display: flex; width: 100%; }
 </style>
 </head>
 <body>
@@ -56,7 +53,7 @@
     <div class="controls" data-controls>
       <div class="leading">
         <button class="button quiet xs attachmentControl" data-attach type="button" aria-label="Attach image"><span class="icon">+</span></button>
-        <span class="modelTrigger" data-model-gate><span class="popoverTrigger triggerStretch"><button class="trigger quietTrigger triggerShrink" data-model-trigger type="button" title="example-provider-with-a-very-long-name/extra-long-qualifier-model-variant-turbo-01"><span class="value" data-model-value>example-provider-with-a-very-long-name/extra-long-qualifier-model-variant-turbo-01</span><span class="chevron">v</span> <span class="srOnly">&mdash; change model</span></button></span></span>
+        <span class="modelTrigger" data-model-gate><span class="pickerWrapper pickerWrapperFill"><button class="trigger quietTrigger triggerShrink" data-model-trigger type="button" title="example-provider-with-a-very-long-name/extra-long-qualifier-model-variant-turbo-01"><span class="value" data-model-value>example-provider-with-a-very-long-name/extra-long-qualifier-model-variant-turbo-01</span><span class="chevron">v</span> <span class="srOnly">&mdash; change model</span></button></span></span>
         <span class="control" data-effort-control data-effort><span class="separator" aria-hidden="true">·</span><span class="quietVariant quietTrigger"><span class="quietReadout" data-effort-value aria-hidden="true">high</span><span class="quietCaret" aria-hidden="true">v</span><select id="spawn-reasoning-effort" class="quietSelect" aria-label="Prompt reasoning effort" data-effort-select><option value="">(default)</option><option value="high" selected>high</option><option value="none">none (off)</option></select></span></span>
       </div>
       <div class="actions">

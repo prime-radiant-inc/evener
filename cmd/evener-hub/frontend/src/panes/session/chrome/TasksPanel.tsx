@@ -80,7 +80,7 @@ import {
   type TaskRow,
   taskAggregateLabel,
 } from "@evener/appwire-client";
-import { forwardRef, type ReactNode, useEffect, useImperativeHandle, useState } from "react";
+import { forwardRef, useEffect, useImperativeHandle, useState } from "react";
 import { tasksPanelStore, useTasksPanelStore } from "../../../stores/tasksPanel";
 import {
   Button,
@@ -94,6 +94,7 @@ import {
 } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { TaskCheck, taskStatusTouch, taskStatusWord } from "../transcript/tools/taskCheck";
+import { ActivityBodyClock, TaskActivityTime } from "./activityTime";
 import { PanelSection } from "./PanelSection";
 import styles from "./taskspanel.module.css";
 
@@ -130,7 +131,6 @@ const CLASS = {
   descDim: requireClass(styles.descDim, "taskspanel.module.css", "descDim"),
   descStruck: requireClass(styles.descStruck, "taskspanel.module.css", "descStruck"),
   statusWord: requireClass(styles.statusWord, "taskspanel.module.css", "statusWord"),
-  time: requireClass(styles.time, "taskspanel.module.css", "time"),
   latest: requireClass(styles.latest, "taskspanel.module.css", "latest"),
   latestText: requireClass(styles.latestText, "taskspanel.module.css", "latestText"),
   stale: requireClass(styles.stale, "taskspanel.module.css", "stale"),
@@ -281,20 +281,17 @@ interface TaskRowViewProps {
   task: TaskRow;
   sessionRef: string;
   settled?: boolean;
-  renderTime?: (task: TaskRow) => ReactNode;
+  now: number;
 }
 
-function TaskRowView({ task, sessionRef, settled = false, renderTime }: TaskRowViewProps) {
+function TaskRowView({ task, sessionRef, settled = false, now }: TaskRowViewProps) {
   const notes = task.notes ?? [];
   const latest = !settled && notes.length > 0 ? notes[notes.length - 1] : null;
   const descClass = task.status === "cancelled" ? CLASS.descStruck : settled ? CLASS.descDim : CLASS.description;
-  const time = renderTime ? (
-    renderTime(task)
-  ) : task.updatedAt ? (
-    <span className={CLASS.time} data-testid="task-row-time" title={absoluteTime(task.updatedAt)}>
-      {relativeTime(task.updatedAt)}
-    </span>
-  ) : null;
+  // One time for every body that lists tasks: the activity time's `<time>`
+  // carries the meaning (updated/completed/cancelled) and the absolute
+  // reading in its title, whichever surface mounts the row.
+  const time = <TaskActivityTime task={task} now={now} />;
   const summary = (
     <>
       <TaskCheck touch={taskStatusTouch(task.status)} />
@@ -343,13 +340,13 @@ function LiveGroup({
   status,
   tasks,
   sessionRef,
-  renderTime,
+  now,
 }: {
   label: string;
   status: string;
   tasks: TaskRow[];
   sessionRef: string;
-  renderTime?: (task: TaskRow) => ReactNode;
+  now: number;
 }) {
   if (tasks.length === 0) return null;
   return (
@@ -365,55 +362,45 @@ function LiveGroup({
     >
       <ul className={CLASS.list}>
         {tasks.map((row) => (
-          <TaskRowView key={row.id} task={row} sessionRef={sessionRef} renderTime={renderTime} />
+          <TaskRowView key={row.id} task={row} sessionRef={sessionRef} now={now} />
         ))}
       </ul>
     </PanelSection>
   );
 }
 
-function TaskListGroups({
-  rows,
-  sessionRef,
-  renderTime,
-}: {
-  rows: TaskRow[];
-  sessionRef: string;
-  renderTime?: (task: TaskRow) => ReactNode;
-}) {
+function TaskListGroups({ rows, sessionRef }: { rows: TaskRow[]; sessionRef: string }) {
   const groups = groupTasks(rows);
   const completed = groups.settled.filter((task) => task.status === "done").length;
   const cancelled = groups.settled.length - completed;
   return (
-    <>
-      {groups.settled.length > 0 && (
-        <Disclosure
-          id={`${sessionRef}\0settled-group`}
-          summary={
-            <span className={CLASS.settledSummary} data-testid="task-settled-group-summary">
-              {completed > 0 ? `${completed} completed ${completed === 1 ? "task" : "tasks"}` : null}
-              {completed > 0 && cancelled > 0 ? " · " : null}
-              {cancelled > 0 ? `${cancelled} cancelled ${cancelled === 1 ? "task" : "tasks"}` : null}
-            </span>
-          }
-          data-testid="task-settled-group"
-        >
-          <ul className={CLASS.list}>
-            {groups.settled.map((row) => (
-              <TaskRowView key={row.id} task={row} sessionRef={sessionRef} settled renderTime={renderTime} />
-            ))}
-          </ul>
-        </Disclosure>
+    <ActivityBodyClock>
+      {(now) => (
+        <>
+          {groups.settled.length > 0 && (
+            <Disclosure
+              id={`${sessionRef}\0settled-group`}
+              summary={
+                <span className={CLASS.settledSummary} data-testid="task-settled-group-summary">
+                  {completed > 0 ? `${completed} completed ${completed === 1 ? "task" : "tasks"}` : null}
+                  {completed > 0 && cancelled > 0 ? " · " : null}
+                  {cancelled > 0 ? `${cancelled} cancelled ${cancelled === 1 ? "task" : "tasks"}` : null}
+                </span>
+              }
+              data-testid="task-settled-group"
+            >
+              <ul className={CLASS.list}>
+                {groups.settled.map((row) => (
+                  <TaskRowView key={row.id} task={row} sessionRef={sessionRef} settled now={now} />
+                ))}
+              </ul>
+            </Disclosure>
+          )}
+          <LiveGroup label="Current" status="in_progress" tasks={groups.inProgress} sessionRef={sessionRef} now={now} />
+          <LiveGroup label="Remaining" status="open" tasks={groups.open} sessionRef={sessionRef} now={now} />
+        </>
       )}
-      <LiveGroup
-        label="Current"
-        status="in_progress"
-        tasks={groups.inProgress}
-        sessionRef={sessionRef}
-        renderTime={renderTime}
-      />
-      <LiveGroup label="Remaining" status="open" tasks={groups.open} sessionRef={sessionRef} renderTime={renderTime} />
-    </>
+    </ActivityBodyClock>
   );
 }
 
@@ -421,11 +408,10 @@ export interface TasksPanelBodyProps {
   sessionRef: string;
   model: ThreadModel;
   showSummary?: boolean;
-  renderTime?: (task: TaskRow) => ReactNode;
 }
 
 /** Shared task-list body for the activity viewer, mobile Sheet and desktop pane. */
-export function TasksPanelBody({ sessionRef, model, showSummary = true, renderTime }: TasksPanelBodyProps) {
+export function TasksPanelBody({ sessionRef, model, showSummary = true }: TasksPanelBodyProps) {
   const toasts = useToasts();
   const entry = useTasksPanelStore((state) => state.entries.get(sessionRef)) ?? EMPTY_TASKS_PANEL_ENTRY;
   // Bumped by Try again. The only fetch trigger a reader controls: the other
@@ -536,7 +522,7 @@ export function TasksPanelBody({ sessionRef, model, showSummary = true, renderTi
         {rows.length === 0 ? (
           <EmptyState title="No tasks yet" hint="The agent's task list is empty for this session." reason="empty" />
         ) : (
-          <TaskListGroups rows={rows} sessionRef={sessionRef} renderTime={renderTime} />
+          <TaskListGroups rows={rows} sessionRef={sessionRef} />
         )}
       </>
     );
