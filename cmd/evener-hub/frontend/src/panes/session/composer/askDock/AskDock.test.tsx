@@ -3,6 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ActivityJob, ActivityTree, Thread, ThreadReadResponse } from "@evener/appwire-client";
 import { buildEntityView, type EntityView, hydrateThread } from "@evener/appwire-client";
+import { askUserArgs } from "@evener/appwire-client/testing/askUserFixtures";
 import type { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -25,7 +26,7 @@ import "../../../doc";
 import { resetComposerFocusStoreForTests, useComposerFocusRequest } from "../composerFocus";
 import { AskDock, AskDockAnnouncements } from "./AskDock";
 import { askDockStore, resetAskDockStoreForTests } from "./askDockStore";
-import { ackAskUserCall, askArgs, ONE_QUESTION } from "./askDockTestUtils";
+import { ackAskUserCall, ONE_QUESTION } from "./askDockTestUtils";
 
 // --- fixtures (mirrors askDockStore.test.ts's own harness) ---------------
 
@@ -1274,7 +1275,7 @@ test("an atomic pending-set replacement with an identical count re-announces the
             toolName: "ask_user",
             callId: "call_1",
             status: "completed",
-            argumentsJson: askArgs(ONE_QUESTION),
+            argumentsJson: askUserArgs(ONE_QUESTION),
           },
           { type: "userMessage", id: "u2", turnId: "turn_1", text: "[answers] yes", status: "completed" },
           {
@@ -1284,7 +1285,7 @@ test("an atomic pending-set replacement with an identical count re-announces the
             toolName: "ask_user",
             callId: "call_2",
             status: "completed",
-            argumentsJson: askArgs(ONE_QUESTION),
+            argumentsJson: askUserArgs(ONE_QUESTION),
           },
         ],
       },
