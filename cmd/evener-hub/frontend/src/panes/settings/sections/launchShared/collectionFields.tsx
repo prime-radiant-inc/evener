@@ -134,7 +134,7 @@ function pathFieldKind(pathKind: string | undefined): PathFieldKind {
 }
 
 /** pathList kind: skillsDirs/pluginDirs/mcpConfigs. Adds come from the shared
- * path picker (PathAddField below), and every add goes through the shared
+ * path picker (PathFieldWithPaths below), and every add goes through the shared
  * validatePathListAdd decision - dedupe, then server-side evener/path/validate
  * before being accepted, using the server-canonicalized path when one comes
  * back - matching the legacy's own "blocks the add on failure, shows a

@@ -579,7 +579,7 @@ function PathListControl({
                 // renders no label of its own in renderAddField mode, and all
                 // three pathList options sit in one panel, so the placeholder
                 // alone would name three indistinguishable buttons - the same
-                // reason collectionFields.tsx's PathAddField passes it.
+                // reason collectionFields.tsx's PathFieldWithPaths passes it.
                 ariaLabel={option.label}
               />
             )
