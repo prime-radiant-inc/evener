@@ -39,15 +39,19 @@
 // separate "last mobile screen" memory to restore independently of that.
 import {
   type CSSProperties,
+  createContext,
   type ReactNode,
+  type RefObject,
   Suspense,
   useCallback,
+  useContext,
   useEffect,
   useLayoutEffect,
   useMemo,
   useRef,
   useState,
 } from "react";
+import { AnimatePresence, m, spatialExitTransition, spatialTransition, useReducedMotion } from "../../motion";
 import { SessionInspectionActions } from "../../panes/session/chrome/SessionInspectionActions";
 import { returnFromAgentCascade } from "../../panes/zoom/actions";
 import { isCascadeReturnedOrigin } from "../../panes/zoom/inspectionOrigin";
@@ -67,6 +71,7 @@ import {
   SIDEBAR_WIDTH_MIN_TOUCH,
   usePrefsStore,
 } from "../../stores/prefs";
+import { useTopNotesExpanded } from "../../stores/topNotes";
 import { Chevron, IconButton } from "../../widgets";
 import { ActivitySidebar } from "../activitybar/ActivitySidebar";
 import { useActivitySidebarStore } from "../activitybar/activitySidebarStore";
@@ -121,6 +126,62 @@ const READING_SCROLLER_SELECTOR = "[data-reading-scroll-host] > *";
 const BOARD_MIN_WIDTH = SIDEBAR_WIDTH_MIN_TOUCH;
 // Leave room for the Find query and its clear button beside the match controls.
 const READER_MIN_WIDTH: Record<FontSizePref, number> = { s: 392, m: 392, l: 408, xl: 432 };
+
+const BoardPresentContext = createContext(true);
+
+// The tablet persistent board column. AnimatePresence keeps an exiting element
+// mounted on its previous props until the left-edge slide completes, so reading
+// presence from context makes the leaving column inert and yields the single
+// Board toggle immediately on collapse.
+function TabletBoardColumn({
+  boardRef,
+  boardWidth,
+  boardMaxWidth,
+  boardToggle,
+  railSlot,
+  transition,
+  exitTransition,
+  onBoardInput,
+}: {
+  boardRef: RefObject<HTMLElement | null>;
+  boardWidth: number;
+  boardMaxWidth: number;
+  boardToggle: ReactNode;
+  railSlot: ReactNode;
+  transition: ReturnType<typeof spatialTransition>;
+  exitTransition: ReturnType<typeof spatialExitTransition>;
+  onBoardInput: () => void;
+}) {
+  const present = useContext(BoardPresentContext);
+  const reducedMotion = useReducedMotion() === true;
+  return (
+    <m.aside
+      className={styles.boardColumn}
+      data-testid="board-column"
+      data-motion={present ? undefined : "closing"}
+      inert={!present}
+      aria-hidden={present ? undefined : true}
+      ref={present ? boardRef : undefined}
+      initial={reducedMotion ? false : { x: "-100%" }}
+      animate={{ x: 0 }}
+      exit={reducedMotion ? undefined : { x: "-100%", transition: exitTransition }}
+      transition={transition}
+      onPointerDownCapture={present ? onBoardInput : undefined}
+      onKeyDownCapture={present ? onBoardInput : undefined}
+      onClickCapture={present ? onBoardInput : undefined}
+      style={{ [RAIL_WIDTH_PROPERTY]: `${boardWidth}px` } as CSSProperties}
+    >
+      <RailHeaderActionProvider value={present ? boardToggle : null}>{railSlot}</RailHeaderActionProvider>
+      <RailResizeHandle
+        width={boardWidth}
+        minWidth={BOARD_MIN_WIDTH}
+        maxWidth={boardMaxWidth}
+        onCommit={(width) => prefsStore.getState().setSidebarWidth(width)}
+        railRef={boardRef}
+      />
+    </m.aside>
+  );
+}
 
 // Renders exactly one pane, full-screen: whichever OpenPaneRecord
 // useWorkspaceStore currently reports as focused. Uses the SAME registry
@@ -322,6 +383,8 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
   const boardRef = useRef<HTMLElement>(null);
   const boardToggleRef = useRef<HTMLButtonElement>(null);
   const restoreToggleFocusRef = useRef(false);
+  const boardTransition = useMemo(() => spatialTransition(), []);
+  const boardExitTransition = useMemo(() => spatialExitTransition(), []);
 
   function toggleBoard() {
     restoreToggleFocusRef.current = boardToggleRef.current === document.activeElement;
@@ -393,6 +456,10 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
   // older turns as you scroll toward the top, and appends grow it below -
   // so the scrollTop jump that arrives with it is not a gesture.
   const lastScrollHeightRef = useRef(0);
+  // Highest scrollTop reached at the start of the current upward scroll run
+  // while the top bar is floating, so slow 120Hz drags that move less than
+  // FLOAT_REVEAL_STEP per frame still reveal once cumulative travel crosses it.
+  const upwardRunStartRef = useRef<number | null>(null);
   // The scroller whose scroll drove the last collapse, and the resting bar
   // height captured at that moment - both consumed by the compensation
   // effect below. Cleared on every focus change.
@@ -459,6 +526,7 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
       setTopBarCollapsed(false);
       lastScrollTopRef.current = 0;
       lastScrollHeightRef.current = 0;
+      upwardRunStartRef.current = null;
       collapseScrollerRef.current = null;
     }
     if (prev !== focusedPaneId) {
@@ -593,17 +661,31 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
       // A height change is position-neutral: resync (the lastScrollTopRef
       // update below) and decide nothing, so a prepend can never pose as a
       // downward gesture and a reveal can never fire off appended content.
-      if (!heightChanged && (type === "session" || type === "sessionZoom" || type === "transcript")) {
+      if (heightChanged) {
+        upwardRunStartRef.current = null;
+        return;
+      }
+      if (type === "session" || type === "sessionZoom" || type === "transcript") {
         collapseScrollerRef.current = target;
         // The fold must land the compensated scroll position clear of the
         // at-top reveal band: collapsing at a scroll the compensation would
         // clamp to 0 would bounce straight back out (st < 12 reveals).
         const foldPast = Math.max(FLOAT_COLLAPSE_PAST, barHeightRef.current + FLOAT_REVEAL_AT_TOP);
         let next = topBarCollapsedRef.current;
-        if (scrollTop > foldPast && scrollTop > prevScrollTop) next = true;
-        else if (scrollTop < prevScrollTop - FLOAT_REVEAL_STEP || scrollTop < FLOAT_REVEAL_AT_TOP) next = false;
+        if (scrollTop > prevScrollTop) {
+          upwardRunStartRef.current = null;
+          if (scrollTop > foldPast) next = true;
+          else if (scrollTop < FLOAT_REVEAL_AT_TOP) next = false;
+        } else {
+          if (topBarCollapsedRef.current && scrollTop < prevScrollTop && upwardRunStartRef.current === null) {
+            upwardRunStartRef.current = prevScrollTop;
+          }
+          const upwardTravel = upwardRunStartRef.current === null ? 0 : upwardRunStartRef.current - scrollTop;
+          if (upwardTravel >= FLOAT_REVEAL_STEP || scrollTop < FLOAT_REVEAL_AT_TOP) next = false;
+        }
         if (next !== topBarCollapsedRef.current) {
           topBarCollapsedRef.current = next;
+          upwardRunStartRef.current = null;
           // Resting height, read while the bar still sits in the flow: the
           // compensation effect needs what the pane is about to lose, not
           // what the floating box measures after the flip.
@@ -870,6 +952,20 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
   const panelPaneTypes = new Set(["sessionTasks", "sessionDetails"]);
   const isPanelPane = focusedPane !== null && panelPaneTypes.has(focusedPane.type);
   const focusedSessionRef = focusedPane?.type === "session" ? (refParam(focusedPane.params) ?? undefined) : undefined;
+  // The focused session's notes card attaches to the solid bar's seam
+  // (topnotespanel.module.css), so expanding it restores a floating bar: the
+  // reveal is chrome, not a scroll gesture, and the capsules would otherwise
+  // sit over the card's header row. The empty string matches no session ref.
+  const focusedNotesExpanded = useTopNotesExpanded(focusedSessionRef ?? "");
+  useEffect(() => {
+    if (!focusedNotesExpanded || !topBarCollapsedRef.current) return;
+    topBarCollapsedRef.current = false;
+    upwardRunStartRef.current = null;
+    setTopBarCollapsed(false);
+    // Unlike a focus change, the reader stays in this pane, so the collapse
+    // scroller stays armed: the compensation effect holds the reading position
+    // when the pane's layout regains the bar's height.
+  }, [focusedNotesExpanded]);
   const livePaneIds = useMemo(() => new Set(panes.map((pane) => pane.id)), [panes]);
   const retainedParentRef = focusedPane?.type === "session" ? conversationOpenParentRef(focusedPane) : undefined;
   const retainedParentAvailable =
@@ -921,25 +1017,24 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
         data-board={tabletSplit ? (boardVisible ? "visible" : "collapsed") : undefined}
         data-testid={tabletSplit ? "board-split" : undefined}
       >
-        {boardVisible && (
-          <aside
-            className={styles.boardColumn}
-            data-testid="board-column"
-            ref={boardRef}
-            onPointerDownCapture={markBoardInput}
-            onKeyDownCapture={markBoardInput}
-            onClickCapture={markBoardInput}
-            style={{ [RAIL_WIDTH_PROPERTY]: `${boardWidth}px` } as CSSProperties}
-          >
-            <RailHeaderActionProvider value={boardToggle}>{railSlot}</RailHeaderActionProvider>
-            <RailResizeHandle
-              width={boardWidth}
-              minWidth={BOARD_MIN_WIDTH}
-              maxWidth={boardMaxWidth}
-              onCommit={(width) => prefsStore.getState().setSidebarWidth(width)}
-              railRef={boardRef}
-            />
-          </aside>
+        {tabletSplit && (
+          <BoardPresentContext.Provider value={boardVisible}>
+            <AnimatePresence initial={false}>
+              {boardVisible && (
+                <TabletBoardColumn
+                  key="tablet-board"
+                  boardRef={boardRef}
+                  boardWidth={boardWidth}
+                  boardMaxWidth={boardMaxWidth}
+                  boardToggle={boardToggle}
+                  railSlot={railSlot}
+                  transition={boardTransition}
+                  exitTransition={boardExitTransition}
+                  onBoardInput={markBoardInput}
+                />
+              )}
+            </AnimatePresence>
+          </BoardPresentContext.Provider>
         )}
         {/* Keep the same pane slot and scroll listener on both sides of the tablet floor. */}
         <div className={styles.paneColumn} data-testid={tabletSplit ? "pane-column" : undefined}>

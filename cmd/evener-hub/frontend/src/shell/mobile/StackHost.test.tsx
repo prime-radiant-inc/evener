@@ -26,6 +26,7 @@ import {
   activityDetailsThread,
   activitySummary,
 } from "../../stores/sessionActivityTestUtils";
+import { topNotesStore } from "../../stores/topNotes";
 import { initTranscriptDisplay, resetTranscriptDisplayStoreForTests } from "../../stores/transcriptDisplay";
 import { readModuleCss } from "../../styles/cssBlock";
 import { Badge } from "../../widgets";
@@ -292,7 +293,56 @@ function asDockviewApi(fake: RestoreDockviewApi): DockviewApi {
   return fake as unknown as DockviewApi;
 }
 
+// motion-dom initializes its prefers-reduced-motion listener once per module
+// load against window.matchMedia("(prefers-reduced-motion)"). Installing a
+// MediaQueryList with real change notifications up front lets the reduced-
+// motion test toggle the preference through the library's own listener.
+let reducedMotionMatches = false;
+const reducedMotionListeners = new Set<() => void>();
+
+function setReducedMotionPreference(matches: boolean): void {
+  reducedMotionMatches = matches;
+  for (const listener of reducedMotionListeners) listener();
+}
+
+const defaultMatchMedia: typeof window.matchMedia = (media) => {
+  const isReducedMotion = media === "(prefers-reduced-motion)" || media === "(prefers-reduced-motion: reduce)";
+  return {
+    media,
+    get matches() {
+      return isReducedMotion ? reducedMotionMatches : false;
+    },
+    onchange: null,
+    addListener: () => {},
+    removeListener: () => {},
+    addEventListener: (_type: string, listener: EventListenerOrEventListenerObject | null) => {
+      if (isReducedMotion && typeof listener === "function") reducedMotionListeners.add(listener as () => void);
+    },
+    removeEventListener: (_type: string, listener: EventListenerOrEventListenerObject | null) => {
+      if (isReducedMotion && typeof listener === "function") reducedMotionListeners.delete(listener as () => void);
+    },
+    dispatchEvent: () => false,
+  };
+};
+
+function installTabletMatchMedia(): () => void {
+  const originalMedia = window.matchMedia;
+  window.matchMedia = ((media: string) =>
+    media === "(prefers-reduced-motion)" || media === "(prefers-reduced-motion: reduce)"
+      ? defaultMatchMedia(media)
+      : ({
+          media,
+          matches: media === MOBILE_QUERY || media === TABLET_QUERY,
+          addEventListener() {},
+          removeEventListener() {},
+        } as unknown as MediaQueryList)) as typeof window.matchMedia;
+  return () => {
+    window.matchMedia = originalMedia;
+  };
+}
+
 beforeAll(async () => {
+  window.matchMedia = defaultMatchMedia;
   registerPaneForTests<{ ref?: string; path?: string }>({
     id: "doc",
     title: (params) => `Doc ${params.ref ?? params.path ?? "unknown"}`,
@@ -383,12 +433,14 @@ beforeEach(() => {
   resetNavigationStoreForTests();
   resetConnectionStoreForTests();
   resetChromeStoreForTests();
+  topNotesStore.getState().resetForTests();
   setLastPopstateWasTrustedForTests(false);
 });
 
 afterEach(() => {
   cleanup();
   window.history.pushState({}, "", "/");
+  setReducedMotionPreference(false);
   setLastPopstateWasTrustedForTests(false); // defensive: no test should leak this into the next
 });
 
@@ -2356,6 +2408,221 @@ test("floating top bar compensates scroll, ignores content height shifts, and re
     host.unmount();
   } finally {
     restoreSession();
+  }
+});
+
+// The focused session's notes card attaches to the solid bar's seam: expanding
+// it restores a floating bar while leaving the scroller armed so compensation
+// holds the reader's position. Expanding another session's notes or collapsing
+// notes does not toggle the bar.
+test("expanding the focused session's notes restores a floating top bar and compensates scroll", async () => {
+  window.history.replaceState({}, "", "/");
+  const restoreSession = registerScrollablePaneForTests("session");
+  try {
+    const host = await act(async () => render(<StackHost routeDeferred />));
+    await act(async () => {
+      workspaceStore.getState().openPane("session", { ref: "local:a" });
+    });
+    const bar = screen.getByTestId("topbar");
+    Object.defineProperty(bar, "offsetHeight", { configurable: true, value: 56 });
+    const scroller = await screen.findByTestId("pane-scroll");
+    Object.defineProperty(scroller, "scrollHeight", { configurable: true, value: 2400 });
+
+    // Sync initial height, then scroll down to float the bar (260 -> 204).
+    act(() => {
+      scroller.scrollTop = 200;
+      scroller.dispatchEvent(new Event("scroll"));
+    });
+    act(() => {
+      scroller.scrollTop = 260;
+      scroller.dispatchEvent(new Event("scroll"));
+    });
+    await waitFor(() => expect(bar.getAttribute("data-collapsed")).toBe("true"));
+    expect(scroller.scrollTop).toBe(204);
+
+    // Another session's notes expanding leaves this session's floating bar alone.
+    act(() => {
+      topNotesStore.getState().setExpanded("local:other", true);
+    });
+    expect(bar.getAttribute("data-collapsed")).toBe("true");
+    expect(scroller.scrollTop).toBe(204);
+
+    // Expanding the focused session's notes restores the solid bar and shifts
+    // the scroller back by +barHeight so the reading position holds steady.
+    act(() => {
+      topNotesStore.getState().setExpanded("local:a", true);
+    });
+    await waitFor(() => expect(bar.getAttribute("data-collapsed")).not.toBe("true"));
+    expect(scroller.scrollTop).toBe(260);
+
+    // Collapsing the notes leaves the bar solid until the next scroll decides.
+    act(() => {
+      topNotesStore.getState().setExpanded("local:a", false);
+    });
+    expect(bar.getAttribute("data-collapsed")).not.toBe("true");
+    host.unmount();
+  } finally {
+    topNotesStore.getState().resetForTests();
+    restoreSession();
+  }
+});
+
+// On 120Hz displays a slow upward drag moves fewer than 8px per frame. Upward
+// travel accumulates across consecutive frames until reaching 8px, and resets
+// whenever downward scrolling interrupts the run.
+test("floating top bar accumulates small upward scroll steps and resets on downward movement", async () => {
+  window.history.replaceState({}, "", "/");
+  const restoreSession = registerScrollablePaneForTests("session");
+  try {
+    const host = await act(async () => render(<StackHost routeDeferred />));
+    await act(async () => {
+      workspaceStore.getState().openPane("session", { ref: "local:slow-drag" });
+    });
+    const bar = screen.getByTestId("topbar");
+    Object.defineProperty(bar, "offsetHeight", { configurable: true, value: 56 });
+    const scroller = await screen.findByTestId("pane-scroll");
+    Object.defineProperty(scroller, "scrollHeight", { configurable: true, value: 2400 });
+
+    const scrollTo = (top: number) => {
+      act(() => {
+        scroller.scrollTop = top;
+        scroller.dispatchEvent(new Event("scroll"));
+      });
+    };
+
+    // Initial height observation, then collapse downward (260 -> 204).
+    scrollTo(200);
+    scrollTo(260);
+    await waitFor(() => expect(bar.getAttribute("data-collapsed")).toBe("true"));
+    expect(scroller.scrollTop).toBe(204);
+
+    // Two 3px upward steps (6px total) stay below the 8px reveal threshold.
+    scrollTo(201);
+    expect(bar.getAttribute("data-collapsed")).toBe("true");
+    scrollTo(198);
+    expect(bar.getAttribute("data-collapsed")).toBe("true");
+
+    // Reversing downward resets the upward run start before crossing 8px.
+    scrollTo(200);
+    expect(bar.getAttribute("data-collapsed")).toBe("true");
+
+    // Two more 3px upward steps from 200 (6px) still stay collapsed even though
+    // the net distance from 204 is 10px.
+    scrollTo(197);
+    expect(bar.getAttribute("data-collapsed")).toBe("true");
+    scrollTo(194);
+    expect(bar.getAttribute("data-collapsed")).toBe("true");
+
+    // A third 3px upward step crosses 8px (200 -> 191 = 9px), restoring the bar
+    // and compensating scroll by +56 (191 -> 247).
+    scrollTo(191);
+    await waitFor(() => expect(bar.getAttribute("data-collapsed")).not.toBe("true"));
+    expect(scroller.scrollTop).toBe(247);
+    host.unmount();
+  } finally {
+    restoreSession();
+  }
+});
+
+// Tablet persistent board column animates from the left edge symmetrically with
+// the desktop Overview sidebar: inert and non-interactive while exiting, one
+// visible toggle at all times, and clipped horizontally so no scrollbar appears.
+test("tablet board column slides out inert on collapse and slides in from the left on reopen", async () => {
+  const css = readModuleCss(import.meta.url, "StackHost.module.css");
+  const splitRule = css.match(/\.split\s*\{([^}]*)\}/)?.[1] ?? "";
+  expect(splitRule).toContain("position: relative");
+  expect(splitRule).toContain("overflow-x: clip");
+  const closingRule = css.match(/\.boardColumn\[data-motion="closing"\]\s*\{([^}]*)\}/)?.[1] ?? "";
+  expect(closingRule).toContain("position: absolute");
+  expect(closingRule).toContain("pointer-events: none");
+  expect(closingRule).toContain("z-index: var(--z-raised)");
+
+  const restoreViewport = installTabletMatchMedia();
+  try {
+    const user = userEvent.setup();
+    workspaceStore.getState().openPane("doc", { ref: "tablet_slide" });
+    render(
+      <MotionProvider>
+        <StackHost railSlot={<TabletRailActionSlot />} />
+      </MotionProvider>,
+    );
+    await screen.findByText(/doc pane: tablet_slide /);
+
+    const initialBoard = screen.getByTestId("board-column");
+    expect(initialBoard.hasAttribute("inert")).toBe(false);
+    expect(initialBoard.getAttribute("data-motion")).not.toBe("closing");
+
+    const expandedToggle = within(initialBoard).getByTestId("board-toggle");
+    expandedToggle.focus();
+    await user.keyboard("{Enter}");
+
+    // Under MotionProvider the exiting column stays mounted for the Slide exit,
+    // immediately marked inert and closing while the single live toggle lives in
+    // the top bar with restored focus.
+    const exitingBoard = screen.getByTestId("board-column");
+    expect(exitingBoard.hasAttribute("inert")).toBe(true);
+    expect(exitingBoard.getAttribute("aria-hidden")).toBe("true");
+    expect(exitingBoard.getAttribute("data-motion")).toBe("closing");
+    expect(screen.getAllByTestId("board-toggle")).toHaveLength(1);
+    const collapsedToggle = within(screen.getByTestId("topbar")).getByTestId("board-toggle");
+    expect(document.activeElement).toBe(collapsedToggle);
+
+    // Once the exit animation finishes, the column unmounts cleanly.
+    await waitFor(() => expect(screen.queryByTestId("board-column")).toBeNull());
+
+    // Reopening mounts the board sliding in from the left edge, live and
+    // interactive again, with the single toggle back inside the board.
+    await user.keyboard("{Enter}");
+    const reopenedBoard = screen.getByTestId("board-column");
+    expect(reopenedBoard.hasAttribute("inert")).toBe(false);
+    expect(reopenedBoard.getAttribute("aria-hidden")).toBeNull();
+    expect(reopenedBoard.getAttribute("data-motion")).not.toBe("closing");
+    expect(reopenedBoard.getAttribute("style") ?? "").toContain("-100%");
+    expect(screen.getAllByTestId("board-toggle")).toHaveLength(1);
+    const reopenedToggle = within(reopenedBoard).getByTestId("board-toggle");
+    expect(document.activeElement).toBe(reopenedToggle);
+    await waitFor(() => {
+      expect(reopenedBoard.getAttribute("style") ?? "").not.toContain("-100%");
+    });
+  } finally {
+    cleanup();
+    restoreViewport();
+  }
+});
+
+test("tablet board column unmounts and reopens immediately without sliding under prefers-reduced-motion", async () => {
+  // motion/react emits a one-time dev warning when reduced motion is active.
+  const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  const restoreViewport = installTabletMatchMedia();
+  setReducedMotionPreference(true);
+  try {
+    const user = userEvent.setup();
+    workspaceStore.getState().openPane("doc", { ref: "tablet_reduced" });
+    render(
+      <MotionProvider>
+        <StackHost railSlot={<TabletRailActionSlot />} />
+      </MotionProvider>,
+    );
+    await screen.findByText(/doc pane: tablet_reduced /);
+
+    const expandedToggle = within(screen.getByTestId("board-column")).getByTestId("board-toggle");
+    expandedToggle.focus();
+    await user.keyboard("{Enter}");
+
+    // Under reduced motion the board skips exit animation and unmounts at once.
+    expect(screen.queryByTestId("board-column")).toBeNull();
+    expect(document.activeElement).toBe(within(screen.getByTestId("topbar")).getByTestId("board-toggle"));
+
+    await user.keyboard("{Enter}");
+    const reopenedBoard = screen.getByTestId("board-column");
+    expect(reopenedBoard.getAttribute("style") ?? "").not.toContain("-100%");
+    expect(warn.mock.calls.every(([msg]) => typeof msg === "string" && msg.includes("reduced-motion-disabled"))).toBe(
+      true,
+    );
+  } finally {
+    cleanup();
+    warn.mockRestore();
+    restoreViewport();
   }
 });
 
