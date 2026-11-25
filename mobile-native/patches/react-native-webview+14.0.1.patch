@@ -1,0 +1,150 @@
+diff --git a/node_modules/react-native-webview/apple/RNCWebView.mm b/node_modules/react-native-webview/apple/RNCWebView.mm
+index 2be7877..c2ac878 100644
+--- a/node_modules/react-native-webview/apple/RNCWebView.mm
++++ b/node_modules/react-native-webview/apple/RNCWebView.mm
+@@ -493,6 +493,9 @@ - (void)updateProps:(Props::Shared const &)props oldProps:(Props::Shared const &
+     }
+ 
+     NSMutableDictionary* source = [[NSMutableDictionary alloc] init];
++    if (!newViewProps.newSource.websiteDataStoreIdentifier.empty()) {
++        source[@"websiteDataStoreIdentifier"] = RCTNSStringFromString(newViewProps.newSource.websiteDataStoreIdentifier);
++    }
+     if (!newViewProps.newSource.uri.empty()) {
+         [source setValue:RCTNSStringFromString(newViewProps.newSource.uri) forKey:@"uri"];
+     }
+diff --git a/node_modules/react-native-webview/apple/RNCWebViewImpl.m b/node_modules/react-native-webview/apple/RNCWebViewImpl.m
+index 3890426..86c26c5 100644
+--- a/node_modules/react-native-webview/apple/RNCWebViewImpl.m
++++ b/node_modules/react-native-webview/apple/RNCWebViewImpl.m
+@@ -461,6 +461,15 @@ - (WKWebViewConfiguration *)setUpWkWebViewConfig
+   }
+   if (_incognito) {
+     wkWebViewConfig.websiteDataStore = [WKWebsiteDataStore nonPersistentDataStore];
++  } else if (_source[@"websiteDataStoreIdentifier"]) {
++    if (@available(iOS 17.0, macOS 14.0, *)) {
++      NSUUID *identifier = [[NSUUID alloc] initWithUUIDString:_source[@"websiteDataStoreIdentifier"]];
++      wkWebViewConfig.websiteDataStore = identifier && ![identifier.UUIDString isEqualToString:@"00000000-0000-0000-0000-000000000000"]
++        ? [WKWebsiteDataStore dataStoreForIdentifier:identifier]
++        : [WKWebsiteDataStore nonPersistentDataStore];
++    } else {
++      wkWebViewConfig.websiteDataStore = [WKWebsiteDataStore nonPersistentDataStore];
++    }
+   } else if (_cacheEnabled) {
+     wkWebViewConfig.websiteDataStore = [WKWebsiteDataStore defaultDataStore];
+   }
+@@ -796,6 +805,7 @@ - (void)userContentController:(WKUserContentController *)userContentController
+       _onLoadingFinish(event);
+     }
+   } else if ([message.name isEqualToString:MessageHandlerName]) {
++    if (_source[@"websiteDataStoreIdentifier"] && !message.frameInfo.isMainFrame) return;
+     if (_onMessage) {
+       NSMutableDictionary<NSString *, id> *event = [self baseEvent];
+       [event addEntriesFromDictionary: @{@"data": message.body}];
+diff --git a/node_modules/react-native-webview/apple/RNCWebViewModule.mm b/node_modules/react-native-webview/apple/RNCWebViewModule.mm
+index 547b95f..6d1fc92 100644
+--- a/node_modules/react-native-webview/apple/RNCWebViewModule.mm
++++ b/node_modules/react-native-webview/apple/RNCWebViewModule.mm
+@@ -1,4 +1,5 @@
+ #import "RNCWebViewModule.h"
++#import <WebKit/WebKit.h>
+ 
+ #import "RNCWebViewDecisionManager.h"
+ 
+@@ -10,6 +11,24 @@ @implementation RNCWebViewModule
+ 
+ RCT_EXPORT_MODULE(RNCWebViewModule)
+ 
++RCT_EXPORT_METHOD(clearWebsiteDataStore:(NSString *)identifier resolve:(RCTPromiseResolveBlock)resolve reject:(RCTPromiseRejectBlock)reject) {
++    dispatch_async(dispatch_get_main_queue(), ^{
++        if (@available(iOS 17.0, macOS 14.0, *)) {
++            NSUUID *uuid = [[NSUUID alloc] initWithUUIDString:identifier];
++            if (!uuid || [uuid.UUIDString isEqualToString:@"00000000-0000-0000-0000-000000000000"]) {
++                reject(@"invalid_profile", @"Invalid WebKit profile identifier.", nil);
++                return;
++            }
++            WKWebsiteDataStore *store = [WKWebsiteDataStore dataStoreForIdentifier:uuid];
++            [store removeDataOfTypes:WKWebsiteDataStore.allWebsiteDataTypes modifiedSince:NSDate.distantPast completionHandler:^{
++                resolve(nil);
++            }];
++        } else {
++            resolve(nil);
++        }
++    });
++}
++
+ RCT_EXPORT_METHOD(isFileUploadSupported:(RCTPromiseResolveBlock)resolve reject:(RCTPromiseRejectBlock)reject) {
+     if (resolve) {
+         resolve(@(YES));
+diff --git a/node_modules/react-native-webview/lib/NativeRNCWebViewModule.d.ts b/node_modules/react-native-webview/lib/NativeRNCWebViewModule.d.ts
+index ae60768..f236831 100644
+--- a/node_modules/react-native-webview/lib/NativeRNCWebViewModule.d.ts
++++ b/node_modules/react-native-webview/lib/NativeRNCWebViewModule.d.ts
+@@ -1,6 +1,7 @@
+ import type { TurboModule } from 'react-native';
+ import { Double } from 'react-native/Libraries/Types/CodegenTypes';
+ export interface Spec extends TurboModule {
++    clearWebsiteDataStore?: (identifier: string) => Promise<void>;
+     shouldStartLoadWithLockIdentifier(shouldStart: boolean, lockIdentifier: Double): void;
+ }
+ declare const _default: Spec;
+diff --git a/node_modules/react-native-webview/lib/RNCWebViewNativeComponent.d.ts b/node_modules/react-native-webview/lib/RNCWebViewNativeComponent.d.ts
+index 6b789f9..3a97fad 100644
+--- a/node_modules/react-native-webview/lib/RNCWebViewNativeComponent.d.ts
++++ b/node_modules/react-native-webview/lib/RNCWebViewNativeComponent.d.ts
+@@ -214,6 +214,7 @@ export interface NativeProps extends ViewProps {
+     showsVerticalScrollIndicator?: WithDefault<boolean, true>;
+     indicatorStyle?: WithDefault<'default' | 'black' | 'white', 'default'>;
+     newSource: Readonly<{
++        websiteDataStoreIdentifier?: string;
+         uri?: string;
+         method?: string;
+         body?: string;
+diff --git a/node_modules/react-native-webview/lib/WebViewTypes.d.ts b/node_modules/react-native-webview/lib/WebViewTypes.d.ts
+index f666e81..abc643f 100644
+--- a/node_modules/react-native-webview/lib/WebViewTypes.d.ts
++++ b/node_modules/react-native-webview/lib/WebViewTypes.d.ts
+@@ -105,6 +105,7 @@ export type CacheMode = 'LOAD_DEFAULT' | 'LOAD_CACHE_ONLY' | 'LOAD_CACHE_ELSE_NE
+ export type AndroidLayerType = 'none' | 'software' | 'hardware';
+ export type IndicatorStyleType = 'default' | 'black' | 'white';
+ export interface WebViewSourceUri {
++    websiteDataStoreIdentifier?: string;
+     /**
+      * The URI to load in the `WebView`. Can be a local or remote file.
+      */
+diff --git a/node_modules/react-native-webview/src/NativeRNCWebViewModule.ts b/node_modules/react-native-webview/src/NativeRNCWebViewModule.ts
+index 146bdf3..0907e4e 100644
+--- a/node_modules/react-native-webview/src/NativeRNCWebViewModule.ts
++++ b/node_modules/react-native-webview/src/NativeRNCWebViewModule.ts
+@@ -3,6 +3,7 @@ import { TurboModuleRegistry } from 'react-native';
+ import { Double } from 'react-native/Libraries/Types/CodegenTypes';
+ 
+ export interface Spec extends TurboModule {
++  clearWebsiteDataStore?: (identifier: string) => Promise<void>;
+   shouldStartLoadWithLockIdentifier(shouldStart: boolean, lockIdentifier: Double): void;
+ }
+ 
+diff --git a/node_modules/react-native-webview/src/RNCWebViewNativeComponent.ts b/node_modules/react-native-webview/src/RNCWebViewNativeComponent.ts
+index ca3af15..806d80b 100644
+--- a/node_modules/react-native-webview/src/RNCWebViewNativeComponent.ts
++++ b/node_modules/react-native-webview/src/RNCWebViewNativeComponent.ts
+@@ -260,6 +260,7 @@ export interface NativeProps extends ViewProps {
+   showsVerticalScrollIndicator?: WithDefault<boolean, true>;
+   indicatorStyle?: WithDefault<'default' | 'black' | 'white', 'default'>;
+   newSource: Readonly<{
++    websiteDataStoreIdentifier?: string;
+     uri?: string;
+     method?: string;
+     body?: string;
+diff --git a/node_modules/react-native-webview/src/WebViewTypes.ts b/node_modules/react-native-webview/src/WebViewTypes.ts
+index 4e7247f..718fa72 100644
+--- a/node_modules/react-native-webview/src/WebViewTypes.ts
++++ b/node_modules/react-native-webview/src/WebViewTypes.ts
+@@ -177,6 +177,8 @@ export type AndroidLayerType = 'none' | 'software' | 'hardware';
+ export type IndicatorStyleType = 'default' | 'black' | 'white';
+ 
+ export interface WebViewSourceUri {
++  /** UUID of the persistent iOS 17+ WebKit profile for this view. */
++  websiteDataStoreIdentifier?: string;
+   /**
+    * The URI to load in the `WebView`. Can be a local or remote file.
+    */
