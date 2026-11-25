@@ -7,4 +7,10 @@
  * already drops the rail's width and border for the same reason). */
 .flushBody {
   padding: 0;
+  /* Stretch the drawer body to the full sheet height (keeping min-height: 0 so
+   * long lists still scroll here) so the rail's min-height: 100% fills the
+   * drawer and glues the floating New-session action to the bottom edge on
+   * short lists. */
+  flex: 1 1 auto;
+  min-height: 0;
 }

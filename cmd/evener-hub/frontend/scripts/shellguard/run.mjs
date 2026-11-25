@@ -531,14 +531,16 @@ function assertResult(result) {
   // rail (docs/developing-evener/testing.md's unfalsifiable-fixture trap).
   if (result.treeRows < 120) failures.push(`expected the tall tree in the page, found ${result.treeRows} rows`);
   if (!result.railNewSession?.present) failures.push("the rail's New session control did not render");
-  if (result.railNewSession?.primary) {
-    failures.push("the rail's New session control is a filled primary and outranks the current task");
+  if (!result.railNewSession?.primary) {
+    failures.push("the rail's New session action lost its accent-filled primary treatment");
   }
-  if (!result.railNewSession?.secondary) {
-    failures.push("the rail's New session control lost its secondary treatment");
+  if (result.railNewSession?.secondary) {
+    failures.push("the rail's New session action is a bordered secondary, not the list's floating primary");
   }
   if (result.primaryButtons > 1) {
-    failures.push(`the shell route shows ${result.primaryButtons} filled primaries, expected at most one`);
+    failures.push(
+      `the shell route shows ${result.primaryButtons} filled primaries outside the rail's floating action, expected at most one`,
+    );
   }
 
   // The property the bug broke: with a tree taller than the viewport, the
@@ -821,7 +823,7 @@ async function measureTabletSplit(page) {
   })()`,
   );
   const rowFocusSample = `(() => {
-    const header = document.querySelector('[data-testid="rail-new-session"]')?.parentElement;
+    const header = document.querySelector('[data-testid="rail-header"]');
     const row = document.activeElement?.closest('[role="treeitem"]');
     const rows = row?.closest('[role="tree"]')?.querySelectorAll('[role="treeitem"]');
     const rect = row?.getBoundingClientRect();
@@ -831,7 +833,7 @@ async function measureTabletSplit(page) {
       hit: Boolean(row && target && row.contains(target)), coveredByHeader: Boolean(target && header?.contains(target)) };
   })()`;
   const startedAtVisibleRow = await evaluate(send, `(() => {
-    const header = document.querySelector('[data-testid="rail-new-session"]')?.parentElement;
+    const header = document.querySelector('[data-testid="rail-header"]');
     if (!header) return false;
     const bottom = header.getBoundingClientRect().bottom;
     for (const tree of document.querySelectorAll('[data-testid="board-column"] [role="tree"]')) {

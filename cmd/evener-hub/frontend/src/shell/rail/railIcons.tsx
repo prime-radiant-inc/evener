@@ -1,7 +1,7 @@
 // The rail's drawn icons, on the app's 16x16 icon grid (the same grammar
 // as widgets/chevron, openbutton's OpenIcon and the Sessions icon below).
 // Gear/Search/Sidebar lead the header; TuneIcon is the rail body's
-// organize-by control.
+// organize-by control; PlusIcon is its floating New-session action.
 //
 // They replace the text glyphs the header used to render. global.css subsets
 // Inter to Latin, so those code points came from whatever system fallback
@@ -31,6 +31,18 @@ export function GearIcon() {
         d="M8 1.75v2M8 12.25v2M1.75 8h2M12.25 8h2M3.6 3.6l1.4 1.4M11 11l1.4 1.4M3.6 12.4 5 11M11 5l1.4-1.4"
         {...STROKE}
       />
+    </svg>
+  );
+}
+
+// The session list's one create verb, drawn for the floating New-session
+// action: two crossing strokes on the same 16x16 grid and stroke weight as
+// the rest of the rail's chrome.
+export function PlusIcon() {
+  return (
+    <svg {...ICON} aria-hidden="true">
+      <path d="M8 3v10" {...STROKE} />
+      <path d="M3 8h10" {...STROKE} />
     </svg>
   );
 }

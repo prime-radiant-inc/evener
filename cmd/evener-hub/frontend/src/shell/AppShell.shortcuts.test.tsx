@@ -104,7 +104,10 @@ afterEach(() => {
 test('clicking "New session" navigates to /new and opens the spawn pane', async () => {
   const user = userEvent.setup();
   render(<AppShell client={new FakeClient("ready")} />);
-  const button = await screen.findByRole("button", { name: "New session" });
+  // Scope to the rail: Welcome also renders a "New session" button, and the
+  // rail's floating action now carries the same accessible name ("New session")
+  // instead of "+ New session".
+  const button = await rail().findByRole("button", { name: "New session" });
 
   await user.click(button);
 
