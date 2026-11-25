@@ -1,5 +1,5 @@
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
-import { afterEach, expect, test, vi } from "vitest";
+import { fireEvent, render, screen, within } from "@testing-library/react";
+import { expect, test, vi } from "vitest";
 import { type TabOption, Tabs } from "./index";
 
 type TabId = "about" | "links" | "agents";
@@ -9,10 +9,6 @@ const OPTIONS: readonly TabOption<TabId>[] = [
   { value: "links", label: "Links", detail: "12", accessibleLabel: "Links, 12" },
   { value: "agents", label: "Agents", detail: "2/5", accessibleLabel: "Agents, 2 of 5 active" },
 ];
-
-afterEach(() => {
-  cleanup();
-});
 
 test("renders a horizontal underline tablist with single- and two-level tabs", () => {
   render(<Tabs label="Overview kind" value="about" options={OPTIONS} onChange={() => {}} panelId="panel-1" />);
