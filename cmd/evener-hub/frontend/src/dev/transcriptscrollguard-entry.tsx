@@ -40,12 +40,15 @@ import "../panes/transcript";
 import "../panes/welcome";
 import Session from "../panes/session/Session";
 import { seenWatermarkKey, writeSeenWatermark } from "../panes/session/transcript/flow/seenWatermark";
+import { captureTranscriptViews } from "../panes/session/transcript/flow/transcriptViewRegistry";
 import { openTranscript } from "../panes/session/transcript/openTranscript";
+import { pagingByRef } from "../panes/session/transcript/transcriptPaging";
 import Transcript from "../panes/transcript/Transcript";
 import { ClientProvider } from "../shell/clientContext";
 import { DockHost } from "../shell/DockHost";
 import { DockRegion } from "../shell/DockRegion";
-import { workspaceStore } from "../shell/workspace";
+import { existingConversationPaneLifetime } from "../shell/paneLifetime";
+import { sourcePaneSessionRef, workspaceStore } from "../shell/workspace";
 import { connectionStore } from "../stores/connection";
 import { prefsStore } from "../stores/prefs";
 import { threadsStore } from "../stores/threads";
@@ -99,19 +102,21 @@ const STALL_INTENT = STALL_MODE === "intent";
 // open genuinely overflows. The control: the paging row mounts and makes no
 // request on open.
 const STALL_FILL = STALL && SEARCH.get("fill") === "1";
-const DOCK = SEARCH.get("dock") === "1" || STALL;
-const REF = ENDED
-  ? "local:transcriptscrollguard-ended"
-  : STALL
-    ? "local:transcriptscrollguard-stall"
-    : DOCK
-      ? "local:transcriptscrollguard-dock"
-      : "local:transcriptscrollguard";
-const THREAD_ID = ENDED
-  ? "thr_transcriptscrollguard_ended"
-  : STALL
-    ? "thr_transcriptscrollguard_stall"
-    : "thr_transcriptscrollguard";
+const PREPEND_PASS = SEARCH.get("prepend");
+const HELD_PREPEND = PREPEND_PASS === "follower" || PREPEND_PASS === "replacement";
+const REPLACEMENT_REF = "local:transcriptscrollguard-replacement-target";
+const DOCK = SEARCH.get("dock") === "1" || STALL || PREPEND_PASS === "replacement";
+function fixtureIdentity() {
+  if (ENDED) return { refSuffix: "-ended", idSuffix: "_ended", sessionSuffix: "_ended" };
+  if (STALL) return { refSuffix: "-stall", idSuffix: "_stall", sessionSuffix: "" };
+  if (PREPEND_PASS === "follower" || PREPEND_PASS === "replacement")
+    return { refSuffix: `-${PREPEND_PASS}`, idSuffix: `_${PREPEND_PASS}`, sessionSuffix: `_${PREPEND_PASS}` };
+  if (DOCK) return { refSuffix: "-dock", idSuffix: "", sessionSuffix: "" };
+  return { refSuffix: "", idSuffix: "", sessionSuffix: "" };
+}
+const FIXTURE = fixtureIdentity();
+const REF = `local:transcriptscrollguard${FIXTURE.refSuffix}`;
+const THREAD_ID = `thr_transcriptscrollguard${FIXTURE.idSuffix}`;
 
 // The transcript's row heights must be variable AND identical on every run -
 // a guard whose geometry depends on Math.random() cannot be bisected or
@@ -195,14 +200,18 @@ const readAdmission = DEFER_READ
     })
   : undefined;
 const OLDER_CURSOR = "cursor_page_1";
+const NEXT_OLDER_CURSOR = "cursor_page_2";
+const REPLACEMENT_CURSOR = "cursor_replacement";
 const OLDER_PAGE_TURNS = ENDED ? 20 : 12;
 let releaseOlder: (() => void) | undefined;
-const olderAdmission = ENDED
-  ? new Promise<void>((resolve) => {
-      releaseOlder = resolve;
-    })
-  : undefined;
+const olderAdmission =
+  ENDED || HELD_PREPEND
+    ? new Promise<void>((resolve) => {
+        releaseOlder = resolve;
+      })
+    : undefined;
 let olderPageCalls = 0;
+let olderReplies = 0;
 const olderPageTurns: Turn[] = Array.from({ length: OLDER_PAGE_TURNS }, (_, i) => {
   const id = `${ENDED ? "ended_" : ""}older_${i + 1}`;
   // Empty and tool-only turns need not produce display rows. The anchor must
@@ -254,7 +263,7 @@ const CAPABILITIES: ThreadCapabilities = {
 
 const THREAD: Thread = {
   id: THREAD_ID,
-  sessionId: ENDED ? "sess_transcriptscrollguard_ended" : "sess_transcriptscrollguard",
+  sessionId: `sess_transcriptscrollguard${FIXTURE.sessionSuffix}`,
   preview: "transcript scroll guard",
   ephemeral: false,
   modelProvider: "anthropic/claude-sonnet-4-5",
@@ -471,7 +480,7 @@ fake.on("thread/read", async (params) => {
     epoch: EPOCH,
     snapshot: { incarnation: INCARNATION, length: INITIAL_TURN_COUNT },
     requestGeneration: params.requestGeneration,
-    ...(PAGED ? { olderCursor: OLDER_CURSOR } : {}),
+    ...(PAGED ? { olderCursor: params.ref === REPLACEMENT_REF ? REPLACEMENT_CURSOR : OLDER_CURSOR } : {}),
   } satisfies ThreadReadResponse;
 });
 // SessionChrome/Composer idle-time reads; scripted so nothing rejects into an
@@ -489,8 +498,12 @@ if (PAGED) {
     ) {
       throw new Error("ended fixture requires the production 40-item older page request");
     }
+    if (HELD_PREPEND && (params.ref !== REF || params.cursor !== OLDER_CURSOR || params.itemLimit !== 40)) {
+      throw new Error(`unexpected held prepend request: ${JSON.stringify(params)}`);
+    }
     await olderAdmission;
-    return { data: olderPageTurns, nextCursor: undefined };
+    olderReplies += 1;
+    return { data: olderPageTurns, nextCursor: HELD_PREPEND ? NEXT_OLDER_CURSOR : undefined };
   });
 }
 if (STALL) {
@@ -546,7 +559,8 @@ rootEl.style.height = "100%";
 // This isolated browser origin belongs to this harness. Do not restore a
 // previous dock pass's layout into the ended fixture, or vice versa.
 if (DOCK) localStorage.removeItem("evener.workspace.layout.v2");
-if (DOCK) workspaceStore.getState().openPane("session", { ref: REF });
+if (PREPEND_PASS === "replacement") workspaceStore.getState().replacePrimary("session", { ref: REF });
+else if (DOCK) workspaceStore.getState().openPane("session", { ref: REF });
 else
   workspaceStore.setState({
     panes: [
@@ -799,18 +813,26 @@ const SETTLE_TRIPWIRE_MS = 15_000;
 // against clears olderCursor and unmounts the row, so waiting on it would spin
 // to the tripwire and report a settle timeout instead of the runner's own
 // "auto-loaded N older page(s)" failure (see createPagedOpenSettleTracker).
-async function waitForPagedOpenSettled(expectedTurns = INITIAL_TURN_COUNT): Promise<TranscriptScrollMetrics> {
+async function waitForPagedOpenSettled(
+  expectedTurns = INITIAL_TURN_COUNT,
+  observeMeasured?: (sample: TranscriptGeometry, el: HTMLElement) => void,
+  ref = REF,
+  onFrame?: () => void,
+): Promise<TranscriptScrollMetrics> {
   const tracker = createPagedOpenSettleTracker(expectedTurns);
   const deadline = performance.now() + SETTLE_TRIPWIRE_MS;
   for (;;) {
     await nextFrame();
     throwOnPageErrors("paged open");
+    onFrame?.();
     const el = findScrollElement();
     const sample = {
-      turns: modelTurnCount,
+      turns: ref === REF ? modelTurnCount : (threadsStore.getState().threads.get(ref)?.turns.length ?? 0),
       geometry: el === null ? null : geometryOf(el),
       measuredLayout: el !== null && hasMeasuredRowGeometry(el),
     };
+    if (el !== null && sample.measuredLayout && sample.geometry && sample.turns >= expectedTurns)
+      observeMeasured?.(sample.geometry, el);
     if (tracker.observe({ turns: sample.turns, geometry: sample.measuredLayout ? sample.geometry : null }))
       return metrics();
     if (performance.now() > deadline) {
@@ -885,6 +907,176 @@ async function waitForEndedPage(merged: boolean) {
     if (performance.now() > deadline)
       throw new Error(`ended older page never ${merged ? "merged" : "requested"}: ${JSON.stringify(state)}`);
   }
+}
+
+async function parkOlderPrepend() {
+  const opened = await waitForPagedOpenSettled();
+  await scrollAwayAndWaitForPill();
+  await waitForEndedPage(false);
+  await waitForPagedOpenSettled();
+  const owner = pagingByRef.get(REF)?.paging;
+  if (olderPageCalls !== 1 || !owner?.getSnapshot().loading || !owner.getSnapshot().pending) {
+    throw new Error("older page was not parked behind one real reader demand");
+  }
+  return { opened, owner };
+}
+
+function sessionView(paneId: string | undefined, ref: string, capture = true) {
+  const pane = paneId === undefined ? undefined : workspaceStore.getState().panes.find((p) => p.id === paneId);
+  const viewId =
+    (pane ? existingConversationPaneLifetime(pane)?.readViews.get(JSON.stringify([ref, "session"]))?.id : undefined) ??
+    null;
+  if (!capture) return { viewId, viewCount: 0, followingBottom: null };
+  const views = captureTranscriptViews();
+  return {
+    viewId,
+    viewCount: views.size,
+    followingBottom: viewId ? (views.get(viewId)?.followingBottom ?? null) : null,
+  };
+}
+
+async function runFollowingPrepend() {
+  const { opened, owner } = await parkOlderPrepend();
+  const parkedView = sessionView("transcriptscrollguard", REF);
+  if (parkedView.viewCount !== 1 || parkedView.followingBottom !== false)
+    throw new Error(`parked scroll-away view unexpectedly followed bottom: ${JSON.stringify(parkedView)}`);
+  const port = requireScrollElement("following prepend");
+  // A native scroll arrival retains the reader's demand. Jump to live would cancel it.
+  port.scrollTop = port.scrollHeight;
+  const before = await waitForPagedOpenSettled();
+  const cursor = threadsStore.getState().threads.get(REF)?.olderCursor;
+  const { loading, pending } = owner.getSnapshot();
+  const held = {
+    ...before,
+    demand: loading && pending && cursor === OLDER_CURSOR,
+    ...sessionView("transcriptscrollguard", REF),
+  };
+  if (!held.demand || held.viewCount !== 1 || !held.followingBottom || held.pill || Math.abs(held.bottomGap) > 1)
+    throw new Error(`older response still held, but follow was not admitted: ${JSON.stringify(held)}`);
+  const lastInitialTurnId = initialTurns[INITIAL_TURN_COUNT - 1]?.id;
+  const preCommit = `[data-index="${INITIAL_TURN_COUNT - 1}"] [data-row-id="${lastInitialTurnId}"]`;
+  if (!port.querySelector(preCommit)) throw new Error(`missing ${lastInitialTurnId} before release`);
+  let [measuredFrames, worstGap, minHeight] = [0, 0, Number.POSITIVE_INFINITY];
+  releaseOlder?.();
+  const settled = await waitForPagedOpenSettled(INITIAL_TURN_COUNT + OLDER_PAGE_TURNS, (sample, el) => {
+    // Skip only frames before React commits the prepended turns to the DOM.
+    if (el.querySelector(preCommit) !== null) return;
+    measuredFrames++;
+    minHeight = Math.min(minHeight, sample.scrollHeight);
+    worstGap = Math.max(worstGap, Math.abs(sample.scrollHeight - sample.clientHeight - sample.scrollTop));
+  });
+  const afterView = sessionView("transcriptscrollguard", REF);
+  const model = threadsStore.getState().threads.get(REF);
+  const ids = model?.turns.map((turn) => turn.id) ?? [];
+  const page = { cursor, nextCursor: model?.olderCursor, ids: ids.slice(0, OLDER_PAGE_TURNS) };
+  const accepted =
+    page.nextCursor === NEXT_OLDER_CURSOR &&
+    !owner.getSnapshot().loading &&
+    olderPageTurns.every((turn, i) => ids[i] === turn.id && ids.lastIndexOf(turn.id) === i);
+  const grew =
+    settled.scrollHeight > before.scrollHeight && Number.isFinite(minHeight) && minHeight > before.scrollHeight;
+  const commitFrames = { measured: measuredFrames, minHeight, grew, worstGap };
+  return {
+    opened,
+    parkedView,
+    held,
+    settled,
+    afterView,
+    page,
+    accepted,
+    commitFrames,
+    samePort: port === findScrollElement(),
+  };
+}
+
+function replacementState(el: HTMLElement | null = findScrollElement()) {
+  const { mainPane, focusedPaneId } = workspaceStore.getState();
+  const pane = mainPane();
+  const model = threadsStore.getState().threads.get(REPLACEMENT_REF);
+  return {
+    paneId: pane?.id ?? null,
+    focusedPaneId,
+    viewId: sessionView(pane?.id, REPLACEMENT_REF, false).viewId,
+    ref: (pane && sourcePaneSessionRef(pane)) ?? null,
+    threadId: model?.threadId ?? null,
+    turns: model?.turns.length ?? 0,
+    cursor: model?.olderCursor ?? null,
+    demand: pagingByRef.get(REPLACEMENT_REF)?.paging.getSnapshot() ?? null,
+    calls: olderPageCalls,
+    geometry: el === null ? null : geometryOf(el),
+  };
+}
+
+async function runObsoletePrepend() {
+  const { opened, owner } = await parkOlderPrepend();
+  const oldPort = requireScrollElement("outgoing reader");
+  const workspace = workspaceStore.getState();
+  const oldPaneId = workspace.mainPane()?.id;
+  const newPaneId = workspace.replacePrimary("session", { ref: REPLACEMENT_REF });
+  await waitForPagedOpenSettled(8, undefined, REPLACEMENT_REF);
+  const port = requireScrollElement("replacement reader");
+  port.scrollTop = (port.scrollHeight - port.clientHeight) / 2;
+  await waitForPagedOpenSettled(8, undefined, REPLACEMENT_REF);
+  const before = replacementState(port);
+  const oldReadHeld = owner.getSnapshot().loading && olderReplies === 0;
+  const ready =
+    before.paneId === newPaneId &&
+    before.focusedPaneId === newPaneId &&
+    before.ref === REPLACEMENT_REF &&
+    before.demand?.loading === false &&
+    !before.demand.pending &&
+    before.demand.error === null &&
+    before.cursor === REPLACEMENT_CURSOR &&
+    before.threadId === `thr_${REPLACEMENT_REF}` &&
+    port.scrollTop > 200 &&
+    port.scrollTop < port.scrollHeight - port.clientHeight;
+  if (!ready || before.calls !== 1 || !oldReadHeld || oldPort.isConnected || oldPaneId === newPaneId)
+    throw new Error(`replacement not parked with obsolete read held: ${JSON.stringify({ before, oldReadHeld })}`);
+  // Hold the real old paging owner, not a timer or merely the fake response gate.
+  let oldSettled = false;
+  const settled = new Promise<void>((resolve) => {
+    const stop = owner.subscribe(() => {
+      if (owner.getSnapshot().loading) return;
+      oldSettled = true;
+      stop();
+      resolve();
+    });
+  });
+  const replacementOwner = pagingByRef.get(REPLACEMENT_REF)?.paging;
+  let demandRearmed = false;
+  const stop = replacementOwner?.subscribe(() => {
+    const state = replacementOwner.getSnapshot();
+    demandRearmed ||= state.loading || state.pending || state.error !== null;
+  });
+  const expectedSnapshot = JSON.stringify(before);
+  let [observedFrames, violationCount] = [0, 0];
+  const frameViolations: unknown[] = [];
+  const checkFrame = (phase: string, countFrame: boolean) => {
+    if (countFrame) observedFrames += 1;
+    throwOnPageErrors("obsolete prepend");
+    const currentPort = findScrollElement();
+    const current = replacementState(currentPort);
+    const sameElement = port.isConnected && currentPort === port;
+    const sameOwner = pagingByRef.get(REPLACEMENT_REF)?.paging === replacementOwner;
+    if (!sameElement || !sameOwner || demandRearmed || JSON.stringify(current) !== expectedSnapshot) {
+      violationCount += 1;
+      if (frameViolations.length < 5)
+        frameViolations.push({ frame: observedFrames, phase, sameElement, sameOwner, demandRearmed, current });
+    }
+  };
+  releaseOlder?.();
+  while (!oldSettled) {
+    await nextFrame();
+    checkFrame("settling", true);
+  }
+  await settled;
+  checkFrame("settled", false);
+  await waitForPagedOpenSettled(8, undefined, REPLACEMENT_REF, () => checkFrame("post-settle", true));
+  stop?.();
+  const completion = { oldReadHeld, olderReplies, oldReadSettled: owner.getSnapshot() };
+  const samePort = port.isConnected && port === findScrollElement();
+  const frameWatch = { observed: observedFrames, violations: violationCount, samples: frameViolations };
+  return { opened, before, after: replacementState(), completion, demandRearmed, samePort, frameWatch };
 }
 
 // --- #7682 compact-history probe -----------------------------------------
@@ -1222,6 +1414,8 @@ declare global {
     waitForStallPagedSettled: typeof waitForStallPagedSettled;
     waitForUnseenOpenSettled: typeof waitForUnseenOpenSettled;
     transcriptScrollMetrics: typeof metrics;
+    runFollowingPrepend: typeof runFollowingPrepend;
+    runObsoletePrepend: typeof runObsoletePrepend;
     scrollAwayAndWaitForPill: typeof scrollAwayAndWaitForPill;
     appendLargeTurns: typeof appendLargeTurns;
     clickPillAndSettle: typeof clickPillAndSettle;
@@ -1247,6 +1441,8 @@ window.waitForPagedOpenSettled = waitForPagedOpenSettled;
 window.waitForStallPagedSettled = waitForStallPagedSettled;
 window.waitForUnseenOpenSettled = waitForUnseenOpenSettled;
 window.transcriptScrollMetrics = metrics;
+window.runFollowingPrepend = runFollowingPrepend;
+window.runObsoletePrepend = runObsoletePrepend;
 window.scrollAwayAndWaitForPill = scrollAwayAndWaitForPill;
 window.appendLargeTurns = appendLargeTurns;
 window.clickPillAndSettle = clickPillAndSettle;
