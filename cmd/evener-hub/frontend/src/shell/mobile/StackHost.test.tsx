@@ -2455,11 +2455,29 @@ test("expanding the focused session's notes restores a floating top bar and comp
     await waitFor(() => expect(bar.getAttribute("data-collapsed")).not.toBe("true"));
     expect(scroller.scrollTop).toBe(260);
 
+    // Scrolling downward past the fold while notes remain expanded keeps the
+    // solid bar pinned so the capsules cannot float back over the notes header.
+    act(() => {
+      scroller.scrollTop = 340;
+      scroller.dispatchEvent(new Event("scroll"));
+    });
+    expect(bar.getAttribute("data-collapsed")).not.toBe("true");
+    expect(scroller.scrollTop).toBe(340);
+
     // Collapsing the notes leaves the bar solid until the next scroll decides.
     act(() => {
       topNotesStore.getState().setExpanded("local:a", false);
     });
     expect(bar.getAttribute("data-collapsed")).not.toBe("true");
+
+    // Once notes collapse, scrolling downward collapses the bar normally from
+    // the synced scroll position (400 -> 344).
+    act(() => {
+      scroller.scrollTop = 400;
+      scroller.dispatchEvent(new Event("scroll"));
+    });
+    await waitFor(() => expect(bar.getAttribute("data-collapsed")).toBe("true"));
+    expect(scroller.scrollTop).toBe(344);
     host.unmount();
   } finally {
     topNotesStore.getState().resetForTests();
