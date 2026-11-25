@@ -505,8 +505,12 @@ function AppShellContent({ client: injectedClient, bannerDelayMs, bannerCreateCl
     ];
     function onClick(event: MouseEvent): void {
       const target = event.target as Element | null;
-      if (target?.closest("[data-search-trigger]")) {
+      const trigger = target?.closest("[data-search-trigger]");
+      if (trigger) {
         event.preventDefault();
+        if (trigger instanceof HTMLElement && trigger.ownerDocument.activeElement !== trigger) {
+          trigger.focus({ preventScroll: true });
+        }
         openPalette();
       }
     }
