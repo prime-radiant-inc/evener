@@ -895,8 +895,26 @@ test("phone Overview enters its selected category and contains sequential keyboa
     const sidebar = await screen.findByTestId("activity-sidebar");
     expect(screen.getByRole("dialog", { name: "Overview" })).toBe(sidebar);
     expect(sidebar.getAttribute("aria-modal")).toBe("true");
-    const about = screen.getByRole("radio", { name: "About" });
+    expect(screen.queryByRole("radiogroup")).toBeNull();
+    const tablist = screen.getByRole("tablist", { name: "Overview kind" });
+    const tabs = within(tablist).getAllByRole("tab");
+    expect(tabs).toHaveLength(5);
+    const about = within(tablist).getByRole("tab", { name: "About" });
+    const panel = within(sidebar).getByRole("tabpanel");
+    expect(panel.getAttribute("aria-labelledby")).toBe(about.id);
+    expect(about.getAttribute("aria-selected")).toBe("true");
+    expect(about.tabIndex).toBe(0);
     await waitFor(() => expect(document.activeElement).toBe(about));
+    // Bare navigation keys rove across the underline tabs; modifier chords pass through.
+    await act(async () => fireEvent.keyDown(about, { key: "ArrowRight", altKey: true }));
+    expect(activitySidebarStore.getState().tab).toBe("about");
+    await act(async () => fireEvent.keyDown(about, { key: "ArrowRight" }));
+    expect(activitySidebarStore.getState().tab).toBe("agents");
+    await act(async () => fireEvent.keyDown(within(tablist).getByRole("tab", { name: /^Agents/ }), { key: "End" }));
+    expect(activitySidebarStore.getState().tab).toBe("tasks");
+    await act(async () => fireEvent.keyDown(within(tablist).getByRole("tab", { name: /^Tasks/ }), { key: "Home" }));
+    expect(activitySidebarStore.getState().tab).toBe("about");
+    expect(document.activeElement).toBe(about);
     for (let step = 0; step < 20; step += 1) {
       await user.tab();
       expect(sidebar.contains(document.activeElement)).toBe(true);
@@ -959,8 +977,8 @@ test("phone Overview reopening during its exit returns focus to its selected cat
     opener.click();
     mount(true);
     const sidebar = await screen.findByTestId("activity-sidebar");
-    const strip = screen.getByRole("radiogroup");
-    const about = screen.getByRole("radio", { name: "About" });
+    const strip = screen.getByRole("tablist");
+    const about = screen.getByRole("tab", { name: "About" });
     await waitFor(() => expect(document.activeElement).toBe(about));
     // Close and reopen in separate synchronous commits. No timer or frame can
     // run between them, so the exit animation cannot finish and the aside
@@ -978,7 +996,7 @@ test("phone Overview reopening during its exit returns focus to its selected cat
     });
     expect(activitySidebarStore.getState().open).toBe(true);
     expect(screen.getByTestId("activity-sidebar")).toBe(sidebar);
-    expect(screen.getByRole("radiogroup")).toBe(strip);
+    expect(screen.getByRole("tablist")).toBe(strip);
     await waitFor(() => expect(document.activeElement).toBe(about), { timeout: 1_500 });
   } finally {
     opener.remove();
