@@ -67,14 +67,17 @@
   opacity: 0.5;
 }
 
-/* The same glyph leading the settled Disclosure summary: the summary sits in
- * the content column like every Disclosure, so the glyph takes only its own
- * box and the summary's gap, at the rail's ambient 50%. */
+/* The bulb glyph leading the settled Disclosure summary: composes the shared
+ * icon-rail seat, ambient strength, and desktop gutter pull so settled
+ * thoughts align on the exact same vertical margin as live thoughts, compact
+ * thoughts, tool rows, and prose. Body font-size matches the summary text's
+ * 1lh line box. */
 .summaryIcon {
-  flex: none;
-  display: inline-flex;
-  align-items: center;
-  opacity: 0.5;
+  composes: seat from "../../../../styles/railseat.module.css";
+  /* biome-ignore lint/suspicious/noDuplicateProperties: css-modules composes takes one declaration per composed class, each with its own `from` */
+  composes: ambient from "../../../../styles/railseat.module.css";
+  composes: gutterPull from "../../../../styles/railseat.module.css";
+  font-size: var(--font-size-body);
 }
 
 /* Above the breakpoint the block sits inside runContent's --speaker-gutter

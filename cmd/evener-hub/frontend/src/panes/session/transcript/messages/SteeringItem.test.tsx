@@ -640,12 +640,13 @@ test("a collapsed divider keeps its steered text out of the document until opene
   expect(screen.getByText("the steered note")).toBeTruthy();
 });
 
-test("the diamond sits in the content column at 50% opacity - no gutter pull", () => {
+test("the diamond seats in the shared icon rail at ambient opacity and pulls into the desktop gutter", () => {
   const css = readModuleCss(import.meta.url, "steeringitem.module.css");
   const slot = /\.railIcon\s*\{([^}]*)\}/.exec(css);
   expect(slot).not.toBeNull();
-  expect(slot![1]).toContain("opacity: 0.5");
-  expect(css).not.toContain("margin-left: calc(-1 * var(--speaker-gutter))");
+  expect(slot![1]).toContain('composes: seat from "../../../../styles/railseat.module.css"');
+  expect(slot![1]).toContain('composes: ambient from "../../../../styles/railseat.module.css"');
+  expect(slot![1]).toContain('composes: gutterPull from "../../../../styles/railseat.module.css"');
 });
 
 test("the body opens with the SYSTEM-REMINDER wrapper stripped", () => {

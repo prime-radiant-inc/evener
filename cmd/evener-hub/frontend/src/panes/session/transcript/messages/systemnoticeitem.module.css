@@ -44,6 +44,14 @@
   padding: var(--space-1) 0;
 }
 
+/* The turn failure cross seats in the shared icon rail at full strength so
+ * failure text aligns on the reading margin with prose and tool rows. */
+.failureIcon {
+  composes: seat from "../../../../styles/railseat.module.css";
+  /* biome-ignore lint/suspicious/noDuplicateProperties: css-modules composes takes one declaration per composed class */
+  composes: gutterPull from "../../../../styles/railseat.module.css";
+}
+
 .failureText {
   flex: 1 1 auto;
   min-width: 0;

@@ -29,6 +29,7 @@ import { threadFingerprintForItem } from "./types";
 
 const CLASS = {
   summary: requireClass(styles.summary, "toolrungroup.module.css", "summary"),
+  railChevron: requireClass(styles.railChevron, "toolrungroup.module.css", "railChevron"),
   label: requireClass(styles.label, "toolrungroup.module.css", "label"),
   body: requireClass(styles.body, "toolrungroup.module.css", "body"),
 };
@@ -57,7 +58,11 @@ export function ToolRunGroup({ run, turn, sessionRef, renderContext, thread }: T
       defaultOpen={fallback}
       data-testid="tool-run"
       summaryClassName={CLASS.summary}
-      leading={(open) => <Chevron open={open} />}
+      leading={(open) => (
+        <span className={CLASS.railChevron} aria-hidden="true">
+          <Chevron open={open} />
+        </span>
+      )}
       summary={<span className={CLASS.label}>{runLabel(run, toolRendererFor, { cwd: thread?.cwd })}</span>}
     >
       <div className={CLASS.body}>

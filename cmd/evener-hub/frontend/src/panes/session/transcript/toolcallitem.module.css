@@ -1,11 +1,12 @@
-/* The icon and text align across calls at every width. Space separates
- * calls; the intent and result within each call stay together. */
+/* Tool rows align on the shared transcript reading margin: above 700px their
+ * leading icon pulls into .runContent / .intentGroupItems' --speaker-gutter
+ * while text and evidence sit flush with prose; below 700px the icon leads
+ * inline with no extra horizontal card inset. */
 .call {
   composes: toolRowInsets from "../../../styles/surface.module.css";
   display: flex;
   flex-direction: column;
-  padding: var(--tool-card-row-pad) var(--tool-card-inset);
-  padding-left: calc(var(--tool-card-inset) + var(--speaker-gutter));
+  padding: var(--tool-card-row-pad) 0;
 }
 
 /* Keep a failed call visible even when its evidence is folded. The cross on
@@ -365,15 +366,13 @@
   composes: seat from "../../../styles/railseat.module.css";
 }
 
-/* The kind icon's slot: the row's first flex item. It carries the pull into
- * the seat column .call reserves (the column is the row's own, so the pull
- * holds at every width) and is the positioning context the failure cross
- * (Jesse, 2026-10-20) pins to. The slot's layout box stays one line tall, so
- * the icon pins to the row's first line and a second line sits tight beneath
- * the first. A clean row renders the slot with only the seat inside it, so
- * success costs no extra column. */
+/* The kind icon's slot: the row's first flex item. Above 700px it pulls one
+ * --speaker-gutter left into the shared avatar column; below 700px it leads
+ * inline. It is also the positioning context the failure cross pins to. The
+ * slot's layout box stays one line tall, so the icon pins to the row's first
+ * line and a second line sits tight beneath the first. */
 .rowIconSlot {
-  composes: columnPull from "../../../styles/railseat.module.css";
+  composes: gutterPull from "../../../styles/railseat.module.css";
   position: relative;
   /* ToolRow's ROW_ICON_SIZE, which it also passes to ToolIcon. The seat
    * centres that square box in its wider avatar column, and the badge anchors
@@ -672,8 +671,7 @@
  * Native renderers keep their bounds and inherit the ambient type size. */
 .body {
   composes: bodyReveal from "../../../styles/motion.module.css";
-  margin: var(--tool-card-row-pad) calc(-1 * var(--tool-card-inset)) calc(-1 * var(--tool-card-row-pad))
-    calc(-1 * (var(--tool-card-inset) + var(--speaker-gutter)));
+  margin: var(--tool-card-row-pad) 0 calc(-1 * var(--tool-card-row-pad));
   padding: var(--tool-card-inset);
   border-top: 1px solid var(--edge);
   background: var(--surface-inset);

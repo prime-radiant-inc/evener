@@ -424,19 +424,22 @@ test("the thought icon is a centred flex-none glyph (baseline alignment would se
   expect(rule![1]).toContain("align-self: center");
 });
 
-test("the thought icon rails at 50% opacity in the speaker-avatar column; only the live eyebrow pulls into the gutter", () => {
+test("live and settled thought icons both seat in the speaker-avatar rail column on desktop", () => {
   const css = thinkCss();
   const rule = /\.icon\s*\{([^}]*)\}/.exec(css);
   expect(rule).not.toBeNull();
   expect(rule![1]).toContain("opacity: 0.5");
   expect(rule![1]).toContain("width: var(--speaker-avatar-size)");
   expect(rule![1]).toContain("margin-right: var(--speaker-gap)");
-  // The pull is on the live eyebrow row, never on the icon; the settled
-  // thought is a Disclosure in the content column.
   expect(rule![1]).not.toContain("margin-left: calc(-1 * var(--speaker-gutter))");
   const mediaRule = /@media \(min-width: 700px\) \{\s*\.label\s*\{([^}]*)\}/.exec(css);
   expect(mediaRule).not.toBeNull();
   expect(mediaRule![1]).toContain("margin-left: calc(-1 * var(--speaker-gutter))");
+  const summaryIconRule = /\.summaryIcon\s*\{([^}]*)\}/.exec(css);
+  expect(summaryIconRule).not.toBeNull();
+  expect(summaryIconRule![1]).toContain('composes: seat from "../../../../styles/railseat.module.css"');
+  expect(summaryIconRule![1]).toContain('composes: ambient from "../../../../styles/railseat.module.css"');
+  expect(summaryIconRule![1]).toContain('composes: gutterPull from "../../../../styles/railseat.module.css"');
 });
 
 test("an expanded thought renders as a full-width row below its summary - no column chrome", () => {

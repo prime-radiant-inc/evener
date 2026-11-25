@@ -11,7 +11,6 @@
   body { padding:20px; font-family:var(--font-sans); font-size:var(--font-size-body); line-height:var(--line-height-body); }
   .fixtures { display:flex; flex-direction:column; gap:16px; }
   iframe { border:0; height:520px; }
-
 </style>
 </head>
 <body data-font-size="m">
@@ -19,60 +18,134 @@
 <script>
 const BULB_SVG = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false" style="display:block"><path d="M8 2.5 A3.8 3.8 0 0 0 5.8 9.1 C6.4 9.8 6.6 10.4 6.6 11 L6.6 11.6 H9.4 L9.4 11 C9.4 10.4 9.6 9.8 10.2 9.1 A3.8 3.8 0 0 0 8 2.5 Z M6.6 13.2 H9.4 M7.1 14.7 H8.9" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"></path></svg>';
 const CHECK_SVG = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false" style="display:block"><path d="M3.2 8.6 L6.5 11.9 L12.8 4.4" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"></path></svg>';
+const TERM_SVG = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false" style="display:block"><path d="M2.5 3.5 H13.5 V12.5 H2.5 Z M5 6.8 L7.5 8.8 L5 10.8 M8.6 10.8 H11.2" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"></path></svg>';
+const STEER_SVG = '<svg viewBox="0 0 10 10" width="10" height="10" aria-hidden="true" focusable="false" style="display:block"><path d="M5 1 L9 5 L5 9 L1 5 Z" stroke="currentColor" stroke-width="1.4" fill="none"></path></svg>';
+const CROSS_SVG = '<svg viewBox="0 0 10 10" width="10" height="10" aria-hidden="true" focusable="false" style="display:block"><path d="M1.5 1.5 L8.5 8.5 M8.5 1.5 L1.5 8.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"></path></svg>';
+const CHEVRON_SVG = '<svg class="chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false" style="display:block"><path d="M6 3.5 L10.5 8 L6 12.5" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"></path></svg>';
 
-// The four rows whose seats this case holds to one column. All class names
-// are the real modules' own local names (resolved.css de-scopes them): .turn
-// and .runContent from turnblock.module.css; .loader/.rail/.grid/.cell/.label
-// from loader.module.css (the content-free thinking row's real markup); .staticHead/
-// .statusIcon/.headingText/.title from notificationcard.module.css (the static
-// notification head; a collapsible card's Disclosure summary is not railed). The think
-// row's own geometry is REPRODUCED under think-prefixed names in the frame
-// styles rather than linked as thinkblock.module.css: thinkblock and loader
-// both define .label, and resolved.css de-scopes every module into one flat
-// stylesheet, so linking both would merge the two .label rules into one
-// selector and measure a row the app never ships - and reproducing the real
-// NAMES would collide with the loader row's own .label span in this document
-// just the same. The same trade the transcript-stamp-rail case makes for the
-// pane container; the declarations are copied verbatim from
-// thinkblock.module.css, and this case's cross-row assertions mean a drift
-// there shows up as a seat mismatch against the two rows whose modules ARE
-// linked.
+// Every railed transcript row, rendered with the REAL production CSS modules
+// (de-scoped and collision-prefixed in resolved.css via case.json).
 function rows() {
   return `
     <div class="turn" data-turn>
       <div class="runContent">
         <div data-content-probe style="height:0"></div>
-        <div class="thinkBlock">
-          <div class="thinkLive">
-            <span class="thinkLabel">
-              <span class="thinkIcon" data-think-slot>${BULB_SVG}</span>
-              <span data-think-text>Thinking…</span>
+
+        <!-- 1. Live thought -->
+        <div class="think-block">
+          <div class="think-live">
+            <span class="think-label">
+              <span class="think-icon" data-slot="think-live">${BULB_SVG}</span>
+              <span data-text="think-live">Thinking…</span>
             </span>
           </div>
         </div>
-        <div class="thinkBlock">
-          <details class="disclosureDetails" data-variant="quiet">
-            <summary class="disclosureSummary">
-              <span class="compactThinkSummary">
-                <span class="thinkIcon" data-compact-slot>${BULB_SVG}</span>
-                <span class="compactThinkText" data-compact-text>Thought · ~17 tokens</span>
+
+        <!-- 2. Compact settled thought (CSS Modules emits both composed .label and .compactSummary) -->
+        <div class="think-block">
+          <details class="disclosure-details" data-variant="quiet">
+            <summary class="disclosure-summary">
+              <span class="think-label think-compactSummary">
+                <span class="think-icon" data-slot="think-compact">${BULB_SVG}</span>
+                <span class="think-summaryText" data-text="think-compact">Thought · ~17 tokens</span>
               </span>
+              <span class="disclosure-chevron" aria-hidden="true">${CHEVRON_SVG}</span>
             </summary>
           </details>
         </div>
-        <div class="thinkBlock">
-          <span class="loader rail" role="status" aria-label="Thinking…">
-            <span class="grid" data-loader-slot>${'<span class="cell"></span>'.repeat(9)}</span>
-            <span class="label" data-loader-text>Thinking… · ~679 tokens</span>
+
+        <!-- 3. Full settled thought -->
+        <div class="think-block">
+          <details class="disclosure-details" data-variant="quiet">
+            <summary class="disclosure-summary">
+              <span class="think-summaryIcon" data-slot="think-settled">${BULB_SVG}</span>
+              <span class="think-summaryText" data-text="think-settled">Thought · 3s · Checking alignment</span>
+              <span class="disclosure-chevron" aria-hidden="true">${CHEVRON_SVG}</span>
+            </summary>
+          </details>
+        </div>
+
+        <!-- 4. Compact live thought (Loader rail) -->
+        <div class="think-block">
+          <span class="loader-loader loader-rail" role="status" aria-label="Thinking…">
+            <span class="loader-grid" data-slot="loader">${'<span class="loader-cell"></span>'.repeat(9)}</span>
+            <span class="loader-label" data-text="loader">Thinking… · ~679 tokens</span>
           </span>
         </div>
-        <div class="staticHead">
-          <span class="statusIcon" data-notification-slot>${CHECK_SVG}</span>
-          <span class="headingText"><span class="title" data-notification-text>Job completed</span></span>
+
+        <!-- 5. Static notification head -->
+        <div class="notif-staticHead">
+          <span class="notif-statusIcon" data-slot="notif-static">${CHECK_SVG}</span>
+          <span class="notif-headingText"><span class="notif-title" data-text="notif-static">Job completed</span></span>
+        </div>
+
+        <!-- 6. Collapsible notification (container-type: inline-size + open expanded body) -->
+        <div class="notif-collapsible">
+          <div class="notif-disclosure">
+            <details class="disclosure-details" data-variant="quiet" open>
+              <summary class="disclosure-summary">
+                <span class="notif-statusIcon" data-slot="notif-collapsible">${CHECK_SVG}</span>
+                <span class="notif-headingText"><span class="notif-title" data-text="notif-collapsible">Delegate completed</span></span>
+                <span class="disclosure-chevron" aria-hidden="true">${CHEVRON_SVG}</span>
+              </summary>
+              <div class="disclosure-body">
+                <div class="notif-expanded" data-notif-expanded>Expanded notification body</div>
+              </div>
+            </details>
+          </div>
+        </div>
+
+        <!-- 7. Steering divider -->
+        <details class="disclosure-details" data-variant="quiet">
+          <summary class="disclosure-summary">
+            <span class="steer-railIcon" data-slot="steering">${STEER_SVG}</span>
+            <span class="steer-label" data-text="steering">System steered: context</span>
+            <span class="disclosure-chevron" aria-hidden="true">${CHEVRON_SVG}</span>
+          </summary>
+        </details>
+
+        <!-- 8. Tool call row (intent + demoted summary line) -->
+        <div class="toolcall-call">
+          <div class="toolcall-row" data-intent="true">
+            <span class="toolcall-rowIconSlot">
+              <span class="toolcall-rowIcon" data-slot="tool-call" aria-hidden="true">${TERM_SVG}</span>
+            </span>
+            <span class="toolcall-intent" data-text="tool-call">Checking layout alignment</span>
+            <div class="toolcall-summaryLine">
+              <span class="toolcall-summary toolcall-demoted" data-tool-demoted>Ran npm run layoutguard</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 9. Folded tool run summary -->
+        <details class="disclosure-details" data-variant="default">
+          <summary class="disclosure-summary toolrun-summary">
+            <span class="toolrun-railChevron" data-slot="tool-run" aria-hidden="true">${CHEVRON_SVG}</span>
+            <span class="toolrun-label" data-text="tool-run">3 actions — Read, Edit, Shell</span>
+          </summary>
+        </details>
+
+        <!-- 10. Turn failure notice -->
+        <div class="sys-failure">
+          <span class="sys-failureIcon" data-slot="turn-failure">${CROSS_SVG}</span>
+          <span class="sys-failureText" data-text="turn-failure">Provider rejected the request</span>
         </div>
       </div>
     </div>`;
 }
+
+const ROW_KEYS = [
+  "think-live",
+  "think-compact",
+  "think-settled",
+  "loader",
+  "notif-static",
+  "notif-collapsible",
+  "steering",
+  "tool-call",
+  "tool-run",
+  "turn-failure",
+];
 
 function frameDocument(mode) {
   const width = mode === "phone" ? 390 : 920;
@@ -84,22 +157,6 @@ function frameDocument(mode) {
       *, *::before, *::after { box-sizing: border-box; transition:none !important; animation:none !important; }
       html, body { margin:0; background:var(--surface-0); color:var(--ink-hi); }
       body { padding:16px; font-family:var(--font-sans); font-size:var(--font-size-body); line-height:var(--line-height-body); }
-      .thinkBlock { padding: var(--space-1) 0; }
-      .thinkLive { display: block; }
-      /* The live thinking row's rail geometry, reproduced under
-         think-prefixed names (the why is in this file's parent comment
-         block): the declarations are copied verbatim from
-         thinkblock.module.css's .block/.live/.label/.icon rules. */
-      .thinkLabel { display:flex; align-items:center; margin-bottom:var(--space-1); font-family:var(--font-sans); font-size:var(--font-size-body); color:var(--ink-mid); }
-      .thinkIcon { flex:none; align-self:center; display:inline-flex; align-items:center; justify-content:center; width:var(--speaker-avatar-size); margin-right:var(--speaker-gap); opacity:0.5; }
-      @media (min-width: 700px) { .thinkLabel { margin-left: calc(-1 * var(--speaker-gutter)); } }
-      /* The compact settled thought's real Disclosure and composed label/text
-         geometry, under collision-free names for this flat stylesheet. */
-      .disclosureDetails { display:block; }
-      .disclosureSummary { display:flex; align-items:center; gap:var(--space-2); padding:var(--space-1) 0; color:var(--ink-mid); }
-      .compactThinkSummary { display:flex; align-items:center; flex:0 1 auto; min-width:0; margin-bottom:0; font-family:var(--font-sans); font-size:var(--font-size-ui); line-height:var(--line-height-title); color:var(--ink-mid); }
-      .compactThinkText { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-      @media (min-width: 700px) { .compactThinkSummary { margin-left:calc(-1 * var(--speaker-gutter)); } }
       .turn { width:${turnWidth}px; }
     </style></head><body data-font-size="m">
     ${rows()}
@@ -131,26 +188,21 @@ window.measure = async () => {
     const doc = frame.contentDocument;
     const turn = box(doc.querySelector("[data-turn]"));
     const probe = box(doc.querySelector("[data-content-probe]"));
-    const think = {
-      slot: box(doc.querySelector("[data-think-slot]")),
-      text: box(doc.querySelector("[data-think-text]")),
-    };
-    const compact = {
-      slot: box(doc.querySelector("[data-compact-slot]")),
-      text: box(doc.querySelector("[data-compact-text]")),
-    };
-    const loader = {
-      slot: box(doc.querySelector("[data-loader-slot]")),
-      text: box(doc.querySelector("[data-loader-text]")),
-    };
-    const notification = {
-      slot: box(doc.querySelector("[data-notification-slot]")),
-      text: box(doc.querySelector("[data-notification-text]")),
-    };
+    const rowsMeasured = ROW_KEYS.map((row) => ({
+      row,
+      slot: box(doc.querySelector(`[data-slot="${row}"]`)),
+      text: box(doc.querySelector(`[data-text="${row}"]`)),
+    }));
+    const toolDemoted = box(doc.querySelector("[data-tool-demoted]"));
+    const notifExpanded = box(doc.querySelector("[data-notif-expanded]"));
     return {
       mode,
       viewportWidth: frame.contentWindow.innerWidth,
-      turn, probe, think, compact, loader, notification,
+      turn,
+      probe,
+      rows: rowsMeasured,
+      toolDemoted,
+      notifExpanded,
     };
   });
 };
