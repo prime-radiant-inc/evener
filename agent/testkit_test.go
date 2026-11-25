@@ -14,6 +14,7 @@ import (
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/registry"
 
@@ -334,4 +335,46 @@ func failAppendN(jm *jobManager, kind jobstore.EventKind, n int) *atomic.Int32 {
 		return orig(e)
 	}
 	return &attempts
+}
+
+// seedTestTranscript creates the JSONL transcript file for meta in stateDir
+// and writes turns verbatim so restore tests exercise the real decode path.
+func seedTestTranscript(t *testing.T, stateDir string, meta schema.SessionMeta, turns ...schema.Turn) {
+	t.Helper()
+	tpath := schema.SessionTranscriptPath(stateDir, meta.ID)
+	tw, err := transcript.NewWriter(tpath, transcript.Header{
+		SessionID: meta.ID,
+		CreatedAt: meta.CreatedAt,
+		ProfileID: meta.ProfileID,
+		Model:     meta.Model,
+	})
+	if err != nil {
+		t.Fatalf("transcript.NewWriter: %v", err)
+	}
+	recordTestTranscriptTurns(t, tw, turns)
+}
+
+// appendTestTranscript opens an existing session transcript in stateDir and
+// appends turns verbatim.
+func appendTestTranscript(t *testing.T, stateDir, sessionID string, turns ...schema.Turn) {
+	t.Helper()
+	tpath := schema.SessionTranscriptPath(stateDir, sessionID)
+	tw, _, err := transcript.OpenWriterForSession(tpath, sessionID)
+	if err != nil {
+		t.Fatalf("transcript.OpenWriterForSession: %v", err)
+	}
+	recordTestTranscriptTurns(t, tw, turns)
+}
+
+func recordTestTranscriptTurns(t *testing.T, tw *transcript.Writer, turns []schema.Turn) {
+	t.Helper()
+	for i, turn := range turns {
+		if _, err := tw.Record(turn, transcript.RecordOptions{Door: transcript.DoorBuffered, Place: transcript.PlaceVerbatim}); err != nil {
+			_ = tw.Close()
+			t.Fatalf("record transcript turn %d (%s): %v", i, turn.Kind, err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("close transcript writer: %v", err)
+	}
 }

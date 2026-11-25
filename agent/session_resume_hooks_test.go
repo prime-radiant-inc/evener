@@ -63,6 +63,10 @@ func restoredSessionWithResumeHook(t *testing.T, adapter *fakeAdapter) *Session 
 		},
 		TurnCount: 1,
 	}
+	seedTestTranscript(t, stateDir, meta,
+		schema.NewTurn(schema.TurnUserInput, llm.User("prior user task")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("prior assistant answer")),
+	)
 	client := llm.NewClient()
 	client.Register(adapter)
 	sess, err := RestoreSessionFromMetaWithConfig(
@@ -72,10 +76,6 @@ func restoredSessionWithResumeHook(t *testing.T, adapter *fakeAdapter) *Session 
 		meta,
 		RestoreSessionConfig{
 			StateDir: stateDir,
-			resumeHistory: []schema.Turn{
-				schema.NewTurn(schema.TurnUserInput, llm.User("prior user task")),
-				schema.NewTurn(schema.TurnAssistant, llm.Assistant("prior assistant answer")),
-			},
 		},
 	)
 	if err != nil {

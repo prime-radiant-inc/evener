@@ -179,11 +179,12 @@ func FuzzSessionInitSeed100Exact(f *testing.F) {
 
 			meta := sierMeta()
 			malformedAsk := stmAssistantTurn(llm.ToolCallData{
-				ID: "bad-ask", Name: "ask_user", Type: "function", Arguments: json.RawMessage(`{`),
+				ID: "bad-ask", Name: "ask_user", Type: "function", Arguments: json.RawMessage(`{}`), RawArguments: `{`,
 			})
 			malformedResult := stmToolResultsTurn(stmToolResult("bad-ask", "ask_user", false))
-			restoreCfg := sierRestoreConfig(t.TempDir(), agenttest.NewFakeClock())
-			restoreCfg.resumeHistory = []schema.Turn{malformedAsk, malformedResult}
+			malformedStateDir := t.TempDir()
+			seedTestTranscript(t, malformedStateDir, meta, malformedAsk, malformedResult)
+			restoreCfg := sierRestoreConfig(malformedStateDir, agenttest.NewFakeClock())
 			restored, err := RestoreSessionFromMetaWithConfig(client, profile, env, meta, restoreCfg)
 			if err != nil {
 				t.Fatalf("restore transcript failure fixture: %v", err)
@@ -242,7 +243,6 @@ func FuzzSessionInitSeed100Exact(f *testing.F) {
 			spawnRestore := sierRestoreConfig(t.TempDir(), agenttest.NewFakeClock())
 			spawnRestore.spawn.parentSessionID = "parent"
 			spawnRestore.spawn.treeCounter = newTreeCounter(0)
-			spawnRestore.resumeHistory = []schema.Turn{}
 			spawned, err := RestoreSessionFromMetaWithConfig(client, profile, env, sierMeta(), spawnRestore)
 			if err != nil {
 				t.Fatalf("spawn restore fixture: %v", err)

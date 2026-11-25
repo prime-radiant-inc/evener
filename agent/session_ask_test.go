@@ -2931,12 +2931,13 @@ func TestAskUser_ForkedChildDoesNotApplyItsOwnJournalToAnInheritedAnsweringSteer
 		ParentSessionID: "01KPARENT0000000000000000",
 		DivergenceTurn:  len(inheritedHistory) + 1,
 	}
+	seedTestTranscript(t, stateDir, meta, inheritedHistory...)
 	restored, err := RestoreSessionFromMetaWithConfig(
 		c,
 		NewOpenAIProfile("gpt-5.2"),
 		execenv.NewLocalExecutionEnvironment(t.TempDir()),
 		meta,
-		RestoreSessionConfig{StateDir: stateDir, resumeHistory: inheritedHistory},
+		RestoreSessionConfig{StateDir: stateDir},
 	)
 	if err != nil {
 		t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)

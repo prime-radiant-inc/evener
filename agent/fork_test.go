@@ -714,7 +714,7 @@ func TestForkSession_RestorePreservesAcceptedInputBudget(t *testing.T) {
 	}
 	client := llm.NewClient()
 	client.Register(adapter)
-	restored := restoreBudgetSession(t, client, childMeta, stateDir, nil)
+	restored := restoreBudgetSession(t, client, childMeta, stateDir)
 
 	restored.mu.Lock()
 	acceptedAtRestore := restored.turns

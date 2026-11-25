@@ -463,9 +463,12 @@ func resumedDivergence(entries []transcript.Entry, divergence int, insertions []
 // superseded identities arrive precomputed from the full entries slice — the
 // skip rule reads the same fold the build's drop reads, not a fresh fold per
 // position mapped.
+//
+// Only the scanned prefix clamps to len(entries), not kept: a 1-based tip
+// divergence (len(entries)+1, as AsideSession and ForkSessionAtUserTurn write)
+// sits one past the tip and must stay past every kept turn.
 func historyIndex(entries []transcript.Entry, i int, superseded map[string]bool) int {
-	i = min(i, len(entries))
-	prefix := entries[:max(i, 0)]
+	prefix := entries[:min(max(i, 0), len(entries))]
 	kept := i
 	for _, e := range prefix {
 		if e.Turn.Kind.TranscriptOnly() || (e.Turn.AttentionID != "" && superseded[e.Turn.AttentionID]) {

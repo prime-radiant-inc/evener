@@ -205,12 +205,13 @@ func TestRestorePersistsModelChangeBeforeAck(t *testing.T) {
 		t.Fatalf("seed the dead daemon's meta: %v", err)
 	}
 	history := []schema.Turn{schema.NewTurn(schema.TurnUserInput, llm.User("prior task"))}
+	seedTestTranscript(t, stateDir, meta, history...)
 	restored, err := RestoreSessionFromMetaWithConfig(
 		client,
 		withTestSessionNamer(client, NewOpenAIProfile("gpt-5.5-picked")),
 		execenv.NewLocalExecutionEnvironment(t.TempDir()),
 		meta,
-		RestoreSessionConfig{StateDir: stateDir, resumeHistory: history},
+		RestoreSessionConfig{StateDir: stateDir},
 	)
 	if err != nil {
 		t.Fatalf("restore on the picked model: %v", err)
@@ -232,7 +233,7 @@ func TestRestorePersistsModelChangeBeforeAck(t *testing.T) {
 		withTestSessionNamer(client, NewOpenAIProfile(persisted.Model)),
 		execenv.NewLocalExecutionEnvironment(t.TempDir()),
 		persisted,
-		RestoreSessionConfig{StateDir: stateDir, resumeHistory: history},
+		RestoreSessionConfig{StateDir: stateDir},
 	)
 	if err != nil {
 		t.Fatalf("resume after the exit: %v", err)

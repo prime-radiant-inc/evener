@@ -163,6 +163,10 @@ func rttRestoredSession(t *testing.T, program rttProgram) (*Session, *agenttest.
 	}
 	meta := fresh.Meta()
 	fresh.Close()
+	appendTestTranscript(t, stateDir, meta.ID,
+		schema.NewTurn(schema.TurnUserInput, llm.User(rttPriorUser)),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant(rttPriorAssistant)),
+	)
 
 	restoreClient, adapter := rttClient()
 	restored, err := RestoreSessionFromMetaWithConfig(
@@ -173,12 +177,8 @@ func rttRestoredSession(t *testing.T, program rttProgram) (*Session, *agenttest.
 		RestoreSessionConfig{
 			StateDir:                stateDir,
 			deferRestoreSideEffects: true,
-			resumeHistory: []schema.Turn{
-				schema.NewTurn(schema.TurnUserInput, llm.User(rttPriorUser)),
-				schema.NewTurn(schema.TurnAssistant, llm.Assistant(rttPriorAssistant)),
-			},
-			clock:    clk,
-			testOnly: rttTestConfig(),
+			clock:                   clk,
+			testOnly:                rttTestConfig(),
 		},
 	)
 	if err != nil {
