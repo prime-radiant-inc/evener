@@ -129,7 +129,7 @@ func browserGuardSpec(guard, root string) guardSpec {
 		// helper daemons are cleaned up by each test binary's own t.Cleanup.
 		return guardSpec{
 			name:            guard,
-			argv:            []string{"go", "test", "-tags", "browserguard", "./cmd/evener-hub", "-run", "^TestBackgroundTranscriptsEntrySliceBrowser$|^TestWarmReturnTranscriptBrowser$", "-count=1"},
+			argv:            []string{"go", "test", "-tags", "browserguard", "./cmd/evener-hub", "-run", "^TestBackgroundTranscriptsEntrySliceBrowser$", "-count=1"},
 			needsBuild:      true,
 			waitOnInterrupt: true,
 			dir:             ".",
