@@ -43,6 +43,33 @@ export default function assert(m) {
         `${label}: the reasoning-effort target is clipped by .identity (${fixture.clippedEffort.width.toFixed(1)} of ${fixture.effort.width.toFixed(1)}px visible)`,
       );
     }
+    if (fixture.context === null || fixture.context.width < 13 || fixture.context.height < 13) {
+      failures.push(
+        `${label}: the context ring is ${fixture.context === null ? "missing" : `${fixture.context.width.toFixed(1)}x${fixture.context.height.toFixed(1)}px`}, below the 14px ring size`,
+      );
+    } else {
+      if (
+        fixture.contextWrapper === null ||
+        fixture.contextWrapper.width < fixture.context.width - TOLERANCE ||
+        fixture.context.left < fixture.contextWrapper.left - TOLERANCE ||
+        fixture.context.right > fixture.contextWrapper.right + TOLERANCE
+      ) {
+        failures.push(
+          `${label}: the context ring is clipped by its .context wrapper (${fixture.contextWrapper === null ? "missing" : `${fixture.contextWrapper.width.toFixed(1)}px`} for ${fixture.context.width.toFixed(1)}px ring)`,
+        );
+      }
+      if (
+        fixture.context.left < fixture.identity.left - TOLERANCE ||
+        fixture.context.right > fixture.identity.right + TOLERANCE ||
+        fixture.context.top < fixture.identity.top - TOLERANCE ||
+        fixture.context.bottom > fixture.identity.bottom + TOLERANCE
+      ) {
+        failures.push(`${label}: the context ring escapes .identity`);
+      }
+      if (fixture.models.length > 0 && fixture.context.right > fixture.models[0].left + TOLERANCE) {
+        failures.push(`${label}: the context ring is not ordered before the model trigger`);
+      }
+    }
   }
   return failures.length === 0
     ? {
@@ -50,7 +77,7 @@ export default function assert(m) {
         reason: m.fixtures
           .map(
             (fixture) =>
-              `${fixture.label}: effort ${fixture.effort.width.toFixed(1)}x${fixture.effort.height.toFixed(1)}px fits identity`,
+              `${fixture.label}: effort ${fixture.effort.width.toFixed(1)}x${fixture.effort.height.toFixed(1)}px, ring ${fixture.context.width.toFixed(1)}x${fixture.context.height.toFixed(1)}px (${fixture.contextWrapper.width.toFixed(1)}px slot) fit identity`,
           )
           .join("; "),
       }
