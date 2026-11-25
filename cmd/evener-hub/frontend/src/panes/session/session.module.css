@@ -49,9 +49,10 @@
 }
 
 @media (max-width: 899px) {
-  /* Scoped to session panes: cascade columns keep an in-flow footer under
-   * data-pane-scaffold="cascade" and must retain the 0px reserve. */
-  :global([data-pane-scaffold^="session:"]) .contentColumn {
+  /* Scoped to session panes without an edge footer: cascade columns keep an
+   * in-flow footer under data-pane-scaffold="cascade", and narrow desktop
+   * Dockview popouts keep StatusBar in an edge footer; both retain 0px. */
+  :global([data-pane-scaffold^="session:"]):not([data-has-edge-footer="true"]) .contentColumn {
     /* The chrome's own measured height (ConversationBody's footer), so the
      * reserve is the card's real boundary: a staged attachment strip or a
      * grown draft pushes it - and every control that rides on it - up with the

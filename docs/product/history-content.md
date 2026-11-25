@@ -397,6 +397,12 @@ flag alone does not prove healthy durable coverage: the repository's recovery
 verdict (`openLocal`'s status and the opening-cut certificate) decides whether
 a recovery read is owed.
 
+While a healthy reopen's local restore is pending, a notice-only display of
+historical notices over released bodies stays withheld (preserving the recorded
+turn shells so the reader stays mounted); a notice raised after the open began
+still publishes, and the restore (or settling on a notice-only fallback)
+publishes the historical notices.
+
 ## Original transcript authors
 
 Optional `ThreadItem.authorship` records an original author and an `inherited`

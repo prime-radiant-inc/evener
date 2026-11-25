@@ -469,6 +469,9 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
   // Mirror of focusedPane for the same reason as topBarCollapsedRef.
   const focusedPaneRef = useRef(focusedPane);
   focusedPaneRef.current = focusedPane;
+  // Mirror of focusedNotesExpanded for the scroll listener so downward scroll
+  // cannot float the top bar back over an open whiteboard.
+  const focusedNotesExpandedRef = useRef(false);
   const prevFocusedTypeRef = useRef<string | undefined>(focusedPane?.type);
 
   // The resting bar height (safe-area padding included), read once on mount:
@@ -674,7 +677,7 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
         let next = topBarCollapsedRef.current;
         if (scrollTop > prevScrollTop) {
           upwardRunStartRef.current = null;
-          if (scrollTop > foldPast) next = true;
+          if (scrollTop > foldPast && !focusedNotesExpandedRef.current) next = true;
           else if (scrollTop < FLOAT_REVEAL_AT_TOP) next = false;
         } else {
           if (topBarCollapsedRef.current && scrollTop < prevScrollTop && upwardRunStartRef.current === null) {
@@ -957,6 +960,7 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
   // reveal is chrome, not a scroll gesture, and the capsules would otherwise
   // sit over the card's header row. The empty string matches no session ref.
   const focusedNotesExpanded = useTopNotesExpanded(focusedSessionRef ?? "");
+  focusedNotesExpandedRef.current = focusedNotesExpanded;
   useEffect(() => {
     if (!focusedNotesExpanded || !topBarCollapsedRef.current) return;
     topBarCollapsedRef.current = false;

@@ -728,6 +728,56 @@ base_url = "http://127.0.0.1:9/v1"
 	}
 }
 
+// TestInstances_BrokenSiblingIsolatesWithoutLockingHealthyEdits proves a
+// broken unrelated provider in providers.toml surfaces in diagnostics while
+// leaving healthy instances usable and editable, and that a rename that would
+// orphan a standalone instance still rolls back cleanly.
+func TestInstances_BrokenSiblingIsolatesWithoutLockingHealthyEdits(t *testing.T) {
+	dir := t.TempDir()
+	tomlPath := writeProvidersToml(t, dir, `[providers.kimi]
+base = "not-a-registry-id"
+
+[providers.standalone]
+protocol = "openai-chat"
+base_url = "http://127.0.0.1:9/v1"
+`)
+	ctl := newTestInstancesController(t, tomlPath, dir, t.TempDir(), nil)
+	if ctl.reg.WritesRefused() {
+		t.Fatal("an isolated broken provider locked out writes for healthy providers")
+	}
+	list := ctl.List()
+	if list.WritesRefused {
+		t.Fatal("listing reported WritesRefused for an isolated broken provider")
+	}
+	if got := entry(t, list, "standalone"); got.BaseURL != "http://127.0.0.1:9/v1" {
+		t.Fatalf("healthy standalone baseURL = %q, want http://127.0.0.1:9/v1", got.BaseURL)
+	}
+	if ctl.reg.Get().ProviderError("kimi") == nil {
+		t.Fatal("broken provider kimi was not recorded in ProviderError")
+	}
+	if len(list.Diagnostics) == 0 {
+		t.Fatal("listing omitted diagnostics for broken provider kimi")
+	}
+
+	// Healthy edit succeeds and preserves the broken sibling stanza on disk.
+	if err := ctl.Edit(appwire.InstanceEditParams{Name: "standalone", BaseURL: "http://127.0.0.1:10/v1"}); err != nil {
+		t.Fatalf("editing healthy instance failed alongside broken sibling: %v", err)
+	}
+	if got := authoredEntry(t, tomlPath, "kimi"); got.Base != "not-a-registry-id" {
+		t.Fatalf("healthy edit dropped or altered broken sibling kimi: %+v", got)
+	}
+
+	// A rename that would leave the renamed instance unloadable must roll back.
+	err := ctl.Edit(appwire.InstanceEditParams{Name: "standalone", NewName: "moved", ClearBaseURL: true})
+	if err == nil {
+		t.Fatal("Edit accepted a rename+clear that would leave moved unable to load")
+	}
+	requireWireError(t, err, appwire.CodeInvalidParams)
+	if got := authoredEntry(t, tomlPath, "standalone"); got.Transport.BaseURL != "http://127.0.0.1:10/v1" {
+		t.Fatalf("rollback did not preserve standalone: %+v", got)
+	}
+}
+
 func TestInstances_EditMergesVarsIntoAuthoredEntry(t *testing.T) {
 	f := newInstancesFixture(t, map[string]string{"AWS_ACCESS_KEY_ID": "id", "AWS_SECRET_ACCESS_KEY": "secret"})
 	if err := f.ctl.Create(appwire.InstanceCreateParams{
@@ -1615,11 +1665,11 @@ func TestInstances_CreateRollsBackWhenTheReloadFails(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)
 	}
-	// An entry that parses but cannot resolve an endpoint (#711: no base and no
-	// base_url of its own): the registry loaded before it appeared, so the
+	// A default naming a non-implicit curated provider parses cleanly but fails
+	// validateDefault on Reload: the registry loaded before it appeared, so the
 	// create still starts, and the layer the create writes still carries it, so
 	// the reload that follows fails.
-	raw := append(slices.Clone(before), []byte("\n[providers.standalone]\nprotocol = \"openai-chat\"\n")...)
+	raw := append([]byte("default = \"huggingface\"\n"), before...)
 	if err := os.WriteFile(f.tomlPath, raw, 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
@@ -1644,10 +1694,11 @@ func TestInstances_CreateRollsBackWhenTheReloadFails(t *testing.T) {
 	if _, ok := after.Providers["second"]; ok {
 		t.Fatal("the instance whose config cannot load is still in providers.toml")
 	}
-	for _, name := range []string{"work", "standalone"} {
-		if _, ok := after.Providers[name]; !ok {
-			t.Fatalf("the rollback lost the %q entry this create found", name)
-		}
+	if _, ok := after.Providers["work"]; !ok {
+		t.Fatal(`the rollback lost the "work" entry this create found`)
+	}
+	if after.Default != "huggingface" {
+		t.Fatalf("the rollback lost the default this create found: got %q", after.Default)
 	}
 	if _, ok := f.ctl.reg.Get().Instance("second"); ok {
 		t.Fatal("the instance whose config cannot load still resolves")
@@ -1671,15 +1722,15 @@ func TestInstances_RemoveRollsBackWhenTheReloadFails(t *testing.T) {
 	if err := authopenai.SaveAuth(f.stateDir, "work", makeOAuthRecord("work", "")); err != nil {
 		t.Fatalf("SaveAuth: %v", err)
 	}
-	// An entry that parses but cannot resolve an endpoint (#711: no base and
-	// no base_url of its own): the registry loaded before it appeared, so the
+	// A default naming a non-implicit curated provider parses cleanly but fails
+	// validateDefault on Reload: the registry loaded before it appeared, so the
 	// removal still starts, and the layer the removal writes still carries it,
 	// so the reload that follows fails.
 	raw, err := os.ReadFile(f.tomlPath)
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)
 	}
-	raw = append(raw, []byte("\n[providers.standalone]\nprotocol = \"openai-chat\"\n")...)
+	raw = append([]byte("default = \"huggingface\"\n"), raw...)
 	if err := os.WriteFile(f.tomlPath, raw, 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
@@ -1830,10 +1881,10 @@ func TestInstances_RemoveRestoresTheCredentialBeforeTheRollbackReload(t *testing
 		t.Fatalf("Set: %v", err)
 	}
 
-	// The layer the removal's reload is made to fail on: an entry that parses
-	// but cannot resolve an endpoint.
+	// The layer the removal's reload is made to fail on: a default naming a
+	// non-implicit curated provider parses cleanly and fails validateDefault.
 	brokenPath := filepath.Join(filepath.Dir(f.tomlPath), "broken.toml")
-	if err := os.WriteFile(brokenPath, []byte("[providers.standalone]\nprotocol = \"openai-chat\"\n"), 0o600); err != nil {
+	if err := os.WriteFile(brokenPath, []byte("default = \"huggingface\"\n"), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 	var loads int
@@ -1952,14 +2003,13 @@ func TestInstances_RemoveRestoresCredentialsWhenTheRollbackCannotBeWritten(t *te
 		t.Fatalf("prime Reload: %v", err)
 	}
 
-	// An entry that parses but cannot resolve an endpoint (#711: no base and no
-	// base_url of its own): the layer the removal writes carries it, so the
-	// reload that follows the write fails.
+	// A default naming a non-implicit curated provider parses cleanly and fails
+	// validateDefault on Reload after the removal writes.
 	raw, err := os.ReadFile(f.tomlPath)
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)
 	}
-	raw = append(raw, []byte("\n[providers.standalone]\nprotocol = \"openai-chat\"\n")...)
+	raw = append([]byte("default = \"huggingface\"\n"), raw...)
 	if err := os.WriteFile(f.tomlPath, raw, 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
@@ -2923,13 +2973,13 @@ func TestInstances_ApiKeySetLandsWhenTheRegistryCannotReload(t *testing.T) {
 	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	// An entry that parses but cannot resolve an endpoint (#711): the reload
-	// that follows the write fails.
+	// A default naming a non-implicit curated provider parses cleanly and fails
+	// validateDefault on the reload that follows ApiKeySet.
 	raw, err := os.ReadFile(f.tomlPath)
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)
 	}
-	raw = append(raw, []byte("\n[providers.standalone]\nprotocol = \"openai-chat\"\n")...)
+	raw = append([]byte("default = \"huggingface\"\n"), raw...)
 	if err := os.WriteFile(f.tomlPath, raw, 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
