@@ -61,14 +61,18 @@ test.each(WIDGETS)(
 test("sheet edge variants keep their square corners and side shadows over the shared defaults", () => {
   const sheet = readModuleCss(import.meta.url, "../sheet/sheet.module.css");
   // The mobile sessions drawer is side="left": square corners, the shadow
-  // redirected off its one visible edge. Both rules are plain single-class
-  // selectors, so they outrank the shared :where(.panel) defaults.
+  // redirected off its one visible edge. The two vertical edges share one
+  // plain single-class geometry, so it outranks the shared :where(.panel)
+  // defaults and each edge adds only its anchor, border and shadow.
+  const vertical = topRuleBlock(sheet, ".edgeVertical");
+  expect(vertical).toMatch(/border-radius:\s*0/);
+
   const left = topRuleBlock(sheet, ".left");
-  expect(left).toMatch(/border-radius:\s*0/);
+  expect(left).toMatch(/composes:\s*edgeVertical/);
   expect(left).toMatch(/box-shadow:\s*16px 0 40px var\(--shadow-color\)/);
 
   const right = topRuleBlock(sheet, ".right");
-  expect(right).toMatch(/border-radius:\s*0/);
+  expect(right).toMatch(/composes:\s*edgeVertical/);
   expect(right).toMatch(/box-shadow:\s*-16px 0 40px var\(--shadow-color\)/);
 
   const bottom = topRuleBlock(sheet, ".bottom");
