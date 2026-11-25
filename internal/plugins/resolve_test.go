@@ -398,6 +398,39 @@ func TestResolveForLaunch_BundledPluginByName(t *testing.T) {
 	}
 }
 
+func TestResolveForLaunch_HarnessFeedbackBundledPlugin(t *testing.T) {
+	m := NewManager(t.TempDir())
+	preview, err := m.PreviewForLaunch(context.Background(), nil, &[]string{"harness-feedback"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := preview.ValidateSelection(); err != nil {
+		t.Fatalf("preview ValidateSelection: %v", err)
+	}
+	if len(preview.Candidates) != 1 || preview.Candidates[0].Name != "harness-feedback" || preview.Candidates[0].Source != LaunchPluginSourceBundled || preview.Candidates[0].SkillCount != 1 {
+		t.Fatalf("preview candidates = %+v, want bundled harness-feedback with 1 skill", preview.Candidates)
+	}
+
+	res, err := m.ResolveForLaunch(context.Background(), nil, &[]string{"harness-feedback"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := res.ValidateSelection(); err != nil {
+		t.Fatalf("resolve ValidateSelection: %v", err)
+	}
+	instance, err := enabledLoad(res.SelectedDirs[0])
+	if err != nil {
+		t.Fatalf("load materialized harness-feedback plugin: %v", err)
+	}
+	meta, ok := instance.Skills["harness-feedback:harness-feedback"]
+	if !ok {
+		t.Fatalf("skills = %v, want harness-feedback:harness-feedback", instance.Skills)
+	}
+	if _, err := os.Stat(filepath.Join(meta.Dir, "scripts", "harness-feedback")); err != nil {
+		t.Fatalf("skill base directory missing scripts/harness-feedback: %v", err)
+	}
+}
+
 // Bundled plugins publish into an immutable content-addressed directory, so a
 // launch never rewrites a copy an earlier session may still be reading.
 func TestMaterializeBundledPlugin_PublishesContentAddressedDir(t *testing.T) {

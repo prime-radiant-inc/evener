@@ -1,0 +1,318 @@
+#!/usr/bin/env python3
+"""CLI helper for deduplicated Evener harness feedback and update checks."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import shutil
+import subprocess
+import sys
+from typing import Any
+from urllib.parse import quote
+
+DEFAULT_REPO = "prime-radiant-inc/evener"
+CATEGORIES = ("tool_error", "schema_gap", "prompt_gap", "performance", "bug", "other")
+REPO_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$")
+VERSION_RE = re.compile(r"^(?:evener\s+)?([0-9a-fA-F]{7,40})(-dirty)?(?:\s+\(([^)]+)\))?$")
+AUTH_TOKENS = ("gh auth login", "not logged into", "authentication", "http 401")
+SECRET_RULES = (
+    ("GitHub token", re.compile(r"\bgh[pousr]_[A-Za-z0-9_]{4,}")),
+    ("GitHub fine-grained token", re.compile(r"\bgithub_pat_[A-Za-z0-9_]{4,}")),
+    ("API secret key", re.compile(r"\bsk-[A-Za-z0-9_-]{8,}")),
+    ("Slack token", re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{4,}")),
+    ("AWS access key ID", re.compile(r"\bAKIA[0-9A-Z]{8,}")),
+    ("PEM private key", re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----")),
+)
+
+
+class CliError(Exception):
+    """Expected operational or validation error surfaced cleanly to stderr."""
+
+
+class GhUnavailableError(CliError):
+    """Raised when gh is missing or unauthenticated and optional calls must not swallow it."""
+
+
+def positive_int(raw: str) -> int:
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"invalid positive integer: {raw!r}") from exc
+    if value <= 0:
+        raise argparse.ArgumentTypeError(f"must be greater than zero: {raw!r}")
+    return value
+
+
+def validate_repo(repo: str) -> str:
+    value = repo.strip()
+    if not REPO_RE.fullmatch(value):
+        raise CliError(f"invalid --repo value {repo!r}; expected OWNER/REPO")
+    return value
+
+
+def require_text(name: str, value: str) -> str:
+    cleaned = value.strip()
+    if not cleaned:
+        raise CliError(f"--{name} must not be empty")
+    return cleaned
+
+
+def check_no_secrets(fields: dict[str, str | None]) -> None:
+    for field_name, value in fields.items():
+        if not value:
+            continue
+        for label, pattern in SECRET_RULES:
+            if pattern.search(value):
+                raise CliError(
+                    f"refused: --{field_name} appears to contain a secret ({label}). "
+                    "Remove sensitive values before posting to a public repository."
+                )
+
+
+def detect_evener_version() -> dict[str, Any]:
+    empty: dict[str, Any] = {"available": False, "raw": None, "commit": None, "dirty": False, "build_time": None}
+    if shutil.which("evener") is None:
+        return empty
+    try:
+        proc = subprocess.run(["evener", "--version"], capture_output=True, text=True, timeout=5, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return empty
+    if proc.returncode != 0 or not proc.stdout.strip():
+        return empty
+    line = proc.stdout.strip().splitlines()[0]
+    raw = line.removeprefix("evener ")
+    match = VERSION_RE.match(line)
+    if not match:
+        return {"available": True, "raw": raw, "commit": None, "dirty": "-dirty" in raw, "build_time": None}
+    return {"available": True, "raw": raw, "commit": match.group(1), "dirty": bool(match.group(2)), "build_time": match.group(3)}
+
+
+def run_gh(args: list[str]) -> str:
+    if shutil.which("gh") is None:
+        raise GhUnavailableError("gh CLI is not installed or not on PATH; install GitHub CLI and run `gh auth login`.")
+    try:
+        proc = subprocess.run(["gh", *args], capture_output=True, text=True, timeout=30, check=False)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise CliError(f"failed to run gh: {exc}") from exc
+    if proc.returncode != 0:
+        detail = proc.stderr.strip() or proc.stdout.strip() or f"exit status {proc.returncode}"
+        if any(tok in detail.lower() for tok in AUTH_TOKENS):
+            raise GhUnavailableError(f"gh authentication required (`gh auth login`): {detail}")
+        raise CliError(f"gh command failed: {detail}")
+    return proc.stdout
+
+
+def gh_json(args: list[str]) -> Any:
+    raw = run_gh(args)
+    try:
+        return json.loads(raw) if raw.strip() else None
+    except json.JSONDecodeError as exc:
+        raise CliError(f"could not parse JSON from gh output: {exc}") from exc
+
+
+def fetch_optional_api(endpoint: str) -> dict[str, Any] | None:
+    try:
+        data = gh_json(["api", endpoint])
+    except GhUnavailableError:
+        raise
+    except CliError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def normalize_issue(raw: dict[str, Any]) -> dict[str, Any]:
+    labels = [item["name"] for item in (raw.get("labels") or []) if isinstance(item, dict) and item.get("name")]
+    body = " ".join(raw["body"].split()) if isinstance(raw.get("body"), str) else ""
+    return {
+        "number": raw.get("number"), "title": raw.get("title", ""), "state": str(raw.get("state", "")).upper(),
+        "url": raw.get("url", ""), "labels": labels, "updated_at": raw.get("updatedAt"), "closed_at": raw.get("closedAt"),
+        "snippet": body if len(body) <= 160 else body[:159] + "...",
+    }
+
+
+def commit_matches(latest: str | None, current: str | None) -> bool:
+    return bool(latest and current and len(current) >= 7 and latest.lower().startswith(current.lower()))
+
+
+def emit(payload: dict[str, Any], as_json: bool, lines: list[str]) -> None:
+    print(json.dumps(payload, indent=2) if as_json else "\n".join(lines))
+
+
+def cmd_check(args: argparse.Namespace) -> None:
+    repo, query = validate_repo(args.repo), require_text("query", args.query)
+    version = detect_evener_version()
+    issues = gh_json([
+        "issue", "list", "--repo", repo, "--state", "all",
+        "--limit", str(args.limit), "--search", query,
+        "--json", "number,title,state,url,labels,updatedAt,closedAt,body",
+    ])
+    normalized = [normalize_issue(item) for item in (issues or []) if isinstance(item, dict)]
+    open_issues = [item for item in normalized if item["state"] == "OPEN"]
+    closed_issues = [item for item in normalized if item["state"] != "OPEN"]
+    payload = {
+        "repo": repo, "query": query, "evener_version": version,
+        "open_issues": open_issues, "closed_issues": closed_issues, "has_possible_fixed": bool(closed_issues),
+    }
+    lines = [
+        f"Repository: {repo}",
+        f"Evener version: {version['raw'] or 'unknown (evener not on PATH)'}",
+        f"Matches for {query!r}: {len(open_issues)} open, {len(closed_issues)} closed",
+    ]
+    if open_issues:
+        lines.extend(["\nOpen issues:"] + [f"  #{i['number']} {i['title']} ({i['url']})" for i in open_issues])
+    if closed_issues:
+        lines.append("\nRecently closed issues (possible already-fixed candidates; run `check-update`):")
+        for item in closed_issues:
+            closed = f" closed {item['closed_at']}" if item["closed_at"] else ""
+            lines.append(f"  #{item['number']}{closed} {item['title']} ({item['url']})")
+    if not open_issues and not closed_issues:
+        lines.append("No matching issues found.")
+    emit(payload, args.json, lines)
+
+
+def classify_update(
+    repo: str, version: dict[str, Any], release_sha: str | None, main_sha: str, main_ahead: bool
+) -> tuple[str, bool, int | None, str, str]:
+    snapshot_cmd = "evener upgrade snapshot" if main_ahead else ""
+    commit = version["commit"]
+    if not version["available"] or not commit:
+        return "unknown_local_build", True, None, "evener upgrade", snapshot_cmd
+    if version["dirty"]:
+        return "dirty_local_build", True, None, "evener upgrade", snapshot_cmd
+    if commit_matches(main_sha, commit):
+        return "up_to_date_main", False, None, "", ""
+    if commit_matches(release_sha, commit):
+        return "up_to_date_release", False, None, "", snapshot_cmd
+    cmp_raw = fetch_optional_api(f"repos/{repo}/compare/{commit}...main")
+    cmp_status = str(cmp_raw.get("status", "")) if cmp_raw else ""
+    ahead_by = int(cmp_raw["ahead_by"]) if cmp_raw and isinstance(cmp_raw.get("ahead_by"), int) else 0
+    if cmp_status in ("ahead", "diverged") and ahead_by > 0:
+        return ("update_available" if cmp_status == "ahead" else "diverged"), True, ahead_by, "evener upgrade", snapshot_cmd
+    if cmp_status in ("behind", "identical"):
+        return ("ahead_of_main" if cmp_status == "behind" else "up_to_date_main"), False, None, "", ""
+    return "unverified_commit", True, None, "evener upgrade", snapshot_cmd
+
+
+def cmd_check_update(args: argparse.Namespace) -> None:
+    repo = validate_repo(args.repo)
+    version = detect_evener_version()
+    release_info: dict[str, Any] | None = None
+    release_raw = fetch_optional_api(f"repos/{repo}/releases/latest")
+    if release_raw and release_raw.get("tag_name"):
+        tag = str(release_raw["tag_name"])
+        tag_commit = fetch_optional_api(f"repos/{repo}/commits/{quote(tag, safe='')}")
+        release_info = {"tag": tag, "commit": tag_commit.get("sha") if tag_commit else None, "published_at": release_raw.get("published_at"), "url": release_raw.get("html_url")}
+    main_raw = gh_json(["api", f"repos/{repo}/commits/main"])
+    if not isinstance(main_raw, dict) or not main_raw.get("sha"):
+        raise CliError(f"could not resolve latest main commit for {repo}")
+    main_sha = str(main_raw["sha"])
+    main_date = ((main_raw.get("commit") or {}).get("committer") or {}).get("date")
+    release_sha = release_info["commit"] if release_info else None
+    main_ahead = bool(release_sha and main_sha.lower() != str(release_sha).lower())
+    status, update_available, commits_behind, upgrade_cmd, snapshot_cmd = classify_update(repo, version, release_sha, main_sha, main_ahead)
+    payload = {
+        "repo": repo, "evener_version": version, "latest_release": release_info,
+        "latest_main": {"commit": main_sha, "date": main_date, "url": main_raw.get("html_url")},
+        "status": status, "update_available": update_available, "main_ahead_of_release": main_ahead,
+        "commits_behind_main": commits_behind, "upgrade_command": upgrade_cmd, "snapshot_upgrade_command": snapshot_cmd,
+    }
+    rel_label = f"{release_info['tag']} ({release_sha[:7]})" if release_info and release_sha else (release_info["tag"] if release_info else "none")
+    behind_note = f", {commits_behind} commits behind main" if commits_behind else ""
+    lines = [
+        f"Running Evener: {version['raw'] or 'unknown (evener not on PATH)'}",
+        f"Latest release: {rel_label}",
+        f"Latest main:    {main_sha[:7]} ({main_date or 'unknown date'})",
+        f"Status:         {status} (update_available={str(update_available).lower()}{behind_note})",
+    ]
+    if upgrade_cmd:
+        lines.append(f"Upgrade:        {upgrade_cmd}")
+    if snapshot_cmd:
+        lines.append(f"Snapshot build: {snapshot_cmd}")
+    emit(payload, args.json, lines)
+
+def cmd_upvote(args: argparse.Namespace) -> None:
+    repo = validate_repo(args.repo)
+    payload: dict[str, Any] = {"action": "upvote", "dry_run": args.dry_run, "repo": repo, "issue_number": args.issue_number, "reaction": "+1"}
+    if args.dry_run:
+        emit(payload, args.json, [f"[dry-run] Would add +1 reaction to {repo}#{args.issue_number}"])
+        return
+    resp = gh_json(["api", f"repos/{repo}/issues/{args.issue_number}/reactions", "-f", "content=+1"])
+    if isinstance(resp, dict) and resp.get("id") is not None:
+        payload["reaction_id"] = resp["id"]
+    emit(payload, args.json, [f"Added +1 reaction to {repo}#{args.issue_number}"])
+
+def cmd_comment(args: argparse.Namespace) -> None:
+    repo, details = validate_repo(args.repo), require_text("details", args.details)
+    tool = args.tool.strip() if args.tool else None
+    check_no_secrets({"details": details, "tool": tool})
+    version = detect_evener_version()
+    header = [f"**Evener version:** `{version['raw'] or 'unknown'}`"] + ([f"**Tool:** `{tool}`"] if tool else [])
+    body = "\n".join(header) + f"\n\n### Additional reproduction details\n\n{details}\n"
+    payload: dict[str, Any] = {"action": "comment", "dry_run": args.dry_run, "repo": repo, "issue_number": args.issue_number, "evener_version": version, "body": body}
+    if args.dry_run:
+        emit(payload, args.json, [f"[dry-run] Would comment on {repo}#{args.issue_number}:\n\n{body}"])
+        return
+    payload["url"] = run_gh(["issue", "comment", str(args.issue_number), "--repo", repo, "--body", body]).strip()
+    emit(payload, args.json, [f"Commented on {repo}#{args.issue_number}: {payload['url']}"])
+
+def cmd_report(args: argparse.Namespace) -> None:
+    repo = validate_repo(args.repo)
+    title, summary, details = require_text("title", args.title), require_text("summary", args.summary), require_text("details", args.details)
+    tool = args.tool.strip() if args.tool else None
+    check_no_secrets({"title": title, "summary": summary, "details": details, "tool": tool})
+    version = detect_evener_version()
+    env = [f"- **Evener version:** `{version['raw'] or 'unknown'}`", f"- **Category:** `{args.category}`"] + ([f"- **Tool:** `{tool}`"] if tool else [])
+    body = f"## Summary\n\n{summary}\n\n## Details\n\n{details}\n\n## Environment\n\n" + "\n".join(env) + "\n"
+    payload: dict[str, Any] = {"action": "report", "dry_run": args.dry_run, "repo": repo, "title": title, "category": args.category, "evener_version": version, "body": body}
+    if args.dry_run:
+        emit(payload, args.json, [f"[dry-run] Would open issue on {repo}: {title}\n\n{body}"])
+        return
+    payload["url"] = run_gh(["issue", "create", "--repo", repo, "--title", title, "--body", body]).strip()
+    emit(payload, args.json, [f"Opened issue on {repo}: {payload['url']}"])
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="harness-feedback", description="Evener harness feedback and update-check helper.")
+    parser.add_argument("--repo", default=DEFAULT_REPO, help=f"GitHub repository slug (default: {DEFAULT_REPO})")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    def add_sub(name: str, help_text: str, func: Any, *, mutating: bool = False) -> argparse.ArgumentParser:
+        p = sub.add_parser(name, help=help_text)
+        p.add_argument("--repo", default=argparse.SUPPRESS, help=f"GitHub repository slug (default: {DEFAULT_REPO})")
+        p.add_argument("--json", action="store_true", help="emit structured JSON output")
+        if mutating:
+            p.add_argument("--dry-run", action="store_true", help="preview the action without calling GitHub")
+        p.set_defaults(func=func)
+        return p
+
+    p_check = add_sub("check", "search open and closed issues and report running Evener version", cmd_check)
+    p_check.add_argument("--query", required=True, help="search terms for existing issues")
+    p_check.add_argument("--limit", type=positive_int, default=10, help="maximum issues to return (default: 10)")
+    add_sub("check-update", "compare running Evener version with latest release and main", cmd_check_update)
+    p_up = add_sub("upvote", "add a +1 reaction to an existing issue", cmd_upvote, mutating=True)
+    p_up.add_argument("issue_number", type=positive_int, help="GitHub issue number")
+    p_comment = add_sub("comment", "append version and reproduction details to an existing issue", cmd_comment, mutating=True)
+    p_comment.add_argument("issue_number", type=positive_int, help="GitHub issue number")
+    p_comment.add_argument("--details", required=True, help="new reproduction details to add")
+    p_comment.add_argument("--tool", help="Evener tool name involved, if applicable")
+    p_report = add_sub("report", "file a new structured GitHub issue", cmd_report, mutating=True)
+    p_report.add_argument("--title", required=True, help="concise issue title")
+    p_report.add_argument("--summary", required=True, help="short problem summary")
+    p_report.add_argument("--details", required=True, help="reproduction steps and observed behavior")
+    p_report.add_argument("--category", choices=CATEGORIES, default="other", help="feedback category")
+    p_report.add_argument("--tool", help="Evener tool name involved, if applicable")
+    return parser
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    try:
+        args.func(args)
+    except CliError as exc:
+        print(f"harness-feedback: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

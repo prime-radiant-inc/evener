@@ -1,0 +1,5 @@
+{
+  "name": "harness-feedback",
+  "version": "1.0.0",
+  "description": "Skill and CLI helper for deduplicated Evener harness feedback and self-update checks."
+}
