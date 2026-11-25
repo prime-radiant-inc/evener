@@ -107,6 +107,9 @@ export interface AdvancedOptionsProps {
    * "high (default)", "openai/gpt-5 (default)" - so the empty marker names
    * what a session started now would actually inherit. */
   resolvedDefaults?: LaunchConfigLayer;
+  /** Optional custom summary node for callers aligning this disclosure with
+   * sibling quiet rows. Omitted, renders the default "Advanced" label. */
+  summary?: ReactNode;
 }
 
 export function AdvancedOptions({
@@ -126,6 +129,7 @@ export function AdvancedOptions({
   children,
   open: controlledOpen,
   onOpenChange,
+  summary,
   resolvedDefaults,
 }: AdvancedOptionsProps) {
   const [localOpen, setLocalOpen] = useState(false);
@@ -227,7 +231,7 @@ export function AdvancedOptions({
         open={open}
         onOpenChange={setOpen}
         data-testid="spawn-advanced-options"
-        summary={<span className={CLASS.label}>Advanced options</span>}
+        summary={summary ?? <span className={CLASS.label}>Advanced</span>}
       >
         <div className={CLASS.reveal}>
           <Card variant="outlined">

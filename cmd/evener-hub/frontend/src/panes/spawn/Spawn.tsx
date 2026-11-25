@@ -201,12 +201,19 @@ const CLASS = {
   form: requireClass(styles.form, "spawn.module.css", "form"),
   startReason: requireClass(styles.startReason, "spawn.module.css", "startReason"),
   chordHints: requireClass(styles.chordHints, "spawn.module.css", "chordHints"),
+  dirValue: requireClass(styles.dirValue, "spawn.module.css", "dirValue"),
+  dirPath: requireClass(styles.dirPath, "spawn.module.css", "dirPath"),
+  dirParent: requireClass(styles.dirParent, "spawn.module.css", "dirParent"),
+  dirLeaf: requireClass(styles.dirLeaf, "spawn.module.css", "dirLeaf"),
+  branchGroup: requireClass(styles.branchGroup, "spawn.module.css", "branchGroup"),
+  branchParen: requireClass(styles.branchParen, "spawn.module.css", "branchParen"),
   branch: requireClass(styles.branch, "spawn.module.css", "branch"),
   accessNote: requireClass(styles.accessNote, "spawn.module.css", "accessNote"),
   quietRows: requireClass(styles.quietRows, "spawn.module.css", "quietRows"),
   quietRow: requireClass(styles.quietRow, "spawn.module.css", "quietRow"),
   desktopOnly: requireClass(styles.desktopOnly, "spawn.module.css", "desktopOnly"),
   quietSummary: requireClass(styles.quietSummary, "spawn.module.css", "quietSummary"),
+  quietSummaryValue: requireClass(styles.quietSummaryValue, "spawn.module.css", "quietSummaryValue"),
   quietButtonSummary: requireClass(styles.quietButtonSummary, "spawn.module.css", "quietButtonSummary"),
   rowChevron: requireClass(styles.rowChevron, "spawn.module.css", "rowChevron"),
   quietSummaryAction: requireClass(styles.quietSummaryAction, "spawn.module.css", "quietSummaryAction"),
@@ -216,10 +223,30 @@ const CLASS = {
   mobileConfig: requireClass(styles.mobileConfig, "spawn.module.css", "mobileConfig"),
   promptIntro: requireClass(styles.promptIntro, "spawn.module.css", "promptIntro"),
   promptHeading: requireClass(styles.promptHeading, "spawn.module.css", "promptHeading"),
-  promptSubtitle: requireClass(styles.promptSubtitle, "spawn.module.css", "promptSubtitle"),
   promptAnchor: requireClass(styles.promptAnchor, "spawn.module.css", "promptAnchor"),
   submitLabel: requireClass(styles.submitLabel, "spawn.module.css", "submitLabel"),
 };
+
+function splitDirectoryPath(path: string): [string, string] | null {
+  const trimmedEnd = path.length > 1 && path.endsWith("/") ? path.slice(0, -1) : path;
+  const slash = trimmedEnd.lastIndexOf("/");
+  if (slash < 0 || slash === trimmedEnd.length - 1) return null;
+  return [path.slice(0, slash + 1), path.slice(slash + 1)];
+}
+
+function pluginCountSummary(enabledCount: number, totalCount: number): string {
+  if (enabledCount === 0 || totalCount === 0) return "None";
+  if (enabledCount === totalCount) return `${enabledCount} enabled`;
+  return `${enabledCount} of ${totalCount}`;
+}
+
+function advancedSummaryLabel(overrideCount: number, manager: boolean, customHarnessLabel: string | null): string {
+  const parts: string[] = [];
+  if (manager) parts.push("Manager");
+  if (customHarnessLabel !== null) parts.push(customHarnessLabel);
+  if (overrideCount > 0) parts.push(overrideCount === 1 ? "1 override" : `${overrideCount} overrides`);
+  return parts.length > 0 ? parts.join(", ") : "Defaults";
+}
 
 // kata xgk8: the empty-value label Model shows when the hub has confirmed it
 // has no default to fall back to - never "(default)", which reads exactly
@@ -2630,8 +2657,17 @@ function SpawnForm({
                 : hostCatalogPending || modelHostPending
                   ? "Waiting for the host to answer; Start is available when it does."
                   : undefined;
+  const cwdSplit = cwd ? splitDirectoryPath(cwd) : null;
+  const customHarnessLabel =
+    harness !== "" && harness !== "evener"
+      ? (harnessOptions.find((option) => option.value === harness)?.label ?? harness)
+      : null;
+  const advancedSummary = advancedSummaryLabel(Object.keys(advancedOverrides).length, manager, customHarnessLabel);
+  const startTooltip =
+    startBlockedReason ??
+    `${prompt.trim() === "" && attachments.items.length === 0 ? "Start an empty session" : "Start session"} · ${chordLabel(["Mod", "Enter"])}`;
   return (
-    <PaneScaffold title="New session" mobileTitle="New session" scaffoldMarker="spawn">
+    <PaneScaffold mobileTitle="New session" scaffoldMarker="spawn">
       <div className={CLASS.form}>
         {staleNotice !== null && (
           <InlineNotice
@@ -2680,8 +2716,7 @@ function SpawnForm({
         )}
 
         <div className={CLASS.promptIntro} data-testid="spawn-prompt-intro">
-          <h2 className={CLASS.promptHeading}>What should the agent do?</h2>
-          <p className={CLASS.promptSubtitle}>Leave blank to start an empty session and write the task there.</p>
+          <h2 className={CLASS.promptHeading}>What's next?</h2>
         </div>
 
         {providerRequired && (
@@ -2816,19 +2851,16 @@ function SpawnForm({
                     setSlashToken(null);
                     setFileToken(null);
                   }}
-                  // Short, because the intro above the card already asks the
-                  // question and states the dormant-start rule; a placeholder
-                  // that repeats them spends the field's one line on nothing.
-                  placeholder="Describe the task…"
+                  placeholder="How can I help? Tell me what needs doing. The more descriptive, the better."
                   aria-label="Prompt"
                   // The PromptCard around it draws the one border this field
                   // needs and owns the focus ring - without this the field drew
                   // its own box inside the card's, and its resize grabber floated
                   // loose in the corner between them.
                   // The page's primary input, so it opens at a size worth writing
-                  // in rather than growing into one. This is also what absorbs
-                  // the slack that used to sit dead below the button.
-                  minLines={6}
+                  // in rather than growing into one while keeping the settings
+                  // list tight below it.
+                  minLines={4}
                 />
               }
               leading={
@@ -2884,7 +2916,7 @@ function SpawnForm({
                 </div>
               }
               actions={
-                <Tooltip label={startBlockedReason ?? `Start the agent · ${chordLabel(["Mod", "Enter"])}`}>
+                <Tooltip label={startTooltip}>
                   <Button
                     variant="primary"
                     size="xs"
@@ -3028,7 +3060,9 @@ function SpawnForm({
                 summary={
                   <div className={CLASS.quietSummary} data-testid="spawn-host-summary">
                     <strong>Host</strong>
-                    <span data-testid="spawn-host-value">{displayHostLabel}</span>
+                    <span className={CLASS.quietSummaryValue} data-testid="spawn-host-value">
+                      {displayHostLabel}
+                    </span>
                   </div>
                 }
               >
@@ -3061,21 +3095,43 @@ function SpawnForm({
               data-testid="spawn-cwd-trigger"
               aria-haspopup="dialog"
               aria-expanded={cwdPickerOpen}
-              aria-label={`Working directory: ${cwdText}${branch !== "" ? `, branch ${branch}` : ""} — browse`}
+              aria-label={`Directory: ${cwdText}${branch !== "" ? `, branch ${branch}` : ""} — browse`}
               onClick={() => setCwdPickerOpen(true)}
             >
               <span className={`${CLASS.quietSummary} ${CLASS.quietButtonSummary}`}>
-                <strong>Working directory</strong>
-                <span data-testid="spawn-cwd-value" data-state={cwd ? "chosen" : "unset"} title={cwd}>
-                  {cwdText}
-                </span>
-                {/* Git info is a property of that directory (HEAD there), so
-                    it suffixes the directory value on the row. */}
-                {branch !== "" && (
-                  <span className={CLASS.branch} data-testid="spawn-branch">
-                    {branch}
+                <strong>Directory</strong>
+                <span className={CLASS.dirValue}>
+                  <span
+                    className={cwd ? CLASS.dirPath : undefined}
+                    data-testid="spawn-cwd-value"
+                    data-state={cwd ? "chosen" : "unset"}
+                    title={cwd}
+                  >
+                    {cwdSplit !== null ? (
+                      <>
+                        <span className={CLASS.dirParent}>{cwdSplit[0]}</span>
+                        <span className={CLASS.dirLeaf}>{cwdSplit[1]}</span>
+                      </>
+                    ) : (
+                      cwdText
+                    )}
                   </span>
-                )}
+                  {/* Git info is a property of that directory (HEAD there), so
+                      it suffixes the directory value inline in parentheses. */}
+                  {branch !== "" && (
+                    <span className={CLASS.branchGroup}>
+                      <span className={CLASS.branchParen} aria-hidden="true">
+                        (
+                      </span>
+                      <span className={CLASS.branch} data-testid="spawn-branch">
+                        {branch}
+                      </span>
+                      <span className={CLASS.branchParen} aria-hidden="true">
+                        )
+                      </span>
+                    </span>
+                  )}
+                </span>
                 <span className={`${CLASS.quietSummaryAction} ${CLASS.rowChevron}`} aria-hidden="true">
                   <Chevron direction="right" />
                 </span>
@@ -3116,8 +3172,8 @@ function SpawnForm({
               data-testid="spawn-access-disclosure"
               summary={
                 <div className={CLASS.quietSummary} data-testid="spawn-access-summary">
-                  <strong>Access mode</strong>
-                  <span role="status" data-testid="spawn-access-value">
+                  <strong>Access</strong>
+                  <span className={CLASS.quietSummaryValue} role="status" data-testid="spawn-access-value">
                     {accessValue}
                   </span>
                 </div>
@@ -3136,7 +3192,7 @@ function SpawnForm({
               </p>
               {advancedSandboxOverride && (
                 <Button variant="quiet" size="xs" type="button" onClick={focusAccessOwner}>
-                  Change in Advanced options
+                  Change in Advanced
                 </Button>
               )}
             </Disclosure>
@@ -3150,11 +3206,13 @@ function SpawnForm({
                   data-state={pluginPreview.state.status}
                   role="status"
                 >
-                  <strong>Plugins for this session</strong>
-                  {pluginPreview.state.status === "loading" && <span>Inspecting plugins…</span>}
+                  <strong>Plugins</strong>
+                  {pluginPreview.state.status === "loading" && (
+                    <span className={CLASS.quietSummaryValue}>Inspecting plugins…</span>
+                  )}
                   {pluginPreview.state.status === "error" && (
                     <>
-                      <span title={pluginPreview.state.message}>
+                      <span className={CLASS.quietSummaryValue} title={pluginPreview.state.message}>
                         Couldn't inspect plugins: {pluginPreview.state.message}
                       </span>
                       <div className={CLASS.quietSummaryAction}>
@@ -3176,11 +3234,13 @@ function SpawnForm({
                       data-testid="spawn-plugin-summary"
                       data-state={pluginPreview.state.status}
                     >
-                      <strong>Plugins for this session</strong>
-                      <span>
-                        {configuredPluginNames.length > 0
-                          ? `Configured plugins: ${configuredPluginNames.join(", ")}`
-                          : "Configured plugins: none"}
+                      <strong>Plugins</strong>
+                      <span
+                        className={CLASS.quietSummaryValue}
+                        data-testid="spawn-plugin-value"
+                        title={configuredPluginNames.length > 0 ? configuredPluginNames.join(", ") : undefined}
+                      >
+                        {pluginCountSummary(configuredPluginNames.length, previewResponse.plugins.length)}
                       </span>
                     </div>
                   }
@@ -3215,6 +3275,14 @@ function SpawnForm({
               resolveConfig={resolveConfig}
               loadCatalog={loadCatalog}
               complete={complete}
+              summary={
+                <div className={CLASS.quietSummary} data-testid="spawn-advanced-summary">
+                  <strong>Advanced</strong>
+                  <span className={CLASS.quietSummaryValue} data-testid="spawn-advanced-value">
+                    {advancedSummary}
+                  </span>
+                </div>
+              }
               resolvedDefaults={
                 sandboxOverride ? { ...resolvedDefaults, sandbox: undefined } : (resolvedDefaults ?? undefined)
               }
