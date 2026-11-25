@@ -1,18 +1,12 @@
-import {
-  type KeyboardEvent,
-  type ReactElement,
-  type ReactNode,
-  useEffect,
-  useLayoutEffect,
-  useRef,
-  useState,
-} from "react";
+import { type ReactElement, type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { LayerFocusScope } from "../focusscope";
 import { requireClass } from "../internal/requireClass";
 import { useDismissOnOutsidePress } from "../internal/useDismissOnOutsidePress";
+import { useEscapeToClose } from "../internal/useEscapeToClose";
 import { usePortalDocument } from "../internal/usePortalDocument";
-import { usePresence } from "../internal/usePresence";
+import { usePresence, useShownWhileClosing } from "../internal/usePresence";
+import { positionFromVisibleViewport, rectInVisibleViewport, visibleViewportBounds } from "../internal/visibleViewport";
 import { computePopoverPosition, type PopoverPosition, TRIGGER_GAP, transformOriginFor } from "./computePosition";
 import styles from "./popover.module.css";
 
@@ -84,8 +78,7 @@ export function Popover({
   const [origin, setOrigin] = useState<string | undefined>(undefined);
   const { mounted, phase } = usePresence(open, panelRef);
   // While the panel leaves it shows what it held when it closed.
-  const shownRef = useRef(children);
-  if (open) shownRef.current = children;
+  const shown = useShownWhileClosing(open, children);
   // The document the trigger lives in. A Dockview popout is a separate window:
   // portaling into the opener's body would put the panel in the wrong one, and
   // listeners on the opener's window never see the popout's scroll, resize, or
@@ -128,20 +121,19 @@ export function Popover({
       // settled size on the first frame with no wait and no reposition flash.
       // (The trigger keeps its rect: that one is wanted in viewport
       // coordinates, and the trigger is never mid-animation here.)
-      const viewport = panelWindow
-        ? { width: panelWindow.innerWidth, height: panelWindow.innerHeight }
-        : { width: window.innerWidth, height: window.innerHeight };
+      const viewport = visibleViewportBounds(panelWindow ?? window);
       const triggerRect = triggerEl.getBoundingClientRect();
       const placed = computePopoverPosition(
-        triggerRect,
+        rectInVisibleViewport(triggerRect, viewport),
         {
           width: panelEl.offsetWidth,
           height: panelEl.offsetHeight,
         },
         viewport,
       );
-      setPosition(placed);
-      setOrigin(transformOriginFor(triggerRect, placed));
+      const position = positionFromVisibleViewport(placed, viewport);
+      setPosition(position);
+      setOrigin(transformOriginFor(triggerRect, position));
     }
     measure();
 
@@ -190,15 +182,7 @@ export function Popover({
     };
   }, [open, onClose, closeOnScroll, panelWindow]);
 
-  function handlePanelKeyDown(event: KeyboardEvent<HTMLDivElement>) {
-    if (event.key === "Escape") {
-      // Stop the event from also reaching an enclosing overlay (e.g. a Dialog
-      // this popover is nested in), mirroring Menu's Escape handling.
-      event.preventDefault();
-      event.stopPropagation();
-      onClose();
-    }
-  }
+  const handlePanelKeyDown = useEscapeToClose(onClose, { stopPropagation: true });
 
   return (
     <span ref={triggerRef} className={`${CLASS.trigger} ${stretchTrigger ? CLASS.triggerStretch : ""}`}>
@@ -221,7 +205,7 @@ export function Popover({
               }
               onKeyDown={handlePanelKeyDown}
             >
-              {shownRef.current}
+              {shown}
             </div>
           </LayerFocusScope>,
           panelDocument.body,

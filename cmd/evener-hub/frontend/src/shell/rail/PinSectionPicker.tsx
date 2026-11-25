@@ -3,9 +3,9 @@ import { friendlyErrorMessage } from "@evener/appwire-client";
 import { type ChangeEvent, useEffect, useId, useState } from "react";
 import { selectPinSectionSummaries } from "../../stores/navigation/selectors";
 import { navigationStore } from "../../stores/navigation/store";
-import { Button, Dialog, FormRow, InlineNotice, Input, ListRow, Sheet, Skeleton } from "../../widgets";
+import { Button, FormRow, InlineNotice, Input, ListRow, Skeleton } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
-import { useIsMobile } from "../useIsMobile";
+import { ResponsiveModal } from "../ResponsiveModal";
 import { isPinSectionNotFound, type PinSectionSummary } from "./actions";
 import styles from "./railDialog.module.css";
 
@@ -30,7 +30,6 @@ function sortedPinSectionSummaries(): PinSectionSummary[] {
 
 export function PinSectionPicker({ session, onAssign, onClose }: PinSectionPickerProps) {
   const inputID = useId();
-  const isMobile = useIsMobile();
   const [sections, setSections] = useState<PinSectionSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [nameMode, setNameMode] = useState(false);
@@ -163,21 +162,9 @@ export function PinSectionPicker({ session, onAssign, onClose }: PinSectionPicke
     </div>
   );
 
-  // Mobile gets the standard Sheet (side=bottom, the same geometry the
-  // session-tree drawer already uses - thumb-reachable header and close);
-  // desktop keeps the centered Dialog. Both are the same OverlayPanel
-  // contract (scrim, Escape, focus trap/restore), so only the panel's own
-  // geometry differs.
-  if (isMobile) {
-    return (
-      <Sheet side="bottom" open onClose={onClose} title={title} footer={footer}>
-        {body}
-      </Sheet>
-    );
-  }
   return (
-    <Dialog open onClose={onClose} title={title} footer={footer}>
+    <ResponsiveModal open onClose={onClose} title={title} footer={footer}>
       {body}
-    </Dialog>
+    </ResponsiveModal>
   );
 }
