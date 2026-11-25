@@ -13,6 +13,25 @@ import (
 // client cannot route a side call to.
 var ErrFastCheapProviderUnavailable = errors.New("is not configured or has no credential")
 
+// CrossProviderFastCheapRef returns the target (provider, model, true) when raw
+// routes auxiliary side calls to a different provider instance than
+// activeProvider, or ("", "", false) when raw is unset, bare ("model"),
+// malformed, or targets activeProvider.
+func CrossProviderFastCheapRef(raw, activeProvider string) (cheapProvider, model string, ok bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", "", false
+	}
+	cheapProvider, model, hasSlash := strings.Cut(raw, "/")
+	if !hasSlash || cheapProvider == "" || model == "" {
+		return "", "", false
+	}
+	if active := strings.TrimSpace(activeProvider); active != "" && strings.EqualFold(cheapProvider, active) {
+		return "", "", false
+	}
+	return cheapProvider, model, true
+}
+
 // ApplyFastCheapModel sets the auxiliary cheap model for side calls. The ref is
 // "provider/model" to route side calls to a different provider instance than the
 // active model, or a bare "model" to keep the active provider. A cross-provider
@@ -24,7 +43,7 @@ func ApplyFastCheapModel(profile *provider.Profile, raw string, client *llm.Clie
 		return profile, nil
 	}
 	raw = strings.TrimSpace(raw)
-	if cheapProvider, model, ok := strings.Cut(raw, "/"); ok && cheapProvider != "" && model != "" && cheapProvider != profile.ID() {
+	if cheapProvider, _, ok := CrossProviderFastCheapRef(raw, profile.ID()); ok {
 		if !client.HasProvider(cheapProvider) {
 			return nil, fmt.Errorf("--fast-cheap-model provider %q %w (active provider %q); available providers: %s",
 				cheapProvider, ErrFastCheapProviderUnavailable, profile.ID(), strings.Join(client.ProviderNames(), ", "))

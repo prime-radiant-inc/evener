@@ -20,6 +20,7 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/launchconfig"
+	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/execsupport/orphanpipe"
 	"primeradiant.com/evener/identifier"
@@ -236,6 +237,11 @@ func (h *HubSpawner) Spawn(ctx context.Context, req hubcore.SpawnRequest) (_ ren
 	})
 	if err := validateProviderCredentials(req.Provider, req.Resolved.Effective.Model, h.Registry); err != nil {
 		return rendezvous.Entry{}, err
+	}
+	if cheapProvider, cheapModel, ok := cmdutil.CrossProviderFastCheapRef(req.Resolved.Effective.FastCheapModel, req.Provider); ok {
+		if err := validateProviderCredentials(cheapProvider, cheapModel, h.Registry); err != nil {
+			return rendezvous.Entry{}, err
+		}
 	}
 	if err := validateEvenerLaunchContract(ctx, h.EvenerBinary, req.Resolved.Effective.Model, req.Env); err != nil {
 		return rendezvous.Entry{}, err
