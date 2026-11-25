@@ -4148,7 +4148,9 @@ describe("archived rows come from evener/archived/list", () => {
         const tablet = render(<Rail />);
         expect(screen.queryByTestId("rail-search")).toBeNull();
         expect(screen.getByTestId("rail-settings")).toBeTruthy();
-        expect(within(screen.getByTestId("rail-header")).getByRole("searchbox")).toBeTruthy();
+        const tabletFilter = within(screen.getByTestId("rail-header")).getByRole("searchbox") as HTMLInputElement;
+        expect(tabletFilter.type).toBe("text");
+        expect(tabletFilter.getAttribute("role")).toBe("searchbox");
         tablet.unmount();
       } finally {
         restoreTablet();
@@ -4269,11 +4271,13 @@ describe("archived rows come from evener/archived/list", () => {
         // Before filtering: collapsed project and archived sessions are closed.
         expect(document.querySelector('[data-session-ref="local:p1"]')).toBeNull();
         expect(document.querySelector('[data-session-ref="local:arch1"]')).toBeNull();
+        expect(screen.getByRole("button", { name: "Organize by" })).toBeTruthy();
 
         const filter = screen.getByRole("searchbox") as HTMLInputElement;
 
         // Match by pending question subtitle: only Needs you row stays, other sections hide.
         fireEvent.change(filter, { target: { value: "roll forward" } });
+        expect(screen.queryByRole("button", { name: "Organize by" })).toBeNull();
         expect(document.querySelector('[data-session-ref="local:q1"]')).not.toBeNull();
         expect(document.querySelector('[data-session-ref="buildbox:w1"]')).toBeNull();
         expect(document.querySelector('[data-session-ref="local:pin1"]')).toBeNull();
@@ -4295,6 +4299,7 @@ describe("archived rows come from evener/archived/list", () => {
 
         // Match by project name auto-expands collapsed project and collapsed Archived sessions.
         fireEvent.change(filter, { target: { value: "gamma" } });
+        expect(screen.queryByRole("button", { name: "Organize by" })).toBeNull();
         expect(document.querySelector('[data-session-ref="local:p1"]')).not.toBeNull();
         expect(document.querySelector('[data-session-ref="local:arch1"]')).not.toBeNull();
         expect(document.querySelector('[data-session-ref="local:q1"]')).toBeNull();
@@ -4315,10 +4320,59 @@ describe("archived rows come from evener/archived/list", () => {
         expect(filter.value).toBe("");
         expect(document.activeElement).toBe(filter);
         expect(screen.queryByTestId("rail-filter-clear")).toBeNull();
+        expect(screen.getByRole("button", { name: "Organize by" })).toBeTruthy();
         expect(document.querySelector('[data-session-ref="local:q1"]')).not.toBeNull();
         expect(document.querySelector('[data-session-ref="local:p1"]')).toBeNull();
         expect(document.querySelector('[data-session-ref="local:arch1"]')).toBeNull();
         window.history.replaceState({}, "", "/");
+      } finally {
+        restoreViewport();
+      }
+    });
+
+    test("keeps unloaded idle projects and archived project stubs visible collapsed when matched by name and loads them on expand", () => {
+      const restoreViewport = installMobileViewport([MOBILE_QUERY, TABLET_QUERY]);
+      resetMobileViewportForTests();
+      try {
+        installState(
+          [
+            resource(
+              { kind: "catalog", catalog: "projects", offset: 0, limit: 100 },
+              {
+                generation_id: "g1",
+                revision: 1,
+                projects: [{ key: "delta", name: "Delta", default_expanded: false, session_count: 2 }],
+                remaining: 0,
+              },
+            ),
+            resource(
+              { kind: "catalog", catalog: "archived_projects", offset: 0, limit: 100 },
+              {
+                generation_id: "g1",
+                revision: 1,
+                projects: [{ key: "old-delta", name: "Delta Legacy", session_count: 1 }],
+                remaining: 0,
+              },
+            ),
+          ],
+          manifest({
+            sections: { live: { count: 0 }, needs_you: { count: 0 }, pin_sections: { count: 0 } },
+            catalogs: { projects: { count: 1 }, archived_projects: { count: 1 }, test_runs: { count: 0 } },
+          }),
+        );
+        const loadProject = vi.fn().mockResolvedValue(undefined);
+        navigationStore.setState({ loadProject });
+        render(<Rail />);
+
+        fireEvent.change(screen.getByRole("searchbox"), { target: { value: "delta" } });
+        const unloadedProject = screen.getByRole("treeitem", { name: /^Delta$/i });
+        expect(unloadedProject.getAttribute("aria-expanded")).toBe("false");
+        const unloadedArchived = screen.getByRole("treeitem", { name: /^Delta Legacy$/i });
+        expect(unloadedArchived.getAttribute("aria-expanded")).toBe("false");
+
+        fireEvent.click(within(unloadedProject).getByText("Delta"));
+        expect(unloadedProject.getAttribute("aria-expanded")).toBe("true");
+        expect(loadProject).toHaveBeenCalledWith("delta");
       } finally {
         restoreViewport();
       }

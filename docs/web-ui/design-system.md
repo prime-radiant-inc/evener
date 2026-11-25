@@ -1542,11 +1542,13 @@ indicator.
 **One search field per Sessions surface.** Below 900px (both the phone Sessions
 drawer and the persistent tablet Sessions board), the rail header omits the
 duplicate Search magnifier button (`rail-search`) and renders an inline filter
-field (`Input type="search"` with a quiet clear control when non-empty) directly
+field (`Input type="text" role="searchbox"` with a quiet clear control when
+non-empty, avoiding a duplicate browser-native search cancel glyph) directly
 below the header. Typing filters sessions in place (case-insensitive substring
 match across titles, status/subtitle text, project names, and remote host names),
-hides empty sections and groups, auto-expands matching ancestor groups without
-mutating saved disclosure state, and restores prior expansion when cleared.
+hides empty sections and groups, auto-expands matching ancestor groups (keeping
+matched unloaded projects collapsed and loadable on expand) without mutating
+saved disclosure state, and restores prior expansion when cleared.
 Pressing `Escape` clears a non-empty query before dismissing the drawer, and
 `ArrowDown` moves focus into the filtered tree. Desktop (`>= 900px`) keeps the
 header Search palette trigger (`rail-search`) and global `⌘K` shortcut unchanged.

@@ -726,7 +726,12 @@ function assertMobileResult(result) {
       `mobile document is ${result.document.scrollHeight}px tall in a ${MOBILE_VIEWPORT.height}px viewport`,
     );
   }
-  if (!result.searchBox) failures.push("mobile inline search box is not rendered");
+  if (result.searchBox) {
+    failures.push("mobile inline search box uses native type=search (renders duplicate clear button)");
+  }
+  if (!result.railFilter) {
+    failures.push("mobile inline search box (type=text role=searchbox) is not rendered");
+  }
   if (result.resume) failures.push("mobile Jump back in action is still rendered");
   if (result.hints) failures.push("mobile key-binding hints are still rendered");
   return failures;
@@ -740,10 +745,11 @@ async function measurePhoneSearchPalette(page) {
   }) ?? null`;
   await waitForDom(
     send,
-    `Boolean((${dialogByTitleExpr})("Sessions") && document.querySelector('[data-testid="rail-search"]'))`,
-    "phone Sessions drawer and Search button mounted",
+    `Boolean((${dialogByTitleExpr})("Sessions") && document.querySelector('[data-testid="rail-filter"]'))`,
+    "phone Sessions drawer and inline filter mounted",
   );
-  await clickControl(send, '[data-testid="rail-search"]');
+  await clickControl(send, '[data-testid="rail-filter"]');
+  await pressKey(send, "k", "KeyK", 75, 2);
   await waitForDom(
     send,
     `Boolean((${dialogByTitleExpr})("Command palette"))`,
@@ -806,7 +812,7 @@ async function measurePhoneSearchPalette(page) {
     send,
     `(() => {
       const sessions = (${dialogByTitleExpr})("Sessions");
-      const search = document.querySelector('[data-testid="rail-search"]');
+      const search = document.querySelector('[data-testid="rail-filter"]');
       const sr = search?.getBoundingClientRect();
       const hit = sr ? document.elementFromPoint(sr.left + sr.width / 2, sr.top + sr.height / 2) : null;
       return {
@@ -2347,7 +2353,7 @@ async function main() {
       sharedTab.id,
       vitePort,
       MOBILE_VIEWPORT,
-      "JSON.stringify({ sidebar: window.measureMobileSidebar(), tap: window.measureTapTargets() })",
+      "JSON.stringify({ sidebar: { ...window.measureMobileSidebar(), railFilter: document.querySelector('[role=\"dialog\"] [data-testid=\"rail-filter\"][role=\"searchbox\"][type=\"text\"]') !== null }, tap: window.measureTapTargets() })",
     );
     const phoneSearchPalette = await measureOnPage(
       cdpEndpoint,

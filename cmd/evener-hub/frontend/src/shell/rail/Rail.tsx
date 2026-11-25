@@ -552,11 +552,11 @@ function NavigationRail({
     node.kind === "session" ? node.session.ref === selectedSessionRef : undefined;
   const isMobile = useIsMobile();
   const [filterQuery, setFilterQuery] = useState("");
-  const [filterCollapsed, setFilterCollapsed] = useState<ReadonlySet<string>>(() => new Set());
+  const [filterExpanded, setFilterExpanded] = useState<ReadonlyMap<string, boolean>>(() => new Map());
   const filterInputRef = useRef<HTMLInputElement>(null);
   const updateFilterQuery = useCallback((next: string) => {
     setFilterQuery(next);
-    setFilterCollapsed(new Set());
+    setFilterExpanded(new Map());
   }, []);
   useEffect(() => {
     if (!isMobile) updateFilterQuery("");
@@ -666,19 +666,11 @@ function NavigationRail({
   });
 
   const filterCtx = useMemo(
-    () => (isMobile ? createRailFilterContext(filterQuery, displaySources, filterCollapsed) : null),
-    [isMobile, filterQuery, displaySources, filterCollapsed],
+    () => (isMobile ? createRailFilterContext(filterQuery, displaySources, filterExpanded) : null),
+    [isMobile, filterQuery, displaySources, filterExpanded],
   );
   const filtering = filterCtx !== null;
 
-  function toggleFilterCollapse(id: string) {
-    setFilterCollapsed((current) => {
-      const next = new Set(current);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  }
   function handleFilterKeyDown(event: KeyboardEvent<HTMLInputElement>) {
     if (isIMECompositionKeydown(event.nativeEvent)) return;
     if (event.key === "Escape" && filterQuery.length > 0) {
@@ -695,9 +687,9 @@ function NavigationRail({
 
   function handleToggle(node: RailNode) {
     if (isPassiveRailNode(node)) return;
-    if (filtering) return toggleFilterCollapse(node.id);
     const value = !node.expanded;
-    setRowExpanded(node.id, value);
+    if (filtering) setFilterExpanded((current) => new Map(current).set(node.id, value));
+    else setRowExpanded(node.id, value);
     if (!value && node.kind === "project") {
       // The in-flight guard is project-wide but one project renders several
       // nodes (host-first copies): clear it only when no other copy stays
@@ -705,7 +697,9 @@ function NavigationRail({
       // node.id is excluded because the memoized lookup still reads the
       // pre-toggle map, where this copy counts as expanded.
       const stillExpanded = projectLoadExpansionKeys(node.project, groupingMode).some(
-        (id) => id !== node.id && isExpanded(id, node.project.default_expanded ?? false),
+        (id) =>
+          id !== node.id &&
+          (filtering ? filterExpanded.get(id) === true : isExpanded(id, node.project.default_expanded ?? false)),
       );
       if (!stillExpanded) rootLoadsInFlight.current.delete(node.project.key);
     }
@@ -720,7 +714,10 @@ function NavigationRail({
     }
   }
   function toggleSection(key: string, defaultOpen: boolean) {
-    if (filtering) return toggleFilterCollapse(key);
+    if (filtering) {
+      setFilterExpanded((current) => new Map(current).set(key, !(current.get(key) ?? true)));
+      return;
+    }
     setRowExpanded(key, !isExpanded(key, defaultOpen));
   }
   function openSession(session: RailSession) {
@@ -1132,7 +1129,7 @@ function NavigationRail({
     visiblePinSections.length > 0 ||
     [visibleLiveNodes, visibleProjectsNodes, visibleTestRunNodes, visibleArchivedNodes].some((list) => list.length > 0);
   const sectionOpen = (key: string, defaultOpen: boolean) =>
-    filtering ? !filterCollapsed.has(key) : isExpanded(key, defaultOpen);
+    filtering ? (filterExpanded.get(key) ?? true) : isExpanded(key, defaultOpen);
   const resourceLoading = [...resourcesState.values()].some((resource) => resource.loading);
   const loading =
     navigationMode === "unknown" || (navigationMode === "v3" && (!manifest || manifest.loading || resourceLoading));
@@ -1210,7 +1207,8 @@ function NavigationRail({
             <div className={CLASS.filterRow}>
               <Input
                 ref={filterInputRef}
-                type="search"
+                type="text"
+                role="searchbox"
                 fill
                 value={filterQuery}
                 onChange={(event) => updateFilterQuery(event.target.value)}
@@ -1299,7 +1297,7 @@ function NavigationRail({
                   projectRetryCallback={projectRetryCallback}
                 />
               ))}
-              {hostGrouping && (!filtering || visibleProjectsNodes.length > 0) && (
+              {hostGrouping && !filtering && (
                 <div className={CLASS.organizeRow}>
                   <OrganizeByControl mode={grouping} onChange={setGrouping} />
                 </div>

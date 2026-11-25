@@ -6,7 +6,7 @@ import { effectiveSessionState, type RailNode, type SessionRailNode } from "./ra
 export interface RailFilterContext {
   query: string;
   hostLabel: (hostId: string) => string;
-  collapsed: ReadonlySet<string>;
+  expanded: ReadonlyMap<string, boolean>;
   now: number;
   projectName?: string;
   hostName?: string;
@@ -15,11 +15,11 @@ export interface RailFilterContext {
 export function createRailFilterContext(
   rawQuery: string,
   sources: readonly Source[],
-  collapsed: ReadonlySet<string>,
+  expanded: ReadonlyMap<string, boolean>,
   now = Date.now(),
 ): RailFilterContext | null {
   const query = rawQuery.trim().toLowerCase();
-  return query.length > 0 ? { query, hostLabel: hostLabeler(sources), collapsed, now } : null;
+  return query.length > 0 ? { query, hostLabel: hostLabeler(sources), expanded, now } : null;
 }
 
 function hasMatch(query: string, ...values: readonly (string | undefined)[]): boolean {
@@ -49,25 +49,32 @@ function matchesSession(node: SessionRailNode, ctx: RailFilterContext): boolean 
 // Filters a rail tree in place while preserving matching ancestors and
 // auto-expanding branches without mutating persisted expansion overrides.
 // Overflow and loading placeholders drop out while filtering so archived
-// auto-load observers cannot loop on empty pages.
+// auto-load observers cannot loop on empty pages, except on unloaded projects
+// matched by name so the user can still expand and load them.
 export function filterRailNodes(nodes: readonly RailNode[], ctx: RailFilterContext): RailNode[] {
   const result: RailNode[] = [];
   for (const node of nodes) {
     if (node.kind === "overflow" || node.kind === "loading") continue;
     if (node.kind === "session") {
       const children = node.children.length > 0 ? filterRailNodes(node.children, ctx) : [];
-      if (children.length > 0) result.push({ ...node, expanded: !ctx.collapsed.has(node.id), children });
+      if (children.length > 0) result.push({ ...node, expanded: ctx.expanded.get(node.id) ?? true, children });
       else if (matchesSession(node, ctx)) result.push(node.children.length === 0 ? node : { ...node, children: [] });
       continue;
     }
+    const projectName = node.kind === "project" ? (node.displayName ?? node.project.name) : undefined;
     const nextCtx =
-      node.kind === "project"
-        ? { ...ctx, projectName: node.displayName ?? node.project.name }
+      projectName !== undefined
+        ? { ...ctx, projectName }
         : node.kind === "host"
           ? { ...ctx, hostName: node.host.label }
           : ctx;
     const children = filterRailNodes(node.children, nextCtx);
-    if (children.length > 0) result.push({ ...node, expanded: !ctx.collapsed.has(node.id), children });
+    if (children.length > 0) {
+      result.push({ ...node, expanded: ctx.expanded.get(node.id) ?? true, children });
+    } else if (node.kind === "project" && hasMatch(ctx.query, projectName)) {
+      const kept = node.children.filter((child) => child.kind !== "overflow");
+      result.push({ ...node, expanded: ctx.expanded.get(node.id) ?? false, children: kept });
+    }
   }
   return result;
 }
@@ -76,6 +83,10 @@ export function countSessionNodes(nodes: readonly RailNode[]): number {
   let total = 0;
   for (const node of nodes) {
     if (node.kind === "session") total += 1;
+    else if (node.kind === "project" && !node.project.loaded && node.children.every((c) => c.kind === "loading")) {
+      total += node.project.session_count ?? 0;
+      continue;
+    }
     if (node.kind !== "overflow" && node.kind !== "loading") total += countSessionNodes(node.children);
   }
   return total;
