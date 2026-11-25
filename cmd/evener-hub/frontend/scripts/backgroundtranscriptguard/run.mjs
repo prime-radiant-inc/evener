@@ -1981,7 +1981,14 @@ async function runEntryProductionJourney(driver, harnessUrl) {
     downloadThroughput: -1,
     uploadThroughput: -1,
   });
-  await waitForPaneText(driver, SESSION_B, GAP_SENTINEL, 60000, "the gap turn arrived after reconnect");
+  try {
+    await waitForPaneText(driver, SESSION_B, GAP_SENTINEL, 60000, "the gap turn arrived after reconnect");
+  } catch (error) {
+    await captureReconnectFailureSnapshot(driver, error).catch((snapshotError) => {
+      console.log(`reconnect failure snapshot failed: ${snapshotError instanceof Error ? snapshotError.message : String(snapshotError)}`);
+    });
+    throw error;
+  }
   // Correlate the NEW connection's target authoritative read and its applied
   // replacement window/cursor: the entry route publishes the repository's
   // accepted model through its subscription, so poll for the applied window.
@@ -2302,6 +2309,43 @@ async function waitForEntryComparison({
 // waitForPaneText waits until the named pane's own text carries the marker.
 async function waitForPaneText(driver, ref, marker, timeoutMs, label) {
   return driver.waitPage(paneContainsExpr(ref, [marker]), { timeoutMs, label });
+}
+
+// captureReconnectFailureSnapshot records what the selected pane's model and DOM
+// hold when the strict gap pane wait times out. Read-only: one evaluate over the
+// existing evidence global and the existing scroll port selector, plus the wire
+// trace already on disk. It never replaces the original failure.
+async function captureReconnectFailureSnapshot(driver, error) {
+  const at = Date.now();
+  const wire = targetPagingEvidence(SESSION_B);
+  const observed = await evaluate(
+    driver.send,
+    `(() => {
+       const e = window.backgroundTranscriptEvidence, ref = ${JSON.stringify(SESSION_B)}, model = e.model(ref);
+       const pane = document.querySelector("[data-pane-scaffold='session:${SESSION_B}']"), port = ${SCROLL_PORT_EXPR(SESSION_B)};
+       const shape = { modelPresent: model !== undefined, modelGap: false, synthetic: [],
+         entryRoute: e.entryRoute(ref), entryRecovery: e.entryRecovery(ref), connectionState: e.connectionState(),
+         panePresent: pane !== null, paneGap: (pane?.textContent ?? "").includes(${JSON.stringify(GAP_SENTINEL)}),
+         scroll: port === null ? null : { scrollTop: port.scrollTop, clientHeight: port.clientHeight, scrollHeight: port.scrollHeight } };
+       if (model === undefined) return shape;
+       const matched = [];
+       (model.turns ?? []).forEach((turn, turnIndex) => (turn.items ?? []).forEach((item, itemIndex) => {
+         if (!((item.text ?? "") + (item.output ?? "")).includes(${JSON.stringify(GAP_SENTINEL)})) return;
+         matched.push({ turnIndex, itemIndex, id: item.id ?? null, turnId: item.turnId ?? null,
+           transcriptKey: item.transcriptKey ?? null, transcriptEntryIndex: item.transcriptEntryIndex ?? null, position: item.position ?? null });
+       }));
+       shape.modelGap = matched.length > 0;
+       shape.synthetic = matched.slice(0, 10);
+       return shape;
+     })()`,
+  ).catch((snapshotError) => ({ snapshotError: snapshotError instanceof Error ? snapshotError.message : String(snapshotError) }));
+  const snapshot = { at, ref: SESSION_B, error: error instanceof Error ? error.message : String(error), wire, observed };
+  try {
+    writeFileSync(path.join(ARTIFACT_DIR, "reconnect-failure-snapshot.json"), `${JSON.stringify(snapshot, null, 2)}\n`, { mode: 0o600 });
+  } catch (writeError) {
+    console.log(`reconnect failure snapshot unavailable: ${writeError instanceof Error ? writeError.message : String(writeError)}`);
+  }
+  driver.milestone("reconnect-failure-snapshot", { modelPresent: observed.modelPresent, modelGap: observed.modelGap, snapshotError: observed.snapshotError ?? null });
 }
 
 // scrollSentinelIntoView scrolls the real port to the top until the wanted
