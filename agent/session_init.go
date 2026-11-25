@@ -850,7 +850,6 @@ type RestoreSessionConfig struct {
 	LLMRetryPolicy          *llm.RetryPolicy
 	LLMSleep                llm.SleepFunc
 	spawn                   spawnConfig
-	resumeHistory           []schema.Turn
 	deferRestoreSideEffects bool
 	// sandboxProvisioned is set only by the stable-delegate restore path after it
 	// has re-resolved and enabled the descriptor's complete sandbox policy. That
@@ -1153,9 +1152,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// coordinate mappers below share: the transcript folds for them once,
 	// not once per reopen marker and boundary they map.
 	var superseded map[string]bool
-	if restoreCfg.resumeHistory != nil {
-		resumeHistory = append([]schema.Turn(nil), restoreCfg.resumeHistory...)
-	} else if len(transcriptEntries) > 0 {
+	if len(transcriptEntries) > 0 {
 		superseded = supersededDelegateAttentionIDs(transcriptEntries)
 		resumeHistory, repairInsertions = resumeHistoryIndexedWithSuperseded(transcriptEntries, superseded)
 	}
@@ -1173,7 +1170,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// transcript, and a compacted transcript resumes partway through it, so the
 	// bound shifts by where the retained history begins.
 	divergenceTurn := meta.DivergenceTurn
-	if restoreCfg.resumeHistory == nil && len(transcriptEntries) > 0 {
+	if len(transcriptEntries) > 0 {
 		// The resumed history starts at the retained window, leaves out the
 		// transcript-only entries, and repair insertions before the fork
 		// boundary shift it right by one each (resumedDivergence carries the

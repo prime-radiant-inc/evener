@@ -196,7 +196,6 @@ func sierRestoreProjection(t *testing.T, r *sierReader, client *llm.Client, prof
 	meta.NameSource = "prompt"
 	meta.CumulativeUsage = schema.CumulativeUsage{InputTokens: 11, OutputTokens: 7, TotalTokens: 18, CacheReadTokens: int64(r.intn(2) * 3)}
 	restoreCfg := sierRestoreConfig(stateDir, clk)
-	restoreCfg.resumeHistory = []schema.Turn{}
 	restoreCfg.ModelFallbacks = []string{"openai/gpt-4.1-mini"}
 	restoreCfg.OpenAIResponsesContinuation = " auto "
 	sess, err := RestoreSessionFromMetaWithConfig(client, profile, env, meta, restoreCfg)

@@ -15,6 +15,7 @@ import (
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/clock"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/llm"
 )
 
@@ -163,6 +164,14 @@ func rttRestoredSession(t *testing.T, program rttProgram) (*Session, *agenttest.
 	}
 	meta := fresh.Meta()
 	fresh.Close()
+	tw, _, err := transcript.OpenWriterForSession(schema.SessionTranscriptPath(stateDir, meta.ID), meta.ID)
+	if err != nil {
+		t.Fatalf("transcript.OpenWriterForSession: %v", err)
+	}
+	recordTestTranscriptTurns(t, tw, []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User(rttPriorUser)),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant(rttPriorAssistant)),
+	})
 
 	restoreClient, adapter := rttClient()
 	restored, err := RestoreSessionFromMetaWithConfig(
@@ -173,12 +182,8 @@ func rttRestoredSession(t *testing.T, program rttProgram) (*Session, *agenttest.
 		RestoreSessionConfig{
 			StateDir:                stateDir,
 			deferRestoreSideEffects: true,
-			resumeHistory: []schema.Turn{
-				schema.NewTurn(schema.TurnUserInput, llm.User(rttPriorUser)),
-				schema.NewTurn(schema.TurnAssistant, llm.Assistant(rttPriorAssistant)),
-			},
-			clock:    clk,
-			testOnly: rttTestConfig(),
+			clock:                   clk,
+			testOnly:                rttTestConfig(),
 		},
 	)
 	if err != nil {

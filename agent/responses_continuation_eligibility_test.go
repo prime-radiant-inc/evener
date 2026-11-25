@@ -379,6 +379,7 @@ func TestResponsesContinuationAnchorCandidateUsesRestoredActiveBoundary(t *testi
 		schema.NewTurn(schema.TurnSummary, llm.User("[CONTEXT SUMMARY]\nrestored state")),
 		schema.NewTurn(schema.TurnUserInput, llm.User("post-restore user")),
 	}
+	seedTestTranscript(t, stateDir, meta, restoredHistory...)
 
 	sess, err := RestoreSessionFromMetaWithConfig(
 		client,
@@ -386,8 +387,7 @@ func TestResponsesContinuationAnchorCandidateUsesRestoredActiveBoundary(t *testi
 		execenv.NewLocalExecutionEnvironment(dir),
 		meta,
 		RestoreSessionConfig{
-			StateDir:      stateDir,
-			resumeHistory: restoredHistory,
+			StateDir: stateDir,
 		},
 	)
 	if err != nil {

@@ -84,6 +84,17 @@ func TestResumeSkipsTranscriptOnlyEntries(t *testing.T) {
 					}
 				}
 			}
+			// Tip divergence (len+1, the AsideSession / ForkSessionAtUserTurn
+			// boundary where all entries are inherited) must map past every
+			// retained turn in resumed history.
+			wantTip := resumedDivergence(plain, len(plain)+1, plainInsertions, plainSuperseded)
+			gotTip := resumedDivergence(interleaved, len(interleaved)+1, insertions, interleavedSuperseded)
+			if gotTip != wantTip {
+				t.Fatalf("tip boundary maps to %d in interleaved vs %d in plain", gotTip, wantTip)
+			}
+			if got := steeringOriginBoundary(gotTip, len(history)); got != len(history) {
+				t.Fatalf("steeringOriginBoundary(tip=%d, len=%d) = %d, want %d (all turns inherited)", gotTip, len(history), got, len(history))
+			}
 		})
 	}
 }

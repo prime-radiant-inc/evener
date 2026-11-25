@@ -50,13 +50,11 @@ func restoreBudgetSession(
 	client *llm.Client,
 	meta schema.SessionMeta,
 	stateDir string,
-	resumeHistory []schema.Turn,
 ) *Session {
 	t.Helper()
 	restoreCfg := RestoreSessionConfig{
-		StateDir:      stateDir,
-		resumeHistory: resumeHistory,
-		clock:         agenttest.NewFakeClock(),
+		StateDir: stateDir,
+		clock:    agenttest.NewFakeClock(),
 		testOnly: testConfig{
 			skipGitSnapshot:     true,
 			minimalSystemPrompt: true,
@@ -204,7 +202,7 @@ func TestSession_TurnBudgetWarningAfterThresholdOnNextAcceptedTurn(t *testing.T)
 		Config:             (SessionConfig{MaxTurns: 7}).toSnapshot(),
 		AcceptedInputTurns: 4,
 	}
-	sess := restoreBudgetSession(t, client, meta, "", []schema.Turn{})
+	sess := restoreBudgetSession(t, client, meta, "")
 
 	if _, err := sess.ProcessInput(context.Background(), "next accepted", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
@@ -246,7 +244,7 @@ func TestSession_TurnBudgetWarningRestoresWithoutDuplication(t *testing.T) {
 	meta.TurnBudgetWarningEmitted = false
 	sess.Close()
 
-	restored := restoreBudgetSession(t, client, meta, stateDir, nil)
+	restored := restoreBudgetSession(t, client, meta, stateDir)
 	if _, err := restored.ProcessInput(context.Background(), "after restore", nil); err != nil {
 		t.Fatalf("restored ProcessInput: %v", err)
 	}
@@ -305,7 +303,7 @@ func TestSession_TurnBudgetWarningRootAndChildWording(t *testing.T) {
 			Config:     (SessionConfig{MaxTurns: 5}).toSnapshot(),
 			IsSubagent: true,
 		}
-		sess := restoreBudgetSession(t, client, meta, "", []schema.Turn{})
+		sess := restoreBudgetSession(t, client, meta, "")
 		if _, err := sess.ProcessInput(context.Background(), "restored child input", nil); err != nil {
 			t.Fatalf("ProcessInput: %v", err)
 		}
