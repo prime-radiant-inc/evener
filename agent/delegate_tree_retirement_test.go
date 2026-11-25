@@ -1895,7 +1895,7 @@ func TestRetirementRetainedRootSteeringBlocksUntilConsumed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	steering, _, err := loadQueues(root.stateDir, root.ID())
+	steering, err := loadQueues(root.stateDir, root.ID())
 	if err != nil || len(steering) != 1 || steering[0].Text != "retained-root-sentinel" {
 		t.Fatalf("persisted root queue missing: %#v %v", steering, err)
 	}

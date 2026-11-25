@@ -423,7 +423,7 @@ func TestSteeringArrivingDuringToolResultAppendWaitsForTheRoundToFinish(t *testi
 	if len(queue) != 1 || queue[0].Text != "arrived during tool round" {
 		t.Fatalf("steering queue during blocked tool result = %#v", queue)
 	}
-	persisted, _, err := loadQueues(root.stateDir, root.id)
+	persisted, err := loadQueues(root.stateDir, root.id)
 	if err != nil || len(persisted) != 1 || persisted[0].Text != "arrived during tool round" {
 		t.Fatalf("durable steering queue during blocked tool result = %#v err=%v", persisted, err)
 	}

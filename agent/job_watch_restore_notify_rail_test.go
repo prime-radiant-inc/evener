@@ -134,7 +134,7 @@ func TestRestartCancellationRoutesThroughParentSystemNotificationQueue(t *testin
 	if message.Kind != events.SteeringKindNotification {
 		t.Errorf("system notification kind = %q, want %q", message.Kind, events.SteeringKindNotification)
 	}
-	steering, _, err := loadQueues(parent.stateDir, parent.ID())
+	steering, err := loadQueues(parent.stateDir, parent.ID())
 	if err != nil {
 		t.Fatalf("load persisted system notification: %v", err)
 	}
