@@ -328,18 +328,9 @@ func formatCheckpoint(data checkpointData, meta *CompactionMeta, maxChars int) s
 	}
 
 	// Activated skills.
-	allSkills := map[string]bool{}
-	for s := range data.activatedSkills {
-		allSkills[s] = true
-	}
-	if meta != nil {
-		for _, s := range meta.ActivatedSkills {
-			allSkills[s] = true
-		}
-	}
-	if len(allSkills) > 0 {
-		skillNames := make([]string, 0, len(allSkills))
-		for s := range allSkills {
+	if len(data.activatedSkills) > 0 {
+		skillNames := make([]string, 0, len(data.activatedSkills))
+		for s := range data.activatedSkills {
 			skillNames = append(skillNames, s)
 		}
 		sort.Strings(skillNames)

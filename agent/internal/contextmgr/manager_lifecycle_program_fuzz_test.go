@@ -67,7 +67,7 @@ func cmgpRunManagerLifecycle(t *testing.T, program []byte) {
 	profile := WithCheapModel(testOpenAIProfileWithContextWindow(64), "anthropic/cheap")
 	cm := NewManager(profile, client, cheapmodel.New(client))
 	cm.PreserveRecentTurns = 2
-	cm.Meta = CompactionMeta{SessionID: "cmgp-" + token, ActivatedSkills: []string{"testing", "fuzzing"}}
+	cm.Meta = CompactionMeta{SessionID: "cmgp-" + token}
 
 	if !cm.HasClient() || NewManager(profile, nil, cheapmodel.New(nil)).HasClient() {
 		t.Fatal("HasClient did not reflect the configured client")
