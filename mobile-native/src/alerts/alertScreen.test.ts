@@ -11,6 +11,11 @@ it.each([
 	["the Board", [board], { kind: "board" }],
 	["a session", [board, session("local:a")], { kind: "session", ref: "local:a" }],
 	[
+		"a web session",
+		[{ name: "Workspace", params: { hubId: "hub-1", path: "/s/remote%3Aa%2Fb" } }],
+		{ kind: "session", ref: "remote:a/b" },
+	],
+	[
 		"a sheet over a session, which keeps it in front",
 		[board, session("local:a"), tasks],
 		{ kind: "session", ref: "local:a" },

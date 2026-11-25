@@ -4,6 +4,7 @@
 // above one (ruling 7), and leaves the screen under it in front, as phase 2
 // part 3's inFront does for sheets.
 import { isSheetRoute } from "../sheet/sheetRoutes";
+import { workspaceSessionRef } from "../location";
 import type { AlertScreen } from "./alertCenter";
 
 /** Phase 5's modal routes: the Hub and New session sheets. */
@@ -22,7 +23,12 @@ export function coversBanners(route: Route | undefined): boolean {
 export function alertScreenFor(routes: readonly Route[], hubId: string | null): AlertScreen {
 	const screen = [...routes].reverse().find((route) => !coversBanners(route));
 	if (screen?.name === "Sessions") return { kind: "board" };
-	const params = screen?.params as { hubId?: unknown; ref?: unknown } | undefined;
+	const params = screen?.params as { hubId?: unknown; ref?: unknown; path?: unknown } | undefined;
+	if (screen?.name === "Workspace" && params?.hubId === hubId && typeof params.path === "string") {
+		const ref = workspaceSessionRef(params.path);
+		if (ref) return { kind: "session", ref };
+		if (params.path === "/") return { kind: "board" };
+	}
 	if (screen?.name === "Conversation" && params?.hubId === hubId && typeof params.ref === "string")
 		return { kind: "session", ref: params.ref };
 	return { kind: "other" };

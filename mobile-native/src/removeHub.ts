@@ -1,9 +1,8 @@
 import type { HubProfile, HubProfiles } from "./connection";
-import type { DraftLibrary } from "./draftLibrary";
 
 export async function removeSavedHub(
 	profiles: Pick<HubProfiles, "remove" | "list">,
-	drafts: Pick<DraftLibrary, "removeHub">,
+	deviceData: { removeHub(id: string): void | Promise<void> },
 	id: string,
 ) {
 	let error: string | null = null;
@@ -25,7 +24,7 @@ export async function removeSavedHub(
 	}
 	if (removed) {
 		try {
-			drafts.removeHub(id);
+			await deviceData.removeHub(id);
 		} catch {
 			error = "The hub was removed, but some local data could not be deleted from this device.";
 		}

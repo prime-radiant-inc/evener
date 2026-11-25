@@ -12,6 +12,7 @@ import type { Routes } from "../screens";
 import { Group, GroupedPage, Row } from "../sheet/Grouped";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { AddHub, type How } from "./AddHub";
+import { usesHubWorkspace } from "../workspaceAvailability";
 
 export function FirstRunScreen({ navigation }: NativeStackScreenProps<Routes, "Hubs">) {
 	const { profiles, selectHub } = useConnection();
@@ -19,9 +20,10 @@ export function FirstRunScreen({ navigation }: NativeStackScreenProps<Routes, "H
 	const scale = useTextScale();
 	const [how, setHow] = useState<How | null>(null);
 
-	function openBoard() {
+	function openWorkspace() {
 		setHow(null);
-		navigation.navigate("Sessions");
+		if (usesHubWorkspace()) navigation.navigate("Workspace");
+		else navigation.navigate("Sessions");
 	}
 
 	if (how)
@@ -32,7 +34,7 @@ export function FirstRunScreen({ navigation }: NativeStackScreenProps<Routes, "H
 						<Row label="Back" tone="accent" onPress={() => setHow(null)} />
 					</Group>
 				</SafeAreaView>
-				<AddHub how={how} onConnected={openBoard} />
+				<AddHub how={how} onConnected={openWorkspace} />
 			</SafeAreaView>
 		);
 
@@ -79,7 +81,7 @@ export function FirstRunScreen({ navigation }: NativeStackScreenProps<Routes, "H
 									chevron
 									onPress={() => {
 										selectHub(profile.id);
-										openBoard();
+										openWorkspace();
 									}}
 								/>
 							))}

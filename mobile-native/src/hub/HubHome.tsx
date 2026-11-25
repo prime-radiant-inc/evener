@@ -4,7 +4,7 @@
 // offers the hub's update (ruling 22).
 import type { HostRow } from "@evener/appwire-client";
 import { useFocusEffect } from "@react-navigation/native";
-import type { NativeStackScreenProps } from "@react-navigation/native-stack";
+import type { NativeStackNavigationProp, NativeStackScreenProps } from "@react-navigation/native-stack";
 import { nativeApplicationVersion, nativeBuildVersion } from "expo-application";
 import { useCallback, useEffect, useSyncExternalStore } from "react";
 import { Alert, Text } from "react-native";
@@ -18,6 +18,8 @@ import { APPEARANCE_LABELS } from "../display/displayPreferences";
 import { versionDriftTag } from "../hosts/hostStatus";
 import { useOptionalSnapshot } from "../hosts/useHubFleet";
 import { Group, GroupedPage, GroupFooter, Row, RowValue } from "../sheet/Grouped";
+import type { Routes } from "../screens";
+import { usesHubWorkspace } from "../workspaceAvailability";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { appVersionText, hubConnectionState, hubStatusLine } from "./hubHeader";
 import { type HubRoutes, useHubSheet } from "./hubSheetContext";
@@ -27,6 +29,8 @@ export function HubHome({ navigation }: NativeStackScreenProps<HubRoutes, "HubHo
 	const { hubId, hubName, client, ready, canUseConnection, updates, hosts } = useHubSheet();
 	const update = useSyncExternalStore(updates.subscribe, updates.getState);
 	const { profiles } = useConnection();
+	const root = navigation.getParent?.<NativeStackNavigationProp<Routes>>();
+	const fromWorkspace = root?.getState().routes.at(-2)?.name === "Workspace";
 	const { appearance } = useDisplayChoices();
 	const { palette } = useColors();
 	const scale = useTextScale();
@@ -141,6 +145,25 @@ export function HubHome({ navigation }: NativeStackScreenProps<HubRoutes, "HubHo
 				/>
 			</Group>
 			<Group label="This phone">
+				{usesHubWorkspace() &&
+					(fromWorkspace ? (
+						<Row
+							icon="iphone"
+							label="Work on this iPhone"
+							sub="Device drafts, queued messages, and shared items"
+							testID="iphone-device-work"
+							chevron
+							onPress={() => root?.replace("Sessions")}
+						/>
+					) : (
+						<Row
+							icon="rectangle.on.rectangle"
+							label="Open workspace"
+							testID="iphone-workspace"
+							chevron
+							onPress={() => root?.popTo("Workspace", undefined, { merge: true })}
+						/>
+					))}
 				<Row
 					icon="textformat.size"
 					label="Display"

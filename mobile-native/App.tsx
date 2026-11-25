@@ -25,7 +25,9 @@ import { DuoSplit } from "./src/duo/DuoSplit";
 import { HubSheet } from "./src/hub/HubSheet";
 import { FirstRunScreen } from "./src/hubs/FirstRunScreen";
 import { ForkScreen } from "./src/ForkScreen";
-import { locationForRoute, restoredStack, routeToSave } from "./src/location";
+import { locationForRoute, phoneLaunchStack, restoredStack, routeToSave } from "./src/location";
+import { WorkspaceScreen } from "./src/WorkspaceScreen";
+import { usesHubWorkspace } from "./src/workspaceAvailability";
 import { NativePreferencesProvider } from "./src/NativePreferencesProvider";
 import { locations } from "./src/nativeLocation";
 import { stackRoutes } from "./src/navigationRoutes";
@@ -132,7 +134,8 @@ function Navigation() {
 		const route = routeToSave(state);
 		if (!route) return;
 		try {
-			locations.save(locationForRoute(route, activeProfile?.id ?? null));
+			const location = locationForRoute(route, activeProfile?.id ?? null);
+			locations.save(location && route.name === "Conversation" ? { ...location, deviceWork: true } : location);
 			setSaveError(null);
 		} catch {
 			setSaveError("This screen could not be saved for reopening after restart.");
@@ -160,7 +163,7 @@ function Navigation() {
 			<ErrorMessage message={saveError || restorationError} />
 			<NavigationContainer
 				ref={navigationRef}
-				initialState={restoredStack(initialLocation)}
+				initialState={usesHubWorkspace() ? phoneLaunchStack(initialLocation) : restoredStack(initialLocation)}
 				onReady={() => {
 					setNavigationReady(true);
 					const root = navigationRef.getRootState();
@@ -175,6 +178,11 @@ function Navigation() {
 				<StatusBar style={dark ? "light" : "dark"} />
 				<Stack.Navigator screenOptions={rootStackOptions}>
 					<Stack.Screen name="Hubs" component={FirstRunScreen} options={{ headerShown: false }} />
+					<Stack.Screen
+						name="Workspace"
+						component={WorkspaceScreen}
+						options={{ headerShown: false, gestureEnabled: false }}
+					/>
 					<Stack.Screen name="Sessions" component={SessionsScreen} options={{ headerShown: !duoWide }} />
 					<Stack.Screen
 						name="SessionDeletion"

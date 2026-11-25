@@ -104,16 +104,16 @@ it("sits just below the nav bar, and shows nothing without a banner", () => {
 	expect(container.children).toHaveLength(0);
 });
 
-it("opens a session's banner on top of where you are", () => {
+it("opens a session's banner in the active hub's workspace", () => {
 	const { card, dispatched } = mount();
 	act(() => harness.center?.offer(session("local:a")));
 	act(() => card().props.onPress());
 	expect(dispatched).toEqual([
 		expect.objectContaining({
-			type: "PUSH",
+			type: "POP_TO",
 			payload: expect.objectContaining({
-				name: "Conversation",
-				params: { hubId: "hub-1", ref: "local:a", title: "Session local:a" },
+				name: "Workspace",
+				params: { hubId: "hub-1", path: "/s/local%3Aa" },
 			}),
 		}),
 	]);

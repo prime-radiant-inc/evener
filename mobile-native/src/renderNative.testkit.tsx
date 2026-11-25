@@ -326,7 +326,7 @@ export function nativeModuleMock() {
 		},
 		KeyboardAvoidingView,
 		Modal: "Modal",
-		Platform: { OS: "ios" as const },
+		Platform: { OS: "ios" as const, Version: "27.0" },
 		Pressable: "Pressable",
 		ScrollView: "ScrollView",
 		SectionList,
