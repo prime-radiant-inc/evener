@@ -13,7 +13,6 @@ import { type PluginSelectionState, selectedPluginNames } from "@evener/appwire-
 import { useEffect, useRef, useState } from "react";
 import {
   Button,
-  Chevron,
   DirectoryPicker,
   type DirectoryPickerProps,
   InlineNotice,
@@ -76,9 +75,7 @@ type PickerName = "Host" | "Harness" | "Working directory" | "Access mode" | "Pl
 
 const CLASS = {
   config: requireClass(styles.config, "MobileSettingRows.module.css", "config"),
-  rowValueGroup: requireClass(styles.rowValueGroup, "MobileSettingRows.module.css", "rowValueGroup"),
   rowValue: requireClass(styles.rowValue, "MobileSettingRows.module.css", "rowValue"),
-  caret: requireClass(styles.caret, "MobileSettingRows.module.css", "caret"),
   sheetBody: requireClass(styles.sheetBody, "MobileSettingRows.module.css", "sheetBody"),
 };
 
@@ -105,23 +102,15 @@ function MobileSettingRow({
   state,
   wrap = false,
 }: MobileSettingRowProps) {
-  const interactive = onClick !== undefined && !disabled;
-  const trailing = (
-    <span className={CLASS.rowValueGroup}>
-      <span
-        className={CLASS.rowValue}
-        title={value}
-        style={
-          wrap ? { overflow: "visible", overflowWrap: "anywhere", textAlign: "start", whiteSpace: "normal" } : undefined
-        }
-      >
-        {value}
-      </span>
-      {interactive && (
-        <span className={CLASS.caret} aria-hidden="true">
-          <Chevron direction="right" />
-        </span>
-      )}
+  const valueNode = (
+    <span
+      className={CLASS.rowValue}
+      title={value}
+      style={
+        wrap ? { overflow: "visible", overflowWrap: "anywhere", textAlign: "start", whiteSpace: "normal" } : undefined
+      }
+    >
+      {value}
     </span>
   );
 
@@ -132,7 +121,7 @@ function MobileSettingRow({
         data-label={label}
         data-state={state}
         label={label}
-        value={trailing}
+        value={valueNode}
         style={{ minHeight: "48px" }}
       />
     );
@@ -144,7 +133,7 @@ function MobileSettingRow({
       data-label={label}
       data-state={state}
       label={label}
-      value={trailing}
+      value={valueNode}
       style={{ minHeight: "48px" }}
       onSelect={onClick}
       aria-haspopup="dialog"
