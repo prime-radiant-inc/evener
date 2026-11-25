@@ -1085,9 +1085,8 @@ function assertTabletSplit(result) {
 const OVERVIEW_VIEWPORTS = [VIEWPORT, MOBILE_VIEWPORT, { width: 320, height: 844, mobile: true, touch: true }];
 const OVERVIEW_THEMES = ["light", "dark"];
 const OVERVIEW = '[data-testid="activity-sidebar"][aria-label="Overview"]';
-const OVERVIEW_SELECTED_TAB = '[role="tab"][aria-selected="true"], [role="radio"][aria-checked="true"]';
-const overviewTabSelector = (labelFilter) =>
-  `${OVERVIEW} [role="tab"]${labelFilter}, ${OVERVIEW} [role="radio"]${labelFilter}`;
+const OVERVIEW_SELECTED_TAB = '[role="tab"][aria-selected="true"]';
+const overviewTabSelector = (labelFilter) => `${OVERVIEW} [role="tab"]${labelFilter}`;
 // The Overview sweep's tall task list renders this many live rows (40-row
 // fixture, every fourth settled into the collapsed fold). The wait gate and
 // the fixture-sanity assert below share it, so resizing the fixture cannot
@@ -1426,13 +1425,13 @@ async function measureOverview(send) {
       return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: r.width, height: r.height };
     };
     const mobile = matchMedia('(max-width: 899px)').matches;
-    // A category is a label plus optional detail (desktop SegmentedControl
-    // radios, mobile underline tablist); each piece must show its whole text.
-    const categories = Array.from(aside.querySelectorAll(mobile ? '[role="tab"]' : '[role="radio"]'), element => {
+    // A category is a label plus optional detail in the shared underline
+    // tablist; each piece must show its whole text.
+    const categories = Array.from(aside.querySelectorAll('[role="tab"]'), element => {
       const lines = Array.from(element.children);
       return {
         text: lines.map(line => line.textContent).join('\\n'),
-        checked: element.getAttribute(mobile ? 'aria-selected' : 'aria-checked'),
+        checked: element.getAttribute('aria-selected'),
         box: box(element),
         label: measure(lines[0], lines[0]?.textContent),
         detail: lines[1] ? measure(lines[1], lines[1].textContent) : null,
@@ -1608,8 +1607,8 @@ async function trustedOverviewFlow(send, viewport, childGesture) {
   );
   const trigger = (id) => `[data-session-actions-ref="local:p0-s0"][data-pane-id="${id}"]`;
   const overviewTrigger = (id, ref = "local:p0-s0") => `[data-session-overview-ref="${ref}"][data-pane-id="${id}"]`;
-  const expectedTabRole = viewport.mobile ? "tab" : "radio";
-  const expectedSelectedAttr = viewport.mobile ? "aria-selected" : "aria-checked";
+  const expectedTabRole = "tab";
+  const expectedSelectedAttr = "aria-selected";
   await evaluate(
     send,
     `document.querySelector(${JSON.stringify(OVERVIEW)}).querySelector(${JSON.stringify(OVERVIEW_SELECTED_TAB)}).focus()`,

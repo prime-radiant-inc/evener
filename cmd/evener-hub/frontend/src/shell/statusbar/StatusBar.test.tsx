@@ -289,7 +289,7 @@ test("unknown counts remain unknown and pending ancestry is explicit", async () 
     </MotionProvider>,
   );
   await waitFor(() => expect(screen.getByRole("button", { name: /Agents, counts unknown/ })).toBeTruthy());
-  expect(screen.getByRole("radio", { name: "Agents, counts unknown" }).textContent).toContain("—");
+  expect(screen.getByRole("tab", { name: "Agents, counts unknown" }).textContent).toContain("—");
   expect(screen.getByRole("button", { name: /Agents, counts unknown/ }).textContent).toContain("—");
   expect(screen.getAllByText("Finding session context…")).toHaveLength(1);
   expect(screen.queryByRole("button", { name: /Agents, 0 of/ })).toBeNull();
@@ -356,12 +356,12 @@ test("footer and tabs explain summary counts through paging and activity changes
     </MotionProvider>,
   );
   const footer = within(screen.getByTestId("statusbar"));
-  await screen.findByRole("radio", { name: "Jobs, 2 of 6 running" });
+  await screen.findByRole("tab", { name: "Jobs, 2 of 6 running" });
   const expectCounts = (running: number, retained: number) => {
     expect(
       footer.getByRole("button", { name: `Jobs, ${running} of ${retained} running - open Overview` }).textContent,
     ).toContain(`${running}/${retained}`);
-    expect(screen.getByRole("radio", { name: `Jobs, ${running} of ${retained} running` }).textContent).toContain(
+    expect(screen.getByRole("tab", { name: `Jobs, ${running} of ${retained} running` }).textContent).toContain(
       `${running}/${retained}`,
     );
   };
@@ -369,12 +369,12 @@ test("footer and tabs explain summary counts through paging and activity changes
   expect(footer.getByText("Jobs")).toBeTruthy();
   expect(footer.getByRole("button", { name: /Jobs, 2 of 6 running/ }).title).toBe("Jobs, 2 of 6 running");
   // The tab carries its label and its count as two separate elements.
-  const watchesTab = within(screen.getByRole("radio", { name: "Watches, 2 of 3 armed" }));
+  const watchesTab = within(screen.getByRole("tab", { name: "Watches, 2 of 3 armed" }));
   expect(watchesTab.getByText("Watches")).not.toBe(watchesTab.getByText("2/3"));
   expect(footer.getByRole("button", { name: /Agents, 0 of 2 active/ }).textContent).toContain("0/2");
-  expect(screen.getByRole("radio", { name: "Agents, 0 of 2 active" })).toBeTruthy();
-  expect(screen.getByRole("radio", { name: "Watches, 2 of 3 armed" })).toBeTruthy();
-  expect(screen.getByRole("radio", { name: "Tasks, 1 of 4 settled" })).toBeTruthy();
+  expect(screen.getByRole("tab", { name: "Agents, 0 of 2 active" })).toBeTruthy();
+  expect(screen.getByRole("tab", { name: "Watches, 2 of 3 armed" })).toBeTruthy();
+  expect(screen.getByRole("tab", { name: "Tasks, 1 of 4 settled" })).toBeTruthy();
   expect(screen.queryByText("Overview kind")).toBeNull();
   await act(async () => ActivityBoundaryObserver.intersect());
   expectCounts(2, 6);
@@ -392,7 +392,7 @@ test("footer and tabs explain summary counts through paging and activity changes
   active = 1;
   total = 7;
   act(() => client.emitNotification(activityChangedNotification({ ref, threadId: "owner" }, ["summary"])));
-  await screen.findByRole("radio", { name: "Jobs, 1 of 7 running" });
+  await screen.findByRole("tab", { name: "Jobs, 1 of 7 running" });
   expectCounts(1, 7);
 });
 
@@ -422,5 +422,5 @@ test("the chip, the sidebar and the liveness line count subagents at every depth
   const chip = await screen.findByRole("button", { name: /Agents, 3 of 4 active/ });
   await waitFor(() => expect(screen.getByTestId("liveness-line").textContent).toBe("Waiting on 3 subagents"));
   fireEvent.click(chip);
-  expect(await screen.findByRole("radio", { name: "Agents, 3 of 4 active" })).toBeTruthy();
+  expect(await screen.findByRole("tab", { name: "Agents, 3 of 4 active" })).toBeTruthy();
 });

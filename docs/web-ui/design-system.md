@@ -205,9 +205,11 @@ losing the conversation that made the evidence relevant.
   intended session, preferring the originating pane. Desktop remains nonmodal. Existing
   standalone Details views and the `/tasks` pane toggle retain their behavior.
 - **Keep inspection readable at larger text sizes.** Desktop Overview stays 320px wide.
-  Its category strip wraps without shortening labels or counts at narrow widths and XL
-  text. About's model, session ID, branch and paths wrap as selectable text. Its body
-  scrolls vertically while the page stays fixed. Phone controls retain the tap floor.
+  Both desktop and mobile use one horizontally scrolling underline tablist without shortening
+  labels or counts at narrow widths and XL text. About presents session facts in a compact
+  inline meta table whose model, session ID, branch, paths, and saved link URLs wrap as
+  selectable text. Its body scrolls vertically while the page stays fixed. Phone controls
+  retain the tap floor.
 - **Keep Overview's activity lists on one loading and spacing contract.** Agents,
   Jobs and Watches page automatically at their visible boundary, with a static
   Skeleton rather than a Load more control. Their inactive/completed folds show
@@ -1462,22 +1464,22 @@ over it.
 
 Below 900px, the session header carries Find in session beside Overview as
 44px icon buttons. Overview opens the shared full-screen activity overlay
-directly for that session, with a horizontally scrolling underline tablist
-(About, Agents, Jobs, Watches, Tasks; never pills) meeting the 44px tap floor.
-A newly inspected session opens on About; a revisited session keeps its last
-tab. About renders shared session facts (including the current goal with its
-status indicator and quiet state chip when set, model, reasoning effort, context
-meter, and local branch) and saved session links (native links for web URLs,
-open-beside rows for local files) on both desktop and mobile. Dismissing
-Overview returns focus to the header entry when it still belongs to that
-session.
+directly for that session, sharing the same horizontally scrolling underline
+tablist (About, Agents, Jobs, Watches, Tasks; never pills) used on desktop and
+meeting the 44px tap floor on touch devices. A newly inspected session opens on
+About; a revisited session keeps its last tab; drilling while open keeps the
+active tab. About renders shared session facts in a compact inline meta table
+(including the current goal with its quiet state chip when set, model, reasoning
+effort, live status indicator, context meter, and local branch) and full
+wrapping saved session links (native links for web URLs, open-beside rows for
+local files) on both desktop and mobile. Dismissing Overview returns focus to
+the header entry when it still belongs to that session.
 
 The phone composer keeps Attach, Session actions and Send or Stop while
 collapsed or expanded. It announces current work to assistive technology
 without adding a visible row. Model and reasoning effort are session facts in
-Overview; Settings owns the default choices. The desktop header, segmented
-Overview tabs, model and effort controls, and pane footer keep their
-independent behavior.
+Overview; Settings owns the default choices. The desktop header, model and
+effort controls, and pane footer keep their independent behavior.
 
 ## Source Serif 4 license notice
 

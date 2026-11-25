@@ -48,19 +48,13 @@
   flex: none;
 }
 
-.tabs {
-  padding: var(--space-2) var(--space-3);
-  border-bottom: 1px solid var(--edge);
-  flex: none;
-}
-
-/* Phone and tablet: the category strip is a horizontally scrolling row of
- * underline tabs, never the desktop's segmented track. */
+/* Desktop and mobile: the category strip is a horizontally scrolling row of
+ * underline tabs, flush against the header hairline. */
 .tablist {
   display: flex;
   flex: none;
   min-inline-size: 0;
-  padding: 0 var(--space-2);
+  padding: var(--space-1) var(--space-2) 0;
   border-bottom: 1px solid var(--edge);
   overflow-x: auto;
   overflow-y: hidden;

@@ -153,7 +153,7 @@ async function retained(jobId, baseline, after, label, outputBytes) {
   await wait(`(() => { const s = ${geometryExpr(jobId)}; return s && s.visible && Math.abs(s.offset-(${baseline.offset})) <= 2; })()`, `${label} restores the same visible semantic row within two pixels`);
   const state = await quiet(jobId, "completed");
   assert.ok(Math.abs(state.offset - baseline.offset) <= 2);
-  assert.equal(await read(`document.querySelector(${q(sidebar + ' [role="radio"][aria-checked="true"]')})?.textContent.trim().startsWith('Jobs')`), true);
+  assert.equal(await read(`document.querySelector(${q(sidebar + ' [role="tab"][aria-selected="true"]')})?.textContent.trim().startsWith('Jobs')`), true);
   assert.equal(await read(`document.querySelector(${q(row(fixture.laterJobId))}) !== null`), true);
   driver.milestone(label, { ...state, pageCount: recovered.pages.length, outputBytes });
   await capture(label);

@@ -109,14 +109,14 @@ test("About renders the explicit remote session's hydrated accounting", async ()
   expect(screen.getByTestId("session-details-branch").textContent).toContain("feature/overview");
   expect(screen.getByTestId("session-details-created")).toBeTruthy();
   expect(screen.getByTestId("session-details-updated")).toBeTruthy();
-  expect(screen.getAllByRole("radio").map((el) => el.querySelector("span")?.textContent)).toEqual([
+  expect(screen.getAllByRole("tab").map((el) => el.querySelector("span")?.textContent)).toEqual([
     "About",
     "Agents",
     "Jobs",
     "Watches",
     "Tasks",
   ]);
-  expect(screen.getByRole("radio", { name: "About" }).textContent).toBe("About");
+  expect(screen.getByRole("tab", { name: "About" }).textContent).toBe("About");
   // The shell's eager catalog warm (stores/commandCatalog) reads
   // evener/command/list on connect; About's own contract is no collection
   // reads, which is what the remaining /list methods would be.
@@ -276,7 +276,7 @@ test("About releases prior collection demand through invalidation and reconnect"
   activitySidebarStore.getState().openWith("agents");
   mountSidebar(client);
   await screen.findByRole("button", { name: /inspect/ });
-  fireEvent.click(screen.getByRole("radio", { name: "About" }));
+  fireEvent.click(screen.getByRole("tab", { name: "About" }));
   await screen.findByText("about-owner");
   const delegateReads = client.calls.filter((call) => call.method === "evener/thread/delegates/list").length;
   const summaryReads = summaries;
@@ -320,7 +320,7 @@ test("leaving About releases its rich model while the sidebar keeps its summary"
       (call) => call.method === "thread/read" && (call.params as { includeTurns: boolean }).includeTurns,
     ),
   ).toBe(true);
-  fireEvent.click(screen.getByRole("radio", { name: /Jobs/ }));
+  fireEvent.click(screen.getByRole("tab", { name: /Jobs/ }));
   await screen.findByText("No jobs at this level.");
   await waitFor(() => expect(threadsStore.getState().threads.has(ref)).toBe(false));
   expect(sessionActivitySnapshot(client, ref, "session")?.summary?.context.ref).toBe(ref);

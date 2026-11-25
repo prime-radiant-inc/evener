@@ -16,14 +16,7 @@ import { deriveCascadePath, parseZoomParams } from "../../panes/zoom/intent";
 import { navigationStore, useNavigationStore } from "../../stores/navigation/store";
 import { useSessionActivity, useSubagentCounts } from "../../stores/sessionActivity";
 import { EntityViewsProvider, sessionEntityViews } from "../../transcriptDisplay/entityViews";
-import {
-  Button,
-  CloseIcon,
-  FocusScope,
-  IconButton,
-  SegmentedControl,
-  type SegmentedControlOption,
-} from "../../widgets";
+import { Button, CloseIcon, FocusScope, IconButton } from "../../widgets";
 import { DisclosurePersistenceContext } from "../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { useRovingRadio } from "../../widgets/internal/rovingRadio";
@@ -47,7 +40,6 @@ const CLASS = {
   scope: requireClass(styles.scope, "activitybar.module.css", "scope"),
   pending: requireClass(styles.pending, "activitybar.module.css", "pending"),
   head: requireClass(styles.head, "activitybar.module.css", "head"),
-  tabs: requireClass(styles.tabs, "activitybar.module.css", "tabs"),
   tablist: requireClass(styles.tablist, "activitybar.module.css", "tablist"),
   tab: requireClass(styles.tab, "activitybar.module.css", "tab"),
   tabLabel: requireClass(styles.tabLabel, "activitybar.module.css", "tabLabel"),
@@ -56,40 +48,28 @@ const CLASS = {
   focusBody: requireClass(styles.focusBody, "activitybar.module.css", "focusBody"),
 };
 
-function OverviewStrip({
-  value,
-  options,
-}: {
+interface OverviewTabOption {
   value: ActivityTab;
-  options: readonly SegmentedControlOption<ActivityTab>[];
-}) {
-  return (
-    <SegmentedControl<ActivityTab>
-      label="Overview kind"
-      hideLabel
-      size="sm"
-      fullWidth
-      wrap
-      value={value}
-      onChange={(next) => activitySidebarStore.getState().setTab(next)}
-      options={options}
-    />
-  );
+  label: string;
+  detail?: string;
+  accessibleLabel?: string;
 }
 
-// The phone and tablet Overview category strip: underline tabs in a horizontally
-// scrolling row. Quiet Button is the tab itself; the wrapper span draws only
+// Shared Overview category strip for desktop and mobile: horizontally scrolling
+// underline tabs. Quiet Button is the tab itself; the wrapper span draws only
 // the selected underline so one tab holds one interactive control.
-function MobileOverviewTabs({
+function OverviewTabs({
   value,
   options,
   panelId,
   tabDomId,
+  entryFocus,
 }: {
   value: ActivityTab;
-  options: readonly SegmentedControlOption<ActivityTab>[];
+  options: readonly OverviewTabOption[];
   panelId: string;
   tabDomId(id: ActivityTab): string;
+  entryFocus: boolean;
 }) {
   // AnimatePresence renders the exiting aside from the element captured while
   // `open` was still true, so subscribing here re-arms entry focus when the
@@ -111,17 +91,17 @@ function MobileOverviewTabs({
   const move = useRovingRadio({ items: options, mode: "tablist", onMove: choose });
   // biome-ignore lint/correctness/useExhaustiveDependencies: selectedIndex is read once when entry focus is armed.
   useEffect(() => {
-    if (!open) return;
+    if (!open || !entryFocus) return;
     const frame = requestAnimationFrame(() => {
       const tab = tabRefs.current[selectedIndex];
       tab?.focus();
       reveal(tab ?? null);
     });
     return () => cancelAnimationFrame(frame);
-  }, [open]);
+  }, [open, entryFocus]);
   function handleKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
     // Modifier chords belong to the global dispatcher; claim only bare keys.
-    if (event.altKey || event.ctrlKey || event.metaKey) return;
+    if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
     move(event, selectedIndex >= 0 ? selectedIndex : 0);
   }
   return (
@@ -141,7 +121,7 @@ function MobileOverviewTabs({
                 tabRefs.current[index] = node;
               }}
               variant="quiet"
-              size="sm"
+              size="xs"
               role="tab"
               id={tabDomId(option.value)}
               aria-selected={selected}
@@ -325,19 +305,14 @@ export function ActivitySidebar({ mobile = false }: { mobile?: boolean }) {
               </div>
               <IconButton label="Close Overview" icon={<CloseIcon />} variant="quiet" size="sm" onClick={close} />
             </div>
-            {mobile ? (
-              <MobileOverviewTabs
-                key={scope.leaf.ref}
-                value={tab}
-                options={tabOptions}
-                panelId={tabPanelId}
-                tabDomId={tabDomId}
-              />
-            ) : (
-              <div className={CLASS.tabs}>
-                <OverviewStrip value={tab} options={tabOptions} />
-              </div>
-            )}
+            <OverviewTabs
+              key={scope.leaf.ref}
+              value={tab}
+              options={tabOptions}
+              panelId={tabPanelId}
+              tabDomId={tabDomId}
+              entryFocus={mobile}
+            />
             <DisclosurePersistenceContext.Provider value={JSON.stringify([scope.leaf.ref, tab])}>
               <ActivityBodyClock>
                 {(now) => (
@@ -347,7 +322,7 @@ export function ActivitySidebar({ mobile = false }: { mobile?: boolean }) {
                       sessionRef={scope.leaf.ref}
                       tab={tab}
                       className={CLASS.body}
-                      panel={mobile ? { id: tabPanelId, labelledBy: tabDomId(tab) } : undefined}
+                      panel={{ id: tabPanelId, labelledBy: tabDomId(tab) }}
                     >
                       {Body === null ? null : <Body scope={scope} now={now} />}
                     </ActivityViewport>

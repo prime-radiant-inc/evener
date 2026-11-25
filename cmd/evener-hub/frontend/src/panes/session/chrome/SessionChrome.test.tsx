@@ -576,7 +576,7 @@ test("landscape phone header Overview reaches the current session's goal through
   );
 
   await user.click(screen.getByRole("button", { name: "Overview" }));
-  await user.click(await screen.findByRole("radio", { name: "About" }));
+  await user.click(await screen.findByRole("tab", { name: "About" }));
   const sidebar = screen.getByTestId("activity-sidebar");
   await within(sidebar).findByTestId("session-details-model");
   expect(within(sidebar).getByTestId("session-details-goal").textContent).toContain(goal.objective);

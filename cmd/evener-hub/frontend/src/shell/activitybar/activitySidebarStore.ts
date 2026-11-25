@@ -225,9 +225,11 @@ export const activitySidebarStore = createStore<ActivitySidebarState>()((set, ge
       if (ref === null) return set({ ref });
       const views = hydrated ? state.views : readViews();
       hydrated = true;
-      // A fresh child keeps the ongoing inspection open on its current kind;
-      // a visited session restores its own category and explicit close choice.
-      const view = views.get(ref) ?? { open: state.open, tab: state.tab, categories: {} };
+      // A fresh scope inherits the current tab only while an inspection is
+      // already open (such as drilling into a child); a newly inspected
+      // session after dismissal starts on About. A visited session restores
+      // its own category and explicit close choice.
+      const view = views.get(ref) ?? { open: state.open, tab: state.open ? state.tab : "about", categories: {} };
       set({ ref, open: view.open, tab: view.tab, views: rememberView(views, ref, view) });
       if (view.open && !state.open) captureActivitySidebarOpener();
     },

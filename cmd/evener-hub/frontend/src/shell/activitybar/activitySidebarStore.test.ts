@@ -27,6 +27,14 @@ test("a newly inspected session defaults to About while revisited and explicit o
   expect(store.getState()).toMatchObject({ open: true, ref: "remote:fresh", tab: "about" });
   store.getState().setTab("jobs");
   store.getState().close();
+  // After closing on another tab, a never-inspected session still opens on About.
+  store.getState().openFor("remote:second-fresh");
+  expect(store.getState()).toMatchObject({ open: true, ref: "remote:second-fresh", tab: "about" });
+  // Retargeting while already open keeps the ongoing inspection's active category.
+  store.getState().setTab("watches");
+  store.getState().retarget("remote:child");
+  expect(store.getState()).toMatchObject({ open: true, ref: "remote:child", tab: "watches" });
+  store.getState().close();
   store.getState().openFor("remote:explicit", "agents");
   expect(store.getState()).toMatchObject({ open: true, ref: "remote:explicit", tab: "agents" });
   store.getState().openFor("remote:fresh");
