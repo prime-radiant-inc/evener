@@ -210,13 +210,23 @@ losing the conversation that made the evidence relevant.
 - **Keep inspection readable at larger text sizes.** Desktop Overview defaults to 320px
   wide and is user-resizable (`280–640px`, clamped against narrow desktop viewports)
   from its left edge using the same edge-resize separator contract as the Sessions rail.
-  Both desktop and mobile use one single-row underline tablist with two-level headings
-  (label on top, count underneath; About stays a single centered label) without wrapping
-  onto multiple rows or shortening labels or counts, scrolling horizontally when larger
-  text sizes or narrow widths exceed the strip. About presents session facts in a compact
-  inline meta table whose model, session ID, branch, paths, and saved link URLs wrap as
-  selectable text. Its body
-  scrolls vertically while the page stays fixed. Phone controls retain the tap floor.
+  Both desktop and mobile use one single-row underline tablist with six two-level
+  headings (About, Links, Agents, Jobs, Watches, Tasks: label on top, count
+  underneath; About stays a single centered label) without wrapping onto multiple
+  rows or shortening labels or counts, scrolling horizontally when larger text
+  sizes or narrow widths exceed the strip. Links has its own tab with a Recent /
+  Grouped mode switch, an inline filter field, hover-underlined label rows (with
+  Open beside for local files), and a sticky bottom destination bar that reveals
+  the full raw URL on hover or keyboard focus instead of stacking multi-line URLs
+  under every row. About presents five pill-free, hairline-divided groups:
+  inline-editable Goal (with a quiet empty row when the session supports goals,
+  explicit Save/Clear/Cancel without blur-save, and zero text shift when
+  converting to edit), Usage (circular ring `Meter` plus a 2×2 metric grid),
+  Workspace (click-to-copy Directory, Project, Branch, and Host with state shown
+  only when offline), Session (the single `StatusDot` on State, Model with inline
+  reasoning effort, click-to-copy Session ID, Role, Started, Updated), and a
+  collapsed Launch settings Disclosure. Its body scrolls vertically while the
+  page stays fixed. Phone controls retain the tap floor.
 - **Keep Overview's activity lists on one loading and spacing contract.** Agents,
   Jobs and Watches page automatically at their visible boundary, with a static
   Skeleton rather than a Load more control. Their inactive/completed folds show
@@ -1528,13 +1538,15 @@ and the tablet Sessions board always keep a solid header.
 Below 900px, the session header carries Find in session beside Overview as
 44px icon buttons. Overview opens the shared full-screen activity overlay
 directly for that session, sharing the same horizontally scrolling underline
-tablist (About, Agents, Jobs, Watches, Tasks; never pills) used on desktop and
-meeting the 44px tap floor on touch devices. A newly inspected session opens on
-About; a revisited session keeps its last tab; drilling while open keeps the
-active tab. About renders shared session facts in a compact inline meta table
-(including the current goal with its quiet state chip when set, model, reasoning
-effort, live status indicator, context meter, and local branch) and full
-wrapping saved session links (native links for web URLs, open-beside rows for
+tablist (About, Links, Agents, Jobs, Watches, Tasks; never pills) used on
+desktop and meeting the 44px tap floor on touch devices. A newly inspected
+session opens on About; a revisited session keeps its last tab; drilling while
+open keeps the active tab. About renders shared session facts in five calm,
+pill-free groups (inline-editable Goal with zero text shift, Usage with the
+circular `Meter` ring, Workspace with click-to-copy Directory, Session with one
+`StatusDot` and click-to-copy Session ID, and collapsed Launch settings); saved
+session links live in the dedicated Links tab (Recent or Grouped, filterable,
+hover-underlined labels with hover/focus destination bar and Open beside for
 local files) on both desktop and mobile. Dismissing Overview returns focus to
 the header entry when it still belongs to that session.
 

@@ -126,7 +126,6 @@
 .contextGauge {
   display: inline-flex;
   align-items: center;
-  width: var(--space-6);
   flex: none;
 }
 

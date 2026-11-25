@@ -178,9 +178,10 @@ test("a live session's context row shows percent used, used / window, and how mu
   for (const figure of ["42%", "42K", "100K", "58K"]) expect(row.textContent).toContain(figure);
 });
 
-test("the context row carries a meter at the session's pressure", async () => {
+test("the context row carries a circular ring meter at the session's pressure", async () => {
   await openPanel(testModel());
   const meter = screen.getByRole("meter", { name: /Context/ });
+  expect(meter.dataset.variant).toBe("ring");
   expect(meter.getAttribute("aria-valuenow")).toBe("42000");
   expect(meter.getAttribute("aria-valuemax")).toBe("100000");
 });

@@ -562,6 +562,7 @@ export function DetailsPanelBody({ model, now, resolvedBranch = "", onSetGoal }:
               <div className={CLASS.contextLead}>
                 <span className={CLASS.contextGauge}>
                   <Meter
+                    variant="ring"
                     label={`Context: ${formatTokenCount(model.contextUsed)} of ${capacityMark}${formatTokenCount(status.ceiling)} tokens used, ${percent} percent`}
                     value={model.contextUsed}
                     max={status.ceiling}

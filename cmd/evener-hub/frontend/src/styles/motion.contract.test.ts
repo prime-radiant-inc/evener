@@ -456,6 +456,7 @@ const CONSUMERS: [file: string, selector: string, recipe: string][] = [
   ["shell/mobile/StackHost.module.css", ".leavingOver", "slideRight"],
   ["widgets/disclosure/disclosure.module.css", ".body", "bodyReveal"],
   ["panes/session/transcript/toolcallitem.module.css", ".body", "bodyReveal"],
+  ["panes/session/chrome/detailspanel.module.css", ".goalActions", "bodyReveal"],
   ["panes/session/transcript/streamingtext.module.css", ".live", "caret"],
   ["panes/session/transcript/messages/agentmessageitem.module.css", ".stream", "caretLast"],
 ];
