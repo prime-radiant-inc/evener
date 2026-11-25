@@ -17,17 +17,23 @@ import type {
   Turn,
   TurnModel,
 } from "@evener/appwire-client";
+import { decodeTranscriptItem, ErrorTranscriptHistoryFailed, WireError } from "@evener/appwire-client";
 import type { FakeClient, RequestHandler } from "@evener/appwire-client/testing/fakeClient";
 import { IDBObjectStore } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readComposerDraft, writeComposerDraft } from "../panes/session/composer/draft";
 import { settleProjectionWorkForTests } from "../panes/session/composer/queue/testing/flushPendingTurnsProjection";
+import { isDormantTranscript } from "../panes/session/transcript/transcriptVisibility";
 import { setCacheChannelFactoryForTests } from "./cacheLifetime";
 import { resetConnectionStoreForTests } from "./connection";
 import {
   isEntryTranscriptLocalOpening,
+  openingRecoveryCompletion,
   productionEntryTranscriptForTests,
+  publishEntryTranscriptModel,
   setProductionEntryCacheForTests,
+  setSessionCacheOpenBackstopForTests,
+  setSessionCacheStalledOpenForTests,
 } from "./entryTranscriptRoutes";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
 import { deleteMutationDatabase } from "./mutationOutboxTestUtils";
@@ -661,6 +667,675 @@ describe("ordinary entry transcript route", () => {
       ).toEqual([]);
     } finally {
       if (opened) threadsStore.getState().releaseThread(selected);
+      await lease.release();
+      await fixture.settled();
+      await settleBackgroundTranscriptsForTests();
+      fixture.dispose();
+      entryCache.close();
+      await deleteIndexedDatabase(entryDatabase);
+    }
+  });
+
+  // A warm reopen over a background lease's released bodies still owes the
+  // conversation from the durable record. The repository's display keeps the
+  // historical warning overlay but no recorded bodies, so publishing that
+  // snapshot as the selected session's conversation paints the warning alone
+  // until the local restore lands. The notice is anchored inside the loaded
+  // recorded window as well as outside it, so a corrected notice placement
+  // alone cannot make this pass.
+  it.each([
+    ["in-window", { entry: 1, item: 0 }],
+    ["out-of-window", { entry: 40, item: 0 }],
+  ] as const)(
+    "a warm reopen with a %s historical notice never publishes it alone while the local restore is pending",
+    async (_name, anchor) => {
+      const selected = "local:entry-warm-pruned-notice";
+      const entryDatabase = "entry-warm-pruned-notice-test";
+      const replyBody = "RECORDED_WARM_REPLY_BODY";
+      const warningText = "HISTORICAL_WARM_WARNING";
+      const entryCache = new SessionEntryCache({ databaseName: entryDatabase });
+      const fixture = observeProductionEntryForTests(entryCache, selected);
+      const fake = connectFakeClient();
+      fake.on("thread/read", (params) => {
+        const recorded = turnFixture("warm-recorded", replyBody);
+        const read = readResponse(params.ref ?? selected, {
+          status: { type: "idle" },
+          snapshot: { incarnation: "inc-1", length: 1 },
+          turns: [{ ...recorded, items: [{ ...recorded.items[0]!, transcriptKey: "warm-recorded-item", version: 1 }] }],
+          requestGeneration: params.requestGeneration,
+        });
+        read.overlay = [
+          {
+            key: "historical-warning",
+            kind: "notice",
+            anchor,
+            turnId: "warm-recorded",
+            item: { id: "historical-warning", type: "agentMessage", text: warningText },
+          },
+        ];
+        return read;
+      });
+      const lease = acquireBackgroundThread(selected);
+      try {
+        await lease.ready;
+        await fixture.settled();
+        await settleBackgroundTranscriptsForTests();
+        const historyKey = fixture.inspect().historyKey;
+        if (!historyKey) throw new Error("the background lease resolved no history key");
+        // The ordinary background lease committed the positioned recorded body
+        // to the real database and then released its display payload.
+        const rows = await entryCache.getLatest(historyKey, 10);
+        expect(rows.map((row) => decodeTranscriptItem(row.item)?.text)).toEqual([replyBody]);
+        const pruned = threadsStore.getState().threads.get(selected);
+        const prunedText = JSON.stringify(pruned ?? null);
+        expect({ warning: prunedText.includes(warningText), reply: prunedText.includes(replyBody) }).toEqual({
+          warning: true,
+          reply: false,
+        });
+
+        // Hold the local restore at its durable window read so the committed
+        // frames during the opening are deterministic.
+        const releases: Array<() => void> = [];
+        const realGetLatestWindow = entryCache.getLatestWindow.bind(entryCache);
+        entryCache.getLatestWindow = ((h: string, limit: number, boundary?: string) =>
+          new Promise((resolve, reject) => {
+            releases.push(() => {
+              void realGetLatestWindow(h, limit, boundary).then(resolve, reject);
+            });
+          })) as typeof entryCache.getLatestWindow;
+
+        // A committed frame is a model publication the pane could render; the
+        // opening's own hold publication replaces only the localOpenings map.
+        const frames: Array<{ pending: boolean; text: string }> = [];
+        let lastModel: unknown;
+        const record = () => {
+          const model = threadsStore.getState().threads.get(selected);
+          if (model === undefined || model === lastModel) return;
+          lastModel = model;
+          frames.push({ pending: threadsStore.getState().localOpenings.has(selected), text: JSON.stringify(model) });
+        };
+        const unsubscribe = threadsStore.subscribe(record);
+        const activationCalls = fake.calls.length;
+        const opening = threadsStore.getState().ensureThread(selected);
+        try {
+          await vi.waitFor(() => expect(releases.length).toBeGreaterThanOrEqual(1));
+          await vi.waitFor(() => expect(frames.some((frame) => frame.pending)).toBe(true));
+          const pendingFrames = frames.filter((frame) => frame.pending);
+          const noticeAloneFrames = pendingFrames.filter(
+            (frame) => frame.text.includes(warningText) && !frame.text.includes(replyBody),
+          );
+          expect(noticeAloneFrames).toEqual([]);
+        } finally {
+          for (const release of releases.splice(0)) release();
+          await opening;
+          await fixture.settled();
+          unsubscribe();
+        }
+        const opened = JSON.stringify(threadsStore.getState().threads.get(selected) ?? null);
+        expect({ reply: opened.includes(replyBody), warning: opened.includes(warningText) }).toEqual({
+          reply: true,
+          warning: true,
+        });
+        // A healthy local hit still needs no activation source read or page.
+        expect(
+          fake.calls
+            .slice(activationCalls)
+            .filter((call) => call.method === "thread/read" || call.method === "thread/turns/list"),
+        ).toEqual([]);
+      } finally {
+        await lease.release();
+        await fixture.settled();
+        await settleBackgroundTranscriptsForTests();
+        fixture.dispose();
+        entryCache.close();
+        await deleteIndexedDatabase(entryDatabase);
+      }
+    },
+  );
+
+  // A warning the session generates during the pending warm open is new
+  // information, not the pruned publication's historical notice. It must be
+  // visible at once while the historical notice stays held, and the restore
+  // then settles both notices beside the recorded body.
+  it("publishes a warning generated during the pending warm open while its historical notice stays held", async () => {
+    const selected = "local:entry-warm-live-warning";
+    const entryDatabase = "entry-warm-live-warning-test";
+    const replyBody = "RECORDED_WARM_LIVE_BODY";
+    const historicalWarning = "HISTORICAL_WARM_NOTICE";
+    const liveWarning = "LIVE_WARM_WARNING";
+    const entryCache = new SessionEntryCache({ databaseName: entryDatabase });
+    const fixture = observeProductionEntryForTests(entryCache, selected);
+    const fake = connectFakeClient();
+    fake.on("thread/read", (params) => {
+      const recorded = turnFixture("warm-live-recorded", replyBody);
+      const read = readResponse(params.ref ?? selected, {
+        status: { type: "idle" },
+        snapshot: { incarnation: "inc-1", length: 1 },
+        turns: [
+          { ...recorded, items: [{ ...recorded.items[0]!, transcriptKey: "warm-live-recorded-item", version: 1 }] },
+        ],
+        requestGeneration: params.requestGeneration,
+      });
+      read.overlay = [
+        {
+          key: "historical-warning",
+          kind: "notice",
+          anchor: { entry: 1, item: 0 },
+          turnId: "warm-live-recorded",
+          item: { id: "historical-warning", type: "agentMessage", text: historicalWarning },
+        },
+      ];
+      return read;
+    });
+    const lease = acquireBackgroundThread(selected);
+    try {
+      await lease.ready;
+      await fixture.settled();
+      await settleBackgroundTranscriptsForTests();
+      const historyKey = fixture.inspect().historyKey;
+      if (!historyKey) throw new Error("the background lease resolved no history key");
+      const rows = await entryCache.getLatest(historyKey, 10);
+      expect(rows.map((row) => decodeTranscriptItem(row.item)?.text)).toEqual([replyBody]);
+      const pruned = threadsStore.getState().threads.get(selected);
+      const prunedText = JSON.stringify(pruned ?? null);
+      expect({ warning: prunedText.includes(historicalWarning), reply: prunedText.includes(replyBody) }).toEqual({
+        warning: true,
+        reply: false,
+      });
+      const threadId = pruned?.threadId;
+      if (!threadId) throw new Error("the pruned publication carries no thread id");
+
+      // Hold the local restore at its durable window read so the committed
+      // frames during the opening are deterministic.
+      const releases: Array<() => void> = [];
+      const realGetLatestWindow = entryCache.getLatestWindow.bind(entryCache);
+      entryCache.getLatestWindow = ((h: string, limit: number, boundary?: string) =>
+        new Promise((resolve, reject) => {
+          releases.push(() => {
+            void realGetLatestWindow(h, limit, boundary).then(resolve, reject);
+          });
+        })) as typeof entryCache.getLatestWindow;
+
+      const frames: Array<{ pending: boolean; text: string }> = [];
+      let lastModel: unknown;
+      const record = () => {
+        const model = threadsStore.getState().threads.get(selected);
+        if (model === undefined || model === lastModel) return;
+        lastModel = model;
+        frames.push({ pending: threadsStore.getState().localOpenings.has(selected), text: JSON.stringify(model) });
+      };
+      const unsubscribe = threadsStore.subscribe(record);
+      const activationCalls = fake.calls.length;
+      const opening = threadsStore.getState().ensureThread(selected);
+      try {
+        await vi.waitFor(() => expect(releases.length).toBeGreaterThanOrEqual(1));
+        await vi.waitFor(() => expect(frames.some((frame) => frame.pending)).toBe(true));
+        const held = JSON.stringify(threadsStore.getState().threads.get(selected) ?? null);
+        expect({ warning: held.includes(historicalWarning), reply: held.includes(replyBody) }).toEqual({
+          warning: false,
+          reply: false,
+        });
+
+        // The session generates a warning while the restore is still pending:
+        // a notice under its own key, with no body sibling.
+        fake.emitNotification({
+          method: "overlay/upserted",
+          params: {
+            ref: selected,
+            threadId,
+            item: {
+              key: "notice:live-warning",
+              kind: "notice",
+              turnId: "warm-live-recorded",
+              item: { id: "live-warning", type: "agentMessage", text: liveWarning },
+            },
+          },
+        } as AnyNotification);
+        await vi.waitFor(() => {
+          expect(JSON.stringify(threadsStore.getState().threads.get(selected) ?? null)).toContain(liveWarning);
+        });
+        const afterLive = JSON.stringify(threadsStore.getState().threads.get(selected) ?? null);
+        expect(afterLive.includes(historicalWarning)).toBe(false);
+      } finally {
+        for (const release of releases.splice(0)) release();
+        await opening;
+        await fixture.settled();
+        unsubscribe();
+      }
+      const opened = JSON.stringify(threadsStore.getState().threads.get(selected) ?? null);
+      expect({
+        reply: opened.includes(replyBody),
+        historical: opened.includes(historicalWarning),
+        live: opened.includes(liveWarning),
+      }).toEqual({ reply: true, historical: true, live: true });
+      // A healthy local hit still needs no activation source read or page.
+      expect(
+        fake.calls
+          .slice(activationCalls)
+          .filter((call) => call.method === "thread/read" || call.method === "thread/turns/list"),
+      ).toEqual([]);
+    } finally {
+      await lease.release();
+      await fixture.settled();
+      await settleBackgroundTranscriptsForTests();
+      fixture.dispose();
+      entryCache.close();
+      await deleteIndexedDatabase(entryDatabase);
+    }
+  });
+
+  // A's released foreground hold leaves its parked local restore alive while a
+  // retained background owner keeps the route. Reclaiming the same ref starts
+  // opening B, then A's own late completion settles. That stale settlement must
+  // not drop B's hold over the pruned notice: the next repository publication
+  // still owes B's recorded bodies, so the carried warning must stay withheld
+  // until B's own restore supplies them.
+  it("a stale opening settlement keeps the newer opening's carried notice held until its restore", async () => {
+    const selected = "local:entry-warm-stale-settle";
+    const entryDatabase = "entry-warm-stale-settle-test";
+    const replyBody = "RECORDED_WARM_STALE_BODY";
+    const warningText = "HISTORICAL_STALE_WARNING";
+    const entryCache = new SessionEntryCache({ databaseName: entryDatabase });
+    const fixture = observeProductionEntryForTests(entryCache, selected);
+    const fake = connectFakeClient();
+    fake.on("thread/read", (params) => {
+      const recorded = turnFixture("warm-stale-recorded", replyBody);
+      const read = readResponse(params.ref ?? selected, {
+        status: { type: "idle" },
+        snapshot: { incarnation: "inc-1", length: 1 },
+        turns: [
+          { ...recorded, items: [{ ...recorded.items[0]!, transcriptKey: "warm-stale-recorded-item", version: 1 }] },
+        ],
+        requestGeneration: params.requestGeneration,
+      });
+      read.overlay = [
+        {
+          key: "historical-warning",
+          kind: "notice",
+          anchor: { entry: 1, item: 0 },
+          turnId: "warm-stale-recorded",
+          item: { id: "historical-warning", type: "agentMessage", text: warningText },
+        },
+      ];
+      return read;
+    });
+    const lease = acquireBackgroundThread(selected);
+    const releases: Array<() => void> = [];
+    let openingA: Promise<unknown> | undefined;
+    let openingB: Promise<unknown> | undefined;
+    try {
+      await lease.ready;
+      await fixture.settled();
+      await settleBackgroundTranscriptsForTests();
+      const historyKey = fixture.inspect().historyKey;
+      if (!historyKey) throw new Error("the background lease resolved no history key");
+      const rows = await entryCache.getLatest(historyKey, 10);
+      expect(rows.map((row) => decodeTranscriptItem(row.item)?.text)).toEqual([replyBody]);
+      const pruned = JSON.stringify(threadsStore.getState().threads.get(selected) ?? null);
+      expect({ warning: pruned.includes(warningText), reply: pruned.includes(replyBody) }).toEqual({
+        warning: true,
+        reply: false,
+      });
+
+      // Park every local restore at its durable window read so each opening
+      // stays pending until the test says otherwise. A's parked read answers a
+      // stale empty window — the released pane's rows no longer certify — so
+      // A settles with the repository still holding the pruned notice display.
+      const realGetLatestWindow = entryCache.getLatestWindow.bind(entryCache);
+      let windowReads = 0;
+      entryCache.getLatestWindow = ((h: string, limit: number, boundary?: string) => {
+        const stale = windowReads++ === 0;
+        return new Promise((resolve, reject) => {
+          releases.push(() => {
+            if (stale) resolve({ rows: [], coverage: [], complete: false, stale: true });
+            else void realGetLatestWindow(h, limit, boundary).then(resolve, reject);
+          });
+        });
+      }) as typeof entryCache.getLatestWindow;
+
+      const activationCalls = fake.calls.length;
+      openingA = threadsStore.getState().ensureThread(selected);
+      await vi.waitFor(() => expect(releases.length).toBeGreaterThanOrEqual(1));
+      await vi.waitFor(() => expect(isEntryTranscriptLocalOpening(selected)).toBe(true));
+
+      // Release A's foreground hold while the retained background owner keeps
+      // the route, then reclaim the same ref as opening B. A's parked restore
+      // is still pending.
+      threadsStore.getState().releaseThread(selected);
+      openingB = threadsStore.getState().ensureThread(selected);
+      await vi.waitFor(() => expect(releases.length).toBeGreaterThanOrEqual(2));
+      await vi.waitFor(() => expect(isEntryTranscriptLocalOpening(selected)).toBe(true));
+      expect(JSON.stringify(threadsStore.getState().threads.get(selected) ?? null)).not.toContain(warningText);
+
+      // Release A only. Its stale restore settles while B remains parked and
+      // pending; B's own restore has not started, so the repository still
+      // holds the pruned notice display.
+      releases[0]!();
+      await openingA;
+      expect(isEntryTranscriptLocalOpening(selected)).toBe(true);
+
+      // The repository still holds the pruned display the opening owes bodies
+      // for, and this is the publication boundary the repository subscription
+      // itself calls. B's carried notice must stay withheld through it.
+      const repoBefore = JSON.stringify(fixture.inspect().model ?? null);
+      expect({ warning: repoBefore.includes(warningText), reply: repoBefore.includes(replyBody) }).toEqual({
+        warning: true,
+        reply: false,
+      });
+      publishEntryTranscriptModel(selected);
+      expect(JSON.stringify(threadsStore.getState().threads.get(selected) ?? null)).not.toContain(warningText);
+
+      // B's restore still supplies the recorded body with the carried notice.
+      releases[1]!();
+      await openingB;
+      await fixture.settled();
+      const restored = JSON.stringify(threadsStore.getState().threads.get(selected) ?? null);
+      expect({ warning: restored.includes(warningText), reply: restored.includes(replyBody) }).toEqual({
+        warning: true,
+        reply: true,
+      });
+      expect(isEntryTranscriptLocalOpening(selected)).toBe(false);
+      // The warm hit still needs no activation source read or page.
+      expect(
+        fake.calls
+          .slice(activationCalls)
+          .filter((call) => call.method === "thread/read" || call.method === "thread/turns/list"),
+      ).toEqual([]);
+    } finally {
+      for (const release of releases.splice(0)) release();
+      threadsStore.getState().releaseThread(selected);
+      await Promise.allSettled([openingA, openingB]);
+      await lease.release();
+      await fixture.settled();
+      await settleBackgroundTranscriptsForTests();
+      fixture.dispose();
+      entryCache.close();
+      await deleteIndexedDatabase(entryDatabase);
+    }
+  });
+
+  // Withholding a pruned historical notice during a pending warm reopen must
+  // preserve the recorded turn shells (matching pruneBackgroundHistoryBodies),
+  // so isDormantTranscript(model.turns) stays false and the mounted reader is
+  // not torn down and captured at scrollTop: 0.
+  it("a warm reopen's held notice display preserves recorded turn shells so the reader stays mounted", async () => {
+    const selected = "local:entry-warm-keep-shells";
+    const entryDatabase = "entry-warm-keep-shells-test";
+    const replyBody1 = "RECORDED_WARM_SHELL_BODY_1";
+    const replyBody2 = "RECORDED_WARM_SHELL_BODY_2";
+    const warningText = "HISTORICAL_SHELL_WARNING";
+    const entryCache = new SessionEntryCache({ databaseName: entryDatabase });
+    const fixture = observeProductionEntryForTests(entryCache, selected);
+    const fake = connectFakeClient();
+    fake.on("thread/read", (params) => {
+      const turn1 = turnFixture("warm-shell-1", replyBody1);
+      const turn2 = turnFixture("warm-shell-2", replyBody2);
+      const read = readResponse(params.ref ?? selected, {
+        status: { type: "idle" },
+        snapshot: { incarnation: "inc-1", length: 2 },
+        turns: [
+          {
+            ...turn1,
+            items: [
+              { ...turn1.items[0]!, transcriptKey: "warm-shell-item-1", position: { entry: 1, item: 0 }, version: 1 },
+            ],
+          },
+          {
+            ...turn2,
+            items: [
+              { ...turn2.items[0]!, transcriptKey: "warm-shell-item-2", position: { entry: 2, item: 0 }, version: 1 },
+            ],
+          },
+        ],
+        requestGeneration: params.requestGeneration,
+      });
+      read.overlay = [
+        {
+          key: "historical-warning",
+          kind: "notice",
+          anchor: { entry: 1, item: 0 },
+          turnId: "warm-shell-1",
+          item: { id: "historical-warning", type: "agentMessage", text: warningText },
+        },
+      ];
+      return read;
+    });
+    const lease = acquireBackgroundThread(selected);
+    try {
+      await lease.ready;
+      await fixture.settled();
+      await settleBackgroundTranscriptsForTests();
+      const historyKey = fixture.inspect().historyKey;
+      if (!historyKey) throw new Error("the background lease resolved no history key");
+      const rows = await entryCache.getLatest(historyKey, 10);
+      expect(rows.map((row) => decodeTranscriptItem(row.item)?.text)).toEqual([replyBody1, replyBody2]);
+      const pruned = threadsStore.getState().threads.get(selected);
+      if (!pruned) throw new Error("the background lease published no pruned model");
+      expect(isDormantTranscript(pruned.turns)).toBe(false);
+      expect(pruned.turns.map((turn) => turn.id)).toEqual(["warm-shell-1", "warm-shell-2"]);
+      expect(pruned.overlay?.["historical-warning"]).toBeDefined();
+      const prunedText = JSON.stringify(pruned);
+      expect({ r1: prunedText.includes(replyBody1), r2: prunedText.includes(replyBody2) }).toEqual({
+        r1: false,
+        r2: false,
+      });
+
+      const releases: Array<() => void> = [];
+      const realGetLatestWindow = entryCache.getLatestWindow.bind(entryCache);
+      entryCache.getLatestWindow = ((h: string, limit: number, boundary?: string) =>
+        new Promise((resolve, reject) => {
+          releases.push(() => {
+            void realGetLatestWindow(h, limit, boundary).then(resolve, reject);
+          });
+        })) as typeof entryCache.getLatestWindow;
+
+      const frames: Array<{ pending: boolean; model: ThreadModel }> = [];
+      let lastModel: ThreadModel | undefined;
+      const record = () => {
+        const model = threadsStore.getState().threads.get(selected);
+        if (model === undefined || model === lastModel) return;
+        lastModel = model;
+        frames.push({ pending: threadsStore.getState().localOpenings.has(selected), model });
+      };
+      const unsubscribe = threadsStore.subscribe(record);
+      const activationCalls = fake.calls.length;
+      const opening = threadsStore.getState().ensureThread(selected);
+      try {
+        await vi.waitFor(() => expect(releases.length).toBeGreaterThanOrEqual(1));
+        await vi.waitFor(() => expect(frames.some((frame) => frame.pending)).toBe(true));
+        const pendingFrames = frames.filter((frame) => frame.pending);
+        expect(pendingFrames.length).toBeGreaterThan(0);
+        for (const frame of pendingFrames) {
+          expect(isDormantTranscript(frame.model.turns)).toBe(false);
+          expect(frame.model.turns.map((turn) => turn.id)).toEqual(pruned.turns.map((turn) => turn.id));
+          expect(frame.model.overlay?.["historical-warning"]).toBeUndefined();
+          expect(
+            frame.model.turns.flatMap((turn) => turn.items).some((item) => item.overlayKey === "historical-warning"),
+          ).toBe(false);
+        }
+      } finally {
+        for (const release of releases.splice(0)) release();
+        await opening;
+        await fixture.settled();
+        unsubscribe();
+      }
+      const opened = threadsStore.getState().threads.get(selected);
+      expect(opened?.overlay?.["historical-warning"]).toBeDefined();
+      expect(JSON.stringify(opened ?? null)).toContain(replyBody1);
+      expect(JSON.stringify(opened ?? null)).toContain(replyBody2);
+      expect(
+        fake.calls
+          .slice(activationCalls)
+          .filter((call) => call.method === "thread/read" || call.method === "thread/turns/list"),
+      ).toEqual([]);
+    } finally {
+      threadsStore.getState().releaseThread(selected);
+      await lease.release();
+      await fixture.settled();
+      await settleBackgroundTranscriptsForTests();
+      fixture.dispose();
+      entryCache.close();
+      await deleteIndexedDatabase(entryDatabase);
+    }
+  });
+
+  // If a pending warm opening held a historical notice and its local restore
+  // settles without republishing (for example a failing recovery re-open after
+  // a structured history failure), settling the opening must republish the
+  // withheld historical notice while foreground-owned instead of stranding it
+  // hidden.
+  it("a settled warm reopen whose local restore fails without republishing restores its withheld historical notice", async () => {
+    const selected = "local:entry-warm-restore-fails";
+    const entryDatabase = "entry-warm-restore-fails-test";
+    const replyBody = "RECORDED_WARM_FAIL_BODY";
+    const warningText = "HISTORICAL_FAIL_WARNING";
+    const entryCache = new SessionEntryCache({ databaseName: entryDatabase });
+    const fixture = observeProductionEntryForTests(entryCache, selected);
+    const fake = connectFakeClient();
+    let failSourceReads = false;
+    fake.on("thread/read", (params) => {
+      if (failSourceReads) {
+        throw new WireError("thread history failed", -32603, {
+          evenerErrorInfo: ErrorTranscriptHistoryFailed,
+        });
+      }
+      const recorded = turnFixture("warm-fail-recorded", replyBody);
+      const read = readResponse(params.ref ?? selected, {
+        status: { type: "idle" },
+        snapshot: { incarnation: "inc-1", length: 1 },
+        turns: [
+          { ...recorded, items: [{ ...recorded.items[0]!, transcriptKey: "warm-fail-recorded-item", version: 1 }] },
+        ],
+        requestGeneration: params.requestGeneration,
+      });
+      read.overlay = [
+        {
+          key: "historical-warning",
+          kind: "notice",
+          anchor: { entry: 1, item: 0 },
+          turnId: "warm-fail-recorded",
+          item: { id: "historical-warning", type: "agentMessage", text: warningText },
+        },
+      ];
+      return read;
+    });
+    const lease = acquireBackgroundThread(selected);
+    setSessionCacheOpenBackstopForTests(20);
+    setSessionCacheStalledOpenForTests(20);
+    try {
+      await lease.ready;
+      await fixture.settled();
+      await settleBackgroundTranscriptsForTests();
+      const pruned = threadsStore.getState().threads.get(selected);
+      expect(pruned?.overlay?.["historical-warning"]).toBeDefined();
+
+      // First local open misses the open backstop, triggering a source read
+      // that returns ErrorTranscriptHistoryFailed. The recovery chain's own
+      // local re-open then withholds the historical notice, rejects its cache
+      // read, and returns immediately on history.failed without republishing.
+      failSourceReads = true;
+      let windowReads = 0;
+      entryCache.getLatestWindow = (() => {
+        windowReads += 1;
+        if (windowReads === 1) return new Promise(() => {});
+        return Promise.reject(new Error("durable window read failed"));
+      }) as typeof entryCache.getLatestWindow;
+
+      await threadsStore.getState().ensureThread(selected);
+      await openingRecoveryCompletion(selected);
+      await vi.waitFor(() => expect(windowReads).toBeGreaterThanOrEqual(2));
+      await vi.waitFor(() => expect(isEntryTranscriptLocalOpening(selected)).toBe(false));
+
+      const settled = threadsStore.getState().threads.get(selected);
+      expect(settled?.history?.failed).toBeDefined();
+      expect(settled?.overlay?.["historical-warning"]).toBeDefined();
+      expect(
+        settled?.turns.flatMap((turn) => turn.items).some((item) => item.overlayKey === "historical-warning"),
+      ).toBe(true);
+    } finally {
+      setSessionCacheOpenBackstopForTests(10000);
+      setSessionCacheStalledOpenForTests(5000);
+      threadsStore.getState().releaseThread(selected);
+      await lease.release();
+      await fixture.settled();
+      await settleBackgroundTranscriptsForTests();
+      fixture.dispose();
+      entryCache.close();
+      await deleteIndexedDatabase(entryDatabase);
+    }
+  });
+
+  // Releasing a foreground pane back to background ownership while a pending
+  // warm opening is still withholding historical notices must prune the
+  // repository snapshot rather than the withheld store model so those notices
+  // remain present while held in the background.
+  it("releasing a foreground pane while a warm opening holds notices retains the historical notices in background", async () => {
+    const selected = "local:entry-warm-release-while-held";
+    const entryDatabase = "entry-warm-release-while-held-test";
+    const replyBody = "RECORDED_WARM_RELEASE_BODY";
+    const warningText = "HISTORICAL_RELEASE_WARNING";
+    const entryCache = new SessionEntryCache({ databaseName: entryDatabase });
+    const fixture = observeProductionEntryForTests(entryCache, selected);
+    const fake = connectFakeClient();
+    fake.on("thread/read", (params) => {
+      const recorded = turnFixture("warm-release-recorded", replyBody);
+      const read = readResponse(params.ref ?? selected, {
+        status: { type: "idle" },
+        snapshot: { incarnation: "inc-1", length: 1 },
+        turns: [
+          { ...recorded, items: [{ ...recorded.items[0]!, transcriptKey: "warm-release-recorded-item", version: 1 }] },
+        ],
+        requestGeneration: params.requestGeneration,
+      });
+      read.overlay = [
+        {
+          key: "historical-warning",
+          kind: "notice",
+          anchor: { entry: 1, item: 0 },
+          turnId: "warm-release-recorded",
+          item: { id: "historical-warning", type: "agentMessage", text: warningText },
+        },
+      ];
+      return read;
+    });
+    const lease = acquireBackgroundThread(selected);
+    const releases: Array<() => void> = [];
+    let opening: Promise<unknown> | undefined;
+    try {
+      await lease.ready;
+      await fixture.settled();
+      await settleBackgroundTranscriptsForTests();
+      const pruned = threadsStore.getState().threads.get(selected);
+      expect(pruned?.overlay?.["historical-warning"]).toBeDefined();
+
+      const realGetLatestWindow = entryCache.getLatestWindow.bind(entryCache);
+      entryCache.getLatestWindow = ((h: string, limit: number, boundary?: string) =>
+        new Promise((resolve, reject) => {
+          releases.push(() => {
+            void realGetLatestWindow(h, limit, boundary).then(resolve, reject);
+          });
+        })) as typeof entryCache.getLatestWindow;
+
+      opening = threadsStore.getState().ensureThread(selected);
+      await vi.waitFor(() => expect(releases.length).toBeGreaterThanOrEqual(1));
+      await vi.waitFor(() => expect(isEntryTranscriptLocalOpening(selected)).toBe(true));
+      expect(threadsStore.getState().threads.get(selected)?.overlay?.["historical-warning"]).toBeUndefined();
+
+      threadsStore.getState().releaseThread(selected);
+      expect(isEntryTranscriptLocalOpening(selected)).toBe(false);
+
+      const backgroundAfterRelease = threadsStore.getState().threads.get(selected);
+      expect(backgroundAfterRelease?.overlay?.["historical-warning"]).toBeDefined();
+      expect(
+        backgroundAfterRelease?.turns
+          .flatMap((turn) => turn.items)
+          .some((item) => item.overlayKey === "historical-warning"),
+      ).toBe(true);
+      expect(JSON.stringify(backgroundAfterRelease ?? null)).not.toContain(replyBody);
+    } finally {
+      for (const release of releases.splice(0)) release();
+      threadsStore.getState().releaseThread(selected);
+      await Promise.allSettled([opening]);
       await lease.release();
       await fixture.settled();
       await settleBackgroundTranscriptsForTests();

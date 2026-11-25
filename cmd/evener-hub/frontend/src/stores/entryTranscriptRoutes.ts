@@ -338,6 +338,14 @@ export function isEntryTranscriptLocalOpening(ref: string): boolean {
 // that newer opening finished.
 const entryTranscriptLatestOpening = new Map<string, number>();
 
+// The notices the pruned publication already carried when its opening became
+// pending, bound to that opening's token. Only these stand in for content the
+// restore owes: a notice upserted while the open runs is new information (a
+// fresh `notice:<n>` key) and stays visible. Only the opening whose token
+// captured the hold clears it, so a released pane's late settlement cannot
+// erase the hold a newer opening over the same ref installed.
+const heldPrunedNoticeKeys = new Map<string, { openingToken: number; keys: ReadonlySet<string> }>();
+
 // A quiet opening's ownership token: present while the open runs, invisible
 // to the consumer gate. The certification open a claim runs over a display
 // its own publication already completed, and whose older frontier is still
@@ -356,10 +364,16 @@ export function beginEntryTranscriptLocalOpening(ref: string, quiet = false): nu
   entryTranscriptOpeningSequence += 1;
   const token = entryTranscriptOpeningSequence;
   entryTranscriptLatestOpening.set(ref, token);
+  heldPrunedNoticeKeys.delete(ref);
   if (quiet) {
     entryTranscriptQuietOpenings.set(ref, token);
     return token;
   }
+  // Replace the stand-alone notice display BEFORE the hold becomes visible to
+  // consumers: a pane that reads the store between these two updates would
+  // otherwise paint the pruned notice as the session's conversation, which is
+  // the frame this opening exists to prevent.
+  publishHeldOpeningDisplay(ref, token);
   store().setState((state) => {
     const localOpenings = new Map(state.localOpenings);
     localOpenings.set(ref, token);
@@ -373,12 +387,35 @@ export function beginEntryTranscriptLocalOpening(ref: string, quiet = false): nu
 // publishing, strand a port. Called on success, failure and no-model alike.
 export function settleEntryTranscriptLocalOpening(ref: string, token: number): void {
   if (entryTranscriptQuietOpenings.get(ref) === token) entryTranscriptQuietOpenings.delete(ref);
+  const held = heldPrunedNoticeKeys.get(ref);
+  const heldByToken = held?.openingToken === token;
+  if (heldByToken) heldPrunedNoticeKeys.delete(ref);
   store().setState((state) => {
     if (state.localOpenings.get(ref) !== token) return {};
     const localOpenings = new Map(state.localOpenings);
     localOpenings.delete(ref);
     return { localOpenings };
   });
+  // If this opening withheld historical notices and settled without restoring
+  // bodies or republishing them (for instance a failing recovery re-open or a
+  // notice-only fallback), republish while still foreground-owned so the
+  // withheld notices do not stay stuck hidden.
+  if (
+    heldByToken &&
+    entryTranscriptLatestOpening.get(ref) === token &&
+    foregroundHolds(ref) > 0 &&
+    !store().getState().deletedRefs.has(ref)
+  ) {
+    const fixture = existingEntryRoute(ref);
+    const snapshot = fixture?.ref === ref && !fixture.clearInert ? fixture.repository?.getSnapshot() : undefined;
+    const current = store().getState().threads.get(ref);
+    if (
+      snapshot &&
+      [...held.keys].some((key) => snapshot.overlay?.[key] !== undefined && current?.overlay?.[key] === undefined)
+    ) {
+      publishEntryTranscriptModel(ref);
+    }
+  }
 }
 
 // Exclusive ownership between quiet and published openings: a quiet
@@ -391,6 +428,7 @@ export function settleEntryTranscriptLocalOpening(ref: string, token: number): v
 function retireSupersededPublishedOpening(ref: string, token: number): boolean {
   const superseded = store().getState().localOpenings.get(ref);
   if (superseded === undefined || superseded >= token) return false;
+  if (heldPrunedNoticeKeys.get(ref)?.openingToken === superseded) heldPrunedNoticeKeys.delete(ref);
   store().setState((state) => {
     if (state.localOpenings.get(ref) !== superseded) return {};
     const localOpenings = new Map(state.localOpenings);
@@ -405,6 +443,7 @@ function retireSupersededPublishedOpening(ref: string, token: number): boolean {
 // for a frame that will never arrive.
 export function clearEntryTranscriptLocalOpening(ref: string): void {
   entryTranscriptQuietOpenings.delete(ref);
+  heldPrunedNoticeKeys.delete(ref);
   store().setState((state) => {
     if (!state.localOpenings.has(ref)) return {};
     const localOpenings = new Map(state.localOpenings);
@@ -460,15 +499,88 @@ export function olderTranscriptPageKey(ref: string): string | null | undefined {
 export function publishEntryTranscriptModel(ref: string): void {
   const fixture = entryTranscriptRoute(ref);
   if (!fixture || fixture.ref !== ref || fixture.clearInert) return;
-  const snapshot = fixture?.repository?.getSnapshot();
-  if (!snapshot) return;
-  const displayed = fixture.localBefore
-    ? { ...snapshot, olderCursor: snapshot.olderCursor ?? `entry-local:${JSON.stringify(fixture.localBefore)}` }
-    : snapshot;
+  const displayed = displayedEntryTranscriptSnapshot(fixture);
+  if (!displayed) return;
   routeHost().putThreadModel(
     ref,
-    isEntryTranscriptBackgroundOnly(ref) ? pruneBackgroundHistoryBodies(displayed) : displayed,
+    isEntryTranscriptBackgroundOnly(ref) ? pruneBackgroundHistoryBodies(displayed) : heldOpeningDisplay(ref, displayed),
   );
+}
+
+function displayedEntryTranscriptSnapshot(fixture: EntryTranscriptRoute): ThreadModel | undefined {
+  const snapshot = fixture.repository?.getSnapshot();
+  if (!snapshot) return undefined;
+  return fixture.localBefore
+    ? { ...snapshot, olderCursor: snapshot.olderCursor ?? `entry-local:${JSON.stringify(fixture.localBefore)}` }
+    : snapshot;
+}
+
+function publishHeldOpeningDisplay(ref: string, token: number): void {
+  const fixture = entryTranscriptRoute(ref);
+  if (!fixture || fixture.ref !== ref || fixture.clearInert) return;
+  const displayed = displayedEntryTranscriptSnapshot(fixture);
+  const pruned = displayed && prunedNoticeKeys(displayed);
+  const held = displayed && pruned && heldNoticeDisplay(displayed, pruned);
+  if (pruned && held) {
+    heldPrunedNoticeKeys.set(ref, { openingToken: token, keys: pruned });
+    routeHost().putThreadModel(ref, held);
+  }
+}
+
+// While a published opening is restoring the recorded bodies, the notice
+// display stands in for content the store cannot paint: history holds the
+// recorded item as a bare identity, and the only display items are overlay
+// notices. Publishing that shape would present the notices as historical
+// conversation whose text is gone, ahead of the restore that supplies it.
+// Withhold the notice items and overlay entries while preserving the recorded
+// turn shells (matching `pruneBackgroundHistoryBodies`) so the transcript
+// reader stays mounted until the restore, or settlement on a notice-only
+// fallback, republishes the display; the repository keeps them, so the settled
+// frame still carries them. A genuinely empty session has no body-less recorded
+// item, and a live warning travels with body-bearing items, so neither matches
+// the hold shape.
+function heldOpeningDisplay(ref: string, model: ThreadModel): ThreadModel {
+  if (!isEntryTranscriptLocalOpening(ref)) return model;
+  const held = heldPrunedNoticeKeys.get(ref);
+  if (held === undefined || held.keys.size === 0) return model;
+  const present = prunedNoticeKeys(model);
+  if (present === undefined) return model;
+  const withheld = new Set([...held.keys].filter((key) => present.has(key)));
+  return heldNoticeDisplay(model, withheld) ?? model;
+}
+
+// prunedNoticeKeys reports the overlay keys of a display that stands in for
+// recorded bodies the store cannot paint: every display item is an overlay
+// notice and history still records a body-less identity. Any other shape owes
+// nothing to a publish hold.
+function prunedNoticeKeys(model: ThreadModel): Set<string> | undefined {
+  const overlay = model.overlay;
+  if (!overlay) return undefined;
+  const displayItems = model.turns.flatMap((turn) => turn.items);
+  if (displayItems.length === 0) return undefined;
+  const noticeKeys = new Set<string>();
+  for (const item of displayItems) {
+    const key = item.overlayKey;
+    if (key === undefined || overlay[key]?.kind !== "notice") return undefined;
+    noticeKeys.add(key);
+  }
+  const bodiesWithheld = (model.history?.turns ?? []).some((turn) =>
+    turn.items.some((item) => encodeTranscriptItem(item).identityOnly),
+  );
+  if (!bodiesWithheld) return undefined;
+  return noticeKeys;
+}
+
+function heldNoticeDisplay(model: ThreadModel, withheld: ReadonlySet<string>): ThreadModel | undefined {
+  if (withheld.size === 0) return undefined;
+  return {
+    ...model,
+    turns: model.turns.map((turn) => ({
+      ...turn,
+      items: turn.items.filter((item) => item.overlayKey === undefined || !withheld.has(item.overlayKey)),
+    })),
+    overlay: Object.fromEntries(Object.entries(model.overlay ?? {}).filter(([key]) => !withheld.has(key))),
+  };
 }
 
 /** The repository side of the owed-range verdict: a windowed baseline's
@@ -1305,13 +1417,15 @@ export function releaseEntryTranscriptReader(ref: string, releaseDisplay = false
   if (heldCountsAtStore(ref)) return;
   const fixture = entryTranscriptRoute(ref);
   if (!fixture || fixture.ref !== ref) return;
+  const hadHeldNotices = heldPrunedNoticeKeys.has(ref);
   clearEntryTranscriptLocalOpening(ref);
   fixture.reader?.dispose();
   fixture.reader = undefined;
   const model = store().getState().threads.get(ref);
-  if (releaseDisplay && model && isEntryTranscriptBackgroundOnly(ref)) {
-    routeHost().putThreadModel(ref, pruneBackgroundHistoryBodies(model));
-  }
+  if (!model || !isEntryTranscriptBackgroundOnly(ref)) return;
+  if (!releaseDisplay && !hadHeldNotices) return;
+  const source = hadHeldNotices && !fixture.clearInert ? (displayedEntryTranscriptSnapshot(fixture) ?? model) : model;
+  routeHost().putThreadModel(ref, pruneBackgroundHistoryBodies(source));
 }
 
 export function retireEntryTranscriptIfUnowned(ref: string): Promise<TranscriptRetirementOutcome> | undefined {

@@ -135,26 +135,7 @@ func TestBackgroundTranscriptsEntrySliceBrowser(t *testing.T) {
 		t.Fatalf("roster refresh: %v", err)
 	}
 	past := newRebuiltPastIndex(t, filepath.Join(fixture.stateRoot, "projects", "*"))
-	tokenBytes := make([]byte, 16)
-	if _, err := rand.Read(tokenBytes); err != nil {
-		t.Fatalf("mint auth token: %v", err)
-	}
-	hubStateRoot := filepath.Join(fixture.root, "hub-state")
-	if err := os.MkdirAll(hubStateRoot, 0o700); err != nil {
-		t.Fatalf("hub state root: %v", err)
-	}
-	appwireTrace, err := appserver.NewWebSocketTrace(filepath.Join(fixture.artifact, "appwire-trace.jsonl"))
-	if err != nil {
-		t.Fatalf("appwire trace: %v", err)
-	}
-	t.Cleanup(func() {
-		if err := appwireTrace.Close(); err != nil {
-			t.Errorf("close appwire trace: %v", err)
-		}
-	})
-	web := newWebServer(hubcore.WebConfig{AuthToken: hex.EncodeToString(tokenBytes), HubStateRoot: hubStateRoot, RunDir: fixture.runDir, Past: past, Roster: roster, PluginDirs: []string{filepath.Join(fixture.root, "controller-plugin")}, StateDir: fixture.stateRoot, PastIndexPath: filepath.Join(hubStateRoot, "index.db")}, appwireTrace)
-	past.SetOnChange(func() { web.navigation.Invalidate(navigationChangeHint{}) })
-	roster.SetOnChange(func() { web.navigation.Invalidate(navigationChangeHint{}) })
+	web, authToken := startBackgroundGuardHub(t, fixture, past, roster)
 	// The driver deletes the sustained project after its history journey. Join
 	// its real daemon shutdown before that action, without destroying the target
 	// session's independent producer transcript. No AppWire response is replaced.
@@ -191,7 +172,7 @@ func TestBackgroundTranscriptsEntrySliceBrowser(t *testing.T) {
 	}
 	lt := backgroundDriverLifetime{Configured: backgroundDriverTimeout, Join: backgroundDriverJoinReserve, Cleanup: backgroundHelperCleanupReserve}
 	deadline, hasDeadline := t.Deadline()
-	launch := backgroundDriverLaunchForMode(t, fixture, hub.URL, hubedge.AuthURLFor(hub.URL, hex.EncodeToString(tokenBytes)), milestones, entries, true)
+	launch := backgroundDriverLaunchForMode(t, fixture, hub.URL, hubedge.AuthURLFor(hub.URL, authToken), milestones, entries, true)
 	driverErr := runOwnedBackgroundDriver(t, deadline, hasDeadline, lt, launch)
 	for i := range entries {
 		skillGuardStopHelper(t, i)
@@ -201,6 +182,36 @@ func TestBackgroundTranscriptsEntrySliceBrowser(t *testing.T) {
 	if driverErr != nil {
 		t.Errorf("%v\nfull artifacts (logs, screenshots, dumps): %s", driverErr, fixture.artifact)
 	}
+}
+
+// startBackgroundGuardHub starts the real hub web server the browser guards
+// drive: the fixture run dir as the roster, the fixture state root as the past
+// index, and an AppWire trace written beside the artifacts. It returns the
+// server and the hex auth token its clients authenticate with.
+func startBackgroundGuardHub(t *testing.T, fixture *skillGuardFixture, past *hubcore.PastIndex, roster *hubcore.Roster) (*WebServer, string) {
+	t.Helper()
+	tokenBytes := make([]byte, 16)
+	if _, err := rand.Read(tokenBytes); err != nil {
+		t.Fatalf("mint auth token: %v", err)
+	}
+	hubStateRoot := filepath.Join(fixture.root, "hub-state")
+	if err := os.MkdirAll(hubStateRoot, 0o700); err != nil {
+		t.Fatalf("hub state root: %v", err)
+	}
+	appwireTrace, err := appserver.NewWebSocketTrace(filepath.Join(fixture.artifact, "appwire-trace.jsonl"))
+	if err != nil {
+		t.Fatalf("appwire trace: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := appwireTrace.Close(); err != nil {
+			t.Errorf("close appwire trace: %v", err)
+		}
+	})
+	token := hex.EncodeToString(tokenBytes)
+	web := newWebServer(hubcore.WebConfig{AuthToken: token, HubStateRoot: hubStateRoot, RunDir: fixture.runDir, Past: past, Roster: roster, PluginDirs: []string{filepath.Join(fixture.root, "controller-plugin")}, StateDir: fixture.stateRoot, PastIndexPath: filepath.Join(hubStateRoot, "index.db")}, appwireTrace)
+	past.SetOnChange(func() { web.navigation.Invalidate(navigationChangeHint{}) })
+	roster.SetOnChange(func() { web.navigation.Invalidate(navigationChangeHint{}) })
+	return web, token
 }
 
 type backgroundDisplaySnapshot struct {

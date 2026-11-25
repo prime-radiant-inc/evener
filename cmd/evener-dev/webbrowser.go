@@ -120,14 +120,16 @@ func browserGuardSpec(guard, root string) guardSpec {
 		}
 	case backgroundTranscriptGuard:
 		// backgroundtranscriptguard's contract is cmd/evener-hub's
-		// TestBackgroundTranscriptsEntrySliceBrowser (browserguard build tag):
-		// the real background-to-disk-to-pane journey on the production entry
-		// route in real Chrome through a real hub and two real `evener serve`
-		// daemons. Like the skill guard it is a go test, so its driver, Chrome
-		// and helper daemons are cleaned up by the test binary's own t.Cleanup.
+		// TestBackgroundTranscriptsEntrySliceBrowser and
+		// TestWarmReturnTranscriptBrowser (browserguard build tag): the real
+		// background-to-disk-to-pane journey on the production entry route in
+		// real Chrome through a real hub and two real `evener serve` daemons.
+		// The second opens a warmed session whose recorded bodies were pruned.
+		// Like the skill guard these are go tests, so their drivers, Chrome and
+		// helper daemons are cleaned up by each test binary's own t.Cleanup.
 		return guardSpec{
 			name:            guard,
-			argv:            []string{"go", "test", "-tags", "browserguard", "./cmd/evener-hub", "-run", "^TestBackgroundTranscriptsEntrySliceBrowser$", "-count=1"},
+			argv:            []string{"go", "test", "-tags", "browserguard", "./cmd/evener-hub", "-run", "^TestBackgroundTranscriptsEntrySliceBrowser$|^TestWarmReturnTranscriptBrowser$", "-count=1"},
 			needsBuild:      true,
 			waitOnInterrupt: true,
 			dir:             ".",
