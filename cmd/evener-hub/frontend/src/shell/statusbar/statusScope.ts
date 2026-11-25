@@ -10,6 +10,7 @@ export interface ScopeCrumb {
   title: string;
 }
 export interface ScopeCounts {
+  linksTotal: number | null;
   activeSubagents: number | null;
   delegatesTotal: number | null;
   runningJobs: number | null;
@@ -33,9 +34,11 @@ export function scopeCounts(
   session: ActivityScope["leaf"],
   activity: SessionActivitySnapshot | null,
   subagents: SessionActivitySummary["delegates"] | null,
+  linksTotal: number | null = null,
 ): ScopeCounts {
   const summary = activity?.summary;
   return {
+    linksTotal,
     activeSubagents: subagents?.active ?? null,
     delegatesTotal: subagents?.total ?? null,
     runningJobs: summary?.jobs.known ? summary.jobs.active : null,
@@ -55,6 +58,7 @@ export function deriveScope(
   activity: SessionActivitySnapshot | null,
   // Required, so no surface that shows the Agents count can leave it out.
   subagents: SessionActivitySummary["delegates"] | null,
+  linksTotal: number | null = null,
 ): ActivityScope {
   const row = selectSessionSummary(ref, navigation);
   const rowMatches = row?.ref === ref;
@@ -79,7 +83,7 @@ export function deriveScope(
       { ref, title: leaf.title },
     ],
     ancestryKnown,
-    counts: scopeCounts(leaf, activity, subagents),
+    counts: scopeCounts(leaf, activity, subagents, linksTotal),
     activity,
   };
 }

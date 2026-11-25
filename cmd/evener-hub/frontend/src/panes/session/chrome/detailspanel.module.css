@@ -199,11 +199,6 @@
   color: var(--tone-ink);
 }
 
-.launchWrap {
-  display: flex;
-  flex-direction: column;
-}
-
 .launchTitle {
   font-size: var(--font-size-ui);
   color: var(--ink-mid);

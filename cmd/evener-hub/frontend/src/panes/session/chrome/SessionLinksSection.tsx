@@ -1,6 +1,12 @@
 import type { SessionURL, ThreadModel } from "@evener/appwire-client";
 import { fileURLToPath } from "@evener/appwire-client/docContent";
-import { type JSX, useMemo, useState } from "react";
+import {
+  type JSX,
+  type FocusEvent as ReactFocusEvent,
+  type PointerEvent as ReactPointerEvent,
+  useMemo,
+  useState,
+} from "react";
 import { EmptyState, Eyebrow, Input, isWebHref, SegmentedControl } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { FileOpenBesideButton } from "../transcript/fileOpenBeside";
@@ -9,6 +15,15 @@ import styles from "./sessionlinkssection.module.css";
 
 type LinksOrderMode = "recent" | "grouped";
 type LinkCategory = "Artifacts & Docs" | "Pull Requests" | "Issues" | "Local files" | "Other links";
+
+interface PreparedLink {
+  entry: SessionURL;
+  category: LinkCategory;
+  categoryLower: string;
+  labelLower: string;
+  urlLower: string;
+  hostHint: string;
+}
 
 const CATEGORY_ORDER: readonly LinkCategory[] = [
   "Artifacts & Docs",
@@ -41,14 +56,19 @@ const CLASS = {
   destinationText: requireClass(styles.destinationText, "sessionlinkssection.module.css", "destinationText"),
 };
 
-function linkCategory(rawUrl: string): LinkCategory {
-  if (isFileHref(rawUrl)) return "Local files";
+function parseLinkMetadata(rawUrl: string): { category: LinkCategory; hostHint: string } {
+  if (isFileHref(rawUrl)) return { category: "Local files", hostHint: "" };
   try {
     const parsed = new URL(rawUrl);
     const host = parsed.hostname.toLowerCase();
     const path = parsed.pathname.toLowerCase();
-    if (/\/(?:pull|pulls|merge_requests)\b/.test(path) || /\/pr\/\d+/.test(path)) return "Pull Requests";
-    if (/\/(?:issues|issue)\b/.test(path)) return "Issues";
+    const hostHint = isWebHref(rawUrl) ? parsed.hostname.replace(/^www\./i, "") : "";
+    if (/\/(?:pull|pulls|merge_requests)\b/.test(path) || /\/pr\/\d+/.test(path)) {
+      return { category: "Pull Requests", hostHint };
+    }
+    if (/\/(?:issues|issue)\b/.test(path)) {
+      return { category: "Issues", hostHint };
+    }
     if (
       host.startsWith("artifacts.") ||
       host.startsWith("docs.") ||
@@ -59,24 +79,15 @@ function linkCategory(rawUrl: string): LinkCategory {
       path.startsWith("/doc/") ||
       path.endsWith(".md")
     ) {
-      return "Artifacts & Docs";
+      return { category: "Artifacts & Docs", hostHint };
     }
+    return { category: "Other links", hostHint };
   } catch {
-    // Non-URL custom scheme falls through to Other links.
-  }
-  return "Other links";
-}
-
-function linkHostHint(rawUrl: string): string {
-  if (!isWebHref(rawUrl)) return "";
-  try {
-    return new URL(rawUrl).hostname.replace(/^www\./i, "");
-  } catch {
-    return "";
+    return { category: "Other links", hostHint: "" };
   }
 }
 
-function orderByRecency(urls: readonly SessionURL[]): SessionURL[] {
+function prepareLinksByRecency(urls: readonly SessionURL[]): PreparedLink[] {
   return urls
     .map((entry, index) => ({ entry, index }))
     .sort((a, b) => {
@@ -85,7 +96,17 @@ function orderByRecency(urls: readonly SessionURL[]): SessionURL[] {
       if (aTime !== bTime) return bTime - aTime;
       return b.index - a.index;
     })
-    .map((item) => item.entry);
+    .map(({ entry }) => {
+      const { category, hostHint } = parseLinkMetadata(entry.url);
+      return {
+        entry,
+        category,
+        categoryLower: category.toLowerCase(),
+        labelLower: (entry.label ?? "").toLowerCase(),
+        urlLower: entry.url.toLowerCase(),
+        hostHint,
+      };
+    });
 }
 
 /** Dedicated Overview Links view: switch between recency and grouped
@@ -105,32 +126,32 @@ export function SessionLinksSection({
   const [query, setQuery] = useState("");
   const [inspectedUrl, setInspectedUrl] = useState<string | null>(null);
 
-  const normalizedQuery = query.trim().toLowerCase();
-  const filteredUrls = useMemo(() => {
-    const ordered = orderByRecency(model.sessionUrls);
-    if (!normalizedQuery) return ordered;
-    return ordered.filter((entry) => {
-      const label = (entry.label ?? "").toLowerCase();
-      const url = entry.url.toLowerCase();
-      const category = linkCategory(entry.url).toLowerCase();
-      return label.includes(normalizedQuery) || url.includes(normalizedQuery) || category.includes(normalizedQuery);
-    });
-  }, [model.sessionUrls, normalizedQuery]);
+  const preparedLinks = useMemo(() => prepareLinksByRecency(model.sessionUrls), [model.sessionUrls]);
 
-  const groupedUrls = useMemo(() => {
+  const normalizedQuery = query.trim().toLowerCase();
+  const filteredLinks = useMemo(() => {
+    if (!normalizedQuery) return preparedLinks;
+    return preparedLinks.filter(
+      (item) =>
+        item.labelLower.includes(normalizedQuery) ||
+        item.urlLower.includes(normalizedQuery) ||
+        item.categoryLower.includes(normalizedQuery),
+    );
+  }, [preparedLinks, normalizedQuery]);
+
+  const groupedLinks = useMemo(() => {
     if (mode !== "grouped") return [];
-    const buckets = new Map<LinkCategory, SessionURL[]>();
-    for (const entry of filteredUrls) {
-      const category = linkCategory(entry.url);
-      const list = buckets.get(category);
-      if (list) list.push(entry);
-      else buckets.set(category, [entry]);
+    const buckets = new Map<LinkCategory, PreparedLink[]>();
+    for (const item of filteredLinks) {
+      const list = buckets.get(item.category);
+      if (list) list.push(item);
+      else buckets.set(item.category, [item]);
     }
     return CATEGORY_ORDER.flatMap((category) => {
       const items = buckets.get(category);
       return items && items.length > 0 ? [{ category, items }] : [];
     });
-  }, [filteredUrls, mode]);
+  }, [filteredLinks, mode]);
 
   if (model.sessionUrls.length === 0) {
     return (
@@ -140,9 +161,23 @@ export function SessionLinksSection({
     );
   }
 
-  function renderItem(entry: SessionURL) {
+  function inspectTargetUrl(target: EventTarget | null) {
+    if (!target || typeof target !== "object" || !("closest" in target)) return;
+    const item = (target as HTMLElement).closest<HTMLElement>("[data-link-url]");
+    setInspectedUrl(item?.dataset.linkUrl ?? null);
+  }
+
+  const inspectHandlers = {
+    onPointerOver: (event: ReactPointerEvent<HTMLElement>) => inspectTargetUrl(event.target),
+    onPointerLeave: () => setInspectedUrl(null),
+    onFocusCapture: (event: ReactFocusEvent<HTMLElement>) => inspectTargetUrl(event.target),
+    onBlurCapture: (event: ReactFocusEvent<HTMLElement>) => {
+      if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setInspectedUrl(null);
+    },
+  };
+
+  function renderItem({ entry, hostHint }: PreparedLink) {
     const title = entry.label || entry.url;
-    const hostHint = linkHostHint(entry.url);
 
     if (isWebHref(entry.url)) {
       return (
@@ -182,10 +217,29 @@ export function SessionLinksSection({
     );
   }
 
-  function inspectTargetUrl(target: EventTarget | null) {
-    if (!target || typeof target !== "object" || !("closest" in target)) return;
-    const item = (target as HTMLElement).closest<HTMLElement>("[data-link-url]");
-    setInspectedUrl(item?.dataset.linkUrl ?? null);
+  let listContent: JSX.Element;
+  if (filteredLinks.length === 0) {
+    listContent = <EmptyState size="compact" title="No matching links" />;
+  } else if (mode === "recent") {
+    listContent = (
+      <ul className={CLASS.list} aria-label="Session links" {...inspectHandlers}>
+        {filteredLinks.map(renderItem)}
+      </ul>
+    );
+  } else {
+    listContent = (
+      <section className={CLASS.groups} aria-label="Session links" {...inspectHandlers}>
+        {groupedLinks.map(({ category, items }) => (
+          <section key={category} className={CLASS.group}>
+            <div className={CLASS.groupHeader}>
+              <Eyebrow as="h3">{category}</Eyebrow>
+              <span className={CLASS.groupCount}>{items.length}</span>
+            </div>
+            <ul className={CLASS.list}>{items.map(renderItem)}</ul>
+          </section>
+        ))}
+      </section>
+    );
   }
 
   return (
@@ -211,43 +265,7 @@ export function SessionLinksSection({
         </div>
       </div>
 
-      {filteredUrls.length === 0 ? (
-        <EmptyState size="compact" title="No matching links" />
-      ) : mode === "recent" ? (
-        <ul
-          className={CLASS.list}
-          aria-label="Session links"
-          onPointerOver={(event) => inspectTargetUrl(event.target)}
-          onPointerLeave={() => setInspectedUrl(null)}
-          onFocusCapture={(event) => inspectTargetUrl(event.target)}
-          onBlurCapture={(event) => {
-            if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setInspectedUrl(null);
-          }}
-        >
-          {filteredUrls.map(renderItem)}
-        </ul>
-      ) : (
-        <section
-          className={CLASS.groups}
-          aria-label="Session links"
-          onPointerOver={(event) => inspectTargetUrl(event.target)}
-          onPointerLeave={() => setInspectedUrl(null)}
-          onFocusCapture={(event) => inspectTargetUrl(event.target)}
-          onBlurCapture={(event) => {
-            if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setInspectedUrl(null);
-          }}
-        >
-          {groupedUrls.map(({ category, items }) => (
-            <section key={category} className={CLASS.group}>
-              <div className={CLASS.groupHeader}>
-                <Eyebrow as="h3">{category}</Eyebrow>
-                <span className={CLASS.groupCount}>{items.length}</span>
-              </div>
-              <ul className={CLASS.list}>{items.map(renderItem)}</ul>
-            </section>
-          ))}
-        </section>
-      )}
+      {listContent}
 
       {inspectedUrl !== null ? (
         <div className={CLASS.destinationBar} data-testid="session-links-destination" aria-live="polite">

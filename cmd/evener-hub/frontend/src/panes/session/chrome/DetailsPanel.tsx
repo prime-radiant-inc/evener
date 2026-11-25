@@ -52,6 +52,7 @@ import {
   Sheet,
   StatusDot,
   Textarea,
+  useDismissOnOutsidePress,
   useToasts,
 } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
@@ -120,7 +121,6 @@ const CLASS = {
   dim: requireClass(styles.dim, "detailspanel.module.css", "dim"),
   effortInline: requireClass(styles.effortInline, "detailspanel.module.css", "effortInline"),
   hostOffline: requireClass(styles.hostOffline, "detailspanel.module.css", "hostOffline"),
-  launchWrap: requireClass(styles.launchWrap, "detailspanel.module.css", "launchWrap"),
   launchTitle: requireClass(styles.launchTitle, "detailspanel.module.css", "launchTitle"),
 };
 
@@ -178,18 +178,12 @@ function GoalSection({
   const priorHeightRef = useRef<number | null>(null);
   const userTransitionRef = useRef(false);
 
-  // Sync incoming goal changes (such as /goal from the composer) while at rest.
-  useEffect(() => {
-    if (!editing) setDraft(objective);
-  }, [objective, editing]);
-
   // Reset inline edit state when switching sessions.
   // biome-ignore lint/correctness/useExhaustiveDependencies: sessionRef is the identity switch that drops an abandoned local edit
   useEffect(() => {
     userTransitionRef.current = false;
     setEditing(false);
     setSaving(false);
-    setDraft(objective);
   }, [sessionRef]);
 
   const setEditingWithMotion = useCallback((next: boolean) => {
@@ -206,8 +200,11 @@ function GoalSection({
     const shouldAnimate = userTransitionRef.current;
     userTransitionRef.current = false;
     if (!body) return undefined;
-    body.style.removeProperty("height");
-    body.style.removeProperty("overflow");
+    const clearInlineSize = () => {
+      body.style.removeProperty("height");
+      body.style.removeProperty("overflow");
+    };
+    clearInlineSize();
     const from = priorHeightRef.current;
     priorHeightRef.current = null;
     if (!shouldAnimate || reducedMotion || from === null) return undefined;
@@ -216,44 +213,35 @@ function GoalSection({
     body.style.height = `${from}px`;
     body.style.overflow = "hidden";
     const animation = animate(body, { height: `${to}px` }, spatialTransition());
-    animation.finished
-      .then(() => {
-        body.style.removeProperty("height");
-        body.style.removeProperty("overflow");
-      })
-      .catch(() => {
-        // A newer toggle interrupted this animation and owns the height now.
-      });
+    animation.finished.then(clearInlineSize).catch(() => {
+      // A newer toggle interrupted this animation and owns the height now.
+    });
     return () => {
       animation.stop();
-      body.style.removeProperty("height");
-      body.style.removeProperty("overflow");
+      clearInlineSize();
     };
   }, [editing, reducedMotion]);
 
   const cancelEdit = useCallback(() => {
     if (saving) return;
-    setDraft(objective);
     setEditingWithMotion(false);
     textareaRef.current?.blur();
-  }, [objective, saving, setEditingWithMotion]);
+  }, [saving, setEditingWithMotion]);
 
   // Never auto-save on outside click: setting a non-empty goal kicks an idle
-  // session immediately, so clicks outside the group cancel cleanly instead.
-  useEffect(() => {
-    if (!editing) return undefined;
-    const doc = groupRef.current?.ownerDocument ?? document;
-    const onPointerDown = (event: PointerEvent) => {
-      if (saving) return;
-      const target = event.target;
-      if (target && typeof target === "object" && "nodeType" in target && groupRef.current?.contains(target as Node)) {
-        return;
-      }
-      cancelEdit();
-    };
-    doc.addEventListener("pointerdown", onPointerDown);
-    return () => doc.removeEventListener("pointerdown", onPointerDown);
-  }, [editing, saving, cancelEdit]);
+  // session immediately. Dismiss on click (not pointerdown) so collapsing this
+  // in-flow editor never shifts controls below it out from under the pointer.
+  useDismissOnOutsidePress({
+    ownerDocument: groupRef.current?.ownerDocument ?? document,
+    enabled: editing && !saving,
+    when: "click",
+    isInside: (target) =>
+      target !== null &&
+      typeof target === "object" &&
+      "nodeType" in target &&
+      Boolean(groupRef.current?.contains(target as Node)),
+    onDismiss: cancelEdit,
+  });
 
   const hasGoal = objective.length > 0;
   const statusKey = goalStatus.toLowerCase();
@@ -273,7 +261,6 @@ function GoalSection({
     try {
       const save = onSetGoal ?? ((next: string) => threadsStore.getState().setGoal(sessionRef, next));
       await save(nextObjective);
-      setDraft(nextObjective);
       setEditingWithMotion(false);
       textareaRef.current?.blur();
     } catch (err) {
@@ -604,25 +591,21 @@ export function DetailsPanelBody({ model, now, resolvedBranch = "", onSetGoal }:
         </section>
       ) : null}
 
-      {sessionRows.length > 0 ? (
-        <section className={CLASS.group} aria-label="Session">
-          <PropertyList layout="inline" rows={sessionRows} />
-        </section>
-      ) : null}
+      <section className={CLASS.group} aria-label="Session">
+        <PropertyList layout="inline" rows={sessionRows} />
+      </section>
 
       {launchRows.length > 0 ? (
         <section className={CLASS.group} aria-label="Launch settings">
-          <div className={CLASS.launchWrap}>
-            <Disclosure
-              open={launchOpen}
-              onOpenChange={setLaunchOpen}
-              variant="quiet"
-              summary={<span className={CLASS.launchTitle}>Launch settings</span>}
-              leading={(open) => <Chevron open={open} />}
-            >
-              <PropertyList layout="inline" rows={launchRows} />
-            </Disclosure>
-          </div>
+          <Disclosure
+            open={launchOpen}
+            onOpenChange={setLaunchOpen}
+            variant="quiet"
+            summary={<span className={CLASS.launchTitle}>Launch settings</span>}
+            leading={(open) => <Chevron open={open} />}
+          >
+            <PropertyList layout="inline" rows={launchRows} />
+          </Disclosure>
         </section>
       ) : null}
     </div>

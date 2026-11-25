@@ -241,7 +241,7 @@ export function ActivitySidebar({ mobile = false }: { mobile?: boolean }) {
   // biome-ignore lint/correctness/useExhaustiveDependencies: `resources` is the memo's invalidation key, not a value the memo reads (the store is read imperatively inside)
   const scope = useMemo(() => {
     if (!open || ref === null) return null;
-    const derived = deriveScope(navigationStore.getState(), ref, snapshot, subagents);
+    const derived = deriveScope(navigationStore.getState(), ref, snapshot, subagents, linksCount);
     if (focusedPane?.type !== "sessionZoom" || !derived.ancestryKnown) return derived;
     const params = parseZoomParams(focusedPane.params);
     if (!params) return derived;
@@ -269,27 +269,17 @@ export function ActivitySidebar({ mobile = false }: { mobile?: boolean }) {
     // A held parent column keeps its whole ancestry, whose origin crumb routes
     // to the retained origin pane instead.
     return { ...derived, path: leaf ? path.filter((crumb) => crumb.ref !== originRef) : path };
-  }, [open, resources, ref, snapshot, subagents, focusedPane]);
+  }, [open, resources, ref, snapshot, subagents, linksCount, focusedPane]);
   const Body = scope === null ? null : activityTabSpec(tab).Body;
   const tabOptions =
     scope === null
       ? []
-      : ACTIVITY_TABS.map((spec) => {
-          if (spec.id === "links") {
-            return {
-              value: spec.id,
-              label: spec.label,
-              detail: linksCount !== null && linksCount > 0 ? String(linksCount) : "—",
-              accessibleLabel: linksCount === null ? "Links" : `Links, ${linksCount}`,
-            };
-          }
-          return {
-            value: spec.id,
-            label: spec.label,
-            detail: spec.tabDetail?.(scope.counts),
-            accessibleLabel: spec.chipLabel(scope.counts),
-          };
-        });
+      : ACTIVITY_TABS.map((spec) => ({
+          value: spec.id,
+          label: spec.label,
+          detail: spec.tabDetail?.(scope.counts),
+          accessibleLabel: spec.chipLabel(scope.counts),
+        }));
   // Resolved once per mount: spatialTransition reads getComputedStyle (a
   // style pass), and the token changes with the theme at most, so paying
   // that read on every render taxes each scope change for nothing.
