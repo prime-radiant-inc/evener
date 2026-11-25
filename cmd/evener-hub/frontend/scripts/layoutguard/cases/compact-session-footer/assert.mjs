@@ -57,13 +57,13 @@ export default function assert(measurements) {
       // The folded desktop input must keep a readable floor (14rem = 224px)
       // even beside a long model name at the 620px fold boundary, and the
       // leading chrome must hug its content without a dead gap before the
-      // model trigger.
+      // identity pill's leading context ring.
       if (m.field.width < 224 - tolerance) {
         fail(`folded field is squeezed to ${m.field.width.toFixed(1)}px (expected >= 224px)`);
       }
-      const leadingSlack = m.modelTrigger.left - m.leading.left;
+      const leadingSlack = m.context.left - m.leading.left;
       if (leadingSlack > 12 + tolerance) {
-        fail(`folded leading reserves ${leadingSlack.toFixed(1)}px of dead space before the model trigger`);
+        fail(`folded leading reserves ${leadingSlack.toFixed(1)}px of dead space before the context ring`);
       }
       if (m.shortModel && m.width >= 900 && m.field.width < 500) {
         fail(`folded short-model field is only ${m.field.width.toFixed(1)}px in a ${m.width}px card`);
@@ -77,6 +77,7 @@ export default function assert(measurements) {
     expectContained(m.send, m.controls, "Send control");
     expectContained(m.effort, m.status, "effort");
     expectContained(m.context, m.status, "context");
+    expectContained(m.context, m.identity, "context inside identity");
     expectContained(m.queue, m.status, "queue");
 
     for (const [label, box] of [
@@ -92,10 +93,10 @@ export default function assert(measurements) {
       fail("attachment control is not bottom-aligned with the composer controls");
     }
 
-    expectBefore(m.attachment, m.modelTrigger, "attachment → model");
+    expectBefore(m.attachment, m.context, "attachment → context");
+    expectBefore(m.context, m.modelTrigger, "context → model");
     expectBefore(m.modelTrigger, m.effort, "model → effort");
-    expectBefore(m.effort, m.context, "effort → context");
-    expectBefore(m.context, m.sessionActions, "context → session actions");
+    expectBefore(m.effort, m.sessionActions, "effort → session actions");
     expectBefore(m.sessionActions, m.send, "session actions → Send");
     if (Math.abs(m.send.right - m.controls.right) > tolerance) fail("Send is not pinned to the trailing edge");
     // PromptCard's horizontal padding must leave enough room for Button's 2px
@@ -134,9 +135,9 @@ export default function assert(measurements) {
     expectTwoPixelOutline(m.focus.sendOutlineStyle, m.focus.sendOutlineWidth, "Send control");
 
     // Boundary fixtures declare the exact StatusRow query-container width they
-    // must produce. This makes 399/400, 479/480, and 559/560 falsifiable: moving
-    // a CSS boundary even when the outer composer still fits changes visibility
-    // at one of these pinned fixtures and fails below.
+    // must produce. This makes 399/400 (compact row gap / effort shrink),
+    // 479/480 (queue label), and 559/560 (work time) falsifiable: moving a CSS
+    // boundary even when the outer composer still fits fails below.
     if (m.expectedStatusWidth !== null && Math.abs(m.statusBody.width - m.expectedStatusWidth) > tolerance) {
       fail(
         `status query container should be ${m.expectedStatusWidth}px, got ${m.statusBody.width}px rect/${m.statusBody.clientWidth}px client`,
@@ -145,30 +146,27 @@ export default function assert(measurements) {
     const queryWidth = m.expectedStatusWidth ?? m.statusBody.clientWidth;
     const full = queryWidth >= 560;
     const fullQueue = queryWidth >= 480;
-    const barContext = queryWidth >= 400;
 
     expectDisplay(m.workDisplay, full, "work time");
     expectDisplay(m.queueFullDisplay, fullQueue, "full queue label");
     expectDisplay(m.queueCompactDisplay, !fullQueue, "compact queue label");
-    expectDisplay(m.contextPercentDisplay, !barContext, "context percentage");
-    if (m.contextMeterDisplay === "none") {
-      fail("context meter wrapper is display:none, removing the only spoken reading");
+    if (context.wrapperDisplay === "none" || context.meterDisplay === "none") {
+      fail("context ring is hidden via display:none");
     }
-    if (m.contextPercentAriaHidden !== "true") {
-      fail("context percentage is exposed to assistive tech alongside the meter");
-    }
-    if (barContext) {
-      if (context.meterBox === null || context.meterBox.width < 1 || context.meterBox.height < 1) {
-        fail("context meter bar is not visible");
-      }
+    if (context.meterBox === null || context.meterBox.width < 13 || context.meterBox.height < 13) {
+      fail(
+        `context ring is not visible at full ring dimensions (${context.meterBox === null ? "missing" : `${context.meterBox.width.toFixed(1)}x${context.meterBox.height.toFixed(1)}px`})`,
+      );
     } else {
-      // Below the bar threshold the gauge is clipped, never unrendered: its
-      // wrapper stays in layout at a 1px box so role=meter keeps its name.
-      if (context.wrapperPosition !== "absolute") fail("compact context meter wrapper is not clipped out of flow");
-      if (!context.wrapperClip.startsWith("rect(")) fail("compact context meter wrapper is not clipped");
-      if (context.wrapperBox.width > 1 + tolerance || context.wrapperBox.height > 1 + tolerance) {
-        fail("compact context meter wrapper is not a 1px box");
+      if (
+        m.context.width < context.meterBox.width - tolerance ||
+        m.context.height < context.meterBox.height - tolerance
+      ) {
+        fail(
+          `context wrapper shrank below the 14px ring (${m.context.width.toFixed(1)}x${m.context.height.toFixed(1)}px for ${context.meterBox.width.toFixed(1)}x${context.meterBox.height.toFixed(1)}px ring)`,
+        );
       }
+      expectContained(context.meterBox, m.context, "context ring inside context wrapper");
     }
     // The resolver inlines composed @container rules ungated, so only the narrow hide is observable here.
     if (m.width <= 559) expectDisplay(m.stopLabelDisplay, false, "Stop label stack");

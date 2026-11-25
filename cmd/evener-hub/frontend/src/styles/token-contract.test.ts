@@ -763,6 +763,17 @@ test("dedicated diff backgrounds preserve quiet contrast and grayscale separatio
 
 const METER_STYLESHEET = STYLESHEETS["widgets/meter/meter.module.css"];
 
+const THEME_BLOCKS = [
+  {
+    name: "dark",
+    block: extractBlock(TOKENS_CSS, /(?:^|\n):root(?:\s*,\s*\[data-theme="dark"\])?\s*\{/),
+  },
+  {
+    name: "light",
+    block: extractBlock(TOKENS_CSS, /\[data-theme="light"\][^{]*\{/),
+  },
+] as const;
+
 // The empty meter track must read as a bounded bar, not vanish into its
 // ground: --surface-2 is pixel-identical to --surface-1 in both themes, so a
 // meter on a surface-1 card/pane showed no extent until the fill painted.
@@ -774,18 +785,7 @@ test("Meter track sinks into --field, distinct from both surfaces in both themes
   if (!METER_STYLESHEET) return;
   expect(declarationInRule(METER_STYLESHEET, "track", "background")).toBe("var(--field)");
 
-  const themes = [
-    {
-      name: "dark",
-      block: extractBlock(TOKENS_CSS, /(?:^|\n):root(?:\s*,\s*\[data-theme="dark"\])?\s*\{/),
-    },
-    {
-      name: "light",
-      block: extractBlock(TOKENS_CSS, /\[data-theme="light"\][^{]*\{/),
-    },
-  ];
-
-  for (const theme of themes) {
+  for (const theme of THEME_BLOCKS) {
     const field = declaredToken(theme.block, "--field");
     const surface1 = declaredToken(theme.block, "--surface-1");
     const surface2 = declaredToken(theme.block, "--surface-2");
@@ -799,6 +799,27 @@ test("Meter track sinks into --field, distinct from both surfaces in both themes
     const surface2Rgb = parseHexColor(surface2);
     expect(contrastRatio(fieldRgb, surface1Rgb), `${theme.name} track vs surface-1`).toBeGreaterThanOrEqual(1.05);
     expect(contrastRatio(fieldRgb, surface2Rgb), `${theme.name} track vs surface-2`).toBeGreaterThanOrEqual(1.05);
+  }
+});
+
+test("Meter ringTrack uses --edge, distinct from --field and --surface-1 in both themes", () => {
+  expect(METER_STYLESHEET).toBeDefined();
+  if (!METER_STYLESHEET) return;
+  expect(declarationInRule(METER_STYLESHEET, "ringTrack", "stroke")).toBe("var(--edge)");
+  for (const theme of THEME_BLOCKS) {
+    const edge = declaredToken(theme.block, "--edge");
+    const field = declaredToken(theme.block, "--field");
+    const surface1 = declaredToken(theme.block, "--surface-1");
+    expect([edge, field, surface1], `${theme.name} theme declares ring track contrast tokens`).not.toContain(undefined);
+    if (!edge || !field || !surface1) continue;
+    const edgeRgb = parseHexColor(edge);
+    expect(contrastRatio(edgeRgb, parseHexColor(field)), `${theme.name} ringTrack vs field`).toBeGreaterThanOrEqual(
+      1.15,
+    );
+    expect(
+      contrastRatio(edgeRgb, parseHexColor(surface1)),
+      `${theme.name} ringTrack vs surface-1`,
+    ).toBeGreaterThanOrEqual(1.15);
   }
 });
 
@@ -823,17 +844,6 @@ test("tokens.css dark and light blocks declare the same color token names", () =
 // same source in the native gate.
 
 const SHARED_WEB_ROLES = (Object.keys(webPalettes.dark) as (keyof WebPalette)[]).sort();
-
-const THEME_BLOCKS = [
-  {
-    name: "dark",
-    block: extractBlock(TOKENS_CSS, /(?:^|\n):root(?:\s*,\s*\[data-theme="dark"\])?\s*\{/),
-  },
-  {
-    name: "light",
-    block: extractBlock(TOKENS_CSS, /\[data-theme="light"\][^{]*\{/),
-  },
-] as const;
 
 /** The color a declared token resolves to, with any color-mix evaluated by
  * the shared OKLab mix. */

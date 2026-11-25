@@ -1,14 +1,19 @@
 .row {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
+  composes: row from "../gallery-section.module.css";
 }
 
 .rowLabel {
   composes: rowLabel from "../gallery-section.module.css";
-  width: 60px;
 }
 
 .track {
   width: 160px;
+}
+
+.ringPill {
+  display: inline-flex;
+  align-items: center;
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-pill);
+  background: var(--field);
 }

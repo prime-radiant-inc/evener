@@ -91,7 +91,7 @@ export type { MenuEntry, MenuItem, MenuProps, MenuSeparator } from "./menu";
 export { isSeparator, Menu } from "./menu";
 export type { MermaidDiagramProps } from "./mermaid";
 export { MermaidDiagram } from "./mermaid";
-export type { MeterProps, MeterTone } from "./meter";
+export type { MeterProps, MeterTone, MeterVariant } from "./meter";
 export { Meter } from "./meter";
 // ModelCatalog is both the component and the typed model/list catalog shape. The
 // plain re-export carries BOTH meanings; only the pure-type members need
