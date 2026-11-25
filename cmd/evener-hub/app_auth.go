@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/auth/githubcopilot"
 	authopenai "primeradiant.com/evener/auth/openai"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/envvars"
@@ -42,6 +43,8 @@ type hubAuthController struct {
 	loadAuth          func(string, string) (authopenai.AuthRecord, error)
 	saveAuth          func(string, string, authopenai.AuthRecord) error
 	deleteAuth        func(string, string) (bool, error)
+	copilotCfg        githubcopilot.Config
+	copilotService    *githubcopilot.Service
 	// lockAuthStore takes the cross-process lock over the state dir's OAuth
 	// records. An instance rename holds it across the record's move — the
 	// write under the new name and the delete under the old one — so a runtime
@@ -64,6 +67,11 @@ type hubAuthController struct {
 	// noUserLayer is EVENER_PROVIDERS_CONFIG's tri-state: present and empty
 	// means the probe must build a client with no user layer, as a child would.
 	noUserLayer bool
+	// copilotRecordAdopted, when set, adopts a Copilot record this hub just
+	// wrote as already observed, so the notice sweep does not announce the
+	// login RPC's own write a second time. The server wires it to the
+	// instances controller, which owns the observation.
+	copilotRecordAdopted func(instance string, record githubcopilot.AuthRecord)
 
 	credentialTestLoader credentialProbeLoader
 	credentialTests      map[string]*credentialTestCall
@@ -174,7 +182,19 @@ type hubAuthFlow struct {
 
 type deviceFlow struct {
 	Provider string
-	Code     authopenai.DeviceCode
+	// Scheme is the OAuth scheme the flow was started for: the poll uses the
+	// flow's own scheme, not whatever the instance resolves to by then.
+	Scheme string
+	Code   authopenai.DeviceCode
+	// Copilot carries the device code's own interval and expiry.
+	Copilot githubcopilot.DeviceCode
+	// NextPollAt is the earliest Copilot poll that may reach GitHub; the
+	// device code's interval owns the pace.
+	NextPollAt time.Time
+	// CopilotPolling marks the one outbound Copilot completion in flight. A
+	// concurrent poll is answered locally as pending; the owner performs the
+	// provider poll, account/session preparation, save, and commit once.
+	CopilotPolling bool
 	// EndpointFingerprint is the endpoint the instance resolved to when the
 	// flow was created, as on hubAuthFlow.
 	EndpointFingerprint string
@@ -210,6 +230,8 @@ func newHubAuthController(launchEnv ...map[string]string) *hubAuthController {
 		loadAuth:             authopenai.LoadAuth,
 		saveAuth:             authopenai.SaveAuth,
 		deleteAuth:           authopenai.DeleteAuth,
+		copilotCfg:           githubcopilot.DefaultConfig(),
+		copilotService:       githubcopilot.NewService(githubcopilot.DefaultConfig(), client),
 		lockAuthStore:        authopenai.LockAuthStore,
 		flows:                map[string]hubAuthFlow{},
 		deviceFlows:          map[string]deviceFlow{},
@@ -369,6 +391,8 @@ func newHubAuthControllerWithStore(stateRoot string, store *credentials.Store) *
 		loadAuth:             authopenai.LoadAuth,
 		saveAuth:             authopenai.SaveAuth,
 		deleteAuth:           authopenai.DeleteAuth,
+		copilotCfg:           githubcopilot.DefaultConfig(),
+		copilotService:       githubcopilot.NewService(githubcopilot.DefaultConfig(), client),
 		lockAuthStore:        authopenai.LockAuthStore,
 		flows:                map[string]hubAuthFlow{},
 		deviceFlows:          map[string]deviceFlow{},
@@ -630,42 +654,55 @@ func (c *hubAuthController) Logout(params appwire.AuthLogoutParams) (resp appwir
 	// behind it. One key for the whole write, so the assertion below is checked
 	// against the key the caller's row was served with.
 	key, keyErr := resolveEndpointFingerprintKey(c.stateDir)
-	codex := false
+	scheme := ""
 	removed := false
 	applied, err := c.credentialWriteExclusive(name, func() error {
 		if err := c.verifyEndpointFingerprint(name, params.ExpectedEndpointFingerprint, key, keyErr); err != nil {
 			return err
 		}
-		codex = c.instanceIsCodex(name)
-		if !codex {
-			_, hadFile := c.storedKey(name)
-			if clrErr := c.clearCredential(name); clrErr != nil {
-				return clrErr
+		scheme, _ = c.instanceAuthScheme(name)
+		switch scheme {
+		case registry.AuthOAuthGitHubCopilot:
+			// The Copilot transport keeps its own record: remove it, corrupt or
+			// not, so the next launch needs a fresh sign-in.
+			if !c.hasEndpointStateRoot() {
+				return nil
 			}
-			removed = hadFile
-			return nil
-		}
-		// The Codex transport: clear the effective layer only. An OAuth record
-		// (present or corrupt) shadows the stored file key, so remove it first;
-		// otherwise clear the file key. The env layer cannot be cleared. Which
-		// layer is active decides what is removed, so the read and the removal
-		// hold the credential lock together.
-		_, loadErr := c.loadAuth(c.stateDir, name)
-		hasRecord := loadErr == nil || errors.Is(loadErr, authopenai.ErrAuthCorrupt)
-		if hasRecord {
-			r, delErr := c.deleteAuth(c.stateDir, name)
-			if delErr != nil {
-				return delErr
+			r, logErr := c.copilotService.Logout(c.stateDir, name)
+			if logErr != nil {
+				return logErr
 			}
 			removed = r
 			return nil
-		}
-		if _, hasFile := c.storedKey(name); hasFile {
-			if clrErr := c.clearCredential(name); clrErr != nil {
-				return clrErr
+		case registry.AuthOAuthOpenAICodex:
+			// The Codex transport: clear the effective layer only. An OAuth
+			// record (present or corrupt) shadows the stored file key, so remove
+			// it first; otherwise clear the file key. The env layer cannot be
+			// cleared. Which layer is active decides what is removed, so the
+			// read and the removal hold the credential lock together.
+			_, loadErr := c.loadAuth(c.stateDir, name)
+			hasRecord := loadErr == nil || errors.Is(loadErr, authopenai.ErrAuthCorrupt)
+			if hasRecord {
+				r, delErr := c.deleteAuth(c.stateDir, name)
+				if delErr != nil {
+					return delErr
+				}
+				removed = r
+				return nil
 			}
-			removed = true
+			if _, hasFile := c.storedKey(name); hasFile {
+				if clrErr := c.clearCredential(name); clrErr != nil {
+					return clrErr
+				}
+				removed = true
+			}
+			return nil
 		}
+		_, hadFile := c.storedKey(name)
+		if clrErr := c.clearCredential(name); clrErr != nil {
+			return clrErr
+		}
+		removed = hadFile
 		return nil
 	})
 	defer func() {
@@ -674,12 +711,16 @@ func (c *hubAuthController) Logout(params appwire.AuthLogoutParams) (resp appwir
 	if err != nil {
 		return appwire.AuthLogoutResponse{}, err
 	}
-	if !codex {
-		status, _ := c.Status(appwire.AuthStatusParams{Provider: name})
-		return appwire.AuthLogoutResponse{Removed: removed, Status: status}, nil
+	switch scheme {
+	case registry.AuthOAuthOpenAICodex:
+		status, err := c.statusAfterWrite(name, applied, c.openAIInstanceStatusByName)
+		return appwire.AuthLogoutResponse{Removed: removed, Status: status}, err
+	case registry.AuthOAuthGitHubCopilot:
+		status, err := c.statusAfterWrite(name, applied, c.copilotInstanceStatusByName)
+		return appwire.AuthLogoutResponse{Removed: removed, Status: status}, err
 	}
-	status, err := c.statusAfterWrite(name, applied, c.openAIInstanceStatusByName)
-	return appwire.AuthLogoutResponse{Removed: removed, Status: status}, err
+	status, _ := c.Status(appwire.AuthStatusParams{Provider: name})
+	return appwire.AuthLogoutResponse{Removed: removed, Status: status}, nil
 }
 
 // credentialWriteBetween runs inside a credential write's critical section,
@@ -910,6 +951,9 @@ func (c *hubAuthController) ApiKeySet(params appwire.AuthApiKeySetParams) (resp 
 		if c.instanceIsCodex(name) {
 			return invalidParamsFor(fmt.Errorf("%s %w: run `evener openai login --instance %s`", name, errAPIKeyForOAuthInstance, name))
 		}
+		if c.instanceIsCopilot(name) {
+			return invalidParamsFor(fmt.Errorf("%s %w: sign in on the host with the GitHub Copilot device flow", name, errAPIKeyForOAuthInstance))
+		}
 		// A bare key under a gcp-adc instance is one the authenticator would
 		// reject as JSON at first request; point at the flow that stores what
 		// this scheme actually reads.
@@ -1048,6 +1092,8 @@ func (c *hubAuthController) ApiKeyConditionalSet(params appwire.ApiKeyConditiona
 		switch inst.Auth {
 		case registry.AuthOAuthOpenAICodex:
 			return skipConditionalSet(&resp, name+" authenticates with an OAuth record; sign in on the host instead of pushing a key")
+		case registry.AuthOAuthGitHubCopilot:
+			return skipConditionalSet(&resp, name+" authenticates with a GitHub Copilot OAuth record; sign in on the host instead of pushing a key")
 		case registry.AuthGCPADC:
 			return skipConditionalSet(&resp, name+" authenticates with Google application-default credentials, which do not read an API key")
 		case registry.AuthNone:
@@ -1188,7 +1234,7 @@ func (c *hubAuthController) authRecordFromTokens(tokens authopenai.TokenSet) aut
 
 func (c *hubAuthController) DeviceStart(ctx context.Context, params appwire.AuthDeviceStartParams) (appwire.AuthDeviceStartResponse, error) {
 	provider := normalizeAuthProvider(params.Provider)
-	if err := c.requiresCodex(provider); err != nil {
+	if err := c.requiresDeviceOAuth(provider); err != nil {
 		return appwire.AuthDeviceStartResponse{}, err
 	}
 	// Captured before the device-code request, which is itself a network round
@@ -1201,6 +1247,9 @@ func (c *hubAuthController) DeviceStart(ctx context.Context, params appwire.Auth
 	endpoint, err := c.captureFlowEndpoint(provider)
 	if err != nil {
 		return appwire.AuthDeviceStartResponse{}, err
+	}
+	if c.instanceIsCopilot(provider) {
+		return c.startCopilotDeviceFlow(ctx, provider, endpoint)
 	}
 	dc, err := c.requestDeviceCode(ctx, c.client, c.config())
 	if err != nil {
@@ -1222,12 +1271,8 @@ func (c *hubAuthController) DeviceStart(ctx context.Context, params appwire.Auth
 	// for the life of the process. Sweep under the same lock, as LoginStart does
 	// for c.flows, so the map holds only live flows plus the one being added.
 	now := c.now()
-	for id, flow := range c.deviceFlows {
-		if now.Sub(flow.StartedAt) >= hubAuthFlowTTL {
-			delete(c.deviceFlows, id)
-		}
-	}
-	c.deviceFlows[flowID] = deviceFlow{Provider: provider, Code: dc, EndpointFingerprint: endpoint, StartedAt: now}
+	c.sweepDeviceFlowsLocked(now)
+	c.deviceFlows[flowID] = deviceFlow{Provider: provider, Scheme: registry.AuthOAuthOpenAICodex, Code: dc, EndpointFingerprint: endpoint, StartedAt: now}
 	c.mu.Unlock()
 	return appwire.AuthDeviceStartResponse{
 		Provider:        provider,
@@ -1240,9 +1285,49 @@ func (c *hubAuthController) DeviceStart(ctx context.Context, params appwire.Auth
 	}, nil
 }
 
+// startCopilotDeviceFlow starts a Copilot device code and records it with the
+// code's own interval and expiry. The device code owns both, so the hub adds
+// only NextPollAt.
+func (c *hubAuthController) startCopilotDeviceFlow(ctx context.Context, provider, endpoint string) (appwire.AuthDeviceStartResponse, error) {
+	dc, err := githubcopilot.RequestDeviceCode(ctx, c.client, c.copilotCfg)
+	if err != nil {
+		return appwire.AuthDeviceStartResponse{}, err
+	}
+	flowID, err := c.generateState()
+	if err != nil {
+		return appwire.AuthDeviceStartResponse{}, fmt.Errorf("generate device flow id: %w", err)
+	}
+	now := c.now()
+	c.mu.Lock()
+	if c.deviceFlows == nil {
+		c.deviceFlows = map[string]deviceFlow{}
+	}
+	c.sweepDeviceFlowsLocked(now)
+	c.deviceFlows[flowID] = deviceFlow{
+		Provider: provider, Scheme: registry.AuthOAuthGitHubCopilot, Copilot: dc,
+		EndpointFingerprint: endpoint, StartedAt: now, NextPollAt: now.Add(dc.Interval),
+	}
+	c.mu.Unlock()
+	expiresIn := int(dc.Expiry.Sub(now).Round(time.Second) / time.Second)
+	expiresIn = max(0, expiresIn)
+	return appwire.AuthDeviceStartResponse{
+		Provider: provider, FlowID: flowID, UserCode: dc.UserCode, VerificationURL: dc.VerificationURL,
+		IntervalSeconds: int(dc.Interval / time.Second), ExpiresInSeconds: expiresIn,
+	}, nil
+}
+
+// sweepDeviceFlowsLocked reaps abandoned device flows. The caller holds c.mu.
+func (c *hubAuthController) sweepDeviceFlowsLocked(now time.Time) {
+	for id, flow := range c.deviceFlows {
+		if now.Sub(flow.StartedAt) >= hubAuthFlowTTL {
+			delete(c.deviceFlows, id)
+		}
+	}
+}
+
 func (c *hubAuthController) DevicePoll(ctx context.Context, params appwire.AuthDevicePollParams) (resp appwire.AuthDevicePollResponse, err error) {
 	provider := normalizeAuthProvider(params.Provider)
-	if err := c.requiresCodex(provider); err != nil {
+	if err := c.requiresDeviceOAuth(provider); err != nil {
 		return appwire.AuthDevicePollResponse{}, err
 	}
 	flowID := strings.TrimSpace(params.FlowID)
@@ -1255,10 +1340,11 @@ func (c *hubAuthController) DevicePoll(ctx context.Context, params appwire.AuthD
 	if flow.Provider != provider {
 		return appwire.AuthDevicePollResponse{}, appwire.InvalidParams("auth device provider does not match flow")
 	}
+	if flow.Scheme == registry.AuthOAuthGitHubCopilot {
+		return c.pollCopilotDevice(ctx, provider, flowID, flow, params)
+	}
 	if c.now().Sub(flow.StartedAt) >= hubAuthFlowTTL {
-		c.mu.Lock()
-		delete(c.deviceFlows, flowID)
-		c.mu.Unlock()
+		c.dropDeviceFlow(flowID)
 		return appwire.AuthDevicePollResponse{State: "expired"}, nil
 	}
 
@@ -1308,22 +1394,157 @@ func (c *hubAuthController) DevicePoll(ctx context.Context, params appwire.AuthD
 		c.commitAuthWrite(applied, status, err, params.OriginClientId)
 	}()
 	if flowEndpointUncheckable(err) {
-		c.mu.Lock()
-		delete(c.deviceFlows, flowID)
-		c.mu.Unlock()
+		c.dropDeviceFlow(flowID)
 		return appwire.AuthDevicePollResponse{State: "restart"}, nil
 	}
 	if err != nil {
 		return appwire.AuthDevicePollResponse{}, err
 	}
-	c.mu.Lock()
-	delete(c.deviceFlows, flowID)
-	c.mu.Unlock()
+	c.dropDeviceFlow(flowID)
 
 	// Authorized and applied: the record is saved. The state is what the
 	// handler reads to tell this from a pending poll, which writes nothing.
 	status, err := c.statusAfterWrite(provider, applied, c.openAIInstanceStatusByName)
 	return appwire.AuthDevicePollResponse{State: "authorized", Status: &status}, err
+}
+
+// pollCopilotDevice polls one Copilot device flow. The device code owns the
+// pace and the expiry; NextPollAt is the hub's only extra state, so a poll
+// before it is answered locally and a slow_down moves it out. One caller owns
+// the outbound completion: a concurrent poll is answered locally as pending,
+// so the provider is asked once and one commit is visible. The authorized poll
+// prepares the login's record before the credential section - its account and
+// session requests must not hold credMu - then saves it through the service's
+// own locked write under the same credential and endpoint fences as the Codex
+// flow.
+func (c *hubAuthController) pollCopilotDevice(ctx context.Context, provider, flowID string, flow deviceFlow, params appwire.AuthDevicePollParams) (resp appwire.AuthDevicePollResponse, err error) {
+	now := c.now()
+	if !now.Before(flow.Copilot.Expiry) {
+		c.dropDeviceFlow(flowID)
+		return appwire.AuthDevicePollResponse{State: "expired"}, nil
+	}
+	if now.Before(flow.NextPollAt) {
+		return appwire.AuthDevicePollResponse{State: "pending"}, nil
+	}
+	flow, ok := c.claimCopilotPoll(flowID, flow.Copilot.DeviceCode, now)
+	if !ok {
+		return appwire.AuthDevicePollResponse{State: "pending"}, nil
+	}
+	defer c.releaseCopilotPoll(flowID, flow.Copilot.DeviceCode)
+	tokens, state, interval, err := githubcopilot.PollDeviceOnce(ctx, c.client, c.copilotCfg, flow.Copilot)
+	if err != nil {
+		return appwire.AuthDevicePollResponse{}, err
+	}
+	switch state {
+	case githubcopilot.PollExpired:
+		c.dropDeviceFlow(flowID)
+		return appwire.AuthDevicePollResponse{State: "expired"}, nil
+	case githubcopilot.PollPending:
+		c.setDeviceFlowNextPoll(flowID, flow.Copilot.DeviceCode, interval, now)
+		return appwire.AuthDevicePollResponse{State: "pending"}, nil
+	}
+	record, err := c.copilotService.PrepareLogin(ctx, provider, tokens)
+	if err != nil {
+		return appwire.AuthDevicePollResponse{}, err
+	}
+	key, _ := resolveEndpointFingerprintKey(c.stateDir)
+	applied, err := c.credentialWrite(provider, func() error {
+		if err := c.requiresCopilot(provider); err != nil {
+			return err
+		}
+		if err := c.verifyFlowEndpoint(provider, flow.EndpointFingerprint, key); err != nil {
+			return err
+		}
+		// The save lands before the write's reload fingerprints the state
+		// root, so that reload reads the newly saved account on both sides of
+		// its identity comparison and would carry the previous account's
+		// roster onto this one. Compare the record this login replaces with
+		// the record it saved and drop the affected instance's cached roster
+		// here, before the reload runs. A same-account renewal keeps the rows:
+		// a rotated token still belongs to the same roster.
+		previous, previousErr := githubcopilot.LoadAuth(c.stateDir, provider)
+		if _, err := c.copilotService.SavePreparedLogin(c.stateDir, provider, record); err != nil {
+			return err
+		}
+		if previousErr != nil || previous.AccountID != record.AccountID {
+			if reg := c.registry(); reg != nil {
+				reg.ForgetLive(provider)
+			}
+		}
+		return nil
+	})
+	if applied && c.copilotRecordAdopted != nil {
+		c.copilotRecordAdopted(provider, record)
+	}
+	defer func() {
+		var status appwire.AuthStatusResponse
+		if resp.Status != nil {
+			status = *resp.Status
+		}
+		c.commitAuthWrite(applied, status, err, params.OriginClientId)
+	}()
+	if flowEndpointUncheckable(err) {
+		c.dropDeviceFlow(flowID)
+		return appwire.AuthDevicePollResponse{State: "restart"}, nil
+	}
+	if err != nil {
+		return appwire.AuthDevicePollResponse{}, err
+	}
+	c.dropDeviceFlow(flowID)
+	status, err := c.statusAfterWrite(provider, applied, c.copilotInstanceStatusByName)
+	return appwire.AuthDevicePollResponse{State: "authorized", Status: &status}, err
+}
+
+// claimCopilotPoll reserves the flow's one outbound completion. It reports
+// false when the flow is gone, another caller owns the poll, or the live flow's
+// pace still says wait; every one of those is a local pending answer, and a
+// failed owner releases the claim so a later poll can retry.
+func (c *hubAuthController) claimCopilotPoll(flowID, deviceCode string, now time.Time) (deviceFlow, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	flow, ok := c.deviceFlows[flowID]
+	if !ok || flow.Copilot.DeviceCode != deviceCode {
+		return deviceFlow{}, false
+	}
+	if flow.CopilotPolling || now.Before(flow.NextPollAt) {
+		return deviceFlow{}, false
+	}
+	flow.CopilotPolling = true
+	c.deviceFlows[flowID] = flow
+	return flow, true
+}
+
+// releaseCopilotPoll clears the in-flight claim on the live flow, if it is
+// still there. A completion that dropped the flow has already released it.
+func (c *hubAuthController) releaseCopilotPoll(flowID, deviceCode string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	flow, ok := c.deviceFlows[flowID]
+	if !ok || flow.Copilot.DeviceCode != deviceCode {
+		return
+	}
+	flow.CopilotPolling = false
+	c.deviceFlows[flowID] = flow
+}
+
+// setDeviceFlowNextPoll records a pending poll's pace on the live flow.
+func (c *hubAuthController) setDeviceFlowNextPoll(flowID, deviceCode string, interval time.Duration, now time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	flow, ok := c.deviceFlows[flowID]
+	if !ok || flow.Copilot.DeviceCode != deviceCode {
+		return
+	}
+	flow.Copilot.Interval = interval
+	flow.NextPollAt = now.Add(interval)
+	c.deviceFlows[flowID] = flow
+}
+
+// dropDeviceFlow forgets one device flow.
+func (c *hubAuthController) dropDeviceFlow(flowID string) {
+	c.mu.Lock()
+	delete(c.deviceFlows, flowID)
+	c.mu.Unlock()
 }
 
 func (c *hubAuthController) config() authopenai.Config {
@@ -1348,6 +1569,8 @@ func normalizeAuthProvider(provider string) string {
 func authModesFor(auth string) []string {
 	switch auth {
 	case registry.AuthOAuthOpenAICodex:
+		return []string{"oauth"}
+	case registry.AuthOAuthGitHubCopilot:
 		return []string{"oauth"}
 	case registry.AuthNone:
 		return []string{"none"}
@@ -1671,6 +1894,13 @@ func (c *hubAuthController) instanceIsCodex(name string) bool {
 	return ok && auth == registry.AuthOAuthOpenAICodex
 }
 
+// instanceIsCopilot reports whether name authenticates through the GitHub
+// Copilot OAuth flow.
+func (c *hubAuthController) instanceIsCopilot(name string) bool {
+	auth, ok := c.instanceAuthScheme(name)
+	return ok && auth == registry.AuthOAuthGitHubCopilot
+}
+
 // instanceUsesGCPADC reports whether name authenticates through Google
 // application-default credentials (spec §9.4): its transport auth is gcp-adc.
 func (c *hubAuthController) instanceUsesGCPADC(name string) bool {
@@ -1747,6 +1977,25 @@ func (c *hubAuthController) requiresCodex(name string) error {
 	return invalidParamsFor(fmt.Errorf("%w %q", errOAuthUnsupported, name))
 }
 
+// requiresCopilot returns an InvalidParams error when the named instance does
+// not authenticate through the Copilot OAuth flow.
+func (c *hubAuthController) requiresCopilot(name string) error {
+	if c.instanceIsCopilot(name) {
+		return nil
+	}
+	return invalidParamsFor(fmt.Errorf("%w %q", errOAuthUnsupported, name))
+}
+
+// requiresDeviceOAuth returns an InvalidParams error when the named instance
+// has no device flow; both OAuth transports do, though only Codex has the
+// browser login.
+func (c *hubAuthController) requiresDeviceOAuth(name string) error {
+	if c.instanceIsCodex(name) || c.instanceIsCopilot(name) {
+		return nil
+	}
+	return invalidParamsFor(fmt.Errorf("%w %q", errOAuthUnsupported, name))
+}
+
 // errOAuthUnsupported is requiresCodex's refusal.
 var errOAuthUnsupported = errors.New("OAuth is not supported for instance")
 
@@ -1797,8 +2046,14 @@ func (c *hubAuthController) instanceStatusKeyed(key []byte, inst registry.Instan
 // credentialStatusKeyed is instanceStatusKeyed before a recorded credential
 // rejection is folded in.
 func (c *hubAuthController) credentialStatusKeyed(key []byte, inst registry.Instance, resolved ...registry.Resolved) appwire.AuthStatusResponse {
-	if inst.Auth == registry.AuthOAuthOpenAICodex {
-		resp, err := c.openAIInstanceStatusKeyed(key, inst.Name, resolved...)
+	if inst.Auth == registry.AuthOAuthOpenAICodex || inst.Auth == registry.AuthOAuthGitHubCopilot {
+		var resp appwire.AuthStatusResponse
+		var err error
+		if inst.Auth == registry.AuthOAuthOpenAICodex {
+			resp, err = c.openAIInstanceStatusKeyed(key, inst.Name, resolved...)
+		} else {
+			resp, err = c.copilotInstanceStatusKeyed(key, inst.Name, resolved...)
+		}
 		if err == nil {
 			return resp
 		}
@@ -1943,6 +2198,60 @@ func (c *hubAuthController) openAIInstanceStatusKeyed(key []byte, name string, r
 		status.Email = envvars.FirstNonEmpty(status.Email, record.Email)
 		status.AccountID = envvars.FirstNonEmpty(status.AccountID, record.AccountID)
 		status.WorkspaceID = envvars.FirstNonEmpty(status.WorkspaceID, record.WorkspaceID)
+	}
+	return status, nil
+}
+
+// copilotInstanceStatusByName is copilotInstanceStatusKeyed in statusAfterWrite's
+// reader shape: a post-write status read resolves its own key.
+func (c *hubAuthController) copilotInstanceStatusByName(name string) (appwire.AuthStatusResponse, error) {
+	key, _ := resolveEndpointFingerprintKey(c.stateDir)
+	return c.copilotInstanceStatusKeyed(key, name)
+}
+
+// copilotInstanceStatusKeyed is the Copilot side of credentialStatusKeyed: a
+// stored record is an OAuth sign-in carrying the record's account identity. A
+// corrupt record is treated as absent, as on the Codex path, so the pane offers
+// the sign-in again instead of hiding the row.
+func (c *hubAuthController) copilotInstanceStatusKeyed(key []byte, name string, resolved ...registry.Resolved) (appwire.AuthStatusResponse, error) {
+	var record githubcopilot.AuthRecord
+	hasRecord := false
+	if c.hasEndpointStateRoot() {
+		loaded, err := githubcopilot.LoadAuth(c.stateDir, name)
+		switch {
+		case err == nil:
+			record, hasRecord = loaded, true
+		case errors.Is(err, githubcopilot.ErrAuthNotFound), errors.Is(err, githubcopilot.ErrAuthCorrupt):
+		default:
+			return appwire.AuthStatusResponse{}, err
+		}
+	}
+	var active githubcopilot.AuthStatus
+	if hasRecord {
+		var err error
+		if active, err = c.copilotService.Status(c.stateDir, name); err != nil {
+			return appwire.AuthStatusResponse{}, err
+		}
+	}
+	_, hasFile := c.storedKey(name)
+	source := "none"
+	if hasRecord {
+		source = githubcopilot.AuthSourceOAuth
+	}
+	status := appwire.AuthStatusResponse{
+		Provider: name, Supported: true, SignedIn: active.SignedIn,
+		ActiveSource: source, AuthModes: authModesFor(registry.AuthOAuthGitHubCopilot),
+		Email: active.Email, AccountID: active.AccountID,
+		NeedsRefresh: active.NeedsRefresh, NeedsLogin: active.NeedsLogin,
+		RefreshRejected: hasRecord && record.RefreshRejected,
+		HasStoredFile:   hasFile,
+		ConfigRevision:  c.credentialConfigRevisionForKey(key, name, resolved...),
+	}
+	if hasRecord {
+		status.HasStoredOAuth = true
+		status.StoredEmail = record.Email
+		status.Email = envvars.FirstNonEmpty(status.Email, record.Email)
+		status.AccountID = envvars.FirstNonEmpty(status.AccountID, record.AccountID)
 	}
 	return status, nil
 }

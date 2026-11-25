@@ -608,18 +608,434 @@ func TestInstanceModels_ListsAliasRowsWithTheirTargetsState(t *testing.T) {
 func TestSnapshotLive_RoundTripsListings(t *testing.T) {
 	t.Parallel()
 	r := fixtureLoad(t, nil, "")
-	r.ApplyLive("anthropic", []Model{{ID: "claude-live-new"}, {ID: "embedding-thing"}})
+	r.ApplyLiveListing("anthropic", LiveListing{Rows: []Model{{ID: "claude-live-new"}, {ID: "embedding-thing"}}})
 	snap := r.SnapshotLive()
-	rows, ok := snap["anthropic"]
-	if !ok || len(rows) != 1 || rows[0].ID != "claude-live-new" {
+	listing, ok := snap["anthropic"]
+	if !ok || len(listing.Rows) != 1 || listing.Rows[0].ID != "claude-live-new" {
 		t.Fatalf("SnapshotLive = %+v, want the single chat id", snap)
 	}
 	r2 := fixtureLoad(t, nil, "")
-	for inst, models := range snap {
-		r2.ApplyLive(inst, models)
+	for inst, listing := range snap {
+		r2.ApplyLiveListing(inst, listing)
 	}
 	if got := r2.LiveModels("anthropic"); len(got) != 1 || got[0].ID != "claude-live-new" {
 		t.Fatalf("restored live = %+v, want claude-live-new", got)
+	}
+}
+
+// copilotTestRegistry loads an instance pointed at the Copilot subscription
+// with a stored credential, so its listing transport carries the OAuth scheme
+// that makes the roster authoritative.
+func copilotTestRegistry(t *testing.T, cfg string) *Registry {
+	t.Helper()
+	state := t.TempDir()
+	saveCopilotRecordForTest(t, state, "github-copilot", healthyCopilotRecord("github-copilot"))
+	return fixtureLoad(t, nil, cfg, WithStateRoot(state))
+}
+
+// TestApplyLiveListingAuthoritativeHidesStaticRows pins the account-owned
+// catalog rule: the live roster is the only source of ids, an authoritative
+// empty answer leaves a launchable model set empty, and the authority survives
+// the snapshot round trip a Reload performs. A non-authoritative ApplyLive
+// clears it, which is what every other provider keeps.
+func TestApplyLiveListingAuthoritativeHidesStaticRows(t *testing.T) {
+	t.Parallel()
+	r := copilotTestRegistry(t, "")
+	if !r.LiveListingAuthoritative("github-copilot") {
+		t.Fatal("a Copilot instance's roster must be authoritative")
+	}
+	if r.LiveListingAuthoritative("anthropic") {
+		t.Fatal("another provider must opt out of authority")
+	}
+	static, err := r.ModelIDs("github-copilot")
+	if err != nil || len(static) == 0 {
+		t.Fatalf("fixture precondition: the Copilot catalog carries static rows: %v %v", static, err)
+	}
+	r.ApplyLiveListing("github-copilot", LiveListing{Rows: []Model{{ID: "live-only"}}, Authoritative: true})
+	ids, err := r.ModelIDs("github-copilot")
+	if err != nil || len(ids) != 1 || ids[0] != "live-only" {
+		t.Fatalf("authoritative ids = %v, %v, want only live-only", ids, err)
+	}
+
+	snap := r.SnapshotLive()
+	carried, ok := snap["github-copilot"]
+	if !ok || !carried.Authoritative || len(carried.Rows) != 1 {
+		t.Fatalf("snapshot = %+v, want authoritative live-only", snap)
+	}
+	r2 := copilotTestRegistry(t, "")
+	r2.ApplyLiveListing("github-copilot", carried)
+	ids, err = r2.ModelIDs("github-copilot")
+	if err != nil || len(ids) != 1 || ids[0] != "live-only" {
+		t.Fatalf("carried ids = %v, %v, want only live-only", ids, err)
+	}
+
+	r.ApplyLive("github-copilot", []Model{{ID: "other"}})
+	if listing, _ := r.LiveListingFor("github-copilot"); listing.Authoritative {
+		t.Fatal("ApplyLive must record a non-authoritative listing")
+	}
+}
+
+// TestLiveListingAuthoritativeFollowsConfiguredListingTransport pins the
+// authority rule to the transport that actually fetches the roster, not to a
+// default row that may override generation to a separate gateway. Discovery
+// for a Copilot account always uses the configured provider transport, so the
+// roster it fetched is authoritative even when the default row's own transport
+// authenticates differently.
+func TestLiveListingAuthoritativeFollowsConfiguredListingTransport(t *testing.T) {
+	t.Parallel()
+	r := copilotTestRegistry(t, `
+[providers.github-copilot]
+base = "github-copilot"
+default_model = "claude-x"
+[providers.github-copilot.models."claude-x"]
+auth = "bearer"
+base_url = "https://gateway.example.com/v1"
+`)
+	if !r.LiveListingAuthoritative("github-copilot") {
+		t.Fatal("the roster is fetched through the configured Copilot transport; its answer must be authoritative even though the default row routes generation with a separate auth scheme")
+	}
+	res, err := r.ResolveInstanceListing("github-copilot")
+	if err != nil {
+		t.Fatalf("ResolveInstanceListing: %v", err)
+	}
+	if res.Transport.Auth != AuthOAuthGitHubCopilot {
+		t.Fatalf("listing transport auth = %q, want the configured Copilot transport %q", res.Transport.Auth, AuthOAuthGitHubCopilot)
+	}
+}
+
+// gatewayCopilotConfig is one Copilot instance whose default model generates
+// through a separate API-key gateway. The provider head keeps the account's
+// configured Copilot transport, so the roster and the connection identity
+// come from the account while generation leaves through the gateway.
+const gatewayCopilotConfig = `
+[providers.work]
+base = "github-copilot"
+api_key_env = ["GATEWAY_KEY"]
+default_model = "claude-x"
+[providers.work.models."claude-x"]
+auth = "bearer"
+base_url = "https://gateway.example.com/v1"
+`
+
+// TestCopilotConnectionMetadataFollowsConfiguredTransport pins the connection
+// half of the boundary: an instance whose default row generates through a
+// gateway still authenticates with its Copilot account, reports the account's
+// credential and endpoint, and keeps the gateway credential for generation.
+func TestCopilotConnectionMetadataFollowsConfiguredTransport(t *testing.T) {
+	t.Parallel()
+	state := t.TempDir()
+	saveCopilotRecordForTest(t, state, "work", healthyCopilotRecord("work"))
+	r := fixtureLoad(t, map[string]string{"GATEWAY_KEY": "gw-secret"}, gatewayCopilotConfig, WithStateRoot(state))
+
+	gen, err := r.Resolve("work/claude-x")
+	if err != nil {
+		t.Fatalf("Resolve(work/claude-x): %v", err)
+	}
+	inst, ok := r.Instance("work")
+	if !ok {
+		t.Fatal("Instance(work) missing")
+	}
+	if inst.Auth != AuthOAuthGitHubCopilot {
+		t.Fatalf("connection auth = %q, want the configured Copilot transport %q", inst.Auth, AuthOAuthGitHubCopilot)
+	}
+	if inst.CredentialSource != "oauth" {
+		t.Fatalf("connection credential source = %q, want oauth", inst.CredentialSource)
+	}
+	if inst.BaseURL != "https://api.githubcopilot.com" {
+		t.Fatalf("connection base URL = %q, want the Copilot endpoint", inst.BaseURL)
+	}
+	if inst.Protocol != gen.Protocol {
+		t.Fatalf("connection protocol = %q, want the generation protocol %q", inst.Protocol, gen.Protocol)
+	}
+	if inst.DefaultModel != "claude-x" {
+		t.Fatalf("default model = %q, want the generation default claude-x", inst.DefaultModel)
+	}
+	if gen.Transport.Auth != AuthBearer || gen.Transport.BaseURL != "https://gateway.example.com/v1" {
+		t.Fatalf("generation transport = %+v, want the gateway bearer transport", gen.Transport)
+	}
+	if gen.Credential.Value != "gw-secret" || gen.Credential.Source != "env:GATEWAY_KEY" {
+		t.Fatalf("generation credential = %+v, want the gateway key", gen.Credential)
+	}
+	gate, err := r.ResolveGateCredential("work", "claude-x")
+	if err != nil {
+		t.Fatalf("ResolveGateCredential(work, claude-x): %v", err)
+	}
+	if gate.Transport.Auth != AuthBearer || gate.Credential.Source != "env:GATEWAY_KEY" {
+		t.Fatalf("generation gate transport/credential = %q/%q, want the gateway bearer credential", gate.Transport.Auth, gate.Credential.Source)
+	}
+
+	listing, err := r.ResolveInstanceListing("work")
+	if err != nil {
+		t.Fatalf("ResolveInstanceListing(work): %v", err)
+	}
+	if listing.Transport.Auth != AuthOAuthGitHubCopilot || listing.Transport.BaseURL != "https://api.githubcopilot.com" {
+		t.Fatalf("listing transport = %+v, want the configured Copilot endpoint", listing.Transport)
+	}
+
+	// A gateway-key rotation is not a connection change: the roster still
+	// comes from the same account. An account switch is.
+	first, ok := r.AuthFingerprint("work")
+	if !ok {
+		t.Fatal("no connection fingerprint")
+	}
+	rotated := fixtureLoad(t, map[string]string{"GATEWAY_KEY": "gw-other"}, gatewayCopilotConfig, WithStateRoot(state))
+	if next, _ := rotated.AuthFingerprint("work"); next != first {
+		t.Fatal("a gateway key rotation moved the connection identity; the roster did not come from it")
+	}
+	switched := healthyCopilotRecord("work")
+	switched.AccountID = "account-2"
+	saveCopilotRecordForTest(t, state, "work", switched)
+	if next, _ := rotated.AuthFingerprint("work"); next == first {
+		t.Fatal("a Copilot account switch kept the connection identity of the old account's roster")
+	}
+}
+
+// TestCopilotConnectionAuthDecidesAutomaticSelection pins that automatic
+// default selection reads the account sign-in, not the gateway credential a
+// default row uses for generation.
+func TestCopilotConnectionAuthDecidesAutomaticSelection(t *testing.T) {
+	t.Parallel()
+	r := fixtureLoad(t, map[string]string{"GATEWAY_KEY": "gw-secret"}, gatewayCopilotConfig, WithStateRoot(t.TempDir()))
+	if name, _, err := r.DefaultInstance(); err == nil {
+		t.Fatalf("DefaultInstance = %q, want no instance: a gateway key is not a Copilot sign-in", name)
+	}
+	inst, ok := r.Instance("work")
+	if !ok {
+		t.Fatal("Instance(work) missing")
+	}
+	if inst.Auth != AuthOAuthGitHubCopilot || inst.CredentialSource != "none" {
+		t.Fatalf("connection = auth %q source %q, want the Copilot account with no sign-in", inst.Auth, inst.CredentialSource)
+	}
+}
+
+// TestCopilotImplicitInstanceUsesTheAccountNotTheGenerationScheme pins the
+// implicit half of the same boundary: a curated Copilot instance whose default
+// model resolves through a gateway row still lists, and still shows the
+// account's credential and endpoint, because its connection is the account.
+func TestCopilotImplicitInstanceUsesTheAccountNotTheGenerationScheme(t *testing.T) {
+	t.Parallel()
+	state := t.TempDir()
+	saveCopilotRecordForTest(t, state, "github-copilot", healthyCopilotRecord("github-copilot"))
+	r := fixtureLoad(t, nil, "[models.\"gpt-5*\"]\nauth = \"bearer\"\nbase_url = \"https://gateway.example.com/v1\"\n", WithStateRoot(state))
+
+	gen, err := r.Resolve("github-copilot/gpt-5.6-sol")
+	if err != nil {
+		t.Fatalf("Resolve(github-copilot/gpt-5.6-sol): %v", err)
+	}
+	if gen.Transport.Auth != AuthBearer || gen.Transport.BaseURL != "https://gateway.example.com/v1" {
+		t.Fatalf("generation transport = %+v, want the gateway bearer transport", gen.Transport)
+	}
+	inst, ok := r.Instance("github-copilot")
+	if !ok {
+		t.Fatal("the signed-in implicit Copilot instance disappeared because its generation row resolves no credential")
+	}
+	if inst.Auth != AuthOAuthGitHubCopilot || inst.CredentialSource != "oauth" {
+		t.Fatalf("connection = auth %q source %q, want the Copilot account", inst.Auth, inst.CredentialSource)
+	}
+	if inst.BaseURL != "https://api.githubcopilot.com" {
+		t.Fatalf("connection base URL = %q, want the Copilot endpoint", inst.BaseURL)
+	}
+}
+
+// liveClaudeRow is the advertised Copilot routing for the one live-proven
+// Claude row.
+func liveClaudeRow() Model {
+	return Model{
+		ID: "claude-haiku-5.5", Protocol: ProtocolAnthropic, Surface: SurfaceAnthropic, Family: "claude",
+		Transport: &Transport{Endpoint: "/v1/messages", StreamEndpoint: "/v1/messages", CountTokensEndpoint: EndpointUnsupported},
+		Caps:      Caps{Tools: new(true), MaxInputTokens: new(200000), MaxOutputTokens: new(32000)},
+	}
+}
+
+// TestResolveLiveRowCarriesAccountRouting pins that the live layer supplies
+// the protocol, endpoints, family, and surface a Copilot id needs: without
+// them the row resolves as an unknown OpenAI chat model at the wrong URL.
+func TestResolveLiveRowCarriesAccountRouting(t *testing.T) {
+	t.Parallel()
+	r := copilotTestRegistry(t, "")
+	r.ApplyLiveListing("github-copilot", LiveListing{Rows: []Model{liveClaudeRow()}, Authoritative: true})
+	res, err := r.Resolve("github-copilot/claude-haiku-5.5")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if res.Protocol != ProtocolAnthropic {
+		t.Fatalf("protocol = %q, want %q", res.Protocol, ProtocolAnthropic)
+	}
+	if got, want := res.Transport.BaseURL+res.Transport.Endpoint, "https://api.githubcopilot.com/v1/messages"; got != want {
+		t.Fatalf("final URL = %q, want %q", got, want)
+	}
+	if res.Transport.CountTokensEndpoint != EndpointUnsupported {
+		t.Fatalf("count tokens = %q, want unsupported", res.Transport.CountTokensEndpoint)
+	}
+	if res.Surface != SurfaceAnthropic || res.Model.Family != "claude" {
+		t.Fatalf("surface/family = %q/%q", res.Surface, res.Model.Family)
+	}
+}
+
+// TestResolveAccountRoutingHonorsUserOverride pins the layer order: the
+// account's live routing sits above the bundled catalog and below the user's
+// own protocol and endpoint.
+func TestResolveAccountRoutingHonorsUserOverride(t *testing.T) {
+	t.Parallel()
+	const cfg = `
+[providers.work]
+base = "github-copilot"
+
+[providers.work.models."claude-haiku-5.5"]
+protocol = "openai-chat"
+endpoint = "/custom/chat"
+`
+	r := copilotTestRegistry(t, cfg)
+	r.ApplyLiveListing("work", LiveListing{Rows: []Model{liveClaudeRow()}, Authoritative: true})
+	res, err := r.Resolve("work/claude-haiku-5.5")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if res.Protocol != ProtocolOpenAIChat {
+		t.Fatalf("protocol = %q, want the user's %q", res.Protocol, ProtocolOpenAIChat)
+	}
+	if res.Transport.Endpoint != "/custom/chat" {
+		t.Fatalf("endpoint = %q, want the user's /custom/chat", res.Transport.Endpoint)
+	}
+}
+
+// TestResolveProtocolOnlyOverrideUsesTheOverrideProtocol pins that a user
+// protocol override retargets the transport: the account's Messages endpoints
+// may not survive as the wire path of an openai-chat row.
+func TestResolveProtocolOnlyOverrideUsesTheOverrideProtocol(t *testing.T) {
+	t.Parallel()
+	const cfg = `
+[providers.work]
+base = "github-copilot"
+
+[providers.work.models."claude-haiku-5.5"]
+protocol = "openai-chat"
+`
+	r := copilotTestRegistry(t, cfg)
+	r.ApplyLiveListing("work", LiveListing{Rows: []Model{liveClaudeRow()}, Authoritative: true})
+	res, err := r.Resolve("work/claude-haiku-5.5")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if res.Protocol != ProtocolOpenAIChat {
+		t.Fatalf("protocol = %q, want the user's %q", res.Protocol, ProtocolOpenAIChat)
+	}
+	if res.Transport.Endpoint != "/chat/completions" || res.Transport.StreamEndpoint != "/chat/completions" {
+		t.Fatalf("transport = %+v, want the chat endpoints, not the account's Messages path", res.Transport)
+	}
+	if res.Transport.CountTokensEndpoint != EndpointUnsupported {
+		t.Fatalf("count tokens = %q, want unsupported", res.Transport.CountTokensEndpoint)
+	}
+	if got, want := res.Transport.BaseURL+res.Transport.Endpoint, "https://api.githubcopilot.com/chat/completions"; got != want {
+		t.Fatalf("final URL = %q, want %q", got, want)
+	}
+}
+
+// TestResolveProtocolChangeClearsInheritedEndpoints pins the partial authored
+// transport on a row that changes protocols: the previous protocol's endpoint
+// paths are cleared before the authored transport merges, so a Chat endpoint
+// never streams down the live row's Messages path. A supplied completion
+// endpoint survives, and the new protocol's default stream path applies unless
+// the same row supplies one.
+func TestResolveProtocolChangeClearsInheritedEndpoints(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name       string
+		row        string
+		wantStream string
+	}{
+		{
+			name: "default stream endpoint",
+			row: `[providers.work.models."claude-haiku-5.5"]
+protocol = "openai-chat"
+endpoint = "/chat/completions"
+`,
+			wantStream: "/chat/completions",
+		},
+		{
+			name: "explicit stream endpoint",
+			row: `[providers.work.models."claude-haiku-5.5"]
+protocol = "openai-chat"
+endpoint = "/chat/completions"
+stream_endpoint = "/custom/stream"
+`,
+			wantStream: "/custom/stream",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			r := copilotTestRegistry(t, "[providers.work]\nbase = \"github-copilot\"\n\n"+tc.row)
+			r.ApplyLiveListing("work", LiveListing{Rows: []Model{liveClaudeRow()}, Authoritative: true})
+			res, err := r.Resolve("work/claude-haiku-5.5")
+			if err != nil {
+				t.Fatalf("Resolve: %v", err)
+			}
+			if res.Protocol != ProtocolOpenAIChat {
+				t.Fatalf("protocol = %q, want the user's %q", res.Protocol, ProtocolOpenAIChat)
+			}
+			if res.Transport.Endpoint != "/chat/completions" {
+				t.Fatalf("endpoint = %q, want the user's /chat/completions", res.Transport.Endpoint)
+			}
+			if res.Transport.StreamEndpoint != tc.wantStream {
+				t.Fatalf("stream endpoint = %q, want %q", res.Transport.StreamEndpoint, tc.wantStream)
+			}
+			if res.Transport.CountTokensEndpoint != EndpointUnsupported {
+				t.Fatalf("count tokens = %q, want unsupported", res.Transport.CountTokensEndpoint)
+			}
+		})
+	}
+}
+
+// TestResolveEndpointOnlyOverrideKeepsAccountTransportFacts pins that an
+// endpoint override changes only the endpoint: the account's protocol and the
+// transport facts it advertised (stream path, unsupported count tokens) stay.
+func TestResolveEndpointOnlyOverrideKeepsAccountTransportFacts(t *testing.T) {
+	t.Parallel()
+	const cfg = `
+[providers.work]
+base = "github-copilot"
+
+[providers.work.models."claude-haiku-5.5"]
+endpoint = "/custom/chat"
+`
+	r := copilotTestRegistry(t, cfg)
+	r.ApplyLiveListing("work", LiveListing{Rows: []Model{liveClaudeRow()}, Authoritative: true})
+	res, err := r.Resolve("work/claude-haiku-5.5")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if res.Protocol != ProtocolAnthropic {
+		t.Fatalf("protocol = %q, want the account's %q", res.Protocol, ProtocolAnthropic)
+	}
+	if res.Transport.Endpoint != "/custom/chat" {
+		t.Fatalf("endpoint = %q, want the user's /custom/chat", res.Transport.Endpoint)
+	}
+	if res.Transport.StreamEndpoint != "/v1/messages" {
+		t.Fatalf("stream endpoint = %q, want the account's /v1/messages", res.Transport.StreamEndpoint)
+	}
+	if res.Transport.CountTokensEndpoint != EndpointUnsupported {
+		t.Fatalf("count tokens = %q, want the account's unsupported verdict", res.Transport.CountTokensEndpoint)
+	}
+}
+
+// TestApplyLiveStripsSyntheticAccountCost is Task 4's deferred regression:
+// a live row that carries a price must not become a live dollar price on a
+// Copilot instance, and no provenance may claim one.
+func TestApplyLiveStripsSyntheticAccountCost(t *testing.T) {
+	t.Parallel()
+	r := copilotTestRegistry(t, "")
+	row := liveClaudeRow()
+	row.Caps.Cost = &Cost{Input: 5, Output: 25}
+	r.ApplyLiveListing("github-copilot", LiveListing{Rows: []Model{row}, Authoritative: true})
+	res, err := r.Resolve("github-copilot/claude-haiku-5.5")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if res.Caps.Cost != nil || res.Model.Caps.Cost != nil {
+		t.Fatalf("cost = %+v/%+v, want absent after the live apply", res.Caps.Cost, res.Model.Caps.Cost)
+	}
+	if got := res.Provenance["Cost"]; got != "" {
+		t.Fatalf("cost provenance = %q, want none", got)
 	}
 }
 

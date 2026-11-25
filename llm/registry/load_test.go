@@ -58,6 +58,35 @@ func embeddedLoad(t testing.TB, extra ...Option) *Registry {
 	return r
 }
 
+func TestLoad_EmbeddedCopilotInstance(t *testing.T) {
+	t.Parallel()
+	state := t.TempDir()
+	saveCopilotRecordForTest(t, state, "github-copilot", healthyCopilotRecord("github-copilot"))
+	r := embeddedLoad(t, WithStateRoot(state))
+
+	inst, ok := r.Instance("github-copilot")
+	if !ok || inst.CredentialSource != "oauth" || inst.DefaultModel != "gpt-5.6-sol" {
+		t.Fatalf("embedded github-copilot listing = %+v, ok=%v", inst, ok)
+	}
+	ids, err := r.ModelIDs("github-copilot")
+	if err != nil || len(ids) == 0 {
+		t.Fatalf("embedded github-copilot models = %v, %v", ids, err)
+	}
+	res, err := r.Resolve("github-copilot/gpt-5.6-sol")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if res.Synthesized || res.Caps.ContextWindow == nil || *res.Caps.ContextWindow != 1050000 {
+		t.Fatalf("embedded row did not inherit catalog facts: synthesized=%v context=%v", res.Synthesized, res.Caps.ContextWindow)
+	}
+	if res.Caps.Cost != nil {
+		t.Fatalf("embedded Copilot row keeps a monetary cost: %+v", *res.Caps.Cost)
+	}
+	if res.DefaultModel != "gpt-5.6-sol" || res.CheapModel != "claude-haiku-5.5" || res.Surface != SurfaceOpenAI {
+		t.Fatalf("embedded Copilot defaults/surface = %q %q %q", res.DefaultModel, res.CheapModel, res.Surface)
+	}
+}
+
 func mapEnv(env map[string]string) func(string) (string, bool) {
 	return func(name string) (string, bool) { v, ok := env[name]; return v, ok }
 }
@@ -1144,5 +1173,68 @@ func TestLoadDefaultsStateRootFromInjectedEnv(t *testing.T) {
 	}
 	if got, want := r.StateRoot(), filepath.Join(home, ".local", "state", "evener"); got != want {
 		t.Fatalf("StateRoot = %q, want %q", got, want)
+	}
+}
+
+// TestEndpointEnvNamesCoversOnlyReferencedEndpointVariables pins the scan a
+// checkout-local launch file is held to: a vars_env mapping read by an
+// endpoint template counts, an environment reference inside a user vars entry
+// counts, and a mapping no template reads does not.
+func TestEndpointEnvNamesCoversOnlyReferencedEndpointVariables(t *testing.T) {
+	t.Parallel()
+	r := fixtureLoad(t, nil, `
+[providers.gateway]
+base = "openai-compatible"
+base_url = "{GW_URL}"
+vars = { GW_URL = "https://stock.example.com/v1" }
+vars_env = { GW_URL = "GATEWAY_ENDPOINT", UNUSED = "UNRELATED_SETTING" }
+api_key = "test"
+
+[providers.relayed]
+base = "openai-compatible"
+base_url = "{RELAY_URL}"
+vars = { RELAY_URL = "$RELAY_ENDPOINT" }
+api_key = "test"
+`)
+	names := r.EndpointEnvNames()
+	has := func(want string) bool { return slices.Contains(names, want) }
+	if !has("GATEWAY_ENDPOINT") {
+		t.Fatalf("EndpointEnvNames = %v, want the vars_env mapping feeding {GW_URL}", names)
+	}
+	if !has("RELAY_ENDPOINT") {
+		t.Fatalf("EndpointEnvNames = %v, want the $RELAY_ENDPOINT reference feeding {RELAY_URL}", names)
+	}
+	if has("UNRELATED_SETTING") {
+		t.Fatalf("EndpointEnvNames = %v, want no mapping no endpoint template reads", names)
+	}
+}
+
+// TestEndpointEnvNamesCoversLiveOnlyTopLevelGlob pins the scan against the ids
+// only the live roster names: generation replays a top-level glob row onto a
+// live-only id exactly as it does onto a static row, so an environment-backed
+// endpoint the glob supplies is a generation input a checkout launch file must
+// not set even when no static row matches the glob.
+func TestEndpointEnvNamesCoversLiveOnlyTopLevelGlob(t *testing.T) {
+	t.Parallel()
+	state := t.TempDir()
+	saveCopilotRecordForTest(t, state, "github-copilot", healthyCopilotRecord("github-copilot"))
+	r := fixtureLoad(t, map[string]string{"COPILOT_ROSTER_ENDPOINT": "https://checkout.example.test/v1"}, `
+[models."roster-only-*"]
+base_url = "{ROSTER_ENDPOINT}"
+vars_env = { ROSTER_ENDPOINT = "COPILOT_ROSTER_ENDPOINT" }
+`, WithStateRoot(state))
+	r.ApplyLiveListing("github-copilot", LiveListing{Rows: []Model{{ID: "roster-only-model"}}, Authoritative: true})
+	if names := r.EndpointEnvNames(); !slices.Contains(names, "COPILOT_ROSTER_ENDPOINT") {
+		t.Fatalf("EndpointEnvNames = %v, want the live-only glob's COPILOT_ROSTER_ENDPOINT", names)
+	}
+	res, err := r.Resolve("github-copilot/roster-only-model")
+	if err != nil {
+		t.Fatalf("Resolve(live-only): %v", err)
+	}
+	if got, want := res.Transport.BaseURL, "https://checkout.example.test/v1"; got != want {
+		t.Fatalf("Resolve(live-only) base URL = %q, want the injected %q", got, want)
+	}
+	if !r.LiveListingAuthoritative("github-copilot") {
+		t.Fatal("the Copilot roster must stay authoritative")
 	}
 }

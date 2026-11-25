@@ -14,12 +14,13 @@ const (
 
 // Auth schemes (spec §4).
 const (
-	AuthBearer           = "bearer"
-	AuthOptionalBearer   = "optional-bearer"
-	AuthHeader           = "header"
-	AuthNone             = "none"
-	AuthGCPADC           = "gcp-adc"
-	AuthOAuthOpenAICodex = "oauth-openai-codex"
+	AuthBearer             = "bearer"
+	AuthOptionalBearer     = "optional-bearer"
+	AuthHeader             = "header"
+	AuthNone               = "none"
+	AuthGCPADC             = "gcp-adc"
+	AuthOAuthOpenAICodex   = "oauth-openai-codex"
+	AuthOAuthGitHubCopilot = "oauth-github-copilot"
 )
 
 // Surfaces (spec §3): the agent-facing vendor family a model was trained for.

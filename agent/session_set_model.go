@@ -136,11 +136,12 @@ func resolveModelSwitchTarget(client *llm.Client, profile *provider.Profile, ses
 // client settles servability first: a reference the registry refuses outright
 // (spec §7.3 — an id off the Codex allowlist is the only such case) reports
 // the resolver's own error. Everything else is checked against the listing the
-// caller already fetched (resolveModelSwitchTarget), and only when that listing
-// is usable: a static fallback is not evidence of absence. The listing's
-// rows are already filtered by the §5 visibility rule, so no second visibility
-// pass runs here; fail-open-on-listing-error is handled by the caller, before
-// this is called.
+// caller already fetched (resolveModelSwitchTarget): a usable listing must
+// carry the model, and an account-owned roster that answered with no usable
+// row is proof the target is unavailable. A failed fetch or a static fallback
+// is not evidence of absence. The listing's rows are already filtered by the §5
+// visibility rule, so no second visibility pass runs here;
+// fail-open-on-listing-error is handled by the caller, before this is called.
 func validateModelSwitchMembership(client *llm.Client, profile *provider.Profile, listing llm.ModelListing) error {
 	if err := validateVertexInteractionsModel(client, profile); err != nil {
 		return err
@@ -151,6 +152,9 @@ func validateModelSwitchMembership(client *llm.Client, profile *provider.Profile
 	if !client.CanServe(profile.ID(), profile.Model()) {
 		_, err := client.Resolve(profile.ID() + "/" + profile.Model())
 		return err
+	}
+	if client.ListingProvesUnavailable(profile.ID(), listing) {
+		return fmt.Errorf("model %s is not available from instance %s (available: %s)", profile.Model(), profile.ID(), formatModelAlternatives(listing.Models))
 	}
 	if !listing.Usable {
 		return nil // static fallback: every servable id is accepted (spec §7.3, §8.1)

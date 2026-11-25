@@ -8,7 +8,7 @@ import (
 )
 
 var specImplicitOrder = []string{
-	"anthropic", "openai-codex", "openai", "google", "groq", "zai", "deepseek", "openrouter", "xai", "mistral",
+	"anthropic", "openai-codex", "github-copilot", "openai", "google", "groq", "zai", "deepseek", "openrouter", "xai", "mistral",
 	"cerebras", "togetherai", "moonshotai", "kimi-for-coding", "minimax", "zai-coding-plan",
 	"google-vertex-anthropic", "google-vertex", "amazon-bedrock", "azure", "ollama",
 }
@@ -97,6 +97,32 @@ func TestCuratedOverlay_DefaultsAndTemplates(t *testing.T) {
 		if p.Transport.VarsEnv["BASE_URL"] != want+"_BASE_URL" || !reflect.DeepEqual(p.APIKeyEnv, []string{want + "_API_KEY"}) {
 			t.Errorf("%s env names: %v %v", id, p.Transport.VarsEnv, p.APIKeyEnv)
 		}
+	}
+}
+
+func TestCuratedOverlay_GitHubCopilot(t *testing.T) {
+	t.Parallel()
+	l := loadOverlay(t)
+	p, ok := l.Providers["github-copilot"]
+	if !ok {
+		t.Fatal("github-copilot: no overlay row")
+	}
+	if p.Implicit == nil || !*p.Implicit {
+		t.Fatal("github-copilot must be implicit")
+	}
+	if p.Transport.Auth != AuthOAuthGitHubCopilot {
+		t.Fatalf("github-copilot auth = %q", p.Transport.Auth)
+	}
+	if p.APIKeyEnv == nil || len(p.APIKeyEnv) != 0 {
+		t.Fatalf("github-copilot api_key_env = %v, want an explicit empty list", p.APIKeyEnv)
+	}
+	if p.Transport.BaseURL != "{BASE_URL}" ||
+		p.Transport.Vars["BASE_URL"] != "https://api.githubcopilot.com" ||
+		p.Transport.VarsEnv["BASE_URL"] != "GITHUB_COPILOT_BASE_URL" {
+		t.Fatalf("github-copilot endpoint = %q vars %v vars_env %v", p.Transport.BaseURL, p.Transport.Vars, p.Transport.VarsEnv)
+	}
+	if p.DefaultModel != "gpt-5.6-sol" || p.CheapModel != "claude-haiku-5.5" {
+		t.Fatalf("github-copilot default/cheap = %q %q", p.DefaultModel, p.CheapModel)
 	}
 }
 

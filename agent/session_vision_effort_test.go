@@ -372,7 +372,6 @@ func TestDescribeImage_CancelsTheSideChannelOnTimeout(t *testing.T) {
 	}
 	profile := withEffortLevels(NewOpenAIProfile("m"), llm.ReasoningEffortVocabulary()...)
 	sess := newSession(t, withAdapter(blocking), withProfile(profile), withDir(dir), withConfig(SessionConfig{
-		StateDir: dir,
 		testOnly: testConfig{visionSideChannelTimeout: 20 * time.Millisecond},
 	}))
 	drainSessionEvents(sess)

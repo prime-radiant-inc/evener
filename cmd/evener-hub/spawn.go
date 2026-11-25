@@ -178,6 +178,43 @@ func (h *HubSpawner) ListLaunchModelContractForWorkingDir(ctx context.Context, w
 	return listEvenerLaunchModelContractFn(ctx, h.EvenerBinary, env)
 }
 
+// projectEndpointEnvExclusions names the environment inputs that resolve a
+// configured provider's endpoint, so the checkout-controlled project layer
+// cannot redirect a launch. The names come from the configuration the child
+// actually reads: an explicit selection in its effective environment, otherwise
+// providersConfigPath; the built-in set when that configuration has no user
+// layer. A file that cannot be loaded fails the launch rather than falling back
+// to the hub's registry, which does not describe the child's trusted file. Nil
+// when no registry has loaded yet.
+func (h *HubSpawner) projectEndpointEnvExclusions(providersConfigPath string, noUserLayer bool, resolvedEnv map[string]string) ([]string, error) {
+	if value, ok := resolvedEnv[envvars.EVENERProvidersConfig.Name]; ok {
+		providersConfigPath = value
+		noUserLayer = value == ""
+	}
+	if noUserLayer {
+		reg, err := registry.Load(registry.WithNoUserLayer(), registry.WithOffline(true), registry.WithoutCache())
+		if err != nil {
+			return nil, fmt.Errorf("load built-in provider endpoints: %w", err)
+		}
+		return reg.EndpointEnvNames(), nil
+	}
+	if providersConfigPath != "" {
+		reg, err := registry.Load(registry.WithConfigPath(providersConfigPath), registry.WithOffline(true), registry.WithoutCache())
+		if err != nil {
+			return nil, fmt.Errorf("load child provider configuration: %w", err)
+		}
+		return reg.EndpointEnvNames(), nil
+	}
+	if h.Registry == nil {
+		return nil, nil
+	}
+	reg := h.Registry.Get()
+	if reg == nil {
+		return nil, nil
+	}
+	return reg.EndpointEnvNames(), nil
+}
+
 func (h *HubSpawner) Spawn(ctx context.Context, req hubcore.SpawnRequest) (_ rendezvous.Entry, spawnErr error) {
 	preExec := true
 	defer func() {
@@ -224,16 +261,21 @@ func (h *HubSpawner) Spawn(ctx context.Context, req hubcore.SpawnRequest) (_ ren
 		return rendezvous.Entry{}, err
 	}
 	defer childConfig.cleanupUnowned()
+	projectEnvExclusions, err := h.projectEndpointEnvExclusions(childConfig.path, childConfig.noUserLayer, req.Resolved.Effective.Env)
+	if err != nil {
+		return rendezvous.Entry{}, err
+	}
 	parentEnv := os.Environ()
 	req.Env = childConfig.environment(launchconfig.EnvInputs{
-		Resolved:            req.Resolved,
-		ParentEnv:           parentEnv,
-		RunDir:              h.RunDir,
-		StateDir:            req.StateDir,
-		HubToken:            h.HubToken,
-		ProvidersConfigPath: childConfig.path,
-		NoUserLayer:         childConfig.noUserLayer,
-		CredentialsPath:     h.CredentialsPath,
+		Resolved:             req.Resolved,
+		ParentEnv:            parentEnv,
+		RunDir:               h.RunDir,
+		StateDir:             req.StateDir,
+		HubToken:             h.HubToken,
+		ProvidersConfigPath:  childConfig.path,
+		NoUserLayer:          childConfig.noUserLayer,
+		CredentialsPath:      h.CredentialsPath,
+		ProjectEnvExclusions: projectEnvExclusions,
 	})
 	if err := validateProviderCredentials(req.Provider, req.Resolved.Effective.Model, h.Registry); err != nil {
 		return rendezvous.Entry{}, err
@@ -286,16 +328,21 @@ func (h *HubSpawner) Resume(ctx context.Context, req hubcore.ResumeRequest) (ren
 		return rendezvous.Entry{}, err
 	}
 	defer childConfig.cleanupUnowned()
+	projectEnvExclusions, err := h.projectEndpointEnvExclusions(childConfig.path, childConfig.noUserLayer, req.Resolved.Effective.Env)
+	if err != nil {
+		return rendezvous.Entry{}, err
+	}
 	parentEnv := os.Environ()
 	req.Env = childConfig.environment(launchconfig.EnvInputs{
-		Resolved:            req.Resolved,
-		ParentEnv:           parentEnv,
-		RunDir:              h.RunDir,
-		StateDir:            req.StateDir,
-		HubToken:            h.HubToken,
-		ProvidersConfigPath: childConfig.path,
-		NoUserLayer:         childConfig.noUserLayer,
-		CredentialsPath:     h.CredentialsPath,
+		Resolved:             req.Resolved,
+		ParentEnv:            parentEnv,
+		RunDir:               h.RunDir,
+		StateDir:             req.StateDir,
+		HubToken:             h.HubToken,
+		ProvidersConfigPath:  childConfig.path,
+		NoUserLayer:          childConfig.noUserLayer,
+		CredentialsPath:      h.CredentialsPath,
+		ProjectEnvExclusions: projectEnvExclusions,
 	})
 	if req.Provider != "" {
 		// The resume request carries the model the session persisted
@@ -1041,6 +1088,11 @@ func validateProviderCredentials(provider, model string, reg *hubcore.ProviderRe
 		if scheme == registry.AuthOAuthOpenAICodex {
 			return launchRefusal(&launchCredentialError{target: name, scheme: scheme, remedy: remedyCodexLogin})
 		}
+		// The Copilot transport reads no key either: its credential is the
+		// device-flow record, so point at that flow.
+		if scheme == registry.AuthOAuthGitHubCopilot {
+			return launchRefusal(&launchCredentialError{target: name, scheme: scheme, remedy: remedyCopilotLogin})
+		}
 		// gcp-adc reads no key either, and it can be unconfigured two ways
 		// (spec §5.1). Hidden means the base URL did not resolve — the
 		// registry says which variables this environment still owes it and
@@ -1068,6 +1120,8 @@ const (
 	remedyInstanceCredential launchRemedy = iota + 1
 	// remedyCodexLogin: sign the Codex instance in.
 	remedyCodexLogin
+	// remedyCopilotLogin: sign the Copilot instance in.
+	remedyCopilotLogin
 	// remedyConfigureProvider: the provider's base URL does not resolve, so
 	// set the variables it still needs or fix the ones it has.
 	remedyConfigureProvider
@@ -1104,6 +1158,8 @@ func (e *launchCredentialError) Error() string {
 	switch e.remedy {
 	case remedyCodexLogin:
 		return fmt.Sprintf("provider credentials missing for %s: run `evener openai login --instance %s`", e.target, e.target)
+	case remedyCopilotLogin:
+		return fmt.Sprintf("provider credentials missing for %s: run `evener github-copilot login --instance %s`", e.target, e.target)
 	case remedyConfigureProvider:
 		reasons := append([]string(nil), e.problems...)
 		if len(e.unset) > 0 {

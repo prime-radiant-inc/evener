@@ -1237,12 +1237,16 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 	authController.providersConfigPath = cfg.ProvidersConfigPath
 	authController.noUserLayer = cfg.NoUserLayer
 	var instancesController *hubInstancesController
-	if cfg.Registry != nil && cfg.ProvidersConfigPath != "" {
+	if cfg.Registry != nil {
 		instancesController = &hubInstancesController{
 			reg:                 cfg.Registry,
 			providersConfigPath: cfg.ProvidersConfigPath,
 			auth:                authController,
 		}
+		// The device login writes its record through the auth controller, so
+		// the instances controller learns of that write here; otherwise the
+		// next notice sweep would announce the login RPC's own write again.
+		authController.copilotRecordAdopted = instancesController.adoptCopilotAuthSignature
 		if observeInstancesController != nil {
 			observeInstancesController(instancesController)
 		}
@@ -1271,7 +1275,13 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 	registerThreadHandlers(server, cfg, sources, relay, hubLog, sessionControlOwners{navigation: navigation, resolve: resolve})
 	registerThreadNameSetHandler(server, cfg, sources, navigation)
 	registerAuthHandlers(server, authController)
-	registerInstanceHandlers(server, instancesController)
+	// The instance CRUD/list surface belongs to the editable user layer, the
+	// same shape it had when a path-less hub built no controller at all. The
+	// controller above is still constructed whenever a registry is wired: the
+	// notices sweep needs its Copilot record observation in that mode.
+	if cfg.Registry != nil && cfg.ProvidersConfigPath != "" {
+		registerInstanceHandlers(server, instancesController)
+	}
 	// launch.toml is user-editable configuration, so its root is the config
 	// root, not HubStateRoot (machine-generated state).
 	launchController := newHubLaunchController(hubLaunchConfigRoot(cfg), cfg.APILogDefault)
@@ -1827,10 +1837,10 @@ func instanceRemoveError(err error) (bool, error) {
 }
 
 // registerInstanceHandlers registers the evener/instance/* CRUD handlers. When no
-// instances controller is configured (providers.toml path unset), no handlers
-// are registered — matching the original inline guard. Successful mutations
-// broadcast evener/auth/updated (see notifyInstanceUpdated) so every other
-// connected client refetches its now-stale instance list.
+// instances controller is configured (no registry wired, or no providers.toml
+// user layer to read and write), no handlers are registered. Successful
+// mutations broadcast evener/auth/updated (see notifyInstanceUpdated) so every
+// other connected client refetches its now-stale instance list.
 func registerInstanceHandlers(server *appserver.Server, instancesController *hubInstancesController) {
 	if instancesController == nil {
 		return

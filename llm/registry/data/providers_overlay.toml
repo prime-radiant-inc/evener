@@ -6,7 +6,7 @@
 # quoted for tomlcheck.
 
 default_order = [
-  "anthropic", "openai-codex", "openai", "google", "groq", "zai", "deepseek", "openrouter", "xai", "mistral",
+  "anthropic", "openai-codex", "github-copilot", "openai", "google", "groq", "zai", "deepseek", "openrouter", "xai", "mistral",
   "cerebras", "togetherai", "moonshotai", "kimi-for-coding", "minimax", "zai-coding-plan",
   "google-vertex-anthropic", "google-vertex", "amazon-bedrock", "azure", "ollama",
 ]
@@ -333,6 +333,31 @@ default_effort = "low"
 alias_of = "gpt-6.1-sol"
 wire_id = "gpt-6.1-sol"
 context_window = 872000
+
+# ---------------------------------------------------------------------------
+# GitHub Copilot subscription
+# ---------------------------------------------------------------------------
+
+# The record is the only credential: api_key_env is cleared so GITHUB_TOKEN
+# and the other ambient GitHub variables never authenticate this instance.
+# The upstream models.dev row supplies the model facts and per-family
+# surfaces, resolution strips its monetary prices, and the instance appears
+# only while its own OAuth record exists.
+[providers."github-copilot"]
+implicit = true
+auth = "oauth-github-copilot"
+api_key_env = []
+base_url = "{BASE_URL}"
+vars = { "BASE_URL" = "https://api.githubcopilot.com" }
+vars_env = { "BASE_URL" = "GITHUB_COPILOT_BASE_URL" }
+default_model = "gpt-5.6-sol"
+cheap_model = "claude-haiku-5.5"
+# The static catalogs predate the live cheap model, so declare the row here
+# to keep the reference resolvable offline; the live roster remains
+# authoritative for availability.
+[providers."github-copilot".models."claude-haiku-5.5"]
+surface = "anthropic"
+family = "claude-haiku"
 
 # ---------------------------------------------------------------------------
 # Azure (§9.2)

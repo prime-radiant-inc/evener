@@ -26,15 +26,20 @@ import (
 // server may cap output under a limits object and state the reasoning fact
 // as a plain boolean.
 type modelEntry struct {
-	ID                       string                            `json:"id"`
-	ContextLength            int                               `json:"context_length"`
-	ContextWindow            int                               `json:"context_window"`
-	MaxInputTokens           int                               `json:"max_input_tokens"`
-	MaxCompletionTokens      int                               `json:"max_completion_tokens"`
-	MaxOutputTokens          int                               `json:"max_output_tokens"`
-	SupportedParameters      []string                          `json:"supported_parameters"`
-	Architecture             requestutil.GatewayArchitecture   `json:"architecture"`
-	Capabilities             requestutil.GatewayCapabilities   `json:"capabilities"`
+	ID                  string                          `json:"id"`
+	ContextLength       int                             `json:"context_length"`
+	ContextWindow       int                             `json:"context_window"`
+	MaxInputTokens      int                             `json:"max_input_tokens"`
+	MaxCompletionTokens int                             `json:"max_completion_tokens"`
+	MaxOutputTokens     int                             `json:"max_output_tokens"`
+	SupportedParameters []string                        `json:"supported_parameters"`
+	SupportedEndpoints  *[]string                       `json:"supported_endpoints"`
+	ModelPickerEnabled  *bool                           `json:"model_picker_enabled"`
+	Architecture        requestutil.GatewayArchitecture `json:"architecture"`
+	Capabilities        accountCapabilities             `json:"capabilities"`
+	Policy              struct {
+		State string `json:"state"`
+	} `json:"policy"`
 	Reasoning                requestutil.ListedReasoning       `json:"reasoning"`
 	SupportedReasoningLevels requestutil.ListedReasoningLevels `json:"supported_reasoning_levels"`
 	DefaultReasoningLevel    string                            `json:"default_reasoning_level"`
@@ -47,6 +52,102 @@ type modelEntry struct {
 	TopProvider struct {
 		MaxCompletionTokens *int `json:"max_completion_tokens"`
 	} `json:"top_provider"`
+}
+
+// accountCapabilities is the Copilot subscription roster's capability object
+// plus the gateway shape the shared reader already understood. The embedded
+// fields keep reading lunaroute's capabilities.vision/tools/reasoning, while
+// the named fields read the account's family, limits and supports blocks.
+type accountCapabilities struct {
+	requestutil.GatewayCapabilities
+	Family string `json:"family"`
+	Limits struct {
+		MaxPromptTokens int `json:"max_prompt_tokens"`
+		MaxOutputTokens int `json:"max_output_tokens"`
+	} `json:"limits"`
+	Supports struct {
+		ToolCalls *bool `json:"tool_calls"`
+		Vision    *bool `json:"vision"`
+		Reasoning *bool `json:"reasoning"`
+	} `json:"supports"`
+}
+
+// provenImageModel is the only Copilot row whose image path passed the live
+// probe. The roster advertises vision more broadly; every other row stays
+// text-only until its own live proof, because the GPT image leg failed at
+// stream open.
+func provenImageModel(id string) bool {
+	return strings.EqualFold(strings.TrimSpace(id), "claude-haiku-5.5")
+}
+
+// dropped reports subscription-roster rows the account asks Evener not to
+// offer: a row the picker excludes and a policy-disabled row. Absent metadata
+// is neutral. The caller applies this only to the Copilot roster.
+func (m modelEntry) dropped() bool {
+	if m.ModelPickerEnabled != nil && !*m.ModelPickerEnabled {
+		return true
+	}
+	return strings.EqualFold(strings.TrimSpace(m.Policy.State), "disabled")
+}
+
+// endpoints returns the advertised endpoint list, or nil when the field is
+// absent. Presence matters on the Copilot roster: absent metadata falls back to
+// Chat, while an explicitly empty list advertises no supported protocol.
+func (m modelEntry) endpoints() []string {
+	if m.SupportedEndpoints == nil {
+		return nil
+	}
+	return *m.SupportedEndpoints
+}
+
+// advertisesEndpoint reports whether the roster advertises path for this row.
+func (m modelEntry) advertisesEndpoint(path string) bool {
+	for _, e := range m.endpoints() {
+		if strings.EqualFold(strings.TrimSpace(e), path) {
+			return true
+		}
+	}
+	return false
+}
+
+// route picks the wire protocol the Copilot account advertises for the row.
+// Claude rows prefer the live-proven Messages path, every other row prefers
+// Responses when advertised and otherwise Chat, and a row with no endpoint
+// metadata keeps the OpenAI-compatible default. An explicitly empty endpoint
+// list, or a list with no path Evener speaks, is unusable and is dropped by
+// the caller.
+func (m modelEntry) route() (string, bool) {
+	family := strings.ToLower(strings.TrimSpace(m.Capabilities.Family))
+	if strings.Contains(family, "claude") && m.advertisesEndpoint("/v1/messages") {
+		return registry.ProtocolAnthropic, true
+	}
+	endpoints := m.endpoints()
+	if endpoints == nil {
+		return registry.ProtocolOpenAIChat, true
+	}
+	if len(endpoints) == 0 {
+		return "", false
+	}
+	if m.advertisesEndpoint("/responses") {
+		return registry.ProtocolOpenAIResponses, true
+	}
+	if m.advertisesEndpoint("/chat/completions") {
+		return registry.ProtocolOpenAIChat, true
+	}
+	return "", false
+}
+
+// surfaceForFamily maps the account's model family to the registry's surface.
+func surfaceForFamily(family string) string {
+	switch {
+	case strings.Contains(strings.ToLower(family), "claude"):
+		return registry.SurfaceAnthropic
+	case strings.Contains(strings.ToLower(family), "gemini"):
+		return registry.SurfaceGoogle
+	case strings.Contains(strings.ToLower(family), "gpt"):
+		return registry.SurfaceOpenAI
+	}
+	return ""
 }
 
 // advertises reports whether the supported_parameters list names any of the
@@ -65,30 +166,86 @@ func advertises(params []string, names ...string) bool {
 }
 
 // row keeps only advertised facts (registry.ApplyLive keeps only those).
-func (m modelEntry) row() registry.Model {
+// copilot selects the subscription roster's policy: its advertised prices are
+// not billed as live dollars and only the live-proven image row may accept
+// images.
+func (m modelEntry) row(copilot bool) registry.Model {
 	caps := registry.Caps{}
-	if w := requestutil.FirstPositiveInt(m.ContextLength, m.ContextWindow); w > 0 {
+	if w := requestutil.FirstPositiveInt(m.ContextLength, m.ContextWindow, m.Capabilities.Limits.MaxPromptTokens); w > 0 {
 		caps.ContextWindow = new(w)
 	}
 	if m.MaxInputTokens > 0 {
 		caps.MaxInputTokens = new(m.MaxInputTokens)
 	}
+	if m.Capabilities.Limits.MaxPromptTokens > 0 {
+		caps.MaxInputTokens = new(m.Capabilities.Limits.MaxPromptTokens)
+	}
 	topProviderCap := requestutil.PositivePointerInt(m.TopProvider.MaxCompletionTokens)
-	if o := requestutil.FirstPositiveInt(topProviderCap, m.MaxCompletionTokens, m.MaxOutputTokens, m.Limits.MaxOutputTokens); o > 0 {
+	if o := requestutil.FirstPositiveInt(topProviderCap, m.MaxCompletionTokens, m.MaxOutputTokens, m.Capabilities.Limits.MaxOutputTokens, m.Limits.MaxOutputTokens); o > 0 {
 		caps.MaxOutputTokens = new(o)
 	}
 	if len(m.SupportedParameters) > 0 {
 		caps.Tools = new(advertises(m.SupportedParameters, "tools"))
 		caps.Reasoning = new(advertises(m.SupportedParameters, "reasoning", "reasoning_effort"))
 	}
+	if v := m.Capabilities.Supports.ToolCalls; v != nil {
+		caps.Tools = new(*v)
+	}
+	if v := m.Capabilities.Supports.Reasoning; v != nil {
+		caps.Reasoning = new(*v)
+	}
 	requestutil.ApplyListedReasoningFacts(&caps, m.Reasoning, m.SupportedReasoningLevels, m.DefaultReasoningLevel)
-	requestutil.ApplyGatewayFacts(&caps, m.Architecture, m.Capabilities, m.ClientCompat)
-	if in, ok := perTokenCostToPerMillion(m.Pricing.Prompt); ok {
-		if out, ok := perTokenCostToPerMillion(m.Pricing.Completion); ok {
-			caps.Cost = &registry.Cost{Input: in, Output: out}
+	requestutil.ApplyGatewayFacts(&caps, m.Architecture, m.Capabilities.GatewayCapabilities, m.ClientCompat)
+	// On the subscription's own roster, the live image proof outranks every
+	// shared gateway field. The account's supports.vision, the embedded
+	// gateway capabilities.vision, and the OpenAI-compatible
+	// architecture.input_modalities all advertise vision more broadly than the
+	// probe found working, so the modalities are settled only after all of
+	// that parsing: nothing but the proven row may accept images there.
+	if copilot {
+		wantsImages := false
+		for _, modality := range caps.InputModalities {
+			if strings.EqualFold(strings.TrimSpace(modality), "image") {
+				wantsImages = true
+			}
+		}
+		if v := m.Capabilities.Supports.Vision; v != nil && *v {
+			wantsImages = true
+		}
+		if provenImageModel(m.ID) && wantsImages {
+			caps.InputModalities = []string{"text", "image"}
+		} else {
+			// An explicit text-only row, never nil: a nil Cap leaves the
+			// bundled models.dev capabilities free to restore the vision an
+			// unproven row must not offer.
+			caps.InputModalities = []string{"text"}
 		}
 	}
-	return registry.Model{ID: m.ID, Caps: caps}
+	// An account roster's prices are not the dollars a live request bills, so
+	// they are never published as live cost.
+	if !copilot {
+		if in, ok := perTokenCostToPerMillion(m.Pricing.Prompt); ok {
+			if out, ok := perTokenCostToPerMillion(m.Pricing.Completion); ok {
+				caps.Cost = &registry.Cost{Input: in, Output: out}
+			}
+		}
+	}
+	model := registry.Model{ID: m.ID, Caps: caps}
+	model.Family = strings.TrimSpace(m.Capabilities.Family)
+	model.Surface = surfaceForFamily(model.Family)
+	if copilot {
+		if proto, ok := m.route(); ok {
+			model.Protocol = proto
+			if proto == registry.ProtocolAnthropic {
+				model.Transport = &registry.Transport{
+					Endpoint:            "/v1/messages",
+					StreamEndpoint:      "/v1/messages",
+					CountTokensEndpoint: registry.EndpointUnsupported,
+				}
+			}
+		}
+	}
+	return model
 }
 
 // ListModels implements llm.Protocol.
@@ -105,13 +262,27 @@ func (p *Protocol) ListModels(ctx context.Context, res registry.Resolved) ([]reg
 		if err := json.Unmarshal(r.Body, &payload); err != nil {
 			return nil, fmt.Errorf("models.list: %w", err)
 		}
+		// The Copilot subscription roster is selected by its transport auth
+		// scheme, never by a row's payload shape: an OpenAI-compatible gateway
+		// may publish the same endpoint, family, policy, pricing and vision
+		// fields and must keep its own behavior.
+		copilot := res.Transport.Auth == registry.AuthOAuthGitHubCopilot
 		// Rows decode independently; the guard below fails only a listing
 		// with no usable row, wrapping the row's own decode error.
 		entries, rowErr := requestutil.DecodeListingRows[modelEntry](payload.Data)
 		for _, e := range entries {
-			if e.ID != "" {
-				rows = append(rows, e.row())
+			if e.ID == "" {
+				continue
 			}
+			if copilot {
+				if e.dropped() {
+					continue
+				}
+				if _, ok := e.route(); !ok {
+					continue
+				}
+			}
+			rows = append(rows, e.row(copilot))
 		}
 		if rowErr != nil && len(rows) == 0 {
 			return nil, fmt.Errorf("models.list: %w", rowErr)

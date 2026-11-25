@@ -232,7 +232,7 @@ this order:
 | 1 | **Upstream snapshot** | `llm/registry/data/models.dev.json.gz`, the raw models.dev catalog, converted at load | `make refresh-model-catalog` |
 | 2 | **Upstream cache** | `<state-root>/catalog/models.dev.json` plus a sibling `models.dev.meta.json` (etag, fetched-at), same converter | background, every 24h |
 | 3 | **Curated overlay** | `llm/registry/data/providers_overlay.toml`, hand-maintained | ships with the release |
-| 4 | **User config** | `<config-root>/providers.toml`; `credentials.toml` is its sibling; OAuth records live at `auth/<instance>.json` under the state root | by the user, the hub, or `evener providers add`/`probe --write` |
+| 4 | **User config** | `<config-root>/providers.toml`; `credentials.toml` is its sibling; OAuth records live at `auth/<instance>.json` for Codex and `auth/github-copilot/<instance>.json` for Copilot under the state root | by the user, the hub, or `evener providers add`/`probe --write` |
 | live | **Live listing** | the instance's models endpoint | per process, cached |
 
 Layer 2 replaces layer 1 wholesale when its fetched-at timestamp is newer
@@ -255,6 +255,10 @@ the hub picker can still display the fallback. A successful response remains
 a live endpoint and credential signal even when every row is unusable and the
 visible IDs fall back. A caller-cancelled hub prefetch does not erase a
 previously healthy live snapshot.
+
+An authoritative live listing (the GitHub Copilot account roster) replaces the
+visible set instead of adding to it: bundled, curated and user rows the roster
+omits are not visible, and an empty roster lists nothing.
 
 For facts on a visible ID, the live layer sits between the curated overlay and
 the user config. It supplies `Tools`, `InputModalities`, `ContextWindow`,
@@ -334,6 +338,11 @@ inherited key variables from another scheme:
 - `bearer` / `header` — a credentials-store entry for the id, or one of the
   provider's own `APIKeyEnv` variables set.
 - `oauth-openai-codex` — the instance's OAuth record, and nothing else.
+- `oauth-github-copilot` — the instance's GitHub Copilot record at
+  `<state-root>/auth/github-copilot/<instance>.json`, and nothing else. A
+  record that exists but cannot launch (corrupt, wrong scheme, refresh
+  rejected, refresh expired) keeps the instance listed for inspection
+  without making it an automatic default.
 - `gcp-adc` — a credentials-store entry under the instance name (a credential
   JSON), `GOOGLE_APPLICATION_CREDENTIALS`, or the well-known ADC file (never
   a live metadata-server probe at load time).
@@ -346,12 +355,14 @@ providers need their location/region variables as well as their credential:
 
 Nothing else conjures an instance from the environment alone — `GITHUB_TOKEN`,
 `HF_TOKEN`, or `DATABRICKS_TOKEN` in a shell must not produce a
-`github-copilot`, `huggingface`, or `databricks` instance. A fresh install
-writes no starter `providers.toml`: the hub and CLI compute the same implicit
-set from the environment and the credentials store, and the file is created
-only on the first write (the hub's instances pane, or `evener providers
-add`); every write is dry-parsed first, so a config the registry couldn't
-read back is refused rather than written.
+`github-copilot`, `huggingface`, or `databricks` instance. `github-copilot`
+exists only while its own record exists; no ambient GitHub token substitutes
+for that record, and only a launchable record can become an automatic default.
+A fresh install writes no starter `providers.toml`: the hub and CLI compute
+the same implicit set from the environment and the credentials store, and the
+file is created only on the first write (the hub's instances pane, or `evener
+providers add`); every write is dry-parsed first, so a config the registry
+couldn't read back is refused rather than written.
 
 ### The default instance
 
@@ -400,6 +411,7 @@ openai/gpt-5.6` work on a machine with no key set.
 |---|---|---|---|
 | `anthropic` | `ANTHROPIC_API_KEY` | `ANTHROPIC_BASE_URL` (`https://api.anthropic.com/v1`) | surface `anthropic`, family `claude`; `default_model = claude-opus-5`, `cheap_model = claude-haiku-4-5` |
 | `openai-codex` | none — OAuth only, `api_key_env = []` so a bare `OPENAI_API_KEY` never yields this instance | `OPENAI_CODEX_BASE_URL` (`https://chatgpt.com/backend-api/codex`) | see [The Codex transport](#the-codex-transport) below; `default_model = gpt-5.6`, `cheap_model = gpt-5.6-luna` |
+| `github-copilot` | none — OAuth only, `api_key_env = []` so `GITHUB_TOKEN` and other ambient GitHub variables never yield this instance | `GITHUB_COPILOT_BASE_URL` (`https://api.githubcopilot.com`) | see [GitHub Copilot subscriptions](#github-copilot-subscriptions) below; ranks after `openai-codex` and before `openai`; `default_model = gpt-5.6-sol`, `cheap_model = claude-haiku-5.5` |
 | `openai` | `OPENAI_API_KEY` | `OPENAI_BASE_URL` (`https://api.openai.com/v1`) | surface `openai`; `default_model = gpt-5.6`, `cheap_model = gpt-4.1-nano`; `strict_tools = true` (strict JSON-schema tool calls on the native Responses path). A tool is certified for strict mode only when **every** node of its schema can be verified: every object explicitly sets `additionalProperties: false` (an omission is implicitly open, and closing it would forbid every key the object never declared), every object's `required` names only keys it declares, and every node states a constraint at all — an empty schema, an array without `items`, and an open object with no declared properties all admit values the projection cannot bound, so all are refused; so is a typeless node whose only keywords annotate it (`description`, `title`) or bound one type (`minLength: 0`, `pattern: ""`), because such a node still accepts every value of every other type. Root-level `anyOf` falls back to non-strict per OpenAI's root-schema rule, while a property-level `anyOf` qualifies for strict mode when every branch is strict-expressible and the emitted schema satisfies the resolved route's requirements (on Codex Responses Lite, where every node requires an explicit `type`, unions that need a container or multi-type enclosing `type` fall back to `strict: false` with that enclosing type stated). A tool with a documented-optional argument is also sent non-strict, because strict mode would make that argument mandatory. So is a shape the projection cannot verify: a nullable `["object", "null"]` type list that is not already strict-valid, anything behind a `$ref` or `$defs`, a `properties` on a node the rewrite does not treat as an object — only a literal `type: "object"` is closed, and any other node's declared properties reach the provider unchecked — and a schema-valued `additionalProperties` whose nested object leaves one of its own properties optional, which strict enforcement still validates. Every refused tool keeps its advertised schema and is sent with `strict: false` on any route whose catalog states the capability (including `strict_tools = false`, because the native endpoint normalizes an omitted flag into strict enforcement), with one exception that changes no accepted value: a typeless node whose closed value set (`enum` or `const`) or union (`anyOf`/`oneOf`) implies a guaranteed type gets that type stated, because the provider requires an explicit type on every node even when strict enforcement is off, and one typeless node rejects the whole request |
 | `google` | `GEMINI_API_KEY`, then `GOOGLE_API_KEY` | `GOOGLE_BASE_URL` (`https://generativelanguage.googleapis.com/v1beta`) | surface `google`; Interactions API (`POST /interactions`); `default_model = gemini-3.8-flash`, `cheap_model = gemini-3.5-flash-lite`, `web_search = false` by default |
 | `groq` | `GROQ_API_KEY` | `GROQ_BASE_URL` (`https://api.groq.com/openai/v1`) | `default_model = openai/gpt-oss-120b`, `cheap_model = llama-3.1-8b-instant` |
@@ -678,7 +690,8 @@ Load rules, enforced with errors that name the instance and key:
   `thinking_levels` or `compat` from the old schema is never silently
   ignored.
 - `protocol` must be registered; `surface` one of the four values; `auth` ∈
-  `bearer | optional-bearer | header | none | gcp-adc | oauth-openai-codex`.
+  `bearer | optional-bearer | header | none | gcp-adc | oauth-openai-codex |
+  oauth-github-copilot`.
 - `fields` keys must be in the resolved protocol's prunable set (a typo
   guard); `thinking_format`, `thinking_shape`, `max_tokens_field`,
   `cache_control`, `reasoning_field`, `host_rule`, `image_detail` are
@@ -733,7 +746,9 @@ The current schema rejects `type`, `api_style`, `quirks`, `[instances.*]`, and
    `ANTHROPIC_API_KEY` through the name layer — and, symmetrically, an
    instance named `togetherai` does not gain a `TOGETHERAI_API_KEY` fallback
    just because its name matches the registry id; see the table above)
-5. `oauth-openai-codex` ignores all of the above and uses its OAuth record.
+5. `oauth-openai-codex` and `oauth-github-copilot` ignore all of the above and
+   use their own OAuth records: `auth/<instance>.json` and
+   `auth/github-copilot/<instance>.json` respectively.
    `gcp-adc` consults only step 3 — a credential JSON stored under the
    instance name — and otherwise application-default credentials (the
    `GOOGLE_APPLICATION_CREDENTIALS` variable or the well-known file); it
@@ -993,6 +1008,117 @@ The selectable reasoning efforts are `low`, `medium`, `high`, `xhigh`, and
 but Evener omits it: it is a
 [Codex delegation preset](https://github.com/openai/codex/blob/459a79eb85400af759e9220c7bafb4429ae07516/codex-rs/core/src/client.rs#L186),
 not an API effort. Astra does not change the instance's default or cheap model.
+
+## GitHub Copilot subscriptions
+
+`github-copilot` is a curated implicit instance for a GitHub Copilot
+subscription. It reads one OAuth record and nothing else: `api_key_env` is
+empty, so `GITHUB_TOKEN`, `GH_TOKEN`, `COPILOT_GITHUB_TOKEN`, or a personal
+access token never authenticates it. A missing record hides the instance; an
+existing record that cannot launch (corrupt, wrong scheme, refresh rejected,
+refresh expired) stays listed in Settings without becoming an automatic
+default. An explicit `default = "github-copilot"` stays authoritative and
+reports the sign-in warning. The instance ranks after `openai-codex` and
+before `openai`.
+
+### Sign-in and records
+
+Sign in on the execution host. Login is device-only and needs no client
+secret:
+
+```sh
+evener github-copilot login
+evener github-copilot status
+evener github-copilot logout
+```
+
+Each command accepts `--state-dir` to override the state root and `--instance`
+to name an instance other than `github-copilot`. `--dir` is accepted as a
+working-directory hint; it does not change the state root. `login` prints the
+verification URL and user code, then exits when GitHub authorizes it. `status`
+is local and makes no network request. `logout` deletes the local record,
+including a corrupt one; it does not revoke the authorization remotely.
+
+One record per instance lives at
+`<state-root>/auth/github-copilot/<instance>.json`, written with mode 0600
+under the `oauth-github-copilot` scheme. That namespace is separate from the
+Codex records at `auth/<instance>.json`: a Copilot record cannot authenticate
+Codex and a Codex record cannot authenticate Copilot. A custom Copilot
+instance needs its own login and its own record.
+
+The record holds the GitHub access token plus the short-lived Copilot session
+token. Evener renews the session token five minutes before it expires. When
+GitHub returns an expiring access token, Evener refreshes that five minutes
+early too and keeps the rotated pair. Login, refresh, rejection handling, and
+logout take a per-record inter-process lock; a refresh re-reads the record and
+saves only while the generation it read is still current. Two processes
+therefore redeem a rotating token once, and a stale writer cannot overwrite a
+newer login or resurrect a logged-out record. A request that fails
+authentication retries once, and only when the stored record generation
+changed under it; a stream already exposed is never replayed.
+
+Sign-in requests `read:user` for a github.com account and nothing broader.
+The CLI and the hub read and write the same record, so either one's sign-in
+serves the other. A running hub adopts an external login, logout, or account
+switch on its notice sweep, reloads the registry, drops only that instance's
+live model rows, and emits one `evener/auth/updated` notice, all without a
+restart; a token renewal under the same account is quiet. Renaming or removing
+a custom Copilot instance moves or deletes its record.
+
+### Account model discovery
+
+The account's live roster is authoritative for this instance. Evener reads
+each row's `supported_endpoints`, `model_picker_enabled`, policy state,
+family, limits, and tool/reasoning/vision capabilities. Rows the account hides
+from its picker or disables by policy are dropped before listing. Each
+remaining row selects one protocol: an advertised `/v1/messages` on a
+Claude-family row uses the `anthropic` protocol at `/v1/messages` with count
+tokens unsupported, otherwise `/responses` uses `openai-responses`, otherwise
+`/chat/completions` uses `openai-chat`. A row with no endpoint metadata keeps
+the Chat Completions default; a row whose endpoints Evener cannot speak is
+dropped. A user-authored protocol or transport override on the row still
+wins.
+
+An authoritative roster replaces the bundled catalog: a model the roster
+omits is not offered and a session refuses to start on it, and an empty,
+all-unsupported, or all-disabled roster lists no models. A successful model
+list proves that listing request only. It does not prove generation access,
+quota, billing state, or that every request to a listed model succeeds.
+
+Images are enabled only for the exact model `claude-haiku-5.5`, and only when
+the account advertises vision for it. Every other row is text-only even when
+the account advertises vision; `claude-haiku-5.5` is the image path proven
+live for this provider.
+
+Copilot rows carry no monetary `Cost`, whether from the bundled catalog or
+the account roster. Evener therefore shows no dollar price or dollar-cost
+estimate for subscription usage; an absent price is not a zero price. Plan
+and quota are separate facts, and a model's presence in the roster does not
+promise every generation or unlimited quota.
+
+The Responses route always sends full conversation history. Evener clears
+`store`, `previous_response_id`, and `conversation` on a Copilot row, so a
+public OpenAI continuation anchor never reaches the subscription endpoint.
+
+### Compatibility boundary
+
+Evener speaks the Copilot HTTP API directly. It uses the public Copilot OAuth
+client identity that the Pi coding agent uses, with the VS Code-compatible
+editor and integration headers that identity needs. This is a temporary
+compatibility path, not a GitHub partnership or approval. Evener uses no
+Copilot SDK or CLI, and the raw inference contract behind it is not a stable
+public contract.
+
+The provider serves github.com accounts through the default endpoint or
+`GITHUB_COPILOT_BASE_URL`. It does not support GitHub Enterprise Server,
+personal-access-token login, account-discovered API hosts, Copilot's `/auto`
+router, model-policy writes, or remote OAuth revocation.
+
+An empty or unsupported roster cannot complete guided Copilot setup: the
+check reports that the credentials work but the account offers no models
+Evener can use, and Copilot gets no "continue without verification" action.
+Signing in again, or with an account whose plan offers a supported model,
+returns the instance to useful operation.
 
 ## The fields denylist and `evener models inspect`
 

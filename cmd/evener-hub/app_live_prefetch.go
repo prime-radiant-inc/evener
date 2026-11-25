@@ -11,10 +11,6 @@ import (
 	"primeradiant.com/evener/llm/registry"
 )
 
-// instanceLiveListTimeout bounds one instance's live /models fetch, the
-// same per-instance budget launch-check and the model picker use.
-const instanceLiveListTimeout = llm.LiveModelListTimeout
-
 // fetchInstanceLive fetches one instance's live listing into the holder,
 // so later InstanceModels calls include the live ids. It is the shared
 // core behind the manual refresh RPC and the background prefetch below.
@@ -23,9 +19,11 @@ const instanceLiveListTimeout = llm.LiveModelListTimeout
 // minted at request start — is still current. A Reload landing mid-fetch
 // swaps in a fresh object (whose carryLive only knows the before
 // snapshot); the re-apply carries the listing forward instead of losing
-// it on the detached registry. An unusable provider result publishes an
-// empty snapshot so registry reads take the static fallback. Caller
-// cancellation leaves the last healthy snapshot untouched.
+// it on the detached registry. A failed fetch publishes the non-authoritative
+// static fallback, so a transient network or decode error never records an
+// account-owned roster. A successful listing with no usable rows publishes the
+// account's verdict, which hides that fallback. Caller cancellation leaves the
+// last healthy snapshot untouched.
 func fetchInstanceLive(ctx context.Context, holder *hubcore.ProviderRegistry, auth *hubAuthController, name string) error {
 	// The listing sends the instance's credential, so what the provider
 	// answers is recorded as a probe of it (#3539). The probe begins before
@@ -43,40 +41,44 @@ func fetchInstanceLive(ctx context.Context, holder *hubcore.ProviderRegistry, au
 		// live listing here, and the holder keeps its last-known rows.
 		return nil
 	}
+	authoritative := reg.LiveListingAuthoritative(name)
 	// Call-scoped authenticator: this fetch's requests bind a Codex
 	// value carrying reg's state root, so no global rewire — from any
 	// concurrent fetch, probe, or model-list RPC — can move the
 	// records under it. No lock is held across the request: fetches
 	// for different instances run fully concurrently again.
-	fetchCtx := withScopedCodexAuth(ctx, reg)
+	fetchCtx := withScopedOAuthAuth(ctx, reg)
 	rows, live, usable, err := fetchInstanceLiveWith(fetchCtx, newLiveClient(reg), name)
 	auth.settleCredentialProbe(probe, llm.ModelListing{Live: live, Usable: usable}, err)
 	if err != nil {
 		if ctx.Err() == nil {
+			// A failure grants no authority: publish the preexisting static
+			// fallback instead of an authoritative empty roster, which would
+			// hide the catalog and be recorded for reloads to restore.
 			holder.ReapplyLive(tok, name, id, nil)
 		}
 		return err
 	}
 	if !usable {
-		holder.ReapplyLive(tok, name, id, nil)
+		holder.ReapplyLiveListing(tok, name, id, registry.LiveListing{Authoritative: authoritative})
 		return nil
 	}
-	holder.ReapplyLive(tok, name, id, rows)
+	holder.ReapplyLiveListing(tok, name, id, registry.LiveListing{Rows: rows, Authoritative: authoritative})
 	return nil
 }
 
-// withScopedCodexAuth binds the call-scoped Codex authenticator for one
-// registry snapshot: every hub path that issues a registry-client request
-// — prefetch fetches, the manual refresh, the credential-test probe, the
-// model-list loader — carries it, so the request reads the OAuth record
-// under THAT registry's state root instead of whatever root the
-// process-global Codex happens to hold. A nil registry (a bare client in
-// a test) keeps the global lookup: there is no root to scope to.
-func withScopedCodexAuth(ctx context.Context, reg *registry.Registry) context.Context {
+// withScopedOAuthAuth binds the call-scoped Codex and Copilot authenticators
+// for one registry snapshot: every hub path that issues a registry-client
+// request — prefetch fetches, the manual refresh, the credential-test probe,
+// the model-list loader — carries them, so each OAuth scheme reads its record
+// under THAT registry's state root. A nil registry (a bare client in a test)
+// keeps the global lookup: there is no root to scope to.
+func withScopedOAuthAuth(ctx context.Context, reg *registry.Registry) context.Context {
 	if reg == nil {
 		return ctx
 	}
-	return llm.WithAuthenticatorOverride(ctx, tokenauth.ScopedCodex(reg.StateRoot()))
+	ctx = llm.WithScopedAuthenticator(ctx, registry.AuthOAuthOpenAICodex, tokenauth.ScopedCodex(reg.StateRoot()))
+	return llm.WithScopedAuthenticator(ctx, registry.AuthOAuthGitHubCopilot, tokenauth.ScopedCopilot(reg.StateRoot()))
 }
 
 // LiveRegistryClient builds a registry client for one fetch without
@@ -104,7 +106,7 @@ func newLiveClient(reg *registry.Registry) *llm.Client {
 // token-validated path. live says the endpoint answered; usable says
 // the rows may become the live-authoritative catalog.
 func fetchInstanceLiveWith(ctx context.Context, client *llm.Client, name string) (rows []registry.Model, live, usable bool, err error) {
-	fetchCtx, cancel := context.WithTimeout(ctx, instanceLiveListTimeout)
+	fetchCtx, cancel := context.WithTimeout(ctx, llm.LiveModelListTimeout)
 	defer cancel()
 	rows, live, err = client.ListLive(fetchCtx, name)
 	if err != nil || !live {

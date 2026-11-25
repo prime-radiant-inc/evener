@@ -583,7 +583,9 @@ type Session struct {
 	turnStartedAt                 time.Time // wall-clock instant the current turn began (stamped at the processing-begin transition); zero when no turn is in flight. Guarded by mu, like workMillis.
 	lastTurnEndedAt               time.Time // when the last turn ended (stamped by endTurnLocked); seeded from SessionMeta on restore, mapped out via Meta(). Guarded by mu, like workMillis.
 	lastMessage                   string    // the opening of the last agent message the session wrote (S1d, noteAgentMessageLocked); seeded from SessionMeta on restore, mapped out via Meta(). Guarded by mu.
-	turnHistoryBaseline           int       // history index of the first turn belonging to the in-flight turn (captured at round 0, adjusted for mid-turn compaction). Turns at or after it are exempt from N4 replay-provenance filtering (fallback rounds keep today's replay semantics). Guarded by mu.
+	turnHistoryBaseline           int       // history index one past the opening user turn of the in-flight turn (captured when that turn became durable, or at round 0 for a turn that appended none; adjusted for mid-turn compaction). Turns at or after it are exempt from N4 replay-provenance filtering (fallback rounds keep today's replay semantics). Guarded by mu.
+	turnBaselineCaptured          bool      // the opening user turn captured turnHistoryBaseline when it became durable, before UserPromptSubmit could admit steering; round zero keeps that boundary instead of overwriting it with one that already includes the steer. Cleared at each input's start. Guarded by mu.
+	turnInputCarriesImages        bool      // the input the in-flight turn accepted carried image attachments. Their bytes stay on the outbound request even for an image-blind target, so the provider can answer them with its actionable refusal; every older user image is projected out for such a target (#7629). Guarded by mu.
 	history                       []schema.Turn
 	historyRevision               int           // bumped by every publishFoldedHistory publish and every other non-append history mutation (orphaned-tool-result repair, attention-turn replace/remove — see bumpHistoryRevisionLocked), never by an ordinary append. Lets a fold snapshot detect whether a competing publish OR mutation already happened since it started, distinct from the ordinary concurrent appends publishFoldedHistory's merge-back already tolerates. Guarded by mu.
 	persistedAppendLog            []schema.Turn // persisted transcript forms of the append/write pairs since the last fold publication, in append order — the exact forms publishFoldTransaction re-appends after its markers. Pruned wholesale by each successful publication. Guarded by mu.
@@ -3458,7 +3460,7 @@ func (s *Session) appendEnvironmentContextWithPlacement(publishEvent, beforeTrai
 
 	// Persist the identity with the entry. Model history can be compacted, so
 	// its length cannot name a durable transcript turn.
-	turn := schema.NewTurn(schema.TurnEnvironment, llm.User(block))
+	turn := schema.NewTurn(schema.TurnEnvironment, llm.UserMachinery(block))
 	turn.StableTurnID = "turn_environment_" + ulid.Make().String()
 	// The environment tracker is a durability owner: it may only claim the
 	// model saw a turn once that turn is a record, or a restart renders every

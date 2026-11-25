@@ -65,6 +65,16 @@ const REMOTE_CODEX_ROW = instance({
   authModes: ["oauth"],
 });
 const CODEX_HOST_LIST = { instances: [REMOTE_CODEX_ROW], availableProviders: [] };
+// The host's own Copilot subscription instance: the other device-code scheme
+// the hub accepts ("Sign in on host", component 07d).
+const REMOTE_COPILOT_ROW = instance({
+  name: "github-copilot",
+  providerId: "github-copilot",
+  protocol: "openai-chat",
+  auth: "oauth-github-copilot",
+  authModes: ["oauth"],
+});
+const COPILOT_HOST_LIST = { instances: [REMOTE_COPILOT_ROW], availableProviders: [] };
 const REMOTE_DEVICE_START = {
   provider: "codex",
   flowId: "flow-remote",
@@ -528,8 +538,8 @@ test("an attachment transition retries a failed remote read", async () => {
 });
 
 // ---------------------------------------------------------------------------
-// Component 07d: "Sign in on host" - a remote Codex instance's device-code
-// sign-in, driven on the SELECTED host through evener/host/request.
+// Component 07d: "Sign in on host" - a remote device-code instance's sign-in
+// (Codex or Copilot), driven on the SELECTED host through evener/host/request.
 // ---------------------------------------------------------------------------
 
 test("offers 'Sign in on host' for a remote host's Codex instance, and never for this hub", async () => {
@@ -609,6 +619,49 @@ test("'Sign in on host' drives device/start and device/poll through evener/host/
   const polls = forwardedMethodCalls(fake, "evener/auth/device/poll").length;
   await act(() => vi.advanceTimersByTimeAsync(1500));
   expect(forwardedMethodCalls(fake, "evener/auth/device/poll")).toHaveLength(polls);
+});
+
+test("offers and drives 'Sign in on host' for a remote Copilot instance through the same host RPCs", async () => {
+  const fake = connectReadyFakeClient();
+  fake.on("evener/instance/list", () => CONTROLLER_LIST);
+  fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
+  fake.on("evener/host/request", (params) => {
+    if (params.method === "evener/instance/list") return COPILOT_HOST_LIST;
+    if (params.method === "evener/auth/device/start")
+      return {
+        ...REMOTE_DEVICE_START,
+        provider: "github-copilot",
+        verificationUrl: "https://github.com/login/device",
+      };
+    if (params.method === "evener/auth/device/poll") return REMOTE_POLL_AUTHORIZED;
+    throw new Error(`unexpected forwarded method ${params.method}`);
+  });
+
+  const select = await renderSettledScope();
+  const user = setupUser();
+  await screen.findByRole("option", { name: "beta" });
+  await user.selectOptions(select, "beta");
+  await user.click(await screen.findByRole("button", { name: "Sign in on host to github-copilot" }));
+
+  await waitFor(() => {
+    expect(forwardedMethodCalls(fake, "evener/auth/device/start")).toEqual([
+      { host: "beta", method: "evener/auth/device/start", params: { provider: "github-copilot" } },
+    ]);
+  });
+  expect(await screen.findByText("REMOTE-CODE")).toBeTruthy();
+  expect(screen.getByText("https://github.com/login/device")).toBeTruthy();
+
+  await waitFor(
+    () => {
+      expect(forwardedMethodCalls(fake, "evener/auth/device/poll")).toContainEqual({
+        host: "beta",
+        method: "evener/auth/device/poll",
+        params: { provider: "github-copilot", flowId: "flow-remote" },
+      });
+    },
+    { timeout: 3000 },
+  );
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull(), { timeout: 3000 });
 });
 
 // The fallback refusal names the thing that actually completes the sign-in:

@@ -113,3 +113,93 @@ func TestAuth_DeviceStart_KeepsFlowsInsideTheWindow(t *testing.T) {
 		}
 	}
 }
+
+// TestAuth_CopilotDeviceStartSweepsAnExpiredFlow is the sweep's Copilot half:
+// the same reaper bounds Copilot device codes too.
+func TestAuth_CopilotDeviceStartSweepsAnExpiredFlow(t *testing.T) {
+	ctrl, _, now := newCopilotDeviceTestController(t, copilotDeviceInstanceToml)
+	startA := startCopilotDeviceFlow(t, ctrl, "work")
+	*now = now.Add(hubAuthFlowTTL + time.Minute)
+	startB := startCopilotDeviceFlow(t, ctrl, "work")
+
+	got := deviceFlowIDs(ctrl)
+	if len(got) != 1 || !got[startB] {
+		t.Fatalf("deviceFlows = %v, want only the new flow %q: the expired Copilot flow %q must be swept",
+			got, startB, startA)
+	}
+}
+
+// TestAuth_CopilotDevicePollHonorsNextPollAt pins the local pace: before
+// NextPollAt a poll answers pending without touching GitHub, and once the
+// deadline passes it polls once.
+func TestAuth_CopilotDevicePollHonorsNextPollAt(t *testing.T) {
+	ctrl, transport, now := newCopilotDeviceTestController(t, copilotDeviceInstanceToml)
+	flowID := startCopilotDeviceFlow(t, ctrl, "work")
+
+	poll := func() appwire.AuthDevicePollResponse {
+		t.Helper()
+		resp, err := ctrl.DevicePoll(context.Background(), appwire.AuthDevicePollParams{Provider: "work", FlowID: flowID})
+		if err != nil {
+			t.Fatalf("DevicePoll: %v", err)
+		}
+		return resp
+	}
+	if got := poll(); got.State != "pending" {
+		t.Fatalf("poll at start = %+v, want pending", got)
+	}
+	*now = now.Add(4 * time.Second)
+	if got := poll(); got.State != "pending" {
+		t.Fatalf("poll before NextPollAt = %+v, want pending", got)
+	}
+	if calls := transport.callCount("/login/oauth/access_token"); calls != 0 {
+		t.Fatalf("local polls made %d GitHub calls, want 0", calls)
+	}
+	*now = now.Add(time.Second)
+	if got := poll(); got.State != "pending" {
+		t.Fatalf("poll at NextPollAt = %+v, want pending", got)
+	}
+	if calls := transport.callCount("/login/oauth/access_token"); calls != 1 {
+		t.Fatalf("poll at NextPollAt made %d GitHub calls, want 1", calls)
+	}
+}
+
+// TestAuth_CopilotDevicePollSlowDownAdvancesNextPollAt pins slow_down: the
+// interval GitHub returns moves the next outbound poll out, so the hub stops
+// hammering the endpoint at a pace GitHub asked it to leave.
+func TestAuth_CopilotDevicePollSlowDownAdvancesNextPollAt(t *testing.T) {
+	ctrl, transport, now := newCopilotDeviceTestController(t, copilotDeviceInstanceToml)
+	transport.polls = []string{`{"error":"slow_down"}`, `{"error":"authorization_pending"}`}
+	flowID := startCopilotDeviceFlow(t, ctrl, "work")
+
+	*now = now.Add(5 * time.Second)
+	if resp, err := ctrl.DevicePoll(context.Background(), appwire.AuthDevicePollParams{Provider: "work", FlowID: flowID}); err != nil || resp.State != "pending" {
+		t.Fatalf("first poll = %+v err=%v, want pending", resp, err)
+	}
+	*now = now.Add(5 * time.Second)
+	if resp, err := ctrl.DevicePoll(context.Background(), appwire.AuthDevicePollParams{Provider: "work", FlowID: flowID}); err != nil || resp.State != "pending" {
+		t.Fatalf("poll inside slow_down's interval = %+v err=%v, want pending", resp, err)
+	}
+	if calls := transport.callCount("/login/oauth/access_token"); calls != 1 {
+		t.Fatalf("GitHub calls after slow_down = %d, want 1: the next poll must wait out the returned interval", calls)
+	}
+	*now = now.Add(5 * time.Second)
+	if resp, err := ctrl.DevicePoll(context.Background(), appwire.AuthDevicePollParams{Provider: "work", FlowID: flowID}); err != nil || resp.State != "pending" {
+		t.Fatalf("poll at slow_down's deadline = %+v err=%v, want pending", resp, err)
+	}
+	if calls := transport.callCount("/login/oauth/access_token"); calls != 2 {
+		t.Fatalf("GitHub calls at slow_down's deadline = %d, want 2", calls)
+	}
+}
+
+// startCopilotDeviceFlow starts one Copilot device flow and returns its id.
+func startCopilotDeviceFlow(t *testing.T, ctrl *hubAuthController, provider string) string {
+	t.Helper()
+	start, err := ctrl.DeviceStart(context.Background(), appwire.AuthDeviceStartParams{Provider: provider})
+	if err != nil {
+		t.Fatalf("DeviceStart(%s): %v", provider, err)
+	}
+	if start.Fallback || start.FlowID == "" {
+		t.Fatalf("DeviceStart(%s) = %+v, want a device flow", provider, start)
+	}
+	return start.FlowID
+}

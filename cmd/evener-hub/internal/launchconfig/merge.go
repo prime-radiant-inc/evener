@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/internal/commitprovenance"
 )
 
@@ -16,6 +17,35 @@ var layerOrder = []LayerName{LayerGlobal, LayerRepo, LayerProject, LayerLaunch}
 // store, never through a launch layer that might get committed.
 var credentialBlocklistSuffixes = []string{
 	"API_KEY", "_KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL",
+}
+
+// projectLayerRefusedEnvKeys maps each env key the checkout-controlled project
+// layer may not set to the part of provider resolution it would choose. A
+// checkout must not choose where the launch's credential goes or which
+// provider file defines every configured endpoint. The global layer, a trusted
+// repo layer, the per-launch overrides, and the parent process still set them.
+var projectLayerRefusedEnvKeys = map[string]string{
+	"GITHUB_COPILOT_BASE_URL":          "the GitHub Copilot credential destination",
+	envvars.EVENERProvidersConfig.Name: "the provider configuration, and with it every configured provider endpoint",
+}
+
+// projectLayerRefusedEnvKey reports the resolution a blocked project-layer key
+// would choose.
+func projectLayerRefusedEnvKey(key string) (string, bool) {
+	for blocked, purpose := range projectLayerRefusedEnvKeys {
+		if strings.EqualFold(key, blocked) {
+			return purpose, true
+		}
+	}
+	return "", false
+}
+
+// validEnvName reports whether key can name a child environment variable. The
+// environment format splits each entry at its first '=', so a key containing
+// '=' would reach the child under a different name than the one checked here;
+// exec refuses NUL outright.
+func validEnvName(key string) bool {
+	return key != "" && !strings.ContainsAny(key, "=\x00")
 }
 
 // sandboxModeIsOff reports whether a launch-config sandbox mode denotes no
@@ -203,12 +233,28 @@ func mergeLayers(layers map[LayerName]Layer) (Resolved, []Diagnostic) {
 		}
 		// Env map: last-write-wins per key, with credential blocklist.
 		for k, v := range l.Env {
+			if name == LayerProject && !validEnvName(k) {
+				diags = append(diags, Diagnostic{
+					Layer: name, Field: EnvField + "." + k,
+					Message: fmt.Sprintf("env name %q is not a valid environment variable name; the child would receive a different name", k),
+				})
+				continue
+			}
 			if isCredentialEnvKey(k) {
 				diags = append(diags, Diagnostic{
 					Layer: name, Field: EnvField + "." + k,
 					Message: fmt.Sprintf("env key %q looks like a credential; route through credentials store", k),
 				})
 				continue
+			}
+			if name == LayerProject {
+				if purpose, refused := projectLayerRefusedEnvKey(k); refused {
+					diags = append(diags, Diagnostic{
+						Layer: name, Field: EnvField + "." + k,
+						Message: fmt.Sprintf("env key %q is not honored from the project layer: a checkout-controlled file must not choose %s", k, purpose),
+					})
+					continue
+				}
 			}
 			eff.Env[k] = v
 		}

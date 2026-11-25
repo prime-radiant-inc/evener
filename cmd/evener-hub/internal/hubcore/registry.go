@@ -33,8 +33,9 @@ type RegistryLoader func(extra ...registry.Option) (*registry.Registry, *credent
 // instance now pointing at endpoint Y, however the swap happened
 // (remove/re-add, rename, re-point, failed-reload recovery).
 type liveSnapshot struct {
-	identity string
-	rows     []registry.Model
+	identity      string
+	rows          []registry.Model
+	authoritative bool
 }
 
 // LiveToken is what one fetch holds from begin to publish: the holder
@@ -190,13 +191,13 @@ func (h *ProviderRegistry) Reload() error {
 		if newIDs[instance] != snap.identity {
 			continue
 		}
-		r.ApplyLive(instance, snap.rows)
+		r.ApplyLiveListing(instance, registry.LiveListing{Rows: snap.rows, Authoritative: snap.authoritative})
 	}
-	for instance, rows := range r.SnapshotLive() {
+	for instance, listing := range r.SnapshotLive() {
 		if _, ok := r.Instance(instance); !ok {
 			continue
 		}
-		h.noteLive(instance, newIDs[instance], rows)
+		h.noteLive(instance, newIDs[instance], listing)
 	}
 	// Drop snapshots for names the fresh registry no longer knows, or
 	// whose identity changed: a later re-add under the same name must
@@ -273,7 +274,7 @@ func carryLive(old, r *registry.Registry, recreated map[string]bool, oldIDs, new
 	if old == nil || r == nil {
 		return
 	}
-	for instance, rows := range old.SnapshotLive() {
+	for instance, listing := range old.SnapshotLive() {
 		if recreated[instance] {
 			continue
 		}
@@ -286,7 +287,7 @@ func carryLive(old, r *registry.Registry, recreated map[string]bool, oldIDs, new
 		if oldIDs[instance] != newIDs[instance] {
 			continue
 		}
-		r.ApplyLive(instance, rows)
+		r.ApplyLiveListing(instance, listing)
 	}
 }
 
@@ -630,7 +631,9 @@ func (h *ProviderRegistry) BeginLiveFetchReg(instance string) (*registry.Registr
 // registry. Rows are the fetch's raw live snapshot, so advertised
 // capability facts survive the round trip the way the direct ApplyLive
 // inside the fetch did. Nil rows publish static fallback for a provider
-// failure, unsupported endpoint, or otherwise unusable listing. The apply
+// failure, unsupported endpoint, or otherwise unusable listing;
+// ReapplyLiveListing instead carries the account-owned verdict, so a
+// Copilot roster with no usable rows hides that fallback. The apply
 // lands only above lastApplied: a slower fetch that returns after a newer
 // published outcome holds a lower token and is discarded. A caller-cancelled
 // fetch never reaches here, so it leaves lastApplied untouched and an older
@@ -639,6 +642,13 @@ func (h *ProviderRegistry) BeginLiveFetchReg(instance string) (*registry.Registr
 // holds a token from an older generation and still applies its listing
 // forward, which is the carry-forward the refresh path needs.
 func (h *ProviderRegistry) ReapplyLive(tok LiveToken, instance, identity string, rows []registry.Model) {
+	h.ReapplyLiveListing(tok, instance, identity, registry.LiveListing{Rows: rows})
+}
+
+// ReapplyLiveListing is ReapplyLive for a listing that also carries the
+// account-owned catalog verdict, so a Copilot empty roster survives the
+// publish and the last-good snapshot records it.
+func (h *ProviderRegistry) ReapplyLiveListing(tok LiveToken, instance, identity string, listing registry.LiveListing) {
 	// The identity check below reads credential material, so it is taken
 	// outside the lock and re-judged if a Reload moves the snapshot in
 	// between: only the install itself holds the lock.
@@ -680,8 +690,8 @@ func (h *ProviderRegistry) ReapplyLive(tok LiveToken, instance, identity string,
 			h.lastApplied = map[string]uint64{}
 		}
 		h.lastApplied[instance] = tok.order
-		reg.ApplyLive(instance, rows)
-		h.noteLive(instance, identity, rows)
+		reg.ApplyLiveListing(instance, listing)
+		h.noteLive(instance, identity, listing)
 		h.generation++
 		h.mu.Unlock()
 		return
@@ -692,13 +702,13 @@ func (h *ProviderRegistry) ReapplyLive(tok LiveToken, instance, identity string,
 // instance: every path that lands a listing — ReapplyLive and the
 // successful Reload below — reports here, so failed-reload recovery
 // always has the freshest rows to restore.
-func (h *ProviderRegistry) noteLive(instance, identity string, rows []registry.Model) {
+func (h *ProviderRegistry) noteLive(instance, identity string, listing registry.LiveListing) {
 	if h.lastGoodLive == nil {
 		h.lastGoodLive = map[string]liveSnapshot{}
 	}
-	cp := make([]registry.Model, len(rows))
-	copy(cp, rows)
-	h.lastGoodLive[instance] = liveSnapshot{identity: identity, rows: cp}
+	cp := make([]registry.Model, len(listing.Rows))
+	copy(cp, listing.Rows)
+	h.lastGoodLive[instance] = liveSnapshot{identity: identity, rows: cp, authoritative: listing.Authoritative}
 }
 
 // LoadError is the error from the last Reload, or nil when it succeeded.

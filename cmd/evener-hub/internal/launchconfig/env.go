@@ -1,6 +1,10 @@
 package launchconfig
 
-import "primeradiant.com/evener/envvars"
+import (
+	"maps"
+
+	"primeradiant.com/evener/envvars"
+)
 
 // EnvInputs bundles everything ToEnv needs.
 type EnvInputs struct {
@@ -21,6 +25,12 @@ type EnvInputs struct {
 	// resolves credentials out of the same credentials.toml the hub's pane
 	// writes.
 	CredentialsPath string
+	// ProjectEnvExclusions names child environment variables that feed
+	// provider endpoint resolution. The checkout-controlled project layer
+	// may not choose them: its value is dropped, and the global or trusted
+	// repo layer's value (or a per-launch override) stands instead. Every
+	// other project key is preserved.
+	ProjectEnvExclusions []string
 }
 
 // ToEnv produces the env slice for the spawned `evener serve`. Order of
@@ -56,5 +66,54 @@ func ToEnv(in EnvInputs) []string {
 
 	// 1. Per-launch env: applied last so it wins, in sorted key order
 	//    for determinism.
-	return envvars.ApplyOverlay(out, in.Resolved.Effective.Env)
+	return envvars.ApplyOverlay(out, endpointEnvWithoutProjectChoices(in.Resolved, in.ProjectEnvExclusions))
+}
+
+// endpointEnvWithoutProjectChoices returns the effective env with the project
+// layer's values for excluded endpoint inputs removed. A per-launch value
+// still wins, and the global or trusted repo layer's value is restored when it
+// had one, so only a checkout-controlled choice is refused.
+func endpointEnvWithoutProjectChoices(resolved Resolved, exclusions []string) map[string]string {
+	if len(exclusions) == 0 {
+		return resolved.Effective.Env
+	}
+	project := resolved.Layers[LayerProject].Env
+	if len(project) == 0 {
+		return resolved.Effective.Env
+	}
+	excluded := make(map[string]struct{}, len(exclusions))
+	for _, key := range exclusions {
+		excluded[key] = struct{}{}
+	}
+	out := resolved.Effective.Env
+	copied := false
+	for key := range project {
+		if _, ok := excluded[key]; !ok {
+			continue
+		}
+		if _, fromLaunch := resolved.Layers[LayerLaunch].Env[key]; fromLaunch {
+			continue
+		}
+		if !copied {
+			out = maps.Clone(resolved.Effective.Env)
+			copied = true
+		}
+		restored := false
+		// mergeLayers refuses a credential-looking key at every layer; a raw
+		// layer map still holds the refused entry, so the restore must not
+		// reintroduce one.
+		if !isCredentialEnvKey(key) {
+			for _, name := range []LayerName{LayerRepo, LayerGlobal} {
+				if value, ok := resolved.Layers[name].Env[key]; ok {
+					out[key] = value
+					restored = true
+					break
+				}
+			}
+		}
+		if !restored {
+			delete(out, key)
+		}
+	}
+	return out
 }

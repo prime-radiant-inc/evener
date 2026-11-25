@@ -10,13 +10,46 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
+	"primeradiant.com/evener/auth/githubcopilot"
 	"primeradiant.com/evener/execsupport/valueexpr"
 )
 
 type fakeCreds map[string]string
 
 func (f fakeCreds) Lookup(name string) (string, bool) { v, ok := f[name]; return v, ok }
+
+func healthyCopilotRecord(instance string) githubcopilot.AuthRecord {
+	return githubcopilot.AuthRecord{
+		Instance:      instance,
+		Scheme:        githubcopilot.AuthScheme,
+		Version:       1,
+		AccessToken:   "github-access-token",
+		CopilotToken:  "copilot-session-token",
+		AccountID:     "account-1",
+		ObtainedAt:    time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC),
+		CopilotExpiry: time.Date(2100, 1, 1, 0, 0, 0, 0, time.UTC),
+	}
+}
+
+func saveCopilotRecordForTest(t *testing.T, stateDir, instance string, rec githubcopilot.AuthRecord) {
+	t.Helper()
+	if err := githubcopilot.SaveAuth(stateDir, instance, rec); err != nil {
+		t.Fatalf("SaveAuth(%q): %v", instance, err)
+	}
+}
+
+func writeRawCopilotRecordForTest(t *testing.T, stateDir, instance, body string) {
+	t.Helper()
+	path := githubcopilot.AuthFilePath(stateDir, instance)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
 
 func instanceNames(r *Registry) []string {
 	var out []string
@@ -95,6 +128,184 @@ func TestInstances_GCPADCAndOAuth(t *testing.T) {
 	}
 	if name, _, _ := r.DefaultInstance(); name != "openai-codex" {
 		t.Fatalf("stored OAuth must beat the API key: %q", name)
+	}
+}
+
+func TestInstances_CopilotRequiresRecordAndRanksByScheme(t *testing.T) {
+	t.Parallel()
+	ambient := map[string]string{
+		"GITHUB_TOKEN":           "a",
+		"GH_TOKEN":               "b",
+		"GITHUB_COPILOT_TOKEN":   "c",
+		"COPILOT_GITHUB_TOKEN":   "d",
+		"GITHUB_COPILOT_API_KEY": "e",
+	}
+	r := fixtureLoad(t, ambient, "")
+	if slices.Contains(instanceNames(r), "github-copilot") {
+		t.Fatalf("ambient GitHub variables must not conjure the Copilot instance: %v", instanceNames(r))
+	}
+
+	state := t.TempDir()
+	saveCopilotRecordForTest(t, state, "github-copilot", healthyCopilotRecord("github-copilot"))
+	r = fixtureLoad(t, ambient, "", WithStateRoot(state))
+	if !slices.Contains(instanceNames(r), "github-copilot") {
+		t.Fatalf("a valid Copilot record must create the implicit instance: %v", instanceNames(r))
+	}
+	inst, ok := r.Instance("github-copilot")
+	if !ok || !inst.Implicit || inst.CredentialSource != "oauth" || inst.DefaultModel != "gpt-5.6-sol" {
+		t.Fatalf("github-copilot listing = %+v, ok=%v", inst, ok)
+	}
+	if name, _, err := r.DefaultInstance(); err != nil || name != "github-copilot" {
+		t.Fatalf("a signed-in Copilot record must be the automatic default: %q %v", name, err)
+	}
+
+	r = fixtureLoad(t, map[string]string{"OPENAI_API_KEY": "k"}, "", WithStateRoot(state))
+	if name, _, err := r.DefaultInstance(); err != nil || name != "github-copilot" {
+		t.Fatalf("Copilot must outrank the metered OpenAI key: %q %v", name, err)
+	}
+	r = fixtureLoad(t, map[string]string{"ANTHROPIC_API_KEY": "k"}, "", WithStateRoot(state))
+	if name, _, err := r.DefaultInstance(); err != nil || name != "anthropic" {
+		t.Fatalf("Anthropic must keep priority over Copilot: %q %v", name, err)
+	}
+
+	codexState := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(codexState, "auth"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(oauthRecordPath(codexState, "openai-codex"), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	saveCopilotRecordForTest(t, codexState, "github-copilot", healthyCopilotRecord("github-copilot"))
+	r = fixtureLoad(t, nil, "", WithStateRoot(codexState))
+	if name, _, err := r.DefaultInstance(); err != nil || name != "openai-codex" {
+		t.Fatalf("Codex must keep priority over Copilot: %q %v", name, err)
+	}
+}
+
+func TestInstances_CopilotUnhealthyRecordStaysVisibleButIsNotAutomaticallyDefault(t *testing.T) {
+	t.Parallel()
+	past := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	cases := []struct {
+		name    string
+		prepare func(t *testing.T, state string)
+	}{
+		{"corrupt JSON", func(t *testing.T, state string) {
+			writeRawCopilotRecordForTest(t, state, "github-copilot", "{not json")
+		}},
+		{"scheme mismatch", func(t *testing.T, state string) {
+			writeRawCopilotRecordForTest(t, state, "github-copilot", `{"instance":"github-copilot","auth_scheme":"oauth-openai-codex"}`)
+		}},
+		{"refresh rejected", func(t *testing.T, state string) {
+			rec := healthyCopilotRecord("github-copilot")
+			rec.RefreshRejected = true
+			saveCopilotRecordForTest(t, state, "github-copilot", rec)
+		}},
+		{"refresh expired", func(t *testing.T, state string) {
+			rec := healthyCopilotRecord("github-copilot")
+			rec.RefreshToken = "refresh-token"
+			rec.RefreshExpiry = past
+			saveCopilotRecordForTest(t, state, "github-copilot", rec)
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			state := t.TempDir()
+			tc.prepare(t, state)
+			r := fixtureLoad(t, map[string]string{"ANTHROPIC_API_KEY": "k"}, "", WithStateRoot(state))
+			inst, ok := r.Instance("github-copilot")
+			if !ok {
+				t.Fatalf("an existing Copilot record must stay visible in Settings (%s)", tc.name)
+			}
+			if inst.CredentialSource != "none" || len(inst.Warnings) == 0 {
+				t.Fatalf("unhealthy Copilot credential = %q warnings %v", inst.CredentialSource, inst.Warnings)
+			}
+			if name, _, err := r.DefaultInstance(); err != nil || name != "anthropic" {
+				t.Fatalf("an unhealthy Copilot record must skip automatic default selection: %q %v", name, err)
+			}
+		})
+	}
+}
+
+func TestInstances_CopilotExpiredAccessTokenWithUsableRefreshIsReady(t *testing.T) {
+	t.Parallel()
+	state := t.TempDir()
+	rec := healthyCopilotRecord("github-copilot")
+	rec.AccessExpiry = time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	rec.RefreshToken = "refresh-token"
+	rec.RefreshExpiry = time.Date(2100, 1, 1, 0, 0, 0, 0, time.UTC)
+	saveCopilotRecordForTest(t, state, "github-copilot", rec)
+
+	r := fixtureLoad(t, nil, "", WithStateRoot(state))
+	inst, ok := r.Instance("github-copilot")
+	if !ok || inst.CredentialSource != "oauth" {
+		t.Fatalf("an expired access token with a usable refresh token must stay ready: %+v ok=%v", inst, ok)
+	}
+	if name, _, err := r.DefaultInstance(); err != nil || name != "github-copilot" {
+		t.Fatalf("a renewable Copilot record must be the automatic default: %q %v", name, err)
+	}
+}
+
+func TestInstances_CopilotExplicitDefaultStaysAuthoritative(t *testing.T) {
+	t.Parallel()
+	state := t.TempDir()
+	rec := healthyCopilotRecord("github-copilot")
+	rec.RefreshRejected = true
+	saveCopilotRecordForTest(t, state, "github-copilot", rec)
+
+	r := fixtureLoad(t, map[string]string{"ANTHROPIC_API_KEY": "k"}, "default = \"github-copilot\"\n", WithStateRoot(state))
+	name, _, err := r.DefaultInstance()
+	if err != nil || name != "github-copilot" {
+		t.Fatalf("an explicit default must select a dead Copilot record: %q %v", name, err)
+	}
+	inst, ok := r.Instance("github-copilot")
+	if !ok || inst.CredentialSource != "none" || len(inst.Warnings) == 0 {
+		t.Fatalf("the explicit default must surface the Copilot sign-in error: %+v ok=%v", inst, ok)
+	}
+}
+
+func TestInstances_CopilotExplicitDefaultWithoutRecordStaysAuthoritative(t *testing.T) {
+	t.Parallel()
+	r := fixtureLoad(t, map[string]string{"ANTHROPIC_API_KEY": "k"}, "default = \"github-copilot\"\n", WithStateRoot(t.TempDir()))
+	name, warns, err := r.DefaultInstance()
+	if err != nil || name != "github-copilot" {
+		t.Fatalf("an explicit default must select Copilot before sign-in: %q %v %v", name, warns, err)
+	}
+	if len(warns) != 0 {
+		t.Fatalf("a missing record must not fall through: %v", warns)
+	}
+	inst, ok := r.Instance("github-copilot")
+	if !ok || inst.CredentialSource != "none" || len(inst.Warnings) == 0 {
+		t.Fatalf("the signed-out explicit default must surface the Copilot sign-in error: %+v ok=%v", inst, ok)
+	}
+}
+
+func TestInstances_CopilotCustomInstanceUsesItsOwnRecord(t *testing.T) {
+	t.Parallel()
+	state := t.TempDir()
+	saveCopilotRecordForTest(t, state, "github-copilot", healthyCopilotRecord("github-copilot"))
+	cfg := `
+[providers.work]
+base = "github-copilot"
+base_url = "https://copilot.example.invalid"
+default_model = "gpt-5.6-sol"
+`
+	r := fixtureLoad(t, nil, cfg, WithStateRoot(state))
+	work, ok := r.Instance("work")
+	if !ok {
+		t.Fatal("the explicit work instance must be listed")
+	}
+	if work.CredentialSource != "none" || work.BaseURL != "https://copilot.example.invalid" {
+		t.Fatalf("a custom Copilot base must use its own record: %+v", work)
+	}
+	if name, _, err := r.DefaultInstance(); err != nil || name != "github-copilot" {
+		t.Fatalf("the curated Copilot instance outranks the custom one: %q %v", name, err)
+	}
+
+	saveCopilotRecordForTest(t, state, "work", healthyCopilotRecord("work"))
+	r = fixtureLoad(t, nil, cfg, WithStateRoot(state))
+	if work, _ := r.Instance("work"); work.CredentialSource != "oauth" {
+		t.Fatalf("the custom instance's own record must authenticate it: %+v", work)
 	}
 }
 
@@ -744,6 +955,38 @@ auth = "none"
 		r := fixtureLoad(t, baseEnv(t), "")
 		if r.ProviderRenameLeavesInstance("openai-codex") {
 			t.Fatal("openai-codex: want false, the only credential is the record the rename moves")
+		}
+	})
+	t.Run("copilot generation override does not survive the moved record", func(t *testing.T) {
+		// The curated github-copilot default row generates with auth none,
+		// which would be keyless on its own. The instance exists through its
+		// Copilot account, though: the connection identity is the provider
+		// head, and a rename moves the OAuth record, so the listing derives no
+		// row under the old id. The rename verdict must agree with it.
+		override := overlayWith(`
+[providers."github-copilot".models."gpt-5.6-sol"]
+auth = "none"
+`)
+		signedIn := t.TempDir()
+		saveCopilotRecordForTest(t, signedIn, "github-copilot", healthyCopilotRecord("github-copilot"))
+		before := fixtureLoad(t, baseEnv(t), "", WithOverlay(override), WithStateRoot(signedIn))
+		inst, ok := before.Instance("github-copilot")
+		if !ok {
+			t.Fatal("github-copilot: the signed-in instance is not listed, so the premise of the rename verdict fails")
+		}
+		if inst.Auth != AuthOAuthGitHubCopilot {
+			t.Fatalf("github-copilot: listed auth = %q, want the account's %q rather than the row's generation scheme", inst.Auth, AuthOAuthGitHubCopilot)
+		}
+
+		// The rename moves auth/github-copilot.json to the new name.
+		renamed := t.TempDir()
+		saveCopilotRecordForTest(t, renamed, "work-copilot", healthyCopilotRecord("work-copilot"))
+		after := fixtureLoad(t, baseEnv(t), "", WithOverlay(override), WithStateRoot(renamed))
+		if _, ok := after.Instance("github-copilot"); ok {
+			t.Fatal("github-copilot: the old id still lists an instance after the record moved, so the premise of the rename verdict fails")
+		}
+		if before.ProviderRenameLeavesInstance("github-copilot") {
+			t.Fatal("github-copilot: want false, the listing omits the old id once the record the scheme reads moves")
 		}
 	})
 	t.Run("gcp-adc with the ADC file re-derives", func(t *testing.T) {
@@ -2238,5 +2481,156 @@ func TestInstanceMatchesItsRowInInstances(t *testing.T) {
 		if !reflect.DeepEqual(got, row) {
 			t.Fatalf("Instance(%q) = %+v, want the Instances row %+v", row.Name, got, row)
 		}
+	}
+}
+
+// The Copilot record is the account a live listing was fetched under: a
+// different record, account, or login health is a different source, while a
+// token refresh rotates values that must not prune the cached roster.
+func TestAuthFingerprintCopilotTracksTheAccountNotRotatingTokens(t *testing.T) {
+	t.Parallel()
+	state := t.TempDir()
+	load := func() *Registry {
+		return fixtureLoad(t, nil, "[providers.work]\nbase = \"github-copilot\"\n", WithStateRoot(state))
+	}
+	saveCopilotRecordForTest(t, state, "work", healthyCopilotRecord("work"))
+	first, ok := load().AuthFingerprint("work")
+	if !ok {
+		t.Fatal("no fingerprint for a Copilot instance with a record")
+	}
+
+	rotated := healthyCopilotRecord("work")
+	rotated.AccessToken = "rotated-github-access"
+	rotated.CopilotToken = "rotated-copilot-session"
+	rotated.ObtainedAt = rotated.ObtainedAt.Add(time.Hour)
+	rotated.CopilotExpiry = rotated.CopilotExpiry.Add(-time.Hour)
+	saveCopilotRecordForTest(t, state, "work", rotated)
+	if next, _ := load().AuthFingerprint("work"); next != first {
+		t.Fatal("a token refresh moved the identity; it rotates values the live roster did not come from")
+	}
+
+	switched := rotated
+	switched.AccountID = "account-2"
+	saveCopilotRecordForTest(t, state, "work", switched)
+	accountFP, _ := load().AuthFingerprint("work")
+	if accountFP == first {
+		t.Fatal("a different account kept the identity; its live roster is not this account's")
+	}
+
+	unusable := switched
+	unusable.RefreshRejected = true
+	saveCopilotRecordForTest(t, state, "work", unusable)
+	if healthFP, _ := load().AuthFingerprint("work"); healthFP == accountFP {
+		t.Fatal("a record that needs a fresh login kept the identity of a usable one")
+	}
+
+	writeRawCopilotRecordForTest(t, state, "work", "{not json")
+	corruptFP, _ := load().AuthFingerprint("work")
+	if corruptFP == accountFP || corruptFP == first {
+		t.Fatal("a corrupt record kept the identity of the record it cannot read")
+	}
+
+	if err := os.Remove(githubcopilot.AuthFilePath(state, "work")); err != nil {
+		t.Fatal(err)
+	}
+	if missingFP, _ := load().AuthFingerprint("work"); missingFP == corruptFP {
+		t.Fatal("a removed record kept the identity of the corrupt one")
+	}
+}
+
+// Both OAuth record namespaces are stray-record material: a record whose name
+// resolves to no instance of its own scheme is one nothing reads, whichever
+// scheme filed it. The record lock files the lifecycle leaves beside them are
+// not records and must never be reported.
+func TestStrayOAuthRecordsCoversBothRecordSchemes(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	saveCopilotRecordForTest(t, root, "github-copilot", healthyCopilotRecord("github-copilot"))
+	saveCopilotRecordForTest(t, root, "old-work", healthyCopilotRecord("old-work"))
+	codexPath := oauthRecordPath(root, "old-codex")
+	if err := os.MkdirAll(filepath.Dir(codexPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(codexPath, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{
+		githubcopilot.AuthFilePath(root, "old-work") + ".lock",
+		codexPath + ".lock",
+	} {
+		if err := os.WriteFile(path, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	r := fixtureLoad(t, nil, "", WithStateRoot(root))
+	got := r.StrayOAuthRecords()
+	if len(got) != 2 {
+		t.Fatalf("want the strays of both schemes, got %d: %v", len(got), got)
+	}
+	for _, subject := range []string{"old-work", "old-codex"} {
+		if !slices.ContainsFunc(got, func(notice string) bool { return strings.Contains(notice, subject) }) {
+			t.Fatalf("stray %q is unreported: %v", subject, got)
+		}
+	}
+	if slices.ContainsFunc(got, func(notice string) bool { return strings.Contains(notice, ".lock") }) {
+		t.Fatalf("a record lock file was reported as a stray record: %v", got)
+	}
+}
+
+// Neither a Copilot api_key nor a glob pinning the Copilot scheme makes the
+// hub's mint-free listing path spend a credential command: the scheme reads
+// its own record and never puts api_key on a request.
+func TestLaunchMintsCredentialCommandIgnoresTheCopilotScheme(t *testing.T) {
+	t.Parallel()
+	t.Run("provider transport", func(t *testing.T) {
+		t.Parallel()
+		r := fixtureLoad(t, nil, "[providers.work]\nbase = \"github-copilot\"\napi_key = \"$(mint)\"\n")
+		if r.LaunchMintsCredentialCommand("work") {
+			t.Fatal("the Copilot scheme sent an api_key command; its record alone authenticates the launch")
+		}
+	})
+	t.Run("glob pinned transport", func(t *testing.T) {
+		t.Parallel()
+		r := fixtureLoad(t, nil, "[providers.work]\nbase = \"openai\"\nbase_url = \"https://gw.example.test/v1\"\napi_key = \"$(mint)\"\n[providers.work.models.\"*\"]\nauth = \"oauth-github-copilot\"\n")
+		if r.LaunchMintsCredentialCommand("work") {
+			t.Fatal("a glob pinning the Copilot scheme counted as a row the api_key travels with")
+		}
+	})
+}
+
+// An instance moved to another auth scheme must not hand its Copilot record
+// to that scheme: the record stays where the Copilot scheme filed it, the new
+// scheme resolves nothing from it, and the stray scan names it so the user can
+// sign that account out.
+func TestInstances_CopilotRecordIsUnusableUnderAnotherScheme(t *testing.T) {
+	t.Parallel()
+	state := t.TempDir()
+	saveCopilotRecordForTest(t, state, "work", healthyCopilotRecord("work"))
+	withCopilot := fixtureLoad(t, nil, "[providers.work]\nbase = \"github-copilot\"\n", WithStateRoot(state))
+	if inst, ok := withCopilot.Instance("work"); !ok || inst.CredentialSource != "oauth" {
+		t.Fatalf("fixture: work = %+v ok=%v, want the Copilot record resolving", inst, ok)
+	}
+
+	withCodex := fixtureLoad(t, nil, "[providers.work]\nbase = \"openai-codex\"\n", WithStateRoot(state))
+	inst, ok := withCodex.Instance("work")
+	if !ok {
+		t.Fatal("work disappeared after its scheme changed")
+	}
+	if inst.Auth != AuthOAuthOpenAICodex || inst.CredentialSource == "oauth" {
+		t.Fatalf("work = %+v, want the Codex scheme resolving no Copilot credential", inst)
+	}
+	presence, err := withCodex.ResolveInstancePresence("work")
+	if err != nil {
+		t.Fatalf("ResolveInstancePresence: %v", err)
+	}
+	if presence.Credential.Source == "oauth" || presence.Credential.Value != "" {
+		t.Fatalf("the Codex scheme read the Copilot record: %+v", presence.Credential)
+	}
+	if _, err := githubcopilot.LoadAuth(state, "work"); err != nil {
+		t.Fatalf("the scheme change deleted the Copilot record: %v", err)
+	}
+	if got := withCodex.StrayOAuthRecords(); len(got) != 1 || !strings.Contains(got[0], "work") {
+		t.Fatalf("strays = %v, want the now-unread Copilot record named", got)
 	}
 }

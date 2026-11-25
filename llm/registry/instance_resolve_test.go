@@ -101,6 +101,93 @@ func TestInstanceViewCarriesBaseURLVarsAndDefaultModel(t *testing.T) {
 	}
 }
 
+func TestResolve_CopilotEndpointAndCustomInstance(t *testing.T) {
+	t.Parallel()
+	state := t.TempDir()
+	saveCopilotRecordForTest(t, state, "github-copilot", healthyCopilotRecord("github-copilot"))
+
+	r := fixtureLoad(t, nil, "", WithStateRoot(state))
+	res, err := r.Resolve("github-copilot/gpt-5.6-sol")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if res.Transport.BaseURL != "https://api.githubcopilot.com" {
+		t.Fatalf("default Copilot endpoint = %q", res.Transport.BaseURL)
+	}
+	if inst, _ := r.Instance("github-copilot"); inst.BaseURL != "https://api.githubcopilot.com" {
+		t.Fatalf("listing base URL = %q", inst.BaseURL)
+	}
+
+	const override = "https://copilot.example.invalid/v1"
+	r = fixtureLoad(t, map[string]string{"GITHUB_COPILOT_BASE_URL": override}, "", WithStateRoot(state))
+	res, err = r.Resolve("github-copilot/gpt-5.6-sol")
+	if err != nil {
+		t.Fatalf("Resolve with endpoint override: %v", err)
+	}
+	if res.Transport.BaseURL != override {
+		t.Fatalf("GITHUB_COPILOT_BASE_URL did not reach resolution: %q", res.Transport.BaseURL)
+	}
+	if inst, _ := r.Instance("github-copilot"); inst.BaseURL != override {
+		t.Fatalf("GITHUB_COPILOT_BASE_URL did not reach the listing: %q", inst.BaseURL)
+	}
+
+	cfg := `
+[providers.work]
+base = "github-copilot"
+base_url = "https://work.example.invalid/copilot"
+default_model = "gpt-5.6-sol"
+`
+	r = fixtureLoad(t, nil, cfg, WithStateRoot(state))
+	work, ok := r.Instance("work")
+	if !ok || work.BaseURL != "https://work.example.invalid/copilot" {
+		t.Fatalf("a custom Copilot instance must keep its own endpoint: %+v ok=%v", work, ok)
+	}
+}
+
+func TestResolve_CopilotStripsCostAndKeepsFamilySurfaces(t *testing.T) {
+	t.Parallel()
+	state := t.TempDir()
+	saveCopilotRecordForTest(t, state, "github-copilot", healthyCopilotRecord("github-copilot"))
+	r := fixtureLoad(t, nil, "", WithStateRoot(state))
+	if _, err := r.Resolve("github-copilot/gpt-5.6-sol"); err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	curated, ok := r.curated["github-copilot"]
+	priced := false
+	if ok {
+		for _, layer := range curated.layers {
+			if row, found := layer.rows["gpt-5.6-sol"]; found && row.Caps.Cost != nil {
+				priced = true
+			}
+		}
+	}
+	if !priced {
+		t.Fatal("fixture precondition: the upstream Copilot row must carry a price")
+	}
+	for _, tc := range []struct {
+		model   string
+		surface string
+	}{
+		{"gpt-5.6-sol", SurfaceOpenAI},
+		{"claude-opus-5", SurfaceAnthropic},
+		{"gemini-3.7-flash", SurfaceGoogle},
+	} {
+		res, err := r.Resolve("github-copilot/" + tc.model)
+		if err != nil {
+			t.Fatalf("%s: Resolve: %v", tc.model, err)
+		}
+		if res.Caps.Cost != nil {
+			t.Errorf("%s: resolved cost = %+v, want nil (absent, not zero)", tc.model, *res.Caps.Cost)
+		}
+		if source, ok := res.Provenance["Cost"]; ok {
+			t.Errorf("%s: provenance still credits a cost to %q", tc.model, source)
+		}
+		if res.Surface != tc.surface {
+			t.Errorf("%s: surface = %q, want %q", tc.model, res.Surface, tc.surface)
+		}
+	}
+}
+
 func TestReasoningDisabled(t *testing.T) {
 	t.Parallel()
 	if (Caps{}).ReasoningDisabled() {

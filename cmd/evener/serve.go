@@ -175,7 +175,7 @@ type serveDeps struct {
 	resolveMeta      func(string, string, bool) (schema.SessionMeta, error)
 	newClient        func(string, io.Writer) (*llm.Client, func() error, error)
 	attachAPILogger  func(*llm.Client, string, io.Writer, bool) (func(string) error, func() error, error)
-	buildProfile     func(context.Context, *llm.Client, cmdutil.ModelRef, string) (*provider.Profile, *agent.StartupModelListing, error)
+	buildProfile     func(context.Context, *llm.Client, cmdutil.ModelRef, string, profileLaunch) (*provider.Profile, *agent.StartupModelListing, error)
 	applyCheap       func(*provider.Profile, string, *llm.Client) (*provider.Profile, error)
 	newSession       func(*llm.Client, *provider.Profile, execenv.ExecutionEnvironment, agent.SessionConfig) (*agent.Session, error)
 	restoreSession   func(*llm.Client, *provider.Profile, execenv.ExecutionEnvironment, schema.SessionMeta, agent.RestoreSessionConfig) (*agent.Session, error)
@@ -654,7 +654,10 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	if resuming {
 		profileCtx = llm.WithAPILogContext(ctx, resumedMeta.ID)
 	}
-	profile, startupListing, err := deps.buildProfile(profileCtx, client, modelRef, *lf.outputSchema)
+	profile, startupListing, err := deps.buildProfile(profileCtx, client, modelRef, *lf.outputSchema, profileLaunch{
+		resuming:      resuming,
+		selectedModel: strings.TrimSpace(*lf.model) != "",
+	})
 	if err != nil {
 		return err
 	}
@@ -1310,14 +1313,31 @@ func printServeEnvVars(w io.Writer) {
 	_ = tw.Flush()
 }
 
+// profileLaunch says how the initial profile relates to a saved session.
+type profileLaunch struct {
+	// resuming restores a saved session: an unreadable authoritative roster
+	// falls back to the saved profile instead of failing the launch.
+	resuming bool
+	// selectedModel marks a model the caller chose rather than one the saved
+	// session already owned, so the fetched roster still gates it.
+	selectedModel bool
+}
+
+// strictRoster reports whether the fetched roster gates this launch. A fresh
+// launch and an explicit new selection are strict; an ordinary resume is not,
+// because the restore path reopens the session so the user can switch models.
+func (l profileLaunch) strictRoster() bool {
+	return !l.resuming || l.selectedModel
+}
+
 // buildInitialProfile constructs the session's initial *Profile by resolving
 // the reference on the client's registry, so an instance name defined in
 // providers.toml ("work") and a curated id resolve the same way and carry the
 // same facts. outputSchemaJSON and EVENER_ALLOWED_DECISIONS are applied in
 // this app layer so callers see the same communicate-tool schema regardless of
 // model.
-func buildInitialProfile(ctx context.Context, client *llm.Client, modelRef cmdutil.ModelRef, outputSchemaJSON string) (*provider.Profile, *agent.StartupModelListing, error) {
-	raw, startupListing, err := resolveInitialProfile(ctx, client, modelRef)
+func buildInitialProfile(ctx context.Context, client *llm.Client, modelRef cmdutil.ModelRef, outputSchemaJSON string, launch profileLaunch) (*provider.Profile, *agent.StartupModelListing, error) {
+	raw, startupListing, err := resolveInitialProfile(ctx, client, modelRef, launch)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -1335,15 +1355,57 @@ func buildInitialProfile(ctx context.Context, client *llm.Client, modelRef cmdut
 	return provider.WithAllowedDecisions(p, allowedDecisions), startupListing, nil
 }
 
-// resolveInitialProfile resolves modelRef on the client's registry. The Codex
-// transport rejects an id absent from its roster instead of synthesizing a
-// row, and the bundled roster lags the models the backend serves. A session
+// resolveInitialProfile resolves modelRef on the client's registry. An
+// account-owned roster is judged against its own live listing: a fresh launch
+// or an explicit new selection must appear in it, while an ordinary resume
+// keeps the saved profile so the restore path can reopen the session. The
+// Codex transport rejects an id absent from its roster instead of synthesizing
+// a row, and the bundled roster lags the models the backend serves. A session
 // restarted after selecting such a model (or a fresh launch with a model the
 // picker just listed) resolves before any listing exists in this process, so
 // the catalog-only gate would reject a model the provider itself advertises.
 // On exactly that rejection, consult the instance's live listing once and
 // resolve again; every other failure is returned unchanged.
-func resolveInitialProfile(ctx context.Context, client *llm.Client, modelRef cmdutil.ModelRef) (*provider.Profile, *agent.StartupModelListing, error) {
+func resolveInitialProfile(ctx context.Context, client *llm.Client, modelRef cmdutil.ModelRef, launch profileLaunch) (*provider.Profile, *agent.StartupModelListing, error) {
+	// An account-owned roster is the whole catalog: list it once, then judge
+	// the launch against that same listing. The listing is handed to the
+	// session as the primed startup roster, so construction and the cheap
+	// model decision never fetch a second time.
+	instance := modelRef.Provider
+	if client != nil && instance == "" {
+		instance = client.DefaultProvider()
+	}
+	if client != nil && client.Registry().LiveListingAuthoritative(instance) {
+		listCtx, cancel := context.WithTimeout(ctx, llm.LiveModelListTimeout)
+		listing, listErr := client.Models(listCtx, instance)
+		cancel()
+		if listErr != nil {
+			// A resumed session already owns the profile its metadata saved,
+			// so an unreadable account roster must not keep it from starting.
+			// A cancelled caller owns the outcome instead of the fallback.
+			if err := ctx.Err(); err != nil {
+				return nil, nil, err
+			}
+			if launch.resuming {
+				profile, err := cmdutil.ResolveProfile(client, modelRef.Qualified())
+				if err != nil {
+					return nil, nil, err
+				}
+				return profile, nil, nil
+			}
+			return nil, nil, fmt.Errorf("%s: the account's model list could not be read: %w", instance, listErr)
+		}
+		profile, err := cmdutil.ResolveProfile(client, modelRef.Qualified())
+		if err != nil {
+			return nil, nil, err
+		}
+		if launch.strictRoster() && (!listing.Usable || !listingHasModel(listing.Models, profile.Model())) {
+			return nil, nil, &llm.ModelNotAvailableError{
+				Instance: instance, Model: profile.Model(), Available: listedModelIDs(listing.Models),
+			}
+		}
+		return profile, &agent.StartupModelListing{Instance: instance, Listing: listing}, nil
+	}
 	raw, err := cmdutil.ResolveProfile(client, modelRef.Qualified())
 	if err == nil || !errors.Is(err, registry.ErrCodexModelNotListed) {
 		return raw, nil, err
@@ -1362,6 +1424,31 @@ func resolveInitialProfile(ctx context.Context, client *llm.Client, modelRef cmd
 		return profile, nil, nil
 	}
 	return profile, &agent.StartupModelListing{Instance: modelRef.Provider, Listing: listing}, nil
+}
+
+// listedModelIDs names the ids an authoritative listing offers, in listing
+// order, for the error that tells the user what the account does serve.
+func listedModelIDs(rows []registry.Resolved) []string {
+	out := make([]string, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, row.ModelID)
+	}
+	return out
+}
+
+// listingHasModel matches the membership rules the session's SetModel check
+// uses: exact id, trimmed id, then case-insensitive.
+func listingHasModel(rows []registry.Resolved, model string) bool {
+	trimmed := strings.TrimSpace(model)
+	if trimmed == "" {
+		return false
+	}
+	for _, row := range rows {
+		if row.ModelID == model || strings.EqualFold(strings.TrimSpace(row.ModelID), trimmed) {
+			return true
+		}
+	}
+	return false
 }
 
 // applyVisionModel validates the --vision-model ref against the registered

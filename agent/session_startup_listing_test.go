@@ -1,6 +1,8 @@
 package agent
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"primeradiant.com/evener/agent/provider"
@@ -66,5 +68,50 @@ func TestNewSessionReusesLauncherListing(t *testing.T) {
 	}
 	if got := sess.currentProfile(); got.Model() != "gpt-reserve" {
 		t.Fatalf("session model = %q, want gpt-reserve", got.Model())
+	}
+}
+
+// TestStartupListingOmitsCuratedCheapModel pins the cheap half of the
+// account-owned roster rule: a curated cheap model the live roster omits uses
+// the session model, while an explicit cheap override stays exactly as the
+// user set it.
+func TestStartupListingOmitsCuratedCheapModel(t *testing.T) {
+	const cfg = `
+[providers.work]
+base = "github-copilot"
+default_model = "gpt-5.6-sol"
+cheap_model = "claude-haiku-5.5"
+`
+	cfgPath := filepath.Join(t.TempDir(), "providers.toml")
+	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r, err := registry.Load(
+		registry.WithConfigPath(cfgPath), registry.WithStateRoot(t.TempDir()),
+		registry.WithOffline(true), registry.WithoutCache(),
+	)
+	if err != nil {
+		t.Fatalf("registry: %v", err)
+	}
+	r.ApplyLiveListing("work", registry.LiveListing{Rows: []registry.Model{{ID: "gpt-5.6-sol"}}, Authoritative: true})
+	profile, err := provider.Resolve(r, "work/gpt-5.6-sol")
+	if err != nil {
+		t.Fatalf("profile: %v", err)
+	}
+	if got := profile.CheapModel(); got != "gpt-5.6-sol" {
+		t.Fatalf("cheap model = %q, want the session model the roster lists", got)
+	}
+	if got := provider.WithCheapModel(profile, "claude-haiku-5.5").CheapModel(); got != "claude-haiku-5.5" {
+		t.Fatalf("explicit cheap override = %q, want it unchanged", got)
+	}
+	// A provider whose roster is not authoritative keeps its curated cheap
+	// model even when the live rows do not list it.
+	r.ApplyLive("work", []registry.Model{{ID: "gpt-5.6-sol"}})
+	profile, err = provider.Resolve(r, "work/gpt-5.6-sol")
+	if err != nil {
+		t.Fatalf("profile: %v", err)
+	}
+	if got := profile.CheapModel(); got != "claude-haiku-5.5" {
+		t.Fatalf("non-authoritative cheap model = %q, want the curated one", got)
 	}
 }

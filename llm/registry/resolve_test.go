@@ -774,6 +774,84 @@ surface = "anthropic"
 	}
 }
 
+// A live roster can route a row over Messages while its provider's own wire
+// is Chat. When an authored exact-model row puts that row back on Chat, the
+// provider's Chat field table must apply: the field flags are judged against
+// the protocol that finally wins, not the live route the replay passed
+// through.
+func TestResolve_ProviderFieldsFollowTheFinalChatProtocol(t *testing.T) {
+	t.Parallel()
+	cfg := `
+[providers.gw]
+base = "openai"
+protocol = "openai-chat"
+base_url = "https://gw.example.test/v1"
+[providers.gw.fields]
+stream_options = false
+[providers.gw.models."claude-live"]
+protocol = "openai-chat"
+`
+	r := fixtureLoad(t, nil, cfg)
+	r.ApplyLive("gw", []Model{{
+		ID:       "claude-live",
+		Protocol: ProtocolAnthropic,
+		Transport: &Transport{
+			Endpoint:            "/v1/messages",
+			StreamEndpoint:      "/v1/messages",
+			CountTokensEndpoint: EndpointUnsupported,
+		},
+	}})
+
+	res := mustResolve(t, r, "gw/claude-live")
+	if res.Protocol != ProtocolOpenAIChat || res.Transport.Endpoint != "/chat/completions" {
+		t.Fatalf("authored override must keep the Chat route: protocol=%q endpoint=%q", res.Protocol, res.Transport.Endpoint)
+	}
+	if v, ok := res.Caps.Fields["stream_options"]; !ok || v {
+		t.Fatalf("stream_options = %v (present %v), want the provider's false on the final Chat protocol", v, ok)
+	}
+	if res.Provenance["Fields.stream_options"] != LayerConfig+"/provider" {
+		t.Fatalf("stream_options provenance = %q, want the config provider layer", res.Provenance["Fields.stream_options"])
+	}
+}
+
+// Without an authored override the live row keeps its Messages route, and the
+// provider's Chat field table must not leak onto it: the row starts from the
+// Messages baseline instead.
+func TestResolve_LiveMessagesRouteKeepsMessagesFields(t *testing.T) {
+	t.Parallel()
+	cfg := `
+[providers.gw]
+base = "openai"
+protocol = "openai-chat"
+base_url = "https://gw.example.test/v1"
+[providers.gw.fields]
+stream_options = false
+[providers.gw.models."claude-live"]
+surface = "anthropic"
+`
+	r := fixtureLoad(t, nil, cfg)
+	r.ApplyLive("gw", []Model{{
+		ID:       "claude-live",
+		Protocol: ProtocolAnthropic,
+		Transport: &Transport{
+			Endpoint:            "/v1/messages",
+			StreamEndpoint:      "/v1/messages",
+			CountTokensEndpoint: EndpointUnsupported,
+		},
+	}})
+
+	res := mustResolve(t, r, "gw/claude-live")
+	if res.Protocol != ProtocolAnthropic || res.Transport.Endpoint != "/v1/messages" {
+		t.Fatalf("live route must stay Messages: protocol=%q endpoint=%q", res.Protocol, res.Transport.Endpoint)
+	}
+	if _, ok := res.Caps.Fields["stream_options"]; ok {
+		t.Fatal("the provider's Chat field table must not reach a Messages row")
+	}
+	if v, ok := res.Caps.Fields["stop_sequences"]; !ok || !v {
+		t.Fatalf("stop_sequences = %v (present %v), want the Messages baseline", v, ok)
+	}
+}
+
 // TestResolve_WebSearchEndpointGate pins WebSearch's first-party-endpoint
 // gate: a platform-side capability, not a wire-protocol fact (spec §4.2
 // says explicitly it is not one of the facts an alias imports), so it

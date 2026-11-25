@@ -347,6 +347,7 @@ func printStartupUsage(w io.Writer) {
 func printRunCommands(w io.Writer) {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	_, _ = fmt.Fprintf(tw, "  openai\tManage OpenAI OAuth login (login, logout, status)\n")
+	_, _ = fmt.Fprintf(tw, "  github-copilot\tManage GitHub Copilot subscription login (login, logout, status)\n")
 	_, _ = fmt.Fprintf(tw, "  serve\tRun the evener HTTP/RPC server\n")
 	_, _ = fmt.Fprintf(tw, "  launch-check\tValidate launch contract for a provider/model\n")
 	_, _ = fmt.Fprintf(tw, "  upgrade\tUpgrade installed Evener binaries\n")
@@ -462,6 +463,7 @@ func dispatchCLICommand(args []string, stdin io.Reader, stdout, stderr io.Writer
 		},
 		models:    runModels,
 		providers: runProviders,
+		copilot:   runGitHubCopilot,
 	})
 }
 
@@ -469,6 +471,7 @@ type cliCommandRunners struct {
 	serve       func([]string) error
 	launchCheck func([]string, io.Reader, io.Writer, io.Writer) error
 	openAI      func([]string, io.Reader, io.Writer, io.Writer) error
+	copilot     func([]string, io.Reader, io.Writer, io.Writer) error
 	upgrade     func([]string, io.Reader, io.Writer, io.Writer) error
 	install     func([]string, io.Reader, io.Writer, io.Writer) error
 	plugin      func([]string, io.Reader, io.Writer, io.Writer) error
@@ -491,6 +494,8 @@ func dispatchCLICommandWith(args []string, stdin io.Reader, stdout, stderr io.Wr
 		return true, "evener launch-check", runners.launchCheck(args[1:], stdin, stdout, stderr)
 	case "openai":
 		return true, "evener openai", runners.openAI(args[1:], stdin, stdout, stderr)
+	case "github-copilot":
+		return true, "evener github-copilot", runners.copilot(args[1:], stdin, stdout, stderr)
 	case "upgrade":
 		return true, "evener upgrade", runners.upgrade(args[1:], stdin, stdout, stderr)
 	case "install":

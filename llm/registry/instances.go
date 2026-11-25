@@ -3,6 +3,7 @@ package registry
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
@@ -12,7 +13,9 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"time"
 
+	"primeradiant.com/evener/auth/githubcopilot"
 	"primeradiant.com/evener/execsupport/valueexpr"
 )
 
@@ -22,6 +25,10 @@ type instance struct {
 	rec      *record
 	implicit bool
 	rank     int
+	// autoSelectable is false for a Copilot instance whose record exists but
+	// cannot launch: it stays listed, while DefaultInstance's automatic
+	// ranking skips it. Every other scheme keeps the listing's policy.
+	autoSelectable bool
 }
 
 // Instance is the listing view of an instance (spec §5.1, §11.2).
@@ -67,6 +74,44 @@ func oauthRecordPath(stateRoot, instance string) string {
 	return filepath.Join(stateRoot, "auth", instance+".json")
 }
 
+// copilotRecordState classifies the record the Copilot auth scheme reads.
+type copilotRecordState int
+
+const (
+	copilotRecordMissing copilotRecordState = iota
+	copilotRecordUnusable
+	copilotRecordReady
+)
+
+// copilotAuthState reads the instance's Copilot record and reports whether
+// it can authenticate a launch without a fresh login. Corrupt,
+// scheme-mismatched, refresh-rejected, refresh-expired, and otherwise
+// login-required records are unusable; an expired access token with a usable
+// refresh token is ready.
+func (r *Registry) copilotAuthState(name string) copilotRecordState {
+	if r.stateRoot == "" {
+		return copilotRecordMissing
+	}
+	rec, err := githubcopilot.LoadAuth(r.stateRoot, name)
+	switch {
+	case errors.Is(err, githubcopilot.ErrAuthNotFound):
+		return copilotRecordMissing
+	case err != nil:
+		return copilotRecordUnusable
+	case rec.NeedsLogin(time.Now()):
+		return copilotRecordUnusable
+	}
+	return copilotRecordReady
+}
+
+// authReadyToLaunch reports whether automatic instance and default selection
+// may use the instance without an explicit `default`. Every scheme but
+// Copilot keeps the presence policy the listing already applied; Copilot
+// requires a record that can actually launch.
+func (r *Registry) authReadyToLaunch(name string, t Transport) bool {
+	return t.Auth != AuthOAuthGitHubCopilot || r.copilotAuthState(name) == copilotRecordReady
+}
+
 func fileExists(path string) bool {
 	st, err := os.Stat(path)
 	return err == nil && !st.IsDir()
@@ -101,7 +146,7 @@ func adcAvailable(env func(string) (string, bool)) bool {
 // record carries either (the catalog conversion sets only api_key_env), and a
 // present higher-priority expression is terminal in credential() anyway, so it
 // never falls through to the candidates below. A non-implicit or hidden
-// curated provider resolves no instance of its own, and the OAuth scheme's
+// curated provider resolves no instance of its own, and the OAuth schemes'
 // only credential is the record the rename moves, so all answer false. False
 // for an id that is not curated.
 //
@@ -120,17 +165,18 @@ func (r *Registry) ProviderRenameLeavesInstance(id string) bool {
 		return false
 	}
 	// The scheme the listing derives the instance with — the same
-	// listingTransport computeInstances reads — decides the verdict, so a
+	// connectionTransport computeInstances reads — decides the verdict, so a
 	// default row or glob that overrides the head's auth scheme moves the
-	// rename verdict with the instance the listing shows. The header-key
-	// check below resolves it once here, with the switch, rather than
-	// re-deriving the default row and globs.
-	transport := r.listingTransport(rec)
+	// rename verdict with the instance the listing shows. A Copilot account's
+	// connection identity is its head's transport, whatever the row
+	// generates. The header-key check below resolves it once here, with the
+	// switch, rather than re-deriving the default row and globs.
+	transport := r.connectionTransport(rec)
 	switch transport.Auth {
 	case AuthNone, AuthOptionalBearer:
 		return true
-	case AuthOAuthOpenAICodex:
-		// The record is the only credential this scheme reads, and the rename
+	case AuthOAuthOpenAICodex, AuthOAuthGitHubCopilot:
+		// The record is the only credential these schemes read, and the rename
 		// moves it.
 		return false
 	case AuthGCPADC:
@@ -231,7 +277,7 @@ func (r *Registry) firstPartyEndpoint(rec *record, transport Transport, proto, r
 	}
 	var row Model
 	if rowID != "" || ref != "" {
-		row = r.canonicalRow(base, ref, altID, rowID, proto)
+		row = r.canonicalRow(base, ref, altID, rowID)
 	}
 	canonical := r.transportShape(base, row, proto)
 	lookup := r.canonicalVarLookup(rec, base, canonical)
@@ -256,7 +302,7 @@ func (r *Registry) firstPartyEndpoint(rec *record, transport Transport, proto, r
 // resolution matched. base's layers are curated by construction, so no
 // LayerConfig contribution - the channel the gate exists to judge - can
 // reach the result.
-func (r *Registry) canonicalRow(base *record, ref, altID, rowID, proto string) Model {
+func (r *Registry) canonicalRow(base *record, ref, altID, rowID string) Model {
 	var row Model
 	if rowID != "" {
 		if m, ok := base.head.Models[rowID]; ok {
@@ -264,17 +310,17 @@ func (r *Registry) canonicalRow(base *record, ref, altID, rowID, proto string) M
 		}
 	}
 	// The caps and provenance sinks are discarded: only the transport
-	// fields applyGlobs and applyRowScalars merge matter here.
+	// fields applyGlobs and applyRowScalars merge matter here. The glob
+	// field collector is nil for the same reason.
 	caps := Caps{}
 	prov := map[string]string{}
-	crossProto := proto != base.head.Protocol
 	seenTag := map[string]bool{}
 	for _, layer := range base.layers {
 		if !seenTag[layer.tag] {
 			seenTag[layer.tag] = true
-			r.applyGlobs(&caps, &row, r.topGlobs[layer.tag], layer.tag, ref, altID, proto, crossProto, prov)
+			r.applyGlobs(&caps, &row, r.topGlobs[layer.tag], layer.tag, ref, altID, prov, nil)
 		}
-		r.applyGlobs(&caps, &row, layer.rows, layer.tag, ref, altID, proto, crossProto, prov)
+		r.applyGlobs(&caps, &row, layer.rows, layer.tag, ref, altID, prov, nil)
 		if rowID != "" {
 			if lr, ok := layer.rows[rowID]; ok {
 				applyRowScalars(&row, lr, layer.tag, prov)
@@ -503,26 +549,27 @@ func (r *Registry) shadowedEnvVar(rec *record, t Transport, cred Credential) str
 // credentialWithAuth (resolveCredentials), so there the header runs once
 // per resolution.
 func (r *Registry) credential(rec *record, t Transport) (Credential, []string) {
-	if t.Auth == AuthOAuthOpenAICodex || t.Auth == AuthGCPADC {
+	if t.Auth == AuthOAuthOpenAICodex || t.Auth == AuthGCPADC || t.Auth == AuthOAuthGitHubCopilot {
 		return r.credentialWithAuth(rec, authExpansion{}, t, false, true)
 	}
 	return r.credentialWithAuth(rec, r.authorizationMode(rec, t, true), t, false, true)
 }
 
 // AuthFingerprint is the hub's mint-free digest of the credential
-// material its views of one instance carry: the same transport and slots
-// the listing and the spawn gate read, hashed so a rotation of stable
-// material (a literal, an environment value, a stored key) changes the
-// digest while command-bearing material contributes its authored text —
+// material its views of one instance carry: the connection transport and
+// slots the listing and its cached roster read, hashed so a rotation of
+// stable material (a literal, an environment value, a stored key) changes
+// the digest while command-bearing material contributes its authored text —
 // the minted value rotates with the cache TTL, and an identity that
 // followed it would prune the cached live rows on every rollover and
 // force a re-fetch. It expands environment references only and never
 // executes a command; only the hex digest leaves this method, never the
 // material. The digest reads the provider-level slots, plus the default
-// row's own headers — the listing fetch resolves through that row and
-// sends its headers with the request, so they shape what the cached
-// live rows came through. Other rows' headers stay display material:
-// they never build a request.
+// row's own headers when that row is what the listing fetch resolves
+// through — it sends them with the request, so they shape what the cached
+// live rows came through. A Copilot roster resolves through the configured
+// transport instead, so only its provider-level headers hash. Other rows'
+// headers stay display material: they never build a request.
 func (r *Registry) AuthFingerprint(instance string) (string, bool) {
 	name := strings.ToLower(strings.TrimSpace(instance))
 	rec, ok := r.recordFor(name)
@@ -530,7 +577,7 @@ func (r *Registry) AuthFingerprint(instance string) (string, bool) {
 		return "", false
 	}
 	h := rec.head
-	t := r.listingTransport(rec)
+	t := r.connectionTransport(rec)
 	sum := sha256.New()
 	_, _ = fmt.Fprintf(sum, "%s\x01%s\x01", t.Auth, t.AuthHeader)
 	hashSlot := func(raw string) {
@@ -576,6 +623,10 @@ func (r *Registry) AuthFingerprint(instance string) (string, bool) {
 		// Terminal scheme with no inline material here: the record's
 		// account claims are the hub's separate fingerprint, and the
 		// source label already distinguishes "no record" from "record".
+	case AuthOAuthGitHubCopilot:
+		// The record's account and login health select whose live roster
+		// this instance fetched; a rotated token keeps the same roster.
+		_, _ = fmt.Fprintf(sum, "copilot\x01%s\x01", copilotRecordSignature(r.stateRoot, rec.name, time.Now()))
 	case AuthGCPADC:
 		// A stored credential JSON outranks the ADC file (spec §4.2) and
 		// is the material that can rotate; the ADC file itself is the
@@ -672,7 +723,7 @@ func (r *Registry) AuthFingerprint(instance string) (string, bool) {
 			hashSlot(h.Headers[k])
 		}
 	}
-	if res, ok := r.resolveDefaultRow(rec, resolveFacts); ok {
+	if res, ok := r.resolveDefaultRow(rec, resolveFacts); ok && !listsThroughConfiguredTransport(rec) {
 		// The listing fetch resolves through the default row and sends
 		// the merged headers with the request — provider, exact row,
 		// and every matching glob row, which merge at resolve time and
@@ -692,7 +743,9 @@ func (r *Registry) AuthFingerprint(instance string) (string, bool) {
 		// No default row names the launch — or it cannot resolve, or the
 		// config disabled it: the listing falls back to the provider's
 		// own transport, whose request carries the provider-level
-		// headers alone.
+		// headers alone. A Copilot roster takes this branch too: its
+		// configured listing transport never resolves through the
+		// default generation row.
 		hashProviderHeaders()
 	}
 	return hex.EncodeToString(sum.Sum(nil)), true
@@ -812,6 +865,31 @@ func (r *Registry) listingProtocol(rec *record) string {
 		return res.Protocol
 	}
 	return rec.head.Protocol
+}
+
+// listsThroughConfiguredTransport reports whether the instance's model listing
+// must resolve the provider's configured shape rather than its default row's
+// generation transport. The Copilot account roster assigns each id its own
+// generation protocol (Claude rows speak Messages), so a Claude default would
+// otherwise send the /models fetch down /v1/messages and parse the answer with
+// the Anthropic listing parser, losing every advertised route and the
+// picker/policy filter. The configured transport is the one destination the
+// account's listing and every credential probe actually serve.
+func listsThroughConfiguredTransport(rec *record) bool {
+	return rec.head.Transport.Auth == AuthOAuthGitHubCopilot
+}
+
+// connectionTransport is the transport an instance's connection identity
+// reads: the account's configured Copilot transport for a Copilot instance,
+// whose default row may route generation through a separate gateway with its
+// own auth scheme, and the bare launch's row-merged transport otherwise. The
+// roster fetch, the connection fields it publishes, and the credential
+// fingerprint the cached roster is keyed by all read this one transport.
+func (r *Registry) connectionTransport(rec *record) Transport {
+	if listsThroughConfiguredTransport(rec) {
+		return rec.head.Transport
+	}
+	return r.listingTransport(rec)
 }
 
 // authHeaderKey resolves which credential-header key carries the named
@@ -964,6 +1042,15 @@ func (r *Registry) credentialWithAuth(rec *record, auth authExpansion, t Transpo
 			return Credential{Source: "oauth"}, nil
 		}
 		return none(fmt.Sprintf("no credential (run `evener openai login --instance %s`)", rec.name))
+	case AuthOAuthGitHubCopilot:
+		switch r.copilotAuthState(rec.name) {
+		case copilotRecordReady:
+			return Credential{Source: "oauth"}, nil
+		case copilotRecordUnusable:
+			return none(fmt.Sprintf("no credential (the GitHub Copilot sign-in record for %q cannot be used; run `evener github-copilot login --instance %s`)", rec.name, rec.name))
+		default:
+			return none(fmt.Sprintf("no credential (run `evener github-copilot login --instance %s`)", rec.name))
+		}
 	case AuthGCPADC:
 		// A credential JSON stored under the instance name (a service-account
 		// key or an authorized_user file the hub accepted) outranks the ADC
@@ -1107,7 +1194,8 @@ func (r *Registry) computeInstances() {
 		if !ok {
 			pos = custom
 		}
-		r.instances[name] = &instance{name: name, rec: rec, rank: pos}
+		t := r.connectionTransport(rec)
+		r.instances[name] = &instance{name: name, rec: rec, rank: pos, autoSelectable: r.authReadyToLaunch(name, t)}
 	}
 	for id, rec := range r.curated {
 		if rec.head.Implicit == nil || !*rec.head.Implicit || rec.head.Hidden {
@@ -1116,15 +1204,28 @@ func (r *Registry) computeInstances() {
 		if _, shadowed := r.explicit[id]; shadowed {
 			continue
 		}
-		t := r.listingTransport(rec)
-		if cred, _ := r.credential(rec, t); cred.Source == "none" && t.Auth != AuthNone && t.Auth != AuthOptionalBearer {
+		t := r.connectionTransport(rec)
+		autoSelectable := true
+		if t.Auth == AuthOAuthGitHubCopilot {
+			// No record means the user never signed in. The row is listed
+			// only when `default` names it, so the explicit default reports
+			// the sign-in state instead of falling through to another
+			// provider; automatic selection skips it either way. A record
+			// that cannot launch stays listed for Settings to show and
+			// diagnose. The one record read answers both questions.
+			state := r.copilotAuthState(id)
+			if state == copilotRecordMissing && r.userDefault != id {
+				continue
+			}
+			autoSelectable = state == copilotRecordReady
+		} else if cred, _ := r.credential(rec, t); cred.Source == "none" && t.Auth != AuthNone && t.Auth != AuthOptionalBearer {
 			continue
 		}
 		pos, ok := rank[id]
 		if !ok {
 			pos = custom // pseudo-providers: after every default_order entry
 		}
-		r.instances[id] = &instance{name: id, rec: rec, implicit: true, rank: pos}
+		r.instances[id] = &instance{name: id, rec: rec, implicit: true, rank: pos, autoSelectable: autoSelectable}
 	}
 }
 
@@ -1177,9 +1278,9 @@ func (r *Registry) validateDefault() error {
 var errNoDefaultInstance = errors.New("no default instance: set `default` in providers.toml or export a provider key")
 
 // DefaultInstance picks the default instance (spec §5.1): `default` when it
-// is an instance here; else the first ranked instance with a default model.
-// A `default` that is a credential-less or hidden implicit id warns and
-// falls through.
+// is an instance here; else the first ranked instance with a default model
+// whose auth scheme reports a launchable credential. A `default` that is a
+// credential-less or hidden implicit id warns and falls through.
 func (r *Registry) DefaultInstance() (string, []string, error) {
 	var warnings []string
 	if r.userDefault != "" {
@@ -1202,19 +1303,28 @@ func (r *Registry) DefaultInstance() (string, []string, error) {
 	}
 	var without []string
 	for _, inst := range ranked {
-		if inst.rec.head.DefaultModel != "" {
+		if inst.rec.head.DefaultModel == "" {
+			without = append(without, inst.name)
+			continue
+		}
+		if inst.autoSelectable {
 			return inst.name, warnings, nil
 		}
-		without = append(without, inst.name)
 	}
-	first := ranked[0].name
-	return "", warnings, fmt.Errorf("%s has no default model; pass `%s/<model>` or set `default` (instances without one: %s)", first, first, strings.Join(without, ", "))
+	if len(without) == len(ranked) {
+		first := ranked[0].name
+		return "", warnings, fmt.Errorf("%s has no default model; pass `%s/<model>` or set `default` (instances without one: %s)", first, first, strings.Join(without, ", "))
+	}
+	return "", warnings, fmt.Errorf("%w: every instance with a default model has no usable credential", errNoDefaultInstance)
 }
 
 // Instances lists every instance in default ranking with its credential
-// source and warnings (spec §11.2). The auth scheme is the one the same
-// row-merged transport picks — the launch a bare instance name makes — so
-// a default row overriding auth moves the listing's scheme with it.
+// source and warnings (spec §11.2). The auth scheme and credential are the
+// connection's: a Copilot instance reports its account's configured
+// transport, whose roster fetch never resolves through the default generation
+// row, while every other scheme follows the bare launch's row-merged
+// transport, so a default row overriding auth moves the listing's scheme with
+// it.
 func (r *Registry) Instances() []Instance {
 	def, _, _ := r.DefaultInstance()
 	var out []Instance
@@ -1240,7 +1350,7 @@ func (r *Registry) Instance(name string) (Instance, bool) {
 // instanceView is one instance's listing row. Instances and Instance share it
 // so the single-row answer and the listing's row cannot drift.
 func (r *Registry) instanceView(inst *instance, def string) Instance {
-	t := r.listingTransport(inst.rec)
+	t := r.connectionTransport(inst.rec)
 	cred, warns := r.credential(inst.rec, t)
 	h := inst.rec.head
 	base := ""
@@ -1276,29 +1386,102 @@ func (r *Registry) HasInstance(name string) bool {
 // without any, which has neither.
 func (r *Registry) StateRoot() string { return r.stateRoot }
 
-// StrayOAuthRecords lists auth/<name>.json records under the state root
-// whose <name> is not an instance on the Codex transport (spec §9.5, §14.1).
-// Nothing reads such a record, so each notice says how to remove it.
-func (r *Registry) StrayOAuthRecords() []string {
+// CopilotSignature is the hub's view of one Copilot record value: the scheme
+// and instance that filed it, the stable GitHub account, and login health.
+// Token values, obtained-at, and expiry rotate under an unchanged account and
+// roster, so they never enter it.
+func CopilotSignature(record githubcopilot.AuthRecord, now time.Time) string {
+	health := "ready"
+	if record.NeedsLogin(now) {
+		health = "login-required"
+	}
+	return fmt.Sprintf("record\x01%s\x01%s\x01%s\x01%s", record.Instance, record.Scheme, record.AccountID, health)
+}
+
+// CopilotRawSignature is CopilotSignature for a record's raw bytes as the
+// record filed under instance: "corrupt" when the bytes do not parse or fail
+// that instance's validation. A caller that has just written the bytes under
+// the record lock can adopt exactly the record it wrote, rather than whatever
+// another writer lands after the lock is released.
+func CopilotRawSignature(instance string, raw []byte, now time.Time) string {
+	var record githubcopilot.AuthRecord
+	if err := json.Unmarshal(raw, &record); err != nil {
+		return "corrupt"
+	}
+	if err := record.Validate(); err != nil || record.Instance != instance {
+		return "corrupt"
+	}
+	return CopilotSignature(record, now)
+}
+
+// copilotRecordSignature is the on-disk view of one Copilot record: existence,
+// corruption, or the record's mint-free signature.
+func copilotRecordSignature(stateRoot, name string, now time.Time) string {
+	if stateRoot == "" {
+		return "missing"
+	}
+	raw, err := os.ReadFile(githubcopilot.AuthFilePath(stateRoot, name))
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		return "missing"
+	case err != nil:
+		return "corrupt"
+	}
+	return CopilotRawSignature(name, raw, now)
+}
+
+// CopilotAuthSignature reports each Copilot record under the state root by
+// instance name and mint-free signature. A sweep compares it with the previous
+// observation: an external login, logout, account switch, or corruption
+// changes an entry, while a token refresh the CLI saved in place does not.
+func (r *Registry) CopilotAuthSignature() map[string]string {
 	if r.stateRoot == "" {
 		return nil
 	}
-	dir := filepath.Join(r.stateRoot, "auth")
+	dir := filepath.Join(r.stateRoot, "auth", "github-copilot")
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil
 	}
-	var out []string
+	now := time.Now()
+	out := map[string]string{}
 	for _, e := range entries {
 		name, ok := strings.CutSuffix(e.Name(), ".json")
 		if !ok || e.IsDir() {
 			continue
 		}
-		if rec, found := r.recordFor(name); found && rec.head.Transport.Auth == AuthOAuthOpenAICodex {
-			continue
-		}
-		out = append(out, fmt.Sprintf("stray OAuth record %s: %q is not an instance on the Codex transport; remove it with `evener openai logout --instance %s`", filepath.Join(dir, e.Name()), name, name))
+		out[name] = copilotRecordSignature(r.stateRoot, name, now)
 	}
+	return out
+}
+
+// StrayOAuthRecords lists OAuth records under the state root whose name is not
+// an instance on the scheme that filed it (spec §9.5, §14.1): Codex records
+// live in auth/, Copilot records in auth/github-copilot/. Nothing reads such a
+// record, so each notice says how to remove it.
+func (r *Registry) StrayOAuthRecords() []string {
+	if r.stateRoot == "" {
+		return nil
+	}
+	var out []string
+	collect := func(dir, scheme, title, transport, logout string) {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			return
+		}
+		for _, e := range entries {
+			name, ok := strings.CutSuffix(e.Name(), ".json")
+			if !ok || e.IsDir() {
+				continue
+			}
+			if rec, found := r.recordFor(name); found && rec.head.Transport.Auth == scheme {
+				continue
+			}
+			out = append(out, fmt.Sprintf("%s %s: %q is not an instance on the %s transport; remove it with `evener %s logout --instance %s`", title, filepath.Join(dir, e.Name()), name, transport, logout, name))
+		}
+	}
+	collect(filepath.Join(r.stateRoot, "auth"), AuthOAuthOpenAICodex, "stray OAuth record", "Codex", "openai")
+	collect(filepath.Join(r.stateRoot, "auth", "github-copilot"), AuthOAuthGitHubCopilot, "stray Copilot OAuth record", "Copilot", "github-copilot")
 	sort.Strings(out)
 	return out
 }

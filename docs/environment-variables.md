@@ -64,6 +64,7 @@ build-llmcall` builds `./llmcall`; run that path or install it separately on you
 | `OPENAI_PROJECT_ID` | no | OpenAI project header for API-key requests. |
 | `ANTHROPIC_API_KEY` | yes | Anthropic API key. |
 | `ANTHROPIC_BASE_URL` | no | Anthropic API base URL override. |
+| `GITHUB_COPILOT_BASE_URL` | no | GitHub Copilot API base URL override (default https://api.githubcopilot.com). |
 | `GEMINI_API_KEY` | yes | Google Gemini API key; checked before GOOGLE_API_KEY. |
 | `GOOGLE_API_KEY` | yes | Google Gemini API key fallback. |
 | `GOOGLE_BASE_URL` | no | Google Gemini API base URL override. |
