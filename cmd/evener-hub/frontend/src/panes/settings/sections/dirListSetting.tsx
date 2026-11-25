@@ -29,12 +29,12 @@ import {
   ConfirmDialog,
   type DirectoryActions,
   FormRow,
-  PathField,
   type PathFieldKind,
   useToasts,
 } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import styles from "./dirListSetting.module.css";
+import { PathFieldWithPaths } from "./launchShared/fields";
 import { SectionGate } from "./sectionGate";
 import { useHostScopedLoad } from "./useConnectedEffect";
 
@@ -128,14 +128,13 @@ export function PathListEditor({
         renderAddField={({ value, onChange, disabled }) => (
           <div className={CLASS.addBlock}>
             <FormRow label={addLabel} htmlFor={addFieldId}>
-              <PathField
+              <PathFieldWithPaths
                 ariaLabel={addLabel}
-                directory={directory}
                 id={addFieldId}
                 value={value}
                 onChange={onChange}
                 kind={kind}
-                complete={complete}
+                paths={{ directory, complete }}
                 placeholder={addPlaceholder}
                 disabled={disabled}
               />
