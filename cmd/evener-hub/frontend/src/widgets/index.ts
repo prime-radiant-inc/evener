@@ -60,6 +60,8 @@ export { HoverCard } from "./hovercard";
 export type { IconButtonProps } from "./iconbutton";
 // --- primitives batch (W2T2) ---
 export { IconButton } from "./iconbutton";
+export type { ImageThumbnailProps } from "./imagethumbnail";
+export { ImageThumbnail } from "./imagethumbnail";
 export type { InlineNoticeLive, InlineNoticeProps, InlineNoticeTone } from "./inlinenotice";
 export { InlineNotice } from "./inlinenotice";
 export type { InputProps } from "./input";
@@ -78,6 +80,8 @@ export type { LoaderProps } from "./loader";
 export { Loader } from "./loader";
 export type { MarkdownProps } from "./markdown";
 export { Markdown, MarkdownBubble } from "./markdown";
+export type { MediaLightboxProps } from "./medialightbox";
+export { MediaLightbox } from "./medialightbox";
 export type { MenuEntry, MenuItem, MenuProps, MenuSeparator } from "./menu";
 export { isSeparator, Menu } from "./menu";
 export type { MermaidDiagramProps } from "./mermaid";

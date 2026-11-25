@@ -137,10 +137,6 @@
   background: var(--surface-1);
 }
 
-.lightboxImage {
-  composes: image from "../../../widgets/internal/lightbox.module.css";
-}
-
 .dimensionsOverlay {
   position: absolute;
   bottom: 0;

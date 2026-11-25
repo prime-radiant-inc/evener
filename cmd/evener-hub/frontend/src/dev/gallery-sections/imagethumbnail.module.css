@@ -1,0 +1,41 @@
+.thumb {
+  composes: frame from "../../widgets/internal/lightbox.module.css";
+  width: 96px;
+  overflow: hidden;
+  background: var(--surface-2);
+}
+
+.positionedThumb {
+  composes: thumb;
+  position: relative;
+}
+
+.image {
+  display: block;
+  width: 96px;
+  height: 96px;
+  object-fit: cover;
+}
+
+.caption {
+  display: block;
+  padding: 2px var(--space-1);
+  font-size: var(--font-size-caption);
+  color: var(--ink-mid);
+}
+
+.pending {
+  width: 96px;
+  height: 96px;
+  background: var(--surface-1);
+}
+
+.badge {
+  position: absolute;
+  inset: auto 0 0 0;
+  padding: 2px var(--space-1);
+  background: var(--surface-0);
+  color: var(--ink-hi);
+  font-size: var(--font-size-caption);
+  text-align: center;
+}
