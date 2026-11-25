@@ -277,9 +277,10 @@ func TestCopilotPrepareRequestInteractionHeaders(t *testing.T) {
 		{name: "no identity", req: llm.Request{Messages: []llm.Message{llm.User("hi")}}, wantIniti: "user"},
 		{name: "assistant tail is agent", req: llm.Request{Messages: []llm.Message{llm.User("hi"), llm.Assistant("ok")}}, wantIniti: "agent"},
 		{name: "tool result is agent", req: llm.Request{Messages: []llm.Message{llm.User("hi"), llm.ToolResultNamed("call-1", "tool", "done", false)}}, wantIniti: "agent"},
-		{name: "tool loop notes are agent", req: llm.Request{Messages: []llm.Message{llm.User("hi"), toolCall, llm.ToolResultNamed("call-1", "tool", "done", false), llm.User("notes")}}, wantIniti: "agent"},
-		{name: "skill after tool call is agent", req: llm.Request{Messages: []llm.Message{llm.User("hi"), toolCall, llm.User("skill")}}, wantIniti: "agent"},
-		{name: "new prompt and notes are user", req: llm.Request{Messages: []llm.Message{llm.Assistant("done"), llm.User("next"), llm.User("notes")}}, wantIniti: "user"},
+		{name: "tool loop notes are agent", req: llm.Request{Messages: []llm.Message{llm.User("hi"), toolCall, llm.ToolResultNamed("call-1", "tool", "done", false), llm.UserMachinery("notes")}}, wantIniti: "agent"},
+		{name: "skill after tool call is agent", req: llm.Request{Messages: []llm.Message{llm.User("hi"), toolCall, llm.UserMachinery("skill")}}, wantIniti: "agent"},
+		{name: "new prompt and notes are user", req: llm.Request{Messages: []llm.Message{llm.Assistant("done"), llm.User("next"), llm.UserMachinery("notes")}}, wantIniti: "user"},
+		{name: "follow-up prompt after tool result is user", req: llm.Request{Messages: []llm.Message{llm.User("hi"), toolCall, llm.ToolResultNamed("call-1", "tool", "done", false), llm.User("next")}}, wantIniti: "user"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

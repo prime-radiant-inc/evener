@@ -597,6 +597,9 @@ func TestNotesContextBlockContainsNotesAndURLs(t *testing.T) {
 	if len(s.history) != 1 || s.history[0].Kind != schema.TurnNotesContext {
 		t.Fatalf("history kinds = %+v, want one NOTES_CONTEXT turn", s.history)
 	}
+	if len(s.history[0].Message.Content) != 1 || !s.history[0].Message.Content[0].Machinery {
+		t.Fatal("notes projection must be marked as session machinery, not user-authored input")
+	}
 }
 
 // TestNotesContextBlockEscapesOnlyTheModelCopy pins both halves of the split:

@@ -82,8 +82,12 @@ func TestSwapEnvAndRefresh_UpdatesEnvInfoAndPromptCache(t *testing.T) {
 	if _, err := sess.injectPostToolSteering(t.Context(), nil, nil, &toolSigs, &toolSigFailed); err != nil {
 		t.Fatalf("injectPostToolSteering: %v", err)
 	}
-	if block := lastTurnOfKind(t, sess, schema.TurnEnvironment).Message.Text(); !strings.Contains(block, repoDir) || !strings.Contains(block, "feature-branch") {
+	environment := lastTurnOfKind(t, sess, schema.TurnEnvironment)
+	if block := environment.Message.Text(); !strings.Contains(block, repoDir) || !strings.Contains(block, "feature-branch") {
 		t.Fatalf("this turn's environment context does not name the swapped cwd and branch:\n%s", block)
+	}
+	if len(environment.Message.Content) != 1 || !environment.Message.Content[0].Machinery {
+		t.Fatal("environment context must be marked as session machinery, not user-authored input")
 	}
 }
 

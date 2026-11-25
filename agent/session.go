@@ -3455,7 +3455,7 @@ func (s *Session) appendEnvironmentContextWithPlacement(publishEvent, beforeTrai
 
 	// Persist the identity with the entry. Model history can be compacted, so
 	// its length cannot name a durable transcript turn.
-	turn := schema.NewTurn(schema.TurnEnvironment, llm.User(block))
+	turn := schema.NewTurn(schema.TurnEnvironment, llm.UserMachinery(block))
 	turn.StableTurnID = "turn_environment_" + ulid.Make().String()
 	// The environment tracker is a durability owner: it may only claim the
 	// model saw a turn once that turn is a record, or a restart renders every

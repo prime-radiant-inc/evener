@@ -565,7 +565,7 @@ func (s *Session) admitSkillActivationBatch(batch *skillActivationBatch) error {
 			Identity:         identity,
 			Status:           "pending",
 		}
-		carrier := schema.NewTurn(schema.TurnSystem, llm.User(item.Rendered.Content))
+		carrier := schema.NewTurn(schema.TurnSystem, llm.UserMachinery(item.Rendered.Content))
 		carrier.SkillState = &schema.SkillTurnState{
 			Outcomes:    []schema.SkillActivationOutcome{outcome},
 			Obligations: []schema.SkillDeliveryObligation{obligation},

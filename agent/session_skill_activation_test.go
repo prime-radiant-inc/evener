@@ -1499,6 +1499,11 @@ func TestSkillActivation_AdmissionSaveFailureAdmitsNothing(t *testing.T) {
 	if err := s.admitSkillActivationBatch(batch); err != nil {
 		t.Fatalf("retry after repair: %v", err)
 	}
+	for _, turn := range currentHistory(t, s) {
+		if turn.SkillState != nil && len(turn.Message.Content) > 0 && !turn.Message.Content[0].Machinery {
+			t.Fatal("skill carrier must be marked as session machinery, not user-authored input")
+		}
+	}
 	if got := lifecycleObligations(s); len(got) != 1 {
 		t.Fatalf("retry admission obligations = %+v, want exactly one", got)
 	}

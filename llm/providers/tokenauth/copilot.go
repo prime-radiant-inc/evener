@@ -131,21 +131,32 @@ func (c *Copilot) PrepareRequest(_ context.Context, httpReq *http.Request, _ map
 func (*Copilot) RequiresStreamingComplete() bool { return false }
 
 // copilotInitiator reports whether the latest conversational input is the
-// user's message or a tool-driven step. A trailing user-role run can contain
-// harness notes or skill carriers, so what precedes that run determines its
-// initiator. System and developer messages are not conversational input.
+// user's message or a tool-driven step. A trailing user-role run is agent-only
+// when every message is session machinery and it follows a tool-driven step.
+// Any user-authored message makes the run user-initiated. System and developer
+// messages are not conversational input.
 func copilotInitiator(messages []llm.Message) string {
 	userRun := false
+	userAuthored := false
 	for _, message := range slices.Backward(messages) {
 		switch message.Role {
 		case llm.RoleUser:
 			userRun = true
+			if copilotUserAuthored(message) {
+				userAuthored = true
+			}
 		case llm.RoleAssistant:
-			if userRun && !copilotHasToolCall(message) {
+			if userRun {
+				if !userAuthored && copilotHasToolCall(message) {
+					return "agent"
+				}
 				return "user"
 			}
 			return "agent"
 		case llm.RoleTool:
+			if userRun && userAuthored {
+				return "user"
+			}
 			return "agent"
 		}
 	}
@@ -153,6 +164,18 @@ func copilotInitiator(messages []llm.Message) string {
 		return "user"
 	}
 	return ""
+}
+
+func copilotUserAuthored(message llm.Message) bool {
+	if len(message.Content) == 0 {
+		return true
+	}
+	for _, part := range message.Content {
+		if !part.Machinery {
+			return true
+		}
+	}
+	return false
 }
 
 func copilotHasToolCall(message llm.Message) bool {
