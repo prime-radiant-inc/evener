@@ -166,6 +166,7 @@ function DelegateSendBody(props: ToolRenderProps) {
             name={target === "" ? "Agent → delegate" : `Agent → ${target}`}
             timeIso={item.startedAt}
             opensExchange={false}
+            markdown={false}
             actions={<CopyButton text={message} label="Copy message" />}
           />
         </section>
@@ -183,6 +184,7 @@ function DelegateSendBody(props: ToolRenderProps) {
               speaker="agent"
               name={target === "" ? `Delegate, ${label}` : `${target} (delegate, ${label})`}
               opensExchange={false}
+              markdown={false}
               actions={<CopyButton text={text} label={`Copy ${label}`} />}
             />
           </section>
@@ -196,6 +198,7 @@ function DelegateSendBody(props: ToolRenderProps) {
             name={target === "" ? "Delegate" : `${target} (delegate)`}
             timeIso={item.completedAt ?? item.startedAt}
             opensExchange={false}
+            markdown={false}
             actions={<CopyButton text={response} label="Copy response" />}
           />
         </section>

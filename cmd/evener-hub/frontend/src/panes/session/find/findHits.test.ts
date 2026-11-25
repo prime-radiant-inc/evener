@@ -222,22 +222,44 @@ test("a hit goes by the entry's display key, which outlives the item's id", () =
   expect(findHits([turnRow("t", [streamed])], "needle")).toEqual([{ key: "round:3", itemId: "item_9", rowIndex: 0 }]);
 });
 
-test("a reply is searched as it reads, not as its Markdown is written", () => {
+test("replies, prompts and user steers are searched as rendered Markdown, not raw source", () => {
   const reply =
     'The build **fail**ed in `main.go`, see [the log](https://example.test/log).\n\n- first point\n- second point\n\n```\nraw **stars** stay\n```\n\n<div class="fake-root">nested</div>';
-  const rows = [turnRow("t", [message("a", reply), message("u", "keep my **stars**", "userMessage")])];
+  const prompt = "keep my **stars** and [my link](https://prompt.test/doc), `raw **code**`";
+  const userSteer: ItemEntry = {
+    kind: "item",
+    id: "s",
+    turnId: "t",
+    sourceIndex: 2,
+    isMessage: false,
+    item: {
+      id: "s",
+      turnId: "t",
+      type: "steering",
+      source: "user",
+      text: "steer **bold** to [notes](https://steer.test/notes)",
+      status: "completed",
+    } as ItemModel,
+  };
+  const rows = [turnRow("t", [message("a", reply), message("u", prompt, "userMessage"), userSteer])];
   const keys = (query: string) => findHits(rows, query).map((hit) => hit.key);
   expect(keys("build failed in main.go, see the log")).toEqual(["a"]);
+  expect(keys("keep my stars and my link")).toEqual(["u"]);
+  expect(keys("steer bold to notes")).toEqual(["s"]);
   // Formatting marks are not words, and a link's address is not on the page.
   expect(keys("**fail**")).toEqual([]);
   expect(keys("example.test")).toEqual([]);
+  expect(keys("prompt.test")).toEqual([]);
+  expect(keys("steer.test")).toEqual([]);
+  expect(keys("**bold**")).toEqual([]);
   // Separate list items are separate words.
   expect(keys("first point second point")).toEqual(["a"]);
   expect(keys("pointsecond")).toEqual([]);
-  // Code, authored HTML and a prompt are shown as written.
+  // Code and authored HTML stay literal in both replies and prompts.
   expect(keys("raw **stars** stay")).toEqual(["a"]);
   expect(keys("fake-root")).toEqual(["a"]);
-  expect(keys("**stars**")).toEqual(["a", "u"]);
+  expect(keys("**stars**")).toEqual(["a"]);
+  expect(keys("raw **code**")).toEqual(["u"]);
 });
 
 test("an in-progress reply searches auto-closed Markdown as its live row reads", () => {
@@ -568,18 +590,22 @@ test("a fenced block's language label is on screen and searched", () => {
   expect(findHits(rows, "gofunc")).toEqual([]);
 });
 
-test("a character reference in a reply is searched as the character it shows", () => {
+test("a character reference in a reply or prompt is searched as the character it shows", () => {
   const reply = "The R&amp;D report costs &#36;5 &lt;today&gt;.\n\n`a &amp; b` stays code, and \\&amp; stays escaped.";
-  const rows = [turnRow("t", [message("a", reply), message("u", "typed &amp; kept", "userMessage")])];
+  const rows = [
+    turnRow("t", [message("a", reply), message("u", "typed &amp; rendered, `kept &amp; literal`", "userMessage")]),
+  ];
   const keys = (query: string) => findHits(rows, query).map((hit) => hit.key);
   expect(keys("R&D report costs $5 <today>")).toEqual(["a"]);
+  expect(keys("typed & rendered")).toEqual(["u"]);
   // The reference's own letters are not on the page.
   expect(keys("R&amp;D")).toEqual([]);
   expect(keys("report costs &#36;")).toEqual([]);
-  // Code, an escaped reference and a prompt show theirs as written.
+  expect(keys("typed &amp; rendered")).toEqual([]);
+  // Code and escaped references stay as written in both replies and prompts.
   expect(keys("a &amp; b")).toEqual(["a"]);
   expect(keys("&amp; stays escaped")).toEqual(["a"]);
-  expect(keys("typed &amp; kept")).toEqual(["u"]);
+  expect(keys("kept &amp; literal")).toEqual(["u"]);
   // An unterminated reference stays literal in the rendered reply.
   const malformed = [turnRow("t", [message("unfinished", "costs &#36")])];
   expect(findHits(malformed, "$")).toEqual([]);

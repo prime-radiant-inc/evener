@@ -256,13 +256,13 @@ test("an effect replay with unchanged source preserves visible text", () => {
   expect(screen.getAllByTestId("entity-trigger")).toHaveLength(1);
 });
 
-test("user message text links via the string form", () => {
-  const text = `${JOB},${JOB}`;
-  render(userMessage(text));
+test("user message prose links entity ids while inline and fenced code stay literal", () => {
+  const text = `${JOB},${JOB} and \`${JOB}\`\n\n\`\`\`\n${JOB}\n\`\`\``;
+  const { container } = render(userMessage(text));
 
-  expect(screen.getByTestId("user-bubble").textContent).toBe(text);
   expect(screen.getAllByTestId("entity-trigger")).toHaveLength(2);
   expect(screen.getAllByRole("button", { name: "Open job log" })).toHaveLength(2);
+  expect([...container.querySelectorAll("code")].map((node) => node.textContent)).toEqual([JOB, JOB]);
 });
 
 test("an unresolved id in prose stays plain text with no button", () => {

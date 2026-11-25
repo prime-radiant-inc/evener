@@ -54,10 +54,18 @@ test("is memoized ignoring turn identity - a fresh turn object on every streamin
 // internal/apptranscript/apptranscript.go:225-228): steering the human
 // typed themselves is indistinguishable from a normal prompt.
 
-test('source "user" renders as a normal user message bubble (the "You" tag), not the divider', () => {
-  render(<SteeringItem item={item({ text: "focus on the tests", source: "user" })} turn={turn} live={false} />);
+test('source "user" renders as a normal user message bubble (the "You" tag) with Markdown, not the divider', () => {
+  render(
+    <SteeringItem
+      item={item({ text: "focus on **the tests** in `parser.ts`", source: "user" })}
+      turn={turn}
+      live={false}
+    />,
+  );
   expect(screen.getByTestId("user-message-item").dataset.speaker).toBe("user");
-  expect(screen.getByText("focus on the tests")).toBeTruthy();
+  const bubble = screen.getByTestId("user-bubble");
+  expect(bubble.querySelector("strong")?.textContent).toBe("the tests");
+  expect(bubble.querySelector("code")?.textContent).toBe("parser.ts");
   expect(screen.queryByTestId("steering-item")).toBeNull();
 });
 

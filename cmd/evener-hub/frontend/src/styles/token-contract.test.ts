@@ -1415,15 +1415,16 @@ for (const [path, text] of Object.entries(STYLESHEETS)) {
 // --prose-font-size is the Markdown widget's reading-step pin (see
 // widgets/markdown/markdown.module.css): a surface declares it ONLY to keep
 // the shared prose step where the widget's 1em fallback would otherwise
-// inherit the host's own size. Two reading surfaces own it today - the agent
-// message (.bubble) and the doc pane (.markdown). Every other Markdown host
-// composes with its host by design; a new declaration means a new reading
-// surface, and that decision belongs in this list, not in a module quietly.
-// The value assertion keeps "who" and "what" in one guard.
+// inherit the host's own size. Three reading surfaces own it today - the agent
+// message (.bubble), the user message (.body), and the doc pane (.markdown).
+// Every other Markdown host composes with its host by design; a new declaration
+// means a new reading surface, and that decision belongs in this list, not in a
+// module quietly. The value assertion keeps "who" and "what" in one guard.
 test("--prose-font-size is declared only by reading-surface hosts, at the prose step", () => {
   expect([...PROSE_PIN_DECLARERS.keys()].sort()).toEqual([
     "panes/doc/docpane.module.css",
     "panes/session/transcript/messages/agentmessageitem.module.css",
+    "panes/session/transcript/messages/usermessageitem.module.css",
   ]);
   for (const values of PROSE_PIN_DECLARERS.values()) {
     expect(values).toEqual(["var(--font-size-prose)"]);
