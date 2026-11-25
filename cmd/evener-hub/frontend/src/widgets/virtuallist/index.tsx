@@ -58,6 +58,8 @@ export interface VirtualListHandle {
    * reading point.
    */
   noteBackwardMovement?: () => void;
+  /** Offset written by the list's own programmatic scroll while its scroll event is pending, or null. */
+  pendingProgrammaticScrollTop?: () => number | null;
 }
 
 export interface VirtualListProps {
@@ -229,6 +231,7 @@ export function VirtualList({
   const measuredHeightsRef = useRef(new WeakMap<Element, number>());
   const publishOffsetRef = useRef<((offset: number, isScrolling: boolean) => void) | null>(null);
   const backwardMovementRef = useRef(false);
+  const programmaticScrollTopRef = useRef<number | null>(null);
   const readingPointRef = useRef<
     | { row: number; id: string; offset: number; offsetInRow: number; height: number; width: number; viewport: number }
     | undefined
@@ -279,18 +282,6 @@ export function VirtualList({
             if (changed) requestGeometryCommit();
           });
         },
-        observeElementOffset: (
-          instance: Virtualizer<HTMLDivElement, HTMLDivElement>,
-          publish: (offset: number, isScrolling: boolean) => void,
-        ) => {
-          publishOffsetRef.current = publish;
-          const dispose = observeElementOffset(instance, publish);
-          return () => {
-            if (publishOffsetRef.current === publish) publishOffsetRef.current = null;
-            backwardMovementRef.current = false;
-            dispose?.();
-          };
-        },
       }
     : {};
 
@@ -311,6 +302,19 @@ export function VirtualList({
       recordReadingPoint();
       onChange?.(instance, sync);
     },
+    observeElementOffset: (instance, publish) => {
+      publishOffsetRef.current = publish;
+      const dispose = observeElementOffset(instance, (offset, isScrolling) => {
+        if (isScrolling) programmaticScrollTopRef.current = null;
+        publish(offset, isScrolling);
+      });
+      return () => {
+        if (publishOffsetRef.current === publish) publishOffsetRef.current = null;
+        backwardMovementRef.current = false;
+        programmaticScrollTopRef.current = null;
+        dispose?.();
+      };
+    },
     ...geometryOptions,
     ...(anchorToEnd
       ? {
@@ -321,19 +325,18 @@ export function VirtualList({
           scrollEndThreshold: followEnd ? END_ANCHOR_THRESHOLD_PX : -1,
         }
       : {}),
-    ...(keepsPlaceOnMeasure
-      ? {
-          scrollToFn: (offset, options, instance) => {
-            elementScroll(offset, options, instance);
-            const port = instance.scrollElement;
-            const target = offset + (options.adjustments ?? 0);
-            clampedScrollRef.current =
-              port && target > Math.max(0, port.scrollHeight - port.clientHeight)
-                ? { offset: target, clampedOffset: port.scrollTop }
-                : null;
-          },
-        }
-      : {}),
+    scrollToFn: (offset, options, instance) => {
+      const port = instance.scrollElement;
+      const before = port?.scrollTop;
+      elementScroll(offset, options, instance);
+      if (port && port.scrollTop !== before) programmaticScrollTopRef.current = port.scrollTop;
+      if (!keepsPlaceOnMeasure) return;
+      const target = offset + (options.adjustments ?? 0);
+      clampedScrollRef.current =
+        port && target > Math.max(0, port.scrollHeight - port.clientHeight)
+          ? { offset: target, clampedOffset: port.scrollTop }
+          : null;
+    },
   });
   const items = virtualizer.getVirtualItems();
   const totalSize = virtualizer.getTotalSize();
@@ -357,12 +360,14 @@ export function VirtualList({
     const port = scrollRef.current;
     if (pending && port && port.scrollTop === pending.clampedOffset && virtualizer.scrollOffset === pending.offset) {
       port.scrollTop = pending.offset;
+      programmaticScrollTopRef.current = port.scrollTop;
     }
   });
 
   const cancelPendingScroll = () => {
     clampedScrollRef.current = null;
     backwardMovementRef.current = false;
+    programmaticScrollTopRef.current = null;
     const port = scrollRef.current;
     if (!port) return;
     virtualizer.scrollToOffset(port.scrollTop, { align: "start", behavior: "auto" });
@@ -371,6 +376,7 @@ export function VirtualList({
   const syncReaderMovement = (beforeOffset: number) => {
     const port = scrollRef.current;
     if (!port || !Number.isFinite(beforeOffset) || port.scrollTop === beforeOffset) return;
+    programmaticScrollTopRef.current = null;
     const afterOffset = port.scrollTop;
     backwardMovementRef.current = afterOffset < beforeOffset;
     // Observations preserve signed movement without replacing a newer command.
@@ -517,6 +523,7 @@ export function VirtualList({
       noteBackwardMovement: () => {
         backwardMovementRef.current = true;
       },
+      pendingProgrammaticScrollTop: () => programmaticScrollTopRef.current,
       getVisibleRange: () => {
         const items = virtualizer.getVirtualItems();
         const first = items[0];

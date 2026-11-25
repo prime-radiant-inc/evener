@@ -18,6 +18,8 @@ export interface UseReaderGesturesOptions {
   }>;
   /** The previous measurement's geometry; a wheel is attributed to the position the reader left. */
   lastScrollGeometryRef: RefObject<ScrollMetrics>;
+  /** Offset written directly by a programmatic scroll while its scroll event is pending, or null. */
+  programmaticScrollTopRef: RefObject<number | null>;
   /** Cleared when the reader takes over: their gesture supersedes these pending requests. */
   pendingViewAnchorRef: RefObject<PendingViewAnchor | null>;
   pendingBottomJumpRef: RefObject<{ element: HTMLElement; scrollHeight: number; clientHeight: number } | null>;
@@ -38,6 +40,7 @@ export function useReaderGestures({
   readerGestureRef,
   readerCallbacksRef,
   lastScrollGeometryRef,
+  programmaticScrollTopRef,
   pendingViewAnchorRef,
   pendingBottomJumpRef,
   pendingInitialEndRef,
@@ -76,6 +79,7 @@ export function useReaderGestures({
     (readerIntent = true, beforeOffset?: number, frames = 1) => {
       const el = listRef.current?.getScrollElement();
       if (readerIntent && el) {
+        programmaticScrollTopRef.current = null;
         pendingViewAnchorRef.current = null;
         pendingBottomJumpRef.current = null;
         readerCallbacksRef.current.onReaderIntent?.();
@@ -270,7 +274,24 @@ export function useReaderGestures({
       const port = listRef.current?.getScrollElement();
       if (!port || event.currentTarget !== port) return;
       const metrics = measure(port);
-      if (!verticalInputCanMovePort(port, metrics, event.target, event.deltaY > 0 ? 1 : -1)) return;
+      const previous = lastScrollGeometryRef.current;
+      const direction = event.deltaY > 0 ? 1 : -1;
+      const programmaticAtOffset =
+        programmaticScrollTopRef.current === metrics.scrollTop ||
+        listRef.current?.pendingProgrammaticScrollTop?.() === metrics.scrollTop;
+      // A passive wheel handler can run after the compositor has already
+      // scrolled the port from a positive offset to 0, before the scroll event
+      // lands. Use the pre-wheel sample for the movement check only when
+      // heights held and no pending programmatic write accounts for that offset.
+      const reachedTopBeforeHandler =
+        direction === -1 &&
+        metrics.scrollTop <= 0 &&
+        previous.scrollTop > 0 &&
+        metrics.scrollHeight === previous.scrollHeight &&
+        metrics.clientHeight === previous.clientHeight &&
+        !programmaticAtOffset;
+      if (!verticalInputCanMovePort(port, reachedTopBeforeHandler ? previous : metrics, event.target, direction))
+        return;
       // An upward wheel from the end is the reader leaving it, and says so
       // before the browser's own scroll event reaches the listener. Record the
       // position the previous measurement saw, not the live offset: the
@@ -280,9 +301,9 @@ export function useReaderGestures({
       // keeps the ordinary one-frame marker. The compositor can have applied
       // the wheel before this passive handler runs, so the previous measurement
       // being at the bottom also counts.
-      if (event.deltaY < 0 && (isAtBottom(metrics) || isAtBottom(lastScrollGeometryRef.current)))
-        readerCallbacksRef.current.onReaderAway?.(lastScrollGeometryRef.current.scrollTop);
-      markGesture(true, lastScrollGeometryRef.current.scrollTop);
+      if (event.deltaY < 0 && (isAtBottom(metrics) || isAtBottom(previous)))
+        readerCallbacksRef.current.onReaderAway?.(previous.scrollTop);
+      markGesture(true, previous.scrollTop);
     },
     [listRef, markGesture, measure],
   );

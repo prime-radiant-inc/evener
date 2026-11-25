@@ -309,6 +309,35 @@ test("a retained reader completes a clamped write when a row above it grows", as
   }
 });
 
+test("a settled programmatic scroll to top does not mask a later upward wheel reaching top", async () => {
+  const scene = mountReaderScene("wheel-top-after-programmatic-settle");
+  try {
+    await scene.start();
+    const port = scene.port();
+    await act(async () => {
+      scene.listRef.current?.scrollToOffset?.(0);
+      fireEvent.scroll(port);
+    });
+    await act(async () => {
+      port.scrollTop = 900;
+      fireEvent.scroll(port);
+    });
+    await scene.holdReflow();
+    const revision = scene.view.positioningRevision;
+    await act(async () => {
+      port.scrollTop = 0;
+      fireEvent.wheel(port, { deltaY: -900 });
+      expect(scene.view.positioningRevision).toBeGreaterThan(revision);
+      fireEvent.scroll(port);
+    });
+    await act(async () => scene.external.notify());
+    expect(port.scrollTop).toBe(0);
+  } finally {
+    scene.dispose();
+    resetTranscriptViewRegistryForTests();
+  }
+});
+
 test.each([
   ...["button", "summary", "editor", "editable", "prevented", "composing", "ctrl", "alt", "meta", "nested"].map(
     (input) => ({
@@ -420,6 +449,94 @@ test.each(["selection", "Tab", "editor", "modifier", "horizontal wheel", "ctrl w
     }
   },
 );
+
+test("upward wheel reaching top before passive handler wins over held width reflow", async () => {
+  const scene = mountReaderScene("wheel-top-before-handler");
+  try {
+    await scene.start();
+    expect(scene.port().scrollTop).toBe(900);
+    await scene.holdReflow();
+    const port = scene.port();
+    const revision = scene.view.positioningRevision;
+    await act(async () => {
+      port.scrollTop = 0;
+      fireEvent.wheel(port, { deltaY: -900 });
+      expect(scene.view.positioningRevision).toBeGreaterThan(revision);
+      fireEvent.scroll(port);
+    });
+    await act(async () => scene.external.notify());
+    expect(port.scrollTop).toBe(0);
+    expect(scene.capture()).toMatchObject({ anchorId: "current-entry", anchorOffset: 0 });
+    await act(async () => scene.remount());
+    await act(async () => scene.external.notify());
+    expect(scene.port().scrollTop).toBe(0);
+    expect(scene.capture()).toMatchObject({ anchorId: "current-entry", anchorOffset: 0 });
+  } finally {
+    scene.dispose();
+    resetTranscriptViewRegistryForTests();
+  }
+});
+
+test.each([
+  { name: "stationary outward wheel at top", start: 0, wantScrollTop: 0 },
+  { name: "nested scroller wheel after top drop", start: 900, wantScrollTop: 225 },
+  { name: "programmatic scroll to top followed by outward wheel", start: 900, wantScrollTop: 225 },
+  { name: "programmatic scrollToIndex to top followed by outward wheel", start: 900, wantScrollTop: 225 },
+  { name: "ctrl wheel after top drop", start: 900, wantScrollTop: 225 },
+  { name: "shift wheel after top drop", start: 900, wantScrollTop: 225 },
+  { name: "horizontal wheel after top drop", start: 900, wantScrollTop: 225 },
+] as const)("$name preserves pending width reflow", async ({ name, start, wantScrollTop }) => {
+  const scene = mountReaderScene(`wheel-top-control-${name}`);
+  try {
+    await scene.start(start);
+    const port = scene.port();
+    expect(port.scrollTop).toBe(start);
+    await scene.holdReflow();
+    const revision = scene.view.positioningRevision;
+    await act(async () => {
+      if (name === "stationary outward wheel at top") {
+        fireEvent.wheel(port, { deltaY: -900 });
+      } else if (name === "nested scroller wheel after top drop") {
+        const inner = document.createElement("div");
+        inner.style.overflowY = "auto";
+        Object.defineProperties(inner, {
+          scrollHeight: { value: 1000 },
+          clientHeight: { value: 100 },
+          scrollTop: { writable: true, value: 500 },
+        });
+        port.appendChild(inner);
+        port.scrollTop = 0;
+        fireEvent.wheel(inner, { deltaY: -900 });
+        inner.remove();
+      } else if (name === "programmatic scroll to top followed by outward wheel") {
+        scene.listRef.current?.scrollToOffset?.(0);
+        expect(port.scrollTop).toBe(0);
+        fireEvent.wheel(port, { deltaY: -900 });
+        fireEvent.scroll(port);
+      } else if (name === "programmatic scrollToIndex to top followed by outward wheel") {
+        scene.listRef.current?.scrollToIndex(0, { align: "start" });
+        expect(port.scrollTop).toBe(0);
+        fireEvent.wheel(port, { deltaY: -900 });
+        fireEvent.scroll(port);
+      } else if (name === "ctrl wheel after top drop") {
+        port.scrollTop = 0;
+        fireEvent.wheel(port, { deltaY: -900, ctrlKey: true });
+      } else if (name === "shift wheel after top drop") {
+        port.scrollTop = 0;
+        fireEvent.wheel(port, { deltaY: -900, shiftKey: true });
+      } else if (name === "horizontal wheel after top drop") {
+        port.scrollTop = 0;
+        fireEvent.wheel(port, { deltaX: -900, deltaY: 0 });
+      }
+      scene.external.notify();
+    });
+    expect(scene.view.positioningRevision).toBe(revision);
+    expect(port.scrollTop).toBe(wantScrollTop);
+  } finally {
+    scene.dispose();
+    resetTranscriptViewRegistryForTests();
+  }
+});
 
 // description: a call with a stated intent projects as an ordinary item
 // entry at the tool-call levels; an intent-less call projects as a
