@@ -387,7 +387,25 @@ func validateNavigationManifestRaw(raw json.RawMessage) bool {
 		return false
 	}
 	for _, source := range sources {
-		if !navigationRawObjectExact(source, []string{"id", "label", "kind", "online"}) {
+		if !navigationRawObjectWithOptional(source, []string{"id", "label", "kind", "online"}, []string{"threadStartIdempotency"}) {
+			return false
+		}
+	}
+	return true
+}
+
+func navigationRawObjectWithOptional(raw json.RawMessage, required, optional []string) bool {
+	var object map[string]json.RawMessage
+	if json.Unmarshal(raw, &object) != nil {
+		return false
+	}
+	for _, field := range required {
+		if _, ok := object[field]; !ok {
+			return false
+		}
+	}
+	for field := range object {
+		if !slices.Contains(required, field) && !slices.Contains(optional, field) {
 			return false
 		}
 	}
@@ -395,16 +413,7 @@ func validateNavigationManifestRaw(raw json.RawMessage) bool {
 }
 
 func navigationRawObjectExact(raw json.RawMessage, fields []string) bool {
-	var object map[string]json.RawMessage
-	if json.Unmarshal(raw, &object) != nil || len(object) != len(fields) {
-		return false
-	}
-	for _, field := range fields {
-		if _, ok := object[field]; !ok {
-			return false
-		}
-	}
-	return true
+	return navigationRawObjectWithOptional(raw, fields, nil)
 }
 
 func navigationManifestValuesValid(metadata hubapi.NavigationManifest) bool {

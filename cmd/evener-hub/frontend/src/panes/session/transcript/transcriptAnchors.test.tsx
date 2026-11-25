@@ -154,7 +154,11 @@ test.each(["input", "close", "reset", "replacement"] as const)(
         expect(bv.positioningRevision).toBe(neighborRevision);
         expect(ap.scrollTop).toBe(100);
       } else {
-        av.setReadable(false);
+        // Readability publishes the reader's activation to React state, so this
+        // transition updates outside the renderer and needs act.
+        await act(async () => {
+          av.setReadable(false);
+        });
         expect(av.getCapture()).toMatchObject({ anchorOffset: -900 });
         const replacement: OpenPaneRecord = { ...a, params: { ref: "shared" } };
         await act(async () => {
@@ -632,9 +636,9 @@ test.each([
       await waitFor(() =>
         expect(captureTranscriptView("width-only")).toMatchObject({ anchorId: "current-entry", anchorOffset: -want }),
       );
-      expect(port.querySelector('[data-view-anchor-id="current-entry"] [data-testid="user-bubble"]')?.textContent).toBe(
-        "current",
-      );
+      expect(
+        port.querySelector('[data-view-anchor-id="current-entry"] [data-testid="user-bubble"]')?.textContent?.trim(),
+      ).toBe("current");
     } finally {
       mounted?.unmount();
       external.restore();
@@ -701,9 +705,9 @@ test.each([
         anchorOffset: -want,
         followingBottom: false,
       });
-      expect(port.querySelector('[data-view-anchor-id="current-entry"] [data-testid="user-bubble"]')?.textContent).toBe(
-        "current",
-      );
+      expect(
+        port.querySelector('[data-view-anchor-id="current-entry"] [data-testid="user-bubble"]')?.textContent?.trim(),
+      ).toBe("current");
     } finally {
       mounted?.unmount();
       external.restore();
@@ -777,7 +781,7 @@ test.each([
     geometry.viewportHeight = 516;
     await act(async () => external.notify((target) => target === port));
     expect(Math.abs(port.scrollTop - reflowed)).toBeLessThanOrEqual(2);
-    expect(port.querySelector(`${selector} [data-testid="user-bubble"]`)?.textContent).toBe("current");
+    expect(port.querySelector(`${selector} [data-testid="user-bubble"]`)?.textContent?.trim()).toBe("current");
   } finally {
     mounted?.unmount();
     external.restore();
@@ -839,9 +843,9 @@ test("width-only reflow preserves useful content beside a Chat-filtered daemon s
         anchorOffset: -225,
       }),
     );
-    expect(port.querySelector('[data-view-anchor-id="current-entry"] [data-testid="user-bubble"]')?.textContent).toBe(
-      "current",
-    );
+    expect(
+      port.querySelector('[data-view-anchor-id="current-entry"] [data-testid="user-bubble"]')?.textContent?.trim(),
+    ).toBe("current");
   } finally {
     mounted?.unmount();
     external.restore();
@@ -896,7 +900,7 @@ test("width-only reflow preserves the first visible row beside a fractional pred
       anchorId: "current-entry",
       anchorOffset: before?.anchorOffset,
     });
-    expect(entry.querySelector('[data-testid="user-bubble"]')?.textContent).toBe("current");
+    expect(entry.querySelector('[data-testid="user-bubble"]')?.textContent?.trim()).toBe("current");
   } finally {
     mounted?.unmount();
     external.restore();
@@ -1004,9 +1008,9 @@ test.each(["zero width", "zero viewport", "zero row", "repeated widths"])(
       await waitFor(() =>
         expect(captureTranscriptView("recover")).toMatchObject({ anchorId: "current-entry", anchorOffset: -want }),
       );
-      expect(port.querySelector('[data-view-anchor-id="current-entry"] [data-testid="user-bubble"]')?.textContent).toBe(
-        "current",
-      );
+      expect(
+        port.querySelector('[data-view-anchor-id="current-entry"] [data-testid="user-bubble"]')?.textContent?.trim(),
+      ).toBe("current");
     } finally {
       mounted?.unmount();
       external.restore();
@@ -1171,9 +1175,9 @@ test("width-only reflow applies a real 300px prepend once", async () => {
     await waitFor(() =>
       expect(captureTranscriptView("reflow-prepend")).toMatchObject({ anchorId: "current-entry", anchorOffset: -450 }),
     );
-    expect(port.querySelector('[data-view-anchor-id="current-entry"] [data-testid="user-bubble"]')?.textContent).toBe(
-      "current",
-    );
+    expect(
+      port.querySelector('[data-view-anchor-id="current-entry"] [data-testid="user-bubble"]')?.textContent?.trim(),
+    ).toBe("current");
   } finally {
     mounted?.unmount();
     external.restore();
@@ -1259,9 +1263,9 @@ test("width-only reflow mounts its known source after shrink removes it from the
     await waitFor(() =>
       expect(captureTranscriptView("outside-reflow")).toMatchObject({ anchorId: "current-entry", anchorOffset: 0 }),
     );
-    expect(port.querySelector('[data-view-anchor-id="current-entry"] [data-testid="user-bubble"]')?.textContent).toBe(
-      "current",
-    );
+    expect(
+      port.querySelector('[data-view-anchor-id="current-entry"] [data-testid="user-bubble"]')?.textContent?.trim(),
+    ).toBe("current");
   } finally {
     mounted?.unmount();
     external.restore();
@@ -1419,9 +1423,9 @@ test.each([
         }),
       );
       expect(port.querySelector('[data-view-anchor-id="removed"]')).toBeNull();
-      expect(port.querySelector('[data-view-anchor-id="earlier-entry"] [data-testid="user-bubble"]')?.textContent).toBe(
-        "earlier",
-      );
+      expect(
+        port.querySelector('[data-view-anchor-id="earlier-entry"] [data-testid="user-bubble"]')?.textContent?.trim(),
+      ).toBe("earlier");
     } finally {
       mounted?.unmount();
       external.restore();

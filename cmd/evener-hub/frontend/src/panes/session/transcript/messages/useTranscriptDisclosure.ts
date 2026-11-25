@@ -1,5 +1,5 @@
 import { scopedDisclosureId } from "@evener/appwire-client";
-import { disclosureDefault, isDisclosureOpen } from "../../../../widgets/disclosure/disclosureStore";
+import { disclosureDefault, isDisclosureOpen } from "../../../../widgets";
 export function useTranscriptDisclosure(options: { scope: string; id: string; defaultOpen?: boolean }) {
   const key = scopedDisclosureId(options.scope, options.id);
   const fallback = (options.defaultOpen ?? false) || disclosureDefault(options.scope, options.id, false);

@@ -4,11 +4,8 @@
  * avatar tile beside a content column whose first line is the speaker header
  * (avatar + "You" + clock time, actions right-anchored) - so speaker
  * identity reads as structure, the way a chat app's avatar column does.
- * The user's words sit on a paper slip (see .body): header structure plus
- * slip containment, not header alone. There is
- * deliberately NO breakpoint in this file: the avatar stays inline in the
- * header row at every width; the responsive gutter media query belongs to
- * turnblock.module.css (decision 4).
+ * The user's words sit directly on the page. On a narrow screen they run
+ * full-width below the speaker row, just as the agent's words do.
  *
  * Decision 5, recorded: the body text is --ink-hi, reversing the old
  * tiered-density demotion ("the user knows what they said", which muted it
@@ -89,29 +86,20 @@
   opacity: 1;
 }
 
-/* The user's own words sit on a paper slip: the structural surface, one
- * hairline and the quiet card lift, hugging the content rather than spanning
- * the column (width: fit-content + max-width, so a one-word message gets a
- * one-word slip). Accent is reserved for focus, links and the primary action;
- * the slip reads as the reader's own note rather than a second call to act.
- * The top-left corner is the tight one: it points at the speaker's avatar,
- * which sits up and to the left of the slip at every width, so the slip
- * reads as that speaker's. Serif prose stays. */
+/* Text and attachments share a column. Only a message awaiting delivery
+ * needs a boundary of its own. */
 .body {
   display: flex;
   flex-direction: column;
   gap: var(--space-1);
-  width: fit-content;
+  align-self: stretch;
+  width: 100%;
   /* Bounded by the column (--session-measure on body), not a percentage of
    * the pane - see agentmessageitem.module.css's .bubble. */
   max-width: 100%;
-  padding: var(--space-2) var(--space-3);
-  background: var(--surface-1);
-  border: 1px solid var(--edge);
-  /* The tight chip corner toward the avatar; the other three take the card
-   * corner, so a one-line slip still reads as a rounded note. */
-  border-radius: var(--radius-chip) var(--radius-pane) var(--radius-pane) var(--radius-pane);
-  box-shadow: var(--shadow-card);
+  /* Pin the shared prose step for Markdown's composed root, matching
+   * agentmessageitem.module.css's .bubble. */
+  --prose-font-size: var(--font-size-prose);
 }
 
 .text {
@@ -170,7 +158,13 @@
 }
 
 .provisional .body {
+  align-self: flex-start;
+  width: fit-content;
+  padding: var(--space-2) var(--space-3);
+  background: var(--surface-1);
   border: 1px dashed var(--accent);
+  border-radius: var(--radius-chip) var(--radius-pane) var(--radius-pane) var(--radius-pane);
+  box-shadow: var(--shadow-card);
   position: relative;
 }
 

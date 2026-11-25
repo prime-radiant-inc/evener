@@ -43,6 +43,32 @@ it("restores a complete creation draft from SQLite for its hub only", () => {
 		db.close();
 	}
 });
+
+it("round-trips clientMutationId, decodes legacy drafts without one, and rejects non-string values", () => {
+	const { db, adapter, repository } = fixture();
+	try {
+		repository().write("hub-a", { ...draft, unconfirmed: true, clientMutationId: "mut-native-1" });
+		expect(repository().read("hub-a")?.clientMutationId).toBe("mut-native-1");
+
+		const { images: _images, ...stored } = draft;
+		adapter.runSync(
+			"INSERT OR REPLACE INTO creation_drafts (hub_id, draft) VALUES (?, ?)",
+			"hub-legacy",
+			JSON.stringify({ ...stored, images: [] }),
+		);
+		const legacy = repository().read("hub-legacy");
+		expect(legacy?.clientMutationId).toBeUndefined();
+
+		adapter.runSync(
+			"INSERT OR REPLACE INTO creation_drafts (hub_id, draft) VALUES (?, ?)",
+			"hub-bad",
+			JSON.stringify({ ...stored, images: [], clientMutationId: 42 }),
+		);
+		expect(() => repository().read("hub-bad")).toThrow("Invalid saved creation draft.");
+	} finally {
+		db.close();
+	}
+});
 it("round-trips the Manager role and restores an older draft as not Manager", () => {
 	const { db, repository } = fixture();
 	try {

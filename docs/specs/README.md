@@ -14,6 +14,7 @@ find that owner.
 | [`2026-10-09-session-activity-push-updates-design.md`](2026-10-09-session-activity-push-updates-design.md) | Push updates for session activity reads. |
 | [`2026-10-11-delegate-latest-intent-design.md`](2026-10-11-delegate-latest-intent-design.md) | The latest-intent row a running delegate shows. |
 | [`2026-10-12-subagent-status-dots-design.md`](2026-10-12-subagent-status-dots-design.md) | Status-dot vocabulary for subagent rows. |
+| [`2026-11-24-new-session-unarchives-project-design.md`](2026-11-24-new-session-unarchives-project-design.md) | A new top-level session clears its project's archive decision. |
 
 The larger delegate design set lives in
 [`docs/subagent-management/`](../subagent-management/); the long-form working

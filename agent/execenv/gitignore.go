@@ -63,9 +63,51 @@ type ignoreMatcherEntry struct {
 	size    int64
 	mod     time.Time
 	matcher *gitignore.GitIgnore
+	rules   []compiledIgnoreRule
 	// cost is what the read that produced matcher charged its call, so a hit
 	// can charge the next call exactly the same.
 	cost ignoreFileCost
+}
+
+type compiledIgnoreRule struct {
+	negate          bool
+	anchored        bool
+	dirChildrenOnly string
+	matcher         *gitignore.GitIgnore
+}
+
+func compileIgnoreRuleList(lines []string) []compiledIgnoreRule {
+	rules := make([]compiledIgnoreRule, 0, len(lines))
+	for _, raw := range lines {
+		line := strings.TrimRight(raw, "\r")
+		if strings.HasPrefix(line, "#") {
+			continue
+		}
+		line = strings.Trim(line, " ")
+		if line == "" {
+			continue
+		}
+		negate := false
+		if line[0] == '!' {
+			negate = true
+			line = line[1:]
+		}
+		if line == "" {
+			continue
+		}
+		var dirChildrenOnly string
+		anchored := strings.HasPrefix(line, "/")
+		if strings.HasSuffix(line, "/*") && !strings.HasSuffix(line, "/**") && !strings.HasSuffix(line, "\\/*") {
+			dirChildrenOnly = strings.TrimPrefix(strings.TrimSuffix(line, "*"), "/")
+		}
+		rules = append(rules, compiledIgnoreRule{
+			negate:          negate,
+			anchored:        anchored,
+			dirChildrenOnly: dirChildrenOnly,
+			matcher:         gitignore.CompileIgnoreLines(line),
+		})
+	}
+	return rules
 }
 
 // newIgnoreMatcherCache returns an empty cache, ready for use.
@@ -165,32 +207,33 @@ func (c *ignoreMatcherCache) store(root, path string, entry ignoreMatcherEntry) 
 // refused. That is deliberate — the budget bounds what a call retains and reads,
 // and a call that retains the same matchers again really does hold them again
 // for its own duration.
-func readIgnoreRules(ctx context.Context, fsys fs.FS, root, path string, budget *GlobBudget, cache *ignoreMatcherCache) (matcher *gitignore.GitIgnore, read bool, err error) {
+func readIgnoreRules(ctx context.Context, fsys fs.FS, root, path string, budget *GlobBudget, cache *ignoreMatcherCache) (matcher *gitignore.GitIgnore, rules []compiledIgnoreRule, read bool, err error) {
 	size, mod, identified := ignoreFileVersion(ctx, fsys, path, cache)
 	if identified {
 		if entry, ok := cache.lookup(root, path, size, mod); ok {
 			if berr := budget.retainIgnoreFile(entry.cost); berr != nil {
-				return nil, false, berr
+				return nil, nil, false, berr
 			}
-			return entry.matcher, true, nil
+			return entry.matcher, entry.rules, true, nil
 		}
 	}
 	lines, read, cost, err := readIgnoreFile(ctx, fsys, path, budget)
 	if err != nil || !read {
-		return nil, read, err
+		return nil, nil, read, err
 	}
 	var compiled *gitignore.GitIgnore
 	if lines != nil {
 		compiled = compileIgnoreLines(lines...)
+		rules = compileIgnoreRuleList(lines)
 	}
 	if identified {
 		// Stored under the version the file had *before* its bytes were read, so
 		// a change landing in between leaves the entry stale and the next call
 		// recompiles, rather than letting a later call hit a matcher built from
 		// different bytes.
-		cache.store(root, path, ignoreMatcherEntry{size: size, mod: mod, matcher: compiled, cost: cost})
+		cache.store(root, path, ignoreMatcherEntry{size: size, mod: mod, matcher: compiled, rules: rules, cost: cost})
 	}
-	return compiled, true, nil
+	return compiled, rules, true, nil
 }
 
 // ignoreFileVersion stats path for the cache key. ok is false when there is no
@@ -644,7 +687,7 @@ func loadIgnoreSetCached(ctx context.Context, fsys fs.FS, skip func(relPath stri
 			if cerr := ctx.Err(); cerr != nil {
 				return set, cerr
 			}
-			matcher, read, berr := readIgnoreRules(ctx, fsys, root, p, budget, cache)
+			matcher, _, read, berr := readIgnoreRules(ctx, fsys, root, p, budget, cache)
 			if berr != nil {
 				return set, berr
 			}
@@ -751,7 +794,7 @@ func loadIgnoreSetCached(ctx context.Context, fsys fs.FS, skip func(relPath stri
 			if loadedRules[p] {
 				return nil
 			}
-			matcher, read, berr := readIgnoreRules(ctx, fsys, root, p, budget, cache)
+			matcher, _, read, berr := readIgnoreRules(ctx, fsys, root, p, budget, cache)
 			if berr != nil {
 				budgetErr = berr
 				return berr
@@ -796,7 +839,6 @@ func (s *ignoreSet) matches(relPath string, isDir bool) bool {
 	if s == nil {
 		return false
 	}
-	ignored := false
 	for _, id := range s.dirs {
 		var rel string
 		switch {
@@ -813,10 +855,10 @@ func (s *ignoreSet) matches(relPath string, isDir bool) bool {
 			rel += "/"
 		}
 		if id.matcher.MatchesPath(rel) {
-			ignored = true
+			return true
 		}
 	}
-	return ignored
+	return false
 }
 
 // globMatchIsDir reports whether m (a path relative to fsys, as returned by

@@ -96,15 +96,18 @@ export function markdownAsRead(source: string, live = false): string {
 }
 
 /** A message's text as its row shows it, or null for an item Find does not
- * search. A reply renders as Markdown, so it is read as the page reads; a
- * prompt is shown as typed. */
+ * search. Both replies and prompts render as Markdown, so both are read as
+ * the page reads. */
 export function messageAsShown(item: ItemModel): string | null {
   if (item.type === "agentMessage") {
     const live = item.status === "inProgress";
     const source = live ? pendingTextJoined(item.pendingText ?? []) : item.text;
     return source ? markdownAsRead(source, live) : null;
   }
-  return item.type === "userMessage" ? item.text : null;
+  if (item.type === "userMessage") {
+    return item.text ? markdownAsRead(item.text) : null;
+  }
+  return null;
 }
 
 /** A thought's summaries as its row reads them: one string per rendered

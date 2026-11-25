@@ -69,6 +69,12 @@ const HISTORY_TURNS = 60;
 // The later-page sentinel: inside the turns two older pages add, outside the
 // initial latest window (so it is genuinely a later-page row).
 const LATER_PAGE = 27;
+// The synthetic provider warning the target's first seeded history turn carries
+// (cmd/evener/skill_browser_helper_test.go), and that turn's prompt. The driver
+// reads where the notice lands from the real Session model. Both are opaque
+// fixture data, never prose.
+const NOTICE_SENTINEL = "BACKGROUND_WARNING_ANCHOR";
+const NOTICE_ANCHOR_PROMPT = "BACKGROUND_HISTORY_01";
 
 // The dev entry installs 64 KiB resident / 32 KiB pending; the guard proves the
 // configured limits are the ones in effect.
@@ -1751,6 +1757,29 @@ async function runEntryProductionJourney(driver, harnessUrl) {
     );
   }
   await waitForPaneText(driver, SESSION_B, historySentinel(HISTORY_TURNS), 60000, "the newest seeded history turn");
+  // The synthetic warning is anchored after the first seeded turn, which is
+  // outside the initial latest window. While that window is the whole model,
+  // the notice must stay in the overlay: no loaded turn precedes its anchor,
+  // so the first visible turn is no evidence of its owner.
+  const offWindowNotice = await driver.waitPage(
+    `(() => { const s = ${noticePlacementExpr(SESSION_B)}; return s && s.overlayNotices === 1 ? s : null; })()`,
+    { timeoutMs: 15000, label: "the synthetic warning notice in the real Session model" },
+  );
+  driver.milestone("notice-off-window", sanitizedNotice(offWindowNotice));
+  if (offWindowNotice.overlayNotices !== 1) {
+    throw new Error(`the off-window warning notice is missing from the overlay: ${JSON.stringify(sanitizedNotice(offWindowNotice))}`);
+  }
+  if (offWindowNotice.windowCarriesPrompt) {
+    throw new Error("the initial window already holds the notice's own turn; the fixture no longer anchors outside it");
+  }
+  if (offWindowNotice.holderCount !== 0) {
+    throw new Error(`the off-window notice was attached to a loaded turn: ${JSON.stringify(sanitizedNotice(offWindowNotice))}`);
+  }
+  if (offWindowNotice.noticeOccurrences !== 0) {
+    throw new Error(
+      `the off-window notice was rendered ${offWindowNotice.noticeOccurrences} times: ${JSON.stringify(sanitizedNotice(offWindowNotice))}`,
+    );
+  }
   // Load at least two REAL older pages through the real scroll port. Each scroll
   // must issue a thread/turns/list request; a synthetic event or an ancestor
   // element would issue none.
@@ -1818,6 +1847,37 @@ async function runEntryProductionJourney(driver, harnessUrl) {
   if (!noDuplicates) throw new Error("further paging introduced duplicate items");
   if (!furtherCheck.ordered) {
     throw new Error(`further paging did not restore the produced history in order: ${JSON.stringify(furtherCheck)}`);
+  }
+  // The page that holds the notice's recorded predecessor has arrived. Prove
+  // that transport result first: the placement counts below are asserted on
+  // their own so a duplicate reports its count instead of only timing out.
+  const anchorLoadedNotice = await driver.waitPage(
+    `(() => { const s = ${noticePlacementExpr(SESSION_B)}; return s && s.windowCarriesPrompt ? s : null; })()`,
+    { timeoutMs: 15000, label: "the page holding the notice's recorded predecessor" },
+  );
+  driver.milestone("notice-anchor-loaded", {
+    overlayNotices: anchorLoadedNotice.overlayNotices,
+    turnCount: anchorLoadedNotice.turnCount,
+    windowCarriesPrompt: anchorLoadedNotice.windowCarriesPrompt,
+  });
+  // The same overlay notice now shows exactly once, inside its own historical
+  // turn and after the turn's prompt.
+  const placedNotice = anchorLoadedNotice;
+  const noticeKeyStable = offWindowNotice.noticeKey !== null && placedNotice.noticeKey === offWindowNotice.noticeKey;
+  driver.milestone("notice-placed", sanitizedNotice(placedNotice, noticeKeyStable));
+  if (!noticeKeyStable) {
+    throw new Error(`the notice is not the same overlay record across paging: ${JSON.stringify(sanitizedNotice(placedNotice))}`);
+  }
+  if (placedNotice.noticeOccurrences !== 1) {
+    throw new Error(
+      `the historical notice has ${placedNotice.noticeOccurrences} rendered occurrences, want exactly one: ${JSON.stringify(sanitizedNotice(placedNotice, noticeKeyStable))}`,
+    );
+  }
+  if (placedNotice.holderCount !== 1) {
+    throw new Error(`the historical notice shows ${placedNotice.holderCount} times, want exactly one: ${JSON.stringify(sanitizedNotice(placedNotice, noticeKeyStable))}`);
+  }
+  if (!placedNotice.holderCarriesPrompt || !placedNotice.noticeAfterPrompt) {
+    throw new Error(`the notice is not inside its own historical turn after the prompt: ${JSON.stringify(sanitizedNotice(placedNotice, noticeKeyStable))}`);
   }
 
   // ---- close/reopen: the local restore must not need a thread/read, and any
@@ -2652,6 +2712,76 @@ async function waitForTurnComplete(which, prompt, timeoutMs = 120000) {
 
 function historySentinel(n) {
   return `BACKGROUND_HISTORY_${String(n).padStart(2, "0")}`;
+}
+
+// noticePlacementExpr reports, from the real Session model, where the synthetic
+// warning notice sits. Every value is a structural count or boolean: no ids or
+// message text leave the page.
+function noticePlacementExpr(ref) {
+  return `(() => {
+    const model = window.backgroundTranscriptEvidence?.model(${JSON.stringify(ref)});
+    if (!model) return null;
+    const notices = Object.values(model.overlay ?? {}).filter(
+      (entry) => entry?.kind === "notice" && (entry?.item?.text ?? "").includes(${JSON.stringify(NOTICE_SENTINEL)}),
+    );
+    const key = notices.length === 1 ? notices[0].key : null;
+    const pane = document.querySelector(${JSON.stringify(`[data-pane-scaffold='session:${ref}']`)});
+    const renderedNoticeLines = pane
+      ? [...pane.querySelectorAll("div,span,p")].filter(
+          (element) => element.childElementCount === 0 && (element.textContent ?? "").includes(${JSON.stringify(NOTICE_SENTINEL)}),
+        ).length
+      : -1;
+    const turns = model.turns ?? [];
+    const holders = [];
+    let noticeOccurrences = 0;
+    turns.forEach((turn, index) => {
+      const items = turn.items ?? [];
+      const noticeIndexes = [];
+      items.forEach((item, itemIndex) => {
+        if (key !== null && item?.overlayKey === key) noticeIndexes.push(itemIndex);
+      });
+      // Every rendered copy counts, not just the first per turn: a duplicate
+      // inside the right turn must fail exactly like a copy in a wrong turn.
+      noticeOccurrences += noticeIndexes.length;
+      if (noticeIndexes.length === 0) return;
+      const promptIndex = items.findIndex((item) => (item?.text ?? "").includes(${JSON.stringify(NOTICE_ANCHOR_PROMPT)}));
+      holders.push({ turnIndex: index, noticeIndex: noticeIndexes[0], noticeInTurn: noticeIndexes.length, promptIndex });
+    });
+    return {
+      overlayNotices: notices.length,
+      noticeKey: key,
+      renderedNoticeLines,
+      turnCount: turns.length,
+      holderCount: holders.length,
+      noticeOccurrences,
+      holderInTurnCounts: holders.map((holder) => holder.noticeInTurn),
+      holderIsFirstTurn: holders.some((holder) => holder.turnIndex === 0),
+      holderCarriesPrompt: holders.some((holder) => holder.promptIndex >= 0),
+      noticeAfterPrompt: holders.some((holder) => holder.promptIndex >= 0 && holder.noticeIndex > holder.promptIndex),
+      windowCarriesPrompt: turns.some((turn) =>
+        (turn.items ?? []).some((item) => (item?.text ?? "").includes(${JSON.stringify(NOTICE_ANCHOR_PROMPT)})),
+      ),
+    };
+  })()`;
+}
+
+// sanitizedNotice is the milestone shape; it deliberately leaves out the
+// notice's real key.
+function sanitizedNotice(snapshot, keyStable) {
+  return {
+    overlayNotices: snapshot.overlayNotices,
+    noticeKeyPresent: snapshot.noticeKey !== null,
+    renderedNoticeLines: snapshot.renderedNoticeLines,
+    turnCount: snapshot.turnCount,
+    holderCount: snapshot.holderCount,
+    noticeOccurrences: snapshot.noticeOccurrences,
+    holderInTurnCounts: snapshot.holderInTurnCounts,
+    holderIsFirstTurn: snapshot.holderIsFirstTurn,
+    holderCarriesPrompt: snapshot.holderCarriesPrompt,
+    noticeAfterPrompt: snapshot.noticeAfterPrompt,
+    windowCarriesPrompt: snapshot.windowCarriesPrompt,
+    ...(keyStable === undefined ? {} : { noticeKeyStable: keyStable }),
+  };
 }
 
 // paneTextExpr returns a page expression that resolves to the pane's text when

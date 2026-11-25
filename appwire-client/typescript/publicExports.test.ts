@@ -13,6 +13,7 @@ import {
   type ConditionSpec,
   cachedSessionRecord,
   conditionSpec,
+  createFileMentionStore,
   type DelegateEntityView,
   delegateRowFields,
   type EntityIdMatch,
@@ -20,6 +21,16 @@ import {
   type EntityView,
   entityKindOf,
   entityOpenTarget,
+  FILE_MENTION_DEBOUNCE_MS,
+  FILE_MENTION_DEFAULT_LIMIT,
+  FILE_MENTION_MAX_QUERY_LENGTH,
+  type FileMentionMatch,
+  type FileMentionSearchInputs,
+  type FileMentionSnapshot,
+  type FileMentionSpliceResult,
+  type FileMentionStore,
+  type FileMentionTarget,
+  type FileMentionToken,
   findEntityIds,
   foldWatchSummaries,
   humanizeInterval,
@@ -29,12 +40,17 @@ import {
   type JsonObject,
   jobOwnerSessionId,
   jobRowFields,
+  matchFileMentionPositions,
   mergeTurnHistory,
   normalizeRow,
   numField,
   type OpenTarget,
   parseConditionText,
+  parseFileMentionToken,
+  rankFileMentions,
+  scoreFileMention,
   sourceLabel,
+  spliceFileMention,
   strArrayField,
   strField,
   type TranscriptDisplayAdvancedV1,
@@ -69,6 +85,15 @@ type EntityLinkPublicTypes =
   | WatchEntityView
   | WatchRow
   | WatchSummary;
+
+type FileMentionPublicTypes =
+  | FileMentionMatch
+  | FileMentionSearchInputs
+  | FileMentionSnapshot
+  | FileMentionSpliceResult
+  | FileMentionStore
+  | FileMentionTarget
+  | FileMentionToken;
 
 // activityNodeID's parameter type is part of the package's public surface: an
 // installed consumer must be able to name it. Import it from the package root
@@ -304,5 +329,23 @@ describe("protocol package root public exports", () => {
       expect(typeof (packageRoot as Record<string, unknown>)[name], name).toBe("function");
     }
     expect(Array.isArray(packageRoot.ITEM_OMISSION_TOLERANT_FIELDS)).toBe(true);
+  });
+
+  it("re-exports the fileMention surface from the package root", () => {
+    const typeSurface: FileMentionPublicTypes | undefined = undefined;
+    expect(typeSurface).toBeUndefined();
+    expect(FILE_MENTION_DEBOUNCE_MS).toBe(80);
+    expect(FILE_MENTION_MAX_QUERY_LENGTH).toBe(256);
+    expect(FILE_MENTION_DEFAULT_LIMIT).toBe(25);
+    for (const fn of [
+      parseFileMentionToken,
+      spliceFileMention,
+      scoreFileMention,
+      matchFileMentionPositions,
+      rankFileMentions,
+      createFileMentionStore,
+    ]) {
+      expect(typeof fn).toBe("function");
+    }
   });
 });

@@ -1,0 +1,40 @@
+/* The neutral row chrome shared by ListRow and the command palette's option
+ * rows: the box reset, the pointer's hover wash and the press. Each caller
+ * keeps its own layout (ListRow's two-track grid, the palette's flex line),
+ * its padding and its selected treatment. A current or selected row's fill
+ * belongs to that caller - ListRow's aria-current lift is
+ * selectableRow.module.css, the palette's aria-selected wash stays local -
+ * never to a class here. Tokens only. */
+
+.rowReset {
+  box-sizing: border-box;
+  width: 100%;
+  margin: 0;
+  border-radius: var(--radius-control);
+  color: var(--ink-hi);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-ui);
+  text-align: start;
+}
+
+.rowInteractive {
+  cursor: pointer;
+  transition:
+    background-color var(--motion-duration-hover) var(--motion-easing-standard),
+    transform var(--motion-duration-press) var(--motion-easing-standard);
+}
+
+/* The wash stays off a current or selected row, so the selected state holds
+ * under the pointer. A refused row never washes: its caller's refusal look
+ * owns it. */
+.rowInteractive:hover:not(:disabled):not([aria-disabled="true"]):not([aria-current]):not([aria-selected="true"]) {
+  background: var(--hover-1);
+}
+
+/* The press, as Button's: transform only, and gentler than a button's
+ * because a row is wide and the same ratio would move its ends much further. */
+@media (prefers-reduced-motion: no-preference) {
+  .rowInteractive:active:not(:disabled):not([aria-disabled="true"]) {
+    transform: scale(var(--press-scale-row));
+  }
+}

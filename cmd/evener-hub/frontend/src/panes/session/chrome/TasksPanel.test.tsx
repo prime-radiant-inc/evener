@@ -422,7 +422,7 @@ test("a task with an unrecognized status stays in the list, with a neutral glyph
   expect(row?.textContent?.match(/blocked/g)).toHaveLength(1);
 });
 
-test("a live row shows a relative updated time", async () => {
+test("a live row's time is the shared activity time, marked as an update", async () => {
   const user = userEvent.setup();
   const fake = connectReadyFakeClient();
   fake.on("evener/tasks/list", () => ({ data: DATED_TASKS }));
@@ -431,17 +431,21 @@ test("a live row shows a relative updated time", async () => {
   await user.click(screen.getByRole("button", { name: "Tasks" }));
   const row = (await screen.findByText("Extend transcript API")).closest("[data-testid='task-row']");
 
-  expect(row?.querySelector("[data-testid='task-row-time']")).toBeTruthy();
+  const time = row?.querySelector("time[data-activity-time]");
+  expect(time?.getAttribute("data-meaning")).toBe("updated");
+  expect(time?.getAttribute("datetime")).toBe(DATED_TASKS[1].updated_at);
 });
 
-test("the standalone task body does not opt into the sidebar's compact presentation", async () => {
+// The sidebar tab and the standalone body are the same component tree: the
+// row's time is ActivityTime in both, not a body-specific relative span.
+test("the standalone task body carries the same activity time as the sidebar", async () => {
   const fake = connectReadyFakeClient();
   fake.on("evener/tasks/list", () => ({ data: DATED_TASKS }));
   render(<TasksPanelBody sessionRef="ref_a" model={testModel()} />);
   const row = (await screen.findByText("Extend transcript API")).closest("[data-testid='task-row']");
-  expect(row?.querySelector("[data-testid='task-row-time']")?.tagName).not.toBe("TIME");
-  expect(row?.querySelector("[data-testid='task-row-time']")).toBeTruthy();
-  expect(row?.querySelector("[data-activity-time]")).toBeNull();
+  const time = row?.querySelector("time[data-activity-time]");
+  expect(time?.getAttribute("data-meaning")).toBe("updated");
+  expect(time?.getAttribute("datetime")).toBe(DATED_TASKS[1].updated_at);
 });
 
 test("the settled group defaults to collapsed and remembers being opened per session", async () => {

@@ -9,6 +9,7 @@ import { EmptyState } from "../emptystate";
 import { InlineNotice } from "../inlinenotice";
 import { ownerDocumentOf } from "../internal/documentRealm";
 import { requireClass } from "../internal/requireClass";
+import { useDirectoryListing } from "../internal/useDirectoryListing";
 import { usePortalDocument } from "../internal/usePortalDocument";
 import { ListRow } from "../listrow";
 import { Loader } from "../loader";
@@ -70,11 +71,9 @@ export function DirectoryPicker({
   const [current, setCurrent] = useState(initialPath);
   const [typed, setTyped] = useState(initialPath);
   const [pathEdited, setPathEdited] = useState(false);
-  const [entries, setEntries] = useState<string[] | null>(null);
   const [initialCanonical, setInitialCanonical] = useState<{ id: number; path: string } | null>(null);
   const [validatedInput, setValidatedInput] = useState<string | null>(null);
-  const [recents, setRecents] = useState<string[]>([]);
-  const [error, setError] = useState<string | null>(null);
+  const [formError, setFormError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [folderName, setFolderName] = useState("");
   const [busy, setBusy] = useState(false);
@@ -94,6 +93,12 @@ export function DirectoryPicker({
   // the shared portal seam re-renders before paint once it attaches.
   const hostRef = useRef<HTMLSpanElement>(null);
   const panelDocument = usePortalDocument(hostRef);
+  // Selection requires an existing directory, so the picker validates before
+  // asking for children; a listed directory's own failure renders in place of
+  // the list.
+  const listing = useDirectoryListing({ complete, listRecents, entriesOnError: "null" });
+  const { entries, recents } = listing;
+  const error = formError ?? listing.error;
 
   async function browse(path: string, preserveFocusedInput = false) {
     // Rows disappear during navigation. Keep focus on a persistent control
@@ -102,8 +107,8 @@ export function DirectoryPicker({
     const id = ++request.current;
     setPathEdited(false);
     setValidatedInput(null);
-    setEntries(null);
-    setError(null);
+    setFormError(null);
+    listing.invalidate();
     setCreating(false);
     try {
       const result = await validatePath(path.trim(), "dir");
@@ -111,7 +116,7 @@ export function DirectoryPicker({
       // Selection requires an existing directory; New folder explicitly creates
       // a child before it becomes a selectable destination.
       if (!result.valid) {
-        setError(result.error || "This path is not a directory.");
+        setFormError(result.error || "This path is not a directory.");
         return;
       }
       const canonical = result.path || path.trim();
@@ -121,10 +126,9 @@ export function DirectoryPicker({
       if (preserveFocusedInput) setInitialCanonical({ id, path: canonical });
       else setTyped(canonical);
       setValidatedInput(path);
-      const children = await complete(childrenPrefix(canonical), false);
-      if (mounted.current && request.current === id) setEntries(children);
+      listing.browse(childrenPrefix(canonical));
     } catch (err) {
-      if (mounted.current && request.current === id) setError(friendlyErrorMessage(err));
+      if (mounted.current && request.current === id) setFormError(friendlyErrorMessage(err));
     }
   }
 
@@ -135,12 +139,6 @@ export function DirectoryPicker({
   useEffect(() => {
     mounted.current = true;
     void browse(initialPath, true);
-    listRecents?.().then(
-      (paths) => {
-        if (mounted.current) setRecents([...new Set(paths)]);
-      },
-      () => {},
-    );
     return () => {
       mounted.current = false;
       request.current++;
@@ -188,23 +186,23 @@ export function DirectoryPicker({
     if (!ready) return;
     const name = folderName.trim();
     if (!name || name === "." || name === ".." || name.includes("/") || name.includes("\0")) {
-      setError("Enter a folder name without slashes.");
+      setFormError("Enter a folder name without slashes.");
       return;
     }
     const path = `${childrenPrefix(current)}${name}`;
     if (entries?.includes(path)) {
-      setError("A folder with this name already exists.");
+      setFormError("A folder with this name already exists.");
       return;
     }
     setBusy(true);
-    setError(null);
+    setFormError(null);
     try {
       await createDirectory(path);
       if (!mounted.current) return;
       // Creation is complete; browsing owns validation and listing independently.
       void browse(path);
     } catch (err) {
-      if (mounted.current) setError(friendlyErrorMessage(err));
+      if (mounted.current) setFormError(friendlyErrorMessage(err));
     } finally {
       if (mounted.current) setBusy(false);
     }
@@ -329,12 +327,12 @@ export function DirectoryPicker({
                 request.current++;
                 setTyped(event.target.value);
                 setPathEdited(true);
-                setEntries(null);
+                listing.invalidate();
                 setValidatedInput(null);
                 // Editing Path closes creation without moving focus away.
                 wasCreating.current = false;
                 setCreating(false);
-                setError(null);
+                setFormError(null);
               }}
             />
             <Button ref={goButton} variant="secondary" type="submit" disabled={busy || !typed.trim()}>
@@ -350,7 +348,7 @@ export function DirectoryPicker({
               onClick={() => {
                 setCreating(true);
                 setFolderName("");
-                setError(null);
+                setFormError(null);
               }}
             >
               New folder
@@ -374,7 +372,7 @@ export function DirectoryPicker({
                   disabled={busy}
                   onClick={() => {
                     setCreating(false);
-                    setError(null);
+                    setFormError(null);
                   }}
                 >
                   Cancel new folder

@@ -1,10 +1,11 @@
 import { errorText } from "@evener/appwire-client";
-import { type ChangeEvent, type ReactNode, useEffect, useId, useRef, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import { selectPinSectionSummaries } from "../../stores/navigation/selectors";
 import { navigationStore } from "../../stores/navigation/store";
-import { ConfirmDialog, FormRow, Input, useToasts } from "../../widgets";
+import { ConfirmDialog, useToasts } from "../../widgets";
 import { useClient } from "../clientContext";
 import { deletePinSection, renamePinSection } from "./actions";
+import { PinSectionNameField, validatePinSectionName } from "./pinSectionForm";
 import type { RailPinSection } from "./railNodes";
 import type { PendingOp } from "./railPending";
 
@@ -29,7 +30,6 @@ export function usePinSectionDialogs(runAction: RailRunAction): {
   const [sectionRenameValue, setSectionRenameValue] = useState("");
   const [sectionRenameError, setSectionRenameError] = useState("");
   const [sectionRenameSubmitting, setSectionRenameSubmitting] = useState(false);
-  const sectionRenameInputID = useId();
   const sectionRenameSubmission = useRef<{ token: number; sectionID: string } | null>(null);
   const sectionRenameToken = useRef(0);
   const sectionDeleteRequestToken = useRef(0);
@@ -67,12 +67,9 @@ export function usePinSectionDialogs(runAction: RailRunAction): {
     const target = sectionRenameTarget;
     const name = sectionRenameValue.trim();
     if (!target) return;
-    if (!name) {
-      setSectionRenameError("Section name is required");
-      return;
-    }
-    if ([...name].length > 80) {
-      setSectionRenameError("Section names must be 80 characters or fewer");
+    const invalid = validatePinSectionName(sectionRenameValue);
+    if (invalid !== undefined) {
+      setSectionRenameError(invalid);
       return;
     }
     const submission = { token: sectionRenameToken.current + 1, sectionID: target.id };
@@ -136,18 +133,15 @@ export function usePinSectionDialogs(runAction: RailRunAction): {
           onConfirm={() => void confirmSectionRename()}
           onCancel={closeSectionRename}
         >
-          <FormRow label="Section name" htmlFor={sectionRenameInputID} error={sectionRenameError || undefined}>
-            <Input
-              id={sectionRenameInputID}
-              value={sectionRenameValue}
-              onChange={(event: ChangeEvent<HTMLInputElement>) => {
-                setSectionRenameValue(event.target.value);
-                setSectionRenameError("");
-              }}
-              disabled={sectionRenameSubmitting}
-              aria-describedby={sectionRenameError ? `${sectionRenameInputID}-error` : undefined}
-            />
-          </FormRow>
+          <PinSectionNameField
+            value={sectionRenameValue}
+            onChange={(value) => {
+              setSectionRenameValue(value);
+              setSectionRenameError("");
+            }}
+            error={sectionRenameError || undefined}
+            disabled={sectionRenameSubmitting}
+          />
         </ConfirmDialog>
         <ConfirmDialog
           open={sectionDeleteTarget !== null}

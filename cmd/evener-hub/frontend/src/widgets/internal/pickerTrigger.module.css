@@ -1,0 +1,21 @@
+/* The trigger's slot box. It lives with the trigger, not with each caller, so
+ * the picker is one span deep wherever it mounts: a quiet trigger inside a
+ * status row sizes this span, a form-field picker fills the field slot through
+ * the fill variant, and Popover's own wrapper (when there is one) sees the
+ * same child it always did.
+ *
+ * Hug by default, so a quiet trigger's label is its width. min-width: 0 keeps
+ * the truncating contract alive through this level: the button and its value
+ * can still shrink instead of reserving the qualified model id's full width. */
+.wrapper {
+  display: inline-flex;
+  min-width: 0;
+  max-width: 100%;
+}
+
+/* fill: the trigger is a form control (or the spawn card's model slot), so the
+ * slot box spans what it was given instead of hugging the label. */
+.wrapperFill {
+  display: flex;
+  width: 100%;
+}

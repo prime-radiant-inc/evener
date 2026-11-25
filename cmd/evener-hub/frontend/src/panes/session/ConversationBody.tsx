@@ -3,8 +3,9 @@ import {
   createTranscriptProjector,
   formatQuoteBlock,
   resolveEffectiveConfig,
+  sessionActionError,
 } from "@evener/appwire-client";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "zustand";
 import { chromeStore } from "../../shell/chromeStore";
 import { focusedSessionRef } from "../../shell/focusedSession";
@@ -70,6 +71,33 @@ import { isDormantTranscript } from "./transcript/transcriptVisibility";
 import { useTranscript } from "./transcript/useTranscript";
 import { useConversationIdentity } from "./useConversationIdentity";
 
+/* The conversation's two terminal faces, shared by the session pane and the
+ * cascade column so both seats word and reason a session the same way. Each
+ * seat adds what it owns: the pane its Close affordance and fuller hint. A
+ * loading face carries no pane-only recovery control, so it stays with the
+ * seat that can offer one. */
+export function ConversationDeletedFace({
+  hint = "Its transcript is gone.",
+  action,
+}: {
+  hint?: string;
+  action?: ReactNode;
+}) {
+  return <EmptyState title="This session was deleted" hint={hint} reason="deleted" action={action} />;
+}
+
+/* A transcript the hub reported it cannot serve, with the shared
+ * session-action sentence every action error uses. */
+export function ConversationUnavailableFace({ error }: { error: unknown }) {
+  return (
+    <EmptyState
+      title="Transcript unavailable"
+      reason="unavailable"
+      hint={sessionActionError("Couldn't load transcript", error)}
+    />
+  );
+}
+
 // A conversation rendered in a seat. The session pane is one seat; a drilled
 // cascade column is another. The seat supplies what the conversation cannot
 // derive from its ref alone, and owns its own frame: the pane's scaffold and
@@ -92,10 +120,6 @@ export interface ConversationSeat {
   focused: boolean;
   // Seat-level policy for mount autofocus, independent of the shared editor.
   mountAutofocus?: boolean;
-  // The seat's own chrome already renders this conversation's activity
-  // counts (a cascade column's ScopeActivityControls), so the composer's
-  // phone row must not duplicate them.
-  ownsActivityCounts?: boolean;
   // A resumed conversation continues under a new ref. A pane replaces its
   // route; a cascade column lets its own reconciliation replace the scope in
   // place. The draft always carries to the resumed identity first. The
@@ -267,8 +291,10 @@ function LiveConversationBody({
     model,
     hasOlder,
     olderPageKey,
+    readerActive,
     loadOlder,
     loadingOlder,
+    olderReadInFlight,
     loadOlderReportingError,
     olderError,
     olderPermanent,
@@ -603,7 +629,10 @@ function LiveConversationBody({
             <LoadOlderRow
               onLoad={loadOlderReportingError}
               loading={loadingOlder}
+              readInFlight={olderReadInFlight}
               error={olderError}
+              pageKey={olderPageKey ?? null}
+              readerActive={readerActive}
               scrollElement={() => virtualListRef.current?.getScrollElement() ?? null}
             />
           )
@@ -705,7 +734,6 @@ function LiveConversationBody({
             submission={submission}
             focused={seat.focused}
             mountAutofocus={seat.mountAutofocus}
-            ownsActivityCounts={seat.ownsActivityCounts}
             onEditingChange={handleEditingChange}
           />
         )}

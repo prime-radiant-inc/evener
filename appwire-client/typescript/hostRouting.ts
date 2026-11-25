@@ -39,6 +39,7 @@ export const HOST_DEPENDENT_DISCOVERY_METHODS = [
   "evener/launch/resolve",
   "evener/launch/schema",
   "evener/paths/complete",
+  "evener/files/search",
   "evener/path/validate",
   "evener/dirs/create",
   "evener/projects/recent",

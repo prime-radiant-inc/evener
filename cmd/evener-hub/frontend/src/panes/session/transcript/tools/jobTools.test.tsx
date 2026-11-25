@@ -981,11 +981,13 @@ test("delegate_send: expanded body renders the sent message as an outgoing chat 
   expect(within(outgoing).getByText("Agent → dlg_abc123")).toBeTruthy();
   expect(within(outgoing).getByTestId("speaker-avatar")).toBeTruthy();
   expect(within(outgoing).getByTestId("user-bubble").textContent).toBe("Inspect the parser.\nReport exact findings.");
+  expect(within(outgoing).getByTestId("user-bubble").querySelector("p")).toBeNull();
   expect(within(outgoing).getByRole("button", { name: "Copy message" })).toBeTruthy();
 
   const reply = screen.getByTestId("delegate-send-response");
   expect(within(reply).getByText("dlg_abc123 (delegate)")).toBeTruthy();
   expect(within(reply).getByTestId("user-bubble").textContent).toBe("Found two call sites.\nBoth need coverage.");
+  expect(within(reply).getByTestId("user-bubble").querySelector("p")).toBeNull();
   expect(within(reply).getByRole("button", { name: "Copy response" })).toBeTruthy();
 
   expect(screen.queryByText(/delegate_id dlg_abc123 · delivered · completed/)).toBeNull();

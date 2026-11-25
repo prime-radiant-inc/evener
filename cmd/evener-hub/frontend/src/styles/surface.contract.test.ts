@@ -1,7 +1,7 @@
 // @vitest-environment node
 
 // Contract test for the shared surface recipes (styles/surface.module.css):
-// the grouped surface, its divided rows, the tool card and the field seat are
+// the grouped surface, its divided rows, the tool row insets and the field seat are
 // each declared once there, and every consumer composes them rather than
 // restating the box. jsdom evaluates no cascade, so these are
 // declaration-level assertions over the stylesheet sources, comments
@@ -47,8 +47,6 @@ test.each([
   ["widgets/pathfield/pathfield.module.css", ".prominentTrigger", ["grouped", "summaryTile"]],
   ["panes/spawn/MobileSettingRows.module.css", ".config", ["grouped", "groupedRows"]],
   ["panes/settings/settings.module.css", ".clusterRowsGrouped", ["grouped", "groupedRows"]],
-  ["panes/session/session.module.css", ".intentGroupRows", ["grouped", "groupedRows"]],
-  ["panes/session/transcript/toolrungroup.module.css", ".body", ["groupedRows"]],
 ])("%s %s composes the shared surface and restates none of it", (file, selector, classes) => {
   const body = ruleBody(read(file), selector);
   for (const name of classes) {
@@ -75,7 +73,7 @@ test("the summary tiles share one row, text column, headline, and caption", () =
   }
 });
 
-test("the tool card's insets are declared once and every row of a card reads them", () => {
+test("single calls and folded runs share their row insets", () => {
   const insets = ruleBody(surface, ".toolRowInsets");
   expect(insets).toMatch(/--tool-card-inset:\s*var\(--space-3\)/);
   expect(insets).toMatch(/--tool-card-row-pad:\s*var\(--rhythm-item\)/);
@@ -89,28 +87,6 @@ test("the tool card's insets are declared once and every row of a card reads the
     expect(ruleBody(css, selector)).toMatch(/composes:\s*toolRowInsets from "[./]*styles\/surface\.module\.css"/);
     expect(declarations(css)).toHaveLength(0);
   }
-});
-
-test("a tool card drawn across sibling rows is the same surface, sliced by position", () => {
-  // Every slice carries the side edges, the surface and a top hairline, so a
-  // row divides from the one above it without a rule of its own.
-  const slice = ruleBody(surface, ".toolRunSegment > *");
-  expect(slice).toMatch(/border-inline:\s*1px solid var\(--edge\)/);
-  expect(slice).toMatch(/border-top:\s*1px solid var\(--edge\)/);
-  expect(slice).toMatch(/background:\s*var\(--surface-1\)/);
-  // The outer corners belong to the card's first and last rows. They are
-  // custom properties on the wrapper, which a row root inside a details can
-  // still read; the slice draws them.
-  expect(slice).toMatch(/border-radius:[^;]*var\(--tool-card-radius-top\)[^;]*var\(--tool-card-radius-bottom\)/);
-  expect(surface).toMatch(
-    /\.toolRunSegment\[data-tool-card="first"\],\s*\.toolRunSegment\[data-tool-card="only"\]\s*\{[^}]*--tool-card-radius-top:\s*var\(--radius-pane\)/,
-  );
-  expect(surface).toMatch(
-    /\.toolRunSegment\[data-tool-card="last"\],\s*\.toolRunSegment\[data-tool-card="only"\]\s*\{[^}]*--tool-card-radius-bottom:\s*var\(--radius-pane\)/,
-  );
-  expect(surface).toMatch(
-    /\.toolRunSegment\[data-tool-card="last"\] > \*,\s*\.toolRunSegment\[data-tool-card="only"\] > \*\s*\{[^}]*box-shadow:\s*var\(--shadow-card\)/,
-  );
 });
 
 test("the field seat is one ground for a tile's leading glyph", () => {

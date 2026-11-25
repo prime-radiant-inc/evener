@@ -31,9 +31,12 @@
 }
 
 .description {
+  composes: truncate from "../../../styles/text.module.css";
   font-family: var(--font-sans);
   font-size: var(--font-size-ui);
   color: var(--ink-hi);
+  flex: 1;
+  min-width: 0;
 }
 
 .groupCount {
@@ -73,35 +76,17 @@
   text-decoration: line-through;
 }
 
-.description,
-.descDim,
-.descStruck {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  flex: 1;
-  min-width: 0;
-}
-
-.time {
-  font-family: var(--font-sans);
-  font-variant-numeric: tabular-nums;
-  font-size: var(--font-size-caption);
-  color: var(--ink-low);
-  white-space: nowrap;
-  flex: none;
-}
-
 /* An unrecognized status (a newer daemon's word) has no glyph or vocabulary
  * of its own: the row shows that word as written beside the neutral box, in
  * the same quiet caption as the row's time. */
 .statusWord {
-  composes: time;
+  composes: rowTime from "./activitytime.module.css";
+  /* biome-ignore lint/suspicious/noDuplicateProperties: css-modules composes takes one declaration per composed class, each with its own `from` */
+  composes: truncate from "../../../styles/text.module.css";
+  font-family: var(--font-sans);
   /* The word is untrusted and unbounded: cap it rather than let it squeeze
    * the description and time out of the row. */
   max-width: 12ch;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 .latest {

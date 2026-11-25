@@ -4,9 +4,7 @@
 // placement with the shared session activity summary; no activity state
 // lives here.
 
-import { memo, useMemo } from "react";
-import { navigationStore, useNavigationStore } from "../../stores/navigation/store";
-import { useSessionActivity, useSubagentCounts } from "../../stores/sessionActivity";
+import { memo } from "react";
 import { CountButton } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { activitySidebarStore } from "../activitybar/activitySidebarStore";
@@ -14,7 +12,7 @@ import { ACTIVITY_TABS } from "../activitybar/activityTabs";
 import { useIsMobile } from "../useIsMobile";
 import { workspaceStore } from "../workspace";
 import styles from "./statusbar.module.css";
-import { deriveScope } from "./statusScope";
+import { useActivityScope } from "./useActivityScope";
 
 const CLASS = {
   chips: requireClass(styles.chips, "statusbar.module.css", "chips"),
@@ -25,26 +23,8 @@ export interface ActivityChipsProps {
   paneId?: string;
 }
 
-// Memoized: the phone composer re-renders on every keystroke, but this row
-// changes only when its own store subscriptions do, so the two stable props
-// hold it quiet while the editor types.
 export const ActivityChips = memo(function ActivityChips({ sessionRef, paneId }: ActivityChipsProps) {
-  // Narrow subscriptions: re-render on the resources map (nav data), not on
-  // every store touch (mode flips, expansion, attention).
-  const resources = useNavigationStore((state) => state.resources);
-  // Observe the shared session summary for context and authoritative counts.
-  // The sidebar shares this owner; badges do not demand collection pages.
-  const { snapshot } = useSessionActivity(sessionRef);
-  const subagents = useSubagentCounts(sessionRef);
-  // biome-ignore lint/correctness/useExhaustiveDependencies: `resources` is the memo's invalidation key, not a value the memo reads (the store is read imperatively inside)
-  const scope = useMemo(
-    () => deriveScope(navigationStore.getState(), sessionRef, snapshot, subagents),
-    [resources, sessionRef, snapshot, subagents],
-  );
-  const { counts } = scope;
-  // A phone renders this row on its own line above the composer card, so a
-  // chip shows the compact single active count; the full active/total
-  // fraction stays in the chip's accessible name.
+  const { counts } = useActivityScope(sessionRef);
   const mobile = useIsMobile();
   return (
     <div className={CLASS.chips}>

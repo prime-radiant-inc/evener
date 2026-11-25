@@ -6,7 +6,6 @@ import {
   basename,
   buildPathRows,
   childrenPrefix,
-  friendlyErrorMessage,
   type PathPickableRow,
   parentOf,
   pickablePathRows,
@@ -19,6 +18,7 @@ import { DirectoryIcon, DirectoryPicker, type DirectoryPickerProps } from "../di
 import { Listbox, ListboxOption } from "../internal/listbox";
 import { PickerTrigger } from "../internal/pickerTrigger";
 import { requireClass } from "../internal/requireClass";
+import { useDirectoryListing } from "../internal/useDirectoryListing";
 import { ariaActiveDescendant, optionDomId, useListbox } from "../internal/useListbox";
 import { Popover } from "../popover";
 import { ToolIcon } from "../toolicon";
@@ -196,13 +196,26 @@ function FileFieldPanel({
   // and the filter - including when it's cleared back to "".
   const [typed, setTyped] = useState<string | null>(null);
   const [currentDir, setCurrentDir] = useState(() => openingDir(value, fallbackDir));
-  const [entries, setEntries] = useState<string[] | null>(null);
-  // Set only when the LATEST request rejected - distinct from entries: []
-  // meaning a genuinely empty directory. See buildPathRows's own doc comment
-  // for why the two must never share a status line ("Nothing here." hides a
-  // real failure from the user - the bug this state exists to fix).
-  const [listError, setListError] = useState<string | null>(null);
-  const [recents, setRecents] = useState<string[]>([]);
+  // The filter the entries in hand were fetched WITH. The hub hides dotfiles
+  // unless the filter itself starts with a dot, so the listing's contents
+  // depend on more than the directory - see handleType.
+  const requestedFilterRef = useRef("");
+  // A rejection still degrades to an empty listing (there is no other row
+  // shape for it, and an unreadable prefix legitimately looks the same from
+  // here), but it must not read as "Nothing here." - that hides a real
+  // failure (a closed client, a permissions error) behind the same words an
+  // actually-empty directory gets. listError carries the distinction into
+  // buildPathRows, which renders it instead.
+  const listing = useDirectoryListing({
+    complete,
+    listRecents,
+    includeFiles: true,
+    debounceMs: COMPLETE_DEBOUNCE_MS,
+    onRequest: (prefix) => {
+      requestedFilterRef.current = typedFilter(prefix);
+    },
+  });
+  const { entries, error: listError, recents } = listing;
   // Recents are dropped permanently by the first keystroke, for this panel's
   // lifetime: once the user is typing a path, a recents list is noise.
   const [showRecents, setShowRecents] = useState(listRecents !== undefined);
@@ -210,15 +223,6 @@ function FileFieldPanel({
   // below is an opening courtesy, so it must never overwrite an arrow key.
   const highlightIsUserSetRef = useRef(false);
   const inputRef = useRef<HTMLInputElement>(null);
-  const debounceRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  // Monotonic request id: a completion response older than the newest request
-  // is dropped, so an out-of-order resolution never overwrites fresher
-  // entries.
-  const reqIdRef = useRef(0);
-  // The filter the entries in hand were fetched WITH. The hub hides dotfiles
-  // unless the filter itself starts with a dot, so the listing's contents
-  // depend on more than the directory - see handleType.
-  const requestedFilterRef = useRef("");
   // 94yg: a directory click both picks the value and descends into it (spec
   // 3.4 - no commit button, no Cancel), and the only thing that visibly
   // changes is this quiet "you are here" header - easy to miss, which is
@@ -259,31 +263,6 @@ function FileFieldPanel({
     setActiveKey(undefined);
   }
 
-  function runCompletion(prefix: string): void {
-    requestedFilterRef.current = typedFilter(prefix);
-    reqIdRef.current += 1;
-    const reqId = reqIdRef.current;
-    setEntries(null);
-    setListError(null);
-    complete(prefix, true).then(
-      (result) => {
-        if (reqId === reqIdRef.current) setEntries(result);
-      },
-      // A rejection still degrades to an empty listing (there is no other
-      // row shape for it, and an unreadable prefix legitimately looks the
-      // same from here), but it must not read as "Nothing here." - that
-      // hides a real failure (a closed client, a permissions error) behind
-      // the same words an actually-empty directory gets. listError carries
-      // the distinction into buildPathRows, which renders it instead.
-      (err) => {
-        if (reqId === reqIdRef.current) {
-          setEntries([]);
-          setListError(friendlyErrorMessage(err));
-        }
-      },
-    );
-  }
-
   // Mount: take focus, select the pre-filled value so the first keystroke
   // replaces it wholesale, and start the opening listing. Mount-only - the
   // panel is created fresh on every open, and re-running this would fight a
@@ -293,13 +272,8 @@ function FileFieldPanel({
     const input = inputRef.current;
     input?.focus();
     input?.select();
-    runCompletion(childrenPrefix(openingDir(value, fallbackDir)));
-    listRecents?.().then(
-      (result) => setRecents(result),
-      () => setRecents([]),
-    );
+    listing.browse(childrenPrefix(openingDir(value, fallbackDir)));
     return () => {
-      clearTimeout(debounceRef.current);
       clearTimeout(justPickedTimeoutRef.current);
     };
   }, []);
@@ -325,8 +299,7 @@ function FileFieldPanel({
     // A new listing is on its way: hand the highlight back to the seeding
     // effect so the new directory's own current row gets it.
     resetHighlight();
-    clearTimeout(debounceRef.current);
-    runCompletion(childrenPrefix(dir));
+    listing.browse(childrenPrefix(dir));
     // Mark the header just-picked for a beat (94yg) - the pick already
     // registered via onChange above; this only makes that moment visible.
     setJustPicked(true);
@@ -373,13 +346,11 @@ function FileFieldPanel({
     // them for a whole debounce window makes every row a lie (clicking one
     // navigates somewhere the user never pointed at). "Loading…" for that
     // window is truthful.
-    setEntries(null);
-    clearTimeout(debounceRef.current);
     // With a filter present, the typed text itself IS the prefix: the hub
     // splits it into listDir + filter and does the matching (and the dotfile
     // decision) server-side.
     const prefix = nextFilter === "" ? childrenPrefix(dir) : next;
-    debounceRef.current = setTimeout(() => runCompletion(prefix), COMPLETE_DEBOUNCE_MS);
+    listing.schedule(prefix);
   }
 
   function handleKeyDown(event: KeyboardEvent<HTMLInputElement>): void {
@@ -560,6 +531,7 @@ export function PathField({
       ariaMode={kind === "dir" ? "dialog" : "listbox"}
       actionLabel="browse"
       value={shownValue}
+      fill
       classes={{
         trigger: `${CLASS.trigger}${kind === "dir" ? ` ${CLASS.directoryTrigger}` : ""}`,
         value: `${CLASS.triggerValue} ${kind === "dir" ? CLASS.directoryValue : ""} ${value === "" ? CLASS.triggerDefault : ""}`,

@@ -49,7 +49,7 @@ import {
   waitingForQuotaText,
   whyLine,
 } from "@evener/appwire-client/state/navigation";
-import { memo, type ReactNode, useCallback, useRef } from "react";
+import { type HTMLAttributes, memo, type ReactNode, type Ref, useCallback, useRef } from "react";
 import { settingsURLWithQuery } from "../../panes/settings/settingsHost";
 import {
   relativeAge,
@@ -80,6 +80,7 @@ import { useActivitySidebarOpenFor } from "../activitybar/activitySidebarStore";
 import { navigate } from "../routing";
 import { type PinTarget, SessionMenu } from "../sessionMenu/SessionMenu";
 import { cadenceStateFor, SIGNAL_STATES } from "../sessionStatus";
+import { useIsMobile } from "../useIsMobile";
 import styles from "./RailRow.module.css";
 import { type RailActivityRead, type RailStatus, useSessionActivityRead, workingStatus } from "./railActivity";
 import { ICON, STROKE } from "./railIcons";
@@ -527,6 +528,9 @@ interface RailWhyProps {
   session: RailSession;
   state: BoardState;
   host?: { label: string; online: boolean };
+  // The phone's drawer and tablet board print the reason inside the title
+  // button; SessionRow reads the one shared viewport listener and says so here.
+  isMobile: boolean;
 }
 
 function RailWhy(props: RailWhyProps): ReactNode {
@@ -537,8 +541,13 @@ function RailWhyTicking(props: RailWhyProps): ReactNode {
   return <RailWhyLine {...props} now={useRailNow()} />;
 }
 
-function RailWhyLine({ session, state, host, now }: RailWhyProps & { now: number }): ReactNode {
+function RailWhyLine({ session, state, host, isMobile, now }: RailWhyProps & { now: number }): ReactNode {
   const line = whyLine({ row: session, state }, undefined, 0, now);
+  // A pending question's own words are the row's useful second line on the
+  // phone's drawer and tablet board: its text is a sentence in the row's
+  // ordinary ink, while the attention dot names the state. No usable text,
+  // and the desktop rail at every width, keep the shared state word.
+  const asked = isMobile && state === "question" ? session.question?.text.trim() || undefined : undefined;
   // A reason line's word names the attention; the sentence after it only
   // tells the reader to open the session, which the row already invites. The
   // bare state word repeats the band's own name.
@@ -546,7 +555,7 @@ function RailWhyLine({ session, state, host, now }: RailWhyProps & { now: number
     line === null || line.kind === "state"
       ? undefined
       : line.kind === "reason"
-        ? { text: line.word, hue: line.hue, kind: line.kind }
+        ? { text: asked ?? line.word, hue: asked === undefined ? line.hue : undefined, kind: line.kind }
         : { text: line.text, hue: undefined, kind: line.kind };
   if (said === undefined && host === undefined) return null;
   return (
@@ -676,11 +685,18 @@ function SessionTitle({
   effectiveState,
   notStarted,
   focusTarget,
+  isMobile,
+  detail,
 }: {
   session: RailSession;
   effectiveState: string;
   notStarted: boolean;
   focusTarget: () => HTMLElement | null;
+  isMobile: boolean;
+  // The phone's title trigger owns the row's second line too, so one 44px
+  // target and one session activation cover both lines. The desktop trigger
+  // keeps the name alone.
+  detail?: ReactNode;
 }) {
   const sideAnchor = useCallback(() => {
     const row = focusTarget();
@@ -711,10 +727,57 @@ function SessionTitle({
             target?.focus();
           }}
         >
-          {session.title}
+          {isMobile ? <span className={CLASS.label}>{session.title}</span> : session.title}
+          {detail}
         </button>
       )}
     </HoverCard>
+  );
+}
+
+// The chrome every rail row shares: the row's box, its text column and title
+// line, the trailing chevron, and the optional leading glyph, second line and
+// right slot. A kind supplies its own label node - the session's title trigger
+// is a button of its own, while the branch kinds' labels carry their own click
+// - plus the attributes that identify the row (the session scroll target, a
+// host group's title, a band's testid and band).
+function RailRowShell({
+  info,
+  rowRef,
+  rowProps,
+  leading,
+  label,
+  afterLabel,
+  below,
+  right,
+  activateOnTextCol,
+}: {
+  info: TreeRowInfo;
+  rowRef?: Ref<HTMLSpanElement>;
+  rowProps?: Omit<HTMLAttributes<HTMLSpanElement>, "className" | "children"> &
+    Record<`data-${string}`, string | undefined>;
+  leading?: ReactNode;
+  label: ReactNode;
+  afterLabel?: ReactNode;
+  below?: ReactNode;
+  right?: ReactNode;
+  activateOnTextCol?: boolean;
+}) {
+  return (
+    <span ref={rowRef} className={CLASS.railRow} {...rowProps}>
+      {/* biome-ignore lint/a11y/noStaticElementInteractions: mouse shortcut only - the treeitem owns keyboard activation and the accessible name */}
+      {/* biome-ignore lint/a11y/useKeyWithClickEvents: mouse shortcut only - the treeitem owns keyboard activation and the accessible name */}
+      <span className={CLASS.textCol} onClick={activateOnTextCol ? info.activate : undefined}>
+        <span className={CLASS.titleLine}>
+          {leading}
+          {label}
+          {afterLabel}
+          <TrailingChevron info={info} />
+        </span>
+        {below}
+      </span>
+      {right}
+    </span>
   );
 }
 
@@ -727,67 +790,70 @@ function SessionRow({ node, info, actions }: { node: SessionRailNode; info: Tree
   });
   const hasSignal = SIGNAL_STATES.has(signalState);
   const notStarted = saysNotStarted(session, hasSignal);
+  // One shared viewport read for the row: the title trigger and the reason
+  // line both need to know whether the phone's layout owns the second line.
+  const isMobile = useIsMobile();
   const rowRef = useRef<HTMLSpanElement>(null);
   const focusTarget = useCallback(() => rowRef.current?.closest<HTMLElement>('[role="treeitem"]') ?? null, []);
+  const detail =
+    node.live !== undefined ? (
+      <RailWhy session={session} state={node.live} host={node.liveHost} isMobile={isMobile} />
+    ) : cadenceStateFor(effectiveState) === "working" ? (
+      <RailQuotaWait session={session} />
+    ) : null;
   return (
     // data-session-ref is the scroll target Rail's reveal effect (the palette's
     // /project command via railController) queries to bring a session's row
     // into view - the ref is stable and unique per session, unlike the label.
-    <span
-      ref={rowRef}
-      className={CLASS.railRow}
-      data-session-ref={session.ref}
-      // The treeitem's own focus, from Tree: it reveals the row's actions.
-      data-row-focused={info.focused ? "true" : undefined}
-    >
-      {/* biome-ignore lint/a11y/noStaticElementInteractions: redundant with the row's own Enter handling, see below */}
-      {/* biome-ignore lint/a11y/useKeyWithClickEvents: redundant with the row's own Enter handling, see below */}
-      <span className={CLASS.textCol} onClick={info.activate}>
-        {/* Mouse-only shortcut for the same activation Enter already performs
-            on the owning treeitem - can't use aria-hidden the way Chevron
-            does, since this text IS the treeitem's accessible name (no
-            separate aria-label on the row). */}
-        <span className={CLASS.titleLine}>
-          <Signal state={signalState} />
-          <SessionTitle
-            session={session}
-            effectiveState={effectiveState}
-            notStarted={notStarted}
-            focusTarget={focusTarget}
-          />
-          <TrailingChevron info={info} />
+    // data-row-focused is the treeitem's own focus, from Tree: it reveals the
+    // row's actions.
+    <RailRowShell
+      info={info}
+      rowRef={rowRef}
+      rowProps={{
+        "data-session-ref": session.ref,
+        "data-row-focused": info.focused ? "true" : undefined,
+      }}
+      activateOnTextCol
+      leading={<Signal state={signalState} />}
+      label={
+        <SessionTitle
+          session={session}
+          effectiveState={effectiveState}
+          notStarted={notStarted}
+          focusTarget={focusTarget}
+          isMobile={isMobile}
+          detail={isMobile ? detail : undefined}
+        />
+      }
+      below={isMobile ? null : detail}
+      // The timestamp shares its slot with hover actions.
+      right={
+        <span className={CLASS.rightSlot}>
+          <span className={CLASS.meta}>
+            {notStarted ? (
+              // Words, not a number: a session that has never run has no elapsed
+              // work to report, and the age this slot would otherwise show is
+              // counting from the moment it was created - which reads as activity
+              // and is the single most misleading thing on the row. Saying so also
+              // gives the row an accessible name that answers the question a
+              // returning user actually has ("did I already ask it something?"),
+              // which an empty signal gutter never could.
+              <span data-testid="rail-row-not-started" className={CLASS.notStarted}>
+                Not started
+              </span>
+            ) : (
+              <RailAge updatedAt={session.updated_at} />
+            )}
+            {/* A session that never ran has no reply to read. */}
+            {!notStarted && node.unseen === true ? <UnreadMarker /> : null}
+          </span>
+          <span className={CLASS.actions}>
+            <SessionMenuRow session={session} actions={actions} />
+          </span>
         </span>
-        {node.live !== undefined ? (
-          <RailWhy session={session} state={node.live} host={node.liveHost} />
-        ) : (
-          cadenceStateFor(effectiveState) === "working" && <RailQuotaWait session={session} />
-        )}
-      </span>
-      {/* The timestamp shares its slot with hover actions. */}
-      <span className={CLASS.rightSlot}>
-        <span className={CLASS.meta}>
-          {notStarted ? (
-            // Words, not a number: a session that has never run has no elapsed
-            // work to report, and the age this slot would otherwise show is
-            // counting from the moment it was created - which reads as activity
-            // and is the single most misleading thing on the row. Saying so also
-            // gives the row an accessible name that answers the question a
-            // returning user actually has ("did I already ask it something?"),
-            // which an empty signal gutter never could.
-            <span data-testid="rail-row-not-started" className={CLASS.notStarted}>
-              Not started
-            </span>
-          ) : (
-            <RailAge updatedAt={session.updated_at} />
-          )}
-          {/* A session that never ran has no reply to read. */}
-          {!notStarted && node.unseen === true ? <UnreadMarker /> : null}
-        </span>
-        <span className={CLASS.actions}>
-          <SessionMenuRow session={session} actions={actions} />
-        </span>
-      </span>
-    </span>
+      }
+    />
   );
 }
 
@@ -821,67 +887,75 @@ function ProjectRow({
   // back to this hub (with the remote working_dir).
   const canSpawn = useHostLaunchable(node.spawnHost);
   return (
-    <span className={CLASS.railRow} data-row-focused={info.focused ? "true" : undefined}>
-      {/* Same title-line anatomy as SessionRow: outdented signal dot, name,
-          trailing chevron on a branch row. */}
-      <span className={CLASS.textCol}>
-        <span className={CLASS.titleLine}>
-          <Signal
-            state={cadenceStateFor(showsRollup ? (project.rollup_state ?? "idle") : "idle", {
-              askPending: showsRollup && project.rollup_state === "awaiting",
-            })}
-          />
-          {/* Same reasoning as SessionRow's own label above. displayName is
-              the UX-fix decoration railNodes.ts's projectDisplayLabels
-              stamps on when this project's name collides with a sibling's
-              in the same list; falls back to the bare name otherwise (and
-              for a hand-built test double that omits it). */}
-          {/* biome-ignore lint/a11y/noStaticElementInteractions: redundant with the row's own Enter handling, see SessionRow */}
-          {/* biome-ignore lint/a11y/useKeyWithClickEvents: redundant with the row's own Enter handling, see SessionRow */}
-          <span className={CLASS.label} onClick={info.activate}>
-            {node.displayName ?? project.name}
+    // Same title-line anatomy as SessionRow: outdented signal dot, name,
+    // trailing chevron on a branch row.
+    <RailRowShell
+      info={info}
+      rowProps={{ "data-row-focused": info.focused ? "true" : undefined }}
+      leading={
+        <Signal
+          state={cadenceStateFor(showsRollup ? (project.rollup_state ?? "idle") : "idle", {
+            askPending: showsRollup && project.rollup_state === "awaiting",
+          })}
+        />
+      }
+      // Same reasoning as SessionRow's own label above. displayName is the
+      // UX-fix decoration railNodes.ts's projectDisplayLabels stamps on when
+      // this project's name collides with a sibling's in the same list; it
+      // falls back to the bare name otherwise (and for a hand-built test
+      // double that omits it).
+      label={
+        // biome-ignore lint/a11y/noStaticElementInteractions: redundant with the row's own Enter handling, see SessionRow
+        // biome-ignore lint/a11y/useKeyWithClickEvents: redundant with the row's own Enter handling, see SessionRow
+        <span className={CLASS.label} onClick={info.activate}>
+          {node.displayName ?? project.name}
+        </span>
+      }
+      afterLabel={
+        resourceError &&
+        retry && (
+          <Button
+            variant="quiet"
+            size="xs"
+            onClick={(event) => {
+              event.stopPropagation();
+              retry();
+            }}
+          >
+            Retry
+          </Button>
+        )
+      }
+      right={
+        <>
+          {project.favorite === true && (
+            <span data-testid="favorite-star" aria-hidden="true" className={CLASS.star}>
+              {"★"}
+            </span>
+          )}
+          {/* Same shared right slot as SessionRow: the rollup Badge (when the
+              project has needs-you descendants) and the hover-revealed actions
+              pair share one cell - the menu covers the badge while revealed
+              instead of reserving width beside it. */}
+          <span className={CLASS.rightSlot}>
+            {showsRollup && attentionCount > 0 && <Badge count={attentionCount} tone="attention" />}
+            <span className={CLASS.actions}>
+              {project.key !== NO_PROJECT_KEY && canSpawn && (
+                <IconButton
+                  label={`New session in ${project.name}`}
+                  icon={<span aria-hidden="true">{"+"}</span>}
+                  variant="quiet"
+                  size="sm"
+                  tabIndex={-1}
+                  onClick={() => spawnInProject(project, node.spawnHost)}
+                />
+              )}
+              <ActionsMenu label={project.name} items={projectMenuItems(project, actions, node.spawnHost, canSpawn)} />
+            </span>
           </span>
-          {resourceError && retry && (
-            <Button
-              variant="quiet"
-              size="xs"
-              onClick={(event) => {
-                event.stopPropagation();
-                retry();
-              }}
-            >
-              Retry
-            </Button>
-          )}
-          <TrailingChevron info={info} />
-        </span>
-      </span>
-      {project.favorite === true && (
-        <span data-testid="favorite-star" aria-hidden="true" className={CLASS.star}>
-          {"★"}
-        </span>
-      )}
-      {/* Same shared right slot as SessionRow: the rollup Badge (when the
-          project has needs-you descendants) and the hover-revealed actions
-          pair share one cell - the menu covers the badge while revealed
-          instead of reserving width beside it. */}
-      <span className={CLASS.rightSlot}>
-        {showsRollup && attentionCount > 0 && <Badge count={attentionCount} tone="attention" />}
-        <span className={CLASS.actions}>
-          {project.key !== NO_PROJECT_KEY && canSpawn && (
-            <IconButton
-              label={`New session in ${project.name}`}
-              icon={<span aria-hidden="true">{"+"}</span>}
-              variant="quiet"
-              size="sm"
-              tabIndex={-1}
-              onClick={() => spawnInProject(project, node.spawnHost)}
-            />
-          )}
-          <ActionsMenu label={project.name} items={projectMenuItems(project, actions, node.spawnHost, canSpawn)} />
-        </span>
-      </span>
-    </span>
+        </>
+      }
+    />
   );
 }
 
@@ -908,28 +982,28 @@ function projectSourcesEqual(a: readonly string[] | undefined, b: readonly strin
 function HostRow({ node, info }: { node: HostRailNode; info: TreeRowInfo }) {
   const { host } = node;
   return (
-    <span
-      className={CLASS.railRow}
-      data-testid="rail-row-host-group"
-      title={host.online ? `Host ${host.label}` : `Host ${host.label} is offline`}
-    >
-      <span className={CLASS.textCol}>
-        <span className={CLASS.titleLine}>
-          <HostGlyph className={CLASS.hostGlyph} testId="rail-row-host-glyph" />
-          {/* biome-ignore lint/a11y/noStaticElementInteractions: redundant with the row's own Enter handling, see SessionRow */}
-          {/* biome-ignore lint/a11y/useKeyWithClickEvents: redundant with the row's own Enter handling, see SessionRow */}
-          <span className={host.online ? CLASS.label : `${CLASS.label} ${CLASS.hostOffline}`} onClick={info.activate}>
-            {host.label}
-          </span>
-          {!host.online && (
-            <span data-testid="rail-row-host-group-offline" className={CLASS.host}>
-              {" (offline)"}
-            </span>
-          )}
-          <TrailingChevron info={info} />
+    <RailRowShell
+      info={info}
+      rowProps={{
+        "data-testid": "rail-row-host-group",
+        title: host.online ? `Host ${host.label}` : `Host ${host.label} is offline`,
+      }}
+      leading={<HostGlyph className={CLASS.hostGlyph} testId="rail-row-host-glyph" />}
+      label={
+        // biome-ignore lint/a11y/noStaticElementInteractions: redundant with the row's own Enter handling, see SessionRow
+        // biome-ignore lint/a11y/useKeyWithClickEvents: redundant with the row's own Enter handling, see SessionRow
+        <span className={host.online ? CLASS.label : `${CLASS.label} ${CLASS.hostOffline}`} onClick={info.activate}>
+          {host.label}
         </span>
-      </span>
-    </span>
+      }
+      afterLabel={
+        !host.online && (
+          <span data-testid="rail-row-host-group-offline" className={CLASS.host}>
+            {" (offline)"}
+          </span>
+        )
+      }
+    />
   );
 }
 
@@ -942,26 +1016,27 @@ const bandLabel = (band: Band): string => STATE_LABELS[band === "needsYou" ? "ne
 
 function BandRow({ node, info }: { node: BandRailNode; info: TreeRowInfo }) {
   return (
-    <span className={CLASS.railRow} data-testid="rail-row-band" data-band={node.band}>
-      <span className={CLASS.textCol}>
-        <span className={CLASS.titleLine}>
-          {/* biome-ignore lint/a11y/noStaticElementInteractions: redundant with the row's own Enter handling, see SessionRow */}
-          {/* biome-ignore lint/a11y/useKeyWithClickEvents: redundant with the row's own Enter handling, see SessionRow */}
-          <span className={`${CLASS.label} ${CLASS.bandLabel}`} onClick={info.activate}>
-            {bandLabel(node.band)}
-          </span>
-          <TrailingChevron info={info} />
+    <RailRowShell
+      info={info}
+      rowProps={{ "data-testid": "rail-row-band", "data-band": node.band }}
+      label={
+        // biome-ignore lint/a11y/noStaticElementInteractions: redundant with the row's own Enter handling, see SessionRow
+        // biome-ignore lint/a11y/useKeyWithClickEvents: redundant with the row's own Enter handling, see SessionRow
+        <span className={`${CLASS.label} ${CLASS.bandLabel}`} onClick={info.activate}>
+          {bandLabel(node.band)}
         </span>
-      </span>
-      <span className={CLASS.bandCount} data-testid="rail-row-band-count">
-        {/* The count is sessions in the band. A band's own "+N older" row
-            stands for rows beyond it, so it is not one of them. */}
-        <Badge
-          count={node.children.filter((child) => child.kind === "session").length}
-          tone={node.band === "needsYou" ? "attention" : undefined}
-        />
-      </span>
-    </span>
+      }
+      right={
+        <span className={CLASS.bandCount} data-testid="rail-row-band-count">
+          {/* The count is sessions in the band. A band's own "+N older" row
+              stands for rows beyond it, so it is not one of them. */}
+          <Badge
+            count={node.children.filter((child) => child.kind === "session").length}
+            tone={node.band === "needsYou" ? "attention" : undefined}
+          />
+        </span>
+      }
+    />
   );
 }
 

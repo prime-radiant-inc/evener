@@ -16,7 +16,7 @@ import {
   parseArgs,
   str,
 } from "@evener/appwire-client";
-import { CopyButton, EmptyState } from "../../../../widgets";
+import { CopyButton, EmptyState, ListRow } from "../../../../widgets";
 import { jobStatusDisplay } from "../../chrome/activityFormat";
 import { EntityRef } from "../EntityRef";
 import { UserMessageView } from "../messages/UserMessageItem";
@@ -24,6 +24,7 @@ import type { ToolRenderProps } from "../toolRenderers";
 import { registerToolRenderer } from "../toolRenderers";
 import { HeadClippedOutputBody } from "./bodies";
 import { DelegateStatusBody } from "./delegateStatus";
+import styles from "./jobTools.module.css";
 
 const ID_CLIP = 26;
 
@@ -90,9 +91,8 @@ function JobListBody({ item, live }: ToolRenderProps) {
           const description = textField(job, "description") || textField(job, "task");
           return (
             <div key={identity} data-testid="job-list-row">
-              <EntityRef id={identity} />
-              {fields.length > 0 ? ` · ${fields.join(" · ")}` : ""}
-              {description ? ` — ${description}` : ""}
+              <ListRow variant="plain" label={<EntityRef id={identity} />} meta={fields.join(" · ") || undefined} />
+              {description ? <div className={styles.description}>{description}</div> : null}
             </div>
           );
         })
@@ -166,6 +166,7 @@ function DelegateSendBody(props: ToolRenderProps) {
             name={target === "" ? "Agent → delegate" : `Agent → ${target}`}
             timeIso={item.startedAt}
             opensExchange={false}
+            markdown={false}
             actions={<CopyButton text={message} label="Copy message" />}
           />
         </section>
@@ -183,6 +184,7 @@ function DelegateSendBody(props: ToolRenderProps) {
               speaker="agent"
               name={target === "" ? `Delegate, ${label}` : `${target} (delegate, ${label})`}
               opensExchange={false}
+              markdown={false}
               actions={<CopyButton text={text} label={`Copy ${label}`} />}
             />
           </section>
@@ -196,6 +198,7 @@ function DelegateSendBody(props: ToolRenderProps) {
             name={target === "" ? "Delegate" : `${target} (delegate)`}
             timeIso={item.completedAt ?? item.startedAt}
             opensExchange={false}
+            markdown={false}
             actions={<CopyButton text={response} label="Copy response" />}
           />
         </section>

@@ -9,6 +9,7 @@ import { stubViewportCapabilities } from "../../shell/appShellTestUtils";
 import { MOBILE_QUERY } from "../../shell/useIsMobile";
 import { connectionStore } from "../../stores/connection";
 import { readModuleCss, topRuleBlock } from "../../styles/cssBlock";
+import pickerTriggerStyles from "../../widgets/internal/pickerTrigger.module.css";
 import popoverStyles from "../../widgets/popover/popover.module.css";
 import promptCardStyles from "../../widgets/promptcard/promptcard.module.css";
 import modelSwitchStyles from "../session/chrome/modelswitch.module.css";
@@ -403,7 +404,10 @@ test("the card's model trigger fills its slot and opts into truncation", async (
   await settled();
   const trigger = modelTrigger();
   expect(trigger.className.split(" ")).toContain(modelSwitchStyles.triggerShrink);
-  expect(trigger.parentElement?.className.split(" ")).toContain(popoverStyles.triggerStretch);
+  // PickerTrigger owns the slot box; the Popover still wraps it to anchor the
+  // panel and stretches its own wrapper so the field lines up.
+  expect(trigger.parentElement?.className.split(" ")).toContain(pickerTriggerStyles.wrapperFill);
+  expect(trigger.closest(`.${popoverStyles.triggerStretch}`)).not.toBeNull();
 });
 
 // The card draws the one border and owns the focus ring, so the field inside

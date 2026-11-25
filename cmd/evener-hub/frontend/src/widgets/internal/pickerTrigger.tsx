@@ -24,6 +24,12 @@
 // them. This widget owns the structure and the ARIA, which is where the three
 // copies had actually drifted.
 //
+// The slot box is the exception, because the structure needs it: the trigger is
+// always one span, from the widget, on every surface that mounts it. A caller
+// whose slot sizes the trigger directly (the status row's `.identity > span`)
+// therefore sizes this span rather than a per-caller shim, and `fill` gives the
+// form-field callers the width they need. See pickerTrigger.module.css.
+//
 // Internal rather than barrelled? ModelSwitchTrigger lives outside src/widgets,
 // so the barrel exports this one; Listbox/useListbox stay internal because only
 // widgets use them.
@@ -31,6 +37,13 @@
 import type { JSX, ReactNode, Ref } from "react";
 import { Chevron } from "../chevron";
 import { VisuallyHidden } from "../visuallyhidden";
+import styles from "./pickerTrigger.module.css";
+import { requireClass } from "./requireClass";
+
+const CLASS = {
+  wrapper: requireClass(styles.wrapper, "pickerTrigger.module.css", "wrapper"),
+  wrapperFill: requireClass(styles.wrapperFill, "pickerTrigger.module.css", "wrapperFill"),
+};
 
 /** What the trigger opens, for aria-haspopup: the model catalog's listbox
  * popup, or PathField's directory dialog. */
@@ -55,6 +68,9 @@ export interface PickerTriggerProps {
   /** The visible value; the caller decides what an empty value reads as. */
   value: ReactNode;
   classes: PickerTriggerClassNames;
+  /** Stretch the slot box across what it was given instead of hugging the
+   * label. The form-field pickers and the spawn card's model slot set it. */
+  fill?: boolean;
   /** data-state for the value span (ModelCatalog's "default" marker). */
   valueState?: string;
   disabled?: boolean;
@@ -77,6 +93,7 @@ export function PickerTrigger({
   actionLabel,
   value,
   classes,
+  fill = false,
   valueState,
   disabled = false,
   title,
@@ -87,26 +104,28 @@ export function PickerTrigger({
   valueTestId,
 }: PickerTriggerProps): JSX.Element {
   return (
-    <button
-      ref={ref}
-      id={id}
-      type="button"
-      className={classes.trigger}
-      disabled={disabled}
-      title={title}
-      aria-haspopup={ariaMode}
-      aria-expanded={open}
-      aria-label={ariaLabel}
-      data-testid={testId}
-      onClick={onClick}
-    >
-      <span className={classes.value} data-testid={valueTestId} data-state={valueState}>
-        {value}
-      </span>
-      <span className={classes.chevron} aria-hidden="true">
-        <Chevron direction="down" />
-      </span>{" "}
-      <VisuallyHidden>— {actionLabel}</VisuallyHidden>
-    </button>
+    <span className={`${CLASS.wrapper}${fill ? ` ${CLASS.wrapperFill}` : ""}`}>
+      <button
+        ref={ref}
+        id={id}
+        type="button"
+        className={classes.trigger}
+        disabled={disabled}
+        title={title}
+        aria-haspopup={ariaMode}
+        aria-expanded={open}
+        aria-label={ariaLabel}
+        data-testid={testId}
+        onClick={onClick}
+      >
+        <span className={classes.value} data-testid={valueTestId} data-state={valueState}>
+          {value}
+        </span>
+        <span className={classes.chevron} aria-hidden="true">
+          <Chevron direction="down" />
+        </span>{" "}
+        <VisuallyHidden>— {actionLabel}</VisuallyHidden>
+      </button>
+    </span>
   );
 }

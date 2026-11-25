@@ -184,7 +184,7 @@ const FEATURE_KEYS = [
   "directoryComplete",
   "auth",
 ] as const;
-const FEATURE_OPTIONAL_KEYS = ["transcriptDisplaySettings", "keybindingsSettings"] as const;
+const FEATURE_OPTIONAL_KEYS = ["transcriptDisplaySettings", "keybindingsSettings", "threadStartIdempotency"] as const;
 
 function hasExactKeys(
   value: Record<string, unknown>,

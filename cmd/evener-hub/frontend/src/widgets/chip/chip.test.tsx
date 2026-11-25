@@ -14,6 +14,7 @@ const styles = {
   attention: requireClass(rawStyles.attention, "chip.module.css", "attention"),
   alive: requireClass(rawStyles.alive, "chip.module.css", "alive"),
   danger: requireClass(rawStyles.danger, "chip.module.css", "danger"),
+  accent: requireClass(rawStyles.accent, "chip.module.css", "accent"),
 };
 
 test("renders its children as the visible label", () => {
@@ -51,6 +52,19 @@ for (const tone of TONES) {
   });
 }
 
+test("the accent tone maps to the accent token family", () => {
+  const accent = requireClass(rawStyles.accent, "chip.module.css", "accent");
+  const { container } = render(<Chip tone="accent">backend</Chip>);
+  expect(container.firstElementChild!.classList.contains(accent)).toBe(true);
+});
+
+test("the accent tone declares the accent token family", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const css = readFileSync(join(here, "chip.module.css"), "utf8");
+  expect(css).toMatch(/\.accent\s*\{[^}]*background:\s*var\(--accent-bg\)/);
+  expect(css).toMatch(/\.accent\s*\{[^}]*color:\s*var\(--accent-ink\)/);
+});
+
 test("renders no remove button when onRemove is not provided", () => {
   render(<Chip>backend</Chip>);
   expect(screen.queryByRole("button")).toBeNull();
@@ -73,6 +87,16 @@ test("when children is not a plain string, the remove button falls back to a bar
     </Chip>,
   );
   expect(screen.getByRole("button", { name: "Remove" })).toBeTruthy();
+});
+
+test("removeLabel names the remove button instead of deriving one from the children", () => {
+  render(
+    <Chip removeLabel="back to command list" onRemove={() => {}}>
+      Spawn
+    </Chip>,
+  );
+  expect(screen.getByRole("button", { name: "back to command list" })).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Remove Spawn" })).toBeNull();
 });
 
 test("clicking the remove button fires onRemove", async () => {

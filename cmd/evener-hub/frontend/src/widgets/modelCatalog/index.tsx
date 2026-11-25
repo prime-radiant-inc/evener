@@ -432,6 +432,7 @@ export function ModelCatalog({
           ariaMode="listbox"
           actionLabel="change model"
           value={value === "" ? emptyLabel : value}
+          fill
           valueState={value === "" ? "default" : undefined}
           classes={{
             trigger: CLASS.trigger,

@@ -1,34 +1,12 @@
-/* A folded run of settled tool calls (critique R9, toolRuns.ts): one row of
- * the tool card it sits in (styles/surface.module.css draws the card on this
- * element). The collapsed row is deliberately quieter than the
- * tool rows it stands in for: a count and one name, at the UI step, with the
- * same inset a tool row takes so its edge lines up with their seats. Open, it
- * is the header of the rows it stands for, which follow inside the same card
- * behind hairline dividers. The card does not clip, because a row's Open
- * control overhangs its line by more than the row's padding on a phone.
- * What paints to the card's edge takes the card's corners instead, read from
- * the segment's corner properties (styles/surface.module.css): the summary
- * while it is the whole row, and the last row of an open run, whose evidence
- * band inherits them. */
+/* A folded run's count and name align with the calls it reveals. */
 
 .summary {
   composes: toolRowInsets from "../../../styles/surface.module.css";
   padding: var(--tool-card-row-pad) var(--tool-card-inset);
-  border-radius: var(--tool-card-radius-top, 0) var(--tool-card-radius-top, 0) var(--tool-card-radius-bottom, 0)
-    var(--tool-card-radius-bottom, 0);
   font-family: var(--font-sans);
   font-size: var(--font-size-ui);
 }
 
-/* Disclosure's summary owns the flex layout, hover wash, and phone tap floor;
- * this row adds only its card geometry above, the card's squared seam while
- * its body is open, and the control-radius focus ring. */
-details[open] > .summary {
-  border-bottom-left-radius: 0;
-  border-bottom-right-radius: 0;
-}
-
-/* Inset: the summary spans the card, so an outset ring would sit on its edge. */
 .summary:focus-visible {
   border-radius: var(--radius-control);
 }
@@ -50,18 +28,7 @@ details[open] > .summary {
   min-width: 0;
 }
 
-/* The rows of an open run: divided from each other by the card's rows rule,
- * and from the header above by the body's own top edge. */
+/* Place the first expanded call directly below the summary. */
 .body {
-  composes: groupedRows from "../../../styles/surface.module.css";
-  /* Disclosure wraps its children in a body with a --space-1 gap. A run's
-   * rows are flush with their header inside one card, so cancel it. */
   margin-top: calc(-1 * var(--space-1));
-  border-top: 1px solid var(--edge);
-}
-
-.body,
-.body > :last-child {
-  border-bottom-left-radius: var(--tool-card-radius-bottom, 0);
-  border-bottom-right-radius: var(--tool-card-radius-bottom, 0);
 }
