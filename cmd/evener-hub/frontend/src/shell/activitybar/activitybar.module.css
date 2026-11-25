@@ -82,6 +82,21 @@
   border-bottom-color: var(--ink-hi);
 }
 
+.tabLabel {
+  color: var(--ink-mid);
+}
+
+.tabLabelSelected {
+  color: var(--ink-hi);
+}
+
+.tabDetail {
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-regular);
+  color: var(--ink-low);
+  font-variant-numeric: tabular-nums;
+}
+
 .body {
   flex: 1;
   overflow-y: auto;

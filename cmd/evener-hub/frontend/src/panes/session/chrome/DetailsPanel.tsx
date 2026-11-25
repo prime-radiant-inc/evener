@@ -50,7 +50,16 @@ import {
 } from "@evener/appwire-client";
 import { forwardRef, type ReactNode, useImperativeHandle, useState } from "react";
 import { cadenceStateFor } from "../../../shell/sessionStatus";
-import { Button, Chip, Meter, PropertyList, Sheet, type StackedPropertyListRow, StatusDot } from "../../../widgets";
+import {
+  Button,
+  Chip,
+  type ChipTone,
+  Meter,
+  PropertyList,
+  Sheet,
+  type StackedPropertyListRow,
+  StatusDot,
+} from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { formatTimestamp, sessionTokens, tokenUnitLabel } from "./detailsAccounting";
 import styles from "./detailspanel.module.css";
@@ -107,6 +116,22 @@ function isEndedStatus(type: string): boolean {
   return type === "ended" || type === "closed";
 }
 
+// Known short GoalStatus tokens fit inside a single-line quiet Chip; free-form
+// or future multi-word status strings wrap as ordinary secondary text so they
+// never overflow narrow panels.
+function goalStatusChipTone(status: string): ChipTone | null {
+  switch (status.toLowerCase()) {
+    case "blocked":
+      return "attention";
+    case "active":
+      return "alive";
+    case "complete":
+      return "neutral";
+    default:
+      return null;
+  }
+}
+
 // detailRow builds one PropertyList row whose value carries the row's own
 // testid, so a caller can find a fact without matching its label text.
 // `scope` says what the row's figure counts, when that can vary (the token
@@ -148,6 +173,7 @@ export function DetailsPanelBody({ model, now, resolvedBranch = "" }: DetailsPan
   const status = effectiveContextStatus(model);
   const objective = model.goal?.objective?.trim();
   const goalStatus = model.goal?.status.trim();
+  const goalChipTone = goalStatus ? goalStatusChipTone(goalStatus) : null;
   const showContext = status.ceiling > 0 && !isEndedStatus(model.status.type);
   const remaining = status.remaining;
   const percent = Math.round(status.pressure * 100);
@@ -202,15 +228,16 @@ export function DetailsPanelBody({ model, now, resolvedBranch = "" }: DetailsPan
               "session-details-goal",
               <>
                 <span>{objective}</span>
-                {goalStatus && (
-                  <Chip
-                    variant="quiet"
-                    tone={goalStatus.toLowerCase() === "blocked" ? "attention" : "neutral"}
-                    data-testid="session-details-goal-status"
-                  >
-                    {goalStatus}
-                  </Chip>
-                )}
+                {goalStatus &&
+                  (goalChipTone !== null ? (
+                    <Chip variant="quiet" tone={goalChipTone} data-testid="session-details-goal-status">
+                      {goalStatus}
+                    </Chip>
+                  ) : (
+                    <span className={CLASS.dim} data-testid="session-details-goal-status">
+                      {goalStatus}
+                    </span>
+                  ))}
               </>,
             ),
           detailRow("model", "session-details-model", modelLabel(model.modelProvider, model.model), true),

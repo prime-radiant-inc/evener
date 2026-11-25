@@ -529,6 +529,22 @@ test("a session on a remote host names that host by its manifest label and says 
   expect(screen.getByTestId("session-details-host-state").dataset.variant).toBe("quiet");
   expect(screen.getByTestId("session-details-goal-status").dataset.variant).toBe("quiet");
   expect(screen.getByTestId("session-details-state").querySelector('[data-state="working"]')).toBeTruthy();
+
+  cleanup();
+  render(
+    <DetailsPanelBody
+      model={testModel({
+        goal: {
+          objective: "Keep layout contained",
+          status: "awaiting stakeholder approval for compact session footer geometry",
+          iterations: 1,
+        },
+      })}
+      now={0}
+    />,
+  );
+  expect(screen.getByTestId("session-details-goal-status").dataset.variant).toBeUndefined();
+  expect(screen.getByTestId("session-details-goal-status").textContent).toContain("awaiting stakeholder approval");
 });
 
 test("a session whose host has dropped reads offline", () => {

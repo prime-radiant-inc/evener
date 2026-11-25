@@ -1135,8 +1135,10 @@ async function verifyPanelCollapse(cdpEndpoint, url) {
         await until(() => !document.querySelector('[role="dialog"][aria-modal="true"]'), 'Verbosity dialog close');
         const checked = await until(
           () =>
-            [...document.querySelectorAll('[data-testid="activity-sidebar"] [role="radio"]')].find(
-              (item) => item.getAttribute('aria-checked') === 'true' && item.textContent?.includes('Tasks'),
+            [...document.querySelectorAll('[data-testid="activity-sidebar"] [role="tab"], [data-testid="activity-sidebar"] [role="radio"]')].find(
+              (item) =>
+                (item.getAttribute('aria-selected') === 'true' || item.getAttribute('aria-checked') === 'true') &&
+                item.textContent?.includes('Tasks'),
             ),
           'selected Tasks activity tab',
         );
@@ -1202,8 +1204,10 @@ async function verifyAboutOverview(cdpEndpoint, url, width) {
           'activity sidebar',
         );
         await until(
-          () => [...sidebar.querySelectorAll('[role="radio"]')].find(
-            (item) => item.getAttribute('aria-checked') === 'true' && item.textContent?.includes('About'),
+          () => [...sidebar.querySelectorAll('[role="tab"], [role="radio"]')].find(
+            (item) =>
+              (item.getAttribute('aria-selected') === 'true' || item.getAttribute('aria-checked') === 'true') &&
+              item.textContent?.includes('About'),
           ),
           'selected About tab',
         );
@@ -1215,6 +1219,7 @@ async function verifyAboutOverview(cdpEndpoint, url, width) {
         const sidebarBox = sidebar.getBoundingClientRect();
         const branchBox = branch.getBoundingClientRect();
         const horizontallyOverflowing = [sidebar, ...sidebar.querySelectorAll('*')].filter((element) => {
+          if (element.matches('[role="tablist"]')) return false;
           const style = getComputedStyle(element);
           return element.clientWidth > 1 && element.scrollWidth > element.clientWidth + 1 &&
             (style.overflowX === 'auto' || style.overflowX === 'scroll');

@@ -919,16 +919,7 @@ async function measureTabletSplit(page) {
   await pressKey(send, "Home", "Home", 36);
   const home = await evaluate(send, snapState);
   await pressKey(send, "End", "End", 35);
-  await clickControl(send, '[data-testid="topbar"] button[aria-label="Overview"]');
-  await waitForDom(
-    send,
-    `(() => {
-      const sheet = document.querySelector(${JSON.stringify(PHONE_INSPECTION)});
-      return Boolean(sheet && getComputedStyle(sheet).transform === 'none' && sheet.contains(document.activeElement) && document.activeElement.matches('button'));
-    })()`,
-    "tablet Overview sheet settles with Find focused",
-  );
-  await pressKey(send, "Enter", "Enter", 13);
+  await clickControl(send, '[data-testid="topbar"] button[aria-label="Find in session"]');
   await waitForDom(send, `document.activeElement?.matches('[data-find-bar] input[type="search"]')`, "Find query focus at maximum board width");
   const findQuery = "session";
   await send("Input.insertText", { text: findQuery });
@@ -1094,7 +1085,9 @@ function assertTabletSplit(result) {
 const OVERVIEW_VIEWPORTS = [VIEWPORT, MOBILE_VIEWPORT, { width: 320, height: 844, mobile: true, touch: true }];
 const OVERVIEW_THEMES = ["light", "dark"];
 const OVERVIEW = '[data-testid="activity-sidebar"][aria-label="Overview"]';
-const PHONE_INSPECTION = '[role="dialog"][aria-modal="true"]:not([data-testid="activity-sidebar"])';
+const OVERVIEW_SELECTED_TAB = '[role="tab"][aria-selected="true"], [role="radio"][aria-checked="true"]';
+const overviewTabSelector = (labelFilter) =>
+  `${OVERVIEW} [role="tab"]${labelFilter}, ${OVERVIEW} [role="radio"]${labelFilter}`;
 // The Overview sweep's tall task list renders this many live rows (40-row
 // fixture, every fourth settled into the collapsed fold). The wait gate and
 // the fixture-sanity assert below share it, so resizing the fixture cannot
@@ -1258,57 +1251,78 @@ async function chooseOverviewMenu(send, selector) {
 }
 
 async function choosePaneOverview(send, selector, mobile = false, measure = false) {
+  let headerFind;
   if (mobile && measure) {
     await waitForDom(send, `document.querySelector(${JSON.stringify(selector)})`, "mounted phone Overview trigger");
+    headerFind = await evaluate(send, `(() => {
+      const find = document.querySelector('[data-testid="topbar"] button[aria-label="Find in session"]');
+      const overview = document.querySelector(${JSON.stringify(selector)})?.closest('button');
+      if (!find || !overview) return { present: false };
+      const tapMin = parseFloat(getComputedStyle(overview).getPropertyValue('--tap-min'));
+      const findBox = find.getBoundingClientRect();
+      const overviewBox = overview.getBoundingClientRect();
+      const hit = (box, el) => el.contains(document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2));
+      return {
+        present: true,
+        tapMin,
+        findFits: findBox.width >= tapMin - 1 && findBox.height >= tapMin - 1 && findBox.left >= -1 && findBox.right <= innerWidth + 1 && hit(findBox, find),
+        overviewFits: overviewBox.width >= tapMin - 1 && overviewBox.height >= tapMin - 1 && overviewBox.left >= -1 && overviewBox.right <= innerWidth + 1 && hit(overviewBox, overview),
+        findBox: findBox.toJSON(),
+        overviewBox: overviewBox.toJSON(),
+      };
+    })()`);
+    if (!headerFind.present || !headerFind.findFits || !headerFind.overviewFits) {
+      throw new Error(`phone session header misses Find/Overview tap geometry: ${JSON.stringify(headerFind)}`);
+    }
     await evaluate(send, `document.querySelector(${JSON.stringify(selector)}).closest('button').focus({ preventScroll: true })`);
     await pressKey(send, "Enter", "Enter", 13);
   } else {
     await clickControl(send, selector);
   }
-  let inspection;
-  if (mobile) {
-    await waitForDom(send, `(() => {
-      const sheet = document.querySelector(${JSON.stringify(PHONE_INSPECTION)});
-      return sheet && getComputedStyle(sheet).transform === 'none';
-    })()`, "phone Overview sheet settles");
-    if (measure) {
-      inspection = await evaluate(send, `(() => {
-        const sheet = document.querySelector(${JSON.stringify(PHONE_INSPECTION)});
-        const rect = sheet.getBoundingClientRect();
-        // Hit-test before clickControl can scroll an off-screen target into view.
-        const active = document.activeElement;
-        const focus = active.getBoundingClientRect();
-        const hit = document.elementFromPoint(focus.left + focus.width / 2, focus.top + focus.height / 2);
-        const initialFocus = {
-          visible: sheet.contains(active) && active.matches('button:focus-visible') && active.contains(hit),
-          box: focus.toJSON(),
-          sheet: rect.toJSON(),
-        };
-        const tapMin = parseFloat(getComputedStyle(sheet).getPropertyValue('--tap-min'));
-        const rows = [...sheet.querySelectorAll('[data-activity-tab]')].map(element => {
-          const box = element.getBoundingClientRect();
-          const glyph = element.querySelector('[aria-hidden="true"]');
-          const glyphBox = glyph?.getBoundingClientRect();
-          return { tab: element.dataset.activityTab,
-            glyphVisible: glyphBox?.width > 0 && glyphBox.height > 0 && getComputedStyle(glyph).visibility === 'visible',
-            fits: box.height >= tapMin - 1 && box.width >= tapMin - 1 &&
-              box.left >= rect.left - 1 && box.right <= rect.right + 1 && element.scrollWidth <= element.clientWidth + 1 };
-        });
-        return { initialFocus, rows, fits: rect.left >= -1 && rect.right <= innerWidth + 1 && rect.top >= -1 &&
-          rect.bottom <= innerHeight + 1 };
-      })()`);
-      if (!inspection.initialFocus.visible) {
-        throw new Error(`phone Overview starts with clipped keyboard focus: ${JSON.stringify(inspection.initialFocus)}`);
-      }
-      if (!inspection.fits || JSON.stringify(inspection.rows.map(row => row.tab)) !== JSON.stringify(["agents", "jobs", "watches", "tasks"]) ||
-          inspection.rows.some(row => !row.fits || !row.glyphVisible)) {
-        throw new Error(`phone Overview misses its activity geometry: ${JSON.stringify(inspection)}`);
-      }
-    }
-    await clickControl(send, `${PHONE_INSPECTION} [data-activity-tab="agents"]`);
-  }
   await waitForDom(send, `document.querySelector(${JSON.stringify(OVERVIEW)})`, "opened pane Overview");
   await settleOverview(send);
+  let inspection;
+  if (mobile && measure) {
+    inspection = await evaluate(send, `(() => {
+      const aside = document.querySelector(${JSON.stringify(OVERVIEW)});
+      const rect = aside.getBoundingClientRect();
+      const active = document.activeElement;
+      const focus = active.getBoundingClientRect();
+      const hit = document.elementFromPoint(focus.left + focus.width / 2, focus.top + focus.height / 2);
+      const initialFocus = {
+        visible: aside.contains(active) && active.matches(':focus-visible') && active.contains(hit),
+        box: focus.toJSON(),
+        aside: rect.toJSON(),
+      };
+      const tapMin = parseFloat(getComputedStyle(aside).getPropertyValue('--tap-min'));
+      const tabs = [...aside.querySelectorAll('[role="tablist"] [role="tab"]')].map(element => {
+        const box = element.getBoundingClientRect();
+        return {
+          label: element.firstElementChild?.textContent?.trim() ?? element.textContent?.trim() ?? '',
+          selected: element.getAttribute('aria-selected') === 'true',
+          fits: box.height >= tapMin - 1 && box.width >= tapMin - 1,
+        };
+      });
+      return {
+        headerFind: ${JSON.stringify(headerFind)},
+        initialFocus,
+        tabs,
+        fits: rect.left >= -1 && rect.right <= innerWidth + 1 && rect.top >= -1 && rect.bottom <= innerHeight + 1,
+      };
+    })()`);
+    if (!inspection.initialFocus.visible) {
+      throw new Error(`phone Overview starts with clipped keyboard focus: ${JSON.stringify(inspection.initialFocus)}`);
+    }
+    if (
+      !inspection.fits ||
+      JSON.stringify(inspection.tabs.map((tab) => tab.label)) !==
+        JSON.stringify(["About", "Agents", "Jobs", "Watches", "Tasks"]) ||
+      inspection.tabs.some((tab) => !tab.fits) ||
+      !inspection.tabs[0]?.selected
+    ) {
+      throw new Error(`phone Overview misses its underline tablist geometry: ${JSON.stringify(inspection)}`);
+    }
+  }
   return inspection;
 }
 
@@ -1333,7 +1347,7 @@ async function openRailOverview(send) {
     "hydrated receiving Session",
   );
   await settleOverview(send);
-  await clickControl(send, `${OVERVIEW} [role="radio"][aria-label="About"]`);
+  await clickControl(send, overviewTabSelector('[aria-label="About"]'));
   await waitForDom(
     send,
     `window.overviewGuardState().overview.tab === 'about' && document.querySelector(${JSON.stringify(OVERVIEW)})?.textContent.includes(${JSON.stringify(LONG_VALUES[1])})`,
@@ -1409,12 +1423,14 @@ async function measureOverview(send) {
       return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: r.width, height: r.height };
     };
     const mobile = matchMedia('(max-width: 899px)').matches;
-    // A category is a label line over an optional detail line (the stacked
-    // SegmentedControl); each line must show its whole text.
-    const categories = Array.from(aside.querySelectorAll('[role="radio"]'), element => {
+    // A category is a label plus optional detail (desktop SegmentedControl
+    // radios, mobile underline tablist); each piece must show its whole text.
+    const categories = Array.from(aside.querySelectorAll(mobile ? '[role="tab"]' : '[role="radio"]'), element => {
       const lines = Array.from(element.children);
       return {
-        text: lines.map(line => line.textContent).join('\\n'), checked: element.getAttribute('aria-checked'), box: box(element),
+        text: lines.map(line => line.textContent).join('\\n'),
+        checked: element.getAttribute(mobile ? 'aria-selected' : 'aria-checked'),
+        box: box(element),
         label: measure(lines[0], lines[0]?.textContent),
         detail: lines[1] ? measure(lines[1], lines[1].textContent) : null,
       };
@@ -1459,7 +1475,7 @@ function overviewScrollContainers(root) {
 // document must not grow: a tall task list scrolling the whole page frame
 // is the bug this step exists to catch.
 async function measureOverviewTasks(send) {
-  await clickControl(send, `${OVERVIEW} [role="radio"][aria-label^="Tasks"]`);
+  await clickControl(send, overviewTabSelector('[aria-label^="Tasks"]'));
   await waitForDom(
     send,
     `document.querySelectorAll('[data-testid="task-row"]').length >= ${TALL_TASK_ROWS}`,
@@ -1515,7 +1531,7 @@ function assertOverviewTasks(result, viewport) {
 
 function assertOverview(result, viewport, theme) {
   const failures = [];
-  const labels = ["Agents\n100/100", "Jobs\n100/100", "Watches\n100/100", "Tasks\n100/100", "About"];
+  const labels = ["About", "Agents\n100/100", "Jobs\n100/100", "Watches\n100/100", "Tasks\n100/100"];
   if (result.theme !== theme || result.font !== "xl") failures.push("XL/theme preferences did not apply");
   if (!viewport.mobile && Math.abs(result.sidebar.width - 320) > 1)
     failures.push(`desktop sidebar width ${result.sidebar.width}`);
@@ -1589,15 +1605,17 @@ async function trustedOverviewFlow(send, viewport, childGesture) {
   );
   const trigger = (id) => `[data-session-actions-ref="local:p0-s0"][data-pane-id="${id}"]`;
   const overviewTrigger = (id, ref = "local:p0-s0") => `[data-session-overview-ref="${ref}"][data-pane-id="${id}"]`;
+  const expectedTabRole = viewport.mobile ? "tab" : "radio";
+  const expectedSelectedAttr = viewport.mobile ? "aria-selected" : "aria-checked";
   await evaluate(
     send,
-    `document.querySelector(${JSON.stringify(OVERVIEW)}).querySelector('[role="radio"][aria-checked="true"]').focus()`,
+    `document.querySelector(${JSON.stringify(OVERVIEW)}).querySelector(${JSON.stringify(OVERVIEW_SELECTED_TAB)}).focus()`,
   );
   for (const [key, code, keyCode, tab] of [
-    ["Home", "Home", 36, "agents"],
-    ["ArrowRight", "ArrowRight", 39, "jobs"],
-    ["ArrowLeft", "ArrowLeft", 37, "agents"],
-    ["End", "End", 35, "about"],
+    ["End", "End", 35, "tasks"],
+    ["Home", "Home", 36, "about"],
+    ["ArrowRight", "ArrowRight", 39, "agents"],
+    ["ArrowLeft", "ArrowLeft", 37, "about"],
   ]) {
     await pressKey(send, key, code, keyCode);
     await waitForDom(
@@ -1610,20 +1628,20 @@ async function trustedOverviewFlow(send, viewport, childGesture) {
       `(() => {
       const active = document.activeElement;
       const style = getComputedStyle(active);
-      return { checked: active.getAttribute('aria-checked'), role: active.getAttribute('role'),
+      return { checked: active.getAttribute(${JSON.stringify(expectedSelectedAttr)}), role: active.getAttribute('role'),
         visible: active.matches(':focus-visible'), outline: style.outlineStyle,
         width: parseFloat(style.outlineWidth), color: style.outlineColor };
     })()`,
     );
     if (
-      focus.role !== "radio" ||
+      focus.role !== expectedTabRole ||
       focus.checked !== "true" ||
       !focus.visible ||
       focus.outline === "none" ||
       focus.width < 1 ||
       focus.color === "rgba(0, 0, 0, 0)"
     )
-      throw new Error(`${key} has no visible selected-radio focus: ${JSON.stringify(focus)}`);
+      throw new Error(`${key} has no visible selected-${expectedTabRole} focus: ${JSON.stringify(focus)}`);
   }
   await waitForDom(
     send,
@@ -1684,7 +1702,7 @@ async function trustedOverviewFlow(send, viewport, childGesture) {
     else {
       await evaluate(
         send,
-        `document.querySelector(${JSON.stringify(OVERVIEW)}).querySelector('[role="radio"][aria-checked="true"]').focus()`,
+        `document.querySelector(${JSON.stringify(OVERVIEW)}).querySelector(${JSON.stringify(OVERVIEW_SELECTED_TAB)}).focus()`,
       );
       await pressKey(send, "Escape", "Escape", 27);
     }
@@ -1711,7 +1729,7 @@ async function trustedOverviewFlow(send, viewport, childGesture) {
   // The rail opener is removed when a phone's Sessions drawer closes.
   await dismiss("close", pane);
   const inspection = await choosePaneOverview(send, overviewTrigger(pane), viewport.mobile, true);
-  await clickControl(send, `${OVERVIEW} [role="radio"][aria-label="About"]`);
+  await clickControl(send, overviewTabSelector('[aria-label="About"]'));
   await evaluate(
     send,
     `void (window.__overviewExpectedButton = document.querySelector(${JSON.stringify(overviewTrigger(pane))}).closest('button'))`,
@@ -1729,13 +1747,17 @@ async function trustedOverviewFlow(send, viewport, childGesture) {
       }, { once: true });
     })()`);
     await clickControl(send, overviewTrigger(pane));
-    await waitForDom(send, `document.querySelector(${JSON.stringify(PHONE_INSPECTION)})`, "pointer opens phone Overview");
+    await waitForDom(send, `document.querySelector(${JSON.stringify(OVERVIEW)})`, "pointer opens phone Overview");
+    await settleOverview(send);
     if (!(await evaluate(send, "window.__overviewUnfocusedClick")))
       throw new Error("phone Overview pointer fixture did not activate without default focus");
     await pressKey(send, "Escape", "Escape", 27);
-    await waitForDom(send, `!document.querySelector(${JSON.stringify(PHONE_INSPECTION)})`, "Escape dismisses phone Overview");
-    const returned = await evaluate(send, "document.activeElement === window.__overviewExpectedButton");
-    if (!returned) throw new Error("phone Overview did not return focus to its header after an unfocused pointer activation");
+    await waitForDom(send, `!document.querySelector(${JSON.stringify(OVERVIEW)})`, "Escape dismisses phone Overview");
+    await waitForDom(
+      send,
+      "document.activeElement === window.__overviewExpectedButton",
+      "phone Overview returns focus to its header after an unfocused pointer activation",
+    );
   }
 
   const submitStatus = async (wrongFocusedPane = null) => {
@@ -1786,7 +1808,7 @@ async function trustedOverviewFlow(send, viewport, childGesture) {
     await settleOverview(send);
     for (const origin of [pane, duplicate]) {
       await choosePaneOverview(send, overviewTrigger(origin));
-      await clickControl(send, `${OVERVIEW} [role="radio"][aria-label="About"]`);
+      await clickControl(send, overviewTabSelector('[aria-label="About"]'));
       await evaluate(
         send,
         `void (window.__overviewExpectedButton = document.querySelector(${JSON.stringify(overviewTrigger(origin))}))`,
@@ -1794,7 +1816,7 @@ async function trustedOverviewFlow(send, viewport, childGesture) {
       await dismiss("escape", origin, true);
     }
     await choosePaneOverview(send, overviewTrigger(duplicate));
-    await clickControl(send, `${OVERVIEW} [role="radio"][aria-label="About"]`);
+    await clickControl(send, overviewTabSelector('[aria-label="About"]'));
     await evaluate(send, `window.overviewPane('close', ${JSON.stringify(duplicate)})`);
     await settleOverview(send);
     await evaluate(
@@ -1806,7 +1828,7 @@ async function trustedOverviewFlow(send, viewport, childGesture) {
   if (viewport.mobile) {
     if (!(await evaluate(send, "window.overviewGuardState().overview.open")))
       await choosePaneOverview(send, overviewTrigger(pane), true);
-    await clickControl(send, `${OVERVIEW} [role="radio"][aria-label^="Agents"]`);
+    await clickControl(send, overviewTabSelector('[aria-label^="Agents"]'));
     await waitForDom(
       send,
       `Array.from(document.querySelectorAll(${JSON.stringify(`${OVERVIEW} button`)})).some(e => e.textContent.includes('Open Overview child'))`,
@@ -1837,7 +1859,7 @@ async function trustedOverviewFlow(send, viewport, childGesture) {
       throw new Error(`${error.message} child-open witness: ${JSON.stringify(witness)}`);
     }
     await settleOverview(send);
-    await clickControl(send, `${OVERVIEW} [role="radio"][aria-label="About"]`);
+    await clickControl(send, overviewTabSelector('[aria-label="About"]'));
     await waitForDom(
       send,
       `document.querySelector(${JSON.stringify(OVERVIEW)})?.textContent.includes(${JSON.stringify(LONG_VALUES[1])})`,
@@ -2031,6 +2053,8 @@ export async function overviewOnPage(cdpEndpoint, vitePort, viewport, theme, chi
         const overviewScrollContainers = ${overviewScrollContainers.toString()};
         const aside = document.querySelector(${JSON.stringify(OVERVIEW)});
         for (const element of overviewScrollContainers(aside)) element.scrollTop = 0;
+        const tablist = aside.querySelector('[role="tablist"]');
+        if (tablist) tablist.scrollLeft = 0;
       })()`,
       );
       const screenshot = await send("Page.captureScreenshot", { format: "png" });
