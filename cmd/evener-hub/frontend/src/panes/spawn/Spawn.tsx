@@ -2705,7 +2705,6 @@ function SpawnForm({
               : `No provider is configured on ${remoteSourceLabel}. Configure one on that host to use a model.`}
           </InlineNotice>
         )}
-        {usesEvenerModels && providerSetup.status === "loading" && <Loader label="Checking provider access" />}
         {usesEvenerModels && providerSetup.status === "error" && (
           <InlineNotice
             tone="danger"
@@ -3237,6 +3236,7 @@ function SpawnForm({
             </AdvancedOptions>
           </div>
         </div>
+        {usesEvenerModels && providerSetup.status === "loading" && <Loader label="Checking provider access" />}
         {!hasSession && (
           <div className={CLASS.chordHints} data-testid="spawn-chord-hints">
             <ShortcutList layout="inline" items={CHORD_HINTS} />

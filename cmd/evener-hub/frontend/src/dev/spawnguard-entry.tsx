@@ -154,14 +154,49 @@ if (new URLSearchParams(window.location.search).has("onboarding")) {
   connectionStore.getState().connect(fake);
 }
 
-createRoot(rootEl).render(
-  <ClientProvider client={fake}>
-    <div id="spawnguard-pane" style={{ height: "100%" }}>
-      <Spawn params={{}} paneId="spawnguard" focused />
-    </div>
-    <Toast />
-  </ClientProvider>,
-);
+let pendingProviderResolver: (() => void) | null = null;
+if (new URLSearchParams(window.location.search).has("pendingProvider")) {
+  const url = new URL(window.location.href);
+  url.pathname = "/new";
+  url.searchParams.set("dir", directoryRoot);
+  window.history.replaceState(null, "", url);
+  const configured = {
+    instances: [
+      {
+        name: "openai",
+        providerId: "openai",
+        protocol: "openai-chat",
+        auth: "bearer",
+        implicit: false,
+        isDefault: true,
+        activeSource: "store",
+        hasStoredOAuth: false,
+        credentialRequired: true,
+      },
+    ],
+    availableProviders: [],
+  };
+  fake.on("evener/instance/list", () => {
+    return new Promise<typeof configured>((resolve) => {
+      pendingProviderResolver = () => resolve(configured);
+    });
+  });
+  fake.on("evener/launch/resolve", () => ({ effective: { model: "openai/gpt-5" }, layers: {}, provenance: {} }));
+  connectionStore.getState().connect(fake);
+}
+
+let root = createRoot(rootEl);
+function renderGuardSpawn(): void {
+  root.render(
+    <ClientProvider client={fake}>
+      <div id="spawnguard-pane" style={{ height: "100%" }}>
+        <Spawn params={{}} paneId="spawnguard" focused />
+      </div>
+      <Toast />
+    </ClientProvider>,
+  );
+}
+renderGuardSpawn();
 
 // An 8x4 two-colour PNG, inline - the same fixture image scripts/layoutguard/
 // cases/edhz-attachment-tile-single-image uses, for the same reason: staging
@@ -596,12 +631,23 @@ declare global {
     exerciseDirectoryPicker: typeof exerciseDirectoryPicker;
     exerciseDirectoryField: typeof exerciseDirectoryField;
     exerciseFileFieldWash: typeof exerciseFileFieldWash;
+    resolvePendingProvider(): void;
+    remountPendingProvider(): void;
   }
 }
 
 window.measureSpawn = measureSpawn;
 window.settledSpawn = settled;
 window.stageSpawnAttachments = stageSpawnAttachments;
+window.resolvePendingProvider = () => {
+  pendingProviderResolver?.();
+  pendingProviderResolver = null;
+};
+window.remountPendingProvider = () => {
+  root.unmount();
+  root = createRoot(rootEl);
+  renderGuardSpawn();
+};
 window.selectLongSpawnModel = selectLongSpawnModel;
 window.openSpawnPlugins = openSpawnPlugins;
 

@@ -364,6 +364,70 @@ function assertResult(result, expectedWidth) {
   return failures;
 }
 
+async function checkWorkingDirectoryStability(cdpEndpoint, vitePort) {
+  const page = await connectOnlyPage(cdpEndpoint);
+  const { send } = page;
+  const failures = [];
+  try {
+    await applyViewport(send, { width: 1280, height: 900 });
+    await send("Emulation.setFocusEmulationEnabled", { enabled: true });
+    for (const mode of ["cold", "remount"]) {
+      if (mode === "cold") {
+        await navigateTo(page, `http://127.0.0.1:${vitePort}/spawnguard.html?pendingProvider=1`, BOOT);
+      } else {
+        await evaluate(send, "window.remountPendingProvider()");
+      }
+      const before = JSON.parse(
+        await evaluate(
+          send,
+          `JSON.stringify((() => {
+            const el = document.querySelector('#spawn-cwd');
+            return el ? el.getBoundingClientRect().toJSON() : null;
+          })())`,
+        ),
+      );
+      if (!before) {
+        failures.push(`${mode}: #spawn-cwd missing before provider check settled`);
+        continue;
+      }
+      const cx = before.left + before.width / 2;
+      const cy = before.top + before.height / 2;
+      await send("Input.dispatchMouseEvent", { type: "mouseMoved", x: cx, y: cy });
+      await evaluate(
+        send,
+        "window.resolvePendingProvider(); new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))",
+      );
+      const after = JSON.parse(
+        await evaluate(
+          send,
+          `JSON.stringify(document.querySelector('#spawn-cwd').getBoundingClientRect().toJSON())`,
+        ),
+      );
+      await send("Input.dispatchMouseEvent", { type: "mousePressed", x: cx, y: cy, button: "left", clickCount: 1 });
+      await send("Input.dispatchMouseEvent", { type: "mouseReleased", x: cx, y: cy, button: "left", clickCount: 1 });
+      const dialogOpen = await evaluate(
+        send,
+        `new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(Boolean(document.querySelector('[role="dialog"] input[aria-label="Path"]'))))))`,
+      );
+      if (Math.abs(after.top - before.top) >= 1) {
+        failures.push(
+          `${mode}: #spawn-cwd shifted vertically from top=${before.top.toFixed(1)} to ${after.top.toFixed(1)} (height=${before.height.toFixed(1)}) when provider check settled`,
+        );
+      }
+      if (!dialogOpen) {
+        failures.push(`${mode}: click at pre-settlement #spawn-cwd center (${cx.toFixed(1)}, ${cy.toFixed(1)}) did not open DirectoryPicker`);
+      }
+      if (dialogOpen) {
+        await evaluate(send, `document.querySelector('[role="dialog"] button[aria-label="Close"]')?.click()`);
+      }
+    }
+  } finally {
+    await clearViewportOverride(send);
+    page.close();
+  }
+  return failures;
+}
+
 async function main() {
   let guard;
   try {
@@ -407,6 +471,14 @@ async function main() {
         console.log(`${width}px ... FAIL`);
         for (const failure of failures) console.log(`    ${failure}`);
       }
+    }
+    const stabilityFailures = await checkWorkingDirectoryStability(cdpEndpoint, vitePort);
+    if (stabilityFailures.length === 0) {
+      console.log("1280px ... PASS - #spawn-cwd stays stationary and clickable while provider check settles");
+    } else {
+      failed++;
+      console.log("1280px ... FAIL");
+      for (const failure of stabilityFailures) console.log(`    ${failure}`);
     }
   } finally {
     // A rejecting teardown is a FAILING RUN, not a warning: cleanup only

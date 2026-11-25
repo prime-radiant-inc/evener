@@ -1,6 +1,12 @@
 import { deferred } from "@evener/appwire-client/testing/deferred";
 import "../session/testing/editorGeometry";
-import type { HostRequestParams, ModelDescriptor, ModelListResponse, ThreadStartParams } from "@evener/appwire-client";
+import type {
+  HostRequestParams,
+  InstanceListResponse,
+  ModelDescriptor,
+  ModelListResponse,
+  ThreadStartParams,
+} from "@evener/appwire-client";
 import { WireError } from "@evener/appwire-client";
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import type userEvent from "@testing-library/user-event";
@@ -14,6 +20,7 @@ import {
   accessRowTrigger,
   chooseHost,
   completionDraft,
+  cwdRowTrigger,
   expectWorkingDir,
   fillPrompt,
   installCanvasStubs,
@@ -1475,4 +1482,60 @@ test.each([
   const params = client.calls.find((call) => call.method === "thread/start")?.params as Record<string, unknown>;
   expect(params.manager).toBe(choose ? true : undefined);
   expect("manager" in params).toBe(choose);
+});
+
+test("remounting Spawn on an established connection keeps provider status ready and never mounts a loader", async () => {
+  const user = setupUser();
+  const client = readyClient();
+  const first = renderSpawn(client);
+  await settled();
+  expect(screen.queryByTestId("loader-grid")).toBeNull();
+  first.unmount();
+
+  const pendingInstances = deferred<InstanceListResponse>();
+  client.on("evener/instance/list", () => pendingInstances.promise);
+  await act(async () => {
+    renderSpawn(client, true, { connectStore: false });
+  });
+
+  expect(screen.queryByTestId("loader-grid")).toBeNull();
+  await user.click(cwdRowTrigger());
+  expect(screen.getByRole("dialog")).toBeTruthy();
+
+  await act(async () => {
+    pendingInstances.resolve({
+      instances: [
+        {
+          name: "anthropic",
+          providerId: "anthropic",
+          protocol: "anthropic",
+          auth: "bearer",
+          implicit: false,
+          isDefault: true,
+          activeSource: "store",
+          hasStoredOAuth: false,
+          credentialRequired: true,
+        },
+      ],
+      availableProviders: [],
+    });
+  });
+});
+
+test("cold mount places any provider-loading indicator after the working directory trigger", async () => {
+  const pendingInstances = deferred<InstanceListResponse>();
+  const client = readyClient((fake) => {
+    fake.on("evener/instance/list", () => pendingInstances.promise);
+  });
+  await act(async () => {
+    renderSpawn(client);
+  });
+
+  const trigger = cwdRowTrigger();
+  const loader = screen.queryByTestId("loader-grid");
+  expect(loader).not.toBeNull();
+  expect(trigger.compareDocumentPosition(loader as HTMLElement) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+  await act(async () => {
+    pendingInstances.resolve({ instances: [], availableProviders: [] });
+  });
 });
