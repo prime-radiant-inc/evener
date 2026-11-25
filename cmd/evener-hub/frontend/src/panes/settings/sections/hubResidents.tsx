@@ -17,6 +17,8 @@ import {
   Badge,
   Button,
   type CadenceState,
+  Card,
+  Chevron,
   Chip,
   ConfirmDialog,
   EmptyState,
@@ -47,6 +49,13 @@ const CLASS = {
   timeout: requireClass(styles.timeout, "hubResidents.module.css", "timeout"),
   list: requireClass(styles.list, "hubResidents.module.css", "list"),
   listRestarting: requireClass(styles.listRestarting, "hubResidents.module.css", "listRestarting"),
+  rowItem: requireClass(styles.rowItem, "hubResidents.module.css", "rowItem"),
+  daemonName: requireClass(styles.daemonName, "hubResidents.module.css", "daemonName"),
+  metaLine: requireClass(styles.metaLine, "hubResidents.module.css", "metaLine"),
+  pid: requireClass(styles.pid, "hubResidents.module.css", "pid"),
+  metaBlocker: requireClass(styles.metaBlocker, "hubResidents.module.css", "metaBlocker"),
+  rowTrailing: requireClass(styles.rowTrailing, "hubResidents.module.css", "rowTrailing"),
+  chevron: requireClass(styles.chevron, "hubResidents.module.css", "chevron"),
   sheetBody: requireClass(styles.sheetBody, "hubResidents.module.css", "sheetBody"),
   statusRow: requireClass(styles.statusRow, "hubResidents.module.css", "statusRow"),
   blockerBox: requireClass(styles.blockerBox, "hubResidents.module.css", "blockerBox"),
@@ -59,10 +68,13 @@ const CLASS = {
 
 const HEADING = `${surfaceStyles.settingsSectionHeading} ${surfaceStyles.settingsSectionHeadingBody}`;
 
-const ABS_STAMP = new Intl.DateTimeFormat("en-US", {
+const ABS_DATE = new Intl.DateTimeFormat("en-US", {
   year: "numeric",
   month: "short",
   day: "numeric",
+});
+
+const ABS_CLOCK = new Intl.DateTimeFormat("en-US", {
   hour: "2-digit",
   minute: "2-digit",
   hour12: false,
@@ -116,7 +128,8 @@ function formatStamp(iso: string | undefined): string | null {
   if (!iso) return null;
   const parsed = Date.parse(iso);
   if (Number.isNaN(parsed)) return iso;
-  return ABS_STAMP.format(new Date(parsed));
+  const date = new Date(parsed);
+  return `${ABS_DATE.format(date)}, ${ABS_CLOCK.format(date)}`;
 }
 
 function effectiveTimeout(daemon: DaemonResident): string {
@@ -402,90 +415,115 @@ export function HubResidents() {
       {loading && data === null && <Skeleton lines={3} />}
 
       {data !== null && data.daemons.length === 0 && (
-        <EmptyState
-          size="compact"
-          reason="empty"
-          title="No resident daemons"
-          hint="Active session processes appear here while running."
-        />
+        <Card variant="outlined" padding="none">
+          <EmptyState
+            size="compact"
+            reason="empty"
+            title="No resident daemons"
+            hint="Active session processes appear here while running."
+          />
+        </Card>
       )}
 
       {data !== null && data.daemons.length > 0 && (
-        <ul className={`${CLASS.list}${hubRestarting ? ` ${CLASS.listRestarting}` : ""}`}>
-          {data.daemons.map((daemon) => {
-            const rowKey = residentRowKey(daemon.identity);
-            const retireResult = retireResults.get(rowKey);
-            const isPending = pending.has(rowKey);
-            const displayPhase = displayPhaseFor(daemon, retireResult);
-            const blockers = effectiveBlockersFor(daemon, retireResult);
-            const displayName = daemon.name || daemon.identity.ref;
-            const duplicateName = (nameCounts.get(displayName) ?? 0) > 1;
+        <Card variant="outlined" padding="none">
+          <ul className={`${CLASS.list}${hubRestarting ? ` ${CLASS.listRestarting}` : ""}`}>
+            {data.daemons.map((daemon) => {
+              const rowKey = residentRowKey(daemon.identity);
+              const retireResult = retireResults.get(rowKey);
+              const isPending = pending.has(rowKey);
+              const displayPhase = displayPhaseFor(daemon, retireResult);
+              const blockers = effectiveBlockersFor(daemon, retireResult);
+              const displayName = daemon.name || daemon.identity.ref;
+              const duplicateName = (nameCounts.get(displayName) ?? 0) > 1;
+              const uptime = formatUptime(daemon.identity.startedAt, nowMs);
 
-            const metaParts: string[] = [`PID ${daemon.identity.pid}`];
-            const uptime = formatUptime(daemon.identity.startedAt, nowMs);
-            if (uptime) metaParts.push(uptime);
-            if (duplicateName) metaParts.push(daemon.identity.ref);
-            if (daemon.compatibility === "incompatible") {
-              metaParts.push(`probe ${daemon.probeState}`);
-            } else if (displayPhase === "retiring") {
-              metaParts.push("draining");
-            } else if (blockers.length > 0) {
-              metaParts.push(summarizeBlockers(blockers));
-            } else {
-              const countdown = formatDeadlineCountdown(daemon.lifecycle?.deadline, nowMs);
-              if (countdown) {
-                metaParts.push(countdown);
-              } else if (daemon.lifecycle?.timeoutMillis === 0) {
-                metaParts.push("auto-retire off");
-              } else if (
-                daemon.lifecycle !== undefined &&
-                daemon.lifecycle.timeoutMillis !== data.defaultTimeoutMillis
-              ) {
-                metaParts.push(`timeout ${formatTimeout(daemon.lifecycle.timeoutMillis)}`);
+              let statusText: string | null = null;
+              let statusIsBlocker = false;
+              if (daemon.compatibility === "incompatible") {
+                statusText = `probe ${daemon.probeState}`;
+              } else if (displayPhase === "retiring") {
+                statusText = "draining";
+              } else if (blockers.length > 0) {
+                statusText = summarizeBlockers(blockers);
+                statusIsBlocker = true;
+              } else {
+                const countdown = formatDeadlineCountdown(daemon.lifecycle?.deadline, nowMs);
+                if (countdown) {
+                  statusText = countdown;
+                } else if (daemon.lifecycle?.timeoutMillis === 0) {
+                  statusText = "auto-retire off";
+                } else if (
+                  daemon.lifecycle !== undefined &&
+                  daemon.lifecycle.timeoutMillis !== data.defaultTimeoutMillis
+                ) {
+                  statusText = `timeout ${formatTimeout(daemon.lifecycle.timeoutMillis)}`;
+                }
               }
-            }
 
-            let trailingAction: ReactNode;
-            if (daemon.canRetire && displayPhase === "resident" && retireResult?.accepted !== true) {
-              trailingAction = (
-                <Button
-                  variant="secondary"
-                  size="xs"
-                  disabled={isPending || hubRestarting}
-                  onClick={() => void handleRetire(daemon)}
-                >
-                  Retire
-                </Button>
-              );
-            } else if (daemon.compatibility === "incompatible" && daemon.canForceStop) {
-              trailingAction = (
-                <Button
-                  variant="dangerQuiet"
-                  size="xs"
-                  disabled={isPending || hubRestarting}
-                  onClick={() => setConfirmForceStop(daemon.identity)}
-                >
-                  Force stop
-                </Button>
-              );
-            }
+              let rowAction: ReactNode;
+              if (
+                daemon.canRetire &&
+                displayPhase === "resident" &&
+                retireResult?.accepted !== true &&
+                blockers.length === 0
+              ) {
+                rowAction = (
+                  <Button
+                    variant="secondary"
+                    size="xs"
+                    disabled={isPending || hubRestarting}
+                    onClick={() => void handleRetire(daemon)}
+                  >
+                    Retire
+                  </Button>
+                );
+              } else if (daemon.compatibility === "incompatible" && daemon.canForceStop) {
+                rowAction = (
+                  <Button
+                    variant="dangerQuiet"
+                    size="xs"
+                    disabled={isPending || hubRestarting}
+                    onClick={() => setConfirmForceStop(daemon.identity)}
+                  >
+                    Force stop
+                  </Button>
+                );
+              }
 
-            return (
-              <li key={rowKey}>
-                <ListRow
-                  variant="collection"
-                  leading={<StatusDot state={dotStateFor(daemon, displayPhase, blockers)} decorative />}
-                  label={displayName}
-                  chips={rowChips(daemon, displayPhase)}
-                  meta={metaParts.join(" · ")}
-                  aria-label={`${displayName} ${daemon.identity.ref}`}
-                  onSelect={() => setSelectedKey(rowKey)}
-                  trailingAction={trailingAction}
-                />
-              </li>
-            );
-          })}
-        </ul>
+              return (
+                <li key={rowKey} className={CLASS.rowItem}>
+                  <ListRow
+                    variant="plain"
+                    leading={<StatusDot state={dotStateFor(daemon, displayPhase, blockers)} decorative />}
+                    label={<span className={CLASS.daemonName}>{displayName}</span>}
+                    chips={rowChips(daemon, displayPhase)}
+                    meta={
+                      <span className={CLASS.metaLine}>
+                        <span className={CLASS.pid}>{`PID ${daemon.identity.pid}`}</span>
+                        {uptime !== null && <span>{uptime}</span>}
+                        {duplicateName && <span className={CLASS.pid}>{daemon.identity.ref}</span>}
+                        {statusText !== null && (
+                          <span className={statusIsBlocker ? CLASS.metaBlocker : undefined}>{statusText}</span>
+                        )}
+                      </span>
+                    }
+                    aria-label={`${displayName} ${daemon.identity.ref}`}
+                    onSelect={() => setSelectedKey(rowKey)}
+                    trailingAction={
+                      <span className={CLASS.rowTrailing}>
+                        {rowAction}
+                        <span className={CLASS.chevron} aria-hidden="true">
+                          <Chevron direction="right" />
+                        </span>
+                      </span>
+                    }
+                  />
+                </li>
+              );
+            })}
+          </ul>
+        </Card>
       )}
 
       <Sheet

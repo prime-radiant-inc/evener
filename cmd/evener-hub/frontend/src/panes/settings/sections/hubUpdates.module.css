@@ -39,7 +39,7 @@
 }
 
 .row + .row {
-  border-top: 1px solid var(--edge);
+  border-top: 1px solid color-mix(in oklab, var(--edge) 65%, transparent);
 }
 
 .rowLabel {
@@ -87,7 +87,7 @@
 .linkMono,
 .mono {
   font-family: var(--font-mono);
-  font-size: var(--font-size-ui);
+  font-size: var(--font-size-caption);
 }
 
 .mono {

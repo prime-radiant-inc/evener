@@ -51,15 +51,15 @@ const CHANNEL_OPTIONS = [
 const BUILD_DATE_SAME_YEAR = new Intl.DateTimeFormat("en-US", {
   month: "short",
   day: "numeric",
-  hour: "2-digit",
-  minute: "2-digit",
-  hour12: false,
 });
 
 const BUILD_DATE_WITH_YEAR = new Intl.DateTimeFormat("en-US", {
   year: "numeric",
   month: "short",
   day: "numeric",
+});
+
+const BUILD_CLOCK = new Intl.DateTimeFormat("en-US", {
   hour: "2-digit",
   minute: "2-digit",
   hour12: false,
@@ -115,7 +115,8 @@ function formatBuildStamp(iso: string | undefined, nowMs: number): string | null
   if (Number.isNaN(parsed)) return null;
   const date = new Date(parsed);
   const sameYear = date.getFullYear() === new Date(nowMs).getFullYear();
-  return sameYear ? BUILD_DATE_SAME_YEAR.format(date) : BUILD_DATE_WITH_YEAR.format(date);
+  const dayPart = sameYear ? BUILD_DATE_SAME_YEAR.format(date) : BUILD_DATE_WITH_YEAR.format(date);
+  return `${dayPart}, ${BUILD_CLOCK.format(date)}`;
 }
 
 function ExternalArrow() {

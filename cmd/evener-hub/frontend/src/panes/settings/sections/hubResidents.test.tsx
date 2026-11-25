@@ -118,6 +118,29 @@ test("archived incompatible residents remain visible, offer Force stop, and cann
   expect(isDisabled(within(sheet).getByRole("button", { name: "Force stop…" }))).toBe(false);
 });
 
+test("busy daemon with active blockers omits the inline Retire button even when canRetire is true", async () => {
+  const fake = connectReadyFakeClient();
+  fake.on("evener/daemon/list", () => ({
+    defaultTimeoutMillis: 3600000,
+    daemons: [
+      makeDaemon({
+        name: "Busy daemon",
+        canRetire: true,
+        lifecycle: {
+          phase: "resident",
+          timeoutMillis: 3600000,
+          blockers: [{ category: "turn", sessionId: "session-busy" }],
+        },
+      }),
+    ],
+  }));
+
+  renderResidents();
+  await screen.findByRole("button", { name: /Busy daemon/ });
+  const item = rowItem(/Busy daemon/);
+  expect(within(item).queryByRole("button", { name: "Retire" })).toBeNull();
+});
+
 test("opening a daemon row shows full ref, protocol, timeout, and exact blocker ids in its detail sheet", async () => {
   const fake = connectReadyFakeClient();
   fake.on("evener/daemon/list", () => ({

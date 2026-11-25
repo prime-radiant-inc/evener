@@ -132,6 +132,10 @@ test("renders unified version links, compare link, and ISO date stamps for relea
   const times = [...document.querySelectorAll("time")].map((el) => el.getAttribute("datetime"));
   expect(times).toContain("2026-11-18T16:05:30Z");
   expect(times).toContain("2026-11-22T18:40:00Z");
+  // Date stamps stay compact without verbose " at " phrasing.
+  for (const el of document.querySelectorAll("time")) {
+    expect(el.textContent).not.toContain(" at ");
+  }
   // On disk matches running, so no separate on-disk row is shown.
   expect(screen.queryByTestId("hub-on-disk-build")).toBeNull();
 });
