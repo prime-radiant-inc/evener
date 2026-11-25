@@ -28,6 +28,7 @@ import { resetConnectionStoreForTests } from "./connection";
 import {
   isEntryTranscriptLocalOpening,
   productionEntryTranscriptForTests,
+  publishEntryTranscriptModel,
   setProductionEntryCacheForTests,
 } from "./entryTranscriptRoutes";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
@@ -910,6 +911,136 @@ describe("ordinary entry transcript route", () => {
           .filter((call) => call.method === "thread/read" || call.method === "thread/turns/list"),
       ).toEqual([]);
     } finally {
+      await lease.release();
+      await fixture.settled();
+      await settleBackgroundTranscriptsForTests();
+      fixture.dispose();
+      entryCache.close();
+      await deleteIndexedDatabase(entryDatabase);
+    }
+  });
+
+  // A's released foreground hold leaves its parked local restore alive while a
+  // retained background owner keeps the route. Reclaiming the same ref starts
+  // opening B, then A's own late completion settles. That stale settlement must
+  // not drop B's hold over the pruned notice: the next repository publication
+  // still owes B's recorded bodies, so the carried warning must stay withheld
+  // until B's own restore supplies them (#7683).
+  it("a stale opening settlement keeps the newer opening's carried notice held until its restore", async () => {
+    const selected = "local:entry-warm-stale-settle";
+    const entryDatabase = "entry-warm-stale-settle-test";
+    const replyBody = "RECORDED_WARM_STALE_BODY";
+    const warningText = "HISTORICAL_STALE_WARNING";
+    const entryCache = new SessionEntryCache({ databaseName: entryDatabase });
+    const fixture = observeProductionEntryForTests(entryCache, selected);
+    const fake = connectFakeClient();
+    fake.on("thread/read", (params) => {
+      const recorded = turnFixture("warm-stale-recorded", replyBody);
+      const read = readResponse(params.ref ?? selected, {
+        status: { type: "idle" },
+        snapshot: { incarnation: "inc-1", length: 1 },
+        turns: [
+          { ...recorded, items: [{ ...recorded.items[0]!, transcriptKey: "warm-stale-recorded-item", version: 1 }] },
+        ],
+        requestGeneration: params.requestGeneration,
+      });
+      read.overlay = [
+        {
+          key: "historical-warning",
+          kind: "notice",
+          anchor: { entry: 1, item: 0 },
+          turnId: "warm-stale-recorded",
+          item: { id: "historical-warning", type: "agentMessage", text: warningText },
+        },
+      ];
+      return read;
+    });
+    const lease = acquireBackgroundThread(selected);
+    const releases: Array<() => void> = [];
+    let openingA: Promise<unknown> | undefined;
+    let openingB: Promise<unknown> | undefined;
+    try {
+      await lease.ready;
+      await fixture.settled();
+      await settleBackgroundTranscriptsForTests();
+      const historyKey = fixture.inspect().historyKey;
+      if (!historyKey) throw new Error("the background lease resolved no history key");
+      const rows = await entryCache.getLatest(historyKey, 10);
+      expect(rows.map((row) => decodeTranscriptItem(row.item)?.text)).toEqual([replyBody]);
+      const pruned = JSON.stringify(threadsStore.getState().threads.get(selected) ?? null);
+      expect({ warning: pruned.includes(warningText), reply: pruned.includes(replyBody) }).toEqual({
+        warning: true,
+        reply: false,
+      });
+
+      // Park every local restore at its durable window read so each opening
+      // stays pending until the test says otherwise. A's parked read answers a
+      // stale empty window — the released pane's rows no longer certify — so
+      // A settles with the repository still holding the pruned notice display.
+      const realGetLatestWindow = entryCache.getLatestWindow.bind(entryCache);
+      let windowReads = 0;
+      entryCache.getLatestWindow = ((h: string, limit: number, boundary?: string) => {
+        const stale = windowReads++ === 0;
+        return new Promise((resolve, reject) => {
+          releases.push(() => {
+            if (stale) resolve({ rows: [], coverage: [], complete: false, stale: true });
+            else void realGetLatestWindow(h, limit, boundary).then(resolve, reject);
+          });
+        });
+      }) as typeof entryCache.getLatestWindow;
+
+      const activationCalls = fake.calls.length;
+      openingA = threadsStore.getState().ensureThread(selected);
+      await vi.waitFor(() => expect(releases.length).toBeGreaterThanOrEqual(1));
+      await vi.waitFor(() => expect(isEntryTranscriptLocalOpening(selected)).toBe(true));
+
+      // Release A's foreground hold while the retained background owner keeps
+      // the route, then reclaim the same ref as opening B. A's parked restore
+      // is still pending.
+      threadsStore.getState().releaseThread(selected);
+      openingB = threadsStore.getState().ensureThread(selected);
+      await vi.waitFor(() => expect(releases.length).toBeGreaterThanOrEqual(2));
+      await vi.waitFor(() => expect(isEntryTranscriptLocalOpening(selected)).toBe(true));
+      expect(JSON.stringify(threadsStore.getState().threads.get(selected) ?? null)).not.toContain(warningText);
+
+      // Release A only. Its stale restore settles while B remains parked and
+      // pending; B's own restore has not started, so the repository still
+      // holds the pruned notice display.
+      releases[0]!();
+      await openingA;
+      expect(isEntryTranscriptLocalOpening(selected)).toBe(true);
+
+      // The repository still holds the pruned display the opening owes bodies
+      // for, and this is the publication boundary the repository subscription
+      // itself calls. B's carried notice must stay withheld through it.
+      const repoBefore = JSON.stringify(fixture.inspect().model ?? null);
+      expect({ warning: repoBefore.includes(warningText), reply: repoBefore.includes(replyBody) }).toEqual({
+        warning: true,
+        reply: false,
+      });
+      publishEntryTranscriptModel(selected);
+      expect(JSON.stringify(threadsStore.getState().threads.get(selected) ?? null)).not.toContain(warningText);
+
+      // B's restore still supplies the recorded body with the carried notice.
+      releases[1]!();
+      await openingB;
+      await fixture.settled();
+      const restored = JSON.stringify(threadsStore.getState().threads.get(selected) ?? null);
+      expect({ warning: restored.includes(warningText), reply: restored.includes(replyBody) }).toEqual({
+        warning: true,
+        reply: true,
+      });
+      expect(isEntryTranscriptLocalOpening(selected)).toBe(false);
+      // The warm hit still needs no activation source read or page.
+      expect(
+        fake.calls
+          .slice(activationCalls)
+          .filter((call) => call.method === "thread/read" || call.method === "thread/turns/list"),
+      ).toEqual([]);
+    } finally {
+      for (const release of releases.splice(0)) release();
+      threadsStore.getState().releaseThread(selected);
+      await Promise.allSettled([openingA, openingB]);
       await lease.release();
       await fixture.settled();
       await settleBackgroundTranscriptsForTests();

@@ -339,10 +339,12 @@ export function isEntryTranscriptLocalOpening(ref: string): boolean {
 const entryTranscriptLatestOpening = new Map<string, number>();
 
 // The notices the pruned publication already carried when its opening became
-// pending. Only these stand in for content the restore owes: a notice upserted
-// while the open runs is new information (a fresh `notice:<n>` key) and stays
-// visible. Cleared with the opening it belongs to.
-const heldPrunedNoticeKeys = new Map<string, ReadonlySet<string>>();
+// pending, bound to that opening's token. Only these stand in for content the
+// restore owes: a notice upserted while the open runs is new information (a
+// fresh `notice:<n>` key) and stays visible. Only the opening whose token
+// captured the hold clears it, so a released pane's late settlement cannot
+// erase the hold a newer opening over the same ref installed.
+const heldPrunedNoticeKeys = new Map<string, { openingToken: number; keys: ReadonlySet<string> }>();
 
 // A quiet opening's ownership token: present while the open runs, invisible
 // to the consumer gate. The certification open a claim runs over a display
@@ -371,7 +373,7 @@ export function beginEntryTranscriptLocalOpening(ref: string, quiet = false): nu
   // consumers: a pane that reads the store between these two updates would
   // otherwise paint the pruned notice as the session's conversation, which is
   // the frame this opening exists to prevent.
-  publishHeldOpeningDisplay(ref);
+  publishHeldOpeningDisplay(ref, token);
   store().setState((state) => {
     const localOpenings = new Map(state.localOpenings);
     localOpenings.set(ref, token);
@@ -385,7 +387,7 @@ export function beginEntryTranscriptLocalOpening(ref: string, quiet = false): nu
 // publishing, strand a port. Called on success, failure and no-model alike.
 export function settleEntryTranscriptLocalOpening(ref: string, token: number): void {
   if (entryTranscriptQuietOpenings.get(ref) === token) entryTranscriptQuietOpenings.delete(ref);
-  heldPrunedNoticeKeys.delete(ref);
+  if (heldPrunedNoticeKeys.get(ref)?.openingToken === token) heldPrunedNoticeKeys.delete(ref);
   store().setState((state) => {
     if (state.localOpenings.get(ref) !== token) return {};
     const localOpenings = new Map(state.localOpenings);
@@ -404,7 +406,7 @@ export function settleEntryTranscriptLocalOpening(ref: string, token: number): v
 function retireSupersededPublishedOpening(ref: string, token: number): boolean {
   const superseded = store().getState().localOpenings.get(ref);
   if (superseded === undefined || superseded >= token) return false;
-  heldPrunedNoticeKeys.delete(ref);
+  if (heldPrunedNoticeKeys.get(ref)?.openingToken === superseded) heldPrunedNoticeKeys.delete(ref);
   store().setState((state) => {
     if (state.localOpenings.get(ref) !== superseded) return {};
     const localOpenings = new Map(state.localOpenings);
@@ -491,14 +493,14 @@ function displayedEntryTranscriptSnapshot(fixture: EntryTranscriptRoute): Thread
     : snapshot;
 }
 
-function publishHeldOpeningDisplay(ref: string): void {
+function publishHeldOpeningDisplay(ref: string, token: number): void {
   const fixture = entryTranscriptRoute(ref);
   if (!fixture || fixture.ref !== ref || fixture.clearInert) return;
   const displayed = displayedEntryTranscriptSnapshot(fixture);
   const pruned = displayed && prunedNoticeKeys(displayed);
   const held = displayed && pruned && heldNoticeDisplay(displayed, pruned);
-  if (held) {
-    heldPrunedNoticeKeys.set(ref, pruned);
+  if (pruned && held) {
+    heldPrunedNoticeKeys.set(ref, { openingToken: token, keys: pruned });
     routeHost().putThreadModel(ref, held);
   }
 }
@@ -515,11 +517,11 @@ function publishHeldOpeningDisplay(ref: string): void {
 // neither matches the hold shape.
 function heldOpeningDisplay(ref: string, model: ThreadModel): ThreadModel {
   if (!isEntryTranscriptLocalOpening(ref)) return model;
-  const pruned = heldPrunedNoticeKeys.get(ref);
-  if (pruned === undefined || pruned.size === 0) return model;
+  const held = heldPrunedNoticeKeys.get(ref);
+  if (held === undefined || held.keys.size === 0) return model;
   const present = prunedNoticeKeys(model);
   if (present === undefined) return model;
-  const withheld = new Set([...pruned].filter((key) => present.has(key)));
+  const withheld = new Set([...held.keys].filter((key) => present.has(key)));
   return heldNoticeDisplay(model, withheld) ?? model;
 }
 
