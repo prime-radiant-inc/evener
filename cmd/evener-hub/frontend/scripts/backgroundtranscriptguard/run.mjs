@@ -1940,23 +1940,29 @@ async function runEntryProductionJourney(driver, harnessUrl) {
   // Let Chrome consume the peer's close frame before offline emulation blocks
   // incoming traffic. Otherwise a native socket can stay CLOSING and the app
   // never observes its loss. Offline then holds the gap until the turn completes.
-  // The reader's pre-close intent rides the same evaluate, read before the
-  // sockets close; each read guards itself so the close actions survive.
+  // The reader's pre-close observation rides the same evaluate, read before the
+  // sockets close; every optional read is isolated so the close survives.
   const closeEvidence = await evaluate(
     driver.send,
     `(() => {
        const e = window.backgroundTranscriptEvidence, ref = ${JSON.stringify(SESSION_B)};
-       const read = (name) => { try { return e[name](ref); } catch (error) { return { error: String((error && error.message) || error) }; } };
-       const port = ${SCROLL_PORT_EXPR(SESSION_B)};
-       const scroll = port === null ? null : { scrollTop: port.scrollTop, clientHeight: port.clientHeight, scrollHeight: port.scrollHeight };
-       const readers = read("readerState"), panes = read("panes");
+       let observed = null;
+       try {
+         const port = ${SCROLL_PORT_EXPR(SESSION_B)}, rows = port === null ? [] : [...port.querySelectorAll("[data-testid='transcript-row']")];
+         const first = rows.find((row) => row.getBoundingClientRect().bottom > port.getBoundingClientRect().top);
+         const model = e.model(ref), history = model?.history ?? null, route = e.entryRoute(ref);
+         observed = { readers: e.readerState(ref).slice(0, 4), panes: e.panes(ref), localOpening: route.localOpening ?? null,
+           issuedGeneration: history?.issuedGeneration ?? null, appliedGeneration: history?.appliedGeneration ?? null, invalidatedGeneration: history?.invalidatedAtGeneration ?? null,
+           firstVisible: first === undefined ? null : { rowId: first.getAttribute("data-row-id"), offset: Math.round(first.getBoundingClientRect().top - port.getBoundingClientRect().top) },
+           scroll: port === null ? null : { scrollTop: port.scrollTop, clientHeight: port.clientHeight, scrollHeight: port.scrollHeight } };
+       } catch (error) { observed = { error: String((error && error.message) || error) }; }
        const open = (window.__backgroundTranscriptSockets ?? []).filter(
          (socket) => socket.readyState === WebSocket.OPEN && new URL(socket.url).pathname === "/rpc",
        );
        for (const socket of open) socket.close(4000, "background transcript guard transport boundary");
-       return { closedSockets: open.length, readers, panes, scroll };
+       return { closedSockets: open.length, observed };
      })()`,
-  ).catch(() => ({ closedSockets: -1, readers: null, panes: null, scroll: null }));
+  ).catch(() => ({ closedSockets: -1, observed: null }));
   const closedSockets = closeEvidence.closedSockets;
   recordReaderAtClose(driver, closeEvidence);
   const disconnected = await waitForDisconnected(driver);
@@ -2320,20 +2326,18 @@ async function waitForPaneText(driver, ref, marker, timeoutMs, label) {
   return driver.waitPage(paneContainsExpr(ref, [marker]), { timeoutMs, label });
 }
 
-// recordReaderAtClose keeps the reader intent measured just before the sockets
-// close. A passing run's artifact tree is removed by the fixture cleanup, so the
-// Actions step summary is the surviving copy; its errors never change the outcome.
+// recordReaderAtClose keeps the pre-close observation. A passing run's artifact
+// tree is removed by the fixture cleanup, so the step summary is the surviving
+// copy; its errors never change the outcome.
 function recordReaderAtClose(driver, evidence) {
-  const readers = Array.isArray(evidence.readers) ? evidence.readers.slice(0, 4) : (evidence.readers ?? null);
-  const record = { at: Date.now(), ref: SESSION_B, closedSockets: evidence.closedSockets, readers,
-    panes: evidence.panes ?? null, scroll: evidence.scroll ?? null };
+  const record = { at: Date.now(), ref: SESSION_B, closedSockets: evidence.closedSockets, observed: evidence.observed ?? null };
   try {
     writeFileSync(path.join(ARTIFACT_DIR, "reader-at-close.json"), `${JSON.stringify(record, null, 2)}\n`, { mode: 0o600 });
   } catch (error) { console.log(`reader-at-close artifact unavailable: ${String(error)}`); }
   try {
     if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY,
       `\n\`\`\`json\n${JSON.stringify({ "backgroundtranscriptguard reader-at-close": record })}\n\`\`\`\n`);
-    driver.milestone("reader-at-close", { ref: SESSION_B, closedSockets: record.closedSockets, readers: record.readers });
+    driver.milestone("reader-at-close", { ref: SESSION_B, closedSockets: record.closedSockets, observed: record.observed });
   } catch (error) { console.log(`reader-at-close step summary unavailable: ${String(error)}`); }
 }
 
