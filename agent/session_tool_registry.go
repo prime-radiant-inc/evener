@@ -526,18 +526,15 @@ func registerCoreTools(reg *tool.Registry, s *Session) error {
 	// not a rename (issue #4218). Nothing here depends on communicate being
 	// registered earlier — the profile's use_skill stub and every other
 	// registration are looked up by their own names.
-	if err := registerCommunicateTool(reg, deps); err != nil {
-		return err
-	}
-	// Ceremony tools come out only after the result tool's collision check, so
-	// --result-tool-name still refuses a name that belongs to one of them even
-	// though this run never offers it.
-	omitOneShotCeremonyTools(reg, s)
-	return nil
+	return registerCommunicateTool(reg, deps)
 }
 
 var oneShotCeremonyToolNames = []string{"notes_agent_set", "notes_read", "urls_add", "urls_remove"}
 
+// omitOneShotCeremonyTools strips ceremony tools that only matter when a
+// later turn or session can read them, and records the subset that survived
+// earlier policy and subagent filters so one-shot delegates can re-admit
+// eligible notes_* tools on persistent resume.
 func omitOneShotCeremonyTools(reg *tool.Registry, s *Session) {
 	if s == nil || !s.cfg.TurnEndsProcess {
 		return

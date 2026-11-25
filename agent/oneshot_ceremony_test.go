@@ -391,12 +391,12 @@ func TestOneShotDefaultDelegateRegainsNotesOnPersistentResume(t *testing.T) {
 			workspace := t.TempDir()
 			stateDir := realTempDirForTest(t)
 			agentsDoc := filepath.Join(t.TempDir(), "no-personal-AGENTS.md")
-			testOnly := testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true, sandboxProber: bwrapCapableProber(workspace)}
+			testOnly := testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true, sandboxProber: bwrapCapableProber(workspace), disableDelegateIdleRelease: true}
 
 			var mu sync.Mutex
 			oneShotToolsBySession := map[string]map[string]bool{}
 			oneShotClient := llm.NewClient()
-			oneShotClient.Register(newFakeAdapter("openai", repeatFakeStep(6, func(req llm.Request) llm.Response {
+			oneShotClient.Register(newFakeAdapter("openai", repeatFakeStep(16, func(req llm.Request) llm.Response {
 				mu.Lock()
 				oneShotToolsBySession[req.SessionID] = toolNameSetFromDefinitions(req.Tools)
 				mu.Unlock()
@@ -423,7 +423,7 @@ func TestOneShotDefaultDelegateRegainsNotesOnPersistentResume(t *testing.T) {
 			if created.Err != nil {
 				t.Fatalf("createDelegate: %v", created.Err)
 			}
-			waitForRuntimeSubagent(t, root, created.ChildSessionID)
+			awaitTreeQuiesced(t, root)
 
 			mu.Lock()
 			oneShotChildReqTools := oneShotToolsBySession[created.ChildSessionID]
@@ -559,12 +559,12 @@ func TestOneShotDefaultDelegateRegainsNotesOnPersistentResume(t *testing.T) {
 		workspace := t.TempDir()
 		stateDir := realTempDirForTest(t)
 		agentsDoc := filepath.Join(t.TempDir(), "no-personal-AGENTS.md")
-		testOnly := testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true, sandboxProber: bwrapCapableProber(workspace)}
+		testOnly := testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true, sandboxProber: bwrapCapableProber(workspace), disableDelegateIdleRelease: true}
 
 		client := llm.NewClient()
 		var mu sync.Mutex
 		toolsSeen := map[string]bool{}
-		client.Register(newFakeAdapter("openai", repeatFakeStep(6, func(req llm.Request) llm.Response {
+		client.Register(newFakeAdapter("openai", repeatFakeStep(16, func(req llm.Request) llm.Response {
 			mu.Lock()
 			toolsSeen = toolNameSetFromDefinitions(req.Tools)
 			mu.Unlock()
@@ -586,7 +586,7 @@ func TestOneShotDefaultDelegateRegainsNotesOnPersistentResume(t *testing.T) {
 		if created.Err != nil {
 			t.Fatalf("createDelegate: %v", created.Err)
 		}
-		waitForRuntimeSubagent(t, root, created.ChildSessionID)
+		awaitTreeQuiesced(t, root)
 		meta := root.Meta()
 		if err := schema.SaveSessionMeta(stateDir, meta); err != nil {
 			t.Fatalf("SaveSessionMeta: %v", err)
@@ -624,7 +624,7 @@ func TestOneShotDefaultDelegateRegainsNotesOnPersistentResume(t *testing.T) {
 		workspace := t.TempDir()
 		stateDir := realTempDirForTest(t)
 		agentsDoc := filepath.Join(t.TempDir(), "no-personal-AGENTS.md")
-		testOnly := testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true, sandboxProber: bwrapCapableProber(workspace)}
+		testOnly := testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true, sandboxProber: bwrapCapableProber(workspace), disableDelegateIdleRelease: true}
 
 		var mu sync.Mutex
 		var grandchildDelegateID, grandchildSessionID string
@@ -633,7 +633,7 @@ func TestOneShotDefaultDelegateRegainsNotesOnPersistentResume(t *testing.T) {
 		childSpawned := false
 		childResumedGrandchild := false
 		client := llm.NewClient()
-		client.Register(newFakeAdapter("openai", repeatFakeStep(16, func(req llm.Request) llm.Response {
+		client.Register(newFakeAdapter("openai", repeatFakeStep(32, func(req llm.Request) llm.Response {
 			mu.Lock()
 			gid := grandchildDelegateID
 			gsid := grandchildSessionID
@@ -723,7 +723,7 @@ func TestOneShotDefaultDelegateRegainsNotesOnPersistentResume(t *testing.T) {
 		if childRes.Err != nil {
 			t.Fatalf("create child: %v", childRes.Err)
 		}
-		waitForRuntimeSubagent(t, root, childRes.ChildSessionID)
+		awaitTreeQuiesced(t, root)
 		mu.Lock()
 		gDelegate := grandchildDelegateID
 		gotOneShotGrandchild := oneShotGrandchildReqTools
@@ -736,8 +736,6 @@ func TestOneShotDefaultDelegateRegainsNotesOnPersistentResume(t *testing.T) {
 				t.Errorf("one-shot default grandchild retained %q", omitted)
 			}
 		}
-		// Drain root attention from the initial child run before closing.
-		sendOneUserInput(t, root, "drain initial child report")
 
 		meta := root.Meta()
 		if err := schema.SaveSessionMeta(stateDir, meta); err != nil {
@@ -761,6 +759,7 @@ func TestOneShotDefaultDelegateRegainsNotesOnPersistentResume(t *testing.T) {
 		if childSend.result.Err != nil {
 			t.Fatalf("resume child: %v", childSend.result.Err)
 		}
+		awaitTreeQuiesced(t, resumedRoot)
 		mu.Lock()
 		gotTools := grandchildResumedTools
 		mu.Unlock()
@@ -783,12 +782,12 @@ func TestOneShotDelegatePersistentResumePreservesRestrictions(t *testing.T) {
 		workspace := t.TempDir()
 		stateDir := realTempDirForTest(t)
 		agentsDoc := filepath.Join(t.TempDir(), "no-personal-AGENTS.md")
-		testOnly := testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true, sandboxProber: bwrapCapableProber(workspace)}
+		testOnly := testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true, sandboxProber: bwrapCapableProber(workspace), disableDelegateIdleRelease: true}
 
 		client := llm.NewClient()
 		var mu sync.Mutex
 		toolsBySession := map[string]map[string]bool{}
-		client.Register(newFakeAdapter("openai", repeatFakeStep(8, func(req llm.Request) llm.Response {
+		client.Register(newFakeAdapter("openai", repeatFakeStep(16, func(req llm.Request) llm.Response {
 			mu.Lock()
 			toolsBySession[req.SessionID] = toolNameSetFromDefinitions(req.Tools)
 			mu.Unlock()
@@ -853,7 +852,7 @@ func TestOneShotDelegatePersistentResumePreservesRestrictions(t *testing.T) {
 				if res.Err != nil {
 					t.Fatalf("createDelegate(%s): %v", role, res.Err)
 				}
-				waitForRuntimeSubagent(t, root, res.ChildSessionID)
+				awaitTreeQuiesced(t, root)
 				return res.DelegateID, res.ChildSessionID
 			})
 			for _, forbidden := range []string{"notes_agent_set", "notes_read"} {
@@ -877,7 +876,7 @@ func TestOneShotDelegatePersistentResumePreservesRestrictions(t *testing.T) {
 			if res.Err != nil {
 				t.Fatalf("createDelegate: %v", res.Err)
 			}
-			waitForRuntimeSubagent(t, root, res.ChildSessionID)
+			awaitTreeQuiesced(t, root)
 			return res.DelegateID, res.ChildSessionID
 		})
 		if got["notes_agent_set"] {
@@ -901,7 +900,7 @@ func TestOneShotDelegatePersistentResumePreservesRestrictions(t *testing.T) {
 			if res.Err != nil {
 				t.Fatalf("createDelegate: %v", res.Err)
 			}
-			waitForRuntimeSubagent(t, root, res.ChildSessionID)
+			awaitTreeQuiesced(t, root)
 			return res.DelegateID, res.ChildSessionID
 		})
 		for _, forbidden := range []string{"notes_agent_set", "notes_read"} {
@@ -924,7 +923,7 @@ func TestOneShotDelegatePersistentResumePreservesRestrictions(t *testing.T) {
 			if res.Err != nil {
 				t.Fatalf("createDelegate: %v", res.Err)
 			}
-			waitForRuntimeSubagent(t, root, res.ChildSessionID)
+			awaitTreeQuiesced(t, root)
 			return res.DelegateID, res.ChildSessionID
 		})
 		for _, forbidden := range []string{"notes_agent_set", "notes_read"} {
@@ -939,7 +938,7 @@ func TestOneShotDelegatePersistentResumePreservesRestrictions(t *testing.T) {
 		workspace := t.TempDir()
 		stateDir := realTempDirForTest(t)
 		agentsDoc := filepath.Join(t.TempDir(), "no-personal-AGENTS.md")
-		testOnly := testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true, sandboxProber: bwrapCapableProber(workspace)}
+		testOnly := testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true, sandboxProber: bwrapCapableProber(workspace), disableDelegateIdleRelease: true}
 
 		client := llm.NewClient()
 		var mu sync.Mutex
@@ -947,7 +946,7 @@ func TestOneShotDelegatePersistentResumePreservesRestrictions(t *testing.T) {
 		var grandchildDelegateID, grandchildSessionID string
 		parentSpawned := false
 		parentResumedGrandchild := false
-		client.Register(newFakeAdapter("openai", repeatFakeStep(16, func(req llm.Request) llm.Response {
+		client.Register(newFakeAdapter("openai", repeatFakeStep(32, func(req llm.Request) llm.Response {
 			mu.Lock()
 			toolsBySession[req.SessionID] = toolNameSetFromDefinitions(req.Tools)
 			gid := grandchildDelegateID
@@ -1027,7 +1026,7 @@ func TestOneShotDelegatePersistentResumePreservesRestrictions(t *testing.T) {
 		if parentRes.Err != nil {
 			t.Fatalf("create subagent parent: %v", parentRes.Err)
 		}
-		waitForRuntimeSubagent(t, root, parentRes.ChildSessionID)
+		awaitTreeQuiesced(t, root)
 		mu.Lock()
 		gID := grandchildDelegateID
 		gsID := grandchildSessionID
@@ -1035,7 +1034,6 @@ func TestOneShotDelegatePersistentResumePreservesRestrictions(t *testing.T) {
 		if gID == "" || gsID == "" {
 			t.Fatal("subagent parent did not spawn default grandchild")
 		}
-		sendOneUserInput(t, root, "drain parent report")
 
 		meta := root.Meta()
 		if err := schema.SaveSessionMeta(stateDir, meta); err != nil {
@@ -1061,6 +1059,7 @@ func TestOneShotDelegatePersistentResumePreservesRestrictions(t *testing.T) {
 		if send := sendAndSettleDelegate(t, resumedRoot, parentRes.DelegateID, "resume parent and grandchild"); send.result.Err != nil {
 			t.Fatalf("resume subagent parent: %v", send.result.Err)
 		}
+		awaitTreeQuiesced(t, resumedRoot)
 		mu.Lock()
 		got := toolsBySession[gsID]
 		mu.Unlock()

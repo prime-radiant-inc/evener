@@ -2017,7 +2017,10 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 		}
 	}
 	s.filterUnavailableMemoryTools()
-	s.pruneDisallowedOneShotOmittedTools(effectiveAllowedToolNames)
+	// Ceremony tools come out after the result tool's collision check and after
+	// all allowed/denied/ceiling/protected filters so --result-tool-name still
+	// refuses them and oneShotOmittedTools records only policy-eligible names.
+	omitOneShotCeremonyTools(s.reg, s)
 	// A role preload is prepared on the creating parent and a frozen descriptor
 	// replays the body frozen at creation; drop what this session cannot follow
 	// before the permanent prompt and inventory carry it.

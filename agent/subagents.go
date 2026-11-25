@@ -972,27 +972,6 @@ func (s *Session) setOneShotOmittedTools(names map[string]bool) {
 	s.oneShotOmittedTools = names
 }
 
-// pruneDisallowedOneShotOmittedTools removes ceremony tools from
-// oneShotOmittedTools when spawn policy or subagent protection also forbids
-// them, so a one-shot parent's own restrictions stay enforced if a child is
-// later resumed in persistent mode.
-func (s *Session) pruneDisallowedOneShotOmittedTools(effectiveAllowed []string) {
-	s.delegateExclusionsMu.Lock()
-	defer s.delegateExclusionsMu.Unlock()
-	if len(s.oneShotOmittedTools) == 0 {
-		return
-	}
-	for name := range s.oneShotOmittedTools {
-		disallowed := (len(effectiveAllowed) > 0 && !hasString(effectiveAllowed, name)) ||
-			hasString(s.cfg.spawn.deniedToolNames, name) ||
-			(len(s.cfg.spawn.toolNameCeiling) > 0 && !hasString(s.cfg.spawn.toolNameCeiling, name) && !hasString(s.cfg.spawn.ceilingReachabilityExcluded, name)) ||
-			(s.isSubagentSession() && isProtectedGrantTool(name))
-		if disallowed {
-			delete(s.oneShotOmittedTools, name)
-		}
-	}
-}
-
 func (s *Session) registeredWithOneShotOmitted(registered map[string]bool) map[string]bool {
 	if !s.cfg.TurnEndsProcess || registered == nil {
 		return registered
