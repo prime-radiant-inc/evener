@@ -1,5 +1,6 @@
 .badge {
   composes: pill from "../../styles/surface.module.css";
+  font-family: var(--font-sans);
   justify-content: center;
   min-width: var(--space-5);
   height: var(--space-5);

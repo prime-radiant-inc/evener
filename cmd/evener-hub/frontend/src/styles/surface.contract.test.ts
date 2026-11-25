@@ -96,6 +96,19 @@ test("the field seat is one ground for a tile's leading glyph", () => {
   expect(seat).toMatch(/width:\s*var\(--field-seat-size\)/);
 });
 
+test("the pill is geometry only, so a widget's own face override decides the font", () => {
+  // The face override has to live in the same sheet as the class it beats:
+  // this sheet's chunk can load after a widget's, and the chip's mono face
+  // would otherwise lose to the pill's sans copy.
+  expect(ruleBody(surface, ".pill")).not.toMatch(/font-family/);
+  for (const [file, selector] of [
+    ["widgets/badge/badge.module.css", ".badge"],
+    ["widgets/chip/chip.module.css", ".chip"],
+  ] as const) {
+    expect(ruleBody(read(file), selector)).toMatch(/font-family:\s*var\(--font-sans\)/);
+  }
+});
+
 test("the left-rail body is one recipe and both daemon notices compose it", () => {
   const recipe = ruleBody(surface, ".railBody");
   expect(recipe).toMatch(/padding:\s*var\(--space-2\)/);

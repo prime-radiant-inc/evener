@@ -3,6 +3,7 @@
   gap: var(--space-1);
   height: 24px;
   border: 1px solid transparent;
+  font-family: var(--font-sans);
 }
 
 /* Machine-text labels (tool names, ids) switch to the mono face; the
