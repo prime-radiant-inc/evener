@@ -125,11 +125,11 @@ losing the conversation that made the evidence relevant.
   Phones reflow speaker rows, controls and evidence rather than shrinking a desktop page;
   wide evidence scrolls within its surface instead of widening the page or shrinking targets.
 - **Keep session reading controls in the header.** Find in session, then Overview, occupy the
-  desktop pane header's action slot; below 900px `StackHost` mounts the same actions as icon
-  buttons with the ordinary touch floor. The ordinary composer menu leaves those two actions to
-  the header and retains Verbosity, turn verbs, and session management. Rail and embedded-column
-  menus keep their existing inspection access. Overview keeps one icon and shows its open state
-  through selected styling. Mobile session titles align left. A session with no real Back
+  desktop pane header's action slot. Below 900px the header has one Overview entry with the
+  ordinary touch floor; its sheet includes Find (§12). The ordinary composer menu leaves those
+  actions to the header and retains Verbosity, turn verbs, and session management. Rail and
+  embedded-column menus keep their existing inspection access. Mobile session titles align
+  left. A session with no real Back
   destination gets Sessions as its only leading navigation control; a retained parent, valid
   back-stack destination, or attention Back uses Back instead. Non-session top bars are unchanged.
 - **Keep session status inside its pane.** Every visible desktop session pane ends
@@ -140,19 +140,18 @@ losing the conversation that made the evidence relevant.
   The shared sidebar retains its scope breadcrumb and an accessible, visually hidden
   “Overview kind” label. About is the fifth category and has no footer counter.
   At the narrow shell breakpoint (899px and below), phones keep one bottom surface:
-  the pane renders no separate footer strip below the
-  composer, so the composer's own control row carries Attach, the model and reasoning
-  chrome line, and Send or Stop. The activity counts sit on a quiet line above the card,
-  so their arrival never moves the card's persistent controls. The card remains the
+  the pane renders no separate footer strip below the composer. The control row carries
+  Attach, the session menu and Send or Stop. Overview holds the activity counts and
+  session facts, so their arrival never moves the card's persistent controls. The card remains the
   lowest interactive surface. The composer dock owns the home-indicator band, and that band is one
   token: `--dock-clearance` in `tokens.css` (`max(0px, env(safe-area-inset-bottom) -
   var(--keyboard-inset, 0px))`). Every dock reads that one value, and it yields when the
   on-screen keyboard covers the band. The working-directory strip follows that shell breakpoint:
   the narrow phone reads the session's working directory and branch through the top bar's
   Overview (About), while a primary-touch phone whose wider landscape viewport uses the desktop
-  shell retains the separate status footer. A phone chip shows its
-  glyph and a single active count (settled for Tasks); its category name and the full
-  active/total fraction stay in its accessible name and tooltip. An empty composer
+  shell retains the separate status footer. A phone Overview activity row shows its
+  glyph and a single active count (settled for Tasks); its accessible name includes
+  the category and full fraction. An empty composer
   with room folds to one row: Attach keeps its leading utility slot, the message field
   stays left of the session menu, and the menu and Send or Stop keep their trailing
   slots. Steer enters to the primary action's left. These positions do not move when
@@ -170,15 +169,14 @@ losing the conversation that made the evidence relevant.
   At container widths up to 340px, the card yields its inline padding and column
   gap in every state; the field's own text inset remains, leaving half the card
   for writing beside three tap targets without moving them when content arrives.
-  A phone's resting composer is one line too, keeping Attach, the session menu and Send
-  or Stop while shedding the model chrome and activity line. Content restores the full
-  row, including the model picker and activity counts. This phone treatment also holds
+  A phone's resting composer is one line too. Content expands the editor without adding
+  model, effort, status or activity controls. This phone treatment also holds
   on a primary-touch landscape viewport up to 1000px wide and 700px tall, including the
   Duo's 951×669pt inner display, even though that width uses the desktop shell. A
   fine-pointer desktop card under 620px keeps the stacked control row and the folded
   one-line field. At the 466px Duo cover width the control row tightens; drafts,
   attachments, and question/approval docks keep their writing and response space. The
-  four activity counters stay in the app with their existing Overview links. The
+  four activity counters stay in the app's Overview sheet. The
   OS-owned Duo system rail is not a public customization surface, so no counters move
   there. The 466px cover treatment is a fit pass on that existing session screen, not
   a new mode: content, controls and workflow stay, and an empty folded card gives
@@ -186,7 +184,7 @@ losing the conversation that made the evidence relevant.
   (`promptcard.module.css`'s 440–500px portrait query, with the matching dock gap
   in `composer.module.css`). Every Duo card keeps zero bottom padding and a zero
   Attach inset, so persistent controls do not move when content expands the card.
-  The activity count line keeps the 44px `--tap-min` floor (`.activityRow`).
+  The Overview activity rows meet the 44px `--tap-min` floor.
 - **Let the lowest footer own the safe area.** A pane with a flush `edgeFooter`
   below its padded composer footer gives that edge footer the home-indicator band
   at every width. The composer footer keeps only its ordinary `--space-3` gap, so a
@@ -201,7 +199,7 @@ losing the conversation that made the evidence relevant.
   a cascade column renders its own bare `Loader` inside its column chrome, keeps its
   verbosity control when the conversation is unavailable, and inherits none of the pane's
   recovery affordances.
-- **Keep session inspection together.** Both session action menus offer Overview, retaining
+- **Keep session inspection together.** Where session action menus offer Overview, they retain
   the intended session's category choice. `/status` selects About without toggling a
   standalone Details pane. About reuses the shared Details renderer and its accounting.
   Phones move focus into the full-screen Overview after menu dismissal and contain Tab
@@ -1447,6 +1445,20 @@ already frames it. Selecting a session closes the drawer, including the
 session already being read: the tap chose a reader, and the list must not stay
 over it.
 
+## 12. Phone session controls
+
+Below 900px, the session header's Overview button opens a bottom sheet with
+Find in session directly under the title, then session facts, activity counts and links.
+Session facts include the current goal and its status when a goal is set.
+An activity row opens its category for that same session. Tasks has a direct
+row when a task list is known. The sheet and activity overlay return focus
+to the header entry when dismissed and the entry still belongs to that session.
+
+The phone composer keeps Attach, Session actions and Send or Stop while
+collapsed or expanded. It announces current work to assistive technology
+without adding a visible row. Model and reasoning effort are session facts in
+Overview; Settings owns the default choices. The desktop header, model and
+effort controls, and pane footer keep their independent behavior.
 
 ## Source Serif 4 license notice
 

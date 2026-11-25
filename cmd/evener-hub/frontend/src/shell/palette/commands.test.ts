@@ -683,7 +683,11 @@ test("/reasoning-effort source prefixes (default) and offers a ladder-listed 'no
     { id: "low", label: "low" },
     { id: "high", label: "high" },
   ]);
-  await c.args.run(runContext(), { id: "high", label: "high" });
+
+  seedModel("ref_a", { supportsReasoning: true, reasoningEffortLevels: [] });
+  const fallbackChoice = (await c.args.source(runContext())).find((item) => item.id === "high");
+  if (!fallbackChoice) throw new Error("the session command did not offer high from the fallback ladder");
+  await c.args.run(runContext(), fallbackChoice);
   expect(fake.calls.find((call) => call.method === "thread/reasoning-effort/set")?.params).toMatchObject({
     ref: "ref_a",
     reasoningEffort: "high",
@@ -693,9 +697,10 @@ test("/reasoning-effort source prefixes (default) and offers a ladder-listed 'no
 
 test("/reasoning-effort offers zero options for a non-reasoning model", () => {
   focusSession("ref_a");
-  seedModel("ref_a", { supportsReasoning: false, reasoningEffortLevels: [] });
   const c = cmd("reasoning-effort");
   if (c.args?.kind !== "enum") throw new Error("expected enum args");
+  expect(c.args.source(runContext())).toEqual([]);
+  seedModel("ref_a", { supportsReasoning: false, reasoningEffortLevels: ["high"] });
   expect(c.args.source(runContext())).toEqual([]);
 });
 

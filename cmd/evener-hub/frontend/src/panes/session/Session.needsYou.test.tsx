@@ -4,9 +4,11 @@ import { deferred } from "@evener/appwire-client/testing/deferred";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { capability, manifest, wireSnapshot } from "@evener/appwire-client/testing/navigation";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
-import { resetActivitySidebarStoreForTests } from "../../shell/activitybar/activitySidebarStore";
+import { MotionProvider } from "../../motion";
+import { activitySidebarStore, resetActivitySidebarStoreForTests } from "../../shell/activitybar/activitySidebarStore";
 import { ClientProvider } from "../../shell/clientContext";
 import { StackHost } from "../../shell/mobile/StackHost";
 import { NeedsYouProvider } from "../../shell/NeedsYouProvider";
@@ -15,6 +17,7 @@ import { type OpenPaneRecord, resetWorkspaceStoreForTests, workspaceStore } from
 import { resetConnectionStoreForTests } from "../../stores/connection";
 import { MutationOutboxIndexedDB } from "../../stores/mutationOutboxIndexedDB";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
+import { activitySummary } from "../../stores/sessionActivityTestUtils";
 import { resetThreadsStoreForTests, setMutationStorageForTests, threadsStore } from "../../stores/threads";
 import { resetAskDockStoreForTests } from "./composer/askDock/askDockStore";
 import { ackAskUserCall } from "./composer/askDock/askDockTestUtils";
@@ -924,10 +927,8 @@ test("the mobile stack host offers attention navigation over its focused session
   await waitFor(() => expect(screen.getByTestId("next-needs-you-next")).toBeTruthy());
 });
 
-// The phone layout keeps one bottom surface: the composer's own control
-// row. The pane's status strip is gone there, and activity chips use their
-// own line above the card when content expands it.
-test("a mobile session pane gives activity chips their own line outside the composer form", async ({
+// The phone layout leaves the bottom surface to the composer.
+test("the phone session opens its live Jobs count from Overview above a composer-only footer", async ({
   onTestFinished,
 }) => {
   vi.mocked(ComposerModule.Composer).mockRestore();
@@ -938,34 +939,48 @@ test("a mobile session pane gives activity chips their own line outside the comp
   onTestFinished(installMobileViewport());
   const fake = connectReadyFakeClient();
   fake.on("thread/read", () => attentionRead("ref_a"));
+  fake.on("evener/thread/activity/read", ({ ref, scope }) => ({
+    ...activitySummary(ref, scope),
+    jobs: { known: true, active: 1, total: 3, completed: 2, failed: 0 },
+  }));
   const pane = attentionSession("mobile-chrome-pane");
   workspaceStore.setState({ panes: [pane], focusedPaneId: pane.id });
   window.history.replaceState({}, "", "/s/ref_a");
 
   render(
     <ClientProvider client={fake}>
-      <NeedsYouProvider>
-        <StackHost />
-      </NeedsYouProvider>
+      <MotionProvider>
+        <NeedsYouProvider>
+          <StackHost />
+        </NeedsYouProvider>
+      </MotionProvider>
     </ClientProvider>,
   );
   await act(async () => await vi.dynamicImportSettled());
   const editor = await screen.findByRole("textbox", { name: "Message" });
-  // The composer's status chips render only once the pane's thread model
-  // hydrates, so wait for the transcript's own content before reading the
-  // control row.
+  // Wait for the transcript's content before reading the control row.
   await screen.findByText("attention content");
   await flushPendingTurnsProjectionForTests();
   act(() => editor.focus());
   act(() => replaceEditorText(editor, "draft"));
 
   // No footer strip under the composer on a phone.
+  expect(screen.queryByTestId("pane-edge-footer")).toBeNull();
   expect(screen.queryByTestId("statusbar")).toBeNull();
 
-  // Content engages the full control row. The activity line remains outside
-  // the form rather than becoming another editor control.
   const form = screen.getByTestId("composer-form");
   expect(form.querySelector('[data-testid="composer-attach"]')).toBeTruthy();
-  expect(form.querySelector("[data-activity-tab]")).toBeNull();
-  expect(screen.getByTestId("composer-activity-line").querySelector("[data-activity-tab]")).toBeTruthy();
+  expect(form.querySelector('[data-testid="composer-submit"]')).toBeTruthy();
+
+  const user = userEvent.setup();
+  const overview = screen.getByRole("button", { name: "Overview" });
+  await user.click(overview);
+  const sheet = await screen.findByRole("dialog", { name: "Overview" });
+  const jobs = await within(sheet).findByRole("button", { name: /Jobs, 1 of 3 running/ });
+  await user.click(jobs);
+  const sidebar = await screen.findByTestId("activity-sidebar");
+  expect(activitySidebarStore.getState()).toMatchObject({ open: true, ref: "ref_a", tab: "jobs" });
+  await waitFor(() => expect(sidebar.contains(document.activeElement)).toBe(true));
+  await user.keyboard("{Escape}");
+  await waitFor(() => expect(document.activeElement).toBe(overview));
 });

@@ -61,6 +61,7 @@ import {
 import { describeBrowserStartupFailure, startBrowserGuard, waitForBrowserReady } from "../browserGuardProcess.mjs";
 import { diagnoseRealizedViewport } from "../layoutguard/viewport.mjs";
 import {
+  assertComposerContainment,
   measureComposerPlacement,
   typeComposerDraft,
   verifyComposerGesture,
@@ -460,9 +461,7 @@ async function measureComposerFooter(
             const submit = form?.querySelector('[data-testid="composer-submit"]');
             const stop = form?.querySelector('[data-testid="composer-stop"]');
             const sessionMenu = form?.querySelector('[data-session-actions-ref]')?.closest('button');
-            const rowChips = form ? [...form.querySelectorAll('[data-activity-tab]')] : [];
-            const activityLine = pane?.querySelector('[data-testid="composer-activity-line"]');
-            const activityChips = activityLine ? [...activityLine.querySelectorAll('[data-activity-tab]')] : [];
+            const paneActivity = pane?.querySelector('[data-activity-tab]');
             const cards = [...(footer?.querySelectorAll('[data-testid="composer-input-card"]') ?? [])]
               .filter((card) => card.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }));
             const lastBottom = cards.length ? Math.max(...cards.map((card) => card.getBoundingClientRect().bottom)) : null;
@@ -508,10 +507,7 @@ async function measureComposerFooter(
               // row shows so the coarse landscape tap-floor check reads the
               // control the user actually presses.
               primaryAction: rect([submit, stop].find((button) => visible(button))),
-              rowChipCount: rowChips.filter((chip) => visible(chip)).length,
-              activityChipCount: activityChips.filter((chip) => visible(chip)).length,
-              activityLine: rect(activityLine),
-              activityLineOutsideForm: activityLine !== null && activityLine.closest('form') === null,
+              hasPaneActivity: Boolean(paneActivity),
               // The resting field must keep most of the card's width. A leading
               // slot reserving width it cannot fill starves the field while
               // looking like a rendering quirk rather than a clipped control.
@@ -589,8 +585,7 @@ function assertComposerFooter(measurement) {
   }
   if (measurement.cards !== 1) failures.push(`visible composer cards=${measurement.cards}, expected 1`);
   // The phone pane keeps one bottom surface: no edge footer at all, so the
-  // composer's own dock is the pane's bottom edge. Its activity line sits
-  // above the card, leaving the card's dock responsible for the band.
+  // composer's own dock is the pane's bottom edge.
   if (mobile) {
     if (measurement.edgeFooterCount !== 0) failures.push("phone pane still renders an edge footer");
     if (measurement.statusbar !== null) failures.push("phone pane still renders a status bar");
@@ -616,7 +611,7 @@ function assertComposerFooter(measurement) {
     if (!measurement.attachVisible) failures.push("phone folded row lost Attach");
     if (measurement.editorMinLines !== "1lh") failures.push("empty focus expanded the one-line editor");
     if (measurement.modelTrigger?.visible) failures.push("empty focus restored the model picker before content");
-    if (measurement.rowChipCount !== 0) failures.push("activity chips must not ride in the composer control row");
+    if (measurement.hasPaneActivity) failures.push("phone activity counters belong in the Overview sheet");
     // The folded row keeps Attach, the session menu, and Send/Stop as real
     // 44px targets on every phone width, including the 320px card where the
     // writing surface has the least room.
@@ -662,7 +657,6 @@ function assertComposerFooter(measurement) {
         );
       }
     }
-    if (measurement.activityLine !== null) failures.push("empty composer renders its activity line before content");
     return failures;
   }
   // overflowharness-entry.tsx supplies this fixture path, independent of the checkout.
@@ -785,11 +779,14 @@ async function measureComposerAsk(cdpEndpoint, url, width) {
         send,
         `(() => {
           const pane = document.getElementById('oh-pane');
-          const chrome = pane?.querySelector('[data-testid="session-chrome-inline"]');
+          const mobile = matchMedia('(max-width: 899px)').matches;
+          const chrome = mobile
+            ? pane?.querySelector('[data-session-actions-ref]')?.closest('button')
+            : pane?.querySelector('[data-testid="session-chrome-inline"]');
           const model = pane?.querySelector('[data-testid="model-switch-trigger"]');
           const askCount = pane?.querySelector('[data-testid="ask-dock-count"]');
           return JSON.stringify({
-            mobile: matchMedia('(max-width: 899px)').matches,
+            mobile,
             askRendered: Boolean(askCount),
             chromeHeight: chrome ? chrome.getBoundingClientRect().height : null,
             chromeVisible: chrome ? chrome.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }) : false,
@@ -809,7 +806,7 @@ function assertComposerAsk(measurement, width) {
   const mobile = width < 900;
   if (measurement.mobile !== mobile) failures.push("realized ask viewport mismatch");
   if (!measurement.askRendered) failures.push("pending ask never rendered its dock");
-  if (!measurement.chromeVisible || !measurement.modelVisible) {
+  if (!measurement.chromeVisible || measurement.modelVisible !== !mobile) {
     failures.push(`pending-ask state lost its chrome (${JSON.stringify(measurement)})`);
   }
   // The pending-question mount stands alone in the composer's vertical
@@ -944,18 +941,8 @@ function assertDuoCompactStates(result) {
   if (!approval?.approval || approval.approval.height <= 0) failures.push("the real approval card did not mount");
   if (!result.approvalResolved) failures.push("Allow did not resolve the real approval card");
   for (const state of result.states) {
-    // The activity counts live above the expanded card. Empty and focused
-    // states stay folded and mount none; content-bearing states mount all four.
-    const expectedCount = state.state === "empty" || state.state === "focused" ? 0 : 4;
-    if (state.counters.length !== expectedCount)
-      failures.push(`${state.state}: expected ${expectedCount} mounted activity counters`);
-    for (const counter of state.counters) {
-      const hidden = state.editing || state.cardHidden;
-      if (!hidden && (counter.width < 44 || counter.height < 44))
-        failures.push(`${state.state}: activity target fell below 44px for ${counter.tab}`);
-      if (!counter.accessibleName?.includes(" of "))
-        failures.push(`${state.state}: activity target or full accessible fraction missing for ${counter.tab}`);
-    }
+    // shellguard measures the touch targets and counts in the actual Overview.
+    if (state.counters.length !== 0) failures.push(`${state.state}: activity counters mounted in the phone pane`);
     for (const control of state.controls) {
       if (control.touchTarget && control.height > 0 && (control.width < 44 || control.height < 44))
         failures.push(`${state.state}: control ${control.name} fell below 44px`);
@@ -2098,7 +2085,7 @@ async function main() {
           }
         }
       }
-      for (const width of [390, 700]) {
+      for (const width of [390, 700, 900]) {
         const askMeasurement = await measureComposerAsk(
           cdpEndpoint,
           `http://127.0.0.1:${vitePort}/overflowharness.html?w=${width}&ask=1`,
@@ -2459,46 +2446,42 @@ async function main() {
             wrong.map(([name, want]) => `${name}=${probe[name]} (expected ${want})`).join(", "),
         );
       }
-      if (!result.footer.effortVisible || !result.footer.contextVisible || !result.footer.queueVisible) {
-        widthFailed = true;
-        console.log(
-          `${width}px ... FAIL - pressured footer facts missing: ` +
-            `effort=${result.footer.effortVisible}, context=${result.footer.contextVisible}, queue=${result.footer.queueVisible}`,
-        );
+      if (width >= 900) {
+        if (!result.footer.effortVisible || !result.footer.contextVisible || !result.footer.queueVisible) {
+          widthFailed = true;
+          console.log(
+            `${width}px ... FAIL - pressured footer facts missing: ` +
+              `effort=${result.footer.effortVisible}, context=${result.footer.contextVisible}, queue=${result.footer.queueVisible}`,
+          );
+        }
+        if (result.footer.queueLabel !== "12 queued") {
+          widthFailed = true;
+          console.log(
+            `${width}px ... FAIL - pressured footer queue label is ${JSON.stringify(result.footer.queueLabel)}`,
+          );
+        }
+        if (result.footer.statusScrollWidth > result.footer.statusClientWidth + 1) {
+          widthFailed = true;
+          console.log(
+            `${width}px ... FAIL - footer status facts are internally clipped: ` +
+              `${result.footer.statusScrollWidth}px in ${result.footer.statusClientWidth}px: ` +
+              JSON.stringify(result.footer.geometry),
+          );
+        }
+        if (result.footer.modelClientWidth <= 0) {
+          widthFailed = true;
+          console.log(
+            `${width}px ... FAIL - pressured footer model has zero visible width: ` +
+              JSON.stringify(result.footer.geometry),
+          );
+        }
       }
-      if (result.footer.queueLabel !== "12 queued") {
+      try {
+        assertComposerContainment(result.currentWork, width < 900);
+      } catch (error) {
         widthFailed = true;
         console.log(
-          `${width}px ... FAIL - pressured footer queue label is ${JSON.stringify(result.footer.queueLabel)}`,
-        );
-      }
-      if (result.footer.statusScrollWidth > result.footer.statusClientWidth + 1) {
-        widthFailed = true;
-        console.log(
-          `${width}px ... FAIL - footer status facts are internally clipped: ` +
-            `${result.footer.statusScrollWidth}px in ${result.footer.statusClientWidth}px: ` +
-            JSON.stringify(result.footer.geometry),
-        );
-      }
-      if (result.footer.modelClientWidth <= 0) {
-        widthFailed = true;
-        console.log(
-          `${width}px ... FAIL - pressured footer model has zero visible width: ` +
-            JSON.stringify(result.footer.geometry),
-        );
-      }
-      if (
-        !result.currentWork.found ||
-        !result.currentWork.composerCardFound ||
-        !result.currentWork.controlsFound ||
-        !result.currentWork.controlsContained ||
-        !result.currentWork.controlsDoNotOverlap ||
-        !result.currentWork.sharedPaneWithoutOverflow ||
-        !result.currentWork.orderedAboveComposer
-      ) {
-        widthFailed = true;
-        console.log(
-          `${width}px ... FAIL - current work and compose controls geometry: ${JSON.stringify(result.currentWork)}`,
+          `${width}px ... FAIL - ${error.message}: ${JSON.stringify(result.currentWork)}`,
         );
       }
       if (
