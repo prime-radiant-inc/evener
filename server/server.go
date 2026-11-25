@@ -18,16 +18,12 @@ import (
 	"primeradiant.com/evener/llm/registry"
 )
 
-// ImageAttachment is re-exported from package agent so HTTP clients and the
-// session layer share a single type.
-type ImageAttachment = agent.ImageAttachment
-
-// InputMessage is delivered on InputCh() carrying user text plus any
-// attached images. Kind classifies the turn (user input vs. a goal-engine
-// continuation); its zero value is agent.EntryUserInput.
+// InputMessage is delivered on InputCh() carrying a serve-loop prompt or
+// wake signal. Kind classifies non-mutation turns (user input vs. a
+// goal-engine continuation or job notification); its zero value is
+// agent.EntryUserInput.
 type InputMessage struct {
 	Text                string
-	Images              []ImageAttachment
 	Kind                agent.EntryKind
 	ClientMutationStart bool
 	// QueuedInput asks the loop to claim and run the named session's queue

@@ -1038,7 +1038,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 					srv.SetCancelFunc(nil)
 				}
 			} else {
-				result, processErr = sess.ProcessInputKind(turnCtx, msg.Text, msg.Images, msg.Kind)
+				result, processErr = sess.ProcessInputKind(turnCtx, msg.Text, nil, msg.Kind)
 			}
 			// The stored state changes only through the session's own events
 			// (SESSION_START, SESSION_END): ending processing publishes what
