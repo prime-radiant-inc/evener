@@ -687,4 +687,73 @@ esac
 			}
 		}
 	})
+
+	t.Run("SKILL.md command reference runs cleanly under bash -o pipefail -c", func(t *testing.T) {
+		bashPath, err := exec.LookPath("bash")
+		if err != nil {
+			t.Skip("bash not available on PATH")
+		}
+		rawSkill, err := fs.ReadFile(Plugins(), "evener-feedback/skills/reporting-feedback/SKILL.md")
+		if err != nil {
+			t.Fatalf("read SKILL.md: %v", err)
+		}
+		_, afterFence, ok := strings.Cut(string(rawSkill), "```sh\n")
+		if !ok {
+			t.Fatal("SKILL.md missing sh fenced command reference")
+		}
+		block, _, ok := strings.Cut(afterFence, "\n```")
+		if !ok {
+			t.Fatal("SKILL.md missing closing fence on sh command reference")
+		}
+		skillDir := filepath.Join(t.TempDir(), "evener feedback skill")
+		scriptsDir := filepath.Join(skillDir, "scripts")
+		if err := os.MkdirAll(scriptsDir, 0o755); err != nil {
+			t.Fatalf("mkdir scripts dir: %v", err)
+		}
+		rawScript, err := fs.ReadFile(Plugins(), "evener-feedback/skills/reporting-feedback/scripts/evener-feedback")
+		if err != nil {
+			t.Fatalf("read bundled script: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(scriptsDir, "evener-feedback"), rawScript, 0o644); err != nil {
+			t.Fatalf("write script: %v", err)
+		}
+		var snippetLines []string
+		foundUpvote := false
+		for line := range strings.SplitSeq(block, "\n") {
+			trimmed := strings.TrimSpace(line)
+			if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+				continue
+			}
+			expanded := strings.ReplaceAll(trimmed, "<base_directory>", skillDir)
+			if strings.Contains(expanded, " upvote ") {
+				expanded = strings.ReplaceAll(expanded, "<issue_number>", "42")
+				expanded = strings.ReplaceAll(expanded, "[--dry-run]", "--dry-run")
+				expanded = strings.ReplaceAll(expanded, "[--json]", "--json")
+				snippetLines = append(snippetLines, expanded)
+				foundUpvote = true
+				break
+			}
+			if !strings.Contains(expanded, " check ") && !strings.Contains(expanded, " check-update ") && !strings.Contains(expanded, " comment ") && !strings.Contains(expanded, " report ") {
+				snippetLines = append(snippetLines, expanded)
+			}
+		}
+		if !foundUpvote {
+			t.Fatalf("SKILL.md sh block missing upvote command:\n%s", block)
+		}
+		snippet := strings.Join(snippetLines, "\n")
+		cmd := exec.Command(bashPath, "-o", "pipefail", "-c", snippet)
+		cmd.Env = []string{"PATH=" + filepath.Dir(python3) + ":/usr/bin:/bin"}
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("SKILL.md command reference failed under bash -o pipefail -c:\nsnippet:\n%s\nerr: %v\noutput:\n%s", snippet, err, out)
+		}
+		var parsed struct {
+			Action      string `json:"action"`
+			IssueNumber int    `json:"issue_number"`
+			DryRun      bool   `json:"dry_run"`
+		}
+		if err := json.Unmarshal(out, &parsed); err != nil || parsed.Action != "upvote" || parsed.IssueNumber != 42 || !parsed.DryRun {
+			t.Fatalf("unexpected upvote dry-run output: %q (err=%v)", out, err)
+		}
+	})
 }
