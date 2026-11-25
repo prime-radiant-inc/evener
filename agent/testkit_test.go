@@ -354,18 +354,6 @@ func seedTestTranscript(t *testing.T, stateDir string, meta schema.SessionMeta, 
 	recordTestTranscriptTurns(t, tw, turns)
 }
 
-// appendTestTranscript opens an existing session transcript in stateDir and
-// appends turns verbatim.
-func appendTestTranscript(t *testing.T, stateDir, sessionID string, turns ...schema.Turn) {
-	t.Helper()
-	tpath := schema.SessionTranscriptPath(stateDir, sessionID)
-	tw, _, err := transcript.OpenWriterForSession(tpath, sessionID)
-	if err != nil {
-		t.Fatalf("transcript.OpenWriterForSession: %v", err)
-	}
-	recordTestTranscriptTurns(t, tw, turns)
-}
-
 func recordTestTranscriptTurns(t *testing.T, tw *transcript.Writer, turns []schema.Turn) {
 	t.Helper()
 	for i, turn := range turns {
