@@ -144,7 +144,6 @@ const CLASS = {
   editorSlot: requireClass(styles.editorSlot, "composer.module.css", "editorSlot"),
   menuSlot: requireClass(styles.menuSlot, "composer.module.css", "menuSlot"),
   chromeSlot: requireClass(styles.chromeSlot, "composer.module.css", "chromeSlot"),
-  steerSlot: requireClass(styles.steerSlot, "composer.module.css", "steerSlot"),
   formAnchor: requireClass(styles.formAnchor, "composer.module.css", "formAnchor"),
   submitLabel: requireClass(styles.submitLabel, "composer.module.css", "submitLabel"),
   stopLabelStack: requireClass(styles.stopLabelStack, "composer.module.css", "stopLabelStack"),
@@ -1539,40 +1538,37 @@ function ComposerWithSubmission({
                 leading={leadingControls}
                 actions={
                   <>
-                    {/* Steer enters to the LEFT of Send/Stop, keeping the
-                        primary action's right edge fixed as content arrives. */}
-                    {showSteer && !narrow && (
-                      <span className={CLASS.steerSlot} data-hidden={folded ? "true" : undefined}>
-                        <Tooltip
-                          label={steerTooltipLabel({
-                            recoveryFenced: steerRecoveryFenced,
-                            unbackedImage: hasUnbackedImage,
-                            enterToSend,
-                          })}
+                    {/* Steer enters to the LEFT of Send/Stop when expanded, keeping the
+                        primary action's right edge fixed while leaving no blank gap beside
+                        Stop on an empty folded row. */}
+                    {showSteer && !narrow && !folded && (
+                      <Tooltip
+                        label={steerTooltipLabel({
+                          recoveryFenced: steerRecoveryFenced,
+                          unbackedImage: hasUnbackedImage,
+                          enterToSend,
+                        })}
+                      >
+                        <Button
+                          variant="primary"
+                          size="xs"
+                          type="button"
+                          data-testid="composer-steer"
+                          onClick={handleSteerClick}
+                          // Same as Stop above: busy + the steer capability
+                          // already gate this control's existence. The recovery
+                          // fence gates the press the same way the Send button's
+                          // does, and the tooltip says why (kata 2f41) instead of
+                          // describing an action the fence refuses. The fence is
+                          // an aria-disabled refusal, not the native attribute, so
+                          // the button keeps focus and hover and that reason
+                          // stays reachable.
+                          aria-disabled={steerRecoveryFenced || hasUnbackedImage || undefined}
+                          disabled={actionPending}
                         >
-                          <Button
-                            variant="primary"
-                            size="xs"
-                            type="button"
-                            data-testid={folded ? "composer-steer-placeholder" : "composer-steer"}
-                            aria-hidden={folded || undefined}
-                            tabIndex={folded ? -1 : undefined}
-                            onClick={handleSteerClick}
-                            // Same as Stop above: busy + the steer capability
-                            // already gate this control's existence. The recovery
-                            // fence gates the press the same way the Send button's
-                            // does, and the tooltip says why (kata 2f41) instead of
-                            // describing an action the fence refuses. The fence is
-                            // an aria-disabled refusal, not the native attribute, so
-                            // the button keeps focus and hover and that reason
-                            // stays reachable.
-                            aria-disabled={steerRecoveryFenced || hasUnbackedImage || undefined}
-                            disabled={actionPending || folded}
-                          >
-                            Steer
-                          </Button>
-                        </Tooltip>
-                      </span>
+                          Steer
+                        </Button>
+                      </Tooltip>
                     )}
                     {/* Distinct keys replace the actual button, so a press
                         begun on Send cannot finish on Stop. */}

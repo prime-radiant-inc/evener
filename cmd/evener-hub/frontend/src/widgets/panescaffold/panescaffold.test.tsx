@@ -284,7 +284,7 @@ test("the footer fills to the screen's bottom edge while keeping its content cle
 //
 // That inset belongs to the pane's bottom edge. Any slot below the body (the
 // session pane's composer footer, or a flush edgeFooter alone) hands the edge
-// to that surface's top hairline, so the inset there would be a dead band
+// to that surface, so the inset there would be a dead band
 // between the last row and the surface. The step is a property on .body so the
 // phone block can change it at (0,1,0); a .body:last-child override there would
 // be (0,2,0) and beat .bodyNoScroll, padding the cascade's flush columns.
