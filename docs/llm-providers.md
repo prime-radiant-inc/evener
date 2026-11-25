@@ -619,10 +619,14 @@ whole file. Healthy providers stay usable and editable, registry warnings
 report the broken entry, a `default` naming it falls back automatically,
 matching OAuth records are preserved, and direct lookups or launches targeting
 the broken name return its `ProviderLoadError` (shadowing any curated implicit
-provider of the same name). Hub Settings writes still validate the targeted
-provider after reload and roll back any edit that would break it. File-level
-TOML syntax errors, unknown schema keys, and pre-registry schemas remain
-whole-file load errors.
+provider of the same name). `evener/instance/list` also returns isolated
+broken entries with `hidden: true` and `loadError`, so web and native Settings
+can show the specific load error, change `base` (via `evener/instance/edit`),
+or remove the broken stanza and its credentials (via `evener/instance/remove`)
+without hand-editing `providers.toml`. Hub Settings writes still validate the
+targeted provider after reload and roll back any edit that would break it.
+File-level TOML syntax errors, unknown schema keys, and pre-registry schemas
+remain whole-file load errors.
 
 
 ```toml
