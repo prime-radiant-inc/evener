@@ -168,7 +168,7 @@ func TestRestoreDoesNotRepeatPersistedPlanSteering(t *testing.T) {
 	if err := saveQueues(fixture.stateDir, fixture.childID, []steeringMessage{{
 		Kind: events.SteeringKindTaskList,
 		Text: "<SYSTEM-REMINDER>\nTask list:\n  [in_progress] #1: Restored committed workflow\n    prompt: Resume the committed workflow.\n</SYSTEM-REMINDER>",
-	}}, nil); err != nil {
+	}}); err != nil {
 		t.Fatalf("persist child plan steering: %v", err)
 	}
 	root, err := restoreDelegateResourceBootstrapSession(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir)

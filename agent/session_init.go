@@ -1396,7 +1396,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// Restore daemon steering before restore side effects can enqueue a
 	// restart-owned notification. Loading it later would overwrite that new
 	// notification with the pre-restart snapshot.
-	if steering, _, err := loadQueues(s.stateDir, s.id); err != nil {
+	if steering, err := loadQueues(s.stateDir, s.id); err != nil {
 		s.emit(events.WarningData{Message: fmt.Sprintf("restore: queue reload failed: %v", err)})
 	} else {
 		s.steeringQueue = daemonSourcedSteering(steering)
