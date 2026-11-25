@@ -209,6 +209,15 @@
   flex: 1 1 100%;
 }
 
+/* Below 700px the turn gutter collapses and .rowIconSlot leads inline ahead of
+ * .intent; offset the wrapped second line by one --speaker-gutter so the
+ * verb/target line stays aligned with the rationale above it. */
+@media (max-width: 699px) {
+  .row[data-intent="true"] .summaryLine {
+    margin-left: var(--speaker-gutter);
+  }
+}
+
 /* An intent-less row keeps its visible summary and inline actions as siblings
  * of the disclosure button. The button still owns the whole visual row: its
  * transparent box sits under the summary line, while real links/buttons opt

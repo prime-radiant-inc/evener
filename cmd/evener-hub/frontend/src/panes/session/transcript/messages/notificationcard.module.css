@@ -95,6 +95,12 @@
   opacity: 1;
 }
 
+/* Inside a collapsible Disclosure summary, center the rail glyph on the
+ * summary line so phones' 44px tap floor does not pin it above the text. */
+.collapsible .statusIcon {
+  align-self: center;
+}
+
 .headingText {
   flex: 0 1 auto;
   min-width: 0;

@@ -693,6 +693,12 @@ test("the rail icon seats via the shared rail-seat module - composed, not restat
   const slotRule = css.match(/\.rowIconSlot\s*\{([^}]*)\}/);
   expect(slotRule).not.toBe(null);
   expect(slotRule?.[1]).toContain('composes: gutterPull from "../../../styles/railseat.module.css"');
+  // Below 700px the icon leads inline ahead of the rationale, so the wrapped
+  // second line (.summaryLine) offsets by --speaker-gutter to share one left
+  // edge with the rationale above it.
+  expect(css).toMatch(
+    /@media\s*\(max-width:\s*699px\)\s*\{[^}]*\.row\[data-intent="true"\]\s+\.summaryLine\s*\{[^}]*margin-left:\s*var\(--speaker-gutter\)/,
+  );
   // The retired inline grammar (the icon inside the summary's text flow) is
   // gone entirely.
   expect(css).not.toContain(".summaryIcon");

@@ -112,6 +112,7 @@ test("ToolRunGroup's leading chevron composes the seat and gutter pull with flus
   expect(toolrungroup).toMatch(
     /\.railChevron\s*\{[^}]*composes:\s*gutterPull from "\.\.\/\.\.\/\.\.\/styles\/railseat\.module\.css"/,
   );
+  expect(toolrungroup).toMatch(/\.railChevron\s*\{[^}]*align-self:\s*center/);
   expect(toolrungroup).toMatch(/\.summary\s*\{[^}]*padding:\s*var\(--tool-card-row-pad\)\s+0/);
 });
 
@@ -126,6 +127,7 @@ test("both static and collapsible notification heads share statusIcon (seat, amb
     /\.statusIcon\s*\{[^}]*composes:\s*gutterPull from "\.\.\/\.\.\/\.\.\/\.\.\/styles\/railseat\.module\.css"/,
   );
   expect(ownDeclarations(notificationcard, "\\.statusIcon")).toBe("");
+  expect(notificationcard).toMatch(/\.collapsible \.statusIcon\s*\{[^}]*align-self:\s*center/);
   expect(notificationcard).not.toMatch(/\.summaryIcon/);
 });
 
@@ -155,7 +157,9 @@ test("the live thought's kind glyph stays the single-line variant while the sett
   expect(thinkblock).toMatch(
     /\.summaryIcon\s*\{[^}]*composes:\s*gutterPull from "\.\.\/\.\.\/\.\.\/\.\.\/styles\/railseat\.module\.css"/,
   );
-  expect(ownDeclarations(thinkblock, "\\.summaryIcon")).toBe("font-size: var(--font-size-body);");
+  expect(ownDeclarations(thinkblock, "\\.summaryIcon")).toBe(
+    "align-self: center;\n  font-size: var(--font-size-body);",
+  );
 });
 
 test("the steer diamond composes the shared rail seat, ambient strength, and gutter pull", () => {
@@ -168,7 +172,7 @@ test("the steer diamond composes the shared rail seat, ambient strength, and gut
   expect(steeringitem).toMatch(
     /\.railIcon\s*\{[^}]*composes:\s*gutterPull from "\.\.\/\.\.\/\.\.\/\.\.\/styles\/railseat\.module\.css"/,
   );
-  expect(ownDeclarations(steeringitem, "\\.railIcon")).toBe("font-size: var(--font-size-body);");
+  expect(ownDeclarations(steeringitem, "\\.railIcon")).toBe("align-self: center;\n  font-size: var(--font-size-body);");
 });
 
 test("the turn failure glyph composes the shared rail seat and gutter pull at full strength", () => {

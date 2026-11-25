@@ -16,6 +16,7 @@
   /* biome-ignore lint/suspicious/noDuplicateProperties: css-modules composes takes one declaration per composed class, each with its own `from` */
   composes: ambient from "../../../../styles/railseat.module.css";
   composes: gutterPull from "../../../../styles/railseat.module.css";
+  align-self: center;
   font-size: var(--font-size-body);
 }
 

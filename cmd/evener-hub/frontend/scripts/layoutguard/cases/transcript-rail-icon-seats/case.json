@@ -42,6 +42,6 @@
     "declaration": "styles/railseat.module.css: @media (min-width: 700px) .gutterPull { margin-left: calc(-1 * var(--speaker-gutter)) } reverted to 0, and thinkblock.module.css .label pull reverted to 0",
     "verified": "2026-11-25",
     "expect": "fail",
-    "note": "Verified on 2026-11-25 against all 10 real-module rows: reverting styles/railseat.module.css @media (min-width: 700px) .gutterPull to margin-left: 0 failed desktop alignment immediately on think-settled (slot.left=214.0 vs turn.left=180.0); restoring returned all 10 rows across desktop (920px) and phone (390px) to PASS."
+    "note": "Verified on 2026-11-25 against all 10 real-module rows: (1) reverting styles/railseat.module.css @media (min-width: 700px) .gutterPull to margin-left: 0 failed desktop alignment immediately on think-settled (slot.left=214.0 vs turn.left=180.0); (2) phone assertions caught toolDemoted at 35.0 vs rationale 69.0 before the @media (max-width: 699px) .row[data-intent=\"true\"] .summaryLine margin-left fix, and caught -3.6px to -7.2px vertical slot drift on Disclosure-hosted rows before adding align-self: center. Restoring/applying fixes returned all 10 rows across desktop (920px) and phone (390px) to PASS."
   }
 }
