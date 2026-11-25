@@ -1,6 +1,5 @@
 // Package hostreg holds the controller hub's in-memory registry of remote
-// hosts: the validated [[hosts]] entries from the machine-managed hub.toml plus the add-time cycle
-// check that keeps the host graph acyclic.
+// hosts: the validated [[hosts]] entries from the machine-managed hub.toml.
 //
 // It is the data layer only. It opens no connections, spawns no SSH, and
 // defines no AppWire source; component 05 iterates Registry.All() to register
@@ -35,8 +34,6 @@ var (
 	ErrDuplicateHost = errors.New("duplicate host")
 	// ErrReservedName marks a name equal to ReservedName.
 	ErrReservedName = errors.New("reserved host name")
-	// ErrHostCycle marks an add that would close a cycle in the host graph.
-	ErrHostCycle = errors.New("host cycle")
 	// ErrAmbiguousSSHUser marks an entry that sets User while SSH already
 	// carries a user.
 	ErrAmbiguousSSHUser = errors.New("ambiguous ssh user")
@@ -85,7 +82,7 @@ type Host struct {
 	// re-added entry — even with byte-identical content — is a different
 	// entry from the one an earlier Get handed out. It carries the 08 spec
 	// series' generation semantics for attach identity: callers construct
-	// Hosts with it zero, Add (AddWithUpstreams) mints the next generation
+	// Hosts with it zero, Add mints the next generation
 	// unless the entry carries a complete identity Stamp minted for it — the
 	// durable-first add path's reservation — and an attach that captured an
 	// entry pins itself to the generation as much as to the content: content
@@ -184,7 +181,7 @@ func cloneHost(host Host) Host {
 
 // validateEntry checks a single entry's shape. It expects an entry already
 // normalized by normalize, so the values it checks are the values that will be
-// stored. It does not consult the registry (duplicates and cycles are handled by
+// stored. It does not consult the registry (duplicates are handled by
 // Registry.Add).
 func validateEntry(entry Host) error {
 	if err := ValidateName(entry.Name); err != nil {
@@ -206,22 +203,20 @@ func validateEntry(entry Host) error {
 }
 
 // ValidateEntry reports whether entry could be added to a registry: the same
-// shape checks AddWithUpstreams runs after normalizing — the name grammar, a
+// shape checks Add runs after normalizing — the name grammar, a
 // non-empty ssh destination, user/ssh agreement, and non-empty roots —
 // available on its own so a caller validating one entry commits nothing and
-// builds no scratch registry. Duplicates and cycles stay Add's job.
+// builds no scratch registry. Duplicates stay Add's job.
 func ValidateEntry(entry Host) error {
 	return validateEntry(Normalize(entry))
 }
 
-// Registry is a concurrency-safe set of validated hosts that also carries the
-// directed upstream edges used for cycle rejection.
+// Registry is a concurrency-safe set of validated hosts.
 type Registry struct {
 	mu    sync.RWMutex
 	hosts map[string]Host
-	edges map[string][]string // host name -> names of its upstream hosts
 	// gen is the registry-wide insert generation: one monotonic counter,
-	// advanced by every Add and never reused, that AddWithUpstreams stamps
+	// advanced by every Add and never reused, that Add stamps
 	// on each inserted entry. One registry-wide counter rather than one
 	// per name keeps the retained state a single integer: a per-name
 	// counter map would grow unboundedly under name churn and could not be
@@ -249,10 +244,7 @@ type Registry struct {
 }
 
 // New validates every entry and builds a registry. Entries are added in order,
-// so a duplicate name fails with ErrDuplicateHost. Entries carry no upstream
-// edges; a config-loaded host gets them from SetUpstreams once component 05 has
-// learned them (AddWithUpstreams inserts, so it cannot be used for a host New
-// already registered).
+// so a duplicate name fails with ErrDuplicateHost.
 //
 // New is the boot load's entry point, so each entry carries the identity the
 // durable file persisted and New keeps it: a restored generation is held and
@@ -283,7 +275,6 @@ func New(entries []Host) (*Registry, error) {
 func NewSeeded(entries []Host, marks map[string]HighWater) (*Registry, error) {
 	r := &Registry{
 		hosts:    make(map[string]Host, len(entries)),
-		edges:    make(map[string][]string, len(entries)),
 		presence: make(map[string]uint64, len(entries)),
 	}
 	r.SeedHighWater(marks)
@@ -462,26 +453,11 @@ func (r *Registry) consumeStampLocked(entry Host) (Identity, bool) {
 	return identity, ok
 }
 
-// Add validates entry and inserts it. It is AddWithUpstreams with no upstreams;
-// a single config-loaded entry cannot close a cycle.
+// Add validates entry and inserts it. A refusal leaves the registry unchanged:
+// the candidate is not inserted.
 func (r *Registry) Add(entry Host) error {
-	return r.AddWithUpstreams(entry, nil)
-}
-
-// AddWithUpstreams validates entry and inserts it iff doing so introduces no
-// cycle. upstreamNames are the identities of the hosts upstream of entry, as
-// learned by component 05 from the attach handshake; the registry never
-// discovers them itself.
-//
-// A refusal leaves the registry unchanged: the candidate is not inserted and no
-// edge is recorded.
-func (r *Registry) AddWithUpstreams(entry Host, upstreamNames []string) error {
 	entry = Normalize(entry)
 	if err := validateEntry(entry); err != nil {
-		return err
-	}
-	upstreamNames, err := normalizeUpstreams(upstreamNames)
-	if err != nil {
 		return err
 	}
 	r.mu.Lock()
@@ -489,18 +465,11 @@ func (r *Registry) AddWithUpstreams(entry Host, upstreamNames []string) error {
 	if _, ok := r.hosts[entry.Name]; ok {
 		return fmt.Errorf("%w: %q", ErrDuplicateHost, entry.Name)
 	}
-	if err := r.checkCycleLocked(entry.Name, upstreamNames); err != nil {
-		return err
-	}
 	// The identity is assigned under the lock: from the registry-wide counter
 	// when the caller stamped none, so a re-add of the same name — byte-
 	// identical or not, interleaved with other hosts' churn or not — always
 	// carries a generation the removed entry never had.
-	if err := r.insertLocked(entry); err != nil {
-		return err
-	}
-	r.edges[entry.Name] = append([]string(nil), upstreamNames...)
-	return nil
+	return r.insertLocked(entry)
 }
 
 // insertLocked gives entry its identity and stores it: the identity a pending
@@ -541,11 +510,8 @@ func (r *Registry) insertLocked(entry Host) error {
 // registry has none, config load has none, and the slice that owns the cap
 // (the design document's [03] follow-up) is where it arrives.
 //
-// Unlike AddWithUpstreams it never inserts: update targets a live entry, so a
-// name the registry does not hold is ErrUnknownHost rather than a create. The
-// name's upstream edges are preserved verbatim, which is why the cycle check is
-// not rerun — the edges are unchanged, and the graph they describe is the one
-// that was already acyclic.
+// Unlike Add it never inserts: update targets a live entry, so a
+// name the registry does not hold is ErrUnknownHost rather than a create.
 func (r *Registry) Update(entry Host) error {
 	entry = Normalize(entry)
 	if err := validateEntry(entry); err != nil {
@@ -557,7 +523,7 @@ func (r *Registry) Update(entry Host) error {
 		return fmt.Errorf("%w: %q", ErrUnknownHost, entry.Name)
 	}
 	// The generation is assigned under the lock from the registry-wide counter,
-	// exactly as AddWithUpstreams does, so an update is as much a new identity
+	// exactly as Add does, so an update is as much a new identity
 	// as a remove/re-add: no generation a capture can hold is ever reused. The
 	// incarnation id is the live entry's — an update is neither an add nor a
 	// re-add, so it never rotates a never-reused id — and the presence epoch is
@@ -734,97 +700,6 @@ func (r *Registry) nextPresenceLocked(name string) (uint64, error) {
 	return next + 1, nil
 }
 
-// SetUpstreams attaches or replaces the upstream edges of an already registered
-// host, applying the same cycle check as AddWithUpstreams. New registers
-// config-loaded hosts without edges, so this — not AddWithUpstreams — is how
-// component 05 records what the attach handshake learned about them. A refusal
-// leaves the recorded edges unchanged.
-func (r *Registry) SetUpstreams(name string, upstreamNames []string) error {
-	// The target is normalized like every other name, so a padded spelling still
-	// finds its host instead of failing as unknown and skipping the cycle check.
-	name = strings.TrimSpace(name)
-	if err := ValidateName(name); err != nil {
-		return err
-	}
-	upstreamNames, err := normalizeUpstreams(upstreamNames)
-	if err != nil {
-		return err
-	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if _, ok := r.hosts[name]; !ok {
-		return fmt.Errorf("%w: %q", ErrUnknownHost, name)
-	}
-	if err := r.checkCycleLocked(name, upstreamNames); err != nil {
-		return err
-	}
-	r.edges[name] = append([]string(nil), upstreamNames...)
-	return nil
-}
-
-// normalizeUpstreams trims upstream names and validates each one as a host name.
-// Storing them verbatim made " b " a key distinct from "b", so the padded
-// spelling looked like a host with no edges and a cycle through it went
-// undetected. The grammar check matters for the same reason: an edge that could
-// never name a registered host would sit forever as an unresolvable leaf.
-func normalizeUpstreams(names []string) ([]string, error) {
-	if len(names) == 0 {
-		return nil, nil
-	}
-	out := make([]string, 0, len(names))
-	for _, name := range names {
-		trimmed := strings.TrimSpace(name)
-		if err := ValidateName(trimmed); err != nil {
-			return nil, err
-		}
-		out = append(out, trimmed)
-	}
-	return out, nil
-}
-
-// checkCycleLocked walks upstream edges from the candidate. It refuses if it
-// reaches the candidate itself (a self-edge or a back-edge) or a node already
-// on the current path (a cycle among the upstreams). Callers hold r.mu.
-//
-// An upstream name the registry has no entry for is a leaf: it has no recorded
-// edges, so nothing beyond it can be traversed. That is deliberate for v1 — a
-// cycle that closes through a host running on another hub is undetectable here,
-// because no AppWire method reports a hub's configured hosts, so component 05
-// can never supply those edges. Cross-hub (multi-hop) cycle detection is
-// deferred in the component spec; this function detects every cycle whose edges
-// are all known to this registry.
-func (r *Registry) checkCycleLocked(candidate string, upstreamNames []string) error {
-	onPath := map[string]bool{candidate: true}
-	done := map[string]bool{}
-	var walk func(name string) error
-	walk = func(name string) error {
-		// candidate is pre-seeded in onPath, so reaching it — a self-edge
-		// or a back-edge — trips the same refusal as any other node
-		// already on the current path (a cycle among the upstreams).
-		if onPath[name] {
-			return fmt.Errorf("%w: %q", ErrHostCycle, candidate)
-		}
-		if done[name] {
-			return nil
-		}
-		onPath[name] = true
-		for _, upstream := range r.edges[name] {
-			if err := walk(upstream); err != nil {
-				return err
-			}
-		}
-		delete(onPath, name)
-		done[name] = true
-		return nil
-	}
-	for _, upstream := range upstreamNames {
-		if err := walk(upstream); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 // Get returns the host registered under name.
 func (r *Registry) Get(name string) (Host, bool) {
 	// Trimmed like every other name, so a padded spelling finds the host rather
@@ -882,25 +757,19 @@ func (r *Registry) SameRegistration(name string, captured Host) bool {
 	return ok && SameRegistration(current, captured)
 }
 
-// Remove deletes the host registered under name along with its upstream edges,
-// and advances the name's presence counter (spec 08 §1: the counter advances on
-// every remove, so a re-add can never reuse the removed incarnation's presence
-// epoch). The durable-first removal records the advanced triple before it tears
-// the live entry down — the removal's hub.toml write lands before any live
-// state changes — so it computes the same value with NextPresenceEpoch, which
-// is the one place the advance's arithmetic lives.
+// Remove deletes the host registered under name and advances the name's presence
+// counter (spec 08 §1: the counter advances on every remove, so a re-add can
+// never reuse the removed incarnation's presence epoch). The durable-first
+// removal records the advanced triple before it tears the live entry down —
+// the removal's hub.toml write lands before any live state changes — so it
+// computes the same value with NextPresenceEpoch, which is the one place the
+// advance's arithmetic lives.
 //
-// A removed host stays removed: Get and All no longer report it, and a later
-// Add of the same name starts clean rather than inheriting the old edges (a
-// stale edges entry under the re-added name would false-positive the cycle
-// check against upstreams that no longer apply). The registry-wide generation
-// counter needs no cleanup here — it only advances, so the re-add's Add
-// assigns the next generation and the re-added entry stays distinguishable
-// from the one Remove deleted even when every configured byte matches.
-//
-// Edges recorded on other hosts that name the removed host are left alone: the
-// cycle walk already treats an unknown upstream as a leaf, so they dangle
-// harmlessly until the target is re-added or the dependent is removed.
+// A removed host stays removed: Get and All no longer report it. The
+// registry-wide generation counter needs no cleanup here — it only advances,
+// so a later Add of the same name assigns the next generation and the re-added
+// entry stays distinguishable from the one Remove deleted even when every
+// configured byte matches.
 func (r *Registry) Remove(name string) error {
 	// Trimmed like every other name, so a padded spelling removes its host
 	// instead of failing as unknown while the host stays registered.
@@ -922,7 +791,6 @@ func (r *Registry) Remove(name string) error {
 		return err
 	}
 	delete(r.hosts, name)
-	delete(r.edges, name)
 	// A pending stamp describes the live entry this call removes (or an insert
 	// that never landed); either way it must not survive to be consumed by a
 	// later insert, which would re-adopt the removed incarnation's id and epoch.
