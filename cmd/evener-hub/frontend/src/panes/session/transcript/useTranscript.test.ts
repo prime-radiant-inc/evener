@@ -19,6 +19,7 @@ import {
   threadsStore,
 } from "../../../stores/threads";
 import { connectReadyFakeClient } from "../../../testing/connectionTestUtils";
+import { useTestDrivenFakeTimers } from "../../../testing/fakeTimers";
 import { ALL_CAPABILITIES as CAPABILITIES } from "../../../threadTestUtils";
 import { enterAgentCascade, returnFromAgentCascade } from "../../zoom/actions";
 import { LoadOlderRow } from "./flow/LoadOlderRow";
@@ -301,6 +302,7 @@ test("a pane moved to a hidden window keeps no older-page demand to replay on re
 // waits - so the row's fetching line must track the read itself. The row's
 // structured state is the observable; its label is copy.
 test("a retained demand between reads shows no fetching affordance and recovers without a stale error", async () => {
+  useTestDrivenFakeTimers();
   const fake = connectReadyFakeClient();
   fake.on("thread/read", () => ({ thread: testThread("ref_a"), olderCursor: "older" }));
   await act(async () => {
@@ -350,26 +352,31 @@ test("a retained demand between reads shows no fetching affordance and recovers 
     expect(row().getAttribute("data-state")).toBe("idle");
     expect(row().textContent).toBe("");
 
-    // The paced attempt rejects: the failure is visible, announced, and
-    // recoverable without pixel-precise scrolling. The pacer's first delay is
-    // one second, so wait for the real timer rather than freezing time under a
-    // rendered React tree.
+    // Nothing is on the wire while the pacer waits, so nothing announces a
+    // failure yet. The pacer's first delay is one second; advancing the test
+    // clock triggers it without depending on the host's wall clock.
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
     await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 1000));
+      await vi.advanceTimersByTimeAsync(1000);
       await flushUntil(() => attempts >= 2, 100);
     });
+    // The paced attempt rejects: the failure is visible, announced, and
+    // recoverable without pixel-precise scrolling.
     expect(attempts).toBe(2);
     expect(row().getAttribute("data-state")).toBe("failed");
     expect(screen.getByRole("alert")).toBeTruthy();
     const retry = screen.getByRole("button", { name: "Retry" });
     expect(has("[data-read-in-flight='false']")).toBe(true);
 
-    // The accessible escape hatch succeeds and leaves no stale failure.
+    // The accessible escape hatch succeeds and leaves no stale failure. The
+    // row unmounts when the page exhausts history, so assert the hook's own
+    // error state too: absence alone would hide a stale error.
     await act(async () => {
       fireEvent.click(retry);
       await flushUntil(olderTurnLanded);
-      await flushUntil(() => !has("[data-older-error='true']"));
     });
+    expect(has("[data-older-error='false']")).toBe(true);
     expect(attempts).toBe(3);
     expect(screen.queryByTestId("load-older-row")).toBeNull();
     expect(screen.queryByRole("alert")).toBeNull();
