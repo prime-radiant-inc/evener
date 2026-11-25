@@ -76,6 +76,9 @@
   padding: calc(var(--space-2) + env(safe-area-inset-top)) var(--space-2) var(--space-2);
   background: var(--surface-1);
   border-bottom: 1px solid var(--edge);
+  transition:
+    background-color var(--motion-duration-spatial) var(--motion-easing-standard),
+    border-color var(--motion-duration-spatial) var(--motion-easing-standard);
 }
 
 .stackTitle {
@@ -87,6 +90,7 @@
    * the same rule PaneScaffold's own .title records. */
   min-width: 0;
   text-align: center;
+  transition: opacity var(--motion-duration-spatial) var(--motion-easing-standard);
 }
 
 .topBar[data-session="true"] .stackTitle {
@@ -103,6 +107,47 @@
   /* One tap target wide even when empty, matching the trailing drawer trigger,
    * so the title centers on the bar and not on whatever space is left. */
   min-width: var(--tap-min);
+  transition:
+    background-color var(--motion-duration-spatial) var(--motion-easing-standard),
+    box-shadow var(--motion-duration-spatial) var(--motion-easing-standard);
+}
+
+.trailing {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  transition:
+    background-color var(--motion-duration-spatial) var(--motion-easing-standard),
+    box-shadow var(--motion-duration-spatial) var(--motion-easing-standard);
+}
+
+/* The floating state (docs/web-ui/design-system.md §12): the bar keeps its
+ * box and its padding - only paint changes - so the controls stay exactly
+ * where they were, now as translucent blur capsules over the scrolling
+ * transcript instead of a solid bar above it. Empty clusters draw no capsule. */
+.topBarCollapsed {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: var(--z-sticky-bar);
+  background: transparent;
+  border-bottom-color: transparent;
+  pointer-events: none;
+}
+
+.topBarCollapsed .stackTitle {
+  opacity: 0;
+}
+
+.topBarCollapsed .leading:not(:empty),
+.topBarCollapsed .trailing:not(:empty) {
+  pointer-events: auto;
+  border-radius: var(--radius-pane);
+  background: color-mix(in oklab, var(--surface-1) 88%, transparent);
+  -webkit-backdrop-filter: blur(16px);
+  backdrop-filter: blur(16px);
+  box-shadow: var(--shadow-card);
 }
 
 .stackBody {

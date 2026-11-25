@@ -47,7 +47,7 @@ test("Overview retains real late browser errors after successful or throwing tru
                   // input, independently of async rejection delivery.
                   if (${throwInteraction}) {
                     const style = document.createElement('style');
-                    style.textContent = '[data-testid="activity-sidebar"] [role="radio"] { outline: none !important; }';
+                    style.textContent = '[data-testid="activity-sidebar"] [role="tab"] { outline: none !important; }';
                     document.head.append(style);
                   }
                   ${kind === "error" ? `throw new Error(${JSON.stringify(marker)});` : `void Promise.reject(new Error(${JSON.stringify(marker)}));`}
@@ -71,7 +71,7 @@ test("Overview retains real late browser errors after successful or throwing tru
           assert.equal(failures.length, throwInteraction ? 2 : 1);
           if (throwInteraction) {
             assert.equal(result.keyboard, undefined);
-            assert.ok(failures.some(failure => failure.startsWith("trusted interaction:") && failure.includes(" has no visible selected-radio focus:")));
+            assert.ok(failures.some(failure => failure.startsWith("trusted interaction:") && failure.includes(" has no visible selected-tab focus:")));
           } else {
             assert.equal(result.keyboard.status, true);
           }

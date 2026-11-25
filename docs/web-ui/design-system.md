@@ -125,8 +125,8 @@ losing the conversation that made the evidence relevant.
   Phones reflow speaker rows, controls and evidence rather than shrinking a desktop page;
   wide evidence scrolls within its surface instead of widening the page or shrinking targets.
 - **Keep session reading controls in the header.** Find in session, then Overview, occupy the
-  desktop pane header's action slot. Below 900px the header has one Overview entry with the
-  ordinary touch floor; its sheet includes Find (§12). The ordinary composer menu leaves those
+  session pane header's action slot at every width: labeled controls on desktop, and 44px
+  icon controls below 900px (§12). The ordinary composer menu leaves those
   actions to the header and retains Verbosity, turn verbs, and session management. Rail and
   embedded-column menus keep their existing inspection access. Mobile session titles align
   left. A session with no real Back
@@ -138,10 +138,10 @@ losing the conversation that made the evidence relevant.
   session's working directory and repository/branch, then its Agents, Jobs, Watches and Tasks
   counts. A count click focuses the owning pane before opening the matching Overview category.
   The shared sidebar retains its scope breadcrumb and an accessible, visually hidden
-  “Overview kind” label. About is the fifth category and has no footer counter.
+  “Overview kind” label. About is the first category and has no footer counter.
   At the narrow shell breakpoint (899px and below), phones keep one bottom surface:
   the pane renders no separate footer strip below the composer. The control row carries
-  Attach, the session menu and Send or Stop. Overview holds the activity counts and
+  Attach, the session menu and Send or Stop. Overview holds the activity tabs and
   session facts, so their arrival never moves the card's persistent controls. The card remains the
   lowest interactive surface. The composer dock owns the home-indicator band, and that band is one
   token: `--dock-clearance` in `tokens.css` (`max(0px, env(safe-area-inset-bottom) -
@@ -149,9 +149,7 @@ losing the conversation that made the evidence relevant.
   on-screen keyboard covers the band. The working-directory strip follows that shell breakpoint:
   the narrow phone reads the session's working directory and branch through the top bar's
   Overview (About), while a primary-touch phone whose wider landscape viewport uses the desktop
-  shell retains the separate status footer. A phone Overview activity row shows its
-  glyph and a single active count (settled for Tasks); its accessible name includes
-  the category and full fraction. An empty composer
+  shell retains the separate status footer. An empty composer
   with room folds to one row: Attach keeps its leading utility slot, the message field
   stays left of the session menu, and the menu and Send or Stop keep their trailing
   slots. Steer enters to the primary action's left. These positions do not move when
@@ -176,7 +174,7 @@ losing the conversation that made the evidence relevant.
   fine-pointer desktop card under 620px keeps the stacked control row and the folded
   one-line field. At the 466px Duo cover width the control row tightens; drafts,
   attachments, and question/approval docks keep their writing and response space. The
-  four activity counters stay in the app's Overview sheet. The
+  four activity categories stay in the app's Overview tabs. The
   OS-owned Duo system rail is not a public customization surface, so no counters move
   there. The 466px cover treatment is a fit pass on that existing session screen, not
   a new mode: content, controls and workflow stay, and an empty folded card gives
@@ -184,7 +182,7 @@ losing the conversation that made the evidence relevant.
   (`promptcard.module.css`'s 440–500px portrait query, with the matching dock gap
   in `composer.module.css`). Every Duo card keeps zero bottom padding and a zero
   Attach inset, so persistent controls do not move when content expands the card.
-  The Overview activity rows meet the 44px `--tap-min` floor.
+  The Overview underline tabs meet the 44px `--tap-min` floor.
 - **Let the lowest footer own the safe area.** A pane with a flush `edgeFooter`
   below its padded composer footer gives that edge footer the home-indicator band
   at every width. The composer footer keeps only its ordinary `--space-3` gap, so a
@@ -207,8 +205,11 @@ losing the conversation that made the evidence relevant.
   intended session, preferring the originating pane. Desktop remains nonmodal. Existing
   standalone Details views and the `/tasks` pane toggle retain their behavior.
 - **Keep inspection readable at larger text sizes.** Desktop Overview stays 320px wide.
-  Its category strip wraps without shortening labels or counts at narrow widths and XL
-  text. About's model, session ID, branch and paths wrap as selectable text. Its body
+  Both desktop and mobile use one underline tablist without shortening labels or counts
+  at narrow widths and XL text: desktop wraps onto rows so every category stays visible
+  inside the 320px sidebar without a horizontal scrollbar, while narrow viewports scroll
+  horizontally. About presents session facts in a compact inline meta table whose model,
+  session ID, branch, paths, and saved link URLs wrap as selectable text. Its body
   scrolls vertically while the page stays fixed. Phone controls retain the tap floor.
 - **Keep Overview's activity lists on one loading and spacing contract.** Agents,
   Jobs and Watches page automatically at their visible boundary, with a static
@@ -391,8 +392,10 @@ Corners come from the radius ladder (§2) and nest concentrically: an inner corn
 outer corner less the inset between them, so a control inside a card never crowds the
 card's arc.
 Do not shrink targets or hide overflow as a substitute for containing wide evidence.
-The page frame follows the column it names: a session or spawn header shares its content
-measure, while the settings header stays on the nav axis. The header takes this from the
+The page frame follows the column it names: a session header shares its content
+measure, while the settings header stays on the nav axis, and the spawn pane omits its
+desktop header bar because its tab already names it while keeping `mobileTitle` for the
+phone top bar. The header takes this from the
 pane's existing scaffold marker, not a second layout prop. The layoutguard case
 `page-frame-alignment` pins it: without the header padding rule the session title sits
 hundreds of pixels left of the reading column.
@@ -428,25 +431,40 @@ ring = Working. The shape difference keeps needs-you and failed distinct without
 accessible name carries the state for assistive tech. Precedence is failed, needs-you, working. Idle and ended rows reserve
 no indicator.
 
-**Rail header.** One row leads with the evener mark, a 24px `--accent` tile holding two
-level bars in `--on-accent` (an equals sign, the same mark the agent's `SpeakerAvatar`
-wears), then the `evener` wordmark, with the Settings, Search and Hide-sidebar icons hard
-right as one cluster with no gap between them, so the app's name and its global actions
+**Rail header.** In the persistent desktop rail and tablet board, one row leads with
+the evener mark, a 24px `--accent` tile holding two level bars in `--on-accent` (an equals
+sign, the same mark the agent's `SpeakerAvatar` wears), then the `evener` wordmark.
+Settings, Search and the hide control sit hard right as one cluster with no gap between
+them, so the app's name and its global actions
 share a line. The mark is decorative (`aria-hidden`); the wordmark names the product. The
 wordmark never truncates: the row is sized to fit at the 200px sidebar minimum, where the
 mark's gap to the wordmark tightens. A needs-you chip sits in the same identity block under
 that row, a pill led by a decorative needs-you `StatusDot`. No rule closes the header: it
 shares the rail's one surface with the tree, and the first section's eyebrow does the
 dividing. The rail names the product once; it does not also print the hub's advertised
-server name, which is the constant `evener-hub` on every hub.
+server name, which is the constant `evener-hub` on every hub. The phone drawer uses its
+Sheet header instead of the brand row.
 
-**Rail rows.** Rows sit one `--space-2` in from both rail edges, so a row is a rounded
+**Rail rows.** Compact rows sit one `--space-2` in from both rail edges, so a row is a rounded
 pill (`--radius-control`) rather than an edge-to-edge band. Hover is the `--hover-1` wash
 and a press is `--hover-2`. The selected row, the session the workspace is showing, lifts
 onto `--surface-1` with `--shadow-card-ringed` and semibold ink, the one selected-row
 recipe `Tree` and `ListRow` share. `Tree` owns the inset, all three states, the press and
 the nested levels' guide rails (§3); the rail contributes row content only. Section
 headings stay full-bleed above the rows.
+
+Settings → Appearance → Session list style saves a browser-local choice for the
+current layout: phone, tablet, or desktop. Automatic clears that layout's override.
+Changing layouts uses the destination's saved choice without editing it. Automatic
+uses Three lines on the phone drawer and tablet board, and Compact rows on desktop.
+In Three lines, one reading target
+holds the semibold title, one status line, and quiet metadata: the age once, then the
+actual project name and any host cue. Reserve the status line even when it is empty.
+Use the question or work from the navigation summary when available, and omit missing
+metadata and its separator. A session that has never run says so in the status line
+instead of showing an age. The flat `Tree` drops the left guides and selected-row lift,
+using a modest selection tint and a separate keyboard focus ring. The menu and
+disclosure remain separate controls.
 
 **Dock tabs, sashes and the status bar.** A dock tab is a pill seated in the tab strip
 with a hairline of strip around it and no divider between tabs. The focused group's
@@ -457,28 +475,29 @@ the rail's resize handle draws. A floating group takes `--shadow-overlay`. The s
 status bar sits on the pane's own surface, and each activity counter is a
 `--surface-canvas` pill on it.
 
-The visible face is indicator, title, and age/actions only. Project,
-host, branch, running jobs, subagent tally, watches, tier and age move into a shared `HoverCard` on
+Compact shows the indicator, title, and age/actions, plus any Live reason below.
+The full title and facts are available in a shared `HoverCard` on
 the title. Hovering the title or focusing the owning tree row exposes it; on a hoverless device a
 long press on the title exposes it and a tap activates the row. Session pin stars
 do not appear on the row.
 
 **Live bands.** The Live section reads top to bottom as Needs you, Working, Idle: each
 band that has sessions is a fold in the section's `Tree`, its name in medium ink with a
-`Badge` count (attention tone on Needs you only), and all three start open. Rows do not
+count (plain in Three lines, `Badge` in Compact; attention tone on Needs you only),
+and all three start open. Rows do not
 animate when a session changes band. A Live row may carry one second line, in caption
 type and medium ink, that truncates and never wraps, and it prints only what the band
 and the dot have not already said: on a Needs-you row the kind of attention (question,
 approval, failure, warning, restart) in the dot's own ink; on a working row what it is
 waiting on or running, or its wait for a usage limit. A row that is simply working or
-idle keeps one line. The same line names the row's host where Live spans hosts and the
-row is away from this hub, or the host is offline. Rows outside Live keep the one-line
-face; their only second line is the usage-limit wait.
+idle has no reason text. In Compact, the reason line also names the row's host where
+Live spans hosts and the row is away from this hub, or the host is offline. Compact
+rows outside Live show a second line only for the usage-limit wait.
 
-In the narrow shell, every session name is semibold. The reason and age stay regular
-even on the selected row. A pending question shows its own words when supplied and
-falls back to the attention label otherwise. The title and reason share one control:
-tap either line to open the session, or hold either line to reveal the full name and context.
+In the narrow shell and in Three lines, the reason and age stay regular even on the
+selected row. A pending question shows its own words when supplied and falls back to
+the attention label otherwise. The title and reason share one control: tap either line
+to open the session, or hold either line to reveal the full name and context.
 
 The rail's New-session control is the session list's floating action across desktop, tablet,
 and mobile: an icon-only `IconButton variant="primary"` (a plus glyph named `"New session"`)
@@ -824,7 +843,7 @@ during implementation (noted inline); this table is the one to trust.
 | **Popover** | `{open; onClose; trigger: ReactElement; children; autoFocus? (true); closeOnScroll? (true); stretchTrigger? (false); "data-testid"?}` | The shared floating panel: `trigger` renders in flow and anchors a panel portaled to `document.body` at a fixed position (flip-then-clamp, shared with Menu), so opening never reflows the page. Outside click, Escape, and (unless `closeOnScroll={false}`) scroll or resize call `onClose`; toggling from the trigger is the caller's job. `autoFocus={false}` keeps focus in an anchoring input (the combobox pattern). |
 | **Dialog** | `{open; onClose; title; children; footer?; size?: "default"\|"large"}` | Modal: centered, enters and leaves on the Float recipe (§5), Escape/scrim-click close, trapped + restored focus. Shares its whole contract with Sheet via the internal `OverlayPanel`. `size="large"` fills almost the whole viewport for lightbox-style content. |
 | **ConfirmDialog** | `{open; title; children; confirmLabel: string; cancelLabel? ("Cancel"); destructive? (true); busy? (false); onConfirm(); onCancel()}` | A Dialog pre-composed for "every destructive action confirms": body copy plus a Cancel / confirm-verb footer, danger-toned unless `destructive={false}` (a consequential but non-destructive action like Install). Controlled — key `open` off one "what's pending" state. Escape and scrim-click call `onCancel`, never `onConfirm`; `busy` disables both buttons against a double submit. |
-| **Sheet** | `{side?: "right"\|"bottom"\|"left"; size?: "standard"\|"wide"; open; onClose; title; children; footer?; expandable?: {peekHeight: number; fullScreenFirst?: boolean}; panelClassName?; bodyClassName?}` | Same contract as Dialog (shared `OverlayPanel`); only geometry and its Slide-recipe edge animation differ. `bodyClassName` lands on the sheet's own body element, which is how the sessions drawer renders the Rail flush inside the sheet instead of as a bordered box nested in a bordered box. `side="bottom"` dismisses on a downward swipe from the grab pill, the header, or an unscrolled body: the panel follows the finger and the scrim fades with it; a drag past 35% of the panel's height (capped at 160px) or a fast flick (velocity measured over the last 100ms, discarded when the finger rests 80ms before lifting) projected 200ms ahead calls `onClose`, and the slide out continues from the dragged position; a shorter drag snaps back on the spatial exit budget, instantly under reduced motion. A drag never starts on an interactive control (a range, textarea, select or contenteditable in the body, a button or link in the header), and a touch that starts in a scrolled body or nested scroller, or within 180ms of the sheet's last scroll, stays a scroll, so scrolling an inner list to its top does not dismiss the sheet. A non-expandable bottom sheet shows a decorative grab pill (36×4px) above its header on coarse pointers only (`@media (any-pointer: coarse)`); it carries no role or tab stop, so keyboard and assistive-tech readers keep Escape and the close button. The swipe and the pill are behavior of the existing props: no new public prop. `expandable` instead adds a drag handle and a peek/full geometry (drag past a threshold or tap to toggle; `fullScreenFirst` opens full every time), and a downward drag from `peek` past the dismiss threshold closes it; the handle takes the grab pill's place. `side="left"` and `side="right"` sheets are unchanged. |
+| **Sheet** | `{side?: "right"\|"bottom"\|"left"; size?: "standard"\|"wide"; open; onClose; title; headerActions?: ReactNode; children; footer?; expandable?: {peekHeight: number; fullScreenFirst?: boolean}; panelClassName?; bodyClassName?}` | Same contract as Dialog (shared `OverlayPanel`); edge geometry and the Slide recipe place and animate it. Optional `headerActions` groups controls with the labelled title, followed by Close in visual and tab order. Without actions, Close keeps its top-right position and comes last in the DOM, so focus can enter the body first. `bodyClassName` lands on the sheet's own body element, which is how the sessions drawer renders the Rail flush inside the sheet instead of as a bordered box nested in a bordered box. `side="bottom"` dismisses on a downward swipe from the grab pill, the header, or an unscrolled body: the panel follows the finger and the scrim fades with it; a drag past 35% of the panel's height (capped at 160px) or a fast flick (velocity measured over the last 100ms, discarded when the finger rests 80ms before lifting) projected 200ms ahead calls `onClose`, and the slide out continues from the dragged position; a shorter drag snaps back on the spatial exit budget, instantly under reduced motion. A drag never starts on an interactive control (a range, textarea, select or contenteditable in the body, a button or link in the header), and a touch that starts in a scrolled body or nested scroller, or within 180ms of the sheet's last scroll, stays a scroll, so scrolling an inner list to its top does not dismiss the sheet. A non-expandable bottom sheet shows a decorative grab pill (36×4px) above its header on coarse pointers only (`@media (any-pointer: coarse)`); it carries no role or tab stop, so keyboard and assistive-tech readers keep Escape and the close button. The swipe and the pill are behavior of the existing props: no new public prop. `expandable` instead adds a drag handle and a peek/full geometry (drag past a threshold or tap to toggle; `fullScreenFirst` opens full every time), and a downward drag from `peek` past the dismiss threshold closes it; the handle takes the grab pill's place. `side="left"` and `side="right"` sheets do not swipe. |
 | **FocusScope** | `{trap?: boolean; autoFocus?: boolean (true); children}` | The focus-management primitive Dialog/Sheet/Menu build on: moves focus in on mount, restores on unmount; traps Tab/Shift+Tab when `trap`. `autoFocus={false}` skips both the move-in and the restore, for a popover whose focus must stay in its anchoring input. Does not (yet) set `inert` on anything outside the scope — see §4. |
 | **Tooltip** | `{label: string; children: ReactNode}` | Hover/focus-triggered, 300ms delay, neither triggered on touch (a tap fires both and dismisses neither) and hidden there via CSS. `aria-describedby` wired via `cloneElement` onto a single-element child — works for a native element or any widget that forwards a ref + spreads rest props (Button/IconButton both do, since the fix-wave in §4). |
 | **HoverCard** | `{label: ReactNode; children: ReactNode \| (association) => ReactNode; focusTarget?: () => HTMLElement \| null; longPressEnabled?: boolean; sideAnchor?: () => SideAnchor \| null}` (`HoverCardProps`, barrel-exported) | Rich, non-interactive hover/focus description on the shared floating-bubble lifecycle. Use for structured context that would overload a compact surface; function children place `aria-describedby` on the actual trigger, while `focusTarget` can associate and trigger from an owning composite widget. On a touch device neither hover nor the focus a tap takes reveals it; `longPressEnabled` adds a long press that does, a plain tap activates the trigger's own control, and keyboard or assistive-tech focus still reveals it. `sideAnchor` supplies a caller-measured side placement; without it placement is unchanged. |
@@ -836,7 +855,7 @@ during implementation (noted inline); this table is the one to trust.
 | **Markdown** (+ **MarkdownBubble**) | `{source: string; live?: boolean; ref?: Ref<HTMLDivElement>}`; bubble: `{source; density?: "default"\|"compact"; dataTestId?}` | `marked` → DOMPurify-sanitized HTML → `innerHTML`; fenced code renders through CodeBlock's stylesheet; links open in a new tab with no opener access; mermaid fences render through MermaidDiagram. `live` closes constructs left open at a streaming tail so formatting renders mid-stream — settled renders must not pass it. MarkdownBubble wraps a Markdown in a bubble frame. |
 | **MermaidDiagram** | `{source: string; renderTimeoutMs?: number (10000)}` (`MermaidDiagramProps`) | Renders one model-authored mermaid diagram inline through the two-layer sanitize in `security.ts`, themed to the resolved scheme. Once rendered the container is a button that opens the fullscreen DiagramViewer; while loading it is an inert box, and a failed or timed-out render falls back to the source in CodeBlock styling plus "Couldn't render this diagram." Exported from the barrel like every other widget; Markdown, a sibling, still imports it from `../mermaid`, and the mermaid guard entry (`src/dev/mermaidguard-entry.tsx`) imports the directory so its standalone bundle does not pull in the whole barrel. |
 | **DiffBlock** | `{unified: string}` | Per-line domain notation on already-diffed text (dedicated add/remove tints plus `+`/`−` markers); does not compute a diff itself. |
-| **Tree** | `{nodes: T[]; onActivate; onToggle; renderRow; releaseModifierKeys?: boolean; isSelected?: (node) => boolean \| undefined}` (generic over `T extends {id; children?; expanded?}`) | Keyboard-navigable (`role="tree"`), roving tabindex, Up/Down/Right/Left/Enter. Fully controlled — `renderRow(node, {depth, expanded, hasChildren, focused, toggle, activate})` owns each row's visible content; Tree owns structure/ARIA/keyboard path only. Tree owns the row's box: its root keeps the rows one `--space-2` in from both edges of its container, so each `--radius-control` row is a pill; a `--hover-1` hover wash and a `--hover-2` pressed wash; the press (`--press-scale-row`, reduced-motion gated, and not while a control inside the row is the one pressed); a 1px `--edge` guide rail down each nested level; and, for a row `isSelected` marks, the shared selected-row lift (`--surface-1`, `--shadow-card-ringed`, semibold ink — one recipe with ListRow, `widgets/internal/selectableRow.module.css`), which holds under hover and press. A caller wraps nothing around it and styles nothing on its elements: `renderRow`'s info carries `focused`, true while the treeitem itself (not a control inside it) holds focus, so row content can reveal focus-only affordances (the rail's row actions). A focused row keeps focus when the caller's next `nodes` move it to another branch, and focus falls to a neighbour when its row leaves the tree. `isSelected` adds `aria-selected`; `releaseModifierKeys` lets Alt-held arrows and Alt+Home/End through to the desktop global chords. |
+| **Tree** | `{nodes: T[]; onActivate; onToggle; renderRow; appearance?: "flat"; releaseModifierKeys?: boolean; isSelected?: (node) => boolean \| undefined}` (generic over `T extends {id; children?; expanded?}`) | Keyboard-navigable (`role="tree"`), roving tabindex, Up/Down/Right/Left/Enter. Fully controlled: `renderRow(node, {depth, expanded, hasChildren, focused, toggle, activate})` owns the content; Tree owns its outer box, structure, ARIA and keyboard path. By default the inset, rounded rows and nested `--edge` guides frame the tree; selected rows use the shared ListRow lift. `appearance="flat"` removes the outer inset, guides and rounded lift; selection uses `--hover-1` as a flat tint. Both keep nesting, hover and pressed washes, reduced-motion-aware press and a distinct keyboard ring. A caller styles only the content it supplies: `focused` reflects focus on the treeitem itself, so row content can reveal focus-only affordances. A row keeps focus when it moves to another branch, and focus falls to a neighbour when its row leaves the tree. `isSelected` adds `aria-selected`; `releaseModifierKeys` lets Alt-held arrows and Alt+Home/End through to the desktop global chords. |
 | **VirtualList** | `{count; estimateSize; renderRow; dynamic?; getItemKey?; onChange?; onLayout?; anchorToEnd?; followEnd?; ref?: Ref<VirtualListHandle>}` | Wraps `@tanstack/react-virtual`; `ref` exposes `{scrollToIndex, getScrollElement, isLayoutCurrent, getVisibleRange, scrollToOffset?, isMeasurementReady?}` via the React 19 ref-as-prop pattern (not a `forwardRef` wrapper). Sizes come from `estimateSize` alone unless `dynamic` opts in to `measureElement`. `getItemKey` keys rows by identity, needed by any consumer that prepends; `anchorToEnd` keeps a live-append list pinned to its end while the reader is there (requires `getItemKey`). |
 | **Chevron** | `{direction?: "right"\|"down"\|"left"\|"up" ("right"); size?: number (14)}` | The app's one chevron: every disclosure triangle, tree twisty and dropdown caret draws from it. A square block-level SVG box, so rotating it in CSS cannot overhang its layout box; a fixed direction draws a different path rather than transforming. Decorative, stroke in currentColor. |
 | **ToolIcon** | `{kind: ToolIconKind; size?: number (14); tone?: "alive"\|"attention"\|"danger"}` | The transcript row-kind glyph: one line-art icon per tool family (terminal, file, edit, search, …, with `wrench` for every unregistered or MCP tool), plus `person`/`thought`, the status shapes `check`/`cross`/`alert`/`info`, and two chrome glyphs: `mark`, the evener mark (two level bars) that the rail's brand tile and the agent's SpeakerAvatar both draw, and `shield`, effective access (the New session access tile). They are kinds here so the product mark and the tile glyphs share the family's grid and stroke weight. Same 16-grid stroke grammar and square box as Chevron; single-colour, currentColor. `tone` is for a glyph whose hue IS the state (the activity sidebar's agent and job rows: working, needs you, failed); it is reported as `data-tone` on the `<svg>`. Omitted, the icon inherits the surrounding ink, so a settled row stays in its caller's quiet ink. On the semantic allowlist for its tones. |
@@ -1467,26 +1486,53 @@ underneath them, instead of being indented into the avatar's column for its
 whole height. Measured before this, agent prose got 260px of a 375px screen,
 28 characters a line.
 
-The sessions drawer renders the Rail flush inside the Sheet body (Sheet's
-`bodyClassName`, §3): no inner surface box, no inner radius, because the sheet
-already frames it. Selecting a session closes the drawer, including the
-session already being read: the tap chose a reader, and the list must not stay
-over it.
+**The phone drawer has one heading.** The Sheet's Sessions heading labels the dialog
+and shares one row with Settings, Search and Close, in that order. The drawer omits
+the rail's brand row. A nonzero needs-you count and the New session button remain
+in the body. The Rail fills the Sheet body without a second surface or frame
+(`bodyClassName`, §3). Selecting any session closes the drawer, including the
+session already being read.
+
+**The tablet board and phone drawer keep the same groups.** Live folds Needs you,
+Working and Idle, in that order. Each user-named pin category has its own disclosure
+and Rename and Delete actions. There is no umbrella Pinned section. Projects or
+Hosts, Test runs and Archived sessions follow.
 
 ## 12. Phone session controls
 
-Below 900px, the session header's Overview button opens a bottom sheet with
-Find in session directly under the title, then session facts, activity counts and links.
-Session facts include the current goal and its status when a goal is set.
-An activity row opens its category for that same session. Tasks has a direct
-row when a task list is known. The sheet and activity overlay return focus
-to the header entry when dismissed and the entry still belongs to that session.
+On session-family panes (`session`, `sessionZoom`, `transcript`), scrolling down
+past the fold (bar height plus the 12px at-top reveal band, floored at 48px)
+trades the solid `StackHost` top bar for floating `--radius-pane` blur capsules
+over the transcript while fading the title. Scrolling up 8px, reaching the top,
+or changing panes restores the solid bar, with pre-paint scroll compensation so
+content stays put and height changes remain position-neutral. Non-session panes
+and the tablet Sessions board always keep a solid header.
+
+Below 900px, the session header carries Find in session beside Overview as
+44px icon buttons. Overview opens the shared full-screen activity overlay
+directly for that session, sharing the same horizontally scrolling underline
+tablist (About, Agents, Jobs, Watches, Tasks; never pills) used on desktop and
+meeting the 44px tap floor on touch devices. A newly inspected session opens on
+About; a revisited session keeps its last tab; drilling while open keeps the
+active tab. About renders shared session facts in a compact inline meta table
+(including the current goal with its quiet state chip when set, model, reasoning
+effort, live status indicator, context meter, and local branch) and full
+wrapping saved session links (native links for web URLs, open-beside rows for
+local files) on both desktop and mobile. Dismissing Overview returns focus to
+the header entry when it still belongs to that session.
 
 The phone composer keeps Attach, Session actions and Send or Stop while
 collapsed or expanded. It announces current work to assistive technology
 without adding a visible row. Model and reasoning effort are session facts in
 Overview; Settings owns the default choices. The desktop header, model and
 effort controls, and pane footer keep their independent behavior.
+
+Below 900px, the collapsed whiteboard (session notes) rests as one quiet
+centered line above the transcript — an em-dash-framed count in caption ink
+with no card chrome, keeping the body's own top spacing and growing to the
+44px tap floor on touch. Its first-priority content rides the trigger's
+accessible name, and expanding opens the header-attached notes card with full
+read and edit controls; desktop keeps its collapsed preview card.
 
 ## Source Serif 4 license notice
 

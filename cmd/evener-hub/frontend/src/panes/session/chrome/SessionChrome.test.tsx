@@ -465,7 +465,7 @@ test("header Overview toggles the session's sidebar and selected state", async (
   expect(overview.getAttribute("aria-pressed")).toBe("false");
 });
 
-test("the phone header keeps session facts, Find and same-session Tasks in one Overview", async ({
+test("the phone header pairs Find with Overview opening the tabbed inspector directly on About", async ({
   onTestFinished,
 }) => {
   onTestFinished(installMobileViewport());
@@ -480,7 +480,6 @@ test("the phone header keeps session facts, Find and same-session Tasks in one O
   const fake = connectFakeClient();
   fake.on("evener/git/head", () => ({ head: branch }));
   fake.on("evener/tasks/list", () => ({ data: [] }));
-  let tasks: NonNullable<Thread["evener"]>["tasks"];
   fake.on("thread/read", () =>
     readResponse(ref, {
       cwd,
@@ -489,7 +488,7 @@ test("the phone header keeps session facts, Find and same-session Tasks in one O
         capabilities: CAPABILITIES,
         queue: { revision: 0 },
         goal,
-        tasks,
+        tasks: { total: 0, done: 0 },
         sessionUrls: [{ id: "u1", url: link, label: "Example", addedBy: "human", addedAt: 7 }],
       },
     }),
@@ -507,46 +506,32 @@ test("the phone header keeps session facts, Find and same-session Tasks in one O
     </MotionProvider>,
   );
 
-  expect(screen.queryByRole("button", { name: "Find in session" })).toBeNull();
+  const find = screen.getByRole("button", { name: "Find in session" });
   const entry = screen.getByRole("button", { name: "Overview" });
-  await user.click(entry);
-  const sheet = await screen.findByRole("dialog", { name: "Overview" });
-  expect(within(sheet).getByTestId("session-details-model")).toBeTruthy();
-  expect(within(sheet).getByTestId("session-details-goal").textContent).toContain(goal.objective);
-  expect(within(sheet).getByTestId("session-details-goal-status").textContent).toBe(goal.status);
-  expect((await within(sheet).findByTestId("session-details-branch")).textContent).toContain(branch);
-  expect(fake.calls.find((call) => call.method === "evener/git/head")?.params).toEqual({ cwd });
-  const savedLink = within(sheet).getByRole("link");
-  expect(savedLink).toBe(within(sheet).getByTestId("overview-sheet-link-u1"));
-  expect(savedLink.getAttribute("href")).toBe(link);
-  expect(savedLink.getAttribute("target")).toBe("_blank");
-  expect(savedLink.getAttribute("rel")?.split(/\s+/)).toEqual(expect.arrayContaining(["noopener", "noreferrer"]));
-  expect(within(savedLink).getByText(link)).toBeTruthy();
-  expect(within(sheet).queryByRole("button", { name: /^Tasks,/ })).toBeNull();
-  act(() => setLocation(ref, { total: 0, done: 0 }));
-  expect(within(within(sheet).getByRole("button", { name: /^Tasks,/ })).getByText("0/0")).toBeTruthy();
-  act(() => resetNavigationStoreForTests());
-
-  await user.click(within(sheet).getByRole("button", { name: "Find in session" }));
+  expect(find.compareDocumentPosition(entry) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+  await user.click(find);
   expect(asked.result.current?.target).toBe(paneId);
-  await waitFor(() => expect(sheet.isConnected).toBe(false));
 
-  // The thread can know its task list is empty before a navigation row loads.
-  tasks = { total: 0, done: 0 };
-  await act(async () => {
-    fake.emitNotification({ method: "evener/thread/resync", params: { threadId: `thr_${ref}`, ref } });
-  });
-  await waitFor(() => expect(threadsStore.getState().threads.get(ref)?.tasks).toMatchObject(tasks));
+  // Even when a browser suppresses mousedown focus on buttons, clicking
+  // Overview opens the unified sidebar directly on About and restores focus
+  // back to the header trigger on Escape.
+  entry.addEventListener("mousedown", (event) => event.preventDefault());
   await user.click(entry);
-  const reopened = await screen.findByRole("dialog", { name: "Overview" });
-  const tasksRow = within(reopened).getByRole("button", { name: /^Tasks,/ });
-  expect(within(tasksRow).getByText("0/0")).toBeTruthy();
-  await user.click(tasksRow);
   const sidebar = await screen.findByTestId("activity-sidebar");
+  expect(screen.getAllByRole("dialog", { name: "Overview" })).toEqual([sidebar]);
+  expect(activitySidebarStore.getState()).toMatchObject({ open: true, ref, tab: "about" });
+  expect(within(sidebar).getByTestId("session-details-model")).toBeTruthy();
+  expect(within(sidebar).getByTestId("session-details-goal").textContent).toContain(goal.objective);
+  expect(within(sidebar).getByTestId("session-details-goal-status").textContent).toBe(goal.status);
+  expect((await within(sidebar).findByTestId("session-details-branch")).textContent).toContain(branch);
+  expect(fake.calls.find((call) => call.method === "evener/git/head")?.params).toEqual({ cwd });
+  const savedLink = within(sidebar).getByTestId("about-link-u1");
+  expect(savedLink.getAttribute("href")).toBe(link);
+
+  await user.click(within(sidebar).getByRole("tab", { name: /^Tasks/ }));
   expect(activitySidebarStore.getState()).toMatchObject({ open: true, ref, tab: "tasks" });
   await waitFor(() => expect(fake.calls.find((call) => call.method === "evener/tasks/list")?.params).toEqual({ ref }));
   expect(workspaceStore.getState().panes).toEqual(panes);
-  await waitFor(() => expect(sidebar.contains(document.activeElement)).toBe(true));
   await user.keyboard("{Escape}");
   await waitFor(() => expect(document.activeElement).toBe(entry));
 });
@@ -591,7 +576,7 @@ test("landscape phone header Overview reaches the current session's goal through
   );
 
   await user.click(screen.getByRole("button", { name: "Overview" }));
-  await user.click(await screen.findByRole("radio", { name: "About" }));
+  await user.click(await screen.findByRole("tab", { name: "About" }));
   const sidebar = screen.getByTestId("activity-sidebar");
   await within(sidebar).findByTestId("session-details-model");
   expect(within(sidebar).getByTestId("session-details-goal").textContent).toContain(goal.objective);
@@ -967,7 +952,7 @@ test("Overview About reads the work time of the SAME ref passed to SessionChrome
   );
   await user.click(screen.getByRole("button", { name: /session actions/i }));
   await user.click(screen.getByRole("menuitem", { name: "Overview" }));
-  await user.click(await screen.findByRole("radio", { name: "About" }));
+  await user.click(await screen.findByRole("tab", { name: "About" }));
 
   expect((await screen.findByTestId("session-details-work-time")).textContent).toContain("2m");
   restoreViewport();
@@ -1213,7 +1198,7 @@ test("mobile chrome opens Overview without changing workspace panes", async () =
     const sidebar = await screen.findByTestId("activity-sidebar");
     await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
     await waitFor(() => expect(sidebar.contains(document.activeElement)).toBe(true));
-    await user.click(screen.getByRole("radio", { name: "About" }));
+    await user.click(screen.getByRole("tab", { name: "About" }));
     await user.keyboard("{Escape}");
     await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("button", { name: "Session actions" })));
     expect(workspaceStore.getState().panes).toEqual(panes);
@@ -1268,7 +1253,7 @@ test.each(["removed", "hidden ancestor"])(
       await waitFor(() => expect(sidebar.contains(document.activeElement)).toBe(true));
       if (condition === "removed") original.unmount();
       else original.container.style.display = "none";
-      await user.click(screen.getByRole("radio", { name: "About" }));
+      await user.click(screen.getByRole("tab", { name: "About" }));
       await user.keyboard("{Escape}");
       const trigger = within(replacement.container).getByRole("button", { name: "Session actions" });
       await waitFor(() => expect(document.activeElement).toBe(trigger));

@@ -9,7 +9,6 @@ import { CountButton } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { activitySidebarStore } from "../activitybar/activitySidebarStore";
 import { ACTIVITY_TABS } from "../activitybar/activityTabs";
-import { useIsMobile } from "../useIsMobile";
 import { workspaceStore } from "../workspace";
 import styles from "./statusbar.module.css";
 import { useActivityScope } from "./useActivityScope";
@@ -25,7 +24,6 @@ export interface ActivityChipsProps {
 
 export const ActivityChips = memo(function ActivityChips({ sessionRef, paneId }: ActivityChipsProps) {
   const { counts } = useActivityScope(sessionRef);
-  const mobile = useIsMobile();
   return (
     <div className={CLASS.chips}>
       {ACTIVITY_TABS.filter((tab) => tab.chipVisible(counts)).map((tab) => (
@@ -36,10 +34,9 @@ export const ActivityChips = memo(function ActivityChips({ sessionRef, paneId }:
           data-session-ref={sessionRef}
           glyph={tab.glyph}
           label={tab.label}
-          count={mobile ? tab.mobileCount(counts) : tab.chipCount(counts)}
+          count={tab.chipCount(counts)}
           accessibleLabel={`${tab.chipLabel(counts)} - open Overview`}
           title={tab.chipLabel(counts)}
-          compact={mobile}
           chrome="pill"
           onClick={(event) => {
             if (paneId) workspaceStore.getState().focusPane(paneId);

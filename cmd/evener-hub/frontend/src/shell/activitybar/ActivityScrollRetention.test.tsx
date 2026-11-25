@@ -238,9 +238,9 @@ test.each(["refresh", "reconnect"] as const)(
       ],
     );
 
-    fireEvent.click(screen.getByRole("radio", { name: "About" }));
+    fireEvent.click(screen.getByRole("tab", { name: "About" }));
     await screen.findByText("owner");
-    fireEvent.click(screen.getByRole("radio", { name: /Jobs/ }));
+    fireEvent.click(screen.getByRole("tab", { name: /Jobs/ }));
     // The re-observed jobs read walks to the retained boundary page by page,
     // paced by the store's own clock. Await the walk's registered read span —
     // an awaitable completion — instead of polling a condition ceiling that

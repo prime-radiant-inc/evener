@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -20,14 +21,18 @@ import (
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/appwire/appwiretest"
+	"primeradiant.com/evener/auth/openai/oaitest"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubtest"
 	"primeradiant.com/evener/cmd/evener-hub/internal/sshconn"
+	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/hubapi"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/internal/appserver"
+	"primeradiant.com/evener/internal/credentials"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
 	"primeradiant.com/evener/rendezvous"
 	"primeradiant.com/evener/server"
 )
@@ -304,6 +309,150 @@ func TestThreadStartIdempotencyPreSpawnAndPreExecRefusals(t *testing.T) {
 		data.MutationOutcome != appwire.MutationOutcomeUnknown ||
 		data.RetryDisposition != appwire.RetryDispositionBlocked {
 		t.Fatalf("post-exec spawn failure data=%+v, want MutationUnknown+Blocked", data)
+	}
+}
+
+func TestThreadStartIdempotencyFastCheapMissingCredentialPreflightRetry(t *testing.T) {
+	oaitest.IsolateOpenAIAuth(t)
+	clearProviderKeysFromEnvironment(t)
+	t.Setenv("EVENER_MODEL", "")
+	t.Setenv("EVENER_OFFLINE", "1")
+
+	fakeLLM := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/models" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"data":[{"id":"gpt-test","object":"model"}]}`))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer fakeLLM.Close()
+
+	root := t.TempDir()
+	providersPath := filepath.Join(root, "providers.toml")
+	credsPath := filepath.Join(root, "credentials.toml")
+	stateRoot := filepath.Join(root, "hub")
+	launchConfigRoot := filepath.Join(root, "launch")
+	runDir := filepath.Join(root, "run")
+	cwd := filepath.Join(root, "work")
+	if err := os.MkdirAll(cwd, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("EVENER_PROVIDERS_CONFIG", providersPath)
+	t.Setenv("EVENER_CREDENTIALS_CONFIG", credsPath)
+	providersTOML := fmt.Sprintf("default = \"fake\"\n[providers.fake]\nbase = \"openai-compatible\"\nbase_url = %q\napi_key = \"fake-primary-key\"\ndefault_model = \"gpt-test\"\n", fakeLLM.URL+"/v1")
+	if err := os.WriteFile(providersPath, []byte(providersTOML), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store, err := credentials.LoadStore(credsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg := hubcore.NewProviderRegistry(func(opts ...registry.Option) (*registry.Registry, *credentials.Store, error) {
+		return cmdutil.LoadRegistry(append(opts, registry.WithOffline(true), registry.WithoutCache())...)
+	})
+	if err := reg.Reload(); err != nil {
+		t.Fatal(err)
+	}
+
+	binary := filepath.Join(liveStackBinaries(t, repoRootForTestMain()), "evener")
+	spawner := &HubSpawner{
+		Cfg:                 DefaultConfig(),
+		EvenerBinary:        binary,
+		RunDir:              runDir,
+		HubToken:            "generated-token",
+		Registry:            reg,
+		ProvidersConfigPath: providersPath,
+		CredentialsPath:     credsPath,
+	}
+	hub := newHubRPCTestServer(t, testWebConfig(t, hubcore.WebConfig{
+		HubStateRoot:        stateRoot,
+		LaunchConfigRoot:    launchConfigRoot,
+		RunDir:              runDir,
+		StateDir:            filepath.Join(root, "state"),
+		Registry:            reg,
+		CredsStore:          store,
+		ProvidersConfigPath: providersPath,
+		CredentialsPath:     credsPath,
+		Spawner:             spawner,
+	}))
+	defer hub.Close()
+	t.Cleanup(func() {
+		entries, _ := rendezvous.List(runDir)
+		for _, e := range entries {
+			if e.PID > 0 {
+				if p, err := os.FindProcess(e.PID); err == nil {
+					_ = p.Kill()
+				}
+			}
+		}
+	})
+	client := dialHubRPCInitialized(t, hub)
+
+	params := appwire.ThreadStartParams{
+		ClientMutationID: "mut-fastcheap-cred",
+		Model:            "fake/gpt-test",
+		CWD:              cwd,
+		LaunchOverrides: &appwire.LaunchConfigLayer{
+			FastCheapModel: "anthropic/claude-haiku-4-5-20251001",
+		},
+	}
+	_, err = appwiretest.ThreadStart(context.Background(), client, params)
+	_, data := wireErrorData(t, err)
+	if data.EvenerErrorInfo != appwire.ErrorHubLaunch ||
+		data.MutationOutcome != appwire.MutationOutcomeNotAccepted ||
+		data.ClientMutationID != params.ClientMutationID {
+		t.Fatalf("missing fast/cheap credential data=%+v, want HubLaunch+NotAccepted(%q)", data, params.ClientMutationID)
+	}
+	if entries, listErr := rendezvous.List(runDir); listErr == nil && len(entries) != 0 {
+		t.Fatalf("unexpectedly spawned daemon before credential check: %+v", entries)
+	}
+	if raw, readErr := os.ReadFile(filepath.Join(stateRoot, "creations", "state.json")); readErr == nil && strings.Contains(string(raw), params.ClientMutationID) {
+		t.Fatalf("journal unexpectedly retained pre-exec refused key: %s", raw)
+	}
+
+	// Global launch.toml fast_cheap_model is also validated pre-exec before spawn.
+	if err := os.MkdirAll(launchConfigRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(launchConfigRoot, "launch.toml"), []byte("fast_cheap_model = \"groq/llama-3.3-70b-versatile\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err = appwiretest.ThreadStart(context.Background(), client, appwire.ThreadStartParams{
+		ClientMutationID: "mut-fastcheap-global-layer",
+		Model:            "fake/gpt-test",
+		CWD:              cwd,
+	})
+	_, globalData := wireErrorData(t, err)
+	if globalData.EvenerErrorInfo != appwire.ErrorHubLaunch ||
+		globalData.MutationOutcome != appwire.MutationOutcomeNotAccepted ||
+		globalData.ClientMutationID != "mut-fastcheap-global-layer" {
+		t.Fatalf("global layer missing fast/cheap credential data=%+v, want HubLaunch+NotAccepted", globalData)
+	}
+	if err := os.Remove(filepath.Join(launchConfigRoot, "launch.toml")); err != nil {
+		t.Fatal(err)
+	}
+
+	var authResp appwire.AuthStatusResponse
+	if err := client.Request(context.Background(), appwire.MethodEvenerAuthApiKeySet, appwire.AuthApiKeySetParams{
+		Provider: "anthropic",
+		Value:    "sk-ant-recovered-test",
+	}, &authResp); err != nil {
+		t.Fatalf("evener/auth/apiKey/set: %v", err)
+	}
+	if authResp.ActiveSource != "store" {
+		t.Fatalf("auth activeSource=%q, want store", authResp.ActiveSource)
+	}
+
+	resp, err := appwiretest.ThreadStart(context.Background(), client, params)
+	if err != nil {
+		t.Fatalf("retry after adding fast/cheap credential failed: %v", err)
+	}
+	if resp.ClientMutationID != params.ClientMutationID || resp.Disposition != appwire.MutationDispositionApplied || resp.Thread.ID == "" {
+		t.Fatalf("retry resp = %+v, want Applied for %q", resp, params.ClientMutationID)
+	}
+	if err := client.ThreadShutdown(context.Background(), appwire.ThreadShutdownParams{Ref: resp.Thread.Evener.Ref}); err != nil {
+		t.Fatalf("shutdown spawned thread: %v", err)
 	}
 }
 
@@ -1405,6 +1554,126 @@ func TestThreadStartIdempotencyRemoteCapableErrorsAndNotSent(t *testing.T) {
 	}
 	if resp.ClientMutationID != "mut-cap-notsent" || resp.Disposition != appwire.MutationDispositionApplied {
 		t.Fatalf("recovered resp = %+v", resp)
+	}
+}
+
+func TestThreadStartIdempotencyRemoteCapablePostSendDropAndRetry(t *testing.T) {
+	remoteSessionID := hubtest.SessionID(t)
+	var spawns atomic.Int32
+	received := make(chan struct{})
+	dropDone := make(chan struct{})
+	t.Cleanup(func() {
+		select {
+		case <-dropDone:
+		default:
+			close(dropDone)
+		}
+	})
+
+	remoteServer := appserver.NewServer(appserver.ServerConfig{
+		ServerName: "remote-capable-drop",
+		SourceID:   "local",
+		Features:   appwire.FeatureSet{ThreadStartIdempotency: true, TurnStart: true},
+	})
+	appserver.HandleTyped(remoteServer.Router(), appwire.MethodThreadStart, func(_ context.Context, params appwire.ThreadStartParams) (appwire.ThreadStartResponse, error) {
+		n := spawns.Add(1)
+		disp := appwire.MutationDispositionApplied
+		if n > 1 {
+			spawns.Add(-1)
+			disp = appwire.MutationDispositionReplayed
+		} else {
+			close(received)
+			<-dropDone
+		}
+		return appwire.ThreadStartResponse{
+			Thread: appwire.Thread{
+				ID:        remoteSessionID,
+				SessionID: remoteSessionID,
+				Source:    "local",
+				Evener:    appwire.EvenerThread{Ref: "local:" + remoteSessionID, InstanceID: remoteSessionID},
+			},
+			Turn:             appwire.Turn{ID: "turn_1", Status: "inProgress"},
+			ClientMutationID: params.ClientMutationID,
+			Disposition:      disp,
+		}, nil
+	})
+	remoteHTTP := httptest.NewServer(http.HandlerFunc(remoteServer.ServeWebSocket))
+	defer remoteHTTP.Close()
+
+	raw1, err := appwire.DialWebSocket(t.Context(), "ws"+remoteHTTP.URL[len("http"):], remoteHTTP.Client())
+	if err != nil {
+		t.Fatalf("dial remote 1: %v", err)
+	}
+	remoteClient1 := appwire.NewClient(raw1)
+	remoteClient1.Start(t.Context())
+	defer remoteClient1.Close()
+	mustInitializeHubClient(t, remoteClient1)
+
+	remoteClient2 := dialHubRPCInitialized(t, remoteHTTP)
+	var mu sync.Mutex
+	attached := remoteClient1
+
+	hub := newHubRPCTestServer(t, testWebConfig(t, hubcore.WebConfig{
+		HubStateRoot: t.TempDir(),
+		RunDir:       t.TempDir(),
+		RemoteHosts:  []hostreg.Host{{Name: "remote-a", SSH: "remote-a.example"}},
+		RemoteHostClient: func(context.Context, string) (*appwire.Client, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			return attached, nil
+		},
+		RemoteHostClientIfAttached: func(string) (*appwire.Client, bool) {
+			mu.Lock()
+			defer mu.Unlock()
+			return attached, true
+		},
+	}))
+	defer hub.Close()
+	client := dialHubRPCInitialized(t, hub)
+
+	params := appwire.ThreadStartParams{
+		ClientMutationID: "mut-cap-drop",
+		Source:           "remote-a",
+		Model:            "openai/gpt-5",
+		CWD:              "/remote/work",
+	}
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := appwiretest.ThreadStart(context.Background(), client, params)
+		errCh <- err
+	}()
+	select {
+	case <-received:
+	case <-time.After(5 * time.Second):
+		t.Fatal("remote never received thread/start")
+	}
+	_ = raw1.Close()
+	close(dropDone)
+
+	var firstErr error
+	select {
+	case firstErr = <-errCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("controller thread/start did not return after transport drop")
+	}
+	wire, data := wireErrorData(t, firstErr)
+	if wire.Code != appwire.CodeInternalError ||
+		data.EvenerErrorInfo != appwire.ErrorMutationOutcomeUnknown ||
+		data.ClientMutationID != "mut-cap-drop" ||
+		data.MutationOutcome != appwire.MutationOutcomeUnknown ||
+		data.RetryDisposition != appwire.RetryDispositionAutomatic {
+		t.Fatalf("post-send drop error = wire:%+v data:%+v, want MutationOutcomeUnknown+Automatic", wire, data)
+	}
+
+	mu.Lock()
+	attached = remoteClient2
+	mu.Unlock()
+	replay, err := appwiretest.ThreadStart(context.Background(), client, params)
+	if err != nil {
+		t.Fatalf("retry after post-send drop failed: %v", err)
+	}
+	if replay.Thread.Evener.Ref != "remote-a:"+remoteSessionID || replay.ClientMutationID != "mut-cap-drop" || replay.Disposition != appwire.MutationDispositionReplayed || spawns.Load() != 1 {
+		t.Fatalf("replay resp = %+v spawns=%d, want Replayed and 1 spawn", replay, spawns.Load())
 	}
 }
 

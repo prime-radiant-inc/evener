@@ -129,6 +129,11 @@ type Session struct {
 	// server names are kept so a retry that heals one re-derives the tools.
 	cliMCPServers   map[string]bool
 	cliMCPToolNames map[string]bool
+	// oneShotOmittedTools records ceremony tools omitted solely because
+	// TurnEndsProcess was true (not denied by spawn policy), so default
+	// delegates record eligible notes_* tools as excluded for one-shot mode and
+	// regain them on a persistent resume. Guarded by delegateExclusionsMu.
+	oneShotOmittedTools map[string]bool
 	// cliMCPEvidence is the project-configuration evidence the classification
 	// above was derived from: the file the layer-2 project config resolves to,
 	// what it contained, and whether it existed. The classification is only

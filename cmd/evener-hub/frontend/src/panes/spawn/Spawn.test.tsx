@@ -6,6 +6,7 @@ import type { LaunchOption } from "@evener/appwire-client";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { expect, onTestFinished, test, vi } from "vitest";
 import { stubViewportCapabilities } from "../../shell/appShellTestUtils";
+import { chromeStore } from "../../shell/chromeStore";
 import { MOBILE_QUERY } from "../../shell/useIsMobile";
 import { connectionStore } from "../../stores/connection";
 import { readModuleCss, topRuleBlock } from "../../styles/cssBlock";
@@ -62,7 +63,7 @@ test("the card effort control keeps a distinct accessible name with Advanced opt
   );
   await settled();
 
-  await user.click(screen.getByText("Advanced options"));
+  await user.click(screen.getByText("Advanced"));
 
   expect(screen.getByLabelText("Prompt reasoning effort")).toBe(effortControl());
   expect(screen.getAllByLabelText(/reasoning effort/i)).toHaveLength(2);
@@ -87,7 +88,7 @@ test("the desktop directory row announces the confirmed path", async () => {
   await settled();
   await setWorkingDir(user, "/tmp/project");
   expect(workingDir().textContent).toBe("/tmp/project");
-  expect(screen.getByLabelText(/^Working directory: \/tmp\/project/, { selector: "#spawn-cwd" })).toBeTruthy();
+  expect(screen.getByLabelText(/^Directory: \/tmp\/project/, { selector: "#spawn-cwd" })).toBeTruthy();
 });
 
 // Issue #198: the attach button, model trigger, and effort control are the
@@ -118,7 +119,7 @@ test("the prompt card leads and the directory follows it; model and effort live 
   expect(card.contains(effortControl())).toBe(true);
   expect(controls.querySelector("[data-testid='spawn-submit']")).toBeTruthy();
   // The prompt takes the page's vertical slack via its own min-height.
-  expect(screen.getByRole("textbox", { name: "Prompt" }).style.minHeight).toBe("6lh");
+  expect(screen.getByRole("textbox", { name: "Prompt" }).style.minHeight).toBe("4lh");
 
   const mobileConfig = screen.getByTestId("spawn-mobile-config");
   expect(
@@ -206,24 +207,22 @@ test("the card's model trigger names the required choice when the hub has no def
   await waitFor(() => expect(modelState()).toBe("required"));
 });
 
-test("mobile Spawn keeps the approved prompt hierarchy visible while the prompt is typed", async () => {
+test("Spawn keeps one editorial heading without a duplicate scaffold header or subtitle", async () => {
   const user = setupUser();
   renderSpawn(readyClient());
   await settled();
 
   await fillPrompt(user, "typed mobile work");
 
-  expect(screen.getByTestId("pane-title-mobile").textContent).not.toBe("");
+  expect(screen.queryByTestId("pane-title-mobile")).toBeNull();
+  expect(screen.queryByTestId("pane-title-desktop")).toBeNull();
+  expect(chromeStore.getState().paneTitle).toBe("New session");
   const intro = screen.getByTestId("spawn-prompt-intro");
   expect(within(intro).getByRole("heading").textContent ?? "").not.toBe("");
-  expect(intro.querySelector("p")?.textContent ?? "").not.toBe("");
+  expect(intro.querySelector("p")).toBeNull();
   expect((screen.getByRole("textbox", { name: "Prompt" }) as HTMLDivElement).textContent).toBe("typed mobile work");
 });
 
-// The placeholder repeated the heading and subtitle standing right above it
-// almost word for word, so the field spent its one line saying what the page
-// had already said. The dormant-start rule it also carried stays on the page,
-// in that intro.
 test("the prompt placeholder does not repeat the heading", async () => {
   renderSpawn(readyClient());
   await settled();
@@ -231,10 +230,8 @@ test("the prompt placeholder does not repeat the heading", async () => {
   const prompt = screen.getByRole("textbox", { name: "Prompt" }) as HTMLDivElement;
   const placeholder = prompt.dataset.placeholder ?? "";
   expect(placeholder).not.toBe("");
-  // The intro above the card - heading and the dormant-start rule - says
-  // something the placeholder does not repeat.
   const intro = screen.getByTestId("spawn-prompt-intro");
-  expect(intro.querySelector("p")?.textContent ?? "").not.toBe("");
+  expect(intro.querySelector("p")).toBeNull();
   for (const line of [...intro.children].map((child) => child.textContent ?? "")) {
     expect(line).not.toBe(placeholder);
   }
@@ -280,7 +277,7 @@ test("harness moved into Advanced options, and still works there", async () => {
   await settled();
 
   expect(screen.queryByLabelText("Harness")).toBeNull();
-  await user.click(screen.getByText("Advanced options"));
+  await user.click(screen.getByText("Advanced"));
   const harness = screen.getByLabelText("Harness") as HTMLSelectElement;
   await user.selectOptions(harness, "external");
   expect(harness.value).toBe("external");
@@ -295,10 +292,43 @@ test("the primary verb is Start, in the card's own corner, and the page is title
   const start = screen.getByTestId("spawn-submit");
   // The verb is visible text, not an icon-only button named by aria-label.
   expect(start.textContent).toBe(start.getAttribute("aria-label"));
-  expect(screen.getByTestId("pane-title-desktop").textContent).not.toBe("");
+  expect(chromeStore.getState().paneTitle).toBe("New session");
   // Inside the card, not in a detached actions strip below it.
   expect(screen.getByTestId("spawn-prompt-card").contains(start)).toBe(true);
   expect(screen.getByRole("button", { name: "Start" })).toBeTruthy();
+});
+
+test("the Advanced row summary reflects active overrides and Manager mode", async () => {
+  const user = setupUser();
+  const maxRoundsOption: LaunchOption = {
+    field: "max_rounds",
+    wireField: "maxRounds",
+    label: "Max rounds",
+    group: "general",
+    kind: "integer",
+    perLaunch: true,
+  };
+  renderSpawn(
+    readyClient((f) => {
+      f.on("evener/launch/schema", () => ({ options: [maxRoundsOption] }));
+    }),
+  );
+  await settled();
+
+  const initialSummary = screen.getByTestId("spawn-advanced-value").textContent ?? "";
+  expect(initialSummary).not.toBe("");
+
+  await user.click(screen.getByTestId("spawn-advanced-summary"));
+  await user.click(screen.getByRole("switch", { name: "Start as Manager" }));
+  const managerSummary = screen.getByTestId("spawn-advanced-value").textContent ?? "";
+  expect(managerSummary).not.toBe(initialSummary);
+
+  await user.type(screen.getByLabelText("Max rounds"), "12");
+  await waitFor(() => {
+    const withOverride = screen.getByTestId("spawn-advanced-value").textContent ?? "";
+    expect(withOverride).not.toBe(managerSummary);
+    expect(withOverride).not.toBe(initialSummary);
+  });
 });
 
 // The word beside the paper plane collapses by PANE width, not viewport
@@ -433,9 +463,7 @@ test("branch renders as a suffix on the directory row, not as an editable peer f
   await waitFor(() => expect(screen.getByTestId("spawn-branch").textContent).toContain("main"));
   // The branch sits inside the picker button, so the button's own accessible
   // name has to carry it too.
-  expect(
-    screen.getByLabelText(/^Working directory: \/home\/me\/app, branch main/, { selector: "#spawn-cwd" }),
-  ).toBeTruthy();
+  expect(screen.getByLabelText(/^Directory: \/home\/me\/app, branch main/, { selector: "#spawn-cwd" })).toBeTruthy();
   // Not a text box: it is a readout of the directory's HEAD.
   expect(screen.queryByLabelText("Branch")).toBeNull();
   expect(screen.getByTestId("spawn-branch").querySelector("input")).toBeNull();
@@ -474,7 +502,7 @@ test("Access mode is its own quiet row, not a field inside Advanced options (9ct
   await settled();
 
   expect(screen.queryByLabelText("Access mode")).toBeNull();
-  await user.click(screen.getByText("Advanced options"));
+  await user.click(screen.getByText("Advanced"));
   expect(within(screen.getByTestId("spawn-advanced-options")).queryByLabelText("Access mode")).toBeNull();
   await user.click(accessRowTrigger());
   expect(screen.getByLabelText("Access mode")).toBeTruthy();

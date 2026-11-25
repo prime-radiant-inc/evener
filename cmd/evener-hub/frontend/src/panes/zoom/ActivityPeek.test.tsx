@@ -378,7 +378,7 @@ test("closing a leaf peek releases only its collection while the same-ref sideba
   // reader before checking release of the sidebar's final collection demand.
   rerender(contents(false));
   await act(async () =>
-    fireEvent.click(within(screen.getByTestId("activity-sidebar")).getByRole("radio", { name: /Jobs/ })),
+    fireEvent.click(within(screen.getByTestId("activity-sidebar")).getByRole("tab", { name: /Jobs/ })),
   );
   const before = reads();
   act(() =>

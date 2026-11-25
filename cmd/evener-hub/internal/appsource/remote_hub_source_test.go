@@ -43,6 +43,11 @@ func wireCalls(calls []remoteCall) []remoteCall {
 // newScriptedRemote and the probe tests that need to swap clients.
 func newScriptedClient(t *testing.T, handle func(method string, params json.RawMessage) scriptedReply) (*appwire.Client, func() []remoteCall) {
 	t.Helper()
+	return newScriptedClientForFeatures(t, appwire.FeatureSet{}, handle)
+}
+
+func newScriptedClientForFeatures(t *testing.T, features appwire.FeatureSet, handle func(method string, params json.RawMessage) scriptedReply) (*appwire.Client, func() []remoteCall) {
+	t.Helper()
 	clientConn, serverConn := net.Pipe()
 	server := appwire.NewStreamTransport(serverConn)
 
@@ -65,7 +70,11 @@ func newScriptedClient(t *testing.T, handle func(method string, params json.RawM
 			calls = append(calls, remoteCall{method: msg.Request.Method, params: msg.Request.Params})
 			mu.Unlock()
 			if msg.Request.Method == appwire.MethodInitialize {
-				data, _ := json.Marshal(appwire.InitializeResponse{ProtocolVersion: appwire.ProtocolVersion, SourceID: "local"})
+				data, _ := json.Marshal(appwire.InitializeResponse{
+					ProtocolVersion: appwire.ProtocolVersion,
+					SourceID:        "local",
+					Features:        features,
+				})
 				if err := server.Send(ctx, appwire.ResponseMessage(msg.Request.ID, json.RawMessage(data))); err != nil {
 					return
 				}
@@ -101,6 +110,7 @@ func newScriptedClient(t *testing.T, handle func(method string, params json.RawM
 	t.Cleanup(func() {
 		cancel()
 		_ = client.Close()
+		_ = server.Close()
 		<-done
 	})
 
@@ -117,7 +127,12 @@ func newScriptedClient(t *testing.T, handle func(method string, params json.RawM
 // whose server side answers canned responses. No SSH, no network, no host.
 func newScriptedRemote(t *testing.T, id string, handle func(method string, params json.RawMessage) scriptedReply) (*RemoteHubSource, func() []remoteCall) {
 	t.Helper()
-	client, calls := newScriptedClient(t, handle)
+	return newScriptedRemoteWithFeatures(t, id, appwire.FeatureSet{}, handle)
+}
+
+func newScriptedRemoteWithFeatures(t *testing.T, id string, features appwire.FeatureSet, handle func(method string, params json.RawMessage) scriptedReply) (*RemoteHubSource, func() []remoteCall) {
+	t.Helper()
+	client, calls := newScriptedClientForFeatures(t, features, handle)
 	source := NewRemoteHubSource(id, nil, func(context.Context, string) (*appwire.Client, error) {
 		return client, nil
 	})

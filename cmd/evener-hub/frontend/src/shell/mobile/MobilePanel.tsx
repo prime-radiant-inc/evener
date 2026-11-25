@@ -1,6 +1,7 @@
 import { type ReactNode, useEffect, useRef } from "react";
 import { Sheet } from "../../widgets";
 import { NavigationChromeProvider } from "../navigationChrome";
+import { RailNavigationActions } from "../rail/RailNavigationActions";
 import { useWorkspaceStore } from "../workspace";
 import styles from "./MobilePanel.module.css";
 
@@ -28,6 +29,7 @@ export function MobilePanel({ rail, open, onClose }: MobilePanelProps) {
       open={open}
       onClose={onClose}
       title="Sessions"
+      headerActions={<RailNavigationActions />}
       size="wide"
       panelClassName={styles.singleScrollPanel}
       bodyClassName={styles.flushBody}

@@ -6,7 +6,8 @@
   composes: measureColumn from "../../styles/surface.module.css";
   display: flex;
   flex-direction: column;
-  gap: var(--space-5);
+  gap: var(--space-4);
+  padding-top: clamp(var(--space-4), 8vh, var(--space-9));
   /* The query container for the shared Start word collapse
    * (styles/sendbutton.module.css): pane width, not viewport width. */
   container-type: inline-size;
@@ -73,8 +74,6 @@
   display: none;
 }
 
-/* The page's heading, at every width: the phone always had it, desktop hid
- * it behind a 12px uppercase pane title (critique finding 8). */
 .promptIntro {
   display: block;
 }
@@ -83,31 +82,57 @@
   margin: 0;
   font-family: var(--font-prose);
   color: var(--ink-hi);
-  font-size: var(--font-size-display);
+  font-size: var(--font-size-page-title);
   font-weight: var(--font-weight-semibold);
   letter-spacing: var(--tracking-display);
   line-height: var(--line-height-title);
 }
 
-.promptSubtitle {
-  margin: var(--space-2) 0 0;
+/* Directory path + git HEAD suffix kept as one right-aligned cluster so the
+ * path yields and ellipsizes first while the branch stays legible beside it. */
+.dirValue {
+  display: flex;
+  flex: 1 1 12rem;
+  min-width: 0;
+  align-items: baseline;
+  justify-content: flex-end;
+  gap: var(--space-1);
   color: var(--ink-mid);
-  font-size: var(--font-size-body);
+  font-size: var(--font-size-caption);
 }
 
-/* Git info is a property of the directory (HEAD there), so it suffixes the
- * directory value in machine type. */
-.branch {
-  color: var(--ink-mid);
+.dirPath {
+  composes: truncate from "../../styles/text.module.css";
+  min-width: 0;
+  font-family: var(--font-mono);
+}
+
+.dirParent {
+  color: var(--ink-low);
+}
+
+.dirLeaf {
+  color: var(--ink-hi);
+  font-weight: var(--font-weight-medium);
+}
+
+/* Git info is a property of the directory (HEAD there), rendered inline beside
+ * the path in quiet machine type with no pill chrome. */
+.branchGroup {
+  display: inline-flex;
+  flex: none;
+  align-items: baseline;
   font-family: var(--font-mono);
   font-size: var(--font-size-caption);
-  overflow-wrap: anywhere;
 }
 
-/* The branch is a short suffix on the directory value, so it keeps its own
- * width instead of taking a share of the row like the path does. */
-.quietSummary .branch {
-  flex: none;
+.branchParen {
+  color: var(--ink-low);
+}
+
+.branch {
+  color: var(--ink-mid);
+  overflow-wrap: anywhere;
 }
 
 /* The access row's explanation of where the effective access comes from,
@@ -138,7 +163,7 @@
 }
 .quietRow {
   min-width: 0;
-  padding-block: var(--space-1);
+  padding-block: var(--space-half);
   border-top: 1px solid var(--edge);
 }
 
@@ -187,15 +212,13 @@
   font-weight: var(--font-weight-medium);
 }
 
-.quietSummary span {
+.quietSummaryValue {
+  composes: truncate from "../../styles/text.module.css";
   flex: 1 1 12rem;
   min-width: 0;
-  overflow: hidden;
   color: var(--ink-mid);
   font-size: var(--font-size-caption);
   text-align: right;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 /* An error state's Retry stays a small inline action at the row's end. */
@@ -205,7 +228,7 @@
 
 /* The chevron that marks a row as opening a dialog rather than expanding in
  * place, seated like the disclosure's own. */
-.quietSummary .rowChevron {
+.rowChevron {
   display: inline-flex;
   flex: none;
   align-self: flex-start;
@@ -225,12 +248,7 @@
   .form {
     width: 100%;
     max-width: none;
-  }
-
-  /* One step down the ramp on phones, where the display size would break
-   * the question over three lines. */
-  .promptHeading {
-    font-size: var(--font-size-page-title);
+    padding-top: 0;
   }
 
   .mobileConfig {

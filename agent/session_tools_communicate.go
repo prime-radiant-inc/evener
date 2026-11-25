@@ -16,6 +16,7 @@ import (
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/internal/apptranscript"
 	"primeradiant.com/evener/llm"
 )
 
@@ -304,6 +305,36 @@ func (c *communicateCompanion) claim() string {
 		return ""
 	}
 	return c.text
+}
+
+// quietCompanionText collects distinct trimmed text runs from content and
+// joins non-empty runs with blank lines so companion prose split across tool
+// calls or other non-text parts is not concatenated directly. Metadata-only
+// reasoning parts leave a text run unbroken, matching internal/apptranscript.
+func quietCompanionText(content []llm.ContentPart) string {
+	var runs []string
+	var cur strings.Builder
+	flush := func() {
+		if cur.Len() == 0 {
+			return
+		}
+		if trimmed := strings.TrimSpace(cur.String()); trimmed != "" {
+			runs = append(runs, trimmed)
+		}
+		cur.Reset()
+	}
+	for _, part := range content {
+		if part.Kind == llm.ContentText {
+			cur.WriteString(part.Text)
+			continue
+		}
+		if apptranscript.MetadataOnlyResponsesReasoning(part) {
+			continue
+		}
+		flush()
+	}
+	flush()
+	return strings.Join(runs, "\n\n")
 }
 
 func (s *Session) canQuietlyYield(ctx context.Context) error {

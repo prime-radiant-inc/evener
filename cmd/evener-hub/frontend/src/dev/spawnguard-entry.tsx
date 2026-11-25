@@ -11,6 +11,7 @@ import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { useState } from "react";
 import { createRoot } from "react-dom/client";
 import Spawn from "../panes/spawn/Spawn";
+import { chromeStore } from "../shell/chromeStore";
 import { ClientProvider } from "../shell/clientContext";
 import { connectionStore } from "../stores/connection";
 import { PathField, Toast } from "../widgets";
@@ -413,7 +414,6 @@ function measureSpawn() {
   const headings = Array.from(promptIntro?.querySelectorAll<HTMLElement>("h2") ?? []);
   const subtitles = Array.from(promptIntro?.querySelectorAll<HTMLElement>("p") ?? []);
   const heading = headings[0] ?? null;
-  const subtitle = subtitles[0] ?? null;
   const pluginSummary = document.querySelector<HTMLElement>('[data-testid="spawn-plugin-summary"]');
   const pluginRow = document.querySelector<HTMLElement>('[data-label="Plugins"]');
   const pluginSheet = document.querySelector<HTMLElement>('[role="dialog"][aria-labelledby] h2')?.parentElement
@@ -432,6 +432,7 @@ function measureSpawn() {
     promptIntro: visibility('[data-testid="spawn-prompt-intro"]'),
     desktopTitle: visibility('[data-testid="pane-title-desktop"]'),
     mobileTitle: visibility('[data-testid="pane-title-mobile"]'),
+    publishedTitle: chromeStore.getState().paneTitle,
     promptCard: measurePromptCard(),
     rows,
     attachments: measureAttachments(),
@@ -442,16 +443,7 @@ function measureSpawn() {
       headingVisible: heading ? isVisible(visibility("[data-testid='spawn-prompt-intro'] h2")) : false,
       headingIsDirectChild: heading?.parentElement === promptIntro,
       subtitleCount: subtitles.length,
-      subtitleTag: subtitle?.tagName.toLowerCase() ?? "missing",
-      subtitleHasContent: (subtitle?.textContent?.trim().length ?? 0) > 0,
-      subtitleVisible: subtitle ? isVisible(visibility("[data-testid='spawn-prompt-intro'] p")) : false,
-      subtitleIsDirectChild: subtitle?.parentElement === promptIntro,
-      headingBeforeSubtitle:
-        heading !== null &&
-        subtitle !== null &&
-        Boolean(heading.compareDocumentPosition(subtitle) & Node.DOCUMENT_POSITION_FOLLOWING),
       headingHiddenFromAT: heading?.getAttribute("aria-hidden") === "true",
-      subtitleHiddenFromAT: subtitle?.getAttribute("aria-hidden") === "true",
     },
     plugins: {
       summary: pluginSummary ? boxOf(pluginSummary) : null,
