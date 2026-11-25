@@ -101,6 +101,14 @@ export function useIsMobile(): boolean {
   return useMediaQuery(MOBILE_QUERY);
 }
 
+export type WebLayout = "phone" | "tablet" | "desktop";
+
+export function useWebLayout(): WebLayout {
+  const mobile = useIsMobile();
+  const tablet = useMediaQuery(TABLET_QUERY);
+  return mobile ? (tablet ? "tablet" : "phone") : "desktop";
+}
+
 // Test-only reset keeps a replaced matchMedia stub from retaining a listener.
 export function resetMobileViewportForTests(): void {
   for (const source of sources.values()) {

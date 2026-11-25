@@ -28,6 +28,8 @@ export interface TreeProps<T extends TreeNode = TreeNode> {
   onActivate: (node: T) => void;
   onToggle: (node: T) => void;
   renderRow: (node: T, info: TreeRowInfo) => ReactNode;
+  /** Flat selection bands and no nested guide lines, with the same tree interactions. */
+  appearance?: "flat";
   // Alt-held arrows (and Alt+Home/End) belong to the desktop global chords
   // (Alt+Arrow pane cycling, Alt+Shift+Arrow live-session navigation and
   // transcript scroll, Alt+Home/End); releasing them lets those chords fire
@@ -49,9 +51,9 @@ export interface TreeProps<T extends TreeNode = TreeNode> {
 
 const CLASS = {
   tree: requireClass(styles.tree, "tree.module.css", "tree"),
-  // Every row is selectable in principle: the shared recipe draws the
-  // selected lift only on the row whose ARIA says so.
-  row: `${requireClass(styles.row, "tree.module.css", "row")} ${requireClass(selectableStyles.selectableRow, "selectableRow.module.css", "selectableRow")}`,
+  flatTree: requireClass(styles.flatTree, "tree.module.css", "flatTree"),
+  row: requireClass(styles.row, "tree.module.css", "row"),
+  selectableRow: requireClass(selectableStyles.selectableRow, "selectableRow.module.css", "selectableRow"),
   group: requireClass(styles.group, "tree.module.css", "group"),
 };
 
@@ -112,6 +114,7 @@ export function Tree<T extends TreeNode = TreeNode>({
   onActivate,
   onToggle,
   renderRow,
+  appearance,
   releaseModifierKeys = false,
   isSelected,
 }: TreeProps<T>) {
@@ -328,7 +331,7 @@ export function Tree<T extends TreeNode = TreeNode>({
           aria-selected={selection}
           aria-level={depth + 1}
           tabIndex={node.id === effectiveCurrentId ? 0 : -1}
-          className={CLASS.row}
+          className={appearance === "flat" ? CLASS.row : `${CLASS.row} ${CLASS.selectableRow}`}
           onKeyDown={(event) => handleKeyDown(event, node, parent)}
           onFocus={(event) => {
             setCurrentId(node.id);
@@ -388,7 +391,7 @@ export function Tree<T extends TreeNode = TreeNode>({
   }
 
   return (
-    <div ref={treeRef} role="tree" className={CLASS.tree}>
+    <div ref={treeRef} role="tree" className={appearance === "flat" ? `${CLASS.tree} ${CLASS.flatTree}` : CLASS.tree}>
       {renderEntries(nodes, 0, null)}
     </div>
   );
