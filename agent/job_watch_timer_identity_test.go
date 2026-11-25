@@ -78,18 +78,6 @@ func TestConfigureWatch_ConcurrentCreatesAtTheCapAdmitExactlyOne(t *testing.T) {
 	}
 }
 
-func TestWatchKeyMatchesClearRequest_SlotIsExact(t *testing.T) {
-	t.Parallel()
-	timer := watchKey{VisibleSessionID: "s", Target: "caller", Slot: "w1"}
-	request := watchKey{VisibleSessionID: "s", Target: "caller"}
-	if watchKeyMatchesClearRequest(timer, request) {
-		t.Fatal("a slot-less clear request must not match a timer")
-	}
-	if !watchKeyMatchesClearRequest(timer, watchKey{VisibleSessionID: "s", Target: "caller", Slot: "w1"}) {
-		t.Fatal("an exact slot must match")
-	}
-}
-
 func TestConfigureWatch_TimerCreateDoesNotSweepOtherWatches(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)

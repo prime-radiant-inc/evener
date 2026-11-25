@@ -131,9 +131,8 @@ func (jm *jobManager) configureWatchWithHooks(a watchArgs, hooks watchConfigureH
 	if a.Send != nil && a.ReceiverSendInternal {
 		sendTo = strings.TrimSpace(a.Send.To)
 	}
-	// The Slot is filled in below, once the request has earned an id. Every use
-	// of the key above that point is a clear or a terminal catch-up, and neither
-	// carries a slot: a fresh id would build a key that matches nothing.
+	// The Slot is filled in below, once the request has earned an id. Terminal
+	// catch-up never carries a slot (timers are excluded by watchArgsIsOutputMatchOnly).
 	key := watchKey{
 		VisibleSessionID:   jm.sessionID,
 		Target:             a.Target,
@@ -150,7 +149,7 @@ func (jm *jobManager) configureWatchWithHooks(a watchArgs, hooks watchConfigureH
 	// goes into the key's Slot and through validateWatchConfig into the
 	// config, so the key's Slot, the config's slot, and the config's watchID
 	// are all the same id.
-	if !a.Clear && watchArgsIsTimer(a) {
+	if watchArgsIsTimer(a) {
 		key.Slot = jobstore.NewWatchID()
 	}
 	cfg, err := jm.validateWatchConfig(a, key.Slot)
@@ -162,25 +161,10 @@ func (jm *jobManager) configureWatchWithHooks(a watchArgs, hooks watchConfigureH
 
 // validateWatchRequest runs the checks a request must pass before it is
 // entitled to an id. done reports that the request was answered here, as a
-// clear, a terminal catch-up or a rejection, and result and err are its
-// answer; otherwise the request is a valid install.
+// terminal catch-up or a rejection, and result and err are its answer;
+// otherwise the request is a valid install.
 func (jm *jobManager) validateWatchRequest(a watchArgs, key watchKey) (result watchResult, done bool, err error) {
-	if a.Clear && jm.hasWatchClearState(key) {
-		result, err := jm.clearWatch(key)
-		return result, true, err
-	}
 	if err := jm.validateWatchTarget(a.Target); err != nil {
-		// Clearing is idempotent regardless of target state: once a job goes
-		// terminal its concrete watch auto-removes, so a clear on that target must
-		// be a no-op success rather than target_terminal. A genuinely-missing
-		// target still returns its original target_not_found.
-		if a.Clear {
-			if _, _, terminal, statusErr := jm.terminalWatchTargetStatus(a.Target); statusErr == nil && terminal {
-				result, err := jm.clearWatch(key)
-				return result, true, err
-			}
-			return watchResult{}, true, err
-		}
 		// An output_match-only watch on an already-terminal job is served as a
 		// one-shot catch-up scan of retained output rather than rejected (spec
 		// §7.1 "Terminal target"). Any other terminal request, and target_not_found,
@@ -206,10 +190,6 @@ func (jm *jobManager) validateWatchRequest(a watchArgs, key watchKey) (result wa
 	}
 	if err := validateWatchTriggerShape(a); err != nil {
 		return watchResult{}, true, err
-	}
-	if a.Clear {
-		result, err := jm.clearWatch(key)
-		return result, true, err
 	}
 	// Session-target shape checks are specific to configureWatch's session targets
 	// (caller, *); a concrete launch target never reaches them, so they stay here
@@ -381,14 +361,13 @@ func watchArgsIsTimer(a watchArgs) bool {
 // watchArgsIsOutputMatchOnly reports whether a watch request carries an
 // output_match condition and NO other trigger source — the only shape eligible
 // for terminal catch-up (spec §7.1 "Terminal target"). events/progress/every on a
-// terminal target can never fire, so they still fail target_terminal. Clear
-// requests are never catch-up. A time field is excluded too: catch-up runs
+// terminal target can never fire, so they still fail target_terminal. A time
+// field is excluded too: catch-up runs
 // before validateWatchTriggerShape, so admitting that shape would serve a scan
 // instead of the timer rules' correction. A note is not a trigger — it is the
 // watch's prose payload — so it rides the scan's notification like any other.
 func watchArgsIsOutputMatchOnly(a watchArgs) bool {
-	return !a.Clear &&
-		a.OutputMatch != "" &&
+	return a.OutputMatch != "" &&
 		len(a.Events) == 0 &&
 		a.Every == 0 &&
 		a.ProgressIntervalMS == 0 &&

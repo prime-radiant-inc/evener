@@ -526,8 +526,11 @@ func TestClearWatchRemovesIt(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})
-	_, _ = jm.configureWatch(watchArgs{Target: rec.JobID, OutputMatch: "ready"})
-	if _, err := jm.configureWatch(watchArgs{Target: rec.JobID, Clear: true}); err != nil {
+	res, err := jm.configureWatch(watchArgs{Target: rec.JobID, OutputMatch: "ready"})
+	if err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	if _, err := jm.clearWatchByID(res.WatchID); err != nil {
 		t.Fatalf("clear: %v", err)
 	}
 	if jm.watchCount() != 0 {
@@ -759,20 +762,24 @@ func TestClearWatchOnTerminalTargetIsIdempotent(t *testing.T) {
 	jm := newTestJM(t)
 	jm.enqueue = func(jobNotification) {}
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})
+	watchRes, err := jm.configureWatch(watchArgs{Target: rec.JobID, OutputMatch: "ready"})
+	if err != nil {
+		t.Fatalf("install watch: %v", err)
+	}
 	code := 0
 	jm.finalize(rec.JobID, jobstore.StatusCompleted, "exit_zero", &code)
 
-	// No watch is installed (a concrete watch auto-removes on terminal) and the
-	// target is terminal: clearing must be an idempotent no-op success, not
+	// The concrete watch auto-removed on terminal: clearing its watch_id
+	// repeatedly must be an idempotent no-op success, not
 	// target_terminal.
-	res, err := jm.configureWatch(watchArgs{Target: rec.JobID, Clear: true})
+	res, err := jm.clearWatchByID(watchRes.WatchID)
 	if err != nil {
 		t.Fatalf("clear on terminal target: %v", err)
 	}
 	if res.Watching {
 		t.Fatalf("clear result Watching = true, want false")
 	}
-	res2, err := jm.configureWatch(watchArgs{Target: rec.JobID, Clear: true})
+	res2, err := jm.clearWatchByID(watchRes.WatchID)
 	if err != nil {
 		t.Fatalf("second clear on terminal target: %v", err)
 	}
@@ -1191,10 +1198,11 @@ func TestWatchHistoryRecordsClear(t *testing.T) {
 	jm.enqueue = func(jobNotification) {}
 	rec, _ := jm.createShell(createShellOpts{Command: "sleep 30"})
 	t.Cleanup(func() { finishRunningTestJob(t, jm, rec.JobID) })
-	if _, err := jm.configureWatch(watchArgs{Target: rec.JobID, OutputMatch: "ready"}); err != nil {
+	res, err := jm.configureWatch(watchArgs{Target: rec.JobID, OutputMatch: "ready"})
+	if err != nil {
 		t.Fatalf("install: %v", err)
 	}
-	if _, err := jm.configureWatch(watchArgs{Target: rec.JobID, Clear: true}); err != nil {
+	if _, err := jm.clearWatchByID(res.WatchID); err != nil {
 		t.Fatalf("clear: %v", err)
 	}
 	hist := jm.recentWatchSummaries()

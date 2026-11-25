@@ -162,10 +162,11 @@ func TestJobListSurfacesRecentWatches(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { finishRunningTestJob(t, s.jobManager, record.JobID) })
-	if _, err := s.jobManager.configureWatch(watchArgs{Target: record.JobID, OutputMatch: "ready"}); err != nil {
+	res, err := s.jobManager.configureWatch(watchArgs{Target: record.JobID, OutputMatch: "ready"})
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.jobManager.configureWatch(watchArgs{Target: record.JobID, Clear: true}); err != nil {
+	if _, err := s.jobManager.clearWatchByID(res.WatchID); err != nil {
 		t.Fatal(err)
 	}
 	result := jobListState(t, s, nil)

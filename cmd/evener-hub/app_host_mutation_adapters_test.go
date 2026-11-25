@@ -75,28 +75,12 @@ func committedHostRow(result appwire.HostMutationResult, err error) (appwire.Hos
 
 // Update adapts UpdateResult for tests, reporting a non-committed arm as the
 // error that arm means.
-func (m *hubHostManager) Update(ctx context.Context, params appwire.HostUpdateParams) (appwire.HostUpdateResponse, error) {
-	result, err := m.UpdateResult(ctx, params)
-	if err != nil {
-		return appwire.HostUpdateResponse{}, err
-	}
-	row, err := committedRow(result)
-	if err != nil {
-		return appwire.HostUpdateResponse{}, err
-	}
-	return appwire.HostUpdateResponse{Host: row}, nil
+func (m *hubHostManager) Update(ctx context.Context, params appwire.HostUpdateParams) (appwire.HostRow, error) {
+	return committedHostRow(m.UpdateResult(ctx, params))
 }
 
 // Remove adapts RemoveResult for tests, reporting a non-committed arm as the
 // error that arm means.
-func (m *hubHostManager) Remove(ctx context.Context, params appwire.HostRemoveParams) (appwire.HostRemoveResponse, error) {
-	result, err := m.RemoveResult(ctx, params)
-	if err != nil {
-		return appwire.HostRemoveResponse{}, err
-	}
-	row, err := committedRow(result)
-	if err != nil {
-		return appwire.HostRemoveResponse{}, err
-	}
-	return appwire.HostRemoveResponse{Host: row}, nil
+func (m *hubHostManager) Remove(ctx context.Context, params appwire.HostRemoveParams) (appwire.HostRow, error) {
+	return committedHostRow(m.RemoveResult(ctx, params))
 }

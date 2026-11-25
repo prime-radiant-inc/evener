@@ -334,7 +334,6 @@ func FuzzWobsConfigureWatchSession(f *testing.F) {
 				OutputMatch:        r.pick([]string{"", "ready", "("}),
 				ProgressIntervalMS: []int{0, 0, 1000, -1}[r.intn(4)],
 				Every:              r.intn(3),
-				Clear:              r.boolean(),
 			}
 			nEvents := r.intn(3)
 			for j := 0; j < nEvents; j++ {
@@ -354,8 +353,16 @@ func FuzzWobsConfigureWatchSession(f *testing.F) {
 			case 3:
 				a.ReceiverDelegateID = "dlg_obs"
 			}
-			_, _ = jm.configureWatch(a)
+			res, err := jm.configureWatch(a)
 			wobs_checkConfigureInvariants(t, jm)
+			if err == nil && res.WatchID != "" && r.boolean() {
+				if a.ReceiverSessionID != "" || a.ReceiverDelegateID != "" {
+					_, _ = jm.clearReceiverWatchByID(res.WatchID, a.ReceiverSessionID, a.ReceiverDelegateID)
+				} else {
+					_, _ = jm.clearWatchByID(res.WatchID)
+				}
+				wobs_checkConfigureInvariants(t, jm)
+			}
 		}
 	})
 }

@@ -79,12 +79,12 @@ func TestHostManageUpdateRoundTripsEveryMutableField(t *testing.T) {
 		Addr:       "127.0.0.1:9180",
 		Roots:      []string{"/srv/one", "/srv/two"},
 	}
-	resp, err := f.m.Update(context.Background(), updateRequest(t, f.m, "side", entry))
+	row, err := f.m.Update(context.Background(), updateRequest(t, f.m, "side", entry))
 	if err != nil {
 		t.Fatalf("Update: %v", err)
 	}
-	if resp.Host.Name != "side" || resp.Host.Address != entry.Address {
-		t.Fatalf("response row = %+v, want the edited entry", resp.Host)
+	if row.Name != "side" || row.Address != entry.Address {
+		t.Fatalf("response row = %+v, want the edited entry", row)
 	}
 	status, err := f.m.Status(context.Background(), appwire.HostStatusParams{Name: "side"})
 	if err != nil {
@@ -151,17 +151,17 @@ func TestHostManageUpdateKeepsTheFileOrder(t *testing.T) {
 // and leave the addressed name stale, with every other test still green.
 func TestHostManageUpdateCannotRename(t *testing.T) {
 	f := newUpdateFixture(t)
-	resp, err := f.m.Update(context.Background(), updateRequest(t, f.m, "side", appwire.HostEntry{Name: "other", Address: "edited.example"}))
+	row, err := f.m.Update(context.Background(), updateRequest(t, f.m, "side", appwire.HostEntry{Name: "other", Address: "edited.example"}))
 	if err != nil {
 		t.Fatalf("Update: %v", err)
 	}
 	// The response row still describes the addressed host, not a renamed one,
 	// and the removal/rename discriminator is not set on an ordinary edit.
-	if resp.Host.Name != "side" || resp.Host.Address != "edited.example" {
-		t.Fatalf("response row = %+v, want side with the edited address", resp.Host)
+	if row.Name != "side" || row.Address != "edited.example" {
+		t.Fatalf("response row = %+v, want side with the edited address", row)
 	}
-	if resp.Host.Removed {
-		t.Fatalf("update row = %+v, want no removed/rename discriminator", resp.Host)
+	if row.Removed {
+		t.Fatalf("update row = %+v, want no removed/rename discriminator", row)
 	}
 	// The durable hub.toml still holds side (edited), never other.
 	assertHubTOMLHostNames(t, f.configPath, "side")
@@ -250,12 +250,12 @@ func TestHostManageUpdateRefusalsCommitNothing(t *testing.T) {
 // Update succeeds on it, with the machine-managed file holding the edit.
 func TestHostManageUpdateEditsAFileDeclaredHost(t *testing.T) {
 	f := newUpdateFixture(t, hostreg.Host{Name: "toml", SSH: "toml.example"})
-	resp, err := f.m.Update(context.Background(), updateRequest(t, f.m, "toml", appwire.HostEntry{Address: "toml2.example", User: "operator"}))
+	row, err := f.m.Update(context.Background(), updateRequest(t, f.m, "toml", appwire.HostEntry{Address: "toml2.example", User: "operator"}))
 	if err != nil {
 		t.Fatalf("Update of a file-declared host: %v", err)
 	}
-	if resp.Host.Name != "toml" || resp.Host.Address != "toml2.example" || resp.Host.Origin != hostOriginHubTOML {
-		t.Fatalf("response row = %+v, want the edited file-declared host", resp.Host)
+	if row.Name != "toml" || row.Address != "toml2.example" || row.Origin != hostOriginHubTOML {
+		t.Fatalf("response row = %+v, want the edited file-declared host", row)
 	}
 	// The live registry holds the edit.
 	live, ok := f.hosts.Get("toml")
@@ -785,8 +785,8 @@ func TestHostManageUpdateVanishedEntryKeepsTheCommit(t *testing.T) {
 
 // updateOutcome carries the parked Update's result back to the test.
 type updateOutcome struct {
-	resp appwire.HostUpdateResponse
-	err  error
+	row appwire.HostRow
+	err error
 }
 
 // parkedUpdate is one update held in its post-commit rebind window: the
@@ -898,8 +898,8 @@ func startParkedUpdate(t *testing.T, name string) *parkedUpdate {
 		ExpectedIncarnationID: incarnation,
 	}
 	go func() {
-		resp, err := m.Update(context.Background(), params)
-		pu.updateDone <- updateOutcome{resp: resp, err: err}
+		row, err := m.Update(context.Background(), params)
+		pu.updateDone <- updateOutcome{row: row, err: err}
 	}()
 	// The commit landed once the file holds the edited address: the save runs
 	// under the mutation mutex, ahead of the live phase; the update then parks
@@ -1025,8 +1025,8 @@ func TestHostManageUpdateWindowFencesTheNameAndKeepsConcurrentCommits(t *testing
 	if done.err != nil {
 		t.Fatalf("Update: %v", done.err)
 	}
-	if done.resp.Host.Address != "edited.example" {
-		t.Fatalf("update row = %+v, want the edited entry", done.resp.Host)
+	if done.row.Address != "edited.example" {
+		t.Fatalf("update row = %+v, want the edited entry", done.row)
 	}
 	if _, err := pu.m.Update(context.Background(), updateRequest(t, pu.m, "side", appwire.HostEntry{Address: "after.example"})); err != nil {
 		t.Fatalf("Update after the window closed: %v", err)
@@ -1084,7 +1084,7 @@ func TestHostManageUpdateClearsFactsRecordedWhileWaitingForTheGate(t *testing.T)
 	if done.err != nil {
 		t.Fatalf("Update: %v", done.err)
 	}
-	row := done.resp.Host
+	row := done.row
 	if row.Name != "side" || row.Address != "edited.example" || row.Origin != hostOriginHubTOML {
 		t.Fatalf("finished row = %+v, want the edited configured entry", row)
 	}
@@ -1638,8 +1638,8 @@ func TestHostManageUpdateRetiresTheAttachRecordInsideTheSwapHold(t *testing.T) {
 	updateParams := updateRequest(t, m, "side", appwire.HostEntry{Address: "edited.example"})
 	updateDone := make(chan updateOutcome, 1)
 	go func() {
-		resp, err := m.Update(context.Background(), updateParams)
-		updateDone <- updateOutcome{resp: resp, err: err}
+		row, err := m.Update(context.Background(), updateParams)
+		updateDone <- updateOutcome{row: row, err: err}
 	}()
 
 	// The update has swapped the entry, emitted the retired identity's Detached,
@@ -1681,8 +1681,8 @@ func TestHostManageUpdateRetiresTheAttachRecordInsideTheSwapHold(t *testing.T) {
 		if done.err != nil {
 			t.Fatalf("Update: %v", done.err)
 		}
-		if !done.resp.Host.MidAttach {
-			t.Fatalf("update row = %+v, want the new identity's in-progress attach retained", done.resp.Host)
+		if !done.row.MidAttach {
+			t.Fatalf("update row = %+v, want the new identity's in-progress attach retained", done.row)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("the update never returned after its reap was released")
@@ -1763,8 +1763,8 @@ func TestHostManageUpdateStaleRowCannotResurrectRetiredState(t *testing.T) {
 	updateParams := updateRequest(t, m, "side", appwire.HostEntry{Address: "edited.example"})
 	updateDone := make(chan updateOutcome, 1)
 	go func() {
-		resp, err := m.Update(context.Background(), updateParams)
-		updateDone <- updateOutcome{resp: resp, err: err}
+		row, err := m.Update(context.Background(), updateParams)
+		updateDone <- updateOutcome{row: row, err: err}
 	}()
 	// The update has swapped the entry and run its retire hook, and is parked in
 	// the reap inside the manager call: the retirement is already done, and the
@@ -1879,11 +1879,10 @@ func TestHostManageRemoveCarriesTheEffectiveEntryFields(t *testing.T) {
 	if !ok {
 		t.Fatal("rem not registered after Add")
 	}
-	resp, err := f.m.Remove(context.Background(), removeRequest(t, f.m, "rem"))
+	got, err := f.m.Remove(context.Background(), removeRequest(t, f.m, "rem"))
 	if err != nil {
 		t.Fatalf("Remove: %v", err)
 	}
-	got := resp.Host
 	if !got.Removed || got.Origin != hostOriginHubTOML {
 		t.Fatalf("removal row = %+v, want Removed with the hub.toml origin", got)
 	}

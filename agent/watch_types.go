@@ -362,7 +362,6 @@ type watchArgs struct {
 	SourceDelegateID     string
 	SourceGeneration     uint64
 	StableReceiver       bool
-	Clear                bool
 	// ResultTool is the watcher session's result tool name, which validation
 	// errors teach; empty means the default.
 	ResultTool string
