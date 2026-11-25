@@ -30,6 +30,7 @@
   flex: 1 1 auto;
   min-height: 0;
   display: flex;
+  overflow-x: clip;
 }
 
 .boardColumn {
@@ -42,6 +43,10 @@
   position: relative;
   display: flex;
   flex-direction: column;
+}
+
+.boardColumn[data-motion="closing"] {
+  pointer-events: none;
 }
 
 .paneColumn {

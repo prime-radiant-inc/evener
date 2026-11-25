@@ -29,7 +29,7 @@
   bottom: 0;
   right: 0;
   width: 2px;
-  border-radius: var(--radius-pill);
+  border-radius: var(--radius-control);
   background: var(--accent);
   opacity: 0;
   transition: opacity var(--motion-duration-hover) var(--motion-easing-standard);

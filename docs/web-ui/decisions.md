@@ -5,6 +5,14 @@ alternatives, and what source review found at the time. The current
 [design system](design-system.md#design-model-an-editorial-instrument) governs new work;
 dated verdicts below are not a competing current mandate.
 
+## 2026-11-25 the New-session action is a primary floating button
+
+The New-session control moves from a top rail button to a bottom-right accent
+primary floating action button across desktop, tablet, and mobile (#7767).
+This supersedes the 2026-11-06 "The rail CTA is secondary" decision: a compact
+floating `+` control stays out of the reading chrome while giving starting a
+new session one consistent primary entry point on every surface.
+
 ## 2026-11-22 the completed-turn end cap is removed
 
 Jesse asked to stop showing the settled-turn line "Done in <work time> · N
