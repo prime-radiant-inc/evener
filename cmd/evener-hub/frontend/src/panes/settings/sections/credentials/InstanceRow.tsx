@@ -24,7 +24,8 @@ import { CREDENTIAL_DOT, type CredentialState, credentialState } from "./credent
 function metaText(instance: InstanceEntry, state: CredentialState): string {
   const lead = state === "error" ? "Error" : unconfiguredLabel(instance);
   const styleInfo = styleInfoText(instance);
-  return lead === null ? styleInfo : `${lead} · ${styleInfo}`;
+  if (lead === null) return styleInfo;
+  return styleInfo ? `${lead} · ${styleInfo}` : lead;
 }
 
 /** The two variants, as a type rather than a comment: an interactive row MUST

@@ -59,12 +59,13 @@ export function useProviderSetup(host: string = LOCAL_HOST) {
   const configured = instances.some(
     (instance) =>
       !instance.hidden &&
+      !instance.loadError &&
       (instance.credentialRequired
         ? instance.activeSource !== "none" && instance.activeSource !== ""
         : !instance.implicit),
   );
   const implicitKeyless = instances.some(
-    (instance) => !instance.hidden && !instance.credentialRequired && instance.implicit,
+    (instance) => !instance.hidden && !instance.loadError && !instance.credentialRequired && instance.implicit,
   );
   // The registry includes an implicit Ollama instance even on a fresh install
   // without a local server. It is available only if it actually offers models.

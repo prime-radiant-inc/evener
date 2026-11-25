@@ -166,7 +166,7 @@ function findSetupIn(
   name: string,
 ): InstanceEntry | undefined {
   return (
-    listing.instances.find((row) => row.name === name) ??
+    listing.instances.find((row) => row.name === name && !row.loadError) ??
     listing.availableProviders.find((row) => row.setup?.name === name)?.setup
   );
 }
@@ -462,6 +462,7 @@ const sameSetting = (a: string, b: string) => a.trim() === b.trim();
 
 const EMPTY_VAR_DRAFT: InstanceDraft = {
   name: "",
+  base: "",
   baseUrl: "",
   protocol: "",
   surface: "",

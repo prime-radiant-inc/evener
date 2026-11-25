@@ -73,6 +73,25 @@ describe("the row carries identity and status only", () => {
     render(<InstanceRow instance={instance({ name: "a", providerId: "x", isDefault: true })} onSelect={() => {}} />);
     expect(chipKinds()).toEqual(["default"]);
   });
+
+  test("an isolated broken provider reports error state with a failed dot", () => {
+    render(
+      <InstanceRow
+        instance={instance({
+          name: "kimi",
+          base: "kimi-code-plan-global",
+          providerId: "kimi-code-plan-global",
+          hidden: true,
+          credentialRequired: false,
+          activeSource: "none",
+          loadError: 'providers.kimi: base "kimi-code-plan-global" is not a registry id',
+        })}
+        onSelect={() => {}}
+      />,
+    );
+    expect(rowState()).toBe("error");
+    expect(dotState()).toBe("failed");
+  });
 });
 
 // The badge names where the instance's credential comes from, not merely
