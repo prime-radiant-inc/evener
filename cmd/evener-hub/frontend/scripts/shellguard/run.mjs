@@ -51,6 +51,10 @@ const VIEWPORT = { width: 1400, height: 900 };
 // styled out of the page.
 const MOBILE_VIEWPORT = { width: 390, height: 844, mobile: true, touch: true };
 
+// Inside the 768-899px tablet band: StackHost keeps mobile/touch emulation
+// while splitting the board column beside the conversation.
+const TABLET_VIEWPORT = { width: 800, height: 1025, mobile: true, touch: true };
+
 // A touch device the desktop layout still applies to (a tablet or a touch
 // laptop). The rail renders docked and resizable here, so its width floor is
 // the one that has to hold 44px tap targets.
@@ -672,6 +676,418 @@ function assertMobileResult(result) {
   if (result.searchBox) failures.push("mobile inline search box is still rendered");
   if (result.resume) failures.push("mobile Jump back in action is still rendered");
   if (result.hints) failures.push("mobile key-binding hints are still rendered");
+  return failures;
+}
+
+async function measureTabletSplit(page) {
+  const { send } = page;
+  await waitForDom(
+    send,
+    "Boolean(document.querySelector('[data-testid=\"board-column\"]') && document.querySelector('[data-testid=\"topbar-title\"]')?.textContent?.trim())",
+    "tablet split initial topbar title settled",
+  );
+  await settleFiniteAnimations(send);
+  const snapState = `(() => {
+    const box = (el) => {
+      if (!el) return null;
+      const r = el.getBoundingClientRect();
+      return { left: r.left, top: r.top, right: r.right, bottom: r.bottom, width: r.width, height: r.height };
+    };
+    const hit = (el) => {
+      if (!el) return false;
+      const r = el.getBoundingClientRect();
+      if (r.width <= 0 || r.height <= 0) return false;
+      const target = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+      return target !== null && el.contains(target);
+    };
+    const split = document.querySelector('[data-testid="board-split"]');
+    const board = document.querySelector('[data-testid="board-column"]');
+    const pane = document.querySelector('[data-testid="pane-column"]');
+    const topbar = document.querySelector('[data-testid="topbar"]');
+    const title = document.querySelector('[data-testid="topbar-title"]');
+    const findInput = pane?.querySelector('[data-find-bar] input[type="search"]');
+    const findStyle = findInput && getComputedStyle(findInput);
+    const findRectWidth = findInput ? findInput.getBoundingClientRect().width : 0;
+    const findText = findInput && document.createElement('canvas').getContext('2d');
+    if (findText) findText.font = findStyle.font;
+    const overview = document.querySelector('[data-session-overview-ref]')?.closest('button') ?? null;
+    const brand = document.querySelector('[data-testid="rail-brand"]');
+    const wordmark = document.querySelector('[data-testid="rail-wordmark"]');
+    const settings = document.querySelector('[data-testid="rail-settings"]');
+    const search = document.querySelector('[data-testid="rail-search"]');
+    const toggles = [...document.querySelectorAll('[data-testid="board-toggle"]')];
+    const toggle = toggles[0] ?? null;
+    const glyph = toggle?.querySelector('span span') ?? null;
+    const handle = board?.querySelector('[role="separator"]');
+    return {
+      viewport: { width: innerWidth, height: innerHeight },
+      document: { scrollWidth: document.documentElement.scrollWidth, scrollHeight: document.documentElement.scrollHeight },
+      dataBoard: split?.getAttribute('data-board') ?? null,
+      board: box(board),
+      pane: box(pane),
+      topbar: box(topbar),
+      topbarInPane: Boolean(pane && topbar && pane.contains(topbar)),
+      title: box(title),
+      overview: box(overview),
+      overviewHit: hit(overview),
+      find: findInput ? {
+        width: findRectWidth,
+        editableWidth:
+          findRectWidth -
+          parseFloat(findStyle.borderLeftWidth) -
+          parseFloat(findStyle.borderRightWidth) -
+          parseFloat(findStyle.paddingLeft) -
+          parseFloat(findStyle.paddingRight),
+        queryWidth: findText.measureText(findInput.value).width,
+        clearAllowance: parseFloat(findStyle.fontSize),
+        focused: document.activeElement === findInput,
+        hit: hit(findInput),
+        value: findInput.value,
+      } : null,
+      brand: box(brand),
+      wordmark: box(wordmark),
+      settings: box(settings),
+      settingsHit: hit(settings),
+      search: box(search),
+      searchHit: hit(search),
+      toggleCount: toggles.length,
+      toggle: box(toggle),
+      toggleHit: hit(toggle),
+      toggleInBoard: Boolean(board && toggle && board.contains(toggle)),
+      toggleInBrand: Boolean(brand && toggle && brand.contains(toggle)),
+      toggleInTopbar: Boolean(topbar && toggle && topbar.contains(toggle)),
+      glyphTransform: glyph ? getComputedStyle(glyph).transform : null,
+      resizeHandle: box(handle),
+      resizeHandleHit: hit(handle),
+      range: handle ? {
+        min: Number(handle.getAttribute('aria-valuemin')), max: Number(handle.getAttribute('aria-valuemax')),
+        now: Number(handle.getAttribute('aria-valuenow')),
+      } : null,
+    };
+  })()`;
+  const open = await evaluate(send, snapState);
+  const scrolledBoard = await evaluate(
+    send,
+    `(() => {
+    const board = document.querySelector('[data-testid="board-column"]');
+    if (!board) return null;
+    const scroller = [board, ...board.querySelectorAll('*')].find(
+      el => el.scrollHeight > el.clientHeight + 1 && ['auto', 'scroll'].includes(getComputedStyle(el).overflowY)
+    );
+    if (!scroller) return { scrolled: false };
+    scroller.scrollTop = 200;
+    const brand = document.querySelector('[data-testid="rail-brand"]');
+    const toggle = document.querySelector('[data-testid="board-toggle"]');
+    const handle = board.querySelector('[role="separator"]');
+    const br = brand?.getBoundingClientRect();
+    const tr = toggle?.getBoundingClientRect();
+    const hr = handle?.getBoundingClientRect();
+    const target = tr ? document.elementFromPoint(tr.left + tr.width / 2, tr.top + tr.height / 2) : null;
+    return {
+      scrolled: scroller.scrollTop > 0,
+      scrollTop: scroller.scrollTop,
+      brandTop: br?.top ?? null,
+      toggleTop: tr?.top ?? null,
+      toggleHit: Boolean(toggle && target && toggle.contains(target)),
+      handleTop: hr?.top ?? null,
+    };
+  })()`,
+  );
+  const rowFocusSample = `(() => {
+    const header = document.querySelector('[data-testid="rail-new-session"]')?.parentElement;
+    const row = document.activeElement?.closest('[role="treeitem"]');
+    const rows = row?.closest('[role="tree"]')?.querySelectorAll('[role="treeitem"]');
+    const rect = row?.getBoundingClientRect();
+    const target = rect && document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2);
+    return { headerBottom: header?.getBoundingClientRect().bottom, rowTop: rect?.top, rowBottom: rect?.bottom,
+      index: rows ? [...rows].indexOf(row) : -1,
+      hit: Boolean(row && target && row.contains(target)), coveredByHeader: Boolean(target && header?.contains(target)) };
+  })()`;
+  const startedAtVisibleRow = await evaluate(send, `(() => {
+    const header = document.querySelector('[data-testid="rail-new-session"]')?.parentElement;
+    if (!header) return false;
+    const bottom = header.getBoundingClientRect().bottom;
+    for (const tree of document.querySelectorAll('[data-testid="board-column"] [role="tree"]')) {
+      const rows = [...tree.querySelectorAll('[role="treeitem"]')];
+      const index = rows.findIndex(row => row.getBoundingClientRect().top >= bottom);
+      if (index <= 0 || rows[index].getBoundingClientRect().bottom >= innerHeight) continue;
+      rows[index].focus({ preventScroll: true });
+      return document.activeElement === rows[index];
+    }
+    return false;
+  })()`);
+  const beforeArrowUp = await evaluate(send, rowFocusSample);
+  const arrowUpRows = [];
+  for (let step = 0; startedAtVisibleRow && step < Math.min(5, beforeArrowUp.index); step++) {
+    await pressKey(send, "ArrowUp", "ArrowUp", 38);
+    arrowUpRows.push(await evaluate(send, rowFocusSample));
+  }
+  await evaluate(
+    send,
+    `(() => {
+    const board = document.querySelector('[data-testid="board-column"]');
+    const scroller = board && [board, ...board.querySelectorAll('*')].find(
+      el => el.scrollHeight > el.clientHeight + 1 && ['auto', 'scroll'].includes(getComputedStyle(el).overflowY)
+    );
+    if (scroller) scroller.scrollTop = 0;
+  })()`,
+  );
+  async function dragDivider(handle, x) {
+    const cx = handle.left + handle.width / 2;
+    const cy = handle.top + handle.height / 2;
+    await send("Input.dispatchMouseEvent", { type: "mouseMoved", x: cx, y: cy });
+    await send("Input.dispatchMouseEvent", { type: "mousePressed", x: cx, y: cy, button: "left", clickCount: 1 });
+    await send("Input.dispatchMouseEvent", { type: "mouseMoved", x, y: cy, button: "left", buttons: 1 });
+    await waitForDom(send, `(() => {
+      const board = document.querySelector('[data-testid="board-column"]');
+      return board?.getBoundingClientRect().width === Number(board?.querySelector('[role="separator"]')?.getAttribute('aria-valuenow'));
+    })()`, "tablet drag width published before pointerup");
+    await send("Input.dispatchMouseEvent", { type: "mouseReleased", x, y: cy, button: "left", clickCount: 1 });
+    return evaluate(send, snapState);
+  }
+  let resized = null;
+  if (open.resizeHandle && open.resizeHandle.width > 0 && open.resizeHandle.height > 0) {
+    resized = await dragDivider(open.resizeHandle, open.resizeHandle.left + open.resizeHandle.width / 2 + 60);
+    const resetHandle = resized.resizeHandle ?? open.resizeHandle;
+    const rx = resetHandle.left + resetHandle.width / 2;
+    const ry = resetHandle.top + resetHandle.height / 2;
+    await send("Input.dispatchMouseEvent", { type: "mousePressed", x: rx, y: ry, button: "left", clickCount: 2 });
+    await send("Input.dispatchMouseEvent", { type: "mouseReleased", x: rx, y: ry, button: "left", clickCount: 2 });
+  }
+  await evaluate(send, "window.overviewPane('other')");
+  await waitForDom(
+    send,
+    `(() => {
+      const scaffold = document.querySelector('[data-pane-scaffold="session:local:p0-s1"]');
+      if (!scaffold || !document.querySelector('[data-session-overview-ref="local:p0-s1"][data-pane-id]')) return false;
+      const scroller = [scaffold, ...scaffold.querySelectorAll('*')].find(
+        el => el.scrollHeight > el.clientHeight + 80 && ['auto', 'scroll'].includes(getComputedStyle(el).overflowY)
+      );
+      return Boolean(scroller);
+    })()`,
+    "tablet split session pane mounted with scrollable transcript",
+  );
+  const paneScrollCapture = await evaluate(
+    send,
+    `(() => {
+      const scaffold = document.querySelector('[data-pane-scaffold="session:local:p0-s1"]');
+      const scroller = scaffold && [scaffold, ...scaffold.querySelectorAll('*')].find(
+        el => el.scrollHeight > el.clientHeight + 80 && ['auto', 'scroll'].includes(getComputedStyle(el).overflowY)
+      );
+      if (!scroller) return null;
+      const target = Math.min(180, Math.floor((scroller.scrollHeight - scroller.clientHeight) / 2));
+      scroller.scrollTop = target;
+      scroller.dispatchEvent(new Event('scroll'));
+      window.__tabletPaneScroller = scroller;
+      return { scrollTop: scroller.scrollTop, maxScroll: scroller.scrollHeight - scroller.clientHeight };
+    })()`,
+  );
+  const readPaneScroll = `(() => {
+    const scaffold = document.querySelector('[data-pane-scaffold="session:local:p0-s1"]');
+    const scroller = scaffold && [scaffold, ...scaffold.querySelectorAll('*')].find(
+      el => el.scrollHeight > el.clientHeight + 80 && ['auto', 'scroll'].includes(getComputedStyle(el).overflowY)
+    );
+    const saved = window.__tabletPaneScroller ?? null;
+    return {
+      sameNode: Boolean(saved && scroller && scroller === saved && saved.isConnected),
+      scrollTop: scroller?.scrollTop ?? null,
+      maxScroll: scroller ? scroller.scrollHeight - scroller.clientHeight : null,
+    };
+  })()`;
+  const sessionOpen = await evaluate(send, snapState);
+  await evaluate(send, `document.querySelector('[data-testid="board-toggle"]').focus({ preventScroll: true })`);
+  await pressKey(send, "Enter", "Enter", 13);
+  await waitForDom(send, "document.querySelector('[data-testid=\"board-split\"]')?.dataset.board === 'collapsed'", "tablet board collapsed");
+  await settleFiniteAnimations(send);
+  const collapsed = await evaluate(send, snapState);
+  const paneScrollCollapsed = await evaluate(send, readPaneScroll);
+  const focusedToggle = `document.activeElement === document.querySelector('[data-testid="board-toggle"]')`;
+  if (!(await evaluate(send, focusedToggle))) throw new Error("collapsing the tablet board lost keyboard focus");
+  await pressKey(send, "Enter", "Enter", 13);
+  await waitForDom(send, "document.querySelector('[data-testid=\"board-split\"]')?.dataset.board === 'visible'", "tablet board re-expanded");
+  await settleFiniteAnimations(send);
+  const reopened = await evaluate(send, snapState);
+  const paneScrollReopened = await evaluate(send, readPaneScroll);
+  if (!(await evaluate(send, focusedToggle))) throw new Error("expanding the tablet board lost keyboard focus");
+  await send("Emulation.setTouchEmulationEnabled", { enabled: false });
+  await applyViewport(send, { width: 768, height: TABLET_VIEWPORT.height });
+  await waitForDom(send, "innerWidth === 768", "768px tablet viewport");
+  const pointer = await evaluate(send, `({ fine: matchMedia('(pointer: fine)').matches, coarse: matchMedia('(any-pointer: coarse)').matches })`);
+  const narrowest = await dragDivider(sessionOpen.resizeHandle, 1);
+  const wideDrag = await dragDivider(narrowest.resizeHandle, 700);
+  await evaluate(send, `document.querySelector('[data-testid="board-column"] [role="separator"]').focus({ preventScroll: true })`);
+  await pressKey(send, "Home", "Home", 36);
+  const home = await evaluate(send, snapState);
+  await pressKey(send, "End", "End", 35);
+  await clickControl(send, '[data-testid="topbar"] button[aria-label="Overview"]');
+  await waitForDom(
+    send,
+    `(() => {
+      const sheet = document.querySelector(${JSON.stringify(PHONE_INSPECTION)});
+      return Boolean(sheet && getComputedStyle(sheet).transform === 'none' && sheet.contains(document.activeElement) && document.activeElement.matches('button'));
+    })()`,
+    "tablet Overview sheet settles with Find focused",
+  );
+  await pressKey(send, "Enter", "Enter", 13);
+  await waitForDom(send, `document.activeElement?.matches('[data-find-bar] input[type="search"]')`, "Find query focus at maximum board width");
+  const findQuery = "session";
+  await send("Input.insertText", { text: findQuery });
+  await waitForDom(send, `document.querySelector('[data-find-bar]:not([data-find-status="idle"])')`, "Find query result at maximum board width");
+  const widest = await evaluate(send, snapState);
+  const largerText = [];
+  for (const font of ["l", "xl"]) {
+    await evaluate(send, `window.configureOverview('light', '${font}')`);
+    await waitForFonts(send);
+    largerText.push([font, await evaluate(send, snapState)]);
+  }
+  await evaluate(send, `window.configureOverview('light', 'm')`);
+  await pressKey(send, "Escape", "Escape", 27);
+  await applyViewport(send, { ...MOBILE_VIEWPORT, width: 400 });
+  await waitForDom(send, `innerWidth === 400 && !document.querySelector('[data-testid="board-split"]')`,
+    "400px uses the phone stack without the tablet board");
+  await settleFiniteAnimations(send);
+  const paneScrollPhone = await evaluate(send, readPaneScroll);
+  const desktopDivider = '[data-testid="rail"] [data-testid="rail-resize-handle"]';
+  const desktopReady = `innerWidth === 1024 && !document.querySelector('[data-stacked-pane-type]') && document.querySelector('${desktopDivider}')`;
+  const desktopViewport = { ...TOUCH_DESKTOP_VIEWPORT, width: 1024, height: 768 };
+  const desktopMeasure = `(() => {
+    const divider = document.querySelector('${desktopDivider}');
+    return { width: divider.closest('[data-testid="rail"]').getBoundingClientRect().width,
+      max: Number(divider.getAttribute('aria-valuemax')) };
+  })()`;
+  await applyViewport(send, desktopViewport);
+  await waitForDom(send, desktopReady, "1024px uses the docked desktop rail without the tablet board");
+  await evaluate(send, `document.querySelector('${desktopDivider}').focus({ preventScroll: true })`);
+  await pressKey(send, "End", "End", 35);
+  const desktopBefore = await evaluate(send, desktopMeasure);
+  await applyViewport(send, { ...TABLET_VIEWPORT, width: 768 });
+  await waitForDom(send, `innerWidth === 768 && document.querySelector('[data-testid="board-column"]')`, "narrow tablet restores the board");
+  const narrowRestored = await evaluate(send, snapState);
+  const roomyViewport = { ...TABLET_VIEWPORT, width: 899 };
+  await applyViewport(send, roomyViewport);
+  await waitForDom(send, `innerWidth === 899`, "wider tablet viewport");
+  await settleFiniteAnimations(send);
+  const roomy = await evaluate(send, snapState);
+  await applyViewport(send, desktopViewport);
+  await waitForDom(send, desktopReady, "desktop restores the docked sidebar");
+  const desktopAfter = await evaluate(send, desktopMeasure);
+  await evaluate(send, `document.querySelector('${desktopDivider}').focus({ preventScroll: true })`);
+  for (let step = 0; step < 4; step++) await pressKey(send, "ArrowLeft", "ArrowLeft", 37);
+  const desktopFits = await evaluate(send, desktopMeasure);
+  await applyViewport(send, roomyViewport);
+  await waitForDom(send, `innerWidth === 899 && document.querySelector('[data-testid="board-column"]')`, "wide tablet restores a fitting desktop width");
+  const roomyFits = await evaluate(send, snapState);
+  return { open, scrolledBoard, resized, collapsed, reopened, sessionOpen,
+    paneScrollCapture, paneScrollCollapsed, paneScrollReopened, paneScrollPhone,
+    beforeArrowUp, arrowUpRows, pointer, narrowest, home, wideDrag, widest, findQuery, largerText,
+    desktopBefore, narrowRestored, roomy, desktopAfter, desktopFits, roomyFits };
+}
+
+function assertTabletSplit(result) {
+  const failures = [];
+  const { open, scrolledBoard, resized, collapsed, reopened } = result;
+  const centerY = (box) => (box.top + box.bottom) / 2;
+  if (!open.board || !open.topbar || !open.title || !open.toggle) {
+    failures.push(`tablet split open missing required nodes: ${JSON.stringify(open)}`);
+    return failures;
+  }
+  if (Math.abs(open.board.top) > 1 || Math.abs(open.board.bottom - TABLET_VIEWPORT.height) > 1) {
+    failures.push(`tablet board does not span full height from y=0: ${JSON.stringify(open.board)}`);
+  }
+  if (!open.topbarInPane || open.topbar.left < open.board.right - 1 || Math.abs(open.topbar.top - open.board.top) > 1) {
+    failures.push(`tablet topbar is not beside board at y=0: board=${JSON.stringify(open.board)} topbar=${JSON.stringify(open.topbar)}`);
+  }
+  if (open.title.left < open.board.right - 1 || open.title.right > open.pane.right + 1 || open.title.width <= 0) {
+    failures.push(`tablet title is not beside board: board=${JSON.stringify(open.board)} title=${JSON.stringify(open.title)}`);
+  }
+  if (open.toggleCount !== 1 || !open.toggleInBoard || !open.toggleInBrand || open.toggleInTopbar) {
+    failures.push(`tablet open toggle must sit inside rail brand only: ${JSON.stringify({ count: open.toggleCount, inBoard: open.toggleInBoard, inBrand: open.toggleInBrand, inTopbar: open.toggleInTopbar })}`);
+  }
+  if (open.search.right > open.toggle.left + 0.5 || open.toggle.right > open.board.right + 0.5 || Math.abs(centerY(open.search) - centerY(open.toggle)) > 1.5) {
+    failures.push(`tablet open toggle misaligned or overlapping board header: search=${JSON.stringify(open.search)} toggle=${JSON.stringify(open.toggle)} board=${JSON.stringify(open.board)}`);
+  }
+  if (!open.settingsHit || !open.searchHit || !open.toggleHit) {
+    failures.push(`tablet open header control failed hit-test: ${JSON.stringify({ settings: open.settingsHit, search: open.searchHit, toggle: open.toggleHit })}`);
+  }
+  if (open.toggle.width < 44 || open.toggle.height < 44) {
+    failures.push(`tablet toggle below 44px touch floor: ${JSON.stringify(open.toggle)}`);
+  }
+  if (!open.resizeHandle || Math.abs(open.resizeHandle.right - open.board.right) > 2 || open.resizeHandle.left < open.board.right - 20 || !open.resizeHandleHit) {
+    failures.push(`tablet divider resize handle not hit-testable at board seam: board=${JSON.stringify(open.board)} handle=${JSON.stringify(open.resizeHandle)} hit=${open.resizeHandleHit}`);
+  }
+  if (!scrolledBoard?.scrolled || scrolledBoard.brandTop === null || Math.abs(scrolledBoard.brandTop - open.brand.top) > 1 || !scrolledBoard.toggleHit) {
+    failures.push(`tablet board header did not stay sticky on scroll: openBrand=${JSON.stringify(open.brand)} scrolled=${JSON.stringify(scrolledBoard)}`);
+  }
+  if (scrolledBoard?.handleTop !== null && Math.abs(scrolledBoard.handleTop - open.resizeHandle.top) > 1) {
+    failures.push(`tablet resize handle scrolled off seam top: open=${open.resizeHandle.top} scrolled=${scrolledBoard.handleTop}`);
+  }
+  if (!resized?.board || resized.board.width <= open.board.width + 20 || !resized.toggleInBrand || !resized.toggleHit) {
+    failures.push(`tablet divider drag did not widen board cleanly: before=${open.board.width} after=${resized?.board?.width}`);
+  }
+  if (collapsed.board !== null || collapsed.dataBoard !== "collapsed" || collapsed.toggleCount !== 1 || !collapsed.toggleInTopbar) {
+    failures.push(`tablet collapsed toggle must move into topbar leading edge: ${JSON.stringify(collapsed)}`);
+  }
+  if (!collapsed.toggle || collapsed.toggle.left < collapsed.pane.left - 1 || collapsed.toggle.left > collapsed.pane.left + 20 || collapsed.toggle.right > collapsed.title.left + 0.5 || !collapsed.toggleHit || collapsed.title.height <= 0) {
+    failures.push(`tablet collapsed toggle overlaps or escapes leading conversation edge: ${JSON.stringify({ toggle: collapsed.toggle, title: collapsed.title, toggleHit: collapsed.toggleHit })}`);
+  }
+  if (collapsed.glyphTransform !== "matrix(-1, 0, 0, -1, 0, 0)") {
+    failures.push(`tablet collapsed glyph did not rotate 180deg: ${collapsed.glyphTransform}`);
+  }
+  if (!reopened.board || reopened.dataBoard !== "visible" || !reopened.toggleInBrand || !reopened.toggleHit) {
+    failures.push(`tablet re-expanded board did not return toggle to board header: ${JSON.stringify(reopened)}`);
+  } else if (Math.abs(reopened.board.width - open.board.width) > 1) {
+    failures.push(`tablet divider reset did not restore the initial width: ${reopened.board.width} vs ${open.board.width}`);
+  }
+  if (!result.sessionOpen?.topbarInPane || !result.sessionOpen.overviewHit || result.sessionOpen.topbar.left < result.sessionOpen.board.right - 1) {
+    failures.push(`tablet session pane topbar/overview geometry failed: ${JSON.stringify(result.sessionOpen)}`);
+  }
+  const { paneScrollCapture, paneScrollCollapsed, paneScrollReopened, paneScrollPhone } = result;
+  if (!paneScrollCapture || paneScrollCapture.scrollTop <= 0) {
+    failures.push(`tablet session pane did not scroll before layout changes: ${JSON.stringify(paneScrollCapture)}`);
+  }
+  for (const [phase, sample] of [
+    ["collapsed", paneScrollCollapsed],
+    ["reopened", paneScrollReopened],
+    ["phone", paneScrollPhone],
+  ]) {
+    if (!sample?.sameNode || sample.scrollTop === null || sample.scrollTop <= 0) {
+      failures.push(`tablet ${phase} remounted the active session scroller or lost its reading position: ${JSON.stringify({ capture: paneScrollCapture, sample })}`);
+    }
+  }
+  const { beforeArrowUp, arrowUpRows, narrowest, widest, pointer, findQuery } = result;
+  if (!beforeArrowUp.hit || !arrowUpRows.length || arrowUpRows.some((row, i) => row.index !== beforeArrowUp.index - i - 1 || !row.hit || row.coveredByHeader)) {
+    failures.push(`tablet ArrowUp focus is not visible around the board header: ${JSON.stringify({ beforeArrowUp, arrowUpRows })}`);
+  }
+  for (const [label, sample, edge] of [
+    ["minimum drag", narrowest, "min"], ["Home", result.home, "min"],
+    ["maximum drag", result.wideDrag, "max"], ["End", widest, "max"],
+  ]) {
+    if (sample.board.width !== sample.range?.[edge] || sample.range.now !== sample.range[edge]) {
+      failures.push(`tablet divider ${label} did not reach the advertised limit: ${JSON.stringify({ range: sample.range, width: sample.board.width })}`);
+    }
+  }
+  if (pointer.coarse || !narrowest.settingsHit || !narrowest.searchHit || !narrowest.toggleHit || narrowest.toggle?.right > narrowest.board.right) {
+    failures.push(`tablet minimum divider hides a header control: ${JSON.stringify({ pointer, board: narrowest.board, toggle: narrowest.toggle, toggleHit: narrowest.toggleHit })}`);
+  }
+  for (const [font, sample] of [["m", widest], ...result.largerText]) {
+    const { board, pane, range, find } = sample;
+    if (board.width !== range?.max || !find?.focused || !find.hit || find.value !== findQuery ||
+        find.editableWidth < find.queryWidth + find.clearAllowance) {
+      failures.push(`tablet maximum divider starves the focused Find query at font ${font}: ${JSON.stringify({ board, pane, range, find })}`);
+    }
+  }
+  const { desktopBefore, narrowRestored, roomy, desktopAfter, desktopFits, roomyFits } = result;
+  if (desktopBefore.width !== desktopBefore.max || narrowRestored.board.width !== widest.board.width ||
+      roomy.pane.width !== narrowRestored.pane.width || desktopAfter.width !== desktopBefore.width ||
+      desktopFits.width >= roomy.range.max || roomyFits.board.width !== desktopFits.width) {
+    failures.push(`tablet did not show the usable part of the saved desktop width: ${JSON.stringify({ desktopBefore,
+      narrow: narrowRestored.board.width, roomy: roomy.board.width, desktopAfter, desktopFits, roomyFits: roomyFits.board.width })}`);
+  }
+  for (const [label, sample] of [["open", open], ["collapsed", collapsed]]) {
+    if (sample.document.scrollWidth > TABLET_VIEWPORT.width + 1 || sample.document.scrollHeight > TABLET_VIEWPORT.height + 1) {
+      failures.push(`tablet ${label} document overflow: ${JSON.stringify(sample.document)}`);
+    }
+  }
   return failures;
 }
 
@@ -1755,11 +2171,28 @@ async function main() {
     // in the page the page-height measurement above reads.
     const focusScroll = await measureOnPage(cdpEndpoint, sharedTab.id, vitePort, VIEWPORT, measureFocusScroll);
     const focusScrollFailures = assertFocusScroll(focusScroll);
+    const tabletSplit = await measureOnPage(cdpEndpoint, sharedTab.id, vitePort, TABLET_VIEWPORT, measureTabletSplit);
+    const tabletSplitFailures = assertTabletSplit(tabletSplit);
+    const { pointer, narrowest, widest, beforeArrowUp, arrowUpRows, largerText, roomy, desktopBefore, desktopAfter, roomyFits, paneScrollCapture, paneScrollCollapsed, paneScrollReopened, paneScrollPhone } = tabletSplit;
+    console.log(`shellguard tablet usability: ${JSON.stringify({ pointer, min: narrowest.board.width, minToggleHit: narrowest.toggleHit,
+      max: widest.board.width, pane: widest.pane.width, find: widest.find, beforeArrowUp, arrowUpRows,
+      paneScroll: { capture: paneScrollCapture, collapsed: paneScrollCollapsed, reopened: paneScrollReopened, phone: paneScrollPhone },
+      largerText: largerText.map(([font, { find, pane }]) => ({ font, find, pane: pane.width })),
+      savedWidth: { desktopBefore, roomy: roomy.board.width, desktopAfter, fittingTablet: roomyFits.board.width } })}`);
     if (focusScrollFailures.length === 0) {
       console.log(
         `shellguard focus scroll: PASS - dismissed to rail row ${focusScroll.triggerRef}'s menu trigger ` +
           `with the row's actions reveal held by the fixture and the rail body's scrollTop unchanged at ` +
           `${focusScroll.pushed.scrollTopBefore}`,
+      );
+    }
+    if (tabletSplitFailures.length === 0) {
+      console.log(
+        `shellguard tablet split: PASS - board y=${tabletSplit.open.board.top}..${tabletSplit.open.board.bottom} ` +
+          `w=${tabletSplit.open.board.width}px (resized=${tabletSplit.resized?.board?.width}px), ` +
+          `topbar x=${tabletSplit.open.topbar.left}, handle x=${tabletSplit.open.resizeHandle.left}..${tabletSplit.open.resizeHandle.right}, ` +
+          `open toggle in rail-brand x=${tabletSplit.open.toggle.left}, collapsed toggle in topbar x=${tabletSplit.collapsed.toggle.left} ` +
+          `glyph=${tabletSplit.collapsed.glyphTransform}`,
       );
     }
     const failures = [
@@ -1772,6 +2205,7 @@ async function main() {
       ...assertTapTargets(mobile.tap),
       ...assertTouchRailMinimum(touchMin),
       ...focusScrollFailures,
+      ...tabletSplitFailures,
     ];
     for (const viewport of OVERVIEW_VIEWPORTS) {
       for (const theme of OVERVIEW_THEMES) {

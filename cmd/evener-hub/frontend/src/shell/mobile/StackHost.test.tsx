@@ -10,7 +10,7 @@ import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { MotionProvider } from "../../motion";
 import { openDocBeside } from "../../panes/doc/openDoc";
 import { installMobileViewport } from "../../panes/session/testing/mobileViewport";
-import { MOBILE_QUERY } from "../useIsMobile";
+import { MOBILE_QUERY, TABLET_QUERY } from "../useIsMobile";
 import "../../panes/transcript";
 import { cascadeClient, cascadeContext } from "../../panes/zoom/cascadeTestUtils";
 import { recordCascadeOrigin } from "../../panes/zoom/inspectionOrigin";
@@ -33,6 +33,7 @@ import { chromeStore, resetChromeStoreForTests } from "../chromeStore";
 import { ClientProvider } from "../clientContext";
 import { type PaneProps, registerPaneForTests } from "../paneRegistry";
 import { usePaneVisible } from "../paneVisibility";
+import { useRailHeaderAction } from "../rail/railHeaderAction";
 import { openTopLevelSession } from "../sessionPlacement";
 import {
   documentPaneState,
@@ -2009,11 +2010,23 @@ test("with no slide running, as under reduced motion, a step deeper is the insta
   expect(stackBody().textContent).not.toContain("instant_a");
 });
 
-test("a slide away from a scrolled pane keeps the discarded pane's scroller out of the offsets map", async () => {
+function TabletRailActionSlot() {
+  return <>{useRailHeaderAction()}</>;
+}
+
+test.each(["phone", "tablet to phone"])("a slide discards the leaving scroller after %s layout", async (layout) => {
   const slides = installSlideAnimations();
+  const originalMedia = window.matchMedia;
+  const tablet = new EventTarget();
+  const tabletMedia = Object.assign(tablet, { matches: true, media: TABLET_QUERY });
+  if (layout === "tablet to phone") {
+    window.matchMedia = (query) =>
+      (query === TABLET_QUERY ? tabletMedia : { matches: query === MOBILE_QUERY, media: query }) as MediaQueryList;
+  }
   try {
+    const user = userEvent.setup();
     workspaceStore.getState().openPane("doc", { ref: "scrolled_from" });
-    render(<StackHost />);
+    render(<StackHost railSlot={<TabletRailActionSlot />} />);
     await screen.findByText(/doc pane: scrolled_from /);
     const offsets = scrollOffsetsForTests();
     if (!offsets) throw new Error("StackHost did not expose its scroll offsets");
@@ -2024,6 +2037,30 @@ test("a slide away from a scrolled pane keeps the discarded pane's scroller out 
       scroller.dispatchEvent(new Event("scroll"));
     });
     expect(offsets.get(scroller)).toEqual([48, 0]);
+
+    if (layout === "tablet to phone") {
+      expect(screen.getByTestId("board-column")).toBeTruthy();
+      await user.click(screen.getByTestId("board-toggle"));
+      expect(screen.queryByTestId("board-column")).toBeNull();
+      expect(paneScroller("scrolled_from")).toBe(scroller);
+      expect(scroller.scrollTop).toBe(48);
+      expect(offsets.get(scroller)).toEqual([48, 0]);
+
+      await user.click(screen.getByTestId("board-toggle"));
+      expect(screen.getByTestId("board-column")).toBeTruthy();
+      expect(paneScroller("scrolled_from")).toBe(scroller);
+      expect(scroller.scrollTop).toBe(48);
+      expect(offsets.get(scroller)).toEqual([48, 0]);
+
+      await act(async () => {
+        tabletMedia.matches = false;
+        tabletMedia.dispatchEvent(Object.assign(new Event("change"), { matches: false }));
+      });
+      expect(screen.queryByTestId("board-column")).toBeNull();
+      expect(paneScroller("scrolled_from")).toBe(scroller);
+      expect(scroller.scrollTop).toBe(48);
+      expect(offsets.get(scroller)).toEqual([48, 0]);
+    }
 
     await showDoc("scrolled_to");
     expect(stackBody().getAttribute("data-stack-transition")).toBe("push");
@@ -2048,5 +2085,6 @@ test("a slide away from a scrolled pane keeps the discarded pane's scroller out 
     expect(offsets.has(scroller)).toBe(false);
   } finally {
     slides.restore();
+    window.matchMedia = originalMedia;
   }
 });

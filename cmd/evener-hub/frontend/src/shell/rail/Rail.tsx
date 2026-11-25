@@ -69,6 +69,7 @@ import styles from "./Rail.module.css";
 import { RAIL_WIDTH_PROPERTY, RailResizeHandle } from "./RailResizeHandle";
 import { RailRow, type RailRowActions } from "./RailRow";
 import { ARCHIVED_SECTION_KEY, LIVE_SECTION_KEY, PROJECTS_SECTION_KEY, TEST_RUNS_SECTION_KEY } from "./railExpansion";
+import { useRailHeaderAction } from "./railHeaderAction";
 import { GearIcon, SearchIcon, SidebarIcon, TuneIcon } from "./railIcons";
 import {
   archivedCount,
@@ -1016,7 +1017,10 @@ function NavigationRail({
   // manifest has not said so yet.
   const settled = !!manifest && !manifest.loading && !manifest.stale && !manifest.error;
   const needsYou = attention?.needsYou ?? (settled ? (manifest.data?.attentionSummary.needsYou ?? 0) : 0);
-  const parentOwnsScroll = scrollOwner === "parent";
+  const headerAction = useRailHeaderAction();
+  // The split board supplies the header action and scrolls rows below it.
+  // Only the Sheet lends the entire rail to its parent scrollport.
+  const parentOwnsScroll = scrollOwner === "parent" && headerAction === null;
   return (
     <div
       className={parentOwnsScroll ? `${CLASS.rail} ${CLASS.parentScrollRail}` : CLASS.rail}
@@ -1052,7 +1056,7 @@ function NavigationRail({
                 variant="quiet"
                 size="md"
               />
-              {onHide && (
+              {onHide ? (
                 <IconButton
                   data-rail-toggle=""
                   label="Hide sidebar"
@@ -1061,6 +1065,8 @@ function NavigationRail({
                   size="md"
                   onClick={onHide}
                 />
+              ) : (
+                headerAction
               )}
             </div>
           </div>

@@ -1433,6 +1433,21 @@ do not add shimmer, pulse, or other motion that implies live data (the one
 motion exception, the Reasoning placeholder's `Loader` grid, is recorded in
 §5).
 
+### Tablet session board
+
+At 768–899px, the Sessions rail replaces the drawer with a full-height board
+beside the conversation. The list scrolls below the header so focused rows stay visible.
+The board shares the desktop sidebar's saved width, 280px by default, and its
+drag, keyboard and double-click reset controls. The displayed board width is
+at least 256px to fit the header. It leaves at least 392px for the reader, or
+408px at large text and 432px at extra-large, so Find has room for the query
+and its clear button. The desktop maximum still applies.
+Crossing a viewport boundary does not rewrite the saved width.
+The Board toggle moves from the board header to the conversation header when
+collapsed and keeps keyboard focus. The active conversation stays mounted
+when crossing the tablet floor. At 900px and above the desktop shell owns
+the layout, including at 1024px.
+
 Below 700px both speaker rows become a grid rather than a flex row: the avatar
 and the speaker header share the first row and the prose spans the full pane
 underneath them, instead of being indented into the avatar's column for its
