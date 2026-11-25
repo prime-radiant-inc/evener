@@ -3,8 +3,9 @@ import {
   createTranscriptProjector,
   formatQuoteBlock,
   resolveEffectiveConfig,
+  sessionActionError,
 } from "@evener/appwire-client";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "zustand";
 import { chromeStore } from "../../shell/chromeStore";
 import { focusedSessionRef } from "../../shell/focusedSession";
@@ -69,6 +70,33 @@ import type { TranscriptReadView } from "./transcript/transcriptReadView";
 import { isDormantTranscript } from "./transcript/transcriptVisibility";
 import { useTranscript } from "./transcript/useTranscript";
 import { useConversationIdentity } from "./useConversationIdentity";
+
+/* The conversation's two terminal faces, shared by the session pane and the
+ * cascade column so both seats word and reason a session the same way. Each
+ * seat adds what it owns: the pane its Close affordance and fuller hint. A
+ * loading face carries no pane-only recovery control, so it stays with the
+ * seat that can offer one. */
+export function ConversationDeletedFace({
+  hint = "Its transcript is gone.",
+  action,
+}: {
+  hint?: string;
+  action?: ReactNode;
+}) {
+  return <EmptyState title="This session was deleted" hint={hint} reason="deleted" action={action} />;
+}
+
+/* A transcript the hub reported it cannot serve, with the shared
+ * session-action sentence every action error uses. */
+export function ConversationUnavailableFace({ error }: { error: unknown }) {
+  return (
+    <EmptyState
+      title="Transcript unavailable"
+      reason="unavailable"
+      hint={sessionActionError("Couldn't load transcript", error)}
+    />
+  );
+}
 
 // A conversation rendered in a seat. The session pane is one seat; a drilled
 // cascade column is another. The seat supplies what the conversation cannot
