@@ -13,7 +13,7 @@ import { currentSessionRef, presentedPanes, workspaceStore } from "../workspace"
 
 export const ACTIVITY_VIEW_STORAGE_KEY = "evener.activity-sidebar.v1";
 export const ACTIVITY_VIEW_LIMIT = 100;
-const TABS: readonly ActivityTab[] = ["agents", "jobs", "watches", "tasks", "about"];
+const TABS: readonly ActivityTab[] = ["about", "agents", "jobs", "watches", "tasks"];
 let hydrated = false;
 let saveTimer: ReturnType<typeof setTimeout> | undefined;
 const SAVE_DELAY_MS = 400;
@@ -154,7 +154,7 @@ export const activitySidebarStore = createStore<ActivitySidebarState>()((set, ge
   }
   return {
     open: false,
-    tab: "agents",
+    tab: "about",
     ref: null,
     explicitScopeRef: null,
     views: new Map(),
@@ -362,5 +362,5 @@ export function resetActivitySidebarStoreForTests({ preserveStorage = false } = 
   clearTimeout(saveTimer);
   saveTimer = undefined;
   hydrated = false;
-  activitySidebarStore.setState({ open: false, tab: "agents", ref: null, explicitScopeRef: null, views: new Map() });
+  activitySidebarStore.setState({ open: false, tab: "about", ref: null, explicitScopeRef: null, views: new Map() });
 }

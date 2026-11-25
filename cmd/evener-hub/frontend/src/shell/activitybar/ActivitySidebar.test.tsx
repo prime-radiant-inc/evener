@@ -775,20 +775,19 @@ test("an embedded column's Overview describes that column, then the sidebar foll
     // focused, not the ordinary pane for the same conversation.
     expect(workspaceStore.getState().focusedPaneId).toBe("zoom");
     // The request named the parent column, so the sidebar describes it:
-    // its delegates, its wire identity, and its own ancestry - never the
+    // its wire identity, its delegates, and its own ancestry - never the
     // focused leaf's.
-    await sidebar.findByRole("button", { name: /delegate owned by child/ });
-    expect(sidebar.queryByRole("button", { name: /delegate owned by grandchild/ })).toBeNull();
-    fireEvent.click(sidebar.getByRole("radio", { name: "About" }));
     await sidebar.findByText("wire-child");
     expect(sidebar.queryByText("wire-grandchild")).toBeNull();
     expect(sidebar.getByRole("button", { name: "root" })).toBeTruthy();
+    fireEvent.click(sidebar.getByRole("radio", { name: /^Agents,/ }));
+    await sidebar.findByRole("button", { name: /delegate owned by child/ });
+    expect(sidebar.queryByRole("button", { name: /delegate owned by grandchild/ })).toBeNull();
     // The checkmark marks the scope the sidebar shows: the column's own menu
     // offers Overview as checked.
     await user.click(screen.getByRole("button", { name: /session actions/i }));
     expect(screen.getByRole("menuitem", { name: /^Overview.*✓$/ })).toBeTruthy();
     await user.keyboard("{Escape}");
-    fireEvent.click(sidebar.getByRole("radio", { name: /^Agents,/ }));
     // The held scope releases when the workspace scope moves: the sidebar
     // goes back to following focus.
     act(() => workspaceStore.getState().openPane("session", { ref: "remote:other" }));
@@ -860,11 +859,11 @@ test("activity tabs keep a named keyboard radio group without a visible heading"
   expect(screen.getByRole("radiogroup", { name: "Overview kind" })).toBeTruthy();
   expect(screen.queryByText("Overview kind")).toBeNull();
   await act(async () => fireEvent.keyDown(screen.getByRole("radio", { name: /Agents/ }), { key: "End" }));
+  expect(activitySidebarStore.getState().tab).toBe("tasks");
+  await act(async () => fireEvent.keyDown(screen.getByRole("radio", { name: /Tasks/ }), { key: "Home" }));
   expect(activitySidebarStore.getState().tab).toBe("about");
-  await act(async () => fireEvent.keyDown(screen.getByRole("radio", { name: "About" }), { key: "Home" }));
+  await act(async () => fireEvent.keyDown(screen.getByRole("radio", { name: "About" }), { key: "ArrowRight" }));
   expect(activitySidebarStore.getState().tab).toBe("agents");
-  await act(async () => fireEvent.keyDown(screen.getByRole("radio", { name: /Agents/ }), { key: "ArrowRight" }));
-  expect(activitySidebarStore.getState().tab).toBe("jobs");
 });
 
 test("activity tabs show each fraction as a detail line and About stays a single line", async () => {
@@ -876,7 +875,7 @@ test("activity tabs show each fraction as a detail line and About stays a single
   const tabs = screen.getAllByRole("radio");
   expect(tabs).toHaveLength(5);
   expect(tabs[0]?.className).toContain("wrap");
-  for (const tab of tabs.slice(0, 4)) {
+  for (const tab of tabs.slice(1)) {
     const spans = tab.querySelectorAll("span");
     expect(spans).toHaveLength(2);
     expect(tab.textContent).not.toContain("\n");
@@ -1111,6 +1110,7 @@ test("an embedded parent column's Overview rebases its ancestor crumb onto the c
     await user.click(screen.getByRole("button", { name: /session actions/i }));
     await user.click(screen.getByRole("menuitem", { name: /^Overview/ }));
     const sidebar = within(screen.getByTestId("activity-sidebar"));
+    fireEvent.click(sidebar.getByRole("radio", { name: /^Agents,/ }));
     // The held scope is the parent column "child", whose own ancestry is
     // proven against the canonical refs.
     await sidebar.findByRole("button", { name: /delegate owned by child/ });
@@ -1184,6 +1184,7 @@ test("a held parent in a cascade opened from a nested session keeps its ancestor
     await user.click(screen.getByRole("button", { name: /session actions/i }));
     await user.click(screen.getByRole("menuitem", { name: /^Overview/ }));
     const sidebar = within(screen.getByTestId("activity-sidebar"));
+    fireEvent.click(sidebar.getByRole("radio", { name: /^Agents,/ }));
     await sidebar.findByRole("button", { name: /delegate owned by parent/ });
     const crumbs = within(sidebar.getByRole("navigation", { name: "Scope" }));
     // The held scope is the parent column: its two ancestors above the

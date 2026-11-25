@@ -110,11 +110,11 @@ test("About renders the explicit remote session's hydrated accounting", async ()
   expect(screen.getByTestId("session-details-created")).toBeTruthy();
   expect(screen.getByTestId("session-details-updated")).toBeTruthy();
   expect(screen.getAllByRole("radio").map((el) => el.querySelector("span")?.textContent)).toEqual([
+    "About",
     "Agents",
     "Jobs",
     "Watches",
     "Tasks",
-    "About",
   ]);
   expect(screen.getByRole("radio", { name: "About" }).textContent).toBe("About");
   // The shell's eager catalog warm (stores/commandCatalog) reads
