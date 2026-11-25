@@ -123,6 +123,23 @@ describe("decodeInitializeResponse", () => {
     ).toThrow("invalid initialize response");
   });
 
+  test.each([true, false])("accepts the threadStartIdempotency capability %s", (threadStartIdempotency) => {
+    const response = {
+      ...FAKE_INITIALIZE_RESULT,
+      features: { ...FAKE_INITIALIZE_RESULT.features, threadStartIdempotency },
+    };
+    expect(decodeInitializeResponse(response)).toEqual(response);
+  });
+
+  test("rejects a malformed threadStartIdempotency capability", () => {
+    expect(() =>
+      decodeInitializeResponse({
+        ...FAKE_INITIALIZE_RESULT,
+        features: { ...FAKE_INITIALIZE_RESULT.features, threadStartIdempotency: "yes" },
+      }),
+    ).toThrow("invalid initialize response");
+  });
+
   // Additive wire changes need no version bump: a hub that advertises a feature
   // this build has never heard of must not fail the handshake. The decoder
   // ignores unknown feature keys (and preserves them) while staying strict

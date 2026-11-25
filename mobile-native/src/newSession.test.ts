@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { WireError } from "@evener/appwire-client";
+import type { Source } from "@evener/appwire-client";
 import { type ConversationClientLike, createNewSessionService } from "./conversation/services/newSession";
 import { type CreationDraft, CreationDraftRepository } from "./creationDraftRepository";
 import { creationImageDraft } from "./creationImageDraft";
@@ -1308,6 +1309,272 @@ describe("an uncertain start across a reopen (#3104)", () => {
 		// Put back as sent, it says a start may exist again.
 		own.getState().setPrompt("go");
 		expect(saved.get("hub-a")).toMatchObject({ prompt: "go", unconfirmed: true });
+	});
+});
+
+describe("idempotent thread/start with clientMutationId", () => {
+	function sqliteStorage() {
+		const { database, port } = openSqliteSyncDouble();
+		const drafts = new CreationDraftRepository(port);
+		return { database, storage: () => drafts };
+	}
+
+	function capableClient(
+		handler: (method: string, params: unknown) => Promise<unknown>,
+		threadStartIdempotency = true,
+	): ConversationClientLike {
+		return {
+			state: "ready",
+			onReady: () => () => {},
+			onStateChange: () => () => {},
+			onNotification: () => () => {},
+			initializeResult: {
+				serverInfo: { name: "hub", version: "1.0.0" },
+				protocolVersion: "evener-appwire-v7",
+				sourceId: "local",
+				features: {
+					threadList: true,
+					threadTurnsList: true,
+					turnStart: true,
+					turnSteer: true,
+					threadClear: true,
+					threadShutdown: true,
+					forkFromTurn: true,
+					tasks: true,
+					transcriptList: true,
+					modelList: true,
+					directoryComplete: true,
+					auth: true,
+					threadStartIdempotency,
+				},
+			},
+			request: handler as ConversationClientLike["request"],
+		};
+	}
+
+	it("persists clientMutationId in SQLite before dispatch, survives disconnect and reopen, retries with the same ID, and clears cleanly", async () => {
+		const { database, storage } = sqliteStorage();
+		try {
+			const sentIds: string[] = [];
+			const firstReply = deferred();
+			let attempt = 0;
+			const firstClient = capableClient(async (method, params) => {
+				if (method === "thread/start") {
+					const startParams = params as { clientMutationId?: string };
+					sentIds.push(startParams.clientMutationId ?? "");
+					expect(storage().read("hub-a")).toMatchObject({
+						unconfirmed: true,
+						clientMutationId: startParams.clientMutationId,
+					});
+					attempt += 1;
+					if (attempt === 1) return firstReply.promise;
+				}
+				return { data: [] };
+			});
+			const store = createNewSessionStore("hub-a", storage);
+			store.getState().bind(createNewSessionService(firstClient));
+			await store.getState().setCwd("/project", false);
+			store.getState().setPrompt("retry me");
+
+			const pending = store.getState().submit();
+			await flush();
+			expect(sentIds).toHaveLength(1);
+			const initialId = sentIds[0];
+			expect(initialId).toBeTruthy();
+
+			// Disconnect mid-flight -> store allows safe retry once reconnected.
+			store.getState().bind(null);
+			firstReply.reject(new Error("socket closed"));
+			expect(await pending).toEqual({ status: "obsolete" });
+			expect(storage().read("hub-a")?.clientMutationId).toBe(initialId);
+
+			// Simulate app restart reading from SQLite.
+			const reopened = createNewSessionStore("hub-a", storage);
+			expect(reopened.getState().unconfirmedCreation).toBe(true);
+			expect(reopened.getState().error).toBeTruthy();
+
+			const retryService = createNewSessionService(
+				capableClient(async (method, params) => {
+					if (method === "thread/start") {
+						const startParams = params as { clientMutationId?: string };
+						sentIds.push(startParams.clientMutationId ?? "");
+						if (sentIds.length === 2) throw new Error("transient drop");
+						return {
+							thread: { id: "t-rec", evener: { ref: "local:t-rec" } },
+							turn: { id: "turn_1", status: "inProgress" },
+						};
+					}
+					return { data: [] };
+				}),
+			);
+			reopened.getState().bind(retryService);
+			expect(reopened.getState().supportsStartIdempotency).toBe(true);
+			expect(reopened.getState().startMayRepeat()).toBe(false);
+
+			expect(await reopened.getState().submit()).toEqual({ status: "failed" });
+			expect(reopened.getState().startMayRepeat()).toBe(false);
+			expect(storage().read("hub-a")?.clientMutationId).toBe(initialId);
+
+			const outcome = await reopened.getState().submit();
+			expect(outcome).toMatchObject({ status: "created", thread: { evener: { ref: "local:t-rec" } } });
+			expect(sentIds).toEqual([initialId, initialId, initialId]);
+			expect(reopened.getState().error).toBeNull();
+			expect(storage().read("hub-a")).toBeNull();
+		} finally {
+			database.close();
+		}
+	});
+
+	it("clears clientMutationId on draft edits, model-list changes, host switches, notAccepted, and blocked errors", async () => {
+		const { database, storage } = sqliteStorage();
+		try {
+			const sentIds: Array<string | undefined> = [];
+			let mode: "transient" | "notAccepted" | "blocked" | "ok" = "transient";
+			let listedModels = [model];
+			const store = createNewSessionStore("hub-a", storage);
+			store.getState().bind(
+				createNewSessionService(
+					capableClient(async (method, params) => {
+						if (method === "model/list") return { data: listedModels };
+						if (method === "evener/host/request") {
+							const req = params as { method: string };
+							if (req.method === "evener/path/validate") return { path: "/project", valid: true };
+							if (req.method === "model/list") return { data: listedModels };
+							return { data: [] };
+						}
+						if (method === "thread/start") {
+							sentIds.push((params as { clientMutationId?: string }).clientMutationId);
+							if (mode === "transient") throw new Error("socket closed");
+							if (mode === "notAccepted") {
+								throw new WireError("bad cwd", -32602, {
+									evenerErrorInfo: "invalidParams",
+									mutationOutcome: "notAccepted",
+								});
+							}
+							if (mode === "blocked") {
+								throw new WireError("uncertain", -32000, {
+									evenerErrorInfo: "mutationOutcomeUnknown",
+									mutationOutcome: "unknown",
+									retryDisposition: "blocked",
+								});
+							}
+							return { thread: { id: "t-ok", evener: { ref: "local:t-ok" } }, turn: {} };
+						}
+						return { data: [] };
+					}),
+				),
+			);
+			store.getState().setSources([
+				{ id: "local", label: "this host", kind: "local", online: true, threadStartIdempotency: true },
+				{ id: "cap-remote", label: "cap-remote", kind: "appwire", online: true, threadStartIdempotency: true },
+			]);
+
+			await store.getState().setCwd("/project");
+			store.getState().selectModel(model);
+			store.getState().setReasoning("high");
+			store.getState().setPrompt("v1");
+			await store.getState().submit();
+			const id1 = sentIds[0];
+			expect(id1).toBeTruthy();
+
+			// Model-list refresh with SAME model+effort keeps clientMutationId.
+			await store.getState().loadModels(true);
+			expect(storage().read("hub-a")?.clientMutationId).toBe(id1);
+
+			// Model-list eviction dropping effort clears clientMutationId so retry never hits ConflictingMutationID.
+			listedModels = [{ ...model, reasoningEffortLevels: ["low"] }];
+			await store.getState().loadModels(true);
+			expect(storage().read("hub-a")?.clientMutationId).toBeUndefined();
+			expect(store.getState().startMayRepeat()).toBe(true);
+
+			// Editing prompt clears unconfirmed hold and mints fresh ID.
+			store.getState().setPrompt("v2");
+			expect(store.getState().startMayRepeat()).toBe(false);
+			await store.getState().submit();
+			const id2 = sentIds[1];
+			expect(id2).toBeTruthy();
+			expect(id2).not.toBe(id1);
+
+			// Switching host clears clientMutationId and omits on unsettled/unlisted or older remote; keys capable remote.
+			await store.getState().changeHost("cap-remote", "cap-remote");
+			expect(storage().read("hub-a")?.clientMutationId).toBeUndefined();
+			await store.getState().submit();
+			const id3 = sentIds[2];
+			expect(id3).toBeTruthy();
+			expect(id3).not.toBe(id2);
+
+			// notAccepted clears clientMutationId and allows immediate fresh submit.
+			mode = "notAccepted";
+			await store.getState().submit();
+			expect(sentIds[3]).toBe(id3);
+			expect(storage().read("hub-a")?.clientMutationId).toBeUndefined();
+			expect(store.getState().unconfirmedCreation).toBe(false);
+			expect(store.getState().startMayRepeat()).toBe(false);
+
+			// blocked clears clientMutationId and sets startMayRepeat() === true until edited.
+			mode = "blocked";
+			await store.getState().submit();
+			const id4 = sentIds[4];
+			expect(id4).toBeTruthy();
+			expect(id4).not.toBe(id3);
+			expect(storage().read("hub-a")?.clientMutationId).toBeUndefined();
+			expect(store.getState().startMayRepeat()).toBe(true);
+			expect(await store.getState().submit()).toEqual({ status: "blocked" });
+
+			store.getState().setPrompt("v3");
+			expect(store.getState().startMayRepeat()).toBe(false);
+			mode = "ok";
+			expect(await store.getState().submit()).toMatchObject({ status: "created" });
+			expect(sentIds[5]).not.toBe(id4);
+		} finally {
+			database.close();
+		}
+	});
+
+	it("keeps older hubs and older or unsettled remote hosts keyless with startMayRepeat === true after failure", async () => {
+		const { database, storage } = sqliteStorage();
+		try {
+			const sent: Array<Record<string, unknown>> = [];
+			const store = createNewSessionStore("hub-a", storage);
+			const sources: Source[] = [
+				{ id: "local", label: "this host", kind: "local", online: true, threadStartIdempotency: true },
+				{ id: "older-remote", label: "older-remote", kind: "appwire", online: true, threadStartIdempotency: false },
+			];
+			store.getState().bind(
+				createNewSessionService(
+					capableClient(async (method, params) => {
+						if (method === "evener/host/request") {
+							const req = params as { method: string };
+							if (req.method === "evener/path/validate") return { path: "/remote", valid: true };
+							return { data: [] };
+						}
+						if (method === "thread/start") {
+							sent.push(params as Record<string, unknown>);
+							throw new Error("drop");
+						}
+						return { data: [] };
+					}, true),
+				),
+			);
+			// Remote host with unsettled sources (null) stays keyless.
+			await store.getState().changeHost("older-remote", "older-remote");
+			await store.getState().setCwd("/remote", false);
+			store.getState().setPrompt("remote");
+			expect(store.getState().supportsStartIdempotency).toBe(false);
+			expect(await store.getState().submit()).toEqual({ status: "failed" });
+			expect("clientMutationId" in (sent[0] ?? {})).toBe(false);
+			expect(store.getState().startMayRepeat()).toBe(true);
+
+			// Once manifest settles showing threadStartIdempotency: false, still keyless & held.
+			store.getState().setPrompt("remote-2");
+			store.getState().setSources(sources);
+			expect(store.getState().supportsStartIdempotency).toBe(false);
+			expect(await store.getState().submit()).toEqual({ status: "failed" });
+			expect("clientMutationId" in (sent[1] ?? {})).toBe(false);
+			expect(store.getState().startMayRepeat()).toBe(true);
+		} finally {
+			database.close();
+		}
 	});
 });
 

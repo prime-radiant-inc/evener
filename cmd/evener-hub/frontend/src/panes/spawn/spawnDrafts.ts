@@ -75,6 +75,7 @@ interface DraftFields {
    * remount restores the dialog, so the binding has to survive it too. */
   createDialogPath: string | null;
   createDialogHost: string | null;
+  pendingStart: { clientMutationId: string; fingerprint: string } | null;
 }
 
 function createDraft(cwd: string) {
@@ -107,6 +108,7 @@ function createDraft(cwd: string) {
       busyStartedAt: null,
       createDialogPath: null,
       createDialogHost: null,
+      pendingStart: null,
     })),
     attachments: createAttachmentStore(),
     busyRef: { current: false },

@@ -69,6 +69,7 @@ function forkEntrySourceItemKey(transcriptEntryIndex: number): string {
 // with AppwireClient and FakeClient, so tests inject a FakeClient without
 // pulling the real class's reconnect/heartbeat machinery.
 export interface ConversationClientLike extends Pick<AppwireClientLike, "state" | "onReady" | "onStateChange"> {
+	readonly initializeResult?: AppwireClientLike["initializeResult"];
 	request<M extends MethodName>(
 		method: M,
 		params: MethodTypes[M]["params"],

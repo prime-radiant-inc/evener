@@ -154,7 +154,11 @@ test.each(["input", "close", "reset", "replacement"] as const)(
         expect(bv.positioningRevision).toBe(neighborRevision);
         expect(ap.scrollTop).toBe(100);
       } else {
-        av.setReadable(false);
+        // Readability publishes the reader's activation to React state, so this
+        // transition updates outside the renderer and needs act.
+        await act(async () => {
+          av.setReadable(false);
+        });
         expect(av.getCapture()).toMatchObject({ anchorOffset: -900 });
         const replacement: OpenPaneRecord = { ...a, params: { ref: "shared" } };
         await act(async () => {

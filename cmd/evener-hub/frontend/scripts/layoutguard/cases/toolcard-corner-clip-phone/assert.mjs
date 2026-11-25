@@ -1,23 +1,18 @@
-// A one-element tool card must leave the Open control's whole touch target
-// reachable and still keep the last row's evidence band inside its rounded
-// lower corners.
+import { rowContractFailures } from "./row-contracts.mjs";
+
+// A one-element tool group keeps the shared tool-row contracts on a phone: the
+// Open control's 44px touch target overhangs its line yet stays reachable at
+// both edges, the last rendered row's evidence band spans its row, and a
+// suppressed member's empty wrapper adds no space below that band.
 export default function assert(m) {
-  const failures = [];
-  if (!m.openTopReachesControl)
+  const failures = rowContractFailures(m);
+  if (Math.abs(m.groupBottom - m.bandBottom) > 0.5)
     failures.push(
-      `a tap inside the Open control's top edge lands on ${m.openTopHit} - the card clips its touch target`,
+      `the suppressed member's empty wrapper adds ${m.groupBottom - m.bandBottom}px below the evidence band`,
     );
-  if (!m.openBottomReachesControl)
-    failures.push(
-      `a tap inside the Open control's bottom edge lands on ${m.openBottomHit} - the card clips its touch target`,
-    );
-  if (!(m.cardRadius > 0)) failures.push("the card has no rounded lower corner to keep the band inside");
-  if (!m.bandReachesCardEdge) failures.push("the last row's evidence band does not run to the card's lower-left edge");
-  if (m.bandCornerPainted)
-    failures.push("the evidence band paints its square corner outside the card's rounded corner");
   if (failures.length > 0) return { pass: false, reason: failures.join("; ") };
   return {
     pass: true,
-    reason: `the ${m.openHeight}px Open control is reachable at both edges, and the band runs to the card edge inside its ${m.cardRadius}px corner`,
+    reason: `the ${m.openHeight}px Open control is reachable at both edges, the evidence band spans its row and ends the group, and the empty suppressed wrapper adds no space`,
   };
 }

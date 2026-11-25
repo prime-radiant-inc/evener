@@ -1453,6 +1453,7 @@ Underlying Go kind: `string` (no struct fields).
 | `auth` | bool |  |  |
 | `transcriptDisplaySettings` | bool | yes |  |
 | `keybindingsSettings` | bool | yes |  |
+| `threadStartIdempotency` | bool | yes |  |
 
 
 ### `FencingEpoch`
@@ -5104,6 +5105,7 @@ Underlying Go kind: `string` (no struct fields).
 | `nonInteractive` | \*bool | yes |  |
 | `launchOverrides` | \*[appwire.LaunchConfigLayer](#launchconfiglayer) | yes |  |
 | `manager` | bool | yes |  |
+| `clientMutationId` | string | yes |  |
 
 
 ### `ThreadStartResponse`
@@ -5112,6 +5114,8 @@ Underlying Go kind: `string` (no struct fields).
 |-------|---------|-----------|----------|
 | `thread` | [appwire.Thread](#thread) |  |  |
 | `turn` | [appwire.Turn](#turn) |  |  |
+| `clientMutationId` | string | yes |  |
+| `disposition` | [appwire.MutationDisposition](#mutationdisposition) | yes |  |
 
 
 ### `ThreadStartedParams`
