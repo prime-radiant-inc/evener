@@ -2,7 +2,7 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createRef } from "react";
 import { expect, test, vi } from "vitest";
-import { readModuleCss } from "../../styles/cssBlock";
+import { readModuleCss, topRuleBlock } from "../../styles/cssBlock";
 import { ListRow, type ListRowProps } from "./index";
 
 function css(): string {
@@ -319,9 +319,17 @@ test("the collection row is a framed surface; the plain row is not", () => {
 });
 
 test("an interactive row washes on hover and rings inset on keyboard focus", () => {
-  expect(rule('.interactive:hover:not(:disabled):not([aria-disabled="true"]):not([aria-current])')).toContain(
-    "background: var(--hover-1)",
-  );
+  // The neutral wash is the shared row-chrome recipe both this row and the
+  // command palette's option rows compose; the current-row exclusion is what
+  // keeps this row's selected lift on top of the pointer.
+  const chrome = readModuleCss(import.meta.url, "../internal/rowChrome.module.css");
+  expect(
+    topRuleBlock(
+      chrome,
+      '.rowInteractive:hover:not(:disabled):not([aria-disabled="true"]):not([aria-current]):not([aria-selected="true"])',
+    ),
+  ).toContain("background: var(--hover-1)");
+  expect(rule(".interactive")).toContain('composes: rowInteractive from "../internal/rowChrome.module.css"');
   const focus = rule(".interactive:focus-visible");
   expect(focus).toContain("outline: var(--focus-ring)");
   expect(focus).toContain("outline-offset: -2px");
