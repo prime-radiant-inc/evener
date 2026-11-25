@@ -47,6 +47,7 @@ import { activitySidebarStore, resetActivitySidebarStoreForTests } from "../acti
 import { ClientProvider } from "../clientContext";
 import { MobilePanel } from "../mobile/MobilePanel";
 import { registerPaneForTests } from "../paneRegistry";
+import { MOBILE_QUERY, resetMobileViewportForTests, TABLET_QUERY } from "../useIsMobile";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
 import { archiveSessionIdentity, Rail } from "./Rail";
 import railStyles from "./Rail.module.css";
@@ -2248,24 +2249,34 @@ describe("resource-backed Rail", () => {
   });
 
   test("the mobile drawer groups actions with its title and closes on the already-focused session", () => {
-    installState([sectionResource("live", [summary({ ref: "local:active", session_id: "active", title: "Active" })])]);
-    const paneId = workspaceStore.getState().openPane("session", { ref: "local:active" });
-    expect(workspaceStore.getState().focusedPaneId).toBe(paneId);
-    const onClose = vi.fn();
-    render(<MobilePanel rail={<Rail />} open onClose={onClose} />);
+    const restoreViewport = installMobileViewport();
+    resetMobileViewportForTests();
+    try {
+      installState([
+        sectionResource("live", [summary({ ref: "local:active", session_id: "active", title: "Active" })]),
+      ]);
+      const paneId = workspaceStore.getState().openPane("session", { ref: "local:active" });
+      expect(workspaceStore.getState().focusedPaneId).toBe(paneId);
+      const onClose = vi.fn();
+      render(<MobilePanel rail={<Rail />} open onClose={onClose} />);
 
-    const drawer = screen.getByRole("dialog");
-    const title = document.getElementById(drawer.getAttribute("aria-labelledby") ?? "");
-    const header = title?.closest("header");
-    expect(header?.contains(within(drawer).getByTestId("rail-settings"))).toBe(true);
-    expect(header?.contains(within(drawer).getByTestId("rail-search"))).toBe(true);
-    expect(header?.contains(within(drawer).getByRole("button", { name: "Close" }))).toBe(true);
-    expect(within(drawer).queryByTestId("rail-brand")).toBeNull();
+      const drawer = screen.getByRole("dialog");
+      const title = document.getElementById(drawer.getAttribute("aria-labelledby") ?? "");
+      const header = title?.closest("header");
+      expect(header?.contains(within(drawer).getByTestId("rail-settings"))).toBe(true);
+      expect(within(drawer).queryByTestId("rail-search")).toBeNull();
+      expect(header?.contains(within(drawer).getByRole("button", { name: "Close" }))).toBe(true);
+      expect(within(drawer).getByRole("searchbox")).toBeTruthy();
+      expect(within(drawer).queryByTestId("rail-brand")).toBeNull();
 
-    fireEvent.click(within(sectionRoot("Live")).getByText("Active"));
+      fireEvent.click(within(sectionRoot("Live")).getByText("Active"));
 
-    expect(workspaceStore.getState().focusedPaneId).toBe(paneId);
-    expect(onClose).toHaveBeenCalled();
+      expect(workspaceStore.getState().focusedPaneId).toBe(paneId);
+      expect(onClose).toHaveBeenCalled();
+    } finally {
+      restoreViewport();
+      resetMobileViewportForTests();
+    }
   });
 
   test("a loading row is passive: keyboard activation persists no expansion override", () => {
@@ -4116,5 +4127,373 @@ describe("archived rows come from evener/archived/list", () => {
       vi.unstubAllGlobals();
       RailBoundaryObserver.observers = [];
     }
+  });
+
+  describe("inline sessions board search (<= 899px)", () => {
+    afterEach(() => {
+      resetMobileViewportForTests();
+    });
+
+    test("renders the palette trigger without an inline filter on desktop, and swaps to an inline filter on phone and tablet", () => {
+      installState([sectionResource("live", [summary({ ref: "local:s1", session_id: "s1", title: "Alpha" })])]);
+
+      const desktop = render(<Rail />);
+      expect(screen.getByTestId("rail-search")).toBeTruthy();
+      expect(screen.queryByRole("searchbox")).toBeNull();
+      desktop.unmount();
+
+      const restoreTablet = installMobileViewport([MOBILE_QUERY, TABLET_QUERY]);
+      resetMobileViewportForTests();
+      try {
+        const tablet = render(<Rail />);
+        expect(screen.queryByTestId("rail-search")).toBeNull();
+        expect(screen.getByTestId("rail-settings")).toBeTruthy();
+        const tabletFilter = within(screen.getByTestId("rail-header")).getByRole("searchbox") as HTMLInputElement;
+        expect(tabletFilter.type).toBe("text");
+        expect(tabletFilter.getAttribute("role")).toBe("searchbox");
+        tablet.unmount();
+      } finally {
+        restoreTablet();
+      }
+
+      const restorePhone = installMobileViewport(MOBILE_QUERY);
+      resetMobileViewportForTests();
+      try {
+        render(<MobilePanel rail={<Rail />} open onClose={vi.fn()} />);
+        const drawer = screen.getByRole("dialog");
+        expect(within(drawer).queryByTestId("rail-search")).toBeNull();
+        expect(within(drawer).getByTestId("rail-settings")).toBeTruthy();
+        expect(within(drawer).getByRole("searchbox")).toBeTruthy();
+      } finally {
+        restorePhone();
+      }
+    });
+
+    test("filters sessions in place by title, subtitle/status, project, and remote host, hiding empty sections and auto-expanding matches", () => {
+      const restoreViewport = installMobileViewport([MOBILE_QUERY, TABLET_QUERY]);
+      resetMobileViewportForTests();
+      try {
+        const liveQuestion = summary({
+          ref: "local:q1",
+          session_id: "q1",
+          title: "Deploy check",
+          project: "Alpha",
+          state: "awaiting",
+          ask_pending: true,
+          question: { text: "Should we roll forward?", count: 1 },
+        });
+        const liveWorking = summary({
+          ref: "buildbox:w1",
+          host_id: "buildbox",
+          session_id: "w1",
+          title: "CI runner",
+          project: "Beta",
+          state: "active",
+          running_job_intent: "Running integration matrix",
+        });
+        const pinnedSession = summary({
+          ref: "local:pin1",
+          session_id: "pin1",
+          title: "Weekly triage",
+          project: "Ops",
+          state: "idle",
+        });
+        const collapsedProjectSession = summary({
+          ref: "local:p1",
+          session_id: "p1",
+          title: "Refactor parser",
+          project: "Gamma",
+          state: "idle",
+          live: false,
+          dormant: true,
+        });
+        const archivedMatch = summary({
+          ref: "local:arch1",
+          session_id: "arch1",
+          title: "Legacy migration",
+          project: "Gamma",
+          state: "closed",
+          live: false,
+        });
+
+        installState(
+          [
+            sectionResource("live", [liveQuestion, liveWorking]),
+            sectionResource("needs_you", [liveQuestion]),
+            resource(
+              { kind: "pin_catalog", offset: 0, limit: 100 },
+              {
+                generation_id: "g1",
+                revision: 1,
+                pin_sections: [{ id: "sec-ops", name: "Urgent", count: 1 }],
+                remaining: 0,
+              },
+            ),
+            resource(
+              { kind: "pin_section", sectionId: "sec-ops", offset: 0, limit: 50 },
+              { generation_id: "g1", revision: 1, section_id: "sec-ops", sessions: [pinnedSession], remaining: 0 },
+            ),
+            resource(
+              { kind: "catalog", catalog: "projects", offset: 0, limit: 100 },
+              {
+                generation_id: "g1",
+                revision: 1,
+                projects: [
+                  { key: "gamma", name: "Gamma", default_expanded: false, session_count: 2, more_archived: 1 },
+                ],
+                remaining: 0,
+              },
+            ),
+            projectResource("gamma", [collapsedProjectSession]),
+          ],
+          manifest({
+            sources: [
+              { id: "local", label: "Local", kind: "local", online: true },
+              { id: "buildbox", label: "Build Box", kind: "ssh", online: true },
+            ],
+            sections: { live: { count: 2 }, needs_you: { count: 1 }, pin_sections: { count: 1 } },
+            catalogs: { projects: { count: 1 }, archived_projects: { count: 0 }, test_runs: { count: 0 } },
+          }),
+        );
+        archivedListStore.setState({
+          lists: {
+            [archivedListKey("projects", "gamma")]: {
+              rows: [archivedMatch],
+              total: 1,
+              loaded: true,
+              loading: false,
+              error: null,
+            },
+          },
+        });
+        render(<Rail />);
+
+        // Before filtering: collapsed project and archived sessions are closed.
+        expect(document.querySelector('[data-session-ref="local:p1"]')).toBeNull();
+        expect(document.querySelector('[data-session-ref="local:arch1"]')).toBeNull();
+        expect(screen.getByRole("button", { name: "Organize by" })).toBeTruthy();
+
+        const filter = screen.getByRole("searchbox") as HTMLInputElement;
+
+        // Match by pending question subtitle: only Needs you row stays, other sections hide.
+        fireEvent.change(filter, { target: { value: "roll forward" } });
+        expect(screen.queryByRole("button", { name: "Organize by" })).toBeNull();
+        expect(document.querySelector('[data-session-ref="local:q1"]')).not.toBeNull();
+        expect(document.querySelector('[data-session-ref="buildbox:w1"]')).toBeNull();
+        expect(document.querySelector('[data-session-ref="local:pin1"]')).toBeNull();
+        expect(screen.queryByRole("button", { name: /^Urgent/i })).toBeNull();
+        expect(screen.queryByRole("button", { name: /^Archived sessions/i })).toBeNull();
+
+        // Match by remote host display name and running job intent.
+        fireEvent.change(filter, { target: { value: "build box" } });
+        expect(document.querySelector('[data-session-ref="buildbox:w1"]')).not.toBeNull();
+        expect(document.querySelector('[data-session-ref="local:q1"]')).toBeNull();
+
+        fireEvent.change(filter, { target: { value: "INTEGRATION MATRIX" } });
+        expect(document.querySelector('[data-session-ref="buildbox:w1"]')).not.toBeNull();
+
+        // Match by dormant status text.
+        fireEvent.change(filter, { target: { value: "not started" } });
+        expect(document.querySelector('[data-session-ref="local:p1"]')).not.toBeNull();
+        expect(document.querySelector('[data-session-ref="local:q1"]')).toBeNull();
+
+        // Match by project name auto-expands collapsed project and collapsed Archived sessions.
+        fireEvent.change(filter, { target: { value: "gamma" } });
+        expect(screen.queryByRole("button", { name: "Organize by" })).toBeNull();
+        expect(document.querySelector('[data-session-ref="local:p1"]')).not.toBeNull();
+        expect(document.querySelector('[data-session-ref="local:arch1"]')).not.toBeNull();
+        expect(document.querySelector('[data-session-ref="local:q1"]')).toBeNull();
+
+        // Match inside pinned category preserves category heading and hides unmatched sections.
+        fireEvent.change(filter, { target: { value: "weekly triage" } });
+        expect(document.querySelector('[data-session-ref="local:pin1"]')).not.toBeNull();
+        expect(screen.getByRole("button", { name: /^Urgent/i })).toBeTruthy();
+        expect(screen.queryByRole("button", { name: /^Live/i })).toBeNull();
+
+        // Selecting a matching session on the persistent tablet board opens it while keeping the filter active.
+        fireEvent.click(screen.getByText("Weekly triage"));
+        expect(window.location.pathname).toBe("/s/local%3Apin1");
+        expect(filter.value).toBe("weekly triage");
+
+        // Clearing via the clear button restores normal expansion state (collapsed stays collapsed) and returns focus.
+        fireEvent.click(screen.getByTestId("rail-filter-clear"));
+        expect(filter.value).toBe("");
+        expect(document.activeElement).toBe(filter);
+        expect(screen.queryByTestId("rail-filter-clear")).toBeNull();
+        expect(screen.getByRole("button", { name: "Organize by" })).toBeTruthy();
+        expect(document.querySelector('[data-session-ref="local:q1"]')).not.toBeNull();
+        expect(document.querySelector('[data-session-ref="local:p1"]')).toBeNull();
+        expect(document.querySelector('[data-session-ref="local:arch1"]')).toBeNull();
+        window.history.replaceState({}, "", "/");
+      } finally {
+        restoreViewport();
+      }
+    });
+
+    test("keeps unloaded idle projects and archived project stubs visible collapsed when matched by name and loads them on expand", () => {
+      const restoreViewport = installMobileViewport([MOBILE_QUERY, TABLET_QUERY]);
+      resetMobileViewportForTests();
+      try {
+        installState(
+          [
+            resource(
+              { kind: "catalog", catalog: "projects", offset: 0, limit: 100 },
+              {
+                generation_id: "g1",
+                revision: 1,
+                projects: [{ key: "delta", name: "Delta", default_expanded: false, session_count: 2 }],
+                remaining: 0,
+              },
+            ),
+            resource(
+              { kind: "catalog", catalog: "archived_projects", offset: 0, limit: 100 },
+              {
+                generation_id: "g1",
+                revision: 1,
+                projects: [{ key: "old-delta", name: "Delta Legacy", session_count: 1 }],
+                remaining: 0,
+              },
+            ),
+          ],
+          manifest({
+            sections: { live: { count: 0 }, needs_you: { count: 0 }, pin_sections: { count: 0 } },
+            catalogs: { projects: { count: 1 }, archived_projects: { count: 1 }, test_runs: { count: 0 } },
+          }),
+        );
+        const loadProject = vi.fn().mockResolvedValue(undefined);
+        navigationStore.setState({ loadProject });
+        render(<Rail />);
+
+        fireEvent.change(screen.getByRole("searchbox"), { target: { value: "delta" } });
+        const unloadedProject = screen.getByRole("treeitem", { name: /^Delta$/i });
+        expect(unloadedProject.getAttribute("aria-expanded")).toBe("false");
+        const unloadedArchived = screen.getByRole("treeitem", { name: /^Delta Legacy$/i });
+        expect(unloadedArchived.getAttribute("aria-expanded")).toBe("false");
+
+        fireEvent.click(within(unloadedProject).getByText("Delta"));
+        expect(unloadedProject.getAttribute("aria-expanded")).toBe("true");
+        expect(loadProject).toHaveBeenCalledWith("delta");
+      } finally {
+        restoreViewport();
+      }
+    });
+
+    test("Escape clears a non-empty filter before closing the phone drawer, and ArrowDown moves focus into the filtered tree", () => {
+      const restoreViewport = installMobileViewport(MOBILE_QUERY);
+      resetMobileViewportForTests();
+      try {
+        installState([
+          sectionResource("live", [
+            summary({ ref: "local:a", session_id: "a", title: "Alpha task" }),
+            summary({ ref: "local:b", session_id: "b", title: "Beta task" }),
+          ]),
+        ]);
+        const onClose = vi.fn();
+        render(<MobilePanel rail={<Rail />} open onClose={onClose} />);
+
+        const filter = screen.getByRole("searchbox") as HTMLInputElement;
+        act(() => filter.focus());
+        fireEvent.change(filter, { target: { value: "beta" } });
+        expect(document.querySelector('[data-session-ref="local:b"]')).not.toBeNull();
+        expect(document.querySelector('[data-session-ref="local:a"]')).toBeNull();
+
+        // ArrowDown moves keyboard focus into the filtered tree.
+        fireEvent.keyDown(filter, { key: "ArrowDown" });
+        expect(document.activeElement?.getAttribute("role")).toBe("treeitem");
+
+        // First Escape on non-empty filter clears query without dismissing the drawer.
+        act(() => filter.focus());
+        fireEvent.keyDown(filter, { key: "Escape" });
+        expect(filter.value).toBe("");
+        expect(onClose).not.toHaveBeenCalled();
+        expect(document.querySelector('[data-session-ref="local:a"]')).not.toBeNull();
+
+        // Second Escape on empty filter bubbles to the Sheet and closes the drawer.
+        fireEvent.keyDown(filter, { key: "Escape" });
+        expect(onClose).toHaveBeenCalledTimes(1);
+      } finally {
+        restoreViewport();
+      }
+    });
+
+    test("shows an empty-filter status with clear action on zero matches and suppresses archive auto-load while filtering", async () => {
+      const restoreViewport = installMobileViewport(MOBILE_QUERY);
+      resetMobileViewportForTests();
+      vi.stubGlobal("IntersectionObserver", RailBoundaryObserver);
+      try {
+        const client = new FakeClient("ready");
+        const cursors: Array<string | undefined> = [];
+        client.on("evener/archived/list", (params) => {
+          cursors.push(params.cursor);
+          return { sessions: [archivedRow(2)], total: 4 };
+        });
+        connectionStore.getState().connect(client);
+        installState([archivedCatalog(4), projectResource("p", [summary({ ref: "local:now", title: "Now" })])]);
+        installList([archivedRow(0), archivedRow(1)], 4, "cursor-1");
+        render(<Rail />, client);
+
+        const filter = screen.getByRole("searchbox") as HTMLInputElement;
+        fireEvent.change(filter, { target: { value: "no-such-session-xyz" } });
+
+        const status = screen.getByRole("status");
+        expect(status).toBeTruthy();
+        expect(document.querySelectorAll('[role="treeitem"]')).toHaveLength(0);
+        expect(screen.queryByTestId("rail-row-overflow")).toBeNull();
+        expect(RailBoundaryObserver.observers).toHaveLength(0);
+        expect(cursors).toEqual([]);
+
+        // Filter matching one archived row auto-expands Archived without mounting an overflow observer.
+        fireEvent.change(filter, { target: { value: "old run 0" } });
+        expect(document.querySelector('[data-session-ref="local:old-0"]')).not.toBeNull();
+        expect(screen.queryByTestId("rail-row-overflow")).toBeNull();
+        expect(RailBoundaryObserver.observers).toHaveLength(0);
+
+        // Clear from the empty-filter state button restores the list.
+        fireEvent.change(filter, { target: { value: "no-such-session-xyz" } });
+        fireEvent.click(within(screen.getByRole("status")).getByRole("button"));
+        expect(filter.value).toBe("");
+        expect(screen.queryByRole("status")).toBeNull();
+      } finally {
+        vi.unstubAllGlobals();
+        RailBoundaryObserver.observers = [];
+        restoreViewport();
+      }
+    });
+
+    test("resets any active mobile filter when crossing to desktop width", () => {
+      let matchesMobile = true;
+      const listeners = new Set<(event: MediaQueryListEvent) => void>();
+      const original = window.matchMedia;
+      window.matchMedia = ((media: string) => ({
+        get matches() {
+          return media === MOBILE_QUERY ? matchesMobile : false;
+        },
+        media,
+        addEventListener: (_: string, listener: (event: MediaQueryListEvent) => void) => listeners.add(listener),
+        removeEventListener: (_: string, listener: (event: MediaQueryListEvent) => void) => listeners.delete(listener),
+      })) as unknown as typeof window.matchMedia;
+      resetMobileViewportForTests();
+      try {
+        installState([
+          sectionResource("live", [
+            summary({ ref: "local:a", session_id: "a", title: "Alpha" }),
+            summary({ ref: "local:b", session_id: "b", title: "Beta" }),
+          ]),
+        ]);
+        render(<Rail />);
+        fireEvent.change(screen.getByRole("searchbox"), { target: { value: "beta" } });
+        expect(document.querySelector('[data-session-ref="local:a"]')).toBeNull();
+
+        matchesMobile = false;
+        act(() => {
+          for (const listener of listeners) listener({ matches: false } as MediaQueryListEvent);
+        });
+        expect(screen.queryByRole("searchbox")).toBeNull();
+        expect(screen.getByTestId("rail-search")).toBeTruthy();
+        expect(document.querySelector('[data-session-ref="local:a"]')).not.toBeNull();
+      } finally {
+        window.matchMedia = original;
+      }
+    });
   });
 });

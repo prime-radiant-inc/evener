@@ -240,7 +240,9 @@ describe("resizable width", () => {
       })),
     );
     render(<RailHost />);
-    expect(screen.getByTestId("rail-search")).toBeTruthy(); // the rail itself is there
+    expect(screen.getByTestId("rail")).toBeTruthy();
+    expect(screen.queryByTestId("rail-search")).toBeNull();
+    expect(screen.getByRole("searchbox")).toBeTruthy();
     expect(screen.queryByTestId("rail-resize-handle")).toBeNull();
     const body = document.querySelector(`.${railStyles.body}`);
     expect(railStyles.parentScrollBody).toBeTruthy();

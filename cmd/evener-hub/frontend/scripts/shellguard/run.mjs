@@ -107,22 +107,31 @@ async function measureOnPage(cdpEndpoint, sharedTabId, vitePort, viewport, expre
         const settings = sheetHeader?.querySelector('[data-testid="rail-settings"]');
         const search = sheetHeader?.querySelector('[data-testid="rail-search"]');
         const close = sheetHeader?.querySelector('[aria-label="Close"]');
+        const filter = dialog?.querySelector('[data-testid="rail-filter"]');
         return {
           mode: "sheet",
           hasBrand: brand !== null,
+          hasSearch: search !== null,
+          hasFilter: filter !== null,
+          isDesktop: false,
           containerRight: dialog ? dialog.getBoundingClientRect().right : null,
-          items: [title, settings, search, close].map((el) => box(el, sheetHeader)),
+          items: [title, settings, close].map((el) => box(el, sheetHeader)),
         };
       }
       const settings = document.querySelector('[data-testid="rail-settings"]');
       const search = document.querySelector('[data-testid="rail-search"]');
       const hide = brand?.querySelector('[aria-label="Hide sidebar"]');
       const wordmark = document.querySelector('[data-testid="rail-wordmark"]');
+      const filter = document.querySelector('[data-testid="rail-filter"]');
+      const isDesktop = window.innerWidth > 899;
       return {
         mode: "brand",
         hasBrand: brand !== null,
+        hasSearch: search !== null,
+        hasFilter: filter !== null,
+        isDesktop,
         containerRight: null,
-        items: [wordmark, settings, search, ...(window.innerWidth > 899 ? [hide] : [])].map((el) => box(el, brand)),
+        items: (isDesktop ? [wordmark, settings, search, hide] : [wordmark, settings]).map((el) => box(el, brand)),
       };
     })())`,
       ),
@@ -154,8 +163,22 @@ async function measureOnPage(cdpEndpoint, sharedTabId, vitePort, viewport, expre
     if (header.mode === "sheet" && header.hasBrand) {
       throw new Error(`rail header at ${viewport.width}px: unexpected rail-brand inside phone drawer`);
     }
+    if (header.mode === "sheet" || !header.isDesktop) {
+      if (header.hasSearch) {
+        throw new Error(`rail header at ${viewport.width}px: unexpected duplicate rail-search button below 900px`);
+      }
+      if (!header.hasFilter) {
+        throw new Error(`rail header at ${viewport.width}px: missing inline rail-filter input below 900px`);
+      }
+    } else if (header.hasFilter) {
+      throw new Error(`rail header at ${viewport.width}px: unexpected inline rail-filter input on desktop`);
+    }
     const labels =
-      header.mode === "sheet" ? ["title", "Settings", "Search", "Close"] : ["wordmark", "Settings", "Search", "Hide sidebar"];
+      header.mode === "sheet"
+        ? ["title", "Settings", "Close"]
+        : header.isDesktop
+          ? ["wordmark", "Settings", "Search", "Hide sidebar"]
+          : ["wordmark", "Settings"];
     const containerRight = header.mode === "sheet" ? header.containerRight : railBox?.right ?? null;
     for (let i = 0; i < header.items.length; i++) {
       const box = header.items[i];
@@ -703,7 +726,12 @@ function assertMobileResult(result) {
       `mobile document is ${result.document.scrollHeight}px tall in a ${MOBILE_VIEWPORT.height}px viewport`,
     );
   }
-  if (result.searchBox) failures.push("mobile inline search box is still rendered");
+  if (result.searchBox) {
+    failures.push("mobile inline search box uses native type=search (renders duplicate clear button)");
+  }
+  if (!result.railFilter) {
+    failures.push("mobile inline search box (type=text role=searchbox) is not rendered");
+  }
   if (result.resume) failures.push("mobile Jump back in action is still rendered");
   if (result.hints) failures.push("mobile key-binding hints are still rendered");
   return failures;
@@ -717,10 +745,11 @@ async function measurePhoneSearchPalette(page) {
   }) ?? null`;
   await waitForDom(
     send,
-    `Boolean((${dialogByTitleExpr})("Sessions") && document.querySelector('[data-testid="rail-search"]'))`,
-    "phone Sessions drawer and Search button mounted",
+    `Boolean((${dialogByTitleExpr})("Sessions") && document.querySelector('[data-testid="rail-filter"]'))`,
+    "phone Sessions drawer and inline filter mounted",
   );
-  await clickControl(send, '[data-testid="rail-search"]');
+  await clickControl(send, '[data-testid="rail-filter"]');
+  await pressKey(send, "k", "KeyK", 75, 2);
   await waitForDom(
     send,
     `Boolean((${dialogByTitleExpr})("Command palette"))`,
@@ -783,7 +812,7 @@ async function measurePhoneSearchPalette(page) {
     send,
     `(() => {
       const sessions = (${dialogByTitleExpr})("Sessions");
-      const search = document.querySelector('[data-testid="rail-search"]');
+      const search = document.querySelector('[data-testid="rail-filter"]');
       const sr = search?.getBoundingClientRect();
       const hit = sr ? document.elementFromPoint(sr.left + sr.width / 2, sr.top + sr.height / 2) : null;
       return {
@@ -859,6 +888,7 @@ async function measureTabletSplit(page) {
     const wordmark = document.querySelector('[data-testid="rail-wordmark"]');
     const settings = document.querySelector('[data-testid="rail-settings"]');
     const search = document.querySelector('[data-testid="rail-search"]');
+    const filter = board?.querySelector('[data-testid="rail-filter"]') ?? null;
     const toggles = [...document.querySelectorAll('[data-testid="board-toggle"]')];
     const toggle = toggles[0] ?? null;
     const glyph = toggle?.querySelector('span span') ?? null;
@@ -893,7 +923,8 @@ async function measureTabletSplit(page) {
       settings: box(settings),
       settingsHit: hit(settings),
       search: box(search),
-      searchHit: hit(search),
+      filter: box(filter),
+      filterHit: hit(filter),
       toggleCount: toggles.length,
       toggle: box(toggle),
       toggleHit: hit(toggle),
@@ -1138,11 +1169,14 @@ function assertTabletSplit(result) {
   if (open.toggleCount !== 1 || !open.toggleInBoard || !open.toggleInBrand || open.toggleInTopbar) {
     failures.push(`tablet open toggle must sit inside rail brand only: ${JSON.stringify({ count: open.toggleCount, inBoard: open.toggleInBoard, inBrand: open.toggleInBrand, inTopbar: open.toggleInTopbar })}`);
   }
-  if (open.search.right > open.toggle.left + 0.5 || open.toggle.right > open.board.right + 0.5 || Math.abs(centerY(open.search) - centerY(open.toggle)) > 1.5) {
-    failures.push(`tablet open toggle misaligned or overlapping board header: search=${JSON.stringify(open.search)} toggle=${JSON.stringify(open.toggle)} board=${JSON.stringify(open.board)}`);
+  if (open.search !== null) {
+    failures.push(`tablet board header rendered duplicate rail-search button: ${JSON.stringify(open.search)}`);
   }
-  if (!open.settingsHit || !open.searchHit || !open.toggleHit) {
-    failures.push(`tablet open header control failed hit-test: ${JSON.stringify({ settings: open.settingsHit, search: open.searchHit, toggle: open.toggleHit })}`);
+  if (open.settings.right > open.toggle.left + 0.5 || open.toggle.right > open.board.right + 0.5 || Math.abs(centerY(open.settings) - centerY(open.toggle)) > 1.5) {
+    failures.push(`tablet open toggle misaligned or overlapping board header: settings=${JSON.stringify(open.settings)} toggle=${JSON.stringify(open.toggle)} board=${JSON.stringify(open.board)}`);
+  }
+  if (!open.settingsHit || !open.filterHit || !open.toggleHit) {
+    failures.push(`tablet open header control failed hit-test: ${JSON.stringify({ settings: open.settingsHit, filter: open.filterHit, toggle: open.toggleHit })}`);
   }
   if (open.toggle.width < 44 || open.toggle.height < 44) {
     failures.push(`tablet toggle below 44px touch floor: ${JSON.stringify(open.toggle)}`);
@@ -1201,8 +1235,8 @@ function assertTabletSplit(result) {
       failures.push(`tablet divider ${label} did not reach the advertised limit: ${JSON.stringify({ range: sample.range, width: sample.board.width })}`);
     }
   }
-  if (pointer.coarse || !narrowest.settingsHit || !narrowest.searchHit || !narrowest.toggleHit || narrowest.toggle?.right > narrowest.board.right) {
-    failures.push(`tablet minimum divider hides a header control: ${JSON.stringify({ pointer, board: narrowest.board, toggle: narrowest.toggle, toggleHit: narrowest.toggleHit })}`);
+  if (pointer.coarse || narrowest.search !== null || !narrowest.settingsHit || !narrowest.filterHit || !narrowest.toggleHit || narrowest.toggle?.right > narrowest.board.right) {
+    failures.push(`tablet minimum divider hides a header control: ${JSON.stringify({ pointer, board: narrowest.board, toggle: narrowest.toggle, toggleHit: narrowest.toggleHit, filterHit: narrowest.filterHit })}`);
   }
   for (const [font, sample] of [["m", widest], ...result.largerText]) {
     const { board, pane, range, find } = sample;
@@ -2319,7 +2353,7 @@ async function main() {
       sharedTab.id,
       vitePort,
       MOBILE_VIEWPORT,
-      "JSON.stringify({ sidebar: window.measureMobileSidebar(), tap: window.measureTapTargets() })",
+      "JSON.stringify({ sidebar: { ...window.measureMobileSidebar(), railFilter: document.querySelector('[role=\"dialog\"] [data-testid=\"rail-filter\"][role=\"searchbox\"][type=\"text\"]') !== null }, tap: window.measureTapTargets() })",
     );
     const phoneSearchPalette = await measureOnPage(
       cdpEndpoint,
