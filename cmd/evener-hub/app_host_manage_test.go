@@ -317,17 +317,17 @@ func TestHostManageRemoveThenReAdd(t *testing.T) {
 	if _, err := m.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "side", Address: "s.example", KeyPath: "/keys/s"}}); err != nil {
 		t.Fatalf("Add = %v", err)
 	}
-	resp, err := m.Remove(context.Background(), removeRequest(t, m, "side"))
+	removed, err := m.Remove(context.Background(), removeRequest(t, m, "side"))
 	if err != nil {
 		t.Fatalf("Remove = %v", err)
 	}
-	if !resp.Host.Removed || resp.Host.Attached {
-		t.Fatalf("remove row = %+v, want removed + detached", resp.Host)
+	if !removed.Removed || removed.Attached {
+		t.Fatalf("remove row = %+v, want removed + detached", removed)
 	}
-	// HostRemoveResponse documents a removed HostRow, and the row echoes the
+	// The committed remove row marks Removed and echoes the
 	// entry's key path like every other rendered row does.
-	if resp.Host.KeyPath != "/keys/s" {
-		t.Fatalf("remove row key path = %q, want the removed entry's /keys/s", resp.Host.KeyPath)
+	if removed.KeyPath != "/keys/s" {
+		t.Fatalf("remove row key path = %q, want the removed entry's /keys/s", removed.KeyPath)
 	}
 	if _, ok := m.cfg.hosts.Get("side"); ok {
 		t.Fatal("removed host still in registry")
@@ -1559,8 +1559,8 @@ func TestHostManageListStatusReleaseLockDuringRowReads(t *testing.T) {
 
 // removeOutcome carries the parked Remove's result back to the test.
 type removeOutcome struct {
-	resp appwire.HostRemoveResponse
-	err  error
+	row appwire.HostRow
+	err error
 }
 
 // parkedRemoval is one removal held in its post-commit teardown window: the
@@ -1649,8 +1649,8 @@ func startParkedRemoval(t *testing.T, name string) *parkedRemoval {
 		ExpectedIncarnationID: incarnation,
 	}
 	go func() {
-		resp, err := m.Remove(context.Background(), params)
-		pr.removeDone <- removeOutcome{resp: resp, err: err}
+		row, err := m.Remove(context.Background(), params)
+		pr.removeDone <- removeOutcome{row: row, err: err}
 	}()
 	// The removal's durable commit landed once the file lost the entry: the
 	// write runs under the mutation mutex, ahead of the teardown; the removal
@@ -1789,8 +1789,8 @@ func TestHostManageRemoveReleasesLockDuringTeardown(t *testing.T) {
 	if done.err != nil {
 		t.Fatalf("Remove: %v", done.err)
 	}
-	if !done.resp.Host.Removed {
-		t.Fatalf("remove row = %+v, want Removed", done.resp.Host)
+	if !done.row.Removed {
+		t.Fatalf("remove row = %+v, want Removed", done.row)
 	}
 	// The end state is the pre-fix one: gone from the registry, the sources,
 	// the sidecar store, and the durable file.
@@ -1857,8 +1857,8 @@ func TestHostManageRemoveWindowFencesTheNameAndKeepsConcurrentCommits(t *testing
 	if done.err != nil {
 		t.Fatalf("Remove: %v", done.err)
 	}
-	if !done.resp.Host.Removed {
-		t.Fatalf("remove row = %+v, want Removed", done.resp.Host)
+	if !done.row.Removed {
+		t.Fatalf("remove row = %+v, want Removed", done.row)
 	}
 	if _, ok := pr.m.cfg.hosts.Get("side"); ok {
 		t.Fatal("removed host still in the registry")

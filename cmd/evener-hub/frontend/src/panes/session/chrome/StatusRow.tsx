@@ -1,10 +1,11 @@
 // StatusRow: the session footer's ONE quiet line of glance-level facts -
-// model · effort · context meter · clock · queue depth, with the queue riding
-// the far right when there is any. Everything on it is something that could
-// make you act in the next minute; everything exact lives one click away in
-// DetailsPanel (the same session's cwd, branch, project, token counts and
-// precise figures), which is why this row carries a 64px gauge where that
-// panel carries "42% used · 42K / 100K · 58K left".
+// context ring + model · effort inside .identity · clock · queue depth, with
+// the queue riding the far right when there is any. Everything on it is
+// something that could make you act in the next minute; everything exact lives
+// one click away in DetailsPanel (the same session's cwd, branch, project,
+// token counts and precise figures), which is why this row carries a compact
+// 14px circular ring where that panel carries
+// "42% used · 42K / 100K · 58K left".
 //
 // What deliberately is NOT here:
 //   - a state dot. The pane header already renders Cadence for this session
@@ -47,8 +48,6 @@ const CLASS = {
   item: requireClass(styles.item, "statusrow.module.css", "item"),
   figure: requireClass(styles.figure, "statusrow.module.css", "figure"),
   context: requireClass(styles.context, "statusrow.module.css", "context"),
-  contextMeter: requireClass(styles.contextMeter, "statusrow.module.css", "contextMeter"),
-  contextPercent: requireClass(styles.contextPercent, "statusrow.module.css", "contextPercent"),
   workTime: requireClass(styles.workTime, "statusrow.module.css", "workTime"),
   queue: requireClass(styles.queue, "statusrow.module.css", "queue"),
   queueFull: requireClass(styles.queueFull, "statusrow.module.css", "queueFull"),
@@ -106,28 +105,20 @@ export function StatusRow({ sessionRef, model, now, align = "start" }: StatusRow
   return (
     <div className={align === "end" ? `${CLASS.row} ${CLASS.rowEnd}` : CLASS.row} data-testid="status-row">
       <span className={CLASS.identity} data-testid="status-row-identity">
-        <ModelSwitch sessionRef={sessionRef} model={model} shrink />
-        <SessionEffortControl sessionRef={sessionRef} model={model} />
-      </span>
-      {hasContext && (
-        <span className={CLASS.context} data-testid="status-row-context" title={contextLabel}>
-          <span className={CLASS.contextMeter} data-testid="status-row-context-meter">
+        {hasContext && (
+          <span className={CLASS.context} data-testid="status-row-context" title={contextLabel}>
             <Meter
               label={contextLabel}
               value={model.contextUsed}
               max={status.ceiling}
               tone={contextTone(status.pressure)}
+              variant="ring"
             />
           </span>
-          <span
-            className={`${CLASS.contextPercent} ${CLASS.figure}`}
-            data-testid="status-row-context-percent"
-            aria-hidden="true"
-          >
-            {`${contextPercent}%`}
-          </span>
-        </span>
-      )}
+        )}
+        <ModelSwitch sessionRef={sessionRef} model={model} shrink />
+        <SessionEffortControl sessionRef={sessionRef} model={model} />
+      </span>
       {/* An unmeasured zero renders NOTHING, never formatWorkDuration's "1s":
           that clamp exists so a real sub-second duration doesn't read "0s", so
           feeding it an absence fabricates a measurement. Same gate

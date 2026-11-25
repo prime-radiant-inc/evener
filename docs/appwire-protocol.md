@@ -215,7 +215,7 @@ no router (reserved).
 | `thread/turns/items/list` | unimplemented | [ThreadTurnItemsListParams](#threadturnitemslistparams) | [ThreadTurnItemsListResponse](#threadturnitemslistresponse) | Codex-parity: paginated items for one turn. Experimental even in Codex (returns method-not-supported) and served by no evener router. |
 | `thread/start` | hub | [ThreadStartParams](#threadstartparams) | [ThreadStartResponse](#threadstartresponse) | Starts a new thread and attaches a live-update relay. |
 | `thread/resume` | hub | [ThreadResumeParams](#threadresumeparams) | [ThreadResumeResponse](#threadresumeresponse) | Resumes an existing session and attaches its relay. |
-| `thread/fork` | hub | [ThreadForkParams](#threadforkparams) | [ThreadForkResponse](#threadforkresponse) | Forks a thread from a source item (sourceItemKey), either replacing the turn with edited input or deferring the original input back to the client for editing (deferInput, mutually exclusive with editedInput). With `aside: true` (local evener threads only; mutually exclusive with sourceItemKey/editedInput/deferInput/label), forks the session at its tip into a side thread that inherits the parent's permissions and config. |
+| `thread/fork` | hub | [ThreadForkParams](#threadforkparams) | [ThreadForkResponse](#threadforkresponse) | Forks a thread from a source item (sourceItemKey), either replacing the turn with edited input or deferring the original input back to the client for editing (deferInput, mutually exclusive with editedInput). With `aside: true` (local evener threads only; mutually exclusive with sourceItemKey/editedInput/deferInput/label), forks the session at its tip into a side thread that inherits the parent's permissions and config. Optional `model` and `modelProvider` override the child thread's model. |
 | `thread/clear` | both | [ThreadClearParams](#threadclearparams) | [ThreadClearResponse](#threadclearresponse) | Clears the thread's conversation when no turn, queued, or approval work is unresolved. |
 | `thread/model/set` | both | [ThreadModelSetParams](#threadmodelsetparams) | [EmptyResponse](#emptyresponse) | Changes the session's model/provider. |
 | `evener/thread/name/set` | both | [ThreadNameSetParams](#threadnamesetparams) | [EmptyResponse](#emptyresponse) | Sets a user-chosen session title (rename). |
@@ -4900,8 +4900,6 @@ Underlying Go kind: `string` (no struct fields).
 |-------|---------|-----------|----------|
 | `cursor` | string | yes |  |
 | `limit` | int | yes |  |
-| `sortKey` | string | yes |  |
-| `sortDirection` | string | yes |  |
 | `searchTerm` | string | yes |  |
 | `statuses` | []string | yes |  |
 | `sourceIds` | []string | yes |  |

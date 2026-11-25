@@ -288,11 +288,6 @@ func TestWatchArgsIsOutputMatchOnly(t *testing.T) {
 			t.Fatalf("expected false with progress")
 		}
 	})
-	t.Run("clear request", func(t *testing.T) {
-		if watchArgsIsOutputMatchOnly(watchArgs{OutputMatch: "ERROR", Clear: true}) {
-			t.Fatalf("expected false for clear request")
-		}
-	})
 	t.Run("no output_match", func(t *testing.T) {
 		if watchArgsIsOutputMatchOnly(watchArgs{}) {
 			t.Fatalf("expected false for no output_match")

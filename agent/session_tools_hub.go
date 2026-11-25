@@ -40,8 +40,6 @@ func managerReadDefinition(def llm.ToolDefinition, ordinary bool) llm.ToolDefini
 				"mode":             map[string]any{"type": "string", "enum": []string{"discovery"}},
 				"cursor":           map[string]any{"type": "string"},
 				"limit":            map[string]any{"type": "integer"},
-				"sortKey":          map[string]any{"type": "string"},
-				"sortDirection":    map[string]any{"type": "string"},
 				"searchTerm":       map[string]any{"type": "string"},
 				"statuses":         map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
 				"sourceIds":        map[string]any{"type": "array", "items": map[string]any{"type": "string"}},

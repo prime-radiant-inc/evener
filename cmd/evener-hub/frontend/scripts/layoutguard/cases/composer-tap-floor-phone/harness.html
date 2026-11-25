@@ -35,6 +35,9 @@
         <div class="body" data-status-body>
           <div class="row" data-status>
           <span class="identity" data-identity>
+            <span class="context" title="Context: 67000 of 100000 tokens used, 67 percent">
+              <!-- biome-ignore lint/a11y/useSemanticElements: the themed gauge is the div Meter.tsx renders, not a native meter --><div class="ring" data-variant="ring" role="meter" aria-label="Context: 67000 of 100000 tokens used, 67 percent" aria-valuenow="67000" aria-valuemin="0" aria-valuemax="100000"><svg class="ringSvg" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false"><circle class="ringTrack" cx="8" cy="8" r="5.7" stroke-width="2.6"></circle><circle class="ringFill fillNeutral" cx="8" cy="8" r="5.7" stroke-width="2.6" stroke-dasharray="35.814" stroke-dashoffset="11.819" transform="rotate(-90 8 8)"></circle></svg></div>
+            </span>
             <span class="model">
               <button class="trigger quietTrigger triggerShrink" type="button" data-model>
                 <span class="value" data-model-value>deepseek-4.1-flash-abliterated</span>
@@ -59,10 +62,6 @@
                 <select class="quietSelect" aria-label="Reasoning effort"><option>high</option></select>
               </span>
             </span>
-          </span>
-          <span class="context">
-            <span class="contextMeter" data-context-meter><!-- biome-ignore lint/a11y/useSemanticElements: the themed gauge is the div Meter.tsx renders, not a native meter --><div class="track" role="meter" aria-label="Context: 67000 of 100000 tokens used, 67 percent" aria-valuenow="67000" aria-valuemin="0" aria-valuemax="100000"><div class="fill fillNeutral" style="--fill: 67%"></div></div></span>
-            <span class="contextPercent figure" data-context-percent aria-hidden="true">67%</span>
           </span>
           <span class="item mono queue"><span class="queueCompact">Q12</span></span>
           </div>
@@ -116,7 +115,7 @@ for (const spec of fixtures) {
 
 function box(el) {
   const r = el.getBoundingClientRect();
-  return { width: r.width, height: r.height, left: r.left, right: r.right };
+  return { width: r.width, height: r.height, left: r.left, right: r.right, top: r.top, bottom: r.bottom };
 }
 window.measure = () => ({
   viewport: { width: window.innerWidth, height: window.innerHeight },
@@ -126,6 +125,8 @@ window.measure = () => ({
     const body = fixture.querySelector("[data-status-body]");
     const identity = fixture.querySelector("[data-identity]");
     const effort = fixture.querySelector("[data-effort]");
+    const context = fixture.querySelector('.context [role="meter"]');
+    const contextWrapper = fixture.querySelector(".context");
     const effortBox = box(effort);
     const identityBox = box(identity);
     const clipped = {
@@ -136,6 +137,8 @@ window.measure = () => ({
       label: fixture.querySelector(".fixtureLabel").textContent,
       effort: effortBox,
       clippedEffort: { ...clipped, width: Math.max(0, clipped.right - clipped.left) },
+      context: context === null ? null : box(context),
+      contextWrapper: contextWrapper === null ? null : box(contextWrapper),
       identity: identityBox,
       models: [...fixture.querySelectorAll("[data-model]")].map((model) => ({
         ...box(model),

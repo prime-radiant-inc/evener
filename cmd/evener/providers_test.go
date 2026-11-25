@@ -148,9 +148,10 @@ func unreachableEndpoint(t *testing.T) string {
 func TestProvidersListShowsInstancesCredentialSourcesAndStrayEntries(t *testing.T) {
 	const envKey = "credential-sentinel:groq:unprinted"
 	const storedKey = "credential-sentinel:work:unprinted"
+	const brokenKey = "credential-sentinel:broken:unprinted"
 	root := providersTestEnv(t, map[string]string{"GROQ_API_KEY": envKey})
-	path := writeProvidersToml(t, root, "[providers.work]\nbase = \"openai\"\nbase_url = \"https://gw.example.com/v1\"\n")
-	creds := "schema = 1\n[providers.kimi]\napi_key = \"old\"\n[providers.work]\napi_key = \"" + storedKey + "\"\n"
+	path := writeProvidersToml(t, root, "[providers.work]\nbase = \"openai\"\nbase_url = \"https://gw.example.com/v1\"\n\n[providers.broken_kimi]\nbase = \"missing-registry-id\"\n")
+	creds := "schema = 1\n[providers.kimi]\napi_key = \"old\"\n[providers.broken_kimi]\napi_key = \"" + brokenKey + "\"\n[providers.work]\napi_key = \"" + storedKey + "\"\n"
 	if err := os.WriteFile(filepath.Join(root, "credentials.toml"), []byte(creds), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -165,11 +166,26 @@ func TestProvidersListShowsInstancesCredentialSourcesAndStrayEntries(t *testing.
 			t.Fatalf("missing %q in\n%s", want, out)
 		}
 	}
-	if strings.Contains(out, envKey) || strings.Contains(out, storedKey) || strings.Contains(stderr.String(), envKey) || strings.Contains(stderr.String(), storedKey) {
+	if strings.Contains(out, envKey) || strings.Contains(out, storedKey) || strings.Contains(out, brokenKey) ||
+		strings.Contains(stderr.String(), envKey) || strings.Contains(stderr.String(), storedKey) || strings.Contains(stderr.String(), brokenKey) {
 		t.Fatalf("list prints credential sources, never values (spec §11.2):\n%s", out)
 	}
 	if !strings.Contains(stderr.String(), `"kimi"`) {
 		t.Fatalf("stray entries are reported (spec §14.1):\n%s", stderr.String())
+	}
+	// An isolated broken provider keeps its stored key without being flagged as
+	// stray, while an undeclared entry ("kimi") is still flagged.
+	r, _, err := loadCLIRegistry()
+	if err != nil {
+		t.Fatalf("loadCLIRegistry: %v", err)
+	}
+	var strayOut bytes.Buffer
+	reportStrayCredentials(r, []string{"broken_kimi", "kimi", "work"}, r.Instances(), &strayOut)
+	if !strings.Contains(strayOut.String(), `"kimi"`) {
+		t.Fatalf("undeclared entry missing from stray report:\n%s", strayOut.String())
+	}
+	if strings.Contains(strayOut.String(), `"broken_kimi"`) {
+		t.Fatalf("isolated broken provider flagged as stray:\n%s", strayOut.String())
 	}
 }
 

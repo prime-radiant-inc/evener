@@ -117,12 +117,13 @@ func TestHostManageConfiguredHostThroughRealServer(t *testing.T) {
 	// The configured host is removable through the real server — the machine-
 	// managed file is the hub's store, so no class of live host is protected —
 	// and its registry entry and live source go with it.
-	var removed appwire.HostRemoveResponse
-	if err := client.Request(context.Background(), appwire.MethodEvenerHostRemove, wireRemoveRequest(t, client, "m4"), &removed); err != nil {
+	var removedResult appwire.HostMutationResult
+	if err := client.Request(context.Background(), appwire.MethodEvenerHostRemove, wireRemoveRequest(t, client, "m4"), &removedResult); err != nil {
 		t.Fatalf("evener/host/remove(configured host): %v", err)
 	}
-	if !removed.Host.Removed {
-		t.Fatalf("remove row = %+v, want removed", removed.Host)
+	removed := committedRowForTest(t, removedResult)
+	if !removed.Removed {
+		t.Fatalf("remove row = %+v, want removed", removed)
 	}
 	if _, ok := reg.Get("m4"); ok {
 		t.Fatal("the shared registry still holds the removed host")
@@ -188,12 +189,13 @@ func TestHostManageUIAddedHostThroughRealServer(t *testing.T) {
 	}
 
 	// Remove through the real server: everything goes together.
-	var removed appwire.HostRemoveResponse
-	if err := client.Request(context.Background(), appwire.MethodEvenerHostRemove, wireRemoveRequest(t, client, "web-side"), &removed); err != nil {
+	var removedResult appwire.HostMutationResult
+	if err := client.Request(context.Background(), appwire.MethodEvenerHostRemove, wireRemoveRequest(t, client, "web-side"), &removedResult); err != nil {
 		t.Fatalf("evener/host/remove: %v", err)
 	}
-	if !removed.Host.Removed {
-		t.Fatalf("remove row = %+v, want removed", removed.Host)
+	removed := committedRowForTest(t, removedResult)
+	if !removed.Removed {
+		t.Fatalf("remove row = %+v, want removed", removed)
 	}
 	if _, ok := reg.Get("web-side"); ok {
 		t.Fatal("removed host still in the shared registry")
@@ -538,12 +540,13 @@ func TestHostManageRemovePrunesRemoteThreadCache(t *testing.T) {
 		t.Fatalf("tree rows before Remove = %d metas, %d live; want the seeded session rendered live (fixture sanity)", metas, live)
 	}
 
-	var removed appwire.HostRemoveResponse
-	if err := client.Request(context.Background(), appwire.MethodEvenerHostRemove, wireRemoveRequest(t, client, "web-side"), &removed); err != nil {
+	var removedResult appwire.HostMutationResult
+	if err := client.Request(context.Background(), appwire.MethodEvenerHostRemove, wireRemoveRequest(t, client, "web-side"), &removedResult); err != nil {
 		t.Fatalf("evener/host/remove: %v", err)
 	}
-	if !removed.Host.Removed {
-		t.Fatalf("remove response = %+v, want removed", removed.Host)
+	removed := committedRowForTest(t, removedResult)
+	if !removed.Removed {
+		t.Fatalf("remove response = %+v, want removed", removed)
 	}
 	if metas, live := rowsFor(); metas != 0 || live != 0 {
 		t.Fatalf("tree rows after Remove = %d metas, %d live; want none: the removed host's cached rows must go with the removal", metas, live)
@@ -621,12 +624,13 @@ func TestHostManageRemoveBlocksInFlightRefreshRepublish(t *testing.T) {
 	}
 
 	// The remove commits while that refresh is in flight.
-	var removed appwire.HostRemoveResponse
-	if err := client.Request(context.Background(), appwire.MethodEvenerHostRemove, wireRemoveRequest(t, client, "web-side"), &removed); err != nil {
+	var removedResult appwire.HostMutationResult
+	if err := client.Request(context.Background(), appwire.MethodEvenerHostRemove, wireRemoveRequest(t, client, "web-side"), &removedResult); err != nil {
 		t.Fatalf("evener/host/remove: %v", err)
 	}
-	if !removed.Host.Removed {
-		t.Fatalf("remove response = %+v, want removed", removed.Host)
+	removed := committedRowForTest(t, removedResult)
+	if !removed.Removed {
+		t.Fatalf("remove response = %+v, want removed", removed)
 	}
 	if metas, live := rowsFor(); metas != 0 || live != 0 {
 		t.Fatalf("tree rows after Remove = %d metas, %d live; want none", metas, live)

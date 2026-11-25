@@ -250,7 +250,7 @@ func TestHostMutationUpdateCommitsTheGuardedPair(t *testing.T) {
 	before, _ := f.m.cfg.hosts.Get("side")
 	params := updateRequest(t, f.m, "side", appwire.HostEntry{Address: "edited.example", User: "operator"})
 
-	resp, err := f.m.Update(context.Background(), params)
+	row, err := f.m.Update(context.Background(), params)
 	if err != nil {
 		t.Fatalf("Update: %v", err)
 	}
@@ -264,12 +264,12 @@ func TestHostMutationUpdateCommitsTheGuardedPair(t *testing.T) {
 	if after.IncarnationID != before.IncarnationID {
 		t.Fatalf("incarnation id = %q after the edit, want the kept %q", after.IncarnationID, before.IncarnationID)
 	}
-	if resp.Host.Generation != after.Generation || resp.Host.IncarnationID != after.IncarnationID {
+	if row.Generation != after.Generation || row.IncarnationID != after.IncarnationID {
 		t.Fatalf("response row pair = (%d, %q), want the post-commit (%d, %q)",
-			resp.Host.Generation, resp.Host.IncarnationID, after.Generation, after.IncarnationID)
+			row.Generation, row.IncarnationID, after.Generation, after.IncarnationID)
 	}
-	if resp.Host.Address != "edited.example" || resp.Host.User != "operator" {
-		t.Fatalf("response row = %+v, want the edited entry", resp.Host)
+	if row.Address != "edited.example" || row.User != "operator" {
+		t.Fatalf("response row = %+v, want the edited entry", row)
 	}
 
 	receipts := receiptsFor(t, f.m, params.MutationID)
@@ -393,8 +393,8 @@ func TestHostMutationUpdateReplayReturnsTheRecordedReceipt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("replayed Update: %v", err)
 	}
-	if replay.Host.Generation != first.Host.Generation || replay.Host.Address != first.Host.Address {
-		t.Fatalf("replay row = %+v, want the recorded %+v", replay.Host, first.Host)
+	if replay.Generation != first.Generation || replay.Address != first.Address {
+		t.Fatalf("replay row = %+v, want the recorded %+v", replay, first)
 	}
 	after, _ := f.m.cfg.hosts.Get("side")
 	if after.Generation != committed.Generation {
@@ -415,8 +415,8 @@ func TestHostMutationRemoveReplayReturnsTheRecordedRemovedRow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Remove: %v", err)
 	}
-	if !first.Host.Removed || first.Host.Name != "side" {
-		t.Fatalf("removal row = %+v, want side marked removed", first.Host)
+	if !first.Removed || first.Name != "side" {
+		t.Fatalf("removal row = %+v, want side marked removed", first)
 	}
 	if _, ok := f.m.cfg.hosts.Get("side"); ok {
 		t.Fatal("the committed removal left the entry live")
@@ -427,9 +427,9 @@ func TestHostMutationRemoveReplayReturnsTheRecordedRemovedRow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("replayed Remove: %v (a lost-response retry must not fail not-found)", err)
 	}
-	if !replay.Host.Removed || replay.Host.Name != "side" || replay.Host.Generation != first.Host.Generation ||
-		replay.Host.IncarnationID != first.Host.IncarnationID {
-		t.Fatalf("replay row = %+v, want the recorded removal %+v", replay.Host, first.Host)
+	if !replay.Removed || replay.Name != "side" || replay.Generation != first.Generation ||
+		replay.IncarnationID != first.IncarnationID {
+		t.Fatalf("replay row = %+v, want the recorded removal %+v", replay, first)
 	}
 	if after := readHubTOMLBytes(t, f.configPath); !bytes.Equal(after, file) {
 		t.Fatal("the replay rewrote hub.toml")
@@ -466,8 +466,8 @@ func TestHostMutationRemoveReplayAfterReAddLeavesTheNewIncarnation(t *testing.T)
 	if err != nil {
 		t.Fatalf("replayed Remove after re-add: %v", err)
 	}
-	if replay.Host.Generation != params.ExpectedGeneration {
-		t.Fatalf("replay row generation = %d, want the recorded %d", replay.Host.Generation, params.ExpectedGeneration)
+	if replay.Generation != params.ExpectedGeneration {
+		t.Fatalf("replay row generation = %d, want the recorded %d", replay.Generation, params.ExpectedGeneration)
 	}
 	live, ok := f.m.cfg.hosts.Get("side")
 	if !ok {
@@ -578,8 +578,8 @@ func TestHostMutationBusyRefusalsAndReplayUnderAHeldGate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("replay under a held gate: %v", err)
 	}
-	if replay.Host.Generation != first.Host.Generation || replay.Host.Address != "committed.example" {
-		t.Fatalf("replay row = %+v, want the recorded %+v", replay.Host, first.Host)
+	if replay.Generation != first.Generation || replay.Address != "committed.example" {
+		t.Fatalf("replay row = %+v, want the recorded %+v", replay, first)
 	}
 }
 
@@ -696,12 +696,12 @@ func TestHostMutationReceiptSurvivesBootAndReplays(t *testing.T) {
 	if err != nil {
 		t.Fatalf("replay after boot: %v", err)
 	}
-	if replay.Host.Generation != first.Host.Generation || replay.Host.Address != "durable.example" {
-		t.Fatalf("replay row = %+v, want the recorded %+v", replay.Host, first.Host)
+	if replay.Generation != first.Generation || replay.Address != "durable.example" {
+		t.Fatalf("replay row = %+v, want the recorded %+v", replay, first)
 	}
 	live, _ := booted.cfg.hosts.Get("side")
-	if live.Generation != first.Host.Generation {
-		t.Fatalf("replaying after boot bumped the generation to %d, want %d", live.Generation, first.Host.Generation)
+	if live.Generation != first.Generation {
+		t.Fatalf("replaying after boot bumped the generation to %d, want %d", live.Generation, first.Generation)
 	}
 }
 

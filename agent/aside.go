@@ -21,8 +21,8 @@ import (
 //
 // Use case: asking a distracting question about the main session without
 // derailing it — the user asks in the aside thread while the parent continues.
-func AsideSession(stateDir, parentID string) (string, error) {
-	return asideSessionFSWithConfig(afero.NewOsFs(), stateDir, parentID, nil)
+func AsideSession(stateDir, parentID string, opts ...ForkOption) (string, error) {
+	return asideSessionFSWithConfig(afero.NewOsFs(), stateDir, parentID, nil, opts...)
 }
 
 // AsideSessionWithConfig creates a full-tip child with config already selected
@@ -33,7 +33,11 @@ func AsideSessionWithConfig(stateDir, parentID string, config schema.ConfigSnaps
 	return asideSessionFSWithConfig(afero.NewOsFs(), stateDir, parentID, &config)
 }
 
-func asideSessionFSWithConfig(fs afero.Fs, stateDir, parentID string, config *schema.ConfigSnapshot) (string, error) {
+func asideSessionFSWithConfig(fs afero.Fs, stateDir, parentID string, config *schema.ConfigSnapshot, opts ...ForkOption) (string, error) {
+	resolvedOpts, err := resolveForkOptions(opts)
+	if err != nil {
+		return "", err
+	}
 	deps := defaultForkDeps()
 	parentHeader, allEntries, err := readForkParent(fs, stateDir, parentID, deps.maxScanToken)
 	if err != nil {
@@ -48,7 +52,7 @@ func asideSessionFSWithConfig(fs afero.Fs, stateDir, parentID string, config *sc
 
 	// The child shares the parent's full transcript, so the first turn unique
 	// to this branch is one past the parent's tip.
-	return writeForkChildWithConfig(fs, stateDir, parentID, parentHeader, parentMeta, allEntries, len(allEntries)+1, nil, config, deps)
+	return writeForkChildWithConfig(fs, stateDir, parentID, parentHeader, parentMeta, allEntries, len(allEntries)+1, nil, config, resolvedOpts, deps)
 }
 
 // RemoveSessionArtifacts removes the artifacts belonging to a newly-created

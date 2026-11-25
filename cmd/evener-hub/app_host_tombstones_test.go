@@ -142,12 +142,12 @@ func TestHostTombstoneRemovalWritesOneAtomicRecord(t *testing.T) {
 	if !ok {
 		t.Fatal("fixture host is not live")
 	}
-	resp, err := f.m.Remove(context.Background(), removeRequest(t, f.m, "side"))
+	removed, err := f.m.Remove(context.Background(), removeRequest(t, f.m, "side"))
 	if err != nil {
 		t.Fatalf("Remove: %v", err)
 	}
-	if !resp.Host.Removed {
-		t.Fatalf("remove response row = %+v, want removed", resp.Host)
+	if !removed.Removed {
+		t.Fatalf("remove response row = %+v, want removed", removed)
 	}
 	tombstone := tombstoneFor(t, f.m, "side")
 	if tombstone.Entry.Name != "side" || tombstone.Entry.SSH != host.SSH {

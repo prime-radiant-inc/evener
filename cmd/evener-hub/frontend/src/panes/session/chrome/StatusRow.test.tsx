@@ -858,11 +858,10 @@ test.each([
   expect(screen.getByTestId("meter-fill").classList.contains(meterToneClass[tone])).toBe(true);
 });
 
-// The gauge alone shows the pressure; a "12k / 128k" readout beside it said
-// the same thing twice in a row that has to stay one line. The exact numbers
-// are still reachable - spoken from the meter's label, and on hover from the
-// title, following the row's "key value" tooltip convention.
-test("context announces through one exposed meter, with the percentage only visual", () => {
+// The circular ring inside the model identity pill alone shows the pressure;
+// the exact numbers are still reachable - spoken from the meter's label, and
+// on hover from the title, following the row's "key value" tooltip convention.
+test("context announces through one exposed ring meter inside identity before the model trigger", () => {
   render(
     <StatusRow
       sessionRef="ref_a"
@@ -870,18 +869,23 @@ test("context announces through one exposed meter, with the percentage only visu
       now={1_000_000}
     />,
   );
+  const identity = screen.getByTestId("status-row-identity");
+  const context = screen.getByTestId("status-row-context");
+  const modelTrigger = screen.getByTestId("model-switch-trigger");
   const meter = screen.getByRole("meter");
   expect(meter.tagName).toBe("DIV");
+  expect(meter.getAttribute("data-variant")).toBe("ring");
   expect(meter.closest('[aria-hidden="true"]')).toBeNull();
   expect(meter.getAttribute("aria-label")).toBeTruthy();
   expect(meter.getAttribute("aria-valuenow")).toBe("64000");
   expect(meter.getAttribute("aria-valuemax")).toBe("128000");
-  const context = screen.getByTestId("status-row-context");
   expect(context.tagName).toBe("SPAN");
   expect(context.contains(meter)).toBe(true);
-  expect(screen.getByTestId("status-row-context-meter").getAttribute("aria-hidden")).toBeNull();
-  expect(screen.getByTestId("status-row-context-percent").textContent).toBe("50%");
-  expect(screen.getByTestId("status-row-context-percent").getAttribute("aria-hidden")).toBe("true");
+  expect(identity.contains(context)).toBe(true);
+  expect(context.compareDocumentPosition(modelTrigger) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+  expect(modelTrigger.contains(context)).toBe(false);
+  expect(screen.queryByTestId("status-row-context-meter")).toBeNull();
+  expect(screen.queryByTestId("status-row-context-percent")).toBeNull();
   expect(screen.getAllByRole("meter")).toHaveLength(1);
   expect(document.querySelector("meter")).toBeNull();
 });
@@ -903,9 +907,10 @@ test("uses compactionThreshold as the gauge ceiling, percentage, and tone when c
   const meter = screen.getByRole("meter");
   expect(meter.getAttribute("aria-valuenow")).toBe("200000");
   expect(meter.getAttribute("aria-valuemax")).toBe("250000");
-  expect(screen.getByTestId("status-row-context-percent").textContent).toBe("80%");
+  expect(meter.getAttribute("aria-label") ?? "").toMatch(/\b80\b/);
   expect(screen.getByTestId("meter-fill").classList.contains(meterToneClass.attention)).toBe(true);
   expect(meter.getAttribute("aria-label") ?? "").toContain("1000000");
+  expect(screen.queryByTestId("status-row-context-percent")).toBeNull();
 
   rerender(
     <StatusRow

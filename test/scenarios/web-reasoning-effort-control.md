@@ -66,9 +66,10 @@ handle, and the effort control is no longer read-only — see Sharp edges.
   with **no web reload** — driven by
   `thread/reasoning-effort/changed` (`appwire-client/typescript/reducer.ts:702-705`).
   `readout` shows the same word, and `options` is `[""]` followed by the
-  model's own ladder minus `"none"` (`StatusRow.tsx:129`). An unset effort —
-  and evener's `"none"`, which clears to the provider default — both render as
-  the leading `(default)` option, value `""` (`:128,139,159`). The palette's
+  model's own ladder minus `"none"` (`ReasoningEffortControl.tsx:64-69`). An
+  unset effort — and evener's `"none"`, which clears to the provider default —
+  both render as the leading `(default)` option, value `""`
+  (`:65-69`). The palette's
   own rows are `(default)` plus the same ladder
   (`shell/palette/commands.ts:410`). Falsification: `selectValue` is
   stale until a reload, or `readout` and `selectValue` disagree.
@@ -93,27 +94,28 @@ handle, and the effort control is no longer read-only — see Sharp edges.
 
 - **The web effort control is a live `<select>`, not a read-only span.**
   This card used to say the opposite and told readers not to look for a click
-  target. `StatusRow.tsx:151-162` renders a real native `<select>` at zero
-  opacity over the `status-row-effort-value` readout, precisely so it keeps
-  tab order, arrow keys, type-ahead and the platform dropdown. Setting effort
-  from the web no longer goes exclusively through `⌘K`. The readout is
-  `aria-hidden` (`:138`) because the select already speaks its own value, so
-  an accessibility-tree query finds the labelled select ("Reasoning effort",
-  `:144-146`), not the visible text.
+  target. `ReasoningEffortControl.tsx:81-91` delegates to `Select`
+  `variant="quiet"` (`widgets/select/index.tsx:65-98`), rendering a real native
+  `<select>` at zero opacity over the `status-row-effort-value` readout,
+  precisely so it keeps tab order, arrow keys, type-ahead and the platform
+  dropdown. Setting effort from the web no longer goes exclusively through
+  `⌘K`. The readout is `aria-hidden` (`:89`) because
+  the select already speaks its own value, so an accessibility-tree query finds
+  the labelled select ("Reasoning effort", `:73`), not the visible text.
 - **The strip and the palette disagree about a reasoning model with an empty
   ladder, by design and in opposite directions.** `StatusRow` falls back to
   `["minimal","low","medium","high"]` when `supportsReasoning` is true and the
-  ladder is empty (`:81,120-125`) — the wire really can emit that pair, and
-  `StatusRow.tsx:96-100` records why. The palette's enum source yields
+  ladder is empty (`StatusRow.tsx:74-75`) — the wire really can emit that pair,
+  and `:57-62` records why. The palette's enum source yields
   **zero** options in the same case (`commands.ts:406-411`, whose own comment
   states the rule), so the command offers nothing.
   Don't treat one as evidence about the other; assert each against the model
   it is actually reading.
 - **The control renders nothing at all when there are no levels**
-  (`StatusRow.tsx:126`). On a non-reasoning model, step 3's `eval` returns
+  (`StatusRow.tsx:74-75`). On a non-reasoning model, step 3's `eval` returns
   `control: false` with `readout`/`selectValue` `undefined` — that is the
   correct answer, not a failed query. The wrapper
-  `[data-testid="status-row-effort"]` (`:132`) is the hook to assert that
+  `[data-testid="status-row-effort"]` (`:83`) is the hook to assert that
   absence against. Check `supportsReasoning` on the wire before calling a
   missing control a regression.
 - `supportsReasoning` is a plain boolean in the web model (coerced from the

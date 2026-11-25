@@ -1,6 +1,7 @@
 package hub
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/appwire/appwiretest"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
@@ -52,6 +54,7 @@ func TestHubRPCThreadForkRoutesNonLocalCapableSource(t *testing.T) {
 		Ref:           "codex:th_fork",
 		SourceItemKey: "codex-turn-1",
 		Model:         "gpt-5-codex",
+		ModelProvider: "openai",
 	})
 	if err != nil {
 		t.Fatalf("ThreadFork: %v", err)
@@ -61,6 +64,9 @@ func TestHubRPCThreadForkRoutesNonLocalCapableSource(t *testing.T) {
 	}
 	if source.forkParams.SourceItemKey != "codex-turn-1" || source.forkParams.EditedInput != "" {
 		t.Fatalf("fork params=%+v", source.forkParams)
+	}
+	if source.forkParams.Model != "gpt-5-codex" || source.forkParams.ModelProvider != "openai" {
+		t.Fatalf("remote fork model passthrough = (%q, %q), want (%q, %q)", source.forkParams.ModelProvider, source.forkParams.Model, "openai", "gpt-5-codex")
 	}
 	if resp.Thread.Evener.Ref != "codex:th_child" {
 		t.Fatalf("thread=%+v", resp.Thread)
@@ -235,4 +241,126 @@ func TestHubRPCThreadForkDeferInputRejectsEditedInput(t *testing.T) {
 		t.Fatal("ThreadFork with both editedInput and deferInput should fail")
 	}
 	requireWireError(t, err, appwire.CodeInvalidParams)
+}
+
+func readForkTranscriptHeader(t *testing.T, path string) transcript.Header {
+	t.Helper()
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatalf("open child transcript: %v", err)
+	}
+	defer f.Close()
+	hdr, err := transcript.ReadHeader(t.Context(), bufio.NewReader(f), transcript.DefaultMaxLineBytes)
+	if err != nil {
+		t.Fatalf("ReadHeader(child): %v", err)
+	}
+	return hdr
+}
+
+func TestHubRPCThreadForkModelOverride(t *testing.T) {
+	for _, tc := range []struct {
+		name              string
+		params            appwire.ThreadForkParams
+		wantProfile       string
+		wantModel         string
+		wantOriginalInput string
+	}{
+		{
+			name: "provider and model",
+			params: appwire.ThreadForkParams{
+				SourceItemKey: "apptranscript-item-v2:turn_3:2:0",
+				EditedInput:   "second task, edited",
+				ModelProvider: "anthropic",
+				Model:         "claude-opus-4-6",
+			},
+			wantProfile: "anthropic",
+			wantModel:   "claude-opus-4-6",
+		},
+		{
+			name: "qualified model with whitespace",
+			params: appwire.ThreadForkParams{
+				SourceItemKey: "apptranscript-item-v2:turn_3:2:0",
+				EditedInput:   "second task, edited",
+				Model:         "  Anthropic/claude-opus-4-6  ",
+			},
+			wantProfile: "anthropic",
+			wantModel:   "claude-opus-4-6",
+		},
+		{
+			name: "provider with slash-containing model id",
+			params: appwire.ThreadForkParams{
+				SourceItemKey: "apptranscript-item-v2:turn_3:2:0",
+				EditedInput:   "second task, edited",
+				ModelProvider: "openrouter",
+				Model:         "deepseek/deepseek-v4-flash",
+			},
+			wantProfile: "openrouter",
+			wantModel:   "deepseek/deepseek-v4-flash",
+		},
+		{
+			name: "deferInput with model override",
+			params: appwire.ThreadForkParams{
+				SourceItemKey: "apptranscript-item-v2:turn_3:2:0",
+				DeferInput:    true,
+				ModelProvider: "anthropic",
+				Model:         "claude-opus-4-6",
+			},
+			wantProfile:       "anthropic",
+			wantModel:         "claude-opus-4-6",
+			wantOriginalInput: "second task",
+		},
+		{
+			name: "default empty inherits parent",
+			params: appwire.ThreadForkParams{
+				SourceItemKey: "apptranscript-item-v2:turn_3:2:0",
+				EditedInput:   "second task, edited",
+			},
+			wantProfile: "openai",
+			wantModel:   "gpt-5",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			stateDir := filepath.Join(root, "projects", "project-fork-0000000000")
+			parentID := buildRPCParentSession(t, stateDir)
+			past := newRebuiltPastIndex(t, filepath.Join(root, "projects", "*"))
+
+			hub := newHubRPCTestServer(t, hubcore.WebConfig{Past: past})
+			defer hub.Close()
+			client := dialHubRPCInitialized(t, hub)
+
+			params := tc.params
+			params.Ref = "local:" + parentID
+			resp, err := appwiretest.ThreadFork(context.Background(), client, params)
+			if err != nil {
+				t.Fatalf("ThreadFork: %v", err)
+			}
+			if resp.OriginalInput != tc.wantOriginalInput {
+				t.Fatalf("OriginalInput = %q, want %q", resp.OriginalInput, tc.wantOriginalInput)
+			}
+			if resp.Thread.ModelProvider != tc.wantModel || resp.Thread.Evener.Profile != tc.wantProfile {
+				t.Fatalf("response thread model/profile = (%q, %q), want (%q, %q)", resp.Thread.ModelProvider, resp.Thread.Evener.Profile, tc.wantModel, tc.wantProfile)
+			}
+
+			childMeta, err := schema.LoadSessionMeta(stateDir, resp.Thread.ID)
+			if err != nil {
+				t.Fatalf("LoadSessionMeta(child): %v", err)
+			}
+			if childMeta.ProfileID != tc.wantProfile || childMeta.Model != tc.wantModel {
+				t.Fatalf("child meta profile/model = (%q, %q), want (%q, %q)", childMeta.ProfileID, childMeta.Model, tc.wantProfile, tc.wantModel)
+			}
+			childHeader := readForkTranscriptHeader(t, filepath.Join(stateDir, "sessions", resp.Thread.ID+".transcript.jsonl"))
+			if childHeader.ProfileID != tc.wantProfile || childHeader.Model != tc.wantModel {
+				t.Fatalf("child header profile/model = (%q, %q), want (%q, %q)", childHeader.ProfileID, childHeader.Model, tc.wantProfile, tc.wantModel)
+			}
+
+			parentMeta, err := schema.LoadSessionMeta(stateDir, parentID)
+			if err != nil {
+				t.Fatalf("LoadSessionMeta(parent): %v", err)
+			}
+			if parentMeta.ProfileID != "openai" || parentMeta.Model != "gpt-5" {
+				t.Fatalf("parent meta mutated: (%q, %q)", parentMeta.ProfileID, parentMeta.Model)
+			}
+		})
+	}
 }
