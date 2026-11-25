@@ -26,6 +26,7 @@ import {
   rail,
   warmRoute,
 } from "./appShellTestUtils";
+import { closeCheatsheet } from "./cheatsheet/cheatsheetController";
 import { focusedSessionPaneId, focusedSessionRef } from "./focusedSession";
 import { resolveFocusedComposer } from "./holdhints/HoldHints";
 import { paletteStore } from "./palette/paletteController";
@@ -94,6 +95,7 @@ afterEach(() => {
   // The command palette store is a module singleton; reset it so one test's
   // open palette never leaks into the next.
   paletteStore.setState({ open: false, query: "" });
+  closeCheatsheet();
   // Several tests below navigate to /settings/* and mount the real
   // HubSection, whose mount effect touches settingsOverviewStore for
   // real - same module-singleton reasoning as warmRoute's own reset (appShellTestUtils).
@@ -403,7 +405,8 @@ test.each(["click", "unfocused-click", "Enter"] as const)(
       act(() => searchButton.focus());
       await user.keyboard("{Enter}");
     }
-    await screen.findByRole("dialog", { name: "Command palette" });
+    const palette = await screen.findByRole("dialog", { name: "Command palette" });
+    expect(drawer.compareDocumentPosition(palette) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
 
     await user.keyboard("{Escape}");
     expect(screen.queryByRole("dialog", { name: "Command palette" })).toBeNull();
@@ -420,6 +423,23 @@ test.each(["click", "unfocused-click", "Enter"] as const)(
     expect(document.activeElement).not.toBe(sessionsButton);
   },
 );
+
+test("desktop: opening Command palette from inside Keyboard shortcuts places it after the shortcuts dialog in DOM order", async () => {
+  const user = userEvent.setup();
+  render(<AppShell client={new FakeClient("ready")} />);
+  await screen.findByText("No session open");
+
+  await user.keyboard("{Control>}/{/Control}");
+  const cheatsheet = await screen.findByRole("dialog", { name: "Keyboard shortcuts" });
+
+  await user.keyboard("{Control>}k{/Control}");
+  const palette = await screen.findByRole("dialog", { name: "Command palette" });
+  expect(cheatsheet.compareDocumentPosition(palette) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+
+  await user.keyboard("{Escape}");
+  expect(screen.queryByRole("dialog", { name: "Command palette" })).toBeNull();
+  expect(screen.getByRole("dialog", { name: "Keyboard shortcuts" })).toBe(cheatsheet);
+});
 
 // FIX 1 (real-browser bug): Settings' Escape/close used to call
 // workspaceStore.closePane directly, which replaces the main pane with

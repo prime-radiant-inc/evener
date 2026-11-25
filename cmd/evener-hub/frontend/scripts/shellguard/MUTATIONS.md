@@ -123,3 +123,33 @@ assertion names the first offending option; every option had fallen to the
 390px and 28px at 1400px.
 
 **Verified:** 2026-11-24. **Expect:** fail.
+
+## Phone CommandPalette paints above the Sessions drawer (`measurePhoneSearchPalette()` / `assertPhoneSearchPalette()`) - #7763
+
+At `400x844` with mobile/touch emulation, `MobilePanel` ("Sessions") opens on
+the welcome route, Search (`[data-testid="rail-search"]`) is clicked to open
+`CommandPalette`, a toast is pushed to `ToastRegion`, and `Escape` dismisses the
+palette:
+
+- `document.elementFromPoint(200, 422)` and the palette combobox center must hit
+  `CommandPalette` (not `Sessions`);
+- an active error toast must still hit-test above `CommandPalette`;
+- pressing `Escape` must keep `Sessions` open and restore focus/hit-testing to
+  Search.
+
+**Mutation performed:** before moving `<CommandPalette />` after
+`<CheatsheetOverlay />` and `.content` in `cmd/evener-hub/frontend/src/shell/AppShell.tsx`
+(when `<CommandPalette />` rendered before `<StackHost />` at the same
+`--z-dialog` level), ran `node scripts/shellguard/run.mjs`.
+
+**Result before fix:** FAIL (exited 1) with both hit-tests hitting the
+`Sessions` drawer instead of `CommandPalette`:
+
+```
+shellguard FAIL: phone Command palette center hit-test was occluded: {"tag":"SPAN","ariaLabel":null,"labelledTitle":null,"inPalette":false,"inSessions":true,"isInput":false,"inToast":false}
+shellguard FAIL: phone Command palette input is not hit-testable/focused: {"tag":"SPAN","ariaLabel":null,"labelledTitle":null,"inPalette":false,"inSessions":true,"isInput":false,"inToast":false,"focused":true}
+```
+
+**Result after fix:** PASS, exit 0 across `npm run shellguard`.
+
+**Verified:** 2026-11-25. **Expect:** fail.
