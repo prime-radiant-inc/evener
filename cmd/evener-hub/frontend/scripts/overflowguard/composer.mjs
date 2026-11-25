@@ -285,7 +285,21 @@ export async function measureComposerPlacement(endpoint, url, { viewportWidth, c
       }
     };
     stablePoint("Attach", empty.controlGeometry["composer-attach"], drafted.controlGeometry["composer-attach"]);
-    stablePoint("session menu", empty.menuGeometry, drafted.menuGeometry);
+    const draftedHasSteer = drafted.inline.includes("composer-steer");
+    if (draftedHasSteer) {
+      // Folded empty rows omit Steer instead of reserving a blank gap beside
+      // Stop, so the session menu sits directly beside Stop while folded and
+      // shifts left only when Steer enters on expansion.
+      stablePoint("session menu", empty.menuGeometry, drafted.menuGeometry, ["top", "bottom"]);
+      const emptyGap = empty.controlGeometry["composer-stop"].left - empty.menuGeometry.right;
+      const draftedGap = drafted.controlGeometry["composer-steer"].left - drafted.menuGeometry.right;
+      assert.ok(
+        Math.abs(emptyGap - draftedGap) <= GEOMETRY_TOLERANCE,
+        `folded session menu must sit directly beside Stop with no hidden-Steer gap (${emptyGap.toFixed(1)}px vs ${draftedGap.toFixed(1)}px)`,
+      );
+    } else {
+      stablePoint("session menu", empty.menuGeometry, drafted.menuGeometry);
+    }
     stablePoint("primary action", empty.controlGeometry["composer-stop"], drafted.controlGeometry["composer-submit"], [
       "right",
       "top",

@@ -306,9 +306,8 @@ func concurrentEditRefusal(stagedFingerprint, observedFingerprint string) error 
 
 // hostEntryField maps a hostreg validation refusal to the input it blames, in
 // the wire spelling the dialog's own inputs use (HostEntry's fields), so a
-// message lands on the control the operator can fix. A refusal that blames the
-// entry as a whole — a cycle, or a half-specified config_path/addr pair, which
-// blames two inputs at once — returns "" and the caller raises it form-level.
+// message lands on the control the operator can fix. Any refusal that blames
+// the entry as a whole returns "" and the caller raises it form-level.
 func hostEntryField(err error) string {
 	switch {
 	case errors.Is(err, hostreg.ErrMissingSSH):
@@ -330,7 +329,7 @@ func hostEntryField(err error) string {
 		// add form places.
 		return "name"
 	default:
-		// ErrHostCycle and anything else blame the entry as a whole.
+		// Anything else blames the entry as a whole.
 		return ""
 	}
 }

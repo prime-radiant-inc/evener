@@ -143,3 +143,36 @@
     flex: none;
   }
 }
+
+/* A one-line folded composer drops container containment on SessionChrome's
+ * .body so short model names hug their real width and return free space to the
+ * input field. Pin the compact rung directly here so StatusRow stays compact
+ * instead of reading PromptCard's wider >= 620px container. */
+@container (min-width: 620px) {
+  :global([data-folded="true"]) .row {
+    flex-basis: auto;
+    min-width: 0;
+    gap: var(--space-1);
+  }
+
+  :global([data-folded="true"]) .workTime,
+  :global([data-folded="true"]) .queueFull {
+    display: none;
+  }
+
+  :global([data-folded="true"]) .queueCompact {
+    display: inline;
+  }
+
+  :global([data-folded="true"]) .contextMeter {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+  }
+
+  :global([data-folded="true"]) .contextPercent {
+    display: inline;
+  }
+}

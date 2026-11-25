@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync/atomic"
 
+	"primeradiant.com/evener/agent"
 	"primeradiant.com/evener/appwire"
 )
 
@@ -38,13 +39,13 @@ func installProjectedMutationCallbacksForTest(s *Server, functions RetrySafeTurn
 
 	if functions.Start == nil {
 		functions.Start = func(params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
-			text, images := inputFromItems("", params.Input)
+			text, _ := inputFromItems("", params.Input)
 			turnID, err := s.startTestTurn()
 			if err != nil {
 				return appwire.TurnStartResponse{}, err
 			}
 			select {
-			case s.inputCh <- InputMessage{Text: text, Images: images}:
+			case s.inputCh <- InputMessage{Text: text}:
 				return appwire.TurnStartResponse{Turn: appwire.Turn{ID: turnID, Status: appwire.TurnStatusInProgress}}, nil
 			default:
 				s.releaseTestTurn(turnID)
@@ -144,12 +145,12 @@ func (s *Server) releaseTestTurn(turnID string) {
 	}
 }
 
-func inputFromItems(prompt string, items []appwire.InputItem) (string, []ImageAttachment) {
+func inputFromItems(prompt string, items []appwire.InputItem) (string, []agent.ImageAttachment) {
 	parts := []string{}
 	if strings.TrimSpace(prompt) != "" {
 		parts = append(parts, prompt)
 	}
-	images := make([]ImageAttachment, 0)
+	images := make([]agent.ImageAttachment, 0)
 	for _, item := range items {
 		switch item.Type {
 		case "text", "input_text", "":
@@ -157,7 +158,7 @@ func inputFromItems(prompt string, items []appwire.InputItem) (string, []ImageAt
 				parts = append(parts, item.Text)
 			}
 		case "image", "input_image":
-			images = append(images, ImageAttachment{
+			images = append(images, agent.ImageAttachment{
 				MediaType: item.MediaType,
 				Data:      item.Data,
 				Name:      item.Name,

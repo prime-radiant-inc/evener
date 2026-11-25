@@ -15,9 +15,9 @@ const (
 )
 
 // rootSignalIndex is a disk-backed index holding one root and one subagent of
-// it, with both hooks counting their fires. The counters are read after each
+// it, with onRootChange counting its fires. The counter is read after each
 // step through the returned func.
-func rootSignalIndex(t *testing.T) (idx *PastIndex, project string, fires func() (full, root int)) {
+func rootSignalIndex(t *testing.T) (idx *PastIndex, project string, fires func() int) {
 	t.Helper()
 	dir := t.TempDir()
 	project = filepath.Join(dir, "projects", "project-x-0123456789")
@@ -31,10 +31,9 @@ func rootSignalIndex(t *testing.T) (idx *PastIndex, project string, fires func()
 	if _, err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
-	var full, root int
-	idx.SetOnChange(func() { full++ })
+	var root int
 	idx.SetOnRootChange(func() { root++ })
-	return idx, project, func() (int, int) { return full, root }
+	return idx, project, func() int { return root }
 }
 
 func TestPastRootSignal_SubagentWritesDoNotFire(t *testing.T) {
@@ -49,11 +48,10 @@ func TestPastRootSignal_SubagentWritesDoNotFire(t *testing.T) {
 	writeMeta(t, project, schema.SessionMeta{ID: rootSignalSubID, Name: "sub renamed", UpdatedAt: later.Add(time.Second), IsSubagent: true, ParentSessionID: rootSignalRootID})
 	idx.RefreshOne(rootSignalSubID)
 
-	full, root := fires()
-	if full != 2 {
-		t.Fatalf("full signal fired %d times for two subagent writes, want 2", full)
+	if got, ok := idx.findCached(rootSignalSubID); !ok || got.Meta.Name != "sub renamed" {
+		t.Fatalf("subagent write did not update index: ok=%v name=%q", ok, got.Meta.Name)
 	}
-	if root != 0 {
+	if root := fires(); root != 0 {
 		t.Fatalf("root signal fired %d times for subagent-only writes, want 0", root)
 	}
 }
@@ -64,13 +62,13 @@ func TestPastRootSignal_RootChangesFire(t *testing.T) {
 
 	writeMeta(t, project, schema.SessionMeta{ID: rootSignalRootID, Name: "renamed", UpdatedAt: later})
 	idx.RefreshOne(rootSignalRootID)
-	if _, root := fires(); root != 1 {
+	if root := fires(); root != 1 {
 		t.Fatalf("root signal after a root rename = %d, want 1", root)
 	}
 	// An autosave of the root moves UpdatedAt, which its row shows.
 	writeMeta(t, project, schema.SessionMeta{ID: rootSignalRootID, Name: "renamed", UpdatedAt: later.Add(time.Minute)})
 	idx.RefreshOne(rootSignalRootID)
-	if _, root := fires(); root != 2 {
+	if root := fires(); root != 2 {
 		t.Fatalf("root signal after a root autosave = %d, want 2", root)
 	}
 }
@@ -84,7 +82,7 @@ func TestPastRootSignal_SubagentAddedOrRemovedFires(t *testing.T) {
 	if fired, err := idx.Rebuild(); err != nil || !fired {
 		t.Fatalf("Rebuild after a subagent was added = %v, %v, want a hook fire", fired, err)
 	}
-	if _, root := fires(); root != 1 {
+	if root := fires(); root != 1 {
 		t.Fatalf("root signal after a subagent was added = %d, want 1", root)
 	}
 
@@ -95,7 +93,7 @@ func TestPastRootSignal_SubagentAddedOrRemovedFires(t *testing.T) {
 	if fired, err := idx.Rebuild(); err != nil || !fired {
 		t.Fatalf("Rebuild after a subagent was removed = %v, %v, want a hook fire", fired, err)
 	}
-	if _, root := fires(); root != 2 {
+	if root := fires(); root != 2 {
 		t.Fatalf("root signal after a subagent was removed = %d, want 2", root)
 	}
 }
@@ -110,12 +108,12 @@ func TestPastRootSignal_EntryBecomingSubagentFires(t *testing.T) {
 	if _, err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
-	if _, root := fires(); root != 1 {
+	if root := fires(); root != 1 {
 		t.Fatalf("root signal after a root appeared = %d, want 1", root)
 	}
 	writeMeta(t, project, schema.SessionMeta{ID: lateID, UpdatedAt: base.Add(time.Second), IsSubagent: true, ParentSessionID: rootSignalRootID})
 	idx.RefreshOne(lateID)
-	if _, root := fires(); root != 2 {
+	if root := fires(); root != 2 {
 		t.Fatalf("root signal after the entry became a subagent = %d, want 2", root)
 	}
 }
@@ -128,7 +126,7 @@ func TestPastRootSignal_StalePublisherDoesNotFireOrRegress(t *testing.T) {
 
 	writeMeta(t, project, schema.SessionMeta{ID: rootSignalRootID, Name: "renamed", UpdatedAt: time.Unix(1_700_000_100, 0).UTC()})
 	idx.RefreshOne(rootSignalRootID)
-	if _, root := fires(); root != 1 {
+	if root := fires(); root != 1 {
 		t.Fatalf("root signal after rename = %d, want 1", root)
 	}
 
@@ -139,18 +137,17 @@ func TestPastRootSignal_StalePublisherDoesNotFireOrRegress(t *testing.T) {
 	if idx.publishAndSignal(current, gen) {
 		t.Fatal("republishing the current snapshot reported a change: the stale publisher regressed the fingerprint")
 	}
-	if _, root := fires(); root != 1 {
+	if root := fires(); root != 1 {
 		t.Fatalf("root signal = %d after a stale publish and a no-op republish, want still 1", root)
 	}
 }
 
-// The bool Rebuild and UpdateMeta return says the change reached a hook, and a
-// root-only subscriber must still get true for a root change and false for a
+// The bool Rebuild and UpdateMeta return says the change reached the root hook:
+// a subscriber gets true for a root change and false for a
 // subagent-only write, because callers use it to decide whether to notify
 // navigation themselves.
 func TestPastRootSignal_ReturnCoversRootHookOnly(t *testing.T) {
 	idx, _, _ := rootSignalIndex(t)
-	idx.SetOnChange(nil) // a root-only subscriber, as in production
 	base := time.Unix(1_700_000_000, 0).UTC()
 
 	sub, ok := idx.findCached(rootSignalSubID)
@@ -169,16 +166,16 @@ func TestPastRootSignal_ReturnCoversRootHookOnly(t *testing.T) {
 	}
 }
 
-// A shown field outside contentFingerprint (Model) still fires the root hook
-// and is reported as a hook fire, while the full signal stays quiet.
-func TestPastRootSignal_ShownFieldOutsideContentFingerprintFires(t *testing.T) {
+// A shown field such as Model fires the root hook and is reported as a hook
+// fire when updated.
+func TestPastRootSignal_ShownModelChangeFires(t *testing.T) {
 	idx, _, fires := rootSignalIndex(t)
 	root, _ := idx.findCached(rootSignalRootID)
 	root.Meta.Model = "other-model"
 	if !idx.UpdateMeta(rootSignalRootID, root.Meta) {
 		t.Fatal("a Model change did not report a hook fire")
 	}
-	if full, rootFires := fires(); full != 0 || rootFires != 1 {
-		t.Fatalf("fires full=%d root=%d after a Model-only change, want 0 and 1", full, rootFires)
+	if rootFires := fires(); rootFires != 1 {
+		t.Fatalf("root signal after a Model-only change = %d, want 1", rootFires)
 	}
 }

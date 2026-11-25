@@ -1037,3 +1037,174 @@ base_url = "http://127.0.0.1:9/v1"
 		})
 	}
 }
+
+// TestSpawnResumeCacheOnlyProviderExcludesProjectEndpointVar proves
+// projectEndpointEnvExclusions reads the runtime models.dev cache just like
+// the hub and spawned child, so a provider whose base exists only in the
+// cached catalog still has its custom endpoint env var stripped from the
+// checkout-controlled project layer.
+func TestSpawnResumeCacheOnlyProviderExcludesProjectEndpointVar(t *testing.T) {
+	clearProviderKeysFromEnvironment(t)
+	const (
+		key      = "KIMI_CUSTOM_URL"
+		checkout = "https://checkout.example.test"
+	)
+	if value, ok := os.LookupEnv(key); ok {
+		t.Cleanup(func() { _ = os.Setenv(key, value) })
+		if err := os.Unsetenv(key); err != nil {
+			t.Fatal(err)
+		}
+	}
+	xdgState := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", xdgState)
+	catalogDir := filepath.Join(xdgState, "evener", "catalog")
+	if err := os.MkdirAll(catalogDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cachedCatalog := `{
+  "kimi-code-plan-global": {
+    "id": "kimi-code-plan-global",
+    "name": "Kimi For Coding (kimi.ai)",
+    "npm": "@ai-sdk/openai-compatible",
+    "api": "https://api.kimi.ai/coding/v1",
+    "env": ["KIMI_API_KEY"],
+    "models": {
+      "k3": {
+        "id": "k3",
+        "name": "Kimi K3",
+        "modalities": {"input": ["text"], "output": ["text"]},
+        "limit": {"context": 262144, "output": 32768}
+      }
+    }
+  }
+}`
+	cachedMeta := `{"fetched_at":"2099-01-01T00:00:00Z","etag":"\"test\"","source":"https://models.dev/api.json"}`
+	if err := os.WriteFile(filepath.Join(catalogDir, "models.dev.json"), []byte(cachedCatalog), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(catalogDir, "models.dev.meta.json"), []byte(cachedMeta), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	tomlPath := filepath.Join(t.TempDir(), "providers.toml")
+	cfg := `[providers.kimi]
+base = "kimi-code-plan-global"
+base_url = "{BASE_URL}"
+vars = { BASE_URL = "https://api.kimi.ai/coding/v1" }
+vars_env = { BASE_URL = "KIMI_CUSTOM_URL" }
+api_key = "sk-fixture"
+`
+	if err := os.WriteFile(tomlPath, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	credsPath := filepath.Join(t.TempDir(), "credentials.toml")
+	reg := hubcore.NewProviderRegistry(func(extra ...registry.Option) (*registry.Registry, *credentials.Store, error) {
+		opts := append([]registry.Option{
+			registry.WithConfigPath(tomlPath),
+			registry.WithOffline(true),
+		}, extra...)
+		r, err := registry.Load(opts...)
+		return r, nil, err
+	})
+	if err := reg.Reload(); err != nil {
+		t.Fatalf("hub registry reload with cached catalog: %v", err)
+	}
+	if !reg.Get().HasInstance("kimi") {
+		t.Fatalf("fixture setup: kimi did not load from cached catalog (warnings: %v)", reg.Get().Warnings())
+	}
+
+	projectEnv := map[string]string{key: checkout, "PROJECT_KEPT": "kept"}
+	resolved := launchconfig.Resolved{
+		Effective: launchconfig.Layer{Model: "kimi/k3", Env: projectEnv},
+		Layers: map[launchconfig.LayerName]launchconfig.Layer{
+			launchconfig.LayerProject: {Env: projectEnv},
+		},
+	}
+	for _, mode := range []string{"spawn", "resume"} {
+		t.Run(mode, func(t *testing.T) {
+			root := t.TempDir()
+			binary := filepath.Join(root, "evener")
+			runDir := filepath.Join(root, "run")
+			stateDir := t.TempDir()
+			writeFakeEvener(t, binary, endpointDaemonScript(key))
+			h := &HubSpawner{Cfg: DefaultConfig(), Registry: reg, ProvidersConfigPath: tomlPath, CredentialsPath: credsPath, EvenerBinary: binary, RunDir: runDir}
+			var entry rendezvous.Entry
+			var err error
+			if mode == "spawn" {
+				entry, err = h.Spawn(t.Context(), hubcore.SpawnRequest{Provider: "kimi", StateDir: stateDir, WorkingDir: root, Resolved: resolved})
+			} else {
+				entry, err = h.Resume(t.Context(), hubcore.ResumeRequest{SessionID: "01JKIMICACHE", Provider: "kimi", StateDir: stateDir, WorkingDir: root, Resolved: resolved})
+			}
+			if err != nil {
+				t.Fatalf("%s with cache-only base failed: %v", mode, err)
+			}
+			process, err := os.FindProcess(entry.PID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = process.Kill() })
+
+			childEnv := readDaemonEnv(t, filepath.Join(runDir, "child-env"))
+			if got, _ := envLookup(childEnv, key); got != "" {
+				t.Fatalf("%s child %s = %q, want unset: project layer redirected cache-only provider endpoint", mode, key, got)
+			}
+			if got, _ := envLookup(childEnv, "PROJECT_KEPT"); got != "kept" {
+				t.Fatalf("%s child PROJECT_KEPT = %q, want kept", mode, got)
+			}
+			launchCheckEnv := readDaemonEnv(t, filepath.Join(root, "launchcheck-env"))
+			if got, _ := envLookup(launchCheckEnv, key); got != "" {
+				t.Fatalf("%s launch-check %s = %q, want unset", mode, key, got)
+			}
+		})
+	}
+}
+
+// TestSpawnResumeSkipExclusionsWhenProjectEnvEmpty proves launches with no
+// checkout-controlled project env vars do not re-load providers.toml for
+// endpoint exclusions.
+func TestSpawnResumeSkipExclusionsWhenProjectEnvEmpty(t *testing.T) {
+	clearProviderKeysFromEnvironment(t)
+	f := newInstancesFixture(t, map[string]string{})
+	if err := os.WriteFile(f.tomlPath, []byte(`default = "work"
+[providers.work]
+base = "openai-compatible"
+base_url = "http://127.0.0.1:9/v1"
+api_key = "sk-work"
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.ctl.reg.Reload(); err != nil {
+		t.Fatalf("hub registry reload: %v", err)
+	}
+	unloadable := filepath.Join(t.TempDir(), "providers.toml")
+	if err := os.WriteFile(unloadable, []byte("[providers.broken\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	resolved := launchconfig.Resolved{
+		Effective: launchconfig.Layer{Model: "work/house"},
+	}
+	for _, mode := range []string{"spawn", "resume"} {
+		t.Run(mode, func(t *testing.T) {
+			root := t.TempDir()
+			binary := filepath.Join(root, "evener")
+			runDir := filepath.Join(root, "run")
+			writeFakeEvener(t, binary, endpointDaemonScript("COPILOT_UPSTREAM_URL"))
+			h := &HubSpawner{Cfg: DefaultConfig(), Registry: f.ctl.reg, ProvidersConfigPath: unloadable, CredentialsPath: f.credsPath, EvenerBinary: binary, RunDir: runDir}
+			var entry rendezvous.Entry
+			var err error
+			if mode == "spawn" {
+				entry, err = h.Spawn(t.Context(), hubcore.SpawnRequest{Provider: "work", StateDir: f.stateDir, WorkingDir: root, Resolved: resolved})
+			} else {
+				entry, err = h.Resume(t.Context(), hubcore.ResumeRequest{SessionID: "01JEMPTYPROJ", Provider: "work", StateDir: f.stateDir, WorkingDir: root, Resolved: resolved})
+			}
+			if err != nil {
+				t.Fatalf("%s with empty project env failed in exclusion scan: %v", mode, err)
+			}
+			process, err := os.FindProcess(entry.PID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = process.Kill() })
+		})
+	}
+}

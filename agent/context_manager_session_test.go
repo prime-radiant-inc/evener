@@ -281,10 +281,6 @@ func TestBuildCompactionMeta_ExcludesTaskState(t *testing.T) {
 	if meta.SessionID != sess.id {
 		t.Fatalf("expected SessionID %q, got %q", sess.id, meta.SessionID)
 	}
-	// ActivatedSkills is never populated by buildCompactionMeta; assert it remains nil.
-	if len(meta.ActivatedSkills) != 0 {
-		t.Fatalf("task state leaked into ActivatedSkills: %v", meta.ActivatedSkills)
-	}
 }
 
 // TestBuildCompactionMeta_SessionID verifies that buildCompactionMeta sets

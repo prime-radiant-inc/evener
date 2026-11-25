@@ -153,9 +153,10 @@ losing the conversation that made the evidence relevant.
   Overview (About), while a primary-touch phone whose wider landscape viewport uses the desktop
   shell retains the separate status footer. An empty composer
   with room folds to one row: Attach keeps its leading utility slot, the message field
-  stays left of the session menu, and the menu and Send or Stop keep their trailing
-  slots. Steer enters to the primary action's left. These positions do not move when
-  content arrives.
+  keeps a readable floor left of the status chrome and absorbs all leftover width, and
+  the session menu sits flush beside Send or Stop with no hidden-Steer gap. When content
+  arrives, Attach and the primary action keep their slots while Steer enters to the
+  primary action's left (shifting the menu left only when inline Steer appears).
   Focus, including session-opening
   autofocus, never grows the empty card; typing or another content contribution expands
   it on the spatial recipe (§5). Clearing while focused keeps that expanded shape stable,
@@ -206,12 +207,15 @@ losing the conversation that made the evidence relevant.
   until close. Return to a visible, connected opener, then a visible control for the
   intended session, preferring the originating pane. Desktop remains nonmodal. Existing
   standalone Details views and the `/tasks` pane toggle retain their behavior.
-- **Keep inspection readable at larger text sizes.** Desktop Overview stays 320px wide.
-  Both desktop and mobile use one underline tablist without shortening labels or counts
-  at narrow widths and XL text: desktop wraps onto rows so every category stays visible
-  inside the 320px sidebar without a horizontal scrollbar, while narrow viewports scroll
-  horizontally. About presents session facts in a compact inline meta table whose model,
-  session ID, branch, paths, and saved link URLs wrap as selectable text. Its body
+- **Keep inspection readable at larger text sizes.** Desktop Overview defaults to 320px
+  wide and is user-resizable (`280–640px`, clamped against narrow desktop viewports)
+  from its left edge using the same edge-resize separator contract as the Sessions rail.
+  Both desktop and mobile use one single-row underline tablist with two-level headings
+  (label on top, count underneath; About stays a single centered label) without wrapping
+  onto multiple rows or shortening labels or counts, scrolling horizontally when larger
+  text sizes or narrow widths exceed the strip. About presents session facts in a compact
+  inline meta table whose model, session ID, branch, paths, and saved link URLs wrap as
+  selectable text. Its body
   scrolls vertically while the page stays fixed. Phone controls retain the tap floor.
 - **Keep Overview's activity lists on one loading and spacing contract.** Agents,
   Jobs and Watches page automatically at their visible boundary, with a static
@@ -851,7 +855,7 @@ during implementation (noted inline); this table is the one to trust.
 | **HoverCard** | `{label: ReactNode; children: ReactNode \| (association) => ReactNode; focusTarget?: () => HTMLElement \| null; longPressEnabled?: boolean; sideAnchor?: () => SideAnchor \| null}` (`HoverCardProps`, barrel-exported) | Rich, non-interactive hover/focus description on the shared floating-bubble lifecycle. Use for structured context that would overload a compact surface; function children place `aria-describedby` on the actual trigger, while `focusTarget` can associate and trigger from an owning composite widget. On a touch device neither hover nor the focus a tap takes reveals it; `longPressEnabled` adds a long press that does, a plain tap activates the trigger's own control, and keyboard or assistive-tech focus still reveals it. `sideAnchor` supplies a caller-measured side placement; without it placement is unchanged. |
 | **Toast** + `useToasts()` | `useToasts(): {push: (kind, text) => void}`; `<Toast/>` takes no props | Module-singleton queue (`useSyncExternalStore`), mounted once near the app root. 5s auto-dismiss, true pause/resume on hover (tracks remaining time, doesn't restart the full window — fix-wave, see §4). |
 | **Banner** | `{tone: "attention"\|"danger"; message: string; action?: {label; onClick; inFlight?}}` | An overlay status strip for "the connection needs a human" moments (ConnectionBanner composes it): absolutely positioned full-width at the top of its positioning ancestor, so it floats over content instead of shifting layout — the ancestor must establish a positioning context. A polite `role="status"` live region; `inFlight` disables the action and appends "…" to its label. |
-| **PaneScaffold** | `{title?; mobileTitle?; paneId?; publishTabTitle?; focused?; focusSelector?; scaffoldMarker?; cadence?; actions?; footer?; edgeFooter?; bodyScroll? (true); children}` | The standard pane chrome: header (title + cadence slot + actions) + scrollable body + optional padded footer + optional flush `edgeFooter`. `title` is omitted where the host already labels the pane (the cascade's tab); `mobileTitle ?? title` is published to the mobile top bar. `bodyScroll={false}` is for content that scrolls itself, and also drops the body's padding. The body's bottom inset is end-of-scroll clearance for the pane's own bottom edge, so a pane with any slot below its body (`footer`, or a flush `edgeFooter` alone) hands that edge to that surface's top hairline and the body drops its bottom inset to meet it (layoutguard `pane-body-composer-gap`); footer-less panes keep the inset to clear a phone's home indicator. Most-copied layout primitive in the app. |
+| **PaneScaffold** | `{title?; mobileTitle?; paneId?; publishTabTitle?; focused?; focusSelector?; scaffoldMarker?; cadence?; actions?; footer?; edgeFooter?; bodyScroll? (true); children}` | The standard pane chrome: header (title + cadence slot + actions) + scrollable body + optional padded footer + optional flush `edgeFooter`. `title` is omitted where the host already labels the pane (the cascade's tab); `mobileTitle ?? title` is published to the mobile top bar. `bodyScroll={false}` is for content that scrolls itself, and also drops the body's padding. Neither `footer` nor `edgeFooter` draws a top hairline; the composer card and status strip sit directly on the page ground. The body's bottom inset is end-of-scroll clearance for the pane's own bottom edge, so a pane with any slot below its body (`footer`, or a flush `edgeFooter` alone) hands that edge to that surface and the body drops its bottom inset to meet it (layoutguard `pane-body-composer-gap`); footer-less panes keep the inset to clear a phone's home indicator. Most-copied layout primitive in the app. |
 | **CodeBlock** | `{text: string; copyText?; language?: string; ansi?: boolean; showLineNumbers?: boolean; copyLabel?; renderLine?(line, lineNumber); fold? (true)}` | Mono block with a CopyButton inset top-right (`copyLabel` names it, `copyText` overrides what it copies); no syntax highlighting (YAGNI this wave). Long lines wrap, never scroll sideways. Long content folds to its tail behind a "Show N earlier lines" control unless `fold={false}`, for a block that is the primary thing the reader opened. `ansi` renders SGR styling. |
 | **ShellCommandBlock** | `{command: string; copyText?: string}` | A shell command as a CodeBlock: formatted across lines with indentation and token-kind spans, never tail-folded, with a "Copy command" button that copies the raw `command` (or `copyText`, for a caller that displays a modified command). |
 | **Markdown** (+ **MarkdownBubble**) | `{source: string; live?: boolean; ref?: Ref<HTMLDivElement>}`; bubble: `{source; density?: "default"\|"compact"; dataTestId?}` | `marked` → DOMPurify-sanitized HTML → `innerHTML`; fenced code renders through CodeBlock's stylesheet; links open in a new tab with no opener access; mermaid fences render through MermaidDiagram. `live` closes constructs left open at a streaming tail so formatting renders mid-stream — settled renders must not pass it. MarkdownBubble wraps a Markdown in a bubble frame. |

@@ -777,6 +777,41 @@ async function main() {
       if (!dock.observerSelected) failures.push("Dock focus did not select the other retained transcript tab");
       if (!dock.switchedRootVisible || Math.abs(dock.switchedRoot.top - dock.before.root.top) > 1)
         failures.push("Selecting another secondary tab changed the retained root viewport");
+
+      for (const [kind, run] of [
+        ["follower", "runFollowingPrepend"],
+        ["replacement", "runObsoletePrepend"],
+      ]) {
+        try {
+          const url = `http://127.0.0.1:${vitePort}/transcriptscrollguard.html?paged=1&prepend=${kind}`;
+          await navigateTo(page, url, BOOT);
+          await waitForFonts(send);
+          const result = JSON.parse(await evaluate(send, `window.${run}().then(JSON.stringify)`));
+          console.log(`${kind} prepend geometry`, JSON.stringify(result));
+          assertPagedOpenContract(failures, `the ${kind} fixture`, result.opened);
+          if (kind === "follower") {
+            if (!result.accepted || result.settled.turns !== 54 || result.settled.listCalls !== 1)
+              failures.push("follower did not accept exactly one advancing older page with unique prepended turns");
+            const { parkedView, held, afterView, commitFrames } = result;
+            if (parkedView?.viewCount !== 1 || parkedView?.followingBottom !== false || held.viewCount !== 1 ||
+                held.followingBottom !== true || afterView?.viewCount !== 1 || afterView?.viewId !== held.viewId ||
+                afterView?.followingBottom !== true)
+              failures.push(`follower view did not maintain followingBottom across prepend: ${JSON.stringify(result)}`);
+            const worst = Math.max(commitFrames.worstGap, Math.abs(result.settled.bottomGap));
+            if (!result.samePort || !commitFrames.grew || commitFrames.measured === 0 || result.settled.pill || worst > BOTTOM_TOLERANCE_PX)
+              failures.push(`follower lost the true end across measured prepend geometry: ${JSON.stringify(result)}`);
+          } else {
+            const { olderReplies, oldReadSettled } = result.completion;
+            if (olderReplies !== 1 || oldReadSettled.loading || oldReadSettled.error !== null)
+              failures.push(`obsolete older read did not settle: ${JSON.stringify(result.completion)}`);
+            const unchanged = JSON.stringify(result.before) === JSON.stringify(result.after);
+            if (!result.samePort || result.demandRearmed || !unchanged || result.frameWatch.observed < 20 || result.frameWatch.violations !== 0)
+              failures.push(`late obsolete prepend changed replacement geometry or demand: ${JSON.stringify(result)}`);
+          }
+        } catch (error) {
+          failures.push(`${kind} prepend: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
     } finally {
       await clearViewportOverride(send);
       page.close();

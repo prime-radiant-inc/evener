@@ -41,6 +41,7 @@ import { requireClass } from "../../../../widgets/internal/requireClass";
 import { checkCredentialHeader, type FormError } from "./formError";
 import styles from "./instanceDialogs.module.css";
 import { byCodePoint, PROTOCOL_OPTIONS, SURFACE_OPTIONS } from "./instanceEdit";
+import { formatProviderLabel } from "./providerLabel";
 import { confirmListingState, refreshListingAfterMutation } from "./reconcileListing";
 
 import { useEditorLifetime } from "./useEditorLifetime";
@@ -157,7 +158,7 @@ export function AddInstanceDialog({
 
   const baseOptions: SelectOption[] = [
     { value: "", label: "" },
-    ...availableProviders.map((p) => ({ value: p.id, label: p.name || p.id })),
+    ...availableProviders.map((p) => ({ value: p.id, label: formatProviderLabel(p.id, p.name) })),
   ];
   const templateVars = availableProviders.find((p) => p.id === base)?.vars ?? {};
 

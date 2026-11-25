@@ -11,7 +11,6 @@
   gap: var(--space-3);
   padding: 0 var(--space-3);
   min-height: 30px;
-  border-top: 1px solid var(--edge);
   background: var(--surface-0);
   font-family: var(--font-sans);
   font-size: var(--font-size-caption);

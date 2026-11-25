@@ -3,8 +3,10 @@
  * tone, so nothing here reaches for a semantic hue. */
 
 .sidebar {
-  width: 320px;
+  width: var(--overview-width, 320px);
+  min-width: 0;
   flex: none;
+  position: relative;
   border-left: 1px solid var(--edge);
   background: var(--surface-canvas);
   display: flex;
@@ -48,7 +50,7 @@
   display: flex;
   flex: none;
   min-inline-size: 0;
-  padding: var(--space-1) var(--space-2) 0;
+  padding: var(--space-1) var(--space-1) 0;
   border-bottom: 1px solid var(--edge);
   overflow-x: auto;
   overflow-y: hidden;
@@ -60,24 +62,23 @@
   display: none;
 }
 
-/* Desktop keeps every category visible inside the fixed 320px sidebar without
- * a hidden horizontal scrollbar; phones keep the single swipeable row. */
-@media (min-width: 900px) {
-  .tablist {
-    flex-wrap: wrap;
-    row-gap: var(--space-1);
-    overflow-x: visible;
-  }
-}
-
 .tab {
   display: inline-flex;
   flex: none;
+  align-items: stretch;
   border-bottom: 2px solid transparent;
 }
 
 .tab[data-selected] {
   border-bottom-color: var(--ink-hi);
+}
+
+.tabStack {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  line-height: var(--line-height-title);
+  white-space: nowrap;
 }
 
 .tabLabel {

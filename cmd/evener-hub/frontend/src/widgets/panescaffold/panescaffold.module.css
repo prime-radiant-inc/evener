@@ -126,7 +126,6 @@
   padding: var(--space-3) var(--space-5);
   /* This dock owns the home-indicator band. */
   padding-bottom: calc(var(--space-3) + var(--dock-clearance));
-  border-top: 1px solid var(--edge);
 }
 
 .edgeFooter {
@@ -181,8 +180,9 @@
    * slides under the card; the scrollable reserve lives inside the list as
    * the end inset row (TranscriptBody), not as padding here. Other panes keep
    * the padded footer: this is the session composer's shape, keyed the same
-   * way as the Duo-cover rule below. */
-  .pane:has(> .body[data-pane-scaffold^="session:"]) {
+   * way as the Duo-cover rule below. Panes carrying an .edgeFooter (narrow
+   * desktop Dockview popouts keep StatusBar) stay in flow above it. */
+  .pane:has(> .body[data-pane-scaffold^="session:"]):not(:has(> .edgeFooter)) {
     position: relative;
     /* Keep .pane a true non-scroller (superseding .pane's overflow: hidden
      * fallback): once .footer is positioned inside .pane, focusing a control
@@ -191,17 +191,16 @@
     overflow: clip;
   }
 
-  .pane:has(> .body[data-pane-scaffold^="session:"]) > .footer {
+  .pane:has(> .body[data-pane-scaffold^="session:"]):not(:has(> .edgeFooter)) > .footer {
     position: absolute;
     inset-inline: 0;
     bottom: 0;
     z-index: var(--z-sticky-bar);
-    border-top: none;
     background: linear-gradient(to bottom, transparent, var(--surface-0) var(--space-5));
     pointer-events: none;
   }
 
-  .pane:has(> .body[data-pane-scaffold^="session:"]) > .footer > * {
+  .pane:has(> .body[data-pane-scaffold^="session:"]):not(:has(> .edgeFooter)) > .footer > * {
     pointer-events: auto;
   }
 }
@@ -210,13 +209,13 @@
  * home-indicator band. Reserve only the ordinary gap here at every width;
  * otherwise a wide touch viewport spends the safe-area band twice. Keep this
  * after the phone .footer rule so it wins for a footer/edge-footer pair there
- * too; the Duo-cover override has higher specificity. */
+ * too. */
 .footerBeforeEdge {
   padding-bottom: var(--space-3);
 }
 
 @media (min-width: 440px) and (max-width: 500px) and (max-aspect-ratio: 3 / 4) {
-  .pane:has(> .body[data-pane-scaffold^="session:"]) > .footer {
+  .pane:has(> .body[data-pane-scaffold^="session:"]):not(:has(> .edgeFooter)) > .footer {
     padding: var(--space-1) var(--space-2);
     padding-bottom: var(--dock-clearance);
   }

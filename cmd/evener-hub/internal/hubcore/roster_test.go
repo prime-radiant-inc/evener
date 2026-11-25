@@ -1273,7 +1273,7 @@ func fuzzScenarioRoster_OnStatusChangeNotFiredWhenStatusUnchanged(t *testing.T) 
 // full tree-freshness fix end to end, mirroring how cmd/evener-hub/main.go
 // wires the pieces together: a session's status transition (as detected by
 // Roster.Refresh) drives PastIndex.RefreshOne, which re-reads the session's
-// on-disk meta and, on a genuine content delta, bumps the shared
+// on-disk meta and, on a root change, bumps the shared
 // InputsVersion counter the navigation memo keys on. Before this fix, that
 // bump only happened on PastIndex's own 60s Rebuild ticker.
 func fuzzScenarioRoster_StatusChangeDrivesPastIndexRefreshAndVersionBump(t *testing.T) {
@@ -1297,7 +1297,7 @@ func fuzzScenarioRoster_StatusChangeDrivesPastIndexRefreshAndVersionBump(t *test
 	roster := NewRoster(rendezvousDir, prober)
 
 	inputs := &InputsVersion{}
-	past.SetOnChange(inputs.Bump)
+	past.SetOnRootChange(inputs.Bump)
 	roster.SetOnChange(inputs.Bump)
 	roster.SetOnStatusChange(func(sessionID string) { past.RefreshOne(sessionID) })
 

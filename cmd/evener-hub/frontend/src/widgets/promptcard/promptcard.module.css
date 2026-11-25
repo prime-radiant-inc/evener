@@ -122,11 +122,13 @@
 }
 
 /* The trailing cluster, pushed to the row's far edge whether or not a leading
- * slot was supplied. */
+ * slot was supplied. flex: none keeps action buttons whole while the leading
+ * slot absorbs any horizontal shrink. */
 .actions {
   display: flex;
   align-items: center;
   gap: var(--space-1);
+  flex: none;
   margin-left: auto;
 }
 
@@ -138,12 +140,13 @@
     align-items: center;
   }
 
-  /* Folded: the field and the control row become one line. The control row
-   * keeps its natural width and the field yields, so a resting composer
-   * shows its placeholder beside the model, effort, menu and verbs instead
-   * of above them. */
+  /* Folded: the field and the control row become one line. The field keeps a
+   * readable floor for its placeholder and absorbs all leftover space, while
+   * the control row hugs its controls and shrinks when a long model name needs
+   * to ellipsize. */
   .card[data-folded="true"] .field {
-    flex: 1 1 10ch;
+    flex: 1 1 14rem;
+    min-width: 14rem;
   }
 }
 

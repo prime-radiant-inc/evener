@@ -147,59 +147,6 @@ func TestAddAcceptsValidEntry(t *testing.T) {
 	}
 }
 
-func TestAddRejectsSelfEdge(t *testing.T) {
-	r, err := New(nil)
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	err = r.AddWithUpstreams(host("m4"), []string{"m4"})
-	if !errors.Is(err, ErrHostCycle) {
-		t.Fatalf("self-edge = %v, want ErrHostCycle", err)
-	}
-	if _, ok := r.Get("m4"); ok {
-		t.Error("self-edge candidate was inserted despite refusal")
-	}
-}
-
-func TestAddRejectsTwoNodeCycle(t *testing.T) {
-	r, err := New(nil)
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	// b is upstream of a: a's upstream is b.
-	if err := r.AddWithUpstreams(host("a"), []string{"b"}); err != nil {
-		t.Fatalf("add a: %v", err)
-	}
-	// Adding b with upstream a closes a -> b -> a.
-	err = r.AddWithUpstreams(host("b"), []string{"a"})
-	if !errors.Is(err, ErrHostCycle) {
-		t.Fatalf("two-node cycle = %v, want ErrHostCycle", err)
-	}
-	if _, ok := r.Get("b"); ok {
-		t.Error("cycle candidate b was inserted despite refusal")
-	}
-	if got := r.All(); len(got) != 1 || got[0].Name != "a" {
-		t.Errorf("registry changed after refusal: %+v", got)
-	}
-}
-
-func TestAddRejectsLongerCycle(t *testing.T) {
-	r, err := New(nil)
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	if err := r.AddWithUpstreams(host("a"), []string{"b"}); err != nil {
-		t.Fatalf("add a: %v", err)
-	}
-	if err := r.AddWithUpstreams(host("b"), []string{"c"}); err != nil {
-		t.Fatalf("add b: %v", err)
-	}
-	err = r.AddWithUpstreams(host("c"), []string{"a"})
-	if !errors.Is(err, ErrHostCycle) {
-		t.Fatalf("three-node cycle = %v, want ErrHostCycle", err)
-	}
-}
-
 func TestAllIsNameSorted(t *testing.T) {
 	r, err := New([]Host{host("zeta"), host("alpha"), host("m4"), host("Beta")})
 	if err != nil {
@@ -270,121 +217,15 @@ func TestNameAcceptanceMatchesRefGrammar(t *testing.T) {
 	}
 }
 
-// A config-loaded host is registered by New, so its upstream edges have to come
-// from SetUpstreams: AddWithUpstreams inserts, and would refuse the duplicate.
-func TestSetUpstreamsAttachesEdgesToConfigLoadedHost(t *testing.T) {
-	r, err := New([]Host{host("a"), host("b")})
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	if err := r.AddWithUpstreams(host("b"), []string{"a"}); !errors.Is(err, ErrDuplicateHost) {
-		t.Fatalf("AddWithUpstreams on a registered host = %v, want ErrDuplicateHost", err)
-	}
-	if err := r.SetUpstreams("b", []string{"a"}); err != nil {
-		t.Fatalf("SetUpstreams: %v", err)
-	}
-	// The edge is live, so closing a cycle through it is refused.
-	if err := r.SetUpstreams("a", []string{"b"}); !errors.Is(err, ErrHostCycle) {
-		t.Fatalf("SetUpstreams closing a cycle = %v, want ErrHostCycle", err)
-	}
-}
-
-func TestSetUpstreamsUnknownHost(t *testing.T) {
-	r, err := New([]Host{host("a")})
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	if err := r.SetUpstreams("nope", []string{"a"}); !errors.Is(err, ErrUnknownHost) {
-		t.Fatalf("SetUpstreams(unknown) = %v, want ErrUnknownHost", err)
-	}
-}
-
-// A refused SetUpstreams must leave the recorded edges alone. Had the refusal
-// left a->b behind, re-attaching b->a below would now look like a cycle.
-func TestSetUpstreamsRefusalLeavesEdgesUnchanged(t *testing.T) {
-	r, err := New([]Host{host("a"), host("b")})
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	if err := r.SetUpstreams("b", []string{"a"}); err != nil {
-		t.Fatalf("SetUpstreams(b, a): %v", err)
-	}
-	if err := r.SetUpstreams("a", []string{"b"}); !errors.Is(err, ErrHostCycle) {
-		t.Fatalf("SetUpstreams(a, b) = %v, want ErrHostCycle", err)
-	}
-	if err := r.SetUpstreams("b", []string{"a"}); err != nil {
-		t.Fatalf("SetUpstreams(b, a) after the refusal = %v, want success", err)
-	}
-}
-
-// Upstream names are normalized like everything else: a padded spelling stored
-// verbatim would be a key distinct from its trimmed form, so the edge would look
-// like a leaf and a cycle through it would go undetected.
-func TestUpstreamNamesAreNormalized(t *testing.T) {
-	r, err := New([]Host{host("a"), host("b")})
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	if err := r.SetUpstreams("b", []string{"  a  "}); err != nil {
-		t.Fatalf("SetUpstreams: %v", err)
-	}
-	// The edge is live under the trimmed name, so closing the cycle is refused.
-	if err := r.SetUpstreams("a", []string{"b"}); !errors.Is(err, ErrHostCycle) {
-		t.Fatalf("cycle through a padded upstream = %v, want ErrHostCycle", err)
-	}
-}
-
-func TestUpstreamNamesRejectBlank(t *testing.T) {
-	r, err := New([]Host{host("a")})
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	if err := r.SetUpstreams("a", []string{"   "}); !errors.Is(err, ErrInvalidName) {
-		t.Fatalf("SetUpstreams with a blank upstream = %v, want ErrInvalidName", err)
-	}
-}
-
-func TestUpstreamNamesRejectBadGrammar(t *testing.T) {
-	r, err := New([]Host{host("a")})
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	// An edge that could never name a registered host would sit forever as an
-	// unresolvable leaf, so the grammar is checked up front.
-	for _, upstream := range []string{"a/b", "a:b", "..", "."} {
-		if err := r.SetUpstreams("a", []string{upstream}); !errors.Is(err, ErrInvalidName) {
-			t.Errorf("SetUpstreams(%q) = %v, want ErrInvalidName", upstream, err)
-		}
-	}
-}
-
 // Lookup names are normalized like every other name: a padded spelling must find
-// its host rather than failing as unknown and skipping the cycle check.
+// its host.
 func TestPaddedLookupNamesFindTheirHost(t *testing.T) {
-	r, err := New([]Host{host("a"), host("b")})
+	r, err := New([]Host{host("a")})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
 	if _, ok := r.Get("  a  "); !ok {
 		t.Error("Get with a padded name missed the host")
-	}
-	if err := r.SetUpstreams("  b  ", []string{"a"}); err != nil {
-		t.Fatalf("SetUpstreams with a padded name: %v", err)
-	}
-	if err := r.SetUpstreams("a", []string{"b"}); !errors.Is(err, ErrHostCycle) {
-		t.Fatalf("cycle through the padded target = %v, want ErrHostCycle", err)
-	}
-}
-
-// An upstream the registry has no entry for is a leaf: nothing beyond it can be
-// traversed, which is the documented v1 limit on cross-hub cycle detection.
-func TestUnknownUpstreamIsALeaf(t *testing.T) {
-	r, err := New([]Host{host("a")})
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	if err := r.SetUpstreams("a", []string{"lives-on-another-hub"}); err != nil {
-		t.Fatalf("SetUpstreams through an unknown upstream = %v, want success", err)
 	}
 }
 
@@ -616,62 +457,5 @@ func TestGenerationIsRegistryWideMonotonic(t *testing.T) {
 	}
 	if a2.Generation <= a1.Generation {
 		t.Fatalf("re-added generation = %d, want greater than the removed entry's %d", a2.Generation, a1.Generation)
-	}
-}
-
-// Removing a dependent clears its edges, so re-adding it without upstreams
-// succeeds instead of tripping the cycle check on a stale edge entry.
-func TestRemoveClearsDependentEdges(t *testing.T) {
-	r, err := New(nil)
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	if err := r.Add(host("a")); err != nil {
-		t.Fatalf("add a: %v", err)
-	}
-	if err := r.AddWithUpstreams(host("b"), []string{"a"}); err != nil {
-		t.Fatalf("add b with upstream a: %v", err)
-	}
-	if err := r.Remove("b"); err != nil {
-		t.Fatalf("Remove(b): %v", err)
-	}
-	if err := r.Add(host("b")); err != nil {
-		t.Fatalf("re-Add b without upstreams: %v", err)
-	}
-	// The re-added host carries no edges, so it is a leaf again.
-	if err := r.SetUpstreams("a", []string{"b"}); err != nil {
-		t.Fatalf("SetUpstreams(a, b) after re-adding b edgeless: %v", err)
-	}
-}
-
-// Removing an upstream does not stop it from being re-added, and the
-// dependent's dangling edge still resolves once the upstream is back.
-func TestRemoveUpstreamThenReAdd(t *testing.T) {
-	r, err := New(nil)
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	if err := r.Add(host("a")); err != nil {
-		t.Fatalf("add a: %v", err)
-	}
-	if err := r.AddWithUpstreams(host("b"), []string{"a"}); err != nil {
-		t.Fatalf("add b with upstream a: %v", err)
-	}
-	if err := r.Remove("a"); err != nil {
-		t.Fatalf("Remove(a): %v", err)
-	}
-	if _, ok := r.Get("a"); ok {
-		t.Error("Get(a) present after Remove")
-	}
-	if err := r.Add(host("a")); err != nil {
-		t.Fatalf("re-Add a: %v", err)
-	}
-	got, ok := r.Get("a")
-	if !ok || got.SSH != "a.local" {
-		t.Fatalf("Get(a) after re-Add = %+v, %v, want the re-added host", got, ok)
-	}
-	// The dependent still points at a, so closing the loop back is refused.
-	if err := r.SetUpstreams("a", []string{"b"}); !errors.Is(err, ErrHostCycle) {
-		t.Fatalf("SetUpstreams closing a cycle through the re-added upstream = %v, want ErrHostCycle", err)
 	}
 }

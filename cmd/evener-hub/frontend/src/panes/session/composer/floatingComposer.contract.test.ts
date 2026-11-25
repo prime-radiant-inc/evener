@@ -1,16 +1,17 @@
 // @vitest-environment node
 import { expect, test } from "vitest";
-import { blockBody, escapeRegExp, mediaBlock, readModuleCss } from "../../../styles/cssBlock";
+import { blockBody, escapeRegExp, mediaBlock, readModuleCss, topRuleBlock } from "../../../styles/cssBlock";
+import { DUO_COVER_QUERY } from "./narrowComposer";
 
 // The floating composer (docs/web-ui/design-system.md §12) is pure stylesheet
 // geometry - jsdom lays out nothing, so the phone rules are pinned off disk
 // the same way display-gates.test.ts pins its gates. What is pinned:
 //
-//  - PaneScaffold's phone block floats a session pane's footer over the body:
-//    no border-top rectangle, a gradient scrim that fades the transcript out
-//    behind the floating chrome (a painted fade, not a boxed strip), and a
-//    root that passes pointer events through to the scroll behind it in its
-//    gutters (its children take taps again).
+//  - PaneScaffold's footer carries no border-top rectangle, and its phone block
+//    floats a session pane's footer over the body: a gradient scrim that fades
+//    the transcript out behind the floating chrome (a painted fade, not a boxed
+//    strip), and a root that passes pointer events through to the scroll behind
+//    it in its gutters (its children take taps again).
 //  - The session pane's own stylesheet sizes the scrollable reserve that lets
 //    the last turn clear the floating composer: the end inset row measures to
 //    the chrome's measured height plus the home-indicator band only under the
@@ -33,9 +34,11 @@ const askDockCss = readModuleCss(import.meta.url, "./askDock/askdock.module.css"
 const loadOlderCss = readModuleCss(import.meta.url, "../transcript/flow/loadolderrow.module.css");
 const userMessageCss = readModuleCss(import.meta.url, "../transcript/messages/usermessageitem.module.css");
 
-// The session-scoped selector both panescaffold rules key on: session panes
-// are the only ones whose footer is a floating composer.
-const SESSION_PANE = escapeRegExp('.pane:has(> .body[data-pane-scaffold^="session:"])');
+// The session-scoped selector panescaffold's floating rules key on: session
+// panes without an edge footer (mobile/tablet/Duo). Narrow desktop Dockview
+// popouts (<900px) still render a StatusBar edgeFooter and keep the composer
+// in flow above it.
+const SESSION_PANE = escapeRegExp('.pane:has(> .body[data-pane-scaffold^="session:"]):not(:has(> .edgeFooter))');
 
 // The block of the first rule in `block` whose selector text matches
 // `selectorPattern` (callers pass the pattern; the selector is CSS Modules
@@ -55,9 +58,11 @@ test("a phone session pane floats its footer over the transcript", () => {
   const pane = ruleIn(phone, new RegExp(`${SESSION_PANE}\\s*\\{`));
   expect(pane).toMatch(/position:\s*relative/);
   expect(pane).toMatch(/overflow:\s*clip/);
+  const baseFooter = topRuleBlock(scaffoldCss, ".footer");
+  expect(baseFooter).not.toMatch(/border-top/);
   const footer = ruleIn(phone, new RegExp(`${SESSION_PANE} > \\.footer\\s*\\{`));
   expect(footer).toMatch(/position:\s*absolute/);
-  expect(footer).toMatch(/border-top:\s*none/);
+  expect(footer).not.toMatch(/border-top/);
   // A fade, not a strip: the scrim starts transparent so content visibly
   // slides under the floating chrome.
   expect(footer).toMatch(/background:\s*linear-gradient\(to bottom, transparent,/);
@@ -67,6 +72,20 @@ test("a phone session pane floats its footer over the transcript", () => {
 
   const reachable = ruleIn(phone, new RegExp(`${SESSION_PANE} > \\.footer > \\*\\s*\\{`));
   expect(reachable).toMatch(/pointer-events:\s*auto/);
+
+  // The Duo-cover footer override must carry the same edge-footer exemption so
+  // a narrow desktop popout in that width/aspect band keeps .footerBeforeEdge.
+  const duo = ruleIn(scaffoldCss, new RegExp(`@media ${escapeRegExp(DUO_COVER_QUERY)}\\s*\\{`));
+  const duoFooter = ruleIn(duo, new RegExp(`${SESSION_PANE} > \\.footer\\s*\\{`));
+  expect(duoFooter).toMatch(/padding-bottom:\s*var\(--dock-clearance\)/);
+
+  const UNGATED_SESSION_PANE = escapeRegExp('.pane:has(> .body[data-pane-scaffold^="session:"])');
+  expect(phone, "phone floating rules must exempt panes carrying an edgeFooter").not.toMatch(
+    new RegExp(`${UNGATED_SESSION_PANE}(?:\\s|>|\\{)`),
+  );
+  expect(duo, "Duo-cover footer rule must exempt panes carrying an edgeFooter").not.toMatch(
+    new RegExp(`${UNGATED_SESSION_PANE}(?:\\s|>|\\{)`),
+  );
 });
 
 test("the transcript carries a scrollable reserve under the floating composer on the phone", () => {
@@ -76,7 +95,10 @@ test("the transcript carries a scrollable reserve under the floating composer on
   expect(phone, "phone reserve must not match an unscoped .contentColumn (such as a cascade column)").not.toMatch(
     /(?:^|[}\n])\s*\.contentColumn\s*\{/,
   );
-  const SESSION_BODY = escapeRegExp(':global([data-pane-scaffold^="session:"])');
+  expect(phone, "phone reserve must exempt session panes carrying an edgeFooter (narrow desktop popouts)").not.toMatch(
+    /:global\(\[data-pane-scaffold\^="session:"\]\)\s+\.contentColumn\s*\{/,
+  );
+  const SESSION_BODY = escapeRegExp(':global([data-pane-scaffold^="session:"]):not([data-has-edge-footer="true"])');
   const column = ruleIn(phone, new RegExp(`${SESSION_BODY}\\s+\\.contentColumn\\s*\\{`));
   // The reserve is the chrome's measured height - the footer ConversationBody
   // publishes - plus the home-indicator band, with the resting composer's

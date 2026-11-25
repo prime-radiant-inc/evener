@@ -607,9 +607,22 @@ whitespace override selects the original provider file's sibling store.
 Copies are kept beside the source
 so they retain its directory visibility, and are removed after the owning child
 or probe exits. Creating a copy needs a writable config directory; if the hub
-exits before its detached child, the copy can remain. An invalid file at startup
-uses implicit instances until repaired. A launch before the next notice tick
-can still encounter the edited source before the hub observes its invalidity.
+exits before its detached child, the copy can remain. An invalid file at startup uses implicit instances until repaired. A launch
+before the next notice tick can still encounter the edited source before the
+hub observes its invalidity.
+
+When `providers.toml` parses cleanly as schema 2 but an individual
+`[providers.<name>]` stanza fails load or validation (for example, an unknown
+`base` ID, missing protocol or base URL, invalid field key, or invalid user
+alias), `registry.Load` isolates only that provider instead of failing the
+whole file. Healthy providers stay usable and editable, registry warnings
+report the broken entry, a `default` naming it falls back automatically,
+matching OAuth records are preserved, and direct lookups or launches targeting
+the broken name return its `ProviderLoadError` (shadowing any curated implicit
+provider of the same name). Hub Settings writes still validate the targeted
+provider after reload and roll back any edit that would break it. File-level
+TOML syntax errors, unknown schema keys, and pre-registry schemas remain
+whole-file load errors.
 
 
 ```toml

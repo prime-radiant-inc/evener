@@ -779,9 +779,9 @@ func (r *Registry) ResolveGateCredential(instance, model string) (Resolved, erro
 
 func (r *Registry) resolveGateCredential(instance, model string, allowCodexCandidate bool) (Resolved, error) {
 	name := strings.ToLower(strings.TrimSpace(instance))
-	rec, ok := r.recordFor(name)
-	if !ok {
-		return Resolved{}, fmt.Errorf("%w %q", ErrUnknownInstance, name)
+	rec, err := r.requireRecord(name)
+	if err != nil {
+		return Resolved{}, err
 	}
 	if ref := ParseRef(strings.TrimSpace(model)); strings.EqualFold(ref.Instance, name) {
 		model = ref.Model
@@ -1204,6 +1204,9 @@ func (r *Registry) computeInstances() {
 		if _, shadowed := r.explicit[id]; shadowed {
 			continue
 		}
+		if _, broken := r.broken[id]; broken {
+			continue
+		}
 		t := r.connectionTransport(rec)
 		autoSelectable := true
 		if t.Auth == AuthOAuthGitHubCopilot {
@@ -1250,6 +1253,9 @@ func (r *Registry) rankedInstances() []*instance {
 // instance, an implicit instance, or any curated implicit provider id
 // (resolvable without a credential, spec §5.2).
 func (r *Registry) recordFor(name string) (*record, bool) {
+	if _, broken := r.broken[name]; broken {
+		return nil, false
+	}
 	if inst, ok := r.instances[name]; ok {
 		return inst.rec, true
 	}
@@ -1259,13 +1265,30 @@ func (r *Registry) recordFor(name string) (*record, bool) {
 	return nil, false
 }
 
+// requireRecord resolves name through recordFor and distinguishes an isolated
+// broken user provider (ProviderLoadError) from an unknown instance.
+func (r *Registry) requireRecord(name string) (*record, error) {
+	if rec, ok := r.recordFor(name); ok {
+		return rec, nil
+	}
+	if err := r.ProviderError(name); err != nil {
+		return nil, err
+	}
+	return nil, fmt.Errorf("%w %q", ErrUnknownInstance, name)
+}
+
 // validateDefault enforces spec §5.1 at load: `default` must name an
-// explicit instance or a curated implicit id.
+// explicit instance or a curated implicit id. A default naming an isolated
+// broken user provider degrades to a warning so unrelated providers still load.
 func (r *Registry) validateDefault() error {
 	if r.userDefault == "" {
 		return nil
 	}
 	if _, ok := r.explicit[r.userDefault]; ok {
+		return nil
+	}
+	if _, broken := r.broken[r.userDefault]; broken {
+		r.warnings = append(r.warnings, fmt.Sprintf("default = %q: provider failed to load; falling back to automatic default", r.userDefault))
 		return nil
 	}
 	if rec, ok := r.curated[r.userDefault]; ok && rec.head.Implicit != nil && *rec.head.Implicit {
@@ -1280,7 +1303,8 @@ var errNoDefaultInstance = errors.New("no default instance: set `default` in pro
 // DefaultInstance picks the default instance (spec §5.1): `default` when it
 // is an instance here; else the first ranked instance with a default model
 // whose auth scheme reports a launchable credential. A `default` that is a
-// credential-less or hidden implicit id warns and falls through.
+// broken user provider or a credential-less or hidden implicit id warns and
+// falls through.
 func (r *Registry) DefaultInstance() (string, []string, error) {
 	var warnings []string
 	if r.userDefault != "" {
@@ -1289,6 +1313,8 @@ func (r *Registry) DefaultInstance() (string, []string, error) {
 		}
 		rec := r.curated[r.userDefault]
 		switch {
+		case r.broken[r.userDefault] != nil:
+			warnings = append(warnings, fmt.Sprintf("default = %q: %v; falling through", r.userDefault, r.broken[r.userDefault]))
 		case rec == nil:
 			return "", nil, fmt.Errorf("default = %q is not an instance", r.userDefault)
 		case rec.head.Hidden:
@@ -1472,6 +1498,9 @@ func (r *Registry) StrayOAuthRecords() []string {
 		for _, e := range entries {
 			name, ok := strings.CutSuffix(e.Name(), ".json")
 			if !ok || e.IsDir() {
+				continue
+			}
+			if _, broken := r.broken[name]; broken {
 				continue
 			}
 			if rec, found := r.recordFor(name); found && rec.head.Transport.Auth == scheme {

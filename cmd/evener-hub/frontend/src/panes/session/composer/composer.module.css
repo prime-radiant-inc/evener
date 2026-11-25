@@ -1,6 +1,5 @@
-/* No padding/border of its own - Session.tsx now renders this inside
- * PaneScaffold's footer slot, which already frames the whole footer group
- * (composer + status row) with the pane's edge padding and top hairline. */
+/* No padding/border of its own - Session.tsx renders this inside
+ * PaneScaffold's footer slot, which supplies the pane's edge padding. */
 .composer {
   flex: 1 1 auto;
   min-height: 0;
@@ -71,12 +70,6 @@
   display: flex;
   flex: 1 1 200px;
   min-width: 0;
-}
-
-/* An empty folded row hides Steer but reserves its slot, so the session menu
- * and primary action do not move when content arrives. */
-.steerSlot[data-hidden="true"] {
-  visibility: hidden;
 }
 
 .attachments {
@@ -241,22 +234,22 @@
   }
 }
 
-/* The folded row is content-sized, so this slot must report the chrome's
- * intrinsic width. The chrome's own contained body contributes none, and
- * contain-intrinsic-inline-size only applies under inline-size containment,
- * so the folded slot declares it here. The width is the 320px status rung plus
- * the session-menu trigger and the gap between them.
- *
- * A compact resting row is excluded: it holds the menu alone, so the folded
- * reservation's width is all gap there. WebKit sizes the control row from the
- * reservation rather than the compact basis, which collapsed the writing
- * field to a quarter of the card behind a dead 312px gap (iPhone Duo cover). */
+/* On a wide one-line folded card, Attach already clears the left side of the
+ * editor via .editorSlot[data-folded="true"], so .leading drops its duplicate
+ * Attach inset and hugs the status chrome's actual content width (capped at
+ * the compact status rung plus menu) instead of reserving a fixed 356px box.
+ * SessionChrome and StatusRow pair with this to drop inline-size containment
+ * on .body while folded, returning all unused horizontal space to the field. */
 @container (min-width: 620px) {
   .leading[data-folded="true"]:not([data-compact="true"]) {
-    container-type: inline-size;
-    contain-intrinsic-inline-size: 356px;
     flex: 0 1 auto;
     flex-wrap: nowrap;
+    padding-inline-start: 0;
+    max-width: 356px;
+  }
+
+  .leading[data-folded="true"]:not([data-compact="true"]) > .chromeSlot {
+    flex: 0 1 auto;
   }
 }
 
@@ -265,13 +258,11 @@
  * editor's own Attach inset and squeezed the 320px writing surface to 82px
  * (issue #7500). Hug the menu alone and let the field absorb the difference;
  * the menu then starts where the expanded row's chrome reserve ends, so it
- * stays put through expansion. The explicit basis also overrides the folded
- * reservation's contribution in engines that size the row from it. */
+ * stays put through expansion. */
 .leading[data-compact="true"] {
   flex: 0 0 var(--tap-min);
   min-width: var(--tap-min);
   padding-inline-start: 0;
-  contain-intrinsic-inline-size: none;
 }
 
 /* At the narrowest card the row has 286px for three 44px targets and the
