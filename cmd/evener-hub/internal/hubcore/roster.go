@@ -357,7 +357,9 @@ type Roster struct {
 	// A completed pass may publish unless a newer pass already published.
 	refreshGen              uint64
 	publishedGen            uint64
+	scanPublishedGen        uint64
 	entryPublishedGen       map[int]uint64
+	unconfirmedDisk         map[int]rendezvous.Entry
 	ownershipRefreshRunning bool
 	queuedOwnershipRefresh  *rosterRefreshBatch
 
@@ -406,6 +408,7 @@ func NewRoster(runDir string, prober Prober) *Roster {
 		bySess:            make(map[string]LiveEntry),
 		byPID:             make(map[int]LiveEntry),
 		entryPublishedGen: make(map[int]uint64),
+		unconfirmedDisk:   make(map[int]rendezvous.Entry),
 		procIdentity:      processIdentity,
 		newWatcher: func() (rosterWatcher, error) {
 			w, err := fsnotify.NewWatcher()
@@ -565,6 +568,7 @@ func (r *Roster) refresh() error {
 	bySess := make(map[string]LiveEntry, len(entries))
 	byPID := make(map[int]LiveEntry, len(entries))
 	var unconfirmed []rendezvous.Entry
+	unconfirmedDisk := make(map[int]rendezvous.Entry)
 	retainUnconfirmed := func(entry rendezvous.Entry) {
 		if !slices.Contains(unconfirmed, entry) {
 			unconfirmed = append(unconfirmed, entry)
@@ -592,6 +596,8 @@ func (r *Roster) refresh() error {
 				retainUnconfirmed(claim)
 			}
 			switch miss.kind {
+			case missRetained:
+				unconfirmedDisk[e.PID] = e
 			case missReused:
 				byPID[e.PID] = miss.entry
 				if miss.entry.SessionID != "" {
@@ -627,15 +633,34 @@ func (r *Roster) refresh() error {
 	// observation. Keep the complete scan's findings for every other PID.
 	merged := false
 	for pid, confirmed := range r.entryPublishedGen {
-		if confirmed <= generation {
-			delete(r.entryPublishedGen, pid)
+		if confirmed > generation {
+			if live, ok := r.byPID[pid]; ok {
+				byPID[pid] = live
+				merged = true
+			}
+			delete(unconfirmedDisk, pid)
+			unconfirmed = slices.DeleteFunc(unconfirmed, func(claim rendezvous.Entry) bool { return claim.PID == pid })
 			continue
 		}
-		if live, ok := r.byPID[pid]; ok {
-			byPID[pid] = live
-			merged = true
+		delete(r.entryPublishedGen, pid)
+		if _, inScan := byPID[pid]; inScan {
+			continue
 		}
+		live, ok := r.byPID[pid]
+		if !ok || live.Crashed {
+			continue
+		}
+		if prev, had := prevByPID[pid]; had && sameDaemonIdentity(prev.Entry, live.Entry) {
+			continue
+		}
+		diskClaim, unconfirmedOnDisk := unconfirmedDisk[pid]
+		if !unconfirmedOnDisk || !sameDaemonIdentity(diskClaim, live.Entry) {
+			continue
+		}
+		byPID[pid] = retainedProbeEntry(live)
+		delete(unconfirmedDisk, pid)
 		unconfirmed = slices.DeleteFunc(unconfirmed, func(claim rendezvous.Entry) bool { return claim.PID == pid })
+		merged = true
 	}
 	if merged {
 		bySess = make(map[string]LiveEntry, len(byPID))
@@ -649,6 +674,8 @@ func (r *Roster) refresh() error {
 		}
 	}
 	r.publishedGen = generation
+	r.scanPublishedGen = generation
+	r.unconfirmedDisk = unconfirmedDisk
 	ownershipCleared := r.ownershipErr != nil
 	r.ownershipErr = nil
 	publication := r.publishListingLocked(bySess, byPID, unconfirmed)
@@ -1480,16 +1507,35 @@ func (r *Roster) ReadSpawnedThread(ctx context.Context, entry rendezvous.Entry, 
 	return response, r.publishConfirmedEntry(entry, result, generation)
 }
 
+func (r *Roster) canPublishSupersededEntryLocked(entry rendezvous.Entry, sessionID string, generation uint64) bool {
+	if generation < r.entryPublishedGen[entry.PID] {
+		return false
+	}
+	if generation >= r.scanPublishedGen {
+		return true
+	}
+	if _, hasPID := r.byPID[entry.PID]; hasPID {
+		return false
+	}
+	if routed, hasSess := r.bySess[sessionID]; hasSess && !routed.Crashed && routed.PID != entry.PID {
+		return false
+	}
+	diskClaim, ok := r.unconfirmedDisk[entry.PID]
+	return ok && sameDaemonIdentity(diskClaim, entry)
+}
+
 func (r *Roster) publishConfirmedEntry(entry rendezvous.Entry, result ProbeResult, generation uint64) error {
 	live := liveEntryFromProbe(entry, result)
 	r.mu.Lock()
 	if generation < r.publishedGen || generation < r.entryPublishedGen[entry.PID] {
-		confirmed := r.hasConfirmedEntry(entry)
-		r.mu.Unlock()
-		if !confirmed {
+		if r.hasConfirmedEntry(entry) {
+			r.mu.Unlock()
+			return nil
+		}
+		if !r.canPublishSupersededEntryLocked(entry, live.SessionID, generation) {
+			r.mu.Unlock()
 			return fmt.Errorf("spawned daemon %s confirmation superseded without a route", live.SessionID)
 		}
-		return nil
 	}
 	bySess, byPID := maps.Clone(r.bySess), maps.Clone(r.byPID)
 	if old, ok := byPID[entry.PID]; ok && bySess[old.SessionID].PID == entry.PID {
@@ -1505,6 +1551,7 @@ func (r *Roster) publishConfirmedEntry(entry rendezvous.Entry, result ProbeResul
 		}
 	}
 	publication := r.publishListingLocked(bySess, byPID, unconfirmed)
+	delete(r.unconfirmedDisk, entry.PID)
 	r.entryPublishedGen[entry.PID] = generation
 	r.mu.Unlock()
 	publication.fire()

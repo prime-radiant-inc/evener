@@ -1962,6 +1962,273 @@ func TestRosterReadSpawnedThreadPublishesTaskProgress(t *testing.T) {
 	}
 }
 
+// gatedProbeWithFallback blocks its gated PID's Probe call on started/release
+// so a test can hold a full Refresh or confirmation mid-probe and interleave
+// another operation before Probe completes.
+type gatedProbeWithFallback struct {
+	started chan struct{}
+	release chan struct{}
+	result  ProbeResult
+	once    sync.Once
+}
+
+func (p *gatedProbeWithFallback) Probe(rendezvous.Entry) ProbeResult {
+	p.once.Do(func() {
+		if p.started != nil {
+			close(p.started)
+		}
+	})
+	if p.release != nil {
+		<-p.release
+	}
+	return p.result
+}
+
+// TestRosterReadSpawnedThreadConcurrentRefreshOutcomes pins how a direct
+// ReadSpawnedThread confirmation interacts with a concurrent full Refresh:
+// an unconfirmed probe miss on the same alive daemon or an unrelated
+// ownership error must not discard the direct confirmation, while a newer
+// crash, clean exit, or PID replacement must still supersede it.
+func TestRosterReadSpawnedThreadConcurrentRefreshOutcomes(t *testing.T) {
+	t.Parallel()
+	makeEntry := func(pid int, sessionID string) rendezvous.Entry {
+		return rendezvous.Entry{
+			PID:          pid,
+			Protocol:     appwire.ProtocolVersion,
+			Endpoint:     "ws://127.0.0.1:50001/rpc",
+			SourceID:     appwire.LocalSourceID,
+			ThreadID:     sessionID,
+			SessionID:    sessionID,
+			WorkspaceRef: "local:" + sessionID,
+			StartedAt:    time.Now().UTC(),
+		}
+	}
+	readRespFor := func(sessionID string) appwire.ThreadReadResponse {
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{
+			ID:        sessionID,
+			SessionID: sessionID,
+			Status:    appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
+		}}
+	}
+	startBlockedRead := func(t *testing.T, roster *Roster, entry rendezvous.Entry) (release func(), done <-chan error) {
+		t.Helper()
+		readStarted, releaseRead := make(chan struct{}), make(chan struct{})
+		result := make(chan error, 1)
+		go func() {
+			_, err := roster.ReadSpawnedThread(t.Context(), entry, func(context.Context) (appwire.ThreadReadResponse, error) {
+				close(readStarted)
+				<-releaseRead
+				return readRespFor(entry.SessionID), nil
+			})
+			result <- err
+		}()
+		<-readStarted
+		return func() { close(releaseRead) }, result
+	}
+
+	t.Run("unconfirmed_live_claim_still_confirms", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		entry := makeEntry(1001, "01SPAWNED")
+		writeRendezvous(t, dir, entry)
+		roster := NewRoster(dir, fakeProber{shouldFail: true})
+		roster.SetProcessAlive(func(int) bool { return true })
+
+		releaseRead, done := startBlockedRead(t, roster, entry)
+		if err := roster.RefreshAndWait(t.Context()); err != nil {
+			t.Fatalf("concurrent refresh: %v", err)
+		}
+		releaseRead()
+		if err := <-done; err != nil {
+			t.Fatalf("ReadSpawnedThread failed after concurrent unconfirmed refresh: %v", err)
+		}
+		if !roster.HasConfirmedEntry(entry) {
+			t.Fatal("confirmed entry lost its route")
+		}
+		if live, ok := roster.Find(entry.SessionID); !ok || live.Crashed || live.PID != entry.PID {
+			t.Fatalf("Find(%q) = %+v, ok=%v; want live route on PID %d", entry.SessionID, live, ok, entry.PID)
+		}
+		if claims := roster.UnconfirmedEntries(); len(claims) != 0 {
+			t.Fatalf("UnconfirmedEntries = %+v, want empty after confirmation", claims)
+		}
+	})
+
+	t.Run("ownership_error_during_read_still_confirms", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		entry := makeEntry(1001, "01SPAWNED")
+		writeRendezvous(t, dir, entry)
+		roster := NewRoster(dir, fakeProber{shouldFail: true})
+		roster.SetProcessAlive(func(int) bool { return true })
+
+		releaseRead, done := startBlockedRead(t, roster, entry)
+		if err := os.WriteFile(filepath.Join(dir, "2.json"), []byte("{"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := roster.RefreshAndWait(t.Context()); err == nil {
+			t.Fatal("fixture did not produce ownership error")
+		}
+		releaseRead()
+		if err := <-done; err != nil {
+			t.Fatalf("ReadSpawnedThread failed after concurrent ownership error: %v", err)
+		}
+		if !roster.HasConfirmedEntry(entry) {
+			t.Fatal("confirmed entry lost its route")
+		}
+		if roster.OwnershipError() == nil {
+			t.Fatal("confirmation cleared global ownership uncertainty")
+		}
+	})
+
+	t.Run("inflight_refresh_miss_preserves_newly_confirmed_entry", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		entry := makeEntry(1001, "01SPAWNED")
+		writeRendezvous(t, dir, entry)
+		prober := &gatedProbeWithFallback{started: make(chan struct{}), release: make(chan struct{})}
+		roster := NewRoster(dir, prober)
+		roster.SetProcessAlive(func(int) bool { return true })
+
+		releaseRead, readDone := startBlockedRead(t, roster, entry)
+		refreshDone := make(chan error, 1)
+		go func() { refreshDone <- roster.RefreshAndWait(t.Context()) }()
+		<-prober.started
+		releaseRead()
+		if err := <-readDone; err != nil {
+			t.Fatalf("ReadSpawnedThread: %v", err)
+		}
+		close(prober.release)
+		if err := <-refreshDone; err != nil {
+			t.Fatalf("RefreshAndWait: %v", err)
+		}
+		if !roster.HasConfirmedEntry(entry) {
+			t.Fatal("in-flight refresh miss evicted newly confirmed entry")
+		}
+		if live, ok := roster.Find(entry.SessionID); !ok || live.Crashed || live.PID != entry.PID {
+			t.Fatalf("Find(%q) = %+v, ok=%v; want live route on PID %d", entry.SessionID, live, ok, entry.PID)
+		}
+		if claims := roster.UnconfirmedEntries(); len(claims) != 0 {
+			t.Fatalf("UnconfirmedEntries = %+v, want empty", claims)
+		}
+	})
+
+	t.Run("replacement_over_unconfirmed_prior_owner_confirms", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		old := makeEntry(1001, "01OLD")
+		replacement := makeEntry(1001, "01NEW")
+		writeRendezvous(t, dir, old)
+		prober := &flakyProber{sessionID: "01OLD"}
+		roster := NewRoster(dir, prober)
+		roster.SetProcessAlive(func(int) bool { return true })
+		roster.Refresh()
+
+		writeRendezvous(t, dir, replacement)
+		prober.fail = true
+		releaseRead, done := startBlockedRead(t, roster, replacement)
+		if err := roster.RefreshAndWait(t.Context()); err != nil {
+			t.Fatalf("concurrent refresh: %v", err)
+		}
+		releaseRead()
+		if err := <-done; err != nil {
+			t.Fatalf("ReadSpawnedThread(replacement) failed: %v", err)
+		}
+		if !roster.HasConfirmedEntry(replacement) {
+			t.Fatal("replacement entry lost its route")
+		}
+		if roster.HasConfirmedEntry(old) {
+			t.Fatal("prior owner retained a route")
+		}
+		if claims := roster.UnconfirmedEntries(); len(claims) != 0 {
+			t.Fatalf("UnconfirmedEntries = %+v, want empty", claims)
+		}
+	})
+
+	t.Run("replaced_confirmed_claim_remains_superseded", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		old := makeEntry(1001, "01OLD")
+		replacement := makeEntry(1001, "01NEW")
+		writeRendezvous(t, dir, old)
+		roster := NewRoster(dir, fakeProber{sessionID: "01NEW"})
+		roster.SetProcessAlive(func(int) bool { return true })
+
+		releaseRead, done := startBlockedRead(t, roster, old)
+		writeRendezvous(t, dir, replacement)
+		if err := roster.RefreshAndWait(t.Context()); err != nil {
+			t.Fatalf("concurrent refresh: %v", err)
+		}
+		releaseRead()
+		if err := <-done; err == nil {
+			t.Fatal("ReadSpawnedThread(old) succeeded after replacement confirmed")
+		}
+		if roster.HasConfirmedEntry(old) || !roster.HasConfirmedEntry(replacement) {
+			t.Fatalf("expected replacement confirmed and old rejected; old=%v replacement=%v", roster.HasConfirmedEntry(old), roster.HasConfirmedEntry(replacement))
+		}
+	})
+
+	for _, tc := range []struct {
+		name       string
+		mutate     func(t *testing.T, dir string, roster *Roster, alive *bool)
+		expectFind bool
+	}{
+		{
+			name: "crashed_in_newer_scan_remains_superseded",
+			mutate: func(_ *testing.T, _ string, _ *Roster, alive *bool) {
+				*alive = false
+			},
+			expectFind: true,
+		},
+		{
+			name: "removed_in_newer_scan_remains_superseded",
+			mutate: func(t *testing.T, dir string, _ *Roster, _ *bool) {
+				t.Helper()
+				if err := rendezvous.Remove(dir, 1001); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "replaced_unconfirmed_claim_remains_superseded",
+			mutate: func(t *testing.T, dir string, _ *Roster, _ *bool) {
+				t.Helper()
+				writeRendezvous(t, dir, makeEntry(1001, "01REPLACED"))
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			entry := makeEntry(1001, "01SPAWNED")
+			writeRendezvous(t, dir, entry)
+			alive := true
+			roster := NewRoster(dir, fakeProber{shouldFail: true})
+			roster.SetProcessAlive(func(int) bool { return alive })
+
+			releaseRead, done := startBlockedRead(t, roster, entry)
+			tc.mutate(t, dir, roster, &alive)
+			if err := roster.RefreshAndWait(t.Context()); err != nil {
+				t.Fatalf("concurrent refresh: %v", err)
+			}
+			releaseRead()
+			if err := <-done; err == nil {
+				t.Fatal("ReadSpawnedThread succeeded despite superseding scan outcome")
+			}
+			if roster.HasConfirmedEntry(entry) {
+				t.Fatal("superseded entry gained a confirmed route")
+			}
+			live, ok := roster.Find(entry.SessionID)
+			if tc.expectFind {
+				if !ok || !live.Crashed {
+					t.Fatalf("Find(%q) = %+v, ok=%v; want retained crashed entry", entry.SessionID, live, ok)
+				}
+			} else if ok {
+				t.Fatalf("Find(%q) = %+v; want no live route", entry.SessionID, live)
+			}
+		})
+	}
+}
+
 // TestRosterReclaimsOnlyExactlyOwnedRendezvousEntries is the regression test
 // for the PID-only removal defect. The crash-reclamation paths may delete a
 // rendezvous file only while it still carries the exact identity the roster
