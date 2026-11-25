@@ -1,7 +1,7 @@
 import type { AppwireClientLike, GitHeadParams, GitHeadResponse, ThreadReadResponse } from "@evener/appwire-client";
 import { deferred } from "@evener/appwire-client/testing/deferred";
 import { activityChangedNotification } from "@evener/appwire-client/testing/notifications";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { MotionProvider } from "../../motion";
 import { WORK_TICK_MS } from "../../panes/session/liveness";
@@ -70,6 +70,11 @@ test("About renders the explicit remote session's hydrated accounting", async ()
     const response = activityDetailsThread(ref);
     if (response.thread.evener) {
       response.thread.evener.goal = { objective: "Ship the release notes", status: "blocked", iterations: 1 };
+      response.thread.evener.sessionUrls = [
+        { id: "u-web", url: "https://example.com/pr/1", label: "Pull request", addedBy: "human", addedAt: 1 },
+        { id: "u-file", url: "file:///work/session/README.md", label: "Spec", addedBy: "human", addedAt: 2 },
+        { id: "u-custom", url: "custom://item/42", label: "Custom ref", addedBy: "human", addedAt: 3 },
+      ];
     }
     return response;
   });
@@ -80,6 +85,17 @@ test("About renders the explicit remote session's hydrated accounting", async ()
   await screen.findByText("about-owner");
   expect(screen.getByTestId("session-details-goal").textContent).toContain("Ship the release notes");
   expect(screen.getByTestId("session-details-goal-status").textContent).toBe("blocked");
+  const webLink = screen.getByTestId("about-link-u-web");
+  expect(webLink.tagName).toBe("A");
+  expect(webLink.getAttribute("href")).toBe("https://example.com/pr/1");
+  expect(webLink.getAttribute("target")).toBe("_blank");
+  expect(webLink.getAttribute("rel")?.split(/\s+/)).toEqual(expect.arrayContaining(["noopener", "noreferrer"]));
+  expect(within(webLink).getByText("https://example.com/pr/1")).toBeTruthy();
+  const fileRow = screen.getByTestId("about-link-u-file");
+  expect(within(fileRow).getByRole("button")).toBeTruthy();
+  const customRow = screen.getByTestId("about-link-u-custom");
+  expect(within(customRow).queryByRole("link")).toBeNull();
+  expect(within(customRow).queryByRole("button")).toBeNull();
   expect(screen.getByText("anthropic/claude-sonnet")).toBeTruthy();
   expect(screen.getByText("idle")).toBeTruthy();
   expect(screen.getByTestId("session-details-context").textContent).toContain("42% used");
@@ -137,6 +153,7 @@ test("About omits unavailable accounting and empty sections", async () => {
   mountSidebar(client);
   await screen.findByText("owner");
   expect(screen.queryByRole("heading", { name: "Usage" })).toBeNull();
+  expect(screen.queryByRole("heading", { name: "Links" })).toBeNull();
   // This session runs on another host, which its ref alone establishes, so
   // Location keeps that one row; the directory the read left out stays absent.
   expect(screen.queryByTestId("session-details-cwd")).toBeNull();

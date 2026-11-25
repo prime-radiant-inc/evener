@@ -514,9 +514,21 @@ test("no host row on a hub whose only host is its own", () => {
 
 test("a session on a remote host names that host by its manifest label and says it is online", () => {
   seedHosts([LOCAL_SOURCE, { id: "studio", label: "Studio Mac", kind: "appwire", online: true }]);
-  render(<DetailsPanelBody model={testModel({ ref: "studio:abc" })} now={0} />);
+  render(
+    <DetailsPanelBody
+      model={testModel({
+        ref: "studio:abc",
+        status: { type: "active" },
+        goal: { objective: "Verify deployment", status: "blocked", iterations: 1 },
+      })}
+      now={0}
+    />,
+  );
   expect(screen.getByTestId("session-details-host").textContent).toContain("Studio Mac");
   expect(screen.getByTestId("session-details-host-state").dataset.online).toBe("true");
+  expect(screen.getByTestId("session-details-host-state").dataset.variant).toBe("quiet");
+  expect(screen.getByTestId("session-details-goal-status").dataset.variant).toBe("quiet");
+  expect(screen.getByTestId("session-details-state").querySelector('[data-state="working"]')).toBeTruthy();
 });
 
 test("a session whose host has dropped reads offline", () => {
