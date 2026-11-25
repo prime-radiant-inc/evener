@@ -26,11 +26,11 @@ import (
 // prevalidation layer refuses it with guidance to use the sandbox enum.
 func TestPrepareToolCall_DelegateLegacySandboxNetDropped(t *testing.T) {
 	t.Parallel()
-	def := tool.DefDelegateWithSandbox([]string{"subagent"}, tool.DelegateSandboxSchema{
+	def := tool.DefDelegateWithResultTool([]string{"subagent"}, tool.DelegateSandboxSchema{
 		Available:   true,
 		Modes:       []string{"off", "read-only", "workspace-write", "restricted"},
 		SandboxEnum: []string{"off", "read-only", "read-only+nonet", "workspace-write", "workspace-write+nonet", "restricted", "restricted+nonet", "nonet"},
-	})
+	}, tool.DefaultResultToolName)
 	reg := tool.NewRegistry()
 	if err := reg.Register(regTool(def)); err != nil {
 		t.Fatalf("register: %v", err)
@@ -59,11 +59,11 @@ func TestPrepareToolCall_DelegateLegacySandboxNetDropped(t *testing.T) {
 // Test: the schema has no oneOf constraint — sandbox_net is not a property.
 func TestDelegateSandboxSchemaNoOneOfOrSandboxNet(t *testing.T) {
 	t.Parallel()
-	def := tool.DefDelegateWithSandbox([]string{"subagent"}, tool.DelegateSandboxSchema{
+	def := tool.DefDelegateWithResultTool([]string{"subagent"}, tool.DelegateSandboxSchema{
 		Available:   true,
 		Modes:       []string{"off", "read-only", "workspace-write", "restricted"},
 		SandboxEnum: []string{"off", "read-only", "read-only+nonet", "workspace-write", "workspace-write+nonet", "restricted", "restricted+nonet", "nonet"},
-	})
+	}, tool.DefaultResultToolName)
 	params := def.Parameters
 	if _, hasOneOf := params["oneOf"]; hasOneOf {
 		t.Fatal("schema still has a oneOf constraint")

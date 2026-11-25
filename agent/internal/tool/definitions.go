@@ -315,28 +315,15 @@ func delegateReasoningEffortDescription() string {
 		strings.Join(llm.ReasoningEffortVocabulary(), ", "), llm.ReasoningEffortNone)
 }
 
-// DefDelegate defines the delegate tool, which starts a NEW delegate
-// conversation (independent agentic work) and returns its durable stable identity.
-// agentTypes constrains the agent_type enum to the session's
-// available roles; pass nil to omit the enum (free-form). reasoning_effort uses
-// the delegate contract's portable vocabulary (delegateReasoningEffortLevels);
-// the handler clamps it to the child model's own ladder. The legacy constructor
-// exposes the full sandbox surface; session-owned callers should use
-// DefDelegateWithSandbox so the advertised controls match the host and parent
-// capabilities.
-func DefDelegate(agentTypes []string) llm.ToolDefinition {
-	return DefDelegateWithSandbox(agentTypes, DelegateSandboxSchema{
+// DefDelegate returns the default delegate tool definition with free-form
+// agent_type, the full sandbox surface, and DefaultResultToolName. Session
+// callers use DefDelegateWithResultTool so advertised roles, sandbox controls,
+// and result tool match the live session.
+func DefDelegate() llm.ToolDefinition {
+	return DefDelegateWithResultTool(nil, DelegateSandboxSchema{
 		Available: true,
 		Modes:     []string{"off", "read-only", "workspace-write", "restricted"},
-	})
-}
-
-// DefDelegateWithSandbox is DefDelegate with a capability-honest sandbox
-// surface. It keeps the stable delegate contract identical for unrelated
-// parameters while removing or constraining sandbox values the session cannot
-// enforce.
-func DefDelegateWithSandbox(agentTypes []string, sandboxSchema DelegateSandboxSchema) llm.ToolDefinition {
-	return DefDelegateWithResultTool(agentTypes, sandboxSchema, DefaultResultToolName)
+	}, DefaultResultToolName)
 }
 
 // DelegateRoleWriteNote tells the model which role may write files. The
@@ -344,8 +331,14 @@ func DefDelegateWithSandbox(agentTypes []string, sandboxSchema DelegateSandboxSc
 // files its report, an implementer) takes subagent.
 const DelegateRoleWriteNote = "explorer is read-only and cannot edit or write files; a seat that must write files uses subagent."
 
-// DefDelegateWithResultTool is DefDelegateWithSandbox for a session whose
-// result tool is named resultTool.
+// DefDelegateWithResultTool defines the delegate tool, which starts a NEW
+// delegate conversation and returns its durable stable identity. agentTypes
+// constrains the agent_type enum to the session's available roles; nil omits
+// the enum (free-form). sandboxSchema exposes only the sandbox controls and
+// model descriptions the session can enforce. resultTool names the session's
+// result tool for observer reporting instructions. reasoning_effort uses the
+// delegate contract's portable vocabulary (delegateReasoningEffortLevels); the
+// handler clamps it to the child model's own ladder.
 func DefDelegateWithResultTool(agentTypes []string, sandboxSchema DelegateSandboxSchema, resultTool string) llm.ToolDefinition {
 	strictFalse := false
 	effortLevels := delegateReasoningEffortLevels()
