@@ -34,7 +34,7 @@ import { ClientProvider } from "../clientContext";
 import { type PaneProps, registerPaneForTests } from "../paneRegistry";
 import { usePaneVisible } from "../paneVisibility";
 import { useRailHeaderAction } from "../rail/railHeaderAction";
-import { openTopLevelSession } from "../sessionPlacement";
+import { openSessionByRef, openTopLevelSession } from "../sessionPlacement";
 import {
   documentPaneState,
   recordConversationOpenParent,
@@ -2086,5 +2086,76 @@ test.each(["phone", "tablet to phone"])("a slide discards the leaving scroller a
   } finally {
     slides.restore();
     window.matchMedia = originalMedia;
+  }
+});
+
+test("picking from the open tablet board replaces without sliding, while non-board steps still push", async () => {
+  const slides = installSlideAnimations();
+  const restoreViewport = installMobileViewport([MOBILE_QUERY, TABLET_QUERY]);
+  try {
+    const user = userEvent.setup();
+    workspaceStore.getState().openPane("session", { ref: "local:board_a" });
+    render(
+      <StackHost
+        railSlot={
+          <div>
+            <TabletRailActionSlot />
+            <button type="button" onClick={() => openSessionByRef("local:board_b")}>
+              Board session B
+            </button>
+            <div
+              role="treeitem"
+              aria-selected={false}
+              tabIndex={0}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") openSessionByRef("local:board_c");
+              }}
+            >
+              Board session C
+            </div>
+          </div>
+        }
+      />,
+    );
+    await screen.findByRole("heading", { name: "local:board_a" });
+    const board = screen.getByTestId("board-column");
+
+    // Pointer pick from the open tablet board replaces without a push slide.
+    await user.click(within(board).getByRole("button", { name: "Board session B" }));
+    await screen.findByRole("heading", { name: "local:board_b" });
+    expect(leavingFrames()).toEqual([]);
+    expect(stackBody().hasAttribute("data-stack-transition")).toBe(false);
+
+    // Keyboard Enter inside the board replaces without a push slide too.
+    const itemC = within(board).getByRole("treeitem", { name: "Board session C" });
+    itemC.focus();
+    await user.keyboard("{Enter}");
+    await screen.findByRole("heading", { name: "local:board_c" });
+    expect(leavingFrames()).toEqual([]);
+    expect(stackBody().hasAttribute("data-stack-transition")).toBe(false);
+
+    // A non-board forward navigation after a board pick still pushes.
+    await showDoc("from_pane");
+    expect(stackBody().getAttribute("data-stack-transition")).toBe("push");
+    expect(leavingFrames()).toHaveLength(1);
+    await slides.finish();
+
+    // Board input followed by input inside the pane column still pushes.
+    itemC.focus();
+    await user.keyboard("{ArrowDown}");
+    await user.click(screen.getByRole("button", { name: "clicks: 0" }));
+    await showDoc("after_pane_input");
+    expect(stackBody().getAttribute("data-stack-transition")).toBe("push");
+    await slides.finish();
+
+    // Collapsing the board from inside board-column clears board input so the next push runs.
+    await user.click(within(board).getByTestId("board-toggle"));
+    expect(screen.queryByTestId("board-column")).toBeNull();
+    await showDoc("after_collapse");
+    expect(stackBody().getAttribute("data-stack-transition")).toBe("push");
+    await slides.finish();
+  } finally {
+    slides.restore();
+    restoreViewport();
   }
 });
