@@ -17,7 +17,7 @@ func TestQuarantineSignalNamesASurvivingCustodyAfterCleanup(t *testing.T) {
 	dir := t.TempDir()
 	path := StorePath(dir)
 	writeRawStore(t, path, 0o600, quarantinedStoreJSON)
-	first, err := Open(path)
+	first, err := Open(path, RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("first Open: %v", err)
 	}
@@ -41,7 +41,7 @@ func TestQuarantineSignalNamesASurvivingCustodyAfterCleanup(t *testing.T) {
 		t.Fatalf("forgetStore: %v", err)
 	}
 
-	reopened, err := Open(path)
+	reopened, err := Open(path, RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("Open under the stale intent: %v", err)
 	}

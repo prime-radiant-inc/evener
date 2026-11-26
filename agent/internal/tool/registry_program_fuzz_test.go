@@ -303,10 +303,10 @@ func toolProgramHelpers(t *testing.T, payload string) {
 	if lim := defaultToolLimit("use_skill"); lim.MaxChars != 0 || lim.MaxLines != 0 {
 		t.Fatalf("defaultToolLimit(%q) = %+v, want no default limit", "use_skill", lim)
 	}
-	if got := truncateChars("abcdef", 4, schema.TruncTail); !strings.HasSuffix(got, "cdef") {
+	if got, _ := truncateChars("abcdef", 4, schema.TruncTail); !strings.HasSuffix(got, "cdef") {
 		t.Fatalf("tail truncation = %q", got)
 	}
-	if got := truncateLines("a\nb\nc\nd", 2); !strings.Contains(got, "lines omitted") {
+	if got, _ := truncateLines("a\nb\nc\nd", 2); !strings.Contains(got, "lines omitted") {
 		t.Fatalf("line truncation = %q", got)
 	}
 	if got := shortHash([]byte(payload)); len(got) != 16 {
@@ -417,16 +417,16 @@ func toolProgramRegistryEdges(t *testing.T) {
 	if got := toolValueToString(unserializable); got == "" || got != toolValueToString(unserializable) {
 		t.Fatalf("unserializable tool value = %q", got)
 	}
-	if got := truncateChars("short", 0, schema.TruncHeadTail); got != "short" {
+	if got, _ := truncateChars("short", 0, schema.TruncHeadTail); got != "short" {
 		t.Fatalf("nonpositive char limit = %q", got)
 	}
-	if got := truncateChars("abcdef", 4, schema.TruncHeadTail); !strings.Contains(got, "removed from the middle") {
+	if got, _ := truncateChars("abcdef", 4, schema.TruncHeadTail); !strings.Contains(got, "removed from the middle") {
 		t.Fatalf("head-tail truncation = %q", got)
 	}
-	if got := truncateLines("a\nb", 0); got != "a\nb" {
+	if got, _ := truncateLines("a\nb", 0); got != "a\nb" {
 		t.Fatalf("nonpositive line limit = %q", got)
 	}
-	if got := truncateLines("a\nb", 3); got != "a\nb" {
+	if got, _ := truncateLines("a\nb", 3); got != "a\nb" {
 		t.Fatalf("untruncated lines = %q", got)
 	}
 }

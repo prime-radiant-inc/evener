@@ -77,7 +77,7 @@ func TestNavigationLocationCountsSelectedSessionOnly(t *testing.T) {
 		{PID: 1, SessionID: "parent", Status: appwire.ThreadStatusIdle},
 		{PID: 2, SessionID: "original", Status: appwire.ThreadStatusIdle, Watches: watchListForCap(40, 12)},
 	}
-	tree := hubcore.BuildTreeAt(metas, live, nil, now)
+	tree := buildTreeAtResolved(metas, live, nil, now)
 	projection, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "g", Tree: tree})
 	if err != nil {
 		t.Fatal(err)

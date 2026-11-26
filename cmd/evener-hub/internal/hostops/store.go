@@ -246,8 +246,10 @@ func StorePath(stateRoot string) string {
 	return filepath.Join(stateRoot, storeSubdir, storeFilename)
 }
 
-// Open loads the operation store at path. A missing file is an empty store: a
-// fresh install has nothing to recover, and Open writes nothing.
+// Open loads the operation store at path under policy; a zero RetentionPolicy
+// (or any non-positive knob) takes the documented defaults. A missing file is
+// an empty store: a fresh install has nothing to recover, and Open writes
+// nothing.
 //
 // A second Open of a path in the same process shares the first handle's store
 // mutex and state, so both handles serialize on one lock over one snapshot.
@@ -255,14 +257,7 @@ func StorePath(stateRoot string) string {
 // The call refuses a store file readable beyond its owner, and refuses a file
 // that is corrupt or schema-invalid (ErrStoreCorrupt) rather than serving a
 // half-understood store.
-func Open(path string) (*Store, error) {
-	return openFSWithRetention(afero.NewOsFs(), path, storeFaults{}, RetentionPolicy{})
-}
-
-// OpenWithRetention opens the operation store at path under one §4
-// owner-knob set. Every knob's zero value takes its documented default; a
-// store opened with the zero policy behaves exactly like Open.
-func OpenWithRetention(path string, policy RetentionPolicy) (*Store, error) {
+func Open(path string, policy RetentionPolicy) (*Store, error) {
 	return openFSWithRetention(afero.NewOsFs(), path, storeFaults{}, policy)
 }
 
@@ -469,49 +464,6 @@ func (s *Store) Records() []Record {
 	s.cell.mu.Lock()
 	defer s.cell.mu.Unlock()
 	return cloneSnapshot(s.cell.state).Records
-}
-
-// Create assigns the next controller-assigned id and persists a fresh `pending`
-// record for the operation, in one atomic write. Creation is not a terminal
-// transition, so it moves no sequence value.
-//
-// Dedup — recognizing a replay by (host, kind, client operation ID, pinned
-// generation, pinned incarnation id) — belongs to the pipeline slice that reads
-// the registry's current pair; this is only the durable append beneath it.
-func (s *Store) Create(newRecord NewRecord) (Record, error) {
-	if s == nil {
-		return Record{}, errors.New("hostops: store is not configured")
-	}
-	s.cell.mu.Lock()
-	defer s.cell.mu.Unlock()
-
-	now := nowUTC()
-	next := cloneSnapshot(s.cell.state)
-	next.AllocatorHighWaterMark++
-	record := Record{
-		ID:                formatAllocatorID(next.AllocatorHighWaterMark),
-		ClientOperationID: newRecord.ClientOperationID,
-		Host:              newRecord.Host,
-		Kind:              newRecord.Kind,
-		State:             StatePending,
-		Generation:        newRecord.Generation,
-		IncarnationID:     newRecord.IncarnationID,
-		CreatedAt:         now,
-		UpdatedAt:         now,
-	}
-	if err := validateRecord(record); err != nil {
-		return Record{}, err
-	}
-	next.Records = append(next.Records, record)
-	adopted, err := s.commitLocked(next)
-	if err != nil && !adopted {
-		// Nothing was written: the refusal reports no record.
-		return Record{}, err
-	}
-	// A write whose rename landed is the operation's durable record even when
-	// the directory sync behind it failed, so the caller gets the id it must
-	// reconcile with (see RenameLanded).
-	return cloneRecord(record), err
 }
 
 // Transition moves one stored record to state to and commits it atomically.

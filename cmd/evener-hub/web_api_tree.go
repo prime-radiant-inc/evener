@@ -31,7 +31,7 @@ func projectKeyForStateDir(stateDir string) string {
 }
 
 var (
-	hubBuildNavigationTree       = hubcore.BuildTreeWithProjects
+	hubBuildNavigationTree       = hubcore.BuildTree
 	hubDeriveNavigationAttention = hubcore.DeriveAttention
 	hubNavigationInputs          = (*WebServer).navigationSnapshotInputs
 )

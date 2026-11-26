@@ -355,16 +355,18 @@ func ensureDeployTestHarnessInstalling(t *testing.T, restartErr error, installed
 		BuildBinary:               writeStageBinary,
 	})
 	m.SetEnsureDeployHook(func(host hostreg.Host) (func(error), error) {
-		record, err := store.Create(hostops.NewRecord{
+		outcome, err := store.Create(hostops.OperationCreateRequest{
 			ClientOperationID: "ensure-1",
 			Host:              host.Name,
 			Kind:              hostops.KindDeploy,
-			Generation:        host.Generation,
-			IncarnationID:     host.IncarnationID,
+			Pair:              hostops.OperationPair{Generation: host.Generation, IncarnationID: host.IncarnationID},
+			BootID:            "test-boot",
+			SequenceBefore:    store.Sequence(),
 		})
 		if err != nil {
 			return nil, err
 		}
+		record := outcome.Record
 		recordID = record.ID
 		return func(err error) {
 			if err == nil {
@@ -383,7 +385,7 @@ func ensureDeployTestHarnessInstalling(t *testing.T, restartErr error, installed
 // tests arm against.
 func ensureDeployTestStore(t *testing.T) *hostops.Store {
 	t.Helper()
-	store, err := hostops.Open(hostops.StorePath(t.TempDir()))
+	store, err := hostops.Open(hostops.StorePath(t.TempDir()), hostops.RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("hostops.Open: %v", err)
 	}
@@ -521,16 +523,18 @@ func ensureRestartTestHarness(t *testing.T, restartErr error) (*Manager, *hostop
 	m := newTestManager(t, testRegistry(t, host), fr, Options{controllerVersionOverride: "newsha"})
 	m.setPendingRestart(host.Name, "systemctl restart evener-hub.service", "newsha", "", hubIdentity{version: "oldsha"}, nil)
 	m.SetEnsureRestartHook(func(host hostreg.Host) (func(error), error) {
-		record, err := store.Create(hostops.NewRecord{
+		outcome, err := store.Create(hostops.OperationCreateRequest{
 			ClientOperationID: "ensure-restart-1",
 			Host:              host.Name,
 			Kind:              hostops.KindRestart,
-			Generation:        host.Generation,
-			IncarnationID:     host.IncarnationID,
+			Pair:              hostops.OperationPair{Generation: host.Generation, IncarnationID: host.IncarnationID},
+			BootID:            "test-boot",
+			SequenceBefore:    store.Sequence(),
 		})
 		if err != nil {
 			return nil, err
 		}
+		record := outcome.Record
 		recordID = record.ID
 		return func(err error) {
 			if err == nil {

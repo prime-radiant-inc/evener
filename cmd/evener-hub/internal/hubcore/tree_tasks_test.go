@@ -30,7 +30,7 @@ func fuzzScenarioBuildTree_CarriesTaskProgressOnEveryRow(t *testing.T) {
 		{PID: 2, SessionID: "01UNINDEXED", Status: appwire.ThreadStatusActive, Tasks: progress("Land the fix")},
 		{PID: 3, SessionID: "01UNPLANNED", Status: appwire.ThreadStatusActive},
 	}
-	tree := BuildTreeAt(metas, live, map[ArchiveKey]bool{}, now)
+	tree := buildTreeAtResolved(metas, live, map[ArchiveKey]bool{}, now)
 
 	liveRow, inLive, projectRow, inProject := liveAndProjectRowsFor(tree, "01PLANNED")
 	if !inLive || !inProject || len(tree.NeedsYou) != 1 || tree.NeedsYou[0].ID != "01PLANNED" {

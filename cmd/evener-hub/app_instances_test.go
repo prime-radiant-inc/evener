@@ -309,7 +309,7 @@ func TestInstances_UnreadableCredentialsStoreRefusesInsteadOfPanicking(t *testin
 	}
 
 	// A rename refuses typed, naming the file the operator has to fix.
-	err = ctl.Edit(appwire.InstanceEditParams{Name: "work-ant", NewName: "work-ant-renamed"})
+	_, err = ctl.Edit(appwire.InstanceEditParams{Name: "work-ant", NewName: "work-ant-renamed"})
 	if err == nil {
 		t.Fatal("Edit renamed an instance with no readable credentials store")
 	}
@@ -340,7 +340,7 @@ func TestInstances_UnreadableCredentialsStoreRefusesInsteadOfPanicking(t *testin
 func TestInstances_CreateWritesRegistryEntryAndLists(t *testing.T) {
 	f := newInstancesFixture(t, map[string]string{"PORTKEY_KEY": "pk"})
 
-	if err := f.ctl.Create(appwire.InstanceCreateParams{
+	if _, err := f.ctl.Create(appwire.InstanceCreateParams{
 		Name:             "work",
 		Base:             "openai",
 		BaseURL:          "https://gw.example.test/v1",
@@ -510,7 +510,7 @@ func TestInstances_CreateRejectsBadInput(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			f := newInstancesFixture(t, nil)
-			err := f.ctl.Create(tt.params)
+			_, err := f.ctl.Create(tt.params)
 			// A field the form got wrong is the caller's to fix, so the pane is
 			// told which field, not handed a bare error.
 			var wire appwire.WireError
@@ -530,10 +530,10 @@ func TestInstances_CreateRejectsBadInput(t *testing.T) {
 func TestInstances_CreateRejectsDuplicateName(t *testing.T) {
 	f := newInstancesFixture(t, nil)
 	params := appwire.InstanceCreateParams{Name: "work", Base: "openai", APIKeyEnv: "WORK_KEY"}
-	if err := f.ctl.Create(params); err != nil {
+	if _, err := f.ctl.Create(params); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	err := f.ctl.Create(params)
+	_, err := f.ctl.Create(params)
 	// The name collides with an existing entry, matching the Conflict class
 	// hubDirsCreate and the pin-section store use for the same "taken" shape.
 	requireWireError(t, err, appwire.CodeConflict)
@@ -553,7 +553,7 @@ func TestInstances_EditImplicitWritesShadowingEntry(t *testing.T) {
 		t.Fatal("the pane displays groq's resolved base URL")
 	}
 
-	if err := f.ctl.Edit(appwire.InstanceEditParams{Name: "groq", Protocol: "openai-responses"}); err != nil {
+	if _, err := f.ctl.Edit(appwire.InstanceEditParams{Name: "groq", Protocol: "openai-responses"}); err != nil {
 		t.Fatalf("Edit: %v", err)
 	}
 
@@ -599,7 +599,7 @@ func TestInstances_EditClearOnlyOnAnImplicitInstanceWritesNoShadow(t *testing.T)
 			f := newInstancesFixture(t, map[string]string{"GROQ_API_KEY": "gk"})
 			params := tc.params
 			params.Name = "groq"
-			if err := f.ctl.Edit(params); err != nil {
+			if _, err := f.ctl.Edit(params); err != nil {
 				t.Fatalf("Edit(%s): %v", tc.name, err)
 			}
 			if providers := readConfigProviders(t, f.tomlPath); len(providers) != 0 {
@@ -622,10 +622,10 @@ func TestInstances_EditClearOnlyOnAnImplicitInstanceWritesNoShadow(t *testing.T)
 // (#711).
 func TestInstances_EditWithoutClearLeavesAnAuthoredBaseURLAlone(t *testing.T) {
 	f := newInstancesFixture(t, map[string]string{"GROQ_API_KEY": "gk"})
-	if err := f.ctl.Edit(appwire.InstanceEditParams{Name: "groq", BaseURL: "http://127.0.0.1:9/v1"}); err != nil {
+	if _, err := f.ctl.Edit(appwire.InstanceEditParams{Name: "groq", BaseURL: "http://127.0.0.1:9/v1"}); err != nil {
 		t.Fatalf("Edit(set): %v", err)
 	}
-	if err := f.ctl.Edit(appwire.InstanceEditParams{Name: "groq", Protocol: "openai-responses"}); err != nil {
+	if _, err := f.ctl.Edit(appwire.InstanceEditParams{Name: "groq", Protocol: "openai-responses"}); err != nil {
 		t.Fatalf("Edit(protocol only): %v", err)
 	}
 	p := authoredEntry(t, f.tomlPath, "groq")
@@ -651,7 +651,7 @@ func TestInstances_EditClearsAuthoredBaseURLBackToDefault(t *testing.T) {
 		t.Fatalf("groq should inherit its credential before any override: activeSource = %q", before.ActiveSource)
 	}
 
-	if err := f.ctl.Edit(appwire.InstanceEditParams{Name: "groq", BaseURL: "http://127.0.0.1:9/v1"}); err != nil {
+	if _, err := f.ctl.Edit(appwire.InstanceEditParams{Name: "groq", BaseURL: "http://127.0.0.1:9/v1"}); err != nil {
 		t.Fatalf("Edit(set): %v", err)
 	}
 	stopped := entry(t, f.ctl.List(), "groq")
@@ -662,7 +662,7 @@ func TestInstances_EditClearsAuthoredBaseURLBackToDefault(t *testing.T) {
 		t.Fatalf("a literal base_url should stop credential inheritance (spec §10), but activeSource is still %q", stopped.ActiveSource)
 	}
 
-	if err := f.ctl.Edit(appwire.InstanceEditParams{Name: "groq", ClearBaseURL: true}); err != nil {
+	if _, err := f.ctl.Edit(appwire.InstanceEditParams{Name: "groq", ClearBaseURL: true}); err != nil {
 		t.Fatalf("Edit(clear): %v", err)
 	}
 	p := authoredEntry(t, f.tomlPath, "groq")
@@ -702,7 +702,7 @@ base_url = "http://127.0.0.1:9/v1"
 		t.Fatalf("fixture did not load as expected: baseURL = %q", before.BaseURL)
 	}
 
-	err := ctl.Edit(appwire.InstanceEditParams{Name: "standalone", ClearBaseURL: true})
+	_, err := ctl.Edit(appwire.InstanceEditParams{Name: "standalone", ClearBaseURL: true})
 	if err == nil {
 		t.Fatal("Edit accepted a clear that would leave standalone unable to resolve an endpoint")
 	}
@@ -723,7 +723,7 @@ base_url = "http://127.0.0.1:9/v1"
 	if ctl.reg.WritesRefused() {
 		t.Fatal("a rejected clear left the registry refusing writes; the pane is now locked out")
 	}
-	if err := ctl.Edit(appwire.InstanceEditParams{Name: "standalone", Protocol: "openai-responses"}); err != nil {
+	if _, err := ctl.Edit(appwire.InstanceEditParams{Name: "standalone", Protocol: "openai-responses"}); err != nil {
 		t.Fatalf("the pane refused a valid edit after rejecting an orphaning clear: %v", err)
 	}
 }
@@ -760,7 +760,7 @@ base_url = "http://127.0.0.1:9/v1"
 	}
 
 	// Healthy edit succeeds and preserves the broken sibling stanza on disk.
-	if err := ctl.Edit(appwire.InstanceEditParams{Name: "standalone", BaseURL: "http://127.0.0.1:10/v1"}); err != nil {
+	if _, err := ctl.Edit(appwire.InstanceEditParams{Name: "standalone", BaseURL: "http://127.0.0.1:10/v1"}); err != nil {
 		t.Fatalf("editing healthy instance failed alongside broken sibling: %v", err)
 	}
 	if got := authoredEntry(t, tomlPath, "kimi"); got.Base != "not-a-registry-id" {
@@ -768,7 +768,7 @@ base_url = "http://127.0.0.1:9/v1"
 	}
 
 	// A rename that would leave the renamed instance unloadable must roll back.
-	err := ctl.Edit(appwire.InstanceEditParams{Name: "standalone", NewName: "moved", ClearBaseURL: true})
+	_, err := ctl.Edit(appwire.InstanceEditParams{Name: "standalone", NewName: "moved", ClearBaseURL: true})
 	if err == nil {
 		t.Fatal("Edit accepted a rename+clear that would leave moved unable to load")
 	}
@@ -830,7 +830,7 @@ base_url = "http://127.0.0.1:9/v1"
 	}
 
 	// Stale endpoint fingerprint assertion on a broken provider must be refused.
-	if err := f.ctl.Edit(appwire.InstanceEditParams{Name: "kimi", Base: "openai-compatible", BaseURL: "https://api.kimi.com/coding/v1", ExpectedEndpointFingerprint: "stale-fp"}); err == nil {
+	if _, err := f.ctl.Edit(appwire.InstanceEditParams{Name: "kimi", Base: "openai-compatible", BaseURL: "https://api.kimi.com/coding/v1", ExpectedEndpointFingerprint: "stale-fp"}); err == nil {
 		t.Fatal("Edit with stale fingerprint on broken provider succeeded, want conflict")
 	} else {
 		requireWireError(t, err, appwire.CodeConflict)
@@ -842,7 +842,7 @@ base_url = "http://127.0.0.1:9/v1"
 	}
 
 	// Unknown base and set+clear pair are refused.
-	if err := f.ctl.Edit(appwire.InstanceEditParams{Name: "kimi", Base: "no-such-registry-base"}); err == nil {
+	if _, err := f.ctl.Edit(appwire.InstanceEditParams{Name: "kimi", Base: "no-such-registry-base"}); err == nil {
 		t.Fatal("Edit accepted unknown base provider")
 	} else {
 		requireWireError(t, err, appwire.CodeInvalidParams)
@@ -855,7 +855,7 @@ base_url = "http://127.0.0.1:9/v1"
 
 	// Repairing kimi by changing base and supplying a base URL heals it and
 	// preserves its stored API key.
-	if err := f.ctl.Edit(appwire.InstanceEditParams{
+	if _, err := f.ctl.Edit(appwire.InstanceEditParams{
 		Name:    "kimi",
 		Base:    "openai-compatible",
 		BaseURL: "https://api.kimi.com/coding/v1",
@@ -874,7 +874,7 @@ base_url = "http://127.0.0.1:9/v1"
 	}
 
 	// Switching base on an already-healthy authored instance also works.
-	if err := f.ctl.Edit(appwire.InstanceEditParams{Name: "kimi", Base: "openai", ClearBaseURL: true}); err != nil {
+	if _, err := f.ctl.Edit(appwire.InstanceEditParams{Name: "kimi", Base: "openai", ClearBaseURL: true}); err != nil {
 		t.Fatalf("switching base on healthy kimi: %v", err)
 	}
 	switched := entry(t, f.ctl.List(), "kimi")
@@ -913,13 +913,13 @@ base_url = "http://127.0.0.1:9/v1"
 
 func TestInstances_EditMergesVarsIntoAuthoredEntry(t *testing.T) {
 	f := newInstancesFixture(t, map[string]string{"AWS_ACCESS_KEY_ID": "id", "AWS_SECRET_ACCESS_KEY": "secret"})
-	if err := f.ctl.Create(appwire.InstanceCreateParams{
+	if _, err := f.ctl.Create(appwire.InstanceCreateParams{
 		Name: "bedrock", Base: "amazon-bedrock",
 		Vars: map[string]string{"AWS_REGION": "us-east-1"},
 	}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	if err := f.ctl.Edit(appwire.InstanceEditParams{
+	if _, err := f.ctl.Edit(appwire.InstanceEditParams{
 		Name: "bedrock",
 		Vars: map[string]string{"AWS_REGION": "eu-west-1"},
 	}); err != nil {
@@ -936,7 +936,7 @@ func TestInstances_EditMergesVarsIntoAuthoredEntry(t *testing.T) {
 
 func TestInstances_EditRejectsUnknownInstance(t *testing.T) {
 	f := newInstancesFixture(t, nil)
-	err := f.ctl.Edit(appwire.InstanceEditParams{Name: "nowhere", Protocol: "openai-chat"})
+	_, err := f.ctl.Edit(appwire.InstanceEditParams{Name: "nowhere", Protocol: "openai-chat"})
 	if err == nil || !strings.Contains(err.Error(), "nowhere") {
 		t.Fatalf("Edit = %v, want an unknown-instance error", err)
 	}
@@ -1168,7 +1168,7 @@ func TestInstances_EditRenamesASignedInCodexAccount(t *testing.T) {
 	f := newInstancesFixture(t, nil)
 	seedOAuthRecord(t, f, "openai-codex", "codex@example.com")
 
-	if err := f.ctl.Edit(appwire.InstanceEditParams{Name: "openai-codex", NewName: "codex-work"}); err != nil {
+	if _, err := f.ctl.Edit(appwire.InstanceEditParams{Name: "openai-codex", NewName: "codex-work"}); err != nil {
 		t.Fatalf("Edit: %v", err)
 	}
 	p := authoredEntry(t, f.tomlPath, "codex-work")
@@ -1209,7 +1209,7 @@ func TestInstances_EditRenameKeepsTheRankedDefault(t *testing.T) {
 		t.Fatalf("fixture: groq = %+v, want the ranking to pick openai-codex", got)
 	}
 
-	if err := f.ctl.Edit(appwire.InstanceEditParams{Name: "openai-codex", NewName: "codex-work"}); err != nil {
+	if _, err := f.ctl.Edit(appwire.InstanceEditParams{Name: "openai-codex", NewName: "codex-work"}); err != nil {
 		t.Fatalf("Edit: %v", err)
 	}
 
@@ -1281,7 +1281,7 @@ func TestInstances_RemoveRejectsAnInvalidName(t *testing.T) {
 
 func TestInstances_RemoveDeletesEntryStoreKeyAndOAuthRecord(t *testing.T) {
 	f := newInstancesFixture(t, nil)
-	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-codex"}); err != nil {
+	if _, err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-codex"}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	if err := f.store.Set("work", "sk-stored"); err != nil {
@@ -1330,7 +1330,7 @@ func TestInstances_RemoveDeletesEntryStoreKeyAndOAuthRecord(t *testing.T) {
 // can retry it rather than being told a deletion happened that did not.
 func TestInstances_RemoveFailsWhenTheStoredCredentialCannotBeCleared(t *testing.T) {
 	f := newInstancesFixture(t, nil)
-	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-codex"}); err != nil {
+	if _, err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-codex"}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	if err := f.store.Set("work", "sk-stored"); err != nil {
@@ -1360,7 +1360,7 @@ func TestInstances_RemoveFailsWhenTheStoredCredentialCannotBeCleared(t *testing.
 
 func TestInstances_RemoveFailsWhenTheOAuthRecordCannotBeDeleted(t *testing.T) {
 	f := newInstancesFixture(t, nil)
-	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-codex"}); err != nil {
+	if _, err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-codex"}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	if err := authopenai.SaveAuth(f.stateDir, "work", makeOAuthRecord("work", "")); err != nil {
@@ -1392,7 +1392,7 @@ func TestInstances_RemoveFailsWhenTheOAuthRecordCannotBeDeleted(t *testing.T) {
 // lost its key.
 func TestInstances_RemoveKeepsCredentialsWhenTheConfigCannotBeRead(t *testing.T) {
 	f := newInstancesFixture(t, nil)
-	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-codex"}); err != nil {
+	if _, err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-codex"}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	if err := f.store.Set("work", "sk-stored"); err != nil {
@@ -1426,7 +1426,7 @@ func TestInstances_RemoveKeepsCredentialsWhenTheConfigCannotBeRead(t *testing.T)
 // in for any write that cannot land (a full disk, a read-only config root).
 func TestInstances_RemoveRestoresCredentialsWhenTheConfigWriteFails(t *testing.T) {
 	f := newInstancesFixture(t, nil)
-	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-codex"}); err != nil {
+	if _, err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-codex"}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	if err := f.store.Set("work", "sk-stored"); err != nil {
@@ -1469,7 +1469,7 @@ func TestInstances_RemoveRestoresCredentialsWhenTheConfigWriteFails(t *testing.T
 // refresh token is still permanently refused.
 func TestInstances_RemoveRestoresARefreshRefusalMarkerWhenTheConfigWriteFails(t *testing.T) {
 	f := newInstancesFixture(t, nil)
-	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-codex"}); err != nil {
+	if _, err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-codex"}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	record := makeOAuthRecord("work", "")
@@ -1508,7 +1508,7 @@ func TestInstances_RemoveRestoresARefreshRefusalMarkerWhenTheConfigWriteFails(t 
 // not block a removal the way an unreadable record does.
 func TestInstances_RemoveIgnoresAnUnreadableRefreshRefusalMarker(t *testing.T) {
 	f := newInstancesFixture(t, nil)
-	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-codex"}); err != nil {
+	if _, err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-codex"}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	if err := authopenai.SaveAuth(f.stateDir, "work", makeOAuthRecord("work", "")); err != nil {
@@ -1535,7 +1535,7 @@ func TestInstances_RemoveIgnoresAnUnreadableRefreshRefusalMarker(t *testing.T) {
 // it - creds.Get is empty by then - so the failed removal has to put it back.
 func TestInstances_RemoveRestoresTheStoredKeyWhenTheOAuthRecordCannotBeDeleted(t *testing.T) {
 	f := newInstancesFixture(t, nil)
-	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-codex"}); err != nil {
+	if _, err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-codex"}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	if err := f.store.Set("work", "sk-stored"); err != nil {
@@ -1582,7 +1582,7 @@ func TestInstances_DestructiveConfirmationsCarryTheEndpoint(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			f := newInstancesFixture(t, nil)
-			if err := f.ctl.Create(appwire.InstanceCreateParams{
+			if _, err := f.ctl.Create(appwire.InstanceCreateParams{
 				Name:    "work",
 				Base:    "openai",
 				BaseURL: "https://a.example.test/v1",
@@ -1597,7 +1597,7 @@ func TestInstances_DestructiveConfirmationsCarryTheEndpoint(t *testing.T) {
 				t.Fatal("fixture drift: the endpoint must be fingerprintable here")
 			}
 			// What another client does while the confirmation is open.
-			if err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", BaseURL: "https://b.example.test/v1"}); err != nil {
+			if _, err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", BaseURL: "https://b.example.test/v1"}); err != nil {
 				t.Fatalf("Edit: %v", err)
 			}
 			current := f.ctl.auth.endpointFingerprintFor("work")
@@ -1630,7 +1630,7 @@ func TestInstances_DestructiveConfirmationsCarryTheEndpoint(t *testing.T) {
 // pre-existing contract and is skipped.
 func TestInstances_EditRefusesAnEndpointItsCallerDidNotSee(t *testing.T) {
 	f := newInstancesFixture(t, nil)
-	if err := f.ctl.Create(appwire.InstanceCreateParams{
+	if _, err := f.ctl.Create(appwire.InstanceCreateParams{
 		Name:    "work",
 		Base:    "openai",
 		BaseURL: "https://a.example.test/v1",
@@ -1643,7 +1643,7 @@ func TestInstances_EditRefusesAnEndpointItsCallerDidNotSee(t *testing.T) {
 	}
 	// What another client does while the form is open: the name now resolves to
 	// a different endpoint.
-	if err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", BaseURL: "https://b.example.test/v1"}); err != nil {
+	if _, err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", BaseURL: "https://b.example.test/v1"}); err != nil {
 		t.Fatalf("Edit: %v", err)
 	}
 	current := f.ctl.auth.endpointFingerprintFor("work")
@@ -1653,7 +1653,7 @@ func TestInstances_EditRefusesAnEndpointItsCallerDidNotSee(t *testing.T) {
 
 	// A rename carrying the stale assertion is refused, and the name does not
 	// move onto the replacement.
-	err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", NewName: "personal", ExpectedEndpointFingerprint: stale})
+	_, err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", NewName: "personal", ExpectedEndpointFingerprint: stale})
 	if err == nil {
 		t.Fatal("Edit renamed the replacement for a form opened on a different endpoint")
 	}
@@ -1664,7 +1664,7 @@ func TestInstances_EditRefusesAnEndpointItsCallerDidNotSee(t *testing.T) {
 
 	// A field edit carrying the stale assertion is refused, and the field is
 	// untouched.
-	if err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", APIKeyEnv: "PORTKEY_KEY", ExpectedEndpointFingerprint: stale}); err == nil {
+	if _, err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", APIKeyEnv: "PORTKEY_KEY", ExpectedEndpointFingerprint: stale}); err == nil {
 		t.Fatal("Edit applied a field change for a form opened on a different endpoint")
 	}
 	if got := entry(t, f.ctl.List(), "work"); got.APIKeyEnv != "" {
@@ -1672,7 +1672,7 @@ func TestInstances_EditRefusesAnEndpointItsCallerDidNotSee(t *testing.T) {
 	}
 
 	// The endpoint the name resolves to now is accepted.
-	if err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", APIKeyEnv: "PORTKEY_KEY", ExpectedEndpointFingerprint: current}); err != nil {
+	if _, err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", APIKeyEnv: "PORTKEY_KEY", ExpectedEndpointFingerprint: current}); err != nil {
 		t.Fatalf("Edit with the endpoint the name resolves to now: %v", err)
 	}
 	if got := entry(t, f.ctl.List(), "work"); got.APIKeyEnv != "PORTKEY_KEY" {
@@ -1681,7 +1681,7 @@ func TestInstances_EditRefusesAnEndpointItsCallerDidNotSee(t *testing.T) {
 
 	// An empty assertion asserts nothing (the pre-existing contract) and is
 	// skipped rather than refused.
-	if err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", Protocol: "openai-chat"}); err != nil {
+	if _, err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", Protocol: "openai-chat"}); err != nil {
 		t.Fatalf("Edit with no assertion: %v", err)
 	}
 	if got := entry(t, f.ctl.List(), "work"); got.Protocol != "openai-chat" {
@@ -1714,7 +1714,7 @@ func unwritableCredentialsPath(t *testing.T, credsPath string) {
 func TestInstances_RemoveDoesNotNeedACredentialsPathWithNothingToClear(t *testing.T) {
 	f := newInstancesFixture(t, nil)
 	for _, name := range []string{"work", "work2"} {
-		if err := f.ctl.Create(appwire.InstanceCreateParams{Name: name, Base: "openai"}); err != nil {
+		if _, err := f.ctl.Create(appwire.InstanceCreateParams{Name: name, Base: "openai"}); err != nil {
 			t.Fatalf("Create(%s): %v", name, err)
 		}
 	}
@@ -1748,7 +1748,7 @@ func TestInstances_RemoveDoesNotNeedACredentialsPathWithNothingToClear(t *testin
 // The capture is the file's bytes, which is what makes this case restorable.
 func TestInstances_RemoveRestoresACorruptOAuthRecordWhenTheConfigWriteFails(t *testing.T) {
 	f := newInstancesFixture(t, nil)
-	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-codex"}); err != nil {
+	if _, err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-codex"}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	authPath := authopenai.AuthFilePath(f.stateDir, "work")
@@ -1791,7 +1791,7 @@ func TestInstances_RemoveRestoresACorruptOAuthRecordWhenTheConfigWriteFails(t *t
 // way back. The create restores the file and reports what it could not load.
 func TestInstances_CreateRollsBackWhenTheReloadFails(t *testing.T) {
 	f := newInstancesFixture(t, nil)
-	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
+	if _, err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	before, err := os.ReadFile(f.tomlPath)
@@ -1807,7 +1807,7 @@ func TestInstances_CreateRollsBackWhenTheReloadFails(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	err = f.ctl.Create(appwire.InstanceCreateParams{Name: "second", Base: "openai"})
+	_, err = f.ctl.Create(appwire.InstanceCreateParams{Name: "second", Base: "openai"})
 	if err == nil {
 		t.Fatal("Create = nil, want the reload failure")
 	}
@@ -1846,7 +1846,7 @@ func TestInstances_CreateRollsBackWhenTheReloadFails(t *testing.T) {
 // file to get back. The removal rolls back instead.
 func TestInstances_RemoveRollsBackWhenTheReloadFails(t *testing.T) {
 	f := newInstancesFixture(t, nil)
-	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-codex"}); err != nil {
+	if _, err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-codex"}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	if err := f.store.Set("work", "sk-stored"); err != nil {
@@ -2007,7 +2007,7 @@ func TestInstances_RemoveRestoresTheCredentialBeforeTheRollbackReload(t *testing
 	// A bearer base, so the stored key is the credential this instance
 	// resolves: the Codex transport reads an OAuth record and ignores the
 	// store (spec §5.1).
-	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
+	if _, err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	if err := f.store.Set("work", "sk-stored"); err != nil {
@@ -2095,7 +2095,7 @@ func TestInstances_RemoveRestoresTheCredentialBeforeTheRollbackReload(t *testing
 func TestInstances_RemoveRestoresCredentialsWhenTheRollbackCannotBeWritten(t *testing.T) {
 	requireWritableDirRefusal(t)
 	f := newInstancesFixture(t, nil)
-	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-codex"}); err != nil {
+	if _, err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-codex"}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	if err := f.store.Set("work", "sk-stored"); err != nil {
@@ -2220,7 +2220,7 @@ func TestInstances_SetDefaultWritesDefault(t *testing.T) {
 // correctly removable.
 func TestInstances_RemoveValidatesTheInstanceUnderTheControllerLock(t *testing.T) {
 	f := newInstancesFixture(t, map[string]string{"OPENAI_API_KEY": "env-key"})
-	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "openai", Base: "anthropic"}); err != nil {
+	if _, err := f.ctl.Create(appwire.InstanceCreateParams{Name: "openai", Base: "anthropic"}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	if inst, ok := f.ctl.reg.Get().Instance("openai"); !ok || inst.Implicit {
@@ -2266,7 +2266,7 @@ base = "anthropic"
 // key behind under a name it just deleted.
 func TestInstances_RemoveWaitsForAnInFlightCredentialWrite(t *testing.T) {
 	f := newInstancesFixture(t, nil)
-	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
+	if _, err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	if err := f.store.Set("work", "sk-stored"); err != nil {
@@ -2311,10 +2311,12 @@ func TestInstances_MutationsWaitForAnInFlightCredentialWrite(t *testing.T) {
 		run  func(f *instancesFixture) error
 	}{
 		{"edit moves the endpoint", func(f *instancesFixture) error {
-			return f.ctl.Edit(appwire.InstanceEditParams{Name: "work", BaseURL: "https://moved.example.test/v1"})
+			_, err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", BaseURL: "https://moved.example.test/v1"})
+			return err
 		}},
 		{"create authors a shadowing entry", func(f *instancesFixture) error {
-			return f.ctl.Create(appwire.InstanceCreateParams{Name: "work2", Base: "openai"})
+			_, err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work2", Base: "openai"})
+			return err
 		}},
 		{"set default rewrites the file", func(f *instancesFixture) error {
 			return f.ctl.SetDefault(appwire.InstanceSetDefaultParams{Name: "work"})
@@ -2322,7 +2324,7 @@ func TestInstances_MutationsWaitForAnInFlightCredentialWrite(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			f := newInstancesFixture(t, nil)
-			if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
+			if _, err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
 				t.Fatalf("Create: %v", err)
 			}
 
@@ -2356,7 +2358,7 @@ func TestInstances_MutationsWaitForAnInFlightCredentialWrite(t *testing.T) {
 // removes what it wrote.
 func TestInstances_RemoveClearsACredentialItsRacerWrote(t *testing.T) {
 	f := newInstancesFixture(t, nil)
-	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
+	if _, err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	originalSet := f.ctl.auth.setCredential
@@ -2492,7 +2494,7 @@ func TestInstances_RemoveRefusesWhenARacerMadeItEnvironmentBacked(t *testing.T) 
 // the removal's own cleanup exists to prevent.
 func TestInstances_ApiKeySetRefusesAKeyForARemovedInstance(t *testing.T) {
 	f := newInstancesFixture(t, nil)
-	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
+	if _, err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	if err := f.ctl.Remove(appwire.InstanceRemoveParams{Name: "work"}); err != nil {
@@ -2511,7 +2513,7 @@ func TestInstances_ApiKeySetRefusesAKeyForARemovedInstance(t *testing.T) {
 		t.Fatalf("stored key = %q, want nothing stored for a name nothing curates", v)
 	}
 	// The hazard the refusal removes: the name comes back as an instance and
-	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
+	if _, err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	if got := entry(t, f.ctl.List(), "work"); got.ActiveSource != "none" || got.HasStoredFile {
@@ -2534,7 +2536,7 @@ func TestInstances_ApiKeySetRefusesAKeyForARemovedInstance(t *testing.T) {
 // change from no change at all.
 func TestInstances_ListExposesAnEndpointFingerprint(t *testing.T) {
 	f := newInstancesFixture(t, nil)
-	if err := f.ctl.Create(appwire.InstanceCreateParams{
+	if _, err := f.ctl.Create(appwire.InstanceCreateParams{
 		Name:    "work",
 		Base:    "openai",
 		BaseURL: "https://gateway.test/v1?api-version=2024-02-01",
@@ -2554,7 +2556,7 @@ func TestInstances_ListExposesAnEndpointFingerprint(t *testing.T) {
 
 	// A change the displayed URL cannot show: the sanitized copy stays put and
 	// the fingerprint is what moves.
-	if err := f.ctl.Edit(appwire.InstanceEditParams{
+	if _, err := f.ctl.Edit(appwire.InstanceEditParams{
 		Name:    "work",
 		BaseURL: "https://gateway.test/v1?api-version=2025-01-01",
 	}); err != nil {
@@ -2576,7 +2578,7 @@ func TestInstances_ListExposesAnEndpointFingerprint(t *testing.T) {
 // would be checked against it.
 func TestInstances_ListingRowFingerprintsTheSnapshotItCameFrom(t *testing.T) {
 	f := newInstancesFixture(t, nil)
-	if err := f.ctl.Create(appwire.InstanceCreateParams{
+	if _, err := f.ctl.Create(appwire.InstanceCreateParams{
 		Name:    "work",
 		Base:    "openai",
 		BaseURL: "https://a.example.test/v1",
@@ -2592,7 +2594,7 @@ func TestInstances_ListingRowFingerprintsTheSnapshotItCameFrom(t *testing.T) {
 
 	// Another client moves the endpoint while the snapshot above is what a
 	// listing would have been built from.
-	if err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", BaseURL: "https://b.example.test/v1"}); err != nil {
+	if _, err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", BaseURL: "https://b.example.test/v1"}); err != nil {
 		t.Fatalf("Edit: %v", err)
 	}
 	moved := f.ctl.reg.Get()
@@ -2618,7 +2620,7 @@ func TestInstances_ListingRowFingerprintsTheSnapshotItCameFrom(t *testing.T) {
 // see would carry a key to a destination nobody reviewed.
 func TestInstances_EndpointFingerprintCoversTheResolvedTransport(t *testing.T) {
 	f := newInstancesFixture(t, nil)
-	if err := f.ctl.Create(appwire.InstanceCreateParams{
+	if _, err := f.ctl.Create(appwire.InstanceCreateParams{
 		Name:    "work",
 		Base:    "openai",
 		BaseURL: "https://gateway.test/v1",
@@ -2636,7 +2638,7 @@ func TestInstances_EndpointFingerprintCoversTheResolvedTransport(t *testing.T) {
 	if first.Protocol == next {
 		next = "openai-chat"
 	}
-	if err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", Protocol: next}); err != nil {
+	if _, err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", Protocol: next}); err != nil {
 		t.Fatalf("Edit(protocol=%s): %v", next, err)
 	}
 	second := entry(t, f.ctl.List(), "work")
@@ -2677,7 +2679,7 @@ endpoint = "/somewhere-else"
 func TestInstances_EndpointFingerprintIsKeyedWithTheHubSecret(t *testing.T) {
 	f := newInstancesFixture(t, nil)
 	const endpoint = "https://gateway.test/v1?token=hunter2"
-	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai", BaseURL: endpoint}); err != nil {
+	if _, err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai", BaseURL: endpoint}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 
@@ -2690,7 +2692,7 @@ func TestInstances_EndpointFingerprintIsKeyedWithTheHubSecret(t *testing.T) {
 	// holds is a function of the hub's secret, not of the endpoint alone, so
 	// the secret parts it covers cannot be recovered from it.
 	other := newInstancesFixture(t, nil)
-	if err := other.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai", BaseURL: endpoint}); err != nil {
+	if _, err := other.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai", BaseURL: endpoint}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	if otherFP := entry(t, other.ctl.List(), "work").EndpointFingerprint; otherFP == got {
@@ -2709,8 +2711,11 @@ func TestInstances_EndpointFingerprintIsKeyedWithTheHubSecret(t *testing.T) {
 // serving a digest anyone can recompute.
 func TestInstances_EndpointFingerprintIsOmittedWithoutAKey(t *testing.T) {
 	f := newInstancesFixture(t, nil)
-	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
+	if _, err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
 		t.Fatalf("Create: %v", err)
+	}
+	if err := os.Remove(filepath.Join(f.stateDir, endpointFingerprintKeyFile)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("Remove fingerprint key: %v", err)
 	}
 	// A directory where the key file belongs: neither reading nor creating it
 	// can succeed, which is the shape of a state root the hub cannot key under.
@@ -2727,8 +2732,11 @@ func TestInstances_EndpointFingerprintIsOmittedWithoutAKey(t *testing.T) {
 // cannot say the name resolves there.
 func TestInstances_EditAndRenameNeedNoKeyWhenNothingIsAsserted(t *testing.T) {
 	f := newInstancesFixture(t, nil)
-	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
+	if _, err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
 		t.Fatalf("Create: %v", err)
+	}
+	if err := os.Remove(filepath.Join(f.stateDir, endpointFingerprintKeyFile)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("Remove fingerprint key: %v", err)
 	}
 	// A directory where the key file belongs: neither reading nor creating it
 	// can succeed, so the hub cannot key a fingerprint and the listing omits one.
@@ -2738,7 +2746,7 @@ func TestInstances_EditAndRenameNeedNoKeyWhenNothingIsAsserted(t *testing.T) {
 	}
 
 	// An unasserted field edit: no key is needed, so it lands.
-	if err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", APIKeyEnv: "PORTKEY_KEY"}); err != nil {
+	if _, err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", APIKeyEnv: "PORTKEY_KEY"}); err != nil {
 		t.Fatalf("unasserted edit on a hub that cannot key fingerprints: %v", err)
 	}
 	if got := entry(t, f.ctl.List(), "work"); got.APIKeyEnv != "PORTKEY_KEY" {
@@ -2746,7 +2754,7 @@ func TestInstances_EditAndRenameNeedNoKeyWhenNothingIsAsserted(t *testing.T) {
 	}
 
 	// A non-empty assertion still fails closed: the hub cannot resolve it.
-	err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", APIKeyEnv: "OTHER_KEY", ExpectedEndpointFingerprint: "stale"})
+	_, err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", APIKeyEnv: "OTHER_KEY", ExpectedEndpointFingerprint: "stale"})
 	if err == nil {
 		t.Fatal("an asserted edit must refuse while the hub cannot resolve the endpoint")
 	}
@@ -2756,7 +2764,7 @@ func TestInstances_EditAndRenameNeedNoKeyWhenNothingIsAsserted(t *testing.T) {
 	}
 
 	// An unasserted rename: no key needed either.
-	if err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", NewName: "personal"}); err != nil {
+	if _, err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", NewName: "personal"}); err != nil {
 		t.Fatalf("unasserted rename on a hub that cannot key fingerprints: %v", err)
 	}
 	if _, ok := f.ctl.reg.Get().Instance("personal"); !ok {
@@ -2773,7 +2781,7 @@ func TestInstances_ListDiagnosesAnUnusableEndpointFingerprintKey(t *testing.T) {
 	newWork := func(t *testing.T) *instancesFixture {
 		t.Helper()
 		f := newInstancesFixture(t, nil)
-		if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
+		if _, err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
 			t.Fatalf("Create: %v", err)
 		}
 		return f
@@ -2797,6 +2805,9 @@ func TestInstances_ListDiagnosesAnUnusableEndpointFingerprintKey(t *testing.T) {
 
 	t.Run("an unusable key is reported", func(t *testing.T) {
 		f := newWork(t)
+		if err := os.Remove(filepath.Join(f.stateDir, endpointFingerprintKeyFile)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("Remove fingerprint key: %v", err)
+		}
 		// A directory where the key file belongs: neither reading nor creating
 		// it can succeed, so every fingerprint is omitted and the pane has to
 		// say why.
@@ -2872,7 +2883,7 @@ func TestInstances_ApiKeySetAcceptsTheFingerprintTheCatalogueAdvertises(t *testi
 // read fresh on every use, so the next read is the one that sees the rotation.
 func TestInstances_EndpointFingerprintRotatesAKeyOthersCanRead(t *testing.T) {
 	f := newInstancesFixture(t, nil)
-	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
+	if _, err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	keyPath := filepath.Join(f.stateDir, endpointFingerprintKeyFile)
@@ -2919,7 +2930,7 @@ func TestInstances_EndpointFingerprintRotatesAKeyThatIsNotItsOwn(t *testing.T) {
 	t.Cleanup(func() { endpointFingerprintKeyOwner = original })
 
 	f := newInstancesFixture(t, nil)
-	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
+	if _, err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	keyPath := filepath.Join(f.stateDir, endpointFingerprintKeyFile)
@@ -2948,7 +2959,7 @@ func TestInstances_EndpointFingerprintRotatesAKeyThatIsNotItsOwn(t *testing.T) {
 // than kept, so the next use writes a fresh one.
 func TestInstances_EndpointFingerprintFollowsARotatedKeyFile(t *testing.T) {
 	f := newInstancesFixture(t, nil)
-	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
+	if _, err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	first := entry(t, f.ctl.List(), "work").EndpointFingerprint
@@ -3005,7 +3016,7 @@ func TestInstances_EndpointFingerprintFollowsARotatedKeyFile(t *testing.T) {
 // replaces it, so the listing keeps serving fingerprints a client can compare.
 func TestInstances_EndpointFingerprintRepairsAnEmptyKeyFile(t *testing.T) {
 	f := newInstancesFixture(t, nil)
-	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
+	if _, err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	keyPath := filepath.Join(f.stateDir, endpointFingerprintKeyFile)
@@ -3032,10 +3043,13 @@ func TestInstances_EndpointFingerprintRepairsAnEmptyKeyFile(t *testing.T) {
 // directory cannot be either and stays the obstacle the diagnostics name.)
 func TestInstances_EndpointFingerprintRepairsAnEmptyKeyPathDirectory(t *testing.T) {
 	f := newInstancesFixture(t, nil)
-	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
+	if _, err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	keyPath := filepath.Join(f.stateDir, endpointFingerprintKeyFile)
+	if err := os.Remove(keyPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("Remove(%s): %v", keyPath, err)
+	}
 	if err := os.Mkdir(keyPath, 0o700); err != nil {
 		t.Fatalf("Mkdir(%s): %v", keyPath, err)
 	}
@@ -3066,10 +3080,13 @@ func TestInstances_EndpointFingerprintIsReadWhereThePlatformDoesNotReportModes(t
 	t.Cleanup(func() { endpointFingerprintKeyMode = original })
 
 	f := newInstancesFixture(t, nil)
-	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
+	if _, err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	keyPath := filepath.Join(f.stateDir, endpointFingerprintKeyFile)
+	if err := os.Remove(keyPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("Remove(%s): %v", keyPath, err)
+	}
 	// What the hub's own 0600 key reads back as on Windows: a mode the hub has
 	// to accept as its own rather than judge against a POSIX 0600.
 	if err := os.WriteFile(keyPath, []byte("a-key-the-hub-just-wrote"), 0o666); err != nil {
@@ -3103,7 +3120,7 @@ func TestInstances_EndpointFingerprintIsReadWhereThePlatformDoesNotReportModes(t
 // carries the diagnostics and refuses instance writes (spec §10).
 func TestInstances_ApiKeySetLandsWhenTheRegistryCannotReload(t *testing.T) {
 	f := newInstancesFixture(t, nil)
-	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
+	if _, err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	// A default naming a non-implicit curated provider parses cleanly and fails
@@ -3140,8 +3157,11 @@ func TestInstances_ApiKeySetLandsWhenTheRegistryCannotReload(t *testing.T) {
 // refuse (TestInstances_ApiKeySetAcceptsAnEmptyAssertionWithoutAStateRoot).
 func TestInstances_ApiKeySetRefusesAnAssertionTheHubCannotCheck(t *testing.T) {
 	f := newInstancesFixture(t, nil)
-	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
+	if _, err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
 		t.Fatalf("Create: %v", err)
+	}
+	if err := os.Remove(filepath.Join(f.stateDir, endpointFingerprintKeyFile)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("Remove fingerprint key: %v", err)
 	}
 	// A directory where the key file belongs: neither reading nor creating it
 	// can succeed, so every fingerprint is omitted.
@@ -3210,7 +3230,7 @@ func TestInstances_ApiKeySetAcceptsAnEmptyAssertionWithNoDestination(t *testing.
 // empty assertion is accepted there, and the write lands.
 func TestInstances_ApiKeySetAcceptsAnEmptyAssertionWithoutAStateRoot(t *testing.T) {
 	f := newInstancesFixture(t, nil)
-	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
+	if _, err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	// No state root: nothing to key with, and every row omits its fingerprint.
@@ -3241,7 +3261,7 @@ func TestInstances_ApiKeySetAcceptsAnEmptyAssertionWithoutAStateRoot(t *testing.
 // flag set for a file that was never there says there is something to put back.
 func TestInstances_RemoveCredentialsReportsOnlyWhatItDeleted(t *testing.T) {
 	f := newInstancesFixture(t, nil)
-	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
+	if _, err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 
@@ -3278,7 +3298,7 @@ func TestInstances_RemoveCredentialsReportsOnlyWhatItDeleted(t *testing.T) {
 // the secret could still land on an endpoint the user never reviewed.
 func TestInstances_ApiKeySetRefusesAnEndpointItsCallerDidNotSee(t *testing.T) {
 	f := newInstancesFixture(t, nil)
-	if err := f.ctl.Create(appwire.InstanceCreateParams{
+	if _, err := f.ctl.Create(appwire.InstanceCreateParams{
 		Name:    "work",
 		Base:    "openai",
 		BaseURL: "https://gateway.test/v1?api-version=2024-02-01",
@@ -3291,7 +3311,7 @@ func TestInstances_ApiKeySetRefusesAnEndpointItsCallerDidNotSee(t *testing.T) {
 	}
 	// The endpoint moves after the form was opened: only the query parameter
 	// changes, so the displayed URL stays identical.
-	if err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", BaseURL: "https://gateway.test/v1?api-version=2025-01-01"}); err != nil {
+	if _, err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", BaseURL: "https://gateway.test/v1?api-version=2025-01-01"}); err != nil {
 		t.Fatalf("Edit: %v", err)
 	}
 
@@ -3327,7 +3347,7 @@ func TestInstances_ApiKeySetRefusesAnEndpointItsCallerDidNotSee(t *testing.T) {
 // refuses while it sits on disk, so the check and the write are one step.
 func TestInstances_SetDefaultValidatesTheInstanceUnderTheControllerLock(t *testing.T) {
 	f := newInstancesFixture(t, nil)
-	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "anthropic"}); err != nil {
+	if _, err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "anthropic"}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 
@@ -3391,8 +3411,14 @@ func TestInstances_OldSchemaRefusesEveryWrite(t *testing.T) {
 	}
 
 	for name, call := range map[string]func() error{
-		"Create":     func() error { return f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}) },
-		"Edit":       func() error { return f.ctl.Edit(appwire.InstanceEditParams{Name: "groq", Protocol: "openai-chat"}) },
+		"Create": func() error {
+			_, err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"})
+			return err
+		},
+		"Edit": func() error {
+			_, err := f.ctl.Edit(appwire.InstanceEditParams{Name: "groq", Protocol: "openai-chat"})
+			return err
+		},
 		"Remove":     func() error { return f.ctl.Remove(appwire.InstanceRemoveParams{Name: "groq"}) },
 		"SetDefault": func() error { return f.ctl.SetDefault(appwire.InstanceSetDefaultParams{Name: "groq"}) },
 	} {
@@ -3430,8 +3456,11 @@ func TestSanitizeEndpointURL(t *testing.T) {
 func TestInstances_WritesRefusedBeforeTheFirstLoad(t *testing.T) {
 	ctl := &hubInstancesController{reg: hubcore.NewProviderRegistry(nil), providersConfigPath: filepath.Join(t.TempDir(), "providers.toml")}
 	for name, call := range map[string]func() error{
-		"Create":     func() error { return ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}) },
-		"Edit":       func() error { return ctl.Edit(appwire.InstanceEditParams{Name: "work"}) },
+		"Create": func() error {
+			_, err := ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"})
+			return err
+		},
+		"Edit":       func() error { _, err := ctl.Edit(appwire.InstanceEditParams{Name: "work"}); return err },
 		"Remove":     func() error { return ctl.Remove(appwire.InstanceRemoveParams{Name: "work"}) },
 		"SetDefault": func() error { return ctl.SetDefault(appwire.InstanceSetDefaultParams{Name: "work"}) },
 	} {
@@ -3472,7 +3501,7 @@ func TestInstances_RefusesAnyWriteTheRegistryCouldNotReadBack(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			f := newInstancesFixture(t, map[string]string{"GROQ_API_KEY": "gk"})
-			err := f.ctl.Create(tt.params)
+			_, err := f.ctl.Create(tt.params)
 			if !errors.Is(err, registry.ErrConfigUnloadable) {
 				t.Fatalf("Create = %v, want the registry's read-back refusal", err)
 			}
@@ -3484,7 +3513,7 @@ func TestInstances_RefusesAnyWriteTheRegistryCouldNotReadBack(t *testing.T) {
 			if f.ctl.reg.WritesRefused() {
 				t.Fatal("the registry stopped loading after a rejected create")
 			}
-			if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai", APIKeyEnv: "WORK_KEY"}); err != nil {
+			if _, err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai", APIKeyEnv: "WORK_KEY"}); err != nil {
 				t.Fatalf("the pane refused a valid create after rejecting an invalid one: %v", err)
 			}
 			if _, ok := f.ctl.reg.Get().Instance("work"); !ok {
@@ -3503,7 +3532,7 @@ func TestInstances_RefusesAnyWriteTheRegistryCouldNotReadBack(t *testing.T) {
 func TestInstances_RefusalKindsAreDistinguishable(t *testing.T) {
 	t.Run("unreadable candidate config is invalid params", func(t *testing.T) {
 		f := newInstancesFixture(t, map[string]string{"GROQ_API_KEY": "gk"})
-		err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai", Protocol: "chat-completions"})
+		_, err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai", Protocol: "chat-completions"})
 		var wire appwire.WireError
 		if !errors.As(err, &wire) || wire.Code != appwire.CodeInvalidParams {
 			t.Fatalf("Create = %v, want an InvalidParams wire error", err)
@@ -3522,7 +3551,7 @@ func TestInstances_RefusalKindsAreDistinguishable(t *testing.T) {
 			t.Fatalf("seal %s: %v", dir, err)
 		}
 		t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
-		err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"})
+		_, err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"})
 		if err == nil {
 			t.Fatal("a failed write must be reported")
 		}
@@ -3540,14 +3569,14 @@ func TestInstances_RefusalKindsAreDistinguishable(t *testing.T) {
 // invariant, on the field a shadowing entry can carry.
 func TestInstances_EditRefusesAnUnreadableCredentialHeader(t *testing.T) {
 	f := newInstancesFixture(t, map[string]string{"GROQ_API_KEY": "gk", "PORTKEY_KEY": "pk"})
-	if err := f.ctl.Create(appwire.InstanceCreateParams{
+	if _, err := f.ctl.Create(appwire.InstanceCreateParams{
 		Name: "work", Base: "openai", CredentialHeader: "Authorization=Bearer $PORTKEY_KEY",
 	}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	before := authoredEntry(t, f.tomlPath, "work")
 
-	err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", Protocol: "responses"})
+	_, err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", Protocol: "responses"})
 	if !errors.Is(err, registry.ErrConfigUnloadable) {
 		t.Fatalf("Edit = %v, want the registry's read-back refusal of the unknown protocol", err)
 	}
@@ -3557,7 +3586,7 @@ func TestInstances_EditRefusesAnUnreadableCredentialHeader(t *testing.T) {
 	if f.ctl.reg.WritesRefused() {
 		t.Fatal("the registry stopped loading after a rejected edit; the pane must not be locked out")
 	}
-	if err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", Protocol: "openai-responses"}); err != nil {
+	if _, err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", Protocol: "openai-responses"}); err != nil {
 		t.Fatalf("the pane refused a valid edit after rejecting an invalid one: %v", err)
 	}
 }
@@ -3572,7 +3601,7 @@ func TestInstances_RefusesAVarsKeyThePlaceholderGrammarCannotName(t *testing.T) 
 	for _, key := range []string{"region", "Region", "1REGION", "MY-REGION", ""} {
 		t.Run("key="+key, func(t *testing.T) {
 			f := newInstancesFixture(t, map[string]string{"GROQ_API_KEY": "gk"})
-			err := f.ctl.Create(appwire.InstanceCreateParams{
+			_, err := f.ctl.Create(appwire.InstanceCreateParams{
 				Name: "work", Base: "openai", Vars: map[string]string{key: "value"},
 			})
 			if err == nil {
@@ -3585,10 +3614,10 @@ func TestInstances_RefusesAVarsKeyThePlaceholderGrammarCannotName(t *testing.T) 
 				t.Fatal("the refused instance was written anyway")
 			}
 
-			if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "ok", Base: "openai"}); err != nil {
+			if _, err := f.ctl.Create(appwire.InstanceCreateParams{Name: "ok", Base: "openai"}); err != nil {
 				t.Fatalf("Create(ok): %v", err)
 			}
-			err = f.ctl.Edit(appwire.InstanceEditParams{Name: "ok", Vars: map[string]string{key: "value"}})
+			_, err = f.ctl.Edit(appwire.InstanceEditParams{Name: "ok", Vars: map[string]string{key: "value"}})
 			if err == nil {
 				t.Fatalf("Edit accepted the vars key %q", key)
 			}
@@ -3613,12 +3642,12 @@ func TestInstances_RefusesAVarsKeyThePlaceholderGrammarCannotName(t *testing.T) 
 // the grammar does name goes through, on both mutators.
 func TestInstances_AcceptsAPlaceholderShapedVarsKey(t *testing.T) {
 	f := newInstancesFixture(t, map[string]string{"GROQ_API_KEY": "gk"})
-	if err := f.ctl.Create(appwire.InstanceCreateParams{
+	if _, err := f.ctl.Create(appwire.InstanceCreateParams{
 		Name: "work", Base: "openai", Vars: map[string]string{"REGION": "us-east-1"},
 	}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	if err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", Vars: map[string]string{"REGION_2": "eu-west-1"}}); err != nil {
+	if _, err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", Vars: map[string]string{"REGION_2": "eu-west-1"}}); err != nil {
 		t.Fatalf("Edit: %v", err)
 	}
 	got := readConfigProviders(t, f.tomlPath)["work"].Transport.Vars
@@ -3645,7 +3674,7 @@ vars = { "bad-name" = "x", REGION = "us-east-1" }
 		t.Fatalf("write providers.toml: %v", err)
 	}
 	ctl := newTestInstancesController(t, tomlPath, dir, stateDir, map[string]string{"GROQ_API_KEY": "gk"})
-	if err := ctl.Edit(appwire.InstanceEditParams{Name: "work", Vars: map[string]string{"bad-name": ""}}); err != nil {
+	if _, err := ctl.Edit(appwire.InstanceEditParams{Name: "work", Vars: map[string]string{"bad-name": ""}}); err != nil {
 		t.Fatalf("Edit(delete bad-name): %v", err)
 	}
 	got := readConfigProviders(t, tomlPath)["work"].Transport.Vars
@@ -3655,14 +3684,14 @@ vars = { "bad-name" = "x", REGION = "us-east-1" }
 	if got["REGION"] != "us-east-1" {
 		t.Fatalf("the delete disturbed the vars beside it: %v", got)
 	}
-	err := ctl.Edit(appwire.InstanceEditParams{Name: "work", Vars: map[string]string{"bad-name": "y"}})
+	_, err := ctl.Edit(appwire.InstanceEditParams{Name: "work", Vars: map[string]string{"bad-name": "y"}})
 	if !errors.Is(err, errInvalidVarName) {
 		t.Fatalf("Edit(set bad-name) = %v, want the invalid-name refusal", err)
 	}
 	// Create has no delete: an empty value there is written under a key
 	// nothing can substitute, so every key it carries is still held to the
 	// grammar.
-	err = ctl.Create(appwire.InstanceCreateParams{Name: "other", Base: "openai", Vars: map[string]string{"bad-name": ""}})
+	_, err = ctl.Create(appwire.InstanceCreateParams{Name: "other", Base: "openai", Vars: map[string]string{"bad-name": ""}})
 	if !errors.Is(err, errInvalidVarName) {
 		t.Fatalf("Create(empty bad-name) = %v, want the invalid-name refusal", err)
 	}
@@ -3674,10 +3703,10 @@ vars = { "bad-name" = "x", REGION = "us-east-1" }
 // one. base_url and api_key_env on the same request already store trimmed.
 func TestInstances_EditStoresAVarTrimmed(t *testing.T) {
 	f := newInstancesFixture(t, map[string]string{"GROQ_API_KEY": "gk"})
-	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
+	if _, err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	if err := f.ctl.Edit(appwire.InstanceEditParams{
+	if _, err := f.ctl.Edit(appwire.InstanceEditParams{
 		Name: "work", Vars: map[string]string{"BASE_URL": "  https://x  "},
 	}); err != nil {
 		t.Fatalf("Edit: %v", err)
@@ -3692,7 +3721,7 @@ func TestInstances_EditStoresAVarTrimmed(t *testing.T) {
 // base_url and api_key_env on the same request already are.
 func TestInstances_CreateStoresAVarTrimmed(t *testing.T) {
 	f := newInstancesFixture(t, map[string]string{"GROQ_API_KEY": "gk"})
-	if err := f.ctl.Create(appwire.InstanceCreateParams{
+	if _, err := f.ctl.Create(appwire.InstanceCreateParams{
 		Name: "work", Base: "openai", Vars: map[string]string{"BASE_URL": "  https://x  "},
 	}); err != nil {
 		t.Fatalf("Create: %v", err)
@@ -3718,7 +3747,7 @@ func readConfigProviders(t *testing.T, path string) map[string]registry.Provider
 // registry and shows neither.
 func TestInstances_ListReportsAuthoredCredentialFields(t *testing.T) {
 	f := newInstancesFixture(t, map[string]string{"GROQ_API_KEY": "gk", "PORTKEY_KEY": "pk"})
-	if err := f.ctl.Create(appwire.InstanceCreateParams{
+	if _, err := f.ctl.Create(appwire.InstanceCreateParams{
 		Name: "work", Base: "openai", APIKeyEnv: "PORTKEY_KEY", CredentialHeader: "Authorization=Bearer $PORTKEY_KEY",
 	}); err != nil {
 		t.Fatalf("Create: %v", err)
@@ -3854,10 +3883,10 @@ api_key_env = ["PORTKEY_KEY"]
 // prefill is also one it cannot save.
 func TestInstances_EditRefusesAnAPIKeyEnvThatIsNotAVariableName(t *testing.T) {
 	f := newInstancesFixture(t, map[string]string{"PORTKEY_KEY": "pk"})
-	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
+	if _, err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", APIKeyEnv: "sk-live-abc"})
+	_, err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", APIKeyEnv: "sk-live-abc"})
 	requireWireError(t, err, appwire.CodeInvalidParams)
 	if strings.Contains(err.Error(), "sk-live-abc") {
 		t.Fatalf("the refusal echoed the value: %v", err)
@@ -3865,7 +3894,7 @@ func TestInstances_EditRefusesAnAPIKeyEnvThatIsNotAVariableName(t *testing.T) {
 	if p := authoredEntry(t, f.tomlPath, "work"); len(p.APIKeyEnv) != 0 {
 		t.Fatalf("a refused api_key_env was written: %v", p.APIKeyEnv)
 	}
-	if err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", APIKeyEnv: "PORTKEY_KEY"}); err != nil {
+	if _, err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", APIKeyEnv: "PORTKEY_KEY"}); err != nil {
 		t.Fatalf("Edit(a variable name) = %v, want it accepted", err)
 	}
 	if got := authoredEntry(t, f.tomlPath, "work").APIKeyEnv; !slices.Equal(got, []string{"PORTKEY_KEY"}) {
@@ -3900,15 +3929,15 @@ func TestCredentialHeaderField_KeepsWhatTheAuthoringRuleAccepts(t *testing.T) {
 // prefill is also one it cannot save.
 func TestInstances_EditRefusesALiteralStandingBesideAReference(t *testing.T) {
 	f := newInstancesFixture(t, map[string]string{"PORTKEY_KEY": "pk"})
-	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
+	if _, err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", CredentialHeader: "Authorization=Bearer supersecret $PORTKEY_KEY"})
+	_, err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", CredentialHeader: "Authorization=Bearer supersecret $PORTKEY_KEY"})
 	requireWireError(t, err, appwire.CodeInvalidParams)
 	if p := authoredEntry(t, f.tomlPath, "work"); len(p.CredentialHeaders) != 0 {
 		t.Fatalf("a refused header was written: %v", p.CredentialHeaders)
 	}
-	if err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", CredentialHeader: "Authorization=Bearer $PORTKEY_KEY"}); err != nil {
+	if _, err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", CredentialHeader: "Authorization=Bearer $PORTKEY_KEY"}); err != nil {
 		t.Fatalf("Edit(a scheme word ahead of the reference) = %v, want it accepted", err)
 	}
 	if got := authoredEntry(t, f.tomlPath, "work").CredentialHeaders["Authorization"]; got != "Bearer $PORTKEY_KEY" {
@@ -3920,7 +3949,7 @@ func TestInstances_EditRefusesALiteralStandingBesideAReference(t *testing.T) {
 // the rule, so neither mutator authors a value the other would.
 func TestInstances_CreateRefusesALiteralStandingBesideAReference(t *testing.T) {
 	f := newInstancesFixture(t, map[string]string{"PORTKEY_KEY": "pk"})
-	err := f.ctl.Create(appwire.InstanceCreateParams{
+	_, err := f.ctl.Create(appwire.InstanceCreateParams{
 		Name: "work", Base: "openai", CredentialHeader: "Authorization=Bearer supersecret $PORTKEY_KEY",
 	})
 	requireWireError(t, err, appwire.CodeInvalidParams)
@@ -3937,11 +3966,11 @@ func TestInstances_CreateRefusesALiteralStandingBesideAReference(t *testing.T) {
 // second header at request time.
 func TestInstances_EditRefusesACredentialHeaderNameThatIsNotAToken(t *testing.T) {
 	f := newInstancesFixture(t, map[string]string{"PORTKEY_KEY": "pk"})
-	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
+	if _, err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	for _, field := range []string{"Bad Name=Bearer $PORTKEY_KEY", "X-Api-Key\r\nX-Other: y=$PORTKEY_KEY"} {
-		err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", CredentialHeader: field})
+		_, err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", CredentialHeader: field})
 		var wire appwire.WireError
 		if !errors.As(err, &wire) || wire.Code != appwire.CodeInvalidParams {
 			t.Fatalf("Edit(%q) = %v, want an InvalidParams wire error", field, err)
@@ -3954,11 +3983,11 @@ func TestInstances_EditRefusesACredentialHeaderNameThatIsNotAToken(t *testing.T)
 
 func TestInstances_EditSetsAndClearsAPIKeyEnvAndCredentialHeader(t *testing.T) {
 	f := newInstancesFixture(t, map[string]string{"GROQ_API_KEY": "gk", "PORTKEY_KEY": "pk"})
-	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
+	if _, err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 
-	if err := f.ctl.Edit(appwire.InstanceEditParams{
+	if _, err := f.ctl.Edit(appwire.InstanceEditParams{
 		Name: "work", APIKeyEnv: "PORTKEY_KEY", CredentialHeader: "Authorization=Bearer $PORTKEY_KEY",
 	}); err != nil {
 		t.Fatalf("Edit(set): %v", err)
@@ -3974,7 +4003,7 @@ func TestInstances_EditSetsAndClearsAPIKeyEnvAndCredentialHeader(t *testing.T) {
 		t.Fatalf("List = apiKeyEnv %q credentialHeader %q", e.APIKeyEnv, e.CredentialHeader)
 	}
 
-	if err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", ClearAPIKeyEnv: true, ClearCredentialHeader: true}); err != nil {
+	if _, err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", ClearAPIKeyEnv: true, ClearCredentialHeader: true}); err != nil {
 		t.Fatalf("Edit(clear): %v", err)
 	}
 	p = authoredEntry(t, f.tomlPath, "work")
@@ -3994,12 +4023,12 @@ func TestInstances_EditSetsAndClearsAPIKeyEnvAndCredentialHeader(t *testing.T) {
 // BECAUSE it is invalid.
 func TestInstances_EditClearsACredentialHeaderOverAStaleValue(t *testing.T) {
 	f := newInstancesFixture(t, map[string]string{"PORTKEY_KEY": "pk"})
-	if err := f.ctl.Create(appwire.InstanceCreateParams{
+	if _, err := f.ctl.Create(appwire.InstanceCreateParams{
 		Name: "work", Base: "openai", CredentialHeader: "Authorization=Bearer $PORTKEY_KEY",
 	}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	if err := f.ctl.Edit(appwire.InstanceEditParams{
+	if _, err := f.ctl.Edit(appwire.InstanceEditParams{
 		Name: "work", ClearCredentialHeader: true, CredentialHeader: "Authorization=literal-secret",
 	}); err != nil {
 		t.Fatalf("Edit(clear over a stale value): %v", err)
@@ -4014,10 +4043,10 @@ func TestInstances_EditClearsACredentialHeaderOverAStaleValue(t *testing.T) {
 
 func TestInstances_EditCodexClientVersion(t *testing.T) {
 	f := newInstancesFixture(t, nil)
-	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "subscription", Base: "openai-codex"}); err != nil {
+	if _, err := f.ctl.Create(appwire.InstanceCreateParams{Name: "subscription", Base: "openai-codex"}); err != nil {
 		t.Fatalf("Create Codex instance: %v", err)
 	}
-	if err := f.ctl.Edit(appwire.InstanceEditParams{Name: "subscription", CodexClientVersion: "0.166.0"}); err != nil {
+	if _, err := f.ctl.Edit(appwire.InstanceEditParams{Name: "subscription", CodexClientVersion: "0.166.0"}); err != nil {
 		t.Fatalf("Edit Codex version: %v", err)
 	}
 	if got := authoredEntry(t, f.tomlPath, "subscription").Transport.CodexClientVersion; got != "0.166.0" {
@@ -4026,7 +4055,7 @@ func TestInstances_EditCodexClientVersion(t *testing.T) {
 	if got := entry(t, f.ctl.List(), "subscription").CodexClientVersion; got != "0.166.0" {
 		t.Fatalf("listed authored Codex client version = %q", got)
 	}
-	if err := f.ctl.Edit(appwire.InstanceEditParams{Name: "subscription", ClearCodexClientVersion: true}); err != nil {
+	if _, err := f.ctl.Edit(appwire.InstanceEditParams{Name: "subscription", ClearCodexClientVersion: true}); err != nil {
 		t.Fatalf("clear Codex version: %v", err)
 	}
 	if got := authoredEntry(t, f.tomlPath, "subscription").Transport.CodexClientVersion; got != "" {
@@ -4043,10 +4072,10 @@ func TestInstances_EditCodexClientVersion(t *testing.T) {
 
 func TestInstances_RefuseCodexClientVersionOnOtherProviders(t *testing.T) {
 	f := newInstancesFixture(t, nil)
-	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
+	if _, err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", CodexClientVersion: "0.166.0"}); err == nil {
+	if _, err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", CodexClientVersion: "0.166.0"}); err == nil {
 		t.Fatal("non-Codex instance accepted a Codex-only model-list version")
 	} else {
 		requireWireError(t, err, appwire.CodeInvalidParams)
@@ -4058,10 +4087,10 @@ func TestInstances_RefuseCodexClientVersionOnOtherProviders(t *testing.T) {
 
 func TestInstances_EditRefusesALiteralCredentialHeader(t *testing.T) {
 	f := newInstancesFixture(t, map[string]string{"GROQ_API_KEY": "gk"})
-	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
+	if _, err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", CredentialHeader: "Authorization=Bearer sk-literal"})
+	_, err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", CredentialHeader: "Authorization=Bearer sk-literal"})
 	requireWireError(t, err, appwire.CodeInvalidParams)
 	if p := authoredEntry(t, f.tomlPath, "work"); len(p.CredentialHeaders) != 0 {
 		t.Fatalf("a refused header was written: %v", p.CredentialHeaders)
@@ -4070,7 +4099,7 @@ func TestInstances_EditRefusesALiteralCredentialHeader(t *testing.T) {
 
 func TestInstances_EditClearsProtocolAndSurface(t *testing.T) {
 	f := newInstancesFixture(t, map[string]string{"GROQ_API_KEY": "gk"})
-	if err := f.ctl.Create(appwire.InstanceCreateParams{
+	if _, err := f.ctl.Create(appwire.InstanceCreateParams{
 		Name: "work", Base: "openai", Protocol: "openai-responses", Surface: "generic",
 	}); err != nil {
 		t.Fatalf("Create: %v", err)
@@ -4078,7 +4107,7 @@ func TestInstances_EditClearsProtocolAndSurface(t *testing.T) {
 	if p := authoredEntry(t, f.tomlPath, "work"); p.Protocol != "openai-responses" || p.Surface != "generic" {
 		t.Fatalf("authored = protocol %q surface %q", p.Protocol, p.Surface)
 	}
-	if err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", ClearProtocol: true, ClearSurface: true}); err != nil {
+	if _, err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", ClearProtocol: true, ClearSurface: true}); err != nil {
 		t.Fatalf("Edit: %v", err)
 	}
 	if p := authoredEntry(t, f.tomlPath, "work"); p.Protocol != "" || p.Surface != "" {
@@ -4095,12 +4124,12 @@ func TestInstances_EditClearsProtocolAndSurface(t *testing.T) {
 
 func TestInstances_EditDeletesAVarGivenAnEmptyValue(t *testing.T) {
 	f := newInstancesFixture(t, map[string]string{"GROQ_API_KEY": "gk"})
-	if err := f.ctl.Create(appwire.InstanceCreateParams{
+	if _, err := f.ctl.Create(appwire.InstanceCreateParams{
 		Name: "work", Base: "openai", Vars: map[string]string{"REGION": "us-east-1", "ZONE": "a"},
 	}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	if err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", Vars: map[string]string{"REGION": ""}}); err != nil {
+	if _, err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", Vars: map[string]string{"REGION": ""}}); err != nil {
 		t.Fatalf("Edit: %v", err)
 	}
 	got := readConfigProviders(t, f.tomlPath)["work"].Transport.Vars
@@ -4114,7 +4143,7 @@ func TestInstances_EditDeletesAVarGivenAnEmptyValue(t *testing.T) {
 
 func TestInstances_EditRenamesEntryDefaultStoredKeyAndOAuthRecord(t *testing.T) {
 	f := newInstancesFixture(t, nil)
-	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-codex"}); err != nil {
+	if _, err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-codex"}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	if err := f.store.Set("work", "sk-stored"); err != nil {
@@ -4128,7 +4157,7 @@ func TestInstances_EditRenamesEntryDefaultStoredKeyAndOAuthRecord(t *testing.T) 
 		t.Fatalf("SetDefault: %v", err)
 	}
 
-	if err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", NewName: "personal"}); err != nil {
+	if _, err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", NewName: "personal"}); err != nil {
 		t.Fatalf("Edit(rename): %v", err)
 	}
 
@@ -4186,7 +4215,7 @@ func TestInstances_EditRenamesEntryDefaultStoredKeyAndOAuthRecord(t *testing.T) 
 // instance signed in and healthy until its next failed refresh re-noted it.
 func TestInstances_EditRenameCarriesARefreshRefusalMarker(t *testing.T) {
 	f := newInstancesFixture(t, nil)
-	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-codex"}); err != nil {
+	if _, err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-codex"}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	record := makeOAuthRecord("work", "")
@@ -4197,7 +4226,7 @@ func TestInstances_EditRenameCarriesARefreshRefusalMarker(t *testing.T) {
 		t.Fatalf("RecordRefreshRejection: %v", err)
 	}
 
-	if err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", NewName: "personal"}); err != nil {
+	if _, err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", NewName: "personal"}); err != nil {
 		t.Fatalf("Edit(rename): %v", err)
 	}
 
@@ -4221,7 +4250,7 @@ func TestInstances_EditRenameCarriesARefreshRefusalMarker(t *testing.T) {
 // once.
 func TestInstances_EditRenameReportsARefreshRefusalMarkerItCouldNotCarry(t *testing.T) {
 	f := newInstancesFixture(t, nil)
-	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-codex"}); err != nil {
+	if _, err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-codex"}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	record := makeOAuthRecord("work", "")
@@ -4245,7 +4274,7 @@ func TestInstances_EditRenameReportsARefreshRefusalMarkerItCouldNotCarry(t *test
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", NewName: "personal"})
+	_, err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", NewName: "personal"})
 	if !errors.Is(err, errRefusalMarkerNotCopied) {
 		t.Fatalf("Edit(rename) = %v, want the refused marker copy reported", err)
 	}
@@ -4279,7 +4308,7 @@ func breakCredentialWrites(t *testing.T, credsPath string) {
 func TestInstances_EditRenameReportsAStoredKeyItCouldNotCopy(t *testing.T) {
 	requireWritableDirRefusal(t)
 	f := newInstancesFixture(t, nil)
-	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-codex"}); err != nil {
+	if _, err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-codex"}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	if err := f.store.Set("work", "sk-stored"); err != nil {
@@ -4290,7 +4319,7 @@ func TestInstances_EditRenameReportsAStoredKeyItCouldNotCopy(t *testing.T) {
 	}
 	breakCredentialWrites(t, f.credsPath)
 
-	err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", NewName: "personal"})
+	_, err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", NewName: "personal"})
 	if !errors.Is(err, errStoredKeyNotCopied) {
 		t.Fatalf("Edit(rename) = %v, want the refused copy reported", err)
 	}
@@ -4347,7 +4376,7 @@ func TestInstances_EditRenameReportsAStoredKeyItCouldNotCopy(t *testing.T) {
 func TestInstances_EditRenameReportsTheMoveAndReloadFailuresTogether(t *testing.T) {
 	requireWritableDirRefusal(t)
 	f := newInstancesFixture(t, nil)
-	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-codex"}); err != nil {
+	if _, err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-codex"}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	if err := f.store.Set("work", "sk-stored"); err != nil {
@@ -4361,7 +4390,7 @@ func TestInstances_EditRenameReportsTheMoveAndReloadFailuresTogether(t *testing.
 		return authopenai.AuthRecord{}, authopenai.ErrAuthNotFound
 	}
 
-	err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", NewName: "personal"})
+	_, err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", NewName: "personal"})
 	if err == nil {
 		t.Fatal("Edit(rename) = nil, want both failures reported")
 	}
@@ -4390,7 +4419,7 @@ func TestInstances_EditRenameReportsTheMoveAndReloadFailuresTogether(t *testing.
 // reach.
 func TestInstances_EditRenameThatOnlyFailedItsReloadStillPersisted(t *testing.T) {
 	f := newInstancesFixture(t, nil)
-	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-codex"}); err != nil {
+	if _, err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-codex"}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	if err := f.store.Set("work", "sk-stored"); err != nil {
@@ -4403,7 +4432,7 @@ func TestInstances_EditRenameThatOnlyFailedItsReloadStillPersisted(t *testing.T)
 		return authopenai.AuthRecord{}, authopenai.ErrAuthNotFound
 	}
 
-	err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", NewName: "personal"})
+	_, err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", NewName: "personal"})
 	if err == nil {
 		t.Fatal("Edit(rename) = nil, want the failed reload reported")
 	}
@@ -4425,7 +4454,7 @@ func TestInstances_EditRenameThatOnlyFailedItsReloadStillPersisted(t *testing.T)
 // must wait for it.
 func TestInstances_EditRenameWaitsForAnInFlightCredentialWrite(t *testing.T) {
 	f := newInstancesFixture(t, nil)
-	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
+	if _, err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	if err := f.store.Set("work", "sk-stored"); err != nil {
@@ -4435,7 +4464,8 @@ func TestInstances_EditRenameWaitsForAnInFlightCredentialWrite(t *testing.T) {
 	f.ctl.auth.credMu.RLock()
 	done := make(chan error, 1)
 	go func() {
-		done <- f.ctl.Edit(appwire.InstanceEditParams{Name: "work", NewName: "personal"})
+		_, err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", NewName: "personal"})
+		done <- err
 	}()
 	select {
 	case err := <-done:
@@ -4463,7 +4493,7 @@ func TestInstances_EditRenameWaitsForAnInFlightCredentialWrite(t *testing.T) {
 // checked and is about to write over.
 func TestAuth_ApiKeySetWaitsForARenameHoldingTheCredentialLock(t *testing.T) {
 	f := newInstancesFixture(t, nil)
-	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
+	if _, err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 
@@ -4507,11 +4537,11 @@ func TestInstances_EditRenameLeavesNoPhantomImplicitInstance(t *testing.T) {
 	}
 	// Editing the implicit instance authors the shadow entry that the rename
 	// then re-keys, leaving the curated provider unshadowed again.
-	if err := f.ctl.Edit(appwire.InstanceEditParams{Name: "openai", BaseURL: "https://gw.example.test/v1", Protocol: "openai-chat"}); err != nil {
+	if _, err := f.ctl.Edit(appwire.InstanceEditParams{Name: "openai", BaseURL: "https://gw.example.test/v1", Protocol: "openai-chat"}); err != nil {
 		t.Fatalf("Edit(shadow): %v", err)
 	}
 
-	if err := f.ctl.Edit(appwire.InstanceEditParams{Name: "openai", NewName: "work"}); err != nil {
+	if _, err := f.ctl.Edit(appwire.InstanceEditParams{Name: "openai", NewName: "work"}); err != nil {
 		t.Fatalf("Edit(rename): %v", err)
 	}
 
@@ -4522,7 +4552,7 @@ func TestInstances_EditRenameLeavesNoPhantomImplicitInstance(t *testing.T) {
 	}
 	// A phantom also makes the name look taken, and the refusal returns
 	// before any reload, so nothing would ever clear it.
-	if err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", NewName: "openai"}); err != nil {
+	if _, err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", NewName: "openai"}); err != nil {
 		t.Fatalf("renaming back was refused: %v", err)
 	}
 }
@@ -4541,12 +4571,12 @@ func TestInstances_EditRenameKeepsTheBaseAShadowInheritedByName(t *testing.T) {
 	}
 	// The shadow carries a base URL and nothing else: everything it resolves
 	// beyond that, it resolves by being named openai.
-	if err := f.ctl.Edit(appwire.InstanceEditParams{Name: "openai", BaseURL: "https://gw.example.test/v1"}); err != nil {
+	if _, err := f.ctl.Edit(appwire.InstanceEditParams{Name: "openai", BaseURL: "https://gw.example.test/v1"}); err != nil {
 		t.Fatalf("Edit(shadow): %v", err)
 	}
 	before := entry(t, f.ctl.List(), "openai")
 
-	if err := f.ctl.Edit(appwire.InstanceEditParams{Name: "openai", NewName: "work"}); err != nil {
+	if _, err := f.ctl.Edit(appwire.InstanceEditParams{Name: "openai", NewName: "work"}); err != nil {
 		t.Fatalf("Edit(rename): %v", err)
 	}
 
@@ -4572,10 +4602,10 @@ func TestInstances_EditRenameKeepsTheBaseAShadowInheritedByName(t *testing.T) {
 // name match would have supplied a different one.
 func TestInstances_EditRenameLeavesAnAuthoredBaseAlone(t *testing.T) {
 	f := newInstancesFixture(t, nil)
-	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "openai", Base: "anthropic"}); err != nil {
+	if _, err := f.ctl.Create(appwire.InstanceCreateParams{Name: "openai", Base: "anthropic"}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	if err := f.ctl.Edit(appwire.InstanceEditParams{Name: "openai", NewName: "work"}); err != nil {
+	if _, err := f.ctl.Edit(appwire.InstanceEditParams{Name: "openai", NewName: "work"}); err != nil {
 		t.Fatalf("Edit(rename): %v", err)
 	}
 	if got := authoredEntry(t, f.tomlPath, "work").Base; got != "anthropic" {
@@ -4599,7 +4629,7 @@ base_url = "http://127.0.0.1:9/v1"
 `)
 	ctl := newTestInstancesController(t, tomlPath, dir, t.TempDir(), nil)
 
-	err := ctl.Edit(appwire.InstanceEditParams{Name: "work", NewName: "openai"})
+	_, err := ctl.Edit(appwire.InstanceEditParams{Name: "work", NewName: "openai"})
 
 	requireWireError(t, err, appwire.CodeInvalidParams)
 
@@ -4620,10 +4650,10 @@ base_url = "http://127.0.0.1:9/v1"
 // called, so the curated name is free to take.
 func TestInstances_EditRenameOntoACuratedProviderIdKeepsAnExplicitBase(t *testing.T) {
 	f := newInstancesFixture(t, nil)
-	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "anthropic"}); err != nil {
+	if _, err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "anthropic"}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	if err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", NewName: "openai"}); err != nil {
+	if _, err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", NewName: "openai"}); err != nil {
 		t.Fatalf("Edit(rename): %v", err)
 	}
 	if got := authoredEntry(t, f.tomlPath, "openai").Base; got != "anthropic" {
@@ -4638,7 +4668,7 @@ func TestInstances_EditRenameOntoACuratedProviderIdKeepsAnExplicitBase(t *testin
 // it simply stays as the environment supplies it.
 func TestInstances_EditRenamesAnImplicitInstanceUnderANewName(t *testing.T) {
 	f := newInstancesFixture(t, map[string]string{"GROQ_API_KEY": "gk"})
-	if err := f.ctl.Edit(appwire.InstanceEditParams{Name: "groq", NewName: "g2"}); err != nil {
+	if _, err := f.ctl.Edit(appwire.InstanceEditParams{Name: "groq", NewName: "g2"}); err != nil {
 		t.Fatalf("Edit = %v, want the rename to land", err)
 	}
 	p := authoredEntry(t, f.tomlPath, "g2")
@@ -4664,12 +4694,12 @@ func TestInstances_EditRenamesAnImplicitInstanceUnderANewName(t *testing.T) {
 func TestInstances_EditRenameRefusesATakenName(t *testing.T) {
 	f := newInstancesFixture(t, map[string]string{"GROQ_API_KEY": "gk"})
 	for _, name := range []string{"work", "other"} {
-		if err := f.ctl.Create(appwire.InstanceCreateParams{Name: name, Base: "openai"}); err != nil {
+		if _, err := f.ctl.Create(appwire.InstanceCreateParams{Name: name, Base: "openai"}); err != nil {
 			t.Fatalf("Create %s: %v", name, err)
 		}
 	}
 	for _, taken := range []string{"other", "groq"} {
-		err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", NewName: taken})
+		_, err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", NewName: taken})
 		var wire appwire.WireError
 		if !errors.As(err, &wire) || wire.Code != appwire.CodeConflict {
 			t.Fatalf("rename to %q = %v, want a Conflict wire error", taken, err)
@@ -4746,7 +4776,7 @@ func TestInstances_EditRenameRefusesANameHoldingOrphanedCredentials(t *testing.T
 	} {
 		t.Run(tc.kind, func(t *testing.T) {
 			f := newInstancesFixture(t, nil)
-			if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-codex"}); err != nil {
+			if _, err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-codex"}); err != nil {
 				t.Fatalf("Create: %v", err)
 			}
 			if err := f.store.Set("work", "sk-work"); err != nil {
@@ -4771,7 +4801,7 @@ func TestInstances_EditRenameRefusesANameHoldingOrphanedCredentials(t *testing.T
 				}
 			}
 
-			err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", NewName: "work2"})
+			_, err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", NewName: "work2"})
 			var wire appwire.WireError
 			if !errors.As(err, &wire) || wire.Code != appwire.CodeConflict {
 				t.Fatalf("Edit(rename) = %v, want a Conflict wire error", err)
@@ -4808,20 +4838,20 @@ func TestInstances_EditRenameRefusesANameHoldingOrphanedCredentials(t *testing.T
 
 func TestInstances_EditRenameRejectsAnInvalidName(t *testing.T) {
 	f := newInstancesFixture(t, nil)
-	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
+	if _, err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", NewName: "Bad/Name"})
+	_, err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", NewName: "Bad/Name"})
 	requireWireError(t, err, appwire.CodeInvalidParams)
 	authoredEntry(t, f.tomlPath, "work")
 }
 
 func TestInstances_EditRenameAppliesTheOtherFieldsToo(t *testing.T) {
 	f := newInstancesFixture(t, nil)
-	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
+	if _, err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	if err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", NewName: "work2", BaseURL: "https://gw.example.test/v1"}); err != nil {
+	if _, err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", NewName: "work2", BaseURL: "https://gw.example.test/v1"}); err != nil {
 		t.Fatalf("Edit: %v", err)
 	}
 	if p := authoredEntry(t, f.tomlPath, "work2"); p.Transport.BaseURL != "https://gw.example.test/v1" {
@@ -4831,10 +4861,10 @@ func TestInstances_EditRenameAppliesTheOtherFieldsToo(t *testing.T) {
 
 func TestInstances_EditSameNameIsNotARename(t *testing.T) {
 	f := newInstancesFixture(t, nil)
-	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
+	if _, err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	if err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", NewName: "work"}); err != nil {
+	if _, err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", NewName: "work"}); err != nil {
 		t.Fatalf("Edit with NewName == Name must be a plain no-op edit: %v", err)
 	}
 	authoredEntry(t, f.tomlPath, "work")
@@ -5019,7 +5049,7 @@ func TestInstances_ListWaitsForAMutationHoldingTheLock(t *testing.T) {
 	)
 
 	f := newInstancesFixture(t, nil)
-	if err := f.ctl.Create(appwire.InstanceCreateParams{
+	if _, err := f.ctl.Create(appwire.InstanceCreateParams{
 		Name:      "work",
 		Base:      "openai",
 		BaseURL:   aURL,
@@ -5070,7 +5100,8 @@ func TestInstances_ListWaitsForAMutationHoldingTheLock(t *testing.T) {
 	armed.Store(true)
 	go func() {
 		defer close(editFinished)
-		editDone <- f.ctl.Edit(appwire.InstanceEditParams{Name: "work", BaseURL: bURL, APIKeyEnv: bKey})
+		_, err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", BaseURL: bURL, APIKeyEnv: bKey})
+		editDone <- err
 	}()
 
 	select {
@@ -5150,7 +5181,7 @@ func TestInstances_ListWaitsForAMutationHoldingTheLock(t *testing.T) {
 // throughout.
 func TestInstances_ListWaitsForACredentialWriteHoldingTheLock(t *testing.T) {
 	f := newInstancesFixture(t, nil)
-	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
+	if _, err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	if err := f.store.Set("work", "sk-stored"); err != nil {
@@ -5491,20 +5522,20 @@ api_key = "sk-inline"
 // value is a snapshot - a later edit does not change it. (The write-lock GAP is
 // not exercised: Edit exposes no seam inside its critical section to pause on,
 // so a concurrent edit cannot be made to land between the write and the
-// capture. What the code enforces is that both happen under c.mu; see edit.)
+// capture. What the code enforces is that both happen under c.mu; see Edit.)
 func TestInstances_EditAnswersWithItsOwnState(t *testing.T) {
 	f := newInstancesFixture(t, map[string]string{"GROQ_API_KEY": "gk"})
-	if err := f.ctl.Edit(appwire.InstanceEditParams{Name: "groq", BaseURL: "http://127.0.0.1:9/first"}); err != nil {
+	if _, err := f.ctl.Edit(appwire.InstanceEditParams{Name: "groq", BaseURL: "http://127.0.0.1:9/first"}); err != nil {
 		t.Fatalf("Edit(first): %v", err)
 	}
 
-	var out appwire.InstanceListResponse
-	if err := f.ctl.edit(appwire.InstanceEditParams{Name: "groq", BaseURL: "http://127.0.0.1:9/second"}, &out); err != nil {
-		t.Fatalf("edit(second): %v", err)
+	out, err := f.ctl.Edit(appwire.InstanceEditParams{Name: "groq", BaseURL: "http://127.0.0.1:9/second"})
+	if err != nil {
+		t.Fatalf("Edit(second): %v", err)
 	}
 
 	// A later edit does not mutate the already-returned captured answer.
-	if err := f.ctl.Edit(appwire.InstanceEditParams{Name: "groq", BaseURL: "http://127.0.0.1:9/foreign"}); err != nil {
+	if _, err := f.ctl.Edit(appwire.InstanceEditParams{Name: "groq", BaseURL: "http://127.0.0.1:9/foreign"}); err != nil {
 		t.Fatalf("Edit(foreign): %v", err)
 	}
 
@@ -5523,13 +5554,13 @@ func TestInstances_EditAnswersWithItsOwnState(t *testing.T) {
 // handed an empty response and blanks the pane.
 func TestInstances_EditCapturesTheListingForARename(t *testing.T) {
 	f := newInstancesFixture(t, nil)
-	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
+	if _, err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 
-	var out appwire.InstanceListResponse
-	if err := f.ctl.edit(appwire.InstanceEditParams{Name: "work", NewName: "personal"}, &out); err != nil {
-		t.Fatalf("edit(rename): %v", err)
+	out, err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", NewName: "personal"})
+	if err != nil {
+		t.Fatalf("Edit(rename): %v", err)
 	}
 	if len(out.Instances) == 0 {
 		t.Fatal("a successful rename returned an empty listing")
@@ -5685,7 +5716,7 @@ func TestInstances_EditRenamesASignedInCopilotAccount(t *testing.T) {
 		t.Fatalf("fixture: github-copilot = %+v, want an implicit instance resolving the Copilot record", before)
 	}
 
-	if err := f.ctl.Edit(appwire.InstanceEditParams{Name: "github-copilot", NewName: "copilot-work"}); err != nil {
+	if _, err := f.ctl.Edit(appwire.InstanceEditParams{Name: "github-copilot", NewName: "copilot-work"}); err != nil {
 		t.Fatalf("Edit: %v", err)
 	}
 	record, err := githubcopilot.LoadAuth(f.stateDir, "copilot-work")
@@ -5713,7 +5744,7 @@ func TestInstances_EditRenamesASignedInCopilotAccount(t *testing.T) {
 // there and leaves every layer untouched.
 func TestInstances_EditRenameRefusesANameHoldingACopilotRecord(t *testing.T) {
 	f := newInstancesFixture(t, nil)
-	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "anthropic"}); err != nil {
+	if _, err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "anthropic"}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	planted := healthyCopilotRecordForTest("work2", "account-2")
@@ -5727,7 +5758,7 @@ func TestInstances_EditRenameRefusesANameHoldingACopilotRecord(t *testing.T) {
 		t.Fatal("the planted record resolved an instance; this is not the leftover case")
 	}
 
-	err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", NewName: "work2"})
+	_, err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", NewName: "work2"})
 	requireWireError(t, err, appwire.CodeConflict)
 	if !strings.Contains(err.Error(), "work2") {
 		t.Fatalf("Edit(rename) = %v, want the leftover named", err)
@@ -5768,7 +5799,7 @@ func TestInstances_RemoveDeletesASignedInCopilotAccount(t *testing.T) {
 // while the raw-byte rollback replaces it with the bytes it captured.
 func TestInstances_RemoveRestoresACorruptCopilotRecordWhenTheConfigWriteFails(t *testing.T) {
 	f := newInstancesFixture(t, nil)
-	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "github-copilot"}); err != nil {
+	if _, err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "github-copilot"}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	corrupt := []byte("this is not a Copilot auth record\n")
@@ -5839,7 +5870,8 @@ func TestInstances_EditRenameKeepsALoginThatArrivesAtTheDestination(t *testing.T
 	f.ctl.beforeCopilotMove = func() { close(arrived) }
 	done := make(chan error, 1)
 	go func() {
-		done <- f.ctl.Edit(appwire.InstanceEditParams{Name: "github-copilot", NewName: "copilot-work"})
+		_, err := f.ctl.Edit(appwire.InstanceEditParams{Name: "github-copilot", NewName: "copilot-work"})
+		done <- err
 	}()
 	<-arrived
 	select {

@@ -66,7 +66,7 @@ func fuzzScenarioLiveRowRef_IsTheRefTheLiveRowCarries(t *testing.T) {
 	now := time.Date(2026, 9, 26, 12, 0, 0, 0, time.UTC)
 	cleared := LiveEntry{PID: 1, SourceID: "local", WorkspaceRef: "local:01WORKSPACE", SessionID: "01CURRENT", Status: appwire.ThreadStatusActive}
 	plain := LiveEntry{PID: 2, SessionID: "01PLAIN", Status: appwire.ThreadStatusActive}
-	tree := BuildTreeAt(nil, []LiveEntry{cleared, plain}, map[ArchiveKey]bool{}, now)
+	tree := buildTreeAtResolved(nil, []LiveEntry{cleared, plain}, map[ArchiveKey]bool{}, now)
 	rowRefs := map[string]string{}
 	for _, row := range tree.Live {
 		rowRefs[row.ID] = row.Ref

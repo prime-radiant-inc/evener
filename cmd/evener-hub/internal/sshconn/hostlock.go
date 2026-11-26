@@ -135,13 +135,21 @@ func (g *hostLockGate) holderOf() hostops.Holder {
 // different gates for one name.
 func (m *Manager) hostLock(name string) *hostLockGate {
 	m.mu.Lock()
+	lock := m.hostLockLocked(name)
+	m.mu.Unlock()
+	return lock
+}
+
+// hostLockLocked is hostLock for a caller that already holds m.mu, so a path
+// that must register a loop and its gate in one critical section (the startup
+// reconnect) can take the live-user reference atomically.
+func (m *Manager) hostLockLocked(name string) *hostLockGate {
 	entry := m.locks[name]
 	if entry == nil {
 		entry = &hostLockEntry{}
 		m.locks[name] = entry
 	}
 	entry.refs++
-	m.mu.Unlock()
 	return &entry.gate
 }
 

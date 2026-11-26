@@ -40,7 +40,7 @@ func TestBuildTreeCanonicalProjectAggregation(t *testing.T) {
 			EnvInfo: schema.EnvironmentInfo{WorkingDir: path},
 		})
 	}
-	tree := BuildTreeAt(metas, nil, nil, now)
+	tree := buildTreeAtResolved(metas, nil, nil, now)
 	if len(tree.Projects) != 2 {
 		t.Fatalf("projects=%d, want shared main/worktree/symlink plus distinct clone: %+v", len(tree.Projects), tree)
 	}
@@ -77,7 +77,7 @@ func TestBuildTreeClearReplacementUsesStableWorkspaceRef(t *testing.T) {
 		"/workspace": {ID: "project", CanonicalPath: "/workspace"},
 	}
 
-	tree := BuildTreeAtWithProjects(metas, live, nil, now, projects)
+	tree := BuildTreeAt(metas, live, nil, now, projects)
 	if len(tree.Live) != 1 || tree.Live[0].ID != "new-instance" || tree.Live[0].Ref != "local:old-instance" {
 		t.Fatalf("live replacement = %#v, want new instance with stable ref", tree.Live)
 	}
@@ -92,7 +92,7 @@ func TestBuildTreeClearReplacementUsesStableWorkspaceRef(t *testing.T) {
 		t.Fatalf("project replacement inherited retired title: %#v", sessions[0])
 	}
 
-	tree = BuildTreeAtWithProjects(metas, live, nil, now, nil)
+	tree = BuildTreeAt(metas, live, nil, now, nil)
 	if len(tree.Projects) != 1 {
 		t.Fatalf("unresolved replacement projects = %#v, want the live replacement to retain its project row", tree.Projects)
 	}
@@ -130,7 +130,7 @@ func TestBuildTreeClearReplacementNeedsYouUsesStableWorkspaceRef(t *testing.T) {
 		"/workspace": {ID: "project", CanonicalPath: "/workspace"},
 	}
 
-	tree := BuildTreeAtWithProjects(metas, live, nil, now, projects)
+	tree := BuildTreeAt(metas, live, nil, now, projects)
 	if len(tree.NeedsYou) != 1 || tree.NeedsYou[0].ID != "new-instance" || tree.NeedsYou[0].Ref != "local:old-instance" {
 		t.Fatalf("needs-you replacement = %#v, want new instance with stable ref", tree.NeedsYou)
 	}
@@ -161,7 +161,7 @@ func TestBuildTreeDoesNotUseCrossSourceWorkspaceRef(t *testing.T) {
 		"/workspace": {ID: "project", CanonicalPath: "/workspace"},
 	}
 
-	tree := BuildTreeAtWithProjects(metas, live, nil, now, projects)
+	tree := BuildTreeAt(metas, live, nil, now, projects)
 	if len(tree.Live) != 1 || tree.Live[0].Ref != "" {
 		t.Fatalf("cross-source live ref = %#v, want the instance ID fallback", tree.Live)
 	}
@@ -187,7 +187,7 @@ func TestBuildTreeReadsBackSourceQualifiedProjectArchive(t *testing.T) {
 		UpdatedAt: now,
 		EnvInfo:   schema.EnvironmentInfo{WorkingDir: path},
 	}
-	tree := BuildTreeAtWithProjects([]schema.SessionMeta{remoteMeta}, nil, decisions, now, projects)
+	tree := BuildTreeAt([]schema.SessionMeta{remoteMeta}, nil, decisions, now, projects)
 	if len(tree.Projects) != 0 || len(tree.ArchivedProjects) != 1 {
 		t.Fatalf("remote archived project: active=%d archived=%d, want the row moved to ArchivedProjects",
 			len(tree.Projects), len(tree.ArchivedProjects))
@@ -208,7 +208,7 @@ func TestBuildTreeReadsBackSourceQualifiedProjectArchive(t *testing.T) {
 		UpdatedAt: now,
 		EnvInfo:   schema.EnvironmentInfo{WorkingDir: path},
 	}
-	tree = BuildTreeAtWithProjects([]schema.SessionMeta{localMeta}, nil, decisions, now, projects)
+	tree = BuildTreeAt([]schema.SessionMeta{localMeta}, nil, decisions, now, projects)
 	if len(tree.Projects) != 1 || tree.Projects[0].IsArchived {
 		t.Fatalf("local project with the same ID: %+v, want it active and unaffected by host-a's decision", tree.Projects)
 	}
@@ -232,7 +232,7 @@ func TestBuildTreeLiveFilterUsesEntrySourceForMergedProject(t *testing.T) {
 		{SourceID: "host-a", SessionID: "host-a:t1", Status: appwire.ThreadStatusIdle, Project: projects[path]},
 		{SourceID: "host-b", SessionID: "host-b:t1", Status: appwire.ThreadStatusIdle, Project: projects[path]},
 	}
-	tree := BuildTreeAtWithProjects(metas, live, decisions, now, projects)
+	tree := BuildTreeAt(metas, live, decisions, now, projects)
 
 	if len(tree.Live) != 1 || tree.Live[0].ID != "host-b:t1" {
 		t.Fatalf("live = %#v, want only host-b's session: host-a archived its own project and must not hide host-b's", tree.Live)
@@ -255,7 +255,7 @@ func TestBuildTreeLiveFilterUsesEntrySourceForMergedProject(t *testing.T) {
 		{Kind: "project", ID: "proj-alpha", Source: "host-a"}: true,
 		{Kind: "project", ID: "proj-alpha", Source: "host-b"}: true,
 	}
-	tree = BuildTreeAtWithProjects(metas, live, both, now, projects)
+	tree = BuildTreeAt(metas, live, both, now, projects)
 	if len(tree.Live) != 0 {
 		t.Fatalf("live = %#v, want none once every owning source archived the project", tree.Live)
 	}
@@ -407,7 +407,7 @@ func fuzzScenarioBuildTree_ProjectsRunningSubagentOnChild(t *testing.T) {
 		RunningSubagentIDs: []string{"01CHILD"},
 	}}
 
-	tree := BuildTreeAt(metas, live, nil, now)
+	tree := buildTreeAtResolved(metas, live, nil, now)
 	if len(tree.Projects) != 1 {
 		t.Fatalf("projects = %d, want 1", len(tree.Projects))
 	}
@@ -426,7 +426,7 @@ func fuzzScenarioBuildTree_ProjectsRunningSubagentOnChild(t *testing.T) {
 		t.Fatalf("project rollup = state %q live %d expanded %v, want idle/0/false", project.RollupState, project.RollupLive, project.Expanded)
 	}
 
-	tree = BuildTreeAt(metas, []LiveEntry{{PID: 1, SessionID: "01PARENT", Status: appwire.ThreadStatusIdle}}, nil, now)
+	tree = buildTreeAtResolved(metas, []LiveEntry{{PID: 1, SessionID: "01PARENT", Status: appwire.ThreadStatusIdle}}, nil, now)
 	project = tree.Projects[0]
 	if project.RollupState != "idle" || project.RollupLive != 0 || project.Expanded {
 		t.Fatalf("stopped child projection = rollup %q/%d expanded %v", project.RollupState, project.RollupLive, project.Expanded)
@@ -457,7 +457,7 @@ func fuzzScenarioBuildTree_RunningSubagentUsesCarriedState(t *testing.T) {
 		RunningSubagentStates: map[string]string{"01IDLE": "idle", "01BUSY": "active"},
 	}}
 
-	tree := BuildTreeAt(metas, live, nil, now)
+	tree := buildTreeAtResolved(metas, live, nil, now)
 	if len(tree.Projects) != 1 {
 		t.Fatalf("projects = %d, want 1", len(tree.Projects))
 	}
@@ -474,7 +474,7 @@ func fuzzScenarioBuildTree_RunningSubagentUsesCarriedState(t *testing.T) {
 
 	// With every child idle, nothing is working: the project goes quiet.
 	live[0].RunningSubagentStates = map[string]string{"01IDLE": "idle", "01BUSY": "idle", "01NOSTATE": "idle"}
-	tree = BuildTreeAt(metas, live, nil, now)
+	tree = buildTreeAtResolved(metas, live, nil, now)
 	project = tree.Projects[0]
 	if project.RollupState != "idle" || project.RollupLive != 0 || project.Expanded {
 		t.Errorf("all-idle rollup = state %q live %d expanded %v, want idle/0/false", project.RollupState, project.RollupLive, project.Expanded)
@@ -644,7 +644,7 @@ func fuzzScenarioBuildTree_OrdersProjectSessionsByCreatedTitleAndID(t *testing.T
 
 	// Classify against a clock right after the sessions so all four land in the
 	// same (Current) tier; the test is about within-project ordering, not tiering.
-	tree := BuildTreeAt(metas, nil, map[ArchiveKey]bool{}, updated.Add(time.Hour))
+	tree := buildTreeAtResolved(metas, nil, map[ArchiveKey]bool{}, updated.Add(time.Hour))
 	if len(tree.Projects) != 1 {
 		t.Fatalf("projects=%d", len(tree.Projects))
 	}
@@ -698,7 +698,7 @@ func fuzzScenarioBuildTree_OrdersMixedLiveRowsByMergedMetadata(t *testing.T) {
 	// Pinned clock: BuildTree's wall clock would auto-archive the fixed-date
 	// meta (14-day window) and the Live tier excludes archived rows — this
 	// scenario asserts ordering, not aging.
-	tree := BuildTreeAt(metas, live, map[ArchiveKey]bool{}, base.Add(2*time.Hour))
+	tree := buildTreeAtResolved(metas, live, map[ArchiveKey]bool{}, base.Add(2*time.Hour))
 	got := make([]string, 0, len(tree.Live))
 	for _, node := range tree.Live {
 		got = append(got, node.ID)
@@ -816,10 +816,18 @@ func fuzzScenarioBuildTree_PathEnteredNonManagedWorktreeAlsoGroupsByRestoreRoot(
 	}
 }
 
-// buildTree is the test convenience wrapper around BuildTree for the cases that
-// don't exercise archive decisions: it passes an empty decision map.
+// buildTree is the test convenience wrapper around buildTreeResolved for the
+// cases that don't exercise archive decisions: it passes an empty decision map.
 func buildTree(metas []schema.SessionMeta, live []LiveEntry) Tree {
-	return BuildTree(metas, live, map[ArchiveKey]bool{})
+	return buildTreeResolved(metas, live, map[ArchiveKey]bool{})
+}
+
+func buildTreeResolved(metas []schema.SessionMeta, live []LiveEntry, decisions map[ArchiveKey]bool) Tree {
+	return BuildTree(metas, live, decisions, ResolveProjectMap(metas, live))
+}
+
+func buildTreeAtResolved(metas []schema.SessionMeta, live []LiveEntry, decisions map[ArchiveKey]bool, now time.Time) Tree {
+	return BuildTreeAt(metas, live, decisions, now, ResolveProjectMap(metas, live))
 }
 
 // allSessions returns a project's top-level session rows across all tiers,
@@ -865,7 +873,7 @@ func fuzzScenarioBuildTreeSessionTiersAndProjectOrder(t *testing.T) {
 		mk("a-old", "alpha", 40*24*time.Hour, 30*24*time.Hour), // alpha: auto-archived
 		mk("b-rec", "beta", 50*time.Hour, 48*time.Hour),        // beta: recent only
 	}
-	tree := BuildTreeAt(metas, nil, map[ArchiveKey]bool{}, now)
+	tree := buildTreeAtResolved(metas, nil, map[ArchiveKey]bool{}, now)
 
 	// alpha has a current session and a >14d session -> alpha is an active project
 	// with one Current and one Archived session.
@@ -896,7 +904,7 @@ func fuzzScenarioBuildTreeArchivedProjectPlacement(t *testing.T) {
 	}
 	// gamma: every session auto-archived -> gamma goes to ArchivedProjects.
 	metas := []schema.SessionMeta{mk("g1", "gamma", 30*24*time.Hour)}
-	tree := BuildTreeAt(metas, nil, map[ArchiveKey]bool{}, now)
+	tree := buildTreeAtResolved(metas, nil, map[ArchiveKey]bool{}, now)
 	if len(tree.Projects) != 0 {
 		t.Fatalf("gamma should not be active, got %v", projectNames(tree.Projects))
 	}
@@ -917,7 +925,7 @@ func fuzzScenarioBuildTreeArchivedProjectPlacement(t *testing.T) {
 		t.Fatal(err)
 	}
 	metas2 := []schema.SessionMeta{{ID: "d1", CreatedAt: now.Add(-time.Hour), UpdatedAt: now.Add(-time.Hour), EnvInfo: schema.EnvironmentInfo{WorkingDir: deltaDir}}}
-	tree2 := BuildTreeAt(metas2, nil, map[ArchiveKey]bool{{Kind: "project", ID: delta.ID}: true}, now)
+	tree2 := buildTreeAtResolved(metas2, nil, map[ArchiveKey]bool{{Kind: "project", ID: delta.ID}: true}, now)
 	if len(tree2.Projects) != 0 || len(tree2.ArchivedProjects) != 1 {
 		t.Fatalf("delta manual-archived should be in ArchivedProjects")
 	}
@@ -938,7 +946,7 @@ func fuzzScenarioBuildTreeManualSessionArchiveAndUnarchive(t *testing.T) {
 		{Kind: "session", ID: "fresh"}: true,
 		{Kind: "session", ID: "stale"}: false,
 	}
-	proj := projectByName(t, BuildTreeAt(metas, nil, decisions, now), "evener")
+	proj := projectByName(t, buildTreeAtResolved(metas, nil, decisions, now), "evener")
 	if len(proj.Archived) != 1 || proj.Archived[0].ID != "fresh" {
 		t.Fatalf("manual-archived fresh session should be Archived; archived=%v", proj.Archived)
 	}
@@ -960,7 +968,7 @@ func fuzzScenarioBuildTreeE2eProjectsClassifyByRecency(t *testing.T) {
 		mk("e-fresh", "evener-e2e-fresh", 1*time.Hour),
 		mk("e-stale", "evener-e2e-stale", 30*24*time.Hour),
 	}
-	tree := BuildTreeAt(metas, nil, map[ArchiveKey]bool{}, now)
+	tree := buildTreeAtResolved(metas, nil, map[ArchiveKey]bool{}, now)
 	if got := projectNames(tree.Projects); len(got) != 1 || got[0] != "evener-e2e-fresh" {
 		t.Fatalf("fresh e2e project should be active, got %v", got)
 	}
@@ -997,7 +1005,7 @@ func fuzzScenarioBuildTree_RollupCapsNestedSubagentToActive(t *testing.T) {
 		},
 	}}
 
-	project := projectByName(t, BuildTreeAt(metas, live, nil, now), "evener")
+	project := projectByName(t, buildTreeAtResolved(metas, live, nil, now), "evener")
 	if project.RollupState != "idle" {
 		t.Errorf("rollup state = %q, want idle (the errored grandchild must NOT turn the project red)", project.RollupState)
 	}
@@ -1013,7 +1021,7 @@ func fuzzScenarioBuildTree_RollupCapsNestedSubagentToActive(t *testing.T) {
 		"01DELEGATE":      "idle",
 		"01GRANDDELEGATE": appwire.ThreadStatusActive,
 	}
-	project = projectByName(t, BuildTreeAt(metas, live, nil, now), "evener")
+	project = projectByName(t, buildTreeAtResolved(metas, live, nil, now), "evener")
 	if project.RollupState != "active" {
 		t.Errorf("rollup state = %q, want active (nested delegate is working)", project.RollupState)
 	}
@@ -1049,7 +1057,7 @@ func fuzzScenarioBuildTree_RollupCoordinatorErrorStillCounts(t *testing.T) {
 		{PID: 2, SessionID: "01ACTIVEDELEGATE", Status: appwire.ThreadStatusActive},
 	}
 
-	project := projectByName(t, BuildTreeAt(metas, live, nil, now), "evener")
+	project := projectByName(t, buildTreeAtResolved(metas, live, nil, now), "evener")
 	if project.RollupState != "errored" {
 		t.Errorf("rollup state = %q, want errored (the coordinator itself failed, and an active child must not downgrade that)", project.RollupState)
 	}
@@ -1081,7 +1089,7 @@ func fuzzScenarioBuildTree_RollupIgnoresChildAwaiting(t *testing.T) {
 		{PID: 2, SessionID: "01ASKINGCHILD", Status: appwire.ThreadStatusAwaiting},
 	}
 
-	project := projectByName(t, BuildTreeAt(metas, live, nil, now), "evener")
+	project := projectByName(t, buildTreeAtResolved(metas, live, nil, now), "evener")
 	if project.RollupAttn != 0 {
 		t.Errorf("rollup attn = %d, want 0 (a child's awaiting state must not raise it)", project.RollupAttn)
 	}
@@ -1118,7 +1126,7 @@ func fuzzScenarioBuildTree_RollupNestedRunningJobsCountAsActive(t *testing.T) {
 			RunningJobs: []appwire.EvenerJobInfo{{JobID: "job-running", JobType: "shell", Status: "running"}}},
 	}
 
-	project := projectByName(t, BuildTreeAt(metas, live, nil, now), "evener")
+	project := projectByName(t, buildTreeAtResolved(metas, live, nil, now), "evener")
 	if project.RollupState != "active" {
 		t.Errorf("rollup state = %q, want active (a nested grandchild's running job keeps the project working)", project.RollupState)
 	}
@@ -1317,7 +1325,7 @@ func TestBuildTree_ExcludesNestedForkFromNeedsYou(t *testing.T) {
 		{PID: 2, SessionID: "fork", Status: appwire.ThreadStatusAwaiting},
 	}
 
-	tree := BuildTreeAt(metas, live, nil, now)
+	tree := buildTreeAtResolved(metas, live, nil, now)
 	if len(tree.NeedsYou) != 0 {
 		t.Fatalf("nested fork leaked into NeedsYou: %#v", tree.NeedsYou)
 	}
@@ -1341,7 +1349,7 @@ func TestBuildTree_CanonicalizesDuplicateMetadataIDs(t *testing.T) {
 		{ID: "dup", ParentSessionID: "root-b", UpdatedAt: now.Add(-time.Hour), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
 	}
 
-	tree := BuildTreeAt(metas, nil, nil, now)
+	tree := buildTreeAtResolved(metas, nil, nil, now)
 	var count func([]TreeNode, string) int
 	count = func(nodes []TreeNode, id string) int {
 		n := 0
@@ -1383,7 +1391,7 @@ func TestBuildTree_MalformedSubagentLineageTerminatesWithoutRows(t *testing.T) {
 		{PID: 1, SessionID: "a", Status: appwire.ThreadStatusActive},
 		{PID: 2, SessionID: "b", Status: appwire.ThreadStatusActive},
 	}
-	tree := BuildTreeAt(metas, live, nil, now)
+	tree := buildTreeAtResolved(metas, live, nil, now)
 	if len(tree.Projects) != 1 || len(tree.Projects[0].Current) != 1 {
 		t.Fatalf("tree = %#v, want one current root", tree)
 	}
@@ -1409,7 +1417,7 @@ func fuzzScenarioBuildTree_OrdersProjectsByName(t *testing.T) {
 		mk("01R2", "alpha", 3*time.Hour, 3*time.Hour),
 		mk("01R3", "mike", 2*time.Hour, 2*time.Hour),
 	}
-	tree := BuildTreeAt(metas, nil, map[ArchiveKey]bool{}, now)
+	tree := buildTreeAtResolved(metas, nil, map[ArchiveKey]bool{}, now)
 	got := projectNames(tree.Projects)
 	want := []string{"alpha", "mike", "zulu"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
@@ -1431,7 +1439,7 @@ func fuzzScenarioBuildTree_OrdersProjectsByNameNotLastActivity(t *testing.T) {
 		mk("01OLD", "zulu", 30*24*time.Hour, 1*time.Minute),
 		mk("02wMz5Txv1C3Hut0M8GCeB", "alpha", 10*time.Minute, 10*time.Minute),
 	}
-	tree := BuildTreeAt(metas, nil, map[ArchiveKey]bool{}, now)
+	tree := buildTreeAtResolved(metas, nil, map[ArchiveKey]bool{}, now)
 	got := projectNames(tree.Projects)
 	want := []string{"alpha", "zulu"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
@@ -1513,7 +1521,7 @@ func fuzzScenarioBuildTree_CapsSessionsPerTierWithOverflowCounts(t *testing.T) {
 			EnvInfo:        schema.EnvironmentInfo{WorkingDir: "/projects/big"},
 		})
 	}
-	proj := projectByName(t, BuildTreeAt(metas, nil, map[ArchiveKey]bool{}, now), "big")
+	proj := projectByName(t, buildTreeAtResolved(metas, nil, map[ArchiveKey]bool{}, now), "big")
 	if len(proj.Current) != maxSidebarSessionsPerTier {
 		t.Errorf("Current capped len = %d, want %d", len(proj.Current), maxSidebarSessionsPerTier)
 	}
@@ -1532,7 +1540,7 @@ func fuzzScenarioBuildTree_NoOverflowWhenUnderCap(t *testing.T) {
 		{ID: "01A", OriginalPrompt: "a", CreatedAt: now, UpdatedAt: now,
 			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/small"}},
 	}
-	proj := projectByName(t, BuildTreeAt(metas, nil, map[ArchiveKey]bool{}, now), "small")
+	proj := projectByName(t, buildTreeAtResolved(metas, nil, map[ArchiveKey]bool{}, now), "small")
 	if proj.MoreCurrent != 0 || proj.MoreRecent != 0 || proj.MoreArchived != 0 {
 		t.Errorf("under-cap project should have zero overflow: more=%d/%d/%d",
 			proj.MoreCurrent, proj.MoreRecent, proj.MoreArchived)
@@ -1898,7 +1906,7 @@ func fuzzScenarioBuildTree_UnnamedSessionTitleSurvivesItsMetaLanding(t *testing.
 
 	// Once the meta lands, both listings must still read the same thing. A
 	// title that changes here is a row rewriting itself under the reader.
-	afterTree := BuildTreeAt([]schema.SessionMeta{{
+	afterTree := buildTreeAtResolved([]schema.SessionMeta{{
 		ID:        id,
 		CreatedAt: now,
 		UpdatedAt: now,
@@ -1991,7 +1999,7 @@ func fuzzScenarioNeedsYou_ArchivedLiveAwaitingExcluded(t *testing.T) {
 	now := time.Now()
 	metas := []schema.SessionMeta{{ID: "01ARCH", UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/p/x"}}}
 	live := []LiveEntry{{PID: 1, SessionID: "01ARCH", Status: appwire.ThreadStatusAwaiting}}
-	tree := BuildTree(metas, live, map[ArchiveKey]bool{{Kind: "session", ID: "01ARCH"}: true})
+	tree := buildTreeResolved(metas, live, map[ArchiveKey]bool{{Kind: "session", ID: "01ARCH"}: true})
 	if len(tree.NeedsYou) != 0 {
 		t.Fatalf("archived live awaiting session must not appear in NeedsYou; got %d", len(tree.NeedsYou))
 	}
@@ -2012,7 +2020,7 @@ func fuzzScenarioCoBasenameProjectsAreDistinctNodes(t *testing.T) {
 		{ID: "01A", CreatedAt: now.Add(-time.Hour), UpdatedAt: now.Add(-time.Hour), EnvInfo: schema.EnvironmentInfo{WorkingDir: aFoo}},
 		{ID: "01B", CreatedAt: now.Add(-time.Hour), UpdatedAt: now.Add(-time.Hour), EnvInfo: schema.EnvironmentInfo{WorkingDir: bFoo}},
 	}
-	tree := BuildTreeAt(metas, nil, map[ArchiveKey]bool{}, now)
+	tree := buildTreeAtResolved(metas, nil, map[ArchiveKey]bool{}, now)
 	if len(tree.Projects) != 2 {
 		t.Fatalf("want 2 distinct projects for co-basename dirs, got %d: %+v", len(tree.Projects), tree.Projects)
 	}
@@ -2036,7 +2044,7 @@ func fuzzScenarioCoBasenameProjectsAreDistinctNodes(t *testing.T) {
 func fuzzScenarioNoProjectKeyIsStable(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	metas := []schema.SessionMeta{{ID: "01A", CreatedAt: now, UpdatedAt: now}}
-	tree := BuildTreeAt(metas, nil, map[ArchiveKey]bool{}, now)
+	tree := buildTreeAtResolved(metas, nil, map[ArchiveKey]bool{}, now)
 	if len(tree.Projects) != 1 || tree.Projects[0].Key != "no-project" || tree.Projects[0].Name != "(no project)" {
 		t.Fatalf("want a single (no project)/no-project node, got %+v", tree.Projects)
 	}
@@ -2059,12 +2067,12 @@ func fuzzScenarioProjectArchiveDecisionUsesCanonicalID(t *testing.T) {
 	projects := ResolveProjectMap([]schema.SessionMeta{mk("01A", aFoo), mk("01B", bFoo)}, nil)
 	aID := projects[aFoo].ID
 	legacy := map[ArchiveKey]bool{{Kind: "project", ID: aID}: true}
-	tree := BuildTreeAtWithProjects([]schema.SessionMeta{mk("01A", aFoo), mk("01B", bFoo)}, nil, legacy, now, projects)
+	tree := BuildTreeAt([]schema.SessionMeta{mk("01A", aFoo), mk("01B", bFoo)}, nil, legacy, now, projects)
 	if len(tree.Projects) != 1 || len(tree.ArchivedProjects) != 1 {
 		t.Fatalf("canonical row should archive only one clone; got projects=%d archived=%d", len(tree.Projects), len(tree.ArchivedProjects))
 	}
 	precedence := map[ArchiveKey]bool{{Kind: "project", ID: aID}: false}
-	tree = BuildTreeAtWithProjects([]schema.SessionMeta{mk("01A", aFoo), mk("01B", bFoo)}, nil, precedence, now, projects)
+	tree = BuildTreeAt([]schema.SessionMeta{mk("01A", aFoo), mk("01B", bFoo)}, nil, precedence, now, projects)
 	if len(tree.Projects) != 2 {
 		t.Fatalf("canonical unarchive should leave both active; got %+v", tree)
 	}
@@ -2079,7 +2087,7 @@ func TestTreeProjectPageReturnsCappedAwayTierRows(t *testing.T) {
 			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w/page"},
 		})
 	}
-	tree := BuildTreeAt(metas, nil, map[ArchiveKey]bool{}, now)
+	tree := buildTreeAtResolved(metas, nil, map[ArchiveKey]bool{}, now)
 	if len(tree.Projects) != 1 {
 		t.Fatalf("projects = %d, want 1", len(tree.Projects))
 	}
@@ -2112,7 +2120,7 @@ func TestTreeSnapshotClonesAuthoritativeTierRows(t *testing.T) {
 	for index := range 60 {
 		metas = append(metas, schema.SessionMeta{ID: fmt.Sprintf("01SNAP%02d", index), CreatedAt: now, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w/snapshot"}})
 	}
-	tree := BuildTreeAt(metas, nil, map[ArchiveKey]bool{}, now)
+	tree := buildTreeAtResolved(metas, nil, map[ArchiveKey]bool{}, now)
 	snapshot := tree.Snapshot()
 	original, _ := tree.Projects[0].TierRows("current")
 	cloned, _ := snapshot.Projects[0].TierRows("current")
@@ -2130,7 +2138,7 @@ func fuzzScenarioAllTestSessionsClassifyAsTestRun(t *testing.T) {
 	mk := func(id, origin string) schema.SessionMeta {
 		return schema.SessionMeta{ID: id, Origin: origin, CreatedAt: now, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w/tp"}}
 	}
-	tree := BuildTreeAt([]schema.SessionMeta{mk("01A", "test"), mk("01B", "test")}, nil, map[ArchiveKey]bool{}, now)
+	tree := buildTreeAtResolved([]schema.SessionMeta{mk("01A", "test"), mk("01B", "test")}, nil, map[ArchiveKey]bool{}, now)
 	var testRun *TreeProject
 	for i := range tree.Projects {
 		if tree.Projects[i].IsTestRun {
@@ -2141,7 +2149,7 @@ func fuzzScenarioAllTestSessionsClassifyAsTestRun(t *testing.T) {
 		t.Fatalf("all-test project should be flagged IsTestRun; projects=%+v", tree.Projects)
 	}
 	// One unmarked session reclassifies the project (hiding real work is worse).
-	tree = BuildTreeAt([]schema.SessionMeta{mk("01A", "test"), mk("01B", "")}, nil, map[ArchiveKey]bool{}, now)
+	tree = buildTreeAtResolved([]schema.SessionMeta{mk("01A", "test"), mk("01B", "")}, nil, map[ArchiveKey]bool{}, now)
 	for _, p := range tree.Projects {
 		if p.IsTestRun {
 			t.Fatalf("a mixed project must not be IsTestRun")
@@ -2306,7 +2314,7 @@ func fuzzScenarioNeedsYou_PendingEscalationUnifiesWithAttentionSummary(t *testin
 	}
 	decisions := map[ArchiveKey]bool{{Kind: "session", ID: "01ARCH"}: true}
 
-	tree := BuildTree(metas, live, decisions)
+	tree := buildTreeResolved(metas, live, decisions)
 	if len(tree.NeedsYou) != 1 || tree.NeedsYou[0].ID != "01A" {
 		t.Fatalf("NeedsYou = %+v, want exactly [01A] (active session promoted by its own pending escalation)", tree.NeedsYou)
 	}
@@ -2355,7 +2363,7 @@ func fuzzScenarioNeedsYou_ForkSupersededParentUnifiesWithAttentionSummary(t *tes
 		{PID: 2, SessionID: "fork", Status: appwire.ThreadStatusAwaiting},
 	}
 
-	tree := BuildTreeAt(metas, live, nil, now)
+	tree := buildTreeAtResolved(metas, live, nil, now)
 	if len(tree.NeedsYou) != 0 {
 		t.Fatalf("nested fork leaked into NeedsYou: %#v", tree.NeedsYou)
 	}
@@ -2393,7 +2401,7 @@ func fuzzScenarioNeedsYou_ProjectArchiveUnifiesWithAttentionSummary(t *testing.T
 	}
 	decisions := map[ArchiveKey]bool{{Kind: "project", ID: "proj-alpha"}: true}
 
-	tree := BuildTreeAtWithProjects(metas, live, decisions, now, projects)
+	tree := BuildTreeAt(metas, live, decisions, now, projects)
 	if len(tree.Live) != 0 {
 		t.Fatalf("live = %#v, want none: a manually archived project clears its session from the rail", tree.Live)
 	}

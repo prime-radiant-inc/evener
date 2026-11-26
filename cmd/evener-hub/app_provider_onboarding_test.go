@@ -139,7 +139,7 @@ func TestZeroProviderOnboarding_SaveCheckListAtHTTPBoundary(t *testing.T) {
 
 	// An authored destination change must not inherit that curated key.
 	changedURL := server.URL + "/changed/v1"
-	if err := f.ctl.Edit(appwire.InstanceEditParams{Name: "anthropic", BaseURL: changedURL}); err != nil {
+	if _, err := f.ctl.Edit(appwire.InstanceEditParams{Name: "anthropic", BaseURL: changedURL}); err != nil {
 		t.Fatal(err)
 	}
 	list = f.ctl.List()

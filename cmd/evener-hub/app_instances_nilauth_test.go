@@ -35,7 +35,7 @@ func detachAuth(t *testing.T, f *instancesFixture) {
 // there is simply no credential layer, so every row's ActiveSource is empty.
 func TestInstances_BareControllerListsWithoutCredentialStatus(t *testing.T) {
 	f := newInstancesFixture(t, nil)
-	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
+	if _, err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
 		t.Fatalf("seed Create: %v", err)
 	}
 	detachAuth(t, f)
@@ -64,7 +64,7 @@ func TestInstances_BareControllerListsWithoutCredentialStatus(t *testing.T) {
 // own; that is the point.
 func TestInstances_BareControllerRefusesChanges(t *testing.T) {
 	f := newInstancesFixture(t, nil)
-	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
+	if _, err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
 		t.Fatalf("seed Create: %v", err)
 	}
 	detachAuth(t, f)
@@ -74,10 +74,12 @@ func TestInstances_BareControllerRefusesChanges(t *testing.T) {
 		call func() error
 	}{
 		{"Create", func() error {
-			return f.ctl.Create(appwire.InstanceCreateParams{Name: "x", Base: "openai"})
+			_, err := f.ctl.Create(appwire.InstanceCreateParams{Name: "x", Base: "openai"})
+			return err
 		}},
 		{"Edit", func() error {
-			return f.ctl.Edit(appwire.InstanceEditParams{Name: "work"})
+			_, err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work"})
+			return err
 		}},
 		{"Remove", func() error {
 			return f.ctl.Remove(appwire.InstanceRemoveParams{Name: "work"})

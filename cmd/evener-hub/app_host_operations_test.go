@@ -22,7 +22,7 @@ import (
 // a boundary triple and one record per pair the test asks for.
 func operationsTestStore(t *testing.T, hosts []hostreg.Host) *hostops.Store {
 	t.Helper()
-	store, err := hostops.Open(hostops.StorePath(t.TempDir()))
+	store, err := hostops.Open(hostops.StorePath(t.TempDir()), hostops.RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("hostops.Open: %v", err)
 	}
@@ -43,17 +43,18 @@ func operationsTestStore(t *testing.T, hosts []hostreg.Host) *hostops.Store {
 // seedOperationRecord persists one pending operation record for host.
 func seedOperationRecord(t *testing.T, store *hostops.Store, host, operationID string, generation uint64, incarnationID string) hostops.Record {
 	t.Helper()
-	record, err := store.Create(hostops.NewRecord{
+	outcome, err := store.Create(hostops.OperationCreateRequest{
 		ClientOperationID: operationID,
 		Host:              host,
 		Kind:              hostops.KindDeploy,
-		Generation:        generation,
-		IncarnationID:     incarnationID,
+		Pair:              hostops.OperationPair{Generation: generation, IncarnationID: incarnationID},
+		BootID:            "test-boot",
+		SequenceBefore:    store.Sequence(),
 	})
 	if err != nil {
 		t.Fatalf("Create(%s): %v", host, err)
 	}
-	return record
+	return outcome.Record
 }
 
 // TestHostOperationsReadsThroughTheRealServer is the proof the read is wired:
@@ -216,9 +217,9 @@ func TestHostOperationsDetailCarriesTheCompactedMarker(t *testing.T) {
 	entry.Generation = 2
 	entry.IncarnationID = "inc-m4"
 	entry.PresenceEpoch = 3
-	store, err := hostops.OpenWithRetention(hostops.StorePath(t.TempDir()), hostops.RetentionPolicy{TerminalPerHost: 1})
+	store, err := hostops.Open(hostops.StorePath(t.TempDir()), hostops.RetentionPolicy{TerminalPerHost: 1})
 	if err != nil {
-		t.Fatalf("OpenWithRetention: %v", err)
+		t.Fatalf("hostops.Open: %v", err)
 	}
 	if err := store.MirrorBoundaries(map[string]hostops.Boundary{
 		"m4": {Generation: 2, IncarnationID: "inc-m4", PresenceEpoch: 3},
