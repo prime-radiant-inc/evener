@@ -23,6 +23,13 @@
   box-shadow: var(--shadow-raised);
 }
 
+/* The launcher keeps its prompt inside the form and uses the denser
+ * material. The conversation composer floats over moving content. */
+:global(body[data-iphone-glass]) :global([data-pane-scaffold="spawn"]) .card {
+  background: var(--glass-panel);
+  background-image: var(--glass-sheen);
+}
+
 /* The folded one-line row is as tall as its controls plus the same inset
  * above and below: no deeper top inset, because no field sits above the row. */
 .card[data-folded="true"] {

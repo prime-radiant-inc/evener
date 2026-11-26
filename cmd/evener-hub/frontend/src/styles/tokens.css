@@ -486,7 +486,9 @@ body[data-iphone-glass] {
   --glass-radius: calc(var(--radius-panel) + var(--radius-control));
 }
 
-@media (prefers-reduced-transparency: no-preference) and (prefers-contrast: no-preference) {
+/* The native host observes Reduce Transparency directly. WebKit can report
+ * neither value for the corresponding media query. */
+@media (prefers-contrast: no-preference) {
   body[data-iphone-glass="regular"] {
     --glass-fill: color-mix(in oklab, var(--field) 72%, transparent);
     --glass-panel: color-mix(in oklab, var(--surface-1) 89%, transparent);
