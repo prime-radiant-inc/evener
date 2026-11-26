@@ -13,6 +13,18 @@ import (
 	"primeradiant.com/evener/appwire"
 )
 
+// runWebSocketKeepalive pings the peer every interval and cancels the
+// connection if a ping is not answered within timeout. A dead peer thus
+// surfaces to the recv/send loops as context cancellation rather than an
+// indefinite block.
+func runWebSocketKeepalive(ctx context.Context, conn wsPinger, cancel context.CancelFunc, gate *webSocketReadGate, interval, timeout time.Duration) {
+	runWebSocketKeepaliveWithTicker(ctx, conn, cancel, gate, timeout, realWebSocketKeepaliveTicker{ticker: time.NewTicker(interval)}, nil)
+}
+
+func runWebSocketSendLoop(ctx context.Context, transport webSocketSender, send <-chan appwire.Message) {
+	runWebSocketSendLoopWithTimeout(ctx, transport, send, webSocketWriteTimeout, nil, nil)
+}
+
 func TestServeWebSocketHandlesAppWire(t *testing.T) {
 	server := NewServer(ServerConfig{ServerName: "test-server", Version: "test", SourceID: "local"})
 	HandleTyped(server.Router(), appwire.MethodThreadList, func(_ context.Context, _ appwire.ThreadListParams) (appwire.ThreadListResponse, error) {

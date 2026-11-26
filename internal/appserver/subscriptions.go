@@ -88,12 +88,6 @@ func (s *Subscriptions) noteDepartureLocked() {
 	s.departed = make(chan struct{})
 }
 
-func (s *Subscriptions) Subscribe(connID, threadID string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.subscribeLocked(&subscription{connID: connID, threadID: threadID})
-}
-
 // Unsubscribe removes the connection's subscription to one thread. It is
 // idempotent: unsubscribing a thread this connection never held is a no-op,
 // so a client racing its own re-subscribe can never wedge the registry.
@@ -282,21 +276,6 @@ func (s *Subscriptions) Release(connID, threadID string, generation uint64) ([]S
 	sub.buffering = false
 	sub.buffer = nil
 	return release, true, mustResync
-}
-
-// Threads lists the threads the connection holds a live interest in; a
-// withdrawn mid-capture entry does not count (see subscription.withdrawn).
-func (s *Subscriptions) Threads(connID string) []string {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	threads := make([]string, 0, len(s.byConn[connID]))
-	for threadID, sub := range s.byConn[connID] {
-		if sub.withdrawn {
-			continue
-		}
-		threads = append(threads, threadID)
-	}
-	return threads
 }
 
 // ConnectionCount reports how many connections hold a live interest in the
