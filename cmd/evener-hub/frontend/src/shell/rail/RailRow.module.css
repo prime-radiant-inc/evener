@@ -49,7 +49,7 @@
 }
 
 /* The right slot: ONE grid cell shared by the slot's occupant (the relative
- * timestamp, the attention count, or "Not started") and the row's
+ * timestamp or "Not started") and the row's
  * hover-revealed actions menu (a session row's "..." trigger, a project
  * row's "+"/"..." pair). Both children occupy the same grid area, so the
  * slot's width is the WIDER of the two - the menu borrows the timestamp's
@@ -333,10 +333,11 @@
   font-size: var(--font-size-caption);
 }
 
-/* The one attention/danger ink pair: the row's why word and the session
- * context status both name their hue on data-hue. */
+/* The one attention/danger ink pair: the row's why word, session context
+ * status, and inline attention counts name their hue on data-hue. */
 .contextStatus[data-hue="attention"],
-.whyReason[data-hue="attention"] {
+.whyReason[data-hue="attention"],
+.countNum[data-hue="attention"] {
   color: var(--attention-ink);
 }
 
@@ -353,20 +354,34 @@
   font-weight: var(--font-weight-medium);
 }
 
-/* A band's count sits where a row's right slot would, but it is not one: a
- * band has no actions to swap in on hover, so the count never hides. */
-.bandCount {
-  display: flex;
+/* Inline heading count (Live bands and project attention rollups): sits right
+ * beside the label before the trailing chevron so the count belongs to its
+ * heading and the right edge stays reserved for timestamps and actions.
+ * Neutral counts stay in --ink-low so the heading leads; attention counts keep
+ * --attention-ink (above) with medium weight. */
+.railCount {
+  display: inline-flex;
   align-items: center;
+  gap: var(--space-1);
   flex: none;
-  margin-left: auto;
+  color: var(--ink-low);
+  font-size: var(--font-size-caption);
+}
+
+.countNum {
+  font-family: var(--font-sans);
+  font-variant-numeric: tabular-nums;
+}
+
+.countNum[data-hue="attention"] {
+  font-weight: var(--font-weight-medium);
 }
 
 /* Right-aligned relative timestamp - an occupant of the shared .rightSlot
- * cell (the attention count and "Not started" are the other two;
- * RailRow.tsx renders at most one of the three, and the hover-revealed
- * .actions menu borrows the same cell). The slot owns the right alignment
- * and the occupant/menu visibility swap; this class is only the text. */
+ * cell ("Not started" is the other; RailRow.tsx renders at most one of the
+ * two, and the hover-revealed .actions menu borrows the same cell). The slot
+ * owns the right alignment and the occupant/menu visibility swap; this class
+ * is only the text. */
 .time {
   color: var(--ink-mid);
   font-family: var(--font-sans);

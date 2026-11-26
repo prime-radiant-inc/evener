@@ -1957,13 +1957,21 @@ describe("project row", () => {
     expect(screen.getByText("prime-radiant")).toBeTruthy();
   });
 
-  test("shows a plain attention count when rollup_attn is nonzero, hides it when zero", () => {
+  test("shows an inline attention count beside the name when rollup_attn is nonzero, hides it when zero", () => {
     const { rerender } = render(
-      <RailRow node={projectRailNode(apiProject({ rollup_attn: 3 }))} info={info()} actions={actions()} />,
+      <RailRow
+        node={projectRailNode(apiProject({ rollup_attn: 3 }))}
+        info={info({ hasChildren: true })}
+        actions={actions()}
+      />,
     );
     const count = screen.getByText("3");
-    expect(count.className).toContain(railStyles.time as string);
+    const titleLine = screen.getByText("Proj").closest(`.${railStyles.titleLine}`);
+    expect(titleLine?.contains(count)).toBe(true);
+    expect(count.closest(`.${railStyles.rightSlot}`)).toBeNull();
     expect(count.dataset.hue).toBe("attention");
+    const chevron = screen.getByTestId("rail-chevron");
+    expect(Boolean(count.compareDocumentPosition(chevron) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true);
 
     rerender(<RailRow node={projectRailNode(apiProject({ rollup_attn: 0 }))} info={info()} actions={actions()} />);
     expect(screen.queryByText("0")).toBeNull();
@@ -2732,11 +2740,17 @@ describe("band row counts", () => {
     { band: "needsYou" as const, count: 2, hue: "attention" },
     { band: "working" as const, count: 6, hue: undefined },
     { band: "idle" as const, count: 1, hue: undefined },
-  ])("renders a plain count for $band in Compact mode with attention hue only on Needs you", ({ band, count, hue }) => {
-    render(<RailRow node={bandNode(band, count)} info={info({ hasChildren: true })} actions={actions()} />);
-    const slot = screen.getByTestId("rail-row-band-count");
-    const numberEl = within(slot).getByText(String(count));
-    expect(numberEl.className).toContain(railStyles.time as string);
-    expect(numberEl.dataset.hue).toBe(hue);
-  });
+  ])(
+    "renders an inline count beside the label for $band with attention hue only on Needs you",
+    ({ band, count, hue }) => {
+      render(<RailRow node={bandNode(band, count)} info={info({ hasChildren: true })} actions={actions()} />);
+      const numberEl = screen.getByTestId("rail-row-band-count");
+      expect(numberEl.textContent).toBe(String(count));
+      expect(numberEl.dataset.hue).toBe(hue);
+      const titleLine = screen.getByTestId("rail-row-band").querySelector(`.${railStyles.titleLine}`);
+      expect(titleLine?.contains(numberEl)).toBe(true);
+      const chevron = screen.getByTestId("rail-chevron");
+      expect(Boolean(numberEl.compareDocumentPosition(chevron) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true);
+    },
+  );
 });

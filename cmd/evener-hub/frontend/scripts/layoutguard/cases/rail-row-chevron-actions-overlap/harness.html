@@ -98,25 +98,24 @@ function sessionRowHtml(id, occupant) {
     </span>`;
 }
 
-// ProjectRow anatomy (RailRow.tsx): textCol(titleLine(label, chevron)), then
-// the shared .rightSlot cell: the rollup count (or nothing) and .actions
-// holding the "+" IconButton (button quiet sm = button.module.css's base +
-// quiet with iconbutton.module.css's sm square, exactly the classes the real
-// IconButton computes) and the Menu trigger - a project row's menu is WIDER
-// than a session row's (two buttons instead of one), so it's the wider
-// danger zone for the shared cell.
+// ProjectRow anatomy (RailRow.tsx): textCol(titleLine(label, inline rollup count,
+// chevron)), then .rightSlot holding .actions ("+" IconButton and Menu trigger) -
+// a project row's menu is WIDER than a session row's (two buttons instead of one),
+// and an inline rollup count pushes the trailing chevron right toward the menu.
 function projectRowHtml(id, withCount) {
-  const count = withCount ? `<span class="time whyReason" data-hue="attention" id="occ-${id}">3</span>` : "";
+  const count = withCount
+    ? `<span class="railCount"><span aria-hidden="true">&middot;</span><span class="countNum" data-hue="attention">3</span></span>`
+    : "";
   return `
     <span class="railRow" id="row-${id}">
       <span class="textCol">
         <span class="titleLine">
           <span class="label" id="label-${id}">${TITLE}</span>
+          ${count}
           ${chevronHtml(id)}
         </span>
       </span>
       <span class="rightSlot" id="slot-${id}">
-        ${count}
         <span class="actions" id="actions-${id}">
           <button type="button" class="button quiet squareSm" id="plus-${id}" aria-label="New session in ${TITLE}">
             <span class="icon" aria-hidden="true">+</span>

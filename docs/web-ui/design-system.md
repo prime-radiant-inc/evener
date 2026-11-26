@@ -501,8 +501,10 @@ long press on the title exposes it and a tap activates the row. Session pin star
 do not appear on the row.
 
 **Live bands.** The Live section reads top to bottom as Needs you, Working, Idle: each
-band that has sessions is a fold in the section's `Tree`, its name in medium ink with a
-plain count (attention tone on Needs you only),
+band that has sessions is a fold in the section's `Tree`, its name in medium ink followed
+inline by a middot and plain tabular count before its trailing chevron (`Needs you · 2`,
+`Working · 3`, `Idle · 2`; low ink on Working and Idle, attention tone on Needs you and
+project attention rollups only) so the right edge stays dedicated to timestamps and actions,
 and all three start open. Rows do not
 animate when a session changes band. A Live row may carry one second line, in caption
 type and medium ink, that truncates and never wraps, and it prints only what the band
