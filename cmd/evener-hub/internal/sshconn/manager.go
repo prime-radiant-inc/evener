@@ -60,6 +60,11 @@ type Event struct {
 	Kind  EventKind
 	State State
 	Err   error
+	// Generation and IncarnationID identify the registration an EventAttached
+	// was built from; consumers persist the pair. They are zero on every other
+	// event kind.
+	Generation    uint64
+	IncarnationID string
 }
 
 // Options configures a Manager. The zero value is usable: exec runner, ssh to
@@ -908,7 +913,7 @@ func (m *Manager) teardownHostChannel(name string, captured hostreg.Host, hadCap
 	newer := func(generation uint64) bool { return hadCaptured && generation > captured.Generation }
 	// The loops first: one reconnecting a newer registration is that host's own
 	// live state, and cancelling it would leave nobody to bring the host back.
-	reconnectingNewer := m.stopSupervisorsBefore(name, newer)
+	stoppedAny, reconnectingNewer := m.stopSupervisorsBefore(name, newer)
 	m.mu.Lock()
 	ch := m.chans[name]
 	if ch != nil && newer(ch.host.Generation) {
@@ -925,6 +930,12 @@ func (m *Manager) teardownHostChannel(name string, captured hostreg.Host, hadCap
 	if ch != nil && m.claimAnnounced(name, ch) {
 		m.detachEvent(name, StateDisconnected)
 	}
+	// A startup reconnect between attempts has no channel to pair, but it was
+	// the host's only recovery owner: after its teardown the host is
+	// disconnected, unless a newer registration's loop still owns recovery.
+	if ch == nil && stoppedAny && !reconnectingNewer {
+		m.stateEvent(name, StateDisconnected)
+	}
 	return ch
 }
 
@@ -934,12 +945,12 @@ func (m *Manager) teardownHostChannel(name string, captured hostreg.Host, hadCap
 // just the most recent, is what reaches a predecessor parked in backoff after a
 // replacement attach registered over it; skipping the newer ones is what keeps
 // a stale teardown from cancelling the re-added host's own reconnect.
-func (m *Manager) stopSupervisorsBefore(name string, newer func(uint64) bool) bool {
+func (m *Manager) stopSupervisorsBefore(name string, newer func(uint64) bool) (stoppedAny, keptAny bool) {
 	m.mu.Lock()
 	loops := m.supervisors[name]
 	if len(loops) == 0 {
 		m.mu.Unlock()
-		return false
+		return false, false
 	}
 	kept := make(map[*supervisorLoop]struct{}, len(loops))
 	var ended []*supervisorLoop
@@ -959,7 +970,7 @@ func (m *Manager) stopSupervisorsBefore(name string, newer func(uint64) bool) bo
 	for _, loop := range ended {
 		loop.cancel()
 	}
-	return len(kept) > 0
+	return len(ended) > 0, len(kept) > 0
 }
 
 // RemoveHost deregisters name and tears down its channel as one atomic step:
@@ -1827,7 +1838,16 @@ func (m *Manager) attachEvent(name string, ch *Channel, s State) {
 	m.mu.Lock()
 	m.announced[name] = ch
 	m.mu.Unlock()
-	m.emit(Event{Host: name, Kind: EventAttached, State: s})
+	ev := Event{Host: name, Kind: EventAttached, State: s}
+	// Stamp the registration the channel was dialed for. The channel's own
+	// copy is the identity its supervisor reconnects, so a consumer that
+	// records it can later tell whether the live registration is still the
+	// one it stored.
+	if ch != nil {
+		ev.Generation = ch.host.Generation
+		ev.IncarnationID = ch.host.IncarnationID
+	}
+	m.emit(ev)
 }
 
 func (m *Manager) detachEvent(name string, s State) {

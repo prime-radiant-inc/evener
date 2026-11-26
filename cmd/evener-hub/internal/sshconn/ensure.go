@@ -170,8 +170,14 @@ func (m *Manager) Ensure(ctx context.Context, name string) (*Channel, error) {
 			// backoff must stop too: otherwise it repeats the terminal outcome
 			// (a second EventFailed for a host already announced as finished).
 			m.stopSupervisor(name)
+			m.stateEvent(name, StateDisconnected)
+		} else if m.hasActiveSupervisor(name, host.Generation) {
+			// A loop for this registration still owns the next attempt, so the
+			// host is reconnecting, not disconnected.
+			m.stateEvent(name, StateReconnecting)
+		} else {
+			m.stateEvent(name, StateDisconnected)
 		}
-		m.stateEvent(name, StateDisconnected)
 		lock.Unlock()
 		return nil, err
 	}
