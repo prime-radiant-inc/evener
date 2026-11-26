@@ -86,7 +86,7 @@ export function rowKeyForDelegateItem(item: ItemModel): string {
   const args = parseArgs(item.argumentsJSON);
   const parsed = parseJSONObject(item.output);
   const delegateId = str(parsed ?? args, "delegate_id");
-  return resolveRowKey(delegateId, undefined, item.callId ?? item.id);
+  return resolveRowKey(delegateId, item.callId ?? item.id);
 }
 
 // Only the owner projection or an explicitly in-flight launch proves current
@@ -163,9 +163,8 @@ export function classifyJobStatus(status: string | undefined): SubagentRowKind {
 }
 
 // Prefixes prevent equal raw ids from different identity classes colliding.
-export function resolveRowKey(delegateId: string | undefined, jobId: string | undefined, fallback: string): string {
+export function resolveRowKey(delegateId: string | undefined, fallback: string): string {
   if (delegateId) return `dlg:${delegateId}`;
-  if (jobId) return `job:${jobId}`;
   return `call:${fallback}`;
 }
 
