@@ -87,7 +87,13 @@ import { RailHeaderActionProvider } from "../rail/railHeaderAction";
 import { navigate, paneToURL, refParam, urlToPane } from "../routing";
 import { openSessionByRef } from "../sessionPlacement";
 import { isSinglePaneRoute } from "../singlePane";
-import { TABLET_QUERY, useMediaQuery } from "../useIsMobile";
+import {
+  isHomeScreenWindow,
+  TABLET_QUERY,
+  useHomeScreenEdge,
+  useMediaQuery,
+  workspaceViewportWidth,
+} from "../useIsMobile";
 import {
   conversationOpenParentRef,
   documentPaneState,
@@ -376,15 +382,21 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
   const roomForHostedBoard = useMediaQuery(
     `(min-width: ${BOARD_MIN_WIDTH + READER_MIN_WIDTH[fontSize]}px) and (min-height: 600px)`,
   );
+  const homeScreenEdge = useHomeScreenEdge();
   const hosted = hasIPhoneSessionHeader();
   const edgeToolbar = useIPhoneEdgeToolbar();
-  const tabletBand = tabletViewport || (hosted && roomForHostedBoard);
+  const tabletBand =
+    tabletViewport ||
+    ((hosted || isHomeScreenWindow()) &&
+      roomForHostedBoard &&
+      workspaceViewportWidth() >= BOARD_MIN_WIDTH + READER_MIN_WIDTH[fontSize]);
   const tabletSplit = tabletBand && !singlePane;
   const [boardCollapsed, setBoardCollapsed] = useState(false);
   const boardVisible = tabletSplit && !boardCollapsed;
   const nativeHeader =
     hosted && !singlePane && (!tabletBand || edgeToolbar) && !routeDeferred && focusedPane?.type === "session";
-  const Title = nativeHeader && edgeToolbar ? "h1" : "span";
+  const homeEdge = !singlePane && !hosted && focusedPane?.type === "session" ? homeScreenEdge : null;
+  const Title = (nativeHeader && edgeToolbar) || homeEdge ? "h1" : "span";
   const needsYou = useNavigationStore(
     useCallback(
       (state: NavigationStoreState) =>
@@ -393,10 +405,10 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
     ),
   );
   const sidebarWidth = usePrefsStore((s) => s.sidebarWidth);
-  const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth);
+  const [viewportWidth, setViewportWidth] = useState(workspaceViewportWidth);
   useLayoutEffect(() => {
     if (!boardVisible) return;
-    const measure = () => setViewportWidth(window.innerWidth);
+    const measure = () => setViewportWidth(workspaceViewportWidth());
     measure();
     window.addEventListener("resize", measure);
     return () => window.removeEventListener("resize", measure);
@@ -1034,6 +1046,30 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
     />
   ) : null;
 
+  const leading = (
+    <div className={styles.leading}>
+      {!boardVisible && boardToggle}
+      {showBack ? (
+        <IconButton
+          label="Back"
+          icon={<Chevron direction="left" size={16} />}
+          variant="quiet"
+          onClick={isPanelPane ? handlePanelBack : (paneBack ?? handleBack)}
+        />
+      ) : (
+        focusedSessionRef !== undefined && drawer
+      )}
+    </div>
+  );
+  const trailing = (
+    <div className={styles.trailing}>
+      {focusedSessionRef !== undefined && (
+        <SessionInspectionActions sessionRef={focusedSessionRef} paneId={focusedPane?.id} />
+      )}
+      {focusedSessionRef === undefined && drawer}
+    </div>
+  );
+
   function handlePanelBack(): void {
     if (!focusedPane) return;
     const { ref } = focusedPane.params as { ref: string };
@@ -1084,32 +1120,16 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
           <div
             ref={topBarRef}
             className={topBarCollapsed ? `${styles.topBar} ${styles.topBarCollapsed}` : styles.topBar}
+            data-home-edge={homeEdge ?? undefined}
             data-testid="topbar"
             data-collapsed={topBarCollapsed ? "true" : undefined}
             data-session={focusedSessionRef === undefined ? undefined : "true"}
           >
-            <div className={styles.leading}>
-              {!boardVisible && boardToggle}
-              {showBack ? (
-                <IconButton
-                  label="Back"
-                  icon={<Chevron direction="left" size={16} />}
-                  variant="quiet"
-                  onClick={isPanelPane ? handlePanelBack : (paneBack ?? handleBack)}
-                />
-              ) : (
-                focusedSessionRef !== undefined && drawer
-              )}
-            </div>
+            {!homeEdge && leading}
             <Title className={styles.stackTitle} data-testid="topbar-title">
               {paneTitle}
             </Title>
-            <div className={styles.trailing}>
-              {focusedSessionRef !== undefined && (
-                <SessionInspectionActions sessionRef={focusedSessionRef} paneId={focusedPane?.id} />
-              )}
-              {focusedSessionRef === undefined && drawer}
-            </div>
+            {!homeEdge && trailing}
           </div>
           {nativeHeader && focusedSessionRef && !panelOpen && !activityOpen && (
             <IPhoneSessionHeader
@@ -1150,6 +1170,17 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
           </div>
         </div>
       </div>
+      {homeEdge && !activityOpen && !panelOpen && (
+        <div
+          role="toolbar"
+          aria-label="Conversation actions"
+          data-home-toolbar={homeEdge}
+          className={styles.homeToolbar}
+        >
+          {leading}
+          {trailing}
+        </div>
+      )}
       <div className={styles.activityOverlay}>
         <ActivitySidebar mobile />
       </div>

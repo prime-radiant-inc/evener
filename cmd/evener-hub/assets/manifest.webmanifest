@@ -3,7 +3,6 @@
   "short_name": "evener",
   "description": "Watch your agents work.",
   "display": "standalone",
-  "orientation": "portrait-primary",
   "background_color": "#111214",
   "theme_color": "#111214",
   "start_url": "/",
