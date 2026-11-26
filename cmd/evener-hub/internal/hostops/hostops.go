@@ -152,18 +152,6 @@ type Record struct {
 	Compacted bool `json:"-"`
 }
 
-// NewRecord is the caller-supplied half of a record: everything the store
-// records about a fresh operation except the fields the store itself assigns
-// (id, state, timestamps). The pinned (generation, incarnation id) pair is
-// spec §4's dedup and validity identity for the operation.
-type NewRecord struct {
-	ClientOperationID string
-	Host              string
-	Kind              Kind
-	Generation        uint64
-	IncarnationID     string
-}
-
 // ErrStoreReadableBeyondOwner reports a store file whose mode lets anyone but
 // its owner read it. Spec §4: startup refuses to load a store readable beyond
 // its owner.

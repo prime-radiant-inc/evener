@@ -680,13 +680,16 @@ func TestHostDeployRefusesAConcurrentTerminalOperation(t *testing.T) {
 			if !ok {
 				return hubcore.HostRuntimeProbe{}, errors.New("the host vanished from the registry")
 			}
-			record, err := store.Create(hostops.NewRecord{
+			outcome, err := store.Create(hostops.OperationCreateRequest{
 				ClientOperationID: "op-other", Host: entry.Name, Kind: hostops.KindRestart,
-				Generation: live.Generation, IncarnationID: live.IncarnationID,
+				Pair:           hostops.OperationPair{Generation: live.Generation, IncarnationID: live.IncarnationID},
+				BootID:         "test-boot",
+				SequenceBefore: store.Sequence(),
 			})
 			if err != nil {
 				return hubcore.HostRuntimeProbe{}, err
 			}
+			record := outcome.Record
 			otherID = record.ID
 			if _, err := store.Transition(record.ID, hostops.StateFailed, func(r *hostops.Record) {
 				r.Result = &hostops.Result{OK: false, Message: "done elsewhere"}
@@ -766,13 +769,16 @@ func TestHostRestartIncarnationPair(t *testing.T) {
 	})
 
 	// The retained record from before the update: pinned to the superseded pair.
-	retained, err := store.Create(hostops.NewRecord{
+	retainedOutcome, err := store.Create(hostops.OperationCreateRequest{
 		ClientOperationID: "op-old", Host: entry.Name, Kind: hostops.KindRestart,
-		Generation: 1, IncarnationID: "inc-old",
+		Pair:           hostops.OperationPair{Generation: 1, IncarnationID: "inc-old"},
+		BootID:         "test-boot",
+		SequenceBefore: store.Sequence(),
 	})
 	if err != nil {
 		t.Fatalf("Create retained: %v", err)
 	}
+	retained := retainedOutcome.Record
 	if _, err := store.Transition(retained.ID, hostops.StateFailed, func(r *hostops.Record) {
 		r.Result = &hostops.Result{OK: false, Message: "old outcome"}
 	}); err != nil {
@@ -2066,14 +2072,16 @@ func TestEnsureTriggeredDeployRunsAfterATerminalRecord(t *testing.T) {
 // createPairRecordForTest persists and completes one record for the live entry.
 func createPairRecordForTest(t *testing.T, store *hostops.Store, entry hostreg.Host, kind hostops.Kind, clientID string) hostops.Record {
 	t.Helper()
-	record, err := store.Create(hostops.NewRecord{
+	outcome, err := store.Create(hostops.OperationCreateRequest{
 		ClientOperationID: clientID, Host: entry.Name, Kind: kind,
-		Generation: entry.Generation, IncarnationID: entry.IncarnationID,
+		Pair:           hostops.OperationPair{Generation: entry.Generation, IncarnationID: entry.IncarnationID},
+		BootID:         "test-boot",
+		SequenceBefore: store.Sequence(),
 	})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	done, err := store.Transition(record.ID, hostops.StateComplete, func(r *hostops.Record) {
+	done, err := store.Transition(outcome.Record.ID, hostops.StateComplete, func(r *hostops.Record) {
 		r.Result = &hostops.Result{OK: true, Message: "done"}
 	})
 	if err != nil {

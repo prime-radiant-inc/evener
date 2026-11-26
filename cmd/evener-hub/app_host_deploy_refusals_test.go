@@ -265,7 +265,7 @@ func TestDeployRefusedWhenATerminalOperationLandsDuringTheProbe(t *testing.T) {
 		probe: func(context.Context, hostreg.Host, *appwire.Client, appwire.FencingEpoch) (hubcore.HostRuntimeProbe, error) {
 			if terminalLanded.CompareAndSwap(false, true) {
 				live, _ := m.liveHost(entry.Name)
-				outcome, err := store.CreateOperation(hostops.OperationCreateRequest{
+				outcome, err := store.Create(hostops.OperationCreateRequest{
 					ClientOperationID: "op-concurrent", Host: entry.Name, Kind: hostops.KindRestart,
 					Pair:   hostops.OperationPair{Generation: live.Generation, IncarnationID: live.IncarnationID},
 					BootID: "test-boot",
@@ -299,7 +299,7 @@ func TestDeployRefusedForConflictingOperationID(t *testing.T) {
 	t.Parallel()
 	m, store, entry, _ := deployRefusalFixture(t, deploySeams{})
 	live, _ := m.liveHost(entry.Name)
-	if _, err := store.CreateOperation(hostops.OperationCreateRequest{
+	if _, err := store.Create(hostops.OperationCreateRequest{
 		ClientOperationID: "op-dup", Host: entry.Name, Kind: hostops.KindRestart,
 		Pair:   hostops.OperationPair{Generation: live.Generation, IncarnationID: live.IncarnationID},
 		BootID: "test-boot",

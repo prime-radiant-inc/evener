@@ -152,10 +152,18 @@ func recordConnectionOperations(t *testing.T, m *Manager) (*hostops.Store, *[]st
 	ids := []string{}
 	hook := func(kind hostops.Kind) func(hostreg.Host) (func(error), error) {
 		return func(host hostreg.Host) (func(error), error) {
-			record, err := store.Create(hostops.NewRecord{ClientOperationID: fmt.Sprintf("connection-%d", len(ids)), Host: host.Name, Kind: kind, Generation: host.Generation, IncarnationID: host.IncarnationID})
+			outcome, err := store.Create(hostops.OperationCreateRequest{
+				ClientOperationID: fmt.Sprintf("connection-%d", len(ids)),
+				Host:              host.Name,
+				Kind:              kind,
+				Pair:              hostops.OperationPair{Generation: host.Generation, IncarnationID: host.IncarnationID},
+				BootID:            "test-boot",
+				SequenceBefore:    store.Sequence(),
+			})
 			if err != nil {
 				return nil, err
 			}
+			record := outcome.Record
 			ids = append(ids, record.ID)
 			return func(err error) {
 				state := hostops.StateComplete

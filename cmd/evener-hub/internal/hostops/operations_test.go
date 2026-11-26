@@ -19,17 +19,18 @@ import (
 // readTestRecord persists one pending deploy record pinned to the pair.
 func readTestRecord(t *testing.T, store *Store, host, clientOperationID string, generation uint64, incarnationID string) Record {
 	t.Helper()
-	record, err := store.Create(NewRecord{
+	outcome, err := store.Create(OperationCreateRequest{
 		ClientOperationID: clientOperationID,
 		Host:              host,
 		Kind:              KindDeploy,
-		Generation:        generation,
-		IncarnationID:     incarnationID,
+		Pair:              OperationPair{Generation: generation, IncarnationID: incarnationID},
+		BootID:            "test-boot",
+		SequenceBefore:    store.Sequence(),
 	})
 	if err != nil {
 		t.Fatalf("Create(%s/%s): %v", host, clientOperationID, err)
 	}
-	return record
+	return outcome.Record
 }
 
 // mirrorTestBoundary writes one host's boundary triple the way the registry's
@@ -397,12 +398,12 @@ func TestOperationsReadSerializesUnderTheStoreMutex(t *testing.T) {
 	}
 	for i := range 20 {
 		wg.Go(func() {
-			if _, err := store.Create(NewRecord{
+			if _, err := store.Create(OperationCreateRequest{
 				ClientOperationID: fmt.Sprintf("op-%02d", i),
 				Host:              "m4",
 				Kind:              KindDeploy,
-				Generation:        2,
-				IncarnationID:     "inc-m4",
+				Pair:              OperationPair{Generation: 2, IncarnationID: "inc-m4"},
+				BootID:            "test-boot",
 			}); err != nil {
 				t.Errorf("Create: %v", err)
 			}

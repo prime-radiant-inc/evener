@@ -45,17 +45,18 @@ func createOp(t *testing.T, store *Store, host, clientOperationID string) Record
 // createOpPair persists one pending deploy record pinned to an explicit pair.
 func createOpPair(t *testing.T, store *Store, host, clientOperationID string, generation uint64, incarnationID string) Record {
 	t.Helper()
-	record, err := store.Create(NewRecord{
+	outcome, err := store.Create(OperationCreateRequest{
 		ClientOperationID: clientOperationID,
 		Host:              host,
 		Kind:              KindDeploy,
-		Generation:        generation,
-		IncarnationID:     incarnationID,
+		Pair:              OperationPair{Generation: generation, IncarnationID: incarnationID},
+		BootID:            "test-boot",
+		SequenceBefore:    store.Sequence(),
 	})
 	if err != nil {
 		t.Fatalf("Create(%s/%s): %v", host, clientOperationID, err)
 	}
-	return record
+	return outcome.Record
 }
 
 // finish moves a record to complete, landing its terminal state.

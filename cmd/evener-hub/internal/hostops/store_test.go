@@ -37,17 +37,18 @@ func openTestStore(t *testing.T) (*Store, string) {
 // createTestRecord persists one pending deploy record for host.
 func createTestRecord(t *testing.T, store *Store, host string) Record {
 	t.Helper()
-	record, err := store.Create(NewRecord{
+	outcome, err := store.Create(OperationCreateRequest{
 		ClientOperationID: "client-" + host,
 		Host:              host,
 		Kind:              KindDeploy,
-		Generation:        7,
-		IncarnationID:     "incarnation-" + host,
+		Pair:              OperationPair{Generation: 7, IncarnationID: "incarnation-" + host},
+		BootID:            "test-boot",
+		SequenceBefore:    store.Sequence(),
 	})
 	if err != nil {
 		t.Fatalf("Create(%s): %v", host, err)
 	}
-	return record
+	return outcome.Record
 }
 
 // reopenFresh opens a store at path the way a process restart does: it forgets
@@ -309,8 +310,8 @@ func TestAFailedWriteIsNotAWrite(t *testing.T) {
 		t.Fatalf("openFS: %v", err)
 	}
 
-	if _, err := store.Create(NewRecord{
-		ClientOperationID: "client-h1", Host: "h1", Kind: KindDeploy, Generation: 7, IncarnationID: "inc-1",
+	if _, err := store.Create(OperationCreateRequest{
+		ClientOperationID: "client-h1", Host: "h1", Kind: KindDeploy, Pair: OperationPair{Generation: 7, IncarnationID: "inc-1"}, BootID: "test-boot",
 	}); err == nil {
 		t.Fatalf("Create whose rename never landed reported success")
 	}
@@ -325,12 +326,13 @@ func TestAFailedWriteIsNotAWrite(t *testing.T) {
 	}
 
 	failing = false
-	record, err := store.Create(NewRecord{
-		ClientOperationID: "client-h1", Host: "h1", Kind: KindDeploy, Generation: 7, IncarnationID: "inc-1",
+	outcome, err := store.Create(OperationCreateRequest{
+		ClientOperationID: "client-h1", Host: "h1", Kind: KindDeploy, Pair: OperationPair{Generation: 7, IncarnationID: "inc-1"}, BootID: "test-boot",
 	})
 	if err != nil {
 		t.Fatalf("Create once the fault cleared: %v", err)
 	}
+	record := outcome.Record
 	info, err := os.Stat(path)
 	if err != nil {
 		t.Fatalf("Stat(%s): %v", path, err)
@@ -392,14 +394,14 @@ func TestStoreSerializesConcurrentReadModifyWrite(t *testing.T) {
 	ids := make([]string, writers)
 	for i := range writers {
 		wg.Go(func() {
-			record, err := store.Create(NewRecord{
+			outcome, err := store.Create(OperationCreateRequest{
 				ClientOperationID: "concurrent",
 				Host:              "h1",
 				Kind:              KindRestart,
-				Generation:        7,
-				IncarnationID:     "inc-1",
+				Pair:              OperationPair{Generation: 7, IncarnationID: "inc-1"},
+				BootID:            "test-boot",
 			})
-			errs[i], ids[i] = err, record.ID
+			errs[i], ids[i] = err, outcome.Record.ID
 		})
 	}
 	wg.Wait()
@@ -426,15 +428,15 @@ func TestStoreSerializesConcurrentReadModifyWrite(t *testing.T) {
 // TestCreateRefusesRecordsOutsideTheStoreSchema pins the schema validation this
 // layer applies to the fields spec §1 gives shapes for.
 func TestCreateRefusesRecordsOutsideTheStoreSchema(t *testing.T) {
-	cases := map[string]NewRecord{
-		"empty client operation id": {ClientOperationID: "", Host: "h1", Kind: KindDeploy, Generation: 1, IncarnationID: "inc"},
+	cases := map[string]OperationCreateRequest{
+		"empty client operation id": {ClientOperationID: "", Host: "h1", Kind: KindDeploy, Pair: OperationPair{Generation: 1, IncarnationID: "inc"}, BootID: "test-boot"},
 		"client operation id over 128 bytes": {
-			ClientOperationID: strings.Repeat("x", 129), Host: "h1", Kind: KindDeploy, Generation: 1, IncarnationID: "inc",
+			ClientOperationID: strings.Repeat("x", 129), Host: "h1", Kind: KindDeploy, Pair: OperationPair{Generation: 1, IncarnationID: "inc"}, BootID: "test-boot",
 		},
-		"empty host":        {ClientOperationID: "op", Host: "", Kind: KindDeploy, Generation: 1, IncarnationID: "inc"},
-		"unknown kind":      {ClientOperationID: "op", Host: "h1", Kind: Kind("migrate"), Generation: 1, IncarnationID: "inc"},
-		"zero generation":   {ClientOperationID: "op", Host: "h1", Kind: KindDeploy, Generation: 0, IncarnationID: "inc"},
-		"empty incarnation": {ClientOperationID: "op", Host: "h1", Kind: KindDeploy, Generation: 1, IncarnationID: ""},
+		"empty host":        {ClientOperationID: "op", Host: "", Kind: KindDeploy, Pair: OperationPair{Generation: 1, IncarnationID: "inc"}, BootID: "test-boot"},
+		"unknown kind":      {ClientOperationID: "op", Host: "h1", Kind: Kind("migrate"), Pair: OperationPair{Generation: 1, IncarnationID: "inc"}, BootID: "test-boot"},
+		"zero generation":   {ClientOperationID: "op", Host: "h1", Kind: KindDeploy, Pair: OperationPair{Generation: 0, IncarnationID: "inc"}, BootID: "test-boot"},
+		"empty incarnation": {ClientOperationID: "op", Host: "h1", Kind: KindDeploy, Pair: OperationPair{Generation: 1, IncarnationID: ""}, BootID: "test-boot"},
 	}
 	for name, record := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -664,10 +666,10 @@ func TestTwoHandlesForOneStoreShareTheOneStoreMutex(t *testing.T) {
 		t.Fatalf("second Open: %v", err)
 	}
 
-	if _, err := first.Create(NewRecord{ClientOperationID: "via-first", Host: "h1", Kind: KindDeploy, Generation: 7, IncarnationID: "inc-1"}); err != nil {
+	if _, err := first.Create(OperationCreateRequest{ClientOperationID: "via-first", Host: "h1", Kind: KindDeploy, Pair: OperationPair{Generation: 7, IncarnationID: "inc-1"}, BootID: "test-boot"}); err != nil {
 		t.Fatalf("Create through the first handle: %v", err)
 	}
-	if _, err := second.Create(NewRecord{ClientOperationID: "via-second", Host: "h1", Kind: KindRestart, Generation: 7, IncarnationID: "inc-1"}); err != nil {
+	if _, err := second.Create(OperationCreateRequest{ClientOperationID: "via-second", Host: "h1", Kind: KindRestart, Pair: OperationPair{Generation: 7, IncarnationID: "inc-1"}, BootID: "test-boot"}); err != nil {
 		t.Fatalf("Create through the second handle: %v", err)
 	}
 	if got := len(first.Records()); got != 2 {
@@ -686,7 +688,7 @@ func TestTwoHandlesForOneStoreShareTheOneStoreMutex(t *testing.T) {
 			handle = second
 		}
 		wg.Go(func() {
-			_, errs[i] = handle.Create(NewRecord{ClientOperationID: "concurrent", Host: "h1", Kind: KindDeploy, Generation: 7, IncarnationID: "inc-1"})
+			_, errs[i] = handle.Create(OperationCreateRequest{ClientOperationID: "concurrent", Host: "h1", Kind: KindDeploy, Pair: OperationPair{Generation: 7, IncarnationID: "inc-1"}, BootID: "test-boot"})
 		})
 	}
 	wg.Wait()
@@ -729,7 +731,7 @@ func TestANilStoreAnswersSafely(t *testing.T) {
 	if _, ok := store.Record("00000000000000000001"); ok {
 		t.Fatalf("Record on a nil store found a record")
 	}
-	if _, err := store.Create(NewRecord{ClientOperationID: "op", Host: "h1", Kind: KindDeploy, Generation: 1, IncarnationID: "inc"}); err == nil {
+	if _, err := store.Create(OperationCreateRequest{ClientOperationID: "op", Host: "h1", Kind: KindDeploy, Pair: OperationPair{Generation: 1, IncarnationID: "inc"}, BootID: "test-boot"}); err == nil {
 		t.Fatalf("Create on a nil store succeeded")
 	}
 	if _, err := store.Transition("00000000000000000001", StateComplete, terminalChange(true)); err == nil {
@@ -867,8 +869,8 @@ func TestALandedWriteIsReconcilable(t *testing.T) {
 	}
 
 	syncErr = errors.New("directory sync fault")
-	record, err := store.Create(NewRecord{
-		ClientOperationID: "client-h1", Host: "h1", Kind: KindDeploy, Generation: 7, IncarnationID: "inc-1",
+	outcome, err := store.Create(OperationCreateRequest{
+		ClientOperationID: "client-h1", Host: "h1", Kind: KindDeploy, Pair: OperationPair{Generation: 7, IncarnationID: "inc-1"}, BootID: "test-boot",
 	})
 	if err == nil {
 		t.Fatalf("Create whose directory sync failed reported success")
@@ -876,6 +878,7 @@ func TestALandedWriteIsReconcilable(t *testing.T) {
 	if !RenameLanded(err) {
 		t.Fatalf("Create's post-rename failure is not distinguishable: %v", err)
 	}
+	record := outcome.Record
 	if record.ID == "" {
 		t.Fatalf("a landed Create returned no record id to reconcile with")
 	}
@@ -901,8 +904,8 @@ func TestALandedWriteIsReconcilable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("openFS: %v", err)
 	}
-	none, err := refusing.Create(NewRecord{
-		ClientOperationID: "client-h1", Host: "h1", Kind: KindDeploy, Generation: 7, IncarnationID: "inc-1",
+	none, err := refusing.Create(OperationCreateRequest{
+		ClientOperationID: "client-h1", Host: "h1", Kind: KindDeploy, Pair: OperationPair{Generation: 7, IncarnationID: "inc-1"}, BootID: "test-boot",
 	})
 	if err == nil {
 		t.Fatalf("Create with a failing rename reported success")
@@ -910,8 +913,8 @@ func TestALandedWriteIsReconcilable(t *testing.T) {
 	if RenameLanded(err) {
 		t.Fatalf("a pre-rename refusal was reported as landed: %v", err)
 	}
-	if none.ID != "" {
-		t.Fatalf("a refusal returned record %q, want none", none.ID)
+	if none.Record.ID != "" {
+		t.Fatalf("a refusal returned record %q, want none", none.Record.ID)
 	}
 	if len(refusing.Records()) != 0 {
 		t.Fatalf("a refused Create left records behind")
@@ -1147,8 +1150,8 @@ func TestCreateAndTransitionRefuseValuesTheStoreCannotWriteBack(t *testing.T) {
 		store, path := openTestStore(t)
 		createTestRecord(t, store, "h1")
 		before := mustReadFile(t, path)
-		if _, err := store.Create(NewRecord{
-			ClientOperationID: "client-h1", Host: "h\xff\xfe", Kind: KindDeploy, Generation: 7, IncarnationID: "inc-1",
+		if _, err := store.Create(OperationCreateRequest{
+			ClientOperationID: "client-h1", Host: "h\xff\xfe", Kind: KindDeploy, Pair: OperationPair{Generation: 7, IncarnationID: "inc-1"}, BootID: "test-boot",
 		}); !errors.Is(err, ErrInvalidRecord) {
 			t.Fatalf("Create with an invalid UTF-8 host: err = %v, want ErrInvalidRecord", err)
 		}
@@ -1158,8 +1161,8 @@ func TestCreateAndTransitionRefuseValuesTheStoreCannotWriteBack(t *testing.T) {
 	})
 	t.Run("create with an invalid utf-8 client operation id", func(t *testing.T) {
 		store, _ := openTestStore(t)
-		if _, err := store.Create(NewRecord{
-			ClientOperationID: "client-\xff\xfe", Host: "h1", Kind: KindDeploy, Generation: 7, IncarnationID: "inc-1",
+		if _, err := store.Create(OperationCreateRequest{
+			ClientOperationID: "client-\xff\xfe", Host: "h1", Kind: KindDeploy, Pair: OperationPair{Generation: 7, IncarnationID: "inc-1"}, BootID: "test-boot",
 		}); !errors.Is(err, ErrInvalidRecord) {
 			t.Fatalf("Create with an invalid UTF-8 client operation id: err = %v, want ErrInvalidRecord", err)
 		}
@@ -1348,8 +1351,8 @@ func TestTheChainSyncsConvergeAfterAFailedAttempt(t *testing.T) {
 		t.Fatalf("openFS: %v", err)
 	}
 
-	if _, err := store.Create(NewRecord{
-		ClientOperationID: "client-h1", Host: "h1", Kind: KindDeploy, Generation: 7, IncarnationID: "inc-1",
+	if _, err := store.Create(OperationCreateRequest{
+		ClientOperationID: "client-h1", Host: "h1", Kind: KindDeploy, Pair: OperationPair{Generation: 7, IncarnationID: "inc-1"}, BootID: "test-boot",
 	}); err == nil {
 		t.Fatalf("a write whose chain sync failed reported success")
 	}
@@ -1359,8 +1362,8 @@ func TestTheChainSyncsConvergeAfterAFailedAttempt(t *testing.T) {
 
 	synced = nil
 	failing = ""
-	if _, err := store.Create(NewRecord{
-		ClientOperationID: "client-h1", Host: "h1", Kind: KindDeploy, Generation: 7, IncarnationID: "inc-1",
+	if _, err := store.Create(OperationCreateRequest{
+		ClientOperationID: "client-h1", Host: "h1", Kind: KindDeploy, Pair: OperationPair{Generation: 7, IncarnationID: "inc-1"}, BootID: "test-boot",
 	}); err != nil {
 		t.Fatalf("Create after the fault cleared: %v", err)
 	}

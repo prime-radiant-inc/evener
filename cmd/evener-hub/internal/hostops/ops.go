@@ -421,7 +421,7 @@ func (s *Store) ConsumeTokenAndCreateOperation(req OperationCreateRequest) (Oper
 	return OperationCreateOutcome{Record: cloneRecord(record), Token: cloneToken(token)}, err
 }
 
-// CreateOperation is the tokenless paths' atomic record creation (§6): a
+// Create is the tokenless paths' atomic record creation (§6): a
 // restart (no install step, no target, no plan to re-verify) and an
 // Ensure-triggered deploy (the Ensure ladder owns its own facts and decision).
 // The one write mints the record's fencing epoch from the host's durable
@@ -434,7 +434,7 @@ func (s *Store) ConsumeTokenAndCreateOperation(req OperationCreateRequest) (Oper
 // The host's persisted probe-epoch row, when one exists (an abandoned plan's),
 // is superseded in the same write: the record's own epoch is the host's current
 // one from here on.
-func (s *Store) CreateOperation(req OperationCreateRequest) (OperationCreateOutcome, error) {
+func (s *Store) Create(req OperationCreateRequest) (OperationCreateOutcome, error) {
 	if s == nil {
 		return OperationCreateOutcome{}, errors.New("hostops: store is not configured")
 	}
