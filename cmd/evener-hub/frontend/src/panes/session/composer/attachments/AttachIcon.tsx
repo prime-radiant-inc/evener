@@ -12,7 +12,7 @@ import symbolStyles from "../../../../styles/appleSymbol.module.css";
 export function AttachIcon() {
   return (
     <svg
-      viewBox="0 0 14 14"
+      viewBox="-0.6 0.2 15 15"
       width="12"
       height="12"
       className={isApplePlatform() ? symbolStyles.symbol : undefined}

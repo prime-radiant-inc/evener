@@ -870,6 +870,7 @@ async function assertTabletActionGeometry(send) {
       const last = document.querySelector('[data-focus-scroll-trigger]').closest('[role="treeitem"]').getBoundingClientRect();
       const createButton = document.querySelector('[data-testid="rail-new-session"]');
       const sendButton = document.querySelector('[data-composer] button[type="submit"]');
+      const attachButton = document.querySelector('[data-testid="composer-attach"] svg').closest('button');
       const create = createButton.getBoundingClientRect(), send = sendButton.getBoundingClientRect();
       function inkOffset(button, seat) {
         const svg = button.querySelector('svg'), box = svg.getBBox(), target = seat.getBoundingClientRect();
@@ -880,6 +881,7 @@ async function assertTabletActionGeometry(send) {
       const labeled = [...sendButton.children].some(el => el !== sendSeat && el.getClientRects().length);
       return { newY: create.top + create.height / 2, sendY: send.top + send.height / 2,
         newInkOffset: inkOffset(createButton, createButton), sendInkOffset: inkOffset(sendButton, labeled ? sendSeat : sendButton),
+        attachInkOffset: inkOffset(attachButton, attachButton),
         atEnd: scroll.nearMax && scroll.scrollTop > 0, lastVisible: scroll.triggerVisible,
         lastBottom: last.bottom, actionTop: create.top };
     } finally {
@@ -889,7 +891,7 @@ async function assertTabletActionGeometry(send) {
   if (Math.abs(result.newY - result.sendY) > 1 || !result.atEnd || !result.lastVisible || result.lastBottom > result.actionTop + 1) {
     throw new Error(`tablet action alignment or final session clearance: ${JSON.stringify(result)}`);
   }
-  if (result.newInkOffset > 1 || result.sendInkOffset > 1) {
+  if (result.newInkOffset > 1 || result.sendInkOffset > 1 || result.attachInkOffset > 1) {
     throw new Error(`tablet button glyph is off center: ${JSON.stringify(result)}`);
   }
   console.log(`shellguard tablet actions: ${JSON.stringify(result)}`);
