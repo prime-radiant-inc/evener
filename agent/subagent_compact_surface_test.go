@@ -10,7 +10,7 @@ import (
 // TestTypedSubagentPolicyKeepsCompactContext pins the policy half of the rule
 // ruled 2026-08-06: every subagent can manage its own context-window headroom.
 // A typed agent's tools: frontmatter is an allowlist handed to
-// RestrictKeepingResultTool, so any tool it omits is DELETED from the child's
+// Restrict, so any tool it omits is DELETED from the child's
 // registry — which used to strip compact_context from every shipped typed
 // agent, leaving those children with no way to compact but the automatic one.
 func TestTypedSubagentPolicyKeepsCompactContext(t *testing.T) {

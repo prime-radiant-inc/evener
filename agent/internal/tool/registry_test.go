@@ -901,7 +901,7 @@ func TestToolRegistry_TruncationLines_UsesHeadTailAndOmittedMarker(t *testing.T)
 	}
 }
 
-func TestToolRegistry_Unregister(t *testing.T) {
+func TestToolRegistry_Remove(t *testing.T) {
 	r := NewRegistry()
 	_ = r.Register(RegisteredTool{
 		Definition: llm.ToolDefinition{Name: "foo", Parameters: map[string]any{"type": "object", "properties": map[string]any{}}},
@@ -909,9 +909,9 @@ func TestToolRegistry_Unregister(t *testing.T) {
 			return "ok", nil
 		},
 	})
-	r.Unregister("foo")
+	r.Remove("foo")
 	if r.Get("foo") != nil {
-		t.Fatal("expected nil after Unregister")
+		t.Fatal("expected nil after Remove")
 	}
 }
 

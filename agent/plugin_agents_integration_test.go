@@ -28,7 +28,7 @@ func TestToolRegistry_Restrict(t *testing.T) {
 		})
 	}
 
-	reg.Restrict(map[string]bool{"read_file": true, "grep": true})
+	reg.Restrict(map[string]bool{"read_file": true, "grep": true}, "")
 
 	names := reg.Names()
 	want := map[string]bool{"read_file": true, "grep": true, "communicate": true}
@@ -59,7 +59,7 @@ func TestToolRegistry_Restrict_KeepsCommunicate(t *testing.T) {
 	})
 
 	// Restrict to only "shell" -- communicate should still be kept
-	reg.Restrict(map[string]bool{"shell": true})
+	reg.Restrict(map[string]bool{"shell": true}, "")
 
 	if reg.Get("communicate") == nil {
 		t.Error("communicate should always be kept after Restrict")

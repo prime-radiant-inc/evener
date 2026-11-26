@@ -15,7 +15,7 @@ import (
 
 // TestTypedSubagentPolicyKeepsUseSkill pins the policy half of the rule that a
 // delegate must be able to follow a skill-directed brief. A typed agent's
-// tools: frontmatter is an allowlist handed to RestrictKeepingResultTool, so
+// tools: frontmatter is an allowlist handed to Restrict, so
 // any tool it omits is DELETED from the child's registry — which strips
 // use_skill from every shipped typed role (subagent, explorer, the
 // coordinator-workflow roles) unless the policy re-adds it. Without the tool

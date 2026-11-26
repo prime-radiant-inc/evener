@@ -257,7 +257,7 @@ func toolProgramIsolation(t *testing.T, reg *Registry) {
 	clone := reg.Clone()
 	clone.Remove("apply_patch")
 	allowed := map[string]bool{"echo_program": true}
-	clone.Restrict(allowed)
+	clone.Restrict(allowed, "")
 	if !allowed["communicate"] || clone.Get("echo_program") == nil || clone.Get("communicate") == nil || len(clone.Names()) != 2 {
 		t.Fatalf("Restrict clone = names=%v allowed=%v", clone.Names(), allowed)
 	}
@@ -266,7 +266,7 @@ func toolProgramIsolation(t *testing.T, reg *Registry) {
 	}
 
 	custom := reg.Clone()
-	custom.RestrictKeepingResultTool(map[string]bool{"echo_program": true}, "read_file")
+	custom.Restrict(map[string]bool{"echo_program": true}, "read_file")
 	if custom.Get("echo_program") == nil || custom.Get("read_file") == nil || len(custom.Names()) != 2 {
 		t.Fatalf("custom result restrict = %v", custom.Names())
 	}
@@ -279,9 +279,9 @@ func toolProgramIsolation(t *testing.T, reg *Registry) {
 	if got == nil || got.Limit.MaxChars != 4 || got.Limit.MaxLines != 1 || got.Limit.Strategy != schema.TruncTail {
 		t.Fatalf("OverrideLimits = %+v", got)
 	}
-	reg.Unregister("communicate")
+	reg.Remove("communicate")
 	if reg.Get("communicate") != nil {
-		t.Fatal("Unregister left communicate registered")
+		t.Fatal("Remove left communicate registered")
 	}
 	reg.Remove("communicate") // idempotent missing removal
 }

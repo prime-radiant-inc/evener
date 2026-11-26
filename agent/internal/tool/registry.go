@@ -718,14 +718,9 @@ func (r *Registry) Definitions() []llm.ToolDefinition {
 // The result tool (communicate or its configured alias) is always kept
 // (subagents need it to return results). The resultToolName parameter
 // specifies the name to preserve; pass empty string for "communicate".
-func (r *Registry) Restrict(allowed map[string]bool) {
-	r.RestrictKeepingResultTool(allowed, "communicate")
-}
-
-// RestrictKeepingResultTool is like Restrict but allows specifying the result tool name.
-func (r *Registry) RestrictKeepingResultTool(allowed map[string]bool, resultToolName string) {
+func (r *Registry) Restrict(allowed map[string]bool, resultToolName string) {
 	if resultToolName == "" {
-		resultToolName = "communicate"
+		resultToolName = DefaultResultToolName
 	}
 	allowed[resultToolName] = true
 	r.mu.Lock()
@@ -775,13 +770,6 @@ func (r *Registry) RequiresOutputRecovery(names []string) bool {
 		}
 	}
 	return false
-}
-
-// Unregister deletes the named tool from the registry.
-func (r *Registry) Unregister(name string) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	delete(r.tools, name)
 }
 
 // Get returns the named registered tool, or nil if it is not registered.

@@ -186,7 +186,7 @@ func bundledAgentSurfaceForTest(agent plugin.Agent, registered map[string]bool) 
 	for _, name := range allowed {
 		surface[name] = true
 	}
-	// RestrictKeepingResultTool never removes the result tool; a session may
+	// Restrict never removes the result tool; a session may
 	// rename it, so ask the default rather than hardcoding "communicate".
 	surface[(&Session{}).resultToolName()] = true
 	return surface

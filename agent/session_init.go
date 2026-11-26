@@ -1931,7 +1931,7 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 		for _, name := range effectiveAllowedToolNames {
 			allowed[name] = true
 		}
-		s.reg.RestrictKeepingResultTool(allowed, s.resultToolName())
+		s.reg.Restrict(allowed, s.resultToolName())
 	}
 	for _, name := range s.cfg.spawn.deniedToolNames {
 		s.reg.Remove(name)
@@ -1977,7 +1977,7 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 		// Stable delegates freeze a capability ceiling before their durable start.
 		// Apply the final intersection after NewSession has added every intrinsic
 		// tool so neither the live registry nor its model-facing cache can widen it.
-		s.reg.RestrictKeepingResultTool(ceiling, s.resultToolName())
+		s.reg.Restrict(ceiling, s.resultToolName())
 	}
 	// Only the coordinator writes the session URL list, and a subagent cannot
 	// ask the human (#6080, ask_user). This gate is the last removal, after the
