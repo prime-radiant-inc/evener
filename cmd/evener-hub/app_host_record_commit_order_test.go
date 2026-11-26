@@ -687,11 +687,8 @@ func TestRecoveryClassifiesAStagedRemovalAgainstTheFileAsItWas(t *testing.T) {
 // reconciliation whose raise of a live host never reached hub.toml: the import
 // must not replace the mirror's higher generation with the file's.
 func TestMigrationRaisesALiveHostToTheMirrorsHigherGeneration(t *testing.T) {
-	fixture := newPipelineFixture(t, []hostreg.Host{pipelineEntry("keep", 3)}, nil)
 	spent := hostops.Boundary{Generation: 40, IncarnationID: "inc-keep", PresenceEpoch: 3}
-	if err := fixture.store.MirrorHostState(hostops.HostMirror{Boundaries: map[string]hostops.Boundary{"keep": spent}, Live: []string{"keep"}}); err != nil {
-		t.Fatalf("MirrorHostState: %v", err)
-	}
+	fixture := newPipelineFixtureWithBoundaries(t, []hostreg.Host{pipelineEntry("keep", 3)}, map[string]hostops.Boundary{"keep": spent}, nil)
 	m := fixture.legacyManager(t)
 
 	m.migrateLegacyRecords(fixture.store)

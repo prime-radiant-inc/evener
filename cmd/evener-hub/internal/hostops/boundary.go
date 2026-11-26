@@ -26,11 +26,10 @@ const MaxIncarnationIDBytes = 128
 // The record outlives the host's live entry by design: §4's retention rule
 // keeps "the historical (generation, incarnation id, presenceEpoch) boundary"
 // in this record until the host's last operation record compacts, so a removed
-// host's history stays readable under its recorded pair. Retention deletion —
-// compacting that last record — belongs to the slice that owns retention; the
-// one deletion this layer performs is the ownership prune MirrorBoundaries
-// applies to a name the writing mutation no longer carries (a compensated add,
-// a name dropped while the write ran).
+// host's history stays readable under its recorded pair. Retention drops that
+// historical boundary when the host's last record compacts, and mirror writes
+// prune any name the writing mutation no longer carries (a compensated add, a
+// name dropped while the write ran).
 type Boundary struct {
 	// Generation is the registry generation the write committed: the live
 	// entry's generation for a live host, or the removed incarnation's
@@ -110,83 +109,4 @@ func (s *Store) Boundaries() map[string]Boundary {
 	s.cell.mu.Lock()
 	defer s.cell.mu.Unlock()
 	return maps.Clone(s.cell.state.Boundaries)
-}
-
-// MirrorBoundaries persists every boundary record in updates and drops every
-// name in remove, in one atomic store write, the same discipline Create and
-// Transition use: the store mutex across the read-modify-write, a temp file
-// fsynced and renamed over the store, then the containing directory fsynced.
-// Names neither carried by updates nor named by remove keep the value they had,
-// so one host's mirror write can never drop another host's boundary.
-//
-// One call is one write for every name it touches: a fault before the rename
-// lands none of them, and the store's in-memory state follows the file, so the
-// mirror can never hold a name the file does not (see RenameLanded for the
-// post-rename failure case, which returns the boundary records the write
-// committed). A name in remove that has no boundary is a no-op, and a call that
-// changes nothing — no updates and no removals — writes nothing.
-//
-// A refusal — an empty name, an empty or oversized incarnation id, a zero
-// generation or presence epoch, a value that is not valid UTF-8 — leaves the
-// store untouched and persists nothing.
-func (s *Store) MirrorBoundaries(updates map[string]Boundary, remove []string) error {
-	if s == nil {
-		return errors.New("hostops: store is not configured")
-	}
-	for name, boundary := range updates {
-		if err := validateBoundary(name, boundary); err != nil {
-			return err
-		}
-	}
-	for _, name := range remove {
-		if err := validateBoundaryName(name); err != nil {
-			return err
-		}
-	}
-	s.cell.mu.Lock()
-	defer s.cell.mu.Unlock()
-	if len(updates) == 0 && len(remove) == 0 {
-		// Nothing to mirror is not a write: the store file must not be created
-		// (or rewritten) for a call that changes no value.
-		return nil
-	}
-	next := cloneSnapshot(s.cell.state)
-	if len(updates) > 0 && next.Boundaries == nil {
-		next.Boundaries = make(map[string]Boundary, len(updates))
-	}
-	maps.Copy(next.Boundaries, updates)
-	for _, name := range remove {
-		delete(next.Boundaries, name)
-	}
-	if boundaryMapsEqual(s.cell.state.Boundaries, next.Boundaries) {
-		// Nothing this call names changes a value — a removal of a name with no
-		// boundary, or an update carrying the values already stored — so there is
-		// no write to commit and no file to create or rewrite.
-		return nil
-	}
-	if _, err := s.commitLocked(next); err != nil {
-		// A refusal before the rename wrote nothing; a post-rename failure is a
-		// landed write whose committed state memory adopted (commitLocked), so
-		// the caller reconciles with the store rather than treating the mirror
-		// as absent.
-		return err
-	}
-	return nil
-}
-
-// boundaryMapsEqual reports whether two boundary maps carry exactly the same
-// names and triples, so MirrorBoundaries can tell a call that changes a value
-// from one that only names names. Boundary is a comparable value type, so the
-// comparison is the values themselves, not a serialization of them.
-func boundaryMapsEqual(a, b map[string]Boundary) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for name, boundary := range a {
-		other, ok := b[name]
-		if !ok || other != boundary {
-			return false
-		}
-	}
-	return true
 }

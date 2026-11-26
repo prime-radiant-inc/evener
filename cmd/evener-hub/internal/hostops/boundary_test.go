@@ -18,16 +18,19 @@ import (
 // longer records. Pruning a name with no boundary is a no-op.
 func TestBoundaryMirrorPrunesNamesTheWriteNoLongerCarries(t *testing.T) {
 	store, path := openTestStore(t)
-	if err := store.MirrorBoundaries(map[string]Boundary{
-		"h1": {Generation: 7, IncarnationID: "inc-h1", PresenceEpoch: 2},
-		"h2": {Generation: 3, IncarnationID: "inc-h2", PresenceEpoch: 1},
-	}, nil); err != nil {
-		t.Fatalf("MirrorBoundaries(h1, h2): %v", err)
+	if err := store.ImportHostRecords(HostRecords{}, HostMirror{
+		Boundaries: map[string]Boundary{
+			"h1": {Generation: 7, IncarnationID: "inc-h1", PresenceEpoch: 2},
+			"h2": {Generation: 3, IncarnationID: "inc-h2", PresenceEpoch: 1},
+		},
+	}); err != nil {
+		t.Fatalf("ImportHostRecords(h1, h2): %v", err)
 	}
-	if err := store.MirrorBoundaries(map[string]Boundary{
-		"h3": {Generation: 4, IncarnationID: "inc-h3", PresenceEpoch: 1},
-	}, []string{"h1"}); err != nil {
-		t.Fatalf("MirrorBoundaries(h3, remove h1): %v", err)
+	if err := store.CommitHostRecords(HostRecords{}, HostMirror{
+		Boundaries: map[string]Boundary{"h3": {Generation: 4, IncarnationID: "inc-h3", PresenceEpoch: 1}},
+		Remove:     []string{"h1"},
+	}); err != nil {
+		t.Fatalf("CommitHostRecords(h3, remove h1): %v", err)
 	}
 	if _, ok := store.Boundary("h1"); ok {
 		t.Fatal("the pruned name kept its boundary")
@@ -43,7 +46,7 @@ func TestBoundaryMirrorPrunesNamesTheWriteNoLongerCarries(t *testing.T) {
 	if _, ok := reopened.Boundary("h3"); !ok {
 		t.Fatal("the upserted boundary did not survive the reload")
 	}
-	if err := store.MirrorBoundaries(nil, []string{"absent"}); err != nil {
+	if err := store.CommitHostRecords(HostRecords{}, HostMirror{Remove: []string{"absent"}}); err != nil {
 		t.Fatalf("pruning a name with no boundary = %v, want a no-op", err)
 	}
 }
@@ -57,12 +60,15 @@ func TestBoundaryMirrorPrunesNamesTheWriteNoLongerCarries(t *testing.T) {
 // write committed.
 func TestBoundaryMirrorLandsAndSurvivesReload(t *testing.T) {
 	store, path := openTestStore(t)
+	if err := store.ImportHostRecords(HostRecords{}, HostMirror{}); err != nil {
+		t.Fatalf("ImportHostRecords: %v", err)
+	}
 	want := map[string]Boundary{
 		"h1": {Generation: 7, IncarnationID: "inc-h1", PresenceEpoch: 2},
 		"h2": {Generation: 3, IncarnationID: "inc-h2", PresenceEpoch: 1},
 	}
-	if err := store.MirrorBoundaries(want, nil); err != nil {
-		t.Fatalf("MirrorBoundaries: %v", err)
+	if err := store.CommitHostRecords(HostRecords{}, HostMirror{Boundaries: want}); err != nil {
+		t.Fatalf("CommitHostRecords: %v", err)
 	}
 	got, ok := store.Boundary("h1")
 	if !ok || got != want["h1"] {
@@ -86,15 +92,18 @@ func TestBoundaryMirrorLandsAndSurvivesReload(t *testing.T) {
 // host the write did not name.
 func TestBoundaryMirrorIsAnUpsert(t *testing.T) {
 	store, _ := openTestStore(t)
-	if err := store.MirrorBoundaries(map[string]Boundary{
-		"h1": {Generation: 7, IncarnationID: "inc-h1", PresenceEpoch: 1},
-	}, nil); err != nil {
-		t.Fatalf("MirrorBoundaries(h1): %v", err)
+	if err := store.ImportHostRecords(HostRecords{}, HostMirror{}); err != nil {
+		t.Fatalf("ImportHostRecords: %v", err)
 	}
-	if err := store.MirrorBoundaries(map[string]Boundary{
-		"h2": {Generation: 4, IncarnationID: "inc-h2", PresenceEpoch: 5},
-	}, nil); err != nil {
-		t.Fatalf("MirrorBoundaries(h2): %v", err)
+	if err := store.CommitHostRecords(HostRecords{}, HostMirror{
+		Boundaries: map[string]Boundary{"h1": {Generation: 7, IncarnationID: "inc-h1", PresenceEpoch: 1}},
+	}); err != nil {
+		t.Fatalf("CommitHostRecords(h1): %v", err)
+	}
+	if err := store.CommitHostRecords(HostRecords{}, HostMirror{
+		Boundaries: map[string]Boundary{"h2": {Generation: 4, IncarnationID: "inc-h2", PresenceEpoch: 5}},
+	}); err != nil {
+		t.Fatalf("CommitHostRecords(h2): %v", err)
 	}
 	all := store.Boundaries()
 	if len(all) != 2 {
@@ -104,10 +113,10 @@ func TestBoundaryMirrorIsAnUpsert(t *testing.T) {
 		t.Fatalf("h1's boundary changed under an unrelated mirror write: %+v", all["h1"])
 	}
 	// A later mirror for one name advances that name alone.
-	if err := store.MirrorBoundaries(map[string]Boundary{
-		"h1": {Generation: 8, IncarnationID: "inc-h1", PresenceEpoch: 2},
-	}, nil); err != nil {
-		t.Fatalf("MirrorBoundaries(h1 again): %v", err)
+	if err := store.CommitHostRecords(HostRecords{}, HostMirror{
+		Boundaries: map[string]Boundary{"h1": {Generation: 8, IncarnationID: "inc-h1", PresenceEpoch: 2}},
+	}); err != nil {
+		t.Fatalf("CommitHostRecords(h1 again): %v", err)
 	}
 	all = store.Boundaries()
 	if all["h1"] != (Boundary{Generation: 8, IncarnationID: "inc-h1", PresenceEpoch: 2}) {
@@ -140,8 +149,8 @@ func TestBoundaryMirrorIsOneWriteForEveryNameItCarries(t *testing.T) {
 		"h1": {Generation: 7, IncarnationID: "inc-h1", PresenceEpoch: 1},
 		"h2": {Generation: 3, IncarnationID: "inc-h2", PresenceEpoch: 2},
 	}
-	if err := store.MirrorBoundaries(batch, nil); err == nil {
-		t.Fatal("MirrorBoundaries whose rename never landed reported success")
+	if err := store.ImportHostRecords(HostRecords{}, HostMirror{Boundaries: batch}); err == nil {
+		t.Fatal("ImportHostRecords whose rename never landed reported success")
 	}
 	if got := store.Boundaries(); len(got) != 0 {
 		t.Fatalf("a mirror write that never landed left %v in memory, want none", got)
@@ -157,8 +166,8 @@ func TestBoundaryMirrorIsOneWriteForEveryNameItCarries(t *testing.T) {
 	// landed one even though the directory sync behind it failed — memory must
 	// follow the file for every name in the batch, never stay behind it.
 	blockRename = false
-	if err := store.MirrorBoundaries(map[string]Boundary{"h1": batch["h1"]}, nil); err != nil {
-		t.Fatalf("MirrorBoundaries(h1) once the fault cleared: %v", err)
+	if err := store.ImportHostRecords(HostRecords{}, HostMirror{Boundaries: map[string]Boundary{"h1": batch["h1"]}}); err != nil {
+		t.Fatalf("ImportHostRecords(h1) once the fault cleared: %v", err)
 	}
 	store.faults.syncDir = func(_ afero.Fs, dir string) error {
 		if dir != filepath.Dir(path) {
@@ -168,7 +177,7 @@ func TestBoundaryMirrorIsOneWriteForEveryNameItCarries(t *testing.T) {
 		}
 		return errors.New("directory sync fault")
 	}
-	err = store.MirrorBoundaries(map[string]Boundary{"h2": batch["h2"]}, nil)
+	err = store.CommitHostRecords(HostRecords{}, HostMirror{Boundaries: map[string]Boundary{"h2": batch["h2"]}})
 	if err == nil || !RenameLanded(err) {
 		t.Fatalf("post-rename mirror failure = %v, want a RenameLanded error", err)
 	}
@@ -205,11 +214,14 @@ func TestBoundaryMirrorIsOneWriteForEveryNameItCarries(t *testing.T) {
 // write lands.
 func TestBoundaryMirrorPreservesTheStoresRecords(t *testing.T) {
 	store, path := openTestStore(t)
+	if err := store.ImportHostRecords(HostRecords{}, HostMirror{}); err != nil {
+		t.Fatalf("ImportHostRecords: %v", err)
+	}
 	record := createTestRecord(t, store, "h1")
-	if err := store.MirrorBoundaries(map[string]Boundary{
-		"h1": {Generation: 7, IncarnationID: "inc-h1", PresenceEpoch: 1},
-	}, nil); err != nil {
-		t.Fatalf("MirrorBoundaries: %v", err)
+	if err := store.CommitHostRecords(HostRecords{}, HostMirror{
+		Boundaries: map[string]Boundary{"h1": {Generation: 7, IncarnationID: "inc-h1", PresenceEpoch: 1}},
+	}); err != nil {
+		t.Fatalf("CommitHostRecords: %v", err)
 	}
 	reopened := reopenFresh(t, path)
 	if _, ok := reopened.Record(record.ID); !ok {
@@ -284,8 +296,8 @@ func TestBoundaryMirrorRefusesWhatNoWriterEmits(t *testing.T) {
 	for name, batch := range cases {
 		t.Run(name, func(t *testing.T) {
 			store, path := openTestStore(t)
-			if err := store.MirrorBoundaries(batch, nil); err == nil {
-				t.Fatalf("MirrorBoundaries(%s) succeeded, want a refusal", name)
+			if err := store.ImportHostRecords(HostRecords{}, HostMirror{Boundaries: batch}); !errors.Is(err, ErrInvalidBoundary) {
+				t.Fatalf("ImportHostRecords(%s) = %v, want ErrInvalidBoundary", name, err)
 			}
 			if got := store.Boundaries(); len(got) != 0 {
 				t.Fatalf("a refused mirror write left %v in memory, want none", got)
@@ -312,32 +324,44 @@ func TestBoundaryMirrorPruningAnAbsentNameWritesNothing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("openFS(%s): %v", path, err)
 	}
-	if err := store.MirrorBoundaries(nil, []string{"absent"}); err != nil {
-		t.Fatalf("MirrorBoundaries(nil, remove absent): %v", err)
+	if err := store.CommitHostRecords(HostRecords{}, HostMirror{Remove: []string{"absent"}}); !errors.Is(err, ErrHostRecordsNotImported) {
+		t.Fatalf("CommitHostRecords before import = %v, want ErrHostRecordsNotImported", err)
 	}
 	if writes != 0 {
-		t.Fatalf("pruning a name with no boundary committed %d write(s), want none", writes)
+		t.Fatalf("refused commit wrote %d time(s), want none", writes)
 	}
 	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("pruning a name with no boundary created the store file (stat err = %v)", err)
+		t.Fatalf("refused commit created the store file (stat err = %v)", err)
 	}
-	if err := store.MirrorBoundaries(map[string]Boundary{
-		"h1": {Generation: 7, IncarnationID: "inc-h1", PresenceEpoch: 2},
-	}, nil); err != nil {
-		t.Fatalf("MirrorBoundaries(h1): %v", err)
+	if err := store.ImportHostRecords(HostRecords{}, HostMirror{}); err != nil {
+		t.Fatalf("ImportHostRecords: %v", err)
 	}
 	if writes != 1 {
-		t.Fatalf("mirroring h1 committed %d write(s), want 1", writes)
+		t.Fatalf("ImportHostRecords committed %d write(s), want 1", writes)
+	}
+	if err := store.CommitHostRecords(HostRecords{}, HostMirror{Remove: []string{"absent"}}); err != nil {
+		t.Fatalf("CommitHostRecords(remove absent) on empty boundaries: %v", err)
+	}
+	if writes != 1 {
+		t.Fatalf("pruning a name with no boundary committed %d write(s), want 1", writes)
+	}
+	if err := store.CommitHostRecords(HostRecords{}, HostMirror{
+		Boundaries: map[string]Boundary{"h1": {Generation: 7, IncarnationID: "inc-h1", PresenceEpoch: 2}},
+	}); err != nil {
+		t.Fatalf("CommitHostRecords(h1): %v", err)
+	}
+	if writes != 2 {
+		t.Fatalf("mirroring h1 committed %d write(s), want 2", writes)
 	}
 	before, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read the store file: %v", err)
 	}
-	if err := store.MirrorBoundaries(nil, []string{"absent"}); err != nil {
-		t.Fatalf("MirrorBoundaries(nil, remove absent) on a written store: %v", err)
+	if err := store.CommitHostRecords(HostRecords{}, HostMirror{Remove: []string{"absent"}}); err != nil {
+		t.Fatalf("CommitHostRecords(remove absent) on a written store: %v", err)
 	}
-	if writes != 1 {
-		t.Fatalf("pruning an absent name on a written store committed %d write(s), want 1", writes)
+	if writes != 2 {
+		t.Fatalf("pruning an absent name on a written store committed %d write(s), want 2", writes)
 	}
 	after, err := os.ReadFile(path)
 	if err != nil {
@@ -346,11 +370,11 @@ func TestBoundaryMirrorPruningAnAbsentNameWritesNothing(t *testing.T) {
 	if !bytes.Equal(before, after) {
 		t.Fatal("pruning an absent name rewrote the store file")
 	}
-	if err := store.MirrorBoundaries(nil, []string{"h1"}); err != nil {
-		t.Fatalf("MirrorBoundaries(nil, remove h1): %v", err)
+	if err := store.CommitHostRecords(HostRecords{}, HostMirror{Remove: []string{"h1"}}); err != nil {
+		t.Fatalf("CommitHostRecords(remove h1): %v", err)
 	}
-	if writes != 2 {
-		t.Fatalf("removing h1 committed %d write(s), want 2", writes)
+	if writes != 3 {
+		t.Fatalf("removing h1 committed %d write(s), want 3", writes)
 	}
 	if _, ok := store.Boundary("h1"); ok {
 		t.Fatal("h1's boundary survived its removal")

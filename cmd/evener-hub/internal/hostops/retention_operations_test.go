@@ -93,19 +93,21 @@ func TestOperationsDetailResolvesACompactedRecordWithoutABoundary(t *testing.T) 
 	store, _ := openRetentionStore(t, RetentionPolicy{TerminalPerHost: 5, RemovedHostHorizon: time.Hour})
 	base := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
 	store.clock = func() time.Time { return base }
-	if err := store.MirrorBoundaries(map[string]Boundary{
-		"gone": {Generation: 7, IncarnationID: "inc-gone", PresenceEpoch: 2},
-		"live": {Generation: 7, IncarnationID: "inc-live", PresenceEpoch: 1},
-	}, nil); err != nil {
-		t.Fatalf("MirrorBoundaries: %v", err)
+	if err := store.ImportHostRecords(HostRecords{}, HostMirror{
+		Boundaries: map[string]Boundary{
+			"gone": {Generation: 7, IncarnationID: "inc-gone", PresenceEpoch: 2},
+			"live": {Generation: 7, IncarnationID: "inc-live", PresenceEpoch: 1},
+		},
+	}); err != nil {
+		t.Fatalf("ImportHostRecords: %v", err)
 	}
 	record := createOp(t, store, "gone", "gone-1")
 	finish(t, store, record.ID)
-	if err := store.MirrorHostState(HostMirror{
+	if err := store.CommitHostRecords(HostRecords{}, HostMirror{
 		Boundaries: map[string]Boundary{"gone": {Generation: 7, IncarnationID: "inc-gone", PresenceEpoch: 2}},
 		Removed:    map[string]RemovedHost{"gone": {RemovedAt: base.Add(-30 * time.Minute), Generation: 7, IncarnationID: "inc-gone"}},
 	}); err != nil {
-		t.Fatalf("MirrorHostState: %v", err)
+		t.Fatalf("CommitHostRecords: %v", err)
 	}
 	store.clock = func() time.Time { return base.Add(2 * time.Hour) }
 	other := createOp(t, store, "live", "live-1")

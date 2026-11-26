@@ -33,14 +33,24 @@ func readTestRecord(t *testing.T, store *Store, host, clientOperationID string, 
 	return outcome.Record
 }
 
-// mirrorTestBoundary writes one host's boundary triple the way the registry's
-// hub.toml write does.
+// mirrorTestBoundary writes one host's boundary triple via the production
+// HostRecords mirror path.
 func mirrorTestBoundary(t *testing.T, store *Store, host string, generation uint64, incarnationID string, presenceEpoch uint64) {
 	t.Helper()
-	if err := store.MirrorBoundaries(map[string]Boundary{
-		host: {Generation: generation, IncarnationID: incarnationID, PresenceEpoch: presenceEpoch},
-	}, nil); err != nil {
-		t.Fatalf("MirrorBoundaries(%s): %v", host, err)
+	mirror := HostMirror{
+		Boundaries: map[string]Boundary{
+			host: {Generation: generation, IncarnationID: incarnationID, PresenceEpoch: presenceEpoch},
+		},
+	}
+	family, _, imported := store.HostRecords()
+	if !imported {
+		if err := store.ImportHostRecords(HostRecords{}, mirror); err != nil {
+			t.Fatalf("ImportHostRecords(%s): %v", host, err)
+		}
+		return
+	}
+	if err := store.CommitHostRecords(family, mirror); err != nil {
+		t.Fatalf("CommitHostRecords(%s): %v", host, err)
 	}
 }
 

@@ -75,6 +75,33 @@ func newPipelineFixtureAt(t *testing.T, dir, storeRoot string, entries []hostreg
 	return &pipelineFixture{dir: dir, configPath: configPath, store: store, registry: registry}
 }
 
+// writeRawHostOpsBoundaries writes a pre-migration store file carrying
+// boundaries on disk before hostops.Open runs, avoiding cached storeCells and
+// keeping HostRecords unimported.
+func writeRawHostOpsBoundaries(t *testing.T, path string, boundaries map[string]hostops.Boundary) {
+	t.Helper()
+	encodedBoundaries, err := json.Marshal(boundaries)
+	if err != nil {
+		t.Fatalf("marshal boundaries: %v", err)
+	}
+	raw := fmt.Appendf(nil, `{"version":1,"sequence":0,"allocatorHighWaterMark":0,"records":[],"boundaries":%s}`, encodedBoundaries)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("MkdirAll(%s): %v", filepath.Dir(path), err)
+	}
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatalf("write store %s: %v", path, err)
+	}
+}
+
+// newPipelineFixtureWithBoundaries is newPipelineFixture with persisted
+// pre-migration boundaries seeded on disk before hostops.Open runs.
+func newPipelineFixtureWithBoundaries(t *testing.T, entries []hostreg.Host, boundaries map[string]hostops.Boundary, seed func(*hostops.Store)) *pipelineFixture {
+	t.Helper()
+	dir := t.TempDir()
+	writeRawHostOpsBoundaries(t, hostops.StorePath(dir), boundaries)
+	return newPipelineFixtureAt(t, dir, dir, entries, seed)
+}
+
 type seededCompensation struct {
 	Host       string
 	Phase      hostops.CompensationPhase
@@ -421,15 +448,9 @@ func TestBootStoreSyncReappliesAPurgeTheStoreMissed(t *testing.T) {
 // store.
 func TestBootStoreSyncClearsAnIntentWhosePurgeLanded(t *testing.T) {
 	entry := pipelineEntry("m4", 2)
-	fixture := newPipelineFixture(t, []hostreg.Host{entry}, func(store *hostops.Store) {
-		// The mirror is already converged, so the only thing the boot moves into
-		// the store is the records.
-		if err := store.MirrorBoundaries(map[string]hostops.Boundary{
-			"m4": {Generation: 2, IncarnationID: "inc-m4", PresenceEpoch: 3},
-		}, nil); err != nil {
-			t.Fatalf("MirrorBoundaries: %v", err)
-		}
-	})
+	fixture := newPipelineFixtureWithBoundaries(t, []hostreg.Host{entry}, map[string]hostops.Boundary{
+		"m4": {Generation: 2, IncarnationID: "inc-m4", PresenceEpoch: 3},
+	}, nil)
 	fixture.appendTOML(t, "[pending_store_sync.m4]\ngeneration = 2\ntoken_values = [\"token-that-was-purged\"]\n")
 	sequence, records := fixture.store.Sequence(), len(fixture.store.Records())
 	m := fixture.manager(t)
@@ -813,12 +834,9 @@ func TestBootHostRemovedPassMarksTheRemovedIncarnationsRecords(t *testing.T) {
 // interrupted naming the torn write — no startup refusal.
 func TestBootMirrorRollsBackATornStoreAndWritesTheHighWater(t *testing.T) {
 	entry := pipelineEntry("m4", 2)
-	fixture := newPipelineFixture(t, []hostreg.Host{entry}, func(store *hostops.Store) {
-		if err := store.MirrorBoundaries(map[string]hostops.Boundary{
-			"m4": {Generation: 9, IncarnationID: "inc-mirror", PresenceEpoch: 5},
-		}, nil); err != nil {
-			t.Fatalf("MirrorBoundaries: %v", err)
-		}
+	fixture := newPipelineFixtureWithBoundaries(t, []hostreg.Host{entry}, map[string]hostops.Boundary{
+		"m4": {Generation: 9, IncarnationID: "inc-mirror", PresenceEpoch: 5},
+	}, func(store *hostops.Store) {
 		if _, err := store.Create(hostops.OperationCreateRequest{
 			ClientOperationID: "op-torn", Host: "m4", Kind: hostops.KindDeploy,
 			Pair:   hostops.OperationPair{Generation: 9, IncarnationID: "inc-mirror"},
@@ -846,13 +864,9 @@ func TestBootMirrorRollsBackATornStoreAndWritesTheHighWater(t *testing.T) {
 // mark newer than the store mirror lands in the mirror in the same boot pass.
 func TestBootMirrorPushesAFileMarkForward(t *testing.T) {
 	entry := pipelineEntry("m4", 7)
-	fixture := newPipelineFixture(t, []hostreg.Host{entry}, func(store *hostops.Store) {
-		if err := store.MirrorBoundaries(map[string]hostops.Boundary{
-			"m4": {Generation: 2, IncarnationID: "inc-old", PresenceEpoch: 1},
-		}, nil); err != nil {
-			t.Fatalf("MirrorBoundaries: %v", err)
-		}
-	})
+	fixture := newPipelineFixtureWithBoundaries(t, []hostreg.Host{entry}, map[string]hostops.Boundary{
+		"m4": {Generation: 2, IncarnationID: "inc-old", PresenceEpoch: 1},
+	}, nil)
 	m := fixture.manager(t)
 	mirror, ok := m.opsStore().Boundary("m4")
 	if !ok || mirror.Generation != 7 || mirror.IncarnationID != "inc-m4" {
@@ -865,13 +879,9 @@ func TestBootMirrorPushesAFileMarkForward(t *testing.T) {
 // is written back as the high-water mark — never rolled back.
 func TestBootMirrorPreservesAMirrorWithoutAFileEntry(t *testing.T) {
 	entry := pipelineEntry("other", 2)
-	fixture := newPipelineFixture(t, []hostreg.Host{entry}, func(store *hostops.Store) {
-		if err := store.MirrorBoundaries(map[string]hostops.Boundary{
-			"gone": {Generation: 11, IncarnationID: "inc-gone", PresenceEpoch: 4},
-		}, nil); err != nil {
-			t.Fatalf("MirrorBoundaries: %v", err)
-		}
-	})
+	fixture := newPipelineFixtureWithBoundaries(t, []hostreg.Host{entry}, map[string]hostops.Boundary{
+		"gone": {Generation: 11, IncarnationID: "inc-gone", PresenceEpoch: 4},
+	}, nil)
 	m := fixture.manager(t)
 	mirror, ok := m.opsStore().Boundary("gone")
 	if !ok || mirror.Generation != 11 || mirror.IncarnationID != "inc-gone" {
@@ -931,13 +941,9 @@ func TestBootCompensationRuntimeLeavesTheRecordWhenTheRestoredFileIsMissing(t *t
 // at G keeps it.
 func TestBootMirrorCommitMarkersRoundTripThroughTheWriter(t *testing.T) {
 	entry := pipelineEntry("m4", 2)
-	fixture := newPipelineFixture(t, []hostreg.Host{entry}, func(store *hostops.Store) {
-		if err := store.MirrorBoundaries(map[string]hostops.Boundary{
-			"m4": {Generation: 2, IncarnationID: "inc-m4", PresenceEpoch: 3},
-		}, nil); err != nil {
-			t.Fatalf("MirrorBoundaries: %v", err)
-		}
-	})
+	fixture := newPipelineFixtureWithBoundaries(t, []hostreg.Host{entry}, map[string]hostops.Boundary{
+		"m4": {Generation: 2, IncarnationID: "inc-m4", PresenceEpoch: 3},
+	}, nil)
 	fixture.legacyManager(t)
 	cfg := loadHubTOMLRecords(t, fixture.configPath)
 	commit, carried := cfg.MirrorCommits["m4"]
@@ -1080,13 +1086,9 @@ func TestBootCompensationRowsUseTheRegistryGenerationWithoutAFileMark(t *testing
 // durable mark never drops below the discarded number.
 func TestMirrorHighWaterRaiseSurvivesALaterRemoval(t *testing.T) {
 	entry := pipelineEntry("m4", 2)
-	fixture := newPipelineFixture(t, []hostreg.Host{entry}, func(store *hostops.Store) {
-		if err := store.MirrorBoundaries(map[string]hostops.Boundary{
-			"m4": {Generation: 9, IncarnationID: "inc-mirror", PresenceEpoch: 5},
-		}, nil); err != nil {
-			t.Fatalf("MirrorBoundaries: %v", err)
-		}
-	})
+	fixture := newPipelineFixtureWithBoundaries(t, []hostreg.Host{entry}, map[string]hostops.Boundary{
+		"m4": {Generation: 9, IncarnationID: "inc-mirror", PresenceEpoch: 5},
+	}, nil)
 	m := fixture.manager(t)
 	if _, err := m.Remove(context.Background(), removeRequest(t, m, "m4")); err != nil {
 		t.Fatalf("Remove(m4): %v", err)
@@ -1126,18 +1128,23 @@ func TestRemovePrunesTheStashWhenTheStagedWriteFails(t *testing.T) {
 // operation records are marked by, and the file still validates.
 func TestMirrorHighWaterRaiseKeepsATombstonedNamesRemovalIdentity(t *testing.T) {
 	entry := pipelineEntry("m4", 2)
-	fixture := newPipelineFixture(t, []hostreg.Host{entry}, nil)
+	fixture := newPipelineStagingFixture(t, []hostreg.Host{entry}, nil)
 	m := fixture.legacyManager(t)
 	if _, err := m.Remove(context.Background(), removeRequest(t, m, "m4")); err != nil {
 		t.Fatalf("Remove(m4): %v", err)
 	}
 	// The torn store mirror lands after the removal: the file still carries the
-	// removed generation while the mirror is ahead.
-	if err := fixture.store.MirrorBoundaries(map[string]hostops.Boundary{
+	// removed generation while the mirror is ahead. Write the raw pre-migration
+	// store JSON before opening so hostops.Open loads the persisted boundary.
+	storePath := hostops.StorePath(fixture.dir)
+	writeRawHostOpsBoundaries(t, storePath, map[string]hostops.Boundary{
 		"m4": {Generation: 9, IncarnationID: "inc-mirror", PresenceEpoch: 5},
-	}, nil); err != nil {
-		t.Fatalf("MirrorBoundaries: %v", err)
+	})
+	store, err := hostops.Open(storePath, hostops.RetentionPolicy{})
+	if err != nil {
+		t.Fatalf("hostops.Open: %v", err)
 	}
+	fixture.store = store
 	// The boot rolls the mirror back and raises the tombstoned name's
 	// [generations] mark, then carries it into the store.
 	fixture.restart(t)
@@ -1434,10 +1441,12 @@ func TestBootFinalizesTheMarkerWhenTheCompensationClearsWithoutRestoring(t *test
 	// The old build mirrored the removed incarnation's boundary behind its
 	// commit; the recorded teardown resolves its handle through it.
 	removed := tombstoneFor(t, m, "keep")
-	if err := fixture.store.MirrorBoundaries(map[string]hostops.Boundary{
-		"keep": {Generation: removed.Generation, IncarnationID: removed.IncarnationID, PresenceEpoch: removed.PresenceEpoch},
-	}, nil); err != nil {
-		t.Fatalf("mirror the removed boundary: %v", err)
+	if _, err := fixture.store.ReconcileMirror(hostops.MirrorView{
+		Marks: map[string]hostops.Boundary{
+			"keep": {Generation: removed.Generation, IncarnationID: removed.IncarnationID, PresenceEpoch: removed.PresenceEpoch},
+		},
+	}); err != nil {
+		t.Fatalf("ReconcileMirror: %v", err)
 	}
 	// The crash state: the commit stands (the purge landed, the commit's
 	// follow-up write cleared the intent), the staged marker is still there (the
