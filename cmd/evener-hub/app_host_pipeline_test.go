@@ -99,22 +99,7 @@ func newPipelineFixtureWithBoundaries(t *testing.T, entries []hostreg.Host, boun
 	t.Helper()
 	dir := t.TempDir()
 	writeRawHostOpsBoundaries(t, hostops.StorePath(dir), boundaries)
-	store, err := hostops.Open(hostops.StorePath(dir), hostops.RetentionPolicy{})
-	if err != nil {
-		t.Fatalf("hostops.Open: %v", err)
-	}
-	if seed != nil {
-		seed(store)
-	}
-	configPath := filepath.Join(dir, "hub.toml")
-	if err := writeHubTOMLHosts(configPath, entries); err != nil {
-		t.Fatalf("writeHubTOMLHosts: %v", err)
-	}
-	registry, err := hostreg.New(entries)
-	if err != nil {
-		t.Fatalf("hostreg.New: %v", err)
-	}
-	return &pipelineFixture{dir: dir, configPath: configPath, store: store, registry: registry}
+	return newPipelineFixtureAt(t, dir, dir, entries, seed)
 }
 
 type seededCompensation struct {
@@ -1143,16 +1128,7 @@ func TestRemovePrunesTheStashWhenTheStagedWriteFails(t *testing.T) {
 // operation records are marked by, and the file still validates.
 func TestMirrorHighWaterRaiseKeepsATombstonedNamesRemovalIdentity(t *testing.T) {
 	entry := pipelineEntry("m4", 2)
-	dir := t.TempDir()
-	configPath := filepath.Join(dir, "hub.toml")
-	if err := writeHubTOMLHosts(configPath, []hostreg.Host{entry}); err != nil {
-		t.Fatalf("writeHubTOMLHosts: %v", err)
-	}
-	registry, err := hostreg.New([]hostreg.Host{entry})
-	if err != nil {
-		t.Fatalf("hostreg.New: %v", err)
-	}
-	fixture := &pipelineFixture{dir: dir, configPath: configPath, registry: registry}
+	fixture := newPipelineStagingFixture(t, []hostreg.Host{entry}, nil)
 	m := fixture.legacyManager(t)
 	if _, err := m.Remove(context.Background(), removeRequest(t, m, "m4")); err != nil {
 		t.Fatalf("Remove(m4): %v", err)
