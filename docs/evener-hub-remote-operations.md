@@ -145,7 +145,20 @@ It uses a new test-owned localhost SSH directory and reaps fixture daemons befor
 
 **Connect preserves a compatible running hub.** The controller verifies its live AppWire handshake and uses that same channel without replacing the binary or restarting the process. A different build label or unavailable cross-platform artifact does not prevent connection. Host details report the remote process's build, or unknown when the handshake omits build metadata.
 
-Connect still provisions a missing installation or upgrades a proven older one. A host whose protocol is newer than the controller's is refused rather than downgraded; update the controller. An explicit Connect can start a stopped compatible installation after proving no hub is listening; background reconnect cannot. Authentication, transport and malformed-handshake failures remain connection errors and do not authorize deployment. Explicit Deploy keeps its plan, confirmation and requested-build verification.
+Connect still provisions a missing installation or upgrades a proven older one. A host whose protocol is newer than the controller's is refused rather than downgraded; update the controller. An explicit Connect can start a stopped compatible installation after proving no hub is listening; mid-run background reconnect cannot. Authentication, transport and malformed-handshake failures remain connection errors and do not authorize deployment. Explicit Deploy keeps its plan, confirmation and requested-build verification.
+
+**Startup reconnects the hosts that were attached last run.** The controller
+records the registration identity of each remote host that reaches attached
+state in `<hub_state_root>/attached-hosts/state.json`, outside `hub.toml`. On
+startup it reconnects those hosts in the background: a compatible running hub
+reattaches unchanged, a stopped compatible hub is started under the
+explicit-Connect rules above, and transient failures retry with bounded
+backoff. A configured host that has never connected stays dormant. Removing or
+editing a host clears its remembered attachment, and an open teardown remnant
+fences it, so those hosts stay disconnected until you connect them again. If the
+state file cannot be opened, the hub starts normally, serves the hosts it
+knows, leaves the file in place for repair, and pauses startup reconnect until
+a start can open it.
 
 Add a host through the hub's host settings, or merge a `[[hosts]]` entry into the controller's `hub.toml`. This complete TOML example names one SSH target and an advisory project root:
 

@@ -34,7 +34,7 @@ import (
 // test controls.
 func runningTestManager(t *testing.T, seams hostRunningConfig) *hubHostManager {
 	t.Helper()
-	store, err := hostops.Open(hostops.StorePath(t.TempDir()))
+	store, err := hostops.Open(hostops.StorePath(t.TempDir()), hostops.RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("hostops.Open: %v", err)
 	}
@@ -303,7 +303,7 @@ func TestHostRunningWriteProbeIsAtomicAndLeavesNoStrays(t *testing.T) {
 // call is refused, and a call carrying the bridge marker — the attached
 // session's own origin — is served.
 func TestHostRunningThroughTheRealServer(t *testing.T) {
-	store, err := hostops.Open(hostops.StorePath(t.TempDir()))
+	store, err := hostops.Open(hostops.StorePath(t.TempDir()), hostops.RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("hostops.Open: %v", err)
 	}

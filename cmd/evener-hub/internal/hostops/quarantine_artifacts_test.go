@@ -45,7 +45,7 @@ func TestQuarantineRefusesAnAbsurdAllocatorHighWaterMark(t *testing.T) {
 			}
 			done := make(chan result, 1)
 			go func() {
-				store, err := Open(path)
+				store, err := Open(path, RetentionPolicy{})
 				done <- result{store: store, err: err}
 			}()
 			select {
@@ -101,7 +101,7 @@ func TestNextControllerIDsRefuseAnOverflow(t *testing.T) {
 func TestOperationsReadWorksOnAFreshlyQuarantinedStore(t *testing.T) {
 	path := StorePath(t.TempDir())
 	writeRawStore(t, path, 0o600, quarantinedStoreJSON)
-	store, err := Open(path)
+	store, err := Open(path, RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -211,7 +211,7 @@ func TestQuarantineRefusesNonRegularArtifacts(t *testing.T) {
 		if err := os.Symlink(target, path); err != nil {
 			t.Fatalf("Symlink: %v", err)
 		}
-		if store, err := Open(path); err == nil {
+		if store, err := Open(path, RetentionPolicy{}); err == nil {
 			t.Fatalf("Open through a symlinked store path returned %v, want a refusal", store)
 		}
 		entries, err := os.ReadDir(filepath.Dir(path))
@@ -236,7 +236,7 @@ func TestQuarantineRefusesNonRegularArtifacts(t *testing.T) {
 		if err := os.Symlink(elsewhere, quarantineEpochPath(path)); err != nil {
 			t.Fatalf("Symlink: %v", err)
 		}
-		if store, err := Open(path); err == nil {
+		if store, err := Open(path, RetentionPolicy{}); err == nil {
 			t.Fatalf("Open with a symlinked epoch sidecar returned %v, want a refusal", store)
 		}
 	})
@@ -255,7 +255,7 @@ func TestQuarantineRefusesNonRegularArtifacts(t *testing.T) {
 		if err := forgetStore(path); err != nil {
 			t.Fatalf("forgetStore: %v", err)
 		}
-		if store, err := Open(path); err == nil {
+		if store, err := Open(path, RetentionPolicy{}); err == nil {
 			t.Fatalf("Open with a symlinked intent returned %v, want a refusal", store)
 		}
 	})
@@ -264,7 +264,7 @@ func TestQuarantineRefusesNonRegularArtifacts(t *testing.T) {
 		dir := t.TempDir()
 		path := StorePath(dir)
 		writeRawStore(t, path, 0o600, quarantinedStoreJSON)
-		if _, err := Open(path); err != nil {
+		if _, err := Open(path, RetentionPolicy{}); err != nil {
 			t.Fatalf("Open: %v", err)
 		}
 		custodyPath, custodyBytes := quarantineArtifact(t, filepath.Dir(path), ".custody-")
@@ -281,7 +281,7 @@ func TestQuarantineRefusesNonRegularArtifacts(t *testing.T) {
 		if err := forgetStore(path); err != nil {
 			t.Fatalf("forgetStore: %v", err)
 		}
-		if store, err := Open(path); err == nil {
+		if store, err := Open(path, RetentionPolicy{}); err == nil {
 			t.Fatalf("Open over a symlinked custody file returned %v, want a refusal", store)
 		}
 	})
@@ -318,7 +318,7 @@ func TestQuarantineRefusesArtifactMismatches(t *testing.T) {
 		dir := t.TempDir()
 		path := StorePath(dir)
 		writeRawStore(t, path, 0o600, quarantinedStoreJSON)
-		if _, err := Open(path); err != nil {
+		if _, err := Open(path, RetentionPolicy{}); err != nil {
 			t.Fatalf("Open: %v", err)
 		}
 		asidePath, _ := quarantineArtifact(t, filepath.Dir(path), ".quarantined-")
@@ -337,7 +337,7 @@ func TestQuarantineRefusesArtifactMismatches(t *testing.T) {
 		if err := forgetStore(path); err != nil {
 			t.Fatalf("forgetStore: %v", err)
 		}
-		if store, err := Open(path); err == nil {
+		if store, err := Open(path, RetentionPolicy{}); err == nil {
 			t.Fatalf("Open with a directory standing in for the aside returned %v, want a refusal", store)
 		}
 	})
@@ -358,7 +358,7 @@ func TestQuarantineRefusesArtifactMismatches(t *testing.T) {
 		if err := forgetStore(path); err != nil {
 			t.Fatalf("forgetStore: %v", err)
 		}
-		if store, err := Open(path); err == nil {
+		if store, err := Open(path, RetentionPolicy{}); err == nil {
 			t.Fatalf("Open with a symlinked aside returned %v, want a refusal", store)
 		}
 	})
@@ -373,7 +373,7 @@ func TestQuarantineRefusesArtifactMismatches(t *testing.T) {
 		if err := forgetStore(path); err != nil {
 			t.Fatalf("forgetStore: %v", err)
 		}
-		if store, err := Open(path); err == nil {
+		if store, err := Open(path, RetentionPolicy{}); err == nil {
 			t.Fatalf("Open with a mismatched intent binding returned %v, want a refusal", store)
 		}
 	})
@@ -389,7 +389,7 @@ func TestQuarantineRefusesArtifactMismatches(t *testing.T) {
 		// The replacement store still serves: the custody is orphaned evidence
 		// (no aside, no pending intent) that no name the store carries can be
 		// held closed by, so it is cleared rather than refusing every boot.
-		store, err := Open(path)
+		store, err := Open(path, RetentionPolicy{})
 		if err != nil {
 			t.Fatalf("Open with an orphan custody beside a cleanly serving store: %v", err)
 		}
@@ -405,7 +405,7 @@ func TestQuarantineRefusesArtifactMismatches(t *testing.T) {
 		if err := forgetStore(path); err != nil {
 			t.Fatalf("forgetStore: %v", err)
 		}
-		if _, err := Open(path); err != nil {
+		if _, err := Open(path, RetentionPolicy{}); err != nil {
 			t.Fatalf("the second fresh open after the orphan was cleared: %v", err)
 		}
 	})
@@ -420,7 +420,7 @@ func TestQuarantineRefusesArtifactMismatches(t *testing.T) {
 		if err := forgetStore(path); err != nil {
 			t.Fatalf("forgetStore: %v", err)
 		}
-		if store, err := Open(path); err == nil {
+		if store, err := Open(path, RetentionPolicy{}); err == nil {
 			t.Fatalf("Open with an orphan custody and no store returned %v, want a refusal", store)
 		} else if !errors.Is(err, ErrStoreCorrupt) || !errors.Is(err, ErrQuarantineIncomplete) {
 			t.Fatalf("Open = %v, want an incomplete-custody refusal", err)
@@ -434,7 +434,7 @@ func TestQuarantineForcesTheAsideOwnerOnly(t *testing.T) {
 	dir := t.TempDir()
 	path := StorePath(dir)
 	writeRawStore(t, path, 0o400, quarantinedStoreJSON)
-	if _, err := Open(path); err != nil {
+	if _, err := Open(path, RetentionPolicy{}); err != nil {
 		t.Fatalf("Open: %v", err)
 	}
 	asidePath, aside := quarantineArtifact(t, filepath.Dir(path), ".quarantined-")
@@ -458,7 +458,7 @@ func TestSecondQuarantineDoesNotReuseEarlierCustodyIDs(t *testing.T) {
 	dir := t.TempDir()
 	path := StorePath(dir)
 	writeRawStore(t, path, 0o600, quarantinedStoreJSON)
-	first, err := Open(path)
+	first, err := Open(path, RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("first Open: %v", err)
 	}
@@ -489,7 +489,7 @@ func TestSecondQuarantineDoesNotReuseEarlierCustodyIDs(t *testing.T) {
 	if err := forgetStore(path); err != nil {
 		t.Fatalf("forgetStore: %v", err)
 	}
-	replacement, err := Open(path)
+	replacement, err := Open(path, RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("second Open: %v", err)
 	}

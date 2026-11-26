@@ -59,7 +59,7 @@ func seedRawCompensationStore(t *testing.T, tokens []string, compensations map[s
 	t.Helper()
 	path := StorePath(t.TempDir())
 	writeRawStore(t, path, 0o600, rawCompensationStoreJSON(tokenEpoch, tokens, compensations))
-	store, err := Open(path)
+	store, err := Open(path, RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("Open(%s): %v", path, err)
 	}
@@ -214,7 +214,7 @@ func TestLoadRefusesMalformedPendingCompensation(t *testing.T) {
 	if _, err := loadFS(afero.NewOsFs(), validPath); err != nil {
 		t.Fatalf("loadFS(valid): %v", err)
 	}
-	if _, err := Open(validPath); err != nil {
+	if _, err := Open(validPath, RetentionPolicy{}); err != nil {
 		t.Fatalf("Open(valid): %v", err)
 	}
 }
@@ -387,15 +387,17 @@ func TestReconcileTokenRowsMatchesTheTombstonedIncarnation(t *testing.T) {
 // host's token rows drop with it.
 func TestApplyHostRemovedPassMarksOnlyTheMatchingPair(t *testing.T) {
 	store, path, _ := openClockStore(t)
-	record, err := store.Create(NewRecord{ClientOperationID: "op-1", Host: "m4", Kind: KindDeploy, Generation: 7, IncarnationID: "inc-7"})
+	outcome, err := store.Create(OperationCreateRequest{ClientOperationID: "op-1", Host: "m4", Kind: KindDeploy, Pair: OperationPair{Generation: 7, IncarnationID: "inc-7"}, BootID: "test-boot"})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
+	record := outcome.Record
 	// A re-add's record carries a different incarnation id and must not match.
-	newer, err := store.Create(NewRecord{ClientOperationID: "op-2", Host: "m4", Kind: KindRestart, Generation: 9, IncarnationID: "inc-9"})
+	newerOutcome, err := store.Create(OperationCreateRequest{ClientOperationID: "op-2", Host: "m4", Kind: KindRestart, Pair: OperationPair{Generation: 9, IncarnationID: "inc-9"}, BootID: "test-boot"})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
+	newer := newerOutcome.Record
 	mintTokenAt(t, store, "m4", 7)
 	marked, dropped, err := store.ApplyHostRemovedPass(map[string]HostRemovedMark{"m4": {Generation: 7, IncarnationID: "inc-7"}})
 	if err != nil {

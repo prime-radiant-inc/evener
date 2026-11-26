@@ -1075,13 +1075,13 @@ func truncateResult(toolName, callID, full string, isErr bool, lim schema.ToolOu
 		out, reason = truncateHeadCountReason(out, lim.MaxLines, lim.MaxChars)
 	} else {
 		var charTruncated bool
-		out, charTruncated = truncateCharsWithStatus(out, lim.MaxChars, lim.Strategy)
+		out, charTruncated = truncateChars(out, lim.MaxChars, lim.Strategy)
 		if charTruncated {
 			reason = TruncatedByChars
 		}
 		if lim.MaxLines > 0 {
 			var lineTruncated bool
-			out, lineTruncated = truncateLinesWithStatus(out, lim.MaxLines)
+			out, lineTruncated = truncateLines(out, lim.MaxLines)
 			if lineTruncated && reason == "" {
 				reason = TruncatedByLines
 			}
@@ -1125,7 +1125,7 @@ func rejectedResult(toolName, callID, full string, lim schema.ToolOutputLimit) E
 }
 
 // omittedNumberedLines is the window of line-numbered text that
-// truncateCharsWithStatus's head/tail cut at limit drops. Both boundary lines
+// truncateChars's head/tail cut at limit drops. Both boundary lines
 // are included because each is shown only in part. It returns nil when the
 // text at either boundary carries no line number.
 func omittedNumberedLines(full string, limit int) *LineRange {
@@ -1163,12 +1163,7 @@ func numberedLineAt(runes []rune, pos int) (int, bool) {
 	return n, err == nil
 }
 
-func truncateChars(s string, limit int, strategy schema.TruncationStrategy) string {
-	out, _ := truncateCharsWithStatus(s, limit, strategy)
-	return out
-}
-
-func truncateCharsWithStatus(s string, limit int, strategy schema.TruncationStrategy) (string, bool) {
+func truncateChars(s string, limit int, strategy schema.TruncationStrategy) (string, bool) {
 	runes := []rune(s)
 	if limit <= 0 || len(runes) <= limit {
 		return s, false
@@ -1264,12 +1259,7 @@ func truncateHeadChars(s string, limit int, splitNotes bool) (string, bool) {
 	}
 }
 
-func truncateLines(s string, limit int) string {
-	out, _ := truncateLinesWithStatus(s, limit)
-	return out
-}
-
-func truncateLinesWithStatus(s string, limit int) (string, bool) {
+func truncateLines(s string, limit int) (string, bool) {
 	if limit <= 0 {
 		return s, false
 	}

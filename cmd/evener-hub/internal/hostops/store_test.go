@@ -27,7 +27,7 @@ const validStoreJSON = `{"version":1,"sequence":0,"allocatorHighWaterMark":0,"re
 func openTestStore(t *testing.T) (*Store, string) {
 	t.Helper()
 	path := StorePath(t.TempDir())
-	store, err := Open(path)
+	store, err := Open(path, RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("Open(%s): %v", path, err)
 	}
@@ -37,17 +37,18 @@ func openTestStore(t *testing.T) (*Store, string) {
 // createTestRecord persists one pending deploy record for host.
 func createTestRecord(t *testing.T, store *Store, host string) Record {
 	t.Helper()
-	record, err := store.Create(NewRecord{
+	outcome, err := store.Create(OperationCreateRequest{
 		ClientOperationID: "client-" + host,
 		Host:              host,
 		Kind:              KindDeploy,
-		Generation:        7,
-		IncarnationID:     "incarnation-" + host,
+		Pair:              OperationPair{Generation: 7, IncarnationID: "incarnation-" + host},
+		BootID:            "test-boot",
+		SequenceBefore:    store.Sequence(),
 	})
 	if err != nil {
 		t.Fatalf("Create(%s): %v", host, err)
 	}
-	return record
+	return outcome.Record
 }
 
 // reopenFresh opens a store at path the way a process restart does: it forgets
@@ -58,7 +59,7 @@ func reopenFresh(t *testing.T, path string) *Store {
 	if err := forgetStore(path); err != nil {
 		t.Fatalf("forgetStore(%s): %v", path, err)
 	}
-	store, err := Open(path)
+	store, err := Open(path, RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("reopen %s: %v", path, err)
 	}
@@ -182,7 +183,7 @@ func TestOpenRefusesAStoreReadableBeyondItsOwner(t *testing.T) {
 		t.Run(mode.String(), func(t *testing.T) {
 			path := StorePath(t.TempDir())
 			writeRawStore(t, path, mode, validStoreJSON)
-			if _, err := Open(path); !errors.Is(err, ErrStoreReadableBeyondOwner) {
+			if _, err := Open(path, RetentionPolicy{}); !errors.Is(err, ErrStoreReadableBeyondOwner) {
 				t.Fatalf("Open on a %04o store: err = %v, want ErrStoreReadableBeyondOwner", mode, err)
 			}
 			info, err := os.Stat(path)
@@ -277,7 +278,7 @@ func TestOpenRefusesACorruptStore(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			path := StorePath(t.TempDir())
 			writeRawStore(t, path, 0o600, body)
-			if _, err := Open(path); !errors.Is(err, ErrStoreCorrupt) {
+			if _, err := Open(path, RetentionPolicy{}); !errors.Is(err, ErrStoreCorrupt) {
 				t.Fatalf("Open on a corrupt store: err = %v, want ErrStoreCorrupt", err)
 			}
 			// A refused file is never served and never rewritten: no temp file,
@@ -309,8 +310,8 @@ func TestAFailedWriteIsNotAWrite(t *testing.T) {
 		t.Fatalf("openFS: %v", err)
 	}
 
-	if _, err := store.Create(NewRecord{
-		ClientOperationID: "client-h1", Host: "h1", Kind: KindDeploy, Generation: 7, IncarnationID: "inc-1",
+	if _, err := store.Create(OperationCreateRequest{
+		ClientOperationID: "client-h1", Host: "h1", Kind: KindDeploy, Pair: OperationPair{Generation: 7, IncarnationID: "inc-1"}, BootID: "test-boot",
 	}); err == nil {
 		t.Fatalf("Create whose rename never landed reported success")
 	}
@@ -325,12 +326,13 @@ func TestAFailedWriteIsNotAWrite(t *testing.T) {
 	}
 
 	failing = false
-	record, err := store.Create(NewRecord{
-		ClientOperationID: "client-h1", Host: "h1", Kind: KindDeploy, Generation: 7, IncarnationID: "inc-1",
+	outcome, err := store.Create(OperationCreateRequest{
+		ClientOperationID: "client-h1", Host: "h1", Kind: KindDeploy, Pair: OperationPair{Generation: 7, IncarnationID: "inc-1"}, BootID: "test-boot",
 	})
 	if err != nil {
 		t.Fatalf("Create once the fault cleared: %v", err)
 	}
+	record := outcome.Record
 	info, err := os.Stat(path)
 	if err != nil {
 		t.Fatalf("Stat(%s): %v", path, err)
@@ -358,7 +360,7 @@ func TestOpenFailsOnAStoreItCannotRead(t *testing.T) {
 		if err := os.Chmod(path, 0o000); err != nil {
 			t.Fatalf("Chmod(%s, 0000): %v", path, err)
 		}
-		if _, err := Open(path); err == nil {
+		if _, err := Open(path, RetentionPolicy{}); err == nil {
 			t.Fatalf("Open on an unreadable store succeeded, want an error")
 		}
 	})
@@ -367,7 +369,7 @@ func TestOpenFailsOnAStoreItCannotRead(t *testing.T) {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			t.Fatalf("MkdirAll(%s): %v", dir, err)
 		}
-		if _, err := Open(dir); err == nil {
+		if _, err := Open(dir, RetentionPolicy{}); err == nil {
 			t.Fatalf("Open on a directory succeeded, want an error")
 		}
 	})
@@ -377,7 +379,7 @@ func TestOpenFailsOnAStoreItCannotRead(t *testing.T) {
 		if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
 			t.Fatalf("WriteFile(%s): %v", blocker, err)
 		}
-		if _, err := Open(filepath.Join(blocker, "operations.json")); err == nil {
+		if _, err := Open(filepath.Join(blocker, "operations.json"), RetentionPolicy{}); err == nil {
 			t.Fatalf("Open under a regular file succeeded, want an error")
 		}
 	})
@@ -392,14 +394,14 @@ func TestStoreSerializesConcurrentReadModifyWrite(t *testing.T) {
 	ids := make([]string, writers)
 	for i := range writers {
 		wg.Go(func() {
-			record, err := store.Create(NewRecord{
+			outcome, err := store.Create(OperationCreateRequest{
 				ClientOperationID: "concurrent",
 				Host:              "h1",
 				Kind:              KindRestart,
-				Generation:        7,
-				IncarnationID:     "inc-1",
+				Pair:              OperationPair{Generation: 7, IncarnationID: "inc-1"},
+				BootID:            "test-boot",
 			})
-			errs[i], ids[i] = err, record.ID
+			errs[i], ids[i] = err, outcome.Record.ID
 		})
 	}
 	wg.Wait()
@@ -426,15 +428,15 @@ func TestStoreSerializesConcurrentReadModifyWrite(t *testing.T) {
 // TestCreateRefusesRecordsOutsideTheStoreSchema pins the schema validation this
 // layer applies to the fields spec §1 gives shapes for.
 func TestCreateRefusesRecordsOutsideTheStoreSchema(t *testing.T) {
-	cases := map[string]NewRecord{
-		"empty client operation id": {ClientOperationID: "", Host: "h1", Kind: KindDeploy, Generation: 1, IncarnationID: "inc"},
+	cases := map[string]OperationCreateRequest{
+		"empty client operation id": {ClientOperationID: "", Host: "h1", Kind: KindDeploy, Pair: OperationPair{Generation: 1, IncarnationID: "inc"}, BootID: "test-boot"},
 		"client operation id over 128 bytes": {
-			ClientOperationID: strings.Repeat("x", 129), Host: "h1", Kind: KindDeploy, Generation: 1, IncarnationID: "inc",
+			ClientOperationID: strings.Repeat("x", 129), Host: "h1", Kind: KindDeploy, Pair: OperationPair{Generation: 1, IncarnationID: "inc"}, BootID: "test-boot",
 		},
-		"empty host":        {ClientOperationID: "op", Host: "", Kind: KindDeploy, Generation: 1, IncarnationID: "inc"},
-		"unknown kind":      {ClientOperationID: "op", Host: "h1", Kind: Kind("migrate"), Generation: 1, IncarnationID: "inc"},
-		"zero generation":   {ClientOperationID: "op", Host: "h1", Kind: KindDeploy, Generation: 0, IncarnationID: "inc"},
-		"empty incarnation": {ClientOperationID: "op", Host: "h1", Kind: KindDeploy, Generation: 1, IncarnationID: ""},
+		"empty host":        {ClientOperationID: "op", Host: "", Kind: KindDeploy, Pair: OperationPair{Generation: 1, IncarnationID: "inc"}, BootID: "test-boot"},
+		"unknown kind":      {ClientOperationID: "op", Host: "h1", Kind: Kind("migrate"), Pair: OperationPair{Generation: 1, IncarnationID: "inc"}, BootID: "test-boot"},
+		"zero generation":   {ClientOperationID: "op", Host: "h1", Kind: KindDeploy, Pair: OperationPair{Generation: 0, IncarnationID: "inc"}, BootID: "test-boot"},
+		"empty incarnation": {ClientOperationID: "op", Host: "h1", Kind: KindDeploy, Pair: OperationPair{Generation: 1, IncarnationID: ""}, BootID: "test-boot"},
 	}
 	for name, record := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -490,7 +492,7 @@ func recordJSON(id, state string) string {
 func TestOpenAcceptsALegitimatelyEmptyStore(t *testing.T) {
 	path := StorePath(t.TempDir())
 	writeRawStore(t, path, 0o600, validStoreJSON)
-	store, err := Open(path)
+	store, err := Open(path, RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("a legitimately empty store was refused: %v", err)
 	}
@@ -523,7 +525,7 @@ func TestOpenRefusesIdsOutsideTheAllocatorForm(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			path := StorePath(t.TempDir())
 			writeRawStore(t, path, 0o600, body)
-			if _, err := Open(path); !errors.Is(err, ErrStoreCorrupt) {
+			if _, err := Open(path, RetentionPolicy{}); !errors.Is(err, ErrStoreCorrupt) {
 				t.Fatalf("Open on %s: err = %v, want ErrStoreCorrupt", name, err)
 			}
 		})
@@ -655,19 +657,19 @@ func TestAPostRenameFailureKeepsMemoryInStepWithTheFile(t *testing.T) {
 // from its own view and drop the other's records.
 func TestTwoHandlesForOneStoreShareTheOneStoreMutex(t *testing.T) {
 	path := StorePath(t.TempDir())
-	first, err := Open(path)
+	first, err := Open(path, RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("first Open: %v", err)
 	}
-	second, err := Open(path)
+	second, err := Open(path, RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("second Open: %v", err)
 	}
 
-	if _, err := first.Create(NewRecord{ClientOperationID: "via-first", Host: "h1", Kind: KindDeploy, Generation: 7, IncarnationID: "inc-1"}); err != nil {
+	if _, err := first.Create(OperationCreateRequest{ClientOperationID: "via-first", Host: "h1", Kind: KindDeploy, Pair: OperationPair{Generation: 7, IncarnationID: "inc-1"}, BootID: "test-boot"}); err != nil {
 		t.Fatalf("Create through the first handle: %v", err)
 	}
-	if _, err := second.Create(NewRecord{ClientOperationID: "via-second", Host: "h1", Kind: KindRestart, Generation: 7, IncarnationID: "inc-1"}); err != nil {
+	if _, err := second.Create(OperationCreateRequest{ClientOperationID: "via-second", Host: "h1", Kind: KindRestart, Pair: OperationPair{Generation: 7, IncarnationID: "inc-1"}, BootID: "test-boot"}); err != nil {
 		t.Fatalf("Create through the second handle: %v", err)
 	}
 	if got := len(first.Records()); got != 2 {
@@ -686,7 +688,7 @@ func TestTwoHandlesForOneStoreShareTheOneStoreMutex(t *testing.T) {
 			handle = second
 		}
 		wg.Go(func() {
-			_, errs[i] = handle.Create(NewRecord{ClientOperationID: "concurrent", Host: "h1", Kind: KindDeploy, Generation: 7, IncarnationID: "inc-1"})
+			_, errs[i] = handle.Create(OperationCreateRequest{ClientOperationID: "concurrent", Host: "h1", Kind: KindDeploy, Pair: OperationPair{Generation: 7, IncarnationID: "inc-1"}, BootID: "test-boot"})
 		})
 	}
 	wg.Wait()
@@ -729,7 +731,7 @@ func TestANilStoreAnswersSafely(t *testing.T) {
 	if _, ok := store.Record("00000000000000000001"); ok {
 		t.Fatalf("Record on a nil store found a record")
 	}
-	if _, err := store.Create(NewRecord{ClientOperationID: "op", Host: "h1", Kind: KindDeploy, Generation: 1, IncarnationID: "inc"}); err == nil {
+	if _, err := store.Create(OperationCreateRequest{ClientOperationID: "op", Host: "h1", Kind: KindDeploy, Pair: OperationPair{Generation: 1, IncarnationID: "inc"}, BootID: "test-boot"}); err == nil {
 		t.Fatalf("Create on a nil store succeeded")
 	}
 	if _, err := store.Transition("00000000000000000001", StateComplete, terminalChange(true)); err == nil {
@@ -760,7 +762,7 @@ func TestOpenQuarantinesDuplicateStampsButAcceptsGaps(t *testing.T) {
 		terminalRecordJSON("00000000000000000001", 1) + `,` + terminalRecordJSON("00000000000000000002", 1) + `]}`
 	path := StorePath(t.TempDir())
 	writeRawStore(t, path, 0o600, duplicate)
-	store, err := Open(path)
+	store, err := Open(path, RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("Open on a store with two records sharing a stamp: %v", err)
 	}
@@ -770,7 +772,7 @@ func TestOpenQuarantinesDuplicateStampsButAcceptsGaps(t *testing.T) {
 		terminalRecordJSON("00000000000000000001", 4) + `,` + terminalRecordJSON("00000000000000000002", 9) + `]}`
 	gapPath := StorePath(t.TempDir())
 	writeRawStore(t, gapPath, 0o600, gappy)
-	store, err = Open(gapPath)
+	store, err = Open(gapPath, RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("a store with sequence gaps was refused: %v", err)
 	}
@@ -805,7 +807,7 @@ func TestOpenToleratesRetiredBoundaryShapesAndRefusesEpochs(t *testing.T) {
 		t.Run("tolerated/"+name, func(t *testing.T) {
 			path := StorePath(t.TempDir())
 			writeRawStore(t, path, 0o600, body)
-			if _, err := Open(path); err != nil {
+			if _, err := Open(path, RetentionPolicy{}); err != nil {
 				t.Fatalf("Open on the prior-build shape %q was refused: %v", name, err)
 			}
 		})
@@ -819,7 +821,7 @@ func TestOpenToleratesRetiredBoundaryShapesAndRefusesEpochs(t *testing.T) {
 		t.Run("refused/"+name, func(t *testing.T) {
 			path := StorePath(t.TempDir())
 			writeRawStore(t, path, 0o600, body)
-			if _, err := Open(path); !errors.Is(err, ErrStoreCorrupt) {
+			if _, err := Open(path, RetentionPolicy{}); !errors.Is(err, ErrStoreCorrupt) {
 				t.Fatalf("Open on a %s: err = %v, want ErrStoreCorrupt", name, err)
 			}
 		})
@@ -832,7 +834,7 @@ func TestOpenToleratesRetiredBoundaryShapesAndRefusesEpochs(t *testing.T) {
 		t.Run("accepted/"+name, func(t *testing.T) {
 			path := StorePath(t.TempDir())
 			writeRawStore(t, path, 0o600, body)
-			if _, err := Open(path); err != nil {
+			if _, err := Open(path, RetentionPolicy{}); err != nil {
 				t.Fatalf("Open on a %s was refused: %v", name, err)
 			}
 		})
@@ -867,8 +869,8 @@ func TestALandedWriteIsReconcilable(t *testing.T) {
 	}
 
 	syncErr = errors.New("directory sync fault")
-	record, err := store.Create(NewRecord{
-		ClientOperationID: "client-h1", Host: "h1", Kind: KindDeploy, Generation: 7, IncarnationID: "inc-1",
+	outcome, err := store.Create(OperationCreateRequest{
+		ClientOperationID: "client-h1", Host: "h1", Kind: KindDeploy, Pair: OperationPair{Generation: 7, IncarnationID: "inc-1"}, BootID: "test-boot",
 	})
 	if err == nil {
 		t.Fatalf("Create whose directory sync failed reported success")
@@ -876,6 +878,7 @@ func TestALandedWriteIsReconcilable(t *testing.T) {
 	if !RenameLanded(err) {
 		t.Fatalf("Create's post-rename failure is not distinguishable: %v", err)
 	}
+	record := outcome.Record
 	if record.ID == "" {
 		t.Fatalf("a landed Create returned no record id to reconcile with")
 	}
@@ -901,8 +904,8 @@ func TestALandedWriteIsReconcilable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("openFS: %v", err)
 	}
-	none, err := refusing.Create(NewRecord{
-		ClientOperationID: "client-h1", Host: "h1", Kind: KindDeploy, Generation: 7, IncarnationID: "inc-1",
+	none, err := refusing.Create(OperationCreateRequest{
+		ClientOperationID: "client-h1", Host: "h1", Kind: KindDeploy, Pair: OperationPair{Generation: 7, IncarnationID: "inc-1"}, BootID: "test-boot",
 	})
 	if err == nil {
 		t.Fatalf("Create with a failing rename reported success")
@@ -910,8 +913,8 @@ func TestALandedWriteIsReconcilable(t *testing.T) {
 	if RenameLanded(err) {
 		t.Fatalf("a pre-rename refusal was reported as landed: %v", err)
 	}
-	if none.ID != "" {
-		t.Fatalf("a refusal returned record %q, want none", none.ID)
+	if none.Record.ID != "" {
+		t.Fatalf("a refusal returned record %q, want none", none.Record.ID)
 	}
 	if len(refusing.Records()) != 0 {
 		t.Fatalf("a refused Create left records behind")
@@ -1010,7 +1013,7 @@ func TestLoadNormalizesStoredTimestampsToUTC(t *testing.T) {
 		`{"id":"00000000000000000001","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"pending","generation":7,"incarnationId":"inc-1","createdAt":"2026-09-26T02:00:00+02:00","updatedAt":"2026-09-26T03:00:00+02:00","hostRemoved":false}]}`
 	writeRawStore(t, path, 0o600, body)
 
-	store, err := Open(path)
+	store, err := Open(path, RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -1047,7 +1050,7 @@ func TestOpenAcceptsARecordCarryingEveryRequiredField(t *testing.T) {
 		`"hostRemoved":true,"result":{"ok":false,"message":"waitHealthy timed out"},"sequence":1}]}`
 	path := StorePath(t.TempDir())
 	writeRawStore(t, path, 0o600, body)
-	store, err := Open(path)
+	store, err := Open(path, RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -1103,7 +1106,7 @@ func TestOpenRefusesEveryRequiredRecordFieldThatIsOmitted(t *testing.T) {
 			body := `{"version":1,"sequence":1,"allocatorHighWaterMark":1,"records":[` + record + `]}`
 			path := StorePath(t.TempDir())
 			writeRawStore(t, path, 0o600, body)
-			if _, err := Open(path); !errors.Is(err, ErrStoreCorrupt) {
+			if _, err := Open(path, RetentionPolicy{}); !errors.Is(err, ErrStoreCorrupt) {
 				t.Fatalf("a record with no %s loaded: err = %v, want ErrStoreCorrupt", name, err)
 			}
 			if got := string(mustReadFile(t, path)); got != body {
@@ -1120,19 +1123,19 @@ func TestOpenRefusesEveryRequiredRecordFieldThatIsOmitted(t *testing.T) {
 // rule reads the same whether or not a handle is already held.
 func TestOpenRevalidatesTheOwnerOnlyModeOfAnAlreadyHeldStore(t *testing.T) {
 	path := StorePath(t.TempDir())
-	first, err := Open(path)
+	first, err := Open(path, RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
 	createTestRecord(t, first, "h1")
-	if _, err := Open(path); err != nil {
+	if _, err := Open(path, RetentionPolicy{}); err != nil {
 		t.Fatalf("second Open of a healthy store: %v", err)
 	}
 
 	if err := os.Chmod(path, 0o644); err != nil {
 		t.Fatalf("Chmod(%s, 0644): %v", path, err)
 	}
-	if _, err := Open(path); !errors.Is(err, ErrStoreReadableBeyondOwner) {
+	if _, err := Open(path, RetentionPolicy{}); !errors.Is(err, ErrStoreReadableBeyondOwner) {
 		t.Fatalf("Open on a widened store file with a held cell: err = %v, want ErrStoreReadableBeyondOwner", err)
 	}
 }
@@ -1147,8 +1150,8 @@ func TestCreateAndTransitionRefuseValuesTheStoreCannotWriteBack(t *testing.T) {
 		store, path := openTestStore(t)
 		createTestRecord(t, store, "h1")
 		before := mustReadFile(t, path)
-		if _, err := store.Create(NewRecord{
-			ClientOperationID: "client-h1", Host: "h\xff\xfe", Kind: KindDeploy, Generation: 7, IncarnationID: "inc-1",
+		if _, err := store.Create(OperationCreateRequest{
+			ClientOperationID: "client-h1", Host: "h\xff\xfe", Kind: KindDeploy, Pair: OperationPair{Generation: 7, IncarnationID: "inc-1"}, BootID: "test-boot",
 		}); !errors.Is(err, ErrInvalidRecord) {
 			t.Fatalf("Create with an invalid UTF-8 host: err = %v, want ErrInvalidRecord", err)
 		}
@@ -1158,8 +1161,8 @@ func TestCreateAndTransitionRefuseValuesTheStoreCannotWriteBack(t *testing.T) {
 	})
 	t.Run("create with an invalid utf-8 client operation id", func(t *testing.T) {
 		store, _ := openTestStore(t)
-		if _, err := store.Create(NewRecord{
-			ClientOperationID: "client-\xff\xfe", Host: "h1", Kind: KindDeploy, Generation: 7, IncarnationID: "inc-1",
+		if _, err := store.Create(OperationCreateRequest{
+			ClientOperationID: "client-\xff\xfe", Host: "h1", Kind: KindDeploy, Pair: OperationPair{Generation: 7, IncarnationID: "inc-1"}, BootID: "test-boot",
 		}); !errors.Is(err, ErrInvalidRecord) {
 			t.Fatalf("Create with an invalid UTF-8 client operation id: err = %v, want ErrInvalidRecord", err)
 		}
@@ -1308,7 +1311,7 @@ func TestOpenAcceptsAProgressListAndRefusesItsAbsenceInAWrittenShape(t *testing.
 		`"createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false}]}`
 	path := StorePath(t.TempDir())
 	writeRawStore(t, path, 0o600, withProgress)
-	store, err := Open(path)
+	store, err := Open(path, RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("Open on a store carrying progress: %v", err)
 	}
@@ -1323,7 +1326,7 @@ func TestOpenAcceptsAProgressListAndRefusesItsAbsenceInAWrittenShape(t *testing.
 	empty := strings.Replace(withProgress, `"progress":[{"ts":"2026-09-26T12:00:00Z","message":"pushed"}]`, `"progress":[]`, 1)
 	emptyPath := StorePath(t.TempDir())
 	writeRawStore(t, emptyPath, 0o600, empty)
-	if _, err := Open(emptyPath); err != nil {
+	if _, err := Open(emptyPath, RetentionPolicy{}); err != nil {
 		t.Fatalf("Open on a store carrying an empty progress list: %v", err)
 	}
 }
@@ -1348,8 +1351,8 @@ func TestTheChainSyncsConvergeAfterAFailedAttempt(t *testing.T) {
 		t.Fatalf("openFS: %v", err)
 	}
 
-	if _, err := store.Create(NewRecord{
-		ClientOperationID: "client-h1", Host: "h1", Kind: KindDeploy, Generation: 7, IncarnationID: "inc-1",
+	if _, err := store.Create(OperationCreateRequest{
+		ClientOperationID: "client-h1", Host: "h1", Kind: KindDeploy, Pair: OperationPair{Generation: 7, IncarnationID: "inc-1"}, BootID: "test-boot",
 	}); err == nil {
 		t.Fatalf("a write whose chain sync failed reported success")
 	}
@@ -1359,8 +1362,8 @@ func TestTheChainSyncsConvergeAfterAFailedAttempt(t *testing.T) {
 
 	synced = nil
 	failing = ""
-	if _, err := store.Create(NewRecord{
-		ClientOperationID: "client-h1", Host: "h1", Kind: KindDeploy, Generation: 7, IncarnationID: "inc-1",
+	if _, err := store.Create(OperationCreateRequest{
+		ClientOperationID: "client-h1", Host: "h1", Kind: KindDeploy, Pair: OperationPair{Generation: 7, IncarnationID: "inc-1"}, BootID: "test-boot",
 	}); err != nil {
 		t.Fatalf("Create after the fault cleared: %v", err)
 	}
@@ -1388,7 +1391,7 @@ func TestOpenAcceptsAValidSurrogatePairAndRefusesALoneOne(t *testing.T) {
 		`"generation":7,"incarnationId":"inc-1","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false}]}`
 	path := StorePath(t.TempDir())
 	writeRawStore(t, path, 0o600, pair)
-	store, err := Open(path)
+	store, err := Open(path, RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("Open on a store carrying a surrogate pair: %v", err)
 	}
@@ -1406,7 +1409,7 @@ func TestOpenAcceptsAValidSurrogatePairAndRefusesALoneOne(t *testing.T) {
 		`"generation":7,"incarnationId":"inc-1","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false}]}`
 	literalPath := StorePath(t.TempDir())
 	writeRawStore(t, literalPath, 0o600, literal)
-	if _, err := Open(literalPath); err != nil {
+	if _, err := Open(literalPath, RetentionPolicy{}); err != nil {
 		t.Fatalf("Open on a store carrying an escaped backslash before ud800: %v", err)
 	}
 }
@@ -1441,7 +1444,7 @@ func TestTransitionRefusesALoneSurrogateInARawField(t *testing.T) {
 // deleted one from a stale snapshot.
 func TestACachedOpenDoesNotServeAVanishedStoreFile(t *testing.T) {
 	path := StorePath(t.TempDir())
-	first, err := Open(path)
+	first, err := Open(path, RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -1453,7 +1456,7 @@ func TestACachedOpenDoesNotServeAVanishedStoreFile(t *testing.T) {
 	if err := os.Remove(path); err != nil {
 		t.Fatalf("Remove(%s): %v", path, err)
 	}
-	reopened, err := Open(path)
+	reopened, err := Open(path, RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("Open after the file vanished: %v", err)
 	}
@@ -1480,7 +1483,7 @@ func TestACachedOpenDoesNotServeAVanishedStoreFile(t *testing.T) {
 func TestRepeatedOpensOfANeverWrittenStoreStayEmpty(t *testing.T) {
 	path := StorePath(t.TempDir())
 	for i := range 3 {
-		store, err := Open(path)
+		store, err := Open(path, RetentionPolicy{})
 		if err != nil {
 			t.Fatalf("Open %d: %v", i, err)
 		}

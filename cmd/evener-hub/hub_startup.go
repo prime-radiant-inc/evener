@@ -163,6 +163,12 @@ type hubRuntime struct {
 	hostRegistry     *hostreg.Registry
 	sshManager       *sshconn.Manager
 	opsStore         *hostops.Store
+	// attachedHostsStore remembers the registrations that reached attached
+	// state, and attachedHostsPersister serializes its writes off the SSH event
+	// path. A state file this boot could not open leaves the store nil, which
+	// makes the persister and startup reconnect no-ops.
+	attachedHostsStore     *hubcore.AttachedHostsStore
+	attachedHostsPersister *attachedHostsPersister
 	// opsUnavailable marks a hub whose operation store failed to open: it serves
 	// its hosts and refuses host changes until it is started with a store that
 	// opens. openOps opens the store (a test replaces it).
@@ -499,6 +505,13 @@ func (r *hubRuntime) openDurableState() error {
 	if r.creationStoreErr != nil {
 		r.logf("creation state: %v", r.creationStoreErr)
 	}
+	store, attachedErr := hubcore.NewAttachedHostsStore(r.hubStateRoot)
+	r.attachedHostsStore = store
+	if attachedErr != nil {
+		// A corrupt attached-host state file must not stop the hub: this boot
+		// serves without startup reconnect and leaves the file for repair.
+		r.logf("attached hosts state: %v", attachedErr)
+	}
 	// Resolve the registry root once for this hub process. Launch configuration
 	// may override XDG_CONFIG_HOME for a child, so the child must receive this
 	// concrete root rather than resolving its own default from that environment.
@@ -552,6 +565,7 @@ func (r *hubRuntime) connectHosts() (func(), error) {
 	if newSSHManager == nil {
 		newSSHManager = sshconn.New
 	}
+	r.attachedHostsPersister = newAttachedHostsPersister(r.attachedHostsStore, r.logf)
 	r.sshManager = newSSHManager(r.hostRegistry, sshconn.Options{
 		SessionToolsHubID: r.sessionToolsHubID,
 		Logger:            r.logf,
@@ -562,7 +576,13 @@ func (r *hubRuntime) connectHosts() (func(), error) {
 		DeployHelp:        deploy.help,
 		OnEvent:           r.onSSHEvent,
 	})
-	closeSSH := func() { _ = r.sshManager.Close() }
+	// Close the manager first: every lifecycle event an in-flight attach still
+	// emits is enqueued before Close returns, and the persister's own Close
+	// then flushes them. Reversing the two would drop those final writes.
+	closeSSH := func() {
+		_ = r.sshManager.Close()
+		r.attachedHostsPersister.Close()
+	}
 
 	// Boot-prune the state-root write probe's crash orphans: evener/host/running
 	// writes (and removes) one probe file per probe under every durable state
@@ -625,6 +645,19 @@ func (r *hubRuntime) onSSHEvent(ev sshconn.Event) {
 	// per-host lock held, so it must never call back into the manager.
 	if r.hostManageEvents != nil {
 		r.hostManageEvents(ev)
+	}
+	if ev.Kind == sshconn.EventAttached && r.attachedHostsPersister != nil {
+		if r.hostIdentitiesDegraded() {
+			// This boot's identities were minted at load, so it cannot vouch for
+			// an incarnation: record the name only, and only if nothing durable
+			// is already there.
+			r.attachedHostsPersister.RecordDegraded(ev.Host)
+		} else {
+			r.attachedHostsPersister.Record(ev.Host, hubcore.AttachedHostRecord{
+				Generation:    ev.Generation,
+				IncarnationID: ev.IncarnationID,
+			})
+		}
 	}
 }
 
@@ -689,6 +722,9 @@ func (r *hubRuntime) buildWeb(appwireTrace *appserver.WebSocketTrace, localHostN
 		RemoteHostOpsStore:          r.opsStore,
 		RemoteHostOpsUnavailable:    r.opsUnavailable,
 		RemoteHostRecordsUnreadable: r.recordsUnreadable,
+		// A host change that retires a registration drops its startup-reconnect
+		// record, so the next boot does not revive the identity it replaced.
+		ForgetAttachedHost: func(name string) { r.attachedHostsPersister.Remove(name) },
 		// This hub's own running identity and the two owner-adjustable
 		// deploy-pipeline knobs: the probe deadline the plan's gated probe
 		// uses, and the minimum free space evener/host/running's health
@@ -922,6 +958,10 @@ func (r *hubRuntime) startBackground(web *WebServer) (context.Context, func()) {
 	// read path (remoteThreadFetch) reads remoteCache.Snapshot() instead whenever
 	// RemoteThreadCache is configured.
 	goBackground(func() { refreshHubRemoteThreads(ctx, r.remotePoke, web) })
+	// Reconnect the hosts that were attached when this hub last stopped.
+	// web.hostManage loaded its records during buildWeb, so the remnant fence
+	// is bound before selection reads it.
+	startStartupHostReconnect(r, web)
 	// Live-model prefetch: fetch every instance's /models listing into the
 	// held registry once at startup, so the Providers sheet reads cached
 	// inventory instead of fetching on open. Once only: the hub never polls

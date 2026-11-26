@@ -57,7 +57,7 @@ func newPipelineStagingFixture(t *testing.T, entries []hostreg.Host, seed func(*
 
 func newPipelineFixtureAt(t *testing.T, dir, storeRoot string, entries []hostreg.Host, seed func(*hostops.Store)) *pipelineFixture {
 	t.Helper()
-	store, err := hostops.Open(hostops.StorePath(storeRoot))
+	store, err := hostops.Open(hostops.StorePath(storeRoot), hostops.RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("hostops.Open: %v", err)
 	}
@@ -193,7 +193,7 @@ func seedStoreWithCompensations(t *testing.T, targetPath, sourcePath string, com
 	if err := os.Chmod(targetPath, 0o600); err != nil {
 		t.Fatalf("Chmod(%s): %v", targetPath, err)
 	}
-	store, err := hostops.Open(targetPath)
+	store, err := hostops.Open(targetPath, hostops.RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("hostops.Open(%s): %v", targetPath, err)
 	}
@@ -356,7 +356,7 @@ func readPipelineConfig(t *testing.T, path string) (loadedConfig, bool) {
 	if err != nil {
 		t.Fatalf("loadWithRecords(%s): %v", path, err)
 	}
-	store, err := hostops.Open(hostops.StorePath(filepath.Dir(path)))
+	store, err := hostops.Open(hostops.StorePath(filepath.Dir(path)), hostops.RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("hostops.Open: %v", err)
 	}
@@ -757,17 +757,19 @@ func TestBootHostRemovedPassMarksTheRemovedIncarnationsRecords(t *testing.T) {
 	entry := pipelineEntry("keep", 2)
 	fixture := newPipelineFixture(t, []hostreg.Host{entry}, func(store *hostops.Store) {
 		pipelineToken(t, store, "keep", 2)
-		if _, err := store.Create(hostops.NewRecord{
+		if _, err := store.Create(hostops.OperationCreateRequest{
 			ClientOperationID: "op-removed", Host: "keep", Kind: hostops.KindDeploy,
-			Generation: 2, IncarnationID: "inc-keep",
+			Pair:   hostops.OperationPair{Generation: 2, IncarnationID: "inc-keep"},
+			BootID: "test-boot",
 		}); err != nil {
 			t.Fatalf("Create: %v", err)
 		}
 		// A re-add's record carries a different incarnation id: the tombstone
 		// must never match it.
-		if _, err := store.Create(hostops.NewRecord{
+		if _, err := store.Create(hostops.OperationCreateRequest{
 			ClientOperationID: "op-readd", Host: "keep", Kind: hostops.KindRestart,
-			Generation: 9, IncarnationID: "inc-readd",
+			Pair:   hostops.OperationPair{Generation: 9, IncarnationID: "inc-readd"},
+			BootID: "test-boot",
 		}); err != nil {
 			t.Fatalf("Create: %v", err)
 		}
@@ -817,9 +819,10 @@ func TestBootMirrorRollsBackATornStoreAndWritesTheHighWater(t *testing.T) {
 		}, nil); err != nil {
 			t.Fatalf("MirrorBoundaries: %v", err)
 		}
-		if _, err := store.Create(hostops.NewRecord{
+		if _, err := store.Create(hostops.OperationCreateRequest{
 			ClientOperationID: "op-torn", Host: "m4", Kind: hostops.KindDeploy,
-			Generation: 9, IncarnationID: "inc-mirror",
+			Pair:   hostops.OperationPair{Generation: 9, IncarnationID: "inc-mirror"},
+			BootID: "test-boot",
 		}); err != nil {
 			t.Fatalf("Create: %v", err)
 		}
@@ -1240,9 +1243,10 @@ func TestBootRestoreInstallsTheMachineRecords(t *testing.T) {
 func TestBootRestoreReversesTheHostRemovedMarks(t *testing.T) {
 	entry := pipelineEntry("keep", 2)
 	fixture, _, preRemove := newPipelineRemovalFixture(t, entry, true)
-	if _, err := fixture.store.Create(hostops.NewRecord{
+	if _, err := fixture.store.Create(hostops.OperationCreateRequest{
 		ClientOperationID: "op-1", Host: "keep", Kind: hostops.KindDeploy,
-		Generation: 2, IncarnationID: "inc-keep",
+		Pair:   hostops.OperationPair{Generation: 2, IncarnationID: "inc-keep"},
+		BootID: "test-boot",
 	}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}

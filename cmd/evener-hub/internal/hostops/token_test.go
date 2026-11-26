@@ -41,7 +41,7 @@ func (c *testClock) advance(d time.Duration) { c.set(c.at.Add(d)) }
 func openClockStore(t *testing.T) (*Store, string, *testClock) {
 	t.Helper()
 	path := StorePath(t.TempDir())
-	store, err := Open(path)
+	store, err := Open(path, RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("Open(%s): %v", path, err)
 	}
@@ -524,7 +524,7 @@ func TestTokenCorruptRowPostdatingTheMarkReadsExpired(t *testing.T) {
 	writeRawStore(t, path, 0o600, tokenStoreJSON(tokenEpoch,
 		tokenRowJSON("m4", strings.Repeat("B", minTokenValueChars), future, future.Add(time.Minute), tokenEpoch)))
 
-	store, err := Open(path)
+	store, err := Open(path, RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("Open refused a file carrying a post-mark row: %v", err)
 	}
@@ -604,7 +604,7 @@ func TestOpenQuarantinesTokenRowsOutsideTheSchema(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			path := StorePath(t.TempDir())
 			writeRawStore(t, path, 0o600, body)
-			store, err := Open(path)
+			store, err := Open(path, RetentionPolicy{})
 			if err != nil {
 				t.Fatalf("Open on %s: %v", name, err)
 			}

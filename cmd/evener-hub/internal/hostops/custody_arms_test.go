@@ -131,7 +131,7 @@ func TestCustodySnapshotRefusesUnprovableCorruptStores(t *testing.T) {
 			t.Parallel()
 			path := StorePath(t.TempDir())
 			writeRawStore(t, path, 0o600, tc.body)
-			if _, err := Open(path); !errors.Is(err, ErrStoreCorrupt) {
+			if _, err := Open(path, RetentionPolicy{}); !errors.Is(err, ErrStoreCorrupt) {
 				t.Fatalf("Open error = %v, want errors.Is(ErrStoreCorrupt)", err)
 			}
 		})
@@ -205,7 +205,7 @@ func TestQuarantineCompletesWithArmedCompensations(t *testing.T) {
 			t.Parallel()
 			path := StorePath(t.TempDir())
 			writeRawStore(t, path, 0o600, tc.body)
-			store, err := Open(path)
+			store, err := Open(path, RetentionPolicy{})
 			if err != nil {
 				t.Fatalf("Open on a corrupt store carrying a compensation record: err = %v, want the custody-first quarantine", err)
 			}
@@ -239,7 +239,7 @@ func TestStoreLoadNormalizesRemovalMarkers(t *testing.T) {
 	body := strings.Replace(validArmStoreJSON, `"sequence":2}]}`,
 		`"sequence":2}],"removedHosts":{"hX":{"removedAt":"2026-09-26T02:00:00+02:00","generation":3,"incarnationId":"inc-x"}}}`, 1)
 	writeRawStore(t, path, 0o600, body)
-	store, err := Open(path)
+	store, err := Open(path, RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("Open refused a valid store carrying a removal marker: %v", err)
 	}
@@ -264,7 +264,7 @@ func TestQuarantineSecondEpochKeepsALineageFenceUnderItsID(t *testing.T) {
 	t.Parallel()
 	path := StorePath(t.TempDir())
 	writeRawStore(t, path, 0o600, quarantinedStoreJSON)
-	first, err := Open(path)
+	first, err := Open(path, RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("first Open: %v", err)
 	}
@@ -283,7 +283,7 @@ func TestQuarantineSecondEpochKeepsALineageFenceUnderItsID(t *testing.T) {
 	if err := forgetStore(path); err != nil {
 		t.Fatalf("forgetStore: %v", err)
 	}
-	reopened, err := Open(path)
+	reopened, err := Open(path, RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("second Open over the prior custody's fence: %v", err)
 	}
@@ -301,7 +301,7 @@ func TestQuarantineSecondEpochRefusesAnAliasedFenceID(t *testing.T) {
 	t.Parallel()
 	path := StorePath(t.TempDir())
 	writeRawStore(t, path, 0o600, quarantinedStoreJSON)
-	if _, err := Open(path); err != nil {
+	if _, err := Open(path, RetentionPolicy{}); err != nil {
 		t.Fatalf("first Open: %v", err)
 	}
 
@@ -315,7 +315,7 @@ func TestQuarantineSecondEpochRefusesAnAliasedFenceID(t *testing.T) {
 	if err := forgetStore(path); err != nil {
 		t.Fatalf("forgetStore: %v", err)
 	}
-	if _, err := Open(path); !errors.Is(err, ErrStoreCorrupt) {
+	if _, err := Open(path, RetentionPolicy{}); !errors.Is(err, ErrStoreCorrupt) {
 		t.Fatalf("Open error = %v, want errors.Is(ErrStoreCorrupt)", err)
 	}
 }
