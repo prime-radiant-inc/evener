@@ -68,7 +68,7 @@ func TestNavigationProjectionBuildSurfacesCancellationAtEveryCheck(t *testing.T)
 	t.Parallel()
 	inputs := navigationCancellationInputs()
 	counting := &cancelAfterChecksContext{Context: context.Background(), limit: math.MaxInt32}
-	if _, err := buildNavigationProjectionContext(counting, inputs); err != nil {
+	if _, err := buildNavigationProjection(counting, inputs); err != nil {
 		t.Fatalf("uncancelled build: %v", err)
 	}
 	total := counting.checks.Load()
@@ -76,13 +76,13 @@ func TestNavigationProjectionBuildSurfacesCancellationAtEveryCheck(t *testing.T)
 		t.Fatal("fixture made no context checks; the sweep would prove nothing")
 	}
 	for limit := int32(1); limit <= total; limit++ {
-		_, err := buildNavigationProjectionContext(&cancelAfterChecksContext{Context: context.Background(), limit: limit}, inputs)
+		_, err := buildNavigationProjection(&cancelAfterChecksContext{Context: context.Background(), limit: limit}, inputs)
 		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("build cancelled at check %d of %d returned %v, want the cancellation surfaced", limit, total, err)
 		}
 	}
 	// One check beyond everything a full build makes must never cancel.
-	if _, err := buildNavigationProjectionContext(&cancelAfterChecksContext{Context: context.Background(), limit: total + 1}, inputs); err != nil {
+	if _, err := buildNavigationProjection(&cancelAfterChecksContext{Context: context.Background(), limit: total + 1}, inputs); err != nil {
 		t.Fatalf("build under a never-reached cancellation limit failed: %v", err)
 	}
 }
@@ -100,7 +100,7 @@ func TestNavigationSectionDropsTrailingRowsWhenOverTheResponseBudget(t *testing.
 	for index := range rows {
 		rows[index] = hubcore.TreeNode{ID: fmt.Sprintf("session-%03d", index), Kind: "session", State: state}
 	}
-	projection, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "generation", Tree: hubcore.Tree{Live: rows}})
+	projection, err := buildNavigationProjection(t.Context(), navigationBuildInputs{GenerationID: "generation", Tree: hubcore.Tree{Live: rows}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,7 +142,7 @@ func TestNavigationProjectDetailTruncatesAcrossTiersWhenOverBudget(t *testing.T)
 		}
 		return rows
 	}
-	projection, err := buildNavigationProjection(navigationBuildInputs{
+	projection, err := buildNavigationProjection(t.Context(), navigationBuildInputs{
 		GenerationID: "generation",
 		Tree: hubcore.Tree{Projects: []hubcore.TreeProject{{
 			Key:     "project",
@@ -154,7 +154,7 @@ func TestNavigationProjectDetailTruncatesAcrossTiersWhenOverBudget(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	resource, ok := projection.ProjectIn("", "project")
+	resource, ok := projection.Project("", "project")
 	if !ok {
 		t.Fatal("project missing")
 	}
@@ -218,7 +218,7 @@ func TestNavigationArchivedPageReportsPartiallyOmittedForks(t *testing.T) {
 		}},
 	}
 	total := 2 + 2*grandchildren
-	projection, err := buildNavigationProjection(navigationBuildInputs{
+	projection, err := buildNavigationProjection(t.Context(), navigationBuildInputs{
 		GenerationID: "generation",
 		Tree: hubcore.Tree{Projects: []hubcore.TreeProject{{
 			Key:      "project",
@@ -258,7 +258,7 @@ func TestNavigationArchivedPageReportsPartiallyOmittedForks(t *testing.T) {
 // a sibling resource, and a pin-section read by its key ID still resolves.
 func TestNavigationResourceReadsRefuseUnknownSelectors(t *testing.T) {
 	t.Parallel()
-	projection, err := buildNavigationProjection(navigationBuildInputs{
+	projection, err := buildNavigationProjection(t.Context(), navigationBuildInputs{
 		GenerationID: "generation",
 		Tree: hubcore.Tree{
 			// The pinned row rides a project tier: pin candidates come from
@@ -299,11 +299,11 @@ func TestNavigationResourceReadsRefuseUnknownSelectors(t *testing.T) {
 			return err
 		},
 		"unknown project page key": func() error {
-			_, err := projection.ProjectPageIn("", "missing", "current", 0, maxNavigationSectionRows)
+			_, err := projection.ProjectPage("", "missing", "current", 0, maxNavigationSectionRows)
 			return err
 		},
 		"unknown project page tier": func() error {
-			_, err := projection.ProjectPageIn("", "project", "bogus", 0, maxNavigationSectionRows)
+			_, err := projection.ProjectPage("", "project", "bogus", 0, maxNavigationSectionRows)
 			return err
 		},
 	} {
@@ -317,12 +317,12 @@ func TestNavigationResourceReadsRefuseUnknownSelectors(t *testing.T) {
 	if _, ok := projection.Location("local:missing"); ok {
 		t.Error("unknown location returned ok")
 	}
-	if _, ok := projection.ProjectIn("", "missing"); ok {
+	if _, ok := projection.Project("", "missing"); ok {
 		t.Error("unknown project detail returned ok")
 	}
 	// A project in the active catalog is invisible to a read that names
 	// another catalog: a catalog narrows, it never falls through.
-	if _, ok := projection.ProjectIn(navigationResourceArchivedProjects, "project"); ok {
+	if _, ok := projection.Project(navigationResourceArchivedProjects, "project"); ok {
 		t.Error("active project answered an archived-catalog read")
 	}
 	// A pin-section read without its SectionID falls back to the key's ID.
@@ -412,7 +412,7 @@ func TestNavigationPinSectionRowsOrderByUpdateThenRefThenID(t *testing.T) {
 		{ID: "old", Ref: "local:old", Title: "old", Kind: "session", State: "idle", UpdatedAt: now.Add(-time.Hour)},
 		{ID: "newest", Ref: "local:newest", Title: "newest", Kind: "session", State: "idle", UpdatedAt: now.Add(time.Hour)},
 	}
-	projection, err := buildNavigationProjection(navigationBuildInputs{
+	projection, err := buildNavigationProjection(t.Context(), navigationBuildInputs{
 		GenerationID: "generation",
 		Tree:         hubcore.Tree{Projects: []hubcore.TreeProject{{Key: "project", Name: "project", Current: rows}}},
 		PinSections:  []hubcore.PinSection{{ID: "pins", Name: "Pins"}},
@@ -459,10 +459,9 @@ func TestNavigationPinSectionRowsOrderByUpdateThenRefThenID(t *testing.T) {
 	}
 }
 
-// The non-context clone is the service's capture boundary (navigation_service
-// reads fresh inputs through it): it must own every decoration map, so a
-// later roster or favorites refresh cannot rewrite a projection built from
-// the earlier capture.
+// Cloning navigation inputs must own every decoration map, so a later roster
+// or favorites refresh cannot rewrite a projection built from an earlier
+// capture.
 func TestCloneNavigationInputsOwnsDecorationMaps(t *testing.T) {
 	t.Parallel()
 	inputs := navigationBuildInputs{
@@ -477,7 +476,10 @@ func TestCloneNavigationInputsOwnsDecorationMaps(t *testing.T) {
 			hubcore.SessionPinKey("", "session-a"): {SessionID: "session-a", SectionID: "pins"},
 		},
 	}
-	clone := cloneNavigationInputs(inputs)
+	clone, err := cloneNavigationInputs(t.Context(), inputs)
+	if err != nil {
+		t.Fatal(err)
+	}
 	inputs.Sources[0].Label = "after"
 	delete(inputs.Live, "session-a")
 	delete(inputs.Renameable, "session-a")
@@ -509,7 +511,7 @@ func TestNavigationProjectorCapsRowsAndUnknownTiers(t *testing.T) {
 		{ID: "session-b", Kind: "session", State: "idle"},
 		{ID: "session-c", Kind: "session", State: "idle"},
 	}
-	projection, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "generation", Tree: hubcore.Tree{Live: rows}})
+	projection, err := buildNavigationProjection(t.Context(), navigationBuildInputs{GenerationID: "generation", Tree: hubcore.Tree{Live: rows}})
 	if err != nil {
 		t.Fatal(err)
 	}

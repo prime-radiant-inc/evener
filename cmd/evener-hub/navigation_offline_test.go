@@ -46,7 +46,7 @@ func TestNavigationOfflineSourceRowsCarryOfflineField(t *testing.T) {
 	snapshot := web.navigationSnapshotInputs(t.Context())
 	tree := hubBuildNavigationTree(snapshot.metas, snapshot.live, map[hubcore.ArchiveKey]bool{}, snapshot.projects)
 	inputs := navigationBuildInputsFromTreeSnapshot("generation", 1, tree, web.apiTreeSources(), hubapi.AttentionSummary{}, snapshot.live, nil, nil, nil, nil)
-	projection, err := buildNavigationProjection(inputs)
+	projection, err := buildNavigationProjection(t.Context(), inputs)
 	if err != nil {
 		t.Fatalf("buildNavigationProjection: %v", err)
 	}
@@ -91,7 +91,7 @@ func remoteNavigationProjection(t *testing.T, threads []appwire.Thread) navigati
 	if err != nil {
 		t.Fatalf("Capture: %v", err)
 	}
-	projection, err := buildNavigationProjection(captured.Inputs)
+	projection, err := buildNavigationProjection(t.Context(), captured.Inputs)
 	if err != nil {
 		t.Fatalf("buildNavigationProjection: %v", err)
 	}

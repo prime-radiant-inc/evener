@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
-	"maps"
 	"math"
 	"regexp"
 	"sort"
@@ -138,7 +137,7 @@ type navigationProjection struct {
 	// would otherwise fingerprint the whole list on every page. It is lazy on
 	// purpose: archived rows stay out of the build-time fingerprint pass, so a
 	// build never hashes every archive. Nil (a projection not made by
-	// buildNavigationProjectionContext) caches nothing.
+	// buildNavigationProjection) caches nothing.
 	archivedRevisions *sync.Map
 }
 
@@ -149,20 +148,15 @@ type navigationPinSection struct {
 	rows        []hubcore.TreeNode
 }
 
-// buildNavigationProjection has no ambient dependencies. The supplied tree is
+// buildNavigationProjection has no ambient dependencies and checks ctx across
+// every potentially large collection and recursive walk. The supplied tree is
 // already ordered and tiered by hubcore; this function only adds wire shaping,
 // pin/favorite decorations, bounds, and indexes.
-func buildNavigationProjection(inputs navigationBuildInputs) (navigationProjection, error) {
-	return buildNavigationProjectionContext(context.Background(), inputs)
-}
-
-// buildNavigationProjectionContext is the bounded form used by the service.
-// Every potentially large collection and recursive walk checks ctx.
-func buildNavigationProjectionContext(ctx context.Context, inputs navigationBuildInputs) (navigationProjection, error) {
+func buildNavigationProjection(ctx context.Context, inputs navigationBuildInputs) (navigationProjection, error) {
 	if err := validateNavigationInputsContext(ctx, inputs); err != nil {
 		return navigationProjection{}, err
 	}
-	cloned, err := cloneNavigationInputsContext(ctx, inputs)
+	cloned, err := cloneNavigationInputs(ctx, inputs)
 	if err != nil {
 		return navigationProjection{}, err
 	}
@@ -228,7 +222,7 @@ func buildNavigationProjectionContext(ctx context.Context, inputs navigationBuil
 	return p, nil
 }
 
-func cloneNavigationInputsContext(ctx context.Context, in navigationBuildInputs) (navigationBuildInputs, error) {
+func cloneNavigationInputs(ctx context.Context, in navigationBuildInputs) (navigationBuildInputs, error) {
 	if err := ctx.Err(); err != nil {
 		return navigationBuildInputs{}, err
 	}
@@ -274,21 +268,6 @@ func cloneNavigationInputsContext(ctx context.Context, in navigationBuildInputs)
 	return out, nil
 }
 
-func cloneNavigationInputs(in navigationBuildInputs) navigationBuildInputs {
-	out := in
-	out.Sources = append([]hubapi.Source(nil), in.Sources...)
-	out.LiveEntries = cloneNavigationLiveEntries(in.LiveEntries)
-	out.Live = cloneNavigationBoolMap(in.Live)
-	out.Renameable = cloneNavigationBoolMap(in.Renameable)
-	out.SessionFavorite = cloneNavigationBoolMap(in.SessionFavorite)
-	out.ProjectFavorite = cloneNavigationBoolMap(in.ProjectFavorite)
-	out.PinSections = append([]hubcore.PinSection(nil), in.PinSections...)
-	out.PinAssignments = make(map[hubcore.ArchiveKey]hubcore.SessionPin, len(in.PinAssignments))
-	maps.Copy(out.PinAssignments, in.PinAssignments)
-	out.SessionSeen = in.SessionSeen.Clone()
-	return out
-}
-
 func cloneNavigationLiveEntries(in []hubcore.LiveEntry) []hubcore.LiveEntry {
 	if in == nil {
 		return nil
@@ -297,15 +276,6 @@ func cloneNavigationLiveEntries(in []hubcore.LiveEntry) []hubcore.LiveEntry {
 	for i, entry := range in {
 		out[i] = hubcore.CloneLiveEntry(entry)
 	}
-	return out
-}
-
-func cloneNavigationBoolMap(in map[string]bool) map[string]bool {
-	if in == nil {
-		return nil
-	}
-	out := make(map[string]bool, len(in))
-	maps.Copy(out, in)
 	return out
 }
 
@@ -333,7 +303,7 @@ func cloneNavigationBoolMap(in map[string]bool) map[string]bool {
 // The buckets are not merely a display list, and that is why the duplicate
 // groups must be MERGED rather than discarded: they are the sole source of the
 // catalog slices and manifest counts, of the p.projects map (all built in
-// buildNavigationProjectionContext), and of the location index that
+// buildNavigationProjection), and of the location index that
 // indexLocationsContext walks to mint a hubapi.NavigationSessionLocation per
 // session. Dropping a duplicate group therefore does not just trim
 // a row: its sessions vanish from the catalog and from their project entry, and
@@ -886,10 +856,6 @@ func navigationCatalogRowsThatFit[T any](rows []T, emptyPage func(kept int) any)
 	return len(rows)
 }
 
-func (p navigationProjection) Project(key string) (hubapi.NavigationProjectResource, bool) {
-	return p.ProjectIn("", key)
-}
-
 // projectIn finds key's project in catalog, or, with no catalog, in the first
 // catalog holding it (p.projects). A key can be in several catalogs, and a
 // session's location names the one whose project holds it.
@@ -906,9 +872,9 @@ func (p navigationProjection) projectIn(catalog navigationResourceKind, key stri
 	return hubcore.TreeProject{}, false
 }
 
-// ProjectIn is the project resource for key in catalog, or in the first
+// Project is the project resource for key in catalog, or in the first
 // catalog holding it when catalog is empty.
-func (p navigationProjection) ProjectIn(catalog navigationResourceKind, key string) (hubapi.NavigationProjectResource, bool) {
+func (p navigationProjection) Project(catalog navigationResourceKind, key string) (hubapi.NavigationProjectResource, bool) {
 	project, ok := p.projectIn(catalog, key)
 	if !ok {
 		return hubapi.NavigationProjectResource{}, false
@@ -921,13 +887,9 @@ func (p navigationProjection) ProjectIn(catalog navigationResourceKind, key stri
 	return resource, true
 }
 
-func (p navigationProjection) ProjectPage(key, tier string, offset uint32, limit int) (hubapi.NavigationProjectPage, error) {
-	return p.ProjectPageIn("", key, tier, offset, limit)
-}
-
-// ProjectPageIn is one tier page of key's project in catalog, or in the
+// ProjectPage is one tier page of key's project in catalog, or in the
 // first catalog holding it when catalog is empty.
-func (p navigationProjection) ProjectPageIn(catalog navigationResourceKind, key, tier string, offset uint32, limit int) (hubapi.NavigationProjectPage, error) {
+func (p navigationProjection) ProjectPage(catalog navigationResourceKind, key, tier string, offset uint32, limit int) (hubapi.NavigationProjectPage, error) {
 	project, ok := p.projectIn(catalog, key)
 	if !ok {
 		return hubapi.NavigationProjectPage{}, fmt.Errorf("navigation project %q not found", key)
@@ -1325,12 +1287,12 @@ func (p navigationProjection) Resource(key navigationResourceKey) (any, navigati
 		resource, err = p.CatalogPage(key.Kind, key.Offset, int(key.Limit))
 	case navigationResourceProject:
 		var ok bool
-		resource, ok = p.ProjectIn(key.Catalog, key.ProjectKey)
+		resource, ok = p.Project(key.Catalog, key.ProjectKey)
 		if !ok {
 			err = fmt.Errorf("navigation project %q not found", key.ProjectKey)
 		}
 	case navigationResourceProjectPage:
-		resource, err = p.ProjectPageIn(key.Catalog, key.ProjectKey, key.Tier, key.Offset, int(key.Limit))
+		resource, err = p.ProjectPage(key.Catalog, key.ProjectKey, key.Tier, key.Offset, int(key.Limit))
 	case navigationResourceLocation:
 		var ok bool
 		resource, ok = p.Location(key.ID)

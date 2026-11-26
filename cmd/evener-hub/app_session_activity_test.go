@@ -299,13 +299,13 @@ func TestSessionActivityRetainedPublicHierarchyAndSourceFences(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	projection, err := buildNavigationProjection(snapshot.Inputs)
+	projection, err := buildNavigationProjection(t.Context(), snapshot.Inputs)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, project := range snapshot.Inputs.Tree.Projects {
 		for _, tier := range []string{"current", "recent", "archived"} {
-			page, err := projection.ProjectPage(project.Key, tier, 0, 0)
+			page, err := projection.ProjectPage("", project.Key, tier, 0, 0)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -467,7 +467,7 @@ func assertActivityArchiveNavigation(t *testing.T, cfg hubcore.WebConfig, client
 	if err != nil {
 		t.Fatal(err)
 	}
-	projection, err := buildNavigationProjection(snapshot.Inputs)
+	projection, err := buildNavigationProjection(t.Context(), snapshot.Inputs)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -475,7 +475,7 @@ func assertActivityArchiveNavigation(t *testing.T, cfg hubcore.WebConfig, client
 	projects := append(slices.Clone(snapshot.Inputs.Tree.Projects), snapshot.Inputs.Tree.ArchivedProjects...)
 	for _, project := range projects {
 		for _, tier := range []string{"current", "recent"} {
-			page, err := projection.ProjectPage(project.Key, tier, 0, 0)
+			page, err := projection.ProjectPage("", project.Key, tier, 0, 0)
 			if err != nil {
 				t.Fatal(err)
 			}

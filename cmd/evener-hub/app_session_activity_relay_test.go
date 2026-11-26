@@ -373,14 +373,14 @@ func testSessionActivityRelay(t *testing.T, checkpoint func(activityRelayFixture
 	if err != nil {
 		t.Fatal(err)
 	}
-	projection, err := buildNavigationProjection(navigation.Inputs)
+	projection, err := buildNavigationProjection(t.Context(), navigation.Inputs)
 	if err != nil {
 		t.Fatal(err)
 	}
 	rootFound := false
 	for _, project := range navigation.Inputs.Tree.Projects {
 		for _, tier := range []string{"current", "recent", "archived"} {
-			page, err := projection.ProjectPage(project.Key, tier, 0, 0)
+			page, err := projection.ProjectPage("", project.Key, tier, 0, 0)
 			if err != nil {
 				t.Fatal(err)
 			}

@@ -17,7 +17,7 @@ import (
 // the check counts are measured first so no flip point is hand-calibrated.
 func TestNavigationLogicalFingerprintsSurfacesCancellationAtEveryCheck(t *testing.T) {
 	t.Parallel()
-	projection, err := buildNavigationProjection(navigationCancellationInputs())
+	projection, err := buildNavigationProjection(t.Context(), navigationCancellationInputs())
 	if err != nil {
 		t.Fatal(err)
 	}
