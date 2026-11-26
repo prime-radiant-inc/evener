@@ -19,6 +19,7 @@ import (
 	"path/filepath"
 	"syscall"
 
+	"primeradiant.com/evener/execsupport/fsatomic"
 	"primeradiant.com/evener/test/e2e/fakellm"
 )
 
@@ -27,6 +28,12 @@ import (
 // test; the emphasis and the fenced code exercise the enriched native
 // Markdown renderer.
 const qualificationFixture = "QUALIFICATION_prose_a7\n\n**QUALIFICATION_emphasis_b8**\n\n```text\nQUALIFICATION_code_c9\n```\n"
+
+// readyEndpoint is the readiness file's JSON contract: the qualification
+// runner learns the provider's base URL from it.
+type readyEndpoint struct {
+	BaseURL string `json:"base_url"`
+}
 
 func main() {
 	os.Exit(provide())
@@ -60,14 +67,12 @@ func run(ctx context.Context, readyFile string) error {
 	if err != nil {
 		return err
 	}
-	endpoint, err := json.Marshal(struct {
-		BaseURL string `json:"base_url"`
-	}{BaseURL: server.BaseURL()})
+	endpoint, err := json.Marshal(readyEndpoint{BaseURL: server.BaseURL()})
 	if err != nil {
 		server.Close()
 		return err
 	}
-	if err := os.WriteFile(readyFile, endpoint, 0o600); err != nil {
+	if err := writeReadyFile(readyFile, endpoint); err != nil {
 		server.Close()
 		return err
 	}
@@ -94,4 +99,12 @@ func run(ctx context.Context, readyFile string) error {
 			"next":    "send_and_end_turn",
 		})
 	}
+}
+
+// writeReadyFile publishes the readiness endpoint. The runner polls this path
+// while the provider starts, so a reader must see either no file or the
+// complete endpoint JSON, never the empty file a truncating write leaves
+// behind.
+func writeReadyFile(path string, endpoint []byte) error {
+	return fsatomic.WriteWithoutSync(path, endpoint, 0o600)
 }
