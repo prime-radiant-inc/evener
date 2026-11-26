@@ -170,26 +170,18 @@ func NewPersistentResumeLocks(stateRoot string) (*ResumeLocks, error) {
 	return r, nil
 }
 
-// PersistForceStop records verified aliases and their current transcript under
-// ownership locks before signaling. Committed intent survives signaling
-// failure. It records no owner process identity, so the Resume refusal stands
-// until the Stop route establishes an exit proof.
-func (r *ResumeLocks) PersistForceStop(aliases []string, sessionID string) error {
-	_, err := r.PersistForceStopWithOwner(aliases, sessionID, daemonprocess.Target{})
-	return err
-}
-
-// PersistForceStopWithOwner is PersistForceStop plus the process identity the
-// force stop signaled, so a later Resume can prove that owner's exit through
-// the process controller even when every rendezvous marker is gone — the same
-// proof class the Stop route itself uses. The force-stop path always records
-// the identity it signaled; a zero owner records no exit proof and the Resume
-// refusal stands. The committed return distinguishes an error that left
+// PersistForceStop records verified aliases, their current transcript, and the
+// signaled owner process identity under ownership locks before signaling.
+// Committed intent survives signaling failure, and a later Resume can prove
+// that owner's exit through the process controller even when every rendezvous
+// marker is gone, the same proof class the Stop route itself uses. A zero
+// owner records no exit proof, so the Resume refusal stands until the Stop
+// route establishes one. The committed return distinguishes an error that left
 // nothing recorded (false) from one whose record landed: the rename can commit
 // while a later sync step fails, and committed-with-error installs the
 // in-memory obligation either way, so a caller refusing on the error must only
 // roll its fence back when committed is false.
-func (r *ResumeLocks) PersistForceStopWithOwner(aliases []string, sessionID string, owner daemonprocess.Target) (committed bool, err error) {
+func (r *ResumeLocks) PersistForceStop(aliases []string, sessionID string, owner daemonprocess.Target) (committed bool, err error) {
 	if len(aliases) == 0 {
 		return false, errors.New("recovery alias set is empty")
 	}

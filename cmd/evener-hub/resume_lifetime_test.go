@@ -238,7 +238,7 @@ func TestLongRunningResumeCanceledAliasWaitReleasesAcquiredPrefix(t *testing.T) 
 		locks := hubcore.NewResumeLocks()
 		aliases := []string{"a-stable", "z-current"}
 		finish := locks.BeginForceStop(aliases)
-		if err := locks.PersistForceStop(aliases, "z-current"); err != nil {
+		if _, err := locks.PersistForceStop(aliases, "z-current", daemonprocess.Target{}); err != nil {
 			t.Fatal(err)
 		}
 		finish.Finish(true)
@@ -288,7 +288,7 @@ func TestLongRunningResumeRepeatStopUsesDurableConfirmedAuthority(t *testing.T) 
 			stable, current := hubtest.SessionID(t), hubtest.SessionID(t)
 			aliases := []string{stable, current}
 			finish := locks.BeginForceStop(aliases)
-			if err := locks.PersistForceStop(aliases, current); err != nil {
+			if _, err := locks.PersistForceStop(aliases, current, daemonprocess.Target{}); err != nil {
 				t.Fatal(err)
 			}
 			if err := locks.ConfirmForceStop(current); err != nil {
@@ -333,7 +333,7 @@ func TestLongRunningResumeConfirmedStopDoesNotHideOtherAliasClaims(t *testing.T)
 			locks := hubcore.NewResumeLocks()
 			stable, current := hubtest.SessionID(t), hubtest.SessionID(t)
 			finish := locks.BeginForceStop([]string{stable, current})
-			if err := locks.PersistForceStop([]string{stable, current}, current); err != nil {
+			if _, err := locks.PersistForceStop([]string{stable, current}, current, daemonprocess.Target{}); err != nil {
 				t.Fatal(err)
 			}
 			if kind != "unconfirmed exit" {
@@ -594,7 +594,7 @@ func TestLongRunningResumeShutdownProofNeverCancelsOrKills(t *testing.T) {
 			locks := hubcore.NewResumeLocks()
 			sessionID := hubtest.SessionID(t)
 			finish := locks.BeginForceStop([]string{sessionID})
-			if err := locks.PersistForceStop([]string{sessionID}, sessionID); err != nil {
+			if _, err := locks.PersistForceStop([]string{sessionID}, sessionID, daemonprocess.Target{}); err != nil {
 				t.Fatal(err)
 			}
 			if err := locks.ConfirmForceStop(sessionID); err != nil {
@@ -729,7 +729,7 @@ func TestLongRunningResumeFailedCleanupRetainsOwnership(t *testing.T) {
 	}
 	sessionID := hubtest.SessionID(t)
 	finish := locks.BeginForceStop([]string{sessionID})
-	if err := locks.PersistForceStop([]string{sessionID}, sessionID); err != nil {
+	if _, err := locks.PersistForceStop([]string{sessionID}, sessionID, daemonprocess.Target{}); err != nil {
 		t.Fatal(err)
 	}
 	if err := locks.ConfirmForceStop(sessionID); err != nil {
@@ -934,7 +934,7 @@ func TestShutdownRefusesCleanupBeforeHandlerDone(t *testing.T) {
 	locks := hubcore.NewResumeLocks()
 	sessionID := hubtest.SessionID(t)
 	finish := locks.BeginForceStop([]string{sessionID})
-	if err := locks.PersistForceStop([]string{sessionID}, sessionID); err != nil {
+	if _, err := locks.PersistForceStop([]string{sessionID}, sessionID, daemonprocess.Target{}); err != nil {
 		t.Fatal(err)
 	}
 	if err := locks.ConfirmForceStop(sessionID); err != nil {
@@ -987,7 +987,7 @@ func TestShutdownUncertainDiscoveryAttemptsSource(t *testing.T) {
 	locks := hubcore.NewResumeLocks()
 	sessionID := hubtest.SessionID(t)
 	finish := locks.BeginForceStop([]string{sessionID})
-	if err := locks.PersistForceStop([]string{sessionID}, sessionID); err != nil {
+	if _, err := locks.PersistForceStop([]string{sessionID}, sessionID, daemonprocess.Target{}); err != nil {
 		t.Fatal(err)
 	}
 	if err := locks.ConfirmForceStop(sessionID); err != nil {
@@ -1094,7 +1094,7 @@ func TestShutdownUncertainDiscoveryInvalidatesWaitingResumeRegistration(t *testi
 		locks := hubcore.NewResumeLocks()
 		sessionID := hubtest.SessionID(t)
 		finish := locks.BeginForceStop([]string{sessionID})
-		if err := locks.PersistForceStop([]string{sessionID}, sessionID); err != nil {
+		if _, err := locks.PersistForceStop([]string{sessionID}, sessionID, daemonprocess.Target{}); err != nil {
 			t.Fatal(err)
 		}
 		if err := locks.ConfirmForceStop(sessionID); err != nil {

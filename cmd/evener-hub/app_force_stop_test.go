@@ -329,7 +329,7 @@ func TestForceStopPreservesSuccessAfterRosterRefreshFailure(t *testing.T) {
 func TestConfirmedStoppedShortcutRefreshesAfterStop(t *testing.T) {
 	locks := hubcore.NewResumeLocks()
 	finish := locks.BeginForceStop([]string{webTestSessionID})
-	if err := locks.PersistForceStop([]string{webTestSessionID}, webTestSessionID); err != nil {
+	if _, err := locks.PersistForceStop([]string{webTestSessionID}, webTestSessionID, daemonprocess.Target{}); err != nil {
 		t.Fatal(err)
 	}
 	if err := locks.ConfirmForceStop(webTestSessionID); err != nil {
@@ -1003,7 +1003,7 @@ func TestSessionRecoveryRejectsOldActionsAfterExplicitResume(t *testing.T) {
 	cfg := hubcore.WebConfig{ResumeLocks: hubcore.NewResumeLocks()}
 	oldEpoch := sessionRecoveryState(cfg, "local:stable", "").Epoch
 	finish := cfg.ResumeLocks.BeginForceStop([]string{"stable", "current"})
-	if err := cfg.ResumeLocks.PersistForceStop([]string{"stable", "current"}, "current"); err != nil {
+	if _, err := cfg.ResumeLocks.PersistForceStop([]string{"stable", "current"}, "current", daemonprocess.Target{}); err != nil {
 		t.Fatal(err)
 	}
 	finish.Finish(true)
@@ -1032,7 +1032,7 @@ func TestTurnStartDoesNotRetryRecoveryRejectionAfterExplicitResume(t *testing.T)
 	const ref = "local:recovery-waiter"
 	oldEpoch := sessionRecoveryState(cfg, ref, "").Epoch
 	finish := cfg.ResumeLocks.BeginForceStop([]string{"recovery-waiter"})
-	if err := cfg.ResumeLocks.PersistForceStop([]string{"recovery-waiter"}, "recovery-waiter"); err != nil {
+	if _, err := cfg.ResumeLocks.PersistForceStop([]string{"recovery-waiter"}, "recovery-waiter", daemonprocess.Target{}); err != nil {
 		t.Fatal(err)
 	}
 	finish.Finish(true)
@@ -1214,7 +1214,7 @@ func TestRecoveryAdmissionUsesNativeTargetAndPreservesRetryEpoch(t *testing.T) {
 				t.Fatalf("admission=%+v present=%v", admission, ok)
 			}
 			other := cfg.ResumeLocks.BeginForceStop([]string{"unrelated"})
-			if err := cfg.ResumeLocks.PersistForceStop([]string{"unrelated"}, "unrelated"); err != nil {
+			if _, err := cfg.ResumeLocks.PersistForceStop([]string{"unrelated"}, "unrelated", daemonprocess.Target{}); err != nil {
 				t.Fatal(err)
 			}
 			other.Finish(true)
@@ -1222,7 +1222,7 @@ func TestRecoveryAdmissionUsesNativeTargetAndPreservesRetryEpoch(t *testing.T) {
 				t.Fatalf("another session invalidated this admission: %v", err)
 			}
 			finish := cfg.ResumeLocks.BeginForceStop([]string{tc.target})
-			if err := cfg.ResumeLocks.PersistForceStop([]string{tc.target}, tc.target); err != nil {
+			if _, err := cfg.ResumeLocks.PersistForceStop([]string{tc.target}, tc.target, daemonprocess.Target{}); err != nil {
 				t.Fatal(err)
 			}
 			finish.Finish(true)
@@ -1294,7 +1294,7 @@ func TestSandboxApprovalCannotCrossSessionRecovery(t *testing.T) {
 					ctx = admitSessionRecovery(ctx, cfg, message)
 				}
 				finish := cfg.ResumeLocks.BeginForceStop([]string{"owner"})
-				if err := cfg.ResumeLocks.PersistForceStop([]string{"owner"}, "owner"); err != nil {
+				if _, err := cfg.ResumeLocks.PersistForceStop([]string{"owner"}, "owner", daemonprocess.Target{}); err != nil {
 					t.Fatal(err)
 				}
 				finish.Finish(true)
@@ -1360,7 +1360,7 @@ func TestCapturedSessionActionsRejectAdmissionBeforeRecovery(t *testing.T) {
 			}
 			ctx := admitSessionRecovery(t.Context(), cfg, appwire.RequestMessage(appwire.NewIntID(1), method, params))
 			finish := cfg.ResumeLocks.BeginForceStop([]string{"admitted-session"})
-			if err := cfg.ResumeLocks.PersistForceStop([]string{"admitted-session"}, "admitted-session"); err != nil {
+			if _, err := cfg.ResumeLocks.PersistForceStop([]string{"admitted-session"}, "admitted-session", daemonprocess.Target{}); err != nil {
 				t.Fatal(err)
 			}
 			finish.Finish(true)
@@ -1433,7 +1433,7 @@ func TestConnectionRecoveryFenceIncludesUnreadActionsAndConnectionsBornDuringSto
 	before := admitSessionConnection(t.Context(), cfg)
 	finish := cfg.ResumeLocks.BeginForceStop([]string{"stable", "current"})
 	during := admitSessionConnection(t.Context(), cfg)
-	if err := cfg.ResumeLocks.PersistForceStop([]string{"stable", "current"}, "current"); err != nil {
+	if _, err := cfg.ResumeLocks.PersistForceStop([]string{"stable", "current"}, "current", daemonprocess.Target{}); err != nil {
 		t.Fatal(err)
 	}
 	finish.Finish(true)
@@ -1472,7 +1472,7 @@ func TestConnectionRecoveryFenceIncludesUnreadActionsAndConnectionsBornDuringSto
 		t.Fatal("fresh connection remained stale")
 	}
 	finish = cfg.ResumeLocks.BeginForceStop([]string{"current"})
-	if err := cfg.ResumeLocks.PersistForceStop([]string{"current"}, "current"); err != nil {
+	if _, err := cfg.ResumeLocks.PersistForceStop([]string{"current"}, "current", daemonprocess.Target{}); err != nil {
 		t.Fatal(err)
 	}
 	finish.Finish(true)
@@ -1659,7 +1659,7 @@ func TestForceStopRejectsExitedConflictingTargetsWithoutAuthority(t *testing.T) 
 func TestForceStopRejectsRecoveryAuthorityChangedAfterDiscovery(t *testing.T) {
 	locks := hubcore.NewResumeLocks()
 	finish := locks.BeginForceStop([]string{"A", "B"})
-	if err := locks.PersistForceStop([]string{"A", "B"}, "B"); err != nil {
+	if _, err := locks.PersistForceStop([]string{"A", "B"}, "B", daemonprocess.Target{}); err != nil {
 		t.Fatal(err)
 	}
 	finish.Finish(true)
@@ -1670,7 +1670,7 @@ func TestForceStopRejectsRecoveryAuthorityChangedAfterDiscovery(t *testing.T) {
 		// A competing stop commits new authority after discovery, before this
 		// request acquires its alias reservations.
 		finish := locks.BeginForceStop([]string{"B", "C"})
-		if err := locks.PersistForceStop([]string{"B", "C"}, "C"); err != nil {
+		if _, err := locks.PersistForceStop([]string{"B", "C"}, "C", daemonprocess.Target{}); err != nil {
 			t.Fatal(err)
 		}
 		finish.Finish(true)
@@ -1690,7 +1690,7 @@ func TestForceStopRejectsRecoveryAuthorityChangedAfterDiscovery(t *testing.T) {
 func TestForceStopRejectsSoleExitedMarkerForSupersededTarget(t *testing.T) {
 	locks := hubcore.NewResumeLocks()
 	finish := locks.BeginForceStop([]string{"B", "C"})
-	if err := locks.PersistForceStop([]string{"B", "C"}, "C"); err != nil {
+	if _, err := locks.PersistForceStop([]string{"B", "C"}, "C", daemonprocess.Target{}); err != nil {
 		t.Fatal(err)
 	}
 	finish.Finish(true)
@@ -1975,7 +1975,7 @@ func TestConfirmedStopAdmissionBarrierDefersRegistrationDuringNoOp(t *testing.T)
 		locks := hubcore.NewResumeLocks()
 		sessionID := hubtest.SessionID(t)
 		finish := locks.BeginForceStop([]string{sessionID})
-		if err := locks.PersistForceStop([]string{sessionID}, sessionID); err != nil {
+		if _, err := locks.PersistForceStop([]string{sessionID}, sessionID, daemonprocess.Target{}); err != nil {
 			t.Fatal(err)
 		}
 		if err := locks.ConfirmForceStop(sessionID); err != nil {
@@ -2035,7 +2035,7 @@ func TestConfirmedStopNoOpInvalidatesWaitingResumeRegistration(t *testing.T) {
 		locks := hubcore.NewResumeLocks()
 		sessionID := hubtest.SessionID(t)
 		finish := locks.BeginForceStop([]string{sessionID})
-		if err := locks.PersistForceStop([]string{sessionID}, sessionID); err != nil {
+		if _, err := locks.PersistForceStop([]string{sessionID}, sessionID, daemonprocess.Target{}); err != nil {
 			t.Fatal(err)
 		}
 		if err := locks.ConfirmForceStop(sessionID); err != nil {
@@ -2098,7 +2098,7 @@ func TestShutdownConfirmedStoppedRefreshesRoster(t *testing.T) {
 	locks := hubcore.NewResumeLocks()
 	sessionID := hubtest.SessionID(t)
 	finish := locks.BeginForceStop([]string{sessionID})
-	if err := locks.PersistForceStop([]string{sessionID}, sessionID); err != nil {
+	if _, err := locks.PersistForceStop([]string{sessionID}, sessionID, daemonprocess.Target{}); err != nil {
 		t.Fatal(err)
 	}
 	if err := locks.ConfirmForceStop(sessionID); err != nil {
@@ -2166,7 +2166,7 @@ func TestForceStopConfirmedStoppedCleanupFailureIsUnavailable(t *testing.T) {
 		sessionID := hubtest.SessionID(t)
 		sibling := hubtest.SessionID(t)
 		finish := locks.BeginForceStop([]string{sessionID, sibling})
-		if err := locks.PersistForceStop([]string{sessionID, sibling}, sessionID); err != nil {
+		if _, err := locks.PersistForceStop([]string{sessionID, sibling}, sessionID, daemonprocess.Target{}); err != nil {
 			t.Fatal(err)
 		}
 		if err := locks.ConfirmForceStop(sessionID); err != nil {
@@ -2253,7 +2253,7 @@ func TestConfirmedStoppedNoOpToleratesDiscoveryErrorWhenNotStopping(t *testing.T
 	locks := hubcore.NewResumeLocks()
 	sessionID := hubtest.SessionID(t)
 	finish := locks.BeginForceStop([]string{sessionID})
-	if err := locks.PersistForceStop([]string{sessionID}, sessionID); err != nil {
+	if _, err := locks.PersistForceStop([]string{sessionID}, sessionID, daemonprocess.Target{}); err != nil {
 		t.Fatal(err)
 	}
 	if err := locks.ConfirmForceStop(sessionID); err != nil {

@@ -11,6 +11,7 @@ import (
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
+	"primeradiant.com/evener/cmd/evener-hub/internal/daemonprocess"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/rendezvous"
@@ -40,7 +41,7 @@ func resumeOnlyRecoveryConfig(t *testing.T) hubcore.WebConfig {
 func stageResumeOnlyFence(t *testing.T, cfg hubcore.WebConfig, id string) {
 	t.Helper()
 	finish := cfg.ResumeLocks.BeginForceStop([]string{id})
-	if err := cfg.ResumeLocks.PersistForceStop([]string{id}, id); err != nil {
+	if _, err := cfg.ResumeLocks.PersistForceStop([]string{id}, id, daemonprocess.Target{}); err != nil {
 		t.Fatal(err)
 	}
 	finish.Finish(true)
@@ -293,7 +294,7 @@ func TestTurnStartDispatchesThroughResumeOnlyFence(t *testing.T) {
 func stageResumeOnlyFenceConfirmedExit(t *testing.T, locks *hubcore.ResumeLocks, id string) {
 	t.Helper()
 	finish := locks.BeginForceStop([]string{id})
-	if err := locks.PersistForceStop([]string{id}, id); err != nil {
+	if _, err := locks.PersistForceStop([]string{id}, id, daemonprocess.Target{}); err != nil {
 		t.Fatal(err)
 	}
 	finish.Finish(true)
