@@ -322,6 +322,8 @@ export function createEditorialClient(): EditorialClient {
     storage: { stateDir: "/fixture/state" },
     agents: [{ name: "fixture" }],
   }));
+  client.on("evener/host/list", () => ({ hosts: [] }));
+  client.on("evener/auth/list", () => ({ providers: [] }));
   client.on("evener/instance/list", () => ({
     instances: [
       {
