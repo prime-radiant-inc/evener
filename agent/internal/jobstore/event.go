@@ -12,7 +12,6 @@ type EventKind string
 const (
 	EventJobStarted               EventKind = "job_started"
 	EventJobFinished              EventKind = "job_finished"
-	EventJobMessageSent           EventKind = "job_message_sent"
 	EventJobNotificationPending   EventKind = "job_notification_pending"
 	EventJobNotificationDelivered EventKind = "job_notification_delivered"
 	EventJobNotificationConsumed  EventKind = "job_notification_consumed"
@@ -73,10 +72,6 @@ type Event struct {
 	StructuredResult       any        `json:"structured_result,omitempty"`
 	StructuredResultValid  *bool      `json:"structured_result_valid,omitempty"`
 	StructuredResultReason string     `json:"structured_result_reason,omitempty"`
-
-	// job_message_sent payload
-	Target string `json:"target,omitempty"`
-	Action string `json:"action,omitempty"`
 
 	// watch_send_* payload
 	WatchSend *WatchSendState `json:"watch_send,omitempty"`

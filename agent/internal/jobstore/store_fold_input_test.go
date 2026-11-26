@@ -31,22 +31,21 @@ import (
 	"primeradiant.com/evener/agent/provenance"
 )
 
-// foldInputHistory is the number of message events in the fixture history:
+// foldInputHistory is the number of notification events in the fixture history:
 // enough that the per-event cost of a whole-history clone is a large,
 // unambiguous share of a cache-miss Load.
 const foldInputHistory = 4096
 
-// foldInputMessageEvent is a job_message_sent, which IsJobRecordEvent counts
-// and the reducer drops. The history therefore folds to exactly one record no
-// matter how many of these there are, so fixture correctness does not depend
-// on which reducer branch they would take.
-func foldInputMessageEvent(i int) Event {
+// foldInputNotificationEvent is a stale-generation notification event, which
+// IsJobRecordEvent counts and the reducer drops. The history therefore folds to
+// exactly one record no matter how many of these there are, so fixture
+// correctness does not depend on which reducer branch they would take.
+func foldInputNotificationEvent(i int) Event {
 	return Event{
-		Kind:   EventJobMessageSent,
-		TS:     time.Unix(1700000000, int64(i)).UTC(),
-		JobID:  "job_probe",
-		Target: "ses_target",
-		Action: "note",
+		Kind:        EventJobNotificationPending,
+		TS:          time.Unix(1700000000, int64(i)).UTC(),
+		JobID:       "job_probe",
+		TerminalGen: "stale",
 		Provenance: &provenance.Causal{
 			WatchKeys: []provenance.WatchKey{{WatchID: "w1", WatchGeneration: "g1"}},
 			Chain:     []provenance.Entry{{Kind: "job", JobID: "job_probe"}},
@@ -88,7 +87,7 @@ func foldInputTerminal(started time.Time) Event {
 }
 
 // foldInputFixture builds a history of one started job, its terminal event, and
-// message events carrying every reference-typed payload an event can hold.
+// notification events carrying every reference-typed payload an event can hold.
 func foldInputFixture() []Event {
 	started := time.Unix(1700000000, 0).UTC()
 	events := make([]Event, 0, foldInputHistory+2)
@@ -109,7 +108,7 @@ func foldInputFixture() []Event {
 		},
 	})
 	for i := range foldInputHistory {
-		events = append(events, foldInputMessageEvent(i))
+		events = append(events, foldInputNotificationEvent(i))
 	}
 	events = append(events, foldInputTerminal(started))
 	return events
@@ -230,7 +229,7 @@ func TestLoadCacheMissDoesNotCloneHistory(t *testing.T) {
 	var quietest int64
 	for round := range 3 {
 		for i := range 8 {
-			if err := s.Append(foldInputMessageEvent(10_000 + round*8 + i)); err != nil {
+			if err := s.Append(foldInputNotificationEvent(10_000 + round*8 + i)); err != nil {
 				t.Fatalf("append: %v", err)
 			}
 			var before, after runtime.MemStats
@@ -318,7 +317,7 @@ func TestLoadBorrowedViewIsIndependentAcrossReaders(t *testing.T) {
 
 	// An own append clears the fold cache while the cursor still accounts for
 	// the whole prefix, so the Load below folds the store's own events.
-	if err := s.Append(foldInputMessageEvent(10_000)); err != nil {
+	if err := s.Append(foldInputNotificationEvent(10_000)); err != nil {
 		t.Fatalf("append: %v", err)
 	}
 	before := freshFullRead(t, s.path)
