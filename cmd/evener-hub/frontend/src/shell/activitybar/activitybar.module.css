@@ -62,17 +62,18 @@
 }
 
 /* The header and tab strip look through to the workspace. Each activity tab
- * gets a solid reading surface for its rows and any open detail. */
+ * gets a solid reading surface for its rows and any open detail. The tab strip
+ * is the Tabs widget's own element, so the glass sits on the mobile sidebar
+ * itself rather than on a class inside the widget. */
 :global([data-iphone-glass]) .sidebarMobile {
-  background: transparent;
-}
-
-:global([data-iphone-glass]) .sidebarMobile :is(.head, .tablist) {
   background: var(--glass-panel);
   background-image: var(--glass-sheen);
-  border-bottom-color: var(--glass-edge);
   -webkit-backdrop-filter: var(--glass-filter);
   backdrop-filter: var(--glass-filter);
+}
+
+:global([data-iphone-glass]) .sidebarMobile .head {
+  border-bottom-color: var(--glass-edge);
 }
 
 :global([data-iphone-glass]) .sidebarMobile .body {
