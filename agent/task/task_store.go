@@ -61,7 +61,6 @@ type TaskInput struct {
 	Prompt          string   `json:"prompt"`                     // full instruction for the task
 	DependsOn       []int    `json:"depends_on,omitempty"`       // IDs of prerequisite tasks
 	ReasoningEffort string   `json:"reasoning_effort,omitempty"` // per-task reasoning effort override
-	Insert          string   `json:"insert,omitempty"`           // template-expansion marker (see Task.Insert)
 }
 
 // TaskUpdate is a change for an existing task.
@@ -511,7 +510,6 @@ func (s *TaskStore) appendLocked(items []TaskInput) ([]Task, error) {
 			Status:          TaskOpen,
 			DependsOn:       cloneInts(item.DependsOn),
 			ReasoningEffort: item.ReasoningEffort,
-			Insert:          item.Insert,
 			CreatedAt:       ts,
 			UpdatedAt:       ts,
 		}

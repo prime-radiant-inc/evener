@@ -2176,25 +2176,33 @@ func TestTask_Insert_RoundTrips(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	store := taskpkg.NewTaskStore(dir, "test-insert")
-	store.Load()
+	if err := store.Load(); err != nil {
+		t.Fatal(err)
+	}
 
-	added, err := store.Append([]taskpkg.TaskInput{{
-		Type:        taskpkg.TaskTypeImplement,
-		Description: "placeholder",
-		Prompt:      "do the work",
-		Insert:      "parent_tasks",
-	}})
+	err := store.PopulateFromTemplates([]taskpkg.TaskTemplate{{
+		Type:   string(taskpkg.TaskTypeImplement),
+		Title:  "placeholder",
+		Prompt: "do the work",
+		Insert: "parent_tasks",
+	}}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if added[0].Insert != "parent_tasks" {
-		t.Errorf("got %q, want parent_tasks", added[0].Insert)
+	seeded := store.View()
+	if len(seeded) != 1 {
+		t.Fatalf("seeded %d tasks, want 1", len(seeded))
+	}
+	if seeded[0].Insert != "parent_tasks" {
+		t.Errorf("got %q, want parent_tasks", seeded[0].Insert)
 	}
 
 	// Reload from disk and verify that Insert survives serialization.
 	// A json:"-" tag (or missing field) would drop the value silently.
 	store2 := taskpkg.NewTaskStore(dir, "test-insert")
-	store2.Load()
+	if err := store2.Load(); err != nil {
+		t.Fatal(err)
+	}
 	tasks := store2.View()
 	if len(tasks) == 0 {
 		t.Fatal("after reload: no tasks found")
