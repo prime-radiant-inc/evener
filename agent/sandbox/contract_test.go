@@ -17,6 +17,11 @@ func TestContractMatrix(t *testing.T) {
 	sandboxtest.AssertResolve(t, sandbox.Resolve)
 }
 
+func TestReRootContract(t *testing.T) {
+	t.Parallel()
+	sandboxtest.AssertReRoot(t, sandboxtest.ReRootCases())
+}
+
 // TestContractCoverage guards the golden table's breadth: every backend outcome,
 // both net values, all four modes, the darwin/Seatbelt tier, and — for the
 // primary bwrap tier — the FULL (mode × net) product, so a future edit can't

@@ -1,6 +1,6 @@
 //go:build evenerfuzz
 
-package sandbox_test
+package sandbox
 
 import (
 	"errors"
@@ -9,8 +9,6 @@ import (
 	"slices"
 	"testing"
 
-	"primeradiant.com/evener/agent/sandbox"
-	"primeradiant.com/evener/agent/sandbox/sandboxtest"
 	"primeradiant.com/evener/identifier"
 )
 
@@ -94,19 +92,44 @@ func writeStructuralFile(t testing.TB, path, content string) {
 	}
 }
 
+// structuralReRootLanes creates the linked-worktree shape that ReRoot operates
+// on. The parent main checkout and both lanes are siblings under one temp root;
+// all git metadata is materialized directly, not through an external command.
+func structuralReRootLanes(t testing.TB) (main, laneA, laneB string) {
+	t.Helper()
+	root := identifier.ResolveClean(t.TempDir())
+	main = filepath.Join(root, "main")
+	laneA = filepath.Join(root, "lane-a")
+	laneB = filepath.Join(root, "lane-b")
+	common := filepath.Join(main, ".git")
+	for _, dir := range []string{
+		filepath.Join(common, "objects"),
+		filepath.Join(common, "refs"),
+		filepath.Join(common, "logs"),
+		filepath.Join(common, "hooks"),
+		filepath.Join(common, "worktrees", "lane-a"),
+		filepath.Join(common, "worktrees", "lane-b"),
+		laneA,
+		laneB,
+	} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("mkdir structural re-root fixture %q: %v", dir, err)
+		}
+	}
+	writeStructuralFile(t, filepath.Join(common, "config"), "[core]\nrepositoryformatversion = 0\n")
+	writeStructuralFile(t, filepath.Join(laneA, ".git"), "gitdir: "+filepath.Join(common, "worktrees", "lane-a")+"\n")
+	writeStructuralFile(t, filepath.Join(laneB, ".git"), "gitdir: "+filepath.Join(common, "worktrees", "lane-b")+"\n")
+	return main, laneA, laneB
+}
+
 func FuzzSandboxStructuralContract(f *testing.F) {
 	for _, seed := range []byte{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 255} {
 		f.Add(seed)
 	}
 	f.Fuzz(func(t *testing.T, variant byte) {
-		// Under evenerfuzz, sandboxtest's materializers create .git shapes
-		// directly without invoking Git.
-		sandboxtest.AssertResolve(t, sandbox.Resolve)
-		sandboxtest.AssertReRoot(t, sandboxtest.ReRootCases())
-
 		fixture := newStructuralFixture(t, variant)
 		cwd := []string{fixture.main, fixture.linked, fixture.submodule, fixture.nonGit, fixture.malformed, fixture.symlinked}[(int(variant)/3)%6]
-		layout, err := sandbox.ClassifyWorkspace(cwd)
+		layout, err := ClassifyWorkspace(cwd)
 		if cwd == fixture.malformed {
 			if err == nil {
 				t.Fatalf("malformed .git pointer %q resolved as %+v", cwd, layout)
@@ -131,12 +154,12 @@ func FuzzSandboxStructuralContract(f *testing.F) {
 		}
 
 		net := variant&1 == 0
-		mode := []sandbox.Mode{sandbox.ModeReadOnly, sandbox.ModeWorkspaceWrite, sandbox.ModeRestricted}[int(variant)%3]
-		rp, rerr := sandbox.Resolve(sandbox.SandboxPolicy{Mode: mode, Network: &net}, sandbox.HostFacts{
+		mode := []Mode{ModeReadOnly, ModeWorkspaceWrite, ModeRestricted}[int(variant)%3]
+		rp, rerr := Resolve(SandboxPolicy{Mode: mode, Network: &net}, HostFacts{
 			OS: "linux", Home: filepath.Join(fixture.root, "home"), BwrapPath: "/fixture/bwrap", BwrapCapable: true,
 		}, cwd)
 		if rerr != nil {
-			var refusal *sandbox.RefusalError
+			var refusal *RefusalError
 			if !errors.As(rerr, &refusal) {
 				t.Fatalf("Resolve returned non-refusal error %T: %v", rerr, rerr)
 			}
@@ -146,38 +169,6 @@ func FuzzSandboxStructuralContract(f *testing.F) {
 			if rp.Masks(root) {
 				t.Fatalf("Resolve granted masked path %q through %q", rp.MaskedPaths, root)
 			}
-		}
-	})
-}
-
-func FuzzSandboxContractMaterializers(f *testing.F) {
-	for _, seed := range []byte{0, 1, 2} {
-		f.Add(seed)
-	}
-	f.Fuzz(func(t *testing.T, _ byte) {
-		for _, kind := range []sandbox.WorkspaceKind{sandbox.NonGit, sandbox.MainCheckout, sandbox.LinkedWorktree} {
-			cwd := sandboxtest.MaterializeWorkspace(t, kind)
-			layout, err := sandbox.ClassifyWorkspace(cwd)
-			if err != nil {
-				t.Fatalf("MaterializeWorkspace(%s): %v", kind, err)
-			}
-			if layout.Kind != kind {
-				t.Fatalf("MaterializeWorkspace(%s) kind = %s", kind, layout.Kind)
-			}
-		}
-		sandboxtest.AssertReRoot(t, sandboxtest.ReRootCases())
-	})
-}
-
-func FuzzSandboxPublicContractHarness(f *testing.F) {
-	f.Add(byte(0))
-	f.Fuzz(func(t *testing.T, _ byte) {
-		sandboxtest.AssertResolve(t, sandbox.Resolve)
-		sandboxtest.AssertReRoot(t, sandboxtest.ReRootCases())
-
-		rec := &recordingT{T: t}
-		if got := sandboxtest.MaterializeWorkspace(rec, sandbox.WorkspaceKind(99)); got != "" || rec.errors == 0 {
-			t.Fatalf("MaterializeWorkspace unsupported kind = (%q, %d errors)", got, rec.errors)
 		}
 	})
 }
