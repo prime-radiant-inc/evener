@@ -47,7 +47,9 @@ import {
   useSyncExternalStore,
 } from "react";
 import { activitySidebarStore } from "../../../shell/activitybar/activitySidebarStore";
+import { isAppleTouchDevice } from "../../../shell/iPhoneGlass";
 import { iPhoneHost } from "../../../shell/iPhoneHost";
+import { alignCreateWithComposer } from "../../../shell/rail/alignCreateWithComposer";
 import type { SessionMenuTurnVerbs } from "../../../shell/sessionMenu/SessionMenu";
 import { useIsMobile } from "../../../shell/useIsMobile";
 import { useMountAutofocus } from "../../../shell/useMountAutofocus";
@@ -340,7 +342,7 @@ function ComposerWithSubmission({
   // The phone shell's control row is menu-only in every state; model and
   // effort live in Overview and Settings (design-system.md section 12).
   const phoneShellLayout = isMobile || landscapePhoneLayout;
-  const hostedPhone = phoneShellLayout && !!iPhoneHost();
+  const appleComposer = isAppleTouchDevice() || !!iPhoneHost();
   const composerRootRef = useRef<HTMLDivElement | null>(null);
   const attachComposerRoot = useCallback(
     (element: HTMLDivElement | null) => {
@@ -380,7 +382,7 @@ function ComposerWithSubmission({
     // Only the primary press can hold editing: a right or middle press fires
     // pointerdown but no click, so a hold armed here could never be released.
     if (event.button !== 0) return;
-    if (hostedPhone && isEditorEvent(event.target)) {
+    if (appleComposer && isEditorEvent(event.target)) {
       formAnchorRef.current?.toggleAttribute("data-touch-editing", event.pointerType === "touch");
     }
     // Drop the previous press's listeners without its deferred clear: the new
@@ -951,6 +953,19 @@ function ComposerWithSubmission({
   }, [menuSteer, model, actionPending, hasUnbackedImage]);
   const inlineStop = !!model && controlsFor(model).stop && !hasContent;
   const inlineStopReady = useInlineStopReady(ref, !model || askPending ? null : inlineStop ? "stop" : "send");
+  const alignRailAction = appleComposer && !isMobile && focused && !askPending ? alignCreateWithComposer : undefined;
+  const attachSubmitButton = useCallback(
+    (button: HTMLButtonElement | null) => {
+      submitButtonRef.current = button;
+      if (!button) return;
+      const release = alignRailAction?.(button);
+      return () => {
+        submitButtonRef.current = null;
+        release?.();
+      };
+    },
+    [alignRailAction],
+  );
 
   if (!model) return null; // Session.tsx only mounts this once its own model is hydrated; defensive only.
 
@@ -1029,7 +1044,7 @@ function ComposerWithSubmission({
   // explicit click keep the same resting row. Content restores the full card
   // and keeps it stable until focus leaves an empty editor.
   let minLines = 2;
-  if (folded || hostedPhone) minLines = 1;
+  if (folded || (appleComposer && phoneShellLayout)) minLines = 1;
   else if (ended) minLines = followUpEngaged ? 3 : 1;
   else if (duoCoverLayout && !followUpEngaged) minLines = 1;
 
@@ -1448,7 +1463,7 @@ function ComposerWithSubmission({
           className={CLASS.formAnchor}
           data-composer={ref}
           data-composer-pane={paneId}
-          data-iphone-composer={hostedPhone ? (focused ? "focused" : "") : undefined}
+          data-iphone-composer={appleComposer ? (focused ? "focused" : "") : undefined}
         >
           {/* Anchored above the control row inside the card below, opening
               upward - see slashcompletionmenu.module.css's header comment
@@ -1591,6 +1606,7 @@ function ComposerWithSubmission({
                           size="xs"
                           type="button"
                           data-testid="composer-stop"
+                          ref={alignRailAction}
                           aria-label="Stop"
                           icon={<StopIcon />}
                           onClick={() => void handleInterruptClick()}
@@ -1610,7 +1626,7 @@ function ComposerWithSubmission({
                     ) : (
                       <Tooltip key="send" label={submitTooltip}>
                         <Button
-                          ref={submitButtonRef}
+                          ref={attachSubmitButton}
                           type="submit"
                           variant={showSteer ? "quiet" : "primary"}
                           size="xs"

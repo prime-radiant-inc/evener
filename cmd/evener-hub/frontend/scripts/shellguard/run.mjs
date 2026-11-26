@@ -54,7 +54,9 @@ const PHONE_PALETTE_VIEWPORT = { ...MOBILE_VIEWPORT, width: 400 };
 
 // Inside the 768-899px tablet band: StackHost keeps mobile/touch emulation
 // while splitting the board column beside the conversation.
-const TABLET_VIEWPORT = { width: 800, height: 1025, mobile: true, touch: true };
+const TABLET_VIEWPORT = { width: 800, height: 1025, mobile: true, touch: true, platform: "Linux armv8l" };
+// Desktop-site iPadOS identifies as a Mac with multiple touch points.
+const IPAD_VIEWPORT = { width: 1032, height: 1244, touch: true, platform: "MacIntel" };
 
 // A touch device the desktop layout still applies to (a tablet or a touch
 // laptop). The rail renders docked and resizable here, so its width floor is
@@ -85,6 +87,10 @@ async function measureOnPage(cdpEndpoint, sharedTabId, vitePort, viewport, expre
     // new document starts. The script ends with this CDP session.
     await send("Page.addScriptToEvaluateOnNewDocument", { source: "try { localStorage.clear(); } catch {}" });
     await applyViewport(send, viewport);
+    if (viewport.platform) {
+      const { userAgent } = (await send("Browser.getVersion")).result;
+      await send("Emulation.setUserAgentOverride", { userAgent, platform: viewport.platform });
+    }
     await navigateTo(page, `http://127.0.0.1:${vitePort}/shellguard.html`, BOOT);
     await evaluate(send, "window.settledShell");
     await waitForFonts(send);
@@ -221,6 +227,7 @@ async function measureOnPage(cdpEndpoint, sharedTabId, vitePort, viewport, expre
     }
     return typeof expression === "function" ? await expression(page) : JSON.parse(await evaluate(send, expression));
   } finally {
+    if (viewport.platform) await send("Emulation.setUserAgentOverride", { userAgent: "" });
     await clearViewportOverride(send);
     page.close();
   }
@@ -852,6 +859,36 @@ function assertPhoneSearchPalette(result) {
   return failures;
 }
 
+async function assertTabletActionGeometry(send) {
+  const result = await evaluate(send, `(async () => {
+    const root = document.documentElement;
+    root.style.setProperty('--dock-clearance', '34px');
+    try {
+      // ResizeObserver publishes the wide dock baseline after the inset is laid out.
+      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      const scroll = window.focusScrollFixture.scrollRailToEnd();
+      const last = document.querySelector('[data-focus-scroll-trigger]').closest('[role="treeitem"]').getBoundingClientRect();
+      const create = document.querySelector('[data-testid="rail-new-session"]').getBoundingClientRect();
+      const send = document.querySelector('[data-composer] button[type="submit"]').getBoundingClientRect();
+      return { newY: create.top + create.height / 2, sendY: send.top + send.height / 2,
+        atEnd: scroll.nearMax && scroll.scrollTop > 0, lastVisible: scroll.triggerVisible,
+        lastBottom: last.bottom, actionTop: create.top };
+    } finally {
+      root.style.removeProperty('--dock-clearance');
+    }
+  })()`);
+  if (Math.abs(result.newY - result.sendY) > 1 || !result.atEnd || !result.lastVisible || result.lastBottom > result.actionTop + 1) {
+    throw new Error(`tablet action alignment or final session clearance: ${JSON.stringify(result)}`);
+  }
+  console.log(`shellguard tablet actions: ${JSON.stringify(result)}`);
+}
+
+async function measureWideIPad({ send }) {
+  await evaluate(send, "window.overviewPane('other')");
+  await waitForDom(send, "document.querySelector('[data-iphone-composer] [data-testid=composer-submit]')", "wide iPad composer");
+  await assertTabletActionGeometry(send);
+}
+
 async function measureTabletSplit(page) {
   const { send } = page;
   await waitForDom(
@@ -1070,6 +1107,7 @@ async function measureTabletSplit(page) {
     };
   })()`;
   const sessionOpen = await evaluate(send, snapState);
+  await assertTabletActionGeometry(send);
   await evaluate(send, `document.querySelector('[data-testid="board-toggle"]').focus({ preventScroll: true })`);
   await pressKey(send, "Enter", "Enter", 13);
   await waitForDom(send, "document.querySelector('[data-testid=\"board-split\"]')?.dataset.board === 'collapsed'", "tablet board collapsed");
@@ -2500,6 +2538,7 @@ async function main() {
     const focusScrollFailures = assertFocusScroll(focusScroll);
     const tabletSplit = await measureOnPage(cdpEndpoint, sharedTab.id, vitePort, TABLET_VIEWPORT, measureTabletSplit);
     const tabletSplitFailures = assertTabletSplit(tabletSplit);
+    await measureOnPage(cdpEndpoint, sharedTab.id, vitePort, IPAD_VIEWPORT, measureWideIPad);
     const { pointer, narrowest, widest, beforeArrowUp, arrowUpRows, largerText, roomy, desktopBefore, desktopAfter, roomyFits, paneScrollCapture, paneScrollCollapsed, paneScrollReopened, paneScrollPhone } = tabletSplit;
     console.log(`shellguard tablet usability: ${JSON.stringify({ pointer, min: narrowest.board.width, minToggleHit: narrowest.toggleHit,
       max: widest.board.width, pane: widest.pane.width, find: widest.find, beforeArrowUp, arrowUpRows,

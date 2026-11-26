@@ -1369,6 +1369,7 @@ const BARE_VAR_RE = /var\(\s*(--[a-zA-Z0-9-]+)\s*\)/g;
 const UNDECLARED_BY_DESIGN = new Set([
   "--keyboard-inset",
   "--rail-width",
+  "--docked-composer-action-center", // alignCreateWithComposer publishes it with the rail's layout attribute.
   "--fill",
   "--menu-inline-pad",
   "--menu-row-inline-pad",
