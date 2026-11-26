@@ -12,7 +12,7 @@ import { clearHubWebData } from "./hubWeb/clearHubWebData";
 import { useHubConnection } from "./hubConnection";
 import { HubSelection } from "./hubSelection";
 import type { SavedLocation } from "./location";
-import { drafts } from "./nativeDrafts";
+import { drafts, nativeDrafts } from "./nativeDrafts";
 import { locations } from "./nativeLocation";
 import { removeOrganizationData } from "./nativeOrganization";
 import { readerPositions } from "./nativeReaderPosition";
@@ -105,7 +105,10 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
 							// If storage is unavailable, its editor owns the recovery.
 							let keepEditor = true;
 							try {
-								keepEditor = drafts.refsWithDrafts(location.hubId).has(location.conversation.ref);
+								keepEditor = nativeDrafts().hasEditorDraft({
+									hubId: location.hubId,
+									sessionRef: location.conversation.ref,
+								});
 							} catch {}
 							if (keepEditor) location = { ...location, deviceWork: true };
 						}
