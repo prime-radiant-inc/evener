@@ -247,8 +247,9 @@ Alt+Shift+ArrowLeft) **navigate** across the rail's live section — unlike
 `session.next`/`previous`, which only move focus between already-open panes.
 The selection semantics live in `src/shell/rail/liveSessionCycle.ts`
 (`adjacentLiveSessionRef`); AppShell's handlers read the rail's Live order
-(`liveBandRefs` in `src/shell/rail/liveBands.ts`) and navigate via the same
-`openNeedsYouSession` URL seam ⌘J uses:
+(`liveBandRefs` in `src/shell/rail/liveBands.ts`) and navigate via
+`openLiveSession` (`openSessionRoute` in `src/shell/routing.ts`, whereas ⌘J
+navigates via `openAttentionSession` in `src/shell/attentionHistory.ts`):
 
 - Order is the order the rail shows Live in — Needs you, then Working,
   then Idle, each in its band's order — wrapping at both ends.

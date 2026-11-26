@@ -1171,9 +1171,9 @@ reduced motion, and each is defined once:
 
 Every other idle pulse, shimmer on live data and animation that invents progress is banned.
 Data arriving (a job finishing, a watch firing, a new row) never animates geometry: the
-attention hues carry that news. User-initiated geometry (the composer fold, an expandable
-sheet, a zoom column) and docked shell edge panes run through the one `src/motion`
-wrapper, which reads the tokens; components import the wrapper, never the library.
+attention hues carry that news. User-initiated geometry (the composer fold, a zoom column)
+and docked shell edge panes run through the one `src/motion` wrapper, which reads the
+tokens; components import the wrapper, never the library.
 
 Docked shell edge panes (the desktop left Sessions rail, the desktop right Overview
 sidebar, and the tablet persistent Sessions board column) and edge-attached overlays
@@ -1325,9 +1325,10 @@ current gap:
 ## 9. Command surfaces: palette vs. composer
 
 **The principle (2026-08-14): the palette is where you go; the composer is where you act on this
-session.** Every command in the registry (`shell/palette/commands.ts`) is tagged with a surface —
-`commandSurface()`, derived from the same `scope` field that already decided whether a session
-needs to be focused. An **app-global** command (new session, spawn, theme, dashboard, search,
+session.** Every command in the registry (`shell/palette/commands.ts`) carries a `scope` field
+(`CommandScope`: `"global"` or `"session"`), which decides both whether a session needs to be
+focused and which surface runs it (`appGlobalCommandsInScope` for the palette,
+`sessionBuiltinCommands` for the composer). An **app-global** command (new session, spawn, theme, dashboard, search,
 help, upgrade, next-needs-you, open settings) needs no session and stays palette-native: it is
 listed, filtered, and run entirely inside the command palette (`Mod+K`), exactly as before. A
 **session** command — every mutation or read that acts on the focused session, built-in (goal,
