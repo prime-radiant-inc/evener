@@ -70,6 +70,21 @@ func (s *AttachedHostsStore) Snapshot() map[string]AttachedHostRecord {
 	return maps.Clone(s.hosts)
 }
 
+// Has reports whether name is currently remembered. Names are trimmed.
+func (s *AttachedHostsStore) Has(name string) bool {
+	if s == nil {
+		return false
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, ok := s.hosts[name]
+	return ok
+}
+
 // Record remembers name with rec. Names are trimmed and must not be empty; an unchanged record writes nothing.
 func (s *AttachedHostsStore) Record(name string, rec AttachedHostRecord) error {
 	if s == nil {
@@ -115,12 +130,8 @@ func (s *AttachedHostsStore) Prune(keep func(name string, rec AttachedHostRecord
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	next := make(map[string]AttachedHostRecord, len(s.hosts))
-	for name, rec := range s.hosts {
-		if keep(name, rec) {
-			next[name] = rec
-		}
-	}
+	next := maps.Clone(s.hosts)
+	maps.DeleteFunc(next, func(name string, rec AttachedHostRecord) bool { return !keep(name, rec) })
 	if len(next) == len(s.hosts) {
 		return nil
 	}

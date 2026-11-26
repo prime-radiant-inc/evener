@@ -112,23 +112,15 @@ func (p *attachedHostsPersister) run() {
 	defer close(p.done)
 	for {
 		<-p.wake
-		for {
-			p.mu.Lock()
-			batch, closed, apply := p.queue, p.closed, p.apply
-			p.queue = nil
-			p.mu.Unlock()
-			for _, m := range batch {
-				apply(m)
-			}
-			if closed {
-				return
-			}
-			p.mu.Lock()
-			more := len(p.queue) > 0
-			p.mu.Unlock()
-			if !more {
-				break
-			}
+		p.mu.Lock()
+		batch, closed, apply := p.queue, p.closed, p.apply
+		p.queue = nil
+		p.mu.Unlock()
+		for _, m := range batch {
+			apply(m)
+		}
+		if closed {
+			return
 		}
 	}
 }
@@ -139,7 +131,7 @@ func (p *attachedHostsPersister) applyToStore(m attachedHostMutation) {
 	case m.remove:
 		err = p.store.Remove(m.name)
 	case m.degraded:
-		if _, exists := p.store.Snapshot()[m.name]; exists {
+		if p.store.Has(m.name) {
 			return
 		}
 		err = p.store.Record(m.name, hubcore.AttachedHostRecord{})
@@ -185,6 +177,12 @@ func selectStartupReconnectHosts(entries []hostreg.Host, saved map[string]hubcor
 	return toReconnect, keepInStore
 }
 
+// hostIdentitiesDegraded reports whether this boot's live host identities were
+// minted at load rather than restored from durable records.
+func (r *hubRuntime) hostIdentitiesDegraded() bool {
+	return r.opsUnavailable || r.recordsUnreadable
+}
+
 // startStartupHostReconnect prunes records the host set no longer accounts for
 // and starts one reconnect loop per saved host. It runs on the startBackground
 // path after the host-management surface has loaded the remnant records.
@@ -192,7 +190,7 @@ func startStartupHostReconnect(r *hubRuntime, web *WebServer) {
 	if r.attachedHostsStore == nil || r.sshManager == nil || r.hostRegistry == nil {
 		return
 	}
-	degraded := r.opsUnavailable || r.recordsUnreadable
+	degraded := r.hostIdentitiesDegraded()
 	var hasOpenRemnant func(string) bool
 	if web != nil && web.hostManage != nil {
 		hasOpenRemnant = func(name string) bool {

@@ -644,10 +644,7 @@ func (m *hubHostManager) UpdateResult(ctx context.Context, params appwire.HostUp
 		}
 	case m.cfg.manager != nil:
 		if err := m.cfg.manager.UpdateHostUnderGate(entry, gateHolder, func(retired hostreg.Host) {
-			m.cfg.state.retire(name, retired.Generation)
-			if m.cfg.forgetAttachedHost != nil {
-				m.cfg.forgetAttachedHost(name)
-			}
+			m.retireHostRegistration(name, retired.Generation)
 		}); err != nil {
 			liveErr = fmt.Errorf("update host %q: %w", name, err)
 		}
@@ -656,10 +653,7 @@ func (m *hubHostManager) UpdateResult(ctx context.Context, params appwire.HostUp
 		if err := m.cfg.hosts.Update(entry); err != nil {
 			liveErr = err
 		} else {
-			m.cfg.state.retire(name, prior.Generation)
-			if m.cfg.forgetAttachedHost != nil {
-				m.cfg.forgetAttachedHost(name)
-			}
+			m.retireHostRegistration(name, prior.Generation)
 		}
 	}
 

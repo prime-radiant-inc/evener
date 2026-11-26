@@ -409,9 +409,22 @@ func (m *hubHostManager) dropHostDerivedState(name string) {
 	if m.cfg.forgetLastGoodThreads != nil {
 		m.cfg.forgetLastGoodThreads(name)
 	}
+	m.forgetAttachedHost(name)
+}
+
+// forgetAttachedHost clears name's startup-reconnect record when the persister
+// hook is wired.
+func (m *hubHostManager) forgetAttachedHost(name string) {
 	if m.cfg.forgetAttachedHost != nil {
 		m.cfg.forgetAttachedHost(name)
 	}
+}
+
+// retireHostRegistration clears retained attach state for the replaced
+// generation and drops the host's startup-reconnect record.
+func (m *hubHostManager) retireHostRegistration(name string, generation uint64) {
+	m.cfg.state.retire(name, generation)
+	m.forgetAttachedHost(name)
 }
 
 // unionHosts returns a and b's distinct entries by name, in a-then-b order.

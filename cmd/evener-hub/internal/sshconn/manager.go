@@ -704,10 +704,9 @@ func (m *Manager) attachedChannel(name string) (*Channel, bool) {
 // as the sibling pre-announce path at the isClosed/isClosed check does.
 func (m *Manager) lostAfterPublish(name string, stale *Channel) error {
 	var generation uint64
-	if cur := m.currentChannel(name); cur != nil {
+	if cur := m.clearChannel(name); cur != nil {
 		generation = cur.host.Generation
 	}
-	m.clearChannel(name)
 	if stale != nil {
 		if !m.restoreChannel(name, stale) {
 			// Close won the race between the pre-publish check and here: its
@@ -1467,10 +1466,12 @@ func (m *Manager) beginEnsure() bool {
 	return true
 }
 
-func (m *Manager) clearChannel(name string) {
+func (m *Manager) clearChannel(name string) *Channel {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	ch := m.chans[name]
 	delete(m.chans, name)
+	return ch
 }
 
 // isDevVersion reports whether v is an identity-less development build.

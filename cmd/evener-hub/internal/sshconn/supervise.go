@@ -88,28 +88,7 @@ func (m *Manager) supervise(ctx context.Context, host hostreg.Host, ch *Channel,
 	lock.Unlock()
 	_ = ch.Close()
 
-	// BackoffMax bounds every reconnect delay, the first one included: a caller
-	// that configures a maximum below the base must not have its first retry wait
-	// longer than the bound it asked for.
-	delay := min(m.opts.backoffBase(), m.opts.backoffMax())
-	for {
-		if err := m.opts.waitSleep(ctx, m.jitterFor(delay)); err != nil {
-			// A canceled loop no longer owns the host, so it announces nothing.
-			// stopSupervisor stopped it because the host reached a terminal
-			// outcome — announced by the caller that stopped it, and possibly
-			// followed by a replacement's Attached — and Close canceled the base
-			// context, whose terminal event is the Detached it emits while tearing
-			// the channel down (a supervisor on a canceled manager "returns
-			// without emitting one", as Close's pairing comment states). Emitting a
-			// Disconnected of its own would contradict that announcement or arrive
-			// after the replacement's Attached.
-			return
-		}
-		if !m.reconnectOnce(ctx, host, lock) {
-			return
-		}
-		delay = nextBackoff(delay, m.opts.backoffMax())
-	}
+	m.runReconnectLadder(ctx, host, lock, false, false)
 }
 
 // startSupervise launches the reconnect loop that owns host's channel, or
@@ -249,11 +228,9 @@ func (m *Manager) StartReconnect(name string) error {
 		m.mu.Unlock()
 		return nil
 	}
-	for loop := range m.supervisors[name] {
-		if loop.host.Generation == host.Generation {
-			m.mu.Unlock()
-			return nil
-		}
+	if m.hasActiveSupervisorLocked(name, host.Generation) {
+		m.mu.Unlock()
+		return nil
 	}
 	// The loop goroutine outlives this call and gates on lock, so its live-user
 	// reference is counted here, under the same mutex that registers it. The
@@ -303,14 +280,26 @@ func (m *Manager) endSupervisor(name string, loop *supervisorLoop, ch *Channel) 
 // superviseStartup runs StartReconnect's loop: an immediate first attempt, then
 // the same bounded backoff a mid-run supervisor uses.
 func (m *Manager) superviseStartup(ctx context.Context, host hostreg.Host, lock *hostLockGate) {
+	m.runReconnectLadder(ctx, host, lock, true, true)
+}
+
+// runReconnectLadder runs one bounded exponential backoff loop for host.
+// BackoffMax bounds every reconnect delay, the first one included. When
+// immediateFirst is true the first attempt runs before any sleep. A canceled
+// loop returns without emitting a state event because its canceller owns the
+// terminal announcement.
+func (m *Manager) runReconnectLadder(ctx context.Context, host hostreg.Host, lock *hostLockGate, explicit, immediateFirst bool) {
 	delay := min(m.opts.backoffBase(), m.opts.backoffMax())
-	for {
-		if !m.reconnectOnceWithMode(ctx, host, lock, true) {
+	if immediateFirst {
+		if !m.reconnectOnceWithMode(ctx, host, lock, explicit) {
 			return
 		}
+	}
+	for {
 		if err := m.opts.waitSleep(ctx, m.jitterFor(delay)); err != nil {
-			// The canceller owns the terminal announcement: a superseding attach
-			// announced the replacement, and Close emits its own Detached.
+			return
+		}
+		if !m.reconnectOnceWithMode(ctx, host, lock, explicit) {
 			return
 		}
 		delay = nextBackoff(delay, m.opts.backoffMax())
@@ -470,6 +459,10 @@ func (m *Manager) reconnectOnceWithMode(ctx context.Context, host hostreg.Host, 
 func (m *Manager) hasActiveSupervisor(name string, generation uint64) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	return m.hasActiveSupervisorLocked(name, generation)
+}
+
+func (m *Manager) hasActiveSupervisorLocked(name string, generation uint64) bool {
 	for loop := range m.supervisors[name] {
 		if loop.host.Generation == generation {
 			return true

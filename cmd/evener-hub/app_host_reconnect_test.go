@@ -16,6 +16,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -383,27 +384,11 @@ func startupHostNames(entries []hostreg.Host) []string {
 }
 
 func sameStrings(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	as := append([]string(nil), a...)
-	bs := append([]string(nil), b...)
-	sortStrings(as)
-	sortStrings(bs)
-	for i := range as {
-		if as[i] != bs[i] {
-			return false
-		}
-	}
-	return true
-}
-
-func sortStrings(names []string) {
-	for i := 1; i < len(names); i++ {
-		for j := i; j > 0 && names[j] < names[j-1]; j-- {
-			names[j], names[j-1] = names[j-1], names[j]
-		}
-	}
+	as := slices.Clone(a)
+	bs := slices.Clone(b)
+	slices.Sort(as)
+	slices.Sort(bs)
+	return slices.Equal(as, bs)
 }
 
 // ---------------------------------------------------------------------------

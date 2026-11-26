@@ -168,7 +168,6 @@ type hubRuntime struct {
 	// path. A state file this boot could not open leaves the store nil, which
 	// makes the persister and startup reconnect no-ops.
 	attachedHostsStore     *hubcore.AttachedHostsStore
-	attachedHostsStoreErr  error
 	attachedHostsPersister *attachedHostsPersister
 	// opsUnavailable marks a hub whose operation store failed to open: it serves
 	// its hosts and refuses host changes until it is started with a store that
@@ -506,11 +505,12 @@ func (r *hubRuntime) openDurableState() error {
 	if r.creationStoreErr != nil {
 		r.logf("creation state: %v", r.creationStoreErr)
 	}
-	r.attachedHostsStore, r.attachedHostsStoreErr = hubcore.NewAttachedHostsStore(r.hubStateRoot)
-	if r.attachedHostsStoreErr != nil {
+	store, attachedErr := hubcore.NewAttachedHostsStore(r.hubStateRoot)
+	r.attachedHostsStore = store
+	if attachedErr != nil {
 		// A corrupt attached-host state file must not stop the hub: this boot
 		// serves without startup reconnect and leaves the file for repair.
-		r.logf("attached hosts state: %v", r.attachedHostsStoreErr)
+		r.logf("attached hosts state: %v", attachedErr)
 	}
 	// Resolve the registry root once for this hub process. Launch configuration
 	// may override XDG_CONFIG_HOME for a child, so the child must receive this
@@ -647,7 +647,7 @@ func (r *hubRuntime) onSSHEvent(ev sshconn.Event) {
 		r.hostManageEvents(ev)
 	}
 	if ev.Kind == sshconn.EventAttached && r.attachedHostsPersister != nil {
-		if r.opsUnavailable || r.recordsUnreadable {
+		if r.hostIdentitiesDegraded() {
 			// This boot's identities were minted at load, so it cannot vouch for
 			// an incarnation: record the name only, and only if nothing durable
 			// is already there.

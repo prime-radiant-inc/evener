@@ -87,6 +87,9 @@ func TestAttachedHostsStoreRecordRemoveReload(t *testing.T) {
 
 	reloaded := openAttachedHostsStore(t, root)
 	wantAttachedHosts(t, reloaded, map[string]AttachedHostRecord{"alpha": want})
+	if !reloaded.Has("alpha") || !reloaded.Has(" alpha ") || reloaded.Has("beta") || reloaded.Has("   ") {
+		t.Fatalf("Has checks failed on reloaded store")
+	}
 
 	snapshot := reloaded.Snapshot()
 	snapshot["alpha"] = AttachedHostRecord{Generation: 9, IncarnationID: "mutated"}
@@ -95,6 +98,9 @@ func TestAttachedHostsStoreRecordRemoveReload(t *testing.T) {
 
 	if err := reloaded.Remove("alpha"); err != nil {
 		t.Fatalf("Remove: %v", err)
+	}
+	if reloaded.Has("alpha") {
+		t.Fatal("Has(alpha) = true after Remove, want false")
 	}
 	wantAttachedHosts(t, openAttachedHostsStore(t, root), map[string]AttachedHostRecord{})
 }
@@ -307,6 +313,9 @@ func TestAttachedHostsStoreAtomicWriteFaults(t *testing.T) {
 func TestAttachedHostsStoreNilAndMemoryOnly(t *testing.T) {
 	t.Parallel()
 	var nilStore *AttachedHostsStore
+	if nilStore.Has("alpha") {
+		t.Fatal("nil Has(alpha) = true, want false")
+	}
 	if got := nilStore.Snapshot(); len(got) != 0 {
 		t.Fatalf("nil Snapshot() = %v, want empty", got)
 	}
