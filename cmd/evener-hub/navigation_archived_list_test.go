@@ -113,7 +113,7 @@ func TestArchivedTiersAreInSessionOrder(t *testing.T) {
 		}
 		metas = append(metas, schema.SessionMeta{ID: fmt.Sprintf("session-order-%03d", i), Name: fmt.Sprintf("%s %02d", titles[i%len(titles)], i/len(titles)), CreatedAt: old.Add(time.Duration(i%3) * time.Minute), UpdatedAt: updated, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w/order"}})
 	}
-	tree := hubcore.BuildTreeAt(metas, nil, map[hubcore.ArchiveKey]bool{}, now)
+	tree := buildTreeAtResolved(metas, nil, map[hubcore.ArchiveKey]bool{}, now)
 	built := append(append([]hubcore.TreeProject(nil), tree.Projects...), tree.ArchivedProjects...)
 	if len(built) != 1 {
 		t.Fatalf("tree built %d projects, want 1", len(built))
@@ -262,7 +262,7 @@ func TestProjectSummaryMoreArchivedIsTheArchivedCount(t *testing.T) {
 	for i := range 2 {
 		metas = append(metas, schema.SessionMeta{ID: fmt.Sprintf("session-current-%d", i), Name: fmt.Sprintf("current %d", i), CreatedAt: now, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w/capped"}})
 	}
-	tree := hubcore.BuildTreeAt(metas, nil, map[hubcore.ArchiveKey]bool{}, now)
+	tree := buildTreeAtResolved(metas, nil, map[hubcore.ArchiveKey]bool{}, now)
 	small := hubcore.TreeProject{Key: "small", Name: "small", Archived: archivedRows("small", 3, func(i int) time.Time { return old.Add(time.Duration(i) * time.Minute) }, func(i int) string { return fmt.Sprintf("small %d", i) })}
 	whole := hubcore.TreeProject{Key: "small", Name: "small", IsArchived: true, Archived: archivedRows("whole", 4, func(i int) time.Time { return old.Add(time.Duration(i) * time.Minute) }, func(i int) string { return fmt.Sprintf("whole %d", i) })}
 	p := archivedProjection(t, append(append([]hubcore.TreeProject(nil), tree.Projects...), small, whole)...)
@@ -367,7 +367,7 @@ func TestHubArchivedListPreservesForkOriginalsFromAuthoritativeTree(t *testing.T
 	now := testNavigationNow()
 	old := now.Add(-40 * 24 * time.Hour)
 	env := schema.EnvironmentInfo{WorkingDir: "/projects/fork"}
-	tree := hubcore.BuildTreeAt([]schema.SessionMeta{
+	tree := buildTreeAtResolved([]schema.SessionMeta{
 		{ID: "orig", ForkLabel: "before edit", CreatedAt: old, UpdatedAt: old, EnvInfo: env},
 		{ID: "cont", ParentSessionID: "orig", CreatedAt: old, UpdatedAt: old, EnvInfo: env},
 	}, nil, nil, now)
@@ -482,7 +482,7 @@ func TestArchivedForkDepthCapAccountsForOmittedOriginals(t *testing.T) {
 		}
 		metas = append(metas, meta)
 	}
-	tree := hubcore.BuildTreeAt(metas, nil, nil, now)
+	tree := buildTreeAtResolved(metas, nil, nil, now)
 	if len(tree.ArchivedProjects) != 1 || len(tree.ArchivedProjects[0].Archived) != 1 {
 		t.Fatalf("authoritative archived tree: %+v", tree)
 	}

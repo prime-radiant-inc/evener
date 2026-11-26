@@ -617,7 +617,7 @@ func (m *hubHostManager) runPinnedTeardown(ctx context.Context, remnantID string
 		if m.cfg.manager != nil {
 			result, err := m.runBoundedTeardown(ctx, "update-host", func() error {
 				if err := m.cfg.manager.UpdateHost(entry, func(retired hostreg.Host) {
-					m.cfg.state.retire(remnant.Host, retired.Generation)
+					m.retireHostRegistration(remnant.Host, retired.Generation)
 				}); err != nil {
 					return fmt.Errorf("teardown-retry %s: update host %q: %w", remnantID, remnant.Host, err)
 				}
@@ -631,6 +631,7 @@ func (m *hubHostManager) runPinnedTeardown(ctx context.Context, remnantID string
 		if err := m.cfg.hosts.Update(entry); err != nil {
 			return teardownRunResult{Seam: "update-host"}, fmt.Errorf("teardown-retry %s: %w", remnantID, err)
 		}
+		m.forgetAttachedHost(remnant.Host)
 		return teardownRunResult{}, nil
 	default:
 		return teardownRunResult{Seam: remnant.Seam}, teardownUnknownKeyRefusal(remnantID)

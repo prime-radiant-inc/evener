@@ -97,7 +97,7 @@ func planTestManager(t *testing.T, configPath string, entries []hostreg.Host, se
 	if err != nil {
 		t.Fatalf("hostreg.New: %v", err)
 	}
-	store, err := hostops.Open(hostops.StorePath(t.TempDir()))
+	store, err := hostops.Open(hostops.StorePath(t.TempDir()), hostops.RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("hostops.Open: %v", err)
 	}
@@ -169,7 +169,7 @@ func TestHostPlanMintsThroughTheRealServer(t *testing.T) {
 	if err := os.WriteFile(configPath, []byte(planTestHubTOML([]hostreg.Host{entry})), 0o600); err != nil {
 		t.Fatalf("write hub.toml: %v", err)
 	}
-	store, err := hostops.Open(hostops.StorePath(t.TempDir()))
+	store, err := hostops.Open(hostops.StorePath(t.TempDir()), hostops.RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("hostops.Open: %v", err)
 	}
@@ -494,14 +494,16 @@ func TestHostPlanRefusesDriftAndConcurrentTerminalOp(t *testing.T) {
 			if !ok {
 				return hubcore.HostPlanFacts{}, errors.New("host vanished")
 			}
-			record, err := store.Create(hostops.NewRecord{
+			outcome, err := store.Create(hostops.OperationCreateRequest{
 				ClientOperationID: "client-1", Host: host.Name, Kind: hostops.KindDeploy,
-				Generation: live.Generation, IncarnationID: live.IncarnationID,
+				Pair:           hostops.OperationPair{Generation: live.Generation, IncarnationID: live.IncarnationID},
+				BootID:         "test-boot",
+				SequenceBefore: store.Sequence(),
 			})
 			if err != nil {
 				return hubcore.HostPlanFacts{}, err
 			}
-			if _, err := store.Transition(record.ID, hostops.StateComplete, func(r *hostops.Record) {
+			if _, err := store.Transition(outcome.Record.ID, hostops.StateComplete, func(r *hostops.Record) {
 				r.Result = &hostops.Result{OK: true, Message: "probe-time completion"}
 			}); err != nil {
 				return hubcore.HostPlanFacts{}, err

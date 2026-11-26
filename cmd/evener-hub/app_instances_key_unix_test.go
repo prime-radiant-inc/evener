@@ -26,7 +26,7 @@ func TestInstances_EndpointFingerprintReplacesASymlinkKeyFile(t *testing.T) {
 	newWork := func(t *testing.T) *instancesFixture {
 		t.Helper()
 		f := newInstancesFixture(t, nil)
-		if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
+		if _, err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
 			t.Fatalf("Create: %v", err)
 		}
 		return f
@@ -64,6 +64,9 @@ func TestInstances_EndpointFingerprintReplacesASymlinkKeyFile(t *testing.T) {
 		f := newWork(t)
 		target := filepath.Join(f.stateDir, "missing-target")
 		keyPath := filepath.Join(f.stateDir, endpointFingerprintKeyFile)
+		if err := os.Remove(keyPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("Remove(%s): %v", keyPath, err)
+		}
 		if err := os.Symlink(target, keyPath); err != nil {
 			t.Fatalf("Symlink: %v", err)
 		}
@@ -89,6 +92,9 @@ func TestInstances_EndpointFingerprintReplacesASymlinkKeyFile(t *testing.T) {
 			t.Fatalf("WriteFile(%s): %v", target, err)
 		}
 		keyPath := filepath.Join(f.stateDir, endpointFingerprintKeyFile)
+		if err := os.Remove(keyPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("Remove(%s): %v", keyPath, err)
+		}
 		if err := os.Symlink(target, keyPath); err != nil {
 			t.Fatalf("Symlink: %v", err)
 		}

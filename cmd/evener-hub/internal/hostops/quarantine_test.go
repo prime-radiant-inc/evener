@@ -138,7 +138,7 @@ func TestQuarantineIsCustodyFirstAndNeverDeletesTheCorruptFile(t *testing.T) {
 	writeRawStore(t, path, 0o600, quarantinedStoreJSON)
 	original := mustReadFile(t, path)
 
-	store, err := Open(path)
+	store, err := Open(path, RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("Open on a corrupt store: err = %v, want the custody-first quarantine", err)
 	}
@@ -239,7 +239,7 @@ func TestQuarantineIsCustodyFirstAndNeverDeletesTheCorruptFile(t *testing.T) {
 func TestQuarantineCustodySchema(t *testing.T) {
 	path := StorePath(t.TempDir())
 	writeRawStore(t, path, 0o600, quarantinedStoreWithRemoteFenceJSON)
-	if _, err := Open(path); err != nil {
+	if _, err := Open(path, RetentionPolicy{}); err != nil {
 		t.Fatalf("Open: %v", err)
 	}
 	custodyPath, body := quarantineArtifact(t, filepath.Dir(path), ".custody-")
@@ -387,7 +387,7 @@ func TestQuarantineFailsStartupWhenCustodyIsIncomplete(t *testing.T) {
 			path := StorePath(t.TempDir())
 			writeRawStore(t, path, 0o600, body)
 			before := mustReadFile(t, path)
-			store, err := Open(path)
+			store, err := Open(path, RetentionPolicy{})
 			if store != nil {
 				t.Fatalf("Open on an incomplete-custody store returned a handle: %v", store)
 			}
@@ -661,7 +661,7 @@ func TestQuarantineFailsStartupWhenTheIntentHasNoCompleteCustody(t *testing.T) {
 	t.Run("aside without complete custody", func(t *testing.T) {
 		path := StorePath(t.TempDir())
 		writeRawStore(t, path, 0o600, quarantinedStoreJSON)
-		if _, err := Open(path); err != nil {
+		if _, err := Open(path, RetentionPolicy{}); err != nil {
 			t.Fatalf("Open: %v", err)
 		}
 		dir := filepath.Dir(path)
@@ -671,7 +671,7 @@ func TestQuarantineFailsStartupWhenTheIntentHasNoCompleteCustody(t *testing.T) {
 		}
 		forgetStore(path)
 
-		store, err := Open(path)
+		store, err := Open(path, RetentionPolicy{})
 		if store != nil {
 			t.Fatalf("Open with an aside file and no custody returned a handle")
 		}
@@ -687,7 +687,7 @@ func TestQuarantineFailsStartupWhenTheIntentHasNoCompleteCustody(t *testing.T) {
 func TestSecondQuarantineAdvancesTheEpochExactlyOnce(t *testing.T) {
 	path := StorePath(t.TempDir())
 	writeRawStore(t, path, 0o600, quarantinedStoreJSON)
-	first, err := Open(path)
+	first, err := Open(path, RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("first Open: %v", err)
 	}
@@ -700,7 +700,7 @@ func TestSecondQuarantineAdvancesTheEpochExactlyOnce(t *testing.T) {
 	if err := forgetStore(path); err != nil {
 		t.Fatalf("forgetStore: %v", err)
 	}
-	second, err := Open(path)
+	second, err := Open(path, RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("second Open: %v", err)
 	}

@@ -526,8 +526,9 @@ flowchart TD
 Connect can still install software on a fresh or older host. A host whose
 protocol is newer than the controller's is refused rather than downgraded: the
 controller must be updated. A stopped compatible installation is started without
-replacement on an explicit Connect; background reconnect does not start a
-stopped hub. An unclassified handshake failure is a connection error, not
+replacement on an explicit Connect or on hub startup reconnect for a previously
+connected host; mid-run background reconnect does not start a stopped hub. An
+unclassified handshake failure is a connection error, not
 permission to overwrite the installation. The same rule applies to malformed or
 incomplete cold-start launch metadata. Use `--no-deploy` to prohibit both pushes
 and installer fallback. Explicit Deploy retains its plan, confirmation and

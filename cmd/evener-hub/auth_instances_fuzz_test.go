@@ -339,17 +339,17 @@ func FuzzAuthInstancesFactories(f *testing.F) {
 		iauth.reg = newTestRegistry(t, istate, ip, icreds, nil)
 		ic := &hubInstancesController{reg: iauth.reg, providersConfigPath: ip, auth: iauth}
 		_ = ic.List()
-		_ = ic.Create(appwire.InstanceCreateParams{Name: "bad/name", Base: "anthropic"})
-		_ = ic.Create(appwire.InstanceCreateParams{Name: "new", Base: "bad"})
-		_ = ic.Create(appwire.InstanceCreateParams{Name: "new", Base: "anthropic", CredentialHeader: "Authorization=Bearer literal"})
-		_ = ic.Create(appwire.InstanceCreateParams{Name: "base", Base: "anthropic"})
-		if err := ic.Create(appwire.InstanceCreateParams{Name: "new", Base: "anthropic", APIKeyEnv: "NEW_KEY", CredentialHeader: "Authorization=Bearer $NEW_KEY"}); err != nil {
+		_, _ = ic.Create(appwire.InstanceCreateParams{Name: "bad/name", Base: "anthropic"})
+		_, _ = ic.Create(appwire.InstanceCreateParams{Name: "new", Base: "bad"})
+		_, _ = ic.Create(appwire.InstanceCreateParams{Name: "new", Base: "anthropic", CredentialHeader: "Authorization=Bearer literal"})
+		_, _ = ic.Create(appwire.InstanceCreateParams{Name: "base", Base: "anthropic"})
+		if _, err := ic.Create(appwire.InstanceCreateParams{Name: "new", Base: "anthropic", APIKeyEnv: "NEW_KEY", CredentialHeader: "Authorization=Bearer $NEW_KEY"}); err != nil {
 			t.Fatal(err)
 		}
 		_ = ic.List()
-		_ = ic.Edit(appwire.InstanceEditParams{Name: "missing"})
-		_ = ic.Edit(appwire.InstanceEditParams{Name: "new", Protocol: "openai-responses", Surface: "generic", Vars: map[string]string{"X": "y"}})
-		if err := ic.Edit(appwire.InstanceEditParams{Name: "new", BaseURL: "http://local"}); err != nil {
+		_, _ = ic.Edit(appwire.InstanceEditParams{Name: "missing"})
+		_, _ = ic.Edit(appwire.InstanceEditParams{Name: "new", Protocol: "openai-responses", Surface: "generic", Vars: map[string]string{"X": "y"}})
+		if _, err := ic.Edit(appwire.InstanceEditParams{Name: "new", BaseURL: "http://local"}); err != nil {
 			t.Fatal(err)
 		}
 		_ = ic.SetDefault(appwire.InstanceSetDefaultParams{Name: "missing"})
@@ -385,8 +385,8 @@ func FuzzAuthInstancesFactories(f *testing.F) {
 		t.Cleanup(func() { _ = os.Chmod(sealedDir, 0o755) })
 		failWrite := &hubInstancesController{reg: sealedReg, providersConfigPath: sealedPath, auth: iauth}
 		_ = failWrite.List()
-		_ = failWrite.Create(appwire.InstanceCreateParams{Name: "third", Base: "anthropic"})
-		_ = failWrite.Edit(appwire.InstanceEditParams{Name: "base"})
+		_, _ = failWrite.Create(appwire.InstanceCreateParams{Name: "third", Base: "anthropic"})
+		_, _ = failWrite.Edit(appwire.InstanceEditParams{Name: "base"})
 		_ = failWrite.Remove(appwire.InstanceRemoveParams{Name: "second"})
 		_ = failWrite.SetDefault(appwire.InstanceSetDefaultParams{Name: "second"})
 
@@ -395,8 +395,8 @@ func FuzzAuthInstancesFactories(f *testing.F) {
 			t.Fatal(err)
 		}
 		failRead := &hubInstancesController{reg: sealedReg, providersConfigPath: unreadablePath, auth: iauth}
-		_ = failRead.Create(appwire.InstanceCreateParams{Name: "third", Base: "anthropic"})
-		_ = failRead.Edit(appwire.InstanceEditParams{Name: "base"})
+		_, _ = failRead.Create(appwire.InstanceCreateParams{Name: "third", Base: "anthropic"})
+		_, _ = failRead.Edit(appwire.InstanceEditParams{Name: "base"})
 		_ = failRead.SetDefault(appwire.InstanceSetDefaultParams{Name: "base"})
 
 		// A providers.toml the registry could not read refuses every write.
@@ -417,8 +417,8 @@ func FuzzAuthInstancesFactories(f *testing.F) {
 		}
 		broken := &hubInstancesController{reg: brokenReg, providersConfigPath: brokenPath, auth: iauth}
 		_ = broken.List()
-		_ = broken.Create(appwire.InstanceCreateParams{Name: "x", Base: "anthropic"})
-		_ = broken.Edit(appwire.InstanceEditParams{Name: "x"})
+		_, _ = broken.Create(appwire.InstanceCreateParams{Name: "x", Base: "anthropic"})
+		_, _ = broken.Edit(appwire.InstanceEditParams{Name: "x"})
 		_ = broken.Remove(appwire.InstanceRemoveParams{Name: "x"})
 		_ = broken.SetDefault(appwire.InstanceSetDefaultParams{Name: "x"})
 	})

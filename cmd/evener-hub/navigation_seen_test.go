@@ -32,7 +32,7 @@ func seenRows(t *testing.T, now time.Time, turnEnds map[string]time.Time, seen h
 		metas = append(metas, schema.SessionMeta{ID: id, CreatedAt: now.Add(-time.Hour), UpdatedAt: now.Add(-time.Hour), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}})
 		live = append(live, hubcore.LiveEntry{PID: len(live) + 1, SessionID: id, Status: appwire.ThreadStatusIdle, LastTurnEndedAt: ended})
 	}
-	tree := hubcore.BuildTreeAt(metas, live, nil, now)
+	tree := buildTreeAtResolved(metas, live, nil, now)
 	projection, err := buildNavigationProjection(t.Context(), navigationBuildInputs{GenerationID: "generation", Tree: tree, SessionSeen: seen, Live: liveIDs})
 	if err != nil {
 		t.Fatal(err)

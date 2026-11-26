@@ -39,7 +39,7 @@ const priorShapeStoreJSON = `{"version":1,"sequence":1,"allocatorHighWaterMark":
 func TestPriorBuildStoreLoadsAndDropsRetiredKeys(t *testing.T) {
 	path := StorePath(t.TempDir())
 	writeRawStore(t, path, 0o600, currentFixtureDates(priorShapeStoreJSON))
-	store, err := Open(path)
+	store, err := Open(path, RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("Open on a prior-build store: %v", err)
 	}
@@ -92,7 +92,7 @@ const priorShapeCorruptStoreJSON = `{"version":1,"sequence":1,"allocatorHighWate
 func TestPriorBuildCorruptStoreStillQuarantinesAndWritesNoRetiredKeys(t *testing.T) {
 	path := StorePath(t.TempDir())
 	writeRawStore(t, path, 0o600, priorShapeCorruptStoreJSON)
-	store, err := Open(path)
+	store, err := Open(path, RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("Open on a corrupt prior-build store: %v", err)
 	}
@@ -141,7 +141,7 @@ func TestPriorBuildMalformedBoundaryStillLoadsAndQuarantines(t *testing.T) {
 	writeRawStore(t, path, 0o600, malformed)
 	// Corrupt only at the store level (the record stamp sits above the store
 	// sequence), so the tolerance under test is the boundary shape.
-	store, err := Open(path)
+	store, err := Open(path, RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("Open on a prior-build store with a malformed boundary: %v", err)
 	}

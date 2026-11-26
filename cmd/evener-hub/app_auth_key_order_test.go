@@ -174,7 +174,7 @@ func TestAuth_ConditionalSetResolvesTheKeyBeforeTheCredentialLock(t *testing.T) 
 // way ApiKeySet's is.
 func TestInstances_KeyResolutionHappensBeforeBothLocks(t *testing.T) {
 	f := newInstancesFixture(t, nil)
-	if err := f.ctl.Create(appwire.InstanceCreateParams{
+	if _, err := f.ctl.Create(appwire.InstanceCreateParams{
 		Name:    "work",
 		Base:    "openai",
 		BaseURL: "https://work.example.test/v1",
