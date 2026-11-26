@@ -24,7 +24,8 @@ export function alignCreateWithComposer(action: HTMLButtonElement | null) {
     body.setAttribute("data-docked-composer-action", "");
   };
   const resize = new ResizeObserver(measure);
-  for (const element of [action, footer, status, pane, workspace]) resize.observe(element);
+  // The safe-area inset changes the status footer's padding without resizing its content.
+  for (const element of [action, footer, status, pane, workspace]) resize.observe(element, { box: "border-box" });
   measure();
   return () => {
     resize.disconnect();

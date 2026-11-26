@@ -215,7 +215,7 @@
 /* In the tablet split, the scrollport pays the same bottom inset as the
  * composer's action row. A second sticky inset lifts Create above Send. */
 :global([data-board="visible"]) .body {
-  padding-bottom: calc(var(--dock-clearance) + var(--space-1));
+  padding-bottom: calc(var(--dock-clearance) + var(--composer-action-inset));
 }
 
 :global([data-board="visible"]) .newSessionRow {

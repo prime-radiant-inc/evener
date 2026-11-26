@@ -80,6 +80,7 @@
  * control-radius verbs at every width. */
 @media (max-width: 899px) {
   :global([data-composer]) .card {
+    padding-block-end: var(--composer-action-inset);
     border: none;
     background: transparent;
   }
@@ -123,13 +124,13 @@
   --font-sans: var(--glass-control-font, system-ui);
   border-radius: var(--glass-radius);
   row-gap: var(--space-1);
-  padding-block: var(--space-2) var(--space-1);
+  padding-block: var(--space-2) var(--composer-action-inset);
   box-shadow: none;
 }
 
 :global([data-iphone-composer]) .card[data-folded="true"] {
   border-radius: var(--radius-pill);
-  padding-block: var(--space-1);
+  padding-block: var(--composer-action-inset);
 }
 
 /* The wide workspace docks its composer in flow, on an opaque footer. */

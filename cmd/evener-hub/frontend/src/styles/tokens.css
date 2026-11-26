@@ -159,6 +159,7 @@
   --space-7: 40px;
   --space-8: 48px;
   --space-9: 64px;
+  --composer-action-inset: var(--space-2);
 
   /* The home-indicator band a docked surface must keep its content clear of.
    * Zero off a phone. It yields as the on-screen keyboard rises over that
@@ -477,6 +478,7 @@ body[data-font-size="xl"] { --font-scale: 1.25; }
 /* Apple touch controls inherit these through body, including portaled menus.
  * The underlying palette stays live when the reader changes theme. */
 body[data-iphone-glass] {
+  --composer-action-inset: var(--space-1);
   --glass-control-font: system-ui, sans-serif;
   --glass-fill: var(--field);
   --glass-panel: var(--surface-1);
