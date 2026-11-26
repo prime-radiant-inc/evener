@@ -36,7 +36,7 @@ func TestHubForkCapabilityReadAndStatusMatchHubOwnership(t *testing.T) {
 	const sessionID = "hub-fork-capability"
 	const ref = "local:" + sessionID
 	daemon := daemonserver.NewServer(daemonserver.ServerConfig{HubToken: "fork-test-token"})
-	daemon.SetAppIdentity("local", sessionID)
+	setAppIdentity(t, daemon, "local", sessionID)
 	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.AppServer().ServeWebSocket))
 	t.Cleanup(daemonHTTP.Close)
 	runDir := t.TempDir()
@@ -726,7 +726,7 @@ func TestHubRelayedForkCapabilityFollowsLiveRecovery(t *testing.T) {
 	const sessionID = "hub-fork-relay-recovery"
 	const ref = "local:" + sessionID
 	daemon := daemonserver.NewServer(daemonserver.ServerConfig{HubToken: "fork-relay-token"})
-	daemon.SetAppIdentity("local", sessionID)
+	setAppIdentity(t, daemon, "local", sessionID)
 	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.AppServer().ServeWebSocket))
 	t.Cleanup(daemonHTTP.Close)
 	runDir := t.TempDir()
@@ -1160,7 +1160,7 @@ func TestHubForkCapabilityHonoursDaemonReportedRecoveryStatus(t *testing.T) {
 	const sessionID = "hub-fork-recovery-status"
 	const ref = "local:" + sessionID
 	daemon := daemonserver.NewServer(daemonserver.ServerConfig{HubToken: "status-test-token"})
-	daemon.SetAppIdentity("local", sessionID)
+	setAppIdentity(t, daemon, "local", sessionID)
 	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.AppServer().ServeWebSocket))
 	t.Cleanup(daemonHTTP.Close)
 	runDir := t.TempDir()
@@ -2031,7 +2031,7 @@ func TestHubForkCapabilityFencesTheSessionAStableRefResolvesTo(t *testing.T) {
 			buildRPCSessionWithWorkingDir(t, stateDir, currentID, t.TempDir())
 			ref := "local:" + aliasID
 			daemon := daemonserver.NewServer(daemonserver.ServerConfig{HubToken: "resolved-fence-token"})
-			daemon.SetAppIdentity("local", aliasID)
+			setAppIdentity(t, daemon, "local", aliasID)
 			daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.AppServer().ServeWebSocket))
 			t.Cleanup(daemonHTTP.Close)
 			runDir := t.TempDir()
@@ -2551,7 +2551,7 @@ func TestHubRelayProjectsForkOnlyForStatusNotifications(t *testing.T) {
 	const sessionID = "hub-fork-relay-hot-path"
 	const ref = "local:" + sessionID
 	daemon := daemonserver.NewServer(daemonserver.ServerConfig{HubToken: "hot-path-token"})
-	daemon.SetAppIdentity("local", sessionID)
+	setAppIdentity(t, daemon, "local", sessionID)
 	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.AppServer().ServeWebSocket))
 	t.Cleanup(daemonHTTP.Close)
 	runDir := t.TempDir()

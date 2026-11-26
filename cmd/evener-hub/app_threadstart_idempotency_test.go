@@ -639,7 +639,7 @@ func TestThreadStartIdempotencyTransientFailureAndRealDaemonTurn1Dedup(t *testin
 	var injectPostExecTransient atomic.Bool
 
 	daemonSrv := server.NewServer(server.ServerConfig{StateDir: sessionStateDir})
-	daemonSrv.SetAppIdentity("local", sessionID)
+	setAppIdentity(t, daemonSrv, "local", sessionID)
 	daemonSrv.SetState(appwire.ThreadStatusIdle)
 	daemonSrv.SetRetrySafeTurnFunctions(server.RetrySafeTurnFunctions{
 		Start: func(params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {

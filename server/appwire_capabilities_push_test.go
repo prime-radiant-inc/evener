@@ -19,7 +19,7 @@ import (
 // carries for the running failure count (kata 12rq).
 func TestStatusChangeCarriesTheCapabilitiesForThatStatus(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
+	setAppIdentity(t, srv, "local", "th_1")
 	wireRetrySafeCapabilities(srv)
 	srv.SetCancelFunc(context.CancelFunc(func() {}))
 
@@ -74,7 +74,7 @@ func TestStatusChangeCarriesTheCapabilitiesForThatStatus(t *testing.T) {
 // daemon never announces it closed.
 func TestFailedTurnStatusFrameKeepsTheSessionOpen(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
+	setAppIdentity(t, srv, "local", "th_1")
 	wireRetrySafeCapabilities(srv)
 
 	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "go"}})
@@ -108,7 +108,7 @@ func TestFailedTurnStatusFrameKeepsTheSessionOpen(t *testing.T) {
 // cut for a turn that is over (kata pk2d).
 func TestStatusChangeOmitsCapabilitiesWhenTheDaemonCloses(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
+	setAppIdentity(t, srv, "local", "th_1")
 	wireRetrySafeCapabilities(srv)
 
 	startExecution(srv, "th_1", "t_go")
@@ -129,7 +129,7 @@ func TestStatusChangeOmitsCapabilitiesWhenTheDaemonCloses(t *testing.T) {
 // it in the active frame too.
 func TestStatusChangeCapabilitiesRespectAnUnwiredHarness(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
+	setAppIdentity(t, srv, "local", "th_1")
 
 	startExecution(srv, "th_1", "t_go")
 

@@ -31,7 +31,7 @@ func cancelRPC(conn interface {
 
 func TestServerAppWireTurnCancelQueuedDispatchesIndex(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
+	setAppIdentity(t, srv, "local", "th_1")
 	srv.SetProcessing(true)
 	seedStatus(srv, StatusInfo{SessionID: "th_1", State: "active"})
 	gotIndex := -1
@@ -65,7 +65,7 @@ func TestServerAppWireTurnCancelQueuedDispatchesIndex(t *testing.T) {
 // promote: canceling a queued follow-up does not require an in-flight turn.
 func TestServerAppWireTurnCancelQueuedAllowedWhileIdle(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
+	setAppIdentity(t, srv, "local", "th_1")
 	srv.SetProcessing(false)
 	seedStatus(srv, StatusInfo{SessionID: "th_1", State: "idle"})
 	called := 0
@@ -88,7 +88,7 @@ func TestServerAppWireTurnCancelQueuedAllowedWhileIdle(t *testing.T) {
 
 func TestServerAppWireTurnCancelQueuedRejectsNegativeIndex(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
+	setAppIdentity(t, srv, "local", "th_1")
 	srv.SetProcessing(true)
 	seedStatus(srv, StatusInfo{SessionID: "th_1", State: "active"})
 	srv.SetRetrySafeTurnFunctions(RetrySafeTurnFunctions{
@@ -109,7 +109,7 @@ func TestServerAppWireTurnCancelQueuedRejectsNegativeIndex(t *testing.T) {
 
 func TestServerAppWireTurnCancelQueuedDelegatesWhenProjectionIsClosed(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
+	setAppIdentity(t, srv, "local", "th_1")
 	srv.SetProcessing(false)
 	seedStatus(srv, StatusInfo{SessionID: "th_1", State: "closed"})
 	called := 0
@@ -129,7 +129,7 @@ func TestServerAppWireTurnCancelQueuedDelegatesWhenProjectionIsClosed(t *testing
 
 func TestServerAppWireTurnCancelQueuedUnavailableWithoutFunc(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
+	setAppIdentity(t, srv, "local", "th_1")
 	srv.SetProcessing(true)
 	seedStatus(srv, StatusInfo{SessionID: "th_1", State: "active"})
 
@@ -148,7 +148,7 @@ func TestServerAppWireTurnCancelQueuedUnavailableWithoutFunc(t *testing.T) {
 // so the client can re-sync its preview.
 func TestServerAppWireTurnCancelQueuedPropagatesSessionError(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
+	setAppIdentity(t, srv, "local", "th_1")
 	srv.SetProcessing(true)
 	seedStatus(srv, StatusInfo{SessionID: "th_1", State: "active"})
 	srv.SetRetrySafeTurnFunctions(RetrySafeTurnFunctions{
@@ -201,7 +201,7 @@ func TestServerAppWireTurnCancelQueuedThroughSession(t *testing.T) {
 	}
 
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", sess.ID())
+	setAppIdentity(t, srv, "local", sess.ID())
 	srv.SetProcessing(true)
 	seedStatus(srv, StatusInfo{SessionID: sess.ID(), State: "active"})
 	srv.SetRetrySafeTurnFunctions(RetrySafeTurnFunctions{

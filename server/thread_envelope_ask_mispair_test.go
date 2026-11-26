@@ -106,7 +106,7 @@ func TestThreadEnvelopeSourceReplacementClearsBothAskHalves(t *testing.T) {
 func TestThreadEnvelopeAskFacetSamplesOneSet(t *testing.T) {
 	t.Parallel()
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "root")
+	setAppIdentity(t, srv, "local", "root")
 	src := &askMispairEnvelopeSource{}
 	// Install the source the way publishEnvelope installs a plain stub
 	// (SetThreadEnvelopeSource + RefreshThreadEnvelope). That pass is the

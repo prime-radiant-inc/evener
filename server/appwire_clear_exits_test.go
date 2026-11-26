@@ -180,7 +180,7 @@ func TestThreadClearRefusals(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			srv := NewServer(ServerConfig{StateDir: t.TempDir()})
-			srv.SetAppIdentity("local", "old")
+			setAppIdentity(t, srv, "local", "old")
 			called := false
 			srv.SetClearFunc(func(context.Context, appwire.ThreadClearParams) error {
 				called = true
@@ -203,7 +203,7 @@ func TestThreadClearRefusals(t *testing.T) {
 
 func TestThreadClearRefusesReusedMutationIDWithDifferentRequest(t *testing.T) {
 	srv := NewServer(ServerConfig{StateDir: t.TempDir()})
-	srv.SetAppIdentity("local", "old")
+	setAppIdentity(t, srv, "local", "old")
 	setReplacingClearFunc(srv, "new")
 	if _, err := srv.handleAppThreadClear(context.Background(), clearParams("reused")); err != nil {
 		t.Fatalf("first clear: %v", err)
@@ -224,7 +224,7 @@ func TestThreadClearWithUnreadableJournalIsOutcomeUnknown(t *testing.T) {
 		t.Fatal(err)
 	}
 	srv := NewServer(ServerConfig{StateDir: stateDir})
-	srv.SetAppIdentity("local", "old")
+	setAppIdentity(t, srv, "local", "old")
 	called := false
 	srv.SetClearFunc(func(context.Context, appwire.ThreadClearParams) error {
 		called = true
@@ -244,7 +244,7 @@ func TestThreadClearReplayOfAppliedRecordWithoutReceiptIsOutcomeUnknown(t *testi
 	record := reservedClear(t, params)
 	record.State = threadClearApplied
 	srv := serverOverClearJournal(t, t.TempDir(), record)
-	srv.SetAppIdentity("local", "old")
+	setAppIdentity(t, srv, "local", "old")
 	code, outcome := clearFailure(t, clearError(srv.handleAppThreadClear(context.Background(), params)))
 	if code != appwire.CodeInternalError || outcome != appwire.MutationOutcomeUnknown {
 		t.Fatalf("refusal = (code %d, outcome %q), want internal error, unknown", code, outcome)
@@ -336,7 +336,7 @@ func TestThreadClearRecoveryThatCannotPersistIsOutcomeUnknownThenRetries(t *test
 func TestThreadClearResumesReservedRecordWhenReplacementNeverInstalled(t *testing.T) {
 	params := clearParams("c")
 	srv := serverOverClearJournal(t, t.TempDir(), reservedClear(t, params))
-	srv.SetAppIdentity("local", "old")
+	setAppIdentity(t, srv, "local", "old")
 	setReplacingClearFunc(srv, "new")
 
 	response, err := srv.handleAppThreadClear(context.Background(), params)
@@ -354,7 +354,7 @@ func TestThreadClearResumesReservedRecordWhenReplacementNeverInstalled(t *testin
 func TestThreadClearReceiptThatCannotPersistIsOutcomeUnknownThenReplays(t *testing.T) {
 	stateDir := t.TempDir()
 	srv := NewServer(ServerConfig{StateDir: stateDir})
-	srv.SetAppIdentity("local", "old")
+	setAppIdentity(t, srv, "local", "old")
 	journalPath := threadClearJournalPath(stateDir)
 	calls := 0
 	srv.SetClearFunc(func(_ context.Context, params appwire.ThreadClearParams) error {
@@ -393,7 +393,7 @@ func TestThreadClearReceiptThatCannotPersistIsOutcomeUnknownThenReplays(t *testi
 func TestThreadClearReservationThatCannotPersistIsOutcomeUnknownThenClears(t *testing.T) {
 	stateDir := t.TempDir()
 	srv := NewServer(ServerConfig{StateDir: stateDir})
-	srv.SetAppIdentity("local", "old")
+	setAppIdentity(t, srv, "local", "old")
 	journalPath := threadClearJournalPath(stateDir)
 	replaceJournalWithDirectory(t, journalPath)
 	called := false

@@ -17,7 +17,7 @@ func TestPendingAskPageSamplesOutsideProjectionLocks(t *testing.T) {
 	for _, replace := range []bool{false, true} {
 		t.Run(map[bool]string{false: "unchanged", true: "source replaced"}[replace], func(t *testing.T) {
 			s := NewServer(ServerConfig{})
-			s.SetAppIdentity("local", "root")
+			setAppIdentity(t, s, "local", "root")
 			sampled, release := make(chan struct{}), make(chan struct{})
 			var once sync.Once
 			unblock := func() { once.Do(func() { close(release) }) }
@@ -86,7 +86,7 @@ func TestPendingAskPageSamplesOutsideProjectionLocks(t *testing.T) {
 func TestPendingAskPageRejectsLiveDescendant(t *testing.T) {
 	t.Parallel()
 	s := NewServer(ServerConfig{})
-	s.SetAppIdentity("local", "root")
+	setAppIdentity(t, s, "local", "root")
 	s.appDescendants["child"] = &appDescendantProjection{thread: appwire.Thread{ID: "child", Evener: appwire.EvenerThread{Ref: "local:child", Kind: "subagent"}}}
 	revision := uint64(1)
 	_, err := s.handleAppThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "local:child", ExpectedAskRevision: &revision, ExpectedAskBootGeneration: "1"})

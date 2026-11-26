@@ -236,8 +236,8 @@ func TestServerAppWireOldIdentityCannotPublishAfterReplacement(t *testing.T) {
 // and that the new thread's subscribers are not.
 func TestServerAppWireReplacementClosesTheOldStreamOnce(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "old")
-	srv.SetAppIdentity("local", "new")
+	setAppIdentity(t, srv, "local", "old")
+	setAppIdentity(t, srv, "local", "new")
 
 	closed := srv.AppNotificationsAfter(0, "local:old")
 	if len(closed) != 1 || closed[0].Notification.Method != appwire.NotifyThreadClosed {
@@ -260,12 +260,12 @@ func TestServerAppWireReplacementClosesTheOldStreamOnce(t *testing.T) {
 // published does not survive the replacement.
 func TestServerAppWireReplacementLeavesNoActiveTurn(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
+	setAppIdentity(t, srv, "local", "th_1")
 	srv.SetProcessingTurn("t_running")
 	if got := srv.appThread().Evener.ActiveTurnID; got != "t_running" {
 		t.Fatalf("thread.evener.activeTurnId = %q, want the running t_running", got)
 	}
-	srv.SetAppIdentity("local", "th_3")
+	setAppIdentity(t, srv, "local", "th_3")
 	if got := srv.appThread().Evener.ActiveTurnID; got != "" {
 		t.Fatalf("thread.evener.activeTurnId = %q after replacement, want none", got)
 	}
@@ -457,25 +457,22 @@ func TestPreparedAppIdentityServesNoHistoryWithoutATranscript(t *testing.T) {
 	}
 }
 
-// TestPreparedAppIdentityRequiresAThreadID also covers SetAppIdentity, which
-// installs through the same validation. An identity with no thread cannot be
-// published half-way: it would blank status.SessionID while leaving the caller
-// believing a thread was installed.
+// TestPreparedAppIdentityRequiresAThreadID verifies that an identity with no
+// thread cannot be prepared: preparation fails before any Server state is
+// touched, rather than blanking status.SessionID.
 func TestPreparedAppIdentityRequiresAThreadID(t *testing.T) {
 	for _, threadID := range []string{"", "   "} {
+		srv := NewServer(ServerConfig{})
+		setAppIdentity(t, srv, "local", "th_1")
+		srv.UpdateSessionInfo("01SESS001", "gpt-5", "openai")
 		if _, err := PrepareAppIdentity("local", threadID, ""); err == nil {
 			t.Fatalf("PrepareAppIdentity(%q) succeeded, want an error", threadID)
 		}
-
-		srv := NewServer(ServerConfig{})
-		srv.SetAppIdentity("local", "th_1")
-		srv.UpdateSessionInfo("01SESS001", "gpt-5", "openai")
-		srv.SetAppIdentity("local", threadID)
 		if got := srv.GetStatus().SessionID; got != "01SESS001" {
-			t.Fatalf("SetAppIdentity(%q) left status.SessionID = %q, want the untouched 01SESS001", threadID, got)
+			t.Fatalf("PrepareAppIdentity(%q) left status.SessionID = %q, want the untouched 01SESS001", threadID, got)
 		}
 		if got := srv.appThread().ID; got != "th_1" {
-			t.Fatalf("SetAppIdentity(%q) replaced the installed thread with %q", threadID, got)
+			t.Fatalf("PrepareAppIdentity(%q) replaced the installed thread with %q", threadID, got)
 		}
 	}
 }

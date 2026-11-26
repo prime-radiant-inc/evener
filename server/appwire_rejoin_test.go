@@ -80,7 +80,7 @@ func TestAtomicRejoinProjectsDurablePendingMutationsAndQueueRevision(t *testing.
 	}
 
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", sess.ID())
+	setAppIdentity(t, srv, "local", sess.ID())
 	publishSessionQueueEnvelope(srv, sess)
 
 	response, err := srv.handleAppThreadRead(context.Background(), appwire.ThreadReadParams{})
@@ -330,7 +330,7 @@ func TestAtomicRejoinShowsARecordedAnswerOnce(t *testing.T) {
 
 func TestAtomicProjectionCommitStampsAuthoritativeNotificationTarget(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "authoritative")
+	setAppIdentity(t, srv, "local", "authoritative")
 	srv.mu.Lock()
 	srv.appProjector = appprojector.NewAppEventProjector("stale", "remote:stale")
 	srv.mu.Unlock()

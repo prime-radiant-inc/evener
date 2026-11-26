@@ -22,7 +22,7 @@ func (s *conversationEnvelopeSource) ConversationProvenance() *appwire.Conversat
 
 func TestConversationProvenance_MaterializedReadAndStaleSampleFence(t *testing.T) {
 	s := NewServer(ServerConfig{})
-	s.SetAppIdentity("local", "thread")
+	setAppIdentity(t, s, "local", "thread")
 	source := &conversationEnvelopeSource{sample: func() *appwire.ConversationProvenanceState {
 		return &appwire.ConversationProvenanceState{Version: 1, Authoritative: true, InstanceID: "thread", Revision: 1}
 	}}
@@ -62,7 +62,7 @@ func TestConversationProvenance_MaterializedReadAndStaleSampleFence(t *testing.T
 func TestConversationProvenance_StartPublishesBeforeConsumption(t *testing.T) {
 	sess := newMutationReplaySession(t)
 	s := NewServer(ServerConfig{})
-	s.SetAppIdentity("local", sess.ID())
+	setAppIdentity(t, s, "local", sess.ID())
 	source := &conversationEnvelopeSource{sample: sess.ConversationProvenance}
 	s.SetThreadEnvelopeSource(source)
 	s.RefreshThreadEnvelope()

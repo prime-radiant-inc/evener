@@ -85,7 +85,7 @@ func TestSubmitContinuation_DropIfFull(t *testing.T) {
 
 func TestServerAppWireThreadList(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
+	setAppIdentity(t, srv, "local", "th_1")
 
 	conn := srv.AppServer().NewConnection("test")
 	init := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
@@ -117,7 +117,7 @@ func TestServerAppWireThreadList(t *testing.T) {
 
 func TestServerAppWireTasksList(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
+	setAppIdentity(t, srv, "local", "th_1")
 	srv.SetTasksFunc(func() []appwire.Task {
 		return []appwire.Task{{ID: 1}}
 	})
@@ -174,7 +174,7 @@ func TestServerAppWireTasksListAvailability(t *testing.T) {
 
 func TestHandleAppJobsListNilFunc(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
+	setAppIdentity(t, srv, "local", "th_1")
 
 	conn := srv.AppServer().NewConnection("test")
 	init := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
@@ -196,7 +196,7 @@ func TestHandleAppJobsListNilFunc(t *testing.T) {
 
 func TestHandleAppJobsList(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
+	setAppIdentity(t, srv, "local", "th_1")
 	srv.SetJobsFunc(func(_ context.Context, got appwire.JobsListParams) (any, error) {
 		if got.Ref != "local:root" || got.Continuation != "next" {
 			t.Fatalf("params=%+v", got)
@@ -231,7 +231,7 @@ func TestHandleAppJobsList(t *testing.T) {
 // can't tell you what ran" must not arrive as the same response.
 func TestHandleAppJobsListSourceError(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
+	setAppIdentity(t, srv, "local", "th_1")
 	srv.SetJobsFunc(func(context.Context, appwire.JobsListParams) (any, error) {
 		return nil, errors.New("jobstore: parse event line 3: unexpected end of JSON input")
 	})
@@ -252,7 +252,7 @@ func TestHandleAppJobsListSourceError(t *testing.T) {
 
 func TestHandleAppJobsOutputNilFunc(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
+	setAppIdentity(t, srv, "local", "th_1")
 
 	conn := srv.AppServer().NewConnection("test")
 	init := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
@@ -277,7 +277,7 @@ func TestHandleAppJobsOutputNilFunc(t *testing.T) {
 
 func TestHandleAppJobsOutputNotFound(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
+	setAppIdentity(t, srv, "local", "th_1")
 	srv.SetJobOutputFunc(func(string, *int64, int64) (appwire.JobOutputPage, bool, error) {
 		return appwire.JobOutputPage{}, false, nil
 	})
@@ -301,7 +301,7 @@ func TestHandleAppJobsOutputNotFound(t *testing.T) {
 
 func TestHandleAppJobsOutput(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
+	setAppIdentity(t, srv, "local", "th_1")
 	srv.SetJobOutputFunc(func(jobID string, beforeBytes *int64, maxBytes int64) (appwire.JobOutputPage, bool, error) {
 		if jobID != "job_1" {
 			t.Errorf("jobID = %q, want job_1", jobID)
@@ -337,7 +337,7 @@ func TestHandleAppJobsOutput(t *testing.T) {
 
 func TestHandleAppJobsGetNilFunc(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
+	setAppIdentity(t, srv, "local", "th_1")
 
 	conn := srv.AppServer().NewConnection("test")
 	init := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
@@ -362,7 +362,7 @@ func TestHandleAppJobsGetNilFunc(t *testing.T) {
 
 func TestHandleAppJobsGetNotFound(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
+	setAppIdentity(t, srv, "local", "th_1")
 	srv.SetJobGetFunc(func(string) (appwire.JobActivityJob, bool, error) { return appwire.JobActivityJob{}, false, nil })
 
 	conn := srv.AppServer().NewConnection("test")
@@ -384,7 +384,7 @@ func TestHandleAppJobsGetNotFound(t *testing.T) {
 
 func TestHandleAppJobsGet(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
+	setAppIdentity(t, srv, "local", "th_1")
 	srv.SetJobGetFunc(func(jobID string) (appwire.JobActivityJob, bool, error) {
 		if jobID != "job_1" {
 			t.Errorf("jobID = %q, want job_1", jobID)
@@ -413,7 +413,7 @@ func TestHandleAppJobsGet(t *testing.T) {
 
 func TestServerAppWireModelList(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
+	setAppIdentity(t, srv, "local", "th_1")
 	srv.SetListModelsFunc(func(ctx context.Context) ([]appwire.ModelDescriptor, error) {
 		return []appwire.ModelDescriptor{{Model: "gpt-4o"}}, nil
 	})
@@ -467,7 +467,7 @@ func TestServerAppWireModelListEmptyDataIsArray(t *testing.T) {
 func TestHandleAppJobsListPassesRequestContext(t *testing.T) {
 	type ctxKey struct{}
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
+	setAppIdentity(t, srv, "local", "th_1")
 	var sawMarker bool
 	srv.SetJobsFunc(func(ctx context.Context, _ appwire.JobsListParams) (any, error) {
 		sawMarker = ctx.Value(ctxKey{}) != nil

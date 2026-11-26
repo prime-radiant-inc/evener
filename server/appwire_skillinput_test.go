@@ -18,7 +18,7 @@ import (
 // is true exactly when the daemon wired the seams that consume selections.
 func TestTurnMutationsConsumeSkillInputWhenWired(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
+	setAppIdentity(t, srv, "local", "th_1")
 	called := map[string]bool{}
 	srv.SetRetrySafeTurnFunctions(RetrySafeTurnFunctions{
 		Start: func(appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
@@ -95,7 +95,7 @@ func TestTurnMutationsConsumeSkillInputWhenWired(t *testing.T) {
 	// A server that wired none of the input-bearing seams has nothing that
 	// consumes a selection, so it must not advertise the capability.
 	bare := NewServer(ServerConfig{})
-	bare.SetAppIdentity("local", "th_2")
+	setAppIdentity(t, bare, "local", "th_2")
 	if caps := bare.appCapabilities("idle", false); caps.SkillInput {
 		t.Fatal("advertised ThreadCapabilities.SkillInput is true with no input-bearing turn mutations wired")
 	}
@@ -104,7 +104,7 @@ func TestTurnMutationsConsumeSkillInputWhenWired(t *testing.T) {
 	// selections, so a client reading the capability can trust every one of
 	// them.
 	partial := NewServer(ServerConfig{})
-	partial.SetAppIdentity("local", "th_3")
+	setAppIdentity(t, partial, "local", "th_3")
 	partial.SetRetrySafeTurnFunctions(RetrySafeTurnFunctions{
 		Queue: func(appwire.TurnQueueParams) (appwire.TurnQueueResponse, error) {
 			return appwire.TurnQueueResponse{}, nil
@@ -127,7 +127,7 @@ func TestTurnMutationsConsumeSkillInputWhenWired(t *testing.T) {
 // (TestTurnMutationsConsumeSkillInputWhenWired above).
 func TestSkillInputValidationMatchesAdvertisedCapability(t *testing.T) {
 	partial := NewServer(ServerConfig{})
-	partial.SetAppIdentity("local", "th_3")
+	setAppIdentity(t, partial, "local", "th_3")
 	queueReached := false
 	partial.SetRetrySafeTurnFunctions(RetrySafeTurnFunctions{
 		Queue: func(appwire.TurnQueueParams) (appwire.TurnQueueResponse, error) {
@@ -207,7 +207,7 @@ func TestSkillInputValidationMatchesAdvertisedCapability(t *testing.T) {
 // reading placeholder false booleans.
 func TestThreadReadAdvertisesRealSkillControls(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
+	setAppIdentity(t, srv, "local", "th_1")
 	seedStatus(srv, StatusInfo{SessionID: "sess_1", State: "idle"})
 	setEnvelope(srv, func(e *stubThreadEnvelopeSource) {
 		e.detailedStatus = DetailedStatus{Skills: []SkillInfo{
@@ -267,7 +267,7 @@ func TestThreadReadAdvertisesRealSkillControls(t *testing.T) {
 // at a conversion boundary.
 func TestThreadReadCarriesSkillDiagnostics(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
+	setAppIdentity(t, srv, "local", "th_1")
 	seedStatus(srv, StatusInfo{SessionID: "sess_1", State: "idle"})
 	setEnvelope(srv, func(e *stubThreadEnvelopeSource) {
 		e.detailedStatus = DetailedStatus{

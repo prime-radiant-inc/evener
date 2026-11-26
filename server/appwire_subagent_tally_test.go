@@ -25,7 +25,7 @@ func TestThreadListRootRowCarriesItsTreesSubagentTally(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			srv := NewServer(ServerConfig{})
-			srv.SetAppIdentity("local", "th_root")
+			setAppIdentity(t, srv, "local", "th_root")
 			srv.RecordDescendantAppEvent("th_root", events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_child", Data: events.UserInputData{Text: "go"}})
 			srv.SetSubagentTallyFunc(func() (appwire.SubagentTally, bool) { return tc.tally, tc.ok })
 			list, err := srv.handleAppThreadList(context.Background(), appwire.ThreadListParams{IncludeSubagents: true, StatusOnly: true})

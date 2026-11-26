@@ -23,7 +23,7 @@ func TestThreadFrontierRefreshesOnRecordedExecutionRows(t *testing.T) {
 		t.Run(string(events.KindOf(event)), func(t *testing.T) {
 			srv := NewServer(ServerConfig{})
 			t.Cleanup(srv.Close)
-			srv.SetAppIdentity("local", "root")
+			setAppIdentity(t, srv, "local", "root")
 			source := &frontierEnvelopeSource{frontier: "turn_m201"}
 			srv.SetThreadEnvelopeSource(source)
 			srv.RefreshThreadEnvelope()

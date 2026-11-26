@@ -15,7 +15,7 @@ func activityTestServer(t *testing.T, threadID string) (*Server, *activityTestCl
 	clock := &activityTestClock{now: activityTestStart}
 	srv := NewServer(ServerConfig{})
 	srv.appActivity.now = clock.Now
-	srv.SetAppIdentity("local", threadID)
+	setAppIdentity(t, srv, "local", threadID)
 	return srv, clock
 }
 
@@ -91,7 +91,7 @@ func TestReplacedIdentityStartsAFreshMeter(t *testing.T) {
 	srv, clock := activityTestServer(t, "old")
 	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventUserInput, SessionID: "old", Data: events.UserInputData{Text: "work"}})
 	clock.now = activityTestStart.Add(30 * time.Second)
-	srv.SetAppIdentity("local", "new")
+	setAppIdentity(t, srv, "local", "new")
 	srv.RecordDescendantAppEvent("old", events.SessionEvent{Kind: events.EventUserInput, SessionID: "old-child", Data: events.UserInputData{Text: "late"}})
 
 	activity, _ := listedRootActivity(t, srv)

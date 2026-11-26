@@ -161,7 +161,7 @@ func TestTaskAggregateMalformedPersistedStoreMatchesLiveAndColdUnknown(t *testin
 	// failure is unavailable aggregate data, while a valid empty View remains a
 	// present zero aggregate.
 	live := server.NewServer(server.ServerConfig{})
-	live.SetAppIdentity("local", sess.ID())
+	setAppIdentity(t, live, "local", sess.ID())
 	seedDaemonStatus(live, server.StatusInfo{SessionID: sess.ID(), State: "idle", Model: sess.Profile().Model(), Profile: sess.Profile().ID(), WorkingDir: workDir})
 	live.SetThreadEnvelopeSource(sessionTaskEnvelopeSource{sess: sess})
 	live.RefreshThreadEnvelope()

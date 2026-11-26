@@ -9,7 +9,19 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	daemonserver "primeradiant.com/evener/server"
 )
+
+// setAppIdentity prepares and installs an empty-history AppWire identity for
+// srv, failing the test if PrepareAppIdentity rejects the inputs.
+func setAppIdentity(t testing.TB, srv *daemonserver.Server, sourceID, threadID string) {
+	t.Helper()
+	prepared, err := daemonserver.PrepareAppIdentity(sourceID, threadID, "")
+	if err != nil {
+		t.Fatalf("PrepareAppIdentity(%q, %q): %v", sourceID, threadID, err)
+	}
+	srv.ReplaceAppIdentity(prepared, nil)
+}
 
 // mustInitializeHubClient completes the initialize handshake a hub RPC client
 // performs before its first request, failing the test on any error.

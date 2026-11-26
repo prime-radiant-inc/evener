@@ -101,7 +101,7 @@ func newPendingAskMeasurement(t *testing.T, sessionID, turnID string) (*Server, 
 	t.Helper()
 	s := NewServer(ServerConfig{})
 	t.Cleanup(s.Close)
-	s.SetAppIdentity("local", sessionID)
+	setAppIdentity(t, s, "local", sessionID)
 	s.appBootGeneration = appwire.BootGeneration(math.MaxUint64)
 	// A page copies the history epoch without projecting history. It can
 	// also observe asks while their execution is still running.

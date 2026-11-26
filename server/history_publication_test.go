@@ -127,7 +127,7 @@ func TestHistoryPublicationStagedDemandBoundary(t *testing.T) {
 func TestHistoryPublicationCaptureAndNotificationIdentity(t *testing.T) {
 	s := NewServer(ServerConfig{})
 	t.Cleanup(s.Close)
-	s.SetAppIdentity("local", "thread")
+	setAppIdentity(t, s, "local", "thread")
 	_, p := s.transcriptPublicationHooks("thread")
 	path := writeDelegateTranscript(t, "thread", "capture-211")
 	h := s.ensureHistory("thread", "local:thread", path, 0, 0, "1")

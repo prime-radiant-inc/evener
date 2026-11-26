@@ -258,7 +258,7 @@ func newContextFacetFixture(t testing.TB) *contextFacetFixture {
 	}
 
 	srv := NewServer(ServerConfig{AppReplaySize: 100})
-	srv.SetAppIdentity("local", "th_context_fixture")
+	setAppIdentity(t, srv, "local", "th_context_fixture")
 	src := &contextFacetEnvelopeSource{sess: sess}
 	srv.SetThreadEnvelopeSource(src)
 	srv.refreshFacets(facetContext)

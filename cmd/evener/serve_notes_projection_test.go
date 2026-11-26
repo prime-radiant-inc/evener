@@ -31,7 +31,11 @@ func TestNotesCanonicalEnvelopeProjection(t *testing.T) {
 			}
 			defer sess.Close()
 			srv := server.NewServer(server.ServerConfig{})
-			srv.SetAppIdentity("local", sess.ID())
+			prepared, err := server.PrepareAppIdentity("local", sess.ID(), "")
+			if err != nil {
+				t.Fatalf("PrepareAppIdentity: %v", err)
+			}
+			srv.ReplaceAppIdentity(prepared, nil)
 			srv.SetThreadEnvelopeSource(liveThreadEnvelopeSource{session: func() agent.EnvelopeSampling { return sess }})
 			srv.SetNotesHumanSetFunc(sess.SetHumanNote)
 			conn := srv.AppServer().NewConnection("canonical-notes")

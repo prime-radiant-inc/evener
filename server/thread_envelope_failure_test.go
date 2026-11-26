@@ -16,7 +16,7 @@ import (
 // because it re-samples every facet, so a second failure replaces the first.
 func TestThreadSnapshotsCarryTheRestingFailureOnlyWhileFailed(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "root")
+	setAppIdentity(t, srv, "local", "root")
 	first := &appwire.ThreadFailure{Title: "Provider error", Cause: &appwire.DiagnosticCause{Kind: "provider", Provider: "codex-jesse-fsck.com", Status: 401}}
 	src := publishEnvelope(srv, &stubThreadEnvelopeSource{failure: first})
 	listed := func() *appwire.ThreadFailure {
@@ -61,7 +61,7 @@ func TestThreadSnapshotsCarryTheRestingFailureOnlyWhileFailed(t *testing.T) {
 // (ASSISTANT_TEXT_END) or a model switch re-samples it once the wait is over.
 func TestThreadSnapshotsCarryAQuotaWaitWhileWorking(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "root")
+	setAppIdentity(t, srv, "local", "root")
 	src := publishEnvelope(srv, &stubThreadEnvelopeSource{})
 	listed := func() *appwire.ThreadFailure {
 		t.Helper()
@@ -113,7 +113,7 @@ func TestThreadSnapshotsCarryAQuotaWaitWhileWorking(t *testing.T) {
 // that does publish un-matches it).
 func TestCachedWaitSummaryBelongsToItsExecution(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "root")
+	setAppIdentity(t, srv, "local", "root")
 	src := publishEnvelope(srv, &stubThreadEnvelopeSource{})
 	waiting := &appwire.ThreadFailure{Title: "Usage limit reached", Cause: &appwire.DiagnosticCause{Kind: "provider", Provider: "openai", Status: 429}, ResumesAt: 1_800_000_000_000, WaitStartedAt: 4}
 	read := func() *appwire.ThreadFailure {

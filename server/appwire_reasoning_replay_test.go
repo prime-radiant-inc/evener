@@ -58,7 +58,7 @@ func TestServerAppWireReadReplaysRecordedReasoningWithTerminalIdentity(t *testin
 
 func TestServerAppWireExecutionStartedConsumesPendingIdentity(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_execution_carrier")
+	setAppIdentity(t, srv, "local", "th_execution_carrier")
 	srv.SetProcessingTurn("turn_steer")
 	cursor := srv.appNotifier.CurrentSequence()
 
@@ -90,7 +90,7 @@ func TestServerAppWireExecutionStartedConsumesPendingIdentity(t *testing.T) {
 
 func TestServerAppWireCleanupBeforeSessionEndDoesNotLeaveLateCarrier(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_late_cleanup")
+	setAppIdentity(t, srv, "local", "th_late_cleanup")
 	srv.SetProcessingTurn("turn_abandoned")
 	srv.SetProcessing(false)
 	cursor := srv.appNotifier.CurrentSequence()
@@ -117,7 +117,7 @@ func TestServerAppWireCleanupBeforeSessionEndDoesNotLeaveLateCarrier(t *testing.
 
 func TestServerAppWireOldCarrierDoesNotConsumeNewPendingIdentity(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_old_carrier")
+	setAppIdentity(t, srv, "local", "th_old_carrier")
 	srv.SetProcessingTurn("turn_old")
 	srv.SetProcessingTurn("turn_new")
 	srv.RecordAppEvent(threadEvent("th_old_carrier", events.ExecutionStartedData{TurnID: "turn_old"}))
@@ -137,7 +137,7 @@ func TestServerAppWireOldCarrierDoesNotConsumeNewPendingIdentity(t *testing.T) {
 
 func TestServerAppWireAbandonedCarrierReplaysDeferredTerminalStatus(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_abandoned_carrier")
+	setAppIdentity(t, srv, "local", "th_abandoned_carrier")
 	client := dialServerAppWire(t, srv)
 	if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "local:th_abandoned_carrier", Subscribe: true}); err != nil {
 		t.Fatalf("subscribe: %v", err)
@@ -175,7 +175,7 @@ func TestServerAppWireAbandonedCarrierReplaysDeferredTerminalStatus(t *testing.T
 
 func TestServerAppWireCarrierDiscardsDeferredPriorTerminalStatus(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_carrier_wins")
+	setAppIdentity(t, srv, "local", "th_carrier_wins")
 	srv.SetProcessingTurn("new-turn")
 	cursor := srv.appNotifier.CurrentSequence()
 	BridgeEvent(srv, events.SessionEvent{Kind: events.EventSessionEnd, SessionID: "th_carrier_wins", Data: events.SessionEndData{Reason: "turn_failed", State: "idle"}}, nil)
@@ -214,7 +214,7 @@ func TestServerAppWireCarrierDiscardsDeferredPriorTerminalStatus(t *testing.T) {
 
 func TestServerAppWireAbandonedCarrierReplaysDeferredClosedStatus(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_abandoned_closed")
+	setAppIdentity(t, srv, "local", "th_abandoned_closed")
 	client := dialServerAppWire(t, srv)
 	if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "local:th_abandoned_closed", Subscribe: true}); err != nil {
 		t.Fatalf("subscribe: %v", err)
@@ -262,7 +262,7 @@ func TestServerAppWireAbandonedCarrierReplaysDeferredClosedStatus(t *testing.T) 
 // projector deferred reaches subscribers.
 func TestServerAppWireDropsMalformedDeferredTerminalNotification(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_malformed_deferred")
+	setAppIdentity(t, srv, "local", "th_malformed_deferred")
 	srv.SetProcessingTurn("malformed-deferred-turn")
 	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventSessionEnd, SessionID: "th_malformed_deferred", Data: events.SessionEndData{Interrupted: true, State: "closed", Reason: "interrupted"}})
 
@@ -416,7 +416,7 @@ func TestServerAppWireConcurrentCarrierAndCleanupPublishOneTerminal(t *testing.T
 			for attempt := range 1000 {
 				const threadID = "concurrent-carrier"
 				srv := NewServer(ServerConfig{})
-				srv.SetAppIdentity("local", threadID)
+				setAppIdentity(t, srv, "local", threadID)
 				srv.SetProcessingTurn("new-turn")
 				cursor := srv.appNotifier.CurrentSequence()
 				BridgeEvent(srv, events.SessionEvent{Kind: events.EventSessionEnd, SessionID: threadID, Data: events.SessionEndData{State: state}}, nil)
@@ -473,7 +473,7 @@ func TestServerAppWireConcurrentCarrierAndCleanupPublishOneTerminal(t *testing.T
 func TestServerAppWireClosedTerminalRejectsLateCarriers(t *testing.T) {
 	for _, turnID := range []string{"accepted-turn", "stale-turn"} {
 		srv := NewServer(ServerConfig{})
-		srv.SetAppIdentity("local", "closed-late-carrier")
+		setAppIdentity(t, srv, "local", "closed-late-carrier")
 		srv.SetProcessingTurn("accepted-turn")
 		BridgeEvent(srv, events.SessionEvent{Kind: events.EventSessionEnd, SessionID: "closed-late-carrier", Data: events.SessionEndData{State: "closed"}}, nil)
 		BridgeEvent(srv, threadEvent("closed-late-carrier", events.ExecutionStartedData{TurnID: turnID}), nil)
@@ -495,7 +495,7 @@ func TestServerAppWireIdentityReplacementDiscardsDeferredPriorTerminalStatus(t *
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			srv := NewServer(ServerConfig{})
-			srv.SetAppIdentity("local", "old")
+			setAppIdentity(t, srv, "local", "old")
 			srv.SetProcessingTurn("pending-old")
 			cursor := srv.appNotifier.CurrentSequence()
 			BridgeEvent(srv, events.SessionEvent{Kind: events.EventSessionEnd, SessionID: "old", Data: events.SessionEndData{Reason: "turn_failed", State: "idle"}}, nil)
@@ -529,7 +529,7 @@ func TestServerAppWireIdentityReplacementDiscardsDeferredPriorTerminalStatus(t *
 // and SESSION_END then carry the thread to active and back to idle.
 func TestServerAppWireQueuedSessionEndDoesNotEndThePublishedExecution(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_reasoning_boundary")
+	setAppIdentity(t, srv, "local", "th_reasoning_boundary")
 	srv.SetProcessingTurn("turn_new")
 	queuedSessionEndCursor := srv.appNotifier.CurrentSequence()
 	BridgeEvent(srv, events.SessionEvent{Kind: events.EventSessionEnd, SessionID: "th_reasoning_boundary", Data: events.SessionEndData{State: "idle"}}, nil)
@@ -573,7 +573,7 @@ func TestServerAppWireQueuedSessionEndDoesNotEndThePublishedExecution(t *testing
 
 func TestServerAppWireUnclaimedStableTurnDoesNotKeepSessionBusy(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_unclaimed")
+	setAppIdentity(t, srv, "local", "th_unclaimed")
 	// The execution is published before its claim; a failed claim clears
 	// processing without the execution ever starting.
 	srv.SetProcessingTurn("turn_unclaimed")
@@ -587,7 +587,7 @@ func TestServerAppWireUnclaimedStableTurnDoesNotKeepSessionBusy(t *testing.T) {
 
 func TestServerAppWireFailedClaimSessionEndClearsState(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_failed_claim")
+	setAppIdentity(t, srv, "local", "th_failed_claim")
 	srv.SetProcessingTurn("turn_unclaimed")
 	srv.SetProcessing(false)
 	BridgeEvent(srv, events.SessionEvent{Kind: events.EventSessionEnd, SessionID: "th_failed_claim", Data: events.SessionEndData{State: "idle"}}, nil)
@@ -599,7 +599,7 @@ func TestServerAppWireFailedClaimSessionEndClearsState(t *testing.T) {
 
 func TestServerAppWireQueuedClosedSessionEndClosesThePublishedExecution(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_closed_boundary")
+	setAppIdentity(t, srv, "local", "th_closed_boundary")
 	srv.SetProcessingTurn("turn_new")
 	cursor := srv.appNotifier.CurrentSequence()
 	BridgeEvent(srv, events.SessionEvent{Kind: events.EventSessionEnd, SessionID: "th_closed_boundary", Data: events.SessionEndData{State: "closed"}}, nil)
@@ -633,7 +633,7 @@ func lastStatus(t *testing.T, srv *Server, threadID string) string {
 func TestServerAppWireFinishBeforeATurnsEndPublishesIdleNotThePriorRest(t *testing.T) {
 	for _, prior := range []string{appwire.ThreadStatusAwaiting, appwire.ThreadStatusSystemError} {
 		srv := NewServer(ServerConfig{})
-		srv.SetAppIdentity("local", "th_prior_"+prior)
+		setAppIdentity(t, srv, "local", "th_prior_"+prior)
 		srv.SetState(prior)
 		srv.SetProcessing(true)
 		srv.SetProcessingTurn("t1")
@@ -651,7 +651,7 @@ func TestServerAppWireFinishBeforeATurnsEndPublishesIdleNotThePriorRest(t *testi
 // a refused input over an awaiting rest still reads and broadcasts awaiting.
 func TestServerAppWireFinishOfAPassWithNoTurnPublishesTheStoredRest(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_no_turn")
+	setAppIdentity(t, srv, "local", "th_no_turn")
 	srv.SetState(appwire.ThreadStatusAwaiting)
 	srv.SetProcessing(true)
 	srv.SetProcessing(false)
@@ -668,7 +668,7 @@ func TestServerAppWireFinishOfAPassWithNoTurnPublishesTheStoredRest(t *testing.T
 // agrees.
 func TestServerAppWireFinishAfterAnInterruptedEndPublishesItsState(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_interrupted_rest")
+	setAppIdentity(t, srv, "local", "th_interrupted_rest")
 	srv.SetState(appwire.ThreadStatusIdle)
 	srv.SetProcessing(true)
 	srv.SetProcessingTurn("t1")
@@ -689,7 +689,7 @@ func TestServerAppWireFinishAfterAnInterruptedEndPublishesItsState(t *testing.T)
 // turn to restate it.
 func TestServerAppWireFinishResolvesASpentActiveForecast(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_interrupted")
+	setAppIdentity(t, srv, "local", "th_interrupted")
 	srv.SetProcessing(true)
 	srv.SetProcessingTurn("t1")
 	BridgeEvent(srv, events.SessionEvent{Kind: events.EventExecutionStarted, SessionID: "th_interrupted", Data: events.ExecutionStartedData{TurnID: "t1"}}, nil)
@@ -718,7 +718,7 @@ func TestServerAppWireFinishResolvesASpentActiveForecast(t *testing.T) {
 // interrupted turn's state.
 func TestServerAppWireANewTurnsEndStartsUnstated(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_two_turns")
+	setAppIdentity(t, srv, "local", "th_two_turns")
 	srv.SetProcessing(true)
 	srv.SetProcessingTurn("a")
 	BridgeEvent(srv, events.SessionEvent{Kind: events.EventExecutionStarted, SessionID: "th_two_turns", Data: events.ExecutionStartedData{TurnID: "a"}}, nil)
