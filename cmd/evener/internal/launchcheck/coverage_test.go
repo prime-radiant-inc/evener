@@ -331,7 +331,7 @@ func launchCheckModels() ([]appwire.ModelDescriptor, []appwire.ModelListDiagnost
 func validateLaunchCheckModel(ref cmdutil.ModelRef) error {
 	client, err := launchCheckLoadClient("")
 	if err != nil {
-		return nil
+		return nil //nolint:nilerr // client-unavailable passes in launch-check model validation
 	}
 	return validateLaunchCheckModelWithClient(client, ref)
 }

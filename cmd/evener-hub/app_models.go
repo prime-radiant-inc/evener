@@ -128,15 +128,6 @@ func sourceForModelHarness(sources *appsource.Registry, harness string) (appsour
 	return source, nil
 }
 
-type launchModelsCallKey struct{}
-
-// launchModelsCall marks a read-only launch-model validation call so
-// fetchLaunchModels skips deep-cloning cached responses and background
-// refreshes while recording whether a live load already ran.
-type launchModelsCall struct {
-	fresh bool
-}
-
 // launchModelsCacheKey normalizes a working directory so model/list (raw CWD)
 // and prepareLocalSpawn (canonicalized CWD) share one cache entry across
 // trailing slashes and symlinks (including /var -> /private/var on macOS).
@@ -159,14 +150,10 @@ func launchModelsCacheKey(workingDir string) string {
 // live listing once per key rather than on every open. Explicit refresh waits
 // for a live load even for a fresh cached empty/diagnostic response.
 func (s *WebServer) fetchLaunchModels(ctx context.Context, workingDir string, refresh bool) (appwire.ModelListResponse, error) {
-	call, _ := ctx.Value(launchModelsCallKey{}).(*launchModelsCall)
 	gen, ok := liveModelsGeneration(s)
 	if !ok {
 		// No holder generation to gate on (a bare test/embedder server): a
 		// cached entry could never be invalidated, so don't cache.
-		if call != nil {
-			call.fresh = true
-		}
 		return evenerLaunchModelList(ctx, s.cfg, workingDir)
 	}
 	cacheKey := launchModelsCacheKey(workingDir)
@@ -183,28 +170,19 @@ func (s *WebServer) fetchLaunchModels(ctx context.Context, workingDir string, re
 		if err := ctx.Err(); err != nil {
 			return appwire.ModelListResponse{}, err
 		}
-		if call != nil {
-			call.fresh = true
-		}
 		loadCtx, cancel := launchModelsFetchContext(s.lifetime)
 		defer cancel()
-		return s.loadLaunchModelsKeyed(loadCtx, cacheKey, workingDir, gen, refresh, call != nil)
+		return s.loadLaunchModelsKeyed(loadCtx, cacheKey, workingDir, gen, refresh)
 	}
 	// The launch list shares the live list's TTL: both track the same provider
 	// inventory, and a picker open past it refreshes the list.
 	if entry.gen == gen && time.Since(entry.filledAt) < liveModelsTTL {
-		if call != nil {
-			return entry.resp, nil
-		}
 		return cloneModelListResponse(entry.resp), nil
 	}
 	// Stale: serve it now and refresh behind the request, so a picker open pays
 	// the live listing once per key rather than on every open.
-	if call == nil && s.beginLaunchModelsRefresh(cacheKey) {
+	if s.beginLaunchModelsRefresh(cacheKey) {
 		s.startLaunchRefresh(cacheKey, gen, entry.resp)
-	}
-	if call != nil {
-		return entry.resp, nil
 	}
 	return cloneModelListResponse(entry.resp), nil
 }
@@ -260,10 +238,10 @@ func (s *WebServer) endLaunchModelsRefresh(workingDir string) {
 // answer, collapsing concurrent callers onto one child. A failed load caches
 // nothing, so the next request retries instead of serving an empty list.
 func (s *WebServer) loadLaunchModels(ctx context.Context, workingDir string, gen uint64, refresh bool) (appwire.ModelListResponse, error) {
-	return s.loadLaunchModelsKeyed(ctx, launchModelsCacheKey(workingDir), workingDir, gen, refresh, false)
+	return s.loadLaunchModelsKeyed(ctx, launchModelsCacheKey(workingDir), workingDir, gen, refresh)
 }
 
-func (s *WebServer) loadLaunchModelsKeyed(ctx context.Context, cacheKey, workingDir string, gen uint64, refresh, readOnly bool) (appwire.ModelListResponse, error) {
+func (s *WebServer) loadLaunchModelsKeyed(ctx context.Context, cacheKey, workingDir string, gen uint64, refresh bool) (appwire.ModelListResponse, error) {
 	v, err, _ := s.launchModels.loading.Do(cacheKey, func() (any, error) {
 		// Re-check the cache inside the flight: a caller that read the cache
 		// before a concurrent flight published its entry reaches this group only
@@ -286,11 +264,8 @@ func (s *WebServer) loadLaunchModelsKeyed(ctx context.Context, cacheKey, working
 	if err != nil {
 		return appwire.ModelListResponse{}, err
 	}
-	if readOnly {
-		return v.(appwire.ModelListResponse), nil
-	}
-	// Each mutating caller gets its own copy: enrichment sorts Data, and
-	// singleflight hands every waiter the same value.
+	// Each caller gets its own copy: enrichment sorts Data, and singleflight
+	// hands every waiter the same value.
 	return cloneModelListResponse(v.(appwire.ModelListResponse)), nil
 }
 
@@ -423,19 +398,16 @@ func validateEvenerLaunchModel(ctx context.Context, cfg hubcore.WebConfig, ref c
 		}
 		return checkEvenerLaunchModel(cfg, ref, contract)
 	}
-	call := &launchModelsCall{}
-	callCtx := context.WithValue(ctx, launchModelsCallKey{}, call)
-	contract, err := cfg.LaunchModels(callCtx, workingDir, false)
+	contract, err := cfg.LaunchModels(ctx, workingDir, false)
 	if err != nil {
 		return nil //nolint:nilerr // fail open: if the model list can't be enumerated, don't block launch
 	}
-	checkErr := checkEvenerLaunchModel(cfg, ref, contract)
-	if checkErr == nil || call.fresh {
-		return checkErr
+	if err := checkEvenerLaunchModel(cfg, ref, contract); err == nil {
+		return nil
 	}
 	// Confirm a refusal against a cached contract with one live refresh so a
 	// newly added model is never rejected by a stale snapshot.
-	fresh, err := cfg.LaunchModels(callCtx, workingDir, true)
+	fresh, err := cfg.LaunchModels(ctx, workingDir, true)
 	if err != nil {
 		return nil //nolint:nilerr // fail open: if the model list can't be enumerated, don't block launch
 	}

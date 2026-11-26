@@ -1244,25 +1244,32 @@ func TestValidateEvenerLaunchModelUsesCachedLaunchModels(t *testing.T) {
 		}
 	})
 
-	t.Run("stale cache refusal refreshes once and accepts newly added model", func(t *testing.T) {
+	t.Run("stale cache refusal refreshes and accepts newly added model", func(t *testing.T) {
 		t.Parallel()
-		spawner := &countLaunchContractSpawner{modelsFn: func(call int, _ string) appwire.ModelListResponse {
+		var reloaded atomic.Bool
+		spawner := &countLaunchContractSpawner{modelsFn: func(int, string) appwire.ModelListResponse {
+			model := "gen-1"
+			if reloaded.Load() {
+				model = "gen-2"
+			}
 			return appwire.ModelListResponse{Data: []appwire.ModelDescriptor{
-				{Provider: "openai", Model: fmt.Sprintf("gen-%d", call)},
+				{Provider: "openai", Model: model},
 			}}
 		}}
 		web := newLaunchModelsTestWeb(t, spawner, true)
+		t.Cleanup(web.waitLaunchRefreshes)
 		if _, err := web.fetchLaunchModels(t.Context(), "/tmp/proj", false); err != nil {
 			t.Fatalf("warm fetchLaunchModels: %v", err)
 		}
+		reloaded.Store(true)
 		if err := web.cfg.Registry.Reload(); err != nil {
 			t.Fatalf("Reload: %v", err)
 		}
 		if err := validateEvenerLaunchModel(t.Context(), web.cfg, cmdutil.ModelRef{Provider: "openai", Model: "gen-2"}, "/tmp/proj"); err != nil {
 			t.Fatalf("validateEvenerLaunchModel after stale miss: %v", err)
 		}
-		if got := spawner.callCount(); got != 2 {
-			t.Fatalf("launch contract called %d times, want 2 (initial load + one refresh)", got)
+		if got := spawner.callCount(); got < 2 {
+			t.Fatalf("launch contract called %d times, want at least 2 (initial load + refresh)", got)
 		}
 	})
 
@@ -1282,16 +1289,23 @@ func TestValidateEvenerLaunchModelUsesCachedLaunchModels(t *testing.T) {
 		}
 	})
 
-	t.Run("cold invalid model fails after one live load without duplicate refresh", func(t *testing.T) {
+	t.Run("custom LaunchModels loader receives refresh=false then refresh=true on refusal", func(t *testing.T) {
 		t.Parallel()
-		spawner := &countLaunchContractSpawner{modelsFn: func(int, string) appwire.ModelListResponse {
-			return appwire.ModelListResponse{Data: []appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-5.5"}}}
-		}}
+		spawner := &countLaunchContractSpawner{}
 		web := newLaunchModelsTestWeb(t, spawner, true)
-		err := validateEvenerLaunchModel(t.Context(), web.cfg, cmdutil.ModelRef{Provider: "openai", Model: "missing"}, "/tmp/cold")
-		assertHubLaunchError(t, err)
-		if got := spawner.callCount(); got != 1 {
-			t.Fatalf("launch contract called %d times on cold invalid model, want 1", got)
+		var refreshes []bool
+		web.cfg.LaunchModels = func(_ context.Context, _ string, refresh bool) (appwire.ModelListResponse, error) {
+			refreshes = append(refreshes, refresh)
+			if !refresh {
+				return appwire.ModelListResponse{Data: []appwire.ModelDescriptor{{Provider: "openai", Model: "old"}}}, nil
+			}
+			return appwire.ModelListResponse{Data: []appwire.ModelDescriptor{{Provider: "openai", Model: "new"}}}, nil
+		}
+		if err := validateEvenerLaunchModel(t.Context(), web.cfg, cmdutil.ModelRef{Provider: "openai", Model: "new"}, "/tmp/custom"); err != nil {
+			t.Fatalf("validateEvenerLaunchModel: %v", err)
+		}
+		if !reflect.DeepEqual(refreshes, []bool{false, true}) {
+			t.Fatalf("LaunchModels refresh sequence = %v, want [false true]", refreshes)
 		}
 	})
 
@@ -1306,14 +1320,12 @@ func TestValidateEvenerLaunchModelUsesCachedLaunchModels(t *testing.T) {
 			t.Fatalf("Symlink: %v", err)
 		}
 		spawner := &countLaunchContractSpawner{
-			fakeRPCSpawner: fakeRPCSpawner{
-				spawn: func(context.Context, hubcore.SpawnRequest) (rendezvous.Entry, error) {
-					return rendezvous.Entry{PID: 412, Protocol: appwire.ProtocolVersion, ThreadID: "th_cached", SessionID: "sess_cached"}, nil
-				},
-			},
 			modelsFn: func(int, string) appwire.ModelListResponse {
 				return appwire.ModelListResponse{Data: []appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-5.5"}}}
 			},
+		}
+		spawner.spawn = func(context.Context, hubcore.SpawnRequest) (rendezvous.Entry, error) {
+			return rendezvous.Entry{PID: 412, Protocol: appwire.ProtocolVersion, ThreadID: "th_cached", SessionID: "sess_cached"}, nil
 		}
 		web := newLaunchModelsTestWeb(t, spawner, true)
 		web.cfg.LaunchConfigRoot = t.TempDir()
