@@ -668,8 +668,12 @@ reading surfaces pin `--prose-font-size: var(--font-size-prose)` on the host tha
 prose, `--markdown-ink` stays the ink hook, and `--markdown-strong-weight` is the emphasis hook:
 strong defaults to semibold, so a host that already renders its body semibold (the ask question
 cards) opts strong into the bold token. Inline code stays JetBrains Mono at 0.86em with a quiet underline; fenced code
-explicitly keeps the mono face. Markdown tables use the sans face at body size, tabular figures,
-wrapping labels and fine horizontal rules. PaneScaffold and EmptyState headings use the serif;
+explicitly keeps the mono face. Markdown tables use the sans face at UI size (`--font-size-ui`,
+`--line-height-ui`), tabular figures, content-sized columns (`table-layout: auto` with word-level
+wrapping and horizontal scroll fallback for very wide tables), transparent headers and fine
+horizontal rules; wide tables (five or more columns with body rows) reflow into bordered
+list-style record cards when their container narrows to 559px or below, while four-column and
+narrower tables stay tabular. PaneScaffold and EmptyState headings use the serif;
 buttons, fields, dialog labels and other compact operational headings do not inherit it globally.
 `faces.test.ts` pins the new contract and the unchanged operational sans rules; `/dev/type`
 shows all three faces (including real serif italic), the ramp and both measures.
