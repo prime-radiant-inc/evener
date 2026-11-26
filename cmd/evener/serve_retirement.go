@@ -210,7 +210,7 @@ func (r *serveRetirement) requestIdleTimeoutSet(_ context.Context, params appwir
 	// in production) so a test can interleave a thread/clear into exactly
 	// the window the revalidation below must still defend.
 	r.observe("idle_timeout_attempted", r.live.session().ID())
-	prev, token, err := r.retirement.RetargetStamped(time.Duration(params.TimeoutMillis) * time.Millisecond)
+	prev, token, err := r.retirement.Retarget(time.Duration(params.TimeoutMillis) * time.Millisecond)
 	if err != nil {
 		return appwire.DaemonIdleTimeoutSetResponse{}, err
 	}

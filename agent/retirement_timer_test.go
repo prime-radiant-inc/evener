@@ -579,7 +579,7 @@ func TestRetirementRetargetShortensArmedInterval(t *testing.T) {
 		t.Fatalf("first settled arm = %v, want the full 1h interval", d)
 	}
 
-	if err := h.ctrl.Retarget(time.Minute); err != nil {
+	if _, _, err := h.ctrl.Retarget(time.Minute); err != nil {
 		t.Fatalf("Retarget: %v", err)
 	}
 	if d := clk.awaitArm(t); d != time.Minute {
@@ -608,7 +608,7 @@ func TestRetirementRetargetBelowElapsedIdleFiresAtOnce(t *testing.T) {
 	clk.awaitArm(t)
 	clk.Advance(30 * time.Minute)
 
-	if err := h.ctrl.Retarget(time.Minute); err != nil {
+	if _, _, err := h.ctrl.Retarget(time.Minute); err != nil {
 		t.Fatalf("Retarget: %v", err)
 	}
 	if d := clk.awaitArm(t); d != 0 {
@@ -638,7 +638,7 @@ func TestRetirementRetargetLengthenSurvivesStaleTick(t *testing.T) {
 	clk.awaitArm(t)
 	clk.Advance(30 * time.Second)
 
-	if err := h.ctrl.Retarget(time.Hour); err != nil {
+	if _, _, err := h.ctrl.Retarget(time.Hour); err != nil {
 		t.Fatalf("Retarget: %v", err)
 	}
 	wantRemaining := 59*time.Minute + 30*time.Second
@@ -671,7 +671,7 @@ func TestRetirementRetargetZeroDisarms(t *testing.T) {
 	}
 	clk.awaitArm(t)
 
-	if err := h.ctrl.Retarget(0); err != nil {
+	if _, _, err := h.ctrl.Retarget(0); err != nil {
 		t.Fatalf("Retarget(0): %v", err)
 	}
 	clk.awaitDisarm(t)
@@ -697,7 +697,7 @@ func TestRetirementRetargetRejectsNegative(t *testing.T) {
 	}
 	clk.awaitArm(t)
 
-	if err := h.ctrl.Retarget(-time.Minute); err == nil {
+	if _, _, err := h.ctrl.Retarget(-time.Minute); err == nil {
 		t.Fatal("Retarget accepted a negative timeout")
 	}
 	if got := h.ctrl.Snapshot().Timeout; got != time.Hour {
@@ -727,7 +727,7 @@ func TestRetirementRetargetRefusesWhilePreparing(t *testing.T) {
 	if got := ctrl.Snapshot().Phase; got != "preparing" {
 		t.Fatalf("phase = %q, want preparing", got)
 	}
-	if err := ctrl.Retarget(time.Minute); !errors.Is(err, ErrRetirementUnavailable) {
+	if _, _, err := ctrl.Retarget(time.Minute); !errors.Is(err, ErrRetirementUnavailable) {
 		t.Fatalf("Retarget while preparing = %v, want ErrRetirementUnavailable", err)
 	}
 	if got := ctrl.Snapshot().Timeout; got != time.Hour {
@@ -736,7 +736,7 @@ func TestRetirementRetargetRefusesWhilePreparing(t *testing.T) {
 	if err := ctrl.Abort(claim, "test_done"); err != nil {
 		t.Fatalf("Abort: %v", err)
 	}
-	if err := ctrl.Retarget(time.Minute); err != nil {
+	if _, _, err := ctrl.Retarget(time.Minute); err != nil {
 		t.Fatalf("Retarget after abort: %v", err)
 	}
 	if got := ctrl.Snapshot().Timeout; got != time.Minute {
@@ -745,7 +745,7 @@ func TestRetirementRetargetRefusesWhilePreparing(t *testing.T) {
 }
 
 // TestRetirementStampedRetargetUndo proves the write-token undo contract:
-// RetargetStamped reports the deadline it replaced and a token naming its own
+// Retarget reports the deadline it replaced and a token naming its own
 // write; UndoRetarget restores the replaced deadline only while that write is
 // still the newest — a later write, even one choosing the same deadline,
 // supersedes the token, because two writers can legitimately choose the same
@@ -755,9 +755,9 @@ func TestRetirementStampedRetargetUndo(t *testing.T) {
 	t.Parallel()
 	ctrl, _ := newAckRetirementController(t)
 
-	prev, token, err := ctrl.RetargetStamped(time.Minute)
+	prev, token, err := ctrl.Retarget(time.Minute)
 	if err != nil {
-		t.Fatalf("RetargetStamped: %v", err)
+		t.Fatalf("Retarget: %v", err)
 	}
 	if prev != time.Hour {
 		t.Fatalf("first stamped write reported prev = %v, want the constructed 1h", prev)
@@ -775,7 +775,7 @@ func TestRetirementStampedRetargetUndo(t *testing.T) {
 	// An aliased second write chooses the deadline the first one set; the
 	// third write supersedes the second's token, and the second's undo must
 	// not reach past either.
-	prev2, token2, err := ctrl.RetargetStamped(time.Minute)
+	prev2, token2, err := ctrl.Retarget(time.Minute)
 	if err != nil {
 		t.Fatalf("second stamped write: %v", err)
 	}
@@ -785,7 +785,7 @@ func TestRetirementStampedRetargetUndo(t *testing.T) {
 	if token2 == token {
 		t.Fatalf("aliased second write minted the first write's token %d", token2)
 	}
-	_, token3, err := ctrl.RetargetStamped(2 * time.Minute)
+	_, token3, err := ctrl.Retarget(2 * time.Minute)
 	if err != nil {
 		t.Fatalf("third stamped write: %v", err)
 	}
@@ -814,9 +814,9 @@ func TestRetirementUndoRetargetRefusesWhilePreparing(t *testing.T) {
 	if err := ctrl.AttachRoot(root); err != nil {
 		t.Fatalf("AttachRoot: %v", err)
 	}
-	_, token, err := ctrl.RetargetStamped(time.Minute)
+	_, token, err := ctrl.Retarget(time.Minute)
 	if err != nil {
-		t.Fatalf("RetargetStamped: %v", err)
+		t.Fatalf("Retarget: %v", err)
 	}
 	claim, _, err := ctrl.TryClaim(true)
 	if err != nil || claim == nil {
@@ -851,9 +851,9 @@ func TestRetirementAttachRootResetsDeadlineToConfigured(t *testing.T) {
 	if err := ctrl.AttachRoot(root); err != nil {
 		t.Fatalf("AttachRoot: %v", err)
 	}
-	_, token, err := ctrl.RetargetStamped(time.Minute)
+	_, token, err := ctrl.Retarget(time.Minute)
 	if err != nil {
-		t.Fatalf("RetargetStamped: %v", err)
+		t.Fatalf("Retarget: %v", err)
 	}
 	replacement := newQueuePersistTestSession(t, t.TempDir())
 	if err := ctrl.AttachRoot(replacement); err != nil {
@@ -885,8 +885,8 @@ func TestRetirementAttachRootResetsDisabledDeadline(t *testing.T) {
 	if err := ctrl.AttachRoot(root); err != nil {
 		t.Fatalf("AttachRoot: %v", err)
 	}
-	if _, _, err := ctrl.RetargetStamped(time.Minute); err != nil {
-		t.Fatalf("RetargetStamped: %v", err)
+	if _, _, err := ctrl.Retarget(time.Minute); err != nil {
+		t.Fatalf("Retarget: %v", err)
 	}
 	replacement := newQueuePersistTestSession(t, t.TempDir())
 	if err := ctrl.AttachRoot(replacement); err != nil {
@@ -910,9 +910,9 @@ func TestRetirementUndoRetargetRejectsUnguardedWrites(t *testing.T) {
 	if got := ctrl.Snapshot().Timeout; got != time.Hour {
 		t.Fatalf("timeout after token-0 undo = %v, want the unchanged 1h", got)
 	}
-	_, token, err := ctrl.RetargetStamped(time.Minute)
+	_, token, err := ctrl.Retarget(time.Minute)
 	if err != nil {
-		t.Fatalf("RetargetStamped: %v", err)
+		t.Fatalf("Retarget: %v", err)
 	}
 	if ctrl.UndoRetarget(token, -time.Minute) {
 		t.Fatal("UndoRetarget with a negative target = true, want false")
