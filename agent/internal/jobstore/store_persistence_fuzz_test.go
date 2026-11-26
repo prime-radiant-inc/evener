@@ -245,7 +245,7 @@ func drawEvent(r *progReader, ec *int) Event {
 			Key:        WatchSendKey{VisibleSessionID: sess, WatchID: "watch_" + sess, WatchTarget: "job_t", ResolvedWatchedIdentity: "job_t", ResolvedSendTo: sess, WatchGeneration: "wg1"},
 			DeliveryID: "wd1",
 			UpdateSeq:  uint64(*ec),
-			Message:    "m",
+			Frame:      "m",
 		}
 	}
 	return e

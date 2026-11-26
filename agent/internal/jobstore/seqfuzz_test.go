@@ -337,7 +337,7 @@ func (m *seqModel) applyOp(rt *rapid.T, op seqOp) {
 		k.lastSeq++
 		seq := k.lastSeq
 		m.emit(Event{Kind: EventWatchSendPending, JobID: "job_t", WatchSend: &WatchSendState{
-			Key: k.key, DeliveryID: m.nextID("wd_"), UpdateSeq: seq, Message: "m",
+			Key: k.key, DeliveryID: m.nextID("wd_"), UpdateSeq: seq, Frame: "m",
 		}})
 		k.pending = true
 		k.pendingSeq = seq

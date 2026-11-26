@@ -202,7 +202,7 @@ func wobs_seedWatchSendEvents(r *wobs_reader, store *jobstore.Store, base time.T
 			Key:               key,
 			DeliveryID:        fmt.Sprintf("dlv_%d", i),
 			UpdateSeq:         seq,
-			Message:           r.str(),
+			Frame:             r.str(),
 			ReceiverSessionID: r.pick([]string{"", "S9"}),
 			CreatedAt:         base.Add(time.Duration(r.intn(8)) * time.Second),
 			UpdatedAt:         base.Add(time.Duration(r.intn(8)) * time.Second),

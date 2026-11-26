@@ -803,7 +803,7 @@ func TestJobManagerCloseContinuesAfterWatchSendCleanupFailure(t *testing.T) {
 	cfg.pending[pendingKey] = &jobstore.WatchSendState{
 		Key:        pendingKey,
 		DeliveryID: jobstore.NewWatchSendDeliveryID(),
-		Message:    "observe",
+		Frame:      "observe",
 	}
 	jm.mu.Unlock()
 	run := jm.running[rec.JobID]
