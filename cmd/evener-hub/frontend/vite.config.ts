@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import react from "@vitejs/plugin-react";
 import { runnerImport, searchForWorkspaceRoot } from "vite";
 import { configDefaults, defineConfig, type Plugin } from "vitest/config";
+import { glassWorker } from "./scripts/glassWorker.mjs";
 
 // The dev server proxies every hub-owned route to a locally running evener-hub.
 // Cookies are port-agnostic on localhost, so the /auth/<token> capability flow
@@ -96,7 +97,7 @@ if (Object.hasOwn(process.env, "EVENER_HUB_ADDR"))
 const hub = parseHubOrigin(process.env.EVENER_HUB_URL ?? "http://127.0.0.1:9180");
 
 export default defineConfig({
-  plugins: [react(), restoreDistPlaceholder(), largeChunksStayLazy()],
+  plugins: [react(), glassWorker(__dirname), restoreDistPlaceholder(), largeChunksStayLazy()],
   // Keep the dep-optimizer cache inside this checkout by default. Vite defaults
   // it to node_modules/.vite, and fleet worktrees symlink node_modules to ONE
   // shared install (docs/developing-evener/conventions/agent-fleets.md), so
