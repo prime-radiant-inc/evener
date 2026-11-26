@@ -28,7 +28,7 @@ func TestClassifyWorkspaceRefusesOversizedGitPointer(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	layout, err := ClassifyWorkspaceWithCeilings(worktree, nil)
+	layout, err := ClassifyWorkspace(worktree, nil)
 	if err == nil {
 		t.Fatalf("classified a .git pointer larger than any pointer: %+v", layout)
 	}

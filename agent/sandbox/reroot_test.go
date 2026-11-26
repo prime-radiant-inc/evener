@@ -195,7 +195,7 @@ func TestReRootOffIsNil(t *testing.T) {
 func TestFuzzReRootFixtureUsesStructuralLinkedWorktrees(t *testing.T) {
 	fixture := newFuzzReRootFixture(t)
 	for _, cwd := range []string{fixture.laneA, fixture.laneB} {
-		layout, err := ClassifyWorkspace(cwd)
+		layout, err := ClassifyWorkspace(cwd, nil)
 		if err != nil {
 			t.Fatalf("ClassifyWorkspace(%q): %v", cwd, err)
 		}

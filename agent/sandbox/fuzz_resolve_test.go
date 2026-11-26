@@ -16,7 +16,7 @@ import (
 
 func TestFuzzResolveFixtureStaysUnderTempRoot(t *testing.T) {
 	fixture := newFuzzResolveFixture(t, "../../ambient/path")
-	layout, err := ClassifyWorkspace(fixture.cwd)
+	layout, err := ClassifyWorkspace(fixture.cwd, nil)
 	if err != nil {
 		t.Fatalf("ClassifyWorkspace(%q): %v", fixture.cwd, err)
 	}

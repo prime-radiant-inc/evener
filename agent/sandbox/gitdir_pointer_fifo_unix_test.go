@@ -39,7 +39,7 @@ func TestClassifyWorkspaceDoesNotBlockOnAFIFOPointer(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		_, err := ClassifyWorkspaceWithCeilings(dir, nil)
+		_, err := ClassifyWorkspace(dir, nil)
 		done <- err
 	}()
 	select {

@@ -80,7 +80,7 @@ func TestContractMaterializersWithScriptedGit(t *testing.T) {
 	t.Parallel()
 	for _, kind := range []sandbox.WorkspaceKind{sandbox.NonGit, sandbox.MainCheckout, sandbox.LinkedWorktree} {
 		cwd := materializeWorkspaceWith(t, kind, scriptedContractGit)
-		layout, err := sandbox.ClassifyWorkspace(cwd)
+		layout, err := sandbox.ClassifyWorkspace(cwd, nil)
 		if err != nil {
 			t.Fatalf("scripted MaterializeWorkspace(%s): %v", kind, err)
 		}
@@ -90,7 +90,7 @@ func TestContractMaterializersWithScriptedGit(t *testing.T) {
 	}
 	main, laneA, laneB := materializeReRootLanesWith(t, scriptedContractGit)
 	for _, lane := range []string{laneA, laneB} {
-		layout, err := sandbox.ClassifyWorkspace(lane)
+		layout, err := sandbox.ClassifyWorkspace(lane, nil)
 		if err != nil || layout.Kind != sandbox.LinkedWorktree || layout.CommonDir != filepath.Join(main, ".git") {
 			t.Fatalf("scripted re-root lane %q = (%+v, %v)", lane, layout, err)
 		}

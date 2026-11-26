@@ -16,7 +16,7 @@ func FuzzSandboxContractMaterializers(f *testing.F) {
 	f.Fuzz(func(t *testing.T, _ byte) {
 		for _, kind := range []sandbox.WorkspaceKind{sandbox.NonGit, sandbox.MainCheckout, sandbox.LinkedWorktree} {
 			cwd := sandboxtest.MaterializeWorkspace(t, kind)
-			layout, err := sandbox.ClassifyWorkspace(cwd)
+			layout, err := sandbox.ClassifyWorkspace(cwd, nil)
 			if err != nil {
 				t.Fatalf("MaterializeWorkspace(%s): %v", kind, err)
 			}
