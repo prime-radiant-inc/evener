@@ -20,6 +20,7 @@ import {
 } from "../../panes/session/transcript/transcriptReadingGeometryTestUtils";
 import { makeTranscriptPreviewModel } from "../../transcriptDisplay/previewFixture";
 import type { VirtualListHandle } from "../../widgets";
+import { connectIPhoneHost } from "../iPhoneHost";
 import { MOBILE_QUERY, TABLET_QUERY } from "../useIsMobile";
 import "../../panes/transcript";
 import { cascadeClient, cascadeContext } from "../../panes/zoom/cascadeTestUtils";
@@ -562,6 +563,44 @@ test("the iPhone controls stay above inline Find and follow the focused reader",
     vi.unstubAllGlobals();
     ua.mockRestore();
     height.mockRestore();
+  }
+});
+
+test("the inner iPhone window keeps the Board and hands reader actions to the system edge bar", async () => {
+  const restore = installMobileViewport([MOBILE_QUERY, "(min-width: 648px) and (min-height: 600px)"]);
+  const ua = vi.spyOn(navigator, "userAgent", "get").mockReturnValue("EvenerNative/1 EvenerSessionHeader/1");
+  const height = vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockReturnValue(58);
+  const messages: { type: string; header?: { leading: string | null } | null }[] = [];
+  vi.stubGlobal("ReactNativeWebView", { postMessage: (json: string) => messages.push(JSON.parse(json)) });
+  vi.stubGlobal("ResizeObserver", StubResizeObserver);
+  const stop = connectIPhoneHost();
+  const send = (command: unknown) =>
+    act(() => window.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(command) })));
+  const lastHeader = () => messages.filter(({ type }) => type === "sessionHeader").at(-1)?.header;
+  try {
+    const id = workspaceStore.getState().openPane("session", { ref: "local:duo" });
+    render(<StackHost railSlot={<TabletRailActionSlot />} />);
+    const board = await screen.findByTestId("board-column");
+    const bar = screen.getByTestId("topbar");
+    expect(bar.hasAttribute("inert")).toBe(false);
+    send({ type: "material", glass: true, edgeToolbar: true });
+    await waitFor(() => expect(lastHeader()).toMatchObject({ id, leading: null }));
+    expect(bar.hasAttribute("inert")).toBe(true);
+    await userEvent.click(within(board).getByTestId("board-toggle"));
+    await waitFor(() => expect(lastHeader()?.leading).toBe("sessions"));
+    send({ type: "headerAction", id, action: "sessions" });
+    await waitFor(() => expect(lastHeader()?.leading).toBeNull());
+    send({ type: "material", glass: true, edgeToolbar: false });
+    await waitFor(() => expect(bar.hasAttribute("inert")).toBe(false));
+    expect(screen.getByTestId("board-column")).toBeTruthy();
+    expect(workspaceStore.getState().focusedPaneId).toBe(id);
+  } finally {
+    cleanup();
+    stop?.();
+    restore();
+    ua.mockRestore();
+    height.mockRestore();
+    vi.unstubAllGlobals();
   }
 });
 

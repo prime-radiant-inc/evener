@@ -157,6 +157,11 @@
   opacity: 0;
 }
 
+/* The system edge bar owns the actions. The title stays with its reader. */
+:global(body[data-iphone-edge-toolbar]) .topBar[inert] .stackTitle {
+  visibility: visible;
+}
+
 .topBarCollapsed .leading:not(:empty),
 .topBarCollapsed .trailing:not(:empty) {
   pointer-events: auto;

@@ -1,12 +1,95 @@
+import type { NativeStackNavigationOptions } from "@react-navigation/native-stack";
 import { act } from "react-test-renderer";
 import { expect, it, onTestFinished, vi } from "vitest";
+import { AlertCenter, type HoldKind } from "../alerts/alertCenter";
+import { AlertsContext } from "../alerts/alertsContext";
 import { paletteFor } from "../design/tokens";
 import { render, settle, systemGlass } from "../renderNative.testkit";
 import { HubWebView } from "./HubWebView";
 
 vi.mock("react-native", async () => (await import("../renderNative.testkit")).nativeModuleMock());
-vi.mock("@react-navigation/native", () => ({ useIsFocused: () => true }));
+const native = vi.hoisted(() => ({
+	focused: true,
+	share: vi.fn(),
+	insets: { left: 0, right: 0, top: 0, bottom: 34 },
+	navigation: { setOptions: vi.fn<(options: NativeStackNavigationOptions) => void>() },
+}));
+vi.mock("@react-navigation/native", () => ({
+	useIsFocused: () => native.focused,
+	useNavigation: () => native.navigation,
+}));
+vi.mock("react-native-safe-area-context", () => ({
+	SafeAreaView: "SafeAreaView",
+	useSafeAreaInsets: () => native.insets,
+}));
+vi.mock("../reader/shareDocumentNative", () => ({ shareSessionDocument: native.share }));
 vi.mock("expo-status-bar", () => ({ StatusBar: "StatusBar" }));
+
+it("preserves a document's share name and releases workspace alert holds with their owners", async () => {
+	const center = new AlertCenter({
+		now: Date.now,
+		setTimeout,
+		clearTimeout: (timer) => clearTimeout(timer as ReturnType<typeof setTimeout>),
+	});
+	const held = new Set<HoldKind>();
+	vi.spyOn(center, "hold").mockImplementation((kind) => {
+		held.add(kind);
+		return () => {
+			held.delete(kind);
+		};
+	});
+	const profile = { id: "desk", name: "Desk", origin: "https://desk.example" };
+	const workspace = () => (
+		<AlertsContext.Provider value={{ center, reportRoutes: vi.fn(), noticeFor: () => undefined }}>
+			<HubWebView
+				profile={profile}
+				token="saved"
+				initialPath="/"
+				onPath={vi.fn()}
+				onHubMenu={vi.fn()}
+				onDeviceWork={vi.fn()}
+			/>
+		</AlertsContext.Provider>
+	);
+	const tree = render(workspace());
+	onTestFinished(() => {
+		native.focused = true;
+	});
+	const view = () => tree.root.findByType("WebView" as never);
+	const message = (data: unknown) =>
+		act(() => view().props.onMessage({ nativeEvent: { url: profile.origin + "/", data: JSON.stringify(data) } }));
+	message({ type: "ready" });
+	const target = { ref: "local:one", path: "/private/run/notes.txt", namePath: "notes.txt" };
+	message({ type: "shareDocument", ...target });
+	await settle();
+	expect(native.share).toHaveBeenCalledWith({
+		origin: profile.origin,
+		token: "saved",
+		sessionRef: target.ref,
+		path: target.path,
+		namePath: target.namePath,
+	});
+	message({ type: "readingDocument", active: true });
+	message({ type: "covered", active: true });
+	expect(held).toEqual(new Set(["quiet", "covered"]));
+	message({ type: "covered", active: false });
+	expect(held).toEqual(new Set(["quiet"]));
+	native.focused = false;
+	act(() => tree.update(workspace()));
+	expect(held.size).toBe(0);
+	native.focused = true;
+	act(() => tree.update(workspace()));
+	expect(held).toEqual(new Set(["quiet"]));
+	message({ type: "editing", active: true });
+	message({ type: "readingDocument", active: false });
+	expect(held).toEqual(new Set(["quiet"]));
+	message({ type: "editing", active: false });
+	expect(held.size).toBe(0);
+	message({ type: "covered", active: true });
+	act(() => view().props.onLoadStart());
+	message({ type: "ready" });
+	expect(held.size).toBe(0);
+});
 
 it("routes the active native session controls back to their pane and gives the header back when it closes", async () => {
 	const profile = { id: "e983b944-6ad8-408a-b80a-f004b6a00cf8", name: "Desk", origin: "https://desk.example" };
@@ -44,7 +127,9 @@ it("routes the active native session controls back to their pane and gives the h
 	message({ type: "appearance", dark: true });
 	await settle();
 	message({ type: "ready" });
-	expect(postMessage.mock.calls.map(([value]) => JSON.parse(value))).toEqual([{ type: "material", glass: true }]);
+	expect(postMessage.mock.calls.map(([value]) => JSON.parse(value))).toEqual([
+		{ type: "material", glass: true, edgeToolbar: false },
+	]);
 	postMessage.mockClear();
 	expect(tree.root.findAllByType("GlassView" as never)).toHaveLength(2);
 	expect(tree.root.findByProps({ accessibilityRole: "header" }).props.children).toBe(header.title);
@@ -65,7 +150,7 @@ it("routes the active native session controls back to their pane and gives the h
 	]);
 	act(() => systemGlass.setReduceTransparency(true));
 	expect(tree.root.findAllByType("GlassView" as never)).toHaveLength(0);
-	expect(JSON.parse(postMessage.mock.lastCall?.[0])).toEqual({ type: "material", glass: false });
+	expect(JSON.parse(postMessage.mock.lastCall?.[0])).toEqual({ type: "material", glass: false, edgeToolbar: false });
 	publish(null);
 	expect(tree.root.findAllByProps({ accessibilityLabel: "Back" })).toHaveLength(0);
 	const statusBar = () => tree.root.findByType("StatusBar" as never).props.style;
@@ -75,8 +160,36 @@ it("routes the active native session controls back to their pane and gives the h
 	message({ type: "appearance", dark: false });
 	expect(statusBar()).toBe("dark");
 	expect(inset()).toBe(paletteFor("light").surface);
+	native.insets.right = 84;
+	onTestFinished(() => {
+		native.insets.left = 0;
+		native.insets.right = 0;
+	});
+	publish({ ...header, leading: null });
+	expect(JSON.parse(postMessage.mock.lastCall?.[0])).toEqual({ type: "material", glass: false, edgeToolbar: true });
+	const toolbar = () => native.navigation.setOptions.mock.lastCall?.[0];
+	expect(toolbar()?.headerShown).toBe(true);
+	expect(toolbar()?.unstable_headerLeftItems?.({})).toEqual([]);
+	expect(tree.root.findAllByProps({ accessibilityRole: "header" })).toHaveLength(0);
+	for (const item of toolbar()?.unstable_headerRightItems?.({}) ?? []) {
+		if (item.type === "button") act(item.onPress);
+	}
+	expect(postMessage.mock.calls.slice(-2).map(([value]) => JSON.parse(value))).toEqual([
+		{ type: "headerAction", id: header.id, action: "find" },
+		{ type: "headerAction", id: header.id, action: "overview" },
+	]);
 	publish(header);
+	expect(toolbar()?.unstable_headerLeftItems?.({})[0]).toMatchObject({
+		type: "button",
+		badge: { value: header.needsYou },
+	});
+	native.insets.left = native.insets.right;
+	publish({ ...header, leading: "back" });
+	expect(JSON.parse(postMessage.mock.lastCall?.[0])).toEqual({ type: "material", glass: false, edgeToolbar: false });
+	expect(toolbar()?.headerShown).toBe(false);
+	expect(tree.root.findByProps({ accessibilityRole: "header" }).props.children).toBe(header.title);
 	act(() => view.props.onLoadStart());
+	expect(toolbar()?.headerShown).toBe(false);
 	expect(tree.root.findAllByProps({ accessibilityRole: "header" })).toHaveLength(0);
 	expect(tree.root.findAllByType("StatusBar" as never)).toHaveLength(0);
 });

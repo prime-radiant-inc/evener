@@ -79,7 +79,7 @@ import { useActivitySidebarStore } from "../activitybar/activitySidebarStore";
 import { attentionEntryOwnsReader, goBackInAttentionHistory, publishFocusedPaneURL } from "../attentionHistory";
 import { ConversationHandoffBoundary } from "../ConversationHandoffBoundary";
 import { useChromeStore } from "../chromeStore";
-import { hasIPhoneSessionHeader } from "../iPhoneHost";
+import { hasIPhoneSessionHeader, useIPhoneEdgeToolbar } from "../iPhoneHost";
 import { paneFor } from "../paneRegistry";
 import { PaneVisibilityContext } from "../paneVisibility";
 import { RAIL_WIDTH_PROPERTY, RailResizeHandle } from "../rail/RailResizeHandle";
@@ -371,12 +371,19 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
   // bar keeps its box and padding, so the controls never move.
   const [topBarCollapsed, setTopBarCollapsed] = useState(false);
   const [nativeFindOpen, setNativeFindOpen] = useState(false);
-  const tabletBand = useMediaQuery(TABLET_QUERY);
+  const fontSize = usePrefsStore((s) => s.fontSize);
+  const tabletViewport = useMediaQuery(TABLET_QUERY);
+  const roomForHostedBoard = useMediaQuery(
+    `(min-width: ${BOARD_MIN_WIDTH + READER_MIN_WIDTH[fontSize]}px) and (min-height: 600px)`,
+  );
+  const hosted = hasIPhoneSessionHeader();
+  const edgeToolbar = useIPhoneEdgeToolbar();
+  const tabletBand = tabletViewport || (hosted && roomForHostedBoard);
   const tabletSplit = tabletBand && !singlePane;
   const [boardCollapsed, setBoardCollapsed] = useState(false);
   const boardVisible = tabletSplit && !boardCollapsed;
   const nativeHeader =
-    !singlePane && !tabletBand && !routeDeferred && focusedPane?.type === "session" && hasIPhoneSessionHeader();
+    hosted && !singlePane && (!tabletBand || edgeToolbar) && !routeDeferred && focusedPane?.type === "session";
   const needsYou = useNavigationStore(
     useCallback(
       (state: NavigationStoreState) =>
@@ -385,7 +392,6 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
     ),
   );
   const sidebarWidth = usePrefsStore((s) => s.sidebarWidth);
-  const fontSize = usePrefsStore((s) => s.fontSize);
   const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth);
   useLayoutEffect(() => {
     if (!boardVisible) return;
@@ -591,7 +597,10 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
     if (!focusedPane) return;
     if (attentionEntryOwnsPane(focusedPane)) return;
     if (singlePaneRouteNames(window.location.pathname, focusedPane)) return;
-    const url = paneToURL(focusedPane.type, focusedPane.params);
+    const path = paneToURL(focusedPane.type, focusedPane.params);
+    // A pane identifies its path. The active URL also owns launcher prefill,
+    // the settings host and any fragment the user followed.
+    const url = path === window.location.pathname ? path + window.location.search + window.location.hash : path;
     if (url) {
       if (focusedPane.slot === "secondary" && isCascadeReturnedOrigin(focusedPane)) {
         publishFocusedPaneURL(url);
@@ -1106,7 +1115,7 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
               bar={topBarRef}
               id={focusedPane.id}
               title={paneTitle ?? ""}
-              leading={showBack ? "back" : "sessions"}
+              leading={showBack ? "back" : boardVisible ? null : "sessions"}
               needsYou={needsYou}
               collapsed={topBarCollapsed}
               onFindChange={setNativeFindOpen}
@@ -1116,7 +1125,8 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
                     (paneBack ?? handleBack)();
                     break;
                   case "sessions":
-                    setPanelOpen(true);
+                    if (tabletSplit) toggleBoard();
+                    else setPanelOpen(true);
                     break;
                   case "find":
                     requestFindInSession(focusedSessionRef, { target: focusedPane.id });

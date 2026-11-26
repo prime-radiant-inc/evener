@@ -60,7 +60,11 @@ against their actual services separately from custom-scheme launch checks.
 
 ### iPhone Duo layout
 
-The native client selects its split layout from the window's point size
+The hosted workspace adapts its Board and reading column to the available
+space. On Duo, the native stack places actions in the system edge bar when the
+status area moves to the side. See the [Duo layout guide](iphone-duo.md).
+
+In **Work on this iPhone**, the native client selects its split layout from the window's point size
 ([`src/duo/duoLayout.ts`](../../../mobile-native/src/duo/duoLayout.ts)), not from
 the device name: both sides at least 600 points. The `Sessions` screen renders
 the Board beside a nested conversation navigator on the inner display, and the

@@ -1,3 +1,4 @@
+import { hostIdOf, LOCAL_HOST } from "@evener/appwire-client";
 import {
   bindArtifactPath,
   bindFilePath,
@@ -109,6 +110,9 @@ function BoundDocument({
 }: PaneProps<DocParams> & { reference: FileReference; reopen: number; visible: boolean }) {
   const read = useDocumentRead(params.session, reference, reopen, visible);
   const hasContent = read.content !== undefined || read.imageGeneration !== undefined;
+  // Cross-host file reads provide a capped preview. The image route delivers
+  // its complete bytes, and the hub can download any local file in full.
+  const canShare = hasContent && (hostIdOf(params.session) === LOCAL_HOST || read.imageGeneration !== undefined);
   let body: ReactNode;
   if (params.kind === "image" && read.imageGeneration) {
     body = (
@@ -134,11 +138,18 @@ function BoundDocument({
       paneId={paneId}
       focused={focused}
       footer={
-        hasContent && iPhoneHost() ? (
+        canShare && iPhoneHost() ? (
           <Button
             block
             variant="secondary"
-            onClick={() => tellIPhoneHost({ type: "shareDocument", ref: params.session, path: reference.readTarget })}
+            onClick={() =>
+              tellIPhoneHost({
+                type: "shareDocument",
+                ref: params.session,
+                path: reference.readTarget,
+                namePath: reference.path,
+              })
+            }
           >
             Open in…
           </Button>
@@ -158,6 +169,11 @@ function BoundDocument({
 
 export default function DocPane({ params, paneId, focused }: PaneProps<DocParams>) {
   const visible = usePaneVisible();
+  useLayoutEffect(() => {
+    if (!visible || !focused || !iPhoneHost()) return;
+    tellIPhoneHost({ type: "readingDocument", active: true });
+    return () => tellIPhoneHost({ type: "readingDocument", active: false });
+  }, [visible, focused]);
   const panes = useWorkspaceStore((state) => state.panes);
   const pane = panes.find((candidate) => candidate.id === paneId);
   const retained = pane && documentPaneState(pane);

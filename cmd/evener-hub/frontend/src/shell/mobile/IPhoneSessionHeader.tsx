@@ -44,7 +44,7 @@ export function IPhoneSessionHeader({ bar, id, title, leading, needsYou, collaps
     const command = iPhoneCommand(event);
     if (command?.type !== "headerAction" || command.id !== id) return;
     const action = command.action;
-    if (action === leading) onAction(leading);
+    if (leading && action === leading) onAction(leading);
     else if (action === "find" || action === "overview") onAction(action);
   });
   const shown = height > 0;

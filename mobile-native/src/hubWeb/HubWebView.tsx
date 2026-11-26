@@ -2,9 +2,9 @@ import { useIsFocused } from "@react-navigation/native";
 import { StatusBar } from "expo-status-bar";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, Alert, AppState, Linking, View } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
+import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { WebView, type WebViewMessageEvent } from "react-native-webview";
-import { useHoldAlerts } from "../alerts/alertsContext";
+import { useHoldAlerts, useWorkspaceDocument } from "../alerts/alertsContext";
 import type { HubProfile } from "../connection";
 import { useSystemGlass } from "../design/systemGlass";
 import { paletteFor } from "../design/tokens";
@@ -13,7 +13,13 @@ import { externalMarkdownLink } from "../markdownLinks";
 import { HeaderButton } from "../sheet/HeaderButton";
 import { ErrorMessage, useColors } from "../ui";
 import { hubPagePath, hubPageSource } from "./hubWebPolicy";
-import { isSessionHeader, SessionHeader, type SessionHeaderState } from "./SessionHeader";
+import {
+	EdgeSessionToolbar,
+	type HeaderAction,
+	isSessionHeader,
+	SessionHeader,
+	type SessionHeaderState,
+} from "./SessionHeader";
 
 interface HubWebViewProps {
 	profile: HubProfile;
@@ -34,23 +40,38 @@ export function HubWebView({ profile, token, initialPath, onPath, onHubMenu, onD
 	const [loaded, setLoaded] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 	const [editing, setEditing] = useState(false);
+	const [readingDocument, setReadingDocument] = useState(false);
+	const [covered, setCovered] = useState(false);
 	const [header, setHeader] = useState<SessionHeaderState | null>(null);
 	const [hubDark, setHubDark] = useState<boolean | null>(null);
 	const focused = useIsFocused();
 	const glass = useSystemGlass();
-	const material = JSON.stringify({ type: "material", glass });
+	const { top, left, right } = useSafeAreaInsets();
+	// A vertical system bar reserves one window edge; landscape cutouts reserve both.
+	const edgeToolbar = top === 0 && Math.min(left, right) === 0 && Math.max(left, right) >= 44;
+	const material = JSON.stringify({ type: "material", glass, edgeToolbar });
+	const headerAction = useCallback((id: string, action: HeaderAction) => {
+		web.current?.postMessage(JSON.stringify({ type: "headerAction", id, action }));
+	}, []);
 	useEffect(() => {
 		if (bridgeReady) web.current?.postMessage(material);
 	}, [bridgeReady, material]);
-	useHoldAlerts(editing && bridgeReady && focused && !error, "quiet");
+	const inFront = bridgeReady && focused && !error;
+	useWorkspaceDocument(profile.id, readingDocument && bridgeReady && !error);
+	useHoldAlerts(inFront && (editing || readingDocument), "quiet");
+	useHoldAlerts(inFront && covered, "covered");
 	const source = useMemo(() => {
 		const page = hubPageSource(origin, entryPath, token);
 		return page && { ...page, websiteDataStoreIdentifier: profile.id };
 	}, [origin, entryPath, token, profile.id]);
-	const shareFile = async (ref: string, path: string) => {
+	const shareFile = async (
+		ref: string,
+		path: string,
+		namePath = path.startsWith("/") ? path.slice(path.lastIndexOf("/") + 1) : path,
+	) => {
 		try {
 			const { shareSessionDocument } = await import("../reader/shareDocumentNative");
-			await shareSessionDocument({ origin, token, sessionRef: ref, path });
+			await shareSessionDocument({ origin, token, sessionRef: ref, path, namePath });
 		} catch {
 			Alert.alert("Could not share this document", "It could not be saved from this hub. Try again.");
 		}
@@ -64,6 +85,8 @@ export function HubWebView({ profile, token, initialPath, onPath, onHubMenu, onD
 	const resetDocument = useCallback(() => {
 		setBridgeReady(false);
 		setEditing(false);
+		setReadingDocument(false);
+		setCovered(false);
 		setHeader(null);
 		setHubDark(null);
 	}, []);
@@ -129,9 +152,15 @@ export function HubWebView({ profile, token, initialPath, onPath, onHubMenu, onD
 			case "editing":
 				if (typeof data.active === "boolean") setEditing(data.active);
 				break;
+			case "readingDocument":
+				if (typeof data.active === "boolean") setReadingDocument(data.active);
+				break;
+			case "covered":
+				if (typeof data.active === "boolean") setCovered(data.active);
+				break;
 			case "shareDocument":
 				if (typeof data.ref === "string" && data.ref && typeof data.path === "string" && data.path)
-					void shareFile(data.ref, data.path);
+					void shareFile(data.ref, data.path, typeof data.namePath === "string" ? data.namePath : undefined);
 				break;
 			case "haptic":
 				if (data.kind === "light") haptic(data.kind);
@@ -227,16 +256,17 @@ export function HubWebView({ profile, token, initialPath, onPath, onHubMenu, onD
 					hideKeyboardAccessoryView
 					style={{ backgroundColor: (hubPalette ?? palette).canvas }}
 				/>
-				{activeHeader && (
-					<SessionHeader
-						header={activeHeader}
-						glass={glass}
-						palette={hubPalette ?? palette}
-						onAction={(action) =>
-							web.current?.postMessage(JSON.stringify({ type: "headerAction", id: activeHeader.id, action }))
-						}
-					/>
-				)}
+				{activeHeader &&
+					(edgeToolbar ? (
+						<EdgeSessionToolbar header={activeHeader} palette={hubPalette ?? palette} onAction={headerAction} />
+					) : (
+						<SessionHeader
+							header={activeHeader}
+							glass={glass}
+							palette={hubPalette ?? palette}
+							onAction={headerAction}
+						/>
+					))}
 			</View>
 		</SafeAreaView>
 	);

@@ -18,7 +18,9 @@ tuck away and the transcript passes beneath the controls. Scrolling up brings
 them back. Find keeps the header above its search field. Overview opens the
 current conversation’s panel. The controls use Liquid Glass on iOS 26 and
 later and an opaque surface on earlier systems or with Reduce Transparency.
-The hub owns the transcript, composer, and reading position.
+The hub owns the transcript, composer, and reading position. Reopening the
+workspace restores the selected settings host or a launcher's directory, prompt,
+and host from the phone's saved location.
 
 The same design extends through pairing, hub settings, and the hosted
 workspace. Native controls use the system material. The hub draws the matching
@@ -40,8 +42,11 @@ so shared text or links are saved before the extension’s copy is removed.
 
 The web composer uses the system keyboard, including iOS Dictation when enabled,
 and the image picker. **Open in…** in the document viewer opens the system share
-sheet. Native foreground alerts respect the active conversation, and tapping a
-session alert opens it in the workspace. Alerts use the app’s existing
+sheet for local documents and supported remote images. Other remote documents
+keep their web preview and copy actions. Native foreground alerts respect
+the active conversation, editor, and reader. A session alert opens in the
+current workspace or on the on-device navigation stack, preserving the Back
+destination. Alerts use the app’s existing
 foreground connection. Lock-screen push would require a push provider.
 The separate [spoken manager mode](../docs/product/voice.md) is excluded
 from the shipping app.
@@ -67,7 +72,9 @@ project generation and distribution prerequisites.
 
 ## On-device Board on iPhone Duo
 
-The hosted workspace follows the hub’s responsive layout. In **Work on this
+The hosted workspace keeps the Board beside the conversation on the inner
+display when both fit. Its session controls follow the iOS system bar, and
+the composer remains in the conversation. In **Work on this
 iPhone**, the app fills both iPhone Duo displays. The outer display keeps the Board
 single-pane. The inner display puts the Board on the left and the open
 conversation on the right; the Board's search, scroll and live state keep

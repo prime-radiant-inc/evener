@@ -70,20 +70,29 @@ beforeEach(() => {
 afterEach(() => vi.useRealTimers());
 
 describe("shareSessionDocument", () => {
-	it("downloads the whole file with this hub's bearer token", async () => {
-		const { shareSessionDocument } = await import("./shareDocumentNative");
-		const sharing = shareSessionDocument(target("docs/onboarding.mp4"));
-		await settle();
-		harness.release.shift()?.();
-		await settle();
-		harness.sheet.shift()?.();
-		await sharing;
-		expect(harness.downloads[0]?.url).toBe(
-			"https://hub.test/doc/file?format=download&session=local%3Aabc&path=docs%2Fonboarding.mp4",
-		);
-		expect(harness.downloads[0]?.headers).toEqual({ Authorization: "Bearer secret" });
-		expect(harness.shared).toHaveLength(1);
-	});
+	it.each([
+		["local:abc", "docs/onboarding.mp4", "/doc/file", "download"],
+		["elsewhere:abc", "out/chart.png", "/doc/image", null],
+	] as const)(
+		"downloads the complete bytes available for %s %s with this hub's bearer token",
+		async (sessionRef, path, route, format) => {
+			const { shareSessionDocument } = await import("./shareDocumentNative");
+			const sharing = shareSessionDocument({ ...target(path), sessionRef });
+			await settle();
+			harness.release.shift()?.();
+			await settle();
+			harness.sheet.shift()?.();
+			await sharing;
+			const url = new URL(harness.downloads[0]?.url ?? "");
+			expect(url.origin).toBe("https://hub.test");
+			expect(url.pathname).toBe(route);
+			expect(url.searchParams.get("format")).toBe(format);
+			expect(url.searchParams.get("session")).toBe(sessionRef);
+			expect(url.searchParams.get("path")).toBe(path);
+			expect(harness.downloads[0]?.headers).toEqual({ Authorization: "Bearer secret" });
+			expect(harness.shared).toHaveLength(1);
+		},
+	);
 
 	it("gives two same-named files different cache destinations", async () => {
 		const { shareSessionDocument } = await import("./shareDocumentNative");

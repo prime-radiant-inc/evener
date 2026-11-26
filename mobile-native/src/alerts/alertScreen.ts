@@ -20,11 +20,20 @@ export function coversBanners(route: Route | undefined): boolean {
 /** The screen alerts care about, from the stack's routes up to the focused
  * one: the top route that isn't a sheet or a modal. A session screen counts
  * only for the hub it belongs to, since refs are per hub. */
-export function alertScreenFor(routes: readonly Route[], hubId: string | null): AlertScreen {
+export function alertScreenFor(
+	routes: readonly Route[],
+	hubId: string | null,
+	readingWorkspaceDocument = false,
+): AlertScreen {
 	const screen = [...routes].reverse().find((route) => !coversBanners(route));
 	if (screen?.name === "Sessions") return { kind: "board" };
 	const params = screen?.params as { hubId?: unknown; ref?: unknown; path?: unknown } | undefined;
-	if (screen?.name === "Workspace" && params?.hubId === hubId && typeof params.path === "string") {
+	if (
+		screen?.name === "Workspace" &&
+		!readingWorkspaceDocument &&
+		params?.hubId === hubId &&
+		typeof params.path === "string"
+	) {
 		const ref = workspaceSessionRef(params.path);
 		if (ref) return { kind: "session", ref };
 	}

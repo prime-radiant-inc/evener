@@ -28,6 +28,11 @@ draws the material. WebKit keeps the editable field, action labels and touch
 targets above it. The controls retain their CSS material until the renderer
 is ready and whenever it becomes unavailable.
 
+The Duo inner display keeps the Board and the reader side by side while there
+is room for both at the chosen text size. When iOS reserves a side edge for
+the status area, its navigation bar owns the reader’s actions. The composer
+stays with the conversation. See the [Duo layout guide](../design/mobile/iphone-duo.md).
+
 In the hosted composer, WebKit owns editing, selection, dictation and the
 keyboard. Value selectors use the platform picker. Command menus and inline
 completions use the shared web actions, with system text, thumb-sized rows

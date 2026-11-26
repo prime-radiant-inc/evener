@@ -528,7 +528,8 @@ function AppShellContent({ client: injectedClient, bannerDelayMs, bannerCreateCl
   const scheme = useResolvedScheme();
   useEffect(connectIPhoneHost, []);
   useEffect(() => tellIPhoneHost({ type: "appearance", dark: scheme === "dark" }), [scheme]);
-  useEffect(() => tellIPhoneHost({ type: "route", path: pathname }), [pathname]);
+  const hubPath = pathname + window.location.search + window.location.hash;
+  useEffect(() => tellIPhoneHost({ type: "route", path: hubPath }), [hubPath]);
   const route = urlToPane(pathname);
   const sessionRouteRef = route?.type === "session" ? refParam(route.params) : null;
   const restoredSessionRef = route?.type === "welcome" ? refParam(workspaceStore.getState().mainPane()?.params) : null;

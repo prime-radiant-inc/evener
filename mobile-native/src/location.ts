@@ -143,9 +143,10 @@ export class LocationRepository {
 				["pinAssignment", "fork", "deleteSession", "pinned", "projects"].some((key) => value[key] !== undefined))
 		)
 			return null;
+		const webPath = savedWorkspacePath(value.webPath);
 		return {
 			hubId: value.hubId,
-			...(typeof value.webPath === "string" && isWorkspacePath(value.webPath) ? { webPath: value.webPath } : {}),
+			...(webPath && { webPath }),
 			...(value.deviceWork === true ? { deviceWork: true as const } : {}),
 			...(projects(value.projects) ? { projects: value.projects } : {}),
 			...(target ? { fork: target } : {}),
@@ -231,11 +232,8 @@ export function locationForRoute(
 	if (!hubId || route.name === "Hubs") return null;
 	if (route.name === "Workspace") {
 		const params = route.params;
-		const path =
-			isPlainObject(params) && params.hubId === hubId && typeof params.path === "string" && isWorkspacePath(params.path)
-				? params.path
-				: "/";
-		return { hubId, webPath: path };
+		const path = isPlainObject(params) && params.hubId === hubId ? savedWorkspacePath(params.path) : undefined;
+		return { hubId, webPath: path ?? "/" };
 	}
 	if (route.name === "Projects" || route.name === "Project") {
 		if (!isPlainObject(route.params) || route.params.hubId !== hubId) return null;
@@ -436,7 +434,7 @@ export function workspaceSessionPath(ref: string): string {
 }
 
 export function workspaceSessionRef(path: string): string | null {
-	const match = /^\/(?:s|thread)\/([^/?#]+)$/.exec(path);
+	const match = /^\/(?:s|thread)\/([^/?#]+)(?:[?#]|$)/.exec(path);
 	if (!match) return null;
 	try {
 		const ref = decodeURIComponent(match[1]);
@@ -449,12 +447,38 @@ export function workspaceSessionRef(path: string): string | null {
 
 /** Only app routes belong in the phone's last location. A capability link,
  * document URL, or external redirect must never be persisted as a workspace. */
+function workspaceURL(path: unknown): URL | null {
+	if (typeof path !== "string" || !path.startsWith("/") || path.startsWith("//") || path.includes("\\")) return null;
+	const url = new URL("https://workspace.invalid" + path);
+	if (url.searchParams.has("token")) return null;
+	const name = url.pathname;
+	return name === "/" ||
+		name === "/new" ||
+		name === "/credentials" ||
+		/^\/settings(?:\/[\w-]+)?$/.test(name) ||
+		workspaceSessionRef(name) !== null
+		? url
+		: null;
+}
+
 export function isWorkspacePath(path: string): boolean {
-	return (
-		path === "/" ||
-		path === "/new" ||
-		path === "/credentials" ||
-		/^\/settings(?:\/[\w-]+)?$/.test(path) ||
-		workspaceSessionRef(path) !== null
-	);
+	return workspaceURL(path) !== null;
+}
+
+function savedWorkspacePath(path: unknown): string | undefined {
+	const url = workspaceURL(path);
+	if (!url) return undefined;
+	const keys =
+		url.pathname === "/new"
+			? ["dir", "prompt", "host"]
+			: url.pathname === "/credentials" || url.pathname.startsWith("/settings")
+				? ["host"]
+				: [];
+	const owned = new URLSearchParams();
+	for (const key of keys) {
+		const value = url.searchParams.get(key);
+		if (value) owned.set(key, value);
+	}
+	const search = owned.toString();
+	return search ? url.pathname + "?" + search : url.pathname;
 }

@@ -265,7 +265,8 @@ test("the iPhone Sessions drawer hands off hub selection and accepts a native ro
     expect(messages).toContainEqual({ type: "ready" });
     expect(messages).toContainEqual({ type: "hubMenu" });
 
-    const data = JSON.stringify({ type: "navigate", path: "/new" });
+    const launcher = "/new?dir=%2Fwork&prompt=Review+the+changes";
+    const data = JSON.stringify({ type: "navigate", path: launcher });
     act(() => {
       window.dispatchEvent(new MessageEvent("message", { data, origin: "https://another.site" }));
     });
@@ -274,7 +275,14 @@ test("the iPhone Sessions drawer hands off hub selection and accepts a native ro
       window.dispatchEvent(new MessageEvent("message", { data }));
     });
     expect(await screen.findByRole("button", { name: "Start" })).toBeTruthy();
-    expect(messages).toContainEqual({ type: "route", path: "/new" });
+    expect(screen.getByRole("textbox", { name: "Prompt" }).textContent).toBe("Review the changes");
+    expect(window.location.search).toBe(launcher.slice("/new".length));
+    expect(messages).toContainEqual({ type: "route", path: launcher });
+    for (const host of ["desk", "studio"]) {
+      const path = `/settings/credentials?host=${host}`;
+      act(() => navigate(path));
+      await waitFor(() => expect(messages).toContainEqual({ type: "route", path }));
+    }
     act(() => {
       window.dispatchEvent(
         new MessageEvent("message", { data: JSON.stringify({ type: "navigate", path: sessionPath }) }),

@@ -10,7 +10,8 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import userEvent from "@testing-library/user-event";
 import type { DockviewApi } from "dockview-core";
 import { lazy, StrictMode } from "react";
-import { afterAll, afterEach, beforeEach, expect, test, vi } from "vitest";
+import { afterAll, afterEach, beforeEach, expect, onTestFinished, test, vi } from "vitest";
+import { connectIPhoneHost } from "../../shell/iPhoneHost";
 import { registerPaneForTests } from "../../shell/paneRegistry";
 import { PaneVisibilityContext } from "../../shell/paneVisibility";
 import {
@@ -23,13 +24,15 @@ import {
 import { connectionStore, resetConnectionStoreForTests } from "../../stores/connection";
 import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
 import { readModuleCss } from "../../styles/cssBlock";
+import { installMobileViewport } from "../session/testing/mobileViewport";
 import DocPane from "./DocPane";
 import docpaneStyles from "./docpane.module.css";
 import { type DocParams, openDocBeside } from "./openDoc";
 import "./index";
 import { ALL_CAPABILITIES } from "../../threadTestUtils";
 
-const ref = "remote:034MXwo6BpPH0QQCgdICSf";
+const remoteRef = "remote:034MXwo6BpPH0QQCgdICSf";
+let ref: string;
 function thread(cwd = "/work/a"): Thread {
   return {
     id: "thr_owner",
@@ -80,6 +83,7 @@ afterAll(
   }),
 );
 beforeEach(async () => {
+  ref = remoteRef;
   resetConnectionStoreForTests();
   resetThreadsStoreForTests();
   resetWorkspaceStoreForTests();
@@ -158,18 +162,43 @@ test("the doc pane's markdown body text reads at the prose step, pinned on the p
   expect(css).toMatch(/\.markdown\s*\{[^}]*--prose-font-size:\s*var\(--font-size-prose\);/);
 });
 test("a text file renders as a copyable code block, with normalized title and an absolute requested target", async () => {
+  ref = "local:document";
   vi.spyOn(navigator, "userAgent", "get").mockReturnValue("EvenerNative/1");
   const messages: unknown[] = [];
   vi.stubGlobal("ReactNativeWebView", { postMessage: (json: string) => messages.push(JSON.parse(json)) });
   respond("plain body line");
-  renderDoc("./src//notes.txt");
+  const { pane, rerender, unmount } = renderDoc("./src//notes.txt");
   expect((await screen.findByText("plain body line")).closest("pre")).toBeTruthy();
   expect(screen.getByRole("button", { name: "Copy" })).toBeTruthy();
   expect(screen.getByRole("heading", { name: "notes.txt" })).toBeTruthy();
   expect(requests[0]?.searchParams.get("path")).toBe("/work/a/src/notes.txt");
   expect(requests[0]?.searchParams.get("session")).toBe(ref);
   await userEvent.click(screen.getByRole("button", { name: "Open in…" }));
-  expect(messages).toEqual([{ type: "shareDocument", ref, path: "/work/a/src/notes.txt" }]);
+  expect(messages).toEqual([{ type: "shareDocument", ref, path: "/work/a/src/notes.txt", namePath: "src/notes.txt" }]);
+  const doc = (focused: boolean, visible: boolean) => (
+    <PaneVisibilityContext value={visible}>
+      <DocPane params={pane.params as DocParams} paneId={pane.id} focused={focused} />
+    </PaneVisibilityContext>
+  );
+  rerender(doc(true, true));
+  expect(messages.at(-1)).toEqual({ type: "readingDocument", active: true });
+  rerender(doc(true, false));
+  expect(messages.at(-1)).toEqual({ type: "readingDocument", active: false });
+  rerender(doc(true, true));
+  unmount();
+  expect(messages.slice(-2)).toEqual([
+    { type: "readingDocument", active: true },
+    { type: "readingDocument", active: false },
+  ]);
+});
+test("a hosted remote text preview offers only actions its hub can serve", async () => {
+  vi.spyOn(navigator, "userAgent", "get").mockReturnValue("EvenerNative/1");
+  vi.stubGlobal("ReactNativeWebView", { postMessage: vi.fn() });
+  respond("preview");
+  renderDoc("docs/remote.txt");
+  expect(await screen.findByText("preview")).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Copy" })).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Open in…" })).toBeNull();
 });
 test("a long text file shows every line, never folded to its tail", async () => {
   // Well past CodeBlock's fold threshold, so a fold would hide the head.
@@ -369,6 +398,12 @@ async function loadImage() {
   await act(async () => fireEvent.load(images.at(-1) as HTMLImageElement));
 }
 test("image authenticated generation request, filename, no raw read and zoom behavior", async () => {
+  onTestFinished(installMobileViewport());
+  vi.spyOn(navigator, "userAgent", "get").mockReturnValue("EvenerNative/1");
+  const messages: unknown[] = [];
+  vi.stubGlobal("ReactNativeWebView", { postMessage: (json: string) => messages.push(JSON.parse(json)) });
+  const disconnect = connectIPhoneHost();
+  if (disconnect) onTestFinished(disconnect);
   renderDoc("out/pic.png", "image");
   await loadImage();
   const image = screen.getByTestId("doc-image");
@@ -379,12 +414,17 @@ test("image authenticated generation request, filename, no raw read and zoom beh
   expect(url.searchParams.get("read")).toBeTruthy();
   expect(image.getAttribute("alt")).toBe("pic.png");
   expect(requests).toHaveLength(0);
+  await userEvent.click(screen.getByRole("button", { name: "Open in…" }));
+  expect(messages).toContainEqual({ type: "shareDocument", ref, path: "/work/a/out/pic.png", namePath: "out/pic.png" });
   expect(screen.getByRole("button", { name: "Zoom image" })).toBeTruthy();
   const user = userEvent.setup();
   expect(screen.queryByRole("dialog")).toBeNull();
   await user.click(image);
   expect(screen.getByRole("dialog")).toBeTruthy();
+  expect(messages).toContainEqual({ type: "covered", active: true });
   expect(screen.getByTestId("doc-lightbox-img").getAttribute("src")).toBe(image.getAttribute("src"));
+  await user.keyboard("{Escape}");
+  expect(messages.at(-1)).toEqual({ type: "covered", active: false });
 });
 test("failed image shows an unavailable notice", async () => {
   renderDoc("out/missing.png", "image");

@@ -29,6 +29,22 @@ describe("last mobile location", () => {
 			params: { hubId: "hub", ...session },
 		});
 	});
+	it("restores only the workspace context owned by the selected route", () => {
+		const disk = new LocationRepository(storage());
+		for (const [opened, restored] of [
+			["/settings/hosts?host=studio&extra=discard#help", "/settings/hosts?host=studio"],
+			["/credentials?host=local", "/credentials?host=local"],
+			[
+				"/new?dir=%2Fwork&prompt=two+lines%0Ahere&host=remote&extra=discard",
+				"/new?dir=%2Fwork&prompt=two+lines%0Ahere&host=remote",
+			],
+			["/s/remote%3Aone?host=ignored#row", "/s/remote%3Aone"],
+			["/settings/hosts?host=studio&token=capability", "/"],
+		]) {
+			disk.save(locationForRoute({ name: "Workspace", params: { hubId: "hub", path: opened } }, "hub"));
+			expect(phoneLaunchStack(disk.read(["hub"])).routes.at(-1)?.params).toEqual({ hubId: "hub", path: restored });
+		}
+	});
 	it("returns an old unbound Reader to its saved owning conversation without erasing other storage", () => {
 		const disk = storage();
 		disk.setItemSync("evener.draft.other", "keep draft");
