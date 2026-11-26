@@ -96,13 +96,16 @@ test.each([
   { name: "narrow desktop", compact: false, inlineSteer: false, width: 382 },
   { name: "Duo cover", compact: false, inlineSteer: true, width: 450, duo: true },
   { name: "phone portrait", compact: true, inlineSteer: false, width: 360, phone: true },
+  { name: "hosted iPhone", compact: true, inlineSteer: false, width: 360, phone: true, hosted: true },
   { name: "Duo landscape", compact: true, inlineSteer: true, width: 526, phoneQuery: LANDSCAPE_PHONE_QUERY },
 ])(
   "$name keeps the empty composer folded until content arrives",
-  async ({ compact, inlineSteer, width, duo, phone, phoneQuery }) => {
+  async ({ compact, inlineSteer, width, duo, phone, phoneQuery, hosted }) => {
     const restoreViewport =
       phone || phoneQuery || duo ? installMobileViewport(duo ? DUO_COVER_QUERY : phoneQuery) : undefined;
     if (width !== undefined) installNarrowComposer(width);
+    const ua = hosted ? vi.spyOn(navigator, "userAgent", "get").mockReturnValue("EvenerNative/1") : undefined;
+    if (hosted) vi.stubGlobal("ReactNativeWebView", { postMessage: vi.fn() });
     try {
       await mountComposerWithHandle("ref_a", { status: { type: "active" } });
       const editor = textarea();
@@ -125,7 +128,7 @@ test.each([
       expect(order()).toEqual(["composer-stop"]);
 
       act(() => replaceEditorText(editor, "draft"));
-      expect(editor.style.minHeight).toBe("2lh");
+      expect(editor.style.minHeight).toBe(hosted ? "1lh" : "2lh");
       expect(card.hasAttribute("data-folded")).toBe(false);
       expect(card.hasAttribute("data-folded-compact")).toBe(false);
       expect(order()).toEqual(inlineSteer ? ["composer-steer", "composer-submit"] : ["composer-submit"]);
@@ -135,6 +138,8 @@ test.each([
     } finally {
       cleanup();
       restoreViewport?.();
+      if (hosted) vi.unstubAllGlobals();
+      ua?.mockRestore();
     }
   },
 );

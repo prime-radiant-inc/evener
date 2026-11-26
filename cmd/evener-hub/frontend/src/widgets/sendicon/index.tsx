@@ -9,7 +9,7 @@
 // widgets/pathfield's glyphs) so it inherits the button variant's own color.
 export function SendIcon() {
   return (
-    <svg viewBox="0 0 14 14" width="12" height="12" aria-hidden="true">
+    <svg viewBox="0 0 14 14" width="12" height="12" aria-hidden="true" style={{ scale: "var(--send-icon-scale, 1)" }}>
       <path
         d="M12.8 1.2 8.8 12.8 6.4 7.6 1.2 5.2Z M12.8 1.2 6.4 7.6"
         fill="none"
