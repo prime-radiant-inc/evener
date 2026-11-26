@@ -16,6 +16,7 @@ import "../../panes/transcript";
 import { cascadeClient, cascadeContext } from "../../panes/zoom/cascadeTestUtils";
 import { recordCascadeOrigin } from "../../panes/zoom/inspectionOrigin";
 import type { SessionZoomParams } from "../../panes/zoom/intent";
+import { StubResizeObserver } from "../../resizeObserverTestUtils";
 import "../../panes/zoom";
 import { connectionStore, resetConnectionStoreForTests } from "../../stores/connection";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
@@ -477,6 +478,62 @@ test("a focused session's top bar orders Find before Overview", async () => {
   const find = await within(topBar).findByRole("button", { name: "Find in session" });
   const overview = within(topBar).getByRole("button", { name: "Overview" });
   expect(find.compareDocumentPosition(overview) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+});
+
+test("the iPhone controls follow the reader and yield to its focused Find field", async () => {
+  const restoreViewport = installMobileViewport();
+  const ua = vi.spyOn(navigator, "userAgent", "get").mockReturnValue("EvenerNative/1 EvenerSessionHeader/1");
+  const height = vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockReturnValue(61);
+  const postMessage = vi.fn<(message: string) => void>();
+  vi.stubGlobal("ReactNativeWebView", { postMessage });
+  vi.stubGlobal("ResizeObserver", StubResizeObserver);
+  const header = () =>
+    postMessage.mock.calls
+      .map(([json]) => JSON.parse(json))
+      .filter((message) => message.type === "sessionHeader")
+      .at(-1)?.header;
+  const press = (id: string, action: string) =>
+    act(async () => {
+      window.dispatchEvent(new MessageEvent("message", { data: JSON.stringify({ type: "headerAction", id, action }) }));
+    });
+  const ref = "remote:header";
+  const client = activityClient();
+  client.on("thread/read", ({ ref }) => activityDetailsThread(ref));
+  connectionStore.getState().connect(client);
+  const pane = workspaceStore.getState().openPane("session", { ref });
+  setNeedsYouCount(3);
+  try {
+    render(
+      <ClientProvider client={client}>
+        <StackHost />
+      </ClientProvider>,
+    );
+    await waitFor(() => expect(header()).toMatchObject({ id: pane, leading: "sessions", height: 61, needsYou: 3 }));
+    const bar = screen.getByTestId("topbar");
+    expect(bar.hasAttribute("inert")).toBe(true);
+    await press(pane, "find");
+    const field = await within(await screen.findByTestId("find-bar")).findByRole("searchbox");
+    expect(document.activeElement).toBe(field);
+    await waitFor(() => expect(header()).toBeNull());
+    expect(bar.hasAttribute("inert")).toBe(false);
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(header()?.id).toBe(pane));
+    const child = await act(async () => openConversation("remote:header-child", ref));
+    await waitFor(() => expect(header()).toMatchObject({ id: child, leading: "back" }));
+    await press(pane, "back");
+    expect(workspaceStore.getState().focusedPaneId).toBe(child);
+    await press(child, "back");
+    expect(workspaceStore.getState().focusedPaneId).toBe(pane);
+    await press(pane, "sessions");
+    expect(await screen.findByRole("dialog")).toBeTruthy();
+    expect(header()).toBeNull();
+  } finally {
+    cleanup();
+    restoreViewport();
+    vi.unstubAllGlobals();
+    ua.mockRestore();
+    height.mockRestore();
+  }
 });
 
 test("a session with a retained parent keeps Back instead of Sessions", async () => {

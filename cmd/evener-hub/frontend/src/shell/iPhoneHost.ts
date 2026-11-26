@@ -2,8 +2,21 @@ import { isTextEntryTarget } from "../keybindings/dispatcher";
 import { navigate, refParam, urlToPane } from "./routing";
 import { openSessionByRef } from "./sessionPlacement";
 
+export interface IPhoneHeader {
+  id: string;
+  title: string;
+  leading: "back" | "sessions";
+  needsYou: number;
+  collapsed: boolean;
+  height: number;
+}
+
+export type IPhoneHeaderAction = IPhoneHeader["leading"] | "find" | "overview";
+
 type HostMessage =
   | { type: "ready" | "hubMenu" }
+  | { type: "appearance"; dark: boolean }
+  | { type: "sessionHeader"; header: IPhoneHeader | null }
   | { type: "route"; path: string }
   | { type: "editing"; active: boolean }
   | { type: "shareDocument"; ref: string; path: string }
@@ -18,6 +31,10 @@ export function iPhoneHost() {
   return (window as HostWindow).ReactNativeWebView;
 }
 
+export function hasIPhoneSessionHeader(): boolean {
+  return !!iPhoneHost() && navigator.userAgent.split(/\s+/).includes("EvenerSessionHeader/1");
+}
+
 export function tellIPhoneHost(message: HostMessage): void {
   try {
     iPhoneHost()?.postMessage(JSON.stringify(message));
@@ -27,17 +44,28 @@ export function tellIPhoneHost(message: HostMessage): void {
   }
 }
 
-function receiveNavigation(event: MessageEvent): void {
+export function iPhoneCommand(
+  event: MessageEvent,
+): { type?: unknown; path?: unknown; id?: unknown; action?: unknown } | null {
   // WebKit dispatches the native command directly on this window. Messages
   // posted by another document carry its origin and window.
-  if (event.source !== null || event.origin !== "" || typeof event.data !== "string") return;
+  if (event.source !== null || event.origin !== "" || typeof event.data !== "string") return null;
+  try {
+    const command = JSON.parse(event.data);
+    return command && typeof command === "object" ? command : null;
+  } catch {
+    return null;
+  }
+}
+
+function receiveNavigation(event: MessageEvent): void {
+  const command = iPhoneCommand(event);
+  if (command?.type !== "navigate" || typeof command.path !== "string") return;
   let route: ReturnType<typeof urlToPane>;
   try {
-    const message = JSON.parse(event.data);
-    if (message?.type !== "navigate" || typeof message.path !== "string") return;
-    route = urlToPane(message.path);
+    route = urlToPane(command.path);
   } catch {
-    return;
+    return; // Malformed percent encoding is not a workspace destination.
   }
   if (route?.type === "session") {
     const ref = refParam(route.params);

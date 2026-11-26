@@ -52,7 +52,8 @@ import {
   useState,
 } from "react";
 import { AnimatePresence, m, spatialExitTransition, spatialTransition, useReducedMotion } from "../../motion";
-import { SessionInspectionActions } from "../../panes/session/chrome/SessionInspectionActions";
+import { openSessionOverview, SessionInspectionActions } from "../../panes/session/chrome/SessionInspectionActions";
+import { requestFindInSession } from "../../panes/session/find/findRequest";
 import { returnFromAgentCascade } from "../../panes/zoom/actions";
 import { isCascadeReturnedOrigin } from "../../panes/zoom/inspectionOrigin";
 import { parseZoomParams } from "../../panes/zoom/intent";
@@ -78,6 +79,7 @@ import { useActivitySidebarStore } from "../activitybar/activitySidebarStore";
 import { attentionEntryOwnsReader, goBackInAttentionHistory, publishFocusedPaneURL } from "../attentionHistory";
 import { ConversationHandoffBoundary } from "../ConversationHandoffBoundary";
 import { useChromeStore } from "../chromeStore";
+import { hasIPhoneSessionHeader } from "../iPhoneHost";
 import { paneFor } from "../paneRegistry";
 import { PaneVisibilityContext } from "../paneVisibility";
 import { RAIL_WIDTH_PROPERTY, RailResizeHandle } from "../rail/RailResizeHandle";
@@ -95,6 +97,7 @@ import {
   useWorkspaceStore,
   workspaceStore,
 } from "../workspace";
+import { IPhoneSessionHeader } from "./IPhoneSessionHeader";
 import { MobilePanel } from "./MobilePanel";
 import styles from "./StackHost.module.css";
 import {
@@ -359,10 +362,13 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
   const tabletSplit = tabletBand && !singlePane;
   const [boardCollapsed, setBoardCollapsed] = useState(false);
   const boardVisible = tabletSplit && !boardCollapsed;
+  const nativeHeader =
+    !singlePane && !tabletBand && !routeDeferred && focusedPane?.type === "session" && hasIPhoneSessionHeader();
   const needsYou = useNavigationStore(
     useCallback(
-      (state: NavigationStoreState) => (tabletSplit && !boardVisible ? selectNeedsYouCount(state) : 0),
-      [tabletSplit, boardVisible],
+      (state: NavigationStoreState) =>
+        nativeHeader || (tabletSplit && !boardVisible) ? selectNeedsYouCount(state) : 0,
+      [nativeHeader, tabletSplit, boardVisible],
     ),
   );
   const sidebarWidth = usePrefsStore((s) => s.sidebarWidth);
@@ -1072,6 +1078,32 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
               {focusedSessionRef === undefined && drawer}
             </div>
           </div>
+          {nativeHeader && focusedSessionRef && !panelOpen && !activityOpen && (
+            <IPhoneSessionHeader
+              bar={topBarRef}
+              id={focusedPane.id}
+              title={paneTitle ?? ""}
+              leading={showBack ? "back" : "sessions"}
+              needsYou={needsYou}
+              collapsed={topBarCollapsed}
+              onAction={(action) => {
+                switch (action) {
+                  case "back":
+                    (paneBack ?? handleBack)();
+                    break;
+                  case "sessions":
+                    setPanelOpen(true);
+                    break;
+                  case "find":
+                    requestFindInSession(focusedSessionRef, { target: focusedPane.id });
+                    break;
+                  case "overview":
+                    openSessionOverview(focusedSessionRef, focusedPane.id, true);
+                    break;
+                }
+              }}
+            />
+          )}
           <div ref={stackBodyRef} className={styles.stackBody} data-stacked-pane-type={focusedPane?.type}>
             {focusedPane && (
               // Only a distinct pane id detaches the outgoing pane's last frame.
