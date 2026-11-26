@@ -5,7 +5,9 @@
   position: relative;
   display: flex;
   flex-direction: column;
-  /* 100vh is the fallback; 100dvh follows the mobile browser chrome. */
+  /* 100vh is the fallback; 100dvh follows dynamic viewport chrome for the
+   * in-flow shell (mobile resets height: auto so position: fixed; inset: 0
+   * owns the layout-viewport height directly). */
   height: 100vh;
   background: var(--surface-0);
 }
@@ -74,6 +76,10 @@
     position: fixed;
     inset: 0;
     width: 100%;
+    /* Let inset: 0 size the fixed mobile shell directly against the layout
+     * viewport instead of letting the shared height: 100dvh rule override
+     * bottom: 0 when dvh lags interactive-widget=resizes-content. */
+    height: auto;
     /* Rides the composer up with iOS's on-screen keyboard: useKeyboardInset
      * (see its header) feeds --keyboard-inset; 0px elsewhere. */
     padding-bottom: var(--keyboard-inset, 0px);

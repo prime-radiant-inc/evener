@@ -46,7 +46,7 @@ test("the viewport meta uses viewport-fit=cover so safe-area insets are nonzero"
 });
 
 test("the viewport meta resizes content around the on-screen keyboard", () => {
-  // Chromium/Android's half of the keyboard fix; Safari ignores the unknown
-  // key and is covered by useKeyboardInset (see its header).
+  // Shrinks the layout viewport in browsers that honor interactive-widget
+  // (Chromium/Android, Safari 27.3+); others fall back to useKeyboardInset.
   expect(viewportContent()).toContain("interactive-widget=resizes-content");
 });
