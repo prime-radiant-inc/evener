@@ -875,7 +875,7 @@ func TestWatchIdempotentReconfigureWithDetachedPendingDoesNotRegisterNewWatch(t 
 				Key:           pendingKey,
 				DeliveryID:    "watch_delivery_detached",
 				UpdateSeq:     1,
-				Message:       "observe",
+				Frame:         "observe",
 				TriggerReason: "output_match: ready",
 			},
 		},

@@ -134,7 +134,7 @@ func incrementalTestEvent(i int) Event {
 			Kind: EventWatchSendPending, TS: ts,
 			WatchSend: &WatchSendState{
 				Key:        WatchSendKey{VisibleSessionID: "ses_owner", WatchID: fmt.Sprintf("w_%d", i%3), WatchTarget: "job:1", WatchGeneration: "g1"},
-				DeliveryID: fmt.Sprintf("d%d", i), UpdateSeq: uint64(i), Message: "m",
+				DeliveryID: fmt.Sprintf("d%d", i), UpdateSeq: uint64(i), Frame: "m",
 				CreatedAt: ts, UpdatedAt: ts,
 				Provenance: &provenance.Causal{
 					Chain:    []provenance.Entry{{Kind: "watch", WatchID: "w1"}},
@@ -449,7 +449,7 @@ func mutateEventDeeply(e *Event) {
 	}
 	mutateCausal(e.Provenance)
 	if ws := e.WatchSend; ws != nil {
-		ws.Message = "mutated"
+		ws.Frame = "mutated"
 		mutateCausal(ws.Provenance)
 	}
 	if w := e.Watch; w != nil {

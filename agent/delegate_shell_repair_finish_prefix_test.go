@@ -237,7 +237,6 @@ func TestDelegateShellRepairPreservesPendingOutputMatchFrameFromFinishOnlyPrefix
 				Key:        key,
 				DeliveryID: "delivery-match",
 				UpdateSeq:  1,
-				Message:    "output matched",
 				Frame:      "matched output frame",
 				CreatedAt:  matched,
 				UpdatedAt:  matched,
@@ -277,7 +276,7 @@ func TestDelegateShellRepairPreservesPendingOutputMatchFrameFromFinishOnlyPrefix
 	if pending == nil {
 		t.Fatalf("pending watch sends after repair = %#v, want the output-match frame preserved", jobstore.FoldWatchSends(stored).Pending)
 	}
-	if pending.EndNotice || pending.DeliveryID != "delivery-match" || pending.Message != "output matched" || pending.Frame != "matched output frame" {
+	if pending.EndNotice || pending.DeliveryID != "delivery-match" || pending.Frame != "matched output frame" {
 		t.Fatalf("pending watch send after repair = %#v, want the original output-match frame", pending)
 	}
 	if frames := watchEndNoticeFrames(t, path); len(frames) != 0 {

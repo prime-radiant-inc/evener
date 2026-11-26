@@ -140,7 +140,6 @@ type WatchSendState struct {
 	Key                      WatchSendKey       `json:"key"`
 	DeliveryID               string             `json:"delivery_id"`
 	UpdateSeq                uint64             `json:"update_seq,omitempty"`
-	Message                  string             `json:"message,omitempty"`
 	Frame                    string             `json:"frame,omitempty"`
 	TriggerIdentity          string             `json:"trigger_identity,omitempty"`
 	TriggerReason            string             `json:"trigger_reason,omitempty"`
