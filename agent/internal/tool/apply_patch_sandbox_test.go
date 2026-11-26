@@ -40,7 +40,7 @@ func sandboxedApplyEnv(t *testing.T, mode sandbox.Mode) (env *execenv.LocalExecu
 
 func applyDenied(t *testing.T, env execenv.FileMutator, patch, whatf string) {
 	t.Helper()
-	_, err := ApplyPatch(env, patch)
+	_, err := ApplyPatch(t.Context(), env, patch)
 	if err == nil {
 		t.Fatalf("%s: expected a denial, got nil", whatf)
 	}
@@ -61,7 +61,7 @@ func TestApplyPatchSandbox_InWorktreeWorks(t *testing.T) {
 		"*** Update File: a.txt\n@@\n one\n-two\n+TWO\n three\n" +
 		"*** Update File: sub/b.txt\n*** Move to: sub/c.txt\n@@\n hello\n world\n" +
 		"*** End Patch\n"
-	if _, err := ApplyPatch(env, patch); err != nil {
+	if _, err := ApplyPatch(t.Context(), env, patch); err != nil {
 		t.Fatalf("in-worktree apply_patch: %v", err)
 	}
 	if got, _ := os.ReadFile(filepath.Join(worktree, "a.txt")); string(got) != "one\nTWO\nthree\n" {
@@ -116,7 +116,7 @@ func TestApplyPatchSandbox_SymlinkedAncestor(t *testing.T) {
 	t.Cleanup(env.Cleanup)
 
 	// (a) An in-worktree write SUCCEEDS despite the symlinked-ancestor spelling.
-	if _, err := ApplyPatch(env, "*** Begin Patch\n*** Add File: sub/b.txt\n+hello\n+world\n*** End Patch\n"); err != nil {
+	if _, err := ApplyPatch(t.Context(), env, "*** Begin Patch\n*** Add File: sub/b.txt\n+hello\n+world\n*** End Patch\n"); err != nil {
 		t.Fatalf("in-worktree apply_patch under a symlinked ancestor: %v", err)
 	}
 	if got, _ := os.ReadFile(filepath.Join(worktree, "sub", "b.txt")); string(got) != "hello\nworld\n" {
@@ -186,7 +186,7 @@ func TestApplyPatchSandbox_DenylistReadDirect(t *testing.T) {
 		t.Fatal(err)
 	}
 	patch := "*** Begin Patch\n*** Update File: " + key + "\n@@\n-KEY\n+PWNED\n*** End Patch\n"
-	_, err := ApplyPatch(env, patch)
+	_, err := ApplyPatch(t.Context(), env, patch)
 	var denied *sandbox.DeniedError
 	if !errors.As(err, &denied) {
 		t.Fatalf("Update of a denylisted path: want *sandbox.DeniedError, got %T: %v", err, err)

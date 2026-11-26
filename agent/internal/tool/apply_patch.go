@@ -13,15 +13,10 @@ import (
 
 // ApplyPatch applies a codex-rs-style apply_patch v4a patch through fm, an
 // execenv.FileMutator that owns path containment (and, under a sandbox policy,
-// race-safe fd-anchored enforcement). This is a best-effort implementation
-// intended for local agent loops.
-func ApplyPatch(fm execenv.FileMutator, patch string) (string, error) {
-	return ApplyPatchCtx(context.Background(), fm, patch)
-}
-
-// ApplyPatchCtx is ApplyPatch with the caller's context threaded to each op's
-// read, so a cancelled call ends a read parked on a stream.
-func ApplyPatchCtx(ctx context.Context, fm execenv.FileMutator, patch string) (string, error) {
+// race-safe fd-anchored enforcement). It threads ctx to each op's read so a
+// cancelled call ends a read parked on a stream. This is a best-effort
+// implementation intended for local agent loops.
+func ApplyPatch(ctx context.Context, fm execenv.FileMutator, patch string) (string, error) {
 	ops, err := parseV4APatch(patch)
 	if err != nil {
 		return "", err
