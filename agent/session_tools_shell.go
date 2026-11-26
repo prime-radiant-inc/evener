@@ -358,7 +358,7 @@ func registerShellTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 			if !ok {
 				return "", errors.New("apply_patch: execution environment does not support file mutation")
 			}
-			return tool.ApplyPatchCtx(ctx, fm, patch)
+			return tool.ApplyPatch(ctx, fm, patch)
 		},
 	})
 

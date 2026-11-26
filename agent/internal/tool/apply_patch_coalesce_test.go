@@ -167,7 +167,7 @@ func TestApplyPatchCoalescedUpdatesMatchSequentialApply(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			want := runPatchOnFixture(t, tc.base, tc.patch, applyPatchSequential)
-			got := runPatchOnFixture(t, tc.base, tc.patch, ApplyPatchCtx)
+			got := runPatchOnFixture(t, tc.base, tc.patch, ApplyPatch)
 			if got.outcome != want.outcome {
 				t.Errorf("outcome = %q, want %q", got.outcome, want.outcome)
 			}
@@ -207,7 +207,7 @@ func FuzzApatchCoalescedMatchesSequential(f *testing.F) {
 	}
 	f.Fuzz(func(t *testing.T, patch, base string) {
 		want := runPatchOnFixture(t, base, patch, applyPatchSequential)
-		got := runPatchOnFixture(t, base, patch, ApplyPatchCtx)
+		got := runPatchOnFixture(t, base, patch, ApplyPatch)
 		if got.outcome != want.outcome {
 			t.Fatalf("coalesced apply diverges from sequential apply\n  coalesced:  %q\n  sequential: %q\n  patch=%q base=%q", got.outcome, want.outcome, patch, base)
 		}
@@ -233,7 +233,7 @@ func TestApplyPatchCoalescedWriteBackFailureMatchesSequential(t *testing.T) {
 		return execenv.NewLocalExecutionEnvironment(dir).SetFs(afero.NewReadOnlyFs(afero.NewOsFs()))
 	}
 	_, wantErr := applyPatchSequential(context.Background(), readOnlyMutator(t), patch)
-	_, gotErr := ApplyPatchCtx(context.Background(), readOnlyMutator(t), patch)
+	_, gotErr := ApplyPatch(context.Background(), readOnlyMutator(t), patch)
 	if wantErr == nil || gotErr == nil {
 		t.Fatalf("expected both appliers to fail, got sequential=%v coalesced=%v", wantErr, gotErr)
 	}
@@ -284,7 +284,7 @@ func TestApplyPatchCoalescedCancelMatchesSequential(t *testing.T) {
 		return patchFixtureOutcome{outcome: out + "\x00" + errText, tree: apatch_snapshotTree(t, dir)}, fm.reads, err
 	}
 	want, wantReads, wantErr := run(applyPatchSequential)
-	got, gotReads, gotErr := run(ApplyPatchCtx)
+	got, gotReads, gotErr := run(ApplyPatch)
 	if got.outcome != want.outcome {
 		t.Errorf("outcome = %q, want %q", got.outcome, want.outcome)
 	}
