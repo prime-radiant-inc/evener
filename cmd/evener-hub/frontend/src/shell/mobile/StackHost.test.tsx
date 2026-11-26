@@ -1,16 +1,22 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { makeTranscriptDisplayConfig } from "@evener/appwire-client";
 import { bindFilePath } from "@evener/appwire-client/docContent";
 import { manifest as navigationManifest } from "@evener/appwire-client/testing/navigation";
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { DockviewApi } from "dockview-core";
-import { lazy, useEffect, useState } from "react";
+import { lazy, useEffect, useRef, useState } from "react";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { MotionProvider } from "../../motion";
 import { openDocBeside } from "../../panes/doc/openDoc";
 import { installMobileViewport } from "../../panes/session/testing/mobileViewport";
+import { useTranscriptScroll } from "../../panes/session/transcript/flow/useTranscriptScroll";
+import { TranscriptBody } from "../../panes/session/transcript/TranscriptBody";
+import { installTranscriptGeometry } from "../../panes/session/transcript/transcriptReadingGeometryTestUtils";
+import { makeTranscriptPreviewModel } from "../../transcriptDisplay/previewFixture";
+import type { VirtualListHandle } from "../../widgets";
 import { MOBILE_QUERY, TABLET_QUERY } from "../useIsMobile";
 import "../../panes/transcript";
 import { cascadeClient, cascadeContext } from "../../panes/zoom/cascadeTestUtils";
@@ -2958,5 +2964,144 @@ test("near-bottom collapse compensates from the pre-flip scroll offset instead o
     host.unmount();
   } finally {
     restoreSession();
+  }
+});
+
+test("floating top bar collapse and reveal keep compensated TranscriptBody scrollTop without reflow undo", async () => {
+  window.history.replaceState({}, "", "/");
+  let topBar: HTMLElement | null = null;
+  let extraHeightOffset = 0;
+  const currentViewportHeight = () =>
+    (topBar?.getAttribute("data-collapsed") === "true" ? 556 : 500) + extraHeightOffset;
+  const geometry = installTranscriptGeometry(() => ({
+    width: 390,
+    viewportHeight: currentViewportHeight(),
+    rowHeights: [1200, 0],
+  }));
+  const model = {
+    ...makeTranscriptPreviewModel(),
+    ref: "local:floating-bar-reflow",
+    turns: [
+      {
+        id: "turn-1",
+        status: "completed" as const,
+        items: [
+          {
+            id: "entry-1",
+            turnId: "turn-1",
+            type: "userMessage" as const,
+            text: "hello",
+            status: "completed" as const,
+          },
+        ],
+      },
+    ],
+  };
+  const config = makeTranscriptDisplayConfig({ kind: "preset", level: "chat" });
+  const SessionPane = () => {
+    const listRef = useRef<VirtualListHandle>(null);
+    const flow = useTranscriptScroll({
+      ref: model.ref,
+      viewId: "floating-bar-reflow-view",
+      model,
+      listRef,
+      loadOlder: async () => {},
+      renderedRowCount: 2,
+    });
+    return (
+      <TranscriptBody
+        model={model}
+        config={config}
+        surface="live"
+        disclosureScope="live:floating-bar-reflow"
+        sessionRef={model.ref}
+        viewId="floating-bar-reflow-view"
+        followingBottom={flow.isFollowingBottom}
+        listRef={listRef}
+        onMeasurementsChange={flow.restoreViewAnchorAfterMeasurement}
+      />
+    );
+  };
+  const restoreSession = registerPaneForTests({
+    id: "session",
+    component: lazy(() => Promise.resolve({ default: SessionPane })),
+    title: () => "session",
+  });
+  try {
+    const host = await act(async () => render(<StackHost routeDeferred />));
+    await act(async () => {
+      workspaceStore.getState().openPane("session", { ref: model.ref });
+    });
+    const bar = screen.getByTestId("topbar");
+    topBar = bar;
+    Object.defineProperty(bar, "offsetHeight", { configurable: true, value: 56 });
+    const list = await screen.findByTestId("transcript-virtual-list");
+    const scroller = list.firstElementChild as HTMLElement;
+    await act(async () => geometry.notify());
+    expect(scroller.scrollTop).toBe(700);
+    // Deliver the native scroll event for the initial end landing (jsdom does not
+    // dispatch scroll events on programmatic scrollTop writes).
+    act(() => {
+      scroller.dispatchEvent(new Event("scroll"));
+    });
+
+    // Seed StackHost's height baseline and settle an away position with solid top bar.
+    act(() => {
+      scroller.scrollTop = 300;
+      scroller.dispatchEvent(new Event("scroll"));
+    });
+    await act(async () => geometry.notify());
+    expect(scroller.scrollTop).toBe(300);
+    expect(bar.getAttribute("data-collapsed")).not.toBe("true");
+
+    // Downward scroll collapses the bar: viewportHeight grows by 56 on commit
+    // and StackHost shifts scrollTop by -56 (350 -> 294). TranscriptBody's
+    // viewport reflow must keep 294.
+    act(() => {
+      scroller.scrollTop = 350;
+      scroller.dispatchEvent(new Event("scroll"));
+    });
+    await waitFor(() => expect(bar.getAttribute("data-collapsed")).toBe("true"));
+    await act(async () => geometry.notify());
+    expect(scroller.scrollTop).toBe(294);
+
+    // Scroll to the bottom while collapsed (1200 - 556 = 644), then scroll up 15px (629):
+    // StackHost reveals the bar (viewportHeight shrinks 556 -> 500 on commit) and
+    // compensates +56 (629 -> 685). TranscriptBody's viewport reflow must keep 685
+    // (15px away from 700), never undoing to 629 or slamming back to the bottom.
+    act(() => {
+      scroller.scrollTop = 644;
+      scroller.dispatchEvent(new Event("scroll"));
+    });
+    await act(async () => geometry.notify());
+    expect(scroller.scrollTop).toBe(644);
+
+    act(() => {
+      scroller.scrollTop = 629;
+      scroller.dispatchEvent(new Event("scroll"));
+    });
+    await waitFor(() => expect(bar.getAttribute("data-collapsed")).not.toBe("true"));
+    await act(async () => geometry.notify());
+    expect(scroller.scrollTop).toBe(685);
+    expect(bar.getAttribute("data-collapsed")).not.toBe("true");
+
+    // Control: scrolling back to the bottom collapses the bar to 644 (1200 - 556);
+    // an uncompensated viewport shrink (such as the keyboard opening) while
+    // following the bottom still re-pins the reader to the new end (1200 - 456 = 744).
+    act(() => {
+      scroller.scrollTop = 700;
+      scroller.dispatchEvent(new Event("scroll"));
+    });
+    await waitFor(() => expect(bar.getAttribute("data-collapsed")).toBe("true"));
+    await act(async () => geometry.notify());
+    expect(scroller.scrollTop).toBe(644);
+    extraHeightOffset = -100;
+    await act(async () => geometry.notify());
+    expect(scroller.scrollTop).toBe(744);
+
+    host.unmount();
+  } finally {
+    restoreSession();
+    geometry.restore();
   }
 });
