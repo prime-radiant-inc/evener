@@ -8,11 +8,11 @@ import (
 )
 
 // read_file's offset/limit read takes a windowed path, while
-// ReadFileAndBytesCtx still loads the whole file. These tests hold the two to
-// the same answer, and they name nothing introduced with the windowed read: they
-// compile and pass against the pre-change code, where both entries took the
-// whole-file path. That is the point of the file — a differential can only show
-// a regression, never invent the contract.
+// ReadFileRichAndBytesCtx still loads the whole file. These tests hold the two
+// to the same answer, and they name nothing introduced with the windowed read:
+// they compile and pass against the pre-change code, where both entries took
+// the whole-file path. That is the point of the file — a differential can only
+// show a regression, never invent the contract.
 
 // readWindowScanFloor is the fixture size above which a bounded read is
 // expected to scan rather than load the file. It is a literal, not derived from
@@ -145,7 +145,7 @@ func TestReadFileWindowAgreesWithWholeFileReadOnALargeFile(t *testing.T) {
 			if err != nil {
 				t.Fatalf("offset/limit read: %v", err)
 			}
-			whole, raw, err := env.ReadFileAndBytesCtx(t.Context(), path, tc.off, tc.lim)
+			whole, raw, _, err := env.ReadFileRichAndBytesCtx(t.Context(), path, tc.off, tc.lim)
 			if err != nil {
 				t.Fatalf("whole-file read: %v", err)
 			}
@@ -198,7 +198,7 @@ func TestReadFileWindowAgreesAcrossScanBufferEdges(t *testing.T) {
 		}
 		for _, w := range windows {
 			off, lim := w.off, w.lim
-			want, _, err := env.ReadFileAndBytesCtx(t.Context(), path, &off, &lim)
+			want, _, _, err := env.ReadFileRichAndBytesCtx(t.Context(), path, &off, &lim)
 			if err != nil {
 				t.Fatalf("%s / %s: whole-file read: %v", bodyName, w.name, err)
 			}
@@ -263,7 +263,7 @@ func TestReadFileWindowAgreesOnAMixedFile(t *testing.T) {
 		{1, 1}, {1, 2}, {1, 3}, {2, 1}, {3, 5}, {17, 4}, {1, 2000}, {50, 50}, {1000, 1},
 	} {
 		off, lim := w.off, w.lim
-		want, _, werr := env.ReadFileAndBytesCtx(t.Context(), path, &off, &lim)
+		want, _, _, werr := env.ReadFileRichAndBytesCtx(t.Context(), path, &off, &lim)
 		got, gerr := env.ReadFileCtx(t.Context(), path, &off, &lim)
 		if (werr == nil) != (gerr == nil) {
 			t.Fatalf("offset=%d limit=%d: offset/limit err = %v, whole-file err = %v", w.off, w.lim, gerr, werr)
