@@ -200,9 +200,7 @@ or give the speech provider manager tools.
 
 S02 owns the New session action and its placement in the Board or Sessions
 drawer. The iPhone shell can present a native button in that spot and send
-its tap to the same action. In a Home Screen web app, S02 sizes the workspace
-to the usable display and places conversation controls in a free side rail.
-Browser tabs keep those controls inside the page. See [Duo layouts](../design/mobile/iphone-duo.md).
+its tap to the same action. See [Duo layouts](../design/mobile/iphone-duo.md).
 
 S02's workspace store owns current logical pane slots; DockHost mirrors only
 actual slot transitions into Dockview placement. Params, document bindings and
