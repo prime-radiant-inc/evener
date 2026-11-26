@@ -122,6 +122,18 @@ const FLOAT_REVEAL_AT_TOP = 12;
 // nested scrollers like composer menus and escalation rails stay independent.
 const READING_SCROLLER_SELECTOR = "[data-reading-scroll-host] > *";
 
+// Elastic overscroll pushes scrollTop outside [0, maxScrollTop], and the
+// rebound moves in the opposite direction while still out of bounds. Clamping
+// keeps overscroll and its rebound position-neutral so neither flips the top
+// bar; unmeasured jsdom boxes report zero for both heights and clamp only at 0.
+function clampedScrollTop(scroller: Element): number {
+  const top = scroller.scrollTop;
+  const scrollHeight = scroller.scrollHeight;
+  const clientHeight = scroller.clientHeight;
+  if (scrollHeight <= 0 && clientHeight <= 0) return Math.max(0, top);
+  return Math.max(0, Math.min(top, Math.max(0, scrollHeight - clientHeight)));
+}
+
 // The header uses full touch targets for every pointer in the tablet band.
 const BOARD_MIN_WIDTH = SIDEBAR_WIDTH_MIN_TOUCH;
 // Leave room for the Find query and its clear button beside the match controls.
@@ -655,7 +667,7 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
         !target.matches(READING_SCROLLER_SELECTOR)
       )
         return;
-      const scrollTop = target.scrollTop;
+      const scrollTop = clampedScrollTop(target);
       const prevScrollTop = lastScrollTopRef.current;
       lastScrollTopRef.current = scrollTop;
       const heightChanged = target.scrollHeight !== lastScrollHeightRef.current;
@@ -718,7 +730,7 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
     const adjusted = Math.max(0, lastScrollTopRef.current + (topBarCollapsed ? -barHeight : barHeight));
     lastScrollTopRef.current = adjusted;
     scroller.scrollTop = adjusted;
-    lastScrollTopRef.current = scroller.scrollTop;
+    lastScrollTopRef.current = clampedScrollTop(scroller);
   }, [topBarCollapsed]);
 
   // Classifies each focus change and slides it (docs/web-ui/motion.md, recipe
