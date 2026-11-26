@@ -27,6 +27,7 @@ import type { ReactElement } from "react";
 import { lazy } from "react";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { installMobileViewport } from "../../panes/session/testing/mobileViewport";
+import { StubResizeObserver } from "../../resizeObserverTestUtils";
 import {
   archivedListKey,
   archivedListStore,
@@ -895,6 +896,55 @@ describe("resource-backed Rail", () => {
     render(<Rail />);
     expect(screen.getByText("Live resource")).toBeTruthy();
     expect(screen.getAllByText("Proj").length).toBeGreaterThan(0);
+  });
+
+  test("the hosted New-session action hands off to its own native button and yields to an overlying layer", () => {
+    const before = window.location.pathname;
+    const hitTest = Object.getOwnPropertyDescriptor(document, "elementFromPoint");
+    const ua = vi.spyOn(navigator, "userAgent", "get").mockReturnValue("EvenerNative/1 EvenerWorkspaceControls/1");
+    const rect = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue(new DOMRect(10, 320, 44, 44));
+    let covered = false;
+    Object.defineProperty(document, "elementFromPoint", {
+      configurable: true,
+      value: () => (covered ? document.body : document.querySelector('[data-testid="rail-new-session"]')),
+    });
+    const messages: { id: string; frame: unknown }[] = [];
+    vi.stubGlobal("ReactNativeWebView", { postMessage: (message: string) => messages.push(JSON.parse(message)) });
+    vi.stubGlobal("ResizeObserver", StubResizeObserver);
+    vi.stubGlobal("IntersectionObserver", StubResizeObserver);
+    const command = (type: string, id: string) =>
+      act(() => {
+        window.dispatchEvent(new MessageEvent("message", { data: JSON.stringify({ type, id }) }));
+      });
+    try {
+      render(<Rail />);
+      const button = screen.getByTestId("rail-new-session");
+      const published = messages.find(({ frame }) => frame);
+      if (!published) throw new Error("Missing native create button");
+      expect(published.frame).toEqual({ x: 10, y: 320, width: 44, height: 44 });
+      expect(button.hasAttribute("aria-hidden")).toBe(false);
+      command("createButtonShown", published.id);
+      expect(button.getAttribute("aria-hidden")).toBe("true");
+      command("createSession", "different-rail");
+      expect(window.location.pathname).toBe(before);
+      covered = true;
+      fireEvent.scroll(window);
+      expect(messages.at(-1)?.frame).toBeNull();
+      command("createSession", published.id);
+      expect(window.location.pathname).toBe(before);
+      covered = false;
+      fireEvent.scroll(window);
+      command("createSession", published.id);
+      expect(window.location.pathname).toBe("/new");
+    } finally {
+      cleanup();
+      if (hitTest) Object.defineProperty(document, "elementFromPoint", hitTest);
+      else Reflect.deleteProperty(document, "elementFromPoint");
+      rect.mockRestore();
+      ua.mockRestore();
+      vi.unstubAllGlobals();
+      window.history.replaceState({}, "", before);
+    }
   });
 
   test("can delegate scrolling to its parent container", () => {

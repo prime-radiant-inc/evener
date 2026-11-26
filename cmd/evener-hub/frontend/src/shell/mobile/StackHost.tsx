@@ -79,7 +79,12 @@ import { useActivitySidebarStore } from "../activitybar/activitySidebarStore";
 import { attentionEntryOwnsReader, goBackInAttentionHistory, publishFocusedPaneURL } from "../attentionHistory";
 import { ConversationHandoffBoundary } from "../ConversationHandoffBoundary";
 import { useChromeStore } from "../chromeStore";
-import { hasIPhoneSessionHeader, useIPhoneEdgeToolbar } from "../iPhoneHost";
+import {
+  hasIPhoneSessionHeader,
+  hasIPhoneWorkspaceControls,
+  tellIPhoneHost,
+  useIPhoneEdgeToolbar,
+} from "../iPhoneHost";
 import { paneFor } from "../paneRegistry";
 import { PaneVisibilityContext } from "../paneVisibility";
 import { RAIL_WIDTH_PROPERTY, RailResizeHandle } from "../rail/RailResizeHandle";
@@ -382,14 +387,21 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
   const tabletSplit = tabletBand && !singlePane;
   const [boardCollapsed, setBoardCollapsed] = useState(false);
   const boardVisible = tabletSplit && !boardCollapsed;
-  const nativeHeader =
-    hosted && !singlePane && (!tabletBand || edgeToolbar) && !routeDeferred && focusedPane?.type === "session";
+  const sessionHeader = hosted && !singlePane && !routeDeferred && focusedPane?.type === "session";
+  const nativeHeader = sessionHeader && (!tabletBand || edgeToolbar);
+  const publishHeader = nativeHeader || (sessionHeader && hasIPhoneWorkspaceControls());
+  useLayoutEffect(() => {
+    // A missing session can settle on a different pane after the phone starts restoring it.
+    if (!routeDeferred && !publishHeader && hasIPhoneWorkspaceControls()) {
+      tellIPhoneHost({ type: "sessionHeader", header: null });
+    }
+  }, [routeDeferred, publishHeader]);
   const Title = nativeHeader && edgeToolbar ? "h1" : "span";
   const needsYou = useNavigationStore(
     useCallback(
       (state: NavigationStoreState) =>
-        nativeHeader || (tabletSplit && !boardVisible) ? selectNeedsYouCount(state) : 0,
-      [nativeHeader, tabletSplit, boardVisible],
+        publishHeader || (tabletSplit && !boardVisible) ? selectNeedsYouCount(state) : 0,
+      [publishHeader, tabletSplit, boardVisible],
     ),
   );
   const sidebarWidth = usePrefsStore((s) => s.sidebarWidth);
@@ -1111,11 +1123,13 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
               {focusedSessionRef === undefined && drawer}
             </div>
           </div>
-          {nativeHeader && focusedSessionRef && !panelOpen && !activityOpen && (
+          {publishHeader && focusedSessionRef && !panelOpen && !activityOpen && (
             <IPhoneSessionHeader
               bar={topBarRef}
               edgeToolbar={edgeToolbar}
+              split={tabletSplit}
               id={focusedPane.id}
+              sessionRef={focusedSessionRef}
               title={paneTitle ?? ""}
               leading={showBack ? "back" : boardVisible ? null : "sessions"}
               needsYou={needsYou}

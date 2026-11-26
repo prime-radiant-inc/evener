@@ -568,7 +568,9 @@ test("the iPhone controls stay above inline Find and follow the focused reader",
 
 test("the inner iPhone window keeps the Board and hands reader actions to the system edge bar", async () => {
   const restore = installMobileViewport([MOBILE_QUERY, "(min-width: 648px) and (min-height: 600px)"]);
-  const ua = vi.spyOn(navigator, "userAgent", "get").mockReturnValue("EvenerNative/1 EvenerSessionHeader/1");
+  const ua = vi
+    .spyOn(navigator, "userAgent", "get")
+    .mockReturnValue("EvenerNative/1 EvenerSessionHeader/1 EvenerWorkspaceControls/1");
   const height = vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockReturnValue(58);
   const messages: { type: string; header?: { leading: string | null } | null }[] = [];
   vi.stubGlobal("ReactNativeWebView", { postMessage: (json: string) => messages.push(JSON.parse(json)) });
@@ -583,6 +585,8 @@ test("the inner iPhone window keeps the Board and hands reader actions to the sy
     const board = await screen.findByTestId("board-column");
     const bar = screen.getByTestId("topbar");
     expect(bar.hasAttribute("inert")).toBe(false);
+    // Rotation can present the already-scoped toolbar before a response from the web process.
+    expect(lastHeader()).toMatchObject({ id, leading: null, split: true });
     send({ type: "material", glass: true, edgeToolbar: true });
     await waitFor(() => expect(lastHeader()).toMatchObject({ id, leading: null }));
     expect(bar.hasAttribute("data-system-edge-actions")).toBe(true);

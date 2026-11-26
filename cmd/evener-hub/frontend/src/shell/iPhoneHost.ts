@@ -6,19 +6,23 @@ import { openSessionByRef } from "./sessionPlacement";
 
 export interface IPhoneHeader {
   id: string;
+  sessionRef: string;
   title: string;
   leading: "back" | "sessions" | null;
   needsYou: number;
   collapsed: boolean;
   height: number;
+  split?: boolean;
 }
 
 export type IPhoneHeaderAction = NonNullable<IPhoneHeader["leading"]> | "find" | "overview";
 
 type HostMessage =
-  | { type: "ready" | "hubMenu" }
+  | { type: "ready"; workspaceControls?: true }
+  | { type: "hubMenu" }
   | { type: "appearance"; dark: boolean }
   | { type: "sessionHeader"; header: IPhoneHeader | null }
+  | { type: "createButton"; id: string; frame: { x: number; y: number; width: number; height: number } | null }
   | { type: "route"; path: string }
   | { type: "editing" | "readingDocument" | "covered"; active: boolean }
   | { type: "shareDocument"; ref: string; path: string; namePath: string }
@@ -26,6 +30,7 @@ type HostMessage =
 
 interface HostWindow extends Window {
   ReactNativeWebView?: { postMessage(json: string): void };
+  evenerEdgeToolbar?: boolean;
 }
 
 export function iPhoneHost() {
@@ -37,14 +42,17 @@ export function hasIPhoneSessionHeader(): boolean {
   return !!iPhoneHost() && navigator.userAgent.split(/\s+/).includes("EvenerSessionHeader/1");
 }
 
+export function hasIPhoneWorkspaceControls(): boolean {
+  return !!iPhoneHost() && navigator.userAgent.split(/\s+/).includes("EvenerWorkspaceControls/1");
+}
+
 function observeToolbar(update: () => void) {
-  const observer = new MutationObserver(update);
-  observer.observe(document.body, { attributes: true, attributeFilter: ["data-iphone-edge-toolbar"] });
-  return () => observer.disconnect();
+  window.addEventListener("evener:edge-toolbar", update);
+  return () => window.removeEventListener("evener:edge-toolbar", update);
 }
 
 export function useIPhoneEdgeToolbar() {
-  return useSyncExternalStore(observeToolbar, () => document.body.hasAttribute("data-iphone-edge-toolbar"));
+  return useSyncExternalStore(observeToolbar, () => (window as HostWindow).evenerEdgeToolbar === true);
 }
 
 export function tellIPhoneHost(message: HostMessage): void {
@@ -74,7 +82,11 @@ function receiveHostCommand(event: MessageEvent): void {
   const command = iPhoneCommand(event);
   if (command?.type === "material" && typeof command.glass === "boolean") {
     document.body.dataset.iphoneGlass = command.glass ? "regular" : "opaque";
-    document.body.toggleAttribute("data-iphone-edge-toolbar", command.edgeToolbar === true);
+    const host = window as HostWindow;
+    if (host.evenerEdgeToolbar !== (command.edgeToolbar === true)) {
+      host.evenerEdgeToolbar = command.edgeToolbar === true;
+      window.dispatchEvent(new Event("evener:edge-toolbar"));
+    }
     return;
   }
   if (command?.type !== "navigate" || typeof command.path !== "string") return;
@@ -157,7 +169,7 @@ export function connectIPhoneHost(): (() => void) | undefined {
   document.addEventListener("focusout", onBlur);
   document.addEventListener("input", onInput);
   window.addEventListener("message", receiveHostCommand);
-  tellIPhoneHost({ type: "ready" });
+  tellIPhoneHost({ type: "ready", workspaceControls: hasIPhoneWorkspaceControls() || undefined });
   trackEditor(document.activeElement);
   reportModal();
   return () => {
@@ -170,7 +182,7 @@ export function connectIPhoneHost(): (() => void) | undefined {
     if (modal) tellIPhoneHost({ type: "covered", active: false });
     stopGlass();
     delete document.body.dataset.iphoneGlass;
-    document.body.removeAttribute("data-iphone-edge-toolbar");
+    delete (window as HostWindow).evenerEdgeToolbar;
     reportEditor(null);
   };
 }

@@ -1,6 +1,6 @@
 import { useIsFocused } from "@react-navigation/native";
 import { StatusBar } from "expo-status-bar";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, Alert, AppState, Linking, View } from "react-native";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { WebView, type WebViewMessageEvent } from "react-native-webview";
@@ -9,9 +9,11 @@ import type { HubProfile } from "../connection";
 import { useSystemGlass } from "../design/systemGlass";
 import { paletteFor } from "../design/tokens";
 import { haptic } from "../haptics";
+import { workspaceSessionRef } from "../location";
 import { externalMarkdownLink } from "../markdownLinks";
 import { HeaderButton } from "../sheet/HeaderButton";
 import { ErrorMessage, useColors } from "../ui";
+import { type ButtonFrame, CreateSessionButton, isButtonFrame } from "./CreateSessionButton";
 import { hubPagePath, hubPageSource } from "./hubWebPolicy";
 import {
 	EdgeSessionToolbar,
@@ -43,17 +45,37 @@ export function HubWebView({ profile, token, initialPath, onPath, onHubMenu, onD
 	const [readingDocument, setReadingDocument] = useState(false);
 	const [covered, setCovered] = useState(false);
 	const [header, setHeader] = useState<SessionHeaderState | null>(null);
+	const [restoringSession, setRestoringSession] = useState(() =>
+		initialPath.startsWith("/s/") ? workspaceSessionRef(initialPath) : null,
+	);
+	const pendingHeaderAction = useRef<HeaderAction | null>(null);
+	const endRestore = useCallback(() => {
+		pendingHeaderAction.current = null;
+		setRestoringSession(null);
+	}, []);
+	const [createButton, setCreateButton] = useState<{ id: string; frame: ButtonFrame } | null>(null);
 	const [hubDark, setHubDark] = useState<boolean | null>(null);
 	const focused = useIsFocused();
+	const createId = focused && !error ? createButton?.id : undefined;
+	useLayoutEffect(() => {
+		if (createId) web.current?.postMessage(JSON.stringify({ type: "createButtonShown", id: createId }));
+	}, [createId]);
 	const glass = useSystemGlass();
 	const { top, left, right } = useSafeAreaInsets();
 	// A vertical system bar reserves one window edge; landscape cutouts reserve both.
 	const edgeToolbar = top === 0 && Math.min(left, right) === 0 && Math.max(left, right) >= 44;
 	const material = JSON.stringify({ type: "material", glass, edgeToolbar });
-	const headerAction = useCallback((id: string, action: HeaderAction) => {
-		web.current?.postMessage(JSON.stringify({ type: "headerAction", id, action }));
-	}, []);
-	useEffect(() => {
+	const headerAction = useCallback(
+		(id: string | null, action: HeaderAction) => {
+			if (id !== null) web.current?.postMessage(JSON.stringify({ type: "headerAction", id, action }));
+			else if (restoringSession) pendingHeaderAction.current = action;
+		},
+		[restoringSession],
+	);
+	useLayoutEffect(() => {
+		if (!focused || error || readingDocument || covered) endRestore();
+	}, [focused, error, readingDocument, covered, endRestore]);
+	useLayoutEffect(() => {
 		if (bridgeReady) web.current?.postMessage(material);
 	}, [bridgeReady, material]);
 	const inFront = bridgeReady && focused && !error;
@@ -78,6 +100,7 @@ export function HubWebView({ profile, token, initialPath, onPath, onHubMenu, onD
 	};
 	const reportPath = (path: string) => {
 		if (path === currentPath.current) return;
+		endRestore();
 		currentPath.current = path;
 		setEditing(false);
 		onPath(path);
@@ -88,6 +111,7 @@ export function HubWebView({ profile, token, initialPath, onPath, onHubMenu, onD
 		setReadingDocument(false);
 		setCovered(false);
 		setHeader(null);
+		setCreateButton(null);
 		setHubDark(null);
 	}, []);
 	const retry = useCallback(() => {
@@ -115,10 +139,11 @@ export function HubWebView({ profile, token, initialPath, onPath, onHubMenu, onD
 		if (initialPath === currentPath.current) return;
 		const path = hubPagePath(origin, origin + initialPath);
 		if (!path) return;
+		endRestore();
 		currentPath.current = path;
 		if (bridgeReady && web.current) web.current.postMessage(JSON.stringify({ type: "navigate", path }));
 		else setEntryPath(path);
-	}, [initialPath, bridgeReady, origin]);
+	}, [initialPath, bridgeReady, origin, endRestore]);
 
 	function message({ nativeEvent }: WebViewMessageEvent) {
 		if (!hubPagePath(origin, nativeEvent.url)) return;
@@ -133,10 +158,31 @@ export function HubWebView({ profile, token, initialPath, onPath, onHubMenu, onD
 			case "appearance":
 				if (typeof data.dark === "boolean") setHubDark(data.dark);
 				break;
-			case "sessionHeader":
-				setHeader(isSessionHeader(data.header) ? data.header : null);
+			case "sessionHeader": {
+				const next = isSessionHeader(data.header) ? data.header : null;
+				const pending = pendingHeaderAction.current;
+				if (
+					next &&
+					restoringSession &&
+					next.sessionRef === restoringSession &&
+					workspaceSessionRef(initialPath) === restoringSession &&
+					pending &&
+					focused &&
+					!error
+				) {
+					headerAction(next.id, pending);
+				}
+				endRestore();
+				setHeader(next);
+				break;
+			}
+			case "createButton":
+				if (typeof data.id !== "string" || !data.id) break;
+				if (isButtonFrame(data.frame)) setCreateButton({ id: data.id, frame: data.frame });
+				else if (data.frame === null) setCreateButton((current) => (current?.id === data.id ? null : current));
 				break;
 			case "ready":
+				if (data.workspaceControls !== true) endRestore();
 				if (bridgeReady) web.current?.postMessage(material);
 				else setBridgeReady(true);
 				break;
@@ -194,7 +240,7 @@ export function HubWebView({ profile, token, initialPath, onPath, onHubMenu, onD
 				<HeaderButton label="Work on this iPhone" onPress={onDeviceWork} />
 			</SafeAreaView>
 		);
-	const activeHeader = focused ? header : null;
+	const activeHeader = focused && (edgeToolbar || !header?.split) ? header : null;
 	const hubPalette = focused && hubDark !== null ? paletteFor(hubDark ? "dark" : "light") : null;
 	return (
 		<SafeAreaView
@@ -211,7 +257,8 @@ export function HubWebView({ profile, token, initialPath, onPath, onHubMenu, onD
 				<WebView<unknown>
 					ref={web}
 					source={source}
-					applicationNameForUserAgent="EvenerNative/1 EvenerSessionHeader/1"
+					applicationNameForUserAgent="EvenerNative/1 EvenerSessionHeader/1 EvenerWorkspaceControls/1"
+					injectedJavaScriptBeforeContentLoaded={`window.evenerEdgeToolbar = ${edgeToolbar}; true;`}
 					// A whitelist miss makes RNCWebView open the URL in the OS itself.
 					// Route every scheme through our user-navigation check instead.
 					originWhitelist={["*"]}
@@ -256,17 +303,19 @@ export function HubWebView({ profile, token, initialPath, onPath, onHubMenu, onD
 					hideKeyboardAccessoryView
 					style={{ backgroundColor: (hubPalette ?? palette).canvas }}
 				/>
-				{activeHeader &&
-					(edgeToolbar ? (
-						<EdgeSessionToolbar header={activeHeader} palette={hubPalette ?? palette} onAction={headerAction} />
-					) : (
-						<SessionHeader
-							header={activeHeader}
-							glass={glass}
-							palette={hubPalette ?? palette}
-							onAction={headerAction}
-						/>
-					))}
+				{edgeToolbar && focused && (activeHeader || restoringSession) ? (
+					<EdgeSessionToolbar header={activeHeader} palette={hubPalette ?? palette} onAction={headerAction} />
+				) : activeHeader ? (
+					<SessionHeader header={activeHeader} glass={glass} palette={hubPalette ?? palette} onAction={headerAction} />
+				) : null}
+				{createId && createButton && (
+					<CreateSessionButton
+						frame={createButton.frame}
+						palette={hubPalette ?? palette}
+						glass={glass}
+						onPress={() => web.current?.postMessage(JSON.stringify({ type: "createSession", id: createId }))}
+					/>
+				)}
 			</View>
 		</SafeAreaView>
 	);
