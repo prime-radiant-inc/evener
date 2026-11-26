@@ -5,12 +5,11 @@ work are paused; preserve their requirements and historical evidence. The
 [active checklist](../docs/design/mobile/ios-v1-remaining.md) governs current work
 and supersedes broader device and accessibility gates below.
 
-The Expo iPhone app opens the selected hub’s mobile web workspace on iOS 17
-and later. The hub supplies the interface, so updating it updates the phone’s
+The iPhone app requires iOS 17 or later and opens the selected hub’s mobile
+web workspace. The hub supplies the interface, so updating it updates the phone’s
 Board, conversations, and composer. Each saved hub has a persistent WebKit
 profile. Removing that hub clears its website data, including credentials and
-drafts. iOS 16.4 uses the on-device interface because WebKit first supports
-separate persistent profiles in iOS 17. Android and iPad delivery are deferred.
+drafts. Android and iPad delivery are deferred.
 
 Open the Sessions drawer and choose **Hubs** for pairing, switching hubs,
 display and in-app alert preferences. **Work on this iPhone** opens the

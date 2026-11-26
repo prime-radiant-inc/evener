@@ -251,7 +251,7 @@ func validateBundleMetadata(info, entitlements map[string]any, extension bool) e
 	if extension {
 		id += ".ShareExtension"
 	}
-	if info["CFBundleIdentifier"] != id || info["MinimumOSVersion"] != "16.4" ||
+	if info["CFBundleIdentifier"] != id || info["MinimumOSVersion"] != "17.0" ||
 		!reflect.DeepEqual(info["UIDeviceFamily"], []any{float64(1)}) ||
 		!reflect.DeepEqual(entitlements["com.apple.security.application-groups"], []any{"group.com.primeradiant.evener.native"}) {
 		return fmt.Errorf("%w: %s", errIdentity, id)

@@ -1,6 +1,8 @@
 # Building and distributing the iPhone checkpoint
 
-The app uses Expo SDK 58, React Native 0.88.1 and React 19.3.0. [Expo's versioned requirements](https://docs.expo.dev/versions/v58.0.0/) specify Node 22.13.x or newer, iOS 16.4 or newer and Xcode 26.4 or newer. The committed Ruby bundle pins CocoaPods 1.16.2 and Fastlane 2.228.0; use Ruby 3.3.6 and Bundler 2.7.2 for the distribution toolchain.
+The app and share extension require iOS 17 or later. The app uses Expo SDK 58, React Native 0.88.1 and React 19.3.0. The build requires Node 22.13.x or newer and Xcode 26.4 or newer. [Expo SDK 58 requirements](https://docs.expo.dev/versions/v58.0.0/).
+
+The committed Ruby bundle pins CocoaPods 1.16.2 and Fastlane 2.228.0. Use Ruby 3.3.6 and Bundler 2.7.2 for the distribution toolchain.
 
 From the repository root, install the native and protocol dependencies and run the source gates:
 

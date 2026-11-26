@@ -28,7 +28,8 @@ project = Xcodeproj::Project.open(project_path)
 if project.targets.any? { |existing| existing.name == target_name }
 	puts "#{target_name} target already present"
 else
-	target = project.new_target(:ui_test_bundle, target_name, :ios, "16.4")
+	app = project.targets.find { |existing| existing.name == "Evener" }
+	target = project.new_target(:ui_test_bundle, target_name, :ios, app.deployment_target)
 	target.build_configurations.each do |config|
 		config.build_settings["PRODUCT_BUNDLE_IDENTIFIER"] = "com.primeradiant.evener.native.QualificationUITests"
 		# The UI-test bundle drives the app under test by name; the run's

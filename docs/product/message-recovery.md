@@ -174,8 +174,8 @@ it. Storage failure retains recoverable content and reports the failure.
 
 ## Native controls and recovery
 
-On iOS 17 and later the normal iPhone workspace runs the browser composer in
-the saved hub’s persistent WebKit profile, using the browser controls above.
+The iPhone workspace runs the browser composer in the saved hub’s persistent
+WebKit profile, using the browser controls above.
 **Work on this iPhone** opens native drafts, image attachments, and pending
 sends in their original SQLite-backed editor. Incoming iOS shares also land in
 that editor. Its outbox keeps its mutation identities through a hub switch,
