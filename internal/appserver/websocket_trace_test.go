@@ -463,6 +463,179 @@ func testServerShutdownDrainsOpenTracedWebSocket(t *testing.T, beforeReceive boo
 	}
 }
 
+type errOnSignalTransport struct {
+	webSocketTransport
+	initialized bool
+	trigger     <-chan struct{}
+	err         error
+}
+
+func (w *errOnSignalTransport) Recv(ctx context.Context) (appwire.Message, error) {
+	if !w.initialized {
+		w.initialized = true
+		return w.webSocketTransport.Recv(ctx)
+	}
+	select {
+	case <-w.trigger:
+		return appwire.Message{}, w.err
+	case <-ctx.Done():
+		return appwire.Message{}, ctx.Err()
+	}
+}
+
+func TestWebSocketTraceRecordsDisconnectError(t *testing.T) {
+	t.Parallel()
+	sentinelErr := errors.New("ws-trace-recv-sentinel")
+	tests := []struct {
+		name      string
+		injectErr error
+		closePeer func(t *testing.T, ctx context.Context, conn *websocket.Conn, trigger chan struct{})
+		wantErr   string
+		wantAny   bool
+	}{
+		{
+			name: "normal_closure_omits_error",
+			closePeer: func(t *testing.T, _ context.Context, conn *websocket.Conn, _ chan struct{}) {
+				t.Helper()
+				if err := conn.Close(websocket.StatusNormalClosure, ""); err != nil {
+					t.Fatalf("close normal: %v", err)
+				}
+			},
+		},
+		{
+			name:    "abnormal_peer_drop_records_error",
+			wantAny: true,
+			closePeer: func(t *testing.T, _ context.Context, conn *websocket.Conn, _ chan struct{}) {
+				t.Helper()
+				if err := conn.CloseNow(); err != nil {
+					t.Fatalf("close now: %v", err)
+				}
+			},
+		},
+		{
+			name:    "non_normal_close_status_records_error",
+			wantAny: true,
+			closePeer: func(t *testing.T, _ context.Context, conn *websocket.Conn, _ chan struct{}) {
+				t.Helper()
+				if err := conn.Close(websocket.StatusPolicyViolation, "policy"); err != nil {
+					t.Fatalf("close policy violation: %v", err)
+				}
+			},
+		},
+		{
+			name:      "injected_recv_error_records_exact_error",
+			injectErr: sentinelErr,
+			wantErr:   sentinelErr.Error(),
+			closePeer: func(_ *testing.T, ctx context.Context, conn *websocket.Conn, trigger chan struct{}) {
+				close(trigger)
+				_, _, _ = conn.Read(ctx)
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			path := filepath.Join(t.TempDir(), "trace.jsonl")
+			trace, err := NewWebSocketTrace(path)
+			if err != nil {
+				t.Fatalf("NewWebSocketTrace: %v", err)
+			}
+			server := NewServer(ServerConfig{
+				ServerName:     "test-server",
+				Version:        "test",
+				SourceID:       "local",
+				WebSocketTrace: trace,
+			})
+			trigger := make(chan struct{})
+			if tc.injectErr != nil {
+				server.wrapWebSocketTransport = func(inner webSocketTransport) webSocketTransport {
+					return &errOnSignalTransport{
+						webSocketTransport: inner,
+						trigger:            trigger,
+						err:                tc.injectErr,
+					}
+				}
+			}
+			httpServer := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
+			defer httpServer.Close()
+
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			defer cancel()
+			conn := dialTraceWebSocket(ctx, t, "ws"+strings.TrimPrefix(httpServer.URL, "http"), httpServer.Client())
+			defer conn.CloseNow()
+			initReq := `{"id":1,"method":"initialize","params":{"protocolVersion":"` + appwire.ProtocolVersion + `"}}`
+			if err := conn.Write(ctx, websocket.MessageText, []byte(initReq)); err != nil {
+				t.Fatalf("write initialize: %v", err)
+			}
+			if _, _, err := conn.Read(ctx); err != nil {
+				t.Fatalf("read initialize response: %v", err)
+			}
+
+			tc.closePeer(t, ctx, conn, trigger)
+
+			var records []decodedWebSocketTraceRecord
+			testwait.Until(t, "close record in trace", func() bool {
+				records = readWebSocketTraceRecords(t, path)
+				for _, rec := range records {
+					if rec.Event == "close" {
+						return true
+					}
+				}
+				return false
+			})
+			httpServer.Close()
+			if err := trace.Close(); err != nil {
+				t.Fatalf("close trace: %v", err)
+			}
+
+			rawLines := readRawWebSocketTraceLines(t, path)
+			var closeLine map[string]any
+			for _, raw := range rawLines {
+				if raw["event"] == "close" {
+					closeLine = raw
+				}
+			}
+			if closeLine == nil {
+				t.Fatalf("missing close record in %v", rawLines)
+			}
+			errVal, hasError := closeLine["error"]
+			switch {
+			case tc.wantErr != "":
+				if !hasError || errVal != tc.wantErr {
+					t.Fatalf("close record error = %v (present=%t), want %q", errVal, hasError, tc.wantErr)
+				}
+			case tc.wantAny:
+				errStr, ok := errVal.(string)
+				if !hasError || !ok || errStr == "" {
+					t.Fatalf("close record error = %v (present=%t), want non-empty error", errVal, hasError)
+				}
+			default:
+				if hasError {
+					t.Fatalf("close record unexpectedly included error=%v on normal closure", errVal)
+				}
+			}
+		})
+	}
+}
+
+func readRawWebSocketTraceLines(t *testing.T, path string) []map[string]any {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read trace: %v", err)
+	}
+	var out []map[string]any
+	for _, line := range bytesLines(data) {
+		var entry map[string]any
+		if err := json.Unmarshal(line, &entry); err != nil {
+			t.Fatalf("decode raw trace line %q: %v", line, err)
+		}
+		out = append(out, entry)
+	}
+	return out
+}
+
 func dialTraceWebSocket(ctx context.Context, t *testing.T, url string, client *http.Client) *websocket.Conn {
 	t.Helper()
 	conn, _, err := websocket.Dial(ctx, url, &websocket.DialOptions{HTTPClient: client})
