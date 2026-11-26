@@ -174,6 +174,14 @@ it. Storage failure retains recoverable content and reports the failure.
 
 ## Native controls and recovery
 
+The iPhone workspace runs the browser composer in the saved hub’s persistent
+WebKit profile, using the browser controls above.
+**Work on this iPhone** opens native drafts, image attachments, and pending
+sends in their original SQLite-backed editor. Incoming iOS shares also land in
+that editor. Its outbox keeps its mutation identities through a hub switch,
+disconnect, or app update. The two composers never copy or replay each other’s
+pending work.
+
 The transcript ghosts and Queue sheet share the same eligible local messages,
 including offline waiting messages and messages held by Stop. Edit appends to
 current work; Remove deletes only the selected durable identity. Local Edit

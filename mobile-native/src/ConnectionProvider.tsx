@@ -8,6 +8,7 @@ import { forgetBoardForHub } from "./board/nativeBoardMemory";
 import { ConnectionClock, type ConnectionTimes } from "./connectionClock";
 import { type HubInput, type HubProfile, HubProfiles, type HubUpdate } from "./connection";
 import { runHubCleanups } from "./hubCleanups";
+import { clearHubWebData } from "./hubWeb/clearHubWebData";
 import { useHubConnection } from "./hubConnection";
 import { HubSelection } from "./hubSelection";
 import type { SavedLocation } from "./location";
@@ -24,6 +25,7 @@ import { forgetSubagentTrees } from "./subagents/subagentTree";
 import { forgetHistoryForHub } from "./session/historyMemory";
 import { forgetDetailLevelsForHub } from "./session/nativeDetailLevels";
 import { forgetNoteDrafts } from "./session/sessionNotes";
+import { usesHubWorkspace } from "./workspaceAvailability";
 
 const repository = new HubProfiles(SecureStore);
 interface Connection {
@@ -97,7 +99,16 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
 			.then((value) => {
 				if (!cancelled) {
 					try {
-						const location = locations.read(value.map((profile) => profile.id));
+						let location = locations.read(value.map((profile) => profile.id));
+						if (usesHubWorkspace() && location?.conversation && !location.deviceWork && !location.webPath) {
+							// A session saved by the native editor can still have unsent work.
+							// If storage is unavailable, its editor owns the recovery.
+							let keepEditor = true;
+							try {
+								keepEditor = drafts.refsWithDrafts(location.hubId).has(location.conversation.ref);
+							} catch {}
+							if (keepEditor) location = { ...location, deviceWork: true };
+						}
 						setInitialLocation(location);
 						selection.restore(location?.hubId ?? null);
 					} catch {
@@ -124,22 +135,26 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
 	const removeHub = useCallback(
 		(id: string) =>
 			selection.remove(id, {
-				removeHub(hubId: string) {
-					runHubCleanups(hubId, [
-						(id) => drafts.removeHub(id),
-						(id) => readerPositions.removeHub(id),
-						removeOrganizationData,
-						forgetBoardForHub,
-						forgetDetailLevelsForHub,
-						forgetHistoryForHub,
-						(id) => forgetNoteDrafts(Storage, id),
-						forgetDocumentsForHub,
-						forgetDocumentSummaries,
-						forgetSubagentTrees,
-						forgetLaunchMemoryForHub,
-						forgetCreationForHub,
-						forgetStopRequestsForHub,
-					]);
+				async removeHub(hubId: string) {
+					try {
+						runHubCleanups(hubId, [
+							(id) => drafts.removeHub(id),
+							(id) => readerPositions.removeHub(id),
+							removeOrganizationData,
+							forgetBoardForHub,
+							forgetDetailLevelsForHub,
+							forgetHistoryForHub,
+							(id) => forgetNoteDrafts(Storage, id),
+							forgetDocumentsForHub,
+							forgetDocumentSummaries,
+							forgetSubagentTrees,
+							forgetLaunchMemoryForHub,
+							forgetCreationForHub,
+							forgetStopRequestsForHub,
+						]);
+					} finally {
+						await clearHubWebData(hubId);
+					}
 				},
 			}),
 		[selection],

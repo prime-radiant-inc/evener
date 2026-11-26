@@ -11,6 +11,12 @@
   border-bottom: 1px solid var(--edge);
 }
 
+:global([data-iphone-glass]) .dock {
+  background: var(--glass-panel);
+  background-image: var(--glass-sheen);
+  border-bottom-color: var(--glass-edge);
+}
+
 .bar {
   display: flex;
   align-items: center;

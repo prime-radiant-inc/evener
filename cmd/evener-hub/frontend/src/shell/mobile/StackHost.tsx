@@ -52,7 +52,8 @@ import {
   useState,
 } from "react";
 import { AnimatePresence, m, spatialExitTransition, spatialTransition, useReducedMotion } from "../../motion";
-import { SessionInspectionActions } from "../../panes/session/chrome/SessionInspectionActions";
+import { openSessionOverview, SessionInspectionActions } from "../../panes/session/chrome/SessionInspectionActions";
+import { requestFindInSession } from "../../panes/session/find/findRequest";
 import { returnFromAgentCascade } from "../../panes/zoom/actions";
 import { isCascadeReturnedOrigin } from "../../panes/zoom/inspectionOrigin";
 import { parseZoomParams } from "../../panes/zoom/intent";
@@ -78,6 +79,7 @@ import { useActivitySidebarStore } from "../activitybar/activitySidebarStore";
 import { attentionEntryOwnsReader, goBackInAttentionHistory, publishFocusedPaneURL } from "../attentionHistory";
 import { ConversationHandoffBoundary } from "../ConversationHandoffBoundary";
 import { useChromeStore } from "../chromeStore";
+import { hasIPhoneSessionHeader } from "../iPhoneHost";
 import { paneFor } from "../paneRegistry";
 import { PaneVisibilityContext } from "../paneVisibility";
 import { RAIL_WIDTH_PROPERTY, RailResizeHandle } from "../rail/RailResizeHandle";
@@ -95,6 +97,7 @@ import {
   useWorkspaceStore,
   workspaceStore,
 } from "../workspace";
+import { IPhoneSessionHeader } from "./IPhoneSessionHeader";
 import { MobilePanel } from "./MobilePanel";
 import styles from "./StackHost.module.css";
 import {
@@ -367,14 +370,18 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
   // floating control capsules. The state is a paint-only class flip - the
   // bar keeps its box and padding, so the controls never move.
   const [topBarCollapsed, setTopBarCollapsed] = useState(false);
+  const [nativeFindOpen, setNativeFindOpen] = useState(false);
   const tabletBand = useMediaQuery(TABLET_QUERY);
   const tabletSplit = tabletBand && !singlePane;
   const [boardCollapsed, setBoardCollapsed] = useState(false);
   const boardVisible = tabletSplit && !boardCollapsed;
+  const nativeHeader =
+    !singlePane && !tabletBand && !routeDeferred && focusedPane?.type === "session" && hasIPhoneSessionHeader();
   const needsYou = useNavigationStore(
     useCallback(
-      (state: NavigationStoreState) => (tabletSplit && !boardVisible ? selectNeedsYouCount(state) : 0),
-      [tabletSplit, boardVisible],
+      (state: NavigationStoreState) =>
+        nativeHeader || (tabletSplit && !boardVisible) ? selectNeedsYouCount(state) : 0,
+      [nativeHeader, tabletSplit, boardVisible],
     ),
   );
   const sidebarWidth = usePrefsStore((s) => s.sidebarWidth);
@@ -481,9 +488,7 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
   // Mirror of focusedPane for the same reason as topBarCollapsedRef.
   const focusedPaneRef = useRef(focusedPane);
   focusedPaneRef.current = focusedPane;
-  // Mirror of focusedNotesExpanded for the scroll listener so downward scroll
-  // cannot float the top bar back over an open whiteboard.
-  const focusedNotesExpandedRef = useRef(false);
+  const headerPinnedRef = useRef(false);
   const prevFocusedTypeRef = useRef<string | undefined>(focusedPane?.type);
 
   // The resting bar height (safe-area padding included), read once on mount:
@@ -689,7 +694,7 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
         let next = topBarCollapsedRef.current;
         if (scrollTop > prevScrollTop) {
           upwardRunStartRef.current = null;
-          if (scrollTop > foldPast && !focusedNotesExpandedRef.current) next = true;
+          if (scrollTop > foldPast && !headerPinnedRef.current) next = true;
           else if (scrollTop < FLOAT_REVEAL_AT_TOP) next = false;
         } else {
           if (topBarCollapsedRef.current && scrollTop < prevScrollTop && upwardRunStartRef.current === null) {
@@ -699,12 +704,19 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
           if (upwardTravel >= FLOAT_REVEAL_STEP || scrollTop < FLOAT_REVEAL_AT_TOP) next = false;
         }
         if (next !== topBarCollapsedRef.current) {
+          // On iPhone the notes summary folds with the title. Count the
+          // entire change in the reader's viewport before pinning its offset.
+          const bar = topBarRef.current;
+          if (next && bar) {
+            const notes = bar.parentElement?.hasAttribute("data-iphone-header")
+              ? paneSlotRef.current?.querySelector<HTMLElement>("[data-notes-panel-ref]")
+              : null;
+            if (notes?.contains(document.activeElement)) return;
+            barHeightRef.current = bar.offsetHeight + (notes?.offsetHeight ?? 0);
+            if (scrollTop <= barHeightRef.current + FLOAT_REVEAL_AT_TOP) return;
+          }
           topBarCollapsedRef.current = next;
           upwardRunStartRef.current = null;
-          // Resting height, read while the bar still sits in the flow: the
-          // compensation effect needs what the pane is about to lose, not
-          // what the floating box measures after the flip.
-          if (next && topBarRef.current !== null) barHeightRef.current = topBarRef.current.offsetHeight;
           setTopBarCollapsed(next);
         }
       }
@@ -972,16 +984,17 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
   // reveal is chrome, not a scroll gesture, and the capsules would otherwise
   // sit over the card's header row. The empty string matches no session ref.
   const focusedNotesExpanded = useTopNotesExpanded(focusedSessionRef ?? "");
-  focusedNotesExpandedRef.current = focusedNotesExpanded;
-  useEffect(() => {
-    if (!focusedNotesExpanded || !topBarCollapsedRef.current) return;
+  const headerPinned = focusedNotesExpanded || nativeFindOpen;
+  headerPinnedRef.current = headerPinned;
+  useLayoutEffect(() => {
+    if (!headerPinned || !topBarCollapsedRef.current) return;
     topBarCollapsedRef.current = false;
     upwardRunStartRef.current = null;
     setTopBarCollapsed(false);
     // Unlike a focus change, the reader stays in this pane, so the collapse
     // scroller stays armed: the compensation effect holds the reading position
     // when the pane's layout regains the bar's height.
-  }, [focusedNotesExpanded]);
+  }, [headerPinned]);
   const livePaneIds = useMemo(() => new Set(panes.map((pane) => pane.id)), [panes]);
   const retainedParentRef = focusedPane?.type === "session" ? conversationOpenParentRef(focusedPane) : undefined;
   const retainedParentAvailable =
@@ -1053,7 +1066,11 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
           </BoardPresentContext.Provider>
         )}
         {/* Keep the same pane slot and scroll listener on both sides of the tablet floor. */}
-        <div className={styles.paneColumn} data-testid={tabletSplit ? "pane-column" : undefined}>
+        <div
+          className={styles.paneColumn}
+          data-iphone-header={nativeHeader ? (topBarCollapsed ? "floating" : "resting") : undefined}
+          data-testid={tabletSplit ? "pane-column" : undefined}
+        >
           <div
             ref={topBarRef}
             className={topBarCollapsed ? `${styles.topBar} ${styles.topBarCollapsed}` : styles.topBar}
@@ -1084,6 +1101,33 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
               {focusedSessionRef === undefined && drawer}
             </div>
           </div>
+          {nativeHeader && focusedSessionRef && !panelOpen && !activityOpen && (
+            <IPhoneSessionHeader
+              bar={topBarRef}
+              id={focusedPane.id}
+              title={paneTitle ?? ""}
+              leading={showBack ? "back" : "sessions"}
+              needsYou={needsYou}
+              collapsed={topBarCollapsed}
+              onFindChange={setNativeFindOpen}
+              onAction={(action) => {
+                switch (action) {
+                  case "back":
+                    (paneBack ?? handleBack)();
+                    break;
+                  case "sessions":
+                    setPanelOpen(true);
+                    break;
+                  case "find":
+                    requestFindInSession(focusedSessionRef, { target: focusedPane.id });
+                    break;
+                  case "overview":
+                    openSessionOverview(focusedSessionRef, focusedPane.id, true);
+                    break;
+                }
+              }}
+            />
+          )}
           <div ref={stackBodyRef} className={styles.stackBody} data-stacked-pane-type={focusedPane?.type}>
             {focusedPane && (
               // Only a distinct pane id detaches the outgoing pane's last frame.

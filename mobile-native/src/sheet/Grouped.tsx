@@ -3,6 +3,7 @@
 // the canvas, and ink-mid footers. A row carries a bare SF Symbol in ink-mid
 // (never a colored tile), a label with an optional second line, a trailing
 // value, and a chevron when it opens a page.
+import { GlassView } from "expo-glass-effect";
 import { type SFSymbol, SymbolView } from "expo-symbols";
 import {
 	Children,
@@ -119,12 +120,15 @@ function carriesSymbol(row: ReactNode): boolean {
  * on both sides of it carry a symbol, as iOS Settings draws it. */
 export function Group({
 	children,
+	glass = false,
 	label,
 	machineLabel = false,
 	selectableLabel = false,
 	section,
 }: {
 	children: ReactNode;
+	/** A group of navigation actions can share a native interactive surface. */
+	glass?: boolean;
 	label?: string;
 	/** Which group this is, as a stable token: its `group:<section>` testID. */
 	section?: string;
@@ -135,15 +139,17 @@ export function Group({
 }) {
 	const { palette } = useColors();
 	const rows = Children.toArray(children);
+	const Surface = glass ? GlassView : View;
 	const group = (
-		<View
+		<Surface
+			{...(glass ? { glassEffectStyle: "regular" as const, colorScheme: palette.scheme, isInteractive: true } : {})}
 			testID={section ? `group:${section}` : undefined}
 			style={{
 				marginHorizontal: space.margin,
 				marginTop: label ? 0 : space.groupGap,
 				borderRadius: 12,
 				overflow: "hidden",
-				backgroundColor: palette.surface,
+				backgroundColor: glass ? "transparent" : palette.surface,
 			}}
 		>
 			{rows.map((row, index) => (
@@ -161,7 +167,7 @@ export function Group({
 					{row}
 				</Fragment>
 			))}
-		</View>
+		</Surface>
 	);
 	if (!label) return group;
 	return (

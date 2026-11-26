@@ -20,10 +20,23 @@
   composes: scrimSlide from "../../styles/motion.module.css";
 }
 
+/* The scrim paints the blur behind the whole sheet. Fixed dialogs nested in
+ * its content must remain anchored to the viewport. */
+:global(body[data-iphone-glass]) .scrim::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  -webkit-backdrop-filter: var(--glass-filter);
+  backdrop-filter: var(--glass-filter);
+}
+
 /* Shared panel chassis - Dialog and Sheet (via OverlayPanel) both start
  * from this, then add their own geometry/animation class on top. */
 .panel {
-  composes: panel from "../internal/floatingSurface.module.css";
+  composes: panel from "../../styles/floatingSurface.module.css";
+  --glass-layer-fill: var(--glass-panel);
+  --glass-layer-filter: none;
   position: relative;
   display: flex;
   flex-direction: column;
@@ -81,6 +94,12 @@
   flex-wrap: wrap;
   justify-content: flex-end;
   gap: var(--space-2);
+}
+
+:global(body[data-iphone-glass]) .header,
+:global(body[data-iphone-glass]) .footer {
+  background: var(--glass-fill);
+  border-color: var(--glass-edge);
 }
 
 /* Positioning seat only: the close control itself is the shared IconButton,

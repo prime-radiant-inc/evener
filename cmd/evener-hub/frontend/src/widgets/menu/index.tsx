@@ -990,7 +990,13 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
   // resize itself runs would have overwritten it before the clamp arrived. It
   // is consumed by the next scroll, so it can only ever excuse the one
   // correction that resize caused.
-  const anchoredTriggerRef = useRef<{ left: number; top: number } | null>(null);
+  const anchoredTriggerRef = useRef<{
+    left: number;
+    top: number;
+    documentTop: number;
+    viewportTop: number;
+    viewportHeight: number;
+  } | null>(null);
   const grewBeforeScrollRef = useRef(false);
   const lastViewportHeightRef = useRef(0);
   const observedViewportHeightRef = useRef(0);
@@ -1203,7 +1209,6 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
     // clamp against that window's edges, not the opener's.
     const ownerWindow = ownerWindowOf(ownerDocument);
     const triggerRect = triggerEl.getBoundingClientRect();
-    anchoredTriggerRef.current = { left: triggerRect.left, top: triggerRect.top };
     // The popup's own size is its untransformed layout box (offset*), not its
     // rect: this runs in the commit that mounts it, while the entrance still
     // holds it at its scaled-down `from` keyframe, and a rect would place a
@@ -1218,6 +1223,13 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
     // flip-then-clamp math unchanged. Without a visual viewport the two are
     // the same region and the translation is zero.
     const visible = visibleViewportBounds(ownerWindow);
+    anchoredTriggerRef.current = {
+      left: triggerRect.left,
+      top: triggerRect.top,
+      documentTop: triggerRect.top + ownerWindow.scrollY,
+      viewportTop: visible.top,
+      viewportHeight: visible.height,
+    };
     const localTriggerRect = rectInVisibleViewport(triggerRect, visible);
     // The stylesheet caps the popup at 100dvh minus both margins, which is the
     // LAYOUT viewport. After a pinch zoom the visible area can be half of that,
@@ -1787,7 +1799,22 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
         // the narrowest of them as well.
         const stillOnScreen =
           rect !== undefined && triggerRef.current !== null && triggerVisibleOnScreen(triggerRef.current, ownerWindow);
-        if (cause !== "scrolled" && stillOnScreen) placeNowAndAfterLayout();
+        // WebKit restores the pan that revealed the editor as the keyboard
+        // closes. The trigger stays at its document position and moves on
+        // screen by exactly the pan the growing visual viewport gave back.
+        const visual = ownerWindow.visualViewport;
+        const returnedPan = anchored && visual ? anchored.viewportTop - visual.offsetTop : 0;
+        const restoredPagePan =
+          (nodeType === 9 || target === ownerWindow) &&
+          anchored &&
+          rect &&
+          visual &&
+          returnedPan > 0 &&
+          visual.height > anchored.viewportHeight &&
+          rect.left === anchored.left &&
+          Math.abs(rect.top - anchored.top - returnedPan) <= CLAMP_ROUNDING &&
+          Math.abs(rect.top + ownerWindow.scrollY - anchored.documentTop) <= CLAMP_ROUNDING;
+        if ((restoredPagePan || cause !== "scrolled") && stillOnScreen) placeNowAndAfterLayout();
         // The growth fallback reads "an unchanged rect since the last
         // placement" as "the browser clamped, and nobody moved the trigger".
         // That reading is only worth keeping while the trigger is somewhere a

@@ -50,6 +50,7 @@ import { requireClass } from "../../widgets/internal/requireClass";
 import { activitySidebarStore } from "../activitybar/activitySidebarStore";
 import { useClient } from "../clientContext";
 import { closePanesForDeletedSessions } from "../deletedSessionPanes";
+import { iPhoneHost } from "../iPhoneHost";
 import { useDismissNavigationChrome } from "../navigationChrome";
 import { navigate } from "../routing";
 import { openSessionByRef } from "../sessionPlacement";
@@ -1158,9 +1159,11 @@ function NavigationRail({
           {showBrand && (
             <div data-testid="rail-brand" className={CLASS.brand}>
               <EvenerMark />
-              <span data-testid="rail-wordmark" className={CLASS.wordmark}>
-                evener
-              </span>
+              {!iPhoneHost() && (
+                <span data-testid="rail-wordmark" className={CLASS.wordmark}>
+                  evener
+                </span>
+              )}
               <div className={CLASS.brandActions}>
                 <RailNavigationActions />
                 {onHide ? (

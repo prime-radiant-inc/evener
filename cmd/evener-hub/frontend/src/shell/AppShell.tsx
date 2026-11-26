@@ -44,6 +44,7 @@ import { DockRegion } from "./DockRegion";
 import { focusedSessionPaneId, focusedSessionRef, modalOpenInFocusedWindows } from "./focusedSession";
 import { HoldHints } from "./holdhints/HoldHints";
 import { installKeybindings } from "./installKeybindings";
+import { connectIPhoneHost, tellIPhoneHost } from "./iPhoneHost";
 import { createLiveSessionController } from "./liveSessionController";
 import { StackHost } from "./mobile/StackHost";
 import { NeedsYouProvider, useNeedsYou } from "./NeedsYouProvider";
@@ -94,7 +95,7 @@ import "../panes/doc"; // registers the "doc" pane type
 import "../panes/transcript"; // registers the "transcript" pane type
 import "../panes/zoom"; // registers the "sessionZoom" pane type
 import "../panes/sessionPanels"; // registers the session panel pane types
-import { initPrefs } from "../stores/prefs";
+import { initPrefs, useResolvedScheme } from "../stores/prefs";
 
 // Apply persisted display preferences (theme/density/font-size) during
 // module evaluation - before first paint - so a saved theme never flashes
@@ -524,6 +525,10 @@ function AppShellContent({ client: injectedClient, bannerDelayMs, bannerCreateCl
   const connectionState = useConnectionStore((s) => s.state);
   const interactiveNavigationRef = useRef<string | null>(null);
   const [pathname, historyRevision] = usePathname(interactiveNavigationRef);
+  const scheme = useResolvedScheme();
+  useEffect(connectIPhoneHost, []);
+  useEffect(() => tellIPhoneHost({ type: "appearance", dark: scheme === "dark" }), [scheme]);
+  useEffect(() => tellIPhoneHost({ type: "route", path: pathname }), [pathname]);
   const route = urlToPane(pathname);
   const sessionRouteRef = route?.type === "session" ? refParam(route.params) : null;
   const restoredSessionRef = route?.type === "welcome" ? refParam(workspaceStore.getState().mainPane()?.params) : null;

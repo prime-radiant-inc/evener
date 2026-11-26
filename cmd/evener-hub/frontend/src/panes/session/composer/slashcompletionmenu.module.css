@@ -7,6 +7,7 @@
  * a downward popup would clip off the viewport. No border - the shadow
  * alone separates it from the card underneath. */
 .menu {
+  composes: panel from "../../../styles/floatingSurface.module.css";
   position: absolute;
   bottom: calc(100% + var(--space-1));
   left: 0;
@@ -18,12 +19,10 @@
   flex-direction: column;
   gap: 2px;
   padding: var(--space-1);
-  background: var(--surface-2);
-  border-radius: var(--radius-pane);
-  box-shadow: var(--shadow-overlay);
 }
 
 .option {
+  composes: choice from "../../../styles/floatingSurface.module.css";
   display: flex;
   align-items: baseline;
   gap: var(--space-2);

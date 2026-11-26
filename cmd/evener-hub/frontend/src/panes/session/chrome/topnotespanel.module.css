@@ -139,6 +139,10 @@
     margin-top: calc(-1 * var(--space-4));
   }
 
+  :global([data-iphone-header="floating"]) .topNotesPanel:not([data-expanded="true"]) {
+    display: none;
+  }
+
   .summary {
     align-items: center;
     padding: var(--space-1) var(--space-2);

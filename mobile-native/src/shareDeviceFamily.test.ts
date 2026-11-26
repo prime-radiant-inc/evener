@@ -5,14 +5,14 @@
 // the generator through the same Xcode-project mod. This generates a real
 // project from the installed template and opens it with the real parser.
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { expect, it, onTestFinished } from "vitest";
 import shareIPhoneOnly from "../plugins/with-share-iphone-only";
 import { requireFrom } from "./nativeTooling.testkit";
 
-it("generates the share extension iPhone-only", async () => {
+it("generates the share extension for the host app’s supported iPhones", async () => {
 	const apple = requireFrom(["@bacons/apple-targets"]);
 	const root = mkdtempSync(join(process.env.EVENER_SCRATCH_DIR ?? tmpdir(), "share-family-"));
 	onTestFinished(() => rmSync(root, { recursive: true, force: true }));
@@ -20,26 +20,17 @@ it("generates the share extension iPhone-only", async () => {
 	execFileSync("tar", ["-xzf", template, "-C", root, "--strip-components=1", "package/ios"]);
 	const target = join(root, "targets/EvenerShareExtension");
 	mkdirSync(target, { recursive: true });
-	writeFileSync(
+	copyFileSync(
+		new URL("../targets/share/expo-target.config.js", import.meta.url),
 		join(target, "expo-target.config.js"),
-		`module.exports = () => ({
-	type: "share",
-	name: "EvenerShareExtension",
-	bundleIdentifier: ".ShareExtension",
-	deploymentTarget: "16.4",
-	frameworks: ["UniformTypeIdentifiers"],
-	entitlements: {
-		"com.apple.security.application-groups": ["group.com.primeradiant.evener.native"],
-	},
-});
-`,
 	);
+	const appIOS = requireFrom([])("./app.config.js").expo.ios;
 	let config = shareIPhoneOnly({
 		name: "HelloWorld",
 		slug: "hello-world",
 		version: "1.0.0",
 		ios: {
-			bundleIdentifier: "com.primeradiant.evener.native",
+			...appIOS,
 			appleTeamId: "EVENERCI01",
 		},
 		_internal: { projectRoot: root },
@@ -65,12 +56,12 @@ it("generates the share extension iPhone-only", async () => {
 	const targets = project.rootObject.props.targets as ParsedTarget[];
 	const share = targets.find((entry) => entry.isa === "PBXNativeTarget" && entry.props.name === "EvenerShareExtension");
 	expect(share).toBeDefined();
-	const families = share?.props.buildConfigurationList.props.buildConfigurations.map(
-		(configuration) => configuration.props.buildSettings.TARGETED_DEVICE_FAMILY,
-	);
-	expect(families?.length).toBeGreaterThan(0);
-	// The plist writer emits a bare 1 unquoted, so the parser reads the value
-	// back as a number; both forms mean iPhone-only. The runner reads it
-	// through xcodebuild, which reports the string.
-	for (const family of families ?? []) expect(String(family)).toBe("1");
+	const configurations = share?.props.buildConfigurationList.props.buildConfigurations ?? [];
+	expect(configurations.length).toBeGreaterThan(0);
+	for (const configuration of configurations) {
+		const { buildSettings } = configuration.props;
+		// The plist parser reads the unquoted device family as a number.
+		expect(String(buildSettings.TARGETED_DEVICE_FAMILY)).toBe("1");
+		expect(buildSettings.IPHONEOS_DEPLOYMENT_TARGET).toBe(appIOS.deploymentTarget);
+	}
 });
