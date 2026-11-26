@@ -27,7 +27,7 @@ func TestStoreRelocationSettledJournal(t *testing.T) {
 func testStoreRelocation(t *testing.T, withCustody bool) {
 	t.Helper()
 	sourcePath := StorePath(t.TempDir())
-	store, err := Open(sourcePath)
+	store, err := Open(sourcePath, RetentionPolicy{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,7 +91,7 @@ func testStoreRelocation(t *testing.T, withCustody bool) {
 		t.Fatal("initial copy changed bytes or modes")
 	}
 	if withCustody {
-		refused, err := Open(destinationPath)
+		refused, err := Open(destinationPath, RetentionPolicy{})
 		if refused != nil || !errors.Is(err, ErrStoreCorrupt) || !errors.Is(err, ErrQuarantineIncomplete) {
 			t.Fatalf("naive copy = %v, %v, want typed custody refusal", refused, err)
 		}
@@ -139,7 +139,7 @@ func testStoreRelocation(t *testing.T, withCustody bool) {
 			t.Fatalf("adjustment changed bytes or mode of %s", name)
 		}
 	}
-	moved, err := Open(destinationPath)
+	moved, err := Open(destinationPath, RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("corrected copy cannot open: %v", err)
 	}
@@ -206,10 +206,11 @@ func testStoreRelocation(t *testing.T, withCustody bool) {
 
 func relocationComplete(t *testing.T, store *Store, host, operation string) Record {
 	t.Helper()
-	record, err := store.Create(NewRecord{ClientOperationID: operation, Host: host, Kind: KindRestart, Generation: 7, IncarnationID: "inc-" + host})
+	outcome, err := store.Create(OperationCreateRequest{ClientOperationID: operation, Host: host, Kind: KindRestart, Pair: OperationPair{Generation: 7, IncarnationID: "inc-" + host}, BootID: "test-boot", SequenceBefore: store.Sequence()})
 	if err != nil {
 		t.Fatal(err)
 	}
+	record := outcome.Record
 	// Unknown nested payload keys deliberately contain the old StorePath. They
 	// are operation evidence, never candidates for path substitution.
 	epoch, err := json.Marshal(map[string]any{"bootId": "fixture-boot", "opSeq": 17,

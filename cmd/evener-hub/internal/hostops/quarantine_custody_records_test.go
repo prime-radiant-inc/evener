@@ -42,7 +42,7 @@ func TestQuarantineQuarantinesACorruptStoreWrittenByThisBuild(t *testing.T) {
 		t.Fatalf("forgetStore: %v", err)
 	}
 
-	reopened, err := Open(path)
+	reopened, err := Open(path, RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("Open on a corrupt, token-bearing store written by this build: %v, want the custody-first quarantine", err)
 	}
@@ -72,7 +72,7 @@ func TestQuarantineCustodyRecordIDsAreBidirectional(t *testing.T) {
 	dir := t.TempDir()
 	path := StorePath(dir)
 	writeRawStore(t, path, 0o600, quarantinedStoreJSON)
-	if _, err := Open(path); err != nil {
+	if _, err := Open(path, RetentionPolicy{}); err != nil {
 		t.Fatalf("Open: %v", err)
 	}
 	custodyPath, custodyBytes := quarantineArtifact(t, filepath.Dir(path), ".custody-")
@@ -155,7 +155,7 @@ func TestQuarantineAcceptsMatureGapsWithCompactionEvidence(t *testing.T) {
 		path := StorePath(t.TempDir())
 		body := matureStoreJSON(true)
 		writeRawStore(t, path, 0o600, body)
-		store, err := Open(path)
+		store, err := Open(path, RetentionPolicy{})
 		if err != nil {
 			t.Fatalf("Open on a mature store with covering compaction evidence: %v, want the custody-first quarantine", err)
 		}
@@ -176,7 +176,7 @@ func TestQuarantineAcceptsMatureGapsWithCompactionEvidence(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			path := StorePath(t.TempDir())
 			writeRawStore(t, path, 0o600, body)
-			if store, err := Open(path); err == nil {
+			if store, err := Open(path, RetentionPolicy{}); err == nil {
 				t.Fatalf("Open returned %v for %s, want an incomplete-custody refusal", store, name)
 			} else if !errors.Is(err, ErrStoreCorrupt) || !errors.Is(err, ErrQuarantineIncomplete) {
 				t.Fatalf("Open = %v, want ErrStoreCorrupt/ErrQuarantineIncomplete", err)
@@ -224,7 +224,7 @@ func TestQuarantineRebuildUsesTheHighestEpochCustody(t *testing.T) {
 	if err := forgetStore(path); err != nil {
 		t.Fatalf("forgetStore: %v", err)
 	}
-	store, err := Open(path)
+	store, err := Open(path, RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("Open on a directory whose replacement vanished: %v", err)
 	}
@@ -247,7 +247,7 @@ func TestQuarantineRefusesArtifactsWithTrailingData(t *testing.T) {
 		dir := t.TempDir()
 		path := StorePath(dir)
 		writeRawStore(t, path, 0o600, validStoreJSON)
-		if _, err := Open(path); err != nil {
+		if _, err := Open(path, RetentionPolicy{}); err != nil {
 			t.Fatalf("Open: %v", err)
 		}
 		// A complete quarantine artifact set: a valid custody file with its
@@ -276,7 +276,7 @@ func TestQuarantineRefusesArtifactsWithTrailingData(t *testing.T) {
 		if err := forgetStore(path); err != nil {
 			t.Fatalf("forgetStore: %v", err)
 		}
-		if store, err := Open(path); err == nil {
+		if store, err := Open(path, RetentionPolicy{}); err == nil {
 			t.Fatalf("Open with a trailing-data intent returned %v, want a refusal", store)
 		}
 	})
@@ -290,7 +290,7 @@ func TestQuarantineRefusesArtifactsWithTrailingData(t *testing.T) {
 		if err := forgetStore(path); err != nil {
 			t.Fatalf("forgetStore: %v", err)
 		}
-		if store, err := Open(path); err == nil {
+		if store, err := Open(path, RetentionPolicy{}); err == nil {
 			t.Fatalf("Open with a trailing-data sidecar returned %v, want a refusal", store)
 		}
 	})

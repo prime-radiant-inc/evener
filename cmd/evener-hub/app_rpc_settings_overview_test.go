@@ -951,7 +951,7 @@ func TestHubRPCSettingsOverviewReportsOperationStoreQuarantine(t *testing.T) {
 // a hub whose store carries no quarantine reports no field at all, so a client
 // cannot mistake a healthy store for a quarantined one.
 func TestHubRPCSettingsOverviewOmitsQuarantineWithoutASignal(t *testing.T) {
-	store, err := hostops.Open(hostops.StorePath(t.TempDir()))
+	store, err := hostops.Open(hostops.StorePath(t.TempDir()), hostops.RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("hostops.Open: %v", err)
 	}

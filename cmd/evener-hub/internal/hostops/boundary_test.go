@@ -241,7 +241,7 @@ func TestBoundaryMirrorPreservesTheStoresRecords(t *testing.T) {
 func TestStoreFileWithoutBoundariesLoadsEmpty(t *testing.T) {
 	path := StorePath(t.TempDir())
 	writeRawStore(t, path, 0o600, validStoreJSON)
-	store, err := Open(path)
+	store, err := Open(path, RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("Open on a store without a boundaries key: %v", err)
 	}
@@ -255,7 +255,7 @@ func TestStoreFileWithoutBoundariesLoadsEmpty(t *testing.T) {
 
 	nullPath := StorePath(t.TempDir())
 	writeRawStore(t, nullPath, 0o600, `{"version":1,"sequence":0,"allocatorHighWaterMark":0,"records":[],"boundaries":null}`)
-	nullStore, err := Open(nullPath)
+	nullStore, err := Open(nullPath, RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("Open on a store with a null boundaries key: %v", err)
 	}

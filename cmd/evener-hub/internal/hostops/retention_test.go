@@ -22,9 +22,9 @@ import (
 func openRetentionStore(t *testing.T, policy RetentionPolicy) (*Store, string) {
 	t.Helper()
 	path := StorePath(t.TempDir())
-	store, err := OpenWithRetention(path, policy)
+	store, err := Open(path, policy)
 	if err != nil {
-		t.Fatalf("OpenWithRetention(%s): %v", path, err)
+		t.Fatalf("Open(%s): %v", path, err)
 	}
 	return store, path
 }
@@ -45,17 +45,18 @@ func createOp(t *testing.T, store *Store, host, clientOperationID string) Record
 // createOpPair persists one pending deploy record pinned to an explicit pair.
 func createOpPair(t *testing.T, store *Store, host, clientOperationID string, generation uint64, incarnationID string) Record {
 	t.Helper()
-	record, err := store.Create(NewRecord{
+	outcome, err := store.Create(OperationCreateRequest{
 		ClientOperationID: clientOperationID,
 		Host:              host,
 		Kind:              KindDeploy,
-		Generation:        generation,
-		IncarnationID:     incarnationID,
+		Pair:              OperationPair{Generation: generation, IncarnationID: incarnationID},
+		BootID:            "test-boot",
+		SequenceBefore:    store.Sequence(),
 	})
 	if err != nil {
 		t.Fatalf("Create(%s/%s): %v", host, clientOperationID, err)
 	}
-	return record
+	return outcome.Record
 }
 
 // finish moves a record to complete, landing its terminal state.
@@ -851,7 +852,7 @@ func TestOpenRefusesAnOversizedTombstone(t *testing.T) {
 		`","kind":"deploy","state":"complete","generation":7,"incarnationId":"inc-1","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false,"result":{"ok":true,"message":"done"},"compactedAt":"2026-09-26T00:00:00Z","compactedSeq":1}]}`
 	path := StorePath(t.TempDir())
 	writeRawStore(t, path, 0o600, body)
-	_, err := Open(path)
+	_, err := Open(path, RetentionPolicy{})
 	if !errors.Is(err, ErrStoreCorrupt) || !strings.Contains(err.Error(), "host name") {
 		t.Fatalf("Open(oversized tombstone) = %v, want ErrStoreCorrupt naming the host name", err)
 	}
@@ -1028,7 +1029,7 @@ func TestOpenQuarantinesACaseVariantRemovedHostKey(t *testing.T) {
 	body := `{"version":1,"sequence":0,"allocatorHighWaterMark":0,"records":[],"removedHosts":{"m4":{"RemovedAt":"2026-09-26T00:00:00Z","generation":7,"incarnationId":"inc-1"}}}`
 	path := StorePath(t.TempDir())
 	writeRawStore(t, path, 0o600, body)
-	store, err := Open(path)
+	store, err := Open(path, RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("Open(case-variant removal marker key) = %v, want the custody-first quarantine", err)
 	}

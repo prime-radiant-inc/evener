@@ -1341,7 +1341,7 @@ func TestHostUpdateRemnantRepairsThroughRetryAndRecover(t *testing.T) {
 	}
 	manager := sshconn.New(reg, sshconn.Options{})
 	t.Cleanup(func() { _ = manager.Close() })
-	ops, err := hostops.Open(filepath.Join(dir, "operations.json"))
+	ops, err := hostops.Open(filepath.Join(dir, "operations.json"), hostops.RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("hostops.Open: %v", err)
 	}

@@ -101,7 +101,7 @@ func (h *crashHub) boot(t *testing.T, restart bool) (*hubHostManager, *hostops.S
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
 	}
-	store, err := hostops.Open(hostops.StorePath(h.stateRoot))
+	store, err := hostops.Open(hostops.StorePath(h.stateRoot), hostops.RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("hostops.Open: %v", err)
 	}

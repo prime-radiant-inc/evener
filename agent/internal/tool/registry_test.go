@@ -1017,7 +1017,7 @@ func TestTruncateChars_UTF8Aware(t *testing.T) {
 	}
 
 	// Truncate to 3 characters (runes), not 3 bytes.
-	result := truncateChars(input, 3, schema.TruncHeadTail)
+	result, _ := truncateChars(input, 3, schema.TruncHeadTail)
 	// Should contain valid UTF-8 (no broken characters).
 	if !utf8.ValidString(result) {
 		t.Error("truncated result must be valid UTF-8")
@@ -1032,7 +1032,7 @@ func TestTruncateChars_UTF8Aware(t *testing.T) {
 	}
 
 	// schema.TruncTail: keep last 3 characters
-	result2 := truncateChars(input, 3, schema.TruncTail)
+	result2, _ := truncateChars(input, 3, schema.TruncTail)
 	if !utf8.ValidString(result2) {
 		t.Error("schema.TruncTail result must be valid UTF-8")
 	}

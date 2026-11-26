@@ -31,7 +31,7 @@ import (
 // manager boots with the store attached.
 func bootOverStore(t *testing.T, configPath, stateRoot string) (*hubHostManager, *hostops.Store) {
 	t.Helper()
-	store, err := hostops.Open(hostops.StorePath(stateRoot))
+	store, err := hostops.Open(hostops.StorePath(stateRoot), hostops.RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("hostops.Open: %v", err)
 	}
@@ -402,7 +402,7 @@ func TestStartupRetriesATransientStoreOpenFailure(t *testing.T) {
 	hostOpsOpenRetryDelays = []time.Duration{time.Millisecond, time.Millisecond}
 	t.Cleanup(func() { hostOpsOpenRetryDelays = previous })
 
-	opened, err := hostops.Open(hostops.StorePath(t.TempDir()))
+	opened, err := hostops.Open(hostops.StorePath(t.TempDir()), hostops.RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("hostops.Open: %v", err)
 	}
@@ -548,7 +548,7 @@ func TestHostsKeepServingWhenTheStoreHoldsRecordsThisBuildCannotRead(t *testing.
 		t.Fatalf("seed hub.toml: %v", err)
 	}
 	stateRoot := t.TempDir()
-	store, err := hostops.Open(hostops.StorePath(stateRoot))
+	store, err := hostops.Open(hostops.StorePath(stateRoot), hostops.RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("hostops.Open: %v", err)
 	}
@@ -656,7 +656,7 @@ func TestUnreadableHubTOMLAtBootDoesNotMoveEmptyRecordsIntoTheStore(t *testing.T
 	configPath, records := legacyHub(t)
 	original := fileBytes(t, configPath)
 	cfg := mustLoadConfig(t, configPath)
-	store, err := hostops.Open(hostops.StorePath(t.TempDir()))
+	store, err := hostops.Open(hostops.StorePath(t.TempDir()), hostops.RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("hostops.Open: %v", err)
 	}
@@ -746,7 +746,7 @@ func TestAReadFailureAfterTheLegacyBootStartedStillKeepsTheRecordsInHubTOML(t *t
 	configPath, records := legacyHub(t)
 	original := fileBytes(t, configPath)
 	cfg := mustLoadConfig(t, configPath)
-	store, err := hostops.Open(hostops.StorePath(t.TempDir()))
+	store, err := hostops.Open(hostops.StorePath(t.TempDir()), hostops.RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("hostops.Open: %v", err)
 	}
@@ -791,7 +791,7 @@ func TestMigrationWaitsForADurableCopyOfTheOriginalHubTOML(t *testing.T) {
 		t.Fatalf("occupy the copy path: %v", err)
 	}
 	cfg := mustLoadConfig(t, configPath)
-	store, err := hostops.Open(hostops.StorePath(t.TempDir()))
+	store, err := hostops.Open(hostops.StorePath(t.TempDir()), hostops.RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("hostops.Open: %v", err)
 	}
@@ -882,7 +882,7 @@ func TestMigrationRaisesAGenerationBelowTheMirrorsForARemovedName(t *testing.T) 
 	writeRawHostOpsBoundaries(t, storePath, map[string]hostops.Boundary{
 		removed: {Generation: spent, IncarnationID: held.IncarnationID, PresenceEpoch: held.PresenceEpoch},
 	})
-	store, err := hostops.Open(storePath)
+	store, err := hostops.Open(storePath, hostops.RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("hostops.Open: %v", err)
 	}
@@ -917,7 +917,7 @@ func TestMigrationRaisesAPresenceEpochTheMirrorHoldsEvenAtTheSameGeneration(t *t
 	writeRawHostOpsBoundaries(t, storePath, map[string]hostops.Boundary{
 		removed: {Generation: held.Generation, IncarnationID: held.IncarnationID, PresenceEpoch: spentEpoch},
 	})
-	store, err := hostops.Open(storePath)
+	store, err := hostops.Open(storePath, hostops.RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("hostops.Open: %v", err)
 	}
@@ -968,7 +968,7 @@ func TestMigrationWaitsWhenTheOriginalCannotBeInspectedForTheCopy(t *testing.T) 
 	configPath, records := legacyHub(t)
 	original := fileBytes(t, configPath)
 	cfg := mustLoadConfig(t, configPath)
-	store, err := hostops.Open(hostops.StorePath(t.TempDir()))
+	store, err := hostops.Open(hostops.StorePath(t.TempDir()), hostops.RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("hostops.Open: %v", err)
 	}
@@ -1082,7 +1082,7 @@ func TestNoSingleReadFailureAtALegacyBootLosesARecord(t *testing.T) {
 			t.Fatalf("append the intent: %v", err)
 		}
 		_ = body.Close()
-		store, err := hostops.Open(hostops.StorePath(t.TempDir()))
+		store, err := hostops.Open(hostops.StorePath(t.TempDir()), hostops.RetentionPolicy{})
 		if err != nil {
 			t.Fatalf("hostops.Open: %v", err)
 		}
@@ -1228,7 +1228,7 @@ func TestAnUnreadableRecordSectionKeepsTheReadableTeardownFences(t *testing.T) {
 func TestAStartupThatCouldNotReadTheRecordSectionsSettlesNothing(t *testing.T) {
 	configPath, _ := legacyHub(t)
 	original := fileBytes(t, configPath)
-	store, err := hostops.Open(hostops.StorePath(t.TempDir()))
+	store, err := hostops.Open(hostops.StorePath(t.TempDir()), hostops.RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("hostops.Open: %v", err)
 	}

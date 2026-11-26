@@ -370,7 +370,7 @@ func TestHostRecordsSurviveAQuarantine(t *testing.T) {
 		t.Fatalf("forgetStore: %v", err)
 	}
 
-	reopened, err := Open(path)
+	reopened, err := Open(path, RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("Open on a corrupt store carrying the family: %v, want the custody-first quarantine", err)
 	}
@@ -424,7 +424,7 @@ func TestHostRecordsQuarantineRefusesAnUnreadableFamily(t *testing.T) {
 			if err := forgetStore(path); err != nil {
 				t.Fatalf("forgetStore: %v", err)
 			}
-			_, err := Open(path)
+			_, err := Open(path, RetentionPolicy{})
 			if !errors.Is(err, ErrQuarantineIncomplete) || !errors.Is(err, ErrStoreCorrupt) {
 				t.Fatalf("Open = %v, want ErrQuarantineIncomplete beside ErrStoreCorrupt", err)
 			}

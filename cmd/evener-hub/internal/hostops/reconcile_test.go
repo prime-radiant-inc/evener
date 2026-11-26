@@ -55,7 +55,7 @@ func openStoreWithRawMirror(t *testing.T, boundaries map[string]Boundary, remove
 		t.Fatalf("marshal raw store fixture: %v", err)
 	}
 	writeRawStore(t, path, 0o600, string(raw))
-	store, err := Open(path)
+	store, err := Open(path, RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("Open(%s): %v", path, err)
 	}
@@ -73,21 +73,24 @@ func TestReconcileMirrorRollsBackATornStoreMirror(t *testing.T) {
 	store, path := openStoreWithRawMirror(t, map[string]Boundary{
 		"m4": {Generation: 9, IncarnationID: "inc-9", PresenceEpoch: 5},
 	}, nil)
-	inflight, err := store.Create(NewRecord{ClientOperationID: "op-1", Host: "m4", Kind: KindDeploy, Generation: 9, IncarnationID: "inc-9"})
+	inflightOutcome, err := store.Create(OperationCreateRequest{ClientOperationID: "op-1", Host: "m4", Kind: KindDeploy, Pair: OperationPair{Generation: 9, IncarnationID: "inc-9"}, BootID: "test-boot", SequenceBefore: store.Sequence()})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	terminal, err := store.Create(NewRecord{ClientOperationID: "op-2", Host: "m4", Kind: KindRestart, Generation: 9, IncarnationID: "inc-9"})
+	inflight := inflightOutcome.Record
+	terminalOutcome, err := store.Create(OperationCreateRequest{ClientOperationID: "op-2", Host: "m4", Kind: KindRestart, Pair: OperationPair{Generation: 9, IncarnationID: "inc-9"}, BootID: "test-boot", SequenceBefore: store.Sequence()})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
+	terminal := terminalOutcome.Record
 	if _, err := store.Transition(terminal.ID, StateComplete, func(record *Record) { record.Result = &Result{OK: true, Message: "done"} }); err != nil {
 		t.Fatalf("Transition: %v", err)
 	}
-	current, err := store.Create(NewRecord{ClientOperationID: "op-3", Host: "m4", Kind: KindDeploy, Generation: 7, IncarnationID: "inc-7"})
+	currentOutcome, err := store.Create(OperationCreateRequest{ClientOperationID: "op-3", Host: "m4", Kind: KindDeploy, Pair: OperationPair{Generation: 7, IncarnationID: "inc-7"}, BootID: "test-boot", SequenceBefore: store.Sequence()})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
+	current := currentOutcome.Record
 	discardedTombstone := tombstoneOf(Record{
 		ID: formatAllocatorID(42), ClientOperationID: "op-42", Host: "m4", Kind: KindDeploy,
 		State: StateComplete, Generation: 9, IncarnationID: "inc-9",
@@ -165,14 +168,16 @@ func TestReconcileMirrorRollbackMovesEveryInFlightRecord(t *testing.T) {
 	store, _ := openStoreWithRawMirror(t, map[string]Boundary{
 		"m4": {Generation: 9, IncarnationID: "inc-9", PresenceEpoch: 5},
 	}, nil)
-	first, err := store.Create(NewRecord{ClientOperationID: "op-fenced", Host: "m4", Kind: KindDeploy, Generation: 9, IncarnationID: "inc-9"})
+	firstOutcome, err := store.Create(OperationCreateRequest{ClientOperationID: "op-fenced", Host: "m4", Kind: KindDeploy, Pair: OperationPair{Generation: 9, IncarnationID: "inc-9"}, BootID: "test-boot"})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	second, err := store.Create(NewRecord{ClientOperationID: "op-plain", Host: "m4", Kind: KindDeploy, Generation: 9, IncarnationID: "inc-9"})
+	first := firstOutcome.Record
+	secondOutcome, err := store.Create(OperationCreateRequest{ClientOperationID: "op-plain", Host: "m4", Kind: KindDeploy, Pair: OperationPair{Generation: 9, IncarnationID: "inc-9"}, BootID: "test-boot"})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
+	second := secondOutcome.Record
 
 	result, err := store.ReconcileMirror(MirrorView{
 		Marks: map[string]Boundary{"m4": {Generation: 7, IncarnationID: "inc-7", PresenceEpoch: 4}},
@@ -397,14 +402,16 @@ func TestReconcileMirrorRequiresBothMarkerGenerationsToMatch(t *testing.T) {
 // incarnation's mark stands, and a pass with nothing to clear writes nothing.
 func TestClearHostRemovedMarksReversesOnlyTheRestoredPair(t *testing.T) {
 	store, path := openTestStore(t)
-	restored, err := store.Create(NewRecord{ClientOperationID: "op-restored", Host: "m4", Kind: KindDeploy, Generation: 7, IncarnationID: "inc-7"})
+	restoredOutcome, err := store.Create(OperationCreateRequest{ClientOperationID: "op-restored", Host: "m4", Kind: KindDeploy, Pair: OperationPair{Generation: 7, IncarnationID: "inc-7"}, BootID: "test-boot"})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	other, err := store.Create(NewRecord{ClientOperationID: "op-other", Host: "m4", Kind: KindRestart, Generation: 9, IncarnationID: "inc-9"})
+	restored := restoredOutcome.Record
+	otherOutcome, err := store.Create(OperationCreateRequest{ClientOperationID: "op-other", Host: "m4", Kind: KindRestart, Pair: OperationPair{Generation: 9, IncarnationID: "inc-9"}, BootID: "test-boot"})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
+	other := otherOutcome.Record
 	if _, _, err := store.ApplyHostRemovedPass(map[string]HostRemovedMark{
 		"m4": {Generation: 7, IncarnationID: "inc-7"},
 	}); err != nil {

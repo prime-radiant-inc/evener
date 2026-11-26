@@ -29,7 +29,7 @@ var armPair = OperationPair{Generation: 3, IncarnationID: "inc-h1"}
 
 func TestLookupOperationRejectsMalformedQueries(t *testing.T) {
 	t.Parallel()
-	store, err := Open(StorePath(t.TempDir()))
+	store, err := Open(StorePath(t.TempDir()), RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -100,8 +100,8 @@ func TestStoreNilGuardsAnswerWithoutPanicking(t *testing.T) {
 	if _, err := store.ConsumeTokenAndCreateOperation(OperationCreateRequest{}); err == nil {
 		t.Fatal("ConsumeTokenAndCreateOperation on a nil store succeeded")
 	}
-	if _, err := store.CreateOperation(OperationCreateRequest{}); err == nil {
-		t.Fatal("CreateOperation on a nil store succeeded")
+	if _, err := store.Create(OperationCreateRequest{}); err == nil {
+		t.Fatal("Create on a nil store succeeded")
 	}
 	if _, err := store.AppendProgress("00000000000000000001", "note"); err == nil {
 		t.Fatal("AppendProgress on a nil store succeeded")
@@ -111,9 +111,9 @@ func TestStoreNilGuardsAnswerWithoutPanicking(t *testing.T) {
 	}
 }
 
-func TestCreateOperationRejectsInvalidRequests(t *testing.T) {
+func TestCreateRejectsInvalidRequests(t *testing.T) {
 	t.Parallel()
-	store, err := Open(StorePath(t.TempDir()))
+	store, err := Open(StorePath(t.TempDir()), RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -151,20 +151,20 @@ func TestCreateOperationRejectsInvalidRequests(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			if _, err := store.CreateOperation(tc.req); !errors.Is(err, tc.want) {
-				t.Fatalf("CreateOperation error = %v, want errors.Is(%v)", err, tc.want)
+			if _, err := store.Create(tc.req); !errors.Is(err, tc.want) {
+				t.Fatalf("Create error = %v, want errors.Is(%v)", err, tc.want)
 			}
 		})
 	}
 }
 
-func TestCreateOperationWithoutDedupCreatesAPendingRecord(t *testing.T) {
+func TestCreateWithoutDedupCreatesAPendingRecord(t *testing.T) {
 	t.Parallel()
-	store, err := Open(StorePath(t.TempDir()))
+	store, err := Open(StorePath(t.TempDir()), RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	outcome, err := store.CreateOperation(OperationCreateRequest{
+	outcome, err := store.Create(OperationCreateRequest{
 		ClientOperationID: "op-restart",
 		Host:              "h1",
 		Kind:              KindRestart,
@@ -172,7 +172,7 @@ func TestCreateOperationWithoutDedupCreatesAPendingRecord(t *testing.T) {
 		BootID:            "boot-1",
 	})
 	if err != nil {
-		t.Fatalf("CreateOperation: %v", err)
+		t.Fatalf("Create: %v", err)
 	}
 	if outcome.Replayed {
 		t.Fatal("a fresh create reported itself as a dedup replay")
@@ -186,30 +186,30 @@ func TestCreateOperationWithoutDedupCreatesAPendingRecord(t *testing.T) {
 	}
 }
 
-func TestCreateOperationRefusesAConcurrentTerminalOperation(t *testing.T) {
+func TestCreateRefusesAConcurrentTerminalOperation(t *testing.T) {
 	t.Parallel()
-	store, err := Open(StorePath(t.TempDir()))
+	store, err := Open(StorePath(t.TempDir()), RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	first, err := store.CreateOperation(OperationCreateRequest{
+	first, err := store.Create(OperationCreateRequest{
 		ClientOperationID: "op-first", Host: "h1", Kind: KindRestart, Pair: armPair, BootID: "boot-1",
 	})
 	if err != nil {
-		t.Fatalf("the first CreateOperation: %v", err)
+		t.Fatalf("the first Create: %v", err)
 	}
 	if _, err := store.TransitionToState(first.Record.ID, StateComplete, &Result{OK: true, Message: "done"}, ""); err != nil {
 		t.Fatalf("the first operation's terminal transition: %v", err)
 	}
 	// The stale scan position names the terminal transition the write's own
 	// locked scan must refuse.
-	_, err = store.CreateOperation(OperationCreateRequest{
+	_, err = store.Create(OperationCreateRequest{
 		ClientOperationID: "op-second", Host: "h1", Kind: KindRestart, Pair: armPair, BootID: "boot-1",
 		SequenceBefore: 0,
 	})
 	var concurrent *ConcurrentTerminalOpError
 	if !errors.As(err, &concurrent) {
-		t.Fatalf("CreateOperation error = %v, want a *ConcurrentTerminalOpError", err)
+		t.Fatalf("Create error = %v, want a *ConcurrentTerminalOpError", err)
 	}
 	if concurrent.ID != first.Record.ID {
 		t.Fatalf("the concurrent refusal names %q, want %q", concurrent.ID, first.Record.ID)
@@ -220,7 +220,7 @@ func TestAppendProgressRefusesRecordsItCannotNote(t *testing.T) {
 	t.Parallel()
 	path := StorePath(t.TempDir())
 	writeRawStore(t, path, 0o600, validArmStoreJSON)
-	store, err := Open(path)
+	store, err := Open(path, RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -244,7 +244,7 @@ func TestInterruptInFlightArms(t *testing.T) {
 
 	t.Run("an empty note refuses", func(t *testing.T) {
 		t.Parallel()
-		store, err := Open(StorePath(t.TempDir()))
+		store, err := Open(StorePath(t.TempDir()), RetentionPolicy{})
 		if err != nil {
 			t.Fatalf("Open: %v", err)
 		}
@@ -257,7 +257,7 @@ func TestInterruptInFlightArms(t *testing.T) {
 		t.Parallel()
 		path := StorePath(t.TempDir())
 		writeRawStore(t, path, 0o600, validArmStoreJSON)
-		store, err := Open(path)
+		store, err := Open(path, RetentionPolicy{})
 		if err != nil {
 			t.Fatalf("Open: %v", err)
 		}
@@ -326,7 +326,7 @@ func TestRecordWithoutAFencingEpochReadsAsUnbound(t *testing.T) {
 	t.Parallel()
 	path := StorePath(t.TempDir())
 	writeRawStore(t, path, 0o600, validArmStoreJSON)
-	store, err := Open(path)
+	store, err := Open(path, RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}

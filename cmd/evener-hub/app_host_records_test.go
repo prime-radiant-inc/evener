@@ -172,7 +172,7 @@ func TestBoundaryMirrorPrunesARolledBackAdd(t *testing.T) {
 	if err := os.WriteFile(path, []byte(""), 0o600); err != nil {
 		t.Fatalf("write hub.toml: %v", err)
 	}
-	ops, err := hostops.Open(hostops.StorePath(filepath.Join(dir, "state")))
+	ops, err := hostops.Open(hostops.StorePath(filepath.Join(dir, "state")), hostops.RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("hostops.Open: %v", err)
 	}
@@ -604,7 +604,7 @@ func TestHubTOMLRecordsLandInTheSameWriteAsTheHostChange(t *testing.T) {
 func TestBoundaryMirrorFollowsEveryHubTOMLMutation(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "hub.toml")
-	ops, err := hostops.Open(hostops.StorePath(dir))
+	ops, err := hostops.Open(hostops.StorePath(dir), hostops.RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("hostops.Open: %v", err)
 	}
