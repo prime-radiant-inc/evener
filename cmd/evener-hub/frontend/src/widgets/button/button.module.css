@@ -56,14 +56,10 @@
   height: 1em;
 }
 
-/* Send and Start keep the label on roomy cards. When the card hides its
- * label, the submit arrow sits alone inside a round control. */
-@container (max-width: 559px) {
-  .button:has([data-submit-arrow]) {
-    aspect-ratio: 1;
-    border-radius: var(--radius-pill);
-    padding-inline: 0;
-  }
+/* The inline button aligns by its box even when its icon has a taller
+ * drawing. Its tooltip wrapper must not grow with the glyph's baseline. */
+.button:where(:not(.link)) {
+  vertical-align: middle;
 }
 
 /* --- sizes -------------------------------------------------------- */
@@ -256,8 +252,13 @@
   .md {
     min-height: var(--tap-min);
   }
+  /* Touch cards that hide the Send/Start label use the whole tap target
+   * for the circle. Desktop keeps the same slot when Stop replaces Send. */
   @container (max-width: 559px) {
     .button:has([data-submit-arrow]) {
+      aspect-ratio: 1;
+      border-radius: var(--radius-pill);
+      padding-inline: 0;
       min-width: var(--tap-min);
     }
   }

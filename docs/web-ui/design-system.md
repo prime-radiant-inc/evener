@@ -82,10 +82,10 @@ symbols with SVG. Native iOS controls use the corresponding SF Symbols.
 | Share through the system share sheet | Up arrow emerging from a square | `square.and.arrow.up` |
 
 The plus opens a new-session form. The arrow submits it. A compact composer
-shows the arrow alone in a round button. A wider composer can also show
-**Send** or **Start**. Keep the action name on an icon-only button for people
-using a screen reader. Include a count in that name when its badge conveys
-information, as with sessions that need attention.
+shows the arrow alone, with a round button on touch layouts. A wider composer
+can also show **Send** or **Start**. Keep the action name on an icon-only button
+for people using a screen reader. Include a count in that name when its badge
+conveys information, as with sessions that need attention.
 
 Shared web action glyphs use an 18 px canvas on a roomy desktop and a 24 px
 canvas on a phone or coarse pointer. Keep a 44 × 44 px touch target for a
