@@ -89,9 +89,6 @@ const rendezvousRemovalRetryPause = 50 * time.Millisecond
 // serveLoadClient is the injectable hook for tests. Production code calls
 // cmdutil.LoadClient; tests may replace this to inject a stub client.
 var serveLoadClient = cmdutil.LoadClient
-var serveAttachAPILogger = func(client *llm.Client, stateDir string, warnings io.Writer) (func() error, error) {
-	return cmdutil.AttachAPILogger(client, stateDir, warnings)
-}
 var serveAttachSessionAPILogger = cmdutil.AttachSessionAPILogger
 
 type serveServer interface {
@@ -328,26 +325,6 @@ func defaultServeDeps() serveDeps {
 	}
 }
 
-func newServeLLMClient(stateDir string, warnings io.Writer) (*llm.Client, func() error, error) {
-	client, closeClient, err := newUnloggedServeLLMClient(stateDir, warnings)
-	if err != nil {
-		return nil, nil, err
-	}
-	closeAPILog, err := serveAttachAPILogger(client, stateDir, warnings)
-	if err != nil {
-		_ = closeClient()
-		return nil, nil, err
-	}
-	return client, func() error {
-		apiLogErr := closeAPILog()
-		clientErr := closeClient()
-		if apiLogErr != nil {
-			return apiLogErr
-		}
-		return clientErr
-	}, nil
-}
-
 func newUnloggedServeLLMClient(stateDir string, warnings io.Writer) (*llm.Client, func() error, error) {
 	client, err := serveLoadClient(stateDir)
 	if err != nil {
@@ -367,10 +344,6 @@ func printRegistryNotices(w io.Writer, r *registry.Registry) {
 	for _, notice := range append(r.Warnings(), r.StrayOAuthRecords()...) {
 		_, _ = fmt.Fprintln(w, "warning:", notice)
 	}
-}
-
-func runServe(args []string) error {
-	return runServeWithDeps(args, defaultServeDeps())
 }
 
 // startupInterrupted reports an interrupt that arrived during a startup step

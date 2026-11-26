@@ -45,6 +45,10 @@ import (
 	"primeradiant.com/evener/server"
 )
 
+func runServe(args []string) error {
+	return runServeWithDeps(args, defaultServeDeps())
+}
+
 func shutdownServeTestDaemon(ctx context.Context, address, sessionID string) error {
 	transport, err := appwire.DialWebSocket(ctx, "ws://"+address+"/rpc", http.DefaultClient)
 	if err != nil {
@@ -883,9 +887,19 @@ func TestServeClient_APILogWritesJSONL(t *testing.T) {
 		serveLoadClient = oldLoadClient
 	})
 
-	client, closeAPILog, err := newServeLLMClient(stateDir, nil)
+	deps := defaultServeDeps()
+	client, closeClient, err := deps.newClient(stateDir, nil)
 	if err != nil {
-		t.Fatalf("newServeLLMClient: %v", err)
+		t.Fatalf("deps.newClient: %v", err)
+	}
+	defer func() {
+		if closeErr := closeClient(); closeErr != nil {
+			t.Errorf("closeClient: %v", closeErr)
+		}
+	}()
+	_, closeAPILog, err := deps.attachAPILogger(client, stateDir, nil, true)
+	if err != nil {
+		t.Fatalf("deps.attachAPILogger: %v", err)
 	}
 	_, err = client.Complete(llm.WithAPILogContext(context.Background(), "serve-session"), llm.Request{
 		Provider: "openai",
