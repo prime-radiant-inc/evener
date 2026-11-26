@@ -34,7 +34,7 @@ func TestJobOutputPageSavedBoundsAndRawBytes(t *testing.T) {
 		{"explicit zero", pageBefore(0), 3, 0, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			page, found, err := LoadSessionJobOutputPage(dir, sessionID, jobID, tc.before, tc.max)
+			page, found, err := LoadSessionJobOutputPage(dir, sessionID, jobID, tc.before, tc.max, nil)
 			if err != nil || !found {
 				t.Fatalf("page: found=%v, error %v", found, err)
 			}
@@ -46,7 +46,7 @@ func TestJobOutputPageSavedBoundsAndRawBytes(t *testing.T) {
 	if err := os.Remove(path); err != nil {
 		t.Fatal(err)
 	}
-	_, found, err := LoadSessionJobOutputPage(dir, sessionID, jobID, nil, 4)
+	_, found, err := LoadSessionJobOutputPage(dir, sessionID, jobID, nil, 4, nil)
 	if !found || err == nil {
 		t.Fatalf("missing output found=%v, error %v, want transient read failure", found, err)
 	}
@@ -56,7 +56,7 @@ func TestJobOutputPageSavedPruningAndLimits(t *testing.T) {
 	t.Parallel()
 	dir, sessionID, jobID, _ := newSavedPageJob(t, bytes.Repeat([]byte("s"), 200), 200, 100)
 	for _, before := range []int64{0, 99} {
-		_, found, err := LoadSessionJobOutputPage(dir, sessionID, jobID, &before, 64)
+		_, found, err := LoadSessionJobOutputPage(dir, sessionID, jobID, &before, 64, nil)
 		var wire appwire.WireError
 		if !found || !errors.As(err, &wire) || wire.Code != appwire.CodeUnavailable {
 			t.Fatalf("pruned page found=%v, error %v, want typed unavailable", found, err)
@@ -69,12 +69,12 @@ func TestJobOutputPageSavedPruningAndLimits(t *testing.T) {
 			t.Fatalf("pruning bounds = %s", data)
 		}
 	}
-	page, found, err := LoadSessionJobOutputPage(dir, sessionID, jobID, pageBefore(100), 64)
+	page, found, err := LoadSessionJobOutputPage(dir, sessionID, jobID, pageBefore(100), 64, nil)
 	if err != nil || !found || page.OffsetBytes != 100 || page.BytesReturned != 0 || page.TotalBytes != 200 || page.RetainedStartBytes != 100 {
 		t.Fatalf("floor page = %+v, found=%v, error %v", page, found, err)
 	}
 	for _, before := range []int64{-1, 201} {
-		_, found, err := LoadSessionJobOutputPage(dir, sessionID, jobID, &before, 64)
+		_, found, err := LoadSessionJobOutputPage(dir, sessionID, jobID, &before, 64, nil)
 		var wire appwire.WireError
 		if !found || !errors.As(err, &wire) || wire.Code != appwire.CodeInvalidParams {
 			t.Fatalf("invalid selector found=%v, error %v, want invalid parameters", found, err)
@@ -82,7 +82,7 @@ func TestJobOutputPageSavedPruningAndLimits(t *testing.T) {
 	}
 	dir, sessionID, jobID, _ = newSavedPageJob(t, bytes.Repeat([]byte("a"), 80000), 80000, 80000)
 	for _, tc := range []struct{ max, count int64 }{{0, 4096}, {-1, 4096}, {100000, 65536}} {
-		page, found, err := LoadSessionJobOutputPage(dir, sessionID, jobID, nil, tc.max)
+		page, found, err := LoadSessionJobOutputPage(dir, sessionID, jobID, nil, tc.max, nil)
 		if err != nil || !found || page.OffsetBytes != 80000-tc.count || page.BytesReturned != tc.count || page.TotalBytes != 80000 || page.RetainedStartBytes != 0 || !bytes.Equal(rawPageBytes(t, page), bytes.Repeat([]byte("a"), int(tc.count))) {
 			t.Fatalf("limit %d page = %+v, found=%v, error %v", tc.max, page, found, err)
 		}

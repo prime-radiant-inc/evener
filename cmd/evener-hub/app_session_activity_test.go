@@ -49,7 +49,7 @@ func TestSessionActivityBackgroundPublicRoutes(t *testing.T) {
 			{id: "job_legacy", command: "legacy", output: "legacy output\n"},
 			{id: "job_second", command: "second background", output: "second output\n", background: true},
 		})
-		record, found, err := agent.LoadSessionJobGet(stateDir, id, "job_equal")
+		record, found, err := agent.LoadSessionJobGet(stateDir, id, "job_equal", nil)
 		if err != nil || !found || !record.Background {
 			t.Fatalf("persisted background fixture %s: %+v, found=%v, err=%v", id, record, found, err)
 		}
