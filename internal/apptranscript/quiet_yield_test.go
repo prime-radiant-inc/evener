@@ -556,6 +556,8 @@ func TestQuietYieldNoteAndNextEnum(t *testing.T) {
 			t.Parallel()
 			turnID := "turn_bare_quiet"
 			longMultiline := "Waiting on subagent\n" + strings.Repeat("x", 260)
+			wantMultilineNote := "Waiting on subagent " + strings.Repeat("x", 260)
+			longSingleLine := "Waiting on subagent " + strings.Repeat("y", 260)
 			entries := []schema.Turn{
 				{Format: format, TurnID: turnID, TurnKind: schema.TurnSpanExecution, Kind: schema.TurnUserInput, Message: llm.User("go"), Timestamp: ts},
 				{Format: format, TurnID: turnID, RoundID: "r_single", Authorship: author.Clone(), Kind: schema.TurnAssistant, QuietYield: true, Timestamp: ts.Add(time.Second), Message: llm.Message{
@@ -568,6 +570,10 @@ func TestQuietYieldNoteAndNextEnum(t *testing.T) {
 				{Format: format, TurnID: turnID, RoundID: "r_multi", Authorship: author.Clone(), Kind: schema.TurnAssistant, QuietYield: true, Timestamp: ts.Add(2 * time.Second), Message: llm.Message{
 					Role:    llm.RoleAssistant,
 					Content: []llm.ContentPart{{Kind: llm.ContentText, Text: longMultiline}},
+				}},
+				{Format: format, TurnID: turnID, RoundID: "r_long_single", Authorship: author.Clone(), Kind: schema.TurnAssistant, QuietYield: true, Timestamp: ts.Add(3 * time.Second), Message: llm.Message{
+					Role:    llm.RoleAssistant,
+					Content: []llm.ContentPart{{Kind: llm.ContentText, Text: longSingleLine}},
 				}},
 			}
 			if format == schema.TurnFormatIdentity {
@@ -587,8 +593,8 @@ func TestQuietYieldNoteAndNextEnum(t *testing.T) {
 			if len(reasonings) != 1 || reasonings[0].Text != "quiet-thought" {
 				t.Fatalf("reasonings=%+v, want quiet-thought", reasonings)
 			}
-			if len(quiets) != 2 {
-				t.Fatalf("quiets=%+v, want 2", quiets)
+			if len(quiets) != 3 {
+				t.Fatalf("quiets=%+v, want 3", quiets)
 			}
 			if quiets[0].Text != "Waiting on build" || len(quiets[0].Raw) != 0 || quiets[0].RoundID != "r_single" {
 				t.Fatalf("single-line quiet=%+v, want Text=\"Waiting on build\" empty Raw RoundID=r_single", quiets[0])
@@ -596,12 +602,14 @@ func TestQuietYieldNoteAndNextEnum(t *testing.T) {
 			if quiets[0].Authorship == nil || quiets[0].Authorship.Author.SessionRef != "local:root-session" {
 				t.Fatalf("Authorship=%+v, want local:root-session", quiets[0].Authorship)
 			}
-			wantNorm := schema.NormalizeQuietNote(longMultiline)
-			if quiets[1].Text != wantNorm || quiets[1].RoundID != "r_multi" {
-				t.Fatalf("long multiline quiet=%+v, want Text=%q RoundID=r_multi", quiets[1], wantNorm)
+			if quiets[1].Text != wantMultilineNote || quiets[1].RoundID != "r_multi" {
+				t.Fatalf("long multiline quiet=%+v, want full untruncated Text=%q RoundID=r_multi", quiets[1], wantMultilineNote)
 			}
 			if got := quietYieldCommentary(t, quiets[1].Raw); got != longMultiline {
 				t.Fatalf("long multiline commentary=%q, want full original text", got)
+			}
+			if quiets[2].Text != longSingleLine || len(quiets[2].Raw) != 0 || quiets[2].RoundID != "r_long_single" {
+				t.Fatalf("long single-line quiet=%+v, want full untruncated Text=%q empty Raw RoundID=r_long_single", quiets[2], longSingleLine)
 			}
 		})
 	}

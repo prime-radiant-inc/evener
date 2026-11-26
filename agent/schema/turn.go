@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"primeradiant.com/evener/agent/provenance"
 	"primeradiant.com/evener/appwire"
@@ -19,19 +18,10 @@ const (
 	CommunicateNextLogQuietlyAndEndTurn = "log_quietly_and_end_turn"
 )
 
-// CommunicateQuietNoteMaxRunes bounds normalized quiet-yield note summaries.
-const CommunicateQuietNoteMaxRunes = 240
-
-// NormalizeQuietNote collapses runs of whitespace into single spaces, trims
-// leading and trailing whitespace, and bounds the result to
-// CommunicateQuietNoteMaxRunes runes with a trailing ellipsis when longer.
+// NormalizeQuietNote collapses runs of whitespace into single spaces and trims
+// leading and trailing whitespace without truncating the note.
 func NormalizeQuietNote(text string) string {
-	collapsed := strings.Join(strings.Fields(text), " ")
-	if utf8.RuneCountInString(collapsed) <= CommunicateQuietNoteMaxRunes {
-		return collapsed
-	}
-	runes := []rune(collapsed)
-	return strings.TrimRight(string(runes[:CommunicateQuietNoteMaxRunes-1]), " ") + "…"
+	return strings.Join(strings.Fields(text), " ")
 }
 
 // CommunicateNextValues lists all valid values of the communicate next enum.

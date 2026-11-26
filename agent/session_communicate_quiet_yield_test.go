@@ -11,7 +11,6 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
-	"unicode/utf8"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
@@ -657,14 +656,13 @@ func TestRestoredLegacyPromptEmitsCommunicateContractDiffOnce(t *testing.T) {
 	}
 }
 
-func TestCommunicateQuietNoteNormalizationAndBound(t *testing.T) {
+func TestCommunicateQuietNoteNormalizationPreservesFullMessage(t *testing.T) {
 	t.Parallel()
-	longMessage := "Waiting on:\n\t  " + strings.Repeat("x", 260)
+	longBody := strings.Repeat("x", 260) + " final word"
 	for _, tc := range []struct {
 		name    string
 		message string
 		want    string
-		bound   bool
 	}{
 		{
 			name:    "collapses_whitespace_and_newlines",
@@ -672,9 +670,9 @@ func TestCommunicateQuietNoteNormalizationAndBound(t *testing.T) {
 			want:    "waiting on build step 2",
 		},
 		{
-			name:    "truncates_over_240_runes_with_ellipsis",
-			message: longMessage,
-			bound:   true,
+			name:    "preserves_long_message_without_truncation",
+			message: "Waiting on:\n\t  " + longBody,
+			want:    "Waiting on: " + longBody,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -688,11 +686,8 @@ func TestCommunicateQuietNoteNormalizationAndBound(t *testing.T) {
 				t.Fatalf("execTool quiet note failed: %s", res.FullOutput)
 			}
 			got := schema.QuietCommunicateNote(res.ToolState)
-			if !tc.bound && got != tc.want {
+			if got != tc.want {
 				t.Fatalf("QuietCommunicateNote = %q, want %q", got, tc.want)
-			}
-			if tc.bound && (utf8.RuneCountInString(got) > 240 || !strings.HasSuffix(got, "…") || strings.ContainsAny(got, "\n\t")) {
-				t.Fatalf("bounded QuietCommunicateNote = %q (runes=%d), want <= 240 runes single-line ending with ellipsis", got, utf8.RuneCountInString(got))
 			}
 		})
 	}
