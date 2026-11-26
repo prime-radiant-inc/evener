@@ -229,8 +229,8 @@ final class EvenerQualificationUITests: XCTestCase {
 	private func showSessions(_ app: XCUIApplication) {
 		let web = app.webViews.firstMatch
 		let hubSettings = web.buttons["Hubs on this iPhone"]
-		let opener = web.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Sessions")).firstMatch
-		let back = web.buttons["Back"].firstMatch
+		let opener = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Sessions")).firstMatch
+		let back = app.buttons["Back"].firstMatch
 		let ready = expectation(for: NSPredicate { _, _ in
 			hubSettings.isHittable || opener.isHittable || back.isHittable
 		}, evaluatedWith: nil)

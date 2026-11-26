@@ -11,6 +11,14 @@ Board, conversations, and composer. Each saved hub has a persistent WebKit
 profile. Removing that hub clears its website data, including credentials and
 drafts. Android and iPad delivery are deferred.
 
+In a conversation, the iPhone can draw the hub’s header with native controls.
+Sessions opens the drawer. When the hub has a destination to return to, Back
+takes its place. Find and Overview act on the open conversation. As the
+transcript scrolls under the controls, iOS 26
+and later can draw them in Liquid Glass. The controls use an opaque surface on
+earlier systems and when Reduce Transparency is on. The hub owns the
+transcript, composer, and reading position.
+
 Open the Sessions drawer and choose **Hubs** for pairing, switching hubs,
 display and in-app alert preferences. **Work on this iPhone** opens the
 on-device Board and its drafts, attachments, and queued messages, including
