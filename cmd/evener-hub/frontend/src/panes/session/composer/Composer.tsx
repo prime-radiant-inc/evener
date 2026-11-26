@@ -266,7 +266,6 @@ function ComposerWithSubmission({
   // press that never clicks never ends editing.
   const outsidePressRef = useRef(false);
   const submitButtonRef = useRef<HTMLButtonElement>(null);
-  const stopButtonRef = useRef<HTMLButtonElement>(null);
   // Set by scheduleCursorRestore below; consumed (and cleared) by the
   // cursor-restore layout effect in the commit that carries the edit.
   const cursorToRestoreRef = useRef<number | null>(null);
@@ -954,10 +953,19 @@ function ComposerWithSubmission({
   }, [menuSteer, model, actionPending, hasUnbackedImage]);
   const inlineStop = !!model && controlsFor(model).stop && !hasContent;
   const inlineStopReady = useInlineStopReady(ref, !model || askPending ? null : inlineStop ? "stop" : "send");
-  const alignRail = appleComposer && !isMobile && focused && !askPending && !!model;
-  useLayoutEffect(() => {
-    if (alignRail) return alignCreateWithComposer(inlineStop ? stopButtonRef.current : submitButtonRef.current);
-  }, [alignRail, inlineStop]);
+  const alignRailAction = appleComposer && !isMobile && focused && !askPending ? alignCreateWithComposer : undefined;
+  const attachSubmitButton = useCallback(
+    (button: HTMLButtonElement | null) => {
+      submitButtonRef.current = button;
+      if (!button) return;
+      const release = alignRailAction?.(button);
+      return () => {
+        submitButtonRef.current = null;
+        release?.();
+      };
+    },
+    [alignRailAction],
+  );
 
   if (!model) return null; // Session.tsx only mounts this once its own model is hydrated; defensive only.
 
@@ -1598,7 +1606,7 @@ function ComposerWithSubmission({
                           size="xs"
                           type="button"
                           data-testid="composer-stop"
-                          ref={stopButtonRef}
+                          ref={alignRailAction}
                           aria-label="Stop"
                           icon={<StopIcon />}
                           onClick={() => void handleInterruptClick()}
@@ -1618,7 +1626,7 @@ function ComposerWithSubmission({
                     ) : (
                       <Tooltip key="send" label={submitTooltip}>
                         <Button
-                          ref={submitButtonRef}
+                          ref={attachSubmitButton}
                           type="submit"
                           variant={showSteer ? "quiet" : "primary"}
                           size="xs"

@@ -12,6 +12,7 @@ import {
 import { ActivitySidebar } from "../../../shell/activitybar/activitySidebarTestUtils";
 import { ClientProvider } from "../../../shell/clientContext";
 import { paletteStore } from "../../../shell/palette/paletteController";
+import * as railAlignment from "../../../shell/rail/alignCreateWithComposer";
 import { MOBILE_QUERY } from "../../../shell/useIsMobile";
 import { isPaneOpen, resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
 import { installLocalStorage, MemoryStorage } from "../../../storageTestUtils";
@@ -573,6 +574,8 @@ test("goal replacement closes slash completion and resets selection", async () =
 });
 
 test("goal replacement focus waits until an ended follow-up textarea mounts", async () => {
+  vi.spyOn(navigator, "userAgent", "get").mockReturnValue("iPad");
+  const align = vi.spyOn(railAlignment, "alignCreateWithComposer");
   const user = userEvent.setup();
   let overrides: Partial<Thread> = {
     status: { type: "closed" },
@@ -581,7 +584,7 @@ test("goal replacement focus waits until an ended follow-up textarea mounts", as
       capabilities: { ...FULL_CAPABILITIES, send: false },
     },
   };
-  const fake = await mountComposer("ref_a", overrides);
+  const { fake } = await mountComposerWithHandle("ref_a", overrides, { focused: true });
   fake.on("thread/read", () => readResponse("ref_a", overrides));
   expect(screen.queryByRole("textbox", { name: /^message$/i })).toBeNull();
 
@@ -600,6 +603,7 @@ test("goal replacement focus waits until an ended follow-up textarea mounts", as
   // re-queried on every poll rather than cached before the mount settles.
   await waitFor(() => expect(document.activeElement).toBe(textarea()));
   expect(textarea().textContent).toBe("/goal Keep the session focused");
+  expect(align).toHaveBeenCalledWith(screen.getByTestId("composer-submit"));
 });
 
 // Desktop Tasks everywhere is the activity sidebar, preselected to its tasks
