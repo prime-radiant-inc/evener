@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { expect, test } from "vitest";
-import { blocked, blockedMessage, isBlocked } from "./blocked";
+import { blocked, isBlocked } from "./blocked";
 
 // The blocked sentinel keeps the palette OPEN and surfaces an inline error
 // instead of closing (parity-m6-surfaces.md §2.7, search.js:198,839-846).
@@ -22,9 +22,4 @@ test("isBlocked rejects everything that is not the sentinel", () => {
   expect(isBlocked({ paletteBlocked: false, message: "x" })).toBe(false);
   // A resolved wire response object is not a block.
   expect(isBlocked({ ok: true })).toBe(false);
-});
-
-test("blockedMessage returns the message for a sentinel and undefined otherwise", () => {
-  expect(blockedMessage(blocked("stuck"))).toBe("stuck");
-  expect(blockedMessage({ ok: true })).toBeUndefined();
 });

@@ -54,23 +54,8 @@ import { readRecentCommandIds } from "./recentCommands";
 // one-row handoff instead (CommandPalette.tsx's buildView). A "global"
 // command (new session, spawn, settings, theme, dashboard, search, help,
 // upgrade, next-needs-you) needs no session and stays palette-native, exactly
-// as before. commandSurface below is the one place that names this mapping,
-// so a reader never has to infer "session scope" and "composer surface" are
-// the same fact from two different modules independently.
+// as before.
 export type CommandScope = "global" | "session";
-
-export type CommandSurface = "session" | "app-global";
-
-// commandSurface: which UI surface owns running this command. Derived
-// straight from `scope`, not a second independently-set field - the two
-// have been the same fact since the 2026-08-14 decision (see CommandScope's
-// own doc comment above), and a parallel field would only invite the two to
-// drift. sessionBuiltinCommands (composer's own resolved list) and the
-// palette's delisting/handoff logic (CommandPalette.tsx) both read this
-// instead of comparing against the literal string "session" themselves.
-export function commandSurface(command: Pick<Command, "scope">): CommandSurface {
-  return command.scope === "session" ? "session" : "app-global";
-}
 
 export interface CommandArgsEnumItem {
   id: string;
@@ -841,7 +826,7 @@ export function appGlobalCommandsInScope(ctx: PaletteContext): ScopedCommand[] {
 // (descending, registry order as a stable tiebreak, negatives excluded) and
 // no Recent section.
 //
-// app-global ONLY (2026-08-14 decision, commandSurface's own doc comment):
+// app-global ONLY (2026-08-14 decision):
 // every session-scoped command - built-in or plugin-catalog - is delisted
 // here, whether or not a session is focused. The palette hands those off to
 // the composer instead (CommandPalette.tsx's buildView, via

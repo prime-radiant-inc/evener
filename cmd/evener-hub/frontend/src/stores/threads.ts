@@ -2818,16 +2818,6 @@ function requireMutationRuntime(): MutationRuntime {
   return runtime;
 }
 
-// A queue action that removes or promotes a row has no transcript item to
-// prove delivery, but the user explicitly ended that queue row. Settle its
-// retained display copy so the stack cannot keep a permanent Delivering row.
-export async function settleDisplayCopy(clientMutationId: string, ref: string): Promise<void> {
-  const runtime = getMutationRuntime();
-  if (!runtime) return;
-  await runtime.dispatcher.reconcileIdentities([clientMutationId]);
-  await refreshMutationPins(runtime, [ref]);
-}
-
 export interface MutationPersistenceSnapshot {
   outbox: MutationOutboxRecord[];
   optimistic: MutationOptimisticRecord[];

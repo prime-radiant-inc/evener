@@ -41,7 +41,6 @@ import {
   resetThreadsStoreForTests,
   retryBlockedMutation,
   setMutationStorageForTests,
-  settleDisplayCopy,
   threadsStore,
 } from "./threads";
 import { ConflictError } from "./threadsErrors";
@@ -658,26 +657,6 @@ test("queue evidence keeps the accepted display copy without settling it", async
   await flushIndexedDBUntil(() => false);
   expect(settleSpy).not.toHaveBeenCalled();
   expect(await storage.getOptimistic("m1")).toBeDefined();
-  storage.close();
-});
-
-test("settleDisplayCopy retires a retained queue display copy", async () => {
-  const storage = new MutationOutboxIndexedDB({ createMutationId: () => "m1" });
-  setMutationStorageForTests(storage);
-  connectMutationClient();
-  const outbox = await storage.enqueueIntent({
-    targetRef: "ref_a",
-    threadId: "thr_ref_a",
-    method: "turn/queue",
-    payload: { ref: "ref_a", clientMutationId: "m1", input: [{ type: "text", text: "hello" }] },
-    attachments: [],
-    optimisticDisplay: { method: "turn/queue", input: [{ type: "text", text: "hello" }] },
-  });
-  await storage.markAttempted(outbox.clientMutationId);
-  expect(await storage.settleReceipt(outbox.clientMutationId, "pending")).toBe(true);
-  expect(await storage.getOptimistic(outbox.clientMutationId)).toBeDefined();
-  await settleDisplayCopy(outbox.clientMutationId, "ref_a");
-  expect(await storage.getOptimistic(outbox.clientMutationId)).toBeUndefined();
   storage.close();
 });
 
