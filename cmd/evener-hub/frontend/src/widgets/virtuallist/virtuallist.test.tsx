@@ -1195,15 +1195,14 @@ describe("anchorToEnd", () => {
       expect(current().isScrolling).toBe(true);
       expect(current().scrollDirection).toBe("forward");
 
-      // Compositor already advanced scrollTop ahead of the next scroll event:
-      // still no scrollTo write and scrolling state stays active.
+      // When the port offset moved ahead of the virtualizer without a scroll
+      // event (such as a layout clamp or compositor step), cancellation syncs
+      // scrollOffset without calling scrollTo.
       await act(async () => {
         root.scrollTop = 480;
         layout?.cancelPendingScroll();
       });
       expect(scrollToSpy).not.toHaveBeenCalled();
-      expect(current().isScrolling).toBe(true);
-      expect(current().scrollDirection).toBe("forward");
       expect(current().scrollOffset).toBe(480);
 
       // An active scrollToIndex reconcile is still cancelled without issuing a

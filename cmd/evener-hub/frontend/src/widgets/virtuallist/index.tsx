@@ -390,10 +390,8 @@ export function VirtualList({
         suppressScrollWriteRef.current = false;
       }
     }
-    if (hadPendingScroll || hadClampedScroll) {
+    if (hadPendingScroll || hadClampedScroll || virtualizer.scrollOffset !== scrollTop) {
       publishOffsetRef.current?.(scrollTop, false);
-    } else if (virtualizer.scrollOffset !== scrollTop) {
-      publishOffsetRef.current?.(scrollTop, virtualizer.isScrolling);
     }
   };
   const syncReaderMovement = (beforeOffset: number) => {
