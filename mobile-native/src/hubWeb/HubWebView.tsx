@@ -6,6 +6,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { WebView, type WebViewMessageEvent } from "react-native-webview";
 import { useHoldAlerts } from "../alerts/alertsContext";
 import type { HubProfile } from "../connection";
+import { useSystemGlass } from "../design/systemGlass";
 import { paletteFor } from "../design/tokens";
 import { haptic } from "../haptics";
 import { externalMarkdownLink } from "../markdownLinks";
@@ -36,6 +37,11 @@ export function HubWebView({ profile, token, initialPath, onPath, onHubMenu, onD
 	const [header, setHeader] = useState<SessionHeaderState | null>(null);
 	const [hubDark, setHubDark] = useState<boolean | null>(null);
 	const focused = useIsFocused();
+	const glass = useSystemGlass();
+	const material = JSON.stringify({ type: "material", glass });
+	useEffect(() => {
+		if (bridgeReady) web.current?.postMessage(material);
+	}, [bridgeReady, material]);
 	useHoldAlerts(editing && bridgeReady && focused && !error, "quiet");
 	const source = useMemo(() => {
 		const page = hubPageSource(origin, entryPath, token);
@@ -84,7 +90,6 @@ export function HubWebView({ profile, token, initialPath, onPath, onHubMenu, onD
 		const path = hubPagePath(origin, origin + initialPath);
 		if (!path) return;
 		currentPath.current = path;
-		setHeader(null);
 		if (bridgeReady && web.current) web.current.postMessage(JSON.stringify({ type: "navigate", path }));
 		else setEntryPath(path);
 	}, [initialPath, bridgeReady, origin]);
@@ -106,7 +111,8 @@ export function HubWebView({ profile, token, initialPath, onPath, onHubMenu, onD
 				setHeader(isSessionHeader(data.header) ? data.header : null);
 				break;
 			case "ready":
-				setBridgeReady(true);
+				if (bridgeReady) web.current?.postMessage(material);
+				else setBridgeReady(true);
 				break;
 			case "route": {
 				const path = typeof data.path === "string" && hubPagePath(origin, origin + data.path);
@@ -226,6 +232,7 @@ export function HubWebView({ profile, token, initialPath, onPath, onHubMenu, onD
 				{activeHeader && (
 					<SessionHeader
 						header={activeHeader}
+						glass={glass}
 						palette={hubPalette ?? palette}
 						onAction={(action) =>
 							web.current?.postMessage(JSON.stringify({ type: "headerAction", id: activeHeader.id, action }))

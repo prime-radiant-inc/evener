@@ -1,8 +1,6 @@
-import { GlassView } from "expo-glass-effect";
 import { type SFSymbol, SymbolView } from "expo-symbols";
-import type { ReactNode } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
-import { useSystemGlass } from "../design/systemGlass";
+import { GlassControlGroup } from "../design/GlassControlGroup";
 import type { Palette } from "../design/tokens";
 
 export interface SessionHeaderState {
@@ -40,33 +38,17 @@ const controls = {
 } as const satisfies Record<string, { symbol: SFSymbol; label: string }>;
 export type HeaderAction = keyof typeof controls;
 
-function ControlGroup({ glass, palette, children }: { glass: boolean; palette: Palette; children: ReactNode }) {
-	return glass ? (
-		<GlassView glassEffectStyle="regular" colorScheme={palette.scheme} isInteractive style={styles.group}>
-			{children}
-		</GlassView>
-	) : (
-		<View
-			style={[
-				styles.group,
-				{ backgroundColor: palette.inset, borderColor: palette.edgeStrong, borderWidth: StyleSheet.hairlineWidth },
-			]}
-		>
-			{children}
-		</View>
-	);
-}
-
 export function SessionHeader({
 	header,
+	glass,
 	palette,
 	onAction,
 }: {
 	header: SessionHeaderState;
+	glass: boolean;
 	palette: Palette;
 	onAction(action: HeaderAction): void;
 }) {
-	const glass = useSystemGlass();
 	function control(action: HeaderAction) {
 		const { symbol, label } = controls[action];
 		const count = action === "sessions" ? header.needsYou : 0;
@@ -100,18 +82,18 @@ export function SessionHeader({
 				},
 			]}
 		>
-			<ControlGroup glass={glass} palette={palette}>
+			<GlassControlGroup glass={glass} palette={palette}>
 				{control(header.leading)}
-			</ControlGroup>
+			</GlassControlGroup>
 			{!header.collapsed && (
 				<Text accessibilityRole="header" numberOfLines={1} style={[styles.title, { color: palette.inkHi }]}>
 					{header.title}
 				</Text>
 			)}
-			<ControlGroup glass={glass} palette={palette}>
+			<GlassControlGroup glass={glass} palette={palette}>
 				{control("find")}
 				{control("overview")}
-			</ControlGroup>
+			</GlassControlGroup>
 		</View>
 	);
 }
@@ -129,7 +111,6 @@ const styles = StyleSheet.create({
 		gap: 10,
 	},
 	title: { flex: 1, fontSize: 17, fontWeight: "600" },
-	group: { flexDirection: "row", alignItems: "center", borderRadius: 24 },
 	button: {
 		alignItems: "center",
 		justifyContent: "center",

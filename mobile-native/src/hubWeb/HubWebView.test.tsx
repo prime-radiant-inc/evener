@@ -43,6 +43,9 @@ it("routes the active native session controls back to their pane and gives the h
 	publish(header);
 	message({ type: "appearance", dark: true });
 	await settle();
+	message({ type: "ready" });
+	expect(postMessage.mock.calls.map(([value]) => JSON.parse(value))).toEqual([{ type: "material", glass: true }]);
+	postMessage.mockClear();
 	expect(tree.root.findAllByType("GlassView" as never)).toHaveLength(2);
 	expect(tree.root.findByProps({ accessibilityRole: "header" }).props.children).toBe(header.title);
 	const press = (label: string) => act(() => tree.root.findByProps({ accessibilityLabel: label }).props.onPress());
@@ -62,6 +65,7 @@ it("routes the active native session controls back to their pane and gives the h
 	]);
 	act(() => systemGlass.setReduceTransparency(true));
 	expect(tree.root.findAllByType("GlassView" as never)).toHaveLength(0);
+	expect(JSON.parse(postMessage.mock.lastCall?.[0])).toEqual({ type: "material", glass: false });
 	publish(null);
 	expect(tree.root.findAllByProps({ accessibilityLabel: "Back" })).toHaveLength(0);
 	const statusBar = () => tree.root.findByType("StatusBar" as never).props.style;

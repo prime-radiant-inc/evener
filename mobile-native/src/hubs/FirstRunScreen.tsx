@@ -8,6 +8,7 @@ import { useState } from "react";
 import { Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useConnection } from "../ConnectionProvider";
+import { useSystemGlass } from "../design/systemGlass";
 import type { Routes } from "../screens";
 import { Group, GroupedPage, Row } from "../sheet/Grouped";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
@@ -17,6 +18,7 @@ import { usesHubWorkspace } from "../workspaceAvailability";
 export function FirstRunScreen({ navigation }: NativeStackScreenProps<Routes, "Hubs">) {
 	const { profiles, selectHub } = useConnection();
 	const { palette } = useColors();
+	const glass = useSystemGlass();
 	const scale = useTextScale();
 	const [how, setHow] = useState<How | null>(null);
 
@@ -30,7 +32,7 @@ export function FirstRunScreen({ navigation }: NativeStackScreenProps<Routes, "H
 		return (
 			<SafeAreaView edges={["top", "bottom"]} style={{ flex: 1, backgroundColor: palette.canvas }}>
 				<SafeAreaView edges={["left", "right"]}>
-					<Group>
+					<Group glass={glass}>
 						<Row label="Back" tone="accent" onPress={() => setHow(null)} />
 					</Group>
 				</SafeAreaView>
@@ -56,11 +58,11 @@ export function FirstRunScreen({ navigation }: NativeStackScreenProps<Routes, "H
 						In Evener on your computer, open Settings, then Mobile app.
 					</Text>
 				</View>
-				<Group>
+				<Group glass={glass}>
 					<Row icon="qrcode.viewfinder" label="Scan pairing code" chevron onPress={() => setHow("scan")} />
 					<Row icon="doc.on.clipboard" label="Paste pairing link" chevron onPress={() => setHow("paste")} />
 				</Group>
-				<Group>
+				<Group glass={glass}>
 					<Row
 						icon="keyboard"
 						label="Enter the address"
