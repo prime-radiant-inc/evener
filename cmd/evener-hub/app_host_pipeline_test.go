@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -43,7 +44,20 @@ type pipelineFixture struct {
 func newPipelineFixture(t *testing.T, entries []hostreg.Host, seed func(*hostops.Store)) *pipelineFixture {
 	t.Helper()
 	dir := t.TempDir()
-	store, err := hostops.Open(hostops.StorePath(dir))
+	return newPipelineFixtureAt(t, dir, dir, entries, seed)
+}
+
+// newPipelineStagingFixture leaves the fixture's own store path unopened,
+// running seed against a separate pre-crash store so seedCompensations can
+// later seed raw JSON on disk at hostops.StorePath(dir) before the first Open.
+func newPipelineStagingFixture(t *testing.T, entries []hostreg.Host, seed func(*hostops.Store)) *pipelineFixture {
+	t.Helper()
+	return newPipelineFixtureAt(t, t.TempDir(), t.TempDir(), entries, seed)
+}
+
+func newPipelineFixtureAt(t *testing.T, dir, storeRoot string, entries []hostreg.Host, seed func(*hostops.Store)) *pipelineFixture {
+	t.Helper()
+	store, err := hostops.Open(hostops.StorePath(storeRoot))
 	if err != nil {
 		t.Fatalf("hostops.Open: %v", err)
 	}
@@ -59,6 +73,131 @@ func newPipelineFixture(t *testing.T, entries []hostreg.Host, seed func(*hostops
 		t.Fatalf("hostreg.New: %v", err)
 	}
 	return &pipelineFixture{dir: dir, configPath: configPath, store: store, registry: registry}
+}
+
+type seededCompensation struct {
+	Host       string
+	Phase      hostops.CompensationPhase
+	Rows       []hostops.Token
+	Stash      string
+	Generation uint64
+	// PurgeRows removes Rows from the store's on-disk "tokens" array before
+	// opening, modeling a crash after a legacy purge landed.
+	PurgeRows bool
+}
+
+// seedCompensations writes raw store JSON into f.dir from the pre-crash store
+// state plus any pendingCompensation entries and opens f.store at that path.
+func (f *pipelineFixture) seedCompensations(t *testing.T, comps ...seededCompensation) {
+	t.Helper()
+	targetPath := hostops.StorePath(f.dir)
+	sourcePath := ""
+	if f.store != nil {
+		if f.store.Path() == targetPath {
+			t.Fatalf("seedCompensations called after %s was already opened", targetPath)
+		}
+		sourcePath = f.store.Path()
+	}
+	f.store = seedStoreWithCompensations(t, targetPath, sourcePath, comps...)
+}
+
+// seedStoreWithCompensations writes a raw operation store JSON file at
+// targetPath starting from sourcePath (or an empty store when sourcePath is
+// empty or absent), injecting pendingCompensation entries and dropping purged
+// token rows, then opens targetPath. targetPath must not have been opened yet
+// in this process because hostops.Open caches cells by canonical path.
+func seedStoreWithCompensations(t *testing.T, targetPath, sourcePath string, comps ...seededCompensation) *hostops.Store {
+	t.Helper()
+	raw := []byte(`{"version":1,"sequence":0,"allocatorHighWaterMark":0,"records":[]}`)
+	if sourcePath != "" {
+		data, err := os.ReadFile(sourcePath)
+		if err == nil {
+			raw = data
+		} else if !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("read source store %s: %v", sourcePath, err)
+		}
+	}
+	var doc map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("decode source store %s: %v", sourcePath, err)
+	}
+	if len(comps) > 0 {
+		purged := make(map[string]map[string]struct{})
+		compMap := make(map[string]any, len(comps))
+		for _, comp := range comps {
+			rows := comp.Rows
+			if rows == nil {
+				rows = []hostops.Token{}
+			}
+			compMap[comp.Host] = map[string]any{
+				"host":           comp.Host,
+				"phase":          string(comp.Phase),
+				"rows":           rows,
+				"stashReference": comp.Stash,
+				"generation":     comp.Generation,
+			}
+			if comp.PurgeRows {
+				set := purged[comp.Host]
+				if set == nil {
+					set = map[string]struct{}{}
+					purged[comp.Host] = set
+				}
+				for _, row := range comp.Rows {
+					set[row.Value] = struct{}{}
+				}
+			}
+		}
+		if len(purged) > 0 && len(doc["tokens"]) > 0 {
+			var tokenItems []json.RawMessage
+			if err := json.Unmarshal(doc["tokens"], &tokenItems); err != nil {
+				t.Fatalf("decode tokens array: %v", err)
+			}
+			kept := make([]json.RawMessage, 0, len(tokenItems))
+			for _, item := range tokenItems {
+				var tok struct {
+					Host  string `json:"host"`
+					Value string `json:"value"`
+				}
+				if err := json.Unmarshal(item, &tok); err != nil {
+					t.Fatalf("decode token item: %v", err)
+				}
+				if values, ok := purged[tok.Host]; ok {
+					if _, drop := values[tok.Value]; drop {
+						continue
+					}
+				}
+				kept = append(kept, item)
+			}
+			encodedTokens, err := json.Marshal(kept)
+			if err != nil {
+				t.Fatalf("marshal kept tokens: %v", err)
+			}
+			doc["tokens"] = encodedTokens
+		}
+		encodedComps, err := json.Marshal(compMap)
+		if err != nil {
+			t.Fatalf("marshal pendingCompensation: %v", err)
+		}
+		doc["pendingCompensation"] = encodedComps
+	}
+	out, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatalf("marshal seeded store: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0o700); err != nil {
+		t.Fatalf("MkdirAll(%s): %v", filepath.Dir(targetPath), err)
+	}
+	if err := os.WriteFile(targetPath, out, 0o600); err != nil {
+		t.Fatalf("WriteFile(%s): %v", targetPath, err)
+	}
+	if err := os.Chmod(targetPath, 0o600); err != nil {
+		t.Fatalf("Chmod(%s): %v", targetPath, err)
+	}
+	store, err := hostops.Open(targetPath)
+	if err != nil {
+		t.Fatalf("hostops.Open(%s): %v", targetPath, err)
+	}
+	return store
 }
 
 // appendTOML appends raw TOML sections to the fixture's hub.toml.
@@ -177,7 +316,7 @@ func newPipelineRemovalFixture(t *testing.T, entry hostreg.Host, registered bool
 	if registered {
 		registryEntries = []hostreg.Host{entry}
 	}
-	fixture := newPipelineFixture(t, registryEntries, func(store *hostops.Store) {
+	fixture := newPipelineStagingFixture(t, registryEntries, func(store *hostops.Store) {
 		token = pipelineToken(t, store, entry.Name, entry.Generation)
 	})
 	if err := writeHubTOMLHosts(fixture.configPath, []hostreg.Host{entry}); err != nil {
@@ -316,12 +455,10 @@ func TestBootCompensationArmedWithRowsPresentRestoresHubTOML(t *testing.T) {
 	// carries the intent, the record is armed with the preimage, the purge never
 	// landed (the row is present), and the stash holds the pre-remove bytes.
 	fixture.appendTOML(t, "[pending_store_sync.m4]\ngeneration = 2\ntoken_values = [\""+token.Value+"\"]\n")
-	if err := fixture.store.ArmCompensation(hostops.Compensation{
+	fixture.seedCompensations(t, seededCompensation{
 		Host: "m4", Phase: hostops.CompensationArmed, Rows: []hostops.Token{token},
 		Stash: hubTOMLStashPath(fixture.configPath, "test-key"), Generation: 2,
-	}); err != nil {
-		t.Fatalf("ArmCompensation: %v", err)
-	}
+	})
 
 	m := fixture.manager(t)
 	if _, ok := m.opsStore().Compensation("m4"); ok {
@@ -398,7 +535,6 @@ func hostRowNamed(rows []appwire.HostRow, name string) (appwire.HostRow, bool) {
 func TestBootCompensationResumesTheOwedRowsAfterAFailedAdvance(t *testing.T) {
 	entry := pipelineEntry("keep", 2)
 	fixture, token, preRemove := newPipelineRemovalFixture(t, entry, true)
-	m := fixture.legacyManager(t)
 	// The crash state: the purge landed (the record advanced to hubtoml), the
 	// file still carries the intent, and the stash holds the pre-mutation bytes.
 	fixture.appendTOML(t, "[pending_store_sync.keep]\ngeneration = 2\ntoken_values = [\""+token.Value+"\"]\n")
@@ -406,15 +542,11 @@ func TestBootCompensationResumesTheOwedRowsAfterAFailedAdvance(t *testing.T) {
 	if err := os.WriteFile(stash, preRemove, 0o600); err != nil {
 		t.Fatalf("write stash: %v", err)
 	}
-	if err := fixture.store.ArmCompensation(hostops.Compensation{
-		Host: "keep", Phase: hostops.CompensationArmed, Rows: []hostops.Token{token},
-		Stash: stash, Generation: 2,
-	}); err != nil {
-		t.Fatalf("ArmCompensation: %v", err)
-	}
-	if _, err := fixture.store.PurgeCompensated("keep", []string{token.Value}); err != nil {
-		t.Fatalf("PurgeCompensated: %v", err)
-	}
+	fixture.seedCompensations(t, seededCompensation{
+		Host: "keep", Phase: hostops.CompensationHubTOML, Rows: []hostops.Token{token},
+		Stash: stash, Generation: 2, PurgeRows: true,
+	})
+	m := fixture.legacyManager(t)
 	// The first pass restores the file, then its advance to the rows arm fails:
 	// the record stays hubtoml with the rows owed.
 	m.testOnlyFailCompensationStep = func(_ string, step string) error {
@@ -475,12 +607,10 @@ func TestBootCompensationArmedWithRowsPresentServesTheHostTheRegistryLacked(t *t
 	entry := pipelineEntry("m4", 2)
 	fixture, token, _ := newPipelineRemovalFixture(t, entry, false)
 	fixture.appendTOML(t, "[pending_store_sync.m4]\ngeneration = 2\ntoken_values = [\""+token.Value+"\"]\n")
-	if err := fixture.store.ArmCompensation(hostops.Compensation{
+	fixture.seedCompensations(t, seededCompensation{
 		Host: "m4", Phase: hostops.CompensationArmed, Rows: []hostops.Token{token},
 		Stash: hubTOMLStashPath(fixture.configPath, "test-key"), Generation: 2,
-	}); err != nil {
-		t.Fatalf("ArmCompensation: %v", err)
-	}
+	})
 	sources := appsource.NewRegistry()
 	m := newHubHostManager(sources, nil, hubcore.WebConfig{
 		RemoteHostRegistry:   fixture.registry,
@@ -518,16 +648,10 @@ func TestBootCompensationPurgeLandedReinsertsTheRows(t *testing.T) {
 	entry := pipelineEntry("m4", 2)
 	fixture, token, _ := newPipelineRemovalFixture(t, entry, true)
 	fixture.appendTOML(t, "[pending_store_sync.m4]\ngeneration = 2\ntoken_values = [\""+token.Value+"\"]\n")
-	if err := fixture.store.ArmCompensation(hostops.Compensation{
-		Host: "m4", Phase: hostops.CompensationArmed, Rows: []hostops.Token{token},
-		Stash: hubTOMLStashPath(fixture.configPath, "test-key"), Generation: 2,
-	}); err != nil {
-		t.Fatalf("ArmCompensation: %v", err)
-	}
-	// The purge landed: the row is gone and the record advanced past armed.
-	if purged, err := fixture.store.PurgeCompensated("m4", []string{token.Value}); err != nil || purged != 1 {
-		t.Fatalf("PurgeCompensated = %d/%v, want 1/nil", purged, err)
-	}
+	fixture.seedCompensations(t, seededCompensation{
+		Host: "m4", Phase: hostops.CompensationHubTOML, Rows: []hostops.Token{token},
+		Stash: hubTOMLStashPath(fixture.configPath, "test-key"), Generation: 2, PurgeRows: true,
+	})
 
 	m := fixture.manager(t)
 	restored, ok := m.opsStore().OutstandingToken("m4")
@@ -552,15 +676,10 @@ func TestBootCompensationWithIntentClearedClearsWithoutResurrection(t *testing.T
 	fixture, token, _ := newPipelineRemovalFixture(t, entry, false)
 	// The commit path passed its commit point: the purge landed and the intent
 	// was cleared, leaving only the armed record behind.
-	if _, err := fixture.store.ApplyStoreSync(hostops.StoreSyncIntent{Host: "m4", Generation: 2, Values: []string{token.Value}}); err != nil {
-		t.Fatalf("purge the row: %v", err)
-	}
-	if err := fixture.store.ArmCompensation(hostops.Compensation{
+	fixture.seedCompensations(t, seededCompensation{
 		Host: "m4", Phase: hostops.CompensationArmed, Rows: []hostops.Token{token},
-		Stash: filepath.Join(fixture.dir, "absent.stash"), Generation: 2,
-	}); err != nil {
-		t.Fatalf("ArmCompensation: %v", err)
-	}
+		Stash: filepath.Join(fixture.dir, "absent.stash"), Generation: 2, PurgeRows: true,
+	})
 	m := fixture.manager(t)
 	if _, ok := m.opsStore().Compensation("m4"); ok {
 		t.Fatal("boot did not clear the record whose intent was already cleared")
@@ -768,24 +887,21 @@ func TestBootMirrorPreservesAMirrorWithoutAFileEntry(t *testing.T) {
 func TestBootCompensationRuntimeLeavesTheRecordWhenTheRestoredFileIsMissing(t *testing.T) {
 	entry := pipelineEntry("m4", 2)
 	var token hostops.Token
-	fixture := newPipelineFixture(t, []hostreg.Host{entry}, func(store *hostops.Store) {
+	fixture := newPipelineStagingFixture(t, []hostreg.Host{entry}, func(store *hostops.Store) {
 		token = pipelineToken(t, store, "m4", 2)
 	})
-	m := fixture.manager(t)
-	// Arm a runtime-phase record and drive the pass directly with an injected
+	// Seed a runtime-phase record and drive the pass directly with an injected
 	// runtime-revert failure: §9 pins the record left in `compensating-runtime`
-	// with its stash intact, never cleared. The stash goes down with the arm —
-	// the boot prune removes an orphan, and no record names it yet.
+	// with its stash intact, never cleared.
 	stash := hubTOMLStashPath(fixture.configPath, "runtime-key")
 	if err := os.WriteFile(stash, []byte("[hosts]\n"), 0o600); err != nil {
 		t.Fatalf("write stash: %v", err)
 	}
-	if err := fixture.store.ArmCompensation(hostops.Compensation{
+	fixture.seedCompensations(t, seededCompensation{
 		Host: "m4", Phase: hostops.CompensationRuntime, Rows: []hostops.Token{token},
 		Stash: stash, Generation: 2,
-	}); err != nil {
-		t.Fatalf("ArmCompensation: %v", err)
-	}
+	})
+	m := fixture.legacyManager(t)
 	m.testOnlyFailRuntimeRevert = func(string) error { return errors.New("injected runtime-revert failure") }
 	m.reconcileCompensations()
 	record, ok := m.opsStore().Compensation("m4")
@@ -863,15 +979,10 @@ func TestBootCompensationHubTOMLWithIntentClearedDoesNotRestore(t *testing.T) {
 	// The commit's follow-up write already cleared the intent while the purge
 	// landed and the record advanced to the hub.toml phase: the commit path
 	// passed its commit point.
-	if _, err := fixture.store.ApplyStoreSync(hostops.StoreSyncIntent{Host: "m4", Generation: 2, Values: []string{token.Value}}); err != nil {
-		t.Fatalf("purge the row: %v", err)
-	}
-	if err := fixture.store.ArmCompensation(hostops.Compensation{
+	fixture.seedCompensations(t, seededCompensation{
 		Host: "m4", Phase: hostops.CompensationHubTOML, Rows: []hostops.Token{token},
-		Stash: hubTOMLStashPath(fixture.configPath, "test-key"), Generation: 2,
-	}); err != nil {
-		t.Fatalf("ArmCompensation: %v", err)
-	}
+		Stash: hubTOMLStashPath(fixture.configPath, "test-key"), Generation: 2, PurgeRows: true,
+	})
 	m := fixture.manager(t)
 	if _, ok := m.opsStore().Compensation("m4"); ok {
 		t.Fatal("boot did not clear the record whose intent was already cleared")
@@ -895,7 +1006,7 @@ func TestBootCompensationHubTOMLWithIntentClearedDoesNotRestore(t *testing.T) {
 func TestBootCompensationRuntimeRegistersTheRestoredHostTheRegistryLacked(t *testing.T) {
 	entry := pipelineEntry("m4", 2)
 	var token hostops.Token
-	fixture := newPipelineFixture(t, nil, func(store *hostops.Store) {
+	fixture := newPipelineStagingFixture(t, nil, func(store *hostops.Store) {
 		token = pipelineToken(t, store, "m4", 2)
 	})
 	if err := writeHubTOMLHosts(fixture.configPath, []hostreg.Host{entry}); err != nil {
@@ -913,15 +1024,10 @@ func TestBootCompensationRuntimeRegistersTheRestoredHostTheRegistryLacked(t *tes
 		t.Fatalf("rewrite hub.toml: %v", err)
 	}
 	fixture.appendTOML(t, "[pending_store_sync.m4]\ngeneration = 2\ntoken_values = [\""+token.Value+"\"]\n")
-	if err := fixture.store.ArmCompensation(hostops.Compensation{
-		Host: "m4", Phase: hostops.CompensationArmed, Rows: []hostops.Token{token},
-		Stash: stash, Generation: 2,
-	}); err != nil {
-		t.Fatalf("ArmCompensation: %v", err)
-	}
-	if _, err := fixture.store.PurgeCompensated("m4", []string{token.Value}); err != nil {
-		t.Fatalf("PurgeCompensated: %v", err)
-	}
+	fixture.seedCompensations(t, seededCompensation{
+		Host: "m4", Phase: hostops.CompensationHubTOML, Rows: []hostops.Token{token},
+		Stash: stash, Generation: 2, PurgeRows: true,
+	})
 	// The registry is empty: the boot loaded the committed (host-less) file.
 	m := fixture.manager(t)
 	if record, open := m.opsStore().Compensation("m4"); open {
@@ -942,7 +1048,7 @@ func TestBootCompensationRuntimeRegistersTheRestoredHostTheRegistryLacked(t *tes
 func TestBootCompensationRowsUseTheRegistryGenerationWithoutAFileMark(t *testing.T) {
 	entry := pipelineEntry("m4", 2)
 	var token hostops.Token
-	fixture := newPipelineFixture(t, []hostreg.Host{entry}, func(store *hostops.Store) {
+	fixture := newPipelineStagingFixture(t, []hostreg.Host{entry}, func(store *hostops.Store) {
 		token = pipelineToken(t, store, "m4", 2)
 	})
 	preRemove := "# hand-authored\n[[hosts]]\nname = \"m4\"\nssh = \"m4.example\"\n"
@@ -954,15 +1060,10 @@ func TestBootCompensationRowsUseTheRegistryGenerationWithoutAFileMark(t *testing
 		t.Fatalf("rewrite hub.toml: %v", err)
 	}
 	fixture.appendTOML(t, "[pending_store_sync.m4]\ngeneration = 2\ntoken_values = [\""+token.Value+"\"]\n")
-	if err := fixture.store.ArmCompensation(hostops.Compensation{
-		Host: "m4", Phase: hostops.CompensationArmed, Rows: []hostops.Token{token},
-		Stash: stash, Generation: 2,
-	}); err != nil {
-		t.Fatalf("ArmCompensation: %v", err)
-	}
-	if _, err := fixture.store.PurgeCompensated("m4", []string{token.Value}); err != nil {
-		t.Fatalf("PurgeCompensated: %v", err)
-	}
+	fixture.seedCompensations(t, seededCompensation{
+		Host: "m4", Phase: hostops.CompensationHubTOML, Rows: []hostops.Token{token},
+		Stash: stash, Generation: 2, PurgeRows: true,
+	})
 	m := fixture.manager(t)
 	row, ok := m.opsStore().OutstandingToken("m4")
 	if !ok || row.Value != token.Value {
@@ -1088,17 +1189,12 @@ func TestBootRestoreInstallsTheMachineRecords(t *testing.T) {
 	entry := pipelineEntry("keep", 2)
 	fixture, token, _ := newPipelineRemovalFixture(t, entry, false)
 	fixture.appendTOML(t, "[pending_store_sync.keep]\ngeneration = 2\ntoken_values = [\""+token.Value+"\"]\n")
-	// The commit crashed after PurgeCompensated: the record advanced and the row
-	// is gone.
-	if err := fixture.store.ArmCompensation(hostops.Compensation{
-		Host: "keep", Phase: hostops.CompensationArmed, Rows: []hostops.Token{token},
-		Stash: hubTOMLStashPath(fixture.configPath, "test-key"), Generation: 2,
-	}); err != nil {
-		t.Fatalf("ArmCompensation: %v", err)
-	}
-	if _, err := fixture.store.PurgeCompensated("keep", []string{token.Value}); err != nil {
-		t.Fatalf("PurgeCompensated: %v", err)
-	}
+	// The commit crashed after the purge landed: the record advanced to
+	// compensating-hubtoml and the row is gone.
+	fixture.seedCompensations(t, seededCompensation{
+		Host: "keep", Phase: hostops.CompensationHubTOML, Rows: []hostops.Token{token},
+		Stash: hubTOMLStashPath(fixture.configPath, "test-key"), Generation: 2, PurgeRows: true,
+	})
 	// The first boot restores hub.toml and the row; its registry was built from
 	// the committed, host-less file, so it registers the restored host under
 	// the identity the file records, the compensation clears and host changes
@@ -1177,18 +1273,16 @@ func TestBootRestoreReversesTheHostRemovedMarks(t *testing.T) {
 	if err := os.WriteFile(stash, preRemove, 0o600); err != nil {
 		t.Fatalf("write stash: %v", err)
 	}
-	if err := fixture.store.ArmCompensation(hostops.Compensation{
-		Host: "keep", Phase: hostops.CompensationArmed, Rows: []hostops.Token{token},
-		Stash: stash, Generation: 2,
-	}); err != nil {
-		t.Fatalf("ArmCompensation: %v", err)
-	}
 	entries := m.cfg.store.snapshot()
 	if err := m.persistHosts(entries, entries, hostPersistChange{
 		marker: &pendingHostMarker{Name: "keep", Marker: staged},
 	}); err != nil {
 		t.Fatalf("re-install the staged marker: %v", err)
 	}
+	fixture.seedCompensations(t, seededCompensation{
+		Host: "keep", Phase: hostops.CompensationArmed, Rows: []hostops.Token{token},
+		Stash: stash, Generation: 2,
+	})
 	// The crash's boot: the registry loads the committed, host-less file. The
 	// host-removed pass marks the record and drops its row; the marker must NOT
 	// be finalized as committed (the open compensation owns the name); the
@@ -1243,7 +1337,7 @@ func TestBootRestoreReversesTheHostRemovedMarks(t *testing.T) {
 func TestPerCommitStashIsNotClobberedByALaterRemoval(t *testing.T) {
 	alpha := pipelineEntry("alpha", 2)
 	beta := pipelineEntry("beta", 2)
-	fixture := newPipelineFixture(t, []hostreg.Host{alpha, beta}, nil)
+	fixture := newPipelineStagingFixture(t, []hostreg.Host{alpha, beta}, nil)
 	preAlpha, err := os.ReadFile(fixture.configPath)
 	if err != nil {
 		t.Fatalf("read hub.toml: %v", err)
@@ -1269,11 +1363,9 @@ func TestPerCommitStashIsNotClobberedByALaterRemoval(t *testing.T) {
 	}
 	// The boot restores alpha's record from alpha's stash: its own bytes.
 	fixture.appendTOML(t, "[pending_store_sync.alpha]\ngeneration = 2\ntoken_values = [\"row-that-was-purged\"]\n")
-	if err := fixture.store.ArmCompensation(hostops.Compensation{
+	fixture.seedCompensations(t, seededCompensation{
 		Host: "alpha", Phase: hostops.CompensationHubTOML, Stash: stashAlpha, Generation: 2,
-	}); err != nil {
-		t.Fatalf("ArmCompensation: %v", err)
-	}
+	})
 	registry, err := hostreg.New([]hostreg.Host{alpha})
 	if err != nil {
 		t.Fatalf("hostreg.New: %v", err)
@@ -1354,15 +1446,10 @@ func TestBootFinalizesTheMarkerWhenTheCompensationClearsWithoutRestoring(t *test
 		t.Fatalf("re-install the staged marker: %v", err)
 	}
 	token := pipelineToken(t, fixture.store, "keep", 2)
-	if err := fixture.store.ArmCompensation(hostops.Compensation{
-		Host: "keep", Phase: hostops.CompensationArmed, Rows: []hostops.Token{token},
-		Stash: hubTOMLStashPath(fixture.configPath, "crash-key"), Generation: 2,
-	}); err != nil {
-		t.Fatalf("ArmCompensation: %v", err)
-	}
-	if _, err := fixture.store.PurgeCompensated("keep", []string{token.Value}); err != nil {
-		t.Fatalf("PurgeCompensated: %v", err)
-	}
+	fixture.seedCompensations(t, seededCompensation{
+		Host: "keep", Phase: hostops.CompensationHubTOML, Rows: []hostops.Token{token},
+		Stash: hubTOMLStashPath(fixture.configPath, "crash-key"), Generation: 2, PurgeRows: true,
+	})
 	// The boot loads the committed file's live set: the removed host is not
 	// registered, so the recorded teardown is a no-op that succeeds.
 	registry, err := hostreg.New(nil)
@@ -1426,18 +1513,16 @@ func TestBootCompensationOwnsTheStagedMarker(t *testing.T) {
 	if err := os.WriteFile(stash, preRemove, 0o600); err != nil {
 		t.Fatalf("write stash: %v", err)
 	}
-	if err := fixture.store.ArmCompensation(hostops.Compensation{
-		Host: "keep", Phase: hostops.CompensationArmed, Rows: []hostops.Token{token},
-		Stash: stash, Generation: 2,
-	}); err != nil {
-		t.Fatalf("ArmCompensation: %v", err)
-	}
 	entries := m.cfg.store.snapshot()
 	if err := m.persistHosts(entries, entries, hostPersistChange{
 		marker: &pendingHostMarker{Name: "keep", Marker: staged},
 	}); err != nil {
 		t.Fatalf("re-install the staged marker: %v", err)
 	}
+	fixture.seedCompensations(t, seededCompensation{
+		Host: "keep", Phase: hostops.CompensationArmed, Rows: []hostops.Token{token},
+		Stash: stash, Generation: 2,
+	})
 	// The crash boot's registry carries the host: an erroneous finalization's
 	// pinned teardown would remove it and write a committed receipt.
 	registry, err := hostreg.New([]hostreg.Host{entry})
@@ -1568,13 +1653,11 @@ func TestValidateHostOpsStashReferencesRefusesAForeignPath(t *testing.T) {
 	if err := os.WriteFile(foreign, []byte("# not this hub's\n"), 0o600); err != nil {
 		t.Fatalf("write foreign stash: %v", err)
 	}
-	if err := fixture.store.ArmCompensation(hostops.Compensation{
+	foreignStore := seedStoreWithCompensations(t, hostops.StorePath(t.TempDir()), "", seededCompensation{
 		Host: "keep", Phase: hostops.CompensationArmed,
 		Stash: foreign, Generation: 2,
-	}); err != nil {
-		t.Fatalf("ArmCompensation: %v", err)
-	}
-	if err := validateHostOpsStashReferences(fixture.store, fixture.configPath); err == nil {
+	})
+	if err := validateHostOpsStashReferences(foreignStore, fixture.configPath); err == nil {
 		t.Fatal("a record naming a foreign stash path was accepted at load")
 	}
 	if !m.ownsStashPath(hubTOMLStashPath(fixture.configPath, "key")) {
@@ -1591,16 +1674,11 @@ func TestValidateHostOpsStashReferencesRefusesAForeignPath(t *testing.T) {
 		t.Fatal("the restore read a path it does not own")
 	}
 	// A genuine per-commit record validates.
-	if err := fixture.store.ClearCompensation("keep"); err != nil {
-		t.Fatalf("ClearCompensation: %v", err)
-	}
-	if err := fixture.store.ArmCompensation(hostops.Compensation{
+	ownStore := seedStoreWithCompensations(t, hostops.StorePath(t.TempDir()), "", seededCompensation{
 		Host: "keep", Phase: hostops.CompensationArmed,
 		Stash: hubTOMLStashPath(fixture.configPath, "key"), Generation: 2,
-	}); err != nil {
-		t.Fatalf("ArmCompensation (own path): %v", err)
-	}
-	if err := validateHostOpsStashReferences(fixture.store, fixture.configPath); err != nil {
+	})
+	if err := validateHostOpsStashReferences(ownStore, fixture.configPath); err != nil {
 		t.Fatalf("a per-commit stash path was refused: %v", err)
 	}
 }
@@ -1620,12 +1698,10 @@ func TestBootCompensationArmedClearsWithNoConfigDocument(t *testing.T) {
 	}
 	// The crash state: an armed record naming the stash, and no config document
 	// at all.
-	if err := fixture.store.ArmCompensation(hostops.Compensation{
+	fixture.seedCompensations(t, seededCompensation{
 		Host: "m4", Phase: hostops.CompensationArmed, Rows: []hostops.Token{token},
 		Stash: stash, Generation: 2,
-	}); err != nil {
-		t.Fatalf("ArmCompensation: %v", err)
-	}
+	})
 	if err := os.Remove(fixture.configPath); err != nil {
 		t.Fatalf("remove hub.toml: %v", err)
 	}
@@ -1648,12 +1724,10 @@ func TestBootCompensationSurvivesAnUnreadableConfigDocument(t *testing.T) {
 	entry := pipelineEntry("m4", 2)
 	fixture, token, _ := newPipelineRemovalFixture(t, entry, true)
 	stash := hubTOMLStashPath(fixture.configPath, "test-key")
-	if err := fixture.store.ArmCompensation(hostops.Compensation{
+	fixture.seedCompensations(t, seededCompensation{
 		Host: "m4", Phase: hostops.CompensationArmed, Rows: []hostops.Token{token},
 		Stash: stash, Generation: 2,
-	}); err != nil {
-		t.Fatalf("ArmCompensation: %v", err)
-	}
+	})
 	// The document exists but cannot be decoded.
 	if err := os.WriteFile(fixture.configPath, []byte("= = = not TOML [[[\n"), 0o600); err != nil {
 		t.Fatalf("write undecodable hub.toml: %v", err)
@@ -1708,12 +1782,10 @@ func TestBootCompensationClearsWithAZeroByteConfigDocument(t *testing.T) {
 	entry := pipelineEntry("m4", 2)
 	fixture, token, _ := newPipelineRemovalFixture(t, entry, true)
 	stash := hubTOMLStashPath(fixture.configPath, "test-key")
-	if err := fixture.store.ArmCompensation(hostops.Compensation{
+	fixture.seedCompensations(t, seededCompensation{
 		Host: "m4", Phase: hostops.CompensationArmed, Rows: []hostops.Token{token},
 		Stash: stash, Generation: 2,
-	}); err != nil {
-		t.Fatalf("ArmCompensation: %v", err)
-	}
+	})
 	if err := os.WriteFile(fixture.configPath, nil, 0o600); err != nil {
 		t.Fatalf("write zero-byte hub.toml: %v", err)
 	}

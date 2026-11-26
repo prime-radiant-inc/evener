@@ -434,7 +434,7 @@ func TestStartupRetriesATransientStoreOpenFailure(t *testing.T) {
 func legacyRemovalCrash(t *testing.T, step crashStep) *pipelineFixture {
 	t.Helper()
 	var token hostops.Token
-	fixture := newPipelineFixture(t, []hostreg.Host{pipelineEntry("m4", 2), pipelineEntry("keep", 3)}, func(store *hostops.Store) {
+	fixture := newPipelineStagingFixture(t, []hostreg.Host{pipelineEntry("m4", 2), pipelineEntry("keep", 3)}, func(store *hostops.Store) {
 		token = pipelineToken(t, store, "m4", 2)
 	})
 	m := fixture.legacyManager(t)
@@ -444,16 +444,15 @@ func legacyRemovalCrash(t *testing.T, step crashStep) *pipelineFixture {
 	switch step {
 	case cutStaged:
 		fixture.appendTOML(t, "[pending_store_sync.m4]\ngeneration = 2\ntoken_values = [\""+token.Value+"\"]\n")
+		fixture.seedCompensations(t)
 	case cutFlipped:
 		stash := hubTOMLStashPath(fixture.configPath, "legacy-removal-key")
 		if err := os.WriteFile(stash, preRemoval, 0o600); err != nil {
 			t.Fatalf("write the stash: %v", err)
 		}
-		if err := fixture.store.ArmCompensation(hostops.Compensation{
+		fixture.seedCompensations(t, seededCompensation{
 			Host: "m4", Phase: hostops.CompensationArmed, Rows: []hostops.Token{token}, Stash: stash, Generation: 2,
-		}); err != nil {
-			t.Fatalf("ArmCompensation: %v", err)
-		}
+		})
 	}
 	return fixture
 }
