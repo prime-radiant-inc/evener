@@ -3708,6 +3708,93 @@ test("the access review shows its facts as eyebrow-labeled PropertyList rows", a
   expect([...terms].every((term) => term.className.includes("eyebrowLabel"))).toBe(true);
 });
 
+test("access review surfaces changed non-URL fields and explains fingerprint-only changes", async () => {
+  // 1. A protocol change under an unchanged URL names the old and new protocol
+  // inside the Was/Now rows instead of showing two identical URLs alone.
+  const first = setup(
+    savedList("anthropic", {
+      activeSource: "none",
+      hasStoredFile: false,
+      protocol: "openai-chat",
+    }),
+  );
+  await choose(first.user, "Anthropic");
+  await enterText(first.user, screen.getByLabelText("API key"), "sk-ant-draft");
+  scriptSave(first.client, savedList("anthropic", { protocol: "openai-responses" }));
+  await first.user.click(screen.getByRole("button", { name: "Save and test" }));
+
+  const protocolReview = await screen.findByTestId("access-review");
+  expect(protocolReview.querySelector('[data-review-detail="hidden-endpoint"]')).toBeNull();
+  const prevProtocol = protocolReview.querySelector('[data-destination="previous"] [data-review-field="protocol"]');
+  const currProtocol = protocolReview.querySelector('[data-destination="current"] [data-review-field="protocol"]');
+  expect(prevProtocol?.textContent).toContain("openai-chat");
+  expect(currProtocol?.textContent).toContain("openai-responses");
+  cleanup();
+
+  // 2. An active-source mismatch under an unchanged URL names the expected vs
+  // resolved access source.
+  const second = setup();
+  await choose(second.user, "Anthropic");
+  await enterText(second.user, screen.getByLabelText("API key"), "sk-ant-draft");
+  scriptSave(second.client, savedList("anthropic", { activeSource: "api_key" }));
+  await second.user.click(screen.getByRole("button", { name: "Save and test" }));
+
+  const sourceReview = await screen.findByTestId("access-review");
+  const prevSource = sourceReview.querySelector('[data-destination="previous"] [data-review-field="activeSource"]');
+  const currSource = sourceReview.querySelector('[data-destination="current"] [data-review-field="activeSource"]');
+  expect(prevSource?.textContent?.trim()).toBeTruthy();
+  expect(currSource?.textContent?.trim()).toBeTruthy();
+  expect(prevSource?.textContent).not.toBe(currSource?.textContent);
+  cleanup();
+
+  // 3. A fingerprint-only change (e.g. stripped query parameters) explains why
+  // both displayed URLs look identical.
+  const third = setup(fingerprintList("fp-2024"));
+  await choose(third.user, "Anthropic");
+  await enterText(third.user, screen.getByLabelText("API key"), "sk-ant-draft");
+  scriptSave(third.client, fingerprintList("fp-2025", "store"));
+  await third.user.click(screen.getByRole("button", { name: "Save and test" }));
+
+  const hiddenReview = await screen.findByTestId("access-review");
+  const detail = hiddenReview.querySelector('[data-review-detail="hidden-endpoint"]');
+  expect(detail?.textContent?.trim()).toBeTruthy();
+});
+
+test("waiting for review hides Sign in and the redundant footer test button until review is accepted or endpoint is edited", async () => {
+  const { user, client, connected } = setup({ instances: [], availableProviders: [copilotProvider()] });
+  await openPopularCopilot(user);
+  scriptCopilotDevice(client);
+  client.on("evener/instance/list", () => structuredClone(copilotListing({ protocol: "openai-responses" })));
+  client.on("evener/auth/test", ({ provider }) => ({ provider, status: "success", message: "" }));
+
+  vi.useFakeTimers();
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Sign in" }));
+  });
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(1000);
+  });
+  vi.useRealTimers();
+
+  const review = await screen.findByTestId("access-review");
+  expect(within(review).getByRole("button", { name: "Use reviewed access and test" })).toBeTruthy();
+  // Review owns the single primary action: Sign in and the footer's Test again
+  // submit button stay hidden while waiting for review.
+  expect(screen.queryByRole("button", { name: "Sign in" })).toBeNull();
+  expect(document.querySelector('button[type="submit"][form="provider-connection-form"]')).toBeNull();
+
+  // Opening the endpoint editor restores the footer's Save endpoint submit action,
+  // and cancelling removes it again.
+  await user.click(screen.getByRole("button", { name: "Edit" }));
+  expect(document.querySelector('button[type="submit"][form="provider-connection-form"]')).not.toBeNull();
+  await user.click(screen.getByRole("button", { name: "Cancel" }));
+  expect(document.querySelector('button[type="submit"][form="provider-connection-form"]')).toBeNull();
+
+  // Accepting the review tests and completes connection as before.
+  await user.click(within(review).getByRole("button", { name: "Use reviewed access and test" }));
+  await waitFor(() => expect(connected).toHaveBeenCalledExactlyOnceWith("github-copilot"));
+});
+
 test("a credential draft is not saved to a destination that changed since it was typed", async () => {
   const { user, client } = setup(fingerprintList("fp-2024"));
   await choose(user, "Anthropic");

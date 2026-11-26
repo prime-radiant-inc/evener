@@ -837,6 +837,77 @@ func TestCopilotImplicitInstanceUsesTheAccountNotTheGenerationScheme(t *testing.
 	}
 }
 
+// TestCopilotConnectionProtocolFollowsConfiguredHead pins that a Copilot
+// instance's listing Protocol follows its configured account head rather than
+// its default model's generation protocol, matching connectionTransport and
+// ResolveInstancePresence. A model row that routes generation to Responses or
+// Messages (via models.dev provider.npm, user config, or the live roster) keeps
+// its generation protocol while the instance's connection view stays aligned
+// with the pre-sign-in presence resolve.
+func TestCopilotConnectionProtocolFollowsConfiguredHead(t *testing.T) {
+	t.Parallel()
+	state := t.TempDir()
+	saveCopilotRecordForTest(t, state, "github-copilot", healthyCopilotRecord("github-copilot"))
+
+	assertCopilotProtocol := func(t *testing.T, r *Registry) {
+		t.Helper()
+		gen, err := r.Resolve("github-copilot/gpt-5.6-sol")
+		if err != nil {
+			t.Fatalf("Resolve(github-copilot/gpt-5.6-sol): %v", err)
+		}
+		if gen.Protocol != ProtocolOpenAIResponses {
+			t.Fatalf("generation protocol = %q, want %q", gen.Protocol, ProtocolOpenAIResponses)
+		}
+		presence, err := r.ResolveInstancePresence("github-copilot")
+		if err != nil {
+			t.Fatalf("ResolveInstancePresence(github-copilot): %v", err)
+		}
+		inst, ok := r.Instance("github-copilot")
+		if !ok {
+			t.Fatal("Instance(github-copilot) missing")
+		}
+		if inst.Protocol != presence.Protocol || inst.Protocol != ProtocolOpenAIChat {
+			t.Fatalf("connection protocol = %q (presence = %q), want configured head %q", inst.Protocol, presence.Protocol, ProtocolOpenAIChat)
+		}
+	}
+
+	t.Run("models.dev per-model protocol override on default model", func(t *testing.T) {
+		snapshot := []byte(`{
+			"github-copilot": {
+				"id": "github-copilot",
+				"name": "GitHub Copilot",
+				"npm": "@ai-sdk/openai-compatible",
+				"api": "https://api.githubcopilot.com",
+				"models": {
+					"gpt-5.6-sol": {
+						"id": "gpt-5.6-sol",
+						"name": "GPT-5.6 Sol",
+						"modalities": {"input": ["text"], "output": ["text"]},
+						"provider": {"npm": "@ai-sdk/openai"}
+					}
+				}
+			}
+		}`)
+		r := fixtureLoad(t, nil, "", WithSnapshot(snapshot), WithStateRoot(state))
+		assertCopilotProtocol(t, r)
+	})
+
+	t.Run("live Copilot roster protocol on default model", func(t *testing.T) {
+		r := fixtureLoad(t, nil, "", WithStateRoot(state))
+		r.ApplyLiveListing("github-copilot", LiveListing{
+			Authoritative: true,
+			Rows: []Model{{
+				ID:       "gpt-5.6-sol",
+				Protocol: ProtocolOpenAIResponses,
+				Surface:  SurfaceOpenAI,
+				Family:   "gpt",
+				Caps:     Caps{Tools: new(true)},
+			}},
+		})
+		assertCopilotProtocol(t, r)
+	})
+}
+
 // liveClaudeRow is the advertised Copilot routing for the one live-proven
 // Claude row.
 func liveClaudeRow() Model {

@@ -69,8 +69,9 @@ func testProbeRegistryOptions(
 // from 1 for the controller's own first load, and returns the error that load
 // should fail with (or nil to load normally).
 type instancesControllerHooks struct {
-	seed func(*credentials.Store)
-	load func(load int) error
+	seed      func(*credentials.Store)
+	load      func(load int) error
+	extraOpts []registry.Option
 }
 
 // newTestInstancesController builds an instances controller whose registry
@@ -109,8 +110,9 @@ func newTestInstancesController(t *testing.T, tomlPath, credsDir, stateDir strin
 				v, ok := lookup[name]
 				return v, ok
 			}),
-			registry.WithConfigPath(tomlPath),
+			hook.extraOpts...,
 		)
+		opts = append(opts, registry.WithConfigPath(tomlPath))
 		r, err := registry.Load(append(opts, extra...)...)
 		return r, store, err
 	})
@@ -148,7 +150,7 @@ func pinEndpointFingerprintKey(t *testing.T, stateDir string) {
 }
 
 // newInstancesFixture is one isolated instances pane over a fresh temp dir.
-func newInstancesFixture(t *testing.T, env map[string]string) *instancesFixture {
+func newInstancesFixture(t *testing.T, env map[string]string, hooks ...instancesControllerHooks) *instancesFixture {
 	t.Helper()
 	dir := t.TempDir()
 	stateDir := t.TempDir()
@@ -160,7 +162,7 @@ func newInstancesFixture(t *testing.T, env map[string]string) *instancesFixture 
 		t.Fatal(err)
 	}
 	tomlPath := filepath.Join(dir, "providers.toml")
-	ctl := newTestInstancesController(t, tomlPath, credsDir, stateDir, env)
+	ctl := newTestInstancesController(t, tomlPath, credsDir, stateDir, env, hooks...)
 	return &instancesFixture{
 		ctl:       ctl,
 		tomlPath:  tomlPath,
@@ -6036,5 +6038,64 @@ func TestInstances_RemoveKeepsANewerCopilotLoginAfterADeleteError(t *testing.T) 
 	}
 	if record.AccountID != "account-2" {
 		t.Fatalf("account = %q, want the newer login the rollback preserved", record.AccountID)
+	}
+}
+
+// Pre-sign-in setup rows come from resolvedInstanceFor (ResolveInstancePresence),
+// while post-sign-in rows come from Registry.Instances (instanceView). When the
+// default Copilot model routes generation through Responses (as refreshed
+// models.dev data and live Copilot rosters advertise for gpt-5.6-sol), every
+// destination field must stay identical across sign-in so the guided connection
+// flow proceeds straight to verification instead of stopping for review.
+func TestInstances_CopilotSetupAndSignedInRowShareDestinationIdentity(t *testing.T) {
+	snapshot := []byte(`{
+		"github-copilot": {
+			"id": "github-copilot",
+			"name": "GitHub Copilot",
+			"npm": "@ai-sdk/openai-compatible",
+			"api": "https://api.githubcopilot.com",
+			"models": {
+				"gpt-5.6-sol": {
+					"id": "gpt-5.6-sol",
+					"name": "GPT-5.6 Sol",
+					"modalities": {"input": ["text"], "output": ["text"]},
+					"provider": {"npm": "@ai-sdk/openai"}
+				}
+			}
+		}
+	}`)
+	f := newInstancesFixture(t, nil, instancesControllerHooks{
+		extraOpts: []registry.Option{registry.WithSnapshot(snapshot)},
+	})
+
+	beforeList := f.ctl.List()
+	if listedInstance(beforeList, "github-copilot") {
+		t.Fatal("fixture: github-copilot is listed before any OAuth record exists")
+	}
+	before := providerSetup(t, beforeList, "github-copilot").Setup
+	if before == nil {
+		t.Fatal("fixture: github-copilot setup row missing before sign-in")
+	}
+	if before.ActiveSource != "none" {
+		t.Fatalf("before.ActiveSource = %q, want none", before.ActiveSource)
+	}
+	gen, err := f.ctl.reg.Get().Resolve("github-copilot/gpt-5.6-sol")
+	if err != nil {
+		t.Fatalf("Resolve(github-copilot/gpt-5.6-sol): %v", err)
+	}
+	if gen.Protocol != registry.ProtocolOpenAIResponses {
+		t.Fatalf("fixture: default row generation protocol = %q, want %q", gen.Protocol, registry.ProtocolOpenAIResponses)
+	}
+
+	seedCopilotRecord(t, f, "github-copilot", "account-1")
+	after := entry(t, f.ctl.List(), "github-copilot")
+	if after.ActiveSource != "oauth" {
+		t.Fatalf("after.ActiveSource = %q, want oauth", after.ActiveSource)
+	}
+	if after.Protocol != before.Protocol || after.Protocol != registry.ProtocolOpenAIChat {
+		t.Fatalf("Protocol drifted across Copilot sign-in: before = %q, after = %q, want %q", before.Protocol, after.Protocol, registry.ProtocolOpenAIChat)
+	}
+	if after.EndpointFingerprint != before.EndpointFingerprint || after.BaseURL != before.BaseURL || after.Auth != before.Auth || after.Surface != before.Surface || after.Base != before.Base || after.ProviderID != before.ProviderID || after.Hidden != before.Hidden {
+		t.Fatalf("destination identity drifted across Copilot sign-in:\nbefore = %+v\nafter  = %+v", *before, after)
 	}
 }
