@@ -898,7 +898,7 @@ describe("resource-backed Rail", () => {
     expect(screen.getAllByText("Proj").length).toBeGreaterThan(0);
   });
 
-  test("the hosted New-session action hands off to its own native button and yields to an overlying layer", () => {
+  test("the hosted New-session action hands off its visible screen position and yields to an overlying layer", async () => {
     const before = window.location.pathname;
     const hitTest = Object.getOwnPropertyDescriptor(document, "elementFromPoint");
     const ua = vi.spyOn(navigator, "userAgent", "get").mockReturnValue("EvenerNative/1 EvenerWorkspaceControls/1");
@@ -919,7 +919,7 @@ describe("resource-backed Rail", () => {
         window.dispatchEvent(new MessageEvent("message", { data: JSON.stringify({ type, id }) }));
       });
     try {
-      render(<Rail />);
+      const { container } = render(<Rail />);
       const button = screen.getByTestId("rail-new-session");
       const published = messages.find(({ frame }) => frame);
       if (!published) throw new Error("Missing native create button");
@@ -933,6 +933,15 @@ describe("resource-backed Rail", () => {
       expect(button.hasAttribute("aria-hidden")).toBe(false);
       viewport.scale = 1;
       act(() => viewport.dispatchEvent(new Event("resize")));
+      await act(async () => {
+        container.dataset.motion = "opening";
+      });
+      expect(messages.at(-1)?.frame).toBeNull();
+      rect.mockReturnValue(new DOMRect(224, 320, 44, 44));
+      await act(async () => {
+        delete container.dataset.motion;
+      });
+      expect(messages.at(-1)?.frame).toEqual({ x: 224, y: 320, width: 44, height: 44 });
       command("createSession", "different-rail");
       expect(window.location.pathname).toBe(before);
       covered = true;

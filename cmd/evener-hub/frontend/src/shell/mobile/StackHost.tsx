@@ -174,11 +174,12 @@ function TabletBoardColumn({
 }) {
   const present = useContext(BoardPresentContext);
   const reducedMotion = useReducedMotion() === true;
+  const [opening, setOpening] = useState(false);
   return (
     <m.aside
       className={styles.boardColumn}
       data-testid="board-column"
-      data-motion={present ? undefined : "closing"}
+      data-motion={!present ? "closing" : opening ? "opening" : undefined}
       inert={!present}
       aria-hidden={present ? undefined : true}
       ref={present ? boardRef : undefined}
@@ -186,6 +187,8 @@ function TabletBoardColumn({
       animate={{ x: 0 }}
       exit={reducedMotion ? undefined : { x: "-100%", transition: exitTransition }}
       transition={transition}
+      onAnimationStart={() => setOpening(true)}
+      onAnimationComplete={() => setOpening(false)}
       onPointerDownCapture={present ? onBoardInput : undefined}
       onKeyDownCapture={present ? onBoardInput : undefined}
       onClickCapture={present ? onBoardInput : undefined}

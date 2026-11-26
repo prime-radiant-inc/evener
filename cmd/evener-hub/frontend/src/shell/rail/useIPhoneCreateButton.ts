@@ -12,7 +12,8 @@ export function useIPhoneCreateButton(rail: RefObject<HTMLDivElement | null>) {
     if (!button || !board || !hasIPhoneWorkspaceControls()) return;
     const viewport = window.visualViewport;
     function frame() {
-      if (!button || button.closest("[inert]") || (viewport && viewport.scale !== 1)) return null;
+      if (!button || button.closest('[inert], [data-motion="opening"]') || (viewport && viewport.scale !== 1))
+        return null;
       const layer = document.activeElement?.closest(
         '[data-focus-layer], [aria-modal="true"], [role="menu"], [role="listbox"]',
       );
@@ -49,7 +50,11 @@ export function useIPhoneCreateButton(rail: RefObject<HTMLDivElement | null>) {
     const intersection = new IntersectionObserver(measure, { threshold: [0, 1] });
     intersection.observe(button);
     const layers = new MutationObserver(measure);
-    layers.observe(document.body, { subtree: true, attributes: true, attributeFilter: ["inert", "aria-modal"] });
+    layers.observe(document.body, {
+      subtree: true,
+      attributes: true,
+      attributeFilter: ["inert", "aria-modal", "data-motion"],
+    });
     window.addEventListener("message", receive);
     window.addEventListener("scroll", scroll, true);
     document.addEventListener("focusin", measure);
