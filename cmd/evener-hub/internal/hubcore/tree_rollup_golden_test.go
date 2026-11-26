@@ -134,7 +134,7 @@ func TestProjectRollupGolden(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			tree := BuildTreeAt(tc.metas, tc.live, nil, now)
+			tree := buildTreeAtResolved(tc.metas, tc.live, nil, now)
 			projects := append(append([]TreeProject(nil), tree.Projects...), tree.ArchivedProjects...)
 			if len(projects) != 1 {
 				t.Fatalf("got %d projects, want 1", len(projects))
@@ -162,7 +162,7 @@ func TestProjectRollupCountsUnindexedRunningChild(t *testing.T) {
 	}
 	live[0].WorkingDir, live[1].WorkingDir = dir, dir
 
-	tree := BuildTreeAt(metas, live, nil, now)
+	tree := buildTreeAtResolved(metas, live, nil, now)
 
 	if len(tree.Projects) != 1 || tree.Projects[0].RollupState != "active" || tree.Projects[0].RollupLive != 1 {
 		t.Fatalf("projects = %+v, want one working project", tree.Projects)

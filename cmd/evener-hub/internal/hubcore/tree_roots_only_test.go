@@ -32,7 +32,7 @@ func TestBuildTreeRootsOnlyHasNoSubagentRows(t *testing.T) {
 	}
 	subagents := []string{"child", "grandchild", "orphan", "parentless", "unindexed"}
 
-	tree := BuildTreeAt(metas, live, nil, now)
+	tree := buildTreeAtResolved(metas, live, nil, now)
 
 	var ids []string
 	var walk func(rows []TreeNode)
@@ -84,7 +84,7 @@ func TestBuildTreeOrphanSubagentVanishes(t *testing.T) {
 	}
 	live := []LiveEntry{{PID: 1, SessionID: "orphan", Status: appwire.ThreadStatusActive}}
 
-	tree := BuildTreeAt(metas, live, nil, now)
+	tree := buildTreeAtResolved(metas, live, nil, now)
 
 	if len(tree.Live) != 0 || len(tree.NeedsYou) != 0 || len(tree.Projects) != 0 || len(tree.ArchivedProjects) != 0 {
 		t.Fatalf("orphan left rows behind: live=%+v needs=%+v projects=%+v archived=%+v", tree.Live, tree.NeedsYou, tree.Projects, tree.ArchivedProjects)
@@ -102,7 +102,7 @@ func TestBuildTreeRootsOnlyKeepsForkOriginalsAsChildren(t *testing.T) {
 		{ID: "child", ParentSessionID: "orig", IsSubagent: true, CreatedAt: now, UpdatedAt: now, EnvInfo: dir},
 	}
 
-	tree := BuildTreeAt(metas, nil, nil, now)
+	tree := buildTreeAtResolved(metas, nil, nil, now)
 
 	if len(tree.Projects) != 1 || len(tree.Projects[0].Current) != 1 {
 		t.Fatalf("tree = %+v, want one current row", tree.Projects)
@@ -126,7 +126,7 @@ func TestBuildTreeNeedsYouExcludesLiveSubagent(t *testing.T) {
 		{PID: 2, SessionID: "child", Status: appwire.ThreadStatusAwaiting, PendingAsk: true},
 	}
 
-	tree := BuildTreeAt(metas, live, nil, now)
+	tree := buildTreeAtResolved(metas, live, nil, now)
 	if len(tree.NeedsYou) != 0 {
 		t.Fatalf("needs-you = %+v, want none", tree.NeedsYou)
 	}

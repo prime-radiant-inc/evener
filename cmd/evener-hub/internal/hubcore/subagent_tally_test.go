@@ -57,7 +57,7 @@ func fuzzScenarioBuildTree_RootRowsCarryTheTreesSubagentTally(t *testing.T) {
 		{PID: 1, SessionID: "01ROOT", Status: appwire.ThreadStatusAwaiting, PendingAsk: true, RunningSubagentIDs: []string{"01CHILD"}, Subagents: tally},
 		{PID: 2, SessionID: "01METALESS", Status: appwire.ThreadStatusIdle, Subagents: metaless},
 	}
-	tree := BuildTreeAt(metas, live, map[ArchiveKey]bool{}, now)
+	tree := buildTreeAtResolved(metas, live, map[ArchiveKey]bool{}, now)
 	leafTally, leafListed := appwire.SubagentTally{}, false
 	for _, row := range tree.Live {
 		if row.ID == "01METALESS" {
@@ -89,7 +89,7 @@ func fuzzScenarioBuildTree_CrashedRootCarriesNoSubagentTally(t *testing.T) {
 	now := time.Date(2026, 9, 26, 12, 0, 0, 0, time.UTC)
 	metas := []schema.SessionMeta{{ID: "01CRASHED", CreatedAt: now.Add(-time.Hour), UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}}}
 	live := []LiveEntry{{PID: 1, SessionID: "01CRASHED", Status: "errored", Crashed: true, Subagents: appwire.SubagentTally{Running: 2, Failed: 1}}}
-	tree := BuildTreeAt(metas, live, map[ArchiveKey]bool{}, now)
+	tree := buildTreeAtResolved(metas, live, map[ArchiveKey]bool{}, now)
 	liveRow, inLive, projectRow, inProject := liveAndProjectRowsFor(tree, "01CRASHED")
 	if !inLive || !inProject || len(tree.NeedsYou) != 1 || tree.NeedsYou[0].ID != "01CRASHED" {
 		t.Fatalf("rows of the errored crashed root: live=%v project=%v needsYou=%+v", inLive, inProject, tree.NeedsYou)
@@ -111,7 +111,7 @@ func fuzzScenarioBuildTree_SubagentFailuresNeverRaiseTheRootsOwnState(t *testing
 	tally := appwire.SubagentTally{Failed: 2, Done: 1}
 	metas := []schema.SessionMeta{{ID: "01ROOT", CreatedAt: now.Add(-time.Hour), UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}}}
 	live := []LiveEntry{{PID: 1, SessionID: "01ROOT", Status: appwire.ThreadStatusIdle, Subagents: tally}}
-	tree := BuildTreeAt(metas, live, map[ArchiveKey]bool{}, now)
+	tree := buildTreeAtResolved(metas, live, map[ArchiveKey]bool{}, now)
 	liveRow, inLive, projectRow, inProject := liveAndProjectRowsFor(tree, "01ROOT")
 	if !inLive || !inProject || liveRow.Subagents != tally {
 		t.Fatalf("Live row %+v (%v), project row found %v: the root must carry %+v", liveRow.Subagents, inLive, inProject, tally)

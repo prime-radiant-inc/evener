@@ -36,7 +36,7 @@ func TestRosterCompletionRefreshesIndexedDormancy(t *testing.T) {
 		if !ok {
 			t.Fatal("session missing from real past index")
 		}
-		tree := BuildTreeAt([]schema.SessionMeta{entry.Meta}, roster.List(), nil, base.Add(time.Minute))
+		tree := buildTreeAtResolved([]schema.SessionMeta{entry.Meta}, roster.List(), nil, base.Add(time.Minute))
 		if len(tree.Live) != 1 || tree.Live[0].ID != id {
 			t.Fatalf("unexpected live tree: %+v", tree.Live)
 		}

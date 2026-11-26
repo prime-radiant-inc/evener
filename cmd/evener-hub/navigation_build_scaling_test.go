@@ -88,21 +88,21 @@ func TestNavigationTreeBuildStaysWithinAllocationBudget(t *testing.T) {
 	metas, projects, now := navigationTreeMetaFixture(t)
 	// The fixture's rows must actually be in the tree, or the measurement could
 	// pass by building nothing.
-	if got, want := countTreeSessions(hubcore.BuildTreeAtWithProjects(metas, nil, nil, now, projects)), 150; got != want {
+	if got, want := countTreeSessions(hubcore.BuildTreeAt(metas, nil, nil, now, projects)), 150; got != want {
 		t.Fatalf("tree holds %d top-level rows, want %d", got, want)
 	}
 	// Every measurement is preceded by one unmeasured build: whatever a first
 	// build allocates and a later one does not — lazily built package state,
 	// sort scratch growing to its steady size — lands outside the window.
 	measurement := testing.Benchmark(func(b *testing.B) {
-		hubcore.BuildTreeAtWithProjects(metas, nil, nil, now, projects)
+		hubcore.BuildTreeAt(metas, nil, nil, now, projects)
 		b.ReportAllocs()
 		for b.Loop() {
-			hubcore.BuildTreeAtWithProjects(metas, nil, nil, now, projects)
+			hubcore.BuildTreeAt(metas, nil, nil, now, projects)
 		}
 	})
 	allocs := testing.AllocsPerRun(navigationTreeAllocationRuns, func() {
-		hubcore.BuildTreeAtWithProjects(metas, nil, nil, now, projects)
+		hubcore.BuildTreeAt(metas, nil, nil, now, projects)
 	})
 	bytesPerBuild := measurement.AllocedBytesPerOp()
 	t.Logf("hub-scale tree build: %d bytes and %.0f allocs per build, budgets %d bytes and %d allocs",

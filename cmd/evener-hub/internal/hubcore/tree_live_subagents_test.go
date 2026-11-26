@@ -23,7 +23,7 @@ func TestBuildTreeLiveHasNoRowForSubagent(t *testing.T) {
 		{PID: 2, SessionID: "child", Status: appwire.ThreadStatusActive},
 	}
 
-	tree := BuildTreeAt(metas, live, nil, now)
+	tree := buildTreeAtResolved(metas, live, nil, now)
 
 	if len(tree.Live) != 1 || tree.Live[0].ID != "parent" || len(tree.Live[0].Children) != 0 {
 		t.Fatalf("Live = %+v, want the parent alone with no children", tree.Live)
@@ -39,7 +39,7 @@ func TestBuildTreeCarriesSessionJobsForNavigation(t *testing.T) {
 		CompletedJobs: []appwire.EvenerJobInfo{{JobID: "job-completed", JobType: "shell", Status: "completed"}},
 	}}
 
-	tree := BuildTreeAt(metas, live, nil, now)
+	tree := buildTreeAtResolved(metas, live, nil, now)
 	if len(tree.Live) != 1 {
 		t.Fatalf("Live tier has %d rows, want one parent", len(tree.Live))
 	}
@@ -79,7 +79,7 @@ func TestBuildTreeCarriesSessionWatchesForNavigation(t *testing.T) {
 			Watches: []appwire.EvenerWatchInfo{{ID: "watch-sibling", Source: "output", Note: "receiver"}}},
 	}
 
-	tree := BuildTreeAt(metas, live, nil, now)
+	tree := buildTreeAtResolved(metas, live, nil, now)
 	parentRow, inLive, parentProject, inProject := liveAndProjectRowsFor(tree, "parent")
 	if !inLive || !inProject {
 		t.Fatalf("parent missing: live=%v project=%v", inLive, inProject)
@@ -118,7 +118,7 @@ func TestDiagnosticsWatchesAbsentYieldsEmptyList(t *testing.T) {
 func TestBuildTreeNeedsYouCarriesSessionJobs(t *testing.T) {
 	now := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
 	metas := []schema.SessionMeta{{ID: "parent", CreatedAt: now, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}}}
-	tree := BuildTreeAt(metas, []LiveEntry{{
+	tree := buildTreeAtResolved(metas, []LiveEntry{{
 		PID: 1, SessionID: "parent", Status: appwire.ThreadStatusAwaiting, PendingAsk: true,
 		RunningJobs: []appwire.EvenerJobInfo{{JobID: "job-running", JobType: "shell", Status: "running"}},
 	}}, nil, now)
@@ -138,7 +138,7 @@ func TestBuildTreeLiveExcludesSubagentWhoseParentIsLive(t *testing.T) {
 		{PID: 2, SessionID: "child", Status: appwire.ThreadStatusActive},
 	}
 
-	tree := BuildTreeAt(metas, live, nil, now)
+	tree := buildTreeAtResolved(metas, live, nil, now)
 
 	// The subagent must NOT appear as a separate top-level Live row — it
 	// nests under its live parent. Only the parent is top-level.
@@ -172,7 +172,7 @@ func TestBuildTreeLivePrunesNonLiveForkOriginals(t *testing.T) {
 		{PID: 3, SessionID: "deadcont", Status: appwire.ThreadStatusIdle},
 	}
 
-	tree := BuildTreeAt(metas, live, nil, now)
+	tree := buildTreeAtResolved(metas, live, nil, now)
 
 	rows := map[string]TreeNode{}
 	for _, row := range tree.Live {
@@ -219,7 +219,7 @@ func TestBuildTreeCrashedParentDoesNotShowItsSubagentRunning(t *testing.T) {
 		{ID: "01PARENT", CreatedAt: now, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
 		{ID: "01CHILD", CreatedAt: now, UpdatedAt: now, ParentSessionID: "01PARENT", IsSubagent: true, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
 	}
-	if project := BuildTreeAt(metas, r.List(), nil, now).Projects[0]; project.RollupLive != 1 {
+	if project := buildTreeAtResolved(metas, r.List(), nil, now).Projects[0]; project.RollupLive != 1 {
 		t.Fatalf("project working count while the parent daemon is alive = %d, want 1", project.RollupLive)
 	}
 
@@ -232,7 +232,7 @@ func TestBuildTreeCrashedParentDoesNotShowItsSubagentRunning(t *testing.T) {
 		t.Fatalf("parent entry=%+v ok=%v, want a retained crashed record still listing the child", parent, ok)
 	}
 
-	tree := BuildTreeAt(metas, r.List(), nil, now)
+	tree := buildTreeAtResolved(metas, r.List(), nil, now)
 	if project := tree.Projects[0]; project.RollupLive != 0 {
 		t.Fatalf("project working count after the parent crashed = %d, want 0", project.RollupLive)
 	}

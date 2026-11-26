@@ -24,7 +24,7 @@ func TestBuildTree_RecursiveSubagentActivityRollsUpToItsRoot(t *testing.T) {
 		{PID: 3, SessionID: "child", Status: appwire.ThreadStatusActive, RunningSubagentIDs: []string{"grandchild"}},
 	}
 
-	tree := BuildTreeAt(metas, live, nil, now)
+	tree := buildTreeAtResolved(metas, live, nil, now)
 	if len(tree.Projects) != 1 || len(tree.Projects[0].Current) != 1 {
 		t.Fatalf("tree = %#v, want one current parent", tree)
 	}
@@ -43,7 +43,7 @@ func TestBuildTree_ProjectsRunningInProcessSubagent(t *testing.T) {
 		{ID: "child", ParentSessionID: "parent", IsSubagent: true, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
 	}
 	parent := LiveEntry{PID: 1, SessionID: "parent", Status: appwire.ThreadStatusIdle, RunningSubagentIDs: []string{"child"}}
-	tree := BuildTreeAt(metas, []LiveEntry{parent}, nil, now)
+	tree := buildTreeAtResolved(metas, []LiveEntry{parent}, nil, now)
 	if tree.Projects[0].RollupState != "idle" || tree.Projects[0].Expanded {
 		t.Fatalf("project rollup = %q expanded=%v, want idle/false", tree.Projects[0].RollupState, tree.Projects[0].Expanded)
 	}
@@ -65,7 +65,7 @@ func TestBuildTree_ChildOwnLiveEntryBeatsParentProjection(t *testing.T) {
 		// Child has its own live entry reporting active — its own daemon truth.
 		{PID: 2, SessionID: "child", Status: appwire.ThreadStatusActive},
 	}
-	tree := BuildTreeAt(metas, live, nil, now)
+	tree := buildTreeAtResolved(metas, live, nil, now)
 	if tree.Projects[0].RollupState != "active" || !tree.Projects[0].Expanded {
 		t.Fatalf("project rollup = %q expanded=%v, want active/true", tree.Projects[0].RollupState, tree.Projects[0].Expanded)
 	}
@@ -80,7 +80,7 @@ func TestBuildTree_CrossEffectiveDirectorySubagentHasNoRowOrProject(t *testing.T
 		{ID: "nested-isolated-child", ParentSessionID: "isolated-child", IsSubagent: true, UpdatedAt: now,
 			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/worktrees/nested-isolated-child"}},
 	}
-	tree := BuildTreeAt(metas, []LiveEntry{{PID: 1, SessionID: "parent", Status: appwire.ThreadStatusIdle}}, nil, now)
+	tree := buildTreeAtResolved(metas, []LiveEntry{{PID: 1, SessionID: "parent", Status: appwire.ThreadStatusIdle}}, nil, now)
 	if len(tree.Projects) != 1 || len(tree.Projects[0].Current) != 1 {
 		t.Fatalf("projects = %#v, want one parent project with one current session", tree.Projects)
 	}

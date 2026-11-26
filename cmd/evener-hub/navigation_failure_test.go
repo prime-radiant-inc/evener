@@ -83,7 +83,7 @@ func TestNavigationRowsCarryAQuotaWaitFromAWorkingThread(t *testing.T) {
 		liveIDs[entry.SessionID] = true
 		metas = append(metas, schema.SessionMeta{ID: entry.SessionID, CreatedAt: now.Add(-time.Hour), UpdatedAt: now.Add(-time.Hour), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}})
 	}
-	projection, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "generation", Tree: hubcore.BuildTreeAt(metas, live, nil, now), Live: liveIDs})
+	projection, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "generation", Tree: buildTreeAtResolved(metas, live, nil, now), Live: liveIDs})
 	if err != nil {
 		t.Fatal(err)
 	}

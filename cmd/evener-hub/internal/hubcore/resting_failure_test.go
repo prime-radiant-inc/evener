@@ -81,7 +81,7 @@ func fuzzScenarioBuildTree_EveryFailedRowSaysWhy(t *testing.T) {
 		{PID: 3, SessionID: "01CRASHED", Status: "errored", Crashed: true, Failure: testRestingFailure()},
 		{PID: 4, SessionID: "01RETRIED", Status: appwire.ThreadStatusActive, Failure: testRestingFailure()},
 	}
-	tree := BuildTreeAt(metas, live, map[ArchiveKey]bool{}, now)
+	tree := buildTreeAtResolved(metas, live, map[ArchiveKey]bool{}, now)
 	needsYou := map[string]TreeNode{}
 	for _, row := range tree.NeedsYou {
 		needsYou[row.ID] = row
@@ -124,7 +124,7 @@ func fuzzScenarioBuildTree_ACoordinatorsRowNeverShowsASubagentsFailure(t *testin
 		PID: 1, SessionID: "01ROOT", Status: appwire.ThreadStatusActive,
 		RunningSubagentIDs: []string{"01CHILD"}, RunningSubagentStates: map[string]string{"01CHILD": appwire.ThreadStatusSystemError},
 	}}
-	tree := BuildTreeAt(metas, live, map[ArchiveKey]bool{}, now)
+	tree := buildTreeAtResolved(metas, live, map[ArchiveKey]bool{}, now)
 	liveRow, inLive, projectRow, inProject := liveAndProjectRowsFor(tree, "01ROOT")
 	if !inLive || !inProject || liveRow.Failure != nil || projectRow.Failure != nil {
 		t.Fatalf("root rows = Live %+v (%v), project %+v (%v); want both found with no failure", liveRow.Failure, inLive, projectRow.Failure, inProject)
