@@ -982,7 +982,7 @@ func TestHubArchiveSetAppWireKeysNonLocalProjectBySource(t *testing.T) {
 func TestHubArchiveSetAppWireCrossChecksRemoteWorkingDir(t *testing.T) {
 	cache := &hubcore.RemoteThreadCache{}
 	projectID := identifier.ProjectFromCanonicalPath("/srv/remote/project").ID
-	cache.StoreSnapshotData(hubcore.RemoteThreadSnapshot{
+	cache.Store(hubcore.RemoteThreadSnapshot{
 		Threads: []appwire.Thread{{
 			ID:          "t1",
 			SessionID:   "t1",
@@ -990,7 +990,7 @@ func TestHubArchiveSetAppWireCrossChecksRemoteWorkingDir(t *testing.T) {
 			ProjectID:   projectID,
 			ProjectPath: "/srv/remote/project",
 		}},
-	})
+	}, nil)
 	web := NewWebServer(testWebConfig(t, hubcore.WebConfig{
 		Archive:           closeOnCleanup(t, hubcore.NewArchiveStore(filepath.Join(t.TempDir(), "archive.db"))),
 		RemoteThreadCache: cache,
@@ -1184,7 +1184,7 @@ func TestHubArchiveSetAppWireArchivesRemoteSessionByRef(t *testing.T) {
 	// A current timestamp keeps the row in the Current tier: an age-based
 	// auto-archive would clear it from the Live tier for reasons of its own.
 	now := time.Now().Unix()
-	cache.StoreSnapshotData(hubcore.RemoteThreadSnapshot{
+	cache.Store(hubcore.RemoteThreadSnapshot{
 		Threads: []appwire.Thread{{
 			ID:          "t1",
 			SessionID:   "t1",
@@ -1197,7 +1197,7 @@ func TestHubArchiveSetAppWireArchivesRemoteSessionByRef(t *testing.T) {
 			Status:      appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
 			Evener:      appwire.EvenerThread{Ref: "host-a:t1"},
 		}},
-	})
+	}, nil)
 	store := closeOnCleanup(t, hubcore.NewArchiveStore(filepath.Join(t.TempDir(), "archive.db")))
 	web := NewWebServer(testWebConfig(t, hubcore.WebConfig{
 		Archive:           store,

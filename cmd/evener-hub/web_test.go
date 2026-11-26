@@ -30,6 +30,26 @@ func timeNowForTest() time.Time {
 	return time.Unix(1_700_000_000, 0)
 }
 
+func remoteThreadSnapshotForTest(threads []appwire.Thread, complete bool) hubcore.RemoteThreadSnapshot {
+	sources := make(map[string]hubcore.RemoteSourceSnapshot)
+	for _, thread := range threads {
+		sourceID := thread.Source
+		if sourceID == "" {
+			if ref, err := appwire.ParseRef(thread.Evener.Ref); err == nil {
+				sourceID = ref.SourceID
+			}
+		}
+		if sourceID == "" {
+			continue
+		}
+		source := sources[sourceID]
+		source.Threads = append(source.Threads, thread)
+		source.Complete = complete
+		sources[sourceID] = source
+	}
+	return hubcore.RemoteThreadSnapshot{Threads: threads, Complete: complete, Sources: sources}
+}
+
 func startAppwireTestDaemonWithProtocol(t *testing.T, dir, sessionID, protocolVersion string, register func(*appserver.Server)) *httptest.Server {
 	t.Helper()
 	app := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})

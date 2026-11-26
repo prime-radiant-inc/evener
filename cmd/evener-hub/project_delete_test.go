@@ -176,7 +176,7 @@ func TestProjectDeleteRefusesBareDeleteOfMergedProject(t *testing.T) {
 	// owned by "" (this hub) and host-a, which is the state the rail renders as
 	// project.sources.
 	cache := &hubcore.RemoteThreadCache{}
-	cache.StoreSnapshotData(hubcore.RemoteThreadSnapshot{
+	cache.Store(hubcore.RemoteThreadSnapshot{
 		Threads: []appwire.Thread{{
 			ID:          "remote-1",
 			SessionID:   "remote-1",
@@ -185,7 +185,7 @@ func TestProjectDeleteRefusesBareDeleteOfMergedProject(t *testing.T) {
 			ProjectID:   project.ID,
 			ProjectPath: project.CanonicalPath,
 		}},
-	})
+	}, nil)
 	web := NewWebServer(hubcore.WebConfig{
 		Past:              past,
 		Roster:            hubcore.NewRosterWithEntries(),

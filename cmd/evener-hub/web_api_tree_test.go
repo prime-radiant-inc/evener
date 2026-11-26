@@ -234,14 +234,14 @@ func TestNavigationTreeInputsUsesRemoteCarriedProject(t *testing.T) {
 		t.Fatal(err)
 	}
 	cache := &hubcore.RemoteThreadCache{}
-	cache.Store([]appwire.Thread{{
+	cache.Store(remoteThreadSnapshotForTest([]appwire.Thread{{
 		ID:          "remote-thread",
 		Source:      "remote",
 		CWD:         filepath.Join(project.CanonicalPath, "linked-worktree"),
 		ProjectID:   project.ID,
 		ProjectPath: project.CanonicalPath,
 		Status:      appwire.ThreadStatus{Type: appwire.ThreadStatusActive},
-	}})
+	}}, true), nil)
 	web := newTestWebServerWithConfig(t, hubcore.WebConfig{RemoteThreadCache: cache})
 
 	_, live, _ := web.navigationTreeInputs(t.Context())

@@ -70,7 +70,7 @@ func TestRemoteCacheChangePokesTheAttentionWatcher(t *testing.T) {
 	t.Parallel()
 	r, _ := newAttentionPokeFixture(t)
 
-	r.remoteCache.Store([]appwire.Thread{{ID: "remote-thread", Source: "remote-host"}})
+	r.remoteCache.Store(remoteThreadSnapshotForTest([]appwire.Thread{{ID: "remote-thread", Source: "remote-host"}}, true), nil)
 
 	waitNavigationSignal(t, r.attentionPoke, "a remote-cache change to poke the attention watcher")
 	requireNoRemotePoke(t, r.remotePoke, "a remote-cache change")

@@ -30,10 +30,10 @@ func TestLocalDaemonEntriesFromRosterCarryTheTurnEndOnlyOnTheRoot(t *testing.T) 
 func TestNavigationRemoteLiveRowCarriesTurnEndAndUnseen(t *testing.T) {
 	ended := time.Now().UTC().Truncate(time.Millisecond).Add(-time.Minute)
 	cache := &hubcore.RemoteThreadCache{}
-	cache.Store([]appwire.Thread{{
+	cache.Store(remoteThreadSnapshotForTest([]appwire.Thread{{
 		ID: "th_1", Source: "host-a", Status: appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
 		Evener: appwire.EvenerThread{Ref: "host-a:th_1", LastTurnEndedAt: ended.UnixMilli()},
-	}})
+	}}, true), nil)
 	registry := appsource.NewRegistry()
 	registry.Add(&offlineStubSource{scriptedAppSource: &scriptedAppSource{id: "host-a"}, online: true})
 	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", RemoteThreadCache: cache, Past: hubcore.NewPastIndex("")})

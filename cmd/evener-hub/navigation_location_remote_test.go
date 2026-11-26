@@ -107,7 +107,7 @@ func (f *remoteLocationFixture) refresh(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f.controller.cfg.RemoteThreadCache.StoreSnapshotData(hubcore.RemoteThreadSnapshot{Threads: listed.Data})
+	f.controller.cfg.RemoteThreadCache.Store(hubcore.RemoteThreadSnapshot{Threads: listed.Data}, nil)
 	for _, web := range []*WebServer{f.remote, f.controller} {
 		if _, err := web.navigation.Refresh(t.Context(), navigationChangeHint{}); err != nil {
 			t.Fatal(err)

@@ -270,7 +270,7 @@ func TestRemoteSessionUnarchivesItsReportedProject(t *testing.T) {
 		remoteID, remotePath, decoyID = aID, "/work/a", zID
 	}
 	cache := &hubcore.RemoteThreadCache{}
-	cache.StoreSnapshotData(hubcore.RemoteThreadSnapshot{Threads: []appwire.Thread{
+	cache.Store(hubcore.RemoteThreadSnapshot{Threads: []appwire.Thread{
 		{
 			ID: "t-remote", SessionID: "t-remote", Source: "host-a", CWD: "/work/task",
 			ProjectID: remoteID, ProjectPath: remotePath, CreatedAt: decided.Add(time.Hour).Unix(),
@@ -279,7 +279,7 @@ func TestRemoteSessionUnarchivesItsReportedProject(t *testing.T) {
 			ID: "t-other", SessionID: "t-other", Source: "host-b", CWD: "/work/task",
 			ProjectID: decoyID, ProjectPath: "/work/decoy", CreatedAt: decided.Add(time.Hour).Unix(),
 		},
-	}})
+	}}, nil)
 	store := newArchiveDecisionStore(t)
 	web := NewWebServer(testWebConfig(t, hubcore.WebConfig{Archive: store, RemoteThreadCache: cache}))
 	snapshot := web.navigationSnapshot(t.Context())

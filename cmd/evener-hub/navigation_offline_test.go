@@ -26,10 +26,10 @@ import (
 // meaning rather than doubling as a reachability signal.
 func TestNavigationOfflineSourceRowsCarryOfflineField(t *testing.T) {
 	cache := &hubcore.RemoteThreadCache{}
-	cache.Store([]appwire.Thread{
+	cache.Store(remoteThreadSnapshotForTest([]appwire.Thread{
 		{ID: "offline-thread", Source: "remote-offline", Status: appwire.ThreadStatus{Type: appwire.ThreadStatusActive}},
 		{ID: "online-thread", Source: "remote-online", Status: appwire.ThreadStatus{Type: appwire.ThreadStatusActive}},
-	})
+	}, true), nil)
 	registry := appsource.NewRegistry()
 	registry.Add(&offlineStubSource{scriptedAppSource: &scriptedAppSource{id: "remote-offline"}, online: false})
 	registry.Add(&offlineStubSource{scriptedAppSource: &scriptedAppSource{id: "remote-online"}, online: true})
@@ -85,7 +85,7 @@ func TestNavigationOfflineSourceRowsCarryOfflineField(t *testing.T) {
 func remoteNavigationProjection(t *testing.T, threads []appwire.Thread) navigationProjection {
 	t.Helper()
 	cache := &hubcore.RemoteThreadCache{}
-	cache.Store(threads)
+	cache.Store(remoteThreadSnapshotForTest(threads, true), nil)
 	web := NewWebServer(hubcore.WebConfig{RemoteThreadCache: cache})
 	captured, err := (webNavigationSource{web: web}).Capture(t.Context(), "generation", time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC))
 	if err != nil {

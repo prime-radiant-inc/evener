@@ -57,7 +57,7 @@ func TestWatchHubAttentionNotifiesForRemoteSessionApproval(t *testing.T) {
 	// remote approval still absent.
 	poke <- struct{}{}
 
-	cache.StoreSnapshot([]appwire.Thread{{
+	cache.Store(remoteThreadSnapshotForTest([]appwire.Thread{{
 		ID:        "remote-thread",
 		SessionID: "remote-thread",
 		Source:    "remote-host",
@@ -67,7 +67,7 @@ func TestWatchHubAttentionNotifiesForRemoteSessionApproval(t *testing.T) {
 			Ref:                "remote-host:remote-thread",
 			PendingEscalations: []appwire.SandboxEscalationRequested{{}},
 		},
-	}}, true)
+	}}, true), nil)
 
 	poke <- struct{}{}
 

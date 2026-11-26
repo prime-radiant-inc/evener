@@ -517,7 +517,7 @@ func TestHostManageRemovePrunesRemoteThreadCache(t *testing.T) {
 	if err := client.Request(context.Background(), appwire.MethodEvenerHostAdd, appwire.HostAddParams{Entry: appwire.HostEntry{Name: "web-side", Address: "ws.example"}}, &added); err != nil {
 		t.Fatalf("evener/host/add: %v", err)
 	}
-	cache.StoreSnapshot([]appwire.Thread{{ID: "t1", Source: "web-side", CWD: "/srv/ws", Name: "side session"}}, true)
+	cache.Store(remoteThreadSnapshotForTest([]appwire.Thread{{ID: "t1", Source: "web-side", CWD: "/srv/ws", Name: "side session"}}, true), nil)
 
 	// rowsFor counts the removed host's presence in the tree inputs: its
 	// session metas and its live entries.
@@ -616,8 +616,12 @@ func TestHostManageRemoveBlocksInFlightRefreshRepublish(t *testing.T) {
 	if err := client.Request(context.Background(), appwire.MethodEvenerHostAdd, appwire.HostAddParams{Entry: appwire.HostEntry{Name: "web-side", Address: "ws.example"}}, &added); err != nil {
 		t.Fatalf("evener/host/add: %v", err)
 	}
-	cache.StoreSnapshot([]appwire.Thread{{ID: "t1", Source: "web-side", CWD: "/srv/ws", Name: "side session"}}, true)
-	walkGenerations := cache.SourceGenerations()
+	cache.Store(remoteThreadSnapshotForTest([]appwire.Thread{{ID: "t1", Source: "web-side", CWD: "/srv/ws", Name: "side session"}}, true), nil)
+	walkGen, ok := cache.SourceGeneration("web-side")
+	if !ok {
+		t.Fatal("added host registered no cache generation")
+	}
+	walkGenerations := map[string]uint64{"web-side": walkGen}
 	inFlight := cache.Snapshot()
 	if metas, live := rowsFor(); metas != 1 || live != 1 {
 		t.Fatalf("tree rows before Remove = %d metas, %d live; want the seeded session rendered live (fixture sanity)", metas, live)
@@ -639,7 +643,7 @@ func TestHostManageRemoveBlocksInFlightRefreshRepublish(t *testing.T) {
 	// The refresh finishes and publishes its pre-remove walk, generations
 	// included. Nothing may come back: not the tree rows, not the cache's
 	// rows, not the per-source entry.
-	cache.StoreWalkSnapshot(inFlight, walkGenerations)
+	cache.Store(inFlight, walkGenerations)
 	for _, thread := range cache.Snapshot().Threads {
 		if thread.Source == "web-side" {
 			t.Fatalf("in-flight refresh resurrected thread %q for the removed host", thread.ID)
@@ -662,12 +666,16 @@ func TestHostManageRemoveBlocksInFlightRefreshRepublish(t *testing.T) {
 	if err := client.Request(context.Background(), appwire.MethodEvenerHostAdd, appwire.HostAddParams{Entry: appwire.HostEntry{Name: "web-side", Address: "ws.example"}}, &readded); err != nil {
 		t.Fatalf("evener/host/add (re-add): %v", err)
 	}
-	cache.StoreWalkSnapshot(inFlight, walkGenerations)
+	cache.Store(inFlight, walkGenerations)
 	if metas, live := rowsFor(); metas != 0 || live != 0 {
 		t.Fatalf("tree rows after the re-add's stale publish = %d metas, %d live; want none: the old registration's walk must not publish under the re-added name", metas, live)
 	}
-	freshGenerations := cache.SourceGenerations()
-	cache.StoreWalkSnapshot(inFlight, freshGenerations)
+	freshGen, ok := cache.SourceGeneration("web-side")
+	if !ok {
+		t.Fatal("re-added host registered no cache generation")
+	}
+	freshGenerations := map[string]uint64{"web-side": freshGen}
+	cache.Store(inFlight, freshGenerations)
 	if metas, live := rowsFor(); metas != 1 || live != 1 {
 		t.Fatalf("tree rows after the re-add's fresh walk = %d metas, %d live; want the re-added host's rows published again", metas, live)
 	}
@@ -908,7 +916,7 @@ func TestHostManageRemoveBlocksPostCaptureAddedHostRepublish(t *testing.T) {
 	// source: it captures the identity generations — an empty capture —
 	// before it reads anything, exactly where the background refresher
 	// captures them.
-	walkGenerations := cache.SourceGenerations()
+	walkGenerations := map[string]uint64{}
 	// The host is added mid-walk and the walk reads its one session row
 	// before the remove commits.
 	if err := client.Request(context.Background(), appwire.MethodEvenerHostAdd, appwire.HostAddParams{Entry: appwire.HostEntry{Name: "web-side", Address: "ws.example"}}, nil); err != nil {
@@ -928,7 +936,7 @@ func TestHostManageRemoveBlocksPostCaptureAddedHostRepublish(t *testing.T) {
 
 	// The walk finishes and publishes what it read. Nothing may come back:
 	// not the tree rows, not the cache's rows, not the per-source entry.
-	cache.StoreWalkSnapshot(walk, walkGenerations)
+	cache.Store(walk, walkGenerations)
 	for _, thread := range cache.Snapshot().Threads {
 		if thread.Source == "web-side" {
 			t.Fatalf("late walk resurrected thread %q for the removed host", thread.ID)
@@ -989,7 +997,7 @@ func TestHostManageRemoveReAddStillBlocksPostCaptureAddedHostRepublish(t *testin
 	// its capture holds nothing for the host about to be added — the
 	// walk-start state the pre-round-10 refresher captured once, before it
 	// read anything.
-	walkGenerations := cache.SourceGenerations()
+	walkGenerations := map[string]uint64{}
 	// The host is added mid-walk and the walk reads its one session row under
 	// that registration.
 	if err := client.Request(context.Background(), appwire.MethodEvenerHostAdd, appwire.HostAddParams{Entry: appwire.HostEntry{Name: "web-side", Address: "ws.example"}}, nil); err != nil {
@@ -1016,7 +1024,7 @@ func TestHostManageRemoveReAddStillBlocksPostCaptureAddedHostRepublish(t *testin
 	// The walk finishes and publishes what it read. Nothing may come back
 	// under the re-added identity: not the tree rows, not the cache's rows,
 	// not the per-source entry.
-	cache.StoreWalkSnapshot(walk, walkGenerations)
+	cache.Store(walk, walkGenerations)
 	for _, thread := range cache.Snapshot().Threads {
 		if thread.Source == "web-side" {
 			t.Fatalf("late walk published thread %q under the re-added identity", thread.ID)
@@ -1069,7 +1077,7 @@ func TestHostManageStillLiveHostAddedMidWalkPublishes(t *testing.T) {
 			"web-side": {Threads: []appwire.Thread{{ID: "t1", Source: "web-side", CWD: "/srv/ws", Name: "side session"}}, Complete: true},
 		},
 	}
-	cache.StoreWalkSnapshot(walk, map[string]uint64{"web-side": readGeneration})
+	cache.Store(walk, map[string]uint64{"web-side": readGeneration})
 	metasList, liveList, _ := web.navigationTreeInputs(context.Background())
 	var metas, live int
 	for _, meta := range metasList {
@@ -1111,9 +1119,8 @@ func TestHostManageConfiguredHostsRegisterCacheGeneration(t *testing.T) {
 	cfg.RemoteThreadCache = cache
 	hub, _ := newHubRPCTestServerWithWeb(t, cfg)
 	defer hub.Close()
-	generations := cache.SourceGenerations()
-	if _, ok := generations["m4"]; !ok {
-		t.Fatalf("configured host registered no cache generation (%v); a walk that captured it would drop its rows as unowned", generations)
+	if _, ok := cache.SourceGeneration("m4"); !ok {
+		t.Fatal("configured host registered no cache generation; a walk that captured it would drop its rows as unowned")
 	}
 }
 

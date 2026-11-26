@@ -68,7 +68,7 @@ type remoteThreadFetch struct {
 	sources  map[string]hubcore.RemoteSourceSnapshot
 	// sourceGenerations is the per-source identity generation the walk
 	// captured immediately before it read each source — the read-time
-	// capture the background refresher hands to StoreWalkSnapshot, so a
+	// capture the background refresher hands to RemoteThreadCache.Store, so a
 	// remove or remove/re-add between a source's read and the publish
 	// moves the live generation and the read's rows drop. A source absent
 	// from the map was unregistered when the
