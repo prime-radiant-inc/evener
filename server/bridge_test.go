@@ -8,6 +8,12 @@ import (
 	"primeradiant.com/evener/appwire"
 )
 
+func bridgeForTest(srv *Server, eventCh <-chan events.SessionEvent, observer func(events.SessionEvent)) {
+	for ev := range eventCh {
+		BridgeEvent(srv, ev, observer)
+	}
+}
+
 func TestBridge_ForwardsEvents(t *testing.T) {
 	srv := NewServer(ServerConfig{AppReplaySize: 100})
 	evs := make(chan events.SessionEvent, 10)
@@ -15,7 +21,7 @@ func TestBridge_ForwardsEvents(t *testing.T) {
 
 	go func() {
 		defer close(done)
-		Bridge(srv, evs)
+		bridgeForTest(srv, evs, nil)
 	}()
 
 	evs <- events.SessionEvent{
@@ -43,7 +49,7 @@ func TestBridge_UpdatesStatusOnSessionStart(t *testing.T) {
 
 	go func() {
 		defer close(done)
-		Bridge(srv, evs)
+		bridgeForTest(srv, evs, nil)
 	}()
 
 	evs <- events.SessionEvent{
@@ -76,7 +82,7 @@ func TestBridge_UsesSessionStartStateWhenProvided(t *testing.T) {
 
 	go func() {
 		defer close(done)
-		Bridge(srv, evs)
+		bridgeForTest(srv, evs, nil)
 	}()
 
 	evs <- events.SessionEvent{
@@ -133,7 +139,7 @@ func TestBridgeUpdatesSessionMetadataBeforeProjectionCommit(t *testing.T) {
 		},
 	}
 	close(evs)
-	Bridge(srv, evs)
+	bridgeForTest(srv, evs, nil)
 
 	if !sampled {
 		t.Fatal("projection commit never ran for the session start")
@@ -197,7 +203,7 @@ func TestBridge_IncrementsturnsOnAssistantTextEnd(t *testing.T) {
 
 	go func() {
 		defer close(done)
-		Bridge(srv, evs)
+		bridgeForTest(srv, evs, nil)
 	}()
 
 	evs <- events.SessionEvent{
@@ -226,7 +232,7 @@ func TestBridge_ClosesOnSessionEnd(t *testing.T) {
 
 	go func() {
 		defer close(done)
-		Bridge(srv, evs)
+		bridgeForTest(srv, evs, nil)
 	}()
 
 	evs <- events.SessionEvent{
@@ -257,7 +263,7 @@ func TestBridge_UsesSessionEndStateWhenProvided(t *testing.T) {
 
 	go func() {
 		defer close(done)
-		Bridge(srv, evs)
+		bridgeForTest(srv, evs, nil)
 	}()
 
 	evs <- events.SessionEvent{
@@ -285,7 +291,7 @@ func TestBridge_InterruptedSessionEndDoesNotClearProcessing(t *testing.T) {
 
 	go func() {
 		defer close(done)
-		Bridge(srv, evs)
+		bridgeForTest(srv, evs, nil)
 	}()
 
 	evs <- events.SessionEvent{
@@ -318,7 +324,7 @@ func TestBridge_IgnoresStaleEventsAfterSessionIdentityChanges(t *testing.T) {
 
 	go func() {
 		defer close(done)
-		Bridge(srv, evs)
+		bridgeForTest(srv, evs, nil)
 	}()
 
 	evs <- events.SessionEvent{
@@ -346,7 +352,7 @@ func TestBridgeWithObserver_InvokesObserverAndForwardsEvents(t *testing.T) {
 
 	go func() {
 		defer close(done)
-		BridgeWithObserver(srv, evs, func(ev events.SessionEvent) {
+		bridgeForTest(srv, evs, func(ev events.SessionEvent) {
 			observed <- ev
 		})
 	}()
@@ -378,7 +384,7 @@ func TestBridge_RecordsAppWireNotifications(t *testing.T) {
 
 	go func() {
 		defer close(done)
-		Bridge(srv, evs)
+		bridgeForTest(srv, evs, nil)
 	}()
 
 	evs <- threadEvent("th_1", events.RoundStartedData{RoundID: "r_1"})

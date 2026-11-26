@@ -187,16 +187,6 @@ func (r *threadHistories) get(threadID string) *threadHistory {
 	return nil
 }
 
-// drop closes threadID's history and its overlay and removes it from the
-// registry; a no-op if threadID is not registered. The history's close can
-// block on its projection goroutine, so it and the overlay close run after
-// the registry's own lock is released.
-func (r *threadHistories) drop(threadID string) {
-	if h := r.detach(threadID); h != nil {
-		closeHistories([]*threadHistory{h})
-	}
-}
-
 // detach removes threadID's history from the registry and returns it
 // unclosed, or nil if none is registered (see detachExcept on why).
 func (r *threadHistories) detach(threadID string) *threadHistory {

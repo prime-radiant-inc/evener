@@ -13,9 +13,9 @@ import (
 	"primeradiant.com/evener/appwire"
 )
 
-// feedBridge runs the real Bridge over evs and returns when it has drained
-// them. Tests use it rather than calling RecordAppEvent directly whenever the
-// thing under test is the envelope, because the refresh lives in the bridge:
+// feedBridge runs BridgeEvent over evs and returns when it has drained them.
+// Tests use it rather than calling RecordAppEvent directly whenever the thing
+// under test is the envelope, because the refresh lives in BridgeEvent:
 // RecordAppEvent alone would prove nothing about freshness.
 func feedBridge(srv *Server, evs ...events.SessionEvent) {
 	ch := make(chan events.SessionEvent, len(evs))
@@ -23,7 +23,7 @@ func feedBridge(srv *Server, evs ...events.SessionEvent) {
 		ch <- ev
 	}
 	close(ch)
-	Bridge(srv, ch)
+	bridgeForTest(srv, ch, nil)
 }
 
 // readThreadOverWire performs a thread/read through a real connection and
