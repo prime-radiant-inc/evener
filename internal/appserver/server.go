@@ -380,17 +380,13 @@ func (s *Server) SetBeforeSubscriptionGate(fn func()) {
 }
 
 func (s *Server) initialize(_ context.Context, params appwire.InitializeParams) (appwire.InitializeResponse, error) {
-	if !s.cfg.AdapterNativeInitialize && params.ProtocolVersion != appwire.ProtocolVersion {
+	if params.ProtocolVersion != appwire.ProtocolVersion {
 		if olderProtocolVersion(params.ProtocolVersion) {
 			return appwire.InitializeResponse{}, appwire.UpgradeRequired(params.ProtocolVersion, appwire.ProtocolVersion)
 		}
 		return appwire.InitializeResponse{}, appwire.InvalidRequest(
 			fmt.Sprintf("protocol version %q is incompatible; want %q", params.ProtocolVersion, appwire.ProtocolVersion),
 		)
-	}
-	protocolVersion := appwire.ProtocolVersion
-	if s.cfg.AdapterNativeInitialize {
-		protocolVersion = ""
 	}
 	capability := s.cfg.Navigation
 	if s.cfg.NavigationCapability != nil {
@@ -405,7 +401,7 @@ func (s *Server) initialize(_ context.Context, params appwire.InitializeParams) 
 			Arch:         s.cfg.Arch,
 			Roots:        append([]string(nil), s.cfg.Roots...),
 		},
-		ProtocolVersion: protocolVersion,
+		ProtocolVersion: appwire.ProtocolVersion,
 		SourceID:        s.cfg.SourceID,
 		Features:        s.cfg.Features,
 		Navigation:      navigationCapability(capability),

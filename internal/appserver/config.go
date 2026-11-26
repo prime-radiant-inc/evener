@@ -31,9 +31,6 @@ type ServerConfig struct {
 	// hub advertise a current generation/sequence rather than freezing those
 	// values when its RPC server was constructed.
 	NavigationCapability func() *appwire.NavigationCapability
-	// AdapterNativeInitialize keeps the shared JSON-RPC server usable in tests
-	// for adapters whose upstream protocol owns a different initialize shape.
-	AdapterNativeInitialize bool
 	// Logf reports server-initiated diagnostics a peer cannot see from its side
 	// of the socket, including handler failures and connection lifecycle events.
 	// Nil means silent.
