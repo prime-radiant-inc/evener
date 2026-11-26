@@ -16,8 +16,6 @@ const SCROLL_SETTLE_MS = 180;
 const DISMISS_RATIO = 0.35;
 const MAX_DISMISS_THRESHOLD_PX = 160;
 const FALLBACK_DISMISS_THRESHOLD_PX = 120;
-const EXPANDABLE_DRAG_PX = 50;
-const EXPANDABLE_TAP_SLOP_PX = 10;
 const DIRECTION_REVERSAL_SLOP_PX = 2;
 
 const INTERACTIVE_EXCLUDE_SELECTOR = 'input, textarea, select, [contenteditable]:not([contenteditable="false"])';
@@ -30,10 +28,6 @@ export interface UseSheetSwipeOptions {
   panelRef: RefObject<HTMLDivElement | null>;
   bodyRef: RefObject<HTMLDivElement | null>;
   scrimRef: RefObject<HTMLDivElement | null>;
-  expandable?: {
-    geometry: "peek" | "full";
-    onGeometryChange: (next: "peek" | "full" | ((prev: "peek" | "full") => "peek" | "full")) => void;
-  };
 }
 
 export interface UseSheetSwipeResult {
@@ -75,9 +69,6 @@ type GestureState =
       panelHeight: number;
       samples: VelocitySample[];
       hasTranslated: boolean;
-      expandableMode: "peek" | "full" | undefined;
-      maxAbsDelta: number;
-      switchedGeometry: boolean;
       needsResetOnRelease: boolean;
     };
 
@@ -230,10 +221,9 @@ function settleSwipeDrag(
 }
 
 /**
- * Swipe-down dismissal for `side="bottom"` Sheets, unified with expandable
- * `peek`/`full` handle dragging so every handle/header gesture uses one
- * `pointermove`/`pointerup` pair on `ownerWindowOf(panel)` while body touches
- * run on non-passive touch listeners on `panel`.
+ * Swipe-down dismissal for `side="bottom"` Sheets: grab pill and header
+ * gestures use one `pointermove`/`pointerup` pair on `ownerWindowOf(panel)`
+ * while body touches run on non-passive touch listeners on `panel`.
  */
 export function useSheetSwipe({
   open,
@@ -242,10 +232,9 @@ export function useSheetSwipe({
   panelRef,
   bodyRef,
   scrimRef,
-  expandable,
 }: UseSheetSwipeOptions): UseSheetSwipeResult {
-  const latestRef = useRef({ open, side, onClose, expandable });
-  latestRef.current = { open, side, onClose, expandable };
+  const latestRef = useRef({ open, side, onClose });
+  latestRef.current = { open, side, onClose };
 
   const ctrlRef = useRef<SwipeController>({
     gesture: { kind: "idle" },
@@ -287,8 +276,8 @@ export function useSheetSwipe({
     };
 
     const onTouchStart = (event: TouchEvent) => {
-      const { open: isOpen, side: currentSide, expandable: exp } = latestRef.current;
-      if (!isOpen || currentSide !== "bottom" || exp?.geometry === "full") return;
+      const { open: isOpen, side: currentSide } = latestRef.current;
+      if (!isOpen || currentSide !== "bottom") return;
       if (ctrl.gesture.kind !== "idle") {
         if (ctrl.gesture.kind === "pointerDrag") return;
         if (event.touches.length > 1 && isTouchActive(event, ctrl.gesture.touchId)) return;
@@ -398,7 +387,7 @@ export function useSheetSwipe({
   const startPointerDrag = useCallback(
     (e: ReactPointerEvent, origin: "handle" | "header") => {
       const ctrl = ctrlRef.current;
-      const { open: isOpen, side: currentSide, expandable: exp } = latestRef.current;
+      const { open: isOpen, side: currentSide } = latestRef.current;
       if (typeof e.button === "number" && e.button > 0) return;
       if (ctrl.gesture.kind === "pointerDrag") return;
       if (ctrl.gesture.kind !== "idle" && e.isPrimary === false) return;
@@ -408,11 +397,7 @@ export function useSheetSwipe({
         // A primary pointerdown implies no primary touch remains active; clear orphaned touch state.
         ctrl.gesture = { kind: "idle" };
       }
-      const originAllowsDrag =
-        origin === "header"
-          ? currentSide === "bottom" && exp?.geometry !== "full"
-          : currentSide === "bottom" || Boolean(exp);
-      if (!isOpen || !originAllowsDrag || isExcludedTarget(e.target, origin === "header")) {
+      if (!isOpen || currentSide !== "bottom" || isExcludedTarget(e.target, origin === "header")) {
         if (orphanedTouch !== null) clearDragState(panelRef.current, scrimRef.current);
         return;
       }
@@ -432,9 +417,6 @@ export function useSheetSwipe({
         panelHeight: panelAtStart?.getBoundingClientRect().height ?? 0,
         hasTranslated: false,
         samples: [{ y: e.clientY, time: performance.now() }],
-        expandableMode: origin === "handle" && exp !== undefined ? exp.geometry : undefined,
-        maxAbsDelta: 0,
-        switchedGeometry: false,
         needsResetOnRelease,
       };
 
@@ -444,40 +426,13 @@ export function useSheetSwipe({
 
         const dx = moveEvent.clientX - state.startX;
         const dy = moveEvent.clientY - state.startY;
-        state.maxAbsDelta = Math.max(state.maxAbsDelta, Math.abs(dx), Math.abs(dy));
         if (state.axis === "pending" && (Math.abs(dx) > LOCK_DISTANCE_PX || Math.abs(dy) > LOCK_DISTANCE_PX)) {
           state.axis = Math.abs(dx) >= Math.abs(dy) ? "horizontal" : "vertical";
         }
         if (state.axis === "horizontal") return;
 
         const panel = panelRef.current;
-        const activeSide = latestRef.current.side;
-
-        if (state.expandableMode === "full") {
-          if (!state.switchedGeometry && dy > EXPANDABLE_DRAG_PX) {
-            state.switchedGeometry = true;
-            latestRef.current.expandable?.onGeometryChange("peek");
-          }
-          return;
-        }
-
-        if (state.expandableMode === "peek") {
-          if (state.switchedGeometry) return;
-          if (dy < -EXPANDABLE_DRAG_PX) {
-            state.switchedGeometry = true;
-            if (state.hasTranslated || state.needsResetOnRelease) {
-              clearDragState(panel, scrimRef.current);
-              state.offsetY = 0;
-              state.hasTranslated = false;
-              state.needsResetOnRelease = false;
-            }
-            latestRef.current.expandable?.onGeometryChange("full");
-            return;
-          }
-          if (activeSide !== "bottom" || (!state.hasTranslated && dy <= EXPANDABLE_TAP_SLOP_PX)) return;
-        }
-
-        if (activeSide !== "bottom" || panel === null || state.axis !== "vertical") return;
+        if (latestRef.current.side !== "bottom" || panel === null || state.axis !== "vertical") return;
         const offsetY = Math.max(0, dy);
         if (offsetY > 0 || state.hasTranslated) {
           state.hasTranslated = true;
@@ -495,15 +450,6 @@ export function useSheetSwipe({
         ctrl.gesture = { kind: "idle" };
         const panel = panelRef.current;
 
-        if (
-          state.expandableMode !== undefined &&
-          !state.hasTranslated &&
-          !cancelled &&
-          !state.switchedGeometry &&
-          state.maxAbsDelta <= EXPANDABLE_TAP_SLOP_PX
-        ) {
-          latestRef.current.expandable?.onGeometryChange((g) => (g === "peek" ? "full" : "peek"));
-        }
         if (panel !== null && state.hasTranslated) {
           if (!cancelled) incorporateReleaseY(state, endEvent.clientY, performance.now());
           settleSwipeDrag(ctrl, latestRef, state, panel, scrimRef, cancelled);

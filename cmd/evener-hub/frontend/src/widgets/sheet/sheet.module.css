@@ -86,24 +86,6 @@
   --sheet-inline-size: calc((24rem * 2) + var(--space-3) + (var(--space-3) * 2));
 }
 
-/* --- expandable bottom Sheet (Task 2) -------------------------------------
- * A bottom-anchored Sheet can opt into a peek/full geometry: a drag handle
- * at the top toggles or drags between a fixed peek height and full viewport
- * height. .expandableBottom animates the height change on the Spatial
- * budget (user-initiated geometry); .expandableHeader
- * stays pinned so it survives the body's scroll; .expandableBody gives the
- * inner scroll region a flex column that can actually shrink (min-height:
- * 0) so the content clips instead of overflowing the panel.
- */
-
-.handle {
-  display: flex;
-  justify-content: center;
-  padding: var(--space-2) 0 var(--space-1);
-  cursor: grab;
-  touch-action: none;
-}
-
 .handleBar {
   width: 36px;
   height: 4px;
@@ -111,10 +93,10 @@
   background: var(--ink-low);
 }
 
-/* The decorative grab pill a non-expandable bottom Sheet shows in place of
- * the expandable handle. It invites the swipe-down gesture and carries
- * onPointerDown for touch drags, with no role or tab stop. Fine pointers have
- * no swipe gesture to advertise, so it is hidden for them. */
+/* The decorative grab pill a bottom Sheet shows above its header on coarse
+ * pointers. It invites the swipe-down gesture and carries onPointerDown for
+ * touch drags, with no role or tab stop. Fine pointers have no swipe gesture to
+ * advertise, so it is hidden for them. */
 .grabHandle {
   display: none;
   justify-content: center;
@@ -134,37 +116,6 @@
   }
 }
 
-.expandableBottom {
-  height: 100vh;
-  /* Override .bottom's max-height: min(480px, 100vh): when expandable, the
-   * panel owns the dynamic height (peek vs full) via an inline style, and
-   * the 480px cap would prevent the "full" (100vh) geometry from ever
-   * filling the screen. .expandableBottom appears after .bottom in the
-   * composed panelClassName and has equal (single-class) specificity, so
-   * this later declaration wins. */
-  max-height: 100vh;
-  transition: height var(--motion-duration-spatial) var(--motion-easing-standard);
-}
-
-.expandableHeader {
-  position: sticky;
-  top: 0;
-  z-index: var(--z-sticky-bar);
-}
-
-.expandableBody {
-  flex: 1 1 auto;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .expandableBottom {
-    transition: none;
-  }
-}
-
 /* While open and not actively dragged, clearing an inline drag transform
  * glides the sheet back to rest on the spatial exit budget. Dragging sets
  * data-swiping="true" so the panel tracks the finger 1:1, and closing flips
@@ -172,11 +123,5 @@
 @media (prefers-reduced-motion: no-preference) {
   .bottom[data-motion="open"]:not([data-swiping="true"]) {
     transition: transform var(--motion-duration-spatial-exit) var(--motion-easing-standard);
-  }
-
-  .expandableBottom[data-motion="open"]:not([data-swiping="true"]) {
-    transition:
-      height var(--motion-duration-spatial) var(--motion-easing-standard),
-      transform var(--motion-duration-spatial-exit) var(--motion-easing-standard);
   }
 }

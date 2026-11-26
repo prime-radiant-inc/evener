@@ -65,26 +65,6 @@ test("appends an optional panel class without replacing sheet geometry classes",
   expect(panel.className.split(/\s+/).length).toBeGreaterThan(1);
 });
 
-test("optional panel styling does not change expandable geometry classes", () => {
-  render(
-    <Sheet
-      open
-      side="bottom"
-      size="wide"
-      expandable={{ peekHeight: 200 }}
-      onClose={vi.fn()}
-      title="t"
-      panelClassName="single-scroll-panel"
-    >
-      Body
-    </Sheet>,
-  );
-
-  const panel = screen.getByRole("dialog");
-  expect(panel.className).toContain("single-scroll-panel");
-  expect(panel.className).not.toContain(sheetStyles.wide);
-});
-
 test("renders as a modal dialog when open, labelled by its title, same contract as Dialog", () => {
   render(
     <Sheet open onClose={vi.fn()} title="Session settings">
@@ -216,8 +196,7 @@ test("side=right, side=bottom, and side=left each render a distinct, non-empty p
 // As in dialog.test.tsx: jsdom does not evaluate real CSS animations or
 // media queries, so the motion is pinned at the declaration level. Each side
 // slides by the shared recipe for its own edge (which owns the keyframes, the
-// spatial durations and the reduced-motion gate), and the expandable sheet's
-// height change runs on the spatial budget, gated.
+// spatial durations and the reduced-motion gate).
 test("each side slides in from and out to its own edge by the shared recipe", () => {
   const css = readModuleCss(import.meta.url, "sheet.module.css");
   const recipe = { left: "slideLeft", right: "slideRight", bottom: "slideBottom" };
@@ -227,19 +206,14 @@ test("each side slides in from and out to its own edge by the shared recipe", ()
     );
   }
   expect(css).not.toMatch(/animation|@keyframes/);
-  expect(topRuleBlock(css, ".expandableBottom")).toMatch(
-    /transition:\s*height var\(--motion-duration-spatial\) var\(--motion-easing-standard\)/,
-  );
-  expect(css).toMatch(/@media \(prefers-reduced-motion: reduce\)\s*\{\s*\.expandableBottom\s*\{\s*transition:\s*none/);
 });
 
 // --- touch-only grab pill ------------------------------------------------
-// A non-expandable bottom Sheet carries a decorative grab pill instead of the
-// expandable drag handle. It only hints at the swipe gesture, so it is hidden
-// from assistive tech and the tab order, and its CSS shows it for coarse
-// pointers only.
+// A bottom Sheet carries a decorative grab pill. It only hints at the swipe
+// gesture, so it is hidden from assistive tech and the tab order, and its CSS
+// shows it for coarse pointers only.
 
-test("a non-expandable bottom sheet renders a decorative grab pill, not a drag handle", () => {
+test("a bottom sheet renders a decorative grab pill, not a drag handle", () => {
   render(
     <Sheet open side="bottom" onClose={vi.fn()} title="t">
       Body
@@ -250,19 +224,9 @@ test("a non-expandable bottom sheet renders a decorative grab pill, not a drag h
   expect(pill.hasAttribute("tabindex")).toBe(false);
   expect(pill.tabIndex).toBe(-1);
   expect(pill.querySelector("button, a[href], input, select, textarea, [tabindex]")).toBeNull();
-  // The pill draws the expandable handle's own bar.
+  // The pill draws the handle bar.
   expect(pill.firstElementChild?.className.split(" ")).toContain(sheetStyles.handleBar);
   expect(screen.queryByTestId("sheet-handle")).toBeNull();
-});
-
-test("expandable keeps the drag handle exclusively, with no grab pill beside it", () => {
-  render(
-    <Sheet open side="bottom" expandable={{ peekHeight: 200 }} onClose={vi.fn()} title="t">
-      Body
-    </Sheet>,
-  );
-  expect(screen.getByTestId("sheet-handle")).toBeTruthy();
-  expect(screen.queryByTestId("sheet-grab-pill")).toBeNull();
 });
 
 test("side=left and side=right render neither the handle nor the grab pill", () => {
@@ -278,7 +242,7 @@ test("side=left and side=right render neither the handle nor the grab pill", () 
   }
 });
 
-test("the body of a bottom sheet contains its overscroll, on both bottom geometries", () => {
+test("the body of a bottom sheet contains its overscroll", () => {
   const plain = render(
     <Sheet open side="bottom" onClose={vi.fn()} title="t" bodyClassName="flush">
       Body
@@ -288,15 +252,6 @@ test("the body of a bottom sheet contains its overscroll, on both bottom geometr
   expect(plainBody).toContain(sheetStyles.bottomBody);
   expect(plainBody).toContain("flush");
   plain.unmount();
-
-  const expandable = render(
-    <Sheet open side="bottom" expandable={{ peekHeight: 200 }} onClose={vi.fn()} title="t">
-      Body
-    </Sheet>,
-  );
-  // The expandable body wraps the caller's content in the geometry div.
-  expect(screen.getByText("Body").parentElement?.className.split(" ")).toContain(sheetStyles.bottomBody);
-  expandable.unmount();
 
   for (const side of ["left", "right"] as const) {
     const view = render(
@@ -332,9 +287,6 @@ test("a declined swipe returns the sheet on the spatial exit budget, behind the 
   expect(gate).toMatch(
     /\.bottom\[data-motion="open"\]:not\(\[data-swiping="true"\]\)\s*\{[^}]*transition:\s*transform var\(--motion-duration-spatial-exit\) var\(--motion-easing-standard\);/,
   );
-  expect(gate).toMatch(
-    /\.expandableBottom\[data-motion="open"\]:not\(\[data-swiping="true"\]\)\s*\{[^}]*height var\(--motion-duration-spatial\) var\(--motion-easing-standard\)[\s\S]*transform var\(--motion-duration-spatial-exit\) var\(--motion-easing-standard\);/,
-  );
   expect(css).not.toContain(".snapBack");
 });
 
@@ -367,88 +319,6 @@ test("full-height edge sheets follow the visible viewport, keeping a vh fallback
   expect(supports![1]).not.toContain("100vh");
 });
 
-// --- expandable mode (Task 2) --------------------------------------------
-// The drag handle (data-testid="sheet-handle") is rendered only when
-// `expandable` is set; geometry state ("peek" | "full") is exposed via a
-// `data-geometry` attribute on a wrapper div inside the body (see
-// index.tsx), so these assertions query that wrapper rather than the dialog
-// panel itself.
-
-test("expandable renders a drag handle", () => {
-  render(
-    <Sheet open side="bottom" expandable={{ peekHeight: 200 }} onClose={vi.fn()} title="t">
-      Body
-    </Sheet>,
-  );
-  expect(screen.getByRole("dialog").querySelector("[data-testid='sheet-handle']")).toBeTruthy();
-});
-
-test("non-expandable renders no drag handle", () => {
-  render(
-    <Sheet open side="bottom" onClose={vi.fn()} title="t">
-      Body
-    </Sheet>,
-  );
-  expect(screen.queryByTestId("sheet-handle")).toBeNull();
-});
-
-test("fullScreenFirst starts at full on mount", () => {
-  render(
-    <Sheet open side="bottom" expandable={{ peekHeight: 200, fullScreenFirst: true }} onClose={vi.fn()} title="t">
-      Body
-    </Sheet>,
-  );
-  const panel = screen.getByRole("dialog");
-  expect(panel.querySelector("[data-geometry]")?.getAttribute("data-geometry")).toBe("full");
-});
-
-test("fullScreenFirst resets to full on reopen", async () => {
-  const { rerender } = render(
-    <Sheet open side="bottom" expandable={{ peekHeight: 200, fullScreenFirst: true }} onClose={vi.fn()} title="t">
-      Body
-    </Sheet>,
-  );
-  const panel = screen.getByRole("dialog");
-  // Simulate user dragging to peek
-  fireEvent.pointerDown(screen.getByTestId("sheet-handle"), { clientY: 500 });
-  fireEvent.pointerMove(window, { clientY: 800 });
-  fireEvent.pointerUp(window, { clientY: 800 });
-  expect(panel.querySelector("[data-geometry]")?.getAttribute("data-geometry")).toBe("peek");
-  // Close and reopen
-  rerender(
-    <Sheet
-      open={false}
-      side="bottom"
-      expandable={{ peekHeight: 200, fullScreenFirst: true }}
-      onClose={vi.fn()}
-      title="t"
-    >
-      Body
-    </Sheet>,
-  );
-  rerender(
-    <Sheet open side="bottom" expandable={{ peekHeight: 200, fullScreenFirst: true }} onClose={vi.fn()} title="t">
-      Body
-    </Sheet>,
-  );
-  expect(screen.getByRole("dialog").querySelector("[data-geometry]")?.getAttribute("data-geometry")).toBe("full");
-});
-
-test("tap on handle toggles peek to full", () => {
-  render(
-    <Sheet open side="bottom" expandable={{ peekHeight: 200, fullScreenFirst: false }} onClose={vi.fn()} title="t">
-      Body
-    </Sheet>,
-  );
-  const panel = screen.getByRole("dialog");
-  // Starts at peek (fullScreenFirst is false)
-  expect(panel.querySelector("[data-geometry]")?.getAttribute("data-geometry")).toBe("peek");
-  // Tap toggles to full
-  fireEvent.pointerDown(screen.getByTestId("sheet-handle"), { clientY: 100 });
-  fireEvent.pointerUp(window, { clientY: 100 });
-  expect(panel.querySelector("[data-geometry]")?.getAttribute("data-geometry")).toBe("full");
-});
-
 test("bodyClassName is appended to the body element", () => {
   render(
     <Sheet side="left" open onClose={() => {}} title="Sessions" bodyClassName="flush">
@@ -456,114 +326,6 @@ test("bodyClassName is appended to the body element", () => {
     </Sheet>,
   );
   expect(screen.getByText("drawer body").className).toMatch(/flush/);
-});
-
-// --- popout realm (Dockview) ---------------------------------------------
-// A Dockview popout is a separate Window/Document. An expandable sheet's drag
-// attaches pointermove/pointerup for the gesture, so those listeners must be
-// on the drag surface's own window; the opener's window never sees the
-// popout's pointer events.
-test("a drag in a popout is driven and ended by that window's pointer events, not the opener's", () => {
-  const { frame, doc } = appendPopout();
-  const view = render(
-    createPortal(
-      <Sheet open side="bottom" expandable={{ peekHeight: 200, fullScreenFirst: true }} onClose={vi.fn()} title="t">
-        Body
-      </Sheet>,
-      doc.body,
-    ),
-  );
-  try {
-    const handle = doc.querySelector<HTMLElement>('[data-testid="sheet-handle"]');
-    if (handle === null) throw new Error("popout sheet handle missing");
-    const geometry = () => doc.querySelector("[data-geometry]")?.getAttribute("data-geometry");
-    expect(geometry()).toBe("full");
-
-    fireEvent.pointerDown(handle, { clientY: 500 });
-    // The opener's window is not part of this drag.
-    fireEvent.pointerMove(document.body, { clientY: 800 });
-    expect(geometry()).toBe("full");
-
-    // The popout's own pointer events drive it.
-    fireEvent.pointerMove(handle, { clientY: 800 });
-    expect(geometry()).toBe("peek");
-
-    // pointerup in the popout ends the gesture; a later move changes nothing.
-    fireEvent.pointerUp(handle, { clientY: 800 });
-    fireEvent.pointerMove(handle, { clientY: 100 });
-    expect(geometry()).toBe("peek");
-  } finally {
-    view.unmount();
-    frame.remove();
-  }
-});
-
-// The drag's listeners must come off the window they went on. A removal that
-// asked the opener (the pre-fix module-scope `window`) leaves the popout's
-// listeners behind, which no geometry assertion can see.
-test("a popout drag removes its listeners from the popout window", () => {
-  const { frame, doc, win } = appendPopout();
-  const addSpy = vi.spyOn(win, "addEventListener");
-  const removeSpy = vi.spyOn(win, "removeEventListener");
-  const openerAdd = vi.spyOn(window, "addEventListener");
-  const view = render(
-    createPortal(
-      <Sheet open side="bottom" expandable={{ peekHeight: 200, fullScreenFirst: true }} onClose={vi.fn()} title="t">
-        Body
-      </Sheet>,
-      doc.body,
-    ),
-  );
-  try {
-    const handle = doc.querySelector<HTMLElement>('[data-testid="sheet-handle"]');
-    if (handle === null) throw new Error("popout sheet handle missing");
-    fireEvent.pointerDown(handle, { clientY: 500 });
-    const added = addSpy.mock.calls.filter(([type]) => type === "pointermove" || type === "pointerup");
-    expect(added.map(([type]) => type).sort()).toEqual(["pointermove", "pointerup"]);
-    expect(openerAdd.mock.calls.filter(([type]) => type === "pointermove" || type === "pointerup")).toHaveLength(0);
-
-    fireEvent.pointerUp(handle, { clientY: 500 });
-    for (const [type, listener] of added) {
-      expect(removeSpy.mock.calls.some(([t, f]) => t === type && f === listener)).toBe(true);
-    }
-  } finally {
-    view.unmount();
-    frame.remove();
-    addSpy.mockRestore();
-    removeSpy.mockRestore();
-    openerAdd.mockRestore();
-  }
-});
-
-// A sheet closed mid-drag removes the pair from the popout window on unmount.
-test("unmounting a popout sheet mid-drag removes its listeners there", () => {
-  const { frame, doc, win } = appendPopout();
-  const addSpy = vi.spyOn(win, "addEventListener");
-  const removeSpy = vi.spyOn(win, "removeEventListener");
-  const view = render(
-    createPortal(
-      <Sheet open side="bottom" expandable={{ peekHeight: 200, fullScreenFirst: true }} onClose={vi.fn()} title="t">
-        Body
-      </Sheet>,
-      doc.body,
-    ),
-  );
-  try {
-    const handle = doc.querySelector<HTMLElement>('[data-testid="sheet-handle"]');
-    if (handle === null) throw new Error("popout sheet handle missing");
-    fireEvent.pointerDown(handle, { clientY: 500 });
-    const added = addSpy.mock.calls.filter(([type]) => type === "pointermove" || type === "pointerup");
-    expect(added).toHaveLength(2);
-
-    view.unmount();
-    for (const [type, listener] of added) {
-      expect(removeSpy.mock.calls.some(([t, f]) => t === type && f === listener)).toBe(true);
-    }
-  } finally {
-    frame.remove();
-    addSpy.mockRestore();
-    removeSpy.mockRestore();
-  }
 });
 
 // --- swipe-down dismissal ------------------------------------------------
@@ -654,10 +416,10 @@ function withRunningExit(): { finish: () => Promise<void>; restore: () => void }
   };
 }
 
-test("retains an expandable sheet's header action until its inert exit ends", async () => {
+test("retains a sheet's header action until its inert exit ends", async () => {
   const exit = withRunningExit();
   try {
-    const config = { side: "bottom", expandable: { peekHeight: 200 }, title: "Example", onClose: vi.fn() } as const;
+    const config = { side: "bottom", title: "Example", onClose: vi.fn() } as const;
     const { rerender } = render(
       <Sheet {...config} open headerActions={<button type="button">Save</button>}>
         Body
@@ -959,7 +721,6 @@ test("grab pill and bottom sheet header declare touch-action: none and apply .bo
   expect(topRuleBlock(css, ".grabHandle")).toContain("touch-action: none");
   expect(topRuleBlock(css, ".bottomHeader")).toContain("touch-action: none");
   const bottomHeaderClass = requireClass(sheetStyles.bottomHeader, "sheet.module.css", "bottomHeader");
-  const expandableHeaderClass = requireClass(sheetStyles.expandableHeader, "sheet.module.css", "expandableHeader");
 
   const plain = render(
     <Sheet open side="bottom" onClose={vi.fn()} title="Plain">
@@ -968,16 +729,6 @@ test("grab pill and bottom sheet header declare touch-action: none and apply .bo
   );
   expect(screen.getByText("Plain").parentElement?.classList.contains(bottomHeaderClass)).toBe(true);
   plain.unmount();
-
-  const exp = render(
-    <Sheet open side="bottom" expandable={{ peekHeight: 200 }} onClose={vi.fn()} title="Exp">
-      Body
-    </Sheet>,
-  );
-  const expHeader = screen.getByText("Exp").parentElement!;
-  expect(expHeader.classList.contains(bottomHeaderClass)).toBe(true);
-  expect(expHeader.classList.contains(expandableHeaderClass)).toBe(true);
-  exp.unmount();
 
   for (const side of ["left", "right"] as const) {
     const edge = render(
@@ -1441,89 +1192,6 @@ test("side=left and side=right ignore downward swipes", () => {
   }
 });
 
-test("expandable keeps full->peek, peek->full, and tap-toggle, while dismissing on downward drag from peek", () => {
-  vi.useFakeTimers();
-  try {
-    const onClose = vi.fn();
-    render(
-      <Sheet
-        open
-        side="bottom"
-        expandable={{ peekHeight: 200, fullScreenFirst: true }}
-        onClose={onClose}
-        title="Expandable"
-      >
-        <p>Body</p>
-      </Sheet>,
-    );
-    const panel = screen.getByRole("dialog");
-    const handle = screen.getByTestId("sheet-handle");
-    const body = screen.getByText("Body");
-    const header = screen.getByText("Expandable").parentElement!;
-    const geometry = () => panel.querySelector("[data-geometry]")?.getAttribute("data-geometry");
-
-    expect(geometry()).toBe("full");
-
-    // Downward body/header swipes do not dismiss from full.
-    dispatchTouch(body, "touchstart", { touches: [{ identifier: 1, clientY: 100 }] });
-    dispatchTouch(body, "touchmove", { touches: [{ identifier: 1, clientY: 300 }] });
-    dispatchTouch(body, "touchend", { changedTouches: [{ identifier: 1, clientY: 300 }] });
-    dispatchPointer(header, "pointerdown", { clientY: 100 });
-    dispatchPointer(window, "pointermove", { clientY: 300 });
-    dispatchPointer(window, "pointerup", { clientY: 300 });
-    expect(panel.style.transform).toBe("");
-    expect(onClose).not.toHaveBeenCalled();
-
-    // Downward drag in full collapses to peek without translating or dismissing.
-    dispatchPointer(handle, "pointerdown", { clientY: 100 });
-    dispatchPointer(window, "pointermove", { clientY: 300 });
-    expect(geometry()).toBe("peek");
-    expect(panel.style.transform).toBe("");
-    dispatchPointer(window, "pointerup", { clientY: 300 });
-    expect(onClose).not.toHaveBeenCalled();
-
-    // Upward drag in peek expands to full.
-    dispatchPointer(handle, "pointerdown", { clientY: 300 });
-    dispatchPointer(window, "pointermove", { clientY: 200 });
-    expect(geometry()).toBe("full");
-    dispatchPointer(window, "pointerup", { clientY: 200 });
-    expect(onClose).not.toHaveBeenCalled();
-
-    // Tap-toggle full -> peek -> full.
-    dispatchPointer(handle, "pointerdown", { clientY: 100 });
-    dispatchPointer(window, "pointermove", { clientY: 105 });
-    dispatchPointer(window, "pointerup", { clientY: 105 });
-    expect(geometry()).toBe("peek");
-
-    // Small downward drag in peek below threshold snaps back and stays in peek (does not tap-toggle).
-    mockPanelHeight(panel, 200); // threshold 70
-    dispatchPointer(handle, "pointerdown", { clientY: 100 });
-    dispatchPointer(window, "pointermove", { clientY: 140 });
-    expect(panel.style.transform).toBe("translateY(40px)");
-    act(() => vi.advanceTimersByTime(90));
-    dispatchPointer(window, "pointerup", { clientY: 140 });
-    expect(onClose).not.toHaveBeenCalled();
-    expect(geometry()).toBe("peek");
-    expect(panel.dataset.swiping).toBeUndefined();
-    expect(panel.style.transform).toBe("");
-
-    // Downward drag in peek past threshold dismisses.
-    dispatchPointer(handle, "pointerdown", { clientY: 100 });
-    dispatchPointer(window, "pointermove", { clientY: 200 });
-    dispatchPointer(window, "pointerup", { clientY: 200 });
-    expect(onClose).toHaveBeenCalledOnce();
-    onClose.mockClear();
-
-    // Downward body swipe in peek also dismisses.
-    dispatchTouch(body, "touchstart", { touches: [{ identifier: 1, clientY: 100 }] });
-    dispatchTouch(body, "touchmove", { touches: [{ identifier: 1, clientY: 200 }] });
-    dispatchTouch(body, "touchend", { changedTouches: [{ identifier: 1, clientY: 200 }] });
-    expect(onClose).toHaveBeenCalledOnce();
-  } finally {
-    vi.useRealTimers();
-  }
-});
-
 test("bottom swipe in a Dockview popout binds and cleans up listeners on ownerWindowOf(panel), including mid-drag unmount", () => {
   vi.useFakeTimers();
   const { frame, doc, win } = appendPopout();
@@ -1645,65 +1313,26 @@ test("reopening (open false -> true) clears inline transform and scrim opacity",
   }
 });
 
-test("expandable handle tap before rAF on declined close snaps back cleanly", () => {
-  vi.useFakeTimers();
-  try {
-    const onClose = vi.fn();
-    render(
-      <Sheet open side="bottom" expandable={{ peekHeight: 200, fullScreenFirst: false }} onClose={onClose} title="Exp">
-        Body
-      </Sheet>,
-    );
-    const panel = screen.getByRole("dialog");
-    mockPanelHeight(panel, 200);
-    const handle = screen.getByTestId("sheet-handle");
-
-    dispatchPointer(handle, "pointerdown", { pointerId: 1, clientY: 100 });
-    dispatchPointer(window, "pointermove", { pointerId: 1, clientY: 200 });
-    dispatchPointer(window, "pointerup", { pointerId: 1, clientY: 200 });
-    expect(onClose).toHaveBeenCalledOnce();
-    expect(panel.style.transform).toBe("translateY(100px)");
-
-    dispatchPointer(handle, "pointerdown", { pointerId: 2, clientY: 100 });
-    dispatchPointer(window, "pointerup", { pointerId: 2, clientY: 100 });
-    expect(panel.dataset.swiping).toBeUndefined();
-    expect(panel.style.transform).toBe("");
-  } finally {
-    vi.useRealTimers();
-  }
-});
-
-test("expandable handle ignores pointerdown while closing (open=false during exit)", () => {
+test("grab pill ignores pointerdown while closing (open=false during exit)", () => {
   const exit = withRunningExit();
   const addSpy = vi.spyOn(window, "addEventListener");
   try {
     const { rerender } = render(
-      <Sheet open side="bottom" expandable={{ peekHeight: 200, fullScreenFirst: false }} onClose={vi.fn()} title="t">
+      <Sheet open side="bottom" onClose={vi.fn()} title="t">
         Body
       </Sheet>,
     );
-    const handle = screen.getByTestId("sheet-handle");
-    const geometry = () => document.querySelector("[data-geometry]")?.getAttribute("data-geometry");
-    dispatchPointer(handle, "pointerdown", { pointerId: 1, clientY: 100 });
-    dispatchPointer(window, "pointerup", { pointerId: 1, clientY: 100 });
-    expect(geometry()).toBe("full");
+    const pill = screen.getByTestId("sheet-grab-pill");
 
     rerender(
-      <Sheet
-        open={false}
-        side="bottom"
-        expandable={{ peekHeight: 200, fullScreenFirst: false }}
-        onClose={vi.fn()}
-        title="t"
-      >
+      <Sheet open={false} side="bottom" onClose={vi.fn()} title="t">
         Body
       </Sheet>,
     );
     addSpy.mockClear();
-    dispatchPointer(handle, "pointerdown", { pointerId: 2, clientY: 100 });
+    dispatchPointer(pill, "pointerdown", { pointerId: 2, clientY: 100 });
     expect(addSpy.mock.calls.filter(([type]) => type === "pointermove")).toHaveLength(0);
     dispatchPointer(window, "pointerup", { pointerId: 2, clientY: 100 });
-    expect(geometry()).toBe("full");
   } finally {
     addSpy.mockRestore();
     exit.restore();

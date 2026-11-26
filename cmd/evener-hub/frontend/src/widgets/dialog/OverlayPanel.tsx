@@ -1,5 +1,4 @@
 import {
-  type CSSProperties,
   type HTMLAttributes,
   type KeyboardEvent,
   type MouseEvent,
@@ -43,12 +42,6 @@ export interface OverlayPanelProps {
   bodyClassName?: string;
   /** Optional extra class appended to the header element's base `.header` class. */
   headerClassName?: string;
-  /** Optional inline style applied to the panel element. Defaults to
-   * undefined; existing consumers that don't pass it are unchanged. Used by
-   * the expandable Sheet to drive a dynamic peek/full height on the panel
-   * itself (not a child wrapper) so a `.bottom` max-height cap can't clamp
-   * the full-screen geometry. */
-  style?: CSSProperties;
   /** Internal seam, not part of the widget surface: the panel element, for a
    * gesture that reads or drives its transform directly. */
   panelRef?: RefObject<HTMLDivElement | null>;
@@ -100,7 +93,6 @@ export function OverlayPanel({
   handle,
   bodyClassName,
   headerClassName,
-  style,
   motion,
   panelRef,
   bodyRef,
@@ -212,7 +204,6 @@ export function OverlayPanel({
           ref={panelRef}
           data-motion={phase}
           onKeyDown={handleKeyDown}
-          style={style}
         >
           {shown.handle}
           <header className={headerClass} {...headerProps}>
