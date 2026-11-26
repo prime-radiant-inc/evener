@@ -6,8 +6,9 @@
 // (ruling 18).
 import { StackActions, useFocusEffect } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
+import { SymbolView } from "expo-symbols";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useSyncExternalStore } from "react";
-import { Alert, Pressable, Text, TextInput, View } from "react-native";
+import { Alert, Pressable, TextInput, View } from "react-native";
 import { useStore } from "zustand";
 import { useOfferAlert, useStartFailureSeen } from "../alerts/alertsContext";
 import { creationImageDraft } from "../creationImageDraft";
@@ -215,13 +216,16 @@ export function NewSessionForm({ navigation }: NativeStackScreenProps<NewSession
 							minWidth: 44,
 							minHeight: 44,
 							alignSelf: "flex-start",
+							alignItems: "center",
 							justifyContent: "center",
 							opacity: !editable || imageState.busy ? 0.4 : 1,
 						}}
 					>
-						<Text allowFontScaling={allowFontScaling} style={{ color: palette.accentInk, fontSize: 24 * scale }}>
-							+
-						</Text>
+						<SymbolView
+							name={{ ios: "paperclip", android: "attach_file", web: "attach_file" }}
+							size={20 * scale}
+							tintColor={palette.accentInk}
+						/>
 					</Pressable>
 				</View>
 			</Group>

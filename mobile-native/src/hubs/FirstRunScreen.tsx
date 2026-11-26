@@ -33,7 +33,7 @@ export function FirstRunScreen({ navigation }: NativeStackScreenProps<Routes, "H
 			<SafeAreaView edges={["top", "bottom"]} style={{ flex: 1, backgroundColor: palette.canvas }}>
 				<SafeAreaView edges={["left", "right"]}>
 					<Group glass={glass}>
-						<Row label="Back" tone="accent" onPress={() => setHow(null)} />
+						<Row icon="chevron.backward" label="Back" tone="accent" onPress={() => setHow(null)} />
 					</Group>
 				</SafeAreaView>
 				<AddHub how={how} onConnected={openWorkspace} />

@@ -126,7 +126,7 @@ export function PinnedSection({ section, folded, onToggle, onMenu, changing, onL
 							opacity: pressed ? 0.6 : 1,
 						})}
 					>
-						<SymbolView name="ellipsis.circle" size={20 * scale} tintColor={palette.inkLow} />
+						<SymbolView name="ellipsis" size={20 * scale} tintColor={palette.inkLow} />
 					</Pressable>
 				) : null}
 			</View>

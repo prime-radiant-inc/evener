@@ -1432,9 +1432,6 @@ function ConversationScreenView({
 						opacity: !hasConversation ? 0.4 : pressed ? 0.6 : 1,
 					})}
 				>
-					{/* The Android/older-RN fallback for the ⋯ iOS draws as a native
-						    menu (sessionMenu's ellipsis.circle): a symbol, so Dynamic Type
-						    grows it with everything else. */}
 					<SymbolView name="ellipsis" tintColor={colors.text} size={20 * textScale} />
 				</Pressable>
 			),
