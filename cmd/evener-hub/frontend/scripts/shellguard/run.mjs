@@ -1070,6 +1070,24 @@ async function measureTabletSplit(page) {
     };
   })()`;
   const sessionOpen = await evaluate(send, snapState);
+  const actionCenters = await evaluate(send, `(() => {
+    const center = el => {
+      const rect = el.getBoundingClientRect();
+      return rect.top + rect.height / 2;
+    };
+    const create = document.querySelector('[data-testid="board-column"] [data-testid="rail-new-session"]');
+    const submit = document.querySelector('[data-composer] button[type="submit"]');
+    const root = document.documentElement;
+    root.style.setProperty('--dock-clearance', '34px');
+    try {
+      return [center(create), center(submit)];
+    } finally {
+      root.style.removeProperty('--dock-clearance');
+    }
+  })()`);
+  if (Math.abs(actionCenters[0] - actionCenters[1]) > 1) {
+    throw new Error(`tablet New session and Send centers differ: ${actionCenters.join(" vs ")}`);
+  }
   await evaluate(send, `document.querySelector('[data-testid="board-toggle"]').focus({ preventScroll: true })`);
   await pressKey(send, "Enter", "Enter", 13);
   await waitForDom(send, "document.querySelector('[data-testid=\"board-split\"]')?.dataset.board === 'collapsed'", "tablet board collapsed");

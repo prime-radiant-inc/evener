@@ -208,6 +208,16 @@
   pointer-events: auto;
 }
 
+/* In the tablet split, the scrollport pays the same bottom inset as the
+ * composer's action row. A second sticky inset lifts Create above Send. */
+:global([data-board="visible"]) .body {
+  padding-bottom: calc(var(--dock-clearance) + var(--space-1));
+}
+
+:global([data-board="visible"]) .newSessionRow {
+  bottom: 0;
+}
+
 /* Full-width flex wrapper around archived overflow rows so IntersectionObserver
  * measures the row's real box without altering Tree row alignment. */
 .archiveOverflowObserver {
