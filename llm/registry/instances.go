@@ -853,20 +853,6 @@ func (r *Registry) listingTransport(rec *record) Transport {
 	return rec.head.Transport
 }
 
-// listingProtocol is the protocol a bare launch of the instance speaks:
-// the default row's when the row resolves, the provider's own otherwise
-// — the same stale-default judgment listingTransport makes for the
-// transport. The listing's Protocol must describe the same launch its
-// Auth and BaseURL already do: every resolve depth takes the row's
-// protocol, and the entry's endpoint fingerprint and revision are
-// computed over it.
-func (r *Registry) listingProtocol(rec *record) string {
-	if res, ok := r.resolveDefaultRow(rec, resolveTransport); ok {
-		return res.Protocol
-	}
-	return rec.head.Protocol
-}
-
 // listsThroughConfiguredTransport reports whether the instance's model listing
 // must resolve the provider's configured shape rather than its default row's
 // generation transport. The Copilot account roster assigns each id its own
@@ -890,6 +876,21 @@ func (r *Registry) connectionTransport(rec *record) Transport {
 		return rec.head.Transport
 	}
 	return r.listingTransport(rec)
+}
+
+// connectionProtocol is the protocol an instance's connection identity reads:
+// the account's configured head protocol for a Copilot instance (matching
+// connectionTransport and ResolveInstancePresence, which compute its endpoint
+// fingerprint and revision over the configured head), and the bare launch's
+// default-row protocol otherwise.
+func (r *Registry) connectionProtocol(rec *record) string {
+	if listsThroughConfiguredTransport(rec) {
+		return rec.head.Protocol
+	}
+	if res, ok := r.resolveDefaultRow(rec, resolveTransport); ok {
+		return res.Protocol
+	}
+	return rec.head.Protocol
 }
 
 // authHeaderKey resolves which credential-header key carries the named
@@ -1388,7 +1389,7 @@ func (r *Registry) instanceView(inst *instance, def string) Instance {
 		baseURL, _, _ = r.resolveBaseURL(inst.rec, t)
 	}
 	return Instance{
-		Name: inst.name, ProviderID: inst.rec.providerID, Base: base, Protocol: r.listingProtocol(inst.rec), Surface: h.Surface,
+		Name: inst.name, ProviderID: inst.rec.providerID, Base: base, Protocol: r.connectionProtocol(inst.rec), Surface: h.Surface,
 		Auth: t.Auth, BaseURL: baseURL, Vars: maps.Clone(inst.rec.userVars), DefaultModel: h.DefaultModel,
 		Implicit: inst.implicit, Hidden: h.Hidden, Default: inst.name == def,
 		CredentialSource: cred.Source, Warnings: warns,

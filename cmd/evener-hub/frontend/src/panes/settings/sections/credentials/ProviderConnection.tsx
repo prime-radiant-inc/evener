@@ -278,8 +278,7 @@ function destinationChangeError(err: unknown): FormError<ConnectionErrorReason> 
  * comes from, short enough to sit in a row. activeSourceLabel is the full
  * sentence a detail sheet prints, and reading it here would put a sentence in
  * a cell. */
-function credentialValue(row: InstanceEntry | undefined): string {
-  const source = row?.activeSource ?? "none";
+function credentialSourceValue(source: string, row: InstanceEntry | undefined): string {
   if (source.startsWith("env:")) return `Environment (${source.slice(4)})`;
   switch (source) {
     case "api_key":
@@ -295,8 +294,85 @@ function credentialValue(row: InstanceEntry | undefined): string {
     case "none":
       return row?.credentialRequired ? "Not set" : "Not required";
     default:
-      return activeSourceLabel(row as InstanceEntry);
+      return row ? activeSourceLabel({ ...row, activeSource: source }) : source;
   }
+}
+
+function credentialValue(row: InstanceEntry | undefined): string {
+  return credentialSourceValue(row?.activeSource ?? "none", row);
+}
+
+interface PendingReview {
+  previous: InstanceEntry | undefined;
+  current: InstanceEntry;
+  expectedSource: string | undefined;
+}
+
+interface ReviewFieldChange {
+  key: string;
+  label: string;
+  before: string;
+  after: string;
+}
+
+function formatVarsSummary(vars: Record<string, string> | undefined): string {
+  const entries = Object.entries(vars ?? {}).sort(([a], [b]) => a.localeCompare(b));
+  return entries.map(([key, value]) => `${key}=${value}`).join(", ");
+}
+
+function formatOptionalField(value: string | undefined): string {
+  return value && value.trim() !== "" ? value : "None";
+}
+
+/** Summarizes what actually moved between the baseline and reviewed row so a
+ * non-URL change (protocol, auth, credential source, or stripped query params)
+ * is explained instead of showing two identical URLs alone. */
+function describeReviewChange(review: PendingReview): {
+  details: ReviewFieldChange[];
+  hiddenEndpointChanged: boolean;
+} {
+  const { previous, current, expectedSource } = review;
+  if (!previous) return { details: [], hiddenEndpointChanged: false };
+
+  const details: ReviewFieldChange[] = [];
+  const pushString = (key: string, label: string, before: string | undefined, after: string | undefined) => {
+    if ((before ?? "") !== (after ?? "")) {
+      details.push({ key, label, before: formatOptionalField(before), after: formatOptionalField(after) });
+    }
+  };
+  pushString("name", "Name", previous.name, current.name);
+  pushString("providerId", "Provider", previous.providerId, current.providerId);
+  pushString("base", "Base", previous.base, current.base);
+  pushString("protocol", "Protocol", previous.protocol, current.protocol);
+  pushString("surface", "Surface", previous.surface, current.surface);
+  pushString("auth", "Auth", previous.auth, current.auth);
+  pushString("authModes", "Auth modes", (previous.authModes ?? []).join(", "), (current.authModes ?? []).join(", "));
+  pushString("vars", "Vars", formatVarsSummary(previous.vars), formatVarsSummary(current.vars));
+  pushString("apiKeyEnv", "API key env", previous.apiKeyEnv, current.apiKeyEnv);
+  pushString("credentialHeader", "Credential header", previous.credentialHeader, current.credentialHeader);
+  pushString("codexClientVersion", "Client version", previous.codexClientVersion, current.codexClientVersion);
+  if (Boolean(previous.hidden) !== Boolean(current.hidden)) {
+    details.push({
+      key: "hidden",
+      label: "Hidden",
+      before: previous.hidden ? "Yes" : "No",
+      after: current.hidden ? "Yes" : "No",
+    });
+  }
+  const expected = expectedSource ?? previous.activeSource;
+  if (current.activeSource !== expected) {
+    details.push({
+      key: "activeSource",
+      label: "Access",
+      before: credentialSourceValue(expected ?? "none", previous),
+      after: credentialValue(current),
+    });
+  }
+
+  const urlChanged = (previous.baseUrl ?? "") !== (current.baseUrl ?? "");
+  const hiddenEndpointChanged =
+    !urlChanged && details.length === 0 && (previous.endpointFingerprint ?? "") !== (current.endpointFingerprint ?? "");
+  return { details, hiddenEndpointChanged };
 }
 
 function resolvedAuthModes(row: ProviderDescriptor): string[] {
@@ -516,7 +592,7 @@ function SelectedConnection({
   const phaseRef = useRef<Phase>("idle");
   const [error, setError] = useState<FormError<ConnectionErrorReason> | null>(null);
   const [result, setResult] = useState<AuthTestResponse | null>(null);
-  const [review, setReview] = useState<InstanceEntry | null>(null);
+  const [review, setReview] = useState<PendingReview | null>(null);
   const errorRef = useRef<HTMLDivElement>(null);
   const operation = useRef(0);
   // One retry timer owned by this flow. The attempt count paces it; both are
@@ -737,7 +813,7 @@ function SelectedConnection({
       // The review names the row it showed. It survives the same unrelated
       // replacements and retires when that row itself moves.
       if (phaseRef.current === "review") {
-        if (selectionIdentity(selected) !== selectionIdentity(review ?? undefined)) invalidate();
+        if (selectionIdentity(selected) !== selectionIdentity(review?.current)) invalidate();
         return;
       }
       if (selfMutation.current) return;
@@ -1176,7 +1252,7 @@ function SelectedConnection({
       target.activeSource !== (expectedSource ?? contextBaseline?.activeSource)
     ) {
       pendingRecovery.current = null;
-      setReview(target);
+      setReview({ previous: contextBaseline, current: target, expectedSource });
       setPhase("review");
       return;
     }
@@ -1936,9 +2012,11 @@ function SelectedConnection({
   ];
 
   const facts = adding ? addFacts() : savedFacts();
+  const reviewDiff = review ? describeReviewChange(review) : null;
   // The footer's primary action. A check the host could not verify offers to
   // continue, except for Copilot setup, whose roster requirement gives it no
-  // unverified completion; saving is the action everywhere else.
+  // unverified completion; while waiting on a destination review (and not
+  // editing the endpoint), the review card owns the single primary action.
   let primaryAction: ReactNode = null;
   if (result?.status === "unsupported") {
     if (!unverifiedCompletionBlocked) {
@@ -1948,7 +2026,7 @@ function SelectedConnection({
         </Button>
       );
     }
-  } else {
+  } else if (!review || editing === "endpoint") {
     primaryAction = (
       <Button type="submit" form="provider-connection-form" disabled={busy || unavailable || (adding && writesRefused)}>
         {primaryLabel}
@@ -2035,10 +2113,10 @@ function SelectedConnection({
           </p>
         )}
 
-        {/* While an automatic retry for saved access is pending, another
-            acquisition is not what the flow needs: the stored access is
-            already there and recovery is already scheduled. */}
-        {modes.includes("oauth") && !busy && !retryScheduled && (
+        {/* While an automatic retry for saved access or a destination review is
+            pending, another acquisition is not what the flow needs: the card is
+            waiting on recovery or explicit review first. */}
+        {modes.includes("oauth") && !busy && !retryScheduled && !review && (
           <Button disabled={busy || unavailable || confirmationOwed} onClick={() => void signIn()}>
             Sign in
           </Button>
@@ -2052,9 +2130,15 @@ function SelectedConnection({
           </p>
         )}
 
-        {review && (
+        {review && reviewDiff && (
           <div className={styles.review} data-testid="access-review">
             <p>Review changed access before contacting the provider.</p>
+            {reviewDiff.hiddenEndpointChanged && (
+              <p className={styles.note} data-review-detail="hidden-endpoint">
+                The displayed URL stayed the same, while hidden endpoint details such as query parameters or request
+                paths changed.
+              </p>
+            )}
             <PropertyList
               eyebrowLabels
               rows={[
@@ -2062,22 +2146,40 @@ function SelectedConnection({
                   label: "Was",
                   mono: true,
                   wrap: true,
-                  value: <span data-destination="previous">{baseline?.baseUrl ?? "Not configured"}</span>,
+                  value: (
+                    <span data-destination="previous" className={styles.reviewValue}>
+                      <span>{review.previous?.baseUrl ?? "Not configured"}</span>
+                      {reviewDiff.details.map((detail) => (
+                        <span key={detail.key} data-review-field={detail.key}>
+                          {detail.label}: {detail.before}
+                        </span>
+                      ))}
+                    </span>
+                  ),
                 },
                 {
                   label: "Now",
                   mono: true,
                   wrap: true,
-                  value: <span data-destination="current">{review.baseUrl}</span>,
+                  value: (
+                    <span data-destination="current" className={styles.reviewValue}>
+                      <span>{review.current.baseUrl}</span>
+                      {reviewDiff.details.map((detail) => (
+                        <span key={detail.key} data-review-field={detail.key}>
+                          {detail.label}: {detail.after}
+                        </span>
+                      ))}
+                    </span>
+                  ),
                 },
               ]}
             />
             <Button
               disabled={unavailable || confirmationOwed}
               onClick={() => {
-                acquisitionSource.current = review.activeSource;
-                adoptBaseline(review);
-                void check(++operation.current, review);
+                acquisitionSource.current = review.current.activeSource;
+                adoptBaseline(review.current);
+                void check(++operation.current, review.current);
               }}
             >
               Use reviewed access and test
