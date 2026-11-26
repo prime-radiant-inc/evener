@@ -392,8 +392,8 @@ export function rowFromDelegateItem(
     : undefined;
   const exhaustionBudget = parsed ? str(parsed, "exhaustion_budget") : undefined;
   const exhaustionLimit = parsed && typeof parsed.exhaustion_limit === "number" ? parsed.exhaustion_limit : undefined;
-  const fallbackRowKey = resolveRowKey(undefined, undefined, item.callId ?? item.id);
-  const rowKey = resolveRowKey(delegateId, undefined, item.callId ?? item.id);
+  const fallbackRowKey = resolveRowKey(undefined, item.callId ?? item.id);
+  const rowKey = resolveRowKey(delegateId, item.callId ?? item.id);
   return {
     rowKey,
     migrateFromRowKey: rowKey === fallbackRowKey ? undefined : fallbackRowKey,

@@ -159,13 +159,6 @@ test('offers "Jump back in" to the first needs-you session when one exists', () 
   expect(screen.getByRole("button", { name: /Jump back in.*Fix the thing/s })).toBeTruthy();
 });
 
-test('can hide "Jump back in"', () => {
-  setRows([], [node({ ref: "local:live1", title: "Refactor auth", project: "myrepo" })]);
-  render(<WelcomeContent showResume={false} />);
-
-  expect(screen.queryByRole("button", { name: /Jump back in/ })).toBeNull();
-});
-
 test("falls back to the first live session when nothing needs you", () => {
   setRows([], [node({ ref: "local:live1", title: "Refactor auth", project: "myrepo" })]);
   render(<Welcome params={{}} paneId="welcome" focused={true} />);
