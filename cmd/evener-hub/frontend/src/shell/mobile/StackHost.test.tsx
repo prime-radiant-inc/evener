@@ -14,7 +14,10 @@ import { openDocBeside } from "../../panes/doc/openDoc";
 import { installMobileViewport } from "../../panes/session/testing/mobileViewport";
 import { useTranscriptScroll } from "../../panes/session/transcript/flow/useTranscriptScroll";
 import { TranscriptBody } from "../../panes/session/transcript/TranscriptBody";
-import { installTranscriptGeometry } from "../../panes/session/transcript/transcriptReadingGeometryTestUtils";
+import {
+  holdReaderFrames,
+  installTranscriptGeometry,
+} from "../../panes/session/transcript/transcriptReadingGeometryTestUtils";
 import { makeTranscriptPreviewModel } from "../../transcriptDisplay/previewFixture";
 import type { VirtualListHandle } from "../../widgets";
 import { MOBILE_QUERY, TABLET_QUERY } from "../useIsMobile";
@@ -2978,6 +2981,7 @@ test("floating top bar collapse and reveal keep compensated TranscriptBody scrol
     viewportHeight: currentViewportHeight(),
     rowHeights: [1200, 0],
   }));
+  const frames = holdReaderFrames();
   const model = {
     ...makeTranscriptPreviewModel(),
     ref: "local:floating-bar-reflow",
@@ -3040,10 +3044,12 @@ test("floating top bar collapse and reveal keep compensated TranscriptBody scrol
     await act(async () => geometry.notify());
     expect(scroller.scrollTop).toBe(700);
     // Deliver the native scroll event for the initial end landing (jsdom does not
-    // dispatch scroll events on programmatic scrollTop writes).
+    // dispatch scroll events on programmatic scrollTop writes) and flush the
+    // virtualizer's one-frame mount reconciliation before scrolling away.
     act(() => {
       scroller.dispatchEvent(new Event("scroll"));
     });
+    await act(async () => frames.release());
 
     // Seed StackHost's height baseline and settle an away position with solid top bar.
     act(() => {
@@ -3103,5 +3109,73 @@ test("floating top bar collapse and reveal keep compensated TranscriptBody scrol
   } finally {
     restoreSession();
     geometry.restore();
+    frames.restore();
+  }
+});
+
+test("floating top bar ignores bottom and top elastic overscroll rebounds", async () => {
+  window.history.replaceState({}, "", "/");
+  const restoreSession = registerScrollablePaneForTests("session");
+  try {
+    const host = await act(async () => render(<StackHost routeDeferred />));
+    await act(async () => {
+      workspaceStore.getState().openPane("session", { ref: "local:overscroll" });
+    });
+    const bar = screen.getByTestId("topbar");
+    Object.defineProperty(bar, "offsetHeight", { configurable: true, value: 61 });
+    const scroller = await screen.findByTestId("pane-scroll");
+    const viewportHeight = () => (bar.getAttribute("data-collapsed") === "true" ? 784 : 723);
+    const maxScroll = () => 1227 - viewportHeight();
+    Object.defineProperty(scroller, "scrollHeight", { configurable: true, value: 1227 });
+    Object.defineProperty(scroller, "clientHeight", { configurable: true, get: viewportHeight });
+
+    let liveScrollTop = 0;
+    const programmaticWrites: number[] = [];
+    Object.defineProperty(scroller, "scrollTop", {
+      configurable: true,
+      get: () => liveScrollTop,
+      set: (value: number) => {
+        const clamped = Math.max(0, Math.min(value, maxScroll()));
+        programmaticWrites.push(clamped);
+        liveScrollTop = clamped;
+      },
+    });
+    const nativeScroll = (top: number) => {
+      act(() => {
+        liveScrollTop = top;
+        scroller.dispatchEvent(new Event("scroll"));
+      });
+    };
+
+    // Initial height baseline at top, then top elastic rubber-band and rebound stay solid.
+    nativeScroll(0);
+    for (const top of [-40, -70, -30, 0]) {
+      nativeScroll(top);
+      expect(bar.getAttribute("data-collapsed")).not.toBe("true");
+    }
+
+    // Scroll down to the bottom so the bar floats and settles at maxScroll (443).
+    nativeScroll(200);
+    await waitFor(() => expect(bar.getAttribute("data-collapsed")).toBe("true"));
+    nativeScroll(443);
+    expect(bar.getAttribute("data-collapsed")).toBe("true");
+    programmaticWrites.length = 0;
+
+    // Bottom elastic overscroll past maxScroll and its rebound must not flip the
+    // bar or issue compensation writes.
+    for (const top of [483, 533, 513, 483, 458, 443]) {
+      nativeScroll(top);
+      expect(bar.getAttribute("data-collapsed")).toBe("true");
+    }
+    expect(programmaticWrites).toEqual([]);
+
+    // A genuine upward scroll inside [0, maxScroll] still reveals the bar and
+    // compensates scrollTop by +barHeight (430 -> 491).
+    nativeScroll(430);
+    await waitFor(() => expect(bar.getAttribute("data-collapsed")).not.toBe("true"));
+    expect(scroller.scrollTop).toBe(491);
+    host.unmount();
+  } finally {
+    restoreSession();
   }
 });

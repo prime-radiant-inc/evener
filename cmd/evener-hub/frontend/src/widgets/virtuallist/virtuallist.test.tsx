@@ -1162,6 +1162,70 @@ describe("anchorToEnd", () => {
       frames.restore();
     }
   });
+
+  test("reader cancellation does not call scrollTo or clear scrolling state during active scrolling", async () => {
+    const external = installMeasuredGeometry([500, 500, 500, 500, 500]);
+    const frames = holdReaderFrames();
+    let layout: ReaderLayout | undefined;
+    try {
+      const { root, current } = await renderMeasuredList(true, true, {
+        onLayout: (value) => {
+          layout = value;
+        },
+      });
+      await act(async () => external.notify());
+      await act(async () => {
+        root.scrollTop = 200;
+        fireEvent.scroll(root);
+      });
+      await act(async () => {
+        root.scrollTop = 400;
+        fireEvent.scroll(root);
+      });
+      expect(current().isScrolling).toBe(true);
+      expect(current().scrollDirection).toBe("forward");
+
+      const scrollToSpy = vi.spyOn(root, "scrollTo");
+      // Active scroll with no pending programmatic target: cancellation must
+      // neither call scrollTo nor clear isScrolling/scrollDirection.
+      await act(async () => {
+        layout?.cancelPendingScroll();
+      });
+      expect(scrollToSpy).not.toHaveBeenCalled();
+      expect(current().isScrolling).toBe(true);
+      expect(current().scrollDirection).toBe("forward");
+
+      // Compositor already advanced scrollTop ahead of the next scroll event:
+      // still no scrollTo write and scrolling state stays active.
+      await act(async () => {
+        root.scrollTop = 480;
+        layout?.cancelPendingScroll();
+      });
+      expect(scrollToSpy).not.toHaveBeenCalled();
+      expect(current().isScrolling).toBe(true);
+      expect(current().scrollDirection).toBe("forward");
+      expect(current().scrollOffset).toBe(480);
+
+      // An active scrollToIndex reconcile is still cancelled without issuing a
+      // DOM scrollTo write on cancellation.
+      await act(async () => current().scrollToIndex(4, { align: "start" }));
+      scrollToSpy.mockClear();
+      await act(async () => {
+        root.scrollTop = 1000;
+        layout?.cancelPendingScroll();
+      });
+      expect(scrollToSpy).not.toHaveBeenCalled();
+      external.geometry.rowHeights[3] = 1000;
+      await act(async () => external.notify((target) => target.dataset.index === "3"));
+      await act(async () => frames.release());
+      expect(root.scrollTop).toBe(1000);
+      expect(current().scrollOffset).toBe(1000);
+    } finally {
+      cleanup();
+      external.restore();
+      frames.restore();
+    }
+  });
 });
 
 // Overflow containment (2026-07-30-mobile-session-layout-design.md, decision

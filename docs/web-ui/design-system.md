@@ -1541,7 +1541,8 @@ past the fold (bar height plus the 12px at-top reveal band, floored at 48px)
 trades the solid `StackHost` top bar for floating `--radius-pane` blur capsules
 over the transcript while fading the title. Scrolling up 8px, reaching the top,
 or changing panes restores the solid bar, with pre-paint scroll compensation so
-content stays put and height changes remain position-neutral. Non-session panes
+content stays put and height changes and elastic overscroll rebounds remain
+position-neutral. Non-session panes
 and the tablet Sessions board always keep a solid header.
 
 Below 900px, the session header carries Find in session beside Overview as

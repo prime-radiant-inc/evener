@@ -225,6 +225,8 @@ export function VirtualList({
 }: VirtualListProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const clampedScrollRef = useRef<{ offset: number; clampedOffset: number } | null>(null);
+  const suppressScrollWriteRef = useRef(false);
+  const pendingProgrammaticScrollRef = useRef(false);
   const [, requestGeometryCommit] = useReducer((revision: number) => revision + 1, 0);
   const measuredHeightsRef = useRef(new WeakMap<Element, number>());
   const publishOffsetRef = useRef<((offset: number, isScrolling: boolean) => void) | null>(null);
@@ -321,10 +323,18 @@ export function VirtualList({
           scrollEndThreshold: followEnd ? END_ANCHOR_THRESHOLD_PX : -1,
         }
       : {}),
-    ...(keepsPlaceOnMeasure
+    ...(keepsPlaceOnMeasure || onLayout !== undefined
       ? {
           scrollToFn: (offset, options, instance) => {
+            if (suppressScrollWriteRef.current) {
+              clampedScrollRef.current = null;
+              return;
+            }
+            if (options.adjustments === undefined && options.behavior !== undefined) {
+              pendingProgrammaticScrollRef.current = true;
+            }
             elementScroll(offset, options, instance);
+            if (!keepsPlaceOnMeasure) return;
             const port = instance.scrollElement;
             const target = offset + (options.adjustments ?? 0);
             clampedScrollRef.current =
@@ -361,12 +371,30 @@ export function VirtualList({
   });
 
   const cancelPendingScroll = () => {
+    const hadClampedScroll = clampedScrollRef.current !== null;
     clampedScrollRef.current = null;
     backwardMovementRef.current = false;
     const port = scrollRef.current;
     if (!port) return;
-    virtualizer.scrollToOffset(port.scrollTop, { align: "start", behavior: "auto" });
-    publishOffsetRef.current?.(port.scrollTop, false);
+    const scrollTop = port.scrollTop;
+    const hadPendingScroll = pendingProgrammaticScrollRef.current;
+    pendingProgrammaticScrollRef.current = false;
+    if (hadPendingScroll) {
+      // Replace an active scrollToIndex/scrollToOffset reconcile target without
+      // writing to the DOM scroll port: calling scrollTo() mid-touch interrupts
+      // browser drag and fling momentum.
+      suppressScrollWriteRef.current = true;
+      try {
+        virtualizer.scrollToOffset(scrollTop, { align: "start", behavior: "auto" });
+      } finally {
+        suppressScrollWriteRef.current = false;
+      }
+    }
+    if (hadPendingScroll || hadClampedScroll) {
+      publishOffsetRef.current?.(scrollTop, false);
+    } else if (virtualizer.scrollOffset !== scrollTop) {
+      publishOffsetRef.current?.(scrollTop, virtualizer.isScrolling);
+    }
   };
   const syncReaderMovement = (beforeOffset: number) => {
     const port = scrollRef.current;
