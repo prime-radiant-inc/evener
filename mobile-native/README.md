@@ -18,6 +18,8 @@ tuck away and the transcript passes beneath the controls. Scrolling up brings
 them back. Find keeps the header above its search field. Overview opens the
 current conversation’s panel. The controls use Liquid Glass on iOS 26 and
 later and an opaque surface on earlier systems or with Reduce Transparency.
+The New session button in the Board and Sessions drawer uses the same native
+material. Tapping it opens the hub's launcher with the current workspace context.
 The hub owns the transcript, composer, and reading position. Reopening the
 workspace restores the selected settings host or a launcher's directory, prompt,
 and host from the phone's saved location.
