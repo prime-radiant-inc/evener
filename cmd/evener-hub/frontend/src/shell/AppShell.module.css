@@ -31,6 +31,7 @@
    * sidebar instead of floating beside it with a strip of shell between. */
   display: flex;
   flex-direction: row;
+  padding: 0;
   min-height: 0;
   min-width: 0;
   /* The activity sidebar enters from translateX(320px). Unclipped, that

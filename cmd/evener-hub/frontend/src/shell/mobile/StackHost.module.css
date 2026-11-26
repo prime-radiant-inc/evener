@@ -172,7 +172,7 @@
  * Anchor at the bottom so a rotation cannot put an action under the camera. */
 .homeToolbar {
   position: fixed;
-  bottom: calc(max(env(safe-area-inset-bottom), var(--keyboard-inset, 0px)) + var(--space-3));
+  bottom: calc(var(--dock-clearance) + var(--keyboard-inset, 0px) + var(--space-3));
   display: flex;
   flex-direction: column;
   align-items: center;
