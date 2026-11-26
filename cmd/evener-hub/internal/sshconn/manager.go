@@ -703,6 +703,10 @@ func (m *Manager) attachedChannel(name string) (*Channel, bool) {
 // cannot pair stale's outstanding Attached: the Detached is emitted here, exactly
 // as the sibling pre-announce path at the isClosed/isClosed check does.
 func (m *Manager) lostAfterPublish(name string, stale *Channel) error {
+	var generation uint64
+	if cur := m.currentChannel(name); cur != nil {
+		generation = cur.host.Generation
+	}
 	m.clearChannel(name)
 	if stale != nil {
 		if !m.restoreChannel(name, stale) {
@@ -715,7 +719,7 @@ func (m *Manager) lostAfterPublish(name string, stale *Channel) error {
 	} else if m.isClosed() {
 		return ErrManagerClosed
 	} else {
-		m.stateEvent(name, StateDisconnected)
+		m.stateAfterFailedAttach(name, generation)
 	}
 	return errChannelDropped(name)
 }
@@ -940,8 +944,9 @@ func (m *Manager) teardownHostChannel(name string, captured hostreg.Host, hadCap
 }
 
 // stopSupervisorsBefore ends every reconnect loop name still has except the
-// loops reconnecting a registration newer than the caller captured, and
-// reports whether any such loop was left running. Ending all of the others, not
+// loops reconnecting a registration newer than the caller captured. It reports
+// whether at least one loop was stopped (stoppedAny) and whether any newer
+// registration's loop remains running (keptAny). Ending all of the others, not
 // just the most recent, is what reaches a predecessor parked in backoff after a
 // replacement attach registered over it; skipping the newer ones is what keeps
 // a stale teardown from cancelling the re-added host's own reconnect.

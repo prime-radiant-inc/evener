@@ -333,6 +333,16 @@ func TestAttachedHostsStoreNilAndMemoryOnly(t *testing.T) {
 	if _, err := os.Stat(attachedHostsStatePath("")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("memory-only store touched disk at %q: %v", attachedHostsStatePath(""), err)
 	}
+
+	wsFS := afero.NewMemMapFs()
+	wsStore := openAttachedHostsStoreFS(t, wsFS, "   ", attachedHostsStoreFaults{})
+	if err := wsStore.Record("alpha", rec); err != nil {
+		t.Fatalf("whitespace-root Record: %v", err)
+	}
+	wantAttachedHosts(t, wsStore, map[string]AttachedHostRecord{"alpha": rec})
+	if exists, err := afero.Exists(wsFS, attachedHostsStatePath("   ")); err != nil || exists {
+		t.Fatalf("whitespace-root store wrote to disk: exists=%v err=%v", exists, err)
+	}
 }
 
 func TestAttachedHostsStoreConcurrentAccess(t *testing.T) {

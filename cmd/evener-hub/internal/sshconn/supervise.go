@@ -478,6 +478,16 @@ func (m *Manager) hasActiveSupervisor(name string, generation uint64) bool {
 	return false
 }
 
+// stateAfterFailedAttach announces StateReconnecting when a loop for this
+// registration still owns recovery, and StateDisconnected otherwise.
+func (m *Manager) stateAfterFailedAttach(name string, generation uint64) {
+	if m.hasActiveSupervisor(name, generation) {
+		m.stateEvent(name, StateReconnecting)
+		return
+	}
+	m.stateEvent(name, StateDisconnected)
+}
+
 func (m *Manager) jitterFor(d time.Duration) time.Duration {
 	if m.opts.jitter != nil {
 		return m.opts.jitter(d)

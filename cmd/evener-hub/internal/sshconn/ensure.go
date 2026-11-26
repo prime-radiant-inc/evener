@@ -171,12 +171,8 @@ func (m *Manager) Ensure(ctx context.Context, name string) (*Channel, error) {
 			// (a second EventFailed for a host already announced as finished).
 			m.stopSupervisor(name)
 			m.stateEvent(name, StateDisconnected)
-		} else if m.hasActiveSupervisor(name, host.Generation) {
-			// A loop for this registration still owns the next attempt, so the
-			// host is reconnecting, not disconnected.
-			m.stateEvent(name, StateReconnecting)
 		} else {
-			m.stateEvent(name, StateDisconnected)
+			m.stateAfterFailedAttach(name, host.Generation)
 		}
 		lock.Unlock()
 		return nil, err
@@ -188,10 +184,10 @@ func (m *Manager) Ensure(ctx context.Context, name string) (*Channel, error) {
 	// started for the replacement.
 	if ch.isClosed() || ch.isLost() {
 		// A dropped predecessor stays mapped: its supervisor still owns the host and
-		// will reconnect. With no predecessor there is nothing to supervise, so the
-		// state is honestly disconnected.
+		// will reconnect. With no predecessor, an active startup loop still owns
+		// recovery; otherwise the state is honestly disconnected.
 		if stale == nil {
-			m.stateEvent(name, StateDisconnected)
+			m.stateAfterFailedAttach(name, host.Generation)
 		}
 		lock.Unlock()
 		_ = ch.Close()
@@ -389,18 +385,23 @@ func (m *Manager) AttachUnderGate(ctx context.Context, host hostreg.Host, holder
 				// announcement, so it is deliberately left running there.
 				m.stopSupervisor(name)
 			}
-			m.stateEvent(name, StateDisconnected)
+			if isTerminal(err) {
+				m.stateEvent(name, StateDisconnected)
+			} else {
+				m.stateAfterFailedAttach(name, host.Generation)
+			}
 		}
 		return nil, nil, err
 	}
 	if ch.isClosed() || ch.isLost() {
 		// The link died between the handshake and the publish: reap the
 		// replacement and report the drop; the predecessor (if any) keeps the
-		// slot, exactly as Ensure's own validation does. With no predecessor
-		// the honest state is disconnected, the same event Ensure emits there.
+		// slot, exactly as Ensure's own validation does. With no predecessor,
+		// an active startup loop still owns recovery; otherwise the state is
+		// disconnected.
 		_ = ch.Close()
 		if stale == nil {
-			m.stateEvent(name, StateDisconnected)
+			m.stateAfterFailedAttach(name, host.Generation)
 		}
 		return nil, nil, errChannelDropped(name)
 	}

@@ -155,7 +155,7 @@ reattaches unchanged, a stopped compatible hub is started under the
 explicit-Connect rules above, and transient failures retry with bounded
 backoff. A configured host that has never connected stays dormant. Removing or
 editing a host clears its remembered attachment, and an open teardown remnant
-fences it, so either stays disconnected until you connect it again. If the
+fences it, so those hosts stay disconnected until you connect them again. If the
 state file cannot be opened, the hub starts normally, serves the hosts it
 knows, leaves the file in place for repair, and pauses startup reconnect until
 a start can open it.

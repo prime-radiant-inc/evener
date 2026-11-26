@@ -958,8 +958,8 @@ func (r *hubRuntime) startBackground(web *WebServer) (context.Context, func()) {
 	// read path (remoteThreadFetch) reads remoteCache.Snapshot() instead whenever
 	// RemoteThreadCache is configured.
 	goBackground(func() { refreshHubRemoteThreads(ctx, r.remotePoke, web) })
-	// Reconnect the hosts that were attached when this hub last stopped. The
-	// host-management surface has loaded its records above, so the remnant fence
+	// Reconnect the hosts that were attached when this hub last stopped.
+	// web.hostManage loaded its records during buildWeb, so the remnant fence
 	// is bound before selection reads it.
 	startStartupHostReconnect(r, web)
 	// Live-model prefetch: fetch every instance's /models listing into the

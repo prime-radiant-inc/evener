@@ -389,8 +389,12 @@ func TestStartReconnectValidationAndIdempotency(t *testing.T) {
 			}
 		}
 		sleep.waitParked(t, "the startup loop")
+		// A sequential repeat while parked must also dedupe against the live loop.
+		if err := m.StartReconnect("alpha"); err != nil {
+			t.Fatalf("sequential StartReconnect while parked = %v, want nil", err)
+		}
 		if got := attempts.Load(); got != 1 {
-			t.Fatalf("preflight attempts = %d, want 1 for two concurrent StartReconnect calls", got)
+			t.Fatalf("preflight attempts = %d, want 1 for concurrent and sequential StartReconnect calls", got)
 		}
 		if states := startupLoopStates(m, "alpha"); len(states) != 1 || !states[0].startup {
 			t.Fatalf("registered loops = %+v, want exactly one startup loop", states)
@@ -776,18 +780,15 @@ func TestEnsureRacingStartupReconnectPreservesOrRetiresLoop(t *testing.T) {
 		ch.markLost()
 		sleep.waitParked(t, "the mid-run supervisor")
 		sleep.wake()
-		testwait.Until(t, "the mid-run reconnect attempt", func() bool {
-			return attempts.Load() == before+1
+		testwait.Until(t, "the mid-run supervisor to publish the replacement attach", func() bool {
+			return log.count(startupKind(EventAttached)) == 2 && m.Attached("alpha")
 		})
-		testwait.Until(t, "the mid-run supervisor to own the host", func() bool {
+		testwait.Until(t, "only the replacement mid-run supervisor to remain registered", func() bool {
 			states := startupLoopStates(m, "alpha")
 			return len(states) == 1 && !states[0].startup
 		})
 		if got := attempts.Load(); got != before+1 {
 			t.Fatalf("reconnect attempts after the drop = %d, want exactly %d", got, before+1)
-		}
-		if got := log.count(startupKind(EventAttached)); got != 2 {
-			t.Fatalf("EventAttached events = %d, want 2", got)
 		}
 		log.requireNone(t, "the handoff announced a terminal failure", startupKind(EventFailed))
 	})

@@ -52,6 +52,7 @@ func NewAttachedHostsStore(stateRoot string) (*AttachedHostsStore, error) {
 }
 
 func newAttachedHostsStoreFS(fs afero.Fs, stateRoot string, faults attachedHostsStoreFaults) (*AttachedHostsStore, error) {
+	stateRoot = strings.TrimSpace(stateRoot)
 	hosts, err := loadAttachedHostsFS(fs, stateRoot)
 	if err != nil {
 		return nil, err

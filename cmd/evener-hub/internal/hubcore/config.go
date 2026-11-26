@@ -229,7 +229,7 @@ type WebConfig struct {
 	// answers "no remnant".
 	HostRemnantFence func(name string) (string, bool)
 	// ForgetAttachedHost drops the durable startup-reconnect record for name
-	// once a host change retires its registration. It is installed by main.go
+	// once a host change retires its registration. It is installed by buildWeb
 	// over the attached-host persister; nil leaves the record in place (tests,
 	// embedders without one).
 	ForgetAttachedHost func(name string)

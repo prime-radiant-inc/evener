@@ -542,7 +542,7 @@ func (r *reconnectRunner) setPolicy(name string, policy dialPolicy) {
 
 func (r *reconnectRunner) waitForDials(t *testing.T, name string, want int) {
 	t.Helper()
-	testwait.Until(t, fmt.Sprintf("%s dials", name), func() bool { return r.dialsFor(name) >= want })
+	testwait.Until(t, name+" dials", func() bool { return r.dialsFor(name) >= want })
 }
 
 func (r *reconnectRunner) killBridges() {
@@ -1017,7 +1017,6 @@ func TestRunMainDegradedOpsStorePreservesDurableIdentityAndCorruptStateStarts(t 
 		if got := attachedHostsNow(t, f.cfg.HubStateRoot)["alpha"]; got != (hubcore.AttachedHostRecord{Generation: 1, IncarnationID: "durable-inc"}) {
 			t.Fatalf("a degraded boot overwrote the durable identity: %+v", got)
 		}
-		_ = h
 	})
 
 	t.Run("a corrupt state file does not stop startup", func(t *testing.T) {
