@@ -261,7 +261,7 @@ Board rows and section rows stay open on the page; no enclosing card. Section ch
 
 ## Components
 
-Use SF Symbols for the [shared action icons](../docs/web-ui/design-system.md#action-icons) in native toolbars, the on-device Board and conversation, and the share flow. Keep the action's accessible name on the button and center the symbol in its tap target.
+Use SF Symbols for the actions in the [shared design guide](../docs/web-ui/design-system.md) under **Action icons**. Apply them in native toolbars, the on-device Board and conversation, and the share flow. Keep the action's accessible name on the button and center the symbol in its tap target. Text-only commands such as Start in a sheet header keep their labels.
 
 ### The hub button
 - **Shape:** One glass capsule in the header's leading slot: the hub's name at 17px in ink-hi and a `chevron.down` glyph. It's a custom header view, because a native bar item given both a title and an image draws only the image.
