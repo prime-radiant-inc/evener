@@ -351,8 +351,8 @@ func ApprovalDecisionAnnouncement(notice schema.ApprovalDecisionNotice) NoticeAn
 // QuietYieldAnnouncement builds the muted notice for a successful quiet
 // communicate turn or bare-text live-work quiet park. When note is empty (such
 // as legacy empty-object records), it falls back to a neutral caption. When
-// companion assistant commentary prose was emitted in the same response (or the
-// full bare-text note was shortened), it rides in Raw under "commentary" so
+// companion assistant commentary prose was emitted in the same response (or a
+// multiline bare-text note was normalized to a single paragraph), it rides in Raw under "commentary" so
 // clients keep it inspectable behind the muted notice instead of as an unread
 // chat bubble.
 func QuietYieldAnnouncement(note, commentary string) NoticeAnnouncement {

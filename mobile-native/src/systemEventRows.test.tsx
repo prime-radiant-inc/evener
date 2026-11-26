@@ -578,6 +578,7 @@ describe("quiet_yield prose typography", () => {
 			lineHeight: typeRoles.agentProse.lineHeight,
 			color: palettes.light.inkLow,
 		});
+		expect(quietText[0]?.props.numberOfLines).toBeUndefined();
 
 		const lifecycleTree = show("tool-repair", "full");
 		const lifecycleText = lifecycleTree.root.findAll((node) => String(node.type) === "Text");
@@ -588,6 +589,7 @@ describe("quiet_yield prose typography", () => {
 			color: palettes.light.inkLow,
 		});
 		expect(lifecycleText[0]?.props.style?.fontFamily).toBeUndefined();
+		expect(lifecycleText[0]?.props.numberOfLines).toBe(2);
 	});
 
 	it("renders a quiet_yield summary with demoted commentary in agentProse serif at inkLow", () => {
@@ -612,6 +614,7 @@ describe("quiet_yield prose typography", () => {
 			lineHeight: typeRoles.agentProse.lineHeight,
 			color: palettes.light.inkLow,
 		});
+		expect(summaryText[0]?.props.numberOfLines).toBeUndefined();
 	});
 
 	it("keeps collapsed quiet_yield group chrome at 13pt sans-serif while inner expanded wakes use agentProse", () => {

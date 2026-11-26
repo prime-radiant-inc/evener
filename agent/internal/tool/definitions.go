@@ -878,7 +878,7 @@ func communicateDelegateDescription(resultTool string) string {
 // worded for a delegate: next="send_and_continue" sends an update its parent
 // receives, next="send_and_end_turn" (or omitted) its report or an observer
 // readiness line, and next="log_quietly_and_end_turn" a quiet yield with a
-// bounded note. The output schema stays as the caller built it.
+// note. The output schema stays as the caller built it.
 func WithCommunicateDelegateUpdates(def llm.ToolDefinition) llm.ToolDefinition {
 	params := CloneSchemaMap(def.Parameters)
 	props, _ := params["properties"].(map[string]any)

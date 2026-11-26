@@ -48,17 +48,22 @@ export function SystemEvent({
 	const quiet = { fontSize: 13 * scale, lineHeight: 18 * scale, color: palette.inkLow };
 	const lineStyle = prose ? { ...scaledType(reading.agentProse, scale), color: palette.inkLow } : quiet;
 	// A long label truncates to one line so its chevron stays in view; the
-	// button's accessibility label still says it in full.
+	// button's accessibility label still says it in full. Quiet-yield prose
+	// notices never clamp their line count so the full update stays readable.
 	const line = label ? (
 		<View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
-			<Text allowFontScaling={allowFontScaling} numberOfLines={1} style={{ ...lineStyle, flexShrink: 1 }}>
+			<Text
+				allowFontScaling={allowFontScaling}
+				numberOfLines={prose ? undefined : 1}
+				style={{ ...lineStyle, flexShrink: 1 }}
+			>
 				{label}
 			</Text>
 			<SymbolView name={expanded ? "chevron.down" : "chevron.right"} tintColor={palette.inkLow} size={10 * scale} />
 		</View>
 	) : (
 		<>
-			<Text allowFontScaling={allowFontScaling} numberOfLines={expanded ? undefined : 2} style={lineStyle}>
+			<Text allowFontScaling={allowFontScaling} numberOfLines={prose || expanded ? undefined : 2} style={lineStyle}>
 				{text}
 			</Text>
 			{hint ? (

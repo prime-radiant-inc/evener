@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
-	"unicode/utf8"
 )
 
 func TestCommunicateToolStateQuietNote(t *testing.T) {
@@ -164,13 +163,9 @@ func TestNormalizeQuietNote(t *testing.T) {
 	if got := NormalizeQuietNote("  waiting\non\t\tbuild\n  step 2  "); got != "waiting on build step 2" {
 		t.Fatalf("NormalizeQuietNote whitespace = %q", got)
 	}
-	exact := strings.Repeat("x", CommunicateQuietNoteMaxRunes)
-	if got := NormalizeQuietNote(exact); got != exact {
-		t.Fatalf("NormalizeQuietNote exact boundary truncated: len=%d", utf8.RuneCountInString(got))
-	}
-	over := strings.Repeat("y", CommunicateQuietNoteMaxRunes-1) + "  " + "trailing"
-	got := NormalizeQuietNote(over)
-	if utf8.RuneCountInString(got) > CommunicateQuietNoteMaxRunes || !strings.HasSuffix(got, "…") || strings.Contains(got, " …") {
-		t.Fatalf("NormalizeQuietNote over = %q (runes=%d)", got, utf8.RuneCountInString(got))
+	long := "Palm is in: " + strings.Repeat("y", 400) + "  \n\ttrailing detail"
+	want := "Palm is in: " + strings.Repeat("y", 400) + " trailing detail"
+	if got := NormalizeQuietNote(long); got != want {
+		t.Fatalf("NormalizeQuietNote truncated or altered long note: got len=%d tail=%q, want len=%d", len(got), got[max(0, len(got)-30):], len(want))
 	}
 }

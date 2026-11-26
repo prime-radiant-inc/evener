@@ -241,8 +241,8 @@ subagents: `(message: string, next?: enum = "send_and_end_turn", output?)` with 
 required (`{}` and legacy `end_turn` are rejected). `next="send_and_end_turn"` (default) delivers
 user- or parent-visible text, enforces any configured `result_schema` on `output`, fires
 `EventCommunicate`, and ends the turn; `next="send_and_continue"` sends a progress update and
-continues working in the next round; `next="log_quietly_and_end_turn"` records `message` as a
-bounded muted one-line transcript note (`communicate_quiet_note` in `ToolState`, no `output`
+continues working in the next round; `next="log_quietly_and_end_turn"` records `message` as an
+untruncated muted transcript note (`communicate_quiet_note` in `ToolState`, no `output`
 allowed) and ends the current turn without emitting `EventCommunicate`, recording a
 `TurnCommunicate`, or waking a parent: on an unanswered user turn it requires wakeable work (and
 in one-shot `TurnEndsProcess` runs, drainable work rather than an unfired self-timer alone), while
