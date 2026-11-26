@@ -24,12 +24,23 @@ function installVisualViewport(): FakeVisualViewport {
   return fake;
 }
 
+const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
+const originalClientHeight = Object.getOwnPropertyDescriptor(document.documentElement, "clientHeight");
+
 function setInnerHeight(px: number): void {
   Object.defineProperty(window, "innerHeight", { value: px, configurable: true, writable: true });
 }
 
+function setClientHeight(px: number): void {
+  Object.defineProperty(document.documentElement, "clientHeight", { value: px, configurable: true });
+}
+
 afterEach(() => {
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
+  if (originalInnerHeight) Object.defineProperty(window, "innerHeight", originalInnerHeight);
+  if (originalClientHeight) Object.defineProperty(document.documentElement, "clientHeight", originalClientHeight);
+  else Reflect.deleteProperty(document.documentElement, "clientHeight");
   document.documentElement.style.removeProperty("--keyboard-inset");
 });
 
@@ -70,18 +81,59 @@ describe("useKeyboardInset", () => {
     unmount();
   });
 
+  test("reads the shrunk layout viewport when resizes-content leaves window.innerHeight stale", () => {
+    const vv = installVisualViewport();
+    setInnerHeight(580);
+    setClientHeight(580);
+    vv.height = 580;
+    const { unmount } = renderHook(() => useKeyboardInset());
+    expect(document.documentElement.style.getPropertyValue("--keyboard-inset")).toBe("0px");
+
+    // Keyboard opens under interactive-widget=resizes-content: the layout
+    // viewport and visualViewport both shrink to 374 while window.innerHeight
+    // stays stale at 580.
+    setClientHeight(374);
+    vv.height = 374;
+    vv.fire("resize");
+    expect(document.documentElement.style.getPropertyValue("--keyboard-inset")).toBe("0px");
+
+    // Keyboard closes, then opens with visualViewport shrinking before the
+    // layout viewport commits: window resize settles --keyboard-inset back to 0.
+    setClientHeight(580);
+    vv.height = 580;
+    vv.fire("resize");
+    vv.height = 374;
+    vv.fire("resize");
+    expect(document.documentElement.style.getPropertyValue("--keyboard-inset")).toBe("206px");
+
+    setClientHeight(374);
+    window.dispatchEvent(new Event("resize"));
+    expect(document.documentElement.style.getPropertyValue("--keyboard-inset")).toBe("0px");
+
+    unmount();
+  });
+
   test("unmount removes the variable and every listener it added", () => {
     const vv = installVisualViewport();
     setInnerHeight(768);
-    const addSpy = vi.spyOn(vv, "addEventListener");
-    const removeSpy = vi.spyOn(vv, "removeEventListener");
+    const vvAddSpy = vi.spyOn(vv, "addEventListener");
+    const vvRemoveSpy = vi.spyOn(vv, "removeEventListener");
+    const winAddSpy = vi.spyOn(window, "addEventListener");
+    const winRemoveSpy = vi.spyOn(window, "removeEventListener");
     const { unmount } = renderHook(() => useKeyboardInset());
-    const added = addSpy.mock.calls.map(([type, listener]) => ({ type, listener }));
-    expect(added.map(({ type }) => type).sort()).toEqual(["resize", "scroll"]);
+    const vvAdded = vvAddSpy.mock.calls.map(([type, listener]) => ({ type, listener }));
+    const winAdded = winAddSpy.mock.calls
+      .filter(([type]) => type === "resize")
+      .map(([type, listener]) => ({ type, listener }));
+    expect(vvAdded.map(({ type }) => type).sort()).toEqual(["resize", "scroll"]);
+    expect(winAdded.map(({ type }) => type)).toEqual(["resize"]);
 
     unmount();
-    for (const { type, listener } of added) {
-      expect(removeSpy).toHaveBeenCalledWith(type, listener);
+    for (const { type, listener } of vvAdded) {
+      expect(vvRemoveSpy).toHaveBeenCalledWith(type, listener);
+    }
+    for (const { type, listener } of winAdded) {
+      expect(winRemoveSpy).toHaveBeenCalledWith(type, listener);
     }
     expect(document.documentElement.style.getPropertyValue("--keyboard-inset")).toBe("");
   });

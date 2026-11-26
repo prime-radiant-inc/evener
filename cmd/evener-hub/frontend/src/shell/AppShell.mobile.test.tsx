@@ -137,10 +137,14 @@ test("mobile: the shell spends --keyboard-inset as bottom padding so the compose
   // before matching (testing.md: a comment quoting the declaration must not
   // satisfy the assertion).
   const css = readModuleCss(import.meta.url, "AppShell.module.css");
+  const supports = css.match(/@supports \(height: 100dvh\) \{([\s\S]*?)\n\}/);
   const mobile = css.match(new RegExp(`@media ${escapeRegExp(MOBILE_QUERY)} \\{([\\s\\S]*?)\\n\\}`));
+  expect(supports).not.toBeNull();
   expect(mobile).not.toBeNull();
+  expect(mobile!.index).toBeGreaterThan(supports!.index ?? -1);
   const shellRule = mobile![1]!.match(/\.shell \{([\s\S]*?)\n[ ]{2}\}/);
   expect(shellRule).not.toBeNull();
+  expect(shellRule![0]).toContain("height: auto");
   expect(shellRule![0]).toContain("padding-bottom: var(--keyboard-inset, 0px)");
 });
 
