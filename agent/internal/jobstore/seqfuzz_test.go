@@ -79,7 +79,6 @@ const (
 	opArmNotify
 	opArmNotifyStale
 	opDeliverNotify
-	opMessageSent
 	opRegisterWatch
 	opClearWatch
 	opClearWatchStale
@@ -166,7 +165,7 @@ func (m *seqModel) legalOps() []seqOp {
 	ops := []seqOp{opStartShell, opRegisterWatch, opWatchSendPending}
 
 	if len(m.jobs) > 0 {
-		ops = append(ops, opMessageSent, opArmNotifyStale)
+		ops = append(ops, opArmNotifyStale)
 	}
 	if len(m.nonterminalJobs()) > 0 {
 		ops = append(ops, opFinishJob)
@@ -308,10 +307,6 @@ func (m *seqModel) applyOp(rt *rapid.T, op seqOp) {
 		jm := pickOf(rt, "deliverJob", m.deliverableJobs())
 		m.emit(Event{Kind: EventJobNotificationDelivered, JobID: jm.id, TerminalGen: jm.terminalGen})
 		jm.notify = NotifyDelivered
-
-	case opMessageSent:
-		jm := pickOf(rt, "msgJob", m.jobs)
-		m.emit(Event{Kind: EventJobMessageSent, JobID: jm.id, Target: "s1", Action: "note"})
 
 	case opRegisterWatch:
 		wid := m.nextID("watch_")

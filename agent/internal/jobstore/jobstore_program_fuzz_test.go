@@ -402,7 +402,7 @@ func jcpFoldEdgePaths(t *testing.T, r *jcpReader) {
 	records := Fold([]Event{
 		{Kind: EventJobStarted, Seq: 1, JobID: "job-edge"},
 		{Kind: EventJobFinished, Seq: 2, JobID: "job-edge", Status: StatusCompleted, TerminalGen: "terminal-edge", StructuredResultValid: new(bool), StructuredResultReason: "invalid"},
-		{Kind: EventJobMessageSent, Seq: 3, JobID: "job-edge"},
+		{Kind: EventKind("unknown_legacy"), Seq: 3, JobID: "job-edge"},
 		{Kind: EventJobNotificationPending, Seq: 4, JobID: "job-edge", TerminalGen: "wrong"},
 		{Kind: EventJobNotificationDelivered, Seq: 5, JobID: "job-edge", TerminalGen: "wrong"},
 		{Kind: EventJobFinished, Seq: 6, JobID: "job-edge", Status: StatusFailed, TerminalGen: "later"},

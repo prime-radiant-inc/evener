@@ -113,7 +113,7 @@ func incrementalTestEvent(i int) Event {
 		}
 	case 3:
 		return Event{
-			Kind: EventJobMessageSent, TS: ts, JobID: jobID, Target: "ses_target", Action: "note",
+			Kind: EventJobNotificationDelivered, TS: ts, JobID: jobID, TerminalGen: fmt.Sprintf("gen_%d", i),
 		}
 	case 4:
 		return Event{
