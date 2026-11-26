@@ -1,15 +1,18 @@
 import { useIsFocused } from "@react-navigation/native";
+import { StatusBar } from "expo-status-bar";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, Alert, AppState, Linking, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { WebView, type WebViewMessageEvent } from "react-native-webview";
 import { useHoldAlerts } from "../alerts/alertsContext";
 import type { HubProfile } from "../connection";
+import { paletteFor } from "../design/tokens";
 import { haptic } from "../haptics";
 import { externalMarkdownLink } from "../markdownLinks";
 import { HeaderButton } from "../sheet/HeaderButton";
 import { ErrorMessage, useColors } from "../ui";
 import { hubPagePath, hubPageSource } from "./hubWebPolicy";
+import { isSessionHeader, SessionHeader, type SessionHeaderState } from "./SessionHeader";
 
 interface HubWebViewProps {
 	profile: HubProfile;
@@ -30,6 +33,7 @@ export function HubWebView({ profile, token, initialPath, onPath, onHubMenu, onD
 	const [loaded, setLoaded] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 	const [editing, setEditing] = useState(false);
+	const [header, setHeader] = useState<SessionHeaderState | null>(null);
 	const focused = useIsFocused();
 	useHoldAlerts(editing && bridgeReady && focused && !error, "quiet");
 	const source = useMemo(() => {
@@ -55,6 +59,7 @@ export function HubWebView({ profile, token, initialPath, onPath, onHubMenu, onD
 		setBridgeReady(false);
 		setEditing(false);
 		setLoaded(false);
+		setHeader(null);
 		setError(null);
 	}, []);
 	useEffect(() => {
@@ -77,6 +82,7 @@ export function HubWebView({ profile, token, initialPath, onPath, onHubMenu, onD
 		const path = hubPagePath(origin, origin + initialPath);
 		if (!path) return;
 		currentPath.current = path;
+		setHeader(null);
 		if (bridgeReady && web.current) web.current.postMessage(JSON.stringify({ type: "navigate", path }));
 		else setEntryPath(path);
 	}, [initialPath, bridgeReady, origin]);
@@ -91,6 +97,9 @@ export function HubWebView({ profile, token, initialPath, onPath, onHubMenu, onD
 		}
 		if (!data || typeof data !== "object") return;
 		switch (data.type) {
+			case "sessionHeader":
+				setHeader(isSessionHeader(data.header) ? data.header : null);
+				break;
 			case "ready":
 				setBridgeReady(true);
 				break;
@@ -142,64 +151,78 @@ export function HubWebView({ profile, token, initialPath, onPath, onHubMenu, onD
 				<HeaderButton label="Work on this iPhone" onPress={onDeviceWork} />
 			</SafeAreaView>
 		);
+	const activeHeader = focused ? header : null;
+	const topColor = activeHeader ? paletteFor(activeHeader.dark ? "dark" : "light").surface : palette.canvas;
 	return (
-		<SafeAreaView edges={["top", "left", "right"]} style={{ flex: 1, backgroundColor: palette.canvas }}>
-			{loaded && (!bridgeReady || currentPath.current.startsWith("/thread/")) && (
+		<SafeAreaView edges={["top", "left", "right"]} style={{ flex: 1, backgroundColor: topColor }}>
+			{activeHeader && <StatusBar style={activeHeader.dark ? "light" : "dark"} />}
+			{loaded && !activeHeader && (!bridgeReady || currentPath.current.startsWith("/thread/")) && (
 				<View style={{ alignItems: "flex-end" }}>
 					<HeaderButton label="iPhone settings" onPress={onHubMenu} />
 				</View>
 			)}
-			<WebView<unknown>
-				ref={web}
-				source={source}
-				applicationNameForUserAgent="EvenerNative/1"
-				// A whitelist miss makes RNCWebView open the URL in the OS itself.
-				// Route every scheme through our user-navigation check instead.
-				originWhitelist={["*"]}
-				onShouldStartLoadWithRequest={(request) => {
-					if (hubPagePath(origin, request.url)) return true;
-					if (request.isTopFrame) {
-						if (request.navigationType === "click") openLink(request.url);
-						else setError("The hub redirected outside its workspace.");
-					}
-					return false;
-				}}
-				onOpenWindow={({ nativeEvent }) => openLink(nativeEvent.targetUrl)}
-				onMessage={message}
-				onLoadStart={() => {
-					setEditing(false);
-					setBridgeReady(false);
-				}}
-				onLoad={({ nativeEvent }) => {
-					setLoaded(true);
-					const path = hubPagePath(origin, nativeEvent.url);
-					if (path) reportPath(path);
-				}}
-				onError={() => setError(`Could not reach ${profile.name}.`)}
-				onHttpError={({ nativeEvent }) => {
-					if (hubPagePath(origin, nativeEvent.url)) {
-						setError(
-							nativeEvent.statusCode === 401
-								? "Check the token in iPhone settings."
-								: `The hub returned HTTP ${nativeEvent.statusCode}.`,
-						);
-					}
-				}}
-				onContentProcessDidTerminate={() => setError("Reopening the hub workspace…")}
-				startInLoadingState
-				renderLoading={() => (
-					<View style={{ position: "absolute", inset: 0, justifyContent: "center", backgroundColor: palette.canvas }}>
-						<ActivityIndicator accessibilityLabel={`Opening ${profile.name}`} />
-						<HeaderButton label="iPhone settings" onPress={onHubMenu} />
-					</View>
+			<View style={{ flex: 1 }}>
+				<WebView<unknown>
+					ref={web}
+					source={source}
+					applicationNameForUserAgent="EvenerNative/1 EvenerSessionHeader/1"
+					// A whitelist miss makes RNCWebView open the URL in the OS itself.
+					// Route every scheme through our user-navigation check instead.
+					originWhitelist={["*"]}
+					onShouldStartLoadWithRequest={(request) => {
+						if (hubPagePath(origin, request.url)) return true;
+						if (request.isTopFrame) {
+							if (request.navigationType === "click") openLink(request.url);
+							else setError("The hub redirected outside its workspace.");
+						}
+						return false;
+					}}
+					onOpenWindow={({ nativeEvent }) => openLink(nativeEvent.targetUrl)}
+					onMessage={message}
+					onLoadStart={() => {
+						setHeader(null);
+						setEditing(false);
+						setBridgeReady(false);
+					}}
+					onLoad={({ nativeEvent }) => {
+						setLoaded(true);
+						const path = hubPagePath(origin, nativeEvent.url);
+						if (path) reportPath(path);
+					}}
+					onError={() => setError(`Could not reach ${profile.name}.`)}
+					onHttpError={({ nativeEvent }) => {
+						if (hubPagePath(origin, nativeEvent.url)) {
+							setError(
+								nativeEvent.statusCode === 401
+									? "Check the token in iPhone settings."
+									: `The hub returned HTTP ${nativeEvent.statusCode}.`,
+							);
+						}
+					}}
+					onContentProcessDidTerminate={() => setError("Reopening the hub workspace…")}
+					startInLoadingState
+					renderLoading={() => (
+						<View style={{ position: "absolute", inset: 0, justifyContent: "center", backgroundColor: palette.canvas }}>
+							<ActivityIndicator accessibilityLabel={`Opening ${profile.name}`} />
+							<HeaderButton label="iPhone settings" onPress={onHubMenu} />
+						</View>
+					)}
+					automaticallyAdjustContentInsets={false}
+					contentInsetAdjustmentBehavior="never"
+					contentMode="mobile"
+					allowsBackForwardNavigationGestures
+					hideKeyboardAccessoryView
+					style={{ backgroundColor: palette.canvas }}
+				/>
+				{activeHeader && (
+					<SessionHeader
+						header={activeHeader}
+						onAction={(action) =>
+							web.current?.postMessage(JSON.stringify({ type: "headerAction", id: activeHeader.id, action }))
+						}
+					/>
 				)}
-				automaticallyAdjustContentInsets={false}
-				contentInsetAdjustmentBehavior="never"
-				contentMode="mobile"
-				allowsBackForwardNavigationGestures
-				hideKeyboardAccessoryView
-				style={{ backgroundColor: palette.canvas }}
-			/>
+			</View>
 		</SafeAreaView>
 	);
 }
