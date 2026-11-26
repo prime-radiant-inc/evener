@@ -295,6 +295,9 @@ final class EvenerQualificationUITests: XCTestCase {
 				guard connect.waitForExistence(timeout: 4) else { break }
 				tap(connect, "the review step never appeared")
 			}
+			// The empty fixture opens Sessions itself on first pairing. Its opener
+			// disappears as the drawer arrives; wait for the drawer's actual action.
+			XCTAssertTrue(app.buttons["workspace-new-session"].waitForExistence(timeout: tripwire))
 		}
 		XCTAssertTrue(
 			app.webViews.firstMatch.waitForExistence(timeout: tripwire),
