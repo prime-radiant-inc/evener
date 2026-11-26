@@ -62,6 +62,39 @@ SIL Open Font License 1.1; the package notice and license are reproduced below.
 
 ---
 
+## Action icons
+
+Use the same symbol for the same action in the browser, the installed Home
+Screen app, the iPhone shell and the on-device editor. The hub draws these
+symbols with SVG. Native iOS controls use the corresponding SF Symbols.
+
+| Action | Shape | iOS symbol |
+| --- | --- | --- |
+| New session, including within a project | Plus | `plus` |
+| Send a message or start a session | Upright arrow | `arrow.up` |
+| Attach an image | Paperclip | `paperclip` |
+| More actions | Three horizontal dots | `ellipsis` |
+| Back | Backward chevron | `chevron.backward` |
+| Show or hide Sessions | Window with the leading sidebar marked | `sidebar.leading` |
+| Open Overview | Window with the trailing sidebar marked | `sidebar.trailing` |
+| Search or find in a session | Magnifying glass | `magnifyingglass` |
+| Settings | Gear | `gearshape` |
+| Share through the system share sheet | Up arrow emerging from a square | `square.and.arrow.up` |
+
+The plus opens a new-session form. The arrow submits it. A compact composer
+shows the arrow alone in a round button. A wider composer can also show
+**Send** or **Start**. Keep the action name on an icon-only button for people
+using a screen reader. Include a count in that name when its badge conveys
+information, as with sessions that need attention.
+
+Shared web action glyphs use an 18 px canvas on a roomy desktop and a 24 px
+canvas on a phone or coarse pointer. Keep a 44 × 44 px touch target for a
+standalone icon button. Center the visible strokes on both axes and leave room
+for the full stroke, including rounded ends. On a labeled button, center the
+glyph in its own slot beside the text. Check the control at its rendered size
+in light and dark themes. The **IconButton**, **Menu** and **SendIcon** sections
+in `/dev/widgets` render the production drawings.
+
 ## Design model: an editorial instrument
 
 **Conversation supports understanding; evidence supports verification; controls support

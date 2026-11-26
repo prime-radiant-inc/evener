@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { MoreIcon } from "../../shell/rail/railIcons";
 import { Menu, type MenuItem } from "../../widgets/menu";
 import { GallerySection } from "../GallerySection";
 import styles from "./menu.module.css";
@@ -38,8 +39,8 @@ function IconTriggerDemo() {
   return (
     <div className={styles.frame}>
       <p className={styles.hint}>Icon-only trigger, default and quiet.</p>
-      <Menu icon="⋯" label="Actions for Alpha" items={ITEMS} />
-      <Menu icon="⋯" label="Actions for Beta" variant="quiet" items={ITEMS} />
+      <Menu icon={<MoreIcon />} label="Actions for Alpha" items={ITEMS} />
+      <Menu icon={<MoreIcon />} label="Actions for Beta" variant="quiet" items={ITEMS} />
     </div>
   );
 }

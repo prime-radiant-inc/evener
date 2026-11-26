@@ -20,6 +20,10 @@ working procedure.
 - **Widgets:** `src/widgets/`, imported only through the barrel
   `src/widgets/index.ts`. The props each widget accepts are listed in §3 of
   the design-system spec and typed in each widget's `index.tsx`.
+- **Button icons** use the existing drawing for the action. Preview icon-only
+  and labeled controls at their actual size in `/dev/widgets`. The shared
+  shapes, iOS equivalents, touch sizes and centering rules are in the
+  [action icon guide](../web-ui/design-system.md#action-icons).
 - **Shared surface recipes:** `src/styles/surface.module.css` owns the grouped
   surface and its hairline-divided rows, the [transcript tool-row spacing](../web-ui/design-system.md#inline-tools-and-delegates),
   and the field seat behind a glyph. `src/styles/railseat.module.css` owns the
