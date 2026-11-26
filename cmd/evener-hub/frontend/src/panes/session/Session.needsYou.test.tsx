@@ -513,7 +513,9 @@ test("a focused draft stays visible and composition suppression clears without l
   expect(readDraft("ref_a")).toBe("keep this draft");
 });
 
-test("the measured attention stack becomes transcript end clearance", async ({ onTestFinished }) => {
+test("the measured attention control becomes transcript end clearance without growing for the new-content pill", async ({
+  onTestFinished,
+}) => {
   vi.mocked(ComposerModule.Composer).mockRestore();
   onTestFinished(() => {
     vi.restoreAllMocks();
@@ -522,13 +524,13 @@ test("the measured attention stack becomes transcript end clearance", async ({ o
   const fake = connectReadyFakeClient();
   fake.on("thread/read", () => attentionRead("ref_a"));
   installNeedsYouRows(["ref_a", "ref_b"]);
-  // Give the floating stack a measured height without disturbing the
-  // transcript's own rect-based geometry. It sits flush against the reader's
-  // own bottom edge (jsdom reports that edge at 0), so the clearance it needs
-  // is exactly its own 96 px.
+  // Give the floating attention slot a 96 px clearance and the full stack a
+  // taller 148 px box when New Content mounts above it. End clearance must stay
+  // pinned to Next's top (96 px) rather than growing when the pill appears.
   const originalRect = HTMLElement.prototype.getBoundingClientRect;
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
-    if (this.dataset.testid === "flow-overlay-stack") return { top: -96, bottom: 0, height: 96 } as DOMRect;
+    if (this.dataset.testid === "flow-overlay-attention") return { top: -96, bottom: 0, height: 96 } as DOMRect;
+    if (this.dataset.testid === "flow-overlay-stack") return { top: -148, bottom: 0, height: 148 } as DOMRect;
     return originalRect.call(this);
   });
   const pane = attentionSession("clearance-pane");
@@ -651,7 +653,19 @@ test("a visible Next control mounts its slot without an empty pill slot above it
   expect(within(stack).queryByTestId("flow-overlay-pill")).toBeNull();
 });
 
-test("a visible pill mounts its slot without an empty attention slot below it", async () => {
+test("a visible pill mounts its slot without an empty attention slot below it or extra end clearance", async ({
+  onTestFinished,
+}) => {
+  const originalRect = HTMLElement.prototype.getBoundingClientRect;
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    if (this.dataset.testid === "flow-overlay-stack" || this.dataset.testid === "flow-overlay-pill") {
+      return { top: -56, bottom: 0, height: 56 } as DOMRect;
+    }
+    return originalRect.call(this);
+  });
+  onTestFinished(() => {
+    vi.restoreAllMocks();
+  });
   const fake = connectReadyFakeClient();
   fake.on("thread/read", () => attentionRead("ref_a"));
   const pane = attentionSession("pill-only-pane");
@@ -673,9 +687,11 @@ test("a visible pill mounts its slot without an empty attention slot below it", 
   expect(pillSlot.contains(screen.getByTestId("new-content-pill"))).toBe(true);
   // No needs-you queue and no manifest: the Next control has nothing to
   // offer, so its slot stays unmounted rather than padding the stack's
-  // measured height with an empty row and the flex gap it carries.
+  // measured height with an empty row and the flex gap it carries, and the
+  // scroll-to-latest pill reserves no trailing end clearance of its own.
   expect(screen.queryByTestId("next-needs-you")).toBeNull();
   expect(within(stack).queryByTestId("flow-overlay-attention")).toBeNull();
+  expect(screen.queryByTestId("transcript-end-clearance")).toBeNull();
   view.unmount();
 });
 
@@ -789,7 +805,7 @@ test("the measured clearance does not toggle New Content or move an end-followin
   let stackHeight = 0;
   const originalRect = HTMLElement.prototype.getBoundingClientRect;
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
-    if (this.dataset.testid === "flow-overlay-stack") {
+    if (this.dataset.testid === "flow-overlay-attention") {
       return { top: -stackHeight, bottom: 0, height: stackHeight } as DOMRect;
     }
     return originalRect.call(this);

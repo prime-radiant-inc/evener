@@ -268,8 +268,18 @@ export function useTranscriptViewRegistration(
       committedLayoutRef.current = committed;
       const before = pendingRef.current?.captured ?? latestCaptureRef.current;
       if (before && viewportChanged(before, el)) {
-        if (pendingRef.current) pendingRef.current.viewportReflow = true;
-        else
+        if (pendingRef.current) {
+          pendingRef.current.viewportReflow = true;
+        } else if (
+          before.readingPoint?.viewportWidth === el.clientWidth &&
+          !(before.followingBottom && currentOptions.followingBottom?.() !== false)
+        ) {
+          // A height-only resize at the same width does not reflow text; adopt
+          // the browser's or host's (for example, StackHost top-bar
+          // compensation) live offset directly rather than snapping back to the
+          // pre-resize top edge.
+          latestCaptureRef.current = undefined;
+        } else {
           pendingRef.current = {
             captured: before,
             readView: currentOptions.readView,
@@ -280,6 +290,7 @@ export function useTranscriptViewRegistration(
             focusScrollRequested: false,
             viewportReflow: true,
           };
+        }
       }
       restoreAfterMeasurement();
       if (!pendingRef.current) capture();

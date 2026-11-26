@@ -379,18 +379,19 @@ lost pointer capture or unmount ends a pending hold without
 opening anything. A completed hold consumes the single click its release emits;
 the next intentional click still runs Next.
 
-The control and the New Content affordance share one measured stack at the
-transcript's trailing bottom edge, with New Content above Next. The stack's
-committed height becomes end clearance inside the virtual list, so the last
-transcript row can scroll clear of both controls and stays readable. A dormant or
-empty transcript floats the same control above the composer in its own dock.
+The control and the New Content affordance share one stack at the transcript's
+trailing bottom edge, with New Content above Next. Only the Next slot (together
+with the stack's bottom inset, which carries the phone's floating composer
+reserve) becomes end clearance inside the virtual list, so the last transcript
+row scrolls clear of Next without changing `scrollHeight` as the scroll-to-latest
+pill mounts and unmounts at the bottom. A dormant or empty transcript floats
+the same control above the composer in its own dock.
 
 Each stack slot mounts only while its control would actually render — the New
 Content pill exactly when its own gate would show it, Next only while its
-visibility predicate holds — and the stack, with the end clearance it reserves,
-disappears entirely while neither would. Nothing floats over the transcript's
-bottom edge, and no clearance band pads its end, until there is something to
-float.
+visibility predicate holds — and the stack disappears entirely while neither
+would. End clearance disappears whenever Next is unmounted, so no clearance
+band pads the transcript's end until Next floats over it.
 
 That predicate also answers whether anything needs the reader: Next mounts for
 a session it can offer, or for rows already loaded while another page of the

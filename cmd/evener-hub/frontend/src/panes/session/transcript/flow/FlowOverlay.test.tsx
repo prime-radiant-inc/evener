@@ -65,17 +65,24 @@ test("puts the attention overlay below the new-content pill in one stack", () =>
   expect(strip.compareDocumentPosition(attention) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 });
 
-test("reports the reader's bottom-to-stack-top clearance, inset included, and clears it when the stack goes away", () => {
+test("reports the reader's bottom-to-attention-top clearance, inset included, and ignores the new-content pill", () => {
   const onOverlayHeightChange = vi.fn();
-  // The real composition floats the 96 px stack 12 px above the reader's own
-  // bottom edge (`.stack { bottom: var(--space-3) }`), so the reader needs
-  // 108 px of trailing clearance: everything from its bottom up to the
-  // stack's top.
+  // The real composition floats Next 12 px above the reader's own bottom edge
+  // (`.stack { padding-bottom: calc(var(--space-3) + var(--floating-composer-reserve, 0px)) }`),
+  // so the reader needs 108 px of trailing clearance: everything from its
+  // bottom up to Next's top. New Content sits above Next only while scrolled
+  // away and unmounts at the bottom, so it never adds to end clearance.
   const rect = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
     this: HTMLElement,
   ) {
-    if (this.dataset.testid === "flow-overlay-stack") {
+    if (this.dataset.testid === "flow-overlay-attention") {
       return { top: 392, bottom: 488, height: 96 } as DOMRect;
+    }
+    if (this.dataset.testid === "flow-overlay-stack") {
+      return { top: 340, bottom: 488, height: 148 } as DOMRect;
+    }
+    if (this.dataset.testid === "flow-overlay-pill") {
+      return { top: 340, bottom: 384, height: 44 } as DOMRect;
     }
     return { top: 0, bottom: 500, height: 500 } as DOMRect;
   });
@@ -92,18 +99,36 @@ test("reports the reader's bottom-to-stack-top clearance, inset included, and cl
     expect(screen.getByTestId("flow-overlay-attention")).toBeTruthy();
 
     view.rerender(
-      <FlowOverlay onOverlayHeightChange={onOverlayHeightChange}>
+      <FlowOverlay
+        pill={<span data-testid="pill-content">latest</span>}
+        attentionOverlay={<span data-testid="attention-content">next</span>}
+        onOverlayHeightChange={onOverlayHeightChange}
+      >
+        <div />
+      </FlowOverlay>,
+    );
+    expect(onOverlayHeightChange).toHaveBeenLastCalledWith(108);
+
+    view.rerender(
+      <FlowOverlay pill={<span data-testid="pill-content">latest</span>} onOverlayHeightChange={onOverlayHeightChange}>
         <div />
       </FlowOverlay>,
     );
     expect(screen.queryByTestId("flow-overlay-attention")).toBeNull();
+    expect(onOverlayHeightChange).toHaveBeenLastCalledWith(0);
+
+    view.rerender(
+      <FlowOverlay onOverlayHeightChange={onOverlayHeightChange}>
+        <div />
+      </FlowOverlay>,
+    );
     expect(onOverlayHeightChange).toHaveBeenLastCalledWith(0);
   } finally {
     rect.mockRestore();
   }
 });
 
-test("observes the stack border box so padding-bottom inset changes re-measure clearance", () => {
+test("observes the attention and stack border boxes when Next is mounted, and none for the pill alone", () => {
   const observed: Array<{ target: Element; options?: ResizeObserverOptions }> = [];
   class RecordingResizeObserver {
     observe(target: Element, options?: ResizeObserverOptions) {
@@ -115,13 +140,24 @@ test("observes the stack border box so padding-bottom inset changes re-measure c
   const previous = globalThis.ResizeObserver;
   globalThis.ResizeObserver = RecordingResizeObserver as unknown as typeof ResizeObserver;
   try {
-    render(
+    const view = render(
+      <FlowOverlay pill={<span data-testid="pill-content">latest</span>} onOverlayHeightChange={vi.fn()}>
+        <div />
+      </FlowOverlay>,
+    );
+    expect(observed).toEqual([]);
+
+    view.rerender(
       <FlowOverlay attentionOverlay={<span data-testid="attention-content">next</span>} onOverlayHeightChange={vi.fn()}>
         <div />
       </FlowOverlay>,
     );
+    const attention = screen.getByTestId("flow-overlay-attention");
     const stack = screen.getByTestId("flow-overlay-stack");
-    expect(observed).toEqual([{ target: stack, options: { box: "border-box" } }]);
+    expect(observed).toEqual([
+      { target: attention, options: { box: "border-box" } },
+      { target: stack, options: { box: "border-box" } },
+    ]);
   } finally {
     globalThis.ResizeObserver = previous;
   }
