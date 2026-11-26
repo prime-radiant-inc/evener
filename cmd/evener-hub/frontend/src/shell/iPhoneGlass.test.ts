@@ -15,10 +15,40 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-test("only the active session owns the worker and its inline and portaled surfaces", async () => {
+test.each([
+  { userAgent: "iPhone", platform: "iPhone", points: 5, glass: true },
+  { userAgent: "Macintosh", platform: "MacIntel", points: 5, glass: true },
+  { userAgent: "Macintosh", platform: "MacIntel", points: 0, glass: false },
+  { userAgent: "Android", platform: "Linux", points: 5, glass: false },
+])("browser material on $platform with $points touch points follows its accessibility settings", (device) => {
+  vi.stubGlobal("navigator", { userAgent: device.userAgent, platform: device.platform, maxTouchPoints: device.points });
+  vi.stubGlobal("CSS", { supports: () => true });
   const contrast = Object.assign(new EventTarget(), { matches: true });
   const reduce = Object.assign(new EventTarget(), { matches: false });
   vi.stubGlobal("matchMedia", (query: string) => (query.includes("contrast") ? contrast : reduce));
+  const stop = connectIPhoneGlass();
+  try {
+    expect(document.body.dataset.iphoneGlass).toBe(device.glass ? "regular" : undefined);
+    reduce.matches = true;
+    reduce.dispatchEvent(new Event("change"));
+    expect(document.body.dataset.iphoneGlass).toBe(device.glass ? "opaque" : undefined);
+    reduce.matches = false;
+    reduce.dispatchEvent(new Event("change"));
+    expect(document.body.dataset.iphoneGlass).toBe(device.glass ? "regular" : undefined);
+  } finally {
+    stop?.();
+  }
+  expect(document.body.dataset.iphoneGlass).toBeUndefined();
+});
+
+test("only the active session owns the worker and its inline and portaled surfaces", async () => {
+  vi.spyOn(navigator, "userAgent", "get").mockReturnValue("EvenerNative/1");
+  vi.stubGlobal("ReactNativeWebView", { postMessage: vi.fn() });
+  const contrast = Object.assign(new EventTarget(), { matches: true });
+  const motion = Object.assign(new EventTarget(), { matches: false });
+  vi.stubGlobal("matchMedia", (query: string) =>
+    query.includes("contrast") ? contrast : query.includes("motion") ? motion : new EventTarget(),
+  );
   vi.spyOn(HTMLElement.prototype, "getClientRects").mockImplementation(function (this: HTMLElement) {
     return [this.getBoundingClientRect()] as unknown as DOMRectList;
   });
@@ -119,8 +149,15 @@ test("only the active session owns the worker and its inline and portaled surfac
     contrast.matches = false;
     contrast.dispatchEvent(new Event("change"));
     expect(surfaces.size).toBe(0);
+    motion.matches = true;
+    contrast.matches = true;
+    contrast.dispatchEvent(new Event("change"));
+    expect(surfaces.size).toBe(0);
+    motion.matches = false;
+    motion.dispatchEvent(new Event("change"));
+    expect(surfaces.has(card)).toBe(true);
   } finally {
-    stop();
+    stop?.();
   }
   expect(report).toBeUndefined();
 });

@@ -10,7 +10,7 @@
   min-height: 0;
   /* The bottom reserve the phone's floating composer occupies over the
    * transcript (docs/web-ui/design-system.md §12): 0 wherever the footer
-   * is in flow, the overlaying chrome's height under the phone's media gate.
+   * is in flow, the overlaying chrome's height in a mobile session.
    * Read by the end inset row's height and the floating controls' offset so
    * one value keeps them in step. */
   --floating-composer-reserve: 0px;
@@ -28,7 +28,7 @@
   composes: dock from "./overlayDock.module.css";
   left: var(--space-3);
   right: var(--space-3);
-  bottom: var(--space-3);
+  bottom: calc(var(--space-3) + var(--floating-composer-reserve));
   align-items: flex-end;
 }
 
@@ -48,24 +48,11 @@
   height: max(0px, calc(var(--floating-composer-reserve) - var(--overlay-clearance, 0px)));
 }
 
-@media (max-width: 899px) {
-  /* Scoped to session panes without an edge footer: cascade columns keep an
-   * in-flow footer under data-pane-scaffold="cascade", and narrow desktop
-   * Dockview popouts keep StatusBar in an edge footer; both retain 0px. */
-  :global([data-pane-scaffold^="session:"]):not([data-has-edge-footer="true"]) .contentColumn {
-    /* The chrome's own measured height (ConversationBody's footer), so the
-     * reserve is the card's real boundary: a staged attachment strip or a
-     * grown draft pushes it - and every control that rides on it - up with the
-     * card, and a folded card leaves only the normal gutter. The fallback
-     * applies only until the first measurement. */
-    --floating-composer-reserve: calc(var(--floating-chrome-height, 150px) + var(--dock-clearance));
-  }
-
-  /* The attention dock floats above the transcript's trailing edge; lift it
-   * clear of the composer card the transcript now runs under. */
-  .attentionDock {
-    bottom: calc(var(--space-3) + var(--floating-composer-reserve));
-  }
+/* A mobile session has a floating composer and no edge footer, including
+ * when the Home Screen window is wide and the system occupies one edge.
+ * Desktop sessions keep their status bar, and cascade columns stay in flow. */
+:global([data-pane-scaffold^="session:"]):not([data-has-edge-footer="true"]) .contentColumn {
+  --floating-composer-reserve: calc(var(--floating-chrome-height, 150px) + var(--dock-clearance));
 }
 
 /* The pane's transcript viewport (Session.tsx's transcriptContent): a flex

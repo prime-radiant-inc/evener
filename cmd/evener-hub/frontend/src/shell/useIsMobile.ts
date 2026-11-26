@@ -70,9 +70,84 @@ function subscribe(query: string, listener: ViewportListener): () => void {
   };
 }
 
+/** WebKit exposes the Home Screen window separately from a Safari tab and an embedded WKWebView. */
+export function isHomeScreenWindow(): boolean {
+  return typeof navigator !== "undefined" && (navigator as Navigator & { standalone?: boolean }).standalone === true;
+}
+
+const homeSizeListeners = new Set<ViewportListener>();
+let homeObserver: ResizeObserver | null = null;
+let homeInsets: { left: number; right: number } | null = null;
+
+function homeScreenInsets() {
+  if (homeInsets) return homeInsets;
+  const style = getComputedStyle(document.documentElement);
+  const insets = {
+    left: Number.parseFloat(style.getPropertyValue("--home-safe-left")) || 0,
+    right: Number.parseFloat(style.getPropertyValue("--home-safe-right")) || 0,
+  };
+  if (homeSizeListeners.size) homeInsets = insets;
+  return insets;
+}
+
+function workspaceViewportWidth(): number {
+  if (!isHomeScreenWindow()) return window.innerWidth;
+  const { left, right } = homeScreenInsets();
+  return window.innerWidth - left - right;
+}
+
+function homeScreenEdge() {
+  if (!isHomeScreenWindow()) return null;
+  const { left, right } = homeScreenInsets();
+  // One full touch target must fit on one side, outside the reading area.
+  if (left >= 44 && right === 0) return "left";
+  if (right >= 44 && left === 0) return "right";
+  return null;
+}
+
+function onHomeScreenResize() {
+  homeInsets = null;
+  for (const listener of homeSizeListeners) listener();
+}
+
+function subscribeHomeScreenSize(listener: ViewportListener): () => void {
+  if (!isHomeScreenWindow()) return () => {};
+  if (!homeSizeListeners.size) {
+    window.addEventListener("resize", onHomeScreenResize);
+    if (typeof ResizeObserver !== "undefined") {
+      homeObserver = new ResizeObserver(onHomeScreenResize);
+      homeObserver.observe(document.documentElement);
+    }
+  }
+  homeSizeListeners.add(listener);
+  return () => {
+    homeSizeListeners.delete(listener);
+    if (!homeSizeListeners.size) {
+      window.removeEventListener("resize", onHomeScreenResize);
+      homeObserver?.disconnect();
+      homeObserver = null;
+      homeInsets = null;
+    }
+  };
+}
+
+function subscribeWorkspaceWidth(listener: ViewportListener): () => void {
+  if (isHomeScreenWindow()) return subscribeHomeScreenSize(listener);
+  window.addEventListener("resize", listener);
+  return () => window.removeEventListener("resize", listener);
+}
+
+export function useWorkspaceViewportWidth(): number {
+  return useSyncExternalStore(subscribeWorkspaceWidth, workspaceViewportWidth, () => 0);
+}
+
+export function useHomeScreenEdge(): "left" | "right" | null {
+  return useSyncExternalStore(subscribeHomeScreenSize, homeScreenEdge, () => null);
+}
+
 /** The exact layout query shared by the shell and transcript-display state. */
 export function isMobileViewport(): boolean {
-  return snapshot(MOBILE_QUERY);
+  return snapshot(MOBILE_QUERY) || (isHomeScreenWindow() && workspaceViewportWidth() < 900);
 }
 
 /** Whether the primary pointer hovers with fine precision, the input a pane
@@ -85,7 +160,12 @@ export function hasFineHoverPointer(): boolean {
 
 /** Subscribe to the one shared MediaQueryList listener. */
 export function subscribeMobileViewport(listener: ViewportListener): () => void {
-  return subscribe(MOBILE_QUERY, listener);
+  const stopQuery = subscribe(MOBILE_QUERY, listener);
+  const stopResize = subscribeHomeScreenSize(listener);
+  return () => {
+    stopQuery();
+    stopResize();
+  };
 }
 
 export function useMediaQuery(query: string): boolean {
@@ -98,7 +178,7 @@ export function useMediaQuery(query: string): boolean {
 }
 
 export function useIsMobile(): boolean {
-  return useMediaQuery(MOBILE_QUERY);
+  return useSyncExternalStore(subscribeMobileViewport, isMobileViewport, () => false);
 }
 
 export type WebLayout = "phone" | "tablet" | "desktop";

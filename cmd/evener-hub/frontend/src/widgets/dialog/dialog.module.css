@@ -14,6 +14,9 @@
 
 .scrimFloat {
   composes: fade from "../../styles/motion.module.css";
+  --dialog-gutters: calc(var(--space-8) + var(--home-safe-left, 0px) + var(--home-safe-right, 0px));
+  padding-left: calc(var(--space-4) + var(--home-safe-left, 0px));
+  padding-right: calc(var(--space-4) + var(--home-safe-right, 0px));
 }
 
 .scrimEdge {
@@ -117,8 +120,8 @@
 
 .dialogVariant {
   composes: float from "../../styles/motion.module.css";
-  min-width: 320px;
-  max-width: min(560px, calc(100vw - var(--space-8)));
+  min-width: min(320px, calc(100vw - var(--dialog-gutters)));
+  max-width: min(560px, calc(100vw - var(--dialog-gutters)));
   max-height: calc(100vh - var(--space-8));
 }
 
@@ -127,6 +130,6 @@
  * is meant to fill almost the whole viewport, not sit in a form-sized box. */
 .dialogVariantLarge {
   composes: float from "../../styles/motion.module.css";
-  max-width: calc(100vw - var(--space-8));
+  max-width: calc(100vw - var(--dialog-gutters));
   max-height: calc(100vh - var(--space-8));
 }

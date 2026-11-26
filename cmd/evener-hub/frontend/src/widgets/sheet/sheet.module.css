@@ -15,7 +15,7 @@
 .edgeVertical {
   position: fixed;
   top: 0;
-  width: min(var(--sheet-inline-size), 100vw);
+  width: min(var(--sheet-inline-size), calc(100vw - var(--home-safe-left, 0px) - var(--home-safe-right, 0px)));
   border-radius: 0;
   border-top: none;
   border-bottom: none;
@@ -25,7 +25,7 @@
   composes: edgeVertical;
   /* biome-ignore lint/suspicious/noDuplicateProperties: css-modules composes takes one declaration per composed class, each with its own `from` */
   composes: slideRight from "../../styles/motion.module.css";
-  right: 0;
+  right: var(--home-safe-right, 0px);
   height: 100vh;
   border-right: none;
   /* .panel's --shadow-modal falls downward, which suits only the centered
@@ -37,9 +37,10 @@
 .bottom {
   composes: slideBottom from "../../styles/motion.module.css";
   position: fixed;
-  left: 0;
+  left: var(--home-safe-left, 0px);
   bottom: 0;
-  width: 100vw;
+  right: var(--home-safe-right, 0px);
+  width: auto;
   max-height: min(480px, 100vh);
   border-radius: var(--radius-panel) var(--radius-panel) 0 0;
   border-left: none;
@@ -65,7 +66,7 @@
   composes: edgeVertical;
   /* biome-ignore lint/suspicious/noDuplicateProperties: css-modules composes takes one declaration per composed class, each with its own `from` */
   composes: slideLeft from "../../styles/motion.module.css";
-  left: 0;
+  left: var(--home-safe-left, 0px);
   height: 100vh;
   border-left: none;
   box-shadow: 16px 0 40px var(--shadow-color);

@@ -159,6 +159,7 @@
   --space-7: 40px;
   --space-8: 48px;
   --space-9: 64px;
+  --composer-action-inset: var(--space-2);
 
   /* The home-indicator band a docked surface must keep its content clear of.
    * Zero off a phone. It yields as the on-screen keyboard rises over that
@@ -474,9 +475,10 @@ body[data-font-size="xl"] { --font-scale: 1.25; }
   }
 }
 
-/* Hosted chrome inherits these through body, including portaled controls.
+/* Apple touch controls inherit these through body, including portaled menus.
  * The underlying palette stays live when the reader changes theme. */
 body[data-iphone-glass] {
+  --composer-action-inset: var(--space-1);
   --glass-control-font: system-ui, sans-serif;
   --glass-fill: var(--field);
   --glass-panel: var(--surface-1);
@@ -487,9 +489,9 @@ body[data-iphone-glass] {
   --glass-radius: calc(var(--radius-panel) + var(--radius-control));
 }
 
-/* The native host observes Reduce Transparency directly. WebKit can report
- * neither value for the corresponding media query. */
-@media (prefers-contrast: no-preference) and (not (prefers-reduced-transparency: reduce)) {
+/* The native host or browser sets the material after checking transparency.
+ * Unsupported media features also make their negation unknown in WebKit. */
+@media (prefers-contrast: no-preference) {
   body[data-iphone-glass="regular"] {
     --glass-fill: color-mix(in oklab, var(--field) 72%, transparent);
     --glass-panel: color-mix(in oklab, var(--surface-1) 89%, transparent);

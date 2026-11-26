@@ -30,7 +30,9 @@ export function keyboardInset(
   vv: Pick<VisualViewport, "height" | "offsetTop" | "scale">,
   layoutHeight: number,
 ): number {
-  if (isPinchZoomed(vv)) return 0;
+  // During a display switch WebKit can report a negative visual height.
+  // Only a positive viewport can describe which part of the page is visible.
+  if (vv.height <= 0 || isPinchZoomed(vv)) return 0;
   return Math.max(0, layoutHeight - vv.height - vv.offsetTop);
 }
 

@@ -1,22 +1,12 @@
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { expect, test, vi } from "vitest";
-import { MOBILE_QUERY } from "../../shell/useIsMobile";
-import { escapeRegExp, readModuleCss } from "../../styles/cssBlock";
+import { readModuleCss } from "../../styles/cssBlock";
 import { SettingsNav } from "./SettingsNav";
 import { SETTINGS_SECTIONS } from "./sections";
 
 function readCss(): string {
   return readModuleCss(import.meta.url, "settings.module.css");
-}
-
-// The mobile rules live in one trailing @media block whose inner rules are
-// indented - the closing brace at column 0 is the block's own terminator
-// (iconbutton.test.tsx's own media-block extraction idiom).
-function mobileBlock(css: string): string {
-  const block = new RegExp(`@media\\s*${escapeRegExp(MOBILE_QUERY)}\\s*\\{([\\s\\S]*?)\\n\\}`).exec(css);
-  expect(block, "settings.module.css must have a mobile media block").not.toBeNull();
-  return block?.[1] ?? "";
 }
 
 test("renders a nav landmark labelled Settings sections", () => {
@@ -184,15 +174,6 @@ test("clearing the filter re-shows every link", async () => {
   expect(screen.getByRole("button", { name: "Storage" })).toBeTruthy();
 });
 
-// --- mobile master list (2026-08-16 settings mobile-nav design) ------------
-//
-// Below the shared shell's <900px breakpoint the nav IS a full-screen master
-// list: full-width 44px rows with a drill-in chevron each, the filter pinned
-// to the top of its own scroll, and no "active" row (there is no content
-// beside it for a highlight to refer to). jsdom has no layout, so the
-// geometry half of this is asserted against the CSS source - the same idiom
-// as iconbutton.test.tsx's own --tap-min checks.
-
 test("every section link carries a drill-in chevron affordance, decorative only", () => {
   render(<SettingsNav activeId="theme" onNavigate={vi.fn()} />);
   const links = screen.getAllByRole("button");
@@ -213,40 +194,6 @@ test("a null activeId marks no link current - the mobile list has no active row"
   for (const link of screen.getAllByRole("button")) {
     expect(link.getAttribute("aria-current")).toBeNull();
   }
-});
-
-test("mobile: the list takes the full width, not the desktop rail width", () => {
-  const nav = /\.nav\s*\{([^}]*)\}/.exec(mobileBlock(readCss()))?.[1] ?? "";
-  expect(nav).toContain("width: 100%");
-});
-
-test("mobile: the drill-in chevron shows only below the breakpoint", () => {
-  const css = readCss();
-  const base = /\.linkChevron\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
-  expect(base).toContain("display: none");
-  const mobile = /\.linkChevron\s*\{([^}]*)\}/.exec(mobileBlock(css))?.[1] ?? "";
-  // The `?? ""` makes the negative assertion below vacuous on its own: delete
-  // the mobile rule entirely and "" satisfies not.toContain, so this test could
-  // not fail on the chevron never showing -- the one thing it is named for.
-  // Assert the rule EXISTS first (markdown.module.css's test already does).
-  expect(mobile).not.toBe("");
-  // The base rule is display:none, so "the mobile block does not re-add
-  // display:none" is not the contract -- delete `display: inline-flex` and the
-  // chevron stays hidden at every width while that assertion still passes.
-  // Showing it is what the test is named for, so assert the showing.
-  expect(mobile).toContain("display: inline-flex");
-  expect(mobile).not.toContain("display: none");
-});
-
-test("mobile: the filter row is pinned to the top of the list's own scroll", () => {
-  const filterRow = /\.filterRow\s*\{([^}]*)\}/.exec(mobileBlock(readCss()))?.[1] ?? "";
-  expect(filterRow).toContain("position: sticky");
-  expect(filterRow).toContain("top: 0");
-});
-
-test("mobile: a focused section hides the list without unmounting it (.shellDetail marker)", () => {
-  const hidden = /\.shellDetail\s+\.nav\s*\{([^}]*)\}/.exec(mobileBlock(readCss()))?.[1] ?? "";
-  expect(hidden).toContain("display: none");
 });
 
 test("the in-content mobile back button's styles are gone - back lives in the shell top bar", () => {

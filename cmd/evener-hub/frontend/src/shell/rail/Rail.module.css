@@ -36,10 +36,12 @@
 
 /* Below 900px either the drawer or the tablet board frames the Rail.
  * Fill that width and leave the border to its host. */
-@media (max-width: 899px) {
-  .rail {
-    width: 100%;
-    border-right: none;
+@media (max-width: 899px), (display-mode: standalone) {
+  :where(html:not(:has([data-desktop-workspace]))) {
+    .rail {
+      width: 100%;
+      border-right: none;
+    }
   }
 }
 
@@ -206,6 +208,30 @@
 
 .newSessionRow > * {
   pointer-events: auto;
+}
+
+:global(body[data-iphone-glass]) .newSessionRow {
+  --radius-control: var(--radius-pill);
+}
+
+/* In the tablet split, the scrollport pays the same bottom inset as the
+ * composer's action row. A second sticky inset lifts Create above Send. */
+:global([data-board="visible"]) .body {
+  padding-bottom: calc(var(--dock-clearance) + var(--composer-action-inset));
+}
+
+:global([data-board="visible"]) .newSessionRow {
+  bottom: 0;
+}
+
+/* On wide iPad the status bar sits below Send. Reserve its measured baseline
+ * in the scrollport so the last session still clears the pinned Create row. */
+:global(body[data-docked-composer-action]) .body {
+  padding-bottom: calc(var(--docked-composer-action-center) - var(--tap-min) / 2);
+}
+
+:global(body[data-docked-composer-action]) .newSessionRow {
+  bottom: 0;
 }
 
 /* Full-width flex wrapper around archived overflow rows so IntersectionObserver

@@ -1,6 +1,5 @@
 import { useSyncExternalStore } from "react";
 import { isTextEntryTarget } from "../keybindings/dispatcher";
-import { connectIPhoneGlass } from "./iPhoneGlass";
 import { navigate, refParam, urlToPane } from "./routing";
 import { openSessionByRef } from "./sessionPlacement";
 
@@ -110,7 +109,6 @@ export function connectIPhoneHost(): (() => void) | undefined {
   if (!iPhoneHost()) return;
   // Draw solid controls until the phone has read its accessibility settings.
   document.body.dataset.iphoneGlass = "opaque";
-  const stopGlass = connectIPhoneGlass();
   let editing = false;
   const reportEditor = (target: EventTarget | null) => {
     let active = false;
@@ -179,7 +177,6 @@ export function connectIPhoneHost(): (() => void) | undefined {
     editorChanges.disconnect();
     modalChanges.disconnect();
     if (modal) tellIPhoneHost({ type: "covered", active: false });
-    stopGlass();
     delete document.body.dataset.iphoneGlass;
     delete (window as HostWindow).evenerEdgeToolbar;
     reportEditor(null);

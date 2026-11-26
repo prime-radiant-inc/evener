@@ -12,6 +12,7 @@ import {
   MOBILE_QUERY,
   resetMobileViewportForTests,
   subscribeMobileViewport,
+  useHomeScreenEdge,
   useIsMobile,
 } from "./useIsMobile";
 
@@ -96,6 +97,53 @@ test("returns true when the media query matches at mount", () => {
   installMatchMediaStub(true);
   const { result } = renderHook(() => useIsMobile());
   expect(result.current).toBe(true);
+});
+
+test("only Home Screen windows use the asymmetric safe area when selecting the reader and side controls", () => {
+  installMatchMediaStub(false);
+  const style = document.documentElement.style;
+  vi.stubGlobal("innerWidth", 951);
+  style.setProperty("--home-safe-right", "84px");
+  const standalone = vi.spyOn(window, "navigator", "get");
+  const nav = window.navigator;
+  try {
+    standalone.mockReturnValue(Object.create(nav, { standalone: { value: false } }));
+    const safari = renderHook(() => [useIsMobile(), useHomeScreenEdge()]);
+    expect(safari.result.current).toEqual([false, null]);
+    safari.unmount();
+
+    standalone.mockReturnValue(Object.create(nav, { standalone: { value: true } }));
+    const resize = vi.spyOn(window, "addEventListener");
+    const computed = vi.spyOn(window, "getComputedStyle");
+    const installed = renderHook(() => [useIsMobile(), useHomeScreenEdge()]);
+    expect(installed.result.current).toEqual([true, "right"]);
+    const another = renderHook(() => useIsMobile());
+    const reads = computed.mock.calls.length;
+    another.rerender();
+    expect(computed).toHaveBeenCalledTimes(reads);
+    expect(resize.mock.calls.filter(([name]) => name === "resize")).toHaveLength(1);
+    act(() => {
+      style.removeProperty("--home-safe-right");
+      style.setProperty("--home-safe-left", "84px");
+      window.dispatchEvent(new Event("resize"));
+    });
+    expect(installed.result.current).toEqual([true, "left"]);
+    act(() => {
+      style.setProperty("--home-safe-right", "84px");
+      window.dispatchEvent(new Event("resize"));
+    });
+    expect(installed.result.current).toEqual([true, null]);
+    installed.unmount();
+    another.unmount();
+    style.removeProperty("--home-safe-left");
+    style.removeProperty("--home-safe-right");
+    expect(isMobileViewport()).toBe(false);
+  } finally {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    style.removeProperty("--home-safe-left");
+    style.removeProperty("--home-safe-right");
+  }
 });
 
 test("queries with the exact <900px breakpoint string", () => {

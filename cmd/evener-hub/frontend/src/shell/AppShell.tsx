@@ -44,6 +44,7 @@ import { DockRegion } from "./DockRegion";
 import { focusedSessionPaneId, focusedSessionRef, modalOpenInFocusedWindows } from "./focusedSession";
 import { HoldHints } from "./holdhints/HoldHints";
 import { installKeybindings } from "./installKeybindings";
+import { connectIPhoneGlass } from "./iPhoneGlass";
 import { connectIPhoneHost, tellIPhoneHost } from "./iPhoneHost";
 import { createLiveSessionController } from "./liveSessionController";
 import { StackHost } from "./mobile/StackHost";
@@ -527,6 +528,7 @@ function AppShellContent({ client: injectedClient, bannerDelayMs, bannerCreateCl
   const [pathname, historyRevision] = usePathname(interactiveNavigationRef);
   const scheme = useResolvedScheme();
   useEffect(connectIPhoneHost, []);
+  useEffect(connectIPhoneGlass, []);
   useEffect(() => tellIPhoneHost({ type: "appearance", dark: scheme === "dark" }), [scheme]);
   const hubPath = pathname + window.location.search + window.location.hash;
   useEffect(() => tellIPhoneHost({ type: "route", path: hubPath }), [hubPath]);
@@ -942,7 +944,12 @@ function AppShellContent({ client: injectedClient, bannerDelayMs, bannerCreateCl
   return (
     <ClientProvider client={client}>
       <MotionProvider>
-        <div className={styles.shell} data-single-pane={singlePane ? "" : undefined}>
+        <div
+          className={styles.shell}
+          data-mobile={isMobile ? "" : undefined}
+          data-desktop-workspace={isMobile ? undefined : ""}
+          data-single-pane={singlePane ? "" : undefined}
+        >
           <ConnectionBanner
             state={connectionState}
             delayMs={bannerDelayMs}

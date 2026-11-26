@@ -212,6 +212,10 @@ source bindings and focus remain workspace-owned. See
 [desktop recovery](../../cmd/evener-hub/frontend/src/shell/DockHost.tsx) and the
 [design system](../web-ui/design-system.md#design-model-an-editorial-instrument).
 
+In a Home Screen web app, S02 sizes the workspace to the usable display and
+places conversation controls in a free side rail. Browser tabs keep those
+controls inside the page. See [Duo layouts](../design/mobile/iphone-duo.md).
+
 S02's Rail owns the sidebar boundary and session-row geometry for navigation
 context cards, and it lists projects by name and each project's sessions
 newest-created first so activity does not move rows. Its Live section is the

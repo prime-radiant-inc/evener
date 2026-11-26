@@ -17,7 +17,7 @@
     "widgets/panescaffold/panescaffold.module.css"
   ],
   "mutation": {
-    "declaration": "AppShell.module.css: @media (max-width:899px) .shell { position: fixed } (reverted to position: relative)",
+    "declaration": "AppShell.module.css: .shell[data-mobile] { position: fixed } (reverted to position: relative)",
     "verified": "2026-08-07",
     "expect": "fail"
   }

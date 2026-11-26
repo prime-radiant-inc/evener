@@ -1,0 +1,28 @@
+{
+  "name": "overview-mobile-glass-tabstrip",
+  "description": "Phone Overview head and tab strip must be glass-backed, and the tab body opaque, in both themes and both glass modes.",
+  "viewport": {
+    "width": 390,
+    "height": 844,
+    "deviceScaleFactor": 2,
+    "mobile": true
+  },
+  "cssFiles": [
+    "styles/global.css",
+    "styles/text.module.css",
+    "styles/tokens.css",
+    "shell/activitybar/activitybar.module.css",
+    "widgets/tabs/tabs.module.css"
+  ],
+  "cssClassPrefixes": {
+    "widgets/tabs/tabs.module.css": "tabs-"
+  },
+  "allowlist": {
+    ".stack": "tabs.module.css is emitted with the tabs- prefix (cssClassPrefixes), so its .stack cannot restyle activitybar.module.css's .stack."
+  },
+  "mutation": {
+    "declaration": "shell/activitybar/activitybar.module.css: :global([data-iphone-glass]) .sidebarMobile { background: transparent; } (reverting to the pre-fix transparent sidebar with dead .tablist selector lets the transcript show through the tab strip)",
+    "verified": "2026-11-26",
+    "expect": "fail"
+  }
+}
