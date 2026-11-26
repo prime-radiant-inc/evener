@@ -1,23 +1,12 @@
-// instanceDialogs.tsx: the instance-CRUD editors that stay dialogs (spec
-// 2026-09-07 §2): Add, plus Set/Replace API key and credential JSON.
+// instanceDialogs.tsx: the per-instance secret-entry dialogs (spec
+// 2026-09-07 §2): Set/Replace API key and credential JSON.
 // Editing an existing instance lives in InstanceSheet. Each owns its own
 // client validation, store call, inline error, and toast; the parent
 // (CredentialsSection) only needs to close the single open editor via
 // `onSuccess`/`onCancel` - it never has to distinguish success from failure
 // itself.
-//
-// Updated for the provider registry's instance shape (spec §11.3): Type
-// becomes Base provider over availableProviders, Protocol and Surface are
-// plain selects over the registry's vocabularies (instanceEdit.ts),
-// defaulting to inherit, and the Add form gains a dynamic Input per the
-// selected provider's Vars entry plus api-key-env/credential-header fields
-// mirroring the CLI's --api-key-env/--credential-header flags (§11.2).
-// Vars maps template placeholder name -> environment variable name
-// (roborev round 1, F3): the input is labeled by the env name (what the
-// docs tell users to set) but keyed by the template name, since that is
-// what the registry actually substitutes.
 
-import type { AuthStatusResponse, InstanceEntry, ProviderDescriptor } from "@evener/appwire-client";
+import type { AuthStatusResponse, InstanceEntry } from "@evener/appwire-client";
 import {
   CONNECTION_REPLACED_ERROR,
   errorText,
@@ -26,24 +15,11 @@ import {
 } from "@evener/appwire-client";
 import { type FormEvent, useLayoutEffect, useRef, useState } from "react";
 import { credentialsStore, isStaleListingRefusal } from "../../../../stores/credentials";
-import {
-  Button,
-  Dialog,
-  FormRow,
-  InlineNotice,
-  Input,
-  Select,
-  type SelectOption,
-  Textarea,
-  useToasts,
-} from "../../../../widgets";
+import { Button, Dialog, FormRow, InlineNotice, Input, Textarea, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
-import { checkCredentialHeader, type FormError } from "./formError";
+import type { FormError } from "./formError";
 import styles from "./instanceDialogs.module.css";
-import { byCodePoint, PROTOCOL_OPTIONS, SURFACE_OPTIONS } from "./instanceEdit";
-import { formatProviderLabel } from "./providerLabel";
-import { confirmListingState, refreshListingAfterMutation } from "./reconcileListing";
-
+import { refreshListingAfterMutation } from "./reconcileListing";
 import { useEditorLifetime } from "./useEditorLifetime";
 
 const CLASS = {
@@ -74,15 +50,6 @@ const ENDPOINT_CHANGED_ERROR =
 const ENDPOINT_VANISHED_ERROR =
   "This connection changed and is no longer in the provider list, so the value was not saved. Reopen this editor from the current list to continue.";
 
-/** Why the add form refused or failed a create, as its alert's data-reason. */
-type AddInstanceErrorReason =
-  | "base-required"
-  | "name-required"
-  | "literal-header"
-  | "unconfirmed"
-  | "connection-replaced"
-  | "create-failed";
-
 /** Why a credential value was not saved, as the dialog's alert's data-reason:
  * the row's endpoint changed, it has a destination the hub cannot fingerprint,
  * it left the listing, the connection was replaced, or the hub failed it. */
@@ -92,311 +59,6 @@ type CredentialValueErrorReason =
   | "endpoint-vanished"
   | "connection-replaced"
   | "save-failed";
-
-// nonEmptyVars trims and drops blank entries before they reach the wire -
-// InstanceCreateParams.Vars only carries variables the user actually set
-// (spec §11.3); a blank templated field means "leave it to the
-// environment," not "set it to the empty string."
-function nonEmptyVars(vars: Record<string, string>): Record<string, string> | undefined {
-  const entries = Object.entries(vars)
-    .map(([key, value]) => [key, value.trim()] as const)
-    .filter(([, value]) => value !== "");
-  return entries.length > 0 ? Object.fromEntries(entries) : undefined;
-}
-
-export interface AddInstanceDialogProps {
-  availableProviders: ProviderDescriptor[];
-  initialBase?: string;
-  onCancel: () => void;
-  onSuccess: (name: string) => void;
-  // A create whose reconciled listing did not show the instance is NOT a
-  // success. A consumer that has its own recovery for a missing row (the
-  // guided flow's not-ready/reload state) takes it through this callback,
-  // without a success toast; a consumer without one gets the dialog's own
-  // error and re-confirm action.
-  onUnconfirmedCreate?: (name: string) => void;
-}
-
-// The create this dialog issues authors the row it writes, so that row is
-// explicit. An implicit row carries the name because the user has a credential
-// or an environment variable for a curated provider, not because this create
-// landed anything. Matching by name alone would confirm a create the host never
-// reflected and steer the caller to a row it never wrote, so only a non-implicit
-// row that carries the name confirms the create.
-function matchesCreatedInstance(instances: InstanceEntry[], name: string): boolean {
-  return instances.some((instance) => instance.name === name && !instance.implicit);
-}
-
-/** The global "+ Add provider instance" form (parity-m7-settings.md §7f). */
-export function AddInstanceDialog({
-  availableProviders,
-  initialBase = "",
-  onCancel,
-  onSuccess,
-  onUnconfirmedCreate,
-}: AddInstanceDialogProps) {
-  const [base, setBase] = useState(initialBase);
-  const [name, setName] = useState("");
-  const [baseUrl, setBaseUrl] = useState("");
-  const [protocol, setProtocol] = useState("");
-  const [surface, setSurface] = useState("");
-  const [vars, setVars] = useState<Record<string, string>>({});
-  const [apiKeyEnv, setApiKeyEnv] = useState("");
-  const [credentialHeader, setCredentialHeader] = useState("");
-  const [error, setError] = useState<FormError<AddInstanceErrorReason> | null>(null);
-  const [busy, setBusy] = useState(false);
-  // Set when the create succeeded but the listing could not be confirmed to
-  // contain it: the dialog stays open and offers a re-confirm rather than
-  // re-issuing a create that already landed on the host.
-  const [unconfirmedName, setUnconfirmedName] = useState<string | null>(null);
-  const toast = useToasts();
-  const active = useEditorLifetime();
-
-  function confirmCreate(instanceName: string): Promise<boolean> {
-    return confirmListingState((instances) => matchesCreatedInstance(instances, instanceName));
-  }
-
-  const baseOptions: SelectOption[] = [
-    { value: "", label: "" },
-    ...availableProviders.map((p) => ({ value: p.id, label: formatProviderLabel(p.id, p.name) })),
-  ];
-  const templateVars = availableProviders.find((p) => p.id === base)?.vars ?? {};
-
-  function handleBaseChange(nextBase: string): void {
-    setBase(nextBase);
-    setVars({}); // a var input from the previous base must not leak into the new one
-  }
-
-  function updateVar(template: string, value: string): void {
-    setVars((current) => ({ ...current, [template]: value }));
-  }
-
-  async function handleSubmit(event: FormEvent<HTMLFormElement>): Promise<void> {
-    event.preventDefault();
-    // While a create still needs confirming, a submit (the button or Enter)
-    // re-confirms instead of re-issuing a create the host already accepted.
-    if (unconfirmedName) {
-      await handleCheckAgain();
-      return;
-    }
-    if (!base) {
-      setError({ reason: "base-required", message: "Base provider is required." });
-      return;
-    }
-    const trimmedName = name.trim();
-    if (!trimmedName) {
-      setError({ reason: "name-required", message: "Name is required." });
-      return;
-    }
-    const headerError = checkCredentialHeader(credentialHeader);
-    if (headerError) {
-      setError(headerError);
-      return;
-    }
-    setError(null);
-    setBusy(true);
-    try {
-      const applied = await credentialsStore.getState().create({
-        name: trimmedName,
-        base,
-        baseUrl: baseUrl.trim(),
-        protocol: protocol || undefined,
-        surface: surface || undefined,
-        vars: nonEmptyVars(vars),
-        apiKeyEnv: apiKeyEnv.trim() || undefined,
-        credentialHeader: credentialHeader.trim() || undefined,
-      });
-      // The listing a superseded create answered with was discarded by the
-      // store's generation guard - reconcile before steering on the create,
-      // and require the listing that applied to actually contain the new
-      // instance. A resolved fetch is not confirmation (a newer read
-      // supersedes it, a failed read lands its error in the store), and
-      // neither is a listing that never reflected the create: reporting
-      // success there would close the editor on an instance the host may not
-      // have. A consumer with its own missing-row recovery (the guided flow's
-      // not-ready/reload state) takes over without a success claim; otherwise
-      // the dialog stays open with a re-confirm path rather than re-issuing
-      // the create. Data refresh deliberately survives an unmount: the dialog
-      // is gone, but the store still owes the caller a current listing.
-      // The store's own listing IS the applied response when the write won the
-      // race, so it can be checked directly; only a superseded write has to be
-      // re-read. Either way the row must be visible before the create is
-      // reported, or the editor would close on an instance the listing never
-      // showed.
-      const confirmed = applied
-        ? matchesCreatedInstance(credentialsStore.getState().instances, trimmedName)
-        : await confirmCreate(trimmedName);
-      if (!confirmed) {
-        if (!active.current) return;
-        if (onUnconfirmedCreate) {
-          onUnconfirmedCreate(trimmedName);
-          return;
-        }
-        setUnconfirmedName(trimmedName);
-        setError({
-          reason: "unconfirmed",
-          message: `The connection was saved on the host, but the provider list could not confirm ${trimmedName}. Check again.`,
-        });
-        return;
-      }
-      if (!active.current) return;
-      toast.push("success", `Created instance ${trimmedName}`);
-      onSuccess(trimmedName);
-    } catch (err) {
-      if (!active.current) return;
-      // The store's own refusal of a write from the previous connection's
-      // listing (stores/credentials.ts's requireWritableClient): the providers
-      // and names this form was filled from were read on a connection that is
-      // gone, so nothing was sent. Keep the draft, say what happened, and ask
-      // for this connection's listing - the read whose arrival is what makes
-      // the retry land. Reported as a create failure it would tell the user
-      // their instance could not be created when no create ever went out.
-      if (isStaleListingRefusal(err)) {
-        setError({ reason: "connection-replaced", message: CONNECTION_REPLACED_ERROR });
-        toast.push("warning", CONNECTION_REPLACED_ERROR);
-        void refreshListingAfterMutation();
-        return;
-      }
-      const message = errorText(err);
-      setError({ reason: "create-failed", message });
-      toast.push("error", `Create failed: ${message}`);
-    } finally {
-      if (active.current) setBusy(false);
-    }
-  }
-
-  // Re-confirms a create whose first reconcile could not see the instance.
-  // Only the listing read is retried: the create itself already succeeded on
-  // the host, so re-issuing it could fail on an instance that exists.
-  // confirmCreate cannot reject - confirmListingState owns a lost read (no
-  // client) as one more unapplied attempt - so the only outcomes here are
-  // confirmed and not-confirmed.
-  async function handleCheckAgain(): Promise<void> {
-    const instanceName = unconfirmedName;
-    if (!instanceName) return;
-    setBusy(true);
-    const confirmed = await confirmCreate(instanceName);
-    if (!active.current) return;
-    setBusy(false);
-    if (!confirmed) {
-      // "Could not confirm", never "does not show": a read that never applied
-      // (a dropped connection) says nothing about what the listing holds. The
-      // connection banner owns that story, and the unconfirmed name is kept so
-      // Check again still works once the host is back.
-      setError({ reason: "unconfirmed", message: `The provider list could not confirm ${instanceName}. Check again.` });
-      return;
-    }
-    setError(null);
-    setUnconfirmedName(null);
-    toast.push("success", `Created instance ${instanceName}`);
-    onSuccess(instanceName);
-  }
-
-  return (
-    <Dialog open onClose={onCancel} title="Add provider instance">
-      <form className={CLASS.body} onSubmit={(event) => void handleSubmit(event)}>
-        <FormRow label="Base provider" htmlFor="add-instance-base">
-          <Select
-            id="add-instance-base"
-            value={base}
-            onChange={(event) => handleBaseChange(event.target.value)}
-            options={baseOptions}
-          />
-        </FormRow>
-        <FormRow label="Name" htmlFor="add-instance-name">
-          <Input
-            id="add-instance-name"
-            value={name}
-            onChange={(event) => setName(event.target.value)}
-            placeholder="e.g. work"
-            disabled={busy}
-          />
-        </FormRow>
-        <FormRow label="Base URL (optional)" htmlFor="add-instance-baseurl">
-          <Input
-            id="add-instance-baseurl"
-            value={baseUrl}
-            onChange={(event) => setBaseUrl(event.target.value)}
-            placeholder="https://…"
-            disabled={busy}
-          />
-        </FormRow>
-        <FormRow
-          label="Protocol"
-          htmlFor="add-instance-protocol"
-          help="Leave on inherit unless the endpoint speaks a different wire protocol than its base."
-        >
-          <Select
-            id="add-instance-protocol"
-            value={protocol}
-            onChange={(event) => setProtocol(event.target.value)}
-            options={PROTOCOL_OPTIONS}
-            disabled={busy}
-          />
-        </FormRow>
-        <FormRow label="Surface" htmlFor="add-instance-surface">
-          <Select
-            id="add-instance-surface"
-            value={surface}
-            onChange={(event) => setSurface(event.target.value)}
-            options={SURFACE_OPTIONS}
-            disabled={busy}
-          />
-        </FormRow>
-        {Object.entries(templateVars)
-          .sort(([a], [b]) => byCodePoint(a, b))
-          .map(([template, envName]) => (
-            <FormRow key={template} label={envName} htmlFor={`add-instance-var-${template}`}>
-              <Input
-                id={`add-instance-var-${template}`}
-                value={vars[template] ?? ""}
-                onChange={(event) => updateVar(template, event.target.value)}
-                disabled={busy}
-              />
-            </FormRow>
-          ))}
-        <FormRow label="API key environment variable (optional)" htmlFor="add-instance-apikeyenv">
-          <Input
-            id="add-instance-apikeyenv"
-            value={apiKeyEnv}
-            onChange={(event) => setApiKeyEnv(event.target.value)}
-            placeholder="e.g. PORTKEY_KEY"
-            disabled={busy}
-          />
-        </FormRow>
-        <FormRow label="Credential header (optional)" htmlFor="add-instance-credentialheader">
-          <Input
-            id="add-instance-credentialheader"
-            value={credentialHeader}
-            onChange={(event) => setCredentialHeader(event.target.value)}
-            placeholder="Authorization=Bearer $VAR or $(get-token)"
-            disabled={busy}
-          />
-        </FormRow>
-        {error && (
-          <InlineNotice tone="danger" data-reason={error.reason}>
-            {error.message}
-          </InlineNotice>
-        )}
-        <div className={CLASS.actions}>
-          {unconfirmedName ? (
-            <Button type="button" disabled={busy} onClick={() => void handleCheckAgain()}>
-              Check again
-            </Button>
-          ) : (
-            <Button type="submit" disabled={busy}>
-              Create
-            </Button>
-          )}
-          <Button type="button" variant="quiet" onClick={onCancel} disabled={busy}>
-            Cancel
-          </Button>
-        </div>
-      </form>
-    </Dialog>
-  );
-}
-
 export interface ApiKeyDialogProps {
   instance: InstanceEntry;
   /** The endpoint fingerprint the dialog was opened against, captured from the
