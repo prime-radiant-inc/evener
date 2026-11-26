@@ -19,7 +19,6 @@ import {
   markerRanges,
   matchBuiltinInvocation,
   mergeSlashCommands,
-  mutationErrorData,
   type PathValidation,
   type PluginSelectionState,
   parseSlashToken,
@@ -138,7 +137,14 @@ import {
   runSpawnBuiltinAfterStart,
   spawnBuiltinCommands,
 } from "./spawnSlashMenu";
-import { type SpawnRequest, spawnRequestFingerprint, startThread } from "./startThread";
+import {
+  classifyStartFailure,
+  formatStartFailureToast,
+  type SpawnRequest,
+  type StartFailureContext,
+  spawnRequestFingerprint,
+  startThread,
+} from "./startThread";
 import { usePluginPreview } from "./usePluginPreview";
 import { useProviderSetup } from "./useProviderSetup";
 import { useSpawnSlashCatalog } from "./useSpawnSlashCatalog";
@@ -2431,10 +2437,16 @@ function SpawnForm({
     } else if (draft.fields.getState().pendingStart !== null) {
       draft.fields.setState({ pendingStart: null });
     }
-    const { ref } = await startThread(client, {
-      ...spawnReq,
-      ...(clientMutationId ? { clientMutationId } : {}),
-    });
+    let ref: string;
+    try {
+      ({ ref } = await startThread(client, {
+        ...spawnReq,
+        ...(clientMutationId ? { clientMutationId } : {}),
+      }));
+    } catch (err) {
+      reportStartFailure(err, { startDispatched: true, retryablePendingStart: clientMutationId !== undefined });
+      return;
+    }
     draft.fields.setState({ pendingStart: null });
     if (builtinMatch && builtinMatch.command.id === "goal") {
       // Post-start application runs AFTER navigation below: awaiting goal/set
@@ -2483,18 +2495,17 @@ function SpawnForm({
     if (url && ownsLaunchView()) navigate(url);
   }
 
-  // friendlyLaunchErrorMessage, not errorText: doSpawn's thread/start call can
-  // reject with AppwireClient's own "cannot call ... while state is closed"
-  // text if the client tears down mid-submit, which is internal wiring detail,
-  // never something to toast at a person - and when the hub answered but no
-  // agent daemon could be reached for cwd (the first-run worst moment, T3), the
-  // launch-check's own raw text is replaced with actionable copy instead.
-  function reportStartFailure(err: unknown): void {
-    const data = mutationErrorData(err);
-    if (data?.mutationOutcome === "notAccepted" || data?.retryDisposition === "blocked") {
+  // Classify pre-dispatch failures separately from post-dispatch thread/start
+  // rejections: once thread/start leaves the client, a timeout or socket drop
+  // may still have created the session on the hub, so the toast must report
+  // that uncertainty instead of claiming "Start failed: Something went wrong."
+  // and pre-dispatch errors must never clear an earlier pendingStart key.
+  function reportStartFailure(err: unknown, context: StartFailureContext): void {
+    const outcome = classifyStartFailure(err, context);
+    if (outcome.clearPendingStart) {
       draft.fields.setState({ pendingStart: null });
     }
-    toasts.push("error", `Start failed: ${friendlyLaunchErrorMessage(err)}`);
+    toasts.push("error", formatStartFailureToast(outcome, err), outcome.kind);
     finishBusy();
   }
 
@@ -2556,7 +2567,7 @@ function SpawnForm({
       }
       await doSpawn(submittedPromptRevision, ownsLaunchView);
     } catch (err) {
-      reportStartFailure(err);
+      reportStartFailure(err, { startDispatched: false, retryablePendingStart: false });
     }
   }
 
@@ -2596,7 +2607,7 @@ function SpawnForm({
       await withLaunchConfig(submittedSource, (config) => config.createDirectory(path));
       await doSpawn(submittedPromptRevision, ownsLaunchView);
     } catch (err) {
-      reportStartFailure(err);
+      reportStartFailure(err, { startDispatched: false, retryablePendingStart: false });
     } finally {
       closeCreateDialog();
     }

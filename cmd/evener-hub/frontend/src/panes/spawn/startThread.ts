@@ -1,7 +1,15 @@
 // startThread is the canonical launch seam: it starts a real session over
 // AppWire "thread/start" and returns the created thread's ref.
 import type { AppwireClientLike, ComposerMention, LaunchConfigLayer, ThreadStartParams } from "@evener/appwire-client";
-import { buildComposerInput } from "@evener/appwire-client";
+import {
+  buildComposerInput,
+  errorKind,
+  friendlyLaunchErrorMessage,
+  isSocketDroppedError,
+  mutationErrorData,
+  RequestTimeoutError,
+  WireError,
+} from "@evener/appwire-client";
 import type { InputAttachment } from "../../stores/threads";
 import { mergeAccessModeSandbox } from "./accessMode";
 
@@ -106,4 +114,74 @@ export async function startThread(client: AppwireClientLike, req: SpawnRequest):
   if (req.clientMutationId) params.clientMutationId = req.clientMutationId;
   const resp = await client.request("thread/start", params);
   return { ref: resp.thread.evener.ref };
+}
+
+export type StartFailureKind =
+  | "failed"
+  | "uncertain-timeout"
+  | "uncertain-disconnected"
+  | "uncertain-partial"
+  | "uncertain";
+
+export interface StartFailureContext {
+  startDispatched: boolean;
+  retryablePendingStart: boolean;
+}
+
+export interface StartFailureOutcome {
+  kind: StartFailureKind;
+  clearPendingStart: boolean;
+  retryable: boolean;
+}
+
+// Separates confirmed pre-spawn refusals (and pre-dispatch failures) from
+// post-dispatch failures whose outcome is uncertain because the hub detaches
+// thread/start after admission and may still have created the session.
+export function classifyStartFailure(err: unknown, context: StartFailureContext): StartFailureOutcome {
+  if (!context.startDispatched) {
+    return { kind: "failed", clearPendingStart: false, retryable: false };
+  }
+  const data = mutationErrorData(err);
+  if (data?.mutationOutcome === "notAccepted" || data?.retryDisposition === "blocked") {
+    return { kind: "failed", clearPendingStart: true, retryable: false };
+  }
+  if (errorKind(err) === "hub-unreachable") {
+    return { kind: "failed", clearPendingStart: false, retryable: false };
+  }
+  if (err instanceof RequestTimeoutError) {
+    return { kind: "uncertain-timeout", clearPendingStart: false, retryable: context.retryablePendingStart };
+  }
+  if (isSocketDroppedError(err)) {
+    return { kind: "uncertain-disconnected", clearPendingStart: false, retryable: context.retryablePendingStart };
+  }
+  if (!context.retryablePendingStart) {
+    return { kind: "failed", clearPendingStart: false, retryable: false };
+  }
+  return {
+    kind: err instanceof WireError ? "uncertain-partial" : "uncertain",
+    clearPendingStart: false,
+    retryable: true,
+  };
+}
+
+const RETRY_CHECK_GUIDANCE = "Press Start again to check and open it without creating a duplicate.";
+const MANUAL_CHECK_GUIDANCE = "Check the session list before starting again.";
+
+export function formatStartFailureToast(outcome: StartFailureOutcome, err: unknown): string {
+  const guidance = outcome.retryable ? RETRY_CHECK_GUIDANCE : MANUAL_CHECK_GUIDANCE;
+  switch (outcome.kind) {
+    case "failed":
+      return `Start failed: ${friendlyLaunchErrorMessage(err)}`;
+    case "uncertain-timeout":
+      return `Session start timed out, but it may still have started. ${guidance}`;
+    case "uncertain-disconnected":
+      return `Connection lost while starting the session; it may still have started. ${guidance}`;
+    case "uncertain-partial": {
+      const detail = friendlyLaunchErrorMessage(err);
+      const separator = /[.!?]$/.test(detail) ? " " : ". ";
+      return `Start did not finish: ${detail}${separator}Press Start again to retry without creating a duplicate.`;
+    }
+    case "uncertain":
+      return `Could not confirm whether the session started. ${RETRY_CHECK_GUIDANCE}`;
+  }
 }

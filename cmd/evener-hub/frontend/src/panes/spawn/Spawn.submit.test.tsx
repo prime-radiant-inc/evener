@@ -1,10 +1,10 @@
 import type { ThreadStartParams, ThreadStartResponse } from "@evener/appwire-client";
-import { WireError } from "@evener/appwire-client";
+import { RequestTimeoutError, WireError } from "@evener/appwire-client";
 import { deferred } from "@evener/appwire-client/testing/deferred";
 import type { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { expect, test, vi } from "vitest";
-import { toastKinds } from "../../widgets/toast/toastTestUtils";
+import { toastKinds, toastReasons } from "../../widgets/toast/toastTestUtils";
 import { selectEditorText } from "../session/testing/editor";
 import { selectSpawnDirectory } from "./spawnDrafts";
 import {
@@ -1052,4 +1052,113 @@ test("keys capable remote hosts across retries while keeping older and unsettled
   >;
   expect(unsettledParams.source).toBe("cap-host");
   expect("clientMutationId" in unsettledParams).toBe(false);
+});
+
+test.each([
+  [
+    "request timeout",
+    new RequestTimeoutError('AppwireClient: "thread/start" timed out after 180000ms'),
+    "uncertain-timeout",
+  ],
+  ["dropped socket", new Error("AppwireClient: socket closed (code 1006)"), "uncertain-disconnected"],
+])(
+  "preserves prompt, attachment, and clientMutationId across %s and clears them on replay",
+  async (_label, err, expectedReason) => {
+    installCanvasStubs();
+    const user = setupUser();
+    let startAttempts = 0;
+    const fake = capableClient((f) => {
+      f.on("thread/start", () => {
+        startAttempts += 1;
+        if (startAttempts === 1) throw err;
+        return startResponse("local:replayed-ok");
+      });
+    });
+    window.history.pushState({}, "", "/new?dir=/tmp/uncertain-start");
+    renderSpawn(fake);
+    await settled();
+
+    await fillPrompt(user, "check pairing flow");
+    act(() => pastePngInto(promptField(), "dialog.png"));
+    await screen.findByRole("button", { name: "View dialog.png" });
+    await user.click(screen.getByTestId("spawn-submit"));
+
+    await waitFor(() => expect(toastKinds()).toContain("error"));
+    expect(toastReasons()).toContain(expectedReason);
+    expect(window.location.pathname).toBe("/new");
+    expectStartUsable();
+
+    const draft = selectSpawnDirectory("/tmp/uncertain-start");
+    const firstId = (fake.calls.filter((c) => c.method === "thread/start")[0]?.params as ThreadStartParams | undefined)
+      ?.clientMutationId;
+    expect(firstId).toBeTruthy();
+    expect(draft.fields.getState().pendingStart?.clientMutationId).toBe(firstId);
+    expect(promptField().textContent).toContain("check pairing flow");
+    expect(screen.getByRole("button", { name: "View dialog.png" })).toBeTruthy();
+
+    // Retrying replays the exact key, clears transient draft state, and opens the session.
+    await user.click(screen.getByTestId("spawn-submit"));
+    await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Areplayed-ok"));
+    const starts = fake.calls.filter((c) => c.method === "thread/start").map((c) => c.params as ThreadStartParams);
+    expect(starts).toHaveLength(2);
+    expect(starts[1]?.clientMutationId).toBe(firstId);
+    expect(draft.fields.getState().pendingStart).toBeNull();
+    expect(draft.fields.getState().prompt).toBe("");
+    expect(draft.attachments.getState().items).toHaveLength(0);
+  },
+);
+
+test("a pre-dispatch directory creation error does not clear an earlier pendingStart key", async () => {
+  const user = setupUser();
+  let startAttempts = 0;
+  let validateAttempts = 0;
+  let createAttempts = 0;
+  const fake = capableClient((f) => {
+    f.on("evener/path/validate", ({ path }) => {
+      validateAttempts += 1;
+      // Second submit offers directory creation; first and third proceed directly.
+      if (validateAttempts === 2) {
+        return { path, valid: false, error: "stat /tmp/preflight-guard: no such file or directory" };
+      }
+      return { path, valid: true };
+    });
+    f.on("evener/dirs/create", () => {
+      createAttempts += 1;
+      throw new WireError("create-not-accepted", -32602, { mutationOutcome: "notAccepted" });
+    });
+    f.on("thread/start", () => {
+      startAttempts += 1;
+      if (startAttempts === 1) {
+        throw new RequestTimeoutError('AppwireClient: "thread/start" timed out after 180000ms');
+      }
+      return startResponse("local:after-create-error");
+    });
+  });
+  window.history.pushState({}, "", "/new?dir=/tmp/preflight-guard");
+  renderSpawn(fake);
+  await settled();
+  validateAttempts = 0;
+
+  await fillPrompt(user, "keep idempotency key");
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(fake.calls.filter((c) => c.method === "thread/start")).toHaveLength(1));
+  const draft = selectSpawnDirectory("/tmp/preflight-guard");
+  const firstId = draft.fields.getState().pendingStart?.clientMutationId;
+  expect(firstId).toBeTruthy();
+
+  // Retry 1 fails inside evener/dirs/create with notAccepted before thread/start is sent:
+  // the earlier pendingStart key must survive.
+  await user.click(screen.getByTestId("spawn-submit"));
+  await user.click(await screen.findByRole("button", { name: "Create & start" }));
+  await waitFor(() => expect(createAttempts).toBe(1));
+  await waitFor(() => expectStartUsable());
+  expect(fake.calls.filter((c) => c.method === "thread/start")).toHaveLength(1);
+  expect(draft.fields.getState().pendingStart?.clientMutationId).toBe(firstId);
+
+  // Retry 2 reaches thread/start with the exact original clientMutationId.
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Aafter-create-error"));
+  const starts = fake.calls.filter((c) => c.method === "thread/start").map((c) => c.params as ThreadStartParams);
+  expect(starts).toHaveLength(2);
+  expect(starts[1]?.clientMutationId).toBe(firstId);
 });

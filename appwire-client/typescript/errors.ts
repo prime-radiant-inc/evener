@@ -314,11 +314,26 @@ export const HUB_UNREACHABLE_MESSAGE = "Can't reach the hub right now.";
 // still want to distinguish.
 const CLIENT_UNREACHABLE_PATTERN = /^\w*Client: (cannot call ".*"(?: while state is ".*"|; not connected)|closed)$/;
 
+// SOCKET_DROPPED_PATTERN matches the mid-flight disconnect error emitted by
+// AppwireClient.handleSocketLoss ("AppwireClient: socket closed (code N)") and
+// FakeClient ("FakeClient: socket closed"), deliberately excluding pre-open
+// "socket closed while connecting" errors and server WireErrors.
+const SOCKET_DROPPED_PATTERN = /^\w*Client: socket closed(?: \(code \d+\))?$/;
+
 function isClientUnreachableError(error: unknown): boolean {
   if (error instanceof ConnectionClosedError || error instanceof ClientNotReadyError) return true;
   if (error instanceof WireError) return false; // a server-reported error is never this family
   const message = error instanceof Error ? error.message : typeof error === "string" ? error : undefined;
   return message !== undefined && CLIENT_UNREACHABLE_PATTERN.test(message);
+}
+
+/** Reports whether a rejection was caused by an open client socket closing
+ * while a request was in flight (distinct from pre-send unreachable rejections
+ * and pre-open handshake closes). */
+export function isSocketDroppedError(error: unknown): boolean {
+  if (error instanceof WireError) return false;
+  const message = error instanceof Error ? error.message : typeof error === "string" ? error : undefined;
+  return message !== undefined && SOCKET_DROPPED_PATTERN.test(message);
 }
 
 // HostMutationOutcomeError is thrown by committedMutationRow (hostMutations.ts)
