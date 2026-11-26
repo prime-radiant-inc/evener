@@ -43,17 +43,18 @@ func operationsTestStore(t *testing.T, hosts []hostreg.Host) *hostops.Store {
 // seedOperationRecord persists one pending operation record for host.
 func seedOperationRecord(t *testing.T, store *hostops.Store, host, operationID string, generation uint64, incarnationID string) hostops.Record {
 	t.Helper()
-	record, err := store.Create(hostops.NewRecord{
+	outcome, err := store.Create(hostops.OperationCreateRequest{
 		ClientOperationID: operationID,
 		Host:              host,
 		Kind:              hostops.KindDeploy,
-		Generation:        generation,
-		IncarnationID:     incarnationID,
+		Pair:              hostops.OperationPair{Generation: generation, IncarnationID: incarnationID},
+		BootID:            "test-boot",
+		SequenceBefore:    store.Sequence(),
 	})
 	if err != nil {
 		t.Fatalf("Create(%s): %v", host, err)
 	}
-	return record
+	return outcome.Record
 }
 
 // TestHostOperationsReadsThroughTheRealServer is the proof the read is wired:

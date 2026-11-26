@@ -638,17 +638,19 @@ func TestBootHostRemovedPassMarksTheRemovedIncarnationsRecords(t *testing.T) {
 	entry := pipelineEntry("keep", 2)
 	fixture := newPipelineFixture(t, []hostreg.Host{entry}, func(store *hostops.Store) {
 		pipelineToken(t, store, "keep", 2)
-		if _, err := store.Create(hostops.NewRecord{
+		if _, err := store.Create(hostops.OperationCreateRequest{
 			ClientOperationID: "op-removed", Host: "keep", Kind: hostops.KindDeploy,
-			Generation: 2, IncarnationID: "inc-keep",
+			Pair:   hostops.OperationPair{Generation: 2, IncarnationID: "inc-keep"},
+			BootID: "test-boot",
 		}); err != nil {
 			t.Fatalf("Create: %v", err)
 		}
 		// A re-add's record carries a different incarnation id: the tombstone
 		// must never match it.
-		if _, err := store.Create(hostops.NewRecord{
+		if _, err := store.Create(hostops.OperationCreateRequest{
 			ClientOperationID: "op-readd", Host: "keep", Kind: hostops.KindRestart,
-			Generation: 9, IncarnationID: "inc-readd",
+			Pair:   hostops.OperationPair{Generation: 9, IncarnationID: "inc-readd"},
+			BootID: "test-boot",
 		}); err != nil {
 			t.Fatalf("Create: %v", err)
 		}
@@ -698,9 +700,10 @@ func TestBootMirrorRollsBackATornStoreAndWritesTheHighWater(t *testing.T) {
 		}, nil); err != nil {
 			t.Fatalf("MirrorBoundaries: %v", err)
 		}
-		if _, err := store.Create(hostops.NewRecord{
+		if _, err := store.Create(hostops.OperationCreateRequest{
 			ClientOperationID: "op-torn", Host: "m4", Kind: hostops.KindDeploy,
-			Generation: 9, IncarnationID: "inc-mirror",
+			Pair:   hostops.OperationPair{Generation: 9, IncarnationID: "inc-mirror"},
+			BootID: "test-boot",
 		}); err != nil {
 			t.Fatalf("Create: %v", err)
 		}
@@ -1144,9 +1147,10 @@ func TestBootRestoreInstallsTheMachineRecords(t *testing.T) {
 func TestBootRestoreReversesTheHostRemovedMarks(t *testing.T) {
 	entry := pipelineEntry("keep", 2)
 	fixture, _, preRemove := newPipelineRemovalFixture(t, entry, true)
-	if _, err := fixture.store.Create(hostops.NewRecord{
+	if _, err := fixture.store.Create(hostops.OperationCreateRequest{
 		ClientOperationID: "op-1", Host: "keep", Kind: hostops.KindDeploy,
-		Generation: 2, IncarnationID: "inc-keep",
+		Pair:   hostops.OperationPair{Generation: 2, IncarnationID: "inc-keep"},
+		BootID: "test-boot",
 	}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}

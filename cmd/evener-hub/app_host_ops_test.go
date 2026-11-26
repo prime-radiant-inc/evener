@@ -494,14 +494,16 @@ func TestHostPlanRefusesDriftAndConcurrentTerminalOp(t *testing.T) {
 			if !ok {
 				return hubcore.HostPlanFacts{}, errors.New("host vanished")
 			}
-			record, err := store.Create(hostops.NewRecord{
+			outcome, err := store.Create(hostops.OperationCreateRequest{
 				ClientOperationID: "client-1", Host: host.Name, Kind: hostops.KindDeploy,
-				Generation: live.Generation, IncarnationID: live.IncarnationID,
+				Pair:   hostops.OperationPair{Generation: live.Generation, IncarnationID: live.IncarnationID},
+				BootID: "test-boot",
+				SequenceBefore: store.Sequence(),
 			})
 			if err != nil {
 				return hubcore.HostPlanFacts{}, err
 			}
-			if _, err := store.Transition(record.ID, hostops.StateComplete, func(r *hostops.Record) {
+			if _, err := store.Transition(outcome.Record.ID, hostops.StateComplete, func(r *hostops.Record) {
 				r.Result = &hostops.Result{OK: true, Message: "probe-time completion"}
 			}); err != nil {
 				return hubcore.HostPlanFacts{}, err

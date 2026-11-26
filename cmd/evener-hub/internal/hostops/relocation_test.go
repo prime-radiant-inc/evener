@@ -204,10 +204,11 @@ func testStoreRelocation(t *testing.T, withCustody bool) {
 
 func relocationComplete(t *testing.T, store *Store, host, operation string) Record {
 	t.Helper()
-	record, err := store.Create(NewRecord{ClientOperationID: operation, Host: host, Kind: KindRestart, Generation: 7, IncarnationID: "inc-" + host})
+	outcome, err := store.Create(OperationCreateRequest{ClientOperationID: operation, Host: host, Kind: KindRestart, Pair: OperationPair{Generation: 7, IncarnationID: "inc-" + host}, BootID: "test-boot", SequenceBefore: store.Sequence()})
 	if err != nil {
 		t.Fatal(err)
 	}
+	record := outcome.Record
 	// Unknown nested payload keys deliberately contain the old StorePath. They
 	// are operation evidence, never candidates for path substitution.
 	epoch, err := json.Marshal(map[string]any{"bootId": "fixture-boot", "opSeq": 17,

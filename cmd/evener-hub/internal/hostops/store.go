@@ -471,49 +471,6 @@ func (s *Store) Records() []Record {
 	return cloneSnapshot(s.cell.state).Records
 }
 
-// Create assigns the next controller-assigned id and persists a fresh `pending`
-// record for the operation, in one atomic write. Creation is not a terminal
-// transition, so it moves no sequence value.
-//
-// Dedup — recognizing a replay by (host, kind, client operation ID, pinned
-// generation, pinned incarnation id) — belongs to the pipeline slice that reads
-// the registry's current pair; this is only the durable append beneath it.
-func (s *Store) Create(newRecord NewRecord) (Record, error) {
-	if s == nil {
-		return Record{}, errors.New("hostops: store is not configured")
-	}
-	s.cell.mu.Lock()
-	defer s.cell.mu.Unlock()
-
-	now := nowUTC()
-	next := cloneSnapshot(s.cell.state)
-	next.AllocatorHighWaterMark++
-	record := Record{
-		ID:                formatAllocatorID(next.AllocatorHighWaterMark),
-		ClientOperationID: newRecord.ClientOperationID,
-		Host:              newRecord.Host,
-		Kind:              newRecord.Kind,
-		State:             StatePending,
-		Generation:        newRecord.Generation,
-		IncarnationID:     newRecord.IncarnationID,
-		CreatedAt:         now,
-		UpdatedAt:         now,
-	}
-	if err := validateRecord(record); err != nil {
-		return Record{}, err
-	}
-	next.Records = append(next.Records, record)
-	adopted, err := s.commitLocked(next)
-	if err != nil && !adopted {
-		// Nothing was written: the refusal reports no record.
-		return Record{}, err
-	}
-	// A write whose rename landed is the operation's durable record even when
-	// the directory sync behind it failed, so the caller gets the id it must
-	// reconcile with (see RenameLanded).
-	return cloneRecord(record), err
-}
-
 // Transition moves one stored record to state to and commits it atomically.
 // change, when non-nil, is applied to the record first, inside the same locked
 // read-modify-write, so progress, the terminal result, the fencing epoch and
