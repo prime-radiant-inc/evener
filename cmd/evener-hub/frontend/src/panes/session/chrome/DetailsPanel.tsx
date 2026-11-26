@@ -1,6 +1,5 @@
-// DetailsPanel: a trigger + Sheet and the shared About body holding a
-// session's goal, live accounting, workspace, identity, and collapsible launch
-// settings.
+// DetailsPanelBody: the shared About body holding a session's goal, live
+// accounting, workspace, identity, and collapsible launch settings.
 //
 // Five calm, pill-free groups separated by hairlines:
 // 1. Goal (inline-editable everywhere when model.capabilities.goal is true,
@@ -28,12 +27,10 @@ import {
   sessionEffortLevels,
 } from "@evener/appwire-client";
 import {
-  forwardRef,
   type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode,
   useCallback,
   useEffect,
-  useImperativeHandle,
   useLayoutEffect,
   useRef,
   useState,
@@ -49,7 +46,6 @@ import {
   Meter,
   PropertyList,
   type PropertyListRow,
-  Sheet,
   StatusDot,
   Textarea,
   useDismissOnOutsidePress,
@@ -68,16 +64,6 @@ import {
 } from "./statusFormat";
 import { useSessionHost } from "./useSessionHost";
 
-export interface DetailsPanelProps {
-  model: ThreadModel;
-  /** Current wall-clock ms, so the work-time figure keeps counting during an
-   * in-flight turn (owned by SessionChrome's useNowTick, same as StatusRow). */
-  now: number;
-  /** Hides the standalone Sheet's inline trigger. Callers can still open
-   * this Sheet through DetailsPanelHandle, independently of Overview. */
-  hideTrigger?: boolean;
-}
-
 export interface DetailsPanelBodyProps {
   model: ThreadModel;
   now: number;
@@ -87,11 +73,6 @@ export interface DetailsPanelBodyProps {
    * gitBranch wins when present; empty means "looked, nothing to show" and
    * renders no row. */
   resolvedBranch?: string;
-}
-
-/** Opens the standalone Details Sheet while keeping its open state local. */
-export interface DetailsPanelHandle {
-  open: () => void;
 }
 
 const CLASS = {
@@ -616,26 +597,3 @@ export function DetailsPanelBody({ model, now, resolvedBranch = "" }: DetailsPan
     </div>
   );
 }
-
-export const DetailsPanel = forwardRef<DetailsPanelHandle, DetailsPanelProps>(function DetailsPanel(
-  { model, now, hideTrigger = false },
-  ref,
-) {
-  const [open, setOpen] = useState(false);
-  useImperativeHandle(ref, () => ({ open: () => setOpen(true) }), []);
-
-  return (
-    <>
-      {/* This optional Sheet trigger is separate from Overview and the
-          standalone Details workspace pane. */}
-      {!hideTrigger && (
-        <Button variant="quiet" size="sm" onClick={() => setOpen(true)}>
-          Details
-        </Button>
-      )}
-      <Sheet open={open} onClose={() => setOpen(false)} title="Session details">
-        {open ? <DetailsPanelBody model={model} now={now} /> : null}
-      </Sheet>
-    </>
-  );
-});

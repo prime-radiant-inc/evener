@@ -1,16 +1,13 @@
-// TasksPanel: a trigger + Sheet for the session's task list.
+// TasksPanelBody: the shared task-list body for the activity viewer, mobile
+// Sheet, and desktop Tasks pane.
 //
-// Two independent signals, per the plan's push-driven-plus-fetch-on-open
-// model:
-//   - The TRIGGER's badge is model.tasks (the {total, done} aggregate,
-//     pushed live by evener/task/updated - protocol/reducer.ts's own case) -
-//     cheap and already-live without opening anything, so it stays exactly
-//     as before.
-//   - The SHEET's row list is fetched fresh via threadsStore.listTasks(ref)
-//     every time the panel opens (unblocked by the T1 addendum, commit
-//     da1b43f85 on w5-interaction, cherry-picked here), and re-fetched
-//     automatically if model.tasks changes again while the panel stays
-//     open (a live update while the user is looking at the list - the
+// Two independent signals:
+//   - The live aggregate model.tasks (pushed by evener/task/updated -
+//     protocol/reducer.ts's own case) drives the tab badge and this body's
+//     optional summary header.
+//   - The row list is fetched fresh via threadsStore.listTasks(ref) on mount
+//     and re-fetched automatically if model.tasks changes while the body stays
+//     mounted (a live update while the user is looking at the list - the
 //     aggregate object reference only changes when the reducer's own
 //     evener/task/updated case actually re-assigns it, so this never
 //     refires on an unrelated model update). The package's
@@ -34,13 +31,12 @@
 // a distinct terminal state depends on model.tasks: null means the frontend
 // truly has no way to distinguish "never had tasks" from "can't currently
 // ask", so it renders the same "No tasks yet" a real `[]` response would.
-// But once model.tasks is non-null, the trigger beside this panel is
-// ALREADY on screen claiming tasks exist (evener/task/updated only fires when
-// the agent has actually edited its list - see the re-fetch paragraph
-// below) - "No tasks yet" would contradict it, so that case gets its own
-// terminal copy instead (renderBody's daemonGone branch), and never wipes
-// whatever rows are already retained. Any other rejection - including the
-// SAME sessionUnavailable code for a daemon that's merely unreachable this
+// But once model.tasks is non-null, the session already claims tasks exist
+// (evener/task/updated only fires when the agent has actually edited its list)
+// - "No tasks yet" would contradict it, so that case gets its own terminal
+// copy instead (renderBody's daemonGone branch), and never wipes whatever rows
+// are already retained. Any other rejection - including the SAME
+// sessionUnavailable code for a daemon that's merely unreachable this
 // instant - is a genuine failure: toast (the wave's failure-feedback
 // convention) AND an inline report.
 //
@@ -80,43 +76,14 @@ import {
   type TaskRow,
   taskAggregateLabel,
 } from "@evener/appwire-client";
-import { forwardRef, useEffect, useImperativeHandle, useState } from "react";
+import { useEffect, useState } from "react";
 import { tasksPanelStore, useTasksPanelStore } from "../../../stores/tasksPanel";
-import {
-  Button,
-  Disclosure,
-  EmptyState,
-  InlineNotice,
-  Markdown,
-  Sheet,
-  useToasts,
-  VisuallyHidden,
-} from "../../../widgets";
+import { Button, Disclosure, EmptyState, InlineNotice, Markdown, useToasts, VisuallyHidden } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { TaskCheck, taskStatusTouch, taskStatusWord } from "../transcript/tools/taskCheck";
 import { ActivityBodyClock, TaskActivityTime } from "./activityTime";
 import { PanelSection } from "./PanelSection";
 import styles from "./taskspanel.module.css";
-
-export interface TasksPanelProps {
-  sessionRef: string;
-  model: ThreadModel;
-  // True once SessionChrome's own row has measured too narrow to show this
-  // panel's own inline trigger beside Details and the "..." menu without
-  // wrapping to a second row (kata vybn) - SessionChrome renders a "Tasks"
-  // item in that menu instead, opening this SAME Sheet through the
-  // imperative handle below. Omitted (the default) is every existing
-  // caller/test, which never suppresses this trigger.
-  hideTrigger?: boolean;
-}
-
-/** Lets SessionChrome open this panel's Sheet from a collapsed menu item,
- * without lifting `open` out of this component (which would touch every
- * existing render site in TasksPanel.test.tsx for no behavioral gain - see
- * DetailsPanelHandle's identical rationale). */
-export interface TasksPanelHandle {
-  open: () => void;
-}
 
 const CLASS = {
   state: requireClass(styles.state, "taskspanel.module.css", "state"),
@@ -149,21 +116,14 @@ const CLASS = {
   note: requireClass(styles.note, "taskspanel.module.css", "note"),
 };
 
-function triggerLabel(tasks: ThreadModel["tasks"]): string {
-  // Bare sentence, no "Tasks" prefix: the aggregate already names the noun
-  // ("4 of 7 tasks left"), so a prefix would stutter ("Tasks 4 of 7 tasks
-  // left"). Bare "Tasks" remains the pre-aggregate fallback.
-  return tasks ? taskAggregateLabel(tasks) : "Tasks";
-}
-
 // Scopes a task row's disclosure state to this session: task ids restart at
 // 1 in every session (agent/task/task_store.go mints them per session), but
 // widgets/disclosure's store is one page-lifetime singleton shared by every
-// open TasksPanel - without the session in the key, expanding task #1 in one
-// session would show task #1 already expanded the next time a DIFFERENT
+// open TasksPanelBody - without the session in the key, expanding task #1 in
+// one session would show task #1 already expanded the next time a DIFFERENT
 // session's panel opens. Mirrors subagentModuleStore.ts's itemScopeKey (same
-// NUL-separator idiom); no "" fallback is needed here since TasksPanelProps'
-// sessionRef is never optional.
+// NUL-separator idiom); no "" fallback is needed here since
+// TasksPanelBodyProps' sessionRef is never optional.
 export function taskDisclosureId(sessionRef: string, taskId: number): string {
   return `${sessionRef}\0${taskId}`;
 }
@@ -530,28 +490,3 @@ export function TasksPanelBody({ sessionRef, model, showSummary = true }: TasksP
 
   return renderBody();
 }
-
-export const TasksPanel = forwardRef<TasksPanelHandle, TasksPanelProps>(function TasksPanel(
-  { sessionRef, model, hideTrigger = false },
-  ref,
-) {
-  const [open, setOpen] = useState(false);
-  useImperativeHandle(ref, () => ({ open: () => setOpen(true) }), []);
-
-  return (
-    <>
-      {/* Omitted while hideTrigger is set (the row collapsed this into the
-          "..." menu instead - see SessionChrome). The palette's /tasks no
-          longer clicks this trigger; it toggles the sessionTasks workspace
-          pane (shell/palette/commands.ts toggleSessionPane). */}
-      {!hideTrigger && (
-        <Button variant="quiet" size="sm" onClick={() => setOpen(true)}>
-          {triggerLabel(model.tasks)}
-        </Button>
-      )}
-      <Sheet open={open} onClose={() => setOpen(false)} title="Tasks">
-        {open ? <TasksPanelBody sessionRef={sessionRef} model={model} /> : null}
-      </Sheet>
-    </>
-  );
-});
