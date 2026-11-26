@@ -256,7 +256,7 @@ func refreshHubRemoteThreads(ctx context.Context, poke <-chan struct{}, web *Web
 		// captured under the registration that owns its rows and still
 		// appears on this tick.
 		snapshot := web.refreshRemoteThreadSnapshot(refreshCtx)
-		web.cfg.RemoteThreadCache.StoreWalkSnapshot(hubcore.RemoteThreadSnapshot{
+		web.cfg.RemoteThreadCache.Store(hubcore.RemoteThreadSnapshot{
 			Threads:  snapshot.threads,
 			Complete: snapshot.complete,
 			Sources:  snapshot.sources,

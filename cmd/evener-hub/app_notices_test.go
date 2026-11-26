@@ -34,7 +34,7 @@ func TestHubNoticesNameWhatBlocksSessions(t *testing.T) {
 	sources.Add(&offlineStubSource{scriptedAppSource: &scriptedAppSource{id: "paradise-park"}, online: false})
 	sources.Add(&offlineStubSource{scriptedAppSource: &scriptedAppSource{id: "m4"}, online: true})
 	remote := &hubcore.RemoteThreadCache{}
-	remote.Store([]appwire.Thread{
+	remote.Store(remoteThreadSnapshotForTest([]appwire.Thread{
 		remoteNoticeThread("paradise-park", "p1", appwire.ThreadStatusIdle, ""),
 		remoteNoticeThread("paradise-park", "p2", appwire.ThreadStatusActive, ""),
 		// A subagent is summarized on its coordinator; an ended session is not
@@ -42,7 +42,7 @@ func TestHubNoticesNameWhatBlocksSessions(t *testing.T) {
 		remoteNoticeThread("paradise-park", "p3", appwire.ThreadStatusActive, "subagent"),
 		remoteNoticeThread("paradise-park", "p4", appwire.ThreadStatusClosed, ""),
 		remoteNoticeThread("m4", "m1", appwire.ThreadStatusActive, ""),
-	})
+	}, true), nil)
 	notices := &hubNotices{
 		auth: func() (appwire.AuthListResponse, error) {
 			return appwire.AuthListResponse{Providers: []appwire.AuthStatusResponse{

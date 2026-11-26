@@ -18,7 +18,7 @@ import (
 // this, and the attention summary counts the two that need the user.
 func TestNavigationRemoteRowsCarryTheirQuestionAndApproval(t *testing.T) {
 	cache := &hubcore.RemoteThreadCache{}
-	cache.Store([]appwire.Thread{
+	cache.Store(remoteThreadSnapshotForTest([]appwire.Thread{
 		{ID: "asking", Source: "devbox", Status: appwire.ThreadStatus{Type: appwire.ThreadStatusAwaiting}, Evener: appwire.EvenerThread{AskPending: true}},
 		{ID: "approving", Source: "devbox", Status: appwire.ThreadStatus{Type: appwire.ThreadStatusActive}, Evener: appwire.EvenerThread{
 			PendingEscalations: []appwire.SandboxEscalationRequested{
@@ -26,7 +26,7 @@ func TestNavigationRemoteRowsCarryTheirQuestionAndApproval(t *testing.T) {
 			},
 		}},
 		{ID: "working", Source: "devbox", Status: appwire.ThreadStatus{Type: appwire.ThreadStatusActive}},
-	})
+	}, true), nil)
 	web := NewWebServer(hubcore.WebConfig{RemoteThreadCache: cache})
 
 	captured, err := (webNavigationSource{web: web}).Capture(t.Context(), "generation", time.Now())

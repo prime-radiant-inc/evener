@@ -172,7 +172,7 @@ func TestHubSnapshotWakePublishesAllThreeSnapshots(t *testing.T) {
 
 	// Three changes, none of them a write through this hub:
 	// a remote session with a pending approval appears,
-	cache.StoreSnapshot([]appwire.Thread{remoteWakeThread()}, true)
+	cache.Store(remoteThreadSnapshotForTest([]appwire.Thread{remoteWakeThread()}, true), nil)
 	// and the other host is reported offline.
 	offlineHost.setOnline(false)
 

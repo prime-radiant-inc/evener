@@ -112,7 +112,7 @@ func TestHostAdminRequestRefusesRemoteOriginatedForwarding(t *testing.T) {
 // dispatch guard covers only real dispatches.
 func TestRemoteOriginatedRequestStillReadsCachedSnapshotRows(t *testing.T) {
 	cache := &hubcore.RemoteThreadCache{}
-	cache.StoreSnapshot([]appwire.Thread{{ID: "alpha-thread", Source: "m4"}}, true)
+	cache.Store(remoteThreadSnapshotForTest([]appwire.Thread{{ID: "alpha-thread", Source: "m4"}}, true), nil)
 	cfg := hubcore.WebConfig{
 		RemoteHosts:       []hostreg.Host{{Name: "m4", SSH: "m4.example"}},
 		RemoteThreadCache: cache,

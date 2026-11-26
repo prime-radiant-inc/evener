@@ -95,10 +95,10 @@ func TestResolveTopLevelSessionRefRefusesForkOriginalWithSeveralChildren(t *test
 func TestResolveTopLevelSessionRefPinsRemoteSessionsWithoutASnapshot(t *testing.T) {
 	calls := countNavigationSnapshots(t)
 	cache := &hubcore.RemoteThreadCache{}
-	cache.Store([]appwire.Thread{
+	cache.Store(remoteThreadSnapshotForTest([]appwire.Thread{
 		{ID: "th_1", Source: "host-a", Evener: appwire.EvenerThread{Ref: "host-a:th_1"}, Status: appwire.ThreadStatus{Type: appwire.ThreadStatusActive}},
 		{ID: "th_sub", Source: "host-a", Evener: appwire.EvenerThread{Ref: "host-a:th_sub", Kind: "subagent", ParentRef: "host-a:th_1"}, Status: appwire.ThreadStatus{Type: appwire.ThreadStatusActive}},
-	})
+	}, true), nil)
 	web := NewWebServer(hubcore.WebConfig{Past: hubcore.NewPastIndex(""), RemoteThreadCache: cache})
 
 	session, err := web.resolveTopLevelSessionRef(t.Context(), "host-a:th_1")

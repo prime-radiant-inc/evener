@@ -74,16 +74,16 @@ func TestProducerAcceptanceRemoteNormalizesRetainedFailureAndNoop(t *testing.T) 
 		calls.Add(1)
 		_ = cache.Snapshot() // callback must be outside the cache lock.
 	})
-	cache.StoreSnapshotData(RemoteThreadSnapshot{Complete: true})
+	cache.Store(RemoteThreadSnapshot{Complete: true}, nil)
 	if got := calls.Load(); got != 1 {
 		t.Fatalf("initial remote publish callbacks = %d, want 1", got)
 	}
 	generation := cache.Snapshot().Generation
-	cache.StoreSnapshotData(RemoteThreadSnapshot{Threads: nil, Sources: nil, Complete: true})
+	cache.Store(RemoteThreadSnapshot{Threads: nil, Sources: nil, Complete: true}, nil)
 	if got := calls.Load(); got != 1 || cache.Snapshot().Generation != generation {
 		t.Fatalf("remote normalized no-op callbacks=%d generation=%d want 1/%d", got, calls.Load(), generation)
 	}
-	cache.StoreSnapshotData(RemoteThreadSnapshot{Complete: false}) // retained failure is a real completeness change.
+	cache.Store(RemoteThreadSnapshot{Complete: false}, nil) // retained failure is a real completeness change.
 	if got := calls.Load(); got != 2 {
 		t.Fatalf("remote retained-failure callbacks = %d, want 2", got)
 	}
@@ -178,9 +178,9 @@ func TestProducerAcceptanceFavoriteHintsAfterSuccessfulWrites(t *testing.T) {
 func TestProducerAcceptanceRemoteSourceMapChangeIsFingerprinted(t *testing.T) {
 	cache := &RemoteThreadCache{}
 	thread := appwire.Thread{ID: "remote-1", Source: "source-a"}
-	cache.StoreSnapshotData(RemoteThreadSnapshot{Threads: []appwire.Thread{thread}, Complete: true, Sources: map[string]RemoteSourceSnapshot{
+	cache.Store(RemoteThreadSnapshot{Threads: []appwire.Thread{thread}, Complete: true, Sources: map[string]RemoteSourceSnapshot{
 		"source-a": {Threads: []appwire.Thread{thread}, Complete: true},
-	}})
+	}}, nil)
 	got := cache.Snapshot()
 	if len(got.Sources["source-a"].Threads) != 1 || got.Sources["source-a"].Threads[0].ID != thread.ID {
 		t.Fatalf("inferred remote source = %+v", got.Sources)
@@ -202,15 +202,15 @@ func TestProducerAcceptanceRemoteAuthoritativeSourcesMatrix(t *testing.T) {
 			"source-a": {Threads: []appwire.Thread{thread}, Complete: true},
 		},
 	}
-	cache.StoreSnapshotData(base)
+	cache.Store(base, nil)
 	firstGeneration := cache.Snapshot().Generation
-	cache.StoreSnapshotData(RemoteThreadSnapshot{
+	cache.Store(RemoteThreadSnapshot{
 		Threads:  []appwire.Thread{thread},
 		Complete: true,
 		Sources: map[string]RemoteSourceSnapshot{
 			"source-a": {Threads: []appwire.Thread{thread}, Complete: true},
 		},
-	})
+	}, nil)
 	if cache.Snapshot().Generation != firstGeneration || calls.Load() != 1 {
 		t.Fatalf("deep-equivalent source map changed generation=%d callbacks=%d", cache.Snapshot().Generation, calls.Load())
 	}
@@ -218,7 +218,7 @@ func TestProducerAcceptanceRemoteAuthoritativeSourcesMatrix(t *testing.T) {
 	changed.Sources = map[string]RemoteSourceSnapshot{
 		"source-a": {Threads: []appwire.Thread{thread}, Complete: false, IncompleteIDs: []string{"remote-bad"}},
 	}
-	cache.StoreSnapshotData(changed)
+	cache.Store(changed, nil)
 	if cache.Snapshot().Generation != firstGeneration+1 || calls.Load() != 2 {
 		t.Fatalf("source-map content change generation=%d callbacks=%d, want %d/2", cache.Snapshot().Generation, calls.Load(), firstGeneration+1)
 	}
