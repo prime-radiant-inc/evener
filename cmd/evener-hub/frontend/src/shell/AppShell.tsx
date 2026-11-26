@@ -651,8 +651,8 @@ function AppShellContent({ client: injectedClient, bannerDelayMs, bannerCreateCl
       registry.registerAction(ACTIONS.sessionPrevious, () => cycleSessionPane("previous")),
       // Live-session navigation: unlike session.next/previous (pane focus),
       // these open the adjacent session from the rail's live section in
-      // server order, wrapping. openNeedsYouSession is the shared
-      // session-URL navigation seam (needsYouCycle.ts).
+      // server order, wrapping. openAttentionSession is the shared
+      // session-URL navigation seam (attentionHistory.ts).
       registry.registerAction(ACTIONS.sessionLiveNext, () => liveSessions.next()),
       registry.registerAction(ACTIONS.sessionLivePrevious, () => liveSessions.previous()),
       registry.registerAction(ACTIONS.settingsOpen, () => navigate("/settings")),

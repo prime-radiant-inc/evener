@@ -17,7 +17,3 @@ export function blocked(message: string): Blocked {
 export function isBlocked(value: unknown): value is Blocked {
   return typeof value === "object" && value !== null && (value as { paletteBlocked?: unknown }).paletteBlocked === true;
 }
-
-export function blockedMessage(value: unknown): string | undefined {
-  return isBlocked(value) ? value.message : undefined;
-}
