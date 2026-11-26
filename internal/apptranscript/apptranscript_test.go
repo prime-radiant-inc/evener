@@ -1252,9 +1252,9 @@ func TestProjectTurnDedupsCommunicateEcho(t *testing.T) {
 	// matches the assistant turn's (same logical turn). Both turns share one
 	// registry so LastAssistantText carries across.
 	echoReg := NewToolCallRegistry()
-	echoAssistant, _ := ProjectTurnParts("t1", 0, mkAssistantTurn("Done.", "Done."), echoReg, nil, nil)
+	echoItems, _ := ProjectTurnParts("t1", 0, mkAssistantTurn("Done.", "Done."), echoReg, nil, nil)
 	echoResult, _ := ProjectTurnParts("t1", 1, mkResultTurn("c1"), echoReg, nil, nil)
-	echoItems := append(echoAssistant, echoResult...)
+	echoItems = append(echoItems, echoResult...)
 	echo := agentMsgs(echoItems)
 	if len(echo) != 1 || echo[0] != "Done." {
 		t.Fatalf("echoed communicate: got agentMessages %q, want exactly [\"Done.\"]", echo)
@@ -1264,9 +1264,9 @@ func TestProjectTurnDedupsCommunicateEcho(t *testing.T) {
 	// both render: the assistant text agentMessage on the assistant turn, the
 	// communicate message agentMessage on the result turn.
 	distinctReg := NewToolCallRegistry()
-	distinctAssistant, _ := ProjectTurnParts("t3", 0, mkAssistantTurn("Working...", "All set."), distinctReg, nil, nil)
+	distinctItems, _ := ProjectTurnParts("t3", 0, mkAssistantTurn("Working...", "All set."), distinctReg, nil, nil)
 	distinctResult, _ := ProjectTurnParts("t3", 1, mkResultTurn("c1"), distinctReg, nil, nil)
-	distinctItems := append(distinctAssistant, distinctResult...)
+	distinctItems = append(distinctItems, distinctResult...)
 	distinct := agentMsgs(distinctItems)
 	if len(distinct) != 2 || distinct[0] != "Working..." || distinct[1] != "All set." {
 		t.Fatalf("distinct communicate: got agentMessages %q, want [\"Working...\" \"All set.\"]", distinct)
@@ -1278,9 +1278,9 @@ func TestProjectTurnDedupsCommunicateEcho(t *testing.T) {
 	// This mirrors the live projector's matchesLastAssistantMessage, which
 	// scopes the echo check to the turn that showed the text.
 	crossReg := NewToolCallRegistry()
-	crossAssistant, _ := ProjectTurnParts("t5", 0, mkAssistantTurn("Done.", "Done."), crossReg, nil, nil)
+	crossItems, _ := ProjectTurnParts("t5", 0, mkAssistantTurn("Done.", "Done."), crossReg, nil, nil)
 	crossResult, _ := ProjectTurnParts("t6", 1, mkResultTurn("c1"), crossReg, nil, nil)
-	crossItems := append(crossAssistant, crossResult...)
+	crossItems = append(crossItems, crossResult...)
 	cross := agentMsgs(crossItems)
 	if len(cross) != 2 || cross[0] != "Done." || cross[1] != "Done." {
 		t.Fatalf("cross-turn communicate: got agentMessages %q, want [\"Done.\" \"Done.\"]", cross)
