@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=390, initial-scale=1">
+<title>overview-mobile-glass-tabstrip layoutguard harness</title>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="resolved.css">
+<style>
+  * { transition: none !important; animation: none !important; }
+
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    background: var(--surface-0);
+    color: var(--ink-hi);
+    font-family: var(--font-sans);
+    font-size: var(--font-size-ui);
+    line-height: var(--line-height-ui);
+  }
+
+  /* The session transcript the phone Overview overlays: the same stacking
+     StackHost's .activityOverlay gives the sidebar over the stacked pane. */
+  .transcript {
+    position: absolute;
+    inset: 0;
+    padding: var(--space-3);
+    color: var(--ink-mid);
+  }
+  .overlay {
+    position: absolute;
+    inset: 0;
+    display: flex;
+  }
+</style>
+</head>
+<body data-font-size="m" data-iphone-glass="regular">
+<div class="transcript" aria-hidden="true">
+  waiting on head-to-head comparator running 41,402 trials against AR-02 vs AR-61 with EC2 fleet at 72/75 and one more line of transcript text behind the Overview so a transparent strip would show it
+</div>
+<div class="overlay">
+  <!-- ActivitySidebar's phone markup (ActivitySidebar.tsx + Tabs widget):
+       m.aside.sidebarMobile > FocusScope(.focusBody) > .head, Tabs
+       (.tabs-tablist, the widget's own module), .body. The tablist carries
+       the Tabs module's prefixed class, exactly as CSS Modules scopes it, so
+       activitybar.module.css cannot match it by name. -->
+  <aside class="sidebarMobile" id="sidebar" aria-label="Overview" role="dialog" aria-modal="true">
+    <div class="focusBody" data-focus-layer tabindex="-1">
+      <div class="head">
+        <div class="scope"><span>Investigate Evener Multi-Edit Support</span></div>
+      </div>
+      <div class="tabs-tablist" role="tablist" aria-label="Overview kind" aria-orientation="horizontal">
+        <button class="tabs-tab" type="button" role="tab" aria-selected="false" tabindex="-1">
+          <span class="tabs-stack"><span class="tabs-label">About</span></span>
+        </button>
+        <button class="tabs-tab" type="button" role="tab" aria-selected="false" tabindex="-1">
+          <span class="tabs-stack"><span class="tabs-label">Links</span><span class="tabs-detail">—</span></span>
+        </button>
+        <button class="tabs-tab" type="button" role="tab" aria-selected="false" tabindex="-1">
+          <span class="tabs-stack"><span class="tabs-label">Agents</span><span class="tabs-detail">0/12</span></span>
+        </button>
+        <button class="tabs-tab" type="button" role="tab" aria-selected="true" tabindex="0">
+          <span class="tabs-stack"><span class="tabs-label">Jobs</span><span class="tabs-detail">1/372</span></span>
+        </button>
+        <button class="tabs-tab" type="button" role="tab" aria-selected="false" tabindex="-1">
+          <span class="tabs-stack"><span class="tabs-label">Watches</span><span class="tabs-detail">0/16</span></span>
+        </button>
+        <button class="tabs-tab" type="button" role="tab" aria-selected="false" tabindex="-1">
+          <span class="tabs-stack"><span class="tabs-label">Tasks</span><span class="tabs-detail">72/75</span></span>
+        </button>
+      </div>
+      <div class="body" role="tabpanel">
+        <p>Phase-2 Grand Tier-B Promotion Eval (80 trials) running</p>
+      </div>
+    </div>
+  </aside>
+</div>
+
+<script>
+// Alpha of a computed background color, in Chrome's serializations: rgb()/
+// rgba() and the slash-alpha functional forms (color(), oklab(), oklch(),
+// lab(), ...) that color-mix() and translucency resolve to.
+function alphaOf(color) {
+  const match = color?.match(/^[a-z-]+\(([^()]*)\)$/i);
+  if (!match) return 0;
+  const body = match[1];
+  if (body.includes("/")) return Number.parseFloat(body.split("/").pop().trim());
+  const parts = body.split(",").map((part) => part.trim());
+  return parts.length === 4 ? Number.parseFloat(parts[3]) : 1;
+}
+
+// What actually sits behind el, walking up to and including the phone
+// sidebar: an opaque background anywhere blocks the transcript, and a
+// backdrop filter blurs it (the regular Liquid Glass mode). Neither means the
+// transcript shows through sharply - the defect this case guards.
+function backing(el, sidebar) {
+  const chain = [];
+  let node = el;
+  while (node && node.nodeType === 1) {
+    const style = getComputedStyle(node);
+    const filter = style.backdropFilter || style.webkitBackdropFilter;
+    const alpha = alphaOf(style.backgroundColor);
+    chain.push({
+      tag: node.tagName.toLowerCase(),
+      className: node.className,
+      backgroundColor: style.backgroundColor,
+      alpha,
+      backdropFilter: filter || "none",
+    });
+    if (node === sidebar) break;
+    node = node.parentElement;
+  }
+  return {
+    opaque: chain.some((entry) => entry.alpha >= 1),
+    blurred: chain.some((entry) => entry.backdropFilter !== "none"),
+    chain,
+  };
+}
+
+window.measure = () => {
+  const sidebar = document.getElementById("sidebar");
+  const head = sidebar.querySelector(".head");
+  const tabstrip = sidebar.querySelector(".tabs-tablist");
+  const body = sidebar.querySelector(".body");
+
+  // Toggle the theme and the glass mode through every combination the phone
+  // can ship: dark/light, and the Reduce Transparency fallback vs regular
+  // Liquid Glass. Custom properties re-resolve on the attribute writes, and
+  // getComputedStyle flushes the style pass.
+  const results = [];
+  for (const theme of ["dark", "light"]) {
+    document.documentElement.setAttribute("data-theme", theme);
+    for (const glass of ["opaque", "regular"]) {
+      document.body.setAttribute("data-iphone-glass", glass === "regular" ? "regular" : "");
+      results.push({
+        theme,
+        glass,
+        head: backing(head, sidebar),
+        tabstrip: backing(tabstrip, sidebar),
+        body: backing(body, sidebar),
+      });
+    }
+  }
+  // Leave the page in its initial combination.
+  document.documentElement.setAttribute("data-theme", "dark");
+  document.body.setAttribute("data-iphone-glass", "regular");
+
+  return {
+    viewport: { width: window.innerWidth, height: window.innerHeight },
+    results,
+  };
+};
+</script>
+</body>
+</html>
