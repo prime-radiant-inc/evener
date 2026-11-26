@@ -1,14 +1,20 @@
 package hostops
 
 // The cross-file commit intent (spec 08b §9): the pendingStoreSync intent's
-// store half and the pendingCompensation armed record's phase machine. These
-// tests pin the store's own behaviour; the hub composes them at boot and on the
-// remove path.
+// store half and the pre-migration pendingCompensation record's phase machine.
+// These tests pin the store's own behaviour; the hub composes them at boot.
 
 import (
 	"errors"
+	"maps"
 	"os"
+	"slices"
+	"strconv"
+	"strings"
 	"testing"
+	"time"
+
+	"github.com/spf13/afero"
 )
 
 // mintTokenAt mints one valid token row for host at the given generation,
@@ -19,6 +25,47 @@ func mintTokenAt(t *testing.T, store *Store, host string, generation uint64) Tok
 	req.Generation = generation
 	req.IncarnationID = testTokenHash("inc-" + host)[:36]
 	return mustMint(t, store, req)
+}
+
+func compensationTokenValue(seed string) string {
+	return testTokenHash(seed)[:minTokenValueChars]
+}
+
+func compensationTokenRowJSON(host, value string, generation uint64, at time.Time) string {
+	row := tokenRowJSON(host, value, at, at.Add(DefaultTokenTTL), at)
+	return strings.Replace(row, `"generation":7`, `"generation":`+strconv.FormatUint(generation, 10), 1)
+}
+
+func compensationRecordJSON(host string, phase CompensationPhase, rows []string, stash string, generation uint64) string {
+	return `{"host":` + strconv.Quote(host) +
+		`,"phase":` + strconv.Quote(string(phase)) +
+		`,"rows":[` + strings.Join(rows, ",") + `]` +
+		`,"stashReference":` + strconv.Quote(stash) +
+		`,"generation":` + strconv.FormatUint(generation, 10) + `}`
+}
+
+func rawCompensationStoreJSON(mark time.Time, tokens []string, compensations map[string]string) string {
+	entries := make([]string, 0, len(compensations))
+	for _, host := range slices.Sorted(maps.Keys(compensations)) {
+		entries = append(entries, strconv.Quote(host)+`:`+compensations[host])
+	}
+	return `{"version":1,"sequence":0,"allocatorHighWaterMark":0,"records":[],"boundaries":{},` +
+		`"wallClockHighWaterMark":` + strconv.Quote(mark.UTC().Format(time.RFC3339)) + `,` +
+		`"tokens":[` + strings.Join(tokens, ",") + `],` +
+		`"pendingCompensation":{` + strings.Join(entries, ",") + `}}`
+}
+
+func seedRawCompensationStore(t *testing.T, tokens []string, compensations map[string]string) (*Store, string, *testClock) {
+	t.Helper()
+	path := StorePath(t.TempDir())
+	writeRawStore(t, path, 0o600, rawCompensationStoreJSON(tokenEpoch, tokens, compensations))
+	store, err := Open(path, RetentionPolicy{})
+	if err != nil {
+		t.Fatalf("Open(%s): %v", path, err)
+	}
+	clock := &testClock{at: tokenEpoch}
+	store.clock = clock.now
+	return store, path, clock
 }
 
 // TestApplyStoreSyncPurgesExactlyTheNamedRows pins the purge half: only the
@@ -94,71 +141,81 @@ func TestApplyStoreSyncIsOneAtomicWrite(t *testing.T) {
 	}
 }
 
-// TestArmAndPurgeCompensationWalksThePhaseMachine pins §9's record: the
-// preimage is persisted before the purge, the purge write advances the phase
-// past `armed`, and the record's rows are a durable copy of the purged rows.
-func TestArmAndPurgeCompensationWalksThePhaseMachine(t *testing.T) {
-	store, path, _ := openClockStore(t)
-	row := mintTokenAt(t, store, "m4", 7)
-	armed := Compensation{
-		Host:       "m4",
-		Phase:      CompensationArmed,
-		Rows:       []Token{row},
-		Stash:      "/state/hub.toml.stash",
-		Generation: 7,
-	}
-	if err := store.ArmCompensation(armed); err != nil {
-		t.Fatalf("ArmCompensation: %v", err)
-	}
+// TestOpenReadsPreMigrationPendingCompensation pins reading pre-migration
+// pendingCompensation records from disk: fields decode intact, empty row lists
+// normalize to non-nil slices, and callers receive isolated copies.
+func TestOpenReadsPreMigrationPendingCompensation(t *testing.T) {
+	value := compensationTokenValue("m4-open")
+	row := compensationTokenRowJSON("m4", value, 7, tokenEpoch)
+	store, _, _ := seedRawCompensationStore(t, []string{row}, map[string]string{
+		"m4": compensationRecordJSON("m4", CompensationArmed, []string{row}, "/state/hub.toml.stash", 7),
+		"m7": compensationRecordJSON("m7", CompensationClear, nil, "/state/m7.stash", 3),
+	})
 	read, ok := store.Compensation("m4")
 	if !ok {
-		t.Fatal("the armed record is not readable")
+		t.Fatal("the seeded record is not readable")
 	}
-	if read.Phase != CompensationArmed || len(read.Rows) != 1 || read.Rows[0].Value != row.Value || read.Stash != "/state/hub.toml.stash" || read.Generation != 7 {
-		t.Fatalf("armed record = %+v", read)
+	if read.Host != "m4" || read.Phase != CompensationArmed || len(read.Rows) != 1 || read.Rows[0].Value != value || read.Stash != "/state/hub.toml.stash" || read.Generation != 7 {
+		t.Fatalf("read record = %+v", read)
 	}
-	purged, err := store.PurgeCompensated("m4", []string{row.Value})
-	if err != nil {
-		t.Fatalf("PurgeCompensated: %v", err)
+	read.Rows[0].Host = "mutated"
+	again, _ := store.Compensation("m4")
+	if again.Rows[0].Host != "m4" {
+		t.Fatal("mutating Compensation()'s returned slice mutated store state")
 	}
-	if purged != 1 {
-		t.Fatalf("PurgeCompensated purged %d, want 1", purged)
+	emptyRows, ok := store.Compensation("m7")
+	if !ok || emptyRows.Rows == nil || len(emptyRows.Rows) != 0 {
+		t.Fatalf("empty-rows record = %+v/%v, want non-nil empty Rows", emptyRows, ok)
 	}
-	if _, ok := store.OutstandingToken("m4"); ok {
-		t.Fatal("the purge left the row behind")
+	if _, ok := store.Compensation("missing"); ok {
+		t.Fatal("Compensation returned true for an absent host")
 	}
-	read, ok = store.Compensation("m4")
-	if !ok || read.Phase != CompensationHubTOML {
-		t.Fatalf("phase after the purge = %+v, want %s", read, CompensationHubTOML)
+	all := store.Compensations()
+	if len(all) != 2 || all["m4"].Stash != "/state/hub.toml.stash" || all["m7"].Phase != CompensationClear {
+		t.Fatalf("Compensations() = %+v, want both seeded records", all)
 	}
-	// A crash after the purge re-reads the same phase and preimage from the file.
-	reopened := reopenFresh(t, path)
-	read, ok = reopened.Compensation("m4")
-	if !ok || read.Phase != CompensationHubTOML || len(read.Rows) != 1 {
-		t.Fatalf("reopened record = %+v, want the %s phase with its preimage", read, CompensationHubTOML)
+	all["m4"].Rows[0].Value = "mutated"
+	delete(all, "m7")
+	if check := store.Compensations(); len(check) != 2 || check["m4"].Rows[0].Value != value {
+		t.Fatal("mutating Compensations()'s returned map mutated store state")
 	}
 }
 
-// TestArmCompensationRefusesAMalformedRecord pins the schema: a record without
-// a host, a phase outside the set, a row of another host, a zero generation or
-// no stash reference is refused with nothing written.
-func TestArmCompensationRefusesAMalformedRecord(t *testing.T) {
-	store, _, _ := openClockStore(t)
-	row := mintTokenAt(t, store, "m4", 7)
-	other := mintTokenAt(t, store, "m7", 7)
-	for name, record := range map[string]Compensation{
-		"no host":         {Phase: CompensationArmed, Rows: []Token{row}, Stash: "stash", Generation: 7},
-		"unknown phase":   {Host: "m4", Phase: "compensating-elsewhere", Rows: []Token{row}, Stash: "stash", Generation: 7},
-		"foreign row":     {Host: "m4", Phase: CompensationArmed, Rows: []Token{other}, Stash: "stash", Generation: 7},
-		"zero generation": {Host: "m4", Phase: CompensationArmed, Rows: []Token{row}, Stash: "stash"},
-		"no stash":        {Host: "m4", Phase: CompensationArmed, Rows: []Token{row}, Generation: 7},
+// TestLoadRefusesMalformedPendingCompensation pins the decode and schema rules
+// for on-disk pendingCompensation records: a missing or empty host, mismatched
+// key, omitted field, null rows, unknown phase, foreign preimage row, zero
+// generation, or empty stash reference is refused on load.
+func TestLoadRefusesMalformedPendingCompensation(t *testing.T) {
+	row := compensationTokenRowJSON("m4", compensationTokenValue("m4-bad"), 7, tokenEpoch)
+	other := compensationTokenRowJSON("m7", compensationTokenValue("m7-bad"), 7, tokenEpoch)
+	for name, comps := range map[string]map[string]string{
+		"empty host":        {"": compensationRecordJSON("", CompensationArmed, []string{row}, "stash", 7)},
+		"key host mismatch": {"m4": compensationRecordJSON("", CompensationArmed, []string{row}, "stash", 7)},
+		"unknown phase":     {"m4": compensationRecordJSON("m4", "compensating-elsewhere", []string{row}, "stash", 7)},
+		"foreign row":       {"m4": compensationRecordJSON("m4", CompensationArmed, []string{other}, "stash", 7)},
+		"zero generation":   {"m4": compensationRecordJSON("m4", CompensationArmed, []string{row}, "stash", 0)},
+		"no stash":          {"m4": compensationRecordJSON("m4", CompensationArmed, []string{row}, "", 7)},
+		"omitted phase":     {"m4": `{"host":"m4","rows":[` + row + `],"stashReference":"stash","generation":7}`},
+		"null rows":         {"m4": `{"host":"m4","phase":"compensating-armed","rows":null,"stashReference":"stash","generation":7}`},
 	} {
-		if err := store.ArmCompensation(record); err == nil {
-			t.Fatalf("ArmCompensation(%s) succeeded, want a refusal", name)
-		}
+		t.Run(name, func(t *testing.T) {
+			path := StorePath(t.TempDir())
+			writeRawStore(t, path, 0o600, rawCompensationStoreJSON(tokenEpoch, nil, comps))
+			if _, err := loadFS(afero.NewOsFs(), path); !errors.Is(err, ErrStoreCorrupt) {
+				t.Fatalf("loadFS(%s): err = %v, want ErrStoreCorrupt", name, err)
+			}
+		})
 	}
-	if _, ok := store.Compensation("m4"); ok {
-		t.Fatal("a refused arm wrote a record")
+	// Positive control: the same fixture shape with valid values loads.
+	validPath := StorePath(t.TempDir())
+	writeRawStore(t, validPath, 0o600, rawCompensationStoreJSON(tokenEpoch, nil, map[string]string{
+		"m4": compensationRecordJSON("m4", CompensationArmed, []string{row}, "stash", 7),
+	}))
+	if _, err := loadFS(afero.NewOsFs(), validPath); err != nil {
+		t.Fatalf("loadFS(valid): %v", err)
+	}
+	if _, err := Open(validPath, RetentionPolicy{}); err != nil {
+		t.Fatalf("Open(valid): %v", err)
 	}
 }
 
@@ -167,23 +224,12 @@ func TestArmCompensationRefusesAMalformedRecord(t *testing.T) {
 // `compensating-runtime` in the same write, and a row already present is not
 // duplicated.
 func TestReinsertCompensationRowsFiltersAndAdvances(t *testing.T) {
-	store, path, _ := openClockStore(t)
-	kept := mintTokenAt(t, store, "m4", 7)
-	dropped := mintTokenAt(t, store, "m7", 6)
-	if _, err := store.ApplyStoreSync(StoreSyncIntent{Host: "m4", Generation: 7, Values: []string{kept.Value}}); err != nil {
-		t.Fatalf("purge m4: %v", err)
-	}
-	if _, err := store.ApplyStoreSync(StoreSyncIntent{Host: "m7", Generation: 6, Values: []string{dropped.Value}}); err != nil {
-		t.Fatalf("purge m7: %v", err)
-	}
-	armed := Compensation{Host: "m4", Phase: CompensationHubTOML, Rows: []Token{kept}, Stash: "stash", Generation: 7}
-	if err := store.ArmCompensation(armed); err != nil {
-		t.Fatalf("ArmCompensation: %v", err)
-	}
-	stale := Compensation{Host: "m7", Phase: CompensationHubTOML, Rows: []Token{dropped}, Stash: "stash", Generation: 6}
-	if err := store.ArmCompensation(stale); err != nil {
-		t.Fatalf("ArmCompensation(m7): %v", err)
-	}
+	kept := compensationTokenRowJSON("m4", compensationTokenValue("m4-reinsert"), 7, tokenEpoch)
+	dropped := compensationTokenRowJSON("m7", compensationTokenValue("m7-reinsert"), 6, tokenEpoch)
+	store, path, _ := seedRawCompensationStore(t, nil, map[string]string{
+		"m4": compensationRecordJSON("m4", CompensationHubTOML, []string{kept}, "stash", 7),
+		"m7": compensationRecordJSON("m7", CompensationHubTOML, []string{dropped}, "stash", 6),
+	})
 	// The rows arm runs after the hub.toml restore advanced each record to
 	// `compensating-rows`.
 	for _, host := range []string{"m4", "m7"} {
@@ -227,11 +273,10 @@ func TestReinsertCompensationRowsFiltersAndAdvances(t *testing.T) {
 // TestClearCompensationRemovesTheRecord pins the final step: the record goes in
 // its own write and a second clear is a no-op.
 func TestClearCompensationRemovesTheRecord(t *testing.T) {
-	store, _, _ := openClockStore(t)
-	row := mintTokenAt(t, store, "m4", 7)
-	if err := store.ArmCompensation(Compensation{Host: "m4", Phase: CompensationRuntime, Rows: []Token{row}, Stash: "stash", Generation: 7}); err != nil {
-		t.Fatalf("ArmCompensation: %v", err)
-	}
+	row := compensationTokenRowJSON("m4", compensationTokenValue("m4-clear"), 7, tokenEpoch)
+	store, path, _ := seedRawCompensationStore(t, []string{row}, map[string]string{
+		"m4": compensationRecordJSON("m4", CompensationRuntime, []string{row}, "stash", 7),
+	})
 	if err := store.ClearCompensation("m4"); err != nil {
 		t.Fatalf("ClearCompensation: %v", err)
 	}
@@ -241,16 +286,18 @@ func TestClearCompensationRemovesTheRecord(t *testing.T) {
 	if err := store.ClearCompensation("m4"); err != nil {
 		t.Fatalf("second ClearCompensation: %v", err)
 	}
+	if _, ok := reopenFresh(t, path).Compensation("m4"); ok {
+		t.Fatal("the cleared record survived a reopen")
+	}
 }
 
 // TestAdvanceCompensationRefusesRegressions pins the phase machine: only the
 // forward steps are legal, and a record that is not there cannot advance.
 func TestAdvanceCompensationRefusesRegressions(t *testing.T) {
-	store, _, _ := openClockStore(t)
-	row := mintTokenAt(t, store, "m4", 7)
-	if err := store.ArmCompensation(Compensation{Host: "m4", Phase: CompensationArmed, Rows: []Token{row}, Stash: "stash", Generation: 7}); err != nil {
-		t.Fatalf("ArmCompensation: %v", err)
-	}
+	row := compensationTokenRowJSON("m4", compensationTokenValue("m4-advance"), 7, tokenEpoch)
+	store, _, _ := seedRawCompensationStore(t, []string{row}, map[string]string{
+		"m4": compensationRecordJSON("m4", CompensationArmed, []string{row}, "stash", 7),
+	})
 	if err := store.AdvanceCompensation("m4", CompensationArmed); err == nil {
 		t.Fatal("AdvanceCompensation(armed) succeeded, want a refusal")
 	}

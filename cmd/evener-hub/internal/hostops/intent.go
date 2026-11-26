@@ -43,7 +43,7 @@ const MaxStashReferenceBytes = 4096
 var ErrInvalidStoreSync = errors.New("hostops: invalid store-sync intent")
 
 // ErrInvalidCompensation reports a pendingCompensation record outside the
-// schema the committer writes.
+// store's compensation schema.
 var ErrInvalidCompensation = errors.New("hostops: invalid compensation record")
 
 // StoreSyncIntent is hub.toml's `pendingStoreSync` intent as this store
@@ -68,8 +68,8 @@ func validateStoreSyncIntent(intent StoreSyncIntent) error {
 	return validateStoreSyncValues(intent.Host, intent.Values)
 }
 
-// validateStoreSyncValues checks the row-value half of one intent (or one
-// purge): at least one value, each non-empty, bounded, valid UTF-8 and unique.
+// validateStoreSyncValues checks the row-value half of one intent: at least one
+// value, each non-empty, bounded, valid UTF-8 and unique.
 func validateStoreSyncValues(host string, values []string) error {
 	if len(values) == 0 {
 		return fmt.Errorf("%w: intent for %q names no rows", ErrInvalidStoreSync, host)
@@ -144,8 +144,8 @@ func (s *Store) ApplyStoreSync(intent StoreSyncIntent) (int, error) {
 type CompensationPhase string
 
 const (
-	// CompensationArmed is the phase the committer persists BEFORE the purge
-	// write: the preimage is durable and the purge has not landed.
+	// CompensationArmed is the initial phase before the purge write: the
+	// preimage is durable and the purge has not landed.
 	CompensationArmed CompensationPhase = "compensating-armed"
 	// CompensationHubTOML is the phase the purge write advances the record to
 	// (`armed` → the hub.toml restore comes next).
@@ -251,34 +251,6 @@ func validateCompensation(c Compensation) error {
 	return nil
 }
 
-// ArmCompensation persists one record in its own store-local write, before the
-// purge write (§9: "the committer first persists a record ... in its own
-// store-local write before the purge write"; "The preimage persists before the
-// purge, never after it"). A record already open for the host refuses — a
-// second commit for one host would clobber a live compensation the boot pass
-// has not converged.
-func (s *Store) ArmCompensation(record Compensation) error {
-	if s == nil {
-		return errors.New("hostops: store is not configured")
-	}
-	normalized := record.normalized()
-	if err := validateCompensation(normalized); err != nil {
-		return err
-	}
-	s.cell.mu.Lock()
-	defer s.cell.mu.Unlock()
-	if _, open := s.cell.state.Compensations[normalized.Host]; open {
-		return fmt.Errorf("%w: a compensation for %q is already open", ErrInvalidCompensation, normalized.Host)
-	}
-	next := cloneSnapshot(s.cell.state)
-	if next.Compensations == nil {
-		next.Compensations = map[string]Compensation{}
-	}
-	next.Compensations[normalized.Host] = normalized
-	_, err := s.commitLocked(next)
-	return err
-}
-
 // Compensation returns a copy of the open record for host, phase normalized.
 func (s *Store) Compensation(host string) (Compensation, bool) {
 	if s == nil {
@@ -350,54 +322,6 @@ func (s *Store) ClearCompensation(host string) error {
 	delete(next.Compensations, host)
 	_, err := s.commitLocked(next)
 	return err
-}
-
-// PurgeCompensated is §9's purge write: it deletes the named rows AND advances
-// the host's armed record past `armed` (to `compensating-hubtoml`) in one
-// atomic write, so the preimage's durability and the purge's landing cannot
-// drift apart. It refuses when no armed record exists: the purge that must be
-// compensable always arms first.
-func (s *Store) PurgeCompensated(host string, values []string) (int, error) {
-	if s == nil {
-		return 0, errors.New("hostops: store is not configured")
-	}
-	if err := validateBoundaryName(host); err != nil {
-		return 0, err
-	}
-	if err := validateStoreSyncValues(host, values); err != nil {
-		return 0, err
-	}
-	s.cell.mu.Lock()
-	defer s.cell.mu.Unlock()
-	record, ok := s.cell.state.Compensations[host]
-	if !ok {
-		return 0, fmt.Errorf("%w: no compensation for %q to advance", ErrInvalidCompensation, host)
-	}
-	if record.Phase != CompensationArmed {
-		return 0, fmt.Errorf("%w: record for %q is in phase %q, not %s", ErrInvalidCompensation, host, record.Phase, CompensationArmed)
-	}
-	next := cloneSnapshot(s.cell.state)
-	purged := 0
-	kept := make([]Token, 0, len(next.Tokens))
-	for _, row := range next.Tokens {
-		if row.Host == host && slices.Contains(values, row.Value) {
-			purged++
-			continue
-		}
-		kept = append(kept, row)
-	}
-	next.Tokens = kept
-	advanced := next.Compensations[host]
-	advanced.Phase = CompensationHubTOML
-	next.Compensations[host] = advanced
-	landed, err := s.commitLocked(next)
-	if err != nil {
-		if landed {
-			return purged, err
-		}
-		return 0, err
-	}
-	return purged, nil
 }
 
 // ReinsertCompensationRows is §9's rows arm, run after the hub.toml restore
