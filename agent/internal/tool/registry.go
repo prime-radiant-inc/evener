@@ -398,7 +398,6 @@ type ExecResult struct {
 	//   - the tool's NormalizeArgs
 	//   - the tool's PreValidate
 	//   - schema validation
-	//   - a middleware refusal
 	// It is the registry-side twin of PrevalOnly (the session repair step's
 	// refusal). A tool that RAN and returned an error is NOT rejected. Claude
 	// fires neither PostToolUse nor PostToolUseFailure for a refused call, so the
@@ -563,16 +562,10 @@ func (t RegisteredTool) UnmarshalArguments(raw []byte, args *map[string]any) err
 	return json.Unmarshal(raw, args)
 }
 
-// toolMiddleware is called after argument validation but before tool execution.
-// Return a non-nil error to block execution (the error message is returned to the LLM).
-type toolMiddleware func(ctx context.Context, toolName string, args map[string]any) error
-
-// Registry is a concurrency-safe collection of registered tools and the
-// middleware run before their execution.
+// Registry is a concurrency-safe collection of registered tools.
 type Registry struct {
 	mu             sync.RWMutex
 	tools          map[string]RegisteredTool
-	middleware     []toolMiddleware
 	resultToolName string
 
 	// breaker is this dispatch scope's record of repeated identical calls.
@@ -586,11 +579,11 @@ func NewRegistry() *Registry {
 	return &Registry{tools: map[string]RegisteredTool{}, breaker: newFailureLedger()}
 }
 
-// Clone returns an independent registry with the same registered tools and
-// middleware. Compiled schemas are immutable after registration, so clones share
-// schema pointers while keeping their tool maps isolated. A clone is a new
-// dispatch scope, so it starts with the fresh breaker ledger NewRegistry gives
-// it — repeated-call state must never leak out of the session that produced it.
+// Clone returns an independent registry with the same registered tools.
+// Compiled schemas are immutable after registration, so clones share schema
+// pointers while keeping their tool maps isolated. A clone is a new dispatch
+// scope, so it starts with the fresh breaker ledger NewRegistry gives it —
+// repeated-call state must never leak out of the session that produced it.
 func (r *Registry) Clone() *Registry {
 	out := NewRegistry()
 	if r == nil {
@@ -610,7 +603,6 @@ func (r *Registry) Clone() *Registry {
 			out.tools[name] = registered
 		}
 	}
-	out.middleware = append([]toolMiddleware(nil), r.middleware...)
 	out.resultToolName = r.resultToolName
 	return out
 }
@@ -637,14 +629,6 @@ func (r *Registry) resultToolNameOrDefault() string {
 		return DefaultResultToolName
 	}
 	return name
-}
-
-// Use appends a middleware to the tool execution pipeline.
-// Middleware runs after argument validation but before tool execution.
-func (r *Registry) Use(mw toolMiddleware) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.middleware = append(r.middleware, mw)
 }
 
 // Register validates and stores a tool in the registry. It rejects an invalid
@@ -824,11 +808,10 @@ func (r *Registry) Names() []string {
 }
 
 // ExecuteCall runs a single tool call: it looks up the tool, parses and
-// schema-validates the arguments, runs the registered middleware, invokes the
-// executor, and returns a truncated ExecResult. Unknown tools, invalid
-// arguments, failed validation, blocking middleware, and executor errors are
-// each returned as an error result. ImageResult and StateResult values are
-// unpacked into the result's image and state fields.
+// schema-validates the arguments, invokes the executor, and returns a
+// truncated ExecResult. Unknown tools, invalid arguments, failed validation,
+// and executor errors are each returned as an error result. ImageResult and
+// StateResult values are unpacked into the result's image and state fields.
 func (r *Registry) ExecuteCall(ctx context.Context, env execenv.ExecutionEnvironment, call llm.ToolCallData) ExecResult {
 	return r.executeCall(ctx, env, call, false)
 }
@@ -934,15 +917,6 @@ func (r *Registry) executeCall(ctx context.Context, env execenv.ExecutionEnviron
 	if err := t.Schema.Validate(args); err != nil {
 		msg := fmt.Sprintf("tool args schema validation failed: %v", err)
 		return rejectedResult(name, callID, msg, t.Limit)
-	}
-
-	r.mu.RLock()
-	mws := r.middleware
-	r.mu.RUnlock()
-	for _, mw := range mws {
-		if err := mw(ctx, name, args); err != nil {
-			return rejectedResult(name, callID, err.Error(), t.Limit)
-		}
 	}
 
 	intent, _ := args["intent"].(string)

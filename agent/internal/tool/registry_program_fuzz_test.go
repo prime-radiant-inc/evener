@@ -25,8 +25,8 @@ import (
 // rooted in t.TempDir, so its mutation is confined to the test's own root.
 //
 // Its semantic checks cover registration/clone/restrict isolation, intent
-// handling, schema and JSON rejection, middleware, typed execution results,
-// error propagation, output limits, and FileMutator capability handling.
+// handling, schema and JSON rejection, typed execution results, error
+// propagation, output limits, and FileMutator capability handling.
 func FuzzToolRegistryProgram(f *testing.F) {
 	for _, seed := range []struct {
 		payload string
@@ -64,17 +64,12 @@ func FuzzToolRegistryProgram(f *testing.F) {
 			t.Fatalf("invalid schema call = %+v calls=%d want no execution", badSchema, *calls)
 		}
 
-		blocked := toolProgramCall(t, reg, deny, "echo_program", "blocked", 0, true, "blocked-id")
-		if !blocked.IsError || blocked.Err != nil || !strings.Contains(blocked.Output, "program middleware blocked") || *calls != beforeCalls {
-			t.Fatalf("middleware result = %+v calls=%d want no execution", blocked, *calls)
-		}
-
 		for mode := range 6 {
 			callID := "mode-id"
 			if mode == 0 {
 				callID = "" // synthesized shortHash branch
 			}
-			result := toolProgramCall(t, reg, deny, "echo_program", payload, mode, false, callID)
+			result := toolProgramCall(t, reg, deny, "echo_program", payload, mode, callID)
 			if result.ToolName != "echo_program" || result.CallID == "" {
 				t.Fatalf("mode %d malformed result: %+v", mode, result)
 			}
@@ -105,7 +100,7 @@ func FuzzToolRegistryProgram(f *testing.F) {
 			t.Fatalf("executor calls = %d, want %d", *calls, beforeCalls+6)
 		}
 
-		if got := toolProgramCall(t, reg, deny, "read_file", payload, 0, false, "read-file"); got.IsError || *readFileSawIntent {
+		if got := toolProgramCall(t, reg, deny, "read_file", payload, 0, "read-file"); got.IsError || *readFileSawIntent {
 			t.Fatalf("read_file must not see intent (stripped like every other tool) = result=%+v saw=%v", got, *readFileSawIntent)
 		}
 
@@ -133,7 +128,6 @@ func toolProgramRegistry(t *testing.T) (*Registry, *int, *bool) {
 				"properties": map[string]any{
 					"value": map[string]any{"type": "string"},
 					"mode":  map[string]any{"type": "integer"},
-					"block": map[string]any{"type": "boolean"},
 				},
 				"required": []string{"value", "mode"},
 			},
@@ -170,7 +164,7 @@ func toolProgramRegistry(t *testing.T) (*Registry, *int, *bool) {
 			Description: "program read_file intent witness",
 			Parameters: map[string]any{
 				"type":       "object",
-				"properties": map[string]any{"value": map[string]any{"type": "string"}, "mode": map[string]any{"type": "integer"}, "block": map[string]any{"type": "boolean"}},
+				"properties": map[string]any{"value": map[string]any{"type": "string"}, "mode": map[string]any{"type": "integer"}},
 				"required":   []string{"value", "mode"},
 			},
 		},
@@ -208,19 +202,12 @@ func toolProgramRegistry(t *testing.T) (*Registry, *int, *bool) {
 	}); err != nil {
 		t.Fatalf("register apply_patch: %v", err)
 	}
-
-	reg.Use(func(_ context.Context, name string, args map[string]any) error {
-		if name == "echo_program" && args["block"] == true {
-			return errors.New("program middleware blocked")
-		}
-		return nil
-	})
 	return reg, calls, readFileSawIntent
 }
 
-func toolProgramCall(t *testing.T, reg *Registry, env execenv.ExecutionEnvironment, name, value string, mode int, block bool, callID string) ExecResult {
+func toolProgramCall(t *testing.T, reg *Registry, env execenv.ExecutionEnvironment, name, value string, mode int, callID string) ExecResult {
 	t.Helper()
-	raw, err := json.Marshal(map[string]any{"value": value, "mode": mode, "block": block, "intent": "fuzz registry program"})
+	raw, err := json.Marshal(map[string]any{"value": value, "mode": mode, "intent": "fuzz registry program"})
 	if err != nil {
 		t.Fatalf("marshal %s args: %v", name, err)
 	}
