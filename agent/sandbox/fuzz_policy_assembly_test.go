@@ -5,10 +5,10 @@ package sandbox
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"reflect"
 	"runtime"
 	"slices"
 	"strings"
@@ -17,6 +17,84 @@ import (
 
 	"primeradiant.com/evener/identifier"
 )
+
+type assemblyFixture struct {
+	root      string
+	main      string
+	linked    string
+	nonGit    string
+	malformed string
+}
+
+func newAssemblyFixture(t testing.TB) assemblyFixture {
+	t.Helper()
+	root := identifier.ResolveClean(t.TempDir())
+	fixture := assemblyFixture{
+		root:      root,
+		main:      filepath.Join(root, "main"),
+		linked:    filepath.Join(root, "linked"),
+		nonGit:    filepath.Join(root, "plain"),
+		malformed: filepath.Join(root, "malformed"),
+	}
+	mainGit := filepath.Join(fixture.main, ".git")
+	linkedGit := filepath.Join(mainGit, "worktrees", "lane")
+	for _, dir := range []string{
+		fixture.main,
+		fixture.linked,
+		fixture.nonGit,
+		fixture.malformed,
+		filepath.Join(mainGit, "objects"),
+		filepath.Join(mainGit, "refs"),
+		filepath.Join(mainGit, "logs"),
+		filepath.Join(mainGit, "hooks"),
+		linkedGit,
+	} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("mkdir assembly fixture %q: %v", dir, err)
+		}
+	}
+	writeAssemblyFile(t, filepath.Join(mainGit, "config"), "[include]\npath = ../included.conf\n")
+	writeAssemblyFile(t, filepath.Join(mainGit, "config.worktree"), "[core]\nrepositoryformatversion = 0\n")
+	writeAssemblyFile(t, filepath.Join(fixture.main, "included.conf"), "[includeIf \"gitdir:*\"]\npath = nested.conf\n")
+	writeAssemblyFile(t, filepath.Join(fixture.main, "nested.conf"), "[core]\nhooksPath = hooks\n")
+	writeAssemblyFile(t, filepath.Join(fixture.linked, ".git"), "gitdir: "+linkedGit+"\n")
+	writeAssemblyFile(t, filepath.Join(fixture.malformed, ".git"), "not a gitdir pointer\n")
+	return fixture
+}
+
+func writeAssemblyFile(t testing.TB, path, content string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write assembly fixture %q: %v", path, err)
+	}
+}
+
+func assemblyReRootLanes(t testing.TB) (main, laneA, laneB string) {
+	t.Helper()
+	root := identifier.ResolveClean(t.TempDir())
+	main = filepath.Join(root, "main")
+	laneA = filepath.Join(root, "lane-a")
+	laneB = filepath.Join(root, "lane-b")
+	common := filepath.Join(main, ".git")
+	for _, dir := range []string{
+		filepath.Join(common, "objects"),
+		filepath.Join(common, "refs"),
+		filepath.Join(common, "logs"),
+		filepath.Join(common, "hooks"),
+		filepath.Join(common, "worktrees", "lane-a"),
+		filepath.Join(common, "worktrees", "lane-b"),
+		laneA,
+		laneB,
+	} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("mkdir assembly re-root fixture %q: %v", dir, err)
+		}
+	}
+	writeAssemblyFile(t, filepath.Join(common, "config"), "[core]\nrepositoryformatversion = 0\n")
+	writeAssemblyFile(t, filepath.Join(laneA, ".git"), "gitdir: "+filepath.Join(common, "worktrees", "lane-a")+"\n")
+	writeAssemblyFile(t, filepath.Join(laneB, ".git"), "gitdir: "+filepath.Join(common, "worktrees", "lane-b")+"\n")
+	return main, laneA, laneB
+}
 
 // FuzzSandboxPolicyAssembly exercises the pure policy and backend assembly
 // boundary using only files created beneath t.TempDir. It deliberately builds
@@ -37,7 +115,7 @@ func FuzzSandboxPolicyAssembly(f *testing.F) {
 		if len(raw) > 4096 {
 			return
 		}
-		fixture := newStructuralFixture(t, 0)
+		fixture := newAssemblyFixture(t)
 		home := filepath.Join(fixture.root, "home")
 		if err := os.MkdirAll(home, 0o755); err != nil {
 			t.Fatalf("mkdir home: %v", err)
@@ -49,12 +127,12 @@ func FuzzSandboxPolicyAssembly(f *testing.F) {
 		fuzzSessionScratchAndProbeHelpers(t, fixture)
 		fuzzGitMetadataHelpers(t, fixture)
 		fuzzReRootAndWrapperBoundaries(t, fixture, home)
-		fuzzContractOracleFailures(t, fixture)
 		fuzzBackendAssembly(t, fixture, program)
+		fuzzSandboxResidualBranches(t)
 	})
 }
 
-func fuzzPolicyModes(t *testing.T, fixture structuralFixture, home, raw string, program byte) {
+func fuzzPolicyModes(t *testing.T, fixture assemblyFixture, home, raw string, program byte) {
 	t.Helper()
 	for _, mode := range append(AllModes(), Mode(-1), Mode(99)) {
 		_ = mode.String()
@@ -159,7 +237,7 @@ func fuzzPolicyModes(t *testing.T, fixture structuralFixture, home, raw string, 
 	}
 }
 
-func fuzzEnvironmentFloor(t *testing.T, fixture structuralFixture, home, raw string, program byte) {
+func fuzzEnvironmentFloor(t *testing.T, fixture assemblyFixture, home, raw string, program byte) {
 	t.Helper()
 	sessionTmp := filepath.Join(fixture.root, "session-tmp")
 	insideKube := filepath.Join(fixture.main, "kubeconfig")
@@ -219,7 +297,7 @@ func fuzzEnvironmentFloor(t *testing.T, fixture structuralFixture, home, raw str
 	}
 }
 
-func fuzzDeniedAndProviderHelpers(t *testing.T, fixture structuralFixture, raw string, program byte) {
+func fuzzDeniedAndProviderHelpers(t *testing.T, fixture assemblyFixture, raw string, program byte) {
 	t.Helper()
 	d := &DeniedError{
 		Mode:       []Mode{ModeOff, ModeReadOnly, ModeWorkspaceWrite, ModeRestricted}[int(program)%4],
@@ -255,7 +333,7 @@ func fuzzDeniedAndProviderHelpers(t *testing.T, fixture structuralFixture, raw s
 	}
 }
 
-func fuzzSessionScratchAndProbeHelpers(t *testing.T, fixture structuralFixture) {
+func fuzzSessionScratchAndProbeHelpers(t *testing.T, fixture assemblyFixture) {
 	t.Helper()
 	tmp, err := NewSessionScratch(fixture.root, fixture.main)
 	if err != nil {
@@ -308,10 +386,6 @@ func fuzzSessionScratchAndProbeHelpers(t *testing.T, fixture structuralFixture) 
 	}
 	sessionScratchUserCacheDir = oldCache
 
-	facts := HostFacts{OS: "linux", Home: fixture.root, BwrapPath: "/fixture/bwrap", BwrapCapable: true}
-	if got := (FakeProber{Facts: facts}).Probe(); !reflect.DeepEqual(got, facts) {
-		t.Fatalf("FakeProber changed facts: %+v", got)
-	}
 	args := bwrapProbeArgs("/fixture/bwrap")
 	if len(args) == 0 || args[0] != "/fixture/bwrap" || !slices.Contains(args, "--new-session") {
 		t.Fatalf("bwrap probe argv lost hardening flags: %v", args)
@@ -321,7 +395,7 @@ func fuzzSessionScratchAndProbeHelpers(t *testing.T, fixture structuralFixture) 
 	}
 }
 
-func fuzzGitMetadataHelpers(t *testing.T, fixture structuralFixture) {
+func fuzzGitMetadataHelpers(t *testing.T, fixture assemblyFixture) {
 	t.Helper()
 	gitDir := filepath.Join(fixture.main, ".git")
 	writable := []string{fixture.main, filepath.Join(gitDir, "objects")}
@@ -357,7 +431,7 @@ func fuzzGitMetadataHelpers(t *testing.T, fixture structuralFixture) {
 	if err := os.MkdirAll(unknown, 0o755); err != nil {
 		t.Fatalf("mkdir unknown pointer fixture: %v", err)
 	}
-	writeStructuralFile(t, filepath.Join(unknown, ".git"), "gitdir: ../not-a-worktree\n")
+	writeAssemblyFile(t, filepath.Join(unknown, ".git"), "gitdir: ../not-a-worktree\n")
 	if _, err := ClassifyWorkspace(unknown); err == nil {
 		t.Fatal("ClassifyWorkspace accepted an unrecognized relative pointer shape")
 	}
@@ -413,7 +487,7 @@ func fuzzGitMetadataHelpers(t *testing.T, fixture structuralFixture) {
 	if !globCouldReachWritable(writableGlob, filepath.Dir(globConfig), writable) {
 		t.Fatalf("globCouldReachWritable(%q) lost a writable absolute base", writableGlob)
 	}
-	writeStructuralFile(t, globConfig, "[include]\npath = \""+writableGlob+"\"\n")
+	writeAssemblyFile(t, globConfig, "[include]\npath = \""+writableGlob+"\"\n")
 	if data, err := os.ReadFile(globConfig); err != nil {
 		t.Fatalf("read writable glob config: %v", err)
 	} else if parsed := parseIncludePaths(string(data)); !slices.Contains(parsed, writableGlob) {
@@ -423,7 +497,7 @@ func fuzzGitMetadataHelpers(t *testing.T, fixture structuralFixture) {
 		t.Fatal("scanConfigIncludes accepted a writable glob include")
 	}
 	nonWritableGlob := filepath.Join(fixture.root, "system-glob.conf")
-	writeStructuralFile(t, nonWritableGlob, "[include]\npath = /etc/*.conf\n[include]\npath = ~/.gitconfig\n")
+	writeAssemblyFile(t, nonWritableGlob, "[include]\npath = /etc/*.conf\n[include]\npath = ~/.gitconfig\n")
 	if found, err := scanConfigIncludes(nonWritableGlob, writable, map[string]bool{}, 0); err != nil || found != nil {
 		t.Fatalf("scanConfigIncludes non-writable glob = (%v, %v)", found, err)
 	}
@@ -451,9 +525,18 @@ func fuzzGitMetadataHelpers(t *testing.T, fixture structuralFixture) {
 	}
 }
 
-func fuzzReRootAndWrapperBoundaries(t *testing.T, fixture structuralFixture, home string) {
+func hasRootGrant(roots []string, target string) bool {
+	for _, r := range roots {
+		if r == target || identifier.PathUnder(target, r) {
+			return true
+		}
+	}
+	return false
+}
+
+func fuzzReRootAndWrapperBoundaries(t *testing.T, fixture assemblyFixture, home string) {
 	t.Helper()
-	main, laneA, laneB := structuralReRootLanes(t)
+	main, laneA, laneB := assemblyReRootLanes(t)
 	net := true
 	facts := HostFacts{OS: "linux", Home: home, BwrapPath: "/fixture/bwrap", BwrapCapable: true, OverlaySupported: true}
 	for _, mode := range []Mode{ModeReadOnly, ModeWorkspaceWrite, ModeRestricted} {
@@ -473,7 +556,7 @@ func fuzzReRootAndWrapperBoundaries(t *testing.T, fixture structuralFixture, hom
 			if len(control.FileTool.WriteRoots) != 0 || len(control.Spawned.WriteRoots) != 0 {
 				t.Fatalf("read-only control policy widened writes: %+v", control)
 			}
-		} else if !rootGrants(control.Spawned.WriteRoots, registry) || !rootGrants(control.FileTool.WriteRoots, registry) {
+		} else if !hasRootGrant(control.Spawned.WriteRoots, registry) || !hasRootGrant(control.FileTool.WriteRoots, registry) {
 			t.Fatalf("control policy lost worktree registry %q: %+v", registry, control)
 		}
 		rerooted, err := rp.ReRoot(laneB)
@@ -572,80 +655,7 @@ func fuzzReRootAndWrapperBoundaries(t *testing.T, fixture structuralFixture, hom
 	}
 }
 
-func fuzzContractOracleFailures(t *testing.T, fixture structuralFixture) {
-	t.Helper()
-	rec := &recordingT{T: t}
-	caseRefusal := ContractCase{Name: "fixture-refusal", WantRequiredBackend: "bwrap"}
-	assertRefusal(rec, caseRefusal, nil)
-	assertRefusal(rec, caseRefusal, errors.New("not a refusal"))
-	assertRefusal(rec, caseRefusal, &RefusalError{RequiredBackend: "seatbelt"})
-	if rec.errors < 3 {
-		t.Fatalf("assertRefusal failed to reject invalid outcomes: %d", rec.errors)
-	}
-
-	rec.errors = 0
-	assertResolution(rec, ContractCase{
-		Name: "fixture-resolution", Mode: ModeRestricted, WantBackend: BackendBwrap, WantNetwork: true,
-		WantCache: CacheSessionPrivate, WantFileRead: ReadWorktreeOnly, WantSpawnRead: ReadWorktreeOnly,
-		WantWorktreeWrite: true,
-	}, ResolvedPolicy{
-		Mode:        ModeRestricted,
-		MaskedPaths: []string{"/proc"},
-		FileTool: AccessScope{
-			Read: ReadWorktreeOnly, ReadRoots: []string{"/usr", "/"}, WriteRoots: []string{"/proc"},
-		},
-		Spawned: AccessScope{Read: ReadWorktreeOnly, WriteRoots: []string{"/proc"}},
-	}, fixture.main, filepath.Join(fixture.root, "home"))
-	if rec.errors == 0 {
-		t.Fatal("assertResolution accepted an incomplete enforced policy")
-	}
-
-	rec.errors = 0
-	assertResolveWith(rec, func(SandboxPolicy, HostFacts, string) (ResolvedPolicy, error) {
-		return ResolvedPolicy{}, errors.New("resolver failed")
-	}, func(t TestingT, kind WorkspaceKind) string {
-		return newStructuralFixture(t, 0).workspace(kind)
-	})
-	if rec.errors == 0 {
-		t.Fatal("assertResolveWith accepted a failing resolver")
-	}
-
-	rec.errors = 0
-	assertReRootWith(rec, []ReRootCase{{
-		Name: "unavailable", Mode: ModeRestricted, Net: true, Host: HostFacts{OS: "linux", Home: filepath.Join(fixture.root, "home")},
-	}}, structuralReRootLanes)
-	if rec.errors == 0 {
-		t.Fatal("assertReRootWith accepted an unavailable backend")
-	}
-
-	rec.errors = 0
-	assertReRootWith(rec, []ReRootCase{{
-		Name: "off", Mode: ModeOff, Net: true, Host: HostFacts{OS: "linux", Home: filepath.Join(fixture.root, "home")},
-	}}, structuralReRootLanes)
-	if rec.errors == 0 {
-		t.Fatal("assertReRootWith accepted an off re-root result")
-	}
-
-	rec.errors = 0
-	assertReRootWith(rec, []ReRootCase{{
-		Name: "malformed-target", Mode: ModeRestricted, Net: true, Host: HostFacts{
-			OS: "linux", Home: filepath.Join(fixture.root, "home"), BwrapPath: "/fixture/bwrap", BwrapCapable: true,
-		},
-	}}, func(t TestingT) (string, string, string) {
-		main, laneA, _ := structuralReRootLanes(t)
-		bad := filepath.Join(filepath.Dir(main), "bad-lane")
-		if err := os.MkdirAll(bad, 0o755); err != nil {
-			t.Fatalf("mkdir malformed re-root lane: %v", err)
-		}
-		writeStructuralFile(t, filepath.Join(bad, ".git"), "invalid pointer\n")
-		return main, laneA, bad
-	})
-	if rec.errors == 0 {
-		t.Fatal("assertReRootWith accepted a malformed target workspace")
-	}
-}
-
-func fuzzBackendAssembly(t *testing.T, fixture structuralFixture, program byte) {
+func fuzzBackendAssembly(t *testing.T, fixture assemblyFixture, program byte) {
 	t.Helper()
 	root := filepath.Join(fixture.root, "assembly")
 	work := filepath.Join(root, "work")
@@ -778,6 +788,89 @@ func fuzzBackendAssembly(t *testing.T, fixture structuralFixture, program byte) 
 	_ = isDeviceFloorException("/fixture/path")
 	_ = EnforcementLine(ResolvedPolicy{Mode: ModeOff})
 }
+
+func fuzzSandboxResidualBranches(t *testing.T) {
+	t.Helper()
+	oldSeatbelt := wrapSeatbelt
+	wrapSeatbelt = func(argv []string, _ ResolvedPolicy, _, _ string) ([]string, error) {
+		return append([]string{"seatbelt"}, argv...), nil
+	}
+	w := &Wrapper{policy: ResolvedPolicy{Backend: BackendSeatbelt}}
+	if got := w.Wrap([]string{"cmd"}, "/work"); len(got) != 2 || got[0] != "seatbelt" {
+		t.Fatalf("seatbelt wrap seam = %v", got)
+	}
+	wrapSeatbelt = oldSeatbelt
+
+	root := t.TempDir()
+	session := filepath.Join(root, "session")
+	if err := os.MkdirAll(session, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_ = buildBwrapArgv(ResolvedPolicy{Spawned: AccessScope{Read: ReadAnywhere, ReadRoots: []string{session}}}, session, root)
+	oldEval, oldStat := bwrapEvalSymlinks, bwrapStat
+	bwrapEvalSymlinks = func(string) (string, error) { return "/fixture/resolved", nil }
+	bwrapStat = func(string) (os.FileInfo, error) { return nil, errors.New("stat") }
+	maskInvisible(&[]string{}, map[string]bool{}, "fixture")
+	bwrapEvalSymlinks, bwrapStat = oldEval, oldStat
+
+	oldAbs := resolveAbs
+	resolveAbs = func(string) (string, error) { return "", errors.New("abs") }
+	_, _ = Resolve(SandboxPolicy{Mode: ModeReadOnly}, HostFacts{OS: "linux", Home: "/home", BwrapCapable: true}, "relative")
+	resolveAbs = oldAbs
+	_, _ = ResolveNamed("read-only", nil, HostFacts{OS: "linux", Home: "relative"}, root, nil)
+	_, _ = chooseBackend(SandboxPolicy{Mode: ModeReadOnly}, HostFacts{OS: "plan9"}, true)
+	_ = filterMasked([]string{"/secret"}, ResolvedPolicy{MaskedPaths: []string{"/secret"}})
+	faultPolicy := ResolvedPolicy{resolveInputs: SandboxPolicy{Mode: ModeReadOnly}, resolveHost: HostFacts{OS: "linux"}}
+	_, _ = faultPolicy.ControlPolicy(root)
+	_, _ = (&Wrapper{policy: faultPolicy}).ReRoot(root)
+	_ = includePathValue("not-a-path-line")
+	oldWalk := gitWalkDir
+	_ = os.MkdirAll(filepath.Join(root, "modules"), 0o755)
+	gitWalkDir = func(root string, fn fs.WalkDirFunc) error { return fn(root, nil, errors.New("walk")) }
+	_ = moduleConfigProtections(root)
+	gitWalkDir = oldWalk
+	nestedConfig := filepath.Join(root, "nested.conf")
+	if err := os.WriteFile(nestedConfig, []byte("[include]\npath = *.conf\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rootConfig := filepath.Join(root, "root.conf")
+	if err := os.WriteFile(rootConfig, []byte("[include]\npath = nested.conf\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = scanConfigIncludes(rootConfig, []string{root}, map[string]bool{}, 0)
+
+	oldHome := probeUserHomeDir
+	probeUserHomeDir = func() (string, error) { return "/fixture/home", nil }
+	if home, err := (hostProbeSystem{}).userHomeDir(); err != nil || home != "/fixture/home" {
+		t.Fatalf("home seam = %q, %v", home, err)
+	}
+	probeUserHomeDir = oldHome
+	_ = (RealProber{system: nil}).Probe()
+	_ = bwrapSupportsOverlay(scriptedProbeSystem{bwrapHelpErr: errors.New("help")}, "/fixture/bwrap")
+
+	oldTemp, oldCache, oldRead := sessionScratchTempDir, sessionScratchUserCacheDir, sessionScratchReadDir
+	sessionScratchTempDir = func() string { return root }
+	sessionScratchUserCacheDir = func() (string, error) { return root, nil }
+	workspace := filepath.Join(root, "different-workspace")
+	if err := os.Mkdir(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	tmp, err := NewSessionScratch("", workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = tmp.Cleanup()
+	sessionScratchReadDir = func(string) ([]os.DirEntry, error) { return []os.DirEntry{faultDirEntry{}}, nil }
+	sweepCrashedSessionScratch(root)
+	sessionScratchTempDir, sessionScratchUserCacheDir, sessionScratchReadDir = oldTemp, oldCache, oldRead
+}
+
+type faultDirEntry struct{}
+
+func (faultDirEntry) Name() string               { return sessionScratchPrefix + "fault" }
+func (faultDirEntry) IsDir() bool                { return true }
+func (faultDirEntry) Type() fs.FileMode          { return fs.ModeDir }
+func (faultDirEntry) Info() (fs.FileInfo, error) { return nil, errors.New("info") }
 
 func fuzzEnvHasName(env []string, name string) bool {
 	_, ok := fuzzEnvValue(env, name)

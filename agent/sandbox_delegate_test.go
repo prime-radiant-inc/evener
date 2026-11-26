@@ -15,6 +15,7 @@ import (
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/sandbox"
+	"primeradiant.com/evener/agent/sandbox/sandboxtest"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/envvars"
@@ -212,7 +213,7 @@ func sbxSandboxedParent(t *testing.T, s *Session, facts sandbox.HostFacts, cwd s
 
 func sbxDelegateSession(t *testing.T, facts sandbox.HostFacts) *Session {
 	t.Helper()
-	return sbxDelegateSessionWithProber(t, sandbox.FakeProber{Facts: facts})
+	return sbxDelegateSessionWithProber(t, sandboxtest.FakeProber{Facts: facts})
 }
 
 func sbxDelegateSessionWithProber(t *testing.T, prober sandbox.Prober) *Session {

@@ -55,7 +55,7 @@ func TestSpawnPolicyWalkCount(t *testing.T) {
 		return n
 	}
 
-	cwd := MaterializeWorkspace(t, MainCheckout)
+	cwd := materializeWorkspace(t, MainCheckout)
 	for _, clean := range []bool{true, false} {
 		mu.Lock()
 		walked = nil

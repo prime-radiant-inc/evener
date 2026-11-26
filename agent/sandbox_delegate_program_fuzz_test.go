@@ -13,6 +13,7 @@ import (
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/sandbox"
+	"primeradiant.com/evener/agent/sandbox/sandboxtest"
 )
 
 // FuzzDelegateSandboxPolicyProgram drives the delegate sandbox floor and its
@@ -265,7 +266,7 @@ func delegateSandboxProvisionContract(t *testing.T) {
 	local := execenv.NewLocalExecutionEnvironment(root)
 	defer local.Cleanup()
 	cfg := SessionConfig{Sandbox: "restricted"}
-	cfg.testOnly.sandboxProber = sandbox.FakeProber{Facts: sandbox.HostFacts{
+	cfg.testOnly.sandboxProber = sandboxtest.FakeProber{Facts: sandbox.HostFacts{
 		OS:               "linux",
 		Home:             t.TempDir(),
 		BwrapPath:        "/fixture/bwrap",
@@ -288,7 +289,7 @@ func delegateSandboxProvisionContract(t *testing.T) {
 		t.Fatal("invalid persisted sandbox mode was accepted")
 	}
 	badWrapper := SessionConfig{Sandbox: "restricted"}
-	badWrapper.testOnly.sandboxProber = sandbox.FakeProber{Facts: sandbox.HostFacts{
+	badWrapper.testOnly.sandboxProber = sandboxtest.FakeProber{Facts: sandbox.HostFacts{
 		OS: "linux", Home: t.TempDir(), BwrapPath: "relative/bwrap", BwrapCapable: true,
 	}}
 	if err := provisionRestoredSandbox(badWrapper, execenv.NewLocalExecutionEnvironment(root)); err == nil {

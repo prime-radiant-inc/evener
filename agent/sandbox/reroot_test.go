@@ -1,4 +1,4 @@
-package sandbox
+package sandbox_test
 
 import (
 	"crypto/sha256"
@@ -9,21 +9,36 @@ import (
 	"slices"
 	"testing"
 
+	"primeradiant.com/evener/agent/sandbox"
+	"primeradiant.com/evener/agent/sandbox/sandboxtest"
+	"primeradiant.com/evener/gittest"
 	"primeradiant.com/evener/identifier"
 )
+
+func bwrapFacts(home string) sandbox.HostFacts {
+	return sandbox.HostFacts{OS: "linux", Home: home, BwrapPath: "/usr/bin/bwrap", BwrapCapable: true, OverlaySupported: false}
+}
+
+func rootGrants(roots []string, target string) bool {
+	for _, r := range roots {
+		if r == target || identifier.PathUnder(target, r) {
+			return true
+		}
+	}
+	return false
+}
 
 // twoLinkedLanes materializes a main checkout with two linked worktrees and
 // returns (main, laneA, laneB), all symlink-resolved. Skips when git is absent.
 func twoLinkedLanes(t *testing.T) (string, string, string) {
 	t.Helper()
-	requireGitHarness(t)
 	main := identifier.ResolveClean(t.TempDir())
-	gitHarness(t, main, "init", "-q")
-	gitHarness(t, main, "commit", "-q", "--allow-empty", "-m", "init")
+	gittest.Run(t, main, "init", "-q")
+	gittest.Run(t, main, "commit", "-q", "--allow-empty", "-m", "init")
 	laneA := main + "-a"
 	laneB := main + "-b"
-	gitHarness(t, main, "worktree", "add", "-q", laneA)
-	gitHarness(t, main, "worktree", "add", "-q", laneB)
+	gittest.Run(t, main, "worktree", "add", "-q", laneA)
+	gittest.Run(t, main, "worktree", "add", "-q", laneB)
 	return main, identifier.ResolveClean(laneA), identifier.ResolveClean(laneB)
 }
 
@@ -32,7 +47,7 @@ func TestReRootToLinkedWorktree(t *testing.T) {
 	facts := bwrapFacts(t.TempDir())
 
 	net := true
-	rpA, err := Resolve(SandboxPolicy{Mode: ModeWorkspaceWrite, Network: &net}, facts, laneA)
+	rpA, err := sandbox.Resolve(sandbox.SandboxPolicy{Mode: sandbox.ModeWorkspaceWrite, Network: &net}, facts, laneA)
 	if err != nil {
 		t.Fatalf("resolve at lane A: %v", err)
 	}
@@ -69,7 +84,7 @@ func TestReRootSiblingLanesDisjoint(t *testing.T) {
 	facts := bwrapFacts(t.TempDir())
 
 	net := true
-	base, err := Resolve(SandboxPolicy{Mode: ModeWorkspaceWrite, Network: &net}, facts, laneA)
+	base, err := sandbox.Resolve(sandbox.SandboxPolicy{Mode: sandbox.ModeWorkspaceWrite, Network: &net}, facts, laneA)
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -94,7 +109,7 @@ func TestReRootRefusesUnsatisfiable(t *testing.T) {
 	facts := bwrapFacts(t.TempDir())
 
 	net := true
-	rp, err := Resolve(SandboxPolicy{Mode: ModeRestricted, Network: &net}, facts, laneA)
+	rp, err := sandbox.Resolve(sandbox.SandboxPolicy{Mode: sandbox.ModeRestricted, Network: &net}, facts, laneA)
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -109,20 +124,20 @@ func TestReRootRefusesUnsatisfiable(t *testing.T) {
 	if rerootErr == nil {
 		t.Fatalf("re-root onto an unclassifiable target must refuse, got nil")
 	}
-	if _, ok := errors.AsType[*RefusalError](rerootErr); !ok {
+	if _, ok := errors.AsType[*sandbox.RefusalError](rerootErr); !ok {
 		t.Fatalf("re-root refusal must be a typed *RefusalError, got %T: %v", rerootErr, rerootErr)
 	}
 }
 
 func TestControlPolicyGrantsRegistry(t *testing.T) {
 	facts := bwrapFacts(t.TempDir())
-	main := MaterializeWorkspace(t, MainCheckout)
+	main := sandboxtest.MaterializeWorkspace(t, sandbox.MainCheckout)
 	registry := filepath.Join(main, ".git", "worktrees")
 	config := filepath.Join(main, ".git", "config")
 	hooks := filepath.Join(main, ".git", "hooks")
 
 	net := true
-	rp, err := Resolve(SandboxPolicy{Mode: ModeWorkspaceWrite, Network: &net}, facts, main)
+	rp, err := sandbox.Resolve(sandbox.SandboxPolicy{Mode: sandbox.ModeWorkspaceWrite, Network: &net}, facts, main)
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -154,10 +169,10 @@ func TestControlPolicyGrantsRegistry(t *testing.T) {
 // worktree).
 func TestControlPolicyReadOnlyNotWidened(t *testing.T) {
 	facts := bwrapFacts(t.TempDir())
-	main := MaterializeWorkspace(t, MainCheckout)
+	main := sandboxtest.MaterializeWorkspace(t, sandbox.MainCheckout)
 
 	net := true
-	rp, err := Resolve(SandboxPolicy{Mode: ModeReadOnly, Network: &net}, facts, main)
+	rp, err := sandbox.Resolve(sandbox.SandboxPolicy{Mode: sandbox.ModeReadOnly, Network: &net}, facts, main)
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -172,14 +187,14 @@ func TestControlPolicyReadOnlyNotWidened(t *testing.T) {
 
 func TestReRootOffIsNil(t *testing.T) {
 	// A nil resolved policy (the env carries none — off) re-roots to nil, no error.
-	var nilPol *ResolvedPolicy
+	var nilPol *sandbox.ResolvedPolicy
 	got, err := nilPol.ReRoot("/anywhere")
 	if err != nil || got != nil {
 		t.Errorf("nil policy re-root = (%v, %v), want (nil, nil)", got, err)
 	}
 
 	// An off policy produced by Resolve re-roots to an equivalent off policy.
-	off, err := Resolve(SandboxPolicy{Mode: ModeOff}, HostFacts{OS: "linux", Home: "/fixture-home/x"}, "/work")
+	off, err := sandbox.Resolve(sandbox.SandboxPolicy{Mode: sandbox.ModeOff}, sandbox.HostFacts{OS: "linux", Home: "/fixture-home/x"}, "/work")
 	if err != nil {
 		t.Fatalf("resolve off: %v", err)
 	}
@@ -193,18 +208,18 @@ func TestReRootOffIsNil(t *testing.T) {
 }
 
 func TestReRootContract(t *testing.T) {
-	AssertReRoot(t, ReRootCases())
+	sandboxtest.AssertReRoot(t, sandboxtest.ReRootCases())
 }
 
 func TestFuzzReRootFixtureUsesStructuralLinkedWorktrees(t *testing.T) {
 	fixture := newFuzzReRootFixture(t)
 	for _, cwd := range []string{fixture.laneA, fixture.laneB} {
-		layout, err := ClassifyWorkspace(cwd)
+		layout, err := sandbox.ClassifyWorkspace(cwd)
 		if err != nil {
 			t.Fatalf("ClassifyWorkspace(%q): %v", cwd, err)
 		}
-		if layout.Kind != LinkedWorktree {
-			t.Fatalf("ClassifyWorkspace(%q).Kind = %v, want %v", cwd, layout.Kind, LinkedWorktree)
+		if layout.Kind != sandbox.LinkedWorktree {
+			t.Fatalf("ClassifyWorkspace(%q).Kind = %v, want %v", cwd, layout.Kind, sandbox.LinkedWorktree)
 		}
 		if layout.CommonDir != filepath.Join(fixture.main, ".git") {
 			t.Fatalf("ClassifyWorkspace(%q).CommonDir = %q, want %q", cwd, layout.CommonDir, filepath.Join(fixture.main, ".git"))
@@ -223,7 +238,7 @@ type fuzzReRootFixture struct {
 // newFuzzReRootFixture materializes only the filesystem shapes ClassifyWorkspace
 // consumes. It intentionally does not use git: the fuzzer needs a deterministic
 // linked-worktree layout, not a real repository or subprocess.
-func newFuzzReRootFixture(t TestingT) fuzzReRootFixture {
+func newFuzzReRootFixture(t testing.TB) fuzzReRootFixture {
 	t.Helper()
 	root := identifier.ResolveClean(t.TempDir())
 	fixture := fuzzReRootFixture{
@@ -303,7 +318,7 @@ func FuzzReRoot(f *testing.F) {
 	facts := bwrapFacts(home)
 
 	net := true
-	base, err := Resolve(SandboxPolicy{Mode: ModeWorkspaceWrite, Network: &net}, facts, fixture.laneA)
+	base, err := sandbox.Resolve(sandbox.SandboxPolicy{Mode: sandbox.ModeWorkspaceWrite, Network: &net}, facts, fixture.laneA)
 	if err != nil {
 		f.Fatalf("seed resolve: %v", err)
 	}
@@ -319,7 +334,7 @@ func FuzzReRoot(f *testing.F) {
 		cwd, wantWorktree, wantRefusal := fixture.cwd(raw)
 		rerooted, err := base.ReRoot(cwd)
 		if err != nil {
-			if _, ok := errors.AsType[*RefusalError](err); !ok {
+			if _, ok := errors.AsType[*sandbox.RefusalError](err); !ok {
 				t.Fatalf("re-root error must be a typed *RefusalError, got %T: %v", err, err)
 			}
 			if !wantRefusal {

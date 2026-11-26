@@ -6,6 +6,7 @@ import (
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/sandbox"
+	"primeradiant.com/evener/agent/sandbox/sandboxtest"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
@@ -37,11 +38,11 @@ func restoreWithSandbox(t *testing.T, mode string, prober sandbox.Prober) (*exec
 	return env, err
 }
 
-// bwrapCapableProber returns a FakeProber reporting a bwrap-capable Linux host
+// bwrapCapableProber returns a sandboxtest.FakeProber reporting a bwrap-capable Linux host
 // anchored at home, so the resume path resolves + builds a real wrapper hermetically
 // (NewWrapper validates the path is absolute but never stats or spawns bwrap).
 func bwrapCapableProber(home string) sandbox.Prober {
-	return sandbox.FakeProber{Facts: sandbox.HostFacts{OS: "linux", Home: home, BwrapPath: "/usr/bin/bwrap", BwrapCapable: true}}
+	return sandboxtest.FakeProber{Facts: sandbox.HostFacts{OS: "linux", Home: home, BwrapPath: "/usr/bin/bwrap", BwrapCapable: true}}
 }
 
 // TestRestoreProvisionsPersistedSandbox: with the M5 flip, restore re-resolves a
@@ -76,7 +77,7 @@ func TestRestoreProvisionsPersistedSandbox(t *testing.T) {
 // than resuming unconfined.
 func TestRestoreFailsClosedWhenHostCannotEnforce(t *testing.T) {
 	t.Parallel()
-	bare := sandbox.FakeProber{Facts: sandbox.HostFacts{OS: "linux", Home: t.TempDir()}} // no bwrap
+	bare := sandboxtest.FakeProber{Facts: sandbox.HostFacts{OS: "linux", Home: t.TempDir()}} // no bwrap
 	_, err := restoreWithSandbox(t, "restricted", bare)
 	if err == nil {
 		t.Fatal("restore on a host that cannot enforce restricted must fail closed")

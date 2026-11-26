@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/gittest"
 	"primeradiant.com/evener/identifier"
 )
 
@@ -79,10 +80,10 @@ func TestBwrapLinkedWorktreeStarts(t *testing.T) {
 	if err := os.MkdirAll(main, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	gitHarness(t, main, "init", "-q")
-	gitHarness(t, main, "commit", "-q", "--allow-empty", "-m", "init")
+	gittest.Run(t, main, "init", "-q")
+	gittest.Run(t, main, "commit", "-q", "--allow-empty", "-m", "init")
 	wt := filepath.Join(base, "wt")
-	gitHarness(t, main, "worktree", "add", "-q", wt)
+	gittest.Run(t, main, "worktree", "add", "-q", wt)
 	cwd := identifier.ResolveClean(wt)
 
 	facts.Home = t.TempDir()
@@ -148,7 +149,7 @@ func TestBwrapReadOnlyTmpRootsPreserveAccess(t *testing.T) {
 				}
 			}
 			// Keep git real: Resolve derives the grants from this checkout.
-			gitHarness(t, cwd, "init", "-q")
+			gittest.Run(t, cwd, "init", "-q")
 			for _, dir := range []string{cwd, readRoot} {
 				if err := os.WriteFile(filepath.Join(dir, "readable"), []byte("fixture"), 0o600); err != nil {
 					t.Fatal(err)
@@ -217,7 +218,7 @@ func TestBwrapConfinesAndMasks(t *testing.T) {
 	}
 	facts.Home = home
 
-	cwd := MaterializeWorkspace(t, MainCheckout)
+	cwd := materializeWorkspace(t, MainCheckout)
 	sessionTmp := t.TempDir()
 
 	script := strings.Join([]string{
@@ -247,7 +248,7 @@ func TestBwrapConfinesAndMasks(t *testing.T) {
 func TestBwrapDeniesGitConfigWrite(t *testing.T) {
 	facts := requireRealBwrap(t)
 	facts.Home = t.TempDir()
-	cwd := MaterializeWorkspace(t, MainCheckout)
+	cwd := materializeWorkspace(t, MainCheckout)
 	sessionTmp := t.TempDir()
 
 	script := strings.Join([]string{
@@ -364,7 +365,7 @@ func TestBwrapShellSeesTheScratchTreeTheFileToolsRead(t *testing.T) {
 	if !identifier.PathUnder(base, "/tmp") {
 		t.Skipf("/tmp resolves to %q on this host; the private /tmp shadows nothing", base)
 	}
-	cwd := MaterializeWorkspace(t, MainCheckout)
+	cwd := materializeWorkspace(t, MainCheckout)
 	var scratch [2]string
 	for i, session := range []string{"parent", "child"} {
 		s, err := OpenSessionScratch(base, cwd, "root", session)
@@ -448,7 +449,7 @@ func TestBwrapCacheHoldingAWritableRootIsNotOverlaid(t *testing.T) {
 		}
 	}
 	facts.Home = home
-	cwd := MaterializeWorkspace(t, MainCheckout)
+	cwd := materializeWorkspace(t, MainCheckout)
 	rp, err := Resolve(SandboxPolicy{Mode: ModeWorkspaceWrite, Network: new(true), ExtraWritableRoots: []string{library}}, facts, cwd)
 	if err != nil {
 		t.Fatal(err)
@@ -510,7 +511,7 @@ func TestBwrapCacheSharingAWritableRootThroughASymlinkIsNotOverlaid(t *testing.T
 	}
 	facts.Home = filepath.Join(base, "home")
 	facts.GoCache = filepath.Join(link, "cache")
-	cwd := MaterializeWorkspace(t, MainCheckout)
+	cwd := materializeWorkspace(t, MainCheckout)
 	rp, err := Resolve(SandboxPolicy{Mode: ModeWorkspaceWrite, Network: new(true), ExtraWritableRoots: []string{library}}, facts, cwd)
 	if err != nil {
 		t.Fatal(err)
@@ -543,7 +544,7 @@ func TestBwrapShellReadsEvenerContentThroughTheCredentialMask(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(home) })
-	cwd := MaterializeWorkspace(t, MainCheckout)
+	cwd := materializeWorkspace(t, MainCheckout)
 	for layout, write := range evenerContentLayouts {
 		fx := write(t, filepath.Join(home, layout))
 		for _, mode := range []Mode{ModeReadOnly, ModeWorkspaceWrite, ModeRestricted} {

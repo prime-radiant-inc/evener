@@ -920,7 +920,7 @@ func TestNewWrapperDropsACacheRootItCannotCreate(t *testing.T) {
 	}
 	unmakeable := filepath.Join(blocker, "gocache")
 	facts := HostFacts{OS: "linux", Home: t.TempDir(), BwrapPath: "/usr/bin/bwrap", BwrapCapable: true, OverlaySupported: true, GoCache: unmakeable}
-	cwd := MaterializeWorkspace(t, MainCheckout)
+	cwd := materializeWorkspace(t, MainCheckout)
 	rp, err := Resolve(SandboxPolicy{Mode: ModeWorkspaceWrite, Network: new(true)}, facts, cwd)
 	if err != nil {
 		t.Fatal(err)
@@ -1151,7 +1151,7 @@ func TestEnvFloorRedirectsGoCachesInACacheHoldingAWritableRoot(t *testing.T) {
 		t.Fatal(err)
 	}
 	facts := HostFacts{OS: "linux", Home: home, BwrapPath: "/usr/bin/bwrap", BwrapCapable: true, OverlaySupported: true}
-	cwd := MaterializeWorkspace(t, MainCheckout)
+	cwd := materializeWorkspace(t, MainCheckout)
 	rp, err := Resolve(SandboxPolicy{Mode: ModeWorkspaceWrite, Network: new(true), ExtraWritableRoots: []string{library}}, facts, cwd)
 	if err != nil {
 		t.Fatal(err)
@@ -1185,7 +1185,7 @@ func TestEnvFloorRedirectsACacheRootRetargetedIntoTheWorktree(t *testing.T) {
 	}
 	gocache := filepath.Join(link, "cache")
 	facts := HostFacts{OS: "linux", Home: servedHome(t), BwrapPath: "/usr/bin/bwrap", BwrapCapable: true, OverlaySupported: true, GoCache: gocache}
-	cwd := MaterializeWorkspace(t, MainCheckout)
+	cwd := materializeWorkspace(t, MainCheckout)
 	rp, err := Resolve(SandboxPolicy{Mode: ModeWorkspaceWrite, Network: new(true)}, facts, cwd)
 	if err != nil {
 		t.Fatal(err)
@@ -1222,7 +1222,7 @@ func TestEnvFloorRedirectsAGoCacheHoldingAWritableRoot(t *testing.T) {
 		t.Fatal(err)
 	}
 	facts := HostFacts{OS: "linux", Home: home, BwrapPath: "/usr/bin/bwrap", BwrapCapable: true, OverlaySupported: true}
-	cwd := MaterializeWorkspace(t, MainCheckout)
+	cwd := materializeWorkspace(t, MainCheckout)
 	rp, err := Resolve(SandboxPolicy{Mode: ModeWorkspaceWrite, Network: new(true), ExtraWritableRoots: []string{sumdb}}, facts, cwd)
 	if err != nil {
 		t.Fatal(err)
@@ -1254,7 +1254,7 @@ func TestEnvFloorServesACacheSpelledThroughAnAlias(t *testing.T) {
 	}
 	modcache := filepath.Join(ssd, "pkg", "mod")
 	facts := HostFacts{OS: "linux", Home: home, BwrapPath: "/usr/bin/bwrap", BwrapCapable: true, OverlaySupported: true}
-	rp, err := Resolve(SandboxPolicy{Mode: ModeWorkspaceWrite, Network: new(true)}, facts, MaterializeWorkspace(t, MainCheckout))
+	rp, err := Resolve(SandboxPolicy{Mode: ModeWorkspaceWrite, Network: new(true)}, facts, materializeWorkspace(t, MainCheckout))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1318,7 +1318,7 @@ func TestEnvFloorPinsAnEmptyGoModCacheWhenGoPathMoves(t *testing.T) {
 		}
 	}
 	facts := HostFacts{OS: "linux", Home: home, BwrapPath: "/usr/bin/bwrap", BwrapCapable: true, OverlaySupported: true, GoModCache: modcache}
-	rp, err := Resolve(SandboxPolicy{Mode: ModeWorkspaceWrite, Network: new(true), ExtraWritableRoots: []string{sumdb}}, facts, MaterializeWorkspace(t, MainCheckout))
+	rp, err := Resolve(SandboxPolicy{Mode: ModeWorkspaceWrite, Network: new(true), ExtraWritableRoots: []string{sumdb}}, facts, materializeWorkspace(t, MainCheckout))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1356,7 +1356,7 @@ func TestEnvFloorRedirectsACacheBehindALinkInTmp(t *testing.T) {
 		t.Fatal(err)
 	}
 	facts := HostFacts{OS: "linux", Home: home, BwrapPath: "/usr/bin/bwrap", BwrapCapable: true, OverlaySupported: true, XDGCacheHome: link}
-	rp, err := Resolve(SandboxPolicy{Mode: ModeWorkspaceWrite, Network: new(true)}, facts, MaterializeWorkspace(t, MainCheckout))
+	rp, err := Resolve(SandboxPolicy{Mode: ModeWorkspaceWrite, Network: new(true)}, facts, materializeWorkspace(t, MainCheckout))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1472,7 +1472,7 @@ func TestEnvFloorKnowsExplicitGoSettingsDespiteAGoEnvFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	facts := HostFacts{OS: "linux", Home: home, BwrapPath: "/usr/bin/bwrap", BwrapCapable: true, OverlaySupported: true, GoEnvFile: envFile}
-	rp, err := Resolve(SandboxPolicy{Mode: ModeWorkspaceWrite, Network: new(true)}, facts, MaterializeWorkspace(t, MainCheckout))
+	rp, err := Resolve(SandboxPolicy{Mode: ModeWorkspaceWrite, Network: new(true)}, facts, materializeWorkspace(t, MainCheckout))
 	if err != nil {
 		t.Fatal(err)
 	}

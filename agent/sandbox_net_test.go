@@ -8,13 +8,14 @@ import (
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/sandbox"
+	"primeradiant.com/evener/agent/sandbox/sandboxtest"
 	"primeradiant.com/evener/llm"
 )
 
 func netEnv(t *testing.T, netOn bool) *execenv.LocalExecutionEnvironment {
 	t.Helper()
 	home := t.TempDir()
-	cwd := sandbox.MaterializeWorkspace(t, sandbox.MainCheckout)
+	cwd := sandboxtest.MaterializeWorkspace(t, sandbox.MainCheckout)
 	net := netOn
 	rp, err := sandbox.Resolve(
 		sandbox.SandboxPolicy{Mode: sandbox.ModeWorkspaceWrite, Network: &net},

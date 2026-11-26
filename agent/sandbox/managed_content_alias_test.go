@@ -48,7 +48,7 @@ func TestSeatbeltManagedAliasSkipsLinkedTargetWalk(t *testing.T) {
 	host.EvenerContentRoots = []string{cache}
 	// The backend opens the plain spelling while the probe records its alias.
 	host.EvenerManagedContentRoots = []string{"/System/Volumes/Data" + cache}
-	cwd := MaterializeWorkspace(t, MainCheckout)
+	cwd := materializeWorkspace(t, MainCheckout)
 	for _, clean := range []bool{false, true} {
 		host.EvenerManagedContentClean = clean
 		policy, err := Resolve(SandboxPolicy{Mode: ModeRestricted, Network: new(true)}, host, cwd)

@@ -27,7 +27,7 @@ func escapeHome(t *testing.T) (facts HostFacts, home, cwd, sessionTmp, secretPat
 		t.Fatal(err)
 	}
 	facts.Home = home
-	cwd = MaterializeWorkspace(t, MainCheckout)
+	cwd = materializeWorkspace(t, MainCheckout)
 	sessionTmp = t.TempDir()
 	return facts, home, cwd, sessionTmp, secretPath, secret
 }

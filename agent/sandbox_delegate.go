@@ -679,8 +679,8 @@ func buildDelegateSandboxPolicy(sandboxMode string, sandboxNet *bool, parentMode
 // via EnableSandbox; a host that can no longer enforce the mode surfaces the
 // resolver's *sandbox.RefusalError so the resume fails closed rather than running
 // unconfined. A non-local env carrying a non-off mode is a misconfiguration — only
-// the local env can sandbox. Tests inject a FakeProber via cfg.testOnly so the
-// resume path stays hermetic.
+// the local env can sandbox. Tests inject a sandboxtest.FakeProber via
+// cfg.testOnly so the resume path stays hermetic.
 func provisionRestoredSandbox(cfg SessionConfig, env execenv.ExecutionEnvironment) error {
 	if sandbox.ModeIsOff(cfg.Sandbox) {
 		return nil

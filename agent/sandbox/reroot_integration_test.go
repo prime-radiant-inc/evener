@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/gittest"
 	"primeradiant.com/evener/identifier"
 )
 
@@ -29,13 +30,13 @@ func nonTmpMainAndLanes(t *testing.T, n int) (string, []string) {
 	if err := os.MkdirAll(main, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	gitHarness(t, main, "init", "-q")
-	gitHarness(t, main, "commit", "-q", "--allow-empty", "-m", "init")
+	gittest.Run(t, main, "init", "-q")
+	gittest.Run(t, main, "commit", "-q", "--allow-empty", "-m", "init")
 
 	lanes := make([]string, n)
 	for i := range lanes {
 		lane := filepath.Join(base, "lane"+string(rune('a'+i)))
-		gitHarness(t, main, "worktree", "add", "-q", lane, "-b", "feat"+string(rune('a'+i)))
+		gittest.Run(t, main, "worktree", "add", "-q", lane, "-b", "feat"+string(rune('a'+i)))
 		lane = identifier.ResolveClean(lane)
 		if err := os.WriteFile(filepath.Join(lane, "secret.txt"), []byte("LANE-SECRET-"+filepath.Base(lane)), 0o644); err != nil {
 			t.Fatal(err)
@@ -383,13 +384,12 @@ func TestReRootNetOffInherited(t *testing.T) {
 // here — this test only inspects policy/argv values, it does not run bwrap).
 func twoLinkedLanesInline(t *testing.T) (string, []string) {
 	t.Helper()
-	requireGitHarness(t)
 	main := identifier.ResolveClean(t.TempDir())
-	gitHarness(t, main, "init", "-q")
-	gitHarness(t, main, "commit", "-q", "--allow-empty", "-m", "init")
+	gittest.Run(t, main, "init", "-q")
+	gittest.Run(t, main, "commit", "-q", "--allow-empty", "-m", "init")
 	a := main + "-a"
 	b := main + "-b"
-	gitHarness(t, main, "worktree", "add", "-q", a)
-	gitHarness(t, main, "worktree", "add", "-q", b)
+	gittest.Run(t, main, "worktree", "add", "-q", a)
+	gittest.Run(t, main, "worktree", "add", "-q", b)
 	return main, []string{identifier.ResolveClean(a), identifier.ResolveClean(b)}
 }
