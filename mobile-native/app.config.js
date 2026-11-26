@@ -31,6 +31,7 @@ const config = {
 		userInterfaceStyle: "automatic",
 		backgroundColor: "#0a0a0e",
 		ios: {
+			deploymentTarget: "17.0",
 			supportsTablet: false,
 			bundleIdentifier: "com.primeradiant.evener.native",
 			...(teamId ? { appleTeamId: teamId } : {}),
