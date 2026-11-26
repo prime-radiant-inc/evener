@@ -238,7 +238,7 @@ func (f *accessProbeFixture) status(t *testing.T, name string) appwire.AuthStatu
 
 func (f *accessProbeFixture) edit(t *testing.T, params appwire.InstanceEditParams) {
 	t.Helper()
-	if err := f.inst.Edit(params); err != nil {
+	if _, err := f.inst.Edit(params); err != nil {
 		t.Fatalf("Edit(%+v): %v", params, err)
 	}
 }
@@ -482,7 +482,8 @@ func TestCredentialProbeAccessTransitions(t *testing.T) {
 		}
 		edited := make(chan error, 1)
 		go func() {
-			edited <- f.inst.Edit(appwire.InstanceEditParams{Name: "local", CredentialHeader: "Authorization=Bearer $KEY_B"})
+			_, err := f.inst.Edit(appwire.InstanceEditParams{Name: "local", CredentialHeader: "Authorization=Bearer $KEY_B"})
+			edited <- err
 		}()
 		select {
 		case <-published:
@@ -548,7 +549,7 @@ func TestCredentialProbeAccessTransitions(t *testing.T) {
 		b.acknowledge(t)
 		// Explicitly author the protocol the implicit instance already resolves to:
 		// the record changes, the effective access does not.
-		if err := f.inst.Edit(appwire.InstanceEditParams{Name: "anthropic", Protocol: inst.Protocol}); err != nil {
+		if _, err := f.inst.Edit(appwire.InstanceEditParams{Name: "anthropic", Protocol: inst.Protocol}); err != nil {
 			t.Fatalf("Edit: %v", err)
 		}
 		after := f.status(t, "anthropic")
@@ -641,7 +642,7 @@ func TestCredentialProbeAccessTransitions(t *testing.T) {
 		b.hold.Store(true)
 		original := startProbe(f.auth, "local")
 		b.acknowledge(t)
-		err := f.inst.Edit(appwire.InstanceEditParams{Name: "local", CredentialHeader: "Authorization=fixture-literal-secret"})
+		_, err := f.inst.Edit(appwire.InstanceEditParams{Name: "local", CredentialHeader: "Authorization=fixture-literal-secret"})
 		if err == nil {
 			t.Fatal("the invalid credential header edit succeeded")
 		}
@@ -697,7 +698,7 @@ func TestCredentialProbeAccessTransitions(t *testing.T) {
 		b.hold.Store(true)
 		original := startProbe(ctl.auth, "local")
 		b.acknowledge(t)
-		err := ctl.Edit(appwire.InstanceEditParams{Name: "local", CredentialHeader: "Authorization=Bearer $KEY_B"})
+		_, err := ctl.Edit(appwire.InstanceEditParams{Name: "local", CredentialHeader: "Authorization=Bearer $KEY_B"})
 		if err == nil {
 			t.Fatal("the edit whose reload and restore both fail succeeded")
 		}
@@ -831,7 +832,7 @@ func TestCredentialProbeAccessTransitions(t *testing.T) {
 		original := startProbe(f.auth, "local")
 		b.acknowledge(t)
 
-		if err := f.inst.Edit(appwire.InstanceEditParams{Name: "local", ClearBaseURL: true}); err == nil {
+		if _, err := f.inst.Edit(appwire.InstanceEditParams{Name: "local", ClearBaseURL: true}); err == nil {
 			t.Fatal("the unloadable edit succeeded")
 		}
 		b.unleash()

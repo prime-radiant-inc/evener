@@ -186,7 +186,7 @@ func TestProviderFileWatcherDoesNotEchoRolledBackWrite(t *testing.T) {
 	t.Parallel()
 	f := newFlakyReloadFixture(t, "", func(load int) bool { return load == 3 })
 	f.ctl.refreshProviderFile() // load 2 establishes the observer baseline
-	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "anthropic"}); err == nil {
+	if _, err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "anthropic"}); err == nil {
 		t.Fatal("create unexpectedly survived the scripted load failure")
 	}
 	generation := f.ctl.reg.Generation()

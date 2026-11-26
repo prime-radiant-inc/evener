@@ -3,6 +3,7 @@ package hub
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -867,7 +868,7 @@ alias_of = "claude-opus-4-6"
 
 func TestInstances_ModelEditEndpointFingerprintAndEffectiveAccess(t *testing.T) {
 	f := newInstancesFixture(t, nil)
-	if err := f.ctl.Create(appwire.InstanceCreateParams{
+	if _, err := f.ctl.Create(appwire.InstanceCreateParams{
 		Name:    "work",
 		Base:    "anthropic",
 		BaseURL: "https://gw.example.test/v1",
@@ -944,8 +945,11 @@ func TestInstances_ModelEditEndpointFingerprintAndEffectiveAccess(t *testing.T) 
 
 	// Unkeyable hub: empty ExpectedEndpointFingerprint is allowed, non-empty is refused with CodeConflict.
 	unkeyable := newInstancesFixture(t, nil)
-	if err := unkeyable.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "anthropic"}); err != nil {
+	if _, err := unkeyable.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "anthropic"}); err != nil {
 		t.Fatalf("Create: %v", err)
+	}
+	if err := os.Remove(filepath.Join(unkeyable.stateDir, endpointFingerprintKeyFile)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("Remove fingerprint key: %v", err)
 	}
 	unkeyableStateRoot(t, unkeyable.stateDir)
 	if err := unkeyable.ctl.EditModel(appwire.InstanceModelEditParams{
