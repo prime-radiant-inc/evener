@@ -533,7 +533,7 @@ it("sends a message when the agent is at rest", async () => {
 	expect(pressable(tree, "Stop")).toBeUndefined();
 	await type(tree, "first");
 	const send = pressable(tree, "Send");
-	expect(send?.findByType("SymbolView" as never).props.name).toBe("paperplane.fill");
+	expect(send?.findByType("SymbolView" as never).props.name).toBe("arrow.up");
 	playedHaptics.length = 0;
 	await press(tree, "Send");
 	expect(hub.mutations()).toEqual(["turn/start"]);
@@ -592,12 +592,10 @@ it("queues a second Send pressed before the first one's turn is seen", async () 
 	expect(inputs).toEqual([[{ type: "text", text: "first" }], [{ type: "text", text: "second" }]]);
 });
 
-// The composer's Send, told apart from the dock's own "Send answer" by its
-// paper airplane.
+// The dock can also offer "Send answer"; these checks exercise the composer.
 function composerSend(tree: ReactTestRenderer, label: string) {
-	return tree.root
-		.findAll((node) => String(node.type) === "Pressable" && node.props.accessibilityLabel === label)
-		.find((node) => node.findAll((child) => child.props.name === "paperplane.fill").length > 0);
+	const [card] = tree.root.findAllByProps({ testID: "composer-card" });
+	return card?.findAll((node) => String(node.type) === "Pressable" && node.props.accessibilityLabel === label)[0];
 }
 
 // A node's style flattened, as React Native flattens a style array.

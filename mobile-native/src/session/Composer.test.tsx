@@ -251,12 +251,12 @@ describe("Composer", () => {
 		expect(card.props.style).toMatchObject({ marginBottom: 4 });
 	});
 
-	it("carries the send label on a paper airplane and sends when enabled", () => {
+	it("carries the send label on the upward arrow and sends when enabled", () => {
 		const { props, tree } = composer();
 		const send = pressable(tree, "Queue message");
 		expect(send?.props.accessibilityState).toMatchObject({ disabled: false });
 		expect(send?.findByType("SymbolView" as never).props).toMatchObject({
-			name: "paperplane.fill",
+			name: "arrow.up",
 			tintColor: light.onFill,
 		});
 		act(() => send?.props.onPress());

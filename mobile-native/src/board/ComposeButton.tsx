@@ -1,5 +1,5 @@
 // The Board's floating compose button (spec 7.1): a 56pt accent circle over
-// the Board's end, with a centered pencil symbol. It stays reachable while
+// the Board's end, with a centered plus symbol. It stays reachable while
 // the Board scrolls, clear of the home indicator, and dims while the hub is
 // away, since New session needs the hub.
 import { SymbolView } from "expo-symbols";
@@ -55,7 +55,7 @@ export function ComposeButton({
 				...FLOATING_SHADOW,
 			})}
 		>
-			<SymbolView name="square.and.pencil" size={24} tintColor={palette.onFill} />
+			<SymbolView name="plus" size={24} tintColor={palette.onFill} />
 		</Pressable>
 	);
 }

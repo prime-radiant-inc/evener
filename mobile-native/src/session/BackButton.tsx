@@ -33,7 +33,7 @@ export function BackButton({ count, label, onPress }: { count: number; label?: s
 				opacity: pressed ? 0.6 : 1,
 			})}
 		>
-			<SymbolView name="chevron.left" tintColor={palette.accentInk} size={20 * scale} weight="semibold" />
+			<SymbolView name="chevron.backward" tintColor={palette.accentInk} size={20 * scale} weight="semibold" />
 			{count > 0 ? (
 				<Text
 					allowFontScaling={allowFontScaling}
