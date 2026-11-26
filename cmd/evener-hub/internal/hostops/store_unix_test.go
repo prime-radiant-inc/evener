@@ -20,11 +20,11 @@ func TestTwoHandlesThroughASymlinkedRootShareTheStore(t *testing.T) {
 		t.Fatalf("Symlink: %v", err)
 	}
 
-	direct, err := Open(StorePath(root))
+	direct, err := Open(StorePath(root), RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("Open(direct): %v", err)
 	}
-	through, err := Open(StorePath(link))
+	through, err := Open(StorePath(link), RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("Open(through the link): %v", err)
 	}
@@ -53,7 +53,7 @@ func TestOpenRefusesAStorePathThatIsNotARegularFile(t *testing.T) {
 		if err := syscall.Mkfifo(path, 0o600); err != nil {
 			t.Fatalf("Mkfifo: %v", err)
 		}
-		if _, err := Open(path); err == nil {
+		if _, err := Open(path, RetentionPolicy{}); err == nil {
 			t.Fatalf("Open on a fifo succeeded, want an error")
 		}
 	})
@@ -67,7 +67,7 @@ func TestOpenRefusesAStorePathThatIsNotARegularFile(t *testing.T) {
 		if err := os.Symlink(target, link); err != nil {
 			t.Fatalf("Symlink: %v", err)
 		}
-		if _, err := Open(link); err == nil {
+		if _, err := Open(link, RetentionPolicy{}); err == nil {
 			t.Fatalf("Open on a symlinked store file succeeded, want an error")
 		}
 	})
@@ -85,7 +85,7 @@ func TestOpenRefusesADanglingSymlinkAtTheStorePath(t *testing.T) {
 	if err := os.Symlink(filepath.Join(t.TempDir(), "never-created.json"), path); err != nil {
 		t.Fatalf("Symlink: %v", err)
 	}
-	if _, err := Open(path); err == nil {
+	if _, err := Open(path, RetentionPolicy{}); err == nil {
 		t.Fatalf("Open on a dangling symlink succeeded, want an error")
 	}
 }
@@ -97,7 +97,7 @@ func TestOpenRefusesADanglingSymlinkAtTheStorePath(t *testing.T) {
 func TestOpenRevalidatesTheKindOfAnAlreadyHeldStore(t *testing.T) {
 	target := filepath.Join(t.TempDir(), "real-store.json")
 	writeRawStore(t, target, 0o600, validStoreJSON)
-	direct, err := Open(target)
+	direct, err := Open(target, RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("Open(target): %v", err)
 	}
@@ -112,7 +112,7 @@ func TestOpenRevalidatesTheKindOfAnAlreadyHeldStore(t *testing.T) {
 	if err := os.Symlink(target, link); err != nil {
 		t.Fatalf("Symlink: %v", err)
 	}
-	if _, err := Open(link); err == nil {
+	if _, err := Open(link, RetentionPolicy{}); err == nil {
 		t.Fatalf("Open on a symlinked store file succeeded through a held store cell, want an error")
 	}
 }
@@ -123,7 +123,7 @@ func TestOpenRevalidatesTheKindOfAnAlreadyHeldStore(t *testing.T) {
 // refuse. The write refuses, leaves the link alone and leaves no temp file behind.
 func TestAWriteRefusesWhenTheStorePathBecameANonRegularFile(t *testing.T) {
 	path := StorePath(t.TempDir())
-	store, err := Open(path)
+	store, err := Open(path, RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -169,7 +169,7 @@ func TestAStoreBehindASymlinkedDirectoryIsWritable(t *testing.T) {
 		t.Fatalf("Symlink: %v", err)
 	}
 
-	store, err := Open(StorePath(root))
+	store, err := Open(StorePath(root), RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("Open through a symlinked directory: %v", err)
 	}
@@ -200,13 +200,13 @@ func TestOpenRefusesAStorePathThroughADanglingLink(t *testing.T) {
 		t.Fatalf("Symlink: %v", err)
 	}
 	throughLink := filepath.Join(root, "link", "hostops", "operations.json")
-	if _, err := Open(throughLink); err == nil {
+	if _, err := Open(throughLink, RetentionPolicy{}); err == nil {
 		t.Fatalf("Open through a link whose target does not exist succeeded, want an error")
 	}
 
 	// The spelling that resolves — the target itself — still works, and no alias
 	// of it can be opened.
-	direct, err := Open(filepath.Join(root, "missing-target", "hostops", "operations.json"))
+	direct, err := Open(filepath.Join(root, "missing-target", "hostops", "operations.json"), RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("Open on the direct spelling: %v", err)
 	}

@@ -34,7 +34,7 @@ func runRefusalRows(t *testing.T, cases []refusalRow, served string) {
 				t.Fatalf("mkdir store dir: %v", err)
 			}
 			tc.seed(t, path)
-			_, err := Open(path)
+			_, err := Open(path, RetentionPolicy{})
 			if err == nil {
 				t.Fatalf("Open served a store %s", served)
 			}

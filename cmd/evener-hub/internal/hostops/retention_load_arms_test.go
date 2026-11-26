@@ -105,7 +105,7 @@ func TestStoreRefusesTombstonesOutsideTheSchema(t *testing.T) {
 			path := StorePath(t.TempDir())
 			body := retentionArmStore(`"compactSeq":1,"tombstones":[` + tc.tombstone + `]`)
 			writeRawStore(t, path, 0o600, body)
-			if _, err := Open(path); !errors.Is(err, ErrStoreCorrupt) {
+			if _, err := Open(path, RetentionPolicy{}); !errors.Is(err, ErrStoreCorrupt) {
 				t.Fatalf("Open error = %v, want errors.Is(ErrStoreCorrupt)", err)
 			}
 		})
@@ -168,7 +168,7 @@ func TestStoreRefusesCompactionMarksOutsideTheSchema(t *testing.T) {
 			// there), but the record set is whole, so §4's custody tolerates
 			// the ledger it discards: the boot quarantines and serves the
 			// replacement, never bricking over ledger bit-rot.
-			store, err := Open(path)
+			store, err := Open(path, RetentionPolicy{})
 			if err != nil {
 				t.Fatalf("Open refused a whole-record store over a bad compaction mark: %v", err)
 			}
@@ -198,7 +198,7 @@ func TestStoreRefusesRemovalMarkersOutsideTheSchema(t *testing.T) {
 			path := StorePath(t.TempDir())
 			body := retentionArmStore(`"removedHosts":{"hX":` + tc.marker + `}`)
 			writeRawStore(t, path, 0o600, body)
-			if _, err := Open(path); !errors.Is(err, ErrStoreCorrupt) {
+			if _, err := Open(path, RetentionPolicy{}); !errors.Is(err, ErrStoreCorrupt) {
 				t.Fatalf("Open error = %v, want errors.Is(ErrStoreCorrupt)", err)
 			}
 		})

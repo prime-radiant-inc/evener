@@ -405,7 +405,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 func openHostOpsStore(stateRoot string, stderr io.Writer, retention hostops.RetentionPolicy) (*hostops.Store, error) {
 	log := componentlog.NewWriter("hub", stderr)
 	storePath := hostops.StorePath(stateRoot)
-	store, err := hostops.OpenWithRetention(storePath, retention)
+	store, err := hostops.Open(storePath, retention)
 	if err != nil {
 		return nil, fmt.Errorf("host operation store: %w", err)
 	}

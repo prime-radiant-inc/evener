@@ -383,7 +383,7 @@ func ensureDeployTestHarnessInstalling(t *testing.T, restartErr error, installed
 // tests arm against.
 func ensureDeployTestStore(t *testing.T) *hostops.Store {
 	t.Helper()
-	store, err := hostops.Open(hostops.StorePath(t.TempDir()))
+	store, err := hostops.Open(hostops.StorePath(t.TempDir()), hostops.RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("hostops.Open: %v", err)
 	}

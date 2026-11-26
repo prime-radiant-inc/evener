@@ -22,9 +22,9 @@ import (
 func openRetentionStore(t *testing.T, policy RetentionPolicy) (*Store, string) {
 	t.Helper()
 	path := StorePath(t.TempDir())
-	store, err := OpenWithRetention(path, policy)
+	store, err := Open(path, policy)
 	if err != nil {
-		t.Fatalf("OpenWithRetention(%s): %v", path, err)
+		t.Fatalf("Open(%s): %v", path, err)
 	}
 	return store, path
 }
@@ -836,7 +836,7 @@ func TestOpenRefusesAnOversizedTombstone(t *testing.T) {
 		`","kind":"deploy","state":"complete","generation":7,"incarnationId":"inc-1","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false,"result":{"ok":true,"message":"done"},"compactedAt":"2026-09-26T00:00:00Z","compactedSeq":1}]}`
 	path := StorePath(t.TempDir())
 	writeRawStore(t, path, 0o600, body)
-	_, err := Open(path)
+	_, err := Open(path, RetentionPolicy{})
 	if !errors.Is(err, ErrStoreCorrupt) || !strings.Contains(err.Error(), "host name") {
 		t.Fatalf("Open(oversized tombstone) = %v, want ErrStoreCorrupt naming the host name", err)
 	}
@@ -1007,7 +1007,7 @@ func TestOpenQuarantinesACaseVariantRemovedHostKey(t *testing.T) {
 	body := `{"version":1,"sequence":0,"allocatorHighWaterMark":0,"records":[],"removedHosts":{"m4":{"RemovedAt":"2026-09-26T00:00:00Z","generation":7,"incarnationId":"inc-1"}}}`
 	path := StorePath(t.TempDir())
 	writeRawStore(t, path, 0o600, body)
-	store, err := Open(path)
+	store, err := Open(path, RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("Open(case-variant removal marker key) = %v, want the custody-first quarantine", err)
 	}

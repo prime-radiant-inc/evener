@@ -66,7 +66,7 @@ func TestHostRestartReconcilesDistinctBuildDeployment(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			store, err := hostops.Open(hostops.StorePath(t.TempDir()))
+			store, err := hostops.Open(hostops.StorePath(t.TempDir()), hostops.RetentionPolicy{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -151,7 +151,7 @@ func TestHostRestartPreservesCompatibleHubWithUnusableExecutable(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			store, err := hostops.Open(hostops.StorePath(t.TempDir()))
+			store, err := hostops.Open(hostops.StorePath(t.TempDir()), hostops.RetentionPolicy{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1332,7 +1332,7 @@ func publicRecoveryHubForHost(t *testing.T, runner *restartRecoveryRunner, remot
 		t.Fatal(err)
 	}
 	host, _ = registry.Get(host.Name)
-	store, err := hostops.Open(hostops.StorePath(t.TempDir()))
+	store, err := hostops.Open(hostops.StorePath(t.TempDir()), hostops.RetentionPolicy{})
 	if err != nil {
 		t.Fatal(err)
 	}
