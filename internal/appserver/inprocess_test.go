@@ -243,8 +243,9 @@ func TestInProcessCancellationAbortsCapture(t *testing.T) {
 func TestInProcessSlowConsumerAndShutdown(t *testing.T) {
 	server := NewServer(ServerConfig{})
 	transport := openInProcessTest(t, server)
+	live := make(chan struct{})
 	HandleTyped(server.Router(), "test/subscribe", func(ctx context.Context, _ struct{}) (struct{}, error) {
-		if !CaptureSubscriptionWithHandoff(ctx, false, func() string { return "target" }, func() uint64 { return 0 }, func() bool { return true }, CaptureSubscriptionHandoff{}) {
+		if !CaptureSubscriptionWithHandoff(ctx, false, func() string { return "target" }, func() uint64 { return 0 }, func() bool { return true }, CaptureSubscriptionHandoff{Commit: func() { close(live) }}) {
 			return struct{}{}, appwire.InternalError("capture failed")
 		}
 		return struct{}{}, nil
@@ -252,6 +253,12 @@ func TestInProcessSlowConsumerAndShutdown(t *testing.T) {
 	if msg := inProcessRequest(t, transport, 2, "test/subscribe", struct{}{}); msg.Error != nil {
 		t.Fatal(msg.Error)
 	}
+	// The response reaches the transport before the worker commits the
+	// capture, so the subscription is still hydrating when inProcessRequest
+	// returns. A burst sent now would overflow the hydration buffer into one
+	// coalesced resync instead of the live outbound buffer. The handoff
+	// commit runs after the release, so it marks the subscription live.
+	waitFor(t, "subscription capture to commit", live)
 	for range appwire.NotificationBufferCap + 1 {
 		server.Broadcast("target", "test/burst", struct{}{})
 	}
