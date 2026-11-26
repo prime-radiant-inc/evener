@@ -496,8 +496,8 @@ func TestHostPlanRefusesDriftAndConcurrentTerminalOp(t *testing.T) {
 			}
 			outcome, err := store.Create(hostops.OperationCreateRequest{
 				ClientOperationID: "client-1", Host: host.Name, Kind: hostops.KindDeploy,
-				Pair:   hostops.OperationPair{Generation: live.Generation, IncarnationID: live.IncarnationID},
-				BootID: "test-boot",
+				Pair:           hostops.OperationPair{Generation: live.Generation, IncarnationID: live.IncarnationID},
+				BootID:         "test-boot",
 				SequenceBefore: store.Sequence(),
 			})
 			if err != nil {

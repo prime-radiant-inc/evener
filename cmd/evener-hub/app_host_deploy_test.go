@@ -682,8 +682,8 @@ func TestHostDeployRefusesAConcurrentTerminalOperation(t *testing.T) {
 			}
 			outcome, err := store.Create(hostops.OperationCreateRequest{
 				ClientOperationID: "op-other", Host: entry.Name, Kind: hostops.KindRestart,
-				Pair:   hostops.OperationPair{Generation: live.Generation, IncarnationID: live.IncarnationID},
-				BootID: "test-boot",
+				Pair:           hostops.OperationPair{Generation: live.Generation, IncarnationID: live.IncarnationID},
+				BootID:         "test-boot",
 				SequenceBefore: store.Sequence(),
 			})
 			if err != nil {
@@ -771,8 +771,8 @@ func TestHostRestartIncarnationPair(t *testing.T) {
 	// The retained record from before the update: pinned to the superseded pair.
 	retainedOutcome, err := store.Create(hostops.OperationCreateRequest{
 		ClientOperationID: "op-old", Host: entry.Name, Kind: hostops.KindRestart,
-		Pair:   hostops.OperationPair{Generation: 1, IncarnationID: "inc-old"},
-		BootID: "test-boot",
+		Pair:           hostops.OperationPair{Generation: 1, IncarnationID: "inc-old"},
+		BootID:         "test-boot",
 		SequenceBefore: store.Sequence(),
 	})
 	if err != nil {
@@ -2074,8 +2074,8 @@ func createPairRecordForTest(t *testing.T, store *hostops.Store, entry hostreg.H
 	t.Helper()
 	outcome, err := store.Create(hostops.OperationCreateRequest{
 		ClientOperationID: clientID, Host: entry.Name, Kind: kind,
-		Pair:   hostops.OperationPair{Generation: entry.Generation, IncarnationID: entry.IncarnationID},
-		BootID: "test-boot",
+		Pair:           hostops.OperationPair{Generation: entry.Generation, IncarnationID: entry.IncarnationID},
+		BootID:         "test-boot",
 		SequenceBefore: store.Sequence(),
 	})
 	if err != nil {
