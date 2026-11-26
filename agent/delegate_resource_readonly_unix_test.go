@@ -106,7 +106,7 @@ func TestDelegateReadOnly_NoSessionProviderOrWritableOpen(t *testing.T) {
 	if _, err := LoadSessionJobActivityTree(context.Background(), stateDir, sessionID, appwire.JobsListParams{}); err != nil {
 		t.Fatalf("historical activity projection constructed writable state: %v", err)
 	}
-	if _, found, err := LoadSessionJobOutputPage(stateDir, sessionID, "job_readonly", nil, 1); err != nil || !found {
+	if _, found, err := LoadSessionJobOutputPage(stateDir, sessionID, "job_readonly", nil, 1, nil); err != nil || !found {
 		t.Fatalf("historical output-page projection: found=%v err=%v", found, err)
 	}
 	if got := mustReadonlyFileState(t, outputPath); !reflect.DeepEqual(got, outputBefore) {

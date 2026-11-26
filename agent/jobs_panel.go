@@ -812,18 +812,12 @@ func jobReadError(jobID string, err error) error {
 //
 // The record is resolved owner-authoritatively (see loadSessionJobRecord), and
 // the log is read from where the session that RAN the job wrote it rather than
-// from the session that was asked.
-func LoadSessionJobOutputPage(stateDir, sessionID, jobID string, beforeBytes *int64, maxBytes int64) (JobOutputPage, bool, error) {
-	return LoadSessionJobOutputPageWithFence(stateDir, sessionID, jobID, beforeBytes, maxBytes, nil)
-}
-
-// LoadSessionJobOutputPageWithFence is LoadSessionJobOutputPage with the
-// caller's deletion fence (see OwnerDeletionFence). A log owned by a fenced
-// session is not opened: the bytes belong to a session that is going away, and
-// serving them through the asking session's ref would outlive that deletion.
-// found=false is the answer because the fenced owner's state is not this
-// read's to state.
-func LoadSessionJobOutputPageWithFence(stateDir, sessionID, jobID string, beforeBytes *int64, maxBytes int64, fence OwnerDeletionFence) (JobOutputPage, bool, error) {
+// from the session that was asked. A log owned by a fenced session (see
+// OwnerDeletionFence; a nil fence checks only durable tombstones) is not
+// opened: the bytes belong to a session that is going away, and serving them
+// through the asking session's ref would outlive that deletion. found=false is
+// the answer because the fenced owner's state is not this read's to state.
+func LoadSessionJobOutputPage(stateDir, sessionID, jobID string, beforeBytes *int64, maxBytes int64, fence OwnerDeletionFence) (JobOutputPage, bool, error) {
 	read, err := loadSessionJobRecord(stateDir, sessionID, jobID, fence)
 	if err != nil {
 		return JobOutputPage{}, false, jobReadError(jobID, err)
@@ -873,7 +867,10 @@ func (s *Session) JobGet(jobID string) (JobActivityJob, bool, error) {
 //
 // The record is resolved owner-authoritatively (see loadSessionJobRecord): when
 // the job ID names an owner other than sessionID, the owner's record wins, and
-// sessionID's copy is used only when the owner's journal holds none.
+// sessionID's copy is used only when the owner's journal holds none. A fenced
+// owner (see OwnerDeletionFence; a nil fence checks only durable tombstones)
+// is not consulted, so the asking session's own copy answers — the same
+// fallback a dead descendant's ancestor relies on.
 //
 // OwnerRef echoes the ref the caller ASKED about, and OwnerSessionID names the
 // session that actually owns the job. The two are deliberately different
@@ -882,15 +879,7 @@ func (s *Session) JobGet(jobID string) (JobActivityJob, bool, error) {
 // there would discard the command and terminal status this read exists to
 // recover. The owner's identity is not lost — it rides OwnerSessionID, the field
 // that means it.
-func LoadSessionJobGet(stateDir, sessionID, jobID string) (JobActivityJob, bool, error) {
-	return LoadSessionJobGetWithFence(stateDir, sessionID, jobID, nil)
-}
-
-// LoadSessionJobGetWithFence is LoadSessionJobGet with the caller's deletion
-// fence (see OwnerDeletionFence). A fenced owner is not consulted, so the
-// asking session's own copy answers — the same fallback a dead descendant's
-// ancestor relies on.
-func LoadSessionJobGetWithFence(stateDir, sessionID, jobID string, fence OwnerDeletionFence) (JobActivityJob, bool, error) {
+func LoadSessionJobGet(stateDir, sessionID, jobID string, fence OwnerDeletionFence) (JobActivityJob, bool, error) {
 	read, err := loadSessionJobRecord(stateDir, sessionID, jobID, fence)
 	if err != nil {
 		return JobActivityJob{}, false, jobReadError(jobID, err)

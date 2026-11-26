@@ -123,7 +123,7 @@ func TestLoadSessionJobGetPreferOwnerCompletedOverForwardedRunning(t *testing.T)
 	// Read the job from the ANCESTOR's session: that is where a hub past-session
 	// fallback lands when it is pointed at the wrong branch of the tree, and it is
 	// where the stale copy lives.
-	job, found, err := LoadSessionJobGet(stateDir, rootSession, jobID)
+	job, found, err := LoadSessionJobGet(stateDir, rootSession, jobID, nil)
 	if err != nil {
 		t.Fatalf("LoadSessionJobGet: %v", err)
 	}
@@ -225,7 +225,7 @@ func TestLoadSessionJobRecordContradictoryAncestorRowIsNotAuthoritative(t *testi
 	})
 	closeJobJournal(t, ownerStore)
 
-	job, found, err := LoadSessionJobGet(stateDir, ancestorSession, jobID)
+	job, found, err := LoadSessionJobGet(stateDir, ancestorSession, jobID, nil)
 	if err != nil {
 		t.Fatalf("LoadSessionJobGet: %v", err)
 	}
@@ -310,7 +310,7 @@ func TestLoadSessionJobGetRequiresRequestedScope(t *testing.T) {
 	})
 	closeJobJournal(t, askedStore)
 
-	job, found, err := LoadSessionJobGet(stateDir, askedSession, jobID)
+	job, found, err := LoadSessionJobGet(stateDir, askedSession, jobID, nil)
 	if err != nil {
 		t.Fatalf("LoadSessionJobGet: %v", err)
 	}
@@ -340,7 +340,7 @@ func TestLoadSessionJobGetReportsUnresolvedScopeOnTornTail(t *testing.T) {
 		`{"kind":"job_started","seq":2,"job_id":"`+jobID+`","type":"shell"`,
 	)
 
-	_, found, err := LoadSessionJobGet(stateDir, sessionID, jobID)
+	_, found, err := LoadSessionJobGet(stateDir, sessionID, jobID, nil)
 	if found {
 		t.Fatal("found = true, want the torn append to leave the job unresolved")
 	}
@@ -394,7 +394,7 @@ func TestLoadSessionJobGetKeepsForwardedTerminalOverDamagedOwnerPrefix(t *testin
 		`{"kind":"job_finished","seq":2,"job_id":"`+jobID+`","status":"completed"`+"\n",
 	)
 
-	job, found, err := LoadSessionJobGet(stateDir, ancestorSession, jobID)
+	job, found, err := LoadSessionJobGet(stateDir, ancestorSession, jobID, nil)
 	if err != nil {
 		t.Fatalf("LoadSessionJobGet: %v", err)
 	}
@@ -444,7 +444,7 @@ func TestLoadSessionJobGetKeepsForwardedTerminalOverTornOwnerTail(t *testing.T) 
 		`{"kind":"job_finished","seq":2,"job_id":"`+jobID+`","status":"completed"`,
 	)
 
-	job, found, err := LoadSessionJobGet(stateDir, ancestorSession, jobID)
+	job, found, err := LoadSessionJobGet(stateDir, ancestorSession, jobID, nil)
 	if err != nil {
 		t.Fatalf("LoadSessionJobGet: %v", err)
 	}
@@ -494,7 +494,7 @@ func TestLoadSessionJobGetKeepsForwardedTerminalOverStatuslessOwnerRow(t *testin
 			`","job_id":"`+jobID+`","owner_session_id":"`+ownerSession+`"}`+"\n",
 	)
 
-	job, found, err := LoadSessionJobGet(stateDir, ancestorSession, jobID)
+	job, found, err := LoadSessionJobGet(stateDir, ancestorSession, jobID, nil)
 	if err != nil {
 		t.Fatalf("LoadSessionJobGet: %v", err)
 	}
@@ -554,7 +554,7 @@ func TestLoadSessionJobGetPreservesLaunchFieldsFromScopedStart(t *testing.T) {
 			`,"ended_at":"`+ownerEnded.Format(time.RFC3339)+`","terminal_generation":"gen_owner"}`+"\n",
 	)
 
-	job, found, err := LoadSessionJobGet(stateDir, ancestorSession, jobID)
+	job, found, err := LoadSessionJobGet(stateDir, ancestorSession, jobID, nil)
 	if err != nil {
 		t.Fatalf("LoadSessionJobGet: %v", err)
 	}
@@ -611,7 +611,7 @@ func TestLoadSessionJobGetIgnoresLaunchFieldsFromContradictoryStart(t *testing.T
 			`","job_id":"`+jobID+`","status":"completed","terminal_generation":"gen_owner"}`+"\n",
 	)
 
-	job, found, err := LoadSessionJobGet(stateDir, ancestorSession, jobID)
+	job, found, err := LoadSessionJobGet(stateDir, ancestorSession, jobID, nil)
 	if err != nil {
 		t.Fatalf("LoadSessionJobGet: %v", err)
 	}
@@ -653,7 +653,7 @@ func TestLoadSessionJobGetWithholdsLaunchFieldsWhenTheContradictedRowIsSelected(
 	// The encoded owner's journal does not exist, so the forwarded copy is the
 	// fallback answer and nothing replaces it.
 
-	job, found, err := LoadSessionJobGet(stateDir, ancestorSession, jobID)
+	job, found, err := LoadSessionJobGet(stateDir, ancestorSession, jobID, nil)
 	if err != nil {
 		t.Fatalf("LoadSessionJobGet: %v", err)
 	}
@@ -695,7 +695,7 @@ func TestLoadSessionJobGetKeepsStoredLegacyOwnerWhenForwardedCopyWins(t *testing
 	})
 	closeJobJournal(t, ancestorStore)
 
-	job, found, err := LoadSessionJobGet(stateDir, ancestorSession, jobID)
+	job, found, err := LoadSessionJobGet(stateDir, ancestorSession, jobID, nil)
 	if err != nil {
 		t.Fatalf("LoadSessionJobGet: %v", err)
 	}
@@ -761,7 +761,7 @@ func TestLoadSessionJobGetLegacyOwnerJournalFinishDrivesTheRead(t *testing.T) {
 	})
 	closeJobJournal(t, ownerStore)
 
-	job, found, err := LoadSessionJobGet(stateDir, ancestorSession, jobID)
+	job, found, err := LoadSessionJobGet(stateDir, ancestorSession, jobID, nil)
 	if err != nil {
 		t.Fatalf("LoadSessionJobGet: %v", err)
 	}
@@ -822,7 +822,7 @@ func TestLoadSessionJobOutputPageIgnoresContradictoryRecordsOutputPath(t *testin
 		t.Fatalf("write owner log: %v", err)
 	}
 
-	page, found, err := LoadSessionJobOutputPage(stateDir, ancestorSession, jobID, nil, 0)
+	page, found, err := LoadSessionJobOutputPage(stateDir, ancestorSession, jobID, nil, 0, nil)
 	if err != nil {
 		t.Fatalf("LoadSessionJobOutputPage: %v", err)
 	}
@@ -861,7 +861,7 @@ func TestLoadSessionJobOutputPageHonorsAgreeingRecordsOutputPath(t *testing.T) {
 	})
 	closeJobJournal(t, ownerStore)
 
-	page, found, err := LoadSessionJobOutputPage(stateDir, ownerSession, jobID, nil, 0)
+	page, found, err := LoadSessionJobOutputPage(stateDir, ownerSession, jobID, nil, 0, nil)
 	if err != nil {
 		t.Fatalf("LoadSessionJobOutputPage: %v", err)
 	}
@@ -919,7 +919,7 @@ func TestLoadSessionJobOutputPageReadsOwnerLogWhenAncestorSuppliedTheStatus(t *t
 		t.Fatalf("write owner log: %v", err)
 	}
 
-	page, found, err := LoadSessionJobOutputPage(stateDir, ancestorSession, jobID, nil, 0)
+	page, found, err := LoadSessionJobOutputPage(stateDir, ancestorSession, jobID, nil, 0, nil)
 	if err != nil {
 		t.Fatalf("LoadSessionJobOutputPage: %v", err)
 	}
@@ -1012,7 +1012,7 @@ func TestLoadSessionJobGetReportsCorruptStatusAsUnavailable(t *testing.T) {
 		`{"kind":"job_finished","seq":2,"job_id":"` + jobID + `","status":"completed"` + "\n"
 	writeJobJournalLines(t, jobsDir(stateDir, sessionID), corrupt)
 
-	_, found, err := LoadSessionJobGet(stateDir, sessionID, jobID)
+	_, found, err := LoadSessionJobGet(stateDir, sessionID, jobID, nil)
 	if found {
 		t.Fatal("found = true, want unavailable: the prefix cannot say whether the job finished")
 	}
@@ -1034,7 +1034,7 @@ func TestLoadSessionJobGetReportsCorruptStatusAsUnavailable(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(ownerLogDir, jobID+".log"), []byte("prefix bytes"), 0o644); err != nil {
 		t.Fatalf("write log: %v", err)
 	}
-	page, pageFound, pageErr := LoadSessionJobOutputPage(stateDir, sessionID, jobID, nil, 0)
+	page, pageFound, pageErr := LoadSessionJobOutputPage(stateDir, sessionID, jobID, nil, 0, nil)
 	if pageErr != nil || !pageFound {
 		t.Fatalf("LoadSessionJobOutputPage: found=%v err=%v, want the readable output beside a corrupt finish", pageFound, pageErr)
 	}
@@ -1049,7 +1049,7 @@ func TestLoadSessionJobGetReportsCorruptStatusAsUnavailable(t *testing.T) {
 			`","job_id":"`+jobID+`","status":"command_exited_nonzero","exit_code":6,`+
 			`"ended_at":"`+ended.Format(time.RFC3339)+`","terminal_generation":"gen_ok"}`+"\n",
 	)
-	job, found, err := LoadSessionJobGet(stateDir, sessionID, jobID)
+	job, found, err := LoadSessionJobGet(stateDir, sessionID, jobID, nil)
 	if err != nil || !found {
 		t.Fatalf("readable finish: found=%v err=%v, want the settled terminal record", found, err)
 	}
@@ -1112,7 +1112,7 @@ func TestLoadSessionJobGetFencedOwnerFallsBackToForwardedCopy(t *testing.T) {
 	// The durable marker a removed session leaves behind.
 	writeSessionTombstone(t, stateDir, ownerSession)
 
-	job, found, err := LoadSessionJobGet(stateDir, ancestorSession, jobID)
+	job, found, err := LoadSessionJobGet(stateDir, ancestorSession, jobID, nil)
 	if err != nil {
 		t.Fatalf("LoadSessionJobGet: %v", err)
 	}
@@ -1130,7 +1130,7 @@ func TestLoadSessionJobGetFencedOwnerFallsBackToForwardedCopy(t *testing.T) {
 		t.Fatalf("endedAt = %q, want empty: the finish belongs to the fenced owner", job.EndedAt)
 	}
 
-	page, pageFound, pageErr := LoadSessionJobOutputPage(stateDir, ancestorSession, jobID, nil, 0)
+	page, pageFound, pageErr := LoadSessionJobOutputPage(stateDir, ancestorSession, jobID, nil, 0, nil)
 	if pageErr != nil {
 		t.Fatalf("LoadSessionJobOutputPage: %v", pageErr)
 	}
@@ -1182,7 +1182,7 @@ func TestLoadSessionJobGetReportsUnavailableWhenOwnerJournalIsCorrupt(t *testing
 		t.Fatalf("write owner log: %v", err)
 	}
 
-	_, found, err := LoadSessionJobGet(stateDir, ancestorSession, jobID)
+	_, found, err := LoadSessionJobGet(stateDir, ancestorSession, jobID, nil)
 	if found {
 		t.Fatal("found = true, want unavailable: the owner's corrupt history left the end unresolved")
 	}
@@ -1195,7 +1195,7 @@ func TestLoadSessionJobGetReportsUnavailableWhenOwnerJournalIsCorrupt(t *testing
 	}
 
 	// Output paging does not consult the status verdict.
-	page, pageFound, pageErr := LoadSessionJobOutputPage(stateDir, ancestorSession, jobID, nil, 0)
+	page, pageFound, pageErr := LoadSessionJobOutputPage(stateDir, ancestorSession, jobID, nil, 0, nil)
 	if pageErr != nil || !pageFound {
 		t.Fatalf("LoadSessionJobOutputPage: found=%v err=%v, want the readable output", pageFound, pageErr)
 	}
@@ -1212,7 +1212,7 @@ func TestLoadSessionJobGetReportsUnavailableWhenOwnerJournalIsCorrupt(t *testing
 	})
 	closeJobJournal(t, ancestorStore)
 
-	job, found, err := LoadSessionJobGet(stateDir, ancestorSession, jobID)
+	job, found, err := LoadSessionJobGet(stateDir, ancestorSession, jobID, nil)
 	if err != nil || !found {
 		t.Fatalf("forwarded finish: found=%v err=%v, want the settled record", found, err)
 	}
@@ -1250,7 +1250,7 @@ func TestLoadSessionJobGetReportsUnavailableWhenOwnerJournalHasNoDecodableRecord
 		`{"kind":"job_started","seq":1,"job_id":"`+jobID+`","type":"shell"`+"\n",
 	)
 
-	_, found, err := LoadSessionJobGet(stateDir, ancestorSession, jobID)
+	_, found, err := LoadSessionJobGet(stateDir, ancestorSession, jobID, nil)
 	if found {
 		t.Fatal("found = true, want unavailable: the owner's journal is unreadable")
 	}
@@ -1301,7 +1301,7 @@ func TestLoadSessionJobOutputPageServesOwnerLogDespiteContradictoryTerminalTotal
 		t.Fatalf("write owner log: %v", err)
 	}
 
-	page, found, err := LoadSessionJobOutputPage(stateDir, ancestorSession, jobID, nil, 0)
+	page, found, err := LoadSessionJobOutputPage(stateDir, ancestorSession, jobID, nil, 0, nil)
 	if err != nil {
 		t.Fatalf("LoadSessionJobOutputPage: %v", err)
 	}
@@ -1352,7 +1352,7 @@ func TestLoadSessionJobGetPrefersRowThatEstablishesStateOnAuthorityTie(t *testin
 	})
 	closeJobJournal(t, ownerStore)
 
-	job, found, err := LoadSessionJobGet(stateDir, ancestorSession, jobID)
+	job, found, err := LoadSessionJobGet(stateDir, ancestorSession, jobID, nil)
 	if err != nil {
 		t.Fatalf("LoadSessionJobGet: %v", err)
 	}
@@ -1410,11 +1410,11 @@ func TestRetainedJobReadOutranksOnAuthorityTie(t *testing.T) {
 	}
 }
 
-// TestLoadSessionJobGetWithFenceConsultsTheCallback pins the callback half of
+// TestLoadSessionJobGetConsultsTheFenceCallback pins the callback half of
 // the deletion fence. A hub's in-memory deletion store knows about a deletion
 // that has not yet left a tombstone on disk, so the reader takes the answer
 // from the caller as well as from the durable marker.
-func TestLoadSessionJobGetWithFenceConsultsTheCallback(t *testing.T) {
+func TestLoadSessionJobGetConsultsTheFenceCallback(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
 	ancestorSession := identifier.MustNewSessionID()
@@ -1459,9 +1459,9 @@ func TestLoadSessionJobGetWithFenceConsultsTheCallback(t *testing.T) {
 		return sessionID == ownerSession
 	}
 
-	job, found, err := LoadSessionJobGetWithFence(stateDir, ancestorSession, jobID, fence)
+	job, found, err := LoadSessionJobGet(stateDir, ancestorSession, jobID, fence)
 	if err != nil {
-		t.Fatalf("LoadSessionJobGetWithFence: %v", err)
+		t.Fatalf("LoadSessionJobGet: %v", err)
 	}
 	if !found {
 		t.Fatal("found = false, want the ancestor's forwarded copy")
@@ -1474,9 +1474,9 @@ func TestLoadSessionJobGetWithFenceConsultsTheCallback(t *testing.T) {
 		t.Fatalf("fence consulted %v, want the resolved owner %q", consulted, ownerSession)
 	}
 
-	page, pageFound, pageErr := LoadSessionJobOutputPageWithFence(stateDir, ancestorSession, jobID, nil, 0, fence)
+	page, pageFound, pageErr := LoadSessionJobOutputPage(stateDir, ancestorSession, jobID, nil, 0, fence)
 	if pageErr != nil {
-		t.Fatalf("LoadSessionJobOutputPageWithFence: %v", pageErr)
+		t.Fatalf("LoadSessionJobOutputPage: %v", pageErr)
 	}
 	if pageFound {
 		t.Fatalf("found = true (page %+v), want false: the log belongs to a fenced owner", page)
