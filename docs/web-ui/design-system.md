@@ -12,8 +12,15 @@ roles onto the phone's surface vocabulary, so the palette and its semantic meani
 shared rather than transcribed twice. Typography, geometry, and navigation remain
 platform-native: do not copy this guide's type sizes, radii, or breakpoint rules literally
 onto iOS. The native app uses neutral light/dark surfaces, SF interface text, optional
-Source Serif reading text, Menlo evidence, and native stacks and sheets. References to
-phone or mobile layout below mean the web frontend, not the React Native app.
+Source Serif reading text, Menlo evidence, and native stacks and sheets.
+
+The iPhone app hosts this same mobile workspace. Its shell draws the ordinary
+conversation header with iOS controls. The web composer, navigation, Find,
+Sessions, Overview, sheets and menus share a material palette with translucent
+fills, highlights and edges. Long lists, messages, code and documents keep
+their reading surfaces. The shell reports whether iOS glass is available and
+whether Reduce Transparency permits it. Hosted controls start opaque and
+respond to setting changes in place. Browser tabs use the browser theme.
 
 The approved [editorial-instrument design](../superpowers/specs/2026-09-09-tufte-webui-design.md)
 supersedes the Beautiful UI aesthetic mandate for palette and typography; shape, enclosure

@@ -46,7 +46,7 @@ export function tellIPhoneHost(message: HostMessage): void {
 
 export function iPhoneCommand(
   event: MessageEvent,
-): { type?: unknown; path?: unknown; id?: unknown; action?: unknown } | null {
+): { type?: unknown; path?: unknown; id?: unknown; action?: unknown; glass?: unknown } | null {
   // WebKit dispatches the native command directly on this window. Messages
   // posted by another document carry its origin and window.
   if (event.source !== null || event.origin !== "" || typeof event.data !== "string") return null;
@@ -58,8 +58,12 @@ export function iPhoneCommand(
   }
 }
 
-function receiveNavigation(event: MessageEvent): void {
+function receiveHostCommand(event: MessageEvent): void {
   const command = iPhoneCommand(event);
+  if (command?.type === "material" && typeof command.glass === "boolean") {
+    document.body.dataset.iphoneGlass = command.glass ? "regular" : "opaque";
+    return;
+  }
   if (command?.type !== "navigate" || typeof command.path !== "string") return;
   let route: ReturnType<typeof urlToPane>;
   try {
@@ -76,6 +80,8 @@ function receiveNavigation(event: MessageEvent): void {
 
 export function connectIPhoneHost(): (() => void) | undefined {
   if (!iPhoneHost()) return;
+  // Draw solid controls until the phone has read its accessibility settings.
+  document.body.dataset.iphoneGlass = "opaque";
   let editing = false;
   const reportEditor = (target: EventTarget | null) => {
     let active = false;
@@ -95,14 +101,15 @@ export function connectIPhoneHost(): (() => void) | undefined {
   document.addEventListener("focusin", onFocus);
   document.addEventListener("focusout", onBlur);
   document.addEventListener("input", onInput);
-  window.addEventListener("message", receiveNavigation);
+  window.addEventListener("message", receiveHostCommand);
   tellIPhoneHost({ type: "ready" });
   onInput();
   return () => {
     document.removeEventListener("focusin", onFocus);
     document.removeEventListener("focusout", onBlur);
     document.removeEventListener("input", onInput);
-    window.removeEventListener("message", receiveNavigation);
+    window.removeEventListener("message", receiveHostCommand);
+    delete document.body.dataset.iphoneGlass;
     reportEditor(null);
   };
 }

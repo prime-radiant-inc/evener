@@ -19,6 +19,12 @@
   border-bottom: 1px solid var(--edge);
 }
 
+:global([data-iphone-glass]) .header {
+  background: var(--glass-panel);
+  background-image: var(--glass-sheen);
+  border-bottom-color: var(--glass-edge);
+}
+
 /* Single-column panes centre their content on --session-measure; the header
  * must use the same measure or the page title floats off the column it names.
  * The marker comes from PaneScaffold's existing scaffoldMarker, so the header

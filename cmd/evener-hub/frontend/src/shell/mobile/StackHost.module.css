@@ -167,6 +167,17 @@
   box-shadow: var(--shadow-card);
 }
 
+/* The workspace also owns navigation on the Board, in documents, and in
+ * wider layouts. Use the same two control groups as the iPhone header. */
+:global([data-iphone-glass]) .topBar:not([inert]) :is(.leading, .trailing):not(:empty) {
+  border-radius: var(--radius-pill);
+  background: var(--glass-fill);
+  background-image: var(--glass-sheen);
+  -webkit-backdrop-filter: var(--glass-filter);
+  backdrop-filter: var(--glass-filter);
+  box-shadow: var(--glass-shadow);
+}
+
 .stackBody {
   flex: 1 1 auto;
   /* min-height: 0 is required for a flex child to size correctly instead

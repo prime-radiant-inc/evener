@@ -246,6 +246,13 @@ test("the iPhone Sessions drawer hands off hub selection and accepts a native ro
   try {
     render(<AppShell client={client} />);
     const composer = await screen.findByRole("textbox", { name: "Message" });
+    expect(document.body.dataset.iphoneGlass).toBe("opaque");
+    const setGlass = (glass: boolean) =>
+      window.dispatchEvent(new MessageEvent("message", { data: JSON.stringify({ type: "material", glass }) }));
+    setGlass(true);
+    expect(document.body.dataset.iphoneGlass).toBe("regular");
+    setGlass(false);
+    expect(document.body.dataset.iphoneGlass).toBe("opaque");
     await userEvent.type(composer, "z");
     expect(messages).toContainEqual({ type: "editing", active: true });
     await userEvent.click(screen.getByRole("button", { name: /^Sessions/ }));

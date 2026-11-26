@@ -20,6 +20,13 @@ current conversation’s panel. The controls use Liquid Glass on iOS 26 and
 later and an opaque surface on earlier systems or with Reduce Transparency.
 The hub owns the transcript, composer, and reading position.
 
+The same design extends through pairing, hub settings, and the hosted
+workspace. Native controls use the system material. The hub draws the matching
+surfaces around its composer, Find, Sessions drawer, Overview, sheets, and
+menus. The shell sends material changes to the open page, so changing Reduce
+Transparency takes effect while a draft is open. Messages, code, documents,
+and long lists retain solid reading surfaces.
+
 Open the Sessions drawer and choose **Hubs** for pairing, switching hubs,
 display and in-app alert preferences. **Work on this iPhone** opens the
 on-device Board and its drafts, attachments, and queued messages, including

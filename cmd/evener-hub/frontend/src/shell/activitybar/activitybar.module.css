@@ -113,6 +113,24 @@
   position: relative;
 }
 
+/* The header and tab strip look through to the workspace. Each activity tab
+ * gets a solid reading surface for its rows and any open detail. */
+:global([data-iphone-glass]) .sidebarMobile {
+  background: transparent;
+}
+
+:global([data-iphone-glass]) .sidebarMobile :is(.head, .tablist) {
+  background: var(--glass-panel);
+  background-image: var(--glass-sheen);
+  border-bottom-color: var(--glass-edge);
+  -webkit-backdrop-filter: var(--glass-filter);
+  backdrop-filter: var(--glass-filter);
+}
+
+:global([data-iphone-glass]) .sidebarMobile .body {
+  background: var(--surface-canvas);
+}
+
 .stack {
   display: flex;
   flex-direction: column;
