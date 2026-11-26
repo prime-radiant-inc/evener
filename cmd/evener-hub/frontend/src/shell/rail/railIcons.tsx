@@ -14,6 +14,9 @@
 // button's only accessible name, and the a11y lint reads the attribute off the
 // element rather than through a spread.
 
+import { isApplePlatform } from "../../platform";
+import symbolStyles from "../../styles/appleSymbol.module.css";
+
 export const ICON = { viewBox: "0 0 16 16", width: 16, height: 16 } as const;
 export const STROKE = {
   fill: "none",
@@ -23,7 +26,22 @@ export const STROKE = {
   strokeLinejoin: "round",
 } as const;
 
+function controlIcon() {
+  return { ...ICON, className: isApplePlatform() ? symbolStyles.symbol : undefined };
+}
+
 export function GearIcon() {
+  if (isApplePlatform())
+    return (
+      <svg {...ICON} className={symbolStyles.symbol} aria-hidden="true">
+        <circle cx="8" cy="8" r="4.2" {...STROKE} strokeWidth="2.1" />
+        <path
+          d="M8 1.8v1.4M8 12.8v1.4M1.8 8h1.4M12.8 8h1.4M3.6 3.6l1 1M11.4 11.4l1 1M3.6 12.4l1-1M11.4 4.6l1-1"
+          {...STROKE}
+          strokeWidth="2.25"
+        />
+      </svg>
+    );
   return (
     <svg {...ICON} aria-hidden="true">
       <circle cx="8" cy="8" r="2.25" {...STROKE} />
@@ -40,7 +58,7 @@ export function GearIcon() {
 // the rest of the rail's chrome.
 export function PlusIcon() {
   return (
-    <svg {...ICON} aria-hidden="true">
+    <svg {...controlIcon()} aria-hidden="true">
       <path d="M8 3v10" {...STROKE} />
       <path d="M3 8h10" {...STROKE} />
     </svg>
@@ -49,7 +67,7 @@ export function PlusIcon() {
 
 export function SearchIcon() {
   return (
-    <svg {...ICON} aria-hidden="true">
+    <svg {...controlIcon()} aria-hidden="true">
       <circle cx="7" cy="7" r="4.25" {...STROKE} />
       <path d="M10.2 10.2 14 14" {...STROKE} />
     </svg>
@@ -58,7 +76,7 @@ export function SearchIcon() {
 
 export function SidebarIcon() {
   return (
-    <svg {...ICON} aria-hidden="true">
+    <svg {...controlIcon()} aria-hidden="true">
       <rect x="2" y="3" width="12" height="10" rx="1.5" {...STROKE} />
       <path d="M6 3v10" {...STROKE} />
     </svg>
@@ -66,9 +84,21 @@ export function SidebarIcon() {
 }
 
 export function SessionsIcon() {
+  if (isApplePlatform()) return <SidebarIcon />;
   return (
     <svg {...ICON} aria-hidden="true">
       <path d="M2 4 H14 M2 8 H14 M2 12 H14" {...STROKE} />
+    </svg>
+  );
+}
+
+export function MoreIcon() {
+  if (!isApplePlatform()) return <>⋯</>;
+  return (
+    <svg {...ICON} className={symbolStyles.symbol} aria-hidden="true" fill="currentColor">
+      <circle cx="3.4" cy="8" r="1.25" />
+      <circle cx="8" cy="8" r="1.25" />
+      <circle cx="12.6" cy="8" r="1.25" />
     </svg>
   );
 }

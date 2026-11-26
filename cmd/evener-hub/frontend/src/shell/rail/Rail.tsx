@@ -76,7 +76,7 @@ import { RailFlatContext, RailRow, type RailRowActions } from "./RailRow";
 import { ARCHIVED_SECTION_KEY, LIVE_SECTION_KEY, PROJECTS_SECTION_KEY, TEST_RUNS_SECTION_KEY } from "./railExpansion";
 import { countSessionNodes, createRailFilterContext, filterRailNodes } from "./railFilter";
 import { useRailHeaderAction } from "./railHeaderAction";
-import { PlusIcon, SidebarIcon, TuneIcon } from "./railIcons";
+import { MoreIcon, PlusIcon, SidebarIcon, TuneIcon } from "./railIcons";
 import {
   archivedCount,
   archivedProjectNodes,
@@ -419,7 +419,7 @@ function PinnedRailSection(props: PinnedRailSectionProps) {
       action={
         <Menu
           variant="quiet"
-          icon="⋯"
+          icon={<MoreIcon />}
           label={`Actions for ${section.name}`}
           items={[
             { id: "rename", label: "Rename", onSelect: onRename },

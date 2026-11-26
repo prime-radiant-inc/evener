@@ -1,20 +1,23 @@
-// The paper airplane that marks the app's one "send it off" action, shared by
-// the two surfaces that do it: the session composer's Send and the spawn
-// pane's Start. One glyph for one act - sending a message and starting a
-// session are the same gesture on two different cards, so they draw the same
-// mark rather than two lookalikes.
-//
-// Drawn in the app's stroke grammar (fill="none", stroke="currentColor",
-// strokeWidth 1.2 - the same as the composer's AttachIcon and
-// widgets/pathfield's glyphs) so it inherits the button variant's own color.
+import { isApplePlatform } from "../../platform";
+import styles from "../../styles/appleSymbol.module.css";
+
+// Send and Start share a glyph, including the upright submit arrow on Apple platforms.
 export function SendIcon() {
+  const apple = isApplePlatform();
   return (
-    <svg viewBox="0 0 14 14" width="12" height="12" aria-hidden="true" style={{ scale: "var(--send-icon-scale, 1)" }}>
+    <svg
+      viewBox="0 0 14 14"
+      width="12"
+      height="12"
+      className={apple ? styles.symbol : undefined}
+      data-apple-send={apple ? "" : undefined}
+      aria-hidden="true"
+    >
       <path
-        d="M12.8 1.2 8.8 12.8 6.4 7.6 1.2 5.2Z M12.8 1.2 6.4 7.6"
+        d={apple ? "M7 12.2V1.8 M2.7 6.1 7 1.8l4.3 4.3" : "M12.8 1.2 8.8 12.8 6.4 7.6 1.2 5.2Z M12.8 1.2 6.4 7.6"}
         fill="none"
         stroke="currentColor"
-        strokeWidth="1.2"
+        strokeWidth={apple ? 1.9 : 1.2}
         strokeLinecap="round"
         strokeLinejoin="round"
       />

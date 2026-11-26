@@ -3,6 +3,7 @@
 // (labeled buttons on desktop, 44px icon buttons below 900px). Overview opens
 // the shared tabbed ActivitySidebar directly for that session.
 
+import { isApplePlatform } from "../../../platform";
 import {
   activitySidebarOpenFor,
   activitySidebarStore,
@@ -11,6 +12,7 @@ import {
 import { SearchIcon } from "../../../shell/rail/railIcons";
 import { useIsMobile } from "../../../shell/useIsMobile";
 import { workspaceStore } from "../../../shell/workspace";
+import symbolStyles from "../../../styles/appleSymbol.module.css";
 import { Button, IconButton } from "../../../widgets";
 import { requestFindInSession } from "../find/findRequest";
 
@@ -32,7 +34,13 @@ export function openSessionOverview(
 
 function OverviewIcon() {
   return (
-    <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
+    <svg
+      viewBox="0 0 16 16"
+      width="16"
+      height="16"
+      className={isApplePlatform() ? symbolStyles.symbol : undefined}
+      aria-hidden="true"
+    >
       <rect x="2" y="2.5" width="12" height="11" rx="1.5" fill="none" stroke="currentColor" strokeWidth="1.3" />
       <path d="M9.5 2.5v11" stroke="currentColor" strokeWidth="1.3" />
     </svg>

@@ -191,7 +191,6 @@
 
 :global([data-iphone-composer]) .actions {
   --radius-control: var(--radius-pill);
-  --send-icon-scale: 1.6;
 }
 
 /* Below this width the controls leave too little for a readable placeholder,

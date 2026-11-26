@@ -46,8 +46,8 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
+import { isAppleTouchDevice } from "../../../platform";
 import { activitySidebarStore } from "../../../shell/activitybar/activitySidebarStore";
-import { isAppleTouchDevice } from "../../../shell/iPhoneGlass";
 import { iPhoneHost } from "../../../shell/iPhoneHost";
 import { alignCreateWithComposer } from "../../../shell/rail/alignCreateWithComposer";
 import type { SessionMenuTurnVerbs } from "../../../shell/sessionMenu/SessionMenu";

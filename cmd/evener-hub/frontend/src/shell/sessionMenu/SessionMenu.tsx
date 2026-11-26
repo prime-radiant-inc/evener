@@ -26,6 +26,7 @@ import type { NavigationSessionSummary } from "@evener/appwire-client";
 import { type ChangeEvent, useEffect, useState } from "react";
 import { Button, ConfirmDialog, Dialog, FormRow, Input, Menu, type MenuEntry } from "../../widgets";
 import { PinSectionPicker } from "../rail/PinSectionPicker";
+import { MoreIcon } from "../rail/railIcons";
 import { isTopLevelSession } from "../rail/sessionKind";
 import { useAsyncConfirm } from "../useAsyncConfirm";
 import { ForceStopDialog } from "./ForceStopDialog";
@@ -240,7 +241,7 @@ export function SessionMenu({
         triggerTabIndex={triggerTabIndex}
         icon={
           <span data-session-actions-ref={sessionRef} data-pane-id={paneId}>
-            ⋯
+            <MoreIcon />
           </span>
         }
         label={triggerLabel}

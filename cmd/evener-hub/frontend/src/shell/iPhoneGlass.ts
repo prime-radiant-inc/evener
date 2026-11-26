@@ -1,4 +1,5 @@
 import type { GlassScene, GlassSurfaceHandle } from "@glass-sdk/liquid-glass";
+import { isAppleTouchDevice } from "../platform";
 import { iPhoneHost } from "./iPhoneHost";
 
 const reader = "[data-reading-scroll-host]";
@@ -8,13 +9,6 @@ const controls = [reader, composer, menus].join(", ");
 
 function visible(element: HTMLElement) {
   return !element.closest("[hidden], [inert]") && element.getClientRects().length > 0;
-}
-
-export function isAppleTouchDevice(): boolean {
-  // iPadOS desktop browsing identifies as a Mac, including in a Home Screen app.
-  return (
-    /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1)
-  );
 }
 
 // The scene samples only the current conversation; its controls may live in portals.

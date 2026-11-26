@@ -1,5 +1,5 @@
 import { render } from "@testing-library/react";
-import { expect, test } from "vitest";
+import { expect, test, vi } from "vitest";
 import { SendIcon } from ".";
 
 // The button beside the glyph carries the verb ("Send" / "Start") as its
@@ -21,4 +21,18 @@ test("draws an SVG stroked with currentColor", () => {
   const path = container.querySelector("svg path");
   expect(path?.getAttribute("fill")).toBe("none");
   expect(path?.getAttribute("stroke")).toBe("currentColor");
+});
+
+test.each([
+  ["iPhone", true],
+  ["MacIntel", true],
+  ["Linux armv8l", false],
+])("selects the compact Apple submit control on %s when appropriate", (platform, apple) => {
+  const stub = vi.spyOn(navigator, "platform", "get").mockReturnValue(platform);
+  try {
+    const { container } = render(<SendIcon />);
+    expect(container.querySelector("[data-apple-send]") !== null).toBe(apple);
+  } finally {
+    stub.mockRestore();
+  }
 });

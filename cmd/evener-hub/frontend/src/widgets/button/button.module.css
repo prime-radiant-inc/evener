@@ -48,9 +48,23 @@
 }
 
 .icon {
-  display: inline-flex;
+  display: inline-grid;
+  grid: 100% / 100%;
+  place-items: center;
+  line-height: 0;
   width: 1em;
   height: 1em;
+}
+
+/* Send and Start keep the label on roomy cards. When the card hides its
+ * label, the Apple submit arrow sits alone inside a round control. */
+@container (max-width: 559px) {
+  .button:has([data-apple-send]) {
+    min-width: var(--tap-min, auto);
+    aspect-ratio: 1;
+    border-radius: var(--radius-pill);
+    padding-inline: 0;
+  }
 }
 
 /* --- sizes -------------------------------------------------------- */

@@ -17,6 +17,7 @@ import { usePaneVisible } from "../../shell/paneVisibility";
 import { documentPaneState, recordDocumentPaneState, useWorkspaceStore } from "../../shell/workspace";
 import { useThreadsStore } from "../../stores/threads";
 import { useThreadClaim } from "../../stores/useThreadModel";
+import symbolStyles from "../../styles/appleSymbol.module.css";
 import {
   Button,
   Chip,
@@ -142,6 +143,20 @@ function BoundDocument({
           <Button
             block
             variant="secondary"
+            icon={
+              <svg
+                className={symbolStyles.symbol}
+                viewBox="0 0 16 16"
+                aria-hidden="true"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <path d="M8 9V1.7 M5.5 4.2 8 1.7l2.5 2.5 M5.3 6.3H3v7.8H13V6.3h-2.3" />
+              </svg>
+            }
             onClick={() =>
               tellIPhoneHost({
                 type: "shareDocument",
