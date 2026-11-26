@@ -1,6 +1,0 @@
-/* The floating-layer surface: raised fill, pane corner, and --shadow-overlay's edge ring plus drop. :where() scores (0,0,0), so a widget's own single-class override wins whatever the load order. */
-:where(.panel) {
-  background: var(--surface-2);
-  border-radius: var(--radius-pane);
-  box-shadow: var(--shadow-overlay);
-}

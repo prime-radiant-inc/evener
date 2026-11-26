@@ -193,6 +193,11 @@
   padding-bottom: calc(var(--space-2) + var(--dock-clearance));
 }
 
+/* The drawer's Sheet supplies the panel material beneath its one scrollport. */
+:global(body[data-iphone-glass]) .parentScrollRail {
+  background: transparent;
+}
+
 /* The session list's floating New-session action. Mounted as the scroll body's
  * last child so `position: sticky` pins it to whichever box owns scrolling
  * (the body itself on desktop and the tablet split board, or the drawer's

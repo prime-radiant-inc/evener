@@ -100,6 +100,14 @@
   :global([data-composer]) .card > * {
     z-index: 0;
   }
+
+  :global(body[data-iphone-glass]) :global([data-composer]) .card::before {
+    background: var(--glass-fill);
+    background-image: var(--glass-sheen);
+    box-shadow: var(--glass-shadow);
+    -webkit-backdrop-filter: var(--glass-filter);
+    backdrop-filter: var(--glass-filter);
+  }
 }
 
 /* On the Duo cover, an empty, folded composer gives its extra inset back to

@@ -57,6 +57,10 @@
   overscroll-behavior-y: contain;
 }
 
+:global(body[data-iphone-glass]) .bottom {
+  border-radius: var(--glass-radius) var(--glass-radius) 0 0;
+}
+
 .left {
   composes: edgeVertical;
   /* biome-ignore lint/suspicious/noDuplicateProperties: css-modules composes takes one declaration per composed class, each with its own `from` */

@@ -1,0 +1,15 @@
+/* Shared by portaled widgets and inline composer completion lists. :where()
+ * keeps the default below the specific fill or geometry a widget owns. */
+:where(.panel) {
+  background: var(--surface-2);
+  border-radius: var(--radius-pane);
+  box-shadow: var(--shadow-overlay);
+}
+
+:global(body[data-iphone-glass]) .panel {
+  background: var(--glass-layer-fill, var(--glass-fill));
+  background-image: var(--glass-sheen);
+  box-shadow: var(--glass-shadow);
+  -webkit-backdrop-filter: var(--glass-layer-filter, var(--glass-filter));
+  backdrop-filter: var(--glass-layer-filter, var(--glass-filter));
+}

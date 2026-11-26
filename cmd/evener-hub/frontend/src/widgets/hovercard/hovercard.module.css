@@ -23,7 +23,7 @@
 .bubble {
   composes: float from "../../styles/motion.module.css";
   /* biome-ignore lint/suspicious/noDuplicateProperties: css-modules composes takes one declaration per composed class, each with its own `from` */
-  composes: panel from "../internal/floatingSurface.module.css";
+  composes: panel from "../../styles/floatingSurface.module.css";
   position: fixed;
   z-index: var(--z-tooltip);
   width: max-content;

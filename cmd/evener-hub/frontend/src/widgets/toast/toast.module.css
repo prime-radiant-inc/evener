@@ -12,9 +12,10 @@
 /* A toast is an arrival that asks for the user: it floats in and out (the
  * Float recipe) from the corner its region is pinned to. */
 .toast {
+  --glass-layer-fill: var(--tone-bg);
   composes: float from "../../styles/motion.module.css";
   /* biome-ignore lint/suspicious/noDuplicateProperties: css-modules composes takes one declaration per composed class, each with its own `from` */
-  composes: panel from "../internal/floatingSurface.module.css";
+  composes: panel from "../../styles/floatingSurface.module.css";
   transform-origin: right bottom;
   padding: var(--space-3) var(--space-4);
   border-color: var(--tone-edge);
