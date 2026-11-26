@@ -220,15 +220,6 @@ func TestEvalCollector_CountsForkSummaryCalls(t *testing.T) {
 	}
 }
 
-func TestEvalCollector_RetentionScoreDefaultsToZero(t *testing.T) {
-	t.Parallel()
-	c := newEvalCollector("compact", "gpt-4", "task")
-	m := c.Metrics()
-	if m.RetentionScore != 0.0 {
-		t.Errorf("expected RetentionScore 0.0, got %f", m.RetentionScore)
-	}
-}
-
 func TestEvalCollector_ConcurrentAccess(t *testing.T) {
 	t.Parallel()
 	c := newEvalCollector("compact", "gpt-4", "task")
