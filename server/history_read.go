@@ -462,16 +462,12 @@ func transferTrimmedEnd(keepNewest bool) string {
 	return "newest"
 }
 
-// before pages the request's ItemLimit items before its cursor from the
-// transcript, or before its Before boundary when it has no cursor, taken under
-// the current incarnation (appitempaging.Boundary). A
-// cursor naming another thread or an incarnation other than the current one is
-// appwire.TranscriptItemCursorStale(): the client re-reads the latest window.
-func (h *threadHistory) before(threadRef string, params appwire.ThreadTurnsListParams) (turns []appwire.Turn, olderCursor string, snapshot appwire.SnapshotIdentity, err error) {
-	turns, olderCursor, snapshot, _, err = h.beforeWithFrontier(threadRef, params)
-	return
-}
-
+// beforeWithFrontier pages the request's ItemLimit items before its cursor from
+// the transcript, or before its Before boundary when it has no cursor, taken
+// under the current incarnation (appitempaging.Boundary), alongside the
+// snapshot's latest execution frontier. A cursor naming another thread or an
+// incarnation other than the current one is appwire.TranscriptItemCursorStale():
+// the client re-reads the latest window.
 func (h *threadHistory) beforeWithFrontier(threadRef string, params appwire.ThreadTurnsListParams) (turns []appwire.Turn, olderCursor string, snapshot appwire.SnapshotIdentity, frontier string, err error) {
 	var window transcriptindex.Window
 	err = h.read(func(idx *transcriptindex.Snapshot) error {

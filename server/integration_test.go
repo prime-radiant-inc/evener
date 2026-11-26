@@ -13,10 +13,10 @@ func TestIntegration_StatusUpdates(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		Bridge(srv, evs)
+		bridgeForTest(srv, evs, nil)
 	}()
 
-	// Send session start event, then close to let Bridge drain and exit.
+	// Send session start event, then close to let the bridge helper drain and exit.
 	evs <- events.SessionEvent{
 		Kind:      events.EventSessionStart,
 		SessionID: "test-session",
@@ -26,7 +26,7 @@ func TestIntegration_StatusUpdates(t *testing.T) {
 		},
 	}
 	close(evs)
-	<-done // Bridge has processed all events; status is now stable.
+	<-done // All events have been processed; status is now stable.
 
 	thread := srv.appThread()
 	if thread.SessionID != "test-session" {

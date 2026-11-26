@@ -199,12 +199,6 @@ type appThreadReadCut struct {
 	capture  historyCapture
 }
 
-// appThreadReadSnapshot answers a read with no subscription.
-func (s *Server) appThreadReadSnapshot(params appwire.ThreadReadParams) appwire.ThreadReadResponse {
-	response, _ := s.appThreadReadSnapshotChecked(params)
-	return response
-}
-
 func (s *Server) appThreadReadSnapshotChecked(params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
 	return s.finishAppThreadRead(params, s.appThreadReadCutForTarget(params, s.appThreadIDForRead(params)))
 }

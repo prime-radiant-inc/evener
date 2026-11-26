@@ -5,25 +5,6 @@ import (
 	"primeradiant.com/evener/agent/events"
 )
 
-// Bridge reads events from a session event channel, records appwire
-// notifications, and updates server status.
-// It blocks until the events channel is closed.
-func Bridge(srv *Server, eventCh <-chan events.SessionEvent) {
-	BridgeWithObserver(srv, eventCh, nil)
-}
-
-// BridgeWithObserver behaves like Bridge and also invokes observer for every
-// event before broadcasting it. This is used to tee raw NDJSON event logs.
-//
-// The channel form is for callers that already hold one. The daemon does NOT
-// use it: it registers through agent.Session.ConsumeEventsLossless so its feed
-// cannot drop, and applies each event with BridgeEvent.
-func BridgeWithObserver(srv *Server, eventCh <-chan events.SessionEvent, observer func(events.SessionEvent)) {
-	for ev := range eventCh {
-		BridgeEvent(srv, ev, observer)
-	}
-}
-
 // BridgeEvent applies one session event to the server: the observer tee, then
 // the status write, any checkpoint/legacy envelope refresh, and the projection
 // commit. SessionStart's self-contained CurrentWork seed and typed task/goal
