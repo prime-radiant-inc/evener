@@ -16,6 +16,7 @@ import (
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/goal"
 	"primeradiant.com/evener/agent/internal/hooks"
+	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
@@ -3726,12 +3727,16 @@ func TestAskUser_ShorthandWithIntentSucceeds(t *testing.T) {
 	t.Parallel()
 	sess := newAskTestSession(t, SessionConfig{})
 	var capturedIntent string
-	sess.reg.Use(func(ctx context.Context, name string, args map[string]any) error {
-		if name == "ask_user" {
-			capturedIntent, _ = args["intent"].(string)
-		}
-		return nil
-	})
+	registered := *sess.reg.Get("ask_user")
+	origExec := registered.Exec
+	registered.Execute = nil
+	registered.Exec = func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
+		capturedIntent = tool.IntentFromContext(ctx)
+		return origExec(ctx, env, args)
+	}
+	if err := sess.reg.Register(registered); err != nil {
+		t.Fatalf("re-register ask_user: %v", err)
+	}
 	args := askUserArgsShorthand()
 	args["intent"] = "clarify datastore choice"
 
