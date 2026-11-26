@@ -1,4 +1,5 @@
 import type { GlassScene, GlassSurfaceHandle } from "@glass-sdk/liquid-glass";
+import { iPhoneHost } from "./iPhoneHost";
 
 const reader = "[data-reading-scroll-host]";
 const composer = '[data-iphone-composer="focused"] [data-prompt-card]';
@@ -9,12 +10,23 @@ function visible(element: HTMLElement) {
   return !element.closest("[hidden], [inert]") && element.getClientRects().length > 0;
 }
 
-// The native host owns its transparency setting. The scene samples only the
-// current conversation, while its real controls may live in document portals.
+export function isAppleTouchDevice(): boolean {
+  // iPadOS desktop browsing identifies as a Mac, including in a Home Screen app.
+  return (
+    /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1)
+  );
+}
+
+// The scene samples only the current conversation; its controls may live in portals.
 export function connectIPhoneGlass() {
+  const browser = !iPhoneHost();
+  if (browser && !isAppleTouchDevice()) return;
   const body = document.body;
   const contrast = matchMedia("(prefers-contrast: no-preference)");
   const reduce = matchMedia("(prefers-reduced-transparency: reduce)");
+  const motion = matchMedia("(prefers-reduced-motion: reduce)");
+  const browserBlur =
+    browser && (CSS.supports("backdrop-filter", "blur(1px)") || CSS.supports("-webkit-backdrop-filter", "blur(1px)"));
   let sdk: typeof import("@glass-sdk/liquid-glass") | undefined;
   let loading = false;
   let closed = false;
@@ -35,7 +47,12 @@ export function connectIPhoneGlass() {
 
   function reconcile() {
     if (closed) return;
-    const allowed = body.dataset.iphoneGlass === "regular" && contrast.matches && !reduce.matches;
+    const transparent = contrast.matches && !reduce.matches;
+    if (browser) {
+      const material = browserBlur && transparent ? "regular" : "opaque";
+      if (body.dataset.iphoneGlass !== material) body.dataset.iphoneGlass = material;
+    }
+    const allowed = body.dataset.iphoneGlass === "regular" && transparent && !motion.matches;
     const card = allowed ? [...body.querySelectorAll<HTMLElement>(composer)].find(visible) : undefined;
     const pane = card?.closest("[data-pane-scaffold-root]");
     const root = pane?.querySelector<HTMLElement>(reader) ?? undefined;
@@ -136,6 +153,7 @@ export function connectIPhoneGlass() {
   });
   contrast.addEventListener("change", reconcile);
   reduce.addEventListener("change", reconcile);
+  motion.addEventListener("change", reconcile);
   function retryAfterForeground() {
     if (document.visibilityState !== "visible" || !failed) return;
     failed = false;
@@ -148,7 +166,9 @@ export function connectIPhoneGlass() {
     observer.disconnect();
     contrast.removeEventListener("change", reconcile);
     reduce.removeEventListener("change", reconcile);
+    motion.removeEventListener("change", reconcile);
     document.removeEventListener("visibilitychange", retryAfterForeground);
     clear();
+    if (browser) delete body.dataset.iphoneGlass;
   };
 }

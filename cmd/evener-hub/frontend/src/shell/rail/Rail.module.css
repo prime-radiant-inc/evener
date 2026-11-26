@@ -210,6 +210,30 @@
   pointer-events: auto;
 }
 
+:global(body[data-iphone-glass]) .newSessionRow {
+  --radius-control: var(--radius-pill);
+}
+
+/* In the tablet split, the scrollport pays the same bottom inset as the
+ * composer's action row. A second sticky inset lifts Create above Send. */
+:global([data-board="visible"]) .body {
+  padding-bottom: calc(var(--dock-clearance) + var(--composer-action-inset));
+}
+
+:global([data-board="visible"]) .newSessionRow {
+  bottom: 0;
+}
+
+/* On wide iPad the status bar sits below Send. Reserve its measured baseline
+ * in the scrollport so the last session still clears the pinned Create row. */
+:global(body[data-docked-composer-action]) .body {
+  padding-bottom: calc(var(--docked-composer-action-center) - var(--tap-min) / 2);
+}
+
+:global(body[data-docked-composer-action]) .newSessionRow {
+  bottom: 0;
+}
+
 /* Full-width flex wrapper around archived overflow rows so IntersectionObserver
  * measures the row's real box without altering Tree row alignment. */
 .archiveOverflowObserver {
