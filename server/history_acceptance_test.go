@@ -363,7 +363,7 @@ func servedRealTranscript(t *testing.T, path string) (*Server, string, *transcri
 		tailTurns[i] = e.Turn
 	}
 
-	prepared, err := PrepareAppIdentity("local", threadID, path)
+	prepared, err := PrepareAppIdentityForRef("local", threadID, "local:"+threadID, path)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -2404,7 +2404,7 @@ func TestServerAppWireThreadReadRejectsMalformedOrForeignRef(t *testing.T) {
 // guards ledger #110/#111's second half: a descendant SessionStart{Restored:
 // true} with a real backing transcript must seed the descendant's turn
 // snapshot from that transcript on first observation, the same way
-// PrepareAppIdentity seeds the ROOT thread's snapshot before any live event
+// PrepareAppIdentityForRef seeds the ROOT thread's snapshot before any live event
 // arrives. Without seeding, thread/read for the descendant only ever shows
 // events recorded after the restore point, silently losing the persisted
 // history.

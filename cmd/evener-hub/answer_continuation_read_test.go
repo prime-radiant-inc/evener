@@ -58,7 +58,7 @@ func TestAnswerContinuationReadRoutes(t *testing.T) {
 	cfg := hubcore.WebConfig{Past: past}
 	daemon := daemonserver.NewServer(daemonserver.ServerConfig{})
 	defer daemon.Close()
-	identity, err := daemonserver.PrepareAppIdentity("local", id, path)
+	identity, err := daemonserver.PrepareAppIdentityForRef("local", id, "local:"+id, path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -239,7 +239,7 @@ func TestAnswerContinuationFirstQueryWithoutSubscribers(t *testing.T) {
 	}
 	daemon := daemonserver.NewServer(daemonserver.ServerConfig{})
 	defer daemon.Close()
-	identity, err := daemonserver.PrepareAppIdentity("local", id, path)
+	identity, err := daemonserver.PrepareAppIdentityForRef("local", id, "local:"+id, path)
 	if err != nil {
 		t.Fatal(err)
 	}

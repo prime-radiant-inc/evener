@@ -32,7 +32,7 @@ import (
 // SetProcessingTurn.
 func wireTranscriptHistory(t *testing.T, sess *agent.Session, srv *Server) {
 	t.Helper()
-	prepared, err := PrepareAppIdentity("local", sess.ID(), sess.TranscriptPath())
+	prepared, err := PrepareAppIdentityForRef("local", sess.ID(), "local:"+sess.ID(), sess.TranscriptPath())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -409,7 +409,7 @@ func newServedTranscriptAt(t *testing.T, srv *Server, threadID, bootGeneration s
 	for _, turn := range turns {
 		st.record(t, turn)
 	}
-	prepared, err := PrepareAppIdentity("local", threadID, path)
+	prepared, err := PrepareAppIdentityForRef("local", threadID, "local:"+threadID, path)
 	if err != nil {
 		t.Fatal(err)
 	}

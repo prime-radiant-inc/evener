@@ -554,7 +554,7 @@ func TestCrashLostBufferedEntriesAreReplacedByBootGeneration(t *testing.T) {
 	}
 	srv2 := NewServer(ServerConfig{})
 	t.Cleanup(srv2.Close)
-	prepared, err := PrepareAppIdentity("local", "crash-thread", st.path)
+	prepared, err := PrepareAppIdentityForRef("local", "crash-thread", "local:crash-thread", st.path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -642,7 +642,7 @@ func TestThreeRebuildFailuresEnterTheFailedState(t *testing.T) {
 	repair()
 	srv2 := NewServer(ServerConfig{})
 	t.Cleanup(srv2.Close)
-	prepared, err := PrepareAppIdentity("local", "fail-thread", st.path)
+	prepared, err := PrepareAppIdentityForRef("local", "fail-thread", "local:fail-thread", st.path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -828,7 +828,7 @@ func TestUnrecordedAppendFailsClosed(t *testing.T) {
 			t.Fatal(err)
 		}
 		// The writer's create already failed against the occupying
-		// directory; remove it so a fresh read of the path (PrepareAppIdentity,
+		// directory; remove it so a fresh read of the path (PrepareAppIdentityForRef,
 		// below) sees a plain absence rather than a directory where a file
 		// belongs.
 		if err := os.RemoveAll(sess.TranscriptPath()); err != nil {

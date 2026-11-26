@@ -83,9 +83,9 @@ func TestServedTranscriptReadsPersistedCommunicate(t *testing.T) {
 // serve does: project once, then publish.
 func installTranscriptIdentity(t testing.TB, srv *Server, threadID, path string) {
 	t.Helper()
-	prepared, err := PrepareAppIdentity("local", threadID, path)
+	prepared, err := PrepareAppIdentityForRef("local", threadID, "local:"+threadID, path)
 	if err != nil {
-		t.Fatalf("PrepareAppIdentity(%s): %v", path, err)
+		t.Fatalf("PrepareAppIdentityForRef(%s): %v", path, err)
 	}
 	srv.ReplaceAppIdentity(prepared.WithBootGeneration("1"), nil)
 }
@@ -170,8 +170,8 @@ func TestDaemonTranscriptPreparationPropagatesUnsupportedFormat(t *testing.T) {
 			if err := os.WriteFile(path, []byte(tc.body), 0o644); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := PrepareAppIdentity("local", "th_1", path); !errors.Is(err, transcript.ErrUnsupportedFormat) {
-				t.Fatalf("PrepareAppIdentity = %v, want ErrUnsupportedFormat", err)
+			if _, err := PrepareAppIdentityForRef("local", "th_1", "local:th_1", path); !errors.Is(err, transcript.ErrUnsupportedFormat) {
+				t.Fatalf("PrepareAppIdentityForRef = %v, want ErrUnsupportedFormat", err)
 			}
 		})
 	}
@@ -404,16 +404,16 @@ func TestPreparedAppIdentityRejectsAnotherSessionsTranscript(t *testing.T) {
 		return path
 	}
 
-	if _, err := PrepareAppIdentity("local", "th_1", write("th_1")); err != nil {
-		t.Fatalf("PrepareAppIdentity with a matching header = %v, want success", err)
+	if _, err := PrepareAppIdentityForRef("local", "th_1", "local:th_1", write("th_1")); err != nil {
+		t.Fatalf("PrepareAppIdentityForRef with a matching header = %v, want success", err)
 	}
 
 	st := newServedTranscript(t, NewServer(ServerConfig{}), "th_1", schema.NewTurn(schema.TurnUserInput, llm.User("installed")))
 	srv := st.srv
 	before := st.read(t)
 
-	if _, err := PrepareAppIdentity("local", "th_1", write("th_other")); err == nil {
-		t.Fatal("PrepareAppIdentity accepted another session's transcript")
+	if _, err := PrepareAppIdentityForRef("local", "th_1", "local:th_1", write("th_other")); err == nil {
+		t.Fatal("PrepareAppIdentityForRef accepted another session's transcript")
 	}
 	if after := st.read(t); !reflect.DeepEqual(after, before) {
 		t.Fatalf("failed preparation mutated installed state\n got: %+v\nwant: %+v", after, before)
@@ -438,9 +438,9 @@ func TestPreparedAppIdentityServesNoHistoryWithoutATranscript(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			srv := NewServer(ServerConfig{})
 			t.Cleanup(srv.Close)
-			prepared, err := PrepareAppIdentity("local", "th_1", tc.path)
+			prepared, err := PrepareAppIdentityForRef("local", "th_1", "local:th_1", tc.path)
 			if err != nil {
-				t.Fatalf("PrepareAppIdentity: %v", err)
+				t.Fatalf("PrepareAppIdentityForRef: %v", err)
 			}
 			srv.ReplaceAppIdentity(prepared.WithBootGeneration("1"), nil)
 			if srv.appHistoryForID("th_1") != nil {
@@ -465,14 +465,14 @@ func TestPreparedAppIdentityRequiresAThreadID(t *testing.T) {
 		srv := NewServer(ServerConfig{})
 		setAppIdentity(t, srv, "local", "th_1")
 		srv.UpdateSessionInfo("01SESS001", "gpt-5", "openai")
-		if _, err := PrepareAppIdentity("local", threadID, ""); err == nil {
-			t.Fatalf("PrepareAppIdentity(%q) succeeded, want an error", threadID)
+		if _, err := PrepareAppIdentityForRef("local", threadID, "local:th_1", ""); err == nil {
+			t.Fatalf("PrepareAppIdentityForRef(%q) succeeded, want an error", threadID)
 		}
 		if got := srv.GetStatus().SessionID; got != "01SESS001" {
-			t.Fatalf("PrepareAppIdentity(%q) left status.SessionID = %q, want the untouched 01SESS001", threadID, got)
+			t.Fatalf("PrepareAppIdentityForRef(%q) left status.SessionID = %q, want the untouched 01SESS001", threadID, got)
 		}
 		if got := srv.appThread().ID; got != "th_1" {
-			t.Fatalf("PrepareAppIdentity(%q) replaced the installed thread with %q", threadID, got)
+			t.Fatalf("PrepareAppIdentityForRef(%q) replaced the installed thread with %q", threadID, got)
 		}
 	}
 }

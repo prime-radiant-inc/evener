@@ -44,7 +44,7 @@ func newFrontierWire(t *testing.T, s *agent.Session) (*server.Server, func(bool)
 	t.Helper()
 	srv := server.NewServer(server.ServerConfig{})
 	t.Cleanup(srv.Close)
-	prepared, err := server.PrepareAppIdentity("local", s.ID(), s.TranscriptPath())
+	prepared, err := server.PrepareAppIdentityForRef("local", s.ID(), "local:"+s.ID(), s.TranscriptPath())
 	if err != nil {
 		t.Fatal(err)
 	}

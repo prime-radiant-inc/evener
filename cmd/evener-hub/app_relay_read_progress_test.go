@@ -360,7 +360,7 @@ func TestHubRelayRoutePublicationUnblocksPendingDelivery(t *testing.T) {
 	const replacementID = "read-progress-replacement"
 	replacement := daemonserver.NewServer(daemonserver.ServerConfig{})
 	t.Cleanup(replacement.Close)
-	identity, err := daemonserver.PrepareAppIdentity("local", replacementID, "")
+	identity, err := daemonserver.PrepareAppIdentityForRef("local", replacementID, "local:"+replacementID, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -626,7 +626,7 @@ func newHubRelayProgressFixtureWithSessionTools(t *testing.T, hooks hubcore.Rela
 
 	daemon := daemonserver.NewServer(daemonserver.ServerConfig{})
 	t.Cleanup(daemon.Close)
-	prepared, err := daemonserver.PrepareAppIdentity("local", rootID, "")
+	prepared, err := daemonserver.PrepareAppIdentityForRef("local", rootID, rootRef, "")
 	if err != nil {
 		t.Fatal(err)
 	}
