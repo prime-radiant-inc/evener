@@ -69,7 +69,7 @@ func toolPackageRegistryEdges(t *testing.T) {
 		t.Fatal("bad schema registered")
 	}
 	allowed := map[string]bool{}
-	r.RestrictKeepingResultTool(allowed, "")
+	r.Restrict(allowed, "")
 	r.OverrideLimits(nil)
 
 	state := RegisteredTool{

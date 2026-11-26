@@ -108,7 +108,7 @@ func bundledMetaStringList(t *testing.T, meta map[string]any, key string) []stri
 // TestBundledCoordinatorUsesDelegateAndShellIdentities pins the
 // coordinator agent's declared capability surface, not the wording of its role
 // prompt. The runtime consumes the frontmatter tools: list as an allowlist
-// (baseSubagentToolPolicy hands it to Registry.RestrictKeepingResultTool), so
+// (baseSubagentToolPolicy hands it to Registry.Restrict), so
 // the stable delegate/shell control tools must be named there. Prose cannot
 // prove a capability; a tools: entry can, and the agent package's
 // TestBundledAgentToolListsNameRegisteredTools additionally proves every entry

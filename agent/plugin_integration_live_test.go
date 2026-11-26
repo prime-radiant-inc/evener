@@ -778,7 +778,7 @@ func TestLive_ToolRestriction_PluginAgent(t *testing.T) {
 	for _, tool := range analyzer.Tools {
 		allowed[tool] = true
 	}
-	reg.Restrict(allowed)
+	reg.Restrict(allowed, "")
 
 	// After restriction: should have read_file, grep, glob + communicate (auto-kept)
 	restricted := reg.RegisteredNames()

@@ -25,7 +25,7 @@ func unsandboxedProber(home string) sandbox.Prober {
 
 // TestTypedSubagentPolicyKeepsIntrinsicTools pins the policy half of #2645: a
 // typed role's tools: frontmatter is an allowlist handed to
-// RestrictKeepingResultTool, which DELETES every registered tool the list omits.
+// Restrict, which DELETES every registered tool the list omits.
 // A role that never named the job tools (the bundled explorer, the
 // coordinator-workflow implementer) used to lose them, so a long foreground
 // command promoted to a background job became work the delegate could await

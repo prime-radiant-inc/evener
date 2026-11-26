@@ -69,7 +69,7 @@ parent/session. This is enforced structurally by a single per-session tool regis
 not by parallel policy checks:
 
 - **One registry, narrowed at child init.** `initSessionState` (`agent/session_init.go`)
-  builds the full registry, then applies the spawn restrictions: `RestrictKeepingResultTool`
+  builds the full registry, then applies the spawn restrictions: `Restrict`
   (`agent/internal/tool/registry.go`) drops every tool not in the child's allowed set
   except the result tool, and `Remove` drops each denied tool. A `tools: all` agent gets
   exactly the tools effective in *this* child session — not every tool registered in the
