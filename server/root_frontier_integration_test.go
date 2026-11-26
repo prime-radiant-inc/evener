@@ -349,7 +349,7 @@ func TestRootFrontierUserInputAndBlockedSteeringCarrier(t *testing.T) {
 	t.Parallel()
 	sess, script, _, stateDir := newScriptedSession(t)
 	h := newRootFrontierHarness(t, sess, stateDir)
-	if err := sess.SetModel("gpt-5.4"); err != nil {
+	if err := sess.SetModel("", "gpt-5.4"); err != nil {
 		t.Fatal(err)
 	}
 	h.await(t, events.EventModelChanged, nil)
@@ -536,7 +536,7 @@ func TestRootFrontierAttentionWakeOpensOnAssistantRecord(t *testing.T) {
 	h.assertShapes(t, previous, true)
 	// A session-owned idle write uses a gap instead of an asynchronous delivery.
 	// Both newer non-execution spans leave the frontier on the completed turn.
-	if err := sess.SetModel("gpt-5.4"); err != nil {
+	if err := sess.SetModel("", "gpt-5.4"); err != nil {
 		t.Fatal(err)
 	}
 	h.await(t, events.EventModelChanged, nil)

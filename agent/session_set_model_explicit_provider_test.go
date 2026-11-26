@@ -10,14 +10,15 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
-// TestSetModelOn_ExplicitProviderDecidesTheInstance pins the two readings of a
-// switch. A picker that names an instance (SetModelOn) lands the switch on that
-// instance even when the current instance serves the same model id under a
-// namespaced name, which is the OpenRouter case: "anthropic/claude-opus-5" is
-// one of OpenRouter's own ids, so the joined ref alone cannot say whether the
-// reader chose OpenRouter's namespaced row or the direct Anthropic one. A
-// picker that names only a ref (SetModel) keeps the current instance's reading.
-func TestSetModelOn_ExplicitProviderDecidesTheInstance(t *testing.T) {
+// TestSetModel_ExplicitProviderDecidesTheInstance pins the two readings of a
+// switch. A caller that names an instance (SetModel(provider, model)) lands
+// the switch on that instance even when the current instance serves the same
+// model id under a namespaced name, which is the OpenRouter case:
+// "anthropic/claude-opus-5" is one of OpenRouter's own ids, so the joined ref
+// alone cannot say whether the reader chose OpenRouter's namespaced row or the
+// direct Anthropic one. An empty provider (SetModel("", ref)) keeps the
+// current instance's reading.
+func TestSetModel_ExplicitProviderDecidesTheInstance(t *testing.T) {
 	t.Parallel()
 	const (
 		anthropicModel  = "claude-opus-5"
@@ -33,28 +34,28 @@ func TestSetModelOn_ExplicitProviderDecidesTheInstance(t *testing.T) {
 		{
 			name:      "explicit Anthropic leaves OpenRouter for the direct row",
 			base:      newOpenAICompatProfile("openrouter", openRouterModel, 0),
-			set:       func(s *Session) error { return s.SetModelOn("anthropic", anthropicModel) },
+			set:       func(s *Session) error { return s.SetModel("anthropic", anthropicModel) },
 			wantID:    "anthropic",
 			wantModel: anthropicModel,
 		},
 		{
 			name:      "explicit OpenRouter leaves Anthropic for the namespaced row",
 			base:      newAnthropicProfile(anthropicModel),
-			set:       func(s *Session) error { return s.SetModelOn("openrouter", openRouterModel) },
+			set:       func(s *Session) error { return s.SetModel("openrouter", openRouterModel) },
 			wantID:    "openrouter",
 			wantModel: openRouterModel,
 		},
 		{
 			name:      "omitted provider keeps the namespaced id on the current instance",
 			base:      newOpenAICompatProfile("openrouter", "openai/gpt-5.2", 0),
-			set:       func(s *Session) error { return s.SetModel(openRouterModel) },
+			set:       func(s *Session) error { return s.SetModel("", openRouterModel) },
 			wantID:    "openrouter",
 			wantModel: openRouterModel,
 		},
 		{
 			name:      "omitted provider keeps an unnamespaced id on the current instance",
 			base:      newAnthropicProfile("claude-sonnet-5"),
-			set:       func(s *Session) error { return s.SetModel(anthropicModel) },
+			set:       func(s *Session) error { return s.SetModel("", anthropicModel) },
 			wantID:    "anthropic",
 			wantModel: anthropicModel,
 		},
@@ -115,8 +116,8 @@ func TestModelPickOnExplicitProviderQueuesToTheTurnBoundary(t *testing.T) {
 			if picked.Swap(true) {
 				return
 			}
-			if err := sess.SetModelOn("anthropic", "claude-opus-5"); err != nil {
-				t.Errorf("SetModelOn mid-input: %v", err)
+			if err := sess.SetModel("anthropic", "claude-opus-5"); err != nil {
+				t.Errorf("SetModel mid-input: %v", err)
 			}
 		}
 	})

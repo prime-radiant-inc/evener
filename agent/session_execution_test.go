@@ -216,10 +216,10 @@ func TestIdleAnnouncementsShareOneGapTurn(t *testing.T) {
 	if _, err := s.ProcessInput(context.Background(), "first", nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SetModel("gpt-5.4"); err != nil {
+	if err := s.SetModel("", "gpt-5.4"); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SetModel("gpt-5.2"); err != nil {
+	if err := s.SetModel("", "gpt-5.2"); err != nil {
 		t.Fatal(err)
 	}
 	turns := transcriptTurnsOf(t, s)

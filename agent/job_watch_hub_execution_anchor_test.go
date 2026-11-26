@@ -26,7 +26,7 @@ func TestManagerWatchModelSwitchExecutionAnchor(t *testing.T) {
 	if _, err := sess.ProcessInput(t.Context(), "completed execution A", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
-	if err := sess.SetModel("gpt-4.1-mini"); err != nil {
+	if err := sess.SetModel("", "gpt-4.1-mini"); err != nil {
 		t.Fatalf("SetModel: %v", err)
 	}
 

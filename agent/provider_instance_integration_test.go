@@ -176,7 +176,7 @@ func TestProviderInstance_CrossInstanceSwitch_PreservesOverrideAndIdentity(t *te
 	}
 
 	// Switch to "work2" via resolver.
-	sess.SetModel("work2/gpt-5.2")
+	sess.SetModel("", "work2/gpt-5.2")
 
 	// Identity must now be "work2".
 	if got := sess.profile.ID(); got != "work2" {
@@ -244,7 +244,7 @@ func TestProviderInstance_GoogleSwitchDoesNotWireWebSearch(t *testing.T) {
 	}
 
 	// Switch to google via resolver.
-	sess.SetModel("google/gemini-2.5-pro")
+	sess.SetModel("", "google/gemini-2.5-pro")
 
 	if got := sess.profile.Surface(); got != registry.SurfaceGoogle {
 		t.Fatalf("after SetModel, Surface = %q, want google", got)
@@ -257,7 +257,7 @@ func TestProviderInstance_GoogleSwitchDoesNotWireWebSearch(t *testing.T) {
 	}
 
 	// Switch back to a renamed openai instance.
-	sess.SetModel("work2/gpt-5.2")
+	sess.SetModel("", "work2/gpt-5.2")
 
 	if got := sess.profile.ID(); got != "work2" {
 		t.Fatalf("after second SetModel, profile ID = %q, want work2", got)

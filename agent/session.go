@@ -2111,7 +2111,7 @@ func (s *Session) Profile() *provider.Profile { return s.currentProfile() }
 // thread/model/set's hook samples it inside the
 // server's critical section, so a pick accepted mid-turn is readable from
 // thread/read before its boundary commits it - the read half of the acceptance
-// SetModelOn publishes as EventNextModelChanged - and stays readable through
+// SetModel publishes as EventNextModelChanged - and stays readable through
 // the application itself, whose settle is what replaces the pair. A pick
 // newer than the validating one that commits mid-application owns the sample,
 // so the pair never regresses from a committed choice to the pick it
@@ -2305,13 +2305,15 @@ type modelSwitchFence struct {
 	queueWhenBusy bool
 }
 
-// SetModel changes the model used for future LLM calls, reading a bare ref or
-// an "instance/model" ref. When the caller knows which instance it picked,
-// SetModelOn is the door that keeps the two halves distinct.
+// SetModel changes the model used for future LLM calls. An explicit provider
+// pins the target instance unambiguously (essential for upstream-namespaced
+// model IDs like OpenRouter's "anthropic/claude-opus-5"). An empty provider
+// ("") parses model as a bare model on the active instance or an
+// "instance/model" ref.
 //
 // Takes effect on the next request. Returns an error (without changing any
-// session state) when the model ref cannot be resolved to a profile, when the
-// current history contains content the target can't represent (see
+// session state) when model is empty or cannot be resolved to a profile, when
+// the current history contains content the target can't represent (see
 // unrepresentableHistoryKinds), or when the target model fails live
 // membership validation (see validateModelSwitchMembership). On a successful
 // switch, cfg.ModelFallbacks entries that no longer validate against the new
@@ -2328,17 +2330,7 @@ type modelSwitchFence struct {
 // History representability is re-checked at that boundary against the settled
 // history; a switch that fails there surfaces as a transcript warning, is
 // dropped rather than retried, and its acceptance is retracted.
-func (s *Session) SetModel(model string) error {
-	return s.SetModelOn("", model)
-}
-
-// SetModelOn is SetModel for a picker that knows both halves of the choice.
-// An explicit provider names the instance the switch lands on: it decides the
-// target even when the current instance also serves the same model id, which
-// is what OpenRouter's upstream-namespaced ids ("anthropic/claude-opus-5")
-// make ambiguous. An empty provider is SetModel's historic current-instance
-// reading, and model is then the whole ref.
-func (s *Session) SetModelOn(provider, model string) error {
+func (s *Session) SetModel(provider, model string) error {
 	release, admissionErr := s.beginRetirementMutation("admission")
 	if admissionErr != nil {
 		return admissionErr

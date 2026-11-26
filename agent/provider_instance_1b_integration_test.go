@@ -314,7 +314,7 @@ func TestPhase1b_SetModel_Work2_PreservesOutputSchema(t *testing.T) {
 	}
 
 	// Switch to work2 via resolver.
-	sess.SetModel("work2/gpt-5.4")
+	sess.SetModel("", "work2/gpt-5.4")
 
 	if got := sess.profile.ID(); got != "work2" {
 		t.Fatalf("after SetModel, profile ID = %q, want work2", got)

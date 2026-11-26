@@ -118,7 +118,7 @@ func TestSetModel_SwitchesToLiveListedCodexModel(t *testing.T) {
 		}),
 	)
 	before := proto.callCount("codex-target")
-	if err := sess.SetModel("codex-target/gpt-reserve"); err != nil {
+	if err := sess.SetModel("", "codex-target/gpt-reserve"); err != nil {
 		t.Fatalf("SetModel to a model the target lists live: %v", err)
 	}
 	if got := proto.callCount("codex-target") - before; got != 1 {
@@ -179,7 +179,7 @@ func TestSetModel_DisabledNamespacedRowDoesNotMaskSwitch(t *testing.T) {
 		}),
 	)
 	before := proto.callCount("codex-target")
-	if err := sess.SetModel("codex-target/gpt-reserve"); err != nil {
+	if err := sess.SetModel("", "codex-target/gpt-reserve"); err != nil {
 		t.Fatalf("a disabled namespaced row masked a provider switch: %v", err)
 	}
 	if got := proto.callCount("codex-target") - before; got != 1 {

@@ -112,7 +112,7 @@ func TestSession_FallbackUsesDispatchSnapshot(t *testing.T) {
 
 	// Cross-surface switch: revalidates and drops the now-invalid fallback
 	// entry from s.cfg.ModelFallbacks. The in-flight round must not see that.
-	if err := sess.SetModel("anthropic/claude-opus-4-6"); err != nil {
+	if err := sess.SetModel("", "anthropic/claude-opus-4-6"); err != nil {
 		t.Fatalf("SetModel: %v", err)
 	}
 	if len(sess.cfg.ModelFallbacks) != 0 {

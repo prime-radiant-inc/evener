@@ -106,7 +106,7 @@ func TestSession_ConcurrencyStress(t *testing.T) {
 
 	// Bounded concurrent control/read ops — all s.mu-guarded, safe against a turn.
 	ops := []func(){
-		func() { sess.SetModel("gpt-5.2") },
+		func() { sess.SetModel("", "gpt-5.2") },
 		func() { sess.SetReasoningEffort("high") },
 		func() { _ = sess.DetailedStatus() },
 		func() { _, _ = sess.SetGoal(context.Background(), "do the thing") },

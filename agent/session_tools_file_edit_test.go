@@ -410,15 +410,15 @@ func TestEditFile_AndApplyPatch_NeverBothAdvertisedInSession(t *testing.T) {
 		}
 
 		assertExclusive(true, false, "initial openai")
-		if err := sess.SetModel("google/gemini-2.5-pro"); err != nil {
+		if err := sess.SetModel("", "google/gemini-2.5-pro"); err != nil {
 			t.Fatalf("SetModel(google): %v", err)
 		}
 		assertExclusive(false, true, "after switch to google")
-		if err := sess.SetModel("glm/glm-5"); err != nil {
+		if err := sess.SetModel("", "glm/glm-5"); err != nil {
 			t.Fatalf("SetModel(glm): %v", err)
 		}
 		assertExclusive(false, true, "after switch to generic glm")
-		if err := sess.SetModel("openai/gpt-5.4"); err != nil {
+		if err := sess.SetModel("", "openai/gpt-5.4"); err != nil {
 			t.Fatalf("SetModel(openai): %v", err)
 		}
 		assertExclusive(true, false, "after switch back to openai")
@@ -435,7 +435,7 @@ func TestEditFile_AndApplyPatch_NeverBothAdvertisedInSession(t *testing.T) {
 				testOnly:       testConfig{skipGitSnapshot: true},
 			}),
 		)
-		if err := sess.SetModel("openai/gpt-5.4"); err != nil {
+		if err := sess.SetModel("", "openai/gpt-5.4"); err != nil {
 			t.Fatalf("SetModel(openai): %v", err)
 		}
 		defs := sess.ToolDefinitions()

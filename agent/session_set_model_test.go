@@ -49,7 +49,7 @@ func TestSetModel_UnknownInstance_ReturnsErrorAndLeavesProfileUnchanged(t *testi
 
 	before := sess.currentProfile()
 
-	err := sess.SetModel("bogus/some-model")
+	err := sess.SetModel("", "bogus/some-model")
 	if err == nil {
 		t.Fatal("SetModel with unknown instance ref = nil error, want non-nil")
 	}
@@ -76,7 +76,7 @@ func TestSetModel_SameProvider_ReturnsNilAndChangesModel(t *testing.T) {
 		}),
 	)
 
-	err := sess.SetModel("gpt-4.1-mini")
+	err := sess.SetModel("", "gpt-4.1-mini")
 	if err != nil {
 		t.Fatalf("SetModel same-provider switch: %v", err)
 	}
@@ -100,7 +100,7 @@ func TestSetModel_CrossProvider_ReturnsNilAndSwapsProfileID(t *testing.T) {
 		}),
 	)
 
-	err := sess.SetModel("anthropic/claude-opus-4-6")
+	err := sess.SetModel("", "anthropic/claude-opus-4-6")
 	if err != nil {
 		t.Fatalf("SetModel cross-provider switch: %v", err)
 	}
@@ -127,7 +127,7 @@ func TestSetModel_CrashRestore_SwitchedModelSurvives(t *testing.T) {
 		t.Fatalf("NewSession: %v", err)
 	}
 
-	if err := sess.SetModel("gpt-4.1-mini"); err != nil {
+	if err := sess.SetModel("", "gpt-4.1-mini"); err != nil {
 		t.Fatalf("SetModel: %v", err)
 	}
 	sessID := sess.ID()
@@ -202,7 +202,7 @@ func TestSetModel_UnknownModelOnEnumerableInstance_Rejected(t *testing.T) {
 		}),
 	)
 
-	err := sess.SetModel("anthropic/not-a-real-model")
+	err := sess.SetModel("", "anthropic/not-a-real-model")
 	if err == nil {
 		t.Fatal("SetModel with unknown model on enumerable instance = nil error, want non-nil")
 	}
@@ -229,7 +229,7 @@ func TestSetModel_NonEnumerableInstance_AcceptsUnlistedModel(t *testing.T) {
 		}),
 	)
 
-	if err := sess.SetModel("anthropic/whatever-unlisted-model"); err != nil {
+	if err := sess.SetModel("", "anthropic/whatever-unlisted-model"); err != nil {
 		t.Fatalf("SetModel on non-enumerable instance: %v", err)
 	}
 	if got := sess.currentProfile().ID(); got != "anthropic" {
@@ -249,7 +249,7 @@ func TestSetModel_UnusableListing_AcceptsUnlistedModel(t *testing.T) {
 		}),
 	)
 
-	if err := sess.SetModel("anthropic/whatever-unlisted-model"); err != nil {
+	if err := sess.SetModel("", "anthropic/whatever-unlisted-model"); err != nil {
 		t.Fatalf("SetModel with unusable listing: %v", err)
 	}
 	if got := sess.currentProfile().ID(); got != "anthropic" {
@@ -275,7 +275,7 @@ func TestSetModel_EnumerationFailure_FailsOpenUnconditionally(t *testing.T) {
 		}),
 	)
 
-	if err := sess.SetModel("anthropic/claude-opus-4-6"); err != nil {
+	if err := sess.SetModel("", "anthropic/claude-opus-4-6"); err != nil {
 		t.Fatalf("SetModel with enumeration failure should fail open, got error: %v", err)
 	}
 }
@@ -483,7 +483,7 @@ func TestSetModel_DocumentInHistory_RejectedForUnsupportedTargetsAndRoles(t *tes
 			}
 			sess.appendTurn(kind, msg)
 
-			err := sess.SetModel(tc.target)
+			err := sess.SetModel("", tc.target)
 			if err == nil {
 				t.Fatalf("SetModel(%q) with %s document in history = nil error, want non-nil", tc.target, tc.role)
 			}
@@ -509,7 +509,7 @@ func TestSetModel_DocumentInHistory_AcceptedForGoogleTarget(t *testing.T) {
 	beforeLen := len(sess.history)
 	before := mustJSON(t, sess.history)
 
-	if err := sess.SetModel("google/gemini-2.5-flash"); err != nil {
+	if err := sess.SetModel("", "google/gemini-2.5-flash"); err != nil {
 		t.Fatalf("SetModel Google target with user document in history: %v", err)
 	}
 	profile := sess.currentProfile()
@@ -540,7 +540,7 @@ func TestSetModel_DocumentInHistory_AcceptedForResponsesTarget(t *testing.T) {
 	)
 	sess.appendTurn(schema.TurnUserInput, documentTurn().Message)
 
-	if err := sess.SetModel("gpt-4.1-mini"); err != nil {
+	if err := sess.SetModel("", "gpt-4.1-mini"); err != nil {
 		t.Fatalf("SetModel same-provider (Responses) switch with document in history: %v", err)
 	}
 }
@@ -562,7 +562,7 @@ func TestSetModel_DocumentInHistory_AcceptedForAnthropicTarget(t *testing.T) {
 	)
 	sess.appendTurn(schema.TurnUserInput, documentTurn().Message)
 
-	if err := sess.SetModel("anthropic/claude-opus-4-6"); err != nil {
+	if err := sess.SetModel("", "anthropic/claude-opus-4-6"); err != nil {
 		t.Fatalf("SetModel cross-provider (Anthropic) switch with document in history: %v", err)
 	}
 }
@@ -584,7 +584,7 @@ func TestSetModel_DocumentInHistory_AcceptedForChatTarget(t *testing.T) {
 	)
 	sess.appendTurn(schema.TurnUserInput, documentTurn().Message)
 
-	if err := sess.SetModel("kimi/kimi-k3"); err != nil {
+	if err := sess.SetModel("", "kimi/kimi-k3"); err != nil {
 		t.Fatalf("SetModel openai-compat (Chat) switch with document in history: %v", err)
 	}
 }
@@ -607,7 +607,7 @@ func TestSetModel_UrlOnlyDocumentInHistory_RejectedForChatTarget(t *testing.T) {
 	)
 	sess.appendTurn(schema.TurnUserInput, urlDocumentTurn().Message)
 
-	err := sess.SetModel("kimi/kimi-k3")
+	err := sess.SetModel("", "kimi/kimi-k3")
 	if err == nil {
 		t.Fatal("SetModel(\"kimi/kimi-k3\") with URL-only user document in history = nil error, want non-nil")
 	}
@@ -647,7 +647,7 @@ func TestSetModel_AudioInHistory_RejectedForAllTargetsIncludingResponses(t *test
 			)
 			sess.appendTurn(schema.TurnUserInput, audioTurn().Message)
 
-			err := sess.SetModel(tc.target)
+			err := sess.SetModel("", tc.target)
 			if err == nil {
 				t.Fatalf("SetModel(%q) with audio in history = nil error, want non-nil", tc.target)
 			}
@@ -744,7 +744,7 @@ func TestSetModel_DocumentInHistory_AcceptedForAnthropicBuilderTargets(t *testin
 			)
 			sess.appendTurn(schema.TurnUserInput, documentTurn().Message)
 
-			if err := sess.SetModel(target); err != nil {
+			if err := sess.SetModel("", target); err != nil {
 				t.Fatalf("SetModel(%q) with document in history: %v, want nil (the Anthropic builder now carries documents)", target, err)
 			}
 		})
@@ -771,7 +771,7 @@ func TestSetModel_AudioInHistory_RejectedForAnthropicBuilderTargets(t *testing.T
 			)
 			sess.appendTurn(schema.TurnUserInput, audioTurn().Message)
 
-			err := sess.SetModel(target)
+			err := sess.SetModel("", target)
 			if err == nil {
 				t.Fatalf("SetModel(%q) with audio in history = nil error, want non-nil (was bricking before fix)", target)
 			}
@@ -867,7 +867,7 @@ func TestSetModel_RejectionLeavesProfileMetaAndHistoryUnchanged(t *testing.T) {
 			beforeMeta := readMeta(t, sess)
 			beforeHistory := append([]schema.Turn(nil), sess.history...)
 
-			if err := sess.SetModel(rc.model); err == nil {
+			if err := sess.SetModel("", rc.model); err == nil {
 				t.Fatalf("SetModel(%q) = nil error, want a rejection", rc.model)
 			}
 
@@ -917,7 +917,7 @@ func TestSetModel_CrossTagSwitch_DropsInvalidatedFallbacksAndSurfacesNames(t *te
 		}),
 	)
 
-	if err := sess.SetModel("anthropic/claude-opus-4-6"); err != nil {
+	if err := sess.SetModel("", "anthropic/claude-opus-4-6"); err != nil {
 		t.Fatalf("SetModel cross-tag switch: %v", err)
 	}
 
@@ -943,7 +943,7 @@ func TestSetModel_SameTagSwitch_KeepsValidFallbacks(t *testing.T) {
 		}),
 	)
 
-	if err := sess.SetModel("gpt-4.1-mini"); err != nil {
+	if err := sess.SetModel("", "gpt-4.1-mini"); err != nil {
 		t.Fatalf("SetModel same-tag switch: %v", err)
 	}
 

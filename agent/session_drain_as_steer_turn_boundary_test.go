@@ -1810,7 +1810,7 @@ func TestSteeringCarrierAfterIdleSetModelCarriesEnvironmentDiff(t *testing.T) {
 	if _, err := sess.ProcessInput(ctx, "turn 1", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
-	if err := sess.SetModel("anthropic/claude-opus-4-6"); err != nil {
+	if err := sess.SetModel("", "anthropic/claude-opus-4-6"); err != nil {
 		t.Fatalf("SetModel: %v", err)
 	}
 	if _, err := sess.AcceptClientMutationSteer(appwire.TurnSteerParams{

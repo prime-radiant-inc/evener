@@ -392,9 +392,9 @@ func TestWirePrefixSurvivesEnvSwapModelSwitchBackAndRootFork(t *testing.T) {
 	swRes, err := sess.worktreeSwitchByPath(tripwireCtx(t), repoB)
 	pxMust(t, err)
 	pxTurn(t, sess, "second ask")
-	pxMust(t, sess.SetModel("openai/gpt-5.5"))
+	pxMust(t, sess.SetModel("", "openai/gpt-5.5"))
 	pxTurn(t, sess, "third ask")
-	pxMust(t, sess.SetModel("openai/gpt-5.4"))
+	pxMust(t, sess.SetModel("", "openai/gpt-5.4"))
 	pxTurn(t, sess, "fourth ask") // a parent request after the switch back, so its own tools and instructions are observable
 	childID, err := ForkSession(dir, sess.ID(), pxForkTurn(t, sess), "edited second ask", "")
 	pxMust(t, err)

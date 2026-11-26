@@ -500,7 +500,7 @@ func TestManagerAdmissionRealToolRead(t *testing.T) {
 		t.Fatalf("status follow-up=%+v", results[1].FollowUps)
 	}
 	for _, model := range []string{"gpt-5", "anthropic/claude-opus-4-6"} {
-		if err = session.SetModel(model); err != nil {
+		if err = session.SetModel("", model); err != nil {
 			t.Fatal(err)
 		}
 		if _, err = session.ProcessInput(ctx, "capture switched request", nil); err != nil {
