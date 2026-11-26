@@ -25,6 +25,7 @@ import {
   isHubLaunchError,
   isInstanceRemoveApplied,
   isMethodNotFound,
+  isSocketDroppedError,
   isTranscriptHistoryFailedError,
   isTranscriptIndexLockedError,
   isTranscriptIndexRebuildingError,
@@ -375,6 +376,18 @@ test("friendlyErrorMessage recognizes the closed-client shape even as a bare str
   expect(friendlyErrorMessage('AppwireClient: cannot call "model/list" while state is "closed"')).toBe(
     hubUnreachable(),
   );
+});
+
+test("isSocketDroppedError matches mid-flight socket loss and excludes pre-open, pre-send, and WireError rejections", () => {
+  expect(isSocketDroppedError(new Error("AppwireClient: socket closed (code 1006)"))).toBe(true);
+  expect(isSocketDroppedError(new Error("FakeClient: socket closed"))).toBe(true);
+  expect(isSocketDroppedError("AppwireClient: socket closed (code 1000)")).toBe(true);
+  expect(isSocketDroppedError(new Error("AppwireClient: socket closed while connecting (code 1006)"))).toBe(false);
+  expect(isSocketDroppedError(new ConnectionClosedError("AppwireClient: closed"))).toBe(false);
+  expect(isSocketDroppedError(new Error('AppwireClient: cannot call "thread/start" while state is "closed"'))).toBe(
+    false,
+  );
+  expect(isSocketDroppedError(new WireError("AppwireClient: socket closed (code 1006)", -32014))).toBe(false);
 });
 
 test("friendlyErrorMessage never leaks a class name or method name for an unrelated internal error", () => {

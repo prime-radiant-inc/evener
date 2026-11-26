@@ -295,6 +295,7 @@ export {
   isInstanceRemoveApplied,
   isInstanceRenamePersisted,
   isMethodNotFound,
+  isSocketDroppedError,
   isStaleCursorError,
   isTranscriptHistoryFailedError,
   isTranscriptIndexLockedError,

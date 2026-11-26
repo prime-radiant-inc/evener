@@ -12,6 +12,7 @@ import {
   HubBelowFloorError,
   RECONNECT_BASE_MS,
   RESUME_REQUEST_TIMEOUT_MS,
+  START_REQUEST_TIMEOUT_MS,
   type SubscriberErrorInfo,
   type SubscriberErrorPhase,
 } from "./client";
@@ -1644,17 +1645,105 @@ test("a Resume the hub never answers is bounded by a large finite cap and can be
   expect(vi.getTimerCount()).toBe(0);
 });
 
-test("an explicit numeric Resume deadline remains authoritative", async () => {
+test.each([
+  ["thread/resume", { ref: "local:owner" }],
+  ["thread/start", { cwd: "/tmp/short-start" }],
+] as const)("an explicit numeric %s deadline remains authoritative", async (method, params) => {
   const socket = new FakeSocket({ autoInitialize: true });
   const client = new AppwireClient({ url: "ws://hub/rpc", socketFactory: () => socket });
   try {
     await connectReady(socket, client);
-    const resumed = client.request("thread/resume", { ref: "local:owner" }, { timeoutMs: 37 });
-    const rejected = expect(resumed).rejects.toBeInstanceOf(RequestTimeoutError);
+    const pending =
+      method === "thread/resume"
+        ? client.request(method, params, { timeoutMs: 37 })
+        : client.request(method, params, { timeoutMs: 37 });
+    const rejected = expect(pending).rejects.toBeInstanceOf(RequestTimeoutError);
     await vi.advanceTimersByTimeAsync(37);
     await rejected;
     expect(client.state).toBe("ready");
-    expect(sentFrames(socket).filter((frame) => frame.method === "thread/resume")).toHaveLength(1);
+    expect(sentFrames(socket).filter((frame) => frame.method === method)).toHaveLength(1);
+  } finally {
+    client.close();
+  }
+  expect(vi.getTimerCount()).toBe(0);
+});
+
+test("thread/start outlives the ordinary 30s RPC deadline and resolves when the hub replies", async () => {
+  const socket = new FakeSocket({ autoInitialize: true });
+  const client = new AppwireClient({ url: "ws://hub/rpc", socketFactory: () => socket });
+  let settled = false;
+  try {
+    await connectReady(socket, client);
+    const started = client.request("thread/start", { cwd: "/tmp/slow-start" });
+    const observed = started.then(
+      (result) => {
+        settled = true;
+        return result;
+      },
+      (error: unknown) => {
+        settled = true;
+        return error;
+      },
+    );
+    const startFrame = sentFrames(socket).find((frame) => frame.method === "thread/start");
+    expect(startFrame?.id).toBeTypeOf("number");
+    const ordinary = client.request("thread/list", {});
+    const ordinaryRejected = expect(ordinary).rejects.toBeInstanceOf(RequestTimeoutError);
+
+    // An ordinary request times out at 30s, while thread/start stays pending
+    // across heartbeats so a slow spawn finishes cleanly.
+    await vi.advanceTimersByTimeAsync(30_000);
+    await ordinaryRejected;
+    expect(settled).toBe(false);
+    expect(client.state).toBe("ready");
+
+    await vi.advanceTimersByTimeAsync(HEARTBEAT_INTERVAL_MS);
+    expect(settled).toBe(false);
+    expect(sentFrames(socket).some((frame) => frame.method === "ping")).toBe(true);
+
+    const payload = { thread: wireThread("local:slow-ok"), turn: { id: "turn_1", status: "inProgress" } };
+    socket.receive({ id: startFrame?.id as number, result: payload });
+    expect(await observed).toEqual(payload);
+    expect(client.state).toBe("ready");
+  } finally {
+    client.close();
+  }
+  expect(vi.getTimerCount()).toBe(0);
+});
+
+test("thread/start eventually times out after its extended budget without retiring the socket", async () => {
+  const socket = new FakeSocket({ autoInitialize: true });
+  const client = new AppwireClient({ url: "ws://hub/rpc", socketFactory: () => socket });
+  let settled = false;
+  try {
+    await connectReady(socket, client);
+    const started = client.request("thread/start", { cwd: "/tmp/wedged-start" });
+    const rejected = expect(started).rejects.toBeInstanceOf(RequestTimeoutError);
+    void started.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+
+    // Still pending right up to the extended start cap.
+    await vi.advanceTimersByTimeAsync(START_REQUEST_TIMEOUT_MS - 1);
+    expect(settled).toBe(false);
+    expect(client.state).toBe("ready");
+
+    // Settles at the cap without closing the primary WebSocket.
+    await vi.advanceTimersByTimeAsync(1);
+    await rejected;
+    expect(client.state).toBe("ready");
+    expect(socket.closeRequests).toEqual([]);
+
+    // The socket stays healthy for subsequent RPCs.
+    const followUp = client.request("thread/list", {});
+    const listFrame = sentFrames(socket).find((frame) => frame.method === "thread/list");
+    socket.receive({ id: listFrame?.id as number, result: { data: [] } });
+    expect(await followUp).toEqual({ data: [] });
   } finally {
     client.close();
   }
