@@ -10,18 +10,16 @@
   .fixtures { display: flex; flex-direction: column; align-items: flex-start; gap: 12px; padding: 8px; }
   .fixture { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
   .fixtureLabel { color: var(--ink-low); font: var(--font-size-caption) var(--font-mono); }
-  /* The transcript column's content box at a narrow and a normal pane width
-     (the live failure was measured in a 422px-wide transcript column). */
+  /* The transcript column's content box at phone (390px), narrow split (422px),
+     and desktop reading measure (700px). */
   .pane { box-sizing: border-box; background: var(--surface-1); }
 </style>
 </head>
 <body data-font-size="m" data-transcript-measure="reading">
-<!-- Reproduces the Markdown widget's DOM for one GFM table (marked emits
-     <table><thead><tr><th align="left">... against a real agent report's
-     content: short header labels, one long-evidence column whose cells carry
-     the wide max-content lines that trigger the collapse). The geometry under
-     test: whether any column narrows below a readable floor while the table
-     stays inside its pane. -->
+<!-- Reproduces the Markdown widget's real DOM for GFM tables:
+     1) 5-column report table (reflows below 559px, tabular at 700px),
+     2) 8-column benchmark table (reflows below 559px, tabular at 700px),
+     3) 2-column entity-chip table (stays tabular at all widths with chip contained). -->
 <main class="fixtures"></main>
 
 <template id="fixture-template">
@@ -29,68 +27,94 @@
     <div class="fixtureLabel"></div>
     <div class="pane" data-pane>
       <div class="root" data-root>
-        <table>
-          <thead>
-            <tr>
-              <th align="left">#</th>
-              <th align="left">Title</th>
-              <th align="left">GH Status</th>
-              <th align="left">once the whole stack lands</th>
-              <th align="left">Evidence</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr>
-              <td>6882</td>
-              <td>Chat tool continuations lose the arguments spelling when a follow-up call re-uses a cached id</td>
-              <td>OPEN</td>
-              <td>in #6986</td>
-              <td>go test ./agent/ -run TestArgumentsSpellingRoundTrip passes RED then GREEN; roborev combined review round 2 names the exact head</td>
-            </tr>
-            <tr>
-              <td>6883</td>
-              <td>Responses replay re-bills cached tool-call items on every turn</td>
-              <td>OPEN</td>
-              <td>in #6986</td>
-              <td>billed 100 want 0 -&gt; 0 after the fix; replayed items = 2 -&gt; 1</td>
-            </tr>
-          </tbody>
-        </table>
+        <div class="tableWrap tableReflow" data-plain-wrap>
+          <table>
+            <thead>
+              <tr>
+                <th align="left">#</th>
+                <th align="left">Title</th>
+                <th align="left">GH Status</th>
+                <th align="left">once the whole stack lands</th>
+                <th align="left">Evidence</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td align="left" data-label="#"><span class="cellValue">6882</span></td>
+                <td align="left" data-label="Title"><span class="cellValue">Chat tool continuations lose the arguments spelling when a follow-up call re-uses a cached id</span></td>
+                <td align="left" data-label="GH Status"><span class="cellValue">OPEN</span></td>
+                <td align="left" data-label="once the whole stack lands"><span class="cellValue">in #6986</span></td>
+                <td align="left" data-label="Evidence"><span class="cellValue">go test ./agent/ -run TestArgumentsSpellingRoundTrip passes RED then GREEN; roborev combined review round 2 names the exact head</span></td>
+              </tr>
+              <tr>
+                <td align="left" data-label="#"><span class="cellValue">6883</span></td>
+                <td align="left" data-label="Title"><span class="cellValue">Responses replay re-bills cached tool-call items on every turn</span></td>
+                <td align="left" data-label="GH Status"><span class="cellValue">OPEN</span></td>
+                <td align="left" data-label="once the whole stack lands"><span class="cellValue">in #6986</span></td>
+                <td align="left" data-label="Evidence"><span class="cellValue">billed 100 want 0 -&gt; 0 after the fix; replayed items = 2 -&gt; 1</span></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="tableWrap tableReflow" data-wide-wrap>
+          <table>
+            <thead>
+              <tr>
+                <th align="left">Variant</th>
+                <th align="right">Pass</th>
+                <th align="right">Input</th>
+                <th align="right">Total</th>
+                <th align="right">Cached</th>
+                <th align="right">Output</th>
+                <th align="right">Ratio</th>
+                <th align="right">Latency</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td align="left" data-label="Variant"><span class="cellValue"><code class="inlineCode">descriptive-ethos-bullets</code> ("You are a collaborator, not an assistant.")</span></td>
+                <td align="right" data-label="Pass"><span class="cellValue">9,541 (3/3)</span></td>
+                <td align="right" data-label="Input"><span class="cellValue">9,277 (-43.9%)</span></td>
+                <td align="right" data-label="Total"><span class="cellValue">13,868 (-15.6%)</span></td>
+                <td align="right" data-label="Cached"><span class="cellValue">1,889 (-17.2%)</span></td>
+                <td align="right" data-label="Output"><span class="cellValue">685 (reas 409)</span></td>
+                <td align="right" data-label="Ratio"><span class="cellValue">0.799x (-20.1%)</span></td>
+                <td align="right" data-label="Latency"><span class="cellValue">13.4 s / 93.2 s</span></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
   </section>
 </template>
 
-<!-- The entity chip as EntityText renders it into a table cell: the host
-     span, the entityref group (inline-flex, nowrap in prose), HoverCard's
-     inline-block wrapper, the mono trigger text, and OpenButton's inline
-     shell. The button stands in for IconButton's 28px sm hit target with a
-     plain 28px button: the chip's width is driven by the ID text, not the
-     button's internals. -->
+<!-- The entity chip as EntityText renders it into a 2-column table cell. -->
 <template id="entity-chip-template">
-  <table>
-    <thead>
-      <tr>
-        <th align="left">Delegate</th>
-        <th align="left">Notes</th>
-      </tr>
-    </thead>
-    <tbody>
-      <tr>
-        <td>
-          <span data-entity-host
-            ><span class="group"
-              ><span class="wrapper"
-                ><span class="trigger" tabindex="0">dlg_034zr72gvjghwwewx2pn2z</span
-                ><span class="inline" data-open-shell
-                  ><button type="button" aria-label="Open delegate transcript" style="width: 28px; height: 28px"></button></span
-              ></span></span></span
-          >
-        </td>
-        <td>queued the qualification lane and waited once on the settle detector</td>
-      </tr>
-    </tbody>
-  </table>
+  <div class="tableWrap" data-entity-wrap>
+    <table>
+      <thead>
+        <tr>
+          <th align="left">Delegate</th>
+          <th align="left">Notes</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td align="left">
+            <span data-entity-host
+              ><span class="group"
+                ><span class="wrapper"
+                  ><span class="trigger" tabindex="0">dlg_034zr72gvjghwwewx2pn2z</span
+                  ><span class="inline" data-open-shell
+                    ><button type="button" aria-label="Open delegate transcript" style="width: 28px; height: 28px"></button></span
+                ></span></span></span>
+          </td>
+          <td align="left">queued the qualification lane and waited once on the settle detector</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
 </template>
 
 <script>
@@ -111,8 +135,8 @@ for (const spec of fixtures) {
 }
 
 // 1ch in the table cell's own font context: a probe span sized to it, appended
-// inside the first header cell so the cascade (family, size, density ramp)
-// that sizes the cell's text also sizes the probe.
+// inside the first body cell so the cascade (family, size, density ramp)
+// that sizes the cell's text also sizes the probe even when thead is visually hidden.
 function chOf(cell) {
   const probe = document.createElement("span");
   probe.style.cssText = "display:inline-block;width:1ch";
@@ -122,14 +146,48 @@ function chOf(cell) {
   return w;
 }
 
+function measureTable(wrap, paneBox) {
+  const table = wrap.querySelector("table");
+  const wrapBox = wrap.getBoundingClientRect();
+  const tableBox = table.getBoundingClientRect();
+  const theadBox = table.querySelector("thead").getBoundingClientRect();
+  const headerCells = [...table.querySelectorAll("thead th")];
+  const firstRowCells = [...table.querySelectorAll("tbody tr:first-child td")];
+  const ch = chOf(firstRowCells[0]);
+  return {
+    ch,
+    wrapWidth: wrapBox.width,
+    tableWidth: tableBox.width,
+    theadWidth: theadBox.width,
+    colWidths: headerCells.map((c) => c.getBoundingClientRect().width),
+    rowCells: firstRowCells.map((c) => {
+      const box = c.getBoundingClientRect();
+      const val = c.querySelector(".cellValue");
+      const valBox = val ? val.getBoundingClientRect() : box;
+      const lineHeight = parseFloat(getComputedStyle(c).lineHeight) || 20;
+      return {
+        top: box.top,
+        bottom: box.bottom,
+        width: box.width,
+        right: box.right,
+        valueWidth: valBox.width,
+        valueHeight: valBox.height,
+        valueRight: valBox.right,
+        valueLeft: valBox.left,
+        lineHeight,
+        textLength: (val ? val.textContent : c.textContent).trim().length,
+      };
+    }),
+    paneRight: paneBox.right,
+  };
+}
+
 window.measure = () =>
   [...document.querySelectorAll(".fixture")].map((fixture) => {
     const pane = fixture.querySelector("[data-pane]").getBoundingClientRect();
-    const [table, entityTable] = [...fixture.querySelectorAll("table")];
-    const tableBox = table.getBoundingClientRect();
-    const headerCells = [...table.querySelectorAll("thead th")];
-    const ch = chOf(headerCells[0]);
-    const entityCells = [...entityTable.querySelectorAll("thead th")];
+    const plain = measureTable(fixture.querySelector("[data-plain-wrap]"), pane);
+    const wide = measureTable(fixture.querySelector("[data-wide-wrap]"), pane);
+    const entity = measureTable(fixture.querySelector("[data-entity-wrap]"), pane);
     const chipHost = fixture.querySelector("[data-entity-host]");
     const chipCell = chipHost.closest("td");
     const chip = chipHost.getBoundingClientRect();
@@ -137,11 +195,9 @@ window.measure = () =>
     return {
       width: Number(fixture.dataset.width),
       paneWidth: pane.width,
-      tableWidth: tableBox.width,
-      ch,
-      colWidths: headerCells.map((c) => c.getBoundingClientRect().width),
-      entityTableWidth: entityTable.getBoundingClientRect().width,
-      entityColWidths: entityCells.map((c) => c.getBoundingClientRect().width),
+      plain,
+      wide,
+      entity,
       chipWidth: chip.width,
       chipRight: chip.right,
       chipCellRight: chipCellBox.right,

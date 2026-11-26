@@ -1,8 +1,8 @@
 // Pure helpers for the reasoning ("think block") item type. See
 // ThinkBlock.tsx for the component that consumes these.
 
-import type { Token, Tokens } from "marked";
-import { markdownLexer } from "../../../../widgets/markdown/lexer";
+import type { Token } from "marked";
+import { markdownLexer, plainTextFromToken } from "../../../../widgets/markdown/lexer";
 import { clipCodePoints } from "../clipCodePoints";
 
 // Lexer-only use of the app's shared Markdown tokenizer (see
@@ -93,35 +93,6 @@ function parseOffsetMinutes(zone: string): number | undefined {
   const minutes = Number(zone.slice(4, 6));
   if (hours > 23 || minutes > 59) return undefined;
   return sign * (hours * 60 + minutes);
-}
-
-function plainTextFromToken(token: Token): string {
-  switch (token.type) {
-    case "image":
-      return token.tokens?.map(plainTextFromToken).join("") ?? token.text;
-    case "link":
-      return token.tokens?.map(plainTextFromToken).join("") ?? token.text;
-    case "code":
-    case "codespan":
-    case "escape":
-    case "html":
-      return token.text;
-    case "checkbox":
-      return "";
-    case "br":
-    case "space":
-      return " ";
-    case "list":
-      return token.items.map((item: Tokens.ListItem) => item.tokens.map(plainTextFromToken).join("")).join(" ");
-    case "table":
-      return [...token.header, ...token.rows.flat()]
-        .map((cell) => cell.tokens.map(plainTextFromToken).join(""))
-        .join(" ");
-    default:
-      if ("tokens" in token && token.tokens) return token.tokens.map(plainTextFromToken).join("");
-      if ("text" in token && typeof token.text === "string") return token.text;
-      return "";
-  }
 }
 
 function plainThoughtLine(line: string): string {

@@ -8,6 +8,7 @@ import { readModuleCss } from "../../styles/cssBlock";
 import codeblockStyles from "../codeblock/codeblock.module.css";
 import { requireClass } from "../internal/requireClass";
 import { Markdown } from "./index";
+import markdownStyles from "./markdown.module.css";
 import { LIVE_TAIL_WINDOW, LIVE_WINDOWED_MIN_LENGTH } from "./segments";
 import { closeOpenMarkdown } from "./streaming";
 
@@ -45,6 +46,9 @@ beforeEach(() => {
 const CODEBLOCK_PRE_CLASS = requireClass(codeblockStyles.pre, "codeblock.module.css", "pre");
 const CODEBLOCK_CODE_CLASS = requireClass(codeblockStyles.code, "codeblock.module.css", "code");
 const CODEBLOCK_LANGUAGE_CLASS = requireClass(codeblockStyles.language, "codeblock.module.css", "language");
+const TABLE_WRAP_CLASS = requireClass(markdownStyles.tableWrap, "markdown.module.css", "tableWrap");
+const TABLE_REFLOW_CLASS = requireClass(markdownStyles.tableReflow, "markdown.module.css", "tableReflow");
+const CELL_VALUE_CLASS = requireClass(markdownStyles.cellValue, "markdown.module.css", "cellValue");
 
 test("renders a heading", () => {
   render(<Markdown source="# Hello" />);
@@ -298,6 +302,50 @@ test("renders GFM column alignment via the align attribute", () => {
   expect(ths.map((th) => th.getAttribute("align"))).toEqual(["left", "center", "right"]);
   const tds = Array.from(container.querySelectorAll("tbody tr:first-child td"));
   expect(tds.map((td) => td.getAttribute("align"))).toEqual(["left", "center", "right"]);
+});
+
+test("wraps GFM tables for container-scoped reflow, marks wide tables with body rows, and labels cells with plain header text", () => {
+  const wide = [
+    "| `Variant` | **Tokens** | [Delta](https://example.com) |  | Latency & `p95` |",
+    "| :--- | ---: | ---: | :--- | ---: |",
+    "| `ethos` (v1) | 9,541 | -43.9% | note | 13.4 s |",
+  ].join("\n");
+  const { container } = render(<Markdown source={wide} />);
+  const table = container.querySelector("table");
+  const wrap = table?.parentElement;
+  expect(wrap?.tagName).toBe("DIV");
+  expect(wrap).not.toBe(container.firstElementChild);
+  expect(wrap?.classList.contains(TABLE_WRAP_CLASS)).toBe(true);
+  expect(wrap?.classList.contains(TABLE_REFLOW_CLASS)).toBe(true);
+
+  const tds = Array.from(container.querySelectorAll("tbody tr:first-child td"));
+  expect(tds.map((td) => td.getAttribute("data-label"))).toEqual(["Variant", "Tokens", "Delta", null, "Latency & p95"]);
+  for (const td of tds) {
+    const value = td.firstElementChild;
+    expect(value?.tagName).toBe("SPAN");
+    expect(value?.classList.contains(CELL_VALUE_CLASS)).toBe(true);
+  }
+  // Mixed inline children stay inside the single value wrapper so a grid cell never splits them across tracks.
+  expect(tds[0]?.firstElementChild?.querySelector("code")?.textContent).toBe("ethos");
+  expect(tds[0]?.firstElementChild?.textContent).toBe("ethos (v1)");
+});
+
+test("does not mark narrow (<=4 column) or header-only wide tables for list reflow", () => {
+  const narrow = render(<Markdown source={"| A | B | C | D |\n| - | - | - | - |\n| 1 | 2 | 3 | 4 |"} />);
+  const narrowWrap = narrow.container.querySelector("table")?.parentElement;
+  expect(narrowWrap?.classList.contains(TABLE_WRAP_CLASS)).toBe(true);
+  expect(narrowWrap?.classList.contains(TABLE_REFLOW_CLASS)).toBe(false);
+
+  const headerOnly = render(<Markdown source={"| A | B | C | D | E |\n| - | - | - | - | - |"} />);
+  const headerOnlyWrap = headerOnly.container.querySelector("table")?.parentElement;
+  expect(headerOnlyWrap?.classList.contains(TABLE_WRAP_CLASS)).toBe(true);
+  expect(headerOnlyWrap?.classList.contains(TABLE_REFLOW_CLASS)).toBe(false);
+});
+
+test("still escapes authored raw HTML carrying data-label attributes", () => {
+  const { container } = render(<Markdown source='<div data-label="spoofed">text</div>' />);
+  expect(container.querySelector("[data-label]")).toBeNull();
+  expect(container.textContent).toContain('<div data-label="spoofed">text</div>');
 });
 
 // --- windowed live path: link definitions across the split ------------------

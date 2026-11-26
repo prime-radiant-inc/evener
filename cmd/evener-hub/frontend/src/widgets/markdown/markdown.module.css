@@ -123,49 +123,81 @@
   border-bottom: 1px solid var(--edge);
 }
 
-/* GFM tables are operational evidence inside a reading surface: Inter,
- * tabular figures and fine rules rather than a tinted header band. The
- * sanitized semantic table and its alignment attributes remain unchanged;
- * long header tokens wrap instead of widening the surrounding document.
- *
- * Fixed layout: auto layout distributes a width deficit proportionally to
- * columns' max-content, and the root's overflow-wrap: anywhere drops every
- * column's min-content to ~1 character - so one cell's long line (a test
- * command, a URL, a JSON dump) collapses every short column to a
- * ~2-character strip. Fixed layout divides the table's width equally: GFM
- * carries no column-width syntax, so no author intent is overridden, the
- * table still never widens past its container, and long content still
- * wraps within its column. The column floor is pinned by the
+.tableWrap {
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  margin: 0 0 var(--space-3);
+}
+
+.tableWrap:last-child {
+  margin-bottom: 0;
+}
+
+.tableReflow {
+  position: relative;
+  container-type: inline-size;
+}
+
+.cellValue {
+  min-width: 0;
+}
+
+/* GFM tables are operational evidence inside a reading surface: UI-sized sans,
+ * tabular figures and fine horizontal rules. Auto layout paired with cell-level
+ * overflow-wrap: break-word (overriding .root's anywhere) keeps each column's
+ * word-level min-content intact so short columns size naturally without being
+ * starved by wide prose cells, while .tableWrap catches genuine horizontal
+ * overflow on very wide desktop tables. Below 559px, wide tables (5+ columns
+ * with body rows) reflow into list-style record cards. Pinned by the
  * markdown-table-column-floor layoutguard case. */
 .root :where(table) {
   margin: 0 0 var(--space-3);
   border-collapse: collapse;
   width: 100%;
-  table-layout: fixed;
+  table-layout: auto;
+  border-block: 1px solid var(--edge);
   font-family: var(--font-sans);
-  font-size: var(--font-size-body);
+  font-size: var(--font-size-ui);
+  line-height: var(--line-height-ui);
   font-variant-numeric: tabular-nums;
 }
 
+.root .tableWrap :where(table) {
+  margin: 0;
+}
+
 .root :where(thead th) {
-  padding: var(--space-1) var(--space-2);
+  padding: var(--space-2) var(--space-3);
   background: transparent;
-  border-bottom: 1px solid var(--edge);
+  border-bottom: 1px solid var(--edge-strong);
   color: var(--ink-mid);
+  font-size: var(--font-size-caption);
   font-weight: var(--font-weight-semibold);
   text-align: left;
+  vertical-align: bottom;
   white-space: normal;
+  overflow-wrap: break-word;
 }
 
 .root :where(tbody td) {
-  padding: var(--space-1) var(--space-2);
+  padding: var(--space-2) var(--space-3);
   color: var(--ink-hi);
   text-align: left;
   vertical-align: top;
+  overflow-wrap: break-word;
+}
+
+.root :where(thead th:first-child, tbody td:first-child) {
+  padding-left: var(--space-2);
+}
+
+.root :where(thead th:last-child, tbody td:last-child) {
+  padding-right: var(--space-2);
 }
 
 .root :where(tbody tr) {
-  border-bottom: 1px solid var(--edge);
+  border-bottom: 1px solid color-mix(in oklab, var(--edge) 50%, transparent);
 }
 
 .root :where(tbody tr:last-child) {
@@ -192,6 +224,107 @@
 
 .root :where(th[align="left"], td[align="left"]) {
   text-align: left;
+}
+
+/* Narrow-container list-style reflow for wide tables (5+ columns with body
+ * rows): visually hide thead (keeping headers in the accessibility tree),
+ * turn each body row into a quiet record surface with a recessed lead band for
+ * column 1 and adaptive flex rows for columns 2..N (short label/value pairs
+ * sit on one ledger line with right-aligned figures; long values wrap onto
+ * their own full-width line). */
+@container (max-width: 559px) {
+  .root .tableReflow :where(table) {
+    display: block;
+    border-block: none;
+  }
+
+  /* Visually-hidden thead (kept in the accessibility tree); stays inline
+   * rather than composing visuallyhidden.module.css because CSS Modules
+   * composes: cannot live inside @container or target a descendant selector. */
+  .root .tableReflow :where(thead) {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+    border: 0;
+  }
+
+  .root .tableReflow :where(tbody) {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+  }
+
+  .root .tableReflow :where(tbody tr) {
+    display: flex;
+    flex-direction: column;
+    border: 1px solid var(--edge);
+    border-radius: var(--radius-control);
+    background: var(--surface-1);
+    overflow: hidden;
+  }
+
+  .root .tableReflow :where(tbody tr:last-child) {
+    border-bottom: 1px solid var(--edge);
+  }
+
+  .root .tableReflow :where(tbody tr:hover) {
+    background: var(--surface-1);
+  }
+
+  .root .tableReflow :where(tbody td) {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    align-items: baseline;
+    column-gap: var(--space-3);
+    row-gap: var(--space-half);
+    margin-inline: var(--space-3);
+    padding: var(--space-2) 0;
+    text-align: left;
+    font-size: var(--font-size-ui);
+    line-height: var(--line-height-ui);
+    overflow-wrap: anywhere;
+  }
+
+  .root .tableReflow :where(tbody td:first-child) {
+    justify-content: flex-start;
+    column-gap: var(--space-2);
+    margin-inline: 0;
+    padding: var(--space-2) var(--space-3);
+    background: var(--surface-inset);
+    border-bottom: 1px solid var(--edge);
+    font-weight: var(--font-weight-semibold);
+  }
+
+  .root .tableReflow :where(tbody td:last-child) {
+    padding-right: 0;
+  }
+
+  .root .tableReflow :where(tbody td:not(:first-child) + td) {
+    border-top: 1px solid color-mix(in oklab, var(--edge) 45%, transparent);
+  }
+
+  .root .tableReflow :where(tbody td[data-label])::before {
+    content: attr(data-label);
+    flex: 0 1 auto;
+    color: var(--ink-mid);
+    font-size: var(--font-size-caption);
+    font-weight: var(--font-weight-regular);
+    line-height: var(--line-height-ui);
+  }
+
+  .root .tableReflow :where(tbody td:first-child[data-label])::before {
+    color: var(--ink-low);
+  }
+
+  .root .tableReflow :where(tbody td) > .cellValue {
+    flex: 0 1 auto;
+    max-width: 100%;
+  }
 }
 
 /* Markdown bubbles are the shared report treatment. The compact variant is

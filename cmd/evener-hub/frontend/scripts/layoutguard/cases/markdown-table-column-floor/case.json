@@ -1,6 +1,6 @@
 {
   "name": "markdown-table-column-floor",
-  "description": "markdown: in a width-constrained GFM table, no column may collapse below a readable floor while a long-content column takes the width, and a cell's enhanced entity chip stays inside its column - the observed live failure rendered 'GH Status' at ~2 characters per line because one cell's long max-content line stole the table (2026-11-19, hub session local:0350DTJsY0196rA6MHasBF)",
+  "description": "markdown: wide GFM tables (4+ columns) reflow to list-style key-value records below the 559px container threshold so narrow phone/split columns never collapse to 2-character strips, while wide panes and narrow (<=3 column) tables stay tabular with every column at a readable floor and enhanced entity chips contained inside their cell",
   "cssFiles": [
     "styles/global.css",
     "styles/tokens.css",
@@ -11,11 +11,11 @@
     "widgets/hovercard/hovercard.module.css",
     "widgets/openbutton/openbutton.module.css"
   ],
-  "widthMatrix": [{ "width": 422 }, { "width": 700 }],
+  "widthMatrix": [{ "width": 390 }, { "width": 422 }, { "width": 700 }],
   "mutation": {
-    "declaration": "markdown.module.css: .root :where(table) { table-layout: fixed } removed - auto layout returns, the evidence column's long max-content line re-collapses 'GH Status' to ~3 characters per line",
-    "verified": "2026-11-19",
+    "declaration": "markdown.module.css: remove @container (max-width: 559px) list-reflow rules or cell-level overflow-wrap: break-word - narrow 5/8-column tables stay crushed instead of stacking into record cards, or wide tables re-collapse short columns to ~2-character strips under inherited overflow-wrap: anywhere",
+    "verified": "2026-11-26",
     "expect": "fail",
-    "note": "Measured 2026-11-19 in the live hub: the same table rendered colW [27, 70, 31, 71, 223] in a 422px transcript column, and the standalone repro measured the 'GH Status' column at 37px (~2 content characters per line) before the fix and 84px after it."
+    "note": "Reproduces both the 2026-11-19 5-column collapse and the 2026-11-26 8-column phone/desktop collapse."
   }
 }
