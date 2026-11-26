@@ -154,7 +154,7 @@ final class EvenerQualificationUITests: XCTestCase {
 			XCTAssertTrue(app.textFields["hub-address"].waitForExistence(timeout: tripwire))
 		} else {
 			showSessions(app)
-			tap(app.webViews.buttons["New session"].firstMatch, "scheme activation lost the workspace controls")
+			tap(app.buttons["workspace-new-session"], "scheme activation lost the workspace controls")
 			XCTAssertTrue(app.webViews.descendants(matching: .any)["Prompt"].waitForExistence(timeout: tripwire))
 		}
 	}
@@ -306,7 +306,7 @@ final class EvenerQualificationUITests: XCTestCase {
 	private func startSession(_ app: XCUIApplication, prompt promptText: String) {
 		showSessions(app)
 		let web = app.webViews.firstMatch
-		tap(web.buttons["New session"].firstMatch, "the Sessions drawer never offered a new session")
+		tap(app.buttons["workspace-new-session"], "the Sessions drawer never offered a new session")
 		let controls = web.descendants(matching: .any)
 		let directory = controls.matching(NSPredicate(format: "label BEGINSWITH %@", "Working directory:")).firstMatch
 		tap(directory, "the launcher never offered the workspace picker")
