@@ -30,7 +30,7 @@ function paneHtml(id, kind, frame) {
         <div class="header"><h2 class="title" id="title-${id}">Settings</h2></div>
         <div class="body" data-pane-scaffold="${frame}">
           <div class="shell">
-            <nav class="nav" id="nav-${id}"><div class="standIn"></div></nav>
+            <nav class="nav" id="nav-${id}"><div class="filterRow"></div><div class="navRow"><span class="linkChevron"></span></div></nav>
             <div class="content" id="content-${id}"><div class="standIn"></div></div>
           </div>
         </div>
@@ -67,6 +67,26 @@ function left(el) {
   return el.getBoundingClientRect().left;
 }
 
+function settingsLayout(nav) {
+  const shell = nav.parentElement;
+  const pane = shell.closest("[data-pane]");
+  const chevron = nav.querySelector(".linkChevron");
+  const desktopHasDetailSpace = nav.getBoundingClientRect().width < shell.getBoundingClientRect().width;
+  const desktopChevron = getComputedStyle(chevron).display;
+  pane.setAttribute("data-mobile", "");
+  shell.style.width = "867px";
+  const listGap = shell.getBoundingClientRect().width - nav.getBoundingClientRect().width;
+  const mobileChevron = getComputedStyle(chevron).display;
+  const filter = getComputedStyle(nav.querySelector(".filterRow"));
+  const filterPinned = filter.position === "sticky" && filter.top === "0px";
+  shell.classList.add("shellDetail");
+  const detailHidesNav = nav.getClientRects().length === 0;
+  shell.classList.remove("shellDetail");
+  shell.style.removeProperty("width");
+  pane.removeAttribute("data-mobile");
+  return { desktopHasDetailSpace, desktopChevron, listGap, mobileChevron, filterPinned, detailHidesNav };
+}
+
 window.measure = () =>
   fixtures.map((spec) => {
     const id = spec.width;
@@ -78,6 +98,7 @@ window.measure = () =>
       spawnForm: left(document.getElementById(`form-spawn-${id}`)),
       settingsTitle: left(document.getElementById(`title-settings-${id}`)),
       settingsNav: left(document.getElementById(`nav-settings-${id}`)),
+      settingsLayout: settingsLayout(document.getElementById(`nav-settings-${id}`)),
     };
   });
 </script>
