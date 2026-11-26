@@ -13,7 +13,6 @@
     "widgets/internal/selectableRow.module.css",
     "widgets/hovercard/hovercard.module.css",
     "widgets/tree/tree.module.css",
-    "widgets/badge/badge.module.css",
     "shell/rail/Rail.module.css",
     "shell/rail/RailRow.module.css"
   ],

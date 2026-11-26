@@ -1,6 +1,6 @@
 {
   "name": "rail-row-chevron-actions-overlap",
-  "description": "rail: a branch row's trailing disclosure chevron and the hover-revealed '...'/'+' menu must have fully disjoint, state-appropriate hit boxes at the sidebar's min (200px) and default (280px) widths, for both a session row (1 menu button) and a project row (2), with and without a right-slot occupant (timestamp/Badge/'Not started') bounding the title column's growth. The menu and the occupant share ONE grid cell (.rightSlot) and swap visibility: at rest the hidden menu must eat no clicks (issue #196's invisible-overlay mechanism), revealed it must cover the occupant and be clickable, the chevron must win its own center in BOTH states, and the slot must never be wider than max(occupant, menu) - no space reserved for the hover menu",
+  "description": "rail: a branch row's trailing disclosure chevron and the hover-revealed '...'/'+' menu must have fully disjoint, state-appropriate hit boxes at the sidebar's min (200px) and default (280px) widths, for both a session row (1 menu button) and a project row (2), with and without a right-slot occupant (timestamp/count/'Not started') bounding the title column's growth. The menu and the occupant share ONE grid cell (.rightSlot) and swap visibility: at rest the hidden menu must eat no clicks (issue #196's invisible-overlay mechanism), revealed it must cover the occupant and be clickable, the chevron must win its own center in BOTH states, and the slot must never be wider than max(occupant, menu) - no space reserved for the hover menu",
   "cssFiles": [
     "styles/global.css",
     "styles/tapfloor.module.css",
@@ -13,8 +13,7 @@
     "widgets/internal/floatingSurface.module.css",
     "widgets/menu/menu.module.css",
     "widgets/button/button.module.css",
-    "widgets/iconbutton/iconbutton.module.css",
-    "widgets/badge/badge.module.css"
+    "widgets/iconbutton/iconbutton.module.css"
   ],
   "viewport": {
     "width": 1000,

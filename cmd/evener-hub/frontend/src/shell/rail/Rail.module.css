@@ -43,11 +43,11 @@
   }
 }
 
-/* The sidebar owns its own chrome: a header zone stacking the brand row and
- * the needs-you chip (only when there is one) - a column so none of it steals
- * a full-width top bar's worth of the workspace's vertical space. No rule
- * under it: the header and the tree share the rail's one surface, and the
- * first section's eyebrow does the dividing. */
+/* The sidebar owns its own chrome: a header zone holding the brand row (and
+ * the mobile filter field) - a column so none of it steals a full-width top
+ * bar's worth of the workspace's vertical space. No rule under it: the header
+ * and the tree share the rail's one surface, and the first section's eyebrow
+ * does the dividing. */
 .header {
   flex: none;
   display: flex;
@@ -57,14 +57,6 @@
   /* Lets the brand row answer the rail's own width (the narrow rule under
    * .mark), not the window's. */
   container: railheader / inline-size;
-}
-
-/* The brand row and its chip read as one identity block, so a chip hugs the
- * row it belongs to. */
-.identity {
-  display: flex;
-  flex-direction: column;
-  gap: var(--rhythm-item);
 }
 
 /* One row: the mark and wordmark lead and the actions sit hard right. The
@@ -136,12 +128,6 @@
   display: flex;
   justify-content: flex-end;
   padding: var(--space-3) var(--space-2) var(--space-2) var(--space-4);
-}
-
-.needsYou {
-  display: flex;
-  max-width: 100%;
-  overflow: hidden;
 }
 
 .filterRow {

@@ -21,7 +21,7 @@ import {
   refreshArchivedList,
   useArchivedLists,
 } from "../../stores/archivedList";
-import { selectAttentionSummary, selectDisplaySources } from "../../stores/navigation/selectors";
+import { selectDisplaySources } from "../../stores/navigation/selectors";
 import { buildShutdownConvergence } from "../../stores/navigation/shutdownConvergence";
 import { navigationStore, useNavigationStore } from "../../stores/navigation/store";
 import { defaultSessionListStyle, type SidebarGroupingPref, usePrefsStore } from "../../stores/prefs";
@@ -29,7 +29,6 @@ import { sessionReadProgress, useSessionSeen } from "../../stores/readProgress";
 import { threadsStore } from "../../stores/threads";
 import {
   Button,
-  Chip,
   CloseIcon,
   ConfirmDialog,
   DisclosureHeading,
@@ -40,7 +39,6 @@ import {
   Popover,
   RadioGroup,
   Skeleton,
-  StatusDot,
   ToolIcon,
   Tooltip,
   Tree,
@@ -119,12 +117,10 @@ import { useRailReveal } from "./useRailReveal";
 const CLASS = {
   rail: requireClass(styles.rail, "Rail.module.css", "rail"),
   header: requireClass(styles.header, "Rail.module.css", "header"),
-  identity: requireClass(styles.identity, "Rail.module.css", "identity"),
   brand: requireClass(styles.brand, "Rail.module.css", "brand"),
   mark: requireClass(styles.mark, "Rail.module.css", "mark"),
   wordmark: requireClass(styles.wordmark, "Rail.module.css", "wordmark"),
   brandActions: requireClass(styles.brandActions, "Rail.module.css", "brandActions"),
-  needsYou: requireClass(styles.needsYou, "Rail.module.css", "needsYou"),
   filterRow: requireClass(styles.filterRow, "Rail.module.css", "filterRow"),
   body: requireClass(styles.body, "Rail.module.css", "body"),
   parentScrollRail: requireClass(styles.parentScrollRail, "Rail.module.css", "parentScrollRail"),
@@ -521,7 +517,6 @@ function NavigationRail({
   const manifest = useNavigationStore((state) => state.manifest);
   const resourcesState = useNavigationStore((state) => state.resources);
   const expanded = useNavigationStore((state) => state.expanded);
-  const attention = useNavigationStore((state) => selectAttentionSummary(state));
   // The rail's organize-by setting. Host grouping turns on only when the
   // manifest has named a remote source, and the decision reads the DISPLAY
   // list (last-known): grouping is a layout fact, and the settled list
@@ -1142,14 +1137,6 @@ function NavigationRail({
   // A row the bands are holding for its open dialog keeps the tree mounted
   // even when it was the last thing the sections supplied.
   const displayed = nonEmpty(resources) || LIVE_BAND_ORDER.some((band) => liveBands[band].length > 0);
-  // The chip counts only what a settled manifest says. A generation change
-  // keeps the previous manifest's data and marks it stale while the attention
-  // summary resets to null, so reading that data anyway kept the chip lit for a
-  // queue the store had already replaced — indefinitely, when the fresh read
-  // failed. The count is a claim that sessions are waiting, and an unsettled
-  // manifest has not said so yet.
-  const settled = !!manifest && !manifest.loading && !manifest.stale && !manifest.error;
-  const needsYou = attention?.needsYou ?? (settled ? (manifest.data?.attentionSummary.needsYou ?? 0) : 0);
   const headerAction = useRailHeaderAction();
   // The split board supplies the header action and scrolls rows below it.
   // Only the Sheet lends the entire rail to its parent scrollport.
@@ -1166,41 +1153,29 @@ function NavigationRail({
       {width !== undefined && onWidthChange && (
         <RailResizeHandle width={width} onCommit={onWidthChange} railRef={railRef} />
       )}
-      {(showBrand || needsYou > 0 || isMobile) && (
+      {(showBrand || isMobile) && (
         <div className={CLASS.header} data-testid="rail-header">
-          {(showBrand || needsYou > 0) && (
-            <div className={CLASS.identity}>
-              {showBrand && (
-                <div data-testid="rail-brand" className={CLASS.brand}>
-                  <EvenerMark />
-                  <span data-testid="rail-wordmark" className={CLASS.wordmark}>
-                    evener
-                  </span>
-                  <div className={CLASS.brandActions}>
-                    <RailNavigationActions />
-                    {onHide ? (
-                      <IconButton
-                        data-rail-toggle=""
-                        label="Hide sidebar"
-                        icon={<SidebarIcon />}
-                        variant="quiet"
-                        size="md"
-                        onClick={onHide}
-                      />
-                    ) : (
-                      headerAction
-                    )}
-                  </div>
-                </div>
-              )}
-              {needsYou > 0 && (
-                <span className={CLASS.needsYou} data-testid="rail-needs-you">
-                  <Chip tone="attention" kind="needs-you">
-                    <StatusDot state="needs-you" decorative />
-                    {needsYou} needs you
-                  </Chip>
-                </span>
-              )}
+          {showBrand && (
+            <div data-testid="rail-brand" className={CLASS.brand}>
+              <EvenerMark />
+              <span data-testid="rail-wordmark" className={CLASS.wordmark}>
+                evener
+              </span>
+              <div className={CLASS.brandActions}>
+                <RailNavigationActions />
+                {onHide ? (
+                  <IconButton
+                    data-rail-toggle=""
+                    label="Hide sidebar"
+                    icon={<SidebarIcon />}
+                    variant="quiet"
+                    size="md"
+                    onClick={onHide}
+                  />
+                ) : (
+                  headerAction
+                )}
+              </div>
             </div>
           )}
           {isMobile && (

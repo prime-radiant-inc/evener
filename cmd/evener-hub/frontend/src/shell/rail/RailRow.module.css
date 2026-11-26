@@ -49,7 +49,7 @@
 }
 
 /* The right slot: ONE grid cell shared by the slot's occupant (the relative
- * timestamp, the needs-you Badge, or "Not started") and the row's
+ * timestamp or "Not started") and the row's
  * hover-revealed actions menu (a session row's "..." trigger, a project
  * row's "+"/"..." pair). Both children occupy the same grid area, so the
  * slot's width is the WIDER of the two - the menu borrows the timestamp's
@@ -183,6 +183,46 @@
     opacity: 1;
     visibility: visible;
   }
+}
+
+/* Desktop Compact two-line rows (a title row plus a full-width reason or
+ * quota line below): a two-column grid keeps .textCol (still the row's first
+ * child) and .rightSlot aligned on row 1, while .belowRow spans both columns
+ * underneath instead of truncating early against an empty right-slot column.
+ * align-content: center keeps coarse-pointer 44px touch rows vertically
+ * centered. Only rows whose .belowRow actually rendered content take two-line
+ * padding and line-1 height capping, so single-line rows whose RailWhy or
+ * RailQuotaWait returned null stay identical to plain single-line rows. */
+.stackedRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  column-gap: var(--space-2);
+  row-gap: 0;
+  align-items: center;
+  align-content: center;
+}
+
+.stackedRow:has(.belowRow:not(:empty)) {
+  padding-block: 4px;
+}
+
+.stackedRow:has(.belowRow:not(:empty)) .rightSlot {
+  height: 1lh;
+  font-size: var(--font-size-ui);
+  line-height: var(--line-height-ui);
+  align-content: center;
+}
+
+.belowRow {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  min-width: 0;
+}
+
+.belowRow:empty {
+  display: none;
 }
 
 /* The negative margin offsets the indicator width and title gap, so quiet and
@@ -353,20 +393,29 @@
   font-weight: var(--font-weight-medium);
 }
 
-/* A band's count sits where a row's right slot would, but it is not one: a
- * band has no actions to swap in on hover, so the count never hides. */
-.bandCount {
-  display: flex;
+/* Inline heading count (Live bands and project attention rollups): sits right
+ * beside the label before the trailing chevron so the count belongs to its
+ * heading and the right edge stays reserved for timestamps and actions. All
+ * counts stay uncolored in --ink-low so headings and status dots lead. */
+.railCount {
+  display: inline-flex;
   align-items: center;
+  gap: var(--space-1);
   flex: none;
-  margin-left: auto;
+  color: var(--ink-low);
+  font-size: var(--font-size-caption);
+}
+
+.countNum {
+  font-family: var(--font-sans);
+  font-variant-numeric: tabular-nums;
 }
 
 /* Right-aligned relative timestamp - an occupant of the shared .rightSlot
- * cell (the Task-7 needs-you Badge and "Not started" are the other two;
- * RailRow.tsx renders at most one of the three, and the hover-revealed
- * .actions menu borrows the same cell). The slot owns the right alignment
- * and the occupant/menu visibility swap; this class is only the text. */
+ * cell ("Not started" is the other; RailRow.tsx renders at most one of the
+ * two, and the hover-revealed .actions menu borrows the same cell). The slot
+ * owns the right alignment and the occupant/menu visibility swap; this class
+ * is only the text. */
 .time {
   color: var(--ink-mid);
   font-family: var(--font-sans);

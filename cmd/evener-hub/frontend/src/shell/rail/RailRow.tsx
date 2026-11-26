@@ -24,7 +24,7 @@
 // sidebar - quiet, hover-revealed, zero layout shift) instead of a
 // permanently-visible bordered button on every row. It lives in the shared
 // .rightSlot grid cell with the row's right-slot occupant (timestamp /
-// Badge / "Not started"), so revealing it covers the occupant instead of
+// "Not started"), so revealing it covers the occupant instead of
 // narrowing the title column with a reserved slot of its own - and the
 // trailing disclosure chevron, which lives in .textCol left of the slot,
 // stays layout-disjoint from the menu at every width. See
@@ -69,7 +69,6 @@ import {
 } from "../../stores/navigation/selectors";
 import { useNavigationStore } from "../../stores/navigation/store";
 import {
-  Badge,
   Button,
   type CadenceState,
   Chevron,
@@ -117,6 +116,8 @@ export const RailFlatContext = createContext(false);
 
 const CLASS = {
   railRow: requireClass(styles.railRow, "RailRow.module.css", "railRow"),
+  stackedRow: requireClass(styles.stackedRow, "RailRow.module.css", "stackedRow"),
+  belowRow: requireClass(styles.belowRow, "RailRow.module.css", "belowRow"),
   flatSession: requireClass(styles.flatSession, "RailRow.module.css", "flatSession"),
   flatStatus: requireClass(styles.flatStatus, "RailRow.module.css", "flatStatus"),
   flatMeta: requireClass(styles.flatMeta, "RailRow.module.css", "flatMeta"),
@@ -139,7 +140,8 @@ const CLASS = {
   why: requireClass(styles.why, "RailRow.module.css", "why"),
   whyReason: requireClass(styles.whyReason, "RailRow.module.css", "whyReason"),
   bandLabel: requireClass(styles.bandLabel, "RailRow.module.css", "bandLabel"),
-  bandCount: requireClass(styles.bandCount, "RailRow.module.css", "bandCount"),
+  railCount: requireClass(styles.railCount, "RailRow.module.css", "railCount"),
+  countNum: requireClass(styles.countNum, "RailRow.module.css", "countNum"),
   time: requireClass(styles.time, "RailRow.module.css", "time"),
   notStarted: requireClass(styles.notStarted, "RailRow.module.css", "notStarted"),
   host: requireClass(styles.host, "RailRow.module.css", "host"),
@@ -225,7 +227,7 @@ export interface RailRowProps {
 }
 
 // The row's trailing chevron: a toggle rendered INLINE, right after the
-// title text (before any star/Badge/timestamp), on branch rows only - the
+// title text (and any inline heading count, before any star/timestamp), on branch rows only - the
 // same trailing position the transcript's disclosure rows use. A leaf row
 // renders nothing here: the chevron trails the text, so its absence leaves
 // no hole to reserve (unlike the old leading gutter, whose conditional fill
@@ -788,8 +790,9 @@ function RailRowShell({
   right?: ReactNode;
   activateOnTextCol?: boolean;
 }) {
+  const className = [CLASS.railRow, below && CLASS.stackedRow, rowClassName].filter(Boolean).join(" ");
   return (
-    <span ref={rowRef} className={rowClassName ? `${CLASS.railRow} ${rowClassName}` : CLASS.railRow} {...rowProps}>
+    <span ref={rowRef} className={className} {...rowProps}>
       {/* biome-ignore lint/a11y/noStaticElementInteractions: mouse shortcut only - the treeitem owns keyboard activation and the accessible name */}
       {/* biome-ignore lint/a11y/useKeyWithClickEvents: mouse shortcut only - the treeitem owns keyboard activation and the accessible name */}
       <span className={CLASS.textCol} onClick={activateOnTextCol ? info.activate : undefined}>
@@ -799,9 +802,15 @@ function RailRowShell({
           {afterLabel}
           <TrailingChevron info={info} />
         </span>
-        {below}
       </span>
       {right}
+      {below && (
+        // biome-ignore lint/a11y/noStaticElementInteractions: mouse shortcut only - the treeitem owns keyboard activation and the accessible name
+        // biome-ignore lint/a11y/useKeyWithClickEvents: mouse shortcut only - the treeitem owns keyboard activation and the accessible name
+        <span className={CLASS.belowRow} onClick={activateOnTextCol ? info.activate : undefined}>
+          {below}
+        </span>
+      )}
     </span>
   );
 }
@@ -837,11 +846,11 @@ function SessionRow({ node, info, actions }: { node: SessionRailNode; info: Tree
   const unread = !notStarted && node.unseen === true ? <UnreadMarker /> : null;
   const metadata = flat ? (
     <span className={`${CLASS.meta} ${CLASS.flatMeta}`}>
+      {unread}
       <span className={CLASS.metaText}>
         <RailAge updatedAt={notStarted ? undefined : session.updated_at} project={session.project?.trim()} />
       </span>
       {host && <RailHostCue {...host} />}
-      {unread}
     </span>
   ) : null;
   return (
@@ -885,8 +894,8 @@ function SessionRow({ node, info, actions }: { node: SessionRailNode; info: Tree
         <span className={CLASS.rightSlot}>
           {!flat && (
             <span className={CLASS.meta}>
-              {dormant ?? <RailAge updatedAt={session.updated_at} />}
               {unread}
+              {dormant ?? <RailAge updatedAt={session.updated_at} />}
             </span>
           )}
           <span className={CLASS.actions}>
@@ -933,6 +942,7 @@ function ProjectRow({
     <RailRowShell
       info={info}
       rowProps={{ "data-row-focused": info.focused ? "true" : undefined }}
+      activateOnTextCol
       leading={
         <Signal
           state={cadenceStateFor(showsRollup ? (project.rollup_state ?? "idle") : "idle", {
@@ -945,27 +955,23 @@ function ProjectRow({
       // this project's name collides with a sibling's in the same list; it
       // falls back to the bare name otherwise (and for a hand-built test
       // double that omits it).
-      label={
-        // biome-ignore lint/a11y/noStaticElementInteractions: redundant with the row's own Enter handling, see SessionRow
-        // biome-ignore lint/a11y/useKeyWithClickEvents: redundant with the row's own Enter handling, see SessionRow
-        <span className={CLASS.label} onClick={info.activate}>
-          {node.displayName ?? project.name}
-        </span>
-      }
+      label={<span className={CLASS.label}>{node.displayName ?? project.name}</span>}
       afterLabel={
-        resourceError &&
-        retry && (
-          <Button
-            variant="quiet"
-            size="xs"
-            onClick={(event) => {
-              event.stopPropagation();
-              retry();
-            }}
-          >
-            Retry
-          </Button>
-        )
+        <>
+          {showsRollup && attentionCount > 0 && <RailCount count={attentionCount} />}
+          {resourceError && retry && (
+            <Button
+              variant="quiet"
+              size="xs"
+              onClick={(event) => {
+                event.stopPropagation();
+                retry();
+              }}
+            >
+              Retry
+            </Button>
+          )}
+        </>
       }
       right={
         <>
@@ -974,12 +980,7 @@ function ProjectRow({
               {"★"}
             </span>
           )}
-          {/* Same shared right slot as SessionRow: the rollup Badge (when the
-              project has needs-you descendants) and the hover-revealed actions
-              pair share one cell - the menu covers the badge while revealed
-              instead of reserving width beside it. */}
           <span className={CLASS.rightSlot}>
-            {showsRollup && attentionCount > 0 && <RailCount count={attentionCount} attention />}
             <span className={CLASS.actions}>
               {project.key !== NO_PROJECT_KEY && canSpawn && (
                 <IconButton
@@ -1017,7 +1018,7 @@ function projectSourcesEqual(a: readonly string[] | undefined, b: readonly strin
 // subheader). Anatomy is the project row's: a leading glyph instead of a
 // signal dot (a host is infrastructure, not triage), the label, a trailing
 // chevron. Offline follows the session rows' own host-label convention:
-// italic, dimmed, "(offline)" in the caption ink. No rollup Badge and no
+// italic, dimmed, "(offline)" in the caption ink. No rollup count and no
 // actions: the manifest carries no per-host attention count, and the rows
 // under the group keep their own signals and menus.
 function HostRow({ node, info }: { node: HostRailNode; info: TreeRowInfo }) {
@@ -1048,18 +1049,18 @@ function HostRow({ node, info }: { node: HostRailNode; info: TreeRowInfo }) {
   );
 }
 
-function RailCount({ count, attention }: { count: number; attention?: boolean }) {
-  return useContext(RailFlatContext) ? (
-    <span className={`${CLASS.time} ${CLASS.whyReason}`} data-hue={attention ? "attention" : undefined}>
-      {count}
+function RailCount({ count, testId }: { count: number; testId?: string }) {
+  return (
+    <span className={CLASS.railCount}>
+      <span aria-hidden="true">{"·"}</span>
+      <span data-testid={testId} className={CLASS.countNum}>
+        {count}
+      </span>
     </span>
-  ) : (
-    <Badge count={count} tone={attention ? "attention" : undefined} />
   );
 }
 
-// A collapsed band still says how many loaded sessions it hides. Only
-// Needs you spends the attention hue, like the project row's rollup.
+// A collapsed band still says how many loaded sessions it hides.
 // The rail's band words are the cadence state words, so they read one table.
 const bandLabel = (band: Band): string => STATE_LABELS[band === "needsYou" ? "needs-you" : band];
 
@@ -1068,22 +1069,15 @@ function BandRow({ node, info }: { node: BandRailNode; info: TreeRowInfo }) {
     <RailRowShell
       info={info}
       rowProps={{ "data-testid": "rail-row-band", "data-band": node.band }}
-      label={
-        // biome-ignore lint/a11y/noStaticElementInteractions: redundant with the row's own Enter handling, see SessionRow
-        // biome-ignore lint/a11y/useKeyWithClickEvents: redundant with the row's own Enter handling, see SessionRow
-        <span className={`${CLASS.label} ${CLASS.bandLabel}`} onClick={info.activate}>
-          {bandLabel(node.band)}
-        </span>
-      }
-      right={
-        <span className={CLASS.bandCount} data-testid="rail-row-band-count">
-          {/* The count is sessions in the band. A band's own "+N older" row
-              stands for rows beyond it, so it is not one of them. */}
-          <RailCount
-            count={node.children.filter((child) => child.kind === "session").length}
-            attention={node.band === "needsYou"}
-          />
-        </span>
+      activateOnTextCol
+      label={<span className={`${CLASS.label} ${CLASS.bandLabel}`}>{bandLabel(node.band)}</span>}
+      afterLabel={
+        /* The count is sessions in the band. A band's own "+N older" row
+           stands for rows beyond it, so it is not one of them. */
+        <RailCount
+          count={node.children.filter((child) => child.kind === "session").length}
+          testId="rail-row-band-count"
+        />
       }
     />
   );

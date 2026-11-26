@@ -830,31 +830,15 @@ describe("resource-backed Rail", () => {
     }
   });
 
-  test("the identity block names the product and a needs-you count", () => {
+  test("the header names the product without rendering a needs-you summary pill", () => {
     installState([], manifest({ attentionSummary: { needsYou: 2, error: 0, working: 0 } }));
     render(<Rail />);
     expect(screen.getByText("evener")).toBeTruthy();
-    expect(screen.getByTestId("rail-needs-you").textContent).toContain("2 needs you");
-  });
-
-  // A generation change keeps the previous manifest's data and marks it stale
-  // until the fresh read lands (provisionalForGeneration), and resets the
-  // attention summary in the same breath. Reading that data anyway kept the
-  // chip lit for a queue the store had already replaced - and if the fresh read
-  // failed, for as long as the failure lasted.
-  test("a stale manifest's needs-you count does not keep the chip lit", () => {
-    const stale = resource({ kind: "manifest" }, manifest({ attentionSummary: { needsYou: 2, error: 0, working: 0 } }));
-    installState([], manifest({ attentionSummary: { needsYou: 2, error: 0, working: 0 } }));
-    navigationStore.setState({
-      manifest: { ...stale, stale: true },
-      attention: { changed: [], summary: null },
-    });
-    render(<Rail />);
     expect(screen.queryByTestId("rail-needs-you")).toBeNull();
   });
 
-  test("the mark leads the wordmark as decoration, and the chip's dot adds no second status name", () => {
-    installState([], manifest({ attentionSummary: { needsYou: 2, error: 0, working: 0 } }));
+  test("the mark leads the wordmark as decoration", () => {
+    installState();
     render(<Rail />);
     const brand = within(screen.getByTestId("rail-brand"));
     const mark = brand.getByTestId("rail-mark");
@@ -862,11 +846,6 @@ describe("resource-backed Rail", () => {
     expect(
       mark.compareDocumentPosition(brand.getByTestId("rail-wordmark")) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
-    // The chip's own text already says what the dot means, so the dot must not
-    // announce the status a second time.
-    const chip = screen.getByTestId("rail-needs-you");
-    expect(chip.querySelector('[data-kind="needs-you"]')).toBeTruthy();
-    expect(within(chip).queryByRole("img")).toBeNull();
   });
 
   // The header's three icons are drawn, not typed: global.css subsets the sans
