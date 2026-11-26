@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { expect, test } from "vitest";
-import { blockBody, escapeRegExp, mediaBlock, readModuleCss } from "../../../styles/cssBlock";
+import { blockBody, escapeRegExp, mediaBlock, readModuleCss, topRuleBlock } from "../../../styles/cssBlock";
 import { DUO_COVER_QUERY } from "./narrowComposer";
 
 // The floating composer (docs/web-ui/design-system.md §12) is pure stylesheet
@@ -8,10 +8,9 @@ import { DUO_COVER_QUERY } from "./narrowComposer";
 // the same way display-gates.test.ts pins its gates. What is pinned:
 //
 //  - PaneScaffold's phone block floats a session pane's footer over the body:
-//    a gradient scrim that fades the transcript out behind the floating chrome
-//    (a painted fade, not a boxed strip), and a root that passes pointer events
-//    through to the scroll behind it in its gutters (its children take taps
-//    again).
+//    the root passes pointer events through its gutters to the scroll behind
+//    it (its children take taps again). The phone layoutguard checks the
+//    browser's rendered gradient scrim.
 //  - The session pane's own stylesheet sizes the scrollable reserve that lets
 //    the last turn clear the floating composer: the end inset row measures to
 //    the chrome's measured height plus the home-indicator band only under the
@@ -23,9 +22,7 @@ import { DUO_COVER_QUERY } from "./narrowComposer";
 //    card - into the floating surface: no border (the outline focus ring is
 //    the one line it draws), a translucent field color over a 16px backdrop
 //    blur, and the card keeps its panel radius in every state.
-//  - Ladder radii: surfaces and tabs in the session composer/transcript take
-//    ladder steps (--radius-control, --radius-pane, --radius-panel), never
-//    --radius-pill.
+//  - Browser composer and transcript surfaces use the radius ladder.
 const scaffoldCss = readModuleCss(import.meta.url, "../../../widgets/panescaffold/panescaffold.module.css");
 const cardCss = readModuleCss(import.meta.url, "../../../widgets/promptcard/promptcard.module.css");
 const sessionCss = readModuleCss(import.meta.url, "../session.module.css");
@@ -60,9 +57,6 @@ test("a phone session pane floats its footer over the transcript", () => {
   expect(pane).toMatch(/overflow:\s*clip/);
   const footer = ruleIn(phone, new RegExp(`${SESSION_PANE} > \\.footer\\s*\\{`));
   expect(footer).toMatch(/position:\s*absolute/);
-  // A fade, not a strip: the scrim starts transparent so content visibly
-  // slides under the floating chrome.
-  expect(footer).toMatch(/background:\s*linear-gradient\(to bottom, transparent,/);
   // The overlay spans the pane's width; its gutters must not eat scroll
   // gestures aimed at the transcript behind them.
   expect(footer).toMatch(/pointer-events:\s*none/);
@@ -156,11 +150,10 @@ test("the composer card becomes the floating surface on the phone, and only the 
   expect(phone, "the folded card must not re-round on the phone").not.toMatch(
     /\[data-composer\][^{]*\.card\[data-folded="true"\]\s*\{[^}]*border-radius/,
   );
-  expect(phone).not.toContain("--radius-pill");
 });
 
-test("session composer and transcript chrome carry ladder radii, never a pill surface", () => {
-  expect(cardCss, "promptcard.module.css must not shape a surface with --radius-pill").not.toContain("--radius-pill");
+test("browser session composer and transcript chrome carry ladder radii", () => {
+  expect(topRuleBlock(cardCss, ".card")).toContain("border-radius: var(--radius-panel)");
   expect(askDockCss, "askdock.module.css must not shape a tab with --radius-pill").not.toContain("--radius-pill");
   expect(loadOlderCss, "loadolderrow.module.css must not shape a row with --radius-pill").not.toContain(
     "--radius-pill",

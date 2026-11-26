@@ -7,7 +7,7 @@
     "styles/motion.module.css",
     "widgets/markdown/markdown.module.css",
     "panes/session/transcript/entityref.module.css",
-    "widgets/internal/floatingSurface.module.css",
+    "styles/floatingSurface.module.css",
     "widgets/hovercard/hovercard.module.css",
     "widgets/openbutton/openbutton.module.css"
   ],

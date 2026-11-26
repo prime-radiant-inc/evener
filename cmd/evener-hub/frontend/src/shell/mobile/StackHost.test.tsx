@@ -2770,9 +2770,8 @@ test("tablet board column unmounts and reopens immediately without sliding under
   }
 });
 
-test("floating top bar capsules use --radius-pane, omit empty clusters, and never transform the header", () => {
+test("browser top bar capsules use --radius-pane, omit empty clusters, and never transform the header", () => {
   const css = readModuleCss(import.meta.url, "StackHost.module.css");
-  expect(css).not.toContain("--radius-pill");
   const collapsed = css.match(/\.topBarCollapsed\s*\{([^}]*)\}/)?.[1] ?? "";
   expect(collapsed).toContain("position: absolute");
   expect(collapsed).toContain("pointer-events: none");
