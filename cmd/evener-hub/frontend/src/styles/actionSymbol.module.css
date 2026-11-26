@@ -1,0 +1,12 @@
+/* The same drawing fits a compact toolbar or the larger touch target. */
+.symbol {
+  display: block;
+  width: calc(var(--space-4) + var(--space-half));
+  height: auto;
+}
+
+@media (max-width: 899px), (any-pointer: coarse) {
+  .symbol {
+    width: var(--space-5);
+  }
+}

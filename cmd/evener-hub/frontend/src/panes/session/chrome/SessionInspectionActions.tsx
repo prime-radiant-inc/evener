@@ -11,6 +11,7 @@ import {
 import { SearchIcon } from "../../../shell/rail/railIcons";
 import { useIsMobile } from "../../../shell/useIsMobile";
 import { workspaceStore } from "../../../shell/workspace";
+import symbolStyles from "../../../styles/actionSymbol.module.css";
 import { Button, IconButton } from "../../../widgets";
 import { requestFindInSession } from "../find/findRequest";
 
@@ -32,7 +33,7 @@ export function openSessionOverview(
 
 function OverviewIcon() {
   return (
-    <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
+    <svg viewBox="0 0 16 16" width="16" height="16" className={symbolStyles.symbol} aria-hidden="true">
       <rect x="2" y="2.5" width="12" height="11" rx="1.5" fill="none" stroke="currentColor" strokeWidth="1.3" />
       <path d="M9.5 2.5v11" stroke="currentColor" strokeWidth="1.3" />
     </svg>

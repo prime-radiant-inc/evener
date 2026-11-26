@@ -2,7 +2,7 @@ import { useMemo } from "react";
 import { selectNeedsYouCount } from "../../stores/navigation/selectors";
 import { useNavigationStore } from "../../stores/navigation/store";
 import { IconButton } from "../../widgets";
-import { SessionsIcon } from "../rail/railIcons";
+import { SidebarIcon } from "../rail/railIcons";
 
 export interface TreeDrawerProps {
   onToggle: () => void;
@@ -15,7 +15,7 @@ export function TreeDrawer({ onToggle }: TreeDrawerProps) {
   return (
     <IconButton
       label={needsYou > 0 ? `Sessions (${needsYou} need attention)` : "Sessions"}
-      icon={<SessionsIcon />}
+      icon={<SidebarIcon />}
       variant="quiet"
       onClick={onToggle}
       badge={needsYou > 0 ? { count: needsYou, tone: "attention" } : undefined}

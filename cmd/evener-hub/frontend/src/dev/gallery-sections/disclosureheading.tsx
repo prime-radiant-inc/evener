@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { MoreIcon } from "../../shell/rail/railIcons";
 import { DisclosureHeading, Menu } from "../../widgets";
 import { GallerySection } from "../GallerySection";
 import styles from "./disclosure.module.css";
@@ -30,7 +31,7 @@ function DisclosureHeadingDemo() {
         action={
           <Menu
             variant="quiet"
-            icon="⋯"
+            icon={<MoreIcon />}
             label="Actions for Release prep"
             items={[
               { id: "rename", label: "Rename", onSelect: () => {} },
