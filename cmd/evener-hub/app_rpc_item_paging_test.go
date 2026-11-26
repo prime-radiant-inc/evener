@@ -1340,7 +1340,7 @@ func serveDaemonTranscript(t *testing.T, daemon *daemonserver.Server, sessionID,
 	if err := writer.Close(); err != nil {
 		t.Fatal(err)
 	}
-	prepared, err := daemonserver.PrepareAppIdentity("local", sessionID, path)
+	prepared, err := daemonserver.PrepareAppIdentityForRef("local", sessionID, "local:"+sessionID, path)
 	if err != nil {
 		t.Fatal(err)
 	}

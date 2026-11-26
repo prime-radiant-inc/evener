@@ -13,12 +13,16 @@ import (
 )
 
 // setAppIdentity prepares and installs an empty-history AppWire identity for
-// srv, failing the test if PrepareAppIdentity rejects the inputs.
+// srv, failing the test if PrepareAppIdentityForRef rejects the inputs.
 func setAppIdentity(t testing.TB, srv *daemonserver.Server, sourceID, threadID string) {
 	t.Helper()
-	prepared, err := daemonserver.PrepareAppIdentity(sourceID, threadID, "")
+	if sourceID == "" {
+		sourceID = appwire.LocalSourceID
+	}
+	ref := appwire.Ref{SourceID: sourceID, ThreadID: threadID}.String()
+	prepared, err := daemonserver.PrepareAppIdentityForRef(sourceID, threadID, ref, "")
 	if err != nil {
-		t.Fatalf("PrepareAppIdentity(%q, %q): %v", sourceID, threadID, err)
+		t.Fatalf("PrepareAppIdentityForRef(%q, %q, %q): %v", sourceID, threadID, ref, err)
 	}
 	srv.ReplaceAppIdentity(prepared, nil)
 }

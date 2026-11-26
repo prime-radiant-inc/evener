@@ -31,9 +31,10 @@ func TestNotesCanonicalEnvelopeProjection(t *testing.T) {
 			}
 			defer sess.Close()
 			srv := server.NewServer(server.ServerConfig{})
-			prepared, err := server.PrepareAppIdentity("local", sess.ID(), "")
+			ref := "local:" + sess.ID()
+			prepared, err := server.PrepareAppIdentityForRef("local", sess.ID(), ref, "")
 			if err != nil {
-				t.Fatalf("PrepareAppIdentity: %v", err)
+				t.Fatalf("PrepareAppIdentityForRef: %v", err)
 			}
 			srv.ReplaceAppIdentity(prepared, nil)
 			srv.SetThreadEnvelopeSource(liveThreadEnvelopeSource{session: func() agent.EnvelopeSampling { return sess }})
@@ -44,7 +45,6 @@ func TestNotesCanonicalEnvelopeProjection(t *testing.T) {
 			if initialized.Kind() != appwire.MessageResponse {
 				t.Fatalf("initialize: %+v", initialized.Error)
 			}
-			ref := "local:" + sess.ID()
 			// Establish actual content before testing clear, rather than clearing an
 			// already empty session. Both writes use the real AppWire mutation path.
 			seed := conn.HandleMessage(ctx, appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodNotesHumanSet, appwire.NotesHumanSetParams{Ref: ref, ClientMutationID: "seed", ExpectedInstanceID: sess.ID(), Note: "seed"}))

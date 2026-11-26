@@ -568,7 +568,7 @@ func TestDescendantFrontierIdleRestoredChild(t *testing.T) {
 	}
 	srv := NewServer(ServerConfig{})
 	t.Cleanup(srv.Close)
-	identity, err := PrepareAppIdentity("local", root.ID(), root.TranscriptPath())
+	identity, err := PrepareAppIdentityForRef("local", root.ID(), "local:"+root.ID(), root.TranscriptPath())
 	if err != nil {
 		t.Fatal(err)
 	}

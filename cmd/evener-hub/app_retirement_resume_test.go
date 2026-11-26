@@ -283,7 +283,7 @@ func (f *retirementResumeFixture) buildReplacement(_ context.Context, _ hubcore.
 		return rendezvous.Entry{}, err
 	}
 	srv := server.NewServer(server.ServerConfig{})
-	prepared, err := server.PrepareAppIdentity("local", f.sessionID, "")
+	prepared, err := server.PrepareAppIdentityForRef("local", f.sessionID, f.ref, "")
 	if err != nil {
 		return rendezvous.Entry{}, err
 	}

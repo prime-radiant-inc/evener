@@ -71,7 +71,7 @@ func flushUnpairedCommunicateItems(reg *ToolCallRegistry, turnID string) []appwi
 // are genuinely unpaired, so flushing them cannot double-render within a single
 // reload.
 //
-// Resume: PrepareAppIdentity seeds the snapshot from this projection, so the
+// Resume: PrepareAppIdentityForRef seeds the snapshot from this projection, so the
 // flushed item enters the live snapshot. If the communicate's result later
 // arrives live (the session resumes mid-call), the live projector emits
 // EventCommunicate with the same CallID. The flushed item carries CallID so
