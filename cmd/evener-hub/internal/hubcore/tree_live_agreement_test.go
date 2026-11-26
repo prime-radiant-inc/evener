@@ -73,7 +73,7 @@ func fuzzScenarioBuildTree_LiveAndProjectRowsAgreeOnState(t *testing.T) {
 				Status:    status,
 			}}
 
-			tree := BuildTreeAt(metas, live, map[ArchiveKey]bool{}, now)
+			tree := buildTreeAtResolved(metas, live, map[ArchiveKey]bool{}, now)
 			liveRow, inLive, projectRow, inProject := liveAndProjectRowsFor(tree, "01DOUBLELISTED")
 			if !inLive {
 				t.Fatalf("status %q: session missing from the Live tier", status)
@@ -108,7 +108,7 @@ func fuzzScenarioBuildTree_LiveAndProjectRowsAgreeOnAPendingAsk(t *testing.T) {
 		PendingAsk: true,
 	}}
 
-	tree := BuildTreeAt(metas, live, map[ArchiveKey]bool{}, now)
+	tree := buildTreeAtResolved(metas, live, map[ArchiveKey]bool{}, now)
 	liveRow, inLive, projectRow, inProject := liveAndProjectRowsFor(tree, "01ASKING")
 	if !inLive || !inProject {
 		t.Fatalf("session missing: live=%v project=%v", inLive, inProject)
@@ -133,7 +133,7 @@ func fuzzScenarioBuildTree_EveryRowCarriesApprovalPending(t *testing.T) {
 	now := time.Date(2026, 9, 26, 12, 0, 0, 0, time.UTC)
 	metas := []schema.SessionMeta{{ID: "01APPROVAL", CreatedAt: now, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}}}
 	live := []LiveEntry{{PID: 1, SessionID: "01APPROVAL", Status: appwire.ThreadStatusActive, PendingEscalation: true}}
-	tree := BuildTreeAt(metas, live, map[ArchiveKey]bool{}, now)
+	tree := buildTreeAtResolved(metas, live, map[ArchiveKey]bool{}, now)
 	if len(tree.NeedsYou) != 1 || !tree.NeedsYou[0].ApprovalPending || tree.NeedsYou[0].State != "active" {
 		t.Fatalf("NeedsYou = %+v, want one active row carrying ApprovalPending", tree.NeedsYou)
 	}
@@ -160,7 +160,7 @@ func fuzzScenarioBuildTree_EveryRowCarriesTheFirstApproval(t *testing.T) {
 		{EscalationID: "esc_1", Tool: "write_file", Kind: "file_tool", DeniedPath: "/home/me/sites/docs/index.md"},
 		{EscalationID: "esc_2", Tool: "edit_file", Kind: "file_tool", DeniedPath: "/etc/hosts"},
 	}}}
-	tree := BuildTreeAt(metas, live, map[ArchiveKey]bool{}, now)
+	tree := buildTreeAtResolved(metas, live, map[ArchiveKey]bool{}, now)
 	liveRow, inLive, projectRow, inProject := liveAndProjectRowsFor(tree, "01APPROVAL")
 	if len(tree.NeedsYou) != 1 || !inLive || !inProject {
 		t.Fatalf("session missing: needs-you rows=%d live=%v project=%v", len(tree.NeedsYou), inLive, inProject)
@@ -185,7 +185,7 @@ func fuzzScenarioBuildTree_NoApprovalDetailWithoutTheFlag(t *testing.T) {
 		{PID: 1, SessionID: "01AWAITING", Status: appwire.ThreadStatusAwaiting, PendingAsk: true, PendingEscalations: cards},
 		{PID: 2, SessionID: "01NOMETA", Status: appwire.ThreadStatusActive, PendingEscalations: cards},
 	}
-	tree := BuildTreeAt(metas, live, map[ArchiveKey]bool{}, now)
+	tree := buildTreeAtResolved(metas, live, map[ArchiveKey]bool{}, now)
 	liveRow, inLive, projectRow, inProject := liveAndProjectRowsFor(tree, "01AWAITING")
 	leaf, inLeaf, _, _ := liveAndProjectRowsFor(tree, "01NOMETA")
 	if len(tree.NeedsYou) != 1 || tree.NeedsYou[0].ID != "01AWAITING" || !inLive || !inProject || !inLeaf {
@@ -250,7 +250,7 @@ func fuzzScenarioBuildTree_EveryRowCarriesEveryLiveFact(t *testing.T) {
 			CurrentModel:       "gpt-oss-leaf",
 		},
 	}
-	tree := BuildTreeAt(metas, live, map[ArchiveKey]bool{}, now)
+	tree := buildTreeAtResolved(metas, live, map[ArchiveKey]bool{}, now)
 
 	// Zero the fields no builder derives from the live roster, leaving only the
 	// live-derived ones that must agree across tiers.

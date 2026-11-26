@@ -392,7 +392,7 @@ func TestHubSearchGroupingAgreesWithTheTreeRollup(t *testing.T) {
 
 	// Tree over the same corpus: the working children attribute to the same
 	// roots search resolved to, and the unresolvable project stays idle.
-	tree := hubcore.BuildTreeAt(metas, live, nil, now)
+	tree := buildTreeAtResolved(metas, live, nil, now)
 	rollups := map[string]string{}
 	for _, project := range tree.Projects {
 		rollups[project.WorkingDir] = project.RollupState

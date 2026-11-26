@@ -34,7 +34,7 @@ func TestPinnedArchivedLiveSessionReachesTheBoardAsArchived(t *testing.T) {
 	metas := []schema.SessionMeta{{ID: "pinned", Name: "Pinned", CreatedAt: now, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w"}}}
 	live := []hubcore.LiveEntry{{SessionID: "pinned", Status: "active", Entry: rendezvous.Entry{SessionID: "pinned", StartedAt: now}}}
 	decisions := map[hubcore.ArchiveKey]bool{{Kind: "session", ID: "pinned"}: true}
-	tree := hubcore.BuildTreeAtWithProjects(metas, live, decisions, now, map[string]identifier.Project{"/w": {ID: "p"}})
+	tree := hubcore.BuildTreeAt(metas, live, decisions, now, map[string]identifier.Project{"/w": {ID: "p"}})
 	projection, err := buildNavigationProjection(navigationBuildInputs{
 		GenerationID: "generation",
 		Revision:     1,
@@ -663,7 +663,7 @@ func TestNavigationProjectionSnapshotsAuthoritativeTierRows(t *testing.T) {
 	for index := range 60 {
 		metas = append(metas, schema.SessionMeta{ID: fmt.Sprintf("session-snapshot-%03d", index), CreatedAt: now, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w/snapshot"}})
 	}
-	tree := hubcore.BuildTreeAt(metas, nil, map[hubcore.ArchiveKey]bool{}, now)
+	tree := buildTreeAtResolved(metas, nil, map[hubcore.ArchiveKey]bool{}, now)
 	projection, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "generation", Tree: tree})
 	if err != nil {
 		t.Fatal(err)

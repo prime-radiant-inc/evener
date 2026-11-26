@@ -16,6 +16,10 @@ import (
 	"primeradiant.com/evener/rendezvous"
 )
 
+func buildTreeAtResolved(metas []schema.SessionMeta, live []hubcore.LiveEntry, decisions map[hubcore.ArchiveKey]bool, now time.Time) hubcore.Tree {
+	return hubcore.BuildTreeAt(metas, live, decisions, now, hubcore.ResolveProjectMap(metas, live))
+}
+
 // A project favorite is stored under (source, project ID). The navigation
 // projection must keep that source dimension: registering every favorite under
 // its bare ID would let one host's favorite decorate another host's project.
@@ -92,7 +96,7 @@ func TestArchiveDecisionsFlowIntoTree(t *testing.T) {
 		CreatedAt: now.Add(-time.Hour),
 		EnvInfo:   schema.EnvironmentInfo{WorkingDir: project.CanonicalPath},
 	}}
-	tree := hubcore.BuildTreeAt(metas, nil, decisions, now)
+	tree := buildTreeAtResolved(metas, nil, decisions, now)
 	// The manual-archive decision must push alpha out of Projects and into ArchivedProjects.
 	for _, p := range tree.Projects {
 		if p.Name == "alpha" {
@@ -140,7 +144,7 @@ func TestArchiveDecisionsFlowIntoTreeForSession(t *testing.T) {
 	decisions := map[hubcore.ArchiveKey]bool{
 		{Kind: "session", ID: "01ALP1"}: true,
 	}
-	tree := hubcore.BuildTreeAt(metas, nil, decisions, now)
+	tree := buildTreeAtResolved(metas, nil, decisions, now)
 	if len(tree.Projects) != 1 {
 		t.Fatalf("len(projects)=%d, want 1", len(tree.Projects))
 	}

@@ -47,7 +47,7 @@ func TestRootIndexAgreesWithTreeOnForkOriginalWithSeveralChildren(t *testing.T) 
 	if _, ok := attention["01KIDB"]; !ok {
 		t.Error("attention must keep the continuation")
 	}
-	tree := BuildTree(metas, live, nil)
+	tree := buildTreeResolved(metas, live, nil)
 	for _, n := range tree.NeedsYou {
 		if n.ID == "01ORIG" {
 			t.Error("the tree's needs-you tier must skip the nested fork original")
@@ -71,7 +71,7 @@ func TestGuardsHoldWhenSubagentMetaIsDropped(t *testing.T) {
 	if _, ok := attention["01CHILD"]; ok || sum.NeedsYou != 0 {
 		t.Fatalf("meta-less subagent reached attention: %v %+v", attention, sum)
 	}
-	for _, n := range BuildTree(metas, live, nil).NeedsYou {
+	for _, n := range buildTreeResolved(metas, live, nil).NeedsYou {
 		if n.ID == "01CHILD" {
 			t.Fatal("meta-less subagent reached the needs-you tier")
 		}

@@ -13,9 +13,9 @@ import (
 var fixedTreeClock = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 
 // FuzzBuildTree drives the real hubcore.BuildTreeAt seam, the sidebar projection
-// core. It decodes fuzzed JSON into the three inputs BuildTreeAt consumes —
+// core. It decodes fuzzed JSON into the inputs BuildTreeAt consumes —
 // []schema.SessionMeta (the persisted sessions), []LiveEntry (the live daemons),
-// and the archive decisions map — and projects them into the navigation Tree.
+// and the archive decisions map — resolves their projects, and builds Tree.
 // This exercises project grouping, fork/subagent nesting, tier classification,
 // rollups, and all the ordering comparators. The
 // oracle is floor "no panic" plus re-serializability of the resulting Tree
@@ -65,7 +65,7 @@ func FuzzBuildTree(f *testing.F) {
 			decisions[ArchiveKey{Kind: kind, ID: id}] = v
 		}
 
-		tree := BuildTreeAt(metas, live, decisions, fixedTreeClock)
+		tree := BuildTreeAt(metas, live, decisions, fixedTreeClock, ResolveProjectMap(metas, live))
 		if _, err := json.Marshal(tree); err != nil {
 			t.Fatalf("BuildTreeAt result failed to marshal: %v\n metas=%q\n live=%q", err, metasRaw, liveRaw)
 		}

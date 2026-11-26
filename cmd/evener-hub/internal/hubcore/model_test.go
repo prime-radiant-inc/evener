@@ -59,7 +59,7 @@ func fuzzScenarioBuildTree_RowsNameTheirOwnSessionsModel(t *testing.T) {
 		{PID: 1, Model: "gpt-5.4", SessionID: "01LIVE", Status: appwire.ThreadStatusAwaiting, RunningSubagentIDs: []string{"01CHILD"}, CurrentModel: "gpt-5.6"},
 		{PID: 2, Model: "glm-5.3-vision", SessionID: "01UNPROBED", Status: appwire.ThreadStatusAwaiting},
 	}
-	tree := BuildTreeAt(metas, live, map[ArchiveKey]bool{}, now)
+	tree := buildTreeAtResolved(metas, live, map[ArchiveKey]bool{}, now)
 	liveRow, inLive, projectRow, inProject := liveAndProjectRowsFor(tree, "01LIVE")
 	if !inLive || !inProject || liveRow.Model != "gpt-5.6" || projectRow.Model != "gpt-5.6" {
 		t.Fatalf("Live row %q (%v), project row %q (%v): both must name the daemon's current model", liveRow.Model, inLive, projectRow.Model, inProject)
@@ -104,7 +104,7 @@ func TestBuildTree_LiveRowWithoutAModelFallsBackToTheMeta(t *testing.T) {
 		{ID: "01LIVE", Model: "gpt-5.5", CreatedAt: now.Add(-time.Hour), UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
 	}
 	live := []LiveEntry{{PID: 1, SessionID: "01LIVE", Status: appwire.ThreadStatusIdle}}
-	tree := BuildTreeAt(metas, live, map[ArchiveKey]bool{}, now)
+	tree := buildTreeAtResolved(metas, live, map[ArchiveKey]bool{}, now)
 	row, inLive, projectRow, inProject := liveAndProjectRowsFor(tree, "01LIVE")
 	if !inLive || !inProject || row.Model != "gpt-5.5" || projectRow.Model != "gpt-5.5" {
 		t.Fatalf("Live row %q (%v), project row %q (%v): a live entry with neither model must name its meta's", row.Model, inLive, projectRow.Model, inProject)

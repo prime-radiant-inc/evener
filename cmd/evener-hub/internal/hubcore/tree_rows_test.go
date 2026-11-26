@@ -107,7 +107,7 @@ func TestTreeProjectTotalSessionCount(t *testing.T) {
 // A live entry with no session ID cannot be shown or opened, so it never
 // reaches the needs-you tier however its status reads.
 func TestBuildTreeNeedsYouSkipsALiveEntryWithoutSession(t *testing.T) {
-	tree := BuildTreeAt(nil, []LiveEntry{{SessionID: "", Status: "awaiting"}}, nil, time.Now())
+	tree := buildTreeAtResolved(nil, []LiveEntry{{SessionID: "", Status: "awaiting"}}, nil, time.Now())
 	if len(tree.NeedsYou) != 0 {
 		t.Fatalf("NeedsYou = %+v, want no row for a live entry without a session", tree.NeedsYou)
 	}

@@ -1212,7 +1212,7 @@ func TestHubArchiveSetAppWireArchivesRemoteSessionByRef(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		return hubcore.BuildTreeWithProjects(metas, live, decisions, projects)
+		return hubcore.BuildTree(metas, live, decisions, projects)
 	}
 
 	if live := liveTree(t).Live; len(live) != 1 || live[0].ID != "host-a:t1" {

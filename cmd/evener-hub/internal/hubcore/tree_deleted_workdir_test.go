@@ -41,7 +41,7 @@ func TestBuildTreeCarriedIdentityForDeletedWorkingDir(t *testing.T) {
 		deadLane: {ID: mainProject.ID},
 		main:     mainProject,
 	}
-	tree := BuildTreeAtWithProjects(metas, nil, map[ArchiveKey]bool{}, now, projects)
+	tree := BuildTreeAt(metas, nil, map[ArchiveKey]bool{}, now, projects)
 	if len(tree.Projects) != 0 || len(tree.ArchivedProjects) != 1 {
 		t.Fatalf("want one archived project, got active=%d archived=%d: %+v", len(tree.Projects), len(tree.ArchivedProjects), tree.ArchivedProjects)
 	}

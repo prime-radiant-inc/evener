@@ -56,7 +56,7 @@ func TestBuildTreeLiveExcludesArchivedSessions(t *testing.T) {
 		{Kind: "project", ID: "proj-x"}: true,
 	}
 
-	tree := BuildTreeAt(metas, live, decisions, now)
+	tree := buildTreeAtResolved(metas, live, decisions, now)
 
 	got := map[string]bool{}
 	for _, node := range tree.Live {
@@ -133,7 +133,7 @@ func TestBuildTreeRowsCarryTheArchivedDecision(t *testing.T) {
 	}
 	// Pin the project keys so the project decision resolves without a real
 	// working-directory resolver. "keep" sits in a project with no decision.
-	tree := BuildTreeAtWithProjects(metas, live, decisions, now, map[string]identifier.Project{"/w": {ID: "proj-x"}, "/w2": {ID: "other"}})
+	tree := BuildTreeAt(metas, live, decisions, now, map[string]identifier.Project{"/w": {ID: "proj-x"}, "/w2": {ID: "other"}})
 
 	rows := map[string]bool{}
 	var walk func([]TreeNode)
@@ -202,7 +202,7 @@ func TestBuildTreeNeedsYouRowCarriesTheArchivedDecision(t *testing.T) {
 		{"unarchived", []schema.SessionMeta{meta("awaiting", now)}, nil, true, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			tree := BuildTreeAtWithProjects(tc.metas, []LiveEntry{entry("awaiting")}, tc.decisions, now, map[string]identifier.Project{"/w": {ID: "p"}})
+			tree := BuildTreeAt(tc.metas, []LiveEntry{entry("awaiting")}, tc.decisions, now, map[string]identifier.Project{"/w": {ID: "p"}})
 			if !tc.member {
 				if len(tree.NeedsYou) != 0 {
 					t.Fatalf("NeedsYou tier holds %d rows, want 0", len(tree.NeedsYou))
@@ -230,7 +230,7 @@ func TestBuildTreeNestedRowCarriesTheArchivedDecision(t *testing.T) {
 		{ID: "cont", ParentSessionID: "orig", CreatedAt: now, UpdatedAt: now, EnvInfo: env},
 	}
 	decisions := map[ArchiveKey]bool{{Kind: "session", ID: "orig"}: true}
-	tree := BuildTreeAtWithProjects(metas, nil, decisions, now, map[string]identifier.Project{"/w": {ID: "p"}})
+	tree := BuildTreeAt(metas, nil, decisions, now, map[string]identifier.Project{"/w": {ID: "p"}})
 
 	rows := map[string]bool{}
 	var walk func([]TreeNode)
