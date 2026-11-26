@@ -2766,18 +2766,23 @@ describe("band row counts", () => {
     expect(Boolean(numberEl.compareDocumentPosition(chevron) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true);
   });
 
-  test("desktop two-line session aligns the right slot with the title row above the full-width why line", () => {
+  test("desktop two-line session aligns the right slot with the title row above the full-width why line and keeps firstElementChild clickable", () => {
+    const rowInfo = info();
     const node = sessionRailNode(
       apiNode({ state: "awaiting", ask_pending: true, updated_at: new Date(Date.now() - 60_000).toISOString() }),
       { live: "question" },
     );
-    render(<RailRow node={node} info={info()} actions={actions()} />);
+    const { container } = render(<RailRow node={node} info={rowInfo} actions={actions()} />);
+    const row = container.querySelector<HTMLElement>("[data-session-ref]");
     const why = screen.getByTestId("rail-row-why");
     const age = screen.getByTestId("rail-row-time");
-    const topRow = age.closest(`.${railStyles.topRow}`);
-    expect(topRow).not.toBeNull();
-    expect(topRow?.contains(screen.getByTestId("rail-row-title"))).toBe(true);
-    expect(topRow?.contains(why)).toBe(false);
-    expect(why.closest(`.${railStyles.belowRow}`)).not.toBeNull();
+    expect(row?.classList.contains(railStyles.stackedRow as string)).toBe(true);
+    expect(row?.firstElementChild?.classList.contains(railStyles.textCol as string)).toBe(true);
+    expect(row?.firstElementChild?.contains(screen.getByTestId("rail-row-title"))).toBe(true);
+    expect(row?.firstElementChild?.contains(why)).toBe(false);
+    expect(age.closest(`.${railStyles.rightSlot}`)?.parentElement).toBe(row);
+    expect(why.closest(`.${railStyles.belowRow}`)?.parentElement).toBe(row);
+    fireEvent.click(row?.firstElementChild as HTMLElement);
+    expect(rowInfo.activate).toHaveBeenCalledTimes(1);
   });
 });

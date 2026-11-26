@@ -117,7 +117,6 @@ export const RailFlatContext = createContext(false);
 const CLASS = {
   railRow: requireClass(styles.railRow, "RailRow.module.css", "railRow"),
   stackedRow: requireClass(styles.stackedRow, "RailRow.module.css", "stackedRow"),
-  topRow: requireClass(styles.topRow, "RailRow.module.css", "topRow"),
   belowRow: requireClass(styles.belowRow, "RailRow.module.css", "belowRow"),
   flatSession: requireClass(styles.flatSession, "RailRow.module.css", "flatSession"),
   flatStatus: requireClass(styles.flatStatus, "RailRow.module.css", "flatStatus"),
@@ -792,8 +791,8 @@ function RailRowShell({
   activateOnTextCol?: boolean;
 }) {
   const className = [CLASS.railRow, below && CLASS.stackedRow, rowClassName].filter(Boolean).join(" ");
-  const main = (
-    <>
+  return (
+    <span ref={rowRef} className={className} {...rowProps}>
       {/* biome-ignore lint/a11y/noStaticElementInteractions: mouse shortcut only - the treeitem owns keyboard activation and the accessible name */}
       {/* biome-ignore lint/a11y/useKeyWithClickEvents: mouse shortcut only - the treeitem owns keyboard activation and the accessible name */}
       <span className={CLASS.textCol} onClick={activateOnTextCol ? info.activate : undefined}>
@@ -805,21 +804,12 @@ function RailRowShell({
         </span>
       </span>
       {right}
-    </>
-  );
-  return (
-    <span ref={rowRef} className={className} {...rowProps}>
-      {below ? (
-        <>
-          <span className={CLASS.topRow}>{main}</span>
-          {/* biome-ignore lint/a11y/noStaticElementInteractions: mouse shortcut only - the treeitem owns keyboard activation and the accessible name */}
-          {/* biome-ignore lint/a11y/useKeyWithClickEvents: mouse shortcut only - the treeitem owns keyboard activation and the accessible name */}
-          <span className={CLASS.belowRow} onClick={activateOnTextCol ? info.activate : undefined}>
-            {below}
-          </span>
-        </>
-      ) : (
-        main
+      {below && (
+        // biome-ignore lint/a11y/noStaticElementInteractions: mouse shortcut only - the treeitem owns keyboard activation and the accessible name
+        // biome-ignore lint/a11y/useKeyWithClickEvents: mouse shortcut only - the treeitem owns keyboard activation and the accessible name
+        <span className={CLASS.belowRow} onClick={activateOnTextCol ? info.activate : undefined}>
+          {below}
+        </span>
       )}
     </span>
   );

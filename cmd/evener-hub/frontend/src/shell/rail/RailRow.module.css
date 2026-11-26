@@ -186,28 +186,24 @@
 }
 
 /* Desktop Compact two-line rows (a title row plus a full-width reason or
- * quota line below): .topRow aligns the timestamp and hover actions with line
- * 1, while .belowRow spans the full row width underneath instead of truncating
- * early against an empty right-slot column. Only rows whose .belowRow actually
- * rendered content take two-line padding and line-1 height capping, so single-
- * line rows whose RailWhy or RailQuotaWait returned null stay identical to
- * plain single-line rows. */
+ * quota line below): a two-column grid keeps .textCol (still the row's first
+ * child) and .rightSlot aligned on row 1, while .belowRow spans both columns
+ * underneath instead of truncating early against an empty right-slot column.
+ * align-content: center keeps coarse-pointer 44px touch rows vertically
+ * centered. Only rows whose .belowRow actually rendered content take two-line
+ * padding and line-1 height capping, so single-line rows whose RailWhy or
+ * RailQuotaWait returned null stay identical to plain single-line rows. */
 .stackedRow {
-  flex-direction: column;
-  align-items: stretch;
-  gap: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  column-gap: var(--space-2);
+  row-gap: 0;
+  align-items: center;
+  align-content: center;
 }
 
 .stackedRow:has(.belowRow:not(:empty)) {
   padding-block: 4px;
-}
-
-.topRow {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  width: 100%;
-  min-width: 0;
 }
 
 .stackedRow:has(.belowRow:not(:empty)) .rightSlot {
@@ -218,6 +214,7 @@
 }
 
 .belowRow {
+  grid-column: 1 / -1;
   display: flex;
   flex-direction: column;
   width: 100%;
