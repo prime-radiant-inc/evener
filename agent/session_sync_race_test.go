@@ -29,7 +29,7 @@ func hammerSetters(t *testing.T, sess *Session) {
 	}()
 	var setters sync.WaitGroup
 	for _, fn := range []func(){
-		func() { sess.SetModel("gpt-5.2") },
+		func() { sess.SetModel("", "gpt-5.2") },
 		func() { sess.SetReasoningEffort("high") },
 		func() { _ = sess.DetailedStatus() },
 	} {

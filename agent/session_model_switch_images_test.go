@@ -197,7 +197,7 @@ func TestSetModel_ImageBlindSwitchCountsOrphanedMedia(t *testing.T) {
 	sess.appendTurn(schema.TurnToolResults, imageToolResultMessage())
 
 	before := sess.currentProfile()
-	if err := sess.SetModel("kimi/kimi-k3"); err != nil {
+	if err := sess.SetModel("", "kimi/kimi-k3"); err != nil {
 		t.Fatalf("SetModel: %v", err)
 	}
 	after := sess.currentProfile()
@@ -230,7 +230,7 @@ func TestSetModel_BlindToBlindSwitchReportsNoNewOrphans(t *testing.T) {
 	sess.appendTurn(schema.TurnToolResults, imageToolResultMessage())
 
 	before := sess.currentProfile()
-	if err := sess.SetModel("glm/glm-4.6"); err != nil {
+	if err := sess.SetModel("", "glm/glm-4.6"); err != nil {
 		t.Fatalf("SetModel: %v", err)
 	}
 	sess.mu.Lock()
@@ -499,7 +499,7 @@ func TestModelSwitchDropsHistoricalUserImagesForImageBlindTarget(t *testing.T) {
 		}),
 	)
 	sess.appendTurn(schema.TurnUserInput, userImageMessage("what is in this image?"))
-	if err := sess.SetModel("minimax/MiniMax-M2.7"); err != nil {
+	if err := sess.SetModel("", "minimax/MiniMax-M2.7"); err != nil {
 		t.Fatalf("SetModel: %v", err)
 	}
 

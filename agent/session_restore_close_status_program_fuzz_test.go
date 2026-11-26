@@ -302,7 +302,7 @@ func srspRuntimeAndStatus(t *testing.T, draw byte) {
 	model := []string{"gpt-5.3", "gpt-4.1"}[int(draw)&1]
 	effort := []string{"high", "off", "none"}[int(draw)%3]
 	name := "  srsp session  "
-	sess.SetModel(model)
+	sess.SetModel("", model)
 	sess.SetReasoningEffort(effort)
 	if err := sess.Rename(name); err != nil {
 		t.Error(err)
@@ -346,7 +346,7 @@ func srspRuntimeAndStatus(t *testing.T, draw byte) {
 
 	sess.Close()
 	before := sess.Meta()
-	sess.SetModel("gpt-5.4")
+	sess.SetModel("", "gpt-5.4")
 	sess.SetReasoningEffort("low")
 	if err := sess.Rename("after close"); err != nil {
 		t.Error(err)

@@ -241,7 +241,7 @@ func TestModelSwitchWhileWaitingForQuotaRetriesOnTheNewModel(t *testing.T) {
 	run.awaitQuotaWait(t, s)
 
 	recoverProvider(adapter)
-	if err := s.SetModel("gpt-5.4"); err != nil {
+	if err := s.SetModel("", "gpt-5.4"); err != nil {
 		t.Fatalf("SetModel: %v", err)
 	}
 	run.awaitEnd(t, trip, "the switch resumes the call")
@@ -298,7 +298,7 @@ func TestModelSwitchWhileWaitingForGoalContinuationQuotaKeepsGoalPromptLast(t *t
 	run.awaitQuotaWait(t, s)
 
 	recoverProvider(adapter)
-	if err := s.SetModel("gpt-5.4"); err != nil {
+	if err := s.SetModel("", "gpt-5.4"); err != nil {
 		t.Fatalf("SetModel: %v", err)
 	}
 	run.awaitEnd(t, trip, "the switch resumes the goal continuation call")
@@ -1110,7 +1110,7 @@ func TestDriveHungTurnBoundStartsOverWhenAWaitEnds(t *testing.T) {
 		st.Send(llm.StreamEvent{Type: llm.StreamEventFinish, FinishReason: &finish})
 	}
 	adapter.mu.Unlock()
-	if err := sub.sess.SetModel("gpt-5.4"); err != nil {
+	if err := sub.sess.SetModel("", "gpt-5.4"); err != nil {
 		t.Fatalf("SetModel: %v", err)
 	}
 	select {
@@ -1240,7 +1240,7 @@ func TestModelSwitchWhileWaitingFiltersThisTurnsEarlierReasoning(t *testing.T) {
 		t.Fatalf("goal status while waiting = %q, want active", status)
 	}
 
-	if err := s.SetModel("claude-sonnet-4-5"); err != nil {
+	if err := s.SetModel("", "claude-sonnet-4-5"); err != nil {
 		t.Fatalf("SetModel: %v", err)
 	}
 	run.awaitEnd(t, trip, "the switch resumes the call")
@@ -1297,7 +1297,7 @@ func TestStopDuringTheSwitchAfterAWaitLeavesSteeringQueued(t *testing.T) {
 	}
 
 	recoverProvider(adapter)
-	if err := s.SetModel("gpt-5.4"); err != nil {
+	if err := s.SetModel("", "gpt-5.4"); err != nil {
 		t.Fatalf("SetModel: %v", err)
 	}
 	run.awaitEnd(t, trip, "the Stop ends the turn")

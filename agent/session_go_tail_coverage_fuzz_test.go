@@ -117,13 +117,13 @@ func FuzzSessionGoTailCoverage(f *testing.F) {
 			s.resolveProfile = func(string) (*provider.Profile, error) {
 				return nil, errors.New("resolver failure")
 			}
-			s.SetModel("google/gemini")
+			s.SetModel("", "google/gemini")
 
 			s.resolveProfile = func(string) (*provider.Profile, error) {
 				return newGeminiProfile("gemini"), nil
 			}
 			s.cfg.testOnly.minimalSystemPrompt = true
-			s.SetModel("google/gemini")
+			s.SetModel("", "google/gemini")
 			if s.profile.Surface() != registry.SurfaceGoogle || s.reg.Get("web_search") != nil {
 				t.Fatalf("cross-provider switch = %q, web_search=%v", s.profile.Surface(), s.reg.Get("web_search") != nil)
 			}
@@ -134,7 +134,7 @@ func FuzzSessionGoTailCoverage(f *testing.F) {
 			tracing := &Session{profile: NewOpenAIProfile("gpt-5"), client: client, reg: tool.NewRegistry()}
 			done := make(chan struct{})
 			go func() {
-				tracing.SetModel("gpt-5.1")
+				tracing.SetModel("", "gpt-5.1")
 				close(done)
 			}()
 			<-lister.entered

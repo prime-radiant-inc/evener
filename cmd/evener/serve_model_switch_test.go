@@ -56,7 +56,7 @@ func waitServeTurn(ctx context.Context, turns <-chan string, want string) error 
 // serve.go). It then asserts thread/read reports the NEW model IMMEDIATELY —
 // with no turn ever started — which is only true if serve.go's closure calls
 // srv.UpdateSessionInfo synchronously after sess.SetModel succeeds. Deleting
-// that UpdateSessionInfo line (while leaving sess.SetModel(model) itself
+// that UpdateSessionInfo line (while leaving sess.SetModel(provider, model) itself
 // intact) makes this test fail, because status.Model would then only refresh
 // on the next EventSessionStart, which never fires again mid-session.
 func TestServeModelSwitch_ThreadReadReflectsNewModelWithNoInterveningTurn(t *testing.T) {

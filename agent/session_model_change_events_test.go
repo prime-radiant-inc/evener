@@ -24,7 +24,7 @@ func TestSetModel_EmitsModelChangedEvent(t *testing.T) {
 		}),
 	)
 
-	if err := sess.SetModel("gpt-4.1-mini"); err != nil {
+	if err := sess.SetModel("", "gpt-4.1-mini"); err != nil {
 		t.Fatalf("SetModel: %v", err)
 	}
 
@@ -88,7 +88,7 @@ func TestSetModel_ModelChangedEventCarriesNewDefaultEffort(t *testing.T) {
 					testOnly: testConfig{skipGitSnapshot: true},
 				}),
 			)
-			if err := sess.SetModel(tc.model); err != nil {
+			if err := sess.SetModel("", tc.model); err != nil {
 				t.Fatalf("SetModel: %v", err)
 			}
 
@@ -132,7 +132,7 @@ func TestSetModel_FailedSwitch_DoesNotEmitModelChangedEvent(t *testing.T) {
 		}),
 	)
 
-	if err := sess.SetModel("bogus/some-model"); err == nil {
+	if err := sess.SetModel("", "bogus/some-model"); err == nil {
 		t.Fatal("expected error from unknown instance ref")
 	}
 

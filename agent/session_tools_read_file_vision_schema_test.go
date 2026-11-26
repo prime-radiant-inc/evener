@@ -187,7 +187,7 @@ func TestSessionReadFileSchema_SetModelDynamicSwitching(t *testing.T) {
 	}
 
 	// Switch to Claude -> Regime 1 (vision_prompt omitted)
-	if err := sess.SetModel("anthropic/claude-opus-4-5"); err != nil {
+	if err := sess.SetModel("", "anthropic/claude-opus-4-5"); err != nil {
 		t.Fatalf("SetModel claude: %v", err)
 	}
 	defs = sess.ToolDefinitions()
@@ -197,7 +197,7 @@ func TestSessionReadFileSchema_SetModelDynamicSwitching(t *testing.T) {
 	}
 
 	// Switch to text-only codex -> Regime 3 (vision_prompt present)
-	if err := sess.SetModel("openai/gpt-5.2-codex"); err != nil {
+	if err := sess.SetModel("", "openai/gpt-5.2-codex"); err != nil {
 		t.Fatalf("SetModel codex: %v", err)
 	}
 	defs = sess.ToolDefinitions()

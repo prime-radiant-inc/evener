@@ -532,7 +532,7 @@ func TestModelSwitchLiveListingAttribution(t *testing.T) {
 		client.Use(logger)
 
 		sess := newModelSwitchAttributionSession(t, client, stateDir)
-		if err := sess.SetModel("gpt-5.2"); err != nil {
+		if err := sess.SetModel("", "gpt-5.2"); err != nil {
 			t.Fatalf("SetModel: %v", err)
 		}
 

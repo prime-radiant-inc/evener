@@ -481,7 +481,7 @@ func TestTranscriptParity(t *testing.T) {
 	processInput("describe the image")
 
 	// 3. A model switch while idle.
-	if err := sess.SetModel("gpt-5.4"); err != nil {
+	if err := sess.SetModel("", "gpt-5.4"); err != nil {
 		t.Fatal(err)
 	}
 	ps.await(t, events.EventModelChanged, nil)

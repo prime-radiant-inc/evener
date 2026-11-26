@@ -75,7 +75,7 @@ func TestSession_SetModel_FlushesMeta(t *testing.T) {
 	defer sess.Close()
 
 	sessID := sess.ID()
-	sess.SetModel("gpt-5.3")
+	sess.SetModel("", "gpt-5.3")
 
 	meta, err := schema.LoadSessionMeta(dir, sessID)
 	if err != nil {
@@ -107,7 +107,7 @@ func TestSession_SetModel_NoOpAfterClose(t *testing.T) {
 		t.Fatalf("LoadSessionMeta before setters: %v", err)
 	}
 
-	sess.SetModel("gpt-5.3")
+	sess.SetModel("", "gpt-5.3")
 
 	after, err := schema.LoadSessionMeta(dir, sessID)
 	if err != nil {
@@ -1625,7 +1625,7 @@ func TestSession_SetModel_TakesEffectOnNextCall(t *testing.T) {
 		t.Errorf("expected 'test-model', got %q", capturedModel)
 	}
 
-	sess.SetModel("new-model")
+	sess.SetModel("", "new-model")
 	if _, err := sess.ProcessInput(ctx, "second", nil); err != nil {
 		t.Fatal(err)
 	}
@@ -1688,7 +1688,7 @@ func TestSession_SetModel_UpdatesContextManager(t *testing.T) {
 	}
 
 	// Switch to 1M context model. Context manager should see the new window.
-	sess.SetModel("claude-opus-4-5[1m]")
+	sess.SetModel("", "claude-opus-4-5[1m]")
 
 	// Pressure with 1M window: 100K/1M = 0.10
 	p2 := sess.contextPressure()

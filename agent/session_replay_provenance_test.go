@@ -1053,7 +1053,7 @@ func TestRestoreSession_PrunesRetiredCheapModelAndModelFallbacks(t *testing.T) {
 		if err != nil {
 			t.Fatalf("NewSession for SetModel: %v", err)
 		}
-		if err := sw.SetModel("google-vertex/gemini-2.5-flash"); err != nil {
+		if err := sw.SetModel("", "google-vertex/gemini-2.5-flash"); err != nil {
 			t.Fatalf("SetModel to google-vertex/gemini-2.5-flash with registered override failed: %v", err)
 		}
 		sw.Close()
