@@ -3,6 +3,7 @@ package sshconn
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"sync"
 	"time"
@@ -87,28 +88,7 @@ func (m *Manager) supervise(ctx context.Context, host hostreg.Host, ch *Channel,
 	lock.Unlock()
 	_ = ch.Close()
 
-	// BackoffMax bounds every reconnect delay, the first one included: a caller
-	// that configures a maximum below the base must not have its first retry wait
-	// longer than the bound it asked for.
-	delay := min(m.opts.backoffBase(), m.opts.backoffMax())
-	for {
-		if err := m.opts.waitSleep(ctx, m.jitterFor(delay)); err != nil {
-			// A canceled loop no longer owns the host, so it announces nothing.
-			// stopSupervisor stopped it because the host reached a terminal
-			// outcome — announced by the caller that stopped it, and possibly
-			// followed by a replacement's Attached — and Close canceled the base
-			// context, whose terminal event is the Detached it emits while tearing
-			// the channel down (a supervisor on a canceled manager "returns
-			// without emitting one", as Close's pairing comment states). Emitting a
-			// Disconnected of its own would contradict that announcement or arrive
-			// after the replacement's Attached.
-			return
-		}
-		if !m.reconnectOnce(ctx, host, lock) {
-			return
-		}
-		delay = nextBackoff(delay, m.opts.backoffMax())
-	}
+	m.runReconnectLadder(ctx, host, lock, false, false)
 }
 
 // startSupervise launches the reconnect loop that owns host's channel, or
@@ -134,7 +114,10 @@ func (m *Manager) supervise(ctx context.Context, host hostreg.Host, ch *Channel,
 //
 // Every live loop stays registered as its own entry: a replacement attach adds a
 // loop rather than overwriting the host's slot, so stopSupervisor can end a
-// predecessor still parked in backoff instead of leaking it.
+// predecessor still parked in backoff instead of leaking it. The one exception
+// is the startup loop, which this attach supersedes: once supervision of the
+// replacement channel commits, the startup loop's retry ladder has no host left
+// to recover.
 func (m *Manager) startSupervise(host hostreg.Host, ch *Channel, lock *hostLockGate) bool {
 	ctx, cancel := context.WithCancel(m.baseCtx)
 	loop := &supervisorLoop{host: host, cancel: cancel}
@@ -183,45 +166,28 @@ func (m *Manager) startSupervise(host hostreg.Host, ch *Channel, lock *hostLockG
 	// time the channel reads as supervised: no failed start can leave a mark
 	// behind for a handoff to mistake for a live loop.
 	ch.supervised.Store(true)
+	// The startup reconnect for this registration is superseded only after this
+	// loop's registration, reference, and mark are committed; retiring it
+	// earlier would leave the host with no recovery owner. A newer
+	// registration's startup loop is that host's own recovery.
+	var retired []*supervisorLoop
+	for other := range m.supervisors[host.Name] {
+		if other == loop || !other.startup || other.host.Generation > host.Generation {
+			continue
+		}
+		delete(m.supervisors[host.Name], other)
+		retired = append(retired, other)
+	}
 	// WaitGroup.Go adds, runs, and marks the loop done, so Close waiting on the
 	// group observes the fully-finished loop.
 	m.supervisorsWG.Go(func() {
-		// Deregister and release this loop's context child when it ends. Without the
-		// deregistration a replaced loop's handle would stay in the host's set for
-		// good — a leak that grows by one with each reconnect — and its WithCancel
-		// child would stay registered with baseCtx until Close.
-		defer func() {
-			m.mu.Lock()
-			if set := m.supervisors[host.Name]; set != nil {
-				delete(set, loop)
-				if len(set) == 0 {
-					delete(m.supervisors, host.Name)
-				}
-			}
-			// The mark is cleared inside this critical section, not after it: the
-			// handoff's start decision reads it under the same mutex
-			// (startSupervise's dedupe), so it can never observe a mark whose
-			// loop has already deregistered — the stale-true window the round-6
-			// review named. The decision sees the live mark or the cleared one,
-			// and a cleared mark sends it to start the missing supervisor.
-			if m.opts.beforeSuperviseClear != nil {
-				m.opts.beforeSuperviseClear(host.Name, ch)
-			}
-			ch.supervised.Store(false)
-			m.mu.Unlock()
-			cancel()
-			// The loop no longer touches the gate, so its reference goes with
-			// it — the last one out drops the entry.
-			m.releaseHostLock(host.Name)
-			// Announce the exit only after the gate is released, so a test that
-			// waits on it can assert on the supervisor's final state.
-			if m.opts.superviseExited != nil {
-				m.opts.superviseExited(host.Name)
-			}
-		}()
+		defer m.endSupervisor(host.Name, loop, ch)
 		m.supervise(ctx, host, ch, lock)
 	})
 	m.mu.Unlock()
+	for _, other := range retired {
+		other.cancel()
+	}
 	return true
 }
 
@@ -233,6 +199,111 @@ type supervisorLoop struct {
 	// re-added under the same name after the removal looked.
 	host   hostreg.Host
 	cancel context.CancelFunc
+	// startup marks a loop StartReconnect registered. Another attach's committed
+	// supervision retires it.
+	startup bool
+}
+
+// StartReconnect starts a background reconnect for name: the loop dials the
+// explicit attach ladder immediately, retries transient failures with the
+// manager's bounded backoff, and hands the host to mid-run supervision once a
+// channel is published. An attached host, or one with a loop for this
+// registration, is left alone, so repeated calls are cheap. It never waits for
+// a dial.
+func (m *Manager) StartReconnect(name string) error {
+	if m.reg == nil {
+		return fmt.Errorf("%w: %q", ErrHostNotFound, name)
+	}
+	host, ok := m.reg.Get(name)
+	if !ok {
+		return fmt.Errorf("%w: %q", ErrHostNotFound, name)
+	}
+	name = host.Name
+	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		return ErrManagerClosed
+	}
+	if ch := m.chans[name]; ch != nil && !ch.isClosed() && !ch.isLost() && ch.host.Generation == host.Generation {
+		m.mu.Unlock()
+		return nil
+	}
+	if m.hasActiveSupervisorLocked(name, host.Generation) {
+		m.mu.Unlock()
+		return nil
+	}
+	// The loop goroutine outlives this call and gates on lock, so its live-user
+	// reference is counted here, under the same mutex that registers it. The
+	// entry cannot be dropped between this call and the goroutine because the
+	// reference exists before the goroutine does.
+	lock := m.hostLockLocked(name)
+	ctx, cancel := context.WithCancel(m.baseCtx)
+	loop := &supervisorLoop{host: host, cancel: cancel, startup: true}
+	if m.supervisors[name] == nil {
+		m.supervisors[name] = map[*supervisorLoop]struct{}{}
+	}
+	m.supervisors[name][loop] = struct{}{}
+	m.supervisorsWG.Go(func() {
+		defer m.endSupervisor(name, loop, nil)
+		m.superviseStartup(ctx, host, lock)
+	})
+	m.mu.Unlock()
+	return nil
+}
+
+// endSupervisor retires one loop's registration and releases its context child,
+// gate reference, and (when ch is non-nil) its channel's supervision mark.
+// The mark is cleared under the same mutex the handoff's start decision reads,
+// and the exit announcement runs last, after the gate is released.
+func (m *Manager) endSupervisor(name string, loop *supervisorLoop, ch *Channel) {
+	m.mu.Lock()
+	if set := m.supervisors[name]; set != nil {
+		delete(set, loop)
+		if len(set) == 0 {
+			delete(m.supervisors, name)
+		}
+	}
+	if ch != nil {
+		if m.opts.beforeSuperviseClear != nil {
+			m.opts.beforeSuperviseClear(name, ch)
+		}
+		ch.supervised.Store(false)
+	}
+	m.mu.Unlock()
+	loop.cancel()
+	m.releaseHostLock(name)
+	if m.opts.superviseExited != nil {
+		m.opts.superviseExited(name)
+	}
+}
+
+// superviseStartup runs StartReconnect's loop: an immediate first attempt, then
+// the same bounded backoff a mid-run supervisor uses.
+func (m *Manager) superviseStartup(ctx context.Context, host hostreg.Host, lock *hostLockGate) {
+	m.runReconnectLadder(ctx, host, lock, true, true)
+}
+
+// runReconnectLadder runs one bounded exponential backoff loop for host.
+// BackoffMax bounds every reconnect delay, the first one included. When
+// immediateFirst is true the first attempt runs before any sleep. A canceled
+// loop returns without emitting a state event because its canceller owns the
+// terminal announcement.
+func (m *Manager) runReconnectLadder(ctx context.Context, host hostreg.Host, lock *hostLockGate, explicit, immediateFirst bool) {
+	delay := min(m.opts.backoffBase(), m.opts.backoffMax())
+	if immediateFirst {
+		if !m.reconnectOnceWithMode(ctx, host, lock, explicit) {
+			return
+		}
+	}
+	for {
+		if err := m.opts.waitSleep(ctx, m.jitterFor(delay)); err != nil {
+			return
+		}
+		if !m.reconnectOnceWithMode(ctx, host, lock, explicit) {
+			return
+		}
+		delay = nextBackoff(delay, m.opts.backoffMax())
+	}
 }
 
 // stopSupervisor ends every reconnect loop host still has, if any. Without it a
@@ -256,6 +327,15 @@ func (m *Manager) stopSupervisor(name string) {
 // whether another attempt is worth making. Every outcome that ends the
 // supervisor emits its own state event first.
 func (m *Manager) reconnectOnce(ctx context.Context, host hostreg.Host, lock *hostLockGate) bool {
+	return m.reconnectOnceWithMode(ctx, host, lock, false)
+}
+
+// reconnectOnceWithMode is the one attach ladder both reconnect paths run.
+// explicit selects a startup reconnect: it may bootstrap a stopped hub, it
+// rechecks its registration before dialing, its terminal failure stops only the
+// loops a newer registration supersedes, and a canceled attempt announces
+// nothing because its canceller owns the terminal event.
+func (m *Manager) reconnectOnceWithMode(ctx context.Context, host hostreg.Host, lock *hostLockGate, explicit bool) bool {
 	lock.Lock()
 	lock.holdAs(hostops.Holder{Kind: hostops.HolderManager, Activity: "reconnect"})
 	defer lock.Unlock()
@@ -273,7 +353,14 @@ func (m *Manager) reconnectOnce(ctx context.Context, host hostreg.Host, lock *ho
 		// loser's channel was clobbered without ever being detached.
 		return false
 	}
-	nch, err := m.ensureOnce(ctx, host, false)
+	if explicit && !m.reg.SameRegistration(host.Name, host) {
+		// The registration this startup loop was told to reconnect is gone or
+		// replaced. Nothing else was announced for it, so report the host
+		// disconnected: a new registration's own path owns the name from here.
+		m.stateEvent(host.Name, StateDisconnected)
+		return false
+	}
+	nch, err := m.ensureOnce(ctx, host, explicit)
 	if err == nil {
 		if nch.isLost() || nch.isClosed() {
 			// The link died between the handshake and this publish. Announcing it
@@ -345,11 +432,53 @@ func (m *Manager) reconnectOnce(ctx context.Context, host hostreg.Host, lock *ho
 			m.failedEvent(host.Name, err)
 		}
 		m.stateEvent(host.Name, StateDisconnected)
-		m.stopSupervisor(host.Name)
+		if explicit {
+			// End only the loops this registration supersedes: a strictly newer
+			// registration's startup loop is the re-added host's recovery.
+			m.stopSupervisorsBefore(host.Name, func(generation uint64) bool {
+				return generation > host.Generation
+			})
+		} else {
+			m.stopSupervisor(host.Name)
+		}
+		return false
+	}
+	if explicit && ctx.Err() != nil {
+		// A canceled startup loop no longer owns the host; its canceller (a
+		// superseding attach or Close) owns the terminal announcement.
 		return false
 	}
 	m.stateEvent(host.Name, StateReconnecting)
 	return true
+}
+
+// hasActiveSupervisor reports whether name still has a reconnect loop for
+// exactly this registration. It lets an attach that failed leave the host's
+// phase honest: a loop still registered for the registration is the host's
+// recovery owner even while it waits out a backoff.
+func (m *Manager) hasActiveSupervisor(name string, generation uint64) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.hasActiveSupervisorLocked(name, generation)
+}
+
+func (m *Manager) hasActiveSupervisorLocked(name string, generation uint64) bool {
+	for loop := range m.supervisors[name] {
+		if loop.host.Generation == generation {
+			return true
+		}
+	}
+	return false
+}
+
+// stateAfterFailedAttach announces StateReconnecting when a loop for this
+// registration still owns recovery, and StateDisconnected otherwise.
+func (m *Manager) stateAfterFailedAttach(name string, generation uint64) {
+	if m.hasActiveSupervisor(name, generation) {
+		m.stateEvent(name, StateReconnecting)
+		return
+	}
+	m.stateEvent(name, StateDisconnected)
 }
 
 func (m *Manager) jitterFor(d time.Duration) time.Duration {
