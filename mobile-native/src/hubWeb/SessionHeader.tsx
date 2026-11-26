@@ -3,7 +3,7 @@ import { type SFSymbol, SymbolView } from "expo-symbols";
 import type { ReactNode } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import { useSystemGlass } from "../design/systemGlass";
-import { type Palette, paletteFor } from "../design/tokens";
+import type { Palette } from "../design/tokens";
 
 export interface SessionHeaderState {
 	id: string;
@@ -11,7 +11,6 @@ export interface SessionHeaderState {
 	leading: "back" | "sessions";
 	needsYou: number;
 	collapsed: boolean;
-	dark: boolean;
 	height: number;
 }
 
@@ -27,7 +26,6 @@ export function isSessionHeader(value: unknown): value is SessionHeaderState {
 		Number.isSafeInteger(header.needsYou) &&
 		header.needsYou >= 0 &&
 		typeof header.collapsed === "boolean" &&
-		typeof header.dark === "boolean" &&
 		typeof header.height === "number" &&
 		Number.isFinite(header.height) &&
 		header.height > 0
@@ -61,13 +59,14 @@ function ControlGroup({ glass, palette, children }: { glass: boolean; palette: P
 
 export function SessionHeader({
 	header,
+	palette,
 	onAction,
 }: {
 	header: SessionHeaderState;
+	palette: Palette;
 	onAction(action: HeaderAction): void;
 }) {
 	const glass = useSystemGlass();
-	const palette = paletteFor(header.dark ? "dark" : "light");
 	function control(action: HeaderAction) {
 		const { symbol, label } = controls[action];
 		const count = action === "sessions" ? header.needsYou : 0;

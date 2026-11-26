@@ -34,6 +34,7 @@ export function HubWebView({ profile, token, initialPath, onPath, onHubMenu, onD
 	const [error, setError] = useState<string | null>(null);
 	const [editing, setEditing] = useState(false);
 	const [header, setHeader] = useState<SessionHeaderState | null>(null);
+	const [hubDark, setHubDark] = useState<boolean | null>(null);
 	const focused = useIsFocused();
 	useHoldAlerts(editing && bridgeReady && focused && !error, "quiet");
 	const source = useMemo(() => {
@@ -60,6 +61,7 @@ export function HubWebView({ profile, token, initialPath, onPath, onHubMenu, onD
 		setEditing(false);
 		setLoaded(false);
 		setHeader(null);
+		setHubDark(null);
 		setError(null);
 	}, []);
 	useEffect(() => {
@@ -97,6 +99,9 @@ export function HubWebView({ profile, token, initialPath, onPath, onHubMenu, onD
 		}
 		if (!data || typeof data !== "object") return;
 		switch (data.type) {
+			case "appearance":
+				if (typeof data.dark === "boolean") setHubDark(data.dark);
+				break;
 			case "sessionHeader":
 				setHeader(isSessionHeader(data.header) ? data.header : null);
 				break;
@@ -152,10 +157,13 @@ export function HubWebView({ profile, token, initialPath, onPath, onHubMenu, onD
 			</SafeAreaView>
 		);
 	const activeHeader = focused ? header : null;
-	const topColor = activeHeader ? paletteFor(activeHeader.dark ? "dark" : "light").surface : palette.canvas;
+	const hubPalette = focused && hubDark !== null ? paletteFor(hubDark ? "dark" : "light") : null;
 	return (
-		<SafeAreaView edges={["top", "left", "right"]} style={{ flex: 1, backgroundColor: topColor }}>
-			{activeHeader && <StatusBar style={activeHeader.dark ? "light" : "dark"} />}
+		<SafeAreaView
+			edges={["top", "left", "right"]}
+			style={{ flex: 1, backgroundColor: hubPalette?.surface ?? palette.canvas }}
+		>
+			{hubPalette && <StatusBar style={hubPalette.scheme === "dark" ? "light" : "dark"} />}
 			{loaded && !activeHeader && (!bridgeReady || currentPath.current.startsWith("/thread/")) && (
 				<View style={{ alignItems: "flex-end" }}>
 					<HeaderButton label="iPhone settings" onPress={onHubMenu} />
@@ -181,6 +189,7 @@ export function HubWebView({ profile, token, initialPath, onPath, onHubMenu, onD
 					onMessage={message}
 					onLoadStart={() => {
 						setHeader(null);
+						setHubDark(null);
 						setEditing(false);
 						setBridgeReady(false);
 					}}
@@ -212,11 +221,12 @@ export function HubWebView({ profile, token, initialPath, onPath, onHubMenu, onD
 					contentMode="mobile"
 					allowsBackForwardNavigationGestures
 					hideKeyboardAccessoryView
-					style={{ backgroundColor: palette.canvas }}
+					style={{ backgroundColor: (hubPalette ?? palette).canvas }}
 				/>
 				{activeHeader && (
 					<SessionHeader
 						header={activeHeader}
+						palette={hubPalette ?? palette}
 						onAction={(action) =>
 							web.current?.postMessage(JSON.stringify({ type: "headerAction", id: activeHeader.id, action }))
 						}

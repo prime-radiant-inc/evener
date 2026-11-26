@@ -1,5 +1,6 @@
 import { act } from "react-test-renderer";
 import { expect, it, onTestFinished, vi } from "vitest";
+import { paletteFor } from "../design/tokens";
 import { render, settle, systemGlass } from "../renderNative.testkit";
 import { HubWebView } from "./HubWebView";
 
@@ -24,22 +25,23 @@ it("routes the active native session controls back to their pane and gives the h
 		{ createNodeMock: (element) => (element.type === "WebView" ? { postMessage } : null) },
 	);
 	const view = tree.root.findByType("WebView" as never);
-	const publish = (header: unknown) =>
+	const message = (payload: unknown) =>
 		act(() =>
 			view.props.onMessage({
-				nativeEvent: { url: profile.origin + "/", data: JSON.stringify({ type: "sessionHeader", header }) },
+				nativeEvent: { url: profile.origin + "/", data: JSON.stringify(payload) },
 			}),
 		);
+	const publish = (header: unknown) => message({ type: "sessionHeader", header });
 	const header = {
 		id: "pane1",
 		title: "Build notes",
 		leading: "sessions",
 		needsYou: 3,
 		collapsed: false,
-		dark: true,
 		height: 61,
 	};
 	publish(header);
+	message({ type: "appearance", dark: true });
 	await settle();
 	expect(tree.root.findAllByType("GlassView" as never)).toHaveLength(2);
 	expect(tree.root.findByProps({ accessibilityRole: "header" }).props.children).toBe(header.title);
@@ -62,9 +64,17 @@ it("routes the active native session controls back to their pane and gives the h
 	expect(tree.root.findAllByType("GlassView" as never)).toHaveLength(0);
 	publish(null);
 	expect(tree.root.findAllByProps({ accessibilityLabel: "Back" })).toHaveLength(0);
+	const statusBar = () => tree.root.findByType("StatusBar" as never).props.style;
+	const inset = () => tree.root.findByType("SafeAreaView" as never).props.style.backgroundColor;
+	expect(statusBar()).toBe("light");
+	expect(inset()).toBe(paletteFor("dark").surface);
+	message({ type: "appearance", dark: false });
+	expect(statusBar()).toBe("dark");
+	expect(inset()).toBe(paletteFor("light").surface);
 	publish(header);
 	act(() => view.props.onLoadStart());
 	expect(tree.root.findAllByProps({ accessibilityRole: "header" })).toHaveLength(0);
+	expect(tree.root.findAllByType("StatusBar" as never)).toHaveLength(0);
 });
 
 it("opens native controls only from the paired app and returns to its session after a failed load", () => {
