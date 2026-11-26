@@ -4,8 +4,8 @@ import XCTest
 /// Each test drives the real Release app on the run-owned simulator against
 /// a real isolated hub whose provider answers every ordinary turn with the
 /// fixed qualification fixture. The UI runner passes the hub's origin, its
-/// fixture-only token, the run-owned workspace and the hub host's home
-/// through the test-run environment; the app never reads a host path, and
+/// fixture-only token and run-owned workspace through the test-run
+/// environment. The hub resolves the path supplied to its directory picker, and
 /// nothing here publishes.
 ///
 /// The tests share one app install, so the suite starts with the recovery
@@ -304,9 +304,15 @@ final class EvenerQualificationUITests: XCTestCase {
 		let controls = web.descendants(matching: .any)
 		let directory = controls.matching(NSPredicate(format: "label BEGINSWITH %@", "Working directory:")).firstMatch
 		tap(directory, "the launcher never offered the workspace picker")
-		let folder = controls.matching(NSPredicate(format: "label ENDSWITH %@", "/evener-qualification-workspace")).firstMatch
-		folder.tap()
-		controls["Use this folder"].firstMatch.tap()
+		let workspace = ProcessInfo.processInfo.environment["EVENER_QUALIFICATION_WORKSPACE"] ?? ""
+		XCTAssertTrue(workspace.hasPrefix("/"), "the runner must supply its isolated workspace")
+		let path = web.textFields["Path"].firstMatch
+		tap(path, "the directory picker has no path field")
+		path.typeText(workspace)
+		XCTAssertEqual(path.value as? String, workspace)
+		tap(web.buttons["Go"].firstMatch, "the directory picker could not navigate to the workspace")
+		tap(web.buttons["Use this folder"].firstMatch, "the directory picker could not select the workspace")
+		XCTAssertTrue(directory.label.hasSuffix(workspace), "the launcher did not select the fixture workspace")
 
 		controls.matching(NSPredicate(format: "label CONTAINS[c] %@", "change model")).firstMatch.tap()
 		let model = controls.matching(
