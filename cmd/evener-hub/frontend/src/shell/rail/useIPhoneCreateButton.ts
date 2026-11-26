@@ -12,7 +12,7 @@ export function useIPhoneCreateButton(rail: RefObject<HTMLDivElement | null>) {
     if (!button || !board || !hasIPhoneWorkspaceControls()) return;
     const viewport = window.visualViewport;
     function frame() {
-      if (!button || button.closest("[inert]")) return null;
+      if (!button || button.closest("[inert]") || (viewport && viewport.scale !== 1)) return null;
       const layer = document.activeElement?.closest(
         '[data-focus-layer], [aria-modal="true"], [role="menu"], [role="listbox"]',
       );

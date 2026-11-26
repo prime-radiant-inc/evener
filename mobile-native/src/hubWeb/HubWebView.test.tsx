@@ -253,61 +253,73 @@ it("opens native controls only from the paired app and returns to its session af
 	act(() => tree.unmount());
 });
 
-it("holds a startup edge action for the matching restored conversation and drops it on navigation", () => {
-	native.insets.right = 84;
-	onTestFinished(() => {
-		native.insets.right = 0;
-	});
-	const profile = { id: "desk", name: "Desk", origin: "https://desk.example" };
-	const postMessage = vi.fn();
-	const workspace = (path: string) => (
-		<HubWebView
-			profile={profile}
-			initialPath={path}
-			token="saved"
-			onPath={vi.fn()}
-			onHubMenu={vi.fn()}
-			onDeviceWork={vi.fn()}
-		/>
-	);
-	const first = "/s/local%3Aone";
-	const tree = render(workspace(first), { createNodeMock: (e) => (e.type === "WebView" ? { postMessage } : null) });
-	const item = native.navigation.setOptions.mock.lastCall?.[0].unstable_headerRightItems?.({})[0];
-	if (item?.type !== "button") throw new Error("Missing restore action");
-	act(item.onPress);
-	expect(postMessage).not.toHaveBeenCalled();
-	const publish = (ref: string) =>
+it.each([
+	{ sessionRef: "local:one", documentPath: "/s/local%3Aone", delivered: true },
+	{ sessionRef: undefined, documentPath: "/s/local%3Aone", delivered: true },
+	{ sessionRef: "local:one", documentPath: "/s/local%3Aother", delivered: false },
+])(
+	"fences a startup edge action to its document and pane ($documentPath, $sessionRef)",
+	({ sessionRef, documentPath, delivered }) => {
+		native.insets.right = 84;
+		onTestFinished(() => {
+			native.insets.right = 0;
+		});
+		const profile = { id: "desk", name: "Desk", origin: "https://desk.example" };
+		const postMessage = vi.fn();
+		const workspace = (path: string) => (
+			<HubWebView
+				profile={profile}
+				initialPath={path}
+				token="saved"
+				onPath={vi.fn()}
+				onHubMenu={vi.fn()}
+				onDeviceWork={vi.fn()}
+			/>
+		);
+		const first = "/s/local%3Aone";
+		const tree = render(workspace(first), { createNodeMock: (e) => (e.type === "WebView" ? { postMessage } : null) });
+		const item = native.navigation.setOptions.mock.lastCall?.[0].unstable_headerRightItems?.({})[0];
+		if (item?.type !== "button") throw new Error("Missing restore action");
+		act(item.onPress);
+		expect(postMessage).not.toHaveBeenCalled();
 		act(() =>
 			tree.root.findByType("WebView" as never).props.onMessage({
-				nativeEvent: {
-					url: profile.origin + first,
-					data: JSON.stringify({
-						type: "sessionHeader",
-						header: {
-							id: "pane",
-							sessionRef: ref,
-							leading: null,
-							needsYou: 0,
-							title: "Trail",
-							height: 47,
-							collapsed: false,
-						},
-					}),
-				},
+				nativeEvent: { url: profile.origin + first, data: JSON.stringify({ type: "ready" }) },
 			}),
 		);
-	publish("local:one");
-	publish("local:one");
-	expect(postMessage.mock.calls.map(([data]) => JSON.parse(data))).toEqual([
-		{ type: "headerAction", action: "find", id: "pane" },
-	]);
-	act(() => tree.unmount());
-	const second = render(workspace(first), { createNodeMock: (e) => (e.type === "WebView" ? { postMessage } : null) });
-	const early = native.navigation.setOptions.mock.lastCall?.[0].unstable_headerRightItems?.({})[1];
-	if (early?.type !== "button") throw new Error("Missing restore action");
-	act(early.onPress);
-	act(() => second.update(workspace("/s/local%3Atwo")));
-	expect(native.navigation.setOptions.mock.lastCall?.[0].headerShown).toBe(false);
-	act(() => second.unmount());
-	expect(postMessage).toHaveBeenCalledTimes(1);
-});
+		const publish = () =>
+			act(() =>
+				tree.root.findByType("WebView" as never).props.onMessage({
+					nativeEvent: {
+						url: profile.origin + documentPath,
+						data: JSON.stringify({
+							type: "sessionHeader",
+							header: {
+								id: "pane",
+								sessionRef,
+								leading: null,
+								needsYou: 0,
+								title: "Trail",
+								height: 47,
+								collapsed: false,
+							},
+						}),
+					},
+				}),
+			);
+		publish();
+		publish();
+		const actions = () =>
+			postMessage.mock.calls.map(([data]) => JSON.parse(data)).filter(({ type }) => type === "headerAction");
+		expect(actions()).toEqual(delivered ? [{ type: "headerAction", action: "find", id: "pane" }] : []);
+		act(() => tree.unmount());
+		const second = render(workspace(first), { createNodeMock: (e) => (e.type === "WebView" ? { postMessage } : null) });
+		const early = native.navigation.setOptions.mock.lastCall?.[0].unstable_headerRightItems?.({})[1];
+		if (early?.type !== "button") throw new Error("Missing restore action");
+		act(early.onPress);
+		act(() => second.update(workspace("/s/local%3Atwo")));
+		expect(native.navigation.setOptions.mock.lastCall?.[0].headerShown).toBe(false);
+		act(() => second.unmount());
+		expect(actions()).toHaveLength(delivered ? 1 : 0);
+	},
+);

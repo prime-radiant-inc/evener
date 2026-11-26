@@ -912,6 +912,8 @@ describe("resource-backed Rail", () => {
     vi.stubGlobal("ReactNativeWebView", { postMessage: (message: string) => messages.push(JSON.parse(message)) });
     vi.stubGlobal("ResizeObserver", StubResizeObserver);
     vi.stubGlobal("IntersectionObserver", StubResizeObserver);
+    const viewport = Object.assign(new EventTarget(), { scale: 1 });
+    vi.stubGlobal("visualViewport", viewport);
     const command = (type: string, id: string) =>
       act(() => {
         window.dispatchEvent(new MessageEvent("message", { data: JSON.stringify({ type, id }) }));
@@ -925,6 +927,12 @@ describe("resource-backed Rail", () => {
       expect(button.hasAttribute("aria-hidden")).toBe(false);
       command("createButtonShown", published.id);
       expect(button.getAttribute("aria-hidden")).toBe("true");
+      viewport.scale = 2;
+      act(() => viewport.dispatchEvent(new Event("resize")));
+      expect(messages.at(-1)?.frame).toBeNull();
+      expect(button.hasAttribute("aria-hidden")).toBe(false);
+      viewport.scale = 1;
+      act(() => viewport.dispatchEvent(new Event("resize")));
       command("createSession", "different-rail");
       expect(window.location.pathname).toBe(before);
       covered = true;

@@ -146,7 +146,8 @@ export function HubWebView({ profile, token, initialPath, onPath, onHubMenu, onD
 	}, [initialPath, bridgeReady, origin, endRestore]);
 
 	function message({ nativeEvent }: WebViewMessageEvent) {
-		if (!hubPagePath(origin, nativeEvent.url)) return;
+		const documentPath = hubPagePath(origin, nativeEvent.url);
+		if (!documentPath) return;
 		let data;
 		try {
 			data = JSON.parse(nativeEvent.data);
@@ -154,6 +155,11 @@ export function HubWebView({ profile, token, initialPath, onPath, onHubMenu, onD
 			return;
 		}
 		if (!data || typeof data !== "object") return;
+		const onRestoredSession =
+			restoringSession !== null &&
+			workspaceSessionRef(documentPath) === restoringSession &&
+			workspaceSessionRef(currentPath.current) === restoringSession &&
+			workspaceSessionRef(initialPath) === restoringSession;
 		switch (data.type) {
 			case "appearance":
 				if (typeof data.dark === "boolean") setHubDark(data.dark);
@@ -163,9 +169,8 @@ export function HubWebView({ profile, token, initialPath, onPath, onHubMenu, onD
 				const pending = pendingHeaderAction.current;
 				if (
 					next &&
-					restoringSession &&
-					next.sessionRef === restoringSession &&
-					workspaceSessionRef(initialPath) === restoringSession &&
+					onRestoredSession &&
+					(next.sessionRef === undefined || next.sessionRef === restoringSession) &&
 					pending &&
 					focused &&
 					!error
@@ -182,7 +187,7 @@ export function HubWebView({ profile, token, initialPath, onPath, onHubMenu, onD
 				else if (data.frame === null) setCreateButton((current) => (current?.id === data.id ? null : current));
 				break;
 			case "ready":
-				if (data.workspaceControls !== true) endRestore();
+				if (!onRestoredSession) endRestore();
 				if (bridgeReady) web.current?.postMessage(material);
 				else setBridgeReady(true);
 				break;

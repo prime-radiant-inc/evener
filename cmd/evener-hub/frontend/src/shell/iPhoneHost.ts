@@ -18,8 +18,7 @@ export interface IPhoneHeader {
 export type IPhoneHeaderAction = NonNullable<IPhoneHeader["leading"]> | "find" | "overview";
 
 type HostMessage =
-  | { type: "ready"; workspaceControls?: true }
-  | { type: "hubMenu" }
+  | { type: "ready" | "hubMenu" }
   | { type: "appearance"; dark: boolean }
   | { type: "sessionHeader"; header: IPhoneHeader | null }
   | { type: "createButton"; id: string; frame: { x: number; y: number; width: number; height: number } | null }
@@ -169,7 +168,7 @@ export function connectIPhoneHost(): (() => void) | undefined {
   document.addEventListener("focusout", onBlur);
   document.addEventListener("input", onInput);
   window.addEventListener("message", receiveHostCommand);
-  tellIPhoneHost({ type: "ready", workspaceControls: hasIPhoneWorkspaceControls() || undefined });
+  tellIPhoneHost({ type: "ready" });
   trackEditor(document.activeElement);
   reportModal();
   return () => {
