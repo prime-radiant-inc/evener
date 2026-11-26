@@ -61,7 +61,7 @@ func seedSyntheticPastSession(tb testing.TB, stateDir, sessionID, workingDir str
 	appendTurn := func(turn schema.Turn) {
 		seq++
 		turn.Timestamp = time.Unix(1_700_000_000+int64(seq), 0).UTC()
-		if err := writer.Append(turn); err != nil {
+		if _, err := writer.Record(turn, transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 			tb.Fatal(err)
 		}
 	}

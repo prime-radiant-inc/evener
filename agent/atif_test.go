@@ -146,14 +146,14 @@ func TestExportATIF_ExcludesCredentialBearingResponseEndpoint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("transcript.NewWriter: %v", err)
 	}
-	if err := tw.Append(schema.Turn{
+	if _, err := tw.Record(schema.Turn{
 		Kind:                   schema.TurnAssistant,
 		Message:                resp.Message,
 		ResponseEndpointFamily: meta.EndpointFamily,
 		ResponseEndpoint:       meta.EndpointURL,
 		Timestamp:              time.Date(2026, 7, 16, 0, 0, 1, 0, time.UTC),
-	}); err != nil {
-		t.Fatalf("Append: %v", err)
+	}, transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
+		t.Fatalf("Record: %v", err)
 	}
 	if err := tw.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
@@ -208,13 +208,13 @@ func TestExportATIF_SanitizesTranscriptResponseEndpoints(t *testing.T) {
 		t.Fatalf("transcript.NewWriter: %v", err)
 	}
 	for _, endpoint := range []string{credentialEndpoint, "://not-a-valid-endpoint?credential=" + endpointQuery} {
-		if err := tw.Append(schema.Turn{
+		if _, err := tw.Record(schema.Turn{
 			Kind:             schema.TurnAssistant,
 			Message:          llm.Assistant("done"),
 			ResponseEndpoint: endpoint,
 			Timestamp:        time.Date(2026, 7, 17, 0, 0, 1, 0, time.UTC),
-		}); err != nil {
-			t.Fatalf("Append: %v", err)
+		}, transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
+			t.Fatalf("Record: %v", err)
 		}
 	}
 	if err := tw.Close(); err != nil {
@@ -268,13 +268,13 @@ func TestExportATIF_WritesFile(t *testing.T) {
 		t.Fatalf("transcript.NewWriter: %v", err)
 	}
 
-	err = tw.Append(schema.Turn{
+	_, err = tw.Record(schema.Turn{
 		Kind:      schema.TurnUserInput,
 		Message:   llm.User("Hello!"),
 		Timestamp: ts,
-	})
+	}, transcript.RecordOptions{Door: transcript.DoorBuffered})
 	if err != nil {
-		t.Fatalf("Append: %v", err)
+		t.Fatalf("Record: %v", err)
 	}
 	if err := tw.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
@@ -330,14 +330,14 @@ func TestExportATIF_ProviderHandleModes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("transcript.NewWriter: %v", err)
 	}
-	if err := tw.Append(schema.Turn{
+	if _, err := tw.Record(schema.Turn{
 		Kind:           schema.TurnAssistant,
 		Message:        llm.Assistant("done"),
 		ResponseID:     "resp_raw_phase11",
 		ResponseIDHash: "cont-handle-v1:response_id:phase11",
 		Timestamp:      ts,
-	}); err != nil {
-		t.Fatalf("Append: %v", err)
+	}, transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
+		t.Fatalf("Record: %v", err)
 	}
 	if err := tw.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
@@ -397,8 +397,8 @@ func TestExportATIF_ProjectsLaunchSystemPromptSavedInMeta(t *testing.T) {
 	if err != nil {
 		t.Fatalf("transcript.NewWriter: %v", err)
 	}
-	if err := tw.Append(schema.Turn{Kind: schema.TurnUserInput, Message: llm.User("hello")}); err != nil {
-		t.Fatalf("Append: %v", err)
+	if _, err := tw.Record(schema.Turn{Kind: schema.TurnUserInput, Message: llm.User("hello")}, transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
+		t.Fatalf("Record: %v", err)
 	}
 	if err := tw.Close(); err != nil {
 		t.Fatalf("Close: %v", err)

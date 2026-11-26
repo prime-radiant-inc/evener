@@ -53,7 +53,7 @@ func TestE2E_VoiceArmRejectsRestoredLegacyProvenance(t *testing.T) {
 		t.Fatal(err)
 	}
 	const legacy = "LEGACY-VOICE-INPUT-173"
-	if err := writer.Append(schema.NewTurn(schema.TurnUserInput, llm.User(legacy))); err != nil {
+	if _, err := writer.Record(schema.NewTurn(schema.TurnUserInput, llm.User(legacy)), transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 		t.Fatal(err)
 	}
 	if err := writer.Close(); err != nil {

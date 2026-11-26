@@ -52,7 +52,7 @@ func TestDoctorTurnIDsToolAppliesSinceAndBucket(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := twA.Append(turnA); err != nil {
+	if _, err := twA.Record(turnA, transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 		t.Fatal(err)
 	}
 	if err := twA.Close(); err != nil {
@@ -67,7 +67,7 @@ func TestDoctorTurnIDsToolAppliesSinceAndBucket(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := twB.Append(turnB); err != nil {
+	if _, err := twB.Record(turnB, transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 		t.Fatal(err)
 	}
 	if err := twB.Close(); err != nil {
@@ -706,7 +706,7 @@ func TestDoctorTranscriptTurnNumbersAgreeWithReadTranscript(t *testing.T) {
 		schema.NewTurn(schema.TurnAssistant, llm.Assistant("the reply")),
 		schema.NewTurn(schema.TurnUserInput, llm.User("second ask")),
 	} {
-		if err := tw.Append(turn); err != nil {
+		if _, err := tw.Record(turn, transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 			t.Fatal(err)
 		}
 	}

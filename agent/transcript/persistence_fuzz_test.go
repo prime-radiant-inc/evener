@@ -77,14 +77,14 @@ func FuzzTranscriptWriterPersistence(f *testing.F) {
 			switch r.next() % opCount {
 			case opAppend:
 				turn := makeTurn(r.next())
-				errOS := osW.Append(turn)
-				errMem := memW.Append(turn)
-				requireErrParity(t, "Append", errOS, errMem)
+				_, errOS := osW.Record(turn, RecordOptions{Door: DoorBuffered})
+				_, errMem := memW.Record(turn, RecordOptions{Door: DoorBuffered})
+				requireErrParity(t, "Record(DoorBuffered)", errOS, errMem)
 			case opAppendDurable:
 				turn := makeTurn(r.next())
-				errOS := osW.AppendDurable(turn)
-				errMem := memW.AppendDurable(turn)
-				requireErrParity(t, "AppendDurable", errOS, errMem)
+				_, errOS := osW.Record(turn, RecordOptions{Door: DoorDurable})
+				_, errMem := memW.Record(turn, RecordOptions{Door: DoorDurable})
+				requireErrParity(t, "Record(DoorDurable)", errOS, errMem)
 			case opReopen:
 				if err := osW.Close(); err != nil {
 					t.Fatalf("os Close: %v", err)

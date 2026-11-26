@@ -907,7 +907,7 @@ func runClearAttempt(t *testing.T, deps serveDeps, state *clearTestState, args [
 		if err != nil {
 			t.Fatalf("open the old transcript: %v", err)
 		}
-		if err := writer.Append(schema.NewTurn(schema.TurnUserInput, llm.User(oldClearInputMarker))); err != nil {
+		if _, err := writer.Record(schema.NewTurn(schema.TurnUserInput, llm.User(oldClearInputMarker)), transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 			t.Fatalf("record the old thread's turn: %v", err)
 		}
 		if err := writer.Close(); err != nil {

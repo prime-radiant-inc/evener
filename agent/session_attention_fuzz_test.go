@@ -49,9 +49,9 @@ func FuzzDelegateAttentionFold(f *testing.F) {
 			t.Fatalf("NewWriter: %v", err)
 		}
 		for _, entry := range entries {
-			if err := writer.AppendDurable(entry.Turn); err != nil {
+			if _, err := writer.Record(entry.Turn, transcript.RecordOptions{Door: transcript.DoorDurable}); err != nil {
 				_ = writer.Close()
-				t.Fatalf("AppendDurable: %v", err)
+				t.Fatalf("Record(DoorDurable): %v", err)
 			}
 		}
 		if err := writer.Close(); err != nil {

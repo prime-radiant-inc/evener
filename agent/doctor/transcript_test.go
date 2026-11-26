@@ -56,7 +56,7 @@ func writeRichSession(t *testing.T, bucket, sid string, turns []schema.Turn, api
 		t.Fatal(err)
 	}
 	for _, turn := range turns {
-		if err := w.Append(turn); err != nil {
+		if _, err := w.Record(turn, transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 			t.Fatal(err)
 		}
 	}

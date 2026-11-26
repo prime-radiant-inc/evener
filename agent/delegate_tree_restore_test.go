@@ -154,7 +154,7 @@ func appendColdAttentionResolutionMarker(t *testing.T, path, sessionID, attentio
 	if err != nil {
 		t.Fatalf("open cold attention transcript %q: %v", sessionID, err)
 	}
-	if err := writer.AppendDurable(delegateAttentionResolutionTurnForGeneration(attentionID, disposition, generation)); err != nil {
+	if _, err := writer.Record(delegateAttentionResolutionTurnForGeneration(attentionID, disposition, generation), transcript.RecordOptions{Door: transcript.DoorDurable}); err != nil {
 		_ = writer.Close()
 		t.Fatalf("append cold attention resolution %q: %v", attentionID, err)
 	}
@@ -826,9 +826,9 @@ func writeDelegateAttentionTranscript(t *testing.T, path, sessionID, attentionID
 	}
 	turn := schema.NewTurn(schema.TurnSteering, llm.User("attention"))
 	turn.AttentionID = attentionID
-	if err := writer.AppendDurable(turn); err != nil {
+	if _, err := writer.Record(turn, transcript.RecordOptions{Door: transcript.DoorDurable}); err != nil {
 		_ = writer.Close()
-		t.Fatalf("AppendDurable attention: %v", err)
+		t.Fatalf("Record(DoorDurable) attention: %v", err)
 	}
 	if err := writer.Close(); err != nil {
 		t.Fatalf("Close attention writer: %v", err)
@@ -843,9 +843,9 @@ func appendDelegateAttentionTurn(t *testing.T, path, sessionID, attentionID stri
 	}
 	turn := schema.NewTurn(schema.TurnSteering, llm.User("attention"))
 	turn.AttentionID = attentionID
-	if err := writer.AppendDurable(turn); err != nil {
+	if _, err := writer.Record(turn, transcript.RecordOptions{Door: transcript.DoorDurable}); err != nil {
 		_ = writer.Close()
-		t.Fatalf("AppendDurable attention: %v", err)
+		t.Fatalf("Record(DoorDurable) attention: %v", err)
 	}
 	if err := writer.Close(); err != nil {
 		t.Fatalf("Close attention writer: %v", err)

@@ -33,7 +33,7 @@ func checkAnswerLinkLiveAndSaved(t *testing.T, kind schema.TurnKind) {
 		t.Fatal(err)
 	}
 	turn.Kind = kind
-	if err := writer.Append(turn); err != nil {
+	if _, err := writer.Record(turn, transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 		t.Fatal(err)
 	}
 	check := func(t *testing.T, items []appwire.ThreadItem) {

@@ -33,7 +33,7 @@ func TestManagerObservationLiveReplayStructure(t *testing.T) {
 		CausalKnown: true, Causal: causal, Communicate: &schema.CommunicateInfo{
 			CallID: "call-1", EndTurn: true, EndReason: "needs_response", Message: "progress",
 		}}
-	if err := writer.Append(recorded); err != nil {
+	if _, err := writer.Record(recorded, transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 		t.Fatal(err)
 	}
 	projector := appprojector.NewAppEventProjector("session", "local:session")
@@ -59,7 +59,7 @@ func TestManagerObservationLiveReplayStructure(t *testing.T) {
 		Message: llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{{Kind: llm.ContentToolResult,
 			ToolResult: &llm.ToolResultData{ToolCallID: "call-1", Name: "communicate", Content: `{"accepted":true,"end_turn":true}`},
 		}}}}
-	if err := writer.Append(result); err != nil {
+	if _, err := writer.Record(result, transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 		t.Fatal(err)
 	}
 	if err := writer.Close(); err != nil {

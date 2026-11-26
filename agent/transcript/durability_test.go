@@ -28,10 +28,11 @@ func TestAppendBatchWritesEveryTurnAtContiguousSeqs(t *testing.T) {
 		schema.NewTurn(schema.TurnAssistant, llm.Assistant("two")),
 		schema.NewTurn(schema.TurnUserInput, llm.User("three")),
 	}
-	firstSeq, err := w.AppendBatch(turns)
+	records, _, err := w.appendBatch(turns, PlaceVerbatim, DoorDurable)
 	if err != nil {
-		t.Fatalf("AppendBatch: %v", err)
+		t.Fatalf("appendBatch: %v", err)
 	}
+	firstSeq := firstRecord(records).Seq
 	if firstSeq != 0 {
 		t.Fatalf("firstSeq = %d, want 0", firstSeq)
 	}
@@ -44,10 +45,11 @@ func TestAppendBatchWritesEveryTurnAtContiguousSeqs(t *testing.T) {
 			t.Fatalf("entry %d seq = %d, want %d: batch seqs must be contiguous", i, e.Seq, firstSeq+i)
 		}
 	}
-	next, err := w.AppendBatch([]schema.Turn{schema.NewTurn(schema.TurnUserInput, llm.User("four"))})
+	nextRecords, _, err := w.appendBatch([]schema.Turn{schema.NewTurn(schema.TurnUserInput, llm.User("four"))}, PlaceVerbatim, DoorDurable)
 	if err != nil {
-		t.Fatalf("AppendBatch (second): %v", err)
+		t.Fatalf("appendBatch (second): %v", err)
 	}
+	next := firstRecord(nextRecords).Seq
 	if next != len(turns) {
 		t.Fatalf("second batch firstSeq = %d, want %d: the first batch spent %d seqs", next, len(turns), len(turns))
 	}
@@ -69,16 +71,17 @@ func TestAppendBatchRollsBackWholeBatchOnWriteFailure(t *testing.T) {
 		schema.NewTurn(schema.TurnUserInput, llm.User("alpha")),
 		schema.NewTurn(schema.TurnUserInput, llm.User("bravo")),
 	}
-	if _, err := w.AppendBatch(turns); err == nil {
-		t.Fatal("AppendBatch reported success; the injected write failure never reached it")
+	if _, _, err := w.appendBatch(turns, PlaceVerbatim, DoorDurable); err == nil {
+		t.Fatal("appendBatch reported success; the injected write failure never reached it")
 	}
 	if entries := faultTestEntries(t, base); len(entries) != 0 {
 		t.Fatalf("entries after a rolled-back batch = %d, want 0: all-or-nothing", len(entries))
 	}
-	firstSeq, err := w.AppendBatch(turns)
+	records, _, err := w.appendBatch(turns, PlaceVerbatim, DoorDurable)
 	if err != nil {
 		t.Fatalf("retry after rollback: %v", err)
 	}
+	firstSeq := firstRecord(records).Seq
 	if firstSeq != 2 {
 		t.Fatalf("retry firstSeq = %d, want 2: the rolled-back batch consumed seq 0 and 1", firstSeq)
 	}
@@ -105,8 +108,8 @@ func TestAppendSyncedReturnsNilWhenTheBarrierConfirmsARetainedRecord(t *testing.
 	if err != nil {
 		t.Fatalf("newWriterFS: %v", err)
 	}
-	if err := w.AppendSynced(schema.NewTurn(schema.TurnAssistant, llm.Assistant("recorded and then synced"))); err != nil {
-		t.Fatalf("AppendSynced error = %v, want nil: the barrier made the retained record durable", err)
+	if _, err := w.Record(schema.NewTurn(schema.TurnAssistant, llm.Assistant("recorded and then synced")), RecordOptions{Door: DoorSynced}); err != nil {
+		t.Fatalf("Record(DoorSynced) error = %v, want nil: the barrier made the retained record durable", err)
 	}
 	if w.Poisoned() {
 		t.Fatal("a retained-then-synced record poisoned the writer; retained is debt, not poison")
@@ -133,10 +136,10 @@ func TestAppendSyncedReturnsErrorWhenDurabilityCannotBeEstablished(t *testing.T)
 	if err != nil {
 		t.Fatalf("newWriterFS: %v", err)
 	}
-	if err := w.AppendSynced(schema.NewTurn(schema.TurnAssistant, llm.Assistant("recorded but never synced"))); err == nil {
-		t.Fatal("AppendSynced reported success; durability was never established")
+	if _, err := w.Record(schema.NewTurn(schema.TurnAssistant, llm.Assistant("recorded but never synced")), RecordOptions{Door: DoorSynced}); err == nil {
+		t.Fatal("Record(DoorSynced) reported success; durability was never established")
 	} else if !errors.Is(err, fault.ErrInjected) {
-		t.Fatalf("AppendSynced error = %v, want the injected barrier failure", err)
+		t.Fatalf("Record(DoorSynced) error = %v, want the injected barrier failure", err)
 	}
 	if w.Poisoned() {
 		t.Fatal("an unsynced whole line poisoned the writer; only a partial line does")
@@ -180,13 +183,13 @@ func TestAppendSyncedDoesNotDropAnotherAppendsQueuedWarning(t *testing.T) {
 	}
 	// Buffered append: whole line lands, its fsync (op 5) fails → retained,
 	// warning queued, writer usable.
-	if err := w.Append(schema.NewTurn(schema.TurnUserInput, llm.User("buffered retained"))); err != nil {
-		t.Fatalf("buffered Append error = %v, want nil", err)
+	if _, err := w.Record(schema.NewTurn(schema.TurnUserInput, llm.User("buffered retained")), RecordOptions{Door: DoorBuffered}); err != nil {
+		t.Fatalf("buffered Record error = %v, want nil", err)
 	}
-	// A following AppendSynced (clean, past the single faulted op) must not
+	// A following DoorSynced Record (clean, past the single faulted op) must not
 	// touch the queued warning.
-	if err := w.AppendSynced(schema.NewTurn(schema.TurnAssistant, llm.Assistant("synced clean"))); err != nil {
-		t.Fatalf("AppendSynced error = %v, want nil", err)
+	if _, err := w.Record(schema.NewTurn(schema.TurnAssistant, llm.Assistant("synced clean")), RecordOptions{Door: DoorSynced}); err != nil {
+		t.Fatalf("Record(DoorSynced) error = %v, want nil", err)
 	}
 	warnings := w.DrainWarnings()
 	if len(warnings) != 1 {
@@ -204,8 +207,8 @@ func TestAppendSyncedDoesNotDoubleFsyncACleanAppend(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newWriterFS: %v", err)
 	}
-	if err := w.AppendSynced(schema.NewTurn(schema.TurnAssistant, llm.Assistant("clean and synced"))); err != nil {
-		t.Fatalf("AppendSynced error = %v, want nil: a clean append needs no second barrier fsync", err)
+	if _, err := w.Record(schema.NewTurn(schema.TurnAssistant, llm.Assistant("clean and synced")), RecordOptions{Door: DoorSynced}); err != nil {
+		t.Fatalf("Record(DoorSynced) error = %v, want nil: a clean append needs no second barrier fsync", err)
 	}
 	if entries := faultTestEntries(t, base); len(entries) != 1 {
 		t.Fatalf("entries = %d, want the one durable record", len(entries))
@@ -229,9 +232,9 @@ func TestAppendSyncedReportsRetainedUnsyncedForAdoptionWithoutDuplication(t *tes
 	if err != nil {
 		t.Fatalf("newWriterFS: %v", err)
 	}
-	err = w.AppendSynced(schema.NewTurn(schema.TurnUserInput, llm.User("recorded, not durable")))
+	_, err = w.Record(schema.NewTurn(schema.TurnUserInput, llm.User("recorded, not durable")), RecordOptions{Door: DoorSynced})
 	if !errors.Is(err, ErrRetainedUnsynced) {
-		t.Fatalf("AppendSynced error = %v, want ErrRetainedUnsynced so the owner adopts rather than re-appends", err)
+		t.Fatalf("Record(DoorSynced) error = %v, want ErrRetainedUnsynced so the owner adopts rather than re-appends", err)
 	}
 	var retained *RetainedUnsyncedError
 	if !errors.As(err, &retained) || retained.Seq != 0 {
@@ -259,14 +262,14 @@ func TestAppendSyncedFailsClosedOnAClosedWriter(t *testing.T) {
 	if err := w.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
-	if err := w.AppendSynced(schema.NewTurn(schema.TurnUserInput, llm.User("during shutdown"))); !errors.Is(err, ErrWriterClosed) {
-		t.Fatalf("AppendSynced on a closed writer = %v, want ErrWriterClosed (a synced owner must not read a dropped write as durable)", err)
+	if _, err := w.Record(schema.NewTurn(schema.TurnUserInput, llm.User("during shutdown")), RecordOptions{Door: DoorSynced}); !errors.Is(err, ErrWriterClosed) {
+		t.Fatalf("Record(DoorSynced) on a closed writer = %v, want ErrWriterClosed (a synced owner must not read a dropped write as durable)", err)
 	}
 	// A writer that never existed stays a nil no-op, so a stateless session's
 	// owners do not error.
 	var nilWriter *Writer
-	if err := nilWriter.AppendSynced(schema.NewTurn(schema.TurnUserInput, llm.User("no writer"))); err != nil {
-		t.Fatalf("AppendSynced on a nil writer = %v, want nil no-op", err)
+	if _, err := nilWriter.Record(schema.NewTurn(schema.TurnUserInput, llm.User("no writer")), RecordOptions{Door: DoorSynced}); err != nil {
+		t.Fatalf("Record(DoorSynced) on a nil writer = %v, want nil no-op", err)
 	}
 }
 
@@ -315,9 +318,9 @@ func TestRetainedUnsyncedRecordIsSettledByALaterSuccessfulFsync(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newWriterFS: %v", err)
 	}
-	err = w.AppendSynced(schema.NewTurn(schema.TurnUserInput, llm.User("retained, settled later")))
+	_, err = w.Record(schema.NewTurn(schema.TurnUserInput, llm.User("retained, settled later")), RecordOptions{Door: DoorSynced})
 	if !errors.Is(err, ErrRetainedUnsynced) {
-		t.Fatalf("AppendSynced error = %v, want ErrRetainedUnsynced", err)
+		t.Fatalf("Record(DoorSynced) error = %v, want ErrRetainedUnsynced", err)
 	}
 	if !w.dirty {
 		t.Fatal("setup: a retained record must leave the writer dirty (durability owed)")
@@ -350,9 +353,9 @@ func TestRetainedUnsyncedRecordSurvivesACrashBeforeTheNextFsync(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newWriterFS: %v", err)
 	}
-	err = w.AppendSynced(schema.NewTurn(schema.TurnUserInput, llm.User("retained across a crash")))
+	_, err = w.Record(schema.NewTurn(schema.TurnUserInput, llm.User("retained across a crash")), RecordOptions{Door: DoorSynced})
 	if !errors.Is(err, ErrRetainedUnsynced) {
-		t.Fatalf("AppendSynced error = %v, want ErrRetainedUnsynced", err)
+		t.Fatalf("Record(DoorSynced) error = %v, want ErrRetainedUnsynced", err)
 	}
 	// A crash: the process never closes w, and never fsyncs again. Reopen the
 	// same underlying file directly (no Close on w), as a restart would.
@@ -367,8 +370,8 @@ func TestRetainedUnsyncedRecordSurvivesACrashBeforeTheNextFsync(t *testing.T) {
 	if got := entries[0].Turn.Kind; got != schema.TurnUserInput {
 		t.Fatalf("recovered entry kind = %s, want %s", got, schema.TurnUserInput)
 	}
-	if err := reopened.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("after reopen"))); err != nil {
-		t.Fatalf("Append after reopen: %v", err)
+	if _, err := reopened.Record(schema.NewTurn(schema.TurnAssistant, llm.Assistant("after reopen")), RecordOptions{Door: DoorBuffered}); err != nil {
+		t.Fatalf("Record after reopen: %v", err)
 	}
 	if entries := faultTestEntries(t, base); len(entries) != 2 {
 		t.Fatalf("entries after reopen and one more append = %d, want 2 (no duplicate of the retained one)", len(entries))

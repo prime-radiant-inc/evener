@@ -65,7 +65,7 @@ func TestRestoreReconcilesSkillStateRecordedBeforeTheCompactionAnchor(t *testing
 			PublicationID: publicationID,
 		},
 	}}
-	if err := writer.AppendDurable(receiptTurn); err != nil {
+	if _, err := writer.Record(receiptTurn, transcript.RecordOptions{Door: transcript.DoorDurable}); err != nil {
 		_ = writer.Close()
 		t.Fatalf("append the pre-anchor compaction receipt: %v", err)
 	}
@@ -82,7 +82,7 @@ func TestRestoreReconcilesSkillStateRecordedBeforeTheCompactionAnchor(t *testing
 		ErrorCode:    "source_missing",
 		Identity:     schema.SkillContentIdentity{Name: "opaque"},
 	}}}
-	if err := writer.AppendDurable(deliveryTurn); err != nil {
+	if _, err := writer.Record(deliveryTurn, transcript.RecordOptions{Door: transcript.DoorDurable}); err != nil {
 		_ = writer.Close()
 		t.Fatalf("append the pre-anchor delivery outcome: %v", err)
 	}
@@ -90,12 +90,12 @@ func TestRestoreReconcilesSkillStateRecordedBeforeTheCompactionAnchor(t *testing
 	// The anchor: everything above is prefix the resume would discard if it
 	// started decoding here.
 	anchor := schema.NewTurn(schema.TurnCheckpoint, llm.User("compaction anchor"))
-	if err := writer.AppendDurable(anchor); err != nil {
+	if _, err := writer.Record(anchor, transcript.RecordOptions{Door: transcript.DoorDurable}); err != nil {
 		_ = writer.Close()
 		t.Fatalf("append the compaction anchor: %v", err)
 	}
 	// A post-anchor turn, so the retained window is not empty.
-	if err := writer.AppendDurable(schema.NewTurn(schema.TurnUserInput, llm.User("after the anchor"))); err != nil {
+	if _, err := writer.Record(schema.NewTurn(schema.TurnUserInput, llm.User("after the anchor")), transcript.RecordOptions{Door: transcript.DoorDurable}); err != nil {
 		_ = writer.Close()
 		t.Fatalf("append the post-anchor input: %v", err)
 	}

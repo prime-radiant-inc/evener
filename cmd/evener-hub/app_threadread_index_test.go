@@ -56,7 +56,7 @@ func seedIndexedPastSessionWithSystemPrompt(t *testing.T, systemPrompt string, e
 	}
 	writer.SyncInterval = time.Hour
 	for _, entry := range entries {
-		if err := writer.Append(entry); err != nil {
+		if _, err := writer.Record(entry, transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -89,7 +89,7 @@ func appendTranscriptEntries(t *testing.T, path string, entries ...schema.Turn) 
 		t.Fatal(err)
 	}
 	for _, entry := range entries {
-		if err := writer.Append(entry); err != nil {
+		if _, err := writer.Record(entry, transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 			t.Fatal(err)
 		}
 	}

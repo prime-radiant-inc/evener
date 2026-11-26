@@ -29,7 +29,7 @@ func TestSavedThreadReadExactWindowPreservesEmptyCheckpointTurn(t *testing.T) {
 	checkpoint := schema.Turn{
 		Format: schema.TurnFormatIdentity, TurnID: "turn_empty", TurnKind: schema.TurnSpanExecution, Kind: schema.TurnCheckpoint,
 	}
-	if err := writer.Append(checkpoint); err != nil {
+	if _, err := writer.Record(checkpoint, transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 		t.Fatal(err)
 	}
 	if err := writer.Close(); err != nil {

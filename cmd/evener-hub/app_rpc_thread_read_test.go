@@ -3880,7 +3880,7 @@ func TestHubRPCThreadReadEnrichesReplayToolOutputImagesFromFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := writer.Append(schema.Turn{
+	if _, err := writer.Record(schema.Turn{
 		Kind: schema.TurnAssistant,
 		Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{
 			Kind: llm.ContentToolCall,
@@ -3890,11 +3890,11 @@ func TestHubRPCThreadReadEnrichesReplayToolOutputImagesFromFiles(t *testing.T) {
 				Arguments: json.RawMessage(`{"command":"python plot.py"}`),
 			},
 		}}},
-	}); err != nil {
+	}, transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 		t.Fatal(err)
 	}
 	toolPNG := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 't', 'o', 'o', 'l'}
-	if err := writer.Append(schema.Turn{
+	if _, err := writer.Record(schema.Turn{
 		Kind: schema.TurnToolResults,
 		Message: llm.Message{Role: llm.RoleTool, ToolCallID: "call_plot", Content: []llm.ContentPart{{
 			Kind: llm.ContentToolResult,
@@ -3906,7 +3906,7 @@ func TestHubRPCThreadReadEnrichesReplayToolOutputImagesFromFiles(t *testing.T) {
 				ImageMediaType: "image/png",
 			},
 		}}},
-	}); err != nil {
+	}, transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 		t.Fatal(err)
 	}
 	if err := writer.Close(); err != nil {

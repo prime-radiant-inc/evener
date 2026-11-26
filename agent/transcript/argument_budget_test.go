@@ -41,8 +41,8 @@ func TestToolCallSpellingColdReplaysExactly(t *testing.T) {
 	turn := spellingToolCallTurn(t, exact)
 	wantCanonical := string(turn.Message.Content[0].ToolCall.Arguments)
 	w, path := newRecordWriter(t)
-	if err := w.Append(turn); err != nil {
-		t.Fatalf("Append: %v", err)
+	if _, err := w.Record(turn, RecordOptions{Door: DoorBuffered}); err != nil {
+		t.Fatalf("Record: %v", err)
 	}
 	if err := w.Close(); err != nil {
 		t.Fatalf("Close: %v", err)

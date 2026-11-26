@@ -124,7 +124,7 @@ func FuzzRfzForkSession(f *testing.F) {
 				t.Fatalf("new parent writer: %v", err)
 			}
 			for _, k := range kinds {
-				if err := w.Append(schema.NewTurn(k, llm.User(rfzTexts[r.intn(len(rfzTexts))]))); err != nil {
+				if _, err := w.Record(schema.NewTurn(k, llm.User(rfzTexts[r.intn(len(rfzTexts))])), transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 					t.Fatalf("append parent turn: %v", err)
 				}
 			}

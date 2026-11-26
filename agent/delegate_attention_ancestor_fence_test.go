@@ -292,7 +292,7 @@ func newFencedGrandchildAttention(t *testing.T) fencedGrandchildAttention {
 	}
 	turn := schema.NewTurn(schema.TurnSteering, llm.User("undelivered grandchild message"))
 	turn.AttentionID = attentionID
-	if err := writer.AppendDurable(turn); err != nil {
+	if _, err := writer.Record(turn, transcript.RecordOptions{Door: transcript.DoorDurable}); err != nil {
 		t.Fatalf("append grandchild attention: %v", err)
 	}
 	if err := writer.Close(); err != nil {

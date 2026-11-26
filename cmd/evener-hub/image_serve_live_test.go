@@ -47,7 +47,7 @@ func TestSessionImageServesAStillRunningSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := w.Append(schema.Turn{
+	if _, err := w.Record(schema.Turn{
 		Kind: schema.TurnToolResults,
 		Message: llm.Message{Role: llm.RoleTool, ToolCallID: "call_shot", Content: []llm.ContentPart{{
 			Kind: llm.ContentToolResult,
@@ -56,7 +56,7 @@ func TestSessionImageServesAStillRunningSession(t *testing.T) {
 				ImageData: png, ImageMediaType: "image/png",
 			},
 		}}},
-	}); err != nil {
+	}, transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 		t.Fatal(err)
 	}
 	if err := w.Close(); err != nil {

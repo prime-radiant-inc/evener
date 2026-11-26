@@ -36,8 +36,8 @@ func TestAppendWritesMachineryFlaggedMarker(t *testing.T) {
 		t.Fatalf("NewWriterWithFS: %v", err)
 	}
 	t.Cleanup(func() { _ = w.Close() })
-	if err := w.Append(schema.NewTurn(schema.TurnUserInput, llm.User("hello"))); err != nil {
-		t.Fatalf("Append: %v", err)
+	if _, err := w.Record(schema.NewTurn(schema.TurnUserInput, llm.User("hello")), RecordOptions{Door: DoorBuffered}); err != nil {
+		t.Fatalf("Record: %v", err)
 	}
 	raw, err := afero.ReadFile(fs, "/machinery.jsonl")
 	if err != nil {
@@ -64,8 +64,8 @@ func TestAppendFlaggedMachineryPartRoundTrips(t *testing.T) {
 		t.Fatalf("NewWriterWithFS: %v", err)
 	}
 	t.Cleanup(func() { _ = w.Close() })
-	if err := w.Append(entryTurn(llm.MachineryText(machineryBlock))); err != nil {
-		t.Fatalf("Append: %v", err)
+	if _, err := w.Record(entryTurn(llm.MachineryText(machineryBlock)), RecordOptions{Door: DoorBuffered}); err != nil {
+		t.Fatalf("Record: %v", err)
 	}
 	raw, err := afero.ReadFile(fs, "/machinery.jsonl")
 	if err != nil {

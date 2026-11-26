@@ -2412,7 +2412,7 @@ func TestLoadHistoricalStableActivityWithAttention_JournalResolutionWinsOverTran
 		for _, attentionID := range attentionIDs {
 			turn := schema.NewTurn(schema.TurnSteering, llm.User(attentionID))
 			turn.AttentionID = attentionID
-			if err := writer.AppendDurable(turn); err != nil {
+			if _, err := writer.Record(turn, transcript.RecordOptions{Door: transcript.DoorDurable}); err != nil {
 				t.Fatalf("append attention %s: %v", attentionID, err)
 			}
 		}

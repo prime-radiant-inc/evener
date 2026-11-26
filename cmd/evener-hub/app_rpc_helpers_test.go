@@ -420,7 +420,7 @@ func buildRPCSessionWithWorkingDir(t *testing.T, stateDir, parentID, workingDir 
 		schema.NewTurn(schema.TurnAssistant, llm.Assistant("first reply")),
 		schema.NewTurn(schema.TurnUserInput, llm.User("second task")),
 	} {
-		if err := writer.Append(turn); err != nil {
+		if _, err := writer.Record(turn, transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 			t.Fatal(err)
 		}
 	}

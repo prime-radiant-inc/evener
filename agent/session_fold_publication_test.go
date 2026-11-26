@@ -1584,13 +1584,13 @@ func restoreAttentionCompactionFixture(t *testing.T, withMarker bool) (restored 
 	pending := schema.NewTurn(schema.TurnSteering, llm.User(pendingText))
 	pending.AttentionID = pendingID
 	pending.StableTurnID = newQueueEntryID()
-	if err := writer.AppendDurable(pending); err != nil {
+	if _, err := writer.Record(pending, transcript.RecordOptions{Door: transcript.DoorDurable}); err != nil {
 		t.Fatalf("append pending attention: %v", err)
 	}
 	consumed := schema.NewTurn(schema.TurnSteering, llm.User(consumedText))
 	consumed.AttentionID = consumedID
 	consumed.StableTurnID = newQueueEntryID()
-	if err := writer.AppendDurable(consumed); err != nil {
+	if _, err := writer.Record(consumed, transcript.RecordOptions{Door: transcript.DoorDurable}); err != nil {
 		t.Fatalf("append consumed attention: %v", err)
 	}
 	resolution := schema.NewTurn(schema.TurnAttentionResolution, llm.User(""))
@@ -1598,12 +1598,12 @@ func restoreAttentionCompactionFixture(t *testing.T, withMarker bool) (restored 
 		AttentionID: consumedID,
 		Disposition: string(delegateAttentionConsumed),
 	}
-	if err := writer.AppendDurable(resolution); err != nil {
+	if _, err := writer.Record(resolution, transcript.RecordOptions{Door: transcript.DoorDurable}); err != nil {
 		t.Fatalf("append resolution: %v", err)
 	}
 	if withMarker {
 		marker := schema.NewTurn(schema.TurnSummary, llm.User("[CONTEXT SUMMARY]\npost-attention fold\n[END SUMMARY]"))
-		if err := writer.AppendDurable(marker); err != nil {
+		if _, err := writer.Record(marker, transcript.RecordOptions{Door: transcript.DoorDurable}); err != nil {
 			t.Fatalf("append compaction marker: %v", err)
 		}
 	}

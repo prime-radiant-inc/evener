@@ -37,7 +37,7 @@ func TestManagerWatchAnswerContinuationReplay(t *testing.T) {
 	appendEntry := func(e schema.Turn) {
 		t.Helper()
 		e.Format = schema.TurnFormatIdentity
-		if err := w.Append(e); err != nil {
+		if _, err := w.Record(e, transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 			t.Fatal(err)
 		}
 	}

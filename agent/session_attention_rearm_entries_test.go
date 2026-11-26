@@ -35,14 +35,14 @@ func rearmFixtureSessionWithConfig(t *testing.T, restoreCfg RestoreSessionConfig
 	pending := schema.NewTurn(schema.TurnSteering, llm.User(`<delegate-notification delegate_id="dlg_rearm">stay pending</delegate-notification>`))
 	pending.AttentionID = pendingID
 	pending.StableTurnID = newQueueEntryID()
-	if err := writer.AppendDurable(pending); err != nil {
+	if _, err := writer.Record(pending, transcript.RecordOptions{Door: transcript.DoorDurable}); err != nil {
 		_ = writer.Close()
 		t.Fatalf("append pending attention: %v", err)
 	}
 	consumed := schema.NewTurn(schema.TurnSteering, llm.User(`<delegate-notification delegate_id="dlg_rearm">already resolved</delegate-notification>`))
 	consumed.AttentionID = consumedID
 	consumed.StableTurnID = newQueueEntryID()
-	if err := writer.AppendDurable(consumed); err != nil {
+	if _, err := writer.Record(consumed, transcript.RecordOptions{Door: transcript.DoorDurable}); err != nil {
 		_ = writer.Close()
 		t.Fatalf("append consumed attention: %v", err)
 	}
@@ -52,7 +52,7 @@ func rearmFixtureSessionWithConfig(t *testing.T, restoreCfg RestoreSessionConfig
 		Disposition:      string(delegateAttentionConsumed),
 		ResumeGeneration: 0,
 	}
-	if err := writer.AppendDurable(resolution); err != nil {
+	if _, err := writer.Record(resolution, transcript.RecordOptions{Door: transcript.DoorDurable}); err != nil {
 		_ = writer.Close()
 		t.Fatalf("append resolution: %v", err)
 	}

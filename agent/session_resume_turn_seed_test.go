@@ -41,10 +41,10 @@ func TestRestoreSessionStartCarriesTranscriptEntryCount(t *testing.T) {
 	if err != nil {
 		t.Fatalf("transcript.NewWriter: %v", err)
 	}
-	if err := tw.Append(schema.NewTurn(schema.TurnUserInput, llm.User("hello"))); err != nil {
+	if _, err := tw.Record(schema.NewTurn(schema.TurnUserInput, llm.User("hello")), transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 		t.Fatalf("append user turn: %v", err)
 	}
-	if err := tw.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("hi"))); err != nil {
+	if _, err := tw.Record(schema.NewTurn(schema.TurnAssistant, llm.Assistant("hi")), transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 		t.Fatalf("append assistant turn: %v", err)
 	}
 	if err := tw.Close(); err != nil {
@@ -96,14 +96,14 @@ func TestRestoreSessionStartTranscriptEntryCountExceedsTurns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("transcript.NewWriter: %v", err)
 	}
-	if err := tw.Append(schema.NewTurn(schema.TurnUserInput, llm.User("hello"))); err != nil {
+	if _, err := tw.Record(schema.NewTurn(schema.TurnUserInput, llm.User("hello")), transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 		t.Fatalf("append user turn: %v", err)
 	}
 	// A durable non-model-response entry (schema.TurnSteering), mirroring what
 	// session_lifecycle.go's reconnect steering reminder persists via
 	// appendSteeringTurnDurably — a second transcript entry that never increments
 	// s.modelResponses.
-	if err := tw.Append(schema.NewTurn(schema.TurnSteering, llm.User("reminder: ..."))); err != nil {
+	if _, err := tw.Record(schema.NewTurn(schema.TurnSteering, llm.User("reminder: ...")), transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 		t.Fatalf("append steering turn: %v", err)
 	}
 	if err := tw.Close(); err != nil {

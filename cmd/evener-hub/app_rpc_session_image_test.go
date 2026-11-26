@@ -77,10 +77,10 @@ func seedSessionImageSession(t *testing.T, cwd string, image []byte, storedMedia
 				},
 			})
 		}
-		if err := w.Append(schema.Turn{
+		if _, err := w.Record(schema.Turn{
 			Kind:    schema.TurnToolResults,
 			Message: llm.Message{Role: llm.RoleTool, ToolCallID: fmt.Sprintf("call_shot_%d", index), Content: content},
-		}); err != nil {
+		}, transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -460,7 +460,7 @@ func appendSessionImageTurn(t *testing.T, past *hubcore.PastIndex, image []byte,
 	if err != nil {
 		return err
 	}
-	if err := w.Append(schema.Turn{
+	if _, err := w.Record(schema.Turn{
 		Kind: schema.TurnToolResults,
 		Message: llm.Message{Role: llm.RoleTool, ToolCallID: "call_tail", Content: []llm.ContentPart{{
 			Kind: llm.ContentToolResult,
@@ -469,7 +469,7 @@ func appendSessionImageTurn(t *testing.T, past *hubcore.PastIndex, image []byte,
 				ImageData: image, ImageMediaType: storedMediaType,
 			},
 		}}},
-	}); err != nil {
+	}, transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 		return err
 	}
 	return w.Close()

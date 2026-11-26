@@ -109,7 +109,7 @@ func assertTranscriptWriteReadRoundTrip(t *testing.T, dir string, data transcrip
 		t.Fatalf("new writer: %v", err)
 	}
 	for _, e := range data.Entries {
-		if err := w.Append(e.Turn); err != nil {
+		if _, err := w.Record(e.Turn, transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 			t.Fatalf("append turn: %v", err)
 		}
 	}

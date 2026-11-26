@@ -908,7 +908,7 @@ func TestManagerTurnsContinuationFollowsInitialCursor(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i := range 100 {
-		if err := w.Append(schema.Turn{Format: schema.TurnFormatIdentity, TurnID: fmt.Sprintf("turn-%03d", i), Kind: schema.TurnUserInput, Message: llm.User(fmt.Sprintf("item-%03d", i))}); err != nil {
+		if _, err := w.Record(schema.Turn{Format: schema.TurnFormatIdentity, TurnID: fmt.Sprintf("turn-%03d", i), Kind: schema.TurnUserInput, Message: llm.User(fmt.Sprintf("item-%03d", i))}, transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 			t.Fatal(err)
 		}
 	}

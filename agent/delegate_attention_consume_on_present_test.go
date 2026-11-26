@@ -944,7 +944,7 @@ func TestLegacyDelegateAttentionJournalAndTranscriptStillRead(t *testing.T) {
 		}
 		steering := schema.NewTurn(schema.TurnSteering, llm.User("legacy attention"))
 		steering.AttentionID = "legacy-attention"
-		if err := writer.AppendDurable(steering); err != nil {
+		if _, err := writer.Record(steering, transcript.RecordOptions{Door: transcript.DoorDurable}); err != nil {
 			t.Fatalf("append legacy steering: %v", err)
 		}
 		resolution := schema.NewTurn(schema.TurnAttentionResolution, llm.System("Attention resolved."))
@@ -954,7 +954,7 @@ func TestLegacyDelegateAttentionJournalAndTranscriptStillRead(t *testing.T) {
 			Disposition:      "consumed",
 			ResumeGeneration: 1,
 		}
-		if err := writer.AppendDurable(resolution); err != nil {
+		if _, err := writer.Record(resolution, transcript.RecordOptions{Door: transcript.DoorDurable}); err != nil {
 			t.Fatalf("append legacy resolution: %v", err)
 		}
 		if err := writer.Close(); err != nil {
