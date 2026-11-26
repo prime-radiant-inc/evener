@@ -60,8 +60,7 @@ final class EvenerQualificationUITests: XCTestCase {
 
 		let composer = composerField(app)
 		tap(composer, "the composer never appeared")
-		composer.typeText(Self.draft)
-		XCTAssertEqual(composer.value as? String, Self.draft)
+		typeWebText(Self.draft, into: composer)
 
 		// Reactivation keeps the hub: background, return, and the journey is
 		// still where it was.
@@ -217,6 +216,13 @@ final class EvenerQualificationUITests: XCTestCase {
 
 	// MARK: - Journey steps
 
+	/// WebKit can still be delivering keystrokes after XCTest finishes typing.
+	private func typeWebText(_ text: String, into field: XCUIElement) {
+		field.typeText(text)
+		let entered = expectation(for: NSPredicate(format: "value == %@", text), evaluatedWith: field)
+		wait(for: [entered], timeout: tripwire)
+	}
+
 	/// The initial route is either native onboarding or the paired hub's web view.
 	private func mainSurface(_ app: XCUIApplication) -> XCUIElement {
 		app.descendants(matching: .any).matching(NSPredicate(
@@ -308,8 +314,7 @@ final class EvenerQualificationUITests: XCTestCase {
 		XCTAssertTrue(workspace.hasPrefix("/"), "the runner must supply its isolated workspace")
 		let path = web.textFields["Path"].firstMatch
 		tap(path, "the directory picker has no path field")
-		path.typeText(workspace)
-		XCTAssertEqual(path.value as? String, workspace)
+		typeWebText(workspace, into: path)
 		tap(web.buttons["Go"].firstMatch, "the directory picker could not navigate to the workspace")
 		tap(web.buttons["Use this folder"].firstMatch, "the directory picker could not select the workspace")
 		XCTAssertTrue(directory.label.hasSuffix(workspace), "the launcher did not select the fixture workspace")
@@ -321,8 +326,7 @@ final class EvenerQualificationUITests: XCTestCase {
 		tap(model, "the fixture model was unavailable")
 		let prompt = web.descendants(matching: .any)["Prompt"].firstMatch
 		tap(prompt, "the launcher prompt was unavailable")
-		prompt.typeText(promptText)
-		XCTAssertEqual(prompt.value as? String, promptText)
+		typeWebText(promptText, into: prompt)
 		let start = web.buttons["Start"].firstMatch
 		waitForEnabled(start)
 		tap(start, "the launcher could not start the session")
