@@ -239,14 +239,6 @@ func runWebSocketReceiveLoop(ctx context.Context, ws webSocketCloser, transport 
 	}
 }
 
-// runWebSocketKeepalive pings the peer every interval and cancels the
-// connection if a ping is not answered within timeout. A dead peer thus
-// surfaces to the recv/send loops as context cancellation rather than an
-// indefinite block.
-func runWebSocketKeepalive(ctx context.Context, conn wsPinger, cancel context.CancelFunc, gate *webSocketReadGate, interval, timeout time.Duration) {
-	runWebSocketKeepaliveWithTicker(ctx, conn, cancel, gate, timeout, realWebSocketKeepaliveTicker{ticker: time.NewTicker(interval)}, nil)
-}
-
 func runWebSocketKeepaliveWithTicker(ctx context.Context, conn wsPinger, cancel context.CancelFunc, gate *webSocketReadGate, timeout time.Duration, ticker webSocketKeepaliveTicker, onDecision func(bool)) {
 	defer ticker.Stop()
 	for {
@@ -271,10 +263,6 @@ func runWebSocketKeepaliveWithTicker(ctx context.Context, conn wsPinger, cancel 
 			}
 		}
 	}
-}
-
-func runWebSocketSendLoop(ctx context.Context, transport webSocketSender, send <-chan appwire.Message) {
-	runWebSocketSendLoopWithTimeout(ctx, transport, send, webSocketWriteTimeout, nil, nil)
 }
 
 // sent, when non-nil, is called with each message the transport accepted, so
