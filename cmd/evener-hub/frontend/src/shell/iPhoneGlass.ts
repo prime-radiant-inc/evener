@@ -136,12 +136,19 @@ export function connectIPhoneGlass() {
   });
   contrast.addEventListener("change", reconcile);
   reduce.addEventListener("change", reconcile);
+  function retryAfterForeground() {
+    if (document.visibilityState !== "visible" || !failed) return;
+    failed = false;
+    reconcile();
+  }
+  document.addEventListener("visibilitychange", retryAfterForeground);
   reconcile();
   return () => {
     closed = true;
     observer.disconnect();
     contrast.removeEventListener("change", reconcile);
     reduce.removeEventListener("change", reconcile);
+    document.removeEventListener("visibilitychange", retryAfterForeground);
     clear();
   };
 }
