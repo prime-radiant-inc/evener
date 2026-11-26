@@ -380,7 +380,7 @@ func (r *forceStopRun) confirmOwnership(ctx context.Context) error {
 // effect. Interrupted signaling conservatively retains the explicit-Resume
 // requirement.
 func (r *forceStopRun) persistRecovery() error {
-	committed, err := r.cfg.ResumeLocks.PersistForceStopWithOwner(r.aliases, r.target.SessionID, r.target)
+	committed, err := r.cfg.ResumeLocks.PersistForceStop(r.aliases, r.target.SessionID, r.target)
 	if err == nil {
 		return nil
 	}

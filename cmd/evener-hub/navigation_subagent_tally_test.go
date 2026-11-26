@@ -34,7 +34,7 @@ func TestNavigationRowsCarryTheWholeTreesSubagentTally(t *testing.T) {
 		{PID: 1, SessionID: "01ROOT", Status: appwire.ThreadStatusActive, RunningSubagentIDs: childIDs, Subagents: tally},
 		{PID: 2, SessionID: "01QUIET", Status: appwire.ThreadStatusIdle},
 	}
-	rows := liveNavigationRows(t, hubcore.BuildTreeAt(metas, live, nil, now).Live)
+	rows := liveNavigationRows(t, buildTreeAtResolved(metas, live, nil, now).Live)
 	root := rows["01ROOT"]
 	if len(root.Children) != 0 {
 		t.Fatalf("root row carries %d children, want none: subagents have no rows", len(root.Children))
@@ -53,7 +53,7 @@ func TestNavigationRowsDropAMalformedSubagentTally(t *testing.T) {
 	now := time.Date(2026, 9, 26, 12, 0, 0, 0, time.UTC)
 	metas := []schema.SessionMeta{{ID: "01ROOT", CreatedAt: now.Add(-time.Hour), UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}}}
 	live := []hubcore.LiveEntry{{PID: 1, SessionID: "01ROOT", Status: appwire.ThreadStatusActive, Subagents: appwire.SubagentTally{Running: 2, Failed: -1}}}
-	if root, listed := liveNavigationRows(t, hubcore.BuildTreeAt(metas, live, nil, now).Live)["01ROOT"]; !listed || root.Subagents != nil {
+	if root, listed := liveNavigationRows(t, buildTreeAtResolved(metas, live, nil, now).Live)["01ROOT"]; !listed || root.Subagents != nil {
 		t.Fatalf("root row = %+v (listed %v), want it listed with no tally", root, listed)
 	}
 }

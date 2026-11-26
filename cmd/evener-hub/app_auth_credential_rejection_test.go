@@ -389,7 +389,7 @@ func TestCredentialRejection_InstanceRenameDropsIt(t *testing.T) {
 func newRemovableRejection(t *testing.T) (*instancesFixture, func() string) {
 	t.Helper()
 	f := newInstancesFixture(t, nil)
-	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-compatible", BaseURL: "http://provider.test/v1"}); err != nil {
+	if _, err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-compatible", BaseURL: "http://provider.test/v1"}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	if err := f.store.Set("work", "sk-stored"); err != nil {
@@ -422,7 +422,7 @@ func TestCredentialRejection_InstanceRemovalDropsIt(t *testing.T) {
 	if err := f.ctl.Remove(appwire.InstanceRemoveParams{Name: "work"}); err != nil {
 		t.Fatalf("Remove: %v", err)
 	}
-	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-compatible", BaseURL: "http://provider.test/v1"}); err != nil {
+	if _, err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-compatible", BaseURL: "http://provider.test/v1"}); err != nil {
 		t.Fatalf("Create again: %v", err)
 	}
 	if err := f.store.Set("work", "sk-stored"); err != nil {

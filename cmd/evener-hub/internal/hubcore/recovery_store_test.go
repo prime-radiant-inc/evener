@@ -20,7 +20,7 @@ func TestPersistentRecoverySurvivesRecreationAndClearsOnlyItsGroup(t *testing.T)
 		t.Fatal(err)
 	}
 	finish := locks.BeginForceStop([]string{"A", "B"})
-	if err := locks.PersistForceStop([]string{"A", "B"}, "B"); err != nil {
+	if _, err := locks.PersistForceStop([]string{"A", "B"}, "B", daemonprocess.Target{}); err != nil {
 		t.Fatal(err)
 	}
 	finish.Finish(false) // Committed intent survives a failed signal.
@@ -34,7 +34,7 @@ func TestPersistentRecoverySurvivesRecreationAndClearsOnlyItsGroup(t *testing.T)
 		}
 	}
 	finish = locks.BeginForceStop([]string{"B", "C"})
-	if err := locks.PersistForceStop([]string{"B", "C"}, "C"); err != nil {
+	if _, err := locks.PersistForceStop([]string{"B", "C"}, "C", daemonprocess.Target{}); err != nil {
 		t.Fatal(err)
 	}
 	finish.Finish(true)
@@ -95,7 +95,7 @@ func TestPersistentRecoveryWriteFailurePolicy(t *testing.T) {
 				}
 				finish := locks.BeginForceStop([]string{"A", "B"})
 				if persistClear {
-					if err := locks.PersistForceStop([]string{"A", "B"}, "B"); err != nil {
+					if _, err := locks.PersistForceStop([]string{"A", "B"}, "B", daemonprocess.Target{}); err != nil {
 						t.Fatal(err)
 					}
 					finish.Finish(true)
@@ -110,7 +110,7 @@ func TestPersistentRecoveryWriteFailurePolicy(t *testing.T) {
 				if persistClear {
 					err = locks.ExplicitResumeCompleted("A", locks.RecoveryState("A").Epoch)
 				} else {
-					err = locks.PersistForceStop([]string{"A", "B"}, "B")
+					_, err = locks.PersistForceStop([]string{"A", "B"}, "B", daemonprocess.Target{})
 					finish.Finish(false)
 				}
 				if !errors.Is(err, boom) {
@@ -154,7 +154,7 @@ func TestRecoveryAdmissionRemainsResponsiveDuringDurableClear(t *testing.T) {
 		t.Fatal(err)
 	}
 	finish := locks.BeginForceStop([]string{"A", "B"})
-	if err := locks.PersistForceStop([]string{"A", "B"}, "B"); err != nil {
+	if _, err := locks.PersistForceStop([]string{"A", "B"}, "B", daemonprocess.Target{}); err != nil {
 		t.Fatal(err)
 	}
 	finish.Finish(true)
@@ -185,7 +185,7 @@ func TestRecoveryAdmissionRemainsResponsiveDuringDurableClear(t *testing.T) {
 		t.Fatal("old clear removed newer memory fence")
 	}
 	locks.store.faults = recoveryStoreFaults{}
-	if err := locks.PersistForceStop([]string{"B", "C"}, "C"); err != nil {
+	if _, err := locks.PersistForceStop([]string{"B", "C"}, "C", daemonprocess.Target{}); err != nil {
 		t.Fatal(err)
 	}
 	fenceNew.Finish(true)
@@ -252,14 +252,14 @@ func TestRecoveryIntentRequiresFileAndDirectoryDurability(t *testing.T) {
 			locks := NewResumeLocks()
 			locks.store = store
 			finish := locks.BeginForceStop([]string{"A"})
-			if err := locks.PersistForceStop([]string{"A"}, "A"); !errors.Is(err, boom) {
+			if _, err := locks.PersistForceStop([]string{"A"}, "A", daemonprocess.Target{}); !errors.Is(err, boom) {
 				t.Fatalf("sync failure did not prohibit signal: %v", err)
 			}
 			if got := locks.RecoveryState("A").ResumeRequired; got != (stage == "renamed directory") {
 				t.Fatalf("uncertain intent memory=%v", got)
 			}
 			fail = false
-			if err := locks.PersistForceStop([]string{"A"}, "A"); err != nil {
+			if _, err := locks.PersistForceStop([]string{"A"}, "A", daemonprocess.Target{}); err != nil {
 				t.Fatal(err)
 			}
 			finish.Finish(false)
@@ -280,13 +280,13 @@ func TestExplicitResumeDoesNotClearChangedEpoch(t *testing.T) {
 		t.Fatal(err)
 	}
 	finish := locks.BeginForceStop([]string{"A"})
-	if err := locks.PersistForceStop([]string{"A"}, "A"); err != nil {
+	if _, err := locks.PersistForceStop([]string{"A"}, "A", daemonprocess.Target{}); err != nil {
 		t.Fatal(err)
 	}
 	finish.Finish(true)
 	epoch := locks.RecoveryState("A").Epoch
 	finish = locks.BeginForceStop([]string{"A"})
-	if err := locks.PersistForceStop([]string{"A"}, "A"); err != nil {
+	if _, err := locks.PersistForceStop([]string{"A"}, "A", daemonprocess.Target{}); err != nil {
 		t.Fatal(err)
 	}
 	finish.Finish(true)
@@ -311,7 +311,7 @@ func TestPersistentRecoveryFailsOnUnreadableState(t *testing.T) {
 func TestRecoveryIntentNormalizesAliasesAndPreservesMemorySemantics(t *testing.T) {
 	locks := NewResumeLocks()
 	finish := locks.BeginForceStop([]string{"A", "B"})
-	if err := locks.PersistForceStop([]string{"B", "A", "B"}, "B"); err != nil {
+	if _, err := locks.PersistForceStop([]string{"B", "A", "B"}, "B", daemonprocess.Target{}); err != nil {
 		t.Fatal(err)
 	}
 	finish.Finish(false)
@@ -325,7 +325,7 @@ func TestRecoveryIntentNormalizesAliasesAndPreservesMemorySemantics(t *testing.T
 		t.Fatal("memory aliases failed to clear")
 	}
 	for _, aliases := range [][]string{nil, {""}, {"../A"}, {" local:A "}} {
-		if err := locks.PersistForceStop(aliases, "A"); err == nil {
+		if _, err := locks.PersistForceStop(aliases, "A", daemonprocess.Target{}); err == nil {
 			t.Fatalf("invalid authority accepted: %v", aliases)
 		}
 	}
@@ -354,7 +354,7 @@ func TestRecoveryPersistenceUnderTraversalOnlyAncestor(t *testing.T) {
 	}
 	finish := locks.BeginForceStop([]string{"A"})
 	defer finish.Finish(false)
-	if err := locks.PersistForceStop([]string{"A"}, "A"); err != nil {
+	if _, err := locks.PersistForceStop([]string{"A"}, "A", daemonprocess.Target{}); err != nil {
 		t.Fatal(err)
 	}
 	reopened, err := NewPersistentResumeLocks(root)
@@ -369,7 +369,7 @@ func TestRecoveryPersistenceUnderTraversalOnlyAncestor(t *testing.T) {
 func TestRecoveryTargetMustBeVerifiedAlias(t *testing.T) {
 	locks := NewResumeLocks()
 	for _, target := range []string{"", "../A", "other"} {
-		if err := locks.PersistForceStop([]string{"A", "B"}, target); err == nil {
+		if _, err := locks.PersistForceStop([]string{"A", "B"}, target, daemonprocess.Target{}); err == nil {
 			t.Fatalf("accepted unverified target %q", target)
 		}
 	}
@@ -382,12 +382,12 @@ func TestRecoveryTargetSurvivesPartialGroupOverlap(t *testing.T) {
 		t.Fatal(err)
 	}
 	finish := locks.BeginForceStop([]string{"A", "B"})
-	if err := locks.PersistForceStop([]string{"A", "B"}, "A"); err != nil {
+	if _, err := locks.PersistForceStop([]string{"A", "B"}, "A", daemonprocess.Target{}); err != nil {
 		t.Fatal(err)
 	}
 	finish.Finish(true)
 	finish = locks.BeginForceStop([]string{"A", "C"})
-	if err := locks.PersistForceStop([]string{"A", "C"}, "C"); err != nil {
+	if _, err := locks.PersistForceStop([]string{"A", "C"}, "C", daemonprocess.Target{}); err != nil {
 		t.Fatal(err)
 	}
 	finish.Finish(true)
@@ -421,7 +421,7 @@ func TestFailedOverlappingStopPreservesCommittedGroup(t *testing.T) {
 				t.Fatal(err)
 			}
 			finish := locks.BeginForceStop([]string{"A", "B"})
-			if err := locks.PersistForceStop([]string{"A", "B"}, "B"); err != nil {
+			if _, err := locks.PersistForceStop([]string{"A", "B"}, "B", daemonprocess.Target{}); err != nil {
 				t.Fatal(err)
 			}
 			finish.Finish(true)
@@ -433,7 +433,7 @@ func TestFailedOverlappingStopPreservesCommittedGroup(t *testing.T) {
 			} else {
 				locks.store.faults.BeforeRename = func() error { return boom }
 			}
-			if err := locks.PersistForceStop([]string{"B", "C"}, "C"); !errors.Is(err, boom) {
+			if _, err := locks.PersistForceStop([]string{"B", "C"}, "C", daemonprocess.Target{}); !errors.Is(err, boom) {
 				t.Fatalf("write error=%v", err)
 			}
 			finish.Finish(false)
@@ -475,7 +475,7 @@ func TestConfirmedExitPersistenceFailureRetainsAdmissionFence(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := locks.PersistForceStop([]string{"A", "B"}, "B"); err != nil {
+			if _, err := locks.PersistForceStop([]string{"A", "B"}, "B", daemonprocess.Target{}); err != nil {
 				t.Fatal(err)
 			}
 			fail := func() error { return errors.New("disk failure") }
@@ -523,7 +523,7 @@ func TestRecoveryStoreLoadsGroupWithNonUTCOwnerTime(t *testing.T) {
 		PID: 4242, SessionID: "B", StateDir: t.TempDir(),
 		StartedAt: time.Date(2026, 9, 19, 12, 0, 0, 0, time.FixedZone("fixture", 3600)),
 	}
-	if _, err := locks.PersistForceStopWithOwner([]string{"A", "B"}, "B", owner); err != nil {
+	if _, err := locks.PersistForceStop([]string{"A", "B"}, "B", owner); err != nil {
 		t.Fatal(err)
 	}
 	reopened, err := NewPersistentResumeLocks(root)

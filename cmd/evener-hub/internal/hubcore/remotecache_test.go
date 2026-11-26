@@ -2,8 +2,6 @@ package hubcore
 
 import (
 	"fmt"
-	"reflect"
-	"slices"
 	"sync/atomic"
 	"testing"
 
@@ -14,17 +12,27 @@ func TestRemoteThreadCacheEquivalentEmptyFormsAreNoOp(t *testing.T) {
 	c := &RemoteThreadCache{}
 	var calls atomic.Int32
 	c.SetOnChange(func() { calls.Add(1) })
-	c.StoreSnapshotData(RemoteThreadSnapshot{Complete: true, Threads: []appwire.Thread{}, Sources: map[string]RemoteSourceSnapshot{}})
+	c.Store(RemoteThreadSnapshot{Complete: true, Threads: []appwire.Thread{}, Sources: map[string]RemoteSourceSnapshot{}}, nil)
 	first := c.Snapshot().Generation
-	c.StoreSnapshotData(RemoteThreadSnapshot{Complete: true, Threads: nil, Sources: nil})
+	c.Store(RemoteThreadSnapshot{Complete: true, Threads: nil, Sources: nil}, nil)
 	if got := c.Snapshot().Generation; got != first || calls.Load() != 1 {
 		t.Fatalf("equivalent snapshot changed: generation=%d calls=%d", got, calls.Load())
 	}
 }
 
+func captureSourceGenerations(c *RemoteThreadCache, sourceIDs ...string) map[string]uint64 {
+	captured := make(map[string]uint64, len(sourceIDs))
+	for _, id := range sourceIDs {
+		if generation, ok := c.SourceGeneration(id); ok {
+			captured[id] = generation
+		}
+	}
+	return captured
+}
+
 func TestRemoteThreadCacheGenerationAvoidsSnapshotContract(t *testing.T) {
 	c := &RemoteThreadCache{}
-	c.Store([]appwire.Thread{{ID: "t1"}})
+	c.Store(RemoteThreadSnapshot{Threads: []appwire.Thread{{ID: "t1"}}, Complete: true}, nil)
 	if got, want := c.Generation(), c.Snapshot().Generation; got != want {
 		t.Fatalf("generation=%d, snapshot generation=%d", got, want)
 	}
@@ -36,7 +44,7 @@ func fuzzScenarioRemoteThreadCacheReadReturnsLastStored(t *testing.T) {
 		t.Fatalf("empty cache should return nil, got %v", got)
 	}
 	threads := []appwire.Thread{{ID: "t1"}, {ID: "t2"}}
-	c.Store(threads)
+	c.Store(RemoteThreadSnapshot{Threads: threads, Complete: true}, nil)
 	got := c.Get()
 	if len(got) != 2 || got[0].ID != "t1" {
 		t.Fatalf("cache should return stored threads, got %+v", got)
@@ -50,7 +58,7 @@ func fuzzScenarioRemoteThreadCacheReadReturnsLastStored(t *testing.T) {
 
 func fuzzScenarioRemoteThreadCacheSnapshotTracksAuthorityGeneration(t *testing.T) {
 	c := &RemoteThreadCache{}
-	c.StoreSnapshot([]appwire.Thread{{ID: "stale"}}, false)
+	c.Store(RemoteThreadSnapshot{Threads: []appwire.Thread{{ID: "stale"}}, Complete: false}, nil)
 	first := c.Snapshot()
 	if first.Complete {
 		t.Fatal("failed source snapshot must not be marked complete")
@@ -59,7 +67,7 @@ func fuzzScenarioRemoteThreadCacheSnapshotTracksAuthorityGeneration(t *testing.T
 		t.Fatalf("first snapshot = %+v, want generation 1 with stale row", first)
 	}
 
-	c.Store([]appwire.Thread{{ID: "fresh"}})
+	c.Store(RemoteThreadSnapshot{Threads: []appwire.Thread{{ID: "fresh"}}, Complete: true}, nil)
 	second := c.Snapshot()
 	if !second.Complete || second.Generation != 2 || len(second.Threads) != 1 || second.Threads[0].ID != "fresh" {
 		t.Fatalf("second snapshot = %+v, want complete generation 2 with fresh row", second)
@@ -77,7 +85,7 @@ func TestRemoteThreadCacheSnapshotDefensivelyCopiesSourceAuthority(t *testing.T)
 			"remote": {Threads: []appwire.Thread{thread}, Complete: false, IncompleteIDs: []string{incompleteID}},
 		},
 	}
-	cache.StoreSnapshotData(snapshot)
+	cache.Store(snapshot, nil)
 	snapshot.Threads[0].ID = "changed"
 	snapshot.Sources["remote"].Threads[0].ID = "changed"
 	snapshot.Sources["remote"].IncompleteIDs[0] = "changed"
@@ -99,11 +107,20 @@ func TestRemoteThreadCacheRemoveSourceDropsOwnedRowsAndPerSourceSnapshot(t *test
 	c := &RemoteThreadCache{}
 	var calls atomic.Int32
 	c.SetOnChange(func() { calls.Add(1) })
-	c.StoreSnapshot([]appwire.Thread{
+	threads := []appwire.Thread{
 		{ID: "a1", Source: "host-a"},
 		{ID: "a2", Source: "", Evener: appwire.EvenerThread{Ref: "host-a:a2"}},
 		{ID: "b1", Source: "host-b"},
-	}, true)
+		{ID: "unowned"},
+	}
+	c.Store(RemoteThreadSnapshot{
+		Threads:  threads,
+		Complete: true,
+		Sources: map[string]RemoteSourceSnapshot{
+			"host-a": {Threads: []appwire.Thread{threads[0], threads[1]}, Complete: true},
+			"host-b": {Threads: []appwire.Thread{threads[2]}, Complete: true},
+		},
+	}, nil)
 	before := c.Snapshot()
 	if before.Generation != 1 {
 		t.Fatalf("seed generation = %d, want 1", before.Generation)
@@ -116,9 +133,9 @@ func TestRemoteThreadCacheRemoveSourceDropsOwnedRowsAndPerSourceSnapshot(t *test
 		t.Fatalf("prune generation = %d, want %d", after.Generation, before.Generation+1)
 	}
 	// Both rows the snapshot walk attributed to host-a go — the one its own
-	// Source names and the one only its parsed ref does — and only those.
-	if len(after.Threads) != 1 || after.Threads[0].ID != "b1" {
-		t.Fatalf("threads after prune = %+v, want only host-b's row", after.Threads)
+	// Source names and the one only its parsed ref does — while host-b and unowned rows remain.
+	if len(after.Threads) != 2 || after.Threads[0].ID != "b1" || after.Threads[1].ID != "unowned" {
+		t.Fatalf("threads after prune = %+v, want host-b's row and the unowned row", after.Threads)
 	}
 	if _, ok := after.Sources["host-a"]; ok {
 		t.Fatal("prune kept host-a's per-source snapshot")
@@ -168,14 +185,14 @@ func TestRemoteThreadCacheRemoveSourceHoldsBackInFlightRefreshPublish(t *testing
 			"host-b": {Threads: []appwire.Thread{{ID: "b1", Source: "host-b"}}, Complete: true},
 		},
 	}
-	c.StoreSnapshotData(seed)
+	c.Store(seed, nil)
 	if calls.Load() != 1 {
 		t.Fatalf("onChange fired %d times after the seed, want 1", calls.Load())
 	}
 	// The refresh that started before the remove: it captured the walk's
 	// identity generations first, then the full pre-remove walk, host-a's
 	// rows included.
-	captured := c.SourceGenerations()
+	captured := captureSourceGenerations(c, "host-a", "host-b")
 	inFlight := c.Snapshot()
 
 	// The remove commits while that refresh is still walking.
@@ -189,7 +206,7 @@ func TestRemoteThreadCacheRemoveSourceHoldsBackInFlightRefreshPublish(t *testing
 	// included. The publish must not resurrect the removed source's rows or
 	// per-source snapshot: host-a's captured generation mismatches its absent
 	// registration.
-	c.StoreWalkSnapshot(inFlight, captured)
+	c.Store(inFlight, captured)
 
 	got := c.Snapshot()
 	for _, thread := range got.Threads {
@@ -240,9 +257,9 @@ func TestRemoteThreadCacheReAddRejectsStaleWalkAdmitsFreshWalk(t *testing.T) {
 			"host-b": {Threads: []appwire.Thread{{ID: "b1", Source: "host-b"}}, Complete: true},
 		},
 	}
-	c.StoreSnapshotData(seed)
+	c.Store(seed, nil)
 	// The walk starts before the remove and captures the old identity.
-	staleCapture := c.SourceGenerations()
+	staleCapture := captureSourceGenerations(c, "host-a", "host-b")
 	inFlight := c.Snapshot()
 	c.RemoveSource("host-a")
 	if len(c.Snapshot().Threads) != 1 {
@@ -254,7 +271,7 @@ func TestRemoteThreadCacheReAddRejectsStaleWalkAdmitsFreshWalk(t *testing.T) {
 
 	// The in-flight walk finishes and publishes its pre-remove capture. The
 	// old registration's rows must not publish under the re-added identity.
-	c.StoreWalkSnapshot(inFlight, staleCapture)
+	c.Store(inFlight, staleCapture)
 	for _, thread := range c.Snapshot().Threads {
 		if remoteThreadOwnedBySource(thread, "host-a") {
 			t.Fatalf("stale walk's thread %q published under the re-added identity", thread.ID)
@@ -265,7 +282,7 @@ func TestRemoteThreadCacheReAddRejectsStaleWalkAdmitsFreshWalk(t *testing.T) {
 	}
 
 	// The re-added host's own walk captures the new generation and publishes.
-	freshCapture := c.SourceGenerations()
+	freshCapture := captureSourceGenerations(c, "host-a", "host-b")
 	if freshCapture["host-a"] == staleCapture["host-a"] {
 		t.Fatal("re-add kept the removed registration's generation; the churn must assign a new one")
 	}
@@ -280,7 +297,7 @@ func TestRemoteThreadCacheReAddRejectsStaleWalkAdmitsFreshWalk(t *testing.T) {
 			"host-b": {Threads: []appwire.Thread{{ID: "b1", Source: "host-b"}}, Complete: true},
 		},
 	}
-	c.StoreWalkSnapshot(fresh, freshCapture)
+	c.Store(fresh, freshCapture)
 	got := c.Snapshot()
 	var hostA int
 	for _, thread := range got.Threads {
@@ -312,7 +329,12 @@ func TestRemoteThreadCacheRemovalLeavesNoPerNameState(t *testing.T) {
 	for i := range names {
 		id := fmt.Sprintf("host-%02d", i)
 		c.RegisterSource(id)
-		c.StoreSnapshot([]appwire.Thread{{ID: "t1", Source: id}}, true)
+		thread := appwire.Thread{ID: "t1", Source: id}
+		c.Store(RemoteThreadSnapshot{
+			Threads:  []appwire.Thread{thread},
+			Complete: true,
+			Sources:  map[string]RemoteSourceSnapshot{id: {Threads: []appwire.Thread{thread}, Complete: true}},
+		}, nil)
 		c.RemoveSource(id)
 	}
 	if got := len(c.generations); got != 0 {
@@ -323,11 +345,16 @@ func TestRemoteThreadCacheRemovalLeavesNoPerNameState(t *testing.T) {
 	}
 	// The bounded state still rejects a late walk for a removed source.
 	c.RegisterSource("late")
-	c.StoreSnapshot([]appwire.Thread{{ID: "t1", Source: "late"}}, true)
-	captured := c.SourceGenerations()
+	lateThread := appwire.Thread{ID: "t1", Source: "late"}
+	c.Store(RemoteThreadSnapshot{
+		Threads:  []appwire.Thread{lateThread},
+		Complete: true,
+		Sources:  map[string]RemoteSourceSnapshot{"late": {Threads: []appwire.Thread{lateThread}, Complete: true}},
+	}, nil)
+	captured := captureSourceGenerations(c, "late")
 	inFlight := c.Snapshot()
 	c.RemoveSource("late")
-	c.StoreWalkSnapshot(inFlight, captured)
+	c.Store(inFlight, captured)
 	for _, thread := range c.Snapshot().Threads {
 		if thread.Source == "late" {
 			t.Fatalf("late walk resurrected thread %q for the removed source", thread.ID)
@@ -353,7 +380,7 @@ func TestRemoteThreadCacheWalkDropsSourceRemovedAfterCapture(t *testing.T) {
 	// the publish filters (a cache with nothing registered at the capture is
 	// a different shape, pinned below).
 	c.RegisterSource("host-a")
-	captured := c.SourceGenerations()
+	captured := captureSourceGenerations(c, "host-a", "host-late")
 	// The host registers after the capture — mid-walk — and the walk reads
 	// its rows before the remove commits, the way a real enumeration of the
 	// source registry would.
@@ -374,7 +401,7 @@ func TestRemoteThreadCacheWalkDropsSourceRemovedAfterCapture(t *testing.T) {
 	c.RemoveSource("host-late")
 
 	// The walk finishes and publishes what it read.
-	c.StoreWalkSnapshot(walk, captured)
+	c.Store(walk, captured)
 
 	got := c.Snapshot()
 	for _, thread := range got.Threads {
@@ -408,7 +435,7 @@ func TestRemoteThreadCacheWalkDropsSourceRemovedAndReAddedAfterCapture(t *testin
 	// host-a is live before the walk starts, so the walk's capture is
 	// non-empty and the publish filters.
 	c.RegisterSource("host-a")
-	captured := c.SourceGenerations()
+	captured := captureSourceGenerations(c, "host-a", "host-late")
 	// host-late registers mid-walk — after the capture, the way a runtime add
 	// lands between the walk's start and its enumeration — and the walk reads
 	// its row under that registration.
@@ -433,7 +460,7 @@ func TestRemoteThreadCacheWalkDropsSourceRemovedAndReAddedAfterCapture(t *testin
 	// The walk finishes and publishes what it read under the removed
 	// registration. Nothing of host-late's may come back under the re-added
 	// identity.
-	c.StoreWalkSnapshot(walk, captured)
+	c.Store(walk, captured)
 
 	got := c.Snapshot()
 	for _, thread := range got.Threads {
@@ -492,7 +519,7 @@ func TestRemoteThreadCacheWalkKeepsStillLiveSourceAddedMidWalk(t *testing.T) {
 			"host-late": {Threads: []appwire.Thread{{ID: "l1", Source: "host-late"}}, Complete: true},
 		},
 	}
-	c.StoreWalkSnapshot(walk, readGenerations)
+	c.Store(walk, readGenerations)
 	got := c.Snapshot()
 	var late int
 	for _, thread := range got.Threads {
@@ -513,16 +540,12 @@ func TestRemoteThreadCacheWalkKeepsStillLiveSourceAddedMidWalk(t *testing.T) {
 // (no source was registered yet) is still a walk, and its publish must not
 // skip the staleness filter — a host added and removed inside that one walk
 // would otherwise republish. The empty capture differs from the walk-free
-// publish (StoreSnapshotData), which passes no capture at all and stays
-// unfiltered.
+// publish, which passes nil and stays unfiltered.
 func TestRemoteThreadCacheEmptyCaptureWalkStillFiltersRemovedSource(t *testing.T) {
 	c := &RemoteThreadCache{}
-	// The walk starts on a hub with nothing registered: the capture is
-	// empty, but it exists — SourceGenerations returns a map, never nil.
-	captured := c.SourceGenerations()
-	if captured == nil {
-		t.Fatal("SourceGenerations returned nil; the fixture needs an empty capture, not a walk-free publish")
-	}
+	// The walk starts on a hub with nothing registered: an empty non-nil map
+	// still triggers staleness filtering.
+	captured := map[string]uint64{}
 	c.RegisterSource("host-late")
 	walk := RemoteThreadSnapshot{
 		Threads:  []appwire.Thread{{ID: "l1", Source: "host-late"}},
@@ -532,50 +555,11 @@ func TestRemoteThreadCacheEmptyCaptureWalkStillFiltersRemovedSource(t *testing.T
 		},
 	}
 	c.RemoveSource("host-late")
-	c.StoreWalkSnapshot(walk, captured)
+	c.Store(walk, captured)
 	if got := c.Snapshot().Threads; len(got) != 0 {
 		t.Fatalf("threads after the late publish = %+v, want none: an empty capture is still a walk's capture", got)
 	}
 	if _, ok := c.Snapshot().Sources["host-late"]; ok {
 		t.Fatal("late walk resurrected the removed host's per-source snapshot")
-	}
-}
-
-// TestInferRemoteSources pins how a flat remote thread list is grouped into
-// per-source snapshots: a thread is attributed to its Source, or failing that
-// to the host its ref names, carries the walk's completeness, and a thread
-// with neither is left out. The input list is not modified.
-func TestInferRemoteSources(t *testing.T) {
-	for _, tc := range []struct {
-		name    string
-		threads []appwire.Thread
-		want    map[string]RemoteSourceSnapshot
-	}{
-		{
-			name:    "no source and no ref",
-			threads: []appwire.Thread{{ID: "t1", Source: "", Evener: appwire.EvenerThread{Ref: ""}}},
-			want:    map[string]RemoteSourceSnapshot{},
-		},
-		{
-			name:    "source taken from the ref",
-			threads: []appwire.Thread{{ID: "t1", Source: "", Evener: appwire.EvenerThread{Ref: "remote1:s1"}}},
-			want: map[string]RemoteSourceSnapshot{
-				"remote1": {
-					Threads:  []appwire.Thread{{ID: "t1", Source: "", Evener: appwire.EvenerThread{Ref: "remote1:s1"}}},
-					Complete: true,
-				},
-			},
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			input := slices.Clone(tc.threads)
-			sources := inferRemoteSources(input, true)
-			if !reflect.DeepEqual(sources, tc.want) {
-				t.Fatalf("sources = %#v, want %#v", sources, tc.want)
-			}
-			if !reflect.DeepEqual(input, tc.threads) {
-				t.Fatalf("input threads mutated: got %#v, want %#v", input, tc.threads)
-			}
-		})
 	}
 }

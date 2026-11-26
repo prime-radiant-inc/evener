@@ -100,7 +100,7 @@ func TestHostTombstoneTreeMergeAndManifest(t *testing.T) {
 	// tree through the cache pipeline: the publication must keep the tombstone
 	// rows, and the tree consumes the tag: the row stays in metas — metadata
 	// retained — but is NOT live, so its capabilities stay disabled.
-	web.cfg.RemoteThreadCache.StoreWalkSnapshot(hubcore.RemoteThreadSnapshot{
+	web.cfg.RemoteThreadCache.Store(hubcore.RemoteThreadSnapshot{
 		Threads:  fetch.threads,
 		Complete: fetch.complete,
 		Sources:  fetch.sources,

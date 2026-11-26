@@ -29,10 +29,10 @@ func TestLocalDaemonEntriesFromRosterNameTheCurrentModelOnlyOnTheRoot(t *testing
 // the row as its meta (S17).
 func TestNavigationRemoteRowsNameTheirModel(t *testing.T) {
 	cache := &hubcore.RemoteThreadCache{}
-	cache.Store([]appwire.Thread{
+	cache.Store(remoteThreadSnapshotForTest([]appwire.Thread{
 		{ID: "online-thread", Source: "remote-online", ModelProvider: "gpt-5.6", Status: appwire.ThreadStatus{Type: appwire.ThreadStatusIdle}},
 		{ID: "offline-thread", Source: "remote-offline", ModelProvider: "claude-opus-4-7", Status: appwire.ThreadStatus{Type: appwire.ThreadStatusIdle}},
-	})
+	}, true), nil)
 	registry := appsource.NewRegistry()
 	registry.Add(&offlineStubSource{scriptedAppSource: &scriptedAppSource{id: "remote-online"}, online: true})
 	registry.Add(&offlineStubSource{scriptedAppSource: &scriptedAppSource{id: "remote-offline"}, online: false})

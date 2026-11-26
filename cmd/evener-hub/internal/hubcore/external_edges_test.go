@@ -288,7 +288,7 @@ func fuzzScenarioRemainingPureBranches(t *testing.T) {
 		{ID: "02wMz5Txv2enqVTitaig6F", ForkLabel: "b", EnvInfo: schema.EnvironmentInfo{WorkingDir: "/p"}, UpdatedAt: time.Unix(1, 0)},
 		{ID: "02wMz5Txv2enqVTitaig6F", ForkLabel: "a", EnvInfo: schema.EnvironmentInfo{WorkingDir: "/p"}, UpdatedAt: time.Unix(2, 0)},
 	}
-	BuildTreeAt(metas, nil, nil, time.Now())
+	buildTreeAtResolved(metas, nil, nil, time.Now())
 	if _, ok := BuildProjectTreeAt([]schema.SessionMeta{{ID: "02wMz5Txv1C3Hut0M8GCeB", EnvInfo: schema.EnvironmentInfo{WorkingDir: projectDir}}}, nil, nil, time.Now(), project.ID); !ok {
 		t.Fatal("missing project")
 	}

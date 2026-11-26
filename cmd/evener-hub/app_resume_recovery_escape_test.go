@@ -34,7 +34,7 @@ func persistedUnconfirmedRecovery(t *testing.T, sessionID string) (*hubcore.Resu
 		t.Fatal(err)
 	}
 	owner := daemonprocess.Target{PID: 4242, SessionID: sessionID, StateDir: t.TempDir(), StartedAt: time.Now().Round(0)}
-	if _, err := locks.PersistForceStopWithOwner([]string{sessionID}, sessionID, owner); err != nil {
+	if _, err := locks.PersistForceStop([]string{sessionID}, sessionID, owner); err != nil {
 		t.Fatal(err)
 	}
 	state := locks.RecoveryState(sessionID)
@@ -155,7 +155,7 @@ func TestResumeStillRefusesUnconfirmedExitWithUnverifiedClaim(t *testing.T) {
 	// proofless record would refuse at the earlier no-proof check and leave
 	// the claim branch unexercised.
 	locks, _, owner := persistedUnconfirmedRecovery(t, sessionID)
-	if _, err := locks.PersistForceStopWithOwner([]string{forkAlias, sessionID}, sessionID, owner); err != nil {
+	if _, err := locks.PersistForceStop([]string{forkAlias, sessionID}, sessionID, owner); err != nil {
 		t.Fatal(err)
 	}
 	spawned := false
@@ -215,7 +215,7 @@ func TestResumeRefusesClaimlessRecoveryWhileOwnerProcessLives(t *testing.T) {
 }
 
 // Authority persisted without an owner identity (a record from before the
-// identity was carried, or a direct PersistForceStop) has no exit proof to
+// identity was carried, or a zero-owner PersistForceStop) has no exit proof to
 // verify: the refusal stands until the Stop route establishes one.
 func TestResumeRefusesClaimlessRecoveryWithoutOwnerProof(t *testing.T) {
 	runDir := t.TempDir()
@@ -225,7 +225,7 @@ func TestResumeRefusesClaimlessRecoveryWithoutOwnerProof(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := locks.PersistForceStop([]string{sessionID}, sessionID); err != nil {
+	if _, err := locks.PersistForceStop([]string{sessionID}, sessionID, daemonprocess.Target{}); err != nil {
 		t.Fatal(err)
 	}
 	spawned := false

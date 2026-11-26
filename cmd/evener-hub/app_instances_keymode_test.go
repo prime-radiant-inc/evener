@@ -41,7 +41,7 @@ func requireJudgedKeyModes(t *testing.T, path string) {
 // from matching.
 func TestInstances_KeyModeAcceptsAnOwnerOnlyKeyAt0400(t *testing.T) {
 	f := newInstancesFixture(t, nil)
-	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
+	if _, err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	keyPath := filepath.Join(f.stateDir, endpointFingerprintKeyFile)
@@ -93,7 +93,7 @@ func TestInstances_KeyModeAcceptsAnOwnerOnlyKeyAt0400(t *testing.T) {
 // from the key - change. The exposed key stops describing anything.
 func TestInstances_KeyModeRotatesAKeyOthersCanRead(t *testing.T) {
 	f := newInstancesFixture(t, nil)
-	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
+	if _, err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	keyPath := filepath.Join(f.stateDir, endpointFingerprintKeyFile)

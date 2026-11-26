@@ -85,7 +85,7 @@ func TestResumeRefusesClaimlessRecoveryWithNonCanonicalWorkspaceClaim(t *testing
 		t.Fatal("setup did not stage an unconfirmed claim")
 	}
 	locks, _, owner := persistedUnconfirmedRecovery(t, sessionID)
-	if _, err := locks.PersistForceStopWithOwner([]string{forkAlias, sessionID}, sessionID, owner); err != nil {
+	if _, err := locks.PersistForceStop([]string{forkAlias, sessionID}, sessionID, owner); err != nil {
 		t.Fatal(err)
 	}
 	spawned := false

@@ -165,9 +165,9 @@ func TestUnpinStillRefusesAnEmptyRef(t *testing.T) {
 
 func TestUnpinRemovesARemoteSubagentPin(t *testing.T) {
 	cache := &hubcore.RemoteThreadCache{}
-	cache.Store([]appwire.Thread{
+	cache.Store(remoteThreadSnapshotForTest([]appwire.Thread{
 		{ID: "th_sub", Source: "host-a", Evener: appwire.EvenerThread{Ref: "host-a:th_sub", Kind: "subagent", ParentRef: "host-a:th_1"}, Status: appwire.ThreadStatus{Type: appwire.ThreadStatusActive}},
-	})
+	}, true), nil)
 	pins := closeOnCleanup(t, hubcore.NewPinSectionStore(filepath.Join(t.TempDir(), "pins.db")))
 	web := NewWebServer(hubcore.WebConfig{Past: hubcore.NewPastIndex(""), PinSections: pins, RemoteThreadCache: cache})
 	if _, _, err := pins.CreateOrReuseAndAssign("Research", "host-a", "th_sub", timeNowForTest()); err != nil {
@@ -236,7 +236,7 @@ func TestReferencedAuthorityKeepsRemoteSourceQuality(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			cache := &hubcore.RemoteThreadCache{}
-			cache.StoreSnapshot(threads, test.complete)
+			cache.Store(remoteThreadSnapshotForTest(threads, test.complete), nil)
 			web := NewWebServer(hubcore.WebConfig{Past: hubcore.NewPastIndex(""), RemoteThreadCache: cache})
 			got := classifyReferenced(t, web, "host-a:th_1", "host-a:th_sub", "host-a:gone")
 			for id, state := range test.want {

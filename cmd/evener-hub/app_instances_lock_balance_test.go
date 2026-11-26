@@ -33,13 +33,15 @@ func TestInstances_EveryMutationReleasesItsLocksOnEveryExit(t *testing.T) {
 		run     func() error
 		wantErr bool
 	}{
-		{"create", func() error { return f.ctl.Create(create) }, false},
-		{"create of a taken name", func() error { return f.ctl.Create(create) }, true},
+		{"create", func() error { _, err := f.ctl.Create(create); return err }, false},
+		{"create of a taken name", func() error { _, err := f.ctl.Create(create); return err }, true},
 		{"edit", func() error {
-			return f.ctl.Edit(appwire.InstanceEditParams{Name: "work", Protocol: "openai-responses"})
+			_, err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", Protocol: "openai-responses"})
+			return err
 		}, false},
 		{"edit of an unknown instance", func() error {
-			return f.ctl.Edit(appwire.InstanceEditParams{Name: "nowhere", Protocol: "openai-responses"})
+			_, err := f.ctl.Edit(appwire.InstanceEditParams{Name: "nowhere", Protocol: "openai-responses"})
+			return err
 		}, true},
 		{"set default", func() error { return f.ctl.SetDefault(appwire.InstanceSetDefaultParams{Name: "groq"}) }, false},
 		{"set default of an unknown instance", func() error {

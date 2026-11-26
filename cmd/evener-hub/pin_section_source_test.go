@@ -20,10 +20,10 @@ func newSharedBareIDPinWeb(t *testing.T) (*WebServer, *hubcore.PinSectionStore) 
 	t.Helper()
 	store := closeOnCleanup(t, hubcore.NewPinSectionStore(filepath.Join(t.TempDir(), "pins.db")))
 	cache := &hubcore.RemoteThreadCache{}
-	cache.Store([]appwire.Thread{
+	cache.Store(remoteThreadSnapshotForTest([]appwire.Thread{
 		{ID: "th_1", Source: "host-a", Evener: appwire.EvenerThread{Ref: "host-a:th_1"}, Status: appwire.ThreadStatus{Type: appwire.ThreadStatusActive}},
 		{ID: "th_1", Source: "host-b", Evener: appwire.EvenerThread{Ref: "host-b:th_1"}, Status: appwire.ThreadStatus{Type: appwire.ThreadStatusActive}},
-	})
+	}, true), nil)
 	web := NewWebServer(hubcore.WebConfig{Past: hubcore.NewPastIndex(""), PinSections: store, RemoteThreadCache: cache})
 	web.injectMetasForTest([]schema.SessionMeta{{ID: "th_1", UpdatedAt: timeNowForTest()}})
 	return web, store

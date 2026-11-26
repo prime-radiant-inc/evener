@@ -26,7 +26,7 @@ func confirmedStoppedResumeFixture(t *testing.T) (*hubcore.ResumeLocks, string, 
 	locks := hubcore.NewResumeLocks()
 	sessionID := hubtest.SessionID(t)
 	finish := locks.BeginForceStop([]string{sessionID})
-	if err := locks.PersistForceStop([]string{sessionID}, sessionID); err != nil {
+	if _, err := locks.PersistForceStop([]string{sessionID}, sessionID, daemonprocess.Target{}); err != nil {
 		t.Fatal(err)
 	}
 	if err := locks.ConfirmForceStop(sessionID); err != nil {
@@ -212,7 +212,7 @@ func TestForceStopConfirmedStoppedValidatesSiblingDeletionBeforeCancelingResume(
 		locks := hubcore.NewResumeLocks()
 		stable, current := hubtest.SessionID(t), hubtest.SessionID(t)
 		finish := locks.BeginForceStop([]string{stable, current})
-		if err := locks.PersistForceStop([]string{stable, current}, current); err != nil {
+		if _, err := locks.PersistForceStop([]string{stable, current}, current, daemonprocess.Target{}); err != nil {
 			t.Fatal(err)
 		}
 		if err := locks.ConfirmForceStop(current); err != nil {
@@ -336,7 +336,7 @@ func TestForceStopConfirmedStoppedRefusalKeepsResumeCompletionValid(t *testing.T
 		}
 		sessionID := hubtest.SessionID(t)
 		finish := locks.BeginForceStop([]string{sessionID})
-		if err := locks.PersistForceStop([]string{sessionID}, sessionID); err != nil {
+		if _, err := locks.PersistForceStop([]string{sessionID}, sessionID, daemonprocess.Target{}); err != nil {
 			t.Fatal(err)
 		}
 		if err := locks.ConfirmForceStop(sessionID); err != nil {
@@ -456,7 +456,7 @@ func TestConfirmedStoppedHandoffRefusedAfterUncanceledDrainRollsBackFence(t *tes
 	locks := hubcore.NewResumeLocks()
 	sessionID := hubtest.SessionID(t)
 	finish := locks.BeginForceStop([]string{sessionID})
-	if err := locks.PersistForceStop([]string{sessionID}, sessionID); err != nil {
+	if _, err := locks.PersistForceStop([]string{sessionID}, sessionID, daemonprocess.Target{}); err != nil {
 		t.Fatal(err)
 	}
 	if err := locks.ConfirmForceStop(sessionID); err != nil {

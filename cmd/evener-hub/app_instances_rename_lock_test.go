@@ -52,7 +52,7 @@ func (l *gatedAuthStoreLock) Release() {
 // so the test knows where the rename is instead of guessing with a window.
 func TestInstances_EditRenameMovesTheOAuthRecordInsideTheStoreLock(t *testing.T) {
 	f := newInstancesFixture(t, nil)
-	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-codex"}); err != nil {
+	if _, err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-codex"}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	if err := authopenai.SaveAuth(f.stateDir, "work", makeOAuthRecord("work", "")); err != nil {
@@ -75,7 +75,8 @@ func TestInstances_EditRenameMovesTheOAuthRecordInsideTheStoreLock(t *testing.T)
 
 	renamed := make(chan error, 1)
 	go func() {
-		renamed <- f.ctl.Edit(appwire.InstanceEditParams{Name: "work", NewName: "personal"})
+		_, err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", NewName: "personal"})
+		renamed <- err
 	}()
 
 	select {

@@ -33,7 +33,7 @@ func TestResumeUsesRetainedCurrentSessionAndReservesAliases(t *testing.T) {
 			}
 			aliases := []string{"a-stable", "z-current"}
 			finish := locks.BeginForceStop(aliases)
-			if err := locks.PersistForceStop(aliases, "z-current"); err != nil {
+			if _, err := locks.PersistForceStop(aliases, "z-current", daemonprocess.Target{}); err != nil {
 				t.Fatal(err)
 			}
 			if err := locks.ConfirmForceStop("z-current"); err != nil {
@@ -135,7 +135,7 @@ func TestResumeMissingMarkerUsesDurableRecoveryTarget(t *testing.T) {
 					target = "z-current"
 				}
 				finish := locks.BeginForceStop(aliases)
-				if err := locks.PersistForceStop(aliases, target); err != nil {
+				if _, err := locks.PersistForceStop(aliases, target, daemonprocess.Target{}); err != nil {
 					t.Fatal(err)
 				}
 				if err := locks.ConfirmForceStop(target); err != nil {
@@ -310,7 +310,7 @@ func TestResumeIgnoresOnlyVerifiedExitedTranscriptClaims(t *testing.T) {
 			// A previous force-stop and Resume obligation is already cleared. A later
 			// daemon clear keeps the workspace alias but advances its current transcript.
 			finish := cfg.ResumeLocks.BeginForceStop([]string{"stable", "old"})
-			if err := cfg.ResumeLocks.PersistForceStop([]string{"stable", "old"}, "old"); err != nil {
+			if _, err := cfg.ResumeLocks.PersistForceStop([]string{"stable", "old"}, "old", daemonprocess.Target{}); err != nil {
 				t.Fatal(err)
 			}
 			finish.Finish(true)
@@ -356,12 +356,12 @@ func TestResumeRejectsTargetRedirectedByNewerRecovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	finish := locks.BeginForceStop([]string{"A", "B"})
-	if err := locks.PersistForceStop([]string{"A", "B"}, "A"); err != nil {
+	if _, err := locks.PersistForceStop([]string{"A", "B"}, "A", daemonprocess.Target{}); err != nil {
 		t.Fatal(err)
 	}
 	finish.Finish(true)
 	finish = locks.BeginForceStop([]string{"A", "C"})
-	if err := locks.PersistForceStop([]string{"A", "C"}, "C"); err != nil {
+	if _, err := locks.PersistForceStop([]string{"A", "C"}, "C", daemonprocess.Target{}); err != nil {
 		t.Fatal(err)
 	}
 	finish.Finish(true)
@@ -390,7 +390,7 @@ func TestResumeUsesDurableTargetWhenAllRetainedClaimsExited(t *testing.T) {
 		t.Fatal(err)
 	}
 	finish := locks.BeginForceStop([]string{"stable", "current"})
-	if err := locks.PersistForceStop([]string{"stable", "current"}, "current"); err != nil {
+	if _, err := locks.PersistForceStop([]string{"stable", "current"}, "current", daemonprocess.Target{}); err != nil {
 		t.Fatal(err)
 	}
 	if err := locks.ConfirmForceStop("current"); err != nil {
@@ -499,7 +499,7 @@ func TestCompletedResumeMappingDefersToCurrentIdentity(t *testing.T) {
 		t.Run(map[bool]string{false: "fresh marker", true: "newer recovery"}[newerRecovery], func(t *testing.T) {
 			locks := hubcore.NewResumeLocks()
 			finish := locks.BeginForceStop([]string{"stable", "B"})
-			if err := locks.PersistForceStop([]string{"stable", "B"}, "B"); err != nil {
+			if _, err := locks.PersistForceStop([]string{"stable", "B"}, "B", daemonprocess.Target{}); err != nil {
 				t.Fatal(err)
 			}
 			finish.Finish(true)
@@ -511,7 +511,7 @@ func TestCompletedResumeMappingDefersToCurrentIdentity(t *testing.T) {
 			cfg := hubcore.WebConfig{RunDir: t.TempDir(), ResumeLocks: locks}
 			if newerRecovery {
 				finish := locks.BeginForceStop([]string{"B", "C"})
-				if err := locks.PersistForceStop([]string{"B", "C"}, "C"); err != nil {
+				if _, err := locks.PersistForceStop([]string{"B", "C"}, "C", daemonprocess.Target{}); err != nil {
 					t.Fatal(err)
 				}
 				finish.Finish(true)
@@ -670,7 +670,7 @@ func TestResumeRejectsCompletedRedirectCycle(t *testing.T) {
 	locks := hubcore.NewResumeLocks()
 	for _, pair := range [][2]string{{"A", "B"}, {"B", "C"}, {"C", "A"}} {
 		finish := locks.BeginForceStop([]string{pair[0]})
-		if err := locks.PersistForceStop([]string{pair[0]}, pair[0]); err != nil {
+		if _, err := locks.PersistForceStop([]string{pair[0]}, pair[0], daemonprocess.Target{}); err != nil {
 			t.Fatal(err)
 		}
 		finish.Finish(true)
@@ -699,7 +699,7 @@ func TestResumeCompletedChainRefusesNewPendingRecovery(t *testing.T) {
 			locks := hubcore.NewResumeLocks()
 			for _, pair := range [][2]string{{"A", "B"}, {"B", "C"}} {
 				finish := locks.BeginForceStop([]string{pair[0], pair[1]})
-				if err := locks.PersistForceStop([]string{pair[0], pair[1]}, pair[1]); err != nil {
+				if _, err := locks.PersistForceStop([]string{pair[0], pair[1]}, pair[1], daemonprocess.Target{}); err != nil {
 					t.Fatal(err)
 				}
 				finish.Finish(true)
@@ -710,7 +710,7 @@ func TestResumeCompletedChainRefusesNewPendingRecovery(t *testing.T) {
 				locks.RecordResolvedSession(pair[0], pair[1], epoch)
 			}
 			finish := locks.BeginForceStop([]string{"C", "D"})
-			if err := locks.PersistForceStop([]string{"C", "D"}, "D"); err != nil {
+			if _, err := locks.PersistForceStop([]string{"C", "D"}, "D", daemonprocess.Target{}); err != nil {
 				t.Fatal(err)
 			}
 			if stopping {
@@ -742,7 +742,7 @@ func TestResumeCompletedChainPreservesConnectionAdmission(t *testing.T) {
 	locks := hubcore.NewResumeLocks()
 	for _, pair := range [][2]string{{"A", "B"}, {"B", "C"}} {
 		finish := locks.BeginForceStop([]string{pair[0], pair[1]})
-		if err := locks.PersistForceStop([]string{pair[0], pair[1]}, pair[1]); err != nil {
+		if _, err := locks.PersistForceStop([]string{pair[0], pair[1]}, pair[1], daemonprocess.Target{}); err != nil {
 			t.Fatal(err)
 		}
 		finish.Finish(true)
@@ -755,7 +755,7 @@ func TestResumeCompletedChainPreservesConnectionAdmission(t *testing.T) {
 	cfg := hubcore.WebConfig{RunDir: t.TempDir(), ResumeLocks: locks}
 	stale := admitSessionConnection(t.Context(), cfg)
 	finish := locks.BeginForceStop([]string{"C"})
-	if err := locks.PersistForceStop([]string{"C"}, "C"); err != nil {
+	if _, err := locks.PersistForceStop([]string{"C"}, "C", daemonprocess.Target{}); err != nil {
 		t.Fatal(err)
 	}
 	finish.Finish(true)
@@ -950,7 +950,7 @@ func TestRepeatedRecoveryRetainsCrashMarkersAndPendingGroups(t *testing.T) {
 func TestCompletedSelfTargetDoesNotOverrideUnresolvedExitedSuccessor(t *testing.T) {
 	locks := hubcore.NewResumeLocks()
 	finish := locks.BeginForceStop([]string{"A", "B"})
-	if err := locks.PersistForceStop([]string{"A", "B"}, "B"); err != nil {
+	if _, err := locks.PersistForceStop([]string{"A", "B"}, "B", daemonprocess.Target{}); err != nil {
 		t.Fatal(err)
 	}
 	finish.Finish(true)
@@ -978,7 +978,7 @@ func TestCompletedSelfTargetDoesNotOverrideUnresolvedExitedSuccessor(t *testing.
 func TestFailedForceStopPreservesCompletedRoutingAfterMarkerRemoval(t *testing.T) {
 	locks := hubcore.NewResumeLocks()
 	finish := locks.BeginForceStop([]string{"stable", "current"})
-	if err := locks.PersistForceStop([]string{"stable", "current"}, "current"); err != nil {
+	if _, err := locks.PersistForceStop([]string{"stable", "current"}, "current", daemonprocess.Target{}); err != nil {
 		t.Fatal(err)
 	}
 	finish.Finish(true)

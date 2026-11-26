@@ -5,6 +5,8 @@ import (
 	"errors"
 	"testing"
 	"testing/synctest"
+
+	"primeradiant.com/evener/cmd/evener-hub/internal/daemonprocess"
 )
 
 func TestResumeMutexCanceledWaiterDoesNotAcquireOrReleaseOwner(t *testing.T) {
@@ -215,7 +217,7 @@ func TestActiveResumeReapedCleanupPreservesRecoveryAuthority(t *testing.T) {
 				t.Fatal(err)
 			}
 			aliases := []string{"owner", "stable"}
-			if err := locks.PersistForceStop(aliases, "owner"); err != nil {
+			if _, err := locks.PersistForceStop(aliases, "owner", daemonprocess.Target{}); err != nil {
 				t.Fatal(err)
 			}
 			if err := locks.ConfirmForceStop("owner"); err != nil {
@@ -253,7 +255,7 @@ func TestActiveResumeReapedCleanupPreservesRecoveryAuthority(t *testing.T) {
 				t.Fatal("fresh Resume passed retained failure")
 			}
 			if newer {
-				if err := locks.PersistForceStop([]string{"next", "owner"}, "next"); err != nil {
+				if _, err := locks.PersistForceStop([]string{"next", "owner"}, "next", daemonprocess.Target{}); err != nil {
 					t.Fatal(err)
 				}
 			}
