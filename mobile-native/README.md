@@ -5,12 +5,51 @@ work are paused; preserve their requirements and historical evidence. The
 [active checklist](../docs/design/mobile/ios-v1-remaining.md) governs current work
 and supersedes broader device and accessibility gates below.
 
-A shared Expo / React Native client whose current release scope is iPhone v1.
-iPad work is paused. Android sources, build instructions and historical evidence
-are retained for later delivery and are explicitly deferred. It uses the shared
-AppWire client and selected services/state modules. The native UI is in this
-directory; the old Tauri UI is not loaded or used as feature authority. Current
-web/server behavior defines scope.
+The iPhone app requires iOS 17 or later and opens the selected hub’s mobile
+web workspace. The hub supplies the interface, so updating it updates the phone’s
+Board, conversations, and composer. Each saved hub has a persistent WebKit
+profile. Removing that hub clears its website data, including credentials and
+drafts. Android and iPad delivery are deferred.
+
+In a conversation, the iPhone can draw the hub’s header with native controls.
+Sessions opens the drawer. When the hub has a destination to return to, Back
+takes its place. As you scroll down, the title and collapsed Notes summary
+tuck away and the transcript passes beneath the controls. Scrolling up brings
+them back. Find keeps the header above its search field. Overview opens the
+current conversation’s panel. The controls use Liquid Glass on iOS 26 and
+later and an opaque surface on earlier systems or with Reduce Transparency.
+The hub owns the transcript, composer, and reading position. Reopening the
+workspace restores the selected settings host or a launcher's directory, prompt,
+and host from the phone's saved location.
+
+The same design extends through pairing, hub settings, and the hosted
+workspace. Native controls use the system material. The hub draws the matching
+surfaces around its composer, Find, Sessions drawer, Overview, sheets, and
+menus. In a conversation, Glass-HQ renders the live transcript through the
+composer and its open menus. The paired hub serves the renderer and its worker.
+The controls use their CSS material while the renderer starts or if it is
+unavailable. The shell sends material changes to the open page, so changing Reduce
+Transparency takes effect while a draft is open. Messages, code, documents,
+and long lists retain solid reading surfaces.
+
+Open the Sessions drawer and choose **Hubs** for pairing, switching hubs,
+display and in-app alert preferences. **Work on this iPhone** opens the
+on-device Board and its drafts, attachments, and queued messages, including
+when the workspace cannot load. After an upgrade, a previously open session
+with an unsent native draft reopens in its original editor. The iOS share extension opens that same editor
+so shared text or links are saved before the extension’s copy is removed.
+**Open workspace** in the native hub menu returns to the web UI.
+
+The web composer uses the system keyboard, including iOS Dictation when enabled,
+and the image picker. **Open in…** in the document viewer opens the system share
+sheet for local documents and supported remote images. Other remote documents
+keep their web preview and copy actions. Native foreground alerts respect
+the active conversation, editor, and reader. A session alert opens in the
+current workspace or on the on-device navigation stack, preserving the Back
+destination. Alerts use the app’s existing
+foreground connection. Lock-screen push would require a push provider.
+The separate [spoken manager mode](../docs/product/voice.md) is excluded
+from the shipping app.
 
 Shell-job output uses the shared lossless byte-page decoder for the existing
 latest-output screen. Its focused two-second rereads preserve prior successful
@@ -31,9 +70,12 @@ explains why the bundle is required alongside tests and type checking. The
 [build guide](../docs/design/mobile/ios-build-distribution.md) covers locked iOS
 project generation and distribution prerequisites.
 
-## iPhone Duo
+## On-device Board on iPhone Duo
 
-The app fills both iPhone Duo displays. The outer display keeps the Board
+The hosted workspace keeps the Board beside the conversation on the inner
+display when both fit. Its session controls follow the iOS system bar, and
+the composer remains in the conversation. In **Work on this
+iPhone**, the app fills both iPhone Duo displays. The outer display keeps the Board
 single-pane. The inner display puts the Board on the left and the open
 conversation on the right; the Board's search, scroll and live state keep
 running while the conversation is open. The split is chosen by window size (both
@@ -200,7 +242,7 @@ unobserved sessions are reclaimed. Existing conversation stores and reader-posit
 restoration still own loaded rows, merging and reading anchors. This intent memory
 lasts for the app lifetime and adds no disk persistence.
 
-## Current scope
+## On-device workspace capabilities
 
 Assistant filename actions and document chips share the file-reference grammar.
 Authored HTML tags are literal text, so they do not suppress otherwise eligible

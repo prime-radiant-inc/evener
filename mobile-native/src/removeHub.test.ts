@@ -89,7 +89,7 @@ describe("hub removal", () => {
 		const result = await removeSavedHub(
 			{ remove: async () => {}, list: async () => [] },
 			{
-				removeHub: () => {
+				removeHub: async () => {
 					throw new Error("disk unavailable");
 				},
 			},

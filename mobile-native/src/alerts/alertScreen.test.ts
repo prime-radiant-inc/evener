@@ -9,7 +9,17 @@ const reader = { name: "Reader", params: { hubId: "hub-1", sessionRef: "local:a"
 
 it.each([
 	["the Board", [board], { kind: "board" }],
+	[
+		"the web welcome page with the drawer closed",
+		[{ name: "Workspace", params: { hubId: "hub-1", path: "/" } }],
+		{ kind: "other" },
+	],
 	["a session", [board, session("local:a")], { kind: "session", ref: "local:a" }],
+	[
+		"a web session",
+		[{ name: "Workspace", params: { hubId: "hub-1", path: "/s/remote%3Aa%2Fb" } }],
+		{ kind: "session", ref: "remote:a/b" },
+	],
 	[
 		"a sheet over a session, which keeps it in front",
 		[board, session("local:a"), tasks],

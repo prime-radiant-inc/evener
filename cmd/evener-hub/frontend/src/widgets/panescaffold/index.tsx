@@ -127,7 +127,7 @@ export function PaneScaffold({
   const hasHeader = title !== undefined || cadence !== undefined || actions !== undefined;
 
   return (
-    <div ref={paneRef} className={CLASS.pane}>
+    <div ref={paneRef} className={CLASS.pane} data-pane-scaffold-root="">
       {hasHeader && (
         <div className={CLASS.header}>
           {title !== undefined && (

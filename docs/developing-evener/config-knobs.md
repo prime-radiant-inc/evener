@@ -121,7 +121,7 @@ packages and test files do not count.
 | `GOGC` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `cmd/evener` |
 | `GOMODCACHE` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `agent`, `agent/execenv`, `agent/sandbox` |
 | `GOPATH` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `agent/execenv`, `agent/sandbox`, `scripts/lib/private-go-home.sh` |
-| `HOME` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `agent/execenv`, `agent/sandbox`, `appwire-client/typescript/pathRows.ts` and 20 more |
+| `HOME` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `agent/execenv`, `agent/sandbox`, `appwire-client/typescript/pathRows.ts` and 19 more |
 | `LANG` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `agent/execenv` |
 | `NVM_DIR` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `agent/execenv` |
 | `PATH` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `agent/execenv`, `agent/sandbox`, `scripts/gate/test-timing-budget.sh` and 1 more |

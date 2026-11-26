@@ -121,6 +121,7 @@
   flex: none;
   display: flex;
   align-items: center;
+  margin-left: auto;
 }
 
 .fallbackHeader {
@@ -176,6 +177,11 @@
    * dvh), so pad the last row - the Archived sessions disclosure - clear of
    * the home indicator, keeping the base .body padding. */
   padding-bottom: calc(var(--space-2) + var(--dock-clearance));
+}
+
+/* The drawer's Sheet supplies the panel material beneath its one scrollport. */
+:global(body[data-iphone-glass]) .parentScrollRail {
+  background: transparent;
 }
 
 /* The session list's floating New-session action. Mounted as the scroll body's

@@ -10,7 +10,7 @@ module.exports = (config) => ({
 	name: "EvenerShareExtension",
 	displayName: "Evener",
 	bundleIdentifier: ".ShareExtension",
-	deploymentTarget: "16.4",
+	deploymentTarget: config.ios.deploymentTarget,
 	frameworks: ["UniformTypeIdentifiers"],
 	entitlements: {
 		// The same app group the app writes; the container is how the two sides

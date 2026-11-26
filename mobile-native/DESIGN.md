@@ -179,9 +179,16 @@ components:
 
 ## Overview
 
+The paired iPhone opens its hub’s mobile workspace. Navigation and controls
+carry Liquid Glass throughout the app. UIKit and Expo draw the native
+material, and the hosted workspace draws its shared controls in matching
+materials. Light and dark follow the active workspace. Reduce Transparency
+uses opaque surfaces with visible edges. Transcript text, code, documents,
+and the rows of a settings page sit on a legible reading surface.
+
 **Creative North Star: "Attention is the product"** (spec principle 1)
 
-This records the native iPhone implementation, not visual or release acceptance. The Board is home: every live session is ordered by who needs you, then the user’s own organization follows. The settled direction is a quiet native instrument: neutral light/dark surfaces, SF interface text, familiar native navigation and touch-sized controls. The current visual direction is `docs/superpowers/specs/2026-10-19-native-apple-design.md`; the interaction foundation remains `docs/superpowers/specs/2026-09-25-mobile-app-redesign-design.md`.
+This records the native iPhone implementation, not visual or release acceptance. For on-device work the Board orders live sessions by who needs you, followed by the user’s own organization. The settled direction is a quiet native instrument: neutral light/dark surfaces, SF interface text, familiar native navigation and touch-sized controls. The current visual direction is `docs/superpowers/specs/2026-10-19-native-apple-design.md`; the interaction foundation remains `docs/superpowers/specs/2026-09-25-mobile-app-redesign-design.md`.
 
 The Board is one native scrolling list: Live’s bands, then pinned categories and inline expandable Projects, Test runs and Archived sections when present. Category and project disclosures reveal their rows in place; they are not placeholder links to separate screens.
 

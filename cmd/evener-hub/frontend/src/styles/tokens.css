@@ -473,3 +473,28 @@ body[data-font-size="xl"] { --font-scale: 1.25; }
     --font-size-control: max(16px, var(--font-size-body), var(--font-size-ui));
   }
 }
+
+/* Hosted chrome inherits these through body, including portaled controls.
+ * The underlying palette stays live when the reader changes theme. */
+body[data-iphone-glass] {
+  --glass-control-font: system-ui, sans-serif;
+  --glass-fill: var(--field);
+  --glass-panel: var(--surface-1);
+  --glass-edge: var(--edge);
+  --glass-filter: none;
+  --glass-sheen: none;
+  --glass-shadow: inset 0 0 0 1px var(--glass-edge), var(--shadow-raised);
+  --glass-radius: calc(var(--radius-panel) + var(--radius-control));
+}
+
+/* The native host observes Reduce Transparency directly. WebKit can report
+ * neither value for the corresponding media query. */
+@media (prefers-contrast: no-preference) and (not (prefers-reduced-transparency: reduce)) {
+  body[data-iphone-glass="regular"] {
+    --glass-fill: color-mix(in oklab, var(--field) 72%, transparent);
+    --glass-panel: color-mix(in oklab, var(--surface-1) 89%, transparent);
+    --glass-edge: color-mix(in oklab, var(--ink-mid) 28%, transparent);
+    --glass-filter: blur(20px) saturate(145%);
+    --glass-sheen: linear-gradient(150deg, color-mix(in oklab, var(--ink-low) 15%, transparent), transparent 45%);
+  }
+}

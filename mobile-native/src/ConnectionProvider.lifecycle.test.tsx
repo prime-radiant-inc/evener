@@ -16,6 +16,7 @@ const harness = vi.hoisted(() => ({
 	client: null as unknown,
 	ids: 0,
 	connection: null as unknown,
+	clearWebData: vi.fn(async (_hubId: string) => {}),
 }));
 vi.mock("react-native", async () => ({
 	...(await import("./renderNative.testkit")).nativeModuleMock(),
@@ -29,6 +30,7 @@ vi.mock("./hubConnection", () => ({
 	useHubConnection: () => ({ client: harness.client, state: harness.client ? "ready" : "closed", fatal: false }),
 }));
 vi.mock("./nativeDrafts", () => ({ drafts: { removeHub: () => {} } }));
+vi.mock("./hubWeb/clearHubWebData", () => ({ clearHubWebData: harness.clearWebData }));
 vi.mock("./nativeLocation", () => ({ locations: { read: () => null, write: () => {} } }));
 vi.mock("./nativeReaderPosition", () => ({ readerPositions: { removeHub: () => {} } }));
 vi.mock("./nativeOrganization", () => ({ removeOrganizationData: () => {} }));
@@ -79,6 +81,7 @@ it("retires a removed hub's New session store with the rest of its data", async 
 	await act(async () => app.connection().removeHub(hubId));
 	await settle();
 	expect(store.getState().retired).toBe(true);
+	expect(harness.clearWebData).toHaveBeenCalledWith(hubId);
 	expect(creationStore(hubId, noDrafts)).not.toBe(store);
 });
 

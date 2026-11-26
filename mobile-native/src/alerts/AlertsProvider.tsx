@@ -47,11 +47,18 @@ export function AlertsProvider({ children }: { children: ReactNode }) {
 	// What is on screen, and whether a sheet or modal covers it (ruling 7).
 	const routes = useRef<readonly ReportedRoute[]>([]);
 	const screenHub = useRef(hubId);
+	const documentHub = useRef<string | null>(null);
 	const uncover = useRef<(() => void) | null>(null);
 	const reportRoutes = useCallback(
 		(next: readonly ReportedRoute[]) => {
 			routes.current = next;
-			center.setScreen(alertScreenFor(next, screenHub.current));
+			center.setScreen(
+				alertScreenFor(
+					next,
+					screenHub.current,
+					documentHub.current !== null && documentHub.current === screenHub.current,
+				),
+			);
 			const covered = coversBanners(next.at(-1));
 			if (covered && uncover.current === null) uncover.current = center.hold("covered");
 			else if (!covered && uncover.current !== null) {
@@ -60,6 +67,18 @@ export function AlertsProvider({ children }: { children: ReactNode }) {
 			}
 		},
 		[center],
+	);
+	const readWorkspaceDocument = useCallback(
+		(id: string) => {
+			documentHub.current = id;
+			reportRoutes(routes.current);
+			return () => {
+				if (documentHub.current !== id) return;
+				documentHub.current = null;
+				reportRoutes(routes.current);
+			};
+		},
+		[reportRoutes],
 	);
 	// Another hub: nothing carries over, and the reset forgot the screen, so
 	// report it again for the new hub.
@@ -131,8 +150,14 @@ export function AlertsProvider({ children }: { children: ReactNode }) {
 	}, [board, client, state]);
 
 	const value = useMemo<Alerts>(
-		() => ({ center, reportRoutes, noticeFor: (key) => noticesByKey.current.get(key), sources: sourcesStore }),
-		[center, reportRoutes, sourcesStore],
+		() => ({
+			center,
+			reportRoutes,
+			readWorkspaceDocument,
+			noticeFor: (key) => noticesByKey.current.get(key),
+			sources: sourcesStore,
+		}),
+		[center, reportRoutes, readWorkspaceDocument, sourcesStore],
 	);
 	return <AlertsContext.Provider value={value}>{children}</AlertsContext.Provider>;
 }

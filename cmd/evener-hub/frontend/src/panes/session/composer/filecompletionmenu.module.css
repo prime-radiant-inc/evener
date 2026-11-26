@@ -2,6 +2,7 @@
  * above the composer card by default, or downward below .promptAnchor in
  * top-anchored forms like Spawn. */
 .listbox {
+  composes: panel from "../../../styles/floatingSurface.module.css";
   position: absolute;
   bottom: calc(100% + var(--space-1));
   left: 0;
@@ -13,9 +14,6 @@
   flex-direction: column;
   gap: var(--space-half);
   padding: var(--space-1);
-  background: var(--surface-2);
-  border-radius: var(--radius-pane);
-  box-shadow: var(--shadow-overlay);
 }
 
 .below {
@@ -24,6 +22,7 @@
 }
 
 .option {
+  composes: choice from "../../../styles/floatingSurface.module.css";
   display: flex;
   align-items: baseline;
   gap: var(--space-2);

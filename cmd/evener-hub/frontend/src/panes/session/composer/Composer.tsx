@@ -47,6 +47,7 @@ import {
   useSyncExternalStore,
 } from "react";
 import { activitySidebarStore } from "../../../shell/activitybar/activitySidebarStore";
+import { iPhoneHost } from "../../../shell/iPhoneHost";
 import type { SessionMenuTurnVerbs } from "../../../shell/sessionMenu/SessionMenu";
 import { useIsMobile } from "../../../shell/useIsMobile";
 import { useMountAutofocus } from "../../../shell/useMountAutofocus";
@@ -339,6 +340,7 @@ function ComposerWithSubmission({
   // The phone shell's control row is menu-only in every state; model and
   // effort live in Overview and Settings (design-system.md section 12).
   const phoneShellLayout = isMobile || landscapePhoneLayout;
+  const hostedPhone = phoneShellLayout && !!iPhoneHost();
   const composerRootRef = useRef<HTMLDivElement | null>(null);
   const attachComposerRoot = useCallback(
     (element: HTMLDivElement | null) => {
@@ -378,6 +380,9 @@ function ComposerWithSubmission({
     // Only the primary press can hold editing: a right or middle press fires
     // pointerdown but no click, so a hold armed here could never be released.
     if (event.button !== 0) return;
+    if (hostedPhone && isEditorEvent(event.target)) {
+      formAnchorRef.current?.toggleAttribute("data-touch-editing", event.pointerType === "touch");
+    }
     // Drop the previous press's listeners without its deferred clear: the new
     // press owns the hold from this moment.
     composerPressReleaseRef.current?.();
@@ -1024,7 +1029,7 @@ function ComposerWithSubmission({
   // explicit click keep the same resting row. Content restores the full card
   // and keeps it stable until focus leaves an empty editor.
   let minLines = 2;
-  if (folded) minLines = 1;
+  if (folded || hostedPhone) minLines = 1;
   else if (ended) minLines = followUpEngaged ? 3 : 1;
   else if (duoCoverLayout && !followUpEngaged) minLines = 1;
 
@@ -1292,6 +1297,7 @@ function ComposerWithSubmission({
   }
 
   function handleEditorBlur(): void {
+    formAnchorRef.current?.removeAttribute("data-touch-editing");
     setSlashToken(null);
     setFileToken(null);
   }
@@ -1437,7 +1443,13 @@ function ComposerWithSubmission({
         // owning pane id, so the overlay can anchor to the FOCUSED pane's
         // composer when several are mounted - including an ordinary pane and a
         // cascade column showing the same conversation.
-        <div ref={formAnchorRef} className={CLASS.formAnchor} data-composer={ref} data-composer-pane={paneId}>
+        <div
+          ref={formAnchorRef}
+          className={CLASS.formAnchor}
+          data-composer={ref}
+          data-composer-pane={paneId}
+          data-iphone-composer={hostedPhone ? (focused ? "focused" : "") : undefined}
+        >
           {/* Anchored above the control row inside the card below, opening
               upward - see slashcompletionmenu.module.css's header comment
               for the anchored-float recipe. Mounted only

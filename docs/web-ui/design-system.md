@@ -12,8 +12,31 @@ roles onto the phone's surface vocabulary, so the palette and its semantic meani
 shared rather than transcribed twice. Typography, geometry, and navigation remain
 platform-native: do not copy this guide's type sizes, radii, or breakpoint rules literally
 onto iOS. The native app uses neutral light/dark surfaces, SF interface text, optional
-Source Serif reading text, Menlo evidence, and native stacks and sheets. References to
-phone or mobile layout below mean the web frontend, not the React Native app.
+Source Serif reading text, Menlo evidence, and native stacks and sheets.
+
+The iPhone app hosts this same mobile workspace. Its shell draws the ordinary
+conversation header with iOS controls. The web composer, navigation, Find,
+Sessions, Overview, sheets and menus share a material palette with translucent
+fills, highlights and edges. Long lists, messages, code and documents keep
+their reading surfaces. The shell reports whether iOS glass is available and
+whether Reduce Transparency permits it. Hosted controls start opaque and
+respond to setting changes in place. Browser tabs use the browser theme.
+
+In a hosted iPhone conversation, the composer and its floating menus use a
+single Glass-HQ scene over the visible transcript. A worker served by the hub
+draws the material. WebKit keeps the editable field, action labels and touch
+targets above it. The controls retain their CSS material until the renderer
+is ready and whenever it becomes unavailable.
+
+The Duo inner display keeps the Board and the reader side by side while there
+is room for both at the chosen text size. When iOS reserves a side edge for
+the status area, its navigation bar owns the reader’s actions. The composer
+stays with the conversation. See the [Duo layout guide](../design/mobile/iphone-duo.md).
+
+In the hosted composer, WebKit owns editing, selection, dictation and the
+keyboard. Value selectors use the platform picker. Command menus and inline
+completions use the shared web actions, with system text, thumb-sized rows
+and a denser glass surface so commands stay readable over a conversation.
 
 The approved [editorial-instrument design](../superpowers/specs/2026-09-09-tufte-webui-design.md)
 supersedes the Beautiful UI aesthetic mandate for palette and typography; shape, enclosure

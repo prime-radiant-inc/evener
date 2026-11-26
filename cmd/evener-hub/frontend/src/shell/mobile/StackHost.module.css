@@ -94,7 +94,12 @@
     border-color var(--motion-duration-spatial) var(--motion-easing-standard);
 }
 
+.topBar[inert] {
+  visibility: hidden;
+}
+
 .stackTitle {
+  margin: 0;
   composes: truncate from "../../styles/text.module.css";
   /* biome-ignore lint/suspicious/noDuplicateProperties: css-modules composes takes one declaration per composed class, each with its own `from` */
   composes: paneTitle from "../../styles/text.module.css";
@@ -153,6 +158,15 @@
   opacity: 0;
 }
 
+/* The system edge bar owns the controls. Only the reader title occupies the row. */
+.topBar[data-system-edge-actions] {
+  padding: var(--space-2) var(--space-4);
+}
+
+.topBar[data-system-edge-actions] :is(.leading, .trailing) {
+  display: none;
+}
+
 .topBarCollapsed .leading:not(:empty),
 .topBarCollapsed .trailing:not(:empty) {
   pointer-events: auto;
@@ -161,6 +175,17 @@
   -webkit-backdrop-filter: blur(16px);
   backdrop-filter: blur(16px);
   box-shadow: var(--shadow-card);
+}
+
+/* The workspace also owns navigation on the Board, in documents, and in
+ * wider layouts. Use the same two control groups as the iPhone header. */
+:global([data-iphone-glass]) .topBar:not([inert]) :is(.leading, .trailing):not(:empty) {
+  border-radius: var(--radius-pill);
+  background: var(--glass-fill);
+  background-image: var(--glass-sheen);
+  -webkit-backdrop-filter: var(--glass-filter);
+  backdrop-filter: var(--glass-filter);
+  box-shadow: var(--glass-shadow);
 }
 
 .stackBody {

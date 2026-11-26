@@ -51,6 +51,7 @@
      inset exists for. An in-flow slot below the body is the desktop case's
      shape and is not reproduced here. -->
 <main class="fixtures"></main>
+<span hidden id="browserScrim" style="background-image: linear-gradient(transparent, var(--surface-0) var(--space-5))"></span>
 <script>
 const fixtures = __LAYOUTGUARD_WIDTH_MATRIX__;
 
@@ -123,7 +124,10 @@ window.measure = () => {
       atBottom: Math.abs(scrollport.scrollHeight - scrollport.clientHeight - scrollport.scrollTop) < 2,
     };
   };
+  const expectedScrim = getComputedStyle(document.getElementById("browserScrim")).backgroundImage;
   return {
+    footerHasBrowserScrim:
+      expectedScrim !== "none" && getComputedStyle(document.querySelector("[data-footer]")).backgroundImage === expectedScrim,
     viewportHeight: document.documentElement.clientHeight,
     // A clipped fixture would make every reading below meaningless.
     documentHeight: document.documentElement.scrollHeight,

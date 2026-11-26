@@ -20,9 +20,9 @@
     }
   ],
   "mutation": {
-    "declaration": "panescaffold.module.css: (a) the phone block's `.footer` floating rule `position: absolute` set to `static`, (b) the `.body:not(:last-child)` / `.body:last-child` pair removed, or (c) the phone block's `--pane-body-edge-inset` restatement removed",
-    "verified": "2026-11-24",
+    "declaration": "panescaffold.module.css: (a) the phone block's `.footer` floating rule `position: absolute` set to `static`, (b) the `.body:not(:last-child)` / `.body:last-child` pair removed, (c) the phone block's `--pane-body-edge-inset` restatement removed, or (d) the floating footer given a solid `--composer-dock-scrim: var(--surface-0)`",
+    "verified": "2026-11-25",
     "expect": "fail",
-    "note": "Each mutation was applied separately on 2026-11-24 at 390px and reverted. Making the footer static failed with 'the session body stops 36.0px above the pane's bottom edge'. Removing the selector pair failed the session fixture with a 16.0px end band (body padding-bottom 16px). Removing the phone token restatement failed the footer-less fixture with 24.0px where the breakpoint's token declares 16px - the two-sided check is what catches a leaked desktop value. The case passed again after each revert."
+    "note": "At 390px, making the footer static left the session body 36px above the pane's bottom edge. Removing the selector pair left a 16px end band. Removing the phone token restatement gave the footer-less fixture 24px instead of 16px. The solid scrim failed the browser paint check while all geometry still passed."
   }
 }

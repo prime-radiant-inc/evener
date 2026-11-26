@@ -32,6 +32,9 @@ export default function assert(measurement) {
   if (!floating.atBottom) {
     failures.push("the session fixture's scroll port was not settled at its true bottom, so its gap is meaningless");
   }
+  if (!measurement.footerHasBrowserScrim) {
+    failures.push("the browser footer must fade from transparent to the pane surface behind the composer");
+  }
   reasons.push(
     `session body ends ${floating.bodyToPaneBottom.toFixed(1)}px above the pane bottom, end band ${floating.gapToBodyEnd.toFixed(1)}px`,
   );

@@ -50,7 +50,7 @@ a truncated output from an earlier install does not prevent recovery.
 
 - Model: `https://raw.githubusercontent.com/snakers4/silero-vad/5cd2ba54db059f961e7545d4f211b44f005a6dfb/files/silero_vad.onnx`
 - SHA-256: `6b99cbfd39246b6706f98ec13c7c50c6b299181f2474fa05cbc8046acc274396`
-- Runtime: CocoaPods `onnxruntime-objc` **1.20.0**, which pins `onnxruntime-c` **1.20.0**. Both are MIT, with upstream iOS minimum 13.0. This app/module stays at 16.4.
+- Runtime: CocoaPods `onnxruntime-objc` **1.20.0**, which pins `onnxruntime-c` **1.20.0**. Both are MIT, with upstream iOS minimum 13.0.
 - Silero is MIT. Notices live in `resources/` and are included with the model in CocoaPods' `EvenerVoiceModels.bundle`. The runtime checks the model checksum before inference. The app module itself does not introduce an open-source license grant.
 - `wake-models.custom.json` is the default installer manifest. It pins the custom classifier and the trainer's paired mel/embedding models, including their modified FP16 weight storage with FP32 operators. Do not substitute the upstream feature assets for these. Streaming feature semantics follow openWakeWord v0.6.0, and the runtime verifies all three hashes. The first-party classifier and Apache-2.0 feature models retain their training-data notices in `resources/wake-word/NOTICE.md`.
 - `wake-models.pretrained.json` retains the upstream Alexa option and its original feature assets. That classifier is CC BY-NC-SA 4.0, personal-use preview only. Notices and license texts are bundled.

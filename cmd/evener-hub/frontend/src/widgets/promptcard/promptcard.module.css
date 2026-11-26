@@ -23,6 +23,13 @@
   box-shadow: var(--shadow-raised);
 }
 
+/* The launcher keeps its prompt inside the form and uses the denser
+ * material. The conversation composer floats over moving content. */
+:global(body[data-iphone-glass]) :global([data-pane-scaffold="spawn"]) .card {
+  background: var(--glass-panel);
+  background-image: var(--glass-sheen);
+}
+
 /* The folded one-line row is as tall as its controls plus the same inset
  * above and below: no deeper top inset, because no field sits above the row. */
 .card[data-folded="true"] {
@@ -100,6 +107,53 @@
   :global([data-composer]) .card > * {
     z-index: 0;
   }
+
+  :global(body[data-iphone-glass]) :global([data-composer]) .card::before {
+    background: var(--glass-fill);
+    background-image: var(--glass-sheen);
+    box-shadow: var(--glass-shadow);
+    -webkit-backdrop-filter: var(--glass-filter);
+    backdrop-filter: var(--glass-filter);
+  }
+}
+
+/* The phone composer can occupy a desktop-width workspace in landscape.
+ * Keep the same shape on both sides of the shell breakpoint. */
+:global([data-iphone-composer]) .card {
+  --font-sans: var(--glass-control-font, system-ui);
+  border-radius: var(--glass-radius);
+  row-gap: var(--space-1);
+  padding-block: var(--space-2) var(--space-1);
+  box-shadow: none;
+}
+
+:global([data-iphone-composer]) .card[data-folded="true"] {
+  border-radius: var(--radius-pill);
+  padding-block: var(--space-1);
+}
+
+/* The wide workspace docks its composer in flow, on an opaque footer. */
+@media (min-width: 900px) {
+  :global([data-iphone-composer]) .card {
+    background: var(--glass-panel);
+    background-image: var(--glass-sheen);
+    border-color: transparent;
+    box-shadow: var(--glass-shadow);
+  }
+}
+
+:global(body[data-iphone-glass="regular"]) :global([data-iphone-composer]) .card[data-iphone-glass-drawn]:not([data-lg-fallback]),
+:global(body[data-iphone-glass="regular"]) :global([data-iphone-composer]) .card[data-iphone-glass-drawn]:not([data-lg-fallback])::before {
+  background: transparent;
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+/* The editor's caret identifies a touch selection. Keyboard entry keeps
+ * the card's focus ring, and each action retains its own focus outline. */
+:global([data-iphone-composer][data-touch-editing]) .card:focus-within {
+  outline: none;
 }
 
 /* On the Duo cover, an empty, folded composer gives its extra inset back to
@@ -130,6 +184,11 @@
   gap: var(--space-1);
   flex: none;
   margin-left: auto;
+}
+
+:global([data-iphone-composer]) .actions {
+  --radius-control: var(--radius-pill);
+  --send-icon-scale: 1.6;
 }
 
 /* Below this width the controls leave too little for a readable placeholder,

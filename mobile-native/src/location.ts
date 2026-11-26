@@ -8,6 +8,8 @@ import type { SyncStringStorage } from "./syncStringStorage";
 
 export interface SavedLocation {
 	hubId: string;
+	webPath?: string;
+	deviceWork?: true;
 	conversation?: { ref: string; title: string };
 	reader?: {
 		sessionRef: string;
@@ -141,8 +143,11 @@ export class LocationRepository {
 				["pinAssignment", "fork", "deleteSession", "pinned", "projects"].some((key) => value[key] !== undefined))
 		)
 			return null;
+		const webPath = savedWorkspacePath(value.webPath);
 		return {
 			hubId: value.hubId,
+			...(webPath && { webPath }),
+			...(value.deviceWork === true ? { deviceWork: true as const } : {}),
 			...(projects(value.projects) ? { projects: value.projects } : {}),
 			...(target ? { fork: target } : {}),
 			...(pinned(value.pinned) ? { pinned: value.pinned } : {}),
@@ -195,7 +200,15 @@ function nestedState(value: unknown): { index: number; routes: readonly SavedRou
  * split keeps the conversation in the focused Sessions route's detail stack,
  * so the page on screen is the frontmost one there, not the Board behind it. */
 export function routeToSave(state: { index: number; routes: readonly SavedRoute[] }): SavedRoute | undefined {
-	const front = state.routes.slice(0, state.index + 1).findLast((route) => !isSheetRoute(route.name));
+	const front = state.routes
+		.slice(0, state.index + 1)
+		.findLast(
+			(route) =>
+				!isSheetRoute(route.name) &&
+				route.name !== "Hub" &&
+				route.name !== "ShareTarget" &&
+				route.name !== "NewSession",
+		);
 	if (front?.name === "Sessions") {
 		const detail = nestedState(front.state);
 		if (detail) return routeToSave(detail) ?? front;
@@ -217,6 +230,11 @@ export function locationForRoute(
 	hubId: string | null,
 ): SavedLocation | null {
 	if (!hubId || route.name === "Hubs") return null;
+	if (route.name === "Workspace") {
+		const params = route.params;
+		const path = isPlainObject(params) && params.hubId === hubId ? savedWorkspacePath(params.path) : undefined;
+		return { hubId, webPath: path ?? "/" };
+	}
 	if (route.name === "Projects" || route.name === "Project") {
 		if (!isPlainObject(route.params) || route.params.hubId !== hubId) return null;
 		const destination = {
@@ -392,4 +410,75 @@ export function restoredStack(location: SavedLocation | null) {
 			params: { hubId: location.hubId, ...location.conversation },
 		});
 	return { index: routes.length - 1, routes };
+}
+
+/** The native record holds screen-specific recovery details. A normal session
+ * opens at its hub URL; an explicitly opened device draft keeps its editor. */
+export function phoneLaunchStack(location: SavedLocation | null) {
+	const device = restoredStack(location);
+	if (!location) return device;
+	const { hubId, conversation } = location;
+	const path = location.webPath ?? (conversation ? workspaceSessionPath(conversation.ref) : "/");
+	const workspace = { name: "Workspace", params: { hubId, path } };
+	const routes = device.routes.slice(0, 1);
+	routes.push(workspace);
+	const detail = device.routes.some((route) => !["Hubs", "Sessions", "Conversation"].includes(route.name));
+	if (!location.webPath && (location.deviceWork || detail)) {
+		routes.push(...device.routes.slice(1));
+	}
+	return { index: routes.length - 1, routes };
+}
+
+export function workspaceSessionPath(ref: string): string {
+	return `/s/${encodeURIComponent(ref)}`;
+}
+
+export function workspaceSessionRef(path: string): string | null {
+	const match = /^\/(?:s|thread)\/([^/?#]+)(?:[?#]|$)/.exec(path);
+	if (!match) return null;
+	try {
+		const ref = decodeURIComponent(match[1]);
+		const colon = ref.indexOf(":");
+		return colon > 0 && colon < ref.length - 1 ? ref : null;
+	} catch {
+		return null;
+	}
+}
+
+/** Only app routes belong in the phone's last location. A capability link,
+ * document URL, or external redirect must never be persisted as a workspace. */
+function workspaceURL(path: unknown): URL | null {
+	if (typeof path !== "string" || !path.startsWith("/") || path.startsWith("//") || path.includes("\\")) return null;
+	const url = new URL("https://workspace.invalid" + path);
+	if (url.searchParams.has("token")) return null;
+	const name = url.pathname;
+	return name === "/" ||
+		name === "/new" ||
+		name === "/credentials" ||
+		/^\/settings(?:\/[\w-]+)?$/.test(name) ||
+		workspaceSessionRef(name) !== null
+		? url
+		: null;
+}
+
+export function isWorkspacePath(path: string): boolean {
+	return workspaceURL(path) !== null;
+}
+
+function savedWorkspacePath(path: unknown): string | undefined {
+	const url = workspaceURL(path);
+	if (!url) return undefined;
+	const keys =
+		url.pathname === "/new"
+			? ["dir", "prompt", "host"]
+			: url.pathname === "/credentials" || url.pathname.startsWith("/settings")
+				? ["host"]
+				: [];
+	const owned = new URLSearchParams();
+	for (const key of keys) {
+		const value = url.searchParams.get(key);
+		if (value) owned.set(key, value);
+	}
+	const search = owned.toString();
+	return search ? url.pathname + "?" + search : url.pathname;
 }

@@ -19,6 +19,12 @@
   border-bottom: 1px solid var(--edge);
 }
 
+:global([data-iphone-glass]) .header {
+  background: var(--glass-panel);
+  background-image: var(--glass-sheen);
+  border-bottom-color: var(--glass-edge);
+}
+
 /* Single-column panes centre their content on --session-measure; the header
  * must use the same measure or the page title floats off the column it names.
  * The marker comes from PaneScaffold's existing scaffoldMarker, so the header
@@ -196,12 +202,17 @@
     inset-inline: 0;
     bottom: 0;
     z-index: var(--z-sticky-bar);
-    background: linear-gradient(to bottom, transparent, var(--surface-0) var(--space-5));
+    background: var(--composer-dock-scrim, linear-gradient(to bottom, transparent, var(--surface-0) var(--space-5)));
     pointer-events: none;
   }
 
   .pane:has(> .body[data-pane-scaffold^="session:"]):not(:has(> .edgeFooter)) > .footer > * {
     pointer-events: auto;
+  }
+
+  /* Keep the home-indicator band solid while the transcript runs behind the card. */
+  .footer:has([data-iphone-glass-drawn]) {
+    --composer-dock-scrim: linear-gradient(to top, var(--surface-0), transparent var(--dock-clearance));
   }
 }
 

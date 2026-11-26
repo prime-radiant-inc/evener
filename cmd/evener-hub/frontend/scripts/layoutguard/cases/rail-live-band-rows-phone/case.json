@@ -9,7 +9,7 @@
     "styles/tokens.css",
     "styles/surface.module.css",
     "styles/help.module.css",
-    "widgets/internal/floatingSurface.module.css",
+    "styles/floatingSurface.module.css",
     "widgets/internal/selectableRow.module.css",
     "widgets/hovercard/hovercard.module.css",
     "widgets/tree/tree.module.css",

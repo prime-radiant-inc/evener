@@ -9,7 +9,7 @@
 import { expect, test } from "vitest";
 import { mediaBlock, readModuleCss, topRuleBlock } from "../../styles/cssBlock";
 
-const shared = readModuleCss(import.meta.url, "floatingSurface.module.css");
+const shared = readModuleCss(import.meta.url, "../../styles/floatingSurface.module.css");
 
 // The shared class keeps its name; only the specificity wrapper is load
 // bearing. A bare `.panel` rule ties every widget's own single-class
@@ -52,7 +52,7 @@ test.each(WIDGETS)(
   "%s %s composes the shared floating surface and restates none of it",
   (file, selector, localFill) => {
     const body = topRuleBlock(readModuleCss(import.meta.url, file), selector);
-    expect(body).toMatch(/composes:\s*panel from "\.\.\/internal\/floatingSurface\.module\.css"/);
+    expect(body).toMatch(/composes:\s*panel from "\.\.\/\.\.\/styles\/floatingSurface\.module\.css"/);
     for (const declaration of SURFACE_DECLARATIONS) expect(body).not.toMatch(declaration);
     if (localFill !== null) expect(body).toMatch(new RegExp(`background:\\s*var\\(${localFill}\\)`));
   },

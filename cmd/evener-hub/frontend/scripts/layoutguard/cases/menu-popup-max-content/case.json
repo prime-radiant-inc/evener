@@ -6,7 +6,7 @@
     "styles/tapfloor.module.css",
     "styles/tokens.css",
     "styles/motion.module.css",
-    "widgets/internal/floatingSurface.module.css",
+    "styles/floatingSurface.module.css",
     "widgets/menu/menu.module.css",
     "widgets/button/button.module.css"
   ],

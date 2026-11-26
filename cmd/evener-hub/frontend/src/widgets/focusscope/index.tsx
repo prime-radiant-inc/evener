@@ -175,7 +175,7 @@ export function LayerFocusScope({
   }, [trap, released]);
 
   return (
-    <div ref={ref} tabIndex={-1} className={className}>
+    <div ref={ref} tabIndex={-1} className={className} data-focus-layer={trap ? "" : undefined}>
       {children}
     </div>
   );

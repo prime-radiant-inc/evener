@@ -24,6 +24,9 @@ vi.mock("../ConnectionProvider", () => ({ useConnection: () => harness.connectio
 vi.mock("react-native", async () => (await import("../renderNative.testkit")).nativeModuleMock());
 
 import { AlertsProvider } from "./AlertsProvider";
+import { HubWebView } from "../hubWeb/HubWebView";
+vi.mock("@react-navigation/native", () => ({ useIsFocused: () => true }));
+vi.mock("expo-status-bar", () => ({ StatusBar: "StatusBar" }));
 import {
 	useAlertSnapshot,
 	useHeldAlertCount,
@@ -263,6 +266,41 @@ it("takes a changed list as the notice baseline when the list read failed, and a
 		await tick();
 	});
 	expect(shownRefs()).toEqual(["hostOffline:laptop"]);
+});
+
+it("queues an alert from the underlying session while its document owns the workspace", () => {
+	connect(null);
+	const profile = { id: "hub-1", origin: "https://hub.test", name: "Desk" };
+	const tree = render(
+		<AlertsProvider>
+			<Probe quiet={false} />
+			<HubWebView
+				profile={profile}
+				token=""
+				initialPath="/s/local%3Aa"
+				onPath={vi.fn()}
+				onHubMenu={vi.fn()}
+				onDeviceWork={vi.fn()}
+			/>
+		</AlertsProvider>,
+	);
+	const route = { name: "Workspace", params: { hubId: profile.id, path: "/s/local%3Aa" } };
+	const message = (data: unknown) =>
+		act(() =>
+			tree.root.findByType("WebView" as never).props.onMessage({
+				nativeEvent: { url: profile.origin + route.params.path, data: JSON.stringify(data) },
+			}),
+		);
+	act(() => probe.report?.([route]));
+	message({ type: "ready" });
+	message({ type: "readingDocument", active: true });
+	act(() => {
+		probe.report?.([route]);
+		probe.offer?.({ kind: "question", ref: "local:a", title: "A", why: null });
+	});
+	expect(probe.held).toBe(1);
+	message({ type: "readingDocument", active: false });
+	expect(probe.held).toBe(0);
 });
 
 it("holds a banner while you read or type, and counts what waits", async () => {

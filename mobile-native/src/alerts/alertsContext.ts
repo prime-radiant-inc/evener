@@ -13,6 +13,7 @@ export type ReportedRoute = { name: string; params?: object };
 export interface Alerts {
 	center: AlertCenter;
 	reportRoutes(routes: readonly ReportedRoute[]): void;
+	readWorkspaceDocument?(hubId: string): () => void;
 	noticeFor(key: string): Notice | undefined;
 	sources?: FrameworkFreeStore<{ sources: readonly Source[] | null }>;
 }
@@ -40,6 +41,12 @@ export function useAlertSnapshot(): AlertSnapshot {
 export function useHoldAlerts(active: boolean, kind: HoldKind): void {
 	const center = useContext(AlertsContext)?.center;
 	useEffect(() => (active && center ? center.hold(kind) : undefined), [active, kind, center]);
+}
+
+/** A hosted reader can be the frontmost pane while its URL still names the conversation. */
+export function useWorkspaceDocument(hubId: string, reading: boolean): void {
+	const read = useContext(AlertsContext)?.readWorkspaceDocument;
+	useEffect(() => (reading ? read?.(hubId) : undefined), [reading, hubId, read]);
 }
 
 /** Offers an alert to the banner: nothing outside an AlertsProvider (a screen

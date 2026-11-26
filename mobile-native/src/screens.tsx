@@ -255,6 +255,7 @@ export type Routes = {
 		tier?: "current" | "recent" | "archived";
 	};
 	Hubs: undefined;
+	Workspace: { hubId: string; path: string } | undefined;
 	Sessions: undefined;
 	/** The Hub sheet (spec 12), a modal holding its own stack of pages. */
 	Hub: NavigatorScreenParams<HubRoutes>;

@@ -10,6 +10,7 @@ import { openNotice } from "../board/BoardNotices";
 import { requestBoardJump } from "../board/boardJump";
 import { hasHub } from "../connection";
 import { useConnection } from "../ConnectionProvider";
+import { workspaceSessionPath } from "../location";
 import type { Routes } from "../screens";
 import { AlertBanner } from "./AlertBanner";
 import { useAlertCenter, useAlertSnapshot, useNoticeFor } from "./alertsContext";
@@ -48,10 +49,13 @@ export function AlertBannerHost({ navigation }: { navigation: NavigationContaine
 		// selected hub's.
 		const hubId = activeProfile?.id;
 		if (hubId === undefined) return;
-		if (target.kind === "session")
-			// Pushed, so Back returns to where you were (spec 6).
-			navigation.dispatch(StackActions.push("Conversation", { hubId, ref: target.ref, title: target.title }));
-		else if (target.kind === "needsYou") {
+		if (target.kind === "session") {
+			navigation.dispatch(
+				navigation.getCurrentRoute()?.name === "Workspace"
+					? StackActions.popTo("Workspace", { hubId, path: workspaceSessionPath(target.ref) })
+					: StackActions.push("Conversation", { hubId, ref: target.ref, title: target.title }),
+			);
+		} else if (target.kind === "needsYou") {
 			navigation.dispatch(StackActions.popTo("Sessions"));
 			requestBoardJump("needsYou");
 		} else {

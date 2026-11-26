@@ -1,12 +1,20 @@
 # iPhone Duo support
 
-The Evener iPhone app runs on both iPhone Duo displays. The outer display keeps
-the single-pane Board. The inner display shows the Board beside the open
-conversation.
+The paired hub supplies the workspace on both iPhone Duo displays. The cover
+shows one pane at a time. On the inner display the Board stays beside the
+conversation when both fit at the selected text size. Collapsing the Board gives
+the reader the full width. The draft and conversation stay open across folds
+and rotations.
 
-## Layout boundary
+The system navigation bar places conversation actions below the status area
+on the cover and in inner landscape. Back or Sessions leads when needed,
+followed by Find and Overview. An expanded Board owns its own toggle. Inner
+portrait keeps the actions above the reader. Attach, Send, and the composer
+menu stay with the text field in every pose.
 
-The split is chosen from the window's point size, not the device name: a window
+## On-device Board layout
+
+In **Work on this iPhone**, the split follows the window's point size. A window
 at least 600 points on both sides is an inner display. The Duo outer display is
 466×678 points, the inner display is 669×951 points, and a regular iPhone in
 landscape stays below the height boundary. The boundary is `isDuoInner` in
@@ -18,7 +26,7 @@ single-pane Board and conversation. The Board's rows, chips and compose button,
 the conversation, the agent and job screens, the reader and Hub pages, and the
 alert banner stay inside the left/right safe areas.
 
-## Wide layout
+### Wide layout
 
 On the inner display the `Sessions` screen renders:
 
@@ -35,7 +43,7 @@ The root stack header is hidden for `Sessions` on the inner display; the Board's
 inline header replaces it. The detail navigator owns the conversation's title,
 back button and session menu.
 
-## Reach and non-goals
+### On-device navigation
 
 Conversations opened from the Board use the split. Conversations opened from a
 root route (a share, an alert, a restored root location) still open full screen;

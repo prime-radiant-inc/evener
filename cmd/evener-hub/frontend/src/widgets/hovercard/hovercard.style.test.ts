@@ -5,7 +5,7 @@ import { mediaBlock, readModuleCss, topRuleBlock } from "../../styles/cssBlock";
 
 // The hover card is a floating layer of the design system, not an oversized
 // tooltip. Every other overlay (popover, menu, dialog, sheet) composes the
-// shared floating surface (widgets/internal/floatingSurface.module.css), whose
+// shared floating surface (styles/floatingSurface.module.css), whose
 // --shadow-overlay supplies both the 1px edge ring and the soft shadow, and
 // the design system forbids doubling that ring with a second border
 // (docs/web-ui/design-system.md §2). The tooltip keeps its inverted
@@ -23,7 +23,7 @@ const CSS = readModuleCss(import.meta.url, "hovercard.module.css");
 test("the bubble rides the overlay surface family, not the tooltip mini-palette", () => {
   const bubble = topRuleBlock(CSS, ".bubble");
   expect(bubble).toMatch(/background:\s*var\(--surface-1\)/);
-  expect(bubble).toMatch(/composes:\s*panel from "\.\.\/internal\/floatingSurface\.module\.css"/);
+  expect(bubble).toMatch(/composes:\s*panel from "\.\.\/\.\.\/styles\/floatingSurface\.module\.css"/);
   expect(bubble).toMatch(/color:\s*var\(--ink-hi\)/);
   // The overlay shadow's 1px ring is the boundary; a second border would
   // double it, which §2 forbids.

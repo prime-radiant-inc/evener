@@ -54,9 +54,6 @@ usage() { sed -n '2,/^# END-USAGE$/p' "$0" | sed 's/^# \{0,1\}//'; exit 0; }
 # "$run_dir/evener"), so a recycled pid is left alone instead of signalled.
 cleanup() {
 	status=$?
-	if [ -L "$workspace_link" ]; then
-		rm -f "$workspace_link"
-	fi
 	if [ -f "$output/hub.log" ] && [ "$daemons_stopped" -eq 0 ]; then
 		while read -r daemon_pid; do
 			[ -n "$daemon_pid" ] || continue
@@ -205,9 +202,8 @@ derived_data="$(cd "$(dirname "$app_path")/../../.." && pwd -P)"
 # The run's private state: the EXIT trap is armed before the first directory
 # is minted, so no crash window can leak it (a mint-then-trap order leaked
 # scratch in 29/150 crash simulations; trap-first leaked 0/150). cleanup
-# tolerates the not-yet-minted state: both pids are empty, no hub log can
-# exist yet, and the home link is removed only when it is a link, so a
-# foreign entry at that path survives a crashed run untouched.
+# tolerates the not-yet-minted state: both pids are empty and no hub log can
+# exist yet.
 provider_pid=""
 hub_pid=""
 xcode_pid=""
@@ -215,7 +211,6 @@ daemons_stopped=0
 run_dir=""
 workspace=""
 state_home=""
-workspace_link="$HOME/evener-qualification-workspace"
 
 trap cleanup EXIT
 trap 'exit 130' INT
@@ -231,20 +226,6 @@ state_home="$run_dir/state"
 cache_home="$run_dir/cache"
 mkdir -p "$config_home/evener" "$state_home" "$cache_home" "$workspace"
 chmod 700 "$run_dir" "$config_home" "$state_home" "$cache_home" "$workspace"
-
-# The browse a journey walks starts in the hub host's home, and the hub
-# bounds path completion at the caller's limit (100 from native), so a
-# workspace inside the temp tree is not reachable through the browse once a
-# parent's listing outgrows that bound. A deterministic link in the home —
-# the one small listing the browse starts in — puts the workspace one tap
-# away. scratch_rm reclaims the directory itself; only the link lives in the
-# home, and a plain rm (never a recursive one) removes it. The fixed name
-# makes a hard-killed run's leftover link the next run's link again.
-if [ -e "$workspace_link" ] && [ ! -L "$workspace_link" ]; then
-	echo "run-ui-tests.sh: $workspace_link exists and is not this harness's link" >&2
-	exit 2
-fi
-ln -sfn "$workspace" "$workspace_link"
 
 provider_binary="$run_dir/fixture-provider"
 evener_binary="$run_dir/evener"
@@ -441,6 +422,7 @@ inject_environment() {
 }
 inject_environment EVENER_QUALIFICATION_HUB_ORIGIN "$hub_origin"
 inject_environment EVENER_QUALIFICATION_HUB_TOKEN "$hub_token"
+inject_environment EVENER_QUALIFICATION_WORKSPACE "$(cd "$workspace" && pwd -P)"
 chmod 600 "$private_run"
 
 xcresult="$output/ui.xcresult"

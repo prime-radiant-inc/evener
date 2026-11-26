@@ -1,0 +1,46 @@
+/* Shared by portaled widgets and inline composer completion lists. :where()
+ * keeps the default below the specific fill or geometry a widget owns. */
+:where(.panel) {
+  background: var(--surface-2);
+  border-radius: var(--radius-pane);
+  box-shadow: var(--shadow-overlay);
+}
+
+:global(body[data-iphone-glass]) .panel {
+  background: var(--glass-layer-fill, var(--glass-fill));
+  background-image: var(--glass-sheen);
+  box-shadow: var(--glass-shadow);
+  -webkit-backdrop-filter: var(--glass-layer-filter, var(--glass-filter));
+  backdrop-filter: var(--glass-layer-filter, var(--glass-filter));
+}
+
+/* Commands and completions float over transcript text. A denser fill
+ * keeps their labels legible as the conversation moves underneath. */
+:global(body[data-iphone-glass]) .panel:is([role="menu"], [role="listbox"]) {
+  --glass-layer-fill: var(--glass-panel);
+  border-radius: var(--glass-radius);
+  overscroll-behavior: contain;
+}
+
+:global(body[data-iphone-glass]) .choice {
+  min-block-size: var(--tap-min);
+  align-items: center;
+  border-radius: var(--radius-panel);
+  font-family: var(--glass-control-font);
+  font-size: var(--font-size-control);
+  touch-action: manipulation;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+:global(body[data-iphone-glass]) .choice:active {
+  background: var(--hover-2);
+}
+
+/* A portaled menu may keep its canvas immediately outside its clipped list. */
+:global(body[data-iphone-glass="regular"]) .panel[data-iphone-glass-drawn]:not([data-lg-fallback]) {
+  background: transparent;
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
