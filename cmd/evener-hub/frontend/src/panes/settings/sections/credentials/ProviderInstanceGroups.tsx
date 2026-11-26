@@ -64,8 +64,8 @@ export function ProviderInstanceGroups(props: ProviderInstanceGroupsProps) {
     <div className={CLASS.groups}>
       {groups.map((group) => (
         <div key={group.providerId} className={CLASS.group}>
-          {/* Shared label with AddInstanceDialog so both surfaces name each
-              provider identically and keep distinct registry ids visible. */}
+          {/* Shared label with InstanceSheet's base selector so both surfaces
+              name each provider identically and keep distinct registry ids visible. */}
           <div className={CLASS.groupHeader}>
             {formatProviderLabel(
               group.providerId,

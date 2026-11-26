@@ -1,5 +1,5 @@
 // formatProviderLabel names a base provider for both the grouped instance list
-// and the Add instance base selector. When the display name differs from the
+// and InstanceSheet's base selector. When the display name differs from the
 // registry id (beyond case), both appear so an error naming the registry id is
 // directly findable in Settings.
 export function formatProviderLabel(id: string, name?: string): string {

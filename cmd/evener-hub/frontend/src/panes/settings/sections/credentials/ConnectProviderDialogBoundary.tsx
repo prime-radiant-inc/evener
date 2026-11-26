@@ -8,7 +8,7 @@
 //
 // Two callers mount this module's lazy chunk (ConnectProviderDialog plus its
 // instance-credential editors): the spawn pane's below-the-fold dialog and the
-// credentials section's full editor.
+// credentials settings section.
 
 import { type JSX, type LazyExoticComponent, lazy, type ReactNode } from "react";
 import {
