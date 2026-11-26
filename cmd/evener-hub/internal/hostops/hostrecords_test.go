@@ -82,10 +82,10 @@ func TestHostRecordsSurviveEveryOtherStoreWrite(t *testing.T) {
 	if _, err := store.Transition(record.ID, StateComplete, terminalChange(true)); err != nil {
 		t.Fatalf("Transition: %v", err)
 	}
-	if err := store.CommitHostRecords(family, HostMirror{
-		Boundaries: map[string]Boundary{"h1": {Generation: 1, IncarnationID: "inc-h1", PresenceEpoch: 1}},
+	if _, err := store.ReconcileMirror(MirrorView{
+		Marks: map[string]Boundary{"h1": {Generation: 1, IncarnationID: "inc-h1", PresenceEpoch: 1}},
 	}); err != nil {
-		t.Fatalf("CommitHostRecords: %v", err)
+		t.Fatalf("ReconcileMirror: %v", err)
 	}
 	mustMint(t, store, mintDefaults("h1", store.now()))
 	requireFamily(t, store, family)

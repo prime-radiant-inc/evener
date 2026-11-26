@@ -67,21 +67,11 @@ func newPipelineFixture(t *testing.T, entries []hostreg.Host, seed func(*hostops
 // keeping HostRecords unimported.
 func writeRawHostOpsBoundaries(t *testing.T, path string, boundaries map[string]hostops.Boundary) {
 	t.Helper()
-	payload := struct {
-		Version                uint64                      `json:"version"`
-		Sequence               uint64                      `json:"sequence"`
-		AllocatorHighWaterMark uint64                      `json:"allocatorHighWaterMark"`
-		Records                []hostops.Record            `json:"records"`
-		Boundaries             map[string]hostops.Boundary `json:"boundaries,omitempty"`
-	}{
-		Version:    1,
-		Records:    []hostops.Record{},
-		Boundaries: boundaries,
-	}
-	raw, err := json.Marshal(payload)
+	encodedBoundaries, err := json.Marshal(boundaries)
 	if err != nil {
-		t.Fatalf("marshal raw store fixture: %v", err)
+		t.Fatalf("marshal boundaries: %v", err)
 	}
+	raw := fmt.Appendf(nil, `{"version":1,"sequence":0,"allocatorHighWaterMark":0,"records":[],"boundaries":%s}`, encodedBoundaries)
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatalf("MkdirAll(%s): %v", filepath.Dir(path), err)
 	}
