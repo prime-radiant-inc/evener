@@ -1,27 +1,31 @@
 import { type RefObject, useEffectEvent, useLayoutEffect, useState } from "react";
 import { type IPhoneHeader, type IPhoneHeaderAction, iPhoneCommand, tellIPhoneHost } from "../iPhoneHost";
 
-// Floating sheets, menus and popovers have a focus layer. Find and inline
-// composer completions keep focus in a text field instead.
-const WEB_LAYER = '[data-focus-layer], [data-find-bar], [role="listbox"], [aria-modal="true"]';
+// Floating layers cover the toolbar. Inline Find docks beneath it.
+const WEB_LAYER = '[data-focus-layer], [role="listbox"], [aria-modal="true"]';
+const TOOLBAR_SURFACES = `${WEB_LAYER}, [data-find-bar]`;
 
 function containsLayer(node: Node): boolean {
-  return node instanceof Element && (node.matches(WEB_LAYER) || node.querySelector(WEB_LAYER) !== null);
+  return node instanceof Element && (node.matches(TOOLBAR_SURFACES) || node.querySelector(TOOLBAR_SURFACES) !== null);
 }
 
 type Props = Pick<IPhoneHeader, "id" | "title" | "leading" | "collapsed" | "needsYou"> & {
   bar: RefObject<HTMLDivElement | null>;
+  onFindChange(open: boolean): void;
   onAction(action: IPhoneHeaderAction): void;
 };
 
 /** The web bar stays in layout so both renderers use the same height and
  * the reading scroller keeps its usual collapse compensation. */
-export function IPhoneSessionHeader({ bar, id, title, leading, needsYou, collapsed, onAction }: Props) {
+export function IPhoneSessionHeader({ bar, id, title, leading, needsYou, collapsed, onAction, onFindChange }: Props) {
   const [height, setHeight] = useState(0);
   useLayoutEffect(() => {
     const element = bar.current;
     if (!element) return;
-    const measure = () => setHeight(document.querySelector(WEB_LAYER) ? 0 : element.offsetHeight);
+    const measure = () => {
+      onFindChange(document.querySelector("[data-find-bar]") !== null);
+      setHeight(document.querySelector(WEB_LAYER) ? 0 : element.offsetHeight);
+    };
     measure();
     const resize = new ResizeObserver(measure);
     resize.observe(element);
@@ -32,8 +36,9 @@ export function IPhoneSessionHeader({ bar, id, title, leading, needsYou, collaps
     return () => {
       resize.disconnect();
       layers.disconnect();
+      onFindChange(false);
     };
-  }, [bar]);
+  }, [bar, onFindChange]);
 
   const receive = useEffectEvent((event: MessageEvent) => {
     const command = iPhoneCommand(event);

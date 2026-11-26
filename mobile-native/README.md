@@ -13,11 +13,12 @@ drafts. Android and iPad delivery are deferred.
 
 In a conversation, the iPhone can draw the hub’s header with native controls.
 Sessions opens the drawer. When the hub has a destination to return to, Back
-takes its place. Find and Overview act on the open conversation. As the
-transcript scrolls under the controls, iOS 26
-and later can draw them in Liquid Glass. The controls use an opaque surface on
-earlier systems and when Reduce Transparency is on. The hub owns the
-transcript, composer, and reading position.
+takes its place. As you scroll down, the title and collapsed Notes summary
+tuck away and the transcript passes beneath the controls. Scrolling up brings
+them back. Find keeps the header above its search field. Overview opens the
+current conversation’s panel. The controls use Liquid Glass on iOS 26 and
+later and an opaque surface on earlier systems or with Reduce Transparency.
+The hub owns the transcript, composer, and reading position.
 
 Open the Sessions drawer and choose **Hubs** for pairing, switching hubs,
 display and in-app alert preferences. **Work on this iPhone** opens the

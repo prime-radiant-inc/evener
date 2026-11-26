@@ -480,7 +480,7 @@ test("a focused session's top bar orders Find before Overview", async () => {
   expect(find.compareDocumentPosition(overview) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
 });
 
-test("the iPhone controls follow the reader and yield to its focused Find field", async () => {
+test("the iPhone controls stay above inline Find and follow the focused reader", async () => {
   const restoreViewport = installMobileViewport();
   const ua = vi.spyOn(navigator, "userAgent", "get").mockReturnValue("EvenerNative/1 EvenerSessionHeader/1");
   const height = vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockReturnValue(61);
@@ -498,7 +498,13 @@ test("the iPhone controls follow the reader and yield to its focused Find field"
     });
   const ref = "remote:header";
   const client = activityClient();
-  client.on("thread/read", ({ ref }) => activityDetailsThread(ref));
+  client.on("thread/read", ({ ref }) => {
+    const result = activityDetailsThread(ref, {
+      turns: [{ id: "t", status: "completed", itemsView: "full", items: [] }],
+    });
+    result.thread.evener.capabilities.sharedNotes = true;
+    return result;
+  });
   connectionStore.getState().connect(client);
   const pane = workspaceStore.getState().openPane("session", { ref });
   setNeedsYouCount(3);
@@ -511,11 +517,25 @@ test("the iPhone controls follow the reader and yield to its focused Find field"
     await waitFor(() => expect(header()).toMatchObject({ id: pane, leading: "sessions", height: 61, needsYou: 3 }));
     const bar = screen.getByTestId("topbar");
     expect(bar.hasAttribute("inert")).toBe(true);
+    const scroller = document.querySelector("[data-reading-scroll-host] > *");
+    if (!scroller) throw new Error("missing transcript scroller");
+    const notes = screen.getByTestId("top-notes-panel");
+    const foldedHeight = bar.offsetHeight + notes.offsetHeight;
+    const scroll = (top: number) =>
+      act(() => {
+        scroller.scrollTop = top;
+        scroller.dispatchEvent(new Event("scroll"));
+      });
+    scroll(240);
+    expect(header()?.collapsed).toBe(true);
+    expect(scroller.scrollTop).toBe(240 - foldedHeight);
     await press(pane, "find");
     const field = await within(await screen.findByTestId("find-bar")).findByRole("searchbox");
     expect(document.activeElement).toBe(field);
-    await waitFor(() => expect(header()).toBeNull());
-    expect(bar.hasAttribute("inert")).toBe(false);
+    await waitFor(() => expect(header()).toMatchObject({ id: pane, collapsed: false }));
+    scroll(340);
+    expect(header()?.collapsed).toBe(false);
+    expect(bar.hasAttribute("inert")).toBe(true);
     await userEvent.keyboard("{Escape}");
     await waitFor(() => expect(header()?.id).toBe(pane));
     const child = await act(async () => openConversation("remote:header-child", ref));
