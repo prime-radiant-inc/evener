@@ -184,7 +184,7 @@ func TestMCPStdioServerDeliversTheFlooredConfigDelta(t *testing.T) {
 	// environment resolves npm's cache to the served ~/.npm, so nothing asks the
 	// floor to redirect it until cfg.Env's userconfig moves npm's effective
 	// cache to the unserved directory.
-	launcherFloor := sandbox.ApplyEnvFloorInDir([]string{"HOME=" + home}, rp, sessionTmp, worktree)
+	launcherFloor := sandbox.ApplyEnvFloor([]string{"HOME=" + home}, rp, sessionTmp, worktree)
 	for _, kv := range launcherFloor {
 		if strings.HasPrefix(kv, "npm_config_cache=") {
 			t.Fatalf("test premise: the launcher's floor already redirects npm_config_cache, so the assignment under test is not derived from cfg.Env: %v", launcherFloor)

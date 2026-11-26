@@ -79,7 +79,7 @@ func runUnderSeatbelt(t *testing.T, rp ResolvedPolicy, cwd string, command ...st
 	}
 	cmd := exec.Command(argv[0], argv[1:]...) //nolint:gosec // argv[0] is the hard-coded /usr/bin/sandbox-exec
 	cmd.Dir = cwd
-	cmd.Env = ApplyEnvFloor(os.Environ(), rp, sessionTmp)
+	cmd.Env = ApplyEnvFloor(os.Environ(), rp, sessionTmp, rp.SessionDir)
 	out, err := cmd.CombinedOutput()
 	exit := 0
 	var ee *exec.ExitError
@@ -475,7 +475,7 @@ func TestSeatbeltLiveGoTestTelemetryDenialIsTheOnlyStderr(t *testing.T) {
 	}
 	cmd := exec.Command(argv[0], argv[1:]...) //nolint:gosec // argv[0] is the hard-coded /usr/bin/sandbox-exec
 	cmd.Dir = cwd
-	cmd.Env = ApplyEnvFloor(os.Environ(), rp, sessionTmp)
+	cmd.Env = ApplyEnvFloor(os.Environ(), rp, sessionTmp, rp.SessionDir)
 	var stdout, stderr strings.Builder
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -545,7 +545,7 @@ func runUnderSeatbeltSplit(t *testing.T, rp ResolvedPolicy, cwd string, command 
 	}
 	cmd := exec.Command(argv[0], argv[1:]...) //nolint:gosec // argv[0] is the hard-coded /usr/bin/sandbox-exec
 	cmd.Dir = cwd
-	cmd.Env = ApplyEnvFloor(os.Environ(), rp, sessionTmp)
+	cmd.Env = ApplyEnvFloor(os.Environ(), rp, sessionTmp, rp.SessionDir)
 	var outBuf, errBuf strings.Builder
 	cmd.Stdout = &outBuf
 	cmd.Stderr = &errBuf
@@ -680,7 +680,7 @@ func runUnderSeatbeltCanon(t *testing.T, rp ResolvedPolicy, cwd string, canon Ca
 	argv := seatbeltArgs(pathToSeatbelt, text, params, command)
 	cmd := exec.Command(argv[0], argv[1:]...) //nolint:gosec // argv[0] is the hard-coded /usr/bin/sandbox-exec
 	cmd.Dir = cwd
-	cmd.Env = ApplyEnvFloor(os.Environ(), rp, sessionTmp)
+	cmd.Env = ApplyEnvFloor(os.Environ(), rp, sessionTmp, rp.SessionDir)
 	out, err := cmd.CombinedOutput()
 	exit := 0
 	var ee *exec.ExitError
@@ -1131,7 +1131,7 @@ func TestSeatbeltLiveChildEnvFdReachesConfinedChild(t *testing.T) {
 
 	const secret = "EVENER-LIVE-CHILD-ENV-7009"
 	cmd := exec.Command("/usr/bin/env") //nolint:noctx // argv[0] is the hard-coded /usr/bin/sandbox-exec after confinement
-	cmd.Env = ApplyEnvFloor(os.Environ(), rp, sessionTmp)
+	cmd.Env = ApplyEnvFloor(os.Environ(), rp, sessionTmp, rp.SessionDir)
 	if err := w.ConfineWithChildEnv(cmd, cwd, ChildEnvDelta{Set: map[string]string{
 		"logging.level.root": "debug",
 		"MCP_SERVER_TOKEN":   secret,

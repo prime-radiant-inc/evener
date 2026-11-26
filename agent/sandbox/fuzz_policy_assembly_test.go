@@ -182,7 +182,7 @@ func fuzzEnvironmentFloor(t *testing.T, fixture structuralFixture, home, raw str
 		"npm_config_cache=/ambient/npm",
 		"CARGO_HOME=/ambient/cargo",
 	}
-	got := ApplyEnvFloor(input, policy, sessionTmp)
+	got := ApplyEnvFloor(input, policy, sessionTmp, policy.SessionDir)
 	if slices.Contains(got, "SSH_AUTH_SOCK=/fixture/agent.sock") || slices.Contains(got, "AWS_ACCESS_KEY_ID=secret") {
 		t.Fatalf("env floor retained secret-bearing entries: %v", got)
 	}

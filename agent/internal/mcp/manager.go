@@ -410,7 +410,7 @@ func confineCommandUnderSandbox(cmd *exec.Cmd, cfg mcpconfig.ServerConfig, w *sa
 	scrubbed := sandbox.ScrubSecretEnv(environ())
 	// The launcher's environment holds only the scrubbed parent environment and
 	// the floor. cfg.Env never joins it (see the doc comment above).
-	launcherEnv := sandbox.ApplyEnvFloorInDir(scrubbed, w.Policy(), w.SessionTmp(), workingDir)
+	launcherEnv := sandbox.ApplyEnvFloor(scrubbed, w.Policy(), w.SessionTmp(), workingDir)
 	cmd.Env = launcherEnv
 	// The child's environment is cfg.Env as the FLOOR leaves it behind the
 	// confinement, so applying it there changes nothing the server observes: a
@@ -422,7 +422,7 @@ func confineCommandUnderSandbox(cmd *exec.Cmd, cfg mcpconfig.ServerConfig, w *sa
 	// to a different scratch path, and it removes names a config supplied.
 	var childEnv sandbox.ChildEnvDelta
 	if len(cfg.Env) > 0 {
-		childEnv = floorChildEnv(launcherEnv, sandbox.ApplyEnvFloorInDir(
+		childEnv = floorChildEnv(launcherEnv, sandbox.ApplyEnvFloor(
 			mergeEnvInto(scrubbed, cfg.Env), w.Policy(), w.SessionTmp(), workingDir))
 	}
 	// fd hygiene first: a sandboxed MCP server inherits no evener fds beyond

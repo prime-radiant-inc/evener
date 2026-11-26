@@ -51,19 +51,16 @@ var floorPrefixDrops = []string{
 //     session-private strategy, and under the overlay the Go caches it does not
 //     serve (see redirectedCacheVars).
 //
+// workingDir must be the directory the spawn is confined to (the dir passed to
+// Confine or ConfineTrustedInfra) and may differ from policy.SessionDir; npm's
+// project config is located from workingDir (falling back to policy.SessionDir
+// when empty).
+//
 // It returns a fresh slice and never reads the process environment; the overlay
 // branch inspects the filesystem at the cache paths it judges (servedByOverlay).
-// Every spawn site calls ApplyEnvFloorInDir with the directory it confines the
+// Every spawn site calls ApplyEnvFloor with the directory it confines the
 // process to, so no spawned process escapes the floor.
-func ApplyEnvFloor(env []string, policy ResolvedPolicy, sessionScratch string) []string {
-	return ApplyEnvFloorInDir(env, policy, sessionScratch, policy.SessionDir)
-}
-
-// ApplyEnvFloorInDir is ApplyEnvFloor for a spawn in workingDir: npm's project
-// config is located from that directory, which must be the directory the spawn
-// is confined to (the dir passed to Confine or ConfineTrustedInfra) and may
-// differ from the session's own.
-func ApplyEnvFloorInDir(env []string, policy ResolvedPolicy, sessionScratch, workingDir string) []string {
+func ApplyEnvFloor(env []string, policy ResolvedPolicy, sessionScratch, workingDir string) []string {
 	out := make([]string, 0, len(env)+4)
 	redirected, pinned := redirectedCacheVars(env, policy, workingDir)
 	goEnvOff := spawnGoEnvFileRefused(env, policy)
