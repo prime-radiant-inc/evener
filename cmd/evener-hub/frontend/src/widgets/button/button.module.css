@@ -60,7 +60,6 @@
  * label, the Apple submit arrow sits alone inside a round control. */
 @container (max-width: 559px) {
   .button:has([data-apple-send]) {
-    min-width: var(--tap-min, auto);
     aspect-ratio: 1;
     border-radius: var(--radius-pill);
     padding-inline: 0;
@@ -256,5 +255,10 @@
   }
   .md {
     min-height: var(--tap-min);
+  }
+  @container (max-width: 559px) {
+    .button:has([data-apple-send]) {
+      min-width: var(--tap-min);
+    }
   }
 }
