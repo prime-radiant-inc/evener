@@ -49,6 +49,7 @@ import {
 import { activitySidebarStore } from "../../../shell/activitybar/activitySidebarStore";
 import { isAppleTouchDevice } from "../../../shell/iPhoneGlass";
 import { iPhoneHost } from "../../../shell/iPhoneHost";
+import { alignCreateWithComposer } from "../../../shell/rail/alignCreateWithComposer";
 import type { SessionMenuTurnVerbs } from "../../../shell/sessionMenu/SessionMenu";
 import { useIsMobile } from "../../../shell/useIsMobile";
 import { useMountAutofocus } from "../../../shell/useMountAutofocus";
@@ -265,6 +266,7 @@ function ComposerWithSubmission({
   // press that never clicks never ends editing.
   const outsidePressRef = useRef(false);
   const submitButtonRef = useRef<HTMLButtonElement>(null);
+  const stopButtonRef = useRef<HTMLButtonElement>(null);
   // Set by scheduleCursorRestore below; consumed (and cleared) by the
   // cursor-restore layout effect in the commit that carries the edit.
   const cursorToRestoreRef = useRef<number | null>(null);
@@ -952,6 +954,10 @@ function ComposerWithSubmission({
   }, [menuSteer, model, actionPending, hasUnbackedImage]);
   const inlineStop = !!model && controlsFor(model).stop && !hasContent;
   const inlineStopReady = useInlineStopReady(ref, !model || askPending ? null : inlineStop ? "stop" : "send");
+  const alignRail = appleComposer && !isMobile && focused && !askPending && !!model;
+  useLayoutEffect(() => {
+    if (alignRail) return alignCreateWithComposer(inlineStop ? stopButtonRef.current : submitButtonRef.current);
+  }, [alignRail, inlineStop]);
 
   if (!model) return null; // Session.tsx only mounts this once its own model is hydrated; defensive only.
 
@@ -1592,6 +1598,7 @@ function ComposerWithSubmission({
                           size="xs"
                           type="button"
                           data-testid="composer-stop"
+                          ref={stopButtonRef}
                           aria-label="Stop"
                           icon={<StopIcon />}
                           onClick={() => void handleInterruptClick()}

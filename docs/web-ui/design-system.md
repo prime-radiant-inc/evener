@@ -558,6 +558,8 @@ corner on short lists instead of parking mid-list: the rail scroll body is a col
 hands free space to the row (`margin-top: auto`), the parent-scroll rail fills its host
 (`min-height: 100%`), and the mobile drawer's sheet body stretches to the panel's bottom.
 The pinned offset clears the home-indicator band with `--dock-clearance` (`0px` on desktop).
+On iPad, New session lines up with Send or Stop in the focused bottom-docked conversation.
+The session status bar stays below the composer, including when its controls wrap.
 It is the list's primary verb, one ladder step above the rows it floats over; the task
 surface still keeps at most one filled primary of its own, and `scripts/shellguard`
 (`run.mjs`'s `railNewSession`/`primaryButtons` probes) fails if the floating action loses
