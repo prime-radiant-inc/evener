@@ -246,8 +246,10 @@ func StorePath(stateRoot string) string {
 	return filepath.Join(stateRoot, storeSubdir, storeFilename)
 }
 
-// Open loads the operation store at path. A missing file is an empty store: a
-// fresh install has nothing to recover, and Open writes nothing.
+// Open loads the operation store at path under policy; a zero RetentionPolicy
+// (or any non-positive knob) takes the documented defaults. A missing file is
+// an empty store: a fresh install has nothing to recover, and Open writes
+// nothing.
 //
 // A second Open of a path in the same process shares the first handle's store
 // mutex and state, so both handles serialize on one lock over one snapshot.
@@ -255,14 +257,7 @@ func StorePath(stateRoot string) string {
 // The call refuses a store file readable beyond its owner, and refuses a file
 // that is corrupt or schema-invalid (ErrStoreCorrupt) rather than serving a
 // half-understood store.
-func Open(path string) (*Store, error) {
-	return openFSWithRetention(afero.NewOsFs(), path, storeFaults{}, RetentionPolicy{})
-}
-
-// OpenWithRetention opens the operation store at path under one §4
-// owner-knob set. Every knob's zero value takes its documented default; a
-// store opened with the zero policy behaves exactly like Open.
-func OpenWithRetention(path string, policy RetentionPolicy) (*Store, error) {
+func Open(path string, policy RetentionPolicy) (*Store, error) {
 	return openFSWithRetention(afero.NewOsFs(), path, storeFaults{}, policy)
 }
 

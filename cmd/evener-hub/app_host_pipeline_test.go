@@ -43,7 +43,7 @@ type pipelineFixture struct {
 func newPipelineFixture(t *testing.T, entries []hostreg.Host, seed func(*hostops.Store)) *pipelineFixture {
 	t.Helper()
 	dir := t.TempDir()
-	store, err := hostops.Open(hostops.StorePath(dir))
+	store, err := hostops.Open(hostops.StorePath(dir), hostops.RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("hostops.Open: %v", err)
 	}
@@ -217,7 +217,7 @@ func readPipelineConfig(t *testing.T, path string) (loadedConfig, bool) {
 	if err != nil {
 		t.Fatalf("loadWithRecords(%s): %v", path, err)
 	}
-	store, err := hostops.Open(hostops.StorePath(filepath.Dir(path)))
+	store, err := hostops.Open(hostops.StorePath(filepath.Dir(path)), hostops.RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("hostops.Open: %v", err)
 	}

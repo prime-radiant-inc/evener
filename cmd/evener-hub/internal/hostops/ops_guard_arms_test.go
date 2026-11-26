@@ -29,7 +29,7 @@ var armPair = OperationPair{Generation: 3, IncarnationID: "inc-h1"}
 
 func TestLookupOperationRejectsMalformedQueries(t *testing.T) {
 	t.Parallel()
-	store, err := Open(StorePath(t.TempDir()))
+	store, err := Open(StorePath(t.TempDir()), RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -113,7 +113,7 @@ func TestStoreNilGuardsAnswerWithoutPanicking(t *testing.T) {
 
 func TestCreateRejectsInvalidRequests(t *testing.T) {
 	t.Parallel()
-	store, err := Open(StorePath(t.TempDir()))
+	store, err := Open(StorePath(t.TempDir()), RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -160,7 +160,7 @@ func TestCreateRejectsInvalidRequests(t *testing.T) {
 
 func TestCreateWithoutDedupCreatesAPendingRecord(t *testing.T) {
 	t.Parallel()
-	store, err := Open(StorePath(t.TempDir()))
+	store, err := Open(StorePath(t.TempDir()), RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -188,7 +188,7 @@ func TestCreateWithoutDedupCreatesAPendingRecord(t *testing.T) {
 
 func TestCreateRefusesAConcurrentTerminalOperation(t *testing.T) {
 	t.Parallel()
-	store, err := Open(StorePath(t.TempDir()))
+	store, err := Open(StorePath(t.TempDir()), RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -220,7 +220,7 @@ func TestAppendProgressRefusesRecordsItCannotNote(t *testing.T) {
 	t.Parallel()
 	path := StorePath(t.TempDir())
 	writeRawStore(t, path, 0o600, validArmStoreJSON)
-	store, err := Open(path)
+	store, err := Open(path, RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -244,7 +244,7 @@ func TestInterruptInFlightArms(t *testing.T) {
 
 	t.Run("an empty note refuses", func(t *testing.T) {
 		t.Parallel()
-		store, err := Open(StorePath(t.TempDir()))
+		store, err := Open(StorePath(t.TempDir()), RetentionPolicy{})
 		if err != nil {
 			t.Fatalf("Open: %v", err)
 		}
@@ -257,7 +257,7 @@ func TestInterruptInFlightArms(t *testing.T) {
 		t.Parallel()
 		path := StorePath(t.TempDir())
 		writeRawStore(t, path, 0o600, validArmStoreJSON)
-		store, err := Open(path)
+		store, err := Open(path, RetentionPolicy{})
 		if err != nil {
 			t.Fatalf("Open: %v", err)
 		}
@@ -326,7 +326,7 @@ func TestRecordWithoutAFencingEpochReadsAsUnbound(t *testing.T) {
 	t.Parallel()
 	path := StorePath(t.TempDir())
 	writeRawStore(t, path, 0o600, validArmStoreJSON)
-	store, err := Open(path)
+	store, err := Open(path, RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}

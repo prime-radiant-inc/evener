@@ -27,7 +27,7 @@ func TestStoreRelocationSettledJournal(t *testing.T) {
 func testStoreRelocation(t *testing.T, withCustody bool) {
 	t.Helper()
 	sourcePath := StorePath(t.TempDir())
-	store, err := Open(sourcePath)
+	store, err := Open(sourcePath, RetentionPolicy{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,7 +89,7 @@ func testStoreRelocation(t *testing.T, withCustody bool) {
 		t.Fatal("initial copy changed bytes or modes")
 	}
 	if withCustody {
-		refused, err := Open(destinationPath)
+		refused, err := Open(destinationPath, RetentionPolicy{})
 		if refused != nil || !errors.Is(err, ErrStoreCorrupt) || !errors.Is(err, ErrQuarantineIncomplete) {
 			t.Fatalf("naive copy = %v, %v, want typed custody refusal", refused, err)
 		}
@@ -137,7 +137,7 @@ func testStoreRelocation(t *testing.T, withCustody bool) {
 			t.Fatalf("adjustment changed bytes or mode of %s", name)
 		}
 	}
-	moved, err := Open(destinationPath)
+	moved, err := Open(destinationPath, RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("corrected copy cannot open: %v", err)
 	}

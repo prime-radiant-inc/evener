@@ -22,7 +22,7 @@ func TestOperationsNotFoundDetailMatchesMirroredAndUnmirroredHosts(t *testing.T)
 
 	path := StorePath(t.TempDir())
 	writeRawStore(t, path, 0o600, quarantinedStoreJSON)
-	store, err := Open(path)
+	store, err := Open(path, RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}

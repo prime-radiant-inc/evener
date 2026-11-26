@@ -181,7 +181,7 @@ func deployTestHub(t *testing.T, configPath string, entries []hostreg.Host, seam
 	if err != nil {
 		t.Fatalf("hostreg.New: %v", err)
 	}
-	store, err := hostops.Open(hostops.StorePath(t.TempDir()))
+	store, err := hostops.Open(hostops.StorePath(t.TempDir()), hostops.RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("hostops.Open: %v", err)
 	}

@@ -27,7 +27,7 @@ const validStoreJSON = `{"version":1,"sequence":0,"allocatorHighWaterMark":0,"re
 func openTestStore(t *testing.T) (*Store, string) {
 	t.Helper()
 	path := StorePath(t.TempDir())
-	store, err := Open(path)
+	store, err := Open(path, RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("Open(%s): %v", path, err)
 	}
@@ -59,7 +59,7 @@ func reopenFresh(t *testing.T, path string) *Store {
 	if err := forgetStore(path); err != nil {
 		t.Fatalf("forgetStore(%s): %v", path, err)
 	}
-	store, err := Open(path)
+	store, err := Open(path, RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("reopen %s: %v", path, err)
 	}
@@ -183,7 +183,7 @@ func TestOpenRefusesAStoreReadableBeyondItsOwner(t *testing.T) {
 		t.Run(mode.String(), func(t *testing.T) {
 			path := StorePath(t.TempDir())
 			writeRawStore(t, path, mode, validStoreJSON)
-			if _, err := Open(path); !errors.Is(err, ErrStoreReadableBeyondOwner) {
+			if _, err := Open(path, RetentionPolicy{}); !errors.Is(err, ErrStoreReadableBeyondOwner) {
 				t.Fatalf("Open on a %04o store: err = %v, want ErrStoreReadableBeyondOwner", mode, err)
 			}
 			info, err := os.Stat(path)
@@ -278,7 +278,7 @@ func TestOpenRefusesACorruptStore(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			path := StorePath(t.TempDir())
 			writeRawStore(t, path, 0o600, body)
-			if _, err := Open(path); !errors.Is(err, ErrStoreCorrupt) {
+			if _, err := Open(path, RetentionPolicy{}); !errors.Is(err, ErrStoreCorrupt) {
 				t.Fatalf("Open on a corrupt store: err = %v, want ErrStoreCorrupt", err)
 			}
 			// A refused file is never served and never rewritten: no temp file,
@@ -360,7 +360,7 @@ func TestOpenFailsOnAStoreItCannotRead(t *testing.T) {
 		if err := os.Chmod(path, 0o000); err != nil {
 			t.Fatalf("Chmod(%s, 0000): %v", path, err)
 		}
-		if _, err := Open(path); err == nil {
+		if _, err := Open(path, RetentionPolicy{}); err == nil {
 			t.Fatalf("Open on an unreadable store succeeded, want an error")
 		}
 	})
@@ -369,7 +369,7 @@ func TestOpenFailsOnAStoreItCannotRead(t *testing.T) {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			t.Fatalf("MkdirAll(%s): %v", dir, err)
 		}
-		if _, err := Open(dir); err == nil {
+		if _, err := Open(dir, RetentionPolicy{}); err == nil {
 			t.Fatalf("Open on a directory succeeded, want an error")
 		}
 	})
@@ -379,7 +379,7 @@ func TestOpenFailsOnAStoreItCannotRead(t *testing.T) {
 		if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
 			t.Fatalf("WriteFile(%s): %v", blocker, err)
 		}
-		if _, err := Open(filepath.Join(blocker, "operations.json")); err == nil {
+		if _, err := Open(filepath.Join(blocker, "operations.json"), RetentionPolicy{}); err == nil {
 			t.Fatalf("Open under a regular file succeeded, want an error")
 		}
 	})
@@ -492,7 +492,7 @@ func recordJSON(id, state string) string {
 func TestOpenAcceptsALegitimatelyEmptyStore(t *testing.T) {
 	path := StorePath(t.TempDir())
 	writeRawStore(t, path, 0o600, validStoreJSON)
-	store, err := Open(path)
+	store, err := Open(path, RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("a legitimately empty store was refused: %v", err)
 	}
@@ -525,7 +525,7 @@ func TestOpenRefusesIdsOutsideTheAllocatorForm(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			path := StorePath(t.TempDir())
 			writeRawStore(t, path, 0o600, body)
-			if _, err := Open(path); !errors.Is(err, ErrStoreCorrupt) {
+			if _, err := Open(path, RetentionPolicy{}); !errors.Is(err, ErrStoreCorrupt) {
 				t.Fatalf("Open on %s: err = %v, want ErrStoreCorrupt", name, err)
 			}
 		})
@@ -657,11 +657,11 @@ func TestAPostRenameFailureKeepsMemoryInStepWithTheFile(t *testing.T) {
 // from its own view and drop the other's records.
 func TestTwoHandlesForOneStoreShareTheOneStoreMutex(t *testing.T) {
 	path := StorePath(t.TempDir())
-	first, err := Open(path)
+	first, err := Open(path, RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("first Open: %v", err)
 	}
-	second, err := Open(path)
+	second, err := Open(path, RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("second Open: %v", err)
 	}
@@ -762,7 +762,7 @@ func TestOpenQuarantinesDuplicateStampsButAcceptsGaps(t *testing.T) {
 		terminalRecordJSON("00000000000000000001", 1) + `,` + terminalRecordJSON("00000000000000000002", 1) + `]}`
 	path := StorePath(t.TempDir())
 	writeRawStore(t, path, 0o600, duplicate)
-	store, err := Open(path)
+	store, err := Open(path, RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("Open on a store with two records sharing a stamp: %v", err)
 	}
@@ -772,7 +772,7 @@ func TestOpenQuarantinesDuplicateStampsButAcceptsGaps(t *testing.T) {
 		terminalRecordJSON("00000000000000000001", 4) + `,` + terminalRecordJSON("00000000000000000002", 9) + `]}`
 	gapPath := StorePath(t.TempDir())
 	writeRawStore(t, gapPath, 0o600, gappy)
-	store, err = Open(gapPath)
+	store, err = Open(gapPath, RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("a store with sequence gaps was refused: %v", err)
 	}
@@ -807,7 +807,7 @@ func TestOpenToleratesRetiredBoundaryShapesAndRefusesEpochs(t *testing.T) {
 		t.Run("tolerated/"+name, func(t *testing.T) {
 			path := StorePath(t.TempDir())
 			writeRawStore(t, path, 0o600, body)
-			if _, err := Open(path); err != nil {
+			if _, err := Open(path, RetentionPolicy{}); err != nil {
 				t.Fatalf("Open on the prior-build shape %q was refused: %v", name, err)
 			}
 		})
@@ -821,7 +821,7 @@ func TestOpenToleratesRetiredBoundaryShapesAndRefusesEpochs(t *testing.T) {
 		t.Run("refused/"+name, func(t *testing.T) {
 			path := StorePath(t.TempDir())
 			writeRawStore(t, path, 0o600, body)
-			if _, err := Open(path); !errors.Is(err, ErrStoreCorrupt) {
+			if _, err := Open(path, RetentionPolicy{}); !errors.Is(err, ErrStoreCorrupt) {
 				t.Fatalf("Open on a %s: err = %v, want ErrStoreCorrupt", name, err)
 			}
 		})
@@ -834,7 +834,7 @@ func TestOpenToleratesRetiredBoundaryShapesAndRefusesEpochs(t *testing.T) {
 		t.Run("accepted/"+name, func(t *testing.T) {
 			path := StorePath(t.TempDir())
 			writeRawStore(t, path, 0o600, body)
-			if _, err := Open(path); err != nil {
+			if _, err := Open(path, RetentionPolicy{}); err != nil {
 				t.Fatalf("Open on a %s was refused: %v", name, err)
 			}
 		})
@@ -1013,7 +1013,7 @@ func TestLoadNormalizesStoredTimestampsToUTC(t *testing.T) {
 		`{"id":"00000000000000000001","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"pending","generation":7,"incarnationId":"inc-1","createdAt":"2026-09-26T02:00:00+02:00","updatedAt":"2026-09-26T03:00:00+02:00","hostRemoved":false}]}`
 	writeRawStore(t, path, 0o600, body)
 
-	store, err := Open(path)
+	store, err := Open(path, RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -1050,7 +1050,7 @@ func TestOpenAcceptsARecordCarryingEveryRequiredField(t *testing.T) {
 		`"hostRemoved":true,"result":{"ok":false,"message":"waitHealthy timed out"},"sequence":1}]}`
 	path := StorePath(t.TempDir())
 	writeRawStore(t, path, 0o600, body)
-	store, err := Open(path)
+	store, err := Open(path, RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -1106,7 +1106,7 @@ func TestOpenRefusesEveryRequiredRecordFieldThatIsOmitted(t *testing.T) {
 			body := `{"version":1,"sequence":1,"allocatorHighWaterMark":1,"records":[` + record + `]}`
 			path := StorePath(t.TempDir())
 			writeRawStore(t, path, 0o600, body)
-			if _, err := Open(path); !errors.Is(err, ErrStoreCorrupt) {
+			if _, err := Open(path, RetentionPolicy{}); !errors.Is(err, ErrStoreCorrupt) {
 				t.Fatalf("a record with no %s loaded: err = %v, want ErrStoreCorrupt", name, err)
 			}
 			if got := string(mustReadFile(t, path)); got != body {
@@ -1123,19 +1123,19 @@ func TestOpenRefusesEveryRequiredRecordFieldThatIsOmitted(t *testing.T) {
 // rule reads the same whether or not a handle is already held.
 func TestOpenRevalidatesTheOwnerOnlyModeOfAnAlreadyHeldStore(t *testing.T) {
 	path := StorePath(t.TempDir())
-	first, err := Open(path)
+	first, err := Open(path, RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
 	createTestRecord(t, first, "h1")
-	if _, err := Open(path); err != nil {
+	if _, err := Open(path, RetentionPolicy{}); err != nil {
 		t.Fatalf("second Open of a healthy store: %v", err)
 	}
 
 	if err := os.Chmod(path, 0o644); err != nil {
 		t.Fatalf("Chmod(%s, 0644): %v", path, err)
 	}
-	if _, err := Open(path); !errors.Is(err, ErrStoreReadableBeyondOwner) {
+	if _, err := Open(path, RetentionPolicy{}); !errors.Is(err, ErrStoreReadableBeyondOwner) {
 		t.Fatalf("Open on a widened store file with a held cell: err = %v, want ErrStoreReadableBeyondOwner", err)
 	}
 }
@@ -1311,7 +1311,7 @@ func TestOpenAcceptsAProgressListAndRefusesItsAbsenceInAWrittenShape(t *testing.
 		`"createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false}]}`
 	path := StorePath(t.TempDir())
 	writeRawStore(t, path, 0o600, withProgress)
-	store, err := Open(path)
+	store, err := Open(path, RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("Open on a store carrying progress: %v", err)
 	}
@@ -1326,7 +1326,7 @@ func TestOpenAcceptsAProgressListAndRefusesItsAbsenceInAWrittenShape(t *testing.
 	empty := strings.Replace(withProgress, `"progress":[{"ts":"2026-09-26T12:00:00Z","message":"pushed"}]`, `"progress":[]`, 1)
 	emptyPath := StorePath(t.TempDir())
 	writeRawStore(t, emptyPath, 0o600, empty)
-	if _, err := Open(emptyPath); err != nil {
+	if _, err := Open(emptyPath, RetentionPolicy{}); err != nil {
 		t.Fatalf("Open on a store carrying an empty progress list: %v", err)
 	}
 }
@@ -1391,7 +1391,7 @@ func TestOpenAcceptsAValidSurrogatePairAndRefusesALoneOne(t *testing.T) {
 		`"generation":7,"incarnationId":"inc-1","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false}]}`
 	path := StorePath(t.TempDir())
 	writeRawStore(t, path, 0o600, pair)
-	store, err := Open(path)
+	store, err := Open(path, RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("Open on a store carrying a surrogate pair: %v", err)
 	}
@@ -1409,7 +1409,7 @@ func TestOpenAcceptsAValidSurrogatePairAndRefusesALoneOne(t *testing.T) {
 		`"generation":7,"incarnationId":"inc-1","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false}]}`
 	literalPath := StorePath(t.TempDir())
 	writeRawStore(t, literalPath, 0o600, literal)
-	if _, err := Open(literalPath); err != nil {
+	if _, err := Open(literalPath, RetentionPolicy{}); err != nil {
 		t.Fatalf("Open on a store carrying an escaped backslash before ud800: %v", err)
 	}
 }
@@ -1444,7 +1444,7 @@ func TestTransitionRefusesALoneSurrogateInARawField(t *testing.T) {
 // deleted one from a stale snapshot.
 func TestACachedOpenDoesNotServeAVanishedStoreFile(t *testing.T) {
 	path := StorePath(t.TempDir())
-	first, err := Open(path)
+	first, err := Open(path, RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -1456,7 +1456,7 @@ func TestACachedOpenDoesNotServeAVanishedStoreFile(t *testing.T) {
 	if err := os.Remove(path); err != nil {
 		t.Fatalf("Remove(%s): %v", path, err)
 	}
-	reopened, err := Open(path)
+	reopened, err := Open(path, RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("Open after the file vanished: %v", err)
 	}
@@ -1483,7 +1483,7 @@ func TestACachedOpenDoesNotServeAVanishedStoreFile(t *testing.T) {
 func TestRepeatedOpensOfANeverWrittenStoreStayEmpty(t *testing.T) {
 	path := StorePath(t.TempDir())
 	for i := range 3 {
-		store, err := Open(path)
+		store, err := Open(path, RetentionPolicy{})
 		if err != nil {
 			t.Fatalf("Open %d: %v", i, err)
 		}

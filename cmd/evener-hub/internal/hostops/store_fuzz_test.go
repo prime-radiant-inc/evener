@@ -253,7 +253,7 @@ func TestRepairedFuzzSeedsReachTheirIntendedArms(t *testing.T) {
 	// The boot-pass seed loads and moves only the pending record.
 	path := StorePath(t.TempDir())
 	writeRawStore(t, path, 0o600, currentFixtureDates(pendingComplete))
-	store, err := Open(path)
+	store, err := Open(path, RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("Open(pending/complete): %v", err)
 	}
@@ -276,7 +276,7 @@ func TestRepairedFuzzSeedsReachTheirIntendedArms(t *testing.T) {
 	for name, body := range map[string]string{"stamp ahead": stampAhead, "shared stamp": sharedStamp} {
 		path := StorePath(t.TempDir())
 		writeRawStore(t, path, 0o600, body)
-		store, err := Open(path)
+		store, err := Open(path, RetentionPolicy{})
 		if err != nil {
 			t.Fatalf("%s: Open = %v, want the custody-first quarantine", name, err)
 		}

@@ -97,7 +97,7 @@ func planTestManager(t *testing.T, configPath string, entries []hostreg.Host, se
 	if err != nil {
 		t.Fatalf("hostreg.New: %v", err)
 	}
-	store, err := hostops.Open(hostops.StorePath(t.TempDir()))
+	store, err := hostops.Open(hostops.StorePath(t.TempDir()), hostops.RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("hostops.Open: %v", err)
 	}
@@ -169,7 +169,7 @@ func TestHostPlanMintsThroughTheRealServer(t *testing.T) {
 	if err := os.WriteFile(configPath, []byte(planTestHubTOML([]hostreg.Host{entry})), 0o600); err != nil {
 		t.Fatalf("write hub.toml: %v", err)
 	}
-	store, err := hostops.Open(hostops.StorePath(t.TempDir()))
+	store, err := hostops.Open(hostops.StorePath(t.TempDir()), hostops.RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("hostops.Open: %v", err)
 	}
