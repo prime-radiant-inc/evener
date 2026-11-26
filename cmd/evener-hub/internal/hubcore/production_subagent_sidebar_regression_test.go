@@ -102,7 +102,7 @@ func TestBuildProjectTreeAt_LazyLookupRollsUpCrossDirectorySubagent(t *testing.T
 			t.Fatal(err)
 		}
 	}
-	projectID, err := identifier.ProjectID(projectDir)
+	proj, err := identifier.ResolveProject(projectDir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,7 +115,7 @@ func TestBuildProjectTreeAt_LazyLookupRollsUpCrossDirectorySubagent(t *testing.T
 		{PID: 1, SessionID: "parent", Status: appwire.ThreadStatusIdle, RunningSubagentIDs: []string{"isolated-child"}},
 		{PID: 2, SessionID: "isolated-child", Status: appwire.ThreadStatusActive},
 	}
-	project, ok := BuildProjectTreeAt(metas, live, nil, now, projectID)
+	project, ok := BuildProjectTreeAt(metas, live, nil, now, proj.ID)
 	if !ok || len(project.Current) != 1 || len(project.Current[0].Children) != 0 {
 		t.Fatalf("lazy project = %#v, found=%v; want the parent alone", project, ok)
 	}
