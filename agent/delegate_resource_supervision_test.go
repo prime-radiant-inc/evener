@@ -4645,6 +4645,13 @@ func armStableSupervisionAttention(t *testing.T, sub *subagent, attentionID, con
 	}
 }
 
+type delegateCompletionSnapshot struct {
+	requirement  delegateCompletionRequirement
+	outcome      delegateCompletionOutcome
+	terminalSeen bool
+	fallback     *delegateFinish
+}
+
 func captureStableCompletionSnapshot(ch chan<- delegateCompletionSnapshot) func(*subagent) {
 	return func(sub *subagent) {
 		controller := sub.sess.delegateController

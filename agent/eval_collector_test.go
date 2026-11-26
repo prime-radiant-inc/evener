@@ -35,18 +35,8 @@ type evalMetrics struct {
 	ForkSummaryCalls  int      `json:"fork_summary_calls"`
 	CompactionEvents  int      `json:"compaction_events"`
 	CompactionLayers  []string `json:"compaction_layers"`
-	RetentionScore    float64  `json:"retention_score"`
 	DurationSeconds   float64  `json:"duration_seconds"`
 	Result            string   `json:"result"`
-
-	// F2P test evaluation results (when --test-patch is used).
-	F2PResults *f2pResults `json:"f2p_results,omitempty"`
-
-	// Per-question retention probe breakdown (when new probe format is used).
-	RetentionBreakdown []probeResult `json:"retention_breakdown,omitempty"`
-
-	// Diff captures the agent's code changes (git diff) after the run.
-	Diff string `json:"diff,omitempty"`
 }
 
 // Session-end reasons that report an input's terminal boundary. session_closed
@@ -58,15 +48,6 @@ const (
 	evalSessionEndTurnFailed    = "turn_failed"
 	evalSessionEndInterrupted   = "interrupted"
 )
-
-// f2pResults captures fail-to-pass test evaluation outcomes.
-type f2pResults struct {
-	Resolved     bool     `json:"resolved"`
-	TestsPassed  []string `json:"tests_passed"`
-	TestsFailed  []string `json:"tests_failed"`
-	TestErrors   string   `json:"test_errors,omitempty"`
-	PatchApplied bool     `json:"patch_applied"`
-}
 
 // evalCollector collects metrics from session events during an evaluation run.
 type evalCollector struct {

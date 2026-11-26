@@ -1454,13 +1454,6 @@ func (c *delegateTreeController) exactLeaseLocked(lease delegateLease) (*delegat
 	return aggregate, live, nil
 }
 
-type delegateCompletionSnapshot struct {
-	requirement  delegateCompletionRequirement
-	outcome      delegateCompletionOutcome
-	terminalSeen bool
-	fallback     *delegateFinish
-}
-
 func (c *delegateTreeController) completionEvidenceLocked(lease delegateLease) (*delegateGenerationEvidence, error) {
 	_, live, err := c.exactLeaseLocked(lease)
 	if err != nil {
