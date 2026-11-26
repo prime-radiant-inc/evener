@@ -82,19 +82,19 @@ func TestReadFileOffArmCapsWholeFileRead(t *testing.T) {
 	env := NewLocalExecutionEnvironment(dir)
 	path := filepath.Join(dir, "oversize.log")
 	sparseOversize(t, path)
-	_, raw, err := env.ReadFileAndBytesCtx(context.Background(), path, nil, nil)
+	_, raw, _, err := env.ReadFileRichAndBytesCtx(context.Background(), path, nil, nil)
 	if err == nil {
-		t.Fatalf("ReadFileAndBytesCtx(oversize) = %d bytes, nil; want the read-limit refusal", len(raw))
+		t.Fatalf("ReadFileRichAndBytesCtx(oversize) = %d bytes, nil; want the read-limit refusal", len(raw))
 	}
 	rle, capped := errors.AsType[*ReadLimitError](err)
 	if !capped {
-		t.Fatalf("ReadFileAndBytesCtx(oversize) err = %v, want a *ReadLimitError", err)
+		t.Fatalf("ReadFileRichAndBytesCtx(oversize) err = %v, want a *ReadLimitError", err)
 	}
 	if rle.Limit != MaxWholeFileReadBytes {
 		t.Fatalf("ReadLimitError.Limit = %d, want %d", rle.Limit, MaxWholeFileReadBytes)
 	}
 	if raw != nil {
-		t.Fatalf("ReadFileAndBytesCtx(oversize) returned %d bytes alongside the refusal", len(raw))
+		t.Fatalf("ReadFileRichAndBytesCtx(oversize) returned %d bytes alongside the refusal", len(raw))
 	}
 }
 
@@ -151,11 +151,11 @@ func TestReadFileOffArmRefusesOversizeBeforeReadingIt(t *testing.T) {
 
 	var before, after runtime.MemStats
 	runtime.ReadMemStats(&before)
-	_, _, err := env.ReadFileAndBytesCtx(context.Background(), path, nil, nil)
+	_, _, _, err := env.ReadFileRichAndBytesCtx(context.Background(), path, nil, nil)
 	runtime.ReadMemStats(&after)
 	rle, capped := errors.AsType[*ReadLimitError](err)
 	if !capped {
-		t.Fatalf("ReadFileAndBytesCtx(oversize) err = %v, want the read-limit refusal", err)
+		t.Fatalf("ReadFileRichAndBytesCtx(oversize) err = %v, want the read-limit refusal", err)
 	}
 	if rle.Limit != MaxWholeFileReadBytes {
 		t.Fatalf("ReadLimitError.Limit = %d, want %d", rle.Limit, MaxWholeFileReadBytes)
@@ -248,10 +248,10 @@ func TestReadFileOffArmRefusesOversizeThroughAWrappedFilesystemBeforeReadingIt(t
 
 	var before, after runtime.MemStats
 	runtime.ReadMemStats(&before)
-	_, _, err := env.ReadFileAndBytesCtx(context.Background(), path, nil, nil)
+	_, _, _, err := env.ReadFileRichAndBytesCtx(context.Background(), path, nil, nil)
 	runtime.ReadMemStats(&after)
 	if _, capped := errors.AsType[*ReadLimitError](err); !capped {
-		t.Fatalf("ReadFileAndBytesCtx(oversize, wrapped) err = %v, want the read-limit refusal", err)
+		t.Fatalf("ReadFileRichAndBytesCtx(oversize, wrapped) err = %v, want the read-limit refusal", err)
 	}
 	if allocated := after.TotalAlloc - before.TotalAlloc; allocated > 1<<20 {
 		t.Fatalf("refusing an oversize file through a wrapped handle allocated %d bytes, want the refusal before any read", allocated)

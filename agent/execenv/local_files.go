@@ -125,18 +125,12 @@ func readFileLimitHint(err error) error {
 	return fmt.Errorf("%w; %w", rle, errReadFileCapHint)
 }
 
-// ReadFileAndBytesCtx is ReadFileCtx that also returns the whole file's bytes
-// as this read loaded them, for a caller that must record exactly what the
-// read saw. The bytes are the complete file even when offset and limit select
-// only some of its lines — the caller needs the file, not the window — so this
-// entry always loads it; ReadFileCtx, which does not need them, reads the
-// window alone. On error the bytes are nil.
-func (e *LocalExecutionEnvironment) ReadFileAndBytesCtx(ctx context.Context, path string, offsetLine *int, limitLines *int) (string, []byte, error) {
-	out, b, _, err := e.ReadFileRichAndBytesCtx(ctx, path, offsetLine, limitLines)
-	return out, b, err
-}
-
-// ReadFileRichAndBytesCtx is ReadFileAndBytesCtx that also returns structured ReadFileMeta.
+// ReadFileRichAndBytesCtx is ReadFileRichCtx that also returns the whole file's
+// bytes as this read loaded them, for a caller that must record exactly what
+// the read saw. The bytes are the complete file even when offset and limit
+// select only some of its lines (the caller needs the file, not the window),
+// so this entry always loads it; ReadFileCtx and ReadFileRichCtx, which do not
+// need them, read the window alone. On error the bytes are nil.
 func (e *LocalExecutionEnvironment) ReadFileRichAndBytesCtx(ctx context.Context, path string, offsetLine *int, limitLines *int) (string, []byte, ReadFileMeta, error) {
 	t, err := e.fileTarget("read_file", path, targetRead)
 	if err != nil {

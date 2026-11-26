@@ -689,7 +689,7 @@ func collectStringRows(window string, startLine, effLimit int, stopAtMaxBytes, s
 // renderTextReadRich turns the bytes a read loaded into read_file's result plus
 // structured ReadFileMeta. Both whole-file reads and small/tail windowed reads
 // share this path and finalizeReadOutput, keeping ReadFileCtx and
-// ReadFileAndBytesCtx byte-identical at every file size.
+// ReadFileRichAndBytesCtx byte-identical at every file size.
 func renderTextReadRich(displayPath string, b []byte, offsetLine, limitLines *int) (string, ReadFileMeta, error) {
 	// Image files: return base64-encoded data instead of erroring on binary.
 	if format := detectImageFormat(displayPath, b); format != "" {
@@ -1485,8 +1485,8 @@ func readWindowErr(ctx context.Context, name string, err error) error {
 }
 
 // readFileWindowedCtx is LocalExecutionEnvironment's bounded read_file entry:
-// the target resolution and missing-file hint ReadFileAndBytesCtx applies, over
-// an arm that renders the window instead of loading the file.
+// the target resolution and missing-file hint ReadFileRichAndBytesCtx applies,
+// over an arm that renders the window instead of loading the file.
 func (e *LocalExecutionEnvironment) readFileWindowedCtx(ctx context.Context, path string, offsetLine, limitLines *int) (string, ReadFileMeta, error) {
 	t, err := e.fileTarget("read_file", path, targetRead)
 	if err != nil {
