@@ -17,7 +17,7 @@ import { usePaneVisible } from "../../shell/paneVisibility";
 import { documentPaneState, recordDocumentPaneState, useWorkspaceStore } from "../../shell/workspace";
 import { useThreadsStore } from "../../stores/threads";
 import { useThreadClaim } from "../../stores/useThreadModel";
-import symbolStyles from "../../styles/appleSymbol.module.css";
+import symbolStyles from "../../styles/actionSymbol.module.css";
 import {
   Button,
   Chip,

@@ -92,7 +92,7 @@ import { cadenceStateFor, SIGNAL_STATES } from "../sessionStatus";
 import { useIsMobile } from "../useIsMobile";
 import styles from "./RailRow.module.css";
 import { type RailActivityRead, type RailStatus, useSessionActivityRead, workingStatus } from "./railActivity";
-import { ICON, MoreIcon, STROKE } from "./railIcons";
+import { ICON, MoreIcon, PlusIcon, STROKE } from "./railIcons";
 import {
   activeWatchCount,
   type BandRailNode,
@@ -985,7 +985,7 @@ function ProjectRow({
               {project.key !== NO_PROJECT_KEY && canSpawn && (
                 <IconButton
                   label={`New session in ${project.name}`}
-                  icon={<span aria-hidden="true">{"+"}</span>}
+                  icon={<PlusIcon />}
                   variant="quiet"
                   size="sm"
                   tabIndex={-1}

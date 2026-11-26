@@ -1,23 +1,14 @@
-import { isApplePlatform } from "../../platform";
-import styles from "../../styles/appleSymbol.module.css";
+import styles from "../../styles/actionSymbol.module.css";
 
-// Send and Start share a glyph, including the upright submit arrow on Apple platforms.
+// Send and Start share one upright submit arrow.
 export function SendIcon() {
-  const apple = isApplePlatform();
   return (
-    <svg
-      viewBox="0 0 14 14"
-      width="12"
-      height="12"
-      className={apple ? styles.symbol : undefined}
-      data-apple-send={apple ? "" : undefined}
-      aria-hidden="true"
-    >
+    <svg viewBox="0 0 14 14" className={styles.symbol} data-submit-arrow="" aria-hidden="true">
       <path
-        d={apple ? "M7 12.2V1.8 M2.7 6.1 7 1.8l4.3 4.3" : "M12.8 1.2 8.8 12.8 6.4 7.6 1.2 5.2Z M12.8 1.2 6.4 7.6"}
+        d="M7 12.2V1.8 M2.7 6.1 7 1.8l4.3 4.3"
         fill="none"
         stroke="currentColor"
-        strokeWidth={apple ? 1.9 : 1.2}
+        strokeWidth="1.9"
         strokeLinecap="round"
         strokeLinejoin="round"
       />

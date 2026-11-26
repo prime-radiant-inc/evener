@@ -1,5 +1,4 @@
 import { Fragment } from "react";
-import { isApplePlatform } from "../../platform";
 import { requireClass } from "../internal/requireClass";
 import { VisuallyHidden } from "../visuallyhidden";
 import styles from "./keyhint.module.css";
@@ -27,6 +26,10 @@ const BASE_CLASS = {
 // name (e.g. "Shift", "K", "Enter") renders verbatim - KeyHint doesn't
 // attempt to prettify the rest of the keyboard.
 const MOD_KEY = "Mod";
+
+function isApplePlatform(): boolean {
+  return /Mac|iPhone|iPad|iPod/.test(window.navigator.platform);
+}
 
 function displayOf(key: string): string {
   if (key !== MOD_KEY) return key;

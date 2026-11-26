@@ -57,7 +57,6 @@ import { requestFindInSession } from "../../panes/session/find/findRequest";
 import { returnFromAgentCascade } from "../../panes/zoom/actions";
 import { isCascadeReturnedOrigin } from "../../panes/zoom/inspectionOrigin";
 import { parseZoomParams } from "../../panes/zoom/intent";
-import { isApplePlatform } from "../../platform";
 import {
   conversationHandoffGeneration,
   registerConversationHostVisibility,
@@ -1035,7 +1034,7 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
       label={needsYou > 0 ? `Board (${needsYou} need attention)` : "Board"}
       aria-expanded={boardVisible}
       variant="quiet"
-      icon={isApplePlatform() ? <SidebarIcon /> : <span className={styles.boardGlyph}>◧</span>}
+      icon={<SidebarIcon />}
       badge={needsYou > 0 ? { count: needsYou, tone: "attention" } : undefined}
       onClick={toggleBoard}
     />
@@ -1047,7 +1046,7 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
       {showBack ? (
         <IconButton
           label="Back"
-          icon={<Chevron direction="left" size={isApplePlatform() ? 24 : 16} />}
+          icon={<Chevron direction="left" size={24} />}
           variant="quiet"
           onClick={isPanelPane ? handlePanelBack : (paneBack ?? handleBack)}
         />

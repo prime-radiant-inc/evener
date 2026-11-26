@@ -57,9 +57,9 @@
 }
 
 /* Send and Start keep the label on roomy cards. When the card hides its
- * label, the Apple submit arrow sits alone inside a round control. */
+ * label, the submit arrow sits alone inside a round control. */
 @container (max-width: 559px) {
-  .button:has([data-apple-send]) {
+  .button:has([data-submit-arrow]) {
     aspect-ratio: 1;
     border-radius: var(--radius-pill);
     padding-inline: 0;
@@ -257,7 +257,7 @@
     min-height: var(--tap-min);
   }
   @container (max-width: 559px) {
-    .button:has([data-apple-send]) {
+    .button:has([data-submit-arrow]) {
       min-width: var(--tap-min);
     }
   }

@@ -1,4 +1,4 @@
-/* The same symbol fits a compact Mac toolbar or the larger touch target. */
+/* The same drawing fits a compact toolbar or the larger touch target. */
 .symbol {
   display: block;
   width: calc(var(--space-4) + var(--space-half));

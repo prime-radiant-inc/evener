@@ -23,15 +23,11 @@ test("draws an SVG stroked with currentColor", () => {
   expect(path?.getAttribute("stroke")).toBe("currentColor");
 });
 
-test.each([
-  ["iPhone", true],
-  ["MacIntel", true],
-  ["Linux armv8l", false],
-])("selects the compact Apple submit control on %s when appropriate", (platform, apple) => {
+test.each(["iPhone", "MacIntel", "Linux armv8l"])("uses the compact submit arrow on %s", (platform) => {
   const stub = vi.spyOn(navigator, "platform", "get").mockReturnValue(platform);
   try {
     const { container } = render(<SendIcon />);
-    expect(container.querySelector("[data-apple-send]") !== null).toBe(apple);
+    expect(container.querySelector("[data-submit-arrow]")).not.toBeNull();
   } finally {
     stub.mockRestore();
   }

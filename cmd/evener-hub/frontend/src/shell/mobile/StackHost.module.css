@@ -66,20 +66,6 @@
   flex-direction: column;
 }
 
-.boardGlyph {
-  display: inline-block;
-}
-
-.split[data-board="collapsed"] .boardGlyph {
-  transform: rotate(180deg);
-}
-
-@media (prefers-reduced-motion: no-preference) {
-  .boardGlyph {
-    transition: transform var(--motion-duration-spatial) var(--motion-easing-standard);
-  }
-}
-
 .topBar {
   flex: none;
   display: flex;
