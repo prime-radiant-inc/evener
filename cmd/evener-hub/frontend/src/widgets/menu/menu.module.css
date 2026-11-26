@@ -86,6 +86,8 @@
 
 .item {
   composes: tapFloor from "../../styles/tapfloor.module.css";
+  /* biome-ignore lint/suspicious/noDuplicateProperties: CSS Modules composes takes one source per declaration. */
+  composes: choice from "../../styles/floatingSurface.module.css";
   /* A zoomed-in viewport can leave a cap narrower than the two insets put
    * together - 52px of viewport caps the popup at 36, and the popup's own 4px
    * and the row's 12px leave 4px for a glyph, which cannot wrap. The widget
@@ -158,4 +160,14 @@
   margin: var(--space-1) calc(-1 * var(--menu-inline-pad, var(--space-1)));
   border-top: 1px solid var(--edge);
   list-style: none;
+}
+
+:global(body[data-iphone-glass]) .popup {
+  --motion-float-from: var(--motion-scale-from);
+  --menu-row-inline-pad: var(--space-4);
+}
+
+:global(body[data-iphone-glass]) .separator {
+  margin-inline: var(--menu-row-inline-pad);
+  border-color: var(--glass-edge);
 }

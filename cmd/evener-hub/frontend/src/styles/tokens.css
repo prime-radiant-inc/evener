@@ -477,6 +477,7 @@ body[data-font-size="xl"] { --font-scale: 1.25; }
 /* Hosted chrome inherits these through body, including portaled controls.
  * The underlying palette stays live when the reader changes theme. */
 body[data-iphone-glass] {
+  --glass-control-font: system-ui, sans-serif;
   --glass-fill: var(--field);
   --glass-panel: var(--surface-1);
   --glass-edge: var(--edge);

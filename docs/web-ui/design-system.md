@@ -22,6 +22,11 @@ their reading surfaces. The shell reports whether iOS glass is available and
 whether Reduce Transparency permits it. Hosted controls start opaque and
 respond to setting changes in place. Browser tabs use the browser theme.
 
+In the hosted composer, WebKit owns editing, selection, dictation and the
+keyboard. Value selectors use the platform picker. Command menus and inline
+completions use the shared web actions, with system text, thumb-sized rows
+and a denser glass surface so commands stay readable over a conversation.
+
 The approved [editorial-instrument design](../superpowers/specs/2026-09-09-tufte-webui-design.md)
 supersedes the Beautiful UI aesthetic mandate for palette and typography; shape, enclosure
 and elevation follow the radius ladder and elevation steps in §2.
