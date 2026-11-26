@@ -336,7 +336,7 @@ func fuzzGitMetadataHelpers(t *testing.T, fixture structuralFixture) {
 	if !globCouldReachWritable("*.conf", fixture.main, []string{fixture.main}) {
 		t.Fatal("globCouldReachWritable missed a config-dir-relative glob")
 	}
-	if _, err := ClassifyWorkspace(fixture.malformed); err == nil {
+	if _, err := ClassifyWorkspace(fixture.malformed, nil); err == nil {
 		t.Fatal("ClassifyWorkspace accepted an invalid .git pointer")
 	}
 	broken := filepath.Join(fixture.root, "broken-pointer")
@@ -346,7 +346,7 @@ func fuzzGitMetadataHelpers(t *testing.T, fixture structuralFixture) {
 	if err := os.Symlink(filepath.Join(fixture.root, "missing-gitdir"), filepath.Join(broken, ".git")); err != nil {
 		t.Fatalf("symlink broken pointer fixture: %v", err)
 	}
-	if _, err := ClassifyWorkspace(broken); err == nil {
+	if _, err := ClassifyWorkspace(broken, nil); err == nil {
 		t.Fatal("ClassifyWorkspace accepted an unreadable .git pointer")
 	}
 	unknown := filepath.Join(fixture.root, "unknown-pointer")
@@ -354,7 +354,7 @@ func fuzzGitMetadataHelpers(t *testing.T, fixture structuralFixture) {
 		t.Fatalf("mkdir unknown pointer fixture: %v", err)
 	}
 	writeStructuralFile(t, filepath.Join(unknown, ".git"), "gitdir: ../not-a-worktree\n")
-	if _, err := ClassifyWorkspace(unknown); err == nil {
+	if _, err := ClassifyWorkspace(unknown, nil); err == nil {
 		t.Fatal("ClassifyWorkspace accepted an unrecognized relative pointer shape")
 	}
 

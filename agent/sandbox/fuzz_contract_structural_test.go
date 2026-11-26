@@ -129,7 +129,7 @@ func FuzzSandboxStructuralContract(f *testing.F) {
 	f.Fuzz(func(t *testing.T, variant byte) {
 		fixture := newStructuralFixture(t, variant)
 		cwd := []string{fixture.main, fixture.linked, fixture.submodule, fixture.nonGit, fixture.malformed, fixture.symlinked}[(int(variant)/3)%6]
-		layout, err := ClassifyWorkspace(cwd)
+		layout, err := ClassifyWorkspace(cwd, nil)
 		if cwd == fixture.malformed {
 			if err == nil {
 				t.Fatalf("malformed .git pointer %q resolved as %+v", cwd, layout)

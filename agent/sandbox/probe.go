@@ -946,7 +946,7 @@ func environValue(environ []string, name string) (string, bool) {
 // parseGitCeilingDirs parses GIT_CEILING_DIRECTORIES for the workspace search:
 // absolute directories only, relative entries ignored as git ignores them. Each
 // is resolved so the walk compares it against the same spelling
-// ClassifyWorkspaceWithCeilings uses.
+// ClassifyWorkspace uses.
 func parseGitCeilingDirs(value string) []string {
 	if value == "" {
 		return nil
