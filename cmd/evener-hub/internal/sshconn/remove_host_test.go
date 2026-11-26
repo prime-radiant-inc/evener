@@ -14,12 +14,54 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 )
 
+// attachedHostFixture attaches alpha through the fake runner and returns the
+// manager with its events channel positioned after the initial Attached.
+func attachedHostFixture(t *testing.T, hosts ...hostreg.Host) (*Manager, chan Event) {
+	t.Helper()
+	if len(hosts) == 0 {
+		hosts = []hostreg.Host{{Name: "alpha", SSH: "alpha.example"}}
+	}
+	fr := &fakeRunner{runFn: cannedRun(nil), startFn: goodStartFn(t)}
+	events := make(chan Event, 64)
+	m := newTestManager(t, testRegistry(t, hosts...), fr, Options{
+		OnEvent: func(ev Event) { events <- ev },
+	})
+	if _, err := m.Ensure(context.Background(), "alpha"); err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	waitForEvent(t, events, EventAttached)
+	return m, events
+}
+
+// drainEventKinds drains whatever events are buffered without blocking.
+func drainEventKinds(events chan Event) []EventKind {
+	var kinds []EventKind
+	for {
+		select {
+		case ev := <-events:
+			kinds = append(kinds, ev.Kind)
+		default:
+			return kinds
+		}
+	}
+}
+
+func countEventKind(kinds []EventKind, want EventKind) int {
+	n := 0
+	for _, k := range kinds {
+		if k == want {
+			n++
+		}
+	}
+	return n
+}
+
 // RemoveHost of an attached host deregisters it and tears the channel down as
 // one step: the registry entry, the mapped channel, and the supervisor all go,
 // and the announced Attached is paired with a Detached exactly once. A later
 // Ensure for the removed name is ErrHostNotFound and publishes nothing.
 func TestRemoveHostTearsDownChannel(t *testing.T) {
-	m, events := detachHostFixture(t)
+	m, events := attachedHostFixture(t)
 	if !m.Attached("alpha") {
 		t.Fatal("Attached before RemoveHost = false, want true")
 	}
@@ -39,7 +81,7 @@ func TestRemoveHostTearsDownChannel(t *testing.T) {
 	if ev.Host != "alpha" {
 		t.Fatalf("Detached for host %q, want alpha", ev.Host)
 	}
-	if rest := detachHostKinds(events); detachHostCount(rest, EventDetached) != 0 {
+	if rest := drainEventKinds(events); countEventKind(rest, EventDetached) != 0 {
 		t.Fatalf("extra Detached events after RemoveHost: %v", rest)
 	}
 	// A later Ensure refuses at the registry lookup and publishes nothing.
@@ -47,7 +89,7 @@ func TestRemoveHostTearsDownChannel(t *testing.T) {
 	if !errors.Is(err, ErrHostNotFound) {
 		t.Fatalf("Ensure after RemoveHost = %v, want ErrHostNotFound", err)
 	}
-	if kinds := detachHostKinds(events); len(kinds) != 0 {
+	if kinds := drainEventKinds(events); len(kinds) != 0 {
 		t.Fatalf("Ensure after RemoveHost emitted %v, want nothing", kinds)
 	}
 }
@@ -65,7 +107,7 @@ func TestRemoveHostUnknown(t *testing.T) {
 	if err := m.RemoveHost("nope"); err != nil {
 		t.Fatalf("RemoveHost(unknown) = %v, want nil", err)
 	}
-	if kinds := detachHostKinds(events); len(kinds) != 0 {
+	if kinds := drainEventKinds(events); len(kinds) != 0 {
 		t.Fatalf("RemoveHost(unknown) emitted %v, want no events", kinds)
 	}
 	if _, ok := reg.Get("alpha"); !ok {
@@ -73,11 +115,88 @@ func TestRemoveHostUnknown(t *testing.T) {
 	}
 }
 
+// TestRemoveHostNilRegistry mirrors AddHost and UpdateHost: a nil registry is
+// an error rather than a silent no-op.
+func TestRemoveHostNilRegistry(t *testing.T) {
+	m := New(nil, Options{Runner: &fakeRunner{}})
+	t.Cleanup(func() { _ = m.Close() })
+	if err := m.RemoveHost("alpha"); err == nil {
+		t.Fatal("RemoveHost with no registry = nil, want an error")
+	}
+}
+
+// RemoveHost of a known but never-attached host removes the entry cleanly with
+// no events emitted.
+func TestRemoveHostUnattached(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	fr := &fakeRunner{runFn: cannedRun(nil), startFn: goodStartFn(t)}
+	events := make(chan Event, 64)
+	m := newTestManager(t, testRegistry(t, host), fr, Options{
+		OnEvent: func(ev Event) { events <- ev },
+	})
+	if err := m.RemoveHost("alpha"); err != nil {
+		t.Fatalf("RemoveHost(unattached) = %v, want nil", err)
+	}
+	if kinds := drainEventKinds(events); len(kinds) != 0 {
+		t.Fatalf("RemoveHost(unattached) emitted %v, want no events", kinds)
+	}
+	if _, ok := m.reg.Get("alpha"); ok {
+		t.Fatal("registry entry survived RemoveHost(unattached)")
+	}
+	if m.Attached("alpha") {
+		t.Fatal("Attached after RemoveHost(unattached) = true, want false")
+	}
+}
+
+// RemoveHost is idempotent: the second call is a no-op returning nil and emits
+// no second Detached.
+func TestRemoveHostTwice(t *testing.T) {
+	m, events := attachedHostFixture(t)
+	if err := m.RemoveHost("alpha"); err != nil {
+		t.Fatalf("first RemoveHost = %v, want nil", err)
+	}
+	waitForEvent(t, events, EventDetached)
+	if err := m.RemoveHost("alpha"); err != nil {
+		t.Fatalf("second RemoveHost = %v, want nil", err)
+	}
+	if kinds := drainEventKinds(events); countEventKind(kinds, EventDetached) != 0 {
+		t.Fatalf("second RemoveHost emitted Detached: %v", kinds)
+	}
+}
+
+// A removed-then-readded host attaches fresh: Ensure returns a new channel and
+// announces a new Attached.
+func TestRemoveHostReaddEnsure(t *testing.T) {
+	m, events := attachedHostFixture(t)
+	first, err := m.Ensure(context.Background(), "alpha")
+	if err != nil {
+		t.Fatalf("Ensure before RemoveHost: %v", err)
+	}
+	if err := m.RemoveHost("alpha"); err != nil {
+		t.Fatalf("RemoveHost = %v, want nil", err)
+	}
+	waitForEvent(t, events, EventDetached)
+	if err := m.AddHost(hostreg.Host{Name: "alpha", SSH: "alpha.example"}); err != nil {
+		t.Fatalf("AddHost = %v, want nil", err)
+	}
+	second, err := m.Ensure(context.Background(), "alpha")
+	if err != nil {
+		t.Fatalf("Ensure after RemoveHost+AddHost: %v", err)
+	}
+	if second == first {
+		t.Fatal("Ensure after RemoveHost+AddHost returned the removed channel, want a fresh attach")
+	}
+	if !m.Attached("alpha") {
+		t.Fatal("Attached after re-Ensure = false, want true")
+	}
+	waitForEvent(t, events, EventAttached)
+}
+
 // The per-host caches do not survive a removal: a re-added host starts clean
 // rather than inheriting the previous identity's deploy marker, resolved
 // executable, or pending restart.
 func TestRemoveHostClearsPerHostCaches(t *testing.T) {
-	m, events := detachHostFixture(t)
+	m, events := attachedHostFixture(t)
 	m.setResolvedTarget("alpha", "/home/dev/.local/bin/evener")
 	m.setPendingRestart("alpha", "evener hub --addr 127.0.0.1:9180", "dev", "", hubIdentity{}, nil)
 	if err := m.RemoveHost("alpha"); err != nil {
@@ -92,27 +211,42 @@ func TestRemoveHostClearsPerHostCaches(t *testing.T) {
 	}
 }
 
-// The same caches do not survive a detach: DetachHost is the teardown a
-// removed-then-readded host goes through when the caller keeps the registry
-// entry, so it clears them too.
-func TestDetachHostClearsPerHostCaches(t *testing.T) {
-	m, events := detachHostFixture(t)
+// teardownHostChannel clears all per-host caches under the host lock while
+// leaving the registry entry intact for its caller (UpdateHost or RemoveHost)
+// to manage.
+func TestTeardownHostChannelClearsPerHostCaches(t *testing.T) {
+	m, events := attachedHostFixture(t)
+	host, ok := m.reg.Get("alpha")
+	if !ok {
+		t.Fatal("alpha not registered")
+	}
 	m.setResolvedTarget("alpha", "/home/dev/.local/bin/evener")
 	m.setPendingRestart("alpha", "evener hub --addr 127.0.0.1:9180", "dev", "", hubIdentity{}, nil)
-	if err := m.DetachHost("alpha"); err != nil {
-		t.Fatalf("DetachHost = %v, want nil", err)
+	m.rememberOwner(selectedOwner{host: host})
+	lock := m.hostLock("alpha")
+	lock.Lock()
+	ch := m.teardownHostChannel("alpha", host, true)
+	lock.Unlock()
+	m.releaseHostLock("alpha")
+	if ch == nil {
+		t.Fatal("teardownHostChannel returned nil for an attached host")
 	}
+	_ = ch.Close()
 	waitForEvent(t, events, EventDetached)
 	if m.resolvedTarget("alpha") != "" {
-		t.Fatal("resolvedTarget survived DetachHost")
+		t.Fatal("resolvedTarget survived teardownHostChannel")
 	}
 	if !reflect.DeepEqual(m.pendingRestart("alpha"), pendingRestartState{}) {
-		t.Fatal("pendingRestart survived DetachHost")
+		t.Fatal("pendingRestart survived teardownHostChannel")
 	}
-	// The registry entry itself survives a detach — that is the difference
-	// between DetachHost and RemoveHost.
+	m.mu.Lock()
+	_, hasWitness := m.ownerWitnesses["alpha"]
+	m.mu.Unlock()
+	if hasWitness {
+		t.Fatal("ownerWitnesses survived teardownHostChannel")
+	}
 	if _, ok := m.reg.Get("alpha"); !ok {
-		t.Fatal("DetachHost dropped the registry entry; only RemoveHost does")
+		t.Fatal("teardownHostChannel dropped the registry entry; only RemoveHost does")
 	}
 }
 
@@ -219,7 +353,7 @@ func TestRemoveReaddRacesEnsureAtGate(t *testing.T) {
 	if !errors.Is(r.err, ErrHostNotFound) {
 		t.Fatalf("parked Ensure = %v, want ErrHostNotFound (the captured identity is gone)", r.err)
 	}
-	if kinds := detachHostKinds(events); len(kinds) != 0 {
+	if kinds := drainEventKinds(events); len(kinds) != 0 {
 		t.Fatalf("the refused attach emitted %v, want nothing", kinds)
 	}
 	// The re-added entry is a new identity the next Ensure attaches: the dial
@@ -299,7 +433,7 @@ func TestRemoveReaddIdenticalRacesEnsureAtGate(t *testing.T) {
 	if !errors.Is(r.err, ErrHostNotFound) {
 		t.Fatalf("parked Ensure = %v, want ErrHostNotFound (the captured entry is gone even though its content was re-added)", r.err)
 	}
-	if kinds := detachHostKinds(events); len(kinds) != 0 {
+	if kinds := drainEventKinds(events); len(kinds) != 0 {
 		t.Fatalf("the refused attach emitted %v, want nothing", kinds)
 	}
 	// The re-added identity is a new entry the next Ensure attaches: exactly
@@ -547,7 +681,7 @@ func TestReconnectRefusesPublishAfterIdenticalReplace(t *testing.T) {
 	}
 	// Nothing was published under the re-added name: no second Attached, and no
 	// live channel.
-	if kinds := detachHostKinds(events); detachHostCount(kinds, EventAttached) != 0 {
+	if kinds := drainEventKinds(events); countEventKind(kinds, EventAttached) != 0 {
 		t.Fatalf("the refused reconnect announced %v, want no Attached for the re-added entry", kinds)
 	}
 	if m.Attached("alpha") {

@@ -382,7 +382,7 @@ func TestHostManageRemoveThenReAdd(t *testing.T) {
 }
 
 // detachRefusingRunner is an sshconn.Runner that refuses every spawn: the
-// manager under test never dials through it (DetachHost is non-dialing), so
+// manager under test never dials through it (RemoveHost is non-dialing), so
 // any call is a test failure.
 type detachRefusingRunner struct{}
 
@@ -402,8 +402,8 @@ func (detachRefusingRunner) Run(_ context.Context, _ []string, _ io.Reader) ([]b
 // teardown drops it from that same registry. The manager here carries no live
 // channel (the refusing runner never dials), so this pins the registry/
 // source/sidecar cleanup plus RemoveHost's unattached path; the attached
-// channel teardown is pinned by TestDetachHostAttached and
-// TestRemoveHostTearsDownChannel in the sshconn package.
+// channel teardown is pinned by TestRemoveHostTearsDownChannel in the sshconn
+// package.
 func TestHostManageRemoveDetachesManager(t *testing.T) {
 	reg, err := hostreg.New(nil)
 	if err != nil {

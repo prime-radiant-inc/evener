@@ -620,8 +620,8 @@ func (m *Manager) installedLiveChannel(name string) (*Channel, bool) {
 // wiring actually uses: cmd/evener-hub/main.go backs both
 // hubcore.WebConfig.RemoteHostFacts (remoteHostFactsForChannel) and
 // RemoteHostHandshake (remoteHostHandshakeForChannel) with one
-// ChannelIfAttached lookup each, rather than with PreflightIfAttached or
-// HandshakeIfAttached. The generation guard lives at that call site —
+// ChannelIfAttached lookup each, rather than with PreflightIfAttached. The
+// generation guard lives at that call site —
 // `ch.Client() == client` — so a caller that must not mix two connection
 // generations reads the channel's client, preflight, and handshake from the
 // single value this returns and refuses when its client differs, so a
@@ -648,27 +648,6 @@ func (m *Manager) PreflightIfAttached(name string) (Preflight, bool) {
 		return Preflight{}, false
 	}
 	return ch.Preflight(), true
-}
-
-// HandshakeIfAttached returns the InitializeResponse captured when name's
-// current channel attached, ONLY while a live, not-closed channel is installed,
-// and reports false otherwise. It is NOT the production backing for
-// hubcore.WebConfig.RemoteHostHandshake: that seam is
-// remoteHostHandshakeForChannel, built on ChannelIfAttached with the channel
-// generation guard (`ch.Client() == client`) at the call site. This accessor
-// has no non-test caller; it is retained for tests and as a convenience for a
-// caller that does not need the generation guard. appwire.Client keeps its
-// Features privately, so ProtocolVersion/SourceID/Features are read through
-// the channel value directly; HubVersion stays preflight-owned (the
-// handshake's ServerInfo.Version is the hub's package constant, not its build
-// identity). Like ClientIfAttached it
-// takes the manager-wide mutex, not the per-host gate, and never dials.
-func (m *Manager) HandshakeIfAttached(name string) (appwire.InitializeResponse, bool) {
-	ch, ok := m.attachedChannel(name)
-	if !ok {
-		return appwire.InitializeResponse{}, false
-	}
-	return ch.Handshake(), true
 }
 
 // attachedChannel resolves name to its installed live channel, normalizing the
@@ -823,60 +802,6 @@ func (m *Manager) Close() error {
 	return first
 }
 
-// DetachHost removes name's host cleanly: it stops the supervisor first, then
-// drops the mapped channel, so a removed-then-readded host attaches fresh. The
-// name is normalized through the registry exactly like Ensure and
-// ClientIfAttached, and an unknown name (or a nil registry) is a no-op
-// returning nil: removal of the registry entry is what makes re-add clean, so
-// there is nothing to detach for a name the registry no longer reports.
-//
-// The host lock serializes with an in-flight Ensure — both hold it while they
-// inspect or publish the host's channel, so a channel cannot be announced as
-// usable after its teardown has begun — and the supervisor is stopped before
-// the channel is cleared so it cannot reconnect behind this call. The Detached
-// is paired through claimAnnounced exactly like Close, so consumers see it
-// only when the channel was announced. The channel close runs after the locks
-// are released: Channel.Close blocks on the ssh child's exit and must never be
-// held across m.mu, but the host lock spans the map mutation so no Ensure can
-// interleave between the clear and the reap. This never dials, preflights, or
-// attaches, and a second call for the same name is a no-op returning nil.
-func (m *Manager) DetachHost(name string) error {
-	if m.reg == nil {
-		return nil
-	}
-	// Trimmed for the lock key exactly as AddHost trims and as the registry's
-	// Get and Remove trim what they are given, so a padded spelling takes the
-	// same host gate as its canonical name.
-	name = strings.TrimSpace(name)
-	host, ok := m.reg.Get(name)
-	if !ok {
-		return nil
-	}
-	// The registry is the authority on the name's spelling, and every map below
-	// is keyed off host.Name: normalizing here keeps a padded spelling from
-	// missing the channel Ensure published, exactly as Ensure does.
-	name = host.Name
-	// Serialize with Ensure and this host's supervisor, as Close does: neither
-	// can inspect or publish the channel while it is being torn down.
-	lock := m.hostLock(name)
-	lock.Lock()
-	lock.holdAs(hostops.Holder{Kind: hostops.HolderManager, Activity: "detach"})
-	// A remove/re-add that swapped the entry while this call waited for the
-	// gate leaves the re-added host's own channel mapped under the name; the
-	// teardown is scoped to the identity resolved above, so that channel — and
-	// its supervisor — stay up.
-	ch := m.teardownHostChannel(name, host, true)
-	lock.Unlock()
-	m.releaseHostLock(name)
-	// Reaping the ssh child can block on its exit, which needs no lock; the map
-	// no longer references this channel, so a concurrent Ensure attaching fresh
-	// — the re-add path — cannot interleave with it.
-	if ch != nil {
-		_ = ch.Close()
-	}
-	return nil
-}
-
 // teardownHostChannel performs the channel half of a host teardown while the
 // caller holds the host lock: it stops the supervisor — a loop parked in
 // backoff would otherwise re-attach behind the teardown and a removed host
@@ -888,10 +813,10 @@ func (m *Manager) DetachHost(name string) error {
 // them, and makes the pairing a no-op for a channel whose Detached was
 // already emitted — so a Close racing the teardown cannot pair it twice. The
 // returned channel is the one that was mapped, for the caller to reap at the
-// position its own discipline fixes: the self-acquiring entries (RemoveHost,
-// UpdateHost, DetachHost) reap after releasing the host lock, while the
-// under-gate entries reap inside the caller's own reservation, which the caller
-// releases last (registry spec 08 §4's "gate released last"; the AttachUnderGate
+// position its own discipline fixes: the self-acquiring entries (RemoveHost
+// and UpdateHost) reap after releasing the host lock, while the under-gate
+// entries reap inside the caller's own reservation, which the caller releases
+// last (registry spec 08 §4's "gate released last"; the AttachUnderGate
 // precedent reaps the same way). The lock spans the map mutation so no Ensure
 // can interleave between the clear and the reap; Channel.Close's wait on the
 // ssh child's exit needs no lock either way. Callers hold the host lock.
@@ -982,19 +907,17 @@ func (m *Manager) stopSupervisorsBefore(name string, newer func(uint64) bool) (s
 // clears the mapped channel together with the per-host caches, so a concurrent
 // Ensure cannot publish a fresh channel for a host that is deregistered — its
 // registry recheck under the same lock sees the entry gone and refuses.
+// Dropping the registry entry and channel under one lock prevents a racing
+// Ensure from dialing and publishing between the two. The registry is the
+// manager's own (New takes it), so this method owns the whole lifecycle the
+// hub's host manager drives: persist first at the caller, then RemoveHost once,
+// and nothing is resurrected.
 //
-// DetachHost alone cannot give the caller that guarantee: it drops the channel
-// under the lock but leaves the registry entry to the caller, and the gap
-// between the two is exactly where a racing Ensure dials and publishes for a
-// host the caller is about to remove. The registry is the manager's own
-// (New takes it), so this method owns the whole lifecycle the hub's host
-// manager drives: persist first at the caller, then RemoveHost once, and
-// nothing is resurrected.
-//
-// Like DetachHost this never dials, an unknown name is a no-op returning nil,
-// and a second call for the same name is a no-op. The Detached pairing and
-// the post-lock reap mirror DetachHost exactly — both run through the same
-// teardownHostChannel. A nil registry is an error rather than a silent no-op:
+// This never dials, an unknown name is a no-op returning nil, and a second
+// call for the same name is a no-op. Both the Detached pairing and channel
+// unmap run through teardownHostChannel under the lock, and the unmapped
+// channel is reaped after the lock is released. A nil registry is an error
+// rather than a silent no-op:
 // a removal that committed nothing must not report success — a Remove that
 // answered Removed:true while the host stayed in the live registry would
 // leave it listed as removable-but-never-removed, mislabeled and unremovable
@@ -1016,7 +939,7 @@ func (m *Manager) RemoveHost(name string) error {
 	host, ok := m.reg.Get(name)
 	if ok {
 		// The registry is the authority on the name's spelling, and every map
-		// below is keyed off host.Name, exactly as Ensure and DetachHost do.
+		// below is keyed off host.Name, exactly as Ensure does.
 		name = host.Name
 	}
 	lock := m.hostLock(name)
@@ -1028,9 +951,9 @@ func (m *Manager) RemoveHost(name string) error {
 	if err != nil {
 		return err
 	}
-	// The reap runs after the lock is released, exactly as DetachHost's does:
-	// Channel.Close blocks on the ssh child's exit, and nothing references the
-	// channel once the map entry is gone.
+	// The reap runs after the lock is released: Channel.Close blocks on the
+	// ssh child's exit, and nothing references the channel once the map entry
+	// is gone.
 	if ch != nil {
 		_ = ch.Close()
 	}
@@ -1241,8 +1164,8 @@ func (m *Manager) UpdateHost(entry hostreg.Host, onRetire func(retired hostreg.H
 	lock.holdAs(hostops.Holder{Kind: hostops.HolderManager, Activity: "update"})
 	ch, err := m.updateHostUnderLock(entry, onRetire)
 	lock.Unlock()
-	// The reap runs after the lock is released, exactly as DetachHost's and
-	// RemoveHost's do: Channel.Close blocks on the ssh child's exit.
+	// The reap runs after the lock is released, exactly as RemoveHost's does:
+	// Channel.Close blocks on the ssh child's exit.
 	if ch != nil {
 		_ = ch.Close()
 	}

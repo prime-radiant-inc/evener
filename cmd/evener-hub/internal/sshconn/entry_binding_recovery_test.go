@@ -393,7 +393,7 @@ func TestRecoveryEntryBindingGuardsBothBareRestartMutations(t *testing.T) {
 }
 
 func TestRecoveryEntryBindingReleasedAtTeardown(t *testing.T) {
-	for _, boundary := range []string{"remove-readd", "update", "detach", "close"} {
+	for _, boundary := range []string{"remove-readd", "update", "close"} {
 		t.Run(boundary, func(t *testing.T) {
 			effects, validations := 0, 0
 			fr := deployRunner(t, func(int) ([]byte, error) { return launchContract("original"), nil }, func(int) ([]byte, error) {
@@ -427,8 +427,6 @@ func TestRecoveryEntryBindingReleasedAtTeardown(t *testing.T) {
 			case "update":
 				host.SSH = "new-registration.example"
 				err = m.UpdateHost(host, nil)
-			case "detach":
-				err = m.DetachHost(host.Name)
 			case "close":
 				err = m.Close()
 			}

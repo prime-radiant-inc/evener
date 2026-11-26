@@ -55,7 +55,7 @@ type hostLockEntry struct {
 
 // hostLockGate is the per-host gate itself: the mutex every holder of one
 // host's work serializes on (Ensure, the reconnect supervisor, AddHost,
-// UpdateHost, RemoveHost, DetachHost, Close — and, through Manager.TryAcquire,
+// UpdateHost, RemoveHost, Close — and, through Manager.TryAcquire,
 // the deploy pipeline's plan/deploy/restart paths), plus the holder
 // registration the pipeline's busy refusal renders (deploy pipeline 08b §5).
 //
@@ -214,7 +214,7 @@ func lockHostCtx(ctx context.Context, mu *hostLockGate) error {
 // holder, returning the typed busy error naming the current holder when the
 // gate is held. The gate it takes is the one gate this Manager's own paths use
 // (Ensure, the reconnect supervisor, AddHost, UpdateHost, RemoveHost,
-// DetachHost, Close), so a plan cannot interleave with an in-flight attach or
+// Close), so a plan cannot interleave with an in-flight attach or
 // teardown for the same host.
 //
 // Nothing waits: the acquisition is a TryLock on the same mutex, and a failed

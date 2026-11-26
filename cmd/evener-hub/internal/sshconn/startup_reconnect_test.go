@@ -601,7 +601,7 @@ func TestStartReconnectStopsOnTerminalError(t *testing.T) {
 	}
 }
 
-func TestStartReconnectStopsCleanlyOnCloseRemoveUpdateAndDetach(t *testing.T) {
+func TestStartReconnectStopsCleanlyOnCloseRemoveAndUpdate(t *testing.T) {
 	// parkedStartupManager starts one startup reconnect over a runner that always
 	// fails retryably, and returns once its loop is parked in backoff.
 	parkedStartupManager := func(t *testing.T) (*Manager, *startupSleepRecorder, *startupEventLog) {
@@ -640,6 +640,9 @@ func TestStartReconnectStopsCleanlyOnCloseRemoveUpdateAndDetach(t *testing.T) {
 		if err := m.RemoveHost("alpha"); err != nil {
 			t.Fatalf("RemoveHost: %v", err)
 		}
+		// No channel was ever mapped, so the disconnected state is the only signal a
+		// consumer has to clear midAttach.
+		log.waitFor(t, "the disconnected state", startupState(StateDisconnected))
 		testwait.Until(t, "the startup loop to exit", func() bool {
 			return len(startupLoopStates(m, "alpha")) == 0
 		})
@@ -656,27 +659,13 @@ func TestStartReconnectStopsCleanlyOnCloseRemoveUpdateAndDetach(t *testing.T) {
 		if err := m.UpdateHost(updated, nil); err != nil {
 			t.Fatalf("UpdateHost: %v", err)
 		}
-		testwait.Until(t, "the startup loop to exit", func() bool {
-			return len(startupLoopStates(m, "alpha")) == 0
-		})
-		log.requireNone(t, "the update announced a terminal failure", startupKind(EventFailed))
-		if err := m.Close(); err != nil {
-			t.Fatalf("Close: %v", err)
-		}
-	})
-
-	t.Run("DetachHost", func(t *testing.T) {
-		m, _, log := parkedStartupManager(t)
-		if err := m.DetachHost("alpha"); err != nil {
-			t.Fatalf("DetachHost: %v", err)
-		}
-		// No channel was ever mapped, so the detached state is the only signal a
+		// No channel was ever mapped, so the disconnected state is the only signal a
 		// consumer has to clear midAttach.
 		log.waitFor(t, "the disconnected state", startupState(StateDisconnected))
 		testwait.Until(t, "the startup loop to exit", func() bool {
 			return len(startupLoopStates(m, "alpha")) == 0
 		})
-		log.requireNone(t, "detach announced a terminal failure", startupKind(EventFailed))
+		log.requireNone(t, "the update announced a terminal failure", startupKind(EventFailed))
 		if err := m.Close(); err != nil {
 			t.Fatalf("Close: %v", err)
 		}

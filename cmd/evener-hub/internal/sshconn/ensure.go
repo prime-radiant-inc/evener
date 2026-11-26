@@ -1176,8 +1176,9 @@ func (m *Manager) attach(ctx context.Context, host hostreg.Host, facts Preflight
 		// Start-error branch above already classifies that one.
 		return nil, fmt.Errorf("%w: host %q initialize: %w: %s", ErrSSHStart, host.Name, err, sink.tail())
 	}
-	// Publish the handshake before the channel is handed to any caller, so the
-	// attached-only HandshakeIfAttached never races the attach it reports on.
+	// Publish the handshake before the channel is handed to any caller, so
+	// attached-only lookups through ChannelIfAttached never race the attach they
+	// report on.
 	ch.handshake = handshake
 	if handshake.Features.SessionTools && m.opts.SessionToolsHubID != "" {
 		if _, err := client.IdentifySessionToolsPeer(initCtx, appwire.SessionToolsPeerParams{HubID: m.opts.SessionToolsHubID}); err != nil {

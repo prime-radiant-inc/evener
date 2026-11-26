@@ -178,11 +178,9 @@ type WebConfig struct {
 	// ServerInfo, SourceID, Features) captured when a remote host's channel
 	// attached, ONLY while a live channel is installed, without dialing. In
 	// production it is a closure over component 04's Manager.ChannelIfAttached
-	// with the client-identity guard at the call site, not
-	// Manager.HandshakeIfAttached (which has no production caller). It takes
-	// client — the exact generation attach dialed — and reports false when the
-	// installed channel is a different one. nil leaves those fields
-	// zero-valued (tests).
+	// with the client-identity guard at the call site. It takes client — the
+	// exact generation attach dialed — and reports false when the installed
+	// channel is a different one. nil leaves those fields zero-valued (tests).
 	RemoteHostHandshake func(host string, client *appwire.Client) (appwire.InitializeResponse, bool)
 	// RemoteHostOnline reports whether the controller's channel to host is
 	// currently attached (component 06). Nil leaves every remote host online
