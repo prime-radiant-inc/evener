@@ -79,8 +79,8 @@ func writeLaunchPromptSession(t *testing.T, headerPrompt, metaPrompt string) str
 	if err != nil {
 		t.Fatalf("transcript.NewWriter: %v", err)
 	}
-	if err := tw.Append(schema.Turn{Kind: schema.TurnUserInput, Message: llm.User("hello")}); err != nil {
-		t.Fatalf("Append: %v", err)
+	if _, err := tw.Record(schema.Turn{Kind: schema.TurnUserInput, Message: llm.User("hello")}, transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
+		t.Fatalf("Record: %v", err)
 	}
 	if err := tw.Close(); err != nil {
 		t.Fatalf("Close: %v", err)

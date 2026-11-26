@@ -45,7 +45,7 @@ func TestReconcileDelegateAttentionPreservesStateForDelegatesThatStillOwe(t *tes
 	}
 	turn := schema.NewTurn(schema.TurnSteering, llm.User("still owed"))
 	turn.AttentionID = attentionID
-	if err := writer.AppendDurable(turn); err != nil {
+	if _, err := writer.Record(turn, transcript.RecordOptions{Door: transcript.DoorDurable}); err != nil {
 		t.Fatalf("append attention: %v", err)
 	}
 	if err := writer.Close(); err != nil {
@@ -92,7 +92,7 @@ func TestReconcileDelegateAttentionBackfillsOnlyUnjournaledRows(t *testing.T) {
 	for _, attentionID := range []string{presentedID, legacyID} {
 		turn := schema.NewTurn(schema.TurnSteering, llm.User(attentionID))
 		turn.AttentionID = attentionID
-		if err := writer.AppendDurable(turn); err != nil {
+		if _, err := writer.Record(turn, transcript.RecordOptions{Door: transcript.DoorDurable}); err != nil {
 			t.Fatalf("append attention %s: %v", attentionID, err)
 		}
 	}

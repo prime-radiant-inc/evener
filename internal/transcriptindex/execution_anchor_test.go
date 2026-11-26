@@ -44,7 +44,7 @@ func TestLatestExecutionTurnIDUsesExecutionSpansNotLatestItems(t *testing.T) {
 			}
 			for _, entry := range tc.entries {
 				entry.Format = schema.TurnFormatIdentity
-				if err := writer.Append(entry); err != nil {
+				if _, err := writer.Record(entry, transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -139,7 +139,7 @@ func TestLatestExecutionLocatorTracksExtensionAndCrossHandleAdoption(t *testing.
 	appendIdentity := func(entry schema.Turn) {
 		t.Helper()
 		entry.Format = schema.TurnFormatIdentity
-		if err := writer.Append(entry); err != nil {
+		if _, err := writer.Record(entry, transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -189,7 +189,7 @@ func TestLatestExecutionLocatorCorruptionRebuildsFromTranscript(t *testing.T) {
 		t.Fatal(err)
 	}
 	entry := schema.Turn{Format: schema.TurnFormatIdentity, TurnID: "A", TurnKind: schema.TurnSpanExecution, Kind: schema.TurnUserInput, Message: llm.User("A")}
-	if err := writer.Append(entry); err != nil {
+	if _, err := writer.Record(entry, transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 		t.Fatal(err)
 	}
 	if err := writer.Close(); err != nil {

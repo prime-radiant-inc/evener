@@ -109,11 +109,11 @@ func TestManagerWatchModelSwitchExecutionAnchor(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, entry := range answerLinkRecords(t, sess) {
-		if err := writer.Append(entry); err != nil {
+		if _, err := writer.Record(entry, transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := writer.Append(schema.Turn{Format: schema.TurnFormatIdentity, TurnID: "execution-B", TurnKind: schema.TurnSpanExecution, Kind: schema.TurnUserInput, Message: llm.User("unfinished execution B")}); err != nil {
+	if _, err := writer.Record(schema.Turn{Format: schema.TurnFormatIdentity, TurnID: "execution-B", TurnKind: schema.TurnSpanExecution, Kind: schema.TurnUserInput, Message: llm.User("unfinished execution B")}, transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 		t.Fatal(err)
 	}
 	if err := writer.Close(); err != nil {

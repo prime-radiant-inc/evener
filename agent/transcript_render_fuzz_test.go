@@ -698,7 +698,7 @@ func TestTrenderExpansionOracleDistinguishesNeighboringRecords(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, entry := range entries {
-		if err := w.Append(entry.Turn); err != nil {
+		if _, err := w.Record(entry.Turn, transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 			_ = w.Close()
 			t.Fatal(err)
 		}
@@ -776,7 +776,7 @@ func trenderAssertPagedExpansion(t *testing.T, header transcript.Header, entries
 		t.Fatal(err)
 	}
 	for _, entry := range entries {
-		if err := w.Append(entry.Turn); err != nil {
+		if _, err := w.Record(entry.Turn, transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 			_ = w.Close()
 			t.Fatal(err)
 		}

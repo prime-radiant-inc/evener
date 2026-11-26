@@ -48,10 +48,10 @@ func writeTranscriptPairs(t testing.TB, path string, pairs int) {
 		t.Fatalf("NewWriter: %v", err)
 	}
 	for range pairs {
-		if err := tw.Append(schema.NewTurn(schema.TurnUserInput, llm.User("in"))); err != nil {
+		if _, err := tw.Record(schema.NewTurn(schema.TurnUserInput, llm.User("in")), transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 			t.Fatalf("append user: %v", err)
 		}
-		if err := tw.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("out"))); err != nil {
+		if _, err := tw.Record(schema.NewTurn(schema.TurnAssistant, llm.Assistant("out")), transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 			t.Fatalf("append assistant: %v", err)
 		}
 	}
@@ -350,7 +350,7 @@ func TestTranscriptHeaderReadsOnlyLeadingHeader(t *testing.T) {
 		// Close still flushes, so the file read back is byte-identical.
 		writer.SyncInterval = time.Hour
 		for range entries {
-			if err := writer.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("historical entry"))); err != nil {
+			if _, err := writer.Record(schema.NewTurn(schema.TurnAssistant, llm.Assistant("historical entry")), transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -503,10 +503,10 @@ func TestSeedingAReservedTurnIDFromTheTranscriptKeepsTurnIDsUnique(t *testing.T)
 			user.ClientMutationID = "reply-1"
 			user.StableTurnID = reserved
 		}
-		if err := tw.Append(user); err != nil {
+		if _, err := tw.Record(user, transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 			t.Fatalf("append user: %v", err)
 		}
-		if err := tw.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant(fmt.Sprintf("out-%d", i)))); err != nil {
+		if _, err := tw.Record(schema.NewTurn(schema.TurnAssistant, llm.Assistant(fmt.Sprintf("out-%d", i))), transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 			t.Fatalf("append assistant: %v", err)
 		}
 	}

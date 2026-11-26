@@ -100,7 +100,7 @@ func TestHistoryServingReplacementKeepsCapturedInstance(t *testing.T) {
 				t.Fatal(err)
 			}
 			t.Cleanup(func() { _ = writer.Close() })
-			if err := writer.Append(inExecution("B", true, schema.NewTurn(schema.TurnUserInput, llm.User("new-only")))); err != nil {
+			if _, err := writer.Record(inExecution("B", true, schema.NewTurn(schema.TurnUserInput, llm.User("new-only"))), transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 				t.Fatal(err)
 			}
 			prepared, err := PrepareAppIdentity("local", "instance-B", path)

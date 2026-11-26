@@ -38,7 +38,7 @@ func TestManagerObservationReconnectBeyondLatestPage(t *testing.T) {
 	appendEntry := func(entry schema.Turn) {
 		t.Helper()
 		entry.Format = schema.TurnFormatIdentity
-		if err := writer.Append(entry); err != nil {
+		if _, err := writer.Record(entry, transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -260,7 +260,7 @@ func TestManagerObservationRecoveryPageBoundaries(t *testing.T) {
 			appendItems := func(start, count int) {
 				t.Helper()
 				for i := start; i < start+count; i++ {
-					if err := writer.Append(schema.Turn{Format: schema.TurnFormatIdentity, TurnID: "work", TurnKind: schema.TurnSpanExecution, Kind: schema.TurnUserInput, Message: llm.User(fmt.Sprintf("item-%d", i))}); err != nil {
+					if _, err := writer.Record(schema.Turn{Format: schema.TurnFormatIdentity, TurnID: "work", TurnKind: schema.TurnSpanExecution, Kind: schema.TurnUserInput, Message: llm.User(fmt.Sprintf("item-%d", i))}, transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 						t.Fatal(err)
 					}
 				}

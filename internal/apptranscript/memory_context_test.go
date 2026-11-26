@@ -233,7 +233,7 @@ func TestMemoryContextProjectionReloadParity(t *testing.T) {
 	}
 	text := memoryContextRecord(MemoryIndexSection("project", "current", true, "opaque-parity\n"), MemoryPageChangesSection("project", []string{"opaque-parity.md"}))
 	turn := memoryContextTurn(text)
-	if err := w.Append(turn); err != nil {
+	if _, err := w.Record(turn, transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 		t.Fatal(err)
 	}
 	if err := w.Close(); err != nil {

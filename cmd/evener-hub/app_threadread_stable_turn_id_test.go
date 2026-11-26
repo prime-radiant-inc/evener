@@ -88,10 +88,10 @@ func seedPastThreadWithReservedTurnID(t *testing.T) (hubcore.WebConfig, string, 
 			user.ClientMutationID = "reply-1"
 			user.StableTurnID = reserved
 		}
-		if err := w.Append(user); err != nil {
+		if _, err := w.Record(user, transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 			t.Fatal(err)
 		}
-		if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("out"))); err != nil {
+		if _, err := w.Record(schema.NewTurn(schema.TurnAssistant, llm.Assistant("out")), transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 			t.Fatal(err)
 		}
 	}

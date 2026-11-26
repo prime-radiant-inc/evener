@@ -16,7 +16,7 @@ import (
 // which reports a closed writer instead of dropping the write silently.
 func transcriptAcceptsWrites(t *testing.T, s *Session) bool {
 	t.Helper()
-	err := s.attachedTranscript().AppendSynced(schema.NewTurn(schema.TurnUserInput, llm.User("probe")))
+	_, err := s.attachedTranscript().Record(schema.NewTurn(schema.TurnUserInput, llm.User("probe")), transcript.RecordOptions{Door: transcript.DoorSynced})
 	if err != nil && !errors.Is(err, transcript.ErrWriterClosed) {
 		t.Fatalf("probe append: %v", err)
 	}

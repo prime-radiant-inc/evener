@@ -320,7 +320,7 @@ func TestResumeCorpus(t *testing.T) {
 
 			// The resumed writer's first append must take the pinned sequence,
 			// so a restart never reuses a number the file already holds.
-			if err := w.Append(corpusTurn(schema.TurnAssistant, "after resume")); err != nil {
+			if _, err := w.Record(corpusTurn(schema.TurnAssistant, "after resume"), RecordOptions{Door: DoorBuffered}); err != nil {
 				t.Fatalf("append after resume: %v", err)
 			}
 			if got := tailNextSeq(w) - 1; got != tc.wantNextSeq {

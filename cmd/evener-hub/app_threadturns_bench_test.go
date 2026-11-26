@@ -54,15 +54,15 @@ func seedCompletedTurnsPastThread(tb testing.TB, rounds int) (hubcore.WebConfig,
 	usage := llm.Usage{InputTokens: 1000, OutputTokens: 100, TotalTokens: 1100}
 	for i := range rounds {
 		turnID := fmt.Sprintf("turn_%06d", i)
-		if err := writer.Append(execution(turnID, schema.NewTurn(schema.TurnUserInput, llm.User(fmt.Sprintf("request %d", i))))); err != nil {
+		if _, err := writer.Record(execution(turnID, schema.NewTurn(schema.TurnUserInput, llm.User(fmt.Sprintf("request %d", i)))), transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 			tb.Fatal(err)
 		}
-		if err := writer.Append(execution(turnID, schema.Turn{
+		if _, err := writer.Record(execution(turnID, schema.Turn{
 			Kind: schema.TurnAssistant, Message: llm.Assistant(fmt.Sprintf("answer %d", i)), Usage: usage,
-		})); err != nil {
+		}), transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 			tb.Fatal(err)
 		}
-		if err := writer.Append(completedExecution(turnID)); err != nil {
+		if _, err := writer.Record(completedExecution(turnID), transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 			tb.Fatal(err)
 		}
 	}

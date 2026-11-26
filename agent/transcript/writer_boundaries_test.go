@@ -53,9 +53,9 @@ func TestWriterZeroProgressReturnsErrShortWrite(t *testing.T) {
 	}
 	fs.file.zeroNextWrite = true
 
-	err = w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("not persisted")))
+	_, err = w.Record(schema.NewTurn(schema.TurnAssistant, llm.Assistant("not persisted")), RecordOptions{Door: DoorBuffered})
 	if !errors.Is(err, io.ErrShortWrite) {
-		t.Fatalf("Append error = %v, want io.ErrShortWrite", err)
+		t.Fatalf("Record error = %v, want io.ErrShortWrite", err)
 	}
 	// The attempt consumed its sequence number but recorded no ordinal.
 	if seq := tailNextSeq(w); seq != 1 {
@@ -104,7 +104,8 @@ func TestWriterAppendRechecksClosedStateAfterLock(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {
 		started <- struct{}{}
-		done <- w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("closed")))
+		_, err := w.Record(schema.NewTurn(schema.TurnAssistant, llm.Assistant("closed")), RecordOptions{Door: DoorBuffered})
+		done <- err
 	}()
 	<-started
 	runtime.Gosched()
@@ -202,7 +203,7 @@ func armPartialWriteFailure(t *testing.T, transferBytes int) (*Writer, *partialW
 func TestAppendDurable_PartialLineRollbackFailurePoisonsWriter(t *testing.T) {
 	w, fs := armPartialWriteFailure(t, 12)
 
-	err := w.AppendDurable(schema.NewTurn(schema.TurnAssistant, llm.Assistant("interrupted")))
+	_, err := w.Record(schema.NewTurn(schema.TurnAssistant, llm.Assistant("interrupted")), RecordOptions{Door: DoorDurable})
 	if !errors.Is(err, ErrRollbackFailed) {
 		t.Fatalf("append error = %v, want a rollback failure over the partial line", err)
 	}
@@ -217,10 +218,10 @@ func TestAppendDurable_PartialLineRollbackFailurePoisonsWriter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read back: %v", err)
 	}
-	if err := w.AppendDurable(schema.NewTurn(schema.TurnAssistant, llm.Assistant("would weld onto the partial line"))); !errors.Is(err, ErrWriterPoisoned) {
+	if _, err := w.Record(schema.NewTurn(schema.TurnAssistant, llm.Assistant("would weld onto the partial line")), RecordOptions{Door: DoorDurable}); !errors.Is(err, ErrWriterPoisoned) {
 		t.Fatalf("append after an unresolved partial write = %v, want ErrWriterPoisoned", err)
 	}
-	if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("the buffered door too"))); !errors.Is(err, ErrWriterPoisoned) {
+	if _, err := w.Record(schema.NewTurn(schema.TurnAssistant, llm.Assistant("the buffered door too")), RecordOptions{Door: DoorBuffered}); !errors.Is(err, ErrWriterPoisoned) {
 		t.Fatalf("buffered append after an unresolved partial write = %v, want ErrWriterPoisoned", err)
 	}
 	after, err := afero.ReadFile(fs, faultTranscriptPath)
@@ -241,7 +242,7 @@ func TestAppendDurable_WholeLineWriteFailureSpendsSequence(t *testing.T) {
 	w, fs := armPartialWriteFailure(t, math.MaxInt32)
 
 	retained := toolResultTurn(llm.ToolResultData{ToolCallID: "call_1", Name: "read_file", IsError: true})
-	if err := w.AppendDurable(retained); err != nil {
+	if _, err := w.Record(retained, RecordOptions{Door: DoorDurable}); err != nil {
 		t.Fatalf("append error = %v, want nil: the whole line is a record", err)
 	}
 	if len(w.DrainWarnings()) != 1 {
@@ -283,7 +284,7 @@ func TestAppendDurable_WholeLineWriteFailureSpendsSequence(t *testing.T) {
 func TestAppend_PartialLineFailurePoisonsWriter(t *testing.T) {
 	w, fs := armPartialWriteFailure(t, 12)
 
-	err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("interrupted")))
+	_, err := w.Record(schema.NewTurn(schema.TurnAssistant, llm.Assistant("interrupted")), RecordOptions{Door: DoorBuffered})
 	if err == nil || errors.Is(err, ErrWriterPoisoned) {
 		t.Fatalf("buffered append error = %v, want the write failure itself", err)
 	}
@@ -298,10 +299,10 @@ func TestAppend_PartialLineFailurePoisonsWriter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read back: %v", err)
 	}
-	if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("would weld onto the partial line"))); !errors.Is(err, ErrWriterPoisoned) {
+	if _, err := w.Record(schema.NewTurn(schema.TurnAssistant, llm.Assistant("would weld onto the partial line")), RecordOptions{Door: DoorBuffered}); !errors.Is(err, ErrWriterPoisoned) {
 		t.Fatalf("buffered append after an unresolved partial write = %v, want ErrWriterPoisoned", err)
 	}
-	if err := w.AppendDurable(schema.NewTurn(schema.TurnAssistant, llm.Assistant("the durable door too"))); !errors.Is(err, ErrWriterPoisoned) {
+	if _, err := w.Record(schema.NewTurn(schema.TurnAssistant, llm.Assistant("the durable door too")), RecordOptions{Door: DoorDurable}); !errors.Is(err, ErrWriterPoisoned) {
 		t.Fatalf("durable append after an unresolved partial write = %v, want ErrWriterPoisoned", err)
 	}
 	after, err := afero.ReadFile(fs, faultTranscriptPath)
@@ -321,7 +322,7 @@ func TestAppend_WholeLineFailureSpendsSequence(t *testing.T) {
 	w, _ := armPartialWriteFailure(t, math.MaxInt32)
 
 	retained := toolResultTurn(llm.ToolResultData{ToolCallID: "call_1", Name: "read_file", IsError: true})
-	if err := w.Append(retained); err != nil {
+	if _, err := w.Record(retained, RecordOptions{Door: DoorBuffered}); err != nil {
 		t.Fatalf("buffered append error = %v, want nil: the whole line is a record", err)
 	}
 	if len(w.DrainWarnings()) != 1 {
@@ -347,10 +348,10 @@ func TestAppend_WholeLineFailureSpendsSequence(t *testing.T) {
 func TestAppend_NoBytesWrittenLeavesWriterUsable(t *testing.T) {
 	w, fs := armPartialWriteFailure(t, 0)
 
-	if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("never left the caller"))); err == nil {
+	if _, err := w.Record(schema.NewTurn(schema.TurnAssistant, llm.Assistant("never left the caller")), RecordOptions{Door: DoorBuffered}); err == nil {
 		t.Fatal("buffered append reported success over an injected write failure")
 	}
-	if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("retry"))); err != nil {
+	if _, err := w.Record(schema.NewTurn(schema.TurnAssistant, llm.Assistant("retry")), RecordOptions{Door: DoorBuffered}); err != nil {
 		t.Fatalf("retry after a write that transferred nothing: %v", err)
 	}
 	if err := w.Close(); err != nil {
@@ -438,10 +439,10 @@ func assertSingleLandedEntry(t *testing.T, path, text string) {
 func TestAppend_RepositionsAfterRollbackLostTheFileEnd(t *testing.T) {
 	w, path := faultedOsWriter(t, rollbackLostPositionPlan())
 
-	if err := w.AppendDurable(schema.NewTurn(schema.TurnAssistant, llm.Assistant("rolled back"))); !errors.Is(err, ErrRollbackFailed) {
+	if _, err := w.Record(schema.NewTurn(schema.TurnAssistant, llm.Assistant("rolled back")), RecordOptions{Door: DoorDurable}); !errors.Is(err, ErrRollbackFailed) {
 		t.Fatalf("durable append error = %v, want the rollback failure that lost the position", err)
 	}
-	if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("lands at the end"))); err != nil {
+	if _, err := w.Record(schema.NewTurn(schema.TurnAssistant, llm.Assistant("lands at the end")), RecordOptions{Door: DoorBuffered}); err != nil {
 		t.Fatalf("buffered append after the rollback: %v", err)
 	}
 	if err := w.Close(); err != nil {
@@ -456,13 +457,13 @@ func TestAppend_RepositionsAfterRollbackLostTheFileEnd(t *testing.T) {
 func TestAppend_RetriesAfterAFailedReposition(t *testing.T) {
 	w, path := faultedOsWriter(t, rollbackLostPositionPlan(9))
 
-	if err := w.AppendDurable(schema.NewTurn(schema.TurnAssistant, llm.Assistant("rolled back"))); !errors.Is(err, ErrRollbackFailed) {
+	if _, err := w.Record(schema.NewTurn(schema.TurnAssistant, llm.Assistant("rolled back")), RecordOptions{Door: DoorDurable}); !errors.Is(err, ErrRollbackFailed) {
 		t.Fatalf("durable append error = %v, want the rollback failure that lost the position", err)
 	}
-	if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("never left the caller"))); err == nil {
+	if _, err := w.Record(schema.NewTurn(schema.TurnAssistant, llm.Assistant("never left the caller")), RecordOptions{Door: DoorBuffered}); err == nil {
 		t.Fatal("buffered append reported success over a failed reposition")
 	}
-	if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("lands at the end"))); err != nil {
+	if _, err := w.Record(schema.NewTurn(schema.TurnAssistant, llm.Assistant("lands at the end")), RecordOptions{Door: DoorBuffered}); err != nil {
 		t.Fatalf("buffered append after the reposition recovered: %v", err)
 	}
 	if err := w.Close(); err != nil {
@@ -479,7 +480,7 @@ func TestAppend_RetriesAfterAFailedReposition(t *testing.T) {
 func TestAppend_WholeLineFailureLeavesTheWriterDirtyForClose(t *testing.T) {
 	w, fs := armPartialWriteFailure(t, math.MaxInt32)
 
-	if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("landed unsynced"))); err != nil {
+	if _, err := w.Record(schema.NewTurn(schema.TurnAssistant, llm.Assistant("landed unsynced")), RecordOptions{Door: DoorBuffered}); err != nil {
 		t.Fatalf("buffered append error = %v, want nil: the whole line is a record", err)
 	}
 	before := fs.file.syncs

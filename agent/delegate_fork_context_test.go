@@ -270,7 +270,7 @@ func TestDelegateForkContext_DirectResumeKeepsAssignment(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, input := range []string{"parent-request-sentinel", "assigned-unit-sentinel"} {
-		if err := writer.Append(schema.NewTurn(schema.TurnUserInput, llm.User(input))); err != nil {
+		if _, err := writer.Record(schema.NewTurn(schema.TurnUserInput, llm.User(input)), transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 			t.Fatal(err)
 		}
 	}

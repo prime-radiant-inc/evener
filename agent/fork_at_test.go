@@ -146,8 +146,8 @@ func TestForkSessionAtUserTurn_OmitsMachineryNoteFromOriginalInput(t *testing.T)
 		schema.NewTurn(schema.TurnUserInput, msg),
 	}
 	for _, turn := range turns {
-		if err := tw.Append(turn); err != nil {
-			t.Fatalf("Append turn: %v", err)
+		if _, err := tw.Record(turn, transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
+			t.Fatalf("Record turn: %v", err)
 		}
 	}
 	if err := tw.Close(); err != nil {
@@ -210,8 +210,8 @@ func TestForkSessionAtUserTurn_KeepsVerbatimMachineryPaste(t *testing.T) {
 		schema.NewTurn(schema.TurnUserInput, msg),
 	}
 	for _, turn := range turns {
-		if err := tw.Append(turn); err != nil {
-			t.Fatalf("Append turn: %v", err)
+		if _, err := tw.Record(turn, transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
+			t.Fatalf("Record turn: %v", err)
 		}
 	}
 	if err := tw.Close(); err != nil {

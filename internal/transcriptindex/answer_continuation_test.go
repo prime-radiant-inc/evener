@@ -40,7 +40,7 @@ func TestAnswerContinuationRecordedEdges(t *testing.T) {
 				t.Fatal(err)
 			}
 			for _, id := range []string{"A", "B", "X", "C"} {
-				if err := w.Append(schema.Turn{Format: schema.TurnFormatIdentity, TurnID: id, TurnKind: schema.TurnSpanExecution, Kind: schema.TurnUserInput, Message: llm.User(id), AnswerToTurnIDs: tc.links[id]}); err != nil {
+				if _, err := w.Record(schema.Turn{Format: schema.TurnFormatIdentity, TurnID: id, TurnKind: schema.TurnSpanExecution, Kind: schema.TurnUserInput, Message: llm.User(id), AnswerToTurnIDs: tc.links[id]}, transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 					t.Fatal(err)
 				}
 			}

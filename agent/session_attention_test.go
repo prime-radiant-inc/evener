@@ -56,7 +56,7 @@ func TestReadExistingDelegateAttentionFoldMemoizesAndInvalidatesOnAppend(t *test
 	}
 	steering := schema.NewTurn(schema.TurnSteering, llm.User("memoized attention"))
 	steering.AttentionID = attentionID
-	if err := writer.AppendDurable(steering); err != nil {
+	if _, err := writer.Record(steering, transcript.RecordOptions{Door: transcript.DoorDurable}); err != nil {
 		t.Fatal(err)
 	}
 	if err := writer.Close(); err != nil {
@@ -112,7 +112,7 @@ func TestReadExistingDelegateAttentionFoldMemoizesAndInvalidatesOnAppend(t *test
 	resolution.AttentionResolution = &schema.AttentionResolutionInfo{
 		AttentionID: attentionID, Disposition: string(delegateAttentionConsumed),
 	}
-	if err := appender.AppendDurable(resolution); err != nil {
+	if _, err := appender.Record(resolution, transcript.RecordOptions{Door: transcript.DoorDurable}); err != nil {
 		t.Fatal(err)
 	}
 	if err := appender.Close(); err != nil {
@@ -155,7 +155,7 @@ func TestReadExistingDelegateAttentionFoldRacingAppendStaysVisible(t *testing.T)
 	}
 	steering := schema.NewTurn(schema.TurnSteering, llm.User("raced attention"))
 	steering.AttentionID = attentionID
-	if err := writer.AppendDurable(steering); err != nil {
+	if _, err := writer.Record(steering, transcript.RecordOptions{Door: transcript.DoorDurable}); err != nil {
 		t.Fatal(err)
 	}
 	if err := writer.Close(); err != nil {
@@ -176,7 +176,7 @@ func TestReadExistingDelegateAttentionFoldRacingAppendStaysVisible(t *testing.T)
 		}
 		racing := schema.NewTurn(schema.TurnSteering, llm.User("attention that landed during the read"))
 		racing.AttentionID = racingID
-		if err := appender.AppendDurable(racing); err != nil {
+		if _, err := appender.Record(racing, transcript.RecordOptions{Door: transcript.DoorDurable}); err != nil {
 			return delegateAttentionFold{}, 0, err
 		}
 		if err := appender.Close(); err != nil {
@@ -229,7 +229,7 @@ func TestReadExistingDelegateAttentionFoldRemovalRacingTheFoldErrors(t *testing.
 	}
 	steering := schema.NewTurn(schema.TurnSteering, llm.User("attention on a transcript that will vanish"))
 	steering.AttentionID = "delegate:delivery-fold-removal"
-	if err := writer.AppendDurable(steering); err != nil {
+	if _, err := writer.Record(steering, transcript.RecordOptions{Door: transcript.DoorDurable}); err != nil {
 		t.Fatal(err)
 	}
 	if err := writer.Close(); err != nil {
@@ -276,7 +276,7 @@ func TestReadExistingDelegateAttentionFoldRepairRacingTheFoldSucceeds(t *testing
 	}
 	steering := schema.NewTurn(schema.TurnSteering, llm.User("attention under a racing repair"))
 	steering.AttentionID = attentionID
-	if err := writer.AppendDurable(steering); err != nil {
+	if _, err := writer.Record(steering, transcript.RecordOptions{Door: transcript.DoorDurable}); err != nil {
 		t.Fatal(err)
 	}
 	if err := writer.Close(); err != nil {
@@ -409,7 +409,7 @@ func newDelegateAttentionAcceptanceHarness(t *testing.T, sessionID string, fs af
 	for _, attentionID := range attentionIDs {
 		attention := schema.NewTurn(schema.TurnSteering, llm.User("durable attention "+attentionID))
 		attention.AttentionID = attentionID
-		if err := writer.AppendDurable(attention); err != nil {
+		if _, err := writer.Record(attention, transcript.RecordOptions{Door: transcript.DoorDurable}); err != nil {
 			t.Fatalf("append attention %q: %v", attentionID, err)
 		}
 	}
@@ -456,7 +456,7 @@ func attachDelegateAttentionTranscriptForTest(t *testing.T, c *delegateTreeContr
 	runtime.attachTranscript(writer, nil)
 	turn := schema.NewTurn(schema.TurnSteering, llm.User("attention "+attentionID))
 	turn.AttentionID = attentionID
-	if err := writer.AppendDurable(turn); err != nil {
+	if _, err := writer.Record(turn, transcript.RecordOptions{Door: transcript.DoorDurable}); err != nil {
 		t.Fatalf("append attention: %v", err)
 	}
 	c.noteDelegateAttention(delegateID, attentionID)
@@ -702,7 +702,7 @@ func TestDelegateAttention_StabilizationRetryPreservesFailedBarrier(t *testing.T
 	t.Cleanup(func() { _ = runtime.closeAttachedTranscript() })
 	attention := schema.NewTurn(schema.TurnSteering, llm.User("pending attention"))
 	attention.AttentionID = attentionID
-	if err := writer.AppendDurable(attention); err != nil {
+	if _, err := writer.Record(attention, transcript.RecordOptions{Door: transcript.DoorDurable}); err != nil {
 		t.Fatalf("append attention: %v", err)
 	}
 	fs.failNextAmbiguousDurability(3)
@@ -749,12 +749,12 @@ func TestDelegateAttention_RecoveryRetainedRuntimePreservesFailedToolCount(t *te
 	runtime.attachTranscript(writer, nil)
 	t.Cleanup(func() { _ = runtime.closeAttachedTranscript() })
 	failed := schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed("failed-call-1", "probe", "failed", true))
-	if err := writer.AppendDurable(failed); err != nil {
+	if _, err := writer.Record(failed, transcript.RecordOptions{Door: transcript.DoorDurable}); err != nil {
 		t.Fatalf("append first failed result: %v", err)
 	}
 	attention := schema.NewTurn(schema.TurnSteering, llm.User("pending attention"))
 	attention.AttentionID = attentionID
-	if err := writer.AppendDurable(attention); err != nil {
+	if _, err := writer.Record(attention, transcript.RecordOptions{Door: transcript.DoorDurable}); err != nil {
 		t.Fatalf("append attention: %v", err)
 	}
 	fs.failNextResolutionDurability()
@@ -841,11 +841,11 @@ func TestDelegateAttention_ColdCallerCommitRequiresRenewedDurabilityBeforeSource
 	commit.DelegateDeliveryCommits = []schema.DelegateDeliveryCommit{{ToolCallID: "delegate-call", DeliveryID: plans[0].deliveryID}}
 	fs.failNextAmbiguousDurability(3)
 	// The commit's whole line lands but its fsync fails: a record, so
-	// AppendDurable returns nil, tracked as dirty debt (not poison — the writer
+	// DoorDurable returns nil, tracked as dirty debt (not poison — the writer
 	// stays usable). Durability is unestablished, and the cold replay below is
 	// what must not source-ack until a renewed barrier confirms it; Close's own
 	// flush fails too, surfacing the unsynced debt.
-	if err := writer.AppendDurable(commit); err != nil {
+	if _, err := writer.Record(commit, transcript.RecordOptions{Door: transcript.DoorDurable}); err != nil {
 		t.Fatalf("ambiguous caller commit append error = %v, want nil: the whole line is a record", err)
 	}
 	if writer.Poisoned() {
@@ -958,7 +958,7 @@ func TestDelegateAttention_LiveResolutionRetryReestablishesDurabilityBeforeSettl
 	t.Cleanup(func() { _ = runtime.attachedTranscript().Close() })
 	attention := schema.NewTurn(schema.TurnSteering, llm.User("pending attention"))
 	attention.AttentionID = attentionID
-	if err := writer.AppendDurable(attention); err != nil {
+	if _, err := writer.Record(attention, transcript.RecordOptions{Door: transcript.DoorDurable}); err != nil {
 		t.Fatalf("append attention: %v", err)
 	}
 	fs.failNextAmbiguousDurability(3)
@@ -1060,7 +1060,7 @@ func TestDelegateAttention_PublicTranscriptReadsExcludePrivateResolutionMetadata
 	results.DelegateDeliveryCommits = []schema.DelegateDeliveryCommit{{ToolCallID: callID, DeliveryID: deliveryID}}
 	turns = append(turns, results)
 	for _, turn := range turns {
-		if err := writer.AppendDurable(turn); err != nil {
+		if _, err := writer.Record(turn, transcript.RecordOptions{Door: transcript.DoorDurable}); err != nil {
 			_ = writer.Close()
 			t.Fatalf("append transcript turn: %v", err)
 		}
@@ -1192,7 +1192,7 @@ func TestDelegateAttention_PublicTranscriptReadsExcludePrivateResolutionMetadata
 		delegateAttentionResolutionTurn(findAttention.AttentionID, delegateAttentionConsumed),
 		schema.NewTurn(schema.TurnUserInput, llm.User("later public match")),
 	} {
-		if err := findWriter.AppendDurable(turn); err != nil {
+		if _, err := findWriter.Record(turn, transcript.RecordOptions{Door: transcript.DoorDurable}); err != nil {
 			_ = findWriter.Close()
 			t.Fatalf("append searchable transcript: %v", err)
 		}
@@ -1231,7 +1231,7 @@ func TestDelegateAttention_PublicJSONLPreservesExactToolResultNumbers(t *testing
 		schema.NewTurn(schema.TurnAssistant, delegateAttentionToolCall(callID)),
 		schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed(callID, "probe", map[string]any{"id": largeID}, false)),
 	} {
-		if err := writer.AppendDurable(turn); err != nil {
+		if _, err := writer.Record(turn, transcript.RecordOptions{Door: transcript.DoorDurable}); err != nil {
 			_ = writer.Close()
 			t.Fatalf("append transcript turn: %v", err)
 		}
@@ -1309,15 +1309,15 @@ func TestDelegateAttention_RestartFoldIsProviderFreeAndReadOnly(t *testing.T) {
 	}
 	attention := schema.NewTurn(schema.TurnSteering, llm.User("cold attention"))
 	attention.AttentionID = "attention-cold"
-	if err := writer.AppendDurable(attention); err != nil {
+	if _, err := writer.Record(attention, transcript.RecordOptions{Door: transcript.DoorDurable}); err != nil {
 		t.Fatalf("append attention: %v", err)
 	}
-	if err := writer.AppendDurable(delegateAttentionResolutionTurn(attention.AttentionID, delegateAttentionConsumed)); err != nil {
+	if _, err := writer.Record(delegateAttentionResolutionTurn(attention.AttentionID, delegateAttentionConsumed), transcript.RecordOptions{Door: transcript.DoorDurable}); err != nil {
 		t.Fatalf("append resolution: %v", err)
 	}
 	toolResults := schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed("call-cold", "delegate_send", "done", false))
 	toolResults.DelegateDeliveryCommits = []schema.DelegateDeliveryCommit{{ToolCallID: "call-cold", DeliveryID: "dlg/delivery/1"}}
-	if err := writer.AppendDurable(toolResults); err != nil {
+	if _, err := writer.Record(toolResults, transcript.RecordOptions{Door: transcript.DoorDurable}); err != nil {
 		t.Fatalf("append delivery commit: %v", err)
 	}
 	if err := writer.Close(); err != nil {
@@ -1656,7 +1656,7 @@ func TestDelegateAttention_RestoreReconcilesColdCommitBeforeProviderMetadata(t *
 		ToolCallID: callID,
 		DeliveryID: delegateDeliveryID("dlg_target", 1),
 	}}
-	if err := writer.AppendDurable(result); err != nil {
+	if _, err := writer.Record(result, transcript.RecordOptions{Door: transcript.DoorDurable}); err != nil {
 		_ = writer.Close()
 		t.Fatalf("append caller delivery commit: %v", err)
 	}
@@ -1725,7 +1725,7 @@ func TestDelegateAttention_RestartReplayRequiresDeliveryIDFromExactPair(t *testi
 		ToolCallID: "delegate-call",
 		DeliveryID: "dlg_other/delivery/1",
 	}}
-	if err := writer.AppendDurable(turn); err != nil {
+	if _, err := writer.Record(turn, transcript.RecordOptions{Door: transcript.DoorDurable}); err != nil {
 		_ = writer.Close()
 		t.Fatalf("append caller delivery commit: %v", err)
 	}
@@ -1769,7 +1769,7 @@ func TestDelegateAttention_ColdReplayRefoldsNextSameOwnerCommit(t *testing.T) {
 		{ToolCallID: "call-a", DeliveryID: delegateDeliveryID("dlg_child_a", 1)},
 		{ToolCallID: "call-b", DeliveryID: delegateDeliveryID("dlg_child_b", 1)},
 	}
-	if err := writer.AppendDurable(results); err != nil {
+	if _, err := writer.Record(results, transcript.RecordOptions{Door: transcript.DoorDurable}); err != nil {
 		_ = writer.Close()
 		t.Fatalf("append nested caller commits: %v", err)
 	}
@@ -1826,7 +1826,7 @@ func TestDelegateAttention_ColdReplayRefoldsMixedSameOwnerCommits(t *testing.T) 
 		ToolCallID: "call-b",
 		DeliveryID: delegateDeliveryID("dlg_child_b", 1),
 	}}
-	if err := writer.AppendDurable(results); err != nil {
+	if _, err := writer.Record(results, transcript.RecordOptions{Door: transcript.DoorDurable}); err != nil {
 		_ = writer.Close()
 		t.Fatalf("append second caller commit: %v", err)
 	}
@@ -2178,7 +2178,7 @@ func TestDelegateAttention_RestoreSessionStartCountsColdReplayAppend(t *testing.
 	}
 	results := schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed("delegate-call", "delegate_send", "done", false))
 	results.DelegateDeliveryCommits = []schema.DelegateDeliveryCommit{{ToolCallID: "delegate-call", DeliveryID: firstDeliveryID}}
-	if err := writer.AppendDurable(results); err != nil {
+	if _, err := writer.Record(results, transcript.RecordOptions{Door: transcript.DoorDurable}); err != nil {
 		_ = writer.Close()
 		t.Fatalf("append committed caller result: %v", err)
 	}
@@ -3757,7 +3757,7 @@ func TestRootDelegateAttention_RestoreRearmsPendingIDsWithoutProviderCall(t *tes
 	attention := schema.NewTurn(schema.TurnSteering, llm.User(`<delegate-notification delegate_id="dlg_restore">restore me</delegate-notification>`))
 	attention.AttentionID = attentionID
 	attention.StableTurnID = newQueueEntryID()
-	if err := writer.AppendDurable(attention); err != nil {
+	if _, err := writer.Record(attention, transcript.RecordOptions{Door: transcript.DoorDurable}); err != nil {
 		_ = writer.Close()
 		t.Fatalf("append pending root attention: %v", err)
 	}
@@ -3824,17 +3824,17 @@ func TestDelegateAttention_RestartRearmsColdChildAndDrainsExactAttention(t *test
 	}
 	// A compaction landed after the three items arrived, so the resumed
 	// history starts at its summary and holds none of them.
-	if err := writer.AppendDurable(schema.NewTurn(schema.TurnSummary, llm.User("[CONTEXT SUMMARY]\nfold after the items\n[END SUMMARY]"))); err != nil {
+	if _, err := writer.Record(schema.NewTurn(schema.TurnSummary, llm.User("[CONTEXT SUMMARY]\nfold after the items\n[END SUMMARY]")), transcript.RecordOptions{Door: transcript.DoorDurable}); err != nil {
 		_ = writer.Close()
 		t.Fatalf("append compaction marker: %v", err)
 	}
 	owedResolution := delegateAttentionResolutionTurn(owedID, delegateAttentionConsumed)
 	owedResolution.AttentionResolution.ResumeGeneration = 1
-	if err := writer.AppendDurable(owedResolution); err != nil {
+	if _, err := writer.Record(owedResolution, transcript.RecordOptions{Door: transcript.DoorDurable}); err != nil {
 		_ = writer.Close()
 		t.Fatalf("append owed consumed marker: %v", err)
 	}
-	if err := writer.AppendDurable(delegateAttentionResolutionTurn(historicalID, delegateAttentionConsumed)); err != nil {
+	if _, err := writer.Record(delegateAttentionResolutionTurn(historicalID, delegateAttentionConsumed), transcript.RecordOptions{Door: transcript.DoorDurable}); err != nil {
 		_ = writer.Close()
 		t.Fatalf("append historical consumed marker: %v", err)
 	}
@@ -3944,7 +3944,7 @@ func TestDelegateAttention_RestartRearmsColdChildAndDrainsExactAttention(t *test
 		}
 		resolution := delegateAttentionResolutionTurn(attentionID, delegateAttentionConsumed)
 		resolution.AttentionResolution.ResumeGeneration = 1
-		if err := writer.AppendDurable(resolution); err != nil {
+		if _, err := writer.Record(resolution, transcript.RecordOptions{Door: transcript.DoorDurable}); err != nil {
 			_ = writer.Close()
 			t.Fatalf("append conflicting consumed marker: %v", err)
 		}

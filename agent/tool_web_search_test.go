@@ -181,8 +181,8 @@ func TestWebSearch_ExpandHistoryOmitsGoogleGroundingAndLegacyToolPairs(t *testin
 			}),
 		}
 		for _, turn := range seededTurns {
-			if err := tw.Append(turn); err != nil {
-				t.Fatalf("AppendTurn: %v", err)
+			if _, err := tw.Record(turn, transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
+				t.Fatalf("Record turn: %v", err)
 			}
 		}
 		if err := tw.Close(); err != nil {

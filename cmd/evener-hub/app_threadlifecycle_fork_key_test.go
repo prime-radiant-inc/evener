@@ -258,7 +258,7 @@ func writeNewFormatForkParentSession(t *testing.T, stateDir, parentID string) er
 		withNewFormatIdentity(schema.NewTurn(schema.TurnUserInput, llm.User("second task")), "t_second"),
 	}
 	for _, turn := range entries {
-		if err := writer.Append(turn); err != nil {
+		if _, err := writer.Record(turn, transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 			return err
 		}
 	}

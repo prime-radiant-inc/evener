@@ -152,14 +152,15 @@ func TestAppendBatchWritesTheFreshBufferBytes(t *testing.T) {
 		{Kind: schema.TurnAssistant, Message: llm.Assistant("two, a longer line than the first"), Timestamp: at},
 		{Kind: schema.TurnToolResults, Message: llm.ToolResult("call-1", "three", false), Timestamp: at},
 	}
-	if _, err := w.AppendBatch(turns); err != nil {
-		t.Fatalf("AppendBatch: %v", err)
+	if _, _, err := w.appendBatch(turns, PlaceVerbatim, DoorDurable); err != nil {
+		t.Fatalf("appendBatch: %v", err)
 	}
 	after := schema.Turn{Kind: schema.TurnAssistant, Message: llm.Assistant("four"), Timestamp: at}
-	first, err := w.AppendBatch([]schema.Turn{after})
+	records, _, err := w.appendBatch([]schema.Turn{after}, PlaceVerbatim, DoorDurable)
 	if err != nil {
-		t.Fatalf("AppendBatch (second): %v", err)
+		t.Fatalf("appendBatch (second): %v", err)
 	}
+	first := firstRecord(records).Seq
 	if first != len(turns) {
 		t.Fatalf("second batch firstSeq = %d, want %d", first, len(turns))
 	}

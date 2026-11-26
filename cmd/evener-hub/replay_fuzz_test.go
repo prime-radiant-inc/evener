@@ -165,7 +165,7 @@ func checkLiveVsReload(t *testing.T, raw []byte) {
 	}
 	defer live.Close() //nolint:errcheck // a read-only projection
 	for _, turn := range []schema.Turn{opener, fuzzed, completion} {
-		if err := writer.Append(turn); err != nil {
+		if _, err := writer.Record(turn, transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 			return // an entry no writer records has no rendering
 		}
 		if err := live.CatchUp(); err != nil {

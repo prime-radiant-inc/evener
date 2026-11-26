@@ -11,12 +11,17 @@ import (
 type Door int
 
 const (
-	// DoorBuffered is Append's door: fsync at most once per SyncInterval.
+	// DoorBuffered fsyncs at most once per SyncInterval without rolling back
+	// failed writes.
 	DoorBuffered Door = iota
-	// DoorDurable is AppendDurable's door: fsync, and roll the line back if
-	// the fsync fails.
+	// DoorDurable fsyncs unconditionally and rolls the line back on failure; a
+	// whole line that landed and could not be removed is recorded (returns nil)
+	// with the failure queued for DrainWarnings.
 	DoorDurable
-	// DoorSynced is AppendSynced's door: recorded AND durable, or an error.
+	// DoorSynced requires the line to be recorded AND durable: returns nil on
+	// durability, *RetainedUnsyncedError (errors.Is ErrRetainedUnsynced) when
+	// recorded without durability, ErrWriterClosed on a closed writer, or
+	// another error when nothing was recorded.
 	DoorSynced
 	// DoorDeferred is the per-round door: a line it cannot record is rolled
 	// back and reported exactly as the durable door's is, and its fsync is
@@ -54,15 +59,39 @@ type Record struct {
 	Turn schema.Turn
 }
 
-// Record appends one turn through opts.Door and reports whether it was
-// recorded. A placement with nothing to place (a completion with no running
-// execution) records nothing and returns no error through every door, as a
-// nil writer does; check Recorded. The error contract is the door's own (see Append, AppendDurable
-// and AppendSynced): a nil writer, and a closed one through the buffered or
-// durable door, record nothing and return no error; the synced door returns
-// ErrWriterClosed for a closed writer, and a *RetainedUnsyncedError for a
-// line that is recorded but could not be made durable — Record then reports
-// Recorded with the error, and the caller adopts the record.
+// Record appends one turn through opts.Door with placement opts.Place and
+// reports whether it was recorded. Safe for concurrent use. A placement with
+// nothing to place (a completion with no running execution) records nothing and
+// returns no error through every door, as a nil writer does; check Recorded.
+//
+// The nil no-op exists so a session with no state directory can write without
+// every call site nil-checking. A caller that can write before its writer
+// exists must gate writes until the writer is opened; Evener's agent package
+// routes writes through Session.writeTranscript/writeTranscriptDurable until
+// Session.attachTranscript settles.
+//
+// Whole-line contract: a whole line that reached the file is a record — every
+// returning reader finds it — even if the fsync that would make it durable
+// failed. DoorBuffered, DoorDeferred, and DoorDurable therefore return nil for
+// a retained record (tracked as dirty debt until the next successful fsync,
+// with the sync failure queued once for DrainWarnings) and return an error
+// only when nothing was recorded or a partial line could not be rolled back
+// (which poisons the writer permanently with ErrWriterPoisoned). Through those
+// doors, a closed writer is a silent nil no-op.
+//
+// DoorSynced has three outcomes for durability owners:
+//   - nil: the record is durable (its own fsync or the recovery barrier
+//     succeeded), or the receiver is nil.
+//   - *RetainedUnsyncedError (errors.Is ErrRetainedUnsynced): the whole record
+//     is in the file, but neither its fsync nor the barrier could make it
+//     durable. Record reports Recorded=true alongside the error; the caller
+//     must adopt the record rather than re-append, and the next successful
+//     fsync settles the debt.
+//   - any other error: nothing was recorded (including ErrWriterClosed on a
+//     closed writer), so the caller may retry.
+//
+// DoorSynced raises the recovery barrier only when the append's own fsync
+// failed; a clean durable append is not fsynced twice.
 func (w *Writer) Record(turn schema.Turn, opts RecordOptions) (Record, error) {
 	if opts.Door == DoorSynced {
 		return w.recordSynced(turn, opts.Place)
@@ -78,7 +107,7 @@ func firstRecord(records []Record) Record {
 	return records[0]
 }
 
-// recordSynced is the synced door: see AppendSynced for its three outcomes.
+// recordSynced is the synced door: see Record for its three outcomes.
 func (w *Writer) recordSynced(turn schema.Turn, place Placement) (Record, error) {
 	records, retained, err := w.appendBatch([]schema.Turn{turn}, place, DoorSynced)
 	if err != nil {

@@ -197,7 +197,7 @@ func TestManagerObservationClearRotatesHistoryAndEndsWatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := initialWriter.Append(schema.Turn{Format: schema.TurnFormatIdentity, TurnID: "seed-turn", Kind: schema.TurnUserInput, Message: llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{{Kind: llm.ContentText, Text: "seed history"}}}}); err != nil {
+	if _, err := initialWriter.Record(schema.Turn{Format: schema.TurnFormatIdentity, TurnID: "seed-turn", Kind: schema.TurnUserInput, Message: llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{{Kind: llm.ContentText, Text: "seed history"}}}}, transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 		t.Fatal(err)
 	}
 	initialLength := initialWriter.RecordedLength()
@@ -348,7 +348,7 @@ func TestManagerObservationStartupWindowDoesNotCancelBinding(t *testing.T) {
 					ToolResult: &llm.ToolResultData{ToolCallID: callID, Name: "communicate", Content: `{"accepted":true,"end_turn":true}`}}}}},
 		}
 		for _, entry := range entries {
-			if err := w.Append(entry); err != nil {
+			if _, err := w.Record(entry, transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -494,7 +494,7 @@ func managerEchoObservationItem(t *testing.T, callID, reason string, accepted bo
 				ToolResult: &llm.ToolResultData{ToolCallID: callID, Name: "communicate", Content: result}}}}},
 	}
 	for _, entry := range entries {
-		if err := w.Append(entry); err != nil {
+		if _, err := w.Record(entry, transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 			t.Fatal(err)
 		}
 	}

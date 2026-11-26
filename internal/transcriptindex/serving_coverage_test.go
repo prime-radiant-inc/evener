@@ -22,7 +22,7 @@ func TestServingCoverageBoundsAppendDuringCatchUp(t *testing.T) {
 	defer writer.Close()
 	appendTurn := func(id string) {
 		t.Helper()
-		if err := writer.Append(schema.Turn{Format: schema.TurnFormatIdentity, TurnID: id, TurnKind: schema.TurnSpanExecution, Kind: schema.TurnUserInput, Message: llm.User(id)}); err != nil {
+		if _, err := writer.Record(schema.Turn{Format: schema.TurnFormatIdentity, TurnID: id, TurnKind: schema.TurnSpanExecution, Kind: schema.TurnUserInput, Message: llm.User(id)}, transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -81,7 +81,7 @@ func TestServingOlderWindowNamesViewExecutionAnchor(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, id := range []string{"A", "B", "C"} {
-		if err := writer.Append(schema.Turn{Format: schema.TurnFormatIdentity, TurnID: id, TurnKind: schema.TurnSpanExecution, Kind: schema.TurnUserInput, Message: llm.User(id)}); err != nil {
+		if _, err := writer.Record(schema.Turn{Format: schema.TurnFormatIdentity, TurnID: id, TurnKind: schema.TurnSpanExecution, Kind: schema.TurnUserInput, Message: llm.User(id)}, transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -115,7 +115,7 @@ func TestServingCoverageRejectsReplacedFileDuringCatchUp(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := writer.Append(schema.Turn{Format: schema.TurnFormatIdentity, TurnID: "A", TurnKind: schema.TurnSpanExecution, Kind: schema.TurnUserInput, Message: llm.User("A")}); err != nil {
+	if _, err := writer.Record(schema.Turn{Format: schema.TurnFormatIdentity, TurnID: "A", TurnKind: schema.TurnSpanExecution, Kind: schema.TurnUserInput, Message: llm.User("A")}, transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 		t.Fatal(err)
 	}
 	if err := writer.Close(); err != nil {

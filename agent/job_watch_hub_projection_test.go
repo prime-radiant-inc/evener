@@ -115,7 +115,7 @@ func managerProjectedTerminalItem(t *testing.T, turnID string) appwire.ThreadIte
 		{Format: schema.TurnFormatIdentity, TurnID: turnID, Kind: schema.TurnCommunicate, CausalKnown: true, Communicate: &schema.CommunicateInfo{CallID: "call-" + turnID, Message: "result", EndTurn: true, EndReason: "done"}},
 		{Format: schema.TurnFormatIdentity, TurnID: turnID, Kind: schema.TurnToolResults, Message: llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "call-" + turnID, Name: "communicate", Content: `{"accepted":true,"end_turn":true}`}}}}},
 	} {
-		if err := w.Append(entry); err != nil {
+		if _, err := w.Record(entry, transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 			t.Fatal(err)
 		}
 	}

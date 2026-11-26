@@ -234,10 +234,10 @@ func systemEventWireFailedTurn(t *testing.T) appwire.Turn {
 	if err != nil {
 		t.Fatalf("NewWriter: %v", err)
 	}
-	if err := w.Append(user); err != nil {
+	if _, err := w.Record(user, transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 		t.Fatalf("append user turn: %v", err)
 	}
-	if err := w.Append(failure); err != nil {
+	if _, err := w.Record(failure, transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 		t.Fatalf("append failure turn: %v", err)
 	}
 	if err := w.Close(); err != nil {

@@ -49,8 +49,8 @@ func buildParentSession(t *testing.T) (stateDir, parentID string) {
 		schema.NewTurn(schema.TurnAssistant, llm.Assistant("second reply")),
 	}
 	for _, turn := range turns {
-		if err := tw.Append(turn); err != nil {
-			t.Fatalf("Append turn: %v", err)
+		if _, err := tw.Record(turn, transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
+			t.Fatalf("Record turn: %v", err)
 		}
 	}
 	if err := tw.Close(); err != nil {
@@ -877,8 +877,8 @@ func TestForkAndAsideReplayLargeTranscriptLine(t *testing.T) {
 		schema.NewTurn(schema.TurnAssistant, llm.Assistant("reply")),
 		schema.NewTurn(schema.TurnUserInput, llm.User("second task")),
 	} {
-		if err := tw.Append(turn); err != nil {
-			t.Fatalf("Append turn: %v", err)
+		if _, err := tw.Record(turn, transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
+			t.Fatalf("Record turn: %v", err)
 		}
 	}
 	if err := tw.Close(); err != nil {
@@ -996,8 +996,8 @@ func rewriteLegacyForkHeader(t *testing.T, stateDir, childID string, legacyPromp
 		t.Fatalf("transcript.NewWriter: %v", err)
 	}
 	for _, entry := range entries {
-		if err := tw.Append(entry.Turn); err != nil {
-			t.Fatalf("Append: %v", err)
+		if _, err := tw.Record(entry.Turn, transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
+			t.Fatalf("Record: %v", err)
 		}
 	}
 	if err := tw.Close(); err != nil {

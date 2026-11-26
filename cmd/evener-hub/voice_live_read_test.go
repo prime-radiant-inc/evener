@@ -33,11 +33,11 @@ func TestLiveOnlyReadRejectsSavedHistoryAfterOutage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := w.Append(schema.Turn{
+	if _, err := w.Record(schema.Turn{
 		Format: schema.TurnFormatIdentity, TurnID: "turn_saved",
 		TurnKind: schema.TurnSpanExecution, Kind: schema.TurnUserInput,
 		Message: llm.User("saved history"),
-	}); err != nil {
+	}, transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 		t.Fatal(err)
 	}
 	if err := w.Close(); err != nil {

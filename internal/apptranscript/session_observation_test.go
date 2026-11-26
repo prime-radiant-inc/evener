@@ -53,7 +53,7 @@ func TestManagerObservationTerminalEvidence(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		if err := writer.Append(turn); err != nil {
+		if _, err := writer.Record(turn, transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -66,19 +66,19 @@ func TestManagerObservationTerminalEvidence(t *testing.T) {
 			{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "rejected", Name: "communicate", Content: `{"accepted":false,"end_turn":true}`}},
 			{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "accepted", Name: "communicate", Content: `{"accepted":true,"end_turn":true}`, ToolState: json.RawMessage(`{"communicate_end_reason":"needs_response"}`)}},
 		}}}
-	if err := writer.Append(results); err != nil {
+	if _, err := writer.Record(results, transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 		t.Fatal(err)
 	}
 	// Reuse the unknown call ID in another logical turn. Its accepted result
 	// must not leak backward across the turn/generation boundary.
-	if err := writer.Append(schema.Turn{Format: schema.TurnFormatIdentity, TurnID: "t_2", Kind: schema.TurnCommunicate,
-		Communicate: &schema.CommunicateInfo{CallID: "unknown", EndTurn: true, EndReason: "done", Message: "later"}}); err != nil {
+	if _, err := writer.Record(schema.Turn{Format: schema.TurnFormatIdentity, TurnID: "t_2", Kind: schema.TurnCommunicate,
+		Communicate: &schema.CommunicateInfo{CallID: "unknown", EndTurn: true, EndReason: "done", Message: "later"}}, transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 		t.Fatal(err)
 	}
-	if err := writer.Append(schema.Turn{Format: schema.TurnFormatIdentity, TurnID: "t_2", Kind: schema.TurnToolResults,
+	if _, err := writer.Record(schema.Turn{Format: schema.TurnFormatIdentity, TurnID: "t_2", Kind: schema.TurnToolResults,
 		Message: llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{{Kind: llm.ContentToolResult,
 			ToolResult: &llm.ToolResultData{ToolCallID: "unknown", Name: "communicate", Content: `{"accepted":true,"end_turn":true}`},
-		}}}}); err != nil {
+		}}}}, transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 		t.Fatal(err)
 	}
 	if err := writer.Close(); err != nil {

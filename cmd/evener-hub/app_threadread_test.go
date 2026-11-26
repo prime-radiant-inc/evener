@@ -706,7 +706,7 @@ func TestPastThreadReadDoesNotReconcileDelegateFromActivationJob(t *testing.T) {
 		t.Fatalf("NewWriter: %v", err)
 	}
 	runningRaw := json.RawMessage(`{"job_id":"job_A","delegate_id":"dlg_A","status":"running","task":"inspect billing","transcript_ref":"local:child"}`)
-	if err := w.Append(schema.Turn{
+	if _, err := w.Record(schema.Turn{
 		Kind: schema.TurnToolResults,
 		Message: llm.Message{Role: llm.RoleTool, ToolCallID: "call_delegate", Content: []llm.ContentPart{{
 			Kind: llm.ContentToolResult,
@@ -717,8 +717,8 @@ func TestPastThreadReadDoesNotReconcileDelegateFromActivationJob(t *testing.T) {
 				ToolState:  runningRaw,
 			},
 		}}},
-	}); err != nil {
-		t.Fatalf("Append: %v", err)
+	}, transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
+		t.Fatalf("Record: %v", err)
 	}
 	if err := w.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
@@ -770,14 +770,14 @@ func TestPastThreadReadProjectsThinkingFromTranscript(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewWriter: %v", err)
 	}
-	if err := w.Append(schema.Turn{
+	if _, err := w.Record(schema.Turn{
 		Kind: schema.TurnAssistant,
 		Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
 			{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: "Let me reason about this."}},
 			{Kind: llm.ContentText, Text: "Here is the answer."},
 		}},
-	}); err != nil {
-		t.Fatalf("Append: %v", err)
+	}, transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
+		t.Fatalf("Record: %v", err)
 	}
 	if err := w.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
@@ -831,7 +831,7 @@ func TestPastThreadReadProjectsToolResultOutputImages(t *testing.T) {
 		t.Fatalf("NewWriter: %v", err)
 	}
 	png := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 'p', 'a', 'y'}
-	if err := w.Append(schema.Turn{
+	if _, err := w.Record(schema.Turn{
 		Kind: schema.TurnToolResults,
 		Message: llm.Message{Role: llm.RoleTool, ToolCallID: "call_img", Content: []llm.ContentPart{{
 			Kind: llm.ContentToolResult,
@@ -843,8 +843,8 @@ func TestPastThreadReadProjectsToolResultOutputImages(t *testing.T) {
 				ImageMediaType: "image/png",
 			},
 		}}},
-	}); err != nil {
-		t.Fatalf("Append: %v", err)
+	}, transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
+		t.Fatalf("Record: %v", err)
 	}
 	if err := w.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
@@ -890,12 +890,12 @@ func TestPastEntryTurns_StampsCostFromSessionModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewWriter: %v", err)
 	}
-	if err := w.Append(schema.Turn{
+	if _, err := w.Record(schema.Turn{
 		Kind:    schema.TurnAssistant,
 		Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentText, Text: "Here is the answer."}}},
 		Usage:   llm.Usage{InputTokens: 100, OutputTokens: 50},
-	}); err != nil {
-		t.Fatalf("Append: %v", err)
+	}, transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
+		t.Fatalf("Record: %v", err)
 	}
 	if err := w.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
@@ -1203,20 +1203,20 @@ func seedBoundedPastThread(t *testing.T) (hubcore.WebConfig, appwire.ThreadReadP
 	for range 199 {
 		// One logical turn per exchange: user input opens, assistant reply
 		// continues. Bare assistant runs would merge into one logical turn.
-		if err := w.Append(schema.NewTurn(schema.TurnUserInput, llm.User("in"))); err != nil {
+		if _, err := w.Record(schema.NewTurn(schema.TurnUserInput, llm.User("in")), transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 			t.Fatal(err)
 		}
-		if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("saved turn"))); err != nil {
+		if _, err := w.Record(schema.NewTurn(schema.TurnAssistant, llm.Assistant("saved turn")), transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := w.Append(schema.NewTurn(schema.TurnUserInput, llm.User("capture"))); err != nil {
+	if _, err := w.Record(schema.NewTurn(schema.TurnUserInput, llm.User("capture")), transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 		t.Fatal(err)
 	}
 	png := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 'p', 'a', 'y'}
-	if err := w.Append(schema.Turn{Kind: schema.TurnToolResults, Message: llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{{
+	if _, err := w.Record(schema.Turn{Kind: schema.TurnToolResults, Message: llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{{
 		Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "call_img", Name: "screenshot", Content: "captured", ImageData: png, ImageMediaType: "image/png"},
-	}}}}); err != nil {
+	}}}}, transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 		t.Fatal(err)
 	}
 	if err := w.Close(); err != nil {
@@ -1862,10 +1862,10 @@ func seedPastItemPagingThread(t *testing.T) (hubcore.WebConfig, hubcore.PastEntr
 			parts = append(parts, llm.ContentPart{Kind: llm.ContentText, Text: fmt.Sprintf("item-%02d", turnIndex*40+i)})
 		}
 		// One logical turn per assistant burst: a user input opens each one.
-		if err := writer.Append(schema.NewTurn(schema.TurnUserInput, llm.User("in"))); err != nil {
+		if _, err := writer.Record(schema.NewTurn(schema.TurnUserInput, llm.User("in")), transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 			t.Fatal(err)
 		}
-		if err := writer.Append(schema.Turn{Kind: schema.TurnAssistant, Message: llm.Message{Role: llm.RoleAssistant, Content: parts}}); err != nil {
+		if _, err := writer.Record(schema.Turn{Kind: schema.TurnAssistant, Message: llm.Message{Role: llm.RoleAssistant, Content: parts}}, transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -2142,15 +2142,15 @@ func TestPastEntryTurns_FlushesUnpairedCommunicate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewWriter: %v", err)
 	}
-	if err := w.Append(schema.Turn{
+	if _, err := w.Record(schema.Turn{
 		Kind:    schema.TurnUserInput,
 		Message: llm.User("do it"),
-	}); err != nil {
-		t.Fatalf("Append user: %v", err)
+	}, transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
+		t.Fatalf("Record user: %v", err)
 	}
 	// Assistant turn with a valid-JSON communicate call and no paired result
 	// turn — the unpaired shape the flush must handle.
-	if err := w.Append(schema.Turn{
+	if _, err := w.Record(schema.Turn{
 		Kind: schema.TurnAssistant,
 		Message: llm.Message{Content: []llm.ContentPart{
 			{Kind: llm.ContentText, Text: "thinking"},
@@ -2160,8 +2160,8 @@ func TestPastEntryTurns_FlushesUnpairedCommunicate(t *testing.T) {
 				Arguments: json.RawMessage(`{"message":"hello there"}`),
 			}},
 		}},
-	}); err != nil {
-		t.Fatalf("Append assistant: %v", err)
+	}, transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
+		t.Fatalf("Record assistant: %v", err)
 	}
 	if err := w.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
@@ -2491,8 +2491,8 @@ func TestPastEntryTurnsRendersACommunicateDeliveryLikeTheIndex(t *testing.T) {
 				next,
 			}
 			for _, entry := range entries {
-				if err := w.Append(entry); err != nil {
-					t.Fatalf("Append: %v", err)
+				if _, err := w.Record(entry, transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
+					t.Fatalf("Record: %v", err)
 				}
 			}
 			if err := w.Close(); err != nil {

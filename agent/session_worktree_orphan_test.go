@@ -1876,7 +1876,7 @@ func TestColdDelegateAttentionHeldLaneLeavesDrainQuiescence(t *testing.T) {
 	}
 	turn := schema.NewTurn(schema.TurnSteering, llm.User("cold held report"))
 	turn.AttentionID = attentionID
-	if err := writer.AppendDurable(turn); err != nil {
+	if _, err := writer.Record(turn, transcript.RecordOptions{Door: transcript.DoorDurable}); err != nil {
 		t.Fatalf("append cold delegate attention: %v", err)
 	}
 	if err := writer.Close(); err != nil {

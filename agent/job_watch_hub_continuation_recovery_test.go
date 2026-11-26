@@ -59,7 +59,7 @@ func newContinuationRecoveryFixture(t *testing.T, replay bool) *continuationReco
 		{TurnID: "C", Kind: schema.TurnToolResults, Message: llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "terminal", Name: "communicate", Content: `{"accepted":true,"end_turn":true}`}}}}},
 	} {
 		e.Format = schema.TurnFormatIdentity
-		if err := w.Append(e); err != nil {
+		if _, err := w.Record(e, transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 			t.Fatal(err)
 		}
 	}

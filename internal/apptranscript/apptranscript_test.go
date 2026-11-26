@@ -35,7 +35,7 @@ func TestMemoryContextProjection(t *testing.T) {
 		t.Fatal(err)
 	}
 	msg := llm.UserMachinery("opaque-memory-display-78")
-	if err := w.Append(schema.Turn{Kind: schema.TurnMemoryContext, Message: msg}); err != nil {
+	if _, err := w.Record(schema.Turn{Kind: schema.TurnMemoryContext, Message: msg}, transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 		t.Fatal(err)
 	}
 	if err := w.Close(); err != nil {
@@ -86,12 +86,12 @@ func TestItemTurnsFromFileStampsStartedAtFromEntryTimestamp(t *testing.T) {
 		t.Fatalf("NewWriter: %v", err)
 	}
 	ts := time.Unix(1_700_000_000, 0).UTC()
-	if err := w.Append(schema.Turn{
+	if _, err := w.Record(schema.Turn{
 		Kind:      schema.TurnUserInput,
 		Message:   llm.User("hello"),
 		Timestamp: ts,
-	}); err != nil {
-		t.Fatalf("Append: %v", err)
+	}, transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
+		t.Fatalf("Record: %v", err)
 	}
 	if err := w.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
@@ -153,8 +153,8 @@ func TestItemTurnsFromFilePreservesDistinctClientMutationIdentitiesForSameText(t
 			SteeringSource:   events.SteeringSourceUser,
 		},
 	} {
-		if err := w.Append(turn); err != nil {
-			t.Fatalf("Append: %v", err)
+		if _, err := w.Record(turn, transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
+			t.Fatalf("Record: %v", err)
 		}
 	}
 	if err := w.Close(); err != nil {
@@ -204,13 +204,13 @@ func TestItemTurnsFromFileProjectorReceivesDecodedTurn(t *testing.T) {
 		t.Fatalf("NewWriter: %v", err)
 	}
 	ts := time.Unix(1_700_000_000, 0).UTC()
-	if err := w.Append(schema.Turn{
+	if _, err := w.Record(schema.Turn{
 		Kind:         schema.TurnSteering,
 		Message:      llm.User("steering decoded once"),
 		Timestamp:    ts,
 		SteeringKind: events.SteeringKindInterrupted,
-	}); err != nil {
-		t.Fatalf("Append: %v", err)
+	}, transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
+		t.Fatalf("Record: %v", err)
 	}
 	if err := w.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
@@ -392,7 +392,7 @@ func TestItemTurnsFromFileFallsBackToPurposeForPreRenameToolCalls(t *testing.T) 
 	if err != nil {
 		t.Fatalf("NewWriter: %v", err)
 	}
-	if err := w.Append(schema.Turn{
+	if _, err := w.Record(schema.Turn{
 		Kind: schema.TurnAssistant,
 		Message: llm.Message{Content: []llm.ContentPart{{
 			Kind: llm.ContentToolCall,
@@ -402,8 +402,8 @@ func TestItemTurnsFromFileFallsBackToPurposeForPreRenameToolCalls(t *testing.T) 
 				Arguments: []byte(`{"path":"README.md","purpose":"inspect docs"}`),
 			},
 		}}},
-	}); err != nil {
-		t.Fatalf("Append: %v", err)
+	}, transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
+		t.Fatalf("Record: %v", err)
 	}
 	if err := w.Close(); err != nil {
 		t.Fatalf("Close: %v", err)

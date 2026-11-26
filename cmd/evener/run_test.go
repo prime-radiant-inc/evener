@@ -265,8 +265,8 @@ func TestRunResumeWithCreatesFreshPluginSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewWriter: %v", err)
 	}
-	if err := writer.Append(schema.NewTurn(schema.TurnUserInput, llm.User("source context"))); err != nil {
-		t.Fatalf("Append: %v", err)
+	if _, err := writer.Record(schema.NewTurn(schema.TurnUserInput, llm.User("source context")), transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
+		t.Fatalf("Record: %v", err)
 	}
 	if err := writer.Close(); err != nil {
 		t.Fatalf("Close writer: %v", err)
@@ -350,8 +350,8 @@ func TestRunResumeWithCarriesInvocationATIFExport(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewWriter: %v", err)
 	}
-	if err := writer.Append(schema.NewTurn(schema.TurnUserInput, llm.User("source context"))); err != nil {
-		t.Fatalf("Append: %v", err)
+	if _, err := writer.Record(schema.NewTurn(schema.TurnUserInput, llm.User("source context")), transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
+		t.Fatalf("Record: %v", err)
 	}
 	if err := writer.Close(); err != nil {
 		t.Fatalf("Close writer: %v", err)

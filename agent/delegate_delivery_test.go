@@ -663,7 +663,7 @@ func TestDelegateControllerInlineReplayAfterReceiverCommitIsIdempotent(t *testin
 	}
 	commit := schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed("delegate-call", "delegate", "nested inline", false))
 	commit.DelegateDeliveryCommits = []schema.DelegateDeliveryCommit{{ToolCallID: "delegate-call", DeliveryID: nestedPlan.deliveryID}}
-	if err := writer.AppendDurable(commit); err != nil {
+	if _, err := writer.Record(commit, transcript.RecordOptions{Door: transcript.DoorDurable}); err != nil {
 		_ = writer.Close()
 		t.Fatalf("append nested caller commit: %v", err)
 	}

@@ -6,6 +6,7 @@ import (
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/llm"
 )
 
@@ -54,13 +55,13 @@ func TestFailedToolCallsSnapshotRisesAsFailuresAreRecorded(t *testing.T) {
 	sess := newSession(t, withDir(dir), withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: dir}))
 	defer sess.Close()
 
-	if err := sess.transcript.Append(failedShellResultTurn("call_1")); err != nil {
+	if _, err := sess.transcript.Record(failedShellResultTurn("call_1"), transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 		t.Fatalf("append failed shell result: %v", err)
 	}
 	if count, _ := sess.FailedToolCallsSnapshot(); count != 1 {
 		t.Fatalf("FailedToolCallsSnapshot() = %d, want 1 while the session is still running", count)
 	}
-	if err := sess.transcript.Append(erroredResultTurn("call_2")); err != nil {
+	if _, err := sess.transcript.Record(erroredResultTurn("call_2"), transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 		t.Fatalf("append errored result: %v", err)
 	}
 	if count, _ := sess.FailedToolCallsSnapshot(); count != 2 {
@@ -87,7 +88,7 @@ func TestFailedToolCallsSnapshotCoversTheWholeSessionAfterResume(t *testing.T) {
 	// one, and under-reporting is the harm the count exists to prevent.
 	dir := t.TempDir()
 	sess := newSession(t, withDir(dir), withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: dir}))
-	if err := sess.transcript.Append(failedShellResultTurn("call_1")); err != nil {
+	if _, err := sess.transcript.Record(failedShellResultTurn("call_1"), transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 		t.Fatalf("append: %v", err)
 	}
 	meta := sess.Meta()
@@ -111,7 +112,7 @@ func TestFailedToolCallsSnapshotCoversTheWholeSessionAfterResume(t *testing.T) {
 		t.Fatalf("FailedToolCallsSnapshot() = %d, want 1 carried across the restart", count)
 	}
 
-	if err := resumed.transcript.Append(erroredResultTurn("call_2")); err != nil {
+	if _, err := resumed.transcript.Record(erroredResultTurn("call_2"), transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 		t.Fatalf("append after resume: %v", err)
 	}
 	if count, _ := resumed.FailedToolCallsSnapshot(); count != 2 {
@@ -126,7 +127,7 @@ func TestFailedToolCallsSnapshotDoesNotChargeAForkChildTheParentsFailures(t *tes
 	// bounds the live count exactly as it bounds the token sum.
 	dir := t.TempDir()
 	parent := newSession(t, withDir(dir), withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: dir}))
-	if err := parent.transcript.Append(failedShellResultTurn("call_1")); err != nil {
+	if _, err := parent.transcript.Record(failedShellResultTurn("call_1"), transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 		t.Fatalf("append parent failure: %v", err)
 	}
 	parentMeta := parent.Meta()
@@ -164,7 +165,7 @@ func TestFailedToolCallsSnapshotSurvivesTheSessionEnding(t *testing.T) {
 	// still be there, or the figure vanishes at the moment it stops changing.
 	dir := t.TempDir()
 	sess := newSession(t, withDir(dir), withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: dir}))
-	if err := sess.transcript.Append(erroredResultTurn("call_1")); err != nil {
+	if _, err := sess.transcript.Record(erroredResultTurn("call_1"), transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 		t.Fatalf("append: %v", err)
 	}
 	sess.Close()

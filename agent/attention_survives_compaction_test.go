@@ -255,7 +255,7 @@ func TestRootDelegateAttentionKeepsDeliveryOrderAcrossCompactionRestart(t *testi
 	const secondText = `<delegate-notification delegate_id="dlg_worker" kind="update">SECOND_ITEM</delegate-notification>`
 	appendTurn := func(turn schema.Turn) {
 		t.Helper()
-		if err := writer.AppendDurable(turn); err != nil {
+		if _, err := writer.Record(turn, transcript.RecordOptions{Door: transcript.DoorDurable}); err != nil {
 			t.Fatalf("append %q: %v", turn.Message.Text(), err)
 		}
 	}

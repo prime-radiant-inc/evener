@@ -93,7 +93,7 @@ func writeResumeDecodeFixture(t *testing.T) (path string, entryBytes, headerByte
 			_ = w.Close()
 			t.Fatalf("stat fixture: %v", err)
 		}
-		if err := w.Append(turn); err != nil {
+		if _, err := w.Record(turn, RecordOptions{Door: DoorBuffered}); err != nil {
 			_ = w.Close()
 			t.Fatalf("append entry %d: %v", i, err)
 		}

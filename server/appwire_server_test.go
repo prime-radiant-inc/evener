@@ -137,11 +137,11 @@ func TestServerAppWireThreadReadExposesStartedActiveTurnIDAlongsideSeededTurns(t
 	if err != nil {
 		t.Fatalf("NewWriter: %v", err)
 	}
-	if err := tw.Append(schema.NewTurn(schema.TurnUserInput, llm.User("old input"))); err != nil {
-		t.Fatalf("Append user: %v", err)
+	if _, err := tw.Record(schema.NewTurn(schema.TurnUserInput, llm.User("old input")), transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
+		t.Fatalf("Record user: %v", err)
 	}
-	if err := tw.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("old output"))); err != nil {
-		t.Fatalf("Append assistant: %v", err)
+	if _, err := tw.Record(schema.NewTurn(schema.TurnAssistant, llm.Assistant("old output")), transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
+		t.Fatalf("Record assistant: %v", err)
 	}
 	if err := tw.Close(); err != nil {
 		t.Fatalf("Close transcript: %v", err)
@@ -2414,10 +2414,10 @@ func TestServerAppWireDescendantThreadReadIncludesSeededTranscriptHistory(t *tes
 	if err != nil {
 		t.Fatalf("NewWriter: %v", err)
 	}
-	if err := w.Append(schema.NewTurn(schema.TurnUserInput, llm.User("first"))); err != nil {
+	if _, err := w.Record(schema.NewTurn(schema.TurnUserInput, llm.User("first")), transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 		t.Fatalf("append first: %v", err)
 	}
-	if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("second"))); err != nil {
+	if _, err := w.Record(schema.NewTurn(schema.TurnAssistant, llm.Assistant("second")), transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 		t.Fatalf("append second: %v", err)
 	}
 	if err := w.Close(); err != nil {
