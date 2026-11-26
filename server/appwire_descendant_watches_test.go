@@ -48,7 +48,7 @@ func TestThreadListCarriesDescendantSessionWatches(t *testing.T) {
 
 	// thread/read must NOT sample through the seam. appThreadForID answers the
 	// read path, which runs under the subscription cut, whose contract
-	// (appThreadReadSnapshot) is cheap and never blocking on a session lock. The
+	// (appThreadReadCutForTarget) is cheap and never blocking on a session lock. The
 	// child read therefore returns the already-projected thread -- no
 	// diagnostics block -- while only the list path above samples the child's
 	// own watches.

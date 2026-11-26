@@ -18,6 +18,11 @@ func (s *Server) appThreadReadSnapshot(params appwire.ThreadReadParams) appwire.
 	return response
 }
 
+// appThreadReadSnapshotChecked answers a read with no subscription.
+func (s *Server) appThreadReadSnapshotChecked(params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+	return s.finishAppThreadRead(params, s.appThreadReadCutForTarget(params, s.appThreadIDForRead(params)))
+}
+
 // before pages items before params.Cursor or params.Before without returning the execution frontier.
 func (h *threadHistory) before(threadRef string, params appwire.ThreadTurnsListParams) (turns []appwire.Turn, olderCursor string, snapshot appwire.SnapshotIdentity, err error) {
 	turns, olderCursor, snapshot, _, err = h.beforeWithFrontier(threadRef, params)

@@ -13,7 +13,7 @@ import (
 // its turns, both of which are already materialized elsewhere.
 //
 // It exists so a read costs a struct copy. thread/read takes its response cut
-// inside the projection gate (see appThreadReadSnapshot and
+// inside the projection gate (see appThreadReadCutForTarget and
 // TestServerAppWireReadCutTakesTheSnapshotInsideTheSubscription), so anything
 // the read touches is touched while projectionMu and deliveryMu are held. Every
 // field here used to be PULLED from a live session callback at that moment,

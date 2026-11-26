@@ -199,10 +199,6 @@ type appThreadReadCut struct {
 	capture  historyCapture
 }
 
-func (s *Server) appThreadReadSnapshotChecked(params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
-	return s.finishAppThreadRead(params, s.appThreadReadCutForTarget(params, s.appThreadIDForRead(params)))
-}
-
 // appThreadReadCutForTarget captures the exact target selected under the
 // subscription projection gate, without resolving mutable request aliases. It
 // runs under the subscription cut, so it does no file I/O: history is read
@@ -377,9 +373,9 @@ func (s *Server) appReadTargetLocked(params appwire.ThreadReadParams) (string, s
 }
 
 // appThreadForID returns the already-projected thread for threadID. It is the
-// single-thread READ path (appThreadReadSnapshotForTarget), which runs under the
+// single-thread READ path (appThreadReadCutForTarget), which runs under the
 // subscription cut, so it must never reach into agent session state:
-// appThreadReadSnapshot's contract is that anything called from here is cheap
+// appThreadReadCutForTarget's contract is that anything called from here is cheap
 // and does not block on a lock another component holds across disk I/O. It
 // therefore returns the projection as installed, without the descendant watch
 // sample. The list path (handleAppThreadList) is where descendant watches are
