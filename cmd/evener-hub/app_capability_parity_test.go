@@ -33,7 +33,7 @@ import (
 func daemonCapabilitiesAtState(t *testing.T, state string) appwire.ThreadCapabilities {
 	t.Helper()
 	srv := daemonserver.NewServer(daemonserver.ServerConfig{})
-	srv.SetAppIdentity("local", "th_parity_oracle")
+	setAppIdentity(t, srv, "local", "th_parity_oracle")
 	srv.SetState(state)
 	hubtest.WireCapabilitySeams(srv)
 

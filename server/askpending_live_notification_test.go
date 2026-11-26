@@ -115,7 +115,7 @@ func TestAskUserLiveStatusFrameCarriesAskPending(t *testing.T) {
 	t.Cleanup(func() { sess.Close() })
 
 	srv := NewServer(ServerConfig{AppReplaySize: 100})
-	srv.SetAppIdentity("local", sess.ID())
+	setAppIdentity(t, srv, "local", sess.ID())
 	srv.SetThreadEnvelopeSource(&sessionAskPendingEnvelopeSource{sess: sess})
 
 	drained := make(chan struct{})

@@ -28,7 +28,7 @@ var pngSig = []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a}
 // deliver the bytes to the active queue handler.
 func TestServerAppWireTurnQueueImageItemReachesQueueHandler(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_qimg")
+	setAppIdentity(t, srv, "local", "th_qimg")
 	srv.SetProcessing(true) // Exercise an in-flight turn.
 
 	var gotText string
@@ -103,7 +103,7 @@ func TestServerAppWireTurnDrainAsSteerThroughSessionProducesImageBearingSteer(t 
 	}
 
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", sess.ID())
+	setAppIdentity(t, srv, "local", sess.ID())
 	srv.SetProcessing(true)
 	srv.SetRetrySafeTurnFunctions(RetrySafeTurnFunctions{
 		Queue: sess.AcceptClientMutationQueue,

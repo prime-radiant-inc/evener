@@ -15,7 +15,7 @@ import (
 // must not store or steer on the replacement session.
 func TestServerAppWireNotesHumanSetRejectsStaleInstance(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "old")
+	setAppIdentity(t, srv, "local", "old")
 	prepared, err := PrepareAppIdentityForRef("local", "new", "local:old", "")
 	if err != nil {
 		t.Fatalf("prepare replacement: %v", err)
@@ -54,7 +54,7 @@ func TestServerAppWireNotesHumanSetRejectsStaleInstance(t *testing.T) {
 // not touch the replacement session's URL list.
 func TestServerAppWireUrlsRemoveRejectsStaleInstance(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "old")
+	setAppIdentity(t, srv, "local", "old")
 	prepared, err := PrepareAppIdentityForRef("local", "new", "local:old", "")
 	if err != nil {
 		t.Fatalf("prepare replacement: %v", err)
@@ -94,7 +94,7 @@ func TestServerAppWireUrlsRemoveRejectsStaleInstance(t *testing.T) {
 // urls/remove are both refused before their callbacks run.
 func TestServerAppWireNotesMutationFencedWhileClearReplaces(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "old")
+	setAppIdentity(t, srv, "local", "old")
 	entered := make(chan struct{})
 	release := make(chan struct{})
 	srv.SetClearFunc(func(_ context.Context, _ appwire.ThreadClearParams) error {

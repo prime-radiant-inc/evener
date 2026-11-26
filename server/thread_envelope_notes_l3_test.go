@@ -39,7 +39,7 @@ func assertEnvelopeCarrierQuad(t *testing.T, thread appwire.Thread, stage, wantG
 // notes carrier keeps its own fields and the sampled URL list installs.
 func TestServerAppWireNotesCarrierKeepsNewerSampledURLList(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "root")
+	setAppIdentity(t, srv, "local", "root")
 	src := publishEnvelope(srv, &stubThreadEnvelopeSource{meta: schema.SessionMeta{
 		HumanNote:   "seed human",
 		AgentNote:   "seed agent",
@@ -104,7 +104,7 @@ func TestServerAppWireNotesCarrierKeepsNewerSampledURLList(t *testing.T) {
 // list.
 func TestServerAppWireURLsCarrierKeepsNewerSampledNotes(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "root")
+	setAppIdentity(t, srv, "local", "root")
 	src := publishEnvelope(srv, &stubThreadEnvelopeSource{meta: schema.SessionMeta{
 		HumanNote:   "seed human",
 		AgentNote:   "seed agent",
@@ -167,7 +167,7 @@ func TestServerAppWireURLsCarrierKeepsNewerSampledNotes(t *testing.T) {
 // fields are dropped.
 func TestServerAppWireCheckpointCannotOverwriteConcurrentNotesCarrier(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "root")
+	setAppIdentity(t, srv, "local", "root")
 	src := publishEnvelope(srv, &stubThreadEnvelopeSource{meta: schema.SessionMeta{
 		HumanNote: "old sampled human",
 		AgentNote: "old sampled agent",
@@ -224,7 +224,7 @@ func TestServerAppWireCheckpointCannotOverwriteConcurrentNotesCarrier(t *testing
 // with no overlapping carrier, a checkpoint sample still repairs stale notes.
 func TestServerAppWireCheckpointStillRepairsNotesWithoutConcurrentCarrier(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "root")
+	setAppIdentity(t, srv, "local", "root")
 	src := publishEnvelope(srv, &stubThreadEnvelopeSource{})
 	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventNotesUpdated, SessionID: "root", Data: events.NotesUpdatedData{
 		HumanNote: "stale carrier human", AgentNote: "stale carrier agent",

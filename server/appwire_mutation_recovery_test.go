@@ -50,7 +50,7 @@ func TestAppWireMutationResponseLossRetriesOnce(t *testing.T) {
 	}
 
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", sess.ID())
+	setAppIdentity(t, srv, "local", sess.ID())
 	srv.SetRetrySafeTurnFunctions(RetrySafeTurnFunctions{
 		Queue: sess.AcceptClientMutationQueue,
 	})
@@ -129,7 +129,7 @@ func TestAppWireMutationSkillInputResponseLossRetriesOnce(t *testing.T) {
 	}
 
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", sess.ID())
+	setAppIdentity(t, srv, "local", sess.ID())
 	srv.SetRetrySafeTurnFunctions(RetrySafeTurnFunctions{
 		Queue: sess.AcceptClientMutationQueue,
 	})
@@ -334,7 +334,7 @@ func TestAppWireMutationReplayTable(t *testing.T) {
 			interrupts := 0
 			params := tt.setup(t, sess, &interrupts)
 			srv := NewServer(ServerConfig{})
-			srv.SetAppIdentity("local", sess.ID())
+			setAppIdentity(t, srv, "local", sess.ID())
 			srv.SetRetrySafeTurnFunctions(RetrySafeTurnFunctions{
 				Start:   sess.AcceptClientMutationStart,
 				Steer:   sess.AcceptClientMutationSteer,
@@ -378,7 +378,7 @@ func TestAppWireMutationPayloadMismatchIsInvalidRequest(t *testing.T) {
 	sess := newMutationReplaySession(t)
 	acceptMutationReplayActiveTurn(t, sess)
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", sess.ID())
+	setAppIdentity(t, srv, "local", sess.ID())
 	srv.SetRetrySafeTurnFunctions(RetrySafeTurnFunctions{
 		Queue: sess.AcceptClientMutationQueue,
 	})
@@ -424,7 +424,7 @@ func TestAppWireMutationHandlersRejectNonCanonicalInputShapes(t *testing.T) {
 		t.Run(input.name, func(t *testing.T) {
 			called := 0
 			srv := NewServer(ServerConfig{})
-			srv.SetAppIdentity("local", "th_1")
+			setAppIdentity(t, srv, "local", "th_1")
 			srv.SetRetrySafeTurnFunctions(RetrySafeTurnFunctions{
 				Start: func(appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
 					called++
@@ -485,7 +485,7 @@ func TestAppWireMutationPersistenceFailureCanRecoverInProcess(t *testing.T) {
 	acceptMutationReplayActiveTurn(t, sess)
 	attempts := 0
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", sess.ID())
+	setAppIdentity(t, srv, "local", sess.ID())
 	srv.SetRetrySafeTurnFunctions(RetrySafeTurnFunctions{
 		Queue: func(params appwire.TurnQueueParams) (appwire.TurnQueueResponse, error) {
 			attempts++
@@ -539,7 +539,7 @@ func TestAppWireMutationTerminalRejectionReplays(t *testing.T) {
 	sess := newMutationReplaySession(t)
 	acceptMutationReplayActiveTurn(t, sess)
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", sess.ID())
+	setAppIdentity(t, srv, "local", sess.ID())
 	srv.SetRetrySafeTurnFunctions(RetrySafeTurnFunctions{
 		Cancel: sess.AcceptClientMutationCancelQueued,
 	})

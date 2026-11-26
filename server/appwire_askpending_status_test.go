@@ -75,7 +75,7 @@ func TestStampAskPendingLeavesEverythingElseAlone(t *testing.T) {
 // either loop fails here.
 func TestRecordedStatusFrameCarriesAskPending(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
+	setAppIdentity(t, srv, "local", "th_1")
 	setEnvelope(srv, func(e *stubThreadEnvelopeSource) { e.askPending = true })
 
 	startExecution(srv, "th_1", "t_go")

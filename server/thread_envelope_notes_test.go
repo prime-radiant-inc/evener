@@ -15,7 +15,7 @@ import (
 // authoritative snapshot.
 func TestThreadEnvelopeSeedUsesStructuredMetaNotes(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
+	setAppIdentity(t, srv, "local", "th_1")
 	source := &stubThreadEnvelopeSource{}
 	// Real normalization can end at a space when its 1000-rune clamp cuts
 	// between words; SessionMeta already carries that canonical value.
@@ -51,7 +51,7 @@ func TestThreadEnvelopeSeedUsesStructuredMetaNotes(t *testing.T) {
 // an unset stored state reads as empty, never invented.
 func TestThreadEnvelopeSeedLeavesNotesAbsentWhenUnset(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
+	setAppIdentity(t, srv, "local", "th_1")
 	publishEnvelope(srv, &stubThreadEnvelopeSource{})
 
 	thread := readThreadOverWire(t, srv, "local:th_1")
@@ -69,7 +69,7 @@ func TestThreadEnvelopeSeedLeavesNotesAbsentWhenUnset(t *testing.T) {
 // even when the sampled source is stale.
 func TestNotesAndUrlsCarriersReplaceSeededRootState(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
+	setAppIdentity(t, srv, "local", "th_1")
 	source := publishEnvelope(srv, &stubThreadEnvelopeSource{
 		meta: schema.SessionMeta{
 			HumanNote:   "stale human",
@@ -107,7 +107,7 @@ func TestNotesAndUrlsCarriersReplaceSeededRootState(t *testing.T) {
 // empty pushed list reads as no links, not as the previously known list.
 func TestUrlsCarrierClearEmptiesTheWireList(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
+	setAppIdentity(t, srv, "local", "th_1")
 	publishEnvelope(srv, &stubThreadEnvelopeSource{
 		meta: schema.SessionMeta{
 			SessionURLs: []schema.SessionURL{{ID: "old", URL: "https://old.test/"}},

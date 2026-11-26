@@ -20,7 +20,7 @@ func TestSessionToolsRealConnectionBinding(t *testing.T) {
 	t.Parallel()
 	session := newNotesTestSession(t)
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", session.ID())
+	setAppIdentity(t, srv, "local", session.ID())
 	srv.SetSessionTools(func() *agent.Session { return session })
 	client := dialServerAppWire(t, srv)
 	binding := appwire.SessionBinding{Ref: "local:" + session.ID(), InstanceID: session.ID(), HubID: "hub-test", BindingID: "connection-test"}
@@ -49,7 +49,7 @@ func TestSessionToolsPublishesRegistryWithFirstBinding(t *testing.T) {
 	t.Parallel()
 	session := newNotesTestSession(t)
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", session.ID())
+	setAppIdentity(t, srv, "local", session.ID())
 	srv.SetSessionTools(func() *agent.Session { return session })
 	published := make(chan int, 1)
 	srv.SetTestOnlySessionToolsPublished(func(registry *runtimeHubClients) {
@@ -84,7 +84,7 @@ func TestSessionToolsLiveBindingCannotBeDisplaced(t *testing.T) {
 	}
 	t.Cleanup(session.Close)
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", session.ID())
+	setAppIdentity(t, srv, "local", session.ID())
 	srv.SetSessionTools(func() *agent.Session { return session })
 	httpServer := httptest.NewServer(srv)
 	t.Cleanup(httpServer.Close)

@@ -185,7 +185,7 @@ func retirementEngineServer(t *testing.T, adapters ...llm.ProviderAdapter) (*Ser
 		t.Fatal(err)
 	}
 	s := NewServer(ServerConfig{})
-	s.SetAppIdentity("local", root.ID())
+	setAppIdentity(t, s, "local", root.ID())
 	s.SetReasoningEffortFunc(root.SetReasoningEffort)
 	s.SetModelFunc(root.SetModel)
 	s.SetVisionModelFunc(root.SetVisionModel)

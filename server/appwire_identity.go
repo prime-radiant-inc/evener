@@ -229,19 +229,6 @@ func (s *Server) ReplaceAppIdentity(prepared PreparedAppIdentity, activate func(
 	closeHistories(detached)
 }
 
-// SetAppIdentity installs an identity with no history. Production serve
-// prepares from the session's transcript instead; this is the shorthand for a
-// thread that has none. It runs the same validation, so an identity
-// PrepareAppIdentity would reject is not installed through this door either --
-// it is rejected here and nothing changes.
-func (s *Server) SetAppIdentity(sourceID, threadID string) {
-	prepared, err := PrepareAppIdentity(sourceID, threadID, "")
-	if err != nil {
-		return
-	}
-	s.ReplaceAppIdentity(prepared, nil)
-}
-
 // SetDescendantTranscriptPathFunc installs the resolver that names a
 // descendant's transcript, which its history is projected from (ledger
 // #110/#111). fn may return "" for a thread with no backing transcript; nil

@@ -21,7 +21,7 @@ func (s *pendingAskEnvelopeSource) PendingAskSnapshot() (*appwire.PendingQuestio
 // This is a projection concurrency test, not a session execution test.
 func TestVoicePendingAsk_MaterializedMonotonicSample(t *testing.T) {
 	s := NewServer(ServerConfig{})
-	s.SetAppIdentity("local", "thread")
+	setAppIdentity(t, s, "local", "thread")
 	state := func(rev uint64, calls ...appwire.PendingAskCall) *appwire.PendingAskState {
 		return &appwire.PendingAskState{Version: 1, InstanceID: "thread", Revision: rev, Calls: append([]appwire.PendingAskCall{}, calls...)}
 	}

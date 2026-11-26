@@ -12,7 +12,7 @@ import (
 func TestManagerInputNeverFallsBackToHumanCallback(t *testing.T) {
 	s := NewServer(ServerConfig{})
 	defer s.Close()
-	s.SetAppIdentity("local", "worker")
+	setAppIdentity(t, s, "local", "worker")
 	s.UpdateSessionInfo("worker", "", "")
 	s.SetState("idle")
 	humanCalls, managerCalls := 0, 0
@@ -52,7 +52,7 @@ func TestManagerInputProofAuthenticatesBindingButLabelsCaller(t *testing.T) {
 	session := newNotesTestSession(t)
 	s := NewServer(ServerConfig{})
 	defer s.Close()
-	s.SetAppIdentity("local", session.ID())
+	setAppIdentity(t, s, "local", session.ID())
 	s.SetSessionTools(func() *agent.Session { return session })
 	client := dialServerAppWire(t, s)
 	workerRef := "local:" + session.ID()

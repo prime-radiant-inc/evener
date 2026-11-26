@@ -15,7 +15,7 @@ import (
 func TestDescendantWorkingDirectoryStartChangeReplayAndOwnerFence(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	t.Cleanup(srv.Close)
-	srv.SetAppIdentity("local", "root")
+	setAppIdentity(t, srv, "local", "root")
 	srv.RecordAppEvent(threadEvent("root", events.EnvironmentChangedData{WorkingDir: "/root"}))
 	read := func(id, want string) {
 		t.Helper()
@@ -51,7 +51,7 @@ func TestDescendantWorkingDirectoryStartChangeReplayAndOwnerFence(t *testing.T) 
 	if resyncs != 1 {
 		t.Fatalf("child cwd resync count = %d", resyncs)
 	}
-	srv.SetAppIdentity("local", "replacement")
+	setAppIdentity(t, srv, "local", "replacement")
 	srv.RecordDescendantAppEvent("replacement", threadEvent("child", events.SessionStartData{WorkingDir: "/restored/child", Restored: true}))
 	replay := srv.AppNotificationsAfter(0, "child")
 	cut := replay[len(replay)-1].Seq

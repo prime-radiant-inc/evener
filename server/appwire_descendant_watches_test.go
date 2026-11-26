@@ -323,7 +323,7 @@ func TestThreadListDescendantWatchesDeepCopyDiagnostics(t *testing.T) {
 func seedDescendantWatchServer(t *testing.T, fn func(threadIDs []string) map[string][]agent.WatchStatusInfo) *Server {
 	t.Helper()
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "root")
+	setAppIdentity(t, srv, "local", "root")
 	srv.mu.Lock()
 	srv.appEnvelope.Detailed = &DetailedStatus{Watches: []agent.WatchStatusInfo{{ID: "watch-root", Source: "timer"}}}
 	srv.appDescendants["child"] = &appDescendantProjection{thread: appwire.Thread{

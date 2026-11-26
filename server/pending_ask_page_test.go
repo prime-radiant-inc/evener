@@ -12,7 +12,7 @@ import (
 func TestPendingAskRowClampsWholeSet(t *testing.T) {
 	t.Parallel()
 	s := NewServer(ServerConfig{})
-	s.SetAppIdentity("local", "root")
+	setAppIdentity(t, s, "local", "root")
 	state := &appwire.PendingAskState{Version: 1, InstanceID: "root", BootGeneration: "1", Revision: 1, CalllessCount: 2}
 	for i := range appwire.MaxPendingAskComposites + 1 {
 		state.Calls = append(state.Calls, appwire.PendingAskCall{TurnID: "turn", CallID: strconv.Itoa(i)})
@@ -36,7 +36,7 @@ func TestPendingAskRowClampsWholeSet(t *testing.T) {
 func TestPendingAskPageWireRequest(t *testing.T) {
 	t.Parallel()
 	s := NewServer(ServerConfig{})
-	s.SetAppIdentity("local", "root")
+	setAppIdentity(t, s, "local", "root")
 	state := &appwire.PendingAskState{Version: 1, InstanceID: "root", BootGeneration: "1", Revision: 0, Calls: []appwire.PendingAskCall{{TurnID: "turn", CallID: "a"}, {TurnID: "turn", CallID: "b"}}, CompositeTotal: 2, CalllessCount: 3}
 	s.SetThreadEnvelopeSource(&pendingAskEnvelopeSource{sample: func() *appwire.PendingAskState { return state }})
 	s.RefreshThreadEnvelope()

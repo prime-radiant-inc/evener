@@ -46,7 +46,7 @@ func requireMutationErrorData(t *testing.T, err error, wantID string, wantOutcom
 
 func TestServerAppWireThreadClearInvokesConfiguredClear(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "old")
+	setAppIdentity(t, srv, "local", "old")
 	called := false
 	srv.SetClearFunc(func(context.Context, appwire.ThreadClearParams) error {
 		called = true
@@ -68,7 +68,7 @@ func TestServerAppWireThreadClearInvokesConfiguredClear(t *testing.T) {
 func TestServerAppWireThreadClearReplaysTheSameReplacement(t *testing.T) {
 	stateDir := t.TempDir()
 	srv := NewServer(ServerConfig{StateDir: stateDir})
-	srv.SetAppIdentity("local", "old")
+	setAppIdentity(t, srv, "local", "old")
 	calls := 0
 	srv.SetClearFunc(func(_ context.Context, params appwire.ThreadClearParams) error {
 		calls++
@@ -133,7 +133,7 @@ func TestServerAppWireThreadClearReplaysTheSameReplacement(t *testing.T) {
 	}
 
 	wrongWorkspace := NewServer(ServerConfig{StateDir: stateDir})
-	wrongWorkspace.SetAppIdentity("local", "other")
+	setAppIdentity(t, wrongWorkspace, "local", "other")
 	if _, err := wrongWorkspace.handleAppThreadClear(context.Background(), params); err == nil {
 		t.Fatal("clear receipt replayed for a different stable workspace")
 	}
@@ -145,7 +145,7 @@ func TestServerAppWireThreadClearReplaysTheSameReplacement(t *testing.T) {
 // than fail before reading it.
 func TestServerAppWireThreadClearReplaysWhileATurnHoldsTheMutationReadGate(t *testing.T) {
 	srv := NewServer(ServerConfig{StateDir: t.TempDir()})
-	srv.SetAppIdentity("local", "old")
+	setAppIdentity(t, srv, "local", "old")
 	setReplacingClearFunc(srv, "new")
 	params := appwire.ThreadClearParams{Ref: "local:old", ClientMutationID: "clear-1", ExpectedInstanceID: "old"}
 	if _, err := srv.handleAppThreadClear(context.Background(), params); err != nil {
@@ -195,7 +195,7 @@ func TestServerAppWireThreadClearWaitsForAnInFlightInputStep(t *testing.T) {
 
 	t.Run("idle step", func(t *testing.T) {
 		srv := NewServer(ServerConfig{StateDir: t.TempDir()})
-		srv.SetAppIdentity("local", "old")
+		setAppIdentity(t, srv, "local", "old")
 		setReplacingClearFunc(srv, "new")
 		release := holdInputStep(t, srv)
 		defer release()
@@ -223,7 +223,7 @@ func TestServerAppWireThreadClearWaitsForAnInFlightInputStep(t *testing.T) {
 
 	t.Run("step becomes a turn", func(t *testing.T) {
 		srv := NewServer(ServerConfig{StateDir: t.TempDir()})
-		srv.SetAppIdentity("local", "old")
+		setAppIdentity(t, srv, "local", "old")
 		setReplacingClearFunc(srv, "new")
 		interrupts := make(chan struct{}, 1)
 		srv.SetRetrySafeTurnFunctions(RetrySafeTurnFunctions{
@@ -264,7 +264,7 @@ func TestServerAppWireThreadClearWaitsForAnInFlightInputStep(t *testing.T) {
 
 	t.Run("caller gives up", func(t *testing.T) {
 		srv := NewServer(ServerConfig{StateDir: t.TempDir()})
-		srv.SetAppIdentity("local", "old")
+		setAppIdentity(t, srv, "local", "old")
 		setReplacingClearFunc(srv, "new")
 		release := holdInputStep(t, srv)
 		defer release()
@@ -286,7 +286,7 @@ func TestServerAppWireThreadClearWaitsForAnInFlightInputStep(t *testing.T) {
 
 	t.Run("running turn", func(t *testing.T) {
 		srv := NewServer(ServerConfig{StateDir: t.TempDir()})
-		srv.SetAppIdentity("local", "old")
+		setAppIdentity(t, srv, "local", "old")
 		setReplacingClearFunc(srv, "new")
 		srv.SetProcessing(true)
 		release := holdInputStep(t, srv)
@@ -304,7 +304,7 @@ func TestServerAppWireThreadClearWaitsForAnInFlightInputStep(t *testing.T) {
 
 func TestServerAppWireThreadClearRejectsConcurrentDifferentMutation(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "old")
+	setAppIdentity(t, srv, "local", "old")
 	entered := make(chan struct{})
 	release := make(chan struct{})
 	var mu sync.Mutex
@@ -357,7 +357,7 @@ func TestServerAppWireThreadClearRejectsConcurrentDifferentMutation(t *testing.T
 
 func TestServerAppWireThreadClearFencesTurnMutationWhileReplacing(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "old")
+	setAppIdentity(t, srv, "local", "old")
 	entered := make(chan struct{})
 	release := make(chan struct{})
 	interruptCalls := 0
@@ -417,7 +417,7 @@ func TestServerAppWireThreadClearFencesTurnMutationWhileReplacing(t *testing.T) 
 
 func TestServerAppWireThreadClearRejectsStaleInstanceAndUnresolvedWork(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "old")
+	setAppIdentity(t, srv, "local", "old")
 	srv.SetClearFunc(func(context.Context, appwire.ThreadClearParams) error { return nil })
 
 	srv.SetProcessing(true)
@@ -501,7 +501,7 @@ func TestServerRejectsOldInstanceTurnMutationsAfterClear(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			srv := NewServer(ServerConfig{})
-			srv.SetAppIdentity("local", "old")
+			setAppIdentity(t, srv, "local", "old")
 			prepared, err := PrepareAppIdentityForRef("local", "new", "local:old", "")
 			if err != nil {
 				t.Fatalf("prepare replacement: %v", err)
@@ -554,7 +554,7 @@ func TestServerRejectsOldInstanceTurnMutationsAfterClear(t *testing.T) {
 func TestServerAppWireThreadClearJournalKeepsOneRecordPerRef(t *testing.T) {
 	stateDir := t.TempDir()
 	srv := NewServer(ServerConfig{StateDir: stateDir})
-	srv.SetAppIdentity("local", "gen-0")
+	setAppIdentity(t, srv, "local", "gen-0")
 	generations := []string{"gen-1", "gen-2"}
 	calls := 0
 	srv.SetClearFunc(func(_ context.Context, params appwire.ThreadClearParams) error {
@@ -632,7 +632,7 @@ func TestServerAppWireThreadClearJournalKeepsOneRecordPerRef(t *testing.T) {
 func TestServerAppWireThreadClearFailedClearRestoresSupersededReceipt(t *testing.T) {
 	stateDir := t.TempDir()
 	srv := NewServer(ServerConfig{StateDir: stateDir})
-	srv.SetAppIdentity("local", "gen-0")
+	setAppIdentity(t, srv, "local", "gen-0")
 	setReplacingClearFunc(srv, "gen-1")
 	if _, err := srv.handleAppThreadClear(context.Background(), appwire.ThreadClearParams{
 		Ref: "local:gen-0", ClientMutationID: "clear-1", ExpectedInstanceID: "gen-0",
@@ -678,7 +678,7 @@ func TestServerAppWireThreadClearFailedClearRestoresSupersededReceipt(t *testing
 func TestServerAppWireThreadClearFailureReleasesGateAndReservation(t *testing.T) {
 	stateDir := t.TempDir()
 	srv := NewServer(ServerConfig{StateDir: stateDir})
-	srv.SetAppIdentity("local", "old")
+	setAppIdentity(t, srv, "local", "old")
 	srv.SetClearFunc(func(context.Context, appwire.ThreadClearParams) error {
 		return errors.New("replacement provisioning failed")
 	})
@@ -716,7 +716,7 @@ func TestServerAppWireThreadClearFailureReleasesGateAndReservation(t *testing.T)
 func TestServerAppWireThreadClearRestoresReservationWhenRollbackPersistFails(t *testing.T) {
 	stateDir := t.TempDir()
 	srv := NewServer(ServerConfig{StateDir: stateDir})
-	srv.SetAppIdentity("local", "old")
+	setAppIdentity(t, srv, "local", "old")
 	// Replacing the journal file with a directory makes the rollback persist
 	// fail without any production fault seam (a rename cannot replace a
 	// directory). The callback installs the fault after the reservation has
@@ -761,7 +761,7 @@ func TestServerAppWireThreadClearRestoresReservationWhenRollbackPersistFails(t *
 
 func TestDescendantAfterClearUsesStableParentRef(t *testing.T) {
 	srv := NewServer(ServerConfig{StateDir: t.TempDir()})
-	srv.SetAppIdentity("local", "old")
+	setAppIdentity(t, srv, "local", "old")
 	setReplacingClearFunc(srv, "new")
 	if _, err := srv.handleAppThreadClear(t.Context(), appwire.ThreadClearParams{
 		Ref: "local:old", ClientMutationID: "clear-1", ExpectedInstanceID: "old",

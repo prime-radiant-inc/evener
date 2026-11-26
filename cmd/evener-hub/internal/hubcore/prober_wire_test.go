@@ -165,7 +165,7 @@ func (s wireProbeEnvelopeSource) SessionMeta() schema.SessionMeta { return s.met
 // proves descendants remain the sole agent projection and are not duplicated.
 func TestStatusProberReadsAppWireStatusIncludingNonAgentJobs(t *testing.T) {
 	srv := server.NewServer(server.ServerConfig{})
-	srv.SetAppIdentity("local", "th_wire_1")
+	setAppIdentity(t, srv, "local", "th_wire_1")
 	srv.SetState("active")
 	srv.SetThreadEnvelopeSource(wireProbeEnvelopeSource{
 		askPending:  true,

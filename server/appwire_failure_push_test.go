@@ -39,7 +39,7 @@ func statusNotificationsAfter(t *testing.T, srv *Server, cursor uint64, threadID
 // along there.
 func TestStatusChangeCarriesTheRunningFailureCount(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
+	setAppIdentity(t, srv, "local", "th_1")
 	publishFailureCount(srv, 0)
 
 	startExecution(srv, "th_1", "t_go")
@@ -64,7 +64,7 @@ func TestStatusChangeOmitsAnUnmeasuredFailureCount(t *testing.T) {
 	// then be showing a clean run it was never told about. Absence on this
 	// notification means "no update" and leaves whatever the hydrate said.
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
+	setAppIdentity(t, srv, "local", "th_1")
 	setEnvelope(srv, func(e *stubThreadEnvelopeSource) { e.failedToolCalls = 0; e.failuresMeasured = false })
 
 	startExecution(srv, "th_1", "t_go")
@@ -78,7 +78,7 @@ func TestStatusChangeOmitsAnUnmeasuredFailureCount(t *testing.T) {
 
 func TestStatusChangeOmitsTheCountOnADaemonThatNeverWiredIt(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
+	setAppIdentity(t, srv, "local", "th_1")
 
 	startExecution(srv, "th_1", "t_go")
 

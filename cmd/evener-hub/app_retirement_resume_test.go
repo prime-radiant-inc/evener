@@ -283,7 +283,11 @@ func (f *retirementResumeFixture) buildReplacement(_ context.Context, _ hubcore.
 		return rendezvous.Entry{}, err
 	}
 	srv := server.NewServer(server.ServerConfig{})
-	srv.SetAppIdentity("local", f.sessionID)
+	prepared, err := server.PrepareAppIdentity("local", f.sessionID, "")
+	if err != nil {
+		return rendezvous.Entry{}, err
+	}
+	srv.ReplaceAppIdentity(prepared, nil)
 	srv.SetState(appwire.ThreadStatusIdle)
 	srv.SetRetrySafeTurnFunctions(server.RetrySafeTurnFunctions{
 		Start: func(params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {

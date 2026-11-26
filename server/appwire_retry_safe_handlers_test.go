@@ -123,9 +123,10 @@ func retrySafeHandlerCases() []retrySafeHandlerCase {
 	}
 }
 
-func newRetrySafeTestServer() *Server {
+func newRetrySafeTestServer(t testing.TB) *Server {
+	t.Helper()
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
+	setAppIdentity(t, srv, "local", "th_1")
 	return srv
 }
 
@@ -150,7 +151,7 @@ func errorDataOf(t *testing.T, err error) appwire.ErrorData {
 func TestRetrySafeHandlersDeliverTrimmedIdentity(t *testing.T) {
 	for _, tc := range retrySafeHandlerCases() {
 		t.Run(tc.name, func(t *testing.T) {
-			srv := newRetrySafeTestServer()
+			srv := newRetrySafeTestServer(t)
 			var seen retrySafeSeen
 			tc.wire(srv, &seen, nil)
 			if err := tc.call(srv, "  m1  ", "  th_1  "); err != nil {
@@ -170,7 +171,7 @@ func TestRetrySafeHandlersRequireMutationIdentity(t *testing.T) {
 			{"blank instance id", "m1", "   "},
 		} {
 			t.Run(tc.name+"/"+bad.name, func(t *testing.T) {
-				srv := newRetrySafeTestServer()
+				srv := newRetrySafeTestServer(t)
 				var seen retrySafeSeen
 				tc.wire(srv, &seen, nil)
 				err := tc.call(srv, bad.mutationID, bad.instanceID)
@@ -188,7 +189,7 @@ func TestRetrySafeHandlersRequireMutationIdentity(t *testing.T) {
 func TestRetrySafeHandlersFenceStaleInstance(t *testing.T) {
 	for _, tc := range retrySafeHandlerCases() {
 		t.Run(tc.name, func(t *testing.T) {
-			srv := newRetrySafeTestServer()
+			srv := newRetrySafeTestServer(t)
 			var seen retrySafeSeen
 			tc.wire(srv, &seen, nil)
 			data := errorDataOf(t, tc.call(srv, "m1", "th_old"))
@@ -205,7 +206,7 @@ func TestRetrySafeHandlersFenceStaleInstance(t *testing.T) {
 func TestRetrySafeHandlersRefuseWhileThreadClearHoldsTheGate(t *testing.T) {
 	for _, tc := range retrySafeHandlerCases() {
 		t.Run(tc.name, func(t *testing.T) {
-			srv := newRetrySafeTestServer()
+			srv := newRetrySafeTestServer(t)
 			var seen retrySafeSeen
 			tc.wire(srv, &seen, nil)
 			srv.appMutationGate.Lock()
@@ -226,7 +227,7 @@ func TestRetrySafeHandlersRefuseWhileThreadClearHoldsTheGate(t *testing.T) {
 // an automatic turn admitted while clear prepares the replacement waits until
 // clear has published it, then runs against whatever session clear installed.
 func TestWithMutationReadWaitsForThreadClear(t *testing.T) {
-	srv := newRetrySafeTestServer()
+	srv := newRetrySafeTestServer(t)
 	entered := make(chan struct{})
 	release := make(chan struct{})
 	srv.SetClearFunc(func(_ context.Context, params appwire.ThreadClearParams) error {
@@ -269,7 +270,7 @@ func TestWithMutationReadWaitsForThreadClear(t *testing.T) {
 func TestRetrySafeHandlersNormalizeCallbackFailure(t *testing.T) {
 	for _, tc := range retrySafeHandlerCases() {
 		t.Run(tc.name, func(t *testing.T) {
-			srv := newRetrySafeTestServer()
+			srv := newRetrySafeTestServer(t)
 			var seen retrySafeSeen
 			tc.wire(srv, &seen, errors.New("store unavailable"))
 			data := errorDataOf(t, tc.call(srv, " m1 ", "th_1"))
@@ -285,7 +286,7 @@ func TestRetrySafeHandlersNormalizeCallbackFailure(t *testing.T) {
 func TestRetrySafeHandlersPassThroughWireErrors(t *testing.T) {
 	for _, tc := range retrySafeHandlerCases() {
 		t.Run(tc.name, func(t *testing.T) {
-			srv := newRetrySafeTestServer()
+			srv := newRetrySafeTestServer(t)
 			var seen retrySafeSeen
 			tc.wire(srv, &seen, appwire.Conflict("queue moved"))
 			if got := wireErrorOf(t, tc.call(srv, "m1", "th_1")).Code; got != appwire.CodeConflict {
@@ -298,7 +299,7 @@ func TestRetrySafeHandlersPassThroughWireErrors(t *testing.T) {
 func TestRetrySafeHandlersAnswerUnavailableWhenUnwired(t *testing.T) {
 	for _, tc := range retrySafeHandlerCases() {
 		t.Run(tc.name, func(t *testing.T) {
-			srv := newRetrySafeTestServer()
+			srv := newRetrySafeTestServer(t)
 			if got := wireErrorOf(t, tc.call(srv, "m1", "th_1")).Code; got != appwire.CodeUnavailable {
 				t.Fatalf("code=%v, want Unavailable", got)
 			}
@@ -341,7 +342,7 @@ func TestRetrySafeInputGate(t *testing.T) {
 	}
 	for name, call := range rejects {
 		t.Run(name, func(t *testing.T) {
-			srv := newRetrySafeTestServer()
+			srv := newRetrySafeTestServer(t)
 			srv.SetRetrySafeTurnFunctions(wired)
 			if got := wireErrorOf(t, call(srv)).Code; got != appwire.CodeInvalidParams {
 				t.Fatalf("code=%v, want InvalidParams", got)
@@ -349,7 +350,7 @@ func TestRetrySafeInputGate(t *testing.T) {
 		})
 	}
 	t.Run("drain accepts no input", func(t *testing.T) {
-		srv := newRetrySafeTestServer()
+		srv := newRetrySafeTestServer(t)
 		srv.SetRetrySafeTurnFunctions(wired)
 		if _, err := srv.handleAppTurnDrainAsSteer(ctx, appwire.TurnDrainAsSteerParams{Ref: "local:th_1", ClientMutationID: "m1", ExpectedInstanceID: "th_1"}); err != nil {
 			t.Fatalf("drain without input: %v", err)
@@ -360,7 +361,7 @@ func TestRetrySafeInputGate(t *testing.T) {
 // The index-addressed handlers validate their static shape before dispatch.
 func TestRetrySafeQueueEntryShapeGate(t *testing.T) {
 	ctx := context.Background()
-	srv := newRetrySafeTestServer()
+	srv := newRetrySafeTestServer(t)
 	srv.SetRetrySafeTurnFunctions(RetrySafeTurnFunctions{
 		Promote: func(appwire.TurnPromoteQueuedAsSteerParams) (appwire.TurnPromoteQueuedAsSteerResponse, error) {
 			return appwire.TurnPromoteQueuedAsSteerResponse{}, nil

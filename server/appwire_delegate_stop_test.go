@@ -15,7 +15,7 @@ func TestHandleDelegateStop(t *testing.T) {
 
 	t.Run("no callback is unavailable", func(t *testing.T) {
 		s := NewServer(ServerConfig{})
-		s.SetAppIdentity("local", "root")
+		setAppIdentity(t, s, "local", "root")
 		if _, err := s.handleAppDelegateStop(context.Background(), appwire.DelegateStopParams{Ref: "local:root", DelegateID: "dlg_1"}); err == nil {
 			t.Fatal("want an error when no session callback is attached")
 		}
@@ -23,7 +23,7 @@ func TestHandleDelegateStop(t *testing.T) {
 
 	t.Run("an empty delegate id is invalid", func(t *testing.T) {
 		s := NewServer(ServerConfig{})
-		s.SetAppIdentity("local", "root")
+		setAppIdentity(t, s, "local", "root")
 		s.SetDelegateStopFunc(func(string) (appwire.DelegateStopOutcome, error) { return appwire.DelegateStopStopping, nil })
 		_, err := s.handleAppDelegateStop(context.Background(), appwire.DelegateStopParams{Ref: "local:root", DelegateID: "  "})
 		if wireErrorInfo(err) != appwire.ErrorInvalidParams {
@@ -33,7 +33,7 @@ func TestHandleDelegateStop(t *testing.T) {
 
 	t.Run("only the root that owns the tree is a target", func(t *testing.T) {
 		s := NewServer(ServerConfig{})
-		s.SetAppIdentity("local", "root")
+		setAppIdentity(t, s, "local", "root")
 		s.SetDelegateStopFunc(func(string) (appwire.DelegateStopOutcome, error) {
 			t.Fatal("a stop aimed at another thread reached the session")
 			return "", nil
@@ -45,7 +45,7 @@ func TestHandleDelegateStop(t *testing.T) {
 
 	t.Run("forwards the delegate and answers its outcome", func(t *testing.T) {
 		s := NewServer(ServerConfig{})
-		s.SetAppIdentity("local", "root")
+		setAppIdentity(t, s, "local", "root")
 		var got string
 		s.SetDelegateStopFunc(func(delegateID string) (appwire.DelegateStopOutcome, error) {
 			got = delegateID
@@ -59,7 +59,7 @@ func TestHandleDelegateStop(t *testing.T) {
 
 	t.Run("an unknown delegate is not found", func(t *testing.T) {
 		s := NewServer(ServerConfig{})
-		s.SetAppIdentity("local", "root")
+		setAppIdentity(t, s, "local", "root")
 		s.SetDelegateStopFunc(func(delegateID string) (appwire.DelegateStopOutcome, error) {
 			return "", fmt.Errorf("%w %q", agent.ErrUnknownDelegate, delegateID)
 		})
@@ -74,7 +74,7 @@ func TestHandleDelegateStop(t *testing.T) {
 // "Stop subagent" instead of asking the coordinator (S6).
 func TestRootCapabilitiesAdvertiseStopSubagent(t *testing.T) {
 	s := NewServer(ServerConfig{})
-	s.SetAppIdentity("local", "root")
+	setAppIdentity(t, s, "local", "root")
 	if s.appThread().Evener.Capabilities.StopSubagent {
 		t.Fatal("a daemon without the stop wired advertises it")
 	}

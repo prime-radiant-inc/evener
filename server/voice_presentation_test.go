@@ -19,7 +19,7 @@ func TestVoicePresentationServerAdmissionAndCapability(t *testing.T) {
 	}
 	defer session.Close()
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", session.ID())
+	setAppIdentity(t, srv, "local", session.ID())
 	seedStatus(srv, StatusInfo{SessionID: session.ID(), State: "idle"})
 	srv.SetRetrySafeTurnFunctions(RetrySafeTurnFunctions{Start: session.AcceptClientMutationStart, Steer: session.AcceptClientMutationSteer, Queue: session.AcceptClientMutationQueue, Drain: session.AcceptClientMutationDrainAsSteer})
 	conn := srv.AppServer().NewConnection("voice-boundary")

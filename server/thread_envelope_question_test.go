@@ -15,7 +15,7 @@ import (
 // flag is the question's presence, and the answer clears both.
 func TestThreadSnapshotsCarryThePendingQuestion(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "root")
+	setAppIdentity(t, srv, "local", "root")
 	question := &appwire.PendingQuestion{Question: "Which datastore for the ingest path?", Options: []string{"Postgres", "SQLite"}, Count: 2}
 	src := publishEnvelope(srv, &stubThreadEnvelopeSource{question: question})
 	if got := listedRootEvener(t, srv); !got.AskPending || !reflect.DeepEqual(got.PendingQuestion, question) {

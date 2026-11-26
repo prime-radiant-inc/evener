@@ -42,7 +42,7 @@ func dialServerAppWire(t *testing.T, srv *Server) *appwire.Client {
 
 func TestServerAppWireRealWireReadUnsubscribeAliases(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
+	setAppIdentity(t, srv, "local", "th_1")
 	installProjectedMutationCallbacksForTest(srv, RetrySafeTurnFunctions{})
 	client := dialServerAppWire(t, srv)
 	ctx := context.Background()
@@ -59,7 +59,7 @@ func TestServerAppWireRealWireReadUnsubscribeAliases(t *testing.T) {
 
 func TestServerAppWireTurnStartQueuesInput(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
+	setAppIdentity(t, srv, "local", "th_1")
 	installProjectedMutationCallbacksForTest(srv, RetrySafeTurnFunctions{})
 
 	conn := srv.AppServer().NewConnection("test")
@@ -91,7 +91,7 @@ func TestServerAppWireTurnStartQueuesInput(t *testing.T) {
 // one frame before any entry of it is recorded.
 func TestServerAppWireSetProcessingPublishesActiveTurnID(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
+	setAppIdentity(t, srv, "local", "th_1")
 	cursor := srv.appNotifier.CurrentSequence()
 
 	srv.SetProcessing(true)
@@ -201,7 +201,7 @@ func TestServerAppWireThreadReadExposesStartedActiveTurnIDAlongsideSeededTurns(t
 
 func TestServerAppWireGoalSetInvokesGoalFunc(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
+	setAppIdentity(t, srv, "local", "th_1")
 	var got []string
 	srv.SetGoalFunc(func(objective string) (bool, error) {
 		got = append(got, objective)
@@ -231,7 +231,7 @@ func TestServerAppWireGoalSetInvokesGoalFunc(t *testing.T) {
 
 func TestServerAppWireGoalSetEmptyObjectiveRoutesThroughGoalFunc(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
+	setAppIdentity(t, srv, "local", "th_1")
 	var got []string
 	srv.SetGoalFunc(func(objective string) (bool, error) {
 		got = append(got, objective)
@@ -258,7 +258,7 @@ func TestServerAppWireGoalSetEmptyObjectiveRoutesThroughGoalFunc(t *testing.T) {
 
 func TestServerAppWireGoalSetWithoutGoalFuncIsUnavailable(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
+	setAppIdentity(t, srv, "local", "th_1")
 
 	conn := srv.AppServer().NewConnection("test")
 	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
@@ -273,7 +273,7 @@ func TestServerAppWireGoalSetWithoutGoalFuncIsUnavailable(t *testing.T) {
 
 func TestServerAppWireTurnStartAcceptsCodexInput(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
+	setAppIdentity(t, srv, "local", "th_1")
 	var gotText string
 	var gotImages []agent.ImageAttachment
 	installProjectedMutationCallbacksForTest(srv, RetrySafeTurnFunctions{
@@ -475,7 +475,7 @@ func TestServerAppWireInitializeAdvertisesTurnList(t *testing.T) {
 
 func TestServerAppWireTurnSteerPreservesImages(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
+	setAppIdentity(t, srv, "local", "th_1")
 	var gotText string
 	var gotImages []agent.ImageAttachment
 	installProjectedMutationCallbacksForTest(srv, RetrySafeTurnFunctions{
@@ -513,7 +513,7 @@ func TestServerAppWireTurnSteerPreservesImages(t *testing.T) {
 
 func TestServerAppWireTurnSteerPreservesAuthorityImageRejection(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
+	setAppIdentity(t, srv, "local", "th_1")
 	var steered []string
 	installProjectedMutationCallbacksForTest(srv, RetrySafeTurnFunctions{
 		Steer: func(params appwire.TurnSteerParams) (appwire.TurnSteerResponse, error) {
@@ -554,7 +554,7 @@ func TestServerAppWireTurnSteerPreservesAuthorityImageRejection(t *testing.T) {
 // so what it must do is cancel whatever is running -- exactly once.
 func TestServerAppWireTurnInterruptCancelsTheRunningTurn(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
+	setAppIdentity(t, srv, "local", "th_1")
 	cancelled := 0
 	srv.SetCancelFunc(func() { cancelled++ })
 	installProjectedMutationCallbacksForTest(srv, RetrySafeTurnFunctions{})
@@ -582,7 +582,7 @@ func TestServerAppWireTurnInterruptCancelsTheRunningTurn(t *testing.T) {
 
 func TestServerAppWireThreadModelSetKeepsProviderApart(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
+	setAppIdentity(t, srv, "local", "th_1")
 	var gotProvider, gotModel string
 	srv.SetModelFunc(func(provider, model string) error {
 		gotProvider, gotModel = provider, model
@@ -619,7 +619,7 @@ func TestAppStatusPreservesAttentionStates(t *testing.T) {
 
 func TestServerAppWireTurnStartRejectsClosedSession(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
+	setAppIdentity(t, srv, "local", "th_1")
 	srv.SetState("closed")
 	installProjectedMutationCallbacksForTest(srv, RetrySafeTurnFunctions{})
 
@@ -690,7 +690,7 @@ func TestServerAppWireErrorEventNotifiesSubscribers(t *testing.T) {
 
 func TestServerAppWireGoalUpdatedFanoutToEverySubscribedClient(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
+	setAppIdentity(t, srv, "local", "th_1")
 
 	httpServer := httptest.NewServer(http.HandlerFunc(srv.AppServer().ServeWebSocket))
 	defer httpServer.Close()
@@ -826,7 +826,7 @@ func awaitTask2Notification(t *testing.T, client *appwire.Client, method string)
 
 func TestServerAppWireTaskAndGoalPatchesAreInSnapshotBeforeNotificationDelivery(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "root")
+	setAppIdentity(t, srv, "local", "root")
 	source := publishEnvelope(srv, &stubThreadEnvelopeSource{
 		tasks: &appwire.TaskAggregate{Total: 1, Current: &appwire.TaskSummary{ID: 1, Description: "stale source task"}},
 		meta:  schema.SessionMeta{Goal: &schema.GoalSnapshot{Objective: "stale source goal", Status: "active"}},
@@ -872,7 +872,7 @@ func TestServerAppWireTaskAndGoalPatchesAreInSnapshotBeforeNotificationDelivery(
 
 func TestServerAppWireCheckpointCannotOverwriteDescendantSharedTaskCarrier(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "root")
+	setAppIdentity(t, srv, "local", "root")
 	src := publishEnvelope(srv, &stubThreadEnvelopeSource{
 		tasks: &appwire.TaskAggregate{Total: 1, Current: &appwire.TaskSummary{ID: 1, Description: "old sampled task"}},
 	})
@@ -930,7 +930,7 @@ func TestServerAppWireCheckpointCannotOverwriteDescendantSharedTaskCarrier(t *te
 
 func TestServerAppWireCheckpointCannotOverwriteConcurrentGoalCarrier(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "root")
+	setAppIdentity(t, srv, "local", "root")
 	src := publishEnvelope(srv, &stubThreadEnvelopeSource{meta: schema.SessionMeta{Goal: &schema.GoalSnapshot{
 		Objective: "old sampled goal", Status: "active", Iterations: 1,
 	}}})
@@ -973,7 +973,7 @@ func TestServerAppWireCheckpointCannotOverwriteConcurrentGoalCarrier(t *testing.
 
 func TestServerAppWireCheckpointStillRepairsTaskAndGoalWithoutConcurrentCarrier(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "root")
+	setAppIdentity(t, srv, "local", "root")
 	src := publishEnvelope(srv, &stubThreadEnvelopeSource{
 		tasks: &appwire.TaskAggregate{Total: 1, Current: &appwire.TaskSummary{ID: 1, Description: "initial sampled task"}},
 		meta:  schema.SessionMeta{Goal: &schema.GoalSnapshot{Objective: "initial sampled goal", Status: "active", Iterations: 1}},
@@ -1010,7 +1010,7 @@ func TestServerAppWireCheckpointStillRepairsTaskAndGoalWithoutConcurrentCarrier(
 
 func TestServerAppWireTaskAndGoalUpdatesHaveOneOrderForEveryClient(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "root")
+	setAppIdentity(t, srv, "local", "root")
 	publishEnvelope(srv, &stubThreadEnvelopeSource{})
 	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventSessionStart, SessionID: "root", Data: events.SessionStartData{
 		TaskStoreOwnerSessionID: "root",
@@ -1083,7 +1083,7 @@ func TestServerAppWireTaskAndGoalUpdatesHaveOneOrderForEveryClient(t *testing.T)
 
 func TestServerAppWireDescendantSessionStartSeedsCurrentTaskAndGoal(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "root")
+	setAppIdentity(t, srv, "local", "root")
 	srv.RecordDescendantAppEvent("root", events.SessionEvent{Kind: events.EventSessionStart, SessionID: "child", Data: events.SessionStartData{
 		TaskStoreOwnerSessionID: "child",
 		CurrentWork: &events.CurrentWorkSeedData{
@@ -1102,7 +1102,7 @@ func TestServerAppWireDescendantSessionStartSeedsCurrentTaskAndGoal(t *testing.T
 
 func TestServerAppWireDescendantSessionStartExplicitlyClearsGoal(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "root")
+	setAppIdentity(t, srv, "local", "root")
 	seed := events.SessionStartData{TaskStoreOwnerSessionID: "child", CurrentWork: &events.CurrentWorkSeedData{
 		Goal: &events.GoalStateData{Objective: "cached descendant goal", Status: "active", Iterations: 2},
 	}}
@@ -1121,7 +1121,7 @@ func TestServerAppWireDescendantSessionStartExplicitlyClearsGoal(t *testing.T) {
 
 func TestServerAppWireDescendantCarriersReplaceSeedAndClearGoal(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "root")
+	setAppIdentity(t, srv, "local", "root")
 	publishEnvelope(srv, &stubThreadEnvelopeSource{
 		tasks: &appwire.TaskAggregate{Total: 1, Current: &appwire.TaskSummary{ID: 1, Description: "root task"}},
 		meta:  schema.SessionMeta{Goal: &schema.GoalSnapshot{Objective: "root goal", Status: "active"}},
@@ -1149,7 +1149,7 @@ func TestServerAppWireDescendantCarriersReplaceSeedAndClearGoal(t *testing.T) {
 
 func TestServerAppWireSharedTaskOwnerFansOutInOneCommit(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "root")
+	setAppIdentity(t, srv, "local", "root")
 	publishEnvelope(srv, &stubThreadEnvelopeSource{tasks: &appwire.TaskAggregate{Total: 1, Current: &appwire.TaskSummary{ID: 1, Description: "root old"}}})
 	for _, start := range []struct {
 		id, owner, task string
@@ -1200,7 +1200,7 @@ func TestServerAppWireSharedTaskOwnerFansOutInOneCommit(t *testing.T) {
 
 func TestServerAppWireTaskPublicationRevisionRejectsDelayedRootCarrier(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "root")
+	setAppIdentity(t, srv, "local", "root")
 	publishEnvelope(srv, &stubThreadEnvelopeSource{tasks: &appwire.TaskAggregate{Total: 1, Current: &appwire.TaskSummary{ID: 1, Description: "base task"}}})
 	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventSessionStart, SessionID: "root", Data: events.SessionStartData{
 		TaskStoreOwnerSessionID: "root",
@@ -1266,7 +1266,7 @@ func TestServerAppWireTaskPublicationRevisionRejectsDelayedRootCarrier(t *testin
 
 func TestServerAppWireZeroMetadataTaskUpdateCannotBypassTheFence(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "root")
+	setAppIdentity(t, srv, "local", "root")
 	publishEnvelope(srv, &stubThreadEnvelopeSource{tasks: &appwire.TaskAggregate{Total: 1, Current: &appwire.TaskSummary{ID: 1, Description: "root old"}}})
 	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventTaskUpdated, SessionID: "root", Data: events.TaskUpdatedData{
 		Total: 2, Current: &events.TaskSummaryData{ID: 2, Description: "zero metadata carrier"},
@@ -1282,7 +1282,7 @@ func TestServerAppWireZeroMetadataTaskUpdateCannotBypassTheFence(t *testing.T) {
 // epoch does not equal the active one, so it is dropped rather than applied.
 func TestServerAppWireZeroMetadataTaskUpdateIsDroppedAfterAValidIncarnation(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "root")
+	setAppIdentity(t, srv, "local", "root")
 	publishEnvelope(srv, &stubThreadEnvelopeSource{tasks: &appwire.TaskAggregate{Total: 1, Current: &appwire.TaskSummary{ID: 1, Description: "root seeded"}}})
 	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventSessionStart, SessionID: "root", Data: events.SessionStartData{
 		TaskStoreOwnerSessionID: "root",
@@ -1307,7 +1307,7 @@ func TestServerAppWireZeroMetadataTaskUpdateIsDroppedAfterAValidIncarnation(t *t
 // reaches the shared owner's fanout, so neither the child nor the root moves.
 func TestServerAppWireZeroMetadataDescendantTaskUpdateIsDropped(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "root")
+	setAppIdentity(t, srv, "local", "root")
 	publishEnvelope(srv, &stubThreadEnvelopeSource{tasks: &appwire.TaskAggregate{Total: 1, Current: &appwire.TaskSummary{ID: 1, Description: "root seeded"}}})
 	srv.RecordDescendantAppEvent("root", events.SessionEvent{Kind: events.EventSessionStart, SessionID: "child", Data: events.SessionStartData{
 		TaskStoreOwnerSessionID: "root",
@@ -1335,7 +1335,7 @@ func TestServerAppWireZeroMetadataDescendantTaskUpdateIsDropped(t *testing.T) {
 
 func TestServerAppWireTaskPublicationRevisionResetsWithIdentity(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "root")
+	setAppIdentity(t, srv, "local", "root")
 	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventSessionStart, SessionID: "root", Data: events.SessionStartData{
 		TaskStoreOwnerSessionID: "root",
 		TaskPublicationEpoch:    50,
@@ -1347,7 +1347,7 @@ func TestServerAppWireTaskPublicationRevisionResetsWithIdentity(t *testing.T) {
 
 	// A restored/replaced identity can reuse the same durable session ID while
 	// owning a newly constructed TaskStore whose in-memory revision restarts.
-	srv.SetAppIdentity("local", "root")
+	setAppIdentity(t, srv, "local", "root")
 	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventSessionStart, SessionID: "root", Data: events.SessionStartData{
 		TaskStoreOwnerSessionID: "root",
 		TaskPublicationEpoch:    51,
@@ -1364,7 +1364,7 @@ func TestServerAppWireTaskPublicationRevisionResetsWithIdentity(t *testing.T) {
 
 func TestServerAppWireTaskPublicationEpochAllowsSameIDColdRestore(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "root")
+	setAppIdentity(t, srv, "local", "root")
 	publishEnvelope(srv, &stubThreadEnvelopeSource{})
 	ownerID := "stable-child"
 	nextPublication := func(store *taskpkg.TaskStore) (epoch, revision uint64) {
@@ -1448,7 +1448,7 @@ func TestServerAppWireTaskPublicationEpochAllowsSameIDColdRestore(t *testing.T) 
 func TestServerAppWireThreadReadReturnsStatus(t *testing.T) {
 	exitCode := 7
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
+	setAppIdentity(t, srv, "local", "th_1")
 	seedStatus(srv, StatusInfo{
 		SessionID:  "sess_1",
 		State:      "idle",
@@ -1522,7 +1522,7 @@ func TestServerAppWireThreadReadReturnsStatus(t *testing.T) {
 
 func TestServerAppWireThreadReadCarriesTurnCountWithoutTurns(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
+	setAppIdentity(t, srv, "local", "th_1")
 	seedStatus(srv, StatusInfo{SessionID: "th_1", State: "idle", Turns: 37})
 
 	conn := srv.AppServer().NewConnection("test")
@@ -1549,7 +1549,7 @@ func TestServerAppWireThreadReadCarriesTurnCountWithoutTurns(t *testing.T) {
 // callbacks exercised by TestServerAppWireThreadReadReturnsStatus.
 func TestServerAppWireThreadReadIncludesWorkMetrics(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
+	setAppIdentity(t, srv, "local", "th_1")
 	setEnvelope(srv, func(e *stubThreadEnvelopeSource) {
 		e.workMillis = 4200
 		e.usage = &appwire.EvenerUsage{InputTokens: 10, OutputTokens: 20, CacheReadTokens: 5, TotalTokens: 30}
@@ -1583,7 +1583,7 @@ func TestServerAppWireThreadReadTaskAggregatePresence(t *testing.T) {
 	readTasks := func(aggregate *appwire.TaskAggregate) *appwire.TaskAggregate {
 		t.Helper()
 		srv := NewServer(ServerConfig{})
-		srv.SetAppIdentity("local", "th_1")
+		setAppIdentity(t, srv, "local", "th_1")
 		if aggregate != nil {
 			setEnvelope(srv, func(e *stubThreadEnvelopeSource) { e.tasks = aggregate })
 		}
@@ -1629,7 +1629,7 @@ func TestServerAppWireThreadReadIncludesCostTotal(t *testing.T) {
 			}
 			return &registry.Cost{Input: 5, Output: 25}
 		})
-		srv.SetAppIdentity("local", "th_1")
+		setAppIdentity(t, srv, "local", "th_1")
 		seedStatus(srv, StatusInfo{SessionID: "th_1", Model: model, Profile: profile})
 		setEnvelope(srv, func(e *stubThreadEnvelopeSource) {
 			e.workMillis = 4200
@@ -1665,7 +1665,7 @@ func TestServerAppWireThreadReadIncludesCostTotal(t *testing.T) {
 // rather than falling back to a bundled pricing table.
 func TestServerAppWireThreadReadOmitsCostWithoutLookup(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
+	setAppIdentity(t, srv, "local", "th_1")
 	seedStatus(srv, StatusInfo{SessionID: "th_1", Model: "claude-opus-4-5", Profile: "anthropic"})
 	setEnvelope(srv, func(e *stubThreadEnvelopeSource) {
 		e.usage = &appwire.EvenerUsage{InputTokens: 100_000, OutputTokens: 20_000, TotalTokens: 120_000}
@@ -1688,7 +1688,7 @@ func TestServerAppWireThreadReadOmitsCostWithoutLookup(t *testing.T) {
 // a nil callback.
 func TestServerAppWireThreadReadOmitsWorkMetricsWhenUnwired(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
+	setAppIdentity(t, srv, "local", "th_1")
 
 	conn := srv.AppServer().NewConnection("test")
 	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
@@ -1742,7 +1742,7 @@ func TestServerAppWireThreadReadKeepsResumedHistoryAheadOfNewTurns(t *testing.T)
 // is written loses the reply the same way the daemon did.
 func TestServerAppWireThreadShutdownRepliesBeforeTheShutdownStarts(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
+	setAppIdentity(t, srv, "local", "th_1")
 	done := make(chan struct{})
 	srv.SetShutdownFunc(func() {
 		defer close(done)
@@ -1764,7 +1764,7 @@ func TestServerAppWireThreadShutdownRepliesBeforeTheShutdownStarts(t *testing.T)
 // its reply) still has to shut the daemon down.
 func TestServerAppWireThreadShutdownInvokesCallbackWithoutATransport(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
+	setAppIdentity(t, srv, "local", "th_1")
 	done := make(chan struct{}, 1)
 	srv.SetShutdownFunc(func() { done <- struct{}{} })
 
@@ -1780,7 +1780,7 @@ func TestServerAppWireThreadShutdownInvokesCallbackWithoutATransport(t *testing.
 
 func TestServerAppWireThreadReadSubscribesForNotifications(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
+	setAppIdentity(t, srv, "local", "th_1")
 
 	httpServer := httptest.NewServer(http.HandlerFunc(srv.AppServer().ServeWebSocket))
 	defer httpServer.Close()
@@ -1805,7 +1805,7 @@ func TestServerAppWireThreadReadSubscribesForNotifications(t *testing.T) {
 
 func TestServerAppWireRootAndDescendantSubscribeOnOneConnection(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "root")
+	setAppIdentity(t, srv, "local", "root")
 	srv.RecordDescendantAppEvent("root", events.SessionEvent{
 		Kind:      events.EventSessionStart,
 		SessionID: "child",
@@ -1882,7 +1882,7 @@ func TestServerAppWireRootAndDescendantSubscribeOnOneConnection(t *testing.T) {
 // The hub-facing counterpart (relay teardown) rides on this count reaching 0.
 func TestServerAppWireThreadUnsubscribeDropsSubscription(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
+	setAppIdentity(t, srv, "local", "th_1")
 
 	httpServer := httptest.NewServer(http.HandlerFunc(srv.AppServer().ServeWebSocket))
 	defer httpServer.Close()
@@ -1934,7 +1934,7 @@ func TestServerAppWireThreadUnsubscribeDropsSubscription(t *testing.T) {
 // session and back to the stable ref — the same key the subscribe used.
 func TestServerAppWireThreadUnsubscribeResolvesStableRefAcrossSwap(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_old")
+	setAppIdentity(t, srv, "local", "th_old")
 	prepared, err := PrepareAppIdentityForRef("local", "th_new", "local:th_stable", "")
 	if err != nil {
 		t.Fatalf("prepare replacement identity: %v", err)
@@ -1976,7 +1976,7 @@ func TestServerAppWireThreadUnsubscribeResolvesStableRefAcrossSwap(t *testing.T)
 // not outlive the client's interest.
 func TestServerAppWireThreadUnsubscribeUnresolvedRefCleansRawKeys(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_live")
+	setAppIdentity(t, srv, "local", "th_live")
 
 	httpServer := httptest.NewServer(http.HandlerFunc(srv.AppServer().ServeWebSocket))
 	defer httpServer.Close()
@@ -2018,9 +2018,9 @@ func TestServerAppWireThreadUnsubscribeUnresolvedRefCleansRawKeys(t *testing.T) 
 
 func TestServerRejectsLateDescendantEventAfterIdentityReplacement(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "old-root")
+	setAppIdentity(t, srv, "local", "old-root")
 	srv.RecordDescendantAppEvent("old-root", events.SessionEvent{Kind: events.EventSessionStart, SessionID: "old-child"})
-	srv.SetAppIdentity("local", "new-root")
+	setAppIdentity(t, srv, "local", "new-root")
 	cursor := srv.appNotifier.CurrentSequence()
 	closed := srv.AppNotificationsAfter(0, "old-child")
 	if len(closed) == 0 || closed[len(closed)-1].Notification.Method != appwire.NotifyThreadClosed {
@@ -2047,7 +2047,7 @@ func TestServerRejectsLateDescendantEventAfterIdentityReplacement(t *testing.T) 
 
 func TestServerRejectsDescendantMutationInsteadOfMutatingRoot(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "root")
+	setAppIdentity(t, srv, "local", "root")
 	srv.RecordDescendantAppEvent("root", events.SessionEvent{Kind: events.EventSessionStart, SessionID: "child"})
 	called := false
 	srv.SetRetrySafeTurnFunctions(RetrySafeTurnFunctions{Start: func(appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
@@ -2072,7 +2072,7 @@ func TestServerRejectsDescendantMutationInsteadOfMutatingRoot(t *testing.T) {
 
 func TestServerAppWireThreadReadDoesNotSubscribeByDefault(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
+	setAppIdentity(t, srv, "local", "th_1")
 
 	conn := srv.AppServer().NewConnection("test")
 	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
@@ -2093,7 +2093,7 @@ func TestServerAppWireThreadReadDoesNotSubscribeByDefault(t *testing.T) {
 // precondition, so the bit no longer flips with processing.
 func TestServerAppWireQueueCapabilityAdvertisesHarnessSupport(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
+	setAppIdentity(t, srv, "local", "th_1")
 	wireRetrySafeCapabilities(srv)
 
 	// Idle: capabilities.queue is true with the queue seam wired, exactly as
@@ -2119,7 +2119,7 @@ func TestServerAppWireQueueCapabilityAdvertisesHarnessSupport(t *testing.T) {
 
 	// No queue seam registered: Queue stays false.
 	srv2 := NewServer(ServerConfig{})
-	srv2.SetAppIdentity("local", "th_2")
+	setAppIdentity(t, srv2, "local", "th_2")
 	srv2.SetProcessing(true)
 	if caps2 := srv2.appCapabilities("active", true); caps2.Queue {
 		t.Fatalf("Queue should be false without the queue seam registered")
@@ -2131,7 +2131,7 @@ func TestServerAppWireQueueCapabilityAdvertisesHarnessSupport(t *testing.T) {
 // turn is in flight.
 func TestServerAppWireTurnQueueAcceptsMidTurnMessage(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
+	setAppIdentity(t, srv, "local", "th_1")
 	srv.SetProcessing(true)
 	seedStatus(srv, StatusInfo{SessionID: "th_1", State: "active"})
 	var got []string
@@ -2158,7 +2158,7 @@ func TestServerAppWireTurnQueueAcceptsMidTurnMessage(t *testing.T) {
 
 func TestServerAppWireTurnStartRejectsRunningTurn(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
+	setAppIdentity(t, srv, "local", "th_1")
 	seedStatus(srv, StatusInfo{SessionID: "th_1", State: "idle"})
 	srv.SetProcessingTurn("turn_running")
 	installProjectedMutationCallbacksForTest(srv, RetrySafeTurnFunctions{})
@@ -2179,7 +2179,7 @@ func TestServerAppWireTurnStartRejectsRunningTurn(t *testing.T) {
 
 func TestStartTestTurnIsAtomic(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
+	setAppIdentity(t, srv, "local", "th_1")
 	start := make(chan struct{})
 	var wg sync.WaitGroup
 	errs := make(chan error, 2)
@@ -2212,7 +2212,7 @@ func TestStartTestTurnIsAtomic(t *testing.T) {
 
 func TestServerAppWireTurnQueueRejectsStaleProjectedActiveTurn(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
+	setAppIdentity(t, srv, "local", "th_1")
 	srv.SetProcessing(false)
 	seedStatus(srv, StatusInfo{SessionID: "th_1", State: "idle"})
 	srv.appActiveTurnID = "turn_stale"
@@ -2236,7 +2236,7 @@ func TestServerAppWireTurnQueueRejectsStaleProjectedActiveTurn(t *testing.T) {
 // Conflict when the session is not processing.
 func TestServerAppWireTurnQueueRejectsWhenIdle(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
+	setAppIdentity(t, srv, "local", "th_1")
 	srv.SetProcessing(false)
 	seedStatus(srv, StatusInfo{SessionID: "th_1", State: "idle"})
 	installProjectedMutationCallbacksForTest(srv, RetrySafeTurnFunctions{
@@ -2262,7 +2262,7 @@ func TestServerAppWireTurnQueueRejectsWhenIdle(t *testing.T) {
 // handler returns Conflict when no messages are queued.
 func TestServerAppWireTurnDrainAsSteerRequiresQueuedMessages(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
+	setAppIdentity(t, srv, "local", "th_1")
 	srv.SetProcessing(true)
 	seedStatus(srv, StatusInfo{SessionID: "th_1", State: "active"})
 	setEnvelope(srv, func(e *stubThreadEnvelopeSource) { e.queue.Depth = 0 })
@@ -2287,7 +2287,7 @@ func TestServerAppWireTurnDrainAsSteerRequiresQueuedMessages(t *testing.T) {
 
 func TestServerAppWireTurnDrainAsSteerRejectsIdleThread(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
+	setAppIdentity(t, srv, "local", "th_1")
 	seedStatus(srv, StatusInfo{SessionID: "th_1", State: "idle"})
 	called := 0
 	setEnvelope(srv, func(e *stubThreadEnvelopeSource) { e.queue.Depth = 1 })
@@ -2318,7 +2318,7 @@ func TestServerAppWireTurnDrainAsSteerRejectsIdleThread(t *testing.T) {
 // handler invokes the registered drain callback.
 func TestServerAppWireTurnDrainAsSteerDispatchesWhenQueued(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
+	setAppIdentity(t, srv, "local", "th_1")
 	srv.SetProcessing(true)
 	seedStatus(srv, StatusInfo{SessionID: "th_1", State: "active"})
 	called := 0
@@ -2345,7 +2345,7 @@ func TestServerAppWireTurnDrainAsSteerDispatchesWhenQueued(t *testing.T) {
 
 func TestServerAppWireTurnDrainAsSteerDispatchesInputAtomically(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
+	setAppIdentity(t, srv, "local", "th_1")
 	srv.SetProcessing(true)
 	seedStatus(srv, StatusInfo{SessionID: "th_1", State: "active"})
 	var gotText string
@@ -2389,7 +2389,7 @@ func TestServerAppWireTurnDrainAsSteerDispatchesInputAtomically(t *testing.T) {
 // for a different session.
 func TestServerAppWireThreadReadRejectsMalformedOrForeignRef(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_root")
+	setAppIdentity(t, srv, "local", "th_root")
 	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventSessionStart, SessionID: "th_root"})
 
 	for _, ref := range []string{"not-a-valid-ref", "remote:th_1"} {
@@ -2457,7 +2457,7 @@ func TestServerAppWireDescendantThreadReadIncludesSeededTranscriptHistory(t *tes
 // A cancelled input that never reached the projector has no SessionEnd event.
 func TestServerAppWireUnincorporatedTurnReleasesActiveIdentity(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "root")
+	setAppIdentity(t, srv, "local", "root")
 	srv.SetProcessingTurn("durable-turn")
 	before := srv.appThreadReadSnapshot(appwire.ThreadReadParams{Ref: "local:root"})
 	if before.Thread.Evener.ActiveTurnID != "durable-turn" {
@@ -2480,7 +2480,7 @@ func TestServerAppWireUnincorporatedTurnReleasesActiveIdentity(t *testing.T) {
 // reading active with no active turn.
 func TestServerAppWireEnvironmentEventKeepsThePublishedExecution(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
+	setAppIdentity(t, srv, "local", "th_1")
 	startExecution(srv, "th_1", "t_running")
 
 	srv.RecordAppEvent(events.SessionEvent{

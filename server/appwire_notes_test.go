@@ -40,7 +40,7 @@ func notesRPC(conn interface {
 func TestServerAppWireNotesHumanSetInvokesCallback(t *testing.T) {
 	sess := newNotesTestSession(t)
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", sess.ID())
+	setAppIdentity(t, srv, "local", sess.ID())
 	srv.SetNotesHumanSetFunc(sess.SetHumanNote)
 	srv.SetUrlsRemoveFunc(sess.RemoveSessionURL)
 
@@ -78,7 +78,7 @@ func TestServerAppWireNotesHumanSetInvokesCallback(t *testing.T) {
 func TestServerAppWireNotesHumanSetRetryOfOneOuterIDSteersOnce(t *testing.T) {
 	sess := newNotesTestSession(t)
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", sess.ID())
+	setAppIdentity(t, srv, "local", sess.ID())
 	srv.SetNotesHumanSetFunc(sess.SetHumanNote)
 	srv.SetUrlsRemoveFunc(sess.RemoveSessionURL)
 
@@ -110,7 +110,7 @@ func TestServerAppWireNotesHumanSetRetryOfOneOuterIDSteersOnce(t *testing.T) {
 // nil-callback → Unavailable mapping, mirroring goal/set.
 func TestServerAppWireNotesHumanSetWithoutFuncIsUnavailable(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
+	setAppIdentity(t, srv, "local", "th_1")
 
 	conn := srv.AppServer().NewConnection("test")
 	resp := notesRPC(conn, 2, appwire.MethodNotesHumanSet, appwire.NotesHumanSetParams{
@@ -129,7 +129,7 @@ func TestServerAppWireNotesHumanSetWithoutFuncIsUnavailable(t *testing.T) {
 func TestServerAppWireUrlsRemoveByID(t *testing.T) {
 	sess := newNotesTestSession(t)
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", sess.ID())
+	setAppIdentity(t, srv, "local", sess.ID())
 	srv.SetNotesHumanSetFunc(sess.SetHumanNote)
 	srv.SetUrlsRemoveFunc(sess.RemoveSessionURL)
 
@@ -167,7 +167,7 @@ func TestServerAppWireUrlsRemoveByID(t *testing.T) {
 func TestServerAppWireUrlsRemoveUnknownIDErrorCannotDriveATerminal(t *testing.T) {
 	sess := newNotesTestSession(t)
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", sess.ID())
+	setAppIdentity(t, srv, "local", sess.ID())
 	// (false, nil) is the callback contract this branch answers: the session
 	// reports an unknown id by rejecting the mutation, but any urls/remove
 	// implementation that reports "not removed" without an error lands here.
@@ -198,7 +198,7 @@ func TestServerAppWireUrlsRemoveUnknownIDErrorCannotDriveATerminal(t *testing.T)
 // nil-callback → Unavailable mapping for urls/remove.
 func TestServerAppWireUrlsRemoveWithoutFuncIsUnavailable(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
+	setAppIdentity(t, srv, "local", "th_1")
 
 	conn := srv.AppServer().NewConnection("test")
 	resp := notesRPC(conn, 2, appwire.MethodUrlsRemove, appwire.UrlsRemoveParams{
@@ -217,7 +217,7 @@ func TestServerAppWireUrlsRemoveWithoutFuncIsUnavailable(t *testing.T) {
 // exactly one push each, and the daemon handlers emit no push themselves.
 func TestServerAppWireNotesEventsProjectToPushes(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
+	setAppIdentity(t, srv, "local", "th_1")
 	first := newTask2SubscribedClient(t, srv, "first", "local:th_1")
 
 	srv.RecordAppEvent(events.SessionEvent{
@@ -238,7 +238,7 @@ func TestServerAppWireNotesEventsProjectToPushes(t *testing.T) {
 func TestServerAppWireNotesLiveThreadMatchesCanonicalAcceptance(t *testing.T) {
 	sess := newNotesTestSession(t)
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", sess.ID())
+	setAppIdentity(t, srv, "local", sess.ID())
 	client := newTask2SubscribedClient(t, srv, "notes-live", "local:"+sess.ID())
 	for _, tc := range []struct{ id, note string }{{"save", "sentinel"}, {"clear", ""}} {
 		response, err := sess.SetHumanNote(tc.id, tc.note)
@@ -263,7 +263,7 @@ func TestServerAppWireNotesLiveThreadMatchesCanonicalAcceptance(t *testing.T) {
 // open, following the Goal bit's contract.
 func TestServerAppWireSharedNotesCapabilityFollowsWiring(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
+	setAppIdentity(t, srv, "local", "th_1")
 	if caps := srv.appCapabilities("idle", false); caps.SharedNotes {
 		t.Fatalf("SharedNotes should be false with nothing wired")
 	}

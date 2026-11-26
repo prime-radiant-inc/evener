@@ -15,7 +15,7 @@ import (
 // (S4).
 func TestThreadSnapshotsCarryTheLastTurnEndedTime(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "root")
+	setAppIdentity(t, srv, "local", "root")
 	ended := time.Date(2026, 9, 26, 12, 0, 0, 123_000_000, time.UTC)
 	src := publishEnvelope(srv, &stubThreadEnvelopeSource{meta: schema.SessionMeta{ID: "root", LastTurnEndedAt: ended}})
 	if got := listedRootEvener(t, srv).LastTurnEndedAt; got != ended.UnixMilli() {
@@ -35,7 +35,7 @@ func TestThreadSnapshotsCarryTheLastTurnEndedTime(t *testing.T) {
 // A session that has not ended a turn carries no key at all.
 func TestThreadSnapshotsOmitTheTurnEndBeforeAnyTurnEnds(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "root")
+	setAppIdentity(t, srv, "local", "root")
 	publishEnvelope(srv, &stubThreadEnvelopeSource{meta: schema.SessionMeta{ID: "root"}})
 	raw, err := json.Marshal(readThreadOverWire(t, srv, "local:root").Evener)
 	if err != nil {

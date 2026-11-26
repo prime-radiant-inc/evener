@@ -166,7 +166,7 @@ func TestBridgeUpdatesSessionMetadataBeforeProjectionCommit(t *testing.T) {
 // test is the one that runs, every time.
 func TestBridgeDropsStatusOfAnEventAdmittedBeforeIdentityReplacement(t *testing.T) {
 	srv := NewServer(ServerConfig{AppReplaySize: 100})
-	srv.SetAppIdentity("local", "retired")
+	setAppIdentity(t, srv, "local", "retired")
 	retiredStart := events.SessionEvent{
 		Kind:      events.EventSessionStart,
 		SessionID: "retired",
@@ -180,7 +180,7 @@ func TestBridgeDropsStatusOfAnEventAdmittedBeforeIdentityReplacement(t *testing.
 		t.Fatal("the bridge would not have admitted the event this test is about")
 	}
 
-	srv.SetAppIdentity("local", "replacement")
+	setAppIdentity(t, srv, "local", "replacement")
 	srv.UpdateSessionInfo("replacement", "replacement-model", "replacement-profile")
 	srv.SetState("idle")
 
@@ -316,7 +316,7 @@ func TestBridge_InterruptedSessionEndDoesNotClearProcessing(t *testing.T) {
 
 func TestBridge_IgnoresStaleEventsAfterSessionIdentityChanges(t *testing.T) {
 	srv := NewServer(ServerConfig{AppReplaySize: 100})
-	srv.SetAppIdentity("local", "new-session")
+	setAppIdentity(t, srv, "local", "new-session")
 	srv.UpdateSessionInfo("new-session", "gpt-5", "openai")
 	srv.SetState("idle")
 	evs := make(chan events.SessionEvent, 10)

@@ -18,7 +18,7 @@ import (
 func startLifecycleProbeDaemon(t *testing.T, sessionID string, status func() appwire.DaemonLifecycle) (*StatusProber, rendezvous.Entry) {
 	t.Helper()
 	srv := server.NewServer(server.ServerConfig{})
-	srv.SetAppIdentity("local", sessionID)
+	setAppIdentity(t, srv, "local", sessionID)
 	srv.SetState(appwire.ThreadStatusIdle)
 	srv.SetThreadEnvelopeSource(wireProbeEnvelopeSource{})
 	if status != nil {
