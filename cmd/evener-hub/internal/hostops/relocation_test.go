@@ -56,10 +56,12 @@ func testStoreRelocation(t *testing.T, withCustody bool) {
 
 	removed := relocationComplete(t, store, "retired", "relocation-retired")
 	current := relocationComplete(t, store, "current", "relocation-current")
-	if err := store.MirrorBoundaries(map[string]Boundary{
-		"retired": {Generation: 7, IncarnationID: "inc-retired", PresenceEpoch: 9},
-		"current": {Generation: 7, IncarnationID: "inc-current", PresenceEpoch: 11},
-	}, nil); err != nil {
+	if err := store.ImportHostRecords(HostRecords{}, HostMirror{
+		Boundaries: map[string]Boundary{
+			"retired": {Generation: 7, IncarnationID: "inc-retired", PresenceEpoch: 9},
+			"current": {Generation: 7, IncarnationID: "inc-current", PresenceEpoch: 11},
+		},
+	}); err != nil {
 		t.Fatal(err)
 	}
 	if marked, dropped, err := store.ApplyHostRemovedPass(map[string]HostRemovedMark{

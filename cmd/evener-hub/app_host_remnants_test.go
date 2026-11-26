@@ -1389,17 +1389,15 @@ func TestHostUpdateRemnantRepairsThroughRetryAndRecover(t *testing.T) {
 	if remnant.Generation != before.Generation || remnant.IncarnationID != before.IncarnationID {
 		t.Fatalf("remnant = %+v, want the retired pair %d/%s", remnant, before.Generation, before.IncarnationID)
 	}
-	// The mirrored boundary is the name's live record: the committed generation
-	// under the preserved incarnation, exactly what the mutation's own mirror
-	// write leaves.
-	if err := ops.MirrorBoundaries(map[string]hostops.Boundary{
-		"side": {
-			Generation:    committed.Generation,
-			IncarnationID: committed.IncarnationID,
-			PresenceEpoch: committed.PresenceEpoch,
-		},
-	}, nil); err != nil {
-		t.Fatalf("MirrorBoundaries: %v", err)
+	// The mutation's own CommitHostRecords write already updated the mirrored
+	// boundary to the committed generation under the preserved incarnation.
+	wantBoundary := hostops.Boundary{
+		Generation:    committed.Generation,
+		IncarnationID: committed.IncarnationID,
+		PresenceEpoch: committed.PresenceEpoch,
+	}
+	if gotBoundary, ok := ops.Boundary("side"); !ok || gotBoundary != wantBoundary {
+		t.Fatalf("ops.Boundary(side) = (%+v, %v), want %+v", gotBoundary, ok, wantBoundary)
 	}
 
 	// Retry: resolution must succeed on incarnation equality, and the pinned

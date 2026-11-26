@@ -21,7 +21,6 @@ package hostops
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"maps"
 	"slices"
@@ -424,31 +423,6 @@ func validateMirror(mirror HostMirror) error {
 		if _, isLive := live[name]; isLive {
 			return fmt.Errorf("%w: host %q is both live and removed in one mirror write", ErrInvalidBoundary, name)
 		}
-	}
-	return nil
-}
-
-// MirrorHostState persists one mirror write's boundaries and removal markers
-// in one atomic store write, the same discipline MirrorBoundaries uses. It is
-// the hub's path for forwarding the registry's live names and removal
-// tombstones into the store §4's removed-host ordering reads.
-func (s *Store) MirrorHostState(mirror HostMirror) error {
-	if s == nil {
-		return errors.New("hostops: store is not configured")
-	}
-	if err := validateMirror(mirror); err != nil {
-		return err
-	}
-
-	s.cell.mu.Lock()
-	defer s.cell.mu.Unlock()
-
-	next := cloneSnapshot(s.cell.state)
-	if !s.applyMirrorLocked(&next, mirror) {
-		return nil
-	}
-	if _, err := s.commitLocked(next); err != nil {
-		return err
 	}
 	return nil
 }

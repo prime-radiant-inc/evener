@@ -226,6 +226,9 @@ func TestRemovedHostHistoryCompactsOnlyPastTheHorizon(t *testing.T) {
 	store, _ := openRetentionStore(t, policy)
 	base := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
 	store.clock = func() time.Time { return base }
+	if err := store.ImportHostRecords(HostRecords{}, HostMirror{}); err != nil {
+		t.Fatalf("ImportHostRecords: %v", err)
+	}
 
 	liveRecord := createOp(t, store, "live", "live-old")
 	finish(t, store, liveRecord.ID)
@@ -235,7 +238,7 @@ func TestRemovedHostHistoryCompactsOnlyPastTheHorizon(t *testing.T) {
 	finish(t, store, removedNew.ID)
 
 	// The removal lands two days before base: inside the 7-day horizon.
-	if err := store.MirrorHostState(HostMirror{
+	if err := store.CommitHostRecords(HostRecords{}, HostMirror{
 		Boundaries: map[string]Boundary{
 			"live": {Generation: 7, IncarnationID: "inc-live", PresenceEpoch: 1},
 			"gone": {Generation: 7, IncarnationID: "inc-gone", PresenceEpoch: 2},
@@ -243,7 +246,7 @@ func TestRemovedHostHistoryCompactsOnlyPastTheHorizon(t *testing.T) {
 		Live:    []string{"live"},
 		Removed: map[string]RemovedHost{"gone": {RemovedAt: base.Add(-48 * time.Hour), Generation: 7, IncarnationID: "inc-gone"}},
 	}); err != nil {
-		t.Fatalf("MirrorHostState: %v", err)
+		t.Fatalf("CommitHostRecords: %v", err)
 	}
 	// A later write runs the pass with no bound exceeded: nothing compacts, and
 	// the inside-horizon removed host's history stays whole.
@@ -320,11 +323,14 @@ func TestRemovedHostTombstonesSurviveInsideTheHorizon(t *testing.T) {
 	})
 	base := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
 	store.clock = func() time.Time { return base }
-	if err := store.MirrorHostState(HostMirror{
+	if err := store.ImportHostRecords(HostRecords{}, HostMirror{}); err != nil {
+		t.Fatalf("ImportHostRecords: %v", err)
+	}
+	if err := store.CommitHostRecords(HostRecords{}, HostMirror{
 		Boundaries: map[string]Boundary{"gone": {Generation: 7, IncarnationID: "inc-gone", PresenceEpoch: 2}},
 		Removed:    map[string]RemovedHost{"gone": {RemovedAt: base.Add(-24 * time.Hour), Generation: 7, IncarnationID: "inc-gone"}},
 	}); err != nil {
-		t.Fatalf("MirrorHostState: %v", err)
+		t.Fatalf("CommitHostRecords: %v", err)
 	}
 	for i := range 4 {
 		record := createOp(t, store, "gone", fmt.Sprintf("gone-%d", i))
@@ -354,16 +360,19 @@ func TestCompactionDropsTheBoundaryWithTheLastRecord(t *testing.T) {
 	store, _ := openRetentionStore(t, policy)
 	base := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
 	store.clock = func() time.Time { return base }
+	if err := store.ImportHostRecords(HostRecords{}, HostMirror{}); err != nil {
+		t.Fatalf("ImportHostRecords: %v", err)
+	}
 
 	record := createOp(t, store, "gone", "gone-1")
 	finish(t, store, record.ID)
 	// The removal is inside its horizon when the mirror lands: the boundary and
 	// the record both stay.
-	if err := store.MirrorHostState(HostMirror{
+	if err := store.CommitHostRecords(HostRecords{}, HostMirror{
 		Boundaries: map[string]Boundary{"gone": {Generation: 7, IncarnationID: "inc-gone", PresenceEpoch: 2}},
 		Removed:    map[string]RemovedHost{"gone": {RemovedAt: base.Add(-30 * time.Minute), Generation: 7, IncarnationID: "inc-gone"}},
 	}); err != nil {
-		t.Fatalf("MirrorHostState: %v", err)
+		t.Fatalf("CommitHostRecords: %v", err)
 	}
 	if _, ok := store.Boundary("gone"); !ok {
 		t.Fatal("the mirror did not persist the boundary")
@@ -558,6 +567,9 @@ func TestRemovedHostReplayMatchesTheActiveRemovedPair(t *testing.T) {
 	store, _ := openRetentionStore(t, RetentionPolicy{TerminalPerHost: 1})
 	base := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
 	store.clock = func() time.Time { return base }
+	if err := store.ImportHostRecords(HostRecords{}, HostMirror{}); err != nil {
+		t.Fatalf("ImportHostRecords: %v", err)
+	}
 
 	// First incarnation (7/inc-m4): op-old is compacted into a tombstone.
 	old := createOp(t, store, "m4", "op-old")
@@ -569,17 +581,17 @@ func TestRemovedHostReplayMatchesTheActiveRemovedPair(t *testing.T) {
 	}
 
 	// Remove at pair 7/inc-m4, re-add at 8/inc-new, then remove again.
-	if err := store.MirrorHostState(HostMirror{
+	if err := store.CommitHostRecords(HostRecords{}, HostMirror{
 		Boundaries: map[string]Boundary{"m4": {Generation: 7, IncarnationID: "inc-m4", PresenceEpoch: 2}},
 		Removed:    map[string]RemovedHost{"m4": {RemovedAt: base, Generation: 7, IncarnationID: "inc-m4"}},
 	}); err != nil {
-		t.Fatalf("MirrorHostState(remove 7): %v", err)
+		t.Fatalf("CommitHostRecords(remove 7): %v", err)
 	}
-	if err := store.MirrorHostState(HostMirror{
+	if err := store.CommitHostRecords(HostRecords{}, HostMirror{
 		Boundaries: map[string]Boundary{"m4": {Generation: 8, IncarnationID: "inc-new", PresenceEpoch: 3}},
 		Live:       []string{"m4"},
 	}); err != nil {
-		t.Fatalf("MirrorHostState(re-add): %v", err)
+		t.Fatalf("CommitHostRecords(re-add): %v", err)
 	}
 
 	// Second incarnation (8/inc-new): op-new is compacted into its own
@@ -591,11 +603,11 @@ func TestRemovedHostReplayMatchesTheActiveRemovedPair(t *testing.T) {
 	if _, ok := store.Record(newer.ID); ok {
 		t.Fatal("the per-host bound did not compact the second incarnation's record")
 	}
-	if err := store.MirrorHostState(HostMirror{
+	if err := store.CommitHostRecords(HostRecords{}, HostMirror{
 		Boundaries: map[string]Boundary{"m4": {Generation: 8, IncarnationID: "inc-new", PresenceEpoch: 4}},
 		Removed:    map[string]RemovedHost{"m4": {RemovedAt: base, Generation: 8, IncarnationID: "inc-new"}},
 	}); err != nil {
-		t.Fatalf("MirrorHostState(remove 8): %v", err)
+		t.Fatalf("CommitHostRecords(remove 8): %v", err)
 	}
 
 	// The older incarnation's tombstone never replays: its pair is not the
@@ -626,6 +638,9 @@ func TestRemovedHostReplayMatchesTheActiveRemovedPair(t *testing.T) {
 // the serialized bound compacts in that same atomic write.
 func TestMirrorWriteMeetsTheByteBound(t *testing.T) {
 	roomy, storePath := openRetentionStore(t, RetentionPolicy{TerminalPerHost: 50, TerminalStoreWide: 50})
+	if err := roomy.ImportHostRecords(HostRecords{}, HostMirror{}); err != nil {
+		t.Fatalf("ImportHostRecords: %v", err)
+	}
 	first := createOp(t, roomy, "m4", "op-1")
 	finish(t, roomy, first.ID)
 	second := createOp(t, roomy, "m4", "op-2")
@@ -638,10 +653,10 @@ func TestMirrorWriteMeetsTheByteBound(t *testing.T) {
 	// An unfittable cap: the mirror write itself must compact every removable
 	// terminal record, not defer the bound to a later record write.
 	roomy.retention.StoreMaxBytes = 1
-	if err := roomy.MirrorHostState(HostMirror{
+	if err := roomy.CommitHostRecords(HostRecords{}, HostMirror{
 		Boundaries: map[string]Boundary{"m4": {Generation: 7, IncarnationID: "inc-m4", PresenceEpoch: 9}},
 	}); err != nil {
-		t.Fatalf("MirrorHostState: %v", err)
+		t.Fatalf("CommitHostRecords: %v", err)
 	}
 	if got := len(roomy.Records()); got != 0 {
 		t.Fatalf("records after the over-cap mirror write = %d, want the mirror write itself to compact", got)
@@ -851,13 +866,16 @@ func TestStaleRemovalMarkerDoesNotCompactLiveHistory(t *testing.T) {
 	store, _ := openRetentionStore(t, RetentionPolicy{TerminalPerHost: 50, TerminalStoreWide: 50, RemovedHostHorizon: time.Hour})
 	base := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
 	store.clock = func() time.Time { return base }
+	if err := store.ImportHostRecords(HostRecords{}, HostMirror{}); err != nil {
+		t.Fatalf("ImportHostRecords: %v", err)
+	}
 	// The removal at pair 7 landed, then the re-add's mirror write failed: the
 	// boundary and the marker both stay at the old pair.
-	if err := store.MirrorHostState(HostMirror{
+	if err := store.CommitHostRecords(HostRecords{}, HostMirror{
 		Boundaries: map[string]Boundary{"m4": {Generation: 7, IncarnationID: "inc-old", PresenceEpoch: 2}},
 		Removed:    map[string]RemovedHost{"m4": {RemovedAt: base.Add(-30 * time.Minute), Generation: 7, IncarnationID: "inc-old"}},
 	}); err != nil {
-		t.Fatalf("MirrorHostState: %v", err)
+		t.Fatalf("CommitHostRecords: %v", err)
 	}
 	live := createOpPair(t, store, "m4", "live-1", 8, "inc-new")
 	finish(t, store, live.ID)
@@ -890,11 +908,14 @@ func TestMirrorDoesNotReproposeADroppedRemovedHostBoundary(t *testing.T) {
 	store, _ := openRetentionStore(t, RetentionPolicy{TerminalPerHost: 50, TerminalStoreWide: 50, RemovedHostHorizon: time.Hour})
 	base := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
 	store.clock = func() time.Time { return base }
-	if err := store.MirrorHostState(HostMirror{
+	if err := store.ImportHostRecords(HostRecords{}, HostMirror{}); err != nil {
+		t.Fatalf("ImportHostRecords: %v", err)
+	}
+	if err := store.CommitHostRecords(HostRecords{}, HostMirror{
 		Boundaries: map[string]Boundary{"gone": {Generation: 7, IncarnationID: "inc-gone", PresenceEpoch: 2}},
 		Removed:    map[string]RemovedHost{"gone": {RemovedAt: base.Add(-30 * time.Minute), Generation: 7, IncarnationID: "inc-gone"}},
 	}); err != nil {
-		t.Fatalf("MirrorHostState: %v", err)
+		t.Fatalf("CommitHostRecords: %v", err)
 	}
 	record := createOp(t, store, "gone", "gone-1")
 	finish(t, store, record.ID)
@@ -916,7 +937,7 @@ func TestMirrorDoesNotReproposeADroppedRemovedHostBoundary(t *testing.T) {
 	writes := 0
 	store.faults.beforeRename = func() error { writes++; return nil }
 	// The hub re-proposes the high-water record's triple on its next mutation.
-	if err := store.MirrorHostState(HostMirror{
+	if err := store.CommitHostRecords(HostRecords{}, HostMirror{
 		Boundaries: map[string]Boundary{"gone": {Generation: 7, IncarnationID: "inc-gone", PresenceEpoch: 2}},
 	}); err != nil {
 		t.Fatalf("re-propose: %v", err)
@@ -928,7 +949,7 @@ func TestMirrorDoesNotReproposeADroppedRemovedHostBoundary(t *testing.T) {
 		t.Fatal("the re-proposal put the dropped boundary back")
 	}
 	// A live name's boundary still commits.
-	if err := store.MirrorHostState(HostMirror{
+	if err := store.CommitHostRecords(HostRecords{}, HostMirror{
 		Boundaries: map[string]Boundary{"x": {Generation: 7, IncarnationID: "inc-x", PresenceEpoch: 1}},
 	}); err != nil {
 		t.Fatalf("live mirror: %v", err)
@@ -944,7 +965,7 @@ func TestMirrorDoesNotReproposeADroppedRemovedHostBoundary(t *testing.T) {
 		Boundaries: map[string]Boundary{"never": {Generation: 9, IncarnationID: "inc-never", PresenceEpoch: 1}},
 		Removed:    map[string]RemovedHost{"never": {RemovedAt: base.Add(-30 * time.Minute), Generation: 9, IncarnationID: "inc-never"}},
 	}
-	if err := store.MirrorHostState(neverMirror); err != nil {
+	if err := store.CommitHostRecords(HostRecords{}, neverMirror); err != nil {
 		t.Fatalf("first mirror: %v", err)
 	}
 	if writes != 2 {
@@ -953,7 +974,7 @@ func TestMirrorDoesNotReproposeADroppedRemovedHostBoundary(t *testing.T) {
 	if _, ok := store.Boundary("never"); ok {
 		t.Fatal("a boundary was created for a record-less removed host")
 	}
-	if err := store.MirrorHostState(neverMirror); err != nil {
+	if err := store.CommitHostRecords(HostRecords{}, neverMirror); err != nil {
 		t.Fatalf("re-proposal: %v", err)
 	}
 	if writes != 2 {
@@ -1026,11 +1047,14 @@ func TestLingeringMarkerStillReplaysTheLiveIncarnationsTombstone(t *testing.T) {
 	store, _ := openRetentionStore(t, RetentionPolicy{TerminalPerHost: 1})
 	base := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
 	store.clock = func() time.Time { return base }
-	if err := store.MirrorHostState(HostMirror{
+	if err := store.ImportHostRecords(HostRecords{}, HostMirror{}); err != nil {
+		t.Fatalf("ImportHostRecords: %v", err)
+	}
+	if err := store.CommitHostRecords(HostRecords{}, HostMirror{
 		Boundaries: map[string]Boundary{"m4": {Generation: 7, IncarnationID: "inc-old", PresenceEpoch: 2}},
 		Removed:    map[string]RemovedHost{"m4": {RemovedAt: base, Generation: 7, IncarnationID: "inc-old"}},
 	}); err != nil {
-		t.Fatalf("MirrorHostState: %v", err)
+		t.Fatalf("CommitHostRecords: %v", err)
 	}
 	first := createOpPair(t, store, "m4", "live-1", 8, "inc-new")
 	finish(t, store, first.ID)
@@ -1060,15 +1084,18 @@ func TestLingeringRemovalMarkerNeverReplaysAgainstANewPair(t *testing.T) {
 	store, _ := openRetentionStore(t, RetentionPolicy{TerminalPerHost: 1})
 	base := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
 	store.clock = func() time.Time { return base }
+	if err := store.ImportHostRecords(HostRecords{}, HostMirror{}); err != nil {
+		t.Fatalf("ImportHostRecords: %v", err)
+	}
 	old := createOpPair(t, store, "m4", "op-old", 7, "inc-m4")
 	finish(t, store, old.ID)
 	other := createOpPair(t, store, "m4", "op-other", 7, "inc-m4")
 	finish(t, store, other.ID) // compacts op-old into a tombstone pinned to 7/inc-m4.
-	if err := store.MirrorHostState(HostMirror{
+	if err := store.CommitHostRecords(HostRecords{}, HostMirror{
 		Boundaries: map[string]Boundary{"m4": {Generation: 7, IncarnationID: "inc-m4", PresenceEpoch: 2}},
 		Removed:    map[string]RemovedHost{"m4": {RemovedAt: base, Generation: 7, IncarnationID: "inc-m4"}},
 	}); err != nil {
-		t.Fatalf("MirrorHostState: %v", err)
+		t.Fatalf("CommitHostRecords: %v", err)
 	}
 	// The name is live again at 8/inc-new (the clear mirror failed and was
 	// logged); the request's current pair is the new incarnation's.

@@ -74,13 +74,10 @@ func TestLookupOperationReplaysTheCurrentPairRecord(t *testing.T) {
 // TestLookupOperationRefusesCrossHostReuse is §12's conflicting-reuse row: a
 // current-generation record of a different host refuses the reuse.
 func TestLookupOperationRefusesCrossHostReuse(t *testing.T) {
-	store, _ := openTestStore(t)
-	createPairRecord(t, store, "h2", KindDeploy, "op-1", 7, "inc-h2")
-	if err := store.MirrorBoundaries(map[string]Boundary{
+	store, _ := openStoreWithRawMirror(t, map[string]Boundary{
 		"h2": {Generation: 7, IncarnationID: "inc-h2", PresenceEpoch: 1},
-	}, nil); err != nil {
-		t.Fatalf("MirrorBoundaries: %v", err)
-	}
+	}, nil)
+	createPairRecord(t, store, "h2", KindDeploy, "op-1", 7, "inc-h2")
 
 	_, _, err := store.LookupOperation(opQuery("h1", KindDeploy, "op-1", 7, "inc-h1"))
 	if _, ok := errors.AsType[*ConflictingOperationIDError](err); !ok {

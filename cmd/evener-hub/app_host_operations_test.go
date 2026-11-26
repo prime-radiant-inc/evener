@@ -22,10 +22,7 @@ import (
 // a boundary triple and one record per pair the test asks for.
 func operationsTestStore(t *testing.T, hosts []hostreg.Host) *hostops.Store {
 	t.Helper()
-	store, err := hostops.Open(hostops.StorePath(t.TempDir()))
-	if err != nil {
-		t.Fatalf("hostops.Open: %v", err)
-	}
+	path := hostops.StorePath(t.TempDir())
 	boundaries := make(map[string]hostops.Boundary, len(hosts))
 	for _, host := range hosts {
 		boundaries[host.Name] = hostops.Boundary{
@@ -34,8 +31,10 @@ func operationsTestStore(t *testing.T, hosts []hostreg.Host) *hostops.Store {
 			PresenceEpoch: host.PresenceEpoch,
 		}
 	}
-	if err := store.MirrorBoundaries(boundaries, nil); err != nil {
-		t.Fatalf("MirrorBoundaries: %v", err)
+	writeRawHostOpsBoundaries(t, path, boundaries)
+	store, err := hostops.Open(path)
+	if err != nil {
+		t.Fatalf("hostops.Open: %v", err)
 	}
 	return store
 }
@@ -216,14 +215,13 @@ func TestHostOperationsDetailCarriesTheCompactedMarker(t *testing.T) {
 	entry.Generation = 2
 	entry.IncarnationID = "inc-m4"
 	entry.PresenceEpoch = 3
-	store, err := hostops.OpenWithRetention(hostops.StorePath(t.TempDir()), hostops.RetentionPolicy{TerminalPerHost: 1})
+	storePath := hostops.StorePath(t.TempDir())
+	writeRawHostOpsBoundaries(t, storePath, map[string]hostops.Boundary{
+		"m4": {Generation: 2, IncarnationID: "inc-m4", PresenceEpoch: 3},
+	})
+	store, err := hostops.OpenWithRetention(storePath, hostops.RetentionPolicy{TerminalPerHost: 1})
 	if err != nil {
 		t.Fatalf("OpenWithRetention: %v", err)
-	}
-	if err := store.MirrorBoundaries(map[string]hostops.Boundary{
-		"m4": {Generation: 2, IncarnationID: "inc-m4", PresenceEpoch: 3},
-	}, nil); err != nil {
-		t.Fatalf("MirrorBoundaries: %v", err)
 	}
 	finishSeedOperation(t, store, seedOperationRecord(t, store, "m4", "op-compacted", 2, "inc-m4"))
 	finishSeedOperation(t, store, seedOperationRecord(t, store, "m4", "op-kept", 2, "inc-m4"))

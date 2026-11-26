@@ -833,11 +833,8 @@ func TestMigrationWaitsForADurableCopyOfTheOriginalHubTOML(t *testing.T) {
 // writes such a boundary's counters into hub.toml can fail to land, and the
 // import must not forget a generation and presence epoch the mirror holds.
 func TestMigrationKeepsTheCountersOfANameOnlyTheMirrorRemembers(t *testing.T) {
-	fixture := newPipelineFixture(t, []hostreg.Host{pipelineEntry("keep", 3)}, nil)
 	boundary := hostops.Boundary{Generation: 9, IncarnationID: "inc-ghost", PresenceEpoch: 5}
-	if err := fixture.store.MirrorHostState(hostops.HostMirror{Boundaries: map[string]hostops.Boundary{"ghost": boundary}}); err != nil {
-		t.Fatalf("MirrorHostState: %v", err)
-	}
+	fixture := newPipelineFixtureWithBoundaries(t, []hostreg.Host{pipelineEntry("keep", 3)}, map[string]hostops.Boundary{"ghost": boundary}, nil)
 	m := fixture.legacyManager(t)
 
 	m.migrateLegacyRecords(fixture.store)
@@ -880,15 +877,14 @@ func TestMigrationRaisesAGenerationBelowTheMirrorsForARemovedName(t *testing.T) 
 	}
 	held := records.Tombstones[removed]
 	cfg := mustLoadConfig(t, configPath)
-	store, err := hostops.Open(hostops.StorePath(t.TempDir()))
+	spent := held.Generation + 4
+	storePath := hostops.StorePath(t.TempDir())
+	writeRawHostOpsBoundaries(t, storePath, map[string]hostops.Boundary{
+		removed: {Generation: spent, IncarnationID: held.IncarnationID, PresenceEpoch: held.PresenceEpoch},
+	})
+	store, err := hostops.Open(storePath)
 	if err != nil {
 		t.Fatalf("hostops.Open: %v", err)
-	}
-	spent := held.Generation + 4
-	if err := store.MirrorHostState(hostops.HostMirror{Boundaries: map[string]hostops.Boundary{
-		removed: {Generation: spent, IncarnationID: held.IncarnationID, PresenceEpoch: held.PresenceEpoch},
-	}}); err != nil {
-		t.Fatalf("MirrorHostState: %v", err)
 	}
 	doc := hostBootDocument(cfg.Config, legacyRecordsOf(t, configPath), store)
 	hosts, err := hostreg.NewSeeded(doc.Hosts, doc.Records.highWaterMarks())
@@ -916,15 +912,14 @@ func TestMigrationRaisesAPresenceEpochTheMirrorHoldsEvenAtTheSameGeneration(t *t
 	removed := firstKey(records.Tombstones)
 	held := records.Tombstones[removed]
 	cfg := mustLoadConfig(t, configPath)
-	store, err := hostops.Open(hostops.StorePath(t.TempDir()))
+	spentEpoch := held.PresenceEpoch + 3
+	storePath := hostops.StorePath(t.TempDir())
+	writeRawHostOpsBoundaries(t, storePath, map[string]hostops.Boundary{
+		removed: {Generation: held.Generation, IncarnationID: held.IncarnationID, PresenceEpoch: spentEpoch},
+	})
+	store, err := hostops.Open(storePath)
 	if err != nil {
 		t.Fatalf("hostops.Open: %v", err)
-	}
-	spentEpoch := held.PresenceEpoch + 3
-	if err := store.MirrorHostState(hostops.HostMirror{Boundaries: map[string]hostops.Boundary{
-		removed: {Generation: held.Generation, IncarnationID: held.IncarnationID, PresenceEpoch: spentEpoch},
-	}}); err != nil {
-		t.Fatalf("MirrorHostState: %v", err)
 	}
 	doc := hostBootDocument(cfg.Config, legacyRecordsOf(t, configPath), nil)
 	hosts, err := hostreg.NewSeeded(doc.Hosts, doc.Records.highWaterMarks())
@@ -949,14 +944,11 @@ func TestMigrationRaisesAPresenceEpochTheMirrorHoldsEvenAtTheSameGeneration(t *t
 // it, so seeding cannot raise it, and the import must not replace the mirror's
 // higher counters with the entry's own.
 func TestMigrationRaisesARestoredHostTheRegistryNeverHeldToTheMirrorsCounters(t *testing.T) {
-	fixture := newPipelineFixture(t, []hostreg.Host{pipelineEntry("keep", 3)}, nil)
-	m := fixture.legacyManager(t)
 	sibling := hostreg.Host{Name: "sibling", SSH: "sibling.example", Generation: 2, IncarnationID: "inc-sibling", PresenceEpoch: 1}
-	m.cfg.store.set(append(m.cfg.store.snapshot(), sibling))
 	boundary := hostops.Boundary{Generation: 6, IncarnationID: sibling.IncarnationID, PresenceEpoch: 4}
-	if err := fixture.store.MirrorHostState(hostops.HostMirror{Boundaries: map[string]hostops.Boundary{"sibling": boundary}}); err != nil {
-		t.Fatalf("MirrorHostState: %v", err)
-	}
+	fixture := newPipelineFixtureWithBoundaries(t, []hostreg.Host{pipelineEntry("keep", 3)}, map[string]hostops.Boundary{"sibling": boundary}, nil)
+	m := fixture.legacyManager(t)
+	m.cfg.store.set(append(m.cfg.store.snapshot(), sibling))
 
 	m.migrateLegacyRecords(fixture.store)
 
