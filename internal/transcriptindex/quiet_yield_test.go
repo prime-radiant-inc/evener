@@ -105,13 +105,14 @@ func TestQuietYieldIndexParityColdAndIncremental(t *testing.T) {
 			}
 
 			reg := apptranscript.NewToolCallRegistry()
-			fullTurns, err := apptranscript.ItemTurnsFromFile(path, transcript.DefaultMaxLineBytes, func(turn schema.Turn, id string, idx int) []appwire.ThreadItem {
+			fullProj, err := apptranscript.ItemTurnProjectionFromFile(path, transcript.DefaultMaxLineBytes, func(turn schema.Turn, id string, idx int) []appwire.ThreadItem {
 				items, _ := apptranscript.ProjectEntryParts(id, idx, turn, reg, apptranscript.AddressedImageProjector, apptranscript.ToolResultOutputImages)
 				return items
 			})
 			if err != nil {
 				t.Fatal(err)
 			}
+			fullTurns := fullProj.Turns
 			if len(fullTurns) != 1 || len(fullTurns[0].Items) != len(w.Candidates) {
 				t.Fatalf("fullTurns=%d items=%d, index=%d", len(fullTurns), len(fullTurns[0].Items), len(w.Candidates))
 			}

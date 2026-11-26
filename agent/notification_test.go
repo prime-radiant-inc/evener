@@ -306,12 +306,14 @@ func TestNotificationTurnOwnsDirectRetrySteering(t *testing.T) {
 		t.Fatalf("direct steering owner=%q, want notification turn %q and not prior user turn %q", persistedOwner, starts[0].TurnID, priorTurnID)
 	}
 	project := func(turn schema.Turn, turnID string, turnIndex int) []appwire.ThreadItem {
-		return apptranscript.ProjectTurn(turnID, turnIndex, turn, apptranscript.NewToolCallRegistry(), nil, nil)
+		items, _ := apptranscript.ProjectTurnParts(turnID, turnIndex, turn, apptranscript.NewToolCallRegistry(), nil, nil)
+		return items
 	}
-	coldTurns, err := apptranscript.ItemTurnsFromFile(sess.TranscriptPath(), transcript.DefaultMaxLineBytes, project)
+	coldProj, err := apptranscript.ItemTurnProjectionFromFile(sess.TranscriptPath(), transcript.DefaultMaxLineBytes, project)
 	if err != nil {
 		t.Fatalf("cold projection: %v", err)
 	}
+	coldTurns := coldProj.Turns
 	coldItem := findNotificationSteeringItem(coldTurns)
 	if coldItem == nil {
 		t.Fatalf("whole-file read lists no NoToolCalls item")

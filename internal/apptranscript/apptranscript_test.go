@@ -51,7 +51,7 @@ func TestMemoryContextProjection(t *testing.T) {
 	if len(entries) != 1 || entries[0].Turn.Message.Role != llm.RoleUser || !entries[0].Turn.Message.Content[0].Machinery {
 		t.Fatalf("restored=%+v", entries)
 	}
-	items := ProjectTurn("memory-turn", 0, entries[0].Turn, NewToolCallRegistry(), nil, nil)
+	items, _ := ProjectTurnParts("memory-turn", 0, entries[0].Turn, NewToolCallRegistry(), nil, nil)
 	if len(items) != 1 {
 		t.Fatalf("items=%+v", items)
 	}
@@ -98,12 +98,14 @@ func TestItemTurnsFromFileStampsStartedAtFromEntryTimestamp(t *testing.T) {
 	}
 
 	project := func(turn schema.Turn, turnID string, turnIndex int) []appwire.ThreadItem {
-		return ProjectTurn(turnID, turnIndex, turn, NewToolCallRegistry(), nil, nil)
+		items, _ := ProjectTurnParts(turnID, turnIndex, turn, NewToolCallRegistry(), nil, nil)
+		return items
 	}
-	turns, err := ItemTurnsFromFile(path, 128<<20, project)
+	proj, err := ItemTurnProjectionFromFile(path, 128<<20, project)
 	if err != nil {
-		t.Fatalf("ItemTurnsFromFile: %v", err)
+		t.Fatalf("ItemTurnProjectionFromFile: %v", err)
 	}
+	turns := proj.Turns
 	if len(turns) != 1 {
 		t.Fatalf("turns=%+v, want 1", turns)
 	}
@@ -161,12 +163,14 @@ func TestItemTurnsFromFilePreservesDistinctClientMutationIdentitiesForSameText(t
 		t.Fatalf("Close: %v", err)
 	}
 
-	turns, err := ItemTurnsFromFile(path, 128<<20, func(turn schema.Turn, turnID string, turnIndex int) []appwire.ThreadItem {
-		return ProjectTurn(turnID, turnIndex, turn, NewToolCallRegistry(), nil, nil)
+	proj, err := ItemTurnProjectionFromFile(path, 128<<20, func(turn schema.Turn, turnID string, turnIndex int) []appwire.ThreadItem {
+		items, _ := ProjectTurnParts(turnID, turnIndex, turn, NewToolCallRegistry(), nil, nil)
+		return items
 	})
 	if err != nil {
-		t.Fatalf("ItemTurnsFromFile: %v", err)
+		t.Fatalf("ItemTurnProjectionFromFile: %v", err)
 	}
+	turns := proj.Turns
 	if len(turns) != 2 || len(turns[0].Items) != 1 || len(turns[1].Items) != 3 {
 		t.Fatalf("grouped turns = %#v, want 2 turns with item counts 1 and 3", turns)
 	}
@@ -221,12 +225,14 @@ func TestItemTurnsFromFileProjectorReceivesDecodedTurn(t *testing.T) {
 	project := func(turn schema.Turn, turnID string, turnIndex int) []appwire.ThreadItem {
 		calls++
 		gotTurn = turn
-		return ProjectTurn(turnID, turnIndex, turn, NewToolCallRegistry(), nil, nil)
+		items, _ := ProjectTurnParts(turnID, turnIndex, turn, NewToolCallRegistry(), nil, nil)
+		return items
 	}
-	turns, err := ItemTurnsFromFile(path, 128<<20, project)
+	proj, err := ItemTurnProjectionFromFile(path, 128<<20, project)
 	if err != nil {
-		t.Fatalf("ItemTurnsFromFile: %v", err)
+		t.Fatalf("ItemTurnProjectionFromFile: %v", err)
 	}
+	turns := proj.Turns
 	if calls != 1 {
 		t.Fatalf("projector called %d times, want 1", calls)
 	}
@@ -259,7 +265,7 @@ func TestProjectTurnSteeringCarriesUserSource(t *testing.T) {
 		Timestamp:      time.Unix(1_700_000_000, 0).UTC(),
 		SteeringSource: "user",
 	}
-	items := ProjectTurn("turn_1", 1, userTurn, NewToolCallRegistry(), nil, nil)
+	items, _ := ProjectTurnParts("turn_1", 1, userTurn, NewToolCallRegistry(), nil, nil)
 	if len(items) != 1 || items[0].Type != "steering" {
 		t.Fatalf("items=%+v, want one steering item", items)
 	}
@@ -272,7 +278,7 @@ func TestProjectTurnSteeringCarriesUserSource(t *testing.T) {
 		Message:   llm.User("<SYSTEM-REMINDER>nudge</SYSTEM-REMINDER>"),
 		Timestamp: time.Unix(1_700_000_000, 0).UTC(),
 	}
-	items = ProjectTurn("turn_2", 2, sysTurn, NewToolCallRegistry(), nil, nil)
+	items, _ = ProjectTurnParts("turn_2", 2, sysTurn, NewToolCallRegistry(), nil, nil)
 	if len(items) != 1 || items[0].Source != "" {
 		t.Fatalf("system steering item.Source=%q, want empty", items[0].Source)
 	}
@@ -285,7 +291,7 @@ func TestProjectTurnSteeringCarriesUserSource(t *testing.T) {
 func TestProjectTurnSteeringCarriesKindOnReload(t *testing.T) {
 	turn := schema.NewTurn(schema.TurnSteering, llm.User("done"))
 	turn.SteeringKind = events.SteeringKindTasksDone
-	items := ProjectTurn("turn_0", 0, turn, NewToolCallRegistry(), nil, nil)
+	items, _ := ProjectTurnParts("turn_0", 0, turn, NewToolCallRegistry(), nil, nil)
 	if len(items) != 1 {
 		t.Fatalf("got %d items, want 1", len(items))
 	}
@@ -306,7 +312,7 @@ func TestProjectTurnSteeringCarriesKindOnReload(t *testing.T) {
 func TestProjectTurnSteeringCarriesDirectAppendKindOnReload(t *testing.T) {
 	turn := schema.NewTurn(schema.TurnSteering, llm.User("<SYSTEM-REMINDER>The user interrupted the previous turn before it completed.</SYSTEM-REMINDER>"))
 	turn.SteeringKind = events.SteeringKindInterrupted
-	items := ProjectTurn("turn_0", 0, turn, NewToolCallRegistry(), nil, nil)
+	items, _ := ProjectTurnParts("turn_0", 0, turn, NewToolCallRegistry(), nil, nil)
 	if len(items) != 1 {
 		t.Fatalf("got %d items, want 1", len(items))
 	}
@@ -321,7 +327,7 @@ func TestProjectTurnSteeringCarriesDirectAppendKindOnReload(t *testing.T) {
 // re-project to tool items only, so a reloaded transcript carries the same items
 // the live envelope did.
 func TestProjectTurnToolOnlyAssistantTurnHasNoAgentMessage(t *testing.T) {
-	items := ProjectTurn("turn_1", 1, schema.Turn{
+	items, _ := ProjectTurnParts("turn_1", 1, schema.Turn{
 		Kind: schema.TurnAssistant,
 		Message: llm.Message{Content: []llm.ContentPart{
 			{Kind: llm.ContentText, Text: ""},
@@ -340,7 +346,7 @@ func TestProjectTurnToolOnlyAssistantTurnHasNoAgentMessage(t *testing.T) {
 
 func TestProjectTurnMapsToolCallsAndResults(t *testing.T) {
 	toolNames := NewToolCallRegistry()
-	start := ProjectTurn("turn_1", 1, schema.Turn{
+	start, _ := ProjectTurnParts("turn_1", 1, schema.Turn{
 		Kind: schema.TurnAssistant,
 		Message: llm.Message{Content: []llm.ContentPart{{
 			Kind: llm.ContentToolCall,
@@ -355,7 +361,7 @@ func TestProjectTurnMapsToolCallsAndResults(t *testing.T) {
 	if len(start) != 1 || start[0].Type != "commandExecution" || start[0].Description != "inspect docs" {
 		t.Fatalf("tool start=%+v", start)
 	}
-	done := ProjectTurn("turn_2", 2, schema.Turn{
+	done, _ := ProjectTurnParts("turn_2", 2, schema.Turn{
 		Kind: schema.TurnToolResults,
 		Message: llm.Message{Content: []llm.ContentPart{{
 			Kind: llm.ContentToolResult,
@@ -410,12 +416,14 @@ func TestItemTurnsFromFileFallsBackToPurposeForPreRenameToolCalls(t *testing.T) 
 	}
 
 	project := func(turn schema.Turn, turnID string, turnIndex int) []appwire.ThreadItem {
-		return ProjectTurn(turnID, turnIndex, turn, NewToolCallRegistry(), nil, nil)
+		items, _ := ProjectTurnParts(turnID, turnIndex, turn, NewToolCallRegistry(), nil, nil)
+		return items
 	}
-	turns, err := ItemTurnsFromFile(path, 128<<20, project)
+	proj, err := ItemTurnProjectionFromFile(path, 128<<20, project)
 	if err != nil {
-		t.Fatalf("ItemTurnsFromFile: %v", err)
+		t.Fatalf("ItemTurnProjectionFromFile: %v", err)
 	}
+	turns := proj.Turns
 	if len(turns) != 1 || len(turns[0].Items) != 1 {
 		t.Fatalf("turns=%+v, want 1 turn with 1 item", turns)
 	}
@@ -432,7 +440,7 @@ func TestItemTurnsFromFileFallsBackToPurposeForPreRenameToolCalls(t *testing.T) 
 // the live path.
 func TestProjectTurnStampsFailedStatusOnErroredToolResult(t *testing.T) {
 	toolNames := NewToolCallRegistry()
-	done := ProjectTurn("turn_2", 2, schema.Turn{
+	done, _ := ProjectTurnParts("turn_2", 2, schema.Turn{
 		Kind: schema.TurnToolResults,
 		Message: llm.Message{Content: []llm.ContentPart{{
 			Kind: llm.ContentToolResult,
@@ -461,7 +469,7 @@ func TestProjectTurnStampsFailedStatusOnErroredToolResult(t *testing.T) {
 // the status decision are exercised.
 func TestProjectTurnKeepsCompletedStatusOnSuccessfulToolResult(t *testing.T) {
 	toolNames := NewToolCallRegistry()
-	done := ProjectTurn("turn_2", 2, schema.Turn{
+	done, _ := ProjectTurnParts("turn_2", 2, schema.Turn{
 		Kind: schema.TurnToolResults,
 		Message: llm.Message{Content: []llm.ContentPart{{
 			Kind: llm.ContentToolResult,
@@ -487,7 +495,7 @@ func TestProjectTurnKeepsCompletedStatusOnSuccessfulToolResult(t *testing.T) {
 // pre-dispatch rejection must still say so after a page reload.
 func TestProjectTurnCarriesPrevalOnlyOnReload(t *testing.T) {
 	toolNames := NewToolCallRegistry()
-	done := ProjectTurn("turn_2", 2, schema.Turn{
+	done, _ := ProjectTurnParts("turn_2", 2, schema.Turn{
 		Kind: schema.TurnToolResults,
 		Message: llm.Message{Content: []llm.ContentPart{{
 			Kind: llm.ContentToolResult,
@@ -514,7 +522,7 @@ func TestProjectTurnCarriesPrevalOnlyOnReload(t *testing.T) {
 // reload must not default it true.
 func TestProjectTurnOmitsPrevalOnlyOnRealFailureReload(t *testing.T) {
 	toolNames := NewToolCallRegistry()
-	done := ProjectTurn("turn_2", 2, schema.Turn{
+	done, _ := ProjectTurnParts("turn_2", 2, schema.Turn{
 		Kind: schema.TurnToolResults,
 		Message: llm.Message{Content: []llm.ContentPart{{
 			Kind: llm.ContentToolResult,
@@ -540,7 +548,7 @@ func TestProjectTurnOmitsPrevalOnlyOnRealFailureReload(t *testing.T) {
 // the live projector does.
 func TestProjectTurnMapsToolResultExitCode(t *testing.T) {
 	toolNames := NewToolCallRegistry()
-	done := ProjectTurn("turn_2", 2, schema.Turn{
+	done, _ := ProjectTurnParts("turn_2", 2, schema.Turn{
 		Kind: schema.TurnToolResults,
 		Message: llm.Message{Content: []llm.ContentPart{{
 			Kind: llm.ContentToolResult,
@@ -569,7 +577,7 @@ func TestProjectTurnMapsToolResultExitCode(t *testing.T) {
 // regress.
 func TestProjectTurnMapsToolResultZeroExitCode(t *testing.T) {
 	toolNames := NewToolCallRegistry()
-	done := ProjectTurn("turn_2", 2, schema.Turn{
+	done, _ := ProjectTurnParts("turn_2", 2, schema.Turn{
 		Kind: schema.TurnToolResults,
 		Message: llm.Message{Content: []llm.ContentPart{{
 			Kind: llm.ContentToolResult,
@@ -595,7 +603,7 @@ func TestProjectTurnMapsToolResultZeroExitCode(t *testing.T) {
 // ExitCode nil rather than fabricating zero.
 func TestProjectTurnOmitsExitCodeForNonShellToolState(t *testing.T) {
 	toolNames := NewToolCallRegistry()
-	done := ProjectTurn("turn_2", 2, schema.Turn{
+	done, _ := ProjectTurnParts("turn_2", 2, schema.Turn{
 		Kind: schema.TurnToolResults,
 		Message: llm.Message{Content: []llm.ContentPart{{
 			Kind: llm.ContentToolResult,
@@ -629,7 +637,7 @@ func TestProjectTurnProjectsToolResultOutputImages(t *testing.T) {
 		}}},
 	}
 
-	items := ProjectTurn("turn_1", 1, turn, NewToolCallRegistry(), nil, func(result *llm.ToolResultData) []appwire.OutputImage {
+	items, _ := ProjectTurnParts("turn_1", 1, turn, NewToolCallRegistry(), nil, func(result *llm.ToolResultData) []appwire.OutputImage {
 		if result == nil || len(result.ImageData) == 0 {
 			return nil
 		}
@@ -664,7 +672,7 @@ func TestProjectTurnPreservesDelegateToolStateForColdReconciliation(t *testing.T
 		}}},
 	}
 
-	items := ProjectTurn("turn_1", 1, turn, &ToolCallRegistry{Names: map[string]string{"call_delegate": "delegate"}}, nil, nil)
+	items, _ := ProjectTurnParts("turn_1", 1, turn, &ToolCallRegistry{Names: map[string]string{"call_delegate": "delegate"}}, nil, nil)
 	if len(items) != 1 || items[0].Type != "commandExecution" || items[0].CallID != "call_delegate" {
 		t.Fatalf("items=%+v", items)
 	}
@@ -675,7 +683,7 @@ func TestProjectTurnPreservesDelegateToolStateForColdReconciliation(t *testing.T
 
 func TestProjectTurnMapsThinkingContent(t *testing.T) {
 	toolNames := NewToolCallRegistry()
-	items := ProjectTurn("turn_1", 1, schema.Turn{
+	items, _ := ProjectTurnParts("turn_1", 1, schema.Turn{
 		Kind: schema.TurnAssistant,
 		Message: llm.Message{Content: []llm.ContentPart{
 			{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: "Let me plan this out."}},
@@ -695,7 +703,7 @@ func TestProjectTurnMapsThinkingContent(t *testing.T) {
 
 func TestProjectTurnMapsRedactedThinkingContent(t *testing.T) {
 	toolNames := NewToolCallRegistry()
-	items := ProjectTurn("turn_1", 1, schema.Turn{
+	items, _ := ProjectTurnParts("turn_1", 1, schema.Turn{
 		Kind: schema.TurnAssistant,
 		Message: llm.Message{Content: []llm.ContentPart{
 			{Kind: llm.ContentRedThinking, Thinking: &llm.ThinkingData{Redacted: true}},
@@ -714,7 +722,7 @@ func TestProjectTurnMapsRedactedThinkingContent(t *testing.T) {
 }
 
 func TestProjectTurnProjectsWebSearchCall(t *testing.T) {
-	items := ProjectTurn("turn_1", 1, schema.Turn{
+	items, _ := ProjectTurnParts("turn_1", 1, schema.Turn{
 		Kind: schema.TurnAssistant,
 		Message: llm.Message{Content: []llm.ContentPart{
 			{Kind: llm.ContentWebSearch, WebSearch: &llm.WebSearchData{
@@ -739,7 +747,7 @@ func TestProjectTurnProjectsWebSearchCall(t *testing.T) {
 }
 
 func TestProjectTurnProjectsWebSearchResultsFromRaw(t *testing.T) {
-	anthropic := ProjectTurn("turn_1", 1, schema.Turn{
+	anthropic, _ := ProjectTurnParts("turn_1", 1, schema.Turn{
 		Kind: schema.TurnAssistant,
 		Message: llm.Message{Content: []llm.ContentPart{
 			{Kind: llm.ContentWebSearch, WebSearch: &llm.WebSearchData{Raw: json.RawMessage(
@@ -755,7 +763,7 @@ func TestProjectTurnProjectsWebSearchResultsFromRaw(t *testing.T) {
 		}
 	}
 
-	gemini := ProjectTurn("turn_1", 1, schema.Turn{
+	gemini, _ := ProjectTurnParts("turn_1", 1, schema.Turn{
 		Kind: schema.TurnAssistant,
 		Message: llm.Message{Content: []llm.ContentPart{
 			{Kind: llm.ContentWebSearch, WebSearch: &llm.WebSearchData{Raw: json.RawMessage(
@@ -790,7 +798,7 @@ func TestProjectTurnKeepsNonImagePartsOutOfImages(t *testing.T) {
 		{schema.TurnUserInput, "userMessage"},
 		{schema.TurnSteering, "steering"},
 	} {
-		items := ProjectTurn("turn_1", 1, schema.Turn{
+		items, _ := ProjectTurnParts("turn_1", 1, schema.Turn{
 			Kind:    tc.kind,
 			Message: llm.Message{Content: content},
 		}, NewToolCallRegistry(), nil, nil)
@@ -808,7 +816,7 @@ func TestProjectTurnKeepsNonImagePartsOutOfImages(t *testing.T) {
 }
 
 func TestProjectTurnTagsCompactionSystemMessages(t *testing.T) {
-	items := ProjectTurn("turn_1", 1, schema.Turn{
+	items, _ := ProjectTurnParts("turn_1", 1, schema.Turn{
 		Kind:    schema.TurnSummary,
 		Message: llm.Assistant("kept useful context"),
 	}, NewToolCallRegistry(), nil, nil)
@@ -1063,6 +1071,23 @@ func TestMetadataOnlyResponsesReasoning_GoogleSignatureOnlyThought(t *testing.T)
 	}
 }
 
+// ScanPrelude validates the full semantic transcript and returns its v2 header.
+func ScanPrelude(path string, maxLineBytes int) (transcript.Header, error) {
+	return scanSemanticTranscript(path, maxLineBytes, nil)
+}
+
+// itemTurnsFromEntries projects already-decoded transcript entries for
+// in-package tests without a file scan; callers projecting a saved file go
+// through ItemTurnProjectionFromFile.
+func itemTurnsFromEntries(header transcript.Header, entries []transcript.Entry, project EntryProjector) ([]appwire.Turn, error) {
+	var acc logicalTurnAccumulator
+	for i := range entries {
+		appendProjectedEntry(&acc, project, entries[i].Turn, i+1)
+	}
+	projection, err := groupedAppTurnProjection(&acc, header, "")
+	return projection.Turns, err
+}
+
 func TestScanPrelude(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "test.jsonl")
@@ -1108,10 +1133,11 @@ func TestItemTurnsFromFile(t *testing.T) {
 	}
 
 	// Without projector, only prelude turns are emitted (since no projector returns items).
-	turns, err := ItemTurnsFromFile(path, 1<<20, nil)
+	proj, err := ItemTurnProjectionFromFile(path, 1<<20, nil)
 	if err != nil {
-		t.Fatalf("ItemTurnsFromFile: %v", err)
+		t.Fatalf("ItemTurnProjectionFromFile: %v", err)
 	}
+	turns := proj.Turns
 	if len(turns) != 1 || turns[0].ID != "turn_system" {
 		t.Errorf("turns = %+v", turns)
 	}
@@ -1120,10 +1146,11 @@ func TestItemTurnsFromFile(t *testing.T) {
 	project := func(turn schema.Turn, turnID string, turnIndex int) []appwire.ThreadItem {
 		return []appwire.ThreadItem{{Type: "userMessage", Text: "hello"}}
 	}
-	turns, err = ItemTurnsFromFile(path, 1<<20, project)
+	proj, err = ItemTurnProjectionFromFile(path, 1<<20, project)
 	if err != nil {
-		t.Fatalf("ItemTurnsFromFile: %v", err)
+		t.Fatalf("ItemTurnProjectionFromFile: %v", err)
 	}
+	turns = proj.Turns
 	if len(turns) != 2 {
 		t.Fatalf("expected 2 turns, got %d: %+v", len(turns), turns)
 	}
@@ -1134,7 +1161,7 @@ func TestItemTurnsFromFile(t *testing.T) {
 		t.Errorf("second turn = %+v", turns[1])
 	}
 
-	if _, err := ItemTurnsFromFile(filepath.Join(dir, "missing"), 1<<20, nil); err == nil {
+	if _, err := ItemTurnProjectionFromFile(filepath.Join(dir, "missing"), 1<<20, nil); err == nil {
 		t.Fatal("missing file error = nil")
 	}
 }
@@ -1157,10 +1184,11 @@ func TestItemTurnsFromFile_StampsUsageFromEntry(t *testing.T) {
 	project := func(turn schema.Turn, turnID string, turnIndex int) []appwire.ThreadItem {
 		return []appwire.ThreadItem{{Type: "agentMessage", Text: "hi"}}
 	}
-	turns, err := ItemTurnsFromFile(path, 1<<20, project)
+	proj, err := ItemTurnProjectionFromFile(path, 1<<20, project)
 	if err != nil {
-		t.Fatalf("ItemTurnsFromFile: %v", err)
+		t.Fatalf("ItemTurnProjectionFromFile: %v", err)
 	}
+	turns := proj.Turns
 	if len(turns) != 2 {
 		t.Fatalf("expected 2 turns, got %d: %+v", len(turns), turns)
 	}
@@ -1224,10 +1252,9 @@ func TestProjectTurnDedupsCommunicateEcho(t *testing.T) {
 	// matches the assistant turn's (same logical turn). Both turns share one
 	// registry so LastAssistantText carries across.
 	echoReg := NewToolCallRegistry()
-	echoItems := append(
-		ProjectTurn("t1", 0, mkAssistantTurn("Done.", "Done."), echoReg, nil, nil),
-		ProjectTurn("t1", 1, mkResultTurn("c1"), echoReg, nil, nil)...,
-	)
+	echoItems, _ := ProjectTurnParts("t1", 0, mkAssistantTurn("Done.", "Done."), echoReg, nil, nil)
+	echoResult, _ := ProjectTurnParts("t1", 1, mkResultTurn("c1"), echoReg, nil, nil)
+	echoItems = append(echoItems, echoResult...)
 	echo := agentMsgs(echoItems)
 	if len(echo) != 1 || echo[0] != "Done." {
 		t.Fatalf("echoed communicate: got agentMessages %q, want exactly [\"Done.\"]", echo)
@@ -1237,10 +1264,9 @@ func TestProjectTurnDedupsCommunicateEcho(t *testing.T) {
 	// both render: the assistant text agentMessage on the assistant turn, the
 	// communicate message agentMessage on the result turn.
 	distinctReg := NewToolCallRegistry()
-	distinctItems := append(
-		ProjectTurn("t3", 0, mkAssistantTurn("Working...", "All set."), distinctReg, nil, nil),
-		ProjectTurn("t3", 1, mkResultTurn("c1"), distinctReg, nil, nil)...,
-	)
+	distinctItems, _ := ProjectTurnParts("t3", 0, mkAssistantTurn("Working...", "All set."), distinctReg, nil, nil)
+	distinctResult, _ := ProjectTurnParts("t3", 1, mkResultTurn("c1"), distinctReg, nil, nil)
+	distinctItems = append(distinctItems, distinctResult...)
 	distinct := agentMsgs(distinctItems)
 	if len(distinct) != 2 || distinct[0] != "Working..." || distinct[1] != "All set." {
 		t.Fatalf("distinct communicate: got agentMessages %q, want [\"Working...\" \"All set.\"]", distinct)
@@ -1252,10 +1278,9 @@ func TestProjectTurnDedupsCommunicateEcho(t *testing.T) {
 	// This mirrors the live projector's matchesLastAssistantMessage, which
 	// scopes the echo check to the turn that showed the text.
 	crossReg := NewToolCallRegistry()
-	crossItems := append(
-		ProjectTurn("t5", 0, mkAssistantTurn("Done.", "Done."), crossReg, nil, nil),
-		ProjectTurn("t6", 1, mkResultTurn("c1"), crossReg, nil, nil)...,
-	)
+	crossItems, _ := ProjectTurnParts("t5", 0, mkAssistantTurn("Done.", "Done."), crossReg, nil, nil)
+	crossResult, _ := ProjectTurnParts("t6", 1, mkResultTurn("c1"), crossReg, nil, nil)
+	crossItems = append(crossItems, crossResult...)
 	cross := agentMsgs(crossItems)
 	if len(cross) != 2 || cross[0] != "Done." || cross[1] != "Done." {
 		t.Fatalf("cross-turn communicate: got agentMessages %q, want [\"Done.\" \"Done.\"]", cross)
@@ -1275,7 +1300,7 @@ func mustJSON(s string) string {
 // "Switched model: <old> → <new>", extending the TurnCheckpoint/TurnSummary
 // systemMessage projection pattern above.
 func TestProjectTurnRendersModelSwitchMarker(t *testing.T) {
-	out := ProjectTurn("turn_9", 9, schema.Turn{
+	out, _ := ProjectTurnParts("turn_9", 9, schema.Turn{
 		Kind:    schema.TurnModelSwitch,
 		Message: llm.System("Switched model: openai/gpt-5.4 → anthropic/claude-opus-4-6"),
 	}, NewToolCallRegistry(), nil, nil)
@@ -1305,7 +1330,7 @@ func TestProjectTurnRendersModelSwitchMarker(t *testing.T) {
 // TurnCheckpoint/TurnSummary empty-text no-op behavior: a marker turn with
 // blank text projects to nothing rather than an empty systemMessage.
 func TestProjectTurnModelSwitchMarkerEmptyTextOmitted(t *testing.T) {
-	out := ProjectTurn("turn_9", 9, schema.Turn{
+	out, _ := ProjectTurnParts("turn_9", 9, schema.Turn{
 		Kind:    schema.TurnModelSwitch,
 		Message: llm.System("   "),
 	}, NewToolCallRegistry(), nil, nil)
@@ -1319,7 +1344,7 @@ func TestProjectTurnModelSwitchMarkerEmptyTextOmitted(t *testing.T) {
 // systemMessage projection pattern above so a reload shows the harness's
 // diff-rendered environment block as chrome rather than dropping it.
 func TestProjectTurnRendersEnvironmentMarker(t *testing.T) {
-	out := ProjectTurn("turn_9", 9, schema.Turn{
+	out, _ := ProjectTurnParts("turn_9", 9, schema.Turn{
 		Kind:    schema.TurnEnvironment,
 		Message: llm.User("<environment_context>\ncwd: \"/tmp\"\n</environment_context>"),
 	}, NewToolCallRegistry(), nil, nil)
@@ -1349,7 +1374,7 @@ func TestProjectTurnRendersEnvironmentMarker(t *testing.T) {
 // TurnModelSwitch empty-text no-op behavior: an environment turn with blank
 // text projects to nothing rather than an empty systemMessage.
 func TestProjectTurnEnvironmentMarkerEmptyTextOmitted(t *testing.T) {
-	out := ProjectTurn("turn_9", 9, schema.Turn{
+	out, _ := ProjectTurnParts("turn_9", 9, schema.Turn{
 		Kind:    schema.TurnEnvironment,
 		Message: llm.User("   "),
 	}, NewToolCallRegistry(), nil, nil)
@@ -1369,7 +1394,7 @@ func TestProjectTurnStampsToolItemTimestamps(t *testing.T) {
 	end := start.Add(3 * time.Second)
 	toolNames := NewToolCallRegistry()
 
-	items := ProjectTurn("turn_1", 1, schema.Turn{
+	items, _ := ProjectTurnParts("turn_1", 1, schema.Turn{
 		Kind:      schema.TurnAssistant,
 		Timestamp: start,
 		Message: llm.Message{Content: []llm.ContentPart{{
@@ -1388,7 +1413,7 @@ func TestProjectTurnStampsToolItemTimestamps(t *testing.T) {
 		t.Fatalf("tool call item StartedAt=%v, want %d (entry timestamp)", items[0].StartedAt, start.UnixMilli())
 	}
 
-	items = ProjectTurn("turn_2", 2, schema.Turn{
+	items, _ = ProjectTurnParts("turn_2", 2, schema.Turn{
 		Kind:      schema.TurnToolResults,
 		Timestamp: end,
 		Message: llm.Message{Content: []llm.ContentPart{{
@@ -1407,7 +1432,7 @@ func TestProjectTurnStampsToolItemTimestamps(t *testing.T) {
 	}
 
 	// A zero entry timestamp mints no stamps.
-	items = ProjectTurn("turn_3", 3, schema.Turn{
+	items, _ = ProjectTurnParts("turn_3", 3, schema.Turn{
 		Kind: schema.TurnAssistant,
 		Message: llm.Message{Content: []llm.ContentPart{{
 			Kind: llm.ContentToolCall,
@@ -1437,7 +1462,7 @@ func TestProjectTurnStampsToolItemTimestamps(t *testing.T) {
 func TestProjectTurn_RejectedCallShowsRawArguments(t *testing.T) {
 	const rawArgs = `{command: "ls", }` // malformed JSON — the shape that rejects
 	toolNames := NewToolCallRegistry()
-	items := ProjectTurn("turn_1", 1, schema.Turn{
+	items, _ := ProjectTurnParts("turn_1", 1, schema.Turn{
 		Kind: schema.TurnAssistant,
 		Message: llm.Message{Content: []llm.ContentPart{{
 			Kind: llm.ContentToolCall,
@@ -1469,7 +1494,7 @@ func TestProjectTurn_RejectedCallShowsRawArguments(t *testing.T) {
 func TestProjectTurn_WellFormedCallUnchanged(t *testing.T) {
 	const args = `{"path":"README.md","intent":"inspect docs"}`
 	toolNames := NewToolCallRegistry()
-	items := ProjectTurn("turn_1", 1, schema.Turn{
+	items, _ := ProjectTurnParts("turn_1", 1, schema.Turn{
 		Kind: schema.TurnAssistant,
 		Message: llm.Message{Content: []llm.ContentPart{{
 			Kind: llm.ContentToolCall,
@@ -1504,7 +1529,7 @@ func TestProjectTurn_WellFormedCallUnchanged(t *testing.T) {
 func TestProjectTurn_RepairedCommunicateRendersDeliveredMessage(t *testing.T) {
 	const rawArgs = `{message: "hello"}` // malformed JSON — bare key (healed to {"message":"hello"})
 	reg := NewToolCallRegistry()
-	assistantItems := ProjectTurn("turn_1", 1, schema.Turn{
+	assistantItems, _ := ProjectTurnParts("turn_1", 1, schema.Turn{
 		Kind: schema.TurnAssistant,
 		Message: llm.Message{Content: []llm.ContentPart{{
 			Kind: llm.ContentToolCall,
@@ -1526,7 +1551,7 @@ func TestProjectTurn_RepairedCommunicateRendersDeliveredMessage(t *testing.T) {
 	// The paired result confirms success (IsError=false). The raw bytes are
 	// repaired with RepairJSON, yielding {"message":"hello"}, and the message
 	// "hello" is rendered as an agentMessage — matching what live delivered.
-	resultItems := ProjectTurn("turn_2", 2, schema.Turn{
+	resultItems, _ := ProjectTurnParts("turn_2", 2, schema.Turn{
 		Kind: schema.TurnToolResults,
 		Message: llm.Message{Content: []llm.ContentPart{{
 			Kind: llm.ContentToolResult,
@@ -1567,7 +1592,7 @@ func TestProjectTurn_HealedCommunicateWithoutRecoverableMessageRendersRawBytes(t
 	// valid object with no "message" (or output.message) to recover.
 	const rawArgs = `{foo: "bar"}`
 	reg := NewToolCallRegistry()
-	assistantItems := ProjectTurn("turn_1", 1, schema.Turn{
+	assistantItems, _ := ProjectTurnParts("turn_1", 1, schema.Turn{
 		Kind: schema.TurnAssistant,
 		Message: llm.Message{Content: []llm.ContentPart{{
 			Kind: llm.ContentToolCall,
@@ -1583,7 +1608,7 @@ func TestProjectTurn_HealedCommunicateWithoutRecoverableMessageRendersRawBytes(t
 		t.Fatalf("want 0 items from assistant turn (raw bytes deferred to result), got %d: %+v", len(assistantItems), assistantItems)
 	}
 
-	resultItems := ProjectTurn("turn_2", 2, schema.Turn{
+	resultItems, _ := ProjectTurnParts("turn_2", 2, schema.Turn{
 		Kind: schema.TurnToolResults,
 		Message: llm.Message{Content: []llm.ContentPart{{
 			Kind: llm.ContentToolResult,
@@ -1657,7 +1682,7 @@ func TestProjectTurn_HealedCommunicateFallbackIsBoundedAndOneLine(t *testing.T) 
 func projectHealedCommunicateFallback(t *testing.T, rawArgs string) []appwire.ThreadItem {
 	t.Helper()
 	reg := NewToolCallRegistry()
-	ProjectTurn("turn_1", 1, schema.Turn{
+	ProjectTurnParts("turn_1", 1, schema.Turn{
 		Kind: schema.TurnAssistant,
 		Message: llm.Message{Content: []llm.ContentPart{{
 			Kind: llm.ContentToolCall,
@@ -1666,13 +1691,14 @@ func projectHealedCommunicateFallback(t *testing.T, rawArgs string) []appwire.Th
 			},
 		}}},
 	}, reg, nil, nil)
-	return ProjectTurn("turn_2", 2, schema.Turn{
+	items, _ := ProjectTurnParts("turn_2", 2, schema.Turn{
 		Kind: schema.TurnToolResults,
 		Message: llm.Message{Content: []llm.ContentPart{{
 			Kind:       llm.ContentToolResult,
 			ToolResult: &llm.ToolResultData{ToolCallID: "call_comm_fallback", Name: "communicate", IsError: false},
 		}}},
 	}, reg, nil, nil)
+	return items
 }
 
 // TestProjectTurn_RejectedCommunicateRendersAsToolError verifies that a
@@ -1684,7 +1710,7 @@ func projectHealedCommunicateFallback(t *testing.T, rawArgs string) []appwire.Th
 func TestProjectTurn_RejectedCommunicateRendersAsToolError(t *testing.T) {
 	const rawArgs = `{message: "hello"}` // malformed JSON — bare key
 	reg := NewToolCallRegistry()
-	assistantItems := ProjectTurn("turn_1", 1, schema.Turn{
+	assistantItems, _ := ProjectTurnParts("turn_1", 1, schema.Turn{
 		Kind: schema.TurnAssistant,
 		Message: llm.Message{Content: []llm.ContentPart{{
 			Kind: llm.ContentToolCall,
@@ -1705,7 +1731,7 @@ func TestProjectTurn_RejectedCommunicateRendersAsToolError(t *testing.T) {
 	// The result confirms rejection (IsError=true, PrevalOnly=true). The raw
 	// bytes surface as a commandExecution with TurnStatusFailed, not as an
 	// agentMessage.
-	resultItems := ProjectTurn("turn_2", 2, schema.Turn{
+	resultItems, _ := ProjectTurnParts("turn_2", 2, schema.Turn{
 		Kind: schema.TurnToolResults,
 		Message: llm.Message{Content: []llm.ContentPart{{
 			Kind: llm.ContentToolResult,
@@ -1748,7 +1774,7 @@ func TestProjectTurn_RejectedCommunicateNameOmittedStillResolves(t *testing.T) {
 	const rawArgs = `{message: "hi"}` // malformed JSON — bare key
 	reg := NewToolCallRegistry()
 	// Project the assistant turn to seed the registry.
-	_ = ProjectTurn("turn_1", 1, schema.Turn{
+	_, _ = ProjectTurnParts("turn_1", 1, schema.Turn{
 		Kind: schema.TurnAssistant,
 		Message: llm.Message{Content: []llm.ContentPart{{
 			Kind: llm.ContentToolCall,
@@ -1763,7 +1789,7 @@ func TestProjectTurn_RejectedCommunicateNameOmittedStillResolves(t *testing.T) {
 
 	// The result has Name="" (omitempty). The Names map (set on the assistant
 	// turn) resolves it to "communicate", not to the raw bytes in CommRawArgs.
-	resultItems := ProjectTurn("turn_2", 2, schema.Turn{
+	resultItems, _ := ProjectTurnParts("turn_2", 2, schema.Turn{
 		Kind: schema.TurnToolResults,
 		Message: llm.Message{Content: []llm.ContentPart{{
 			Kind: llm.ContentToolResult,
@@ -1794,7 +1820,7 @@ func TestProjectTurn_RejectedCommunicateNameOmittedStillResolves(t *testing.T) {
 func TestProjectTurn_RuntimeFailedCommunicateDoesNotShowRawArgs(t *testing.T) {
 	const rawArgs = `{message: "hi"}` // malformed JSON — bare key
 	reg := NewToolCallRegistry()
-	_ = ProjectTurn("turn_1", 1, schema.Turn{
+	_, _ = ProjectTurnParts("turn_1", 1, schema.Turn{
 		Kind: schema.TurnAssistant,
 		Message: llm.Message{Content: []llm.ContentPart{{
 			Kind: llm.ContentToolCall,
@@ -1809,7 +1835,7 @@ func TestProjectTurn_RuntimeFailedCommunicateDoesNotShowRawArgs(t *testing.T) {
 
 	// Runtime failure: IsError=true but PrevalOnly=false. The raw fallback
 	// must NOT fire — the call executed and failed, it was not rejected.
-	resultItems := ProjectTurn("turn_2", 2, schema.Turn{
+	resultItems, _ := ProjectTurnParts("turn_2", 2, schema.Turn{
 		Kind: schema.TurnToolResults,
 		Message: llm.Message{Content: []llm.ContentPart{{
 			Kind: llm.ContentToolResult,
@@ -1839,7 +1865,7 @@ func TestProjectTurn_OversizedValidJSONSuppressesIntent(t *testing.T) {
 	large := strings.Repeat("x", 2*1024*1024+10)
 	oversizedArgs := []byte(`{"intent":"secret","bar":"` + large + `"}`)
 	reg := NewToolCallRegistry()
-	items := ProjectTurn("turn_1", 1, schema.Turn{
+	items, _ := ProjectTurnParts("turn_1", 1, schema.Turn{
 		Kind: schema.TurnAssistant,
 		Message: llm.Message{Content: []llm.ContentPart{{
 			Kind: llm.ContentToolCall,
@@ -1874,7 +1900,7 @@ func TestProjectTurn_HealedCommunicateStringOutputRendersMessage(t *testing.T) {
 	// output as a JSON-object string — the shape the live path promotes.
 	const rawArgs = `{output: "{\"message\":\"hello\"}"}`
 	reg := NewToolCallRegistry()
-	ProjectTurn("turn_1", 1, schema.Turn{
+	ProjectTurnParts("turn_1", 1, schema.Turn{
 		Kind: schema.TurnAssistant,
 		Message: llm.Message{Content: []llm.ContentPart{{
 			Kind: llm.ContentToolCall,
@@ -1887,7 +1913,7 @@ func TestProjectTurn_HealedCommunicateStringOutputRendersMessage(t *testing.T) {
 		}}},
 	}, reg, nil, nil)
 
-	resultItems := ProjectTurn("turn_2", 2, schema.Turn{
+	resultItems, _ := ProjectTurnParts("turn_2", 2, schema.Turn{
 		Kind: schema.TurnToolResults,
 		Message: llm.Message{Content: []llm.ContentPart{{
 			Kind: llm.ContentToolResult,
@@ -1942,10 +1968,10 @@ func TestRootBareTextFallbackQuietProjection(t *testing.T) {
 		{`not valid JSON`, `{"communicate_quiet":true}`, "systemMessage", appwire.ThreadItemEventKindQuietYield},
 	} {
 		reg := NewToolCallRegistry()
-		ProjectTurn("turn", 1, schema.Turn{Kind: schema.TurnAssistant, Message: llm.Message{Content: []llm.ContentPart{{
+		ProjectTurnParts("turn", 1, schema.Turn{Kind: schema.TurnAssistant, Message: llm.Message{Content: []llm.ContentPart{{
 			Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "call", Name: "communicate", Arguments: json.RawMessage(`{}`), RawArguments: tc.raw},
 		}}}}, reg, nil, nil)
-		items := ProjectTurn("turn", 2, schema.Turn{Kind: schema.TurnToolResults, Message: llm.Message{Content: []llm.ContentPart{{
+		items, _ := ProjectTurnParts("turn", 2, schema.Turn{Kind: schema.TurnToolResults, Message: llm.Message{Content: []llm.ContentPart{{
 			Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "call", Name: "communicate", ToolState: json.RawMessage(tc.state)},
 		}}}}, reg, nil, nil)
 		if tc.wantType == "" {

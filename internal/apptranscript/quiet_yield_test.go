@@ -74,13 +74,14 @@ func projectQuietFixture(t *testing.T, entries []schema.Turn) []appwire.ThreadIt
 	t.Helper()
 	path := writeTranscriptEntries(t, entries...)
 	reg := NewToolCallRegistry()
-	turns, err := ItemTurnsFromFile(path, transcript.DefaultMaxLineBytes, func(turn schema.Turn, id string, idx int) []appwire.ThreadItem {
+	proj, err := ItemTurnProjectionFromFile(path, transcript.DefaultMaxLineBytes, func(turn schema.Turn, id string, idx int) []appwire.ThreadItem {
 		items, _ := ProjectEntryParts(id, idx, turn, reg, nil, nil)
 		return items
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
+	turns := proj.Turns
 	if len(turns) != 1 {
 		t.Fatalf("turns=%d, want 1", len(turns))
 	}

@@ -56,10 +56,11 @@ func largeEntryProjector(turn schema.Turn, turnID string, entryIndex int) []appw
 
 func TestItemTurnsFromEntriesLargeFixtureParity(t *testing.T) {
 	path, header, entries := largeEntryProjectionFixture(t)
-	fileTurns, err := ItemTurnsFromFile(path, 1<<30, largeEntryProjector)
+	fileProj, err := ItemTurnProjectionFromFile(path, 1<<30, largeEntryProjector)
 	if err != nil {
-		t.Fatalf("ItemTurnsFromFile: %v", err)
+		t.Fatalf("ItemTurnProjectionFromFile: %v", err)
 	}
+	fileTurns := fileProj.Turns
 	if err := os.Remove(path); err != nil {
 		t.Fatal(err)
 	}
@@ -82,7 +83,7 @@ func BenchmarkItemTurnsLargeFixture(b *testing.B) {
 	b.Run("file", func(b *testing.B) {
 		b.ReportAllocs()
 		for b.Loop() {
-			if _, err := ItemTurnsFromFile(path, 1<<30, largeEntryProjector); err != nil {
+			if _, err := ItemTurnProjectionFromFile(path, 1<<30, largeEntryProjector); err != nil {
 				b.Fatal(err)
 			}
 		}

@@ -20,7 +20,7 @@ func TestMessageTimestampsFromTranscript(t *testing.T) {
 	} {
 		for _, stamp := range []time.Time{at, {}} {
 			turn.Timestamp = stamp
-			items := ProjectTurn("turn", 1, turn, nil, nil, nil)
+			items, _ := ProjectTurnParts("turn", 1, turn, nil, nil, nil)
 			if len(items) == 0 {
 				t.Fatal("no messages projected")
 			}

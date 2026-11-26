@@ -103,7 +103,7 @@ func TestTextlessAssistantDoesNotZeroReloadEchoState(t *testing.T) {
 	const turnID = "turn_1"
 	var allItems []appwire.ThreadItem
 	for i, entry := range entries {
-		items := ProjectTurn(turnID, i+1, entry.Turn, reg, nil, nil)
+		items, _ := ProjectTurnParts(turnID, i+1, entry.Turn, reg, nil, nil)
 		allItems = append(allItems, items...)
 	}
 
@@ -130,7 +130,7 @@ func TestTextlessAssistantEchoDoesNotSuppressCrossTurnMessage(t *testing.T) {
 	turnIDs := []string{"turn_1", "turn_1", "turn_2", "turn_2"}
 	var allItems []appwire.ThreadItem
 	for i, entry := range entries {
-		items := ProjectTurn(turnIDs[i], i+1, entry.Turn, reg, nil, nil)
+		items, _ := ProjectTurnParts(turnIDs[i], i+1, entry.Turn, reg, nil, nil)
 		allItems = append(allItems, items...)
 	}
 
@@ -170,7 +170,8 @@ func TestGroupingEchoFixPropagatesOpenerTurnID(t *testing.T) {
 	// Shared registry, as the full read threads.
 	reg := NewToolCallRegistry()
 	projector := func(turn schema.Turn, turnID string, turnIndex int) []appwire.ThreadItem {
-		return ProjectTurn(turnID, turnIndex, turn, reg, nil, nil)
+		items, _ := ProjectTurnParts(turnID, turnIndex, turn, reg, nil, nil)
+		return items
 	}
 
 	turns, err := itemTurnsFromEntries(transcript.Header{}, entries, projector)

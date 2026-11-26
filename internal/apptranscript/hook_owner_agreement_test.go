@@ -114,13 +114,14 @@ func shapesFromCandidates(candidates []appitempaging.TranscriptItemCandidate) []
 func TestHookCompletionsGroupAlikeInBothProjections(t *testing.T) {
 	path := hookOwnerTranscript(t)
 	reg := apptranscript.NewToolCallRegistry()
-	full, err := apptranscript.ItemTurnsFromFile(path, transcript.DefaultMaxLineBytes, func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
+	fullProj, err := apptranscript.ItemTurnProjectionFromFile(path, transcript.DefaultMaxLineBytes, func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
 		items, _ := apptranscript.ProjectEntryParts(turnID, entryIndex, turn, reg, nil, apptranscript.ToolResultOutputImages)
 		return items
 	})
 	if err != nil {
-		t.Fatalf("ItemTurnsFromFile: %v", err)
+		t.Fatalf("ItemTurnProjectionFromFile: %v", err)
 	}
+	full := fullProj.Turns
 	candidates := indexCandidates(t, path)
 
 	want := []turnShape{
@@ -197,13 +198,14 @@ func preludeOwnerTranscript(t *testing.T) string {
 func TestPreludeAndStampedPreludeEntryAreOneTurn(t *testing.T) {
 	path := preludeOwnerTranscript(t)
 	reg := apptranscript.NewToolCallRegistry()
-	full, err := apptranscript.ItemTurnsFromFile(path, transcript.DefaultMaxLineBytes, func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
+	fullProj, err := apptranscript.ItemTurnProjectionFromFile(path, transcript.DefaultMaxLineBytes, func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
 		items, _ := apptranscript.ProjectEntryParts(turnID, entryIndex, turn, reg, nil, apptranscript.ToolResultOutputImages)
 		return items
 	})
 	if err != nil {
-		t.Fatalf("ItemTurnsFromFile: %v", err)
+		t.Fatalf("ItemTurnProjectionFromFile: %v", err)
 	}
+	full := fullProj.Turns
 
 	want := []turnShape{
 		{ID: appwire.SystemPreludeTurnID, Items: []string{"systemMessage/system_prompt", "systemMessage/hook_completed"}},

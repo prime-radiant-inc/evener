@@ -87,13 +87,14 @@ func TestToolSettlementPreservesAuthorship(t *testing.T) {
 						t.Helper()
 						t.Run("full", func(t *testing.T) {
 							reg := apptranscript.NewToolCallRegistry()
-							turns, err := apptranscript.ItemTurnsFromFile(path, 128<<20, func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
+							proj, err := apptranscript.ItemTurnProjectionFromFile(path, 128<<20, func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
 								items, _ := apptranscript.ProjectEntryParts(turnID, entryIndex, turn, reg, nil, apptranscript.ToolResultOutputImages)
 								return items
 							})
 							if err != nil {
 								t.Fatal(err)
 							}
+							turns := proj.Turns
 							if len(turns) != 1 || len(turns[0].Items) != 2 {
 								t.Fatalf("full history duplicated or lost an item: %+v", turns)
 							}

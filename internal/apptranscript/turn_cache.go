@@ -156,21 +156,12 @@ func memoizeScan[T any](
 
 // ItemTurnsFromFile returns the cached logical item turns for path when its
 // authoritative file metadata matches the cached entry, otherwise parses via
-// the package ItemTurnsFromFile and caches the result.
+// ItemTurnProjectionFromFile and caches the result.
 func (c *TurnCache) ItemTurnsFromFile(path string, maxLineBytes int, project EntryProjector) ([]appwire.Turn, error) {
-	return c.itemTurnsFromFileContext(context.Background(), path, maxLineBytes, project)
-}
-
-func (c *TurnCache) itemTurnsFromFileContext(ctx context.Context, path string, maxLineBytes int, project EntryProjector) ([]appwire.Turn, error) {
-	return c.loadItemProjectionContext(ctx, path, func() ([]appwire.Turn, error) {
-		return itemTurnsFromFileContext(ctx, path, maxLineBytes, project)
+	return c.loadItemProjectionContext(context.Background(), path, func() ([]appwire.Turn, error) {
+		projection, err := ItemTurnProjectionFromFile(path, maxLineBytes, project)
+		return projection.Turns, err
 	})
-}
-
-// loadItemProjection is the cache core, split out so tests can supply a
-// counting parse function.
-func (c *TurnCache) loadItemProjection(path string, parse func() ([]appwire.Turn, error)) ([]appwire.Turn, error) {
-	return c.loadItemProjectionContext(context.Background(), path, parse)
 }
 
 func (c *TurnCache) loadItemProjectionContext(ctx context.Context, path string, parse func() ([]appwire.Turn, error)) ([]appwire.Turn, error) {

@@ -294,7 +294,7 @@ func TestMemoryContextProjection(t *testing.T) {
 		if entry.Turn.Message.Role != llm.RoleUser || !entry.Turn.Message.Content[0].Machinery {
 			t.Fatalf("source=%+v", entry.Turn.Message)
 		}
-		items := apptranscript.ProjectTurn("memory-turn", i, entry.Turn, apptranscript.NewToolCallRegistry(), nil, nil)
+		items, _ := apptranscript.ProjectTurnParts("memory-turn", i, entry.Turn, apptranscript.NewToolCallRegistry(), nil, nil)
 		t.Run("app", func(t *testing.T) {
 			if len(items) != 1 || items[0].Type != "systemMessage" || items[0].ID != fmt.Sprintf("item_memory_context_%d", i) || !strings.Contains(items[0].Text, opaque) {
 				t.Fatalf("projection=%+v", items)
@@ -3103,7 +3103,7 @@ func TestMemoryGenericDelivery(t *testing.T) {
 			turn.RoundID = ""
 			index := len(entries) + 1
 			entries = append(entries, transcript.Entry{Turn: turn})
-			projected := apptranscript.ProjectTurn("turn_1", index+arm*4, turn, reg, nil, nil)
+			projected, _ := apptranscript.ProjectTurnParts("turn_1", index+arm*4, turn, reg, nil, nil)
 			for i := range projected {
 				projected[i].DurationMS = nil
 				if authorship := projected[i].Authorship; authorship != nil {
