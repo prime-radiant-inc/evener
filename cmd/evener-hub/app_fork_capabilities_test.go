@@ -251,7 +251,7 @@ func TestHubForkCapabilityProjectionFencesRecoveryAndSubagents(t *testing.T) {
 	}
 	locks := hubcore.NewResumeLocks()
 	finish := locks.BeginForceStop([]string{"root"})
-	if err := locks.PersistForceStop([]string{"root"}, "root"); err != nil {
+	if _, err := locks.PersistForceStop([]string{"root"}, "root", daemonprocess.Target{}); err != nil {
 		t.Fatal(err)
 	}
 	finish.Finish(false)
@@ -438,7 +438,7 @@ func TestHubExplicitResumeResponseAdvertisesClearedForkFence(t *testing.T) {
 	sessionID = id
 	locks := hubcore.NewResumeLocks()
 	finish := locks.BeginForceStop([]string{sessionID})
-	if err := locks.PersistForceStop([]string{sessionID}, sessionID); err != nil {
+	if _, err := locks.PersistForceStop([]string{sessionID}, sessionID, daemonprocess.Target{}); err != nil {
 		t.Fatal(err)
 	}
 	if err := locks.ConfirmForceStop(sessionID); err != nil {
@@ -560,7 +560,7 @@ func TestHubForkAdmissionRefusesEveryProjectedRecoveryFence(t *testing.T) {
 			name: "explicit resume required",
 			fence: func(t *testing.T, cfg *hubcore.WebConfig, _, sessionID string) {
 				finish := cfg.ResumeLocks.BeginForceStop([]string{sessionID})
-				if err := cfg.ResumeLocks.PersistForceStop([]string{sessionID}, sessionID); err != nil {
+				if _, err := cfg.ResumeLocks.PersistForceStop([]string{sessionID}, sessionID, daemonprocess.Target{}); err != nil {
 					t.Fatal(err)
 				}
 				finish.Finish(true)
@@ -1119,7 +1119,7 @@ func TestHubForkValidatesParamsBeforeFencingOrDiscovery(t *testing.T) {
 			}
 			locks := hubcore.NewResumeLocks()
 			finish := locks.BeginForceStop([]string{sessionID})
-			if err := locks.PersistForceStop([]string{sessionID}, sessionID); err != nil {
+			if _, err := locks.PersistForceStop([]string{sessionID}, sessionID, daemonprocess.Target{}); err != nil {
 				t.Fatal(err)
 			}
 			finish.Finish(true)
@@ -1240,7 +1240,7 @@ func TestHubForkFencesBothTheRequestedAliasAndTheResolvedSession(t *testing.T) {
 			name: "resolved session needs an explicit resume",
 			fence: func(t *testing.T, cfg *hubcore.WebConfig, fencedID string) {
 				finish := cfg.ResumeLocks.BeginForceStop([]string{fencedID})
-				if err := cfg.ResumeLocks.PersistForceStop([]string{fencedID}, fencedID); err != nil {
+				if _, err := cfg.ResumeLocks.PersistForceStop([]string{fencedID}, fencedID, daemonprocess.Target{}); err != nil {
 					t.Fatal(err)
 				}
 				finish.Finish(true)
@@ -1376,7 +1376,7 @@ func TestHubForkReportsDeletionBeforeRecoveryWhicheverIdentitySortsFirst(t *test
 			}
 			locks := hubcore.NewResumeLocks()
 			finish := locks.BeginForceStop([]string{tc.liveID})
-			if err := locks.PersistForceStop([]string{tc.liveID}, tc.liveID); err != nil {
+			if _, err := locks.PersistForceStop([]string{tc.liveID}, tc.liveID, daemonprocess.Target{}); err != nil {
 				t.Fatal(err)
 			}
 			finish.Finish(true)
@@ -1763,7 +1763,7 @@ func TestHubForkFollowsTheRecoveryRedirectForAStoppedAlias(t *testing.T) {
 	locks := hubcore.NewResumeLocks()
 	group := []string{aliasID, currentID}
 	finish := locks.BeginForceStop(group)
-	if err := locks.PersistForceStop(group, currentID); err != nil {
+	if _, err := locks.PersistForceStop(group, currentID, daemonprocess.Target{}); err != nil {
 		t.Fatal(err)
 	}
 	finish.Finish(true)
@@ -2007,7 +2007,7 @@ func TestHubForkCapabilityFencesTheSessionAStableRefResolvesTo(t *testing.T) {
 			name: "resolved session needs an explicit resume",
 			fence: func(t *testing.T, locks *hubcore.ResumeLocks, sessionID string) {
 				finish := locks.BeginForceStop([]string{sessionID})
-				if err := locks.PersistForceStop([]string{sessionID}, sessionID); err != nil {
+				if _, err := locks.PersistForceStop([]string{sessionID}, sessionID, daemonprocess.Target{}); err != nil {
 					t.Fatal(err)
 				}
 				finish.Finish(true)
@@ -2486,7 +2486,7 @@ func recordResumeRedirect(t *testing.T, locks *hubcore.ResumeLocks, from, to str
 	t.Helper()
 	group := []string{from, to}
 	finish := locks.BeginForceStop(group)
-	if err := locks.PersistForceStop(group, to); err != nil {
+	if _, err := locks.PersistForceStop(group, to, daemonprocess.Target{}); err != nil {
 		t.Fatal(err)
 	}
 	finish.Finish(true)

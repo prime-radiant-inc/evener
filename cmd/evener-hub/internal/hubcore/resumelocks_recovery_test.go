@@ -3,6 +3,8 @@ package hubcore
 import (
 	"errors"
 	"testing"
+
+	"primeradiant.com/evener/cmd/evener-hub/internal/daemonprocess"
 )
 
 func TestExplicitResumePreservesNewerAliasRecovery(t *testing.T) {
@@ -10,13 +12,13 @@ func TestExplicitResumePreservesNewerAliasRecovery(t *testing.T) {
 		t.Run(map[bool]string{false: "during exit", true: "after exit"}[complete], func(t *testing.T) {
 			locks := NewResumeLocks()
 			finishOld := locks.BeginForceStop([]string{"A", "B"})
-			if err := locks.PersistForceStop([]string{"A", "B"}, "B"); err != nil {
+			if _, err := locks.PersistForceStop([]string{"A", "B"}, "B", daemonprocess.Target{}); err != nil {
 				t.Fatal(err)
 			}
 			finishOld.Finish(true)
 			epochA := locks.RecoveryState("A").Epoch
 			finishNew := locks.BeginForceStop([]string{"B", "C"})
-			if err := locks.PersistForceStop([]string{"B", "C"}, "C"); err != nil {
+			if _, err := locks.PersistForceStop([]string{"B", "C"}, "C", daemonprocess.Target{}); err != nil {
 				t.Fatal(err)
 			}
 			if complete {
@@ -46,7 +48,7 @@ func TestExplicitResumePreservesNewerAliasRecovery(t *testing.T) {
 func TestResolvedSessionMappingRequiresCompletedCurrentEpoch(t *testing.T) {
 	locks := NewResumeLocks()
 	finish := locks.BeginForceStop([]string{"stable", "current"})
-	if err := locks.PersistForceStop([]string{"stable", "current"}, "current"); err != nil {
+	if _, err := locks.PersistForceStop([]string{"stable", "current"}, "current", daemonprocess.Target{}); err != nil {
 		t.Fatal(err)
 	}
 	fenceEpoch := locks.RecoveryState("stable").Epoch
@@ -71,7 +73,7 @@ func TestResolvedSessionMappingRequiresCompletedCurrentEpoch(t *testing.T) {
 		t.Fatal("completed target was not shared across aliases")
 	}
 	newer := locks.BeginForceStop([]string{"stable", "next"})
-	if err := locks.PersistForceStop([]string{"stable", "next"}, "next"); err != nil {
+	if _, err := locks.PersistForceStop([]string{"stable", "next"}, "next", daemonprocess.Target{}); err != nil {
 		t.Fatal(err)
 	}
 	newer.Finish(true)
@@ -298,7 +300,7 @@ func TestForceStopFinishMintsEpochOnce(t *testing.T) {
 	}
 	// F2 completes a real stop: its advance is minted exactly once.
 	f2 := locks.BeginForceStop([]string{"A"})
-	if err := locks.PersistForceStop([]string{"A"}, "A"); err != nil {
+	if _, err := locks.PersistForceStop([]string{"A"}, "A", daemonprocess.Target{}); err != nil {
 		t.Fatal(err)
 	}
 	f2.Finish(true)

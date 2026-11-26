@@ -15,6 +15,7 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/appwire/appwiretest"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
+	"primeradiant.com/evener/cmd/evener-hub/internal/daemonprocess"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/internal/appserver"
@@ -774,7 +775,9 @@ func TestResumeSiblingAliasDeletionIsNotTheCallersToClaim(t *testing.T) {
 	// One recovery group holds the requested session and a sibling alias of it, so
 	// the resume's group fence covers both.
 	cfg.ResumeLocks = hubcore.NewResumeLocks()
-	cfg.ResumeLocks.PersistForceStop([]string{sibling, sessionID}, sessionID)
+	if _, err := cfg.ResumeLocks.PersistForceStop([]string{sibling, sessionID}, sessionID, daemonprocess.Target{}); err != nil {
+		t.Fatal(err)
+	}
 
 	server, web := newHubRPCTestServerWithWeb(t, cfg)
 	defer server.Close()
@@ -862,7 +865,9 @@ func TestMutationResumeFailureErrorRecognizesResolvedOwnershipTarget(t *testing.
 	ref := "local:" + alias
 
 	cfg.ResumeLocks = hubcore.NewResumeLocks()
-	cfg.ResumeLocks.PersistForceStop([]string{alias, target, sibling}, target)
+	if _, err := cfg.ResumeLocks.PersistForceStop([]string{alias, target, sibling}, target, daemonprocess.Target{}); err != nil {
+		t.Fatal(err)
+	}
 
 	server, web := newHubRPCTestServerWithWeb(t, cfg)
 	defer server.Close()

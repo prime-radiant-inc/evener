@@ -6,6 +6,7 @@ import (
 	"testing"
 	"testing/synctest"
 
+	"primeradiant.com/evener/cmd/evener-hub/internal/daemonprocess"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubtest"
 )
@@ -31,7 +32,7 @@ func TestConfirmedStoppedShutdownHoldsReservationsAcrossFinalChecksAndSuccess(t 
 		group := []string{sessionID, workspaceID}
 		slices.Sort(group)
 		finish := locks.BeginForceStop(group)
-		if err := locks.PersistForceStop(group, sessionID); err != nil {
+		if _, err := locks.PersistForceStop(group, sessionID, daemonprocess.Target{}); err != nil {
 			t.Fatal(err)
 		}
 		if err := locks.ConfirmForceStop(sessionID); err != nil {

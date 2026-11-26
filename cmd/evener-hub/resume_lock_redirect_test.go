@@ -5,6 +5,7 @@ import (
 
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/evener-hub/internal/daemonprocess"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/identifier"
 )
@@ -15,7 +16,7 @@ import (
 func endRedirectTarget(t *testing.T, locks *hubcore.ResumeLocks, targetID string) {
 	t.Helper()
 	finish := locks.BeginForceStop([]string{targetID})
-	if err := locks.PersistForceStop([]string{targetID}, targetID); err != nil {
+	if _, err := locks.PersistForceStop([]string{targetID}, targetID, daemonprocess.Target{}); err != nil {
 		t.Fatal(err)
 	}
 	finish.Finish(true)
@@ -68,7 +69,7 @@ func TestForkRedirectStopsAtARedirectWhoseTargetEnded(t *testing.T) {
 			name: "pending recovery target is still followed",
 			end: func(t *testing.T, l *hubcore.ResumeLocks, aliasID, targetID string) {
 				finish := l.BeginForceStop([]string{aliasID, targetID})
-				if err := l.PersistForceStop([]string{aliasID, targetID}, targetID); err != nil {
+				if _, err := l.PersistForceStop([]string{aliasID, targetID}, targetID, daemonprocess.Target{}); err != nil {
 					t.Fatal(err)
 				}
 				finish.Finish(true)

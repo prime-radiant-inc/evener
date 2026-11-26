@@ -27,7 +27,7 @@ func TestConfirmedStoppedShortcutChecksEveryAliasDeletionFence(t *testing.T) {
 	}
 	locks := hubcore.NewResumeLocks()
 	finish := locks.BeginForceStop([]string{stable, current})
-	if err := locks.PersistForceStop([]string{stable, current}, current); err != nil {
+	if _, err := locks.PersistForceStop([]string{stable, current}, current, daemonprocess.Target{}); err != nil {
 		t.Fatal(err)
 	}
 	if err := locks.ConfirmForceStop(current); err != nil {

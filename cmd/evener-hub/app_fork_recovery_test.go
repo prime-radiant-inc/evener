@@ -5,6 +5,7 @@ import (
 
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/evener-hub/internal/daemonprocess"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 )
 
@@ -25,7 +26,7 @@ func TestForkRespectsSourceRecoveryAdmission(t *testing.T) {
 			}
 			queued := admitSessionRecovery(t.Context(), cfg, appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodThreadFork, params))
 			finish := locks.BeginForceStop([]string{parent})
-			if err := locks.PersistForceStop([]string{parent}, parent); err != nil {
+			if _, err := locks.PersistForceStop([]string{parent}, parent, daemonprocess.Target{}); err != nil {
 				t.Fatal(err)
 			}
 			assertBlocked := func() {

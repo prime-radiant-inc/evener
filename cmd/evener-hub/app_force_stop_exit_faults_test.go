@@ -55,7 +55,7 @@ func newForceStopExitFixture(t *testing.T) *forceStopExitFixture {
 }
 
 // failSecondRecoveryCommit arms the recovery store so its second write fails:
-// the force stop's PersistForceStopWithOwner commits first, and the
+// the force stop's PersistForceStop commits first, and the
 // ConfirmForceStop the stop ends with is the write this refusal describes.
 func (f *forceStopExitFixture) failSecondRecoveryCommit(boom error) {
 	f.locks.SetRecoveryStoreFaultsForTest(func() error {

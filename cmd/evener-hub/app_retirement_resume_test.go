@@ -776,7 +776,7 @@ func TestRetirementResumeSequentialDistinctIDsAccepted(t *testing.T) {
 func TestRetirementResumeFences(t *testing.T) {
 	t.Run("resume required blocks the automatic path", func(t *testing.T) {
 		f := newRetirementResumeFixture(t, retirementResumeOptions{})
-		if err := f.locks.PersistForceStop([]string{f.sessionID}, f.sessionID); err != nil {
+		if _, err := f.locks.PersistForceStop([]string{f.sessionID}, f.sessionID, daemonprocess.Target{}); err != nil {
 			t.Fatalf("PersistForceStop: %v", err)
 		}
 		client := f.dial(t)
@@ -924,7 +924,7 @@ func TestResumeAfterConfirmedRetirementSpawnsResolvedTarget(t *testing.T) {
 	// ownership group, explicit recovery acknowledged it, and the resolved
 	// routing records requested -> target. resumeOwnershipStep reads exactly
 	// this state to return a target distinct from the request.
-	if err := locks.PersistForceStop([]string{requested, target}, target); err != nil {
+	if _, err := locks.PersistForceStop([]string{requested, target}, target, daemonprocess.Target{}); err != nil {
 		t.Fatalf("PersistForceStop: %v", err)
 	}
 	epoch := locks.RecoveryState(requested).Epoch
@@ -974,7 +974,7 @@ func TestRetirementResumeSiblingAliasDeletionFencesOwnershipGroup(t *testing.T) 
 	locks := hubcore.NewResumeLocks()
 	// A completed clear over a three-alias ownership group, with the resolved
 	// routing recorded requested -> target. The fence names only the sibling.
-	if err := locks.PersistForceStop([]string{requested, target, sibling}, target); err != nil {
+	if _, err := locks.PersistForceStop([]string{requested, target, sibling}, target, daemonprocess.Target{}); err != nil {
 		t.Fatalf("PersistForceStop: %v", err)
 	}
 	epoch := locks.RecoveryState(requested).Epoch
@@ -1037,7 +1037,7 @@ func TestResumeAfterConfirmedRetirementRecordsResolvedSession(t *testing.T) {
 	// A completed redirect A -> B, exactly as production leaves one after an
 	// explicit resume: the durable per-alias ResumeSessionID is cleared, and the
 	// only surviving record is the group's resolved routing.
-	if err := locks.PersistForceStop([]string{alias, stale}, stale); err != nil {
+	if _, err := locks.PersistForceStop([]string{alias, stale}, stale, daemonprocess.Target{}); err != nil {
 		t.Fatalf("PersistForceStop: %v", err)
 	}
 	epoch := locks.RecoveryState(alias).Epoch
@@ -1490,7 +1490,7 @@ func TestRetirementResumeAdmitsResumeOnlyFoldableSend(t *testing.T) {
 // the request's admission against the ONE id the request named, but
 // resumeAfterConfirmedRetirement re-checks that SAME admission for every alias
 // in the resolved ownership group. A force stop persists ResumeRequired and
-// confirms ExitConfirmed for the whole group (hubcore.PersistForceStopWithOwner /
+// confirms ExitConfirmed for the whole group (hubcore.ResumeLocks.PersistForceStop /
 // ConfirmForceStop), and forceStopAliases yields more than one id for a grouped
 // daemon, so the alias the request did not name was refused on ResumeRequired
 // alone. The send must resume the grouped session and reach the replacement,
@@ -1507,7 +1507,7 @@ func TestRetirementResumeAdmitsResumeOnlyFoldableGroupedSend(t *testing.T) {
 	// exactly the obligation a force stop leaves: every alias carries
 	// ResumeRequired with a proven exit.
 	finish := f.locks.BeginForceStop(aliases)
-	if err := f.locks.PersistForceStop(aliases, f.sessionID); err != nil {
+	if _, err := f.locks.PersistForceStop(aliases, f.sessionID, daemonprocess.Target{}); err != nil {
 		t.Fatalf("PersistForceStop: %v", err)
 	}
 	finish.Finish(true)
