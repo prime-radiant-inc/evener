@@ -1,17 +1,16 @@
-package sandbox
+package sandboxtest
 
 import (
 	"errors"
 	"path/filepath"
 	"slices"
 
+	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/identifier"
 )
 
-// TestingT is the subset of *testing.T the contract harness needs. Depending on
-// this interface instead of importing "testing" keeps package sandbox free of a
-// testing dependency in the production binaries (cmd/evener) that import it for
-// Resolve/ParseMode, while *testing.T satisfies it structurally in test code.
+// TestingT is the subset of *testing.T the contract harness needs, allowing
+// callers like recordingT to intercept failures when verifying oracle rejections.
 type TestingT interface {
 	Helper()
 	Errorf(format string, args ...any)
@@ -21,32 +20,32 @@ type TestingT interface {
 }
 
 // ResolveFunc is the resolver signature the contract runs against — sandbox.Resolve
-// in M1, and the same function threaded through each backend's tests in M2/M3/M6.
-type ResolveFunc func(SandboxPolicy, HostFacts, string) (ResolvedPolicy, error)
+// and wrapped resolver checks in backend parity tests.
+type ResolveFunc func(sandbox.SandboxPolicy, sandbox.HostFacts, string) (sandbox.ResolvedPolicy, error)
 
 // ContractCase is one cell of the fail-closed floor matrix: a (mode, network,
 // host, workspace-kind) request paired with its EXPECTED resolution — either the
 // scalar enforcement decisions or a typed refusal. The expected values are
 // copied from the spec's floor matrix, not from the resolver, so a wrong resolver
-// is caught. M2/M3/M6 import ContractCases() to hold their backends to the same
-// grants/denials/refusals this table pins for M1.
+// is caught. Backend tests import ContractCases() to hold their backends to the
+// same grants, denials, and refusals.
 type ContractCase struct {
 	Name      string
-	Mode      Mode
+	Mode      sandbox.Mode
 	Net       bool
-	Host      HostFacts
-	Workspace WorkspaceKind // Main / Linked / NonGit; the harness materializes a real repo of this kind
+	Host      sandbox.HostFacts
+	Workspace sandbox.WorkspaceKind // Main / Linked / NonGit; the harness materializes a real repo of this kind
 
 	// WantRefusal is the fail-closed floor outcome.
 	WantRefusal         bool
 	WantRequiredBackend string // when WantRefusal: the backend that WOULD satisfy ("bwrap"/"sandbox-exec"/"")
 
 	// The remaining fields are the expected resolution when !WantRefusal.
-	WantBackend   Backend
+	WantBackend   sandbox.Backend
 	WantNetwork   bool
-	WantCache     CacheStrategy
-	WantFileRead  ReadScope
-	WantSpawnRead ReadScope
+	WantCache     sandbox.CacheStrategy
+	WantFileRead  sandbox.ReadScope
+	WantSpawnRead sandbox.ReadScope
 	// WantWorktreeWrite is whether the worktree is a writable root in BOTH layers
 	// (the read-only vs workspace-write/restricted distinction — "read-only cannot
 	// commit"). Independent of the resolver: it encodes the spec's mode semantics.
@@ -59,35 +58,35 @@ type ContractCase struct {
 // cases directly.
 func ContractCases() []ContractCase {
 	const home = "/fixture-home/contract"
-	bwrap := HostFacts{OS: "linux", Home: home, BwrapPath: "/usr/bin/bwrap", BwrapCapable: true, OverlaySupported: true}
-	bwrapNoOverlay := HostFacts{OS: "linux", Home: home, BwrapPath: "/usr/bin/bwrap", BwrapCapable: true, OverlaySupported: false}
-	bare := HostFacts{OS: "linux", Home: home}
-	windows := HostFacts{OS: "windows", Home: `C:\Users\contract`}
-	seatbelt := HostFacts{OS: "darwin", Home: "/Users/contract", SandboxExecPath: "/usr/bin/sandbox-exec"}
-	darwinBare := HostFacts{OS: "darwin", Home: "/Users/contract"}
+	bwrap := sandbox.HostFacts{OS: "linux", Home: home, BwrapPath: "/usr/bin/bwrap", BwrapCapable: true, OverlaySupported: true}
+	bwrapNoOverlay := sandbox.HostFacts{OS: "linux", Home: home, BwrapPath: "/usr/bin/bwrap", BwrapCapable: true, OverlaySupported: false}
+	bare := sandbox.HostFacts{OS: "linux", Home: home}
+	windows := sandbox.HostFacts{OS: "windows", Home: `C:\Users\contract`}
+	seatbelt := sandbox.HostFacts{OS: "darwin", Home: "/Users/contract", SandboxExecPath: "/usr/bin/sandbox-exec"}
+	darwinBare := sandbox.HostFacts{OS: "darwin", Home: "/Users/contract"}
 
 	var cases []ContractCase
 
 	// --- off: resolves on every host, no backend, no containment. ---
-	for _, h := range []HostFacts{bwrap, bare, windows, seatbelt, darwinBare} {
+	for _, h := range []sandbox.HostFacts{bwrap, bare, windows, seatbelt, darwinBare} {
 		cases = append(cases, ContractCase{
-			Name: "off/" + h.OS + backendTag(h), Mode: ModeOff, Net: true, Host: h, Workspace: MainCheckout,
-			WantBackend: BackendNone, WantNetwork: true, WantCache: CacheNone,
-			WantFileRead: ReadAnywhere, WantSpawnRead: ReadAnywhere,
+			Name: "off/" + h.OS + backendTag(h), Mode: sandbox.ModeOff, Net: true, Host: h, Workspace: sandbox.MainCheckout,
+			WantBackend: sandbox.BackendNone, WantNetwork: true, WantCache: sandbox.CacheNone,
+			WantFileRead: sandbox.ReadAnywhere, WantSpawnRead: sandbox.ReadAnywhere,
 		})
 	}
 
 	// --- bwrap tier: every mode, net on/off, all run. ---
 	for _, net := range []bool{true, false} {
 		cases = append(cases,
-			modeCase("read-only", ModeReadOnly, net, bwrap, MainCheckout, BackendBwrap, CacheNone, ReadAnywhere, ReadAnywhere, false),
-			modeCase("workspace-write", ModeWorkspaceWrite, net, bwrap, MainCheckout, BackendBwrap, CacheOverlay, ReadAnywhere, ReadAnywhere, true),
-			modeCase("restricted", ModeRestricted, net, bwrap, MainCheckout, BackendBwrap, CacheSessionPrivate, ReadWorktreeOnly, ReadWorktreeOnly, true),
+			modeCase("read-only", sandbox.ModeReadOnly, net, bwrap, sandbox.MainCheckout, sandbox.BackendBwrap, sandbox.CacheNone, sandbox.ReadAnywhere, sandbox.ReadAnywhere, false),
+			modeCase("workspace-write", sandbox.ModeWorkspaceWrite, net, bwrap, sandbox.MainCheckout, sandbox.BackendBwrap, sandbox.CacheOverlay, sandbox.ReadAnywhere, sandbox.ReadAnywhere, true),
+			modeCase("restricted", sandbox.ModeRestricted, net, bwrap, sandbox.MainCheckout, sandbox.BackendBwrap, sandbox.CacheSessionPrivate, sandbox.ReadWorktreeOnly, sandbox.ReadWorktreeOnly, true),
 		)
 	}
 	cases = append(cases,
 		// workspace-write on a bwrap host WITHOUT overlay support → session-private cache.
-		modeCase("workspace-write-no-overlay", ModeWorkspaceWrite, true, bwrapNoOverlay, MainCheckout, BackendBwrap, CacheSessionPrivate, ReadAnywhere, ReadAnywhere, true),
+		modeCase("workspace-write-no-overlay", sandbox.ModeWorkspaceWrite, true, bwrapNoOverlay, sandbox.MainCheckout, sandbox.BackendBwrap, sandbox.CacheSessionPrivate, sandbox.ReadAnywhere, sandbox.ReadAnywhere, true),
 	)
 
 	// --- refusal tiers: every sandboxed mode × net cell refuses, so no refusal
@@ -97,29 +96,29 @@ func ContractCases() []ContractCase {
 	// refuses with no backend that would satisfy it. The Linux tier exercises both
 	// git shapes: the full mode × net product on a main checkout, plus a linked
 	// worktree cell so both layouts are covered.
-	cases = append(cases, refuseTier("no-backend/linux", bare, MainCheckout, "")...)
-	cases = append(cases, refuseCase("no-backend/linux/restricted-linked", ModeRestricted, true, bare, LinkedWorktree, ""))
-	cases = append(cases, refuseTier("no-backend/windows", windows, MainCheckout, "")...)
+	cases = append(cases, refuseTier("no-backend/linux", bare, sandbox.MainCheckout, "")...)
+	cases = append(cases, refuseCase("no-backend/linux/restricted-linked", sandbox.ModeRestricted, true, bare, sandbox.LinkedWorktree, ""))
+	cases = append(cases, refuseTier("no-backend/windows", windows, sandbox.MainCheckout, "")...)
 
 	// --- darwin + Seatbelt: deny-capable, full matrix; cache always session-private. ---
 	for _, net := range []bool{true, false} {
 		cases = append(cases,
-			modeCase("seatbelt/read-only", ModeReadOnly, net, seatbelt, MainCheckout, BackendSeatbelt, CacheNone, ReadAnywhere, ReadAnywhere, false),
-			modeCase("seatbelt/workspace-write", ModeWorkspaceWrite, net, seatbelt, MainCheckout, BackendSeatbelt, CacheSessionPrivate, ReadAnywhere, ReadAnywhere, true),
-			modeCase("seatbelt/restricted", ModeRestricted, net, seatbelt, MainCheckout, BackendSeatbelt, CacheSessionPrivate, ReadWorktreeOnly, ReadWorktreeOnly, true),
+			modeCase("seatbelt/read-only", sandbox.ModeReadOnly, net, seatbelt, sandbox.MainCheckout, sandbox.BackendSeatbelt, sandbox.CacheNone, sandbox.ReadAnywhere, sandbox.ReadAnywhere, false),
+			modeCase("seatbelt/workspace-write", sandbox.ModeWorkspaceWrite, net, seatbelt, sandbox.MainCheckout, sandbox.BackendSeatbelt, sandbox.CacheSessionPrivate, sandbox.ReadAnywhere, sandbox.ReadAnywhere, true),
+			modeCase("seatbelt/restricted", sandbox.ModeRestricted, net, seatbelt, sandbox.MainCheckout, sandbox.BackendSeatbelt, sandbox.CacheSessionPrivate, sandbox.ReadWorktreeOnly, sandbox.ReadWorktreeOnly, true),
 		)
 	}
 	// darwin without sandbox-exec: every cell refuses naming sandbox-exec.
-	cases = append(cases, refuseTier("darwin-bare", darwinBare, MainCheckout, "sandbox-exec")...)
+	cases = append(cases, refuseTier("darwin-bare", darwinBare, sandbox.MainCheckout, "sandbox-exec")...)
 
 	return cases
 }
 
 // refuseTier generates the full sandboxed mode × net refusal product for a host
 // tier that cannot enforce any sandboxed mode, so every refusal cell is asserted.
-func refuseTier(namePrefix string, host HostFacts, ws WorkspaceKind, requiredBackend string) []ContractCase {
+func refuseTier(namePrefix string, host sandbox.HostFacts, ws sandbox.WorkspaceKind, requiredBackend string) []ContractCase {
 	var out []ContractCase
-	for _, m := range []Mode{ModeReadOnly, ModeWorkspaceWrite, ModeRestricted} {
+	for _, m := range []sandbox.Mode{sandbox.ModeReadOnly, sandbox.ModeWorkspaceWrite, sandbox.ModeRestricted} {
 		for _, net := range []bool{true, false} {
 			out = append(out, refuseCase(namePrefix+"/"+m.String(), m, net, host, ws, requiredBackend))
 		}
@@ -127,7 +126,7 @@ func refuseTier(namePrefix string, host HostFacts, ws WorkspaceKind, requiredBac
 	return out
 }
 
-func backendTag(h HostFacts) string {
+func backendTag(h sandbox.HostFacts) string {
 	switch {
 	case h.BwrapCapable:
 		return "-bwrap"
@@ -138,7 +137,7 @@ func backendTag(h HostFacts) string {
 	}
 }
 
-func modeCase(name string, mode Mode, net bool, host HostFacts, ws WorkspaceKind, backend Backend, cache CacheStrategy, fileRead, spawnRead ReadScope, worktreeWrite bool) ContractCase {
+func modeCase(name string, mode sandbox.Mode, net bool, host sandbox.HostFacts, ws sandbox.WorkspaceKind, backend sandbox.Backend, cache sandbox.CacheStrategy, fileRead, spawnRead sandbox.ReadScope, worktreeWrite bool) ContractCase {
 	return ContractCase{
 		Name: name + netTag(net), Mode: mode, Net: net, Host: host, Workspace: ws,
 		WantBackend: backend, WantNetwork: net, WantCache: cache, WantFileRead: fileRead, WantSpawnRead: spawnRead,
@@ -146,7 +145,7 @@ func modeCase(name string, mode Mode, net bool, host HostFacts, ws WorkspaceKind
 	}
 }
 
-func refuseCase(name string, mode Mode, net bool, host HostFacts, ws WorkspaceKind, requiredBackend string) ContractCase {
+func refuseCase(name string, mode sandbox.Mode, net bool, host sandbox.HostFacts, ws sandbox.WorkspaceKind, requiredBackend string) ContractCase {
 	return ContractCase{
 		Name: name + netTag(net), Mode: mode, Net: net, Host: host, Workspace: ws,
 		WantRefusal: true, WantRequiredBackend: requiredBackend,
@@ -163,9 +162,7 @@ func netTag(net bool) string {
 // AssertResolve runs the golden ContractCases() table against resolve, materializing
 // a real git workspace of each case's kind. It asserts the exact refusal-or-resolution
 // per the spec floor matrix AND the universal containment invariants (an enforced
-// policy masks the pseudo-fs floor; no granted root is at/under a masked path). M1
-// runs it with sandbox.Resolve; M2/M3/M6 reuse ContractCases() to hold their
-// backends to the same contract.
+// policy masks the pseudo-fs floor; no granted root is at/under a masked path).
 func AssertResolve(t TestingT, resolve ResolveFunc) {
 	assertResolveWith(t, resolve, MaterializeWorkspace)
 }
@@ -175,7 +172,7 @@ func AssertResolve(t TestingT, resolve ResolveFunc) {
 // caller can provide the same structural .git layouts directly under a temp root.
 // Keeping this boundary explicit lets the contract assertions exercise the real
 // resolver without requiring an ambient Git binary.
-type contractWorkspaceMaterializer func(TestingT, WorkspaceKind) string
+type contractWorkspaceMaterializer func(TestingT, sandbox.WorkspaceKind) string
 
 func assertResolveWith(t TestingT, resolve ResolveFunc, materialize contractWorkspaceMaterializer) {
 	t.Helper()
@@ -183,7 +180,7 @@ func assertResolveWith(t TestingT, resolve ResolveFunc, materialize contractWork
 		cwd := materialize(t, tc.Workspace)
 		host := tc.Host
 		net := tc.Net
-		rp, err := resolve(SandboxPolicy{Mode: tc.Mode, Network: &net}, host, cwd)
+		rp, err := resolve(sandbox.SandboxPolicy{Mode: tc.Mode, Network: &net}, host, cwd)
 
 		if tc.WantRefusal {
 			assertRefusal(t, tc, err)
@@ -203,7 +200,7 @@ func assertRefusal(t TestingT, tc ContractCase, err error) {
 		t.Errorf("case %s: expected a refusal, got a resolved policy", tc.Name)
 		return
 	}
-	var ref *RefusalError
+	var ref *sandbox.RefusalError
 	if !errors.As(err, &ref) {
 		t.Errorf("case %s: refusal is not *RefusalError: %T", tc.Name, err)
 		return
@@ -213,7 +210,7 @@ func assertRefusal(t TestingT, tc ContractCase, err error) {
 	}
 }
 
-func assertResolution(t TestingT, tc ContractCase, rp ResolvedPolicy, cwd, home string) {
+func assertResolution(t TestingT, tc ContractCase, rp sandbox.ResolvedPolicy, cwd, home string) {
 	t.Helper()
 	if rp.Backend != tc.WantBackend {
 		t.Errorf("case %s: Backend = %v, want %v", tc.Name, rp.Backend, tc.WantBackend)
@@ -267,7 +264,7 @@ func assertResolution(t TestingT, tc ContractCase, rp ResolvedPolicy, cwd, home 
 
 	// The two-layer read split for restricted: spawned procs read system roots
 	// (to execute); file tools do NOT (the model may only browse the worktree).
-	if tc.Mode == ModeRestricted {
+	if tc.Mode == sandbox.ModeRestricted {
 		if !slices.Contains(rp.Spawned.ReadRoots, "/usr") {
 			t.Errorf("case %s: restricted Spawned.ReadRoots must include system roots like /usr: %v", tc.Name, rp.Spawned.ReadRoots)
 		}
@@ -309,13 +306,13 @@ func rootGrants(roots []string, target string) bool {
 // request whose resolved policy is re-rooted from one lane to a sibling lane of
 // the same main repo. AssertReRoot materializes the lanes and asserts the
 // re-rooted policy re-anchors to the TARGET lane (never the source's), so every
-// backend (bwrap now, Seatbelt in M6) is held to the same "same policy, different
-// worktree" semantics. Data-only, like ContractCase.
+// backend is held to the same "same policy, different worktree" semantics.
+// Data-only, like ContractCase.
 type ReRootCase struct {
 	Name string
-	Mode Mode
+	Mode sandbox.Mode
 	Net  bool
-	Host HostFacts
+	Host sandbox.HostFacts
 	// WantWorktreeWrite mirrors ContractCase: whether the worktree is a writable
 	// root (false only for read-only). Encodes the spec's mode semantics, not the
 	// resolver's output.
@@ -324,17 +321,17 @@ type ReRootCase struct {
 
 // ReRootCases returns the golden re-root table: each enforceable (mode × backend
 // tier) cell, so a backend's re-root path is pinned to the same re-anchoring
-// semantics M4 established. Data-only (no ReRoot call).
+// semantics. Data-only (no ReRoot call).
 func ReRootCases() []ReRootCase {
 	const home = "/fixture-home/contract"
-	bwrap := HostFacts{OS: "linux", Home: home, BwrapPath: "/usr/bin/bwrap", BwrapCapable: true, OverlaySupported: true}
-	seatbelt := HostFacts{OS: "darwin", Home: "/Users/contract", SandboxExecPath: "/usr/bin/sandbox-exec"}
+	bwrap := sandbox.HostFacts{OS: "linux", Home: home, BwrapPath: "/usr/bin/bwrap", BwrapCapable: true, OverlaySupported: true}
+	seatbelt := sandbox.HostFacts{OS: "darwin", Home: "/Users/contract", SandboxExecPath: "/usr/bin/sandbox-exec"}
 	var cases []ReRootCase
-	for _, h := range []HostFacts{bwrap, seatbelt} {
+	for _, h := range []sandbox.HostFacts{bwrap, seatbelt} {
 		cases = append(cases,
-			ReRootCase{Name: "read-only" + backendTag(h), Mode: ModeReadOnly, Net: true, Host: h, WantWorktreeWrite: false},
-			ReRootCase{Name: "workspace-write" + backendTag(h), Mode: ModeWorkspaceWrite, Net: true, Host: h, WantWorktreeWrite: true},
-			ReRootCase{Name: "restricted" + backendTag(h), Mode: ModeRestricted, Net: true, Host: h, WantWorktreeWrite: true},
+			ReRootCase{Name: "read-only" + backendTag(h), Mode: sandbox.ModeReadOnly, Net: true, Host: h, WantWorktreeWrite: false},
+			ReRootCase{Name: "workspace-write" + backendTag(h), Mode: sandbox.ModeWorkspaceWrite, Net: true, Host: h, WantWorktreeWrite: true},
+			ReRootCase{Name: "restricted" + backendTag(h), Mode: sandbox.ModeRestricted, Net: true, Host: h, WantWorktreeWrite: true},
 		)
 	}
 	return cases
@@ -342,10 +339,9 @@ func ReRootCases() []ReRootCase {
 
 // AssertReRoot holds ReRoot to its contract: for each case it resolves a policy
 // at lane A of a shared main repo and re-roots it to a sibling lane B, asserting
-// the re-rooted policy anchors its grants at B and NOT at A (the containment the
-// whole milestone rests on). It materializes a real main checkout and two linked
-// worktrees (no mocks; skips when git is unavailable). M6 reuses it so Seatbelt
-// satisfies the same re-root semantics.
+// the re-rooted policy anchors its grants at B and NOT at A. It materializes a
+// real main checkout and two linked worktrees (no mocks; skips when git is
+// unavailable).
 func AssertReRoot(t TestingT, cases []ReRootCase) {
 	assertReRootWith(t, cases, materializeReRootLanes)
 }
@@ -366,7 +362,7 @@ func assertReRootWith(t TestingT, cases []ReRootCase, materialize contractReRoot
 			host.Home = "/fixture-home/contract"
 		}
 		net := tc.Net
-		rp, err := Resolve(SandboxPolicy{Mode: tc.Mode, Network: &net}, host, laneA)
+		rp, err := sandbox.Resolve(sandbox.SandboxPolicy{Mode: tc.Mode, Network: &net}, host, laneA)
 		if err != nil {
 			t.Errorf("case %s: resolve at lane A: %v", tc.Name, err)
 			continue
@@ -380,7 +376,7 @@ func assertReRootWith(t TestingT, cases []ReRootCase, materialize contractReRoot
 	}
 }
 
-func assertRerooted(t TestingT, tc ReRootCase, rerooted *ResolvedPolicy, main, laneA, laneB string) {
+func assertRerooted(t TestingT, tc ReRootCase, rerooted *sandbox.ResolvedPolicy, main, laneA, laneB string) {
 	if rerooted == nil {
 		t.Errorf("case %s: re-root returned a nil policy", tc.Name)
 		return
@@ -420,29 +416,18 @@ func assertRerooted(t TestingT, tc ReRootCase, rerooted *ResolvedPolicy, main, l
 	}
 }
 
-// contractGitRunner is the one external boundary used by the contract
-// materializers. The public helpers provide gitHarness; focused structural
-// tests can provide a filesystem-only implementation of the same protocol.
+// contractGitRunner is the external git boundary used by the contract
+// materializers.
 type contractGitRunner func(TestingT, string, ...string)
 
-// contractGitRunnerProvider is deliberately private: only package-local test
-// harnesses can replace the external Git process boundary. Normal callers keep
-// the public materializer APIs and receive the real Git runner below.
-type contractGitRunnerProvider interface {
-	contractGitRunner() contractGitRunner
-}
-
-func contractGitRunnerFor(t TestingT) contractGitRunner {
-	if provider, ok := t.(contractGitRunnerProvider); ok {
-		return provider.contractGitRunner()
-	}
+func defaultGitRunner(t TestingT) contractGitRunner {
 	requireGitHarness(t)
 	return gitHarness
 }
 
 func materializeReRootLanes(t TestingT) (main, laneA, laneB string) {
 	t.Helper()
-	return materializeReRootLanesWith(t, contractGitRunnerFor(t))
+	return materializeReRootLanesWith(t, defaultGitRunner(t))
 }
 
 func materializeReRootLanesWith(t TestingT, run contractGitRunner) (main, laneA, laneB string) {
@@ -462,31 +447,29 @@ func materializeReRootLanesWith(t TestingT, run contractGitRunner) (main, laneA,
 // MaterializeWorkspace creates a real git workspace of the requested kind under a
 // temp dir and returns its cwd. It uses the real git binary (no mocks); when git
 // is unavailable it skips. NonGit returns a bare temp dir.
-func MaterializeWorkspace(t TestingT, kind WorkspaceKind) string {
+func MaterializeWorkspace(t TestingT, kind sandbox.WorkspaceKind) string {
 	t.Helper()
 	switch kind {
-	case NonGit:
+	case sandbox.NonGit:
 		return materializeWorkspaceWith(t, kind, nil)
-	case MainCheckout:
-		return materializeWorkspaceWith(t, kind, contractGitRunnerFor(t))
-	case LinkedWorktree:
-		return materializeWorkspaceWith(t, kind, contractGitRunnerFor(t))
+	case sandbox.MainCheckout, sandbox.LinkedWorktree:
+		return materializeWorkspaceWith(t, kind, defaultGitRunner(t))
 	default:
 		t.Fatalf("MaterializeWorkspace: unsupported kind %v", kind)
 		return ""
 	}
 }
 
-func materializeWorkspaceWith(t TestingT, kind WorkspaceKind, run contractGitRunner) string {
+func materializeWorkspaceWith(t TestingT, kind sandbox.WorkspaceKind, run contractGitRunner) string {
 	t.Helper()
 	switch kind {
-	case NonGit:
+	case sandbox.NonGit:
 		return identifier.ResolveClean(t.TempDir())
-	case MainCheckout:
+	case sandbox.MainCheckout:
 		root := identifier.ResolveClean(t.TempDir())
 		run(t, root, "init", "-q")
 		return root
-	case LinkedWorktree:
+	case sandbox.LinkedWorktree:
 		main := identifier.ResolveClean(t.TempDir())
 		run(t, main, "init", "-q")
 		run(t, main, "commit", "-q", "--allow-empty", "-m", "init")

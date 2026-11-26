@@ -9,6 +9,7 @@ import (
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/sandbox"
+	"primeradiant.com/evener/agent/sandbox/sandboxtest"
 	"primeradiant.com/evener/llm"
 )
 
@@ -31,7 +32,7 @@ func newReadOnlyRoleFloorSession(t *testing.T, lane string, facts sandbox.HostFa
 				minimalSystemPrompt: true,
 				noSyncJobStore:      true,
 				childClientFactory:  func() *llm.Client { return childClient },
-				sandboxProber:       sandbox.FakeProber{Facts: facts},
+				sandboxProber:       sandboxtest.FakeProber{Facts: facts},
 			},
 		}),
 	)
@@ -294,7 +295,7 @@ func TestRestoreDelegate_ReadOnlyRoleSandboxFloor(t *testing.T) {
 				fixture.workspace,
 				fixture.meta,
 				fixture.stateDir,
-				testConfig{sandboxProber: sandbox.FakeProber{Facts: facts}},
+				testConfig{sandboxProber: sandboxtest.FakeProber{Facts: facts}},
 			)
 			if err != nil {
 				t.Fatalf("restore root: %v", err)
@@ -407,7 +408,7 @@ func TestRestoreDelegate_WriteBlockedParentCannotBeRelaxed(t *testing.T) {
 		fixture.workspace,
 		fixture.meta,
 		fixture.stateDir,
-		testConfig{sandboxProber: sandbox.FakeProber{Facts: facts}},
+		testConfig{sandboxProber: sandboxtest.FakeProber{Facts: facts}},
 	)
 	if err != nil {
 		t.Fatalf("restore root: %v", err)

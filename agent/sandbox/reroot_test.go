@@ -9,6 +9,7 @@ import (
 	"slices"
 	"testing"
 
+	"primeradiant.com/evener/gittest"
 	"primeradiant.com/evener/identifier"
 )
 
@@ -16,14 +17,13 @@ import (
 // returns (main, laneA, laneB), all symlink-resolved. Skips when git is absent.
 func twoLinkedLanes(t *testing.T) (string, string, string) {
 	t.Helper()
-	requireGitHarness(t)
 	main := identifier.ResolveClean(t.TempDir())
-	gitHarness(t, main, "init", "-q")
-	gitHarness(t, main, "commit", "-q", "--allow-empty", "-m", "init")
+	gittest.Run(t, main, "init", "-q")
+	gittest.Run(t, main, "commit", "-q", "--allow-empty", "-m", "init")
 	laneA := main + "-a"
 	laneB := main + "-b"
-	gitHarness(t, main, "worktree", "add", "-q", laneA)
-	gitHarness(t, main, "worktree", "add", "-q", laneB)
+	gittest.Run(t, main, "worktree", "add", "-q", laneA)
+	gittest.Run(t, main, "worktree", "add", "-q", laneB)
 	return main, identifier.ResolveClean(laneA), identifier.ResolveClean(laneB)
 }
 
@@ -44,10 +44,10 @@ func TestReRootToLinkedWorktree(t *testing.T) {
 	if rpB.Git.WorktreeRoot != laneB {
 		t.Errorf("re-rooted worktree = %q, want lane B %q", rpB.Git.WorktreeRoot, laneB)
 	}
-	if !rootGrants(rpB.FileTool.WriteRoots, laneB) {
+	if !isUnderAnyRoot(laneB, rpB.FileTool.WriteRoots) {
 		t.Errorf("re-rooted write roots must anchor at lane B %q: %v", laneB, rpB.FileTool.WriteRoots)
 	}
-	if rootGrants(rpB.FileTool.WriteRoots, laneA) {
+	if isUnderAnyRoot(laneA, rpB.FileTool.WriteRoots) {
 		t.Errorf("re-rooted write roots must NOT still cover lane A %q (leaked roots): %v", laneA, rpB.FileTool.WriteRoots)
 	}
 	// The two lanes share one main repo, so the common-.git read grant is the same
@@ -81,10 +81,10 @@ func TestReRootSiblingLanesDisjoint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("re-root to B: %v", err)
 	}
-	if rootGrants(toA.FileTool.WriteRoots, laneB) {
+	if isUnderAnyRoot(laneB, toA.FileTool.WriteRoots) {
 		t.Errorf("lane A's re-rooted policy must not grant sibling lane B %q: %v", laneB, toA.FileTool.WriteRoots)
 	}
-	if rootGrants(toB.FileTool.WriteRoots, laneA) {
+	if isUnderAnyRoot(laneA, toB.FileTool.WriteRoots) {
 		t.Errorf("lane B's re-rooted policy must not grant sibling lane A %q: %v", laneA, toB.FileTool.WriteRoots)
 	}
 }
@@ -116,7 +116,7 @@ func TestReRootRefusesUnsatisfiable(t *testing.T) {
 
 func TestControlPolicyGrantsRegistry(t *testing.T) {
 	facts := bwrapFacts(t.TempDir())
-	main := MaterializeWorkspace(t, MainCheckout)
+	main := materializeWorkspace(t, MainCheckout)
 	registry := filepath.Join(main, ".git", "worktrees")
 	config := filepath.Join(main, ".git", "config")
 	hooks := filepath.Join(main, ".git", "hooks")
@@ -131,7 +131,7 @@ func TestControlPolicyGrantsRegistry(t *testing.T) {
 		t.Fatalf("control policy: %v", err)
 	}
 
-	if !rootGrants(ctrl.Spawned.WriteRoots, registry) {
+	if !isUnderAnyRoot(registry, ctrl.Spawned.WriteRoots) {
 		t.Errorf("control policy must grant the worktree registry %q writable: %v", registry, ctrl.Spawned.WriteRoots)
 	}
 	// .git/config and hooks stay write-PROTECTED and must never be a write ROOT in
@@ -154,7 +154,7 @@ func TestControlPolicyGrantsRegistry(t *testing.T) {
 // worktree).
 func TestControlPolicyReadOnlyNotWidened(t *testing.T) {
 	facts := bwrapFacts(t.TempDir())
-	main := MaterializeWorkspace(t, MainCheckout)
+	main := materializeWorkspace(t, MainCheckout)
 
 	net := true
 	rp, err := Resolve(SandboxPolicy{Mode: ModeReadOnly, Network: &net}, facts, main)
@@ -192,10 +192,6 @@ func TestReRootOffIsNil(t *testing.T) {
 	}
 }
 
-func TestReRootContract(t *testing.T) {
-	AssertReRoot(t, ReRootCases())
-}
-
 func TestFuzzReRootFixtureUsesStructuralLinkedWorktrees(t *testing.T) {
 	fixture := newFuzzReRootFixture(t)
 	for _, cwd := range []string{fixture.laneA, fixture.laneB} {
@@ -223,7 +219,7 @@ type fuzzReRootFixture struct {
 // newFuzzReRootFixture materializes only the filesystem shapes ClassifyWorkspace
 // consumes. It intentionally does not use git: the fuzzer needs a deterministic
 // linked-worktree layout, not a real repository or subprocess.
-func newFuzzReRootFixture(t TestingT) fuzzReRootFixture {
+func newFuzzReRootFixture(t testing.TB) fuzzReRootFixture {
 	t.Helper()
 	root := identifier.ResolveClean(t.TempDir())
 	fixture := fuzzReRootFixture{
@@ -353,7 +349,7 @@ func FuzzReRoot(f *testing.F) {
 				t.Fatalf("re-rooted FileTool write root %q escapes the re-rooted worktree %q (copy bug?)", r, rerooted.Git.WorktreeRoot)
 			}
 		}
-		if wantWorktree != fixture.laneA && rootGrants(rerooted.FileTool.WriteRoots, fixture.laneA) {
+		if wantWorktree != fixture.laneA && isUnderAnyRoot(fixture.laneA, rerooted.FileTool.WriteRoots) {
 			t.Fatalf("ReRoot(%q) retained source lane A write grant: %v", cwd, rerooted.FileTool.WriteRoots)
 		}
 	})

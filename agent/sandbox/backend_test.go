@@ -616,7 +616,7 @@ func TestConfineWithChildEnvWiresSeatbeltReader(t *testing.T) {
 func TestChildEnvFdRoundTripsThroughRealBwrap(t *testing.T) {
 	facts := requireRealBwrap(t)
 	facts.Home = t.TempDir()
-	cwd := MaterializeWorkspace(t, MainCheckout)
+	cwd := materializeWorkspace(t, MainCheckout)
 	net := true
 	rp, err := Resolve(SandboxPolicy{Mode: ModeWorkspaceWrite, Network: &net}, facts, cwd)
 	if err != nil {

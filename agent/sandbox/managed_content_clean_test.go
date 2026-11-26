@@ -25,7 +25,7 @@ func TestBwrapCleanManagedRootSkipsWalkButUserSkillsStillWalk(t *testing.T) {
 	facts.EvenerContentRoots = []string{cache, skills}
 	facts.EvenerManagedContentRoots = []string{cache}
 	facts.EvenerManagedContentClean = true
-	cwd := MaterializeWorkspace(t, MainCheckout)
+	cwd := materializeWorkspace(t, MainCheckout)
 	rp, err := Resolve(SandboxPolicy{Mode: ModeRestricted, Network: new(true)}, facts, cwd)
 	if err != nil {
 		t.Fatal(err)
@@ -57,7 +57,7 @@ func TestBwrapUnverifiedManagedRootKeepsWalk(t *testing.T) {
 	facts.EvenerContentRoots = []string{cache, skills}
 	facts.EvenerManagedContentRoots = []string{cache}
 	facts.EvenerManagedContentClean = false
-	cwd := MaterializeWorkspace(t, MainCheckout)
+	cwd := materializeWorkspace(t, MainCheckout)
 	rp, err := Resolve(SandboxPolicy{Mode: ModeRestricted, Network: new(true)}, facts, cwd)
 	if err != nil {
 		t.Fatal(err)
@@ -93,7 +93,7 @@ func TestSeatbeltCleanManagedRootSkipsLinkedTargetWalk(t *testing.T) {
 	host.EvenerContentRoots = []string{cache, skills}
 	host.EvenerManagedContentRoots = []string{cache}
 	host.EvenerManagedContentClean = true
-	cwd := MaterializeWorkspace(t, MainCheckout)
+	cwd := materializeWorkspace(t, MainCheckout)
 	rp, err := Resolve(SandboxPolicy{Mode: ModeRestricted, Network: new(true)}, host, cwd)
 	if err != nil {
 		t.Fatal(err)
@@ -201,7 +201,7 @@ func TestProbeResolveSeatbeltWithASymlinkedManagedRoot(t *testing.T) {
 	if !facts.EvenerManagedContentClean {
 		t.Fatal("probe did not read the clean store marker through the symlinked config root")
 	}
-	rp, err := Resolve(SandboxPolicy{Mode: ModeRestricted, Network: new(true)}, facts, MaterializeWorkspace(t, MainCheckout))
+	rp, err := Resolve(SandboxPolicy{Mode: ModeRestricted, Network: new(true)}, facts, materializeWorkspace(t, MainCheckout))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -289,7 +289,7 @@ func TestMissingManagedRootUsesProspectiveResolvedSpelling(t *testing.T) {
 	facts.EvenerContentRoots = []string{cache}
 	facts.EvenerManagedContentRoots = []string{cache}
 	facts.EvenerManagedContentClean = true
-	rp, err := Resolve(SandboxPolicy{Mode: ModeRestricted, Network: new(true)}, facts, MaterializeWorkspace(t, MainCheckout))
+	rp, err := Resolve(SandboxPolicy{Mode: ModeRestricted, Network: new(true)}, facts, materializeWorkspace(t, MainCheckout))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -312,7 +312,7 @@ func TestManagedWalkExemptUsesRecordedOnDiskSpelling(t *testing.T) {
 	facts.EvenerContentRoots = []string{cache}
 	facts.EvenerManagedContentRoots = []string{cache}
 	facts.EvenerManagedContentClean = true
-	rp, err := Resolve(SandboxPolicy{Mode: ModeRestricted, Network: new(true)}, facts, MaterializeWorkspace(t, MainCheckout))
+	rp, err := Resolve(SandboxPolicy{Mode: ModeRestricted, Network: new(true)}, facts, materializeWorkspace(t, MainCheckout))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -337,7 +337,7 @@ func TestManagedWalkExemptUsesRecordedOnDiskSpelling(t *testing.T) {
 		t.Fatal("a non-managed sibling was exempted")
 	}
 	facts.EvenerManagedContentClean = false
-	unverified, err := Resolve(SandboxPolicy{Mode: ModeRestricted, Network: new(true)}, facts, MaterializeWorkspace(t, MainCheckout))
+	unverified, err := Resolve(SandboxPolicy{Mode: ModeRestricted, Network: new(true)}, facts, materializeWorkspace(t, MainCheckout))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -378,7 +378,7 @@ func TestManagedWalkExemptNativeCaseSpelling(t *testing.T) {
 	facts.EvenerContentRoots = []string{variant}
 	facts.EvenerManagedContentRoots = []string{variant}
 	facts.EvenerManagedContentClean = true
-	rp, err := Resolve(SandboxPolicy{Mode: ModeRestricted, Network: new(true)}, facts, MaterializeWorkspace(t, MainCheckout))
+	rp, err := Resolve(SandboxPolicy{Mode: ModeRestricted, Network: new(true)}, facts, materializeWorkspace(t, MainCheckout))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -402,7 +402,7 @@ func TestManagedWalkExemptNativeUnicodeSpelling(t *testing.T) {
 	facts.EvenerContentRoots = []string{variant}
 	facts.EvenerManagedContentRoots = []string{variant}
 	facts.EvenerManagedContentClean = true
-	rp, err := Resolve(SandboxPolicy{Mode: ModeRestricted, Network: new(true)}, facts, MaterializeWorkspace(t, MainCheckout))
+	rp, err := Resolve(SandboxPolicy{Mode: ModeRestricted, Network: new(true)}, facts, materializeWorkspace(t, MainCheckout))
 	if err != nil {
 		t.Fatal(err)
 	}

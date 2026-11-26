@@ -15,6 +15,7 @@ import (
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/sandbox"
+	"primeradiant.com/evener/agent/sandbox/sandboxtest"
 	"primeradiant.com/evener/fuzz/promoter"
 	"primeradiant.com/evener/fuzz/schemagen"
 	"primeradiant.com/evener/llm"
@@ -355,7 +356,7 @@ func coreToolSchemaDefs(t testing.TB) []toolSchemaDef {
 
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		testOnly: testConfig{
-			sandboxProber: sandbox.FakeProber{Facts: sandbox.HostFacts{OS: "linux", Home: dir, BwrapPath: "/usr/bin/bwrap", BwrapCapable: true}},
+			sandboxProber: sandboxtest.FakeProber{Facts: sandbox.HostFacts{OS: "linux", Home: dir, BwrapPath: "/usr/bin/bwrap", BwrapCapable: true}},
 		},
 	})
 	if err != nil {

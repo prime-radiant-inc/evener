@@ -11,11 +11,12 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/sandbox"
+	"primeradiant.com/evener/agent/sandbox/sandboxtest"
 )
 
 // This is the M2 adversarial escape suite. It drives the spec's Validation
 // escapes through EVERY file tool and takes its allow/deny ORACLE from M1's
-// exported contract table (sandbox.ContractCases) — not from M2's own resolver —
+// exported contract table (sandboxtest.ContractCases) — not from M2's own resolver —
 // so a resolver that granted the wrong shape would be caught here.
 
 // modeOracle is a mode's expected file-tool shape, read from the M1 contract.
@@ -30,7 +31,7 @@ type modeOracle struct {
 // what M2's resolver happens to produce.
 func oracleFor(t *testing.T, mode sandbox.Mode) modeOracle {
 	t.Helper()
-	for _, c := range sandbox.ContractCases() {
+	for _, c := range sandboxtest.ContractCases() {
 		if c.Mode == mode && !c.WantRefusal && c.Host.BwrapCapable && c.Workspace == sandbox.MainCheckout {
 			return modeOracle{read: c.WantFileRead, worktreeWrite: c.WantWorktreeWrite}
 		}

@@ -972,7 +972,7 @@ func TestCacheRootsNeverLieInsideAPersistentWriteRoot(t *testing.T) {
 		t.Fatal(err)
 	}
 	host := HostFacts{OS: "linux", Home: clean(t.TempDir()), BwrapPath: "/usr/bin/bwrap", BwrapCapable: true, OverlaySupported: true, GoCache: gocache}
-	cwd := MaterializeWorkspace(t, MainCheckout)
+	cwd := materializeWorkspace(t, MainCheckout)
 	rp, err := Resolve(SandboxPolicy{Mode: ModeWorkspaceWrite, Network: new(true), ExtraWritableRoots: []string{shared}}, host, cwd)
 	if err != nil {
 		t.Fatal(err)

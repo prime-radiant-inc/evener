@@ -11,9 +11,32 @@ import (
 	"slices"
 	"testing"
 
+	"primeradiant.com/evener/gittest"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/internal/testfs"
 )
+
+func materializeWorkspace(t *testing.T, kind WorkspaceKind) string {
+	t.Helper()
+	switch kind {
+	case NonGit:
+		return identifier.ResolveClean(t.TempDir())
+	case MainCheckout:
+		root := identifier.ResolveClean(t.TempDir())
+		gittest.Run(t, root, "init", "-q")
+		return root
+	case LinkedWorktree:
+		main := identifier.ResolveClean(t.TempDir())
+		gittest.Run(t, main, "init", "-q")
+		gittest.Run(t, main, "commit", "-q", "--allow-empty", "-m", "init")
+		wt := main + "-wt"
+		gittest.Run(t, main, "worktree", "add", "-q", wt)
+		return identifier.ResolveClean(wt)
+	default:
+		t.Fatalf("materializeWorkspace: unsupported kind %v", kind)
+		return ""
+	}
+}
 
 // canonicalTempDir returns a fresh t.TempDir by its canonical path: symlinks
 // resolved, the spelling Resolve gives every root it is handed. On macOS
@@ -74,7 +97,7 @@ func devShmMainCheckout(t *testing.T) string {
 		// shadow the resolved path, so there is no /dev/shm workspace to test.
 		t.Skipf("/dev/shm resolves to %q on this host; no /dev/shm-based workspace exists", root)
 	}
-	contractGitRunnerFor(t)(t, root, "init", "-q")
+	gittest.Run(t, root, "init", "-q")
 	return root
 }
 
@@ -96,7 +119,7 @@ func tmpMainCheckout(t *testing.T) string {
 		// workspace this host can offer.
 		t.Skipf("/tmp resolves to %q on this host; no /tmp-based workspace exists", root)
 	}
-	contractGitRunnerFor(t)(t, root, "init", "-q")
+	gittest.Run(t, root, "init", "-q")
 	return root
 }
 
@@ -112,7 +135,7 @@ func resolveFixture(t *testing.T, mode Mode, netOn bool) (ResolvedPolicy, string
 	if err := os.WriteFile(filepath.Join(home, ".git-credentials"), []byte("x"), 0o600); err != nil {
 		t.Fatalf("write .git-credentials: %v", err)
 	}
-	cwd := MaterializeWorkspace(t, MainCheckout)
+	cwd := materializeWorkspace(t, MainCheckout)
 	net := netOn
 	rp, err := Resolve(SandboxPolicy{Mode: mode, Network: &net}, bwrapFacts(home), cwd)
 	if err != nil {

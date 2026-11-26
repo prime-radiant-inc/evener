@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/sandbox"
+	"primeradiant.com/evener/agent/sandbox/sandboxtest"
 )
 
 // sbxUnconfirmedBwrapFacts is a Linux host whose bwrap user-namespace check has
@@ -69,7 +70,7 @@ func TestASandboxedParentNeverDegradesItsDelegatesAfterARecheckAnswersNo(t *test
 // with its box enforced but unconfirmed, instead of failing the resume.
 func TestRestoreOnAnUnconfirmedHostResumesWithTheSandboxPending(t *testing.T) {
 	t.Parallel()
-	env, err := restoreWithSandbox(t, "workspace-write", sandbox.FakeProber{Facts: sbxUnconfirmedBwrapFacts(t.TempDir())})
+	env, err := restoreWithSandbox(t, "workspace-write", sandboxtest.FakeProber{Facts: sbxUnconfirmedBwrapFacts(t.TempDir())})
 	if err != nil {
 		t.Fatalf("an unanswered host check must not fail the resume: %v", err)
 	}

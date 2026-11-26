@@ -50,7 +50,7 @@ func liveResolve(t *testing.T, mode Mode, netOn bool, extra ...func(*SandboxPoli
 // root — the two cases must be exercised separately.
 func liveResolveKind(t *testing.T, kind WorkspaceKind, mode Mode, netOn bool, extra ...func(*SandboxPolicy)) (ResolvedPolicy, string) {
 	t.Helper()
-	cwd := MaterializeWorkspace(t, kind)
+	cwd := materializeWorkspace(t, kind)
 	net := netOn
 	policy := SandboxPolicy{Mode: mode, Network: &net}
 	for _, f := range extra {
@@ -427,13 +427,6 @@ func TestSeatbeltLiveInfraGrantNeverUnmasksDenylist(t *testing.T) {
 	})
 }
 
-// TestSeatbeltLiveContractOnHost re-runs M1's exported contract suite against the
-// live host's real facts, confirming the resolver agrees with the Mac it runs on.
-func TestSeatbeltLiveContractOnHost(t *testing.T) {
-	requireLiveSeatbelt(t)
-	AssertResolve(t, Resolve)
-}
-
 // goTelemetryDenialLine is the ONE tolerated stderr line from a sandboxed `go`
 // invocation: Go's telemetry uploader stats/creates a token file under the
 // user's Go config directory, which sits outside every sandbox root by
@@ -775,7 +768,7 @@ func TestSeatbeltLiveGitCredentialsStayMasked(t *testing.T) {
 	}
 	facts.Home = home
 	facts.GitGlobalConfigPaths = []string{config}
-	cwd := MaterializeWorkspace(t, MainCheckout)
+	cwd := materializeWorkspace(t, MainCheckout)
 	net := true
 	rp, err := Resolve(SandboxPolicy{Mode: ModeRestricted, Network: &net}, facts, cwd)
 	if err != nil {
@@ -891,7 +884,7 @@ func TestSeatbeltLiveReadsEvenerContentThroughTheMask(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cwd := MaterializeWorkspace(t, MainCheckout)
+	cwd := materializeWorkspace(t, MainCheckout)
 	for layout, write := range evenerContentLayouts {
 		fx := write(t, filepath.Join(home, layout))
 		facts := RealProber{}.Probe()

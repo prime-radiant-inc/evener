@@ -1,11 +1,13 @@
 //go:build !evenerfuzz
 
-package sandbox
+package sandboxtest
 
 import (
 	"context"
 	"os/exec"
 	"time"
+
+	"primeradiant.com/evener/gittest"
 )
 
 func requireGitHarness(t TestingT) {
@@ -21,11 +23,7 @@ func gitHarness(t TestingT, dir string, args ...string) {
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
-	cmd.Env = append(cmd.Environ(),
-		"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@e",
-		"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@e",
-		"GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null",
-	)
+	cmd.Env = gittest.Env()
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git %v in %s: %v\n%s", args, dir, err, out)
 	}

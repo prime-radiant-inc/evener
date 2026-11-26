@@ -22,7 +22,7 @@ func TestContractRealizedAgainstBwrap(t *testing.T) {
 			t.Run(name, func(t *testing.T) {
 				f := facts
 				f.Home = t.TempDir()
-				cwd := MaterializeWorkspace(t, MainCheckout)
+				cwd := materializeWorkspace(t, MainCheckout)
 
 				net := netOn
 				rp, err := Resolve(SandboxPolicy{Mode: mode, Network: &net}, f, cwd)

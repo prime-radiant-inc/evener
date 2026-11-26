@@ -1,6 +1,6 @@
 //go:build evenerfuzz
 
-package sandbox
+package sandboxtest
 
 import (
 	"os"
