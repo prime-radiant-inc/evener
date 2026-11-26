@@ -3531,58 +3531,6 @@ func TestPreflightIfAttachedReturnsOnlyALiveChannel(t *testing.T) {
 	}
 }
 
-// HandshakeIfAttached is a test-only/convenience attached-only accessor: it
-// offers the InitializeResponse captured at attach for a live channel and
-// never dials.
-func TestHandshakeIfAttachedReturnsOnlyALiveChannel(t *testing.T) {
-	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
-	fr := &fakeRunner{runFn: cannedRun(nil), startFn: goodStartFn(t)}
-	m := newTestManager(t, testRegistry(t, host), fr, Options{
-		BackoffBase: time.Hour,
-		BackoffMax:  time.Hour,
-		jitter:      func(d time.Duration) time.Duration { return d },
-	})
-
-	if hs, ok := m.HandshakeIfAttached("alpha"); ok {
-		t.Fatalf("HandshakeIfAttached(unattached) = %+v, true; want zero, false", hs)
-	}
-	if hs, ok := m.HandshakeIfAttached("ghost"); ok {
-		t.Fatalf("HandshakeIfAttached(unknown host) = %+v, true; want zero, false", hs)
-	}
-	if runs, starts := len(fr.recordedRuns()), len(fr.recordedStarts()); runs != 0 || starts != 0 {
-		t.Fatalf("HandshakeIfAttached attached a dormant host: %d runs, %d starts", runs, starts)
-	}
-
-	ch, err := m.Ensure(context.Background(), "alpha")
-	if err != nil {
-		t.Fatalf("Ensure: %v", err)
-	}
-	hs, ok := m.HandshakeIfAttached("alpha")
-	if !ok {
-		t.Fatalf("HandshakeIfAttached(attached) = %+v, false; want the captured handshake, true", hs)
-	}
-	if hs.ProtocolVersion != appwire.ProtocolVersion {
-		t.Fatalf("HandshakeIfAttached ProtocolVersion = %q, want %q", hs.ProtocolVersion, appwire.ProtocolVersion)
-	}
-	if !reflect.DeepEqual(hs, ch.Handshake()) {
-		t.Fatalf("HandshakeIfAttached = %+v; want the installed channel's %+v", hs, ch.Handshake())
-	}
-	if hs, ok := m.HandshakeIfAttached("  alpha  "); !ok || !reflect.DeepEqual(hs, ch.Handshake()) {
-		t.Fatalf("HandshakeIfAttached did not normalize the name: %+v, %v", hs, ok)
-	}
-
-	ch.markLost()
-	if hs, ok := m.HandshakeIfAttached("alpha"); ok {
-		t.Fatalf("HandshakeIfAttached(a dropped channel) = %+v, true; want zero, false", hs)
-	}
-	if err := m.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
-	}
-	if hs, ok := m.HandshakeIfAttached("alpha"); ok {
-		t.Fatalf("HandshakeIfAttached(a closed manager) = %+v, true; want zero, false", hs)
-	}
-}
-
 // ChannelIfAttached is the atomic primitive the generation-guarded facts seams
 // read: one lookup yields one installed channel, so a caller can take the
 // client, preflight, and handshake from the same connection generation. It must
@@ -3620,14 +3568,20 @@ func TestChannelIfAttachedReturnsOnlyALiveChannel(t *testing.T) {
 	if got.Client() != ch.Client() {
 		t.Fatal("ChannelIfAttached returned a channel whose client is not the installed one")
 	}
+	if got.Handshake().ProtocolVersion != appwire.ProtocolVersion {
+		t.Fatalf("ChannelIfAttached Handshake().ProtocolVersion = %q, want %q", got.Handshake().ProtocolVersion, appwire.ProtocolVersion)
+	}
+	if !reflect.DeepEqual(got.Handshake(), ch.Handshake()) {
+		t.Fatalf("ChannelIfAttached Handshake() = %+v; want the installed channel's %+v", got.Handshake(), ch.Handshake())
+	}
+	if padded, ok := m.ChannelIfAttached("  alpha  "); !ok || padded != ch || !reflect.DeepEqual(padded.Handshake(), ch.Handshake()) {
+		t.Fatalf("ChannelIfAttached did not normalize the name: %v, %v", padded, ok)
+	}
 	if client, ok := m.ClientIfAttached("alpha"); !ok || client != got.Client() {
 		t.Fatalf("ClientIfAttached disagrees with ChannelIfAttached: %v, %v", client, ok)
 	}
 	if pf, ok := m.PreflightIfAttached("alpha"); !ok || !reflect.DeepEqual(pf, got.Preflight()) {
 		t.Fatalf("PreflightIfAttached disagrees with ChannelIfAttached: %+v, %v", pf, ok)
-	}
-	if hs, ok := m.HandshakeIfAttached("alpha"); !ok || !reflect.DeepEqual(hs, got.Handshake()) {
-		t.Fatalf("HandshakeIfAttached disagrees with ChannelIfAttached: %+v, %v", hs, ok)
 	}
 
 	ch.markLost()

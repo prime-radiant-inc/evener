@@ -17,7 +17,7 @@ import (
 // the registry, the host's channel goes with the generation it was built from,
 // and the announced Attached is paired with exactly one Detached.
 func TestUpdateHostDropsTheChannel(t *testing.T) {
-	m, events := detachHostFixture(t)
+	m, events := attachedHostFixture(t)
 	if !m.Attached("alpha") {
 		t.Fatal("Attached before UpdateHost = false, want true")
 	}
@@ -48,7 +48,7 @@ func TestUpdateHostDropsTheChannel(t *testing.T) {
 		t.Fatal("ClientIfAttached after UpdateHost = true, want false")
 	}
 	waitForEvent(t, events, EventDetached)
-	if rest := detachHostKinds(events); detachHostCount(rest, EventDetached) != 0 {
+	if rest := drainEventKinds(events); countEventKind(rest, EventDetached) != 0 {
 		t.Fatalf("extra Detached events after UpdateHost: %v", rest)
 	}
 }
@@ -138,7 +138,7 @@ func TestUpdateHostUnknownNameIsUnknownHost(t *testing.T) {
 	if !ok || !after.Equal(before) || after.Generation != before.Generation {
 		t.Fatalf("registry after the refusal = %+v, want alpha untouched", after)
 	}
-	if kinds := detachHostKinds(events); len(kinds) != 0 {
+	if kinds := drainEventKinds(events); len(kinds) != 0 {
 		t.Fatalf("a refused update emitted %v, want nothing", kinds)
 	}
 }
@@ -193,7 +193,7 @@ func TestUpdateHostRacesEnsureAtGate(t *testing.T) {
 	if m.Attached("alpha") {
 		t.Fatal("Attached after the refused attach = true, want false")
 	}
-	if kinds := detachHostKinds(events); detachHostCount(kinds, EventAttached) != 0 {
+	if kinds := drainEventKinds(events); countEventKind(kinds, EventAttached) != 0 {
 		t.Fatalf("the refused attach announced %v, want no Attached", kinds)
 	}
 }
@@ -203,7 +203,7 @@ func TestUpdateHostRacesEnsureAtGate(t *testing.T) {
 // starts clean rather than inheriting the old one's deploy marker, resolved
 // executable, or pending restart.
 func TestUpdateHostClearsPerHostCaches(t *testing.T) {
-	m, events := detachHostFixture(t)
+	m, events := attachedHostFixture(t)
 	m.setResolvedTarget("alpha", "/home/dev/.local/bin/evener")
 	m.setPendingRestart("alpha", "evener hub --addr 127.0.0.1:9180", "dev", "", hubIdentity{}, nil)
 	if err := m.UpdateHost(hostreg.Host{Name: "alpha", SSH: "alpha2.example"}, nil); err != nil {
@@ -421,7 +421,7 @@ func TestUpdateHostAppearedEntryIsNotTornDownUnderTheEmptyName(t *testing.T) {
 // this call retired the still-live channel first and only then had
 // Registry.Update refuse, disconnecting a host it reported it had not touched.
 func TestUpdateHostDroppedLiveNameRefusedWithChannelAttached(t *testing.T) {
-	m, events := detachHostFixture(t)
+	m, events := attachedHostFixture(t)
 	if !m.Attached("alpha") {
 		t.Fatal("the fixture host is not attached")
 	}
@@ -441,7 +441,7 @@ func TestUpdateHostDroppedLiveNameRefusedWithChannelAttached(t *testing.T) {
 	// the direct drop removed — from the registry, not the manager. Attached is
 	// the manager-map lookup that proves the channel itself survived, which is
 	// exactly the live state this refusal must leave untouched.
-	if kinds := detachHostKinds(events); detachHostCount(kinds, EventDetached) != 0 {
+	if kinds := drainEventKinds(events); countEventKind(kinds, EventDetached) != 0 {
 		t.Fatalf("the refused update emitted %v, want no Detached", kinds)
 	}
 }
@@ -526,7 +526,7 @@ func TestUpdateHostUnmapsTheChannelBeforeTheSwapIsVisible(t *testing.T) {
 // have torn an attached host's channel down and then answered an error, leaving
 // the caller told nothing changed while its live channel was gone.
 func TestUpdateHostRefusedEntryLeavesTheLiveChannelAttached(t *testing.T) {
-	m, events := detachHostFixture(t)
+	m, events := attachedHostFixture(t)
 	if !m.Attached("alpha") {
 		t.Fatal("Attached before the refused update = false, want true")
 	}
@@ -550,7 +550,7 @@ func TestUpdateHostRefusedEntryLeavesTheLiveChannelAttached(t *testing.T) {
 	if !ok || !after.Equal(before) || after.Generation != before.Generation {
 		t.Fatalf("registry after the refused update = %+v, want the unedited entry", after)
 	}
-	if kinds := detachHostKinds(events); detachHostCount(kinds, EventDetached) != 0 {
+	if kinds := drainEventKinds(events); countEventKind(kinds, EventDetached) != 0 {
 		t.Fatalf("the refused update emitted %v, want no Detached", kinds)
 	}
 }
@@ -566,7 +566,7 @@ func TestUpdateHostRefusedEntryLeavesTheLiveChannelAttached(t *testing.T) {
 // refuses here before anything live moves and "an error means nothing live
 // changed" holds for raw entries too.
 func TestUpdateHostNormalizesBeforeThePreSwapCheck(t *testing.T) {
-	m, events := detachHostFixture(t)
+	m, events := attachedHostFixture(t)
 	if !m.Attached("alpha") {
 		t.Fatal("Attached before the refused update = false, want true")
 	}
@@ -592,7 +592,7 @@ func TestUpdateHostNormalizesBeforeThePreSwapCheck(t *testing.T) {
 	if !ok || !after.Equal(before) || after.Generation != before.Generation {
 		t.Fatalf("registry after the refused update = %+v, want the unedited entry", after)
 	}
-	if kinds := detachHostKinds(events); detachHostCount(kinds, EventDetached) != 0 {
+	if kinds := drainEventKinds(events); countEventKind(kinds, EventDetached) != 0 {
 		t.Fatalf("the refused update emitted %v, want no Detached", kinds)
 	}
 }
