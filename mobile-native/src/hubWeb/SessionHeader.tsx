@@ -9,11 +9,13 @@ import type { Routes } from "../screens";
 
 export interface SessionHeaderState {
 	id: string;
+	sessionRef?: string;
 	title: string;
 	leading: "back" | "sessions" | null;
 	needsYou: number;
 	collapsed: boolean;
 	height: number;
+	split?: boolean;
 }
 
 export function isSessionHeader(value: unknown): value is SessionHeaderState {
@@ -22,6 +24,7 @@ export function isSessionHeader(value: unknown): value is SessionHeaderState {
 	return (
 		typeof header.id === "string" &&
 		header.id.length > 0 &&
+		(header.sessionRef === undefined || typeof header.sessionRef === "string") &&
 		typeof header.title === "string" &&
 		(header.leading === "back" || header.leading === "sessions" || header.leading === null) &&
 		typeof header.needsYou === "number" &&
@@ -30,7 +33,8 @@ export function isSessionHeader(value: unknown): value is SessionHeaderState {
 		typeof header.collapsed === "boolean" &&
 		typeof header.height === "number" &&
 		Number.isFinite(header.height) &&
-		header.height > 0
+		header.height > 0 &&
+		(header.split === undefined || typeof header.split === "boolean")
 	);
 }
 
@@ -55,7 +59,18 @@ function headerControl(action: HeaderAction, needsYou: number) {
 	return { symbol, label, count, spoken };
 }
 
-export function EdgeSessionToolbar({ header: { id, leading, needsYou }, palette, onAction }: HeaderProps) {
+export function EdgeSessionToolbar({
+	header,
+	palette,
+	onAction,
+}: {
+	header: SessionHeaderState | null;
+	palette: Palette;
+	onAction(id: string | null, action: HeaderAction): void;
+}) {
+	const id = header?.id ?? null;
+	const leading = header?.leading;
+	const needsYou = header?.needsYou ?? 0;
 	const navigation = useNavigation<NativeStackNavigationProp<Routes, "Workspace">>();
 	useLayoutEffect(() => {
 		function button(action: HeaderAction): NativeStackHeaderItemButton {
@@ -80,8 +95,8 @@ export function EdgeSessionToolbar({ header: { id, leading, needsYou }, palette,
 			unstable_headerLeftItems: () => (leading ? [button(leading)] : []),
 			unstable_headerRightItems: () => [button("find"), button("overview")],
 		});
-		return () => navigation.setOptions({ headerShown: false });
 	}, [id, leading, needsYou, palette.inkHi, onAction, navigation]);
+	useLayoutEffect(() => () => navigation.setOptions({ headerShown: false }), [navigation]);
 	return null;
 }
 

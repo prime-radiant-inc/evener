@@ -9,9 +9,10 @@ function containsLayer(node: Node): boolean {
   return node instanceof Element && (node.matches(TOOLBAR_SURFACES) || node.querySelector(TOOLBAR_SURFACES) !== null);
 }
 
-type Props = Pick<IPhoneHeader, "id" | "title" | "leading" | "collapsed" | "needsYou"> & {
+type Props = Pick<IPhoneHeader, "id" | "sessionRef" | "title" | "leading" | "collapsed" | "needsYou"> & {
   bar: RefObject<HTMLDivElement | null>;
   edgeToolbar: boolean;
+  split: boolean;
   onFindChange(open: boolean): void;
   onAction(action: IPhoneHeaderAction): void;
 };
@@ -21,11 +22,13 @@ type Props = Pick<IPhoneHeader, "id" | "title" | "leading" | "collapsed" | "need
 export function IPhoneSessionHeader({
   bar,
   id,
+  sessionRef,
   title,
   leading,
   needsYou,
   collapsed,
   edgeToolbar,
+  split,
   onAction,
   onFindChange,
 }: Props) {
@@ -61,14 +64,14 @@ export function IPhoneSessionHeader({
   const shown = height > 0;
   useLayoutEffect(() => {
     const element = bar.current;
-    if (!element || !shown) return;
+    if (!element || !shown || (split && !edgeToolbar)) return;
     element.toggleAttribute("inert", !edgeToolbar);
     element.toggleAttribute("data-system-edge-actions", edgeToolbar);
     return () => {
       element.removeAttribute("inert");
       element.removeAttribute("data-system-edge-actions");
     };
-  }, [bar, shown, edgeToolbar]);
+  }, [bar, shown, edgeToolbar, split]);
   useLayoutEffect(() => {
     if (!shown) return;
     window.addEventListener("message", receive);
@@ -78,7 +81,11 @@ export function IPhoneSessionHeader({
     };
   }, [shown]);
   useLayoutEffect(() => {
-    if (height) tellIPhoneHost({ type: "sessionHeader", header: { id, title, leading, needsYou, collapsed, height } });
-  }, [id, title, leading, needsYou, collapsed, height]);
+    if (height)
+      tellIPhoneHost({
+        type: "sessionHeader",
+        header: { id, sessionRef, title, leading, needsYou, collapsed, height, split },
+      });
+  }, [id, sessionRef, title, leading, needsYou, collapsed, height, split]);
   return null;
 }

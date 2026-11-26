@@ -111,6 +111,7 @@ import {
   withArchivedLists,
 } from "./railResources";
 import { isTopLevelSession } from "./sessionKind";
+import { useIPhoneCreateButton } from "./useIPhoneCreateButton";
 import { usePinSectionDialogs } from "./usePinSectionDialogs";
 import { useProjectRootLoads } from "./useProjectRootLoads";
 import { useRailReveal } from "./useRailReveal";
@@ -565,6 +566,7 @@ function NavigationRail({
   const [pending, setPending] = useState<readonly PendingOp[]>([]);
   const bodyRef = useRef<HTMLDivElement>(null);
   const railRef = useRef<HTMLDivElement>(null);
+  const createButton = useIPhoneCreateButton(railRef);
   const overflowPagesInFlight = useRef(new Set<string>());
   const state = { ...navigationStore.getState(), resources: resourcesState, expanded };
   const archivedLists = useArchivedLists();
@@ -1327,6 +1329,10 @@ function NavigationRail({
               variant="primary"
               size="md"
               data-testid="rail-new-session"
+              ref={createButton.ref}
+              aria-hidden={createButton.shown || undefined}
+              tabIndex={createButton.shown ? -1 : undefined}
+              style={createButton.shown ? { opacity: 0 } : undefined}
               label="New session"
               icon={<PlusIcon />}
               onClick={() => navigate("/new")}

@@ -1,5 +1,7 @@
 .singleScrollPanel {
   overflow: hidden;
+  /* The drawer is portaled outside the shell's keyboard padding. */
+  max-height: calc(100dvh - var(--keyboard-inset, 0px));
 }
 
 /* The rail fills the drawer flush: the sheet body's own inset made the rail
