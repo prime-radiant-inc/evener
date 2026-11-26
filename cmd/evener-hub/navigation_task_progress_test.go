@@ -15,7 +15,7 @@ import (
 // ID, after proving the section passes the hub's own schema.
 func liveNavigationRows(t *testing.T, rows []hubcore.TreeNode) map[string]hubapi.NavigationSessionSummary {
 	t.Helper()
-	projection, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "generation", Revision: 1, Tree: hubcore.Tree{Live: rows}})
+	projection, err := buildNavigationProjection(t.Context(), navigationBuildInputs{GenerationID: "generation", Revision: 1, Tree: hubcore.Tree{Live: rows}})
 	if err != nil {
 		t.Fatal(err)
 	}

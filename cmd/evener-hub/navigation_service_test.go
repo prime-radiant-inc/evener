@@ -56,8 +56,7 @@ func (s *testNavigationSource) Capture(ctx context.Context, generation string, n
 		default:
 		}
 	}
-	inputs := cloneNavigationInputs(s.inputs)
-	inputs.Tree = s.inputs.Tree.Snapshot()
+	inputs, cloneErr := cloneNavigationInputs(ctx, s.inputs)
 	inputs.GenerationID = generation
 	inputs.Revision = 0
 	next := s.nextBoundary
@@ -71,6 +70,9 @@ func (s *testNavigationSource) Capture(ctx context.Context, generation string, n
 			return navigationSourceSnapshot{}, ctx.Err()
 		case <-release:
 		}
+	}
+	if cloneErr != nil {
+		return navigationSourceSnapshot{}, cloneErr
 	}
 	if err != nil {
 		return navigationSourceSnapshot{}, err
@@ -2456,14 +2458,14 @@ func TestNavigationProjectionAndLogicalFingerprintTraversalCheckContextInternall
 	inputs.Tree.Projects[0].Current = rows
 	inputs.GenerationID = "0123456789abcdef0123456789abcdef"
 	projectionCtx := &cancelAfterChecksContext{Context: context.Background(), limit: 25}
-	if _, err := buildNavigationProjectionContext(projectionCtx, inputs); !errors.Is(err, context.Canceled) {
+	if _, err := buildNavigationProjection(projectionCtx, inputs); !errors.Is(err, context.Canceled) {
 		t.Fatalf("projection error = %v, want internal cancellation", err)
 	}
 	if got := projectionCtx.checks.Load(); got > projectionCtx.limit+2 {
 		t.Fatalf("projection continued after cancellation: %d checks", got)
 	}
 
-	projection, err := buildNavigationProjection(inputs)
+	projection, err := buildNavigationProjection(t.Context(), inputs)
 	if err != nil {
 		t.Fatal(err)
 	}

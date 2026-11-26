@@ -381,7 +381,7 @@ func TestNavigationCrashRecordCannotEnableRenameForIncompatibleReplacement(t *te
 	)
 	tree := hubcore.Tree{Live: []hubcore.TreeNode{{ID: workspaceID, State: appwire.ThreadStatusRestartRequired}}}
 	inputs := navigationBuildInputsFromTreeSnapshot("generation", 1, tree, nil, hubapi.AttentionSummary{}, roster.List(), nil, nil, nil, nil)
-	projection, err := buildNavigationProjection(inputs)
+	projection, err := buildNavigationProjection(t.Context(), inputs)
 	if err != nil {
 		t.Fatal(err)
 	}

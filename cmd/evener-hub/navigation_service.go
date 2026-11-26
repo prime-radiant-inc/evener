@@ -39,7 +39,7 @@ const (
 
 // buildNavigationServiceProjectionContext is a narrow test seam proving
 // resource misses reuse the retained core projection rather than rebuilding it.
-var buildNavigationServiceProjectionContext = buildNavigationProjectionContext
+var buildNavigationServiceProjectionContext = buildNavigationProjection
 
 // These narrow seams make cancellation at the publication linearization point
 // and during a large string fingerprint deterministic in tests. Production

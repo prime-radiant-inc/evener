@@ -29,7 +29,7 @@ func TestNavigationRemoteRowsCarryTheirLastMessage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Capture: %v", err)
 	}
-	projection, err := buildNavigationProjection(captured.Inputs)
+	projection, err := buildNavigationProjection(t.Context(), captured.Inputs)
 	if err != nil {
 		t.Fatalf("buildNavigationProjection: %v", err)
 	}

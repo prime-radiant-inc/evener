@@ -30,7 +30,7 @@ func archivedRows(prefix string, n int, updated func(i int) time.Time, title fun
 
 func archivedProjection(t *testing.T, projects ...hubcore.TreeProject) navigationProjection {
 	t.Helper()
-	projection, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "generation", Revision: 1, Tree: hubcore.Tree{Projects: projects}})
+	projection, err := buildNavigationProjection(t.Context(), navigationBuildInputs{GenerationID: "generation", Revision: 1, Tree: hubcore.Tree{Projects: projects}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -305,15 +305,15 @@ func TestNavigationServesNoArchivedRows(t *testing.T) {
 	}
 	p := build(archived)
 
-	resource, ok := p.Project("project")
+	resource, ok := p.Project("", "project")
 	if !ok || len(resource.Current.Sessions) != 1 || len(resource.Archived.Sessions) != 0 || resource.Archived.Remaining != 0 {
 		t.Fatalf("project resource = current %d, archived %d remaining %d", len(resource.Current.Sessions), len(resource.Archived.Sessions), resource.Archived.Remaining)
 	}
-	onlyArchived, _ := p.Project("only-archived")
+	onlyArchived, _ := p.Project("", "only-archived")
 	if err := validateNavigationPageProgress(navigationResourceProject, onlyArchived); err != nil {
 		t.Fatalf("a project whose only rows are archived fails page progress: %v", err)
 	}
-	page, err := p.ProjectPage("project", "archived", 0, 50)
+	page, err := p.ProjectPage("", "project", "archived", 0, 50)
 	if err != nil || len(page.Sessions) != 0 || page.Remaining != 0 {
 		t.Fatalf("archived page = %d rows, remaining %d, err %v", len(page.Sessions), page.Remaining, err)
 	}
@@ -497,7 +497,7 @@ func TestArchivedForkDepthCapAccountsForOmittedOriginals(t *testing.T) {
 		tail = &tail.Children[0]
 	}
 	tail.Children = append(tail.Children, hubcore.TreeNode{ID: "delegate", Kind: "subagent", Children: []hubcore.TreeNode{{ID: "delegate-original", Kind: "fork"}}})
-	p, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "g", Revision: 1, Tree: tree})
+	p, err := buildNavigationProjection(t.Context(), navigationBuildInputs{GenerationID: "g", Revision: 1, Tree: tree})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -851,11 +851,11 @@ func TestAKeyInSeveralCatalogsResolvesToOneForEveryRead(t *testing.T) {
 		if !ok {
 			t.Fatalf("%s has no location", row.ID)
 		}
-		project, ok := p.Project(location.ProjectKey)
+		project, ok := p.Project("", location.ProjectKey)
 		if !ok || !slices.ContainsFunc(project.Recent.Sessions, func(s hubapi.NavigationSessionSummary) bool { return s.SessionID == row.ID }) {
 			t.Fatalf("%s is located in project %q, whose read does not hold it: %+v", row.ID, location.ProjectKey, project.Recent.Sessions)
 		}
-		page, err := p.ProjectPage(location.ProjectKey, location.Tier, 0, 10)
+		page, err := p.ProjectPage("", location.ProjectKey, location.Tier, 0, 10)
 		if err != nil || !slices.ContainsFunc(page.Sessions, func(s hubapi.NavigationSessionSummary) bool { return s.SessionID == row.ID }) {
 			t.Fatalf("%s is located in %s/%s, whose page does not hold it: %+v (%v)", row.ID, location.ProjectKey, location.Tier, page.Sessions, err)
 		}
@@ -891,7 +891,7 @@ func TestArchivedListRevisionMovesWithARowsDecoration(t *testing.T) {
 		t.Helper()
 		inputs.GenerationID, inputs.Revision = "generation", 1
 		inputs.Tree = hubcore.Tree{Projects: []hubcore.TreeProject{project}}
-		p, err := buildNavigationProjection(inputs)
+		p, err := buildNavigationProjection(t.Context(), inputs)
 		if err != nil {
 			t.Fatal(err)
 		}

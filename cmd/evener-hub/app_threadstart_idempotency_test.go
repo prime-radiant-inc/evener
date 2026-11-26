@@ -1909,7 +1909,7 @@ func TestThreadStartIdempotencyManifestSourcesCapability(t *testing.T) {
 
 	// Projection preserves ThreadStartIdempotency across clone + Manifest().
 	inputs := navigationBuildInputsFromTreeSnapshot("generation", 1, hubcore.Tree{}, sources, hubapi.AttentionSummary{}, nil, nil, nil, nil, nil)
-	projection, err := buildNavigationProjection(inputs)
+	projection, err := buildNavigationProjection(t.Context(), inputs)
 	if err != nil {
 		t.Fatalf("buildNavigationProjection: %v", err)
 	}
