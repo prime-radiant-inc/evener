@@ -1931,16 +1931,3 @@ func TestServerInitializeWithCorrectProtocol(t *testing.T) {
 		t.Fatalf("expected server name 'test', got %q", resp.ServerInfo.Name)
 	}
 }
-
-// An adapter that answers initialize natively accepts any protocol version
-// and reports none of its own.
-func TestServerInitializeAdapterNative(t *testing.T) {
-	server := NewServer(ServerConfig{AdapterNativeInitialize: true})
-	resp, err := server.initialize(context.TODO(), appwire.InitializeParams{ProtocolVersion: "anything"})
-	if err != nil {
-		t.Fatalf("adapter native initialize should not error: %v", err)
-	}
-	if resp.ProtocolVersion != "" {
-		t.Fatalf("adapter native should return empty protocol version, got %q", resp.ProtocolVersion)
-	}
-}

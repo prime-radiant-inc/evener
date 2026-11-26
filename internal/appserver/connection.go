@@ -295,10 +295,8 @@ func (c *Connection) HandleMessage(ctx context.Context, msg appwire.Message) app
 	if req.Method == appwire.MethodRuntimeSessionBind {
 		return c.bindSessionTools(ctx, req)
 	}
-	if !c.server.cfg.AdapterNativeInitialize {
-		if err := appwire.ValidateMutationParams(req.Method, req.Params); err != nil {
-			return appwire.ErrorMessage(req.ID, appwire.InvalidParams(err.Error()))
-		}
+	if err := appwire.ValidateMutationParams(req.Method, req.Params); err != nil {
+		return appwire.ErrorMessage(req.ID, appwire.InvalidParams(err.Error()))
 	}
 	handlerCtx := context.WithValue(ctx, connectionContextKey{}, c)
 	handlerCtx = context.WithValue(handlerCtx, requestIDContextKey{}, requestIDKey(req.ID))
