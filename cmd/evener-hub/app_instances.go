@@ -276,8 +276,7 @@ func (c *hubInstancesController) List() appwire.InstanceListResponse {
 // listLocked builds the listing from state the caller has ALREADY locked, using
 // a fingerprint key resolved before that lock. A mutation that captured its
 // answer under its own write lock uses this so the answer is the state that
-// mutation produced, not a second read a concurrent edit can slip into (see
-// Edit).
+// mutation produced, not a second read a concurrent write can slip into.
 func (c *hubInstancesController) listLocked(key []byte, keyErr error) appwire.InstanceListResponse {
 	entries := make([]appwire.InstanceEntry, 0)
 	providers := make([]appwire.ProviderDescriptor, 0)
@@ -1095,9 +1094,13 @@ func (c *hubInstancesController) refuseWhenBroken() error {
 	return nil
 }
 
-// Create authors a new instance entry. APIKeyEnv is a variable name and
-// CredentialHeader must reference a $VAR: a literal secret never crosses this
-// boundary, and none is ever written to the file (spec §11.2).
+// Create authors a new instance entry and returns the listing captured while
+// its write locks are still held, so the answer describes the state this create
+// authored rather than a later List() a concurrent edit can slip into.
+//
+// APIKeyEnv is a variable name and CredentialHeader must reference a $VAR: a
+// literal secret never crosses this boundary, and none is ever written to the
+// file (spec §11.2).
 //
 // Every refusal that blames the fields the caller sent comes back as a wire
 // error naming its class — InvalidParams for a field that is malformed or
@@ -1106,74 +1109,57 @@ func (c *hubInstancesController) refuseWhenBroken() error {
 // shapes. A refusal about the hub's own state (the registry not loaded, a
 // read or write failure) stays a plain error: that is not the caller's to
 // fix.
-func (c *hubInstancesController) Create(params appwire.InstanceCreateParams) (err error) {
-	return c.create(params, nil)
-}
-
-// create applies a create. When out is non-nil it receives the listing captured
-// while this create's write lock is still held, so the answer describes the
-// state this create authored rather than a later List() a concurrent edit can
-// slip into. The RPC handler uses it that way for its response, exactly as
-// edit's captured answer does: a create's response is the only proof a client
-// has of which endpoint its credential belongs to.
-func (c *hubInstancesController) create(params appwire.InstanceCreateParams, out *appwire.InstanceListResponse) (err error) {
+func (c *hubInstancesController) Create(params appwire.InstanceCreateParams) (_ appwire.InstanceListResponse, err error) {
 	if err := c.refuseWhenBroken(); err != nil {
-		return err
+		return appwire.InstanceListResponse{}, err
 	}
 	if err := c.requireAuth(); err != nil {
-		return err
+		return appwire.InstanceListResponse{}, err
 	}
 	name := strings.TrimSpace(params.Name)
 	if !registry.ValidInstanceName(name) {
-		return appwire.InvalidParams(fmt.Sprintf("invalid instance name %q (lowercase, no slash)", params.Name))
+		return appwire.InstanceListResponse{}, appwire.InvalidParams(fmt.Sprintf("invalid instance name %q (lowercase, no slash)", params.Name))
 	}
 	base := strings.TrimSpace(params.Base)
 	baseProvider, ok := c.reg.Get().Provider(base)
 	if !ok {
-		return appwire.InvalidParams(fmt.Sprintf("unknown base provider %q", params.Base))
+		return appwire.InstanceListResponse{}, appwire.InvalidParams(fmt.Sprintf("unknown base provider %q", params.Base))
 	}
 	codexClientVersion := strings.TrimSpace(params.CodexClientVersion)
 	if codexClientVersion != "" && baseProvider.Transport.Auth != registry.AuthOAuthOpenAICodex {
-		return appwire.InvalidParams("codexClientVersion requires a Codex provider")
+		return appwire.InstanceListResponse{}, appwire.InvalidParams("codexClientVersion requires a Codex provider")
 	}
 	credentialHeaders, err := credentialHeaderFrom(params.CredentialHeader)
 	if err != nil {
-		return err
+		return appwire.InstanceListResponse{}, err
 	}
 	apiKeyEnv := strings.TrimSpace(params.APIKeyEnv)
 	if apiKeyEnv != "" {
 		if err := registry.CheckAPIKeyEnvName(apiKeyEnv); err != nil {
-			return appwire.InvalidParams(err.Error())
+			return appwire.InstanceListResponse{}, appwire.InvalidParams(err.Error())
 		}
 	}
 	if err := validVarNames(params.Vars); err != nil {
-		return invalidParamsFor(err)
+		return appwire.InstanceListResponse{}, invalidParamsFor(err)
 	}
 	// Resolved before the locks, as Edit resolves its own: resolving can repair
 	// the key file (an inter-process lock and a write), so doing it while c.mu
 	// and credMu are held would hold every listing and credential op behind it.
-	// Only a capture needs it: a plain Create is a write that installs no
-	// listing, and the controller's other callers must keep the pre-existing
-	// property that creating an entry does not touch the fingerprint key.
-	var key []byte
-	var keyErr error
-	if out != nil {
-		key, keyErr = resolveEndpointFingerprintKey(c.authStateDir())
-	}
+	key, keyErr := resolveEndpointFingerprintKey(c.authStateDir())
 	defer c.lockMutation(params.OriginClientId, &err)()
 	// before is an independent parse from l below — a fresh read sharing no
 	// maps with it — so a create whose config parses but cannot load (#711) can
 	// be written back exactly as the file was, the way Edit restores its own.
 	before, _, err := c.read()
 	if err != nil {
-		return err
+		return appwire.InstanceListResponse{}, err
 	}
 	l, _, err := c.read()
 	if err != nil {
-		return err
+		return appwire.InstanceListResponse{}, err
 	}
 	if _, exists := l.Providers[name]; exists {
-		return appwire.Conflict(fmt.Sprintf("instance %q already exists", name))
+		return appwire.InstanceListResponse{}, appwire.Conflict(fmt.Sprintf("instance %q already exists", name))
 	}
 	p := registry.Provider{
 		ID:       name,
@@ -1192,7 +1178,7 @@ func (c *hubInstancesController) create(params appwire.InstanceCreateParams, out
 	p.CredentialHeaders = credentialHeaders
 	l.Providers[name] = p
 	if err := c.writeLoadable(l); err != nil {
-		return err
+		return appwire.InstanceListResponse{}, err
 	}
 	if err := c.reloadAndCheckProvider(name); err != nil {
 		// writeLoadable's dry parse only checks the layer against the registry
@@ -1207,22 +1193,19 @@ func (c *hubInstancesController) create(params appwire.InstanceCreateParams, out
 			// stands and every other client's list is stale: the write primitive
 			// already marked the applied state, so the marker rides the plain
 			// error and the commit port broadcasts it.
-			return fmt.Errorf("%w (and %w: %w)", err, errConfigRestoreFailed, restoreErr)
+			return appwire.InstanceListResponse{}, fmt.Errorf("%w (and %w: %w)", err, errConfigRestoreFailed, restoreErr)
 		}
 		// The rollback put the previous file back, so the write this call made is
 		// undone: nothing for other clients to hear about.
 		c.applied.resetApplied()
 		_ = c.reg.Reload() // best-effort: put the last-good registry view back
-		return invalidParamsFor(fmt.Errorf("instance %q %w: %w", name, errInstanceUnloadable, err))
+		return appwire.InstanceListResponse{}, invalidParamsFor(fmt.Errorf("instance %q %w: %w", name, errInstanceUnloadable, err))
 	}
-	if out != nil {
-		// Still under this create's write locks, so no concurrent edit can land
-		// between the write and this read. The row (and its immutable endpoint
-		// fingerprint) is the one this create authored, not a destination that
-		// replaced it before the handler answered.
-		*out = c.listLocked(key, keyErr)
-	}
-	return nil
+	// Still under this create's write locks, so no concurrent edit can land
+	// between the write and this read. The row (and its immutable endpoint
+	// fingerprint) is the one this create authored, not a destination that
+	// replaced it before the handler answered.
+	return c.listLocked(key, keyErr), nil
 }
 
 // Edit applies the fields the form set, leaving every other authored key
@@ -1249,24 +1232,20 @@ func (c *hubInstancesController) create(params appwire.InstanceCreateParams, out
 // that would leave the instance unable to load — come back as
 // appwire.InvalidParams; the hub's own faults (the registry not loaded, a
 // read, write, or restore failure) stay plain errors.
-func (c *hubInstancesController) Edit(params appwire.InstanceEditParams) error {
-	return c.edit(params, nil)
-}
-
-// edit applies an edit. When out is non-nil it receives the listing captured
-// while this edit's write lock is still held, so the answer describes the state
-// this edit produced rather than a later List() a concurrent write can slip
-// into; the RPC handler uses it that way for its response.
-func (c *hubInstancesController) edit(params appwire.InstanceEditParams, out *appwire.InstanceListResponse) (err error) {
+//
+// The returned listing is captured while this edit's write locks are still
+// held, so it describes the state this edit produced rather than a later List()
+// a concurrent write can slip into.
+func (c *hubInstancesController) Edit(params appwire.InstanceEditParams) (_ appwire.InstanceListResponse, err error) {
 	if err := c.refuseWhenBroken(); err != nil {
-		return err
+		return appwire.InstanceListResponse{}, err
 	}
 	if err := c.requireAuth(); err != nil {
-		return err
+		return appwire.InstanceListResponse{}, err
 	}
 	req, err := parseEditRequest(params)
 	if err != nil {
-		return err
+		return appwire.InstanceListResponse{}, err
 	}
 	name := req.name
 
@@ -1274,9 +1253,7 @@ func (c *hubInstancesController) edit(params appwire.InstanceEditParams, out *ap
 	// on resolving the fingerprint key before the locks): resolving can repair
 	// the key file - an inter-process lock and a write - so doing it while c.mu
 	// and credMu are held would hold every listing and credential op behind it.
-	// This edit's own endpoint assertion needs it, and so does the listing the
-	// edit captures under its write locks (listLocked), so it is resolved for
-	// every caller rather than only the captured-listing one.
+	// This edit's own endpoint assertion and its lock-scoped listing both need it.
 	key, keyErr := resolveEndpointFingerprintKey(c.authStateDir())
 	defer c.lockMutation(params.OriginClientId, &err)()
 	// before is an independent parse from l below — a fresh read sharing no
@@ -1284,22 +1261,22 @@ func (c *hubInstancesController) edit(params appwire.InstanceEditParams, out *ap
 	// writing it back restores exactly what was on disk before this call.
 	before, _, err := c.read()
 	if err != nil {
-		return err
+		return appwire.InstanceListResponse{}, err
 	}
 	l, _, err := c.read()
 	if err != nil {
-		return err
+		return appwire.InstanceListResponse{}, err
 	}
 	p, authored := l.Providers[name]
 	if !authored {
 		if _, ok := c.reg.Get().Instance(name); !ok {
-			return instanceNotFound(name)
+			return appwire.InstanceListResponse{}, instanceNotFound(name)
 		}
 		p = registry.Provider{ID: name}
 	}
 	if !params.ClearBase && req.base != "" {
 		if _, ok := c.reg.Get().Provider(req.base); !ok {
-			return appwire.InvalidParams(fmt.Sprintf("unknown base provider %q", params.Base))
+			return appwire.InstanceListResponse{}, appwire.InvalidParams(fmt.Sprintf("unknown base provider %q", params.Base))
 		}
 	}
 	// The edit is applied to the row the client listed, so the endpoint that row
@@ -1315,13 +1292,13 @@ func (c *hubInstancesController) edit(params appwire.InstanceEditParams, out *ap
 	// cannot say the name resolves where the caller was told it does.
 	if params.ExpectedEndpointFingerprint != "" {
 		if err := c.auth.verifyEndpointFingerprint(name, params.ExpectedEndpointFingerprint, key, keyErr); err != nil {
-			return err
+			return appwire.InstanceListResponse{}, err
 		}
 	}
 	renaming := req.newName != "" && req.newName != name
 	if renaming {
 		if err := c.checkRenameTarget(l, params, name, req.newName); err != nil {
-			return err
+			return appwire.InstanceListResponse{}, err
 		}
 	}
 	applyEditFields(&p, params, req)
@@ -1333,7 +1310,7 @@ func (c *hubInstancesController) edit(params appwire.InstanceEditParams, out *ap
 		baseP, ok := c.reg.Get().Provider(baseID)
 		isCodex := p.Transport.Auth == registry.AuthOAuthOpenAICodex || (ok && baseP.Transport.Auth == registry.AuthOAuthOpenAICodex)
 		if !isCodex {
-			return appwire.InvalidParams("codexClientVersion requires a Codex provider")
+			return appwire.InstanceListResponse{}, appwire.InvalidParams("codexClientVersion requires a Codex provider")
 		}
 	}
 	// A clear-only edit on an implicit instance (one the environment or a
@@ -1344,16 +1321,13 @@ func (c *hubInstancesController) edit(params appwire.InstanceEditParams, out *ap
 	// the edit is a no-op rather than a write. A rename is not this case: it
 	// re-keys the entry, and it pins a base below, so it always writes.
 	if !renaming && !authored && providerIsBare(p) {
-		if out != nil {
-			// Still under this edit's write locks, like the listing captured
-			// on the write path, so a concurrent edit cannot slip in.
-			*out = c.listLocked(key, keyErr)
-		}
-		return nil
+		// Still under this edit's write locks, like the listing captured on the
+		// write path, so a concurrent edit cannot slip in.
+		return c.listLocked(key, keyErr), nil
 	}
 	if renaming {
 		if err := c.rekeyProvider(l, p, name, req.newName); err != nil {
-			return err
+			return appwire.InstanceListResponse{}, err
 		}
 	} else {
 		l.Providers[name] = p
@@ -1403,9 +1377,9 @@ func (c *hubInstancesController) edit(params appwire.InstanceEditParams, out *ap
 		// A non-rename edit has no rename to report, so it keeps the error as
 		// it came.
 		if renaming && c.applied.peekApplied() {
-			return renamePersistedError{err}
+			return appwire.InstanceListResponse{}, renamePersistedError{err}
 		}
-		return err
+		return appwire.InstanceListResponse{}, err
 	}
 	if !renaming {
 		afterAccess := effectiveAccessIdentity(key, c.reg.Get(), name, p, true)
@@ -1423,16 +1397,13 @@ func (c *hubInstancesController) edit(params appwire.InstanceEditParams, out *ap
 	}
 	if renaming {
 		if err := c.moveCredentialsAfterRename(name, req.newName); err != nil {
-			return err
+			return appwire.InstanceListResponse{}, err
 		}
 	}
-	if out != nil {
-		// Still under this edit's write locks, so no concurrent edit can land
-		// between the write and this read. Reached for a plain edit AND a clean
-		// rename (the rename branch above only returns on an applied error).
-		*out = c.listLocked(key, keyErr)
-	}
-	return nil
+	// Still under this edit's write locks, so no concurrent edit can land
+	// between the write and this read. Reached for a plain edit AND a clean
+	// rename (the rename branch above only returns on an applied error).
+	return c.listLocked(key, keyErr), nil
 }
 
 // editRequest is the part of an edit that is validated and normalized before

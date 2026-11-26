@@ -1865,7 +1865,7 @@ func registerInstanceHandlers(server *appserver.Server, instancesController *hub
 	})
 	// apply performs the mutation and returns the listing to answer with; the
 	// controller's commit port owns the broadcast. A create or edit passes its
-	// lock-scoped capture (see create and edit); the rest answer with a fresh
+	// lock-scoped capture (see Create and Edit); the rest answer with a fresh
 	// List() via listAfter.
 	instanceWrite := func(apply func() (appwire.InstanceListResponse, error)) (appwire.InstanceListResponse, error) {
 		list, err := apply()
@@ -1884,11 +1884,7 @@ func registerInstanceHandlers(server *appserver.Server, instancesController *hub
 	}
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceCreate, func(_ context.Context, params appwire.InstanceCreateParams) (appwire.InstanceListResponse, error) {
 		return instanceWrite(func() (appwire.InstanceListResponse, error) {
-			var list appwire.InstanceListResponse
-			if err := instancesController.create(params, &list); err != nil {
-				return appwire.InstanceListResponse{}, err
-			}
-			return list, nil
+			return instancesController.Create(params)
 		})
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceEdit, func(_ context.Context, params appwire.InstanceEditParams) (appwire.InstanceListResponse, error) {
@@ -1896,8 +1892,7 @@ func registerInstanceHandlers(server *appserver.Server, instancesController *hub
 			return appwire.InstanceListResponse{}, err
 		}
 		return instanceWrite(func() (appwire.InstanceListResponse, error) {
-			var list appwire.InstanceListResponse
-			err := instancesController.edit(params, &list)
+			list, err := instancesController.Edit(params)
 			if err == nil {
 				return list, nil
 			}
