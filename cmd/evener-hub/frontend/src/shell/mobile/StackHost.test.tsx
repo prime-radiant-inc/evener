@@ -585,13 +585,14 @@ test("the inner iPhone window keeps the Board and hands reader actions to the sy
     expect(bar.hasAttribute("inert")).toBe(false);
     send({ type: "material", glass: true, edgeToolbar: true });
     await waitFor(() => expect(lastHeader()).toMatchObject({ id, leading: null }));
-    expect(bar.hasAttribute("inert")).toBe(true);
+    expect(bar.hasAttribute("data-system-edge-actions")).toBe(true);
+    expect(within(bar).getByRole("heading")).toBe(screen.getByTestId("topbar-title"));
     await userEvent.click(within(board).getByTestId("board-toggle"));
     await waitFor(() => expect(lastHeader()?.leading).toBe("sessions"));
     send({ type: "headerAction", id, action: "sessions" });
     await waitFor(() => expect(lastHeader()?.leading).toBeNull());
     send({ type: "material", glass: true, edgeToolbar: false });
-    await waitFor(() => expect(bar.hasAttribute("inert")).toBe(false));
+    await waitFor(() => expect(bar.hasAttribute("data-system-edge-actions")).toBe(false));
     expect(screen.getByTestId("board-column")).toBeTruthy();
     expect(workspaceStore.getState().focusedPaneId).toBe(id);
   } finally {

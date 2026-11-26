@@ -55,33 +55,33 @@ function headerControl(action: HeaderAction, needsYou: number) {
 	return { symbol, label, count, spoken };
 }
 
-export function EdgeSessionToolbar({ header, palette, onAction }: HeaderProps) {
+export function EdgeSessionToolbar({ header: { id, leading, needsYou }, palette, onAction }: HeaderProps) {
 	const navigation = useNavigation<NativeStackNavigationProp<Routes, "Workspace">>();
 	useLayoutEffect(() => {
 		function button(action: HeaderAction): NativeStackHeaderItemButton {
-			const { symbol, label, spoken, count } = headerControl(action, header.needsYou);
+			const { symbol, label, spoken, count } = headerControl(action, needsYou);
 			return {
 				type: "button",
 				label,
 				accessibilityLabel: spoken,
 				icon: { type: "sfSymbol", name: symbol },
 				badge: count ? { value: count } : undefined,
-				onPress: () => onAction(header.id, action),
+				onPress: () => onAction(id, action),
 			};
 		}
 		navigation.setOptions({
 			headerShown: true,
 			headerTransparent: true,
 			headerBackVisible: false,
-			headerTitle: header.collapsed ? "" : header.title,
+			// The session title belongs to its reader column when the buttons move to the edge.
+			headerTitle: "",
 			headerStyle: { backgroundColor: "transparent" },
 			headerTintColor: palette.inkHi,
-			headerTitleStyle: { color: palette.inkHi },
-			unstable_headerLeftItems: () => (header.leading ? [button(header.leading)] : []),
+			unstable_headerLeftItems: () => (leading ? [button(leading)] : []),
 			unstable_headerRightItems: () => [button("find"), button("overview")],
 		});
 		return () => navigation.setOptions({ headerShown: false });
-	}, [header, palette, onAction, navigation]);
+	}, [id, leading, needsYou, palette.inkHi, onAction, navigation]);
 	return null;
 }
 

@@ -384,6 +384,7 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
   const boardVisible = tabletSplit && !boardCollapsed;
   const nativeHeader =
     hosted && !singlePane && (!tabletBand || edgeToolbar) && !routeDeferred && focusedPane?.type === "session";
+  const Title = nativeHeader && edgeToolbar ? "h1" : "span";
   const needsYou = useNavigationStore(
     useCallback(
       (state: NavigationStoreState) =>
@@ -1100,9 +1101,9 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
                 focusedSessionRef !== undefined && drawer
               )}
             </div>
-            <span className={styles.stackTitle} data-testid="topbar-title">
+            <Title className={styles.stackTitle} data-testid="topbar-title">
               {paneTitle}
-            </span>
+            </Title>
             <div className={styles.trailing}>
               {focusedSessionRef !== undefined && (
                 <SessionInspectionActions sessionRef={focusedSessionRef} paneId={focusedPane?.id} />
@@ -1113,6 +1114,7 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
           {nativeHeader && focusedSessionRef && !panelOpen && !activityOpen && (
             <IPhoneSessionHeader
               bar={topBarRef}
+              edgeToolbar={edgeToolbar}
               id={focusedPane.id}
               title={paneTitle ?? ""}
               leading={showBack ? "back" : boardVisible ? null : "sessions"}

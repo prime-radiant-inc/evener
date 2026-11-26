@@ -11,13 +11,24 @@ function containsLayer(node: Node): boolean {
 
 type Props = Pick<IPhoneHeader, "id" | "title" | "leading" | "collapsed" | "needsYou"> & {
   bar: RefObject<HTMLDivElement | null>;
+  edgeToolbar: boolean;
   onFindChange(open: boolean): void;
   onAction(action: IPhoneHeaderAction): void;
 };
 
 /** The web bar stays in layout so both renderers use the same height and
  * the reading scroller keeps its usual collapse compensation. */
-export function IPhoneSessionHeader({ bar, id, title, leading, needsYou, collapsed, onAction, onFindChange }: Props) {
+export function IPhoneSessionHeader({
+  bar,
+  id,
+  title,
+  leading,
+  needsYou,
+  collapsed,
+  edgeToolbar,
+  onAction,
+  onFindChange,
+}: Props) {
   const [height, setHeight] = useState(0);
   useLayoutEffect(() => {
     const element = bar.current;
@@ -51,14 +62,21 @@ export function IPhoneSessionHeader({ bar, id, title, leading, needsYou, collaps
   useLayoutEffect(() => {
     const element = bar.current;
     if (!element || !shown) return;
-    element.toggleAttribute("inert", true);
-    window.addEventListener("message", receive);
+    element.toggleAttribute("inert", !edgeToolbar);
+    element.toggleAttribute("data-system-edge-actions", edgeToolbar);
     return () => {
       element.removeAttribute("inert");
+      element.removeAttribute("data-system-edge-actions");
+    };
+  }, [bar, shown, edgeToolbar]);
+  useLayoutEffect(() => {
+    if (!shown) return;
+    window.addEventListener("message", receive);
+    return () => {
       window.removeEventListener("message", receive);
       tellIPhoneHost({ type: "sessionHeader", header: null });
     };
-  }, [bar, shown]);
+  }, [shown]);
   useLayoutEffect(() => {
     if (height) tellIPhoneHost({ type: "sessionHeader", header: { id, title, leading, needsYou, collapsed, height } });
   }, [id, title, leading, needsYou, collapsed, height]);
