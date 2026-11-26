@@ -17,16 +17,19 @@ Source Serif reading text, Menlo evidence, and native stacks and sheets.
 The iPhone app hosts this same mobile workspace. Its shell draws the ordinary
 conversation header with iOS controls. The web composer, navigation, Find,
 Sessions, Overview, sheets and menus share a material palette with translucent
-fills, highlights and edges. Long lists, messages, code and documents keep
-their reading surfaces. The shell reports whether iOS glass is available and
-whether Reduce Transparency permits it. Hosted controls start opaque and
-respond to setting changes in place. Browser tabs use the browser theme.
+fills, highlights and edges. Safari, other iPhone and iPad browsers, and the
+Home Screen web app use these same controls. Long lists, messages, code and
+documents keep their reading surfaces. The native shell starts opaque until
+iOS reports glass availability. Browsers use their backdrop support and
+reported transparency and contrast preferences. Settings changes take effect
+in place.
 
-In a hosted iPhone conversation, the composer and its floating menus use a
+In an iPhone or iPad conversation, the composer and its floating menus use a
 single Glass-HQ scene over the visible transcript. A worker served by the hub
 draws the material. WebKit keeps the editable field, action labels and touch
 targets above it. The controls retain their CSS material until the renderer
-is ready and whenever it becomes unavailable.
+is ready and whenever it becomes unavailable. Reduce Motion keeps the CSS
+material and stops the transcript renderer.
 
 The Duo inner display keeps the Board and the reader side by side while there
 is room for both at the chosen text size. When iOS reserves a side edge for

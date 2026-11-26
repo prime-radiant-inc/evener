@@ -96,6 +96,8 @@ test.each([
   { name: "narrow desktop", compact: false, inlineSteer: false, width: 382 },
   { name: "Duo cover", compact: false, inlineSteer: true, width: 450, duo: true },
   { name: "phone portrait", compact: true, inlineSteer: false, width: 360, phone: true },
+  { name: "iPhone Safari", compact: true, inlineSteer: false, width: 360, phone: true, safari: true },
+  { name: "iPad Safari", compact: false, inlineSteer: true, safari: true },
   { name: "hosted iPhone", compact: true, inlineSteer: false, width: 360, phone: true, hosted: true },
   { name: "Duo landscape", compact: true, inlineSteer: true, width: 526, phoneQuery: LANDSCAPE_PHONE_QUERY },
   {
@@ -108,17 +110,20 @@ test.each([
   },
 ])(
   "$name keeps the empty composer folded until content arrives",
-  async ({ compact, inlineSteer, width, duo, phone, phoneQuery, hosted }) => {
+  async ({ compact, inlineSteer, width, duo, phone, phoneQuery, hosted, safari }) => {
     const restoreViewport =
       phone || phoneQuery || duo ? installMobileViewport(duo ? DUO_COVER_QUERY : phoneQuery) : undefined;
     if (width !== undefined) installNarrowComposer(width);
-    const ua = hosted ? vi.spyOn(navigator, "userAgent", "get").mockReturnValue("EvenerNative/1") : undefined;
+    const ua =
+      hosted || safari
+        ? vi.spyOn(navigator, "userAgent", "get").mockReturnValue(hosted ? "EvenerNative/1" : phone ? "iPhone" : "iPad")
+        : undefined;
     if (hosted) vi.stubGlobal("ReactNativeWebView", { postMessage: vi.fn() });
     try {
       await mountComposerWithHandle("ref_a", { status: { type: "active" } });
       const editor = textarea();
       const card = screen.getByTestId("composer-input-card");
-      expect(card.closest("[data-iphone-composer]") !== null).toBe(!!hosted);
+      expect(card.closest("[data-iphone-composer]") !== null).toBe(!!(hosted || safari));
       const order = () =>
         [...card.querySelectorAll("button")]
           .map((button) => button.getAttribute("data-testid"))
@@ -137,7 +142,7 @@ test.each([
       expect(order()).toEqual(["composer-stop"]);
 
       act(() => replaceEditorText(editor, "draft"));
-      expect(editor.style.minHeight).toBe(hosted ? "1lh" : "2lh");
+      expect(editor.style.minHeight).toBe(hosted || (safari && phone) ? "1lh" : "2lh");
       expect(card.hasAttribute("data-folded")).toBe(false);
       expect(card.hasAttribute("data-folded-compact")).toBe(false);
       expect(order()).toEqual(inlineSteer ? ["composer-steer", "composer-submit"] : ["composer-submit"]);
