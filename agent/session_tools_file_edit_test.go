@@ -538,7 +538,7 @@ func TestEditFile_RepairedStringifiedEditsExecutesAndRendersLiveAndReopened(t *t
 	reg := apptranscript.NewToolCallRegistry()
 	var sawProjectedStart, sawProjectedDone bool
 	for i, entry := range entries {
-		items := apptranscript.ProjectTurn("turn_"+string(rune('0'+i)), i, entry.Turn, reg, nil, nil)
+		items, _ := apptranscript.ProjectTurnParts("turn_"+string(rune('0'+i)), i, entry.Turn, reg, nil, nil)
 		for _, item := range items {
 			if item.Type != "commandExecution" || item.CallID != "c_repaired" || item.ToolName != "edit_file" {
 				continue

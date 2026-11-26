@@ -65,10 +65,11 @@ func singlePassProjector(turn schema.Turn, turnID string, entryIndex int) []appw
 func TestItemTurnsFromFileSinglePassMatchesEntriesForm(t *testing.T) {
 	path := writeSinglePassFixture(t)
 
-	fileTurns, err := ItemTurnsFromFile(path, 1<<20, singlePassProjector)
+	fileProj, err := ItemTurnProjectionFromFile(path, 1<<20, singlePassProjector)
 	if err != nil {
-		t.Fatalf("ItemTurnsFromFile: %v", err)
+		t.Fatalf("ItemTurnProjectionFromFile: %v", err)
 	}
+	fileTurns := fileProj.Turns
 	w, entries, err := transcript.OpenWriterForSession(path, "th_single")
 	if err != nil {
 		t.Fatalf("OpenWriterForSession: %v", err)
@@ -101,10 +102,11 @@ func TestItemTurnsFromFileSinglePassMatchesEntriesForm(t *testing.T) {
 // per-entry projection applies, proving the shared projector kept them.
 func TestItemTurnsFromFileSinglePassStillStampsUsageAndTimestamp(t *testing.T) {
 	path := writeSinglePassFixture(t)
-	turns, err := ItemTurnsFromFile(path, 1<<20, singlePassProjector)
+	proj, err := ItemTurnProjectionFromFile(path, 1<<20, singlePassProjector)
 	if err != nil {
-		t.Fatalf("ItemTurnsFromFile: %v", err)
+		t.Fatalf("ItemTurnProjectionFromFile: %v", err)
 	}
+	turns := proj.Turns
 	var stamped *appwire.Turn
 	for i := range turns {
 		if turns[i].Usage != nil {
@@ -153,7 +155,7 @@ func TestItemTurnsFromFileSinglePassSkipsOversizeLine(t *testing.T) {
 	if err := os.WriteFile(path, []byte(string(header)+"\n"+string(big)+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ItemTurnsFromFile(path, 32, singlePassProjector); err == nil {
+	if _, err := ItemTurnProjectionFromFile(path, 32, singlePassProjector); err == nil {
 		t.Fatal("oversize line was accepted")
 	}
 }

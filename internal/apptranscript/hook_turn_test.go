@@ -12,7 +12,7 @@ import (
 // systemMessage item the live projector emits, so Settings -> Transcript's
 // hook-exit toggles have something to act on after a reload.
 func TestProjectTurnRendersHookCompleted(t *testing.T) {
-	out := ProjectTurn("turn_7", 7, schema.Turn{
+	out, _ := ProjectTurnParts("turn_7", 7, schema.Turn{
 		Kind:    schema.TurnHookCompleted,
 		Message: llm.System("PreToolUse hook my-plugin Bash command exit 0"),
 		Hook:    &schema.HookInfo{Event: "PreToolUse", HookType: "command", Matcher: "Bash", PluginName: "my-plugin"},
@@ -48,7 +48,7 @@ func TestProjectTurnRendersHookCompleted(t *testing.T) {
 // A non-zero exit must survive the round trip verbatim, or a reloaded broken
 // hook renders as a clean one.
 func TestProjectTurnCarriesNonZeroHookExit(t *testing.T) {
-	out := ProjectTurn("turn_1", 1, schema.Turn{
+	out, _ := ProjectTurnParts("turn_1", 1, schema.Turn{
 		Kind:    schema.TurnHookCompleted,
 		Message: llm.System("Stop hook exit 3"),
 		Hook:    &schema.HookInfo{Event: "Stop", ExitCode: 3},
@@ -66,7 +66,7 @@ func TestProjectTurnCarriesNonZeroHookExit(t *testing.T) {
 // line rather than vanishing, and reports no exit code rather than a
 // fabricated zero.
 func TestProjectTurnRendersHookCompletedWithoutDetail(t *testing.T) {
-	out := ProjectTurn("turn_2", 2, schema.Turn{
+	out, _ := ProjectTurnParts("turn_2", 2, schema.Turn{
 		Kind:    schema.TurnHookCompleted,
 		Message: llm.System("SessionStart hook"),
 	}, NewToolCallRegistry(), nil, nil)

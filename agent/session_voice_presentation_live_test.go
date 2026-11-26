@@ -128,7 +128,7 @@ func TestVoicePresentationLiveReference(t *testing.T) {
 				sess.recordTurn(seed, seed)
 				canonical := schema.NewTurn(schema.TurnAssistant, llm.Assistant("Available builds:\n1. Atlas (fixture-atlas)\n2. Boreal (fixture-boreal)\nWhich one should I inspect?"))
 				recorded := sess.recordTurn(canonical, canonical)
-				items := apptranscript.ProjectTurn(recorded.Turn.TurnID, recorded.Seq, recorded.Turn, apptranscript.NewToolCallRegistry(), nil, nil)
+				items, _ := apptranscript.ProjectTurnParts(recorded.Turn.TurnID, recorded.Seq, recorded.Turn, apptranscript.NewToolCallRegistry(), nil, nil)
 				if !recorded.Recorded || len(items) != 1 || items[0].ID == "" {
 					t.Fatal("canonical source fixture was not recorded and projected")
 				}

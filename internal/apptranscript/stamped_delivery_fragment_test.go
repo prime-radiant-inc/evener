@@ -115,14 +115,14 @@ func deliveryInsideExecutionTranscript(t *testing.T, withUsage bool) (path strin
 func fullTurns(t *testing.T, path string) []appwire.Turn {
 	t.Helper()
 	reg := apptranscript.NewToolCallRegistry()
-	turns, err := apptranscript.ItemTurnsFromFile(path, transcript.DefaultMaxLineBytes, func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
+	proj, err := apptranscript.ItemTurnProjectionFromFile(path, transcript.DefaultMaxLineBytes, func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
 		items, _ := apptranscript.ProjectEntryParts(turnID, entryIndex, turn, reg, nil, apptranscript.ToolResultOutputImages)
 		return items
 	})
 	if err != nil {
-		t.Fatalf("ItemTurnsFromFile: %v", err)
+		t.Fatalf("ItemTurnProjectionFromFile: %v", err)
 	}
-	return turns
+	return proj.Turns
 }
 
 // visibleItemsFromTurns flattens the whole-file read's visible items in the

@@ -88,14 +88,15 @@ func transcriptImageSHAs(t *testing.T, sess *Session) []string {
 	if path == "" {
 		t.Fatal("session has no transcript; the fixture did not enable state persistence")
 	}
-	turns, err := apptranscript.ItemTurnsFromFile(path, 128<<20, func(turn schema.Turn, turnID string, turnIndex int) []appwire.ThreadItem {
-		return apptranscript.ProjectTurn(turnID, turnIndex, turn, apptranscript.NewToolCallRegistry(), nil, apptranscript.ToolResultOutputImages)
+	proj, err := apptranscript.ItemTurnProjectionFromFile(path, 128<<20, func(turn schema.Turn, turnID string, turnIndex int) []appwire.ThreadItem {
+		items, _ := apptranscript.ProjectTurnParts(turnID, turnIndex, turn, apptranscript.NewToolCallRegistry(), nil, apptranscript.ToolResultOutputImages)
+		return items
 	})
 	if err != nil {
-		t.Fatalf("ItemTurnsFromFile: %v", err)
+		t.Fatalf("ItemTurnProjectionFromFile: %v", err)
 	}
 	var shas []string
-	for _, turn := range turns {
+	for _, turn := range proj.Turns {
 		for _, item := range turn.Items {
 			for _, img := range item.OutputImages {
 				shas = append(shas, img.SHA)

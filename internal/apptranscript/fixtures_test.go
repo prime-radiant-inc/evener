@@ -26,18 +26,19 @@ func sequentialTestProjector() EntryProjector {
 }
 
 func boundedTestProjector(turn schema.Turn, turnID string, turnIndex int, reg *ToolCallRegistry) []appwire.ThreadItem {
-	return ProjectTurn(turnID, turnIndex, turn, reg, nil, nil)
+	items, _ := ProjectTurnParts(turnID, turnIndex, turn, reg, nil, nil)
+	return items
 }
 
 // requireItemTurnsFromFile is the one full-projection entry point every
 // still-live grouping/identity test in this package reads through.
 func requireItemTurnsFromFile(t testing.TB, path string, maxLineBytes int, project EntryProjector) []appwire.Turn {
 	t.Helper()
-	turns, err := ItemTurnsFromFile(path, maxLineBytes, project)
+	proj, err := ItemTurnProjectionFromFile(path, maxLineBytes, project)
 	if err != nil {
-		t.Fatalf("ItemTurnsFromFile: %v", err)
+		t.Fatalf("ItemTurnProjectionFromFile: %v", err)
 	}
-	return turns
+	return proj.Turns
 }
 
 // allTurnsItems flattens every turn's items, in turn order, for assertions

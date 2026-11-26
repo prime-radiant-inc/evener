@@ -781,13 +781,14 @@ func TestFullReadSettlesADuplicatedCallIDLikeTheIndex(t *testing.T) {
 func fullReadTurns(t testing.TB, fx fixture) []appwire.Turn {
 	t.Helper()
 	reg := apptranscript.NewToolCallRegistry()
-	turns, err := apptranscript.ItemTurnsFromFile(writeFixture(t, fx), testMaxLineBytes, func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
-		return apptranscript.ProjectTurn(turnID, entryIndex, turn, reg, nil, nil)
+	proj, err := apptranscript.ItemTurnProjectionFromFile(writeFixture(t, fx), testMaxLineBytes, func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
+		items, _ := apptranscript.ProjectTurnParts(turnID, entryIndex, turn, reg, nil, nil)
+		return items
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	return turns
+	return proj.Turns
 }
 
 func fullReadTurn(t testing.TB, turns []appwire.Turn, id string) *appwire.Turn {

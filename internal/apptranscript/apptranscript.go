@@ -20,7 +20,7 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
-// ToolCallRegistry threads per-call metadata across ProjectTurn calls so the
+// ToolCallRegistry threads per-call metadata across ProjectTurnParts calls so the
 // result turn can recover state set on the assistant turn. Names maps a call
 // ID to the tool name (for results with Name omitted); CommRawArgs carries
 // deferred communicate raw bytes from the assistant turn to the paired result
@@ -97,11 +97,6 @@ func ToolResultOutputImages(result *llm.ToolResultData) []appwire.OutputImage {
 		SHA:       img.SHA,
 		Path:      img.Path,
 	}}
-}
-
-// ScanPrelude validates the full semantic transcript and returns its v2 header.
-func ScanPrelude(path string, maxLineBytes int) (transcript.Header, error) {
-	return scanSemanticTranscript(path, maxLineBytes, nil)
 }
 
 // PreludeTurn projects semantic transcript header context into the synthetic
@@ -247,7 +242,7 @@ func NormalizeCommunicateArguments(raw json.RawMessage) json.RawMessage {
 // This is the single definition of "counts as a duplicate" for all three
 // surfaces that display bare assistant text: the live projector
 // (matchesLastAssistantMessage in internal/appprojector), the reload path
-// below in ProjectTurn, and the non-interactive CLI printer (drainEventsHuman
+// below in projectTurn, and the non-interactive CLI printer (drainEventsHuman
 // in cmd/evener). Turn scoping is the projector's own state, not part of this
 // comparison.
 func EchoesAssistantText(shown, message string) bool {
@@ -312,7 +307,7 @@ func ExitCodeFromToolState(raw json.RawMessage) *int64 {
 // commandExecution item: TurnStatusFailed when the tool result carries an
 // error, TurnStatusCompleted otherwise. Both the live projector
 // (EventToolCallEnd, internal/appprojector/appwire_projection.go) and reload
-// (ProjectTurn's TurnToolResults case below) call this, so a settled item's
+// (projectTurn's TurnToolResults case below) call this, so a settled item's
 // Status agrees with its own Error field instead of unconditionally claiming
 // "completed" regardless of outcome — previously clients had to infer error
 // state by checking Error's presence instead of trusting Status.
@@ -440,11 +435,6 @@ func UserFacingText(msg llm.Message) string {
 	return b.String()
 }
 
-// ProjectTurn maps a typed transcript turn into AppWire transcript items.
-func ProjectTurn(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRegistry, imageProjector ImageProjector, outputImageProjector OutputImageProjector) []appwire.ThreadItem {
-	return projectTurn(turnID, turnIndex, turn, reg, imageProjector, outputImageProjector, nil)
-}
-
 // communicateRawFallbackMaxRunes bounds the raw-arguments fallback a healed
 // communicate renders when repair cannot recover a message, mirroring the
 // hub's resultLineMaxRunes limit (agent/transcript_render.go).
@@ -464,11 +454,12 @@ func communicateRawFallbackText(s string) string {
 	return strings.ReplaceAll(strings.ReplaceAll(s, "\n", " "), "\r", "")
 }
 
-// ProjectTurnParts is ProjectTurn plus, for each item, a part index that
-// names the item within its entry; no two items of an entry share one. For
-// most kinds it is the index of the entry content part the item came from,
-// and each content part projects at most one item. A kind that projects the
-// whole entry as one item reports part 0. A memory-context entry is the
+// ProjectTurnParts maps a typed transcript turn into AppWire transcript items
+// and, for each item, a part index that names the item within its entry; no two
+// items of an entry share one. For most kinds it is the index of the entry
+// content part the item came from, and each content part projects at most one
+// item. A kind that projects the whole entry as one item reports part 0. A
+// memory-context entry is the
 // exception: its one content part splits into a section per item, which
 // report 0..n-1, so only part 0 there names a content part; never index
 // Message.Content with a memory-context part. Hidden parts (an echoed
@@ -564,7 +555,7 @@ func ProjectEntryParts(turnID string, entryIndex int, turn schema.Turn, reg *Too
 	}
 }
 
-// projectTurn is ProjectTurn. When parts is non-nil, the kinds that project
+// projectTurn implements ProjectTurnParts. When parts is non-nil, the kinds that project
 // one item per content part (assistant and tool results) record each item's
 // part index in it.
 func projectTurn(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRegistry, imageProjector ImageProjector, outputImageProjector OutputImageProjector, parts *[]int) (out []appwire.ThreadItem) {
@@ -605,16 +596,16 @@ func projectTurn(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRe
 		reg.CommAuthorship = map[string]*schema.TranscriptAuthorship{}
 	}
 	if invariant.Enabled {
-		// Every item ProjectTurn emits belongs to the turn it was asked to
+		// Every item ProjectTurnParts emits belongs to the turn it was asked to
 		// project (TurnID == the turnID argument) and carries a non-empty id the
 		// client can address it by. Each construction below sets TurnID: turnID
 		// and an item_..._N id, so these hold across all turn kinds.
 		defer func() {
 			for _, item := range out {
 				invariant.Hold(item.TurnID == turnID,
-					"apptranscript: ProjectTurn item %q has TurnID %q, want %q", item.ID, item.TurnID, turnID)
+					"apptranscript: ProjectTurnParts item %q has TurnID %q, want %q", item.ID, item.TurnID, turnID)
 				invariant.Hold(item.ID != "",
-					"apptranscript: ProjectTurn emitted item with empty ID (type=%s, turnID=%s)", item.Type, turnID)
+					"apptranscript: ProjectTurnParts emitted item with empty ID (type=%s, turnID=%s)", item.Type, turnID)
 			}
 		}()
 	}
@@ -1504,37 +1495,6 @@ func itemTurnProjectionFromFileContext(ctx context.Context, path string, maxLine
 	}
 	projection.Entries = entryIndex
 	return projection, err
-}
-
-// ItemTurnsFromFile projects a transcript into the logical turns used by item
-// paging. Continuation entries share the opener's turn identity and one
-// item-position entry ordinal. Callers that resume live projection should use
-// ItemTurnProjectionFromFile for NextEntry.
-func ItemTurnsFromFile(path string, maxLineBytes int, project EntryProjector) ([]appwire.Turn, error) {
-	projection, err := ItemTurnProjectionFromFile(path, maxLineBytes, project)
-	return projection.Turns, err
-}
-
-func itemTurnsFromFileContext(ctx context.Context, path string, maxLineBytes int, project EntryProjector) ([]appwire.Turn, error) {
-	projection, err := itemTurnProjectionFromFileContext(ctx, path, maxLineBytes, project)
-	return projection.Turns, err
-}
-
-// itemTurnsFromEntries is the already-decoded form of ItemTurnsFromFile: the
-// header and entries must come from the same transcript. It is in-package
-// only, so a test outside this package cannot project a shape production never
-// reads; the guards drive the shared grouping engine through it without a file
-// scan.
-func itemTurnsFromEntries(header transcript.Header, entries []transcript.Entry, project EntryProjector) ([]appwire.Turn, error) {
-	var acc logicalTurnAccumulator
-	for i := range entries {
-		appendProjectedEntry(&acc, project, entries[i].Turn, i+1)
-	}
-	// The seam holds decoded entries and no transcript path, so it has no meta
-	// to read: callers that project a saved file go through
-	// itemTurnProjectionFromFileContext, which resolves the saved launch prompt.
-	projection, err := groupedAppTurnProjection(&acc, header, "")
-	return projection.Turns, err
 }
 
 // persistedTurnID names the turn one persisted entry projects into.

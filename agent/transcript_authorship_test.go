@@ -416,7 +416,7 @@ func TestTranscriptAuthorshipForkCopiesKnown(t *testing.T) {
 				t.Errorf("inherited note kind=%q source=%q steering kind=%q", turn.Kind, turn.SteeringSource, turn.SteeringKind)
 			}
 			assertTranscriptAuthor(t, turn, map[string]any{"kind": "human"}, true)
-			items := apptranscript.ProjectTurn("fork-note", index, turn, nil, nil, nil)
+			items, _ := apptranscript.ProjectTurnParts("fork-note", index, turn, nil, nil, nil)
 			if len(items) != 1 || items[0].Type != "steering" || items[0].Source != "user" || items[0].SteeringKind != "human-note" || items[0].Text != note.Message.Text() {
 				t.Errorf("projected inherited note = %+v", items)
 			} else {

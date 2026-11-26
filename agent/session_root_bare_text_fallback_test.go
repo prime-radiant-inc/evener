@@ -1390,7 +1390,7 @@ func TestQuietYieldRenamedResultToolHasNoProjectedToolCard(t *testing.T) {
 	}
 	requireQuietToolResult(t, s, "quiet")
 	reg := apptranscript.NewToolCallRegistry()
-	turns, err := apptranscript.ItemTurnsFromFile(s.TranscriptPath(), transcript.DefaultMaxLineBytes, func(entry schema.Turn, id string, i int) []appwire.ThreadItem {
+	proj, err := apptranscript.ItemTurnProjectionFromFile(s.TranscriptPath(), transcript.DefaultMaxLineBytes, func(entry schema.Turn, id string, i int) []appwire.ThreadItem {
 		items, _ := apptranscript.ProjectEntryParts(id, i, entry, reg, nil, nil)
 		return items
 	})
@@ -1402,7 +1402,7 @@ func TestQuietYieldRenamedResultToolHasNoProjectedToolCard(t *testing.T) {
 			t.Errorf("%s: quiet call projected %s (call=%q status=%q)", source, item.Type, item.CallID, item.Status)
 		}
 	}
-	for _, turn := range turns {
+	for _, turn := range proj.Turns {
 		for _, item := range turn.Items {
 			check("whole transcript", item)
 		}

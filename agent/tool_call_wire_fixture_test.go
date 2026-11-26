@@ -833,10 +833,12 @@ func TestToolCallWireFixtures(t *testing.T) {
 		notes[call.id] = call.note
 	}
 	reg := apptranscript.NewToolCallRegistry()
-	items := apptranscript.ProjectTurn("turn_1", 1, schema.Turn{Kind: schema.TurnAssistant, Message: announce, Timestamp: wireFixtureStart}, reg, nil, nil)
-	items = append(items, apptranscript.ProjectTurn("turn_1", 2, schema.Turn{Kind: schema.TurnToolResults, Message: results, Timestamp: wireFixtureStart.Add(2 * time.Second)}, reg, nil, nil)...)
+	items, _ := apptranscript.ProjectTurnParts("turn_1", 1, schema.Turn{Kind: schema.TurnAssistant, Message: announce, Timestamp: wireFixtureStart}, reg, nil, nil)
+	resultItems, _ := apptranscript.ProjectTurnParts("turn_1", 2, schema.Turn{Kind: schema.TurnToolResults, Message: results, Timestamp: wireFixtureStart.Add(2 * time.Second)}, reg, nil, nil)
+	items = append(items, resultItems...)
 	// The user's reply to the ask_user question starts the next turn.
-	items = append(items, apptranscript.ProjectTurn("turn_2", 3, schema.Turn{Kind: schema.TurnUserInput, Message: llm.User(toolWireAnswers), Timestamp: wireFixtureStart.Add(60 * time.Second)}, reg, nil, nil)...)
+	userItems, _ := apptranscript.ProjectTurnParts("turn_2", 3, schema.Turn{Kind: schema.TurnUserInput, Message: llm.User(toolWireAnswers), Timestamp: wireFixtureStart.Add(60 * time.Second)}, reg, nil, nil)
+	items = append(items, userItems...)
 
 	checkWireFixture(t, toolWireFixturePath, struct {
 		Note  string               `json:"note"`

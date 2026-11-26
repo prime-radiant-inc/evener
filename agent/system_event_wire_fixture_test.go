@@ -55,7 +55,7 @@ func TestSystemEventWireFixtures(t *testing.T) {
 	projected := func(t *testing.T, name string, turn schema.Turn) appwire.ThreadItem {
 		t.Helper()
 		turn.Timestamp = wireFixtureStart
-		items := apptranscript.ProjectTurn("turn_1", 1, turn, nil, nil, nil)
+		items, _ := apptranscript.ProjectTurnParts("turn_1", 1, turn, nil, nil, nil)
 		if len(items) != 1 {
 			t.Fatalf("%s: projected %d items, want 1", name, len(items))
 		}
@@ -227,7 +227,8 @@ func systemEventWireFailedTurn(t *testing.T) appwire.Turn {
 
 	reg := apptranscript.NewToolCallRegistry()
 	project := func(turn schema.Turn, turnID string, turnIndex int) []appwire.ThreadItem {
-		return apptranscript.ProjectTurn(turnID, turnIndex, turn, reg, nil, nil)
+		items, _ := apptranscript.ProjectTurnParts(turnID, turnIndex, turn, reg, nil, nil)
+		return items
 	}
 	path := filepath.Join(t.TempDir(), "system-event-wire.jsonl")
 	w, err := transcript.NewWriter(path, transcript.Header{})
@@ -243,10 +244,11 @@ func systemEventWireFailedTurn(t *testing.T) appwire.Turn {
 	if err := w.Close(); err != nil {
 		t.Fatalf("close transcript: %v", err)
 	}
-	turns, err := apptranscript.ItemTurnsFromFile(path, transcript.DefaultMaxLineBytes, project)
+	proj, err := apptranscript.ItemTurnProjectionFromFile(path, transcript.DefaultMaxLineBytes, project)
 	if err != nil {
 		t.Fatalf("project the failed turn: %v", err)
 	}
+	turns := proj.Turns
 	if len(turns) != 1 {
 		t.Fatalf("the failed turn grouped into %d turns, want 1", len(turns))
 	}

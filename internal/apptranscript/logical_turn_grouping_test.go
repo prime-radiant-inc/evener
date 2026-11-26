@@ -112,7 +112,8 @@ func TestItemReadersStampInterruptedSteeringOnGroupedTurn(t *testing.T) {
 			path := writeEntries(t, entries...)
 			names := NewToolCallRegistry()
 			full := requireItemTurnsFromFile(t, path, testMaxLineBytes, func(turn schema.Turn, turnID string, turnIndex int) []appwire.ThreadItem {
-				return ProjectTurn(turnID, turnIndex, turn, names, nil, nil)
+				items, _ := ProjectTurnParts(turnID, turnIndex, turn, names, nil, nil)
+				return items
 			})
 			if len(full) != 1 || full[0].Status != want {
 				t.Fatalf("turns = %+v, want one %s turn", full, want)

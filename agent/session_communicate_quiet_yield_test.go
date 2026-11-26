@@ -1707,13 +1707,14 @@ func TestQuietCompanionStampedAtProducer(t *testing.T) {
 					t.Fatalf("assistant turn QuietCompanion = %v, want %v", turn.QuietCompanion, tc.wantQuietCompanion)
 				}
 				reg := apptranscript.NewToolCallRegistry()
-				appTurns, err := apptranscript.ItemTurnsFromFile(s.TranscriptPath(), transcript.DefaultMaxLineBytes, func(turn schema.Turn, turnID string, turnIndex int) []appwire.ThreadItem {
+				appProj, err := apptranscript.ItemTurnProjectionFromFile(s.TranscriptPath(), transcript.DefaultMaxLineBytes, func(turn schema.Turn, turnID string, turnIndex int) []appwire.ThreadItem {
 					items, _ := apptranscript.ProjectEntryParts(turnID, turnIndex, turn, reg, nil, nil)
 					return items
 				})
 				if err != nil {
 					t.Fatalf("apptranscript projection: %v", err)
 				}
+				appTurns := appProj.Turns
 				var gotCommentary string
 				foundQuiet := false
 				for _, appTurn := range appTurns {
@@ -1802,12 +1803,12 @@ func TestQuietCompanionRuntimeRejectionStaysOutOfHistory(t *testing.T) {
 		items, _ := apptranscript.ProjectEntryParts(turnID, turnIndex, turn, reg, nil, nil)
 		return items
 	}
-	appTurns, err := apptranscript.ItemTurnsFromFile(path, transcript.DefaultMaxLineBytes, project)
+	appProj, err := apptranscript.ItemTurnProjectionFromFile(path, transcript.DefaultMaxLineBytes, project)
 	if err != nil {
 		t.Fatalf("apptranscript projection: %v", err)
 	}
 	var projected []appwire.ThreadItem
-	for _, turn := range appTurns {
+	for _, turn := range appProj.Turns {
 		projected = append(projected, turn.Items...)
 	}
 	idx, err := transcriptindex.Open(path, t.TempDir())

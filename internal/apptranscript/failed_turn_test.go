@@ -14,7 +14,7 @@ import (
 // says the turn failed and carries the diagnostic — the reload counterpart of
 // the live projector's failed NotifyTurnCompleted.
 func TestProjectTurnRendersFailedTurn(t *testing.T) {
-	out := ProjectTurn("turn_4", 4, schema.Turn{
+	out, _ := ProjectTurnParts("turn_4", 4, schema.Turn{
 		Kind:    schema.TurnFailure,
 		Message: llm.System("provider error: access denied"),
 		Error: &schema.TurnFailureInfo{
@@ -53,7 +53,7 @@ func TestProjectTurnRendersFailedTurn(t *testing.T) {
 // A TurnFailure with no diagnostic at all still renders: a failure the reader
 // cannot see is the bug this fix exists to close.
 func TestProjectTurnRendersFailedTurnWithoutDiagnostic(t *testing.T) {
-	out := ProjectTurn("turn_1", 1, schema.Turn{
+	out, _ := ProjectTurnParts("turn_1", 1, schema.Turn{
 		Kind:    schema.TurnFailure,
 		Message: llm.System("something broke"),
 	}, NewToolCallRegistry(), nil, nil)
@@ -72,7 +72,7 @@ func TestProjectTurnRendersFailedTurnWithoutDiagnostic(t *testing.T) {
 // A failure carrying no text anywhere still produces a visible item rather
 // than vanishing the way a blank model-switch marker does.
 func TestProjectTurnRendersFailedTurnWithNoText(t *testing.T) {
-	out := ProjectTurn("turn_1", 1, schema.Turn{Kind: schema.TurnFailure}, NewToolCallRegistry(), nil, nil)
+	out, _ := ProjectTurnParts("turn_1", 1, schema.Turn{Kind: schema.TurnFailure}, NewToolCallRegistry(), nil, nil)
 	if len(out) != 1 {
 		t.Fatalf("items = %+v, want exactly one", out)
 	}
@@ -118,17 +118,19 @@ func writeFailureTranscript(t *testing.T) string {
 }
 
 func failureProjector(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
-	return ProjectTurn(turnID, entryIndex, turn, NewToolCallRegistry(), nil, nil)
+	items, _ := ProjectTurnParts(turnID, entryIndex, turn, NewToolCallRegistry(), nil, nil)
+	return items
 }
 
 // The reloaded turn wrapping a persisted failure reports the same
 // status/error the live NotifyTurnCompleted did, instead of the blanket
 // "completed" every reloaded turn used to claim.
 func TestItemTurnsFromFileStampsFailedTurnStatus(t *testing.T) {
-	turns, err := ItemTurnsFromFile(writeFailureTranscript(t), 1<<20, failureProjector)
+	proj, err := ItemTurnProjectionFromFile(writeFailureTranscript(t), 1<<20, failureProjector)
 	if err != nil {
-		t.Fatalf("ItemTurnsFromFile: %v", err)
+		t.Fatalf("ItemTurnProjectionFromFile: %v", err)
 	}
+	turns := proj.Turns
 	// By value with a found flag, not a pointer: staticcheck cannot see that
 	// t.Fatalf terminates, so a nil-check-then-dereference here reads to it as
 	// a possible nil deref (SA5011). A zero Turn fails the assertions below

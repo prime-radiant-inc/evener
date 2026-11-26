@@ -196,7 +196,7 @@ func TestAgentNotesAndURLToolsKeepTranscriptRowWhileSuppressingModelSelfEcho(t *
 				}
 			}
 		}
-		items := apptranscript.ProjectTurn("t1", i, turn, reg, nil, nil)
+		items, _ := apptranscript.ProjectTurnParts("t1", i, turn, reg, nil, nil)
 		if turn.Kind == schema.TurnNotesContext {
 			notesTurnsInHistory++
 			if len(items) != 1 || items[0].EventKind != appwire.ThreadItemEventKindNotesContext {

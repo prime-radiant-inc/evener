@@ -273,14 +273,15 @@ func TestLiveToolResultImageMatchesItsReloadedProjection(t *testing.T) {
 		t.Fatalf("live OutputImages=%+v, want one descriptor", live)
 	}
 
-	turns, err := apptranscript.ItemTurnsFromFile(transcriptPath, 128<<20, func(turn schema.Turn, turnID string, turnIndex int) []appwire.ThreadItem {
-		return apptranscript.ProjectTurn(turnID, turnIndex, turn, apptranscript.NewToolCallRegistry(), nil, apptranscript.ToolResultOutputImages)
+	proj, err := apptranscript.ItemTurnProjectionFromFile(transcriptPath, 128<<20, func(turn schema.Turn, turnID string, turnIndex int) []appwire.ThreadItem {
+		items, _ := apptranscript.ProjectTurnParts(turnID, turnIndex, turn, apptranscript.NewToolCallRegistry(), nil, apptranscript.ToolResultOutputImages)
+		return items
 	})
 	if err != nil {
-		t.Fatalf("ItemTurnsFromFile: %v", err)
+		t.Fatalf("ItemTurnProjectionFromFile: %v", err)
 	}
 	var reloaded []appwire.OutputImage
-	for _, turn := range turns {
+	for _, turn := range proj.Turns {
 		for _, item := range turn.Items {
 			if item.CallID == "call_shot" && len(item.OutputImages) > 0 {
 				reloaded = item.OutputImages

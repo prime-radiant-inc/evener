@@ -101,14 +101,15 @@ func TestItemTurnsFromEntriesAvoidsFileScanAndDecode(t *testing.T) {
 	}
 
 	// File form.
-	var fileTurns []appwire.Turn
+	var fileProj ItemTurnProjection
 	var fileErr error
 	fileAllocs, fileElapsed, fileBytes := allocsPerProjection(func() {
-		fileTurns, fileErr = ItemTurnsFromFile(path, 1<<30, project)
+		fileProj, fileErr = ItemTurnProjectionFromFile(path, 1<<30, project)
 	})
 	if fileErr != nil {
-		t.Fatalf("ItemTurnsFromFile: %v", fileErr)
+		t.Fatalf("ItemTurnProjectionFromFile: %v", fileErr)
 	}
+	fileTurns := fileProj.Turns
 
 	// Entries form: decode once the way resume does, then project.
 	rw, entries, err := transcript.OpenWriterForSession(path, "th_large")

@@ -527,12 +527,14 @@ func TestReferenceEqualsTodaysFileProjectionApartFromPositions(t *testing.T) {
 		t.Run(fx.name, func(t *testing.T) {
 			path := writeFixture(t, fx)
 			reg := apptranscript.NewToolCallRegistry()
-			today, err := apptranscript.ItemTurnsFromFile(path, testMaxLineBytes, func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
-				return apptranscript.ProjectTurn(turnID, entryIndex, turn, reg, nil, apptranscript.ToolResultOutputImages)
+			todayProj, err := apptranscript.ItemTurnProjectionFromFile(path, testMaxLineBytes, func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
+				items, _ := apptranscript.ProjectTurnParts(turnID, entryIndex, turn, reg, nil, apptranscript.ToolResultOutputImages)
+				return items
 			})
 			if err != nil {
 				t.Fatal(err)
 			}
+			today := todayProj.Turns
 			// Every production caller flushes after projecting (e.g.
 			// server/appwire_turns.go's appTurnProjectionFromTranscriptFile);
 			// ItemTurnsFromFile alone does not, so match that here too.

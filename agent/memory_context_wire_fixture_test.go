@@ -67,7 +67,8 @@ func TestMemoryContextWireFixtures(t *testing.T) {
 		turn := latestMemoryContextTurn(t, s)
 		turn.Timestamp = wireFixtureStart
 		recorded = append(recorded, turn.Message.Text())
-		return turn, apptranscript.ProjectTurn("turn_1", 1, turn, nil, nil, nil)
+		items, _ := apptranscript.ProjectTurnParts("turn_1", 1, turn, nil, nil, nil)
+		return turn, items
 	}
 	one := func(name string, items []appwire.ThreadItem) appwire.ThreadItem {
 		t.Helper()
@@ -110,7 +111,8 @@ func TestMemoryContextWireFixtures(t *testing.T) {
 	// Malformed: the producer's own valid bytes, corrupted so extraction must
 	// fail. The recorded text is preserved and no raw is fabricated.
 	malformedText := strings.Replace(quotedTurn.Message.Text(), apptranscript.MemoryContextPreamble, apptranscript.MemoryContextPreamble+"?", 1)
-	malformedItem := one("malformed", apptranscript.ProjectTurn("turn_1", 1, schema.Turn{Kind: schema.TurnMemoryContext, Message: llm.UserMachinery(malformedText)}, nil, nil, nil))
+	malformedItems, _ := apptranscript.ProjectTurnParts("turn_1", 1, schema.Turn{Kind: schema.TurnMemoryContext, Message: llm.UserMachinery(malformedText)}, nil, nil, nil)
+	malformedItem := one("malformed", malformedItems)
 
 	// Another session changed both known indexes and one project page this
 	// session read, and removed another: one message carries both scopes'

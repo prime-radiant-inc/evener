@@ -204,8 +204,9 @@ func TestSubagentCallWireFixtures(t *testing.T) {
 			})
 		}
 		reg := apptranscript.NewToolCallRegistry()
-		items := apptranscript.ProjectTurn("turn_1", 1, schema.Turn{Kind: schema.TurnAssistant, Message: announce, Timestamp: wireFixtureStart}, reg, nil, nil)
-		items = append(items, apptranscript.ProjectTurn("turn_1", 2, schema.Turn{Kind: schema.TurnToolResults, Message: results, Timestamp: wireFixtureStart.Add(2 * time.Second)}, reg, nil, nil)...)
+		items, _ := apptranscript.ProjectTurnParts("turn_1", 1, schema.Turn{Kind: schema.TurnAssistant, Message: announce, Timestamp: wireFixtureStart}, reg, nil, nil)
+		resultItems, _ := apptranscript.ProjectTurnParts("turn_1", 2, schema.Turn{Kind: schema.TurnToolResults, Message: results, Timestamp: wireFixtureStart.Add(2 * time.Second)}, reg, nil, nil)
+		items = append(items, resultItems...)
 
 		relocate := strings.NewReplacer(
 			receipt.DelegateID, subagentWireDelegateID,

@@ -65,7 +65,7 @@ func TestAuthorshipProjection(t *testing.T) {
 	} {
 		turn := schema.NewTurn(schema.TurnUserInput, llm.User("input"))
 		turn.Authorship = tc.a
-		items := ProjectTurn("turn", 1, turn, nil, nil, nil)
+		items, _ := ProjectTurnParts("turn", 1, turn, nil, nil, nil)
 		assertAuthorJSON(t, items[0], tc.want)
 	}
 }
@@ -75,14 +75,14 @@ func TestAuthorshipCommunicateWindow(t *testing.T) {
 		reg := NewToolCallRegistry()
 		call := schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "call", Name: "communicate", Arguments: json.RawMessage(`{"message":"delivered"}`)}}}})
 		call.Authorship = &schema.TranscriptAuthorship{Author: schema.TranscriptAuthor{Kind: schema.TranscriptAuthorAgent, SessionID: "parent"}, Inherited: true}
-		ProjectTurn("turn", 1, call, reg, nil, nil)
+		ProjectTurnParts("turn", 1, call, reg, nil, nil)
 		var items []appwire.ThreadItem
 		if pending {
 			items = flushUnpairedCommunicateItems(reg, "turn")
 		} else {
 			result := schema.NewTurn(schema.TurnToolResults, llm.Message{Content: []llm.ContentPart{{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "call"}}}})
 			result.Authorship = &schema.TranscriptAuthorship{Author: schema.TranscriptAuthor{Kind: schema.TranscriptAuthorAgent, SessionID: "child"}}
-			items = ProjectTurn("turn", 2, result, reg, nil, nil)
+			items, _ = ProjectTurnParts("turn", 2, result, reg, nil, nil)
 		}
 		if len(items) != 1 || items[0].Text != "delivered" || items[0].CallID != "call" {
 			t.Fatalf("items=%+v", items)
