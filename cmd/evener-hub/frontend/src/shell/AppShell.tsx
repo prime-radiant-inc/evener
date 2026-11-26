@@ -944,7 +944,12 @@ function AppShellContent({ client: injectedClient, bannerDelayMs, bannerCreateCl
   return (
     <ClientProvider client={client}>
       <MotionProvider>
-        <div className={styles.shell} data-single-pane={singlePane ? "" : undefined}>
+        <div
+          className={styles.shell}
+          data-mobile={isMobile ? "" : undefined}
+          data-desktop-workspace={isMobile ? undefined : ""}
+          data-single-pane={singlePane ? "" : undefined}
+        >
           <ConnectionBanner
             state={connectionState}
             delayMs={bannerDelayMs}

@@ -31,6 +31,7 @@
    * sidebar instead of floating beside it with a strip of shell between. */
   display: flex;
   flex-direction: row;
+  padding: 0;
   min-height: 0;
   min-width: 0;
   /* The activity sidebar enters from translateX(320px). Unclipped, that
@@ -71,21 +72,30 @@
  * the screen edges; the surface steps carry the structure. (No gap rule here:
  * .content has no gap at any width anymore - the flush sidebar is the desktop
  * rule too.) */
-@media (max-width: 899px) {
-  .shell {
-    position: fixed;
-    inset: 0;
-    width: 100%;
-    /* Let inset: 0 size the fixed mobile shell directly against the layout
-     * viewport instead of letting the shared height: 100dvh rule override
-     * bottom: 0 when dvh lags interactive-widget=resizes-content. */
-    height: auto;
-    /* Rides the composer up with iOS's on-screen keyboard: useKeyboardInset
-     * (see its header) feeds --keyboard-inset; 0px elsewhere. */
-    padding-bottom: var(--keyboard-inset, 0px);
+.shell[data-mobile] {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  /* Let inset: 0 size the fixed mobile shell directly against the layout
+   * viewport instead of letting the shared height: 100dvh rule override
+   * bottom: 0 when dvh lags interactive-widget=resizes-content. */
+  height: auto;
+  /* Rides the composer up with iOS's on-screen keyboard: useKeyboardInset
+   * (see its header) feeds --keyboard-inset; 0px elsewhere. */
+  padding-bottom: var(--keyboard-inset, 0px);
+}
+
+@media (display-mode: standalone) {
+  :global(:root) {
+    --home-safe-left: env(safe-area-inset-left, 0px);
+    --home-safe-right: env(safe-area-inset-right, 0px);
+    padding-left: var(--home-safe-left);
+    padding-right: var(--home-safe-right);
   }
 
-  .content {
-    padding: 0;
+  .shell[data-mobile] {
+    left: var(--home-safe-left);
+    right: var(--home-safe-right);
+    width: auto;
   }
 }

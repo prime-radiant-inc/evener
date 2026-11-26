@@ -51,7 +51,7 @@
      inset exists for. An in-flow slot below the body is the desktop case's
      shape and is not reproduced here. -->
 <main class="fixtures"></main>
-<span hidden id="browserScrim" style="background-image: linear-gradient(transparent, var(--surface-0) var(--space-5))"></span>
+<span hidden id="browserScrim" style="padding: var(--space-3) var(--space-4) var(--dock-clearance); background-image: linear-gradient(transparent, var(--surface-0) var(--space-5))"></span>
 <script>
 const fixtures = __LAYOUTGUARD_WIDTH_MATRIX__;
 
@@ -124,10 +124,16 @@ window.measure = () => {
       atBottom: Math.abs(scrollport.scrollHeight - scrollport.clientHeight - scrollport.scrollTop) < 2,
     };
   };
-  const expectedScrim = getComputedStyle(document.getElementById("browserScrim")).backgroundImage;
+  const expectedFooter = getComputedStyle(document.getElementById("browserScrim"));
+  const footer = getComputedStyle(document.querySelector("[data-footer]"));
+  const reader = document.querySelector('[data-pane="floating"]');
+  const frame = getComputedStyle(reader);
   return {
     footerHasBrowserScrim:
-      expectedScrim !== "none" && getComputedStyle(document.querySelector("[data-footer]")).backgroundImage === expectedScrim,
+      expectedFooter.backgroundImage !== "none" && footer.backgroundImage === expectedFooter.backgroundImage,
+    footerPaddingMatches: footer.padding === expectedFooter.padding,
+    paneFlush: frame.borderTopWidth === "0px" && frame.borderTopLeftRadius === "0px",
+    paneHeaderVisible: reader.querySelector(".header").getClientRects().length > 0,
     viewportHeight: document.documentElement.clientHeight,
     // A clipped fixture would make every reading below meaningless.
     documentHeight: document.documentElement.scrollHeight,

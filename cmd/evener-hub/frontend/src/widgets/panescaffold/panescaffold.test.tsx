@@ -4,9 +4,8 @@ import { fileURLToPath } from "node:url";
 import { render, screen } from "@testing-library/react";
 import { beforeEach, expect, test } from "vitest";
 import { chromeStore, resetChromeStoreForTests } from "../../shell/chromeStore";
-import { MOBILE_QUERY } from "../../shell/useIsMobile";
 import { requestPaneFocus, resetWorkspaceStoreForTests } from "../../shell/workspace";
-import { escapeRegExp, mediaBlock, readModuleCss, topRuleBlock } from "../../styles/cssBlock";
+import { readModuleCss, topRuleBlock } from "../../styles/cssBlock";
 import { PaneScaffold } from "./index";
 
 beforeEach(() => {
@@ -277,12 +276,6 @@ test("the footer fills to the screen's bottom edge while keeping its content cle
   const footerRule = css.match(/\.footer \{([^}]*)\}/)?.[1] ?? "";
   expect(footerRule).toContain("padding-bottom: calc(var(--space-3) + var(--dock-clearance))");
   expect(topRuleBlock(css, ".edgeFooter")).toContain("padding-bottom: var(--dock-clearance)");
-  // The phone keeps only keyboard-aware safe-area clearance below the card.
-  expect(css).toMatch(
-    new RegExp(
-      `@media ${escapeRegExp(MOBILE_QUERY)} \\{[\\s\\S]*?\\.footer \\{[^}]*padding: var\\(--space-3\\) var\\(--space-4\\);[^}]*padding-bottom: var\\(--dock-clearance\\)`,
-    ),
-  );
   // A flush edge footer below this one (the session status bar) is the pane's
   // bottom edge and owns the band at every width, including a landscape phone
   // whose width crosses the desktop shell boundary.
@@ -311,11 +304,6 @@ test("the body keeps end-of-scroll content clear of the home indicator", () => {
   expect(bodyRule).toContain("--pane-body-edge-inset: calc(var(--space-5) + var(--dock-clearance));");
   expect(topRuleBlock(css, ".body:not(:last-child)")).toContain("padding-bottom: 0");
   expect(topRuleBlock(css, ".body:last-child")).toContain("padding-bottom: var(--pane-body-edge-inset)");
-  // The phone changes only the step, and must use its own: a block repeating
-  // --space-5 would change nothing.
-  expect(mediaBlock(css, "max-width: 899px").replace(/\s+/g, " ")).toContain(
-    "--pane-body-edge-inset: calc(var(--space-4) + var(--dock-clearance));",
-  );
 });
 
 // The chrome-store title channel (2026-07-30-mobile-session-layout-design.md,
@@ -353,30 +341,6 @@ test("clears the chrome store title on unmount", async () => {
   const { unmount } = render(<PaneScaffold title="Sessions">content</PaneScaffold>);
   unmount();
   expect(chromeStore.getState().paneTitle).toBeNull();
-});
-
-// Mobile full-bleed + hidden header (2026-07-30-mobile-session-layout-design.md,
-// decisions 1 and 3): on the phone the pane loses its card chrome (the
-// top bar and surface steps carry the structure) and its header (the title
-// moved into StackHost's top bar via the chrome store).
-test("mobile: the pane sheds its border and radius to sit flush against the screen edges", () => {
-  const here = dirname(fileURLToPath(import.meta.url));
-  const css = readFileSync(join(here, "panescaffold.module.css"), "utf8");
-  const mobile = css.match(new RegExp(`@media ${escapeRegExp(MOBILE_QUERY)} \\{([\\s\\S]*?)\\n\\}`));
-  expect(mobile).not.toBeNull();
-  const paneRule = mobile![1]!.match(/\.pane \{([^}]*)\}/);
-  expect(paneRule).not.toBeNull();
-  expect(paneRule![1]).toContain("border: none");
-  expect(paneRule![1]).toContain("border-radius: 0");
-});
-
-test("mobile: the in-pane header is hidden - the title lives in the top bar", () => {
-  const here = dirname(fileURLToPath(import.meta.url));
-  const css = readFileSync(join(here, "panescaffold.module.css"), "utf8");
-  const mobile = css.match(new RegExp(`@media ${escapeRegExp(MOBILE_QUERY)} \\{([\\s\\S]*?)\\n\\}`));
-  const headerRule = mobile![1]!.match(/\.header \{([^}]*)\}/);
-  expect(headerRule).not.toBeNull();
-  expect(headerRule![1]).toContain("display: none");
 });
 
 test("mobile: the body can never scroll sideways - wide content is contained, not panned", () => {

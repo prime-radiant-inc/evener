@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { expect, test } from "vitest";
-import { blockBody, escapeRegExp, mediaBlock, readModuleCss, topRuleBlock } from "../../../styles/cssBlock";
+import { blockBody, escapeRegExp, readModuleCss, topRuleBlock } from "../../../styles/cssBlock";
 import { DUO_COVER_QUERY } from "./narrowComposer";
 
 // The floating composer (docs/web-ui/design-system.md §12) is pure stylesheet
@@ -13,8 +13,8 @@ import { DUO_COVER_QUERY } from "./narrowComposer";
 //    browser's rendered gradient scrim.
 //  - The session pane's own stylesheet sizes the scrollable reserve that lets
 //    the last turn clear the floating composer: the end inset row measures to
-//    the chrome's measured height plus the home-indicator band only under the
-//    phone's gate, topped up by the floating stack's own clearance, and the
+//    the chrome's measured height plus the home-indicator band in mobile
+//    sessions, topped up by the floating stack's own clearance, and the
 //    dormant attention dock and live FlowOverlay stack ride above the same
 //    reserve.
 //  - PromptCard's phone block turns the composer card - and only the
@@ -47,21 +47,20 @@ function ruleIn(block: string, selectorPattern: RegExp): string {
 }
 
 test("a phone session pane floats its footer over the transcript", () => {
-  const phone = mediaBlock(scaffoldCss, "max-width: 899px");
   // The pane itself must establish a non-scrolling containing block so an
   // absolutely positioned footer anchors to the pane in narrow/split hosts
   // rather than escaping to the viewport, and focus-into-view on a bottom-flush
   // button cannot scroll .pane and lift the footer off the bottom edge.
-  const pane = ruleIn(phone, new RegExp(`${SESSION_PANE}\\s*\\{`));
+  const pane = ruleIn(scaffoldCss, new RegExp(`${SESSION_PANE}\\s*\\{`));
   expect(pane).toMatch(/position:\s*relative/);
   expect(pane).toMatch(/overflow:\s*clip/);
-  const footer = ruleIn(phone, new RegExp(`${SESSION_PANE} > \\.footer\\s*\\{`));
+  const footer = ruleIn(scaffoldCss, new RegExp(`${SESSION_PANE} > \\.footer\\s*\\{`));
   expect(footer).toMatch(/position:\s*absolute/);
   // The overlay spans the pane's width; its gutters must not eat scroll
   // gestures aimed at the transcript behind them.
   expect(footer).toMatch(/pointer-events:\s*none/);
 
-  const reachable = ruleIn(phone, new RegExp(`${SESSION_PANE} > \\.footer > \\*\\s*\\{`));
+  const reachable = ruleIn(scaffoldCss, new RegExp(`${SESSION_PANE} > \\.footer > \\*\\s*\\{`));
   expect(reachable).toMatch(/pointer-events:\s*auto/);
 
   // The Duo-cover footer override must carry the same edge-footer exemption so
@@ -71,26 +70,17 @@ test("a phone session pane floats its footer over the transcript", () => {
   expect(duoFooter).toMatch(/padding-bottom:\s*var\(--dock-clearance\)/);
 
   const UNGATED_SESSION_PANE = escapeRegExp('.pane:has(> .body[data-pane-scaffold^="session:"])');
-  expect(phone, "phone floating rules must exempt panes carrying an edgeFooter").not.toMatch(
-    new RegExp(`${UNGATED_SESSION_PANE}(?:\\s|>|\\{)`),
-  );
-  expect(duo, "Duo-cover footer rule must exempt panes carrying an edgeFooter").not.toMatch(
-    new RegExp(`${UNGATED_SESSION_PANE}(?:\\s|>|\\{)`),
+  expect(scaffoldCss, "floating rules must exempt panes carrying an edgeFooter").not.toMatch(
+    new RegExp(`${UNGATED_SESSION_PANE}\\s*(?:\\{|>\\s*\\.footer\\b)`),
   );
 });
 
 test("the transcript carries a scrollable reserve under the floating composer on the phone", () => {
-  const phone = mediaBlock(sessionCss, "max-width: 899px");
   // Scoped to session panes so cascade columns (data-pane-scaffold="cascade",
   // which keep an in-flow footer) retain --floating-composer-reserve: 0px.
-  expect(phone, "phone reserve must not match an unscoped .contentColumn (such as a cascade column)").not.toMatch(
-    /(?:^|[}\n])\s*\.contentColumn\s*\{/,
-  );
-  expect(phone, "phone reserve must exempt session panes carrying an edgeFooter (narrow desktop popouts)").not.toMatch(
-    /:global\(\[data-pane-scaffold\^="session:"\]\)\s+\.contentColumn\s*\{/,
-  );
+  expect(topRuleBlock(sessionCss, ".contentColumn")).toMatch(/--floating-composer-reserve:\s*0px/);
   const SESSION_BODY = escapeRegExp(':global([data-pane-scaffold^="session:"]):not([data-has-edge-footer="true"])');
-  const column = ruleIn(phone, new RegExp(`${SESSION_BODY}\\s+\\.contentColumn\\s*\\{`));
+  const column = ruleIn(sessionCss, new RegExp(`${SESSION_BODY}\\s+\\.contentColumn\\s*\\{`));
   // The reserve is the chrome's measured height - the footer ConversationBody
   // publishes - plus the home-indicator band, with the resting composer's
   // height as its pre-measure fallback.
@@ -105,7 +95,7 @@ test("the transcript carries a scrollable reserve under the floating composer on
   expect(inset).toMatch(
     /height:\s*max\(0px,\s*calc\(var\(--floating-composer-reserve\)\s*-\s*var\(--overlay-clearance,\s*0px\)\)\)/,
   );
-  const dock = ruleIn(phone, /\.attentionDock\s*\{/);
+  const dock = ruleIn(sessionCss, /\.attentionDock\s*\{/);
   expect(dock).toMatch(/bottom:\s*calc\([\s\S]*--floating-composer-reserve/);
 
   // The live FlowOverlay stack anchors to bottom: 0 and carries its gutter,
@@ -117,10 +107,9 @@ test("the transcript carries a scrollable reserve under the floating composer on
 });
 
 test("the composer card becomes the floating surface on the phone, and only the composer's", () => {
-  const phone = mediaBlock(cardCss, "max-width: 899px");
   // Scoped to the composer's anchor so the spawn pane's shared card keeps its
   // framed look inside a scrolling form body.
-  const card = ruleIn(phone, /\[data-composer\][^{]*\.card\s*\{/);
+  const card = ruleIn(cardCss, /\[data-composer\][^{]*\.card\s*\{/);
   expect(card).toMatch(/border:\s*none/);
   expect(card).toMatch(/background:\s*transparent/);
   // Never put backdrop-filter on .card itself: a non-none backdrop-filter makes
@@ -128,7 +117,7 @@ test("the composer card becomes the floating surface on the phone, and only the 
   // SessionMenu dialogs (Rename, Shut down, Force stop, Delete) inside the card.
   expect(card).not.toMatch(/backdrop-filter/);
 
-  const surface = ruleIn(phone, /\[data-composer\][^{]*\.card::before\s*\{/);
+  const surface = ruleIn(cardCss, /\[data-composer\][^{]*\.card::before\s*\{/);
   expect(surface).toMatch(/position:\s*absolute/);
   expect(surface).toMatch(/inset:\s*0/);
   expect(surface).toMatch(/border-radius:\s*inherit/);
@@ -140,14 +129,14 @@ test("the composer card becomes the floating surface on the phone, and only the 
   // above ::before in tree order without isolation: isolate (which would form
   // a backdrop root and stop ::before from blurring the transcript) and
   // without position: relative (which would trap .attachSlot inside .controls).
-  const children = ruleIn(phone, /\[data-composer\][^{]*\.card\s*>\s*\*\s*\{/);
+  const children = ruleIn(cardCss, /\[data-composer\][^{]*\.card\s*>\s*\*\s*\{/);
   expect(children).toMatch(/z-index:\s*0/);
   expect(children).not.toMatch(/position:\s*relative/);
 
   // The card keeps the panel radius in every state: the pill is control
   // geometry, never a surface shape, so the folded one-row shape stays
   // concentric with its control-radius verbs instead of colliding with them.
-  expect(phone, "the folded card must not re-round on the phone").not.toMatch(
+  expect(cardCss, "the folded card must not re-round on the phone").not.toMatch(
     /\[data-composer\][^{]*\.card\[data-folded="true"\]\s*\{[^}]*border-radius/,
   );
 });

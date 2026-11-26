@@ -35,8 +35,7 @@
 
 /* A cluster's rows on a phone, where the nav is the master list: one grouped
  * surface (styles/surface.module.css) with a hairline between rows. The pane
- * picks between the two by useIsMobile, the same 899px boundary as the phone
- * block below. */
+ * follows the workspace's mobile layout. */
 .clusterRowsGrouped {
   composes: grouped from "../../styles/surface.module.css";
   /* biome-ignore lint/suspicious/noDuplicateProperties: css-modules composes takes one declaration per composed class, each with its own `from` */
@@ -67,24 +66,14 @@
   display: none;
 }
 
-/* Mobile (<900px, matching useIsMobile's query): the nav is a full-screen
- * master list, not a 200px rail - full width, honest 44px rows (--tap-min,
- * tokens.css's phone block, per 2026-07-30-mobile-session-layout-design.md
- * decision 4), a visible drill-in chevron per row, and the filter pinned to
- * the top of the list's own scroll. While a section detail shows
- * (.shellDetail - Settings.tsx's marker for "a section is focused"), the
- * list hides but stays mounted: the compound `.shellDetail .nav` selector
- * out-specifies .nav's own display:flex above, which is what lets the nav
- * keep its filter text and scroll position instead of being conditionally
- * rendered. .shellDetail is declared ONLY inside this media query (it means
- * nothing on desktop) - CSS modules exports media-nested locals the same as
- * top-level ones, so requireClass still sees it. */
-@media (max-width: 899px) {
+/* The mobile workspace drills into one section at a time. Keep the list
+ * mounted behind a detail so its filter and scroll position survive Back. */
+.shell:where([data-mobile-view]) {
   .nav {
     width: 100%;
   }
 
-  .shellDetail .nav {
+  &[data-mobile-view="detail"] .nav {
     display: none;
   }
 

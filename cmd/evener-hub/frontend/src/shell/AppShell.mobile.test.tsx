@@ -22,7 +22,7 @@ import { activityDetailsThread, answerActivityRead } from "../stores/sessionActi
 import { resetSettingsHostForTests } from "../stores/settingsHost";
 import { resetSettingsOverviewStoreForTests } from "../stores/settingsOverview";
 import { initTranscriptDisplay } from "../stores/transcriptDisplay";
-import { escapeRegExp, readModuleCss } from "../styles/cssBlock";
+import { readModuleCss, topRuleBlock } from "../styles/cssBlock";
 import { AppShell } from "./AppShell";
 import {
   installLocation,
@@ -36,7 +36,6 @@ import {
 } from "./appShellTestUtils";
 import { paletteStore } from "./palette/paletteController";
 import { navigate } from "./routing";
-import { MOBILE_QUERY } from "./useIsMobile";
 import { getDockviewApi, resetWorkspaceStoreForTests, workspaceStore } from "./workspace";
 
 const paneFor = (ref: string) =>
@@ -113,39 +112,17 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-// --- mobile full-bleed shell (2026-07-30-mobile-session-layout-design.md, decision 1) ---
-// jsdom performs no layout, so media-query rules are verified by reading the
-// CSS module's own source, the same way panescaffold.test.tsx verifies its
-// truncation rule.
-
 test("mobile: the shell content frame drops its padding so the workspace is full-bleed", () => {
-  const here = dirname(fileURLToPath(import.meta.url));
-  const css = readFileSync(join(here, "AppShell.module.css"), "utf8");
-  const mobile = css.match(new RegExp(`@media ${escapeRegExp(MOBILE_QUERY)} \\{([\\s\\S]*?)\\n\\}`));
-  expect(mobile).not.toBeNull();
-  const contentRule = mobile![1]!.match(/\.content \{([^}]*)\}/);
-  expect(contentRule).not.toBeNull();
-  expect(contentRule![1]).toContain("padding: 0");
-  // The flush sidebar is the rule at EVERY width now, so the mobile block
-  // carries no gap reset of its own; a gap: here would mean someone added
-  // one back on .content above, which the full-bleed contract test forbids.
-  expect(contentRule![1]).not.toContain("gap:");
+  const content = topRuleBlock(readModuleCss(import.meta.url, "AppShell.module.css"), ".content");
+  expect(content).toContain("padding: 0");
+  expect(content).not.toContain("gap:");
 });
 
 test("mobile: the shell spends --keyboard-inset as bottom padding so the composer clears the on-screen keyboard", () => {
-  // See useKeyboardInset.ts's header for the mechanism. Comments are stripped
-  // before matching (testing.md: a comment quoting the declaration must not
-  // satisfy the assertion).
   const css = readModuleCss(import.meta.url, "AppShell.module.css");
-  const supports = css.match(/@supports \(height: 100dvh\) \{([\s\S]*?)\n\}/);
-  const mobile = css.match(new RegExp(`@media ${escapeRegExp(MOBILE_QUERY)} \\{([\\s\\S]*?)\\n\\}`));
-  expect(supports).not.toBeNull();
-  expect(mobile).not.toBeNull();
-  expect(mobile!.index).toBeGreaterThan(supports!.index ?? -1);
-  const shellRule = mobile![1]!.match(/\.shell \{([\s\S]*?)\n[ ]{2}\}/);
-  expect(shellRule).not.toBeNull();
-  expect(shellRule![0]).toContain("height: auto");
-  expect(shellRule![0]).toContain("padding-bottom: var(--keyboard-inset, 0px)");
+  const mobile = topRuleBlock(css, ".shell[data-mobile]");
+  expect(mobile).toContain("height: auto");
+  expect(mobile).toContain("padding-bottom: var(--keyboard-inset, 0px)");
 });
 
 test("mobile: the shared shell follows the visible viewport while retaining a vh fallback", () => {

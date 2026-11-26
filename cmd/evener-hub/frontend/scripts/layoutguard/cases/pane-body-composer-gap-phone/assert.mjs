@@ -32,6 +32,12 @@ export default function assert(measurement) {
   if (!floating.atBottom) {
     failures.push("the session fixture's scroll port was not settled at its true bottom, so its gap is meaningless");
   }
+  if (!measurement.paneFlush || measurement.paneHeaderVisible) {
+    failures.push("the mobile reader must be flush and leave its title to the stack header");
+  }
+  if (!measurement.footerPaddingMatches) {
+    failures.push("the mobile footer does not use the phone insets and home-indicator clearance");
+  }
   if (!measurement.footerHasBrowserScrim) {
     failures.push("the browser footer must fade from transparent to the pane surface behind the composer");
   }

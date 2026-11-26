@@ -74,6 +74,13 @@ describe("useKeyboardInset", () => {
     vv.fire("resize");
     expect(document.documentElement.style.getPropertyValue("--keyboard-inset")).toBe("368px");
 
+    for (const height of [-33554432, -21, 0]) {
+      vv.height = height; // WebKit is switching displays during a fold.
+      vv.fire("resize");
+      expect(document.documentElement.style.getPropertyValue("--keyboard-inset")).toBe("0px");
+    }
+
+    vv.height = 400;
     vv.offsetTop = 100; // Safari scrolled the visual viewport down
     vv.fire("scroll");
     expect(document.documentElement.style.getPropertyValue("--keyboard-inset")).toBe("268px");

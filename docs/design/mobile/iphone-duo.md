@@ -12,6 +12,18 @@ followed by Find and Overview. An expanded Board owns its own toggle. Inner
 portrait keeps the actions above the reader. Attach, Send, and the composer
 menu stay with the text field in every pose.
 
+## Home Screen and Safari
+
+A hub added to the Home Screen rotates on both displays. The installed workspace
+subtracts the horizontal safe-area insets before choosing its layout. When iOS
+leaves one side wide enough for touch controls, Back or Sessions, Find, and
+Overview move to that edge below the system status area. With no available edge,
+the actions stay above the reader. The New session button stays with the Board,
+aligned with Send in the adjacent composer.
+
+Safari supplies its own browser controls and viewport. Conversation actions stay
+in the web header in a browser tab.
+
 ## On-device Board layout
 
 In **Work on this iPhone**, the split follows the window's point size. A window

@@ -159,11 +159,49 @@
 }
 
 /* The system edge bar owns the controls. Only the reader title occupies the row. */
-.topBar[data-system-edge-actions] {
+.topBar[data-system-edge-actions],
+.topBar[data-home-edge] {
   padding: var(--space-2) var(--space-4);
 }
 
 .topBar[data-system-edge-actions] :is(.leading, .trailing) {
+  display: none;
+}
+
+/* The Home Screen grants the document this edge below the system clock.
+ * Anchor at the bottom so a rotation cannot put an action under the camera. */
+.homeToolbar {
+  position: fixed;
+  bottom: calc(var(--dock-clearance) + var(--keyboard-inset, 0px) + var(--space-3));
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
+  z-index: var(--z-sticky-bar);
+}
+
+.homeToolbar[hidden] {
+  display: none;
+}
+
+.homeToolbar[data-home-toolbar="left"] {
+  left: 0;
+  width: var(--home-safe-left);
+}
+
+.homeToolbar[data-home-toolbar="right"] {
+  right: 0;
+  width: var(--home-safe-right);
+}
+
+.homeToolbar :is(.leading, .trailing):not(:empty) {
+  flex-direction: column;
+  border-radius: var(--radius-pill);
+  background: var(--glass-fill, var(--surface-1));
+  box-shadow: var(--glass-shadow);
+}
+
+.homeToolbar .leading:empty {
   display: none;
 }
 
