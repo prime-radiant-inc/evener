@@ -1219,11 +1219,11 @@ func TestLaunchCheckModelsCarriesEffortLevelsForCommandCredentialedRows(t *testi
 }
 
 // TestLaunchCheckSequentialStallsKeepHealthyRowsInChildBudget is the control
-// for the shared listing budget. The hub kills a launch check at 30s. Under the
-// old shared 15s budget, two stalled non-Copilot endpoints spent that whole
-// budget (30s), so a healthy provider listed after them lost its rows. Each
-// non-Copilot route now gets the previous 8s (16s for the pair), leaving room
-// for the healthy rows. A Copilot route keeps its 15s session-exchange budget.
+// for the shared listing budget. The hub kills a launch check at 30s. Each
+// non-Copilot route gets an 8s listing budget and runs concurrently, so two
+// stalled non-Copilot endpoints finish together at 8s instead of summing to
+// 16s, leaving room for healthy rows inside the 30s child budget. A Copilot
+// route keeps its 15s session-exchange budget.
 func TestLaunchCheckSequentialStallsKeepHealthyRowsInChildBudget(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		provider := func() registry.Provider {
@@ -1275,8 +1275,8 @@ func TestLaunchCheckSequentialStallsKeepHealthyRowsInChildBudget(t *testing.T) {
 		if err != nil {
 			t.Fatalf("launchCheckModels: %v", err)
 		}
-		if elapsed := time.Since(start); elapsed != 16*time.Second {
-			t.Fatalf("two stalled non-Copilot listings took %s, want 16s of the 30s child budget", elapsed)
+		if elapsed := time.Since(start); elapsed != 8*time.Second {
+			t.Fatalf("two stalled non-Copilot listings took %s, want 8s of the 30s child budget", elapsed)
 		}
 		if len(diagnostics) != 2 {
 			t.Fatalf("diagnostics = %v, want one per stalled endpoint", diagnostics)
