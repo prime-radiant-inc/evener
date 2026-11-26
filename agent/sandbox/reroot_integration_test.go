@@ -53,7 +53,7 @@ func runArgv(t *testing.T, argv []string, rp ResolvedPolicy, sessionTmp string) 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
-	cmd.Env = ApplyEnvFloor(os.Environ(), rp, sessionTmp)
+	cmd.Env = ApplyEnvFloor(os.Environ(), rp, sessionTmp, rp.SessionDir)
 	cmd.ExtraFiles = nil
 	out, err := cmd.CombinedOutput()
 	return string(out), err

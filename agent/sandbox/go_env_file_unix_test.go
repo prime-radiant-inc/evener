@@ -68,7 +68,7 @@ func TestEnvFloorJudgesGoEnvFileReadabilityAtEachSpawn(t *testing.T) {
 
 	healthy := func(when string) {
 		t.Helper()
-		out := ApplyEnvFloor(env, overlay, tmp)
+		out := ApplyEnvFloor(env, overlay, tmp, overlay.SessionDir)
 		if v, _ := envValue(out, "GOENV"); v != envFile {
 			t.Errorf("%s: a readable go env file must stay on, got GOENV=%q", when, v)
 		}
@@ -85,7 +85,7 @@ func TestEnvFloorJudgesGoEnvFileReadabilityAtEachSpawn(t *testing.T) {
 		t.Skipf("no FIFO support: %v", err)
 	}
 	for _, policy := range []ResolvedPolicy{overlay, private} {
-		out := ApplyEnvFloor(env, policy, tmp)
+		out := ApplyEnvFloor(env, policy, tmp, policy.SessionDir)
 		if v, _ := envValue(out, "GOENV"); v != "off" {
 			t.Errorf("%v: a go env file that became a FIFO must be turned off, got %q", policy.CacheStrategy, v)
 		}
@@ -97,7 +97,7 @@ func TestEnvFloorJudgesGoEnvFileReadabilityAtEachSpawn(t *testing.T) {
 	if err := os.WriteFile(other, []byte("GOPROXY=direct\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if v, _ := envValue(ApplyEnvFloor([]string{"HOME=" + home, "GOENV=" + other}, overlay, tmp), "GOENV"); v != other {
+	if v, _ := envValue(ApplyEnvFloor([]string{"HOME=" + home, "GOENV=" + other}, overlay, tmp, overlay.SessionDir), "GOENV"); v != other {
 		t.Errorf("a healthy go env file the spawn names must stay on, got %q", v)
 	}
 
@@ -113,7 +113,8 @@ func TestEnvFloorKeepsGoEnvOnForAnUnreadableHiddenFile(t *testing.T) {
 	if err := syscall.Mkfifo(envFile, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	out := ApplyEnvFloor([]string{"HOME=/fixture-home/u", "GOENV=" + envFile}, policyFor(filepath.Dir(envFile)), "/tmp/evener-session-xyz")
+	policy := policyFor(filepath.Dir(envFile))
+	out := ApplyEnvFloor([]string{"HOME=/fixture-home/u", "GOENV=" + envFile}, policy, "/tmp/evener-session-xyz", policy.SessionDir)
 	if v, _ := envValue(out, "GOENV"); v == "off" {
 		t.Errorf("a hidden go env file must not turn GOENV off")
 	}
@@ -132,7 +133,7 @@ func TestEnvFloorTurnsGoEnvOffForAFIFOInATmpWorktree(t *testing.T) {
 		t.Fatal(err)
 	}
 	policy := ResolvedPolicy{Mode: ModeWorkspaceWrite, Backend: BackendBwrap, CacheStrategy: CacheSessionPrivate, Spawned: AccessScope{Read: ReadAnywhere}, resolveHost: HostFacts{OS: "linux", Home: "/fixture-home/u", GoEnvFile: envFile}}
-	out := ApplyEnvFloor([]string{"HOME=/fixture-home/u", "GOENV=" + envFile}, policy, "/tmp/evener-session-xyz")
+	out := ApplyEnvFloor([]string{"HOME=/fixture-home/u", "GOENV=" + envFile}, policy, "/tmp/evener-session-xyz", policy.SessionDir)
 	if v, _ := envValue(out, "GOENV"); v != "off" {
 		t.Errorf("a FIFO go env file in a /tmp worktree must turn GOENV off, got %q", v)
 	}

@@ -53,7 +53,7 @@ func runWrapped(t *testing.T, facts HostFacts, mode Mode, netOn bool, cwd, sessi
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	// Mirror the real spawn sites: raise the sandbox env floor (TMPDIR + cache
 	// redirect + secret drops) and inherit no extra fds.
-	cmd.Env = ApplyEnvFloor(os.Environ(), rp, sessionTmp)
+	cmd.Env = ApplyEnvFloor(os.Environ(), rp, sessionTmp, rp.SessionDir)
 	cmd.ExtraFiles = nil
 	out, err := cmd.CombinedOutput()
 	return string(out), err
@@ -184,7 +184,7 @@ fi
 echo ACCESS-OK`
 			argv := w.Wrap([]string{"/bin/bash", "-c", script, "read-roots-test", cwd, grantArg, sessionTmp, base}, cwd)
 			cmd := exec.CommandContext(t.Context(), argv[0], argv[1:]...)
-			cmd.Env = ApplyEnvFloor(os.Environ(), rp, sessionTmp)
+			cmd.Env = ApplyEnvFloor(os.Environ(), rp, sessionTmp, rp.SessionDir)
 			out, err := cmd.CombinedOutput()
 			if err != nil {
 				t.Fatalf("temporary read roots failed: %v\n%s", err, out)
@@ -403,7 +403,7 @@ if test -e "$4"; then echo ELSEWHERE-VISIBLE; fi`
 			}
 			argv := w.Wrap([]string{"/bin/bash", "-c", script, "scratch-tree-test", preserved, parentScratch, ownScratch, elsewhere}, cwd)
 			cmd := exec.CommandContext(t.Context(), argv[0], argv[1:]...)
-			cmd.Env = ApplyEnvFloor(os.Environ(), rp, ownScratch)
+			cmd.Env = ApplyEnvFloor(os.Environ(), rp, ownScratch, rp.SessionDir)
 			raw, err := cmd.CombinedOutput()
 			out := string(raw)
 			if err != nil {
@@ -481,7 +481,7 @@ func TestBwrapCacheHoldingAWritableRootIsNotOverlaid(t *testing.T) {
 		// This host refuses the fixture's filesystem as an overlay lower, which is
 		// exactly the case #4220 degrades: the cache is not overlaid, and the floor
 		// sends what names it to the session scratch instead.
-		floored := ApplyEnvFloor([]string{"HOME=" + home}, w.Policy(), w.SessionTmp())
+		floored := ApplyEnvFloor([]string{"HOME=" + home}, w.Policy(), w.SessionTmp(), w.Policy().SessionDir)
 		if v, _ := envValue(floored, "npm_config_cache"); !strings.HasPrefix(v, w.SessionTmp()+"/") {
 			t.Errorf("a cache root this host cannot overlay must be redirected to the session scratch, got %q", v)
 		}
@@ -562,7 +562,7 @@ func TestBwrapShellReadsEvenerContentThroughTheCredentialMask(t *testing.T) {
 				}
 				argv := w.Wrap(fx.scriptCommand("/bin/bash"), cwd)
 				cmd := exec.CommandContext(t.Context(), argv[0], argv[1:]...)
-				cmd.Env = ApplyEnvFloor(os.Environ(), rp, w.SessionTmp())
+				cmd.Env = ApplyEnvFloor(os.Environ(), rp, w.SessionTmp(), rp.SessionDir)
 				out, err := cmd.CombinedOutput()
 				if err != nil {
 					t.Fatalf("sandboxed command failed: %v\n%s", err, out)

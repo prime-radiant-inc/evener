@@ -123,7 +123,7 @@ func TestEnvFloorPutsTheToolchainAheadOfTheSystemDirs(t *testing.T) {
 	const bin = "/Applications/Xcode.app/Contents/Developer/usr/bin"
 	policy := ResolvedPolicy{Mode: ModeRestricted, ToolchainBinDir: bin}
 
-	out := ApplyEnvFloor([]string{"PATH=/opt/homebrew/bin:/usr/bin:/bin"}, policy, "")
+	out := ApplyEnvFloor([]string{"PATH=/opt/homebrew/bin:/usr/bin:/bin"}, policy, "", policy.SessionDir)
 	got, _ := envValue(out, "PATH")
 	want := "/opt/homebrew/bin:" + bin + ":/usr/bin:/bin"
 	if got != want {
@@ -138,7 +138,7 @@ func TestEnvFloorKeepsUserToolPrecedence(t *testing.T) {
 	const bin = "/Applications/Xcode.app/Contents/Developer/usr/bin"
 	policy := ResolvedPolicy{Mode: ModeRestricted, ToolchainBinDir: bin}
 
-	out := ApplyEnvFloor([]string{"PATH=/fixture-home/u/bin:/opt/homebrew/bin"}, policy, "")
+	out := ApplyEnvFloor([]string{"PATH=/fixture-home/u/bin:/opt/homebrew/bin"}, policy, "", policy.SessionDir)
 	got, _ := envValue(out, "PATH")
 	if want := "/fixture-home/u/bin:/opt/homebrew/bin:" + bin; got != want {
 		t.Errorf("with no system dir on PATH the toolchain goes last: got %q, want %q", got, want)
@@ -148,13 +148,13 @@ func TestEnvFloorKeepsUserToolPrecedence(t *testing.T) {
 func TestEnvFloorLeavesPathAloneWithoutAToolchain(t *testing.T) {
 	t.Parallel()
 	in := []string{"PATH=/usr/bin:/bin"}
-	out := ApplyEnvFloor(in, ResolvedPolicy{Mode: ModeRestricted}, "")
+	out := ApplyEnvFloor(in, ResolvedPolicy{Mode: ModeRestricted}, "", "")
 	if got, _ := envValue(out, "PATH"); got != "/usr/bin:/bin" {
 		t.Errorf("PATH must be untouched when no toolchain is named, got %q", got)
 	}
 
 	// No PATH in, no PATH out: the floor never invents a search path.
-	out = ApplyEnvFloor([]string{"HOME=/fixture-home/u"}, ResolvedPolicy{Mode: ModeRestricted, ToolchainBinDir: "/x/usr/bin"}, "")
+	out = ApplyEnvFloor([]string{"HOME=/fixture-home/u"}, ResolvedPolicy{Mode: ModeRestricted, ToolchainBinDir: "/x/usr/bin"}, "", "")
 	if _, ok := envValue(out, "PATH"); ok {
 		t.Errorf("the floor must not invent a PATH: %v", out)
 	}
@@ -165,7 +165,7 @@ func TestEnvFloorDoesNotDuplicateTheToolchainEntry(t *testing.T) {
 	const bin = "/Applications/Xcode.app/Contents/Developer/usr/bin"
 	policy := ResolvedPolicy{Mode: ModeRestricted, ToolchainBinDir: bin}
 
-	out := ApplyEnvFloor([]string{"PATH=" + bin + ":/usr/bin"}, policy, "")
+	out := ApplyEnvFloor([]string{"PATH=" + bin + ":/usr/bin"}, policy, "", policy.SessionDir)
 	got, _ := envValue(out, "PATH")
 	if strings.Count(got, bin) != 1 {
 		t.Errorf("the toolchain must appear once, got %q", got)
@@ -176,7 +176,7 @@ func TestEnvFloorDoesNotDuplicateTheToolchainEntry(t *testing.T) {
 
 	// A trailing slash names the same directory, so it is still already there.
 	// Comparing raw strings would have appended a second, cleaned copy.
-	out = ApplyEnvFloor([]string{"PATH=" + bin + "/:/usr/bin"}, policy, "")
+	out = ApplyEnvFloor([]string{"PATH=" + bin + "/:/usr/bin"}, policy, "", policy.SessionDir)
 	got, _ = envValue(out, "PATH")
 	if want := bin + "/:/usr/bin"; got != want {
 		t.Errorf("a differently-spelled toolchain entry must not be duplicated: got %q, want %q", got, want)
@@ -185,7 +185,7 @@ func TestEnvFloorDoesNotDuplicateTheToolchainEntry(t *testing.T) {
 	// The toolchain listed AFTER a system directory is still present, so there is
 	// nothing to insert — checking for it only up to the insertion point would
 	// have added a second copy.
-	out = ApplyEnvFloor([]string{"PATH=/usr/bin:" + bin}, policy, "")
+	out = ApplyEnvFloor([]string{"PATH=/usr/bin:" + bin}, policy, "", policy.SessionDir)
 	got, _ = envValue(out, "PATH")
 	if want := "/usr/bin:" + bin; got != want {
 		t.Errorf("a toolchain behind a system dir must not be duplicated: got %q, want %q", got, want)
@@ -199,7 +199,7 @@ func TestEnvFloorDoesNotDuplicateTheToolchainEntry(t *testing.T) {
 func TestEnvFloorLeavesAnEmptyPathEmpty(t *testing.T) {
 	t.Parallel()
 	policy := ResolvedPolicy{Mode: ModeRestricted, ToolchainBinDir: "/x/usr/bin"}
-	out := ApplyEnvFloor([]string{"PATH="}, policy, "")
+	out := ApplyEnvFloor([]string{"PATH="}, policy, "", policy.SessionDir)
 	if got, ok := envValue(out, "PATH"); !ok || got != "" {
 		t.Errorf("PATH = %q (present=%v), want an untouched empty value", got, ok)
 	}
@@ -210,7 +210,7 @@ func TestEnvFloorPathRewriteDoesNotMutateInput(t *testing.T) {
 	t.Parallel()
 	in := []string{"PATH=/usr/bin:/bin", "HOME=/fixture-home/u"}
 	before := slices.Clone(in)
-	ApplyEnvFloor(in, ResolvedPolicy{Mode: ModeRestricted, ToolchainBinDir: "/x/usr/bin"}, "")
+	ApplyEnvFloor(in, ResolvedPolicy{Mode: ModeRestricted, ToolchainBinDir: "/x/usr/bin"}, "", "")
 	if !slices.Equal(in, before) {
 		t.Errorf("ApplyEnvFloor mutated its input: %v", in)
 	}
