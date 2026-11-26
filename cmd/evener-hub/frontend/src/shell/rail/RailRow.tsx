@@ -116,6 +116,9 @@ export const RailFlatContext = createContext(false);
 
 const CLASS = {
   railRow: requireClass(styles.railRow, "RailRow.module.css", "railRow"),
+  stackedRow: requireClass(styles.stackedRow, "RailRow.module.css", "stackedRow"),
+  topRow: requireClass(styles.topRow, "RailRow.module.css", "topRow"),
+  belowRow: requireClass(styles.belowRow, "RailRow.module.css", "belowRow"),
   flatSession: requireClass(styles.flatSession, "RailRow.module.css", "flatSession"),
   flatStatus: requireClass(styles.flatStatus, "RailRow.module.css", "flatStatus"),
   flatMeta: requireClass(styles.flatMeta, "RailRow.module.css", "flatMeta"),
@@ -788,8 +791,9 @@ function RailRowShell({
   right?: ReactNode;
   activateOnTextCol?: boolean;
 }) {
-  return (
-    <span ref={rowRef} className={rowClassName ? `${CLASS.railRow} ${rowClassName}` : CLASS.railRow} {...rowProps}>
+  const className = [CLASS.railRow, below && CLASS.stackedRow, rowClassName].filter(Boolean).join(" ");
+  const main = (
+    <>
       {/* biome-ignore lint/a11y/noStaticElementInteractions: mouse shortcut only - the treeitem owns keyboard activation and the accessible name */}
       {/* biome-ignore lint/a11y/useKeyWithClickEvents: mouse shortcut only - the treeitem owns keyboard activation and the accessible name */}
       <span className={CLASS.textCol} onClick={activateOnTextCol ? info.activate : undefined}>
@@ -799,9 +803,24 @@ function RailRowShell({
           {afterLabel}
           <TrailingChevron info={info} />
         </span>
-        {below}
       </span>
       {right}
+    </>
+  );
+  return (
+    <span ref={rowRef} className={className} {...rowProps}>
+      {below ? (
+        <>
+          <span className={CLASS.topRow}>{main}</span>
+          {/* biome-ignore lint/a11y/noStaticElementInteractions: mouse shortcut only - the treeitem owns keyboard activation and the accessible name */}
+          {/* biome-ignore lint/a11y/useKeyWithClickEvents: mouse shortcut only - the treeitem owns keyboard activation and the accessible name */}
+          <span className={CLASS.belowRow} onClick={activateOnTextCol ? info.activate : undefined}>
+            {below}
+          </span>
+        </>
+      ) : (
+        main
+      )}
     </span>
   );
 }
@@ -837,11 +856,11 @@ function SessionRow({ node, info, actions }: { node: SessionRailNode; info: Tree
   const unread = !notStarted && node.unseen === true ? <UnreadMarker /> : null;
   const metadata = flat ? (
     <span className={`${CLASS.meta} ${CLASS.flatMeta}`}>
+      {unread}
       <span className={CLASS.metaText}>
         <RailAge updatedAt={notStarted ? undefined : session.updated_at} project={session.project?.trim()} />
       </span>
       {host && <RailHostCue {...host} />}
-      {unread}
     </span>
   ) : null;
   return (
@@ -885,8 +904,8 @@ function SessionRow({ node, info, actions }: { node: SessionRailNode; info: Tree
         <span className={CLASS.rightSlot}>
           {!flat && (
             <span className={CLASS.meta}>
-              {dormant ?? <RailAge updatedAt={session.updated_at} />}
               {unread}
+              {dormant ?? <RailAge updatedAt={session.updated_at} />}
             </span>
           )}
           <span className={CLASS.actions}>
@@ -949,7 +968,7 @@ function ProjectRow({
       label={<span className={CLASS.label}>{node.displayName ?? project.name}</span>}
       afterLabel={
         <>
-          {showsRollup && attentionCount > 0 && <RailCount count={attentionCount} attention />}
+          {showsRollup && attentionCount > 0 && <RailCount count={attentionCount} />}
           {resourceError && retry && (
             <Button
               variant="quiet"
@@ -1040,19 +1059,18 @@ function HostRow({ node, info }: { node: HostRailNode; info: TreeRowInfo }) {
   );
 }
 
-function RailCount({ count, attention, testId }: { count: number; attention?: boolean; testId?: string }) {
+function RailCount({ count, testId }: { count: number; testId?: string }) {
   return (
     <span className={CLASS.railCount}>
       <span aria-hidden="true">{"·"}</span>
-      <span data-testid={testId} className={CLASS.countNum} data-hue={attention ? "attention" : undefined}>
+      <span data-testid={testId} className={CLASS.countNum}>
         {count}
       </span>
     </span>
   );
 }
 
-// A collapsed band still says how many loaded sessions it hides. Only
-// Needs you spends the attention hue, like the project row's rollup.
+// A collapsed band still says how many loaded sessions it hides.
 // The rail's band words are the cadence state words, so they read one table.
 const bandLabel = (band: Band): string => STATE_LABELS[band === "needsYou" ? "needs-you" : band];
 
@@ -1068,7 +1086,6 @@ function BandRow({ node, info }: { node: BandRailNode; info: TreeRowInfo }) {
            stands for rows beyond it, so it is not one of them. */
         <RailCount
           count={node.children.filter((child) => child.kind === "session").length}
-          attention={node.band === "needsYou"}
           testId="rail-row-band-count"
         />
       }

@@ -32,6 +32,7 @@ import { MOBILE_QUERY } from "../useIsMobile";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
 import {
   watchGloss as domainWatchGloss,
+  RailFlatContext,
   RailRow,
   type RailRowActions,
   watchCadenceLabel,
@@ -1957,7 +1958,7 @@ describe("project row", () => {
     expect(screen.getByText("prime-radiant")).toBeTruthy();
   });
 
-  test("shows an inline attention count beside the name when rollup_attn is nonzero, hides it when zero", () => {
+  test("shows an inline uncolored count beside the name when rollup_attn is nonzero, hides it when zero", () => {
     const { rerender } = render(
       <RailRow
         node={projectRailNode(apiProject({ rollup_attn: 3 }))}
@@ -1969,7 +1970,7 @@ describe("project row", () => {
     const titleLine = screen.getByText("Proj").closest(`.${railStyles.titleLine}`);
     expect(titleLine?.contains(count)).toBe(true);
     expect(count.closest(`.${railStyles.rightSlot}`)).toBeNull();
-    expect(count.dataset.hue).toBe("attention");
+    expect(count.dataset.hue).toBeUndefined();
     const chevron = screen.getByTestId("rail-chevron");
     expect(Boolean(count.compareDocumentPosition(chevron) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true);
 
@@ -2692,9 +2693,23 @@ describe("host group row", () => {
 // The unread marker is a read signal, not a status: a session can need you with
 // nothing new to read, or carry new replies that need nothing from you.
 describe("unread marker", () => {
-  test("an unread session shows the marker beside its age", () => {
-    render(<RailRow node={sessionRailNode(apiNode(), { unseen: true })} info={info()} actions={actions()} />);
-    expect(screen.getByTestId("rail-row-unread")).toBeTruthy();
+  test("an unread session leads its age with the marker in both Compact and Three lines", () => {
+    const node = sessionRailNode(apiNode({ updated_at: new Date(Date.now() - 60_000).toISOString() }), {
+      unseen: true,
+    });
+    const { rerender } = render(<RailRow node={node} info={info()} actions={actions()} />);
+    const compactUnread = screen.getByTestId("rail-row-unread");
+    const compactAge = screen.getByTestId("rail-row-time");
+    expect(Boolean(compactUnread.compareDocumentPosition(compactAge) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true);
+
+    rerender(
+      <RailFlatContext.Provider value={true}>
+        <RailRow node={node} info={info()} actions={actions()} />
+      </RailFlatContext.Provider>,
+    );
+    const flatUnread = screen.getByTestId("rail-row-unread");
+    const flatAge = screen.getByTestId("rail-row-time");
+    expect(Boolean(flatUnread.compareDocumentPosition(flatAge) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true);
   });
 
   test("a session with nothing new to read shows no marker", () => {
@@ -2737,20 +2752,32 @@ describe("band row counts", () => {
   });
 
   test.each([
-    { band: "needsYou" as const, count: 2, hue: "attention" },
-    { band: "working" as const, count: 6, hue: undefined },
-    { band: "idle" as const, count: 1, hue: undefined },
-  ])(
-    "renders an inline count beside the label for $band with attention hue only on Needs you",
-    ({ band, count, hue }) => {
-      render(<RailRow node={bandNode(band, count)} info={info({ hasChildren: true })} actions={actions()} />);
-      const numberEl = screen.getByTestId("rail-row-band-count");
-      expect(numberEl.textContent).toBe(String(count));
-      expect(numberEl.dataset.hue).toBe(hue);
-      const titleLine = screen.getByTestId("rail-row-band").querySelector(`.${railStyles.titleLine}`);
-      expect(titleLine?.contains(numberEl)).toBe(true);
-      const chevron = screen.getByTestId("rail-chevron");
-      expect(Boolean(numberEl.compareDocumentPosition(chevron) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true);
-    },
-  );
+    { band: "needsYou" as const, count: 2 },
+    { band: "working" as const, count: 6 },
+    { band: "idle" as const, count: 1 },
+  ])("renders an uncolored inline count beside the label for $band", ({ band, count }) => {
+    render(<RailRow node={bandNode(band, count)} info={info({ hasChildren: true })} actions={actions()} />);
+    const numberEl = screen.getByTestId("rail-row-band-count");
+    expect(numberEl.textContent).toBe(String(count));
+    expect(numberEl.dataset.hue).toBeUndefined();
+    const titleLine = screen.getByTestId("rail-row-band").querySelector(`.${railStyles.titleLine}`);
+    expect(titleLine?.contains(numberEl)).toBe(true);
+    const chevron = screen.getByTestId("rail-chevron");
+    expect(Boolean(numberEl.compareDocumentPosition(chevron) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true);
+  });
+
+  test("desktop two-line session aligns the right slot with the title row above the full-width why line", () => {
+    const node = sessionRailNode(
+      apiNode({ state: "awaiting", ask_pending: true, updated_at: new Date(Date.now() - 60_000).toISOString() }),
+      { live: "question" },
+    );
+    render(<RailRow node={node} info={info()} actions={actions()} />);
+    const why = screen.getByTestId("rail-row-why");
+    const age = screen.getByTestId("rail-row-time");
+    const topRow = age.closest(`.${railStyles.topRow}`);
+    expect(topRow).not.toBeNull();
+    expect(topRow?.contains(screen.getByTestId("rail-row-title"))).toBe(true);
+    expect(topRow?.contains(why)).toBe(false);
+    expect(why.closest(`.${railStyles.belowRow}`)).not.toBeNull();
+  });
 });

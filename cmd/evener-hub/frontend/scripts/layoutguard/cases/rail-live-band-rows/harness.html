@@ -30,7 +30,7 @@
           <span class="textCol">
             <span class="titleLine">
               <span class="label bandLabel">Needs you</span>
-              <span class="railCount"><span aria-hidden="true">&middot;</span><span class="countNum" data-hue="attention" data-testid="rail-row-band-count">3</span></span>
+              <span class="railCount"><span aria-hidden="true">&middot;</span><span class="countNum" data-testid="rail-row-band-count">3</span></span>
               <button type="button" class="chevronButton" aria-hidden="true" tabindex="-1">&#8250;</button>
             </span>
           </span>
@@ -39,15 +39,19 @@
       <div role="group" class="group">
 
         <div role="treeitem" class="row" aria-level="2">
-          <span class="railRow" id="row-long">
-            <span class="textCol">
-              <span class="titleLine">
-                <span class="signal"></span>
-                <span class="label" id="label-why">Verify Vite Build</span>
+          <span class="railRow stackedRow" id="row-long">
+            <span class="topRow">
+              <span class="textCol">
+                <span class="titleLine">
+                  <span class="signal"></span>
+                  <span class="label" id="label-why">Verify Vite Build</span>
+                </span>
               </span>
+              <span class="rightSlot"><span class="meta"><span class="unreadDot"></span><span class="time" id="time-why">4m</span></span></span>
+            </span>
+            <span class="belowRow">
               <span class="why" id="why-long" data-testid="rail-row-why"><span class="whyReason" data-hue="attention">Waiting on approval</span> &middot; a-remarkably-long-host-name-that-cannot-possibly-fit-in-a-narrow-rail.internal.example.com (offline) and then some more words to be sure</span>
             </span>
-            <span class="rightSlot"><span class="time">4m</span></span>
           </span>
         </div>
 
@@ -63,14 +67,18 @@
         </div>
 
         <div role="treeitem" class="row" aria-level="2">
-          <span class="railRow">
-            <span class="textCol">
-              <span class="titleLine">
-                <span class="label">Short Why</span>
+          <span class="railRow stackedRow">
+            <span class="topRow">
+              <span class="textCol">
+                <span class="titleLine">
+                  <span class="label">Short Why</span>
+                </span>
               </span>
+              <span class="rightSlot"><span class="time">1h</span></span>
+            </span>
+            <span class="belowRow">
               <span class="why" id="why-short" data-testid="rail-row-why">Idle</span>
             </span>
-            <span class="rightSlot"><span class="time">1h</span></span>
           </span>
         </div>
 
@@ -83,7 +91,7 @@ window.measure = () => {
   const el = (id) => document.getElementById(id);
   const rect = (id) => {
     const r = el(id).getBoundingClientRect();
-    return { left: r.left, right: r.right, height: r.height };
+    return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, height: r.height };
   };
   return {
     why: rect("why-long"),
@@ -91,6 +99,7 @@ window.measure = () => {
     whyOverflows: el("why-long").scrollWidth > el("why-long").clientWidth,
     row: rect("row-long"),
     whyLabel: rect("label-why"),
+    whyTime: rect("time-why"),
     quietLabel: rect("label-quiet"),
   };
 };

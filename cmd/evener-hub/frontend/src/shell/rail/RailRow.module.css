@@ -185,6 +185,49 @@
   }
 }
 
+/* Desktop Compact two-line rows (a title row plus a full-width reason or
+ * quota line below): .topRow aligns the timestamp and hover actions with line
+ * 1, while .belowRow spans the full row width underneath instead of truncating
+ * early against an empty right-slot column. Only rows whose .belowRow actually
+ * rendered content take two-line padding and line-1 height capping, so single-
+ * line rows whose RailWhy or RailQuotaWait returned null stay identical to
+ * plain single-line rows. */
+.stackedRow {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0;
+}
+
+.stackedRow:has(.belowRow:not(:empty)) {
+  padding-block: 4px;
+}
+
+.topRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  min-width: 0;
+}
+
+.stackedRow:has(.belowRow:not(:empty)) .rightSlot {
+  height: 1lh;
+  font-size: var(--font-size-ui);
+  line-height: var(--line-height-ui);
+  align-content: center;
+}
+
+.belowRow {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  min-width: 0;
+}
+
+.belowRow:empty {
+  display: none;
+}
+
 /* The negative margin offsets the indicator width and title gap, so quiet and
  * signaled row titles stay aligned. */
 .signal {
@@ -333,11 +376,10 @@
   font-size: var(--font-size-caption);
 }
 
-/* The one attention/danger ink pair: the row's why word, session context
- * status, and inline attention counts name their hue on data-hue. */
+/* The one attention/danger ink pair: the row's why word and the session
+ * context status both name their hue on data-hue. */
 .contextStatus[data-hue="attention"],
-.whyReason[data-hue="attention"],
-.countNum[data-hue="attention"] {
+.whyReason[data-hue="attention"] {
   color: var(--attention-ink);
 }
 
@@ -356,9 +398,8 @@
 
 /* Inline heading count (Live bands and project attention rollups): sits right
  * beside the label before the trailing chevron so the count belongs to its
- * heading and the right edge stays reserved for timestamps and actions.
- * Neutral counts stay in --ink-low so the heading leads; attention counts keep
- * --attention-ink (above) with medium weight. */
+ * heading and the right edge stays reserved for timestamps and actions. All
+ * counts stay uncolored in --ink-low so headings and status dots lead. */
 .railCount {
   display: inline-flex;
   align-items: center;
@@ -371,10 +412,6 @@
 .countNum {
   font-family: var(--font-sans);
   font-variant-numeric: tabular-nums;
-}
-
-.countNum[data-hue="attention"] {
-  font-weight: var(--font-weight-medium);
 }
 
 /* Right-aligned relative timestamp - an occupant of the shared .rightSlot
