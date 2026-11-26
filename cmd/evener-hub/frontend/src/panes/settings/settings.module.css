@@ -68,12 +68,12 @@
 
 /* The mobile workspace drills into one section at a time. Keep the list
  * mounted behind a detail so its filter and scroll position survive Back. */
-:where(:global([data-mobile])) {
+.shell:where([data-mobile-view]) {
   .nav {
     width: 100%;
   }
 
-  .shellDetail .nav {
+  &[data-mobile-view="detail"] .nav {
     display: none;
   }
 

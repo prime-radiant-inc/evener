@@ -50,7 +50,6 @@ export interface SettingsPaneParams {
 
 const CLASS = {
   shell: requireClass(styles.shell, "settings.module.css", "shell"),
-  shellDetail: requireClass(styles.shellDetail, "settings.module.css", "shellDetail"),
   content: requireClass(styles.content, "settings.module.css", "content"),
 };
 
@@ -125,10 +124,7 @@ function showSettingsList(): void {
  * meaning (exit settings). Host-agnostic, like the title channel - DockHost
  * never reads paneBack.
  *
- * The nav is NEVER unmounted, in either host or view: while a mobile detail
- * shows, the .shellDetail marker class CSS-hides it (a compound selector -
- * `.shellDetail .nav` beats `.nav`'s own display:flex on specificity, the
- * trap the legacy's `hidden`-attribute toggling fell into), so its filter
+ * The nav stays mounted while a mobile detail is visible so its filter
  * text and scroll position survive the drill-down round trip.
  */
 export default function Settings({ params, paneId }: PaneProps<SettingsPaneParams>) {
@@ -151,7 +147,6 @@ export default function Settings({ params, paneId }: PaneProps<SettingsPaneParam
   // Mobile list view: bare /settings on a phone. No row is "active" - there
   // is no content beside the list for a highlight to refer to.
   const showingList = isMobile && params.section === undefined;
-  const showContent = !isMobile || params.section !== undefined;
 
   function handleNavigate(sectionId: string) {
     // Through settingsURL, not paneToURL: a remote selection stays part of the
@@ -237,9 +232,9 @@ export default function Settings({ params, paneId }: PaneProps<SettingsPaneParam
         <IconButton label="Close settings" icon={<CloseIcon />} variant="quiet" size="sm" onClick={handleClose} />
       }
     >
-      <div className={params.section !== undefined ? `${CLASS.shell} ${CLASS.shellDetail}` : CLASS.shell}>
+      <div className={CLASS.shell} data-mobile-view={isMobile ? (showingList ? "list" : "detail") : undefined}>
         <SettingsNav activeId={showingList ? null : activeId} onNavigate={handleNavigate} />
-        {showContent && (
+        {!showingList && (
           <div className={CLASS.content} data-testid="settings-content">
             <SectionComponent sectionId={activeId} />
           </div>
