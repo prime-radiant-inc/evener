@@ -81,9 +81,13 @@ const hostDown: Notice = {
 	sourceId: "paradise-park",
 };
 
-function mount() {
+function mount(currentScreen = "Workspace") {
 	const dispatched: unknown[] = [];
-	const navigation = { dispatch: (action: unknown) => dispatched.push(action), navigate: vi.fn() };
+	const navigation = {
+		getCurrentRoute: () => ({ name: currentScreen }),
+		dispatch: (action: unknown) => dispatched.push(action),
+		navigate: vi.fn(),
+	};
 	const tree = render(<AlertBannerHost navigation={navigation as never} />);
 	const container = tree.root.find((node) => node.props.pointerEvents === "box-none");
 	const card = () => tree.root.find((node) => node.props.accessibilityRole === "button");
@@ -114,6 +118,21 @@ it("opens a session's banner in the active hub's workspace", () => {
 			payload: expect.objectContaining({
 				name: "Workspace",
 				params: { hubId: "hub-1", path: "/s/local%3Aa" },
+			}),
+		}),
+	]);
+});
+
+it("keeps the on-device editor on the stack when opening a session alert", () => {
+	const { card, dispatched } = mount("Conversation");
+	act(() => harness.center?.offer(session("local:b")));
+	act(() => card().props.onPress());
+	expect(dispatched).toEqual([
+		expect.objectContaining({
+			type: "PUSH",
+			payload: expect.objectContaining({
+				name: "Conversation",
+				params: expect.objectContaining({ hubId: "hub-1", ref: "local:b" }),
 			}),
 		}),
 	]);

@@ -11,7 +11,6 @@ import { requestBoardJump } from "../board/boardJump";
 import { hasHub } from "../connection";
 import { useConnection } from "../ConnectionProvider";
 import { workspaceSessionPath } from "../location";
-import { usesHubWorkspace } from "../workspaceAvailability";
 import type { Routes } from "../screens";
 import { AlertBanner } from "./AlertBanner";
 import { useAlertCenter, useAlertSnapshot, useNoticeFor } from "./alertsContext";
@@ -52,7 +51,7 @@ export function AlertBannerHost({ navigation }: { navigation: NavigationContaine
 		if (hubId === undefined) return;
 		if (target.kind === "session") {
 			navigation.dispatch(
-				usesHubWorkspace()
+				navigation.getCurrentRoute()?.name === "Workspace"
 					? StackActions.popTo("Workspace", { hubId, path: workspaceSessionPath(target.ref) })
 					: StackActions.push("Conversation", { hubId, ref: target.ref, title: target.title }),
 			);
