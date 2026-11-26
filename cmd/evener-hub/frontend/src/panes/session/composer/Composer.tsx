@@ -1443,7 +1443,13 @@ function ComposerWithSubmission({
         // owning pane id, so the overlay can anchor to the FOCUSED pane's
         // composer when several are mounted - including an ordinary pane and a
         // cascade column showing the same conversation.
-        <div ref={formAnchorRef} className={CLASS.formAnchor} data-composer={ref} data-composer-pane={paneId}>
+        <div
+          ref={formAnchorRef}
+          className={CLASS.formAnchor}
+          data-composer={ref}
+          data-composer-pane={paneId}
+          data-iphone-composer={hostedPhone ? "" : undefined}
+        >
           {/* Anchored above the control row inside the card below, opening
               upward - see slashcompletionmenu.module.css's header comment
               for the anchored-float recipe. Mounted only

@@ -98,6 +98,14 @@ test.each([
   { name: "phone portrait", compact: true, inlineSteer: false, width: 360, phone: true },
   { name: "hosted iPhone", compact: true, inlineSteer: false, width: 360, phone: true, hosted: true },
   { name: "Duo landscape", compact: true, inlineSteer: true, width: 526, phoneQuery: LANDSCAPE_PHONE_QUERY },
+  {
+    name: "hosted Duo landscape",
+    compact: true,
+    inlineSteer: true,
+    width: 526,
+    phoneQuery: LANDSCAPE_PHONE_QUERY,
+    hosted: true,
+  },
 ])(
   "$name keeps the empty composer folded until content arrives",
   async ({ compact, inlineSteer, width, duo, phone, phoneQuery, hosted }) => {
@@ -110,6 +118,7 @@ test.each([
       await mountComposerWithHandle("ref_a", { status: { type: "active" } });
       const editor = textarea();
       const card = screen.getByTestId("composer-input-card");
+      expect(card.closest("[data-iphone-composer]") !== null).toBe(!!hosted);
       const order = () =>
         [...card.querySelectorAll("button")]
           .map((button) => button.getAttribute("data-testid"))

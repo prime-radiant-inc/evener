@@ -43,10 +43,8 @@
   inset-block-end: var(--space-2);
 }
 
-@media (max-width: 899px) {
-  :where(:global(body[data-iphone-glass])) .attachSlot {
-    inset-block-end: var(--space-1);
-  }
+:where(:global([data-iphone-composer])) .attachSlot {
+  inset-block-end: var(--space-1);
 }
 
 @media (min-width: 440px) and (max-width: 500px) and (max-aspect-ratio: 3 / 4) {

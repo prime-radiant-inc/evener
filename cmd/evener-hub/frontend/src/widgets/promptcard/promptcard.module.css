@@ -115,27 +115,37 @@
     -webkit-backdrop-filter: var(--glass-filter);
     backdrop-filter: var(--glass-filter);
   }
+}
 
-  /* A single-line prompt is a capsule. A draft can grow to paragraphs
-   * without its corners curving into the text. */
-  :global(body[data-iphone-glass]) :global([data-composer]) .card {
-    --font-sans: var(--glass-control-font, system-ui);
-    border-radius: var(--glass-radius);
-    row-gap: var(--space-1);
-    padding-block: var(--space-2) var(--space-1);
-    box-shadow: none;
-  }
+/* The phone composer can occupy a desktop-width workspace in landscape.
+ * Keep the same shape on both sides of the shell breakpoint. */
+:global([data-iphone-composer]) .card {
+  --font-sans: var(--glass-control-font, system-ui);
+  border-radius: var(--glass-radius);
+  row-gap: var(--space-1);
+  padding-block: var(--space-2) var(--space-1);
+  box-shadow: none;
+}
 
-  :global(body[data-iphone-glass]) :global([data-composer]) .card[data-folded="true"] {
-    border-radius: var(--radius-pill);
-    padding-block: var(--space-1);
-  }
+:global([data-iphone-composer]) .card[data-folded="true"] {
+  border-radius: var(--radius-pill);
+  padding-block: var(--space-1);
+}
 
-  /* The editor's caret identifies a touch selection. Keyboard entry keeps
-   * the card's focus ring, and each action retains its own focus outline. */
-  :global(body[data-iphone-glass]) :global([data-touch-editing]) .card:focus-within {
-    outline: none;
+/* The wide workspace docks its composer in flow, on an opaque footer. */
+@media (min-width: 900px) {
+  :global([data-iphone-composer]) .card {
+    background: var(--glass-panel);
+    background-image: var(--glass-sheen);
+    border-color: transparent;
+    box-shadow: var(--glass-shadow);
   }
+}
+
+/* The editor's caret identifies a touch selection. Keyboard entry keeps
+ * the card's focus ring, and each action retains its own focus outline. */
+:global([data-iphone-composer][data-touch-editing]) .card:focus-within {
+  outline: none;
 }
 
 /* On the Duo cover, an empty, folded composer gives its extra inset back to
@@ -168,7 +178,7 @@
   margin-left: auto;
 }
 
-:global(body[data-iphone-glass]) :global([data-composer]) .actions {
+:global([data-iphone-composer]) .actions {
   --radius-control: var(--radius-pill);
   --send-icon-scale: 1.6;
 }
