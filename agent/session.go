@@ -3790,19 +3790,12 @@ func (s *Session) recordTurnOn(bound context.Context, warn func(events.WarningDa
 // the silent success a nil writer gives, which is why the writer answers with an
 // error rather than dropping the turn.
 
-// writeTranscript records a turn in the durable transcript, holding it if the
-// session has not yet decided whether it has one.
-func (s *Session) writeTranscript(t schema.Turn) error {
-	s.attentionMu.Lock()
-	defer s.attentionMu.Unlock()
-	return s.writeTranscriptLocked(t)
-}
-
-// writeTranscriptLocked is writeTranscript for a caller already holding
-// attentionMu — the fold publication transaction commits the fold's own
-// entries under the same attentionMu hold that decided the publish, so no
-// other writer's entry can interleave between the publish and the fold's
-// compaction markers.
+// writeTranscriptLocked records t in the transcript through the buffered door
+// with attentionMu held, holding t if the transcript writer is not yet
+// attached. Callers such as the fold publication transaction commit entries
+// under the same attentionMu hold that decided the publish, so no other
+// writer's entry can interleave between the publish and the fold's compaction
+// markers.
 func (s *Session) writeTranscriptLocked(t schema.Turn) error {
 	_, err := s.recordTranscriptLocked(t, transcript.DoorBuffered, transcript.PlaceSession)
 	return err
@@ -3854,20 +3847,11 @@ func (s *Session) withEntryModel(t schema.Turn) schema.Turn {
 	return t
 }
 
-// writeTranscriptDurable is writeTranscript with an fsync before returning.
-func (s *Session) writeTranscriptDurable(t schema.Turn) error {
-	err := func() error {
-		s.attentionMu.Lock()
-		defer s.attentionMu.Unlock()
-		return s.writeTranscriptDurableLocked(t)
-	}()
-	s.surfaceTranscriptWarnings()
-	return err
-}
-
-// writeTranscriptDurableLocked is writeTranscriptDurable for a caller
-// already holding attentionMu — an append/write pair
-// (appendTurnAfterTranscriptWrite) or the fold publication transaction.
+// writeTranscriptDurableLocked records t in the transcript through the durable
+// door with attentionMu held, fsyncing an attached writer before returning (and
+// holding t if the transcript writer is not yet attached). Callers such as
+// appendTurnAfterTranscriptWrite invoke it inside their attentionMu hold and
+// drain retained-entry warnings once the lock releases.
 func (s *Session) writeTranscriptDurableLocked(t schema.Turn) error {
 	_, err := s.recordTranscriptLocked(t, transcript.DoorDurable, transcript.PlaceSession)
 	return err
