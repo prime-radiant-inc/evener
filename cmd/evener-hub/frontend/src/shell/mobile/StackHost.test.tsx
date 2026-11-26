@@ -468,15 +468,31 @@ test("opens the mobile panel when nothing is focused", async () => {
   expect(screen.getByRole("dialog", { name: "Sessions" })).toBeTruthy();
 });
 
-test("a session without a Back destination uses Sessions as its only leading navigation", async () => {
-  const user = userEvent.setup();
-  workspaceStore.getState().openPane("session", { ref: "local:root-navigation" });
-  render(<StackHost />);
-  await screen.findByTestId("topbar-title");
-
-  expect(screen.queryByRole("button", { name: "Back" })).toBeNull();
-  await openSessionsPanel(user);
-});
+test.each([false, true])(
+  "Escape restores the session's leading navigation in a Home Screen window: %s",
+  async (installed) => {
+    const user = userEvent.setup();
+    const restoreViewport = installMobileViewport();
+    Object.defineProperty(navigator, "standalone", { configurable: true, value: installed });
+    document.documentElement.style.setProperty("--home-safe-right", "84px");
+    try {
+      workspaceStore.getState().openPane("session", { ref: "local:root-navigation" });
+      render(<StackHost />);
+      await screen.findByTestId("topbar-title");
+      expect(screen.queryByRole("button", { name: "Back" })).toBeNull();
+      const opener = screen.getByRole("button", { name: "Sessions" });
+      expect(opener.closest("[role=toolbar]") !== null).toBe(installed);
+      await openSessionsPanel(user);
+      await user.keyboard("{Escape}");
+      expect(document.activeElement).toBe(opener);
+    } finally {
+      cleanup();
+      document.documentElement.style.removeProperty("--home-safe-right");
+      Reflect.deleteProperty(navigator, "standalone");
+      restoreViewport();
+    }
+  },
+);
 
 test("a focused session's top bar orders Find before Overview", async () => {
   workspaceStore.getState().openPane("session", { ref: "local:header-order" });

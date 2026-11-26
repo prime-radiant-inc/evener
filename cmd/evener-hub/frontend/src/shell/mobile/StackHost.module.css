@@ -180,6 +180,10 @@
   z-index: var(--z-sticky-bar);
 }
 
+.homeToolbar[hidden] {
+  display: none;
+}
+
 .homeToolbar[data-home-toolbar="left"] {
   left: 0;
   width: var(--home-safe-left);

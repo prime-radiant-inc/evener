@@ -36,10 +36,12 @@
 
 /* Below 900px either the drawer or the tablet board frames the Rail.
  * Fill that width and leave the border to its host. */
-@media (max-width: 899px) {
-  .rail {
-    width: 100%;
-    border-right: none;
+@media (max-width: 899px), (display-mode: standalone) {
+  :where(html:not(:has([data-desktop-workspace]))) {
+    .rail {
+      width: 100%;
+      border-right: none;
+    }
   }
 }
 

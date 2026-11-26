@@ -78,42 +78,44 @@
  * card keeps the panel radius in every state: the pill is control geometry,
  * never a surface shape, so the card stays concentric with its
  * control-radius verbs at every width. */
-@media (max-width: 899px) {
-  :global([data-composer]) .card {
-    border: none;
-    background: transparent;
-  }
+@media (max-width: 899px), (display-mode: standalone) {
+  :where(html:not(:has([data-desktop-workspace]))) {
+    :global([data-composer]) .card {
+      border: none;
+      background: transparent;
+    }
 
-  /* Paint the translucent blur surface on a pseudo-element rather than on
-   * .card itself: a non-none backdrop-filter turns its element into a
-   * containing block for position: fixed descendants, trapping inline modals
-   * rendered from the composer's control row (SessionMenu dialogs and
-   * Verbosity) inside the card. Keeping .card free of isolation: isolate lets
-   * ::before blur the scrolling transcript behind the card, and giving flex
-   * children (.field, .controls) z-index: 0 paints them above ::before in tree
-   * order while leaving .controls static so Attach still anchors to .card. */
-  :global([data-composer]) .card::before {
-    content: "";
-    position: absolute;
-    inset: 0;
-    border-radius: inherit;
-    background: color-mix(in oklab, var(--field) 88%, transparent);
-    -webkit-backdrop-filter: blur(16px);
-    backdrop-filter: blur(16px);
-    pointer-events: none;
-    transition: background-color var(--motion-duration-spatial) var(--motion-easing-standard);
-  }
+    /* Paint the translucent blur surface on a pseudo-element rather than on
+     * .card itself: a non-none backdrop-filter turns its element into a
+     * containing block for position: fixed descendants, trapping inline modals
+     * rendered from the composer's control row (SessionMenu dialogs and
+     * Verbosity) inside the card. Keeping .card free of isolation: isolate lets
+     * ::before blur the scrolling transcript behind the card, and giving flex
+     * children (.field, .controls) z-index: 0 paints them above ::before in tree
+     * order while leaving .controls static so Attach still anchors to .card. */
+    :global([data-composer]) .card::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      border-radius: inherit;
+      background: color-mix(in oklab, var(--field) 88%, transparent);
+      -webkit-backdrop-filter: blur(16px);
+      backdrop-filter: blur(16px);
+      pointer-events: none;
+      transition: background-color var(--motion-duration-spatial) var(--motion-easing-standard);
+    }
 
-  :global([data-composer]) .card > * {
-    z-index: 0;
-  }
+    :global([data-composer]) .card > * {
+      z-index: 0;
+    }
 
-  :global(body[data-iphone-glass]) :global([data-composer]) .card::before {
-    background: var(--glass-fill);
-    background-image: var(--glass-sheen);
-    box-shadow: var(--glass-shadow);
-    -webkit-backdrop-filter: var(--glass-filter);
-    backdrop-filter: var(--glass-filter);
+    :global(body[data-iphone-glass]) :global([data-composer]) .card::before {
+      background: var(--glass-fill);
+      background-image: var(--glass-sheen);
+      box-shadow: var(--glass-shadow);
+      -webkit-backdrop-filter: var(--glass-filter);
+      backdrop-filter: var(--glass-filter);
+    }
   }
 }
 
@@ -134,7 +136,7 @@
 
 /* The wide workspace docks its composer in flow, on an opaque footer. */
 @media (min-width: 900px) {
-  :global([data-iphone-composer]) .card {
+  :where(:global([data-desktop-workspace])) :global([data-iphone-composer]) .card {
     background: var(--glass-panel);
     background-image: var(--glass-sheen);
     border-color: transparent;

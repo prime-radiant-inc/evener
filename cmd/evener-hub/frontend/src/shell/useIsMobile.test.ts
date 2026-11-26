@@ -113,8 +113,15 @@ test("only Home Screen windows use the asymmetric safe area when selecting the r
     safari.unmount();
 
     standalone.mockReturnValue(Object.create(nav, { standalone: { value: true } }));
+    const resize = vi.spyOn(window, "addEventListener");
+    const computed = vi.spyOn(window, "getComputedStyle");
     const installed = renderHook(() => [useIsMobile(), useHomeScreenEdge()]);
     expect(installed.result.current).toEqual([true, "right"]);
+    const another = renderHook(() => useIsMobile());
+    const reads = computed.mock.calls.length;
+    another.rerender();
+    expect(computed).toHaveBeenCalledTimes(reads);
+    expect(resize.mock.calls.filter(([name]) => name === "resize")).toHaveLength(1);
     act(() => {
       style.removeProperty("--home-safe-right");
       style.setProperty("--home-safe-left", "84px");
@@ -126,8 +133,13 @@ test("only Home Screen windows use the asymmetric safe area when selecting the r
       window.dispatchEvent(new Event("resize"));
     });
     expect(installed.result.current).toEqual([true, null]);
+    installed.unmount();
+    another.unmount();
+    style.removeProperty("--home-safe-left");
+    style.removeProperty("--home-safe-right");
+    expect(isMobileViewport()).toBe(false);
   } finally {
-    standalone.mockRestore();
+    vi.restoreAllMocks();
     vi.unstubAllGlobals();
     style.removeProperty("--home-safe-left");
     style.removeProperty("--home-safe-right");

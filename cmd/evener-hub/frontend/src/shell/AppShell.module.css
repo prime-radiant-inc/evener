@@ -89,10 +89,13 @@
   :global(:root) {
     --home-safe-left: env(safe-area-inset-left, 0px);
     --home-safe-right: env(safe-area-inset-right, 0px);
-  }
-
-  .shell {
     padding-left: var(--home-safe-left);
     padding-right: var(--home-safe-right);
+  }
+
+  .shell[data-mobile] {
+    left: var(--home-safe-left);
+    right: var(--home-safe-right);
+    width: auto;
   }
 }

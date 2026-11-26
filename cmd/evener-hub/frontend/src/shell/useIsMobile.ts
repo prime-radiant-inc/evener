@@ -75,15 +75,22 @@ export function isHomeScreenWindow(): boolean {
   return typeof navigator !== "undefined" && (navigator as Navigator & { standalone?: boolean }).standalone === true;
 }
 
+const homeSizeListeners = new Set<ViewportListener>();
+let homeObserver: ResizeObserver | null = null;
+let homeInsets: { left: number; right: number } | null = null;
+
 function homeScreenInsets() {
+  if (homeInsets) return homeInsets;
   const style = getComputedStyle(document.documentElement);
-  return {
+  const insets = {
     left: Number.parseFloat(style.getPropertyValue("--home-safe-left")) || 0,
     right: Number.parseFloat(style.getPropertyValue("--home-safe-right")) || 0,
   };
+  if (homeSizeListeners.size) homeInsets = insets;
+  return insets;
 }
 
-export function workspaceViewportWidth(): number {
+function workspaceViewportWidth(): number {
   if (!isHomeScreenWindow()) return window.innerWidth;
   const { left, right } = homeScreenInsets();
   return window.innerWidth - left - right;
@@ -98,10 +105,40 @@ function homeScreenEdge() {
   return null;
 }
 
+function onHomeScreenResize() {
+  homeInsets = null;
+  for (const listener of homeSizeListeners) listener();
+}
+
 function subscribeHomeScreenSize(listener: ViewportListener): () => void {
   if (!isHomeScreenWindow()) return () => {};
+  if (!homeSizeListeners.size) {
+    window.addEventListener("resize", onHomeScreenResize);
+    if (typeof ResizeObserver !== "undefined") {
+      homeObserver = new ResizeObserver(onHomeScreenResize);
+      homeObserver.observe(document.documentElement);
+    }
+  }
+  homeSizeListeners.add(listener);
+  return () => {
+    homeSizeListeners.delete(listener);
+    if (!homeSizeListeners.size) {
+      window.removeEventListener("resize", onHomeScreenResize);
+      homeObserver?.disconnect();
+      homeObserver = null;
+      homeInsets = null;
+    }
+  };
+}
+
+function subscribeWorkspaceWidth(listener: ViewportListener): () => void {
+  if (isHomeScreenWindow()) return subscribeHomeScreenSize(listener);
   window.addEventListener("resize", listener);
   return () => window.removeEventListener("resize", listener);
+}
+
+export function useWorkspaceViewportWidth(): number {
+  return useSyncExternalStore(subscribeWorkspaceWidth, workspaceViewportWidth, () => 0);
 }
 
 export function useHomeScreenEdge(): "left" | "right" | null {

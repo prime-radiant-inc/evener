@@ -92,7 +92,7 @@ import {
   TABLET_QUERY,
   useHomeScreenEdge,
   useMediaQuery,
-  workspaceViewportWidth,
+  useWorkspaceViewportWidth,
 } from "../useIsMobile";
 import {
   conversationOpenParentRef,
@@ -378,6 +378,7 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
   const [topBarCollapsed, setTopBarCollapsed] = useState(false);
   const [nativeFindOpen, setNativeFindOpen] = useState(false);
   const fontSize = usePrefsStore((s) => s.fontSize);
+  const viewportWidth = useWorkspaceViewportWidth();
   const tabletViewport = useMediaQuery(TABLET_QUERY);
   const roomForHostedBoard = useMediaQuery(
     `(min-width: ${BOARD_MIN_WIDTH + READER_MIN_WIDTH[fontSize]}px) and (min-height: 600px)`,
@@ -389,7 +390,7 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
     tabletViewport ||
     ((hosted || isHomeScreenWindow()) &&
       roomForHostedBoard &&
-      workspaceViewportWidth() >= BOARD_MIN_WIDTH + READER_MIN_WIDTH[fontSize]);
+      viewportWidth >= BOARD_MIN_WIDTH + READER_MIN_WIDTH[fontSize]);
   const tabletSplit = tabletBand && !singlePane;
   const [boardCollapsed, setBoardCollapsed] = useState(false);
   const boardVisible = tabletSplit && !boardCollapsed;
@@ -405,14 +406,6 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
     ),
   );
   const sidebarWidth = usePrefsStore((s) => s.sidebarWidth);
-  const [viewportWidth, setViewportWidth] = useState(workspaceViewportWidth);
-  useLayoutEffect(() => {
-    if (!boardVisible) return;
-    const measure = () => setViewportWidth(workspaceViewportWidth());
-    measure();
-    window.addEventListener("resize", measure);
-    return () => window.removeEventListener("resize", measure);
-  }, [boardVisible]);
   const boardMaxWidth = Math.min(
     SIDEBAR_WIDTH_MAX,
     Math.max(BOARD_MIN_WIDTH, viewportWidth - READER_MIN_WIDTH[fontSize]),
@@ -1170,10 +1163,11 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
           </div>
         </div>
       </div>
-      {homeEdge && !activityOpen && !panelOpen && (
+      {homeEdge && (
         <div
           role="toolbar"
           aria-label="Conversation actions"
+          hidden={activityOpen || panelOpen}
           data-home-toolbar={homeEdge}
           className={styles.homeToolbar}
         >

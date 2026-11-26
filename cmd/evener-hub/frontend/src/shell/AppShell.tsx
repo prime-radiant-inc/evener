@@ -945,6 +945,7 @@ function AppShellContent({ client: injectedClient, bannerDelayMs, bannerCreateCl
         <div
           className={styles.shell}
           data-mobile={isMobile ? "" : undefined}
+          data-desktop-workspace={isMobile ? undefined : ""}
           data-single-pane={singlePane ? "" : undefined}
         >
           <ConnectionBanner
