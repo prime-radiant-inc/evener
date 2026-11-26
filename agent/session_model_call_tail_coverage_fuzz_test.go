@@ -116,7 +116,7 @@ func FuzzModelCallExactCoverage(f *testing.F) {
 		if _, err := store.Append([]task.TaskInput{{Type: task.TaskTypeImplement, Description: "tail", Prompt: "tail", ReasoningEffort: "high"}}); err != nil {
 			t.Fatal(err)
 		}
-		if err := store.Update([]task.TaskUpdate{{ID: 1, Status: task.TaskInProgress}}); err != nil {
+		if _, err := store.Update([]task.TaskUpdate{{ID: 1, Status: task.TaskInProgress}}); err != nil {
 			t.Fatal(err)
 		}
 		s.strategy = modelCallTailStrategy{}

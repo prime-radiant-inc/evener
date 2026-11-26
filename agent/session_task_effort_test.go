@@ -219,7 +219,7 @@ func TestSession_RestoreTaskEffortMigration_ReachesProviderSafely(t *testing.T) 
 				seed.Close()
 				t.Fatalf("Append: %v", err)
 			}
-			if err := store.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress}}); err != nil {
+			if _, err := store.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress}}); err != nil {
 				seed.Close()
 				t.Fatalf("Update: %v", err)
 			}
@@ -505,7 +505,7 @@ func TestSession_TaskEffortSurvivesCompaction(t *testing.T) {
 	}}); err != nil {
 		t.Fatalf("append task: %v", err)
 	}
-	if err := store.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress}}); err != nil {
+	if _, err := store.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress}}); err != nil {
 		t.Fatalf("start task: %v", err)
 	}
 
@@ -548,7 +548,7 @@ func TestSession_TaskEffortSurvivesResumeWithoutClobberingConfig(t *testing.T) {
 	}}); err != nil {
 		t.Fatalf("append task: %v", err)
 	}
-	if err := store.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress}}); err != nil {
+	if _, err := store.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress}}); err != nil {
 		t.Fatalf("start task: %v", err)
 	}
 	ctx := context.Background()
@@ -610,7 +610,7 @@ func TestSession_LoopDetect_NoEscalationSurvivesResume(t *testing.T) {
 	}}); err != nil {
 		t.Fatalf("append task: %v", err)
 	}
-	if err := store.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress}}); err != nil {
+	if _, err := store.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress}}); err != nil {
 		t.Fatalf("start task: %v", err)
 	}
 	ctx := context.Background()

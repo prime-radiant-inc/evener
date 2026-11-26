@@ -684,17 +684,11 @@ func (s *TaskStore) PopulateFromTemplates(templates []TaskTemplate, parentTasks 
 	return nil
 }
 
-// Update changes the status of existing tasks.
-func (s *TaskStore) Update(updates []TaskUpdate) error {
-	_, err := s.UpdateWithSnapshot(updates)
-	return err
-}
-
-// UpdateWithSnapshot applies one validated update batch and returns the exact
-// task state immediately before and after that mutation. Validation, mutation,
-// and both snapshots share one store lock so consumers can classify a batch
-// against the same state that the store validated.
-func (s *TaskStore) UpdateWithSnapshot(updates []TaskUpdate) (TaskUpdateSnapshot, error) {
+// Update applies one validated update batch and returns the exact task state
+// immediately before and after that mutation. Validation, mutation, and both
+// snapshots share one store lock so consumers can classify a batch against the
+// same state that the store validated.
+func (s *TaskStore) Update(updates []TaskUpdate) (TaskUpdateSnapshot, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 

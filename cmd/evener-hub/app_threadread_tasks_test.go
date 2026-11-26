@@ -39,7 +39,7 @@ func TestPastThreadReadProjectsPersistedTaskAggregate(t *testing.T) {
 	if err := store.Load(); err != nil {
 		t.Fatalf("load persisted tasks: %v", err)
 	}
-	if err := store.Update([]task.TaskUpdate{{ID: 1, Status: task.TaskDone}}); err != nil {
+	if _, err := store.Update([]task.TaskUpdate{{ID: 1, Status: task.TaskDone}}); err != nil {
 		t.Fatalf("complete persisted task: %v", err)
 	}
 

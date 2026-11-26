@@ -67,7 +67,7 @@ func TestInjectPostToolSteering_PersistsTaskReminderKind(t *testing.T) {
 	if _, err := store.Append([]taskpkg.TaskInput{{Type: taskpkg.TaskTypeResearch, Description: "A", Prompt: "a"}}); err != nil {
 		t.Fatalf("add task 1: %v", err)
 	}
-	if err := store.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress}}); err != nil {
+	if _, err := store.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress}}); err != nil {
 		t.Fatalf("mark task 1 in_progress: %v", err)
 	}
 	s.mu.Lock()

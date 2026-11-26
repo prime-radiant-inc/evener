@@ -44,7 +44,7 @@ func TestTaskStore_TimestampsMintedAutomatically(t *testing.T) {
 	// An update advances updated_at; reaching done stamps completed_at while
 	// created_at stays put.
 	clock = base.Add(5 * time.Minute)
-	if err := s.Update([]taskpkg.TaskUpdate{{ID: a.ID, Status: taskpkg.TaskDone}}); err != nil {
+	if _, err := s.Update([]taskpkg.TaskUpdate{{ID: a.ID, Status: taskpkg.TaskDone}}); err != nil {
 		t.Fatalf("Update done: %v", err)
 	}
 	got := s.View()[0]
@@ -60,7 +60,7 @@ func TestTaskStore_TimestampsMintedAutomatically(t *testing.T) {
 
 	// Reopening a done task clears completed_at and advances updated_at.
 	clock = base.Add(10 * time.Minute)
-	if err := s.Update([]taskpkg.TaskUpdate{{ID: a.ID, Status: taskpkg.TaskInProgress}}); err != nil {
+	if _, err := s.Update([]taskpkg.TaskUpdate{{ID: a.ID, Status: taskpkg.TaskInProgress}}); err != nil {
 		t.Fatalf("Update reopen: %v", err)
 	}
 	got = s.View()[0]
@@ -128,7 +128,7 @@ func TestTaskStore_UpdateStatus(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err := s.Update([]taskpkg.TaskUpdate{
+	_, err := s.Update([]taskpkg.TaskUpdate{
 		{ID: 1, Status: taskpkg.TaskDone},
 		{ID: 2, Status: taskpkg.TaskCancelled},
 	})
@@ -154,7 +154,7 @@ func TestTaskStore_UpdateRejectsUnknownID(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err := s.Update([]taskpkg.TaskUpdate{{ID: 99, Status: taskpkg.TaskDone}})
+	_, err := s.Update([]taskpkg.TaskUpdate{{ID: 99, Status: taskpkg.TaskDone}})
 	if err == nil {
 		t.Fatalf("expected error for unknown ID")
 	}
@@ -169,7 +169,7 @@ func TestTaskStore_UpdateInProgress(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err := s.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress}})
+	_, err := s.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress}})
 	if err != nil {
 		t.Fatalf("Update to in_progress: %v", err)
 	}
@@ -189,7 +189,7 @@ func TestTaskStore_UpdateRejectsInvalidStatus(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err := s.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskStatus("deleted")}})
+	_, err := s.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskStatus("deleted")}})
 	if err == nil {
 		t.Fatalf("expected error for invalid status")
 	}
@@ -207,7 +207,7 @@ func TestTaskStore_UpdateRejectsMultipleInProgressInBatch(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err := s.Update([]taskpkg.TaskUpdate{
+	_, err := s.Update([]taskpkg.TaskUpdate{
 		{ID: 1, Status: taskpkg.TaskInProgress},
 		{ID: 2, Status: taskpkg.TaskInProgress},
 	})
@@ -239,11 +239,11 @@ func TestTaskStore_UpdateRejectsInProgressWhenOneAlreadyExists(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := s.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress}}); err != nil {
+	if _, err := s.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress}}); err != nil {
 		t.Fatalf("first in_progress update: %v", err)
 	}
 
-	err := s.Update([]taskpkg.TaskUpdate{{ID: 2, Status: taskpkg.TaskInProgress}})
+	_, err := s.Update([]taskpkg.TaskUpdate{{ID: 2, Status: taskpkg.TaskInProgress}})
 	if err == nil {
 		t.Fatalf("expected error when setting a second task to in_progress while another is in_progress")
 	}
@@ -273,12 +273,12 @@ func TestTaskStore_UpdateAllowsMovingInProgressToDoneThenStartingAnother(t *test
 		t.Fatal(err)
 	}
 
-	if err := s.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress}}); err != nil {
+	if _, err := s.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress}}); err != nil {
 		t.Fatalf("first in_progress: %v", err)
 	}
 
 	// Agent completes task 1 and starts task 2 in one batch — allowed.
-	if err := s.Update([]taskpkg.TaskUpdate{
+	if _, err := s.Update([]taskpkg.TaskUpdate{
 		{ID: 1, Status: taskpkg.TaskDone},
 		{ID: 2, Status: taskpkg.TaskInProgress},
 	}); err != nil {
@@ -328,7 +328,7 @@ func TestTaskStore_PersistsAcrossLoads(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s1.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskDone}}); err != nil {
+	if _, err := s1.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskDone}}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -367,7 +367,7 @@ func TestTaskStore_UpdateOnlyChangesStatus(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := s.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskDone}}); err != nil {
+	if _, err := s.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskDone}}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -480,7 +480,7 @@ func TestTaskStore_UpdateWithNotes(t *testing.T) {
 	}
 
 	// First note.
-	err := s.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress, Notes: "Tried make -j4, got linker error: undefined reference to libfoo"}})
+	_, err := s.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress, Notes: "Tried make -j4, got linker error: undefined reference to libfoo"}})
 	if err != nil {
 		t.Fatalf("Update with notes: %v", err)
 	}
@@ -493,7 +493,7 @@ func TestTaskStore_UpdateWithNotes(t *testing.T) {
 	}
 
 	// Second note appends.
-	err = s.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress, Notes: "Installed libfoo-dev, retrying"}})
+	_, err = s.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress, Notes: "Installed libfoo-dev, retrying"}})
 	if err != nil {
 		t.Fatalf("Update second note: %v", err)
 	}
@@ -503,7 +503,7 @@ func TestTaskStore_UpdateWithNotes(t *testing.T) {
 	}
 
 	// Empty notes field should not append.
-	err = s.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskDone}})
+	_, err = s.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskDone}})
 	if err != nil {
 		t.Fatalf("Update without notes: %v", err)
 	}
@@ -590,7 +590,7 @@ func TestTaskStore_CurrentInProgressReflectsReasoningEffortUpdate(t *testing.T) 
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress}}); err != nil {
+	if _, err := s.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress}}); err != nil {
 		t.Fatal(err)
 	}
 	current, ok := s.CurrentInProgress()
@@ -599,7 +599,7 @@ func TestTaskStore_CurrentInProgressReflectsReasoningEffortUpdate(t *testing.T) 
 	}
 
 	// Escalate the in-progress task.
-	if err := s.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress, ReasoningEffort: "high"}}); err != nil {
+	if _, err := s.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress, ReasoningEffort: "high"}}); err != nil {
 		t.Fatal(err)
 	}
 	current, ok = s.CurrentInProgress()
@@ -620,7 +620,7 @@ func TestTaskStore_UpdateReasoningEffort(t *testing.T) {
 	}
 
 	// Escalate to high.
-	if err := s.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress, ReasoningEffort: "high"}}); err != nil {
+	if _, err := s.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress, ReasoningEffort: "high"}}); err != nil {
 		t.Fatalf("escalate to high: %v", err)
 	}
 	if got := s.View()[0].ReasoningEffort; got != "high" {
@@ -628,7 +628,7 @@ func TestTaskStore_UpdateReasoningEffort(t *testing.T) {
 	}
 
 	// Omitting reasoning_effort leaves it unchanged.
-	if err := s.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress, Notes: "still working"}}); err != nil {
+	if _, err := s.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress, Notes: "still working"}}); err != nil {
 		t.Fatalf("update without reasoning_effort: %v", err)
 	}
 	if got := s.View()[0].ReasoningEffort; got != "high" {
@@ -638,7 +638,7 @@ func TestTaskStore_UpdateReasoningEffort(t *testing.T) {
 	// Store does not validate effort strings — values are passed through to
 	// the provider, which knows what it accepts. Schema-level enum on the
 	// tool definition prevents the LLM from sending unsupported values.
-	if err := s.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress, ReasoningEffort: "xhigh"}}); err != nil {
+	if _, err := s.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress, ReasoningEffort: "xhigh"}}); err != nil {
 		t.Fatalf("xhigh should be accepted by store: %v", err)
 	}
 	if got := s.View()[0].ReasoningEffort; got != "xhigh" {
@@ -654,7 +654,7 @@ func TestTaskStore_NotesPersistAcrossLoads(t *testing.T) {
 	if _, err := s.Append([]taskpkg.TaskInput{{Type: taskpkg.TaskTypeResearch, Description: "Task", Prompt: "Do stuff"}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress, Notes: "First approach failed"}}); err != nil {
+	if _, err := s.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress, Notes: "First approach failed"}}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1040,7 +1040,7 @@ func TestTaskStore_UpdateDependsOn(t *testing.T) {
 
 	// Set depends_on via Update.
 	deps := []int{1}
-	if err := s.Update([]taskpkg.TaskUpdate{{ID: 2, Status: taskpkg.TaskOpen, DependsOn: &deps}}); err != nil {
+	if _, err := s.Update([]taskpkg.TaskUpdate{{ID: 2, Status: taskpkg.TaskOpen, DependsOn: &deps}}); err != nil {
 		t.Fatalf("Update with DependsOn: %v", err)
 	}
 	all := s.View()
@@ -1050,7 +1050,7 @@ func TestTaskStore_UpdateDependsOn(t *testing.T) {
 
 	// Clear depends_on with empty slice.
 	empty := []int{}
-	if err := s.Update([]taskpkg.TaskUpdate{{ID: 2, Status: taskpkg.TaskOpen, DependsOn: &empty}}); err != nil {
+	if _, err := s.Update([]taskpkg.TaskUpdate{{ID: 2, Status: taskpkg.TaskOpen, DependsOn: &empty}}); err != nil {
 		t.Fatalf("Update clear DependsOn: %v", err)
 	}
 	all = s.View()
@@ -1099,7 +1099,7 @@ func TestTaskStore_UpdateRejectsNonexistentDependency(t *testing.T) {
 	}
 
 	deps := []int{99}
-	err := s.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskOpen, DependsOn: &deps}})
+	_, err := s.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskOpen, DependsOn: &deps}})
 	if err == nil {
 		t.Fatalf("expected error for nonexistent dependency 99, got nil")
 	}
@@ -1120,7 +1120,7 @@ func TestTaskStore_RejectsCyclicDependency(t *testing.T) {
 
 	// Now try to make A depend on B — creates cycle A→B→A.
 	deps := []int{2}
-	err := s.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskOpen, DependsOn: &deps}})
+	_, err := s.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskOpen, DependsOn: &deps}})
 	if err == nil {
 		t.Fatalf("expected error for cyclic dependency A→B→A, got nil")
 	}
@@ -1142,7 +1142,7 @@ func TestTaskStore_RejectsTransitiveCycle(t *testing.T) {
 
 	// Make A depend on C → closes the cycle A←B←C←A.
 	deps := []int{3}
-	err := s.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskOpen, DependsOn: &deps}})
+	_, err := s.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskOpen, DependsOn: &deps}})
 	if err == nil {
 		t.Fatalf("expected error for transitive cycle A→C→B→A, got nil")
 	}
@@ -1225,7 +1225,7 @@ func TestTaskStore_NextEligible(t *testing.T) {
 	}
 
 	// Mark A done — B and C become eligible.
-	if err := s.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskDone}}); err != nil {
+	if _, err := s.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskDone}}); err != nil {
 		t.Fatal(err)
 	}
 	eligible = ids(s.NextEligible())
@@ -1234,7 +1234,7 @@ func TestTaskStore_NextEligible(t *testing.T) {
 	}
 
 	// Mark B done — C still eligible, D not yet (C still open).
-	if err := s.Update([]taskpkg.TaskUpdate{{ID: 2, Status: taskpkg.TaskDone}}); err != nil {
+	if _, err := s.Update([]taskpkg.TaskUpdate{{ID: 2, Status: taskpkg.TaskDone}}); err != nil {
 		t.Fatal(err)
 	}
 	eligible = ids(s.NextEligible())
@@ -1243,7 +1243,7 @@ func TestTaskStore_NextEligible(t *testing.T) {
 	}
 
 	// Mark C done — D becomes eligible.
-	if err := s.Update([]taskpkg.TaskUpdate{{ID: 3, Status: taskpkg.TaskDone}}); err != nil {
+	if _, err := s.Update([]taskpkg.TaskUpdate{{ID: 3, Status: taskpkg.TaskDone}}); err != nil {
 		t.Fatal(err)
 	}
 	eligible = ids(s.NextEligible())
@@ -1265,7 +1265,7 @@ func TestTaskStore_NextEligibleSkipsInProgress(t *testing.T) {
 	}
 
 	// Mark A in_progress — should not appear in eligible list.
-	if err := s.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress}}); err != nil {
+	if _, err := s.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress}}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1294,7 +1294,7 @@ func TestTaskStore_NextEligibleCancelledSatisfiesDeps(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := s.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskCancelled}}); err != nil {
+	if _, err := s.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskCancelled}}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1327,7 +1327,7 @@ func TestTaskStore_Progress(t *testing.T) {
 	}
 
 	// Mark one done, one cancelled.
-	if err := s.Update([]taskpkg.TaskUpdate{
+	if _, err := s.Update([]taskpkg.TaskUpdate{
 		{ID: 1, Status: taskpkg.TaskDone},
 		{ID: 2, Status: taskpkg.TaskCancelled},
 	}); err != nil {
@@ -1357,7 +1357,7 @@ func TestTaskStore_UpdateOmittedDependsOnPreserves(t *testing.T) {
 	}
 
 	// Update status without touching DependsOn (nil pointer = no change).
-	if err := s.Update([]taskpkg.TaskUpdate{{ID: 2, Status: taskpkg.TaskInProgress}}); err != nil {
+	if _, err := s.Update([]taskpkg.TaskUpdate{{ID: 2, Status: taskpkg.TaskInProgress}}); err != nil {
 		t.Fatalf("Update status: %v", err)
 	}
 

@@ -398,7 +398,7 @@ func TestTaskTool_CompletingAnotherTaskKeepsActiveCurrentTaskAndRecovers(t *test
 		{Description: "next", Prompt: "next"},
 		{Description: "current", Prompt: "current"},
 	})
-	if err := h.store.Update([]taskpkg.TaskUpdate{{ID: 3, Status: taskpkg.TaskInProgress}}); err != nil {
+	if _, err := h.store.Update([]taskpkg.TaskUpdate{{ID: 3, Status: taskpkg.TaskInProgress}}); err != nil {
 		t.Fatalf("start current task: %v", err)
 	}
 
@@ -475,7 +475,7 @@ func TestTaskTool_AutoAdvanceLeavesActiveTaskWhenCompletingAnother(t *testing.T)
 		{Description: "next", Prompt: "next"},
 		{Description: "active", Prompt: "active"},
 	})
-	if err := h.store.Update([]taskpkg.TaskUpdate{{ID: 3, Status: taskpkg.TaskInProgress}}); err != nil {
+	if _, err := h.store.Update([]taskpkg.TaskUpdate{{ID: 3, Status: taskpkg.TaskInProgress}}); err != nil {
 		t.Fatalf("start active task: %v", err)
 	}
 
@@ -665,7 +665,7 @@ func TestTaskTool_UpdateClassifiesStartsFromPreState(t *testing.T) {
 	t.Parallel()
 	t.Run("notes-only reassertion is not a start", func(t *testing.T) {
 		h := newTaskToolHarness(t, []taskpkg.TaskInput{{Description: "investigate", Prompt: "inspect"}})
-		if err := h.store.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress}}); err != nil {
+		if _, err := h.store.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress}}); err != nil {
 			t.Fatalf("start task: %v", err)
 		}
 
@@ -704,7 +704,7 @@ func TestTaskTool_UpdateClassifiesStartsFromPreState(t *testing.T) {
 			{Description: "finish", Prompt: "finish"},
 			{Description: "continue", Prompt: "continue"},
 		})
-		if err := h.store.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress}}); err != nil {
+		if _, err := h.store.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress}}); err != nil {
 			t.Fatalf("start task: %v", err)
 		}
 
@@ -750,7 +750,7 @@ func TestTaskTool_UpdateClassifiesSettlesFromPreState(t *testing.T) {
 	t.Parallel()
 	t.Run("terminal reassertion is not a settle", func(t *testing.T) {
 		h := newTaskToolHarness(t, []taskpkg.TaskInput{{Description: "wrap up", Prompt: "wrap up"}})
-		if err := h.store.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskDone}}); err != nil {
+		if _, err := h.store.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskDone}}); err != nil {
 			t.Fatalf("complete task: %v", err)
 		}
 
@@ -780,7 +780,7 @@ func TestTaskTool_UpdateClassifiesSettlesFromPreState(t *testing.T) {
 
 	t.Run("cancelled swap of a done task is a new settle", func(t *testing.T) {
 		h := newTaskToolHarness(t, []taskpkg.TaskInput{{Description: "swap", Prompt: "swap"}})
-		if err := h.store.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskDone}}); err != nil {
+		if _, err := h.store.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskDone}}); err != nil {
 			t.Fatalf("complete task: %v", err)
 		}
 
@@ -796,7 +796,7 @@ func TestTaskTool_UpdateClassifiesSettlesFromPreState(t *testing.T) {
 
 	t.Run("round-trip batch re-settles like the store's stamp", func(t *testing.T) {
 		h := newTaskToolHarness(t, []taskpkg.TaskInput{{Description: "bounce", Prompt: "bounce"}})
-		if err := h.store.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskDone}}); err != nil {
+		if _, err := h.store.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskDone}}); err != nil {
 			t.Fatalf("complete task: %v", err)
 		}
 
@@ -821,7 +821,7 @@ func TestTaskTool_UpdateClassifiesSettlesFromPreState(t *testing.T) {
 			{Description: "wrapped", Prompt: "wrapped"},
 			{Description: "waiting", Prompt: "waiting"},
 		})
-		if err := h.store.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskDone}}); err != nil {
+		if _, err := h.store.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskDone}}); err != nil {
 			t.Fatalf("complete task: %v", err)
 		}
 
@@ -867,7 +867,7 @@ func TestTaskTool_UpdateClassifiesSettlesFromPreState(t *testing.T) {
 func TestTaskTool_UpdateReopenEmitsTaskUpdated(t *testing.T) {
 	t.Parallel()
 	h := newTaskToolHarness(t, []taskpkg.TaskInput{{Description: "reopen", Prompt: "reopen"}})
-	if err := h.store.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskDone}}); err != nil {
+	if _, err := h.store.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskDone}}); err != nil {
 		t.Fatalf("complete task: %v", err)
 	}
 
@@ -929,7 +929,7 @@ func TestTaskTool_UpdateMarkerOnlyDescribesExplicitFinalInProgress(t *testing.T)
 		t.Run(tc.name, func(t *testing.T) {
 			h := newTaskToolHarness(t, []taskpkg.TaskInput{{Description: tc.name, Prompt: tc.name}})
 			if tc.status == "done" || tc.status == "cancelled" {
-				if err := h.store.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress}}); err != nil {
+				if _, err := h.store.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress}}); err != nil {
 					t.Fatalf("start task: %v", err)
 				}
 			}
@@ -947,7 +947,7 @@ func TestTaskTool_UpdateMarkerOnlyDescribesExplicitFinalInProgress(t *testing.T)
 func TestTaskTool_UpdateCompletionUsesLegacySteerFallback(t *testing.T) {
 	t.Parallel()
 	h := newTaskToolHarness(t, []taskpkg.TaskInput{{Description: "finish", Prompt: "finish"}})
-	if err := h.store.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress}}); err != nil {
+	if _, err := h.store.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress}}); err != nil {
 		t.Fatalf("start task: %v", err)
 	}
 
@@ -1081,7 +1081,7 @@ func TestTaskTool_NoOpUpdateEntryRejected(t *testing.T) {
 func TestTaskTool_AutoAdvanceCanPickSameCallAdd(t *testing.T) {
 	t.Parallel()
 	h := newTaskToolHarness(t, []taskpkg.TaskInput{{Description: "first", Prompt: "p1"}})
-	if err := h.store.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress}}); err != nil {
+	if _, err := h.store.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress}}); err != nil {
 		t.Fatalf("start: %v", err)
 	}
 	res := h.call(t, map[string]any{
@@ -1104,7 +1104,7 @@ func TestTaskTool_AutoAdvanceCanPickSameCallAdd(t *testing.T) {
 func TestTaskTool_NotesOnlyUpdateWorks(t *testing.T) {
 	t.Parallel()
 	h := newTaskToolHarness(t, []taskpkg.TaskInput{{Description: "d", Prompt: "p"}})
-	if err := h.store.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress}}); err != nil {
+	if _, err := h.store.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress}}); err != nil {
 		t.Fatalf("start: %v", err)
 	}
 	res := h.call(t, map[string]any{

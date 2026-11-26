@@ -171,7 +171,7 @@ func stceVisionAndWeb(t *testing.T, selector byte) {
 	if _, err := store.Append([]taskpkg.TaskInput{{Type: taskpkg.TaskTypeImplement, Description: "vision", Prompt: "vision", ReasoningEffort: "max"}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress}}); err != nil {
+	if _, err := store.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress}}); err != nil {
 		t.Fatal(err)
 	}
 	if got := s.describeImage(context.Background(), tool.ExecResult{ImageData: []byte("x"), ImageMediaType: "image/png"}); got != "scripted vision" {
@@ -303,7 +303,7 @@ func stceRegistryAndHelpers(t *testing.T) {
 	if _, err := shared.Append([]taskpkg.TaskInput{{Type: taskpkg.TaskTypeImplement, Description: "remind", Prompt: "remind"}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := shared.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress}}); err != nil {
+	if _, err := shared.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress}}); err != nil {
 		t.Fatal(err)
 	}
 	child, _, _ := stmNewSession(t, []byte("shared"))
