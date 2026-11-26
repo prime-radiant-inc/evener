@@ -26,7 +26,7 @@ func TestCov_Update_SaveErrorSurfaces(t *testing.T) {
 	}
 	// Swap to a read-only fs so the next persist fails.
 	s.SetFs(afero.NewReadOnlyFs(mem))
-	if err := s.Update([]TaskUpdate{{ID: added[0].ID, Status: TaskDone}}); err == nil {
+	if _, err := s.Update([]TaskUpdate{{ID: added[0].ID, Status: TaskDone}}); err == nil {
 		t.Fatal("Update should surface the save error on a read-only fs")
 	}
 }

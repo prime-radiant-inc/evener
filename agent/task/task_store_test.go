@@ -160,7 +160,7 @@ func TestUpdate_StatusNotesTimestampsAndCompletion(t *testing.T) {
 	added, _ := s.Append([]TaskInput{{Description: "a"}})
 	id := added[0].ID
 
-	if err := s.Update([]TaskUpdate{{ID: id, Status: TaskDone, Notes: "finished"}}); err != nil {
+	if _, err := s.Update([]TaskUpdate{{ID: id, Status: TaskDone, Notes: "finished"}}); err != nil {
 		t.Fatal(err)
 	}
 	got := s.View()[0]
@@ -178,7 +178,7 @@ func TestUpdate_StatusNotesTimestampsAndCompletion(t *testing.T) {
 	}
 
 	// Reopening a done task clears CompletedAt.
-	if err := s.Update([]TaskUpdate{{ID: id, Status: TaskOpen}}); err != nil {
+	if _, err := s.Update([]TaskUpdate{{ID: id, Status: TaskOpen}}); err != nil {
 		t.Fatal(err)
 	}
 	if s.View()[0].CompletedAt != nil {
@@ -194,7 +194,7 @@ func TestUpdate_StampsCompletedAtOnTerminalSettle(t *testing.T) {
 	// Reaching cancelled is a terminal settle like done: the stamp is the
 	// transition moment, so the transcript card's window can order the
 	// cancellation as most-recently-settled.
-	if err := s.Update([]TaskUpdate{{ID: id, Status: TaskCancelled}}); err != nil {
+	if _, err := s.Update([]TaskUpdate{{ID: id, Status: TaskCancelled}}); err != nil {
 		t.Fatal(err)
 	}
 	cancelled := s.View()[0]
@@ -206,7 +206,7 @@ func TestUpdate_StampsCompletedAtOnTerminalSettle(t *testing.T) {
 	// A later notes-only edit advances UpdatedAt but must not move the
 	// settle moment forward with it - an old cancellation must not read as
 	// the plan's most recent settle just because someone annotated it.
-	if err := s.Update([]TaskUpdate{{ID: id, Notes: "not really dropping it"}}); err != nil {
+	if _, err := s.Update([]TaskUpdate{{ID: id, Notes: "not really dropping it"}}); err != nil {
 		t.Fatal(err)
 	}
 	annotated := s.View()[0]
@@ -220,7 +220,7 @@ func TestUpdate_StampsCompletedAtOnTerminalSettle(t *testing.T) {
 	// Re-asserting the same terminal status alongside a note is still just
 	// an annotation of an already-settled task: the settle moment is the
 	// first transition, not every repeat of the word.
-	if err := s.Update([]TaskUpdate{{ID: id, Status: TaskCancelled, Notes: "and here is why"}}); err != nil {
+	if _, err := s.Update([]TaskUpdate{{ID: id, Status: TaskCancelled, Notes: "and here is why"}}); err != nil {
 		t.Fatal(err)
 	}
 	reasserted := s.View()[0]
@@ -235,7 +235,7 @@ func TestUpdate_StampsCompletedAtOnTerminalSettle(t *testing.T) {
 	}
 
 	// Reopening clears the stamp exactly like a reopened done task.
-	if err := s.Update([]TaskUpdate{{ID: id, Status: TaskOpen}}); err != nil {
+	if _, err := s.Update([]TaskUpdate{{ID: id, Status: TaskOpen}}); err != nil {
 		t.Fatal(err)
 	}
 	if s.View()[0].CompletedAt != nil {
@@ -249,7 +249,7 @@ func TestUpdate_SnapshotReportsSettledTransitions(t *testing.T) {
 	id := added[0].ID
 
 	// A fresh transition into terminal is a settle.
-	snap, err := s.UpdateWithSnapshot([]TaskUpdate{{ID: id, Status: TaskDone}})
+	snap, err := s.Update([]TaskUpdate{{ID: id, Status: TaskDone}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -259,7 +259,7 @@ func TestUpdate_SnapshotReportsSettledTransitions(t *testing.T) {
 
 	// Re-asserting the status the task already holds is an annotation, not
 	// a settle: the store keeps the original stamp, so the marker must too.
-	snap, err = s.UpdateWithSnapshot([]TaskUpdate{{ID: id, Status: TaskDone, Notes: "annotating"}})
+	snap, err = s.Update([]TaskUpdate{{ID: id, Status: TaskDone, Notes: "annotating"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -270,7 +270,7 @@ func TestUpdate_SnapshotReportsSettledTransitions(t *testing.T) {
 	// A batch that touches the task away from terminal and back re-settles
 	// it: the store stamps a fresh CompletedAt, and the marker must agree
 	// with the stamp or the frontend suppresses a genuine settle.
-	snap, err = s.UpdateWithSnapshot([]TaskUpdate{
+	snap, err = s.Update([]TaskUpdate{
 		{ID: id, Status: TaskOpen},
 		{ID: id, Status: TaskDone},
 	})
@@ -303,7 +303,7 @@ func TestUpdate_SettleThenReopenInOneBatchIsNotASettle(t *testing.T) {
 	// The batch's net effect is no change: the task ends open with no
 	// stamp, so the settled map must not claim a settle the batch undid -
 	// the tool gates auto-advance on this map.
-	snap, err := s.UpdateWithSnapshot([]TaskUpdate{
+	snap, err := s.Update([]TaskUpdate{
 		{ID: id, Status: TaskDone},
 		{ID: id, Status: TaskOpen},
 	})
@@ -318,19 +318,19 @@ func TestUpdate_SettleThenReopenInOneBatchIsNotASettle(t *testing.T) {
 	}
 }
 
-func TestUpdateWithSnapshotReturnsAtomicPreAndPostStates(t *testing.T) {
+func TestUpdate_ReturnsAtomicPreAndPostStates(t *testing.T) {
 	s := newTestStore(t)
 	added, err := s.Append([]TaskInput{{Description: "a"}, {Description: "b"}})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	snapshot, err := s.UpdateWithSnapshot([]TaskUpdate{
+	snapshot, err := s.Update([]TaskUpdate{
 		{ID: added[0].ID, Status: TaskInProgress},
 		{ID: added[0].ID, Status: TaskDone},
 	})
 	if err != nil {
-		t.Fatalf("UpdateWithSnapshot: %v", err)
+		t.Fatalf("Update: %v", err)
 	}
 	if got := snapshot.Before[0].Status; got != TaskOpen {
 		t.Fatalf("before task 1 status = %q, want open", got)
@@ -343,14 +343,14 @@ func TestUpdateWithSnapshotReturnsAtomicPreAndPostStates(t *testing.T) {
 	}
 }
 
-func TestUpdateWithSnapshotClonesTimestampPointers(t *testing.T) {
+func TestUpdate_ClonesTimestampPointers(t *testing.T) {
 	s := newTestStore(t)
 	added, err := s.Append([]TaskInput{{Description: "a"}, {Description: "b"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.UpdateWithSnapshot([]TaskUpdate{{ID: added[0].ID, Status: TaskDone}}); err != nil {
-		t.Fatalf("UpdateWithSnapshot: %v", err)
+	if _, err := s.Update([]TaskUpdate{{ID: added[0].ID, Status: TaskDone}}); err != nil {
+		t.Fatalf("Update: %v", err)
 	}
 
 	type timestampValues struct {
@@ -365,9 +365,9 @@ func TestUpdateWithSnapshotClonesTimestampPointers(t *testing.T) {
 		clonedValue := *value
 		return &clonedValue
 	}
-	snapshot, err := s.UpdateWithSnapshot([]TaskUpdate{{ID: added[1].ID, Status: TaskOpen}})
+	snapshot, err := s.Update([]TaskUpdate{{ID: added[1].ID, Status: TaskOpen}})
 	if err != nil {
-		t.Fatalf("UpdateWithSnapshot: %v", err)
+		t.Fatalf("Update: %v", err)
 	}
 	if snapshot.Before[0].CompletedAt == nil {
 		// The completed task proves a non-nil CompletedAt pointer is covered;
@@ -429,14 +429,14 @@ func TestUpdate_DependsOnChangeAndClear(t *testing.T) {
 	a, b := added[0].ID, added[1].ID
 
 	// Set b to depend on a.
-	if err := s.Update([]TaskUpdate{{ID: b, Status: TaskOpen, DependsOn: &[]int{a}}}); err != nil {
+	if _, err := s.Update([]TaskUpdate{{ID: b, Status: TaskOpen, DependsOn: &[]int{a}}}); err != nil {
 		t.Fatal(err)
 	}
 	if deps := s.View()[1].DependsOn; len(deps) != 1 || deps[0] != a {
 		t.Fatalf("DependsOn = %v, want [%d]", deps, a)
 	}
 	// Clear with &[]int{}; nil would mean "no change".
-	if err := s.Update([]TaskUpdate{{ID: b, Status: TaskOpen, DependsOn: &[]int{}}}); err != nil {
+	if _, err := s.Update([]TaskUpdate{{ID: b, Status: TaskOpen, DependsOn: &[]int{}}}); err != nil {
 		t.Fatal(err)
 	}
 	if deps := s.View()[1].DependsOn; len(deps) != 0 {
@@ -449,14 +449,14 @@ func TestUpdate_RejectsInvalidStatusUnknownIDAndDoubleInProgress(t *testing.T) {
 	added, _ := s.Append([]TaskInput{{Description: "a"}, {Description: "b"}})
 	a, b := added[0].ID, added[1].ID
 
-	if err := s.Update([]TaskUpdate{{ID: a, Status: "bogus"}}); err == nil {
+	if _, err := s.Update([]TaskUpdate{{ID: a, Status: "bogus"}}); err == nil {
 		t.Error("invalid status: want error")
 	}
-	if err := s.Update([]TaskUpdate{{ID: 999, Status: TaskOpen}}); err == nil {
+	if _, err := s.Update([]TaskUpdate{{ID: 999, Status: TaskOpen}}); err == nil {
 		t.Error("unknown ID: want error")
 	}
 	// Two tasks in_progress in one batch violates the single-in_progress invariant.
-	if err := s.Update([]TaskUpdate{
+	if _, err := s.Update([]TaskUpdate{
 		{ID: a, Status: TaskInProgress},
 		{ID: b, Status: TaskInProgress},
 	}); err == nil {
@@ -475,10 +475,10 @@ func TestUpdate_DoubleInProgress_NamesTheBlockingTask(t *testing.T) {
 	added, _ := s.Append([]TaskInput{{Description: "first task"}, {Description: "second task"}})
 	first, second := added[0].ID, added[1].ID
 
-	if err := s.Update([]TaskUpdate{{ID: first, Status: TaskInProgress}}); err != nil {
+	if _, err := s.Update([]TaskUpdate{{ID: first, Status: TaskInProgress}}); err != nil {
 		t.Fatalf("starting first task: %v", err)
 	}
-	err := s.Update([]TaskUpdate{{ID: second, Status: TaskInProgress}})
+	_, err := s.Update([]TaskUpdate{{ID: second, Status: TaskInProgress}})
 	if err == nil {
 		t.Fatal("second task in_progress while first still in_progress: want error")
 	}
@@ -493,14 +493,14 @@ func TestUpdate_DoubleInProgress_DoesNotBlameATaskTheBatchResolves(t *testing.T)
 	added, _ := s.Append([]TaskInput{{Description: "first"}, {Description: "second"}, {Description: "third"}})
 	first, second, third := added[0].ID, added[1].ID, added[2].ID
 
-	if err := s.Update([]TaskUpdate{{ID: first, Status: TaskInProgress}}); err != nil {
+	if _, err := s.Update([]TaskUpdate{{ID: first, Status: TaskInProgress}}); err != nil {
 		t.Fatalf("starting first task: %v", err)
 	}
 
 	// This batch resolves the old blocker (first -> done) but creates a NEW
 	// conflict between second and third. The error must not blame first,
 	// since first won't be in_progress once this batch applies.
-	err := s.Update([]TaskUpdate{
+	_, err := s.Update([]TaskUpdate{
 		{ID: first, Status: TaskDone},
 		{ID: second, Status: TaskInProgress},
 		{ID: third, Status: TaskInProgress},
@@ -583,8 +583,8 @@ func TestSummarizeReturnsOwnedCurrentTask(t *testing.T) {
 func TestTaskStore_ProgressPreservesLegacyCountsAndSummaryAddsOutcomes(t *testing.T) {
 	s := newTestStore(t)
 	added, _ := s.Append([]TaskInput{{Description: "a"}, {Description: "b"}, {Description: "c"}})
-	_ = s.Update([]TaskUpdate{{ID: added[0].ID, Status: TaskDone}})
-	_ = s.Update([]TaskUpdate{{ID: added[1].ID, Status: TaskCancelled}})
+	_, _ = s.Update([]TaskUpdate{{ID: added[0].ID, Status: TaskDone}})
+	_, _ = s.Update([]TaskUpdate{{ID: added[1].ID, Status: TaskCancelled}})
 	total, done := s.Progress()
 	if total != 3 || done != 1 {
 		t.Errorf("Progress = (%d,%d), want (3,1)", total, done)
@@ -608,7 +608,7 @@ func TestNextEligible_GatedByDependencies(t *testing.T) {
 		t.Fatalf("eligible = %+v, want only task %d", elig, a)
 	}
 	// Complete a -> b becomes eligible.
-	_ = s.Update([]TaskUpdate{{ID: a, Status: TaskDone}})
+	_, _ = s.Update([]TaskUpdate{{ID: a, Status: TaskDone}})
 	elig = s.NextEligible()
 	if len(elig) != 1 || elig[0].ID != b {
 		t.Fatalf("eligible = %+v, want only task %d after a done", elig, b)
@@ -621,7 +621,7 @@ func TestTaskStore_CurrentInProgress(t *testing.T) {
 	if _, ok := s.CurrentInProgress(); ok {
 		t.Error("no task in progress yet, want ok=false")
 	}
-	_ = s.Update([]TaskUpdate{{ID: added[1].ID, Status: TaskInProgress}})
+	_, _ = s.Update([]TaskUpdate{{ID: added[1].ID, Status: TaskInProgress}})
 	cur, ok := s.CurrentInProgress()
 	if !ok || cur.ID != added[1].ID {
 		t.Errorf("CurrentInProgress = (%+v,%v), want task %d", cur, ok, added[1].ID)
@@ -730,7 +730,7 @@ func TestView_EmptyStoreReturnsNonNilSlice(t *testing.T) {
 func TestView_DeepCopiesNestedState(t *testing.T) {
 	t.Parallel()
 	s, aID := seedDependentStore(t)
-	if err := s.Update([]TaskUpdate{{ID: aID, Notes: "note"}}); err != nil {
+	if _, err := s.Update([]TaskUpdate{{ID: aID, Notes: "note"}}); err != nil {
 		t.Fatalf("update notes: %v", err)
 	}
 
@@ -756,7 +756,7 @@ func TestView_DeepCopiesNestedState(t *testing.T) {
 func TestViewWithError_DeepCopiesNestedState(t *testing.T) {
 	t.Parallel()
 	s, aID := seedDependentStore(t)
-	if err := s.Update([]TaskUpdate{{ID: aID, Notes: "note"}}); err != nil {
+	if _, err := s.Update([]TaskUpdate{{ID: aID, Notes: "note"}}); err != nil {
 		t.Fatalf("update notes: %v", err)
 	}
 
@@ -788,7 +788,7 @@ func TestViewWithError_DeepCopiesNestedState(t *testing.T) {
 func TestNextEligible_DeepCopiesNestedState(t *testing.T) {
 	t.Parallel()
 	s, aID := seedDependentStore(t)
-	if err := s.Update([]TaskUpdate{{ID: aID, Status: TaskDone}}); err != nil {
+	if _, err := s.Update([]TaskUpdate{{ID: aID, Status: TaskDone}}); err != nil {
 		t.Fatalf("complete a: %v", err)
 	}
 
@@ -816,7 +816,7 @@ func TestCurrentInProgress_DeepCopiesNestedState(t *testing.T) {
 	t.Parallel()
 	s, aID := seedDependentStore(t)
 	bID := s.View()[1].ID
-	if err := s.Update([]TaskUpdate{{ID: bID, Status: TaskInProgress, Notes: "note"}}); err != nil {
+	if _, err := s.Update([]TaskUpdate{{ID: bID, Status: TaskInProgress, Notes: "note"}}); err != nil {
 		t.Fatalf("start b: %v", err)
 	}
 
@@ -880,7 +880,7 @@ func TestUpdate_ClonesInputDependencies(t *testing.T) {
 		t.Fatalf("append: %v", err)
 	}
 	deps := []int{added[0].ID}
-	if err := s.Update([]TaskUpdate{{ID: added[1].ID, DependsOn: &deps}}); err != nil {
+	if _, err := s.Update([]TaskUpdate{{ID: added[1].ID, DependsOn: &deps}}); err != nil {
 		t.Fatalf("update deps: %v", err)
 	}
 	deps[0] = 999
@@ -899,7 +899,7 @@ func TestTaskUpdate_EmptyStatusMeansNoChange(t *testing.T) {
 	if err != nil {
 		t.Fatalf("append: %v", err)
 	}
-	if err := s.Update([]TaskUpdate{{ID: added[0].ID, Notes: "note one"}}); err != nil {
+	if _, err := s.Update([]TaskUpdate{{ID: added[0].ID, Notes: "note one"}}); err != nil {
 		t.Fatalf("notes-only update: %v", err)
 	}
 	got := s.View()
@@ -910,10 +910,10 @@ func TestTaskUpdate_EmptyStatusMeansNoChange(t *testing.T) {
 		t.Fatalf("notes not applied: %v", got[0].Notes)
 	}
 
-	if err := s.Update([]TaskUpdate{{ID: added[0].ID, Status: TaskInProgress}}); err != nil {
+	if _, err := s.Update([]TaskUpdate{{ID: added[0].ID, Status: TaskInProgress}}); err != nil {
 		t.Fatalf("start: %v", err)
 	}
-	if err := s.Update([]TaskUpdate{{ID: added[0].ID, Notes: "note two"}}); err != nil {
+	if _, err := s.Update([]TaskUpdate{{ID: added[0].ID, Notes: "note two"}}); err != nil {
 		t.Fatalf("notes-only during progress: %v", err)
 	}
 	got = s.View()
@@ -934,13 +934,13 @@ func TestTaskUpdate_EmptyStatusStillValidates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("append: %v", err)
 	}
-	if err := s.Update([]TaskUpdate{{ID: 999, Notes: "x"}}); err == nil {
+	if _, err := s.Update([]TaskUpdate{{ID: 999, Notes: "x"}}); err == nil {
 		t.Fatal("unknown ID with empty status must still be rejected")
 	}
-	if err := s.Update([]TaskUpdate{{ID: added[0].ID, DependsOn: &[]int{999}}}); err == nil {
+	if _, err := s.Update([]TaskUpdate{{ID: added[0].ID, DependsOn: &[]int{999}}}); err == nil {
 		t.Fatal("unknown dep must still be rejected")
 	}
-	if err := s.Update([]TaskUpdate{{ID: added[0].ID, Status: "bogus"}}); err == nil {
+	if _, err := s.Update([]TaskUpdate{{ID: added[0].ID, Status: "bogus"}}); err == nil {
 		t.Fatal("bogus status must still be rejected")
 	}
 }

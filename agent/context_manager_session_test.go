@@ -272,7 +272,7 @@ func TestBuildCompactionMeta_ExcludesTaskState(t *testing.T) {
 	if _, err := store.Append([]task.TaskInput{{Description: "Frobnicate the gizmo"}}); err != nil {
 		t.Fatalf("Append: %v", err)
 	}
-	if err := store.Update([]task.TaskUpdate{{ID: 1, Status: task.TaskInProgress}}); err != nil {
+	if _, err := store.Update([]task.TaskUpdate{{ID: 1, Status: task.TaskInProgress}}); err != nil {
 		t.Fatalf("Update in_progress: %v", err)
 	}
 

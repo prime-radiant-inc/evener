@@ -74,8 +74,8 @@ func FuzzTaskStorePersistence(f *testing.F) {
 					break
 				}
 				updates := r.taskUpdates(created, op == opUpdateDep)
-				errOS := osStore.Update(updates)
-				errMem := memStore.Update(updates)
+				_, errOS := osStore.Update(updates)
+				_, errMem := memStore.Update(updates)
 				requireErrParity(t, "Update", errOS, errMem)
 			case opPopulate:
 				n := int(r.next()%4) + 1

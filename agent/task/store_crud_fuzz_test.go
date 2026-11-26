@@ -80,7 +80,7 @@ func FuzzTaskStore(f *testing.F) {
 				}
 				updates := r.taskUpdates(created, op == opUpdateDep)
 				diskBefore := readFileBytes(s.path)
-				if err := s.Update(updates); err != nil {
+				if _, err := s.Update(updates); err != nil {
 					// NOTE: Update can half-apply a status change in memory when a
 					// later DependsOn validation fails, but it returns before save();
 					// the durable contract (disk unchanged on error) still holds.

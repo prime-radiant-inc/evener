@@ -205,7 +205,7 @@ func TestMaybeInjectTaskReminder_InactivityAfter25Rounds(t *testing.T) {
 	store.Append([]taskpkg.TaskInput{{Type: taskpkg.TaskTypeResearch, Description: "A", Prompt: "a"}})
 	// An inactivity reminder only fires when there's a task in_progress — the
 	// point of the reminder is to re-state the current step.
-	if err := store.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress}}); err != nil {
+	if _, err := store.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress}}); err != nil {
 		t.Fatalf("mark task 1 in_progress: %v", err)
 	}
 	sess.taskToolEverUsed = true

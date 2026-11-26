@@ -199,7 +199,7 @@ func TestTaskInactivityReminderGatesAtTheCallSite(t *testing.T) {
 			if _, err := store.Append([]taskpkg.TaskInput{{Type: taskpkg.TaskTypeImplement, Description: "ship it", Prompt: "do the thing"}}); err != nil {
 				t.Fatalf("append: %v", err)
 			}
-			if _, err := store.UpdateWithSnapshot([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress}}); err != nil {
+			if _, err := store.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress}}); err != nil {
 				t.Fatalf("start task: %v", err)
 			}
 			if tc.removeTool {

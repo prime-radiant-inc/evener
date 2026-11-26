@@ -11,13 +11,13 @@ import "testing"
 func TestUpdate_AtomicWhenDependencyValidationFails(t *testing.T) {
 	s := newTestStore(t)
 	s.Append([]TaskInput{{Description: "a"}, {Description: "b"}}) //nolint:errcheck
-	if err := s.Update([]TaskUpdate{{ID: 1, Status: TaskInProgress}}); err != nil {
+	if _, err := s.Update([]TaskUpdate{{ID: 1, Status: TaskInProgress}}); err != nil {
 		t.Fatal(err)
 	}
 
 	// Unknown dependency in a later update — would previously half-apply the batch.
 	bad := []int{99}
-	err := s.Update([]TaskUpdate{
+	_, err := s.Update([]TaskUpdate{
 		{ID: 2, Status: TaskInProgress, DependsOn: &bad},
 		{ID: 1, Status: TaskOpen},
 	})
@@ -44,7 +44,7 @@ func TestUpdate_AtomicWhenDependencyValidationFails(t *testing.T) {
 	// rejected atomically (the per-update check could miss the cross-update cycle).
 	s2 := newTestStore(t)
 	s2.Append([]TaskInput{{Description: "a"}, {Description: "b"}}) //nolint:errcheck
-	if err := s2.Update([]TaskUpdate{
+	if _, err := s2.Update([]TaskUpdate{
 		{ID: 1, Status: TaskOpen, DependsOn: &[]int{2}},
 		{ID: 2, Status: TaskOpen, DependsOn: &[]int{1}},
 	}); err == nil {
