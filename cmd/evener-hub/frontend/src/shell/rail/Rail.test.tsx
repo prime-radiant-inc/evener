@@ -919,8 +919,21 @@ describe("resource-backed Rail", () => {
         window.dispatchEvent(new MessageEvent("message", { data: JSON.stringify({ type, id }) }));
       });
     try {
-      const { container } = render(<Rail />);
+      const container = document.body.appendChild(document.createElement("section"));
+      container.setAttribute("role", "dialog");
+      let entering = true;
+      Object.defineProperty(container, "getAnimations", { value: () => (entering ? [{ playState: "running" }] : []) });
+      renderUI(
+        <ClientProvider client={new FakeClient()}>
+          <Rail />
+        </ClientProvider>,
+        { container },
+      );
       const button = screen.getByTestId("rail-new-session");
+      expect(messages.at(-1)?.frame).toBeNull();
+      expect(button.hasAttribute("aria-hidden")).toBe(false);
+      entering = false;
+      fireEvent.animationEnd(container);
       const published = messages.find(({ frame }) => frame);
       if (!published) throw new Error("Missing native create button");
       expect(published.frame).toEqual({ x: 10, y: 320, width: 44, height: 44 });

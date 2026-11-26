@@ -11,9 +11,12 @@ export function useIPhoneCreateButton(rail: RefObject<HTMLDivElement | null>) {
     const board = rail.current;
     if (!button || !board || !hasIPhoneWorkspaceControls()) return;
     const viewport = window.visualViewport;
+    const drawer = button.closest('[role="dialog"]');
     function frame() {
       if (!button || button.closest('[inert], [data-motion="opening"]') || (viewport && viewport.scale !== 1))
         return null;
+      // A fully visible button can still be moving with the Sessions drawer.
+      if (drawer?.getAnimations().some((animation) => animation.playState === "running")) return null;
       const layer = document.activeElement?.closest(
         '[data-focus-layer], [aria-modal="true"], [role="menu"], [role="listbox"]',
       );
@@ -59,6 +62,9 @@ export function useIPhoneCreateButton(rail: RefObject<HTMLDivElement | null>) {
     window.addEventListener("scroll", scroll, true);
     document.addEventListener("focusin", measure);
     document.addEventListener("focusout", measure);
+    drawer?.addEventListener("animationstart", measure);
+    drawer?.addEventListener("animationend", measure);
+    drawer?.addEventListener("animationcancel", measure);
     viewport?.addEventListener("resize", measure);
     viewport?.addEventListener("scroll", measure);
     measure();
@@ -70,6 +76,9 @@ export function useIPhoneCreateButton(rail: RefObject<HTMLDivElement | null>) {
       window.removeEventListener("scroll", scroll, true);
       document.removeEventListener("focusin", measure);
       document.removeEventListener("focusout", measure);
+      drawer?.removeEventListener("animationstart", measure);
+      drawer?.removeEventListener("animationend", measure);
+      drawer?.removeEventListener("animationcancel", measure);
       viewport?.removeEventListener("resize", measure);
       viewport?.removeEventListener("scroll", measure);
       tellIPhoneHost({ type: "createButton", id, frame: null });
