@@ -137,10 +137,6 @@ func (m *Manager) marketplaceDir(name string) string {
 	return filepath.Join(m.marketplacesDir(), name)
 }
 
-func (m *Manager) pluginCacheDir(marketplace, plugin, sha string) string {
-	return filepath.Join(m.cacheDir(), marketplace, plugin, sha)
-}
-
 // validNameComponent rejects a marketplace/plugin name that is unsafe to use as
 // a filesystem path segment (traversal, absolute, separators, empty), and two
 // shapes that are legal path components but already spoken for by the store —
