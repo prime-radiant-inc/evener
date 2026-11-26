@@ -3335,7 +3335,7 @@ test("a scrolled visual viewport places the popup in the reader's visible region
 // padding, which slides the composer and this trigger down. No window
 // `resize` fires for it, so a menu listening only on the window stayed at the
 // coordinates it measured while the keyboard was still up.
-test("a visual-viewport resize re-anchors the menu to the trigger it moved", async () => {
+test("the keyboard restoring the document's pan re-anchors the menu and a reader scroll still closes it", async () => {
   const user = userEvent.setup();
   const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
   const fakeViewport = new EventTarget() as EventTarget & {
@@ -3345,17 +3345,14 @@ test("a visual-viewport resize re-anchors the menu to the trigger it moved", asy
     offsetTop: number;
   };
   fakeViewport.width = 400;
-  fakeViewport.height = 400;
+  fakeViewport.height = 484;
   fakeViewport.offsetLeft = 0;
-  fakeViewport.offsetTop = 0;
+  fakeViewport.offsetTop = 328;
   vi.stubGlobal("visualViewport", fakeViewport);
+  vi.stubGlobal("scrollY", 328);
   const { flush } = captureFrames();
-  let triggerTop = 300;
-  // The layout viewport has to be tall enough to CONTAIN the panned visual
-  // viewport: a 400px visible area whose top sits 100px down ends at 500, so a
-  // 400px layout viewport could never report this pan. 600 leaves the offset
-  // reachable, and the placement still reads the visual viewport's 400px height.
-  Object.defineProperty(window, "innerHeight", { configurable: true, value: 600 });
+  let triggerTop = 398;
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: 812 });
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
     if (this.tagName === "BUTTON") return box(100, triggerTop, 40, 28);
     if (this.tagName === "UL") return box(0, 0, 160, 120);
@@ -3363,20 +3360,28 @@ test("a visual-viewport resize re-anchors the menu to the trigger it moved", asy
   });
   stubPopupLayoutBox(window, 160, 120);
   try {
-    render(<Menu trigger="Actions" items={items()} />);
+    render(<ComposerLikeSurface />);
+    await user.click(screen.getByRole("textbox"));
     await user.click(screen.getByRole("button", { name: "Actions" }));
-    expect(screen.getByRole("menu").style.top).toBe("176px"); // flipped above
+    expect(screen.getByRole("menu").style.top).toBe("430px");
 
-    // The keyboard's inset lands: the composer and its trigger slide down, and
-    // only the visual viewport reports it.
-    triggerTop = 500;
-    fakeViewport.height = 800;
-    Object.defineProperty(window, "innerHeight", { configurable: true, value: 800 });
+    // WebKit restores the pan it applied to reveal the active editor. It
+    // delivers a document scroll between the visual viewport events.
+    triggerTop = 726;
+    fakeViewport.height = 812;
+    fakeViewport.offsetTop = 0;
+    vi.stubGlobal("scrollY", 0);
     fakeViewport.dispatchEvent(new Event("resize"));
+    fireEvent.scroll(document);
+    fakeViewport.dispatchEvent(new Event("scroll"));
     flush();
 
-    expect(screen.getByRole("menu")).toBeTruthy();
-    expect(screen.getByRole("menu").style.top).toBe("532px"); // follows the trigger
+    expect(screen.getByRole("menu").style.top).toBe("602px");
+    expect(screen.getAllByRole("menuitem")[0]).toBe(document.activeElement);
+    triggerTop -= 20;
+    vi.stubGlobal("scrollY", 20);
+    fireEvent.scroll(document);
+    expect(screen.queryByRole("menu")).toBeNull();
   } finally {
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
