@@ -18,12 +18,14 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/execsupport/valueexpr"
 	"primeradiant.com/evener/internal/credentials"
 	"primeradiant.com/evener/internal/testwait"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/providers/tokenauth"
 	"primeradiant.com/evener/llm/registry"
+	"primeradiant.com/evener/rendezvous"
 )
 
 type modelMetadataAdapter struct {
@@ -1215,6 +1217,118 @@ func TestFetchLiveModelsUsesSharedListingBudget(t *testing.T) {
 		}
 		if remaining := time.Until(deadline); remaining != 8*time.Second {
 			t.Fatalf("settings listing budget = %s, want the shared 8s listing budget", remaining)
+		}
+	})
+}
+
+func TestValidateEvenerLaunchModelUsesCachedLaunchModels(t *testing.T) {
+	t.Parallel()
+
+	t.Run("warm cache accepts valid model without re-running launch-check", func(t *testing.T) {
+		t.Parallel()
+		spawner := &countLaunchContractSpawner{modelsFn: func(int, string) appwire.ModelListResponse {
+			return appwire.ModelListResponse{Data: []appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-5.5"}}}
+		}}
+		web := newLaunchModelsTestWeb(t, spawner, true)
+		if _, err := hubModelList(t.Context(), web.cfg, nil, appwire.ModelListParams{CWD: "/tmp/proj"}); err != nil {
+			t.Fatalf("hubModelList: %v", err)
+		}
+		if got := spawner.callCount(); got != 1 {
+			t.Fatalf("warm call count = %d, want 1", got)
+		}
+		if err := validateEvenerLaunchModel(t.Context(), web.cfg, cmdutil.ModelRef{Provider: "openai", Model: "gpt-5.5"}, "/tmp/proj"); err != nil {
+			t.Fatalf("validateEvenerLaunchModel: %v", err)
+		}
+		if got := spawner.callCount(); got != 1 {
+			t.Fatalf("launch contract called %d times after warm model/list + validate, want 1", got)
+		}
+	})
+
+	t.Run("stale cache refusal refreshes once and accepts newly added model", func(t *testing.T) {
+		t.Parallel()
+		spawner := &countLaunchContractSpawner{modelsFn: func(call int, _ string) appwire.ModelListResponse {
+			return appwire.ModelListResponse{Data: []appwire.ModelDescriptor{
+				{Provider: "openai", Model: fmt.Sprintf("gen-%d", call)},
+			}}
+		}}
+		web := newLaunchModelsTestWeb(t, spawner, true)
+		if _, err := web.fetchLaunchModels(t.Context(), "/tmp/proj", false); err != nil {
+			t.Fatalf("warm fetchLaunchModels: %v", err)
+		}
+		if err := web.cfg.Registry.Reload(); err != nil {
+			t.Fatalf("Reload: %v", err)
+		}
+		if err := validateEvenerLaunchModel(t.Context(), web.cfg, cmdutil.ModelRef{Provider: "openai", Model: "gen-2"}, "/tmp/proj"); err != nil {
+			t.Fatalf("validateEvenerLaunchModel after stale miss: %v", err)
+		}
+		if got := spawner.callCount(); got != 2 {
+			t.Fatalf("launch contract called %d times, want 2 (initial load + one refresh)", got)
+		}
+	})
+
+	t.Run("warm cache refusal refreshes once before rejecting invalid model", func(t *testing.T) {
+		t.Parallel()
+		spawner := &countLaunchContractSpawner{modelsFn: func(int, string) appwire.ModelListResponse {
+			return appwire.ModelListResponse{Data: []appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-5.5"}}}
+		}}
+		web := newLaunchModelsTestWeb(t, spawner, true)
+		if _, err := web.fetchLaunchModels(t.Context(), "/tmp/proj", false); err != nil {
+			t.Fatalf("warm fetchLaunchModels: %v", err)
+		}
+		err := validateEvenerLaunchModel(t.Context(), web.cfg, cmdutil.ModelRef{Provider: "openai", Model: "missing"}, "/tmp/proj")
+		assertHubLaunchError(t, err)
+		if got := spawner.callCount(); got != 2 {
+			t.Fatalf("launch contract called %d times, want 2 (initial load + one refresh on refusal)", got)
+		}
+	})
+
+	t.Run("cold invalid model fails after one live load without duplicate refresh", func(t *testing.T) {
+		t.Parallel()
+		spawner := &countLaunchContractSpawner{modelsFn: func(int, string) appwire.ModelListResponse {
+			return appwire.ModelListResponse{Data: []appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-5.5"}}}
+		}}
+		web := newLaunchModelsTestWeb(t, spawner, true)
+		err := validateEvenerLaunchModel(t.Context(), web.cfg, cmdutil.ModelRef{Provider: "openai", Model: "missing"}, "/tmp/cold")
+		assertHubLaunchError(t, err)
+		if got := spawner.callCount(); got != 1 {
+			t.Fatalf("launch contract called %d times on cold invalid model, want 1", got)
+		}
+	})
+
+	t.Run("thread/start reuses launch model cache warmed by model/list across symlinked CWD", func(t *testing.T) {
+		t.Parallel()
+		realDir := filepath.Join(t.TempDir(), "repo")
+		if err := os.MkdirAll(realDir, 0o755); err != nil {
+			t.Fatalf("MkdirAll: %v", err)
+		}
+		linkDir := filepath.Join(t.TempDir(), "repo-link")
+		if err := os.Symlink(realDir, linkDir); err != nil {
+			t.Fatalf("Symlink: %v", err)
+		}
+		spawner := &countLaunchContractSpawner{
+			fakeRPCSpawner: fakeRPCSpawner{
+				spawn: func(context.Context, hubcore.SpawnRequest) (rendezvous.Entry, error) {
+					return rendezvous.Entry{PID: 412, Protocol: appwire.ProtocolVersion, ThreadID: "th_cached", SessionID: "sess_cached"}, nil
+				},
+			},
+			modelsFn: func(int, string) appwire.ModelListResponse {
+				return appwire.ModelListResponse{Data: []appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-5.5"}}}
+			},
+		}
+		web := newLaunchModelsTestWeb(t, spawner, true)
+		web.cfg.LaunchConfigRoot = t.TempDir()
+		web.cfg.PluginRoot = t.TempDir()
+		if _, err := hubModelList(t.Context(), web.cfg, appsource.NewRegistry(), appwire.ModelListParams{CWD: linkDir + string(os.PathSeparator)}); err != nil {
+			t.Fatalf("hubModelList: %v", err)
+		}
+		if _, err := hubThreadStart(t.Context(), web.cfg, appsource.NewRegistry(), appwire.ThreadStartParams{
+			Model: "openai/gpt-5.5",
+			CWD:   linkDir,
+		}); err != nil {
+			t.Fatalf("hubThreadStart: %v", err)
+		}
+		if got := spawner.callCount(); got != 1 {
+			t.Fatalf("launch contract called %d times across model/list + thread/start, want 1", got)
 		}
 	})
 }
