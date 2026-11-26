@@ -24,7 +24,7 @@
 // sidebar - quiet, hover-revealed, zero layout shift) instead of a
 // permanently-visible bordered button on every row. It lives in the shared
 // .rightSlot grid cell with the row's right-slot occupant (timestamp /
-// Badge / "Not started"), so revealing it covers the occupant instead of
+// count / "Not started"), so revealing it covers the occupant instead of
 // narrowing the title column with a reserved slot of its own - and the
 // trailing disclosure chevron, which lives in .textCol left of the slot,
 // stays layout-disjoint from the menu at every width. See
@@ -69,7 +69,6 @@ import {
 } from "../../stores/navigation/selectors";
 import { useNavigationStore } from "../../stores/navigation/store";
 import {
-  Badge,
   Button,
   type CadenceState,
   Chevron,
@@ -225,7 +224,7 @@ export interface RailRowProps {
 }
 
 // The row's trailing chevron: a toggle rendered INLINE, right after the
-// title text (before any star/Badge/timestamp), on branch rows only - the
+// title text (before any star/count/timestamp), on branch rows only - the
 // same trailing position the transcript's disclosure rows use. A leaf row
 // renders nothing here: the chevron trails the text, so its absence leaves
 // no hole to reserve (unlike the old leading gutter, whose conditional fill
@@ -974,9 +973,9 @@ function ProjectRow({
               {"★"}
             </span>
           )}
-          {/* Same shared right slot as SessionRow: the rollup Badge (when the
+          {/* Same shared right slot as SessionRow: the rollup count (when the
               project has needs-you descendants) and the hover-revealed actions
-              pair share one cell - the menu covers the badge while revealed
+              pair share one cell - the menu covers the count while revealed
               instead of reserving width beside it. */}
           <span className={CLASS.rightSlot}>
             {showsRollup && attentionCount > 0 && <RailCount count={attentionCount} attention />}
@@ -1017,7 +1016,7 @@ function projectSourcesEqual(a: readonly string[] | undefined, b: readonly strin
 // subheader). Anatomy is the project row's: a leading glyph instead of a
 // signal dot (a host is infrastructure, not triage), the label, a trailing
 // chevron. Offline follows the session rows' own host-label convention:
-// italic, dimmed, "(offline)" in the caption ink. No rollup Badge and no
+// italic, dimmed, "(offline)" in the caption ink. No rollup count and no
 // actions: the manifest carries no per-host attention count, and the rows
 // under the group keep their own signals and menus.
 function HostRow({ node, info }: { node: HostRailNode; info: TreeRowInfo }) {
@@ -1049,12 +1048,10 @@ function HostRow({ node, info }: { node: HostRailNode; info: TreeRowInfo }) {
 }
 
 function RailCount({ count, attention }: { count: number; attention?: boolean }) {
-  return useContext(RailFlatContext) ? (
+  return (
     <span className={`${CLASS.time} ${CLASS.whyReason}`} data-hue={attention ? "attention" : undefined}>
       {count}
     </span>
-  ) : (
-    <Badge count={count} tone={attention ? "attention" : undefined} />
   );
 }
 

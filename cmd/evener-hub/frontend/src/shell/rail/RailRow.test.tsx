@@ -39,6 +39,7 @@ import {
 } from "./RailRow";
 import railStyles from "./RailRow.module.css";
 import type {
+  BandRailNode,
   HostRailNode,
   LoadingRailNode,
   OverflowRailNode,
@@ -1956,11 +1957,13 @@ describe("project row", () => {
     expect(screen.getByText("prime-radiant")).toBeTruthy();
   });
 
-  test("shows an attention Badge when rollup_attn is nonzero, hides it when zero", () => {
+  test("shows a plain attention count when rollup_attn is nonzero, hides it when zero", () => {
     const { rerender } = render(
       <RailRow node={projectRailNode(apiProject({ rollup_attn: 3 }))} info={info()} actions={actions()} />,
     );
-    expect(screen.getByText("3")).toBeTruthy();
+    const count = screen.getByText("3");
+    expect(count.className).toContain(railStyles.time as string);
+    expect(count.dataset.hue).toBe("attention");
 
     rerender(<RailRow node={projectRailNode(apiProject({ rollup_attn: 0 }))} info={info()} actions={actions()} />);
     expect(screen.queryByText("0")).toBeNull();
@@ -2713,5 +2716,27 @@ describe("unread marker", () => {
     );
     expect(screen.getByTestId("rail-row-unread")).toBeTruthy();
     expect(screen.queryByTestId("rail-row-signal")).toBeNull();
+  });
+});
+
+describe("band row counts", () => {
+  const bandNode = (band: BandRailNode["band"], count: number): BandRailNode => ({
+    id: `band:${band}`,
+    kind: "band",
+    band,
+    expanded: true,
+    children: Array.from({ length: count }, (_, idx) => sessionRailNode(apiNode({ ref: `local:${band}-${idx}` }))),
+  });
+
+  test.each([
+    { band: "needsYou" as const, count: 2, hue: "attention" },
+    { band: "working" as const, count: 6, hue: undefined },
+    { band: "idle" as const, count: 1, hue: undefined },
+  ])("renders a plain count for $band in Compact mode with attention hue only on Needs you", ({ band, count, hue }) => {
+    render(<RailRow node={bandNode(band, count)} info={info({ hasChildren: true })} actions={actions()} />);
+    const slot = screen.getByTestId("rail-row-band-count");
+    const numberEl = within(slot).getByText(String(count));
+    expect(numberEl.className).toContain(railStyles.time as string);
+    expect(numberEl.dataset.hue).toBe(hue);
   });
 });

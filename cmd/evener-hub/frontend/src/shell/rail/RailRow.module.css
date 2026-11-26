@@ -49,7 +49,7 @@
 }
 
 /* The right slot: ONE grid cell shared by the slot's occupant (the relative
- * timestamp, the needs-you Badge, or "Not started") and the row's
+ * timestamp, the attention count, or "Not started") and the row's
  * hover-revealed actions menu (a session row's "..." trigger, a project
  * row's "+"/"..." pair). Both children occupy the same grid area, so the
  * slot's width is the WIDER of the two - the menu borrows the timestamp's
@@ -363,7 +363,7 @@
 }
 
 /* Right-aligned relative timestamp - an occupant of the shared .rightSlot
- * cell (the Task-7 needs-you Badge and "Not started" are the other two;
+ * cell (the attention count and "Not started" are the other two;
  * RailRow.tsx renders at most one of the three, and the hover-revealed
  * .actions menu borrows the same cell). The slot owns the right alignment
  * and the occupant/menu visibility swap; this class is only the text. */

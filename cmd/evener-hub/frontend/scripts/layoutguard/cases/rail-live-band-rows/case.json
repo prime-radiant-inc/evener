@@ -8,7 +8,6 @@
     "styles/surface.module.css",
     "styles/help.module.css",
     "widgets/tree/tree.module.css",
-    "widgets/badge/badge.module.css",
     "shell/rail/Rail.module.css",
     "shell/rail/RailRow.module.css"
   ],

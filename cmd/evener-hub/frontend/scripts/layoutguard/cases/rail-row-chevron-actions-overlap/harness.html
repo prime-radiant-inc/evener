@@ -35,8 +35,8 @@
 <body data-font-size="m">
 <!-- Reproduces RailRow.tsx's SessionRow and ProjectRow anatomy against the
      REAL classes from RailRow.module.css, widgets/menu/menu.module.css
-     (Menu's icon-only trigger, quiet variant), widgets/button + widgets/iconbutton
-     (ProjectRow's "+" IconButton), and widgets/badge (the rollup Badge) -
+     (Menu's icon-only trigger, quiet variant), and widgets/button + widgets/iconbutton
+     (ProjectRow's "+" IconButton) -
      and the real Chevron widget's SVG markup (widgets/chevron/index.tsx,
      size=12, viewBox 0 0 16 16), not a text-glyph stand-in: this case's
      whole point is the chevron's actual 12x12 hit box against the actions
@@ -44,7 +44,7 @@
      the overlap.
 
      The anatomy is the 2026-08 shared right slot: the slot's occupant
-     (timestamp / "Not started" / Badge) and .actions are the TWO CHILDREN
+     (timestamp / "Not started" / count) and .actions are the TWO CHILDREN
      OF ONE .rightSlot grid cell - the menu borrows the occupant's space and
      covers it while revealed, instead of reserving its own width beside it.
      The chevron lives in .textCol, left of the slot.
@@ -99,14 +99,14 @@ function sessionRowHtml(id, occupant) {
 }
 
 // ProjectRow anatomy (RailRow.tsx): textCol(titleLine(label, chevron)), then
-// the shared .rightSlot cell: the rollup Badge (or nothing) and .actions
+// the shared .rightSlot cell: the rollup count (or nothing) and .actions
 // holding the "+" IconButton (button quiet sm = button.module.css's base +
 // quiet with iconbutton.module.css's sm square, exactly the classes the real
 // IconButton computes) and the Menu trigger - a project row's menu is WIDER
 // than a session row's (two buttons instead of one), so it's the wider
 // danger zone for the shared cell.
-function projectRowHtml(id, withBadge) {
-  const badge = withBadge ? `<span class="badge badgeAttention" id="occ-${id}">3</span>` : "";
+function projectRowHtml(id, withCount) {
+  const count = withCount ? `<span class="time whyReason" data-hue="attention" id="occ-${id}">3</span>` : "";
   return `
     <span class="railRow" id="row-${id}">
       <span class="textCol">
@@ -116,7 +116,7 @@ function projectRowHtml(id, withBadge) {
         </span>
       </span>
       <span class="rightSlot" id="slot-${id}">
-        ${badge}
+        ${count}
         <span class="actions" id="actions-${id}">
           <button type="button" class="button quiet squareSm" id="plus-${id}" aria-label="New session in ${TITLE}">
             <span class="icon" aria-hidden="true">+</span>
@@ -195,7 +195,7 @@ function winnerAt(rect) {
   if (el.closest(".chevronButton")) return "chevron";
   if (el.closest(".trigger")) return "kebab";
   if (el.closest("[id^='plus-']")) return "plus";
-  if (el.closest(".time") || el.closest(".notStarted") || el.closest(".badge")) return "occupant";
+  if (el.closest(".time") || el.closest(".notStarted")) return "occupant";
   return "other";
 }
 

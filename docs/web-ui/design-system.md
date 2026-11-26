@@ -502,7 +502,7 @@ do not appear on the row.
 
 **Live bands.** The Live section reads top to bottom as Needs you, Working, Idle: each
 band that has sessions is a fold in the section's `Tree`, its name in medium ink with a
-count (plain in Three lines, `Badge` in Compact; attention tone on Needs you only),
+plain count (attention tone on Needs you only),
 and all three start open. Rows do not
 animate when a session changes band. A Live row may carry one second line, in caption
 type and medium ink, that truncates and never wraps, and it prints only what the band
