@@ -104,6 +104,10 @@ type hostManagerConfig struct {
 	// embedders without a web server): nothing was ever retained, so there
 	// is nothing to forget.
 	forgetLastGoodThreads func(sourceID string)
+	// forgetAttachedHost drops the durable startup-reconnect record for a name
+	// whose registration a host change retires. Nil (tests, embedders without
+	// the persister): there is no record to drop.
+	forgetAttachedHost func(name string)
 	// lastGoodThreads is the getter twin of forgetLastGoodThreads: it returns a
 	// copy of the web server's retained last-known-good rows for a source.
 	// Remove calls it in its commit phase — before the finish phase's forget
@@ -274,30 +278,31 @@ func newHubHostManager(sources *appsource.Registry, manager *sshconn.Manager, cf
 		hosts, _ = hostreg.New(nil)
 	}
 	m := &hubHostManager{cfg: &hostManagerConfig{
-		hosts:             hosts,
-		store:             &hostStore{},
-		configPath:        strings.TrimSpace(configPath),
-		records:           hubTOMLRecordStore{path: strings.TrimSpace(configPath)},
-		opsUnavailable:    cfg.RemoteHostOpsUnavailable,
-		recordsUnreadable: cfg.RemoteHostRecordsUnreadable,
-		sources:           sources,
-		remoteCache:       cfg.RemoteThreadCache,
-		manager:           manager,
-		client:            cfg.RemoteHostClient,
-		online:            cfg.RemoteHostOnline,
-		clientIfAttached:  cfg.RemoteHostClientIfAttached,
-		handshake:         cfg.RemoteHostHandshake,
-		facts:             cfg.RemoteHostFacts,
-		planFacts:         cfg.RemoteHostPlanFacts,
-		planProbe:         cfg.RemoteHostPlanProbe,
-		gate:              hostGateFor(manager),
-		bootID:            strings.TrimSpace(cfg.HubBootID),
-		probeTimeout:      hostProbeTimeoutFor(cfg.HostProbeTimeout),
-		running:           newHostRunningConfig(cfg),
-		state:             newHostAttachState(),
-		mutating:          map[string]struct{}{},
-		policy:            hostRecordPolicyFor(cfg),
-		log:               log,
+		hosts:              hosts,
+		store:              &hostStore{},
+		configPath:         strings.TrimSpace(configPath),
+		records:            hubTOMLRecordStore{path: strings.TrimSpace(configPath)},
+		opsUnavailable:     cfg.RemoteHostOpsUnavailable,
+		recordsUnreadable:  cfg.RemoteHostRecordsUnreadable,
+		sources:            sources,
+		remoteCache:        cfg.RemoteThreadCache,
+		forgetAttachedHost: cfg.ForgetAttachedHost,
+		manager:            manager,
+		client:             cfg.RemoteHostClient,
+		online:             cfg.RemoteHostOnline,
+		clientIfAttached:   cfg.RemoteHostClientIfAttached,
+		handshake:          cfg.RemoteHostHandshake,
+		facts:              cfg.RemoteHostFacts,
+		planFacts:          cfg.RemoteHostPlanFacts,
+		planProbe:          cfg.RemoteHostPlanProbe,
+		gate:               hostGateFor(manager),
+		bootID:             strings.TrimSpace(cfg.HubBootID),
+		probeTimeout:       hostProbeTimeoutFor(cfg.HostProbeTimeout),
+		running:            newHostRunningConfig(cfg),
+		state:              newHostAttachState(),
+		mutating:           map[string]struct{}{},
+		policy:             hostRecordPolicyFor(cfg),
+		log:                log,
 	}}
 	m.cfg.ops.Store(cfg.RemoteHostOpsStore)
 	if m.cfg.planFacts == nil && manager != nil {

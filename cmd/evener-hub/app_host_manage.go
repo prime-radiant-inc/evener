@@ -409,6 +409,9 @@ func (m *hubHostManager) dropHostDerivedState(name string) {
 	if m.cfg.forgetLastGoodThreads != nil {
 		m.cfg.forgetLastGoodThreads(name)
 	}
+	if m.cfg.forgetAttachedHost != nil {
+		m.cfg.forgetAttachedHost(name)
+	}
 }
 
 // unionHosts returns a and b's distinct entries by name, in a-then-b order.
