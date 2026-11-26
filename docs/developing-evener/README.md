@@ -25,6 +25,9 @@ Keep those references current when changing the behavior they describe.
 - **[design-system.md](design-system.md)** — how to build hub web UI on
   the design system: compose from the widget library, tokens only, and what
   to do when no widget fits.
+- **[system-prompting.md](system-prompting.md):** designing, gating,
+  disclosing, and testing Evener's system prompt, tool surface, bundled
+  skills, and runtime tool results.
 - **[environment.md](environment.md)** — every environment variable evener
   reads, keyed to the `envvars` package that's their source of truth.
 - **[config-knobs.md](config-knobs.md)** — generated: every environment
