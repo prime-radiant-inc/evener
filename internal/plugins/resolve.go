@@ -1034,13 +1034,6 @@ func bundledPluginDirName(name, digest string) string {
 	return name + "-" + digest
 }
 
-// bundledPluginPath names where a bundled plugin's published copy lives. It is
-// the unchecked join, for tests naming a path; prepareBundledStore derives the
-// same path through storePath so an unresolved root is refused.
-func (m *Manager) bundledPluginPath(name, digest string) string {
-	return filepath.Join(m.bundledDir(), bundledPluginDirName(name, digest))
-}
-
 // bundledPluginDigest identifies the embedded contents of the bundled plugin
 // named name. It rejects names that are not a single path component and
 // reports fs.ErrNotExist for names that are not bundled.
