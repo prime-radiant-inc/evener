@@ -61,15 +61,18 @@ export function HubWebView({ profile, token, initialPath, onPath, onHubMenu, onD
 		setEditing(false);
 		onPath(path);
 	};
-	const retry = useCallback(() => {
-		setEntryPath(currentPath.current);
+	const resetDocument = useCallback(() => {
 		setBridgeReady(false);
 		setEditing(false);
-		setLoaded(false);
 		setHeader(null);
 		setHubDark(null);
-		setError(null);
 	}, []);
+	const retry = useCallback(() => {
+		resetDocument();
+		setEntryPath(currentPath.current);
+		setLoaded(false);
+		setError(null);
+	}, [resetDocument]);
 	useEffect(() => {
 		if (!error) return;
 		const subscription = AppState.addEventListener("change", (next) => {
@@ -193,12 +196,7 @@ export function HubWebView({ profile, token, initialPath, onPath, onHubMenu, onD
 					}}
 					onOpenWindow={({ nativeEvent }) => openLink(nativeEvent.targetUrl)}
 					onMessage={message}
-					onLoadStart={() => {
-						setHeader(null);
-						setHubDark(null);
-						setEditing(false);
-						setBridgeReady(false);
-					}}
+					onLoadStart={resetDocument}
 					onLoad={({ nativeEvent }) => {
 						setLoaded(true);
 						const path = hubPagePath(origin, nativeEvent.url);
