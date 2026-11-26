@@ -23,7 +23,10 @@ The hub owns the transcript, composer, and reading position.
 The same design extends through pairing, hub settings, and the hosted
 workspace. Native controls use the system material. The hub draws the matching
 surfaces around its composer, Find, Sessions drawer, Overview, sheets, and
-menus. The shell sends material changes to the open page, so changing Reduce
+menus. In a conversation, Glass-HQ renders the live transcript through the
+composer and its open menus. The paired hub serves the renderer and its worker.
+The controls use their CSS material while the renderer starts or if it is
+unavailable. The shell sends material changes to the open page, so changing Reduce
 Transparency takes effect while a draft is open. Messages, code, documents,
 and long lists retain solid reading surfaces.
 

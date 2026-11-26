@@ -1448,7 +1448,7 @@ function ComposerWithSubmission({
           className={CLASS.formAnchor}
           data-composer={ref}
           data-composer-pane={paneId}
-          data-iphone-composer={hostedPhone ? "" : undefined}
+          data-iphone-composer={hostedPhone ? (focused ? "focused" : "") : undefined}
         >
           {/* Anchored above the control row inside the card below, opening
               upward - see slashcompletionmenu.module.css's header comment

@@ -36,3 +36,11 @@
 :global(body[data-iphone-glass]) .choice:active {
   background: var(--hover-2);
 }
+
+/* A portaled menu may keep its canvas immediately outside its clipped list. */
+:global(body[data-iphone-glass="regular"]) .panel[data-iphone-glass-drawn]:not([data-lg-fallback]) {
+  background: transparent;
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}

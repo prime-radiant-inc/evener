@@ -22,6 +22,12 @@ their reading surfaces. The shell reports whether iOS glass is available and
 whether Reduce Transparency permits it. Hosted controls start opaque and
 respond to setting changes in place. Browser tabs use the browser theme.
 
+In a hosted iPhone conversation, the composer and its floating menus use a
+single Glass-HQ scene over the visible transcript. A worker served by the hub
+draws the material. WebKit keeps the editable field, action labels and touch
+targets above it. The controls retain their CSS material until the renderer
+is ready and whenever it becomes unavailable.
+
 In the hosted composer, WebKit owns editing, selection, dictation and the
 keyboard. Value selectors use the platform picker. Command menus and inline
 completions use the shared web actions, with system text, thumb-sized rows
