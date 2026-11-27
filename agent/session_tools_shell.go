@@ -612,6 +612,8 @@ func marshalShellToolResult(res shellResult, maxChars, maxLines int, turnEndsPro
 		TimedOut:        res.TimedOut,
 		WaitElapsedMS:   res.WaitElapsedMS,
 		ExitCode:        res.ExitCode,
+		TotalBytes:      res.TotalBytes,
+		DroppedBytes:    res.DroppedBytes,
 		TurnEndsProcess: turnEndsProcess,
 		ResultToolName:  resultToolName,
 	}
@@ -635,8 +637,6 @@ func marshalShellToolResult(res shellResult, maxChars, maxLines int, turnEndsPro
 		}
 		out.Output = &preview
 		out.Truncated = &truncated
-		out.TotalBytes = res.TotalBytes
-		out.DroppedBytes = res.DroppedBytes
 		out.OutputStatus = outputWindowStatus(res.TotalBytes, res.DroppedBytes, truncated)
 	}
 	return tool.StateResult{
@@ -860,7 +860,7 @@ func formatBackgroundShellReminder(out shellToolResult, promoted bool) string {
 	}
 	if out.TurnEndsProcess {
 		return fmt.Sprintf(
-			`%s One-shot: unwatched jobs stop at turn end; call job_watch(operation="create", source=%q, progress_interval_ms=180000) (or output_match), then do other work or call %s(next="log_quietly_and_end_turn", message="Waiting.") to wake on completion notification (no sleep/polling/killing).`,
+			`%s One-shot: unwatched jobs stop at turn end. If you need completion, call job_watch(operation="create", source=%q, progress_interval_ms=180000), then work or call %s(next="log_quietly_and_end_turn", message="Waiting.") (no sleep/polling/killing). Use output_match instead to wake when ready.`,
 			lead, out.JobID, resultTool,
 		)
 	}

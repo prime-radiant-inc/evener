@@ -586,6 +586,7 @@ func TestShellToolStreamingPathHonorsSessionTimeouts(t *testing.T) {
 		limit            schema.ToolOutputLimit
 		args             json.RawMessage
 		wantPreviewBytes int64
+		outputCapBytes   int64
 	}{
 		{
 			name:  "default",
@@ -606,6 +607,14 @@ func TestShellToolStreamingPathHonorsSessionTimeouts(t *testing.T) {
 			wantPreviewBytes: 600,
 		},
 		{
+			name:             "one_shot_retention_overflow_min_char_limit",
+			turnEndsProcess:  true,
+			limit:            schema.ToolOutputLimit{MaxChars: shellToolResultMinJSONChars, Strategy: schema.TruncHeadTail},
+			args:             json.RawMessage(`{"command":"printf '%0600d\\n' 1; ` + idleShellCommand + `"}`),
+			wantPreviewBytes: 600,
+			outputCapBytes:   256,
+		},
+		{
 			name:             "persistent_preview_min_char_limit",
 			limit:            schema.ToolOutputLimit{MaxChars: shellToolResultMinJSONChars, Strategy: schema.TruncHeadTail},
 			args:             json.RawMessage(`{"command":"printf '%0600d\\n' 1; ` + idleShellCommand + `"}`),
@@ -624,6 +633,12 @@ func TestShellToolStreamingPathHonorsSessionTimeouts(t *testing.T) {
 			})
 			clk := agenttest.NewFakeClock()
 			s.jobManager.clock = clk
+			if tc.outputCapBytes > 0 {
+				capBytes := tc.outputCapBytes
+				s.jobManager.createOutput = func(path string, _ int64) (*jobstore.OutputStore, error) {
+					return jobstore.CreateOutputNoSync(path, capBytes)
+				}
+			}
 
 			resCh := make(chan tool.ExecResult, 1)
 			go func() {
@@ -640,6 +655,9 @@ func TestShellToolStreamingPathHonorsSessionTimeouts(t *testing.T) {
 					defer s.jobManager.mu.Unlock()
 					for _, run := range s.jobManager.running {
 						if run.output.Len() >= tc.wantPreviewBytes {
+							if tc.outputCapBytes > 0 && run.output.RetainedStart() <= 0 {
+								continue
+							}
 							return true
 						}
 					}
@@ -684,6 +702,14 @@ func TestShellToolStreamingPathHonorsSessionTimeouts(t *testing.T) {
 			})
 			if tc.wantPreviewBytes > 0 && res.Truncated {
 				t.Fatalf("promoted shell result tripped registry truncation instead of reserving space for reminder and footer: %q", res.Output)
+			}
+			if tc.outputCapBytes > 0 {
+				if gotRunes := len([]rune(res.Output)); gotRunes > shellToolResultMinJSONChars {
+					t.Fatalf("promoted retention-overflow result = %d runes, want <= %d: %q", gotRunes, shellToolResultMinJSONChars, res.Output)
+				}
+				if !strings.Contains(res.Output, "bytes dropped (retention cap)") {
+					t.Fatalf("promoted retention-overflow result missing retention warning: %q", res.Output)
+				}
 			}
 			if !strings.Contains(res.Output, out.JobID) {
 				t.Fatalf("promoted shell model output lost job_id %q under constrained registry limits: %q", out.JobID, res.Output)
@@ -1719,6 +1745,42 @@ func TestFormatShellResultBackgroundReminderOneShot(t *testing.T) {
 			} {
 				if !strings.Contains(oneShot, token) {
 					t.Fatalf("one-shot reminder = %q, want API contract token %q", oneShot, token)
+				}
+			}
+			// The progress-watch and quiet-yield sequence must be gated on
+			// needing completion, with output_match named for readiness wakes
+			// (e.g., local servers that should not hold one-shot drain open).
+			if !strings.Contains(oneShot, "If you need completion") {
+				t.Fatalf("one-shot reminder = %q, must make progress_interval_ms conditional on needing completion", oneShot)
+			}
+			if !strings.Contains(oneShot, "output_match") || !strings.Contains(oneShot, "ready") {
+				t.Fatalf("one-shot reminder = %q, must describe output_match as the readiness wake path", oneShot)
+			}
+
+			// A realistic 39-char job ID plus >8 MiB retention overflow and
+			// preview output must still fit inside shellToolResultMinJSONChars
+			// (800 runes) without losing the retention notice or wait calls.
+			overflowRes := res
+			overflowRes.JobID = "job_035514ILLd2AItKGBsTeAf_5W7EwEDzQi0B"
+			overflowRes.Output = strings.Repeat("x", 600)
+			overflowRes.TotalBytes = 108 * 1024 * 1024
+			overflowRes.DroppedBytes = 100 * 1024 * 1024
+			overflowOut, err := marshalShellToolResult(overflowRes, shellToolResultMinJSONChars, 0, true, "")
+			if err != nil {
+				t.Fatalf("marshalShellToolResult(one-shot overflow): %v", err)
+			}
+			if gotRunes := len([]rune(overflowOut.Output)); gotRunes > shellToolResultMinJSONChars {
+				t.Fatalf("one-shot retention-overflow output = %d runes, want <= %d: %q", gotRunes, shellToolResultMinJSONChars, overflowOut.Output)
+			}
+			for _, token := range []string{
+				overflowRes.JobID,
+				"104857600 bytes dropped (retention cap)",
+				fmt.Sprintf(`job_watch(operation="create", source=%q, progress_interval_ms=180000)`, overflowRes.JobID),
+				`communicate(next="log_quietly_and_end_turn", message="Waiting.")`,
+				"output_match",
+			} {
+				if !strings.Contains(overflowOut.Output, token) {
+					t.Fatalf("one-shot retention-overflow output missing %q: %q", token, overflowOut.Output)
 				}
 			}
 
