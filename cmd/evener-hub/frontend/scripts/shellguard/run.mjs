@@ -789,7 +789,7 @@ async function measurePhoneSearchPalette(page) {
       viewport: { width: innerWidth, height: innerHeight },
       center: hitAt(innerWidth / 2, innerHeight / 2),
       input: ir ? { ...hitAt(ir.left + ir.width / 2, ir.top + ir.height / 2), focused: document.activeElement === input } : null,
-      toast: tr ? hitAt(tr.left + tr.width / 2, tr.top + tr.height / 2) : null,
+      toast: tr ? { ...hitAt(tr.left + tr.width / 2, tr.top + tr.height / 2), bottom: tr.bottom } : null,
     };
   })()`;
   const beforeToast = await evaluate(send, hitProbe);
@@ -850,6 +850,9 @@ function assertPhoneSearchPalette(result) {
   }
   if (!result.toast?.inToast) {
     failures.push(`toast did not paint above Command palette: ${JSON.stringify(result.toast)}`);
+  }
+  if (result.toast?.bottom > result.viewport.height / 2) {
+    failures.push(`phone toast covers the lower workspace: ${JSON.stringify(result.toast)}`);
   }
   if (!result.afterEscape.sessionsOpen || !result.afterEscape.searchFocused || !result.afterEscape.searchHit) {
     failures.push(

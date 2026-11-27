@@ -776,6 +776,9 @@ Button shape follows its content across the website, Home Screen app and native 
 An icon alone sits in a circle. A label, with or without an icon, sits in a capsule.
 The resting fill, pressed feedback and focus ring follow the same outline. This
 includes **Needs you**, **Latest**, counters and the actions in a notice.
+The mobile web workspace centers short confirmations below its toolbar, inside
+the usable pane. The composer and its Send or Stop button stay clear while the
+keyboard is open. Native notices with an action give its label a separate capsule.
 
 | Token | Value | Used by |
 |---|---|---|
