@@ -976,63 +976,82 @@ test("late successful creation clears only the originating draft across remount 
   ).toEqual([{ type: "sharePlaced", path: "/new", id: share.id }]);
 });
 
-test("a directory pick carries the pending share without merging the projects' drafts", async () => {
-  const agent = vi.spyOn(navigator, "userAgent", "get").mockReturnValue("EvenerNative/1");
-  const postMessage = vi.fn();
-  vi.stubGlobal("ReactNativeWebView", { postMessage });
-  onTestFinished(() => {
-    agent.mockRestore();
-    vi.unstubAllGlobals();
-  });
-  const user = setupUser();
-  window.history.pushState({}, "", "/new?dir=/tmp/share-owner-a");
-  const started = deferred<ThreadStartResponse>();
-  const fake = readyClient((f) => f.on("thread/start", () => started.promise));
-  renderSpawn(fake);
-  await fillPrompt(user, "project-a-draft\n\nextension-content");
-  const projectA = completionDraft("/tmp/share-owner-a");
-  act(() => projectA.fields.setState({ manager: true }));
-  await visitSpawnURL("/new?dir=/tmp/share-owner-b");
-  await fillPrompt(user, "project-b-draft");
-  const projectB = completionDraft("/tmp/share-owner-b");
-  act(() => projectB.fields.setState({ manager: false, harness: "external" }));
-  await visitSpawnURL("/new?dir=/tmp/share-owner-a");
+test.each(["desktop", "mobile"])(
+  "%s directory pick carries the pending share without merging the projects' drafts",
+  async (surface) => {
+    const agent = vi.spyOn(navigator, "userAgent", "get").mockReturnValue("EvenerNative/1");
+    const postMessage = vi.fn();
+    vi.stubGlobal("ReactNativeWebView", { postMessage });
+    onTestFinished(() => {
+      agent.mockRestore();
+      vi.unstubAllGlobals();
+    });
+    const user = setupUser();
+    window.history.pushState({}, "", "/new?dir=/tmp/share-owner-a");
+    const started = deferred<ThreadStartResponse>();
+    const fake = readyClient((f) => f.on("thread/start", () => started.promise));
+    renderSpawn(fake);
+    await fillPrompt(user, "project-a-draft\n\nextension-content");
+    const projectA = completionDraft("/tmp/share-owner-a");
+    act(() => projectA.fields.setState({ manager: true }));
+    await visitSpawnURL("/new?dir=/tmp/share-owner-b");
+    await fillPrompt(user, "project-b-draft");
+    const projectB = completionDraft("/tmp/share-owner-b");
+    act(() => projectB.fields.setState({ manager: false, harness: "external" }));
+    await visitSpawnURL("/new?dir=/tmp/share-owner-a");
 
-  const share = { type: "shareText", path: "/new", id: "moving-share", text: "extension-content" };
-  act(() => window.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(share) })));
-  expect(promptField().textContent).toBe("project-a-draft\n\nextension-content\n\nextension-content");
-  await fillPrompt(user, "project-a-draft\n\nextension-content\n\nextension-content\n\nlocal-edit");
-  await setWorkingDir(user, "/tmp/share-owner-b");
-  await settled();
+    const share = { type: "shareText", path: "/new", id: "moving-share", text: "extension-content" };
+    act(() => window.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(share) })));
+    expect(promptField().textContent).toBe("project-a-draft\n\nextension-content\n\nextension-content");
+    await fillPrompt(user, "project-a-draft\n\nextension-content\n\nextension-content\n\nlocal-edit");
+    if (surface === "desktop") await setWorkingDir(user, "/tmp/share-owner-b");
+    else {
+      await user.click(screen.getByLabelText(/^Working directory:/, { selector: "button:not(#spawn-cwd)" }));
+      const input = await screen.findByRole("textbox", { name: "Path" });
+      await settled();
+      await user.clear(input);
+      await user.type(input, "/tmp/share-owner-b");
+      await user.type(input, "{Enter}");
+      const confirm = screen.getByRole("button", { name: "Use this folder" });
+      await waitFor(() => expect((confirm as HTMLButtonElement).disabled).toBe(false));
+      await user.click(confirm);
+      await waitFor(() => expectWorkingDir("/tmp/share-owner-b"));
+    }
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(localStorage.getItem(LAST_WORKING_DIR_KEY)).toBe("/tmp/share-owner-b");
+    await settled();
 
-  expect(projectA.fields.getState()).toMatchObject({
-    prompt: "project-a-draft\n\nextension-content\n\nlocal-edit",
-    shareId: null,
-    manager: true,
-  });
-  expect(projectB.fields.getState()).toMatchObject({
-    prompt: "project-b-draft\n\nextension-content",
-    shareId: share.id,
-    manager: false,
-    harness: "external",
-  });
-  expect([projectA.fields.getState().shareId, projectB.fields.getState().shareId].filter(Boolean)).toEqual([share.id]);
-  expect(
-    postMessage.mock.calls.map(([value]) => JSON.parse(value)).filter((message) => message.type === "sharePlaced"),
-  ).toEqual([]);
+    expect(projectA.fields.getState()).toMatchObject({
+      prompt: "project-a-draft\n\nextension-content\n\nlocal-edit",
+      shareId: null,
+      manager: true,
+    });
+    expect(projectB.fields.getState()).toMatchObject({
+      prompt: "project-b-draft\n\nextension-content",
+      shareId: share.id,
+      manager: false,
+      harness: "external",
+    });
+    expect([projectA.fields.getState().shareId, projectB.fields.getState().shareId].filter(Boolean)).toEqual([
+      share.id,
+    ]);
+    expect(
+      postMessage.mock.calls.map(([value]) => JSON.parse(value)).filter((message) => message.type === "sharePlaced"),
+    ).toEqual([]);
 
-  expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false);
-  await user.click(screen.getByTestId("spawn-submit"));
-  await settled();
-  expect(fake.calls.map((call) => call.method)).toContain("thread/start");
-  expect(
-    postMessage.mock.calls.map(([value]) => JSON.parse(value)).filter((message) => message.type === "sharePlaced"),
-  ).toEqual([]);
-  await act(async () => started.resolve(startResponse("local:share-owner-b")));
-  expect(
-    postMessage.mock.calls.map(([value]) => JSON.parse(value)).filter((message) => message.type === "sharePlaced"),
-  ).toEqual([{ type: "sharePlaced", path: "/new", id: share.id }]);
-});
+    expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false);
+    await user.click(screen.getByTestId("spawn-submit"));
+    await settled();
+    expect(fake.calls.map((call) => call.method)).toContain("thread/start");
+    expect(
+      postMessage.mock.calls.map(([value]) => JSON.parse(value)).filter((message) => message.type === "sharePlaced"),
+    ).toEqual([]);
+    await act(async () => started.resolve(startResponse("local:share-owner-b")));
+    expect(
+      postMessage.mock.calls.map(([value]) => JSON.parse(value)).filter((message) => message.type === "sharePlaced"),
+    ).toEqual([{ type: "sharePlaced", path: "/new", id: share.id }]);
+  },
+);
 
 test("assigning an unscoped launch its first directory keeps the share with that draft", async () => {
   const agent = vi.spyOn(navigator, "userAgent", "get").mockReturnValue("EvenerNative/1");

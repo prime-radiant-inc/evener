@@ -2094,6 +2094,9 @@ function SpawnForm({
   // The row and the dialog name the same destination, and the access summary
   // and its note read the same resolution, so each is derived once.
   const cwdText = cwd === "" ? "Choose a folder" : cwd;
+  function changeWorkingDirectory(path: string): void {
+    carryPendingShare(draft, setCwd(path));
+  }
   const accessValue =
     resolveStatus === "ready"
       ? (effectiveAccess?.label ?? (effectiveSandbox || "inherited"))
@@ -3026,7 +3029,7 @@ function SpawnForm({
             harnessOptions={harnessOptions}
             onHarnessChange={handleHarnessChange}
             cwd={cwd}
-            onCwdChange={setCwd}
+            onCwdChange={changeWorkingDirectory}
             complete={complete}
             validatePath={validatePath}
             createDirectory={createDirectory}
@@ -3161,7 +3164,7 @@ function SpawnForm({
                 validatePath={validatePath}
                 createDirectory={createDirectory}
                 onPick={(path) => {
-                  carryPendingShare(draft, setCwd(path));
+                  changeWorkingDirectory(path);
                   commitLastWorkingDir(path);
                   closeCwdPicker();
                 }}
