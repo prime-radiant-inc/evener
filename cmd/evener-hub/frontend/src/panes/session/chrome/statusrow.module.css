@@ -168,12 +168,21 @@
 /* The folded ladder's first sacrifice: below the one-line threshold the
  * effort readout drops before the model label yields any width (Jesse's
  * 2026-11-27 ruling: "start by dropping effort and then dropping model to
- * stay 1 line"). The native select goes with its visible readout - focusing
- * the editor expands the card and brings the full row back. The range form
- * is the exact complement of the folded row's historic 620px gate, with no
- * dead window where neither side matches. */
+ * stay 1 line"). The native select goes with its visible readout at rest.
+ * The range form is the exact complement of the folded row's historic 620px
+ * gate, with no dead window where neither side matches. */
 @container (width < 620px) {
   :global([data-folded="true"]) .identity > [data-effort-control] {
     display: none;
+  }
+
+  /* Editor focus never resizes the composer (Composer.tsx's own ruling:
+   * focus alone keeps the resting row), so the writer cannot count on the
+   * expanded row to reach the effort picker. While the composer's editing
+   * anchor marks the editor engaged, return the readout in place - the
+   * picker stays operable until focus leaves the empty editor, and content
+   * alone stacks the card. */
+  :global([data-composer-editing]) :global([data-folded="true"]) .identity > [data-effort-control] {
+    display: inline-flex;
   }
 }

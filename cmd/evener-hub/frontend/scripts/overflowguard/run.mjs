@@ -768,11 +768,17 @@ function assertFinePointerLandscapeComposer(measurement) {
   // The resting row holds ONE line below the old stacked threshold (Jesse's
   // 2026-11-27 ruling): the field and the control row share the line and the
   // effort readout drops before the model label yields, instead of the card
-  // growing a chrome-only second line.
+  // growing a chrome-only second line. Editor focus does NOT resize the card
+  // (Composer.tsx's own ruling), but it returns the dropped effort picker so
+  // the writer can change effort before typing; content alone stacks the card.
   if (measurement.field === null || measurement.controls === null || foldedOneRowCenters(measurement) !== null) {
     failures.push("the fine-pointer folded field and controls did not stay on one row");
   }
-  if (measurement.effortVisible) {
+  if (measurement.focus === "editor") {
+    if (!measurement.effortVisible) {
+      failures.push("the editor-focused sub-threshold row lost its effort picker");
+    }
+  } else if (measurement.effortVisible) {
     failures.push("the sub-threshold folded row kept its effort readout");
   }
   failures.push(...assertLandscapeEdgeFooter(measurement));
@@ -2067,18 +2073,18 @@ async function main() {
           deviceScaleFactor: 3,
           touch: false,
           safeAreas: safeAreaSupported ? [34] : [0],
-          focusStates: ["none"],
+          focusStates: ["none", "editor"],
         },
       );
       for (const measurement of finePointerLandscapeMeasurements) {
         const failures = [...assertComposerFooter(measurement), ...assertFinePointerLandscapeComposer(measurement)];
-        const label = `951x669 fine-pointer landscape composer safe-area=${measurement.safeArea}`;
+        const label = `951x669 fine-pointer landscape composer safe-area=${measurement.safeArea} focus=${measurement.focus}`;
         if (failures.length > 0) {
           failed++;
           console.log(`${label} ... FAIL - ${failures.join("; ")}; ${JSON.stringify(measurement)}`);
         } else {
           console.log(
-            `${label} ... PASS - one folded row with the model visible and the effort readout dropped, footer gap=${measurement.gap}px, status clearance=${measurement.safeArea}px`,
+            `${label} ... PASS - one folded row, ${measurement.focus === "editor" ? "effort picker back for the writer" : "model visible and the effort readout dropped"}, footer gap=${measurement.gap}px, status clearance=${measurement.safeArea}px`,
           );
         }
       }

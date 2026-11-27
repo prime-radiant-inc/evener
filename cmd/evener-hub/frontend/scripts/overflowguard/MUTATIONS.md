@@ -339,8 +339,12 @@ resting card holds ONE line at every width, and below the threshold the effort
 readout drops before the model label yields. The assertions require the field
 and control row to share one line, the model picker to stay visible with its
 label ellipsized, the editor to stay one line, and the effort readout to be
-gone; the card must still measure under 620px so the fixture keeps exercising
-the sub-threshold regime.
+gone at rest - and, in the editor-focus state, back: Composer.tsx's own
+ruling keeps focus from resizing the card, so the sub-threshold row must
+return the effort picker in place (statusrow's [data-composer-editing]
+exemption) rather than leaving it unreachable until content arrives. The
+card must still measure under 620px so the fixture keeps exercising the
+sub-threshold regime.
 
 **Mutation performed (row shape):** re-gated PromptCard's folded row shape
 (`widgets/promptcard/promptcard.module.css`) back inside
@@ -361,15 +365,27 @@ The coarse-pointer Duo landscape fixtures stayed PASS in the same run.
 with `effortVisible: true` in the measurement; the one-row and model-picker
 assertions stayed green, isolating the failure to the dropped readout.
 
-**Result after restore:** PASS:
-`951x669 fine-pointer landscape composer safe-area=34 ... PASS - one folded row with the model visible and the effort readout dropped, footer gap=12px, status clearance=34px`.
+**Mutation performed (editing exemption):** the
+`[data-composer-editing]` exemption in `statusrow.module.css` absent - the
+state the editor-focus measurement first ran against, exactly equivalent to
+deleting the rule.
+
+**Result before restore:** FAIL:
+`951x669 fine-pointer landscape composer safe-area=34 focus=editor ... FAIL - the editor-focused sub-threshold row lost its effort picker`
+with `effortVisible: false` and the card still 46px tall on one row - proving
+both the reachability loss and that focus alone does not resize the card.
+
+**Result after restore:** PASS, both states:
+`951x669 fine-pointer landscape composer safe-area=34 focus=none ... PASS - one folded row, model visible and the effort readout dropped, ...`
+`951x669 fine-pointer landscape composer safe-area=34 focus=editor ... PASS - one folded row, effort picker back for the writer, ...`.
 
 **Command:** `npm run overflowguard` (the landscape fixtures run only in the
 full sweep; `--composer-only` skips them).
 
 **Verified:** 2026-11-27. **Expect:** fail when the folded row shape is
-re-gated to a width threshold, or when the folded effort-drop rule stops firing
-below it.
+re-gated to a width threshold, when the folded effort-drop rule stops firing
+below it, or when the editing exemption stops returning the picker while the
+editor holds focus.
 
 ## Landscape phone folded row and single safe-area owner
 
