@@ -150,6 +150,46 @@ it("reopens the selected session when an explicit share targets the current work
 	expect(sent).toContainEqual({ type: "shareText", path: share.path, id: share.id, text: share.text });
 });
 
+it("accepts a late conversation share receipt from its document only", () => {
+	const profile = { id: "desk", name: "Desk", origin: "https://desk.example" };
+	const share = {
+		id: "late-session-share",
+		hubId: profile.id,
+		path: "/s/local%3Aone",
+		text: "shared-sentinel",
+		createdAt: "",
+	};
+	const onSharePlaced = vi.fn();
+	const tree = render(
+		<HubWebView
+			profile={profile}
+			token=""
+			initialPath={share.path}
+			onPath={vi.fn()}
+			onHubMenu={vi.fn()}
+			share={share}
+			onSharePlaced={onSharePlaced}
+		/>,
+		{ createNodeMock: (node) => (node.type === "WebView" ? { postMessage: vi.fn() } : null) },
+	);
+	const view = () => tree.root.findByType("WebView" as never);
+	const message = (data: object, path = share.path) =>
+		act(() => view().props.onMessage({ nativeEvent: { url: profile.origin + path, data: JSON.stringify(data) } }));
+	message({ type: "ready", capabilities: ["incomingShare"] });
+	message({ type: "shareTarget", path: share.path });
+	message({ type: "route", path: "/s/local%3Atwo" }, "/s/local%3Atwo");
+	message({ type: "sharePlaced", path: share.path, id: "unrelated-id" }, "/s/local%3Atwo");
+	message({ type: "sharePlaced", path: "/new", id: share.id }, "/s/local%3Atwo");
+	expect(onSharePlaced).not.toHaveBeenCalled();
+	message({ type: "sharePlaced", path: share.path, id: share.id }, "/s/local%3Atwo");
+	expect(onSharePlaced).toHaveBeenCalledExactlyOnceWith(share.id);
+
+	act(() => view().props.onLoadStart());
+	message({ type: "sharePlaced", path: share.path, id: share.id }, "/s/local%3Atwo");
+	expect(onSharePlaced).toHaveBeenCalledExactlyOnceWith(share.id);
+	act(() => tree.unmount());
+});
+
 it("keeps a share pending for an older hub and retries delivery after reload discovers support", async () => {
 	const profile = { id: "desk", name: "Desk", origin: "https://desk.example" };
 	const share = {

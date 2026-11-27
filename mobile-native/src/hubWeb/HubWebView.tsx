@@ -334,14 +334,7 @@ export function HubWebView({ profile, token, initialPath, onPath, onHubMenu, sha
 				if (!delivery || delivery.hubId !== profile.id || delivery.path !== data.path) break;
 				// A retained launch draft can finish after navigation or while a picker
 				// covers the workspace. Its receipt belongs to this WebKit document.
-				const accepted =
-					delivery.path === "/new"
-						? documentPath === currentPath.current
-						: focused &&
-							!error &&
-							share?.id === data.id &&
-							initialPath === delivery.path &&
-							documentPath === delivery.path;
+				const accepted = documentPath === currentPath.current;
 				if (accepted) {
 					deliveredShares.current.delete(data.id);
 					onSharePlaced?.(data.id);
