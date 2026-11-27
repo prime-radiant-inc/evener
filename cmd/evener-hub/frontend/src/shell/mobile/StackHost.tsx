@@ -54,7 +54,7 @@ import {
 import { AnimatePresence, m, spatialExitTransition, spatialTransition, useReducedMotion } from "../../motion";
 import { openSessionOverview, SessionInspectionActions } from "../../panes/session/chrome/SessionInspectionActions";
 import { requestFindInSession } from "../../panes/session/find/findRequest";
-import { portsAwaitingReaderInput } from "../../panes/session/transcript/flow/useReaderGestures";
+import { readerScrollInput } from "../../panes/session/transcript/flow/useReaderGestures";
 import { returnFromAgentCascade } from "../../panes/zoom/actions";
 import { isCascadeReturnedOrigin } from "../../panes/zoom/inspectionOrigin";
 import { parseZoomParams } from "../../panes/zoom/intent";
@@ -716,10 +716,9 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
       const heightChanged = target.scrollHeight !== lastScrollHeightRef.current;
       lastScrollHeightRef.current = target.scrollHeight;
       const type = focusedPaneRef.current?.type;
-      // A height change is position-neutral: resync (the lastScrollTopRef
-      // update below) and decide nothing, so a prepend can never pose as a
-      // downward gesture and a reveal can never fire off appended content.
-      if (heightChanged || portsAwaitingReaderInput.has(target)) {
+      const input = readerScrollInput.get(target);
+      // Resync on initial placement, streaming or prepended history.
+      if (heightChanged || input === "opening") {
         scrollRunRef.current = 0;
         return;
       }
@@ -729,6 +728,9 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
       const current = readingChromeRef.current;
       const step = scrollTop - prevScrollTop;
       const direction = Math.sign(step);
+      // WebKit can move back toward the tail when folding Notes grows the
+      // viewport. Only the finger can reverse a touch scroll.
+      if (input !== undefined && input !== direction && scrollTop >= FLOAT_REVEAL_AT_TOP) return;
       const run = Math.sign(scrollRunRef.current) === direction ? scrollRunRef.current + step : step;
       scrollRunRef.current = run;
       let { floating, notesHidden } = current;

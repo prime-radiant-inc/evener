@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { makeTranscriptDisplayConfig } from "@evener/appwire-client";
 import { bindFilePath } from "@evener/appwire-client/docContent";
 import { manifest as navigationManifest } from "@evener/appwire-client/testing/navigation";
-import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { DockviewApi } from "dockview-core";
 import { lazy, useEffect, useRef, useState } from "react";
@@ -2616,14 +2616,21 @@ test("mobile notes tuck in the reading direction and return on reversal or expli
     scroll(2400);
     expect(notes.closest("[data-notes-hidden]")).toBeNull();
     expect(bar.getAttribute("data-collapsed")).not.toBe("true");
-    act(() => {
-      scroller.dispatchEvent(new WheelEvent("wheel", { deltaY: -60, bubbles: true }));
-    });
+    fireEvent.touchStart(scroller, { touches: [{ clientY: 400 }] });
+    fireEvent.touchMove(scroller, { touches: [{ clientY: 420 }] });
     scroll(2340);
     expect(notes.closest("[data-notes-hidden]")).not.toBeNull();
     expect(bar.getAttribute("data-collapsed")).not.toBe("true");
+    // A composited scroll can rebound after the viewport grows under the
+    // finger. The finger is still moving in the original direction.
+    scroll(2310);
+    expect(notes.closest("[data-notes-hidden]")).not.toBeNull();
+    expect(bar.getAttribute("data-collapsed")).not.toBe("true");
+    fireEvent.touchMove(scroller, { touches: [{ clientY: 400 }] });
     scroll(2320);
     expect(notes.closest("[data-notes-hidden]")).toBeNull();
+    fireEvent.touchEnd(scroller);
+    fireEvent.wheel(scroller, { deltaY: -2320 });
     scroll(0);
 
     // Hiding the notes summary and floating the title preserves the reading line.
