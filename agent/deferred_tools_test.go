@@ -138,11 +138,8 @@ func TestDeferredToolsTurn1ToolsAndPromptAvailability(t *testing.T) {
 			t.Errorf("promptData.HasTool(%q) = false, want true for Tier-1 tool", tier1)
 		}
 	}
-	if !data.HasDelegateTool() {
-		t.Error("promptData.HasDelegateTool() = false while delegate is registered")
-	}
-	if !data.HasJobWatchTool() {
-		t.Error("promptData.HasJobWatchTool() = false while job_watch is registered")
+	if !slices.Contains(data.CallableToolNames, "job_watch") {
+		t.Errorf("promptData.CallableToolNames missing deferred job_watch: %v", data.CallableToolNames)
 	}
 	for _, skillName := range []string{"running-jobs", "using-worktrees", "reading-transcripts"} {
 		if !sess.skillAvailableToSession(skillName) {
@@ -466,8 +463,8 @@ func TestToolSearchSchemasStaticToolsAndOmission(t *testing.T) {
 	if strings.Contains(noDefSess.cachedSystemPrompt, "tool_search") {
 		t.Errorf("system prompt mentions unavailable tool_search:\n%s", noDefSess.cachedSystemPrompt)
 	}
-	if noDefData, _ := noDefSess.buildPromptData(noDefSess.currentEnv()); noDefData.HasJobWatchTool() {
-		t.Error("promptData.HasJobWatchTool() = true when job_watch is unregistered")
+	if noDefData, _ := noDefSess.buildPromptData(noDefSess.currentEnv()); slices.Contains(noDefData.CallableToolNames, "job_watch") {
+		t.Errorf("promptData.CallableToolNames contains unregistered job_watch: %v", noDefData.CallableToolNames)
 	}
 	noDefBody, _, _ := strings.Cut(noDefSess.cachedSystemPrompt, "\nCurrent role/session:\n")
 	noDefBody, _, _ = strings.Cut(noDefBody, "\n<environment>\n")
@@ -475,7 +472,7 @@ func TestToolSearchSchemasStaticToolsAndOmission(t *testing.T) {
 		t.Errorf("operational prompt mentions unavailable job_watch:\n%s", noDefSess.cachedSystemPrompt)
 	}
 
-	// 4. When tool_search is explicitly denied, delegate stub and prompt never mention tool_search.
+	// 4. When tool_search is explicitly denied, delegate definition and prompt never mention tool_search.
 	deniedTSCfg := SessionConfig{
 		StateDir:         t.TempDir(),
 		MaxSubagentDepth: 2,
@@ -497,7 +494,7 @@ func TestToolSearchSchemasStaticToolsAndOmission(t *testing.T) {
 	}
 	for _, td := range deniedTSSess.ToolDefinitions() {
 		if td.Name == "delegate" && strings.Contains(td.Description, "tool_search") {
-			t.Errorf("delegate stub mentions denied tool_search: %q", td.Description)
+			t.Errorf("delegate definition mentions denied tool_search: %q", td.Description)
 		}
 	}
 }
@@ -894,6 +891,14 @@ func TestUseSkillDisclosesDeferredSchemasOnce(t *testing.T) {
 		t.Fatalf("NewSession: %v", err)
 	}
 	defer sess.Close()
+
+	for skillName, toolNames := range skillDeferredToolGroups {
+		for _, name := range toolNames {
+			if _, ok := tier2DeferredGroups[name]; !ok {
+				t.Errorf("skillDeferredToolGroups[%q] includes non-deferred tool %q", skillName, name)
+			}
+		}
+	}
 
 	// First use_skill("using-worktrees") returns clean skill content and steers manage_worktree schema once.
 	res1 := sess.execTool(tripwireCtx(t), useSkillCall("s1", "using-worktrees"), "")

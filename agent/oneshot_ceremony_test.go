@@ -356,9 +356,8 @@ func TestOneShotSessionLinksHeadingOmitted(t *testing.T) {
 				t.Fatalf("renderSystemPrompt: %s", warning)
 			}
 			gotHeading := strings.Contains(prompt, "\n## Session links\n")
-			wantHeading := tc.isSubagent && !tc.turnEndsProcess
-			if gotHeading != wantHeading {
-				t.Errorf("prompt contains ## Session links = %v, want %v", gotHeading, wantHeading)
+			if gotHeading != tc.wantHeading {
+				t.Errorf("prompt contains ## Session links = %v, want %v", gotHeading, tc.wantHeading)
 			}
 		})
 	}

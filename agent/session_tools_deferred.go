@@ -102,13 +102,6 @@ func (s *Session) deferredToolDefinitionLocked(name string) (llm.ToolDefinition,
 	if rt == nil || !s.isDeferredToolLocked(name) {
 		return llm.ToolDefinition{}, false
 	}
-	if name == "delegate" && !s.hubEnabled {
-		td := s.delegateToolDefinition()
-		if !canGrantDelegation(s.delegationAllowance) {
-			td = withoutDelegateAllowance(td)
-		}
-		return td, true
-	}
 	if name == "memory_read" {
 		return tool.MemoryDefinition(s.sessionReadFileDefinition(), "memory_read"), true
 	}
@@ -432,69 +425,23 @@ func (s *Session) discloseDeferredToolsNotification(leadNote string, names []str
 	return note
 }
 
-func formatAvailableAgentsBlock(entries []agentEntry) string {
-	if len(entries) == 0 {
-		return ""
-	}
-	var b strings.Builder
-	b.WriteString("<available_agents>\nAvailable `delegate` roles (`agent_type`); authoritative per-role tool lists live in the `delegate` schema.\n")
-	for _, a := range entries {
-		fmt.Fprintf(&b, "<agent>\nName: `%s`\nDescription: %s\nDefault task list:\n", a.Name, a.Description)
-		if len(a.TaskList) == 0 {
-			b.WriteString("- none\n")
-		} else {
-			for _, task := range a.TaskList {
-				fmt.Fprintf(&b, "- `%s`: %s", task.Title, task.Description)
-				if task.ReplacedByParentTasks {
-					b.WriteString(" Include relevant parent task details in the `delegate` task prompt for this step.")
-				}
-				b.WriteByte('\n')
-			}
-		}
-		b.WriteString("</agent>\n")
-	}
-	b.WriteString("</available_agents>")
-	return b.String()
-}
-
 var skillDeferredToolGroups = map[string][]string{
-	skill.RunningJobsSkillName:        {"job_watch", "job_status", "job_stop", "job_list", "delegate", "delegate_send"},
+	skill.RunningJobsSkillName:        {"job_watch", "job_status", "job_stop", "job_list"},
 	skill.UsingWorktreesSkillName:     {"manage_worktree"},
 	skill.ReadingTranscriptsSkillName: {"read_transcript", "find_session_transcripts"},
 	"doctoring-evener":                {"doctor_evener"},
 	skill.GardeningMemorySkillName:    {"memory_read", "memory_write", "memory_edit", "memory_delete", "memory_search"},
 }
 
-func (s *Session) skillDisclosureBlocks(skillName string) ([]string, []string, bool) {
+func (s *Session) skillDisclosure(skillName string) (string, []string) {
 	if s == nil {
-		return nil, nil, false
+		return "", nil
 	}
-	var parts []string
-	var claimed []string
-	if names := skillDeferredToolGroups[skillName]; len(names) > 0 {
-		if note, got := s.discloseDeferredTools("", names); note != "" {
-			parts = append(parts, note)
-			claimed = append(claimed, got...)
-		}
+	names := skillDeferredToolGroups[skillName]
+	if len(names) == 0 {
+		return "", nil
 	}
-	claimedAgents := false
-	if skillName == skill.RunningJobsSkillName && s.reg != nil && s.reg.Get("delegate") != nil && s.isDeferredTool("delegate") && !s.isSubagentSession() {
-		s.mu.Lock()
-		already := s.disclosedAvailableAgents
-		var entries []agentEntry
-		if !already {
-			entries = s.availableAgentEntries()
-			if len(entries) > 0 {
-				s.disclosedAvailableAgents = true
-				claimedAgents = true
-			}
-		}
-		s.mu.Unlock()
-		if block := formatAvailableAgentsBlock(entries); block != "" {
-			parts = append(parts, block)
-		}
-	}
-	return parts, claimed, claimedAgents
+	return s.discloseDeferredTools("", names)
 }
 
 func (s *Session) steerReactiveToolDisclosure(toolName string, res tool.ExecResult, outputRef string) {
@@ -503,7 +450,6 @@ func (s *Session) steerReactiveToolDisclosure(toolName string, res tool.ExecResu
 	}
 	var claimed []string
 	var blocks []string
-	claimedAgents := false
 	needJobControl := false
 	needReadTranscript := outputRef != ""
 	jobLeadNote := "Background job started. Manage or inspect jobs directly:"
@@ -512,10 +458,10 @@ func (s *Session) steerReactiveToolDisclosure(toolName string, res tool.ExecResu
 		if !res.IsError && !res.Rejected && !res.PrevalOnly && len(res.ToolState) > 0 {
 			var st skillToolState
 			if json.Unmarshal(res.ToolState, &st) == nil && st.Outcome.Identity.Name != "" {
-				skillBlocks, skillClaimed, skillAgents := s.skillDisclosureBlocks(st.Outcome.Identity.Name)
-				blocks = append(blocks, skillBlocks...)
-				claimed = append(claimed, skillClaimed...)
-				claimedAgents = skillAgents
+				if note, skillClaimed := s.skillDisclosure(st.Outcome.Identity.Name); note != "" {
+					blocks = append(blocks, note)
+					claimed = append(claimed, skillClaimed...)
+				}
 			}
 		}
 	case "shell":
@@ -569,9 +515,6 @@ func (s *Session) steerReactiveToolDisclosure(toolName string, res tool.ExecResu
 		s.mu.Lock()
 		for _, name := range claimed {
 			delete(s.disclosedToolSchemas, name)
-		}
-		if claimedAgents {
-			s.disclosedAvailableAgents = false
 		}
 		s.mu.Unlock()
 		s.emitDiagnosticWarning(events.WarningData{Message: fmt.Sprintf("deferred tool schema disclosure failed: %v", err)})

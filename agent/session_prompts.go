@@ -232,14 +232,12 @@ func (s *Session) buildPromptData(env execenv.ExecutionEnvironment) (promptData,
 	actualDefs := append([]llm.ToolDefinition(nil), s.cachedToolDefs...)
 	data.HasUseSkill = toolNameSetFromDefinitions(actualDefs)["use_skill"]
 	data.CallableToolNames = toolNamesFromDefinitions(actualDefs)
-	data.UnavailableProfileToolNames = s.unavailableProfileToolNames(profileDefs, actualDefs)
+	data.UnavailableProfileToolNames = unavailableToolNames(profileDefs, actualDefs)
 
 	// Delegation capability: a positive allowance unlocks the delegation
 	// and background-jobs prompt surface only when those tools are callable.
 	data.DelegationAllowance = s.delegationAllowance
 	data.CanDelegate = s.canPromptDelegation()
-	data.DelegateRegistered = s.reg != nil && s.reg.Get("delegate") != nil
-	data.JobWatchRegistered = s.reg != nil && s.reg.Get("job_watch") != nil
 	data.ManagerEnabled = s.hubEnabled
 	data.ManagerDiscovery = s.hubEnabled && s.reg.Get("job_list") != nil
 	data.ManagerStatus = s.hubEnabled && s.reg.Get("job_status") != nil
@@ -297,23 +295,6 @@ var deferredPromptGuidedTools = map[string]bool{
 	"notes_agent_set": true,
 	"urls_add":        true,
 	"urls_remove":     true,
-}
-
-func (s *Session) unavailableProfileToolNames(profileDefs, actualDefs []llm.ToolDefinition) []string {
-	candidates := unavailableToolNames(profileDefs, actualDefs)
-	if s == nil || s.reg == nil {
-		return candidates
-	}
-	nameMap := s.toolNameMap()
-	missing := make([]string, 0, len(candidates))
-	for _, name := range candidates {
-		canonical := canonicalToolName(name, nameMap)
-		if s.reg.Get(canonical) != nil && s.isDeferredToolLocked(canonical) {
-			continue
-		}
-		missing = append(missing, name)
-	}
-	return missing
 }
 
 // includeProjectDocs reports whether the system prompt renders the personal and

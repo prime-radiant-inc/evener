@@ -379,22 +379,13 @@ func (s *Session) hasDeferredToolsLocked() bool {
 	return slices.ContainsFunc(s.reg.Names(), s.isDeferredToolLocked)
 }
 
-// deferredToolStubLocked returns the minimal static open-object stub for a
-// deferred Tier-2 tool. All deferred stubs carry an empty description except
-// delegate, which gets a compact 1-line delegation cue.
-func (s *Session) deferredToolStubLocked(canonicalName string, nameMap map[string]string) llm.ToolDefinition {
+// deferredToolStub returns the minimal static open-object stub for a
+// deferred Tier-2 tool.
+func deferredToolStub(canonicalName string, nameMap map[string]string) llm.ToolDefinition {
 	strictFalse := false
-	desc := ""
-	if canonicalName == "delegate" {
-		if s.reg != nil && s.reg.Get("tool_search") != nil {
-			desc = `Start a parallel delegate session for an independent task; call tool_search(names=["delegate"]) for full parameters.`
-		} else {
-			desc = "Start a parallel delegate session for an independent task."
-		}
-	}
 	return llm.ToolDefinition{
 		Name:        providerToolName(canonicalName, nameMap),
-		Description: desc,
+		Description: "",
 		Strict:      &strictFalse,
 		Parameters: map[string]any{
 			"type":                 "object",
@@ -476,7 +467,7 @@ func (s *Session) rebuildToolDefsCache() {
 				}
 			}
 			if s.isDeferredToolLocked(td.Name) {
-				stub := s.deferredToolStubLocked(td.Name, nameMap)
+				stub := deferredToolStub(td.Name, nameMap)
 				defs = append(defs, stub)
 				included[td.Name] = true
 				included[stub.Name] = true
@@ -519,7 +510,7 @@ func (s *Session) rebuildToolDefsCache() {
 			continue
 		}
 		if s.isDeferredToolLocked(td.Name) {
-			stub := s.deferredToolStubLocked(td.Name, nameMap)
+			stub := deferredToolStub(td.Name, nameMap)
 			defs = append(defs, stub)
 			included[td.Name] = true
 			included[stub.Name] = true
