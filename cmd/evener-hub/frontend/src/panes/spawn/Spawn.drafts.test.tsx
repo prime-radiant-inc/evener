@@ -1064,6 +1064,17 @@ test("assigning an unscoped launch its first directory keeps the share with that
   ).toEqual([]);
 });
 
+test("plain-text editing keeps omitted command names empty in the launch draft", async () => {
+  const user = setupUser();
+  window.history.pushState({}, "", "/new?dir=/tmp/plain-text-editor");
+  renderSpawn(readyClient());
+  await fillPrompt(user, "plain text input");
+  expect(completionDraft("/tmp/plain-text-editor").fields.getState()).toMatchObject({
+    prompt: "plain text input",
+    commandNames: [],
+  });
+});
+
 test("restoring a project's effort never clamps it against the previous project's catalog", async () => {
   const user = setupUser();
   window.history.pushState({}, "", "/new?dir=/tmp/draft-a");

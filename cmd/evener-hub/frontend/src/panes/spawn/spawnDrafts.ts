@@ -178,7 +178,7 @@ export function updateSpawnPrompt(draft: SpawnDraft, value: string | SkillEditor
   draft.fields.setState({
     prompt,
     skillNames: selections.skillNames,
-    commandNames: selections.commandNames,
+    commandNames: selections.commandNames ?? [],
     mentions: selections.mentions,
     promptRevision: fields.promptRevision + 1,
     shareStart,
