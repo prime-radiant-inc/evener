@@ -5,12 +5,15 @@ import { ActivityIndicator, Alert, AppState, Linking, View } from "react-native"
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { WebView, type WebViewMessageEvent } from "react-native-webview";
 import { useHoldAlerts, useWorkspaceDocument } from "../alerts/alertsContext";
+import { type AlertPreferences, DEFAULT_ALERT_PREFERENCES } from "../alerts/alertCenter";
+import { alertPreferences } from "../alerts/nativeAlertPreferences";
 import type { HubProfile } from "../connection";
 import { useSystemGlass } from "../design/systemGlass";
 import { paletteFor } from "../design/tokens";
 import { haptic } from "../haptics";
 import { workspaceSessionRef } from "../location";
 import { externalMarkdownLink } from "../markdownLinks";
+import type { WorkspaceShare } from "../share/sharePayload";
 import { Button } from "../sheet/Grouped";
 import { ErrorMessage, useColors } from "../ui";
 import { type ButtonFrame, CreateSessionButton, isButtonFrame } from "./CreateSessionButton";
@@ -31,21 +34,55 @@ interface HubWebViewProps {
 	initialPath: string;
 	onPath(path: string): void;
 	onHubMenu(): void;
-	onDeviceWork(): void;
+	share?: WorkspaceShare;
+	onSharePlaced?(id: string): void;
 }
 
-export function HubWebView({ profile, token, initialPath, onPath, onHubMenu, onDeviceWork }: HubWebViewProps) {
+interface HubCapabilities {
+	incomingShare: boolean;
+	needsYouNavigation: boolean;
+}
+
+function capabilitiesFrom(value: unknown): HubCapabilities {
+	const capabilities = Array.isArray(value) ? (value as unknown[]) : [];
+	return {
+		incomingShare: capabilities.includes("incomingShare"),
+		needsYouNavigation: capabilities.includes("needsYouNavigation"),
+	};
+}
+
+function isNeedsYouPath(path: string, origin: string): boolean {
+	try {
+		const url = new URL(path, origin);
+		return url.pathname === "/" && url.searchParams.get("attention") === "needs-you";
+	} catch {
+		return false;
+	}
+}
+
+function initialEntryPath(path: string, origin: string, share?: WorkspaceShare): string {
+	return isNeedsYouPath(path, origin) || share?.path === path ? "/" : path;
+}
+
+export function HubWebView({ profile, token, initialPath, onPath, onHubMenu, share, onSharePlaced }: HubWebViewProps) {
 	const { origin } = profile;
 	const { palette } = useColors();
 	const web = useRef<WebView<unknown>>(null);
-	const [entryPath, setEntryPath] = useState(initialPath);
-	const currentPath = useRef(initialPath);
+	const reportRoute = useRef(onPath);
+	reportRoute.current = onPath;
+	const [entryPath, setEntryPath] = useState(() => initialEntryPath(initialPath, origin, share));
+	const currentPath = useRef(initialEntryPath(initialPath, origin, share));
+	const pendingNeedsYou = useRef(isNeedsYouPath(initialPath, origin));
 	const [bridgeReady, setBridgeReady] = useState(false);
+	const [hubCapabilities, setHubCapabilities] = useState<HubCapabilities | null>(null);
 	const [loaded, setLoaded] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 	const [editing, setEditing] = useState(false);
 	const [readingDocument, setReadingDocument] = useState(false);
 	const [covered, setCovered] = useState(false);
+	const [shareTarget, setShareTarget] = useState<{ path: string } | null>(null);
+	const deliveredShares = useRef(new Map<string, Pick<WorkspaceShare, "hubId" | "path">>());
+	const navigatedShareId = useRef<string | null>(null);
 	const [header, setHeader] = useState<SessionHeaderState | null>(null);
 	const [sessionsToolbar, setSessionsToolbar] = useState<SessionsToolbar | null>(null);
 	const [restoringSession, setRestoringSession] = useState(() =>
@@ -86,6 +123,21 @@ export function HubWebView({ profile, token, initialPath, onPath, onHubMenu, onD
 		if (bridgeReady) web.current?.postMessage(material);
 	}, [bridgeReady, material]);
 	const inFront = bridgeReady && focused && !error;
+	const incomingShareAvailable = hubCapabilities?.incomingShare;
+	const needsYouNavigationAvailable = hubCapabilities?.needsYouNavigation;
+	useEffect(() => {
+		if (
+			inFront &&
+			!covered &&
+			incomingShareAvailable === true &&
+			share?.hubId === profile.id &&
+			share.path === shareTarget?.path &&
+			initialPath === share.path
+		) {
+			deliveredShares.current.set(share.id, { hubId: share.hubId, path: share.path });
+			web.current?.postMessage(JSON.stringify({ type: "shareText", path: share.path, id: share.id, text: share.text }));
+		}
+	}, [inFront, covered, incomingShareAvailable, share, profile.id, shareTarget, initialPath]);
 	useWorkspaceDocument(profile.id, readingDocument && bridgeReady && !error);
 	useHoldAlerts(inFront && (editing || readingDocument), "quiet");
 	useHoldAlerts(inFront && covered, "covered");
@@ -106,6 +158,17 @@ export function HubWebView({ profile, token, initialPath, onPath, onHubMenu, onD
 		}
 	};
 	const reportPath = (path: string) => {
+		if (pendingNeedsYou.current) {
+			if (path === "/") return;
+			if (!isNeedsYouPath(path, origin)) pendingNeedsYou.current = false;
+		}
+		if (
+			share?.hubId === profile.id &&
+			share.path === initialPath &&
+			path === "/" &&
+			hubCapabilities?.incomingShare !== true
+		)
+			return;
 		if (path === currentPath.current) return;
 		endRestore();
 		currentPath.current = path;
@@ -113,7 +176,12 @@ export function HubWebView({ profile, token, initialPath, onPath, onHubMenu, onD
 		onPath(path);
 	};
 	const resetDocument = useCallback(() => {
+		deliveredShares.current.clear();
+		navigatedShareId.current = null;
+		setShareTarget(null);
 		setBridgeReady(false);
+		setHubCapabilities(null);
+		setLoaded(false);
 		setEditing(false);
 		setReadingDocument(false);
 		setCovered(false);
@@ -147,11 +215,79 @@ export function HubWebView({ profile, token, initialPath, onPath, onHubMenu, onD
 		if (initialPath === currentPath.current) return;
 		const path = hubPagePath(origin, origin + initialPath);
 		if (!path) return;
+		if (share?.hubId === profile.id && share.path === path && incomingShareAvailable !== true) return;
+		if (isNeedsYouPath(path, origin) && needsYouNavigationAvailable !== true) {
+			pendingNeedsYou.current = true;
+			return;
+		}
 		endRestore();
 		currentPath.current = path;
+		if (pendingNeedsYou.current && !isNeedsYouPath(path, origin)) pendingNeedsYou.current = false;
+		if (share?.hubId === profile.id && share.path === path) navigatedShareId.current = share.id;
 		if (bridgeReady && web.current) web.current.postMessage(JSON.stringify({ type: "navigate", path }));
 		else setEntryPath(path);
-	}, [initialPath, bridgeReady, origin, endRestore]);
+	}, [
+		initialPath,
+		bridgeReady,
+		incomingShareAvailable,
+		needsYouNavigationAvailable,
+		share,
+		profile.id,
+		origin,
+		endRestore,
+	]);
+	useEffect(() => {
+		if (share?.hubId !== profile.id || share.path !== initialPath) navigatedShareId.current = null;
+	}, [share?.id, share?.hubId, share?.path, profile.id, initialPath]);
+	useEffect(() => {
+		if (
+			!bridgeReady ||
+			incomingShareAvailable !== true ||
+			share?.hubId !== profile.id ||
+			share.path !== initialPath ||
+			share.path !== currentPath.current ||
+			navigatedShareId.current === share.id
+		)
+			return;
+		navigatedShareId.current = share.id;
+		web.current?.postMessage(JSON.stringify({ type: "navigate", path: share.path }));
+	}, [bridgeReady, incomingShareAvailable, share, profile.id, initialPath]);
+	const requestHubUpdate = useCallback(
+		(feature: keyof HubCapabilities, action: string) => {
+			const message =
+				feature === "incomingShare"
+					? `Update ${profile.name} in Settings → Hub → Updates to ${action}. The share is saved on this iPhone.`
+					: `Update ${profile.name} in Settings → Hub → Updates to ${action}.`;
+			Alert.alert("Hub update needed", message, [
+				{
+					text: "Not now",
+					style: "cancel",
+					onPress: () => {
+						if (feature === "needsYouNavigation") pendingNeedsYou.current = false;
+						reportRoute.current(currentPath.current);
+					},
+				},
+				{ text: "Try again", onPress: () => web.current?.reload() },
+			]);
+		},
+		[profile.name],
+	);
+	useEffect(() => {
+		if (share?.hubId === profile.id && share.path === initialPath && incomingShareAvailable === false)
+			requestHubUpdate("incomingShare", "receive this share");
+		if (isNeedsYouPath(initialPath, origin) && needsYouNavigationAvailable === false)
+			requestHubUpdate("needsYouNavigation", "open grouped Needs You alerts");
+	}, [
+		incomingShareAvailable,
+		needsYouNavigationAvailable,
+		share?.id,
+		share?.hubId,
+		share?.path,
+		profile.id,
+		initialPath,
+		origin,
+		requestHubUpdate,
+	]);
 
 	function message({ nativeEvent }: WebViewMessageEvent) {
 		const documentPath = hubPagePath(origin, nativeEvent.url);
@@ -169,6 +305,43 @@ export function HubWebView({ profile, token, initialPath, onPath, onHubMenu, onD
 			workspaceSessionRef(currentPath.current) === restoringSession &&
 			workspaceSessionRef(initialPath) === restoringSession;
 		switch (data.type) {
+			case "getAlertPreferences":
+				web.current?.postMessage(
+					JSON.stringify({ type: "alertPreferences", preferences: alertPreferences().getSnapshot() }),
+				);
+				break;
+			case "setAlertPreference": {
+				const preferences = alertPreferences();
+				if (
+					typeof data.key !== "string" ||
+					!Object.hasOwn(DEFAULT_ALERT_PREFERENCES, data.key) ||
+					typeof data.value !== "boolean"
+				)
+					break;
+				const key = data.key as keyof AlertPreferences;
+				preferences.set({ [key]: data.value });
+				web.current?.postMessage(JSON.stringify({ type: "alertPreferences", preferences: preferences.getSnapshot() }));
+				break;
+			}
+			case "legacyHub":
+				setHubCapabilities((current) => current ?? { incomingShare: false, needsYouNavigation: false });
+				break;
+			case "shareTarget":
+				if (data.path === new URL(nativeEvent.url).pathname) setShareTarget({ path: data.path });
+				break;
+			case "sharePlaced": {
+				const delivery = deliveredShares.current.get(data.id);
+				if (!delivery || delivery.hubId !== profile.id || delivery.path !== data.path) break;
+				// A retained launch draft can finish after navigation or while a picker
+				// covers the workspace. Its receipt belongs to this WebKit document.
+				const accepted =
+					documentPath === currentPath.current || (delivery.path === "/new" && documentPath === delivery.path);
+				if (accepted) {
+					deliveredShares.current.delete(data.id);
+					onSharePlaced?.(data.id);
+				}
+				break;
+			}
 			case "appearance":
 				if (typeof data.dark === "boolean") setHubDark(data.dark);
 				break;
@@ -220,6 +393,7 @@ export function HubWebView({ profile, token, initialPath, onPath, onHubMenu, onD
 				}
 				break;
 			case "ready":
+				setHubCapabilities(capabilitiesFrom(data.capabilities));
 				if (!onRestoredSession) endRestore();
 				if (bridgeReady) web.current?.postMessage(material);
 				else setBridgeReady(true);
@@ -283,8 +457,7 @@ export function HubWebView({ profile, token, initialPath, onPath, onHubMenu, onD
 			>
 				<ErrorMessage message={error ?? "Edit the saved token to open this hub on iPhone."} />
 				{source && <Button label="Try again" primary compact onPress={retry} />}
-				<Button label="iPhone settings" onPress={onHubMenu} />
-				<Button label="Work on this iPhone" onPress={onDeviceWork} />
+				<Button label="Hubs on this iPhone" onPress={onHubMenu} />
 			</SafeAreaView>
 		);
 	const activeHeader = focused && (edgeToolbar || !header?.split) ? header : null;
@@ -297,7 +470,7 @@ export function HubWebView({ profile, token, initialPath, onPath, onHubMenu, onD
 			{hubPalette && <StatusBar style={hubPalette.scheme === "dark" ? "light" : "dark"} />}
 			{loaded && !activeHeader && (!bridgeReady || currentPath.current.startsWith("/thread/")) && (
 				<View style={{ alignItems: "flex-end" }}>
-					<Button label="iPhone settings" onPress={onHubMenu} />
+					<Button label="Hubs on this iPhone" onPress={onHubMenu} />
 				</View>
 			)}
 			<View style={{ flex: 1 }}>
@@ -323,14 +496,19 @@ export function HubWebView({ profile, token, initialPath, onPath, onHubMenu, onD
 					onLoad={({ nativeEvent }) => {
 						setLoaded(true);
 						const path = hubPagePath(origin, nativeEvent.url);
-						if (path) reportPath(path);
+						if (path) {
+							reportPath(path);
+							web.current?.injectJavaScript(
+								'(() => { const root = document.getElementById("root"); if (root && !root.hasAttribute("data-iphone-host-capabilities")) window.ReactNativeWebView?.postMessage(JSON.stringify({ type: "legacyHub" })); })(); true;',
+							);
+						}
 					}}
 					onError={() => setError(`Could not reach ${profile.name}.`)}
 					onHttpError={({ nativeEvent }) => {
 						if (hubPagePath(origin, nativeEvent.url)) {
 							setError(
 								nativeEvent.statusCode === 401
-									? "Check the token in iPhone settings."
+									? "Check the token in this hub’s saved connection."
 									: `The hub returned HTTP ${nativeEvent.statusCode}.`,
 							);
 						}
@@ -349,7 +527,7 @@ export function HubWebView({ profile, token, initialPath, onPath, onHubMenu, onD
 							}}
 						>
 							<ActivityIndicator accessibilityLabel={`Opening ${profile.name}`} />
-							<Button label="iPhone settings" onPress={onHubMenu} />
+							<Button label="Hubs on this iPhone" onPress={onHubMenu} />
 						</View>
 					)}
 					automaticallyAdjustContentInsets={false}

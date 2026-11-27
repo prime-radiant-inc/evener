@@ -67,6 +67,11 @@ than an error state. The direction of the skew decides who adapts:
 | Local hub and remote hub over SSH | The local hub works with an older remote hub. | Remote-side code carries no fallback for a newer local hub. |
 | On-disk state | Every persisted format stays readable and every migration stays, because users skip versions. | Nothing is dropped on a time window alone. |
 
+The iPhone checks the selected hub workspace for incoming share and grouped
+Needs You support when those actions are used. An older workspace remains
+usable and the phone explains which hub to update. A share stays pending until
+its destination saves it. See [iPhone workspace recovery](message-recovery.md#iphone-workspace).
+
 Code that serves no producer in any direction is dead code, not compatibility,
 and is deleted. New compatibility code names the version direction it serves
 and the condition that removes it in its pull request description.

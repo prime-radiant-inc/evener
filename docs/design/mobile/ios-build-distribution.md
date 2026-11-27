@@ -64,15 +64,6 @@ The hosted workspace adapts its Board and reading column to the available
 space. On Duo, the native stack places actions in the system edge bar when the
 status area moves to the side. See the [Duo layout guide](iphone-duo.md).
 
-In **Work on this iPhone**, the native client selects its split layout from the window's point size
-([`src/duo/duoLayout.ts`](../../../mobile-native/src/duo/duoLayout.ts)), not from
-the device name: both sides at least 600 points. The `Sessions` screen renders
-the Board beside a nested conversation navigator on the inner display, and the
-root stack header is hidden there in favor of the Board's inline header. The app
-supports landscape (`orientation: "default"`); the Board, conversation, agent and
-job screens, reader and Hub pages, and the alert banner inset their content by
-the left/right safe areas, so the notch and Dynamic Island stay clear.
-
 Simulator qualification uses the `iPhone Duo` device type on the iOS 27.1
 runtime, captures the outer display, the empty split and an open conversation,
 and rotates the inner display. The TestFlight workflow runs on the `xcode-27`

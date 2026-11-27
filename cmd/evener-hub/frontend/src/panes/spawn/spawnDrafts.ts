@@ -9,15 +9,20 @@ import type {
   PluginSelectionError,
   PluginSelectionState,
 } from "@evener/appwire-client";
+import { mergeDraftText, sharedPrefixLength, sharedSuffixLength } from "@evener/appwire-client";
 import { type Dispatch, type SetStateAction, useCallback } from "react";
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
 import { createAttachmentStore } from "../session/composer/attachments/useAttachments";
+import { patchSelectionText, type SkillEditorValue } from "../session/composer/skillDocument";
 import { resolveInitialDefaults } from "./spawnDefaults";
 import { readUrlPrefill } from "./urlPrefill";
 
 interface DraftFields {
   prompt: string;
+  shareId: string | null;
+  shareText: string | null;
+  shareStart: number | null;
   skillNames: string[];
   commandNames: string[];
   mentions?: ComposerMention[];
@@ -85,6 +90,9 @@ function createDraft(cwd: string) {
     cwd,
     fields: createStore<DraftFields>(() => ({
       prompt: "",
+      shareId: null,
+      shareText: null,
+      shareStart: null,
       skillNames: [],
       commandNames: [],
       promptRevision: 0,
@@ -120,12 +128,14 @@ export type SpawnDraft = ReturnType<typeof createDraft>;
 export const spawnDraftsStore = createStore(() => ({
   drafts: new Map<string, SpawnDraft>(),
   current: null as SpawnDraft | null,
+  detachedShare: null as { id: string; cwd: string; url: string } | null,
   lastPrefillURL: null as string | null,
   prefillRevision: 0,
 }));
 
 export function selectSpawnDirectory(cwd: string): SpawnDraft {
   const state = spawnDraftsStore.getState();
+  if (state.current?.cwd !== cwd && state.detachedShare) spawnDraftsStore.setState({ detachedShare: null });
   let draft = state.drafts.get(cwd);
   const drafts = new Map(state.drafts);
   // Composing before choosing the first folder is supported: selecting it
@@ -138,6 +148,86 @@ export function selectSpawnDirectory(cwd: string): SpawnDraft {
   drafts.set(cwd, draft);
   spawnDraftsStore.setState({ drafts, current: draft });
   return draft;
+}
+
+/** Writes editor text and keeps the draft's selection identities in sync. */
+export function updateSpawnPrompt(
+  draft: SpawnDraft,
+  value: string | SkillEditorValue,
+  replacedRange?: { start: number; end: number },
+): void {
+  const fields = draft.fields.getState();
+  const prompt = typeof value === "string" ? value : value.text;
+  const selections =
+    typeof value === "string"
+      ? patchSelectionText(
+          {
+            text: fields.prompt,
+            skillNames: fields.skillNames,
+            commandNames: fields.commandNames,
+            mentions: fields.mentions,
+          },
+          prompt,
+        )
+      : value;
+  let shareStart = fields.shareStart;
+  let shareText = fields.shareText;
+  let shareId = fields.shareId;
+  if (shareStart !== null && fields.shareText !== null) {
+    const prefix = replacedRange?.start ?? sharedPrefixLength(fields.prompt, prompt);
+    const oldEnd = replacedRange?.end ?? fields.prompt.length - sharedSuffixLength(fields.prompt, prompt, prefix);
+    const shareEnd = shareStart + fields.shareText.length;
+    if (oldEnd <= shareStart) shareStart += prompt.length - fields.prompt.length;
+    else if (prefix < shareEnd) {
+      const removedWholeShare = prefix <= shareStart && oldEnd >= shareEnd;
+      const newEnd = oldEnd + prompt.length - fields.prompt.length;
+      shareStart = Math.min(prefix, shareStart);
+      shareText = prompt.slice(
+        shareStart,
+        oldEnd >= shareEnd ? newEnd : shareEnd + prompt.length - fields.prompt.length,
+      );
+      if (removedWholeShare || shareText === "") {
+        if (shareId) {
+          spawnDraftsStore.setState({ detachedShare: { id: shareId, cwd: draft.cwd, url: window.location.href } });
+        }
+        shareId = null;
+        shareText = null;
+        shareStart = null;
+      }
+    }
+  }
+  draft.fields.setState({
+    prompt,
+    skillNames: selections.skillNames,
+    commandNames: selections.commandNames ?? [],
+    mentions: selections.mentions,
+    promptRevision: fields.promptRevision + 1,
+    shareId,
+    shareText,
+    shareStart,
+  });
+}
+
+/** Moves an unstarted iPhone share with a user-selected launch project while
+ * keeping each project's independent prompt selections. */
+export function carryPendingShare(from: SpawnDraft, to: SpawnDraft): void {
+  if (from === to || from.fields === to.fields || from.busyRef.current) return;
+  const source = from.fields.getState();
+  if (!source.shareId || !source.shareText || source.shareStart === null) return;
+  const destination = to.fields.getState();
+  if (destination.shareId !== null && destination.shareId !== source.shareId) return;
+
+  const { shareStart, shareText } = source;
+  if (source.prompt.slice(shareStart, shareStart + shareText.length) !== shareText) return;
+  const removeStart =
+    shareStart >= 2 && source.prompt.slice(shareStart - 2, shareStart) === "\n\n" ? shareStart - 2 : shareStart;
+  updateSpawnPrompt(from, source.prompt.slice(0, removeStart) + source.prompt.slice(shareStart + shareText.length));
+  from.fields.setState({ shareId: null, shareText: null, shareStart: null });
+  if (destination.shareId === source.shareId) return;
+
+  const withShare = mergeDraftText(destination.prompt, shareText);
+  updateSpawnPrompt(to, withShare);
+  to.fields.setState({ shareId: source.shareId, shareText, shareStart: withShare.length - shareText.length });
 }
 
 /** The controller's own default working directory: the ?dir= prefill when this
@@ -181,6 +271,14 @@ export function applySpawnURL(onNavigation = false): void {
   const draft = selectSpawnDirectory(cwd);
   if (applyPrefill) {
     if (prefill.prompt) {
+      const current = draft.fields.getState();
+      spawnDraftsStore.setState({ detachedShare: null });
+      if (current.shareId) {
+        spawnDraftsStore.setState({
+          detachedShare: { id: current.shareId, cwd: draft.cwd, url: window.location.href },
+        });
+        draft.fields.setState({ shareId: null, shareText: null, shareStart: null });
+      }
       setDraftField(draft, "prompt", prefill.prompt);
       draft.fields.setState({ skillNames: [], commandNames: [], mentions: undefined });
     }
@@ -200,9 +298,14 @@ export function applySpawnURL(onNavigation = false): void {
 // keeps the marker, so its suppression of a redundant re-apply survives.
 if (typeof window !== "undefined") {
   window.addEventListener("popstate", () => {
-    if (window.location.pathname === "/new") return;
     const state = spawnDraftsStore.getState();
-    if (state.lastPrefillURL !== null) spawnDraftsStore.setState({ lastPrefillURL: null });
+    if (window.location.pathname === "/new") {
+      if (state.detachedShare && state.detachedShare.url !== window.location.href)
+        spawnDraftsStore.setState({ detachedShare: null });
+      return;
+    }
+    if (state.lastPrefillURL !== null || state.detachedShare)
+      spawnDraftsStore.setState({ lastPrefillURL: null, detachedShare: null });
   });
 }
 
@@ -240,5 +343,11 @@ export function useDraftField<K extends keyof DraftFields>(
 }
 
 export function resetSpawnDraftsForTests(): void {
-  spawnDraftsStore.setState({ drafts: new Map(), current: null, lastPrefillURL: null, prefillRevision: 0 });
+  spawnDraftsStore.setState({
+    drafts: new Map(),
+    current: null,
+    detachedShare: null,
+    lastPrefillURL: null,
+    prefillRevision: 0,
+  });
 }

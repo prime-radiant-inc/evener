@@ -186,6 +186,8 @@ materials. Light and dark follow the active workspace. Reduce Transparency
 uses opaque surfaces with visible edges. Transcript text, code, documents,
 and the rows of a settings page sit on a legible reading surface.
 
+The [shared workspace design guide](../docs/web-ui/design-system.md) governs the iPhone Board, conversations, launcher, and settings. Hubs opens the saved connections list directly. The phone also presents the [share destination picker](#share-to-evener). The native Board, Session, and administration sheet specifications below describe the retained Android development client.
+
 **Creative North Star: "Attention is the product"** (spec principle 1)
 
 This records the native iPhone implementation, not visual or release acceptance. For on-device work the Board orders live sessions by who needs you, followed by the user’s own organization. The settled direction is a quiet native instrument: neutral light/dark surfaces, SF interface text, familiar native navigation and touch-sized controls. The current visual direction is `docs/superpowers/specs/2026-10-19-native-apple-design.md`; the interaction foundation remains `docs/superpowers/specs/2026-09-25-mobile-app-redesign-design.md`.
@@ -261,11 +263,11 @@ Board rows and section rows stay open on the page; no enclosing card. Section ch
 
 ## Components
 
-Use SF Symbols for the actions in the [shared design guide](../docs/web-ui/design-system.md) under **Action icons**. Apply them in native toolbars, the on-device Board and conversation, and the share flow. Keep the action's accessible name on the button and center the symbol in its tap target. Text-only commands such as Start in a sheet header keep their labels.
+Use SF Symbols for the actions in the [shared design guide](../docs/web-ui/design-system.md) under **Action icons**. Apply them in native toolbars, saved Hubs, and the share flow. Keep the action's accessible name on the button and center the symbol in its tap target. Text-only commands such as Start in a sheet header keep their labels.
 
-### The hub button
-- **Shape:** One glass capsule in the header's leading slot: the hub's name at 17px in ink-hi and a `chevron.down` glyph. It's a custom header view, because a native bar item given both a title and an image draws only the image.
-- **Behavior:** Opens the Hub sheet (below).
+### Hubs and Settings
+
+In Sessions, Hubs opens the saved connections sheet. A person can pair, switch, edit, or forget a hub there. Settings opens the selected hub’s web settings. Give each action its own accessible name and preserve its position when the Duo moves the controls to the side rail.
 
 ### Section chips
 - **Shape:** A horizontal row, sticky under the header; fully rounded capsules with a hairline border. The row fades at its trailing edge, so a cut-off chip reads as "there's more."
@@ -520,7 +522,7 @@ The iOS share sheet offers Evener for text and web links. The extension saves wh
 ### The Share target sheet
 - **Header:** the title "Share to Evener" and Cancel. Cancel asks before dropping the share.
 - **The shared text:** up to four lines at the top, in 15pt ink-mid, the same quiet inset the sheets use for a summary. It is the content being placed, not an editable field.
-- **New session:** a row under it with a `plus` glyph in accent ink and "New session" in 17pt semibold accent. It opens New session with the text already in the prompt, so the host, project, model and effort this phone remembers still apply.
+- **New session:** a row under it with a `plus` glyph opens the hub’s launcher with the shared text in its prompt. The extension keeps its copy until the session starts.
 - **The search field:** "Search sessions", the Board's own field and its 250ms debounce. A query replaces the live list with the Board's grouped results: live matches first, then past ones. A past session is a normal result and opens the same way.
 - **Live:** a LIVE band of the active hub's sessions in the Board's attention order (Needs you, Working, Idle), each row a title, its state word and its project. No swipes, no Row menu: this sheet chooses, it doesn't manage.
 - **States:** with no ready hub it says the session list waits for one and the share stays put. A share that can't be written to a draft stays in the sheet with the reason, and its file is kept.

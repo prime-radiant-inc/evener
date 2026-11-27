@@ -4,10 +4,6 @@ import type { ReactTestRenderer } from "react-test-renderer";
 import { act } from "react-test-renderer";
 import { beforeEach, expect, it, vi } from "vitest";
 import type { ConversationClientLike } from "../conversation/services/conversation";
-import { DraftLibrary } from "../draftLibrary";
-import { DraftRepository } from "../draftRepository";
-import { DraftDocument } from "../draftDocument";
-import { openSqliteSyncDouble, type SqliteDoubleDatabase } from "../sqliteSync.testkit";
 import { answerFleetRead, type FleetShape, fleetSession } from "../session/fleetTestUtils";
 import { alertRequests, render, settleMicrotasks, unmountMountedTrees, until } from "../renderNative.testkit";
 import { ShareTargetSheet } from "./ShareTargetSheet";
@@ -50,15 +46,8 @@ const past = {
 	ref: "local:report",
 };
 
-let database: SqliteDoubleDatabase;
-let repository: DraftRepository;
-
 beforeEach(() => {
-	database?.close();
 	harness.kv.clear();
-	const opened = openSqliteSyncDouble();
-	database = opened.database;
-	repository = new DraftRepository(opened.port);
 	unmountMountedTrees();
 });
 
@@ -112,14 +101,13 @@ const share: SharedPayload = { id: "share-1", text: "What I shared", createdAt: 
 
 function sheet(
 	navigation: { replace: ReturnType<typeof vi.fn>; goBack: ReturnType<typeof vi.fn> },
-	onPlaced = vi.fn(),
+	onChoose = vi.fn(),
 ) {
 	return (
 		<ShareTargetSheet
 			navigation={navigation as never}
 			route={{ key: "ShareTarget", name: "ShareTarget", params: { item: share } } as never}
-			drafts={new DraftLibrary(() => repository)}
-			onPlaced={onPlaced}
+			onChoose={onChoose}
 		/>
 	);
 }
@@ -152,61 +140,34 @@ it("lists live sessions in attention order", async () => {
 	expect(position("Build the picker")).toBeLessThan(position("Old notes"));
 });
 
-it("opens the chosen session with the shared text in its draft", async () => {
+it("hands the selected session to the hub workspace", async () => {
 	const { client } = hub();
 	connect(client);
 	const navigation = { replace: vi.fn(), goBack: vi.fn() };
-	const onPlaced = vi.fn();
-	const tree = render(sheet(navigation, onPlaced));
+	const onChoose = vi.fn();
+	const tree = render(sheet(navigation, onChoose));
 	await settleMicrotasks();
-	const row = rowTitled(tree, "Build the picker");
-	act(() => row.props.onPress());
-	await settleMicrotasks();
-	expect(navigation.replace).toHaveBeenCalledWith("Conversation", {
-		hubId: "hub-1",
-		ref: "local:work",
-		title: "Build the picker",
-	});
-	const opened = new DraftDocument(() => repository, { hubId: "hub-1", sessionRef: "local:work" });
-	expect(opened.getSnapshot().record.draft).toBe("What I shared");
-	expect(onPlaced).toHaveBeenCalledWith(share);
-});
-
-it("appends to a session's existing draft instead of replacing it", async () => {
-	const { client } = hub();
-	connect(client);
-	const existing = new DraftDocument(() => repository, { hubId: "hub-1", sessionRef: "local:work" });
-	existing.edit("What I was writing");
-	const navigation = { replace: vi.fn(), goBack: vi.fn() };
-	const tree = render(sheet(navigation));
-	await settleMicrotasks();
-	const row = rowTitled(tree, "Build the picker");
-	act(() => row.props.onPress());
-	await settleMicrotasks();
-	expect(
-		new DraftDocument(() => repository, { hubId: "hub-1", sessionRef: "local:work" }).getSnapshot().record.draft,
-	).toBe("What I was writing\n\nWhat I shared");
+	act(() => rowTitled(tree, "Build the picker").props.onPress());
+	expect(onChoose).toHaveBeenCalledWith("hub-1", "/s/local%3Awork", share);
 });
 
 it("starts a new session with the share when New session is chosen", async () => {
 	const { client } = hub();
 	connect(client);
 	const navigation = { replace: vi.fn(), goBack: vi.fn() };
-	const tree = render(sheet(navigation));
+	const onChoose = vi.fn();
+	const tree = render(sheet(navigation, onChoose));
 	await settleMicrotasks();
 	act(() => tree.root.find((node) => node.props.testID === "share-new-session").props.onPress());
-	expect(navigation.replace).toHaveBeenCalledWith("NewSession", {
-		hubId: "hub-1",
-		hubName: "Work hub",
-		share,
-	});
+	expect(onChoose).toHaveBeenCalledWith("hub-1", "/new", share);
 });
 
 it("searches with the Board's backend and offers a past result", async () => {
 	const { client, searches } = hub();
 	connect(client);
 	const navigation = { replace: vi.fn(), goBack: vi.fn() };
-	const tree = render(sheet(navigation));
+	const onChoose = vi.fn();
+	const tree = render(sheet(navigation, onChoose));
 	await settleMicrotasks();
 	const field = tree.root.find((node) => node.props.accessibilityLabel === "Search sessions");
 	act(() => field.props.onChangeText("report"));
@@ -215,9 +176,7 @@ it("searches with the Board's backend and offers a past result", async () => {
 	const row = rowTitled(tree, "Quarterly report");
 	act(() => row.props.onPress());
 	await settleMicrotasks();
-	expect(
-		new DraftDocument(() => repository, { hubId: "hub-1", sessionRef: "local:report" }).getSnapshot().record.draft,
-	).toBe("What I shared");
+	expect(onChoose).toHaveBeenCalledWith("hub-1", "/s/local%3Areport", share);
 });
 
 it("offers no sessions and searches nothing while the hub is not ready", async () => {
@@ -247,36 +206,6 @@ it("offers no sessions and searches nothing while the hub is not ready", async (
 	expect(newSession.props.disabled).toBe(true);
 });
 
-it("keeps the share when the draft write does not land", async () => {
-	const { client } = hub();
-	connect(client);
-	const broken = new DraftRepository({
-		execSync: () => {},
-		runSync: () => ({ changes: 0 }),
-		getFirstSync: () => {
-			throw new Error("draft storage unavailable");
-		},
-		getAllSync: () => [],
-	});
-	const navigation = { replace: vi.fn(), goBack: vi.fn() };
-	const onPlaced = vi.fn();
-	const tree = render(
-		<ShareTargetSheet
-			navigation={navigation as never}
-			route={{ key: "ShareTarget", name: "ShareTarget", params: { item: share } } as never}
-			drafts={new DraftLibrary(() => broken)}
-			onPlaced={onPlaced}
-		/>,
-	);
-	await settleMicrotasks();
-	const row = rowTitled(tree, "Build the picker");
-	act(() => row.props.onPress());
-	await settleMicrotasks();
-	expect(onPlaced).not.toHaveBeenCalled();
-	expect(navigation.replace).not.toHaveBeenCalled();
-	expect(tree.root.findAll((node) => node.props.testID === "share-error").length).toBeGreaterThan(0);
-});
-
 it("releases the intake when the sheet closes without choosing", async () => {
 	const { client } = hub();
 	connect(client);
@@ -286,8 +215,7 @@ it("releases the intake when the sheet closes without choosing", async () => {
 		<ShareTargetSheet
 			navigation={navigation as never}
 			route={{ key: "ShareTarget", name: "ShareTarget", params: { item: share } } as never}
-			drafts={new DraftLibrary(() => repository)}
-			onPlaced={vi.fn()}
+			onChoose={vi.fn()}
 			onClosed={onClosed}
 		/>,
 	);
@@ -305,8 +233,7 @@ it("discards the share only when the confirmation says so", async () => {
 		<ShareTargetSheet
 			navigation={navigation as never}
 			route={{ key: "ShareTarget", name: "ShareTarget", params: { item: share } } as never}
-			drafts={new DraftLibrary(() => repository)}
-			onPlaced={vi.fn()}
+			onChoose={vi.fn()}
 			onDiscarded={onDiscarded}
 		/>,
 	);

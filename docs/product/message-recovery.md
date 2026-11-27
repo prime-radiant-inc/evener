@@ -172,15 +172,26 @@ is missing. The Send press captures its Stop barrier before asynchronous draft
 persistence, so a newer Stop leaves the fresh row canceled rather than dispatching
 it. Storage failure retains recoverable content and reports the failure.
 
-## Native controls and recovery
+## iPhone workspace
 
-The iPhone workspace runs the browser composer in the saved hub’s persistent
-WebKit profile, using the browser controls above.
-**Work on this iPhone** opens native drafts, image attachments, and pending
-sends in their original SQLite-backed editor. Incoming iOS shares also land in
-that editor. Its outbox keeps its mutation identities through a hub switch,
-disconnect, or app update. The two composers never copy or replay each other’s
-pending work.
+The iPhone runs the browser composer in the saved hub’s persistent WebKit
+profile. Its draft, queue, and recovery controls follow the browser contracts
+above. The app does not import or dispatch work from the retired iPhone editor.
+An incoming share stays in the App Group until its destination saves the text
+in a conversation draft or starts the new session with it. In the launcher, editing a share and
+choosing another project carries the edited text along. Replacing the launch
+prompt from the command palette leaves the original share pending.
+Choosing a hub that cannot receive the share leaves the item pending on the
+phone and prompts for an update to that hub.
+An existing conversation saves the proposed draft before displaying the shared
+text. If that write fails, the composer offers Retry and keeps the current
+draft available for editing and sending. Retry appends the share to the draft
+as it stands at that moment. Only a successful save releases it from the phone.
+
+## Android development client
+
+The following SQLite and native screen contracts apply to the deferred Android
+client.
 
 The transcript ghosts and Queue sheet share the same eligible local messages,
 including offline waiting messages and messages held by Stop. Edit appends to

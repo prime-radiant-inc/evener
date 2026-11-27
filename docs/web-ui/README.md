@@ -137,6 +137,10 @@ preferences retain their existing browser storage. Conversation display keeps
 its Desktop/Mobile hub defaults and browser overrides. Organization does not
 change persistence or introduce new synchronization.
 
+Inside the iPhone app, Settings → Notifications also controls this phone’s
+failure alerts, questions and approvals, holding alerts while reading or typing,
+and haptics. The phone supplies the saved values and applies changes across hubs.
+
 Notifications shows Loud for only when sound or desktop notifications are enabled.
 Hiding that control preserves its selection. Browser tab indicator is independent
 of those channels. The desktop switch records a browser-local preference, not a

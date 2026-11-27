@@ -7,19 +7,23 @@ import { type HubProfile, HubProfiles } from "./connection";
 import { HubWebView } from "./hubWeb/HubWebView";
 import { isWorkspacePath } from "./location";
 import type { Routes } from "./screens";
+import type { WorkspaceShare } from "./share/sharePayload";
 import { Button } from "./sheet/Grouped";
 import { ErrorMessage } from "./ui";
 
 const hubs = new HubProfiles(SecureStore);
-type Props = NativeStackScreenProps<Routes, "Workspace">;
+type Props = NativeStackScreenProps<Routes, "Workspace"> & {
+	share?: WorkspaceShare;
+	onSharePlaced?(id: string): void;
+};
 
-export function WorkspaceScreen({ route, navigation }: Props) {
+export function WorkspaceScreen(props: Props) {
 	const { activeProfile } = useConnection();
 	if (!activeProfile) return null;
-	return <PairedWorkspace key={activeProfile.id} profile={activeProfile} route={route} navigation={navigation} />;
+	return <PairedWorkspace key={activeProfile.id} profile={activeProfile} {...props} />;
 }
 
-function PairedWorkspace({ profile, route, navigation }: Props & { profile: HubProfile }) {
+function PairedWorkspace({ profile, route, navigation, share, onSharePlaced }: Props & { profile: HubProfile }) {
 	const [credential, setCredential] = useState<{ token: string; version: number } | null>(null);
 	const [failed, setFailed] = useState(false);
 	const [attempt, setAttempt] = useState(0);
@@ -43,7 +47,7 @@ function PairedWorkspace({ profile, route, navigation }: Props & { profile: HubP
 			current = false;
 		};
 	}, [profile, attempt]);
-	const openHub = () => navigation.navigate("Hub", { screen: "HubHome", params: { hubId: profile.id } });
+	const openHub = () => navigation.navigate("Hub", { screen: "Hubs" });
 	if (failed || credential === null) {
 		return (
 			<View style={{ flex: 1, justifyContent: "center", padding: 24 }}>
@@ -72,7 +76,8 @@ function PairedWorkspace({ profile, route, navigation }: Props & { profile: HubP
 				}
 			}}
 			onHubMenu={openHub}
-			onDeviceWork={() => navigation.navigate("Sessions")}
+			share={share?.hubId === profile.id ? share : undefined}
+			onSharePlaced={onSharePlaced}
 		/>
 	);
 }

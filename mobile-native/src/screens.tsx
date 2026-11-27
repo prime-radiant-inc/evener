@@ -263,8 +263,6 @@ export type Routes = {
 	NewSession: {
 		hubId: string;
 		hubName: string;
-		/** A share's text to seed the prompt with (spec: share intent). */
-		share?: { id: string; text: string };
 	};
 	/** Where a share goes (spec: share intent): a modal sheet listing New
 	 * session, the hub's live sessions and search results. */

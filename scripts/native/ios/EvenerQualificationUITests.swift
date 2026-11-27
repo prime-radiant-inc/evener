@@ -159,59 +159,29 @@ final class EvenerQualificationUITests: XCTestCase {
 		}
 	}
 
-	/// A swipe inside an ordinary native sheet must leave its controls
-	/// usable: swipe the New session sheet's form rows, then press its
-	/// Cancel and see the sheet close back to the Board. The Board's own row
-	/// gestures have their own regression checks; this is the sheet's side of
-	/// the interplay.
+	/// A swipe inside the saved Hubs sheet leaves its details, Back and Done usable.
 	func testSheetGestureKeepsControlsUsable() throws {
 		let app = XCUIApplication()
 		onboardIfNeeded(app)
 		showSessions(app)
-		tap(app.buttons["Hubs on this iPhone"].firstMatch, "the iPhone settings never appeared")
-		app.buttons["iphone-device-work"].tap()
-		let prompt = openNewSession(app)
-		// The gesture swipes the form's own labels, not a control (a swipe
-		// on a row can land as its press) and not the focused prompt (a swipe
-		// over a first-responder text view can turn into a text selection,
-		// and the selection holds the next tap). A nested label registers on
-		// both its outer and inner text, so the query takes its first match:
-		// a find that must be unique would refuse the doubled label.
-		let anchor = app.staticTexts["Where"].firstMatch
-		XCTAssertTrue(anchor.waitForExistence(timeout: tripwire), "the sheet's form never showed")
-		anchor.swipeUp()
-		anchor.swipeDown()
-
-		// Cancel, checked by its effect like every other step: the first
-		// press can be lost to a selection the swipe left behind, and a
-		// retained draft riding in the prompt makes Cancel ask before
-		// discarding — the journey answers Keep draft, which closes the
-		// sheet with the draft kept, and never presses into the asking
-		// alert.
-		let deadline = Date().addingTimeInterval(tripwire)
-		while prompt.waitForExistence(timeout: 2) && Date() < deadline {
-			let keep = app.buttons["Keep draft"].firstMatch
-			if keep.exists {
-				tap(keep, "the draft alert never offered keeping it")
-				continue
-			}
-			tap(app.buttons["Cancel"], "the sheet's Cancel vanished after swipes")
-			if keep.waitForExistence(timeout: 2) {
-				tap(keep, "the draft alert never offered keeping it")
-			}
-		}
-		XCTAssertTrue(
-			prompt.waitForNonExistence(timeout: tripwire),
-			"the sheet never closed after Cancel"
-		)
-		XCTAssertTrue(
-			app.buttons["new-session"].waitForExistence(timeout: tripwire),
-			"the board never returned after the sheet closed"
-		)
+		let hubs = app.buttons["Hubs on this iPhone"].firstMatch
+		tap(hubs, "the saved hubs sheet was unreachable")
 		let hubName = try XCTUnwrap(URL(string: hubOrigin)?.host)
-		tap(app.navigationBars.buttons[hubName], "the saved hub menu was unreachable")
-		app.buttons["iphone-workspace"].tap()
-		XCTAssertTrue(app.webViews.firstMatch.waitForExistence(timeout: tripwire))
+		let details = app.buttons["Details for \(hubName)"]
+		XCTAssertTrue(details.waitForExistence(timeout: tripwire))
+		let list = app.scrollViews.containing(.button, identifier: details.label).firstMatch
+		list.swipeUp()
+		list.swipeDown()
+		tap(details, "the saved hub's details were unreachable after scrolling")
+		let name = app.buttons["Name, \(hubName)"]
+		tap(name, "the saved hub's editor was unreachable")
+		XCTAssertEqual(app.textFields["Hub name"].value as? String, hubName)
+		tap(app.buttons["Cancel"], "the saved hub editor could not close")
+		tap(app.navigationBars[hubName].buttons.firstMatch, "the saved hub's Back button was unreachable")
+		XCTAssertTrue(details.waitForExistence(timeout: tripwire))
+		tap(app.buttons["Done"], "the saved hubs sheet could not close")
+		XCTAssertTrue(details.waitForNonExistence(timeout: tripwire))
+		XCTAssertTrue(hubs.waitForExistence(timeout: tripwire), "the workspace drawer never returned")
 	}
 
 	// MARK: - Journey steps
@@ -334,22 +304,6 @@ final class EvenerQualificationUITests: XCTestCase {
 		tap(start, "the launcher could not start the session")
 	}
 
-	/// Opens the New session sheet, tapping again when the first tap lands
-	/// inside the board's settling window: right after the board appears, the
-	/// compose button can carry a valid frame at one instant and an invalid
-	/// one at the next, and a tap synthesized in that window computes {-1, -1}
-	/// and goes nowhere. The journey checks its own effect, the sheet's
-	/// prompt, rather than pretending to predict the settled moment.
-	private func openNewSession(_ app: XCUIApplication) -> XCUIElement {
-		let prompt = app.descendants(matching: .any).matching(identifier: "session-prompt").firstMatch
-		let deadline = Date().addingTimeInterval(tripwire)
-		while !prompt.waitForExistence(timeout: 2) && Date() < deadline {
-			answerSavePasswordSheet(app)
-			tap(app.buttons["new-session"], "the board's compose button never appeared")
-		}
-		XCTAssertTrue(prompt.waitForExistence(timeout: 2), "the New session sheet never opened")
-		return prompt
-	}
 
 	/// Types into a field and checks the text arrived whole, clearing and
 	/// retyping when it did not. A busy app can drop synthesized keystrokes

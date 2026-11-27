@@ -720,7 +720,7 @@ test("the inner iPhone window keeps the Board and hands focused pane actions to 
   const messages: { type: string; id?: string; header?: { leading: string | null } | null }[] = [];
   vi.stubGlobal("ReactNativeWebView", { postMessage: (json: string) => messages.push(JSON.parse(json)) });
   vi.stubGlobal("ResizeObserver", StubResizeObserver);
-  const stop = connectIPhoneHost();
+  const stop = connectIPhoneHost(vi.fn());
   const send = (command: unknown) =>
     act(() => window.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(command) })));
   const lastHeader = () => messages.filter(({ type }) => type === "sessionHeader").at(-1)?.header;

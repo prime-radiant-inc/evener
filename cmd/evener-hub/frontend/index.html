@@ -31,7 +31,8 @@
     <link rel="manifest" href="/manifest.webmanifest" crossorigin="use-credentials" />
   </head>
   <body>
-    <div id="root"></div>
+    <!-- Presence means this workspace can report the iPhone host ready capabilities. -->
+    <div id="root" data-iphone-host-capabilities="v1"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

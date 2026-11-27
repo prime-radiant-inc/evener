@@ -402,7 +402,7 @@ test("image authenticated generation request, filename, no raw read and zoom beh
   vi.spyOn(navigator, "userAgent", "get").mockReturnValue("EvenerNative/1");
   const messages: unknown[] = [];
   vi.stubGlobal("ReactNativeWebView", { postMessage: (json: string) => messages.push(JSON.parse(json)) });
-  const disconnect = connectIPhoneHost();
+  const disconnect = connectIPhoneHost(vi.fn());
   if (disconnect) onTestFinished(disconnect);
   renderDoc("out/pic.png", "image");
   await loadImage();

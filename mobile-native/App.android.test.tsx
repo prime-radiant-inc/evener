@@ -8,7 +8,7 @@ import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import type { ReactNode } from "react";
 import { act } from "react-test-renderer";
 import { expect, it, vi } from "vitest";
-import App from "./App";
+import App from "./App.android";
 import { render } from "./src/renderNative.testkit";
 
 vi.mock("react-native", async () => (await import("./src/renderNative.testkit")).nativeModuleMock());

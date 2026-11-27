@@ -84,9 +84,6 @@ vi.mock("./MoreOptions", () => ({ MoreOptions: () => null }));
 vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
 }));
-// The sheet's share handoff reads the app group; this suite's sheet carries no
-// share, and the module cannot load under vitest.
-vi.mock("expo-file-system", () => ({ Paths: { appleSharedContainers: {} } }));
 
 async function mount() {
 	const route = { key: "NewSession", name: "NewSession", params: { hubId: "hub-1", hubName: "magic-kingdom" } };

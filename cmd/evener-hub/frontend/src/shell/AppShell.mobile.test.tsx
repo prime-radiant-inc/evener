@@ -41,6 +41,12 @@ import { getDockviewApi, resetWorkspaceStoreForTests, workspaceStore } from "./w
 const paneFor = (ref: string) =>
   workspaceStore.getState().panes.find((p) => (p.params as { ref?: string }).ref === ref);
 
+test("marks the workspace root for native iPhone capability detection", () => {
+  const index = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../../index.html"), "utf8");
+  const document = new DOMParser().parseFromString(index, "text/html");
+  expect(document.getElementById("root")?.hasAttribute("data-iphone-host-capabilities")).toBe(true);
+});
+
 // Await the welcome/session panes' lazy-loaded modules ONCE up front so
 // React.lazy resolves from a warm module cache - mirrors App.test.tsx's own
 // beforeAll pattern for the same reason: the slow part of lazy-loading is
@@ -243,7 +249,7 @@ test("the iPhone Sessions drawer hands off hub selection and accepts a native ro
     act(() => prefsStore.getState().setTheme("light"));
     expect(messages.at(-1)).toEqual({ type: "appearance", dark: false });
     await userEvent.click(await screen.findByRole("button", { name: "Hubs on this iPhone" }));
-    expect(messages).toContainEqual({ type: "ready" });
+    expect(messages).toContainEqual({ type: "ready", capabilities: ["incomingShare", "needsYouNavigation"] });
     expect(messages).toContainEqual({ type: "hubMenu" });
 
     const launcher = "/new?dir=%2Fwork&prompt=Review+the+changes";
@@ -270,7 +276,41 @@ test("the iPhone Sessions drawer hands off hub selection and accepts a native ro
       );
     });
     await screen.findByRole("textbox", { name: "Message" });
-    expect(messages.at(-1)).toEqual({ type: "route", path: sessionPath });
+    expect(messages.filter((message) => (message as { type: string }).type === "route").at(-1)).toEqual({
+      type: "route",
+      path: sessionPath,
+    });
+  } finally {
+    agent.mockRestore();
+  }
+});
+
+test.each(["mount", "tap"])("an iPhone Needs you %s opens the palette and consumes the alert intent", async (entry) => {
+  vi.stubGlobal("innerWidth", 390);
+  installMobileViewport();
+  const agent = vi.spyOn(navigator, "userAgent", "get").mockReturnValue("EvenerNative/1");
+  const messages: unknown[] = [];
+  vi.stubGlobal("ReactNativeWebView", { postMessage: (json: string) => messages.push(JSON.parse(json)) });
+  const path = "/?attention=needs-you";
+  const sessionPath = "/s/local%3Aorigin";
+  const client = navClient();
+  installLocationForRoute("local:origin");
+  client.on("thread/read", () => ({ thread: threadStartResponse("local:origin").thread }));
+  window.history.replaceState({}, "", entry === "mount" ? path : sessionPath);
+  try {
+    render(<AppShell client={client} />);
+    if (entry === "tap") {
+      await screen.findByRole("textbox", { name: "Message" });
+      messages.length = 0;
+      act(() =>
+        window.dispatchEvent(new MessageEvent("message", { data: JSON.stringify({ type: "navigate", path }) })),
+      );
+    }
+    await screen.findByRole("combobox", { name: "Command palette" });
+    expect(window.location.search).toBe("");
+    const visiblePath = entry === "mount" ? "/" : sessionPath;
+    expect(window.location.pathname).toBe(visiblePath);
+    expect(messages).toContainEqual({ type: "route", path: visiblePath });
   } finally {
     agent.mockRestore();
   }

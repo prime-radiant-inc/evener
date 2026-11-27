@@ -37,10 +37,11 @@ it("counts a session screen only for its own hub, since refs are per hub", () =>
 	expect(alertScreenFor([board, session("local:a")], "hub-2")).toEqual({ kind: "other" });
 });
 
-it("counts a sheet route and phase 5's modals as covering banners, and nothing else", () => {
+it("holds banners while a sheet or native modal covers the workspace", () => {
 	expect(coversBanners(tasks)).toBe(true);
 	expect(coversBanners(hub)).toBe(true);
 	expect(coversBanners({ name: "NewSession" })).toBe(true);
+	expect(coversBanners({ name: "ShareTarget" })).toBe(true);
 	expect(coversBanners(session("local:a"))).toBe(false);
 	expect(coversBanners(reader)).toBe(false);
 	expect(coversBanners(undefined)).toBe(false);

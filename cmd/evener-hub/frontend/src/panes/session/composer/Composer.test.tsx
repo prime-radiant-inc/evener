@@ -5,6 +5,7 @@ import userEvent from "@testing-library/user-event";
 import { IDBFactory } from "fake-indexeddb";
 import { afterEach, beforeAll, beforeEach, expect, onTestFinished, test, vi } from "vitest";
 import { MotionProvider } from "../../../motion";
+import { appliedReceipt } from "../../../mutationReceiptTestUtils";
 import {
   activitySidebarStore,
   resetActivitySidebarStoreForTests,
@@ -551,6 +552,131 @@ test("goal replacement preserves the consolidated recovery owner while its commi
   } finally {
     hold.release();
   }
+});
+
+test("the focused iPhone composer retries a share after its draft write is rejected", async () => {
+  const path = "/s/local%3Aone";
+  const previous = window.location.href;
+  window.history.replaceState({}, "", path);
+  const agent = vi.spyOn(navigator, "userAgent", "get").mockReturnValue("EvenerNative/1");
+  const postMessage = vi.fn();
+  vi.stubGlobal("ReactNativeWebView", { postMessage });
+  onTestFinished(() => {
+    window.history.replaceState({}, "", previous);
+    agent.mockRestore();
+    vi.unstubAllGlobals();
+  });
+  writeComposerDraft("local:one", { text: "existing draft", skillNames: [] });
+  const source = createTestComposerSource("local:one");
+  const { fake } = await mountComposerWithHandle("local:one", {}, { focused: true, source });
+  const editor = textarea();
+  const deliver = (destination: string, origin = "") =>
+    act(() => {
+      window.dispatchEvent(
+        new MessageEvent("message", {
+          origin,
+          data: JSON.stringify({
+            type: "shareText",
+            path: destination,
+            id: "payload",
+            text: "incoming",
+          }),
+        }),
+      );
+    });
+  deliver("/s/other");
+  deliver(path, "https://another.example");
+  expect(editor.textContent).toBe("existing draft");
+  const failedWrites = vi.spyOn(localStorage, "setItem").mockImplementation(() => {
+    throw new Error("quota");
+  });
+  deliver(path);
+  expect(editor.textContent).toBe("existing draft");
+  expect(screen.getByRole("alert")).toBeTruthy();
+  expect(postMessage.mock.calls.map(([raw]) => JSON.parse(raw))).not.toContainEqual({
+    type: "sharePlaced",
+    id: "payload",
+    path,
+  });
+  const user = userEvent.setup();
+  await user.type(editor, " edit");
+  expect(editor.textContent).toBe("existing draft edit");
+  expect(readDraft("local:one")).toBe("existing draft");
+  failedWrites.mockRestore();
+  await user.click(screen.getByRole("button", { name: "Retry" }));
+  expect(editor.textContent).toBe("existing draft edit\n\nincoming");
+  expect(readDraft("local:one")).toBe("existing draft edit\n\nincoming");
+  expect(screen.queryByRole("alert")).toBeNull();
+  expect(postMessage.mock.calls.map(([raw]) => JSON.parse(raw))).toContainEqual({
+    type: "sharePlaced",
+    id: "payload",
+    path,
+  });
+  deliver(path);
+  expect(editor.textContent).toBe("existing draft edit\n\nincoming");
+  expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
+});
+
+test("an unrelated send does not consume a failed share and retry saves it into the now empty draft", async () => {
+  const path = "/s/local%3Aone";
+  const previous = window.location.href;
+  window.history.replaceState({}, "", path);
+  const agent = vi.spyOn(navigator, "userAgent", "get").mockReturnValue("EvenerNative/1");
+  const postMessage = vi.fn();
+  vi.stubGlobal("ReactNativeWebView", { postMessage });
+  onTestFinished(() => {
+    window.history.replaceState({}, "", previous);
+    agent.mockRestore();
+    vi.unstubAllGlobals();
+  });
+  const { fake } = await mountComposerWithHandle("local:one", {}, { focused: true });
+  let releaseStart: (() => void) | undefined;
+  fake.on(
+    "turn/start",
+    (params) =>
+      new Promise((resolve) => {
+        releaseStart = () =>
+          resolve({
+            receipt: appliedReceipt(params.clientMutationId, "thread_one"),
+            turn: { id: "turn_one", status: "inProgress", itemsView: "" },
+          });
+      }),
+  );
+  vi.spyOn(localStorage, "setItem").mockImplementationOnce(() => {
+    throw new Error("quota");
+  });
+  act(() =>
+    window.dispatchEvent(
+      new MessageEvent("message", {
+        data: JSON.stringify({ type: "shareText", path, id: "payload", text: "incoming" }),
+      }),
+    ),
+  );
+  expect(screen.getByRole("alert")).toBeTruthy();
+  const user = userEvent.setup();
+  const editor = textarea();
+  await user.type(editor, "unrelated message");
+  await user.click(screen.getByRole("button", { name: "Send" }));
+  await waitFor(() => expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1));
+  expect(editor.textContent).toBe("");
+  expect(screen.getByRole("alert")).toBeTruthy();
+  await act(async () => releaseStart?.());
+  expect(screen.getByRole("alert")).toBeTruthy();
+  expect(editor.textContent).toBe("");
+  expect(postMessage.mock.calls.map(([raw]) => JSON.parse(raw))).not.toContainEqual({
+    type: "sharePlaced",
+    id: "payload",
+    path,
+  });
+  await user.click(screen.getByRole("button", { name: "Retry" }));
+  expect(editor.textContent).toBe("incoming");
+  expect(readDraft("local:one")).toBe("incoming");
+  expect(screen.queryByRole("alert")).toBeNull();
+  expect(postMessage.mock.calls.map(([raw]) => JSON.parse(raw))).toContainEqual({
+    type: "sharePlaced",
+    id: "payload",
+    path,
+  });
 });
 
 test("goal replacement closes slash completion and resets selection", async () => {

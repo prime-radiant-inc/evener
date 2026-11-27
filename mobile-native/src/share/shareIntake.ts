@@ -4,7 +4,7 @@
 // (URL, foreground, hub ready) offers it again, so nothing is lost. A placed
 // share is forgotten and never offered again.
 import type { SharePort, SharedPayload } from "./sharePayload";
-import { pendingShares, shareFileName } from "./sharePayload";
+import { completeShare, pendingShares } from "./sharePayload";
 
 export interface ShareIntakeOptions {
 	/** Called with the oldest pending share, one at a time. The app opens its
@@ -66,7 +66,7 @@ export function createShareIntake(options: ShareIntakeOptions): ShareIntake {
 		},
 		async advance(id) {
 			try {
-				await options.port.remove(shareFileName(id));
+				await completeShare(options.port, id);
 			} catch {
 				// The file is still there: offering it again is the honest
 				// outcome, since the app cannot say it was placed.

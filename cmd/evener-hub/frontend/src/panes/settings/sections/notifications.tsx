@@ -3,6 +3,7 @@ import { type NotificationKey, prefsStore, usePrefsStore } from "../../../stores
 import { InlineNotice, RadioGroup, type RadioGroupOption, Switch, useToasts } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import styles from "./notifications.module.css";
+import { useIPhoneAlertPreferences } from "./useIPhoneAlertPreferences";
 
 const CLASS = {
   root: requireClass(styles.root, "notifications.module.css", "root"),
@@ -39,6 +40,7 @@ const LOUD_SCOPE_OPTIONS: RadioGroupOption[] = [
 export function NotificationsSection() {
   const notifications = usePrefsStore((s) => s.notifications);
   const loudScope = usePrefsStore((s) => s.notificationsLoudScope);
+  const { preferences: iPhoneAlerts, setPreference: setIPhoneAlert } = useIPhoneAlertPreferences();
   const { push } = useToasts();
   const [permission, setPermission] = useState<NotificationPermission | null>(() =>
     "Notification" in window ? Notification.permission : null,
@@ -113,6 +115,33 @@ export function NotificationsSection() {
         Title bar count is on by default. Browser tab indicator, desktop notifications, and sound are opt-in. Saved
         per-browser.
       </p>
+
+      {iPhoneAlerts && (
+        <>
+          <p className={CLASS.intro}>In-app alerts, saved on this iPhone.</p>
+          <Switch
+            label="A session fails"
+            checked={iPhoneAlerts.failures}
+            onChange={(value) => setIPhoneAlert("failures", value)}
+          />
+          <Switch
+            label="A session asks a question, needs approval, or needs your reply"
+            checked={iPhoneAlerts.questions}
+            onChange={(value) => setIPhoneAlert("questions", value)}
+          />
+          <Switch
+            label="Hold alerts while reading or typing"
+            checked={iPhoneAlerts.hold}
+            onChange={(value) => setIPhoneAlert("hold", value)}
+            description="They show when you leave the document or send."
+          />
+          <Switch
+            label="Haptics"
+            checked={iPhoneAlerts.haptics}
+            onChange={(value) => setIPhoneAlert("haptics", value)}
+          />
+        </>
+      )}
 
       <Switch
         label="Title bar count"

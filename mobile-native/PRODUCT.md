@@ -16,14 +16,14 @@ Evener is one product across its runtime, hub, and clients. The iPhone app makes
 
 ## Operating Context
 
-The existing Expo / React Native app connects to user-configured Evener hubs. Sessions run on the hub's machines. Connectivity can change, and saved drafts, uncertain sends, reading position, and useful last-known data must survive that change.
+The iPhone app opens the selected hub’s web workspace in its own persistent WebKit profile. Sessions run on the hub’s machines. The web workspace owns composition, delivery recovery, reading position, and workspace settings. The phone owns its saved connections and system integrations.
 
 ## Capabilities and Constraints
 
 - This design work is iPhone-first. Jesse confirmed that iPad and Android remain deferred.
 - Preserve existing capabilities, attention ordering, session and project organization, approvals, questions, model selection, settings, and access to activity and evidence.
 - Preserve source-of-truth, recovery, draft, and delivery contracts in `../docs/product/` and this directory's README.
-- Build on the existing native navigation, Expo SDK 57, SF Symbols, shared AppWire client, and native UI components. A UI redesign does not authorize a framework migration.
+- Use the hub’s mobile components for the workspace and Expo SDK 58, SF Symbols, and system controls for pairing, sharing, and native navigation affordances.
 - Screenshots from simulator fixtures are design evidence, not proof of real-hub workflow qualification.
 
 ## Brand Commitments

@@ -20,7 +20,6 @@ const connection = vi.hoisted(() => ({
 	lastLiveAt: null as number | null,
 }));
 vi.mock("../ConnectionProvider", () => ({ useConnection: () => connection }));
-vi.mock("./hubSheetContext", () => ({ useHubSheet: () => ({ ready: connection.state === "ready" }) }));
 vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
 }));

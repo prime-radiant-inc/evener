@@ -18,6 +18,7 @@ import {
   isLocalHost,
   markerRanges,
   matchBuiltinInvocation,
+  mergeDraftText,
   mergeSlashCommands,
   type PathValidation,
   type PluginSelectionState,
@@ -36,6 +37,7 @@ import { flushSync } from "react-dom";
 import { useStore } from "zustand";
 import { useClient } from "../../shell/clientContext";
 import { resolveHeadBranch } from "../../shell/gitLocation";
+import { tellIPhoneHost, useIPhoneShare } from "../../shell/iPhoneHost";
 import { splitModelId } from "../../shell/palette/commands";
 import { CHORD_HINTS } from "../../shell/palette/helpRows";
 import { usePaneDocument } from "../../shell/paneDocument";
@@ -88,7 +90,7 @@ import { type TextEditor, useAttachments } from "../session/composer/attachments
 import { FileCompletionMenu } from "../session/composer/FileCompletionMenu";
 import { SkillEditor, type SkillEditorHandle, type SkillEditorValue } from "../session/composer/SkillEditor";
 import { SlashCompletionMenu } from "../session/composer/SlashCompletionMenu";
-import { maskSkillAtoms, patchSelectionText } from "../session/composer/skillDocument";
+import { maskSkillAtoms } from "../session/composer/skillDocument";
 import { resolveCompletionTokens, useFileCompletion } from "../session/composer/useFileCompletion";
 import { useSlashCompletion } from "../session/composer/useSlashCompletion";
 import {
@@ -117,12 +119,14 @@ import {
 } from "./spawnDefaults";
 import {
   applySpawnURL,
+  carryPendingShare,
   controllerDefaultDirectory,
   markModelChoice,
   reseedSpawnDirectory,
   type SpawnDraft,
   selectSpawnDirectory,
   spawnDraftsStore,
+  updateSpawnPrompt,
   useDraftField,
 } from "./spawnDrafts";
 import {
@@ -737,6 +741,26 @@ function SpawnForm({
     return cancel;
   }, [client, draft, submittedSource]);
   const [busy, setBusy] = useDraftField(draft, "busy");
+  useIPhoneShare(focused && !busy ? "/new" : null, (id, text) => {
+    if (draft.busyRef.current) return;
+    const detachedShare = spawnDraftsStore.getState().detachedShare;
+    if (detachedShare?.id === id && detachedShare.cwd === draft.cwd && detachedShare.url === window.location.href)
+      return;
+    // Every project launcher shares the /new destination. A redelivery
+    // belongs to the draft that already accepted it, even while another is open.
+    for (const retained of spawnDraftsStore.getState().drafts.values()) {
+      if (retained.fields.getState().shareId === id) return;
+    }
+    const current = draft.fields.getState();
+    const prompt = mergeDraftText(current.prompt, text);
+    updatePrompt(prompt);
+    draft.fields.setState({
+      shareId: id,
+      shareText: text,
+      shareStart: prompt.length - text.length,
+      selectionRestoreRevision: current.selectionRestoreRevision + 1,
+    });
+  });
   // Loader's elapsed readout is pure-render (widgets/loader's own doc
   // comment - no internal timer, so it can't drift or fake liveness): the
   // caller owns the clock. busyStartedAt is stamped once, at the submit that
@@ -948,23 +972,7 @@ function SpawnForm({
 
   function updatePrompt(next: string): void {
     if (isCurrentDraft()) textRef.current = next;
-    const fields = draft.fields.getState();
-    const value = patchSelectionText(
-      {
-        text: fields.prompt,
-        skillNames: fields.skillNames,
-        commandNames: fields.commandNames,
-        mentions: fields.mentions,
-      },
-      next,
-    );
-    draft.fields.setState({
-      prompt: next,
-      skillNames: value.skillNames,
-      commandNames: value.commandNames ?? [],
-      mentions: value.mentions,
-      promptRevision: fields.promptRevision + 1,
-    });
+    updateSpawnPrompt(draft, next);
   }
 
   useLayoutEffect(() => {
@@ -2089,6 +2097,9 @@ function SpawnForm({
   // The row and the dialog name the same destination, and the access summary
   // and its note read the same resolution, so each is derived once.
   const cwdText = cwd === "" ? "Choose a folder" : cwd;
+  function changeWorkingDirectory(path: string): void {
+    carryPendingShare(draft, setCwd(path));
+  }
   const accessValue =
     resolveStatus === "ready"
       ? (effectiveAccess?.label ?? (effectiveSandbox || "inherited"))
@@ -2320,7 +2331,19 @@ function SpawnForm({
         })()
       : null;
 
-  async function doSpawn(submittedPromptRevision: number, ownsLaunchView: () => boolean): Promise<void> {
+  function captureLaunchPrompt() {
+    const { promptRevision, shareId, shareText, shareStart } = draft.fields.getState();
+    const containsShare =
+      shareText !== null &&
+      shareStart !== null &&
+      prompt.slice(shareStart, shareStart + shareText.length) === shareText;
+    return { revision: promptRevision, shareId: containsShare ? shareId : null };
+  }
+
+  async function doSpawn(
+    submission: ReturnType<typeof captureLaunchPrompt>,
+    ownsLaunchView: () => boolean,
+  ): Promise<void> {
     if (pluginSelectionBlocked) {
       finishBusy();
       return;
@@ -2447,7 +2470,17 @@ function SpawnForm({
       reportStartFailure(err, { startDispatched: true, retryablePendingStart: clientMutationId !== undefined });
       return;
     }
-    draft.fields.setState({ pendingStart: null });
+    // A launch draft lives only in this document. Its App Group file protects
+    // the prompt until the person starts the session and the hub accepts it.
+    const submittedShareId = builtinMatch ? null : submission.shareId;
+    if (submittedShareId) tellIPhoneHost({ type: "sharePlaced", path: "/new", id: submittedShareId });
+    const completed = draft.fields.getState();
+    draft.fields.setState({
+      pendingStart: null,
+      ...(submittedShareId && completed.shareId === submittedShareId
+        ? { shareId: null, shareText: null, shareStart: null }
+        : {}),
+    });
     if (builtinMatch && builtinMatch.command.id === "goal") {
       // Post-start application runs AFTER navigation below: awaiting goal/set
       // here would hold the UI in "Starting…" for the RPC timeout on a
@@ -2479,7 +2512,7 @@ function SpawnForm({
     // user returns to it. Sticky defaults (harness/model/cwd/access
     // mode, floor §1.9-§1.10) are deliberately left untouched - only the
     // one-shot prompt/attachments reset.
-    if (draft.fields.getState().promptRevision === submittedPromptRevision) {
+    if (draft.fields.getState().promptRevision === submission.revision) {
       updatePrompt("");
     }
     attachments.clearSubmitted(submittedMarkers);
@@ -2540,7 +2573,7 @@ function SpawnForm({
     // (cmd/evener-hub/app_threadlifecycle.go), so the session is created and
     // simply waits for its first prompt in the session composer.
     startBusy();
-    const submittedPromptRevision = draft.fields.getState().promptRevision;
+    const submission = captureLaunchPrompt();
     const ownsLaunchView = captureLaunchView();
     try {
       // The working-directory preflight is host-scoped (component 07b):
@@ -2565,7 +2598,7 @@ function SpawnForm({
         finishBusy();
         return;
       }
-      await doSpawn(submittedPromptRevision, ownsLaunchView);
+      await doSpawn(submission, ownsLaunchView);
     } catch (err) {
       reportStartFailure(err, { startDispatched: false, retryablePendingStart: false });
     }
@@ -2601,11 +2634,11 @@ function SpawnForm({
     // stack toasts).
     if (hostCatalogPending || modelHostPending) return;
     startBusy();
-    const submittedPromptRevision = draft.fields.getState().promptRevision;
+    const submission = captureLaunchPrompt();
     const ownsLaunchView = captureLaunchView();
     try {
       await withLaunchConfig(submittedSource, (config) => config.createDirectory(path));
-      await doSpawn(submittedPromptRevision, ownsLaunchView);
+      await doSpawn(submission, ownsLaunchView);
     } catch (err) {
       reportStartFailure(err, { startDispatched: false, retryablePendingStart: false });
     } finally {
@@ -2819,14 +2852,7 @@ function SpawnForm({
                   }
                   onChange={(value: SkillEditorValue, caret, meta) => {
                     textRef.current = value.text;
-                    const fields = draft.fields.getState();
-                    draft.fields.setState({
-                      prompt: value.text,
-                      skillNames: value.skillNames,
-                      commandNames: value.commandNames ?? [],
-                      mentions: value.mentions,
-                      promptRevision: fields.promptRevision + 1,
-                    });
+                    updateSpawnPrompt(draft, value, meta?.replacedRange);
                     const masked = maskSkillAtoms(value);
                     const tokens = resolveCompletionTokens(
                       masked,
@@ -3024,7 +3050,7 @@ function SpawnForm({
             harnessOptions={harnessOptions}
             onHarnessChange={handleHarnessChange}
             cwd={cwd}
-            onCwdChange={setCwd}
+            onCwdChange={changeWorkingDirectory}
             complete={complete}
             validatePath={validatePath}
             createDirectory={createDirectory}
@@ -3159,7 +3185,7 @@ function SpawnForm({
                 validatePath={validatePath}
                 createDirectory={createDirectory}
                 onPick={(path) => {
-                  setCwd(path);
+                  changeWorkingDirectory(path);
                   commitLastWorkingDir(path);
                   closeCwdPicker();
                 }}
