@@ -808,7 +808,7 @@ func DefCommunicateNamed(name string) llm.ToolDefinition {
 // watches through resultTool, shared by every tool description and error that
 // teaches it.
 func ObserverReporting(resultTool string) string {
-	return "Observers: `" + resultTool + "` (`next=\"send_and_continue\"` update, `next=\"send_and_end_turn\"` ready/findings, `next=\"log_quietly_and_end_turn\"` quiet)."
+	return "Observers: `" + resultTool + "` (`next=\"send_and_end_turn\"`) ready/findings, `next=\"send_and_continue\"` update, `next=\"log_quietly_and_end_turn\"` quiet."
 }
 
 // communicateDelegateDescription is communicate worded for a delegate, whose
