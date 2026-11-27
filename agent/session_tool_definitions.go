@@ -347,10 +347,10 @@ func (s *Session) isTier1PromotedLocked(canonicalName string) bool {
 
 // isDeferredToolLocked reports whether canonicalName is deferred to a minimal
 // Tier-2 stub in req.Tools (with full schemas discoverable via tool_search and
-// JIT disclosures). Manager sessions, parent observers, and configured
-// Tier1Tools keep matching tools upfront with full Tier-1 schemas.
+// JIT disclosures). Manager sessions, parent observers, configured Tier1Tools,
+// and the configured result tool keep full Tier-1 schemas upfront.
 func (s *Session) isDeferredToolLocked(canonicalName string) bool {
-	if s == nil || s.resultToolOwnsToolSearch() {
+	if s == nil || s.resultToolOwnsToolSearch() || canonicalName == s.resultToolName() {
 		return false
 	}
 	group, ok := tier2DeferredGroups[canonicalName]

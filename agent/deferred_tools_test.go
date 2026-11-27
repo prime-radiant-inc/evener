@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -16,10 +17,13 @@ import (
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/hooks"
+	"primeradiant.com/evener/agent/internal/modelavailability"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/plugin"
+	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
 )
 
 func assertDeferredStubDef(t *testing.T, td llm.ToolDefinition, wantDesc string) {
@@ -152,7 +156,9 @@ func TestDeferredToolsTurn1ToolsAndPromptAvailability(t *testing.T) {
 	if strings.Contains(promptBody, "`tool_search`") {
 		t.Errorf("Turn 1 prompt body must not tell the model to load Tier-1 delegate via tool_search:\n%s", promptBody)
 	}
-	_ = systemPromptSection(t, sess.cachedSystemPrompt, "## Delegating")
+	if !data.CanDelegate || !strings.Contains(promptBody, "delegate") {
+		t.Errorf("Turn 1 prompt missing delegation guidance (CanDelegate=%v):\n%s", data.CanDelegate, promptBody)
+	}
 	if !strings.Contains(sess.cachedSystemPrompt, "<available_agents>") || !strings.Contains(sess.cachedSystemPrompt, "</available_agents>") {
 		t.Errorf("Turn 1 system prompt missing compact <available_agents> when delegate is registered")
 	}
@@ -598,6 +604,145 @@ func TestToolSearchSchemasStaticToolsAndOmission(t *testing.T) {
 		if out, err := restored.ProcessInput(tripwireCtx(t), "resume", nil); err != nil || out != "restored-ok" {
 			t.Fatalf("restored ProcessInput = (%q, %v), want (\"restored-ok\", nil)", out, err)
 		}
+	})
+
+	t.Run("result_tool_name_model_list_not_deferred_while_ordinary_model_list_stays_deferred", func(t *testing.T) {
+		t.Parallel()
+		stateDir := t.TempDir()
+		outputSchema := map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"verdict": map[string]any{"type": "string"},
+			},
+			"required": []string{"verdict"},
+		}
+		var aliasReq llm.Request
+		rc := llm.NewClient()
+		rc.Register(newFakeAdapter("openai", func(req llm.Request) llm.Response {
+			aliasReq = req
+			return agenttest.ToolCallResponse(llm.ToolCallData{
+				ID:        "res-ml-1",
+				Name:      "model_list",
+				Type:      "function",
+				Arguments: json.RawMessage(`{"message":"alias-ok","output":{"verdict":"pass"}}`),
+			})
+		}))
+		boundProfile, err := provider.WithCommunicateOutputSchema(withTestSessionNamer(rc, NewOpenAIProfile("gpt-5.2")), outputSchema)
+		if err != nil {
+			t.Fatalf("WithCommunicateOutputSchema: %v", err)
+		}
+		aliasSess, err := NewSession(rc, boundProfile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+			StateDir:         stateDir,
+			DisableSubagents: true,
+			NonInteractive:   true,
+			TurnEndsProcess:  true,
+			ResultToolName:   "model_list",
+			AgentsDocPath:    filepath.Join(t.TempDir(), "no-personal-AGENTS.md"),
+			testOnly:         testConfig{skipGitSnapshot: true, noSyncJobStore: true},
+		})
+		if err != nil {
+			t.Fatalf("NewSession(ResultToolName=model_list): %v", err)
+		}
+		out, err := aliasSess.ProcessInput(tripwireCtx(t), "reply via alias", nil)
+		if err != nil || out != "alias-ok" {
+			aliasSess.Close()
+			t.Fatalf("ProcessInput = (%q, %v), want (\"alias-ok\", nil)", out, err)
+		}
+		checkAliasRequest := func(label string, req llm.Request) {
+			t.Helper()
+			byName := make(map[string]llm.ToolDefinition, len(req.Tools))
+			for _, td := range req.Tools {
+				byName[td.Name] = td
+			}
+			td, ok := byName["model_list"]
+			if !ok {
+				t.Fatalf("%s: provider request missing model_list result tool", label)
+			}
+			assertFullTier1Def(t, td)
+			props, _ := td.Parameters["properties"].(map[string]any)
+			for _, want := range []string{"message", "next", "output"} {
+				if _, present := props[want]; !present {
+					t.Fatalf("%s: advertised model_list missing result property %q: %v", label, want, props)
+				}
+			}
+			if _, hasIntent := props["intent"]; hasIntent {
+				t.Fatalf("%s: advertised result alias model_list must omit intent: %v", label, props)
+			}
+			outProp, _ := props["output"].(map[string]any)
+			outProps, _ := outProp["properties"].(map[string]any)
+			if _, hasVerdict := outProps["verdict"]; !hasVerdict {
+				t.Fatalf("%s: advertised model_list lost bound output schema: %#v", label, outProp)
+			}
+			if wf, ok := byName["web_fetch"]; !ok {
+				t.Fatalf("%s: expected web_fetch stub alongside result alias", label)
+			} else {
+				assertDeferredStubDef(t, wf, "")
+			}
+		}
+		checkAliasRequest("new", aliasReq)
+		if aliasSess.isDeferredTool("model_list") {
+			aliasSess.Close()
+			t.Fatal("result-tool alias model_list must not be classified as deferred")
+		}
+		tsAll := aliasSess.execTool(tripwireCtx(t), llm.ToolCallData{
+			ID:        "ts-ml-all",
+			Name:      "tool_search",
+			Type:      "function",
+			Arguments: json.RawMessage(`{"query":"all","intent":"Checking deferred tools"}`),
+		}, "")
+		if tsAll.IsError || strings.Contains(tsAll.Output, "- model_list:") {
+			aliasSess.Close()
+			t.Fatalf("tool_search(all) must not list result alias model_list as deferred: isErr=%v out=%s", tsAll.IsError, tsAll.Output)
+		}
+		aliasSess.Close()
+
+		// Ordinary model_list (non-Manager, delegation enabled, non-inline snapshot) remains eligible for deferral.
+		models := make([]registry.Model, modelavailability.DefaultInlineMaxCount)
+		for i := range models {
+			models[i].ID = fmt.Sprintf("model-%03d-%s", i, strings.Repeat("x", 12))
+		}
+		var ordReq llm.Request
+		ordAdapter := &modelAvailabilityAdapter{models: models}
+		ordAdapter.fakeAdapter = *newFakeAdapter("openai", func(req llm.Request) llm.Response {
+			ordReq = req
+			return agenttest.FinalResponse("ok")
+		})
+		oc := llm.NewClient()
+		oc.Register(ordAdapter)
+		ordSess, err := NewSession(oc, withTestSessionNamer(oc, NewOpenAIProfile(models[0].ID)), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+			StateDir:         t.TempDir(),
+			MaxSubagentDepth: 2,
+			NonInteractive:   true,
+			TurnEndsProcess:  true,
+			AgentsDocPath:    filepath.Join(t.TempDir(), "no-personal-AGENTS.md"),
+			testOnly:         testConfig{skipGitSnapshot: true, noSyncJobStore: true},
+		})
+		if err != nil {
+			t.Fatalf("NewSession(ordinary model_list): %v", err)
+		}
+		defer ordSess.Close()
+		if ordSess.reg.Get("model_list") == nil {
+			t.Fatal("fixture precondition: expected ordinary model_list to be registered")
+		}
+		if !ordSess.isDeferredTool("model_list") {
+			t.Fatal("ordinary model_list must remain deferred in non-Manager sessions")
+		}
+		if _, err := ordSess.ProcessInput(tripwireCtx(t), "hello", nil); err != nil {
+			t.Fatalf("ordinary ProcessInput: %v", err)
+		}
+		var ordML llm.ToolDefinition
+		var foundML bool
+		for _, td := range ordReq.Tools {
+			if td.Name == "model_list" {
+				ordML = td
+				foundML = true
+				break
+			}
+		}
+		if !foundML {
+			t.Fatal("ordinary provider request missing deferred model_list stub")
+		}
+		assertDeferredStubDef(t, ordML, "")
 	})
 
 	t.Run("output_limit_caps_whole_schemas_before_marking_disclosed", func(t *testing.T) {

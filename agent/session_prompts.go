@@ -258,7 +258,7 @@ func (s *Session) buildPromptData(env execenv.ExecutionEnvironment) (promptData,
 			advertised[canonicalToolName(def.Name, nameMap)] = true
 		}
 		for name := range callable {
-			if !advertised[name] || (s.isDeferredToolLocked(name) && !deferredPromptGuidedTools[name]) {
+			if !advertised[name] || (s.isDeferredToolLocked(name) && !s.isDeferredPromptGuidedLocked(name)) {
 				delete(callable, name)
 			}
 		}
@@ -295,6 +295,13 @@ var deferredPromptGuidedTools = map[string]bool{
 	"notes_agent_set": true,
 	"urls_add":        true,
 	"urls_remove":     true,
+}
+
+func (s *Session) isDeferredPromptGuidedLocked(name string) bool {
+	if deferredPromptGuidedTools[name] {
+		return true
+	}
+	return name == "manage_worktree" && s.worktreeDisposeOnlySurface()
 }
 
 // includeProjectDocs reports whether the system prompt renders the personal and
