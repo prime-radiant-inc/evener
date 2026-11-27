@@ -976,6 +976,94 @@ test("late successful creation clears only the originating draft across remount 
   ).toEqual([{ type: "sharePlaced", path: "/new", id: share.id }]);
 });
 
+test("a directory pick carries the pending share without merging the projects' drafts", async () => {
+  const agent = vi.spyOn(navigator, "userAgent", "get").mockReturnValue("EvenerNative/1");
+  const postMessage = vi.fn();
+  vi.stubGlobal("ReactNativeWebView", { postMessage });
+  onTestFinished(() => {
+    agent.mockRestore();
+    vi.unstubAllGlobals();
+  });
+  const user = setupUser();
+  window.history.pushState({}, "", "/new?dir=/tmp/share-owner-a");
+  const started = deferred<ThreadStartResponse>();
+  const fake = readyClient((f) => f.on("thread/start", () => started.promise));
+  renderSpawn(fake);
+  await fillPrompt(user, "project-a-draft\n\nextension-content");
+  const projectA = completionDraft("/tmp/share-owner-a");
+  act(() => projectA.fields.setState({ manager: true }));
+  await visitSpawnURL("/new?dir=/tmp/share-owner-b");
+  await fillPrompt(user, "project-b-draft");
+  const projectB = completionDraft("/tmp/share-owner-b");
+  act(() => projectB.fields.setState({ manager: false, harness: "external" }));
+  await visitSpawnURL("/new?dir=/tmp/share-owner-a");
+
+  const share = { type: "shareText", path: "/new", id: "moving-share", text: "extension-content" };
+  act(() => window.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(share) })));
+  expect(promptField().textContent).toBe("project-a-draft\n\nextension-content\n\nextension-content");
+  await fillPrompt(user, "project-a-draft\n\nextension-content\n\nextension-content\n\nlocal-edit");
+  await setWorkingDir(user, "/tmp/share-owner-b");
+  await settled();
+
+  expect(projectA.fields.getState()).toMatchObject({
+    prompt: "project-a-draft\n\nextension-content\n\nlocal-edit",
+    shareId: null,
+    manager: true,
+  });
+  expect(projectB.fields.getState()).toMatchObject({
+    prompt: "project-b-draft\n\nextension-content",
+    shareId: share.id,
+    manager: false,
+    harness: "external",
+  });
+  expect([projectA.fields.getState().shareId, projectB.fields.getState().shareId].filter(Boolean)).toEqual([share.id]);
+  expect(
+    postMessage.mock.calls.map(([value]) => JSON.parse(value)).filter((message) => message.type === "sharePlaced"),
+  ).toEqual([]);
+
+  expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false);
+  await user.click(screen.getByTestId("spawn-submit"));
+  await settled();
+  expect(fake.calls.map((call) => call.method)).toContain("thread/start");
+  expect(
+    postMessage.mock.calls.map(([value]) => JSON.parse(value)).filter((message) => message.type === "sharePlaced"),
+  ).toEqual([]);
+  await act(async () => started.resolve(startResponse("local:share-owner-b")));
+  expect(
+    postMessage.mock.calls.map(([value]) => JSON.parse(value)).filter((message) => message.type === "sharePlaced"),
+  ).toEqual([{ type: "sharePlaced", path: "/new", id: share.id }]);
+});
+
+test("assigning an unscoped launch its first directory keeps the share with that draft", async () => {
+  const agent = vi.spyOn(navigator, "userAgent", "get").mockReturnValue("EvenerNative/1");
+  const postMessage = vi.fn();
+  vi.stubGlobal("ReactNativeWebView", { postMessage });
+  onTestFinished(() => {
+    agent.mockRestore();
+    vi.unstubAllGlobals();
+  });
+  const user = setupUser();
+  window.history.pushState({}, "", "/new");
+  renderSpawn(readyClient());
+  await settled();
+  await fillPrompt(user, "unscoped-draft");
+  const unscoped = completionDraft("");
+  const share = { type: "shareText", path: "/new", id: "first-directory-share", text: "extension-content" };
+  act(() => window.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(share) })));
+
+  await setWorkingDir(user, "/tmp/first-directory");
+  const selected = completionDraft("/tmp/first-directory");
+  expect(selected.fields).toBe(unscoped.fields);
+  expect(selected.fields.getState()).toMatchObject({
+    prompt: "unscoped-draft\n\nextension-content",
+    shareId: share.id,
+    shareText: share.text,
+  });
+  expect(
+    postMessage.mock.calls.map(([value]) => JSON.parse(value)).filter((message) => message.type === "sharePlaced"),
+  ).toEqual([]);
+});
+
 test("restoring a project's effort never clamps it against the previous project's catalog", async () => {
   const user = setupUser();
   window.history.pushState({}, "", "/new?dir=/tmp/draft-a");

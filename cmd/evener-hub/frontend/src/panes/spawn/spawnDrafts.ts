@@ -9,16 +9,20 @@ import type {
   PluginSelectionError,
   PluginSelectionState,
 } from "@evener/appwire-client";
+import { mergeDraftText, sharedPrefixLength, sharedSuffixLength } from "@evener/appwire-client";
 import { type Dispatch, type SetStateAction, useCallback } from "react";
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
 import { createAttachmentStore } from "../session/composer/attachments/useAttachments";
+import { patchSelectionText, type SkillEditorValue } from "../session/composer/skillDocument";
 import { resolveInitialDefaults } from "./spawnDefaults";
 import { readUrlPrefill } from "./urlPrefill";
 
 interface DraftFields {
   prompt: string;
   shareId: string | null;
+  shareText: string | null;
+  shareStart: number | null;
   skillNames: string[];
   commandNames: string[];
   mentions?: ComposerMention[];
@@ -87,6 +91,8 @@ function createDraft(cwd: string) {
     fields: createStore<DraftFields>(() => ({
       prompt: "",
       shareId: null,
+      shareText: null,
+      shareStart: null,
       skillNames: [],
       commandNames: [],
       promptRevision: 0,
@@ -140,6 +146,65 @@ export function selectSpawnDirectory(cwd: string): SpawnDraft {
   drafts.set(cwd, draft);
   spawnDraftsStore.setState({ drafts, current: draft });
   return draft;
+}
+
+/** Writes editor text and keeps the draft's selection identities in sync. */
+export function updateSpawnPrompt(draft: SpawnDraft, value: string | SkillEditorValue): void {
+  const fields = draft.fields.getState();
+  const prompt = typeof value === "string" ? value : value.text;
+  const selections =
+    typeof value === "string"
+      ? patchSelectionText(
+          {
+            text: fields.prompt,
+            skillNames: fields.skillNames,
+            commandNames: fields.commandNames,
+            mentions: fields.mentions,
+          },
+          prompt,
+        )
+      : value;
+  let shareStart = fields.shareStart;
+  if (shareStart !== null && fields.shareText !== null) {
+    const prefix = sharedPrefixLength(fields.prompt, prompt);
+    const suffix = sharedSuffixLength(fields.prompt, prompt, prefix);
+    const oldEnd = fields.prompt.length - suffix;
+    const shareEnd = shareStart + fields.shareText.length;
+    if (oldEnd <= shareStart) shareStart += prompt.length - fields.prompt.length;
+    else if (prefix < shareEnd) shareStart = null;
+    if (shareStart !== null && prompt.slice(shareStart, shareStart + fields.shareText.length) !== fields.shareText)
+      shareStart = null;
+  }
+  draft.fields.setState({
+    prompt,
+    skillNames: selections.skillNames,
+    commandNames: selections.commandNames,
+    mentions: selections.mentions,
+    promptRevision: fields.promptRevision + 1,
+    shareStart,
+  });
+}
+
+/** Moves an unstarted iPhone share with a user-selected launch project while
+ * keeping each project's independent prompt selections. */
+export function carryPendingShare(from: SpawnDraft, to: SpawnDraft): void {
+  if (from === to || from.fields === to.fields || from.busyRef.current) return;
+  const source = from.fields.getState();
+  if (!source.shareId || !source.shareText || source.shareStart === null) return;
+  const destination = to.fields.getState();
+  if (destination.shareId !== null && destination.shareId !== source.shareId) return;
+
+  const { shareStart, shareText } = source;
+  if (source.prompt.slice(shareStart, shareStart + shareText.length) !== shareText) return;
+  const removeStart =
+    shareStart >= 2 && source.prompt.slice(shareStart - 2, shareStart) === "\n\n" ? shareStart - 2 : shareStart;
+  updateSpawnPrompt(from, source.prompt.slice(0, removeStart) + source.prompt.slice(shareStart + shareText.length));
+  from.fields.setState({ shareId: null, shareText: null, shareStart: null });
+  if (destination.shareId === source.shareId) return;
+
+  const withShare = mergeDraftText(destination.prompt, shareText);
+  updateSpawnPrompt(to, withShare);
+  to.fields.setState({ shareId: source.shareId, shareText, shareStart: withShare.length - shareText.length });
 }
 
 /** The controller's own default working directory: the ?dir= prefill when this

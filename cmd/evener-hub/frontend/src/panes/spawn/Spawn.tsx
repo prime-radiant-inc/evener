@@ -90,7 +90,7 @@ import { type TextEditor, useAttachments } from "../session/composer/attachments
 import { FileCompletionMenu } from "../session/composer/FileCompletionMenu";
 import { SkillEditor, type SkillEditorHandle, type SkillEditorValue } from "../session/composer/SkillEditor";
 import { SlashCompletionMenu } from "../session/composer/SlashCompletionMenu";
-import { maskSkillAtoms, patchSelectionText } from "../session/composer/skillDocument";
+import { maskSkillAtoms } from "../session/composer/skillDocument";
 import { resolveCompletionTokens, useFileCompletion } from "../session/composer/useFileCompletion";
 import { useSlashCompletion } from "../session/composer/useSlashCompletion";
 import {
@@ -119,12 +119,14 @@ import {
 } from "./spawnDefaults";
 import {
   applySpawnURL,
+  carryPendingShare,
   controllerDefaultDirectory,
   markModelChoice,
   reseedSpawnDirectory,
   type SpawnDraft,
   selectSpawnDirectory,
   spawnDraftsStore,
+  updateSpawnPrompt,
   useDraftField,
 } from "./spawnDrafts";
 import {
@@ -747,8 +749,14 @@ function SpawnForm({
       if (retained.fields.getState().shareId === id) return;
     }
     const current = draft.fields.getState();
-    updatePrompt(mergeDraftText(current.prompt, text));
-    draft.fields.setState({ shareId: id, selectionRestoreRevision: current.selectionRestoreRevision + 1 });
+    const prompt = mergeDraftText(current.prompt, text);
+    updatePrompt(prompt);
+    draft.fields.setState({
+      shareId: id,
+      shareText: text,
+      shareStart: prompt.length - text.length,
+      selectionRestoreRevision: current.selectionRestoreRevision + 1,
+    });
   });
   // Loader's elapsed readout is pure-render (widgets/loader's own doc
   // comment - no internal timer, so it can't drift or fake liveness): the
@@ -961,23 +969,7 @@ function SpawnForm({
 
   function updatePrompt(next: string): void {
     if (isCurrentDraft()) textRef.current = next;
-    const fields = draft.fields.getState();
-    const value = patchSelectionText(
-      {
-        text: fields.prompt,
-        skillNames: fields.skillNames,
-        commandNames: fields.commandNames,
-        mentions: fields.mentions,
-      },
-      next,
-    );
-    draft.fields.setState({
-      prompt: next,
-      skillNames: value.skillNames,
-      commandNames: value.commandNames ?? [],
-      mentions: value.mentions,
-      promptRevision: fields.promptRevision + 1,
-    });
+    updateSpawnPrompt(draft, next);
   }
 
   useLayoutEffect(() => {
@@ -2464,7 +2456,7 @@ function SpawnForm({
     // A launch draft lives only in this document. Its App Group file protects
     // the prompt until the person starts the session and the hub accepts it.
     if (shareId) tellIPhoneHost({ type: "sharePlaced", path: "/new", id: shareId });
-    draft.fields.setState({ pendingStart: null, shareId: null });
+    draft.fields.setState({ pendingStart: null, shareId: null, shareText: null, shareStart: null });
     if (builtinMatch && builtinMatch.command.id === "goal") {
       // Post-start application runs AFTER navigation below: awaiting goal/set
       // here would hold the UI in "Starting…" for the RPC timeout on a
@@ -2836,14 +2828,7 @@ function SpawnForm({
                   }
                   onChange={(value: SkillEditorValue, caret, meta) => {
                     textRef.current = value.text;
-                    const fields = draft.fields.getState();
-                    draft.fields.setState({
-                      prompt: value.text,
-                      skillNames: value.skillNames,
-                      commandNames: value.commandNames ?? [],
-                      mentions: value.mentions,
-                      promptRevision: fields.promptRevision + 1,
-                    });
+                    updateSpawnPrompt(draft, value);
                     const masked = maskSkillAtoms(value);
                     const tokens = resolveCompletionTokens(
                       masked,
@@ -3176,7 +3161,7 @@ function SpawnForm({
                 validatePath={validatePath}
                 createDirectory={createDirectory}
                 onPick={(path) => {
-                  setCwd(path);
+                  carryPendingShare(draft, setCwd(path));
                   commitLastWorkingDir(path);
                   closeCwdPicker();
                 }}
