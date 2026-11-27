@@ -84,6 +84,16 @@
   visibility: hidden;
 }
 
+/* The drawer trigger must keep one mounted node across pane swaps (the drawer
+ * restores focus to its opener when it closes, including mid-navigation), so
+ * it lives in the trailing cluster even where it should lead. Row-reversing
+ * the whole bar puts that cluster at the visual leading edge when Back is
+ * absent; the empty leading cluster's matching min-width keeps the centered
+ * title centered. */
+.topBar[data-drawer-leads] {
+  flex-direction: row-reverse;
+}
+
 .stackTitle {
   margin: 0;
   composes: truncate from "../../styles/text.module.css";

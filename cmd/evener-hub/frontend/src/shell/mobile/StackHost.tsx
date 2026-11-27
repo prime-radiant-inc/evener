@@ -1109,7 +1109,7 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
       {showBack ? (
         <IconButton label="Back" icon={<Chevron direction="left" size={24} />} variant="quiet" onClick={goBack} />
       ) : (
-        drawer
+        focusedSessionRef !== undefined && drawer
       )}
     </div>
   );
@@ -1118,7 +1118,7 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
       {focusedSessionRef !== undefined && (
         <SessionInspectionActions sessionRef={focusedSessionRef} paneId={focusedPane?.id} />
       )}
-      {showBack && focusedSessionRef === undefined && drawer}
+      {focusedSessionRef === undefined && drawer}
     </div>
   );
 
@@ -1179,6 +1179,7 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
             data-testid="topbar"
             data-collapsed={topBarCollapsed ? "true" : undefined}
             data-session={focusedSessionRef === undefined ? undefined : "true"}
+            data-drawer-leads={drawer !== null && !showBack && focusedSessionRef === undefined ? "" : undefined}
           >
             {!actionsAtEdge && leading}
             <Title className={styles.stackTitle} data-testid="topbar-title">

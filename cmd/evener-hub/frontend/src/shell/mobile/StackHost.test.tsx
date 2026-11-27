@@ -587,11 +587,12 @@ test.each([
       const bar = screen.getByTestId("topbar");
       expect(bar.contains(opener)).toBe(!installed);
       if (!installed) {
-        // The leading cluster owns the trigger wherever Back is absent; a
-        // Back-owning pane keeps it trailing so the trigger never disappears
-        // behind Back.
-        const cluster = screen.queryByRole("button", { name: "Back" }) ? "trailing" : "leading";
-        expect(opener.closest(`.${stackStyles[cluster]}`)).toBeTruthy();
+        // The trigger keeps one mounted node in the trailing cluster across
+        // pane swaps, so the drawer's focus restoration keeps its opener; the
+        // bar row-reverses (data-drawer-leads) to put it at the visual leading
+        // edge wherever Back is absent. A Back-owning pane keeps normal order
+        // so the trigger never disappears behind Back.
+        expect(bar.hasAttribute("data-drawer-leads")).toBe(pane === "welcome");
       }
       await openSessionsPanel(user);
       expect(screen.getByRole("dialog").classList.contains(mobilePanelStyles.right ?? "")).toBe(installed);
@@ -1202,6 +1203,17 @@ test("a single-pane route offers no tree drawer trigger", async () => {
   render(<StackHost singlePane />);
   expect(await screen.findByTestId("topbar-title")).toBeTruthy();
   expect(screen.queryByRole("button", { name: "Sessions" })).toBeNull();
+});
+
+// The drawer restores focus to its opener when it closes, including when a
+// pane choice inside the drawer closes it mid-navigation. A trigger that
+// remounts across the pane swap strands that restoration on a detached node.
+test("the tree drawer trigger stays one mounted node across a Back-owning pane swap", async () => {
+  render(<StackHost />);
+  const opener = await screen.findByRole("button", { name: "Sessions" });
+  act(() => workspaceStore.getState().openPane("settings", {}));
+  await screen.findByRole("button", { name: "Back" });
+  expect(screen.getByRole("button", { name: "Sessions" })).toBe(opener);
 });
 
 // --- back navigation ---------------------------------------------------
@@ -2081,6 +2093,13 @@ test("the top bar reserves the device's top safe-area inset", () => {
   const css = readFileSync(join(here, "StackHost.module.css"), "utf8");
   const topBarRule = css.match(/\.topBar \{([^}]*)\}/)?.[1] ?? "";
   expect(topBarRule).toContain("env(safe-area-inset-top)");
+});
+
+test("a Back-less non-session bar row-reverses so the drawer trigger visually leads", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const css = readFileSync(join(here, "StackHost.module.css"), "utf8");
+  const reversedRule = css.match(/\.topBar\[data-drawer-leads\] \{([^}]*)\}/)?.[1] ?? "";
+  expect(reversedRule).toContain("flex-direction: row-reverse");
 });
 
 // The top-bar title channel (2026-07-30-mobile-session-layout-design.md,
