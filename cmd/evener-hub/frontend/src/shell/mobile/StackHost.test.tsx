@@ -2977,7 +2977,10 @@ test("tablet board column slides out inert on collapse and slides in from the le
 
     // Reopening mounts the board sliding in from the left edge, live and
     // interactive again, with the single toggle back inside the board.
-    await user.keyboard("{Enter}");
+    // Activate synchronously: an awaited keyboard event can yield a frame, and
+    // the entrance animation advances past its -100% start before this read.
+    // The collapse above still exercises keyboard activation and focus return.
+    fireEvent.click(collapsedToggle);
     const reopenedBoard = screen.getByTestId("board-column");
     expect(reopenedBoard.hasAttribute("inert")).toBe(false);
     expect(reopenedBoard.getAttribute("aria-hidden")).toBeNull();
