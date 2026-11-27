@@ -1,11 +1,16 @@
+import { BaseNavigationContainer, createNavigationContainerRef } from "@react-navigation/core";
 import { act } from "react-test-renderer";
 import { beforeEach, expect, it, vi } from "vitest";
 import { onBoardJump } from "../board/boardJump";
 import type { Notice } from "../board/notices";
+import { BlankPage, createTestStack } from "../navigationTestStack.testkit";
 import { alertRequests, render } from "../renderNative.testkit";
+import type { Routes } from "../screens";
 import { AlertCenter, type Alert } from "./alertCenter";
+import type { OpenAlertTarget } from "./openAlertTarget";
 
 const harness = vi.hoisted(() => ({
+	platform: "ios",
 	center: null as AlertCenter | null,
 	notices: new Map<string, unknown>(),
 	opened: [] as unknown[][],
@@ -69,6 +74,15 @@ vi.mock("../board/BoardNotices", () => ({
 	openNotice: (...args: unknown[]) => harness.opened.push(args),
 }));
 
+// Vitest runs both Metro platform entries in one process.
+vi.mock("./openAlertTarget", async (importOriginal) => {
+	const iphone = await importOriginal<typeof import("./openAlertTarget")>();
+	const android = await import("./openAlertTarget.android");
+	const openAlertTarget: OpenAlertTarget = (...args) =>
+		(harness.platform === "android" ? android : iphone).openAlertTarget(...args);
+	return { openAlertTarget };
+});
+
 import { AlertBannerHost } from "./AlertBannerHost";
 
 const timer = { now: () => Date.now(), setTimeout: () => 0, clearTimeout: () => {} };
@@ -81,20 +95,20 @@ const hostDown: Notice = {
 	sourceId: "paradise-park",
 };
 
-function mount(currentScreen = "Workspace") {
+function mount() {
 	const dispatched: unknown[] = [];
 	const navigation = {
-		getCurrentRoute: () => ({ name: currentScreen }),
 		dispatch: (action: unknown) => dispatched.push(action),
 		navigate: vi.fn(),
 	};
 	const tree = render(<AlertBannerHost navigation={navigation as never} />);
 	const container = tree.root.find((node) => node.props.pointerEvents === "box-none");
 	const card = () => tree.root.find((node) => node.props.accessibilityRole === "button");
-	return { tree, dispatched, container, card };
+	return { tree, dispatched, navigate: navigation.navigate, container, card };
 }
 
 beforeEach(() => {
+	harness.platform = "ios";
 	harness.center = new AlertCenter(timer);
 	harness.notices.clear();
 	harness.opened.length = 0;
@@ -108,23 +122,36 @@ it("sits just below the nav bar, and shows nothing without a banner", () => {
 	expect(container.children).toHaveLength(0);
 });
 
-it("opens a session's banner in the active hub's workspace", () => {
-	const { card, dispatched } = mount();
-	act(() => harness.center?.offer(session("local:a")));
-	act(() => card().props.onPress());
-	expect(dispatched).toEqual([
-		expect.objectContaining({
-			type: "POP_TO",
-			payload: expect.objectContaining({
-				name: "Workspace",
-				params: { hubId: "hub-1", path: "/s/local%3Aa" },
-			}),
-		}),
-	]);
-});
+const Stack = createTestStack();
+it.each(["Workspace", "Hubs"])(
+	"opens an iPhone session alert from %s without duplicating or losing a route",
+	async (screen) => {
+		const navigation = createNavigationContainerRef<Routes>();
+		render(
+			<BaseNavigationContainer ref={navigation}>
+				<Stack.Navigator initialRouteName="Hubs">
+					<Stack.Screen name="Hubs" component={BlankPage} />
+					<Stack.Screen name="Workspace" component={BlankPage} />
+				</Stack.Navigator>
+			</BaseNavigationContainer>,
+		);
+		if (screen === "Workspace") {
+			await act(async () => navigation.navigate("Workspace", { hubId: "hub-1", path: "/" }));
+		}
+		const priorKeys = navigation.getRootState().routes.map((route) => route.key);
+		const tree = render(<AlertBannerHost navigation={navigation} />);
+		act(() => harness.center?.offer(session("local:a")));
+		await act(async () => tree.root.find((node) => node.props.accessibilityRole === "button").props.onPress());
+		const routes = navigation.getRootState().routes;
+		expect(routes.map((route) => route.name)).toEqual(["Hubs", "Workspace"]);
+		expect(routes.slice(0, priorKeys.length).map((route) => route.key)).toEqual(priorKeys);
+		expect(navigation.getCurrentRoute()?.params).toEqual({ hubId: "hub-1", path: "/s/local%3Aa" });
+	},
+);
 
 it("keeps the on-device editor on the stack when opening a session alert", () => {
-	const { card, dispatched } = mount("Conversation");
+	harness.platform = "android";
+	const { card, dispatched } = mount();
 	act(() => harness.center?.offer(session("local:b")));
 	act(() => card().props.onPress());
 	expect(dispatched).toEqual([
@@ -138,8 +165,9 @@ it("keeps the on-device editor on the stack when opening a session alert", () =>
 	]);
 });
 
-it("takes a coalesced banner to Needs you on the Board", () => {
-	const { card, dispatched } = mount();
+it.each(["ios", "android"])("opens the %s Needs you list when several sessions alert together", (platform) => {
+	harness.platform = platform;
+	const { card, dispatched, navigate } = mount();
 	act(() => {
 		harness.center?.offer(session("local:a"));
 		harness.center?.offer(session("local:b"));
@@ -148,13 +176,48 @@ it("takes a coalesced banner to Needs you on the Board", () => {
 	const stop = onBoardJump((section) => jumps.push(section));
 	act(() => card().props.onPress());
 	stop();
+	if (platform === "ios") {
+		expect(navigate).toHaveBeenCalledWith(
+			"Workspace",
+			{ hubId: "hub-1", path: "/?attention=needs-you" },
+			{ pop: true },
+		);
+		expect(jumps).toEqual([]);
+		return;
+	}
 	expect(dispatched).toEqual([
 		expect.objectContaining({ type: "POP_TO", payload: expect.objectContaining({ name: "Sessions" }) }),
 	]);
 	expect(jumps).toEqual(["needsYou"]);
 });
 
-it("opens a notice where the Board's notice row does, and nothing once it has resolved", () => {
+it.each([
+	[hostDown, "hosts"],
+	[{ kind: "signIn", key: "auth", providerId: "provider", text: "expired", action: "Sign in" }, "credentials"],
+	[
+		{ kind: "plugin", key: "broken", pluginId: "plugin", marketplace: "plugins", text: "invalid", action: "Plugins" },
+		"plugins-manager",
+	],
+] as const)("opens each iPhone notice in local hub settings and skips a resolved notice", (notice, section) => {
+	const { card, navigate } = mount();
+	harness.notices.set(notice.key, notice);
+	const tap = () => {
+		act(() => harness.center?.offer({ kind: "notice", key: notice.key, title: notice.text }));
+		act(() => card().props.onPress());
+	};
+	tap();
+	expect(navigate).toHaveBeenCalledWith(
+		"Workspace",
+		{ hubId: "hub-1", path: `/settings/${section}?host=local` },
+		{ pop: true },
+	);
+	harness.notices.clear();
+	tap();
+	expect(navigate).toHaveBeenCalledTimes(1);
+});
+
+it("opens an Android notice where the Board's notice row does, and nothing once it has resolved", () => {
+	harness.platform = "android";
 	const { card } = mount();
 	harness.notices.set(hostDown.key, hostDown);
 	act(() => harness.center?.offer({ kind: "notice", key: hostDown.key, title: hostDown.text }));
@@ -167,6 +230,7 @@ it("opens a notice where the Board's notice row does, and nothing once it has re
 });
 
 it("opens the New session of the hub whose start failed, with its draft, whichever hub is selected (#3104)", () => {
+	harness.platform = "android";
 	const { card, dispatched } = mount();
 	act(() => harness.center?.offer({ kind: "startFailed", hubId: "hub-2", hubName: "paradise-park", uncertain: false }));
 	act(() => card().props.onPress());
@@ -199,6 +263,7 @@ it("says why a failed start's banner opens nothing once its hub has been removed
 });
 
 it("opens the selected hub's New session without selecting it again (#3104)", () => {
+	harness.platform = "android";
 	const { card, dispatched } = mount();
 	act(() => harness.center?.offer({ kind: "startFailed", hubId: "hub-1", hubName: "magic-kingdom", uncertain: false }));
 	act(() => card().props.onPress());
@@ -207,6 +272,7 @@ it("opens the selected hub's New session without selecting it again (#3104)", ()
 });
 
 it("opens a failed start's New session with no hub selected, selecting its hub (#3104)", () => {
+	harness.platform = "android";
 	harness.active = null;
 	const { card, dispatched } = mount();
 	act(() => harness.center?.offer({ kind: "startFailed", hubId: "hub-2", hubName: "paradise-park", uncertain: true }));

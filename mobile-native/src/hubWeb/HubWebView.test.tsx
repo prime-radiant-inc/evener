@@ -14,6 +14,51 @@ const native = vi.hoisted(() => ({
 	insets: { left: 0, right: 0, top: 0, bottom: 34 },
 	navigation: { setOptions: vi.fn<(options: NativeStackNavigationOptions) => void>() },
 }));
+
+it("delivers a share only to its chosen hub and composer, then accepts that delivery's receipt", () => {
+	const profile = { id: "desk", name: "Desk", origin: "https://desk.example" };
+	const share = { id: "file-id", path: "/new", hubId: profile.id, text: "shared-sentinel", createdAt: "" };
+	const postMessage = vi.fn();
+	const onSharePlaced = vi.fn();
+	const workspace = (hubId: string) => (
+		<HubWebView
+			profile={profile}
+			token=""
+			initialPath="/new"
+			onPath={vi.fn()}
+			onHubMenu={vi.fn()}
+			share={{ ...share, hubId }}
+			onSharePlaced={onSharePlaced}
+		/>
+	);
+	const tree = render(workspace("other"), {
+		createNodeMock: (node) => (node.type === "WebView" ? { postMessage } : null),
+	});
+	const message = (payload: object, url = profile.origin + "/new") =>
+		act(() =>
+			tree.root.findByType("WebView" as never).props.onMessage({ nativeEvent: { url, data: JSON.stringify(payload) } }),
+		);
+	const target = { type: "shareTarget", path: share.path };
+	const receipt = { type: "sharePlaced", path: share.path, id: share.id };
+	const sent = () => postMessage.mock.calls.map(([raw]) => JSON.parse(raw)).filter((data) => data.type === "shareText");
+	message({ type: "ready" });
+	message(target);
+	expect(sent()).toEqual([]);
+	message({ type: "covered", active: true });
+	act(() => tree.update(workspace(profile.id)));
+	message(receipt);
+	expect(onSharePlaced).not.toHaveBeenCalled();
+	expect(sent()).toEqual([]);
+	message({ type: "covered", active: false });
+	expect(sent()).toEqual([{ type: "shareText", path: share.path, id: share.id, text: share.text }]);
+	message(receipt, "https://other.example/new");
+	message(receipt, profile.origin + "/s/stale");
+	message({ ...receipt, id: "stale" });
+	expect(onSharePlaced).not.toHaveBeenCalled();
+	message(receipt);
+	message(receipt);
+	expect(onSharePlaced.mock.calls).toEqual([[share.id]]);
+});
 vi.mock("@react-navigation/native", () => ({
 	useIsFocused: () => native.focused,
 	useNavigation: () => native.navigation,
@@ -41,14 +86,7 @@ it("preserves a document's share name and releases workspace alert holds with th
 	const profile = { id: "desk", name: "Desk", origin: "https://desk.example" };
 	const workspace = () => (
 		<AlertsContext.Provider value={{ center, reportRoutes: vi.fn(), noticeFor: () => undefined }}>
-			<HubWebView
-				profile={profile}
-				token="saved"
-				initialPath="/"
-				onPath={vi.fn()}
-				onHubMenu={vi.fn()}
-				onDeviceWork={vi.fn()}
-			/>
+			<HubWebView profile={profile} token="saved" initialPath="/" onPath={vi.fn()} onHubMenu={vi.fn()} />
 		</AlertsContext.Provider>
 	);
 	const tree = render(workspace());
@@ -97,14 +135,7 @@ it("routes the active native session controls back to their pane and gives the h
 	systemGlass.available = true;
 	onTestFinished(() => systemGlass.reset());
 	const tree = render(
-		<HubWebView
-			profile={profile}
-			token="hello"
-			initialPath="/"
-			onPath={vi.fn()}
-			onHubMenu={vi.fn()}
-			onDeviceWork={vi.fn()}
-		/>,
+		<HubWebView profile={profile} token="hello" initialPath="/" onPath={vi.fn()} onHubMenu={vi.fn()} />,
 		{ createNodeMock: (element) => (element.type === "WebView" ? { postMessage } : null) },
 	);
 	const view = tree.root.findByType("WebView" as never);
@@ -252,14 +283,7 @@ it("opens native controls only from the paired app and returns to its session af
 	const onPath = vi.fn();
 	const path = "/s/desk%3Aone";
 	const tree = render(
-		<HubWebView
-			profile={profile}
-			token="hello"
-			initialPath="/"
-			onPath={onPath}
-			onHubMenu={onHubMenu}
-			onDeviceWork={vi.fn()}
-		/>,
+		<HubWebView profile={profile} token="hello" initialPath="/" onPath={onPath} onHubMenu={onHubMenu} />,
 	);
 	const view = () => tree.root.findByType("WebView" as never);
 	const message = (url: string, value: unknown) => {
@@ -280,14 +304,7 @@ it("opens native controls only from the paired app and returns to its session af
 	const alertPath = "/s/desk%3Atwo";
 	act(() =>
 		tree.update(
-			<HubWebView
-				profile={profile}
-				token="hello"
-				initialPath={alertPath}
-				onPath={onPath}
-				onHubMenu={onHubMenu}
-				onDeviceWork={vi.fn()}
-			/>,
+			<HubWebView profile={profile} token="hello" initialPath={alertPath} onPath={onPath} onHubMenu={onHubMenu} />,
 		),
 	);
 	act(() => tree.root.findByProps({ accessibilityLabel: "Try again" }).props.onPress());
@@ -309,14 +326,7 @@ it.each([
 		const profile = { id: "desk", name: "Desk", origin: "https://desk.example" };
 		const postMessage = vi.fn();
 		const workspace = (path: string) => (
-			<HubWebView
-				profile={profile}
-				initialPath={path}
-				token="saved"
-				onPath={vi.fn()}
-				onHubMenu={vi.fn()}
-				onDeviceWork={vi.fn()}
-			/>
+			<HubWebView profile={profile} initialPath={path} token="saved" onPath={vi.fn()} onHubMenu={vi.fn()} />
 		);
 		const first = "/s/local%3Aone";
 		const tree = render(workspace(first), { createNodeMock: (e) => (e.type === "WebView" ? { postMessage } : null) });

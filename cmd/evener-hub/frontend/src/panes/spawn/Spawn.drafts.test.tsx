@@ -6,7 +6,7 @@ import type {
 } from "@evener/appwire-client";
 import { deferred } from "@evener/appwire-client/testing/deferred";
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
-import { expect, test } from "vitest";
+import { expect, onTestFinished, test, vi } from "vitest";
 import { ClientProvider } from "../../shell/clientContext";
 import { connectionStore } from "../../stores/connection";
 import { credentialsStore } from "../../stores/credentials";
@@ -915,12 +915,30 @@ test("late missing-directory preflight keeps Create and start with its originati
 
 test("late successful creation clears only the originating draft across remount and project navigation", async () => {
   installCanvasStubs();
+  const agent = vi.spyOn(navigator, "userAgent", "get").mockReturnValue("EvenerNative/1");
+  const postMessage = vi.fn();
+  vi.stubGlobal("ReactNativeWebView", { postMessage });
+  onTestFinished(() => {
+    agent.mockRestore();
+    vi.unstubAllGlobals();
+  });
   const user = setupUser();
   window.history.pushState({}, "", "/new?dir=/tmp/draft-a");
   const started = deferred<ThreadStartResponse>();
   const fake = readyClient((f) => f.on("thread/start", () => started.promise));
   const mounted = renderSpawn(fake);
   await fillPrompt(user, "submitted-sentinel");
+  const share = { type: "shareText", path: "/new", id: "share-id", text: "from-extension" };
+  const deliver = (path: string) =>
+    act(() => {
+      window.dispatchEvent(new MessageEvent("message", { data: JSON.stringify({ ...share, path }) }));
+    });
+  deliver("/s/elsewhere");
+  expect(promptField().textContent).toBe("submitted-sentinel");
+  deliver("/new");
+  deliver("/new");
+  expect(completionDraft("/tmp/draft-a").fields.getState().prompt).toBe("submitted-sentinel\n\nfrom-extension");
+  expect(fake.calls.filter((call) => call.method === "thread/start")).toHaveLength(0);
   act(() => pastePngInto(promptField(), "submitted.png"));
   await screen.findByRole("button", { name: "View submitted.png" });
   fireEvent.change(effortControl(), { target: { value: "high" } });
@@ -934,6 +952,11 @@ test("late successful creation clears only the originating draft across remount 
   act(() => pastePngInto(promptField(), "other.png"));
   await screen.findByRole("button", { name: "View other.png" });
   await act(async () => started.resolve(startResponse("local:abc123")));
+  expect(postMessage.mock.calls.map(([value]) => JSON.parse(value))).toContainEqual({
+    type: "sharePlaced",
+    path: "/new",
+    id: share.id,
+  });
   expect(promptField().textContent).toBe("other-project-sentinel[image 1]");
   expect(screen.getByRole("button", { name: "View other.png" })).toBeTruthy();
   await visitSpawnURL("/new?dir=/tmp/draft-a");

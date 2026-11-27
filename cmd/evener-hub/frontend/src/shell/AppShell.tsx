@@ -45,7 +45,7 @@ import { focusedSessionPaneId, focusedSessionRef, modalOpenInFocusedWindows } fr
 import { HoldHints } from "./holdhints/HoldHints";
 import { installKeybindings } from "./installKeybindings";
 import { connectIPhoneGlass } from "./iPhoneGlass";
-import { connectIPhoneHost, tellIPhoneHost } from "./iPhoneHost";
+import { connectIPhoneHost, reportIPhoneRoute, tellIPhoneHost } from "./iPhoneHost";
 import { createLiveSessionController } from "./liveSessionController";
 import { StackHost } from "./mobile/StackHost";
 import { NeedsYouProvider, useNeedsYou } from "./NeedsYouProvider";
@@ -531,7 +531,7 @@ function AppShellContent({ client: injectedClient, bannerDelayMs, bannerCreateCl
   useEffect(connectIPhoneGlass, []);
   useEffect(() => tellIPhoneHost({ type: "appearance", dark: scheme === "dark" }), [scheme]);
   const hubPath = pathname + window.location.search + window.location.hash;
-  useEffect(() => tellIPhoneHost({ type: "route", path: hubPath }), [hubPath]);
+  useEffect(() => reportIPhoneRoute(hubPath), [hubPath]);
   const route = urlToPane(pathname);
   const sessionRouteRef = route?.type === "session" ? refParam(route.params) : null;
   const restoredSessionRef = route?.type === "welcome" ? refParam(workspaceStore.getState().mainPane()?.params) : null;

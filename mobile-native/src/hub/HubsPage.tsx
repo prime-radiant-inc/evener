@@ -1,21 +1,22 @@
 // Hubs (spec 12): the phone's saved hubs, the selected one with its connection
 // state, and adding one. Choosing another hub selects it; the sheet then closes
-// onto that hub's Board by itself (useClosesOnHubChange), so this page never
+// onto that hub's workspace by itself (useClosesOnHubChange), so this page never
 // navigates for it.
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { SymbolView } from "expo-symbols";
 import { Pressable, View } from "react-native";
 import { useConnectionStatusText } from "../board/connectionStatus";
 import { useConnection } from "../ConnectionProvider";
+import { isReady } from "../connectionDisplay";
 import { Group, GroupedPage, GroupFooter, Row } from "../sheet/Grouped";
 import { useColors } from "../ui";
 import { hubConnectionState, hubConnectionWord } from "./hubHeader";
-import { type HubRoutes, useHubSheet } from "./hubSheetContext";
+import type { HubRoutes } from "./hubSheetContext";
 
 export function HubsPage({ navigation }: NativeStackScreenProps<HubRoutes, "Hubs">) {
-	const { profiles, activeProfile, selectHub } = useConnection();
+	const { profiles, activeProfile, selectHub, state } = useConnection();
 	const { palette } = useColors();
-	const { ready } = useHubSheet();
+	const ready = isReady(state);
 	const connectionLine = useConnectionStatusText();
 	return (
 		<GroupedPage>

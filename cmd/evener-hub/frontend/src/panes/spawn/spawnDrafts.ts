@@ -18,6 +18,7 @@ import { readUrlPrefill } from "./urlPrefill";
 
 interface DraftFields {
   prompt: string;
+  shareId: string | null;
   skillNames: string[];
   commandNames: string[];
   mentions?: ComposerMention[];
@@ -85,6 +86,7 @@ function createDraft(cwd: string) {
     cwd,
     fields: createStore<DraftFields>(() => ({
       prompt: "",
+      shareId: null,
       skillNames: [],
       commandNames: [],
       promptRevision: 0,

@@ -553,6 +553,48 @@ test("goal replacement preserves the consolidated recovery owner while its commi
   }
 });
 
+test("the focused iPhone composer places only native shares addressed to this session", async () => {
+  const path = "/s/local%3Aone";
+  const previous = window.location.href;
+  window.history.replaceState({}, "", path);
+  const agent = vi.spyOn(navigator, "userAgent", "get").mockReturnValue("EvenerNative/1");
+  const postMessage = vi.fn();
+  vi.stubGlobal("ReactNativeWebView", { postMessage });
+  onTestFinished(() => {
+    window.history.replaceState({}, "", previous);
+    agent.mockRestore();
+    vi.unstubAllGlobals();
+  });
+  const { fake } = await mountComposerWithHandle("local:one", {}, { focused: true });
+  const editor = textarea();
+  const deliver = (destination: string, origin = "") =>
+    act(() => {
+      window.dispatchEvent(
+        new MessageEvent("message", {
+          origin,
+          data: JSON.stringify({
+            type: "shareText",
+            path: destination,
+            id: "payload",
+            text: "incoming",
+          }),
+        }),
+      );
+    });
+  deliver("/s/other");
+  deliver(path, "https://another.example");
+  expect(editor.textContent).toBe("");
+  deliver(path);
+  deliver(path);
+  expect(editor.textContent).toBe("incoming");
+  expect(postMessage.mock.calls.map(([raw]) => JSON.parse(raw))).toContainEqual({
+    type: "sharePlaced",
+    id: "payload",
+    path,
+  });
+  expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
+});
+
 test("goal replacement closes slash completion and resets selection", async () => {
   useCommandCatalog.setState({ commands: REVIEW_RELEASE_CATALOG });
   const user = userEvent.setup();

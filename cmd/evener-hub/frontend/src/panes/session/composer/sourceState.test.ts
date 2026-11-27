@@ -60,6 +60,17 @@ test("source restoration retains mixed atom identity and inert prose", () => {
   expect(source.getSnapshot()).toMatchObject(value);
   source.persistDraft(text);
   expect(readComposerDraft("root")).toEqual(value);
+  const failWrite = vi.spyOn(localStorage, "setItem").mockImplementationOnce(() => {
+    throw new Error("quota");
+  });
+  expect(source.placeShare("item-1", "incoming")).toBe(false);
+  failWrite.mockRestore();
+  expect(source.placeShare("item-1", "incoming")).toBe(true);
+  const restored = createTestComposerSource("root");
+  expect(restored.placeShare("item-1", "incoming")).toBe(true);
+  expect(readComposerDraft("root")).toMatchObject({ ...value, text: `${text}\n\nincoming` });
+  expect(restored.placeShare("item-2", "incoming")).toBe(true);
+  expect(readComposerDraft("root").text).toBe(`${text}\n\nincoming\n\nincoming`);
 });
 
 // Dropping mentions at restore/persist would select this deliberately inert token.

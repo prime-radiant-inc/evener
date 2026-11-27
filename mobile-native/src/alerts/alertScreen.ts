@@ -7,8 +7,8 @@ import { isSheetRoute } from "../sheet/sheetRoutes";
 import { workspaceSessionRef } from "../location";
 import type { AlertScreen } from "./alertCenter";
 
-/** Phase 5's modal routes: the Hub and New session sheets. */
-const MODAL_ROUTES: ReadonlySet<string> = new Set(["Hub", "NewSession"]);
+/** Native modals cover the workspace until the person returns or chooses a share target. */
+const MODAL_ROUTES: ReadonlySet<string> = new Set(["Hub", "NewSession", "ShareTarget"]);
 
 type Route = { name: string; params?: object };
 

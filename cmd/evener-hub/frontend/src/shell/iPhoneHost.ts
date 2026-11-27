@@ -1,9 +1,11 @@
-import { useSyncExternalStore } from "react";
+import { useEffect, useEffectEvent, useSyncExternalStore } from "react";
 import { isTextEntryTarget } from "../keybindings/dispatcher";
+import { openPalette } from "./palette/paletteController";
 import { navigate, refParam, urlToPane } from "./routing";
 import { openSessionByRef } from "./sessionPlacement";
 
 export const FLOATING_WEB_LAYER = ':is([data-focus-layer], [aria-modal="true"], [role="listbox"])';
+const NEEDS_YOU_PATH = "/?attention=needs-you";
 
 export interface IPhoneHeader {
   id: string;
@@ -33,6 +35,8 @@ type HostMessage =
     }
   | { type: "createButton"; id: string; frame: { x: number; y: number; width: number; height: number } | null }
   | { type: "route"; path: string }
+  | { type: "shareTarget"; path: string }
+  | { type: "sharePlaced"; path: string; id: string }
   | { type: "editing" | "readingDocument" | "covered"; active: boolean }
   | { type: "shareDocument"; ref: string; path: string; namePath: string }
   | { type: "haptic"; kind: "light" };
@@ -81,9 +85,26 @@ export function tellIPhoneHost(message: HostMessage): void {
   }
 }
 
-export function iPhoneCommand(
-  event: MessageEvent,
-): { type?: unknown; path?: unknown; id?: unknown; action?: unknown; glass?: unknown; edgeToolbar?: unknown } | null {
+export function reportIPhoneRoute(path: string): void {
+  if (!iPhoneHost()) return;
+  if (path === NEEDS_YOU_PATH) {
+    // A cold launch consumed the alert. Back and restore should land on the workspace.
+    navigate("/", { replace: true });
+    openPalette();
+  } else {
+    tellIPhoneHost({ type: "route", path });
+  }
+}
+
+export function iPhoneCommand(event: MessageEvent): {
+  type?: unknown;
+  path?: unknown;
+  id?: unknown;
+  text?: unknown;
+  action?: unknown;
+  glass?: unknown;
+  edgeToolbar?: unknown;
+} | null {
   // WebKit dispatches the native command directly on this window. Messages
   // posted by another document carry its origin and window.
   if (event.source !== null || event.origin !== "" || typeof event.data !== "string") return null;
@@ -93,6 +114,31 @@ export function iPhoneCommand(
   } catch {
     return null;
   }
+}
+
+/** Only the focused composer's document may accept a share addressed by the picker. */
+export function useIPhoneShare(path: string | null, place: (id: string, text: string) => void): void {
+  const onShare = useEffectEvent(place);
+  useEffect(() => {
+    if (!path || !iPhoneHost()) return;
+    const receive = (event: MessageEvent) => {
+      const command = iPhoneCommand(event);
+      if (
+        command?.type !== "shareText" ||
+        command.path !== path ||
+        window.location.pathname !== path ||
+        typeof command.id !== "string" ||
+        !command.id ||
+        typeof command.text !== "string" ||
+        !command.text.trim()
+      )
+        return;
+      onShare(command.id, command.text);
+    };
+    window.addEventListener("message", receive);
+    tellIPhoneHost({ type: "shareTarget", path });
+    return () => window.removeEventListener("message", receive);
+  }, [path]);
 }
 
 function receiveHostCommand(event: MessageEvent): void {
@@ -107,6 +153,13 @@ function receiveHostCommand(event: MessageEvent): void {
     return;
   }
   if (command?.type !== "navigate" || typeof command.path !== "string") return;
+  if (command.path === NEEDS_YOU_PATH) {
+    // The empty palette lists Needs you first, over the user's current pane.
+    openPalette();
+    const { pathname, search, hash } = window.location;
+    tellIPhoneHost({ type: "route", path: pathname + search + hash });
+    return;
+  }
   let route: ReturnType<typeof urlToPane>;
   try {
     if (!command.path.startsWith("/")) return;

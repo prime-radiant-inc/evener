@@ -13,6 +13,11 @@ export interface SharedPayload {
 	createdAt: string;
 }
 
+export interface WorkspaceShare extends SharedPayload {
+	hubId: string;
+	path: string;
+}
+
 /** The App Group directory as this module needs it. Production is the app
  * group container; tests pass a directory of their own. */
 export interface SharePort {

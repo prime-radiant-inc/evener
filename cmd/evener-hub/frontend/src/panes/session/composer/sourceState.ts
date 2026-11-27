@@ -3,6 +3,7 @@ import {
   type ComposerMention,
   type ImageMarkerRange,
   markerNumbersOf,
+  mergeDraftText,
   type TextSplice,
   validMarkerRanges,
 } from "@evener/appwire-client";
@@ -163,6 +164,7 @@ export interface ComposerSourceState {
    * that change the persisted record out of band never move only one of them. */
   claimDraftRevision(): void;
   persistDraft(text: string): void;
+  placeShare(id: string, text: string): boolean;
   /** `splice` is the exact span the caller's own edit replaced, when it knows
    * it. Passing it keeps a marker the edit did not touch from being read as
    * spliced through (see TextEditor.write). */
@@ -272,6 +274,7 @@ export function recoverySubmissionInFlight(clientMutationId: string): boolean {
 export function createComposerSourceState(ref: string, ownerId?: string): ComposerSourceState {
   const compositionOwnerId = ownerId ?? defaultCompositionOwner(ref);
   const initial = readComposerDraftSnapshot(ref);
+  let shareId = initial.shareId;
   const initialAdoption = adoptedAnchorsIn(initial);
   let currentDraftRevisionId = initial.revisionId;
   const state = createStore<ComposerSourceSnapshot>(() => ({
@@ -541,6 +544,7 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     }
     currentDraftRevisionId = writeComposerDraft(ref, {
       text,
+      ...(shareId && { shareId }),
       skillNames: skillNamesRef.current,
       ...(selectionMetaRef.current.commandNames.length ? { commandNames: selectionMetaRef.current.commandNames } : {}),
       ...(selectionMetaRef.current.mentions ? { mentions: selectionMetaRef.current.mentions } : {}),
@@ -1188,6 +1192,17 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     claimDraftRevision,
     markRestore,
     persistDraft,
+    placeShare(id, text) {
+      if (disposed || currentRecoveryId() !== null) return false;
+      if (shareId !== id) {
+        shareId = id;
+        writeDraft(mergeDraftText(textRef.current, text), true);
+        markRestore();
+      } else if (readComposerDraftSnapshot(ref).shareId !== id) {
+        persistDraft(textRef.current);
+      }
+      return readComposerDraftSnapshot(ref).shareId === id;
+    },
     writeDraft,
     compositionOwnerId,
     runRecoveryOperation,

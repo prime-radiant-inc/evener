@@ -11,6 +11,7 @@ import { paletteFor } from "../design/tokens";
 import { haptic } from "../haptics";
 import { workspaceSessionRef } from "../location";
 import { externalMarkdownLink } from "../markdownLinks";
+import type { WorkspaceShare } from "../share/sharePayload";
 import { Button } from "../sheet/Grouped";
 import { ErrorMessage, useColors } from "../ui";
 import { type ButtonFrame, CreateSessionButton, isButtonFrame } from "./CreateSessionButton";
@@ -31,10 +32,11 @@ interface HubWebViewProps {
 	initialPath: string;
 	onPath(path: string): void;
 	onHubMenu(): void;
-	onDeviceWork(): void;
+	share?: WorkspaceShare;
+	onSharePlaced?(id: string): void;
 }
 
-export function HubWebView({ profile, token, initialPath, onPath, onHubMenu, onDeviceWork }: HubWebViewProps) {
+export function HubWebView({ profile, token, initialPath, onPath, onHubMenu, share, onSharePlaced }: HubWebViewProps) {
 	const { origin } = profile;
 	const { palette } = useColors();
 	const web = useRef<WebView<unknown>>(null);
@@ -46,6 +48,8 @@ export function HubWebView({ profile, token, initialPath, onPath, onHubMenu, onD
 	const [editing, setEditing] = useState(false);
 	const [readingDocument, setReadingDocument] = useState(false);
 	const [covered, setCovered] = useState(false);
+	const [shareTarget, setShareTarget] = useState<{ path: string } | null>(null);
+	const deliveredShare = useRef<WorkspaceShare | undefined>(undefined);
 	const [header, setHeader] = useState<SessionHeaderState | null>(null);
 	const [sessionsToolbar, setSessionsToolbar] = useState<SessionsToolbar | null>(null);
 	const [restoringSession, setRestoringSession] = useState(() =>
@@ -86,6 +90,18 @@ export function HubWebView({ profile, token, initialPath, onPath, onHubMenu, onD
 		if (bridgeReady) web.current?.postMessage(material);
 	}, [bridgeReady, material]);
 	const inFront = bridgeReady && focused && !error;
+	useEffect(() => {
+		if (
+			inFront &&
+			!covered &&
+			share?.hubId === profile.id &&
+			share.path === shareTarget?.path &&
+			initialPath === share.path
+		) {
+			deliveredShare.current = share;
+			web.current?.postMessage(JSON.stringify({ type: "shareText", path: share.path, id: share.id, text: share.text }));
+		}
+	}, [inFront, covered, share, profile.id, shareTarget, initialPath]);
 	useWorkspaceDocument(profile.id, readingDocument && bridgeReady && !error);
 	useHoldAlerts(inFront && (editing || readingDocument), "quiet");
 	useHoldAlerts(inFront && covered, "covered");
@@ -113,6 +129,8 @@ export function HubWebView({ profile, token, initialPath, onPath, onHubMenu, onD
 		onPath(path);
 	};
 	const resetDocument = useCallback(() => {
+		deliveredShare.current = undefined;
+		setShareTarget(null);
 		setBridgeReady(false);
 		setEditing(false);
 		setReadingDocument(false);
@@ -169,6 +187,25 @@ export function HubWebView({ profile, token, initialPath, onPath, onHubMenu, onD
 			workspaceSessionRef(currentPath.current) === restoringSession &&
 			workspaceSessionRef(initialPath) === restoringSession;
 		switch (data.type) {
+			case "shareTarget":
+				if (data.path === documentPath) setShareTarget({ path: documentPath });
+				break;
+			case "sharePlaced":
+				if (
+					focused &&
+					!error &&
+					share &&
+					deliveredShare.current === share &&
+					share.hubId === profile.id &&
+					share.id === data.id &&
+					data.path === share.path &&
+					documentPath === share.path &&
+					initialPath === share.path
+				) {
+					deliveredShare.current = undefined;
+					onSharePlaced?.(share.id);
+				}
+				break;
 			case "appearance":
 				if (typeof data.dark === "boolean") setHubDark(data.dark);
 				break;
@@ -283,8 +320,7 @@ export function HubWebView({ profile, token, initialPath, onPath, onHubMenu, onD
 			>
 				<ErrorMessage message={error ?? "Edit the saved token to open this hub on iPhone."} />
 				{source && <Button label="Try again" primary compact onPress={retry} />}
-				<Button label="iPhone settings" onPress={onHubMenu} />
-				<Button label="Work on this iPhone" onPress={onDeviceWork} />
+				<Button label="Hubs on this iPhone" onPress={onHubMenu} />
 			</SafeAreaView>
 		);
 	const activeHeader = focused && (edgeToolbar || !header?.split) ? header : null;
@@ -297,7 +333,7 @@ export function HubWebView({ profile, token, initialPath, onPath, onHubMenu, onD
 			{hubPalette && <StatusBar style={hubPalette.scheme === "dark" ? "light" : "dark"} />}
 			{loaded && !activeHeader && (!bridgeReady || currentPath.current.startsWith("/thread/")) && (
 				<View style={{ alignItems: "flex-end" }}>
-					<Button label="iPhone settings" onPress={onHubMenu} />
+					<Button label="Hubs on this iPhone" onPress={onHubMenu} />
 				</View>
 			)}
 			<View style={{ flex: 1 }}>
@@ -330,7 +366,7 @@ export function HubWebView({ profile, token, initialPath, onPath, onHubMenu, onD
 						if (hubPagePath(origin, nativeEvent.url)) {
 							setError(
 								nativeEvent.statusCode === 401
-									? "Check the token in iPhone settings."
+									? "Check the token in this hub’s saved connection."
 									: `The hub returned HTTP ${nativeEvent.statusCode}.`,
 							);
 						}
@@ -349,7 +385,7 @@ export function HubWebView({ profile, token, initialPath, onPath, onHubMenu, onD
 							}}
 						>
 							<ActivityIndicator accessibilityLabel={`Opening ${profile.name}`} />
-							<Button label="iPhone settings" onPress={onHubMenu} />
+							<Button label="Hubs on this iPhone" onPress={onHubMenu} />
 						</View>
 					)}
 					automaticallyAdjustContentInsets={false}

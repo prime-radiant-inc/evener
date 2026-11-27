@@ -274,14 +274,7 @@ it("queues an alert from the underlying session while its document owns the work
 	const tree = render(
 		<AlertsProvider>
 			<Probe quiet={false} />
-			<HubWebView
-				profile={profile}
-				token=""
-				initialPath="/s/local%3Aa"
-				onPath={vi.fn()}
-				onHubMenu={vi.fn()}
-				onDeviceWork={vi.fn()}
-			/>
+			<HubWebView profile={profile} token="" initialPath="/s/local%3Aa" onPath={vi.fn()} onHubMenu={vi.fn()} />
 		</AlertsProvider>,
 	);
 	const route = { name: "Workspace", params: { hubId: profile.id, path: "/s/local%3Aa" } };

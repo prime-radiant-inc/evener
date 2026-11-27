@@ -18,6 +18,7 @@ import {
   isLocalHost,
   markerRanges,
   matchBuiltinInvocation,
+  mergeDraftText,
   mergeSlashCommands,
   type PathValidation,
   type PluginSelectionState,
@@ -36,6 +37,7 @@ import { flushSync } from "react-dom";
 import { useStore } from "zustand";
 import { useClient } from "../../shell/clientContext";
 import { resolveHeadBranch } from "../../shell/gitLocation";
+import { tellIPhoneHost, useIPhoneShare } from "../../shell/iPhoneHost";
 import { splitModelId } from "../../shell/palette/commands";
 import { CHORD_HINTS } from "../../shell/palette/helpRows";
 import { usePaneDocument } from "../../shell/paneDocument";
@@ -737,6 +739,12 @@ function SpawnForm({
     return cancel;
   }, [client, draft, submittedSource]);
   const [busy, setBusy] = useDraftField(draft, "busy");
+  useIPhoneShare(focused && !busy ? "/new" : null, (id, text) => {
+    const current = draft.fields.getState();
+    if (current.shareId === id || draft.busyRef.current) return;
+    updatePrompt(mergeDraftText(current.prompt, text));
+    draft.fields.setState({ shareId: id, selectionRestoreRevision: current.selectionRestoreRevision + 1 });
+  });
   // Loader's elapsed readout is pure-render (widgets/loader's own doc
   // comment - no internal timer, so it can't drift or fake liveness): the
   // caller owns the clock. busyStartedAt is stamped once, at the submit that
@@ -2447,7 +2455,11 @@ function SpawnForm({
       reportStartFailure(err, { startDispatched: true, retryablePendingStart: clientMutationId !== undefined });
       return;
     }
-    draft.fields.setState({ pendingStart: null });
+    const shareId = draft.fields.getState().shareId;
+    // A launch draft lives only in this document. Its App Group file protects
+    // the prompt until the person starts the session and the hub accepts it.
+    if (shareId) tellIPhoneHost({ type: "sharePlaced", path: "/new", id: shareId });
+    draft.fields.setState({ pendingStart: null, shareId: null });
     if (builtinMatch && builtinMatch.command.id === "goal") {
       // Post-start application runs AFTER navigation below: awaiting goal/set
       // here would hold the UI in "Starting…" for the RPC timeout on a

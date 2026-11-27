@@ -36,21 +36,21 @@ unavailable. The shell sends material changes to the open page, so changing Redu
 Transparency takes effect while a draft is open. Messages, code, documents,
 and long lists retain solid reading surfaces.
 
-Open the Sessions drawer and choose **Hubs** for pairing, switching hubs,
-display and in-app alert preferences. **Work on this iPhone** opens the
-on-device Board and its drafts, attachments, and queued messages, including
-when the workspace cannot load. After an upgrade, a previously open session
-with an unsent native draft reopens in its original editor. The iOS share extension opens that same editor
-so shared text or links are saved before the extension’s copy is removed.
-**Open workspace** in the native hub menu returns to the web UI.
+Open the Sessions drawer and choose **Hubs** to add, switch, edit, or remove
+a saved connection. **Settings** opens the hub’s workspace settings. When the
+workspace cannot load, the phone retries and offers the same saved Hubs list.
+A saved conversation reopens in its hub. The iPhone uses that hub’s WebKit
+profile for drafts and pending sends.
+
+The iOS share extension accepts text and links. Choose a conversation to add
+the item to its web draft, or choose New session to use it in the launch prompt.
+The extension keeps its copy until the draft is saved or the new session starts.
 
 The web composer uses the system keyboard, including iOS Dictation when enabled,
 and the image picker. **Open in…** in the document viewer opens the system share
 sheet for local documents and supported remote images. Other remote documents
 keep their web preview and copy actions. Native foreground alerts respect
-the active conversation, editor, and reader. A session alert opens in the
-current workspace or on the on-device navigation stack, preserving the Back
-destination. Alerts use the app’s existing
+the active conversation, editor, and reader. Tapping an alert opens its destination in the hub workspace. Alerts use the app’s existing
 foreground connection. Lock-screen push would require a push provider.
 The separate [spoken manager mode](../docs/product/voice.md) is excluded
 from the shipping app.

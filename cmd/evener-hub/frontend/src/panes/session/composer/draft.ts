@@ -34,6 +34,8 @@ const draftRevisions = new Map<string, number>();
 // input items after the ordinary text/attachment items, and a chip change is
 // a draft edit even when the text is byte-identical.
 export interface ComposerDraft extends SkillEditorValue {
+  /** App Group delivery already merged into this draft, including after a WebKit reload. */
+  shareId?: string;
   // Exact identity for this persisted structured snapshot. Older records have
   // no identity and keep their existing recovery behavior.
   revisionId?: string;
@@ -173,6 +175,7 @@ export function readComposerDraft(ref: string): ComposerDraft {
   // them read readComposerDraftSnapshot; a caller composing or rendering a
   // draft gets only what the person sees.
   const {
+    shareId: _shareId,
     revisionId: _revisionId,
     stagedImageMarkers: _staged,
     stagedImageRanges: _stagedRanges,
@@ -207,6 +210,7 @@ export function readComposerDraftSnapshot(ref: string): ComposerDraft {
           ...(parsed.commandNames ? { commandNames: canonicalSkillNames(parsed.commandNames) } : {}),
           ...(parsed.mentions ? { mentions: parsed.mentions } : {}),
           ...(parsed.revisionId ? { revisionId: parsed.revisionId } : {}),
+          ...(typeof parsed.shareId === "string" ? { shareId: parsed.shareId } : {}),
           ...(parsed.stagedImageMarkers ? { stagedImageMarkers: parsed.stagedImageMarkers } : {}),
           ...(stagedImageRanges.length > 0 ? { stagedImageRanges } : {}),
         };
