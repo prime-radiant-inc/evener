@@ -28,17 +28,19 @@ four things in one run:
 - **Wire-side remove is id-addressed and push-authoritative.**
   `urls/remove` takes `{ref, clientMutationId, expectedInstanceId, id}` and
   its response carries no state at all (`UrlsRemoveResponse` is empty by wire
-  design — the `evener/urls/updated` push is the authority). The web client
-  commits no local list edit; the row disappears when the push lands.
+  design — the `evener/urls/updated` push is the authority, `threads.ts:677`).
+  The web client commits no local list edit; the row disappears when the push
+  lands.
 - **Canonical dedup keeps the list honest.** Re-adding the same URL (modulo
   fragment, case, default port — `TestCanonicalSessionURLNormalizesHTTP`)
   keeps one entry and updates its label; `docs/x.md` and `./docs/x.md`
   collide (`TestAddSessionURLDedupsCanonically`,
   `agent/session_notes_test.go:39`).
 - **Removal converges everywhere.** The push folds through the reducer and
-  the store (`protocol/reducer.ts` urls case, `threads.ts` push routing with
-  the per-verb `urlsUpdateGenerations` fence), so a second client watching
-  the same session sees the same list without reloading.
+  the store (the `evener/urls/updated` case in `reducer.ts:503` replaces
+  `sessionUrls` wholesale, and `threads.ts:7095` keeps a urls push from
+  retiring a notes response commit), so a second client watching the same
+  session sees the same list without reloading.
 
 **Surface**: see `docs/developing-evener/agentic-testing.md`, "Driving the web UI" — the
 selector map there is the single place these hooks are maintained. There is
@@ -132,8 +134,8 @@ ref off the resulting `/s/local:<SID>` path, and wait for `idle` (poll `thread/r
    as its visible text. No row carries a button — this card uses `https:`
    URLs, whose rows are bare anchors (`button: null` on every row); the
    in-app open-beside button exists only for in-scope `file://` entries
-   (`SessionLinksSection.tsx:204`). An empty session would show the compact
-   "No saved links" empty state instead (`SessionLinksSection.tsx:159`).
+   (`:204`). An empty session would show the compact
+   "No saved links" empty state instead (`:159`).
 
 3. **[browser] The Notes panel carries no links.** From the same session
    page, open **Notes** from the session chrome button/menu or `/notes`
