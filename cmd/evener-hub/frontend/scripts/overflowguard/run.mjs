@@ -545,6 +545,7 @@ async function measureComposerFooter(
                     scrollWidth: modelTrigger.scrollWidth,
                   }
                 : null,
+              effortVisible: visible(form?.querySelector('[data-testid="status-row-effort"]')),
               pathBox: rect(path),
               statusChips: statusbar
                 ? [...statusbar.querySelectorAll('[data-activity-tab]')].map((element) => rect(element))
@@ -683,11 +684,10 @@ function assertCompactFoldedRow(measurement) {
   if (measurement.field === null || measurement.controls === null) {
     failures.push("the folded field or control row is missing");
   } else {
-    const fieldCenter = (measurement.field.top + measurement.field.bottom) / 2;
-    const controlsCenter = (measurement.controls.top + measurement.controls.bottom) / 2;
-    if (!nearlyEqual(fieldCenter, controlsCenter)) {
+    const centers = foldedOneRowCenters(measurement);
+    if (centers !== null) {
       failures.push(
-        `folded field and controls remain stacked (centres ${fieldCenter}/${controlsCenter}, card ${JSON.stringify(measurement.card)})`,
+        `folded field and controls remain stacked (centres ${centers.fieldCenter}/${centers.controlsCenter}, card ${JSON.stringify(measurement.card)})`,
       );
     }
   }
@@ -744,6 +744,18 @@ function assertLandscapeEdgeFooter(measurement) {
   return failures;
 }
 
+// The folded card's one-row geometry, shared by the compact phone fixture
+// and the fine-pointer landscape one: the field and the control row must
+// share a line. Returns null when they do (or when either box is missing,
+// which the callers report in their own words), and the two measured centres
+// otherwise.
+function foldedOneRowCenters(measurement) {
+  if (measurement.field === null || measurement.controls === null) return null;
+  const fieldCenter = (measurement.field.top + measurement.field.bottom) / 2;
+  const controlsCenter = (measurement.controls.top + measurement.controls.bottom) / 2;
+  return nearlyEqual(fieldCenter, controlsCenter) ? null : { fieldCenter, controlsCenter };
+}
+
 function assertFinePointerLandscapeComposer(measurement) {
   const failures = [];
   if (measurement.primaryTouch) failures.push("the fine-pointer landscape fixture realized a touch pointer");
@@ -753,12 +765,15 @@ function assertFinePointerLandscapeComposer(measurement) {
   if (measurement.foldedCompact) failures.push("a fine-pointer landscape desktop incorrectly compacted its controls");
   if (!measurement.modelTrigger?.visible) failures.push("the fine-pointer resting row lost its model picker");
   if (measurement.editorMinLines !== "1lh") failures.push("the fine-pointer folded field is not one line");
-  if (
-    measurement.field === null ||
-    measurement.controls === null ||
-    measurement.field.bottom > measurement.controls.top + GEOMETRY_TOLERANCE
-  ) {
-    failures.push("the fine-pointer folded field and controls did not stay stacked");
+  // The resting row holds ONE line below the old stacked threshold (Jesse's
+  // 2026-11-27 ruling): the field and the control row share the line and the
+  // effort readout drops before the model label yields, instead of the card
+  // growing a chrome-only second line.
+  if (measurement.field === null || measurement.controls === null || foldedOneRowCenters(measurement) !== null) {
+    failures.push("the fine-pointer folded field and controls did not stay on one row");
+  }
+  if (measurement.effortVisible) {
+    failures.push("the sub-threshold folded row kept its effort readout");
   }
   failures.push(...assertLandscapeEdgeFooter(measurement));
   return failures;
@@ -2063,7 +2078,7 @@ async function main() {
           console.log(`${label} ... FAIL - ${failures.join("; ")}; ${JSON.stringify(measurement)}`);
         } else {
           console.log(
-            `${label} ... PASS - stacked controls and visible model, footer gap=${measurement.gap}px, status clearance=${measurement.safeArea}px`,
+            `${label} ... PASS - one folded row with the model visible and the effort readout dropped, footer gap=${measurement.gap}px, status clearance=${measurement.safeArea}px`,
           );
         }
       }

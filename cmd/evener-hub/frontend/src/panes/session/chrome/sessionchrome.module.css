@@ -68,18 +68,19 @@
   overflow: hidden;
 }
 
-/* Inside a wide one-line folded composer, drop inline-size containment on .body
+/* Inside the one-line folded composer, drop inline-size containment on .body
  * and hug the status content instead of a 200px/356px fixed reservation so
- * short model names return unused width to the message field. */
-@container (min-width: 620px) {
-  :global([data-folded="true"]) .inlineRung {
-    flex: 0 1 auto;
-  }
+ * short model names return unused width to the message field. Unconditional
+ * while folded: the resting card holds one line at every width, so the
+ * status row's container queries read the card from PromptCard's root
+ * container at every folded width, not only the wide one. */
+:global([data-folded="true"]) .inlineRung {
+  flex: 0 1 auto;
+}
 
-  :global([data-folded="true"]) .inlineRung > .body {
-    container-type: normal;
-    flex: 0 1 auto;
-  }
+:global([data-folded="true"]) .inlineRung > .body {
+  container-type: normal;
+  flex: 0 1 auto;
 }
 
 .right {

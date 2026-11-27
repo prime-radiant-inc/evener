@@ -238,23 +238,22 @@
   }
 }
 
-/* On a wide one-line folded card, Attach already clears the left side of the
- * editor via .editorSlot[data-folded="true"], so .leading drops its duplicate
- * Attach inset and hugs the status chrome's actual content width (capped at
- * the compact status rung plus menu) instead of reserving a fixed 356px box.
- * SessionChrome and StatusRow pair with this to drop inline-size containment
- * on .body while folded, returning all unused horizontal space to the field. */
-@container (min-width: 620px) {
-  .leading[data-folded="true"]:not([data-compact="true"]) {
-    flex: 0 1 auto;
-    flex-wrap: nowrap;
-    padding-inline-start: 0;
-    max-width: 356px;
-  }
+/* On the one-line folded card at every width, Attach already clears the left
+ * side of the editor via .editorSlot[data-folded="true"], so .leading drops
+ * its duplicate Attach inset and hugs the status chrome's actual content
+ * width (capped at the compact status rung plus menu) instead of reserving a
+ * fixed 356px box. SessionChrome and StatusRow pair with this to drop
+ * inline-size containment on .body while folded, returning all unused
+ * horizontal space to the field. */
+.leading[data-folded="true"]:not([data-compact="true"]) {
+  flex: 0 1 auto;
+  flex-wrap: nowrap;
+  padding-inline-start: 0;
+  max-width: 356px;
+}
 
-  .leading[data-folded="true"]:not([data-compact="true"]) > .chromeSlot {
-    flex: 0 1 auto;
-  }
+.leading[data-folded="true"]:not([data-compact="true"]) > .chromeSlot {
+  flex: 0 1 auto;
 }
 
 /* The phone's compact resting row keeps only the menu in this slot. Attach is

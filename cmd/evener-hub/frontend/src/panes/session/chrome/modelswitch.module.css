@@ -27,18 +27,6 @@
   }
 }
 
-/* Match the compact status rung inside a one-line folded composer where
- * SessionChrome's .body drops container containment to hug its content. */
-@container (min-width: 620px) {
-  :global([data-folded="true"]) .trigger.triggerShrink {
-    padding-inline: 0;
-  }
-
-  :global([data-folded="true"]) .triggerShrink > .value {
-    min-width: 1rem;
-  }
-}
-
 /* The model id, in this row's caption size. Sans, not mono: an id is an
  * identifier, but this is the row's most-read label and chrome takes the UI
  * face (principle 7, docs/web-ui/decisions.md); the qualified id keeps its
@@ -52,6 +40,18 @@
 
 .chevron {
   composes: quietChevron from "../../../widgets/internal/quietTrigger.module.css";
+}
+
+/* Match the compact status rung inside a one-line folded composer at every
+ * folded width, where SessionChrome's .body drops container containment to
+ * hug its content (sessionchrome.module.css). Sits after .value/.chevron so
+ * the folded overrides keep ascending specificity. */
+:global([data-folded="true"]) .trigger.triggerShrink {
+  padding-inline: 0;
+}
+
+:global([data-folded="true"]) .triggerShrink > .value {
+  min-width: 1rem;
 }
 
 /* The floating panel's own content padding/sizing - widgets/popover supplies
