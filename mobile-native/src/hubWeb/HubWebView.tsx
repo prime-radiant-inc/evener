@@ -11,7 +11,7 @@ import { paletteFor } from "../design/tokens";
 import { haptic } from "../haptics";
 import { workspaceSessionRef } from "../location";
 import { externalMarkdownLink } from "../markdownLinks";
-import { HeaderButton } from "../sheet/HeaderButton";
+import { Button } from "../sheet/Grouped";
 import { ErrorMessage, useColors } from "../ui";
 import { type ButtonFrame, CreateSessionButton, isButtonFrame } from "./CreateSessionButton";
 import { hubPagePath, hubPageSource } from "./hubWebPolicy";
@@ -238,11 +238,20 @@ export function HubWebView({ profile, token, initialPath, onPath, onHubMenu, onD
 	}
 	if (error || !source)
 		return (
-			<SafeAreaView style={{ flex: 1, justifyContent: "center", backgroundColor: palette.canvas }}>
+			<SafeAreaView
+				style={{
+					flex: 1,
+					justifyContent: "center",
+					alignItems: "center",
+					gap: 12,
+					paddingHorizontal: 16,
+					backgroundColor: palette.canvas,
+				}}
+			>
 				<ErrorMessage message={error ?? "Edit the saved token to open this hub on iPhone."} />
-				{source && <HeaderButton label="Try again" strong onPress={retry} />}
-				<HeaderButton label="iPhone settings" onPress={onHubMenu} />
-				<HeaderButton label="Work on this iPhone" onPress={onDeviceWork} />
+				{source && <Button label="Try again" primary compact onPress={retry} />}
+				<Button label="iPhone settings" onPress={onHubMenu} />
+				<Button label="Work on this iPhone" onPress={onDeviceWork} />
 			</SafeAreaView>
 		);
 	const activeHeader = focused && (edgeToolbar || !header?.split) ? header : null;
@@ -255,7 +264,7 @@ export function HubWebView({ profile, token, initialPath, onPath, onHubMenu, onD
 			{hubPalette && <StatusBar style={hubPalette.scheme === "dark" ? "light" : "dark"} />}
 			{loaded && !activeHeader && (!bridgeReady || currentPath.current.startsWith("/thread/")) && (
 				<View style={{ alignItems: "flex-end" }}>
-					<HeaderButton label="iPhone settings" onPress={onHubMenu} />
+					<Button label="iPhone settings" onPress={onHubMenu} />
 				</View>
 			)}
 			<View style={{ flex: 1 }}>
@@ -296,9 +305,18 @@ export function HubWebView({ profile, token, initialPath, onPath, onHubMenu, onD
 					onContentProcessDidTerminate={() => setError("Reopening the hub workspace…")}
 					startInLoadingState
 					renderLoading={() => (
-						<View style={{ position: "absolute", inset: 0, justifyContent: "center", backgroundColor: palette.canvas }}>
+						<View
+							style={{
+								position: "absolute",
+								inset: 0,
+								justifyContent: "center",
+								alignItems: "center",
+								gap: 12,
+								backgroundColor: palette.canvas,
+							}}
+						>
 							<ActivityIndicator accessibilityLabel={`Opening ${profile.name}`} />
-							<HeaderButton label="iPhone settings" onPress={onHubMenu} />
+							<Button label="iPhone settings" onPress={onHubMenu} />
 						</View>
 					)}
 					automaticallyAdjustContentInsets={false}

@@ -9,6 +9,7 @@ import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { Pressable, ScrollView, Text, TextInput, View } from "react-native";
 import { useConnection } from "../ConnectionProvider";
+import { radius } from "../design/tokens";
 import { getNativeMutationRuntime, subscribeNativeIdentities } from "../nativeMutationRuntime";
 import type { Routes } from "../screens";
 import { owningSessionRef, returnToSession } from "../session/returnToSession";
@@ -152,7 +153,9 @@ export function ReviewSheet({ route, navigation }: NativeStackScreenProps<Routes
 				contentContainerStyle={{ padding: 16, gap: 16 }}
 			>
 				<View style={{ gap: 8 }}>
-					<View style={{ flexDirection: "row", borderRadius: 10, backgroundColor: palette.inset, padding: 2 }}>
+					<View
+						style={{ flexDirection: "row", borderRadius: radius.capsule, backgroundColor: palette.inset, padding: 2 }}
+					>
 						{VERDICTS.map((choice) => {
 							const selected = choice.verdict === verdict;
 							return (
@@ -167,7 +170,7 @@ export function ReviewSheet({ route, navigation }: NativeStackScreenProps<Routes
 										minHeight: 44,
 										alignItems: "center",
 										justifyContent: "center",
-										borderRadius: 8,
+										borderRadius: radius.capsule,
 										backgroundColor: selected ? palette.accentBg : undefined,
 									}}
 								>

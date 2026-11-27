@@ -9,6 +9,7 @@ import { AccessibilityInfo, Animated, PanResponder, Pressable, Text, View } from
 import type { BoardState, WhyLine } from "@evener/appwire-client/state/navigation";
 import { StateMark } from "../board/StateMark";
 import { FLOATING_SHADOW } from "../design/underBar";
+import { radius } from "../design/tokens";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { type Alert, type Banner, quiet } from "./alertCenter";
 import { swipeDismisses } from "./bannerGesture";
@@ -191,7 +192,7 @@ export function AlertBanner({
 						columnGap: 10,
 						paddingVertical: 11,
 						paddingHorizontal: 14,
-						borderRadius: 18,
+						borderRadius: radius.toast,
 						borderCurve: "continuous",
 						borderWidth: 1,
 						borderColor: news ? palette.accentEdge : palette.attentionEdge,
