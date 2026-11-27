@@ -34,7 +34,7 @@ import {
 import { useSessionActivity, useSubagentCounts } from "../../stores/sessionActivity";
 import { useThreadsStore } from "../../stores/threads";
 import { EntityViewsProvider, sessionEntityViews } from "../../transcriptDisplay/entityViews";
-import { CloseIcon, FocusScope, IconButton, type TabOption, Tabs } from "../../widgets";
+import { FocusScope, IconButton, type TabOption, Tabs } from "../../widgets";
 import { DisclosurePersistenceContext } from "../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { EdgeResizeHandle } from "../EdgeResizeHandle";
@@ -316,18 +316,14 @@ export function ActivitySidebar({ mobile = false }: { mobile?: boolean }) {
                   />
                   {!scope.ancestryKnown ? <span className={CLASS.pending}>Finding session context…</span> : null}
                 </div>
-                {mobile ? (
-                  <IconButton label="Close Overview" icon={<CloseIcon />} variant="quiet" size="sm" onClick={close} />
-                ) : (
-                  <IconButton
-                    data-overview-toggle=""
-                    label="Hide Overview"
-                    icon={<OverviewIcon />}
-                    variant="quiet"
-                    size="md"
-                    onClick={close}
-                  />
-                )}
+                <IconButton
+                  data-overview-toggle=""
+                  label="Hide Overview"
+                  icon={<OverviewIcon />}
+                  variant="quiet"
+                  size={mobile ? "sm" : "md"}
+                  onClick={close}
+                />
               </div>
               <OverviewTabs
                 key={scope.leaf.ref}

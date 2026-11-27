@@ -1641,8 +1641,10 @@ circular `Meter` ring, Workspace with click-to-copy Directory, Session with one
 `StatusDot` and click-to-copy Session ID, and collapsed Launch settings); saved
 session links live in the dedicated Links tab (Recent or Grouped, filterable,
 hover-underlined labels with hover/focus destination bar and Open beside for
-local files) on both desktop and mobile. Dismissing Overview returns focus to
-the header entry when it still belongs to that session.
+local files) on both desktop and mobile. The overlay's header carries the same
+trailing-panel Hide Overview control as the desktop sidebar, and the session
+header's Overview action remains the outside control. Dismissing Overview
+returns focus to that header entry when it still belongs to that session.
 
 The phone composer keeps Attach, Session actions and Send or Stop while
 collapsed or expanded. It announces current work to assistive technology

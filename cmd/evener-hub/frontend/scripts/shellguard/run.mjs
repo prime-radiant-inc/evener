@@ -1703,7 +1703,7 @@ async function measureOverview(send) {
         !Array.from(e.children).some(child => child.textContent === expected));
       return measure(element, expected);
     });
-    const close = aside.querySelector('button[aria-label="Hide Overview"], button[aria-label="Close Overview"]');
+    const close = aside.querySelector('button[aria-label="Hide Overview"]');
     const resizeHandle = aside.querySelector('[data-testid="overview-resize-handle"]');
     const surface = mobile ? null : Array.from(document.querySelectorAll('[data-testid="statusbar"]'))
       .find(e => !e.closest('[data-pane-footer-fixture]')) ?? null;
@@ -2071,11 +2071,7 @@ async function trustedOverviewFlow(send, viewport, childGesture) {
   }
 
   const dismiss = async (gesture, expectedPane, expectedButton = null) => {
-    if (gesture === "close")
-      await clickControl(
-        send,
-        `${OVERVIEW} button[aria-label="Hide Overview"], ${OVERVIEW} button[aria-label="Close Overview"]`,
-      );
+    if (gesture === "close") await clickControl(send, `${OVERVIEW} button[aria-label="Hide Overview"]`);
     else {
       await evaluate(
         send,

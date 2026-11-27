@@ -859,7 +859,7 @@ test.each(["Close", "Escape"])(
       await screen.findByRole("heading", { name: "Child work" });
       const before = workspaceStore.getState();
       expect(before.focusedPaneId).not.toBe(parentPane);
-      if (dismiss === "Close") await user.click(within(sidebar).getByRole("button", { name: "Close Overview" }));
+      if (dismiss === "Close") await user.click(within(sidebar).getByRole("button", { name: "Hide Overview" }));
       else await user.keyboard("{Escape}");
       // The read-only transcript's ancestor link is gone: the revealed
       // conversation owns the return focus through its own actions control.

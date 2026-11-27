@@ -401,7 +401,7 @@ test("desktop Overview puts its Hide control inside the pane and its Show contro
   expect(screen.getByRole("button", { name: "Show Overview" })).toBeTruthy();
 });
 
-test("the phone keeps its Close Overview control and offers no Show control", async () => {
+test("the phone puts its Hide control inside the pane and offers no edge Show chip", async () => {
   const client = activityClient();
   connectionStore.getState().connect(client);
   installFocusedScope(ref);
@@ -410,7 +410,7 @@ test("the phone keeps its Close Overview control and offers no Show control", as
 
   act(() => activitySidebarStore.getState().openWith("agents"));
   const aside = await screen.findByTestId("activity-sidebar");
-  expect(within(aside).getByRole("button", { name: "Close Overview" })).toBeTruthy();
+  expect(within(aside).getByRole("button", { name: "Hide Overview" })).toBeTruthy();
 });
 
 test("Escape dismisses only an unclaimed sidebar gesture", async () => {
