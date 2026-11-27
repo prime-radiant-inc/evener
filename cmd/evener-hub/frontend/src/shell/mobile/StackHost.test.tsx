@@ -2780,6 +2780,9 @@ test("mobile notes tuck in the reading direction and return on reversal or expli
     scroll(scroller.scrollTop + 4);
     expect(notes.closest("[data-notes-hidden]")).toBeNull();
     expect(bar.getAttribute("data-collapsed")).toBe("true");
+    scroll(0);
+    expect(scroller.scrollTop).toBe(0);
+    expect(bar.getAttribute("data-collapsed")).not.toBe("true");
     host.unmount();
   } finally {
     topNotesStore.getState().resetForTests();

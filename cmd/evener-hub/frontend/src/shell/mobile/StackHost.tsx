@@ -791,7 +791,8 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
     const scroller = collapseScrollerRef.current;
     if (!scroller?.isConnected) return;
     const delta = readingChromeHeightChange(prev, readingChrome, chromeHeightsRef.current);
-    if (delta === 0) return;
+    // At the beginning the first line belongs below the returning controls.
+    if (delta === 0 || lastScrollTopRef.current === 0) return;
     const adjusted = Math.max(0, lastScrollTopRef.current + delta);
     lastScrollTopRef.current = adjusted;
     scroller.scrollTop = adjusted;
