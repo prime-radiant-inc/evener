@@ -176,9 +176,12 @@ func TestGuideDisclosures_BackgroundShellFiresOnceAndPreservesSystemPrefix(t *te
 func TestGuideDisclosures_DelegateFiresOnce(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	childClient := llm.NewClient()
-	childClient.Register(newFakeAdapter("openai", repeatFinalResponse(8, "child done")...))
-	registerTestSessionNamer(childClient)
+	childClientFactory := func() *llm.Client {
+		cc := llm.NewClient()
+		cc.Register(&blockingAdapter{name: "openai", blocked: make(chan struct{})})
+		registerTestSessionNamer(cc)
+		return cc
+	}
 
 	delArgs := json.RawMessage(`{"prompt":"return ok","delegation_allowance":0}`)
 
@@ -210,7 +213,7 @@ func TestGuideDisclosures_DelegateFiresOnce(t *testing.T) {
 				MaxSubagentDepth: 2,
 				StateDir:         t.TempDir(),
 				AgentsDocPath:    filepath.Join(t.TempDir(), "no-AGENTS.md"),
-				testOnly:         testConfig{childClientFactory: func() *llm.Client { return childClient }},
+				testOnly:         testConfig{childClientFactory: childClientFactory},
 			}))
 			defer sess.Close()
 
