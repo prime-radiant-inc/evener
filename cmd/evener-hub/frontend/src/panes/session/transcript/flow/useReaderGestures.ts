@@ -5,6 +5,11 @@ import { isAtBottom, type ScrollMetrics } from "./scrollMetrics";
 import { DRAG_BUTTON_BITS, MIDDLE_BUTTON_BIT, verticalInputCanMovePort } from "./scrollPredicates";
 import type { PendingViewAnchor } from "./viewAnchor";
 
+// Opening offsets and corrections opposite a finger's travel can both look
+// like a reversal. The mobile header needs the last admitted touch direction
+// through momentum, until another input takes over.
+export const readerScrollInput = new WeakMap<Element, "opening" | "followingEnd" | 1 | -1>();
+
 export interface UseReaderGesturesOptions {
   listRef: RefObject<VirtualListHandle | null>;
   measure: (el: HTMLElement) => ScrollMetrics;
@@ -76,6 +81,7 @@ export function useReaderGestures({
     (readerIntent = true, beforeOffset?: number, frames = 1) => {
       const el = listRef.current?.getScrollElement();
       if (readerIntent && el) {
+        readerScrollInput.delete(el);
         pendingViewAnchorRef.current = null;
         pendingBottomJumpRef.current = null;
         readerCallbacksRef.current.onReaderIntent?.();
@@ -312,8 +318,10 @@ export function useReaderGestures({
       const port = listRef.current?.getScrollElement();
       if (!port || event.currentTarget !== port) return;
       // A finger moving UP - clientY decreasing - pushes content down.
-      if (!verticalInputCanMovePort(port, measure(port), event.target, y < last ? 1 : -1)) return;
+      const direction = y < last ? 1 : -1;
+      if (!verticalInputCanMovePort(port, measure(port), event.target, direction)) return;
       markGesture();
+      readerScrollInput.set(port, direction);
     },
     [listRef, markGesture, measure],
   );

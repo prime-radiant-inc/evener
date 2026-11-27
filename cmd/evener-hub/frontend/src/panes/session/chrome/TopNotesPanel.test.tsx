@@ -6,7 +6,7 @@ import { resetMobileViewportForTests } from "../../../shell/useIsMobile";
 import { resetHumanNoteDrafts, useHumanNoteDraft } from "../../../stores/humanNoteDrafts";
 import { putThreadModel, resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
 import { topNotesStore } from "../../../stores/topNotes";
-import { mediaBlock, readModuleCss, topRuleBlock } from "../../../styles/cssBlock";
+import { readModuleCss, topRuleBlock } from "../../../styles/cssBlock";
 import { ALL_CAPABILITIES } from "../../../threadTestUtils";
 import { installMobileViewport } from "../testing/mobileViewport";
 import { TopNotesPanel } from "./TopNotesPanel";
@@ -601,11 +601,11 @@ test("the panel is an inset card with a boundary that cannot clip", () => {
   // (widgets/disclosure's own test asserts it); this card must not restate it.
   expect(css).not.toMatch(/outline:/);
 
-  // Mobile (<=899px): collapsed rests as one quiet centered line on the reading
+  // In the mobile shell, the collapsed summary rests as one quiet centered line on the reading
   // surface with no card chrome and the body's own top spacing; only the
   // expanded card attaches to the header.
   expect(topRuleBlock(css, ".summaryLine")).toContain("color: var(--ink-low)");
-  const mobile = mediaBlock(css, "max-width: 899px");
+  const mobile = topRuleBlock(css, ":global([data-mobile])");
   expect(mobile).toMatch(/\.topNotesPanel:not\(\[data-expanded="true"\]\)\s*\{[^}]*border:\s*none/);
   expect(mobile).toMatch(/\.topNotesPanel:not\(\[data-expanded="true"\]\)\s*\{[^}]*box-shadow:\s*none/);
   expect(mobile).toMatch(/\.topNotesPanel:not\(\[data-expanded="true"\]\)\s*\{[^}]*background:\s*transparent/);

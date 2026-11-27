@@ -1615,7 +1615,8 @@ Hosts, Test runs and Archived sessions follow.
 ## 12. Phone session controls
 
 On session-family panes (`session`, `sessionZoom`, `transcript`), scrolling down
-past the fold (bar height plus the 12px at-top reveal band, floored at 48px)
+past the fold (height of the visible bar and collapsed notes summary, plus
+the 12px at-top reveal band, floored at 48px)
 trades the solid `StackHost` top bar for floating `--radius-pill` blur capsules
 over the transcript while fading the title. Scrolling up 8px, reaching the top,
 or changing panes restores the solid bar, with pre-paint scroll compensation so
@@ -1666,10 +1667,16 @@ Pressing `Escape` clears a non-empty query before dismissing the drawer, and
 `ArrowDown` moves focus into the filtered tree. Desktop (`>= 900px`) keeps the
 header Search palette trigger (`rail-search`) and global `⌘K` shortcut unchanged.
 
-Below 900px, the collapsed whiteboard (session notes) rests as one quiet
+In the mobile workspace, the collapsed whiteboard (session notes) rests as one quiet
 centered line above the transcript — an em-dash-framed count in caption ink
 with no card chrome, keeping the body's own top spacing and growing to the
-44px tap floor on touch. Its first-priority content rides the trigger's
+44px tap floor on touch. The mobile reader tucks the summary away while
+scrolling in the initial reading direction. A deliberate reversal of 8px
+returns the summary at the current reading position. Continuing in that
+direction keeps it in reach. Resuming the initial direction tucks it again.
+An upward gesture restores navigation. Reaching the top or explicitly
+opening Notes restores both the summary and the solid header.
+Its first-priority content rides the trigger's
 accessible name, and expanding opens the header-attached notes card with full
 read and edit controls; desktop keeps its collapsed preview card.
 
