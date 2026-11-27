@@ -5,6 +5,7 @@ import userEvent from "@testing-library/user-event";
 import { IDBFactory } from "fake-indexeddb";
 import { afterEach, beforeAll, beforeEach, expect, onTestFinished, test, vi } from "vitest";
 import { MotionProvider } from "../../../motion";
+import { appliedReceipt } from "../../../mutationReceiptTestUtils";
 import {
   activitySidebarStore,
   resetActivitySidebarStoreForTests,
@@ -611,6 +612,60 @@ test("the focused iPhone composer retries a share after its draft write is rejec
   deliver(path);
   expect(editor.textContent).toBe("incoming edit");
   expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
+});
+
+test("the focused iPhone composer acknowledges a failed draft share after its composition is sent", async () => {
+  const path = "/s/local%3Aone";
+  const previous = window.location.href;
+  window.history.replaceState({}, "", path);
+  const agent = vi.spyOn(navigator, "userAgent", "get").mockReturnValue("EvenerNative/1");
+  const postMessage = vi.fn();
+  vi.stubGlobal("ReactNativeWebView", { postMessage });
+  onTestFinished(() => {
+    window.history.replaceState({}, "", previous);
+    agent.mockRestore();
+    vi.unstubAllGlobals();
+  });
+  const { fake } = await mountComposerWithHandle("local:one", {}, { focused: true });
+  let releaseStart: (() => void) | undefined;
+  fake.on(
+    "turn/start",
+    (params) =>
+      new Promise((resolve) => {
+        releaseStart = () =>
+          resolve({
+            receipt: appliedReceipt(params.clientMutationId, "thread_one"),
+            turn: { id: "turn_one", status: "inProgress", itemsView: "" },
+          });
+      }),
+  );
+  vi.spyOn(localStorage, "setItem").mockImplementationOnce(() => {
+    throw new Error("quota");
+  });
+  act(() =>
+    window.dispatchEvent(
+      new MessageEvent("message", {
+        data: JSON.stringify({ type: "shareText", path, id: "payload", text: "incoming" }),
+      }),
+    ),
+  );
+  expect(screen.getByRole("alert")).toBeTruthy();
+  const user = userEvent.setup();
+  await user.click(screen.getByRole("button", { name: "Send" }));
+  await waitFor(() => expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1));
+  const editor = textarea();
+  await user.type(editor, " later");
+  expect(editor.textContent).toBe(" later");
+  expect(screen.queryByRole("alert")).toBeNull();
+  await act(async () => releaseStart?.());
+  expect(screen.queryByRole("alert")).toBeNull();
+  expect(editor.textContent).toBe(" later");
+  expect(postMessage.mock.calls.map(([raw]) => JSON.parse(raw))).toContainEqual({
+    type: "sharePlaced",
+    id: "payload",
+    path,
+  });
+  expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
 });
 
 test("goal replacement closes slash completion and resets selection", async () => {

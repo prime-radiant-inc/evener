@@ -99,6 +99,7 @@ import { useDuoCoverLayout, useLandscapePhoneLayout, useNarrowComposer } from ".
 import {
   editQueuedPendingTurn,
   refreshPendingTurnsProjection,
+  subscribeComposerSubmissionCommitted,
   useBlockedMutationEntries,
 } from "./queue/pendingTurnsStore";
 import {
@@ -306,6 +307,22 @@ function ComposerWithSubmission({
     tellIPhoneHost({ type: "sharePlaced", id, path });
     setShareWriteFailure((pending) => (pending?.id === id ? null : pending));
   }
+  useEffect(
+    () =>
+      subscribeComposerSubmissionCommitted(
+        (targetRef, _text, _skills, _recovery, _commands, ownerId, submittedShareId) => {
+          if (
+            targetRef === ref &&
+            shareFailureIsCurrent &&
+            ownerId === compositionOwnerId &&
+            submittedShareId === shareWriteFailure?.id
+          ) {
+            setShareWriteFailure((pending) => (pending?.id === submittedShareId ? null : pending));
+          }
+        },
+      ),
+    [compositionOwnerId, ref, shareFailureIsCurrent, shareWriteFailure?.id],
+  );
   useIPhoneShare(focused && !activeRecoveryId ? sharePath : null, (id, text) => {
     if (!sharePath) return;
     if (source.placeShare(id, text)) acknowledgeShare(id, sharePath);

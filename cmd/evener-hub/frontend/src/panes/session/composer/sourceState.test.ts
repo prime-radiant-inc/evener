@@ -64,8 +64,12 @@ test("source restoration retains mixed atom identity and inert prose", () => {
     throw new Error("quota");
   });
   expect(source.placeShare("item-1", "incoming")).toBe(false);
+  expect(source.pendingShareId).toBe("item-1");
+  expect(source.clearPendingShare("other-item")).toBe(false);
   failWrite.mockRestore();
   expect(source.placeShare("item-1", "incoming")).toBe(true);
+  expect(source.pendingShareId).toBeUndefined();
+  expect(source.clearPendingShare("item-1")).toBe(false);
   const restored = createTestComposerSource("root");
   expect(restored.placeShare("item-1", "incoming")).toBe(true);
   expect(readComposerDraft("root")).toMatchObject({ ...value, text: `${text}\n\nincoming` });

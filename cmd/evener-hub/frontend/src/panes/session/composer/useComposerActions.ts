@@ -2,6 +2,7 @@ import { type ComposerMention, NO_ACTIVE_TURN, sessionActionError } from "@evene
 import { ownPendingSend } from "@evener/appwire-client/state/mutation";
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { tellIPhoneHost } from "../../../shell/iPhoneHost";
+import { paneToURL } from "../../../shell/routing";
 import { controlsFor, liveThreadModel, pressLocalRecoveryFenced, pressRefusal } from "../../../stores/liveControls";
 import type { MutationRecoveryRecord } from "../../../stores/mutationOutbox";
 import {
@@ -472,6 +473,7 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
     }
     const submittedLease = recoveryOwnerLeaseRef.current;
     const submittedRecoveryId = submittedLease?.clientMutationId ?? null;
+    const submittedShareId = source.pendingShareId;
     let releaseRecoveryInFlight: (() => void) | null = null;
     const releaseInFlightRecovery = () => {
       releaseRecoveryInFlight?.();
@@ -514,6 +516,15 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
           skillNames: submittedSkillNames,
           commandNames: submittedCommandNames,
           recoveryId: submittedRecoveryId ?? undefined,
+          compositionOwnerId: source.compositionOwnerId,
+          shareId: submittedShareId,
+          onCommitted: () => {
+            if (submittedShareId) {
+              source.clearPendingShare(submittedShareId);
+              const path = paneToURL("session", { ref });
+              if (path) tellIPhoneHost({ type: "sharePlaced", id: submittedShareId, path });
+            }
+          },
           onFailure: (err) => {
             // The branded destination refusal has its own deliberate
             // feedback in the submission's catch: this generic wrapper must

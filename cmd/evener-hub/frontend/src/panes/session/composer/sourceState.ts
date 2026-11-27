@@ -165,6 +165,8 @@ export interface ComposerSourceState {
   claimDraftRevision(): void;
   persistDraft(text: string): void;
   placeShare(id: string, text: string): boolean;
+  readonly pendingShareId: string | undefined;
+  clearPendingShare(id: string): boolean;
   /** `splice` is the exact span the caller's own edit replaced, when it knows
    * it. Passing it keeps a marker the edit did not touch from being read as
    * spliced through (see TextEditor.write). */
@@ -275,6 +277,7 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
   const compositionOwnerId = ownerId ?? defaultCompositionOwner(ref);
   const initial = readComposerDraftSnapshot(ref);
   let shareId = initial.shareId;
+  let pendingShareId: string | undefined;
   const initialAdoption = adoptedAnchorsIn(initial);
   let currentDraftRevisionId = initial.revisionId;
   const state = createStore<ComposerSourceSnapshot>(() => ({
@@ -1201,7 +1204,17 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
       } else if (readComposerDraftSnapshot(ref).shareId !== id) {
         persistDraft(textRef.current);
       }
-      return readComposerDraftSnapshot(ref).shareId === id;
+      const placed = readComposerDraftSnapshot(ref).shareId === id;
+      pendingShareId = placed ? undefined : id;
+      return placed;
+    },
+    get pendingShareId() {
+      return pendingShareId;
+    },
+    clearPendingShare(id) {
+      if (pendingShareId !== id) return false;
+      pendingShareId = undefined;
+      return true;
     },
     writeDraft,
     compositionOwnerId,
