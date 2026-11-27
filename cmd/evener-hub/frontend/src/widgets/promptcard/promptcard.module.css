@@ -217,6 +217,18 @@
   }
 }
 
+/* Editor focus returns the effort picker (statusrow's [data-composer-editing]
+ * exemption), and the restored readout spends width the resting row gave the
+ * field floor: at a 421px card the floor held the model trigger to 0px. Yield
+ * the floor over the exemption's whole range so the picker pays out of the
+ * field, never out of the trigger's usable geometry. */
+@container (width < 620px) {
+  :global([data-composer-editing]) .card[data-folded="true"] .field {
+    flex: 1 1 10ch;
+    min-width: 0;
+  }
+}
+
 .card[data-folded="true"] .controls {
   min-width: 0;
 }

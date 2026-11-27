@@ -764,6 +764,14 @@ function assertFinePointerLandscapeComposer(measurement) {
   }
   if (measurement.foldedCompact) failures.push("a fine-pointer landscape desktop incorrectly compacted its controls");
   if (!measurement.modelTrigger?.visible) failures.push("the fine-pointer resting row lost its model picker");
+  // The model trigger's fully-compressed geometry (zero padding, 1rem value
+  // floor, chevron) is ~30px; below that the row is clipping the picker's
+  // chevron and hit area instead of compressing its facts in priority order.
+  if (measurement.modelTrigger !== null && measurement.modelTrigger.clientWidth < 28) {
+    failures.push(
+      `the model trigger is clipped to ${measurement.modelTrigger.clientWidth}px, below its usable floor`,
+    );
+  }
   if (measurement.editorMinLines !== "1lh") failures.push("the fine-pointer folded field is not one line");
   // The resting row holds ONE line below the old stacked threshold (Jesse's
   // 2026-11-27 ruling): the field and the control row share the line and the
@@ -2061,31 +2069,37 @@ async function main() {
           );
         }
       }
-      const finePointerLandscapeMeasurements = await measureComposerFooter(
-        cdpEndpoint,
-        `http://127.0.0.1:${vitePort}/overflowharness.html?w=572&h=669`,
-        572,
-        safeAreaSupported,
-        {
-          width: 951,
-          height: 669,
-          mobile: false,
-          deviceScaleFactor: 3,
-          touch: false,
-          safeAreas: safeAreaSupported ? [34] : [0],
-          focusStates: ["none", "editor"],
-        },
-      );
-      for (const measurement of finePointerLandscapeMeasurements) {
-        const failures = [...assertComposerFooter(measurement), ...assertFinePointerLandscapeComposer(measurement)];
-        const label = `951x669 fine-pointer landscape composer safe-area=${measurement.safeArea} focus=${measurement.focus}`;
-        if (failures.length > 0) {
-          failed++;
-          console.log(`${label} ... FAIL - ${failures.join("; ")}; ${JSON.stringify(measurement)}`);
-        } else {
-          console.log(
-            `${label} ... PASS - one folded row, ${measurement.focus === "editor" ? "effort picker back for the writer" : "model visible and the effort readout dropped"}, footer gap=${measurement.gap}px, status clearance=${measurement.safeArea}px`,
-          );
+      // A 572px pane puts the card at 524px; a 469px pane puts it just above
+      // the 420px field-floor yield - the band where the editor-focus effort
+      // exemption must not pay for the restored picker out of the model
+      // trigger's usable floor.
+      for (const paneWidth of [572, 469]) {
+        const finePointerLandscapeMeasurements = await measureComposerFooter(
+          cdpEndpoint,
+          `http://127.0.0.1:${vitePort}/overflowharness.html?w=${paneWidth}&h=669`,
+          paneWidth,
+          safeAreaSupported,
+          {
+            width: 951,
+            height: 669,
+            mobile: false,
+            deviceScaleFactor: 3,
+            touch: false,
+            safeAreas: safeAreaSupported ? [34] : [0],
+            focusStates: ["none", "editor"],
+          },
+        );
+        for (const measurement of finePointerLandscapeMeasurements) {
+          const failures = [...assertComposerFooter(measurement), ...assertFinePointerLandscapeComposer(measurement)];
+          const label = `951x669 fine-pointer ${paneWidth}px-pane landscape composer safe-area=${measurement.safeArea} focus=${measurement.focus}`;
+          if (failures.length > 0) {
+            failed++;
+            console.log(`${label} ... FAIL - ${failures.join("; ")}; ${JSON.stringify(measurement)}`);
+          } else {
+            console.log(
+              `${label} ... PASS - one folded row, ${measurement.focus === "editor" ? "effort picker back for the writer" : "model visible and the effort readout dropped"}, footer gap=${measurement.gap}px, status clearance=${measurement.safeArea}px`,
+            );
+          }
         }
       }
       for (const width of [...new Set([320, 390, 430, 460, 540, 760, 899, 900, 1400, ...sweep])]) {
