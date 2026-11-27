@@ -41,7 +41,7 @@ export interface StartFailedAlert {
 
 export type Alert = SessionAlert | NoticeAlert | StartFailedAlert;
 
-/** Hub > In-app alerts (spec 12). Read-only, since the defaults and each
+/** Device-wide alert preferences. Read-only, since the defaults and each
  * snapshot are shared by reference: the store, the center and the page all
  * hold the same object. */
 export interface AlertPreferences {

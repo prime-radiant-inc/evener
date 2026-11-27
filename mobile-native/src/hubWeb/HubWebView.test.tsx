@@ -1,8 +1,10 @@
 import type { NativeStackNavigationOptions } from "@react-navigation/native-stack";
 import { act } from "react-test-renderer";
 import { expect, it, onTestFinished, vi } from "vitest";
+import { DEFAULT_ALERT_PREFERENCES } from "../alerts/alertCenter";
 import { AlertCenter, type HoldKind } from "../alerts/alertCenter";
 import { AlertsContext } from "../alerts/alertsContext";
+import { alertPreferences } from "../alerts/nativeAlertPreferences";
 import { paletteFor } from "../design/tokens";
 import { render, settle, systemGlass } from "../renderNative.testkit";
 import { createShareIntake } from "../share/shareIntake";
@@ -84,6 +86,38 @@ it("delivers a share only to its chosen hub and composer, then accepts that deli
 	expect(intake.busy).toBe(true);
 	expect(offered).toHaveBeenCalledTimes(1);
 });
+
+it("reopens the selected session when an explicit share targets the current workspace URL", () => {
+	const profile = { id: "desk", name: "Desk", origin: "https://desk.example" };
+	const share = {
+		id: "same-session-share",
+		hubId: profile.id,
+		path: "/s/local%3Aone",
+		text: "shared-sentinel",
+		createdAt: "",
+	};
+	const postMessage = vi.fn();
+	const tree = render(
+		<HubWebView
+			profile={profile}
+			token=""
+			initialPath={share.path}
+			onPath={vi.fn()}
+			onHubMenu={vi.fn()}
+			share={share}
+		/>,
+		{ createNodeMock: (node) => (node.type === "WebView" ? { postMessage } : null) },
+	);
+	const message = (data: object, url = profile.origin + share.path) =>
+		act(() =>
+			tree.root.findByType("WebView" as never).props.onMessage({ nativeEvent: { url, data: JSON.stringify(data) } }),
+		);
+	message({ type: "ready", capabilities: { incomingShare: true, needsYouNavigation: true } });
+	message({ type: "shareTarget", path: share.path });
+	const sent = postMessage.mock.calls.map(([raw]) => JSON.parse(raw));
+	expect(sent).toContainEqual({ type: "navigate", path: share.path });
+	expect(sent).toContainEqual({ type: "shareText", path: share.path, id: share.id, text: share.text });
+});
 vi.mock("@react-navigation/native", () => ({
 	useIsFocused: () => native.focused,
 	useNavigation: () => native.navigation,
@@ -94,6 +128,41 @@ vi.mock("react-native-safe-area-context", () => ({
 }));
 vi.mock("../reader/shareDocumentNative", () => ({ shareSessionDocument: native.share }));
 vi.mock("expo-status-bar", () => ({ StatusBar: "StatusBar" }));
+
+it("reads and updates alert preferences through the trusted hub bridge", () => {
+	const profile = { id: "desk", name: "Desk", origin: "https://desk.example" };
+	const postMessage = vi.fn();
+	alertPreferences().set(DEFAULT_ALERT_PREFERENCES);
+	onTestFinished(() => alertPreferences().set(DEFAULT_ALERT_PREFERENCES));
+	const tree = render(<HubWebView profile={profile} token="" initialPath="/" onPath={vi.fn()} onHubMenu={vi.fn()} />, {
+		createNodeMock: (node) => (node.type === "WebView" ? { postMessage } : null),
+	});
+	const message = (data: object, url = profile.origin + "/") =>
+		act(() =>
+			tree.root.findByType("WebView" as never).props.onMessage({ nativeEvent: { url, data: JSON.stringify(data) } }),
+		);
+	const preferences = () => alertPreferences().getSnapshot();
+	const replies = () => postMessage.mock.calls.map(([raw]) => JSON.parse(raw));
+
+	message({ type: "getAlertPreferences" });
+	expect(replies()).toEqual([{ type: "alertPreferences", preferences: DEFAULT_ALERT_PREFERENCES }]);
+
+	message({ type: "setAlertPreference", key: "haptics", value: false });
+	expect(preferences().haptics).toBe(false);
+	expect(replies().at(-1)).toEqual({
+		type: "alertPreferences",
+		preferences: { ...DEFAULT_ALERT_PREFERENCES, haptics: false },
+	});
+
+	const current = preferences();
+	const replyCount = replies().length;
+	message({ type: "setAlertPreference", key: "unknown", value: false });
+	message({ type: "setAlertPreference", key: "failures", value: "false" });
+	message({ type: "getAlertPreferences" }, "https://untrusted.example/");
+	expect(preferences()).toBe(current);
+	expect(replies()).toHaveLength(replyCount);
+	act(() => tree.unmount());
+});
 
 it("preserves a document's share name and releases workspace alert holds with their owners", async () => {
 	const center = new AlertCenter({

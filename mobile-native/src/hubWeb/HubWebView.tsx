@@ -5,6 +5,8 @@ import { ActivityIndicator, Alert, AppState, Linking, View } from "react-native"
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { WebView, type WebViewMessageEvent } from "react-native-webview";
 import { useHoldAlerts, useWorkspaceDocument } from "../alerts/alertsContext";
+import { type AlertPreferences, DEFAULT_ALERT_PREFERENCES } from "../alerts/alertCenter";
+import { alertPreferences } from "../alerts/nativeAlertPreferences";
 import type { HubProfile } from "../connection";
 import { useSystemGlass } from "../design/systemGlass";
 import { paletteFor } from "../design/tokens";
@@ -187,6 +189,24 @@ export function HubWebView({ profile, token, initialPath, onPath, onHubMenu, sha
 			workspaceSessionRef(currentPath.current) === restoringSession &&
 			workspaceSessionRef(initialPath) === restoringSession;
 		switch (data.type) {
+			case "getAlertPreferences":
+				web.current?.postMessage(
+					JSON.stringify({ type: "alertPreferences", preferences: alertPreferences().getSnapshot() }),
+				);
+				break;
+			case "setAlertPreference": {
+				const preferences = alertPreferences();
+				if (
+					typeof data.key !== "string" ||
+					!Object.hasOwn(DEFAULT_ALERT_PREFERENCES, data.key) ||
+					typeof data.value !== "boolean"
+				)
+					break;
+				const key = data.key as keyof AlertPreferences;
+				preferences.set({ [key]: data.value });
+				web.current?.postMessage(JSON.stringify({ type: "alertPreferences", preferences: preferences.getSnapshot() }));
+				break;
+			}
 			case "shareTarget":
 				if (data.path === new URL(nativeEvent.url).pathname) setShareTarget({ path: data.path });
 				break;

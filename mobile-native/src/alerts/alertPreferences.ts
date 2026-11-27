@@ -1,5 +1,4 @@
-// Hub > In-app alerts (spec 12), kept per device: the switches describe how
-// this phone interrupts you, whichever hub it is connected to.
+// Alert preferences describe how this phone interrupts you across saved hubs.
 import type { SyncStringStorage } from "../syncStringStorage";
 import { type AlertPreferences, DEFAULT_ALERT_PREFERENCES } from "./alertCenter";
 
