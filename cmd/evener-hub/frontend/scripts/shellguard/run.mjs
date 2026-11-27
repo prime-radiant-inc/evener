@@ -1157,22 +1157,64 @@ async function measureTabletSplit(page) {
     if (scroller) scroller.scrollTop = 0;
   })()`,
   );
-  async function dragDivider(handle, x) {
-    const cx = handle.left + handle.width / 2;
-    const cy = handle.top + handle.height / 2;
-    await send("Input.dispatchMouseEvent", { type: "mouseMoved", x: cx, y: cy });
-    await send("Input.dispatchMouseEvent", { type: "mousePressed", x: cx, y: cy, button: "left", clickCount: 1 });
-    await send("Input.dispatchMouseEvent", { type: "mouseMoved", x, y: cy, button: "left", buttons: 1 });
-    await waitForDom(send, `(() => {
-      const board = document.querySelector('[data-testid="board-column"]');
-      return board?.getBoundingClientRect().width === Number(board?.querySelector('[role="separator"]')?.getAttribute('aria-valuenow'));
-    })()`, "tablet drag width published before pointerup");
-    await send("Input.dispatchMouseEvent", { type: "mouseReleased", x, y: cy, button: "left", clickCount: 1 });
-    return evaluate(send, snapState);
+  // The separator strip is only 8px wide, and the Board can still be moving
+  // when a rect captured in an earlier round trip has gone stale, so each
+  // drag press samples the live, hittable handle center in the round trip
+  // before it goes down, and takes its destination from the same sample (a
+  // number x drags to that viewport coordinate; a function x gets the sample
+  // and returns one). The drag only counts once the Board's rendered width
+  // moved off the baseline captured with that sample and matches the
+  // published aria-valuenow; a press whose width never moved is retried
+  // with a fresh sample, so a mover between the sample and the press cannot
+  // fail the guard on the board it left behind. The advertised limits stay
+  // asserted in assertTabletSplit, so the gate only distinguishes a
+  // published resize from a missed press. The double-click reset below still
+  // presses a rect from the snapshot it is resetting; its one-round-trip
+  // window risks only its own loud width-restore assertion.
+  async function dragDivider(x) {
+    const missed = [];
+    for (let i = 0; i < 3; i++) {
+      const sample = await waitForValue(send, `(() => {
+      const board = document.querySelector('[data-testid="board-column"]:not([inert]):not([data-motion])');
+      const handle = board?.querySelector('[role="separator"]');
+      if (!board || !handle) return null;
+      const r = handle.getBoundingClientRect();
+      if (r.width <= 0 || r.height <= 0) return null;
+      const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+      if (!hit || !handle.contains(hit)) return null;
+      return { cx: r.left + r.width / 2, cy: r.top + r.height / 2,
+        boardWidth: board.getBoundingClientRect().width };
+    })()`, "settled, hittable tablet divider");
+      const where = typeof x === "function" ? x(sample) : x;
+      await send("Input.dispatchMouseEvent", { type: "mouseMoved", x: sample.cx, y: sample.cy });
+      await send("Input.dispatchMouseEvent", { type: "mousePressed", x: sample.cx, y: sample.cy, button: "left", clickCount: 1 });
+      await send("Input.dispatchMouseEvent", { type: "mouseMoved", x: where, y: sample.cy, button: "left", buttons: 1 });
+      let armed = false;
+      try {
+        await waitForDom(send, `(() => {
+        const board = document.querySelector('[data-testid="board-column"]:not([inert]):not([data-motion])');
+        const width = board?.getBoundingClientRect().width;
+        return width !== undefined && width !== ${sample.boardWidth}
+          && width === Number(board?.querySelector('[role="separator"]')?.getAttribute('aria-valuenow'));
+      })()`, "tablet drag moved and published its width before pointerup");
+        armed = true;
+      } catch (error) {
+        missed.push(JSON.stringify(await evaluate(send, `(() => {
+        const board = document.querySelector('[data-testid="board-column"]:not([inert])');
+        const handle = board?.querySelector('[role="separator"]');
+        const r = handle?.getBoundingClientRect();
+        return { baseline: ${sample.boardWidth}, width: board?.getBoundingClientRect().width,
+          now: Number(handle?.getAttribute('aria-valuenow')), handle: r ? { left: r.left, width: r.width } : null };
+      })()`)));
+      }
+      await send("Input.dispatchMouseEvent", { type: "mouseReleased", x: where, y: sample.cy, button: "left", clickCount: 1 });
+      if (armed) return evaluate(send, snapState);
+    }
+    throw new Error(`tablet divider drag never moved the Board width: ${JSON.stringify(missed)}`);
   }
   let resized = null;
   if (open.resizeHandle && open.resizeHandle.width > 0 && open.resizeHandle.height > 0) {
-    resized = await dragDivider(open.resizeHandle, open.resizeHandle.left + open.resizeHandle.width / 2 + 60);
+    resized = await dragDivider((sample) => sample.cx + 60);
     const resetHandle = resized.resizeHandle ?? open.resizeHandle;
     const rx = resetHandle.left + resetHandle.width / 2;
     const ry = resetHandle.top + resetHandle.height / 2;
@@ -1237,17 +1279,13 @@ async function measureTabletSplit(page) {
   if (!(await evaluate(send, focusedToggle))) throw new Error("expanding the tablet board lost keyboard focus");
   await send("Emulation.setTouchEmulationEnabled", { enabled: false });
   await applyViewport(send, { width: 768, height: TABLET_VIEWPORT.height });
-  // The Board spring moves the separator after the browser's own animations finish.
-  const divider = await waitForValue(send, `(() => {
-    const handle = document.querySelector('[data-testid="board-column"]:not([inert]):not([data-motion]) [role="separator"]');
-    if (innerWidth !== 768 || !handle) return null;
-    const r = handle.getBoundingClientRect();
-    const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
-    return handle.contains(hit) && r.toJSON();
-  })()`, "settled, hittable tablet divider at 768px");
+  // dragDivider samples the live, settled, hittable separator itself before
+  // each press, so this wait only needs the viewport change to have taken.
+  await waitForDom(send, `innerWidth === 768 && document.querySelector('[data-testid="board-column"] [role="separator"]')`,
+    "tablet viewport 768 with the board divider mounted");
   const pointer = await evaluate(send, `({ fine: matchMedia('(pointer: fine)').matches, coarse: matchMedia('(any-pointer: coarse)').matches })`);
-  const narrowest = await dragDivider(divider, 1);
-  const wideDrag = await dragDivider(narrowest.resizeHandle, 700);
+  const narrowest = await dragDivider(1);
+  const wideDrag = await dragDivider(700);
   await evaluate(send, `document.querySelector('[data-testid="board-column"] [role="separator"]').focus({ preventScroll: true })`);
   await pressKey(send, "Home", "Home", 36);
   const home = await evaluate(send, snapState);
