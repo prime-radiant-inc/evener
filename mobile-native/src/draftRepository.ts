@@ -389,17 +389,6 @@ export class DraftRepository {
 		return new Set(rows.map((row) => row.session_ref));
 	}
 
-	hasEditorDraft(destination: DraftDestination): boolean {
-		if (this.refsWithDrafts(destination.hubId).has(destination.sessionRef)) return true;
-		const answers = this.questionRow(destination);
-		return (
-			!!answers &&
-			Object.values(decodeQuestionSelections(answers.selections)).some(
-				({ resolution, note }) => resolution !== null || note.length > 0,
-			)
-		);
-	}
-
 	removeHub(hubId: string): void {
 		this.creation.clear(hubId);
 		this.db.runSync("DELETE FROM draft_image_sets WHERE hub_id = ?", hubId);

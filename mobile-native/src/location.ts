@@ -9,7 +9,6 @@ import type { SyncStringStorage } from "./syncStringStorage";
 export interface SavedLocation {
 	hubId: string;
 	webPath?: string;
-	deviceWork?: true;
 	conversation?: { ref: string; title: string };
 	reader?: {
 		sessionRef: string;
@@ -147,7 +146,6 @@ export class LocationRepository {
 		return {
 			hubId: value.hubId,
 			...(webPath && { webPath }),
-			...(value.deviceWork === true ? { deviceWork: true as const } : {}),
 			...(projects(value.projects) ? { projects: value.projects } : {}),
 			...(target ? { fork: target } : {}),
 			...(pinned(value.pinned) ? { pinned: value.pinned } : {}),
@@ -412,21 +410,13 @@ export function restoredStack(location: SavedLocation | null) {
 	return { index: routes.length - 1, routes };
 }
 
-/** The native record holds screen-specific recovery details. A normal session
- * opens at its hub URL; an explicitly opened device draft keeps its editor. */
+/** A saved phone location opens in its hub's workspace. */
 export function phoneLaunchStack(location: SavedLocation | null) {
-	const device = restoredStack(location);
-	if (!location) return device;
-	const { hubId, conversation } = location;
-	const path = location.webPath ?? (conversation ? workspaceSessionPath(conversation.ref) : "/");
-	const workspace = { name: "Workspace", params: { hubId, path } };
-	const routes = device.routes.slice(0, 1);
-	routes.push(workspace);
-	const detail = device.routes.some((route) => !["Hubs", "Sessions", "Conversation"].includes(route.name));
-	if (!location.webPath && (location.deviceWork || detail)) {
-		routes.push(...device.routes.slice(1));
-	}
-	return { index: routes.length - 1, routes };
+	const hubs = { name: "Hubs" };
+	if (!location) return { index: 0, routes: [hubs] };
+	const { hubId, webPath, conversation } = location;
+	const path = webPath ?? (conversation ? workspaceSessionPath(conversation.ref) : "/");
+	return { index: 1, routes: [hubs, { name: "Workspace", params: { hubId, path } }] };
 }
 
 export function workspaceSessionPath(ref: string): string {

@@ -682,15 +682,6 @@ test("refsWithDrafts names the sessions with typed, unconfirmed or image-only dr
 	expect(repository.refsWithDrafts("hub-c").size).toBe(0);
 });
 
-test("the native editor can recover a question selection without a composer draft", () => {
-	expect(repository.hasEditorDraft(destination)).toBe(false);
-	repository.writeQuestions(destination, questionSignature, { "call:0": { resolution: null, note: "clarify" } });
-	expect(repository.hasEditorDraft(destination)).toBe(true);
-	expect(repository.hasEditorDraft({ ...destination, hubId: "other" })).toBe(false);
-	repository.writeQuestions(destination, questionSignature, { "call:0": { resolution: null, note: "" } });
-	expect(repository.hasEditorDraft(destination)).toBe(false);
-});
-
 test("composer-only records survive file reopen and clean up without any acknowledgment fields", () => {
 	const destination = { hubId: "hub-composer", sessionRef: "selection-only" };
 	for (const metadata of [{ skillNames: ["skill"] }, { commandNames: ["command"] }, { recoveryIds: ["source"] }]) {

@@ -12,7 +12,7 @@ import { clearHubWebData } from "./hubWeb/clearHubWebData";
 import { useHubConnection } from "./hubConnection";
 import { HubSelection } from "./hubSelection";
 import type { SavedLocation } from "./location";
-import { drafts, nativeDrafts } from "./nativeDrafts";
+import { drafts } from "./nativeDrafts";
 import { locations } from "./nativeLocation";
 import { removeOrganizationData } from "./nativeOrganization";
 import { readerPositions } from "./nativeReaderPosition";
@@ -25,7 +25,6 @@ import { forgetSubagentTrees } from "./subagents/subagentTree";
 import { forgetHistoryForHub } from "./session/historyMemory";
 import { forgetDetailLevelsForHub } from "./session/nativeDetailLevels";
 import { forgetNoteDrafts } from "./session/sessionNotes";
-import { usesHubWorkspace } from "./workspaceAvailability";
 
 const repository = new HubProfiles(SecureStore);
 interface Connection {
@@ -99,19 +98,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
 			.then((value) => {
 				if (!cancelled) {
 					try {
-						let location = locations.read(value.map((profile) => profile.id));
-						if (usesHubWorkspace() && location?.conversation && !location.deviceWork && !location.webPath) {
-							// A session saved by the native editor can still have unsent work.
-							// If storage is unavailable, its editor owns the recovery.
-							let keepEditor = true;
-							try {
-								keepEditor = nativeDrafts().hasEditorDraft({
-									hubId: location.hubId,
-									sessionRef: location.conversation.ref,
-								});
-							} catch {}
-							if (keepEditor) location = { ...location, deviceWork: true };
-						}
+						const location = locations.read(value.map((profile) => profile.id));
 						setInitialLocation(location);
 						selection.restore(location?.hubId ?? null);
 					} catch {

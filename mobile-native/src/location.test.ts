@@ -14,7 +14,7 @@ function storage() {
 	};
 }
 describe("last mobile location", () => {
-	it("reopens the web session for the saved hub and preserves a native editor explicitly used for device work", () => {
+	it("reopens the saved hub and session in the workspace from any previous phone screen", () => {
 		const disk = new LocationRepository(storage());
 		const session = { ref: "remote:one/two", title: "One" };
 		const workspace = { name: "Workspace", params: { hubId: "hub", path: "/s/remote%3Aone%2Ftwo" } };
@@ -23,11 +23,9 @@ describe("last mobile location", () => {
 		disk.save(locationForRoute(workspace, "hub"));
 		expect(phoneLaunchStack(disk.read(["hub"])).routes.at(-1)).toEqual(workspace);
 		expect(locationForRoute(workspace, "other")).toEqual({ hubId: "other", webPath: "/" });
-		disk.save({ hubId: "hub", conversation: session, deviceWork: true });
-		expect(phoneLaunchStack(disk.read(["hub"])).routes.at(-1)).toEqual({
-			name: "Conversation",
-			params: { hubId: "hub", ...session },
-		});
+		disk.save({ hubId: "hub", conversation: session, pinAssignment: true });
+		expect(phoneLaunchStack(disk.read(["hub"])).routes).toEqual([{ name: "Hubs" }, workspace]);
+		expect(phoneLaunchStack(disk.read([])).routes).toEqual([{ name: "Hubs" }]);
 	});
 	it("restores only the workspace context owned by the selected route", () => {
 		const disk = new LocationRepository(storage());
@@ -42,7 +40,10 @@ describe("last mobile location", () => {
 			["/settings/hosts?host=studio&token=capability", "/"],
 		]) {
 			disk.save(locationForRoute({ name: "Workspace", params: { hubId: "hub", path: opened } }, "hub"));
-			expect(phoneLaunchStack(disk.read(["hub"])).routes.at(-1)?.params).toEqual({ hubId: "hub", path: restored });
+			expect(phoneLaunchStack(disk.read(["hub"])).routes.at(-1)).toEqual({
+				name: "Workspace",
+				params: { hubId: "hub", path: restored },
+			});
 		}
 	});
 	it("returns an old unbound Reader to its saved owning conversation without erasing other storage", () => {
