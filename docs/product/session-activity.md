@@ -1199,7 +1199,11 @@ inspection keeps its active tab while drilling; both desktop and mobile use the
 same underline tablist). The menu's
 optional active count sums the subagents running at every depth and the
 session's own running jobs, only when both are known; watches and completed work
-are not part of that number. The sidebar's Jobs, Watches and Tasks tabs use
+are not part of that number. On desktop the sidebar's header carries a Hide
+Overview toggle using the trailing-panel symbol, and a closed sidebar offers the
+same symbol as a Show Overview chip at the shell's right edge, mirroring the
+navigation rail's Hide sidebar / Show sidebar pair. The phone keeps Close
+Overview in the header and adds no edge chip. The sidebar's Jobs, Watches and Tasks tabs use
 session-scoped reads on both viewports, while About and Links use the shared
 session model on both desktop and mobile (About rendering the calm five-group
 details body with inline-editable Goal, and Links rendering saved session links

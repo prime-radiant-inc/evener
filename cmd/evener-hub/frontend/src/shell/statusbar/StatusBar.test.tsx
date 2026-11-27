@@ -93,7 +93,7 @@ test.each(["button", "Escape"])("closing activity with %s restores its keyboard 
   const opener = await screen.findByRole("button", { name: /Jobs, 2 of 201 running/ });
   opener.focus();
   await user.keyboard("{Enter}");
-  const close = await screen.findByRole("button", { name: "Close Overview" });
+  const close = await screen.findByRole("button", { name: "Hide Overview" });
   close.focus();
   await user.keyboard(gesture === "button" ? "{Enter}" : "{Escape}");
   expect(activitySidebarStore.getState().open).toBe(false);
@@ -128,7 +128,7 @@ test("an open activity sidebar returns focus to the latest pane's replacement ch
   await user.click(await within(second.container).findByRole("button", { name: /Jobs, 2 of 201 running/ }));
 
   expect(focusedPaneWhenSidebarChanged).toBe("pane-second");
-  const close = await screen.findByRole("button", { name: "Close Overview" });
+  const close = await screen.findByRole("button", { name: "Hide Overview" });
   close.focus();
   second.unmount();
   const replacement = render(<StatusBar sessionRef="remote:second" paneId="pane-second" leading={null} />);
@@ -177,7 +177,7 @@ test("closing after a transient opener disappears returns to the selected activi
   );
   await user.click(screen.getByRole("button", { name: "Inspect job activity" }));
   trigger.unmount();
-  await user.click(await screen.findByRole("button", { name: "Close Overview" }));
+  await user.click(await screen.findByRole("button", { name: "Hide Overview" }));
   expect(document.activeElement).toBe(screen.getByRole("button", { name: /Jobs, 2 of 201 running/ }));
 });
 

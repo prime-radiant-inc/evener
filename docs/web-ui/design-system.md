@@ -1235,6 +1235,11 @@ instant under `prefers-reduced-motion: reduce`. Initial mount and restoration, b
 crossings, data or reconnect updates, and non-edge content swaps (tab switches, dock pane
 changes, settings sections) change immediately without sliding.
 
+Each desktop docked rail carries its Hide toggle just inside its own header and, once hidden,
+a Show chip at the same shell edge: Show sidebar for the left rail, Show Overview for the
+right Overview sidebar. The control uses that rail's symbol (`sidebar.leading` or
+`sidebar.trailing`), so the inside toggle and the edge chip read as the same control.
+
 ---
 
 ## 6. Copy rules

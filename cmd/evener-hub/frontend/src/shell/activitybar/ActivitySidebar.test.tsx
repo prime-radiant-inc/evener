@@ -246,7 +246,7 @@ test("closed sidebar owns no read and an open tab observes only its own collecti
   await screen.findByText("No jobs at this level.");
   expect(client.calls.filter((c) => c.method === "evener/thread/jobs/list")).toHaveLength(1);
   expect(client.calls.filter((c) => c.method === "thread/read")).toHaveLength(1);
-  fireEvent.click(screen.getByRole("button", { name: "Close Overview" }));
+  fireEvent.click(screen.getByRole("button", { name: "Hide Overview" }));
   await waitFor(() => expect(sessionActivitySnapshot(client, ref, "session")).toBeNull());
 });
 
@@ -379,6 +379,38 @@ test("the sidebar's focus scope is its flex body, not a wrapper around it", asyn
   const root = sidebar.firstElementChild;
   expect(root?.classList.contains(requireClass(styles.focusBody, "activitybar.module.css", "focusBody"))).toBe(true);
   expect(root?.getAttribute("tabindex")).toBe("-1");
+});
+
+test("desktop Overview puts its Hide control inside the pane and its Show control outside it", async () => {
+  const client = activityClient();
+  connectionStore.getState().connect(client);
+  installFocusedScope(ref);
+  mount();
+
+  const show = screen.getByRole("button", { name: "Show Overview" });
+  expect(show.closest('[data-testid="activity-sidebar"]')).toBeNull();
+  expect(screen.queryByTestId("activity-sidebar")).toBeNull();
+
+  fireEvent.click(show);
+  const aside = await screen.findByTestId("activity-sidebar");
+  const hide = within(aside).getByRole("button", { name: "Hide Overview" });
+  expect(screen.queryByRole("button", { name: "Show Overview" })).toBeNull();
+
+  fireEvent.click(hide);
+  await waitFor(() => expect(screen.queryByTestId("activity-sidebar")).toBeNull());
+  expect(screen.getByRole("button", { name: "Show Overview" })).toBeTruthy();
+});
+
+test("the phone keeps its Close Overview control and offers no Show control", async () => {
+  const client = activityClient();
+  connectionStore.getState().connect(client);
+  installFocusedScope(ref);
+  mount(true);
+  expect(screen.queryByRole("button", { name: "Show Overview" })).toBeNull();
+
+  act(() => activitySidebarStore.getState().openWith("agents"));
+  const aside = await screen.findByTestId("activity-sidebar");
+  expect(within(aside).getByRole("button", { name: "Close Overview" })).toBeTruthy();
 });
 
 test("Escape dismisses only an unclaimed sidebar gesture", async () => {

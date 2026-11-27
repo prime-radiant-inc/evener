@@ -469,7 +469,7 @@ test("reopening during sidebar exit resumes the same viewport and its pending an
   const original = viewport();
   const boundary = Visibility.latest();
   vi.useFakeTimers();
-  fireEvent.click(screen.getByRole("button", { name: "Close Overview" }));
+  fireEvent.click(screen.getByRole("button", { name: "Hide Overview" }));
   // Real AnimatePresence keeps its one exiting aside mounted until motion ends.
   expect(original.isConnected).toBe(true);
   act(() => boundary.emit(true));
@@ -505,7 +505,7 @@ test.each(["tab", "scope", "completed exit"])(
     const obsoleteBody = viewport();
     const obsoleteBoundary = Visibility.latest();
     if (replacement !== "completed exit") vi.useFakeTimers();
-    fireEvent.click(screen.getByRole("button", { name: "Close Overview" }));
+    fireEvent.click(screen.getByRole("button", { name: "Hide Overview" }));
     expect(obsoleteBody.isConnected).toBe(true);
     if (replacement === "tab") {
       act(() => activitySidebarStore.getState().openWith("watches"));

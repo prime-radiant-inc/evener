@@ -59,9 +59,10 @@
  * class (the activity sidebar mounts as a LATER sibling in .content, so a bare
  * :last-child rule would jump to it when open); the :last-child fallback keeps
  * the mobile StackHost and the NotFound page, which never share the row with
- * the aside. */
+ * the aside. The closed Overview's Show chip is also a later sibling and must
+ * keep its own width, so the fallback skips it by its marker attribute. */
 .content > .workspaceColumn,
-.content > :last-child:not(aside) {
+.content > :last-child:not(aside, [data-overview-chip]) {
   flex: 1 1 auto;
   min-width: 0;
 }

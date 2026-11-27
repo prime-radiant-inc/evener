@@ -70,6 +70,19 @@ export function SidebarIcon() {
   );
 }
 
+// The trailing-panel twin of SidebarIcon (design-system.md's action-symbol
+// table): the session header's Overview action and the Overview sidebar's own
+// Show/Hide toggle draw this one glyph, as the Sessions rail draws SidebarIcon
+// for both of its states.
+export function OverviewIcon() {
+  return (
+    <svg {...CONTROL_ICON} aria-hidden="true">
+      <rect x="2" y="3" width="12" height="10" rx="1.5" {...STROKE} />
+      <path d="M10 3v10" {...STROKE} />
+    </svg>
+  );
+}
+
 export function MoreIcon() {
   return (
     <svg {...CONTROL_ICON} aria-hidden="true" fill="currentColor">
