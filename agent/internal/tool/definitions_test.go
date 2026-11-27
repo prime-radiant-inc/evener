@@ -176,6 +176,19 @@ func TestDefShellHasExecutionMode(t *testing.T) {
 	if _, exists := props["background"]; exists {
 		t.Fatal("legacy background property is still exposed")
 	}
+
+	noDetachProps := DefShellWithDetach(false).Parameters["properties"].(map[string]any)
+	noDetachMode, ok := noDetachProps["mode"].(map[string]any)
+	if !ok {
+		t.Fatal("DefShellWithDetach(false) missing mode property")
+	}
+	wantNoDetach := []any{"foreground", "background"}
+	if got := noDetachMode["enum"]; !reflect.DeepEqual(got, wantNoDetach) {
+		t.Fatalf("DefShellWithDetach(false) mode enum = %#v, want %#v", got, wantNoDetach)
+	}
+	if desc, _ := noDetachMode["description"].(string); strings.TrimSpace(desc) == "" {
+		t.Fatal("DefShellWithDetach(false) mode description is empty")
+	}
 }
 
 func TestDefDelegateParamsAndEnum(t *testing.T) {
@@ -1009,7 +1022,7 @@ func TestDefAskUserSchema(t *testing.T) {
 // same commit that adds it.
 // TestDefReadFileSliceParamsDocumented pins the offset/limit semantics: offset
 // is a 1-based start line that also accepts negative tail reads, and limit
-// defaults to 2000 lines with limit=1 returning a single long line uncut
+// defaults to DefaultReadLines lines with limit=1 returning a single long line uncut
 // (matching LocalExecutionEnvironment.ReadFile's actual defaults).
 func TestDefReadFileSliceParamsDocumented(t *testing.T) {
 	def := DefReadFile()
@@ -1030,8 +1043,8 @@ func TestDefReadFileSliceParamsDocumented(t *testing.T) {
 	if !strings.Contains(offsetDesc, "1-based") || !strings.Contains(offsetDesc, "negative") {
 		t.Errorf("offset description should document a 1-based start line and negative tail reads, got: %q", offsetDesc)
 	}
-	if !strings.Contains(limitDesc, "2000") || !strings.Contains(limitDesc, "uncut") {
-		t.Errorf("limit description should document the default of 2000 and the limit=1 uncut escape, got: %q", limitDesc)
+	if !descriptionMentions(limitDesc, 2000) || !descriptionMentions(limitDesc, execenv.DefaultReadLines) || !strings.Contains(limitDesc, "48 KB") || !strings.Contains(limitDesc, "uncut") {
+		t.Errorf("limit description should document the default of %d (~48 KB cap) and the limit=1 uncut escape, got: %q", execenv.DefaultReadLines, limitDesc)
 	}
 }
 

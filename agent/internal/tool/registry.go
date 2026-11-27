@@ -36,7 +36,7 @@ import (
 // row grammar wants it most (plain file reads), but a missing rationale must
 // not fail at dispatch, where the retry breaker would park repeated
 // legacy-shaped calls.
-const toolIntentDescription = "Verb-first gerund stating your hypothesis and desired outcome (e.g. \"Reading config to find the active profile\")."
+const toolIntentDescription = "Verb-first gerund stating goal and expected outcome."
 
 // MaxToolArgumentBytes caps the size of a tool call's raw argument payload
 // before it is parsed, so a runaway generation can't push a multi-hundred-KB
