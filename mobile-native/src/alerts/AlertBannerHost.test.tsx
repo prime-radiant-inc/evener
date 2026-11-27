@@ -138,11 +138,11 @@ it.each(["Workspace", "Hubs"])(
 		if (screen === "Workspace") {
 			await act(async () => navigation.navigate("Workspace", { hubId: "hub-1", path: "/" }));
 		}
-		const priorKeys = navigation.getRootState().routes.map((route) => route.key);
+		const priorKeys = navigation.getRootState()?.routes.map((route) => route.key) ?? [];
 		const tree = render(<AlertBannerHost navigation={navigation} />);
 		act(() => harness.center?.offer(session("local:a")));
 		await act(async () => tree.root.find((node) => node.props.accessibilityRole === "button").props.onPress());
-		const routes = navigation.getRootState().routes;
+		const routes = navigation.getRootState()?.routes ?? [];
 		expect(routes.map((route) => route.name)).toEqual(["Hubs", "Workspace"]);
 		expect(routes.slice(0, priorKeys.length).map((route) => route.key)).toEqual(priorKeys);
 		expect(navigation.getCurrentRoute()?.params).toEqual({ hubId: "hub-1", path: "/s/local%3Aa" });
