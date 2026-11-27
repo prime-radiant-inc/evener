@@ -49,7 +49,6 @@
  */
 .root[data-chrome="wash"] {
   padding: var(--space-1);
-  border-radius: var(--radius-pane);
   background: transparent;
   color: var(--ink-mid);
 }

@@ -1,12 +1,12 @@
 .region {
   position: fixed;
-  bottom: var(--space-4);
-  right: var(--space-4);
+  bottom: calc(var(--space-4) + var(--dock-clearance) + var(--keyboard-inset, 0px));
+  right: calc(var(--space-4) + var(--home-safe-right, 0px));
   z-index: var(--z-toast);
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
-  max-width: 360px;
+  max-width: min(360px, calc(100% - 2 * var(--space-4) - var(--home-safe-left, 0px) - var(--home-safe-right, 0px)));
 }
 
 /* A toast is an arrival that asks for the user: it floats in and out (the
@@ -17,7 +17,11 @@
   /* biome-ignore lint/suspicious/noDuplicateProperties: css-modules composes takes one declaration per composed class, each with its own `from` */
   composes: panel from "../../styles/floatingSurface.module.css";
   transform-origin: right bottom;
+  display: grid;
+  align-content: center;
+  min-height: calc(2 * var(--radius-toast));
   padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-toast);
   border-color: var(--tone-edge);
   background: var(--tone-bg);
 }
@@ -28,6 +32,7 @@
   font-size: var(--font-size-ui);
   line-height: var(--line-height-body);
   color: var(--tone-ink);
+  overflow-wrap: anywhere;
 }
 
 /* --- kind -> semantic tone -------------------------------------------

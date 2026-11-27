@@ -122,10 +122,9 @@
   background-color: transparent;
 }
 
-/* The close button's hover wash is a small rounded square, not dockview's
- * 2px corner. */
-.dockview-theme-evener .dv-tab .dv-default-tab .dv-default-tab-action:hover {
-  border-radius: var(--radius-chip);
+/* Match the circular close control used by Evener's own toolbars. */
+.dockview-theme-evener .dv-tab .dv-default-tab .dv-default-tab-action {
+  border-radius: var(--radius-pill);
 }
 
 /* kata 491q: the tab-overflow popover (dockview-core's own control, shown

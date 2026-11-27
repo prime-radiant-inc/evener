@@ -190,7 +190,7 @@
 .topBarCollapsed .leading:not(:empty),
 .topBarCollapsed .trailing:not(:empty) {
   pointer-events: auto;
-  border-radius: var(--radius-pane);
+  border-radius: var(--radius-pill);
   background: color-mix(in oklab, var(--surface-1) 88%, transparent);
   -webkit-backdrop-filter: blur(16px);
   backdrop-filter: blur(16px);

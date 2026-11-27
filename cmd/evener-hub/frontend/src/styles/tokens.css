@@ -194,10 +194,11 @@
    * frame (PaneScaffold), tables and side sheets stay square; the bottom
    * sheet rounds its top corners on the panel step. */
   --radius-chip: 6px; /* keycaps, small inline tags, tight inner corners */
-  --radius-control: 8px; /* buttons, fields, rows, tooltips */
-  --radius-pane: 12px; /* cards, code/diff blocks, menus, dialogs, popovers, toasts */
-  --radius-panel: 16px; /* the largest surfaces: prompt card, notes panel, the bottom sheet's top corners */
-  --radius-pill: 999px; /* pill geometry: chips, badges, tracks, counters */
+  --radius-control: 8px; /* fields, rows, tooltips */
+  --radius-pane: 12px; /* cards, code/diff blocks, menus, dialogs, popovers */
+  --radius-panel: 16px; /* prompt card, notes panel, the bottom sheet's top corners */
+  --radius-toast: 22px; /* a 44pt capsule that can grow into a multiline notice */
+  --radius-pill: 999px; /* action buttons, chips, badges, tracks, counters */
 
   /* --- focus ring ------------------------------------------------------
    * THE focus treatment: every :focus-visible (or :focus-within proxy) ring

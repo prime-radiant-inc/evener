@@ -144,7 +144,7 @@ export function SegmentedControl<T extends string = string>({
         aria-describedby={ariaDescribedby}
         aria-orientation="horizontal"
         aria-disabled={disabled ? "true" : undefined}
-        className={`${CLASS.track}${fullWidth ? ` ${CLASS.fullWidth}` : ""}${stacked ? ` ${CLASS.stacked}` : ""}`}
+        className={`${CLASS.track}${fullWidth ? ` ${CLASS.fullWidth}` : ""}`}
         style={{ gridTemplateColumns: `repeat(${options.length}, minmax(0, 1fr))` }}
       >
         {/* One thumb marks the choice and travels to it; the options paint over it. */}

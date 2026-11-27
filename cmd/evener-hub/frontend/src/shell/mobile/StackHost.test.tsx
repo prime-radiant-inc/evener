@@ -2811,7 +2811,7 @@ test("browser top bar capsules use --radius-pane, omit empty clusters, and never
     css.match(
       /\.topBarCollapsed \.leading:not\(:empty\),\s*\.topBarCollapsed \.trailing:not\(:empty\)\s*\{([^}]*)\}/,
     )?.[1] ?? "";
-  expect(capsules).toContain("border-radius: var(--radius-pane)");
+  expect(capsules).toContain("border-radius: var(--radius-pill)");
   expect(capsules).toContain("pointer-events: auto");
 });
 
