@@ -126,14 +126,19 @@ func sessionNamerEnabled(profile *provider.Profile) bool {
 }
 
 // sessionNamerUsable reports whether a naming call is worth making at all: the
-// profile must resolve a naming model, and the session must not already have
-// learned that the current model choice's allowance is spent.
+// session must outlive the current turn (one-shot TurnEndsProcess runs have no
+// persistent UI listing a generated title), the profile must resolve a naming
+// model, and the session must not already have learned that the current model
+// choice's allowance is spent.
 //
 // Every launch path asks this one question, which is why the question has one
 // name. sessionNamerEnabled answers only the model-resolution half and cannot
 // see session state; a quota exhaustion is the same category of fact ("the
 // namer cannot run") but is learned at runtime rather than read from config.
 func (s *Session) sessionNamerUsable() bool {
+	if s.cfg.TurnEndsProcess {
+		return false
+	}
 	if !sessionNamerEnabled(s.currentProfile()) {
 		return false
 	}
