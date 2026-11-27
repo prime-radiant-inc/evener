@@ -1,12 +1,5 @@
-import type { SessionURL, ThreadModel } from "@evener/appwire-client";
-import {
-  canReadSharedNotes,
-  canWriteSharedNotes,
-  isSessionResting,
-  sessionActionError,
-  WireError,
-} from "@evener/appwire-client";
-import { fileURLToPath } from "@evener/appwire-client/docContent";
+import type { ThreadModel } from "@evener/appwire-client";
+import { canReadSharedNotes, canWriteSharedNotes, isSessionResting } from "@evener/appwire-client";
 import { useEffect, useRef } from "react";
 import {
   blurHumanNote,
@@ -16,17 +9,10 @@ import {
   unmountHumanNote,
   useHumanNoteDraft,
 } from "../../../stores/humanNoteDrafts";
-import { beginUrlRemoval, endUrlRemoval, usePendingUrlRemovals } from "../../../stores/pendingUrlRemovals";
-import { threadsStore } from "../../../stores/threads";
-import { Button, EmptyState, InlineNotice, isWebHref, Textarea, useToasts } from "../../../widgets";
+import { EmptyState, InlineNotice, Textarea } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
-import { FileOpenBesideButton } from "../transcript/fileOpenBeside";
 import styles from "./notespanel.module.css";
 import { PanelSection } from "./PanelSection";
-
-export function isFileHref(href: string): boolean {
-  return /^file:\/\//.test(href);
-}
 
 /** A note carries content only when something survives trimming. The
  * collapsed summary and the expanded body must judge emptiness the same
@@ -39,16 +25,12 @@ export function hasNoteText(text: string): boolean {
 export interface NotesPanelBodyProps {
   sessionRef: string;
   model: ThreadModel;
-  sourcePaneId?: string;
   editorRef?: React.Ref<HTMLTextAreaElement>;
 }
 
 const CLASS = {
   editorGroup: requireClass(styles.editorGroup, "notespanel.module.css", "editorGroup"),
   prose: requireClass(styles.prose, "notespanel.module.css", "prose"),
-  linkList: requireClass(styles.linkList, "notespanel.module.css", "linkList"),
-  linkRow: requireClass(styles.linkRow, "notespanel.module.css", "linkRow"),
-  linkUrl: requireClass(styles.linkUrl, "notespanel.module.css", "linkUrl"),
 };
 
 // The human note's save status line: exactly one of saving / saved / error /
@@ -90,34 +72,15 @@ function HumanStatus({
   return null;
 }
 
-// isMissingURLEntryError recognizes the daemon's unknown-url-entry rejection: an
-// invalidParams WireError carrying the "no URL entry with id" contract text
-// (agent/session_notes_mutations.go and server/appwire_turn_handlers.go both build it, and
-// the agent test TestRemoveSessionURLUnknownIDRejects pins it). The code alone is
-// too broad, since every bad-parameter rejection shares it, so the message is
-// what separates a stale row from a real error.
-function isMissingURLEntryError(err: unknown): boolean {
-  return (
-    err instanceof WireError && err.evenerErrorInfo === "invalidParams" && /no URL entry with id/.test(err.message)
-  );
-}
-
-export function NotesPanelBody({ sessionRef, model, sourcePaneId, editorRef }: NotesPanelBodyProps) {
-  const toasts = useToasts();
+export function NotesPanelBody({ sessionRef, model, editorRef }: NotesPanelBodyProps) {
   const owner = useRef(Symbol("notes editor"));
   const state = useHumanNoteDraft(sessionRef);
   const draft = state?.text ?? model.humanNote;
   const saving = !!state?.submitted && !state.error;
   const saved = state?.saved ?? false;
   const error = state?.error ?? null;
-  // A double-click on one row's Remove must not fire twice: the first request
-  // succeeds and the second reports the entry as already gone. The guard lives
-  // in a store keyed by session and entry id rather than in this component,
-  // because the mobile sheet unmounts the body mid-request and a pane can be
-  // reused for another session (see stores/pendingUrlRemovals).
-  const removingURLs = usePendingUrlRemovals(sessionRef);
   // Editability here tracks the store's own write gate: rendering controls that
-  // setHumanNote/RemoveSessionURL would refuse leaves dead affordances.
+  // setHumanNote would refuse leaves dead affordances.
   const live = canWriteSharedNotes(model);
   const idleWake = live && isSessionResting(model.status.type);
   useEffect(() => {
@@ -134,35 +97,11 @@ export function NotesPanelBody({ sessionRef, model, sourcePaneId, editorRef }: N
     return () => unmountHumanNote(sessionRef, id);
   }, [sessionRef, live, model.capabilities.sharedNotes]);
 
-  // The guard covers the request, not the push. It was held until the
-  // authoritative urls/updated push first, which wedged a row whose id another
-  // client re-added before that push landed, and it reset on unmount anyway.
-  // The double-click problem it exists for is solved at the source instead: a
-  // removal of an entry the server no longer has reads as success below, so a
-  // duplicate request is harmless whichever way it slips through.
-  async function handleRemoveURL(url: SessionURL) {
-    // Check and mark in one synchronous step: two clicks inside one tick both
-    // run this handler before any re-render.
-    if (!beginUrlRemoval(sessionRef, url.id)) return;
-    try {
-      await threadsStore.getState().removeURL(sessionRef, url.id);
-    } catch (err) {
-      // "No such entry" means this row is stale and the outcome the user asked
-      // for is already true, so it is a success for the UI rather than the
-      // spurious "Couldn't remove link" toast a double-click used to produce.
-      if (!isMissingURLEntryError(err)) {
-        toasts.push("error", sessionActionError("Couldn't remove link", err));
-      }
-    } finally {
-      endUrlRemoval(sessionRef, url.id);
-    }
-  }
-
   // Rule 1 of the ordered display rule: capability unset hides the panel
   // body entirely. After the hooks above (Rules of Hooks).
   if (!canReadSharedNotes(model)) return null;
 
-  const hasContent = hasNoteText(model.humanNote) || hasNoteText(model.agentNote) || model.sessionUrls.length > 0;
+  const hasContent = hasNoteText(model.humanNote) || hasNoteText(model.agentNote);
 
   return (
     <div data-testid="shared-notes-section">
@@ -200,64 +139,6 @@ export function NotesPanelBody({ sessionRef, model, sourcePaneId, editorRef }: N
           ) : (
             <div data-testid="shared-notes-agent-empty">
               <EmptyState size="compact" title="No agent note yet" />
-            </div>
-          )}
-        </PanelSection>
-      )}
-      {(model.sessionUrls.length > 0 || live) && (
-        <PanelSection title="Links">
-          {model.sessionUrls.length > 0 ? (
-            <ul className={CLASS.linkList} data-testid="shared-notes-urls">
-              {model.sessionUrls.map((url) => (
-                <li key={url.id} className={CLASS.linkRow} data-testid={`shared-notes-url-${url.id}`}>
-                  {isWebHref(url.url) ? (
-                    // The destination stays visible beside an agent-controlled
-                    // label: a trusted-looking label over a phishing URL must
-                    // never display the label alone. Matches the file-link and
-                    // TUI `label (URL) [id]` shape.
-                    <span>
-                      <a href={url.url} target="_blank" rel="noopener noreferrer">
-                        {url.label || url.url}
-                      </a>{" "}
-                      {url.label ? <span className={CLASS.linkUrl}>{url.url}</span> : null}
-                    </span>
-                  ) : isFileHref(url.url) ? (
-                    // Local file references open through the in-app
-                    // document/open-beside flow (design requirement), with the
-                    // URL text retained. Out-of-scope paths keep the visible
-                    // text but no affordance.
-                    <span>
-                      {url.label || url.url} <span className={CLASS.linkUrl}>{url.url}</span>{" "}
-                      <FileOpenBesideButton
-                        absPath={fileURLToPath(url.url)}
-                        sessionRef={sessionRef}
-                        cwd={model.cwd}
-                        sourcePaneId={sourcePaneId}
-                      />
-                    </span>
-                  ) : (
-                    <span>
-                      {url.label || url.url} <span className={CLASS.linkUrl}>{url.url}</span>
-                    </span>
-                  )}
-                  {live && (
-                    <Button
-                      variant="quiet"
-                      size="sm"
-                      onClick={() => void handleRemoveURL(url)}
-                      disabled={removingURLs.has(url.id)}
-                      aria-label={`Remove ${url.label || url.url}`}
-                      data-testid={`shared-notes-url-remove-${url.id}`}
-                    >
-                      Remove
-                    </Button>
-                  )}
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <div data-testid="shared-notes-urls-empty">
-              <EmptyState size="compact" title="No links yet" />
             </div>
           )}
         </PanelSection>

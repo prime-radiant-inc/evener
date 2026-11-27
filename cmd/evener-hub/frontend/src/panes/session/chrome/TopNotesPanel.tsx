@@ -136,9 +136,8 @@ export function TopNotesPanel({ sessionRef, model, sourcePaneId }: TopNotesPanel
 
   const hasHumanNote = hasNoteText(humanNote);
   const hasAgentNote = hasNoteText(model.agentNote);
-  const hasUrls = model.sessionUrls.length > 0;
 
-  let sourceIconKind: "person" | "skill" | "globe" | null = null;
+  let sourceIconKind: "person" | "skill" | null = null;
   let summaryText = "";
   let isPlaceholder = false;
 
@@ -148,9 +147,6 @@ export function TopNotesPanel({ sessionRef, model, sourcePaneId }: TopNotesPanel
   } else if (hasAgentNote) {
     sourceIconKind = "skill";
     summaryText = model.agentNote;
-  } else if (hasUrls) {
-    sourceIconKind = "globe";
-    summaryText = `${model.sessionUrls.length} ${model.sessionUrls.length === 1 ? "link" : "links"}`;
   } else {
     isPlaceholder = true;
     // Read-only sessions (ended/closed/fenced) have no editor to write in, so
@@ -164,13 +160,7 @@ export function TopNotesPanel({ sessionRef, model, sourcePaneId }: TopNotesPanel
   const noteCount = (hasHumanNote ? 1 : 0) + (hasAgentNote ? 1 : 0);
   const lineText = isPlaceholder
     ? summaryText
-    : [
-        "Notes",
-        noteCount > 0 ? `${noteCount} ${noteCount === 1 ? "note" : "notes"}` : null,
-        hasUrls ? `${model.sessionUrls.length} ${model.sessionUrls.length === 1 ? "link" : "links"}` : null,
-      ]
-        .filter(Boolean)
-        .join(" · ");
+    : ["Notes", `${noteCount} ${noteCount === 1 ? "note" : "notes"}`].join(" · ");
   const placeholderReason = isPlaceholder ? (canWrite ? "empty" : "read-only") : undefined;
 
   const toggle = () => {
@@ -258,7 +248,7 @@ export function TopNotesPanel({ sessionRef, model, sourcePaneId }: TopNotesPanel
         }
       >
         <div className={CLASS.expandedBody} data-testid="top-notes-expanded-content">
-          <NotesPanelBody sessionRef={sessionRef} model={model} sourcePaneId={sourcePaneId} editorRef={editorRef} />
+          <NotesPanelBody sessionRef={sessionRef} model={model} editorRef={editorRef} />
         </div>
       </Disclosure>
     </div>
