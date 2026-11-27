@@ -1660,12 +1660,12 @@ Pressing `Escape` clears a non-empty query before dismissing the drawer, and
 `ArrowDown` moves focus into the filtered tree. Desktop (`>= 900px`) keeps the
 header Search palette trigger (`rail-search`) and global `⌘K` shortcut unchanged.
 
-Below 900px, the collapsed whiteboard (session notes) rests as one quiet
+In the mobile workspace, the collapsed whiteboard (session notes) rests as one quiet
 centered line above the transcript — an em-dash-framed count in caption ink
 with no card chrome, keeping the body's own top spacing and growing to the
 44px tap floor on touch. The mobile reader tucks the summary away while
-scrolling in either direction. Navigation returns on an upward gesture;
-the summary returns near the top or when Notes is explicitly opened.
+scrolling in either direction. An upward gesture restores navigation.
+The summary returns near the top or when Notes is explicitly opened.
 Its first-priority content rides the trigger's
 accessible name, and expanding opens the header-attached notes card with full
 read and edit controls; desktop keeps its collapsed preview card.
