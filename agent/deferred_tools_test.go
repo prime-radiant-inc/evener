@@ -1222,9 +1222,10 @@ func TestReactiveDisclosuresOnDelegateAndTimedOutShell(t *testing.T) {
 		clk := agenttest.NewFakeClock()
 		sess.jobManager.clock = clk
 
+		ctx := tripwireCtx(t)
 		resCh := make(chan tool.ExecResult, 1)
 		go func() {
-			resCh <- sess.execTool(tripwireCtx(t), llm.ToolCallData{
+			resCh <- sess.execTool(ctx, llm.ToolCallData{
 				ID:        "sh-auto-bg",
 				Name:      "shell",
 				Type:      "function",
@@ -1243,13 +1244,13 @@ func TestReactiveDisclosuresOnDelegateAndTimedOutShell(t *testing.T) {
 			clk.Advance(time.Second)
 		case res = <-resCh:
 			gotEarly = true
-		case <-time.After(30 * time.Second):
+		case <-ctx.Done():
 			t.Fatal("shell tool neither armed block timer nor returned")
 		}
 		if !gotEarly {
 			select {
 			case res = <-resCh:
-			case <-time.After(30 * time.Second):
+			case <-ctx.Done():
 				t.Fatal("shell tool did not return after foreground timeout")
 			}
 		}
