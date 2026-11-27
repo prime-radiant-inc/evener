@@ -3030,20 +3030,21 @@ async function positionOlderReading(driver, ref, sentinel) {
   const domain = await waitForRestoredDomain(driver, ref, sentinel);
   const item = domain?.items.find(item => item.text === sentinel);
   if (!item) throw new Error(`older fixture item absent: ${sentinel}`);
-  const result = await evaluate(driver.send, `(async () => {
+  const sentinelRow = `[...port.querySelectorAll("[data-testid='transcript-row']")]
+    .find(row => row.textContent.includes(${JSON.stringify(sentinel)}))`;
+  const alignRow = (inset) => evaluate(driver.send, `(async () => {
     const port = ${SCROLL_PORT_EXPR(ref)};
     if (!port) throw new Error("older reading has no scroll port");
     const deadline = performance.now() + 15000;
     let aligned = 0;
-    port.scrollTop = 0;
+    if (!(${sentinelRow})) port.scrollTop = 0;
     while (performance.now() < deadline) {
       await new Promise(requestAnimationFrame);
-      const row = [...port.querySelectorAll("[data-testid='transcript-row']")]
-        .find(row => row.textContent.includes(${JSON.stringify(sentinel)}));
+      const row = ${sentinelRow};
       if (row) {
-        const delta = row.getBoundingClientRect().top - port.getBoundingClientRect().top + 8;
+        const delta = row.getBoundingClientRect().top - port.getBoundingClientRect().top + ${inset};
         aligned = Math.abs(delta) <= 1 ? aligned + 1 : 0;
-        if (aligned >= 3) return true;
+        if (aligned >= 3) return row.getBoundingClientRect().top;
         port.scrollTop += delta;
       } else {
         aligned = 0;
@@ -3052,18 +3053,28 @@ async function positionOlderReading(driver, ref, sentinel) {
     }
     throw new Error("older fixture row never rendered");
   })()`);
-  if (!result) throw new Error("older reading gesture failed");
+  const rowTop = await alignRow(8);
   const box = await evaluate(driver.send, `(() => {
     const port = ${SCROLL_PORT_EXPR(ref)};
     const rect = port.getBoundingClientRect();
-    return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2, top: port.scrollTop };
+    return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2, height: port.clientHeight };
   })()`);
   await driver.send("Input.dispatchMouseEvent", {
     type: "mouseWheel", x: box.x, y: box.y, deltaX: 0, deltaY: 8,
   });
-  await driver.waitPage(`(${SCROLL_PORT_EXPR(ref)}).scrollTop > ${box.top}`, {
+  // Folding mobile controls can reduce scrollTop while the wheel moves the
+  // reading line upward. Observe the same row in screen coordinates.
+  await driver.waitPage(`(() => {
+    const port = ${SCROLL_PORT_EXPR(ref)};
+    const row = ${sentinelRow};
+    return row && row.getBoundingClientRect().top < ${rowTop};
+  })()`, {
     label: "the native wheel moves the older reader",
   });
+  // Newly available space above the preserved reading line may expose an
+  // earlier turn. Seat the fixture's sentinel at its usual post-wheel inset
+  // before comparing which turn a responsive host or a newly opened pane keeps.
+  if (await evaluate(driver.send, `(${SCROLL_PORT_EXPR(ref)}).clientHeight !== ${box.height}`)) await alignRow(16);
 }
 
 function assertResponsiveReading(before, after, sentinel) {
