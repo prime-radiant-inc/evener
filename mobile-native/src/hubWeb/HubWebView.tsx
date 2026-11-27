@@ -56,10 +56,10 @@ export function HubWebView({ profile, token, initialPath, onPath, onHubMenu, onD
 	const [createButton, setCreateButton] = useState<{ id: string; frame: ButtonFrame } | null>(null);
 	const [hubDark, setHubDark] = useState<boolean | null>(null);
 	const focused = useIsFocused();
-	const createId = focused && !error ? createButton?.id : undefined;
+	const activeCreate = focused && !error ? createButton : null;
 	useLayoutEffect(() => {
-		if (createId) web.current?.postMessage(JSON.stringify({ type: "createButtonShown", id: createId }));
-	}, [createId]);
+		if (activeCreate) web.current?.postMessage(JSON.stringify({ type: "createButtonShown", id: activeCreate.id }));
+	}, [activeCreate]);
 	const glass = useSystemGlass();
 	const { top, left, right } = useSafeAreaInsets();
 	// A vertical system bar reserves one window edge; landscape cutouts reserve both.
@@ -331,12 +331,12 @@ export function HubWebView({ profile, token, initialPath, onPath, onHubMenu, onD
 				) : activeHeader ? (
 					<SessionHeader header={activeHeader} glass={glass} palette={hubPalette ?? palette} onAction={headerAction} />
 				) : null}
-				{createId && createButton && (
+				{activeCreate && (
 					<CreateSessionButton
-						frame={createButton.frame}
+						frame={activeCreate.frame}
 						palette={hubPalette ?? palette}
 						glass={glass}
-						onPress={() => web.current?.postMessage(JSON.stringify({ type: "createSession", id: createId }))}
+						onPress={() => web.current?.postMessage(JSON.stringify({ type: "createSession", id: activeCreate.id }))}
 					/>
 				)}
 			</View>

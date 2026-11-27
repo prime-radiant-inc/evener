@@ -156,6 +156,11 @@ it("routes the active native session controls back to their pane and gives the h
 	const frame = { x: 100, y: 360, width: 44, height: 44 };
 	message({ type: "createButton", id: "board", frame });
 	expect(JSON.parse(postMessage.mock.lastCall?.[0])).toEqual({ type: "createButtonShown", id: "board" });
+	postMessage.mockClear();
+	message({ type: "createButton", id: "board", frame: { ...frame, x: frame.x + 3 } });
+	expect(postMessage.mock.calls.map(([value]) => JSON.parse(value))).toEqual([
+		{ type: "createButtonShown", id: "board" },
+	]);
 	const create = tree.root.findByProps({ testID: "workspace-new-session" });
 	act(() => create.props.onPress());
 	expect(JSON.parse(postMessage.mock.lastCall?.[0])).toEqual({ type: "createSession", id: "board" });
