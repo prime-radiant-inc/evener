@@ -1111,6 +1111,12 @@ type Session struct {
 
 	// skills discovered at session startup
 	skills skill.Catalog
+	// skillCollisions holds collision diagnostics by catalog name, built once at
+	// startup and immutable thereafter. A name can displace several sources.
+	skillCollisions map[string][]skill.Diagnostic
+	// skillCollisionWarned records catalog names whose collision warnings have
+	// already been emitted on a genuine activation this session. Guarded by mu.
+	skillCollisionWarned map[string]bool
 
 	// skillLifecycle is activation metadata, separate from the full catalog.
 	// Guarded by mu; ordinary instruction bodies are never stored here.

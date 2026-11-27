@@ -134,10 +134,11 @@ Discovery and activation share these recoveries. Neither rewrites the source;
 activation delivers the complete body, and source digests cover the original
 bytes. Unrecoverable metadata leaves only that skill unavailable. The session
 emits a `skill_diagnostic` warning with source-specific guidance for malformed
-skills, invalid controls and collisions, rather than a session failure or daemon
-repair advice. CLI, web and native clients consume the shared warning fields.
-Correcting a source restores availability at the next catalog discovery or
-session startup. Retained descriptors revalidate current bytes when loaded;
+skills and invalid controls at startup, and for a collision on the first
+activation that resolves the colliding name, rather than a session failure or
+daemon repair advice. CLI, web and native clients consume the shared warning
+fields. Correcting a source restores availability at the next catalog discovery
+or session startup. Retained descriptors revalidate current bytes when loaded;
 there is no live filesystem watcher.
 
 `allowed-tools` may be one string or an ordered array of strings. Evener
@@ -186,8 +187,12 @@ source in `other_source`. A known higher-priority name with invalid metadata
 reserves its key as unavailable; it never exposes a permissive lower-priority
 skill instead. Missing automatic directories are normal; unreadable sources,
 malformed existing skills, and absent configured roots produce diagnostics.
-Startup warnings and full session inspection expose diagnostics; source paths
-are excluded from completion and metadata inspection entries.
+A collision warning fires the first time a model or user activation resolves
+that name in the session, names both sources, and does not repeat for that
+name; role preloads, compaction reloads, and continuations of a recorded
+source do not fire it. Startup warnings, that first-activation warning, and
+full session inspection expose diagnostics; source paths are excluded from
+completion and metadata inspection entries.
 
 The model advertisement omits unavailable skills and those with
 `disable-model-invocation: true`, including the `read_file` fallback when
