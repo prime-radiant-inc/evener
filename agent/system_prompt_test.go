@@ -427,15 +427,12 @@ func systemPromptSection(t *testing.T, prompt, heading string) string {
 // bullets before the first conditional section heading or environment block.
 func operationalPromptBody(t *testing.T, prompt string) string {
 	t.Helper()
-	end := strings.Index(prompt, "\n<environment>\n")
-	if end < 0 {
+	body, _, ok := strings.Cut(prompt, "\n<environment>\n")
+	if !ok {
 		t.Fatalf("system prompt has no <environment> block")
 	}
-	body := prompt[:end]
 	for _, marker := range []string{"\n## ", "\nCurrent role/session:\n"} {
-		if idx := strings.Index(body, marker); idx >= 0 {
-			body = body[:idx]
-		}
+		body, _, _ = strings.Cut(body, marker)
 	}
 	body = strings.TrimSpace(body)
 	if body == "" {
