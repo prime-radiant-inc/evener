@@ -545,6 +545,7 @@ async function measureComposerFooter(
                     scrollWidth: modelTrigger.scrollWidth,
                   }
                 : null,
+              effortVisible: visible(form?.querySelector('[data-testid="status-row-effort"]')),
               pathBox: rect(path),
               statusChips: statusbar
                 ? [...statusbar.querySelectorAll('[data-activity-tab]')].map((element) => rect(element))
@@ -683,11 +684,10 @@ function assertCompactFoldedRow(measurement) {
   if (measurement.field === null || measurement.controls === null) {
     failures.push("the folded field or control row is missing");
   } else {
-    const fieldCenter = (measurement.field.top + measurement.field.bottom) / 2;
-    const controlsCenter = (measurement.controls.top + measurement.controls.bottom) / 2;
-    if (!nearlyEqual(fieldCenter, controlsCenter)) {
+    const centers = foldedOneRowCenters(measurement);
+    if (centers !== null) {
       failures.push(
-        `folded field and controls remain stacked (centres ${fieldCenter}/${controlsCenter}, card ${JSON.stringify(measurement.card)})`,
+        `folded field and controls remain stacked (centres ${centers.fieldCenter}/${centers.controlsCenter}, card ${JSON.stringify(measurement.card)})`,
       );
     }
   }
@@ -744,6 +744,18 @@ function assertLandscapeEdgeFooter(measurement) {
   return failures;
 }
 
+// The folded card's one-row geometry, shared by the compact phone fixture
+// and the fine-pointer landscape one: the field and the control row must
+// share a line. Returns null when they do (or when either box is missing,
+// which the callers report in their own words), and the two measured centres
+// otherwise.
+function foldedOneRowCenters(measurement) {
+  if (measurement.field === null || measurement.controls === null) return null;
+  const fieldCenter = (measurement.field.top + measurement.field.bottom) / 2;
+  const controlsCenter = (measurement.controls.top + measurement.controls.bottom) / 2;
+  return nearlyEqual(fieldCenter, controlsCenter) ? null : { fieldCenter, controlsCenter };
+}
+
 function assertFinePointerLandscapeComposer(measurement) {
   const failures = [];
   if (measurement.primaryTouch) failures.push("the fine-pointer landscape fixture realized a touch pointer");
@@ -752,13 +764,28 @@ function assertFinePointerLandscapeComposer(measurement) {
   }
   if (measurement.foldedCompact) failures.push("a fine-pointer landscape desktop incorrectly compacted its controls");
   if (!measurement.modelTrigger?.visible) failures.push("the fine-pointer resting row lost its model picker");
+  // The model trigger's fully-compressed geometry (zero padding, 1rem value
+  // floor, chevron) is ~30px; below that the row is clipping the picker's
+  // chevron and hit area instead of compressing its facts in priority order.
+  if (measurement.modelTrigger !== null && measurement.modelTrigger.clientWidth < 28) {
+    failures.push(`the model trigger is clipped to ${measurement.modelTrigger.clientWidth}px, below its usable floor`);
+  }
   if (measurement.editorMinLines !== "1lh") failures.push("the fine-pointer folded field is not one line");
-  if (
-    measurement.field === null ||
-    measurement.controls === null ||
-    measurement.field.bottom > measurement.controls.top + GEOMETRY_TOLERANCE
-  ) {
-    failures.push("the fine-pointer folded field and controls did not stay stacked");
+  // The resting row holds ONE line below the old stacked threshold (Jesse's
+  // 2026-11-27 ruling): the field and the control row share the line and the
+  // effort readout drops before the model label yields, instead of the card
+  // growing a chrome-only second line. Editor focus does NOT resize the card
+  // (Composer.tsx's own ruling), but it returns the dropped effort picker so
+  // the writer can change effort before typing; content alone stacks the card.
+  if (measurement.field === null || measurement.controls === null || foldedOneRowCenters(measurement) !== null) {
+    failures.push("the fine-pointer folded field and controls did not stay on one row");
+  }
+  if (measurement.focus === "editor") {
+    if (!measurement.effortVisible) {
+      failures.push("the editor-focused sub-threshold row lost its effort picker");
+    }
+  } else if (measurement.effortVisible) {
+    failures.push("the sub-threshold folded row kept its effort readout");
   }
   failures.push(...assertLandscapeEdgeFooter(measurement));
   return failures;
@@ -2050,31 +2077,37 @@ async function main() {
           );
         }
       }
-      const finePointerLandscapeMeasurements = await measureComposerFooter(
-        cdpEndpoint,
-        `http://127.0.0.1:${vitePort}/overflowharness.html?w=572&h=669`,
-        572,
-        safeAreaSupported,
-        {
-          width: 951,
-          height: 669,
-          mobile: false,
-          deviceScaleFactor: 3,
-          touch: false,
-          safeAreas: safeAreaSupported ? [34] : [0],
-          focusStates: ["none"],
-        },
-      );
-      for (const measurement of finePointerLandscapeMeasurements) {
-        const failures = [...assertComposerFooter(measurement), ...assertFinePointerLandscapeComposer(measurement)];
-        const label = `951x669 fine-pointer landscape composer safe-area=${measurement.safeArea}`;
-        if (failures.length > 0) {
-          failed++;
-          console.log(`${label} ... FAIL - ${failures.join("; ")}; ${JSON.stringify(measurement)}`);
-        } else {
-          console.log(
-            `${label} ... PASS - stacked controls and visible model, footer gap=${measurement.gap}px, status clearance=${measurement.safeArea}px`,
-          );
+      // A 572px pane puts the card at 524px; a 469px pane puts it just above
+      // the 420px field-floor yield - the band where the editor-focus effort
+      // exemption must not pay for the restored picker out of the model
+      // trigger's usable floor.
+      for (const paneWidth of [572, 469]) {
+        const finePointerLandscapeMeasurements = await measureComposerFooter(
+          cdpEndpoint,
+          `http://127.0.0.1:${vitePort}/overflowharness.html?w=${paneWidth}&h=669`,
+          paneWidth,
+          safeAreaSupported,
+          {
+            width: 951,
+            height: 669,
+            mobile: false,
+            deviceScaleFactor: 3,
+            touch: false,
+            safeAreas: safeAreaSupported ? [34] : [0],
+            focusStates: ["none", "editor"],
+          },
+        );
+        for (const measurement of finePointerLandscapeMeasurements) {
+          const failures = [...assertComposerFooter(measurement), ...assertFinePointerLandscapeComposer(measurement)];
+          const label = `951x669 fine-pointer ${paneWidth}px-pane landscape composer safe-area=${measurement.safeArea} focus=${measurement.focus}`;
+          if (failures.length > 0) {
+            failed++;
+            console.log(`${label} ... FAIL - ${failures.join("; ")}; ${JSON.stringify(measurement)}`);
+          } else {
+            console.log(
+              `${label} ... PASS - one folded row, ${measurement.focus === "editor" ? "effort picker back for the writer" : "model visible and the effort readout dropped"}, footer gap=${measurement.gap}px, status clearance=${measurement.safeArea}px`,
+            );
+          }
         }
       }
       for (const width of [...new Set([320, 390, 430, 460, 540, 760, 899, 900, 1400, ...sweep])]) {
@@ -2363,7 +2396,9 @@ async function main() {
       failed++;
       console.log(`cold start skeleton ... FAIL - ${JSON.stringify(coldStartSkeleton)}`);
     } else {
-      console.log("cold start skeleton ... PASS - first-reply skeleton fills the wide reading column after its padding");
+      console.log(
+        "cold start skeleton ... PASS - first-reply skeleton fills the wide reading column after its padding",
+      );
       console.log(
         `  measured bar ${coldStartSkeleton.barWidth.toFixed(1)}px in column content ` +
           `${coldStartSkeleton.contentWidth.toFixed(1)}px, column ${coldStartSkeleton.skeletonWidth.toFixed(1)}px ` +
@@ -2492,9 +2527,7 @@ async function main() {
         assertComposerContainment(result.currentWork, width < 900);
       } catch (error) {
         widthFailed = true;
-        console.log(
-          `${width}px ... FAIL - ${error.message}: ${JSON.stringify(result.currentWork)}`,
-        );
+        console.log(`${width}px ... FAIL - ${error.message}: ${JSON.stringify(result.currentWork)}`);
       }
       if (
         width === 390 &&

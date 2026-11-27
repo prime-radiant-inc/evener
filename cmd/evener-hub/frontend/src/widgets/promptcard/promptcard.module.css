@@ -193,21 +193,43 @@
   margin-left: auto;
 }
 
-/* Below this width the controls leave too little for a readable placeholder,
- * so the card falls back to the stacked shape it has always had. */
-@container (min-width: 620px) {
-  .card[data-folded="true"] {
-    flex-direction: row;
-    align-items: center;
-  }
+/* Folded: the field and the control row become one line at EVERY card width.
+ * A resting card never grows a second line for its own chrome: under width
+ * pressure the chrome drops its facts (the effort readout first, then the
+ * model label floor - statusrow/modelswitch own that ladder) and only a
+ * draft engaging the card stacks it. The field keeps a readable floor for
+ * its placeholder and absorbs all leftover space, while the control row hugs
+ * its controls and shrinks when a long model name needs to ellipsize. */
+.card[data-folded="true"] {
+  flex-direction: row;
+  align-items: center;
+}
 
-  /* Folded: the field and the control row become one line. The field keeps a
-   * readable floor for its placeholder and absorbs all leftover space, while
-   * the control row hugs its controls and shrinks when a long model name needs
-   * to ellipsize. */
+.card[data-folded="true"] .field {
+  flex: 1 1 14rem;
+  min-width: 14rem;
+}
+
+/* At the narrowest cards even the effort-dropped, label-floored control row
+ * cannot share the line with a 14rem field. The floor yields there so the
+ * one-line shape survives; the placeholder clips instead of the card growing
+ * a chrome-only second line. */
+@container (max-width: 420px) {
   .card[data-folded="true"] .field {
-    flex: 1 1 14rem;
-    min-width: 14rem;
+    flex: 1 1 10ch;
+    min-width: 0;
+  }
+}
+
+/* Editor focus returns the effort picker (statusrow's [data-composer-editing]
+ * exemption), and the restored readout spends width the resting row gave the
+ * field floor: at a 421px card the floor held the model trigger to 0px. Yield
+ * the floor over the exemption's whole range so the picker pays out of the
+ * field, never out of the trigger's usable geometry. */
+@container (width < 620px) {
+  :global([data-composer-editing]) .card[data-folded="true"] .field {
+    flex: 1 1 10ch;
+    min-width: 0;
   }
 }
 
@@ -215,8 +237,8 @@
   min-width: 0;
 }
 
-/* A caller that knows its control row is compact can use the same one-line
- * shape below the normal width threshold (the phone's Attach/menu resting row). */
+/* A caller that knows its control row is compact can use the compact variant
+ * of the one-line shape (the phone's Attach/menu resting row). */
 .card[data-folded="true"][data-folded-compact="true"] {
   flex-direction: row;
   align-items: center;
@@ -224,6 +246,7 @@
 
 .card[data-folded="true"][data-folded-compact="true"] .field {
   flex: 1 1 10ch;
+  min-width: 0;
 }
 
 /* The field owns its text inset, so a narrow composer card can yield its

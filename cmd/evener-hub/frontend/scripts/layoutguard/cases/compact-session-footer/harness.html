@@ -96,12 +96,17 @@ for (const spec of fixtures) {
   fixture.dataset.width = String(spec.width);
   if (spec.expectedStatusWidth !== undefined) fixture.dataset.expectedStatusWidth = String(spec.expectedStatusWidth);
   if (spec.shortModel) fixture.dataset.shortModel = "true";
+  // The folded ladder's per-fixture expectations: below the one-line threshold
+  // the effort readout drops before the model label yields, and at the
+  // narrowest cards the field's 14rem floor yields so the row still holds.
+  if (spec.effortHidden) fixture.dataset.effortHidden = "true";
+  if (spec.fieldYields) fixture.dataset.fieldYields = "true";
   if (spec.folded) {
     fixture.dataset.folded = "true";
     fixture.querySelector("[data-card]").dataset.folded = "true";
     fixture.querySelector("[data-leading]").dataset.folded = "true";
   }
-  fixture.querySelector(".fixtureLabel").textContent = `${spec.width}px composer${spec.folded ? ", folded" : ""}${spec.expectedStatusWidth === undefined ? "" : ` / ${spec.expectedStatusWidth}px status container`}${spec.shortModel ? ", short model label" : ""}`;
+  fixture.querySelector(".fixtureLabel").textContent = `${spec.width}px composer${spec.folded ? ", folded" : ""}${spec.expectedStatusWidth === undefined ? "" : ` / ${spec.expectedStatusWidth}px status container`}${spec.shortModel ? ", short model label" : ""}${spec.effortHidden ? ", effort dropped" : ""}${spec.fieldYields ? ", field floor yielded" : ""}`;
   fixture.querySelector("[data-card]").style.width = `${spec.width}px`;
   fixture.querySelector("[data-prompt-root]").style.width = `${spec.width}px`;
   fixture.querySelector("[data-model-value]").textContent = spec.shortModel
@@ -135,8 +140,8 @@ function blockFraming(el) {
   );
 }
 
-function visibleBox(el) {
-  return getComputedStyle(el).display === "none"
+function visibleBox(el, display = getComputedStyle(el).display) {
+  return display === "none"
     ? { left: 0, right: 0, top: 0, bottom: 0, width: 0, height: 0, clientWidth: 0, scrollWidth: 0 }
     : box(el);
 }
@@ -160,6 +165,7 @@ window.measure = () => {
     const status = fixture.querySelector("[data-status]");
     const attachment = fixture.querySelector("[data-attachment]");
     const effort = fixture.querySelector("[data-effort]");
+    const effortDisplay = getComputedStyle(effort).display;
     const contextSemantic = fixture.querySelector('.context [role="meter"]');
     const contextVisual = fixture.querySelector(".context");
     const work = fixture.querySelector("[data-work]");
@@ -175,6 +181,9 @@ window.measure = () => {
     return {
       width: Number(fixture.dataset.width),
       folded: fixture.dataset.folded === "true",
+      effortHidden: fixture.dataset.effortHidden === "true",
+      fieldYields: fixture.dataset.fieldYields === "true",
+      effortDisplay,
       expectedStatusWidth:
         fixture.dataset.expectedStatusWidth === undefined ? null : Number(fixture.dataset.expectedStatusWidth),
       shortModel: fixture.dataset.shortModel === "true",
@@ -189,7 +198,7 @@ window.measure = () => {
       attachment: attachment === null ? null : box(attachment),
       modelTrigger: box(modelTrigger),
       identity: box(fixture.querySelector(".identity")),
-      effort: visibleBox(effort),
+      effort: visibleBox(effort, effortDisplay),
       contextStructure: {
         meterCount: fixture.querySelectorAll('[role="meter"]').length,
         meterAriaLabel: contextSemantic === null ? null : contextSemantic.getAttribute("aria-label"),

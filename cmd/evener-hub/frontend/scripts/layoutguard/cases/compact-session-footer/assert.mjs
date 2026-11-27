@@ -3,7 +3,7 @@ export default function assert(measurements) {
   const tolerance = 1;
 
   for (const m of measurements) {
-    const fixtureLabel = `${m.width}px${m.folded ? "-folded" : ""}/${m.statusBody.width}px-actual-status${m.expectedStatusWidth === null ? "" : `/${m.expectedStatusWidth}px-expected-status`}${m.shortModel ? " short-model" : ""}`;
+    const fixtureLabel = `${m.width}px${m.folded ? "-folded" : ""}/${m.statusBody.width}px-actual-status${m.expectedStatusWidth === null ? "" : `/${m.expectedStatusWidth}px-expected-status`}${m.shortModel ? " short-model" : ""}${m.effortHidden ? " effort-dropped" : ""}${m.fieldYields ? " field-yielded" : ""}`;
     const fail = (message) => failures.push(`${fixtureLabel}: ${message}`);
     const expectDisplay = (display, visible, label) => {
       const shown = display !== "none";
@@ -46,6 +46,9 @@ export default function assert(measurements) {
 
     expectContained(m.controls, m.card, "composer control row");
     if (m.folded) {
+      // The folded ladder: below the one-line threshold the effort readout
+      // drops before the model label yields.
+      expectDisplay(m.effortDisplay, !m.effortHidden, "effort readout");
       expectContained(m.field, m.card, "folded field");
       expectBefore(m.field, m.controls, "field → controls");
       expectSameRow(m.field, "folded field");
@@ -57,8 +60,12 @@ export default function assert(measurements) {
       // The folded desktop input keeps a readable floor (14rem = 224px) even
       // beside a long model name at 620px, claims leftover card width beside
       // short model names, and the leading chrome hugs its visible controls
-      // without a dead width reservation or duplicate inset.
-      if (m.field.width < 224 - tolerance) {
+      // without a dead width reservation or duplicate inset. At the narrowest
+      // cards the floor itself yields (fieldYields) so the row still holds one
+      // line - the field keeps whatever width is left, never zero.
+      if (m.fieldYields) {
+        if (m.field.width <= 0) fail(`yielded folded field has zero width (${m.field.width.toFixed(1)}px)`);
+      } else if (m.field.width < 224 - tolerance) {
         fail(`folded field is squeezed to ${m.field.width.toFixed(1)}px (expected >= 224px)`);
       }
       const leadingControlsWidth =
@@ -73,18 +80,18 @@ export default function assert(measurements) {
     }
     expectContained(m.attachment, m.card, "attachment control");
     expectContained(m.modelTrigger, m.controls, "model control");
-    expectContained(m.effort, m.controls, "effort control");
+    if (!m.effortHidden) expectContained(m.effort, m.controls, "effort control");
     expectContained(m.context, m.controls, "context control");
     expectContained(m.sessionActions, m.controls, "session actions");
     expectContained(m.send, m.controls, "Send control");
-    expectContained(m.effort, m.status, "effort");
+    if (!m.effortHidden) expectContained(m.effort, m.status, "effort");
     expectContained(m.context, m.status, "context");
     expectContained(m.context, m.identity, "context inside identity");
     expectContained(m.queue, m.status, "queue");
 
     for (const [label, box] of [
       ["model control", m.modelTrigger],
-      ["effort control", m.effort],
+      ...(m.effortHidden ? [] : [["effort control", m.effort]]),
       ["context control", m.context],
       ["session actions", m.sessionActions],
       ["Send control", m.send],
@@ -97,8 +104,12 @@ export default function assert(measurements) {
 
     expectBefore(m.attachment, m.context, "attachment → context");
     expectBefore(m.context, m.modelTrigger, "context → model");
-    expectBefore(m.modelTrigger, m.effort, "model → effort");
-    expectBefore(m.effort, m.sessionActions, "effort → session actions");
+    if (m.effortHidden) {
+      expectBefore(m.modelTrigger, m.sessionActions, "model → session actions");
+    } else {
+      expectBefore(m.modelTrigger, m.effort, "model → effort");
+      expectBefore(m.effort, m.sessionActions, "effort → session actions");
+    }
     expectBefore(m.sessionActions, m.send, "session actions → Send");
     if (Math.abs(m.send.right - m.controls.right) > tolerance) fail("Send is not pinned to the trailing edge");
     // PromptCard's horizontal padding must leave enough room for Button's 2px
