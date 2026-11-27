@@ -2105,6 +2105,37 @@ async function trustedOverviewFlow(send, viewport, childGesture) {
   };
   // The rail opener is removed when a phone's Sessions drawer closes.
   await dismiss("close", pane);
+  // The closed desktop Overview mirrors the Sessions rail: the open sidebar's
+  // header Hide control gives way to one Show chip docked at the right shell
+  // edge. The phone keeps its in-sheet Close control and has no edge chip.
+  const edgeShow = await evaluate(
+    send,
+    `(() => {
+    const chips = Array.from(document.querySelectorAll('[data-overview-chip]'));
+    const chip = chips[0]?.querySelector('[data-overview-toggle]') ?? null;
+    if (!chip) return { chips: chips.length, box: null };
+    const r = chip.getBoundingClientRect();
+    return { chips: chips.length, box: { left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: r.width, height: r.height } };
+  })()`,
+  );
+  if (viewport.mobile) {
+    if (edgeShow.chips !== 0) throw new Error(`phone Overview offers an edge Show chip: ${JSON.stringify(edgeShow)}`);
+  } else {
+    const box = edgeShow.box;
+    if (
+      edgeShow.chips !== 1 ||
+      !box ||
+      box.width <= 0 ||
+      box.height <= 0 ||
+      box.left < -1 ||
+      box.right > viewport.width + 1 ||
+      box.top < -1 ||
+      box.bottom > viewport.height + 1
+    )
+      throw new Error(`desktop Overview edge Show chip is missing or off-shell: ${JSON.stringify(edgeShow)}`);
+    if (box.right < viewport.width - 64)
+      throw new Error(`desktop Overview edge Show chip is not docked at the right edge: ${JSON.stringify(edgeShow)}`);
+  }
   const inspection = await choosePaneOverview(send, overviewTrigger(pane), viewport.mobile, true);
   await clickControl(send, overviewTabSelector('[aria-label="About"]'));
   await evaluate(
