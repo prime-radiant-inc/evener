@@ -5,6 +5,10 @@ import { isAtBottom, type ScrollMetrics } from "./scrollMetrics";
 import { DRAG_BUTTON_BITS, MIDDLE_BUTTON_BIT, verticalInputCanMovePort } from "./scrollPredicates";
 import type { PendingViewAnchor } from "./viewAnchor";
 
+// Opening and measurement can position the port several times before the
+// reader touches it. These offsets do not establish their reading direction.
+export const portsAwaitingReaderInput = new WeakSet<Element>();
+
 export interface UseReaderGesturesOptions {
   listRef: RefObject<VirtualListHandle | null>;
   measure: (el: HTMLElement) => ScrollMetrics;
@@ -76,6 +80,7 @@ export function useReaderGestures({
     (readerIntent = true, beforeOffset?: number, frames = 1) => {
       const el = listRef.current?.getScrollElement();
       if (readerIntent && el) {
+        portsAwaitingReaderInput.delete(el);
         pendingViewAnchorRef.current = null;
         pendingBottomJumpRef.current = null;
         readerCallbacksRef.current.onReaderIntent?.();

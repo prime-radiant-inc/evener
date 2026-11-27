@@ -54,6 +54,7 @@ import {
 import { AnimatePresence, m, spatialExitTransition, spatialTransition, useReducedMotion } from "../../motion";
 import { openSessionOverview, SessionInspectionActions } from "../../panes/session/chrome/SessionInspectionActions";
 import { requestFindInSession } from "../../panes/session/find/findRequest";
+import { portsAwaitingReaderInput } from "../../panes/session/transcript/flow/useReaderGestures";
 import { returnFromAgentCascade } from "../../panes/zoom/actions";
 import { isCascadeReturnedOrigin } from "../../panes/zoom/inspectionOrigin";
 import { parseZoomParams } from "../../panes/zoom/intent";
@@ -718,7 +719,7 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
       // A height change is position-neutral: resync (the lastScrollTopRef
       // update below) and decide nothing, so a prepend can never pose as a
       // downward gesture and a reveal can never fire off appended content.
-      if (heightChanged) {
+      if (heightChanged || portsAwaitingReaderInput.has(target)) {
         scrollRunRef.current = 0;
         return;
       }

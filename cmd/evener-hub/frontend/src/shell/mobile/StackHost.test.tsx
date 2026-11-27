@@ -552,6 +552,15 @@ test("the iPhone controls stay above inline Find and follow the focused reader",
         scroller.scrollTop = top;
         scroller.dispatchEvent(new Event("scroll"));
       });
+    Object.defineProperty(scroller, "scrollHeight", { configurable: true, value: 2400 });
+    scroll(2400);
+    act(() => {
+      scroller.dispatchEvent(new WheelEvent("wheel", { deltaY: -2400, bubbles: true }));
+    });
+    scroll(0);
+    act(() => {
+      scroller.dispatchEvent(new WheelEvent("wheel", { deltaY: 240, bubbles: true }));
+    });
     scroll(240);
     expect(header()?.collapsed).toBe(true);
     expect(scroller.scrollTop).toBe(240 - foldedHeight);
@@ -2601,8 +2610,23 @@ test("mobile notes tuck in the reading direction and return on reversal or expli
         scroller.dispatchEvent(new Event("scroll"));
       });
 
+    // The initial end landing can move again with the same measured height.
+    // Neither automatic offset establishes the reader's direction.
+    scroll(1800);
+    scroll(2400);
+    expect(notes.closest("[data-notes-hidden]")).toBeNull();
+    expect(bar.getAttribute("data-collapsed")).not.toBe("true");
+    act(() => {
+      scroller.dispatchEvent(new WheelEvent("wheel", { deltaY: -60, bubbles: true }));
+    });
+    scroll(2340);
+    expect(notes.closest("[data-notes-hidden]")).not.toBeNull();
+    expect(bar.getAttribute("data-collapsed")).not.toBe("true");
+    scroll(2320);
+    expect(notes.closest("[data-notes-hidden]")).toBeNull();
+    scroll(0);
+
     // Hiding the notes summary and floating the title preserves the reading line.
-    scroll(200);
     scroll(260);
     await waitFor(() => expect(bar.getAttribute("data-collapsed")).toBe("true"));
     expect(notes.closest("[data-notes-hidden]")).not.toBeNull();
@@ -3237,6 +3261,7 @@ test("floating top bar collapse and reveal keep compensated TranscriptBody scrol
 
     // Seed StackHost's height baseline and settle an away position with solid top bar.
     act(() => {
+      scroller.dispatchEvent(new WheelEvent("wheel", { deltaY: -400, bubbles: true }));
       scroller.scrollTop = 300;
       scroller.dispatchEvent(new Event("scroll"));
     });

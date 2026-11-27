@@ -52,7 +52,7 @@ import {
 } from "./scrollMetrics";
 import { failedTurnCount, isAttentionWorthy, isFailedTurn, totalItemCount } from "./scrollPredicates";
 import { type CapturedTranscriptView, retainTranscriptView } from "./transcriptViewRegistry";
-import { useReaderGestures } from "./useReaderGestures";
+import { portsAwaitingReaderInput, useReaderGestures } from "./useReaderGestures";
 import {
   captureTopAnchor,
   type PendingViewAnchor,
@@ -861,6 +861,7 @@ export function useTranscriptScroll({
     if (!el) return;
 
     if (!initializedRef.current) {
+      portsAwaitingReaderInput.add(el);
       // Opening a session always lands at the end (kata cmjb, Jesse's call):
       // the latest content is what a reader clicks in for. This deliberately
       // replaced the earlier per-ref restore of a stored scroll offset — the
@@ -1026,6 +1027,7 @@ export function useTranscriptScroll({
           wasAtBottomRef.current = false;
         }
         if (!gesture?.admitted) {
+          portsAwaitingReaderInput.delete(el);
           pendingViewAnchorRef.current = null;
           readerCallbacksRef.current.onReaderIntent?.();
         }
