@@ -134,8 +134,8 @@ const TRANSITION_CLASSES = {
 const FLOAT_COLLAPSE_PAST = 48;
 const FLOAT_REVEAL_STEP = 8;
 const FLOAT_REVEAL_AT_TOP = 12;
-type ReadingChrome = { floating: boolean; notesHidden: boolean };
-const FULL_CHROME: ReadingChrome = { floating: false, notesHidden: false };
+type ReadingChrome = { floating: boolean; notes: "resting" | "hidden" | "overlay" };
+const FULL_CHROME: ReadingChrome = { floating: false, notes: "resting" };
 
 function readingChromeHeightChange(
   from: ReadingChrome,
@@ -143,7 +143,8 @@ function readingChromeHeightChange(
   heights: { bar: number; notes: number },
 ): number {
   function height(chrome: ReadingChrome) {
-    return (chrome.floating ? 0 : heights.bar) + (chrome.notesHidden ? 0 : heights.notes);
+    if (heights.notes > 0 && chrome.notes !== "resting") return 0;
+    return (chrome.floating ? 0 : heights.bar) + heights.notes;
   }
   return height(to) - height(from);
 }
@@ -743,10 +744,10 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
       if (typeof input === "number" && input !== direction && scrollTop >= FLOAT_REVEAL_AT_TOP) return;
       const run = Math.sign(scrollRunRef.current) === direction ? scrollRunRef.current + step : step;
       scrollRunRef.current = run;
-      let { floating, notesHidden } = current;
+      let { floating, notes } = current;
       if (scrollTop < FLOAT_REVEAL_AT_TOP) {
         floating = false;
-        notesHidden = false;
+        notes = "resting";
         notesReadingDirectionRef.current = 0;
       } else {
         if (step > 0 && scrollTop > FLOAT_COLLAPSE_PAST) floating = true;
@@ -755,22 +756,23 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
           Math.abs(run) >= FLOAT_REVEAL_STEP &&
           (notesReadingDirectionRef.current || scrollTop > FLOAT_COLLAPSE_PAST)
         ) {
-          notesHidden = !notesReadingDirectionRef.current || direction === notesReadingDirectionRef.current;
+          notes =
+            !notesReadingDirectionRef.current || direction === notesReadingDirectionRef.current ? "hidden" : "overlay";
         }
       }
-      if (floating === current.floating && notesHidden === current.notesHidden) return;
-      const next = { floating, notesHidden };
+      if (floating === current.floating && notes === current.notes) return;
+      const next = { floating, notes };
       const heights = chromeHeightsRef.current;
-      if (!current.notesHidden) {
-        const notes = paneSlotRef.current?.querySelector<HTMLElement>("[data-notes-panel-ref]");
-        if (notes?.contains(document.activeElement) || notes?.dataset.expanded === "true") return;
-        heights.notes = notes?.offsetHeight ?? 0;
+      if (current.notes !== "hidden") {
+        const panel = paneSlotRef.current?.querySelector<HTMLElement>("[data-notes-panel-ref]");
+        if (panel?.contains(document.activeElement) || panel?.dataset.expanded === "true") return;
+        heights.notes = panel?.offsetHeight ?? 0;
       }
       if (!current.floating && topBarRef.current) heights.bar = topBarRef.current.offsetHeight;
       const delta = readingChromeHeightChange(current, next, heights);
       // A fold must leave the compensated offset clear of the at-top reveal band.
       if (delta < 0 && scrollTop + delta <= FLOAT_REVEAL_AT_TOP) return;
-      if (notesHidden && !notesReadingDirectionRef.current) notesReadingDirectionRef.current = direction;
+      if (notes === "hidden" && !notesReadingDirectionRef.current) notesReadingDirectionRef.current = direction;
       readingChromeRef.current = next;
       setReadingChrome(next);
     };
@@ -795,6 +797,21 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
     scroller.scrollTop = adjusted;
     lastScrollTopRef.current = clampedScrollTop(scroller);
   }, [readingChrome]);
+
+  const overlayReadingChrome = readingChrome.notes !== "resting" && chromeHeightsRef.current.notes > 0;
+  useLayoutEffect(() => {
+    const bar = topBarRef.current;
+    const body = stackBodyRef.current;
+    if (!overlayReadingChrome || topBarCollapsed || !bar || !body) return;
+    const placeNotes = () => body.style.setProperty("--reading-title-height", `${bar.offsetHeight}px`);
+    placeNotes();
+    const resize = new ResizeObserver(placeNotes);
+    resize.observe(bar);
+    return () => {
+      resize.disconnect();
+      body.style.removeProperty("--reading-title-height");
+    };
+  }, [overlayReadingChrome, topBarCollapsed]);
 
   // Classifies each focus change and slides it (docs/web-ui/motion.md, recipe
   // 4). A pop is a focus change a Back tap caused. A push is any other change
@@ -1144,7 +1161,8 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
         {/* Keep the same pane slot and scroll listener on both sides of the tablet floor. */}
         <div
           className={styles.paneColumn}
-          data-notes-hidden={readingChrome.notesHidden || undefined}
+          data-notes-hidden={readingChrome.notes === "hidden" || undefined}
+          data-reading-overlay={overlayReadingChrome || undefined}
           data-iphone-header={nativeHeader ? (topBarCollapsed ? "floating" : "resting") : undefined}
           data-testid={tabletSplit ? "pane-column" : undefined}
         >

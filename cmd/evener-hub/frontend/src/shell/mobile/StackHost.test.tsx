@@ -2653,6 +2653,7 @@ test("floating top bar compensates scroll, ignores content height shifts, and re
 });
 
 test("mobile notes tuck in the reading direction and return on reversal or explicit open", async () => {
+  vi.stubGlobal("ResizeObserver", StubResizeObserver);
   window.history.replaceState({}, "", "/");
   const restoreViewport = installMobileViewport();
   const ref = "remote:mobile-notes";
@@ -2726,13 +2727,13 @@ test("mobile notes tuck in the reading direction and return on reversal or expli
     expect(notes.closest("[data-notes-hidden]")).not.toBeNull();
     scroll(140);
     expect(notes.closest("[data-notes-hidden]")).toBeNull();
-    expect(scroller.scrollTop).toBe(240);
+    expect(scroller.scrollTop).toBe(140);
     expect(bar.getAttribute("data-collapsed")).not.toBe("true");
-    scroll(224);
+    scroll(124);
     expect(notes.closest("[data-notes-hidden]")).toBeNull();
 
     // Resuming the original direction tucks the summary. Explicit opening restores it.
-    scroll(240);
+    scroll(140);
     expect(notes.closest("[data-notes-hidden]")).not.toBeNull();
     act(() => {
       topNotesStore.getState().setExpanded(ref, true);
@@ -2768,10 +2769,10 @@ test("mobile notes tuck in the reading direction and return on reversal or expli
     scroll(2460);
     expect(notes.closest("[data-notes-hidden]")).not.toBeNull();
     expect(bar.getAttribute("data-collapsed")).not.toBe("true");
-    expect(scroller.scrollTop).toBe(2416);
+    expect(scroller.scrollTop).toBe(2360);
     // Two small reverse steps still count when streaming moves the offset
     // between them. The content shift itself contributes no travel.
-    scroll(2420);
+    scroll(2364);
     expect(notes.closest("[data-notes-hidden]")).not.toBeNull();
     Object.defineProperty(scroller, "scrollHeight", { configurable: true, value: 3900 });
     scroll(2720);
@@ -2783,6 +2784,7 @@ test("mobile notes tuck in the reading direction and return on reversal or expli
   } finally {
     topNotesStore.getState().resetForTests();
     restoreViewport();
+    vi.unstubAllGlobals();
   }
 });
 

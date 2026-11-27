@@ -129,6 +129,12 @@
  * box and its padding - only paint changes - so the controls stay exactly
  * where they were, now as translucent blur capsules over the scrolling
  * transcript instead of a solid bar above it. Empty clusters draw no capsule. */
+.paneColumn[data-reading-overlay] > .topBar:not(.topBarCollapsed) {
+  position: absolute;
+  inset: 0 0 auto;
+  z-index: var(--z-sticky-bar);
+}
+
 .topBarCollapsed {
   position: absolute;
   top: 0;

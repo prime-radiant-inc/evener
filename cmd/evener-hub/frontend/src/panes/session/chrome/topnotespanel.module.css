@@ -165,6 +165,25 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
+
+  /* A reversal brings back a tappable label over the conversation. Neither
+   * the viewport nor a line beneath the reader's finger moves to make room. */
+  :global([data-reading-overlay]) .topNotesPanel:not([data-expanded="true"]) {
+    position: absolute;
+    z-index: var(--z-raised);
+    top: var(--reading-title-height, 0px);
+    inset-inline: var(--notes-controls-inset, 0px);
+    width: fit-content;
+    max-width: calc(100% - 2 * var(--notes-controls-inset, 0px));
+    margin-inline: auto;
+    border-radius: var(--radius-pill);
+    background: var(--glass-fill, var(--surface-1));
+    box-shadow: var(--shadow-card);
+  }
+
+  :global([data-reading-overlay]) .summaryLine {
+    margin-inline: 0;
+  }
 }
 
 @media (max-width: 899px), (any-pointer: coarse) {
