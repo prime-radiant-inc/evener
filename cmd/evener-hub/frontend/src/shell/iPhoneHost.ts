@@ -1,6 +1,5 @@
 import { useEffect, useEffectEvent, useSyncExternalStore } from "react";
 import { isTextEntryTarget } from "../keybindings/dispatcher";
-import { openPalette } from "./palette/paletteController";
 import { navigate, refParam, urlToPane } from "./routing";
 import { openSessionByRef } from "./sessionPlacement";
 
@@ -85,12 +84,12 @@ export function tellIPhoneHost(message: HostMessage): void {
   }
 }
 
-export function reportIPhoneRoute(path: string): void {
+export function reportIPhoneRoute(path: string, openNeedsYou: () => void): void {
   if (!iPhoneHost()) return;
   if (path === NEEDS_YOU_PATH) {
     // A cold launch consumed the alert. Back and restore should land on the workspace.
     navigate("/", { replace: true });
-    openPalette();
+    openNeedsYou();
   } else {
     tellIPhoneHost({ type: "route", path });
   }
@@ -141,7 +140,7 @@ export function useIPhoneShare(path: string | null, place: (id: string, text: st
   }, [path]);
 }
 
-function receiveHostCommand(event: MessageEvent): void {
+function receiveHostCommand(event: MessageEvent, openNeedsYou: () => void): void {
   const command = iPhoneCommand(event);
   if (command?.type === "material" && typeof command.glass === "boolean") {
     document.body.dataset.iphoneGlass = command.glass ? "regular" : "opaque";
@@ -155,7 +154,7 @@ function receiveHostCommand(event: MessageEvent): void {
   if (command?.type !== "navigate" || typeof command.path !== "string") return;
   if (command.path === NEEDS_YOU_PATH) {
     // The empty palette lists Needs you first, over the user's current pane.
-    openPalette();
+    openNeedsYou();
     const { pathname, search, hash } = window.location;
     tellIPhoneHost({ type: "route", path: pathname + search + hash });
     return;
@@ -177,7 +176,7 @@ function receiveHostCommand(event: MessageEvent): void {
   }
 }
 
-export function connectIPhoneHost(): (() => void) | undefined {
+export function connectIPhoneHost(openNeedsYou: () => void): (() => void) | undefined {
   if (!iPhoneHost()) return;
   // Draw solid controls until the phone has read its accessibility settings.
   document.body.dataset.iphoneGlass = "opaque";
@@ -237,7 +236,8 @@ export function connectIPhoneHost(): (() => void) | undefined {
   document.addEventListener("focusin", onFocus);
   document.addEventListener("focusout", onBlur);
   document.addEventListener("input", onInput);
-  window.addEventListener("message", receiveHostCommand);
+  const onMessage = (event: MessageEvent) => receiveHostCommand(event, openNeedsYou);
+  window.addEventListener("message", onMessage);
   tellIPhoneHost({ type: "ready" });
   trackEditor(document.activeElement);
   reportModal();
@@ -245,7 +245,7 @@ export function connectIPhoneHost(): (() => void) | undefined {
     document.removeEventListener("focusin", onFocus);
     document.removeEventListener("focusout", onBlur);
     document.removeEventListener("input", onInput);
-    window.removeEventListener("message", receiveHostCommand);
+    window.removeEventListener("message", onMessage);
     editorChanges.disconnect();
     modalChanges.disconnect();
     if (modal) tellIPhoneHost({ type: "covered", active: false });

@@ -1074,7 +1074,7 @@ test("ordinary Send preserves the textarea submission shortcut and next typing",
       if (message.type === "editing") editing.push(message.active);
     },
   });
-  const disconnect = connectIPhoneHost();
+  const disconnect = connectIPhoneHost(vi.fn());
   if (disconnect) onTestFinished(disconnect);
   const fake = await mountComposer("ref_a", idleFocusThread("ref_a"));
   acceptFocusSubmission(fake, "turn/start");

@@ -527,11 +527,11 @@ function AppShellContent({ client: injectedClient, bannerDelayMs, bannerCreateCl
   const interactiveNavigationRef = useRef<string | null>(null);
   const [pathname, historyRevision] = usePathname(interactiveNavigationRef);
   const scheme = useResolvedScheme();
-  useEffect(connectIPhoneHost, []);
+  useEffect(() => connectIPhoneHost(openPalette), []);
   useEffect(connectIPhoneGlass, []);
   useEffect(() => tellIPhoneHost({ type: "appearance", dark: scheme === "dark" }), [scheme]);
   const hubPath = pathname + window.location.search + window.location.hash;
-  useEffect(() => reportIPhoneRoute(hubPath), [hubPath]);
+  useEffect(() => reportIPhoneRoute(hubPath, openPalette), [hubPath]);
   const route = urlToPane(pathname);
   const sessionRouteRef = route?.type === "session" ? refParam(route.params) : null;
   const restoredSessionRef = route?.type === "welcome" ? refParam(workspaceStore.getState().mainPane()?.params) : null;
