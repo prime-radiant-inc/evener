@@ -76,7 +76,7 @@
     left: var(--overlay-actions-left, auto);
     right: var(--overlay-actions-right, auto);
     bottom: calc(var(--dock-clearance) + var(--space-3));
-    margin-inline: calc((max(var(--home-safe-left), var(--home-safe-right)) - var(--tap-min)) / 2);
+    translate: var(--overlay-actions-offset) 0;
     flex-direction: column;
     border-radius: var(--radius-pill);
     background: var(--glass-fill, var(--surface-1));

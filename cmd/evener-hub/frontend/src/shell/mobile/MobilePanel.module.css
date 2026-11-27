@@ -20,11 +20,13 @@
 }
 
 .left {
-  --overlay-actions-left: 0px;
+  --overlay-actions-left: calc(var(--home-safe-left) / 2);
+  --overlay-actions-offset: -50%;
 }
 
 .right {
-  --overlay-actions-right: 0px;
+  --overlay-actions-right: calc(var(--home-safe-right) / 2);
+  --overlay-actions-offset: 50%;
 }
 
 /* The rail fills the drawer flush: the sheet body's own inset made the rail

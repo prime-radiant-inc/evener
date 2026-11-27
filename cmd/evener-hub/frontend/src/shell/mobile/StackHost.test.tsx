@@ -57,6 +57,7 @@ import {
   resetWorkspaceStoreForTests,
   workspaceStore,
 } from "../workspace";
+import mobilePanelStyles from "./MobilePanel.module.css";
 import { StackHost, scrollOffsetsForTests, setLastPopstateWasTrustedForTests } from "./StackHost";
 import stackStyles from "./StackHost.module.css";
 
@@ -529,21 +530,34 @@ test("the Duo edge controls open and dismiss Sessions and yield to a nested dial
   }
 });
 
-test.each([false, true])(
-  "Escape restores the session's leading navigation in a Home Screen window: %s",
-  async (installed) => {
+test.each([
+  { installed: false, pane: "session" },
+  { installed: true, pane: "session" },
+  { installed: false, pane: "welcome" },
+  { installed: true, pane: "welcome" },
+])(
+  "Sessions uses the free edge and restores the opener on $pane when installed=$installed",
+  async ({ installed, pane }) => {
     const user = userEvent.setup();
     const restoreViewport = installMobileViewport();
     Object.defineProperty(navigator, "standalone", { configurable: true, value: installed });
     document.documentElement.style.setProperty("--home-safe-right", "84px");
     try {
-      workspaceStore.getState().openPane("session", { ref: "local:root-navigation" });
+      if (pane === "session") workspaceStore.getState().openPane("session", { ref: "local:root-navigation" });
       render(<StackHost />);
+      if (pane === "welcome") {
+        await screen.findByRole("dialog");
+        await user.keyboard("{Escape}");
+      }
       await screen.findByTestId("topbar-title");
       expect(screen.queryByRole("button", { name: "Back" })).toBeNull();
       const opener = screen.getByRole("button", { name: "Sessions" });
-      expect(opener.closest("[role=toolbar]") !== null).toBe(installed);
+      expect(opener.closest("[role=toolbar]")?.getAttribute("data-home-toolbar") ?? null).toBe(
+        installed ? "right" : null,
+      );
+      expect(screen.getByTestId("topbar").contains(opener)).toBe(!installed);
       await openSessionsPanel(user);
+      expect(screen.getByRole("dialog").classList.contains(mobilePanelStyles.right ?? "")).toBe(installed);
       await user.keyboard("{Escape}");
       expect(document.activeElement).toBe(opener);
     } finally {
