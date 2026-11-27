@@ -1,9 +1,14 @@
 import { type RefObject, useEffectEvent, useLayoutEffect, useState } from "react";
-import { type IPhoneHeader, type IPhoneHeaderAction, iPhoneCommand, tellIPhoneHost } from "../iPhoneHost";
+import {
+  FLOATING_WEB_LAYER,
+  type IPhoneHeader,
+  type IPhoneHeaderAction,
+  iPhoneCommand,
+  tellIPhoneHost,
+} from "../iPhoneHost";
 
 // Floating layers cover the toolbar. Inline Find docks beneath it.
-const WEB_LAYER = '[data-focus-layer], [role="listbox"], [aria-modal="true"]';
-const TOOLBAR_SURFACES = `${WEB_LAYER}, [data-find-bar]`;
+const TOOLBAR_SURFACES = `${FLOATING_WEB_LAYER}, [data-find-bar]`;
 
 function containsLayer(node: Node): boolean {
   return node instanceof Element && (node.matches(TOOLBAR_SURFACES) || node.querySelector(TOOLBAR_SURFACES) !== null);
@@ -38,7 +43,7 @@ export function IPhoneSessionHeader({
     if (!element) return;
     const measure = () => {
       onFindChange(document.querySelector("[data-find-bar]") !== null);
-      setHeight(document.querySelector(WEB_LAYER) ? 0 : element.offsetHeight);
+      setHeight(document.querySelector(FLOATING_WEB_LAYER) ? 0 : element.offsetHeight);
     };
     measure();
     const resize = new ResizeObserver(measure);

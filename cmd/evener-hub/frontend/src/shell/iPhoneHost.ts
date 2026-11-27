@@ -3,6 +3,8 @@ import { isTextEntryTarget } from "../keybindings/dispatcher";
 import { navigate, refParam, urlToPane } from "./routing";
 import { openSessionByRef } from "./sessionPlacement";
 
+export const FLOATING_WEB_LAYER = ':is([data-focus-layer], [aria-modal="true"], [role="listbox"])';
+
 export interface IPhoneHeader {
   id: string;
   sessionRef: string;

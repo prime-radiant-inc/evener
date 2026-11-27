@@ -1,8 +1,6 @@
 import { type RefObject, useEffectEvent, useId, useLayoutEffect } from "react";
-import { iPhoneCommand, tellIPhoneHost } from "../iPhoneHost";
+import { FLOATING_WEB_LAYER, iPhoneCommand, tellIPhoneHost } from "../iPhoneHost";
 import { useOpenRailDestination } from "../rail/RailNavigationActions";
-
-const LAYER = ':is([data-focus-layer], [aria-modal="true"], [role="listbox"])';
 
 export function IPhoneSessionsToolbar({
   mode,
@@ -20,9 +18,9 @@ export function IPhoneSessionsToolbar({
     // Only the foreground sheet can act. Its row menus and confirmations
     // release the side buttons until their own focus layer closes.
     const ownsActions = () => {
-      const layers = document.querySelectorAll(`${LAYER}:not([inert], [inert] *)`);
+      const layers = document.querySelectorAll(`${FLOATING_WEB_LAYER}:not([inert], [inert] *)`);
       const front = layers.item(layers.length - 1);
-      return mode === "launcher" ? !front : !!front && panelAnchor.current?.closest(LAYER) === front;
+      return mode === "launcher" ? !front : !!front && panelAnchor.current?.closest(FLOATING_WEB_LAYER) === front;
     };
     // On entry the title announces the list. Otherwise its first web control,
     // Filter, would receive automatic focus and summon the iPhone keyboard.
@@ -43,7 +41,8 @@ export function IPhoneSessionsToolbar({
           (record) =>
             record.type === "attributes" ||
             [...record.addedNodes, ...record.removedNodes].some(
-              (node) => node instanceof Element && (node.matches(LAYER) || node.querySelector(LAYER)),
+              (node) =>
+                node instanceof Element && (node.matches(FLOATING_WEB_LAYER) || node.querySelector(FLOATING_WEB_LAYER)),
             ),
         )
       )
