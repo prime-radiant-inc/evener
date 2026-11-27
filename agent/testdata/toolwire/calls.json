@@ -813,7 +813,7 @@
       "turnId": "turn_1",
       "toolName": "shell",
       "callId": "call_shell_timeout",
-      "output": "started\n\u003csystem-reminder\u003eThis job will notify you when it completes. If your session is idle, the notification will wake it. You do not need to wait for it explicitly.\u003c/system-reminder\u003e [the foreground wait ended after 2s, not the command · read_transcript(transcript_ref=\"job:job_fixture_1\") · completion arrives by notification — do not relaunch or poll · still running as job_fixture_1]",
+      "output": "started\n\u003csystem-reminder\u003eThe foreground wait ended and this command is still running in the background as job_fixture_1 (it did not fail or hang; empty or sparse output so far is often normal stdout/pipe buffering rather than a stall). When it finishes, Evener automatically delivers a job notification containing its exit status, an output excerpt, and full log ref job:job_fixture_1. Evener wakes your session automatically on completion; move on to other work or yield quietly with communicate(next=\"log_quietly_and_end_turn\", message=\"Waiting for job_fixture_1 to finish.\") rather than running sleep, polling, or killing a buffered job.\u003c/system-reminder\u003e [the foreground wait ended after 2s, not the command · read_transcript(transcript_ref=\"job:job_fixture_1\") · completion arrives by notification — do not relaunch or poll · still running as job_fixture_1]",
       "status": "completed",
       "completedAt": 1790625602000
     },
