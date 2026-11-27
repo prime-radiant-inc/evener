@@ -36,6 +36,7 @@
   /* biome-ignore lint/suspicious/noDuplicateProperties: css-modules composes takes one declaration per composed class, each with its own `from` */
   composes: summaryTile from "../../styles/surface.module.css";
   padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-pill);
   cursor: pointer;
   transition:
     border-color var(--motion-duration-hover) var(--motion-easing-standard),
