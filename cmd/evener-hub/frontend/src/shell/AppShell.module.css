@@ -34,6 +34,11 @@
   padding: 0;
   min-height: 0;
   min-width: 0;
+  /* The containing block for a docked pane's exiting frame. Absolute inside
+   * .content, the frame stays inside this row's overflow-x clip; anchored to
+   * .shell instead, its rightward slide escapes the clip and widens the
+   * document until the pane unmounts. */
+  position: relative;
   /* The activity sidebar enters from translateX(320px). Unclipped, that
    * overhang overflows the desktop document, and classic scrollbars (Linux,
    * Windows) then shift the whole shell 15px and can linger until the next

@@ -158,6 +158,17 @@ export function ActivitySidebar({ mobile = false }: { mobile?: boolean }) {
   const tabPanelId = `${idPrefix}-panel`;
   const tabDomId = (id: ActivityTab) => `${idPrefix}-tab-${id}`;
   const sidebar = useRef<HTMLElement>(null);
+  const hideButton = useRef<HTMLButtonElement>(null);
+  const focusOnOpen = useRef(false);
+  // The edge Show chip unmounts as it opens the pane. Hand focus to the
+  // in-pane Hide control so a keyboard or assistive-tech activation does not
+  // drop to the document body. Other openers stay mounted and keep their own
+  // focus behavior.
+  useEffect(() => {
+    if (!open || !focusOnOpen.current) return;
+    focusOnOpen.current = false;
+    hideButton.current?.focus();
+  }, [open]);
   const returnFrame = useRef<number | null>(null);
   useEffect(() => {
     if (mobile || !open) return;
@@ -318,6 +329,7 @@ export function ActivitySidebar({ mobile = false }: { mobile?: boolean }) {
                   {!scope.ancestryKnown ? <span className={CLASS.pending}>Finding session context…</span> : null}
                 </div>
                 <IconButton
+                  ref={hideButton}
                   label="Hide Overview"
                   icon={<OverviewIcon />}
                   variant="quiet"
@@ -375,7 +387,10 @@ export function ActivitySidebar({ mobile = false }: { mobile?: boolean }) {
             label="Show Overview"
             icon={<OverviewIcon />}
             variant="secondary"
-            onClick={() => activitySidebarStore.getState().toggle()}
+            onClick={() => {
+              focusOnOpen.current = true;
+              activitySidebarStore.getState().toggle();
+            }}
           />
         </div>
       ) : null}

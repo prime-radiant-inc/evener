@@ -391,9 +391,14 @@ test("desktop Overview puts its Hide control inside the pane and its Show contro
   expect(show.closest('[data-testid="activity-sidebar"]')).toBeNull();
   expect(screen.queryByTestId("activity-sidebar")).toBeNull();
 
+  // A keyboard user activates the Show chip, which unmounts as the pane opens.
+  // Focus must land on the in-pane Hide control instead of falling to the body.
+  show.focus();
+  expect(document.activeElement).toBe(show);
   fireEvent.click(show);
   const aside = await screen.findByTestId("activity-sidebar");
   const hide = within(aside).getByRole("button", { name: "Hide Overview" });
+  expect(document.activeElement).toBe(hide);
   expect(screen.queryByRole("button", { name: "Show Overview" })).toBeNull();
 
   fireEvent.click(hide);

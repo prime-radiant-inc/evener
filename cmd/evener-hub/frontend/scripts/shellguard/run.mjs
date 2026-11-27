@@ -2071,6 +2071,13 @@ async function trustedOverviewFlow(send, viewport, childGesture) {
   }
 
   const dismiss = async (gesture, expectedPane, expectedButton = null) => {
+    await evaluate(
+      send,
+      `(() => {
+        const aside = document.querySelector(${JSON.stringify(OVERVIEW)});
+        window.__overviewWorkspace = aside?.previousElementSibling ?? null;
+      })()`,
+    );
     if (gesture === "close") await clickControl(send, `${OVERVIEW} button[aria-label="Hide Overview"]`);
     else {
       await evaluate(
@@ -2079,11 +2086,57 @@ async function trustedOverviewFlow(send, viewport, childGesture) {
       );
       await pressKey(send, "Escape", "Escape", 27);
     }
+    // The leaving pane must lift out of the row on its first exit frame: the
+    // workspace takes its closed width immediately, the Show chip is already
+    // docked, and the rightward slide cannot widen the document.
+    const exiting = viewport.mobile
+      ? null
+      : await evaluate(
+          send,
+          `(() => {
+            const aside = document.querySelector(${JSON.stringify(OVERVIEW)});
+            if (!aside) return null;
+            const chip = document.querySelector('[data-overview-chip] [data-overview-toggle]');
+            const box = chip?.getBoundingClientRect() ?? null;
+            const workspace = window.__overviewWorkspace;
+            return {
+              position: getComputedStyle(aside).position,
+              workspaceWidth: workspace?.getBoundingClientRect().width ?? null,
+              chip: box ? { left: box.left, right: box.right, top: box.top, bottom: box.bottom } : null,
+              scrollWidth: document.documentElement.scrollWidth,
+              clientWidth: document.documentElement.clientWidth,
+            };
+          })()`,
+        );
     await waitForDom(
       send,
       `!document.querySelector(${JSON.stringify(OVERVIEW)})`,
       `${gesture} completes Overview exit`,
     );
+    const closedWorkspace = await evaluate(
+      send,
+      `window.__overviewWorkspace?.getBoundingClientRect().width ?? null`,
+    );
+    if (exiting) {
+      if (!exiting.chip) throw new Error(`${gesture} removes the edge Show chip during Overview exit`);
+      if (exiting.position !== "absolute")
+        throw new Error(`${gesture} leaves the exiting Overview in the content row: ${JSON.stringify(exiting)}`);
+      if (exiting.scrollWidth > exiting.clientWidth + 1)
+        throw new Error(`${gesture} widens the document during Overview exit: ${JSON.stringify(exiting)}`);
+      if (
+        exiting.workspaceWidth === null ||
+        closedWorkspace === null ||
+        Math.abs(exiting.workspaceWidth - closedWorkspace) > 1
+      )
+        throw new Error(
+          `${gesture} does not settle the workspace before Overview exit: ${JSON.stringify({ during: exiting.workspaceWidth, closed: closedWorkspace })}`,
+        );
+      const box = exiting.chip;
+      if (box.left < -1 || box.right > viewport.width + 1 || box.top < -1 || box.bottom > viewport.height + 1)
+        throw new Error(`${gesture} puts the edge Show chip off-shell during Overview exit: ${JSON.stringify(box)}`);
+    } else if (!viewport.mobile && !(await evaluate(send, `matchMedia('(prefers-reduced-motion: reduce)').matches`))) {
+      throw new Error(`${gesture} removed the Overview before its exit geometry could be measured`);
+    }
     await waitForDom(
       send,
       `(() => {
