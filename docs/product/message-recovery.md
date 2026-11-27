@@ -181,6 +181,9 @@ An incoming share stays in the App Group until its destination saves the text
 in a conversation draft or starts the new session.
 Choosing a hub that cannot receive the share leaves the item pending on the
 phone and prompts for an update to that hub.
+If WebKit cannot save a shared item in a conversation draft, the composer
+keeps the text visible and offers Retry. A successful retry saves the current
+draft, including subsequent edits, and releases the item on the phone.
 
 ## Android development client
 

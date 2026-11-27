@@ -553,7 +553,7 @@ test("goal replacement preserves the consolidated recovery owner while its commi
   }
 });
 
-test("the focused iPhone composer places only native shares addressed to this session", async () => {
+test("the focused iPhone composer retries a share after its draft write is rejected", async () => {
   const path = "/s/local%3Aone";
   const previous = window.location.href;
   window.history.replaceState({}, "", path);
@@ -565,7 +565,8 @@ test("the focused iPhone composer places only native shares addressed to this se
     agent.mockRestore();
     vi.unstubAllGlobals();
   });
-  const { fake } = await mountComposerWithHandle("local:one", {}, { focused: true });
+  const source = createTestComposerSource("local:one");
+  const { fake } = await mountComposerWithHandle("local:one", {}, { focused: true, source });
   const editor = textarea();
   const deliver = (destination: string, origin = "") =>
     act(() => {
@@ -584,14 +585,31 @@ test("the focused iPhone composer places only native shares addressed to this se
   deliver("/s/other");
   deliver(path, "https://another.example");
   expect(editor.textContent).toBe("");
-  deliver(path);
+  vi.spyOn(localStorage, "setItem").mockImplementationOnce(() => {
+    throw new Error("quota");
+  });
   deliver(path);
   expect(editor.textContent).toBe("incoming");
+  expect(screen.getByRole("alert")).toBeTruthy();
+  expect(postMessage.mock.calls.map(([raw]) => JSON.parse(raw))).not.toContainEqual({
+    type: "sharePlaced",
+    id: "payload",
+    path,
+  });
+  const user = userEvent.setup();
+  await user.type(editor, " edit");
+  expect(editor.textContent).toBe("incoming edit");
+  await user.click(screen.getByRole("button", { name: "Retry" }));
+  expect(editor.textContent).toBe("incoming edit");
+  expect(readDraft("local:one")).toBe("incoming edit");
+  expect(screen.queryByRole("alert")).toBeNull();
   expect(postMessage.mock.calls.map(([raw]) => JSON.parse(raw))).toContainEqual({
     type: "sharePlaced",
     id: "payload",
     path,
   });
+  deliver(path);
+  expect(editor.textContent).toBe("incoming edit");
   expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
 });
 

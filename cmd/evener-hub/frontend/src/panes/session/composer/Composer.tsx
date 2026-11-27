@@ -289,9 +289,33 @@ function ComposerWithSubmission({
     stagedImageRanges,
   } = useSyncExternalStore(source.subscribe, source.getSnapshot, source.getSnapshot);
   const sharePath = paneToURL("session", { ref });
+  const [shareWriteFailure, setShareWriteFailure] = useState<{
+    id: string;
+    text: string;
+    path: string;
+    ownerId: string;
+  } | null>(null);
+  const compositionOwnerId = source.compositionOwnerId;
+  const shareFailureIsCurrent =
+    shareWriteFailure?.path === sharePath && shareWriteFailure.ownerId === compositionOwnerId;
+  useEffect(() => {
+    if (shareWriteFailure && (shareWriteFailure.path !== sharePath || shareWriteFailure.ownerId !== compositionOwnerId))
+      setShareWriteFailure(null);
+  }, [shareWriteFailure, sharePath, compositionOwnerId]);
+  function acknowledgeShare(id: string, path: string): void {
+    tellIPhoneHost({ type: "sharePlaced", id, path });
+    setShareWriteFailure((pending) => (pending?.id === id ? null : pending));
+  }
   useIPhoneShare(focused && !activeRecoveryId ? sharePath : null, (id, text) => {
-    if (sharePath && source.placeShare(id, text)) tellIPhoneHost({ type: "sharePlaced", id, path: sharePath });
+    if (!sharePath) return;
+    if (source.placeShare(id, text)) acknowledgeShare(id, sharePath);
+    else setShareWriteFailure({ id, text, path: sharePath, ownerId: compositionOwnerId });
   });
+  function retryShareWrite(): void {
+    if (!shareFailureIsCurrent || !shareWriteFailure || !sharePath) return;
+    const { id, text, path } = shareWriteFailure;
+    if (source.placeShare(id, text)) acknowledgeShare(id, path);
+  }
   // The anchors this composer read out of a draft it did not write and cannot
   // back with bytes: the source's adoption record intersected with the text as
   // it stands. Read once here so the refusal, the reason beside the draft, and
@@ -1527,6 +1551,20 @@ function ComposerWithSubmission({
                   .join(
                     ", ",
                   )} referred to here is not attached in this composer. Attach the replacement beside it first, then use Remove the reference once the preview appears, before sending.`}
+              </InlineNotice>
+            )}
+            {!askPending && shareFailureIsCurrent && (
+              <InlineNotice
+                tone="danger"
+                live="alert"
+                data-testid="composer-share-write-error"
+                action={
+                  <Button size="sm" type="button" onClick={retryShareWrite}>
+                    Retry
+                  </Button>
+                }
+              >
+                Shared text is still in this draft. Retry saving it.
               </InlineNotice>
             )}
             <Dropzone onFiles={(files) => attachments.ingestFiles(files, (message) => toasts.push("error", message))}>
