@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -646,6 +647,92 @@ func TestTier1ToolsConfigPromotionRespectsCeilings(t *testing.T) {
 	if _, hasIntent := wired.Parameters["properties"].(map[string]any)["intent"]; hasIntent {
 		t.Fatalf("wireDeferredToolDef kept intent property: %#v", wired.Parameters)
 	}
+
+	t.Run("restore merges explicit Tier1Tools with saved promotions and preserves saved when omitted", func(t *testing.T) {
+		t.Parallel()
+		rdir := t.TempDir()
+		initGitRepo(t, rdir)
+		stateDir := t.TempDir()
+		noAgents := filepath.Join(t.TempDir(), "no-personal-AGENTS.md")
+
+		c0 := llm.NewClient()
+		c0.Register(newFakeAdapter("openai", func(llm.Request) llm.Response {
+			return agenttest.FinalResponse("ok")
+		}))
+		orig, err := NewSession(c0, withTestSessionNamer(c0, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(rdir), SessionConfig{
+			StateDir:         stateDir,
+			MaxSubagentDepth: 2,
+			Tier1Tools:       []string{"web_fetch"},
+			AgentsDocPath:    noAgents,
+		})
+		if err != nil {
+			t.Fatalf("NewSession: %v", err)
+		}
+		sessionID := orig.ID()
+		if _, err := orig.ProcessInput(tripwireCtx(t), "seed", nil); err != nil {
+			orig.Close()
+			t.Fatalf("seed ProcessInput: %v", err)
+		}
+		orig.Close()
+
+		meta, err := schema.LoadSessionMeta(stateDir, sessionID)
+		if err != nil {
+			t.Fatalf("LoadSessionMeta: %v", err)
+		}
+
+		// Omitting Tier1Tools on restore preserves saved web_fetch and keeps manage_worktree deferred.
+		var reqOmitted llm.Request
+		c1 := llm.NewClient()
+		c1.Register(newFakeAdapter("openai", func(req llm.Request) llm.Response {
+			reqOmitted = req
+			return agenttest.FinalResponse("ok")
+		}))
+		restoredOmitted, err := RestoreSessionFromMetaWithConfig(c1, withTestSessionNamer(c1, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(rdir), meta, RestoreSessionConfig{
+			StateDir:      stateDir,
+			AgentsDocPath: noAgents,
+		})
+		if err != nil {
+			t.Fatalf("RestoreSession (omitted): %v", err)
+		}
+		if _, err := restoredOmitted.ProcessInput(tripwireCtx(t), "turn2", nil); err != nil {
+			restoredOmitted.Close()
+			t.Fatalf("restoredOmitted ProcessInput: %v", err)
+		}
+		restoredOmitted.Close()
+		omittedByName := make(map[string]llm.ToolDefinition, len(reqOmitted.Tools))
+		for _, td := range reqOmitted.Tools {
+			omittedByName[td.Name] = td
+		}
+		assertFullTier1Def(t, omittedByName["web_fetch"])
+		assertDeferredStubDef(t, omittedByName["manage_worktree"], "")
+
+		// Passing manage_worktree on restore promotes manage_worktree while preserving saved web_fetch.
+		var reqMerged llm.Request
+		c2 := llm.NewClient()
+		c2.Register(newFakeAdapter("openai", func(req llm.Request) llm.Response {
+			reqMerged = req
+			return agenttest.FinalResponse("ok")
+		}))
+		restoredMerged, err := RestoreSessionFromMetaWithConfig(c2, withTestSessionNamer(c2, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(rdir), meta, RestoreSessionConfig{
+			StateDir:      stateDir,
+			AgentsDocPath: noAgents,
+			Tier1Tools:    []string{"manage_worktree"},
+		})
+		if err != nil {
+			t.Fatalf("RestoreSession (merged): %v", err)
+		}
+		if _, err := restoredMerged.ProcessInput(tripwireCtx(t), "turn3", nil); err != nil {
+			restoredMerged.Close()
+			t.Fatalf("restoredMerged ProcessInput: %v", err)
+		}
+		restoredMerged.Close()
+		mergedByName := make(map[string]llm.ToolDefinition, len(reqMerged.Tools))
+		for _, td := range reqMerged.Tools {
+			mergedByName[td.Name] = td
+		}
+		assertFullTier1Def(t, mergedByName["web_fetch"])
+		assertFullTier1Def(t, mergedByName["manage_worktree"])
+	})
 }
 
 func TestDeferredStubDirectDispatchHooksAndSchemaDisclosure(t *testing.T) {
@@ -808,16 +895,23 @@ func TestUseSkillDisclosesDeferredSchemasOnce(t *testing.T) {
 	}
 	defer sess.Close()
 
-	// First use_skill("using-worktrees") discloses manage_worktree schema.
+	// First use_skill("using-worktrees") returns clean skill content and steers manage_worktree schema once.
 	res1 := sess.execTool(tripwireCtx(t), useSkillCall("s1", "using-worktrees"), "")
 	if res1.IsError {
 		t.Fatalf("use_skill(using-worktrees) failed: %s", res1.Output)
 	}
-	if !strings.Contains(res1.Output, "<system-notification>") || !strings.Contains(res1.Output, `"name":"manage_worktree"`) {
-		t.Fatalf("first use_skill(using-worktrees) missing manage_worktree schema: %s", res1.Output)
+	if strings.Contains(res1.Output, `"name":"manage_worktree"`) {
+		t.Fatalf("first use_skill(using-worktrees) embedded schema into tool result: %s", res1.Output)
 	}
-	if strings.Contains(res1.Output, "call_tool") || !strings.Contains(res1.Output, "call these tools directly by name") {
-		t.Fatalf("use_skill disclosure should direct native calls without call_tool: %s", res1.Output)
+	msgs1 := sess.drainSteeringForCommunicate()
+	if len(msgs1) != 1 {
+		t.Fatalf("steering messages after first use_skill(using-worktrees) = %d, want 1 (%+v)", len(msgs1), msgs1)
+	}
+	if !strings.Contains(msgs1[0].Text, "<system-notification>") || !strings.Contains(msgs1[0].Text, `"name":"manage_worktree"`) {
+		t.Fatalf("first use_skill(using-worktrees) steering missing manage_worktree schema: %s", msgs1[0].Text)
+	}
+	if strings.Contains(msgs1[0].Text, "call_tool") || !strings.Contains(msgs1[0].Text, "call these tools directly by name") {
+		t.Fatalf("use_skill disclosure should direct native calls without call_tool: %s", msgs1[0].Text)
 	}
 	// Second invocation is idempotent: schema is not injected again.
 	res2 := sess.execTool(tripwireCtx(t), useSkillCall("s2", "using-worktrees"), "")
@@ -827,22 +921,125 @@ func TestUseSkillDisclosesDeferredSchemasOnce(t *testing.T) {
 	if strings.Contains(res2.Output, `"name":"manage_worktree"`) {
 		t.Fatalf("second use_skill(using-worktrees) re-injected schema: %s", res2.Output)
 	}
+	if msgs2 := sess.drainSteeringForCommunicate(); len(msgs2) != 0 {
+		t.Fatalf("second use_skill(using-worktrees) re-steered schema: %+v", msgs2)
+	}
 
 	// use_skill("running-jobs") discloses deferred job tools without re-disclosing Tier-1 delegate or <available_agents>.
 	jobsRes := sess.execTool(tripwireCtx(t), useSkillCall("s3", "running-jobs"), "")
 	if jobsRes.IsError {
 		t.Fatalf("use_skill(running-jobs) failed: %s", jobsRes.Output)
 	}
+	if strings.Contains(jobsRes.Output, `"name":"job_watch"`) {
+		t.Fatalf("use_skill(running-jobs) embedded schema into tool result: %s", jobsRes.Output)
+	}
+	jobMsgs := sess.drainSteeringForCommunicate()
+	if len(jobMsgs) != 1 {
+		t.Fatalf("steering messages after use_skill(running-jobs) = %d, want 1 (%+v)", len(jobMsgs), jobMsgs)
+	}
 	for _, want := range []string{`"name":"job_watch"`, `"name":"job_status"`, `"name":"job_stop"`, `"name":"job_list"`} {
-		if !strings.Contains(jobsRes.Output, want) {
-			t.Errorf("use_skill(running-jobs) missing %q in output:\n%s", want, jobsRes.Output)
+		if !strings.Contains(jobMsgs[0].Text, want) {
+			t.Errorf("use_skill(running-jobs) steering missing %q:\n%s", want, jobMsgs[0].Text)
 		}
 	}
 	for _, alreadyUpfront := range []string{`"name":"delegate"`, `"name":"delegate_send"`, "<available_agents>"} {
-		if strings.Contains(jobsRes.Output, alreadyUpfront) {
-			t.Errorf("use_skill(running-jobs) re-disclosed upfront %q:\n%s", alreadyUpfront, jobsRes.Output)
+		if strings.Contains(jobMsgs[0].Text, alreadyUpfront) {
+			t.Errorf("use_skill(running-jobs) steering re-disclosed upfront %q:\n%s", alreadyUpfront, jobMsgs[0].Text)
 		}
 	}
+
+	t.Run("4096_char_use_skill_limit_delivers_running_jobs_and_steers_schemas", func(t *testing.T) {
+		t.Parallel()
+		ldir := t.TempDir()
+		initGitRepo(t, ldir)
+		lc := llm.NewClient()
+		f := newFakeAdapter("openai",
+			func(llm.Request) llm.Response { return agenttest.ToolCallResponse(useSkillCall("u1", "running-jobs")) },
+			func(llm.Request) llm.Response { return agenttest.FinalResponse("ok") },
+		)
+		lc.Register(f)
+		lsess, err := NewSession(lc, withTestSessionNamer(lc, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(ldir), SessionConfig{
+			StateDir:         t.TempDir(),
+			MaxSubagentDepth: 2,
+			AgentsDocPath:    filepath.Join(t.TempDir(), "no-personal-AGENTS.md"),
+			ToolOutputLimits: map[string]schema.ToolOutputLimit{
+				"use_skill": {MaxChars: 4096, Strategy: schema.TruncHeadTail},
+			},
+		})
+		if err != nil {
+			t.Fatalf("NewSession: %v", err)
+		}
+		defer lsess.Close()
+		if _, err := lsess.ProcessInput(tripwireCtx(t), "load running-jobs", nil); err != nil {
+			t.Fatalf("ProcessInput: %v", err)
+		}
+		reqs := f.Requests()
+		if len(reqs) != 2 {
+			t.Fatalf("requests = %d, want 2", len(reqs))
+		}
+		var toolResult string
+		var toolIsErr bool
+		var steeringBuf strings.Builder
+		for _, m := range reqs[1].Messages {
+			if m.Role == llm.RoleTool {
+				for _, p := range m.Content {
+					if p.Kind == llm.ContentToolResult && p.ToolResult != nil {
+						toolResult, _ = p.ToolResult.Content.(string)
+						toolIsErr = p.ToolResult.IsError
+					}
+				}
+			}
+			if m.Role == llm.RoleUser && strings.Contains(m.Text(), "<system-notification>") {
+				steeringBuf.WriteString(m.Text())
+				steeringBuf.WriteByte('\n')
+			}
+		}
+		steeringText := steeringBuf.String()
+		if toolIsErr {
+			t.Fatalf("use_skill(running-jobs) under 4096-char limit failed: %s", toolResult)
+		}
+		if strings.Contains(toolResult, `"name":"job_watch"`) {
+			t.Fatalf("use_skill(running-jobs) embedded deferred schema into tool result:\n%s", toolResult)
+		}
+		for _, want := range []string{`"name":"job_watch"`, `"name":"job_status"`, `"name":"job_stop"`, `"name":"job_list"`} {
+			if !strings.Contains(steeringText, want) {
+				t.Errorf("next request steering missing %q:\n%s", want, steeringText)
+			}
+		}
+	})
+
+	t.Run("rejected_use_skill_does_not_mark_schemas_disclosed", func(t *testing.T) {
+		t.Parallel()
+		ldir := t.TempDir()
+		initGitRepo(t, ldir)
+		lc := llm.NewClient()
+		lc.Register(&fakeAdapter{name: "openai"})
+		lsess, err := NewSession(lc, withTestSessionNamer(lc, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(ldir), SessionConfig{
+			StateDir:         t.TempDir(),
+			MaxSubagentDepth: 2,
+			AgentsDocPath:    filepath.Join(t.TempDir(), "no-personal-AGENTS.md"),
+			ToolOutputLimits: map[string]schema.ToolOutputLimit{
+				"use_skill": {MaxChars: 64, Strategy: schema.TruncHeadTail},
+			},
+		})
+		if err != nil {
+			t.Fatalf("NewSession: %v", err)
+		}
+		defer lsess.Close()
+		res := lsess.execTool(tripwireCtx(t), useSkillCall("u-fail", "running-jobs"), "")
+		if !res.IsError || !errors.Is(res.Err, tool.ErrCompleteOutputExceedsLimit) {
+			t.Fatalf("expected ErrCompleteOutputExceedsLimit, got IsError=%v Err=%v Output=%q", res.IsError, res.Err, res.Output)
+		}
+		if msgs := lsess.drainSteeringForCommunicate(); len(msgs) != 0 {
+			t.Fatalf("rejected use_skill queued steering: %+v", msgs)
+		}
+		lsess.mu.Lock()
+		disclosed := lsess.disclosedToolSchemas["job_watch"]
+		lsess.mu.Unlock()
+		if disclosed {
+			t.Fatal("rejected use_skill marked job_watch disclosed")
+		}
+	})
 }
 
 func TestReactiveDisclosuresOnBackgroundShellTruncationAndCompactNudge(t *testing.T) {
@@ -1049,24 +1246,61 @@ func TestManagerAndWatchParentKeepJobsUpfront(t *testing.T) {
 	obsCfg.spawn.parentSessionID = "parent"
 	obsCfg.spawn.depth = 1
 	obsCfg.spawn.parentWatchGranted = true
-	obs, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), obsCfg)
+	var obsFirstReq llm.Request
+	obsClient := llm.NewClient()
+	obsClient.Register(newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		obsFirstReq = req
+		return agenttest.FinalResponse("ready")
+	}))
+	obs, err := NewSession(obsClient, withTestSessionNamer(obsClient, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), obsCfg)
 	if err != nil {
 		t.Fatalf("NewSession(observer): %v", err)
 	}
 	defer obs.Close()
+	if _, err := obs.ProcessInput(tripwireCtx(t), "watch parent", nil); err != nil {
+		t.Fatalf("observer ProcessInput: %v", err)
+	}
 	obsTools := toolNameSetFromDefinitions(obs.ToolDefinitions())
 	obsByName := make(map[string]llm.ToolDefinition, len(obs.ToolDefinitions()))
 	for _, td := range obs.ToolDefinitions() {
 		obsByName[td.Name] = td
 	}
-	for _, want := range []string{"job_list", "job_status", "job_watch", "job_stop", "delegate_send", "task_list"} {
+	obsReqByName := make(map[string]llm.ToolDefinition, len(obsFirstReq.Tools))
+	for _, td := range obsFirstReq.Tools {
+		obsReqByName[td.Name] = td
+	}
+	for _, want := range []string{"job_list", "job_status", "job_watch", "job_stop", "delegate_send", "task_list", "read_transcript"} {
 		if !obsTools[want] {
 			t.Errorf("watch_parent observer missing upfront tool %q", want)
 			continue
 		}
 		assertFullTier1Def(t, obsByName[want])
+		reqTD, ok := obsReqByName[want]
+		if !ok {
+			t.Errorf("watch_parent observer first request missing %q", want)
+			continue
+		}
+		assertFullTier1Def(t, reqTD)
 	}
 	assertDeferredStubDef(t, obsByName["web_fetch"], "")
+
+	// When read_transcript is denied/unregistered, observer must not advertise it.
+	deniedObsCfg := SessionConfig{
+		StateDir:      t.TempDir(),
+		AgentsDocPath: filepath.Join(t.TempDir(), "no-personal-AGENTS.md"),
+	}
+	deniedObsCfg.spawn.parentSessionID = "parent"
+	deniedObsCfg.spawn.depth = 1
+	deniedObsCfg.spawn.parentWatchGranted = true
+	deniedObsCfg.spawn.deniedToolNames = []string{"read_transcript"}
+	deniedObs, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), deniedObsCfg)
+	if err != nil {
+		t.Fatalf("NewSession(denied observer): %v", err)
+	}
+	defer deniedObs.Close()
+	if hasToolDef(deniedObs.ToolDefinitions(), "read_transcript") {
+		t.Fatal("observer with denied read_transcript must not advertise it")
+	}
 }
 
 func TestReactiveDisclosuresOnDelegateAndTimedOutShell(t *testing.T) {

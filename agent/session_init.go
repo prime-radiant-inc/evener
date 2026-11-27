@@ -846,7 +846,11 @@ type RestoreSessionConfig struct {
 	CompactAtPercent int
 	// CommitProvenance replaces the persisted mode when non-empty. Empty keeps
 	// the session's saved value, which may itself be empty (default on).
-	CommitProvenance        string
+	CommitProvenance string
+	// Tier1Tools lists extra canonical or provider-visible tool names promoted
+	// to Tier-1 upfront schemas on resume, merged with any saved Tier1Tools.
+	// Empty preserves the saved list unchanged.
+	Tier1Tools              []string
 	LLMRetryPolicy          *llm.RetryPolicy
 	LLMSleep                llm.SleepFunc
 	spawn                   spawnConfig
@@ -1049,6 +1053,9 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	savedModelFallbacks := restoreCfg.ModelFallbacks == nil && len(cfg.ModelFallbacks) > 0
 	if restoreCfg.ModelFallbacks != nil {
 		cfg.ModelFallbacks = append([]string(nil), restoreCfg.ModelFallbacks...)
+	}
+	if len(restoreCfg.Tier1Tools) > 0 {
+		cfg.Tier1Tools = mergeTier1Tools(cfg.Tier1Tools, restoreCfg.Tier1Tools)
 	}
 	if strings.TrimSpace(restoreCfg.ProviderIdleTimeout) != "" {
 		cfg.ProviderIdleTimeout = restoreCfg.ProviderIdleTimeout

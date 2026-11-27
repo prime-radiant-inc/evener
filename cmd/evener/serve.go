@@ -760,6 +760,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			ProviderIdleTimeout:         *lf.providerIdleTimeout,
 			CompactAtPercent:            *lf.compactAtPercent,
 			CommitProvenance:            *lf.commitProvenance,
+			Tier1Tools:                  sessionCfg.Tier1Tools,
 			AgentsDocPath:               *agentsDoc,
 			// See RestoreSessionConfig.ExportATIFPath.
 			ExportATIFPath:            sessionCfg.ExportATIFPath,

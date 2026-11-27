@@ -458,6 +458,7 @@ func run(ctx context.Context, cfg runConfig) error {
 			ProviderIdleTimeout:         cfg.providerIdleTimeout,
 			CompactAtPercent:            cfg.compactAtPercent,
 			CommitProvenance:            cfg.commitProvenance,
+			Tier1Tools:                  baseSessionCfg.Tier1Tools,
 			TurnEndsProcess:             baseSessionCfg.TurnEndsProcess,
 			// See RestoreSessionConfig.ExportATIFPath: the flag is json:"-" on
 			// SessionConfig, so restore cannot recover it from the saved meta.

@@ -428,7 +428,8 @@ func TestSystemPromptCarriesEachOperatorInputOnce(t *testing.T) {
 	}
 	// delegate is upfront Tier-1 so sentinelAgent is rendered in the Turn-1 prompt
 	// (verified above) and running-jobs does not duplicate <available_agents>.
-	disclosed := root.skillDisclosureSuffix("running-jobs")
+	disclosedBlocks, _, _ := root.skillDisclosureBlocks("running-jobs")
+	disclosed := strings.Join(disclosedBlocks, "\n")
 	if got := strings.Count(disclosed, sentinelAgent); got != 0 {
 		t.Errorf("running-jobs disclosure: %s appears %d times, want 0 while delegate is Tier-1", sentinelAgent, got)
 	}

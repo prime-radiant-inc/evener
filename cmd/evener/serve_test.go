@@ -1787,6 +1787,29 @@ func TestServeTier1ToolFlagReachesTheSessionConfig(t *testing.T) {
 	if len(got.Tier1Tools) != 2 || got.Tier1Tools[0] != "manage_worktree" || got.Tier1Tools[1] != "task_list" {
 		t.Fatalf("SessionConfig.Tier1Tools = %v, want [manage_worktree task_list]", got.Tier1Tools)
 	}
+
+	stateDir := t.TempDir()
+	const sessionID = "02wMz5Txv1C3Hut0M8GCeB"
+	if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{
+		ID: sessionID, ProfileID: "openai", Model: "gpt-test",
+		CreatedAt: time.Unix(1, 0).UTC(), UpdatedAt: time.Unix(2, 0).UTC(),
+	}); err != nil {
+		t.Fatalf("SaveSessionMeta: %v", err)
+	}
+	var gotRestore []string
+	deps.restoreSession = func(_ *llm.Client, _ *provider.Profile, _ execenv.ExecutionEnvironment, _ schema.SessionMeta, restoreCfg agent.RestoreSessionConfig) (*agent.Session, error) {
+		gotRestore = restoreCfg.Tier1Tools
+		return nil, errNoSessionToday
+	}
+	if err := runServeWithDeps([]string{
+		"--resume", sessionID, "--dir", stateDir, "--state-dir", stateDir, "--run-dir", t.TempDir(),
+		"--tier1-tool", "manage_worktree",
+	}, deps); !errors.Is(err, errNoSessionToday) {
+		t.Fatalf("serve resume error = %v, want session-creation sentinel", err)
+	}
+	if len(gotRestore) != 1 || gotRestore[0] != "manage_worktree" {
+		t.Fatalf("RestoreSessionConfig.Tier1Tools = %v, want [manage_worktree]", gotRestore)
+	}
 }
 
 // A resume takes the flag too: the hub passes --agents-doc on every resume it

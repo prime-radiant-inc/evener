@@ -123,14 +123,21 @@ func TestOneShotOmitsCeremonyTools(t *testing.T) {
 			TurnEndsProcess: false,
 			AgentsDocPath:   filepath.Join(t.TempDir(), "no-personal-AGENTS.md"),
 		}))
-		advertised := toolNameSetFromDefinitions(s.ToolDefinitions())
+		defs := s.ToolDefinitions()
+		advertised := toolNameSetFromDefinitions(defs)
+		byName := make(map[string]llm.ToolDefinition, len(defs))
+		for _, td := range defs {
+			byName[td.Name] = td
+		}
 		for _, name := range ceremonyTools {
 			if s.reg.Get(name) == nil {
 				t.Errorf("registry missing %q under TurnEndsProcess=false", name)
 			}
 			if !advertised[name] {
 				t.Errorf("advertised tools missing deferred stub %q under TurnEndsProcess=false", name)
+				continue
 			}
+			assertDeferredStubDef(t, byName[name], "")
 		}
 		if !advertised["tool_search"] || advertised["call_tool"] {
 			t.Error("advertised tools want tool_search without call_tool under TurnEndsProcess=false")
@@ -139,12 +146,12 @@ func TestOneShotOmitsCeremonyTools(t *testing.T) {
 		if warning != "" {
 			t.Fatalf("renderSystemPrompt: %s", warning)
 		}
-		if strings.Contains(prompt, "\n## Session links\n") {
-			t.Error("prompt should omit ## Session links while urls_add is deferred")
+		if !strings.Contains(prompt, "\n## Session links\n") {
+			t.Error("prompt missing ## Session links under TurnEndsProcess=false")
 		}
 		finishing := systemPromptSection(t, prompt, "## Finishing")
-		if strings.Contains(finishing, "notes_agent_set") {
-			t.Errorf("## Finishing should omit deferred notes_agent_set guidance:\n%s", finishing)
+		if !strings.Contains(finishing, "notes_agent_set") {
+			t.Errorf("## Finishing missing notes_agent_set guidance under TurnEndsProcess=false:\n%s", finishing)
 		}
 	})
 }

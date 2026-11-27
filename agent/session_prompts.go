@@ -260,7 +260,7 @@ func (s *Session) buildPromptData(env execenv.ExecutionEnvironment) (promptData,
 			advertised[canonicalToolName(def.Name, nameMap)] = true
 		}
 		for name := range callable {
-			if !advertised[name] || s.isDeferredToolLocked(name) {
+			if !advertised[name] || (s.isDeferredToolLocked(name) && !deferredPromptGuidedTools[name]) {
 				delete(callable, name)
 			}
 		}
@@ -291,6 +291,12 @@ func (s *Session) buildPromptData(env execenv.ExecutionEnvironment) (promptData,
 	}
 
 	return data, sources
+}
+
+var deferredPromptGuidedTools = map[string]bool{
+	"notes_agent_set": true,
+	"urls_add":        true,
+	"urls_remove":     true,
 }
 
 func (s *Session) unavailableProfileToolNames(profileDefs, actualDefs []llm.ToolDefinition) []string {

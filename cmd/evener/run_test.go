@@ -361,6 +361,7 @@ func TestRunResumeWithCarriesInvocationATIFExport(t *testing.T) {
 	err = run(context.Background(), runConfig{
 		resumeWith: sourceID, prompt: "new prompt", workDir: stateDir, stateDir: stateDir,
 		exportATIF: exportPath, exportATIFProviderHandles: "raw-local",
+		tier1Tools:            []string{"manage_worktree"},
 		noDefaultMarketplaces: true, stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{},
 	})
 	if !errors.Is(err, stopRestore) {
@@ -369,6 +370,9 @@ func TestRunResumeWithCarriesInvocationATIFExport(t *testing.T) {
 	if restoreCfg.ExportATIFPath != exportPath || restoreCfg.ExportATIFProviderHandles != "raw-local" {
 		t.Fatalf("resume-with restore export = %q %q, want %q %q",
 			restoreCfg.ExportATIFPath, restoreCfg.ExportATIFProviderHandles, exportPath, "raw-local")
+	}
+	if len(restoreCfg.Tier1Tools) != 1 || restoreCfg.Tier1Tools[0] != "manage_worktree" {
+		t.Fatalf("resume-with RestoreSessionConfig.Tier1Tools = %v, want [manage_worktree]", restoreCfg.Tier1Tools)
 	}
 }
 

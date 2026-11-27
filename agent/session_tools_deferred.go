@@ -51,6 +51,24 @@ func (s *Session) syncToolSearchRegistrationLocked() bool {
 	return true
 }
 
+// mergeTier1Tools returns saved plus any additional non-empty tool names from
+// extra, deduplicated while preserving order.
+func mergeTier1Tools(saved, extra []string) []string {
+	merged := make([]string, 0, len(saved)+len(extra))
+	seen := make(map[string]bool, len(saved)+len(extra))
+	for _, list := range [][]string{saved, extra} {
+		for _, raw := range list {
+			name := strings.TrimSpace(raw)
+			if name == "" || seen[name] {
+				continue
+			}
+			seen[name] = true
+			merged = append(merged, name)
+		}
+	}
+	return merged
+}
+
 func (s *Session) isDeferredTool(canonicalName string) bool {
 	if s == nil {
 		return false
@@ -447,16 +465,19 @@ var skillDeferredToolGroups = map[string][]string{
 	skill.GardeningMemorySkillName:    {"memory_read", "memory_write", "memory_edit", "memory_delete", "memory_search"},
 }
 
-func (s *Session) skillDisclosureSuffix(skillName string) string {
+func (s *Session) skillDisclosureBlocks(skillName string) ([]string, []string, bool) {
 	if s == nil {
-		return ""
+		return nil, nil, false
 	}
 	var parts []string
+	var claimed []string
 	if names := skillDeferredToolGroups[skillName]; len(names) > 0 {
-		if note := s.discloseDeferredToolsNotification("", names); note != "" {
+		if note, got := s.discloseDeferredTools("", names); note != "" {
 			parts = append(parts, note)
+			claimed = append(claimed, got...)
 		}
 	}
+	claimedAgents := false
 	if skillName == skill.RunningJobsSkillName && s.reg != nil && s.reg.Get("delegate") != nil && s.isDeferredTool("delegate") && !s.isSubagentSession() {
 		s.mu.Lock()
 		already := s.disclosedAvailableAgents
@@ -465,6 +486,7 @@ func (s *Session) skillDisclosureSuffix(skillName string) string {
 			entries = s.availableAgentEntries()
 			if len(entries) > 0 {
 				s.disclosedAvailableAgents = true
+				claimedAgents = true
 			}
 		}
 		s.mu.Unlock()
@@ -472,17 +494,30 @@ func (s *Session) skillDisclosureSuffix(skillName string) string {
 			parts = append(parts, block)
 		}
 	}
-	return strings.Join(parts, "\n")
+	return parts, claimed, claimedAgents
 }
 
 func (s *Session) steerReactiveToolDisclosure(toolName string, res tool.ExecResult, outputRef string) {
 	if s == nil || s.reg == nil {
 		return
 	}
+	var claimed []string
+	var blocks []string
+	claimedAgents := false
 	needJobControl := false
 	needReadTranscript := outputRef != ""
 	jobLeadNote := "Background job started. Manage or inspect jobs directly:"
 	switch toolName {
+	case "use_skill":
+		if !res.IsError && !res.Rejected && !res.PrevalOnly && len(res.ToolState) > 0 {
+			var st skillToolState
+			if json.Unmarshal(res.ToolState, &st) == nil && st.Outcome.Identity.Name != "" {
+				skillBlocks, skillClaimed, skillAgents := s.skillDisclosureBlocks(st.Outcome.Identity.Name)
+				blocks = append(blocks, skillBlocks...)
+				claimed = append(claimed, skillClaimed...)
+				claimedAgents = skillAgents
+			}
+		}
 	case "shell":
 		if len(res.ToolState) > 0 {
 			var st struct {
@@ -506,8 +541,6 @@ func (s *Session) steerReactiveToolDisclosure(toolName string, res tool.ExecResu
 			jobLeadNote = "Delegate started. Manage or inspect delegates directly:"
 		}
 	}
-	var claimed []string
-	var blocks []string
 	if needJobControl {
 		jobNames := []string{"job_watch", "job_status", "job_stop", "job_list"}
 		if note, names := s.discloseDeferredTools(jobLeadNote, jobNames); len(names) > 0 {
@@ -529,13 +562,16 @@ func (s *Session) steerReactiveToolDisclosure(toolName string, res tool.ExecResu
 		return
 	}
 	kind := events.SteeringKindTranscriptPointer
-	if needJobControl {
+	if needJobControl || toolName == "use_skill" {
 		kind = events.SteeringKindNotification
 	}
 	if err := s.steerKind(strings.Join(blocks, "\n"), kind); err != nil {
 		s.mu.Lock()
 		for _, name := range claimed {
 			delete(s.disclosedToolSchemas, name)
+		}
+		if claimedAgents {
+			s.disclosedAvailableAgents = false
 		}
 		s.mu.Unlock()
 		s.emitDiagnosticWarning(events.WarningData{Message: fmt.Sprintf("deferred tool schema disclosure failed: %v", err)})

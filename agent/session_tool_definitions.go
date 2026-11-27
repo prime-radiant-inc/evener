@@ -363,7 +363,10 @@ func (s *Session) isDeferredToolLocked(canonicalName string) bool {
 	if group == "jobs" && (s.hubEnabled || s.cfg.spawn.parentWatchGranted) {
 		return false
 	}
-	if s.hubEnabled && (canonicalName == "read_transcript" || canonicalName == "model_list") {
+	if canonicalName == "read_transcript" && (s.hubEnabled || s.cfg.spawn.parentWatchGranted) {
+		return false
+	}
+	if s.hubEnabled && canonicalName == "model_list" {
 		return false
 	}
 	return true
