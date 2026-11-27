@@ -83,6 +83,8 @@ const BOOT = {
 async function measureOnPage(cdpEndpoint, sharedTabId, vitePort, viewport, expression) {
   const page = await connectPage(cdpEndpoint, sharedTabId);
   const { send } = page;
+  const hosted = viewport.duoClient === "hosted app";
+  const standalone = viewport.duoClient === "Home Screen";
   try {
     // Every measurement shares this tab, and the outgoing document can still
     // save its layout until the navigation replaces it, so clear storage as each
@@ -91,8 +93,16 @@ async function measureOnPage(cdpEndpoint, sharedTabId, vitePort, viewport, expre
     if (viewport.fontSize) {
       await send("Page.addScriptToEvaluateOnNewDocument", {
         source: `localStorage.setItem('evener.prefs.fontSize', ${JSON.stringify(viewport.fontSize)});
-          Object.defineProperty(navigator, 'standalone', {value: ${viewport.installed === true}});`,
+          Object.defineProperty(navigator, 'standalone', {value: ${standalone}});`,
       });
+    }
+    if (hosted) {
+      await send("Page.addScriptToEvaluateOnNewDocument", { source: `
+        Object.defineProperty(navigator, 'userAgent', {value: navigator.userAgent +
+          ' EvenerNative/1 EvenerSessionHeader/1 EvenerWorkspaceControls/1 EvenerSessionsToolbar/1 EvenerPaneNavigation/1'});
+        window.ReactNativeWebView = { postMessage() {} };
+        window.evenerEdgeToolbar = false;
+      ` });
     }
     await applyViewport(send, viewport);
     if (viewport.platform) {
@@ -119,6 +129,7 @@ async function measureOnPage(cdpEndpoint, sharedTabId, vitePort, viewport, expre
         const titleId = dialog?.getAttribute("aria-labelledby");
         const title = titleId ? document.getElementById(titleId) : sheetHeader?.querySelector("h2");
         const settings = sheetHeader?.querySelector('[data-testid="rail-settings"]');
+        const hubs = sheetHeader?.querySelector('[aria-label="Hubs on this iPhone"]');
         const search = sheetHeader?.querySelector('[data-testid="rail-search"]');
         const close = sheetHeader?.querySelector('[aria-label="Close"]');
         const filter = dialog?.querySelector('[data-testid="rail-filter"]');
@@ -132,7 +143,7 @@ async function measureOnPage(cdpEndpoint, sharedTabId, vitePort, viewport, expre
           newSessionRight: newSession?.getBoundingClientRect().right,
           isDesktop: false,
           containerRight: dialog ? dialog.getBoundingClientRect().right : null,
-          items: [title, settings, close].map((el) => box(el, sheetHeader)),
+          items: [title, ...(${hosted} ? [hubs] : []), settings, close].map((el) => box(el, sheetHeader)),
         };
       }
       const settings = document.querySelector('[data-testid="rail-settings"]');
@@ -192,7 +203,7 @@ async function measureOnPage(cdpEndpoint, sharedTabId, vitePort, viewport, expre
     }
     const labels =
       header.mode === "sheet"
-        ? ["title", "Settings", "Close"]
+        ? ["title", ...(hosted ? ["Hubs"] : []), "Settings", "Close"]
         : header.isDesktop
           ? ["wordmark", "Settings", "Search", "Hide sidebar"]
           : ["wordmark", "Settings"];
@@ -215,7 +226,7 @@ async function measureOnPage(cdpEndpoint, sharedTabId, vitePort, viewport, expre
             `past the ${header.mode === "sheet" ? "drawer" : "rail"}'s ${containerRight.toFixed(1)}px edge`,
         );
       }
-      if (viewport.installed && i > 0) {
+      if ((standalone || hosted) && i > 0) {
         const previous = header.items[i - 1];
         const besideList = box.left >= Math.max(header.filterRight, header.newSessionRight);
         const sameColumn = i === 1 || Math.abs(box.left + box.width / 2 - previous.left - previous.width / 2) <= 1;
@@ -236,7 +247,7 @@ async function measureOnPage(cdpEndpoint, sharedTabId, vitePort, viewport, expre
       }
     }
     if (viewport.fontSize) {
-      console.log(`shellguard Duo ${viewport.installed ? "Home Screen" : "tab"} Sessions: ${JSON.stringify(header)}`);
+      console.log(`shellguard Duo ${viewport.duoClient} Sessions: ${JSON.stringify(header)}`);
     }
     // At the width floor the header must fit exactly: the floor is derived from
     // this content, so a clipped wordmark there means the two have drifted.
@@ -2536,8 +2547,8 @@ async function main() {
     // for a moment after /json/close, so "the first listed page" can be the
     // click-geometry tab just closed, whose socket fails or never answers (#3895).
     const sharedTab = await openPage(cdpEndpoint, "about:blank");
-    for (const installed of [false, true]) {
-      await measureOnPage(cdpEndpoint, sharedTab.id, vitePort, { ...DUO_INNER_PORTRAIT, installed }, "true");
+    for (const duoClient of ["tab", "Home Screen", "hosted app"]) {
+      await measureOnPage(cdpEndpoint, sharedTab.id, vitePort, { ...DUO_INNER_PORTRAIT, duoClient }, "true");
     }
     console.log(`shellguard click geometry: ${JSON.stringify(await checkMovingControls(cdpEndpoint, clickControl))}`);
     const result = await measureOnPage(
