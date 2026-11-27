@@ -20,7 +20,8 @@ export interface IPhoneHeader {
 export type IPhoneHeaderAction = NonNullable<IPhoneHeader["leading"]> | "find" | "overview";
 
 type HostMessage =
-  | { type: "ready" | "hubMenu" }
+  | { type: "ready"; capabilities: ("incomingShare" | "needsYouNavigation")[] }
+  | { type: "hubMenu" }
   | { type: "appearance"; dark: boolean }
   | { type: "sessionHeader"; header: IPhoneHeader | null }
   | { type: "sessionsToolbar"; id: string; mode: "list" | "launcher" | null }
@@ -238,7 +239,7 @@ export function connectIPhoneHost(openNeedsYou: () => void): (() => void) | unde
   document.addEventListener("input", onInput);
   const onMessage = (event: MessageEvent) => receiveHostCommand(event, openNeedsYou);
   window.addEventListener("message", onMessage);
-  tellIPhoneHost({ type: "ready" });
+  tellIPhoneHost({ type: "ready", capabilities: ["incomingShare", "needsYouNavigation"] });
   trackEditor(document.activeElement);
   reportModal();
   return () => {

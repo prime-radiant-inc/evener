@@ -243,7 +243,7 @@ test("the iPhone Sessions drawer hands off hub selection and accepts a native ro
     act(() => prefsStore.getState().setTheme("light"));
     expect(messages.at(-1)).toEqual({ type: "appearance", dark: false });
     await userEvent.click(await screen.findByRole("button", { name: "Hubs on this iPhone" }));
-    expect(messages).toContainEqual({ type: "ready" });
+    expect(messages).toContainEqual({ type: "ready", capabilities: ["incomingShare", "needsYouNavigation"] });
     expect(messages).toContainEqual({ type: "hubMenu" });
 
     const launcher = "/new?dir=%2Fwork&prompt=Review+the+changes";

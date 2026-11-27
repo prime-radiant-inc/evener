@@ -6,7 +6,7 @@ import { AlertCenter, type HoldKind } from "../alerts/alertCenter";
 import { AlertsContext } from "../alerts/alertsContext";
 import { alertPreferences } from "../alerts/nativeAlertPreferences";
 import { paletteFor } from "../design/tokens";
-import { render, settle, systemGlass } from "../renderNative.testkit";
+import { alertRequests, render, settle, systemGlass } from "../renderNative.testkit";
 import { createShareIntake } from "../share/shareIntake";
 import { pendingShares } from "../share/sharePayload";
 import { share as payload, sharePort } from "../share/shareTestkit";
@@ -53,7 +53,7 @@ it("delivers a share only to its chosen hub and composer, then accepts that deli
 	const target = { type: "shareTarget", path: share.path };
 	const receipt = { type: "sharePlaced", path: share.path, id: share.id };
 	const sent = () => postMessage.mock.calls.map(([raw]) => JSON.parse(raw)).filter((data) => data.type === "shareText");
-	message({ type: "ready" });
+	message({ type: "ready", capabilities: ["incomingShare", "needsYouNavigation"] });
 	message(target, profile.origin + "/new?dir=%2Fwork");
 	expect(sent()).toEqual([]);
 	message({ type: "covered", active: true });
@@ -112,11 +112,115 @@ it("reopens the selected session when an explicit share targets the current work
 		act(() =>
 			tree.root.findByType("WebView" as never).props.onMessage({ nativeEvent: { url, data: JSON.stringify(data) } }),
 		);
-	message({ type: "ready", capabilities: { incomingShare: true, needsYouNavigation: true } });
+	message({ type: "ready", capabilities: ["incomingShare", "needsYouNavigation"] });
 	message({ type: "shareTarget", path: share.path });
 	const sent = postMessage.mock.calls.map(([raw]) => JSON.parse(raw));
 	expect(sent).toContainEqual({ type: "navigate", path: share.path });
 	expect(sent).toContainEqual({ type: "shareText", path: share.path, id: share.id, text: share.text });
+});
+
+it("keeps a share pending for an older hub and retries delivery after reload discovers support", async () => {
+	const profile = { id: "desk", name: "Desk", origin: "https://desk.example" };
+	const share = {
+		id: "pending-share",
+		hubId: profile.id,
+		path: "/new",
+		text: "shared-sentinel",
+		createdAt: new Date(1).toISOString(),
+	};
+	const port = sharePort([share]);
+	const onSharePlaced = vi.fn();
+	const postMessage = vi.fn();
+	alertRequests.length = 0;
+	const tree = render(
+		<HubWebView
+			profile={profile}
+			token=""
+			initialPath={share.path}
+			onPath={vi.fn()}
+			onHubMenu={vi.fn()}
+			share={share}
+			onSharePlaced={onSharePlaced}
+		/>,
+		{ createNodeMock: (node) => (node.type === "WebView" ? { postMessage, reload: vi.fn() } : null) },
+	);
+	const view = () => tree.root.findByType("WebView" as never);
+	const message = (data: object) =>
+		act(() =>
+			view().props.onMessage({ nativeEvent: { url: profile.origin + share.path, data: JSON.stringify(data) } }),
+		);
+	message({ type: "ready" });
+	expect(alertRequests).toHaveLength(1);
+	alertRequests[0]?.buttons?.find((button) => button.style === "cancel")?.onPress?.();
+	expect(onSharePlaced).not.toHaveBeenCalled();
+	expect(postMessage.mock.calls.map(([raw]) => JSON.parse(raw))).not.toContainEqual(
+		expect.objectContaining({ type: "shareText" }),
+	);
+	expect(await pendingShares(port)).toEqual([{ id: share.id, text: share.text, createdAt: share.createdAt }]);
+
+	act(() => view().props.onLoadStart());
+	message({ type: "ready", capabilities: ["incomingShare", "needsYouNavigation"] });
+	message({ type: "shareTarget", path: share.path });
+	expect(postMessage.mock.calls.map(([raw]) => JSON.parse(raw))).toContainEqual({
+		type: "shareText",
+		path: share.path,
+		id: share.id,
+		text: share.text,
+	});
+	act(() => tree.unmount());
+});
+
+it("preserves a cold Needs You request while an older hub reports its safe root route", () => {
+	const profile = { id: "desk", name: "Desk", origin: "https://desk.example" };
+	const onPath = vi.fn();
+	const postMessage = vi.fn();
+	alertRequests.length = 0;
+	const tree = render(
+		<HubWebView profile={profile} token="" initialPath="/?attention=needs-you" onPath={onPath} onHubMenu={vi.fn()} />,
+		{ createNodeMock: (node) => (node.type === "WebView" ? { postMessage } : null) },
+	);
+	const view = () => tree.root.findByType("WebView" as never);
+	const message = (data: object, url = profile.origin + "/") =>
+		act(() => view().props.onMessage({ nativeEvent: { url, data: JSON.stringify(data) } }));
+	message({ type: "route", path: "/" });
+	message({ type: "ready" });
+	expect(onPath).not.toHaveBeenCalled();
+	expect(alertRequests).toHaveLength(1);
+	alertRequests[0]?.buttons?.find((button) => button.style === "cancel")?.onPress?.();
+	act(() => tree.update(<HubWebView profile={profile} token="" initialPath="/" onPath={onPath} onHubMenu={vi.fn()} />));
+	act(() =>
+		tree.update(
+			<HubWebView profile={profile} token="" initialPath="/?attention=needs-you" onPath={onPath} onHubMenu={vi.fn()} />,
+		),
+	);
+	expect(alertRequests).toHaveLength(2);
+	expect(postMessage.mock.calls.map(([raw]) => JSON.parse(raw))).not.toContainEqual(
+		expect.objectContaining({ type: "navigate", path: "/?attention=needs-you" }),
+	);
+	act(() => tree.unmount());
+});
+
+it("opens the cold Needs You request only after the hub handshake confirms support", () => {
+	const profile = { id: "desk", name: "Desk", origin: "https://desk.example" };
+	const postMessage = vi.fn();
+	const tree = render(
+		<HubWebView profile={profile} token="" initialPath="/?attention=needs-you" onPath={vi.fn()} onHubMenu={vi.fn()} />,
+		{ createNodeMock: (node) => (node.type === "WebView" ? { postMessage } : null) },
+	);
+	const view = () => tree.root.findByType("WebView" as never);
+	act(() =>
+		view().props.onMessage({
+			nativeEvent: {
+				url: profile.origin + "/",
+				data: JSON.stringify({ type: "ready", capabilities: ["needsYouNavigation"] }),
+			},
+		}),
+	);
+	expect(postMessage.mock.calls.map(([raw]) => JSON.parse(raw))).toContainEqual({
+		type: "navigate",
+		path: "/?attention=needs-you",
+	});
+	act(() => tree.unmount());
 });
 vi.mock("@react-navigation/native", () => ({
 	useIsFocused: () => native.focused,
@@ -190,7 +294,7 @@ it("preserves a document's share name and releases workspace alert holds with th
 	const view = () => tree.root.findByType("WebView" as never);
 	const message = (data: unknown) =>
 		act(() => view().props.onMessage({ nativeEvent: { url: profile.origin + "/", data: JSON.stringify(data) } }));
-	message({ type: "ready" });
+	message({ type: "ready", capabilities: ["incomingShare", "needsYouNavigation"] });
 	const target = { ref: "local:one", path: "/private/run/notes.txt", namePath: "notes.txt" };
 	message({ type: "shareDocument", ...target });
 	await settle();
