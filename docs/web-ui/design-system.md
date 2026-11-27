@@ -189,14 +189,15 @@ losing the conversation that made the evidence relevant.
   but separates reading from scanning. Shared size and width preferences remain available.
   Phones reflow speaker rows, controls and evidence rather than shrinking a desktop page;
   wide evidence scrolls within its surface instead of widening the page or shrinking targets.
-- **Keep session reading controls in the header.** Find in session, then Overview, occupy the
-  session pane header's action slot at every width: labeled controls on desktop, and 44px
-  icon controls below 900px (§12). The ordinary composer menu leaves those
-  actions to the header and retains Verbosity, turn verbs, and session management. Rail and
-  embedded-column menus keep their existing inspection access. Mobile session titles align
-  left. A session with no real Back
-  destination gets Sessions as its only leading navigation control; a retained parent, valid
-  back-stack destination, or attention Back uses Back instead. Non-session top bars are unchanged.
+- **Keep session reading controls in the header.** On desktop, Find in session occupies the
+  session pane header's action slot as the same icon-only secondary square as the closed
+  Overview's Show chip; below 900px the header carries Find in session beside Overview as 44px
+  icon controls (§12). On desktop, the ordinary composer menu leaves Find to the header and
+  Overview to the sidebar's Hide/Show control, and retains Verbosity, turn verbs, and session
+  management. Rail and embedded-column menus keep their existing inspection access. Mobile
+  session titles align left. A session with no real Back destination gets Sessions as its only
+  leading navigation control; a retained parent, valid back-stack destination, or attention Back
+  uses Back instead. Non-session top bars are unchanged.
 - **Keep session status inside its pane.** Every visible desktop session pane ends
   with its own
   flush status footer, never one strip spanning sibling panes. The footer leads with that

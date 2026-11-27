@@ -1,6 +1,7 @@
 // SessionInspectionActions: the session pane's header entry to its
-// inspectors. Both desktop and mobile render Find in session then Overview
-// (labeled buttons on desktop, 44px icon buttons below 900px). Overview opens
+// inspectors. Desktop renders Find in session alone, as the same icon-only
+// secondary square as the closed Overview's Show chip. Below 900px the header
+// renders Find in session then Overview as 44px icon buttons; Overview opens
 // the shared tabbed ActivitySidebar directly for that session.
 
 import {
@@ -11,7 +12,7 @@ import {
 import { OverviewIcon, SearchIcon } from "../../../shell/rail/railIcons";
 import { useIsMobile } from "../../../shell/useIsMobile";
 import { workspaceStore } from "../../../shell/workspace";
-import { Button, IconButton } from "../../../widgets";
+import { IconButton } from "../../../widgets";
 import { requestFindInSession } from "../find/findRequest";
 
 export function openSessionOverview(
@@ -30,60 +31,52 @@ export function openSessionOverview(
   activitySidebarStore.getState().openFor(sessionRef, undefined, opener, paneId);
 }
 
+function FindInSessionButton({
+  sessionRef,
+  paneId,
+  variant,
+}: {
+  sessionRef: string;
+  paneId?: string;
+  variant: "quiet" | "secondary";
+}) {
+  return (
+    <IconButton
+      label="Find in session"
+      icon={<SearchIcon />}
+      variant={variant}
+      data-pane-id={paneId}
+      onClick={() => requestFindInSession(sessionRef, { target: paneId })}
+    />
+  );
+}
+
+function MobileOverviewButton({ sessionRef, paneId }: { sessionRef: string; paneId?: string }) {
+  const overviewOpen = useActivitySidebarOpenFor(sessionRef);
+  return (
+    <IconButton
+      label="Overview"
+      icon={
+        <span data-session-overview-ref={sessionRef} data-pane-id={paneId}>
+          <OverviewIcon />
+        </span>
+      }
+      variant={overviewOpen ? "secondary" : "quiet"}
+      aria-pressed={overviewOpen}
+      onClick={(event) => openSessionOverview(sessionRef, paneId, true, event.currentTarget)}
+    />
+  );
+}
+
 export function SessionInspectionActions({ sessionRef, paneId }: { sessionRef: string; paneId?: string }) {
   const isMobile = useIsMobile();
-  const overviewOpen = useActivitySidebarOpenFor(sessionRef);
   if (isMobile) {
     return (
       <>
-        <IconButton
-          label="Find in session"
-          icon={
-            <span data-pane-id={paneId}>
-              <SearchIcon />
-            </span>
-          }
-          variant="quiet"
-          onClick={() => requestFindInSession(sessionRef, { target: paneId })}
-        />
-        <IconButton
-          label="Overview"
-          icon={
-            <span data-session-overview-ref={sessionRef} data-pane-id={paneId}>
-              <OverviewIcon />
-            </span>
-          }
-          variant={overviewOpen ? "secondary" : "quiet"}
-          aria-pressed={overviewOpen}
-          onClick={(event) => openSessionOverview(sessionRef, paneId, true, event.currentTarget)}
-        />
+        <FindInSessionButton sessionRef={sessionRef} paneId={paneId} variant="quiet" />
+        <MobileOverviewButton sessionRef={sessionRef} paneId={paneId} />
       </>
     );
   }
-  return (
-    <>
-      <Button
-        size="sm"
-        variant="quiet"
-        icon={<SearchIcon />}
-        aria-label="Find in session"
-        data-pane-id={paneId}
-        onClick={() => requestFindInSession(sessionRef, { target: paneId })}
-      >
-        Find
-      </Button>
-      <Button
-        size="sm"
-        variant={overviewOpen ? "secondary" : "quiet"}
-        icon={<OverviewIcon />}
-        aria-label="Overview"
-        aria-pressed={overviewOpen}
-        data-session-overview-ref={sessionRef}
-        data-pane-id={paneId}
-        onClick={(event) => openSessionOverview(sessionRef, paneId, false, event.currentTarget)}
-      >
-        Overview
-      </Button>
-    </>
-  );
+  return <FindInSessionButton sessionRef={sessionRef} paneId={paneId} variant="secondary" />;
 }

@@ -1124,7 +1124,7 @@ test("desktop session panes own separate location and activity footers", async (
   expect(activitySidebarStore.getState()).toMatchObject({ open: true, tab: "jobs" });
 });
 
-test("same-session pane headers open Overview from their own instance", async ({ onTestFinished }) => {
+test("same-session pane headers keep Find per pane and offer no Overview action", async ({ onTestFinished }) => {
   vi.mocked(ComposerModule.Composer).mockRestore();
   vi.mocked(SessionChromeModule.SessionChrome).mockRestore();
   onTestFinished(stubSessionSlots);
@@ -1153,14 +1153,10 @@ test("same-session pane headers open Overview from their own instance", async ({
       marker.getAttribute("data-pane-id"),
     ),
   ).toEqual(["overview-first", "overview-second"]);
-  const user = userEvent.setup();
-  const headers = await screen.findAllByRole("button", { name: "Overview" });
+  const headers = await screen.findAllByRole("button", { name: "Find in session" });
   expect(headers).toHaveLength(2);
-  const secondHeader = headers[1];
-  if (!secondHeader) throw new Error("second session header is missing");
-  await user.click(secondHeader);
-  expect(workspaceStore.getState().focusedPaneId).toBe("overview-second");
-  expect(activitySidebarStore.getState()).toMatchObject({ open: true, ref });
+  expect(headers.map((header) => header.getAttribute("data-pane-id"))).toEqual(["overview-first", "overview-second"]);
+  expect(screen.queryAllByRole("button", { name: "Overview" })).toEqual([]);
 });
 
 test.each(["closed", "ended", "notLoaded"] as const)(
