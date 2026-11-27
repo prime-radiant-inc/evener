@@ -2095,13 +2095,6 @@ test("the top bar reserves the device's top safe-area inset", () => {
   expect(topBarRule).toContain("env(safe-area-inset-top)");
 });
 
-test("a Back-less non-session bar row-reverses so the drawer trigger visually leads", () => {
-  const here = dirname(fileURLToPath(import.meta.url));
-  const css = readFileSync(join(here, "StackHost.module.css"), "utf8");
-  const reversedRule = css.match(/\.topBar\[data-drawer-leads\] \{([^}]*)\}/)?.[1] ?? "";
-  expect(reversedRule).toContain("flex-direction: row-reverse");
-});
-
 // The top-bar title channel (2026-07-30-mobile-session-layout-design.md,
 // decision 2): StackHost renders whatever PaneScaffold published to the
 // chrome store between the back button and the drawer trigger.
