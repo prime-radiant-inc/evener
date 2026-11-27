@@ -53,7 +53,7 @@ import {
 } from "react";
 import { AnimatePresence, m, spatialExitTransition, spatialTransition, useReducedMotion } from "../../motion";
 import { openSessionOverview, SessionInspectionActions } from "../../panes/session/chrome/SessionInspectionActions";
-import { requestFindInSession } from "../../panes/session/find/findRequest";
+import { FindVisibilityContext, requestFindInSession } from "../../panes/session/find/findRequest";
 import { readerScrollInput } from "../../panes/session/transcript/flow/useReaderGestures";
 import { returnFromAgentCascade } from "../../panes/zoom/actions";
 import { isCascadeReturnedOrigin } from "../../panes/zoom/inspectionOrigin";
@@ -399,7 +399,7 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
   const closePanel = useCallback(() => setPanelOpen(false), []);
   const [readingChrome, setReadingChrome] = useState(FULL_CHROME);
   const topBarCollapsed = readingChrome.floating;
-  const [nativeFindOpen, setNativeFindOpen] = useState(false);
+  const [findOpen, setFindOpen] = useState(false);
   const fontSize = usePrefsStore((s) => s.fontSize);
   const viewportWidth = useWorkspaceViewportWidth();
   const tabletViewport = useMediaQuery(TABLET_QUERY);
@@ -1053,7 +1053,7 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
   // reveal is chrome, not a scroll gesture, and the capsules would otherwise
   // sit over the card's header row. The empty string matches no session ref.
   const focusedNotesExpanded = useTopNotesExpanded(readerSessionRef(focusedPane) ?? "");
-  const headerPinned = focusedNotesExpanded || nativeFindOpen;
+  const headerPinned = focusedNotesExpanded || findOpen;
   headerPinnedRef.current = headerPinned;
   useLayoutEffect(() => {
     if (!headerPinned) return;
@@ -1193,7 +1193,6 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
               leading={showBack ? "back" : boardVisible ? null : "sessions"}
               needsYou={needsYou}
               collapsed={topBarCollapsed}
-              onFindChange={setNativeFindOpen}
               onAction={(action) => {
                 switch (action) {
                   case "back":
@@ -1217,7 +1216,9 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
             {focusedPane && (
               // Only a distinct pane id detaches the outgoing pane's last frame.
               <div key={focusedPane.id} ref={paneSlotRef} className={styles.paneSlot} data-stack-pane={focusedPane.id}>
-                <StackedPane pane={focusedPane} />
+                <FindVisibilityContext.Provider value={setFindOpen}>
+                  <StackedPane pane={focusedPane} />
+                </FindVisibilityContext.Provider>
               </div>
             )}
           </div>

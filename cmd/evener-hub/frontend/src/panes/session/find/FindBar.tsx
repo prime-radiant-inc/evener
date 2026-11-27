@@ -3,10 +3,11 @@
 // clear of the composer, so on a phone the on-screen keyboard (which lifts the
 // composer, shell/useKeyboardInset.ts) never puts it over the send control.
 // useFindInSession owns the search; this only shows it.
-import { type KeyboardEvent, useEffect, useRef } from "react";
+import { type KeyboardEvent, useContext, useEffect, useLayoutEffect, useRef } from "react";
 import { isIMECompositionKeydown } from "../../../keybindings/dispatcher";
 import { Chevron, CloseIcon, IconButton, InlineNotice, Input, VisuallyHidden } from "../../../widgets";
 import styles from "./findbar.module.css";
+import { FindVisibilityContext } from "./findRequest";
 import type { FindView } from "./useFindInSession";
 
 function statusText(view: FindView): string {
@@ -38,6 +39,11 @@ function statusAnnouncement(view: FindView): string {
 
 export function FindBar({ view }: { view: FindView }) {
   const inputRef = useRef<HTMLInputElement>(null);
+  const onVisibilityChange = useContext(FindVisibilityContext);
+  useLayoutEffect(() => {
+    onVisibilityChange?.(true);
+    return () => onVisibilityChange?.(false);
+  }, [onVisibilityChange]);
   // Each focus request focuses the field and selects its query, so a reader
   // can replace it by typing. The widget hands out its own element now; the
   // bar no longer queries for it.

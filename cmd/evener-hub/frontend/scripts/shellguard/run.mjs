@@ -1241,6 +1241,17 @@ async function checkNotesReadingPosition(send) {
   if (Math.abs(after.port - before.port) > 1 || Math.abs(after.line - before.line - 16) > 1) {
     throw new Error(`Notes reveal displaced the reader beyond the 16px gesture: ${JSON.stringify({ before, after })}`);
   }
+  await evaluate(send, `document.querySelector('[data-testid="topbar"] button[aria-label="Find in session"]').click()`);
+  const query = "document.querySelector('[data-find-bar] input')";
+  await waitForDom(send, query, "Find opened from the phone header");
+  const visible = await evaluate(send, `(() => {
+    const input = ${query};
+    const r = input.getBoundingClientRect();
+    return document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2) === input;
+  })()`);
+  if (!visible) throw new Error("The returning header covers the Find query");
+  await pressKey(send, "Escape", "Escape", 27);
+  await waitForDom(send, `!${query}`, "Find dismissed");
 }
 
 function assertTabletSplit(result) {
