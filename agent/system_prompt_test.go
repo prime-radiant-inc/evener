@@ -423,6 +423,27 @@ func systemPromptSection(t *testing.T, prompt, heading string) string {
 	return heading + "\n" + section + "\n"
 }
 
+// operationalPromptBody returns the opening identity and operational guidance
+// bullets before the first conditional section heading or environment block.
+func operationalPromptBody(t *testing.T, prompt string) string {
+	t.Helper()
+	end := strings.Index(prompt, "\n<environment>\n")
+	if end < 0 {
+		t.Fatalf("system prompt has no <environment> block")
+	}
+	body := prompt[:end]
+	for _, marker := range []string{"\n## ", "\nCurrent role/session:\n"} {
+		if idx := strings.Index(body, marker); idx >= 0 {
+			body = body[:idx]
+		}
+	}
+	body = strings.TrimSpace(body)
+	if body == "" {
+		t.Fatalf("system prompt has empty operational body")
+	}
+	return body
+}
+
 // promptValue is one value the session computes for its prompt, named for the
 // failure message.
 type promptValue struct {
@@ -466,7 +487,7 @@ func TestSystemPromptRendersTheSessionData(t *testing.T) {
 				for _, skill := range d.Skills {
 					values = append(values,
 						promptValue{"skill catalog name", skill.CatalogNameOrName()},
-						promptValue{"skill directory", skill.Dir},
+						promptValue{"skill description", skill.Description},
 					)
 				}
 				for _, agent := range d.AvailableAgents {
@@ -595,6 +616,59 @@ func TestSystemPromptDiagramGuidanceClaimsNoRendering(t *testing.T) {
 	}
 	if !strings.Contains(prompt, "```mermaid code block") {
 		t.Errorf("the mermaid diagram guidance is missing from the rendered prompt")
+	}
+}
+
+// TestSystemPromptTier1DelegateAndTaskListAlignment verifies structural prompt
+// gating: upfront delegate omits tool_search indirection (preserving the
+// deferred fallback branch only when delegate is registered but not upfront),
+// and task_list folds inline into the core ethos without adding a standalone
+// bullet or appearing when unavailable.
+func TestSystemPromptTier1DelegateAndTaskListAlignment(t *testing.T) {
+	t.Parallel()
+	withUpfront, err := executeSystemPromptTemplate(promptData{
+		ResultToolName:     "communicate",
+		DelegateRegistered: true,
+		CallableTools: map[string]bool{
+			"communicate": true,
+			"delegate":    true,
+			"task_list":   true,
+			"tool_search": true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("render upfront: %v", err)
+	}
+	upfrontBody := operationalPromptBody(t, withUpfront)
+	if !strings.Contains(upfrontBody, "`delegate`") || strings.Contains(upfrontBody, "`tool_search`") {
+		t.Errorf("upfront delegate prompt should name `delegate` directly without `tool_search`:\n%s", upfrontBody)
+	}
+	if !strings.Contains(upfrontBody, "`task_list`") {
+		t.Errorf("upfront task_list prompt missing `task_list`:\n%s", upfrontBody)
+	}
+
+	withDeferred, err := executeSystemPromptTemplate(promptData{
+		ResultToolName:     "communicate",
+		DelegateRegistered: true,
+		CallableTools: map[string]bool{
+			"communicate": true,
+			"tool_search": true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("render deferred: %v", err)
+	}
+	deferredBody := operationalPromptBody(t, withDeferred)
+	if !strings.Contains(deferredBody, "`delegate`") || !strings.Contains(deferredBody, "`tool_search`") {
+		t.Errorf("deferred delegate fallback branch should name both `delegate` and `tool_search`:\n%s", deferredBody)
+	}
+	if strings.Contains(deferredBody, "`task_list`") {
+		t.Errorf("prompt without task_list must not mention `task_list`:\n%s", deferredBody)
+	}
+	upfrontBullets := strings.Count(upfrontBody, "\n- ")
+	deferredBullets := strings.Count(deferredBody, "\n- ")
+	if upfrontBullets != deferredBullets {
+		t.Errorf("adding task_list changed bullet count (%d vs %d); fold task_list inline into Bullet 3:\n%s", upfrontBullets, deferredBullets, upfrontBody)
 	}
 }
 

@@ -117,6 +117,8 @@ type promptData struct {
 	// callable. Drives the subagent template's conditional delegation/background-
 	// jobs sections and the stated allowance.
 	CanDelegate         bool
+	DelegateRegistered  bool
+	JobWatchRegistered  bool
 	DelegationAllowance int
 	ManagerEnabled      bool
 	ManagerDiscovery    bool
@@ -182,6 +184,31 @@ type agentEntry struct {
 	Name        string
 	Description string
 	TaskList    []agentTaskEntry
+}
+
+// ConciseDescription returns the normalized first sentence of Description (up to
+// 160 bytes) so the Turn-1 <available_agents> roster fits one crisp line per role.
+func (a agentEntry) ConciseDescription() string {
+	return firstSentence(a.Description)
+}
+
+func firstSentence(s string) string {
+	text := strings.Join(strings.Fields(s), " ")
+	if text == "" {
+		return ""
+	}
+	for i := 0; i < len(text); i++ {
+		switch text[i] {
+		case '.', '!', '?':
+			if i+1 == len(text) || text[i+1] == ' ' {
+				return text[:i+1]
+			}
+		}
+	}
+	if len(text) > 160 {
+		return strings.TrimSpace(runetrim.Cut(text, 157)) + "..."
+	}
+	return text
 }
 
 func toolNamesFromDefinitions(defs []llm.ToolDefinition) []string {
@@ -267,6 +294,18 @@ func formatToolNamesForPrompt(names []string) string {
 // deleted tools is a page the model can only fail.
 func (d promptData) HasTool(name string) bool {
 	return d.CallableTools[name]
+}
+
+// HasDelegateTool reports whether delegate is registered for this session,
+// either upfront in Tier-1 or as a deferred Tier-2 stub.
+func (d promptData) HasDelegateTool() bool {
+	return d.DelegateRegistered || d.HasTool("delegate")
+}
+
+// HasJobWatchTool reports whether job_watch is registered for this session,
+// either upfront in Tier-1 or as a deferred Tier-2 stub.
+func (d promptData) HasJobWatchTool() bool {
+	return d.JobWatchRegistered || d.HasTool("job_watch")
 }
 
 // resolveRolePrompt returns the role body and its PROMPT_LOADED source: the

@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -23,7 +24,10 @@ func TestContextLengthGuidanceFollowsTheCompactTool(t *testing.T) {
 			if warning != "" {
 				t.Fatalf("render system prompt: %s", warning)
 			}
-			systemPromptSection(t, prompt, "## How you work")
+			body := operationalPromptBody(t, prompt)
+			if got := strings.Contains(body, "compact_context"); got != (tc.revoke == "") {
+				t.Fatalf("operational prompt mentions compact_context = %v, want %v:\n%s", got, tc.revoke == "", body)
+			}
 		})
 	}
 }

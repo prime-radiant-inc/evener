@@ -61,12 +61,12 @@ func TestOneShotOmitsCeremonyTools(t *testing.T) {
 		if strings.Contains(prompt, "\n## Session links\n") {
 			t.Error("prompt renders ## Session links although no URL tool is callable")
 		}
-		finishing := systemPromptSection(t, prompt, "## Finishing")
-		if strings.Contains(finishing, "|---|---|") {
-			t.Errorf("## Finishing renders a table with no rows:\n%s", finishing)
+		body := operationalPromptBody(t, prompt)
+		if strings.Contains(body, "|---|---|") {
+			t.Errorf("operational prompt renders a table with no rows:\n%s", body)
 		}
-		if strings.Contains(finishing, "notes_agent_set") {
-			t.Errorf("## Finishing mentions omitted tool notes_agent_set:\n%s", finishing)
+		if strings.Contains(body, "notes_agent_set") {
+			t.Errorf("operational prompt mentions omitted tool notes_agent_set:\n%s", body)
 		}
 		if strings.Contains(prompt, "\n## Memory\n") {
 			t.Error("prompt renders ## Memory when memory is unconfigured")
@@ -83,7 +83,7 @@ func TestOneShotOmitsCeremonyTools(t *testing.T) {
 		if warning != "" {
 			t.Fatalf("renderSystemPrompt (no memory): %s", warning)
 		}
-		withoutFinishing := systemPromptSection(t, withoutPrompt, "## Finishing")
+		withoutBody := operationalPromptBody(t, withoutPrompt)
 
 		s := newSession(t, withConfig(SessionConfig{
 			TurnEndsProcess: true,
@@ -99,15 +99,15 @@ func TestOneShotOmitsCeremonyTools(t *testing.T) {
 		if warning != "" {
 			t.Fatalf("renderSystemPrompt: %s", warning)
 		}
-		finishing := systemPromptSection(t, prompt, "## Finishing")
+		body := operationalPromptBody(t, prompt)
 		if !strings.Contains(prompt, "\n## Memory\n") {
 			t.Error("prompt omitted ## Memory although MemorySaves=true")
 		}
-		if strings.Contains(finishing, "notes_agent_set") {
-			t.Errorf("## Finishing mentions omitted tool notes_agent_set:\n%s", finishing)
+		if strings.Contains(body, "notes_agent_set") {
+			t.Errorf("operational prompt mentions omitted tool notes_agent_set:\n%s", body)
 		}
-		if finishing == withoutFinishing {
-			t.Errorf("## Finishing did not add memory-save guidance when MemorySaves=true:\n%s", finishing)
+		if body == withoutBody {
+			t.Errorf("operational prompt did not add memory-save guidance when MemorySaves=true:\n%s", body)
 		}
 	})
 
@@ -133,16 +133,16 @@ func TestOneShotOmitsCeremonyTools(t *testing.T) {
 		if !strings.Contains(prompt, "\n## Session links\n") {
 			t.Error("prompt missing ## Session links under TurnEndsProcess=false")
 		}
-		finishing := systemPromptSection(t, prompt, "## Finishing")
-		if !strings.Contains(finishing, "notes_agent_set") {
-			t.Errorf("## Finishing missing notes_agent_set guidance under TurnEndsProcess=false:\n%s", finishing)
+		body := operationalPromptBody(t, prompt)
+		if !strings.Contains(body, "notes_agent_set") {
+			t.Errorf("operational prompt missing notes_agent_set guidance under TurnEndsProcess=false:\n%s", body)
 		}
 	})
 }
 
 // A one-shot session keeps manage_worktree, whose handler resolves the
 // repository on every call. The launch snapshot must resolve symlinks too so a
-// --dir symlink into a checkout reports IsGitRepo=true and renders ## Git and safety.
+// --dir symlink into a checkout reports IsGitRepo=true and renders <git> and git guidance.
 func TestOneShotWorktreeToolFollowsResolvedCheckout(t *testing.T) {
 	t.Parallel()
 
@@ -170,6 +170,15 @@ func TestOneShotWorktreeToolFollowsResolvedCheckout(t *testing.T) {
 			opts = append(opts, withEnvironmentSnapshot())
 		}
 		return newSession(t, opts...)
+	}
+
+	renderBody := func(t *testing.T, s *Session) (string, string) {
+		t.Helper()
+		prompt, warning, _ := s.renderSystemPrompt(s.env)
+		if warning != "" {
+			t.Fatalf("renderSystemPrompt: %s", warning)
+		}
+		return prompt, operationalPromptBody(t, prompt)
 	}
 
 	t.Run("symlink into a checkout keeps manage_worktree", func(t *testing.T) {
@@ -202,15 +211,13 @@ func TestOneShotWorktreeToolFollowsResolvedCheckout(t *testing.T) {
 		if data.IsGitRepo {
 			t.Fatal("promptData.IsGitRepo = true for a non-repository directory")
 		}
-		prompt, warning, _ := s.renderSystemPrompt(s.env)
-		if warning != "" {
-			t.Fatalf("renderSystemPrompt: %s", warning)
+		prompt, nonRepoBody := renderBody(t, s)
+		if strings.Contains(prompt, "<git>") {
+			t.Error("prompt renders <git> in a confirmed non-repository")
 		}
-		if strings.Contains(prompt, "\n## Git and safety\n") {
-			t.Error("prompt renders ## Git and safety in a confirmed non-repository")
-		}
-		if !strings.Contains(prompt, "\n## Safety\n") {
-			t.Error("prompt is missing ## Safety in a confirmed non-repository")
+		_, repoBody := renderBody(t, oneShot(t, repoDir, true))
+		if nonRepoBody == repoBody {
+			t.Errorf("non-repository operational prompt matched repository prompt:\n%s", nonRepoBody)
 		}
 	})
 
@@ -227,15 +234,17 @@ func TestOneShotWorktreeToolFollowsResolvedCheckout(t *testing.T) {
 		if !data.IsGitRepo {
 			t.Fatal("promptData.IsGitRepo = false for a symlinked --dir into a checkout")
 		}
-		prompt, warning, _ := s.renderSystemPrompt(s.env)
-		if warning != "" {
-			t.Fatalf("renderSystemPrompt: %s", warning)
+		prompt, linkBody := renderBody(t, s)
+		if !strings.Contains(prompt, "<git>") || !strings.Contains(prompt, "</git>") {
+			t.Error("prompt is missing <git> although the directory resolves into a checkout")
 		}
-		if !strings.Contains(prompt, "\n## Git and safety\n") {
-			t.Error("prompt is missing ## Git and safety although the directory resolves into a checkout")
+		_, repoBody := renderBody(t, oneShot(t, repoDir, true))
+		if linkBody != repoBody {
+			t.Errorf("symlinked checkout operational prompt differed from real checkout:\nlink:\n%s\nrepo:\n%s", linkBody, repoBody)
 		}
-		if strings.Contains(prompt, "\n## Safety\n") {
-			t.Error("prompt renders ## Safety instead of ## Git and safety for a symlinked checkout")
+		_, nonRepoBody := renderBody(t, oneShot(t, t.TempDir(), true))
+		if linkBody == nonRepoBody {
+			t.Errorf("symlinked checkout operational prompt omitted git guidance:\n%s", linkBody)
 		}
 	})
 
@@ -248,12 +257,13 @@ func TestOneShotWorktreeToolFollowsResolvedCheckout(t *testing.T) {
 		if s.reg.Get("manage_worktree") == nil {
 			t.Fatal("manage_worktree omitted inside a real checkout")
 		}
-		prompt, warning, _ := s.renderSystemPrompt(s.env)
-		if warning != "" {
-			t.Fatalf("renderSystemPrompt: %s", warning)
+		prompt, repoBody := renderBody(t, s)
+		if !strings.Contains(prompt, "<git>") || !strings.Contains(prompt, "</git>") {
+			t.Error("prompt is missing <git> inside a real checkout")
 		}
-		if !strings.Contains(prompt, "\n## Git and safety\n") {
-			t.Error("prompt is missing ## Git and safety inside a real checkout")
+		_, nonRepoBody := renderBody(t, oneShot(t, t.TempDir(), true))
+		if repoBody == nonRepoBody {
+			t.Errorf("real checkout operational prompt omitted git guidance:\n%s", repoBody)
 		}
 	})
 

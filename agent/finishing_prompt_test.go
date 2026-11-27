@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -47,7 +48,10 @@ func TestFinishingPromptGating(t *testing.T) {
 			if warning != "" {
 				t.Fatalf("render system prompt: %s", warning)
 			}
-			systemPromptSection(t, prompt, "## Finishing")
+			body := operationalPromptBody(t, prompt)
+			if got := strings.Contains(body, "manage_worktree"); got != tc.worktree {
+				t.Fatalf("operational prompt mentions manage_worktree = %v, want %v:\n%s", got, tc.worktree, body)
+			}
 		})
 	}
 }
