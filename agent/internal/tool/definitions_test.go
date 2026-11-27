@@ -12,6 +12,7 @@ import (
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/modelavailability"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
 )
@@ -294,7 +295,10 @@ func TestDefDelegateHasWatchParent(t *testing.T) {
 	if got, _ := watchParent["type"].(string); got != "boolean" {
 		t.Fatalf("watch_parent type = %q, want boolean", got)
 	}
-	for _, want := range []string{"watch_parent=true", "job_watch(source=\"parent\")", "next=\"send_and_end_turn\"", "next=\"log_quietly_and_end_turn\""} {
+	if desc, _ := watchParent["description"].(string); strings.TrimSpace(desc) == "" {
+		t.Fatal("watch_parent description is empty")
+	}
+	for _, want := range []string{"watch_parent=true", "next=\"send_and_end_turn\"", "next=\"log_quietly_and_end_turn\""} {
 		if !strings.Contains(def.Description, want) {
 			t.Fatalf("delegate description = %q, want %q", def.Description, want)
 		}
@@ -395,8 +399,12 @@ func TestDefDelegateSendShape(t *testing.T) {
 	if _, ok := props["on_idle"]; ok {
 		t.Fatalf("delegate_send must not expose on_idle")
 	}
-	if !strings.Contains(def.Description, "started/resumed automatically") {
-		t.Fatalf("delegate_send description must explain automatic idle restart: %q", def.Description)
+	if !strings.Contains(def.Description, "dlg_...") {
+		t.Fatalf("delegate_send description must name dlg_... target format: %q", def.Description)
+	}
+	renamed := DefDelegateSendNamed("submit_report")
+	if !strings.Contains(renamed.Description, "submit_report") || strings.Contains(renamed.Description, DefaultResultToolName) {
+		t.Fatalf("DefDelegateSendNamed did not propagate result tool name: %q", renamed.Description)
 	}
 	combined := def.Description + "\n" + props["to"].(map[string]any)["description"].(string)
 	for _, banned := range []string{"job_send_message", "watched", "main"} {
@@ -709,6 +717,43 @@ func TestDefCommunicateSchemaNextEnumSurface(t *testing.T) {
 	}
 }
 
+// TestWithCommunicateDelegateUpdatesClonesWithoutMutatingBase verifies that
+// delegate adaptation clones the schema maps without mutating the caller's
+// definition and preserves the next enum/default and output schema.
+func TestWithCommunicateDelegateUpdatesClonesWithoutMutatingBase(t *testing.T) {
+	base := DefCommunicate()
+	origBaseDesc := base.Description
+	origBaseNextDesc := base.Parameters["properties"].(map[string]any)["next"].(map[string]any)["description"].(string)
+	origBaseMsgDesc := base.Parameters["properties"].(map[string]any)["message"].(map[string]any)["description"].(string)
+
+	dlg := WithCommunicateDelegateUpdates(base)
+
+	if base.Description != origBaseDesc {
+		t.Fatalf("WithCommunicateDelegateUpdates mutated caller description")
+	}
+	baseProps := base.Parameters["properties"].(map[string]any)
+	if got := baseProps["next"].(map[string]any)["description"].(string); got != origBaseNextDesc {
+		t.Fatalf("WithCommunicateDelegateUpdates mutated caller next.description")
+	}
+	if got := baseProps["message"].(map[string]any)["description"].(string); got != origBaseMsgDesc {
+		t.Fatalf("WithCommunicateDelegateUpdates mutated caller message.description")
+	}
+	if dlg.Description == "" || dlg.Description == base.Description {
+		t.Fatalf("WithCommunicateDelegateUpdates did not adapt tool description: %q", dlg.Description)
+	}
+	dlgProps := dlg.Parameters["properties"].(map[string]any)
+	dlgNext := dlgProps["next"].(map[string]any)
+	if dlgNext["default"] != CommunicateNextSendAndEndTurn {
+		t.Errorf("delegate next.default = %v, want %q", dlgNext["default"], CommunicateNextSendAndEndTurn)
+	}
+	if nextEnum, _ := dlgNext["enum"].([]string); !slices.Equal(nextEnum, schema.CommunicateNextValues) {
+		t.Errorf("delegate next.enum = %v, want %v", nextEnum, schema.CommunicateNextValues)
+	}
+	if !reflect.DeepEqual(dlgProps["output"], baseProps["output"]) {
+		t.Errorf("delegate output schema drifted from base")
+	}
+}
+
 // schemaRequiredNames reads a schema's required list as []string, treating a
 // missing or null entry as none. Schemas built in Go hold []string while a
 // JSON round-tripped one holds []any.
@@ -946,8 +991,7 @@ func TestDefManageWorktreeShape(t *testing.T) {
 }
 
 // TestDefManageWorktreeDescriptionCarriesUsagePolicy asserts the description
-// carries spec §2's usage-policy paragraph: worktrees are for isolated,
-// parallel, or risky work, not ordinary branch creation/switching.
+// states worktrees are for isolated, parallel, or risky work.
 func TestDefManageWorktreeDescriptionCarriesUsagePolicy(t *testing.T) {
 	def := DefManageWorktree()
 	desc := strings.ToLower(def.Description)
@@ -956,12 +1000,6 @@ func TestDefManageWorktreeDescriptionCarriesUsagePolicy(t *testing.T) {
 		if !strings.Contains(desc, phrase) {
 			t.Errorf("description missing usage-policy phrase %q; got: %s", phrase, def.Description)
 		}
-	}
-	if !strings.Contains(desc, "not") || !strings.Contains(desc, "ordinary") {
-		t.Errorf("description must say this is not for ordinary branch work; got: %s", def.Description)
-	}
-	if !strings.Contains(desc, "plain git") && !strings.Contains(desc, "git commands") {
-		t.Errorf("description must point to plain git commands for ordinary branch work; got: %s", def.Description)
 	}
 }
 
@@ -1304,22 +1342,18 @@ func TestDefEditFileAndMemoryEditSchema(t *testing.T) {
 	}
 }
 
-// TestDefAskUserDescriptionIsSpecVerbatim pins the description to spec §4.4's
-// key contract points: yields the floor, no timeout, batching, the reply
-// contract, and the "no Other option" rule.
-func TestDefAskUserDescriptionIsSpecVerbatim(t *testing.T) {
+// TestDefAskUserNamedPropagatesResultTool verifies ask_user carries the
+// configured result tool token and the [answers] reply framing marker.
+func TestDefAskUserNamedPropagatesResultTool(t *testing.T) {
 	def := DefAskUser()
-	for _, want := range []string{
-		"Asking yields the floor",
-		"no timeout",
-		"several `ask_user` calls may share the round",
-		"a `communicate` in the same round still delivers its message",
-		"Do not add an \"Other\" or free-text option",
-		"First try to resolve the question yourself with tools",
-	} {
+	for _, want := range []string{"`communicate`", "[answers]"} {
 		if !strings.Contains(def.Description, want) {
 			t.Fatalf("description missing %q; got: %s", want, def.Description)
 		}
+	}
+	renamed := DefAskUserNamed("submit_report")
+	if !strings.Contains(renamed.Description, "`submit_report`") || strings.Contains(renamed.Description, DefaultResultToolName) {
+		t.Fatalf("DefAskUserNamed did not propagate result tool name: %q", renamed.Description)
 	}
 }
 

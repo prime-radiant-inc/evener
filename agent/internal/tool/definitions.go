@@ -326,10 +326,10 @@ func DefDelegate() llm.ToolDefinition {
 	}, DefaultResultToolName)
 }
 
-// DelegateRoleWriteNote tells the model which role may write files. The
-// explorer role has no edit tools, so a seat that must write (a reviewer that
-// files its report, an implementer) takes subagent.
-const DelegateRoleWriteNote = "explorer is read-only; writers use subagent."
+// DelegateRoleWriteNote notes that the explorer role is read-only (no edit
+// tools), shared between the static delegate schema and the live per-role
+// capability roster appended at request time.
+const DelegateRoleWriteNote = "explorer is read-only."
 
 // DefDelegateWithResultTool defines the delegate tool, which starts a NEW
 // delegate conversation and returns its durable stable identity. agentTypes
@@ -352,7 +352,7 @@ func DefDelegateWithResultTool(agentTypes []string, sandboxSchema DelegateSandbo
 	def := llm.ToolDefinition{
 		Name: "delegate",
 		Description: "Start a delegate (`delegate_id`; follow up: `delegate_send(to=<delegate_id>)`). " +
-			"`watch_parent=true` allows `job_watch(source=\"parent\")`. " +
+			"`watch_parent=true` allows it to observe you. " +
 			ObserverReporting(resultTool),
 		Strict: &strictFalse,
 		Parameters: map[string]any{
@@ -382,10 +382,10 @@ func DefDelegateWithResultTool(agentTypes []string, sandboxSchema DelegateSandbo
 				"model":                map[string]any{"type": "string", "description": delegateModelOverrideDescription},
 				"reasoning_effort":     map[string]any{"type": "string", "description": delegateReasoningEffortDescription(), "enum": effortLevels},
 				"delegation_allowance": map[string]any{"type": "integer", "description": "Sub-delegation cap (0=leaf; < yours; default yours-1)."},
-				"watch_parent":         map[string]any{"type": "boolean", "description": "Allow job_watch(source=\"parent\")."},
+				"watch_parent":         map[string]any{"type": "boolean", "description": "Allow it to observe you."},
 				"fork_context": map[string]any{
 					"type": "boolean", "default": false,
-					"description": "Copy parent history (same model/provider).",
+					"description": "Copy your history.",
 				},
 				"isolation": map[string]any{
 					"type":        "string",
@@ -474,12 +474,12 @@ func DefDelegateSend() llm.ToolDefinition {
 func DefDelegateSendNamed(resultTool string) llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "delegate_send",
-		Description: "Message an owned delegate (`dlg_...`; use `" + resultTool + "` for parent). Idle delegates are started/resumed automatically.",
+		Description: "Message (and wake) a descendant (`dlg_...`; use `" + resultTool + "` for parent).",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
-				"to":          map[string]any{"type": "string", "description": "Owned `dlg_...` ID (not `caller`/job/turn)."},
+				"to":          map[string]any{"type": "string", "description": "Child by `dlg_...` ID."},
 				"message":     map[string]any{"type": "string", "description": "Message."},
 				"max_wait_ms": map[string]any{"type": "integer", "description": "0 (default) sends/steers now; >0 waits if idle (`earlier_results`), fails `target_busy` if running."},
 			},
@@ -755,6 +755,27 @@ const (
 	CommunicateNextLogQuietlyAndEndTurn = schema.CommunicateNextLogQuietlyAndEndTurn
 )
 
+// communicateDescription builds the communicate tool description for either a
+// human-partner session or a delegate session from one shared template so the
+// turn-end, update, quiet-yield, and output contracts stay in sync. It names no
+// output fields because a bound result schema replaces the default output shape
+// (provider.WithCommunicateOutputSchema).
+func communicateDescription(audience, finalUse string) string {
+	return "Message " + audience +
+		". Default next=\"send_and_end_turn\" ENDS YOUR TURN IMMEDIATELY (use only " + finalUse +
+		"); pass next=\"send_and_continue\" for mid-work updates, or next=\"log_quietly_and_end_turn\" (no prose) when waiting on background work. " +
+		"Include `output` only on `send_and_end_turn` (required when a result schema is bound; omit on updates and quiet yields)."
+}
+
+// communicateNextDescription builds the `next` enum parameter description for
+// partner and delegate communicate definitions, leading with send_and_continue
+// so models see the mid-work update option before the turn-ending default.
+func communicateNextDescription(updateTarget, finalKind, quietEffect string) string {
+	return "\"send_and_continue\" sends a mid-work update" + updateTarget +
+		" and keeps working; \"send_and_end_turn\" (default) ENDS THE TURN immediately with " + finalKind +
+		"; \"log_quietly_and_end_turn\" logs a quiet wait note" + quietEffect + " and ends the turn."
+}
+
 func DefCommunicate() llm.ToolDefinition {
 	return DefCommunicateNamed(DefaultResultToolName)
 }
@@ -763,7 +784,7 @@ func DefCommunicateNamed(name string) llm.ToolDefinition {
 	strictFalse := false
 	return llm.ToolDefinition{
 		Name:        name,
-		Description: "Send a message to your partner/caller. Default next=\"send_and_end_turn\" ENDS YOUR TURN IMMEDIATELY (use only when complete and verified); pass next=\"send_and_continue\" for any mid-work progress update, or next=\"log_quietly_and_end_turn\" (no prose) when waiting on background work. Include `output` only on `send_and_end_turn` (required when a result schema is bound; omit on updates and quiet yields).",
+		Description: communicateDescription("your partner/caller", "when complete and verified"),
 		Strict:      &strictFalse,
 		Parameters: map[string]any{
 			"type":                 "object",
@@ -777,7 +798,7 @@ func DefCommunicateNamed(name string) llm.ToolDefinition {
 					"type":        "string",
 					"enum":        slices.Clone(schema.CommunicateNextValues),
 					"default":     CommunicateNextSendAndEndTurn,
-					"description": "Set next=\"send_and_continue\" for mid-work updates. \"send_and_continue\" sends an update and keeps working; \"send_and_end_turn\" (default) ENDS THE TURN immediately with your final reply; \"log_quietly_and_end_turn\" logs a quiet wait note and ends the turn.",
+					"description": communicateNextDescription("", "your final reply", ""),
 				},
 				"output": map[string]any{
 					"type":                 "object",
@@ -811,15 +832,6 @@ func ObserverReporting(resultTool string) string {
 	return "Observers: `" + resultTool + "` (`next=\"send_and_end_turn\"`) ready/findings, `next=\"send_and_continue\"` update, `next=\"log_quietly_and_end_turn\"` quiet."
 }
 
-// communicateDelegateDescription is communicate worded for a delegate, whose
-// messages go to its parent agent. It names no output fields: a delegate
-// started with result_schema gets that schema as its output parameter
-// (provider.WithCommunicateOutputSchema), so only the schema can say the shape.
-func communicateDelegateDescription(resultTool string) string {
-	_ = resultTool
-	return "Send a message to your parent agent. Default next=\"send_and_end_turn\" ENDS YOUR TURN IMMEDIATELY (use only for your report or readiness line); pass next=\"send_and_continue\" for any mid-work update, or next=\"log_quietly_and_end_turn\" (no prose) when waiting on background work. Include `output` only on `send_and_end_turn` (required when a result schema is bound; omit on updates and quiet yields)."
-}
-
 // WithCommunicateDelegateUpdates returns a copy of a communicate definition
 // worded for a delegate: next="send_and_continue" sends an update its parent
 // receives, next="send_and_end_turn" (or omitted) its report or an observer
@@ -832,9 +844,9 @@ func WithCommunicateDelegateUpdates(def llm.ToolDefinition) llm.ToolDefinition {
 		message["description"] = "Report, update, or wait note."
 	}
 	if nextProp, ok := props["next"].(map[string]any); ok {
-		nextProp["description"] = "Set next=\"send_and_continue\" for mid-work updates. \"send_and_continue\" sends an update to your parent and keeps working; \"send_and_end_turn\" (default) ENDS THE TURN immediately with your report or readiness line; \"log_quietly_and_end_turn\" logs a quiet wait note without waking your parent and ends the turn."
+		nextProp["description"] = communicateNextDescription(" to your parent", "your report or readiness line", " without waking your parent")
 	}
-	def.Description = communicateDelegateDescription(def.Name)
+	def.Description = communicateDescription("your parent agent", "for your report or readiness line")
 	def.Parameters = params
 	return def
 }
@@ -1057,7 +1069,7 @@ func DefDoctorEvener() llm.ToolDefinition {
 // description and enforced by the handler, not the schema. Each arg's own
 // description names the operations that read it.
 func DefManageWorktree() llm.ToolDefinition {
-	desc := "Manage git worktrees for isolated, parallel, or risky work (not ordinary branches; use plain git for those). `prune` removes lanes without unmerged work; exit and merge with plain git."
+	desc := "Manage git worktrees for isolated, parallel, or risky work. `prune` removes lanes without unmerged work."
 	return llm.ToolDefinition{
 		Name:        "manage_worktree",
 		Description: desc,
@@ -1197,11 +1209,9 @@ func DefReadTranscript() llm.ToolDefinition {
 	}
 }
 
-// DefAskUser defines the ask_user tool (spec §4): structured, mostly
-// multiple-choice questions that end the model's turn at the asking round's
-// boundary. The Description is verbatim from spec §4.4 (the blockquote,
-// leading "> " markers stripped); the schema is spec §4.2. Strict is false
-// because multi_select/why/if_unanswered/recommended are all optional.
+// DefAskUser defines the ask_user tool: structured, mostly multiple-choice
+// questions that end the model's turn at the asking round's boundary. Strict is
+// false because multi_select/why/if_unanswered/recommended are all optional.
 func DefAskUser() llm.ToolDefinition {
 	return DefAskUserNamed(DefaultResultToolName)
 }
@@ -1212,11 +1222,11 @@ func DefAskUserNamed(resultTool string) llm.ToolDefinition {
 	strictFalse := false
 	return llm.ToolDefinition{
 		Name: "ask_user",
-		Description: "Ask structured questions. Asking yields the floor: your turn ends after the round and waits with no timeout. " +
+		Description: "Ask structured questions. Ends your turn after the round and waits indefinitely for the answer. " +
 			"First try to resolve the question yourself with tools, and finish independent work before asking. " +
-			"Batch questions: several `ask_user` calls may share the round, and a `" + resultTool + "` in the same round still delivers its message. " +
+			"Multiple questions? Call multiple times per round (`" + resultTool + "` in the same round still delivers). " +
 			"Give 1-4 `questions` with 2-5 unique-label `options`, putting any `recommended` option first. " +
-			"Do not add an \"Other\" or free-text option; the UI provides one plus \"you decide\". " +
+			"The harness adds an \"Other\" free-text option and \"you decide\". " +
 			"Replies arrive as `[answers]` (choice, free text, \"you decide\", fallback, or skipped: use best judgment, state assumptions, and do not re-ask) or prose; read any user note, which may override a choice.",
 		Strict: &strictFalse,
 		Parameters: map[string]any{
@@ -1243,7 +1253,7 @@ func DefAskUserNamed(resultTool string) llm.ToolDefinition {
 									"properties": map[string]any{
 										"label":       map[string]any{"type": "string", "description": "Unique label."},
 										"detail":      map[string]any{"type": "string", "description": "Option detail."},
-										"recommended": map[string]any{"type": "boolean", "description": "Suggest at most one option (put it first)."},
+										"recommended": map[string]any{"type": "boolean", "description": "Recommend at most one option (put it first)."},
 									},
 									"required": []string{"label", "detail"},
 								},
