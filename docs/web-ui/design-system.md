@@ -189,14 +189,15 @@ losing the conversation that made the evidence relevant.
   but separates reading from scanning. Shared size and width preferences remain available.
   Phones reflow speaker rows, controls and evidence rather than shrinking a desktop page;
   wide evidence scrolls within its surface instead of widening the page or shrinking targets.
-- **Keep session reading controls in the header.** Find in session, then Overview, occupy the
-  session pane header's action slot at every width: labeled controls on desktop, and 44px
-  icon controls below 900px (§12). The ordinary composer menu leaves those
-  actions to the header and retains Verbosity, turn verbs, and session management. Rail and
-  embedded-column menus keep their existing inspection access. Mobile session titles align
-  left. A session with no real Back
-  destination gets Sessions as its only leading navigation control; a retained parent, valid
-  back-stack destination, or attention Back uses Back instead. Non-session top bars are unchanged.
+- **Keep session reading controls in the header.** On desktop, Find in session occupies the
+  session pane header's action slot as the same icon-only secondary square as the closed
+  Overview's Show chip; below 900px the header carries Find in session beside Overview as 44px
+  icon controls (§12). On desktop, the ordinary composer menu leaves Find to the header and
+  Overview to the sidebar's Hide/Show control, and retains Verbosity, turn verbs, and session
+  management. Rail and embedded-column menus keep their existing inspection access. Mobile
+  session titles align left. A session with no real Back destination gets Sessions as its only
+  leading navigation control; a retained parent, valid back-stack destination, or attention Back
+  uses Back instead. Non-session top bars are unchanged.
 - **Keep session status inside its pane.** Every visible desktop session pane ends
   with its own
   flush status footer, never one strip spanning sibling panes. The footer leads with that
@@ -1235,6 +1236,11 @@ instant under `prefers-reduced-motion: reduce`. Initial mount and restoration, b
 crossings, data or reconnect updates, and non-edge content swaps (tab switches, dock pane
 changes, settings sections) change immediately without sliding.
 
+Each desktop docked rail carries its Hide toggle just inside its own header and, once hidden,
+a Show chip at the same shell edge: Show sidebar for the left rail, Show Overview for the
+right Overview sidebar. The control uses that rail's symbol (`sidebar.leading` or
+`sidebar.trailing`), so the inside toggle and the edge chip read as the same control.
+
 ---
 
 ## 6. Copy rules
@@ -1636,8 +1642,10 @@ circular `Meter` ring, Workspace with click-to-copy Directory, Session with one
 `StatusDot` and click-to-copy Session ID, and collapsed Launch settings); saved
 session links live in the dedicated Links tab (Recent or Grouped, filterable,
 hover-underlined labels with hover/focus destination bar and Open beside for
-local files) on both desktop and mobile. Dismissing Overview returns focus to
-the header entry when it still belongs to that session.
+local files) on both desktop and mobile. The overlay's header carries the same
+trailing-panel Hide Overview control as the desktop sidebar, and the session
+header's Overview action remains the outside control. Dismissing Overview
+returns focus to that header entry when it still belongs to that session.
 
 The phone composer keeps Attach, Session actions and Send or Stop while
 collapsed or expanded. It announces current work to assistive technology

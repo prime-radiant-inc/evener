@@ -599,15 +599,20 @@ test.each([
 );
 
 test("a focused session's top bar orders Find before Overview", async () => {
-  workspaceStore.getState().openPane("session", { ref: "local:header-order" });
-  render(<StackHost />);
-  const title = await screen.findByTestId("topbar-title");
-  const topBar = title.parentElement;
-  if (!topBar) throw new Error("session top bar is missing");
+  const restoreViewport = installMobileViewport();
+  try {
+    workspaceStore.getState().openPane("session", { ref: "local:header-order" });
+    render(<StackHost />);
+    const title = await screen.findByTestId("topbar-title");
+    const topBar = title.parentElement;
+    if (!topBar) throw new Error("session top bar is missing");
 
-  const find = await within(topBar).findByRole("button", { name: "Find in session" });
-  const overview = within(topBar).getByRole("button", { name: "Overview" });
-  expect(find.compareDocumentPosition(overview) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+    const find = await within(topBar).findByRole("button", { name: "Find in session" });
+    const overview = within(topBar).getByRole("button", { name: "Overview" });
+    expect(find.compareDocumentPosition(overview) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+  } finally {
+    restoreViewport();
+  }
 });
 
 test("the iPhone controls stay above inline Find and follow the focused reader", async () => {
@@ -850,7 +855,7 @@ test("renders the new activity sidebar over the mobile stack with the selected t
   expect(screen.getByRole("tab", { name: /Jobs/ })).toBeTruthy();
 });
 
-test.each(["Close", "Escape"])(
+test.each(["Hide", "Escape"])(
   "%s returns phone Overview focus to the revealed conversation after child drilling",
   async (dismiss) => {
     const restoreViewport = installMobileViewport();
@@ -904,7 +909,7 @@ test.each(["Close", "Escape"])(
       await screen.findByRole("heading", { name: "Child work" });
       const before = workspaceStore.getState();
       expect(before.focusedPaneId).not.toBe(parentPane);
-      if (dismiss === "Close") await user.click(within(sidebar).getByRole("button", { name: "Close Overview" }));
+      if (dismiss === "Hide") await user.click(within(sidebar).getByRole("button", { name: "Hide Overview" }));
       else await user.keyboard("{Escape}");
       // The read-only transcript's ancestor link is gone: the revealed
       // conversation owns the return focus through its own actions control.

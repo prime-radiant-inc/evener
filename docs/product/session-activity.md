@@ -1190,17 +1190,25 @@ cause an `evener/thread/*` activity read for every session in the navigation
 rail; the rail's open title card makes only its own one-ref pulse read, as
 described under [Navigation session status](#navigation-session-status).
 
-The session header carries Find in session beside Overview at every width (44px
-icon buttons below 900px, labeled controls on desktop). Opening Overview from
-the session header, navigation rail, or embedded session action menu opens the
-shared activity sidebar directly for that session (a newly inspected session
-opens on About; a revisited session keeps its last selected tab; an open
-inspection keeps its active tab while drilling; both desktop and mobile use the
-same underline tablist). The menu's
+The desktop session header carries Find in session alone, as the same icon-only
+secondary square as the closed Overview's Show chip. Below 900px the session
+header carries Find in session beside Overview as 44px icon buttons. Opening
+Overview from the navigation rail, an embedded session action menu, the desktop
+edge Show chip, or the phone session header's Overview action opens the shared
+activity sidebar directly for that session (a newly inspected session opens on
+About; a revisited session keeps its last selected tab; an open inspection keeps
+its active tab while drilling; both desktop and mobile use the same underline
+tablist). The menu's
 optional active count sums the subagents running at every depth and the
 session's own running jobs, only when both are known; watches and completed work
-are not part of that number. The sidebar's Jobs, Watches and Tasks tabs use
-session-scoped reads on both viewports, while About and Links use the shared
+are not part of that number. On desktop the sidebar's header carries a Hide
+Overview toggle using the trailing-panel symbol, and a closed sidebar offers the
+same symbol as a Show Overview chip at the shell's right edge, mirroring the
+navigation rail's Hide sidebar / Show sidebar pair. The phone uses the same Hide
+Overview control inside its full-screen Overview and has no edge chip; the phone
+header's trailing-panel Overview action remains its Show control. The
+sidebar's Jobs, Watches and Tasks tabs use session-scoped reads on both
+viewports, while About and Links use the shared
 session model on both desktop and mobile (About rendering the calm five-group
 details body with inline-editable Goal, and Links rendering saved session links
 with recency/grouped organization). The Agents tab and all Agents counts (the desktop pane's activity

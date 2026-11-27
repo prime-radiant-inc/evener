@@ -25,6 +25,24 @@
   border-left: none;
 }
 
+/* Closed desktop Overview: the Show chip docks at the top-right edge, mirroring
+ * the rail's Show chip so both sidebars collapse to the same gesture. */
+.chipBar {
+  composes: chip from "../../styles/dockedEdge.module.css";
+}
+
+/* Lift the leaving pane out of the content row on its first exit frame. The
+ * compound selector keeps the frame absolute even though .sidebar's own
+ * position: relative (the resize handle's anchor) has equal specificity. */
+.sidebarExiting {
+  composes: frameExiting from "../../styles/dockedEdge.module.css";
+  right: 0;
+}
+
+.sidebar.sidebarExiting {
+  position: absolute;
+}
+
 /* The FocusScope root: it fills the aside and stacks the head, tabs and
  * scrolling body. */
 .focusBody {

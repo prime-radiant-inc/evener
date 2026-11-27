@@ -1419,6 +1419,8 @@ function assertTabletSplit(result) {
 const OVERVIEW_VIEWPORTS = [VIEWPORT, MOBILE_VIEWPORT, { width: 320, height: 844, mobile: true, touch: true }];
 const OVERVIEW_THEMES = ["light", "dark"];
 const OVERVIEW = '[data-testid="activity-sidebar"][aria-label="Overview"]';
+const OVERVIEW_CHIP_HOST = '[data-overview-chip]';
+const OVERVIEW_CHIP = `${OVERVIEW_CHIP_HOST} [data-overview-toggle]`;
 const OVERVIEW_SELECTED_TAB = '[role="tab"][aria-selected="true"]';
 const overviewTabSelector = (labelFilter) => `${OVERVIEW} [role="tab"]${labelFilter}`;
 // The Overview sweep's tall task list renders this many live rows (40-row
@@ -1497,6 +1499,19 @@ async function settleOverview(send) {
     return box.right <= innerWidth + 1 && box.left >= -1;
   })()`,
     "Overview finishes its entrance",
+  );
+}
+
+async function waitForOverviewOpen(send, label) {
+  await waitForDom(send, `document.querySelector(${JSON.stringify(OVERVIEW)})`, label);
+  await settleOverview(send);
+}
+
+async function waitForShowChipFocus(send) {
+  await waitForDom(
+    send,
+    `document.activeElement === document.querySelector(${JSON.stringify(OVERVIEW_CHIP)})`,
+    "desktop Overview returns focus to the Show chip",
   );
 }
 
@@ -1580,13 +1595,17 @@ async function chooseOverviewMenu(send, selector) {
   })()`,
   );
   await clickControl(send, "[data-overview-guard-item]");
-  await waitForDom(send, `document.querySelector(${JSON.stringify(OVERVIEW)})`, "opened Overview");
-  await settleOverview(send);
+  await waitForOverviewOpen(send, "opened Overview");
 }
 
-async function choosePaneOverview(send, selector, mobile = false, measure = false) {
+async function openDesktopOverview(send) {
+  await clickControl(send, OVERVIEW_CHIP);
+  await waitForOverviewOpen(send, "opened desktop Overview");
+}
+
+async function openPhoneOverview(send, selector, measure = false) {
   let headerFind;
-  if (mobile && measure) {
+  if (measure) {
     await waitForDom(send, `document.querySelector(${JSON.stringify(selector)})`, "mounted phone Overview trigger");
     headerFind = await evaluate(send, `(() => {
       const find = document.querySelector('[data-testid="topbar"] button[aria-label="Find in session"]');
@@ -1615,10 +1634,9 @@ async function choosePaneOverview(send, selector, mobile = false, measure = fals
   } else {
     await clickControl(send, selector);
   }
-  await waitForDom(send, `document.querySelector(${JSON.stringify(OVERVIEW)})`, "opened pane Overview");
-  await settleOverview(send);
+  await waitForOverviewOpen(send, "opened pane Overview");
   let inspection;
-  if (mobile && measure) {
+  if (measure) {
     inspection = await evaluate(send, `(() => {
       const aside = document.querySelector(${JSON.stringify(OVERVIEW)});
       const rect = aside.getBoundingClientRect();
@@ -1782,7 +1800,7 @@ async function measureOverview(send) {
         !Array.from(e.children).some(child => child.textContent === expected));
       return measure(element, expected);
     });
-    const close = aside.querySelector('button[aria-label="Close Overview"]');
+    const close = aside.querySelector('button[aria-label="Hide Overview"]');
     const resizeHandle = aside.querySelector('[data-testid="overview-resize-handle"]');
     const surface = mobile ? null : Array.from(document.querySelectorAll('[data-testid="statusbar"]'))
       .find(e => !e.closest('[data-pane-footer-fixture]')) ?? null;
@@ -2150,7 +2168,38 @@ async function trustedOverviewFlow(send, viewport, childGesture) {
   }
 
   const dismiss = async (gesture, expectedPane, expectedButton = null) => {
-    if (gesture === "close") await clickControl(send, `${OVERVIEW} button[aria-label="Close Overview"]`);
+    // Capture the exit on the first DOM commit that has both the leaving pane
+    // and its Show chip. A separate CDP request is not deterministic here: the
+    // 180 ms exit can finish first. The observer runs as a microtask after the
+    // commit, while the pane is still mounted.
+    await evaluate(
+      send,
+      `(() => {
+        const aside = document.querySelector(${JSON.stringify(OVERVIEW)});
+        window.__overviewWorkspace = aside?.previousElementSibling ?? null;
+        window.__overviewExitGeometry = null;
+        window.__overviewExitObserver?.disconnect();
+        const capture = () => {
+          if (window.__overviewExitGeometry) return;
+          const leaving = document.querySelector(${JSON.stringify(OVERVIEW)});
+          const chip = document.querySelector(${JSON.stringify(OVERVIEW_CHIP)});
+          if (!leaving || !chip) return;
+          const box = chip.getBoundingClientRect();
+          const workspace = window.__overviewWorkspace;
+          window.__overviewExitGeometry = {
+            position: getComputedStyle(leaving).position,
+            workspaceWidth: workspace?.getBoundingClientRect().width ?? null,
+            chip: box ? { left: box.left, right: box.right, top: box.top, bottom: box.bottom } : null,
+            scrollWidth: document.documentElement.scrollWidth,
+            clientWidth: document.documentElement.clientWidth,
+          };
+        };
+        window.__overviewExitObserver = new MutationObserver(capture);
+        window.__overviewExitObserver.observe(document.body, { childList: true, subtree: true });
+        capture();
+      })()`,
+    );
+    if (gesture === "close") await clickControl(send, `${OVERVIEW} button[aria-label="Hide Overview"]`);
     else {
       await evaluate(
         send,
@@ -2163,6 +2212,38 @@ async function trustedOverviewFlow(send, viewport, childGesture) {
       `!document.querySelector(${JSON.stringify(OVERVIEW)})`,
       `${gesture} completes Overview exit`,
     );
+    const exiting = await evaluate(
+      send,
+      `(() => {
+        window.__overviewExitObserver?.disconnect();
+        window.__overviewExitObserver = null;
+        return window.__overviewExitGeometry;
+      })()`,
+    );
+    const closedWorkspace = await evaluate(
+      send,
+      `window.__overviewWorkspace?.getBoundingClientRect().width ?? null`,
+    );
+    if (exiting) {
+      if (!exiting.chip) throw new Error(`${gesture} removes the edge Show chip during Overview exit`);
+      if (exiting.position !== "absolute")
+        throw new Error(`${gesture} leaves the exiting Overview in the content row: ${JSON.stringify(exiting)}`);
+      if (exiting.scrollWidth > exiting.clientWidth + 1)
+        throw new Error(`${gesture} widens the document during Overview exit: ${JSON.stringify(exiting)}`);
+      if (
+        exiting.workspaceWidth === null ||
+        closedWorkspace === null ||
+        Math.abs(exiting.workspaceWidth - closedWorkspace) > 1
+      )
+        throw new Error(
+          `${gesture} does not settle the workspace before Overview exit: ${JSON.stringify({ during: exiting.workspaceWidth, closed: closedWorkspace })}`,
+        );
+      const box = exiting.chip;
+      if (box.left < -1 || box.right > viewport.width + 1 || box.top < -1 || box.bottom > viewport.height + 1)
+        throw new Error(`${gesture} puts the edge Show chip off-shell during Overview exit: ${JSON.stringify(box)}`);
+    } else if (!viewport.mobile && !(await evaluate(send, `matchMedia('(prefers-reduced-motion: reduce)').matches`))) {
+      throw new Error(`${gesture} removed the Overview before its exit geometry could be measured`);
+    }
     await waitForDom(
       send,
       `(() => {
@@ -2180,13 +2261,54 @@ async function trustedOverviewFlow(send, viewport, childGesture) {
   };
   // The rail opener is removed when a phone's Sessions drawer closes.
   await dismiss("close", pane);
-  const inspection = await choosePaneOverview(send, overviewTrigger(pane), viewport.mobile, true);
-  await clickControl(send, overviewTabSelector('[aria-label="About"]'));
-  await evaluate(
+  // The closed desktop Overview mirrors the Sessions rail: the open sidebar's
+  // header Hide control gives way to one Show chip docked at the right shell
+  // edge. The phone keeps its in-sheet Hide control and has no edge chip.
+  const edgeShow = await evaluate(
     send,
-    `void (window.__overviewExpectedButton = document.querySelector(${JSON.stringify(overviewTrigger(pane))}).closest('button'))`,
+    `(() => {
+    const chips = Array.from(document.querySelectorAll(${JSON.stringify(OVERVIEW_CHIP_HOST)}));
+    const chip = chips[0]?.querySelector('[data-overview-toggle]') ?? null;
+    if (!chip) return { chips: chips.length, box: null };
+    const r = chip.getBoundingClientRect();
+    return { chips: chips.length, box: { left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: r.width, height: r.height } };
+  })()`,
   );
-  await dismiss("escape", pane, true);
+  if (viewport.mobile) {
+    if (edgeShow.chips !== 0) throw new Error(`phone Overview offers an edge Show chip: ${JSON.stringify(edgeShow)}`);
+  } else {
+    const box = edgeShow.box;
+    if (
+      edgeShow.chips !== 1 ||
+      !box ||
+      box.width <= 0 ||
+      box.height <= 0 ||
+      box.left < -1 ||
+      box.right > viewport.width + 1 ||
+      box.top < -1 ||
+      box.bottom > viewport.height + 1
+    )
+      throw new Error(`desktop Overview edge Show chip is missing or off-shell: ${JSON.stringify(edgeShow)}`);
+    if (box.right < viewport.width - 64)
+      throw new Error(`desktop Overview edge Show chip is not docked at the right edge: ${JSON.stringify(edgeShow)}`);
+  }
+  let inspection;
+  if (viewport.mobile) {
+    inspection = await openPhoneOverview(send, overviewTrigger(pane), true);
+  } else {
+    await openDesktopOverview(send);
+  }
+  await clickControl(send, overviewTabSelector('[aria-label="About"]'));
+  if (viewport.mobile) {
+    await evaluate(
+      send,
+      `void (window.__overviewExpectedButton = document.querySelector(${JSON.stringify(overviewTrigger(pane))}).closest('button'))`,
+    );
+    await dismiss("escape", pane, true);
+  } else {
+    await dismiss("escape", pane);
+    await waitForShowChipFocus(send);
+  }
 
   if (viewport.width === MOBILE_VIEWPORT.width && childGesture === "close") {
     await evaluate(send, `(() => {
@@ -2199,8 +2321,7 @@ async function trustedOverviewFlow(send, viewport, childGesture) {
       }, { once: true });
     })()`);
     await clickControl(send, overviewTrigger(pane));
-    await waitForDom(send, `document.querySelector(${JSON.stringify(OVERVIEW)})`, "pointer opens phone Overview");
-    await settleOverview(send);
+    await waitForOverviewOpen(send, "pointer opens phone Overview");
     if (!(await evaluate(send, "window.__overviewUnfocusedClick")))
       throw new Error("phone Overview pointer fixture did not activate without default focus");
     await pressKey(send, "Escape", "Escape", 27);
@@ -2251,6 +2372,13 @@ async function trustedOverviewFlow(send, viewport, childGesture) {
   if (!viewport.mobile) {
     const other = await evaluate(send, "window.overviewPane('other')");
     await settleOverview(send);
+    // The edge chip opens the focused session, not whichever pane last owned
+    // the header action.
+    await openDesktopOverview(send);
+    if ((await evaluate(send, "window.overviewGuardState().overview.ref")) !== "local:p0-s1")
+      throw new Error("desktop edge Show chip did not open the focused session's Overview");
+    await dismiss("escape", other);
+    await waitForShowChipFocus(send);
     // Keep the original composer DOM-focused while another real pane owns the
     // workspace focus. The command must capture its own session, not that pane.
     await submitStatus(other);
@@ -2259,27 +2387,22 @@ async function trustedOverviewFlow(send, viewport, childGesture) {
     const duplicate = await evaluate(send, "window.overviewPane('duplicate')");
     await settleOverview(send);
     for (const origin of [pane, duplicate]) {
-      await choosePaneOverview(send, overviewTrigger(origin));
+      await evaluate(send, `window.overviewPane('focus', ${JSON.stringify(origin)})`);
+      await openDesktopOverview(send);
       await clickControl(send, overviewTabSelector('[aria-label="About"]'));
-      await evaluate(
-        send,
-        `void (window.__overviewExpectedButton = document.querySelector(${JSON.stringify(overviewTrigger(origin))}))`,
-      );
-      await dismiss("escape", origin, true);
+      await dismiss("escape", origin);
+      await waitForShowChipFocus(send);
     }
-    await choosePaneOverview(send, overviewTrigger(duplicate));
+    await openDesktopOverview(send);
     await clickControl(send, overviewTabSelector('[aria-label="About"]'));
     await evaluate(send, `window.overviewPane('close', ${JSON.stringify(duplicate)})`);
     await settleOverview(send);
-    await evaluate(
-      send,
-      `void (window.__overviewExpectedButton = document.querySelector(${JSON.stringify(trigger(pane))}).closest('button'))`,
-    );
-    await dismiss("close", pane, true);
+    await dismiss("close", pane);
+    await waitForShowChipFocus(send);
   }
   if (viewport.mobile) {
     if (!(await evaluate(send, "window.overviewGuardState().overview.open")))
-      await choosePaneOverview(send, overviewTrigger(pane), true);
+      await openPhoneOverview(send, overviewTrigger(pane));
     await clickControl(send, overviewTabSelector('[aria-label^="Agents"]'));
     await waitForDom(
       send,
