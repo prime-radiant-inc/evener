@@ -1098,7 +1098,7 @@ export function useTranscriptScroll({
         !pendingInitialEndRef.current &&
         !pendingViewAnchorRef.current
       ) {
-        readerScrollInput.delete(el);
+        readerScrollInput.set(el, "followingEnd");
       }
       wasAtBottomRef.current =
         preserveEndFollow || (arrived && (wasFollowingBefore || jumpLanded || (layoutCurrent && !collapsedToFit)));

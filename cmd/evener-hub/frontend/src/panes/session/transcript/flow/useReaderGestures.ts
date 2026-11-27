@@ -8,7 +8,7 @@ import type { PendingViewAnchor } from "./viewAnchor";
 // Opening offsets and corrections opposite a finger's travel can both look
 // like a reversal. The mobile header needs the last admitted touch direction
 // through momentum, until another input takes over.
-export const readerScrollInput = new WeakMap<Element, "opening" | 1 | -1>();
+export const readerScrollInput = new WeakMap<Element, "opening" | "followingEnd" | 1 | -1>();
 
 export interface UseReaderGesturesOptions {
   listRef: RefObject<VirtualListHandle | null>;

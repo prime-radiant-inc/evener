@@ -3267,6 +3267,21 @@ test("floating top bar collapse and reveal keep compensated TranscriptBody scrol
     });
     await act(async () => frames.release());
 
+    // The usable viewport can shrink after the first measured tail lands.
+    // Following the extended tail is still automatic positioning.
+    extraHeightOffset = -40;
+    act(() => {
+      scroller.scrollTop = 740;
+      scroller.dispatchEvent(new Event("scroll"));
+    });
+    expect(bar.getAttribute("data-collapsed")).not.toBe("true");
+    extraHeightOffset = 0;
+    act(() => {
+      scroller.scrollTop = 700;
+      scroller.dispatchEvent(new Event("scroll"));
+    });
+    expect(scroller.closest("[data-notes-hidden]")).toBeNull();
+
     // A native scrollbar drag away from the settled end can deliver only
     // scroll events. Its first movement still establishes the reading direction.
     act(() => {

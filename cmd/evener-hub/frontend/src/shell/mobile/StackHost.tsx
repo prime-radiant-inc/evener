@@ -726,9 +726,16 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
       const current = readingChromeRef.current;
       const step = scrollTop - prevScrollTop;
       const direction = Math.sign(step);
+      if (input === "followingEnd") {
+        // Measurement can extend the tail again after the first confirmed
+        // arrival. A native thumb drag leaves that end at stable geometry.
+        const end = target.scrollHeight - target.clientHeight;
+        if (step > 0 || Math.abs(prevScrollTop - end) > 1 || scrollTop >= end) return;
+        readerScrollInput.delete(target);
+      }
       // WebKit can move back toward the tail when folding Notes grows the
       // viewport. Only the finger can reverse a touch scroll.
-      if (input !== undefined && input !== direction && scrollTop >= FLOAT_REVEAL_AT_TOP) return;
+      if (typeof input === "number" && input !== direction && scrollTop >= FLOAT_REVEAL_AT_TOP) return;
       const run = Math.sign(scrollRunRef.current) === direction ? scrollRunRef.current + step : step;
       scrollRunRef.current = run;
       let { floating, notesHidden } = current;
