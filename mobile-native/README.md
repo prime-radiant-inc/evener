@@ -57,7 +57,9 @@ Notifications** controls failure alerts, questions and approvals, holding alerts
 while reading or typing, and haptics. These preferences follow this phone across
 saved hubs. Tapping an alert opens its destination in the hub workspace. Opening
 a grouped Needs You alert requires a hub that supports that destination. The
-app prompts for a hub update when needed. Alerts use the app’s existing
+app prompts for a hub update when needed. Provider sign-in, offline host, and
+plugin notices open the corresponding Settings section on the hub that issued
+the notice. Select the named item there. Alerts use the app’s existing
 foreground connection. Lock-screen push would require a push provider.
 The separate [spoken manager mode](../docs/product/voice.md) is excluded
 from the shipping app.
