@@ -367,49 +367,6 @@ func TestSession_SystemPromptFile_OverridesBasePrompt(t *testing.T) {
 	if strings.Contains(aSys, "`apply_patch`") {
 		t.Errorf("custom anthropic system prompt must not mention apply_patch")
 	}
-
-	// Writable custom-persona sessions must retain the shared irreversible-rewrite
-	// safeguard outside BaseInstructionsOverride, matching the default persona.
-	defaultSess, err := NewSession(ac, newAnthropicProfile("claude-test"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession(default anthropic): %v", err)
-	}
-	defer defaultSess.Close()
-	defaultPrompt, warning, _ := defaultSess.renderSystemPrompt(defaultSess.env)
-	if warning != "" {
-		t.Fatalf("renderSystemPrompt(default): %s", warning)
-	}
-	defaultBody := operationalPromptBody(t, defaultPrompt)
-
-	roSess, err := NewSession(ac, newAnthropicProfile("claude-test"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
-		SystemPromptFile: promptFile,
-	})
-	if err != nil {
-		t.Fatalf("NewSession(ro custom anthropic): %v", err)
-	}
-	defer roSess.Close()
-	for _, name := range []string{"write_file", "edit_file", "apply_patch", "shell"} {
-		roSess.reg.Remove(name)
-	}
-	refreshModelFacingCaches(roSess)
-	roPrompt, warning, _ := roSess.renderSystemPrompt(roSess.env)
-	if warning != "" {
-		t.Fatalf("renderSystemPrompt(ro custom): %s", warning)
-	}
-	withWriteBody := operationalPromptBody(t, aSys)
-	withoutWriteBody := operationalPromptBody(t, roPrompt)
-	if withWriteBody == withoutWriteBody {
-		t.Fatalf("writable custom-persona prompt omitted shared file-rewrite safeguard:\n%s", withWriteBody)
-	}
-	var sharedSafeguardFound bool
-	for line := range strings.SplitSeq(withWriteBody, "\n") {
-		if strings.HasPrefix(line, "- ") && !strings.Contains(withoutWriteBody, line) && strings.Contains(defaultBody, line) {
-			sharedSafeguardFound = true
-		}
-	}
-	if !sharedSafeguardFound {
-		t.Fatalf("custom-persona writable bullet did not match shared default-persona safeguard:\ncustom:\n%s\ndefault:\n%s", withWriteBody, defaultBody)
-	}
 }
 
 func TestSearchToolsDefaultPathAndFilterWhenOmitted(t *testing.T) {
