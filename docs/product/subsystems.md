@@ -405,11 +405,11 @@ and [remote operations](../evener-hub-remote-operations.md#remote-manager-and-in
 
 ## Maintaining the map
 
-Native S03 built-in commands retire edited recovery through a draft-owned
+In S03’s Android development client, built-in commands retire edited recovery through a draft-owned
 completion marker and S11's exact-source cleanup coordinator. `/steer` and
 `/queue` remain message submissions whose source ownership settles only from an
 exact resend receipt; command completion is not send evidence. See the
-[message recovery contract](message-recovery.md#native-controls-and-recovery).
+[message recovery contract](message-recovery.md#android-development-client).
 
 When a change moves an owner, adds a persistent store, changes a recovery trigger,
 introduces a surface, or changes a user-visible boundary, update the affected row
