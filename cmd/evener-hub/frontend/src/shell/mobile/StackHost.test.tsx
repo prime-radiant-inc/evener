@@ -685,13 +685,15 @@ test("the iPhone controls stay above inline Find and follow the focused reader",
   }
 });
 
-test("the inner iPhone window keeps the Board and hands reader actions to the system edge bar", async () => {
+test("the inner iPhone window keeps the Board and hands focused pane actions to the system edge bar", async () => {
   const restore = installMobileViewport([MOBILE_QUERY, "(min-width: 648px) and (min-height: 600px)"]);
   const ua = vi
     .spyOn(navigator, "userAgent", "get")
-    .mockReturnValue("EvenerNative/1 EvenerSessionHeader/1 EvenerWorkspaceControls/1");
+    .mockReturnValue(
+      "EvenerNative/1 EvenerSessionHeader/1 EvenerWorkspaceControls/1 EvenerSessionsToolbar/1 EvenerPaneNavigation/1",
+    );
   const height = vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockReturnValue(58);
-  const messages: { type: string; header?: { leading: string | null } | null }[] = [];
+  const messages: { type: string; id?: string; header?: { leading: string | null } | null }[] = [];
   vi.stubGlobal("ReactNativeWebView", { postMessage: (json: string) => messages.push(JSON.parse(json)) });
   vi.stubGlobal("ResizeObserver", StubResizeObserver);
   const stop = connectIPhoneHost();
@@ -729,6 +731,20 @@ test("the inner iPhone window keeps the Board and hands reader actions to the sy
     expect(within(bar).getAllByRole("button").length).toBeGreaterThan(0);
     expect(screen.getByTestId("board-column")).toBeTruthy();
     expect(workspaceStore.getState().focusedPaneId).toBe(id);
+    act(() => {
+      workspaceStore.getState().openPane("settings", {});
+      setNeedsYouCount(3);
+    });
+    const settingsId = workspaceStore.getState().focusedPaneId;
+    send({ type: "material", glass: true, edgeToolbar: true });
+    const paneToolbar = () => messages.filter(({ type }) => type === "sessionsToolbar").at(-1);
+    await waitFor(() => expect(paneToolbar()).toMatchObject({ mode: "navigation", destination: null }));
+    await userEvent.click(within(screen.getByTestId("board-column")).getByTestId("board-toggle"));
+    await waitFor(() => expect(paneToolbar()).toMatchObject({ mode: "navigation", destination: "board", needsYou: 3 }));
+    send({ type: "sessionsAction", id: paneToolbar()?.id, action: "board" });
+    await waitFor(() => expect(paneToolbar()).toMatchObject({ mode: "navigation", destination: null }));
+    expect(screen.getByTestId("board-column")).toBeTruthy();
+    expect(workspaceStore.getState().focusedPaneId).toBe(settingsId);
   } finally {
     cleanup();
     stop?.();
