@@ -3,9 +3,9 @@ package agent
 import (
 	"context"
 	"errors"
-	"fmt"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -888,7 +888,7 @@ func TestTerminalNotificationShellExcerptHeadAndTail(t *testing.T) {
 		"excerpt:",
 		"HEAD_MARKER_",
 		"_TAIL_MARKER",
-		fmt.Sprintf("%d", omitted),
+		strconv.Itoa(omitted),
 		`read_transcript(transcript_ref="job:job_X", offset_bytes=2048)`,
 		"output_match=",
 	} {
@@ -950,7 +950,7 @@ func TestTerminalNotificationShellExcerptWithoutReadTranscriptTool(t *testing.T)
 	if !strings.Contains(text, "HEAD_MARKER_") || !strings.Contains(text, "_TAIL_MARKER") {
 		t.Fatalf("shell excerpt without read_transcript must still carry head and tail:\n%s", text)
 	}
-	if !strings.Contains(text, fmt.Sprintf("%d", omitted)) {
+	if !strings.Contains(text, strconv.Itoa(omitted)) {
 		t.Fatalf("shell excerpt without read_transcript must still carry omitted byte count %d:\n%s", omitted, text)
 	}
 	if strings.Contains(text, "read_transcript") || strings.Contains(text, "output_match") {
