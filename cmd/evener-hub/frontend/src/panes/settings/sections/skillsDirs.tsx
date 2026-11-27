@@ -3,13 +3,19 @@
 // two built-in roots that cannot be derived from the browser's environment;
 // bundled, project, and plugin sources are described here because they are
 // fixed parts of discovery rather than host settings.
-import { friendlyErrorMessage, hostRequest, LOCAL_HOST, type SkillDirsResponse } from "@evener/appwire-client";
+import {
+  friendlyErrorMessage,
+  hostRequest,
+  isMethodNotFound,
+  LOCAL_HOST,
+  type SkillDirsResponse,
+} from "@evener/appwire-client";
 import { type ReactNode, useState } from "react";
 import { connectedClientPort } from "../../../stores/connection";
 import { PropertyList, type StackedPropertyListRow } from "../../../widgets";
 import { DirListSetting } from "./dirListSetting";
 import { HostScopedSurface } from "./hostScopedSurface";
-import { SectionGate } from "./sectionGate";
+import { RefreshErrorNotice, SectionGate } from "./sectionGate";
 import { Code } from "./settingsField";
 import styles from "./skillsDirs.module.css";
 import { useHostScopedLoad } from "./useConnectedEffect";
@@ -22,21 +28,26 @@ export interface SkillsDirsSectionProps {
   host?: string;
 }
 
-function builtInDirValue(path: string | undefined): ReactNode {
-  return path ? <Code>{path}</Code> : "Not resolved";
+function builtInDirValue(path: string | undefined, unavailable: boolean): ReactNode {
+  if (path) return <Code>{path}</Code>;
+  return unavailable ? "Unavailable on this host" : "Not resolved";
 }
 
 /** BuiltInSkillDirs is the read-only part of the discovery order: every
  * location the host scans without configuration, plus the heading that marks
- * where the editable extras join the order. */
+ * where the editable extras join the order. The static rows stay visible when
+ * the host cannot answer: an older hub lacks the read entirely, and a
+ * transient error still leaves the discovery order useful. */
 function BuiltInSkillDirs({ host }: { host: string }) {
   const [dirs, setDirs] = useState<SkillDirsResponse | null>(null);
+  const [unavailable, setUnavailable] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const { retryLoad } = useHostScopedLoad(
     host,
     async (blank, isCancelled) => {
       if (blank) {
         setDirs(null);
+        setUnavailable(false);
         setError(null);
       }
       try {
@@ -44,17 +55,26 @@ function BuiltInSkillDirs({ host }: { host: string }) {
         const response = await hostRequest(client, host, "evener/settings/skillDirs/get", {});
         if (!isCancelled()) {
           setDirs(response);
+          setUnavailable(false);
           setError(null);
         }
         return true;
       } catch (err) {
+        if (isMethodNotFound(err)) {
+          if (!isCancelled()) {
+            setDirs(null);
+            setUnavailable(true);
+            setError(null);
+          }
+          return true;
+        }
         if (!isCancelled()) setError(friendlyErrorMessage(err));
         return false;
       }
     },
     [host],
   );
-  const pending = dirs === null && error === null;
+  const pending = dirs === null && error === null && !unavailable;
   const rows: StackedPropertyListRow[] = [
     {
       label: "Bundled",
@@ -63,13 +83,13 @@ function BuiltInSkillDirs({ host }: { host: string }) {
     },
     {
       label: "Home",
-      value: builtInDirValue(dirs?.homeSkillsDir),
+      value: builtInDirValue(dirs?.homeSkillsDir, unavailable),
       help: "The agent-standard skills directory in the host's home.",
     },
     {
       label: "User config",
-      value: builtInDirValue(dirs?.userSkillsDir),
-      help: "Skills under the host's evener config root.",
+      value: builtInDirValue(dirs?.userSkillsDir, unavailable),
+      help: "Skills under the host's evener config root, after its global launch settings.",
     },
     {
       label: "Project",
@@ -89,10 +109,14 @@ function BuiltInSkillDirs({ host }: { host: string }) {
   return (
     <div className={styles.builtins}>
       <h3>Built-in locations</h3>
-      <p className={styles.help}>Scanned automatically at launch, in increasing precedence.</p>
-      <SectionGate loading={pending} error={error} title="Could not read built-in locations" onRetry={retryLoad}>
+      <p className={styles.help}>
+        Session defaults, scanned automatically at launch in increasing precedence. Project and per-launch settings can
+        add locations.
+      </p>
+      <SectionGate loading={pending} error={null}>
         <PropertyList layout="stacked" rows={rows} />
       </SectionGate>
+      {error !== null ? <RefreshErrorNotice onRetry={retryLoad}>{error}</RefreshErrorNotice> : null}
       <h3>Extra directories</h3>
     </div>
   );

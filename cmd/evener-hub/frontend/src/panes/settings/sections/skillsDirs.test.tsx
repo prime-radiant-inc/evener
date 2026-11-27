@@ -1,3 +1,4 @@
+import { WireError } from "@evener/appwire-client";
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
@@ -49,9 +50,26 @@ test("a failed built-in read offers a retry that reads the roots again", async (
   });
   const user = userEvent.setup();
   render(<SkillsDirsSection />);
-  await user.click(await screen.findByRole("button", { name: "Retry" }));
+  expect(await screen.findByRole("button", { name: "Retry" })).toBeTruthy();
+  expect(screen.getByText("Bundled")).toBeTruthy();
+  await user.click(screen.getByRole("button", { name: "Retry" }));
   expect(await screen.findByText("/recovered/home/.agents/skills")).toBeTruthy();
   expect(reads).toBe(2);
+});
+
+test("keeps the built-in discovery order visible when an older host lacks the read", async () => {
+  const fake = connectReadyFakeClient();
+  fake.on("evener/launch/getLayer", () => ({ skillsDirs: [] }));
+  fake.on("evener/settings/skillDirs/get", () => {
+    throw new WireError("fixture-method-unavailable", -32601);
+  });
+  render(<SkillsDirsSection />);
+  expect(await screen.findByText("Bundled")).toBeTruthy();
+  for (const label of ["Home", "User config", "Project"]) {
+    expect(screen.getByText(label)).toBeTruthy();
+  }
+  expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+  expect(screen.queryByText("/host/home/.agents/skills")).toBeNull();
 });
 
 test("saving a new entry writes it to the skillsDirs field, not pluginDirs", async () => {
