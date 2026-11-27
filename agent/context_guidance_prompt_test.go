@@ -18,16 +18,26 @@ func TestContextLengthGuidanceFollowsTheCompactTool(t *testing.T) {
 				s.reg.Remove(tc.revoke)
 				refreshModelFacingCaches(s)
 			}
+			registered := tc.revoke == ""
+			checkPromptInput(t, "canInstructTool compact_context", s.canInstructTool("compact_context"), registered)
+			upfront := hasUpfrontToolDef(s.ToolDefinitions(), "compact_context")
+			if s.reg.Get("tool_search") == nil {
+				checkPromptInput(t, "upfront compact_context", upfront, registered)
+			} else if !registered && upfront {
+				t.Fatal("compact_context remained advertised upfront after removal")
+			}
 			data, _ := s.buildPromptData(s.env)
-			checkPromptInput(t, "HasTool compact_context", data.HasTool("compact_context"), tc.revoke == "")
+			checkPromptInput(t, "HasTool compact_context", data.HasTool("compact_context"), upfront)
 			prompt, warning, _ := s.renderSystemPrompt(s.env)
 			if warning != "" {
 				t.Fatalf("render system prompt: %s", warning)
 			}
 			body := operationalPromptBody(t, prompt)
-			if got := strings.Contains(body, "compact_context"); got != (tc.revoke == "") {
-				t.Fatalf("operational prompt mentions compact_context = %v, want %v:\n%s", got, tc.revoke == "", body)
+			if got := strings.Contains(body, "compact_context"); got != upfront {
+				t.Fatalf("operational prompt mentions compact_context = %v, want %v:\n%s", got, upfront, body)
 			}
+			nudge := selfCompactNudge(s.canInstructTool("compact_context"), nil)
+			checkPromptInput(t, "selfCompactNudge names compact_context", strings.Contains(nudge, "compact_context"), registered)
 		})
 	}
 }

@@ -14,6 +14,7 @@ import (
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/internal/bundled"
+	"primeradiant.com/evener/llm"
 )
 
 // Opaque sentinels for the operator inputs the prompt must carry. They prove
@@ -441,6 +442,17 @@ func operationalPromptBody(t *testing.T, prompt string) string {
 	return body
 }
 
+// hasUpfrontToolDef reports whether defs advertises name with a full schema
+// (non-empty description), distinguishing upfront tools from deferred stubs.
+func hasUpfrontToolDef(defs []llm.ToolDefinition, name string) bool {
+	for _, td := range defs {
+		if td.Name == name && td.Description != "" {
+			return true
+		}
+	}
+	return false
+}
+
 // promptValue is one value the session computes for its prompt, named for the
 // failure message.
 type promptValue struct {
@@ -617,19 +629,21 @@ func TestSystemPromptDiagramGuidanceClaimsNoRendering(t *testing.T) {
 }
 
 // TestSystemPromptTier1DelegateAndTaskListAlignment verifies structural prompt
-// gating: upfront delegate omits tool_search indirection (preserving the
-// deferred fallback branch only when delegate is registered but not upfront),
-// and task_list folds inline into the core ethos without adding a standalone
-// bullet or appearing when unavailable.
+// gating: delegate, task_list, and job_watch follow CallableTools directly,
+// delegate omits tool_search indirection, and task_list folds inline into the
+// core ethos without adding a standalone bullet or appearing when unavailable.
 func TestSystemPromptTier1DelegateAndTaskListAlignment(t *testing.T) {
 	t.Parallel()
+	agents := []agentEntry{{Name: "reviewer", Description: "Reviews code."}}
 	withUpfront, err := executeSystemPromptTemplate(promptData{
-		ResultToolName:     "communicate",
-		DelegateRegistered: true,
+		ResultToolName:  "communicate",
+		TurnEndsProcess: true,
+		AvailableAgents: agents,
 		CallableTools: map[string]bool{
 			"communicate": true,
 			"delegate":    true,
 			"task_list":   true,
+			"job_watch":   true,
 			"tool_search": true,
 		},
 	})
@@ -640,32 +654,44 @@ func TestSystemPromptTier1DelegateAndTaskListAlignment(t *testing.T) {
 	if !strings.Contains(upfrontBody, "`delegate`") || strings.Contains(upfrontBody, "`tool_search`") {
 		t.Errorf("upfront delegate prompt should name `delegate` directly without `tool_search`:\n%s", upfrontBody)
 	}
-	if !strings.Contains(upfrontBody, "`task_list`") {
-		t.Errorf("upfront task_list prompt missing `task_list`:\n%s", upfrontBody)
+	if !strings.Contains(upfrontBody, "`task_list`") || !strings.Contains(upfrontBody, "`job_watch`") {
+		t.Errorf("upfront prompt missing `task_list` or `job_watch`:\n%s", upfrontBody)
+	}
+	if !strings.Contains(withUpfront, "<available_agents>") {
+		t.Errorf("upfront delegate prompt missing <available_agents>:\n%s", withUpfront)
 	}
 
-	withDeferred, err := executeSystemPromptTemplate(promptData{
-		ResultToolName:     "communicate",
-		DelegateRegistered: true,
+	withoutTaskAndWatch, err := executeSystemPromptTemplate(promptData{
+		ResultToolName:  "communicate",
+		TurnEndsProcess: true,
+		AvailableAgents: agents,
 		CallableTools: map[string]bool{
 			"communicate": true,
+			"delegate":    true,
 			"tool_search": true,
 		},
 	})
 	if err != nil {
-		t.Fatalf("render deferred: %v", err)
+		t.Fatalf("render without task_list/job_watch: %v", err)
 	}
-	deferredBody := operationalPromptBody(t, withDeferred)
-	if !strings.Contains(deferredBody, "`delegate`") || !strings.Contains(deferredBody, "`tool_search`") {
-		t.Errorf("deferred delegate fallback branch should name both `delegate` and `tool_search`:\n%s", deferredBody)
+	withoutBody := operationalPromptBody(t, withoutTaskAndWatch)
+	if strings.Contains(withoutBody, "`task_list`") || strings.Contains(withoutBody, "`job_watch`") {
+		t.Errorf("prompt without task_list/job_watch must not mention them:\n%s", withoutBody)
 	}
-	if strings.Contains(deferredBody, "`task_list`") {
-		t.Errorf("prompt without task_list must not mention `task_list`:\n%s", deferredBody)
+	if upfrontBullets, withoutBullets := strings.Count(upfrontBody, "\n- "), strings.Count(withoutBody, "\n- "); upfrontBullets != withoutBullets {
+		t.Errorf("adding task_list changed bullet count (%d vs %d); fold task_list inline into Bullet 3:\n%s", upfrontBullets, withoutBullets, upfrontBody)
 	}
-	upfrontBullets := strings.Count(upfrontBody, "\n- ")
-	deferredBullets := strings.Count(deferredBody, "\n- ")
-	if upfrontBullets != deferredBullets {
-		t.Errorf("adding task_list changed bullet count (%d vs %d); fold task_list inline into Bullet 3:\n%s", upfrontBullets, deferredBullets, upfrontBody)
+
+	withoutDelegate, err := executeSystemPromptTemplate(promptData{
+		ResultToolName:  "communicate",
+		AvailableAgents: agents,
+		CallableTools:   map[string]bool{"communicate": true, "tool_search": true},
+	})
+	if err != nil {
+		t.Fatalf("render without delegate: %v", err)
+	}
+	if noDelBody := operationalPromptBody(t, withoutDelegate); strings.Contains(noDelBody, "`delegate`") || strings.Contains(noDelBody, "`tool_search`") || strings.Contains(withoutDelegate, "<available_agents>") {
+		t.Errorf("prompt without delegate should omit delegate, tool_search, and <available_agents>:\n%s", withoutDelegate)
 	}
 }
 

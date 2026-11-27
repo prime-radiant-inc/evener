@@ -238,8 +238,6 @@ func (s *Session) buildPromptData(env execenv.ExecutionEnvironment) (promptData,
 	// and background-jobs prompt surface only when those tools are callable.
 	data.DelegationAllowance = s.delegationAllowance
 	data.CanDelegate = s.canPromptDelegation()
-	data.DelegateRegistered = s.reg != nil && s.reg.Get("delegate") != nil
-	data.JobWatchRegistered = s.reg != nil && s.reg.Get("job_watch") != nil
 	data.ManagerEnabled = s.hubEnabled
 	data.ManagerDiscovery = s.hubEnabled && s.reg.Get("job_list") != nil
 	data.ManagerStatus = s.hubEnabled && s.reg.Get("job_status") != nil
