@@ -481,26 +481,36 @@ func (s *Session) steerReactiveToolDisclosure(toolName string, res tool.ExecResu
 	}
 	needJobControl := false
 	needReadTranscript := outputRef != ""
-	if toolName == "shell" && len(res.ToolState) > 0 {
-		var st struct {
-			JobID    string `json:"job_id"`
-			Mode     string `json:"mode"`
-			TimedOut bool   `json:"timed_out"`
+	jobLeadNote := "Background job started. Manage or inspect jobs directly:"
+	switch toolName {
+	case "shell":
+		if len(res.ToolState) > 0 {
+			var st struct {
+				JobID    string `json:"job_id"`
+				Mode     string `json:"mode"`
+				TimedOut bool   `json:"timed_out"`
+			}
+			if json.Unmarshal(res.ToolState, &st) == nil && st.JobID != "" {
+				if st.Mode == string(shellModeBackground) || st.TimedOut {
+					needJobControl = true
+				}
+				if st.TimedOut || st.Mode != string(shellModeBackground) {
+					needReadTranscript = true
+				}
+			}
 		}
-		if json.Unmarshal(res.ToolState, &st) == nil && st.JobID != "" {
-			if st.Mode == string(shellModeBackground) {
-				needJobControl = true
-			}
-			if st.TimedOut || st.Mode != string(shellModeBackground) {
-				needReadTranscript = true
-			}
+	case "delegate":
+		if !res.IsError && !res.Rejected && !res.PrevalOnly {
+			needJobControl = true
+			needReadTranscript = true
+			jobLeadNote = "Delegate started. Manage or inspect delegates directly:"
 		}
 	}
 	var claimed []string
 	var blocks []string
 	if needJobControl {
 		jobNames := []string{"job_watch", "job_status", "job_stop", "job_list"}
-		if note, names := s.discloseDeferredTools("Background job started. Manage or inspect jobs directly:", jobNames); len(names) > 0 {
+		if note, names := s.discloseDeferredTools(jobLeadNote, jobNames); len(names) > 0 {
 			claimed = append(claimed, names...)
 			if note != "" {
 				blocks = append(blocks, note)

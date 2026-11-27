@@ -9,10 +9,12 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/hooks"
+	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
@@ -1065,4 +1067,235 @@ func TestManagerAndWatchParentKeepJobsUpfront(t *testing.T) {
 		assertFullTier1Def(t, obsByName[want])
 	}
 	assertDeferredStubDef(t, obsByName["web_fetch"], "")
+}
+
+func TestReactiveDisclosuresOnDelegateAndTimedOutShell(t *testing.T) {
+	t.Parallel()
+	wantJobAndTranscript := []string{
+		"<system-notification>",
+		`"name":"job_watch"`,
+		`"name":"job_status"`,
+		`"name":"job_stop"`,
+		`"name":"job_list"`,
+		`"name":"read_transcript"`,
+	}
+
+	t.Run("successful_delegate_discloses_once_in_steering", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		childClient := llm.NewClient()
+		childClient.Register(newFakeAdapter("openai", repeatFinalResponse(8, "child done")...))
+		registerTestSessionNamer(childClient)
+
+		delArgs := json.RawMessage(`{"prompt":"return ok","delegation_allowance":0}`)
+		c := llm.NewClient()
+		adapter := newFakeAdapter("openai",
+			func(llm.Request) llm.Response {
+				return agenttest.ToolCallResponse(llm.ToolCallData{ID: "d1", Name: "delegate", Arguments: delArgs, Type: "function"})
+			},
+			func(llm.Request) llm.Response {
+				return agenttest.ToolCallResponse(llm.ToolCallData{ID: "d2", Name: "delegate", Arguments: delArgs, Type: "function"})
+			},
+			func(llm.Request) llm.Response {
+				return agenttest.ToolCallResponse(communicateCall("c1", "done"))
+			},
+		)
+		c.Register(adapter)
+
+		sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+			StateDir:         t.TempDir(),
+			MaxSubagentDepth: 2,
+			NonInteractive:   true,
+			TurnEndsProcess:  true,
+			AgentsDocPath:    filepath.Join(t.TempDir(), "no-personal-AGENTS.md"),
+			testOnly:         testConfig{childClientFactory: func() *llm.Client { return childClient }},
+		})
+		if err != nil {
+			t.Fatalf("NewSession: %v", err)
+		}
+		defer sess.Close()
+
+		if _, err := sess.ProcessInput(tripwireCtx(t), "run two delegates", nil); err != nil {
+			t.Fatalf("ProcessInput: %v", err)
+		}
+		reqs := adapter.Requests()
+		if len(reqs) < 3 {
+			t.Fatalf("requests = %d, want at least 3", len(reqs))
+		}
+		if !reflect.DeepEqual(reqs[0].Tools, reqs[1].Tools) || !reflect.DeepEqual(reqs[1].Tools, reqs[2].Tools) {
+			t.Fatal("req.Tools mutated across delegate rounds")
+		}
+		d1Out := toolResultTextForCall(reqs[1], "d1")
+		if !json.Valid([]byte(d1Out)) || strings.Contains(d1Out, `"name":"job_status"`) {
+			t.Fatalf("delegate tool_result must remain clean JSON without embedded schema: %s", d1Out)
+		}
+
+		countMatches := func(msgs []llm.Message, needle string) int {
+			n := 0
+			for _, m := range msgs {
+				if m.Role == llm.RoleUser && strings.Contains(m.Text(), "<system-notification>") && strings.Contains(m.Text(), needle) {
+					n++
+				}
+			}
+			return n
+		}
+		for _, want := range wantJobAndTranscript {
+			if got := countMatches(reqs[1].Messages, want); got != 1 {
+				t.Errorf("after first delegate: steering messages matching %q = %d, want 1", want, got)
+			}
+			if got := countMatches(reqs[2].Messages, want); got != 1 {
+				t.Errorf("after second delegate: steering messages matching %q = %d, want 1 (must not re-emit)", want, got)
+			}
+		}
+	})
+
+	t.Run("failed_delegate_does_not_disclose", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		childClient := llm.NewClient()
+		childClient.Register(newFakeAdapter("openai", repeatFinalResponse(4, "child done")...))
+		registerTestSessionNamer(childClient)
+
+		c := llm.NewClient()
+		c.Register(&fakeAdapter{name: "openai"})
+		sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+			StateDir:         t.TempDir(),
+			MaxSubagentDepth: 2,
+			NonInteractive:   true,
+			TurnEndsProcess:  true,
+			AgentsDocPath:    filepath.Join(t.TempDir(), "no-personal-AGENTS.md"),
+			testOnly:         testConfig{childClientFactory: func() *llm.Client { return childClient }},
+		})
+		if err != nil {
+			t.Fatalf("NewSession: %v", err)
+		}
+		defer sess.Close()
+
+		badRes := sess.execTool(tripwireCtx(t), llm.ToolCallData{
+			ID:        "d-bad",
+			Name:      "delegate",
+			Type:      "function",
+			Arguments: json.RawMessage(`{"prompt":""}`),
+		}, "")
+		if !badRes.IsError {
+			t.Fatalf("invalid delegate unexpectedly succeeded: %s", badRes.Output)
+		}
+		if msgs := sess.drainSteeringForCommunicate(); len(msgs) != 0 {
+			t.Fatalf("failed delegate queued unexpected steering disclosure: %+v", msgs)
+		}
+
+		okRes := sess.execTool(tripwireCtx(t), llm.ToolCallData{
+			ID:        "d-ok",
+			Name:      "delegate",
+			Type:      "function",
+			Arguments: json.RawMessage(`{"prompt":"return ok","delegation_allowance":0}`),
+		}, "")
+		if okRes.IsError {
+			t.Fatalf("valid delegate failed: %s", okRes.Output)
+		}
+		msgs := sess.drainSteeringForCommunicate()
+		if len(msgs) != 1 {
+			t.Fatalf("steering messages after valid delegate = %d, want 1 (%+v)", len(msgs), msgs)
+		}
+		for _, want := range wantJobAndTranscript {
+			if !strings.Contains(msgs[0].Text, want) {
+				t.Errorf("valid delegate steering missing %q:\n%s", want, msgs[0].Text)
+			}
+		}
+	})
+
+	t.Run("auto_backgrounded_and_timed_out_shell_discloses_job_controls", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		c := llm.NewClient()
+		c.Register(&fakeAdapter{name: "openai"})
+		sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+			StateDir:                t.TempDir(),
+			DefaultCommandTimeoutMS: 100,
+			MaxCommandTimeoutMS:     100,
+			AgentsDocPath:           filepath.Join(t.TempDir(), "no-personal-AGENTS.md"),
+		})
+		if err != nil {
+			t.Fatalf("NewSession: %v", err)
+		}
+		defer sess.Close()
+		clk := agenttest.NewFakeClock()
+		sess.jobManager.clock = clk
+
+		resCh := make(chan tool.ExecResult, 1)
+		go func() {
+			resCh <- sess.execTool(tripwireCtx(t), llm.ToolCallData{
+				ID:        "sh-auto-bg",
+				Name:      "shell",
+				Type:      "function",
+				Arguments: json.RawMessage(`{"command":"printf start; sleep 2; ls","intent":"Testing auto-backgrounded shell disclosure"}`),
+			}, "")
+		}()
+		timerReady := make(chan struct{})
+		go func() {
+			clk.BlockUntil(1)
+			close(timerReady)
+		}()
+		var res tool.ExecResult
+		var gotEarly bool
+		select {
+		case <-timerReady:
+			clk.Advance(time.Second)
+		case res = <-resCh:
+			gotEarly = true
+		case <-time.After(30 * time.Second):
+			t.Fatal("shell tool neither armed block timer nor returned")
+		}
+		if !gotEarly {
+			select {
+			case res = <-resCh:
+			case <-time.After(30 * time.Second):
+				t.Fatal("shell tool did not return after foreground timeout")
+			}
+		}
+		if res.IsError {
+			t.Fatalf("auto-backgrounded shell failed: %s", res.Output)
+		}
+		var st struct {
+			JobID    string `json:"job_id"`
+			TimedOut bool   `json:"timed_out"`
+		}
+		if err := json.Unmarshal(res.ToolState, &st); err != nil || st.JobID == "" || !st.TimedOut {
+			t.Fatalf("auto-backgrounded ToolState = %s (err=%v), want job_id and timed_out=true", string(res.ToolState), err)
+		}
+		_, _ = sess.jobManager.stop(st.JobID)
+		waitForShellDone(t, sess.jobManager, st.JobID)
+
+		msgs := sess.drainSteeringForCommunicate()
+		if len(msgs) != 1 {
+			t.Fatalf("steering messages after auto-backgrounded shell = %d, want 1 (%+v)", len(msgs), msgs)
+		}
+		for _, want := range wantJobAndTranscript {
+			if !strings.Contains(msgs[0].Text, want) {
+				t.Errorf("auto-backgrounded shell steering missing %q:\n%s", want, msgs[0].Text)
+			}
+		}
+
+		// TimedOut=true with JobID!="" must also disclose job control schemas even when mode is foreground.
+		sessFG, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+			StateDir:      t.TempDir(),
+			AgentsDocPath: filepath.Join(t.TempDir(), "no-personal-AGENTS.md"),
+		})
+		if err != nil {
+			t.Fatalf("NewSession(timed out fg): %v", err)
+		}
+		defer sessFG.Close()
+		sessFG.steerReactiveToolDisclosure("shell", tool.ExecResult{
+			ToolState: json.RawMessage(`{"job_id":"job_timedout_fg","mode":"foreground","timed_out":true}`),
+		}, "")
+		fgMsgs := sessFG.drainSteeringForCommunicate()
+		if len(fgMsgs) != 1 {
+			t.Fatalf("steering messages after timed-out foreground shell = %d, want 1 (%+v)", len(fgMsgs), fgMsgs)
+		}
+		for _, want := range wantJobAndTranscript {
+			if !strings.Contains(fgMsgs[0].Text, want) {
+				t.Errorf("timed-out foreground shell steering missing %q:\n%s", want, fgMsgs[0].Text)
+			}
+		}
+	})
 }
