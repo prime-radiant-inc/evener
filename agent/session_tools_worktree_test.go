@@ -101,15 +101,25 @@ func TestManageWorktreeToolRegisteredRegistryOnlyNonReadOnly(t *testing.T) {
 		}
 	}
 
-	found := false
+	foundStub := false
+	foundToolSearch := false
 	for _, td := range s.ToolDefinitions() {
 		if td.Name == "manage_worktree" {
-			found = true
-			break
+			foundStub = true
+			assertDeferredStubDef(t, td, "")
+		}
+		if td.Name == "tool_search" {
+			foundToolSearch = true
+		}
+		if td.Name == "call_tool" {
+			t.Error("call_tool must not be advertised in ToolDefinitions()")
 		}
 	}
-	if !found {
-		t.Error("manage_worktree not advertised in ToolDefinitions()")
+	if !foundStub {
+		t.Error("manage_worktree stub not advertised in ToolDefinitions()")
+	}
+	if !foundToolSearch {
+		t.Error("tool_search not advertised in ToolDefinitions() when manage_worktree is deferred")
 	}
 }
 

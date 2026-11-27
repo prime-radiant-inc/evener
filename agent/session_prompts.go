@@ -232,21 +232,23 @@ func (s *Session) buildPromptData(env execenv.ExecutionEnvironment) (promptData,
 	actualDefs := append([]llm.ToolDefinition(nil), s.cachedToolDefs...)
 	data.HasUseSkill = toolNameSetFromDefinitions(actualDefs)["use_skill"]
 	data.CallableToolNames = toolNamesFromDefinitions(actualDefs)
-	data.UnavailableProfileToolNames = unavailableToolNames(profileDefs, actualDefs)
+	data.UnavailableProfileToolNames = s.unavailableProfileToolNames(profileDefs, actualDefs)
 
 	// Delegation capability: a positive allowance unlocks the delegation
 	// and background-jobs prompt surface only when those tools are callable.
 	data.DelegationAllowance = s.delegationAllowance
 	data.CanDelegate = s.canPromptDelegation()
+	data.DelegateRegistered = s.reg != nil && s.reg.Get("delegate") != nil
+	data.JobWatchRegistered = s.reg != nil && s.reg.Get("job_watch") != nil
 	data.ManagerEnabled = s.hubEnabled
 	data.ManagerDiscovery = s.hubEnabled && s.reg.Get("job_list") != nil
 	data.ManagerStatus = s.hubEnabled && s.reg.Get("job_status") != nil
 	data.WorktreeDisposeOnly = s.worktreeDisposeOnlySurface()
 
-	// The section-facing tool-availability set: canonical names that are both
-	// registered and advertised on this session's wire tool list (e.g. OpenAI
-	// advertises apply_patch rather than edit_file while both remain registered
-	// for mid-session model switching).
+	// The section-facing tool-availability set: canonical names that are
+	// registered, advertised on this session's wire tool list, and not deferred
+	// to Tier-2 stubs (e.g. OpenAI advertises apply_patch rather than edit_file
+	// while both remain registered for mid-session model switching).
 	callable := s.reg.RegisteredNames()
 	if len(actualDefs) > 0 {
 		var nameMap map[string]string
@@ -258,7 +260,7 @@ func (s *Session) buildPromptData(env execenv.ExecutionEnvironment) (promptData,
 			advertised[canonicalToolName(def.Name, nameMap)] = true
 		}
 		for name := range callable {
-			if !advertised[name] {
+			if !advertised[name] || s.isDeferredToolLocked(name) {
 				delete(callable, name)
 			}
 		}
@@ -289,6 +291,23 @@ func (s *Session) buildPromptData(env execenv.ExecutionEnvironment) (promptData,
 	}
 
 	return data, sources
+}
+
+func (s *Session) unavailableProfileToolNames(profileDefs, actualDefs []llm.ToolDefinition) []string {
+	actual := toolNameSetFromDefinitions(actualDefs)
+	nameMap := s.toolNameMap()
+	missing := make([]string, 0)
+	for _, td := range profileDefs {
+		if td.Name == "" || actual[td.Name] {
+			continue
+		}
+		canonical := canonicalToolName(td.Name, nameMap)
+		if s != nil && s.reg != nil && s.reg.Get(canonical) != nil && s.isDeferredToolLocked(canonical) {
+			continue
+		}
+		missing = append(missing, td.Name)
+	}
+	return missing
 }
 
 // includeProjectDocs reports whether the system prompt renders the personal and

@@ -51,6 +51,7 @@ type ConfigSnapshot struct {
 	SandboxNet                  *bool    `json:"sandbox_net,omitempty"`                   // sandbox network decision; nil = default (on when sandboxed)
 	CommitProvenance            string   `json:"commit_provenance,omitempty"`             // commit message provenance: empty/coauthor = on, off = omit the instruction
 	VisionModel                 string   `json:"vision_model,omitempty"`                  // vision side-channel routing: "" | "off" | "model" | "provider/model"
+	Tier1Tools                  []string `json:"tier1_tools,omitempty"`                   // extra canonical or provider-visible tool names promoted to Tier-1 upfront
 }
 
 // Clone returns an independently mutable copy of the persisted configuration.
@@ -74,5 +75,6 @@ func (s ConfigSnapshot) Clone() ConfigSnapshot {
 		network := *s.SandboxNet
 		clone.SandboxNet = &network
 	}
+	clone.Tier1Tools = append([]string(nil), s.Tier1Tools...)
 	return clone
 }

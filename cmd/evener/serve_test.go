@@ -1763,6 +1763,32 @@ func TestServeCompactAtPercentFlagReachesTheSessionConfig(t *testing.T) {
 	}
 }
 
+func TestServeTier1ToolFlagReachesTheSessionConfig(t *testing.T) {
+	installServeScriptedProvider(t, &scriptedProvider{name: "openai"})
+	deps := defaultServeDeps()
+	deps.ensureConfigDirs = func() error { return nil }
+	deps.seedMarketplaces = func(context.Context) error { return nil }
+	var got agent.SessionConfig
+	deps.newSession = func(_ *llm.Client, _ *provider.Profile, _ execenv.ExecutionEnvironment, cfg agent.SessionConfig) (*agent.Session, error) {
+		got = cfg
+		return nil, errNoSessionToday
+	}
+
+	args := []string{
+		"--model", "openai/gpt-test",
+		"--dir", t.TempDir(),
+		"--state-dir", t.TempDir(),
+		"--tier1-tool", "manage_worktree",
+		"--tier1-tool", "task_list",
+	}
+	if err := runServeWithDeps(args, deps); !errors.Is(err, errNoSessionToday) {
+		t.Fatalf("serve error = %v, want session-creation sentinel", err)
+	}
+	if len(got.Tier1Tools) != 2 || got.Tier1Tools[0] != "manage_worktree" || got.Tier1Tools[1] != "task_list" {
+		t.Fatalf("SessionConfig.Tier1Tools = %v, want [manage_worktree task_list]", got.Tier1Tools)
+	}
+}
+
 // A resume takes the flag too: the hub passes --agents-doc on every resume it
 // spawns (buildResumeArgs), and the restore has to prefer it over the path
 // frozen in the snapshot, which a pre-feature session never had and a moved

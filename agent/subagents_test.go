@@ -114,6 +114,9 @@ func TestToolSummaryAdvertisesWhatTheDefaultGrantGrants(t *testing.T) {
 				registered := child.reg.RegisteredNames()
 				got := make([]string, 0, len(registered))
 				for name := range registered {
+					if name == "tool_search" && child.hasDeferredToolsLocked() {
+						continue
+					}
 					got = append(got, name)
 				}
 				sort.Strings(got)
@@ -796,18 +799,24 @@ func TestSubagentCannotCallRootOnlyControlTools(t *testing.T) {
 			t.Fatalf("depth>0 child must keep %s registered", name)
 		}
 	}
-	if !hasCachedCallableToolDefinition(child, "job_watch") {
-		t.Fatal("depth>0 child must advertise job_watch")
+	if hasCachedCallableToolDefinition(child, "call_tool") {
+		t.Fatal("depth>0 child must not advertise call_tool")
+	}
+	if !hasCachedCallableToolDefinition(child, "tool_search") {
+		t.Fatal("depth>0 child must advertise tool_search for deferred tools")
 	}
 	if hasCachedCallableToolDefinition(child, "manage_worktree") {
 		t.Fatal("depth>0 child must not advertise manage_worktree")
 	}
-	if !hasCachedCallableToolDefinition(child, "delegate_send") {
-		t.Fatal("depth>0 child must advertise delegate_send")
+	if !hasCachedCallableToolDefinition(child, "shell") {
+		t.Fatal("depth>0 child must advertise Tier-1 shell")
 	}
-	for _, name := range []string{"shell", "job_status", "job_list", "job_stop", "read_transcript"} {
-		if !hasCachedCallableToolDefinition(child, name) {
-			t.Fatalf("depth>0 child must advertise %s", name)
+	if !hasCachedCallableToolDefinition(child, "delegate_send") || child.isDeferredTool("delegate_send") {
+		t.Fatal("depth>0 child must advertise Tier-1 delegate_send")
+	}
+	for _, name := range []string{"job_watch", "job_status", "job_list", "job_stop", "read_transcript"} {
+		if !hasCachedCallableToolDefinition(child, name) || !child.isDeferredTool(name) {
+			t.Fatalf("depth>0 child should advertise %s as a deferred stub", name)
 		}
 	}
 }
@@ -882,8 +891,8 @@ func TestWatchParentGrantIsNotInheritedByGrandchild(t *testing.T) {
 	if grandchild.reg.Get("job_watch") == nil {
 		t.Fatal("grandchild must keep job_watch to watch its own jobs")
 	}
-	if !hasCachedCallableToolDefinition(grandchild, "job_watch") {
-		t.Fatal("grandchild must advertise the job_watch it can call")
+	if !hasCachedCallableToolDefinition(grandchild, "job_watch") || !hasCachedCallableToolDefinition(grandchild, "tool_search") {
+		t.Fatal("grandchild must advertise deferred job_watch stub and tool_search")
 	}
 	if grandchild.reg.Get("delegate") != nil {
 		t.Fatal("grandchild with delegation_allowance 0 must not have delegate registered")

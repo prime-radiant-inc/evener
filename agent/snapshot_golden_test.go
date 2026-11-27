@@ -190,3 +190,19 @@ func TestConfigSnapshot_VisionModelRoundTrip(t *testing.T) {
 		t.Fatalf("snapshot JSON missing vision_model field: %s", snapJSON)
 	}
 }
+
+func TestConfigSnapshot_Tier1ToolsRoundTrip(t *testing.T) {
+	t.Parallel()
+	cfg := SessionConfig{Tier1Tools: []string{"manage_worktree", "task_list"}}
+	out := configFromSnapshot(cfg.toSnapshot())
+	if len(out.Tier1Tools) != 2 || out.Tier1Tools[0] != "manage_worktree" || out.Tier1Tools[1] != "task_list" {
+		t.Fatalf("Tier1Tools did not round-trip: got %v, want %v", out.Tier1Tools, cfg.Tier1Tools)
+	}
+	snapJSON, err := json.Marshal(cfg.toSnapshot())
+	if err != nil {
+		t.Fatalf("marshal snapshot: %v", err)
+	}
+	if !strings.Contains(string(snapJSON), `"tier1_tools"`) {
+		t.Fatalf("snapshot JSON missing tier1_tools field: %s", snapJSON)
+	}
+}

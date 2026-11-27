@@ -309,6 +309,103 @@ func (s *Session) profileWireToolDefs() []llm.ToolDefinition {
 // rebuildToolDefsCache builds the cached tool definition lists from the
 // current profile, MCP tools, and registry state. Called once at session init
 // and again if tools are added at runtime (e.g. MCP or custom tools).
+var tier2DeferredGroups = map[string]string{
+	"job_list":                 "jobs",
+	"job_status":               "jobs",
+	"job_stop":                 "jobs",
+	"job_watch":                "jobs",
+	"manage_worktree":          "worktrees",
+	"read_transcript":          "transcripts",
+	"find_session_transcripts": "transcripts",
+	"doctor_evener":            "doctor",
+	"compact_context":          "compact",
+	"web_fetch":                "secondary",
+	"model_list":               "secondary",
+	"notes_agent_set":          "secondary",
+	"notes_read":               "secondary",
+	"urls_add":                 "secondary",
+	"urls_remove":              "secondary",
+	"memory_read":              "secondary",
+	"memory_write":             "secondary",
+	"memory_edit":              "secondary",
+	"memory_delete":            "secondary",
+	"memory_search":            "secondary",
+}
+
+func (s *Session) isTier1PromotedLocked(canonicalName string) bool {
+	if s == nil || len(s.cfg.Tier1Tools) == 0 {
+		return false
+	}
+	nameMap := s.toolNameMap()
+	for _, raw := range s.cfg.Tier1Tools {
+		if canonicalToolName(raw, nameMap) == canonicalName {
+			return true
+		}
+	}
+	return false
+}
+
+// isDeferredToolLocked reports whether canonicalName is deferred to a minimal
+// Tier-2 stub in req.Tools (with full schemas discoverable via tool_search and
+// JIT disclosures). Manager sessions, parent observers, and configured
+// Tier1Tools keep matching tools upfront with full Tier-1 schemas.
+func (s *Session) isDeferredToolLocked(canonicalName string) bool {
+	if s == nil {
+		return false
+	}
+	group, ok := tier2DeferredGroups[canonicalName]
+	if !ok {
+		return false
+	}
+	if s.isTier1PromotedLocked(canonicalName) {
+		return false
+	}
+	if group == "jobs" && (s.hubEnabled || s.cfg.spawn.parentWatchGranted) {
+		return false
+	}
+	if s.hubEnabled && (canonicalName == "read_transcript" || canonicalName == "model_list") {
+		return false
+	}
+	return true
+}
+
+func (s *Session) hasDeferredToolsLocked() bool {
+	if s == nil || s.reg == nil {
+		return false
+	}
+	for _, name := range s.reg.Names() {
+		if s.isDeferredToolLocked(name) {
+			return true
+		}
+	}
+	return false
+}
+
+// deferredToolStubLocked returns the minimal static open-object stub for a
+// deferred Tier-2 tool. All deferred stubs carry an empty description except
+// delegate, which gets a compact 1-line delegation cue.
+func (s *Session) deferredToolStubLocked(canonicalName string, nameMap map[string]string) llm.ToolDefinition {
+	strictFalse := false
+	desc := ""
+	if canonicalName == "delegate" {
+		if s.reg != nil && s.reg.Get("tool_search") != nil {
+			desc = `Start a parallel delegate session for an independent task; call tool_search(names=["delegate"]) for full parameters.`
+		} else {
+			desc = "Start a parallel delegate session for an independent task."
+		}
+	}
+	return llm.ToolDefinition{
+		Name:        providerToolName(canonicalName, nameMap),
+		Description: desc,
+		Strict:      &strictFalse,
+		Parameters: map[string]any{
+			"type":                 "object",
+			"properties":           map[string]any{},
+			"additionalProperties": true,
+		},
+	}
+}
+
 func (s *Session) rebuildToolDefsCache() {
 	if s == nil || s.reg == nil {
 		if s != nil {
@@ -319,6 +416,7 @@ func (s *Session) rebuildToolDefsCache() {
 		return
 	}
 	s.composeHubRegistry()
+	hasDeferred := s.syncToolSearchRegistrationLocked()
 	registered := s.reg.RegisteredNames()
 
 	// Profile tool definitions are canonical (e.g. "shell"); the registry is also
@@ -379,6 +477,13 @@ func (s *Session) rebuildToolDefsCache() {
 					_ = s.reg.Register(*regTool)
 				}
 			}
+			if s.isDeferredToolLocked(td.Name) {
+				stub := s.deferredToolStubLocked(td.Name, nameMap)
+				defs = append(defs, stub)
+				included[td.Name] = true
+				included[stub.Name] = true
+				continue
+			}
 			switch td.Name {
 			case "shell":
 				td = s.sessionShellDefinition()
@@ -414,6 +519,18 @@ func (s *Session) rebuildToolDefsCache() {
 	for _, td := range s.reg.Definitions() {
 		if included[td.Name] {
 			continue
+		}
+		if s.isDeferredToolLocked(td.Name) {
+			stub := s.deferredToolStubLocked(td.Name, nameMap)
+			defs = append(defs, stub)
+			included[td.Name] = true
+			included[stub.Name] = true
+			continue
+		}
+		if td.Name == "tool_search" {
+			if !hasDeferred {
+				continue
+			}
 		}
 		// Never expose both apply_patch and edit_file in the same session; both
 		// stay registered in s.reg for mid-session model switching.
@@ -453,7 +570,7 @@ func (s *Session) rebuildToolDefsCache() {
 			if canMessageDelegates {
 				defs[i] = tool.WithCommunicateDelegatePointer(defs[i])
 			}
-		} else {
+		} else if !s.isDeferredToolLocked(canonicalToolName(defs[i].Name, nameMap)) {
 			// Same wire contract as wireToolDef: intent is required in the
 			// advertised schema, optional in the registry's validation schema.
 			defs[i] = tool.WithIntentParameterRequired(defs[i])

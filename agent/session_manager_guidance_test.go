@@ -62,16 +62,29 @@ func TestManagerRequestAllBranches(t *testing.T) {
 					if (index >= 0) != want {
 						t.Fatalf("advertised=%t, want %t", index >= 0, want)
 					}
-					if index < 0 {
+					var params map[string]any
+					if index >= 0 && !root.isDeferredTool(tc.name) {
+						params = req.Tools[index].Parameters
+					} else if mode == "ordinary" && tc.ordinary != "" {
+						root.mu.Lock()
+						def, ok := root.deferredToolDefinitionLocked(tc.name)
+						root.mu.Unlock()
+						if !ok {
+							t.Fatalf("ordinary deferred schema missing for %s", tc.name)
+						}
+						params = def.Parameters
+					} else {
 						return
 					}
-					compiled := compileProjectionSchema(t, req.Tools[index].Parameters)
+					compiled := compileProjectionSchema(t, params)
 					validate := func(raw string) error {
 						var args map[string]any
 						if err := json.Unmarshal([]byte(raw), &args); err != nil {
 							t.Fatal(err)
 						}
-						args["intent"] = "sentinel"
+						if index >= 0 && !root.isDeferredTool(tc.name) {
+							args["intent"] = "sentinel"
+						}
 						return compiled.Validate(args)
 					}
 					if err := validate(tc.manager); mode != "ordinary" && err != nil {

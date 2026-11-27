@@ -562,6 +562,9 @@ func TestDelegateResourceCreate_UsesFrozenDescriptorAfterCommit(t *testing.T) {
 	}
 
 	wantTools := append([]string(nil), descriptor.ToolNameCeiling...)
+	if child.hasDeferredToolsLocked() {
+		wantTools = append(wantTools, "tool_search")
+	}
 	gotTools := make([]string, 0, len(request.Tools))
 	for _, definition := range request.Tools {
 		gotTools = append(gotTools, definition.Name)

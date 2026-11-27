@@ -20,6 +20,7 @@ func TestConfigSnapshotCloneDeepCopiesReferenceFields(t *testing.T) {
 		EnableLoopDetection: &loopDetection,
 		ModelFallbacks:      []string{"openai/fallback"},
 		SandboxNet:          &sandboxNet,
+		Tier1Tools:          []string{"manage_worktree"},
 	}
 	want := original
 	want.ToolOutputLimits = map[string]ToolOutputLimit{
@@ -35,6 +36,7 @@ func TestConfigSnapshotCloneDeepCopiesReferenceFields(t *testing.T) {
 	want.ModelFallbacks = append([]string(nil), original.ModelFallbacks...)
 	wantSandboxNet := *original.SandboxNet
 	want.SandboxNet = &wantSandboxNet
+	want.Tier1Tools = append([]string(nil), original.Tier1Tools...)
 
 	clone := original.Clone()
 	clone.ToolOutputLimits["read_file"] = ToolOutputLimit{MaxChars: 999, Strategy: TruncTail}
@@ -46,6 +48,7 @@ func TestConfigSnapshotCloneDeepCopiesReferenceFields(t *testing.T) {
 	*clone.EnableLoopDetection = true
 	clone.ModelFallbacks[0] = "openai/mutated"
 	*clone.SandboxNet = true
+	clone.Tier1Tools[0] = "mutated_tool"
 
 	if !reflect.DeepEqual(original, want) {
 		t.Fatalf("Clone aliases a reference-valued field:\n got %#v\nwant %#v", original, want)

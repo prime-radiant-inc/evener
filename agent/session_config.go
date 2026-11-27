@@ -322,6 +322,12 @@ type SessionConfig struct {
 	// Session.SetVisionModel, which writes this same field under s.mu.
 	VisionModel string `json:"vision_model,omitempty"`
 
+	// Tier1Tools lists extra canonical or provider-visible tool names to
+	// promote from Tier-2 deferred stubs to full upfront Tier-1 schemas.
+	// Additive on top of the default Tier-1 set; never overrides denied,
+	// restricted, or unavailable tool ceilings.
+	Tier1Tools []string `json:"tier1_tools,omitempty"`
+
 	// ResolveProfile, when non-nil, maps a "provider/model" ref to the
 	// corresponding *provider.Profile. Injected by cmd/evener so that
 	// Session.SetModel can perform cross-provider switches without
@@ -623,6 +629,7 @@ func (c SessionConfig) toSnapshot() schema.ConfigSnapshot {
 		SandboxNet:                  c.SandboxNet,
 		CommitProvenance:            c.CommitProvenance,
 		VisionModel:                 c.VisionModel,
+		Tier1Tools:                  c.Tier1Tools,
 	}
 }
 
@@ -671,6 +678,7 @@ func configFromSnapshot(s schema.ConfigSnapshot) SessionConfig {
 		SandboxNet:                  s.SandboxNet,
 		CommitProvenance:            s.CommitProvenance,
 		VisionModel:                 s.VisionModel,
+		Tier1Tools:                  s.Tier1Tools,
 	}
 }
 

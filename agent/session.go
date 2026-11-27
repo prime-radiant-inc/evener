@@ -1498,6 +1498,11 @@ type Session struct {
 	// Guarded by mu.
 	toolDefsGen int
 
+	// Per-session idempotent schema disclosure tracking for Tier-2 deferred tools.
+	// Guarded by mu.
+	disclosedToolSchemas     map[string]bool
+	disclosedAvailableAgents bool
+
 	systemPromptOverride string
 	cachedSystemPrompt   string
 	promptSourceLog      []promptSource
