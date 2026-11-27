@@ -112,6 +112,15 @@ func TestAutoDisclosedGuideSkills_OmittedFromTurn1Catalog(t *testing.T) {
 		repo := t.TempDir()
 		initGitRepo(t, repo)
 		writeSkillMD(t, repo, skill.UsingWorktreesSkillName, "---\nname: using-worktrees\ndescription: Project custom worktree workflow\n---\nProject-worktree-override-body.\n")
+		bigPath := filepath.Join(repo, "big.txt")
+		if err := os.WriteFile(bigPath, []byte(strings.Repeat("line-of-text\n", 400)), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		store, err := artifactstore.New(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = store.Close() })
 		userSkills := t.TempDir()
 		if err := os.MkdirAll(filepath.Join(userSkills, skill.RunningJobsSkillName), 0o755); err != nil {
 			t.Fatal(err)
@@ -121,10 +130,31 @@ func TestAutoDisclosedGuideSkills_OmittedFromTurn1Catalog(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		overridden := newSession(t, withDir(repo), withConfig(SessionConfig{
+		readArgs, _ := json.Marshal(map[string]any{"file_path": bigPath})
+		bgArgs := idleShellJSON(`,"mode":"background"`)
+		c := llm.NewClient()
+		adapter := newFakeAdapter("openai",
+			func(llm.Request) llm.Response {
+				return agenttest.ToolCallResponse(
+					llm.ToolCallData{ID: "w1", Name: "manage_worktree", Arguments: json.RawMessage(`{"operation":"list"}`), Type: "function"},
+					llm.ToolCallData{ID: "sh1", Name: "shell", Arguments: bgArgs, Type: "function"},
+					llm.ToolCallData{ID: "r1", Name: "read_file", Arguments: readArgs, Type: "function"},
+				)
+			},
+			func(llm.Request) llm.Response {
+				return agenttest.ToolCallResponse(communicateCall("done", "ok"))
+			},
+		)
+		c.Register(adapter)
+
+		overridden := newSession(t, withClient(c), withDir(repo), withConfig(SessionConfig{
 			StateDir:      t.TempDir(),
 			SkillsDirs:    []string{userSkills},
+			artifactStore: store,
 			AgentsDocPath: filepath.Join(t.TempDir(), "no-AGENTS.md"),
+			ToolOutputLimits: map[string]schema.ToolOutputLimit{
+				"read_file": {MaxChars: 512, Strategy: schema.TruncHeadTail},
+			},
 		}))
 		defer overridden.Close()
 
@@ -157,6 +187,26 @@ func TestAutoDisclosedGuideSkills_OmittedFromTurn1Catalog(t *testing.T) {
 		})
 		if res.IsError || !strings.Contains(res.Output, "Project-worktree-override-body.") {
 			t.Fatalf("use_skill(using-worktrees) = (err=%v, %q), want project override body", res.IsError, res.Output)
+		}
+		if res := overridden.reg.ExecuteCall(context.Background(), overridden.env, llm.ToolCallData{
+			ID:        "load-user-override",
+			Name:      "use_skill",
+			Arguments: json.RawMessage(`{"skill_name":"running-jobs"}`),
+		}); res.IsError || !strings.Contains(res.Output, "User-jobs-override-body.") {
+			t.Fatalf("use_skill(running-jobs) = (err=%v, %q), want user override body", res.IsError, res.Output)
+		}
+
+		if _, err := overridden.ProcessInput(tripwireCtx(t), "list worktrees, start background shell, and read big file", nil); err != nil {
+			t.Fatalf("ProcessInput: %v", err)
+		}
+		reqs := adapter.Requests()
+		for _, topic := range []string{guideTopicUsingWorktrees, guideTopicRunningJobs} {
+			if got := countGuideNotifications(reqs, topic); got != 0 {
+				t.Fatalf("overridden guide %q emitted %d bundled disclosures, want 0", topic, got)
+			}
+		}
+		if got := countGuideNotifications(reqs, guideTopicReadingTranscripts); got != 1 {
+			t.Fatalf("unoverridden bundled guide %q emitted %d disclosures, want 1", guideTopicReadingTranscripts, got)
 		}
 	})
 }

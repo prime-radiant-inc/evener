@@ -147,7 +147,9 @@ func (s *Session) maybeDiscloseGuidesForToolRound(ctx context.Context, calls []l
 	}
 	wants := s.detectToolRoundGuideTriggers(calls, results)
 	s.mu.Lock()
-	pending := slices.ContainsFunc([]int{0, 1, 2}, func(i int) bool { return wants[i] && !*slots[i].flag })
+	pending := slices.ContainsFunc([]int{0, 1, 2}, func(i int) bool {
+		return wants[i] && !*slots[i].flag && s.isAutoDisclosedGuideLocked(slots[i].topic)
+	})
 	s.mu.Unlock()
 	if !pending {
 		return nil
@@ -156,7 +158,7 @@ func (s *Session) maybeDiscloseGuidesForToolRound(ctx context.Context, calls []l
 		var blocks []string
 		s.mu.Lock()
 		for i, slot := range slots {
-			if wants[i] && !*slot.flag {
+			if wants[i] && !*slot.flag && s.isAutoDisclosedGuideLocked(slot.topic) {
 				*slot.flag = true
 				blocks = append(blocks, slot.build())
 			}
@@ -209,15 +211,19 @@ func (s *Session) recoverDisclosedGuidesFromTranscript(entries []transcript.Entr
 	}
 }
 
+func (s *Session) isAutoDisclosedGuideLocked(name string) bool {
+	d, ok := s.skills.Entries[name]
+	if !ok || d.Unavailable || d.Controls.DisableModelInvocation {
+		return false
+	}
+	return skill.IsAutoDisclosedGuideSkill(d) && s.skillAvailableToSession(name)
+}
+
 func (s *Session) filterEnvTrackerBundledGuidesLocked() {
 	if s.envTracker == nil {
 		return
 	}
 	s.envTracker.FilterRuntimeSkills(func(name string) bool {
-		d, ok := s.skills.Entries[name]
-		if !ok || d.Unavailable || d.Controls.DisableModelInvocation {
-			return true
-		}
-		return !skill.IsAutoDisclosedGuideSkill(d) || !s.skillAvailableToSession(name)
+		return !s.isAutoDisclosedGuideLocked(name)
 	})
 }
