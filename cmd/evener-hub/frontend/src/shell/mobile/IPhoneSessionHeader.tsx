@@ -64,13 +64,9 @@ export function IPhoneSessionHeader({
   const shown = height > 0;
   useLayoutEffect(() => {
     const element = bar.current;
-    if (!element || !shown || (split && !edgeToolbar)) return;
-    element.toggleAttribute("inert", !edgeToolbar);
-    element.toggleAttribute("data-system-edge-actions", edgeToolbar);
-    return () => {
-      element.removeAttribute("inert");
-      element.removeAttribute("data-system-edge-actions");
-    };
+    if (!element || !shown || split || edgeToolbar) return;
+    element.setAttribute("inert", "");
+    return () => element.removeAttribute("inert");
   }, [bar, shown, edgeToolbar, split]);
   useLayoutEffect(() => {
     if (!shown) return;

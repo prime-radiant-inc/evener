@@ -413,7 +413,10 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
     }
   }, [routeDeferred, publishHeader]);
   const homeEdge = !singlePane && !hosted && focusedPane?.type === "session" ? homeScreenEdge : null;
-  const Title = (nativeHeader && edgeToolbar) || homeEdge ? "h1" : "span";
+  const systemEdge = nativeHeader && edgeToolbar;
+  // An overlay can suspend edge actions, but only a change of layout moves them into the top bar.
+  const actionsAtEdge = systemEdge || !!homeEdge;
+  const Title = actionsAtEdge ? "h1" : "span";
   const needsYou = useNavigationStore(
     useCallback(
       (state: NavigationStoreState) =>
@@ -1130,15 +1133,16 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
             ref={topBarRef}
             className={topBarCollapsed ? `${styles.topBar} ${styles.topBarCollapsed}` : styles.topBar}
             data-home-edge={homeEdge ?? undefined}
+            data-system-edge-actions={systemEdge ? "" : undefined}
             data-testid="topbar"
             data-collapsed={topBarCollapsed ? "true" : undefined}
             data-session={focusedSessionRef === undefined ? undefined : "true"}
           >
-            {!homeEdge && leading}
+            {!actionsAtEdge && leading}
             <Title className={styles.stackTitle} data-testid="topbar-title">
               {paneTitle}
             </Title>
-            {!homeEdge && trailing}
+            {!actionsAtEdge && trailing}
           </div>
           {publishHeader && focusedSessionRef && !panelOpen && !activityOpen && (
             <IPhoneSessionHeader

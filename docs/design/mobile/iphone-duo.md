@@ -10,7 +10,9 @@ The system navigation bar places conversation actions below the status area
 on the cover and in inner landscape. Back or Sessions leads when needed,
 followed by Find and Overview. An expanded Board owns its own toggle. Inner
 portrait keeps the actions above the reader. Attach, Send, and the composer
-menu stay with the text field in every pose.
+menu stay with the text field in every pose. When the system bar is on the
+side, opening a menu, the Sessions drawer, or Overview temporarily hides its
+actions. Dismissing the overlay restores them on that edge.
 
 ## Home Screen and Safari
 
