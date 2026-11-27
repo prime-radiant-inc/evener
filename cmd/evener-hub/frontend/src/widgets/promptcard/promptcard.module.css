@@ -15,7 +15,10 @@
  * The card clips its own overflow in every state: a rounded surface holds
  * its content inside its box, and clipping is what tells the liquid-glass
  * SDK to host its drawn canvas as a positioned sibling of the card rather
- * than as a child positioned inside it and sized past the card's edge. */
+ * than as a child positioned inside it and sized past the card's edge. The
+ * clip margin is one focus ring wide, so a keyboard-focused control keeps
+ * its ring where a zero-padding state seats it flush with the card's
+ * padding edge (the Duo cover's empty resting row, the ≤340px phone card). */
 .card {
   display: flex;
   flex-direction: column;
@@ -29,6 +32,7 @@
   overflow: hidden;
   /* biome-ignore lint/suspicious/noDuplicateProperties: clip supersedes hidden as a true non-scroller where supported; hidden is the fallback for engines that predate it */
   overflow: clip;
+  overflow-clip-margin: var(--focus-ring-width);
 }
 
 /* The folded one-line row is as tall as its controls plus the same inset

@@ -149,8 +149,11 @@ test("the start composer keeps its plain framed card, and the card clips its own
   expect(cardCss, "the prompt card must not special-case the spawn pane").not.toMatch(/\[data-pane-scaffold="spawn"\]/);
 
   // Clip is load-bearing for the liquid-glass SDK too - see the .card rule's
-  // own comment.
+  // own comment - and the clip margin keeps a keyboard-focused control's
+  // ring painting where a zero-padding state seats it flush with the card's
+  // padding edge (the Duo cover's empty resting row, the ≤340px phone card).
   expect(topRuleBlock(cardCss, ".card")).toMatch(/overflow:\s*clip/);
+  expect(topRuleBlock(cardCss, ".card")).toMatch(/overflow-clip-margin:\s*var\(--focus-ring-width\)/);
 });
 
 test("browser session composer and transcript chrome carry ladder radii", () => {
