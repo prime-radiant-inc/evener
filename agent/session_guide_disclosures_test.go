@@ -107,7 +107,7 @@ func TestGuideDisclosures_BackgroundShellFiresOnceAndPreservesSystemPrefix(t *te
 	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
-	bgArgs := json.RawMessage(`{"command":"printf 'bg\\n'","mode":"background"}`)
+	bgArgs := idleShellJSON(`,"mode":"background"`)
 	adapter := newFakeAdapter("anthropic",
 		func(llm.Request) llm.Response {
 			return agenttest.ToolCallResponse(llm.ToolCallData{ID: "sh1", Name: "shell", Arguments: bgArgs, Type: "function"})
@@ -410,7 +410,7 @@ func TestGuideDisclosures_RestoreAndCompactionSync(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
 	dir := t.TempDir()
-	bgArgs := json.RawMessage(`{"command":"printf 'bg\\n'","mode":"background"}`)
+	bgArgs := idleShellJSON(`,"mode":"background"`)
 
 	c1 := llm.NewClient()
 	c1.Register(newFakeAdapter("openai",

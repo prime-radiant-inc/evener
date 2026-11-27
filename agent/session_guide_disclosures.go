@@ -28,7 +28,7 @@ func wrapGuideNotification(topic, body string) string {
 }
 
 func (s *Session) buildRunningJobsDisclosure() string {
-	parts := []string{fmt.Sprintf("Background jobs and delegates notify you automatically when they finish; yield quietly with `%s` (`next=\"log_quietly_and_end_turn\"`) while waiting rather than polling.", s.resultToolName())}
+	parts := []string{fmt.Sprintf("Background jobs and delegates notify you automatically when they finish; yield quietly with %#q (`next=\"log_quietly_and_end_turn\"`) while waiting rather than polling.", s.resultToolName())}
 	var controls []string
 	for _, c := range []struct{ tool, text string }{
 		{"job_list", "check `job_list` before starting duplicate work"},
