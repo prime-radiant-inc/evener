@@ -147,7 +147,7 @@ func Discover(env execenv.ExecutionEnvironment, opts DiscoverOptions) Catalog {
 		}
 		c.Entries[d.CatalogName] = d
 	}
-	scan := func(dir, pluginName string, optional bool) {
+	scan := func(dir, pluginName string, optional, bundled bool) {
 		if strings.TrimSpace(dir) == "" {
 			return
 		}
@@ -182,6 +182,7 @@ func Discover(env execenv.ExecutionEnvironment, opts DiscoverOptions) Catalog {
 				continue
 			}
 			d, diagnostics, _ := Parse(data, source)
+			d.Bundled = bundled
 			if pluginName != "" && d.CatalogName != "" {
 				d.CatalogName = pluginName + ":" + d.CatalogName
 				for i := range diagnostics {
@@ -201,21 +202,21 @@ func Discover(env execenv.ExecutionEnvironment, opts DiscoverOptions) Catalog {
 	if dir, err := EmbeddedSkillsDir(); err != nil {
 		c.Diagnostics = append(c.Diagnostics, Diagnostic{Category: "unreadable_source", Source: "embedded", Message: err.Error()})
 	} else {
-		scan(dir, "", false)
+		scan(dir, "", false, true)
 	}
 	c.Diagnostics = append(c.Diagnostics, EmbeddedSkillsDiagnostics()...)
 	if opts.HomeDir != "" {
-		scan(HomeSkillsDir(opts.HomeDir), "", true)
+		scan(HomeSkillsDir(opts.HomeDir), "", true, false)
 	}
-	scan(opts.UserSkillsDir, "", true)
+	scan(opts.UserSkillsDir, "", true, false)
 	for _, dir := range projectSkillDirs(env) {
-		scan(dir, "", true)
+		scan(dir, "", true, false)
 	}
 	for _, dir := range opts.ExtraDirs {
-		scan(dir, "", false)
+		scan(dir, "", false, false)
 	}
 	for _, p := range opts.Plugins {
-		scan(filepath.Join(p.Dir, "skills"), p.Name, true)
+		scan(filepath.Join(p.Dir, "skills"), p.Name, true, false)
 	}
 	return c
 }

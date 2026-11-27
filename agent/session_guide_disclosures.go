@@ -10,6 +10,8 @@ import (
 
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/skill"
+	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/llm"
 )
 
@@ -44,7 +46,7 @@ func (s *Session) buildRunningJobsDisclosure() string {
 	}
 	if s.canInstructTool("job_watch") {
 		if s.cfg.TurnEndsProcess {
-			parts = append(parts, "In one-shot runs, attach `job_watch(source=<job_id>, progress_interval_ms=180000)` (or `output_match`) so a needed background shell survives turn end.")
+			parts = append(parts, "In one-shot runs, attach `job_watch(operation=\"create\", source=<job_id>, progress_interval_ms=180000)` (or `output_match`) so a needed background shell survives turn end.")
 		} else {
 			parts = append(parts, "Use `job_watch` for output patterns (`output_match`) or external timers (`after_seconds`/`repeat_seconds`).")
 		}
@@ -167,36 +169,55 @@ func (s *Session) maybeDiscloseGuidesForToolRound(ctx context.Context, calls []l
 	})
 }
 
-func (s *Session) syncDisclosedGuidesFromHistory() {
+// recoverDisclosedGuidesFromTranscript restores sticky disclosure flags from
+// all persisted transcript entries (including turns before any compaction
+// marker) plus live history. Flags stay set across compaction folds.
+func (s *Session) recoverDisclosedGuidesFromTranscript(entries []transcript.Entry) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.syncDisclosedGuidesFromHistoryLocked(s.history)
-}
-
-func (s *Session) syncDisclosedGuidesFromHistoryLocked(history []schema.Turn) {
 	slots := s.guideSlots()
 	var openTags [3]string
+	remaining := 0
 	for i, slot := range slots {
-		*slot.flag = false
 		openTags[i] = guideNotificationOpenTag(slot.topic)
+		if !*slot.flag {
+			remaining++
+		}
 	}
-	remaining := len(slots)
-	for _, turn := range history {
+	scan := func(turn schema.Turn) bool {
 		if turn.Kind != schema.TurnSystem {
-			continue
+			return false
 		}
 		text := turn.Message.Text()
 		for i, slot := range slots {
-			if *slot.flag {
-				continue
-			}
-			if strings.Contains(text, openTags[i]) {
+			if !*slot.flag && strings.Contains(text, openTags[i]) {
 				*slot.flag = true
 				remaining--
 			}
 		}
-		if remaining == 0 {
+		return remaining == 0
+	}
+	for _, entry := range entries {
+		if scan(entry.Turn) {
+			return
+		}
+	}
+	for _, turn := range s.history {
+		if scan(turn) {
 			break
 		}
 	}
+}
+
+func (s *Session) filterEnvTrackerBundledGuidesLocked() {
+	if s.envTracker == nil {
+		return
+	}
+	s.envTracker.FilterRuntimeSkills(func(name string) bool {
+		d, ok := s.skills.Entries[name]
+		if !ok || d.Unavailable || d.Controls.DisableModelInvocation {
+			return true
+		}
+		return !skill.IsAutoDisclosedGuideSkill(d) || !s.skillAvailableToSession(name)
+	})
 }

@@ -283,3 +283,24 @@ func TestRenderDiffCommunicateContractAndReplay(t *testing.T) {
 		t.Fatal("replayed communicate contract diff did not quiet subsequent turns")
 	}
 }
+
+func TestTrackerFilterRuntimeSkills(t *testing.T) {
+	t.Parallel()
+	launch := fullSnap()
+	launch.AvailableSkills = "alpha, reading-transcripts, running-jobs, zeta"
+	tr := NewTracker(State{Last: fullSnap(), HasSent: true})
+	tr.SeedRuntime(launch)
+	tr.FilterRuntimeSkills(func(name string) bool {
+		return name != "running-jobs" && name != "reading-transcripts"
+	})
+	cur := fullSnap()
+	cur.AvailableSkills = "alpha, zeta"
+	if tr.RuntimeDrifted(cur) || tr.RenderDiff(cur) != "" {
+		t.Fatalf("filtered baseline unexpectedly drifted against matching current skills: %q", tr.RenderDiff(cur))
+	}
+	cur.AvailableSkills = "alpha"
+	diff := tr.RenderDiff(cur)
+	if !strings.Contains(diff, "removed skills: zeta") || strings.Contains(diff, "running-jobs") {
+		t.Fatalf("expected only genuine removal of zeta, got:\n%s", diff)
+	}
+}

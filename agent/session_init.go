@@ -1270,7 +1270,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		}
 	}()
 	s.restoreConversation(transcriptEntries)
-	s.syncDisclosedGuidesFromHistory()
+	s.recoverDisclosedGuidesFromTranscript(transcriptEntries)
 	s.bufferArtifactStoreWarning(artifactStoreErr)
 	s.retirementController.Store(cfg.spawn.retirementController)
 	s.initEnvContext(meta.EnvContext)
@@ -2080,9 +2080,12 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 			s.launchEnvBaseline = s.envRuntimeSnapshot(envctx.Snapshot{})
 			s.launchEnvBaseline.GitBranch = cmp.Or(s.launchEnvBaseline.GitBranch, s.envInfo.GitBranch)
 			s.envTracker.SeedRuntime(s.launchEnvBaseline)
-		} else if !restoredPromptHasLegacyCommunicateGuidance(restoredPrompt, s.resultToolName()) {
-			s.launchEnvBaseline.CommunicateContract = cmp.Or(s.launchEnvBaseline.CommunicateContract, s.communicateContractLine())
-			s.envTracker.SeedRuntime(envctx.Snapshot{CommunicateContract: s.launchEnvBaseline.CommunicateContract})
+		} else {
+			if !restoredPromptHasLegacyCommunicateGuidance(restoredPrompt, s.resultToolName()) {
+				s.launchEnvBaseline.CommunicateContract = cmp.Or(s.launchEnvBaseline.CommunicateContract, s.communicateContractLine())
+				s.envTracker.SeedRuntime(envctx.Snapshot{CommunicateContract: s.launchEnvBaseline.CommunicateContract})
+			}
+			s.filterEnvTrackerBundledGuidesLocked()
 		}
 	}
 	if warning := s.commitProvenanceWarning(); warning != "" {

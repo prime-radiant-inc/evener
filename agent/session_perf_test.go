@@ -440,7 +440,7 @@ func TestCachedSystemPromptComponents_SkillList(t *testing.T) {
 	}
 	want := 0
 	for _, d := range sess.skills.ModelEntries() {
-		if !skill.IsAutoDisclosedGuideSkill(d.CatalogName) {
+		if !skill.IsAutoDisclosedGuideSkill(d) {
 			want++
 		}
 	}

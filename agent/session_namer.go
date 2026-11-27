@@ -520,7 +520,6 @@ func (s *Session) handleCompactionTurnEffects(t schema.Turn, writeErr error, sup
 		// not the marker announcing the fold survived its staged writes.
 		s.resetNotesProjectionAfterCompaction()
 		s.resetMemoryProjectionAfterCompaction()
-		s.syncDisclosedGuidesFromHistory()
 		if !withheld {
 			s.emit(events.CompactionTurnData{Kind: string(t.Kind), Text: t.Message.Text()})
 		}
