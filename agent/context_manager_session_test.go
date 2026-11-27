@@ -246,12 +246,11 @@ func contextWindowForRead(t *testing.T, dir, input string) (profile *provider.Pr
 	// line numbers), which the estimator prices at 5.25 tokens per 21 bytes.
 	// Cap the body at 2,300 lines so the rendered result stays under
 	// read_file's 48,000-byte head-only cap instead of being truncated.
-	lines := standing * 38 / 100 * 4 / 21
-	if maxLines := 2_300; lines > maxLines {
-		lines = maxLines
-	}
-	toolTokens := lines * 21 / 4
-	profile = withContextWindow(profile, standing+toolTokens+standing/10)
+	toolTokens := max(standing*38/100, 8_400)
+	lines := min(toolTokens*4/21, 2_300)
+	toolTokens = lines * 21 / 4
+	headroom := max(standing/10, llm.SafetyReserveTokens(standing+toolTokens)+64)
+	profile = withContextWindow(profile, standing+toolTokens+headroom)
 	return profile, standing, strings.Repeat("line of content\n", lines)
 }
 

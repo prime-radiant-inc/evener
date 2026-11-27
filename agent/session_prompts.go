@@ -294,18 +294,18 @@ func (s *Session) buildPromptData(env execenv.ExecutionEnvironment) (promptData,
 }
 
 func (s *Session) unavailableProfileToolNames(profileDefs, actualDefs []llm.ToolDefinition) []string {
-	actual := toolNameSetFromDefinitions(actualDefs)
+	candidates := unavailableToolNames(profileDefs, actualDefs)
+	if s == nil || s.reg == nil {
+		return candidates
+	}
 	nameMap := s.toolNameMap()
-	missing := make([]string, 0)
-	for _, td := range profileDefs {
-		if td.Name == "" || actual[td.Name] {
+	missing := make([]string, 0, len(candidates))
+	for _, name := range candidates {
+		canonical := canonicalToolName(name, nameMap)
+		if s.reg.Get(canonical) != nil && s.isDeferredToolLocked(canonical) {
 			continue
 		}
-		canonical := canonicalToolName(td.Name, nameMap)
-		if s != nil && s.reg != nil && s.reg.Get(canonical) != nil && s.isDeferredToolLocked(canonical) {
-			continue
-		}
-		missing = append(missing, td.Name)
+		missing = append(missing, name)
 	}
 	return missing
 }

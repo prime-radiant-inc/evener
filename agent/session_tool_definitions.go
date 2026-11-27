@@ -373,12 +373,7 @@ func (s *Session) hasDeferredToolsLocked() bool {
 	if s == nil || s.reg == nil {
 		return false
 	}
-	for _, name := range s.reg.Names() {
-		if s.isDeferredToolLocked(name) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(s.reg.Names(), s.isDeferredToolLocked)
 }
 
 // deferredToolStubLocked returns the minimal static open-object stub for a

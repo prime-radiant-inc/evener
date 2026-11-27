@@ -672,7 +672,8 @@ func TestDeferredStubDirectDispatchHooksAndSchemaDisclosure(t *testing.T) {
 		hookMu.Unlock()
 		return agenttest.FinalResponse(`{"ok":true}`)
 	}
-	hookClient.Register(newFakeAdapter("openai", hookStep, hookStep))
+	hookSteps := []func(req llm.Request) llm.Response{hookStep, hookStep}
+	hookClient.Register(newFakeAdapter("openai", hookSteps...))
 	runner := hooks.NewRunner(hookClient, "gpt-5.2")
 	runner.Add(plugin.HookPreToolUse, plugin.RegisteredHook{
 		Matcher: "^job_list$",

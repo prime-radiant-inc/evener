@@ -284,7 +284,7 @@ func (s *Session) execToolSearch(_ context.Context, _ execenv.ExecutionEnvironme
 		}
 		if len(alreadyTier1) > 0 {
 			return tool.StateResult{
-				Output: fmt.Sprintf("Already loaded upfront in full (call directly): %s", strings.Join(alreadyTier1, ", ")),
+				Output: "Already loaded upfront in full (call directly): " + strings.Join(alreadyTier1, ", "),
 			}, nil
 		}
 		return tool.StateResult{
