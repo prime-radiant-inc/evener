@@ -11,6 +11,7 @@ import (
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/skill"
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/internal/bundled"
 	"primeradiant.com/evener/internal/commitprovenance"
@@ -214,7 +215,7 @@ func (s *Session) buildPromptData(env execenv.ExecutionEnvironment) (promptData,
 	// Skills. A skill this session cannot follow is left out, so the catalog
 	// only offers usable skills.
 	for _, descriptor := range s.skills.ModelEntries() {
-		if !s.skillAvailableToSession(descriptor.CatalogName) {
+		if !s.skillAvailableToSession(descriptor.CatalogName) || skill.IsAutoDisclosedGuideSkill(descriptor.CatalogName) {
 			continue
 		}
 		skillName, sm := descriptor.CatalogName, descriptor.Meta

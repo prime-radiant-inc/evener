@@ -367,6 +367,9 @@ func (s *Session) persistToolResults(ctx context.Context, calls []llm.ToolCallDa
 		return abortErr
 	}
 	s.consumePersistedTerminalJobNotifications(calls, results)
+	if abortErr := s.maybeDiscloseGuidesForToolRound(ctx, calls, results); abortErr != nil {
+		return abortErr
+	}
 
 	for i, r := range results {
 		if len(r.ImageData) > 0 {

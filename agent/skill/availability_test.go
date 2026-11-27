@@ -41,6 +41,20 @@ func TestSessionAvailability(t *testing.T) {
 	}
 }
 
+func TestIsAutoDisclosedGuideSkill(t *testing.T) {
+	t.Parallel()
+	for _, name := range []string{RunningJobsSkillName, UsingWorktreesSkillName, ReadingTranscriptsSkillName} {
+		if !IsAutoDisclosedGuideSkill(name) {
+			t.Fatalf("IsAutoDisclosedGuideSkill(%q) = false, want true", name)
+		}
+	}
+	for _, name := range []string{GardeningMemorySkillName, "doctoring-evener", "custom-skill"} {
+		if IsAutoDisclosedGuideSkill(name) {
+			t.Fatalf("IsAutoDisclosedGuideSkill(%q) = true, want false", name)
+		}
+	}
+}
+
 func TestUserEntriesForSession(t *testing.T) {
 	t.Parallel()
 	catalog := Catalog{Entries: map[string]Descriptor{

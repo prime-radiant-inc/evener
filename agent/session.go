@@ -577,6 +577,9 @@ type Session struct {
 	closing                       bool
 	turns                         int       // user input count (for MaxTurns enforcement)
 	turnBudgetWarningEmitted      bool      // five-turn warning has been queued or recovered from history
+	disclosedRunningJobs          bool      // one-time running-jobs guide disclosure emitted
+	disclosedReadingTranscripts   bool      // one-time reading-transcripts guide disclosure emitted
+	disclosedUsingWorktrees       bool      // one-time using-worktrees guide disclosure emitted
 	modelResponses                int       // LLM round-trip count (for meta.json turn_count)
 	createdAt                     time.Time // stamped once at construction/restore; Meta() reads it rather than re-stamping "now" on every call
 	workMillis                    int64     // accumulated wall-clock work time across turns; seeded from SessionMeta on restore, mapped out via Meta()
@@ -3381,7 +3384,7 @@ func (s *Session) envContextDue() bool {
 func (s *Session) envRuntimeSnapshot(snap envctx.Snapshot) envctx.Snapshot {
 	var skills []string
 	for _, d := range s.skills.ModelEntries() {
-		if s.skillAvailableToSession(d.CatalogName) {
+		if s.skillAvailableToSession(d.CatalogName) && !skill.IsAutoDisclosedGuideSkill(d.CatalogName) {
 			skills = append(skills, d.CatalogName)
 		}
 	}

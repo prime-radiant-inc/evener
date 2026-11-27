@@ -1270,6 +1270,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		}
 	}()
 	s.restoreConversation(transcriptEntries)
+	s.syncDisclosedGuidesFromHistory()
 	s.bufferArtifactStoreWarning(artifactStoreErr)
 	s.retirementController.Store(cfg.spawn.retirementController)
 	s.initEnvContext(meta.EnvContext)
