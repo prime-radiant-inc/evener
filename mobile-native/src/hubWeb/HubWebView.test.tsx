@@ -51,7 +51,7 @@ function evaluateHubLoadProbe(
 	);
 }
 
-it("delivers a share only to its chosen hub and composer, then accepts that delivery's receipt", async () => {
+it.each([false, true])("accepts the delivered launcher share once (WebKit has navigated: %s)", async (webNavigated) => {
 	const profile = { id: "desk", name: "Desk", origin: "https://desk.example" };
 	const share = { id: "file-id", path: "/new", hubId: profile.id, text: "shared-sentinel", createdAt: "" };
 	const postMessage = vi.fn();
@@ -101,7 +101,7 @@ it("delivers a share only to its chosen hub and composer, then accepts that deli
 	// The launcher can finish after another pane opens, with the intake
 	// already holding a different file for the picker.
 	const nextPath = "/s/local%3Aother";
-	message({ type: "route", path: nextPath }, profile.origin + nextPath);
+	if (webNavigated) message({ type: "route", path: nextPath }, profile.origin + nextPath);
 	native.focused = false;
 	onTestFinished(() => {
 		native.focused = true;
@@ -109,8 +109,8 @@ it("delivers a share only to its chosen hub and composer, then accepts that deli
 	act(() => tree.update(workspace(undefined, nextPath)));
 	await intake.offer();
 	expect(offered).toHaveBeenCalledWith(other);
-	message(receipt, profile.origin + nextPath);
-	message(receipt, profile.origin + nextPath);
+	message(receipt, profile.origin + (webNavigated ? nextPath : share.path));
+	message(receipt, profile.origin + (webNavigated ? nextPath : share.path));
 	expect(onSharePlaced.mock.calls).toEqual([[share.id]]);
 	await onSharePlaced.mock.results[0]?.value;
 	expect(await pendingShares(port)).toEqual([other]);
