@@ -4,7 +4,11 @@
 // corners carry the panel radius.
 export default function assert(measurement) {
   const failures = [];
-  for (const [state, card] of Object.entries(measurement)) {
+  const { expanded, collapsed, summaryHeight, spaceReleased } = measurement;
+  if (summaryHeight <= 0 || Math.abs(summaryHeight - spaceReleased) > 1) {
+    failures.push(`mobile: hiding the ${summaryHeight}px summary freed ${spaceReleased}px of transcript space`);
+  }
+  for (const [state, card] of Object.entries({ expanded, collapsed })) {
     // Attached to header: top edge is at the clip line (negative margin cancels padding).
     if (Math.abs(card.insetAboveClip) > 1) {
       failures.push(
@@ -43,7 +47,6 @@ export default function assert(measurement) {
     );
   }
   if (failures.length > 0) return { pass: false, reason: failures.join("; ") };
-  const { expanded, collapsed } = measurement;
   return {
     pass: true,
     reason:

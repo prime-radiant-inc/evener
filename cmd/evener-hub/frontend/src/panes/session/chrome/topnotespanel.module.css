@@ -120,11 +120,9 @@
   display: none;
 }
 
-/* Below 900px, the collapsed whiteboard rests as one quiet centered line on
- * the reading surface: no card chrome, keeping the body's own top spacing.
- * The card chrome and attach-to-header negative margin apply only while
- * expanded. */
-@media (max-width: 899px) {
+/* The mobile shell can also occupy a wide viewport with a reserved system
+ * edge. Its collapsed summary takes exactly its own height in the reader. */
+:global([data-mobile]) {
   .topNotesPanel:not([data-expanded="true"]) {
     position: static;
     z-index: auto;
