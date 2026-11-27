@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { makeTranscriptDisplayConfig } from "@evener/appwire-client";
 import { bindFilePath } from "@evener/appwire-client/docContent";
 import { manifest as navigationManifest } from "@evener/appwire-client/testing/navigation";
+import { testEscalation } from "@evener/appwire-client/testing/reducerTestKit";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { DockviewApi } from "dockview-core";
@@ -2789,6 +2790,17 @@ test("mobile notes tuck in the reading direction and return on reversal or expli
     scroll(0);
     expect(scroller.scrollTop).toBe(0);
     expect(bar.getAttribute("data-collapsed")).not.toBe("true");
+    act(() =>
+      client.emitNotification({ method: "evener/sandbox/escalation/requested", params: testEscalation({ ref }) }),
+    );
+    const card = await screen.findByRole("group", { name: "Sandbox approval" });
+    scroll(260);
+    expect(notes.closest("[data-reading-overlay]")).toBeNull();
+    client.on("evener/sandbox/escalation/resolve", () => ({}));
+    await userEvent.click(within(card).getByRole("button", { name: "Deny" }));
+    await waitFor(() => expect(card.isConnected).toBe(false));
+    scroll(340);
+    expect(notes.closest("[data-reading-overlay]")).not.toBeNull();
     host.unmount();
   } finally {
     topNotesStore.getState().resetForTests();

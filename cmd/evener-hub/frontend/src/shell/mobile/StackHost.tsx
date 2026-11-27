@@ -53,7 +53,7 @@ import {
 } from "react";
 import { AnimatePresence, m, spatialExitTransition, spatialTransition, useReducedMotion } from "../../motion";
 import { openSessionOverview, SessionInspectionActions } from "../../panes/session/chrome/SessionInspectionActions";
-import { FindVisibilityContext, requestFindInSession } from "../../panes/session/find/findRequest";
+import { requestFindInSession } from "../../panes/session/find/findRequest";
 import { readerScrollInput } from "../../panes/session/transcript/flow/useReaderGestures";
 import { returnFromAgentCascade } from "../../panes/zoom/actions";
 import { isCascadeReturnedOrigin } from "../../panes/zoom/inspectionOrigin";
@@ -79,7 +79,7 @@ import { ActivitySidebar } from "../activitybar/ActivitySidebar";
 import { useActivitySidebarStore } from "../activitybar/activitySidebarStore";
 import { attentionEntryOwnsReader, goBackInAttentionHistory, publishFocusedPaneURL } from "../attentionHistory";
 import { ConversationHandoffBoundary } from "../ConversationHandoffBoundary";
-import { useChromeStore } from "../chromeStore";
+import { ReaderHeaderPinContext, useChromeStore } from "../chromeStore";
 import {
   hasIPhoneSessionHeader,
   hasIPhoneSessionsToolbar,
@@ -399,7 +399,7 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
   const closePanel = useCallback(() => setPanelOpen(false), []);
   const [readingChrome, setReadingChrome] = useState(FULL_CHROME);
   const topBarCollapsed = readingChrome.floating;
-  const [findOpen, setFindOpen] = useState(false);
+  const [readerControlsPinned, setReaderControlsPinned] = useState(false);
   const fontSize = usePrefsStore((s) => s.fontSize);
   const viewportWidth = useWorkspaceViewportWidth();
   const tabletViewport = useMediaQuery(TABLET_QUERY);
@@ -1053,7 +1053,7 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
   // reveal is chrome, not a scroll gesture, and the capsules would otherwise
   // sit over the card's header row. The empty string matches no session ref.
   const focusedNotesExpanded = useTopNotesExpanded(readerSessionRef(focusedPane) ?? "");
-  const headerPinned = focusedNotesExpanded || findOpen;
+  const headerPinned = focusedNotesExpanded || readerControlsPinned;
   headerPinnedRef.current = headerPinned;
   useLayoutEffect(() => {
     if (!headerPinned) return;
@@ -1216,9 +1216,9 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
             {focusedPane && (
               // Only a distinct pane id detaches the outgoing pane's last frame.
               <div key={focusedPane.id} ref={paneSlotRef} className={styles.paneSlot} data-stack-pane={focusedPane.id}>
-                <FindVisibilityContext.Provider value={setFindOpen}>
+                <ReaderHeaderPinContext.Provider value={setReaderControlsPinned}>
                   <StackedPane pane={focusedPane} />
-                </FindVisibilityContext.Provider>
+                </ReaderHeaderPinContext.Provider>
               </div>
             )}
           </div>

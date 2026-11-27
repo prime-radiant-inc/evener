@@ -3,12 +3,8 @@
 // one entry. Same per-ref request shape as composer/composerFocus.ts: the
 // request waits in the store until the addressed conversation consumes it, so
 // it survives the pane mounting after the ask.
-import { createContext } from "react";
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
-
-/** The mobile host keeps navigation in flow while its displayed reader shows Find. */
-export const FindVisibilityContext = createContext<((open: boolean) => void) | null>(null);
 
 export interface FindRequest {
   /** Monotonic, so two asks in a row are two events. */
