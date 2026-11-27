@@ -150,10 +150,6 @@
   padding: var(--space-2) var(--space-4);
 }
 
-.topBar[data-system-edge-actions] :is(.leading, .trailing) {
-  display: none;
-}
-
 /* The Home Screen grants the document this edge below the system clock.
  * Anchor at the bottom so a rotation cannot put an action under the camera. */
 .homeToolbar {

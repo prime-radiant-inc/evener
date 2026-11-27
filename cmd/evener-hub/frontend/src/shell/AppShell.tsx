@@ -758,10 +758,7 @@ function AppShellContent({ client: injectedClient, bannerDelayMs, bannerCreateCl
   const routePlacementPathnameRef = useRef<string | null>(null);
   const placedPathnameRef = useRef<string | null>(null);
   const restoredAttentionTokenRef = useRef<string | null>(null);
-  // Restoration writes only a ref, and the workspace restore may publish no
-  // state change at all (a cached location, an already focused reader). This
-  // render epoch makes the completion visible to the host's `routeDeferred`.
-  const [, setAttentionRestoreEpoch] = useState(0);
+  const [, publishRoutePlacement] = useReducer((revision: number) => revision + 1, 0);
   const deferredDocumentRef = useRef<OpenPaneRecord | null>(null);
   const initialPathnameRef = useRef(pathname);
   if (!dockHostHasMountedRef.current && openedForPathnameRef.current !== pathname) {
@@ -790,9 +787,10 @@ function AppShellContent({ client: injectedClient, bannerDelayMs, bannerCreateCl
   // layout's conversation is a valid source while the address bar says "/" -
   // so the deferral follows the token, not the route type.
   const attentionToken = currentAttentionEntryToken();
-  const routeDeferred =
+  const isRouteDeferred = () =>
     (route?.type === "session" && pendingSessionRef.current !== null) ||
     (attentionToken !== null && restoredAttentionTokenRef.current !== attentionToken);
+  const routeDeferred = isRouteDeferred();
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: workspacePanesVersion is a deliberate trigger-only dep for route-owned primary replacement ordering
   useEffect(() => {
@@ -834,12 +832,7 @@ function AppShellContent({ client: injectedClient, bannerDelayMs, bannerCreateCl
       settleNavigationFocus();
       settleRequestedFocus();
     };
-    if (attentionToken === null) {
-      if (restoredAttentionTokenRef.current !== null) {
-        restoredAttentionTokenRef.current = null;
-        setAttentionRestoreEpoch((epoch) => epoch + 1);
-      }
-    }
+    if (attentionToken === null) restoredAttentionTokenRef.current = null;
     const deletedRouteRef = locationGone && route?.type === "session" ? refParam(route.params) : null;
     if (attentionToken !== null && deletedRouteRef !== null && retireDeletedAttentionSession(deletedRouteRef)) {
       restoredAttentionTokenRef.current = null;
@@ -858,7 +851,6 @@ function AppShellContent({ client: injectedClient, bannerDelayMs, bannerCreateCl
       restoreCurrentAttentionEntry()
     ) {
       restoredAttentionTokenRef.current = attentionToken;
-      setAttentionRestoreEpoch((epoch) => epoch + 1);
       pendingSessionRef.current = null;
       placedPathnameRef.current = pathname;
       return;
@@ -940,6 +932,12 @@ function AppShellContent({ client: injectedClient, bannerDelayMs, bannerCreateCl
     openRouteAsPane(pathname, location, locationTerminal, locationGone, pendingSessionRef);
     settlePlacementFocus();
   }, [pathname, historyRevision, route?.type, location, locationTerminal, locationGone, workspacePanesVersion]);
+
+  // Placement can settle on the already focused reader without changing the
+  // workspace. Publish a changed deferral even when no pane rerenders the shell.
+  useEffect(() => {
+    if (routeDeferred !== isRouteDeferred()) publishRoutePlacement();
+  });
 
   return (
     <ClientProvider client={client}>

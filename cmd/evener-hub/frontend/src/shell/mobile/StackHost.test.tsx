@@ -597,7 +597,11 @@ test("the inner iPhone window keeps the Board and hands reader actions to the sy
   const lastHeader = () => messages.filter(({ type }) => type === "sessionHeader").at(-1)?.header;
   try {
     const id = workspaceStore.getState().openPane("session", { ref: "local:duo" });
-    render(<StackHost railSlot={<TabletRailActionSlot />} />);
+    render(
+      <ClientProvider client={activityClient()}>
+        <StackHost railSlot={<TabletRailActionSlot />} />
+      </ClientProvider>,
+    );
     const board = await screen.findByTestId("board-column");
     const bar = screen.getByTestId("topbar");
     expect(bar.hasAttribute("inert")).toBe(false);
@@ -611,8 +615,15 @@ test("the inner iPhone window keeps the Board and hands reader actions to the sy
     await waitFor(() => expect(lastHeader()?.leading).toBe("sessions"));
     send({ type: "headerAction", id, action: "sessions" });
     await waitFor(() => expect(lastHeader()?.leading).toBeNull());
+    send({ type: "headerAction", id, action: "overview" });
+    expect(await screen.findByRole("dialog")).toBeTruthy();
+    await waitFor(() => expect(lastHeader()).toBeNull());
+    expect(within(bar).queryAllByRole("button")).toHaveLength(0);
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(lastHeader()).toMatchObject({ id }));
     send({ type: "material", glass: true, edgeToolbar: false });
     await waitFor(() => expect(bar.hasAttribute("data-system-edge-actions")).toBe(false));
+    expect(within(bar).getAllByRole("button").length).toBeGreaterThan(0);
     expect(screen.getByTestId("board-column")).toBeTruthy();
     expect(workspaceStore.getState().focusedPaneId).toBe(id);
   } finally {
