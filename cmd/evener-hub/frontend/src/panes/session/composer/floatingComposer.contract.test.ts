@@ -141,6 +141,21 @@ test("the composer card becomes the floating surface on the phone, and only the 
   );
 });
 
+test("the start composer keeps its plain framed card, and the card clips its own content", () => {
+  // The spawn pane's card is the same PromptCard the conversation composer
+  // renders, and it keeps the framed look in every material mode: the iPhone
+  // glass material belongs to surfaces floating over moving content, not to
+  // a card inside a scrolling form over a flat pane background.
+  expect(cardCss, "the prompt card must not special-case the spawn pane").not.toMatch(/\[data-pane-scaffold="spawn"\]/);
+
+  // Clip is load-bearing for the liquid-glass SDK too - see the .card rule's
+  // own comment - and the clip margin keeps a keyboard-focused control's
+  // ring painting where a zero-padding state seats it flush with the card's
+  // padding edge (the Duo cover's empty resting row, the ≤340px phone card).
+  expect(topRuleBlock(cardCss, ".card")).toMatch(/overflow:\s*clip/);
+  expect(topRuleBlock(cardCss, ".card")).toMatch(/overflow-clip-margin:\s*var\(--focus-ring-width\)/);
+});
+
 test("browser session composer and transcript chrome carry ladder radii", () => {
   expect(topRuleBlock(cardCss, ".card")).toContain("border-radius: var(--radius-panel)");
   expect(askDockCss, "askdock.module.css must not shape a tab with --radius-pill").not.toContain("--radius-pill");

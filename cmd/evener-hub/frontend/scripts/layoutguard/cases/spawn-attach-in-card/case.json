@@ -1,6 +1,6 @@
 {
   "name": "spawn-attach-in-card",
-  "description": "spawn's prompt card keeps its whole control row - attach, the model trigger, and Start - inside the card at phone width, exactly where the session composer keeps them (issue #198)",
+  "description": "spawn's prompt card keeps its whole control row - attach, the model trigger, and Start - inside the card at phone width, exactly where the session composer keeps them (issue #198); the card is also the same plain framed card in regular iPhone glass mode, and it clips its own overflow with a focus-ring clip margin in every mode",
   "cssFiles": [
     "styles/tokens.css",
     "styles/text.module.css",
@@ -31,6 +31,6 @@
     "declaration": "spawn.module.css: the @media (max-width: 899px) .actionBand block (position: fixed; bottom: 0; min-height: 76px) restored, with the control row spelled class=\"controls actionBand\" and the attach button as its direct child - i.e. exactly what Spawn.tsx's controlsClassName={CLASS.actionBand} produced before this case existed",
     "verified": "2026-08-19",
     "expect": "fail",
-    "note": "2026-09-06: extended with effort containment, long-model ellipsis, and the 44px effort tap floor. Mutation-tested the same day by neutralizing spawn.module.css's .modelTrigger :global(span)/:global(button) piercing rules: the case fails with the model trigger and value escaping the card and no active ellipsis. 2026-11-22: the effort markup follows Select's quiet variant; the tap floor now lives in widgets/select and the shared quietTrigger recipe. 2026-11-23: the wrapper is ReasoningEffortControl's shared .control + data-effort-control, so this case loads reasoningeffortcontrol.module.css and spells the same names."
+    "note": "2026-09-06: extended with effort containment, long-model ellipsis, and the 44px effort tap floor. Mutation-tested the same day by neutralizing spawn.module.css's .modelTrigger :global(span)/:global(button) piercing rules: the case fails with the model trigger and value escaping the card and no active ellipsis. 2026-11-22: the effort markup follows Select's quiet variant; the tap floor now lives in widgets/select and the shared quietTrigger recipe. 2026-11-23: the wrapper is ReasoningEffortControl's shared .control + data-effort-control, so this case loads reasoningeffortcontrol.module.css and spells the same names. 2026-11-27: extended with the glass-mode skin and containment claims; mutation-tested the same day by restoring promptcard.module.css's body[data-iphone-glass] [data-pane-scaffold=spawn] .card glass rule (fails on the sheen gradient and the translucent panel color) and by dropping the base overflow: clip (fails in both glass and plain mode)."
   }
 }
