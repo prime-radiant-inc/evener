@@ -1,0 +1,7 @@
+.builtins {
+  composes: stack2 from "../../../styles/surface.module.css";
+}
+
+.help {
+  composes: helpUi from "../../../styles/help.module.css";
+}

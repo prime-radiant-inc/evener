@@ -157,6 +157,9 @@ lowest to highest precedence:
 Deeper project directories win over shallower ones; `skills/` wins over
 `.agents/skills/` at the same level. Without a repository, only cwd is scanned.
 Configured roots remain discoverable when a cold session has no recorded cwd.
+Settings → Skill directories shows this order on the selected host, with that
+host's resolved home and user-config roots, and edits step 5's `skills_dirs`
+list in place.
 Each public root scans its immediate children, including readable directory
 symlinks. Absolute and relative links may point outside the root; discovery does
 not recurse into nested collections. Symlinked roots and linked `SKILL.md` files

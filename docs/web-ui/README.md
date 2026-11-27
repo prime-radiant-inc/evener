@@ -82,7 +82,7 @@ Settings groups controls by task:
 
 - **Preferences:** Appearance, Conversation display, Input & shortcuts, Notifications.
 - **Agent setup:** Providers & credentials, Agents, AGENTS.md, Session defaults.
-- **Extensions:** Plugins, Skill directories, MCP servers.
+- **Extensions:** Plugins, Skill directories (the host's full discovery order plus the editable extra list), MCP servers.
 - **System:** Hosts, Devices, Hub, Storage, About.
 
 Search matches destination names and control keywords, such as font, Enter,
