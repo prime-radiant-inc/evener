@@ -11,6 +11,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
@@ -497,6 +498,262 @@ func TestToolSearchSchemasStaticToolsAndOmission(t *testing.T) {
 			t.Errorf("delegate definition mentions denied tool_search: %q", td.Description)
 		}
 	}
+
+	t.Run("result_tool_name_tool_search_takes_precedence", func(t *testing.T) {
+		t.Parallel()
+		stateDir := t.TempDir()
+		rc := llm.NewClient()
+		rc.Register(newFakeAdapter("openai", func(llm.Request) llm.Response {
+			return agenttest.ToolCallResponse(llm.ToolCallData{
+				ID:        "res-1",
+				Name:      "tool_search",
+				Type:      "function",
+				Arguments: json.RawMessage(`{"message":"ok"}`),
+			})
+		}))
+		cfg := SessionConfig{
+			StateDir:         stateDir,
+			MaxSubagentDepth: 2,
+			NonInteractive:   true,
+			ResultToolName:   "tool_search",
+			AgentsDocPath:    filepath.Join(t.TempDir(), "no-personal-AGENTS.md"),
+			testOnly:         testConfig{skipGitSnapshot: true, noSyncJobStore: true},
+		}
+		rsess, err := NewSession(rc, withTestSessionNamer(rc, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), cfg)
+		if err != nil {
+			t.Fatalf("NewSession(ResultToolName=tool_search): %v", err)
+		}
+		checkFullSurface := func(label string, s *Session) {
+			t.Helper()
+			requireResultToolShape(t, s, "tool_search")
+			if s.reg.Get("communicate") != nil {
+				t.Fatalf("%s: canonical communicate remained registered", label)
+			}
+			if s.hasDeferredToolsLocked() {
+				t.Fatalf("%s: expected zero deferred tools when result tool owns tool_search", label)
+			}
+			defs := s.ToolDefinitions()
+			byName := make(map[string]llm.ToolDefinition, len(defs))
+			for _, td := range defs {
+				byName[td.Name] = td
+			}
+			rtDef, ok := byName["tool_search"]
+			if !ok {
+				t.Fatalf("%s: tool_search result tool missing from ToolDefinitions()", label)
+			}
+			props, _ := rtDef.Parameters["properties"].(map[string]any)
+			if _, hasMsg := props["message"]; !hasMsg {
+				t.Fatalf("%s: advertised tool_search lacks communicate message property: %v", label, props)
+			}
+			for _, name := range []string{"job_watch", "manage_worktree", "read_transcript", "web_fetch"} {
+				td, exists := byName[name]
+				if !exists {
+					t.Fatalf("%s: expected %q in ToolDefinitions()", label, name)
+				}
+				tdProps, _ := td.Parameters["properties"].(map[string]any)
+				if td.Description == "" || len(tdProps) == 0 {
+					t.Fatalf("%s: tool %q was deferred instead of full schema: %+v", label, name, td)
+				}
+			}
+			ceiling := delegateToolNameCeilingFromRegistered(s.reg.RegisteredNames(), s.reg, s.resultToolName(), true, nil, nil, true, "")
+			if !slices.Contains(ceiling, "tool_search") {
+				t.Fatalf("%s: delegate ceiling dropped result alias tool_search: %v", label, ceiling)
+			}
+		}
+		checkFullSurface("new", rsess)
+		rsess.mu.Lock()
+		rsess.rebuildToolDefsCache()
+		rsess.mu.Unlock()
+		checkFullSurface("rebuild", rsess)
+
+		if _, err := rsess.ProcessInput(tripwireCtx(t), "hello", nil); err != nil {
+			rsess.Close()
+			t.Fatalf("ProcessInput: %v", err)
+		}
+		id := rsess.ID()
+		rsess.Close()
+
+		meta, err := schema.LoadSessionMeta(stateDir, id)
+		if err != nil {
+			t.Fatalf("LoadSessionMeta: %v", err)
+		}
+		rc2 := llm.NewClient()
+		rc2.Register(newFakeAdapter("openai", func(llm.Request) llm.Response {
+			return agenttest.ToolCallResponse(llm.ToolCallData{
+				ID:        "res-2",
+				Name:      "tool_search",
+				Type:      "function",
+				Arguments: json.RawMessage(`{"message":"restored-ok"}`),
+			})
+		}))
+		restored, err := RestoreSessionFromMetaWithConfig(rc2, withTestSessionNamer(rc2, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), meta, RestoreSessionConfig{
+			StateDir: stateDir,
+			testOnly: testConfig{skipGitSnapshot: true, noSyncJobStore: true},
+		})
+		if err != nil {
+			t.Fatalf("RestoreSessionFromMetaWithConfig(ResultToolName=tool_search): %v", err)
+		}
+		defer restored.Close()
+		checkFullSurface("restore", restored)
+		if out, err := restored.ProcessInput(tripwireCtx(t), "resume", nil); err != nil || out != "restored-ok" {
+			t.Fatalf("restored ProcessInput = (%q, %v), want (\"restored-ok\", nil)", out, err)
+		}
+	})
+
+	t.Run("output_limit_caps_whole_schemas_before_marking_disclosed", func(t *testing.T) {
+		t.Parallel()
+		const capChars = 4096
+		bgArgs := idleShellJSON(`,"mode":"background"`)
+		lc := llm.NewClient()
+		la := newFakeAdapter("openai",
+			func(llm.Request) llm.Response {
+				return agenttest.ToolCallResponse(llm.ToolCallData{
+					ID:        "ts-cap",
+					Name:      "tool_search",
+					Type:      "function",
+					Arguments: json.RawMessage(`{"names":["job_watch","job_status","job_stop","job_list"],"intent":"Loading job control schemas"}`),
+				})
+			},
+			func(llm.Request) llm.Response {
+				return agenttest.ToolCallResponse(llm.ToolCallData{
+					ID:        "sh-bg",
+					Name:      "shell",
+					Type:      "function",
+					Arguments: bgArgs,
+				})
+			},
+			func(llm.Request) llm.Response {
+				return agenttest.FinalResponse("ok")
+			},
+		)
+		lc.Register(la)
+		lsess, err := NewSession(lc, withTestSessionNamer(lc, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+			StateDir:        t.TempDir(),
+			NonInteractive:  true,
+			TurnEndsProcess: true,
+			AgentsDocPath:   filepath.Join(t.TempDir(), "no-personal-AGENTS.md"),
+			ToolOutputLimits: map[string]schema.ToolOutputLimit{
+				"tool_search": {MaxChars: capChars, Strategy: schema.TruncHeadTail},
+			},
+			testOnly: testConfig{skipGitSnapshot: true, noSyncJobStore: true},
+		})
+		if err != nil {
+			t.Fatalf("NewSession(capped tool_search): %v", err)
+		}
+		defer lsess.Close()
+
+		if _, err := lsess.ProcessInput(tripwireCtx(t), "look up job tools then start background shell", nil); err != nil {
+			t.Fatalf("ProcessInput: %v", err)
+		}
+		lreqs := la.Requests()
+		if len(lreqs) < 3 {
+			t.Fatalf("requests = %d, want at least 3", len(lreqs))
+		}
+		tsOut := toolResultTextForCall(lreqs[1], "ts-cap")
+		if utf8.RuneCountInString(tsOut) > capChars {
+			t.Fatalf("tool_search output length = %d runes, exceeds cap %d", utf8.RuneCountInString(tsOut), capChars)
+		}
+		if tool.IsTruncatedOutput(tsOut) {
+			t.Fatalf("tool_search output was sliced by registry truncation instead of returning whole schemas:\n%s", tsOut)
+		}
+		jsonLine, trailing, hasTrailing := strings.Cut(tsOut, "\n")
+		var included []liveToolSchema
+		if err := json.Unmarshal([]byte(jsonLine), &included); err != nil {
+			t.Fatalf("tool_search returned invalid JSON line (%v):\n%s", err, tsOut)
+		}
+		if len(included) == 0 || len(included) == 4 {
+			t.Fatalf("expected partial fit under %d-char cap, got %d of 4 schemas", capChars, len(included))
+		}
+		includedSet := make(map[string]bool, len(included))
+		for _, item := range included {
+			includedSet[item.Name] = true
+		}
+		var omitted []string
+		for _, name := range []string{"job_watch", "job_status", "job_stop", "job_list"} {
+			if !includedSet[name] {
+				omitted = append(omitted, name)
+			}
+		}
+		if !hasTrailing {
+			t.Fatalf("expected trailing omitted-tool line for %v, got:\n%s", omitted, tsOut)
+		}
+		for _, name := range omitted {
+			if !strings.Contains(trailing, name) {
+				t.Fatalf("trailing line %q did not name omitted tool %q", trailing, name)
+			}
+		}
+		// Omitted schemas must stay eligible for automatic reactive disclosure after the background shell.
+		var reactiveText strings.Builder
+		for _, msg := range lreqs[2].Messages[len(lreqs[1].Messages):] {
+			reactiveText.WriteString(msg.Text())
+			reactiveText.WriteByte('\n')
+		}
+		for _, name := range omitted {
+			if !strings.Contains(reactiveText.String(), `"`+name+`"`) {
+				t.Fatalf("omitted schema %q was not reactively disclosed after background shell:\n%s", name, reactiveText.String())
+			}
+		}
+		for name := range includedSet {
+			if strings.Contains(reactiveText.String(), `"`+name+`"`) {
+				t.Fatalf("already-returned schema %q was duplicated in reactive disclosure:\n%s", name, reactiveText.String())
+			}
+		}
+
+		// Follow-up smaller lookup for the omitted names returns them cleanly under the same cap.
+		fc := llm.NewClient()
+		fc.Register(&fakeAdapter{name: "openai"})
+		fsess, err := NewSession(fc, withTestSessionNamer(fc, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+			StateDir:        t.TempDir(),
+			NonInteractive:  true,
+			TurnEndsProcess: true,
+			AgentsDocPath:   filepath.Join(t.TempDir(), "no-personal-AGENTS.md"),
+			ToolOutputLimits: map[string]schema.ToolOutputLimit{
+				"tool_search": {MaxChars: capChars, Strategy: schema.TruncHeadTail},
+			},
+			testOnly: testConfig{skipGitSnapshot: true, noSyncJobStore: true},
+		})
+		if err != nil {
+			t.Fatalf("NewSession(follow-up): %v", err)
+		}
+		defer fsess.Close()
+		followArgs, _ := json.Marshal(map[string]any{"names": omitted, "intent": "Follow-up lookup of omitted job tools"})
+		followRes := fsess.execTool(tripwireCtx(t), llm.ToolCallData{
+			ID: "ts-follow", Name: "tool_search", Type: "function", Arguments: followArgs,
+		}, "")
+		if followRes.IsError || followRes.Truncated || !strings.Contains(followRes.Output, `"`+omitted[0]+`"`) {
+			t.Fatalf("follow-up tool_search(%v) = err:%v trunc:%v out:%q", omitted, followRes.IsError, followRes.Truncated, followRes.Output)
+		}
+
+		// Single-oversize cap: leaves tool undisclosed and does not slice JSON.
+		tinyClient := llm.NewClient()
+		tinyClient.Register(&fakeAdapter{name: "openai"})
+		tinySess, err := NewSession(tinyClient, withTestSessionNamer(tinyClient, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+			StateDir:        t.TempDir(),
+			NonInteractive:  true,
+			TurnEndsProcess: true,
+			AgentsDocPath:   filepath.Join(t.TempDir(), "no-personal-AGENTS.md"),
+			ToolOutputLimits: map[string]schema.ToolOutputLimit{
+				"tool_search": {MaxChars: 120, Strategy: schema.TruncHeadTail},
+			},
+			testOnly: testConfig{skipGitSnapshot: true, noSyncJobStore: true},
+		})
+		if err != nil {
+			t.Fatalf("NewSession(tiny tool_search): %v", err)
+		}
+		defer tinySess.Close()
+		tinyRes := tinySess.execTool(tripwireCtx(t), llm.ToolCallData{
+			ID:        "ts-tiny",
+			Name:      "tool_search",
+			Type:      "function",
+			Arguments: json.RawMessage(`{"names":["job_watch"],"intent":"Testing single-oversize cap"}`),
+		}, "")
+		if tinyRes.Truncated || !strings.Contains(tinyRes.Output, "job_watch") {
+			t.Fatalf("tiny cap result = truncated:%v out:%q, want non-truncated omitted message naming job_watch", tinyRes.Truncated, tinyRes.Output)
+		}
+		if tinySess.disclosedToolSchemas["job_watch"] {
+			t.Fatal("oversize single schema job_watch must not be marked disclosed")
+		}
+	})
 }
 
 func TestDelegationCueAbsentWhenDelegateUnregistered(t *testing.T) {

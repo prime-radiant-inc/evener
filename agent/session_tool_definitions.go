@@ -350,7 +350,7 @@ func (s *Session) isTier1PromotedLocked(canonicalName string) bool {
 // JIT disclosures). Manager sessions, parent observers, and configured
 // Tier1Tools keep matching tools upfront with full Tier-1 schemas.
 func (s *Session) isDeferredToolLocked(canonicalName string) bool {
-	if s == nil {
+	if s == nil || s.resultToolOwnsToolSearch() {
 		return false
 	}
 	group, ok := tier2DeferredGroups[canonicalName]
@@ -516,10 +516,8 @@ func (s *Session) rebuildToolDefsCache() {
 			included[stub.Name] = true
 			continue
 		}
-		if td.Name == "tool_search" {
-			if !hasDeferred {
-				continue
-			}
+		if td.Name == "tool_search" && !s.resultToolOwnsToolSearch() && !hasDeferred {
+			continue
 		}
 		// Never expose both apply_patch and edit_file in the same session; both
 		// stay registered in s.reg for mid-session model switching.

@@ -7,13 +7,19 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"unicode/utf8"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/skill"
 	"primeradiant.com/evener/llm"
 )
+
+func (s *Session) resultToolOwnsToolSearch() bool {
+	return s != nil && s.resultToolName() == "tool_search"
+}
 
 func (s *Session) toolSearchRegisteredTool() tool.RegisteredTool {
 	return tool.RegisteredTool{
@@ -24,14 +30,14 @@ func (s *Session) toolSearchRegisteredTool() tool.RegisteredTool {
 }
 
 func (s *Session) registerToolSearch(register func(tool.RegisteredTool) error) error {
-	if register == nil {
+	if register == nil || s.resultToolOwnsToolSearch() {
 		return nil
 	}
 	return register(s.toolSearchRegisteredTool())
 }
 
 func (s *Session) syncToolSearchRegistrationLocked() bool {
-	if s == nil || s.reg == nil {
+	if s == nil || s.reg == nil || s.resultToolOwnsToolSearch() {
 		return false
 	}
 	hasDeferred := s.hasDeferredToolsLocked()
@@ -47,6 +53,9 @@ func (s *Session) syncToolSearchRegistrationLocked() bool {
 			}
 		}
 		_ = s.registerToolSearch(register)
+		if lim, ok := s.cfg.ToolOutputLimits["tool_search"]; ok {
+			s.reg.OverrideLimits(map[string]schema.ToolOutputLimit{"tool_search": lim})
+		}
 	}
 	return true
 }
@@ -122,22 +131,57 @@ type liveToolSchema struct {
 	Parameters  map[string]any `json:"parameters"`
 }
 
-func encodeLiveToolSchemas(defs []llm.ToolDefinition) string {
-	items := make([]liveToolSchema, 0, len(defs))
-	for _, td := range defs {
-		items = append(items, liveToolSchema{
-			Name:        td.Name,
-			Description: td.Description,
-			Parameters:  td.Parameters,
-		})
-	}
+func encodeLiveToolSchema(td llm.ToolDefinition) string {
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
 	enc.SetEscapeHTML(false)
-	if err := enc.Encode(items); err != nil {
+	if err := enc.Encode(liveToolSchema{Name: td.Name, Description: td.Description, Parameters: td.Parameters}); err != nil {
 		return ""
 	}
 	return strings.TrimSpace(buf.String())
+}
+
+func (s *Session) toolSearchMaxCharsLocked() int {
+	if rt := s.reg.Get("tool_search"); rt != nil {
+		return rt.Limit.MaxChars
+	}
+	return s.cfg.ToolOutputLimits["tool_search"].MaxChars
+}
+
+func fitToolSearchOutput(matched []llm.ToolDefinition, matchedCanonicals []string, staticSuffix string, maxChars int) (string, []string) {
+	items := make([]string, len(matched))
+	for i, td := range matched {
+		items[i] = encodeLiveToolSchema(td)
+	}
+	if full := "[" + strings.Join(items, ",") + "]" + staticSuffix; maxChars <= 0 || utf8.RuneCountInString(full) <= maxChars {
+		return full, matchedCanonicals
+	}
+	const omittedPrefix = "\nOmitted due to output limit (look up in a smaller follow-up call): "
+	var chosenJSON, includedCanonicals, omittedWire []string
+	for i, td := range matched {
+		candOmitted := slices.Clone(omittedWire)
+		for _, rem := range matched[i+1:] {
+			candOmitted = append(candOmitted, rem.Name)
+		}
+		candOut := "[" + strings.Join(append(slices.Clone(chosenJSON), items[i]), ",") + "]" + staticSuffix
+		if len(candOmitted) > 0 {
+			candOut += omittedPrefix + strings.Join(candOmitted, ", ")
+		}
+		if utf8.RuneCountInString(candOut) <= maxChars {
+			chosenJSON = append(chosenJSON, items[i])
+			includedCanonicals = append(includedCanonicals, matchedCanonicals[i])
+		} else {
+			omittedWire = append(omittedWire, td.Name)
+		}
+	}
+	if len(chosenJSON) == 0 {
+		msg := fmt.Sprintf("Omitted due to output limit (%d chars): %s", maxChars, strings.Join(omittedWire, ", "))
+		if staticSuffix != "" && utf8.RuneCountInString(msg+staticSuffix) <= maxChars {
+			msg += staticSuffix
+		}
+		return msg, nil
+	}
+	return "[" + strings.Join(chosenJSON, ",") + "]" + staticSuffix + omittedPrefix + strings.Join(omittedWire, ", "), includedCanonicals
 }
 
 func parseToolSearchNames(args map[string]any) []string {
@@ -303,22 +347,23 @@ func (s *Session) execToolSearch(_ context.Context, _ execenv.ExecutionEnvironme
 		}, nil
 	}
 
-	if s.disclosedToolSchemas == nil {
-		s.disclosedToolSchemas = make(map[string]bool)
-	}
-	for _, canonical := range matchedCanonicals {
-		s.disclosedToolSchemas[canonical] = true
-	}
-
-	var out strings.Builder
-	out.WriteString(encodeLiveToolSchemas(matched))
+	var suffix strings.Builder
 	if len(alreadyTier1) > 0 {
-		fmt.Fprintf(&out, "\nAlready loaded upfront in full (call directly): %s", strings.Join(alreadyTier1, ", "))
+		fmt.Fprintf(&suffix, "\nAlready loaded upfront in full (call directly): %s", strings.Join(alreadyTier1, ", "))
 	}
 	if len(unknown) > 0 {
-		fmt.Fprintf(&out, "\nUnknown tool(s): %s (available deferred tools: %s)", strings.Join(unknown, ", "), strings.Join(visibleNames, ", "))
+		fmt.Fprintf(&suffix, "\nUnknown tool(s): %s (available deferred tools: %s)", strings.Join(unknown, ", "), strings.Join(visibleNames, ", "))
 	}
-	return tool.StateResult{Output: out.String()}, nil
+	output, includedCanonicals := fitToolSearchOutput(matched, matchedCanonicals, suffix.String(), s.toolSearchMaxCharsLocked())
+	if len(includedCanonicals) > 0 {
+		if s.disclosedToolSchemas == nil {
+			s.disclosedToolSchemas = make(map[string]bool)
+		}
+		for _, canonical := range includedCanonicals {
+			s.disclosedToolSchemas[canonical] = true
+		}
+	}
+	return tool.StateResult{Output: output}, nil
 }
 
 func (s *Session) deferredToolDefsForDisclosureWithCanonical(names []string, claim bool) ([]llm.ToolDefinition, []string) {

@@ -340,6 +340,19 @@ func TestNewSessionRefusesEveryNameItsOwnRegistryRegisters(t *testing.T) {
 				if name == tool.DefaultResultToolName {
 					continue
 				}
+				if name == "tool_search" {
+					cfg.ResultToolName = name
+					sess, err := newResultToolSession(t, tc.profile, cfg)
+					if err != nil {
+						t.Fatalf("NewSession refused ResultToolName=%q (expected precedence over discovery shim): %v", name, err)
+					}
+					requireResultToolShape(t, sess, name)
+					if sess.hasDeferredToolsLocked() {
+						t.Fatalf("ResultToolName=%q left tools deferred without discovery", name)
+					}
+					sess.Close()
+					continue
+				}
 				cfg.ResultToolName = name
 				requireResultToolRejected(t, tc.profile, cfg)
 				// A registered tool's provider-visible alias is taken too.
