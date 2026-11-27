@@ -287,8 +287,8 @@ test("More lists the other sessions with full accessible titles and restores the
   render(controlTree());
 
   const more = screen.getByTestId("next-needs-you-more");
-  expect(more.textContent).toContain("…");
-  expect(more.textContent).not.toContain("▾");
+  expect(more.getAttribute("aria-label")).toBeTruthy();
+  expect(more.querySelector('svg[aria-hidden="true"]')).toBeTruthy();
   more.focus();
   fireEvent.click(more);
 

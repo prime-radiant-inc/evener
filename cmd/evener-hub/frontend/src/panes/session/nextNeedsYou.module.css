@@ -51,12 +51,6 @@
   line-height: var(--line-height-ui);
 }
 
-.ellipsis {
-  display: block;
-  font-size: var(--font-size-body);
-  line-height: 1;
-}
-
 .list {
   display: flex;
   flex-direction: column;
