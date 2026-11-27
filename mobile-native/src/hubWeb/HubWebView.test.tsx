@@ -5,6 +5,9 @@ import { AlertCenter, type HoldKind } from "../alerts/alertCenter";
 import { AlertsContext } from "../alerts/alertsContext";
 import { paletteFor } from "../design/tokens";
 import { render, settle, systemGlass } from "../renderNative.testkit";
+import { createShareIntake } from "../share/shareIntake";
+import { pendingShares } from "../share/sharePayload";
+import { share as payload, sharePort } from "../share/shareTestkit";
 import { HubWebView } from "./HubWebView";
 
 vi.mock("react-native", async () => (await import("../renderNative.testkit")).nativeModuleMock());
@@ -15,23 +18,30 @@ const native = vi.hoisted(() => ({
 	navigation: { setOptions: vi.fn<(options: NativeStackNavigationOptions) => void>() },
 }));
 
-it("delivers a share only to its chosen hub and composer, then accepts that delivery's receipt", () => {
+it("delivers a share only to its chosen hub and composer, then accepts that delivery's receipt", async () => {
 	const profile = { id: "desk", name: "Desk", origin: "https://desk.example" };
 	const share = { id: "file-id", path: "/new", hubId: profile.id, text: "shared-sentinel", createdAt: "" };
 	const postMessage = vi.fn();
-	const onSharePlaced = vi.fn();
-	const workspace = (hubId: string) => (
+	const other = payload("other-file", 1);
+	const port = sharePort([other, { ...share, createdAt: new Date(2).toISOString() }]);
+	const offered = vi.fn();
+	const intake = createShareIntake({ port, onShare: offered });
+	const onSharePlaced = vi.fn(async (id: string) => {
+		intake.forget(id);
+		await intake.advance(id);
+	});
+	const workspace = (hubId?: string, initialPath = "/new") => (
 		<HubWebView
 			profile={profile}
 			token=""
-			initialPath="/new"
+			initialPath={initialPath}
 			onPath={vi.fn()}
 			onHubMenu={vi.fn()}
-			share={{ ...share, hubId }}
+			share={hubId ? { ...share, hubId } : undefined}
 			onSharePlaced={onSharePlaced}
 		/>
 	);
-	const tree = render(workspace("other"), {
+	const tree = render(workspace("other", "/new?dir=%2Fwork"), {
 		createNodeMock: (node) => (node.type === "WebView" ? { postMessage } : null),
 	});
 	const message = (payload: object, url = profile.origin + "/new") =>
@@ -42,7 +52,7 @@ it("delivers a share only to its chosen hub and composer, then accepts that deli
 	const receipt = { type: "sharePlaced", path: share.path, id: share.id };
 	const sent = () => postMessage.mock.calls.map(([raw]) => JSON.parse(raw)).filter((data) => data.type === "shareText");
 	message({ type: "ready" });
-	message(target);
+	message(target, profile.origin + "/new?dir=%2Fwork");
 	expect(sent()).toEqual([]);
 	message({ type: "covered", active: true });
 	act(() => tree.update(workspace(profile.id)));
@@ -52,12 +62,27 @@ it("delivers a share only to its chosen hub and composer, then accepts that deli
 	message({ type: "covered", active: false });
 	expect(sent()).toEqual([{ type: "shareText", path: share.path, id: share.id, text: share.text }]);
 	message(receipt, "https://other.example/new");
-	message(receipt, profile.origin + "/s/stale");
+	message(receipt, profile.origin + "/s/local%3Astale");
 	message({ ...receipt, id: "stale" });
 	expect(onSharePlaced).not.toHaveBeenCalled();
-	message(receipt);
-	message(receipt);
+	// The launcher can finish after another pane opens, with the intake
+	// already holding a different file for the picker.
+	const nextPath = "/s/local%3Aother";
+	message({ type: "route", path: nextPath }, profile.origin + nextPath);
+	native.focused = false;
+	onTestFinished(() => {
+		native.focused = true;
+	});
+	act(() => tree.update(workspace(undefined, nextPath)));
+	await intake.offer();
+	expect(offered).toHaveBeenCalledWith(other);
+	message(receipt, profile.origin + nextPath);
+	message(receipt, profile.origin + nextPath);
 	expect(onSharePlaced.mock.calls).toEqual([[share.id]]);
+	await onSharePlaced.mock.results[0]?.value;
+	expect(await pendingShares(port)).toEqual([other]);
+	expect(intake.busy).toBe(true);
+	expect(offered).toHaveBeenCalledTimes(1);
 });
 vi.mock("@react-navigation/native", () => ({
 	useIsFocused: () => native.focused,

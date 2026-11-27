@@ -50,6 +50,7 @@ import { activitySidebarStore } from "../../../shell/activitybar/activitySidebar
 import { isAppleTouchDevice } from "../../../shell/iPhoneGlass";
 import { iPhoneHost, tellIPhoneHost, useIPhoneShare } from "../../../shell/iPhoneHost";
 import { alignCreateWithComposer } from "../../../shell/rail/alignCreateWithComposer";
+import { paneToURL } from "../../../shell/routing";
 import type { SessionMenuTurnVerbs } from "../../../shell/sessionMenu/SessionMenu";
 import { useIsMobile } from "../../../shell/useIsMobile";
 import { useMountAutofocus } from "../../../shell/useMountAutofocus";
@@ -287,9 +288,9 @@ function ComposerWithSubmission({
     adoptedImageRanges,
     stagedImageRanges,
   } = useSyncExternalStore(source.subscribe, source.getSnapshot, source.getSnapshot);
-  const sharePath = `/s/${encodeURIComponent(ref)}`;
+  const sharePath = paneToURL("session", { ref });
   useIPhoneShare(focused && !activeRecoveryId ? sharePath : null, (id, text) => {
-    if (source.placeShare(id, text)) tellIPhoneHost({ type: "sharePlaced", id, path: sharePath });
+    if (sharePath && source.placeShare(id, text)) tellIPhoneHost({ type: "sharePlaced", id, path: sharePath });
   });
   // The anchors this composer read out of a draft it did not write and cannot
   // back with bytes: the source's adoption record intersected with the text as

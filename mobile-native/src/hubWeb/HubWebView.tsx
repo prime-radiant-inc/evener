@@ -49,7 +49,7 @@ export function HubWebView({ profile, token, initialPath, onPath, onHubMenu, sha
 	const [readingDocument, setReadingDocument] = useState(false);
 	const [covered, setCovered] = useState(false);
 	const [shareTarget, setShareTarget] = useState<{ path: string } | null>(null);
-	const deliveredShare = useRef<WorkspaceShare | undefined>(undefined);
+	const deliveredShares = useRef(new Map<string, Pick<WorkspaceShare, "hubId" | "path">>());
 	const [header, setHeader] = useState<SessionHeaderState | null>(null);
 	const [sessionsToolbar, setSessionsToolbar] = useState<SessionsToolbar | null>(null);
 	const [restoringSession, setRestoringSession] = useState(() =>
@@ -98,7 +98,7 @@ export function HubWebView({ profile, token, initialPath, onPath, onHubMenu, sha
 			share.path === shareTarget?.path &&
 			initialPath === share.path
 		) {
-			deliveredShare.current = share;
+			deliveredShares.current.set(share.id, { hubId: share.hubId, path: share.path });
 			web.current?.postMessage(JSON.stringify({ type: "shareText", path: share.path, id: share.id, text: share.text }));
 		}
 	}, [inFront, covered, share, profile.id, shareTarget, initialPath]);
@@ -129,7 +129,7 @@ export function HubWebView({ profile, token, initialPath, onPath, onHubMenu, sha
 		onPath(path);
 	};
 	const resetDocument = useCallback(() => {
-		deliveredShare.current = undefined;
+		deliveredShares.current.clear();
 		setShareTarget(null);
 		setBridgeReady(false);
 		setEditing(false);
@@ -188,24 +188,27 @@ export function HubWebView({ profile, token, initialPath, onPath, onHubMenu, sha
 			workspaceSessionRef(initialPath) === restoringSession;
 		switch (data.type) {
 			case "shareTarget":
-				if (data.path === documentPath) setShareTarget({ path: documentPath });
+				if (data.path === new URL(nativeEvent.url).pathname) setShareTarget({ path: data.path });
 				break;
-			case "sharePlaced":
-				if (
-					focused &&
-					!error &&
-					share &&
-					deliveredShare.current === share &&
-					share.hubId === profile.id &&
-					share.id === data.id &&
-					data.path === share.path &&
-					documentPath === share.path &&
-					initialPath === share.path
-				) {
-					deliveredShare.current = undefined;
-					onSharePlaced?.(share.id);
+			case "sharePlaced": {
+				const delivery = deliveredShares.current.get(data.id);
+				if (!delivery || delivery.hubId !== profile.id || delivery.path !== data.path) break;
+				// A retained launch draft can finish after navigation or while a picker
+				// covers the workspace. Its receipt belongs to this WebKit document.
+				const accepted =
+					delivery.path === "/new"
+						? documentPath === currentPath.current
+						: focused &&
+							!error &&
+							share?.id === data.id &&
+							initialPath === delivery.path &&
+							documentPath === delivery.path;
+				if (accepted) {
+					deliveredShares.current.delete(data.id);
+					onSharePlaced?.(data.id);
 				}
 				break;
+			}
 			case "appearance":
 				if (typeof data.dark === "boolean") setHubDark(data.dark);
 				break;

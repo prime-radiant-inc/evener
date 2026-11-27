@@ -82,8 +82,9 @@ function Navigation() {
 	}, [share, hubId, intake]);
 
 	function finishShare(id: string) {
-		picker.current = null;
-		setShare(undefined);
+		if (picker.current === id) picker.current = null;
+		setShare((current) => (current?.id === id ? undefined : current));
+		setOffer((current) => (current?.id === id ? null : current));
 		intake.forget(id);
 		void intake.advance(id);
 	}
@@ -129,7 +130,11 @@ function Navigation() {
 								{...props}
 								share={share}
 								onSharePlaced={(id) => {
-									if (share?.id === id && share.hubId === hubId) finishShare(id);
+									const front = navigationRef.getCurrentRoute();
+									finishShare(id);
+									if (front?.name === "ShareTarget" && (front.params as Routes["ShareTarget"]).item.id === id) {
+										navigationRef.goBack();
+									}
 								}}
 							/>
 						)}
