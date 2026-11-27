@@ -331,6 +331,7 @@ no router (reserved).
 | `evener/settings/keybindings/patch` | hub | [KeybindingsPatchParams](#keybindingspatchparams) | [KeybindingsOverrides](#keybindingsoverrides) | Replaces the user keybinding overrides using an expected revision and returns the canonical value. |
 | `evener/settings/agentsDoc/get` | hub | [EmptyParams](#emptyparams) | [AgentsDocResponse](#agentsdocresponse) | Reads the personal AGENTS.md under the user config root: its path, whether it exists, and its content. |
 | `evener/settings/agentsDoc/set` | hub | [AgentsDocSetParams](#agentsdocsetparams) | [AgentsDocResponse](#agentsdocresponse) | Replaces the personal AGENTS.md whole (no precondition); broadcasts evener/settings/agentsDoc/changed. |
+| `evener/settings/skillDirs/get` | hub | [EmptyParams](#emptyparams) | [SkillDirsResponse](#skilldirsresponse) | Reads the built-in home and user-config skill directories this host scans, for the Settings skill-directory reference. |
 | `evener/sandbox/escalation/resolve` | both | [SandboxEscalationResolveParams](#sandboxescalationresolveparams) | [EmptyResponse](#emptyresponse) | Delivers a human's approve/deny decision for a pending sandbox-exemption escalation (M7); the daemon unblocks the waiting tool-exec goroutine, the hub relays. |
 | `evener/delegate/stop` | both | [DelegateStopParams](#delegatestopparams) | [DelegateStopResponse](#delegatestopresponse) | Ends one subagent's current run at the user's request (S6): that subagent alone, while the subagents it started keep running; the root's daemon serves it, the hub relays. Answers stopping or notRunning. |
 | `evener/jobs/stop` | both | [SessionStopRequest](#sessionstoprequest) | [SessionStopResponse](#sessionstopresponse) | Runs the human job_stop owner for a typed job_ target (includeChildren stops only immediate shell children) or owned_delegate dlg_ target (recursive owned subtree). The separate delegate mode ends only one run. |
@@ -4552,6 +4553,14 @@ Underlying Go kind: `string` (no struct fields).
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `stateDir` | string | yes |  |
+
+
+### `SkillDirsResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `homeSkillsDir` | string | yes |  |
+| `userSkillsDir` | string | yes |  |
 
 
 ### `SnapshotIdentity`

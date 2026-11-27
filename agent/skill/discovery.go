@@ -127,6 +127,13 @@ func (c Catalog) advertisedEntries(user bool) []Descriptor {
 	return result
 }
 
+// HomeSkillsDir is the agent-standard home skill root discovery scans when
+// DiscoverOptions.HomeDir is set. Callers that report discovery roots use it so
+// their answer matches the scan.
+func HomeSkillsDir(home string) string {
+	return filepath.Join(home, ".agents", "skills")
+}
+
 // Discover scans in increasing precedence, preserving diagnostics and reserving
 // known names even when the winning metadata is invalid. It only reads text.
 func Discover(env execenv.ExecutionEnvironment, opts DiscoverOptions) Catalog {
@@ -198,7 +205,7 @@ func Discover(env execenv.ExecutionEnvironment, opts DiscoverOptions) Catalog {
 	}
 	c.Diagnostics = append(c.Diagnostics, EmbeddedSkillsDiagnostics()...)
 	if opts.HomeDir != "" {
-		scan(filepath.Join(opts.HomeDir, ".agents", "skills"), "", true)
+		scan(HomeSkillsDir(opts.HomeDir), "", true)
 	}
 	scan(opts.UserSkillsDir, "", true)
 	for _, dir := range projectSkillDirs(env) {

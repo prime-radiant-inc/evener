@@ -4679,6 +4679,11 @@ export interface SettingsStorageOverview {
   stateDir?: string;
 }
 
+export interface SkillDirsResponse {
+  homeSkillsDir?: string;
+  userSkillsDir?: string;
+}
+
 export interface SnapshotIdentity {
   incarnation: string;
   length: number;
@@ -6266,6 +6271,7 @@ export const METHOD_NAMES = [
   "evener/settings/keybindings/patch",
   "evener/settings/agentsDoc/get",
   "evener/settings/agentsDoc/set",
+  "evener/settings/skillDirs/get",
   "evener/sandbox/escalation/resolve",
   "evener/delegate/stop",
   "evener/jobs/stop",
@@ -6339,6 +6345,7 @@ export const HOST_REQUEST_METHODS = [
   "evener/projects/recent",
   "evener/settings/agentsDoc/get",
   "evener/settings/agentsDoc/set",
+  "evener/settings/skillDirs/get",
   "evener/spawn/slashCatalog",
   "model/list",
 ] as const;
@@ -6951,6 +6958,7 @@ export interface MethodTypes {
   "evener/settings/keybindings/patch": { params: KeybindingsPatchParams; result: KeybindingsOverrides };
   "evener/settings/agentsDoc/get": { params: EmptyParams; result: AgentsDocResponse };
   "evener/settings/agentsDoc/set": { params: AgentsDocSetParams; result: AgentsDocResponse };
+  "evener/settings/skillDirs/get": { params: EmptyParams; result: SkillDirsResponse };
   "evener/sandbox/escalation/resolve": { params: SandboxEscalationResolveParams; result: EmptyResponse };
   "evener/delegate/stop": { params: DelegateStopParams; result: DelegateStopResponse };
   "evener/jobs/stop": { params: SessionStopRequest; result: SessionStopResponse };

@@ -11,7 +11,6 @@ import (
 	"primeradiant.com/evener/agent"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
-	"primeradiant.com/evener/envvars/userdirs"
 	"primeradiant.com/evener/internal/appserver"
 )
 
@@ -31,13 +30,8 @@ func agentsDocPath(configRoot string) string {
 // omit --agents-doc and the settings handlers refuse, which is the rule
 // agent.personalDocPath already applies on the daemon side.
 func hubAgentsDocPath(cfg hubcore.WebConfig) string {
-	root := cfg.LaunchConfigRoot
+	root := hubLaunchConfigRoot(cfg)
 	if root == "" {
-		// userdirs, not cmdutil: this one reports an unresolvable root as
-		// empty instead of substituting a relative path.
-		root = userdirs.DefaultConfigRoot()
-	}
-	if root == "" || !filepath.IsAbs(root) {
 		return ""
 	}
 	return agentsDocPath(root)

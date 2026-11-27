@@ -103,6 +103,10 @@ var hostRequestMethods = map[string]struct{}{
 	MethodEvenerProjectsRecent:    {},
 	MethodEvenerHarnessesList:     {},
 	MethodEvenerSpawnSlashCatalog: {},
+	// evener/settings/skillDirs/get answers with the host's own home and
+	// user-config skill roots, which the Settings pane shows beside its
+	// editable extra-directory list.
+	MethodEvenerSettingsSkillDirsGet: {},
 	// evener/git/head is read-only branch metadata for a remote working
 	// directory (protocol.go: ScopeHub, GitHeadParams/GitHeadResponse); the
 	// spawn form needs the branch of the path it is about to launch.

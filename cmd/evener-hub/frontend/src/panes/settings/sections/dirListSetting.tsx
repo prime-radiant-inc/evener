@@ -19,7 +19,7 @@
 
 import type { LaunchConfigLayer } from "@evener/appwire-client";
 import { friendlyErrorMessage, LOCAL_HOST } from "@evener/appwire-client";
-import { useId, useLayoutEffect, useRef, useState } from "react";
+import { type ReactNode, useId, useLayoutEffect, useRef, useState } from "react";
 import { connectionStore } from "../../../stores/connection";
 import { extensionsStoreForHost, useExtensionsStoreForHost } from "../../../stores/extensions";
 import surfaceStyles from "../../../styles/surface.module.css";
@@ -164,6 +164,17 @@ export interface DirListSettingProps {
   /** The host whose own directory list this instance edits (component 07b).
    * Defaults to the local hub, so a direct render is today's local section. */
   host?: string;
+  /** Read-only reference content between the section help and the editor,
+   * such as the built-in locations this list adds to. */
+  intro?: ReactNode;
+  /** Content after the editor, for the discovery sources that follow this
+   * list (plugin skills, for example). */
+  outro?: ReactNode;
+  /** Noun the header count uses instead of "entry"/"entries" ("extra"). */
+  countLabel?: string;
+  /** Empty-list message when this list is only part of the section's
+   * discovery order and "No <label>" would be false. */
+  emptyMessage?: string;
 }
 
 /**
@@ -174,7 +185,16 @@ export interface DirListSettingProps {
  * actually being ready - see the mount effect's own comment), validates an
  * add via evener/path/validate before saving, and confirms every row removal.
  */
-export function DirListSetting({ wireField, label, copy, host = LOCAL_HOST }: DirListSettingProps) {
+export function DirListSetting({
+  wireField,
+  label,
+  copy,
+  host = LOCAL_HOST,
+  intro,
+  outro,
+  countLabel,
+  emptyMessage,
+}: DirListSettingProps) {
   // The extensions instance for the selected host: the controller's own store
   // for the local hub, a per-host instance (over evener/host/request) for a
   // remote one, so its launch layer and path helpers are that host's own.
@@ -246,11 +266,12 @@ export function DirListSetting({ wireField, label, copy, host = LOCAL_HOST }: Di
         <h2 className={HEADING}>{label}</h2>
         {showCount && (
           <span className={CLASS.count} data-count={items.length}>
-            {items.length} {items.length === 1 ? "entry" : "entries"}
+            {items.length} {countLabel ?? (items.length === 1 ? "entry" : "entries")}
           </span>
         )}
       </header>
       <p className={CLASS.help}>{copy}</p>
+      {intro}
       <SectionGate loading={error === null && loading && layer === null} error={error && `Failed to load: ${error}`}>
         <PathListEditor
           directory={{
@@ -264,11 +285,12 @@ export function DirListSetting({ wireField, label, copy, host = LOCAL_HOST }: Di
           onAdd={handleAdd}
           onRemove={handleRemove}
           complete={(prefix, includeFiles) => store.getState().completePaths(prefix, includeFiles)}
-          emptyMessage={`No ${lowerLabel}. Add one below.`}
+          emptyMessage={emptyMessage ?? `No ${lowerLabel}. Add one below.`}
           removeConfirmTitle="Remove directory"
           removeConfirmBody={(path) => `Remove "${path}" from ${lowerLabel}?`}
         />
       </SectionGate>
+      {outro}
     </section>
   );
 }

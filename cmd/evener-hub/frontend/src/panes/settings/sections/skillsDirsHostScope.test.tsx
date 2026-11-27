@@ -36,6 +36,10 @@ test("with this hub selected the section issues the plain launch calls and never
   const fake = connectReadyFakeClient();
   fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
   fake.on("evener/launch/getLayer", () => ({ skillsDirs: ["/controller/skills"] }));
+  fake.on("evener/settings/skillDirs/get", () => ({
+    homeSkillsDir: "/controller/home/.agents/skills",
+    userSkillsDir: "/controller/config/evener/skills",
+  }));
   fake.on("evener/host/request", () => {
     throw new Error("the local hub must never route through the proxy");
   });
@@ -43,6 +47,7 @@ test("with this hub selected the section issues the plain launch calls and never
   render(<SkillsDirsHostScope />);
 
   expect(await screen.findByText("/controller/skills")).toBeTruthy();
+  expect(await screen.findByText("/controller/home/.agents/skills")).toBeTruthy();
   expect(fake.calls.some((call) => call.method === "evener/host/request")).toBe(false);
 });
 
@@ -52,10 +57,16 @@ test("a remote selection shows that host's own skill directories, never the cont
   fake.on("evener/launch/getLayer", () => {
     throw new Error("a remote selection must not read this hub's launch layer");
   });
+  fake.on("evener/settings/skillDirs/get", () => {
+    throw new Error("a remote selection must not read this hub's built-in roots");
+  });
   fake.on("evener/host/request", (params) => {
     const forwarded = params as { host: string; method: string };
     expect(forwarded.host).toBe("beta");
     if (forwarded.method === "evener/launch/getLayer") return { skillsDirs: ["/beta/skills"] } as never;
+    if (forwarded.method === "evener/settings/skillDirs/get") {
+      return { homeSkillsDir: "/beta/home/.agents/skills", userSkillsDir: "/beta/config/evener/skills" } as never;
+    }
     throw new Error(`unexpected forwarded method ${forwarded.method}`);
   });
 
@@ -63,7 +74,10 @@ test("a remote selection shows that host's own skill directories, never the cont
   render(<SkillsDirsHostScope />);
 
   expect(await screen.findByText("/beta/skills")).toBeTruthy();
+  expect(await screen.findByText("/beta/home/.agents/skills")).toBeTruthy();
+  expect(await screen.findByText("/beta/config/evener/skills")).toBeTruthy();
   expect(fake.calls.filter((call) => call.method.startsWith("evener/launch/"))).toEqual([]);
+  expect(fake.calls.some((call) => call.method === "evener/settings/skillDirs/get")).toBe(false);
 });
 
 test("adding a skill directory writes that host's layer through the proxy, never this hub's", async () => {
@@ -75,6 +89,9 @@ test("adding a skill directory writes that host's layer through the proxy, never
   fake.on("evener/host/request", (params) => {
     const forwarded = params as { method: string; params: { config?: { skillsDirs?: string[] } } };
     if (forwarded.method === "evener/launch/getLayer") return { skillsDirs: [] } as never;
+    if (forwarded.method === "evener/settings/skillDirs/get") {
+      return { homeSkillsDir: "/beta/home/.agents/skills", userSkillsDir: "/beta/config/evener/skills" } as never;
+    }
     if (forwarded.method === "evener/path/validate") return { path: "/opt/new-skill", valid: true } as never;
     if (forwarded.method === "evener/launch/setLayer") return { effective: {}, layers: {}, provenance: {} } as never;
     throw new Error(`unexpected forwarded method ${forwarded.method}`);
@@ -88,9 +105,8 @@ test("adding a skill directory writes that host's layer through the proxy, never
     </>,
   );
 
-  expect(await screen.findByText("No skill directories. Add one below.")).toBeTruthy();
   const user = userEvent.setup();
-  await user.click(screen.getByRole("button", { name: /^New directory:/ }));
+  await user.click(await screen.findByRole("button", { name: /^New directory:/ }));
   const input = await screen.findByRole("textbox", { name: "Path" });
   await user.clear(input);
   await user.type(input, "/opt/new-skill");
