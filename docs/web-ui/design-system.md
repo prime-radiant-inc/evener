@@ -1672,10 +1672,16 @@ centered line above the transcript — an em-dash-framed count in caption ink
 with no card chrome, keeping the body's own top spacing and growing to the
 44px tap floor on touch. The mobile reader tucks the summary away while
 scrolling in the initial reading direction. A deliberate reversal of 8px
-returns the summary at the current reading position. Continuing in that
+returns the summary over the current reading position. While reading, the title
+and summary overlay the transcript so its viewport stays fixed as either returns.
+When there is room to fold only the summary before reaching the start, the title
+stays docked for that reading pass. The summary returns over the transcript.
+Continuing in that
 direction keeps it in reach. Resuming the initial direction tucks it again.
 An upward gesture restores navigation. Reaching the top or explicitly
-opening Notes restores both the summary and the solid header.
+opening Notes restores both the summary and the solid header. When Find is open
+or a sandbox approval awaits a decision, the header stays in flow so the query,
+request and controls remain reachable.
 Its first-priority content rides the trigger's
 accessible name, and expanding opens the header-attached notes card with full
 read and edit controls; desktop keeps its collapsed preview card.

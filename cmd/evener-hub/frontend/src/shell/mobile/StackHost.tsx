@@ -79,7 +79,7 @@ import { ActivitySidebar } from "../activitybar/ActivitySidebar";
 import { useActivitySidebarStore } from "../activitybar/activitySidebarStore";
 import { attentionEntryOwnsReader, goBackInAttentionHistory, publishFocusedPaneURL } from "../attentionHistory";
 import { ConversationHandoffBoundary } from "../ConversationHandoffBoundary";
-import { useChromeStore } from "../chromeStore";
+import { ReaderHeaderPinContext, useChromeStore } from "../chromeStore";
 import {
   hasIPhonePaneNavigation,
   hasIPhoneSessionHeader,
@@ -136,8 +136,8 @@ const TRANSITION_CLASSES = {
 const FLOAT_COLLAPSE_PAST = 48;
 const FLOAT_REVEAL_STEP = 8;
 const FLOAT_REVEAL_AT_TOP = 12;
-type ReadingChrome = { floating: boolean; notesHidden: boolean };
-const FULL_CHROME: ReadingChrome = { floating: false, notesHidden: false };
+type ReadingChrome = { floating: boolean; notes: "resting" | "hidden" | "overlay"; keepTitleDocked: boolean };
+const FULL_CHROME: ReadingChrome = { floating: false, notes: "resting", keepTitleDocked: false };
 
 function readingChromeHeightChange(
   from: ReadingChrome,
@@ -145,7 +145,8 @@ function readingChromeHeightChange(
   heights: { bar: number; notes: number },
 ): number {
   function height(chrome: ReadingChrome) {
-    return (chrome.floating ? 0 : heights.bar) + (chrome.notesHidden ? 0 : heights.notes);
+    if (heights.notes > 0 && chrome.notes !== "resting") return chrome.keepTitleDocked ? heights.bar : 0;
+    return (chrome.floating ? 0 : heights.bar) + heights.notes;
   }
   return height(to) - height(from);
 }
@@ -294,15 +295,15 @@ function singlePaneRouteNames(pathname: string, pane: OpenPaneRecord): boolean {
   return route !== null && route.type === pane.type && JSON.stringify(route.params) === JSON.stringify(pane.params);
 }
 
+function readerSessionRef(pane: OpenPaneRecord | null | undefined): string | null {
+  if (pane?.type === "session") return refParam(pane.params);
+  if (pane?.type === "sessionZoom") return parseZoomParams(pane.params)?.ref ?? null;
+  return null;
+}
+
 function attentionEntryOwnsPane(pane: OpenPaneRecord | null | undefined): boolean {
-  if (!pane) return false;
-  const readerRef =
-    pane.type === "session"
-      ? refParam(pane.params)
-      : pane.type === "sessionZoom"
-        ? parseZoomParams(pane.params)?.ref
-        : null;
-  return typeof readerRef === "string" && attentionEntryOwnsReader(pane.id, readerRef);
+  const ref = readerSessionRef(pane);
+  return !!pane && ref !== null && attentionEntryOwnsReader(pane.id, ref);
 }
 
 // Module-level, not component state: popstate is a window-level browser
@@ -400,7 +401,7 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
   const closePanel = useCallback(() => setPanelOpen(false), []);
   const [readingChrome, setReadingChrome] = useState(FULL_CHROME);
   const topBarCollapsed = readingChrome.floating;
-  const [nativeFindOpen, setNativeFindOpen] = useState(false);
+  const [readerControlsPinned, setReaderControlsPinned] = useState(false);
   const fontSize = usePrefsStore((s) => s.fontSize);
   const viewportWidth = useWorkspaceViewportWidth();
   const tabletViewport = useMediaQuery(TABLET_QUERY);
@@ -732,34 +733,42 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
       if (typeof input === "number" && input !== direction && scrollTop >= FLOAT_REVEAL_AT_TOP) return;
       const run = Math.sign(scrollRunRef.current) === direction ? scrollRunRef.current + step : step;
       scrollRunRef.current = run;
-      let { floating, notesHidden } = current;
+      let { floating, notes } = current;
       if (scrollTop < FLOAT_REVEAL_AT_TOP) {
         floating = false;
-        notesHidden = false;
+        notes = "resting";
         notesReadingDirectionRef.current = 0;
       } else {
-        if (step > 0 && scrollTop > FLOAT_COLLAPSE_PAST) floating = true;
+        if (step > 0 && scrollTop > FLOAT_COLLAPSE_PAST && !current.keepTitleDocked) floating = true;
         if (run <= -FLOAT_REVEAL_STEP) floating = false;
         if (
           Math.abs(run) >= FLOAT_REVEAL_STEP &&
           (notesReadingDirectionRef.current || scrollTop > FLOAT_COLLAPSE_PAST)
         ) {
-          notesHidden = !notesReadingDirectionRef.current || direction === notesReadingDirectionRef.current;
+          notes =
+            !notesReadingDirectionRef.current || direction === notesReadingDirectionRef.current ? "hidden" : "overlay";
         }
       }
-      if (floating === current.floating && notesHidden === current.notesHidden) return;
-      const next = { floating, notesHidden };
+      if (floating === current.floating && notes === current.notes) return;
       const heights = chromeHeightsRef.current;
-      if (!current.notesHidden) {
-        const notes = paneSlotRef.current?.querySelector<HTMLElement>("[data-notes-panel-ref]");
-        if (notes?.contains(document.activeElement) || notes?.dataset.expanded === "true") return;
-        heights.notes = notes?.offsetHeight ?? 0;
+      if (current.notes !== "hidden") {
+        const panel = paneSlotRef.current?.querySelector<HTMLElement>("[data-notes-panel-ref]");
+        if (panel?.contains(document.activeElement) || panel?.dataset.expanded === "true") return;
+        heights.notes = panel?.offsetHeight ?? 0;
       }
       if (!current.floating && topBarRef.current) heights.bar = topBarRef.current.offsetHeight;
+      // A short history may have room to tuck only Notes. Keep that viewport
+      // for the reading pass, including when the summary returns over it.
+      let keepTitleDocked = current.keepTitleDocked && notes !== "resting";
+      if (current.notes === "resting" && notes === "hidden" && !current.floating && heights.notes > 0) {
+        const headroom = direction < 0 ? scrollTop : target.scrollHeight - target.clientHeight;
+        keepTitleDocked = headroom - heights.notes - heights.bar <= FLOAT_REVEAL_AT_TOP;
+      }
+      const next = { floating: floating && !keepTitleDocked, notes, keepTitleDocked };
       const delta = readingChromeHeightChange(current, next, heights);
       // A fold must leave the compensated offset clear of the at-top reveal band.
       if (delta < 0 && scrollTop + delta <= FLOAT_REVEAL_AT_TOP) return;
-      if (notesHidden && !notesReadingDirectionRef.current) notesReadingDirectionRef.current = direction;
+      if (notes === "hidden" && !notesReadingDirectionRef.current) notesReadingDirectionRef.current = direction;
       readingChromeRef.current = next;
       setReadingChrome(next);
     };
@@ -778,12 +787,29 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
     const scroller = collapseScrollerRef.current;
     if (!scroller?.isConnected) return;
     const delta = readingChromeHeightChange(prev, readingChrome, chromeHeightsRef.current);
-    if (delta === 0) return;
+    // At the beginning the first line belongs below the returning controls.
+    if (delta === 0 || lastScrollTopRef.current < FLOAT_REVEAL_AT_TOP) return;
     const adjusted = Math.max(0, lastScrollTopRef.current + delta);
     lastScrollTopRef.current = adjusted;
     scroller.scrollTop = adjusted;
     lastScrollTopRef.current = clampedScrollTop(scroller);
   }, [readingChrome]);
+
+  const overlayNotes = readingChrome.notes !== "resting" && chromeHeightsRef.current.notes > 0;
+  const overlayTitle = overlayNotes && !readingChrome.keepTitleDocked;
+  useLayoutEffect(() => {
+    const bar = topBarRef.current;
+    const body = stackBodyRef.current;
+    if (!overlayTitle || topBarCollapsed || !bar || !body) return;
+    const placeNotes = () => body.style.setProperty("--reading-title-height", `${bar.offsetHeight}px`);
+    placeNotes();
+    const resize = new ResizeObserver(placeNotes);
+    resize.observe(bar);
+    return () => {
+      resize.disconnect();
+      body.style.removeProperty("--reading-title-height");
+    };
+  }, [overlayTitle, topBarCollapsed]);
 
   // Classifies each focus change and slides it (docs/web-ui/motion.md, recipe
   // 4). A pop is a focus change a Back tap caused. A push is any other change
@@ -1023,8 +1049,8 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
   // (topnotespanel.module.css), so expanding it restores a floating bar: the
   // reveal is chrome, not a scroll gesture, and the capsules would otherwise
   // sit over the card's header row. The empty string matches no session ref.
-  const focusedNotesExpanded = useTopNotesExpanded(focusedSessionRef ?? "");
-  const headerPinned = focusedNotesExpanded || nativeFindOpen;
+  const focusedNotesExpanded = useTopNotesExpanded(readerSessionRef(focusedPane) ?? "");
+  const headerPinned = focusedNotesExpanded || readerControlsPinned;
   headerPinnedRef.current = headerPinned;
   useLayoutEffect(() => {
     if (!headerPinned) return;
@@ -1140,7 +1166,8 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
         {/* Keep the same pane slot and scroll listener on both sides of the tablet floor. */}
         <div
           className={styles.paneColumn}
-          data-notes-hidden={readingChrome.notesHidden || undefined}
+          data-notes-hidden={readingChrome.notes === "hidden" || undefined}
+          data-reading-overlay={overlayNotes ? (overlayTitle ? "title-and-notes" : "notes") : undefined}
           data-iphone-header={nativeHeader ? (topBarCollapsed ? "floating" : "resting") : undefined}
           data-testid={tabletSplit ? "pane-column" : undefined}
         >
@@ -1180,7 +1207,6 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
               leading={showBack ? "back" : boardVisible ? null : "sessions"}
               needsYou={needsYou}
               collapsed={topBarCollapsed}
-              onFindChange={setNativeFindOpen}
               onAction={(action) => {
                 switch (action) {
                   case "back":
@@ -1204,7 +1230,9 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
             {focusedPane && (
               // Only a distinct pane id detaches the outgoing pane's last frame.
               <div key={focusedPane.id} ref={paneSlotRef} className={styles.paneSlot} data-stack-pane={focusedPane.id}>
-                <StackedPane pane={focusedPane} />
+                <ReaderHeaderPinContext.Provider value={setReaderControlsPinned}>
+                  <StackedPane pane={focusedPane} />
+                </ReaderHeaderPinContext.Provider>
               </div>
             )}
           </div>

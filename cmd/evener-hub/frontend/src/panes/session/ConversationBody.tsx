@@ -9,6 +9,7 @@ import {
   type CSSProperties,
   type ReactNode,
   useCallback,
+  useContext,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -16,7 +17,7 @@ import {
   useState,
 } from "react";
 import { useStore } from "zustand";
-import { chromeStore } from "../../shell/chromeStore";
+import { chromeStore, ReaderHeaderPinContext } from "../../shell/chromeStore";
 import { focusedSessionRef } from "../../shell/focusedSession";
 import { useOptionalNeedsYouController } from "../../shell/NeedsYouProvider";
 import { navigate, paneToURL, refParam } from "../../shell/routing";
@@ -551,6 +552,13 @@ function LiveConversationBody({
     // transcript, so the scroll port Find marks and observes is not mounted.
     transcriptMounted: model !== undefined && (!isDormantTranscript(model.turns) || pendingRowsVisible),
   });
+  const pinHeader = useContext(ReaderHeaderPinContext);
+  const hasInlineControls = !deletedRef && !!model && keyboardPaneId !== null && (!!find.view || approvalPending);
+  useLayoutEffect(() => {
+    if (!pinHeader || !hasInlineControls) return;
+    pinHeader(true);
+    return () => pinHeader(false);
+  }, [pinHeader, hasInlineControls]);
   // Going to the live end also ends Find's search into older history, so a
   // match arriving later cannot pull the reader back up.
   const { leaveHistory } = find;

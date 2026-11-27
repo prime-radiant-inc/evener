@@ -1190,6 +1190,7 @@ async function measureTabletSplit(page) {
     "400px uses the phone stack without the tablet board");
   await settleFiniteAnimations(send);
   const paneScrollPhone = await evaluate(send, readPaneScroll);
+  await checkNotesReadingPosition(send);
   const desktopDivider = '[data-testid="rail"] [data-testid="rail-resize-handle"]';
   const desktopReady = `innerWidth === 1024 && !document.querySelector('[data-stacked-pane-type]') && document.querySelector('${desktopDivider}')`;
   const desktopViewport = { ...TOUCH_DESKTOP_VIEWPORT, width: 1024, height: 768 };
@@ -1224,6 +1225,45 @@ async function measureTabletSplit(page) {
     paneScrollCapture, paneScrollCollapsed, paneScrollReopened, paneScrollPhone,
     beforeArrowUp, arrowUpRows, pointer, narrowest, home, wideDrag, widest, findQuery, largerText,
     desktopBefore, narrowRestored, roomy, desktopAfter, desktopFits, roomyFits };
+}
+
+async function checkNotesReadingPosition(send) {
+  const port = "document.querySelector('[data-reading-scroll-host] > *')";
+  const notes = "document.querySelector('[data-notes-panel-ref]')";
+  // Start at the beginning, then scroll past the initial header. Real wheel
+  // input tells the transcript to give up following its initial end.
+  await evaluate(send, `${port}.scrollTop = 0`);
+  await waitForDom(send, `${port}.scrollTop < 1 && ${notes}?.offsetHeight > 0`, "Notes resting at the beginning");
+  const point = await evaluate(send, `(() => {
+    const r = ${port}.getBoundingClientRect();
+    return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+  })()`);
+  const wheel = (deltaY) => send("Input.dispatchMouseEvent", { type: "mouseWheel", ...point, deltaX: 0, deltaY });
+  await wheel(240);
+  await waitForDom(send, `${notes}.offsetHeight === 0`, "Notes tucked away while reading");
+  await evaluate(send, `window.__notesAnchor = [...${port}.querySelectorAll('p')].find(p => {
+    const y = p.getBoundingClientRect().y;
+    return y > innerHeight / 3 && y < innerHeight * 2 / 3;
+  })`);
+  const geometry = `({ port: ${port}.getBoundingClientRect().y, line: window.__notesAnchor.getBoundingClientRect().y })`;
+  const before = await evaluate(send, geometry);
+  await wheel(-16);
+  await waitForDom(send, `${notes}.offsetHeight > 0`, "Notes revealed on reversal");
+  const after = await evaluate(send, geometry);
+  if (Math.abs(after.port - before.port) > 1 || Math.abs(after.line - before.line - 16) > 1) {
+    throw new Error(`Notes reveal displaced the reader beyond the 16px gesture: ${JSON.stringify({ before, after })}`);
+  }
+  await evaluate(send, `document.querySelector('[data-testid="topbar"] button[aria-label="Find in session"]').click()`);
+  const query = "document.querySelector('[data-find-bar] input')";
+  await waitForDom(send, query, "Find opened from the phone header");
+  const visible = await evaluate(send, `(() => {
+    const input = ${query};
+    const r = input.getBoundingClientRect();
+    return document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2) === input;
+  })()`);
+  if (!visible) throw new Error("The returning header covers the Find query");
+  await pressKey(send, "Escape", "Escape", 27);
+  await waitForDom(send, `!${query}`, "Find dismissed");
 }
 
 function assertTabletSplit(result) {

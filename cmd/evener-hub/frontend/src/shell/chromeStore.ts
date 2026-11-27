@@ -25,8 +25,12 @@
 // Settings' section list (the drill-down's ROOT) publishes nothing, so
 // Back there still exits the pane - correct at a root.
 
+import { createContext } from "react";
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
+
+/** The displayed conversation keeps controls above its transcript clear of the mobile header. */
+export const ReaderHeaderPinContext = createContext<((pinned: boolean) => void) | null>(null);
 
 export interface ChromeStoreState {
   paneTitle: string | null;

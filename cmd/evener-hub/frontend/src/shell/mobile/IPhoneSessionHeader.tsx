@@ -7,18 +7,16 @@ import {
   tellIPhoneHost,
 } from "../iPhoneHost";
 
-// Floating layers cover the toolbar. Inline Find docks beneath it.
-const TOOLBAR_SURFACES = `${FLOATING_WEB_LAYER}, [data-find-bar]`;
-
 function containsLayer(node: Node): boolean {
-  return node instanceof Element && (node.matches(TOOLBAR_SURFACES) || node.querySelector(TOOLBAR_SURFACES) !== null);
+  return (
+    node instanceof Element && (node.matches(FLOATING_WEB_LAYER) || node.querySelector(FLOATING_WEB_LAYER) !== null)
+  );
 }
 
 type Props = Pick<IPhoneHeader, "id" | "sessionRef" | "title" | "leading" | "collapsed" | "needsYou"> & {
   bar: RefObject<HTMLDivElement | null>;
   edgeToolbar: boolean;
   split: boolean;
-  onFindChange(open: boolean): void;
   onAction(action: IPhoneHeaderAction): void;
 };
 
@@ -35,14 +33,12 @@ export function IPhoneSessionHeader({
   edgeToolbar,
   split,
   onAction,
-  onFindChange,
 }: Props) {
   const [height, setHeight] = useState(0);
   useLayoutEffect(() => {
     const element = bar.current;
     if (!element) return;
     const measure = () => {
-      onFindChange(document.querySelector("[data-find-bar]") !== null);
       setHeight(document.querySelector(FLOATING_WEB_LAYER) ? 0 : element.offsetHeight);
     };
     measure();
@@ -55,9 +51,8 @@ export function IPhoneSessionHeader({
     return () => {
       resize.disconnect();
       layers.disconnect();
-      onFindChange(false);
     };
-  }, [bar, onFindChange]);
+  }, [bar]);
 
   const receive = useEffectEvent((event: MessageEvent) => {
     const command = iPhoneCommand(event);

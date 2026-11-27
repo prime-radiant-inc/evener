@@ -441,6 +441,7 @@ async function boot(): Promise<void> {
         tasks: { total: 100, done: 100 },
         evener: {
           ...response.thread.evener,
+          capabilities: { ...response.thread.evener.capabilities, sharedNotes: ref === "local:p0-s1" },
           sessionUrls: [
             {
               id: "guard-web-link",

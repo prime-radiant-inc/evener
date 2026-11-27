@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { makeTranscriptDisplayConfig } from "@evener/appwire-client";
 import { bindFilePath } from "@evener/appwire-client/docContent";
 import { manifest as navigationManifest } from "@evener/appwire-client/testing/navigation";
+import { testEscalation } from "@evener/appwire-client/testing/reducerTestKit";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { DockviewApi } from "dockview-core";
@@ -2621,6 +2622,12 @@ test.each([
           scroller.dispatchEvent(new Event("scroll"));
         });
         await waitFor(() => expect(bar.getAttribute("data-collapsed")).not.toBe("true"));
+        if (paneType === "sessionZoom") {
+          fireEvent.scroll(scroller, { target: { scrollTop: 200 } });
+          expect(bar.getAttribute("data-collapsed")).toBe("true");
+          act(() => topNotesStore.getState().openAndFocus(params.ref));
+          expect(bar.getAttribute("data-collapsed")).not.toBe("true");
+        }
       } else {
         expect(bar.getAttribute("data-collapsed")).not.toBe("true");
       }
@@ -2697,6 +2704,7 @@ test("floating top bar compensates scroll, ignores content height shifts, and re
 });
 
 test("mobile notes tuck in the reading direction and return on reversal or explicit open", async () => {
+  vi.stubGlobal("ResizeObserver", StubResizeObserver);
   window.history.replaceState({}, "", "/");
   const restoreViewport = installMobileViewport();
   const ref = "remote:mobile-notes";
@@ -2770,13 +2778,13 @@ test("mobile notes tuck in the reading direction and return on reversal or expli
     expect(notes.closest("[data-notes-hidden]")).not.toBeNull();
     scroll(140);
     expect(notes.closest("[data-notes-hidden]")).toBeNull();
-    expect(scroller.scrollTop).toBe(240);
+    expect(scroller.scrollTop).toBe(140);
     expect(bar.getAttribute("data-collapsed")).not.toBe("true");
-    scroll(224);
+    scroll(124);
     expect(notes.closest("[data-notes-hidden]")).toBeNull();
 
     // Resuming the original direction tucks the summary. Explicit opening restores it.
-    scroll(240);
+    scroll(140);
     expect(notes.closest("[data-notes-hidden]")).not.toBeNull();
     act(() => {
       topNotesStore.getState().setExpanded(ref, true);
@@ -2804,7 +2812,7 @@ test("mobile notes tuck in the reading direction and return on reversal or expli
     expect(scroller.scrollTop).toBe(300);
     scroll(5);
     expect(notes.closest("[data-notes-hidden]")).toBeNull();
-    expect(scroller.scrollTop).toBe(105);
+    expect(scroller.scrollTop).toBe(5);
 
     // Opening at the latest turn can start the first reading gesture upward.
     Object.defineProperty(scroller, "scrollHeight", { configurable: true, value: 3600 });
@@ -2812,10 +2820,10 @@ test("mobile notes tuck in the reading direction and return on reversal or expli
     scroll(2460);
     expect(notes.closest("[data-notes-hidden]")).not.toBeNull();
     expect(bar.getAttribute("data-collapsed")).not.toBe("true");
-    expect(scroller.scrollTop).toBe(2416);
+    expect(scroller.scrollTop).toBe(2360);
     // Two small reverse steps still count when streaming moves the offset
     // between them. The content shift itself contributes no travel.
-    scroll(2420);
+    scroll(2364);
     expect(notes.closest("[data-notes-hidden]")).not.toBeNull();
     Object.defineProperty(scroller, "scrollHeight", { configurable: true, value: 3900 });
     scroll(2720);
@@ -2823,10 +2831,39 @@ test("mobile notes tuck in the reading direction and return on reversal or expli
     scroll(scroller.scrollTop + 4);
     expect(notes.closest("[data-notes-hidden]")).toBeNull();
     expect(bar.getAttribute("data-collapsed")).toBe("true");
+    scroll(0);
+    expect(scroller.scrollTop).toBe(0);
+    expect(bar.getAttribute("data-collapsed")).not.toBe("true");
+    act(() =>
+      client.emitNotification({ method: "evener/sandbox/escalation/requested", params: testEscalation({ ref }) }),
+    );
+    const card = await screen.findByRole("group", { name: "Sandbox approval" });
+    scroll(260);
+    expect(notes.closest("[data-reading-overlay]")).toBeNull();
+    client.on("evener/sandbox/escalation/resolve", () => ({}));
+    await userEvent.click(within(card).getByRole("button", { name: "Deny" }));
+    await waitFor(() => expect(card.isConnected).toBe(false));
+    scroll(340);
+    expect(notes.closest("[data-reading-overlay]")).not.toBeNull();
+    scroll(0);
+
+    // A short history can have room for the summary alone. Keep its title
+    // above the reader throughout the reversal so the viewport stays fixed.
+    Object.defineProperty(scroller, "scrollHeight", { configurable: true, value: 600 });
+    Object.defineProperty(scroller, "clientHeight", { configurable: true, value: 500 });
+    scroll(100);
+    scroll(80);
+    expect(notes.closest("[data-notes-hidden]")).not.toBeNull();
+    expect(scroller.scrollTop).toBe(36);
+    scroll(46);
+    expect(notes.closest("[data-notes-hidden]")).toBeNull();
+    expect(bar.getAttribute("data-collapsed")).not.toBe("true");
+    expect(scroller.scrollTop).toBe(46);
     host.unmount();
   } finally {
     topNotesStore.getState().resetForTests();
     restoreViewport();
+    vi.unstubAllGlobals();
   }
 });
 
