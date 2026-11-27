@@ -2577,6 +2577,12 @@ test.each([
           scroller.dispatchEvent(new Event("scroll"));
         });
         await waitFor(() => expect(bar.getAttribute("data-collapsed")).not.toBe("true"));
+        if (paneType === "sessionZoom") {
+          fireEvent.scroll(scroller, { target: { scrollTop: 200 } });
+          expect(bar.getAttribute("data-collapsed")).toBe("true");
+          act(() => topNotesStore.getState().openAndFocus(params.ref));
+          expect(bar.getAttribute("data-collapsed")).not.toBe("true");
+        }
       } else {
         expect(bar.getAttribute("data-collapsed")).not.toBe("true");
       }
@@ -2761,7 +2767,7 @@ test("mobile notes tuck in the reading direction and return on reversal or expli
     expect(scroller.scrollTop).toBe(300);
     scroll(5);
     expect(notes.closest("[data-notes-hidden]")).toBeNull();
-    expect(scroller.scrollTop).toBe(105);
+    expect(scroller.scrollTop).toBe(5);
 
     // Opening at the latest turn can start the first reading gesture upward.
     Object.defineProperty(scroller, "scrollHeight", { configurable: true, value: 3600 });

@@ -293,15 +293,15 @@ function singlePaneRouteNames(pathname: string, pane: OpenPaneRecord): boolean {
   return route !== null && route.type === pane.type && JSON.stringify(route.params) === JSON.stringify(pane.params);
 }
 
+function readerSessionRef(pane: OpenPaneRecord | null | undefined): string | null {
+  if (pane?.type === "session") return refParam(pane.params);
+  if (pane?.type === "sessionZoom") return parseZoomParams(pane.params)?.ref ?? null;
+  return null;
+}
+
 function attentionEntryOwnsPane(pane: OpenPaneRecord | null | undefined): boolean {
-  if (!pane) return false;
-  const readerRef =
-    pane.type === "session"
-      ? refParam(pane.params)
-      : pane.type === "sessionZoom"
-        ? parseZoomParams(pane.params)?.ref
-        : null;
-  return typeof readerRef === "string" && attentionEntryOwnsReader(pane.id, readerRef);
+  const ref = readerSessionRef(pane);
+  return !!pane && ref !== null && attentionEntryOwnsReader(pane.id, ref);
 }
 
 // Module-level, not component state: popstate is a window-level browser
@@ -792,7 +792,7 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
     if (!scroller?.isConnected) return;
     const delta = readingChromeHeightChange(prev, readingChrome, chromeHeightsRef.current);
     // At the beginning the first line belongs below the returning controls.
-    if (delta === 0 || lastScrollTopRef.current === 0) return;
+    if (delta === 0 || lastScrollTopRef.current < FLOAT_REVEAL_AT_TOP) return;
     const adjusted = Math.max(0, lastScrollTopRef.current + delta);
     lastScrollTopRef.current = adjusted;
     scroller.scrollTop = adjusted;
@@ -1052,7 +1052,7 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
   // (topnotespanel.module.css), so expanding it restores a floating bar: the
   // reveal is chrome, not a scroll gesture, and the capsules would otherwise
   // sit over the card's header row. The empty string matches no session ref.
-  const focusedNotesExpanded = useTopNotesExpanded(focusedSessionRef ?? "");
+  const focusedNotesExpanded = useTopNotesExpanded(readerSessionRef(focusedPane) ?? "");
   const headerPinned = focusedNotesExpanded || nativeFindOpen;
   headerPinnedRef.current = headerPinned;
   useLayoutEffect(() => {
