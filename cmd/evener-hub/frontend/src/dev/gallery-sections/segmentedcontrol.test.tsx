@@ -61,7 +61,7 @@ test("shows every documented SegmentedControl state in both theme panes", async 
     expect(keyboard.option.getAttribute("tabindex")).toBe("0");
 
     const stacked = selected("Stacked detail", "Jobs, 2 of 201 running");
-    expect(stacked.group.className).toContain("stacked");
+    expect(stacked.option.className).toContain("stacked");
     expect(stacked.option.querySelectorAll("span")).toHaveLength(2);
 
     const wrapDemo = pane.querySelector('[data-testid="segmentedcontrol-wrap-demo"]');
