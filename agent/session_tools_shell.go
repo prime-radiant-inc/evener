@@ -662,15 +662,17 @@ func marshalCompleteOrHandleResult(res shellResult, maxChars, maxLines int, turn
 
 	out.OutputStatus = outputWindowStatus(res.TotalBytes, res.DroppedBytes, false)
 
-	// Two layers decide keep vs ephemeral (spec §6.4c): the ride-whole budget
-	// (output too big to inline) and the tool-result char bound (the rendered
-	// result would overflow maxChars). Either → keep a durable job so the model
-	// can page; neither → return the complete output inline and discard the job.
-	disp := shellResultDisposition(len(res.Output), len([]rune(formatShellResult(out))), maxChars, shellRideWholeBytes)
+	// Three checks decide keep vs ephemeral: the ride-whole byte budget, the
+	// rendered char bound (maxChars), and the rendered line bound (maxLines).
+	// Any overflow keeps a durable job so the model receives a bounded digest
+	// and job ref; otherwise return the complete output inline and discard.
+	renderedInline := formatShellResult(out)
+	renderedLines := strings.Count(renderedInline, "\n") + 1
+	disp := shellResultDisposition(len(res.Output), len([]rune(renderedInline)), maxChars, renderedLines, maxLines, shellRideWholeBytes)
 	if !disp.Keep {
 		_ = res.settle(false)
 		return tool.StateResult{
-			Output: formatShellResult(out),
+			Output: renderedInline,
 			State:  out,
 			// A failed shell status means the machinery could not finalize
 			// the command; the model and the no-progress signal must see that
@@ -714,23 +716,25 @@ func marshalCompleteOrHandleResult(res shellResult, maxChars, maxLines int, turn
 
 // shellSettleDisposition is the keep-vs-discard decision for a within-bound
 // shell completion (spec §6.4c). Keep reports whether the delayed job must be
-// retained; EmbedExceeded and CharBoundExceeded attribute why. The two reasons
-// are mutually exclusive: EmbedExceeded short-circuits the char-bound check.
-type shellSettleDisposition struct{ Keep, EmbedExceeded, CharBoundExceeded bool }
+// retained; EmbedExceeded, CharBoundExceeded, and LineBoundExceeded attribute
+// why. The reasons are mutually exclusive in that priority order.
+type shellSettleDisposition struct{ Keep, EmbedExceeded, CharBoundExceeded, LineBoundExceeded bool }
 
 // shellResultDisposition decides whether a within-bound shell completion must
 // keep its delayed job. rawOutputBytes is the byte length of the full output;
-// renderedRuneLen is the rune length of the rendered tool result. Output larger
-// than rideWholeBytes cannot ride whole inline (EmbedExceeded); otherwise a
-// rendered result over a positive maxChars exceeds the char bound
-// (CharBoundExceeded). Either reason keeps the job.
-func shellResultDisposition(rawOutputBytes, renderedRuneLen, maxChars, rideWholeBytes int) shellSettleDisposition {
+// renderedRuneLen and renderedLines are the rune and line counts of the
+// rendered tool result. Output larger than rideWholeBytes cannot ride whole
+// inline (EmbedExceeded); otherwise overflowing positive maxChars
+// (CharBoundExceeded) or positive maxLines (LineBoundExceeded) keeps the job.
+func shellResultDisposition(rawOutputBytes, renderedRuneLen, maxChars, renderedLines, maxLines, rideWholeBytes int) shellSettleDisposition {
 	embedExceeded := rawOutputBytes > rideWholeBytes
 	charBoundExceeded := !embedExceeded && maxChars > 0 && renderedRuneLen > maxChars
+	lineBoundExceeded := !embedExceeded && !charBoundExceeded && maxLines > 0 && renderedLines > maxLines
 	return shellSettleDisposition{
-		Keep:              embedExceeded || charBoundExceeded,
+		Keep:              embedExceeded || charBoundExceeded || lineBoundExceeded,
 		EmbedExceeded:     embedExceeded,
 		CharBoundExceeded: charBoundExceeded,
+		LineBoundExceeded: lineBoundExceeded,
 	}
 }
 
