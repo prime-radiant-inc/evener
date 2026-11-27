@@ -158,6 +158,13 @@
   .summary .summaryLeft {
     justify-content: center;
   }
+
+  .summaryLine {
+    margin-inline: var(--notes-controls-inset, 0px);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
 }
 
 @media (max-width: 899px), (any-pointer: coarse) {

@@ -1664,8 +1664,11 @@ In the mobile workspace, the collapsed whiteboard (session notes) rests as one q
 centered line above the transcript — an em-dash-framed count in caption ink
 with no card chrome, keeping the body's own top spacing and growing to the
 44px tap floor on touch. The mobile reader tucks the summary away while
-scrolling in either direction. An upward gesture restores navigation.
-The summary returns near the top or when Notes is explicitly opened.
+scrolling in the initial reading direction. A deliberate reversal of 8px
+returns the summary at the current reading position. Continuing in that
+direction keeps it in reach. Resuming the initial direction tucks it again.
+An upward gesture restores navigation. Reaching the top or explicitly
+opening Notes restores both the summary and the solid header.
 Its first-priority content rides the trigger's
 accessible name, and expanding opens the header-attached notes card with full
 read and edit controls; desktop keeps its collapsed preview card.

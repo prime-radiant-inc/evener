@@ -2568,7 +2568,7 @@ test("floating top bar compensates scroll, ignores content height shifts, and re
   }
 });
 
-test("mobile notes stay tucked while reading and return near the top or when explicitly opened", async () => {
+test("mobile notes tuck in the reading direction and return on reversal or explicit open", async () => {
   window.history.replaceState({}, "", "/");
   const restoreViewport = installMobileViewport();
   const ref = "remote:mobile-notes";
@@ -2615,13 +2615,19 @@ test("mobile notes stay tucked while reading and return near the top or when exp
     expect(bar.getAttribute("data-collapsed")).toBe("true");
     expect(scroller.scrollTop).toBe(160);
 
-    // On the way back, navigation returns first. Notes stay tucked away.
-    scroll(140);
+    // A small reversal is neutral. Continuing upward restores Notes and navigation.
+    scroll(156);
     expect(notes.closest("[data-notes-hidden]")).not.toBeNull();
-    expect(scroller.scrollTop).toBe(196);
+    scroll(140);
+    expect(notes.closest("[data-notes-hidden]")).toBeNull();
+    expect(scroller.scrollTop).toBe(240);
     expect(bar.getAttribute("data-collapsed")).not.toBe("true");
+    scroll(224);
+    expect(notes.closest("[data-notes-hidden]")).toBeNull();
 
-    // Explicitly opening Notes restores the summary's height as well.
+    // Resuming the original direction tucks the summary. Explicit opening restores it.
+    scroll(240);
+    expect(notes.closest("[data-notes-hidden]")).not.toBeNull();
     act(() => {
       topNotesStore.getState().setExpanded(ref, true);
     });
@@ -2649,6 +2655,23 @@ test("mobile notes stay tucked while reading and return near the top or when exp
     scroll(5);
     expect(notes.closest("[data-notes-hidden]")).toBeNull();
     expect(scroller.scrollTop).toBe(105);
+
+    // Opening at the latest turn can start the first reading gesture upward.
+    Object.defineProperty(scroller, "scrollHeight", { configurable: true, value: 3600 });
+    scroll(2500);
+    scroll(2460);
+    expect(notes.closest("[data-notes-hidden]")).not.toBeNull();
+    expect(bar.getAttribute("data-collapsed")).not.toBe("true");
+    expect(scroller.scrollTop).toBe(2416);
+    // Streaming moves the reader's offset without changing their direction.
+    Object.defineProperty(scroller, "scrollHeight", { configurable: true, value: 3900 });
+    scroll(2716);
+    expect(notes.closest("[data-notes-hidden]")).not.toBeNull();
+    scroll(2720);
+    expect(notes.closest("[data-notes-hidden]")).not.toBeNull();
+    scroll(scroller.scrollTop + 4);
+    expect(notes.closest("[data-notes-hidden]")).toBeNull();
+    expect(bar.getAttribute("data-collapsed")).toBe("true");
     host.unmount();
   } finally {
     topNotesStore.getState().resetForTests();

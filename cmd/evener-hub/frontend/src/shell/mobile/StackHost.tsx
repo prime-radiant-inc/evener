@@ -132,7 +132,8 @@ const TRANSITION_CLASSES = {
 const FLOAT_COLLAPSE_PAST = 48;
 const FLOAT_REVEAL_STEP = 8;
 const FLOAT_REVEAL_AT_TOP = 12;
-type ReadingChrome = "full" | "navigation" | "floating";
+type ReadingChrome = { floating: boolean; notesHidden: boolean };
+const FULL_CHROME: ReadingChrome = { floating: false, notesHidden: false };
 
 function readingChromeHeightChange(
   from: ReadingChrome,
@@ -140,8 +141,7 @@ function readingChromeHeightChange(
   heights: { bar: number; notes: number },
 ): number {
   function height(chrome: ReadingChrome) {
-    if (chrome === "floating") return 0;
-    return chrome === "full" ? heights.bar + heights.notes : heights.bar;
+    return (chrome.floating ? 0 : heights.bar) + (chrome.notesHidden ? 0 : heights.notes);
   }
   return height(to) - height(from);
 }
@@ -394,8 +394,8 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
   const activityOpen = useActivitySidebarStore((s) => s.open);
   const [panelOpen, setPanelOpen] = useState(false);
   const closePanel = useCallback(() => setPanelOpen(false), []);
-  const [readingChrome, setReadingChrome] = useState<ReadingChrome>("full");
-  const topBarCollapsed = readingChrome === "floating";
+  const [readingChrome, setReadingChrome] = useState(FULL_CHROME);
+  const topBarCollapsed = readingChrome.floating;
   const [nativeFindOpen, setNativeFindOpen] = useState(false);
   const fontSize = usePrefsStore((s) => s.fontSize);
   const viewportWidth = useWorkspaceViewportWidth();
@@ -509,22 +509,23 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
   const scrollOffsetsRef = useRef<ScrollOffsets>(new Map());
   const topBarRef = useRef<HTMLDivElement>(null);
   // The capture listener stays installed across reading chrome transitions.
-  const readingChromeRef = useRef<ReadingChrome>("full");
+  const readingChromeRef = useRef(FULL_CHROME);
   const lastScrollTopRef = useRef(0);
   // The scroller's scrollHeight as of the last event. A change between
   // events means content shifted under the reader - the transcript prepends
   // older turns as you scroll toward the top, and appends grow it below -
   // so the scrollTop jump that arrives with it is not a gesture.
   const lastScrollHeightRef = useRef(0);
-  // Highest scrollTop reached at the start of the current upward scroll run
-  // while the top bar is floating, so slow 120Hz drags that move less than
-  // FLOAT_REVEAL_STEP per frame still reveal once cumulative travel crosses it.
-  const upwardRunStartRef = useRef<number | null>(null);
+  // Consecutive movement counts toward a deliberate reversal even on 120Hz displays.
+  const scrollRunRef = useRef(0);
+  // The conversation can open at either end. Its first reading direction
+  // tucks Notes; a sustained scroll in the other direction brings it back.
+  const notesReadingDirectionRef = useRef(0);
   // Measured before the chrome leaves the flow, used to hold the reading
   // position when navigation and the notes summary fold or return separately.
   const collapseScrollerRef = useRef<Element | null>(null);
   const chromeHeightsRef = useRef({ bar: 0, notes: 0 });
-  const previousChromeRef = useRef<ReadingChrome>("full");
+  const previousChromeRef = useRef(FULL_CHROME);
   const focusedPaneRef = useRef(focusedPane);
   focusedPaneRef.current = focusedPane;
   const headerPinnedRef = useRef(false);
@@ -574,11 +575,12 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
       // its own scroll, and non-session panes never collapse it anyway.
       // Clearing the collapse scroller disarms the compensation effect for
       // reveals that are not scroll-driven (this one).
-      readingChromeRef.current = "full";
-      setReadingChrome("full");
+      readingChromeRef.current = FULL_CHROME;
+      setReadingChrome(FULL_CHROME);
       lastScrollTopRef.current = 0;
       lastScrollHeightRef.current = 0;
-      upwardRunStartRef.current = null;
+      scrollRunRef.current = 0;
+      notesReadingDirectionRef.current = 0;
       collapseScrollerRef.current = null;
     }
     if (prev !== focusedPaneId) {
@@ -717,40 +719,46 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
       // update below) and decide nothing, so a prepend can never pose as a
       // downward gesture and a reveal can never fire off appended content.
       if (heightChanged) {
-        upwardRunStartRef.current = null;
+        scrollRunRef.current = 0;
         return;
       }
       if (type !== "session" && type !== "sessionZoom" && type !== "transcript") return;
       if (headerPinnedRef.current || scrollTop === prevScrollTop) return;
       collapseScrollerRef.current = target;
       const current = readingChromeRef.current;
-      let next = current;
+      const step = scrollTop - prevScrollTop;
+      const direction = Math.sign(step);
+      const run = Math.sign(scrollRunRef.current) === direction ? scrollRunRef.current + step : step;
+      scrollRunRef.current = run;
+      let { floating, notesHidden } = current;
       if (scrollTop < FLOAT_REVEAL_AT_TOP) {
-        next = "full";
-      } else if (scrollTop > prevScrollTop) {
-        upwardRunStartRef.current = null;
-        if (scrollTop > FLOAT_COLLAPSE_PAST) next = "floating";
-      } else if (current === "floating") {
-        upwardRunStartRef.current ??= prevScrollTop;
-        if (upwardRunStartRef.current - scrollTop >= FLOAT_REVEAL_STEP) next = "navigation";
-      } else if (current === "full" && scrollTop > FLOAT_COLLAPSE_PAST) {
-        // A session can open at its latest turn. Reading older turns also
-        // tucks the summary away, while keeping the navigation in reach.
-        next = "navigation";
+        floating = false;
+        notesHidden = false;
+        notesReadingDirectionRef.current = 0;
+      } else {
+        if (step > 0 && scrollTop > FLOAT_COLLAPSE_PAST) floating = true;
+        if (run <= -FLOAT_REVEAL_STEP) floating = false;
+        if (
+          Math.abs(run) >= FLOAT_REVEAL_STEP &&
+          (notesReadingDirectionRef.current || scrollTop > FLOAT_COLLAPSE_PAST)
+        ) {
+          notesHidden = !notesReadingDirectionRef.current || direction === notesReadingDirectionRef.current;
+        }
       }
-      if (next === current) return;
+      if (floating === current.floating && notesHidden === current.notesHidden) return;
+      const next = { floating, notesHidden };
       const heights = chromeHeightsRef.current;
-      if (current === "full") {
+      if (!current.notesHidden) {
         const notes = paneSlotRef.current?.querySelector<HTMLElement>("[data-notes-panel-ref]");
         if (notes?.contains(document.activeElement) || notes?.dataset.expanded === "true") return;
         heights.notes = notes?.offsetHeight ?? 0;
       }
-      if (current !== "floating" && topBarRef.current) heights.bar = topBarRef.current.offsetHeight;
+      if (!current.floating && topBarRef.current) heights.bar = topBarRef.current.offsetHeight;
       const delta = readingChromeHeightChange(current, next, heights);
       // A fold must leave the compensated offset clear of the at-top reveal band.
       if (delta < 0 && scrollTop + delta <= FLOAT_REVEAL_AT_TOP) return;
+      if (notesHidden && !notesReadingDirectionRef.current) notesReadingDirectionRef.current = direction;
       readingChromeRef.current = next;
-      upwardRunStartRef.current = null;
       setReadingChrome(next);
     };
     body.addEventListener("scroll", onScroll, { capture: true, passive: true });
@@ -1017,10 +1025,11 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
   const headerPinned = focusedNotesExpanded || nativeFindOpen;
   headerPinnedRef.current = headerPinned;
   useLayoutEffect(() => {
-    if (!headerPinned || readingChromeRef.current === "full") return;
-    readingChromeRef.current = "full";
-    upwardRunStartRef.current = null;
-    setReadingChrome("full");
+    if (!headerPinned) return;
+    notesReadingDirectionRef.current = 0;
+    scrollRunRef.current = 0;
+    readingChromeRef.current = FULL_CHROME;
+    setReadingChrome(FULL_CHROME);
     // Unlike a focus change, the reader stays in this pane, so the collapse
     // scroller stays armed: the compensation effect holds the reading position
     // when the pane's layout regains the bar's height.
@@ -1122,7 +1131,7 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
         {/* Keep the same pane slot and scroll listener on both sides of the tablet floor. */}
         <div
           className={styles.paneColumn}
-          data-notes-hidden={readingChrome !== "full" || undefined}
+          data-notes-hidden={readingChrome.notesHidden || undefined}
           data-iphone-header={nativeHeader ? (topBarCollapsed ? "floating" : "resting") : undefined}
           data-testid={tabletSplit ? "pane-column" : undefined}
         >

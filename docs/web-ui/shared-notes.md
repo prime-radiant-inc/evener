@@ -2,9 +2,10 @@
 
 The Notes panel contains your note, the agent's note, and session links.
 
-On mobile, scrolling through the conversation tucks the collapsed summary away.
-It returns near the top. Opening Notes brings the panel back at any reading
-position and keeps it visible while you edit.
+On mobile, scrolling into the conversation tucks the collapsed summary away,
+whether you start at the top or at the latest turn. Reverse your scroll to
+bring it back at the current reading position. It also returns at the top.
+Opening Notes keeps the panel visible while you edit.
 
 Both notes are whiteboards: short texts that keep their line breaks. When a
 note is saved, the server removes terminal control characters, turns `\r\n` and
