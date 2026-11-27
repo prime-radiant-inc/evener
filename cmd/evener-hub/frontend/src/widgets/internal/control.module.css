@@ -6,7 +6,7 @@
  * treatment. The type face stays with the composing widget: the picker
  * trigger is a button and PathField reads mono. Tokens only. */
 .controlField {
-  border-radius: var(--radius-control);
+  border-radius: var(--field-radius, var(--radius-control));
   border: 1px solid var(--edge);
   background: var(--field);
   box-shadow: var(--shadow-inset-field);

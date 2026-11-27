@@ -45,7 +45,7 @@
     <div class="root" id="formrow">
       <label for="prompt-file" class="label">System prompt file</label>
       <div class="control">
-        <button id="prompt-file" type="button" class="pathTrigger trigger " aria-label="System prompt file: /Users/jesse/prime-radiant/toil-suite/evener/.claude/worktrees/some-long-name/prompt.md — browse">
+        <button id="prompt-file" type="button" class="pathTrigger trigger controlField" aria-label="System prompt file: /Users/jesse/prime-radiant/toil-suite/evener/.claude/worktrees/some-long-name/prompt.md — browse">
           <span class="triggerValue  " id="value">/Users/jesse/prime-radiant/toil-suite/evener/.claude/worktrees/some-long-name/prompt.md</span>
           <span class="pathChevron chevron" aria-hidden="true"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false" style="display: block"><path d="M3.5 6 L8 10.5 L12.5 6" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"></path></svg></span>
           <span class="pathSrOnly srOnly">— browse</span>
@@ -63,7 +63,8 @@ window.measure = () => {
   };
   const row = box(document.querySelector("#row"));
   const formRow = box(document.querySelector("#formrow"));
-  const trigger = box(document.querySelector("#prompt-file"));
+  const picker = document.querySelector("#prompt-file");
+  const trigger = box(picker);
   const chip = box(document.querySelector("#chip"));
   const value = document.querySelector("#value");
   const valueStyle = getComputedStyle(value);
@@ -71,6 +72,8 @@ window.measure = () => {
   return {
     row,
     formRow,
+    pickerHeight: picker.getBoundingClientRect().height,
+    pickerRadius: parseFloat(getComputedStyle(picker).borderTopLeftRadius),
     // Positive = spilled past the row's right edge.
     formRowOverflowsRow: formRow.right - row.right,
     triggerOverflowsRow: trigger.right - row.right,

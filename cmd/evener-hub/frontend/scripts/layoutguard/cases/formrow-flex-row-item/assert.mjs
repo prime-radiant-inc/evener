@@ -5,6 +5,8 @@
 // content's full nowrap width, so it overflows the row.
 export default function assert(m) {
   const failures = [];
+  if (m.pickerRadius < m.pickerHeight / 2)
+    failures.push(`the ${m.pickerHeight}px picker has a ${m.pickerRadius}px corner with the shared field stylesheet loaded last`);
   if (m.formRowOverflowsRow > 1)
     failures.push(
       `the FormRow overflows its flex row by ${m.formRowOverflowsRow.toFixed(1)}px (FormRow ${m.formRow.width.toFixed(1)}px wide in a ${m.row.width.toFixed(1)}px row) - formrow.module.css's .root is missing min-width:0`,
