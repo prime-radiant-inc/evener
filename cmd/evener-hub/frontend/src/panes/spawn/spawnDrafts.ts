@@ -128,12 +128,14 @@ export type SpawnDraft = ReturnType<typeof createDraft>;
 export const spawnDraftsStore = createStore(() => ({
   drafts: new Map<string, SpawnDraft>(),
   current: null as SpawnDraft | null,
+  detachedShare: null as { id: string; cwd: string; url: string } | null,
   lastPrefillURL: null as string | null,
   prefillRevision: 0,
 }));
 
 export function selectSpawnDirectory(cwd: string): SpawnDraft {
   const state = spawnDraftsStore.getState();
+  if (state.current?.cwd !== cwd && state.detachedShare) spawnDraftsStore.setState({ detachedShare: null });
   let draft = state.drafts.get(cwd);
   const drafts = new Map(state.drafts);
   // Composing before choosing the first folder is supported: selecting it
@@ -165,15 +167,30 @@ export function updateSpawnPrompt(draft: SpawnDraft, value: string | SkillEditor
         )
       : value;
   let shareStart = fields.shareStart;
+  let shareText = fields.shareText;
+  let shareId = fields.shareId;
   if (shareStart !== null && fields.shareText !== null) {
     const prefix = sharedPrefixLength(fields.prompt, prompt);
     const suffix = sharedSuffixLength(fields.prompt, prompt, prefix);
     const oldEnd = fields.prompt.length - suffix;
     const shareEnd = shareStart + fields.shareText.length;
     if (oldEnd <= shareStart) shareStart += prompt.length - fields.prompt.length;
-    else if (prefix < shareEnd) shareStart = null;
-    if (shareStart !== null && prompt.slice(shareStart, shareStart + fields.shareText.length) !== fields.shareText)
-      shareStart = null;
+    else if (prefix < shareEnd) {
+      const newEnd = prompt.length - suffix;
+      shareStart = Math.min(prefix, shareStart);
+      shareText = prompt.slice(
+        shareStart,
+        oldEnd >= shareEnd ? newEnd : shareEnd + prompt.length - fields.prompt.length,
+      );
+      if (shareText === "") {
+        if (shareId) {
+          spawnDraftsStore.setState({ detachedShare: { id: shareId, cwd: draft.cwd, url: window.location.href } });
+        }
+        shareId = null;
+        shareText = null;
+        shareStart = null;
+      }
+    }
   }
   draft.fields.setState({
     prompt,
@@ -181,6 +198,8 @@ export function updateSpawnPrompt(draft: SpawnDraft, value: string | SkillEditor
     commandNames: selections.commandNames ?? [],
     mentions: selections.mentions,
     promptRevision: fields.promptRevision + 1,
+    shareId,
+    shareText,
     shareStart,
   });
 }
@@ -248,6 +267,14 @@ export function applySpawnURL(onNavigation = false): void {
   const draft = selectSpawnDirectory(cwd);
   if (applyPrefill) {
     if (prefill.prompt) {
+      const current = draft.fields.getState();
+      spawnDraftsStore.setState({ detachedShare: null });
+      if (current.shareId) {
+        spawnDraftsStore.setState({
+          detachedShare: { id: current.shareId, cwd: draft.cwd, url: window.location.href },
+        });
+        draft.fields.setState({ shareId: null, shareText: null, shareStart: null });
+      }
       setDraftField(draft, "prompt", prefill.prompt);
       draft.fields.setState({ skillNames: [], commandNames: [], mentions: undefined });
     }
@@ -267,9 +294,14 @@ export function applySpawnURL(onNavigation = false): void {
 // keeps the marker, so its suppression of a redundant re-apply survives.
 if (typeof window !== "undefined") {
   window.addEventListener("popstate", () => {
-    if (window.location.pathname === "/new") return;
     const state = spawnDraftsStore.getState();
-    if (state.lastPrefillURL !== null) spawnDraftsStore.setState({ lastPrefillURL: null });
+    if (window.location.pathname === "/new") {
+      if (state.detachedShare && state.detachedShare.url !== window.location.href)
+        spawnDraftsStore.setState({ detachedShare: null });
+      return;
+    }
+    if (state.lastPrefillURL !== null || state.detachedShare)
+      spawnDraftsStore.setState({ lastPrefillURL: null, detachedShare: null });
   });
 }
 
@@ -307,5 +339,11 @@ export function useDraftField<K extends keyof DraftFields>(
 }
 
 export function resetSpawnDraftsForTests(): void {
-  spawnDraftsStore.setState({ drafts: new Map(), current: null, lastPrefillURL: null, prefillRevision: 0 });
+  spawnDraftsStore.setState({
+    drafts: new Map(),
+    current: null,
+    detachedShare: null,
+    lastPrefillURL: null,
+    prefillRevision: 0,
+  });
 }

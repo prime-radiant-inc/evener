@@ -11,7 +11,7 @@ import { ClientProvider } from "../../shell/clientContext";
 import { connectionStore } from "../../stores/connection";
 import { credentialsStore } from "../../stores/credentials";
 import { Toast } from "../../widgets";
-import { selectEditorText } from "../session/testing/editor";
+import { insertEditorTextAt, selectEditorText } from "../session/testing/editor";
 import Spawn from "./Spawn";
 import {
   accessRowTrigger,
@@ -1055,6 +1055,149 @@ test.each(["desktop", "mobile"])(
     ).toEqual([{ type: "sharePlaced", path: "/new", id: share.id }]);
   },
 );
+
+test("an explicit prompt prefill detaches a pending share and stale redelivery cannot replace it", async () => {
+  const agent = vi.spyOn(navigator, "userAgent", "get").mockReturnValue("EvenerNative/1");
+  const postMessage = vi.fn();
+  vi.stubGlobal("ReactNativeWebView", { postMessage });
+  onTestFinished(() => {
+    agent.mockRestore();
+    vi.unstubAllGlobals();
+  });
+  const user = setupUser();
+  window.history.pushState({}, "", "/new?dir=/tmp/prefilled-share");
+  const fake = readyClient();
+  renderSpawn(fake);
+  await settled();
+  await fillPrompt(user, "old-draft");
+  const share = { type: "shareText", path: "/new", id: "prefilled-share", text: "extension-content" };
+  act(() => window.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(share) })));
+  expect(completionDraft("/tmp/prefilled-share").fields.getState().shareId).toBe(share.id);
+
+  await visitSpawnURL("/new?dir=/tmp/prefilled-share&prompt=command-palette-prompt");
+  expect(promptField().textContent).toBe("command-palette-prompt");
+  expect(completionDraft("/tmp/prefilled-share").fields.getState().shareId).toBeNull();
+  act(() => window.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(share) })));
+  expect(promptField().textContent).toBe("command-palette-prompt");
+
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Aabc123"));
+  expect(fake.calls.find((call) => call.method === "thread/start")?.params).toMatchObject({
+    input: [{ type: "text", text: "command-palette-prompt" }],
+  });
+  expect(
+    postMessage.mock.calls.map(([value]) => JSON.parse(value)).filter((message) => message.type === "sharePlaced"),
+  ).toEqual([]);
+
+  await visitSpawnURL("/new?dir=/tmp/reoffer-target");
+  act(() => window.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(share) })));
+  expect(promptField().textContent).toBe("extension-content");
+  expect(completionDraft("/tmp/reoffer-target").fields.getState().shareId).toBe(share.id);
+});
+
+test("edited share edges travel with their project while unrelated identical text stays behind", async () => {
+  installCanvasStubs();
+  const agent = vi.spyOn(navigator, "userAgent", "get").mockReturnValue("EvenerNative/1");
+  const postMessage = vi.fn();
+  vi.stubGlobal("ReactNativeWebView", { postMessage });
+  onTestFinished(() => {
+    agent.mockRestore();
+    vi.unstubAllGlobals();
+  });
+  const user = setupUser();
+  window.history.pushState({}, "", "/new?dir=/tmp/edited-share-a");
+  const started = deferred<ThreadStartResponse>();
+  const fake = readyClient((f) => f.on("thread/start", () => started.promise));
+  renderSpawn(fake);
+  await fillPrompt(user, "project-a-draft\n\nextension-content");
+  const projectA = completionDraft("/tmp/edited-share-a");
+  await visitSpawnURL("/new?dir=/tmp/edited-share-b");
+  await fillPrompt(user, "project-b-draft");
+  const projectB = completionDraft("/tmp/edited-share-b");
+  await visitSpawnURL("/new?dir=/tmp/edited-share-a");
+
+  const share = { type: "shareText", path: "/new", id: "edited-share", text: "extension-content" };
+  act(() => window.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(share) })));
+  const sourceText = "project-a-draft\n\nextension-content\n\nextension-content";
+  expect(promptField().textContent).toBe(sourceText);
+  const shareStart = sourceText.lastIndexOf(share.text);
+  insertEditorTextAt(promptField(), shareStart, "E", shareStart + 1);
+  const firstEdit = "project-a-draft\n\nextension-content\n\nExtension-content";
+  expect(promptField().textContent).toBe(firstEdit);
+  const lastChar = firstEdit.lastIndexOf("Extension-content") + "Extension-content".length - 1;
+  insertEditorTextAt(promptField(), lastChar, "!", lastChar + 1);
+  expect(promptField().textContent).toBe("project-a-draft\n\nextension-content\n\nExtension-conten!");
+
+  await setWorkingDir(user, "/tmp/edited-share-b");
+  expect(projectA.fields.getState()).toMatchObject({
+    prompt: "project-a-draft\n\nextension-content",
+    shareId: null,
+  });
+  expect(projectB.fields.getState()).toMatchObject({
+    prompt: "project-b-draft\n\nExtension-conten!",
+    shareId: share.id,
+    shareText: "Extension-conten!",
+  });
+
+  await user.click(screen.getByTestId("spawn-submit"));
+  await settled();
+  const submittedPrompt = projectB.fields.getState().prompt;
+  act(() => {
+    projectB.fields.setState({
+      prompt: `${submittedPrompt}\n\nnewer-share-content`,
+      promptRevision: projectB.fields.getState().promptRevision + 1,
+      shareId: "newer-share",
+      shareText: "newer-share-content",
+      shareStart: submittedPrompt.length + 2,
+    });
+  });
+  expect(postMessage.mock.calls.filter(([value]) => JSON.parse(value).type === "sharePlaced")).toEqual([]);
+  await act(async () => started.resolve(startResponse("local:edited-share")));
+  expect(
+    postMessage.mock.calls.map(([value]) => JSON.parse(value)).filter((message) => message.type === "sharePlaced"),
+  ).toEqual([{ type: "sharePlaced", path: "/new", id: share.id }]);
+  expect(fake.calls.find((call) => call.method === "thread/start")?.params).toMatchObject({
+    input: [{ type: "text", text: "project-b-draft\n\nExtension-conten!" }],
+  });
+  expect(projectB.fields.getState()).toMatchObject({
+    shareId: "newer-share",
+    shareText: "newer-share-content",
+  });
+});
+
+test("deleting the entire shared span before a project pick does not restore it", async () => {
+  const agent = vi.spyOn(navigator, "userAgent", "get").mockReturnValue("EvenerNative/1");
+  vi.stubGlobal("ReactNativeWebView", { postMessage: vi.fn() });
+  onTestFinished(() => {
+    agent.mockRestore();
+    vi.unstubAllGlobals();
+  });
+  const user = setupUser();
+  window.history.pushState({}, "", "/new?dir=/tmp/deleted-share-a");
+  renderSpawn(readyClient());
+  await fillPrompt(user, "project-a-draft");
+  const projectA = completionDraft("/tmp/deleted-share-a");
+  await visitSpawnURL("/new?dir=/tmp/deleted-share-b");
+  await fillPrompt(user, "project-b-draft");
+  const projectB = completionDraft("/tmp/deleted-share-b");
+  await visitSpawnURL("/new?dir=/tmp/deleted-share-a");
+  const share = { type: "shareText", path: "/new", id: "deleted-share", text: "extension-content" };
+  act(() => window.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(share) })));
+  const sourceText = "project-a-draft\n\nextension-content";
+  const shareStart = sourceText.indexOf(share.text);
+  insertEditorTextAt(promptField(), shareStart - 2, "", shareStart + share.text.length);
+  expect(promptField().textContent).toBe("project-a-draft");
+  act(() => window.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(share) })));
+  expect(promptField().textContent).toBe("project-a-draft");
+  expect(projectA.fields.getState().shareId).toBeNull();
+
+  await setWorkingDir(user, "/tmp/deleted-share-b");
+  expect(projectA.fields.getState()).toMatchObject({ prompt: "project-a-draft", shareId: null });
+  expect(projectB.fields.getState()).toMatchObject({ prompt: "project-b-draft", shareId: null });
+  act(() => window.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(share) })));
+  expect(promptField().textContent).toBe("project-b-draft\n\nextension-content");
+  expect(projectB.fields.getState().shareId).toBe(share.id);
+});
 
 test("assigning an unscoped launch its first directory keeps the share with that draft", async () => {
   const agent = vi.spyOn(navigator, "userAgent", "get").mockReturnValue("EvenerNative/1");

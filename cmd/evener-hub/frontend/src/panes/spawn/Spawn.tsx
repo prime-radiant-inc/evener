@@ -743,6 +743,9 @@ function SpawnForm({
   const [busy, setBusy] = useDraftField(draft, "busy");
   useIPhoneShare(focused && !busy ? "/new" : null, (id, text) => {
     if (draft.busyRef.current) return;
+    const detachedShare = spawnDraftsStore.getState().detachedShare;
+    if (detachedShare?.id === id && detachedShare.cwd === draft.cwd && detachedShare.url === window.location.href)
+      return;
     // Every project launcher shares the /new destination. A redelivery
     // belongs to the draft that already accepted it, even while another is open.
     for (const retained of spawnDraftsStore.getState().drafts.values()) {
@@ -2429,6 +2432,16 @@ function SpawnForm({
       // Start-time role: an ordinary launch omits it entirely.
       manager,
     };
+    const shareAtSubmit = draft.fields.getState();
+    const submittedShareId =
+      !builtinMatch &&
+      shareAtSubmit.shareId &&
+      shareAtSubmit.shareText &&
+      shareAtSubmit.shareStart !== null &&
+      prompt.slice(shareAtSubmit.shareStart, shareAtSubmit.shareStart + shareAtSubmit.shareText.length) ===
+        shareAtSubmit.shareText
+        ? shareAtSubmit.shareId
+        : null;
     const supportsStartIdempotency =
       client.initializeResult?.features?.threadStartIdempotency === true &&
       (isLocalHost(submittedSource) || chosenSource?.threadStartIdempotency === true);
@@ -2455,11 +2468,16 @@ function SpawnForm({
       reportStartFailure(err, { startDispatched: true, retryablePendingStart: clientMutationId !== undefined });
       return;
     }
-    const shareId = draft.fields.getState().shareId;
     // A launch draft lives only in this document. Its App Group file protects
     // the prompt until the person starts the session and the hub accepts it.
-    if (shareId) tellIPhoneHost({ type: "sharePlaced", path: "/new", id: shareId });
-    draft.fields.setState({ pendingStart: null, shareId: null, shareText: null, shareStart: null });
+    if (submittedShareId) tellIPhoneHost({ type: "sharePlaced", path: "/new", id: submittedShareId });
+    const completed = draft.fields.getState();
+    draft.fields.setState({
+      pendingStart: null,
+      ...(submittedShareId && completed.shareId === submittedShareId
+        ? { shareId: null, shareText: null, shareStart: null }
+        : {}),
+    });
     if (builtinMatch && builtinMatch.command.id === "goal") {
       // Post-start application runs AFTER navigation below: awaiting goal/set
       // here would hold the UI in "Starting…" for the RPC timeout on a
