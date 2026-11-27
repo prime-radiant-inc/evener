@@ -221,7 +221,7 @@ func DefShell() llm.ToolDefinition {
 // accepts.
 func ShellModeProperty(detachAvailable bool) map[string]any {
 	modeEnum := []any{"foreground", "background"}
-	modeDescription := "foreground (default for builds, tests, and waited commands; auto-backgrounds at 2m); background (only when running independent parallel work; stops on exit)"
+	modeDescription := "foreground (default for builds, tests, and waited commands; auto-backgrounds at 2m); background (for independent parallel work or a session-owned service that must return immediately; stops on exit)"
 	if detachAvailable {
 		modeEnum = append(modeEnum, "detached")
 		modeDescription += "; detached (outlives exit, returns PID only, no job/notice, discards unredirected output; pass absolute paths and redirect needed logs to an absolute path)."
@@ -777,7 +777,7 @@ func DefCommunicateNamed(name string) llm.ToolDefinition {
 					"type":        "string",
 					"enum":        slices.Clone(schema.CommunicateNextValues),
 					"default":     CommunicateNextSendAndEndTurn,
-					"description": "REQUIRED for mid-work updates: \"send_and_end_turn\" (default) ENDS THE TURN immediately; \"send_and_continue\" sends an update and keeps working; \"log_quietly_and_end_turn\" logs a quiet wait note and ends the turn.",
+					"description": "Set next=\"send_and_continue\" for mid-work updates. \"send_and_continue\" sends an update and keeps working; \"send_and_end_turn\" (default) ENDS THE TURN immediately with your final reply; \"log_quietly_and_end_turn\" logs a quiet wait note and ends the turn.",
 				},
 				"output": map[string]any{
 					"type":                 "object",
@@ -832,7 +832,7 @@ func WithCommunicateDelegateUpdates(def llm.ToolDefinition) llm.ToolDefinition {
 		message["description"] = "Report, update, or wait note."
 	}
 	if nextProp, ok := props["next"].(map[string]any); ok {
-		nextProp["description"] = "REQUIRED for mid-work updates: \"send_and_end_turn\" (default) ENDS THE TURN immediately with your report; \"send_and_continue\" sends an update to your parent and keeps working; \"log_quietly_and_end_turn\" logs a quiet wait note without waking your parent and ends the turn."
+		nextProp["description"] = "Set next=\"send_and_continue\" for mid-work updates. \"send_and_continue\" sends an update to your parent and keeps working; \"send_and_end_turn\" (default) ENDS THE TURN immediately with your report or readiness line; \"log_quietly_and_end_turn\" logs a quiet wait note without waking your parent and ends the turn."
 	}
 	def.Description = communicateDelegateDescription(def.Name)
 	def.Parameters = params
