@@ -1,8 +1,9 @@
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { createElement, type ReactNode } from "react";
+import { type ComponentProps, createElement, type ReactNode } from "react";
 import { act } from "react-test-renderer";
 import { beforeEach, expect, it, vi } from "vitest";
 import App from "./App";
+import type { WorkspaceScreen } from "./src/WorkspaceScreen";
 import { render, settleMicrotasks, unmountMountedTrees } from "./src/renderNative.testkit";
 import { answerFleetRead, fleetSession } from "./src/session/fleetTestUtils";
 import { share, sharePort } from "./src/share/shareTestkit";
@@ -57,8 +58,7 @@ vi.mock("./src/ConnectionProvider", () => ({
 }));
 vi.mock("./src/share/appGroupSharePort", () => ({ appGroupSharePort: () => harness.port as SharePort }));
 vi.mock("./src/WorkspaceScreen", () => ({
-	WorkspaceScreen: (props: { share?: unknown; onSharePlaced(id: string): void }) =>
-		createElement("WorkspaceShare", { share: props.share, onSharePlaced: props.onSharePlaced }),
+	WorkspaceScreen: (props: ComponentProps<typeof WorkspaceScreen>) => createElement("WorkspaceShare", props),
 }));
 vi.mock("./src/hub/HubSheet", () => ({ HubSheet: () => null }));
 vi.mock("./src/hubs/FirstRunScreen", () => ({ FirstRunScreen: () => null }));
@@ -114,6 +114,11 @@ it("routes an incoming share through its picker target and waits for the matchin
 		await settleMicrotasks();
 	});
 	const workspace = () => tree.root.find((node) => (node.type as string) === "WorkspaceShare");
+	expect(workspace().props.route).toMatchObject({
+		name: "Workspace",
+		params: { hubId: "hub-1", path: "/s/local%3Awork" },
+	});
+	expect(tree.root.findAllByProps({ testID: "share-new-session" })).toHaveLength(0);
 	expect(workspace().props.share).toMatchObject({ id: "incoming", hubId: "hub-1", path: "/s/local%3Awork" });
 	expect(await port.list()).toHaveLength(1);
 
