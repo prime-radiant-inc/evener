@@ -957,11 +957,19 @@ async function assertTabletActionGeometry(send) {
 }
 
 async function measureWideIPad({ send }) {
+  // Pin the motion preference the glass scene requires. iPhoneGlass skips
+  // creating the scene under prefers-reduced-motion: reduce while the body
+  // still reads glass mode as regular, so a host carrying the preference
+  // would pass the clip assert and then hang the drawn wait on a healthy
+  // build. The clear after the pass hands the shared tab back its host
+  // media for the next measurement.
+  await send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-reduced-motion", value: "no-preference" }] });
   await evaluate(send, "window.overviewPane('other')");
   await waitForDom(send, "document.querySelector('[data-iphone-composer] [data-testid=composer-submit]')", "wide iPad composer");
   await assertFocusedComposerClips(send);
   await assertDrawnGlassCanvasContained(send);
   await assertTabletActionGeometry(send);
+  await send("Emulation.setEmulatedMedia", { features: [] });
 }
 
 // The drawn half of the glass containment contract (#7930). The SDK creates
