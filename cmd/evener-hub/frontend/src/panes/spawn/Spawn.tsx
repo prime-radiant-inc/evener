@@ -740,8 +740,13 @@ function SpawnForm({
   }, [client, draft, submittedSource]);
   const [busy, setBusy] = useDraftField(draft, "busy");
   useIPhoneShare(focused && !busy ? "/new" : null, (id, text) => {
+    if (draft.busyRef.current) return;
+    // Every project launcher shares the /new destination. A redelivery
+    // belongs to the draft that already accepted it, even while another is open.
+    for (const retained of spawnDraftsStore.getState().drafts.values()) {
+      if (retained.fields.getState().shareId === id) return;
+    }
     const current = draft.fields.getState();
-    if (current.shareId === id || draft.busyRef.current) return;
     updatePrompt(mergeDraftText(current.prompt, text));
     draft.fields.setState({ shareId: id, selectionRestoreRevision: current.selectionRestoreRevision + 1 });
   });

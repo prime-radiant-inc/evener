@@ -949,6 +949,8 @@ test("late successful creation clears only the originating draft across remount 
   expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(true);
   await visitSpawnURL("/new?dir=/tmp/draft-b");
   await fillPrompt(user, "other-project-sentinel");
+  deliver("/new");
+  expect(completionDraft("/tmp/draft-b").fields.getState().prompt).toBe("other-project-sentinel");
   act(() => pastePngInto(promptField(), "other.png"));
   await screen.findByRole("button", { name: "View other.png" });
   await act(async () => started.resolve(startResponse("local:abc123")));
@@ -966,6 +968,12 @@ test("late successful creation clears only the originating draft across remount 
   expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false);
   expect(fake.calls.filter((call) => call.method === "thread/start")).toHaveLength(1);
   expect(localStorage.getItem("evener-hub.spawn-defaults.global.working_dir")).toBe("/tmp/draft-a");
+  await visitSpawnURL("/new?dir=/tmp/draft-b");
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(completionDraft("/tmp/draft-b").fields.getState().prompt).toBe(""));
+  expect(
+    postMessage.mock.calls.map(([value]) => JSON.parse(value)).filter((message) => message.type === "sharePlaced"),
+  ).toEqual([{ type: "sharePlaced", path: "/new", id: share.id }]);
 });
 
 test("restoring a project's effort never clamps it against the previous project's catalog", async () => {
