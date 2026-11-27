@@ -1179,6 +1179,7 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
             data-testid="topbar"
             data-collapsed={topBarCollapsed ? "true" : undefined}
             data-session={focusedSessionRef === undefined ? undefined : "true"}
+            data-drawer-leads={drawer !== null && !showBack && focusedSessionRef === undefined ? "" : undefined}
           >
             {!actionsAtEdge && leading}
             <Title className={styles.stackTitle} data-testid="topbar-title">

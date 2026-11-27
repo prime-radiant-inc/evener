@@ -38,6 +38,7 @@ import {
 } from "./floatingFixture.mjs";
 import { checkSessionHoverCards } from "./sessionHoverCard.mjs";
 import { checkSettingsGeometry } from "./settingsGeometry.mjs";
+import { checkTopBarDrawerPlacement } from "./topBarDrawerPlacement.mjs";
 import { measureDelayedFloatingDock } from "./startup.mjs";
 
 const FRONTEND = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -2842,6 +2843,7 @@ async function main() {
     console.log(`shellguard delayed workspace: ${JSON.stringify(delayedFloatingDock)}`);
     failures.push(...(await checkSessionHoverCards(cdpEndpoint, vitePort)));
     failures.push(...(await checkSettingsGeometry(cdpEndpoint, vitePort)));
+    failures.push(...(await checkTopBarDrawerPlacement(cdpEndpoint, vitePort)));
     if (failures.length === 0) {
       console.log(
         `shellguard ok: document ${result.document.scrollHeight}px in a ${result.viewport.height}px viewport, ` +

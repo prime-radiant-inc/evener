@@ -197,7 +197,9 @@ losing the conversation that made the evidence relevant.
   management. Rail and embedded-column menus keep their existing inspection access. Mobile
   session titles align left. A session with no real Back destination gets Sessions as its only
   leading navigation control; a retained parent, valid back-stack destination, or attention Back
-  uses Back instead. Non-session top bars are unchanged.
+  uses Back instead. Non-session top bars keep Back leading with the drawer trigger trailing;
+  a pane with no Back (Welcome) leads with the Sessions drawer trigger, matching the no-back
+  session bar.
 - **Keep session status inside its pane.** Every visible desktop session pane ends
   with its own
   flush status footer, never one strip spanning sibling panes. The footer leads with that

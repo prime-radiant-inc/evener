@@ -584,7 +584,16 @@ test.each([
       expect(opener.closest("[role=toolbar]")?.getAttribute("data-home-toolbar") ?? null).toBe(
         installed ? "right" : null,
       );
-      expect(screen.getByTestId("topbar").contains(opener)).toBe(!installed);
+      const bar = screen.getByTestId("topbar");
+      expect(bar.contains(opener)).toBe(!installed);
+      if (!installed) {
+        // The trigger keeps one mounted node in the trailing cluster across
+        // pane swaps, so the drawer's focus restoration keeps its opener; the
+        // bar row-reverses (data-drawer-leads) to put it at the visual leading
+        // edge wherever Back is absent. A Back-owning pane keeps normal order
+        // so the trigger never disappears behind Back.
+        expect(bar.hasAttribute("data-drawer-leads")).toBe(pane === "welcome");
+      }
       await openSessionsPanel(user);
       expect(screen.getByRole("dialog").classList.contains(mobilePanelStyles.right ?? "")).toBe(installed);
       await user.keyboard("{Escape}");
@@ -1194,6 +1203,17 @@ test("a single-pane route offers no tree drawer trigger", async () => {
   render(<StackHost singlePane />);
   expect(await screen.findByTestId("topbar-title")).toBeTruthy();
   expect(screen.queryByRole("button", { name: "Sessions" })).toBeNull();
+});
+
+// The drawer restores focus to its opener when it closes, including when a
+// pane choice inside the drawer closes it mid-navigation. A trigger that
+// remounts across the pane swap strands that restoration on a detached node.
+test("the tree drawer trigger stays one mounted node across a Back-owning pane swap", async () => {
+  render(<StackHost />);
+  const opener = await screen.findByRole("button", { name: "Sessions" });
+  act(() => workspaceStore.getState().openPane("settings", {}));
+  await screen.findByRole("button", { name: "Back" });
+  expect(screen.getByRole("button", { name: "Sessions" })).toBe(opener);
 });
 
 // --- back navigation ---------------------------------------------------
