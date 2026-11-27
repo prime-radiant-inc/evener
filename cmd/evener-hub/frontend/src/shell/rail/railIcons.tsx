@@ -27,6 +27,16 @@ export const STROKE = {
 
 const CONTROL_ICON = { ...ICON, className: symbolStyles.symbol };
 
+export function HostGlyph({ className = symbolStyles.symbol, testId }: { className?: string; testId?: string }) {
+  return (
+    <svg data-testid={testId} className={className} {...ICON} aria-hidden="true" focusable="false">
+      <rect x="2" y="2.75" width="12" height="4.5" rx="1.25" {...STROKE} />
+      <rect x="2" y="8.75" width="12" height="4.5" rx="1.25" {...STROKE} />
+      <path d="M4.75 5h.01M4.75 11h.01" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" />
+    </svg>
+  );
+}
+
 export function GearIcon() {
   return (
     <svg {...CONTROL_ICON} aria-hidden="true">

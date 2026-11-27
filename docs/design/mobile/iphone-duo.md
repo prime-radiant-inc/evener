@@ -16,6 +16,10 @@ list keeps its filter and New session button. Closing it restores the reader
 actions, or the Sessions button on Welcome. A menu or Overview temporarily
 hides the covered actions.
 
+At larger text sizes, the inner portrait display can show Sessions as a drawer
+instead of a split Board. Both the native app and the Home Screen place the
+drawer actions in a strip down its right side when iOS reserves no edge.
+
 ## Home Screen and Safari
 
 A hub added to the Home Screen rotates on both displays. The installed workspace
