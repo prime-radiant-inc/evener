@@ -959,43 +959,9 @@ async function assertTabletActionGeometry(send) {
 async function measureWideIPad({ send }) {
   await evaluate(send, "window.overviewPane('other')");
   await waitForDom(send, "document.querySelector('[data-iphone-composer] [data-testid=composer-submit]')", "wide iPad composer");
-  const baseline = await readComposerOverhangChain(send);
   await assertFocusedComposerClips(send);
-  await assertDrawnGlassCanvasContained(send, baseline);
+  await assertDrawnGlassCanvasContained(send);
   await assertTabletActionGeometry(send);
-}
-
-// Read the horizontal overhang (scrollWidth - clientWidth) of the composer
-// card and every ancestor up to the document, each with a stable descriptor
-// and its computed overflow-x. The glass canvas can protrude into any of
-// these boxes, so the drawn-canvas guard compares a chain read before the
-// glass pass focused the composer against one taken after the canvas is
-// drawn: only growth the canvas caused fails, and pre-existing overflow
-// elsewhere never misfires.
-async function readComposerOverhangChain(send) {
-  const chain = await evaluate(
-    send,
-    `(() => {
-      const describe = (el) => {
-        let d = el.tagName.toLowerCase();
-        const classes = String(el.className).trim().split(/\s+/).filter(Boolean);
-        if (classes.length) d += '.' + classes.slice(0, 3).join('.');
-        for (const attr of ['data-prompt-card', 'data-iphone-composer', 'data-pane-scaffold-root', 'data-reading-scroll-host', 'role', 'data-testid']) {
-          if (el.getAttribute(attr) !== null) d += '[' + attr + ']';
-        }
-        return d;
-      };
-      const levels = [];
-      for (let el = document.querySelector('[data-iphone-composer] [data-prompt-card]'); el; el = el.parentElement) {
-        levels.push({ descriptor: describe(el), overhang: el.scrollWidth - el.clientWidth, overflowX: getComputedStyle(el).overflowX });
-      }
-      return levels;
-    })()`,
-  );
-  if (!Array.isArray(chain) || chain.length === 0) {
-    throw new Error('the wide iPad pass has no composer card to measure an overhang chain on');
-  }
-  return chain;
 }
 
 // The drawn half of the glass containment contract (#7930). The SDK creates
@@ -1007,9 +973,9 @@ async function readComposerOverhangChain(send) {
 // waits for the drawn flag, then requires the canvas to be the card's previous
 // sibling (the placement the SDK maintains for a clipped card: an unclipped
 // card keeps the bleed-sized canvas in-card, widening the card's scrollable
-// content - the escape #7928 fixed), to cover the card it drew, and to have
-// grown no scrolling box's horizontal overhang from the pre-focus baseline.
-async function assertDrawnGlassCanvasContained(send, baseline) {
+// content - the escape #7928 fixed), to cover the card it drew, and to add
+// no horizontal scroll range any user can reach.
+async function assertDrawnGlassCanvasContained(send) {
   await waitForDom(
     send,
     "document.querySelector('[data-iphone-composer=\"focused\"] [data-prompt-card]')?.hasAttribute('data-iphone-glass-drawn')",
@@ -1059,34 +1025,71 @@ async function assertDrawnGlassCanvasContained(send, baseline) {
       `the drawn glass canvas does not cover the conversation card (canvas ${JSON.stringify(drawn.canvasRect)} card ${JSON.stringify(drawn.cardRect)}) - the SDK sizes the sibling canvas to the card plus its bleed, so a partial cover means the canvas is not this card's`,
     );
   }
-  const after = await readComposerOverhangChain(send);
-  if (after.length !== baseline.length) {
-    throw new Error(
-      `the composer card's ancestor chain changed during the glass pass (before ${baseline.length} levels, after ${after.length}) - the overhang comparison cannot be trusted`,
-    );
+  const added = await evaluate(
+    send,
+    `(() => {
+      const card = document.querySelector('[data-iphone-composer="focused"] [data-prompt-card]');
+      if (!card) return { card: false };
+      const canvas = card.previousElementSibling && card.previousElementSibling.matches('[data-lg-canvas]') ? card.previousElementSibling : null;
+      const describe = (el) => {
+        let d = el.tagName.toLowerCase();
+        const classes = String(el.className).trim().split(/\s+/).filter(Boolean);
+        if (classes.length) d += '.' + classes.slice(0, 3).join('.');
+        for (const attr of ['data-prompt-card', 'data-iphone-composer', 'data-pane-scaffold-root', 'data-reading-scroll-host', 'role', 'data-testid']) {
+          if (el.getAttribute(attr) !== null) d += '[' + attr + ']';
+        }
+        return d;
+      };
+      const read = () => {
+        const levels = [];
+        for (let el = card; el; el = el.parentElement) {
+          levels.push({ descriptor: describe(el), overhang: el.scrollWidth - el.clientWidth, overflowX: getComputedStyle(el).overflowX });
+        }
+        return levels;
+      };
+      // Both reads run in one synchronous evaluation, with the canvas hidden
+      // between them: renders ride rAF, so the SDK cannot react to the hide,
+      // and the finally restores the inline display before any frame. The
+      // difference is exactly what the canvas adds to each box.
+      const shown = read();
+      if (!canvas) return { card: true, canvas: false, levels: shown };
+      const display = canvas.style.display;
+      try {
+        canvas.style.display = 'none';
+        const hidden = read();
+        return {
+          card: true,
+          canvas: true,
+          levels: shown.map((level, i) => ({ ...level, added: level.overhang - hidden[i].overhang })),
+        };
+      } finally {
+        canvas.style.display = display;
+      }
+    })()`,
+  );
+  if (!added.card) {
+    throw new Error('the focused conversation card vanished before its overhang could be read');
   }
-  for (let i = 0; i < after.length; i++) {
-    if (after[i].descriptor !== baseline[i].descriptor) {
-      throw new Error(
-        `the composer card's ancestor chain changed during the glass pass (level ${i} was ${baseline[i].descriptor}, now ${after[i].descriptor}) - the overhang comparison cannot be trusted`,
-      );
-    }
-    const growth = after[i].overhang - baseline[i].overhang;
-    // Growth only fails the guard where the box actually scrolls: a visible
-    // box hands its growth up to the next scroller (which the chain also
-    // measures) and a clipped box discards it, while the document root is
-    // the viewport scroller whatever its computed overflow says. The SDK
-    // sizes the sibling canvas to the card plus its bleed, so its host box
-    // always reports the bleed as overhang - invisible unless a scroller
-    // adopts it.
+  if (!added.canvas) {
+    throw new Error('the drawn glass canvas is gone from beside the conversation card');
+  }
+  for (let i = 0; i < added.levels.length; i++) {
+    const level = added.levels[i];
+    // The canvas's contribution only fails the guard where the box actually
+    // scrolls: a visible box hands its growth up to the next scroller (which
+    // this walk also measures) and a clipped box discards it, while the
+    // document root is the viewport scroller whatever its computed overflow
+    // says. The SDK sizes the sibling canvas to the card plus its bleed, so
+    // its host boxes always report the bleed as overhang - invisible unless a
+    // scroller adopts it.
     const scrolls =
-      (i === after.length - 1 && after[i].overflowX !== "clip") ||
-      after[i].overflowX === "auto" ||
-      after[i].overflowX === "scroll" ||
-      after[i].overflowX === "hidden";
-    if (growth > 0 && scrolls) {
+      (i === added.levels.length - 1 && level.overflowX !== "clip") ||
+      level.overflowX === "auto" ||
+      level.overflowX === "scroll" ||
+      level.overflowX === "hidden";
+    if (level.added > 0 && scrolls) {
       throw new Error(
-        `the drawn glass canvas added horizontal scroll range at ${after[i].descriptor} (overflow-x: ${after[i].overflowX}): ${baseline[i].overhang}px -> ${after[i].overhang}px`,
+        `the drawn glass canvas added horizontal scroll range at ${level.descriptor} (overflow-x: ${level.overflowX}): +${level.added}px`,
       );
     }
   }
