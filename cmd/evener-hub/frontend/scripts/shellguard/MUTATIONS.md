@@ -153,3 +153,55 @@ shellguard FAIL: phone Command palette input is not hit-testable/focused: {"tag"
 **Result after fix:** PASS, exit 0 across `npm run shellguard`.
 
 **Verified:** 2026-11-25. **Expect:** fail.
+
+## The tablet divider drags press the live separator, not a rect captured earlier (`measureTabletSplit()`'s `dragDivider`, the `minimum drag` / `maximum drag` assertions) - #7912
+
+The Board's resize separator is an 8px strip at the board's right edge, and a
+drag has to land a pointer press inside it. The drags used to press the center
+of a rect captured in an earlier CDP round trip (the settled-divider gate, or
+the previous snapshot's `resizeHandle`). When the Board is still moving when
+the press lands - the #7912 trusted-event reproduction caught the opening
+spring at translateX -33.9px - the strip is no longer at the pressed
+coordinate, the separator never receives `pointerdown`, the drag never arms,
+and the Board stays at its starting 280px width. The drag's
+"width published before pointerup" gate compared the board width to
+`aria-valuenow`, which is vacuously true when the drag never armed (280 === 280),
+so the guard released, snapshotted the un-armed board, and the assertion reported
+the stale width JSON instead of the missed press.
+
+The fix under test samples the live, hittable handle center in the round trip
+immediately before each press, takes each drag's destination from that same
+sample (a number drags to a viewport coordinate; a function computes one from
+the sample, which is how the first drag moves 60px right of the live strip),
+waits for the board width to reach the width the component's own clamp computes
+for that destination, and retries the whole press with a fresh sample (throwing
+with each attempt's live board state) when the width never moves.
+
+**Mutation performed:** in
+`cmd/evener-hub/frontend/scripts/shellguard/run.mjs` injected, around the two
+768px drags, the mover class the #7912 reproduction observed:
+`document.querySelector('[data-testid="board-column"]').style.transform =
+'translateX(-40px)'` applied after the settled-divider gate and removed between
+the two drags, then ran `node scripts/shellguard/run.mjs`.
+
+**Result before fix:** FAIL, exit 1, exactly the two lines the merge-group CI
+run 46053280559 (job `web-browser / skill`) reported:
+
+```
+shellguard FAIL: tablet divider minimum drag did not reach the advertised limit: {"range":{"min":256,"max":376,"now":280},"width":280}
+shellguard FAIL: tablet divider maximum drag did not reach the advertised limit: {"range":{"min":256,"max":376,"now":280},"width":280}
+```
+
+Both drags pressed coordinates captured before the transform moved the strip
+40px left; the press landed on the pane and on the board content, the separator
+never captured the pointer, and both drags snapshot the starting 280px width.
+Every other assertion passed, including the Home/End key steps, matching the CI
+failure, which lost only the two drag lines.
+
+**Result after fix:** PASS, exit 0, same injected mover: each drag sampled the
+translated strip's live center, armed, and reached 256px / 376px. Without the
+mover the guard passes unchanged, so the assertions still verify real drag
+behavior, not the retry.
+
+**Verified:** 2026-11-27. **Expect:** fail (with the pre-fix dragDivider; the
+fixed dragDivider must keep passing the same mover).
