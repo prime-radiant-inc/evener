@@ -959,8 +959,137 @@ async function assertTabletActionGeometry(send) {
 async function measureWideIPad({ send }) {
   await evaluate(send, "window.overviewPane('other')");
   await waitForDom(send, "document.querySelector('[data-iphone-composer] [data-testid=composer-submit]')", "wide iPad composer");
+  const baseline = await readComposerOverhangChain(send);
   await assertFocusedComposerClips(send);
+  await assertDrawnGlassCanvasContained(send, baseline);
   await assertTabletActionGeometry(send);
+}
+
+// Read the horizontal overhang (scrollWidth - clientWidth) of the composer
+// card and every ancestor up to the document, each with a stable descriptor
+// and its computed overflow-x. The glass canvas can protrude into any of
+// these boxes, so the drawn-canvas guard compares a chain read before the
+// glass pass focused the composer against one taken after the canvas is
+// drawn: only growth the canvas caused fails, and pre-existing overflow
+// elsewhere never misfires.
+async function readComposerOverhangChain(send) {
+  const chain = await evaluate(
+    send,
+    `(() => {
+      const describe = (el) => {
+        let d = el.tagName.toLowerCase();
+        const classes = String(el.className).trim().split(/\s+/).filter(Boolean);
+        if (classes.length) d += '.' + classes.slice(0, 3).join('.');
+        for (const attr of ['data-prompt-card', 'data-iphone-composer', 'data-pane-scaffold-root', 'data-reading-scroll-host', 'role', 'data-testid']) {
+          if (el.getAttribute(attr) !== null) d += '[' + attr + ']';
+        }
+        return d;
+      };
+      const levels = [];
+      for (let el = document.querySelector('[data-iphone-composer] [data-prompt-card]'); el; el = el.parentElement) {
+        levels.push({ descriptor: describe(el), overhang: el.scrollWidth - el.clientWidth, overflowX: getComputedStyle(el).overflowX });
+      }
+      return levels;
+    })()`,
+  );
+  if (!Array.isArray(chain) || chain.length === 0) {
+    throw new Error('the wide iPad pass has no composer card to measure an overhang chain on');
+  }
+  return chain;
+}
+
+// The drawn half of the glass containment contract (#7930). The SDK creates
+// each surface's canvas inside the surface, then its own pipeline - the frame
+// addSurface requests, the ResizeObserver's measure, the worker's paint -
+// moves the canvas to a positioned previous sibling when the card clips,
+// sizes it to the card plus its bleed, and flags the card
+// data-iphone-glass-drawn. Nothing drives that pipeline, so the guard only
+// waits for the drawn flag, then requires the canvas to be the card's previous
+// sibling (the placement the SDK maintains for a clipped card: an unclipped
+// card keeps the bleed-sized canvas in-card, widening the card's scrollable
+// content - the escape #7928 fixed), to cover the card it drew, and to have
+// grown no scrolling box's horizontal overhang from the pre-focus baseline.
+async function assertDrawnGlassCanvasContained(send, baseline) {
+  await waitForDom(
+    send,
+    "document.querySelector('[data-iphone-composer=\"focused\"] [data-prompt-card]')?.hasAttribute('data-iphone-glass-drawn')",
+    "focused composer card painted by the liquid-glass worker",
+  );
+  await settleFiniteAnimations(send);
+  const drawn = await evaluate(
+    send,
+    `(() => {
+      const card = document.querySelector('[data-iphone-composer="focused"] [data-prompt-card]');
+      if (!card) return { card: false };
+      const prev = card.previousElementSibling;
+      const canvas = prev && prev.matches('[data-lg-canvas]') ? prev : null;
+      const rect = (el) => {
+        const r = el.getBoundingClientRect();
+        return { left: r.left, top: r.top, right: r.right, bottom: r.bottom };
+      };
+      return {
+        card: true,
+        surface: card.hasAttribute('data-lg-surface'),
+        prevSiblingCanvas: Boolean(canvas),
+        inCard: Boolean(card.querySelector('[data-lg-canvas]')),
+        canvasRect: canvas ? rect(canvas) : null,
+        cardRect: rect(card),
+      };
+    })()`,
+  );
+  if (!drawn.card) {
+    throw new Error('the focused conversation card vanished after the liquid-glass worker painted');
+  }
+  if (!drawn.surface) {
+    throw new Error("the focused conversation card never registered as a liquid-glass surface - the drawn-canvas check would pass vacuously");
+  }
+  if (!drawn.prevSiblingCanvas || drawn.inCard) {
+    throw new Error(
+      `the drawn liquid-glass canvas is hosted inside the conversation card (prevSiblingCanvas=${drawn.prevSiblingCanvas}, inCard=${drawn.inCard}) - the SDK hosts the canvas in-card only when the card does not clip, and the in-card canvas widens the card's scrollable content`,
+    );
+  }
+  if (
+    !drawn.canvasRect ||
+    drawn.canvasRect.left > drawn.cardRect.left ||
+    drawn.canvasRect.right < drawn.cardRect.right ||
+    drawn.canvasRect.top > drawn.cardRect.top ||
+    drawn.canvasRect.bottom < drawn.cardRect.bottom
+  ) {
+    throw new Error(
+      `the drawn glass canvas does not cover the conversation card (canvas ${JSON.stringify(drawn.canvasRect)} card ${JSON.stringify(drawn.cardRect)}) - the SDK sizes the sibling canvas to the card plus its bleed, so a partial cover means the canvas is not this card's`,
+    );
+  }
+  const after = await readComposerOverhangChain(send);
+  if (after.length !== baseline.length) {
+    throw new Error(
+      `the composer card's ancestor chain changed during the glass pass (before ${baseline.length} levels, after ${after.length}) - the overhang comparison cannot be trusted`,
+    );
+  }
+  for (let i = 0; i < after.length; i++) {
+    if (after[i].descriptor !== baseline[i].descriptor) {
+      throw new Error(
+        `the composer card's ancestor chain changed during the glass pass (level ${i} was ${baseline[i].descriptor}, now ${after[i].descriptor}) - the overhang comparison cannot be trusted`,
+      );
+    }
+    const growth = after[i].overhang - baseline[i].overhang;
+    // Growth only fails the guard where the box actually scrolls: a visible
+    // box hands its growth up to the next scroller (which the chain also
+    // measures) and a clipped box discards it, while the document root is
+    // the viewport scroller whatever its computed overflow says. The SDK
+    // sizes the sibling canvas to the card plus its bleed, so its host box
+    // always reports the bleed as overhang - invisible unless a scroller
+    // adopts it.
+    const scrolls =
+      (i === after.length - 1 && after[i].overflowX !== "clip") ||
+      after[i].overflowX === "auto" ||
+      after[i].overflowX === "scroll" ||
+      after[i].overflowX === "hidden";
+    if (growth > 0 && scrolls) {
+      throw new Error(
+        `the drawn glass canvas added horizontal scroll range at ${after[i].descriptor} (overflow-x: ${after[i].overflowX}): ${baseline[i].overhang}px -> ${after[i].overhang}px`,
+      );
+    }
+  }
 }
 
 // The focused conversation card is the one surface the liquid-glass SDK draws:
