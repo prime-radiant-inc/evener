@@ -958,7 +958,48 @@ async function assertTabletActionGeometry(send) {
 async function measureWideIPad({ send }) {
   await evaluate(send, "window.overviewPane('other')");
   await waitForDom(send, "document.querySelector('[data-iphone-composer] [data-testid=composer-submit]')", "wide iPad composer");
+  await assertFocusedComposerClips(send);
   await assertTabletActionGeometry(send);
+}
+
+// The focused conversation card is the one surface the liquid-glass SDK draws:
+// it attaches its canvas only while the composer is focused on an Apple touch
+// device, and it picks the canvas's host from the card's own computed overflow
+// - a card that does not clip gets the canvas as an in-card child whose
+// bleed-sized box extends the card's scrollable content and any ancestor
+// scroller's range. This pass already spoofs the Apple touch environment
+// (IPAD_VIEWPORT's MacIntel platform + touch), so the shell's own
+// connectIPhoneGlass wiring puts the page in regular glass mode. Focus the
+// composer's editor, then read the real card's computed overflow and fail if
+// either axis is not clip. The glass attribute is read too, so a guard
+// environment that loses glass mode fails by name instead of passing
+// vacuously.
+async function assertFocusedComposerClips(send) {
+  await evaluate(send, `(() => {
+    document.querySelector('[data-composer] [role="textbox"]')?.focus();
+  })()`);
+  await waitForDom(send, "document.querySelector('[data-iphone-composer=\"focused\"] [data-prompt-card]')", "focused composer card");
+  const clip = await evaluate(send, `(() => {
+    const card = document.querySelector('[data-iphone-composer="focused"] [data-prompt-card]');
+    if (!card) return { card: false };
+    const style = getComputedStyle(card);
+    return {
+      card: true,
+      glass: document.body.getAttribute('data-iphone-glass'),
+      overflowX: style.overflowX,
+      overflowY: style.overflowY,
+      overflowClipMargin: style.overflowClipMargin,
+    };
+  })()`);
+  if (!clip.card) {
+    throw new Error('wide iPad composer card is missing under [data-iphone-composer="focused"]');
+  }
+  if (clip.glass !== 'regular') {
+    throw new Error(`wide iPad pass is not in regular glass mode (data-iphone-glass=${clip.glass}) - the focused-card clip check would pass vacuously`);
+  }
+  if (clip.overflowX !== 'clip' || clip.overflowY !== 'clip') {
+    throw new Error(`the focused conversation card does not clip its overflow in glass mode (x: ${clip.overflowX}, y: ${clip.overflowY}, margin: ${clip.overflowClipMargin}) - the liquid-glass SDK would host its canvas inside the card and extend the card's scroll range`);
+  }
 }
 
 async function measureTabletSplit(page) {
