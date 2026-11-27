@@ -391,18 +391,18 @@ func readBodyBudget(displayPath string, unnumbered bool, p readWindowParams) (bo
 func formatTailHeader(displayPath string, p readWindowParams, shownCount int, stoppedByBytes, stoppedByLines bool) string {
 	pathLabel := boundedFooterPath(displayPath, maxFooterPathBytes())
 	if p.tailMode && p.explicitLimit {
-		return fmt.Sprintf("[Tail slice of %s: showing %d lines starting %d lines from end (file >2 MiB, absolute line numbers omitted)]\n",
+		return fmt.Sprintf("[tail %s: %d lines from -%d (>2 MiB, unnumbered)]\n",
 			pathLabel, shownCount, p.tailN)
 	}
 	switch {
 	case stoppedByBytes:
-		return fmt.Sprintf("[Tail of %s: last %d lines (file >2 MiB, %d-byte output cap reached; absolute line numbers omitted)]\n",
+		return fmt.Sprintf("[tail %s: last %d lines (>2 MiB, %dB cap, unnumbered)]\n",
 			pathLabel, shownCount, DefaultReadMaxBytes)
 	case stoppedByLines:
-		return fmt.Sprintf("[Tail of %s: last %d lines (file >2 MiB, %d-line limit reached; absolute line numbers omitted)]\n",
+		return fmt.Sprintf("[tail %s: last %d lines (>2 MiB, %d-line limit, unnumbered)]\n",
 			pathLabel, shownCount, DefaultReadLines)
 	default:
-		return fmt.Sprintf("[Tail of %s: last %d lines (file >2 MiB, absolute line numbers omitted)]\n",
+		return fmt.Sprintf("[tail %s: last %d lines (>2 MiB, unnumbered)]\n",
 			pathLabel, shownCount)
 	}
 }
@@ -410,31 +410,31 @@ func formatTailHeader(displayPath string, p readWindowParams, shownCount int, st
 func formatSingleLineOverflowFooter(lineNum, rawLineLen, shown int, displayPath string, unnumbered bool, maxFooterBytes int) string {
 	if !unnumbered && lineNum > 0 {
 		if displayPath != "" {
-			withSed := fmt.Sprintf("\n[Line %d is %d bytes, exceeding the %d-byte single-read cap. To inspect further bytes: sed -n '%dp' %s | tail -c +%d | head -c %d]",
+			withSed := fmt.Sprintf("\n[line %d is %dB (>%dB cap). To inspect further bytes: sed -n '%dp' %s | tail -c +%d | head -c %d]",
 				lineNum, rawLineLen, DefaultReadMaxBytes, lineNum, ShellEscapeArgs(displayPath), shown+1, DefaultReadMaxBytes)
 			if maxFooterBytes <= 0 || len(withSed) <= maxFooterBytes {
 				return withSed
 			}
 		}
-		return fmt.Sprintf("\n[Line %d is %d bytes, exceeding the %d-byte single-read cap.]",
+		return fmt.Sprintf("\n[line %d is %dB (>%dB cap)]",
 			lineNum, rawLineLen, DefaultReadMaxBytes)
 	}
-	return fmt.Sprintf("\n[Tail line is %d bytes, exceeding the %d-byte single-read cap.]",
+	return fmt.Sprintf("\n[tail line is %dB (>%dB cap)]",
 		rawLineLen, DefaultReadMaxBytes)
 }
 
 func emptyFileNotice(displayPath string) string {
 	if displayPath == "" {
-		return "[File is empty (0 bytes).]"
+		return "[empty file (0B)]"
 	}
-	return fmt.Sprintf("[File %s is empty (0 bytes).]", boundedFooterPath(displayPath, maxFooterPathBytes()))
+	return fmt.Sprintf("[%s: empty (0B)]", boundedFooterPath(displayPath, maxFooterPathBytes()))
 }
 
 func pastEOFNotice(displayPath string, totalLines, requestedOffset int) string {
 	if displayPath == "" {
-		return fmt.Sprintf("[File has %d lines; requested offset=%d is past end of file.]", totalLines, requestedOffset)
+		return fmt.Sprintf("[offset=%d past EOF (%d lines)]", requestedOffset, totalLines)
 	}
-	return fmt.Sprintf("[File %s has %d lines; requested offset=%d is past end of file.]", boundedFooterPath(displayPath, maxFooterPathBytes()), totalLines, requestedOffset)
+	return fmt.Sprintf("[%s: offset=%d past EOF (%d lines)]", boundedFooterPath(displayPath, maxFooterPathBytes()), requestedOffset, totalLines)
 }
 
 type readFooterOpts struct {
@@ -487,49 +487,49 @@ func finalizeReadOutput(rw renderedWindow, opts readFooterOpts) (string, ReadFil
 	case opts.unnumbered:
 		if p.tailMode && p.explicitLimit && opts.moreRemain {
 			rem := max(int64(1), p.tailN-int64(rw.shownCount))
-			fmt.Fprintf(&out, "\n[%d more lines remain in tail slice; pass offset=-%d to continue.]", rem, rem)
+			fmt.Fprintf(&out, "\n[%d more tail lines; offset=-%d]", rem, rem)
 		}
 	case p.tailMode && !p.explicitLimit:
 		if stoppedByBytes || stoppedByLines {
 			earlierStart := max(1, rw.startLine-rw.shownCount)
 			earlierLimit := max(1, rw.startLine-earlierStart)
-			reason := fmt.Sprintf("%d-byte cap reached", DefaultReadMaxBytes)
+			reason := fmt.Sprintf("%dB cap", DefaultReadMaxBytes)
 			if stoppedByLines {
-				reason = fmt.Sprintf("%d-line limit reached", DefaultReadLines)
+				reason = fmt.Sprintf("%d-line limit", DefaultReadLines)
 			}
-			fmt.Fprintf(&out, "\n[Showing last %d lines (lines %d-%d of %d total; %s). Read earlier lines with offset=%d limit=%d.]",
+			fmt.Fprintf(&out, "\n[last %d lines (%d-%d/%d; %s); earlier: offset=%d limit=%d]",
 				rw.shownCount, rw.startLine, rw.endLine, opts.totalLines, reason, earlierStart, earlierLimit)
 		} else if opts.totalLines > 0 {
-			fmt.Fprintf(&out, "\n[Showing lines %d-%d of %d total (end of file).]", rw.startLine, rw.endLine, opts.totalLines)
+			fmt.Fprintf(&out, "\n[lines %d-%d/%d (EOF)]", rw.startLine, rw.endLine, opts.totalLines)
 		}
 	case opts.moreRemain:
 		nextOffset := rw.endLine + 1
 		if opts.totalLines > 0 {
 			if stoppedByBytes {
-				fmt.Fprintf(&out, "\n[Showing lines %d-%d of %d total (%d-byte output cap reached). Continue with offset=%d.]",
+				fmt.Fprintf(&out, "\n[lines %d-%d/%d (%dB cap); offset=%d]",
 					rw.startLine, rw.endLine, opts.totalLines, DefaultReadMaxBytes, nextOffset)
 			} else {
-				fmt.Fprintf(&out, "\n[Showing lines %d-%d of %d total. Continue with offset=%d.]",
+				fmt.Fprintf(&out, "\n[lines %d-%d/%d; offset=%d]",
 					rw.startLine, rw.endLine, opts.totalLines, nextOffset)
 			}
 		} else {
 			if stoppedByBytes {
-				fmt.Fprintf(&out, "\n[Showing lines %d-%d (%d-byte output cap reached; file >2 MiB not scanned to EOF). Continue with offset=%d.]",
+				fmt.Fprintf(&out, "\n[lines %d-%d (%dB cap, >2 MiB); offset=%d]",
 					rw.startLine, rw.endLine, DefaultReadMaxBytes, nextOffset)
 			} else {
-				fmt.Fprintf(&out, "\n[Showing lines %d-%d (more lines remain; file >2 MiB not scanned to EOF). Continue with offset=%d.]",
+				fmt.Fprintf(&out, "\n[lines %d-%d (>2 MiB); offset=%d]",
 					rw.startLine, rw.endLine, nextOffset)
 			}
 		}
 	case p.requestedWindow && opts.totalLines > 0:
-		fmt.Fprintf(&out, "\n[Showing lines %d-%d of %d total (end of file).]", rw.startLine, rw.endLine, opts.totalLines)
+		fmt.Fprintf(&out, "\n[lines %d-%d/%d (EOF)]", rw.startLine, rw.endLine, opts.totalLines)
 	}
 
 	if rw.clampedLines > 0 && !rw.singleLineOverflow {
 		if opts.unnumbered {
-			fmt.Fprintf(&out, "\n[%d line(s) exceeded %d chars and were truncated.]", rw.clampedLines, DefaultReadMaxLineChars)
+			fmt.Fprintf(&out, "\n[%d line(s) truncated at %d chars]", rw.clampedLines, DefaultReadMaxLineChars)
 		} else {
-			fmt.Fprintf(&out, "\n[%d line(s) exceeded %d chars and were truncated; pass offset=N limit=1 to read one line uncut.]", rw.clampedLines, DefaultReadMaxLineChars)
+			fmt.Fprintf(&out, "\n[%d line(s) truncated at %d chars; offset=N limit=1 reads uncut]", rw.clampedLines, DefaultReadMaxLineChars)
 		}
 	}
 

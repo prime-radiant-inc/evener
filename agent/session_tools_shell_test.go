@@ -1186,18 +1186,37 @@ func TestCompleteOrHandleKeptLargeOutput(t *testing.T) {
 
 }
 
-// TestShellRideWholeThresholdIs8KiB pins the context-managed default: completed
-// output above shellRideWholeBytes (8 KiB) becomes a navigable handle (job_id)
-// rather than being auto-injected inline. A ~9 KiB command must return a job_id;
-// under the old 64 KiB threshold it rode whole with no job_id.
-func TestShellRideWholeThresholdIs8KiB(t *testing.T) {
+// TestShellRideWholeThresholdIs6KiB pins the context-managed default: completed
+// output above shellRideWholeBytes (6 KiB) becomes a navigable handle (job_id)
+// rather than being auto-injected inline, while output under 6 KiB rides whole.
+func TestShellRideWholeThresholdIs6KiB(t *testing.T) {
 	t.Parallel()
 	s := newTestSession(t)
+
+	short := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "c0",
+		Name:      "shell",
+		Arguments: json.RawMessage(`{"command":"head -c 5000 </dev/zero | tr '\\0' 'x'"}`),
+	})
+	if short.IsError {
+		t.Fatalf("5 KiB shell returned error: %s", short.Output)
+	}
+	var shortOut struct {
+		JobID  string `json:"job_id"`
+		Status string `json:"status"`
+		Output string `json:"output"`
+	}
+	if err := json.Unmarshal(toolResultJSON(short), &shortOut); err != nil {
+		t.Fatalf("unmarshal 5 KiB: %v (output: %s)", err, short.Output)
+	}
+	if shortOut.JobID != "" || len(shortOut.Output) != 5000 {
+		t.Fatalf("5 KiB output = {job_id:%q bytes:%d}, want ephemeral inline 5000 bytes", shortOut.JobID, len(shortOut.Output))
+	}
 
 	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "c1",
 		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"head -c 9000 </dev/zero | tr '\\0' 'x'"}`),
+		Arguments: json.RawMessage(`{"command":"head -c 7000 </dev/zero | tr '\\0' 'x'"}`),
 	})
 	if res.IsError {
 		t.Fatalf("shell returned error: %s", res.Output)
@@ -1210,7 +1229,7 @@ func TestShellRideWholeThresholdIs8KiB(t *testing.T) {
 		t.Fatalf("unmarshal: %v (output: %s)", err, res.Output)
 	}
 	if out.JobID == "" {
-		t.Fatalf("9 KiB output returned no job_id; want a navigable handle above the 8 KiB ride-whole threshold")
+		t.Fatalf("7 KiB output returned no job_id; want a navigable handle above the 6 KiB ride-whole threshold")
 	}
 	if out.Status != string(jobstore.StatusCompleted) {
 		t.Fatalf("status = %q, want completed", out.Status)

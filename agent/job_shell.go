@@ -21,7 +21,7 @@ const (
 	// this rides back inline (ephemeral, no durable job); above it the output
 	// becomes a navigable handle (job_id + a small peek tail). Kept small so the
 	// tool manages the agent's context instead of auto-injecting large output.
-	shellRideWholeBytes = 8 * 1024
+	shellRideWholeBytes = 6 * 1024
 	// shellDefaultTailBytes is the small peek tail shown inline when output
 	// exceeds the ride-whole budget, and for running-job snapshots. The full
 	// output stays in the OutputStore, reachable via the job transcript_ref.

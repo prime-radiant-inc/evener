@@ -109,12 +109,12 @@ func formatDirListing(r listDirResult) string {
 		}
 		if r.HitWalkCap {
 			if r.Depth > 1 {
-				fmt.Fprintf(&b, "\nThe listing stopped after visiting its cap of %d entries; there may be more beyond the cap. Narrow the path, reduce depth, or page with %s(offset=%d) to see the rest.", r.WalkTruncatedAt, toolName, nextOffset)
+				fmt.Fprintf(&b, "\nWalk cap (%d entries) reached; narrow path, reduce depth, or page with %s(offset=%d).", r.WalkTruncatedAt, toolName, nextOffset)
 			} else {
-				fmt.Fprintf(&b, "\nThe listing stopped after visiting its cap of %d entries; there may be more beyond the cap. Narrow the path or page with %s(offset=%d) to see the rest.", r.WalkTruncatedAt, toolName, nextOffset)
+				fmt.Fprintf(&b, "\nWalk cap (%d entries) reached; narrow path or page with %s(offset=%d).", r.WalkTruncatedAt, toolName, nextOffset)
 			}
 		} else {
-			fmt.Fprintf(&b, "\nThe walk stopped after %d entries once this page filled; total count was not enumerated.", r.WalkTruncatedAt)
+			fmt.Fprintf(&b, "\nWalk stopped at %d entries (total unenumerated).", r.WalkTruncatedAt)
 			if r.Depth > 1 {
 				fmt.Fprintf(&b, " Page with %s(offset=%d), narrow the path, or reduce depth.", toolName, nextOffset)
 			}
@@ -331,14 +331,7 @@ func registerShellTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 				notes = append(notes, fmt.Sprintf("0 matches after excluding %d dotfile/gitignored path(s); set include_ignored to include them", excluded))
 			}
 			if truncatedAt > 0 {
-				// Silent truncation is the same enemy: the matches collected
-				// before the cap tripped look exactly like the whole answer,
-				// and a fully-excluded or fully-masked capped walk would
-				// otherwise report its emptiness as if the walk had finished.
-				// The cap counts candidate matches, before the dotfile/
-				// gitignore exclusion above drops any of them, so the number
-				// of paths actually shown can be smaller than the cap itself.
-				notes = append(notes, fmt.Sprintf("The glob stopped after considering its cap of %d candidate matches; fewer may be shown above once excluded paths are dropped, and there may be more beyond the cap. Narrow the pattern or point path at a smaller directory to see the rest.", truncatedAt))
+				notes = append(notes, fmt.Sprintf("Glob cap (%d candidate matches) reached before exclusions; narrow pattern or path to see more.", truncatedAt))
 			}
 			if len(notes) > 0 {
 				return searchresult.WithNotes(result, notes...), nil
@@ -557,7 +550,7 @@ func shellIntArg(args map[string]any, key string) (int, bool) {
 }
 
 const (
-	shellToolResultDefaultMaxChars = 30_000
+	shellToolResultDefaultMaxChars = 6_000
 	shellToolResultMinJSONChars    = 800
 	minShellMaxRuntimeMS           = 1000
 )
@@ -644,7 +637,7 @@ func marshalShellToolResult(res shellResult, maxChars, maxLines int, turnEndsPro
 // marshalCompleteOrHandleResult implements spec §0.6 for within-bound shell
 // completions. It checks both layers:
 //
-//  1. Ride-whole budget (shellRideWholeBytes): output > 8KB cannot ride whole
+//  1. Ride-whole budget (shellRideWholeBytes): output > 6KB cannot ride whole
 //     in the inline result.
 //  2. Tool-result char bound (maxChars): marshaled JSON > bound also exceeds.
 //
@@ -803,17 +796,17 @@ func formatShellResult(out shellToolResult) string {
 	case promoted:
 		foot = append(foot,
 			foregroundWaitEndedLine(out.WaitElapsedMS),
-			fmt.Sprintf("output accumulates durably; read it with read_transcript(transcript_ref=%q)", "job:"+out.JobID),
+			fmt.Sprintf("read_transcript(transcript_ref=%q)", "job:"+out.JobID),
 			"completion arrives by notification — do not relaunch or poll",
 		)
 	case directBackground:
 		// The identifying footer is appended after optional retention details so
 		// the job ID remains at the absolute tail.
 	case out.JobID != "":
-		foot = append(foot, fmt.Sprintf("output windowed — read more with read_transcript(transcript_ref=%q)", "job:"+out.JobID))
+		foot = append(foot, "output windowed", fmt.Sprintf("read_transcript(transcript_ref=%q)", "job:"+out.JobID))
 	}
 	if out.DroppedBytes > 0 {
-		foot = append(foot, fmt.Sprintf("%d bytes dropped past the retention cap", out.DroppedBytes))
+		foot = append(foot, fmt.Sprintf("%d bytes dropped (retention cap)", out.DroppedBytes))
 	}
 	if promoted {
 		foot = append(foot, "still running as "+out.JobID)
