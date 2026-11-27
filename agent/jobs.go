@@ -22,6 +22,7 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/clock"
 	"primeradiant.com/evener/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/internal/runetrim"
 	"primeradiant.com/evener/agent/provenance"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/envvars"
@@ -1274,23 +1275,52 @@ func (e *jobNotFoundError) Unwrap() error { return errJobNotFoundSentinel }
 // isJobNotFoundErr reports whether err is (or wraps) an errJobNotFound value.
 func isJobNotFoundErr(err error) bool { return errors.Is(err, errJobNotFoundSentinel) }
 
-func (jm *jobManager) readOutput(jobID string, tailBytes int) (content string, total int64, truncated bool, err error) {
-	jm.mu.Lock()
-	run := jm.running[jobID]
-	jm.mu.Unlock()
-	if run != nil {
-		return tailOutput(run.output, tailBytes)
-	}
+type jobOutputExcerptParts struct {
+	head          string
+	tail          string
+	totalBytes    int64
+	retainedStart int64
+	truncated     bool
+}
 
-	recs, err := jm.store.Load()
+func (jm *jobManager) readOutput(jobID string, tailBytes int) (content string, total int64, truncated bool, err error) {
+	return jm.readOutputEdge(jobID, tailBytes, false)
+}
+
+func (jm *jobManager) readOutputFromHead(jobID string, headBytes int) (content string, total int64, truncated bool, err error) {
+	return jm.readOutputEdge(jobID, headBytes, true)
+}
+
+func (jm *jobManager) readOutputEdge(jobID string, maxBytes int, fromHead bool) (string, int64, bool, error) {
+	run, rec, err := jm.recordForRead(jobID)
 	if err != nil {
 		return "", 0, false, err
 	}
-	rec := recs[jobID]
+	if run != nil {
+		if fromHead {
+			b, total, truncated, err := run.output.Head(maxBytes)
+			return stringOutputResult(b, total, truncated, err)
+		}
+		return tailOutput(run.output, maxBytes)
+	}
 	if rec == nil {
 		return "", 0, false, errJobNotFound(jobID)
 	}
-	return readClosedJobOutput(jm.outputPathForJob(rec, jobID), rec, tailBytes, false)
+	return readClosedJobOutput(jm.outputPathForJob(rec, jobID), rec, maxBytes, fromHead)
+}
+
+func (jm *jobManager) readOutputHeadTail(jobID string, inlineMaxBytes, headBytes, tailBytes int) (jobOutputExcerptParts, error) {
+	run, rec, err := jm.recordForRead(jobID)
+	if err != nil {
+		return jobOutputExcerptParts{}, err
+	}
+	if run != nil {
+		return readJobOutputHeadTail(liveJobOutputEdgeReader(run.output), inlineMaxBytes, headBytes, tailBytes)
+	}
+	if rec == nil {
+		return jobOutputExcerptParts{}, errJobNotFound(jobID)
+	}
+	return readJobOutputHeadTail(closedJobOutputEdgeReader(jm.outputPathForJob(rec, jobID), rec), inlineMaxBytes, headBytes, tailBytes)
 }
 
 // readOutputPage resolves the live owner first and reads one coherent raw page.
@@ -2262,16 +2292,83 @@ func checkOutputFileNotGrownPastRecord(rec *jobstore.JobRecord, fileBytes, total
 // change), and output whose lifetime total disagrees with rec is refused.
 func readClosedJobOutput(path string, rec *jobstore.JobRecord, maxBytes int, fromHead bool) (output string, totalBytes int64, truncated bool, err error) {
 	snapshot, err := readLocalJobOutputSnapshot(path, maxBytes, fromHead)
+	snapshot, err = validateClosedJobOutputSnapshot(rec, snapshot, err)
 	if err != nil {
 		return "", 0, false, err
 	}
+	return string(snapshot.Content), snapshot.TotalBytes, snapshot.Truncated, nil
+}
+
+type outputEdgeReader func(maxBytes int, fromHead bool) (string, int64, int64, bool, error)
+
+func liveJobOutputEdgeReader(output *jobstore.OutputStore) outputEdgeReader {
+	return func(maxBytes int, fromHead bool) (string, int64, int64, bool, error) {
+		var b []byte
+		var total int64
+		var truncated bool
+		var err error
+		if fromHead {
+			b, total, truncated, err = output.Head(maxBytes)
+		} else {
+			b, total, truncated, err = output.Tail(maxBytes)
+		}
+		if err != nil {
+			return "", 0, 0, false, err
+		}
+		return string(b), total, output.RetainedStart(), truncated, nil
+	}
+}
+
+func closedJobOutputEdgeReader(path string, rec *jobstore.JobRecord) outputEdgeReader {
+	return func(maxBytes int, fromHead bool) (string, int64, int64, bool, error) {
+		snap, err := readLocalJobOutputSnapshot(path, maxBytes, fromHead)
+		snap, err = validateClosedJobOutputSnapshot(rec, snap, err)
+		if err != nil {
+			return "", 0, 0, false, err
+		}
+		return string(snap.Content), snap.TotalBytes, snap.RetainedStart, snap.Truncated, nil
+	}
+}
+
+func validateClosedJobOutputSnapshot(rec *jobstore.JobRecord, snapshot jobstore.OutputSnapshot, err error) (jobstore.OutputSnapshot, error) {
+	if err != nil {
+		return jobstore.OutputSnapshot{}, err
+	}
 	if totalErr := checkOutputTotalForRecord(rec, snapshot.TotalBytes); totalErr != nil {
-		return "", 0, false, totalErr
+		return jobstore.OutputSnapshot{}, totalErr
 	}
 	if grownErr := checkOutputFileNotGrownPastRecord(rec, snapshot.FileBytes, snapshot.TotalBytes); grownErr != nil {
-		return "", 0, false, grownErr
+		return jobstore.OutputSnapshot{}, grownErr
 	}
-	return string(snapshot.Content), snapshot.TotalBytes, snapshot.Truncated, nil
+	return snapshot, nil
+}
+
+func readJobOutputHeadTail(readEdge outputEdgeReader, inlineMaxBytes, headBytes, tailBytes int) (jobOutputExcerptParts, error) {
+	content, total, retainedStart, truncated, err := readEdge(inlineMaxBytes, false)
+	if err != nil {
+		return jobOutputExcerptParts{}, err
+	}
+	if total-retainedStart <= int64(inlineMaxBytes) {
+		return jobOutputExcerptParts{head: content, totalBytes: total, retainedStart: retainedStart, truncated: truncated}, nil
+	}
+	head, headTotal, _, _, err := readEdge(headBytes, true)
+	if err != nil {
+		return jobOutputExcerptParts{}, err
+	}
+	var tail string
+	tailTotal, tailRetainedStart := total, retainedStart
+	switch {
+	case tailBytes == 0:
+		tail = ""
+	case tailBytes > 0 && tailBytes <= inlineMaxBytes && len(content) >= tailBytes:
+		tail = string(runetrim.TrimLeadingPartial([]byte(content[len(content)-tailBytes:])))
+	default:
+		tail, tailTotal, tailRetainedStart, _, err = readEdge(tailBytes, false)
+		if err != nil {
+			return jobOutputExcerptParts{}, err
+		}
+	}
+	return jobOutputExcerptParts{head: head, tail: tail, totalBytes: max(headTotal, tailTotal), retainedStart: tailRetainedStart, truncated: true}, nil
 }
 
 // grepOutputFile greps a closed job's visible output through one opened

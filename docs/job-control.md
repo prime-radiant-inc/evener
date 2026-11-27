@@ -1709,8 +1709,9 @@ Shell notification example:
 <job-notification job_id="job_..." event="completed" job_type="shell" status="completed" reason="exit_zero" output_bytes="12345">
 Job job_... completed. Output is available through read_transcript(transcript_ref="job:job_...") if needed.
 excerpt:
-<bounded 8000-character shell-output tail>
-[excerpt truncated]
+<2048-byte head>
+[... 6201 bytes elided; inspect with read_transcript(transcript_ref="job:job_...", offset_bytes=2048) or output_match=... ...]
+<4096-byte tail>
 </job-notification>
 ```
 
@@ -1786,8 +1787,12 @@ points to `job:<job_id>`.
 Rules:
 
 - Shell notifications carry concrete `job_id`, `job_type="shell"`, lifecycle
-  event/status/reason, output bytes, and exit code when known. Their bounded
-  excerpt is the retained output tail. Watch notifications continue to use
+  event/status/reason, output bytes, and exit code when known. Shell outputs up
+  to 6 KiB (`6144` bytes) are inlined in full; larger retained outputs stitch a
+  2 KiB (`2048` byte) head and 4 KiB (`4096` byte) tail around an elision line
+  pointing to `read_transcript` (`offset_bytes` / `output_match`) when
+  `read_transcript` is callable (delegate notifications keep a bounded 8000-byte
+  head excerpt). Watch notifications continue to use
   `event="watch"` and `job_type="watch"`, with typed source identity.
 - Direct-delegate notifications carry `delegate_id` and the bounded canonical
   terminal packet folded in the stable aggregate. `job_status(dlg_...)` remains
