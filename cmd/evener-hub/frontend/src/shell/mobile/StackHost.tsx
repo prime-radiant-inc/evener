@@ -1109,7 +1109,7 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
       {showBack ? (
         <IconButton label="Back" icon={<Chevron direction="left" size={24} />} variant="quiet" onClick={goBack} />
       ) : (
-        focusedSessionRef !== undefined && drawer
+        drawer
       )}
     </div>
   );
@@ -1118,7 +1118,7 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
       {focusedSessionRef !== undefined && (
         <SessionInspectionActions sessionRef={focusedSessionRef} paneId={focusedPane?.id} />
       )}
-      {focusedSessionRef === undefined && drawer}
+      {showBack && focusedSessionRef === undefined && drawer}
     </div>
   );
 

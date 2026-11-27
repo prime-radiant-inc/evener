@@ -584,7 +584,15 @@ test.each([
       expect(opener.closest("[role=toolbar]")?.getAttribute("data-home-toolbar") ?? null).toBe(
         installed ? "right" : null,
       );
-      expect(screen.getByTestId("topbar").contains(opener)).toBe(!installed);
+      const bar = screen.getByTestId("topbar");
+      expect(bar.contains(opener)).toBe(!installed);
+      if (!installed) {
+        // The leading cluster owns the trigger wherever Back is absent; a
+        // Back-owning pane keeps it trailing so the trigger never disappears
+        // behind Back.
+        const cluster = screen.queryByRole("button", { name: "Back" }) ? "trailing" : "leading";
+        expect(opener.closest(`.${stackStyles[cluster]}`)).toBeTruthy();
+      }
       await openSessionsPanel(user);
       expect(screen.getByRole("dialog").classList.contains(mobilePanelStyles.right ?? "")).toBe(installed);
       await user.keyboard("{Escape}");
