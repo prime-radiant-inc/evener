@@ -161,7 +161,8 @@ export function LayerFocusScope({
       const last = list[list.length - 1];
       if (!first || !last) return; // list.length >= 1 was just checked above
       const active = (ownerDocumentRef.current ?? scope.ownerDocument ?? document).activeElement;
-      if (event.shiftKey && active === first) {
+      // A dialog can take initial focus itself before its first tabbable control.
+      if (event.shiftKey && active?.contains(first)) {
         event.preventDefault();
         last.focus();
       } else if (!event.shiftKey && active === last) {

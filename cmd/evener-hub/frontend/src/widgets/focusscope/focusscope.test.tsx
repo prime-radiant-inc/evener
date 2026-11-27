@@ -186,18 +186,23 @@ test("trap=true: Tab from the last tabbable loops back to the first", async () =
   expect(document.activeElement).toBe(screen.getByRole("button", { name: "First" }));
 });
 
-test("trap=true: Shift+Tab from the first loops back to the last", async () => {
+test("trap=true: Shift+Tab from the first control or its focused dialog loops back to the last", async () => {
   const user = userEvent.setup();
   render(
     <div>
       <FocusScope trap>
-        <button type="button">First</button>
-        <button type="button">Last</button>
+        <div role="dialog" aria-label="Sessions" tabIndex={-1}>
+          <button type="button">First</button>
+          <button type="button">Last</button>
+        </div>
       </FocusScope>
       <button type="button">Outside</button>
     </div>,
   );
   screen.getByRole("button", { name: "First" }).focus();
+  await user.tab({ shift: true });
+  expect(document.activeElement).toBe(screen.getByRole("button", { name: "Last" }));
+  screen.getByRole("dialog").focus();
   await user.tab({ shift: true });
   expect(document.activeElement).toBe(screen.getByRole("button", { name: "Last" }));
 });
