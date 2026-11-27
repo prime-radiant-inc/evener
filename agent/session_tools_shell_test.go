@@ -1213,23 +1213,30 @@ func TestShellRideWholeThresholdIs6KiB(t *testing.T) {
 		t.Fatalf("5 KiB output = {job_id:%q bytes:%d}, want ephemeral inline 5000 bytes", shortOut.JobID, len(shortOut.Output))
 	}
 
+	// Emit 2,500 three-byte UTF-8 runes (7,500 bytes, <6,000 rendered chars,
+	// <120 lines) so only the 6 KiB byte cutoff triggers and an 8 KiB cutoff
+	// would fail this test.
 	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "c1",
 		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"head -c 7000 </dev/zero | tr '\\0' 'x'"}`),
+		Arguments: json.RawMessage(`{"command":"s='€€€€€€€€€€'; s=\"$s$s$s$s$s\"; s=\"$s$s$s$s$s\"; s=\"$s$s$s$s$s$s$s$s$s$s\"; printf '%s' \"$s\""}`),
 	})
 	if res.IsError {
 		t.Fatalf("shell returned error: %s", res.Output)
 	}
 	var out struct {
-		JobID  string `json:"job_id"`
-		Status string `json:"status"`
+		JobID      string `json:"job_id"`
+		Status     string `json:"status"`
+		TotalBytes int64  `json:"total_bytes"`
 	}
 	if err := json.Unmarshal(toolResultJSON(res), &out); err != nil {
 		t.Fatalf("unmarshal: %v (output: %s)", err, res.Output)
 	}
 	if out.JobID == "" {
-		t.Fatalf("7 KiB output returned no job_id; want a navigable handle above the 6 KiB ride-whole threshold")
+		t.Fatalf("7,500-byte multibyte output (2,500 runes) returned no job_id; want a navigable handle above the 6 KiB ride-whole threshold")
+	}
+	if out.TotalBytes != 7500 {
+		t.Fatalf("total_bytes = %d, want 7500", out.TotalBytes)
 	}
 	if out.Status != string(jobstore.StatusCompleted) {
 		t.Fatalf("status = %q, want completed", out.Status)
