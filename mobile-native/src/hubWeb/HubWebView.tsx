@@ -44,7 +44,7 @@ interface HubCapabilities {
 }
 
 function capabilitiesFrom(value: unknown): HubCapabilities {
-	const capabilities = Array.isArray(value) ? value : [];
+	const capabilities = Array.isArray(value) ? (value as unknown[]) : [];
 	return {
 		incomingShare: capabilities.includes("incomingShare"),
 		needsYouNavigation: capabilities.includes("needsYouNavigation"),
@@ -123,11 +123,13 @@ export function HubWebView({ profile, token, initialPath, onPath, onHubMenu, sha
 		if (bridgeReady) web.current?.postMessage(material);
 	}, [bridgeReady, material]);
 	const inFront = bridgeReady && focused && !error;
+	const incomingShareAvailable = hubCapabilities?.incomingShare;
+	const needsYouNavigationAvailable = hubCapabilities?.needsYouNavigation;
 	useEffect(() => {
 		if (
 			inFront &&
 			!covered &&
-			hubCapabilities?.incomingShare === true &&
+			incomingShareAvailable === true &&
 			share?.hubId === profile.id &&
 			share.path === shareTarget?.path &&
 			initialPath === share.path
@@ -135,7 +137,7 @@ export function HubWebView({ profile, token, initialPath, onPath, onHubMenu, sha
 			deliveredShares.current.set(share.id, { hubId: share.hubId, path: share.path });
 			web.current?.postMessage(JSON.stringify({ type: "shareText", path: share.path, id: share.id, text: share.text }));
 		}
-	}, [inFront, covered, hubCapabilities, share, profile.id, shareTarget, initialPath]);
+	}, [inFront, covered, incomingShareAvailable, share, profile.id, shareTarget, initialPath]);
 	useWorkspaceDocument(profile.id, readingDocument && bridgeReady && !error);
 	useHoldAlerts(inFront && (editing || readingDocument), "quiet");
 	useHoldAlerts(inFront && covered, "covered");
@@ -179,6 +181,7 @@ export function HubWebView({ profile, token, initialPath, onPath, onHubMenu, sha
 		setShareTarget(null);
 		setBridgeReady(false);
 		setHubCapabilities(null);
+		setLoaded(false);
 		setEditing(false);
 		setReadingDocument(false);
 		setCovered(false);
@@ -212,8 +215,8 @@ export function HubWebView({ profile, token, initialPath, onPath, onHubMenu, sha
 		if (initialPath === currentPath.current) return;
 		const path = hubPagePath(origin, origin + initialPath);
 		if (!path) return;
-		if (share?.hubId === profile.id && share.path === path && hubCapabilities?.incomingShare !== true) return;
-		if (isNeedsYouPath(path, origin) && hubCapabilities?.needsYouNavigation !== true) {
+		if (share?.hubId === profile.id && share.path === path && incomingShareAvailable !== true) return;
+		if (isNeedsYouPath(path, origin) && needsYouNavigationAvailable !== true) {
 			pendingNeedsYou.current = true;
 			return;
 		}
@@ -223,14 +226,23 @@ export function HubWebView({ profile, token, initialPath, onPath, onHubMenu, sha
 		if (share?.hubId === profile.id && share.path === path) navigatedShareId.current = share.id;
 		if (bridgeReady && web.current) web.current.postMessage(JSON.stringify({ type: "navigate", path }));
 		else setEntryPath(path);
-	}, [initialPath, bridgeReady, hubCapabilities, share, profile.id, origin, endRestore]);
+	}, [
+		initialPath,
+		bridgeReady,
+		incomingShareAvailable,
+		needsYouNavigationAvailable,
+		share,
+		profile.id,
+		origin,
+		endRestore,
+	]);
 	useEffect(() => {
 		if (share?.hubId !== profile.id || share.path !== initialPath) navigatedShareId.current = null;
 	}, [share?.id, share?.hubId, share?.path, profile.id, initialPath]);
 	useEffect(() => {
 		if (
 			!bridgeReady ||
-			hubCapabilities?.incomingShare !== true ||
+			incomingShareAvailable !== true ||
 			share?.hubId !== profile.id ||
 			share.path !== initialPath ||
 			share.path !== currentPath.current ||
@@ -239,7 +251,7 @@ export function HubWebView({ profile, token, initialPath, onPath, onHubMenu, sha
 			return;
 		navigatedShareId.current = share.id;
 		web.current?.postMessage(JSON.stringify({ type: "navigate", path: share.path }));
-	}, [bridgeReady, hubCapabilities, share, profile.id, initialPath]);
+	}, [bridgeReady, incomingShareAvailable, share, profile.id, initialPath]);
 	const requestHubUpdate = useCallback(
 		(feature: keyof HubCapabilities, action: string) => {
 			const message =
@@ -261,14 +273,13 @@ export function HubWebView({ profile, token, initialPath, onPath, onHubMenu, sha
 		[profile.name],
 	);
 	useEffect(() => {
-		if (!bridgeReady || !hubCapabilities) return;
-		if (share?.hubId === profile.id && share.path === initialPath && !hubCapabilities.incomingShare)
+		if (share?.hubId === profile.id && share.path === initialPath && incomingShareAvailable === false)
 			requestHubUpdate("incomingShare", "receive this share");
-		if (isNeedsYouPath(initialPath, origin) && !hubCapabilities.needsYouNavigation)
+		if (isNeedsYouPath(initialPath, origin) && needsYouNavigationAvailable === false)
 			requestHubUpdate("needsYouNavigation", "open grouped Needs You alerts");
 	}, [
-		bridgeReady,
-		hubCapabilities,
+		incomingShareAvailable,
+		needsYouNavigationAvailable,
 		share?.id,
 		share?.hubId,
 		share?.path,
@@ -312,6 +323,9 @@ export function HubWebView({ profile, token, initialPath, onPath, onHubMenu, sha
 				web.current?.postMessage(JSON.stringify({ type: "alertPreferences", preferences: preferences.getSnapshot() }));
 				break;
 			}
+			case "legacyHub":
+				setHubCapabilities((current) => current ?? { incomingShare: false, needsYouNavigation: false });
+				break;
 			case "shareTarget":
 				if (data.path === new URL(nativeEvent.url).pathname) setShareTarget({ path: data.path });
 				break;
@@ -488,7 +502,12 @@ export function HubWebView({ profile, token, initialPath, onPath, onHubMenu, sha
 					onLoad={({ nativeEvent }) => {
 						setLoaded(true);
 						const path = hubPagePath(origin, nativeEvent.url);
-						if (path) reportPath(path);
+						if (path) {
+							reportPath(path);
+							web.current?.injectJavaScript(
+								'(() => { const root = document.getElementById("root"); if (root && !root.hasAttribute("data-iphone-host-capabilities")) window.ReactNativeWebView?.postMessage(JSON.stringify({ type: "legacyHub" })); })(); true;',
+							);
+						}
 					}}
 					onError={() => setError(`Could not reach ${profile.name}.`)}
 					onHttpError={({ nativeEvent }) => {

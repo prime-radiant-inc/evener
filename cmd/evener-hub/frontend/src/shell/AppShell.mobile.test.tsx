@@ -41,6 +41,12 @@ import { getDockviewApi, resetWorkspaceStoreForTests, workspaceStore } from "./w
 const paneFor = (ref: string) =>
   workspaceStore.getState().panes.find((p) => (p.params as { ref?: string }).ref === ref);
 
+test("marks the workspace root for native iPhone capability detection", () => {
+  const index = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../../index.html"), "utf8");
+  const document = new DOMParser().parseFromString(index, "text/html");
+  expect(document.getElementById("root")?.hasAttribute("data-iphone-host-capabilities")).toBe(true);
+});
+
 // Await the welcome/session panes' lazy-loaded modules ONCE up front so
 // React.lazy resolves from a warm module cache - mirrors App.test.tsx's own
 // beforeAll pattern for the same reason: the slow part of lazy-loading is

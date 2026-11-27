@@ -1,5 +1,5 @@
 import type { NativeStackNavigationOptions } from "@react-navigation/native-stack";
-import { act } from "react-test-renderer";
+import { act, type ReactTestRenderer } from "react-test-renderer";
 import { expect, it, onTestFinished, vi } from "vitest";
 import { DEFAULT_ALERT_PREFERENCES } from "../alerts/alertCenter";
 import { AlertCenter, type HoldKind } from "../alerts/alertCenter";
@@ -19,6 +19,37 @@ const native = vi.hoisted(() => ({
 	insets: { left: 0, right: 0, top: 0, bottom: 34 },
 	navigation: { setOptions: vi.fn<(options: NativeStackNavigationOptions) => void>() },
 }));
+
+function evaluateHubLoadProbe(
+	tree: ReactTestRenderer,
+	script: unknown,
+	profile: { origin: string },
+	rootMarker: boolean | null,
+): void {
+	if (typeof script !== "string") throw new Error("hub page probe missing");
+	const view = tree.root.findByType("WebView" as never);
+	const evaluate = new Function("document", "window", script) as (
+		document: { getElementById(id: string): { hasAttribute(name: string): boolean } | null },
+		window: { ReactNativeWebView: { postMessage(json: string): void } },
+	) => void;
+	evaluate(
+		{
+			getElementById: () => (rootMarker === null ? null : { hasAttribute: () => rootMarker }),
+		},
+		{
+			ReactNativeWebView: {
+				postMessage: (raw) => {
+					const data = JSON.parse(raw);
+					act(() =>
+						view.props.onMessage({
+							nativeEvent: { url: profile.origin + "/", data: JSON.stringify(data) },
+						}),
+					);
+				},
+			},
+		},
+	);
+}
 
 it("delivers a share only to its chosen hub and composer, then accepts that delivery's receipt", async () => {
 	const profile = { id: "desk", name: "Desk", origin: "https://desk.example" };
@@ -168,6 +199,117 @@ it("keeps a share pending for an older hub and retries delivery after reload dis
 		text: share.text,
 	});
 	act(() => tree.unmount());
+});
+
+it("identifies an unmarked workspace root after document load without consuming its share", async () => {
+	const profile = { id: "desk", name: "Desk", origin: "https://desk.example" };
+	const share = {
+		id: "legacy-share",
+		hubId: profile.id,
+		path: "/new",
+		text: "shared-sentinel",
+		createdAt: new Date(1).toISOString(),
+	};
+	const port = sharePort([share]);
+	const onSharePlaced = vi.fn();
+	alertRequests.length = 0;
+	const injectJavaScript = vi.fn();
+	const postMessage = vi.fn();
+	const tree = render(
+		<HubWebView
+			profile={profile}
+			token=""
+			initialPath={share.path}
+			onPath={vi.fn()}
+			onHubMenu={vi.fn()}
+			share={share}
+			onSharePlaced={onSharePlaced}
+		/>,
+		{ createNodeMock: (node) => (node.type === "WebView" ? { injectJavaScript, postMessage } : null) },
+	);
+	const view = () => tree.root.findByType("WebView" as never);
+	act(() => view().props.onLoad({ nativeEvent: { url: profile.origin + "/" } }));
+	expect(alertRequests).toHaveLength(0);
+	evaluateHubLoadProbe(tree, injectJavaScript.mock.calls[0]?.[0], profile, false);
+	expect(alertRequests).toHaveLength(1);
+	act(() =>
+		view().props.onMessage({ nativeEvent: { url: profile.origin + "/", data: JSON.stringify({ type: "ready" }) } }),
+	);
+	expect(alertRequests).toHaveLength(1);
+	expect(onSharePlaced).not.toHaveBeenCalled();
+	expect(await pendingShares(port)).toEqual([{ id: share.id, text: share.text, createdAt: share.createdAt }]);
+	act(() => tree.unmount());
+});
+
+it("recognizes an unmarked workspace root for cold grouped alerts while keeping ordinary work quiet", () => {
+	const profile = { id: "desk", name: "Desk", origin: "https://desk.example" };
+	const postMessage = vi.fn();
+	const injectJavaScript = vi.fn();
+	const onPath = vi.fn();
+	alertRequests.length = 0;
+	const tree = render(
+		<HubWebView profile={profile} token="" initialPath="/?attention=needs-you" onPath={onPath} onHubMenu={vi.fn()} />,
+		{ createNodeMock: (node) => (node.type === "WebView" ? { postMessage, injectJavaScript } : null) },
+	);
+	const view = () => tree.root.findByType("WebView" as never);
+	act(() => view().props.onLoad({ nativeEvent: { url: profile.origin + "/" } }));
+	expect(alertRequests).toHaveLength(0);
+	evaluateHubLoadProbe(tree, injectJavaScript.mock.calls[0]?.[0], profile, false);
+	expect(alertRequests).toHaveLength(1);
+	act(() =>
+		view().props.onMessage({ nativeEvent: { url: profile.origin + "/", data: JSON.stringify({ type: "ready" }) } }),
+	);
+	expect(alertRequests).toHaveLength(1);
+	expect(onPath).not.toHaveBeenCalled();
+	expect(postMessage.mock.calls.map(([raw]) => JSON.parse(raw))).not.toContainEqual(
+		expect.objectContaining({ type: "navigate", path: "/?attention=needs-you" }),
+	);
+	act(() => tree.unmount());
+
+	alertRequests.length = 0;
+	const ordinaryProbe = vi.fn();
+	const ordinaryTree = render(
+		<HubWebView profile={profile} token="" initialPath="/" onPath={vi.fn()} onHubMenu={vi.fn()} />,
+		{ createNodeMock: (node) => (node.type === "WebView" ? { injectJavaScript: ordinaryProbe } : null) },
+	);
+	act(() =>
+		ordinaryTree.root.findByType("WebView" as never).props.onLoad({ nativeEvent: { url: profile.origin + "/" } }),
+	);
+	evaluateHubLoadProbe(ordinaryTree, ordinaryProbe.mock.calls[0]?.[0], profile, false);
+	expect(alertRequests).toHaveLength(0);
+	act(() => ordinaryTree.unmount());
+});
+
+it("does not prompt a marked workspace while its capability handshake is delayed", () => {
+	const profile = { id: "desk", name: "Desk", origin: "https://desk.example" };
+	const share = {
+		id: "slow-share",
+		hubId: profile.id,
+		path: "/new",
+		text: "shared-sentinel",
+		createdAt: new Date(1).toISOString(),
+	};
+	for (const rootMarker of [true, null]) {
+		for (const initialPath of [share.path, "/?attention=needs-you"]) {
+			alertRequests.length = 0;
+			const injectJavaScript = vi.fn();
+			const tree = render(
+				<HubWebView
+					profile={profile}
+					token=""
+					initialPath={initialPath}
+					onPath={vi.fn()}
+					onHubMenu={vi.fn()}
+					share={initialPath === share.path ? share : undefined}
+				/>,
+				{ createNodeMock: (node) => (node.type === "WebView" ? { injectJavaScript } : null) },
+			);
+			act(() => tree.root.findByType("WebView" as never).props.onLoad({ nativeEvent: { url: profile.origin + "/" } }));
+			evaluateHubLoadProbe(tree, injectJavaScript.mock.calls[0]?.[0], profile, rootMarker);
+			expect(alertRequests).toHaveLength(0);
+			act(() => tree.unmount());
+		}
+	}
 });
 
 it("preserves a cold Needs You request while an older hub reports its safe root route", () => {
