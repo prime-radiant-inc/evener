@@ -21,6 +21,7 @@ import (
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/internal/testwait"
 	"primeradiant.com/evener/llm"
 )
 
@@ -578,26 +579,70 @@ func TestBufferedShellHonorsMaxRuntime(t *testing.T) {
 
 func TestShellToolStreamingPathHonorsSessionTimeouts(t *testing.T) {
 	t.Parallel()
-	s := newShellToolTestSession(t, SessionConfig{
-		DefaultCommandTimeoutMS: 100,
-		MaxCommandTimeoutMS:     100,
-		ToolOutputLimits: map[string]schema.ToolOutputLimit{
-			"shell": {MaxChars: 800, MaxLines: 1, Strategy: schema.TruncHeadTail},
-		},
-	})
-	clk := agenttest.NewFakeClock()
-	s.jobManager.clock = clk
 
 	for _, tc := range []struct {
-		name string
-		args json.RawMessage
+		name             string
+		turnEndsProcess  bool
+		resultToolName   string
+		limit            schema.ToolOutputLimit
+		args             json.RawMessage
+		wantPreviewBytes int64
+		outputCapBytes   int64
 	}{
 		{
-			name: "default",
-			args: json.RawMessage(`{"command":"printf start; sleep 2; ls"}`),
+			name:  "default",
+			limit: schema.ToolOutputLimit{MaxChars: 800, MaxLines: 1, Strategy: schema.TruncHeadTail},
+			args:  json.RawMessage(`{"command":"printf start; sleep 2; ls"}`),
+		},
+		{
+			name:            "one_shot_silent_min_char_limit",
+			turnEndsProcess: true,
+			limit:           schema.ToolOutputLimit{MaxChars: shellToolResultMinJSONChars, Strategy: schema.TruncHeadTail},
+			args:            idleShellJSON(""),
+		},
+		{
+			name:             "one_shot_preview_min_char_limit",
+			turnEndsProcess:  true,
+			resultToolName:   "reply_parent",
+			limit:            schema.ToolOutputLimit{MaxChars: shellToolResultMinJSONChars, Strategy: schema.TruncHeadTail},
+			args:             json.RawMessage(`{"command":"printf '%0600d\\n' 1; ` + idleShellCommand + `"}`),
+			wantPreviewBytes: 600,
+		},
+		{
+			name:             "one_shot_retention_overflow_min_char_limit",
+			turnEndsProcess:  true,
+			limit:            schema.ToolOutputLimit{MaxChars: shellToolResultMinJSONChars, Strategy: schema.TruncHeadTail},
+			args:             json.RawMessage(`{"command":"printf '%0600d\\n' 1; ` + idleShellCommand + `"}`),
+			wantPreviewBytes: 600,
+			outputCapBytes:   256,
+		},
+		{
+			name:             "persistent_preview_min_char_limit",
+			limit:            schema.ToolOutputLimit{MaxChars: shellToolResultMinJSONChars, Strategy: schema.TruncHeadTail},
+			args:             json.RawMessage(`{"command":"printf '%0600d\\n' 1; ` + idleShellCommand + `"}`),
+			wantPreviewBytes: 600,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			s := newShellToolTestSession(t, SessionConfig{
+				DefaultCommandTimeoutMS: 100,
+				MaxCommandTimeoutMS:     100,
+				TurnEndsProcess:         tc.turnEndsProcess,
+				ResultToolName:          tc.resultToolName,
+				ToolOutputLimits: map[string]schema.ToolOutputLimit{
+					"shell": tc.limit,
+				},
+			})
+			clk := agenttest.NewFakeClock()
+			s.jobManager.clock = clk
+			if tc.outputCapBytes > 0 {
+				capBytes := tc.outputCapBytes
+				s.jobManager.createOutput = func(path string, _ int64) (*jobstore.OutputStore, error) {
+					return jobstore.CreateOutputNoSync(path, capBytes)
+				}
+			}
+
 			resCh := make(chan tool.ExecResult, 1)
 			go func() {
 				resCh <- s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
@@ -607,6 +652,21 @@ func TestShellToolStreamingPathHonorsSessionTimeouts(t *testing.T) {
 				})
 			}()
 			clk.BlockUntil(1)
+			if tc.wantPreviewBytes > 0 {
+				testwait.Until(t, "shell preview output before promotion", func() bool {
+					s.jobManager.mu.Lock()
+					defer s.jobManager.mu.Unlock()
+					for _, run := range s.jobManager.running {
+						if run.output.Len() >= tc.wantPreviewBytes {
+							if tc.outputCapBytes > 0 && run.output.RetainedStart() <= 0 {
+								continue
+							}
+							return true
+						}
+					}
+					return false
+				})
+			}
 			clk.Advance(time.Second)
 
 			var res tool.ExecResult
@@ -639,6 +699,21 @@ func TestShellToolStreamingPathHonorsSessionTimeouts(t *testing.T) {
 				out.Mode != "background" {
 				t.Fatalf("shell output = %+v, want foreground timeout promoted to background", out)
 			}
+			t.Cleanup(func() {
+				_, _ = s.jobManager.stop(out.JobID)
+				waitForShellDone(t, s.jobManager, out.JobID)
+			})
+			if tc.wantPreviewBytes > 0 && res.Truncated {
+				t.Fatalf("promoted shell result tripped registry truncation instead of reserving space for reminder and footer: %q", res.Output)
+			}
+			if tc.outputCapBytes > 0 {
+				if gotRunes := len([]rune(res.Output)); gotRunes > shellToolResultMinJSONChars {
+					t.Fatalf("promoted retention-overflow result = %d runes, want <= %d: %q", gotRunes, shellToolResultMinJSONChars, res.Output)
+				}
+				if !strings.Contains(res.Output, "bytes dropped (retention cap)") {
+					t.Fatalf("promoted retention-overflow result missing retention warning: %q", res.Output)
+				}
+			}
 			if !strings.Contains(res.Output, out.JobID) {
 				t.Fatalf("promoted shell model output lost job_id %q under constrained registry limits: %q", out.JobID, res.Output)
 			}
@@ -652,8 +727,23 @@ func TestShellToolStreamingPathHonorsSessionTimeouts(t *testing.T) {
 			if !strings.Contains(res.Output, "after 1s") {
 				t.Fatalf("promoted shell model output does not state the elapsed wait: %q", res.Output)
 			}
-			_, _ = s.jobManager.stop(out.JobID)
-			waitForShellDone(t, s.jobManager, out.JobID)
+			wantResultTool := tc.resultToolName
+			if wantResultTool == "" {
+				wantResultTool = tool.DefaultResultToolName
+			}
+			wantQuietCall := wantResultTool + `(next="log_quietly_and_end_turn"`
+			if !strings.Contains(res.Output, wantQuietCall) {
+				t.Fatalf("promoted shell model output lost quiet-yield call %q under constrained registry limits: %q", wantQuietCall, res.Output)
+			}
+			if tc.resultToolName != "" && strings.Contains(res.Output, tool.DefaultResultToolName+`(next="log_quietly_and_end_turn"`) {
+				t.Fatalf("promoted shell model output still suggested %s when ResultToolName=%q: %q", tool.DefaultResultToolName, tc.resultToolName, res.Output)
+			}
+			if tc.turnEndsProcess {
+				wantWatchCall := fmt.Sprintf(`job_watch(operation="create", source=%q, progress_interval_ms=180000)`, out.JobID)
+				if !strings.Contains(res.Output, wantWatchCall) {
+					t.Fatalf("promoted one-shot shell model output lost watch call %q under constrained registry limits: %q", wantWatchCall, res.Output)
+				}
+			}
 		})
 	}
 }
@@ -1610,30 +1700,115 @@ func TestFormatShellResultBackgroundReminderOneShot(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			normal := formatShellResult(tc.res)
-			if !strings.Contains(normal, "You do not need to wait for it explicitly") {
-				t.Fatalf("serve-mode reminder = %q, want the notify-and-wake wording", normal)
+			reason := ""
+			if tc.res.Reason != nil {
+				reason = *tc.res.Reason
+			}
+			res := shellResult{
+				JobID:               tc.res.JobID,
+				Type:                tc.res.Type,
+				Status:              tc.res.Status,
+				Reason:              reason,
+				RunningInBackground: true,
+				TimedOut:            tc.res.TimedOut,
+				WaitElapsedMS:       tc.res.WaitElapsedMS,
+			}
+
+			normalRes, err := marshalShellToolResult(res, 30000, 0, false, "")
+			if err != nil {
+				t.Fatalf("marshalShellToolResult(normal): %v", err)
+			}
+			normal := normalRes.Output
+			if !strings.Contains(normal, "<system-reminder>") || !strings.Contains(normal, "</system-reminder>") {
+				t.Fatalf("serve-mode reminder = %q, want <system-reminder> wrapper", normal)
 			}
 			if strings.Contains(normal, "job_watch") {
 				t.Fatalf("serve-mode reminder = %q, must not mention the one-shot job_watch remedy", normal)
 			}
-
-			oneShotRes := tc.res
-			oneShotRes.TurnEndsProcess = true
-			oneShot := formatShellResult(oneShotRes)
-			if strings.Contains(oneShot, "You do not need to wait for it explicitly") {
-				t.Fatalf("one-shot reminder = %q, must not claim no wait is needed", oneShot)
+			if !strings.Contains(normal, tc.res.JobID) {
+				t.Fatalf("serve-mode result = %q, want job id %q", normal, tc.res.JobID)
 			}
 			for _, token := range []string{
+				"job:" + tc.res.JobID,
+				`next="log_quietly_and_end_turn"`,
+			} {
+				if !strings.Contains(normal, token) {
+					t.Fatalf("serve-mode reminder = %q, want API contract token %q", normal, token)
+				}
+			}
+
+			oneShotOut, err := marshalShellToolResult(res, 30000, 0, true, "")
+			if err != nil {
+				t.Fatalf("marshalShellToolResult(one-shot): %v", err)
+			}
+			oneShot := oneShotOut.Output
+			for _, token := range []string{
+				"<system-reminder>",
+				"</system-reminder>",
+				"job:" + tc.res.JobID,
 				"job_watch",
 				`operation="create"`,
 				fmt.Sprintf(`source=%q`, tc.res.JobID),
 				"progress_interval_ms",
 				"output_match",
+				`next="log_quietly_and_end_turn"`,
 			} {
 				if !strings.Contains(oneShot, token) {
 					t.Fatalf("one-shot reminder = %q, want API contract token %q", oneShot, token)
 				}
+			}
+			// The progress-watch and quiet-yield sequence must be gated on
+			// needing completion, with output_match named for readiness wakes
+			// (e.g., local servers that should not hold one-shot drain open).
+			if !strings.Contains(oneShot, "If you need completion") {
+				t.Fatalf("one-shot reminder = %q, must make progress_interval_ms conditional on needing completion", oneShot)
+			}
+			if !strings.Contains(oneShot, "output_match") || !strings.Contains(oneShot, "ready") {
+				t.Fatalf("one-shot reminder = %q, must describe output_match as the readiness wake path", oneShot)
+			}
+
+			// A realistic 39-char job ID plus >8 MiB retention overflow and
+			// preview output must still fit inside shellToolResultMinJSONChars
+			// (800 runes) without losing the retention notice or wait calls.
+			overflowRes := res
+			overflowRes.JobID = "job_035514ILLd2AItKGBsTeAf_5W7EwEDzQi0B"
+			overflowRes.Output = strings.Repeat("x", 600)
+			overflowRes.TotalBytes = 108 * 1024 * 1024
+			overflowRes.DroppedBytes = 100 * 1024 * 1024
+			overflowOut, err := marshalShellToolResult(overflowRes, shellToolResultMinJSONChars, 0, true, "")
+			if err != nil {
+				t.Fatalf("marshalShellToolResult(one-shot overflow): %v", err)
+			}
+			if gotRunes := len([]rune(overflowOut.Output)); gotRunes > shellToolResultMinJSONChars {
+				t.Fatalf("one-shot retention-overflow output = %d runes, want <= %d: %q", gotRunes, shellToolResultMinJSONChars, overflowOut.Output)
+			}
+			for _, token := range []string{
+				overflowRes.JobID,
+				"104857600 bytes dropped (retention cap)",
+				fmt.Sprintf(`job_watch(operation="create", source=%q, progress_interval_ms=180000)`, overflowRes.JobID),
+				`communicate(next="log_quietly_and_end_turn", message="Waiting.")`,
+				"output_match",
+			} {
+				if !strings.Contains(overflowOut.Output, token) {
+					t.Fatalf("one-shot retention-overflow output missing %q: %q", token, overflowOut.Output)
+				}
+			}
+
+			// The tool-result reminder must never emit a literal <job-notification
+			// tag; reserve that wire frame strictly for delivered notifications.
+			if strings.Contains(oneShot, "<job-notification") {
+				t.Fatalf("one-shot reminder = %q, must not contain literal <job-notification frame tag", oneShot)
+			}
+			if strings.Contains(normal, "<job-notification") {
+				t.Fatalf("serve-mode reminder = %q, must not contain literal <job-notification frame tag", normal)
+			}
+
+			namedOut, err := marshalShellToolResult(res, 30000, 0, true, "reply_parent")
+			if err != nil {
+				t.Fatalf("marshalShellToolResult(named): %v", err)
+			}
+			if !strings.Contains(namedOut.Output, `reply_parent(next="log_quietly_and_end_turn"`) {
+				t.Fatalf("custom result tool reminder = %q, want reply_parent call", namedOut.Output)
 			}
 		})
 	}
@@ -1997,4 +2172,60 @@ func TestShellCwdWithShellOperatorsGetsPathHint(t *testing.T) {
 	if !errors.Is(err, errShellCwdNotFound) || errors.Is(err, errShellCwdIsCommand) {
 		t.Fatalf("plain missing path error = %v, want only errShellCwdNotFound", err)
 	}
+}
+
+func TestShellTimeoutPolicyOneShotDefaults(t *testing.T) {
+	t.Parallel()
+
+	t.Run("policy helper", func(t *testing.T) {
+		t.Parallel()
+		interactive := &toolDeps{cmdTimeouts: func() (int, int) { return defaultShellBlockTimeoutMS, maxShellBlockTimeoutMS }}
+		oneShot := &toolDeps{turnEndsProcess: true, cmdTimeouts: func() (int, int) { return defaultShellBlockTimeoutMS, maxShellBlockTimeoutMS }}
+		oneShotCustomDef := &toolDeps{turnEndsProcess: true, cmdTimeouts: func() (int, int) { return 30_000, maxShellBlockTimeoutMS }}
+
+		if got := applyShellTimeoutPolicy(interactive, shellArgs{Mode: shellModeForeground}); got.BlockTimeoutMS != defaultShellBlockTimeoutMS {
+			t.Fatalf("interactive foreground BlockTimeoutMS = %d, want %d", got.BlockTimeoutMS, defaultShellBlockTimeoutMS)
+		}
+		if got := applyShellTimeoutPolicy(oneShot, shellArgs{Mode: shellModeForeground}); got.BlockTimeoutMS != defaultShellBlockTimeoutMS {
+			t.Fatalf("one-shot foreground BlockTimeoutMS = %d, want %d", got.BlockTimeoutMS, defaultShellBlockTimeoutMS)
+		}
+		if got := applyShellTimeoutPolicy(oneShot, shellArgs{Mode: shellModeForeground, BlockTimeoutMS: 45_000}); got.BlockTimeoutMS != 45_000 {
+			t.Fatalf("one-shot explicit BlockTimeoutMS = %d, want 45000", got.BlockTimeoutMS)
+		}
+		if got := applyShellTimeoutPolicy(oneShot, shellArgs{Mode: shellModeBackground}); got.BlockTimeoutMS != defaultShellBlockTimeoutMS {
+			t.Fatalf("one-shot background BlockTimeoutMS = %d, want %d", got.BlockTimeoutMS, defaultShellBlockTimeoutMS)
+		}
+		if got := applyShellTimeoutPolicy(oneShotCustomDef, shellArgs{Mode: shellModeForeground}); got.BlockTimeoutMS != 30_000 {
+			t.Fatalf("one-shot custom default BlockTimeoutMS = %d, want 30000", got.BlockTimeoutMS)
+		}
+	})
+
+	t.Run("session tool execution", func(t *testing.T) {
+		t.Parallel()
+		for _, tc := range []struct {
+			name            string
+			turnEndsProcess bool
+			want            int
+		}{
+			{name: "interactive", turnEndsProcess: false, want: defaultShellBlockTimeoutMS},
+			{name: "one-shot", turnEndsProcess: true, want: defaultShellBlockTimeoutMS},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
+				env := &captureEnv{wd: t.TempDir()}
+				s := newSession(t, withEnv(env), withConfig(SessionConfig{TurnEndsProcess: tc.turnEndsProcess}))
+				res := s.reg.ExecuteCall(context.Background(), env, llm.ToolCallData{
+					ID:        "c1",
+					Name:      "shell",
+					Arguments: json.RawMessage(`{"command":"echo hi"}`),
+				})
+				if res.IsError {
+					t.Fatalf("shell returned error: %s", res.Output)
+				}
+				if got := env.LastTimeoutMS(); got != tc.want {
+					t.Fatalf("timeout = %d, want %d", got, tc.want)
+				}
+			})
+		}
+	})
 }
