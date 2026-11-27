@@ -907,8 +907,22 @@ test("mobile: tapping the already-focused session closes the Sessions drawer", a
 // route's location read is still in flight. That read is a hub round trip;
 // tying both the placement and the dismissal to it makes a slow hub look like
 // a dead tap and leaves the drawer covering the result.
-test("mobile: a session tap places and dismisses before its location read answers", async () => {
+test("mobile: a session tap places and dismisses before its location read answers", async ({ onTestFinished }) => {
   installMobileViewport();
+  const ua = vi.spyOn(navigator, "userAgent", "get").mockReturnValue("EvenerNative/1 EvenerSessionHeader/1");
+  const height = vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockReturnValue(58);
+  onTestFinished(() => {
+    ua.mockRestore();
+    height.mockRestore();
+  });
+  let lastHeaderRef: string | undefined;
+  vi.stubGlobal("evenerEdgeToolbar", true);
+  vi.stubGlobal("ReactNativeWebView", {
+    postMessage: (json: string) => {
+      const message = JSON.parse(json);
+      if (message.type === "sessionHeader") lastHeaderRef = message.header?.sessionRef;
+    },
+  });
   const location = deferred<void>();
   const client = navClient();
   client.on("evener/navigation/read", (params: NavigationReadParams) => {
@@ -924,13 +938,17 @@ test("mobile: a session tap places and dismisses before its location read answer
   await waitFor(() => expect(screen.queryByRole("dialog", { name: "Sessions" })).toBeNull());
   expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:s1" });
 
+  const topBar = screen.getByTestId("topbar");
+  expect(within(topBar).queryAllByRole("button")).toHaveLength(0);
   await act(async () => {
     location.resolve(undefined);
     await location.promise;
   });
   await waitFor(() => {
     expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:s1" });
+    expect(lastHeaderRef).toBe("local:s1");
   });
+  expect(within(topBar).queryAllByRole("button")).toHaveLength(0);
 });
 
 // --- kata 098n: a /thread share link is not rewritten into /s ------------

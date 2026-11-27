@@ -33,8 +33,10 @@ material and stops the transcript renderer.
 
 The Duo inner display keeps the Board and the reader side by side while there
 is room for both at the chosen text size. When iOS reserves a side edge for
-the status area, its navigation bar owns the reader’s actions. The composer
-stays with the conversation. See the [Duo layout guide](../design/mobile/iphone-duo.md).
+the status area, its navigation bar owns the reader’s actions. Find and
+Overview return to the same edge after opening a menu or switching
+conversations. The composer stays with the conversation.
+See the [Duo layout guide](../design/mobile/iphone-duo.md).
 
 In the hosted composer, WebKit owns editing, selection, dictation and the
 keyboard. Value selectors use the platform picker. Command menus and inline

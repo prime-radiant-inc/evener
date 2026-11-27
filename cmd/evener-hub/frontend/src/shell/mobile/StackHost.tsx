@@ -403,7 +403,8 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
   const tabletSplit = tabletBand && !singlePane;
   const [boardCollapsed, setBoardCollapsed] = useState(false);
   const boardVisible = tabletSplit && !boardCollapsed;
-  const sessionHeader = hosted && !singlePane && !routeDeferred && focusedPane?.type === "session";
+  const hostedSession = hosted && !singlePane && focusedPane?.type === "session";
+  const sessionHeader = hostedSession && !routeDeferred;
   const nativeHeader = sessionHeader && (!tabletBand || edgeToolbar);
   const publishHeader = nativeHeader || (sessionHeader && hasIPhoneWorkspaceControls());
   useLayoutEffect(() => {
@@ -413,7 +414,7 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
     }
   }, [routeDeferred, publishHeader]);
   const homeEdge = !singlePane && !hosted && focusedPane?.type === "session" ? homeScreenEdge : null;
-  const systemEdge = nativeHeader && edgeToolbar;
+  const systemEdge = hostedSession && edgeToolbar;
   // An overlay can suspend edge actions, but only a change of layout moves them into the top bar.
   const actionsAtEdge = systemEdge || !!homeEdge;
   const Title = actionsAtEdge ? "h1" : "span";
