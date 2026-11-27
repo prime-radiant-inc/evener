@@ -1163,9 +1163,16 @@ async function measureTabletSplit(page) {
   if (!(await evaluate(send, focusedToggle))) throw new Error("expanding the tablet board lost keyboard focus");
   await send("Emulation.setTouchEmulationEnabled", { enabled: false });
   await applyViewport(send, { width: 768, height: TABLET_VIEWPORT.height });
-  await waitForDom(send, "innerWidth === 768", "768px tablet viewport");
+  // The Board spring moves the separator after the browser's own animations finish.
+  const divider = await waitForValue(send, `(() => {
+    const handle = document.querySelector('[data-testid="board-column"]:not([inert]):not([data-motion]) [role="separator"]');
+    if (innerWidth !== 768 || !handle) return null;
+    const r = handle.getBoundingClientRect();
+    const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+    return handle.contains(hit) && r.toJSON();
+  })()`, "settled, hittable tablet divider at 768px");
   const pointer = await evaluate(send, `({ fine: matchMedia('(pointer: fine)').matches, coarse: matchMedia('(any-pointer: coarse)').matches })`);
-  const narrowest = await dragDivider(sessionOpen.resizeHandle, 1);
+  const narrowest = await dragDivider(divider, 1);
   const wideDrag = await dragDivider(narrowest.resizeHandle, 700);
   await evaluate(send, `document.querySelector('[data-testid="board-column"] [role="separator"]').focus({ preventScroll: true })`);
   await pressKey(send, "Home", "Home", 36);
