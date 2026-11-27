@@ -584,7 +584,16 @@ test.each([
       expect(opener.closest("[role=toolbar]")?.getAttribute("data-home-toolbar") ?? null).toBe(
         installed ? "right" : null,
       );
-      expect(screen.getByTestId("topbar").contains(opener)).toBe(!installed);
+      const bar = screen.getByTestId("topbar");
+      expect(bar.contains(opener)).toBe(!installed);
+      if (!installed) {
+        // The trigger keeps one mounted node in the trailing cluster across
+        // pane swaps, so the drawer's focus restoration keeps its opener; the
+        // bar row-reverses (data-drawer-leads) to put it at the visual leading
+        // edge wherever Back is absent. A Back-owning pane keeps normal order
+        // so the trigger never disappears behind Back.
+        expect(bar.hasAttribute("data-drawer-leads")).toBe(pane === "welcome");
+      }
       await openSessionsPanel(user);
       expect(screen.getByRole("dialog").classList.contains(mobilePanelStyles.right ?? "")).toBe(installed);
       await user.keyboard("{Escape}");
@@ -599,15 +608,20 @@ test.each([
 );
 
 test("a focused session's top bar orders Find before Overview", async () => {
-  workspaceStore.getState().openPane("session", { ref: "local:header-order" });
-  render(<StackHost />);
-  const title = await screen.findByTestId("topbar-title");
-  const topBar = title.parentElement;
-  if (!topBar) throw new Error("session top bar is missing");
+  const restoreViewport = installMobileViewport();
+  try {
+    workspaceStore.getState().openPane("session", { ref: "local:header-order" });
+    render(<StackHost />);
+    const title = await screen.findByTestId("topbar-title");
+    const topBar = title.parentElement;
+    if (!topBar) throw new Error("session top bar is missing");
 
-  const find = await within(topBar).findByRole("button", { name: "Find in session" });
-  const overview = within(topBar).getByRole("button", { name: "Overview" });
-  expect(find.compareDocumentPosition(overview) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+    const find = await within(topBar).findByRole("button", { name: "Find in session" });
+    const overview = within(topBar).getByRole("button", { name: "Overview" });
+    expect(find.compareDocumentPosition(overview) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+  } finally {
+    restoreViewport();
+  }
 });
 
 test("the iPhone controls stay above inline Find and follow the focused reader", async () => {
@@ -1189,6 +1203,17 @@ test("a single-pane route offers no tree drawer trigger", async () => {
   render(<StackHost singlePane />);
   expect(await screen.findByTestId("topbar-title")).toBeTruthy();
   expect(screen.queryByRole("button", { name: "Sessions" })).toBeNull();
+});
+
+// The drawer restores focus to its opener when it closes, including when a
+// pane choice inside the drawer closes it mid-navigation. A trigger that
+// remounts across the pane swap strands that restoration on a detached node.
+test("the tree drawer trigger stays one mounted node across a Back-owning pane swap", async () => {
+  render(<StackHost />);
+  const opener = await screen.findByRole("button", { name: "Sessions" });
+  act(() => workspaceStore.getState().openPane("settings", {}));
+  await screen.findByRole("button", { name: "Back" });
+  expect(screen.getByRole("button", { name: "Sessions" })).toBe(opener);
 });
 
 // --- back navigation ---------------------------------------------------
@@ -2972,7 +2997,10 @@ test("tablet board column slides out inert on collapse and slides in from the le
 
     // Reopening mounts the board sliding in from the left edge, live and
     // interactive again, with the single toggle back inside the board.
-    await user.keyboard("{Enter}");
+    // Activate synchronously: an awaited keyboard event can yield a frame, and
+    // the entrance animation advances past its -100% start before this read.
+    // The collapse above still exercises keyboard activation and focus return.
+    fireEvent.click(collapsedToggle);
     const reopenedBoard = screen.getByTestId("board-column");
     expect(reopenedBoard.hasAttribute("inert")).toBe(false);
     expect(reopenedBoard.getAttribute("aria-hidden")).toBeNull();

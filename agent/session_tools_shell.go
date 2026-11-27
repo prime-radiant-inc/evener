@@ -109,12 +109,12 @@ func formatDirListing(r listDirResult) string {
 		}
 		if r.HitWalkCap {
 			if r.Depth > 1 {
-				fmt.Fprintf(&b, "\nThe listing stopped after visiting its cap of %d entries; there may be more beyond the cap. Narrow the path, reduce depth, or page with %s(offset=%d) to see the rest.", r.WalkTruncatedAt, toolName, nextOffset)
+				fmt.Fprintf(&b, "\nWalk cap (%d entries) reached; narrow path, reduce depth, or page with %s(offset=%d).", r.WalkTruncatedAt, toolName, nextOffset)
 			} else {
-				fmt.Fprintf(&b, "\nThe listing stopped after visiting its cap of %d entries; there may be more beyond the cap. Narrow the path or page with %s(offset=%d) to see the rest.", r.WalkTruncatedAt, toolName, nextOffset)
+				fmt.Fprintf(&b, "\nWalk cap (%d entries) reached; narrow path or page with %s(offset=%d).", r.WalkTruncatedAt, toolName, nextOffset)
 			}
 		} else {
-			fmt.Fprintf(&b, "\nThe walk stopped after %d entries once this page filled; total count was not enumerated.", r.WalkTruncatedAt)
+			fmt.Fprintf(&b, "\nWalk stopped at %d entries (total unenumerated).", r.WalkTruncatedAt)
 			if r.Depth > 1 {
 				fmt.Fprintf(&b, " Page with %s(offset=%d), narrow the path, or reduce depth.", toolName, nextOffset)
 			}
@@ -331,14 +331,7 @@ func registerShellTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 				notes = append(notes, fmt.Sprintf("0 matches after excluding %d dotfile/gitignored path(s); set include_ignored to include them", excluded))
 			}
 			if truncatedAt > 0 {
-				// Silent truncation is the same enemy: the matches collected
-				// before the cap tripped look exactly like the whole answer,
-				// and a fully-excluded or fully-masked capped walk would
-				// otherwise report its emptiness as if the walk had finished.
-				// The cap counts candidate matches, before the dotfile/
-				// gitignore exclusion above drops any of them, so the number
-				// of paths actually shown can be smaller than the cap itself.
-				notes = append(notes, fmt.Sprintf("The glob stopped after considering its cap of %d candidate matches; fewer may be shown above once excluded paths are dropped, and there may be more beyond the cap. Narrow the pattern or point path at a smaller directory to see the rest.", truncatedAt))
+				notes = append(notes, fmt.Sprintf("Glob cap (%d candidate matches) reached before exclusions; narrow pattern or path to see more.", truncatedAt))
 			}
 			if len(notes) > 0 {
 				return searchresult.WithNotes(result, notes...), nil
@@ -557,7 +550,7 @@ func shellIntArg(args map[string]any, key string) (int, bool) {
 }
 
 const (
-	shellToolResultDefaultMaxChars = 30_000
+	shellToolResultDefaultMaxChars = 6_000
 	shellToolResultMinJSONChars    = 800
 	minShellMaxRuntimeMS           = 1000
 )
@@ -644,7 +637,7 @@ func marshalShellToolResult(res shellResult, maxChars, maxLines int, turnEndsPro
 // marshalCompleteOrHandleResult implements spec §0.6 for within-bound shell
 // completions. It checks both layers:
 //
-//  1. Ride-whole budget (shellRideWholeBytes): output > 8KB cannot ride whole
+//  1. Ride-whole budget (shellRideWholeBytes): output > 6KB cannot ride whole
 //     in the inline result.
 //  2. Tool-result char bound (maxChars): marshaled JSON > bound also exceeds.
 //
@@ -669,15 +662,17 @@ func marshalCompleteOrHandleResult(res shellResult, maxChars, maxLines int, turn
 
 	out.OutputStatus = outputWindowStatus(res.TotalBytes, res.DroppedBytes, false)
 
-	// Two layers decide keep vs ephemeral (spec §6.4c): the ride-whole budget
-	// (output too big to inline) and the tool-result char bound (the rendered
-	// result would overflow maxChars). Either → keep a durable job so the model
-	// can page; neither → return the complete output inline and discard the job.
-	disp := shellResultDisposition(len(res.Output), len([]rune(formatShellResult(out))), maxChars, shellRideWholeBytes)
+	// Three checks decide keep vs ephemeral: the ride-whole byte budget, the
+	// rendered char bound (maxChars), and the rendered line bound (maxLines).
+	// Any overflow keeps a durable job so the model receives a bounded digest
+	// and job ref; otherwise return the complete output inline and discard.
+	renderedInline := formatShellResult(out)
+	renderedLines := strings.Count(renderedInline, "\n") + 1
+	disp := shellResultDisposition(len(res.Output), len([]rune(renderedInline)), maxChars, renderedLines, maxLines, shellRideWholeBytes)
 	if !disp.Keep {
 		_ = res.settle(false)
 		return tool.StateResult{
-			Output: formatShellResult(out),
+			Output: renderedInline,
 			State:  out,
 			// A failed shell status means the machinery could not finalize
 			// the command; the model and the no-progress signal must see that
@@ -721,23 +716,25 @@ func marshalCompleteOrHandleResult(res shellResult, maxChars, maxLines int, turn
 
 // shellSettleDisposition is the keep-vs-discard decision for a within-bound
 // shell completion (spec §6.4c). Keep reports whether the delayed job must be
-// retained; EmbedExceeded and CharBoundExceeded attribute why. The two reasons
-// are mutually exclusive: EmbedExceeded short-circuits the char-bound check.
-type shellSettleDisposition struct{ Keep, EmbedExceeded, CharBoundExceeded bool }
+// retained; EmbedExceeded, CharBoundExceeded, and LineBoundExceeded attribute
+// why. The reasons are mutually exclusive in that priority order.
+type shellSettleDisposition struct{ Keep, EmbedExceeded, CharBoundExceeded, LineBoundExceeded bool }
 
 // shellResultDisposition decides whether a within-bound shell completion must
 // keep its delayed job. rawOutputBytes is the byte length of the full output;
-// renderedRuneLen is the rune length of the rendered tool result. Output larger
-// than rideWholeBytes cannot ride whole inline (EmbedExceeded); otherwise a
-// rendered result over a positive maxChars exceeds the char bound
-// (CharBoundExceeded). Either reason keeps the job.
-func shellResultDisposition(rawOutputBytes, renderedRuneLen, maxChars, rideWholeBytes int) shellSettleDisposition {
+// renderedRuneLen and renderedLines are the rune and line counts of the
+// rendered tool result. Output larger than rideWholeBytes cannot ride whole
+// inline (EmbedExceeded); otherwise overflowing positive maxChars
+// (CharBoundExceeded) or positive maxLines (LineBoundExceeded) keeps the job.
+func shellResultDisposition(rawOutputBytes, renderedRuneLen, maxChars, renderedLines, maxLines, rideWholeBytes int) shellSettleDisposition {
 	embedExceeded := rawOutputBytes > rideWholeBytes
 	charBoundExceeded := !embedExceeded && maxChars > 0 && renderedRuneLen > maxChars
+	lineBoundExceeded := !embedExceeded && !charBoundExceeded && maxLines > 0 && renderedLines > maxLines
 	return shellSettleDisposition{
-		Keep:              embedExceeded || charBoundExceeded,
+		Keep:              embedExceeded || charBoundExceeded || lineBoundExceeded,
 		EmbedExceeded:     embedExceeded,
 		CharBoundExceeded: charBoundExceeded,
+		LineBoundExceeded: lineBoundExceeded,
 	}
 }
 
@@ -803,17 +800,17 @@ func formatShellResult(out shellToolResult) string {
 	case promoted:
 		foot = append(foot,
 			foregroundWaitEndedLine(out.WaitElapsedMS),
-			fmt.Sprintf("output accumulates durably; read it with read_transcript(transcript_ref=%q)", "job:"+out.JobID),
+			fmt.Sprintf("read_transcript(transcript_ref=%q)", "job:"+out.JobID),
 			"completion arrives by notification — do not relaunch or poll",
 		)
 	case directBackground:
 		// The identifying footer is appended after optional retention details so
 		// the job ID remains at the absolute tail.
 	case out.JobID != "":
-		foot = append(foot, fmt.Sprintf("output windowed — read more with read_transcript(transcript_ref=%q)", "job:"+out.JobID))
+		foot = append(foot, "output windowed", fmt.Sprintf("read_transcript(transcript_ref=%q)", "job:"+out.JobID))
 	}
 	if out.DroppedBytes > 0 {
-		foot = append(foot, fmt.Sprintf("%d bytes dropped past the retention cap", out.DroppedBytes))
+		foot = append(foot, fmt.Sprintf("%d bytes dropped (retention cap)", out.DroppedBytes))
 	}
 	if promoted {
 		foot = append(foot, "still running as "+out.JobID)

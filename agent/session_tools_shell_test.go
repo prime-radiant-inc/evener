@@ -1186,31 +1186,57 @@ func TestCompleteOrHandleKeptLargeOutput(t *testing.T) {
 
 }
 
-// TestShellRideWholeThresholdIs8KiB pins the context-managed default: completed
-// output above shellRideWholeBytes (8 KiB) becomes a navigable handle (job_id)
-// rather than being auto-injected inline. A ~9 KiB command must return a job_id;
-// under the old 64 KiB threshold it rode whole with no job_id.
-func TestShellRideWholeThresholdIs8KiB(t *testing.T) {
+// TestShellRideWholeThresholdIs6KiB pins the context-managed default: completed
+// output above shellRideWholeBytes (6 KiB) becomes a navigable handle (job_id)
+// rather than being auto-injected inline, while output under 6 KiB rides whole.
+func TestShellRideWholeThresholdIs6KiB(t *testing.T) {
 	t.Parallel()
 	s := newTestSession(t)
 
+	short := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "c0",
+		Name:      "shell",
+		Arguments: json.RawMessage(`{"command":"head -c 5000 </dev/zero | tr '\\0' 'x'"}`),
+	})
+	if short.IsError {
+		t.Fatalf("5 KiB shell returned error: %s", short.Output)
+	}
+	var shortOut struct {
+		JobID  string `json:"job_id"`
+		Status string `json:"status"`
+		Output string `json:"output"`
+	}
+	if err := json.Unmarshal(toolResultJSON(short), &shortOut); err != nil {
+		t.Fatalf("unmarshal 5 KiB: %v (output: %s)", err, short.Output)
+	}
+	if shortOut.JobID != "" || len(shortOut.Output) != 5000 {
+		t.Fatalf("5 KiB output = {job_id:%q bytes:%d}, want ephemeral inline 5000 bytes", shortOut.JobID, len(shortOut.Output))
+	}
+
+	// Emit 2,500 three-byte UTF-8 runes (7,500 bytes, <6,000 rendered chars,
+	// <120 lines) so only the 6 KiB byte cutoff triggers and an 8 KiB cutoff
+	// would fail this test.
 	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "c1",
 		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"head -c 9000 </dev/zero | tr '\\0' 'x'"}`),
+		Arguments: json.RawMessage(`{"command":"s='€€€€€€€€€€'; s=\"$s$s$s$s$s\"; s=\"$s$s$s$s$s\"; s=\"$s$s$s$s$s$s$s$s$s$s\"; printf '%s' \"$s\""}`),
 	})
 	if res.IsError {
 		t.Fatalf("shell returned error: %s", res.Output)
 	}
 	var out struct {
-		JobID  string `json:"job_id"`
-		Status string `json:"status"`
+		JobID      string `json:"job_id"`
+		Status     string `json:"status"`
+		TotalBytes int64  `json:"total_bytes"`
 	}
 	if err := json.Unmarshal(toolResultJSON(res), &out); err != nil {
 		t.Fatalf("unmarshal: %v (output: %s)", err, res.Output)
 	}
 	if out.JobID == "" {
-		t.Fatalf("9 KiB output returned no job_id; want a navigable handle above the 8 KiB ride-whole threshold")
+		t.Fatalf("7,500-byte multibyte output (2,500 runes) returned no job_id; want a navigable handle above the 6 KiB ride-whole threshold")
+	}
+	if out.TotalBytes != 7500 {
+		t.Fatalf("total_bytes = %d, want 7500", out.TotalBytes)
 	}
 	if out.Status != string(jobstore.StatusCompleted) {
 		t.Fatalf("status = %q, want completed", out.Status)
@@ -1331,40 +1357,148 @@ func TestShellHandlePeekTailIsSmall(t *testing.T) {
 
 // TestCompleteOrHandleKeptToolResultOverflow pins spec §6.4(c): a command
 // whose output fits in the ride-whole budget but exceeds the tool-result char
-// bound still gets a durable job_id.
+// or line bound still gets a durable job_id, while output within all limits
+// stays inline.
 func TestCompleteOrHandleKeptToolResultOverflow(t *testing.T) {
 	t.Parallel()
-	// Use MaxChars:1 so even a tiny output overflows the tool-result bound.
-	s := newShellToolTestSession(t, SessionConfig{
-		ToolOutputLimits: map[string]schema.ToolOutputLimit{
-			"shell": {MaxChars: 1, Strategy: schema.TruncHeadTail},
-		},
+
+	t.Run("char_bound", func(t *testing.T) {
+		t.Parallel()
+		// Use MaxChars:1 so even a tiny output overflows the tool-result bound.
+		s := newShellToolTestSession(t, SessionConfig{
+			ToolOutputLimits: map[string]schema.ToolOutputLimit{
+				"shell": {MaxChars: 1, Strategy: schema.TruncHeadTail},
+			},
+		})
+
+		// 4KB < shellRideWholeBytes (6KB), so layer 1 budget is fine, but
+		// MaxChars:1 ensures the tool-result char bound is exceeded (layer 2).
+		res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+			ID:        "c1",
+			Name:      "shell",
+			Arguments: json.RawMessage(`{"command":"head -c 4000 </dev/zero | tr '\\0' 'x'"}`),
+		})
+		if res.IsError {
+			t.Fatalf("shell returned error: %s", res.Output)
+		}
+		var out struct {
+			JobID     string `json:"job_id"`
+			Status    string `json:"status"`
+			Truncated bool   `json:"truncated"`
+		}
+		if err := json.Unmarshal(toolResultJSON(res), &out); err != nil {
+			t.Fatalf("unmarshal: %v (output: %s)", err, res.Output)
+		}
+		if out.JobID == "" {
+			t.Fatalf("tool-result overflow command returned no job_id; want kept durable record (spec §6.4c)")
+		}
+		if out.Status != string(jobstore.StatusCompleted) {
+			t.Fatalf("status = %q, want completed", out.Status)
+		}
 	})
 
-	// 4KB < shellRideWholeBytes (8KB), so layer 1 budget is fine, but
-	// MaxChars:1 ensures the tool-result char bound is exceeded (layer 2).
-	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
-		ID:        "c1",
-		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"head -c 4000 </dev/zero | tr '\\0' 'x'"}`),
+	t.Run("line_bound_default_session", func(t *testing.T) {
+		t.Parallel()
+		s := newTestSession(t)
+
+		var want strings.Builder
+		for i := 1; i <= 150; i++ {
+			fmt.Fprintf(&want, "line-%03d\n", i)
+		}
+		path := filepath.Join(t.TempDir(), "lines150.txt")
+		if err := os.WriteFile(path, []byte(want.String()), 0o600); err != nil {
+			t.Fatalf("write fixture: %v", err)
+		}
+		args, err := json.Marshal(map[string]string{"command": "cat -- " + shellSingleQuote(path)})
+		if err != nil {
+			t.Fatalf("marshal args: %v", err)
+		}
+
+		res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+			ID:        "c-lines-150",
+			Name:      "shell",
+			Arguments: args,
+		})
+		if res.IsError {
+			t.Fatalf("shell returned error: %s", res.Output)
+		}
+		var out shellToolResult
+		if err := json.Unmarshal(toolResultJSON(res), &out); err != nil {
+			t.Fatalf("unmarshal: %v (output: %s)", err, res.Output)
+		}
+		if out.JobID == "" {
+			t.Fatalf("150-line output (<5KB) returned no job_id (registry truncated=%v); want durable job digest:\n%s", res.Truncated, res.Output)
+		}
+		if res.Truncated {
+			t.Fatalf("registry re-truncated line-overflow shell digest:\n%s", res.Output)
+		}
+		if gotLines := strings.Count(res.Output, "\n") + 1; gotLines > 120 {
+			t.Fatalf("rendered digest has %d lines, want at most 120", gotLines)
+		}
+		if !strings.Contains(res.Output, "job:"+out.JobID) {
+			t.Fatalf("rendered digest missing durable job ref job:%s:\n%s", out.JobID, res.Output)
+		}
+
+		readRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+			ID:        "read-lines-150",
+			Name:      "read_transcript",
+			Arguments: json.RawMessage(fmt.Sprintf(`{"transcript_ref":"job:%s","offset_bytes":0}`, out.JobID)),
+		})
+		if readRes.IsError {
+			t.Fatalf("read_transcript returned error: %s", readRes.Output)
+		}
+		var transcript struct {
+			Page struct {
+				Data string `json:"data"`
+			} `json:"page"`
+		}
+		if err := json.Unmarshal(toolResultJSON(readRes), &transcript); err != nil {
+			t.Fatalf("unmarshal read_transcript: %v (output: %s)", err, readRes.Output)
+		}
+		if transcript.Page.Data != want.String() {
+			t.Fatalf("read_transcript page data mismatch: got %d bytes, want %d bytes", len(transcript.Page.Data), want.Len())
+		}
 	})
-	if res.IsError {
-		t.Fatalf("shell returned error: %s", res.Output)
-	}
-	var out struct {
-		JobID     string `json:"job_id"`
-		Status    string `json:"status"`
-		Truncated bool   `json:"truncated"`
-	}
-	if err := json.Unmarshal(toolResultJSON(res), &out); err != nil {
-		t.Fatalf("unmarshal: %v (output: %s)", err, res.Output)
-	}
-	if out.JobID == "" {
-		t.Fatalf("tool-result overflow command returned no job_id; want kept durable record (spec §6.4c)")
-	}
-	if out.Status != string(jobstore.StatusCompleted) {
-		t.Fatalf("status = %q, want completed", out.Status)
-	}
+
+	t.Run("within_all_limits_stays_inline", func(t *testing.T) {
+		t.Parallel()
+		s := newTestSession(t)
+
+		var want strings.Builder
+		for i := 1; i <= 119; i++ {
+			fmt.Fprintf(&want, "line-%03d\n", i)
+		}
+		path := filepath.Join(t.TempDir(), "lines119.txt")
+		if err := os.WriteFile(path, []byte(want.String()), 0o600); err != nil {
+			t.Fatalf("write fixture: %v", err)
+		}
+		args, err := json.Marshal(map[string]string{"command": "cat -- " + shellSingleQuote(path)})
+		if err != nil {
+			t.Fatalf("marshal args: %v", err)
+		}
+
+		res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+			ID:        "c-lines-119",
+			Name:      "shell",
+			Arguments: args,
+		})
+		if res.IsError {
+			t.Fatalf("shell returned error: %s", res.Output)
+		}
+		var out shellToolResult
+		if err := json.Unmarshal(toolResultJSON(res), &out); err != nil {
+			t.Fatalf("unmarshal: %v (output: %s)", err, res.Output)
+		}
+		if out.JobID != "" {
+			t.Fatalf("119-line output (120 rendered lines with footer) returned job_id=%q, want ephemeral inline", out.JobID)
+		}
+		if res.Truncated {
+			t.Fatalf("119-line output unexpectedly truncated by registry:\n%s", res.Output)
+		}
+		if !strings.Contains(res.Output, "line-060") {
+			t.Fatalf("inline output missing middle line:\n%s", res.Output)
+		}
+	})
 }
 
 // TestCompleteOrHandleKeptNoNotification pins spec §6.4(d): a within-bound

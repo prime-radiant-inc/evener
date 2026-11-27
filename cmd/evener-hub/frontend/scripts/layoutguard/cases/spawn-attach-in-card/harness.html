@@ -36,7 +36,7 @@
   .pickerWrapperFill { display: flex; width: 100%; }
 </style>
 </head>
-<body>
+<body data-iphone-glass="regular">
 <!-- panes/spawn/Spawn.tsx's prompt card, verbatim against the real class
      names: PromptCard's .card wrapping a seamless autoGrow Textarea over its
      .controls row, with the attach IconButton and the ModelSwitchTrigger in
@@ -47,7 +47,7 @@
      height at rest here: nothing in this harness runs autoGrow's measuring
      effect, and a card sized by an unmeasured field would be a card the
      product never renders. -->
-<div class="form">
+<div class="form" data-pane-scaffold="spawn">
   <div class="card" data-card>
     <textarea class="textarea seamless" data-field aria-label="Prompt" style="--textarea-min-lines: 6" placeholder="What should the agent work on? Leave blank to start it dormant."></textarea>
     <div class="controls" data-controls>
@@ -100,8 +100,33 @@ window.measure = () => {
     // display:none ancestor keeps its own computed display while its box
     // collapses (kata bsq9).
     modelGateDisplay: gate === null ? "missing" : getComputedStyle(gate).display,
+    glassCard: readCardSkin(),
+    plainCard: (() => {
+      document.body.removeAttribute("data-iphone-glass");
+      const skin = readCardSkin();
+      document.body.setAttribute("data-iphone-glass", "regular");
+      return skin;
+    })(),
   };
 };
+
+// The card's own material and containment, read under whatever glass mode the
+// body carries: the start composer's card must be the same plain framed card
+// in regular glass mode as everywhere else, and it must clip its own overflow
+// in every mode - the clip is what keeps the card's content inside its
+// rounded box and moves the liquid-glass SDK to its sibling canvas placement.
+function readCardSkin() {
+  const card = document.querySelector("[data-card]");
+  if (!card) return null;
+  const style = getComputedStyle(card);
+  return {
+    backgroundColor: style.backgroundColor,
+    backgroundImage: style.backgroundImage,
+    overflowX: style.overflowX,
+    overflowY: style.overflowY,
+    overflowClipMargin: style.overflowClipMargin,
+  };
+}
 </script>
 </body>
 </html>

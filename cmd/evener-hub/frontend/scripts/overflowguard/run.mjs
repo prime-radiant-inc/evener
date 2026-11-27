@@ -768,9 +768,7 @@ function assertFinePointerLandscapeComposer(measurement) {
   // floor, chevron) is ~30px; below that the row is clipping the picker's
   // chevron and hit area instead of compressing its facts in priority order.
   if (measurement.modelTrigger !== null && measurement.modelTrigger.clientWidth < 28) {
-    failures.push(
-      `the model trigger is clipped to ${measurement.modelTrigger.clientWidth}px, below its usable floor`,
-    );
+    failures.push(`the model trigger is clipped to ${measurement.modelTrigger.clientWidth}px, below its usable floor`);
   }
   if (measurement.editorMinLines !== "1lh") failures.push("the fine-pointer folded field is not one line");
   // The resting row holds ONE line below the old stacked threshold (Jesse's
@@ -1073,6 +1071,16 @@ async function measureTrustedFocus(send) {
         const clippingAncestors = [];
         for (let ancestor = focused?.parentElement; ancestor && ancestor !== document.body; ancestor = ancestor.parentElement) {
           const ancestorStyle = getComputedStyle(ancestor);
+          // A fixed-position ancestor's containing block is the viewport, so no
+          // DOM ancestor above it can clip its subtree's paint - overflow
+          // clipping only reaches descendants whose containing-block chain
+          // passes through the clipper. The Verbosity dialog renders inline
+          // under the composer card (no portal), so without this stop a card
+          // that clips its own overflow reads as clipping the dialog that
+          // floats over it. Verified in Chrome: elementFromPoint finds a
+          // fixed descendant at a point far outside its overflow:clip
+          // ancestor's box.
+          if (ancestorStyle.position === 'fixed') break;
           const clipsX = ancestorStyle.overflowX !== 'visible';
           const clipsY = ancestorStyle.overflowY !== 'visible';
           if (clipsX || clipsY) {
@@ -2388,7 +2396,9 @@ async function main() {
       failed++;
       console.log(`cold start skeleton ... FAIL - ${JSON.stringify(coldStartSkeleton)}`);
     } else {
-      console.log("cold start skeleton ... PASS - first-reply skeleton fills the wide reading column after its padding");
+      console.log(
+        "cold start skeleton ... PASS - first-reply skeleton fills the wide reading column after its padding",
+      );
       console.log(
         `  measured bar ${coldStartSkeleton.barWidth.toFixed(1)}px in column content ` +
           `${coldStartSkeleton.contentWidth.toFixed(1)}px, column ${coldStartSkeleton.skeletonWidth.toFixed(1)}px ` +
@@ -2517,9 +2527,7 @@ async function main() {
         assertComposerContainment(result.currentWork, width < 900);
       } catch (error) {
         widthFailed = true;
-        console.log(
-          `${width}px ... FAIL - ${error.message}: ${JSON.stringify(result.currentWork)}`,
-        );
+        console.log(`${width}px ... FAIL - ${error.message}: ${JSON.stringify(result.currentWork)}`);
       }
       if (
         width === 390 &&
