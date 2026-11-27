@@ -221,10 +221,10 @@ func DefShell() llm.ToolDefinition {
 // accepts.
 func ShellModeProperty(detachAvailable bool) map[string]any {
 	modeEnum := []any{"foreground", "background"}
-	modeDescription := "foreground (default, auto-backgrounds at 2m); background (session job, stops on exit)"
+	modeDescription := "foreground (default for builds, tests, and waited commands; auto-backgrounds at 2m); background (only when running independent parallel work; stops on exit)"
 	if detachAvailable {
 		modeEnum = append(modeEnum, "detached")
-		modeDescription += "; detached (outlives exit, no job/notice, pass abs paths)."
+		modeDescription += "; detached (outlives exit, returns PID only, no job/notice, discards unredirected output; pass absolute paths and redirect needed logs to an absolute path)."
 	} else {
 		modeDescription += "; detached unavailable."
 	}
@@ -714,8 +714,8 @@ func DefApplyPatch() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name: "apply_patch",
 		Description: `Apply a v4a patch for creating, modifying, or deleting files (not unified diff) wrapped in *** Begin Patch ... *** End Patch.
-Headers: *** Add File: <path> (every line prefixed with +), *** Delete File: <path>, *** Update File: <path> (optional *** Move to: <new path>, then @@ [scope] hunks with space context, - removed, + added; ~3 lines context).
-Paths resolve from cwd (use absolute paths outside cwd). Use scripting for bulk search-and-replace.`,
+Headers: *** Add File: <path> (every line prefixed with +), *** Delete File: <path>, *** Update File: <path> (optional *** Move to: <new path>, then @@ [scope] hunks with space context, - removed, + added; ~3 lines context, or enough context / an @@ scope header to uniquely identify the intended occurrence when context matches more than once).
+Paths resolve from cwd (use absolute paths outside cwd). Use scripting for bulk search-and-replace. Always end with *** End Patch and copy exact lines and indentation from read_file.`,
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
@@ -763,7 +763,7 @@ func DefCommunicateNamed(name string) llm.ToolDefinition {
 	strictFalse := false
 	return llm.ToolDefinition{
 		Name:        name,
-		Description: "Send a message to your partner/caller. Default next=\"send_and_end_turn\" ENDS YOUR TURN IMMEDIATELY (use only when complete and verified); pass next=\"send_and_continue\" for any mid-work progress update, or next=\"log_quietly_and_end_turn\" (no prose) when waiting on background work.",
+		Description: "Send a message to your partner/caller. Default next=\"send_and_end_turn\" ENDS YOUR TURN IMMEDIATELY (use only when complete and verified); pass next=\"send_and_continue\" for any mid-work progress update, or next=\"log_quietly_and_end_turn\" (no prose) when waiting on background work. Include `output` only on `send_and_end_turn` (required when a result schema is bound; omit on updates and quiet yields).",
 		Strict:      &strictFalse,
 		Parameters: map[string]any{
 			"type":                 "object",
@@ -781,7 +781,7 @@ func DefCommunicateNamed(name string) llm.ToolDefinition {
 				},
 				"output": map[string]any{
 					"type":                 "object",
-					"description":          "Structured result (`send_and_end_turn` only).",
+					"description":          "Structured result (`send_and_end_turn` only; required when a result schema is bound).",
 					"additionalProperties": false,
 					"properties": map[string]any{
 						"message": map[string]any{"type": "string", "description": "Summary."},
@@ -817,7 +817,7 @@ func ObserverReporting(resultTool string) string {
 // (provider.WithCommunicateOutputSchema), so only the schema can say the shape.
 func communicateDelegateDescription(resultTool string) string {
 	_ = resultTool
-	return "Send a message to your parent agent. Default next=\"send_and_end_turn\" ENDS YOUR TURN IMMEDIATELY (use only for your report or readiness line); pass next=\"send_and_continue\" for any mid-work update, or next=\"log_quietly_and_end_turn\" (no prose) when waiting on background work."
+	return "Send a message to your parent agent. Default next=\"send_and_end_turn\" ENDS YOUR TURN IMMEDIATELY (use only for your report or readiness line); pass next=\"send_and_continue\" for any mid-work update, or next=\"log_quietly_and_end_turn\" (no prose) when waiting on background work. Include `output` only on `send_and_end_turn` (required when a result schema is bound; omit on updates and quiet yields)."
 }
 
 // WithCommunicateDelegateUpdates returns a copy of a communicate definition
@@ -1252,7 +1252,7 @@ func DefAskUserNamed(resultTool string) llm.ToolDefinition {
 							"why":          map[string]any{"type": "string", "description": "What the answer changes."},
 							"if_unanswered": map[string]any{
 								"type":        "string",
-								"description": "Fallback if skipped.",
+								"description": "Proposed fallback the user can accept (if skipped, use judgment and state the assumption).",
 							},
 						},
 						"required": []string{"question", "options"},
