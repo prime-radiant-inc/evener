@@ -3074,7 +3074,8 @@ async function positionOlderReading(driver, ref, sentinel) {
   // Newly available space above the preserved reading line may expose an
   // earlier turn. Seat the fixture's sentinel at its usual post-wheel inset
   // before comparing which turn a responsive host or a newly opened pane keeps.
-  if (await evaluate(driver.send, `(${SCROLL_PORT_EXPR(ref)}).clientHeight !== ${box.height}`)) await alignRow(16);
+  const reading = await settledReading(driver, ref);
+  if (reading.clientHeight !== box.height) await alignRow(16);
 }
 
 function assertResponsiveReading(before, after, sentinel) {
