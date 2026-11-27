@@ -70,14 +70,14 @@ export function HubWebView({ profile, token, initialPath, onPath, onHubMenu, onD
 	const material = JSON.stringify({ type: "material", glass, edgeToolbar });
 	const headerAction = useCallback(
 		(id: string | null, action: EdgeAction) => {
-			if (action === "open" || action === "close" || action === "hubs" || action === "settings") {
-				if (id !== null) web.current?.postMessage(JSON.stringify({ type: "sessionsAction", id, action }));
-				return;
+			if (id !== null) {
+				const type = sessionsToolbar?.id === id ? "sessionsAction" : "headerAction";
+				web.current?.postMessage(JSON.stringify({ type, id, action }));
+			} else if (restoringSession && (action === "find" || action === "overview")) {
+				pendingHeaderAction.current = action;
 			}
-			if (id !== null) web.current?.postMessage(JSON.stringify({ type: "headerAction", id, action }));
-			else if (restoringSession) pendingHeaderAction.current = action;
 		},
-		[restoringSession],
+		[restoringSession, sessionsToolbar?.id],
 	);
 	useLayoutEffect(() => {
 		if (!focused || error || readingDocument || covered) endRestore();
@@ -199,6 +199,22 @@ export function HubWebView({ profile, token, initialPath, onPath, onHubMenu, onD
 				if (data.mode === "list" || data.mode === "launcher") {
 					endRestore();
 					setSessionsToolbar({ id: data.id, mode: data.mode });
+				} else if (
+					data.mode === "navigation" &&
+					typeof data.back === "boolean" &&
+					typeof data.needsYou === "number" &&
+					Number.isSafeInteger(data.needsYou) &&
+					data.needsYou >= 0 &&
+					(data.destination === null || data.destination === "open" || data.destination === "board")
+				) {
+					endRestore();
+					setSessionsToolbar({
+						id: data.id,
+						mode: data.mode,
+						back: data.back,
+						destination: data.destination,
+						needsYou: data.needsYou,
+					});
 				} else if (data.mode === null) {
 					setSessionsToolbar((current) => (current?.id === data.id ? null : current));
 				}
@@ -279,7 +295,7 @@ export function HubWebView({ profile, token, initialPath, onPath, onHubMenu, onD
 				<WebView<unknown>
 					ref={web}
 					source={source}
-					applicationNameForUserAgent="EvenerNative/1 EvenerSessionHeader/1 EvenerWorkspaceControls/1 EvenerSessionsToolbar/1"
+					applicationNameForUserAgent="EvenerNative/1 EvenerSessionHeader/1 EvenerWorkspaceControls/1 EvenerSessionsToolbar/1 EvenerPaneNavigation/1"
 					injectedJavaScriptBeforeContentLoaded={`window.evenerEdgeToolbar = ${edgeToolbar}; true;`}
 					// A whitelist miss makes RNCWebView open the URL in the OS itself.
 					// Route every scheme through our user-navigation check instead.
