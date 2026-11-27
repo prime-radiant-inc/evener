@@ -21,12 +21,14 @@ type deliverableJobNotification struct {
 
 const jobNotificationEventWatch = "watch"
 
-// terminalExcerptBytes bounds the byte budget read for a job_finished
-// notification excerpt (shell tail / delegate head). terminalExcerptMaxChars
-// rune-bounds the rendered excerpt with the shared watch-text discipline.
+// terminalExcerptBytes bounds the delegate head excerpt; shell completions
+// inline up to terminalShellInlineMaxBytes and otherwise stitch head+tail.
 const (
-	terminalExcerptBytes    = 8000
-	terminalExcerptMaxChars = 8000
+	terminalExcerptBytes        = 8000
+	terminalExcerptMaxChars     = 8000
+	terminalShellInlineMaxBytes = 6144
+	terminalShellHeadBytes      = 2048
+	terminalShellTailBytes      = 4096
 )
 
 // recordNotificationProvenance is the causal provenance a record's notification
@@ -117,12 +119,10 @@ type notificationExcerpt struct {
 	complete bool
 }
 
-// terminalNotificationExcerpt resolves the bounded result excerpt for a finished
-// job notification: the shell tail or the delegate report's head, re-read from
-// the job's output at render time. It returns the zero value for watch frames,
-// no-job watch events, and any job whose output is empty or cannot be read (a
-// failed read degrades to no excerpt rather than failing the notification
-// render).
+// terminalNotificationExcerpt resolves the bounded result excerpt for a
+// finished job notification (shell full-or-head+tail, delegate head), re-read
+// from the job's output at render time. Watch frames, no-job watch events,
+// empty outputs, and failed reads return the zero value.
 func (s *Session) terminalNotificationExcerpt(n jobNotification) notificationExcerpt {
 	// Watch frames and watch events (with or without a job id) are not terminal
 	// job_finished notifications and carry no result excerpt.
@@ -137,19 +137,73 @@ func (s *Session) terminalNotificationExcerpt(n jobNotification) notificationExc
 	if rec == nil || !rec.Status.IsTerminal() {
 		return notificationExcerpt{}
 	}
-	var (
-		excerpt   string
-		truncated bool
-	)
-	excerpt, _, truncated, err = jm.readOutput(n.JobID, terminalExcerptBytes)
+	if rec.Type == jobstore.JobShell {
+		parts, err := jm.readOutputHeadTail(n.JobID, terminalShellInlineMaxBytes, terminalShellHeadBytes, terminalShellTailBytes)
+		if err != nil {
+			return notificationExcerpt{}
+		}
+		return formatShellNotificationExcerpt(parts, notificationTranscriptRef(n), s.canInstructTool("read_transcript"))
+	}
+	excerpt, _, truncated, err := jm.readOutputFromHead(n.JobID, terminalExcerptBytes)
 	if err != nil || excerpt == "" {
 		return notificationExcerpt{}
 	}
+	return formatTruncatedHeadExcerpt(excerpt, truncated)
+}
+
+func formatTruncatedHeadExcerpt(excerpt string, truncated bool) notificationExcerpt {
 	rendered := limitWatchText(strings.ToValidUTF8(excerpt, "\uFFFD"), terminalExcerptMaxChars)
 	if truncated {
 		rendered += "\n[excerpt truncated]"
 	}
 	return notificationExcerpt{text: rendered, complete: !truncated}
+}
+
+func formatShellNotificationExcerpt(parts jobOutputExcerptParts, transcriptRef string, canReadTranscript bool) notificationExcerpt {
+	if parts.head == "" && parts.tail == "" {
+		return notificationExcerpt{}
+	}
+	if !parts.truncated {
+		return notificationExcerpt{
+			text:     limitWatchText(strings.ToValidUTF8(parts.head, "\uFFFD"), terminalExcerptMaxChars),
+			complete: true,
+		}
+	}
+	if parts.tail == "" {
+		prefix := fmt.Sprintf("[... %d bytes dropped past retention cap ...]\n", parts.retainedStart)
+		return notificationExcerpt{
+			text:     limitWatchText(prefix+strings.ToValidUTF8(parts.head, "\uFFFD"), terminalExcerptMaxChars),
+			complete: false,
+		}
+	}
+	omitStart := parts.retainedStart + int64(len(parts.head))
+	omitEnd := max(parts.totalBytes-int64(len(parts.tail)), omitStart)
+	hint := shellNotificationElisionHint(omitEnd-omitStart, parts.retainedStart, omitStart, transcriptRef, canReadTranscript)
+	headText := strings.ToValidUTF8(parts.head, "\uFFFD")
+	tailText := strings.ToValidUTF8(parts.tail, "\uFFFD")
+	var b strings.Builder
+	b.WriteString(headText)
+	if headText != "" && !strings.HasSuffix(headText, "\n") {
+		b.WriteByte('\n')
+	}
+	b.WriteString(hint)
+	b.WriteByte('\n')
+	b.WriteString(tailText)
+	return notificationExcerpt{text: limitWatchText(b.String(), terminalExcerptMaxChars), complete: false}
+}
+
+func shellNotificationElisionHint(elidedBytes, retainedStart, offsetBytes int64, transcriptRef string, canReadTranscript bool) string {
+	var retention string
+	if retainedStart > 0 {
+		retention = fmt.Sprintf(" (%d bytes dropped past retention cap)", retainedStart)
+	}
+	if canReadTranscript && transcriptRef != "" {
+		return fmt.Sprintf(
+			"[... %d bytes elided%s; inspect with read_transcript(transcript_ref=%q, offset_bytes=%d) or output_match=... ...]",
+			elidedBytes, retention, transcriptRef, offsetBytes,
+		)
+	}
+	return fmt.Sprintf("[... %d bytes elided%s ...]", elidedBytes, retention)
 }
 
 func notificationTranscriptRef(n jobNotification) string {

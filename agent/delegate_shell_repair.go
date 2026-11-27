@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strings"
 	"time"
 
 	agentevent "primeradiant.com/evener/agent/events"
@@ -124,11 +123,16 @@ func repairStableShellAttentionTarget(target stableShellAttentionBootstrapTarget
 
 func stableShellAttentionContent(storePath string, descriptor delegatestore.Descriptor, record *jobstore.JobRecord) string {
 	notification := jobNotificationFromRecord(record)
-	excerpt := stableShellNotificationExcerpt(storePath, record)
-	return formatJobNotificationBlock(notification, excerpt, hasString(descriptor.ToolNameCeiling, "read_transcript"))
+	canReadTranscript := hasString(descriptor.ToolNameCeiling, "read_transcript")
+	excerpt := stableShellNotificationExcerptWithReadTranscript(storePath, record, canReadTranscript)
+	return formatJobNotificationBlock(notification, excerpt, canReadTranscript)
 }
 
 func stableShellNotificationExcerpt(storePath string, record *jobstore.JobRecord) notificationExcerpt {
+	return stableShellNotificationExcerptWithReadTranscript(storePath, record, false)
+}
+
+func stableShellNotificationExcerptWithReadTranscript(storePath string, record *jobstore.JobRecord, canReadTranscript bool) notificationExcerpt {
 	if record == nil || !record.Status.IsTerminal() {
 		return notificationExcerpt{}
 	}
@@ -136,15 +140,18 @@ func stableShellNotificationExcerpt(storePath string, record *jobstore.JobRecord
 	if path == "" {
 		path = filepath.Join(filepath.Dir(storePath), "jobs", record.JobID+".log")
 	}
-	excerpt, _, truncated, err := readClosedJobOutput(path, record, terminalExcerptBytes, false)
+	if record.Type == jobstore.JobShell {
+		parts, err := readJobOutputHeadTail(closedJobOutputEdgeReader(path, record), terminalShellInlineMaxBytes, terminalShellHeadBytes, terminalShellTailBytes)
+		if err != nil {
+			return notificationExcerpt{}
+		}
+		return formatShellNotificationExcerpt(parts, notificationTranscriptRef(jobNotificationFromRecord(record)), canReadTranscript)
+	}
+	excerpt, _, truncated, err := readClosedJobOutput(path, record, terminalExcerptBytes, true)
 	if err != nil || excerpt == "" {
 		return notificationExcerpt{}
 	}
-	rendered := limitWatchText(strings.ToValidUTF8(excerpt, "\uFFFD"), terminalExcerptMaxChars)
-	if truncated {
-		rendered += "\n[excerpt truncated]"
-	}
-	return notificationExcerpt{text: rendered, complete: !truncated}
+	return formatTruncatedHeadExcerpt(excerpt, truncated)
 }
 
 func collectDelegateReconcileEvidence(stateDir string, requirements delegateReconcileRequirements) (delegateReconcileEvidence, error) {
