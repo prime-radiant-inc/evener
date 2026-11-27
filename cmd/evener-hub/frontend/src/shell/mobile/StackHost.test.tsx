@@ -599,15 +599,20 @@ test.each([
 );
 
 test("a focused session's top bar orders Find before Overview", async () => {
-  workspaceStore.getState().openPane("session", { ref: "local:header-order" });
-  render(<StackHost />);
-  const title = await screen.findByTestId("topbar-title");
-  const topBar = title.parentElement;
-  if (!topBar) throw new Error("session top bar is missing");
+  const restoreViewport = installMobileViewport();
+  try {
+    workspaceStore.getState().openPane("session", { ref: "local:header-order" });
+    render(<StackHost />);
+    const title = await screen.findByTestId("topbar-title");
+    const topBar = title.parentElement;
+    if (!topBar) throw new Error("session top bar is missing");
 
-  const find = await within(topBar).findByRole("button", { name: "Find in session" });
-  const overview = within(topBar).getByRole("button", { name: "Overview" });
-  expect(find.compareDocumentPosition(overview) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+    const find = await within(topBar).findByRole("button", { name: "Find in session" });
+    const overview = within(topBar).getByRole("button", { name: "Overview" });
+    expect(find.compareDocumentPosition(overview) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+  } finally {
+    restoreViewport();
+  }
 });
 
 test("the iPhone controls stay above inline Find and follow the focused reader", async () => {

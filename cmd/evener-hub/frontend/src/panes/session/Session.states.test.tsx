@@ -478,7 +478,7 @@ test("falls back to the navigation location title as the header when no thread n
   await waitFor(() => expect(screen.getByText("Fix the flaky CI job")).toBeTruthy());
 });
 
-test("session inspection actions occupy the desktop pane header", async () => {
+test("the desktop pane header offers Find in session without Overview", async () => {
   const fake = connectReadyFakeClient();
   fake.on("thread/read", () => readResponse("ref_header_actions"));
 
@@ -490,7 +490,7 @@ test("session inspection actions occupy the desktop pane header", async () => {
 
   const actions = await screen.findByTestId("pane-actions");
   await waitFor(() => expect(within(actions).getByRole("button", { name: "Find in session" })).toBeTruthy());
-  expect(within(actions).getByRole("button", { name: "Overview" })).toBeTruthy();
+  expect(within(actions).queryByRole("button", { name: "Overview" })).toBeNull();
 });
 
 // An empty transcript is two different situations wearing one face, and the

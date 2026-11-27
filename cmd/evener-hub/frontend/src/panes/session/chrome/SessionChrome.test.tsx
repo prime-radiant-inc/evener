@@ -439,30 +439,15 @@ test("header Find asks the owning pane's conversation to open Find", async () =>
   expect(asked.result.current?.target).toBe("pane_header_find");
 });
 
-test("header actions place Find before Overview", () => {
-  render(<SessionInspectionActions sessionRef="ref_header_order" />);
+test("desktop header offers only the icon-only Find action", () => {
+  render(<SessionInspectionActions sessionRef="ref_header_order" paneId="pane_header_order" />);
   const find = screen.getByRole("button", { name: "Find in session" });
-  const overview = screen.getByRole("button", { name: "Overview" });
 
-  expect(find.compareDocumentPosition(overview) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
-});
-
-test("header Overview toggles the session's sidebar and selected state", async () => {
-  const user = userEvent.setup();
-  workspaceStore.setState({
-    panes: [{ id: "pane_header_overview", type: "session", params: { ref: "ref_header_overview" }, slot: "main" }],
-    focusedPaneId: "pane_header_overview",
-  });
-  render(<SessionInspectionActions sessionRef="ref_header_overview" paneId="pane_header_overview" />);
-  const overview = screen.getByRole("button", { name: "Overview" });
-
-  expect(overview.getAttribute("aria-pressed")).toBe("false");
-  await user.click(overview);
-  expect(activitySidebarStore.getState()).toMatchObject({ open: true, ref: "ref_header_overview" });
-  expect(overview.getAttribute("aria-pressed")).toBe("true");
-  await user.click(overview);
-  expect(activitySidebarStore.getState().open).toBe(false);
-  expect(overview.getAttribute("aria-pressed")).toBe("false");
+  expect(screen.getAllByRole("button")).toEqual([find]);
+  expect(find.textContent).toBe("");
+  expect(find.querySelector("svg")).toBeTruthy();
+  expect(find.getAttribute("data-pane-id")).toBe("pane_header_order");
+  expect(screen.queryByRole("button", { name: "Overview" })).toBeNull();
 });
 
 test("the phone header pairs Find with Overview opening the tabbed inspector directly on About", async ({
@@ -537,7 +522,9 @@ test("the phone header pairs Find with Overview opening the tabbed inspector dir
   await waitFor(() => expect(document.activeElement).toBe(entry));
 });
 
-test("landscape phone header Overview reaches the current session's goal through About", async ({ onTestFinished }) => {
+test("landscape phone reaches the current session's goal through the Show Overview chip", async ({
+  onTestFinished,
+}) => {
   const originalMatchMedia = window.matchMedia;
   window.matchMedia = vi.fn((query: string) => ({
     matches: query === LANDSCAPE_PHONE_QUERY,
@@ -576,7 +563,8 @@ test("landscape phone header Overview reaches the current session's goal through
     </MotionProvider>,
   );
 
-  await user.click(screen.getByRole("button", { name: "Overview" }));
+  expect(screen.queryByRole("button", { name: "Overview" })).toBeNull();
+  await user.click(screen.getByRole("button", { name: "Show Overview" }));
   await user.click(await screen.findByRole("tab", { name: "About" }));
   const sidebar = screen.getByTestId("activity-sidebar");
   await within(sidebar).findByTestId("session-details-model");
@@ -584,7 +572,7 @@ test("landscape phone header Overview reaches the current session's goal through
   expect(within(sidebar).getByTestId("session-details-goal-status").textContent).toBe(goal.status);
 });
 
-test("an ordinary session's composer leaves Find and Overview to the header but keeps Verbosity", async () => {
+test("an ordinary session's composer leaves Find to the header and Overview to the sidebar chip but keeps Verbosity", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
   const ref = "ref_composer_header_actions";
@@ -620,8 +608,8 @@ test("a cascade composer keeps Find and Overview through the sessionZoom pane th
   // (ConversationSeat.viewFallbackId), and Composer forwards it to
   // SessionChrome. An ordinary session pane showing the same conversation
   // stands beside it: were the explicit owner ignored, the fallback lookup
-  // would find that session pane and the header would take Find and Overview
-  // out of the menu.
+  // would find that session pane and the header would take Find out of the
+  // menu.
   const cascadeParams: SessionZoomParams = {
     ref,
     source: { type: "session", params: { ref: originRef } },
