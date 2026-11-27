@@ -334,6 +334,39 @@ func TestSession_SystemPromptFile_OverridesBasePrompt(t *testing.T) {
 	if !strings.Contains(sys, "You are a custom test agent.") {
 		t.Errorf("custom system prompt not found in LLM request")
 	}
+	for _, token := range []string{"`communicate`", "send_and_continue", "log_quietly_and_end_turn", "`apply_patch`"} {
+		if !strings.Contains(sys, token) {
+			t.Errorf("custom OpenAI system prompt missing operational token %s:\n%s", token, sys)
+		}
+	}
+
+	ac := llm.NewClient()
+	af := newFakeAdapter("anthropic", func(req llm.Request) llm.Response {
+		return agenttest.FinalResponse("ok")
+	})
+	ac.Register(af)
+	aSess, err := NewSession(ac, newAnthropicProfile("claude-test"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+		SystemPromptFile: promptFile,
+	})
+	if err != nil {
+		t.Fatalf("NewSession(anthropic): %v", err)
+	}
+	defer aSess.Close()
+	if _, err := aSess.ProcessInput(ctx, "hello", nil); err != nil {
+		t.Fatal(err)
+	}
+	aSys := af.Requests()[0].Messages[0].Text()
+	if !strings.Contains(aSys, "You are a custom test agent.") {
+		t.Errorf("custom anthropic system prompt missing persona")
+	}
+	for _, token := range []string{"`communicate`", "send_and_continue", "log_quietly_and_end_turn"} {
+		if !strings.Contains(aSys, token) {
+			t.Errorf("custom anthropic system prompt missing operational token %s", token)
+		}
+	}
+	if strings.Contains(aSys, "`apply_patch`") {
+		t.Errorf("custom anthropic system prompt must not mention apply_patch")
+	}
 }
 
 func TestSearchToolsDefaultPathAndFilterWhenOmitted(t *testing.T) {

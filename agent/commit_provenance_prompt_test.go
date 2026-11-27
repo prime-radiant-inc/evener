@@ -23,16 +23,43 @@ func TestSystemPromptCarriesCommitTrailer(t *testing.T) {
 	if !strings.Contains(prompt, want) {
 		t.Fatalf("system prompt does not carry the provenance trailer %q", want)
 	}
+	envStart := strings.Index(prompt, "<environment>\n")
+	envEnd := strings.Index(prompt, "\n</environment>")
+	if envStart < 0 || envEnd <= envStart {
+		t.Fatalf("system prompt missing <environment> block:\n%s", prompt)
+	}
+	if !strings.Contains(prompt[envStart:envEnd], "<environment_context>") {
+		t.Fatalf("<environment> block missing <environment_context> update reference:\n%s", prompt[envStart:envEnd])
+	}
 }
 
-func TestSystemPromptOmitsCommitTrailerOutsideGitRepo(t *testing.T) {
+func TestSystemPromptCarriesCommitTrailerOutsideGitRepo(t *testing.T) {
 	s := newSession(t, withDir(t.TempDir()), withEnvironmentSnapshot(), withConfig(SessionConfig{MaxSubagentDepth: 1}))
 	prompt, warning, renderFailed := s.renderSystemPrompt(s.env)
 	if warning != "" || renderFailed {
 		t.Fatalf("render failed: %s", warning)
 	}
-	if strings.Contains(prompt, "Co-authored-by: Evener") || strings.Contains(prompt, "## Commit provenance") {
-		t.Fatal("system prompt carries commit provenance outside a git repository")
+	want, ok := commitTrailerFor(s.profile.ID()+"/"+s.profile.Model(), s.ID())
+	if !ok {
+		t.Skip("this host cannot mint a commit trailer")
+	}
+	if !strings.Contains(prompt, want) {
+		t.Fatalf("system prompt outside a git repo missing provenance trailer %q", want)
+	}
+	if strings.Contains(prompt, "<git>") {
+		t.Fatal("system prompt outside a git repo should omit <git> snapshot")
+	}
+
+	off := newSession(t, withDir(t.TempDir()), withEnvironmentSnapshot(), withConfig(SessionConfig{
+		MaxSubagentDepth: 1,
+		CommitProvenance: commitprovenance.ModeOff,
+	}))
+	offPrompt, warning, renderFailed := off.renderSystemPrompt(off.env)
+	if warning != "" || renderFailed {
+		t.Fatalf("render failed (off): %s", warning)
+	}
+	if strings.Contains(offPrompt, "Co-authored-by: Evener") || strings.Contains(offPrompt, "## Commit provenance") {
+		t.Fatal("system prompt carries commit provenance outside a git repo when mode is off")
 	}
 }
 
