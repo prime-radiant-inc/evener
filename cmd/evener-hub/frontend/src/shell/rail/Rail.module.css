@@ -210,10 +210,6 @@
   pointer-events: auto;
 }
 
-:global(body[data-iphone-glass]) .newSessionRow {
-  --radius-control: var(--radius-pill);
-}
-
 /* In the tablet split, the scrollport pays the same bottom inset as the
  * composer's action row. A second sticky inset lifts Create above Send. */
 :global([data-board="visible"]) .body {
