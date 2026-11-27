@@ -52,6 +52,7 @@ const VIEWPORT = { width: 1400, height: 900 };
 // styled out of the page.
 const MOBILE_VIEWPORT = { width: 390, height: 844, mobile: true, touch: true };
 const PHONE_PALETTE_VIEWPORT = { ...MOBILE_VIEWPORT, width: 400 };
+const DUO_INNER_PORTRAIT = { ...MOBILE_VIEWPORT, width: 669, height: 951, fontSize: "xl" };
 
 // Inside the 768-899px tablet band: StackHost keeps mobile/touch emulation
 // while splitting the board column beside the conversation.
@@ -87,6 +88,12 @@ async function measureOnPage(cdpEndpoint, sharedTabId, vitePort, viewport, expre
     // save its layout until the navigation replaces it, so clear storage as each
     // new document starts. The script ends with this CDP session.
     await send("Page.addScriptToEvaluateOnNewDocument", { source: "try { localStorage.clear(); } catch {}" });
+    if (viewport.fontSize) {
+      await send("Page.addScriptToEvaluateOnNewDocument", {
+        source: `localStorage.setItem('evener.prefs.fontSize', ${JSON.stringify(viewport.fontSize)});
+          Object.defineProperty(navigator, 'standalone', {value: ${viewport.installed === true}});`,
+      });
+    }
     await applyViewport(send, viewport);
     if (viewport.platform) {
       const { userAgent } = (await send("Browser.getVersion")).result;
@@ -115,11 +122,14 @@ async function measureOnPage(cdpEndpoint, sharedTabId, vitePort, viewport, expre
         const search = sheetHeader?.querySelector('[data-testid="rail-search"]');
         const close = sheetHeader?.querySelector('[aria-label="Close"]');
         const filter = dialog?.querySelector('[data-testid="rail-filter"]');
+        const newSession = dialog?.querySelector('[data-testid="rail-new-session"]');
         return {
           mode: "sheet",
           hasBrand: brand !== null,
           hasSearch: search !== null,
           hasFilter: filter !== null,
+          filterRight: filter?.getBoundingClientRect().right,
+          newSessionRight: newSession?.getBoundingClientRect().right,
           isDesktop: false,
           containerRight: dialog ? dialog.getBoundingClientRect().right : null,
           items: [title, settings, close].map((el) => box(el, sheetHeader)),
@@ -205,7 +215,15 @@ async function measureOnPage(cdpEndpoint, sharedTabId, vitePort, viewport, expre
             `past the ${header.mode === "sheet" ? "drawer" : "rail"}'s ${containerRight.toFixed(1)}px edge`,
         );
       }
-      if (i > 0) {
+      if (viewport.installed && i > 0) {
+        const previous = header.items[i - 1];
+        const besideList = box.left >= Math.max(header.filterRight, header.newSessionRight);
+        const sameColumn = i === 1 || Math.abs(box.left + box.width / 2 - previous.left - previous.width / 2) <= 1;
+        if (!(besideList && sameColumn && box.width >= 44 && box.height >= 44 &&
+          box.top >= previous.bottom && box.bottom <= viewport.height)) {
+          throw new Error(`installed Sessions drawer: ${labels[i]} must fit its trailing column: ${JSON.stringify(header)}`);
+        }
+      } else if (i > 0) {
         const previous = header.items[i - 1];
         if (
           previous.right > box.left ||
@@ -216,6 +234,9 @@ async function measureOnPage(cdpEndpoint, sharedTabId, vitePort, viewport, expre
           );
         }
       }
+    }
+    if (viewport.fontSize) {
+      console.log(`shellguard Duo ${viewport.installed ? "Home Screen" : "tab"} Sessions: ${JSON.stringify(header)}`);
     }
     // At the width floor the header must fit exactly: the floor is derived from
     // this content, so a clipped wordmark there means the two have drifted.
@@ -2515,6 +2536,9 @@ async function main() {
     // for a moment after /json/close, so "the first listed page" can be the
     // click-geometry tab just closed, whose socket fails or never answers (#3895).
     const sharedTab = await openPage(cdpEndpoint, "about:blank");
+    for (const installed of [false, true]) {
+      await measureOnPage(cdpEndpoint, sharedTab.id, vitePort, { ...DUO_INNER_PORTRAIT, installed }, "true");
+    }
     console.log(`shellguard click geometry: ${JSON.stringify(await checkMovingControls(cdpEndpoint, clickControl))}`);
     const result = await measureOnPage(
       cdpEndpoint,

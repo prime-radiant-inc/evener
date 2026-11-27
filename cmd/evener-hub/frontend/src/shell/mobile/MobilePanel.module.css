@@ -29,6 +29,19 @@
   --overlay-actions-offset: 50%;
 }
 
+/* An inner display can fit the drawer controls beside the list even when
+ * the chosen text size leaves too little room for a persistent Board. */
+@media (min-width: 600px) and (min-height: 600px) {
+  .singleScrollPanel.inside {
+    --drawer-action-strip: var(--space-9);
+    --overlay-actions-placement: edge;
+    --overlay-actions-right: calc(var(--drawer-action-strip) / 2);
+    --overlay-actions-offset: 50%;
+    padding-right: var(--drawer-action-strip);
+    padding-top: env(safe-area-inset-top, 0px);
+  }
+}
+
 /* The rail fills the drawer flush: the sheet body's own inset made the rail
  * read as a panel nested inside a panel (Rail.module.css's own mobile rule
  * already drops the rail's width and border for the same reason). */

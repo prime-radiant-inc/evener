@@ -1,9 +1,9 @@
-import { Button, IconButton } from "../../widgets";
+import { IconButton } from "../../widgets";
 import { iPhoneHost, tellIPhoneHost } from "../iPhoneHost";
 import { useDismissNavigationChrome } from "../navigationChrome";
 import { navigate } from "../routing";
 import { useIsMobile } from "../useIsMobile";
-import { GearIcon, SearchIcon } from "./railIcons";
+import { GearIcon, HostGlyph, SearchIcon } from "./railIcons";
 
 export function useOpenRailDestination() {
   const dismiss = useDismissNavigationChrome();
@@ -22,9 +22,13 @@ export function RailNavigationActions() {
   return (
     <>
       {iPhoneHost() && (
-        <Button size="sm" variant="quiet" aria-label="Hubs on this iPhone" onClick={() => openRailDestination("hubs")}>
-          Hubs
-        </Button>
+        <IconButton
+          label="Hubs on this iPhone"
+          icon={<HostGlyph />}
+          variant="quiet"
+          size="md"
+          onClick={() => openRailDestination("hubs")}
+        />
       )}
       <IconButton
         data-testid="rail-settings"

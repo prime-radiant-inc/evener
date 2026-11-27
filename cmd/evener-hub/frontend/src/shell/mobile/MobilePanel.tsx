@@ -11,7 +11,7 @@ export interface MobilePanelProps {
   open: boolean;
   onClose: () => void;
   onOpen?: () => void;
-  toolbarEdge?: "left" | "right" | "system" | null;
+  toolbarEdge?: "left" | "right" | "system" | "inside" | null;
 }
 
 export function MobilePanel({ rail, open, onClose, onOpen, toolbarEdge }: MobilePanelProps) {

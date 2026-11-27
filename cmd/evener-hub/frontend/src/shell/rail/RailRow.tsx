@@ -92,7 +92,7 @@ import { cadenceStateFor, SIGNAL_STATES } from "../sessionStatus";
 import { useIsMobile } from "../useIsMobile";
 import styles from "./RailRow.module.css";
 import { type RailActivityRead, type RailStatus, useSessionActivityRead, workingStatus } from "./railActivity";
-import { ICON, MoreIcon, PlusIcon, STROKE } from "./railIcons";
+import { HostGlyph, ICON, MoreIcon, PlusIcon, STROKE } from "./railIcons";
 import {
   activeWatchCount,
   type BandRailNode,
@@ -1097,21 +1097,6 @@ export function WatchGlyph({ className, testId }: { className: string; testId: s
     <svg data-testid={testId} className={className} {...ICON} aria-hidden="true" focusable="false">
       <circle cx="8" cy="8" r="6.25" {...STROKE} />
       <path d="M8 4.5V8l2.5 1.5" {...STROKE} />
-    </svg>
-  );
-}
-
-// The host glyph a host group row leads with: DRAWN on the rail's 16x16 icon
-// grammar (railIcons.tsx) and sized/inked like the watch row's clock above -
-// two stacked units and their drive dots, so the row reads as "a machine"
-// rather than a text glyph falling back to a system font. aria-hidden like
-// WatchGlyph: the label beside it is the row's accessible name.
-function HostGlyph({ className, testId }: { className: string; testId: string }) {
-  return (
-    <svg data-testid={testId} className={className} {...ICON} aria-hidden="true" focusable="false">
-      <rect x="2" y="2.75" width="12" height="4.5" rx="1.25" {...STROKE} />
-      <rect x="2" y="8.75" width="12" height="4.5" rx="1.25" {...STROKE} />
-      <path d="M4.75 5h.01M4.75 11h.01" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" />
     </svg>
   );
 }

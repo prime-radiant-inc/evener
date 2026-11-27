@@ -409,12 +409,11 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
   );
   const homeScreenEdge = useHomeScreenEdge();
   const hosted = hasIPhoneSessionHeader();
+  const installedWorkspace = hosted || isHomeScreenWindow();
   const edgeToolbar = useIPhoneEdgeToolbar();
   const tabletBand =
     tabletViewport ||
-    ((hosted || isHomeScreenWindow()) &&
-      roomForHostedBoard &&
-      viewportWidth >= BOARD_MIN_WIDTH + READER_MIN_WIDTH[fontSize]);
+    (installedWorkspace && roomForHostedBoard && viewportWidth >= BOARD_MIN_WIDTH + READER_MIN_WIDTH[fontSize]);
   const tabletSplit = tabletBand && !singlePane;
   const [boardCollapsed, setBoardCollapsed] = useState(false);
   const boardVisible = tabletSplit && !boardCollapsed;
@@ -431,6 +430,7 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
   const welcomeLauncher =
     !singlePane && !tabletSplit && !routeDeferred && (focusedPane === null || focusedPane.type === "welcome");
   const sessionsEdge = !singlePane && edgeToolbar && hasIPhoneSessionsToolbar();
+  const webDrawerEdge = installedWorkspace && !singlePane ? (homeScreenEdge ?? "inside") : null;
   const sidebarWidth = usePrefsStore((s) => s.sidebarWidth);
   const boardMaxWidth = Math.min(
     SIDEBAR_WIDTH_MAX,
@@ -1230,7 +1230,7 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
           rail={railSlot}
           open={panelOpen}
           onClose={closePanel}
-          toolbarEdge={sessionsEdge ? "system" : hosted || singlePane ? null : homeScreenEdge}
+          toolbarEdge={sessionsEdge ? "system" : webDrawerEdge}
           onOpen={welcomeLauncher ? () => setPanelOpen(true) : undefined}
         />
       )}
