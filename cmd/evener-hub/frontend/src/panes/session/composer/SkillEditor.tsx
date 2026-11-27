@@ -49,7 +49,11 @@ export interface SkillEditorHandle {
 
 export interface SkillEditorProps {
   value: SkillEditorValue;
-  onChange(value: SkillEditorValue, cursor: number, meta?: { isPaste?: boolean }): void;
+  onChange(
+    value: SkillEditorValue,
+    cursor: number,
+    meta?: { isPaste?: boolean; replacedRange?: { start: number; end: number } },
+  ): void;
   onSelectionChange?: (cursor: number) => void;
   onKeyDown?: HTMLAttributes<HTMLDivElement>["onKeyDown"];
   onPaste?: HTMLAttributes<HTMLDivElement>["onPaste"];
@@ -388,10 +392,21 @@ export const SkillEditor = forwardRef<SkillEditorHandle, SkillEditorProps>(funct
           view.updateState(next);
           view.dom.dataset.empty = String(view.state.doc.content.size === 0);
           if (transaction.docChanged && !transaction.getMeta(externalSync)) {
+            let replacedRange: { start: number; end: number } | undefined;
+            if (transaction.mapping.maps.length === 1) {
+              transaction.mapping.maps[0]?.forEach((from, to) => {
+                if (from < to) {
+                  replacedRange = {
+                    start: documentPositionToTextOffset(transaction.before, from),
+                    end: documentPositionToTextOffset(transaction.before, to),
+                  };
+                }
+              });
+            }
             latest.current.onChange(
               serializeSkillDocument(view.state.doc),
               documentPositionToTextOffset(view.state.doc, view.state.selection.head),
-              { isPaste: Boolean(transaction.getMeta("paste")) },
+              { isPaste: Boolean(transaction.getMeta("paste")), replacedRange },
             );
           } else if (transaction.selectionSet && !transaction.docChanged && !transaction.getMeta(externalSync)) {
             latest.current.onSelectionChange?.(documentPositionToTextOffset(view.state.doc, view.state.selection.head));

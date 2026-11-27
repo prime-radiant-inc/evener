@@ -151,7 +151,11 @@ export function selectSpawnDirectory(cwd: string): SpawnDraft {
 }
 
 /** Writes editor text and keeps the draft's selection identities in sync. */
-export function updateSpawnPrompt(draft: SpawnDraft, value: string | SkillEditorValue): void {
+export function updateSpawnPrompt(
+  draft: SpawnDraft,
+  value: string | SkillEditorValue,
+  replacedRange?: { start: number; end: number },
+): void {
   const fields = draft.fields.getState();
   const prompt = typeof value === "string" ? value : value.text;
   const selections =
@@ -170,19 +174,19 @@ export function updateSpawnPrompt(draft: SpawnDraft, value: string | SkillEditor
   let shareText = fields.shareText;
   let shareId = fields.shareId;
   if (shareStart !== null && fields.shareText !== null) {
-    const prefix = sharedPrefixLength(fields.prompt, prompt);
-    const suffix = sharedSuffixLength(fields.prompt, prompt, prefix);
-    const oldEnd = fields.prompt.length - suffix;
+    const prefix = replacedRange?.start ?? sharedPrefixLength(fields.prompt, prompt);
+    const oldEnd = replacedRange?.end ?? fields.prompt.length - sharedSuffixLength(fields.prompt, prompt, prefix);
     const shareEnd = shareStart + fields.shareText.length;
     if (oldEnd <= shareStart) shareStart += prompt.length - fields.prompt.length;
     else if (prefix < shareEnd) {
-      const newEnd = prompt.length - suffix;
+      const removedWholeShare = prefix <= shareStart && oldEnd >= shareEnd;
+      const newEnd = oldEnd + prompt.length - fields.prompt.length;
       shareStart = Math.min(prefix, shareStart);
       shareText = prompt.slice(
         shareStart,
         oldEnd >= shareEnd ? newEnd : shareEnd + prompt.length - fields.prompt.length,
       );
-      if (shareText === "") {
+      if (removedWholeShare || shareText === "") {
         if (shareId) {
           spawnDraftsStore.setState({ detachedShare: { id: shareId, cwd: draft.cwd, url: window.location.href } });
         }

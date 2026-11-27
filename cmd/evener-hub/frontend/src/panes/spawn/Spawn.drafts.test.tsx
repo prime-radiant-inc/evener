@@ -889,6 +889,47 @@ test("successful creation preserves edits made while directory preflight was pen
   expect(promptField().textContent).toBe("submitted-sentinel-newer");
 });
 
+test("directory preflight submits its captured share while preserving newer prompt edits", async () => {
+  const agent = vi.spyOn(navigator, "userAgent", "get").mockReturnValue("EvenerNative/1");
+  const postMessage = vi.fn();
+  vi.stubGlobal("ReactNativeWebView", { postMessage });
+  onTestFinished(() => {
+    agent.mockRestore();
+    vi.unstubAllGlobals();
+  });
+  const user = setupUser();
+  window.history.pushState({}, "", "/new?dir=/tmp/draft-a");
+  const validation = deferred<{ path: string; valid: boolean }>();
+  const started = deferred<ThreadStartResponse>();
+  const fake = readyClient((f) => {
+    f.on("evener/path/validate", () => validation.promise);
+    f.on("thread/start", () => started.promise);
+  });
+  renderSpawn(fake);
+  await fillPrompt(user, "submitted-sentinel");
+  const share = { type: "shareText", path: "/new", id: "preflight-share", text: "from-extension-content" };
+  act(() => window.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(share) })));
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(fake.calls.some((call) => call.method === "evener/path/validate")).toBe(true));
+  const prompt = promptField().textContent ?? "";
+  const sharedSuffix = prompt.lastIndexOf("content");
+  insertEditorTextAt(promptField(), sharedSuffix, "article", sharedSuffix + "content".length);
+  await act(async () => validation.resolve({ path: "/tmp/draft-a", valid: true }));
+  await waitFor(() => expect(fake.calls.some((call) => call.method === "thread/start")).toBe(true));
+  expect(fake.calls.find((call) => call.method === "thread/start")?.params).toMatchObject({
+    input: [{ type: "text", text: "submitted-sentinel\n\nfrom-extension-content" }],
+  });
+  expect(promptField().textContent).toBe("submitted-sentinel\n\nfrom-extension-article");
+  expect(
+    postMessage.mock.calls.map(([value]) => JSON.parse(value)).filter((message) => message.type === "sharePlaced"),
+  ).toEqual([]);
+  await act(async () => started.resolve(startResponse("local:abc123")));
+  expect(promptField().textContent).toBe("submitted-sentinel\n\nfrom-extension-article");
+  expect(
+    postMessage.mock.calls.map(([value]) => JSON.parse(value)).filter((message) => message.type === "sharePlaced"),
+  ).toEqual([{ type: "sharePlaced", path: "/new", id: share.id }]);
+});
+
 test("late missing-directory preflight keeps Create and start with its originating draft", async () => {
   const user = setupUser();
   window.history.pushState({}, "", "/new?dir=/tmp/draft-a");
@@ -1165,38 +1206,38 @@ test("edited share edges travel with their project while unrelated identical tex
   });
 });
 
-test("deleting the entire shared span before a project pick does not restore it", async () => {
+test("replacing the entire shared span in one edit detaches it from an unrelated start", async () => {
   const agent = vi.spyOn(navigator, "userAgent", "get").mockReturnValue("EvenerNative/1");
-  vi.stubGlobal("ReactNativeWebView", { postMessage: vi.fn() });
+  const postMessage = vi.fn();
+  vi.stubGlobal("ReactNativeWebView", { postMessage });
   onTestFinished(() => {
     agent.mockRestore();
     vi.unstubAllGlobals();
   });
   const user = setupUser();
   window.history.pushState({}, "", "/new?dir=/tmp/deleted-share-a");
-  renderSpawn(readyClient());
+  const fake = readyClient();
+  renderSpawn(fake);
   await fillPrompt(user, "project-a-draft");
   const projectA = completionDraft("/tmp/deleted-share-a");
-  await visitSpawnURL("/new?dir=/tmp/deleted-share-b");
-  await fillPrompt(user, "project-b-draft");
-  const projectB = completionDraft("/tmp/deleted-share-b");
-  await visitSpawnURL("/new?dir=/tmp/deleted-share-a");
   const share = { type: "shareText", path: "/new", id: "deleted-share", text: "extension-content" };
   act(() => window.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(share) })));
   const sourceText = "project-a-draft\n\nextension-content";
   const shareStart = sourceText.indexOf(share.text);
-  insertEditorTextAt(promptField(), shareStart - 2, "", shareStart + share.text.length);
-  expect(promptField().textContent).toBe("project-a-draft");
+  const unrelatedReplacement = "extension-unrelated-content";
+  insertEditorTextAt(promptField(), shareStart, unrelatedReplacement, shareStart + share.text.length);
+  expect(promptField().textContent).toBe(`project-a-draft\n\n${unrelatedReplacement}`);
   act(() => window.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(share) })));
-  expect(promptField().textContent).toBe("project-a-draft");
+  expect(promptField().textContent).toBe(`project-a-draft\n\n${unrelatedReplacement}`);
   expect(projectA.fields.getState().shareId).toBeNull();
-
-  await setWorkingDir(user, "/tmp/deleted-share-b");
-  expect(projectA.fields.getState()).toMatchObject({ prompt: "project-a-draft", shareId: null });
-  expect(projectB.fields.getState()).toMatchObject({ prompt: "project-b-draft", shareId: null });
-  act(() => window.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(share) })));
-  expect(promptField().textContent).toBe("project-b-draft\n\nextension-content");
-  expect(projectB.fields.getState().shareId).toBe(share.id);
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Aabc123"));
+  expect(fake.calls.find((call) => call.method === "thread/start")?.params).toMatchObject({
+    input: [{ type: "text", text: `project-a-draft\n\n${unrelatedReplacement}` }],
+  });
+  expect(
+    postMessage.mock.calls.map(([value]) => JSON.parse(value)).filter((message) => message.type === "sharePlaced"),
+  ).toEqual([]);
 });
 
 test("assigning an unscoped launch its first directory keeps the share with that draft", async () => {

@@ -2,7 +2,6 @@ import { type ComposerMention, NO_ACTIVE_TURN, sessionActionError } from "@evene
 import { ownPendingSend } from "@evener/appwire-client/state/mutation";
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { tellIPhoneHost } from "../../../shell/iPhoneHost";
-import { paneToURL } from "../../../shell/routing";
 import { controlsFor, liveThreadModel, pressLocalRecoveryFenced, pressRefusal } from "../../../stores/liveControls";
 import type { MutationRecoveryRecord } from "../../../stores/mutationOutbox";
 import {

@@ -2331,7 +2331,19 @@ function SpawnForm({
         })()
       : null;
 
-  async function doSpawn(submittedPromptRevision: number, ownsLaunchView: () => boolean): Promise<void> {
+  function captureLaunchPrompt() {
+    const { promptRevision, shareId, shareText, shareStart } = draft.fields.getState();
+    const containsShare =
+      shareText !== null &&
+      shareStart !== null &&
+      prompt.slice(shareStart, shareStart + shareText.length) === shareText;
+    return { revision: promptRevision, shareId: containsShare ? shareId : null };
+  }
+
+  async function doSpawn(
+    submission: ReturnType<typeof captureLaunchPrompt>,
+    ownsLaunchView: () => boolean,
+  ): Promise<void> {
     if (pluginSelectionBlocked) {
       finishBusy();
       return;
@@ -2432,16 +2444,6 @@ function SpawnForm({
       // Start-time role: an ordinary launch omits it entirely.
       manager,
     };
-    const shareAtSubmit = draft.fields.getState();
-    const submittedShareId =
-      !builtinMatch &&
-      shareAtSubmit.shareId &&
-      shareAtSubmit.shareText &&
-      shareAtSubmit.shareStart !== null &&
-      prompt.slice(shareAtSubmit.shareStart, shareAtSubmit.shareStart + shareAtSubmit.shareText.length) ===
-        shareAtSubmit.shareText
-        ? shareAtSubmit.shareId
-        : null;
     const supportsStartIdempotency =
       client.initializeResult?.features?.threadStartIdempotency === true &&
       (isLocalHost(submittedSource) || chosenSource?.threadStartIdempotency === true);
@@ -2470,6 +2472,7 @@ function SpawnForm({
     }
     // A launch draft lives only in this document. Its App Group file protects
     // the prompt until the person starts the session and the hub accepts it.
+    const submittedShareId = builtinMatch ? null : submission.shareId;
     if (submittedShareId) tellIPhoneHost({ type: "sharePlaced", path: "/new", id: submittedShareId });
     const completed = draft.fields.getState();
     draft.fields.setState({
@@ -2509,7 +2512,7 @@ function SpawnForm({
     // user returns to it. Sticky defaults (harness/model/cwd/access
     // mode, floor §1.9-§1.10) are deliberately left untouched - only the
     // one-shot prompt/attachments reset.
-    if (draft.fields.getState().promptRevision === submittedPromptRevision) {
+    if (draft.fields.getState().promptRevision === submission.revision) {
       updatePrompt("");
     }
     attachments.clearSubmitted(submittedMarkers);
@@ -2570,7 +2573,7 @@ function SpawnForm({
     // (cmd/evener-hub/app_threadlifecycle.go), so the session is created and
     // simply waits for its first prompt in the session composer.
     startBusy();
-    const submittedPromptRevision = draft.fields.getState().promptRevision;
+    const submission = captureLaunchPrompt();
     const ownsLaunchView = captureLaunchView();
     try {
       // The working-directory preflight is host-scoped (component 07b):
@@ -2595,7 +2598,7 @@ function SpawnForm({
         finishBusy();
         return;
       }
-      await doSpawn(submittedPromptRevision, ownsLaunchView);
+      await doSpawn(submission, ownsLaunchView);
     } catch (err) {
       reportStartFailure(err, { startDispatched: false, retryablePendingStart: false });
     }
@@ -2631,11 +2634,11 @@ function SpawnForm({
     // stack toasts).
     if (hostCatalogPending || modelHostPending) return;
     startBusy();
-    const submittedPromptRevision = draft.fields.getState().promptRevision;
+    const submission = captureLaunchPrompt();
     const ownsLaunchView = captureLaunchView();
     try {
       await withLaunchConfig(submittedSource, (config) => config.createDirectory(path));
-      await doSpawn(submittedPromptRevision, ownsLaunchView);
+      await doSpawn(submission, ownsLaunchView);
     } catch (err) {
       reportStartFailure(err, { startDispatched: false, retryablePendingStart: false });
     } finally {
@@ -2849,7 +2852,7 @@ function SpawnForm({
                   }
                   onChange={(value: SkillEditorValue, caret, meta) => {
                     textRef.current = value.text;
-                    updateSpawnPrompt(draft, value);
+                    updateSpawnPrompt(draft, value, meta?.replacedRange);
                     const masked = maskSkillAtoms(value);
                     const tokens = resolveCompletionTokens(
                       masked,
