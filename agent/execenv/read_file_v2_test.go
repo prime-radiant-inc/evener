@@ -103,6 +103,41 @@ func TestReadFileHeadOnlyPagingNeverDropsMiddle(t *testing.T) {
 			t.Fatalf("line %d was dropped during paging", i)
 		}
 	}
+
+	// Default window stops at 2000 lines / 48 KB, while an explicit larger limit
+	// is still honored when the rendered bytes fit under DefaultReadMaxBytes.
+	var shortSB strings.Builder
+	for i := 1; i <= 2200; i++ {
+		fmt.Fprintf(&shortSB, "r%d\n", i)
+	}
+	shortPath := filepath.Join(dir, "short2200.txt")
+	if err := os.WriteFile(shortPath, []byte(shortSB.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	defOut, defMeta, err := reader.ReadFileRichCtx(t.Context(), "short2200.txt", nil, nil)
+	if err != nil {
+		t.Fatalf("default 2200-line read: %v", err)
+	}
+	if DefaultReadLines != 2000 || DefaultReadMaxBytes != 48_000 {
+		t.Fatalf("defaults = (%d lines, %d bytes), want (2000, 48000)", DefaultReadLines, DefaultReadMaxBytes)
+	}
+	if defMeta.StartLine != 1 || defMeta.EndLine != 2000 || defMeta.TotalLines != 2200 || !defMeta.Truncated || defMeta.TruncatedBy != "lines" {
+		t.Fatalf("default 2200-line meta = %+v, want 1..2000/2200 TruncatedBy=lines", defMeta)
+	}
+	if !strings.Contains(defOut, "offset=2001") {
+		t.Fatalf("default 2200-line read missing offset=2001 paging hint: %q", defOut[max(0, len(defOut)-120):])
+	}
+	expLimit := 2200
+	expOut, expMeta, err := reader.ReadFileRichCtx(t.Context(), "short2200.txt", nil, &expLimit)
+	if err != nil {
+		t.Fatalf("explicit 2200-line read: %v", err)
+	}
+	if expMeta.StartLine != 1 || expMeta.EndLine != 2200 || expMeta.TotalLines != 2200 || expMeta.Truncated {
+		t.Fatalf("explicit 2200-line meta = %+v, want full 1..2200 untruncated", expMeta)
+	}
+	if !strings.Contains(expOut, "2200\tr2200") {
+		t.Fatalf("explicit 2200-line read missing final line 2200")
+	}
 }
 
 func TestReadFileLineClampingAndSingleLineEscape(t *testing.T) {

@@ -156,16 +156,16 @@ func (s *Session) noteReadFileRepeat(path string, before readStamp, res *tool.Ex
 func repeatReadNote(span priorReadSpan, res *tool.ExecResult) string {
 	if span.startLine > 0 && res.ReadEndLine >= res.ReadStartLine {
 		if span.repeatCount < 3 {
-			return fmt.Sprintf("\n[Unchanged since turn %d: lines %d-%d of this file were already read.]",
+			return fmt.Sprintf("\n[Unchanged since turn %d: lines %d-%d already read]",
 				span.turn, res.ReadStartLine, res.ReadEndLine)
 		}
-		return fmt.Sprintf("\n[Unchanged since turn %d (repeated %d times): lines %d-%d are already in context. Use the text already read rather than re-reading.]",
+		return fmt.Sprintf("\n[Unchanged since turn %d (%dx): lines %d-%d already in context]",
 			span.turn, span.repeatCount, res.ReadStartLine, res.ReadEndLine)
 	}
 	if span.repeatCount < 3 {
-		return fmt.Sprintf("\n[Unchanged since turn %d: this file was already read.]", span.turn)
+		return fmt.Sprintf("\n[Unchanged since turn %d: already read]", span.turn)
 	}
-	return fmt.Sprintf("\n[Unchanged since turn %d (repeated %d times): this file is already in context. Use the version already read rather than re-reading.]",
+	return fmt.Sprintf("\n[Unchanged since turn %d (%dx): already in context]",
 		span.turn, span.repeatCount)
 }
 

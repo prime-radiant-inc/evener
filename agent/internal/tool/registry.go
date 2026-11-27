@@ -1299,7 +1299,7 @@ func defaultToolLimit(toolName string) schema.ToolOutputLimit {
 	case "read_file", "memory_read":
 		return schema.ToolOutputLimit{MaxChars: 50_000, Strategy: schema.TruncHead}
 	case "shell":
-		return schema.ToolOutputLimit{MaxChars: 30_000, MaxLines: 512, Strategy: schema.TruncHeadTail}
+		return schema.ToolOutputLimit{MaxChars: 6_000, MaxLines: 120, Strategy: schema.TruncHeadTail}
 	case "grep", "memory_search":
 		return schema.ToolOutputLimit{MaxChars: 20_000, MaxLines: 200, Strategy: schema.TruncHeadCount}
 	case "glob":

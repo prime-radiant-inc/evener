@@ -35,10 +35,10 @@ func assembleOutputDigest(head, tail []byte, total, dropped int64) string {
 		b.WriteByte('\n')
 	}
 	if dropped > 0 {
-		fmt.Fprintf(&b, "…[%s elided; %s permanently dropped past the retention cap; omitted [%d,%d); read more with read_transcript(offset_bytes=%d) via the returned job transcript_ref]…\n",
+		fmt.Fprintf(&b, "…[%s elided; %s permanently dropped; omitted [%d,%d); read more with read_transcript(offset_bytes=%d) via transcript_ref]…\n",
 			humanBytes(elidedBytes), humanBytes(dropped), omitStart, omitEnd, omitStart)
 	} else {
-		fmt.Fprintf(&b, "…[%s elided; omitted [%d,%d); read more with read_transcript(offset_bytes=%d) via the returned job transcript_ref]…\n",
+		fmt.Fprintf(&b, "…[%s elided; omitted [%d,%d); read more with read_transcript(offset_bytes=%d) via transcript_ref]…\n",
 			humanBytes(elidedBytes), omitStart, omitEnd, omitStart)
 	}
 	b.Write(tail)
@@ -67,7 +67,7 @@ func humanBytes(n int64) string {
 // first). Net inline footprint stays ~1 KiB, split head/tail.
 const (
 	shellDigestHalfBytes = 512
-	shellDigestLines     = 200
+	shellDigestLines     = 120
 )
 
 // shellInlineDigest renders a compact head+tail digest of a completed command's
