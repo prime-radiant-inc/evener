@@ -385,7 +385,7 @@ func DefDelegateWithResultTool(agentTypes []string, sandboxSchema DelegateSandbo
 				"watch_parent":         map[string]any{"type": "boolean", "description": "Allow it to observe you."},
 				"fork_context": map[string]any{
 					"type": "boolean", "default": false,
-					"description": "Copy your history.",
+					"description": "Copy your history (same model/provider).",
 				},
 				"isolation": map[string]any{
 					"type":        "string",
@@ -474,7 +474,7 @@ func DefDelegateSend() llm.ToolDefinition {
 func DefDelegateSendNamed(resultTool string) llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "delegate_send",
-		Description: "Message (and wake) a descendant (`dlg_...`; use `" + resultTool + "` for parent).",
+		Description: "Message (and wake) a direct child (`dlg_...`; use `" + resultTool + "` for parent).",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
