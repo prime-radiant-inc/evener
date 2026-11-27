@@ -473,13 +473,17 @@ test("the Duo edge controls open and dismiss Sessions and yield to a nested dial
   const restore = installMobileViewport();
   const ua = vi
     .spyOn(navigator, "userAgent", "get")
-    .mockReturnValue("EvenerNative/1 EvenerSessionHeader/1 EvenerSessionsToolbar/1");
-  let toolbar: { id: string; mode: string | null } | undefined;
+    .mockReturnValue("EvenerNative/1 EvenerSessionHeader/1 EvenerSessionsToolbar/1 EvenerPaneNavigation/1");
+  let toolbar: { id: string; mode: string | null; needsYou?: number } | undefined;
+  const modes: (string | null)[] = [];
   vi.stubGlobal("evenerEdgeToolbar", true);
   vi.stubGlobal("ReactNativeWebView", {
     postMessage(json: string) {
       const message = JSON.parse(json);
-      if (message.type === "sessionsToolbar") toolbar = message;
+      if (message.type === "sessionsToolbar") {
+        toolbar = message;
+        modes.push(message.mode);
+      }
     },
   });
   const send = (id: string | undefined, action: string) =>
@@ -522,6 +526,22 @@ test("the Duo edge controls open and dismiss Sessions and yield to a nested dial
     send(toolbar?.id, "settings");
     expect(window.location.pathname).toBe("/settings");
     expect(screen.queryByRole("dialog")).toBeNull();
+    act(() => workspaceStore.getState().openPane("settings", { section: "appearance" }));
+    await waitFor(() => expect(toolbar).toMatchObject({ mode: "navigation", back: true, destination: "open" }));
+    expect(within(screen.getByTestId("topbar")).queryByRole("button")).toBeNull();
+    modes.length = 0;
+    act(() => setNeedsYouCount(2));
+    expect(toolbar?.needsYou).toBe(2);
+    expect.soft(modes).not.toContain(null);
+    rerender(<StackHost routeDeferred />);
+    expect.soft(toolbar?.mode).toBeNull();
+    rerender(<StackHost />);
+    const paneBack = vi.fn();
+    act(() => chromeStore.getState().setPaneBack(paneBack));
+    send(toolbar?.id, "back");
+    expect(paneBack).toHaveBeenCalledOnce();
+    send(toolbar?.id, "open");
+    await screen.findByRole("dialog");
   } finally {
     cleanup();
     vi.unstubAllGlobals();
@@ -535,6 +555,8 @@ test.each([
   { installed: true, pane: "session" },
   { installed: false, pane: "welcome" },
   { installed: true, pane: "welcome" },
+  { installed: false, pane: "settings" },
+  { installed: true, pane: "settings" },
 ])(
   "Sessions uses the free edge and restores the opener on $pane when installed=$installed",
   async ({ installed, pane }) => {
@@ -544,13 +566,19 @@ test.each([
     document.documentElement.style.setProperty("--home-safe-right", "84px");
     try {
       if (pane === "session") workspaceStore.getState().openPane("session", { ref: "local:root-navigation" });
+      if (pane === "settings") workspaceStore.getState().openPane("settings", {});
       render(<StackHost />);
       if (pane === "welcome") {
         await screen.findByRole("dialog");
         await user.keyboard("{Escape}");
       }
       await screen.findByTestId("topbar-title");
-      expect(screen.queryByRole("button", { name: "Back" })).toBeNull();
+      if (pane === "settings") {
+        const back = screen.getByRole("button", { name: "Back" });
+        expect(Boolean(back.closest("[data-home-toolbar]"))).toBe(installed);
+      } else {
+        expect(screen.queryByRole("button", { name: "Back" })).toBeNull();
+      }
       const opener = screen.getByRole("button", { name: "Sessions" });
       expect(opener.closest("[role=toolbar]")?.getAttribute("data-home-toolbar") ?? null).toBe(
         installed ? "right" : null,
@@ -666,13 +694,15 @@ test("the iPhone controls stay above inline Find and follow the focused reader",
   }
 });
 
-test("the inner iPhone window keeps the Board and hands reader actions to the system edge bar", async () => {
+test("the inner iPhone window keeps the Board and hands focused pane actions to the system edge bar", async () => {
   const restore = installMobileViewport([MOBILE_QUERY, "(min-width: 648px) and (min-height: 600px)"]);
   const ua = vi
     .spyOn(navigator, "userAgent", "get")
-    .mockReturnValue("EvenerNative/1 EvenerSessionHeader/1 EvenerWorkspaceControls/1");
+    .mockReturnValue(
+      "EvenerNative/1 EvenerSessionHeader/1 EvenerWorkspaceControls/1 EvenerSessionsToolbar/1 EvenerPaneNavigation/1",
+    );
   const height = vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockReturnValue(58);
-  const messages: { type: string; header?: { leading: string | null } | null }[] = [];
+  const messages: { type: string; id?: string; header?: { leading: string | null } | null }[] = [];
   vi.stubGlobal("ReactNativeWebView", { postMessage: (json: string) => messages.push(JSON.parse(json)) });
   vi.stubGlobal("ResizeObserver", StubResizeObserver);
   const stop = connectIPhoneHost();
@@ -710,6 +740,20 @@ test("the inner iPhone window keeps the Board and hands reader actions to the sy
     expect(within(bar).getAllByRole("button").length).toBeGreaterThan(0);
     expect(screen.getByTestId("board-column")).toBeTruthy();
     expect(workspaceStore.getState().focusedPaneId).toBe(id);
+    act(() => {
+      workspaceStore.getState().openPane("settings", {});
+      setNeedsYouCount(3);
+    });
+    const settingsId = workspaceStore.getState().focusedPaneId;
+    send({ type: "material", glass: true, edgeToolbar: true });
+    const paneToolbar = () => messages.filter(({ type }) => type === "sessionsToolbar").at(-1);
+    await waitFor(() => expect(paneToolbar()).toMatchObject({ mode: "navigation", destination: null }));
+    await userEvent.click(within(screen.getByTestId("board-column")).getByTestId("board-toggle"));
+    await waitFor(() => expect(paneToolbar()).toMatchObject({ mode: "navigation", destination: "board", needsYou: 3 }));
+    send({ type: "sessionsAction", id: paneToolbar()?.id, action: "board" });
+    await waitFor(() => expect(paneToolbar()).toMatchObject({ mode: "navigation", destination: null }));
+    expect(screen.getByTestId("board-column")).toBeTruthy();
+    expect(workspaceStore.getState().focusedPaneId).toBe(settingsId);
   } finally {
     cleanup();
     stop?.();

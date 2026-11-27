@@ -81,6 +81,7 @@ import { attentionEntryOwnsReader, goBackInAttentionHistory, publishFocusedPaneU
 import { ConversationHandoffBoundary } from "../ConversationHandoffBoundary";
 import { useChromeStore } from "../chromeStore";
 import {
+  hasIPhonePaneNavigation,
   hasIPhoneSessionHeader,
   hasIPhoneSessionsToolbar,
   hasIPhoneWorkspaceControls,
@@ -112,6 +113,7 @@ import {
   workspaceStore,
 } from "../workspace";
 import { IPhoneSessionHeader } from "./IPhoneSessionHeader";
+import { IPhoneSessionsToolbar } from "./IPhoneSessionsToolbar";
 import { MobilePanel } from "./MobilePanel";
 import styles from "./StackHost.module.css";
 import {
@@ -429,19 +431,6 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
   const welcomeLauncher =
     !singlePane && !tabletSplit && !routeDeferred && (focusedPane === null || focusedPane.type === "welcome");
   const sessionsEdge = !singlePane && edgeToolbar && hasIPhoneSessionsToolbar();
-  const homeEdge =
-    !singlePane && !hosted && (focusedPane?.type === "session" || welcomeLauncher) ? homeScreenEdge : null;
-  const systemEdge = (hostedSession && edgeToolbar) || (welcomeLauncher && sessionsEdge);
-  // An overlay can suspend edge actions, but only a change of layout moves them into the top bar.
-  const actionsAtEdge = systemEdge || !!homeEdge;
-  const Title = actionsAtEdge ? "h1" : "span";
-  const needsYou = useNavigationStore(
-    useCallback(
-      (state: NavigationStoreState) =>
-        publishHeader || (tabletSplit && !boardVisible) ? selectNeedsYouCount(state) : 0,
-      [publishHeader, tabletSplit, boardVisible],
-    ),
-  );
   const sidebarWidth = usePrefsStore((s) => s.sidebarWidth);
   const boardMaxWidth = Math.min(
     SIDEBAR_WIDTH_MAX,
@@ -1062,6 +1051,17 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
       backStackRef.current.some((id) => id !== focusedPane.id && livePaneIds.has(id)));
   const showBack =
     focusedPane !== null && focusedPane.type !== "welcome" && (focusedSessionRef === undefined || sessionBackAvailable);
+  const paneEdge =
+    sessionsEdge && !hostedSession && hasIPhonePaneNavigation() && (showBack || (tabletSplit && !boardVisible));
+  const homeEdge = !singlePane && !hosted ? homeScreenEdge : null;
+  const systemEdge = (hostedSession && edgeToolbar) || (welcomeLauncher && sessionsEdge) || paneEdge;
+  // An overlay can suspend edge actions, but only a change of layout moves them into the top bar.
+  const actionsAtEdge = systemEdge || !!homeEdge;
+  const Title = actionsAtEdge ? "h1" : "span";
+  const showAttention = publishHeader || (tabletSplit && !boardVisible) || (paneEdge && !tabletSplit);
+  const needsYou = useNavigationStore(
+    useCallback((state: NavigationStoreState) => (showAttention ? selectNeedsYouCount(state) : 0), [showAttention]),
+  );
   const drawer = !singlePane && !tabletSplit ? <TreeDrawer onToggle={() => setPanelOpen((v) => !v)} /> : null;
   const boardToggle = tabletSplit ? (
     <IconButton
@@ -1076,16 +1076,12 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
     />
   ) : null;
 
+  const goBack = isPanelPane ? handlePanelBack : (paneBack ?? handleBack);
   const leading = (
     <div className={styles.leading}>
       {!boardVisible && boardToggle}
       {showBack ? (
-        <IconButton
-          label="Back"
-          icon={<Chevron direction="left" size={24} />}
-          variant="quiet"
-          onClick={isPanelPane ? handlePanelBack : (paneBack ?? handleBack)}
-        />
+        <IconButton label="Back" icon={<Chevron direction="left" size={24} />} variant="quiet" onClick={goBack} />
       ) : (
         focusedSessionRef !== undefined && drawer
       )}
@@ -1163,6 +1159,16 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
             </Title>
             {!actionsAtEdge && trailing}
           </div>
+          {paneEdge && !routeDeferred && !panelOpen && !activityOpen && (
+            <IPhoneSessionsToolbar
+              key={focusedPane?.id}
+              mode="navigation"
+              needsYou={needsYou}
+              onBack={showBack ? goBack : undefined}
+              destination={!tabletSplit ? "open" : boardVisible ? null : "board"}
+              onToggle={tabletSplit ? toggleBoard : () => setPanelOpen(true)}
+            />
+          )}
           {publishHeader && focusedSessionRef && !panelOpen && !activityOpen && (
             <IPhoneSessionHeader
               bar={topBarRef}
@@ -1207,7 +1213,7 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
       {homeEdge && (
         <div
           role="toolbar"
-          aria-label={welcomeLauncher ? "Workspace actions" : "Conversation actions"}
+          aria-label={focusedSessionRef === undefined ? "Workspace actions" : "Conversation actions"}
           hidden={activityOpen || panelOpen}
           data-home-toolbar={homeEdge}
           className={styles.homeToolbar}

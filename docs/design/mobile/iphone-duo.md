@@ -26,7 +26,13 @@ the actions stay above the reader. The Sessions drawer places Settings and Close
 in the same free edge, and Welcome uses it to reopen Sessions. The New session
 button stays with the Board, aligned with Send in the adjacent composer.
 
-Safari supplies its own browser controls and viewport. Conversation actions stay
+The hosted app and Home Screen also use the available edge for Back and
+Sessions on workspace pages such as New session and Settings. Back follows the
+current pane's own navigation, including Settings sections. When a split Board
+is collapsed, its opener moves to the available edge; an expanded Board keeps
+its toggle. Find and Overview belong to conversations.
+
+Safari supplies its own browser controls and viewport. Workspace actions stay
 in the web header in a browser tab.
 
 ## On-device Board layout

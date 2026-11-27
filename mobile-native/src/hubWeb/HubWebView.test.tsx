@@ -219,7 +219,21 @@ it("routes the active native session controls back to their pane and gives the h
 	if (open?.type === "button") act(open.onPress);
 	expect(JSON.parse(postMessage.mock.lastCall?.[0])).toEqual({ type: "sessionsAction", id: "list", action: "open" });
 	expect(toolbar()?.unstable_headerRightItems?.({})).toEqual([]);
-	message({ type: "sessionsToolbar", id: "list", mode: null });
+	for (const destination of ["open", "board", null]) {
+		message({ type: "sessionsToolbar", id: "pane", mode: "navigation", back: true, destination, needsYou: 2 });
+		if (destination) expect(toolbar()?.unstable_headerRightItems?.({})[0]).toMatchObject({ badge: { value: 2 } });
+		postMessage.mockClear();
+		for (const item of [
+			...(toolbar()?.unstable_headerLeftItems?.({}) ?? []),
+			...(toolbar()?.unstable_headerRightItems?.({}) ?? []),
+		]) {
+			if (item.type === "button") act(item.onPress);
+		}
+		expect(postMessage.mock.calls.map(([value]) => JSON.parse(value))).toEqual(
+			["back", ...(destination ? [destination] : [])].map((action) => ({ type: "sessionsAction", id: "pane", action })),
+		);
+	}
+	message({ type: "sessionsToolbar", id: "pane", mode: null });
 	expect(toolbar()?.headerShown).toBe(false);
 	native.insets.left = native.insets.right;
 	publish({ ...header, leading: "back" });

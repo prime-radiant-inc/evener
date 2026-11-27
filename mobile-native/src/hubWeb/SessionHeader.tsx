@@ -49,6 +49,7 @@ export type HeaderAction = keyof typeof readerControls;
 const controls = {
 	...readerControls,
 	open: readerControls.sessions,
+	board: { symbol: "sidebar.leading", label: "Board" },
 	close: { symbol: "xmark", label: "Close" },
 	hubs: { symbol: "server.rack", label: "Hubs on this iPhone" },
 	settings: { symbol: "gearshape", label: "Settings" },
@@ -60,7 +61,10 @@ const listActions = {
 	launcher: { leading: "open", trailing: [] },
 } as const;
 const inspectionActions = ["find", "overview"] as const;
-export type SessionsToolbar = { id: string; mode: keyof typeof listActions };
+export type SessionsToolbar =
+	| { id: string; mode: keyof typeof listActions }
+	| { id: string; mode: "navigation"; back: boolean; destination: "open" | "board" | null; needsYou: number };
+const paneDestinations = { open: ["open"], board: ["board"], none: [] } as const;
 
 interface HeaderProps {
 	header: SessionHeaderState;
@@ -68,9 +72,19 @@ interface HeaderProps {
 	onAction(id: string, action: HeaderAction): void;
 }
 
+function edgeControls(header: SessionHeaderState | null, toolbar: SessionsToolbar | null) {
+	if (!toolbar) return { leading: header?.leading, trailing: inspectionActions, needsYou: header?.needsYou ?? 0 };
+	if (toolbar.mode !== "navigation") return { ...listActions[toolbar.mode], needsYou: 0 };
+	return {
+		leading: toolbar.back ? ("back" as const) : null,
+		trailing: paneDestinations[toolbar.destination ?? "none"],
+		needsYou: toolbar.needsYou,
+	};
+}
+
 function headerControl(action: EdgeAction, needsYou: number) {
 	const { symbol, label } = controls[action];
-	const count = action === "sessions" ? needsYou : 0;
+	const count = action === "sessions" || action === "open" || action === "board" ? needsYou : 0;
 	const spoken = count ? `${label}, ${count} ${count === 1 ? "needs" : "need"} you` : label;
 	return { symbol, label, count, spoken };
 }
@@ -87,10 +101,7 @@ export function EdgeSessionToolbar({
 	onAction(id: string | null, action: EdgeAction): void;
 }) {
 	const id = sessionsToolbar?.id ?? header?.id ?? null;
-	const list = sessionsToolbar && listActions[sessionsToolbar.mode];
-	const leading = list?.leading ?? header?.leading;
-	const trailing = list?.trailing ?? inspectionActions;
-	const needsYou = header?.needsYou ?? 0;
+	const { leading, trailing, needsYou } = edgeControls(header, sessionsToolbar);
 	const navigation = useNavigation<NativeStackNavigationProp<Routes, "Workspace">>();
 	useLayoutEffect(() => {
 		function button(action: EdgeAction): NativeStackHeaderItemButton {
