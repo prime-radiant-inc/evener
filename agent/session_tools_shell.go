@@ -210,7 +210,7 @@ func registerShellTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 					return "", errors.New("shell jobs require an initialized JobManager")
 				}
 				shellArgs = applyShellTimeoutPolicy(deps, shellArgs)
-				return marshalShellToolResultNamed(runShell(ctx, s.jobManager, se, shellArgs), shellToolResultMaxChars(reg), shellToolResultMaxLines(reg), s.cfg.TurnEndsProcess, s.resultToolName())
+				return marshalShellToolResult(runShell(ctx, s.jobManager, se, shellArgs), shellToolResultMaxChars(reg), shellToolResultMaxLines(reg), s.cfg.TurnEndsProcess, s.resultToolName())
 			}
 			return runBufferedShell(ctx, env, deps, shellArgs)
 		},
@@ -595,16 +595,12 @@ func shellToolResultMaxLines(reg *tool.Registry) int {
 	return registered.Limit.MaxLines
 }
 
-func marshalShellToolResult(res shellResult, maxChars, maxLines int, turnEndsProcess bool) (tool.StateResult, error) {
-	return marshalShellToolResultNamed(res, maxChars, maxLines, turnEndsProcess, "")
-}
-
-func marshalShellToolResultNamed(res shellResult, maxChars, maxLines int, turnEndsProcess bool, resultToolName string) (tool.StateResult, error) {
+func marshalShellToolResult(res shellResult, maxChars, maxLines int, turnEndsProcess bool, resultToolName string) (tool.StateResult, error) {
 	// complete-or-handle (spec §0.6): within-bound results carry a settle
 	// closure. Apply both layers — ride-whole budget (shellRideWholeBytes)
 	// and tool-result char bound (maxChars) — to decide keep vs discard.
 	if res.settle != nil {
-		return marshalCompleteOrHandleResult(res, maxChars, maxLines, turnEndsProcess, resultToolName)
+		return marshalCompleteOrHandleResult(res, maxChars, maxLines, turnEndsProcess)
 	}
 
 	out := shellToolResult{
@@ -623,11 +619,25 @@ func marshalShellToolResultNamed(res shellResult, maxChars, maxLines int, turnEn
 		out.Mode = string(shellModeBackground)
 	}
 	if !res.RunningInBackground || res.Output != "" {
-		out.Output = &res.Output
-		out.Truncated = &res.Truncated
+		preview := res.Output
+		truncated := res.Truncated
+		if res.RunningInBackground && res.JobID != "" && maxChars > 0 {
+			chromeRunes := len([]rune(formatShellResult(out)))
+			previewBudget := maxChars - chromeRunes - 1
+			if runes := []rune(preview); len(runes) > previewBudget {
+				if previewBudget <= 0 {
+					preview = ""
+				} else {
+					preview = string(runes[len(runes)-previewBudget:])
+				}
+				truncated = true
+			}
+		}
+		out.Output = &preview
+		out.Truncated = &truncated
 		out.TotalBytes = res.TotalBytes
 		out.DroppedBytes = res.DroppedBytes
-		out.OutputStatus = outputWindowStatus(res.TotalBytes, res.DroppedBytes, res.Truncated)
+		out.OutputStatus = outputWindowStatus(res.TotalBytes, res.DroppedBytes, truncated)
 	}
 	return tool.StateResult{
 		Output: formatShellResult(out),
@@ -649,7 +659,7 @@ func marshalShellToolResultNamed(res shellResult, maxChars, maxLines int, turnEn
 // If either layer triggers → settle(true) keeps the delayed job (durable),
 // returns a truncated tail + job_id. Otherwise → settle(false) discards the
 // delayed job (ephemeral), returns complete output inline with no job_id.
-func marshalCompleteOrHandleResult(res shellResult, maxChars, maxLines int, turnEndsProcess bool, resultToolName string) (tool.StateResult, error) {
+func marshalCompleteOrHandleResult(res shellResult, maxChars, maxLines int, turnEndsProcess bool) (tool.StateResult, error) {
 	falseVal := false
 	out := shellToolResult{
 		Type:            res.Type,
@@ -663,7 +673,6 @@ func marshalCompleteOrHandleResult(res shellResult, maxChars, maxLines int, turn
 		TotalBytes:      res.TotalBytes,
 		DroppedBytes:    res.DroppedBytes,
 		TurnEndsProcess: turnEndsProcess,
-		ResultToolName:  resultToolName,
 	}
 
 	out.OutputStatus = outputWindowStatus(res.TotalBytes, res.DroppedBytes, false)
@@ -845,26 +854,19 @@ func formatBackgroundShellReminder(out shellToolResult, promoted bool) string {
 	}
 	var lead string
 	if promoted {
-		lead = fmt.Sprintf(
-			"The foreground wait ended and this command is still running in the background as %s (it did not fail or hang; empty or sparse output so far is often normal stdout/pipe buffering rather than a stall).",
-			out.JobID,
-		)
+		lead = "Still running (not failed; quiet output is often stdout/pipe buffering)."
 	} else {
-		lead = fmt.Sprintf("Command is running in the background as %s.", out.JobID)
+		lead = fmt.Sprintf("Running in background (log job:%s).", out.JobID)
 	}
-	surfacing := fmt.Sprintf(
-		"When it finishes, Evener automatically delivers a job notification containing its exit status, an output excerpt, and full log ref job:%s.",
-		out.JobID,
-	)
 	if out.TurnEndsProcess {
 		return fmt.Sprintf(
-			`%s %s Because this is a one-shot run, background jobs stop if your turn ends unwatched; to wait cleanly for completion: (1) call job_watch(operation="create", source=%q, progress_interval_ms=180000) (or pass output_match), then (2) do unrelated work or yield quietly with %s(next="log_quietly_and_end_turn", message="Waiting for %s to finish.") so Evener wakes you on completion. Do not run sleep, poll in a loop, or kill the job just because stdout is buffered.`,
-			lead, surfacing, out.JobID, resultTool, out.JobID,
+			`%s One-shot: unwatched jobs stop at turn end; call job_watch(operation="create", source=%q, progress_interval_ms=180000) (or output_match), then do other work or call %s(next="log_quietly_and_end_turn", message="Waiting.") to wake on completion notification (no sleep/polling/killing).`,
+			lead, out.JobID, resultTool,
 		)
 	}
 	return fmt.Sprintf(
-		`%s %s Evener wakes your session automatically on completion; move on to other work or yield quietly with %s(next="log_quietly_and_end_turn", message="Waiting for %s to finish.") rather than running sleep, polling, or killing a buffered job.`,
-		lead, surfacing, resultTool, out.JobID,
+		`%s Completion notifies and wakes you automatically; do other work or call %s(next="log_quietly_and_end_turn", message="Waiting.") instead of sleep/polling/killing.`,
+		lead, resultTool,
 	)
 }
 

@@ -21,6 +21,7 @@ import (
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/internal/testwait"
 	"primeradiant.com/evener/llm"
 )
 
@@ -578,26 +579,52 @@ func TestBufferedShellHonorsMaxRuntime(t *testing.T) {
 
 func TestShellToolStreamingPathHonorsSessionTimeouts(t *testing.T) {
 	t.Parallel()
-	s := newShellToolTestSession(t, SessionConfig{
-		DefaultCommandTimeoutMS: 100,
-		MaxCommandTimeoutMS:     100,
-		ToolOutputLimits: map[string]schema.ToolOutputLimit{
-			"shell": {MaxChars: 800, MaxLines: 1, Strategy: schema.TruncHeadTail},
-		},
-	})
-	clk := agenttest.NewFakeClock()
-	s.jobManager.clock = clk
 
 	for _, tc := range []struct {
-		name string
-		args json.RawMessage
+		name             string
+		turnEndsProcess  bool
+		limit            schema.ToolOutputLimit
+		args             json.RawMessage
+		wantPreviewBytes int64
 	}{
 		{
-			name: "default",
-			args: json.RawMessage(`{"command":"printf start; sleep 2; ls"}`),
+			name:  "default",
+			limit: schema.ToolOutputLimit{MaxChars: 800, MaxLines: 1, Strategy: schema.TruncHeadTail},
+			args:  json.RawMessage(`{"command":"printf start; sleep 2; ls"}`),
+		},
+		{
+			name:            "one_shot_silent_min_char_limit",
+			turnEndsProcess: true,
+			limit:           schema.ToolOutputLimit{MaxChars: shellToolResultMinJSONChars, Strategy: schema.TruncHeadTail},
+			args:            idleShellJSON(""),
+		},
+		{
+			name:             "one_shot_preview_min_char_limit",
+			turnEndsProcess:  true,
+			limit:            schema.ToolOutputLimit{MaxChars: shellToolResultMinJSONChars, Strategy: schema.TruncHeadTail},
+			args:             json.RawMessage(`{"command":"printf '%0600d\\n' 1; ` + idleShellCommand + `"}`),
+			wantPreviewBytes: 600,
+		},
+		{
+			name:             "persistent_preview_min_char_limit",
+			limit:            schema.ToolOutputLimit{MaxChars: shellToolResultMinJSONChars, Strategy: schema.TruncHeadTail},
+			args:             json.RawMessage(`{"command":"printf '%0600d\\n' 1; ` + idleShellCommand + `"}`),
+			wantPreviewBytes: 600,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			s := newShellToolTestSession(t, SessionConfig{
+				DefaultCommandTimeoutMS: 100,
+				MaxCommandTimeoutMS:     100,
+				TurnEndsProcess:         tc.turnEndsProcess,
+				ToolOutputLimits: map[string]schema.ToolOutputLimit{
+					"shell": tc.limit,
+				},
+			})
+			clk := agenttest.NewFakeClock()
+			s.jobManager.clock = clk
+
 			resCh := make(chan tool.ExecResult, 1)
 			go func() {
 				resCh <- s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
@@ -607,6 +634,18 @@ func TestShellToolStreamingPathHonorsSessionTimeouts(t *testing.T) {
 				})
 			}()
 			clk.BlockUntil(1)
+			if tc.wantPreviewBytes > 0 {
+				testwait.Until(t, "shell preview output before promotion", func() bool {
+					s.jobManager.mu.Lock()
+					defer s.jobManager.mu.Unlock()
+					for _, run := range s.jobManager.running {
+						if run.output.Len() >= tc.wantPreviewBytes {
+							return true
+						}
+					}
+					return false
+				})
+			}
 			clk.Advance(time.Second)
 
 			var res tool.ExecResult
@@ -639,6 +678,13 @@ func TestShellToolStreamingPathHonorsSessionTimeouts(t *testing.T) {
 				out.Mode != "background" {
 				t.Fatalf("shell output = %+v, want foreground timeout promoted to background", out)
 			}
+			t.Cleanup(func() {
+				_, _ = s.jobManager.stop(out.JobID)
+				waitForShellDone(t, s.jobManager, out.JobID)
+			})
+			if tc.wantPreviewBytes > 0 && res.Truncated {
+				t.Fatalf("promoted shell result tripped registry truncation instead of reserving space for reminder and footer: %q", res.Output)
+			}
 			if !strings.Contains(res.Output, out.JobID) {
 				t.Fatalf("promoted shell model output lost job_id %q under constrained registry limits: %q", out.JobID, res.Output)
 			}
@@ -652,8 +698,16 @@ func TestShellToolStreamingPathHonorsSessionTimeouts(t *testing.T) {
 			if !strings.Contains(res.Output, "after 1s") {
 				t.Fatalf("promoted shell model output does not state the elapsed wait: %q", res.Output)
 			}
-			_, _ = s.jobManager.stop(out.JobID)
-			waitForShellDone(t, s.jobManager, out.JobID)
+			wantQuietCall := `communicate(next="log_quietly_and_end_turn"`
+			if !strings.Contains(res.Output, wantQuietCall) {
+				t.Fatalf("promoted shell model output lost quiet-yield call %q under constrained registry limits: %q", wantQuietCall, res.Output)
+			}
+			if tc.turnEndsProcess {
+				wantWatchCall := fmt.Sprintf(`job_watch(operation="create", source=%q, progress_interval_ms=180000)`, out.JobID)
+				if !strings.Contains(res.Output, wantWatchCall) {
+					t.Fatalf("promoted one-shot shell model output lost watch call %q under constrained registry limits: %q", wantWatchCall, res.Output)
+				}
+			}
 		})
 	}
 }
@@ -1624,7 +1678,7 @@ func TestFormatShellResultBackgroundReminderOneShot(t *testing.T) {
 				WaitElapsedMS:       tc.res.WaitElapsedMS,
 			}
 
-			normalRes, err := marshalShellToolResult(res, 30000, 0, false)
+			normalRes, err := marshalShellToolResult(res, 30000, 0, false, "")
 			if err != nil {
 				t.Fatalf("marshalShellToolResult(normal): %v", err)
 			}
@@ -1647,7 +1701,7 @@ func TestFormatShellResultBackgroundReminderOneShot(t *testing.T) {
 				}
 			}
 
-			oneShotOut, err := marshalShellToolResult(res, 30000, 0, true)
+			oneShotOut, err := marshalShellToolResult(res, 30000, 0, true, "")
 			if err != nil {
 				t.Fatalf("marshalShellToolResult(one-shot): %v", err)
 			}
@@ -1677,9 +1731,9 @@ func TestFormatShellResultBackgroundReminderOneShot(t *testing.T) {
 				t.Fatalf("serve-mode reminder = %q, must not contain literal <job-notification frame tag", normal)
 			}
 
-			namedOut, err := marshalShellToolResultNamed(res, 30000, 0, true, "reply_parent")
+			namedOut, err := marshalShellToolResult(res, 30000, 0, true, "reply_parent")
 			if err != nil {
-				t.Fatalf("marshalShellToolResultNamed: %v", err)
+				t.Fatalf("marshalShellToolResult(named): %v", err)
 			}
 			if !strings.Contains(namedOut.Output, `reply_parent(next="log_quietly_and_end_turn"`) {
 				t.Fatalf("custom result tool reminder = %q, want reply_parent call", namedOut.Output)
