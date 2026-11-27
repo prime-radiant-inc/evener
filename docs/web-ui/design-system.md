@@ -1607,7 +1607,8 @@ Hosts, Test runs and Archived sessions follow.
 ## 12. Phone session controls
 
 On session-family panes (`session`, `sessionZoom`, `transcript`), scrolling down
-past the fold (bar height plus the 12px at-top reveal band, floored at 48px)
+past the fold (height of the visible bar and collapsed notes summary, plus
+the 12px at-top reveal band, floored at 48px)
 trades the solid `StackHost` top bar for floating `--radius-pane` blur capsules
 over the transcript while fading the title. Scrolling up 8px, reaching the top,
 or changing panes restores the solid bar, with pre-paint scroll compensation so
@@ -1662,7 +1663,10 @@ header Search palette trigger (`rail-search`) and global `⌘K` shortcut unchang
 Below 900px, the collapsed whiteboard (session notes) rests as one quiet
 centered line above the transcript — an em-dash-framed count in caption ink
 with no card chrome, keeping the body's own top spacing and growing to the
-44px tap floor on touch. Its first-priority content rides the trigger's
+44px tap floor on touch. The mobile reader tucks the summary away while
+scrolling in either direction. Navigation returns on an upward gesture;
+the summary returns near the top or when Notes is explicitly opened.
+Its first-priority content rides the trigger's
 accessible name, and expanding opens the header-attached notes card with full
 read and edit controls; desktop keeps its collapsed preview card.
 

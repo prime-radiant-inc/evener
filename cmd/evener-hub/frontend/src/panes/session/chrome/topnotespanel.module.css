@@ -116,6 +116,10 @@
   overflow-x: clip;
 }
 
+:global([data-notes-hidden]) .topNotesPanel:not([data-expanded="true"]) {
+  display: none;
+}
+
 /* Below 900px, the collapsed whiteboard rests as one quiet centered line on
  * the reading surface: no card chrome, keeping the body's own top spacing.
  * The card chrome and attach-to-header negative margin apply only while
@@ -137,10 +141,6 @@
 
   :global([data-pane-scaffold^="session:"]) .topNotesPanel[data-expanded="true"] {
     margin-top: calc(-1 * var(--space-4));
-  }
-
-  :global([data-iphone-header="floating"]) .topNotesPanel:not([data-expanded="true"]) {
-    display: none;
   }
 
   .summary {

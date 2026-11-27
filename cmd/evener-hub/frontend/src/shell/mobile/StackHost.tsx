@@ -132,6 +132,20 @@ const TRANSITION_CLASSES = {
 const FLOAT_COLLAPSE_PAST = 48;
 const FLOAT_REVEAL_STEP = 8;
 const FLOAT_REVEAL_AT_TOP = 12;
+type ReadingChrome = "full" | "navigation" | "floating";
+
+function readingChromeHeightChange(
+  from: ReadingChrome,
+  to: ReadingChrome,
+  heights: { bar: number; notes: number },
+): number {
+  function height(chrome: ReadingChrome) {
+    if (chrome === "floating") return 0;
+    return chrome === "full" ? heights.bar + heights.notes : heights.bar;
+  }
+  return height(to) - height(from);
+}
+
 // Only a session-family pane's primary reading scroll port (the VirtualList
 // root directly inside a reading scroll host) drives the floating header;
 // nested scrollers like composer menus and escalation rails stay independent.
@@ -380,11 +394,8 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
   const activityOpen = useActivitySidebarStore((s) => s.open);
   const [panelOpen, setPanelOpen] = useState(false);
   const closePanel = useCallback(() => setPanelOpen(false), []);
-  // The floating top bar (docs/web-ui/design-system.md §12): true while a
-  // session-family pane's body is scrolled down, trading the solid bar for
-  // floating control capsules. The state is a paint-only class flip - the
-  // bar keeps its box and padding, so the controls never move.
-  const [topBarCollapsed, setTopBarCollapsed] = useState(false);
+  const [readingChrome, setReadingChrome] = useState<ReadingChrome>("full");
+  const topBarCollapsed = readingChrome === "floating";
   const [nativeFindOpen, setNativeFindOpen] = useState(false);
   const fontSize = usePrefsStore((s) => s.fontSize);
   const viewportWidth = useWorkspaceViewportWidth();
@@ -497,10 +508,8 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
   const endTransitionRef = useRef<(() => void) | null>(null);
   const scrollOffsetsRef = useRef<ScrollOffsets>(new Map());
   const topBarRef = useRef<HTMLDivElement>(null);
-  // Mirror of topBarCollapsed for the scroll listener (which installs once,
-  // on mount, like the offsets listener below it): reading state there would
-  // need the effect re-armed on every flip.
-  const topBarCollapsedRef = useRef(false);
+  // The capture listener stays installed across reading chrome transitions.
+  const readingChromeRef = useRef<ReadingChrome>("full");
   const lastScrollTopRef = useRef(0);
   // The scroller's scrollHeight as of the last event. A change between
   // events means content shifted under the reader - the transcript prepends
@@ -511,24 +520,15 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
   // while the top bar is floating, so slow 120Hz drags that move less than
   // FLOAT_REVEAL_STEP per frame still reveal once cumulative travel crosses it.
   const upwardRunStartRef = useRef<number | null>(null);
-  // The scroller whose scroll drove the last collapse, and the resting bar
-  // height captured at that moment - both consumed by the compensation
-  // effect below. Cleared on every focus change.
+  // Measured before the chrome leaves the flow, used to hold the reading
+  // position when navigation and the notes summary fold or return separately.
   const collapseScrollerRef = useRef<Element | null>(null);
-  const barHeightRef = useRef(0);
-  const prevTopBarCollapsedRef = useRef(false);
-  // Mirror of focusedPane for the same reason as topBarCollapsedRef.
+  const chromeHeightsRef = useRef({ bar: 0, notes: 0 });
+  const previousChromeRef = useRef<ReadingChrome>("full");
   const focusedPaneRef = useRef(focusedPane);
   focusedPaneRef.current = focusedPane;
   const headerPinnedRef = useRef(false);
   const prevFocusedTypeRef = useRef<string | undefined>(focusedPane?.type);
-
-  // The resting bar height (safe-area padding included), read once on mount:
-  // the fold threshold below needs it BEFORE the first collapse, not after.
-  // jsdom measures 0, which the threshold's 48px floor already covers.
-  useLayoutEffect(() => {
-    if (topBarRef.current !== null) barHeightRef.current = topBarRef.current.offsetHeight;
-  }, []);
 
   // Installs the ONE popstate listener that feeds lastPopstateWasTrusted
   // (module-level - see its own comment above for why). A REAL browser
@@ -574,8 +574,8 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
       // its own scroll, and non-session panes never collapse it anyway.
       // Clearing the collapse scroller disarms the compensation effect for
       // reveals that are not scroll-driven (this one).
-      topBarCollapsedRef.current = false;
-      setTopBarCollapsed(false);
+      readingChromeRef.current = "full";
+      setReadingChrome("full");
       lastScrollTopRef.current = 0;
       lastScrollHeightRef.current = 0;
       upwardRunStartRef.current = null;
@@ -720,65 +720,60 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
         upwardRunStartRef.current = null;
         return;
       }
-      if (type === "session" || type === "sessionZoom" || type === "transcript") {
-        collapseScrollerRef.current = target;
-        // The fold must land the compensated scroll position clear of the
-        // at-top reveal band: collapsing at a scroll the compensation would
-        // clamp to 0 would bounce straight back out (st < 12 reveals).
-        const foldPast = Math.max(FLOAT_COLLAPSE_PAST, barHeightRef.current + FLOAT_REVEAL_AT_TOP);
-        let next = topBarCollapsedRef.current;
-        if (scrollTop > prevScrollTop) {
-          upwardRunStartRef.current = null;
-          if (scrollTop > foldPast && !headerPinnedRef.current) next = true;
-          else if (scrollTop < FLOAT_REVEAL_AT_TOP) next = false;
-        } else {
-          if (topBarCollapsedRef.current && scrollTop < prevScrollTop && upwardRunStartRef.current === null) {
-            upwardRunStartRef.current = prevScrollTop;
-          }
-          const upwardTravel = upwardRunStartRef.current === null ? 0 : upwardRunStartRef.current - scrollTop;
-          if (upwardTravel >= FLOAT_REVEAL_STEP || scrollTop < FLOAT_REVEAL_AT_TOP) next = false;
-        }
-        if (next !== topBarCollapsedRef.current) {
-          // On iPhone the notes summary folds with the title. Count the
-          // entire change in the reader's viewport before pinning its offset.
-          const bar = topBarRef.current;
-          if (next && bar) {
-            const notes = bar.parentElement?.hasAttribute("data-iphone-header")
-              ? paneSlotRef.current?.querySelector<HTMLElement>("[data-notes-panel-ref]")
-              : null;
-            if (notes?.contains(document.activeElement)) return;
-            barHeightRef.current = bar.offsetHeight + (notes?.offsetHeight ?? 0);
-            if (scrollTop <= barHeightRef.current + FLOAT_REVEAL_AT_TOP) return;
-          }
-          topBarCollapsedRef.current = next;
-          upwardRunStartRef.current = null;
-          setTopBarCollapsed(next);
-        }
+      if (type !== "session" && type !== "sessionZoom" && type !== "transcript") return;
+      if (headerPinnedRef.current || scrollTop === prevScrollTop) return;
+      collapseScrollerRef.current = target;
+      const current = readingChromeRef.current;
+      let next = current;
+      if (scrollTop < FLOAT_REVEAL_AT_TOP) {
+        next = "full";
+      } else if (scrollTop > prevScrollTop) {
+        upwardRunStartRef.current = null;
+        if (scrollTop > FLOAT_COLLAPSE_PAST) next = "floating";
+      } else if (current === "floating") {
+        upwardRunStartRef.current ??= prevScrollTop;
+        if (upwardRunStartRef.current - scrollTop >= FLOAT_REVEAL_STEP) next = "navigation";
+      } else if (current === "full" && scrollTop > FLOAT_COLLAPSE_PAST) {
+        // A session can open at its latest turn. Reading older turns also
+        // tucks the summary away, while keeping the navigation in reach.
+        next = "navigation";
       }
+      if (next === current) return;
+      const heights = chromeHeightsRef.current;
+      if (current === "full") {
+        const notes = paneSlotRef.current?.querySelector<HTMLElement>("[data-notes-panel-ref]");
+        if (notes?.contains(document.activeElement) || notes?.dataset.expanded === "true") return;
+        heights.notes = notes?.offsetHeight ?? 0;
+      }
+      if (current !== "floating" && topBarRef.current) heights.bar = topBarRef.current.offsetHeight;
+      const delta = readingChromeHeightChange(current, next, heights);
+      // A fold must leave the compensated offset clear of the at-top reveal band.
+      if (delta < 0 && scrollTop + delta <= FLOAT_REVEAL_AT_TOP) return;
+      readingChromeRef.current = next;
+      upwardRunStartRef.current = null;
+      setReadingChrome(next);
     };
     body.addEventListener("scroll", onScroll, { capture: true, passive: true });
     return () => body.removeEventListener("scroll", onScroll, { capture: true });
   }, []);
 
-  // The floating bar leaves the flow, so the pane's body grows by the bar's
-  // resting height. Shift the scroller by the same amount in the opposite
-  // direction, before paint, so no frame shows the content jump - and write
-  // the scroll memory first, so the shift's own scroll event reads as "no
-  // change" instead of a large step that would instantly flip the bar back.
-  // Compute from the pre-flip offset rather than post-layout scroller.scrollTop:
-  // near the bottom, viewport growth clamps scrollTop before this effect runs.
+  // Keep the same line under the reader's eye when the title or summary
+  // leaves or re-enters the flow. Use the pre-layout offset because viewport
+  // growth can clamp scrollTop near the bottom. Record the applied offset so
+  // the resulting scroll event stays gesture-neutral.
   useLayoutEffect(() => {
-    const prev = prevTopBarCollapsedRef.current;
-    prevTopBarCollapsedRef.current = topBarCollapsed;
-    if (prev === topBarCollapsed) return;
+    const prev = previousChromeRef.current;
+    previousChromeRef.current = readingChrome;
+    if (prev === readingChrome) return;
     const scroller = collapseScrollerRef.current;
-    const barHeight = barHeightRef.current;
-    if (scroller === null || !scroller.isConnected || barHeight <= 0) return;
-    const adjusted = Math.max(0, lastScrollTopRef.current + (topBarCollapsed ? -barHeight : barHeight));
+    if (!scroller?.isConnected) return;
+    const delta = readingChromeHeightChange(prev, readingChrome, chromeHeightsRef.current);
+    if (delta === 0) return;
+    const adjusted = Math.max(0, lastScrollTopRef.current + delta);
     lastScrollTopRef.current = adjusted;
     scroller.scrollTop = adjusted;
     lastScrollTopRef.current = clampedScrollTop(scroller);
-  }, [topBarCollapsed]);
+  }, [readingChrome]);
 
   // Classifies each focus change and slides it (docs/web-ui/motion.md, recipe
   // 4). A pop is a focus change a Back tap caused. A push is any other change
@@ -1022,10 +1017,10 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
   const headerPinned = focusedNotesExpanded || nativeFindOpen;
   headerPinnedRef.current = headerPinned;
   useLayoutEffect(() => {
-    if (!headerPinned || !topBarCollapsedRef.current) return;
-    topBarCollapsedRef.current = false;
+    if (!headerPinned || readingChromeRef.current === "full") return;
+    readingChromeRef.current = "full";
     upwardRunStartRef.current = null;
-    setTopBarCollapsed(false);
+    setReadingChrome("full");
     // Unlike a focus change, the reader stays in this pane, so the collapse
     // scroller stays armed: the compensation effect holds the reading position
     // when the pane's layout regains the bar's height.
@@ -1127,6 +1122,7 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
         {/* Keep the same pane slot and scroll listener on both sides of the tablet floor. */}
         <div
           className={styles.paneColumn}
+          data-notes-hidden={readingChrome !== "full" || undefined}
           data-iphone-header={nativeHeader ? (topBarCollapsed ? "floating" : "resting") : undefined}
           data-testid={tabletSplit ? "pane-column" : undefined}
         >

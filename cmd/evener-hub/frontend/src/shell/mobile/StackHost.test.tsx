@@ -2568,77 +2568,87 @@ test("floating top bar compensates scroll, ignores content height shifts, and re
   }
 });
 
-// The focused session's notes card attaches to the solid bar's seam: expanding
-// it restores a floating bar while leaving the scroller armed so compensation
-// holds the reader's position. Expanding another session's notes or collapsing
-// notes does not toggle the bar.
-test("expanding the focused session's notes restores a floating top bar and compensates scroll", async () => {
+test("mobile notes stay tucked while reading and return near the top or when explicitly opened", async () => {
   window.history.replaceState({}, "", "/");
-  const restoreSession = registerScrollablePaneForTests("session");
-  try {
-    const host = await act(async () => render(<StackHost routeDeferred />));
-    await act(async () => {
-      workspaceStore.getState().openPane("session", { ref: "local:a" });
+  const restoreViewport = installMobileViewport();
+  const ref = "remote:mobile-notes";
+  const client = activityClient();
+  client.on("thread/read", ({ ref }) => {
+    const result = activityDetailsThread(ref, {
+      turns: [{ id: "t", status: "completed", itemsView: "full", items: [] }],
     });
+    result.thread.evener.capabilities.sharedNotes = true;
+    return result;
+  });
+  connectionStore.getState().connect(client);
+  workspaceStore.getState().openPane("session", { ref });
+  try {
+    const host = render(
+      <ClientProvider client={client}>
+        <StackHost />
+      </ClientProvider>,
+    );
+    const notes = await screen.findByTestId("top-notes-panel");
+    Object.defineProperty(notes, "offsetHeight", { configurable: true, value: 44 });
     const bar = screen.getByTestId("topbar");
     Object.defineProperty(bar, "offsetHeight", { configurable: true, value: 56 });
-    const scroller = await screen.findByTestId("pane-scroll");
+    const scroller = document.querySelector("[data-reading-scroll-host] > *");
+    if (!scroller) throw new Error("missing transcript scroller");
     Object.defineProperty(scroller, "scrollHeight", { configurable: true, value: 2400 });
+    const scroll = (top: number) =>
+      act(() => {
+        scroller.scrollTop = top;
+        scroller.dispatchEvent(new Event("scroll"));
+      });
 
-    // Sync initial height, then scroll down to float the bar (260 -> 204).
-    act(() => {
-      scroller.scrollTop = 200;
-      scroller.dispatchEvent(new Event("scroll"));
-    });
-    act(() => {
-      scroller.scrollTop = 260;
-      scroller.dispatchEvent(new Event("scroll"));
-    });
+    // Hiding the notes summary and floating the title preserves the reading line.
+    scroll(200);
+    scroll(260);
     await waitFor(() => expect(bar.getAttribute("data-collapsed")).toBe("true"));
-    expect(scroller.scrollTop).toBe(204);
+    expect(scroller.scrollTop).toBe(160);
 
     // Another session's notes expanding leaves this session's floating bar alone.
     act(() => {
       topNotesStore.getState().setExpanded("local:other", true);
     });
     expect(bar.getAttribute("data-collapsed")).toBe("true");
-    expect(scroller.scrollTop).toBe(204);
+    expect(scroller.scrollTop).toBe(160);
 
-    // Expanding the focused session's notes restores the solid bar and shifts
-    // the scroller back by +barHeight so the reading position holds steady.
+    // On the way back, navigation returns first. Notes stay tucked away.
+    scroll(140);
+    expect(scroller.scrollTop).toBe(196);
+    expect(bar.getAttribute("data-collapsed")).not.toBe("true");
+
+    // Explicitly opening Notes restores the summary's height as well.
     act(() => {
-      topNotesStore.getState().setExpanded("local:a", true);
+      topNotesStore.getState().setExpanded(ref, true);
     });
     await waitFor(() => expect(bar.getAttribute("data-collapsed")).not.toBe("true"));
-    expect(scroller.scrollTop).toBe(260);
+    expect(scroller.scrollTop).toBe(240);
 
-    // Scrolling downward past the fold while notes remain expanded keeps the
-    // solid bar pinned so the capsules cannot float back over the notes header.
-    act(() => {
-      scroller.scrollTop = 340;
-      scroller.dispatchEvent(new Event("scroll"));
-    });
+    const editor = within(notes).getByRole<HTMLTextAreaElement>("textbox");
+    await userEvent.type(editor, "draft");
+    scroll(340);
+    expect(document.activeElement).toBe(editor);
+    expect(editor.value).toBe("draft");
     expect(bar.getAttribute("data-collapsed")).not.toBe("true");
     expect(scroller.scrollTop).toBe(340);
 
     // Collapsing the notes leaves the bar solid until the next scroll decides.
     act(() => {
-      topNotesStore.getState().setExpanded("local:a", false);
+      topNotesStore.getState().setExpanded(ref, false);
     });
     expect(bar.getAttribute("data-collapsed")).not.toBe("true");
 
-    // Once notes collapse, scrolling downward collapses the bar normally from
-    // the synced scroll position (400 -> 344).
-    act(() => {
-      scroller.scrollTop = 400;
-      scroller.dispatchEvent(new Event("scroll"));
-    });
+    scroll(400);
     await waitFor(() => expect(bar.getAttribute("data-collapsed")).toBe("true"));
-    expect(scroller.scrollTop).toBe(344);
+    expect(scroller.scrollTop).toBe(300);
+    scroll(5);
+    expect(scroller.scrollTop).toBe(105);
     host.unmount();
   } finally {
     topNotesStore.getState().resetForTests();
-    restoreSession();
+    restoreViewport();
   }
 });
 
