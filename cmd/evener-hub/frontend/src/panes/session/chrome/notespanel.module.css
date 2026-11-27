@@ -1,5 +1,5 @@
-/* Notes panel: the session's shared notes as their own surface. Three stacked
- * cards (yours / agent / links) inside PanelSection's shared section rhythm,
+/* Notes panel: the session's shared notes as their own surface. Two stacked
+ * cards (yours / agent) inside PanelSection's shared section rhythm,
  * so the panel reads as one family with DetailsPanel while giving the human
  * textarea the room a popover never had. Token colors and spacing only. */
 
@@ -21,31 +21,4 @@
   color: var(--ink-hi);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-}
-
-/* Links list: one row per entry, label link leading and the quiet Remove
- * trailing. Long URLs wrap at a separator rather than overflowing the card. */
-.linkList {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-}
-
-.linkRow {
-  display: flex;
-  align-items: baseline;
-  flex-wrap: wrap;
-  gap: var(--space-2);
-  font-family: var(--font-sans);
-  font-size: var(--font-size-ui);
-  color: var(--ink-hi);
-  overflow-wrap: anywhere;
-}
-
-.linkUrl {
-  color: var(--ink-mid);
-  font-size: var(--font-size-caption);
 }

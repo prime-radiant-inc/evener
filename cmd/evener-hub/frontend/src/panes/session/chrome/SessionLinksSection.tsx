@@ -11,8 +11,12 @@ import { EmptyState, Eyebrow, Input, isWebHref, SegmentedControl } from "../../.
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { FileOpenBesideButton } from "../transcript/fileOpenBeside";
 import { ActivityTime, type ActivityTimeValue, unixSecondsActivityTime } from "./activityTime";
-import { isFileHref } from "./NotesPanel";
 import styles from "./sessionlinkssection.module.css";
+
+/** A `file://` link can open in-app beside the transcript; every other href is web. */
+function isFileHref(href: string): boolean {
+  return /^file:\/\//.test(href);
+}
 
 type LinksOrderMode = "recent" | "grouped";
 type LinkCategory = "Artifacts & Docs" | "Pull Requests" | "Issues" | "Local files" | "Other links";

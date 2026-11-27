@@ -106,7 +106,6 @@ test("collapsed default shows first priority: human note with person icon", () =
   const model = makeModel({
     humanNote: "First line of human note\nSecond line",
     agentNote: "Agent note",
-    sessionUrls: [{ id: "u1", url: "https://example.com", label: "Example" }],
   });
   render(<TopNotesPanel sessionRef={model.ref} model={model} />);
 
@@ -120,7 +119,6 @@ test("collapsed default shows second priority: agent note with skill icon when h
   const model = makeModel({
     humanNote: "",
     agentNote: "First line of agent note\nSecond line",
-    sessionUrls: [{ id: "u1", url: "https://example.com", label: "Example" }],
   });
   render(<TopNotesPanel sessionRef={model.ref} model={model} />);
 
@@ -129,7 +127,21 @@ test("collapsed default shows second priority: agent note with skill icon when h
   expect(screen.getByText(/First line of agent note/)).toBeTruthy();
 });
 
-test("collapsed default shows third priority: links with globe icon when notes are empty", () => {
+test("collapsed default shows empty placeholder when no notes exist", () => {
+  const model = makeModel({
+    humanNote: "",
+    agentNote: "",
+  });
+  render(<TopNotesPanel sessionRef={model.ref} model={model} />);
+
+  expect(summaryPlaceholderReason()).toBe("empty");
+  expect(screen.queryByTestId("top-notes-icon-person")).toBeNull();
+  expect(screen.queryByTestId("top-notes-icon-skill")).toBeNull();
+});
+
+// Session links do not reach the collapsed summary: a links-only session
+// reads exactly like an empty one.
+test("collapsed summary ignores session links", () => {
   const model = makeModel({
     humanNote: "",
     agentNote: "",
@@ -140,29 +152,15 @@ test("collapsed default shows third priority: links with globe icon when notes a
   });
   render(<TopNotesPanel sessionRef={model.ref} model={model} />);
 
-  expect(screen.getByTestId("top-notes-icon-globe")).toBeTruthy();
-  expect(screen.getByText(/2 links/)).toBeTruthy();
-});
-
-test("collapsed default shows empty placeholder when no notes or links exist", () => {
-  const model = makeModel({
-    humanNote: "",
-    agentNote: "",
-    sessionUrls: [],
-  });
-  render(<TopNotesPanel sessionRef={model.ref} model={model} />);
-
   expect(summaryPlaceholderReason()).toBe("empty");
-  expect(screen.queryByTestId("top-notes-icon-person")).toBeNull();
-  expect(screen.queryByTestId("top-notes-icon-skill")).toBeNull();
   expect(screen.queryByTestId("top-notes-icon-globe")).toBeNull();
+  expect(panelSummary().textContent?.match(/\d+/g) ?? []).toEqual([]);
 });
 
 test("collapsed summary treats a whitespace-only note as empty", () => {
   const model = makeModel({
     humanNote: "   ",
     agentNote: " \n\t ",
-    sessionUrls: [],
   });
   render(<TopNotesPanel sessionRef={model.ref} model={model} />);
 
@@ -214,18 +212,10 @@ test("openAndFocus from topNotesStore expands the panel and focuses textarea", a
   });
 });
 
-test("expanded view displays human note editor, agent note, and links with remove functionality", async () => {
-  const user = userEvent.setup();
-  const removeURLSpy = vi.fn().mockResolvedValue(undefined);
-  vi.spyOn(threadsStore.getState(), "removeURL").mockImplementation(removeURLSpy);
-
+test("expanded view displays human note editor, agent note", async () => {
   const model = makeModel({
     humanNote: "My note",
     agentNote: "Agent analysis",
-    sessionUrls: [
-      { id: "u1", url: "https://example.com", label: "Example Docs" },
-      { id: "u2", url: "file:///repo/file.txt", label: "Local file" },
-    ],
   });
 
   topNotesStore.getState().setExpanded(model.ref, true);
@@ -235,17 +225,10 @@ test("expanded view displays human note editor, agent note, and links with remov
   const textarea = screen.getByRole("textbox", { name: "Human note" }) as HTMLTextAreaElement;
   expect(textarea.value).toBe("My note");
   expect(screen.getByText("Agent analysis")).toBeTruthy();
-  expect(screen.getByText("Example Docs")).toBeTruthy();
-  expect(screen.getByText("Local file")).toBeTruthy();
-
-  // Test removing URL
-  const removeBtn = screen.getByRole("button", { name: "Remove Example Docs" });
-  await user.click(removeBtn);
-  expect(removeURLSpy).toHaveBeenCalledWith(model.ref, "u1");
 });
 
 test("the read-only placeholder does not reuse the writable session's invitation", () => {
-  const empty = { humanNote: "", agentNote: "", sessionUrls: [] };
+  const empty = { humanNote: "", agentNote: "" };
   const writable = makeModel(empty);
   render(<TopNotesPanel sessionRef={writable.ref} model={writable} />);
   const invitation = panelSummary().textContent;
@@ -261,7 +244,6 @@ test("read-only sessions show a view-only empty state instead of a write invitat
     status: { type: "ended" },
     humanNote: "",
     agentNote: "",
-    sessionUrls: [],
   });
   render(<TopNotesPanel sessionRef={model.ref} model={model} />);
 
@@ -630,25 +612,23 @@ test("mobile collapsed whiteboard rests as one quiet count line and carries firs
 
   const cases = [
     {
-      name: "human + agent + link",
+      name: "human + agent",
       overrides: {
         humanNote: "human-sentinel-alpha\nsecond-line",
         agentNote: "agent-sentinel-beta",
-        sessionUrls: [{ id: "u1", url: "https://example.com", label: "Example" }],
       },
-      expectedCounts: ["2", "1"],
+      expectedCounts: ["2"],
       hiddenSentinels: ["human-sentinel-alpha", "agent-sentinel-beta"],
       expectedAriaSentinel: "human-sentinel-alpha",
       placeholderReason: null,
     },
     {
-      name: "agent + link when human note is empty",
+      name: "agent when human note is empty",
       overrides: {
         humanNote: "",
         agentNote: "agent-sentinel-gamma",
-        sessionUrls: [{ id: "u1", url: "https://example.com", label: "Example" }],
       },
-      expectedCounts: ["1", "1"],
+      expectedCounts: ["1"],
       hiddenSentinels: ["agent-sentinel-gamma"],
       expectedAriaSentinel: "agent-sentinel-gamma",
       placeholderReason: null,
@@ -663,14 +643,14 @@ test("mobile collapsed whiteboard rests as one quiet count line and carries firs
           { id: "u2", url: "https://foo.bar", label: "Foo" },
         ],
       },
-      expectedCounts: ["2"],
+      expectedCounts: [],
       hiddenSentinels: [],
-      expectedAriaSentinel: "2",
-      placeholderReason: null,
+      expectedAriaSentinel: null,
+      placeholderReason: "empty",
     },
     {
       name: "empty writable session",
-      overrides: { humanNote: "", agentNote: "", sessionUrls: [] },
+      overrides: { humanNote: "", agentNote: "" },
       expectedCounts: [],
       hiddenSentinels: [],
       expectedAriaSentinel: null,
@@ -678,7 +658,7 @@ test("mobile collapsed whiteboard rests as one quiet count line and carries firs
     },
     {
       name: "empty read-only session",
-      overrides: { status: { type: "ended" as const }, humanNote: "", agentNote: "", sessionUrls: [] },
+      overrides: { status: { type: "ended" as const }, humanNote: "", agentNote: "" },
       expectedCounts: [],
       hiddenSentinels: [],
       expectedAriaSentinel: null,
@@ -696,7 +676,6 @@ test("mobile collapsed whiteboard rests as one quiet count line and carries firs
     expect(root.getAttribute("data-expanded"), item.name).toBeNull();
     expect(screen.queryByTestId("top-notes-icon-person"), item.name).toBeNull();
     expect(screen.queryByTestId("top-notes-icon-skill"), item.name).toBeNull();
-    expect(screen.queryByTestId("top-notes-icon-globe"), item.name).toBeNull();
 
     const visibleText = summary.textContent ?? "";
     for (const sentinel of item.hiddenSentinels) {
@@ -727,7 +706,6 @@ test("mobile whiteboard expands to full editor and tracks draft, remote updates,
   const model = makeModel({
     humanNote: "saved-sentinel",
     agentNote: "agent-body-sentinel",
-    sessionUrls: [{ id: "u1", url: "https://example.com", label: "Example Docs" }],
   });
   const view = render(<TopNotesPanel sessionRef={model.ref} model={model} />);
 
@@ -740,7 +718,6 @@ test("mobile whiteboard expands to full editor and tracks draft, remote updates,
   expect(screen.getByTestId("top-notes-panel").getAttribute("data-expanded")).toBe("true");
   expect(screen.getByTestId("top-notes-expanded-content")).toBeTruthy();
   expect(screen.getByText("agent-body-sentinel")).toBeTruthy();
-  expect(screen.getByText("Example Docs")).toBeTruthy();
   const expandedAria = panelSummary().getAttribute("aria-label");
   expect(expandedAria).not.toBeNull();
   expect(expandedAria).not.toBe(collapsedAria);

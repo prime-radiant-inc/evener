@@ -168,13 +168,13 @@ the Past index's Recent list.
   preservation, and a fresh `thread/read` carries it (the Task 7 I1
   live-envelope pin); history check bounds per-round `NOTES_CONTEXT`
   growth (Task 5 M3).
-- `web-notes-url-add-remove.md` — agent `urls_add` links render as
-  per-id `shared-notes-url-<id>` rows in Notes (explicit live-provider
-  model-choice setup), human `urls/remove` deletes by id
-  with the `evener/urls/updated` push as authority (empty response by
-  design), removal converges without reload, the row/button testid
-  pairing answers the bare-id discoverability question (Task 8 minor 5),
-  and the `Link:` context-block shape is pinned.
+- `web-notes-url-add-remove.md` — agent `urls_add` links render as per-id
+  `about-link-<id>` rows in the Overview sidebar's Links tab, read-only on
+  the web (explicit live-provider model-choice setup), and the notes panel
+  carries no link rows; human `urls/remove` deletes by id over `/rpc` with
+  the `evener/urls/updated` push as authority (empty response by design),
+  removal converges without reload, the bare id stays discoverable over
+  `/rpc` and the row testids, and the `Link:` context-block shape is pinned.
 
 ## `ask_user` (interactive questions)
 

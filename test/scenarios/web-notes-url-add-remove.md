@@ -1,14 +1,14 @@
-# web-notes-url-add-remove: agent-added links render, human removal sticks, bare-id removal is discoverable
+# web-notes-url-add-remove: agent-added links render in the Overview Links tab, wire removal sticks
 
 **What this covers**: the session URL list end to end on the web surface.
 The agent's `urls_add` tool (`agent/internal/tool/definitions.go:DefUrlsAdd`,
 agent tool name `urls_add` — tool names cannot contain slashes, so the wire
-RPC `urls/add` and the tool differ in spelling) appends entries the Notes
-panel renders as links; the human's `urls/remove`
+RPC `urls/add` and the tool differ in spelling) appends entries the Overview
+sidebar's Links tab renders (read-only — the web surface has no removal
+control); the human's `urls/remove`
 (`appwire/types_thread.go#UrlsRemoveParams`, daemon `agent/session_notes_mutations.go:RemoveSessionURL`)
-removes one by id; the `evener/urls/updated` push keeps every client
-converged; and the removed id stays discoverable from the panel (step 5 pins
-the web panel's answer).
+removes one by id over the wire; and the `evener/urls/updated` push keeps
+every client converged (step 5 pins the web client's answer).
 
 The Go layer covers the store and the gate with unit tests
 (`agent/session_notes_test.go:TestAddSessionURLDedupsCanonically`,
@@ -22,31 +22,33 @@ four things in one run:
 - **Agent-side add reaches the browser.** `urls_add` stores
   `{id, url, label, addedBy, addedAt}` (identity pinned by
   `TestAddSessionURLDedupKeepsIdentity` — a re-add keeps the first id) and
-  emits `evener/urls/updated`; the Notes panel's links row renders one
-  `<li data-testid="shared-notes-url-<id>">` per entry
-  (`NotesPanel.tsx:203-251`).
-- **Human-side remove is id-addressed and push-authoritative.**
+  emits `evener/urls/updated`; the Overview sidebar's Links tab renders one
+  `about-link-<id>` row per entry (`SessionLinksSection.tsx:190`, `:215`).
+  The session header's Notes panel renders none of them (step 3 pins that).
+- **Wire-side remove is id-addressed and push-authoritative.**
   `urls/remove` takes `{ref, clientMutationId, expectedInstanceId, id}` and
   its response carries no state at all (`UrlsRemoveResponse` is empty by wire
-  design — the `evener/urls/updated` push is the authority,
-  `threads.ts:2655-2658`). The web client commits no local list edit; the
-  row disappears when the push lands.
+  design — the `evener/urls/updated` push is the authority, `threads.ts:677`).
+  The web client commits no local list edit; the row disappears when the push
+  lands.
 - **Canonical dedup keeps the list honest.** Re-adding the same URL (modulo
   fragment, case, default port — `TestCanonicalSessionURLNormalizesHTTP`)
   keeps one entry and updates its label; `docs/x.md` and `./docs/x.md`
   collide (`TestAddSessionURLDedupsCanonically`,
   `agent/session_notes_test.go:39`).
 - **Removal converges everywhere.** The push folds through the reducer and
-  the store (`protocol/reducer.ts` urls case, `threads.ts` push routing with
-  the per-verb `urlsUpdateGenerations` fence), so a second client watching
-  the same session sees the same list without reloading.
+  the store (the `evener/urls/updated` case in `reducer.ts:503` replaces
+  `sessionUrls` wholesale, and `threads.ts:7095` keeps a urls push from
+  retiring a notes response commit), so a second client watching the same
+  session sees the same list without reloading.
 
 **Surface**: see `docs/developing-evener/agentic-testing.md`, "Driving the web UI" — the
 selector map there is the single place these hooks are maintained. There is
 no `window` handle to add or remove URLs through (`threadsStore` is a module
 import with nothing on `window`), so adding goes through the agent's real
-tool and removal goes through the real UI (the row's Remove button) plus
-`/rpc` for the exact assertions.
+tool and removal goes through `/rpc` only: the web Links tab is read-only by
+design and renders no Remove control, and mobile keeps the only human remove
+surface.
 
 ## Pre-state
 
@@ -96,87 +98,93 @@ ref off the resulting `/s/local:<SID>` path, and wait for `idle` (poll `thread/r
    in `includeTurns` — a `gopher://` scheme, an out-of-scope file path, or a
    51st URL is refused by validation, `TestAddSessionURLRejectsOverCapAndBadScheme`).
 
-2. **[browser] Read the links row.** Authenticate and open the session:
+2. **[browser] Read the Links tab.** Authenticate and open the session:
    ```text
    navigate $HUB/auth/<TOKEN>?next=/s/local:<SID>
    await_element [data-testid="composer-input-card"]
    ```
    (Use the literal token, not the path. Note the ref form — a bare `/s/<SID>`
-   renders "Page not found" by design.) Open **Notes** from the session
-   chrome button/menu or `/notes` desktop pane and read the Shared notes section:
+   renders "Page not found" by design.) Open the Overview sidebar with the
+   session header's Overview button (`[aria-label="Overview"]`,
+   `SessionInspectionActions.tsx:79`), switch to its Links tab (the tab
+   button whose id ends `-tab-links`), and read the links list:
    ```javascript
    (() => {
-     const section = document.querySelector('[data-testid="shared-notes-section"]');
-     const rows = section ? [...section.querySelectorAll('[data-testid="shared-notes-urls"] li')] : [];
+     const sidebar = document.querySelector('[data-testid="activity-sidebar"]');
+     const rows = sidebar ? [...sidebar.querySelectorAll("li[data-link-url]")] : [];
      return {
        port: location.port,                        // page-identity check, always
        path: decodeURIComponent(location.pathname), // /s/local:<SID>; the literal colon breaks naive === compare
-       section: !!section,
+       sidebar: !!sidebar,
        rows: rows.map((li) => ({
-         testid: li.getAttribute("data-testid"),
+         testid: li.querySelector("[data-testid]")?.getAttribute("data-testid") ?? null,
          text: li.textContent,
          href: li.querySelector("a")?.getAttribute("href") ?? null,
-         remove: li.querySelector("button")?.getAttribute("data-testid") ?? null,
-         removeLabel: li.querySelector("button")?.getAttribute("aria-label") ?? null,
+         linkUrl: li.getAttribute("data-link-url"),
+         button: li.querySelector("button") ? "button-present" : null,
        })),
      };
    })()
    ```
-   **Expected:** two rows; each row's `testid` is `shared-notes-url-<id>`
-   with the `<id>` half byte-identical to the wire id from step 1 (this
-   pairing is the discoverability proof — see step 5); each `http(s)` URL
-   renders as an anchor (`href` exactly the URL, `target _blank`,
-   `rel="noopener noreferrer"`, `NotesPanel.tsx:214`); the destination URL
-   remains visible beside a label. Each row carries a Remove button whose
-   `data-testid` is `shared-notes-url-remove-<id>` with the *same* `<id>`
-   (`:233-243`). In-scope file URLs use the in-app open-beside affordance
-   with visible URL text; unsupported/out-of-scope paths have no affordance
-   (`:219-230`). This card uses `https:` URLs to exercise the anchor half.
+   **Expected:** two rows; each row's `testid` is `about-link-<id>` with the
+   `<id>` half byte-identical to the wire id from step 1 (the row's
+   `data-link-url` repeats the entry URL); each `http(s)` URL renders as an
+   anchor (`href` exactly the URL, `target="_blank"`,
+   `rel="noopener noreferrer"`, `SessionLinksSection.tsx:190`) with the label
+   as its visible text. No row carries a button — this card uses `https:`
+   URLs, whose rows are bare anchors (`button: null` on every row); the
+   in-app open-beside button exists only for in-scope `file://` entries
+   (`:204`). An empty session would show the compact
+   "No saved links" empty state instead (`:159`).
 
-3. **[browser] Remove one link through the real UI.** Click the `U_MOCK`
-   row's Remove button (`[data-testid="shared-notes-url-remove-<U_MOCK>"]`)
-   and re-read the step-2 query. **Expected:** the `U_MOCK` row is gone; the
-   `U_SPEC` row remains; no toast appears in
-   `section[aria-label="Notifications"]`. The client commits no local edit —
-   the row disappears when `evener/urls/updated` lands (`threads.ts:2655`),
-   so a row that vanishes *before* the push would mean an optimistic edit
-   someone added against the wire design. Falsify: a `Couldn't remove link`
-   toast (the panel's call failed — cross-check step 4's wire call to tell a
-   panel bug from a store refusal).
+3. **[browser] The Notes panel carries no links.** From the same session
+   page, open **Notes** from the session chrome button/menu or `/notes`
+   desktop pane and read the Shared notes section:
+   ```javascript
+   (() => {
+     const section = document.querySelector('[data-testid="shared-notes-section"]');
+     return {
+       section: !!section,
+       linkList: !!section?.querySelector('[data-testid="shared-notes-urls"]'),
+       linkRows: section
+         ? [...section.querySelectorAll("[data-testid^='shared-notes-url-']")].length
+         : -1,
+     };
+   })()
+   ```
+   **Expected:** `linkList` false and `linkRows` 0 — the notes body renders
+   note text only; session links live in the Overview sidebar's Links tab
+   (step 2), never here.
 
-4. **[browser-free] Remove the second link over the wire — the exact
-   push-authority proof.** On the `/rpc` socket, call:
+4. **[browser-free] Remove one link over the wire.** On the `/rpc` socket,
+   call:
    ```json
    {"id":4,"method":"urls/remove","params":{"ref":"local:<SID>",
-    "clientMutationId":"<uuid>","expectedInstanceId":"<SID>","id":"<U_SPEC>"}}
+    "clientMutationId":"<uuid>","expectedInstanceId":"<SID>","id":"<U_MOCK>"}}
    ```
    Param shape is `appwire.UrlsRemoveParams` (`appwire/types_thread.go#UrlsRemoveParams`).
    Then re-issue the step-1 `thread/read` and diff the `sessionUrls` list.
    **Expected:** no error; the response is `{}` (empty by design — it carries
    no state, so assert nothing about the list from the response itself); the
-   fresh read carries only `[]` (both links gone). A second `urls/remove`
-   with the same id now fails `InvalidParams` (unknown id maps to
-   InvalidParams, `agent/session_notes_mutations.go` RemoveSessionURL via
+   fresh read carries only `U_SPEC`.
+
+5. **[browser] Confirm the removal converged without reload.** Still on the
+   session page from step 2 (no refresh), re-read the step-2 query.
+   **Expected:** the `U_MOCK` row is gone from the Links tab; the `U_SPEC`
+   row remains; no toast appears in `section[aria-label="Notifications"]`.
+   The client commits no local edit — the row disappears when
+   `evener/urls/updated` lands, so a row that vanishes *before* the push
+   would mean an optimistic edit someone added against the wire design.
+
+6. **[browser-free] Remove the second link and prove the refusal.** Call
+   `urls/remove` again with `id":"<U_SPEC>"`; a fresh `thread/read` now shows
+   `[]` (both links gone). A third `urls/remove` re-sending the `U_MOCK` id
+   fails `InvalidParams` (unknown id maps to InvalidParams,
+   `agent/session_notes_mutations.go` RemoveSessionURL via
    `TestRemoveSessionURLDaemonPath`) — that refusal is the store telling you
    the first removal stuck, not a new failure.
 
-5. **[browser] Confirm the removal converged without reload, and note the
-   discoverability answer.** Still on the session page from step 3 (no
-   refresh), re-read the step-2 query. **Expected:** the links row is gone
-   (or the section shows only the human/agent rows, or — if the session held
-   nothing else — the not-live inert `No shared notes` text); still no
-   toast. Then answer the Task 8 minor-5 question explicitly: read one
-   remaining-or-remembered row's `remove` testid and strip the
-   `shared-notes-url-remove-` prefix — the remainder is the bare id a raw
-   `urls/remove` RPC needs. Record in
-   the run notes whether that pairing held: on the web panel the id IS
-   discoverable (row testid + button testid both embed it, and the button's
-   `aria-label` names the entry — `Remove spec` — so a human can pair row to
-   id without devtools only if they can see testids, which they cannot; the
-   honest statement is "discoverable over `/rpc` + DOM, not from the rendered
-   text alone").
-
-6. **[browser-free, history check] Assert the URL context shape.** Read the
+7. **[browser-free, history check] Assert the URL context shape.** Read the
    agent context block the session actually consumed:
    ```bash
    go run ./cmd/evener doctor transcript "$SID" --format outline --range last:80
@@ -185,8 +193,8 @@ ref off the resulting `/s/local:<SID>` path, and wait for `idle` (poll `thread/r
    `user` message body). **Expected:** while both links were set, the block
    rendered each as a `Link:` line — `Link: spec
    (https://example.com/notes-spec)` (`agent/session_notes_context.go` formatNotesLinkLine,
-   pinned by `TestNotesContextBlockContainsNotesAndURLs`) — and after step
-   4's removal the next block (if any turn runs after it) no longer carries
+   pinned by `TestNotesContextBlockContainsNotesAndURLs`) — and after the
+   removals the next block (if any turn runs after them) no longer carries
    the removed URL. Human URL removals reach the agent even though the wire
    pushes travel hub-ward, because the block is re-rendered from the store
    before the next round (`maybeAppendNotesContext` runs beside the goal
@@ -204,25 +212,23 @@ ref off the resulting `/s/local:<SID>` path, and wait for `idle` (poll `thread/r
   agent claims success (the tool emission never reached the store), or
   `sharedNotes:false` on a live evener session (the capability bit
   regressed).
-- **Step 2 (render, exact-in-browser)**: two `shared-notes-url-<id>` rows,
-  anchors with exact hrefs, per-row `shared-notes-url-remove-<id>` buttons.
-  Falsify: rows keyed by anything but the wire id (the step-5 pairing
-  breaks); `http(s)` links rendered as inert text (the `isWebURL` branch
-  regressed, `NotesPanel.tsx:208-230`); Remove buttons missing while live
-  (the ordered display rule regressed — rule 2 strips them only when *not*
-  live, `NotesPanel.tsx:233`).
-- **Step 3 (UI remove, qualitative)**: one row gone on push, no toast.
-  Falsify: row gone with no push on the socket (an optimistic edit against
-  the design); row persisting after the push (the reducer/store fold dropped
-  it); toast naming a failure the wire call does not reproduce.
-- **Step 4 (wire remove, exact)**: `{}` response, fresh read shows the id
-  gone, re-remove refused as `InvalidParams`. Falsify: the response carrying
-  a list (the wire type changed — `UrlsRemoveResponse` must stay empty), or
-  the read still listing the id (the store never removed it).
-- **Step 5 (converge + discoverability, qualitative)**: no-reload
-  convergence plus the recorded discoverability verdict (web: id embedded in
-  row/button testids; rendered text alone does not show it).
-- **Step 6 (context, exact)**: `Link: <label> (<url>)` lines while set,
+- **Step 2 (render, exact-in-browser)**: two `about-link-<id>` rows in the
+  Overview Links tab, anchors with exact hrefs, no button on any row.
+  Falsify: rows keyed by anything but the wire id; `http(s)` links rendered
+  as inert text (the `isWebHref` branch regressed).
+- **Step 3 (notes panel, exact-in-browser)**: the Shared notes section
+  renders note text with no link list and no link rows.
+- **Step 4 (wire remove, exact)**: `{}` response, fresh read shows only
+  `U_SPEC`. Falsify: the response carrying a list (the wire type changed —
+  `UrlsRemoveResponse` must stay empty), or the read still listing the id
+  (the store never removed it).
+- **Step 5 (converge, qualitative)**: no-reload convergence in the Links
+  tab, no toast. Falsify: row gone with no push on the socket (an optimistic
+  edit against the design); row persisting after the push (the reducer/store
+  fold dropped it).
+- **Step 6 (refusal, exact)**: fresh read `[]`, re-remove refused as
+  `InvalidParams`.
+- **Step 7 (context, exact)**: `Link: <label> (<url>)` lines while set,
   absent after removal; growth within the per-round bound.
 
 ## Cleanup
@@ -251,21 +257,19 @@ above is what keeps this run's sessions out of them.
   `file:///etc/passwd` are refused). Prompts that add "a few links" can
   silently collide into one entry — this card uses two URLs that differ past
   the host so the count assertion means something.
-- **Only the agent adds; only the human removes — by design.** `urls/add`
+- **Only the agent adds; removal is wire-only on the web.** `urls_add`
   is an agent tool (not in the AppWire catalog:
   `appwire/protocol_notes_test.go:58` asserts the agent verbs stay out), and
-  `urls/remove` is a hub RPC (no agent tool removes links). A card that tries
-  `urls/add` over `/rpc` gets a catalog refusal; a card that has the model
-  call `urls_remove` finds no such tool. Do not read either refusal as a
-  notes bug.
+  `urls/remove` is a hub RPC (no agent tool removes links). The web Links
+  tab is read-only by design and renders no Remove control; a card that
+  looks for one finds none. Do not read either refusal as a notes bug.
 - **The remove response is `{}` — there is nothing to assert in it.**
   `UrlsRemoveResponse` carries no state by wire design; the push is the
   authority. A test that reads the removed id out of the response is testing
   a field that must not exist.
-- **`urls/remove` takes a bare id with no picker** (Task 8 minor 5 carried
-  watch item). On the web the id is embedded in the row and button testids
-  (step 5's pairing), so a human can pair row to id from the DOM even though
-  the rendered text alone does not show it.
+- **`urls/remove` takes a bare id with no picker.** The id is discoverable
+  over `/rpc` (`thread/read` lists the ids) and in the DOM (the row's
+  `about-link-<id>` testid); the rendered label text alone does not show it.
 - **Entries keep their first id across re-adds.** A re-add updates the label
   but keeps `id`/`addedBy`/`addedAt` (`TestAddSessionURLDedupKeepsIdentity`),
   so an id recorded in step 1 stays valid through any label churn. Asserting
@@ -288,10 +292,11 @@ above is what keeps this run's sessions out of them.
   values so a refusal there means something else broke.
 - **The transcript is virtualized** (`VirtualList`, `panes/session/Session.tsx`),
   so a global row count measures the viewport. Scope every query to the
-  Shared notes section, and use the doctor — not DOM counts — for the step-6
-  history shape.
+  Links tab's list (`li[data-link-url]` inside the activity sidebar) or the
+  Shared notes section, and use the doctor — not DOM counts — for the
+  step-7 history shape.
 - **The pure add/remove logic is already unit-tested** —
   `TestUrlsAddRemoveTool` (`agent/session_tools_notes_test.go:98`) pins the
   add→event→remove→empty loop including the id round-trip. If those pass and
   this card fails, the break is in the wiring (projection, push fold, or
-  panel), not the store.
+  render), not the store.

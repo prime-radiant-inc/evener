@@ -1,6 +1,6 @@
 # Shared notes
 
-The Notes panel contains your note, the agent's note, and session links.
+The Notes panel contains your note and the agent's note.
 
 On mobile, scrolling into the conversation tucks the collapsed summary away,
 whether you start at the top or at the latest turn. Reverse your scroll to
@@ -40,8 +40,8 @@ once it understands the task, updates it when a phase finishes, the plan
 changes, or it is blocked, and brings it up to date before its final report.
 
 When the session can add links, the agent also adds each GitHub pull request
-it opens, updates, reviews or merges, and other links you should look at, to
-the session links list, each with a short label.
+it opens, updates, reviews or merges, and other links you should look at,
+to the Overview sidebar's Links tab, each with a short label.
 
 Editing your note changes a shared draft for that session. Multiple open panels show the same draft. Leaving the editor schedules a save **10 seconds later**; focusing any editor for the same session cancels that delay. Saving also notifies the agent and may wake an idle agent.
 
@@ -53,7 +53,7 @@ A saved response only acknowledges the draft that was submitted. Typing while an
 
 If a save is refused, the panel keeps your draft and shows the error. Edit or refocus and leave the field to schedule another attempt. An uncertain transport outcome stays in the durable outbox and reconnects using the same request identity, rather than sending a second independent notification. A blocked outcome waits for session recovery. Submitted drafts survive reload through that outbox; edits not yet submitted are browser-memory drafts and do not survive a full reload.
 
-A save will not proceed if the session ends, loses notes capability, or changes instance before its deadline. Read-only sessions continue to show saved notes and links.
+A save will not proceed if the session ends, loses notes capability, or changes instance before its deadline. Read-only sessions continue to show saved notes; links live in the Overview sidebar's Links tab.
 
 ## Transcript updates
 
