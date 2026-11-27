@@ -583,6 +583,7 @@ func TestShellToolStreamingPathHonorsSessionTimeouts(t *testing.T) {
 	for _, tc := range []struct {
 		name             string
 		turnEndsProcess  bool
+		resultToolName   string
 		limit            schema.ToolOutputLimit
 		args             json.RawMessage
 		wantPreviewBytes int64
@@ -602,6 +603,7 @@ func TestShellToolStreamingPathHonorsSessionTimeouts(t *testing.T) {
 		{
 			name:             "one_shot_preview_min_char_limit",
 			turnEndsProcess:  true,
+			resultToolName:   "reply_parent",
 			limit:            schema.ToolOutputLimit{MaxChars: shellToolResultMinJSONChars, Strategy: schema.TruncHeadTail},
 			args:             json.RawMessage(`{"command":"printf '%0600d\\n' 1; ` + idleShellCommand + `"}`),
 			wantPreviewBytes: 600,
@@ -627,6 +629,7 @@ func TestShellToolStreamingPathHonorsSessionTimeouts(t *testing.T) {
 				DefaultCommandTimeoutMS: 100,
 				MaxCommandTimeoutMS:     100,
 				TurnEndsProcess:         tc.turnEndsProcess,
+				ResultToolName:          tc.resultToolName,
 				ToolOutputLimits: map[string]schema.ToolOutputLimit{
 					"shell": tc.limit,
 				},
@@ -724,9 +727,16 @@ func TestShellToolStreamingPathHonorsSessionTimeouts(t *testing.T) {
 			if !strings.Contains(res.Output, "after 1s") {
 				t.Fatalf("promoted shell model output does not state the elapsed wait: %q", res.Output)
 			}
-			wantQuietCall := `communicate(next="log_quietly_and_end_turn"`
+			wantResultTool := tc.resultToolName
+			if wantResultTool == "" {
+				wantResultTool = tool.DefaultResultToolName
+			}
+			wantQuietCall := wantResultTool + `(next="log_quietly_and_end_turn"`
 			if !strings.Contains(res.Output, wantQuietCall) {
 				t.Fatalf("promoted shell model output lost quiet-yield call %q under constrained registry limits: %q", wantQuietCall, res.Output)
+			}
+			if tc.resultToolName != "" && strings.Contains(res.Output, tool.DefaultResultToolName+`(next="log_quietly_and_end_turn"`) {
+				t.Fatalf("promoted shell model output still suggested %s when ResultToolName=%q: %q", tool.DefaultResultToolName, tc.resultToolName, res.Output)
 			}
 			if tc.turnEndsProcess {
 				wantWatchCall := fmt.Sprintf(`job_watch(operation="create", source=%q, progress_interval_ms=180000)`, out.JobID)
