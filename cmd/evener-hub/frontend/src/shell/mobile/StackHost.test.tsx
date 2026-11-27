@@ -2605,6 +2605,7 @@ test("mobile notes stay tucked while reading and return near the top or when exp
     scroll(200);
     scroll(260);
     await waitFor(() => expect(bar.getAttribute("data-collapsed")).toBe("true"));
+    expect(notes.closest("[data-notes-hidden]")).not.toBeNull();
     expect(scroller.scrollTop).toBe(160);
 
     // Another session's notes expanding leaves this session's floating bar alone.
@@ -2616,6 +2617,7 @@ test("mobile notes stay tucked while reading and return near the top or when exp
 
     // On the way back, navigation returns first. Notes stay tucked away.
     scroll(140);
+    expect(notes.closest("[data-notes-hidden]")).not.toBeNull();
     expect(scroller.scrollTop).toBe(196);
     expect(bar.getAttribute("data-collapsed")).not.toBe("true");
 
@@ -2624,6 +2626,7 @@ test("mobile notes stay tucked while reading and return near the top or when exp
       topNotesStore.getState().setExpanded(ref, true);
     });
     await waitFor(() => expect(bar.getAttribute("data-collapsed")).not.toBe("true"));
+    expect(notes.closest("[data-notes-hidden]")).toBeNull();
     expect(scroller.scrollTop).toBe(240);
 
     const editor = within(notes).getByRole<HTMLTextAreaElement>("textbox");
@@ -2644,6 +2647,7 @@ test("mobile notes stay tucked while reading and return near the top or when exp
     await waitFor(() => expect(bar.getAttribute("data-collapsed")).toBe("true"));
     expect(scroller.scrollTop).toBe(300);
     scroll(5);
+    expect(notes.closest("[data-notes-hidden]")).toBeNull();
     expect(scroller.scrollTop).toBe(105);
     host.unmount();
   } finally {
