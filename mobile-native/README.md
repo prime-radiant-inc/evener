@@ -45,12 +45,19 @@ profile for drafts and pending sends.
 The iOS share extension accepts text and links. Choose a conversation to add
 the item to its web draft, or choose New session to use it in the launch prompt.
 The extension keeps its copy until the draft is saved or the new session starts.
+If the selected hub needs an update to receive the share, the app tells you
+when you choose the destination. The shared item stays on the phone.
 
 The web composer uses the system keyboard, including iOS Dictation when enabled,
 and the image picker. **Open in…** in the document viewer opens the system share
 sheet for local documents and supported remote images. Other remote documents
 keep their web preview and copy actions. Native foreground alerts respect
-the active conversation, editor, and reader. Tapping an alert opens its destination in the hub workspace. Alerts use the app’s existing
+the active conversation, editor, and reader. In the iPhone app, **Settings →
+Notifications** controls failure alerts, questions and approvals, holding alerts
+while reading or typing, and haptics. These preferences follow this phone across
+saved hubs. Tapping an alert opens its destination in the hub workspace. Opening
+a grouped Needs You alert requires a hub that supports that destination. The
+app prompts for a hub update when needed. Alerts use the app’s existing
 foreground connection. Lock-screen push would require a push provider.
 The separate [spoken manager mode](../docs/product/voice.md) is excluded
 from the shipping app.
@@ -74,25 +81,12 @@ explains why the bundle is required alongside tests and type checking. The
 [build guide](../docs/design/mobile/ios-build-distribution.md) covers locked iOS
 project generation and distribution prerequisites.
 
-## On-device Board on iPhone Duo
+## Board on iPhone Duo
 
-The hosted workspace keeps the Board beside the conversation on the inner
-display when both fit. Its session controls follow the iOS system bar, and
-the composer remains in the conversation. In **Work on this
-iPhone**, the app fills both iPhone Duo displays. The outer display keeps the Board
-single-pane. The inner display puts the Board on the left and the open
-conversation on the right; the Board's search, scroll and live state keep
-running while the conversation is open. The split is chosen by window size (both
-sides at least 600 points), not by device name. Landscape is supported: a regular
-iPhone in landscape keeps the single-pane Board and conversation, and the Board,
-conversation, agent and job screens, reader and Hub pages, and the alert banner
-inset their content by the left/right safe areas.
-
-A conversation opened from the Board uses the split. Conversations opened from a
-root route (a share, an alert, a restored root location) still open full screen;
-that entry-point work is separate. The app does not render on both displays at
-once and does not lay out around a partially folded hinge. See
-[the design](../docs/design/mobile/iphone-duo.md).
+The cover shows one pane at a time. The inner display keeps the Board beside
+the conversation when both fit. Folding or rotating keeps the conversation and
+draft open. The system navigation bar places session actions, while Attach
+and Send stay with the composer. See [Duo layouts](../docs/design/mobile/iphone-duo.md).
 
 ## Run on simulators
 
@@ -170,7 +164,13 @@ typechecks and passes every test, then crashes the screen on device. Hoist
 any such call to the component body and capture its result in the closure;
 the worklet may then only read numbers and animated values.
 
-## Queued-message recovery
+## Native development client
+
+The following native screen and SQLite contracts apply to the development
+client. The shipping iPhone uses the [hub workspace](../docs/web-ui/README.md)
+and its [browser draft and recovery controls](../docs/product/message-recovery.md#iphone-workspace).
+
+### Queued-message recovery
 
 Transcript ghosts and the Queue sheet offer local Edit and Remove for safely
 unattempted messages, including offline and Stop-held work. Edit preserves the
@@ -185,7 +185,7 @@ preserve prose and bytes but cannot recover unstored image-reference association
 See [message recovery and ownership](../docs/product/message-recovery.md) for the
 cache boundary, failure recovery, checks and deferred C05/C06 work.
 
-## Memory-refresh transcript updates
+### Memory-refresh transcript updates
 
 Automatic index observations appear as standalone **Refreshed my memory** rows
 from the Tools level up; Chat and Intent show the actions view instead. Where
@@ -206,7 +206,7 @@ The JavaScript tests and iOS Metro bundle check do not establish installed-iPhon
 touch behavior or narrow-layout wrapping; those require a current-source device
 or simulator smoke check.
 
-## Shared-notes transcript updates
+### Shared-notes transcript updates
 
 Internal snapshots fold under **Shared notes updated**. Chat hides them even
 with System events enabled; other levels follow that setting. Activity and Full
@@ -216,7 +216,7 @@ at every level. See the [shared-notes guide](../docs/web-ui/shared-notes.md).
 
 The dated 8 September execution checkpoint remains in the development archive. Its simulator and controller results identify earlier artifacts; use the current acceptance index for the joined checkpoint journey.
 
-## Older-history recovery
+### Older-history recovery
 
 A session opens at the **latest** (live end), never at a saved reading position
 (`openingTarget` in `src/readerPosition.ts`). The one exception is the
@@ -246,7 +246,7 @@ unobserved sessions are reclaimed. Existing conversation stores and reader-posit
 restoration still own loaded rows, merging and reading anchors. This intent memory
 lasts for the app lifetime and adds no disk persistence.
 
-## On-device workspace capabilities
+### On-device workspace capabilities
 
 Assistant filename actions and document chips share the file-reference grammar.
 Authored HTML tags are literal text, so they do not suppress otherwise eligible

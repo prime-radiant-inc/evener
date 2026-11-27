@@ -179,6 +179,8 @@ profile. Its draft, queue, and recovery controls follow the browser contracts
 above. The app does not import or dispatch work from the retired iPhone editor.
 An incoming share stays in the App Group until its destination saves the text
 in a conversation draft or starts the new session.
+Choosing a hub that cannot receive the share leaves the item pending on the
+phone and prompts for an update to that hub.
 
 ## Android development client
 
