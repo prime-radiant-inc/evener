@@ -173,9 +173,11 @@ The fix under test samples the live, hittable handle center in the round trip
 immediately before each press, takes each drag's destination from that same
 sample (a number drags to a viewport coordinate; a function computes one from
 the sample, which is how the first drag moves 60px right of the live strip),
-waits for the board width to reach the width the component's own clamp computes
-for that destination, and retries the whole press with a fresh sample (throwing
-with each attempt's live board state) when the width never moves.
+waits for the board's rendered width to move off the baseline captured with
+that sample and match the published aria-valuenow - the advertised limits stay
+asserted in assertTabletSplit, so the gate only distinguishes a published
+resize from a missed press - and retries the whole press with a fresh sample
+(throwing with each attempt's live board state) when the width never moves.
 
 **Mutation performed:** in
 `cmd/evener-hub/frontend/scripts/shellguard/run.mjs` injected, around the two
