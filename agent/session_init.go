@@ -2804,6 +2804,18 @@ func unsupportedHandlerTypeWarning(pluginName, event, handlerType string) string
 		pluginName, shown, event)
 }
 
+// skillCollisionWarning summarizes one catalog name's collision history for the
+// copy the session actually resolved to.
+func skillCollisionWarning(name, winner string, shadowed []string) events.WarningData {
+	return skillDiagnosticWarning(skill.Diagnostic{
+		Name:        name,
+		Category:    "collision",
+		Source:      winner,
+		OtherSource: strings.Join(shadowed, ", "),
+		Message:     "higher-precedence skill replaces earlier sources",
+	})
+}
+
 func skillDiagnosticWarning(d skill.Diagnostic) events.WarningData {
 	target := d.Source
 	if d.Field != "" {
@@ -2822,8 +2834,8 @@ func skillDiagnosticWarning(d skill.Diagnostic) events.WarningData {
 		warning.Title = "Skill compatibility"
 		warning.Hint = fmt.Sprintf("Review %s when convenient. The source file was left unchanged.", target)
 	case "collision":
-		warning.Message += "; displaced source " + d.OtherSource
-		warning.Hint = fmt.Sprintf("Review %s and %s. This session loads the highest-precedence copy; source changes are picked up on the next catalog discovery or session startup. Other skills remain usable.", d.Source, d.OtherSource)
+		warning.Message += "; displaced: " + d.OtherSource
+		warning.Hint = fmt.Sprintf("Review %s and %s. This session resolves to the copy at %s; source changes are picked up on the next catalog discovery or session startup. Other skills remain usable.", d.Source, d.OtherSource, d.Source)
 	case "unverified_cache_root":
 		warning.Title = "Skill cache fallback"
 		warning.Hint = "Set TMPDIR to a directory this process can verify, or keep using the fallback named in the message. Other skills remain usable."
