@@ -60,19 +60,21 @@ test("source restoration retains mixed atom identity and inert prose", () => {
   expect(source.getSnapshot()).toMatchObject(value);
   source.persistDraft(text);
   expect(readComposerDraft("root")).toEqual(value);
+  const beforeFailedPlacement = source.getSnapshot();
   const failWrite = vi.spyOn(localStorage, "setItem").mockImplementationOnce(() => {
     throw new Error("quota");
   });
   expect(source.placeShare("item-1", "incoming")).toBe(false);
-  expect(source.pendingShareId).toBe("item-1");
-  expect(source.clearPendingShare("other-item")).toBe(false);
+  expect(source.getSnapshot()).toMatchObject(beforeFailedPlacement);
+  expect(source.getSnapshot()).toMatchObject(value);
+  expect(readComposerDraft("root")).toEqual(value);
   failWrite.mockRestore();
   expect(source.placeShare("item-1", "incoming")).toBe(true);
-  expect(source.pendingShareId).toBeUndefined();
-  expect(source.clearPendingShare("item-1")).toBe(false);
+  const placed = readComposerDraft("root");
+  expect(placed).toMatchObject({ ...value, text: `${text}\n\nincoming` });
+  expect(source.placeShare("item-1", "incoming")).toBe(true);
+  expect(readComposerDraft("root")).toEqual(placed);
   const restored = createTestComposerSource("root");
-  expect(restored.placeShare("item-1", "incoming")).toBe(true);
-  expect(readComposerDraft("root")).toMatchObject({ ...value, text: `${text}\n\nincoming` });
   expect(restored.placeShare("item-2", "incoming")).toBe(true);
   expect(readComposerDraft("root").text).toBe(`${text}\n\nincoming\n\nincoming`);
 });

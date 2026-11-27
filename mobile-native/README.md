@@ -45,6 +45,8 @@ profile for drafts and pending sends.
 The iOS share extension accepts text and links. Choose a conversation to add
 the item to its web draft, or choose New session to use it in the launch prompt.
 The extension keeps its copy until the draft is saved or the new session starts.
+In an existing conversation the shared text appears after the draft saves.
+If storage is full, you can keep typing or sending and retry the share later.
 If the selected hub needs an update to receive the share, the app tells you
 when you choose the destination. The shared item stays on the phone.
 

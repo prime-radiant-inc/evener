@@ -566,6 +566,7 @@ test("the focused iPhone composer retries a share after its draft write is rejec
     agent.mockRestore();
     vi.unstubAllGlobals();
   });
+  writeComposerDraft("local:one", { text: "existing draft", skillNames: [] });
   const source = createTestComposerSource("local:one");
   const { fake } = await mountComposerWithHandle("local:one", {}, { focused: true, source });
   const editor = textarea();
@@ -585,12 +586,12 @@ test("the focused iPhone composer retries a share after its draft write is rejec
     });
   deliver("/s/other");
   deliver(path, "https://another.example");
-  expect(editor.textContent).toBe("");
-  vi.spyOn(localStorage, "setItem").mockImplementationOnce(() => {
+  expect(editor.textContent).toBe("existing draft");
+  const failedWrites = vi.spyOn(localStorage, "setItem").mockImplementation(() => {
     throw new Error("quota");
   });
   deliver(path);
-  expect(editor.textContent).toBe("incoming");
+  expect(editor.textContent).toBe("existing draft");
   expect(screen.getByRole("alert")).toBeTruthy();
   expect(postMessage.mock.calls.map(([raw]) => JSON.parse(raw))).not.toContainEqual({
     type: "sharePlaced",
@@ -599,10 +600,12 @@ test("the focused iPhone composer retries a share after its draft write is rejec
   });
   const user = userEvent.setup();
   await user.type(editor, " edit");
-  expect(editor.textContent).toBe("incoming edit");
+  expect(editor.textContent).toBe("existing draft edit");
+  expect(readDraft("local:one")).toBe("existing draft");
+  failedWrites.mockRestore();
   await user.click(screen.getByRole("button", { name: "Retry" }));
-  expect(editor.textContent).toBe("incoming edit");
-  expect(readDraft("local:one")).toBe("incoming edit");
+  expect(editor.textContent).toBe("existing draft edit\n\nincoming");
+  expect(readDraft("local:one")).toBe("existing draft edit\n\nincoming");
   expect(screen.queryByRole("alert")).toBeNull();
   expect(postMessage.mock.calls.map(([raw]) => JSON.parse(raw))).toContainEqual({
     type: "sharePlaced",
@@ -610,11 +613,11 @@ test("the focused iPhone composer retries a share after its draft write is rejec
     path,
   });
   deliver(path);
-  expect(editor.textContent).toBe("incoming edit");
+  expect(editor.textContent).toBe("existing draft edit\n\nincoming");
   expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
 });
 
-test("the focused iPhone composer acknowledges a failed draft share after its composition is sent", async () => {
+test("an unrelated send does not consume a failed share and retry saves it into the now empty draft", async () => {
   const path = "/s/local%3Aone";
   const previous = window.location.href;
   window.history.replaceState({}, "", path);
@@ -651,21 +654,29 @@ test("the focused iPhone composer acknowledges a failed draft share after its co
   );
   expect(screen.getByRole("alert")).toBeTruthy();
   const user = userEvent.setup();
+  const editor = textarea();
+  await user.type(editor, "unrelated message");
   await user.click(screen.getByRole("button", { name: "Send" }));
   await waitFor(() => expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1));
-  const editor = textarea();
-  await user.type(editor, " later");
-  expect(editor.textContent).toBe(" later");
-  expect(screen.queryByRole("alert")).toBeNull();
+  expect(editor.textContent).toBe("");
+  expect(screen.getByRole("alert")).toBeTruthy();
   await act(async () => releaseStart?.());
+  expect(screen.getByRole("alert")).toBeTruthy();
+  expect(editor.textContent).toBe("");
+  expect(postMessage.mock.calls.map(([raw]) => JSON.parse(raw))).not.toContainEqual({
+    type: "sharePlaced",
+    id: "payload",
+    path,
+  });
+  await user.click(screen.getByRole("button", { name: "Retry" }));
+  expect(editor.textContent).toBe("incoming");
+  expect(readDraft("local:one")).toBe("incoming");
   expect(screen.queryByRole("alert")).toBeNull();
-  expect(editor.textContent).toBe(" later");
   expect(postMessage.mock.calls.map(([raw]) => JSON.parse(raw))).toContainEqual({
     type: "sharePlaced",
     id: "payload",
     path,
   });
-  expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
 });
 
 test("goal replacement closes slash completion and resets selection", async () => {

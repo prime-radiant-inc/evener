@@ -323,9 +323,6 @@ export interface SubmitWithPendingTrackingOptions {
   skillNames?: readonly string[];
   commandNames?: readonly string[];
   recoveryId?: string;
-  compositionOwnerId?: string;
-  shareId?: string;
-  onCommitted?: () => void;
   onFailure: (error: unknown) => void;
 }
 
@@ -341,8 +338,6 @@ type SubmissionCommittedListener = (
   skillNames: readonly string[],
   recovery?: RecoverySubmissionCommit,
   commandNames?: readonly string[],
-  compositionOwnerId?: string,
-  shareId?: string,
 ) => void;
 const submissionCommittedListeners = new Set<SubmissionCommittedListener>();
 
@@ -378,12 +373,7 @@ export function submitWithPendingTracking(
     },
     perform,
     ({ cleared, draftUnchanged }) => {
-      try {
-        opts.onCommitted?.();
-      } catch (error) {
-        console.error("Composer submission completion failed", error);
-      }
-      if (!cleared && !opts.recoveryId && !opts.shareId) return;
+      if (!cleared && !opts.recoveryId) return;
       for (const listener of submissionCommittedListeners) {
         try {
           listener(
@@ -394,8 +384,6 @@ export function submitWithPendingTracking(
               ? { clientMutationId: opts.recoveryId, draftUnchanged, attachments: opts.attachments ?? [] }
               : undefined,
             opts.commandNames,
-            opts.compositionOwnerId,
-            opts.shareId,
           );
         } catch (error) {
           console.error("Composer submission listener failed", error);

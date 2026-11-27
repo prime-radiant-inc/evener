@@ -21,6 +21,7 @@ import {
   type TextEditSource,
 } from "./attachments/useAttachments";
 import {
+  type ComposerDraft,
   clearDraft,
   clearPersistedDraftIfRevisionMatches,
   markDraftEdited,
@@ -165,8 +166,6 @@ export interface ComposerSourceState {
   claimDraftRevision(): void;
   persistDraft(text: string): void;
   placeShare(id: string, text: string): boolean;
-  readonly pendingShareId: string | undefined;
-  clearPendingShare(id: string): boolean;
   /** `splice` is the exact span the caller's own edit replaced, when it knows
    * it. Passing it keeps a marker the edit did not touch from being read as
    * spliced through (see TextEditor.write). */
@@ -277,7 +276,6 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
   const compositionOwnerId = ownerId ?? defaultCompositionOwner(ref);
   const initial = readComposerDraftSnapshot(ref);
   let shareId = initial.shareId;
-  let pendingShareId: string | undefined;
   const initialAdoption = adoptedAnchorsIn(initial);
   let currentDraftRevisionId = initial.revisionId;
   const state = createStore<ComposerSourceSnapshot>(() => ({
@@ -491,8 +489,7 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     reconcileRecoveryTarget(record?.targetRef ?? ref);
     state.setState({ activeRecoveryId });
   }
-  function persistDraft(text: string): void {
-    if (disposed) return;
+  function draftToPersist(text: string): ComposerDraft {
     // Which of this text's markers were STAGED by a writer that held bytes.
     // Two sources, both by EXACT occurrence rather than by number:
     // - the occurrences this source staged itself whose tiles still back them
@@ -545,7 +542,7 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
       );
       staged = [...new Set([...located, ...unlocated])].sort((left, right) => left - right);
     }
-    currentDraftRevisionId = writeComposerDraft(ref, {
+    return {
       text,
       ...(shareId && { shareId }),
       skillNames: skillNamesRef.current,
@@ -553,7 +550,18 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
       ...(selectionMetaRef.current.mentions ? { mentions: selectionMetaRef.current.mentions } : {}),
       ...(staged.length > 0 ? { stagedImageMarkers: staged } : {}),
       ...(stagedRanges.length > 0 ? { stagedImageRanges: stagedRanges } : {}),
-    });
+    };
+  }
+  function persistDraft(text: string): void {
+    if (disposed) return;
+    const revisionId = writeComposerDraft(ref, draftToPersist(text));
+    if (!revisionId && readComposerDraftRevisionId(ref) !== undefined) {
+      // A failed autosave leaves the previous record in place. Retain its ownership
+      // so retrying a share includes this editor's newer, still-visible text.
+      ownedDraftRevisionRef.current = readDraftRevision(ref);
+      return;
+    }
+    currentDraftRevisionId = revisionId;
     // writeComposerDraft minted this revision, so this source owns it - even
     // when the write removed the record outright (undefined).
     ownedDraftRevisionIdRef.current = currentDraftRevisionId;
@@ -598,6 +606,27 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     // Tile numbering restarts at 1, so a remembered position would outlive the
     // tile it described.
     positionedStagedMarkers.clear();
+  }
+  function adoptPersistedDraft(draft: ComposerDraft): void {
+    shareId = draft.shareId;
+    updateText(draft.text);
+    updateSkillNames(restoredSkillNames(draft));
+    updateSelectionMeta(draft);
+    currentDraftRevisionId = draft.revisionId;
+    claimDraftRevision();
+    // The revision this source last held is gone, so another writer
+    // produced this text. Which of its markers that writer STAGED is the
+    // record's own provenance - not every marker the text happens to
+    // spell, which would refuse prose a person typed.
+    const adoption = adoptedAnchorsIn(draft);
+    setAdoptedImageRanges(adoption.ranges, adoption.markers);
+    // This composer's retained tiles outlive the draft another pane
+    // replaced, so a tile's number can name an occurrence in the incoming
+    // text that is ordinary prose there. Moving the tile off that number
+    // (the text is left exactly as it arrived) is what stops Send pairing
+    // the literal with this tile's older bytes. Runs after the adoption so
+    // the move already sees the numbers that adoption reserves.
+    operations.renumberOff(draft.text);
   }
   function markRestore(): void {
     if (!disposed) state.setState((snapshot) => ({ restoreEpoch: snapshot.restoreEpoch + 1 }));
@@ -1197,23 +1226,26 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     persistDraft,
     placeShare(id, text) {
       if (disposed || currentRecoveryId() !== null) return false;
-      if (shareId !== id) {
-        shareId = id;
-        writeDraft(mergeDraftText(textRef.current, text), true);
-        markRestore();
-      } else if (readComposerDraftSnapshot(ref).shareId !== id) {
-        persistDraft(textRef.current);
+      const saved = readComposerDraftSnapshot(ref);
+      if (saved.shareId === id) return true;
+      const ownsDraft = ownsDraftRevision();
+      const merged = mergeDraftText(ownsDraft ? textRef.current : saved.text, text);
+      const proposed = { ...(ownsDraft ? draftToPersist(merged) : saved), text: merged, shareId: id };
+      const revisionId = writeComposerDraft(ref, proposed);
+      if (!revisionId) {
+        // A failed write advanced the in-memory edit counter, but the saved record is still ours.
+        if (ownsDraft) ownedDraftRevisionRef.current = readDraftRevision(ref);
+        return false;
       }
-      const placed = readComposerDraftSnapshot(ref).shareId === id;
-      pendingShareId = placed ? undefined : id;
-      return placed;
-    },
-    get pendingShareId() {
-      return pendingShareId;
-    },
-    clearPendingShare(id) {
-      if (pendingShareId !== id) return false;
-      pendingShareId = undefined;
+      if (ownsDraft) {
+        shareId = id;
+        currentDraftRevisionId = revisionId;
+        claimDraftRevision();
+        writeDraft(merged, false);
+      } else {
+        adoptPersistedDraft({ ...proposed, revisionId });
+      }
+      markRestore();
       return true;
     },
     writeDraft,
@@ -1227,25 +1259,7 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     bindEditor(nextEditor) {
       if (disposed) return () => {};
       if (!ownsDraftRevision() && currentRecoveryId() === null) {
-        const draft = readComposerDraftSnapshot(ref);
-        updateText(draft.text);
-        updateSkillNames(restoredSkillNames(draft));
-        updateSelectionMeta(draft);
-        currentDraftRevisionId = draft.revisionId;
-        claimDraftRevision();
-        // The revision this source last held is gone, so another writer
-        // produced this text. Which of its markers that writer STAGED is the
-        // record's own provenance - not every marker the text happens to
-        // spell, which would refuse prose a person typed.
-        const adoption = adoptedAnchorsIn(draft);
-        setAdoptedImageRanges(adoption.ranges, adoption.markers);
-        // This composer's retained tiles outlive the draft another pane
-        // replaced, so a tile's number can name an occurrence in the incoming
-        // text that is ordinary prose there. Moving the tile off that number
-        // (the text is left exactly as it arrived) is what stops Send pairing
-        // the literal with this tile's older bytes. Runs after the adoption so
-        // the move already sees the numbers that adoption reserves.
-        operations.renumberOff(draft.text);
+        adoptPersistedDraft(readComposerDraftSnapshot(ref));
       }
       markRestore();
       boundEditor = nextEditor;

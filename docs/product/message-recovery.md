@@ -178,16 +178,15 @@ The iPhone runs the browser composer in the saved hub’s persistent WebKit
 profile. Its draft, queue, and recovery controls follow the browser contracts
 above. The app does not import or dispatch work from the retired iPhone editor.
 An incoming share stays in the App Group until its destination saves the text
-in a conversation draft, durably accepts a submission containing that share,
-or starts the new session with it. In the launcher, editing a share and
+in a conversation draft or starts the new session with it. In the launcher, editing a share and
 choosing another project carries the edited text along. Replacing the launch
 prompt from the command palette leaves the original share pending.
 Choosing a hub that cannot receive the share leaves the item pending on the
 phone and prompts for an update to that hub.
-If WebKit cannot save a shared item in a conversation draft, the composer
-keeps the text visible and offers Retry. A successful retry saves the current
-draft, including subsequent edits, and releases the item on the phone.
-A successful Send can also release it. A failed Send leaves Retry available.
+An existing conversation saves the proposed draft before displaying the shared
+text. If that write fails, the composer offers Retry and keeps the current
+draft available for editing and sending. Retry appends the share to the draft
+as it stands at that moment. Only a successful save releases it from the phone.
 
 ## Android development client
 

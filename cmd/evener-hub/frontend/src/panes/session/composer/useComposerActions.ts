@@ -473,7 +473,6 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
     }
     const submittedLease = recoveryOwnerLeaseRef.current;
     const submittedRecoveryId = submittedLease?.clientMutationId ?? null;
-    const submittedShareId = source.pendingShareId;
     let releaseRecoveryInFlight: (() => void) | null = null;
     const releaseInFlightRecovery = () => {
       releaseRecoveryInFlight?.();
@@ -516,15 +515,6 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
           skillNames: submittedSkillNames,
           commandNames: submittedCommandNames,
           recoveryId: submittedRecoveryId ?? undefined,
-          compositionOwnerId: source.compositionOwnerId,
-          shareId: submittedShareId,
-          onCommitted: () => {
-            if (submittedShareId) {
-              source.clearPendingShare(submittedShareId);
-              const path = paneToURL("session", { ref });
-              if (path) tellIPhoneHost({ type: "sharePlaced", id: submittedShareId, path });
-            }
-          },
           onFailure: (err) => {
             // The branded destination refusal has its own deliberate
             // feedback in the submission's catch: this generic wrapper must
