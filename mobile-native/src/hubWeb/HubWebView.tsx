@@ -16,11 +16,13 @@ import { ErrorMessage, useColors } from "../ui";
 import { type ButtonFrame, CreateSessionButton, isButtonFrame } from "./CreateSessionButton";
 import { hubPagePath, hubPageSource } from "./hubWebPolicy";
 import {
+	type EdgeAction,
 	EdgeSessionToolbar,
 	type HeaderAction,
 	isSessionHeader,
 	SessionHeader,
 	type SessionHeaderState,
+	type SessionsToolbar,
 } from "./SessionHeader";
 
 interface HubWebViewProps {
@@ -45,6 +47,7 @@ export function HubWebView({ profile, token, initialPath, onPath, onHubMenu, onD
 	const [readingDocument, setReadingDocument] = useState(false);
 	const [covered, setCovered] = useState(false);
 	const [header, setHeader] = useState<SessionHeaderState | null>(null);
+	const [sessionsToolbar, setSessionsToolbar] = useState<SessionsToolbar | null>(null);
 	const [restoringSession, setRestoringSession] = useState(() =>
 		initialPath.startsWith("/s/") ? workspaceSessionRef(initialPath) : null,
 	);
@@ -66,7 +69,11 @@ export function HubWebView({ profile, token, initialPath, onPath, onHubMenu, onD
 	const edgeToolbar = top === 0 && Math.min(left, right) === 0 && Math.max(left, right) >= 44;
 	const material = JSON.stringify({ type: "material", glass, edgeToolbar });
 	const headerAction = useCallback(
-		(id: string | null, action: HeaderAction) => {
+		(id: string | null, action: EdgeAction) => {
+			if (action === "open" || action === "close" || action === "hubs" || action === "settings") {
+				if (id !== null) web.current?.postMessage(JSON.stringify({ type: "sessionsAction", id, action }));
+				return;
+			}
 			if (id !== null) web.current?.postMessage(JSON.stringify({ type: "headerAction", id, action }));
 			else if (restoringSession) pendingHeaderAction.current = action;
 		},
@@ -111,6 +118,7 @@ export function HubWebView({ profile, token, initialPath, onPath, onHubMenu, onD
 		setReadingDocument(false);
 		setCovered(false);
 		setHeader(null);
+		setSessionsToolbar(null);
 		setCreateButton(null);
 		setHubDark(null);
 	}, []);
@@ -185,6 +193,15 @@ export function HubWebView({ profile, token, initialPath, onPath, onHubMenu, onD
 				if (typeof data.id !== "string" || !data.id) break;
 				if (isButtonFrame(data.frame)) setCreateButton({ id: data.id, frame: data.frame });
 				else if (data.frame === null) setCreateButton((current) => (current?.id === data.id ? null : current));
+				break;
+			case "sessionsToolbar":
+				if (typeof data.id !== "string" || !data.id) break;
+				if (data.mode === "list" || data.mode === "launcher") {
+					endRestore();
+					setSessionsToolbar({ id: data.id, mode: data.mode });
+				} else if (data.mode === null) {
+					setSessionsToolbar((current) => (current?.id === data.id ? null : current));
+				}
 				break;
 			case "ready":
 				if (!onRestoredSession) endRestore();
@@ -271,7 +288,7 @@ export function HubWebView({ profile, token, initialPath, onPath, onHubMenu, onD
 				<WebView<unknown>
 					ref={web}
 					source={source}
-					applicationNameForUserAgent="EvenerNative/1 EvenerSessionHeader/1 EvenerWorkspaceControls/1"
+					applicationNameForUserAgent="EvenerNative/1 EvenerSessionHeader/1 EvenerWorkspaceControls/1 EvenerSessionsToolbar/1"
 					injectedJavaScriptBeforeContentLoaded={`window.evenerEdgeToolbar = ${edgeToolbar}; true;`}
 					// A whitelist miss makes RNCWebView open the URL in the OS itself.
 					// Route every scheme through our user-navigation check instead.
@@ -326,8 +343,13 @@ export function HubWebView({ profile, token, initialPath, onPath, onHubMenu, onD
 					hideKeyboardAccessoryView
 					style={{ backgroundColor: (hubPalette ?? palette).canvas }}
 				/>
-				{edgeToolbar && focused && (activeHeader || restoringSession) ? (
-					<EdgeSessionToolbar header={activeHeader} palette={hubPalette ?? palette} onAction={headerAction} />
+				{edgeToolbar && focused && (sessionsToolbar || activeHeader || restoringSession) ? (
+					<EdgeSessionToolbar
+						header={activeHeader}
+						sessionsToolbar={sessionsToolbar}
+						palette={hubPalette ?? palette}
+						onAction={headerAction}
+					/>
 				) : activeHeader ? (
 					<SessionHeader header={activeHeader} glass={glass} palette={hubPalette ?? palette} onAction={headerAction} />
 				) : null}

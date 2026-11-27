@@ -198,6 +198,29 @@ it("routes the active native session controls back to their pane and gives the h
 		type: "button",
 		badge: { value: header.needsYou },
 	});
+	publish(null);
+	message({ type: "sessionsToolbar", id: "list", mode: "list" });
+	message({ type: "sessionsToolbar", id: "previous-list", mode: null });
+	expect(toolbar()?.headerShown).toBe(true);
+	postMessage.mockClear();
+	for (const item of [
+		...(toolbar()?.unstable_headerLeftItems?.({}) ?? []),
+		...(toolbar()?.unstable_headerRightItems?.({}) ?? []),
+	]) {
+		if (item.type === "button") act(item.onPress);
+	}
+	expect(postMessage.mock.calls.map(([value]) => JSON.parse(value))).toEqual([
+		{ type: "sessionsAction", id: "list", action: "close" },
+		{ type: "sessionsAction", id: "list", action: "hubs" },
+		{ type: "sessionsAction", id: "list", action: "settings" },
+	]);
+	message({ type: "sessionsToolbar", id: "list", mode: "launcher" });
+	const open = toolbar()?.unstable_headerLeftItems?.({})[0];
+	if (open?.type === "button") act(open.onPress);
+	expect(JSON.parse(postMessage.mock.lastCall?.[0])).toEqual({ type: "sessionsAction", id: "list", action: "open" });
+	expect(toolbar()?.unstable_headerRightItems?.({})).toEqual([]);
+	message({ type: "sessionsToolbar", id: "list", mode: null });
+	expect(toolbar()?.headerShown).toBe(false);
 	native.insets.left = native.insets.right;
 	publish({ ...header, leading: "back" });
 	expect(JSON.parse(postMessage.mock.lastCall?.[0])).toEqual({ type: "material", glass: false, edgeToolbar: false });

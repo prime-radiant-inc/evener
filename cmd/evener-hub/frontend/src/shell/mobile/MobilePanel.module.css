@@ -4,6 +4,31 @@
   max-height: calc(100dvh - var(--keyboard-inset, 0px));
 }
 
+.singleScrollPanel.system {
+  --overlay-header-actions-display: none;
+}
+
+/* The drawer owns the entire Home Screen while open. Keep its rows inside
+ * the safe reading width and give its actions the free edge below the clock. */
+.singleScrollPanel:is(.left, .right) {
+  --overlay-actions-placement: edge;
+  left: 0;
+  width: 100vw;
+  padding-left: var(--home-safe-left, 0px);
+  padding-right: var(--home-safe-right, 0px);
+  background-clip: content-box;
+}
+
+.left {
+  --overlay-actions-left: calc(var(--home-safe-left) / 2);
+  --overlay-actions-offset: -50%;
+}
+
+.right {
+  --overlay-actions-right: calc(var(--home-safe-right) / 2);
+  --overlay-actions-offset: 50%;
+}
+
 /* The rail fills the drawer flush: the sheet body's own inset made the rail
  * read as a panel nested inside a panel (Rail.module.css's own mobile rule
  * already drops the rail's width and border for the same reason). */

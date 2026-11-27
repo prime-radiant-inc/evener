@@ -20,6 +20,7 @@ import {
   connectPage,
   createStartupDeadline,
   evaluate,
+  forcePseudoStates,
   navigateTo,
   openPage,
   waitForFonts,
@@ -896,6 +897,19 @@ async function assertTabletActionGeometry(send) {
   }
   if (result.newInkOffset > 1 || result.sendInkOffset > 1 || result.attachInkOffset > 1) {
     throw new Error(`tablet button glyph is off center: ${JSON.stringify(result)}`);
+  }
+  const settings = '[data-testid="rail-settings"]';
+  await forcePseudoStates(send, [{ selector: settings, pseudoClasses: ["hover"] }]);
+  const feedback = await evaluate(send, `(() => {
+    const button = document.querySelector('${settings}');
+    const { width, height } = button.getBoundingClientRect();
+    const corner = getComputedStyle(button).borderTopLeftRadius;
+    return { width, height, corner };
+  })()`);
+  await forcePseudoStates(send, [{ selector: settings, pseudoClasses: [] }]);
+  const circularCorner = feedback.corner.endsWith("%") ? 50 : feedback.width / 2;
+  if (!feedback.width || feedback.width !== feedback.height || parseFloat(feedback.corner) < circularCorner) {
+    throw new Error(`tablet Settings button feedback should stay circular: ${JSON.stringify(feedback)}`);
   }
   console.log(`shellguard tablet actions: ${JSON.stringify(result)}`);
 }

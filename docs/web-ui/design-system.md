@@ -81,6 +81,8 @@ symbols with SVG. Native iOS controls use the corresponding SF Symbols.
 | Open Overview | Window with the trailing sidebar marked | `sidebar.trailing` |
 | Search or find in a session | Magnifying glass | `magnifyingglass` |
 | Settings | Gear | `gearshape` |
+| Switch hubs in the iPhone app | Server rack | `server.rack` |
+| Close a sheet | Cross | `xmark` |
 | Share through the system share sheet | Up arrow emerging from a square | `square.and.arrow.up` |
 
 The plus opens a new-session form. The arrow submits it. A compact composer

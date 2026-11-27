@@ -81,6 +81,7 @@ import { ConversationHandoffBoundary } from "../ConversationHandoffBoundary";
 import { useChromeStore } from "../chromeStore";
 import {
   hasIPhoneSessionHeader,
+  hasIPhoneSessionsToolbar,
   hasIPhoneWorkspaceControls,
   tellIPhoneHost,
   useIPhoneEdgeToolbar,
@@ -413,8 +414,12 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
       tellIPhoneHost({ type: "sessionHeader", header: null });
     }
   }, [routeDeferred, publishHeader]);
-  const homeEdge = !singlePane && !hosted && focusedPane?.type === "session" ? homeScreenEdge : null;
-  const systemEdge = hostedSession && edgeToolbar;
+  const welcomeLauncher =
+    !singlePane && !tabletSplit && !routeDeferred && (focusedPane === null || focusedPane.type === "welcome");
+  const sessionsEdge = !singlePane && edgeToolbar && hasIPhoneSessionsToolbar();
+  const homeEdge =
+    !singlePane && !hosted && (focusedPane?.type === "session" || welcomeLauncher) ? homeScreenEdge : null;
+  const systemEdge = (hostedSession && edgeToolbar) || (welcomeLauncher && sessionsEdge);
   // An overlay can suspend edge actions, but only a change of layout moves them into the top bar.
   const actionsAtEdge = systemEdge || !!homeEdge;
   const Title = actionsAtEdge ? "h1" : "span";
@@ -1189,7 +1194,7 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
       {homeEdge && (
         <div
           role="toolbar"
-          aria-label="Conversation actions"
+          aria-label={welcomeLauncher ? "Workspace actions" : "Conversation actions"}
           hidden={activityOpen || panelOpen}
           data-home-toolbar={homeEdge}
           className={styles.homeToolbar}
@@ -1201,7 +1206,15 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
       <div className={styles.activityOverlay}>
         <ActivitySidebar mobile />
       </div>
-      {!tabletSplit && <MobilePanel rail={railSlot} open={panelOpen} onClose={closePanel} />}
+      {!tabletSplit && (
+        <MobilePanel
+          rail={railSlot}
+          open={panelOpen}
+          onClose={closePanel}
+          toolbarEdge={sessionsEdge ? "system" : hosted || singlePane ? null : homeScreenEdge}
+          onOpen={welcomeLauncher ? () => setPanelOpen(true) : undefined}
+        />
+      )}
     </div>
   );
 }
