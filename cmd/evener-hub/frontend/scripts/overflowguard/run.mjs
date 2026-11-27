@@ -1044,6 +1044,16 @@ async function measureTrustedFocus(send) {
         const clippingAncestors = [];
         for (let ancestor = focused?.parentElement; ancestor && ancestor !== document.body; ancestor = ancestor.parentElement) {
           const ancestorStyle = getComputedStyle(ancestor);
+          // A fixed-position ancestor's containing block is the viewport, so no
+          // DOM ancestor above it can clip its subtree's paint - overflow
+          // clipping only reaches descendants whose containing-block chain
+          // passes through the clipper. The Verbosity dialog renders inline
+          // under the composer card (no portal), so without this stop a card
+          // that clips its own overflow reads as clipping the dialog that
+          // floats over it. Verified in Chrome: elementFromPoint finds a
+          // fixed descendant at a point far outside its overflow:clip
+          // ancestor's box.
+          if (ancestorStyle.position === 'fixed') break;
           const clipsX = ancestorStyle.overflowX !== 'visible';
           const clipsY = ancestorStyle.overflowY !== 'visible';
           if (clipsX || clipsY) {
