@@ -366,6 +366,10 @@ describe("a segmented control", () => {
 		const tree = render(<Segmented label="Appearance" options={options} value="light" onChange={onChange} />);
 		const group = tree.root.findByProps({ accessibilityRole: "radiogroup" });
 		expect(merged(group.props.style).flexDirection).toBe("column");
+		const selected = tree.root.findByProps({ accessibilityRole: "radio", accessibilityLabel: options[1].label });
+		const optionStyle = merged(selected.props.style);
+		const labelHeight = merged(selected.findByType("Text" as never).props.style).lineHeight;
+		expect(optionStyle.borderRadius).toBeGreaterThanOrEqual((labelHeight + 2 * optionStyle.paddingVertical) / 2);
 		for (const label of texts(tree)) {
 			expect(label.props.numberOfLines).toBeUndefined();
 			expect(merged(label.props.style).fontSize).toBeGreaterThanOrEqual(30);

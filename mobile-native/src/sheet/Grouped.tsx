@@ -894,7 +894,7 @@ export function Segmented<T extends string>({
 							gap: space.rowGap,
 							paddingHorizontal: 12,
 							paddingVertical: 8,
-							borderRadius: stacked ? 10 : radius.capsule,
+							borderRadius: radius.capsule,
 							backgroundColor: chosen ? selectedSurface : "transparent",
 						}}
 					>
