@@ -2801,6 +2801,20 @@ test("mobile notes tuck in the reading direction and return on reversal or expli
     await waitFor(() => expect(card.isConnected).toBe(false));
     scroll(340);
     expect(notes.closest("[data-reading-overlay]")).not.toBeNull();
+    scroll(0);
+
+    // A short history can have room for the summary alone. Keep its title
+    // above the reader throughout the reversal so the viewport stays fixed.
+    Object.defineProperty(scroller, "scrollHeight", { configurable: true, value: 600 });
+    Object.defineProperty(scroller, "clientHeight", { configurable: true, value: 500 });
+    scroll(100);
+    scroll(80);
+    expect(notes.closest("[data-notes-hidden]")).not.toBeNull();
+    expect(scroller.scrollTop).toBe(36);
+    scroll(46);
+    expect(notes.closest("[data-notes-hidden]")).toBeNull();
+    expect(bar.getAttribute("data-collapsed")).not.toBe("true");
+    expect(scroller.scrollTop).toBe(46);
     host.unmount();
   } finally {
     topNotesStore.getState().resetForTests();

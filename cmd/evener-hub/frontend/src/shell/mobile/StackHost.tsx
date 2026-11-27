@@ -134,8 +134,8 @@ const TRANSITION_CLASSES = {
 const FLOAT_COLLAPSE_PAST = 48;
 const FLOAT_REVEAL_STEP = 8;
 const FLOAT_REVEAL_AT_TOP = 12;
-type ReadingChrome = { floating: boolean; notes: "resting" | "hidden" | "overlay" };
-const FULL_CHROME: ReadingChrome = { floating: false, notes: "resting" };
+type ReadingChrome = { floating: boolean; notes: "resting" | "hidden" | "overlay"; keepTitleDocked: boolean };
+const FULL_CHROME: ReadingChrome = { floating: false, notes: "resting", keepTitleDocked: false };
 
 function readingChromeHeightChange(
   from: ReadingChrome,
@@ -143,7 +143,7 @@ function readingChromeHeightChange(
   heights: { bar: number; notes: number },
 ): number {
   function height(chrome: ReadingChrome) {
-    if (heights.notes > 0 && chrome.notes !== "resting") return 0;
+    if (heights.notes > 0 && chrome.notes !== "resting") return chrome.keepTitleDocked ? heights.bar : 0;
     return (chrome.floating ? 0 : heights.bar) + heights.notes;
   }
   return height(to) - height(from);
@@ -750,7 +750,7 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
         notes = "resting";
         notesReadingDirectionRef.current = 0;
       } else {
-        if (step > 0 && scrollTop > FLOAT_COLLAPSE_PAST) floating = true;
+        if (step > 0 && scrollTop > FLOAT_COLLAPSE_PAST && !current.keepTitleDocked) floating = true;
         if (run <= -FLOAT_REVEAL_STEP) floating = false;
         if (
           Math.abs(run) >= FLOAT_REVEAL_STEP &&
@@ -761,7 +761,6 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
         }
       }
       if (floating === current.floating && notes === current.notes) return;
-      const next = { floating, notes };
       const heights = chromeHeightsRef.current;
       if (current.notes !== "hidden") {
         const panel = paneSlotRef.current?.querySelector<HTMLElement>("[data-notes-panel-ref]");
@@ -769,6 +768,14 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
         heights.notes = panel?.offsetHeight ?? 0;
       }
       if (!current.floating && topBarRef.current) heights.bar = topBarRef.current.offsetHeight;
+      // A short history may have room to tuck only Notes. Keep that viewport
+      // for the reading pass, including when the summary returns over it.
+      let keepTitleDocked = current.keepTitleDocked && notes !== "resting";
+      if (current.notes === "resting" && notes === "hidden" && !current.floating && heights.notes > 0) {
+        const headroom = direction < 0 ? scrollTop : target.scrollHeight - target.clientHeight;
+        keepTitleDocked = headroom - heights.notes - heights.bar <= FLOAT_REVEAL_AT_TOP;
+      }
+      const next = { floating: floating && !keepTitleDocked, notes, keepTitleDocked };
       const delta = readingChromeHeightChange(current, next, heights);
       // A fold must leave the compensated offset clear of the at-top reveal band.
       if (delta < 0 && scrollTop + delta <= FLOAT_REVEAL_AT_TOP) return;
@@ -799,11 +806,12 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
     lastScrollTopRef.current = clampedScrollTop(scroller);
   }, [readingChrome]);
 
-  const overlayReadingChrome = readingChrome.notes !== "resting" && chromeHeightsRef.current.notes > 0;
+  const overlayNotes = readingChrome.notes !== "resting" && chromeHeightsRef.current.notes > 0;
+  const overlayTitle = overlayNotes && !readingChrome.keepTitleDocked;
   useLayoutEffect(() => {
     const bar = topBarRef.current;
     const body = stackBodyRef.current;
-    if (!overlayReadingChrome || topBarCollapsed || !bar || !body) return;
+    if (!overlayTitle || topBarCollapsed || !bar || !body) return;
     const placeNotes = () => body.style.setProperty("--reading-title-height", `${bar.offsetHeight}px`);
     placeNotes();
     const resize = new ResizeObserver(placeNotes);
@@ -812,7 +820,7 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
       resize.disconnect();
       body.style.removeProperty("--reading-title-height");
     };
-  }, [overlayReadingChrome, topBarCollapsed]);
+  }, [overlayTitle, topBarCollapsed]);
 
   // Classifies each focus change and slides it (docs/web-ui/motion.md, recipe
   // 4). A pop is a focus change a Back tap caused. A push is any other change
@@ -1163,7 +1171,7 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
         <div
           className={styles.paneColumn}
           data-notes-hidden={readingChrome.notes === "hidden" || undefined}
-          data-reading-overlay={overlayReadingChrome || undefined}
+          data-reading-overlay={overlayNotes ? (overlayTitle ? "title-and-notes" : "notes") : undefined}
           data-iphone-header={nativeHeader ? (topBarCollapsed ? "floating" : "resting") : undefined}
           data-testid={tabletSplit ? "pane-column" : undefined}
         >

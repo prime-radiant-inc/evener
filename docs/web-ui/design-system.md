@@ -1673,6 +1673,8 @@ with no card chrome, keeping the body's own top spacing and growing to the
 scrolling in the initial reading direction. A deliberate reversal of 8px
 returns the summary over the current reading position. While reading, the title
 and summary overlay the transcript so its viewport stays fixed as either returns.
+When there is room to fold only the summary before reaching the start, the title
+stays docked for that reading pass. The summary returns over the transcript.
 Continuing in that
 direction keeps it in reach. Resuming the initial direction tucks it again.
 An upward gesture restores navigation. Reaching the top or explicitly
