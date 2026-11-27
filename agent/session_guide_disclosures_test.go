@@ -9,14 +9,15 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/agent/envctx"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/artifactstore"
-	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/skill"
+	"primeradiant.com/evener/internal/testwait"
 	"primeradiant.com/evener/llm"
 )
 
@@ -481,42 +482,93 @@ func TestGuideDisclosures_ArtifactTruncationAndCapabilityGate(t *testing.T) {
 
 func TestGuideDisclosures_PromotedShellTriggersBothOnce(t *testing.T) {
 	t.Parallel()
-	sess := newTestSession(t)
-	tru := true
-	promotedState, _ := json.Marshal(shellToolResult{
-		JobID:     "job_promoted_1",
-		Type:      "shell",
-		Status:    "running",
-		Mode:      "background",
-		TimedOut:  true,
-		Truncated: &tru,
-	})
-	call := llm.ToolCallData{ID: "sh1", Name: "shell"}
-	res := tool.ExecResult{CallID: "sh1", ToolName: "shell", ToolState: promotedState}
-	if err := sess.persistToolResults(context.Background(), []llm.ToolCallData{call}, []tool.ExecResult{res}); err != nil {
-		t.Fatalf("first persistToolResults: %v", err)
+	promotedArgs := json.RawMessage(`{"command":"printf '%02048d\\n' 1; ` + idleShellCommand + `"}`)
+	shellTurn := func(id string) func(llm.Request) llm.Response {
+		return func(llm.Request) llm.Response {
+			return agenttest.ToolCallResponse(llm.ToolCallData{ID: id, Name: "shell", Arguments: promotedArgs, Type: "function"})
+		}
 	}
-	if err := sess.persistToolResults(context.Background(), []llm.ToolCallData{call}, []tool.ExecResult{res}); err != nil {
-		t.Fatalf("second persistToolResults: %v", err)
+	c := llm.NewClient()
+	adapter := newFakeAdapter("openai",
+		shellTurn("sh1"),
+		shellTurn("sh2"),
+		func(llm.Request) llm.Response {
+			return agenttest.ToolCallResponse(communicateCall("c1", "done"))
+		},
+	)
+	c.Register(adapter)
+
+	sess := newSession(t, withClient(c), withDir(t.TempDir()), withConfig(SessionConfig{
+		StateDir:                t.TempDir(),
+		DefaultCommandTimeoutMS: 100,
+		MaxCommandTimeoutMS:     100,
+		AgentsDocPath:           filepath.Join(t.TempDir(), "no-AGENTS.md"),
+	}))
+	defer sess.Close()
+
+	clk := agenttest.NewFakeClock()
+	sess.jobManager.clock = clk
+	seen := map[string]bool{}
+	var promotedIDs []string
+	defer func() {
+		for _, id := range promotedIDs {
+			_, _ = sess.jobManager.stop(id)
+			waitForShellDone(t, sess.jobManager, id)
+		}
+	}()
+
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := sess.ProcessInput(tripwireCtx(t), "run two noisy foreground commands", nil)
+		errCh <- err
+	}()
+
+	promoteNext := func(label string) string {
+		clk.BlockUntil(1)
+		var jobID string
+		testwait.Until(t, label, func() bool {
+			sess.jobManager.mu.Lock()
+			defer sess.jobManager.mu.Unlock()
+			for id, run := range sess.jobManager.running {
+				if seen[id] || run == nil || run.rec == nil || run.rec.Background {
+					continue
+				}
+				if run.output.Len() > shellDefaultTailBytes {
+					jobID = id
+					return true
+				}
+			}
+			return false
+		})
+		seen[jobID] = true
+		promotedIDs = append(promotedIDs, jobID)
+		clk.Advance(time.Second)
+		return jobID
 	}
 
-	var jobsCount, transcriptsCount int
-	sess.mu.Lock()
-	for _, turn := range sess.history {
-		if turn.Kind != schema.TurnSystem {
-			continue
-		}
-		text := turn.Message.Text()
-		if strings.Contains(text, guideNotificationOpenTag(guideTopicRunningJobs)) {
-			jobsCount++
-		}
-		if strings.Contains(text, guideNotificationOpenTag(guideTopicReadingTranscripts)) {
-			transcriptsCount++
-		}
+	job1 := promoteNext("first promoted shell output exceeds peek tail")
+	job2 := promoteNext("second promoted shell output exceeds peek tail")
+	if err := <-errCh; err != nil {
+		t.Fatalf("ProcessInput: %v", err)
 	}
-	sess.mu.Unlock()
-	if jobsCount != 1 || transcriptsCount != 1 {
-		t.Fatalf("promoted shell counts: running-jobs=%d reading-transcripts=%d, want 1 and 1", jobsCount, transcriptsCount)
+
+	reqs := adapter.Requests()
+	if len(reqs) < 3 {
+		t.Fatalf("expected 3 requests, got %d", len(reqs))
+	}
+	for _, check := range []struct {
+		round  int
+		callID string
+		jobID  string
+	}{{1, "sh1", job1}, {2, "sh2", job2}} {
+		if got := toolResultTextForCall(reqs[check.round], check.callID); !strings.Contains(got, check.jobID) {
+			t.Fatalf("round %d shell result missing promoted job_id %q: %q", check.round, check.jobID, got)
+		}
+		for _, topic := range []string{guideTopicRunningJobs, guideTopicReadingTranscripts} {
+			if got := countGuideNotifications(reqs[:check.round+1], topic); got != 1 {
+				t.Fatalf("after promoted shell round %d: %s disclosures = %d, want 1", check.round, topic, got)
+			}
+		}
 	}
 }
 
