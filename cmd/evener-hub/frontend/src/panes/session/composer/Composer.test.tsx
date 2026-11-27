@@ -13,7 +13,7 @@ import { ActivitySidebar } from "../../../shell/activitybar/activitySidebarTestU
 import { ClientProvider } from "../../../shell/clientContext";
 import { paletteStore } from "../../../shell/palette/paletteController";
 import * as railAlignment from "../../../shell/rail/alignCreateWithComposer";
-import { MOBILE_QUERY } from "../../../shell/useIsMobile";
+import { LANDSCAPE_PHONE_QUERY, MOBILE_QUERY } from "../../../shell/useIsMobile";
 import { isPaneOpen, resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
 import { installLocalStorage, MemoryStorage } from "../../../storageTestUtils";
 import { useCommandCatalog } from "../../../stores/commandCatalog";
@@ -52,7 +52,7 @@ import {
   textarea,
 } from "./composerTestUtils";
 import { readDraft, writeComposerDraft } from "./draft";
-import { DUO_COVER_QUERY, LANDSCAPE_PHONE_QUERY } from "./narrowComposer";
+import { DUO_COVER_QUERY } from "./narrowComposer";
 import { resetPendingTurnsStoreForTests } from "./queue/pendingTurnsStore";
 import { flushPendingTurnsProjectionForTests } from "./queue/testing/flushPendingTurnsProjection";
 import { resetQuoteInsertStoreForTests } from "./quoteInsert";

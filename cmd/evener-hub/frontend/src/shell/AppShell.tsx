@@ -73,7 +73,7 @@ import {
 } from "./sessionPlacement";
 import { isSinglePaneRoute } from "./singlePane";
 import { useBrowserConnection } from "./useBrowserConnection";
-import { isMobileViewport } from "./useIsMobile";
+import { isMobileViewport, LANDSCAPE_PHONE_QUERY, useMediaQuery } from "./useIsMobile";
 import { useKeyboardInset } from "./useKeyboardInset";
 import {
   conversationOpenParentRef,
@@ -567,6 +567,7 @@ function AppShellContent({ client: injectedClient, bannerDelayMs, bannerCreateCl
     setViewportReady(true);
   }, []);
   const isMobile = viewport === "mobile";
+  const landscapePhone = useMediaQuery(LANDSCAPE_PHONE_QUERY);
   const handoffGeneration = conversationHandoffGeneration(viewport);
   const hasHost = route !== null;
   // A route departure can leave the workspace's retained pane record alive.
@@ -945,6 +946,7 @@ function AppShellContent({ client: injectedClient, bannerDelayMs, bannerCreateCl
         <div
           className={styles.shell}
           data-mobile={isMobile ? "" : undefined}
+          data-notices-at-top={isMobile || landscapePhone ? "" : undefined}
           data-desktop-workspace={isMobile ? undefined : ""}
           data-single-pane={singlePane ? "" : undefined}
         >

@@ -9,9 +9,9 @@
   max-width: min(360px, calc(100% - 2 * var(--space-4) - var(--home-safe-left, 0px) - var(--home-safe-right, 0px)));
 }
 
-/* The mobile shell already excludes the system edge. Put confirmations
- * below the toolbar so the composer and its Send/Stop target stay clear. */
-:global([data-mobile]) .region {
+/* The shell's usable bounds exclude the installed window's system edge.
+ * Keep phone notices clear of Send/Stop in either workspace layout. */
+:global([data-notices-at-top]) .region {
   position: absolute;
   inset: calc(env(safe-area-inset-top, 0px) + var(--space-8) + var(--space-4)) var(--space-4) auto;
   margin-inline: auto;

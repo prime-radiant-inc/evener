@@ -18,19 +18,11 @@
 // one DOM location, one tab order (2026-08-10-composer-controls-inline-design.md).
 
 import { useLayoutEffect, useState } from "react";
-import { useMediaQuery } from "../../../shell/useIsMobile";
+import { LANDSCAPE_PHONE_QUERY, useMediaQuery } from "../../../shell/useIsMobile";
 
 // The 466pt Duo cover is a viewport layout, not a narrow docked pane. Keep the
 // lower edge above ordinary portrait phones so their composer stays unchanged.
 export const DUO_COVER_QUERY = "(min-width: 440px) and (max-width: 500px) and (max-aspect-ratio: 3 / 4)";
-
-// A phone can cross the shell's 899px width boundary in landscape. The Duo's
-// inner display is 951x669pt there, so its session pane still needs the
-// compact resting controls even though the shell around it is desktop.
-// Primary-pointer and size bounds keep hybrid laptops and full-size tablets
-// from inheriting the phone-only controls.
-export const LANDSCAPE_PHONE_QUERY =
-  "(pointer: coarse) and (hover: none) and (orientation: landscape) and (max-width: 1000px) and (max-height: 700px)";
 
 export function useDuoCoverLayout(): boolean {
   return useMediaQuery(DUO_COVER_QUERY);
