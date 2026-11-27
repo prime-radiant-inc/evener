@@ -10,7 +10,15 @@
  * the controls' --radius-control corner that inset keeps the two arcs
  * concentric (16 - 8 = 8), so the primary verb never crowds the corner arc.
  * The field takes a deeper top inset and its own inline inset (see .field),
- * which seats the writing line one --space-4 from the card's edge. */
+ * which seats the writing line one --space-4 from the card's edge.
+ *
+ * The card clips its own overflow in every state: a rounded surface holds
+ * its content inside its box, and clipping is what tells the liquid-glass
+ * SDK to place its drawn canvas as a positioned sibling of the card rather
+ * than prepending it as an in-flow child - an in-flow child sized to the
+ * card plus its bleed would lay the card's content wider than the card
+ * itself (the glass paint escaping horizontally, and a horizontal scrollbar
+ * wherever an ancestor scrolls). */
 .card {
   display: flex;
   flex-direction: column;
@@ -21,13 +29,7 @@
   border-radius: var(--radius-panel);
   background: var(--surface-1);
   box-shadow: var(--shadow-raised);
-}
-
-/* The launcher keeps its prompt inside the form and uses the denser
- * material. The conversation composer floats over moving content. */
-:global(body[data-iphone-glass]) :global([data-pane-scaffold="spawn"]) .card {
-  background: var(--glass-panel);
-  background-image: var(--glass-sheen);
+  overflow: clip;
 }
 
 /* The folded one-line row is as tall as its controls plus the same inset
