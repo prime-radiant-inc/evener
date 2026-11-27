@@ -223,6 +223,12 @@
   overflow-x: clip;
 }
 
+/* A downward reversal can reveal Notes while the title is still floating.
+ * Leave its centered summary clear of the two trailing action buttons. */
+.topBarCollapsed:not([data-home-edge], [data-system-edge-actions]) ~ .stackBody {
+  --notes-controls-inset: calc(2 * var(--tap-min) + var(--space-2));
+}
+
 /* The shown pane. It fills the body exactly as a pane sitting directly in
  * the body would, and is opaque so a pane beneath it never shows through.
  * It stacks at the body's ground level, after a leaving pane put under it. */

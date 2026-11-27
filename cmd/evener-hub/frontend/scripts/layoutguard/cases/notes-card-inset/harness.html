@@ -137,10 +137,22 @@ function cardGeometry(bodyId, panelId) {
   };
 }
 
-window.measure = () => ({
-  expanded: cardGeometry("#expandedBody", "#expandedPanel"),
-  collapsed: cardGeometry("#collapsedBody", "#collapsedPanel"),
-});
+window.measure = () => {
+  const expanded = cardGeometry("#expandedBody", "#expandedPanel");
+  const collapsed = cardGeometry("#collapsedBody", "#collapsedPanel");
+  // A reserved system edge can select the mobile shell in a wide viewport.
+  const host = document.querySelector("#collapsedPane").parentElement;
+  const panel = document.querySelector("#collapsedPanel");
+  const transcript = panel.nextElementSibling;
+  host.setAttribute("data-mobile", "");
+  const visibleTop = transcript.getBoundingClientRect().top;
+  const summaryHeight = panel.offsetHeight;
+  host.setAttribute("data-notes-hidden", "");
+  const spaceReleased = visibleTop - transcript.getBoundingClientRect().top;
+  host.removeAttribute("data-notes-hidden");
+  host.removeAttribute("data-mobile");
+  return { expanded, collapsed, summaryHeight, spaceReleased };
+};
 </script>
 </body>
 </html>
