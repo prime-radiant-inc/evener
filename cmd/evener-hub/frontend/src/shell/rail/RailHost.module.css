@@ -3,13 +3,7 @@
  * that docks it back. It carries the needs-you badge so attention stays
  * visible while the tree is hidden. */
 .chipBar {
-  flex: none;
-  align-self: flex-start;
-  /* The shell's content row has no gap at any width anymore (the docked
-   * rail sits flush against the workspace), so the floating button carries
-   * its own offset from the window's corner instead of borrowing the old
-   * shell gap's. */
-  margin: var(--space-2);
+  composes: chip from "../../styles/dockedEdge.module.css";
 }
 
 /* Desktop slide frame: inherits the rail's own width so RailResizeHandle's
@@ -25,10 +19,6 @@
 /* Lift the leaving rail out of flex flow so Show sidebar and the workspace
  * settle immediately, and pass pointer hits through for mid-exit reversal. */
 .railFrameExiting {
-  position: absolute;
-  top: 0;
-  bottom: 0;
+  composes: frameExiting from "../../styles/dockedEdge.module.css";
   left: 0;
-  z-index: var(--z-raised);
-  pointer-events: none;
 }

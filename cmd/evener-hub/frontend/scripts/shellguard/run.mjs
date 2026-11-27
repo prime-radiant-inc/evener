@@ -2103,7 +2103,7 @@ async function trustedOverviewFlow(send, viewport, childGesture) {
   await dismiss("close", pane);
   // The closed desktop Overview mirrors the Sessions rail: the open sidebar's
   // header Hide control gives way to one Show chip docked at the right shell
-  // edge. The phone keeps its in-sheet Close control and has no edge chip.
+  // edge. The phone keeps its in-sheet Hide control and has no edge chip.
   const edgeShow = await evaluate(
     send,
     `(() => {

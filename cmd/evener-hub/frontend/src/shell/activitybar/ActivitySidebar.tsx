@@ -110,7 +110,7 @@ function ActivitySidebarFrame({
 }: {
   mobile: boolean;
   sidebarRef: RefObject<HTMLElement | null>;
-  width: number | undefined;
+  width: number;
   transition: ReturnType<typeof spatialTransition>;
   exitTransition: ReturnType<typeof spatialExitTransition>;
   children: ReactNode;
@@ -121,11 +121,12 @@ function ActivitySidebarFrame({
   // DesktopRailFrame does the same for the rail).
   const open = useActivitySidebarStore((state) => state.open);
   const exiting = !mobile && !open;
+  const baseClass = mobile ? CLASS.sidebarMobile : CLASS.sidebar;
   return (
     <m.aside
       ref={sidebarRef}
-      className={`${mobile ? CLASS.sidebarMobile : CLASS.sidebar}${exiting ? ` ${CLASS.sidebarExiting}` : ""}`}
-      style={mobile || width === undefined ? undefined : ({ [OVERVIEW_WIDTH_PROPERTY]: `${width}px` } as CSSProperties)}
+      className={exiting ? `${baseClass} ${CLASS.sidebarExiting}` : baseClass}
+      style={mobile ? undefined : ({ [OVERVIEW_WIDTH_PROPERTY]: `${width}px` } as CSSProperties)}
       inert={exiting || undefined}
       // The Slide recipe: in from the right edge it lives on and back out
       // to it, by the sidebar's own width.
@@ -317,7 +318,6 @@ export function ActivitySidebar({ mobile = false }: { mobile?: boolean }) {
                   {!scope.ancestryKnown ? <span className={CLASS.pending}>Finding session context…</span> : null}
                 </div>
                 <IconButton
-                  data-overview-toggle=""
                   label="Hide Overview"
                   icon={<OverviewIcon />}
                   variant="quiet"
