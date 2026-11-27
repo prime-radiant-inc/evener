@@ -14,11 +14,8 @@
  *
  * The card clips its own overflow in every state: a rounded surface holds
  * its content inside its box, and clipping is what tells the liquid-glass
- * SDK to place its drawn canvas as a positioned sibling of the card rather
- * than prepending it as an in-flow child - an in-flow child sized to the
- * card plus its bleed would lay the card's content wider than the card
- * itself (the glass paint escaping horizontally, and a horizontal scrollbar
- * wherever an ancestor scrolls). */
+ * SDK to host its drawn canvas as a positioned sibling of the card rather
+ * than as a child positioned inside it and sized past the card's edge. */
 .card {
   display: flex;
   flex-direction: column;
@@ -29,6 +26,8 @@
   border-radius: var(--radius-panel);
   background: var(--surface-1);
   box-shadow: var(--shadow-raised);
+  overflow: hidden;
+  /* biome-ignore lint/suspicious/noDuplicateProperties: clip supersedes hidden as a true non-scroller where supported; hidden is the fallback for engines that predate it */
   overflow: clip;
 }
 
@@ -39,11 +38,10 @@
 }
 
 /* While the card's height interpolates, its content is laid out at the new
- * shape but the box is still short. Bottom-align and clip it so the controls
- * stay at the footer edge instead of dropping below it. */
+ * shape but the box is still short. Bottom-align it so the controls stay
+ * at the footer edge instead of dropping below it. */
 .card[data-animating] {
   justify-content: flex-end;
-  overflow: hidden;
 }
 
 /* The field's own box is the caller's; this slot only gives it a shrinkable

@@ -143,19 +143,13 @@ test("the composer card becomes the floating surface on the phone, and only the 
 
 test("the start composer keeps its plain framed card, and the card clips its own content", () => {
   // The spawn pane's card is the same PromptCard the conversation composer
-  // renders, and it keeps the framed look at every width and in every
-  // material mode: the iPhone glass material belongs to surfaces floating
-  // over moving content (the conversation composer over the transcript), not
-  // to a card sitting inside a scrolling form over a flat pane background,
-  // where the diagonal glass sheen reads as a stray background fade.
+  // renders, and it keeps the framed look in every material mode: the iPhone
+  // glass material belongs to surfaces floating over moving content, not to
+  // a card inside a scrolling form over a flat pane background.
   expect(cardCss, "the prompt card must not special-case the spawn pane").not.toMatch(/\[data-pane-scaffold="spawn"\]/);
 
-  // The card is a rounded surface, so its own content can never escape its
-  // box. The liquid-glass SDK reads this too: a card that clips its overflow
-  // gets its drawn canvas placed as a positioned sibling of the card, while
-  // a card with visible overflow gets the canvas prepended as an in-flow
-  // child whose bleed-sized width lays the card's content wider than the
-  // card itself.
+  // Clip is load-bearing for the liquid-glass SDK too - see the .card rule's
+  // own comment.
   expect(topRuleBlock(cardCss, ".card")).toMatch(/overflow:\s*clip/);
 });
 
