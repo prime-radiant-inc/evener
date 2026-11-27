@@ -115,7 +115,10 @@ func TestSkillDescriptionSessionJourney(t *testing.T) {
 	if !completed || !preserved {
 		t.Fatalf("completed=%v original input event=%v", completed, preserved)
 	}
-	if want := map[string]int{events.WarningCodePluginCompatibility: 1, "skill_diagnostic": 3, events.WarningCodeContextWindowAssumed: 1}; !reflect.DeepEqual(counts, want) {
+	// The collision diagnostic stays in DetailedStatus (checked above), but its
+	// warning waits for an activation of the colliding name; this journey
+	// activates a healthy skill instead, so only the two discovery warnings fire.
+	if want := map[string]int{events.WarningCodePluginCompatibility: 1, "skill_diagnostic": 2, events.WarningCodeContextWindowAssumed: 1}; !reflect.DeepEqual(counts, want) {
 		t.Errorf("warning codes=%v want=%v payloads=%+v", counts, want, warnings)
 	}
 	for name, want := range sources {

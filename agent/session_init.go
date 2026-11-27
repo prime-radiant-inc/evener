@@ -1873,7 +1873,19 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 		Plugins:       sources,
 	})
 	s.skills.Diagnostics = append(diagnostics, s.skills.Diagnostics...)
+	s.skillCollisions = nil
 	for _, diagnostic := range s.skills.Diagnostics {
+		// A collision is about which source an invocation resolves to, so it is
+		// reported when a genuine activation resolves that name, not at startup.
+		// Other diagnostics still describe discovery problems the user should
+		// see immediately.
+		if diagnostic.Category == "collision" {
+			if s.skillCollisions == nil {
+				s.skillCollisions = make(map[string][]skill.Diagnostic)
+			}
+			s.skillCollisions[diagnostic.Name] = append(s.skillCollisions[diagnostic.Name], diagnostic)
+			continue
+		}
 		s.pendingHookWarnings = append(s.pendingHookWarnings, skillDiagnosticWarning(diagnostic))
 	}
 	s.pluginCommands = make(map[string]plugin.Command)
@@ -2809,6 +2821,9 @@ func skillDiagnosticWarning(d skill.Diagnostic) events.WarningData {
 		warning.Code = events.WarningCodePluginCompatibility
 		warning.Title = "Skill compatibility"
 		warning.Hint = fmt.Sprintf("Review %s when convenient. The source file was left unchanged.", target)
+	case "collision":
+		warning.Message += "; displaced source " + d.OtherSource
+		warning.Hint = fmt.Sprintf("Review %s and %s. This session loads the highest-precedence copy; source changes are picked up on the next catalog discovery or session startup. Other skills remain usable.", d.Source, d.OtherSource)
 	case "unverified_cache_root":
 		warning.Title = "Skill cache fallback"
 		warning.Hint = "Set TMPDIR to a directory this process can verify, or keep using the fallback named in the message. Other skills remain usable."

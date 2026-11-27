@@ -450,7 +450,44 @@ func (s *Session) prepareSkillActivations(ctx context.Context, invocations []ski
 		}
 		batch.Items = append(batch.Items, preparedSkillActivation{Invocation: invocation, Loaded: loaded, Rendered: rendered})
 	}
+	for _, item := range batch.Items {
+		s.warnFirstSkillCollision(item)
+	}
 	return batch, nil
+}
+
+// warnFirstSkillCollision reports the collision diagnostic for a catalog name
+// the first time a genuine model or user activation resolves it. Background
+// routes (role preload, compaction reload) and continuations pinned to a
+// recorded source go through the same preparation without re-reporting a
+// catalog choice the user did not just make.
+func (s *Session) warnFirstSkillCollision(item preparedSkillActivation) {
+	if item.Invocation.Source != nil {
+		return
+	}
+	switch item.Invocation.Route {
+	case "model_tool", "user_slash", "user_selection":
+	default:
+		return
+	}
+	name := item.Loaded.Descriptor.CatalogName
+	collisions := s.skillCollisions[name]
+	if len(collisions) == 0 {
+		return
+	}
+	s.mu.Lock()
+	if s.skillCollisionWarned[name] {
+		s.mu.Unlock()
+		return
+	}
+	if s.skillCollisionWarned == nil {
+		s.skillCollisionWarned = make(map[string]bool)
+	}
+	s.skillCollisionWarned[name] = true
+	s.mu.Unlock()
+	for _, diagnostic := range collisions {
+		s.emitDiagnosticWarning(skillDiagnosticWarning(diagnostic))
+	}
 }
 
 // mintSkillOperationID assigns the session's next lifecycle operation identity
