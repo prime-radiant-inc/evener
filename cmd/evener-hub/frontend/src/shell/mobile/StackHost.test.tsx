@@ -850,7 +850,7 @@ test("renders the new activity sidebar over the mobile stack with the selected t
   expect(screen.getByRole("tab", { name: /Jobs/ })).toBeTruthy();
 });
 
-test.each(["Close", "Escape"])(
+test.each(["Hide", "Escape"])(
   "%s returns phone Overview focus to the revealed conversation after child drilling",
   async (dismiss) => {
     const restoreViewport = installMobileViewport();
@@ -904,7 +904,7 @@ test.each(["Close", "Escape"])(
       await screen.findByRole("heading", { name: "Child work" });
       const before = workspaceStore.getState();
       expect(before.focusedPaneId).not.toBe(parentPane);
-      if (dismiss === "Close") await user.click(within(sidebar).getByRole("button", { name: "Close Overview" }));
+      if (dismiss === "Hide") await user.click(within(sidebar).getByRole("button", { name: "Hide Overview" }));
       else await user.keyboard("{Escape}");
       // The read-only transcript's ancestor link is gone: the revealed
       // conversation owns the return focus through its own actions control.

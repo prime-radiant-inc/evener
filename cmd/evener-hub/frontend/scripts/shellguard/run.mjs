@@ -1782,7 +1782,7 @@ async function measureOverview(send) {
         !Array.from(e.children).some(child => child.textContent === expected));
       return measure(element, expected);
     });
-    const close = aside.querySelector('button[aria-label="Close Overview"]');
+    const close = aside.querySelector('button[aria-label="Hide Overview"]');
     const resizeHandle = aside.querySelector('[data-testid="overview-resize-handle"]');
     const surface = mobile ? null : Array.from(document.querySelectorAll('[data-testid="statusbar"]'))
       .find(e => !e.closest('[data-pane-footer-fixture]')) ?? null;
@@ -2150,7 +2150,38 @@ async function trustedOverviewFlow(send, viewport, childGesture) {
   }
 
   const dismiss = async (gesture, expectedPane, expectedButton = null) => {
-    if (gesture === "close") await clickControl(send, `${OVERVIEW} button[aria-label="Close Overview"]`);
+    // Capture the exit on the first DOM commit that has both the leaving pane
+    // and its Show chip. A separate CDP request is not deterministic here: the
+    // 180 ms exit can finish first. The observer runs as a microtask after the
+    // commit, while the pane is still mounted.
+    await evaluate(
+      send,
+      `(() => {
+        const aside = document.querySelector(${JSON.stringify(OVERVIEW)});
+        window.__overviewWorkspace = aside?.previousElementSibling ?? null;
+        window.__overviewExitGeometry = null;
+        window.__overviewExitObserver?.disconnect();
+        const capture = () => {
+          if (window.__overviewExitGeometry) return;
+          const leaving = document.querySelector(${JSON.stringify(OVERVIEW)});
+          const chip = document.querySelector('[data-overview-chip] [data-overview-toggle]');
+          if (!leaving || !chip) return;
+          const box = chip.getBoundingClientRect();
+          const workspace = window.__overviewWorkspace;
+          window.__overviewExitGeometry = {
+            position: getComputedStyle(leaving).position,
+            workspaceWidth: workspace?.getBoundingClientRect().width ?? null,
+            chip: box ? { left: box.left, right: box.right, top: box.top, bottom: box.bottom } : null,
+            scrollWidth: document.documentElement.scrollWidth,
+            clientWidth: document.documentElement.clientWidth,
+          };
+        };
+        window.__overviewExitObserver = new MutationObserver(capture);
+        window.__overviewExitObserver.observe(document.body, { childList: true, subtree: true });
+        capture();
+      })()`,
+    );
+    if (gesture === "close") await clickControl(send, `${OVERVIEW} button[aria-label="Hide Overview"]`);
     else {
       await evaluate(
         send,
@@ -2163,6 +2194,38 @@ async function trustedOverviewFlow(send, viewport, childGesture) {
       `!document.querySelector(${JSON.stringify(OVERVIEW)})`,
       `${gesture} completes Overview exit`,
     );
+    const exiting = await evaluate(
+      send,
+      `(() => {
+        window.__overviewExitObserver?.disconnect();
+        window.__overviewExitObserver = null;
+        return window.__overviewExitGeometry;
+      })()`,
+    );
+    const closedWorkspace = await evaluate(
+      send,
+      `window.__overviewWorkspace?.getBoundingClientRect().width ?? null`,
+    );
+    if (exiting) {
+      if (!exiting.chip) throw new Error(`${gesture} removes the edge Show chip during Overview exit`);
+      if (exiting.position !== "absolute")
+        throw new Error(`${gesture} leaves the exiting Overview in the content row: ${JSON.stringify(exiting)}`);
+      if (exiting.scrollWidth > exiting.clientWidth + 1)
+        throw new Error(`${gesture} widens the document during Overview exit: ${JSON.stringify(exiting)}`);
+      if (
+        exiting.workspaceWidth === null ||
+        closedWorkspace === null ||
+        Math.abs(exiting.workspaceWidth - closedWorkspace) > 1
+      )
+        throw new Error(
+          `${gesture} does not settle the workspace before Overview exit: ${JSON.stringify({ during: exiting.workspaceWidth, closed: closedWorkspace })}`,
+        );
+      const box = exiting.chip;
+      if (box.left < -1 || box.right > viewport.width + 1 || box.top < -1 || box.bottom > viewport.height + 1)
+        throw new Error(`${gesture} puts the edge Show chip off-shell during Overview exit: ${JSON.stringify(box)}`);
+    } else if (!viewport.mobile && !(await evaluate(send, `matchMedia('(prefers-reduced-motion: reduce)').matches`))) {
+      throw new Error(`${gesture} removed the Overview before its exit geometry could be measured`);
+    }
     await waitForDom(
       send,
       `(() => {
@@ -2180,6 +2243,37 @@ async function trustedOverviewFlow(send, viewport, childGesture) {
   };
   // The rail opener is removed when a phone's Sessions drawer closes.
   await dismiss("close", pane);
+  // The closed desktop Overview mirrors the Sessions rail: the open sidebar's
+  // header Hide control gives way to one Show chip docked at the right shell
+  // edge. The phone keeps its in-sheet Hide control and has no edge chip.
+  const edgeShow = await evaluate(
+    send,
+    `(() => {
+    const chips = Array.from(document.querySelectorAll('[data-overview-chip]'));
+    const chip = chips[0]?.querySelector('[data-overview-toggle]') ?? null;
+    if (!chip) return { chips: chips.length, box: null };
+    const r = chip.getBoundingClientRect();
+    return { chips: chips.length, box: { left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: r.width, height: r.height } };
+  })()`,
+  );
+  if (viewport.mobile) {
+    if (edgeShow.chips !== 0) throw new Error(`phone Overview offers an edge Show chip: ${JSON.stringify(edgeShow)}`);
+  } else {
+    const box = edgeShow.box;
+    if (
+      edgeShow.chips !== 1 ||
+      !box ||
+      box.width <= 0 ||
+      box.height <= 0 ||
+      box.left < -1 ||
+      box.right > viewport.width + 1 ||
+      box.top < -1 ||
+      box.bottom > viewport.height + 1
+    )
+      throw new Error(`desktop Overview edge Show chip is missing or off-shell: ${JSON.stringify(edgeShow)}`);
+    if (box.right < viewport.width - 64)
+      throw new Error(`desktop Overview edge Show chip is not docked at the right edge: ${JSON.stringify(edgeShow)}`);
+  }
   const inspection = await choosePaneOverview(send, overviewTrigger(pane), viewport.mobile, true);
   await clickControl(send, overviewTabSelector('[aria-label="About"]'));
   await evaluate(

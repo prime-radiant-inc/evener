@@ -1235,6 +1235,11 @@ instant under `prefers-reduced-motion: reduce`. Initial mount and restoration, b
 crossings, data or reconnect updates, and non-edge content swaps (tab switches, dock pane
 changes, settings sections) change immediately without sliding.
 
+Each desktop docked rail carries its Hide toggle just inside its own header and, once hidden,
+a Show chip at the same shell edge: Show sidebar for the left rail, Show Overview for the
+right Overview sidebar. The control uses that rail's symbol (`sidebar.leading` or
+`sidebar.trailing`), so the inside toggle and the edge chip read as the same control.
+
 ---
 
 ## 6. Copy rules
@@ -1636,8 +1641,10 @@ circular `Meter` ring, Workspace with click-to-copy Directory, Session with one
 `StatusDot` and click-to-copy Session ID, and collapsed Launch settings); saved
 session links live in the dedicated Links tab (Recent or Grouped, filterable,
 hover-underlined labels with hover/focus destination bar and Open beside for
-local files) on both desktop and mobile. Dismissing Overview returns focus to
-the header entry when it still belongs to that session.
+local files) on both desktop and mobile. The overlay's header carries the same
+trailing-panel Hide Overview control as the desktop sidebar, and the session
+header's Overview action remains the outside control. Dismissing Overview
+returns focus to that header entry when it still belongs to that session.
 
 The phone composer keeps Attach, Session actions and Send or Stop while
 collapsed or expanded. It announces current work to assistive technology

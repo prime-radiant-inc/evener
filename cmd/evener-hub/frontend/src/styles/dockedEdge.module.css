@@ -1,0 +1,23 @@
+/* The shared chrome of the two docked shell sidebars: the left Sessions rail
+ * and the right Overview sidebar. Each module composes these rules and adds
+ * its own edge offset, so the closed-state Show chip and the exiting frame
+ * cannot drift between the two sides. */
+
+/* The closed-state Show chip: a quiet control docked at the top edge of the
+ * sidebar's former lane, carrying its own offset from the window corner. */
+.chip {
+  flex: none;
+  align-self: flex-start;
+  margin: var(--space-2);
+}
+
+/* Lift a leaving pane out of the content row on its first exit frame so the
+ * Show chip and the workspace settle immediately. Pointer-transparent so a
+ * mid-exit reversal still reaches the Show control. */
+.frameExiting {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: var(--z-raised);
+  pointer-events: none;
+}
