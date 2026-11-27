@@ -1003,7 +1003,10 @@ test.each(["desktop", "mobile"])(
     const share = { type: "shareText", path: "/new", id: "moving-share", text: "extension-content" };
     act(() => window.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(share) })));
     expect(promptField().textContent).toBe("project-a-draft\n\nextension-content\n\nextension-content");
-    await fillPrompt(user, "project-a-draft\n\nextension-content\n\nextension-content\n\nlocal-edit");
+    const prompt = promptField();
+    selectEditorText(prompt, prompt.textContent?.length ?? 0);
+    await user.paste("\n\nlocal-edit");
+    expect(promptField().textContent).toBe("project-a-draft\n\nextension-content\n\nextension-content\n\nlocal-edit");
     if (surface === "desktop") await setWorkingDir(user, "/tmp/share-owner-b");
     else {
       await user.click(screen.getByLabelText(/^Working directory:/, { selector: "button:not(#spawn-cwd)" }));
