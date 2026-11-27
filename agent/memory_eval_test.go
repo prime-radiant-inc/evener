@@ -936,7 +936,10 @@ func memoryEvalCancellation(t *testing.T) {
 	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(time.Minute))
 	defer cancel()
 	root, workspace := t.TempDir(), t.TempDir()
-	s, err := NewSession(c, p, memoryEvalLocal(t, home, workspace, t.TempDir()), memoryEvalConfig(ctx, root, false, 20))
+	// Persistent session so the real auxiliary session-name Complete runs alongside root and child.
+	cfg := memoryEvalConfig(ctx, root, false, 20)
+	cfg.TurnEndsProcess = false
+	s, err := NewSession(c, p, memoryEvalLocal(t, home, workspace, t.TempDir()), cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1167,7 +1170,7 @@ func TestMemoryEvalChildBoundaries(t *testing.T) {
 			t.Fatal("real child delivered tool data over shared round cap")
 		}
 	}
-	if b.logical != 2 || b.toolRounds != 12 { // Child call plus its real auxiliary name call.
+	if b.logical != 1 || b.toolRounds != 12 { // Child call only; TurnEndsProcess skips the auxiliary session-name call.
 		t.Fatalf("child escaped shared admission: %s", memoryEvalSnapshot(b))
 	}
 }
