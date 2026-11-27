@@ -81,6 +81,8 @@ symbols with SVG. Native iOS controls use the corresponding SF Symbols.
 | Open Overview | Window with the trailing sidebar marked | `sidebar.trailing` |
 | Search or find in a session | Magnifying glass | `magnifyingglass` |
 | Settings | Gear | `gearshape` |
+| Switch hubs in the iPhone app | Server rack | `server.rack` |
+| Close a sheet | Cross | `xmark` |
 | Share through the system share sheet | Up arrow emerging from a square | `square.and.arrow.up` |
 
 The plus opens a new-session form. The arrow submits it. A compact composer
@@ -88,6 +90,10 @@ shows the arrow alone, with a round button on touch layouts. A wider composer
 can also show **Send** or **Start**. Keep the action name on an icon-only button
 for people using a screen reader. Include a count in that name when its badge
 conveys information, as with sessions that need attention.
+
+On phones and touchscreens, give icon-only buttons a circular surface. Keep
+that circle for hover, press and keyboard focus, including when the button
+sits in a group. Preserve the full touch target around the glyph.
 
 Shared web action glyphs use an 18 px canvas on a roomy desktop and a 24 px
 canvas on a phone or coarse pointer. Keep a 44 × 44 px touch target for a
