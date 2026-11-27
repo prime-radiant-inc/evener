@@ -7,11 +7,11 @@
     "styles/tokens.css",
     "styles/help.module.css",
     "styles/surface.module.css",
-    "widgets/internal/control.module.css",
     "widgets/internal/fieldTrigger.module.css",
     "widgets/internal/pickerPanel.module.css",
     "widgets/pathfield/pathfield.module.css",
-    "widgets/formrow/formrow.module.css"
+    "widgets/formrow/formrow.module.css",
+    "widgets/internal/control.module.css"
   ],
   "allowlist": {
     ".popoverPanel": "PathField's picker panel composes pickerPanel's panel padding and width; one element wears both names.",

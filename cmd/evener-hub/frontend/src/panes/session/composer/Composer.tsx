@@ -1606,6 +1606,7 @@ function ComposerWithSubmission({
                           size="xs"
                           type="button"
                           data-testid="composer-stop"
+                          data-compact-action=""
                           ref={alignRailAction}
                           aria-label="Stop"
                           icon={<StopIcon />}
@@ -1631,6 +1632,7 @@ function ComposerWithSubmission({
                           variant={showSteer ? "quiet" : "primary"}
                           size="xs"
                           data-testid="composer-submit"
+                          data-compact-action=""
                           aria-label="Send"
                           icon={<SendIcon />}
                           // canCompose comes from the availability table, which

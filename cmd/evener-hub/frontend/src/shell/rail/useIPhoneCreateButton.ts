@@ -29,15 +29,18 @@ export function useIPhoneCreateButton(rail: RefObject<HTMLDivElement | null>) {
     function measure() {
       const rect = frame();
       const key = JSON.stringify(rect);
-      if (previous === key) return;
+      if (previous === key) return !!rect;
       previous = key;
       if (!rect) setShown(false);
       tellIPhoneHost({ type: "createButton", id, frame: rect });
+      return false;
     }
     function receive(event: MessageEvent) {
       const command = iPhoneCommand(event);
       if (command?.id !== id) return;
-      if (command.type === "createButtonShown") setShown(!!frame());
+      // The Board can move or become covered while iOS places its button.
+      // Publish that change and wait for the current placement before handing off.
+      if (command.type === "createButtonShown") setShown(measure());
       if (command.type === "createSession" && frame()) button?.click();
     }
     function scroll(event: Event) {

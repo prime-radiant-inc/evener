@@ -30,15 +30,6 @@
   padding: 0;
 }
 
-/* Keep the pressed fill and focus ring on the same circle as the touch control. */
-@media (max-width: 899px), (any-pointer: coarse) {
-  .squareXs,
-  .squareSm,
-  .squareMd {
-    --radius-control: var(--radius-pill);
-  }
-}
-
 /* badge: the count overhangs the button's top-right corner, so it reads as
  * attached to the icon without widening the square. pointer-events: none
  * keeps the overhang from catching clicks outside the button's own box. */

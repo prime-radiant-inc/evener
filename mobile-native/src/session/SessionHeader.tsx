@@ -9,6 +9,7 @@ import { Animated, type LayoutChangeEvent, Pressable, Text, View } from "react-n
 import { UPDATE_NEEDED } from "../board/connectionStatus";
 import { INCOMPATIBLE_VERSIONS } from "../connectionRecovery";
 import { useReduceMotion } from "../accessibilitySettings";
+import { radius } from "../design/tokens";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { useComposerTyping } from "../useKeyboardShown";
 import { FreshDot } from "../reader/FreshDot";
@@ -174,7 +175,7 @@ function Chip({ chip, onPress }: { chip: ContextChip; onPress: () => void }) {
 				gap: 6,
 				paddingHorizontal: 12,
 				paddingVertical: 5,
-				borderRadius: 16,
+				borderRadius: radius.capsule,
 				borderWidth: 1,
 				borderColor: chip.attention ? palette.attentionEdge : palette.edge,
 				backgroundColor: chip.attention ? palette.attentionBg : palette.inset,

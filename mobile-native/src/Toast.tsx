@@ -4,6 +4,7 @@
 // it floats on the raised surface, and VoiceOver hears it once.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AccessibilityInfo, Platform, Pressable, Text, useWindowDimensions, View } from "react-native";
+import { radius } from "./design/tokens";
 import { FLOATING_SHADOW } from "./design/underBar";
 import { allowFontScaling, styles, useColors } from "./ui";
 
@@ -60,19 +61,21 @@ export function Toast({ toast, dismiss }: Pick<ToastController, "toast" | "dismi
 	const scale = Platform.OS === "ios" ? fontScale : 1;
 	if (!toast) return null;
 	const action = toast.action;
+	const largeText = fontScale > 1.2;
 	return (
 		<View
 			testID={toast.kind ? `toast:${toast.kind}` : undefined}
 			pointerEvents="box-none"
 			style={{
 				alignSelf: "center",
-				flexDirection: "row",
-				alignItems: "center",
-				gap: 12,
+				flexDirection: largeText ? "column" : "row",
+				alignItems: largeText ? "stretch" : "center",
+				gap: largeText ? 4 : 8,
 				maxWidth: "92%",
 				minHeight: 44,
 				paddingHorizontal: 16,
-				borderRadius: 22,
+				paddingVertical: 4,
+				borderRadius: radius.toast,
 				borderWidth: 1,
 				borderColor: palette.edgeStrong,
 				backgroundColor: palette.surface,
@@ -82,7 +85,7 @@ export function Toast({ toast, dismiss }: Pick<ToastController, "toast" | "dismi
 		>
 			<Text
 				allowFontScaling={allowFontScaling}
-				numberOfLines={2}
+				numberOfLines={largeText ? undefined : 2}
 				style={{ flexShrink: 1, color: palette.inkHi, fontSize: 15 * scale, lineHeight: 20 * scale }}
 			>
 				{toast.text}
@@ -98,7 +101,15 @@ export function Toast({ toast, dismiss }: Pick<ToastController, "toast" | "dismi
 						dismiss();
 						action.run();
 					}}
-					style={styles.action}
+					style={({ pressed }) => [
+						styles.action,
+						{
+							alignSelf: largeText ? "flex-end" : "center",
+							maxWidth: "100%",
+							borderRadius: radius.capsule,
+							backgroundColor: pressed ? palette.pressed : palette.accentBg,
+						},
+					]}
 				>
 					<Text
 						allowFontScaling={allowFontScaling}

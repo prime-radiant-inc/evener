@@ -938,6 +938,13 @@ describe("resource-backed Rail", () => {
       if (!published) throw new Error("Missing native create button");
       expect(published.frame).toEqual({ x: 10, y: 320, width: 44, height: 44 });
       expect(button.hasAttribute("aria-hidden")).toBe(false);
+      covered = true;
+      command("createButtonShown", published.id);
+      expect(messages.at(-1)?.frame).toBeNull();
+      expect(button.hasAttribute("aria-hidden")).toBe(false);
+      covered = false;
+      fireEvent.scroll(window);
+      expect(messages.at(-1)?.frame).toEqual(published.frame);
       command("createButtonShown", published.id);
       expect(button.getAttribute("aria-hidden")).toBe("true");
       viewport.scale = 2;

@@ -2932,6 +2932,7 @@ function SpawnForm({
                     variant="primary"
                     size="xs"
                     data-testid="spawn-submit"
+                    data-compact-action={busy ? undefined : ""}
                     aria-label="Start"
                     icon={busy ? undefined : <SendIcon />}
                     onClick={() => void handleSpawn()}

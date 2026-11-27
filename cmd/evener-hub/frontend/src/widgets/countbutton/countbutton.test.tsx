@@ -76,7 +76,6 @@ test("pill chrome grounds the counter on the canvas, wash chrome does not", () =
   expect(screen.getByRole("button").getAttribute("data-chrome")).toBe("wash");
   const wash = topRuleBlock(CSS, '.root[data-chrome="wash"]');
   expect(wash).toContain("background: transparent");
-  expect(wash).toContain("border-radius: var(--radius-pane)");
 });
 
 test("inside a narrow width container the label drops first, then the glyph", () => {

@@ -20,7 +20,7 @@ import {
 import { ClientProvider } from "../../../shell/clientContext";
 import { resetFocusedActivityScopeForTests } from "../../../shell/focusedSession";
 import { registerPaneForTests } from "../../../shell/paneRegistry";
-import { MOBILE_QUERY } from "../../../shell/useIsMobile";
+import { LANDSCAPE_PHONE_QUERY, MOBILE_QUERY } from "../../../shell/useIsMobile";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
 import { connectionStore, resetConnectionStoreForTests } from "../../../stores/connection";
 import { navigationStore, resetNavigationStoreForTests } from "../../../stores/navigation/store";
@@ -31,7 +31,6 @@ import { resetTranscriptDisplayStoreForTests, transcriptDisplayStore } from "../
 import { escapeRegExp } from "../../../styles/cssBlock";
 import { ALL_CAPABILITIES as CAPABILITIES } from "../../../threadTestUtils";
 import type { SessionZoomParams } from "../../zoom/intent";
-import { LANDSCAPE_PHONE_QUERY } from "../composer/narrowComposer";
 import { resetFindRequestsForTests, useFindRequest } from "../find/findRequest";
 import { settleActivityDiscovery } from "../testing/activityDiscovery";
 import { installMobileViewport } from "../testing/mobileViewport";

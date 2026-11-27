@@ -188,7 +188,6 @@ describe("the chips row (spec 8.1)", () => {
 		const [chip] = chipButtons(render(header({ chips: [tasks] })));
 		expect(chip?.props.style({ pressed: false })).toMatchObject({
 			minHeight: 32,
-			borderRadius: 16,
 			borderWidth: 1,
 			borderColor: palette.edge,
 			backgroundColor: palette.inset,
@@ -205,7 +204,9 @@ describe("the chips row (spec 8.1)", () => {
 		const style = chip.props.style({ pressed: false });
 		expect(style.height).toBeUndefined();
 		expect(style.minHeight).toBeGreaterThanOrEqual(32);
-		expect(chip.findByType("Text" as never).props.style.lineHeight).toBe(60);
+		const lineHeight = chip.findByType("Text" as never).props.style.lineHeight;
+		expect(lineHeight).toBe(60);
+		expect(style.borderRadius).toBeGreaterThanOrEqual(lineHeight / 2);
 		act(() => chip.props.onPress());
 		expect(onChip).toHaveBeenCalledWith("tasks");
 	});

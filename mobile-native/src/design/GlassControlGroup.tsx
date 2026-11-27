@@ -1,7 +1,7 @@
 import { GlassView } from "expo-glass-effect";
 import type { ReactNode } from "react";
 import { StyleSheet, View } from "react-native";
-import type { Palette } from "./tokens";
+import { type Palette, radius } from "./tokens";
 
 export function GlassControlGroup({
 	glass,
@@ -12,7 +12,7 @@ export function GlassControlGroup({
 	palette: Palette;
 	children: ReactNode;
 }) {
-	const shape = { flexDirection: "row", alignItems: "center", borderRadius: 24 } as const;
+	const shape = { flexDirection: "row", alignItems: "center", borderRadius: radius.capsule } as const;
 	return glass ? (
 		<GlassView glassEffectStyle="regular" colorScheme={palette.scheme} isInteractive style={shape}>
 			{children}

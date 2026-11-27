@@ -34,6 +34,7 @@ import {
 	readOrganizationNavigation,
 } from "./organizationNavigation";
 import type { Routes } from "./screens";
+import { radius } from "./design/tokens";
 import { Copy, ErrorMessage, styles, useColors } from "./ui";
 import { Spinner } from "./sheet/Spinner";
 import { sessionSubagentChip, sessionSubagentChipLabel } from "./board/BoardRow";
@@ -54,9 +55,9 @@ function FilterTab({ label, selected, onPress }: { label: string; selected: bool
 				minHeight: 48,
 				paddingHorizontal: 12,
 				paddingVertical: 10,
-				borderRadius: 12,
+				borderRadius: radius.capsule,
 				backgroundColor: selected ? colors.surface : "transparent",
-				borderBottomWidth: selected ? 2 : 0,
+				borderWidth: selected ? 1 : 0,
 				borderColor: colors.accent,
 			}}
 		>

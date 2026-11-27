@@ -366,6 +366,10 @@ describe("a segmented control", () => {
 		const tree = render(<Segmented label="Appearance" options={options} value="light" onChange={onChange} />);
 		const group = tree.root.findByProps({ accessibilityRole: "radiogroup" });
 		expect(merged(group.props.style).flexDirection).toBe("column");
+		const selected = tree.root.findByProps({ accessibilityRole: "radio", accessibilityLabel: options[1].label });
+		const optionStyle = merged(selected.props.style);
+		const labelHeight = merged(selected.findByType("Text" as never).props.style).lineHeight;
+		expect(optionStyle.borderRadius).toBeGreaterThanOrEqual((labelHeight + 2 * optionStyle.paddingVertical) / 2);
 		for (const label of texts(tree)) {
 			expect(label.props.numberOfLines).toBeUndefined();
 			expect(merged(label.props.style).fontSize).toBeGreaterThanOrEqual(30);
@@ -827,7 +831,8 @@ describe("Button", () => {
 	it("draws a mini button as the prototype's .mini-btn: accent text, no fill, shaded when pressed, touchable over 44pt (audit M13)", () => {
 		const tree = render(<Button label="Install" mini onPress={() => {}} />);
 		const button = pressable(tree);
-		expect(styleOf(button)).toMatchObject({ paddingVertical: 6, paddingHorizontal: 8, borderRadius: 8, minHeight: 30 });
+		expect(styleOf(button)).toMatchObject({ paddingVertical: 6, paddingHorizontal: 8, minHeight: 30 });
+		expect(styleOf(button).borderRadius).toBeGreaterThanOrEqual(styleOf(button).minHeight / 2);
 		expect(styleOf(button).backgroundColor).toBeUndefined();
 		expect(styleOf(button, true).backgroundColor).toBe(light.pressed);
 		const label = tree.root.find((node) => String(node.type) === "Text");
@@ -907,7 +912,6 @@ describe("Button", () => {
 				const button = pressable(tree);
 				expect(styleOf(button)).toMatchObject({
 					backgroundColor: light.accentFill,
-					borderRadius: 24,
 					paddingHorizontal: 18,
 					paddingVertical: 8,
 					minHeight: minimum,

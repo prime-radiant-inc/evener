@@ -170,6 +170,9 @@ export function scaledType<Role extends { fontSize: number; lineHeight: number; 
 	return role.letterSpacing === undefined ? scaled : { ...scaled, letterSpacing: role.letterSpacing * scale };
 }
 
+/** The capsule radius reaches half the shorter side even as Dynamic Type grows a control. */
+export const radius = { capsule: 999, toast: 22 } as const;
+
 /** Spacing from spec 16.3 (a 4pt base) and the prototype's grouped list. */
 export const space = {
 	/** The side margin of a group, a segmented control or a field. */

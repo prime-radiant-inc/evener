@@ -1,7 +1,7 @@
 import { SymbolView } from "expo-symbols";
 import { Pressable, Text, useWindowDimensions, View } from "react-native";
 import { ChipStrip } from "../design/ChipStrip";
-import { scaledType, uiType } from "../design/tokens";
+import { radius, scaledType, uiType } from "../design/tokens";
 import { useHeaderTextScale } from "../headerText";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import {
@@ -100,7 +100,7 @@ export function Chips({ chips, onGlass }: { chips: ChipProps[]; onGlass: boolean
 					style={({ pressed }) => ({
 						minHeight: 32,
 						paddingHorizontal: 12,
-						borderRadius: 16,
+						borderRadius: radius.capsule,
 						flexDirection: "row",
 						alignItems: "center",
 						columnGap: 6,

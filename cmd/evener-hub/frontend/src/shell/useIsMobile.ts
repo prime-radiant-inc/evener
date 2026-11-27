@@ -1,6 +1,10 @@
 import { useCallback, useSyncExternalStore } from "react";
 
 export const MOBILE_QUERY = "(max-width: 899px)";
+// The Duo inner display can use the desktop workspace in landscape. Its touch
+// controls and notices still belong to a phone-sized window.
+export const LANDSCAPE_PHONE_QUERY =
+  "(pointer: coarse) and (hover: none) and (orientation: landscape) and (max-width: 1000px) and (max-height: 700px)";
 // StackHost already owns the mobile ceiling, so this query only adds the floor.
 export const TABLET_QUERY = "(min-width: 768px)";
 /** The primary pointer's capability query: fine precision and hover. */

@@ -12,7 +12,7 @@ import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context"
 import { BandHeader } from "../board/BoardRow";
 import { useConnection } from "../ConnectionProvider";
 import { ChipStrip } from "../design/ChipStrip";
-import { space } from "../design/tokens";
+import { radius, space } from "../design/tokens";
 import { useDetailPaneWidth } from "../duo/paneWidth";
 import { HubModels } from "../hubModels";
 import type { Routes } from "../screens";
@@ -453,12 +453,12 @@ function FilterChip({
 			}}
 			hitSlop={{ top: 6, bottom: 6 }}
 			style={{
-				height: 32,
+				minHeight: 32,
 				flexDirection: "row",
 				alignItems: "center",
 				gap: 6,
 				paddingHorizontal: 12,
-				borderRadius: 16,
+				borderRadius: radius.capsule,
 				backgroundColor: selected ? palette.accentBg : palette.canvas,
 			}}
 		>

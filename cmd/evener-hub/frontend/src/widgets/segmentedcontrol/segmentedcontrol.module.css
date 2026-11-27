@@ -147,18 +147,7 @@
   block-size: 32px;
 }
 
-/* Stacked: a label over a quiet detail. The track is a pane-radius rounded
- * rectangle and each option's radius is the track's minus its padding and
- * border, so the thumb stays concentric with the track. The track and every
- * option carry .stacked. */
-.track.stacked {
-  border-radius: var(--radius-pane);
-}
-
-.track.stacked > .thumb {
-  border-radius: calc(var(--radius-pane) - var(--space-half) - 1px);
-}
-
+/* A detail adds a second line in the same capsule. */
 .option.stacked {
   flex-direction: column;
   gap: var(--space-half);
@@ -169,7 +158,6 @@
    * so a column's width is set by the caption scale, not the control scale. */
   padding-inline: 0;
   font-size: var(--font-size-caption);
-  border-radius: calc(var(--radius-pane) - var(--space-half) - 1px);
 }
 
 .optionDetail {

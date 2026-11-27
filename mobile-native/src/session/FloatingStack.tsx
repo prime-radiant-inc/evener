@@ -9,7 +9,7 @@
 // follower's end once.
 import type { ReactNode } from "react";
 import { View } from "react-native";
-import type { Palette } from "../design/tokens";
+import { type Palette, radius } from "../design/tokens";
 import { FLOAT_GAP } from "../design/underBar";
 import { useComposerTyping } from "../useKeyboardShown";
 import type { ComposerFocus } from "./composerFocus";
@@ -20,7 +20,7 @@ export function floatingCapsule(palette: Palette) {
 	return {
 		minHeight: 44,
 		paddingHorizontal: 16,
-		borderRadius: 999,
+		borderRadius: radius.capsule,
 		borderWidth: 1,
 		borderColor: palette.edgeStrong,
 		backgroundColor: palette.surface,

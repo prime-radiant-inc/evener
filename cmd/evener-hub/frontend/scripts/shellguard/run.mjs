@@ -790,21 +790,20 @@ async function measurePhoneSearchPalette(page) {
       viewport: { width: innerWidth, height: innerHeight },
       center: hitAt(innerWidth / 2, innerHeight / 2),
       input: ir ? { ...hitAt(ir.left + ir.width / 2, ir.top + ir.height / 2), focused: document.activeElement === input } : null,
-      toast: tr ? hitAt(tr.left + tr.width / 2, tr.top + tr.height / 2) : null,
+      toast: tr ? { ...hitAt(tr.left + tr.width / 2, tr.top + tr.height / 2), x: tr.left + tr.width / 2, bottom: tr.bottom } : null,
     };
   })()`;
   const beforeToast = await evaluate(send, hitProbe);
-  await evaluate(
-    send,
-    "import('/src/widgets/toast/store.ts').then(({ pushToast }) => pushToast('error', 'Palette toast check'))",
-  );
-  await waitForDom(
-    send,
-    'Boolean(document.querySelector(\'[aria-label="Notifications"] [data-kind="error"]\'))',
-    "Toast rendered over open Command palette",
-  );
-  await settleFiniteAnimations(send);
-  const withToast = await evaluate(send, hitProbe);
+  async function measureToast() {
+    await evaluate(
+      send,
+      "import('/src/widgets/toast/store.ts').then(({ pushToast }) => pushToast('error', 'Palette toast check'))",
+    );
+    await waitForDom(send, 'Boolean(document.querySelector(\'[aria-label="Notifications"] [data-kind="error"]\'))', "Toast rendered");
+    await settleFiniteAnimations(send);
+    return evaluate(send, hitProbe);
+  }
+  const withToast = await measureToast();
   await evaluate(
     send,
     "import('/src/widgets/toast/store.ts').then(({ resetToastStoreForTests }) => resetToastStoreForTests())",
@@ -830,7 +829,13 @@ async function measurePhoneSearchPalette(page) {
       };
     })()`,
   );
-  return { ...beforeToast, toast: withToast.toast, afterEscape };
+  await applyViewport(send, { ...MOBILE_VIEWPORT, width: 951, height: 669 });
+  await waitForDom(send, 'Boolean(document.querySelector("[data-desktop-workspace]"))', "Duo landscape workspace mounted");
+  const landscape = await measureToast();
+  await send("Emulation.setTouchEmulationEnabled", { enabled: false });
+  await applyViewport(send, { width: 951, height: 669 });
+  const desktop = await measureToast();
+  return { ...beforeToast, toast: withToast.toast, afterEscape, landscape, desktop };
 }
 
 function assertPhoneSearchPalette(result) {
@@ -852,6 +857,13 @@ function assertPhoneSearchPalette(result) {
   if (!result.toast?.inToast) {
     failures.push(`toast did not paint above Command palette: ${JSON.stringify(result.toast)}`);
   }
+  for (const { toast, viewport } of [result, result.landscape]) {
+    if (!toast || toast.bottom > viewport.height / 2 || Math.abs(toast.x - viewport.width / 2) > 1)
+      failures.push(`phone toast outside the top center at ${viewport.width}x${viewport.height}: ${JSON.stringify(toast)}`);
+  }
+  const { toast, viewport } = result.desktop;
+  if (!toast || toast.bottom < viewport.height / 2 || toast.x < viewport.width / 2)
+    failures.push(`desktop toast outside the lower right: ${JSON.stringify(toast)}`);
   if (!result.afterEscape.sessionsOpen || !result.afterEscape.searchFocused || !result.afterEscape.searchHit) {
     failures.push(
       `dismissing Command palette did not restore phone Sessions drawer/focus: ${JSON.stringify(result.afterEscape)}`,

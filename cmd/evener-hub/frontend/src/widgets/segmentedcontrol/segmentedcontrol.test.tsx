@@ -408,27 +408,19 @@ describe("stacked detail", () => {
     expect(screen.getByRole("radio", { name: "About" }).querySelectorAll("span")).toHaveLength(1);
   });
 
-  test("applies the stacked shape to the track and every option only when a detail exists", () => {
+  test("gives every option room for a second line when a detail exists", () => {
     const { unmount } = render(<SegmentedControl label="Kind" value="jobs" options={detailed} onChange={() => {}} />);
-    const stackedTrack = screen.getByRole("radiogroup");
-    const stackedClass = stackedTrack.className.split(" ").find((name) => name.includes("stacked"));
-    expect(stackedClass).toBeTruthy();
     for (const radio of screen.getAllByRole("radio")) {
-      expect(radio.className).toContain(stackedClass);
+      expect(radio.className).toContain("stacked");
       expect(radio.className).not.toMatch(/\b(sm|md)\b/);
     }
     unmount();
     render(<SegmentedControl label="Kind" value="chat" options={OPTIONS} onChange={() => {}} />);
-    expect(screen.getByRole("radiogroup").className).not.toContain("stacked");
     for (const radio of screen.getAllByRole("radio")) expect(radio.className).not.toContain("stacked");
   });
 
-  test("stacked CSS gives the track pane corners and the thumb the concentric inner radius", () => {
+  test("stacked options fit a second line of detail", () => {
     const css = cssSource();
-    expect(css).toMatch(/\.track\.stacked\s*\{[^}]*border-radius:\s*var\(--radius-pane\)/s);
-    expect(css).toMatch(
-      /\.option\.stacked\s*\{[^}]*flex-direction:\s*column[^}]*block-size:\s*auto[^}]*border-radius:\s*calc\(var\(--radius-pane\) - var\(--space-half\) - 1px\)/s,
-    );
     expect(css).toMatch(
       /\.optionDetail\s*\{[^}]*font-size:\s*min\(var\(--font-size-caption\),\s*calc\(var\(--font-size-caption\) \/ var\(--font-scale\)\)\)[^}]*font-variant-numeric:\s*tabular-nums[^}]*font-weight:\s*var\(--font-weight-regular\)/s,
     );
@@ -589,9 +581,6 @@ describe("CSS contract", () => {
     const css = cssSource();
     expect(css).toMatch(
       /\.thumb\s*\{[^}]*grid-row:\s*1 \/ 2[^}]*grid-column:\s*1 \/ 2[^}]*position:\s*absolute[^}]*inset:\s*0[^}]*border:\s*1px solid var\(--edge\)[^}]*border-radius:\s*var\(--radius-pill\)[^}]*background:\s*var\(--surface-1\)[^}]*box-shadow:\s*var\(--shadow-card\)[^}]*pointer-events:\s*none[^}]*transform:\s*translateX\(calc\(var\(--segmented-direction, 1\) \* var\(--segmented-index, 0\) \* \(100% \+ var\(--segmented-gap\)\)\)\)/s,
-    );
-    expect(css).toMatch(
-      /\.track\.stacked > \.thumb\s*\{[^}]*border-radius:\s*calc\(var\(--radius-pane\) - var\(--space-half\) - 1px\)/s,
     );
     expect(css).toMatch(
       /@media\s*\(prefers-reduced-motion:\s*no-preference\)\s*\{\s*\.thumb\s*\{\s*transition:\s*transform var\(--motion-duration-hover\) var\(--motion-easing-standard\);\s*\}\s*\}/s,

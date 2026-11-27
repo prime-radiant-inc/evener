@@ -9,7 +9,7 @@ import { SymbolView } from "expo-symbols";
 import { memo, useMemo } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
 import { EnrichedMarkdownText, type MarkdownStyle } from "react-native-enriched-markdown";
-import { fonts } from "../design/tokens";
+import { fonts, radius } from "../design/tokens";
 import { readingRoles, useDisplayChoices } from "../display/displayContext";
 import type { ReadingFont } from "../display/displayPreferences";
 import { type MenuItem, menuAccessibility, menuPreview, showMenu } from "../longPressMenu";
@@ -247,7 +247,7 @@ function CommentMarker({ count, onPress }: { count: number; onPress(): void }) {
 				gap: 4,
 				paddingHorizontal: 8,
 				paddingVertical: 4,
-				borderRadius: 10,
+				borderRadius: radius.capsule,
 				backgroundColor: palette.accentBg,
 			}}
 		>

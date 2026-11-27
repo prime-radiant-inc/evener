@@ -81,7 +81,6 @@
     border-radius: var(--radius-pill);
     background: var(--glass-fill, var(--surface-1));
     box-shadow: var(--glass-shadow);
-    --radius-control: var(--radius-pill);
   }
 }
 

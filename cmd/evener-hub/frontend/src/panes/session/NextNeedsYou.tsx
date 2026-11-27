@@ -8,6 +8,7 @@ import type { ReactElement, KeyboardEvent as ReactKeyboardEvent, MouseEvent as R
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import { useOptionalNeedsYou, useOptionalNeedsYouController } from "../../shell/NeedsYouProvider";
 import type { NeedsYouChoice, NeedsYouSnapshot } from "../../shell/needsYouActions";
+import { MoreIcon } from "../../shell/rail/railIcons";
 import { Button, IconButton, ListRow, Popover, StatusDot } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { useLongPress } from "../../widgets/internal/useLongPress";
@@ -70,7 +71,6 @@ const CLASS = {
   nextStack: requireClass(styles.nextStack, "nextNeedsYou.module.css", "nextStack"),
   nextLead: requireClass(styles.nextLead, "nextNeedsYou.module.css", "nextLead"),
   nextLabel: requireClass(styles.nextLabel, "nextNeedsYou.module.css", "nextLabel"),
-  ellipsis: requireClass(styles.ellipsis, "nextNeedsYou.module.css", "ellipsis"),
   list: requireClass(styles.list, "nextNeedsYou.module.css", "list"),
 };
 
@@ -265,11 +265,7 @@ function OwnedNextNeedsYou({
             label="More needs-you sessions"
             aria-haspopup="true"
             aria-expanded={listOpen}
-            icon={
-              <span className={CLASS.ellipsis} aria-hidden="true">
-                …
-              </span>
-            }
+            icon={<MoreIcon />}
             variant="secondary"
             size="md"
             onClick={() => {

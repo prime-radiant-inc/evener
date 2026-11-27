@@ -4,7 +4,7 @@ import { type SFSymbol, SymbolView } from "expo-symbols";
 import { useLayoutEffect } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import { GlassControlGroup } from "../design/GlassControlGroup";
-import type { Palette } from "../design/tokens";
+import { type Palette, radius } from "../design/tokens";
 import type { Routes } from "../screens";
 
 export interface SessionHeaderState {
@@ -192,5 +192,5 @@ const styles = StyleSheet.create({
 		gap: 3,
 		paddingHorizontal: 9,
 	},
-	badge: { fontSize: 12, fontWeight: "700", borderRadius: 8, overflow: "hidden", paddingHorizontal: 4 },
+	badge: { fontSize: 12, fontWeight: "700", borderRadius: radius.capsule, overflow: "hidden", paddingHorizontal: 4 },
 });

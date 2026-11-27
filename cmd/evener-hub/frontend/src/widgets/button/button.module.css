@@ -9,7 +9,7 @@
    * nowrap makes the label's min-content its full width, which a flex parent
    * then cannot shrink below (min-width:auto) - the label always fits. */
   white-space: nowrap;
-  border-radius: var(--radius-control);
+  border-radius: var(--radius-pill);
   border: 1px solid transparent;
   font-family: var(--font-sans);
   font-weight: var(--font-weight-medium);
@@ -252,14 +252,18 @@
   .md {
     min-height: var(--tap-min);
   }
-  /* Touch cards that hide the Send/Start label use the whole tap target
-   * for the circle. Desktop keeps the same slot when Stop replaces Send. */
   @container (max-width: 559px) {
-    .button:has([data-submit-arrow]) {
-      aspect-ratio: 1;
-      border-radius: var(--radius-pill);
-      padding-inline: 0;
+    .button[data-compact-action] {
       min-width: var(--tap-min);
     }
+  }
+}
+
+/* Where the composer hides the label, give Send, Stop and Start the same
+ * circular slot for both pointer and touch input. */
+@container (max-width: 559px) {
+  .button[data-compact-action] {
+    aspect-ratio: 1;
+    padding-inline: 0;
   }
 }

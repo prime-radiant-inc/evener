@@ -23,11 +23,17 @@ test("draws an SVG stroked with currentColor", () => {
   expect(path?.getAttribute("stroke")).toBe("currentColor");
 });
 
-test.each(["iPhone", "MacIntel", "Linux armv8l"])("uses the compact submit arrow on %s", (platform) => {
-  const stub = vi.spyOn(navigator, "platform", "get").mockReturnValue(platform);
+test("uses the same submit arrow on each platform", () => {
+  const stub = vi.spyOn(navigator, "platform", "get");
   try {
-    const { container } = render(<SendIcon />);
-    expect(container.querySelector("[data-submit-arrow]")).not.toBeNull();
+    const paths = ["iPhone", "MacIntel", "Linux armv8l"].map((platform) => {
+      stub.mockReturnValue(platform);
+      return render(<SendIcon />)
+        .container.querySelector("path")
+        ?.getAttribute("d");
+    });
+    expect(paths[0]).toBeTruthy();
+    expect(new Set(paths).size).toBe(1);
   } finally {
     stub.mockRestore();
   }

@@ -16,7 +16,7 @@ const control = read("./control.module.css");
 
 // The box chrome every consumer gets from `.controlField`.
 const FIELD_DECLARATIONS = [
-  /border-radius:\s*var\(--radius-control\)/,
+  /border-radius:\s*var\(--field-radius, var\(--radius-control\)\)/,
   /border:\s*1px solid var\(--edge\)/,
   /background:\s*var\(--field\)/,
   /box-shadow:\s*var\(--shadow-inset-field\)/,

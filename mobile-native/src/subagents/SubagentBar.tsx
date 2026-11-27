@@ -8,6 +8,7 @@
 // its verb behind an ellipsis.
 import { SymbolView } from "expo-symbols";
 import { Pressable, Text, View } from "react-native";
+import { radius } from "../design/tokens";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import type { StopOfferKind } from "./stopOffer";
 
@@ -39,7 +40,7 @@ export function SubagentBar({
 						justifyContent: "center",
 						gap: 6,
 						paddingHorizontal: 12,
-						borderRadius: 12,
+						borderRadius: radius.capsule,
 						borderWidth: 0.5,
 						borderColor: palette.edgeStrong,
 						opacity: pressed ? 0.6 : 1,
@@ -73,7 +74,7 @@ export function SubagentBar({
 					alignItems: "center",
 					justifyContent: "center",
 					paddingHorizontal: 12,
-					borderRadius: 12,
+					borderRadius: radius.capsule,
 					backgroundColor: palette.accentFill,
 					opacity: pressed ? 0.6 : 1,
 				})}
