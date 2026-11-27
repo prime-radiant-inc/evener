@@ -403,7 +403,8 @@ test("desktop Overview puts its Hide control inside the pane and its Show contro
 
   fireEvent.click(hide);
   await waitFor(() => expect(screen.queryByTestId("activity-sidebar")).toBeNull());
-  expect(screen.getByRole("button", { name: "Show Overview" })).toBeTruthy();
+  const showAgain = screen.getByRole("button", { name: "Show Overview" });
+  expect(document.activeElement).toBe(showAgain);
 });
 
 test("the phone puts its Hide control inside the pane and offers no edge Show chip", async () => {

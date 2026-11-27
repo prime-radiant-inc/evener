@@ -158,16 +158,35 @@ export function ActivitySidebar({ mobile = false }: { mobile?: boolean }) {
   const tabPanelId = `${idPrefix}-panel`;
   const tabDomId = (id: ActivityTab) => `${idPrefix}-tab-${id}`;
   const sidebar = useRef<HTMLElement>(null);
+  const showButton = useRef<HTMLButtonElement>(null);
   const hideButton = useRef<HTMLButtonElement>(null);
   const focusOnOpen = useRef(false);
+  const openedFromChip = useRef(false);
+  const returnToChip = useRef(false);
   // The edge Show chip unmounts as it opens the pane. Hand focus to the
   // in-pane Hide control so a keyboard or assistive-tech activation does not
   // drop to the document body. Other openers stay mounted and keep their own
   // focus behavior.
   useEffect(() => {
-    if (!open || !focusOnOpen.current) return;
+    if (!open) return;
+    returnToChip.current = false;
+    if (!focusOnOpen.current) {
+      openedFromChip.current = false;
+      return;
+    }
     focusOnOpen.current = false;
+    openedFromChip.current = true;
     hideButton.current?.focus();
+  }, [open]);
+  // Closing an Overview that the edge chip opened restores focus to the chip
+  // after React mounts its replacement. The close handler cannot do that
+  // synchronously: the chip is unmounted for the whole open state.
+  useEffect(() => {
+    if (open || !returnToChip.current) return;
+    returnToChip.current = false;
+    const chip = showButton.current;
+    if (chip) chip.focus();
+    else activitySidebarReturnFocusTarget(activitySidebarStore.getState().tab)?.focus();
   }, [open]);
   const returnFrame = useRef<number | null>(null);
   useEffect(() => {
@@ -190,8 +209,13 @@ export function ActivitySidebar({ mobile = false }: { mobile?: boolean }) {
   );
   const close = useCallback(() => {
     const focusInside = sidebar.current?.contains(document.activeElement);
+    const returnToEdgeChip = focusInside && openedFromChip.current;
     activitySidebarStore.getState().close();
     if (!focusInside) return;
+    if (returnToEdgeChip) {
+      returnToChip.current = true;
+      return;
+    }
     if (returnFrame.current !== null) cancelAnimationFrame(returnFrame.current);
     // The phone shell must reveal its underlying pane before selecting a
     // visible return control. A newer opening keeps ownership of focus.
@@ -383,6 +407,7 @@ export function ActivitySidebar({ mobile = false }: { mobile?: boolean }) {
       {!mobile && !open && ref !== null ? (
         <div className={CLASS.chipBar} data-overview-chip="">
           <IconButton
+            ref={showButton}
             data-overview-toggle=""
             label="Show Overview"
             icon={<OverviewIcon />}

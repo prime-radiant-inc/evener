@@ -2071,11 +2071,35 @@ async function trustedOverviewFlow(send, viewport, childGesture) {
   }
 
   const dismiss = async (gesture, expectedPane, expectedButton = null) => {
+    // Capture the exit on the first DOM commit that has both the leaving pane
+    // and its Show chip. A separate CDP request is not deterministic here: the
+    // 180 ms exit can finish first. The observer runs as a microtask after the
+    // commit, while the pane is still mounted.
     await evaluate(
       send,
       `(() => {
         const aside = document.querySelector(${JSON.stringify(OVERVIEW)});
         window.__overviewWorkspace = aside?.previousElementSibling ?? null;
+        window.__overviewExitGeometry = null;
+        window.__overviewExitObserver?.disconnect();
+        const capture = () => {
+          if (window.__overviewExitGeometry) return;
+          const leaving = document.querySelector(${JSON.stringify(OVERVIEW)});
+          const chip = document.querySelector('[data-overview-chip] [data-overview-toggle]');
+          if (!leaving || !chip) return;
+          const box = chip.getBoundingClientRect();
+          const workspace = window.__overviewWorkspace;
+          window.__overviewExitGeometry = {
+            position: getComputedStyle(leaving).position,
+            workspaceWidth: workspace?.getBoundingClientRect().width ?? null,
+            chip: box ? { left: box.left, right: box.right, top: box.top, bottom: box.bottom } : null,
+            scrollWidth: document.documentElement.scrollWidth,
+            clientWidth: document.documentElement.clientWidth,
+          };
+        };
+        window.__overviewExitObserver = new MutationObserver(capture);
+        window.__overviewExitObserver.observe(document.body, { childList: true, subtree: true });
+        capture();
       })()`,
     );
     if (gesture === "close") await clickControl(send, `${OVERVIEW} button[aria-label="Hide Overview"]`);
@@ -2086,32 +2110,18 @@ async function trustedOverviewFlow(send, viewport, childGesture) {
       );
       await pressKey(send, "Escape", "Escape", 27);
     }
-    // The leaving pane must lift out of the row on its first exit frame: the
-    // workspace takes its closed width immediately, the Show chip is already
-    // docked, and the rightward slide cannot widen the document.
-    const exiting = viewport.mobile
-      ? null
-      : await evaluate(
-          send,
-          `(() => {
-            const aside = document.querySelector(${JSON.stringify(OVERVIEW)});
-            if (!aside) return null;
-            const chip = document.querySelector('[data-overview-chip] [data-overview-toggle]');
-            const box = chip?.getBoundingClientRect() ?? null;
-            const workspace = window.__overviewWorkspace;
-            return {
-              position: getComputedStyle(aside).position,
-              workspaceWidth: workspace?.getBoundingClientRect().width ?? null,
-              chip: box ? { left: box.left, right: box.right, top: box.top, bottom: box.bottom } : null,
-              scrollWidth: document.documentElement.scrollWidth,
-              clientWidth: document.documentElement.clientWidth,
-            };
-          })()`,
-        );
     await waitForDom(
       send,
       `!document.querySelector(${JSON.stringify(OVERVIEW)})`,
       `${gesture} completes Overview exit`,
+    );
+    const exiting = await evaluate(
+      send,
+      `(() => {
+        window.__overviewExitObserver?.disconnect();
+        window.__overviewExitObserver = null;
+        return window.__overviewExitGeometry;
+      })()`,
     );
     const closedWorkspace = await evaluate(
       send,
