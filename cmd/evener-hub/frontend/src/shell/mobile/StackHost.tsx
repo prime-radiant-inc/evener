@@ -717,11 +717,9 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
       lastScrollHeightRef.current = target.scrollHeight;
       const type = focusedPaneRef.current?.type;
       const input = readerScrollInput.get(target);
-      // Resync on initial placement, streaming or prepended history.
-      if (heightChanged || input === "opening") {
-        scrollRunRef.current = 0;
-        return;
-      }
+      // A content shift contributes no travel in either direction. A slow
+      // reversal can span several streaming updates.
+      if (heightChanged || input === "opening") return;
       if (type !== "session" && type !== "sessionZoom" && type !== "transcript") return;
       if (headerPinnedRef.current || scrollTop === prevScrollTop) return;
       collapseScrollerRef.current = target;

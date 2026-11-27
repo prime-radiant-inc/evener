@@ -2694,10 +2694,11 @@ test("mobile notes tuck in the reading direction and return on reversal or expli
     expect(notes.closest("[data-notes-hidden]")).not.toBeNull();
     expect(bar.getAttribute("data-collapsed")).not.toBe("true");
     expect(scroller.scrollTop).toBe(2416);
-    // Streaming moves the reader's offset without changing their direction.
-    Object.defineProperty(scroller, "scrollHeight", { configurable: true, value: 3900 });
-    scroll(2716);
+    // Two small reverse steps still count when streaming moves the offset
+    // between them. The content shift itself contributes no travel.
+    scroll(2420);
     expect(notes.closest("[data-notes-hidden]")).not.toBeNull();
+    Object.defineProperty(scroller, "scrollHeight", { configurable: true, value: 3900 });
     scroll(2720);
     expect(notes.closest("[data-notes-hidden]")).not.toBeNull();
     scroll(scroller.scrollTop + 4);
@@ -3266,14 +3267,15 @@ test("floating top bar collapse and reveal keep compensated TranscriptBody scrol
     });
     await act(async () => frames.release());
 
-    // Seed StackHost's height baseline and settle an away position with solid top bar.
+    // A native scrollbar drag away from the settled end can deliver only
+    // scroll events. Its first movement still establishes the reading direction.
     act(() => {
-      scroller.dispatchEvent(new WheelEvent("wheel", { deltaY: -400, bubbles: true }));
       scroller.scrollTop = 300;
       scroller.dispatchEvent(new Event("scroll"));
     });
     await act(async () => geometry.notify());
     expect(scroller.scrollTop).toBe(300);
+    expect(scroller.closest("[data-notes-hidden]")).not.toBeNull();
     expect(bar.getAttribute("data-collapsed")).not.toBe("true");
 
     // Downward scroll collapses the bar: viewportHeight grows by 56 on commit
