@@ -11,8 +11,10 @@ on the cover and in inner landscape. Back or Sessions leads when needed,
 followed by Find and Overview. An expanded Board owns its own toggle. Inner
 portrait keeps the actions above the reader. Attach, Send, and the composer
 menu stay with the text field in every pose. When the system bar is on the
-side, opening a menu, the Sessions drawer, or Overview temporarily hides its
-actions. Dismissing the overlay restores them on that edge.
+side, the Sessions drawer uses that bar for Close, Hubs, and Settings. The
+list keeps its filter and New session button. Closing it restores the reader
+actions, or the Sessions button on Welcome. A menu or Overview temporarily
+hides the covered actions.
 
 ## Home Screen and Safari
 
@@ -20,8 +22,9 @@ A hub added to the Home Screen rotates on both displays. The installed workspace
 subtracts the horizontal safe-area insets before choosing its layout. When iOS
 leaves one side wide enough for touch controls, Back or Sessions, Find, and
 Overview move to that edge below the system status area. With no available edge,
-the actions stay above the reader. The New session button stays with the Board,
-aligned with Send in the adjacent composer.
+the actions stay above the reader. The Sessions drawer places Settings and Close
+in the same free edge, and Welcome uses it to reopen Sessions. The New session
+button stays with the Board, aligned with Send in the adjacent composer.
 
 Safari supplies its own browser controls and viewport. Conversation actions stay
 in the web header in a browser tab.

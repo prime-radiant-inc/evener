@@ -168,7 +168,7 @@ final class EvenerQualificationUITests: XCTestCase {
 		let app = XCUIApplication()
 		onboardIfNeeded(app)
 		showSessions(app)
-		tap(app.webViews.buttons["Hubs on this iPhone"].firstMatch, "the iPhone settings never appeared")
+		tap(app.buttons["Hubs on this iPhone"].firstMatch, "the iPhone settings never appeared")
 		app.buttons["iphone-device-work"].tap()
 		let prompt = openNewSession(app)
 		// The gesture swipes the form's own labels, not a control (a swipe
@@ -233,8 +233,7 @@ final class EvenerQualificationUITests: XCTestCase {
 	/// A cold-opened session has a Sessions drawer. A session reached through another
 	/// screen has Back until that parent screen can show the drawer.
 	private func showSessions(_ app: XCUIApplication) {
-		let web = app.webViews.firstMatch
-		let hubSettings = web.buttons["Hubs on this iPhone"]
+		let hubSettings = app.buttons["Hubs on this iPhone"].firstMatch
 		let opener = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Sessions")).firstMatch
 		let back = app.buttons["Back"].firstMatch
 		let ready = expectation(for: NSPredicate { _, _ in

@@ -161,7 +161,9 @@ export function LayerFocusScope({
       const last = list[list.length - 1];
       if (!first || !last) return; // list.length >= 1 was just checked above
       const active = (ownerDocumentRef.current ?? scope.ownerDocument ?? document).activeElement;
-      if (event.shiftKey && active === first) {
+      // A dialog can take initial focus itself. Menus own Tab from their
+      // popup and choose among enabled rows, including rows with tabindex=-1.
+      if (event.shiftKey && (active === first || first.closest('[role="dialog"], dialog') === active)) {
         event.preventDefault();
         last.focus();
       } else if (!event.shiftKey && active === last) {

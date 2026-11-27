@@ -38,13 +38,29 @@ export function isSessionHeader(value: unknown): value is SessionHeaderState {
 	);
 }
 
-const controls = {
+const readerControls = {
 	back: { symbol: "chevron.backward", label: "Back" },
 	sessions: { symbol: "sidebar.leading", label: "Sessions" },
 	find: { symbol: "magnifyingglass", label: "Find in session" },
 	overview: { symbol: "sidebar.trailing", label: "Overview" },
 } as const satisfies Record<string, { symbol: SFSymbol; label: string }>;
-export type HeaderAction = keyof typeof controls;
+export type HeaderAction = keyof typeof readerControls;
+
+const controls = {
+	...readerControls,
+	open: readerControls.sessions,
+	close: { symbol: "xmark", label: "Close" },
+	hubs: { symbol: "server.rack", label: "Hubs on this iPhone" },
+	settings: { symbol: "gearshape", label: "Settings" },
+} as const satisfies Record<string, { symbol: SFSymbol; label: string }>;
+export type EdgeAction = keyof typeof controls;
+
+const listActions = {
+	list: { leading: "close", trailing: ["hubs", "settings"] },
+	launcher: { leading: "open", trailing: [] },
+} as const;
+const inspectionActions = ["find", "overview"] as const;
+export type SessionsToolbar = { id: string; mode: keyof typeof listActions };
 
 interface HeaderProps {
 	header: SessionHeaderState;
@@ -52,7 +68,7 @@ interface HeaderProps {
 	onAction(id: string, action: HeaderAction): void;
 }
 
-function headerControl(action: HeaderAction, needsYou: number) {
+function headerControl(action: EdgeAction, needsYou: number) {
 	const { symbol, label } = controls[action];
 	const count = action === "sessions" ? needsYou : 0;
 	const spoken = count ? `${label}, ${count} ${count === 1 ? "needs" : "need"} you` : label;
@@ -61,19 +77,23 @@ function headerControl(action: HeaderAction, needsYou: number) {
 
 export function EdgeSessionToolbar({
 	header,
+	sessionsToolbar,
 	palette,
 	onAction,
 }: {
 	header: SessionHeaderState | null;
+	sessionsToolbar: SessionsToolbar | null;
 	palette: Palette;
-	onAction(id: string | null, action: HeaderAction): void;
+	onAction(id: string | null, action: EdgeAction): void;
 }) {
-	const id = header?.id ?? null;
-	const leading = header?.leading;
+	const id = sessionsToolbar?.id ?? header?.id ?? null;
+	const list = sessionsToolbar && listActions[sessionsToolbar.mode];
+	const leading = list?.leading ?? header?.leading;
+	const trailing = list?.trailing ?? inspectionActions;
 	const needsYou = header?.needsYou ?? 0;
 	const navigation = useNavigation<NativeStackNavigationProp<Routes, "Workspace">>();
 	useLayoutEffect(() => {
-		function button(action: HeaderAction): NativeStackHeaderItemButton {
+		function button(action: EdgeAction): NativeStackHeaderItemButton {
 			const { symbol, label, spoken, count } = headerControl(action, needsYou);
 			return {
 				type: "button",
@@ -93,9 +113,9 @@ export function EdgeSessionToolbar({
 			headerStyle: { backgroundColor: "transparent" },
 			headerTintColor: palette.inkHi,
 			unstable_headerLeftItems: () => (leading ? [button(leading)] : []),
-			unstable_headerRightItems: () => [button("find"), button("overview")],
+			unstable_headerRightItems: () => trailing.map(button),
 		});
-	}, [id, leading, needsYou, palette.inkHi, onAction, navigation]);
+	}, [id, leading, trailing, needsYou, palette.inkHi, onAction, navigation]);
 	useLayoutEffect(() => () => navigation.setOptions({ headerShown: false }), [navigation]);
 	return null;
 }
