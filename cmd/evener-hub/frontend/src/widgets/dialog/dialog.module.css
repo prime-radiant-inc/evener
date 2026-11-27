@@ -38,6 +38,9 @@
  * from this, then add their own geometry/animation class on top. */
 .panel {
   composes: panel from "../../styles/floatingSurface.module.css";
+  /* A nested sheet starts with its own dismiss action in its header. */
+  --overlay-header-actions-display: flex;
+  --overlay-actions-placement: inline;
   --glass-layer-fill: var(--glass-panel);
   --glass-layer-filter: none;
   position: relative;
@@ -62,9 +65,24 @@
 }
 
 .headerActions {
-  display: flex;
+  display: var(--overlay-header-actions-display, flex);
   flex: none;
   align-items: center;
+}
+
+@container style(--overlay-actions-placement: edge) {
+  .headerActions {
+    position: absolute;
+    left: var(--overlay-actions-left, auto);
+    right: var(--overlay-actions-right, auto);
+    bottom: calc(var(--dock-clearance) + var(--space-3));
+    margin-inline: calc((max(var(--home-safe-left), var(--home-safe-right)) - var(--tap-min)) / 2);
+    flex-direction: column;
+    border-radius: var(--radius-pill);
+    background: var(--glass-fill, var(--surface-1));
+    box-shadow: var(--glass-shadow);
+    --radius-control: var(--radius-pill);
+  }
 }
 
 .title {

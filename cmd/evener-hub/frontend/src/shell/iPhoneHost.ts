@@ -20,6 +20,7 @@ type HostMessage =
   | { type: "ready" | "hubMenu" }
   | { type: "appearance"; dark: boolean }
   | { type: "sessionHeader"; header: IPhoneHeader | null }
+  | { type: "sessionsToolbar"; id: string; mode: "list" | "launcher" | null }
   | { type: "createButton"; id: string; frame: { x: number; y: number; width: number; height: number } | null }
   | { type: "route"; path: string }
   | { type: "editing" | "readingDocument" | "covered"; active: boolean }
@@ -42,6 +43,10 @@ export function hasIPhoneSessionHeader(): boolean {
 
 export function hasIPhoneWorkspaceControls(): boolean {
   return !!iPhoneHost() && navigator.userAgent.split(/\s+/).includes("EvenerWorkspaceControls/1");
+}
+
+export function hasIPhoneSessionsToolbar(): boolean {
+  return !!iPhoneHost() && navigator.userAgent.split(/\s+/).includes("EvenerSessionsToolbar/1");
 }
 
 function observeToolbar(update: () => void) {

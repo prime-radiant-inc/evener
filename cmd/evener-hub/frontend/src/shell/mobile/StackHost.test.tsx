@@ -40,7 +40,7 @@ import {
 import { topNotesStore } from "../../stores/topNotes";
 import { initTranscriptDisplay, resetTranscriptDisplayStoreForTests } from "../../stores/transcriptDisplay";
 import { readModuleCss } from "../../styles/cssBlock";
-import { Badge } from "../../widgets";
+import { Badge, Dialog, Input } from "../../widgets";
 import { activitySidebarStore, resetActivitySidebarStoreForTests } from "../activitybar/activitySidebarStore";
 import { openAttentionSession } from "../attentionHistory";
 import { captureAttentionPlacement, presentAttentionTarget, restoreAttentionPlacement } from "../attentionPlacement";
@@ -466,6 +466,67 @@ test("opens the mobile panel when nothing is focused", async () => {
   await findStackedEmptyState("welcome");
   // The panel's Sheet title "Sessions" is the dialog's accessible name
   expect(screen.getByRole("dialog", { name: "Sessions" })).toBeTruthy();
+});
+
+test("the Duo edge controls open and dismiss Sessions and yield to a nested dialog", async () => {
+  const restore = installMobileViewport();
+  const ua = vi
+    .spyOn(navigator, "userAgent", "get")
+    .mockReturnValue("EvenerNative/1 EvenerSessionHeader/1 EvenerSessionsToolbar/1");
+  let toolbar: { id: string; mode: string | null } | undefined;
+  vi.stubGlobal("evenerEdgeToolbar", true);
+  vi.stubGlobal("ReactNativeWebView", {
+    postMessage(json: string) {
+      const message = JSON.parse(json);
+      if (message.type === "sessionsToolbar") toolbar = message;
+    },
+  });
+  const send = (id: string | undefined, action: string) =>
+    act(() =>
+      window.dispatchEvent(
+        new MessageEvent("message", { data: JSON.stringify({ type: "sessionsAction", id, action }) }),
+      ),
+    );
+  try {
+    const filter = <Input role="searchbox" aria-label="Filter" value="" onChange={() => {}} />;
+    const { rerender } = render(<StackHost railSlot={filter} />);
+    await screen.findByRole("dialog");
+    await waitFor(() => expect(toolbar?.mode).toBe("list"));
+    expect(document.activeElement).toBe(screen.getByRole("dialog"));
+    await userEvent.click(screen.getByRole("searchbox"));
+    expect(document.activeElement).toBe(screen.getByRole("searchbox"));
+    const listID = toolbar?.id;
+    rerender(
+      <StackHost
+        railSlot={
+          <Dialog open onClose={() => {}} title="Confirm">
+            <Badge count={1} />
+          </Dialog>
+        }
+      />,
+    );
+    await waitFor(() => expect(toolbar?.mode).toBeNull());
+    send(listID, "close");
+    expect(screen.getAllByRole("dialog")).toHaveLength(2);
+    rerender(<StackHost />);
+    await waitFor(() => expect(toolbar?.mode).toBe("list"));
+    send(listID, "close");
+    await waitFor(() => expect(toolbar?.mode).toBe("launcher"));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(within(screen.getByTestId("topbar")).queryByRole("button")).toBeNull();
+    send(toolbar?.id, "open");
+    await waitFor(() => expect(toolbar?.mode).toBe("list"));
+    send(listID, "close");
+    expect(screen.getByRole("dialog")).toBeTruthy();
+    send(toolbar?.id, "settings");
+    expect(window.location.pathname).toBe("/settings");
+    expect(screen.queryByRole("dialog")).toBeNull();
+  } finally {
+    cleanup();
+    vi.unstubAllGlobals();
+    ua.mockRestore();
+    restore();
+  }
 });
 
 test.each([false, true])(

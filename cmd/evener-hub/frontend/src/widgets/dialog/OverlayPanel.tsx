@@ -198,6 +198,7 @@ export function OverlayPanel({
         {/* biome-ignore lint/a11y/useAriaPropsSupportedByRole lint/a11y/noStaticElementInteractions: the dialog role and aria-modal are dropped together only while the layer leaves, inert, see above */}
         <div
           role={closing ? undefined : "dialog"}
+          tabIndex={-1}
           aria-modal={closing ? undefined : "true"}
           aria-labelledby={titleId}
           className={panelClassName}
