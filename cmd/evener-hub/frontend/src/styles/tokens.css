@@ -231,7 +231,7 @@
    * its drop-target container is 9999, which tops everything here for the
    * duration of a dock drag.
    */
-  --z-raised: 1; /* local: resize handles, overlay controls within a pane */
+  --z-raised: 1; /* local: resize handles, overlay controls within a pane, the docked sidebars' casts */
   --z-sticky-bar: 20; /* pane-level pinned bars (mobile action band) */
   --z-dialog: 1000; /* modal dialog + its scrim */
   --z-menu: 1020; /* menus, popovers, anchored floats */

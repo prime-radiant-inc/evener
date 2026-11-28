@@ -7,7 +7,8 @@
   flex: none;
   border-left: 1px solid var(--edge);
   background: var(--surface-0);
-  /* Keeps the left-cast shadow above the following workspace sibling's paint. */
+  /* Mirrors the rail's rule: keeps the left cast above the workspace's
+   * positioned panes whatever the sibling order. */
   position: relative;
   z-index: var(--z-raised);
   box-shadow: var(--shadow-overview);

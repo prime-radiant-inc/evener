@@ -36,10 +36,12 @@ landing the unshipped warm glow-up palette.
   `duoSurfaceStyles` helper, with `zIndex: 1` so the detail pane cannot
   paint over the cast. The grouped sheets keep their canvas ground per the
   Grouped List Rule.
-- Pinned by the layoutguard cases `sidebar-one-ground` (both themes, both
-  sidebars: page ground, hairline, mirrored casts, `--z-raised`) and
-  `sidebar-one-ground-mobile` (drawer: page ground, no border, no shadow),
-  and by `DuoSplit.test.tsx`'s surface contract in both schemes.
+- Pinned by the layoutguard cases `sidebar-one-ground` (the rail, both
+  themes: page ground, hairline, cast, `--z-raised`),
+  `sidebar-one-ground-overview` (the Overview sidebar, both themes plus the
+  mobile variant), and `sidebar-one-ground-mobile` (drawer-hosted rail: page
+  ground, no border, no shadow), and by `DuoSplit.test.tsx`'s surface
+  contract in both schemes.
 
 ## 2026-11-13 the accent becomes an indigo and the primary action wears it
 

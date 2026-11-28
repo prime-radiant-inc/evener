@@ -5,15 +5,21 @@ https://artifacts.trout-rigel.ts.net/p/evener-sidebar-mockups/). Branch `sidebar
 
 ## Intent
 
-The sidebars and the main body use two different ground colors, and the two
-platforms invert the mapping: on web the rail and the Overview sidebar are
-`--surface-canvas` over a `--surface-0` page, while on iPad the split's
-sidebar is `palette.page` over a `palette.canvas` detail pane
-(`DuoSplit.tsx:97,149`). In light theme canvas is darker than page; in dark
-it is lighter, so the tint relationship flips four ways. That is the crappy
-look. Sidebars and main body share one ground; the split is carried by the
-1px `--edge` hairline both platforms already draw, plus a soft one-sided
-shadow so the sidebar reads as a layer on top of the page.
+The sidebars and the main body use two different ground colors on web: the
+rail and the Overview sidebar are `--surface-canvas` over a `--surface-0`
+page. In light theme canvas is darker than page; in dark it is lighter, so
+the rail sinks in one theme and floats in the other. Sidebars and main body
+share one ground; the split is carried by the 1px `--edge` hairline both
+platforms already draw, plus a soft one-sided shadow so the sidebar reads as
+a layer on top of the page.
+
+(Correction recorded during implementation: the first draft of this section
+claimed the iPad split's detail pane was `palette.canvas`, citing
+`DuoSplit.tsx:149`. That line is the grouped *sheet* ground; the
+conversation's content comes from `rootStack`'s `palette.page` contentStyle,
+and pixel-sampling the screenshot Jesse sent confirmed the split was already
+one ground. The approved outcome is unchanged; the native behavior below is
+corrected to match.)
 
 ## Approaches
 
@@ -30,9 +36,9 @@ shadow so the sidebar reads as a layer on top of the page.
 
 - Web: rail and Overview sidebar share `--surface-0` with the page; each
   keeps its hairline and gains a soft shadow cast onto the page.
-- iPad: the split's detail pane joins the sidebar on `palette.page`; the
-  sidebar gains the native shadow recipe (matching `FloatingStack`) cast
-  onto the detail pane. The 1px `palette.edge` divider stays.
+- iPad: the split stays one ground (it already was); the sidebar gains the
+  soft shadow and the `zIndex` that keeps the cast visible, while the 1px
+  `palette.edge` divider stays.
 - Design law, decisions record and native design record updated in the same
   change (evergreen docs rule).
 
@@ -45,6 +51,7 @@ shadow so the sidebar reads as a layer on top of the page.
 - The dock tab strip stays canvas (the pane well). Builder's call, flagged
   on the mockup page and not overridden.
 - iPhone: untouched (Board and Session are already flat `palette.page`).
+- iPad grouped sheets: untouched (they keep `palette.canvas`).
 - Android: deferred as before.
 
 ## Anti-goals
@@ -93,8 +100,8 @@ grounds exactly. Reduced-motion behavior is unaffected (nothing animates).
    desktop `box-shadow` is non-`none` with `z-index` applied, and at ≤899px
    the rail's `box-shadow` is `none`. Fails before the CSS change, passes
    after.
-2. `DuoSplit.test.tsx` gains a `duoSurfaceStyles` contract test: detail
-   ground is `palette.page` in both schemes, the divider stays 1px
+2. `DuoSplit.test.tsx` gains a `duoSurfaceStyles` contract test: root and
+   sidebar grounds are `palette.page` in both schemes, the divider stays 1px
    `palette.edge`, and the sidebar shadow matches the spec values with
    `zIndex: 1`. Fails before, passes after.
 3. Gates: `make test-web` (token contract, typecheck, Biome, unit),

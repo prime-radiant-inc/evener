@@ -716,7 +716,8 @@ paints outside that box, from clipping. `global.css` owns the one rule, and toke
 every positive outline-offset in the tree against it.
 
 **Stacking order** — The app's own z-index values are tokenized to keep stacking context
-predictable. The ladder: `--z-raised` (1, local resize handles/overlay controls within a pane),
+predictable. The ladder: `--z-raised` (1, local resize handles/overlay controls within a pane,
+and the docked sidebars' casts above the workspace),
 `--z-sticky-bar` (20, pane-level pinned bars), `--z-dialog` (1000, modal dialogs + scrim),
 `--z-menu` (1020, menus, popovers, anchored floats), `--z-tooltip` (1030, tooltips beat menus),
 `--z-toast` (1040, tops the app's own ladder). Raw z-index integers are contract-banned; see §4.
