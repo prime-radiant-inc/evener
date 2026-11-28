@@ -379,8 +379,11 @@ func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int,
 	// longer exists, so drop it in this same lock hold. An unchanged publication
 	// — the per-request fold that found nothing to fold — keeps it: the history
 	// the provider measured is still the one resident.
-	if commit.actualCompaction && s.contextMgr != nil {
-		s.contextMgr.ClearInputMeasurement()
+	if commit.actualCompaction {
+		s.disclosedToolSchemas = nil
+		if s.contextMgr != nil {
+			s.contextMgr.ClearInputMeasurement()
+		}
 	}
 	commit.claimCompactionLocked()
 	// Publication-order marker for last-write-wins effect suppression, set

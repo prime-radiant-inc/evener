@@ -40,11 +40,8 @@ func TestOneShotOmitsCeremonyTools(t *testing.T) {
 		if s.reg.Get("manage_worktree") == nil {
 			t.Error("registry omitted manage_worktree under TurnEndsProcess=true")
 		}
-		if !advertised["manage_worktree"] || !advertised["tool_search"] {
-			t.Error("advertised tools omitted manage_worktree stub or tool_search under TurnEndsProcess=true")
-		}
-		if advertised["call_tool"] {
-			t.Error("advertised tools unexpectedly included call_tool under TurnEndsProcess=true")
+		if !advertised["manage_worktree"] {
+			t.Error("advertised tools omitted manage_worktree under TurnEndsProcess=true")
 		}
 
 		data, _ := s.buildPromptData(s.env)
@@ -53,11 +50,8 @@ func TestOneShotOmitsCeremonyTools(t *testing.T) {
 				t.Errorf("promptData.HasTool(%q) = true under TurnEndsProcess=true", name)
 			}
 		}
-		if !data.HasTool("tool_search") {
-			t.Error("promptData.HasTool(\"tool_search\") = false under TurnEndsProcess=true")
-		}
-		if data.HasTool("manage_worktree") {
-			t.Error("promptData.HasTool(\"manage_worktree\") = true while manage_worktree is deferred")
+		if !data.HasTool("manage_worktree") {
+			t.Error("promptData.HasTool(\"manage_worktree\") = false under TurnEndsProcess=true")
 		}
 
 		prompt, warning, _ := s.renderSystemPrompt(s.env)
@@ -123,24 +117,14 @@ func TestOneShotOmitsCeremonyTools(t *testing.T) {
 			TurnEndsProcess: false,
 			AgentsDocPath:   filepath.Join(t.TempDir(), "no-personal-AGENTS.md"),
 		}))
-		defs := s.ToolDefinitions()
-		advertised := toolNameSetFromDefinitions(defs)
-		byName := make(map[string]llm.ToolDefinition, len(defs))
-		for _, td := range defs {
-			byName[td.Name] = td
-		}
+		advertised := toolNameSetFromDefinitions(s.ToolDefinitions())
 		for _, name := range ceremonyTools {
 			if s.reg.Get(name) == nil {
 				t.Errorf("registry missing %q under TurnEndsProcess=false", name)
 			}
 			if !advertised[name] {
-				t.Errorf("advertised tools missing deferred stub %q under TurnEndsProcess=false", name)
-				continue
+				t.Errorf("advertised tools missing %q under TurnEndsProcess=false", name)
 			}
-			assertDeferredStubDef(t, byName[name], "")
-		}
-		if !advertised["tool_search"] || advertised["call_tool"] {
-			t.Error("advertised tools want tool_search without call_tool under TurnEndsProcess=false")
 		}
 		prompt, warning, _ := s.renderSystemPrompt(s.env)
 		if warning != "" {

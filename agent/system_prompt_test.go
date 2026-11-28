@@ -79,13 +79,8 @@ func promptConfigs() []promptConfig {
 			checkPromptInput(t, "an available agent with tasks", withTasks, true)
 			checkPromptInput(t, "an available agent without tasks", withoutTasks, true)
 			checkPromptInput(t, "a task that inserts parent tasks", insertsParentTasks, true)
-			for _, name := range []string{"edit_file", "tool_search", "delegate", "delegate_send", "task_list"} {
+			for _, name := range []string{"read_transcript", "find_session_transcripts", "job_watch", "compact_context", "edit_file"} {
 				checkPromptInput(t, "HasTool "+name, d.HasTool(name), true)
-			}
-			checkPromptInput(t, "HasTool call_tool", d.HasTool("call_tool"), false)
-			checkPromptInput(t, "CallableToolNames has job_watch", slices.Contains(d.CallableToolNames, "job_watch"), true)
-			for _, name := range []string{"read_transcript", "find_session_transcripts", "job_watch", "compact_context", "web_fetch"} {
-				checkPromptInput(t, "HasTool "+name+" (deferred)", d.HasTool(name), false)
 			}
 			checkPromptInput(t, "HasTool apply_patch", d.HasTool("apply_patch"), false)
 		}},
@@ -94,12 +89,7 @@ func promptConfigs() []promptConfig {
 			checkPromptInput(t, "HasAskUser", d.HasAskUser, false)
 			checkPromptInput(t, "NonInteractive", d.NonInteractive, true)
 			checkPromptInput(t, "TurnEndsProcess", d.TurnEndsProcess, true)
-			checkPromptInput(t, "HasTool call_tool", d.HasTool("call_tool"), false)
-			for _, name := range []string{"tool_search", "delegate", "delegate_send", "task_list"} {
-				checkPromptInput(t, "HasTool "+name, d.HasTool(name), true)
-			}
-			checkPromptInput(t, "HasTool job_watch (deferred)", d.HasTool("job_watch"), false)
-			checkPromptInput(t, "CallableToolNames has job_watch", slices.Contains(d.CallableToolNames, "job_watch"), true)
+			checkPromptInput(t, "HasTool job_watch", d.HasTool("job_watch"), true)
 			checkPromptInput(t, "IsSubagent", d.IsSubagent, false)
 			checkPromptInput(t, "Surface is openai", d.Surface == "openai", true)
 			checkPromptInput(t, "Role is the coordinator plugin body",
@@ -146,13 +136,7 @@ func promptConfigs() []promptConfig {
 			checkPromptInput(t, "IsSubagent", d.IsSubagent, true)
 			checkPromptInput(t, "NonInteractive", d.NonInteractive, true)
 			checkPromptInput(t, "TurnEndsProcess", d.TurnEndsProcess, true)
-			checkPromptInput(t, "HasTool call_tool", d.HasTool("call_tool"), false)
-			for _, name := range []string{"tool_search", "task_list"} {
-				checkPromptInput(t, "HasTool "+name, d.HasTool(name), true)
-			}
-			checkPromptInput(t, "HasTool delegate", d.HasTool("delegate"), false)
-			checkPromptInput(t, "HasTool job_watch (deferred)", d.HasTool("job_watch"), false)
-			checkPromptInput(t, "CallableToolNames has job_watch", slices.Contains(d.CallableToolNames, "job_watch"), true)
+			checkPromptInput(t, "HasTool job_watch", d.HasTool("job_watch"), true)
 			checkPromptInput(t, "Role is the implementer plugin body",
 				d.Role == strings.TrimSpace(coordinatorWorkflowAgentForTest(t, "implementer").SystemPrompt), true)
 		}},
@@ -424,12 +408,6 @@ func TestSystemPromptCarriesEachOperatorInputOnce(t *testing.T) {
 				t.Errorf("%s: %s appears %d times in the rendered prompt, want 1", tc.name, sentinel, got)
 			}
 		}
-	}
-	// delegate is upfront Tier-1 so sentinelAgent is rendered in the Turn-1 prompt
-	// (verified above) and running-jobs does not duplicate <available_agents>.
-	disclosed, _ := root.skillDisclosure("running-jobs")
-	if got := strings.Count(disclosed, sentinelAgent); got != 0 {
-		t.Errorf("running-jobs disclosure: %s appears %d times, want 0 while delegate is Tier-1", sentinelAgent, got)
 	}
 }
 

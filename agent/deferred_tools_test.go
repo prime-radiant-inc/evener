@@ -134,8 +134,8 @@ func TestDeferredToolsTurn1ToolsAndPromptAvailability(t *testing.T) {
 		if slices.Contains(data.UnavailableProfileToolNames, deferred) {
 			t.Errorf("UnavailableProfileToolNames must not list deferred tool %q: %v", deferred, data.UnavailableProfileToolNames)
 		}
-		if data.HasTool(deferred) {
-			t.Errorf("promptData.HasTool(%q) = true for deferred stub, want false to preserve compact Turn-1 prompt", deferred)
+		if !data.HasTool(deferred) {
+			t.Errorf("promptData.HasTool(%q) = false for advertised deferred stub, want true", deferred)
 		}
 	}
 	for _, tier1 := range []string{"tool_search", "delegate", "delegate_send", "task_list"} {
@@ -442,6 +442,54 @@ func TestToolSearchSchemasStaticToolsAndOmission(t *testing.T) {
 	}, "")
 	if !unkRes.IsError || !strings.Contains(unkRes.Output, "no_such_tool") {
 		t.Fatalf("tool_search(names=[no_such_tool]) = isErr:%v out:%q, want error naming no_such_tool", unkRes.IsError, unkRes.Output)
+	}
+
+	// Hidden registry tools (OpenAI's suppressed edit_file when apply_patch is active,
+	// and update_goal when no goal is configured) must be reported as unknown, never as
+	// already loaded upfront in full.
+	for _, hidden := range []string{"edit_file", "update_goal"} {
+		hidRes := sess.execTool(tripwireCtx(t), llm.ToolCallData{
+			ID:        "ts-hidden-" + hidden,
+			Name:      "tool_search",
+			Type:      "function",
+			Arguments: json.RawMessage(fmt.Sprintf(`{"names":[%q],"intent":"Checking hidden tool"}`, hidden)),
+		}, "")
+		if !hidRes.IsError || !strings.Contains(hidRes.Output, hidden) {
+			t.Fatalf("tool_search(names=[%s]) = isErr:%v out:%q, want unknown-tool error (not already loaded)", hidden, hidRes.IsError, hidRes.Output)
+		}
+	}
+	apRes := sess.execTool(tripwireCtx(t), llm.ToolCallData{
+		ID:        "ts-apply-patch",
+		Name:      "tool_search",
+		Type:      "function",
+		Arguments: json.RawMessage(`{"names":["apply_patch"],"intent":"Checking active OpenAI editor"}`),
+	}, "")
+	if apRes.IsError || !strings.Contains(apRes.Output, "apply_patch") {
+		t.Fatalf("tool_search(names=[apply_patch]) = isErr:%v out:%q, want already-loaded result", apRes.IsError, apRes.Output)
+	}
+	if _, err := sess.SetGoal(tripwireCtx(t), "verify update_goal visibility"); err != nil {
+		t.Fatalf("SetGoal: %v", err)
+	}
+	ugRes := sess.execTool(tripwireCtx(t), llm.ToolCallData{
+		ID:        "ts-update-goal-on",
+		Name:      "tool_search",
+		Type:      "function",
+		Arguments: json.RawMessage(`{"names":["update_goal"],"intent":"Checking advertised update_goal"}`),
+	}, "")
+	if ugRes.IsError || !strings.Contains(ugRes.Output, "update_goal") {
+		t.Fatalf("tool_search(names=[update_goal]) with goal = isErr:%v out:%q, want already-loaded result", ugRes.IsError, ugRes.Output)
+	}
+	if err := sess.ClearGoal(); err != nil {
+		t.Fatalf("ClearGoal: %v", err)
+	}
+	ugOffRes := sess.execTool(tripwireCtx(t), llm.ToolCallData{
+		ID:        "ts-update-goal-off",
+		Name:      "tool_search",
+		Type:      "function",
+		Arguments: json.RawMessage(`{"names":["update_goal"],"intent":"Checking cleared update_goal"}`),
+	}, "")
+	if !ugOffRes.IsError || !strings.Contains(ugOffRes.Output, "update_goal") {
+		t.Fatalf("tool_search(names=[update_goal]) after ClearGoal = isErr:%v out:%q, want unknown-tool error", ugOffRes.IsError, ugOffRes.Output)
 	}
 
 	// 3. Session with ZERO deferred tools omits tool_search completely from registry, req.Tools, and prompt.
@@ -1870,7 +1918,7 @@ func TestReactiveDisclosuresOnDelegateAndTimedOutShell(t *testing.T) {
 				ID:        "sh-auto-bg",
 				Name:      "shell",
 				Type:      "function",
-				Arguments: json.RawMessage(`{"command":"printf start; sleep 2; ls","intent":"Testing auto-backgrounded shell disclosure"}`),
+				Arguments: idleShellJSON(`,"intent":"Testing auto-backgrounded shell disclosure"`),
 			}, "")
 		}()
 		timerReady := make(chan struct{})
@@ -1905,8 +1953,10 @@ func TestReactiveDisclosuresOnDelegateAndTimedOutShell(t *testing.T) {
 		if err := json.Unmarshal(res.ToolState, &st); err != nil || st.JobID == "" || !st.TimedOut {
 			t.Fatalf("auto-backgrounded ToolState = %s (err=%v), want job_id and timed_out=true", string(res.ToolState), err)
 		}
-		_, _ = sess.jobManager.stop(st.JobID)
-		waitForShellDone(t, sess.jobManager, st.JobID)
+		defer func() {
+			_, _ = sess.jobManager.stop(st.JobID)
+			waitForShellDone(t, sess.jobManager, st.JobID)
+		}()
 
 		msgs := sess.drainSteeringForCommunicate()
 		if len(msgs) != 1 {
@@ -1940,4 +1990,104 @@ func TestReactiveDisclosuresOnDelegateAndTimedOutShell(t *testing.T) {
 			}
 		}
 	})
+}
+
+func TestDeferredToolSchemasRediscloseAfterCompaction(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	initGitRepo(t, dir)
+	c := llm.NewClient()
+	c.Register(newFakeAdapter("openai",
+		func(llm.Request) llm.Response {
+			return agenttest.FinalResponse("summary of earlier turns")
+		},
+		func(llm.Request) llm.Response {
+			return agenttest.ToolCallResponse(communicateCall("done", "ok"))
+		},
+	))
+
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+		StateDir:      t.TempDir(),
+		AgentsDocPath: filepath.Join(t.TempDir(), "no-personal-AGENTS.md"),
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	ctx := tripwireCtx(t)
+	seedNumberedSessionHistory(t, sess, 12)
+
+	badWorktree := llm.ToolCallData{ID: "mw-bad-1", Name: "manage_worktree", Type: "function", Arguments: json.RawMessage(`{}`)}
+	firstBad := sess.execTool(ctx, badWorktree, "")
+	if !firstBad.IsError || !strings.Contains(firstBad.Output, `"name":"manage_worktree"`) {
+		t.Fatalf("first invalid manage_worktree missing schema disclosure: isErr=%v out=%q", firstBad.IsError, firstBad.Output)
+	}
+	secondBad := sess.execTool(ctx, badWorktree, "")
+	if strings.Contains(secondBad.Output, `"name":"manage_worktree"`) {
+		t.Fatalf("pre-compaction repeat invalid manage_worktree unexpectedly re-disclosed schema: %q", secondBad.Output)
+	}
+
+	startBG := func(id string) {
+		t.Helper()
+		res := sess.execTool(ctx, llm.ToolCallData{
+			ID:        id,
+			Name:      "shell",
+			Type:      "function",
+			Arguments: idleShellJSON(`,"mode":"background"`),
+		}, "")
+		if res.IsError {
+			t.Fatalf("background shell %s failed: %s", id, res.Output)
+		}
+		var st struct {
+			JobID string `json:"job_id"`
+		}
+		if err := json.Unmarshal(res.ToolState, &st); err != nil || st.JobID == "" {
+			t.Fatalf("background shell %s ToolState = %s (err=%v)", id, string(res.ToolState), err)
+		}
+		_, _ = sess.jobManager.stop(st.JobID)
+		waitForShellDone(t, sess.jobManager, st.JobID)
+	}
+
+	startBG("sh-pre-1")
+	if msgs := sess.drainSteeringForCommunicate(); len(msgs) != 1 || !strings.Contains(msgs[0].Text, `"name":"job_watch"`) {
+		t.Fatalf("first background shell steering = %+v, want job_watch disclosure", msgs)
+	}
+	startBG("sh-pre-2")
+	if msgs := sess.drainSteeringForCommunicate(); len(msgs) != 0 {
+		t.Fatalf("pre-compaction repeat background shell emitted steering = %+v, want none", msgs)
+	}
+
+	if err := sess.Compact(ctx); err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+	// Drain compaction's own steering reminders before measuring post-compaction
+	// reactive tool disclosures.
+	_ = sess.drainSteeringForCommunicate()
+
+	postBad := sess.execTool(ctx, badWorktree, "")
+	if !postBad.IsError || !strings.Contains(postBad.Output, `"name":"manage_worktree"`) {
+		t.Fatalf("post-compaction invalid manage_worktree did not re-disclose schema: isErr=%v out=%q", postBad.IsError, postBad.Output)
+	}
+	if repeat := sess.execTool(ctx, badWorktree, ""); strings.Contains(repeat.Output, `"name":"manage_worktree"`) {
+		t.Fatalf("post-compaction repeat invalid manage_worktree unexpectedly re-disclosed schema: %q", repeat.Output)
+	}
+	startBG("sh-post-1")
+	if msgs := sess.drainSteeringForCommunicate(); len(msgs) != 1 || !strings.Contains(msgs[0].Text, `"name":"job_watch"`) {
+		t.Fatalf("post-compaction background shell steering = %+v, want re-disclosed job_watch schema", msgs)
+	}
+	startBG("sh-post-2")
+	if msgs := sess.drainSteeringForCommunicate(); len(msgs) != 0 {
+		t.Fatalf("post-compaction repeat background shell emitted steering = %+v, want none", msgs)
+	}
+
+	// An ordinary non-compacting ProcessInput turn runs request-time ManageContext
+	// with actualCompaction=false and must preserve disclosedToolSchemas.
+	if _, err := sess.ProcessInput(ctx, "quick follow-up", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	repeatPostBad := sess.execTool(ctx, badWorktree, "")
+	if strings.Contains(repeatPostBad.Output, `"name":"manage_worktree"`) {
+		t.Fatalf("non-compacting turn unexpectedly cleared disclosedToolSchemas: %q", repeatPostBad.Output)
+	}
 }

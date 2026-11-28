@@ -376,6 +376,9 @@ func (s *Session) hasDeferredToolsLocked() bool {
 	if s == nil || s.reg == nil {
 		return false
 	}
+	if s.toolDefsGen > 0 {
+		return len(s.cachedDeferredFullDefs) > 0
+	}
 	return slices.ContainsFunc(s.reg.Names(), s.isDeferredToolLocked)
 }
 
@@ -399,13 +402,14 @@ func (s *Session) rebuildToolDefsCache() {
 	if s == nil || s.reg == nil {
 		if s != nil {
 			s.cachedToolDefs = nil
+			s.cachedDeferredFullDefs = nil
+			s.cachedAdvertisedTier1 = nil
 			s.cachedToolDefsJSONBytes = 0
 			s.toolDefsGen++
 		}
 		return
 	}
 	s.composeHubRegistry()
-	hasDeferred := s.syncToolSearchRegistrationLocked()
 	registered := s.reg.RegisteredNames()
 
 	// Profile tool definitions are canonical (e.g. "shell"); the registry is also
@@ -466,13 +470,6 @@ func (s *Session) rebuildToolDefsCache() {
 					_ = s.reg.Register(*regTool)
 				}
 			}
-			if s.isDeferredToolLocked(td.Name) {
-				stub := deferredToolStub(td.Name, nameMap)
-				defs = append(defs, stub)
-				included[td.Name] = true
-				included[stub.Name] = true
-				continue
-			}
 			switch td.Name {
 			case "shell":
 				td = s.sessionShellDefinition()
@@ -509,16 +506,6 @@ func (s *Session) rebuildToolDefsCache() {
 		if included[td.Name] {
 			continue
 		}
-		if s.isDeferredToolLocked(td.Name) {
-			stub := deferredToolStub(td.Name, nameMap)
-			defs = append(defs, stub)
-			included[td.Name] = true
-			included[stub.Name] = true
-			continue
-		}
-		if td.Name == "tool_search" && !s.resultToolOwnsToolSearch() && !hasDeferred {
-			continue
-		}
 		// Never expose both apply_patch and edit_file in the same session; both
 		// stay registered in s.reg for mid-session model switching.
 		if (td.Name == "apply_patch" && included["edit_file"]) || (td.Name == "edit_file" && included["apply_patch"]) {
@@ -548,8 +535,18 @@ func (s *Session) rebuildToolDefsCache() {
 	}
 	// The registry holds what this session can call, by canonical name.
 	canMessageDelegates := s.reg.Get("delegate_send") != nil
+	deferredFull := make(map[string]llm.ToolDefinition)
+	advertisedTier1 := make(map[string]string)
 	for i := range defs {
-		if isResultToolDefinition(defs[i].Name, defs[i].Name, s.resultToolName()) {
+		canonical := canonicalToolName(defs[i].Name, nameMap)
+		if s.isDeferredToolLocked(canonical) {
+			full := defs[i]
+			full.Name = canonical
+			deferredFull[canonical] = wireDeferredToolDef(full, nameMap)
+			defs[i] = deferredToolStub(canonical, nameMap)
+			continue
+		}
+		if isResultToolDefinition(canonical, defs[i].Name, s.resultToolName()) {
 			defs[i] = tool.WithoutIntentParameter(defs[i])
 			if s.reportsToParent() {
 				defs[i] = tool.WithCommunicateDelegateUpdates(defs[i])
@@ -557,14 +554,32 @@ func (s *Session) rebuildToolDefsCache() {
 			if canMessageDelegates {
 				defs[i] = tool.WithCommunicateDelegatePointer(defs[i])
 			}
-		} else if !s.isDeferredToolLocked(canonicalToolName(defs[i].Name, nameMap)) {
+		} else {
 			// Same wire contract as wireToolDef: intent is required in the
 			// advertised schema, optional in the registry's validation schema.
 			defs[i] = tool.WithIntentParameterRequired(defs[i])
 		}
+		advertisedTier1[canonical] = defs[i].Name
+	}
+	if !s.resultToolOwnsToolSearch() {
+		if len(deferredFull) == 0 {
+			s.reg.Remove("tool_search")
+			defs = slices.DeleteFunc(defs, func(td llm.ToolDefinition) bool {
+				return canonicalToolName(td.Name, nameMap) == "tool_search"
+			})
+			delete(advertisedTier1, "tool_search")
+		} else if _, advertised := advertisedTier1["tool_search"]; !advertised && s.ensureToolSearchRegisteredLocked() {
+			if rt := s.reg.Get("tool_search"); rt != nil {
+				td := tool.WithIntentParameterRequired(normalizeRegistryToolDefinition(rt.Definition))
+				defs = append(defs, td)
+				advertisedTier1["tool_search"] = td.Name
+			}
+		}
 	}
 
 	s.cachedToolDefs = defs
+	s.cachedDeferredFullDefs = deferredFull
+	s.cachedAdvertisedTier1 = advertisedTier1
 	s.cachedToolDefsJSONBytes = llm.ToolsJSONBytes(defs)
 	s.toolDefsGen++
 }

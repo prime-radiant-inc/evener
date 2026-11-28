@@ -6,8 +6,7 @@ import (
 )
 
 // TestSessionLinksPrompt checks that the Session links heading renders when
-// urls_add is callable (even while its schema is deferred) and is omitted when
-// it is absent.
+// urls_add is registered and is omitted when it is absent.
 func TestSessionLinksPrompt(t *testing.T) {
 	t.Parallel()
 	const heading = "## Session links"
@@ -16,12 +15,6 @@ func TestSessionLinksPrompt(t *testing.T) {
 		testOnly:         testConfig{skipGitSnapshot: true},
 	}))
 	data, _ := sess.buildPromptData(sess.env)
-	if sess.reg.Get("urls_add") == nil {
-		t.Fatal("expected urls_add to be registered on persistent root")
-	}
-	if !sess.isDeferredTool("urls_add") {
-		t.Fatal("expected urls_add schema to stay deferred on persistent root")
-	}
 	checkPromptInput(t, "HasTool urls_add (present)", data.HasTool("urls_add"), true)
 	prompt, warning, _ := sess.renderSystemPrompt(sess.env)
 	if warning != "" {

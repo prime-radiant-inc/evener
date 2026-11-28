@@ -36,28 +36,35 @@ func (s *Session) registerToolSearch(register func(tool.RegisteredTool) error) e
 	return register(s.toolSearchRegisteredTool())
 }
 
-func (s *Session) syncToolSearchRegistrationLocked() bool {
+func (s *Session) ensureToolSearchRegisteredLocked() bool {
 	if s == nil || s.reg == nil || s.resultToolOwnsToolSearch() {
 		return false
 	}
-	hasDeferred := s.hasDeferredToolsLocked()
-	if !hasDeferred {
-		s.reg.Remove("tool_search")
+	if s.reg.Get("tool_search") != nil {
+		return true
+	}
+	if slices.Contains(s.cfg.spawn.deniedToolNames, "tool_search") {
 		return false
 	}
-	if s.reg.Get("tool_search") == nil && !slices.Contains(s.cfg.spawn.deniedToolNames, "tool_search") {
-		register := s.reg.Register
-		if s.cfg.testOnly.registerTool != nil {
-			register = func(rt tool.RegisteredTool) error {
-				return s.cfg.testOnly.registerTool(s.reg, rt)
-			}
-		}
-		_ = s.registerToolSearch(register)
-		if lim, ok := s.cfg.ToolOutputLimits["tool_search"]; ok {
-			s.reg.OverrideLimits(map[string]schema.ToolOutputLimit{"tool_search": lim})
+	register := s.reg.Register
+	if s.cfg.testOnly.registerTool != nil {
+		register = func(rt tool.RegisteredTool) error {
+			return s.cfg.testOnly.registerTool(s.reg, rt)
 		}
 	}
-	return true
+	if err := s.registerToolSearch(register); err != nil {
+		return false
+	}
+	if lim, ok := s.cfg.ToolOutputLimits["tool_search"]; ok {
+		s.reg.OverrideLimits(map[string]schema.ToolOutputLimit{"tool_search": lim})
+	}
+	return s.reg.Get("tool_search") != nil
+}
+
+func (s *Session) ensureToolDefsCacheLocked() {
+	if s != nil && s.reg != nil && s.toolDefsGen == 0 {
+		s.rebuildToolDefsCache()
+	}
 }
 
 // mergeTier1Tools returns saved plus any additional non-empty tool names from
@@ -87,34 +94,15 @@ func (s *Session) isDeferredTool(canonicalName string) bool {
 	return s.isDeferredToolLocked(canonicalName)
 }
 
-func (s *Session) deferredToolNamesLocked() []string {
-	if s == nil || s.reg == nil {
-		return nil
-	}
-	var names []string
-	for _, name := range s.reg.Names() {
-		if s.isDeferredToolLocked(name) {
-			names = append(names, name)
-		}
-	}
-	slices.Sort(names)
-	return names
-}
-
-// deferredToolDefinitionLocked returns the live schema for a registered deferred
-// tool. Caller holds s.mu.
+// deferredToolDefinitionLocked returns the live provider-facing schema for an
+// advertised deferred tool stub. Caller holds s.mu.
 func (s *Session) deferredToolDefinitionLocked(name string) (llm.ToolDefinition, bool) {
 	if s == nil || s.reg == nil {
 		return llm.ToolDefinition{}, false
 	}
-	rt := s.reg.Get(name)
-	if rt == nil || !s.isDeferredToolLocked(name) {
-		return llm.ToolDefinition{}, false
-	}
-	if name == "memory_read" {
-		return tool.MemoryDefinition(s.sessionReadFileDefinition(), "memory_read"), true
-	}
-	return rt.Definition, true
+	s.ensureToolDefsCacheLocked()
+	def, ok := s.cachedDeferredFullDefs[name]
+	return def, ok
 }
 
 // wireDeferredToolDef applies provider-visible naming and strips the optional
@@ -216,9 +204,9 @@ func (s *Session) execToolSearch(_ context.Context, _ execenv.ExecutionEnvironme
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	s.ensureToolDefsCacheLocked()
 	nameMap := s.toolNameMap()
-	deferredCanonicals := s.deferredToolNamesLocked()
-	if len(deferredCanonicals) == 0 {
+	if len(s.cachedDeferredFullDefs) == 0 {
 		return tool.StateResult{Output: "No deferred tools are registered in this session."}, nil
 	}
 
@@ -227,17 +215,12 @@ func (s *Session) execToolSearch(_ context.Context, _ execenv.ExecutionEnvironme
 		wire      string
 		def       llm.ToolDefinition
 	}
-	entries := make([]deferredEntry, 0, len(deferredCanonicals))
-	for _, canonical := range deferredCanonicals {
-		def, ok := s.deferredToolDefinitionLocked(canonical)
-		if !ok {
-			continue
-		}
-		wireDef := wireDeferredToolDef(def, nameMap)
+	entries := make([]deferredEntry, 0, len(s.cachedDeferredFullDefs))
+	for canonical, def := range s.cachedDeferredFullDefs {
 		entries = append(entries, deferredEntry{
 			canonical: canonical,
-			wire:      wireDef.Name,
-			def:       wireDef,
+			wire:      def.Name,
+			def:       def,
 		})
 	}
 	slices.SortFunc(entries, func(a, b deferredEntry) int {
@@ -272,11 +255,10 @@ func (s *Session) execToolSearch(_ context.Context, _ execenv.ExecutionEnvironme
 	for _, raw := range reqNames {
 		canonical := canonicalToolName(raw, nameMap)
 		if def, ok := s.deferredToolDefinitionLocked(canonical); ok {
-			addMatch(canonical, wireDeferredToolDef(def, nameMap))
+			addMatch(canonical, def)
 			continue
 		}
-		if s.reg != nil && s.reg.Get(canonical) != nil {
-			visible := providerToolName(canonical, nameMap)
+		if visible, ok := s.cachedAdvertisedTier1[canonical]; ok {
 			if !slices.Contains(alreadyTier1, visible) {
 				alreadyTier1 = append(alreadyTier1, visible)
 			}
@@ -375,7 +357,6 @@ func (s *Session) deferredToolDefsForDisclosureWithCanonical(names []string, cla
 	if claim && s.disclosedToolSchemas == nil {
 		s.disclosedToolSchemas = make(map[string]bool)
 	}
-	nameMap := s.toolNameMap()
 	var defs []llm.ToolDefinition
 	var canonicals []string
 	for _, name := range names {
@@ -386,7 +367,7 @@ func (s *Session) deferredToolDefsForDisclosureWithCanonical(names []string, cla
 			if claim {
 				s.disclosedToolSchemas[name] = true
 			}
-			defs = append(defs, wireDeferredToolDef(def, nameMap))
+			defs = append(defs, def)
 			canonicals = append(canonicals, name)
 		}
 	}

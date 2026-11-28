@@ -243,10 +243,10 @@ func (s *Session) buildPromptData(env execenv.ExecutionEnvironment) (promptData,
 	data.ManagerStatus = s.hubEnabled && s.reg.Get("job_status") != nil
 	data.WorktreeDisposeOnly = s.worktreeDisposeOnlySurface()
 
-	// The section-facing tool-availability set: canonical names that are
-	// registered, advertised on this session's wire tool list, and not deferred
-	// to Tier-2 stubs (e.g. OpenAI advertises apply_patch rather than edit_file
-	// while both remain registered for mid-session model switching).
+	// The section-facing tool-availability set: canonical names that are both
+	// registered and advertised on this session's wire tool list (e.g. OpenAI
+	// advertises apply_patch rather than edit_file while both remain registered
+	// for mid-session model switching).
 	callable := s.reg.RegisteredNames()
 	if len(actualDefs) > 0 {
 		var nameMap map[string]string
@@ -258,7 +258,7 @@ func (s *Session) buildPromptData(env execenv.ExecutionEnvironment) (promptData,
 			advertised[canonicalToolName(def.Name, nameMap)] = true
 		}
 		for name := range callable {
-			if !advertised[name] || (s.isDeferredToolLocked(name) && !s.isDeferredPromptGuidedLocked(name)) {
+			if !advertised[name] {
 				delete(callable, name)
 			}
 		}
@@ -289,19 +289,6 @@ func (s *Session) buildPromptData(env execenv.ExecutionEnvironment) (promptData,
 	}
 
 	return data, sources
-}
-
-var deferredPromptGuidedTools = map[string]bool{
-	"notes_agent_set": true,
-	"urls_add":        true,
-	"urls_remove":     true,
-}
-
-func (s *Session) isDeferredPromptGuidedLocked(name string) bool {
-	if deferredPromptGuidedTools[name] {
-		return true
-	}
-	return name == "manage_worktree" && s.worktreeDisposeOnlySurface()
 }
 
 // includeProjectDocs reports whether the system prompt renders the personal and

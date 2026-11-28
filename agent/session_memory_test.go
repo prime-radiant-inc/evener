@@ -1657,15 +1657,9 @@ func TestMemoryDelegatesReadButNeverSave(t *testing.T) {
 				t.Errorf("delegate has %s", name)
 			}
 		}
-		if !hasToolDef(defs, "tool_search") {
-			t.Errorf("delegate missing tool_search for deferred memory read/search")
-		}
 		for _, name := range []string{"memory_read", "memory_search"} {
-			if child.reg.Get(name) == nil {
-				t.Errorf("delegate lost %s from registry", name)
-			}
-			if !hasToolDef(defs, name) {
-				t.Errorf("delegate missing deferred stub %s", name)
+			if child.reg.Get(name) == nil || !hasToolDef(defs, name) {
+				t.Errorf("delegate lost %s", name)
 			}
 		}
 		data, _ := child.buildPromptData(child.currentEnv())
