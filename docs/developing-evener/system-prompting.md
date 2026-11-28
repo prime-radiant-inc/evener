@@ -8,7 +8,7 @@ Evener separates **launch-time static context** from **runtime incremental updat
 
 ```mermaid
 flowchart LR
-  Launch[Launch prompt and full registered req.Tools] --> Cache[Byte-identical KV-cache prefix across turns]
+  Launch[Launch prompt and provider-visible req.Tools] --> Cache[Byte-identical KV-cache prefix across turns]
   Cache --> Tail[Append-only conversation tail]
   Env[envctx diffs] --> Tail
   Notif[Event-triggered system-notification and job-notification] --> Tail
@@ -17,7 +17,7 @@ flowchart LR
   Replay[Full assistant reasoning replay] --> Tail
 ```
 
-At session startup, [`agent/session_prompts.go`](../../agent/session_prompts.go) renders [`agent/prompts/system.md.tmpl`](../../agent/prompts/system.md.tmpl) once from live capabilities and freezes it (`systemPromptFrozen`). `rebuildToolDefsCache` in [`agent/session_tool_definitions.go`](../../agent/session_tool_definitions.go) caches full schemas for registered tools (`cachedToolDefs`) so `req.Tools` stays stable across rounds. Runtime changes, concise lifecycle and paging instructions (such as `formatShellResult` in [`agent/session_tools_shell.go`](../../agent/session_tools_shell.go)), job completions, and loaded skills append to the conversation tail, preserving the prefix cache.
+At session startup, [`agent/session_prompts.go`](../../agent/session_prompts.go) renders [`agent/prompts/system.md.tmpl`](../../agent/prompts/system.md.tmpl) once from live capabilities and freezes it (`systemPromptFrozen`). `rebuildToolDefsCache` in [`agent/session_tool_definitions.go`](../../agent/session_tool_definitions.go) supplies full schemas for tools selected for the provider-visible `req.Tools` list (`cachedToolDefs`), preserving provider-specific tool selection (such as advertising only the active profile's `apply_patch` or `edit_file` while keeping both registered for model switching) so `req.Tools` stays stable across rounds. Runtime changes, concise lifecycle and paging instructions (such as `formatShellResult` in [`agent/session_tools_shell.go`](../../agent/session_tools_shell.go)), job completions, and loaded skills append to the conversation tail, preserving the prefix cache.
 
 ## Identity and original prose
 
@@ -92,12 +92,12 @@ Every prompt line, section, and environment block must reflect the session's act
 
 Provider prompt prefix KV-caches across Anthropic, OpenAI Responses, Chat Completions, and Gemini require byte-identical prefixes: the system prompt, the `req.Tools` array (order, names, and schemas), and all prior messages.
 
-- **Freeze the launch prefix and `req.Tools`:** Evener freezes the rendered system prompt at launch (`systemPromptFrozen` in [`agent/session_prompts.go`](../../agent/session_prompts.go)) and serves a cached wire tool list (`cachedToolDefs` built by `rebuildToolDefsCache` in [`agent/session_tool_definitions.go`](../../agent/session_tool_definitions.go)) with full schemas for registered tools. Avoid mutating `req.Tools` mid-session to swap schemas in or out. Mid-session tool-array mutations bust the entire prompt prefix cache and convert cheap cached reads into expensive uncached prefills.
+- **Freeze the launch prefix and `req.Tools`:** Evener freezes the rendered system prompt at launch (`systemPromptFrozen` in [`agent/session_prompts.go`](../../agent/session_prompts.go)) and serves a cached wire tool list (`cachedToolDefs` built by `rebuildToolDefsCache` in [`agent/session_tool_definitions.go`](../../agent/session_tool_definitions.go)) with full schemas for tools selected for the provider-visible `req.Tools` list. Avoid mutating `req.Tools` mid-session to swap schemas in or out. Mid-session tool-array mutations bust the entire prompt prefix cache and convert cheap cached reads into expensive uncached prefills.
 - **Never elide or prune earlier reasoning replay:** Preserve full assistant reasoning history across all wire adapters (`llm/providers/anthropic/`, `llm/providers/responses/`, `llm/providers/chatcompletions/`, and `llm/providers/google/`). Dropping or window-pruning earlier reasoning blocks invalidates the prompt prefix KV-cache and breaks continuity on reasoning models. Achieve input-token reductions by cutting static Turn-1 prompt weight, schema size, tool-result boilerplate, and unnecessary rounds while leaving history intact.
 
 ### Two-tier tool surface (when deferral is enabled)
 
-Today, `rebuildToolDefsCache` advertises full schemas for every registered tool (including `delegate`, `job_watch`, and `read_transcript`), and Evener has no schema-deferral setting or `tool_search` tool. When a session enables tool deferral to shrink Turn-1 schema overhead, keep the wire tool list immutable by splitting tools into two tiers at launch:
+Today, `rebuildToolDefsCache` supplies full schemas for tools selected for the provider-visible `req.Tools` list (including `delegate`, `job_watch`, and `read_transcript` when enabled for the session, while preserving provider-specific selection such as exposing only the active profile's `apply_patch` or `edit_file` even though both remain registered for model switching), and Evener has no schema-deferral setting or `tool_search` tool. When a session enables tool deferral to shrink Turn-1 schema overhead, keep the wire tool list immutable by splitting tools into two tiers at launch:
 
 | Tier | Membership | Wire representation in `req.Tools` | Discovery mechanism |
 | --- | --- | --- | --- |
