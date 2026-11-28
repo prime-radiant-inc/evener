@@ -170,6 +170,10 @@ Activated skill instructions:
 ----- END {{ .Path }} -----
 {{ end }}{{ end }}
 {{ end }}
+{{- if and .ResultToolName (.HasTool .ResultToolName) }}
+
+You deliver every reply and final answer through `{{ .ResultToolName }}`; plain text reaches no one.
+{{- end }}
 {{ if .UserInstructionOverride }}
 
 {{ .UserInstructionOverride }}
@@ -188,7 +192,3 @@ You carry durable memory across sessions: personal scope for cross-project prefe
 Before affected work, you save durable partner preferences and corrections (`**Why:**`){{ if .ProjectMemory }}, project plans and constraints (excluding temporary holds and sign-offs),{{ end }} and non-obvious environment facts: one durable fact per page via `memory_write` (Evener generates `MEMORY.md`). You update or `memory_delete` contradicted pages, split multi-fact pages, and keep secrets and ephemeral session details out.
 {{- end }}
 {{ end }}
-{{- if and .ResultToolName (.HasTool .ResultToolName) }}
-
-You deliver every reply and final answer through `{{ .ResultToolName }}`; plain text reaches no one.
-{{- end }}
