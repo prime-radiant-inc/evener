@@ -66,7 +66,10 @@ export async function measureEditorialTranscript() {
       const sample = required(host.querySelector<HTMLElement>(selector));
       if (!sample.getBoundingClientRect().height) throw new Error(`Hidden reading sample: ${level} ${selector}`);
       const row = required(sample.closest('[data-testid="transcript-row"]'));
-      for (let el: HTMLElement | null = sample; el && el !== row; el = el.parentElement) {
+      // Delivered user bubbles carry the brand accent fill; their enclosing
+      // wrappers and tool rows stay flat on the page ground.
+      const start = selector === '[data-testid="user-bubble"]' ? sample.parentElement : sample;
+      for (let el: HTMLElement | null = start; el && el !== row; el = el.parentElement) {
         if (!el.getClientRects().length) continue;
         const { borderInlineStartWidth: edge, backgroundColor: fill, boxShadow: shadow } = getComputedStyle(el);
         surfaces.push({ level, element: el.className, edge, fill, shadow });
@@ -153,6 +156,8 @@ export async function measureEditorialTranscript() {
             userFont: getComputedStyle(userText).fontFamily,
             userSize: getComputedStyle(userText).fontSize,
             userLineHeight: getComputedStyle(userText).lineHeight,
+            userBackground: getComputedStyle(user).backgroundColor,
+            userColor: getComputedStyle(userText).color,
             agentLineHeight: agent && getComputedStyle(agent).lineHeight,
             agentFont: agent && getComputedStyle(agent).fontFamily,
             quoteFont: getComputedStyle(quote).fontFamily,

@@ -87,14 +87,14 @@
 .root blockquote {
   margin: 0 0 var(--space-3);
   padding-left: var(--space-3);
-  border-left: 2px solid var(--edge);
-  color: var(--ink-mid);
+  border-left: 2px solid var(--markdown-edge, var(--edge));
+  color: var(--markdown-muted, var(--ink-mid));
 }
 
 .root hr {
   margin: var(--space-5) 0;
   border: none;
-  border-top: 1px solid var(--edge);
+  border-top: 1px solid var(--markdown-edge, var(--edge));
 }
 
 .root strong {
@@ -102,15 +102,15 @@
 }
 
 .root del {
-  color: var(--ink-mid);
+  color: var(--markdown-muted, var(--ink-mid));
 }
 
 .root a {
-  color: var(--accent-ink);
+  color: var(--markdown-link, var(--accent-ink));
 }
 
 .root a:focus-visible {
-  outline: var(--focus-ring);
+  outline: var(--markdown-focus-ring, var(--focus-ring));
   outline-offset: 2px;
 }
 
@@ -119,8 +119,8 @@
 .inlineCode {
   font-family: var(--font-mono);
   font-size: 0.86em;
-  color: var(--ink-hi);
-  border-bottom: 1px solid var(--edge);
+  color: var(--markdown-ink, var(--ink-hi));
+  border-bottom: 1px solid var(--markdown-edge, var(--edge));
 }
 
 .tableWrap {
@@ -156,7 +156,7 @@
   border-collapse: collapse;
   width: 100%;
   table-layout: auto;
-  border-block: 1px solid var(--edge);
+  border-block: 1px solid var(--markdown-edge, var(--edge));
   font-family: var(--font-sans);
   font-size: var(--font-size-ui);
   line-height: var(--line-height-ui);
@@ -170,8 +170,8 @@
 .root :where(thead th) {
   padding: var(--space-2) var(--space-3);
   background: transparent;
-  border-bottom: 1px solid var(--edge-strong);
-  color: var(--ink-mid);
+  border-bottom: 1px solid var(--markdown-edge-strong, var(--edge-strong));
+  color: var(--markdown-muted, var(--ink-mid));
   font-size: var(--font-size-caption);
   font-weight: var(--font-weight-semibold);
   text-align: left;
@@ -182,7 +182,7 @@
 
 .root :where(tbody td) {
   padding: var(--space-2) var(--space-3);
-  color: var(--ink-hi);
+  color: var(--markdown-ink, var(--ink-hi));
   text-align: left;
   vertical-align: top;
   overflow-wrap: break-word;
@@ -197,7 +197,7 @@
 }
 
 .root :where(tbody tr) {
-  border-bottom: 1px solid color-mix(in oklab, var(--edge) 50%, transparent);
+  border-bottom: 1px solid color-mix(in oklab, var(--markdown-edge, var(--edge)) 50%, transparent);
 }
 
 .root :where(tbody tr:last-child) {
@@ -205,7 +205,7 @@
 }
 
 .root :where(tbody tr:hover) {
-  background: var(--hover-1);
+  background: var(--markdown-hover, var(--hover-1));
 }
 
 /* GFM column alignment: marked emits the legacy align="left|center|right"
@@ -265,6 +265,21 @@
     border-radius: var(--radius-control);
     background: var(--surface-1);
     overflow: hidden;
+    /* Reflowed cards paint their own neutral surface, so restore neutral
+     * hooks when hosted inside an accent-filled user message bubble. */
+    --markdown-ink: var(--ink-hi);
+    --markdown-muted: var(--ink-mid);
+    --markdown-link: var(--accent-ink);
+    --markdown-edge: var(--edge);
+    --markdown-edge-strong: var(--edge-strong);
+    --markdown-hover: var(--hover-1);
+    --markdown-focus-ring: var(--focus-ring);
+    --quiet-ink: var(--ink-hi);
+    --quiet-hover: var(--hover-1);
+    --quiet-active: var(--hover-2);
+    --quiet-focus-ring: var(--focus-ring);
+    --selection-surface: var(--selection-bg);
+    --selection-ink: var(--ink-hi);
   }
 
   .root .tableReflow :where(tbody tr:last-child) {

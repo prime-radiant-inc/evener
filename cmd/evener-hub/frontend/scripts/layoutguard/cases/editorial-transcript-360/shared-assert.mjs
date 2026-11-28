@@ -22,6 +22,8 @@ export default function assert({ measurements, surfaces, collapsedFailure }) {
     if (!m.collapsedStatusVisible) failures.push(`${id}: collapsed status hidden`);
     if (![m.userFont, m.agentFont, m.quoteFont].every((f) => f?.includes("Source Serif 4")))
       failures.push(`${id}: prose not serif ${JSON.stringify(m)}`);
+    if (m.userBackground !== "rgb(79, 91, 245)" || m.userColor !== "rgb(255, 255, 255)")
+      failures.push(`${id}: user bubble is not white on accent fill (bg ${m.userBackground}, color ${m.userColor})`);
     if (m.userSize !== (m.scale === "xl" ? "20px" : "16px"))
       failures.push(`${id}: reading preference did not scale: ${m.userSize}`);
     const expectedLineHeight = (m.scale === "xl" ? 29 : 23.2) * (m.density === "comfortable" ? 1.25 : 1);

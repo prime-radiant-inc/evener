@@ -16,6 +16,9 @@
   min-width: 0;
   overflow: hidden;
   background: var(--surface-2);
+  /* Thumbnails paint their own neutral card surface inside user bubbles. */
+  --selection-surface: var(--selection-bg);
+  --selection-ink: var(--ink-hi);
 }
 
 .thumbImg {

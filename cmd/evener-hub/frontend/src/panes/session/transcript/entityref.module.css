@@ -16,15 +16,15 @@
 
 .trigger {
   border-radius: var(--radius-chip);
-  color: var(--accent-ink);
+  color: var(--markdown-link, var(--accent-ink));
   font-family: var(--font-mono);
   cursor: help;
-  text-decoration: underline dotted var(--edge-strong);
+  text-decoration: underline dotted var(--markdown-edge-strong, var(--edge-strong));
   text-underline-offset: 2px;
 }
 
 .trigger:focus-visible {
-  outline: var(--focus-ring);
+  outline: var(--markdown-focus-ring, var(--focus-ring));
   outline-offset: 2px;
 }
 
