@@ -221,10 +221,10 @@ func DefShell() llm.ToolDefinition {
 // what DetachCommand accepts.
 func ShellModeProperty(detachAvailable bool) map[string]any {
 	modeEnum := []any{"foreground", "background"}
-	modeDescription := "foreground: builds, tests, and waited commands (auto-backgrounds at 2m); background: parallel work or session-owned services that return immediately (stops on exit)"
+	modeDescription := "foreground: builds, tests, and waited commands (auto-backgrounds at 2m); background: only for independent parallel work or a session-owned service that must return immediately (stops on exit)"
 	if detachAvailable {
 		modeEnum = append(modeEnum, "detached")
-		modeDescription += "; detached: outlives exit, returns PID only (no job/notice, discards unredirected output; pass absolute paths and redirect needed logs to an absolute path)."
+		modeDescription += "; detached: outlives exit, returns PID only, no job/notice, discards unredirected output (pass abs paths and redirect logs)."
 	} else {
 		modeDescription += "."
 	}
