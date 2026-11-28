@@ -110,6 +110,26 @@ export function makeEditorialTranscriptModel() {
     description: "Reading a launch receipt with missing lifecycle data",
     output: JSON.stringify({ delegate_id: "dlg_editorial_missing" }),
   });
-  model.turns = [...model.turns, { id: "editorial_collaborators", status: "completed", items }];
+  model.turns = [
+    ...model.turns,
+    { id: "editorial_collaborators", status: "completed", items },
+    {
+      id: "editorial_user_table",
+      status: "completed",
+      items: [
+        {
+          id: "editorial_user_table_msg",
+          turnId: "editorial_user_table",
+          type: "userMessage",
+          status: "completed",
+          text: [
+            "| Host | Branch | Status | Owner | Notes |",
+            "| --- | --- | --- | --- | --- |",
+            "| magic-kingdom | main | green | alice | verified |",
+          ].join("\n"),
+        },
+      ],
+    },
+  ];
   return model;
 }

@@ -233,9 +233,7 @@ test("delivered user bubbles paint white on accent-fill while leaving agent and 
   expect(deliveredBody).toMatch(/--mermaid-surface:\s*var\(--surface-1\)/);
   expect(deliveredBody).toMatch(/--mermaid-radius:\s*var\(--radius-pane\)/);
   expect(deliveredBody).toMatch(/--mermaid-pad:\s*var\(--space-2\)/);
-
-  const deliveredText = topRuleBlock(css, '.message[data-speaker="user"]:not(.provisional) .text');
-  expect(deliveredText).toMatch(/color:\s*var\(--on-fill\)/);
+  expect(css).not.toMatch(/\.message\[data-speaker="user"\]:not\(\.provisional\)\s+\.text\s*\{/);
 });
 
 test("inline markdown, entity triggers, quiet controls, and selection honor host overrides while self-surfaced blocks reset them", () => {
@@ -247,16 +245,20 @@ test("inline markdown, entity triggers, quiet controls, and selection honor host
   const markdownCss = readModuleCss(import.meta.url, "../../../../widgets/markdown/markdown.module.css");
   expect(topRuleBlock(markdownCss, ".root a")).toMatch(/color:\s*var\(--markdown-link,\s*var\(--accent-ink\)\)/);
   expect(topRuleBlock(markdownCss, ".inlineCode")).toMatch(/color:\s*var\(--markdown-ink,\s*var\(--ink-hi\)\)/);
+  expect(topRuleBlock(markdownCss, ".tableReflow")).toMatch(
+    /contain-intrinsic-inline-size:\s*var\(--session-measure\)/,
+  );
   expect(markdownCss).toMatch(
     /@container\s*\(max-width:\s*559px\)\s*\{[\s\S]*\.root \.tableReflow :where\(tbody tr\)\s*\{[^}]*--markdown-ink:\s*var\(--ink-hi\)/,
   );
   expect(markdownCss).toMatch(
     /@container\s*\(max-width:\s*559px\)\s*\{[\s\S]*\.root \.tableReflow :where\(tbody tr\)\s*\{[^}]*--selection-surface:\s*var\(--selection-bg\)/,
   );
+  expect(markdownCss).not.toMatch(/--markdown-hover:\s*var\(--hover-1\)/);
 
   const codeblockCss = readModuleCss(import.meta.url, "../../../../widgets/codeblock/codeblock.module.css");
   const codeRoot = topRuleBlock(codeblockCss, ".root");
-  expect(codeRoot).toMatch(/--quiet-ink:\s*var\(--ink-hi\)/);
+  expect(codeRoot).not.toMatch(/--quiet-/);
   expect(codeRoot).toMatch(/--selection-surface:\s*var\(--selection-bg\)/);
   expect(codeRoot).toMatch(/--selection-ink:\s*var\(--ink-hi\)/);
 

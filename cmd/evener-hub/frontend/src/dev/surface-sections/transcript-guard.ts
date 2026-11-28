@@ -126,6 +126,12 @@ export async function measureEditorialTranscript() {
           const anchorVisible = visibleWithin(anchor, box);
           const user = required(host.querySelector<HTMLElement>('[data-testid="user-bubble"]'));
           const userText = required(user.firstElementChild);
+          const tableBubble = required(host.querySelector<HTMLElement>('[data-testid="user-bubble"]:has(table)'));
+          const tableHead = required(tableBubble.querySelector<HTMLElement>("thead"));
+          const tableCells = Array.from(tableBubble.querySelectorAll<HTMLElement>("tbody td")).map((cell) => {
+            const rect = cell.getBoundingClientRect();
+            return { width: rect.width, height: rect.height };
+          });
           const agent = host.querySelector<HTMLElement>('[data-testid="agent-bubble"] p');
           const quote = required(host.querySelector<HTMLElement>('[data-testid="subagent-quote"]'));
           const card = required(quote.closest<HTMLElement>('[data-testid="subagent-row"]'));
@@ -161,6 +167,9 @@ export async function measureEditorialTranscript() {
             userLineHeight: getComputedStyle(userText).lineHeight,
             userBackground: getComputedStyle(user).backgroundColor,
             userColor: getComputedStyle(userText).color,
+            tableBubbleWidth: tableBubble.getBoundingClientRect().width,
+            tableReflowed: getComputedStyle(tableHead).position === "absolute",
+            tableCells,
             agentLineHeight: agent && getComputedStyle(agent).lineHeight,
             agentFont: agent && getComputedStyle(agent).fontFamily,
             quoteFont: getComputedStyle(quote).fontFamily,

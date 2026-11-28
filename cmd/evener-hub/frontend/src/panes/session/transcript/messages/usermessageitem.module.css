@@ -138,12 +138,8 @@
   font-family: var(--font-prose);
   font-size: var(--font-size-prose);
   line-height: var(--line-height-prose);
-  /* --ink-hi: neutral base for non-user and provisional text. */
+  /* --ink-hi: neutral base for non-user plain-text callers (delegate_send). */
   color: var(--ink-hi);
-}
-
-.message[data-speaker="user"]:not(.provisional) .text {
-  color: var(--on-fill);
 }
 
 /* Pending-row actions: persistent, discoverable on touch, and aligned to the

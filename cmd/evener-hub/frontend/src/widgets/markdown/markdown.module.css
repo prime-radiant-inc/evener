@@ -137,6 +137,11 @@
 .tableReflow {
   position: relative;
   container-type: inline-size;
+  /* container-type: inline-size zeros intrinsic inline sizing; supply the
+   * reading measure so a wide table inside a fit-content user bubble expands
+   * to the column instead of collapsing to padding while max-width: 100% still
+   * clamps narrow panes. */
+  contain-intrinsic-inline-size: var(--session-measure);
 }
 
 .cellValue {
@@ -272,7 +277,6 @@
     --markdown-link: var(--accent-ink);
     --markdown-edge: var(--edge);
     --markdown-edge-strong: var(--edge-strong);
-    --markdown-hover: var(--hover-1);
     --markdown-focus-ring: var(--focus-ring);
     --quiet-ink: var(--ink-hi);
     --quiet-hover: var(--hover-1);
