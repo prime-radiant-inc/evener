@@ -2,6 +2,7 @@ package execenv
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -24,10 +25,10 @@ const maxAmbiguousLines = 10
 // segment: a line-heavy file at the whole-file read cap would otherwise
 // allocate ~16 bytes of slice header per line for every line in it
 // (issue #4556).
-func findFuzzyMatchSpans(content, oldString string, replaceAll bool, maxSpans int) (spans []byteSpan, ambigLines []int, limitExceeded bool) {
+func findFuzzyMatchSpans(content, oldString string, replaceAll bool, maxSpans int) (spans []byteSpan, ambigLines []int, limitExceeded, blankTolerant bool) {
 	normOld := normalizeWS(oldString)
 	if normOld == "" {
-		return nil, nil, false
+		return nil, nil, false, false
 	}
 	oldLines := splitEditLines(oldString, "\n")
 	wSize := len(oldLines)
@@ -122,15 +123,16 @@ func findFuzzyMatchSpans(content, oldString string, replaceAll bool, maxSpans in
 	})
 
 	if overflow {
-		return nil, nil, true
+		return nil, nil, true, false
 	}
 	if len(ambigLines) > 0 {
-		return nil, ambigLines, false
+		return nil, ambigLines, false, false
 	}
 	if len(spans) == 0 && !replaceAll {
-		return findBlankTolerantMatchSpan(content, oldLines, maxSpans)
+		spans, ambigLines, limitExceeded = findBlankTolerantMatchSpan(content, oldLines, maxSpans)
+		return spans, ambigLines, limitExceeded, len(spans) > 0
 	}
-	return spans, nil, false
+	return spans, nil, false, false
 }
 
 // findBlankTolerantMatchSpan is the last-resort unique-match fallback when
@@ -164,8 +166,7 @@ func findBlankTolerantMatchSpan(content string, oldLines []string, maxSpans int)
 		}
 		ring[(head+count)%m] = nonBlankLine{norm: norm, start: lineStart, end: lineEnd, lineNo: lineNo}
 		if count < m {
-			count++
-			if count < m {
+			if count++; count < m {
 				return false
 			}
 		} else {
@@ -198,11 +199,75 @@ func findBlankTolerantMatchSpan(content string, oldLines []string, maxSpans int)
 	return spans, nil, false
 }
 
+// reconcileBlankTolerantReplacement preserves unchanged leading/trailing whole
+// context lines (and their blank lines) from matched on blank-tolerant hits.
+func reconcileBlankTolerantReplacement(matched, oldString, newString string) string {
+	matchedLines := splitEditLines(matched, "\n")
+	oldLines, newLines := splitEditLines(oldString, "\n"), splitEditLines(newString, "\n")
+	matchedIdx := make([]int, 0, len(matchedLines))
+	for i, l := range matchedLines {
+		if normalizeWS(l) != "" {
+			matchedIdx = append(matchedIdx, i)
+		}
+	}
+	p, pNB, s, sNB := 0, 0, 0, 0
+	for p < len(oldLines) && p < len(newLines) && oldLines[p] == newLines[p] {
+		if normalizeWS(oldLines[p]) != "" {
+			pNB++
+		}
+		p++
+	}
+	if p == len(oldLines) && p == len(newLines) {
+		return matched
+	}
+	for p+s < len(oldLines) && p+s < len(newLines) && oldLines[len(oldLines)-1-s] == newLines[len(newLines)-1-s] {
+		if normalizeWS(oldLines[len(oldLines)-1-s]) != "" {
+			sNB++
+		}
+		s++
+	}
+	totalNB := len(matchedIdx)
+	if (pNB == 0 && sNB == 0) || pNB+sNB > totalNB {
+		return newString
+	}
+	for pNB > 0 && p < len(newLines)-s && normalizeWS(newLines[p]) == "" && p > 0 && normalizeWS(oldLines[p-1]) == "" {
+		p--
+	}
+	for sNB > 0 && p < len(newLines)-s && normalizeWS(newLines[len(newLines)-s-1]) == "" && s > 0 && normalizeWS(oldLines[len(oldLines)-s]) == "" {
+		s--
+	}
+	newMid := newLines[p : len(newLines)-s]
+	gap := func(k int) []string { return matchedLines[matchedIdx[k]+1 : matchedIdx[k+1]] }
+	var prefix, preGap, postGap, suffix []string
+	if pNB > 0 {
+		prefix = matchedLines[:matchedIdx[pNB-1]+1]
+	}
+	if sNB > 0 {
+		suffix = matchedLines[matchedIdx[totalNB-sNB]:]
+	}
+	startNB := len(newMid) > 0 && normalizeWS(newMid[0]) != ""
+	endNB := len(newMid) > 0 && normalizeWS(newMid[len(newMid)-1]) != ""
+	if pNB+sNB == totalNB {
+		if pNB > 0 && sNB > 0 && startNB && endNB {
+			if p > 0 && normalizeWS(oldLines[p-1]) == "" {
+				preGap = gap(pNB - 1)
+			} else {
+				postGap = gap(pNB - 1)
+			}
+		}
+	} else {
+		if pNB > 0 && (startNB || (len(newMid) == 0 && sNB > 0)) {
+			preGap = gap(pNB - 1)
+		}
+		if sNB > 0 && (endNB || (len(newMid) == 0 && pNB > 0 && len(preGap) == 0)) {
+			postGap = gap(totalNB - sNB - 1)
+		}
+	}
+	return strings.Join(slices.Concat(prefix, preGap, newMid, postGap, suffix), "\n")
+}
+
 // normalizeWS collapses all whitespace runs to single spaces and trims ends.
 func normalizeWS(s string) string {
-	if s == "" {
-		return ""
-	}
 	return strings.Join(strings.Fields(s), " ")
 }
 

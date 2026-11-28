@@ -1245,4 +1245,169 @@ func TestEditFile_BlankLineTolerantUniqueFallback(t *testing.T) {
 			t.Fatalf("batch partially mutated file on ambiguous fallback:\n%q", string(got))
 		}
 	})
+
+	t.Run("preserves unchanged blank lines in shared context", func(t *testing.T) {
+		t.Parallel()
+		cases := []struct {
+			name string
+			orig string
+			old  string
+			new  string
+			want string
+		}{
+			{
+				name: "unchanged leading paragraph break",
+				orig: "Overview\n\nDetails\nVersion 1\n",
+				old:  "Overview\nDetails\nVersion 1",
+				new:  "Overview\nDetails\nVersion 2",
+				want: "Overview\n\nDetails\nVersion 2\n",
+			},
+			{
+				name: "boundary blank gap before changed line",
+				orig: "Overview\n\nVersion 1\n",
+				old:  "Overview\nVersion 1",
+				new:  "Overview\nVersion 2",
+				want: "Overview\n\nVersion 2\n",
+			},
+			{
+				name: "explicit blank-line edit is honored",
+				orig: "Overview\n\nVersion 1\n",
+				old:  "Overview\nVersion 1",
+				new:  "Overview\n\n\nVersion 2",
+				want: "Overview\n\n\nVersion 2\n",
+			},
+			{
+				name: "shared prefix and suffix preserve internal and boundary blanks",
+				orig: "a\n\nold\n\nb\n\nc\n",
+				old:  "a\nold\nb\nc",
+				new:  "a\nnew\nb\nc",
+				want: "a\n\nnew\n\nb\n\nc\n",
+			},
+			{
+				name: "pure deletion keeps single paragraph break",
+				orig: "a\n\ndrop\n\nb\n",
+				old:  "a\ndrop\nb",
+				new:  "a\nb",
+				want: "a\n\nb\n",
+			},
+			{
+				name: "pure insertion preserves blank break once",
+				orig: "a\n\nb\n",
+				old:  "a\nb",
+				new:  "a\nmid\nb",
+				want: "a\nmid\n\nb\n",
+			},
+			{
+				name: "pure append and prepend preserve internal blank line",
+				orig: "a\n\nb\n",
+				old:  "a\nb",
+				new:  "a\nb\nc",
+				want: "a\n\nb\nc\n",
+			},
+			{
+				name: "pure prepend preserves internal blank line",
+				orig: "a\n\nb\n",
+				old:  "a\nb",
+				new:  "z\na\nb",
+				want: "z\na\n\nb\n",
+			},
+			{
+				name: "CRLF file preserves CRLF endings and blank break",
+				orig: "Overview\r\n\r\nDetails\r\nVersion 1\r\n",
+				old:  "Overview\nDetails\nVersion 1",
+				new:  "Overview\nDetails\nVersion 2",
+				want: "Overview\r\n\r\nDetails\r\nVersion 2\r\n",
+			},
+			{
+				name: "tab-indented unchanged context keeps real indentation and blank line",
+				orig: "\tOverview\n\n\tDetails\n\tVersion 1\n",
+				old:  "  Overview\n  Details\n  Version 1",
+				new:  "  Overview\n  Details\n\tVersion 2",
+				want: "\tOverview\n\n\tDetails\n\tVersion 2\n",
+			},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
+				dir := t.TempDir()
+				env := NewLocalExecutionEnvironment(dir)
+				if _, err := env.WriteFile("doc.txt", tc.orig); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := env.EditFile("doc.txt", tc.old, tc.new, false); err != nil {
+					t.Fatalf("EditFile failed: %v", err)
+				}
+				got, err := os.ReadFile(filepath.Join(dir, "doc.txt"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if string(got) != tc.want {
+					t.Fatalf("got:\n%q\nwant:\n%q", string(got), tc.want)
+				}
+			})
+		}
+	})
+
+	t.Run("identical old and new on blank-tolerant match fails as no-op", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		env := NewLocalExecutionEnvironment(dir)
+		orig := "Overview\n\nVersion 1\n"
+		if _, err := env.WriteFile("noop.txt", orig); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := env.EditFile("noop.txt", "Overview\nVersion 1", "Overview\nVersion 1", false); err == nil {
+			t.Fatal("expected no-op error when old_string equals new_string")
+		}
+		got, err := os.ReadFile(filepath.Join(dir, "noop.txt"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != orig {
+			t.Fatalf("file mutated on no-op:\n%q", string(got))
+		}
+	})
+
+	t.Run("batch preserves blanks and keeps full matched span for overlap detection", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		env := NewLocalExecutionEnvironment(dir)
+		orig := "Header\nOverview\n\nDetails\nVersion 1\n"
+		if _, err := env.WriteFile("ok.txt", orig); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := env.EditFileBatchCtx(context.Background(), "ok.txt", []FileEdit{
+			{OldString: "Header", NewString: "Title"},
+			{OldString: "Overview\nDetails\nVersion 1", NewString: "Overview\nDetails\nVersion 2"},
+		}); err != nil {
+			t.Fatalf("EditFileBatchCtx failed: %v", err)
+		}
+		got, err := os.ReadFile(filepath.Join(dir, "ok.txt"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := "Title\nOverview\n\nDetails\nVersion 2\n"
+		if string(got) != want {
+			t.Fatalf("got:\n%q\nwant:\n%q", string(got), want)
+		}
+
+		// Second edit touches "Overview", which sits inside the full blank-tolerant
+		// matched span even though it is unchanged context: overlap must still reject.
+		if _, err := env.WriteFile("ov.txt", orig); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := env.EditFileBatchCtx(context.Background(), "ov.txt", []FileEdit{
+			{OldString: "Overview", NewString: "Summary"},
+			{OldString: "Overview\nDetails\nVersion 1", NewString: "Overview\nDetails\nVersion 2"},
+		}); err == nil {
+			t.Fatal("expected overlap rejection across full blank-tolerant matched span")
+		}
+		got, err = os.ReadFile(filepath.Join(dir, "ov.txt"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != orig {
+			t.Fatalf("file mutated on overlapping batch:\n%q", string(got))
+		}
+	})
 }

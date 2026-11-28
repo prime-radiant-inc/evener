@@ -13,7 +13,7 @@ import (
 func findFuzzyMatch(content, oldString string) string {
 	// Every accepted span is non-empty and non-overlapping, so content cannot
 	// hold more than len(content) of them.
-	spans, _, _ := findFuzzyMatchSpans(content, oldString, true, len(content)+1)
+	spans, _, _, _ := findFuzzyMatchSpans(content, oldString, true, len(content)+1)
 	if len(spans) == 0 {
 		return ""
 	}
@@ -29,9 +29,9 @@ func TestFindFuzzyMatchSpans_SingleAndMultiLineOffsets(t *testing.T) {
 
 	t.Run("single line", func(t *testing.T) {
 		t.Parallel()
-		spans, ambigLines, limitExceeded := findFuzzyMatchSpans(content, "foo bar", false, 10)
-		if limitExceeded || ambigLines != nil || len(spans) != 1 {
-			t.Fatalf("findFuzzyMatchSpans single-line = (%v, %v, %v), want one span", spans, ambigLines, limitExceeded)
+		spans, ambigLines, limitExceeded, blankTolerant := findFuzzyMatchSpans(content, "foo bar", false, 10)
+		if limitExceeded || ambigLines != nil || len(spans) != 1 || blankTolerant {
+			t.Fatalf("findFuzzyMatchSpans single-line = (%v, %v, %v, %v), want one non-blank-tolerant span", spans, ambigLines, limitExceeded, blankTolerant)
 		}
 		want := "  foo    bar  "
 		start := strings.Index(content, want)
@@ -45,9 +45,9 @@ func TestFindFuzzyMatchSpans_SingleAndMultiLineOffsets(t *testing.T) {
 
 	t.Run("multi line", func(t *testing.T) {
 		t.Parallel()
-		spans, ambigLines, limitExceeded := findFuzzyMatchSpans(content, "foo bar\nbaz qux", false, 10)
-		if limitExceeded || ambigLines != nil || len(spans) != 1 {
-			t.Fatalf("findFuzzyMatchSpans multi-line = (%v, %v, %v), want one span", spans, ambigLines, limitExceeded)
+		spans, ambigLines, limitExceeded, blankTolerant := findFuzzyMatchSpans(content, "foo bar\nbaz qux", false, 10)
+		if limitExceeded || ambigLines != nil || len(spans) != 1 || blankTolerant {
+			t.Fatalf("findFuzzyMatchSpans multi-line = (%v, %v, %v, %v), want one non-blank-tolerant span", spans, ambigLines, limitExceeded, blankTolerant)
 		}
 		want := "  foo    bar  \n\tbaz\tqux"
 		start := strings.Index(content, want)
@@ -67,10 +67,10 @@ func TestFindFuzzyMatchSpans_EmptyNormalizedNeedle(t *testing.T) {
 	t.Parallel()
 	content := "one\n\nthree\n"
 	for _, replaceAll := range []bool{false, true} {
-		spans, ambigLines, limitExceeded := findFuzzyMatchSpans(content, "\t  ", replaceAll, 10)
-		if spans != nil || ambigLines != nil || limitExceeded {
-			t.Fatalf("findFuzzyMatchSpans(whitespace-only, replaceAll=%v) = (%v, %v, %v), want (nil, nil, false)",
-				replaceAll, spans, ambigLines, limitExceeded)
+		spans, ambigLines, limitExceeded, blankTolerant := findFuzzyMatchSpans(content, "\t  ", replaceAll, 10)
+		if spans != nil || ambigLines != nil || limitExceeded || blankTolerant {
+			t.Fatalf("findFuzzyMatchSpans(whitespace-only, replaceAll=%v) = (%v, %v, %v, %v), want (nil, nil, false, false)",
+				replaceAll, spans, ambigLines, limitExceeded, blankTolerant)
 		}
 	}
 }
@@ -81,7 +81,7 @@ func TestFindFuzzyMatchSpans_EmptyNormalizedNeedle(t *testing.T) {
 func TestFindFuzzyMatchSpans_AmbiguousLineNumbers(t *testing.T) {
 	t.Parallel()
 	content := "  foo bar\nmiddle\n\tfoo\tbar\nother\nfoo   bar\n"
-	spans, ambigLines, limitExceeded := findFuzzyMatchSpans(content, "foo bar", false, 10)
+	spans, ambigLines, limitExceeded, _ := findFuzzyMatchSpans(content, "foo bar", false, 10)
 	if spans != nil {
 		t.Fatalf("ambiguous match returned spans %v, want nil", spans)
 	}
@@ -100,7 +100,7 @@ func TestFindFuzzyMatchSpans_AmbiguousLineNumbers(t *testing.T) {
 		}
 		many.WriteString("  foo bar\n")
 	}
-	spans, ambigLines, limitExceeded = findFuzzyMatchSpans(many.String(), "foo bar", false, 100)
+	spans, ambigLines, limitExceeded, _ = findFuzzyMatchSpans(many.String(), "foo bar", false, 100)
 	if spans != nil || limitExceeded {
 		t.Fatalf("many-variant match = (%v, %v, %v), want nil spans without overflow", spans, ambigLines, limitExceeded)
 	}
@@ -118,7 +118,7 @@ func TestFindFuzzyMatchSpans_ReplaceAllNonOverlapping(t *testing.T) {
 	t.Run("single line", func(t *testing.T) {
 		t.Parallel()
 		content := "  foo bar\nmiddle\n\tfoo\tbar\nfoo   bar\n"
-		spans, ambigLines, limitExceeded := findFuzzyMatchSpans(content, "foo bar", true, 100)
+		spans, ambigLines, limitExceeded, _ := findFuzzyMatchSpans(content, "foo bar", true, 100)
 		if limitExceeded || ambigLines != nil {
 			t.Fatalf("replace_all single-line = (%v, %v, %v)", spans, ambigLines, limitExceeded)
 		}
@@ -136,7 +136,7 @@ func TestFindFuzzyMatchSpans_ReplaceAllNonOverlapping(t *testing.T) {
 	t.Run("multi line window consumed", func(t *testing.T) {
 		t.Parallel()
 		content := "a\na\na"
-		spans, ambigLines, limitExceeded := findFuzzyMatchSpans(content, "a\na", true, 100)
+		spans, ambigLines, limitExceeded, _ := findFuzzyMatchSpans(content, "a\na", true, 100)
 		if limitExceeded || ambigLines != nil {
 			t.Fatalf("replace_all multi-line = (%v, %v, %v)", spans, ambigLines, limitExceeded)
 		}
@@ -151,7 +151,7 @@ func TestFindFuzzyMatchSpans_ReplaceAllNonOverlapping(t *testing.T) {
 	t.Run("multi line non-overlapping sequence", func(t *testing.T) {
 		t.Parallel()
 		content := "a\na\nmid\na\na"
-		spans, ambigLines, limitExceeded := findFuzzyMatchSpans(content, "a\na", true, 100)
+		spans, ambigLines, limitExceeded, _ := findFuzzyMatchSpans(content, "a\na", true, 100)
 		if limitExceeded || ambigLines != nil {
 			t.Fatalf("replace_all multi-line sequence = (%v, %v, %v)", spans, ambigLines, limitExceeded)
 		}
@@ -174,7 +174,7 @@ func TestFindFuzzyMatchSpans_MaxSpansLimit(t *testing.T) {
 
 	t.Run("zero budget single match", func(t *testing.T) {
 		t.Parallel()
-		spans, ambigLines, limitExceeded := findFuzzyMatchSpans("foo bar\n", "foo bar", false, 0)
+		spans, ambigLines, limitExceeded, _ := findFuzzyMatchSpans("foo bar\n", "foo bar", false, 0)
 		if !limitExceeded || spans != nil || ambigLines != nil {
 			t.Fatalf("maxSpans=0 = (%v, %v, %v), want (nil, nil, true)", spans, ambigLines, limitExceeded)
 		}
@@ -183,7 +183,7 @@ func TestFindFuzzyMatchSpans_MaxSpansLimit(t *testing.T) {
 	t.Run("two span budget three matches", func(t *testing.T) {
 		t.Parallel()
 		content := "foo bar\nmid\nfoo bar\nmid\nfoo bar\n"
-		spans, ambigLines, limitExceeded := findFuzzyMatchSpans(content, "foo bar", true, 2)
+		spans, ambigLines, limitExceeded, _ := findFuzzyMatchSpans(content, "foo bar", true, 2)
 		if !limitExceeded || spans != nil || ambigLines != nil {
 			t.Fatalf("maxSpans=2 with three matches = (%v, %v, %v), want (nil, nil, true)", spans, ambigLines, limitExceeded)
 		}
@@ -195,7 +195,7 @@ func TestFindFuzzyMatchSpans_MaxSpansLimit(t *testing.T) {
 	t.Run("one span budget two matches reports ambiguity", func(t *testing.T) {
 		t.Parallel()
 		content := "  foo bar\nmiddle\n\tfoo\tbar\n"
-		spans, ambigLines, limitExceeded := findFuzzyMatchSpans(content, "foo bar", false, 1)
+		spans, ambigLines, limitExceeded, _ := findFuzzyMatchSpans(content, "foo bar", false, 1)
 		if limitExceeded || spans != nil {
 			t.Fatalf("maxSpans=1 with two matches = (%v, %v, %v), want ambiguity without overflow", spans, ambigLines, limitExceeded)
 		}
@@ -212,9 +212,9 @@ func TestFindFuzzyMatchSpans_BlankLineTolerantUniqueFallback(t *testing.T) {
 		t.Parallel()
 		content := "alpha\n}\n\nfunction boundaryRank(x) {\n  return x\n}\n"
 		old := "}\nfunction boundaryRank(x) {"
-		spans, ambigLines, limitExceeded := findFuzzyMatchSpans(content, old, false, 10)
-		if limitExceeded || ambigLines != nil || len(spans) != 1 {
-			t.Fatalf("findFuzzyMatchSpans = (%v, %v, %v), want one span", spans, ambigLines, limitExceeded)
+		spans, ambigLines, limitExceeded, blankTolerant := findFuzzyMatchSpans(content, old, false, 10)
+		if limitExceeded || ambigLines != nil || len(spans) != 1 || !blankTolerant {
+			t.Fatalf("findFuzzyMatchSpans = (%v, %v, %v, %v), want one blank-tolerant span", spans, ambigLines, limitExceeded, blankTolerant)
 		}
 		want := "}\n\nfunction boundaryRank(x) {"
 		if got := content[spans[0].start:spans[0].end]; got != want {
@@ -226,9 +226,9 @@ func TestFindFuzzyMatchSpans_BlankLineTolerantUniqueFallback(t *testing.T) {
 		t.Parallel()
 		content := "alpha\n}\nfunction boundaryRank(x) {\n  return x\n}\n"
 		old := "}\n\nfunction boundaryRank(x) {"
-		spans, ambigLines, limitExceeded := findFuzzyMatchSpans(content, old, false, 10)
-		if limitExceeded || ambigLines != nil || len(spans) != 1 {
-			t.Fatalf("findFuzzyMatchSpans = (%v, %v, %v), want one span", spans, ambigLines, limitExceeded)
+		spans, ambigLines, limitExceeded, blankTolerant := findFuzzyMatchSpans(content, old, false, 10)
+		if limitExceeded || ambigLines != nil || len(spans) != 1 || !blankTolerant {
+			t.Fatalf("findFuzzyMatchSpans = (%v, %v, %v, %v), want one blank-tolerant span", spans, ambigLines, limitExceeded, blankTolerant)
 		}
 		want := "}\nfunction boundaryRank(x) {"
 		if got := content[spans[0].start:spans[0].end]; got != want {
@@ -240,9 +240,9 @@ func TestFindFuzzyMatchSpans_BlankLineTolerantUniqueFallback(t *testing.T) {
 		t.Parallel()
 		content := "pkg\n\t}\n\n\tfunction   boundaryRank(x) {\n\t\treturn x\n\t}\n"
 		old := "  }\n  function boundaryRank(x) {"
-		spans, ambigLines, limitExceeded := findFuzzyMatchSpans(content, old, false, 10)
-		if limitExceeded || ambigLines != nil || len(spans) != 1 {
-			t.Fatalf("findFuzzyMatchSpans = (%v, %v, %v), want one span", spans, ambigLines, limitExceeded)
+		spans, ambigLines, limitExceeded, blankTolerant := findFuzzyMatchSpans(content, old, false, 10)
+		if limitExceeded || ambigLines != nil || len(spans) != 1 || !blankTolerant {
+			t.Fatalf("findFuzzyMatchSpans = (%v, %v, %v, %v), want one blank-tolerant span", spans, ambigLines, limitExceeded, blankTolerant)
 		}
 		want := "\t}\n\n\tfunction   boundaryRank(x) {"
 		if got := content[spans[0].start:spans[0].end]; got != want {
@@ -254,9 +254,9 @@ func TestFindFuzzyMatchSpans_BlankLineTolerantUniqueFallback(t *testing.T) {
 		t.Parallel()
 		content := "}\n\nfunction f() {\n  return 1\n}\n\nfunction f() {\n  return 2\n}\n"
 		old := "}\nfunction f() {"
-		spans, ambigLines, limitExceeded := findFuzzyMatchSpans(content, old, false, 10)
-		if spans != nil || limitExceeded {
-			t.Fatalf("ambiguous blank-line fallback = (%v, %v, %v), want nil spans without overflow", spans, ambigLines, limitExceeded)
+		spans, ambigLines, limitExceeded, blankTolerant := findFuzzyMatchSpans(content, old, false, 10)
+		if spans != nil || limitExceeded || blankTolerant {
+			t.Fatalf("ambiguous blank-line fallback = (%v, %v, %v, %v), want nil spans without overflow", spans, ambigLines, limitExceeded, blankTolerant)
 		}
 		if want := []int{1, 5}; !slices.Equal(ambigLines, want) {
 			t.Fatalf("ambiguous lines = %v, want %v", ambigLines, want)
@@ -266,9 +266,9 @@ func TestFindFuzzyMatchSpans_BlankLineTolerantUniqueFallback(t *testing.T) {
 	t.Run("self-overlapping blank-separated repeats are ambiguous", func(t *testing.T) {
 		t.Parallel()
 		content := "foo()\n\nfoo()\n\nfoo()\n"
-		spans, ambigLines, limitExceeded := findFuzzyMatchSpans(content, "foo()\nfoo()", false, 10)
-		if spans != nil || limitExceeded {
-			t.Fatalf("self-overlapping match = (%v, %v, %v), want ambiguity", spans, ambigLines, limitExceeded)
+		spans, ambigLines, limitExceeded, blankTolerant := findFuzzyMatchSpans(content, "foo()\nfoo()", false, 10)
+		if spans != nil || limitExceeded || blankTolerant {
+			t.Fatalf("self-overlapping match = (%v, %v, %v, %v), want ambiguity", spans, ambigLines, limitExceeded, blankTolerant)
 		}
 		if want := []int{1, 3}; !slices.Equal(ambigLines, want) {
 			t.Fatalf("ambiguous lines = %v, want %v", ambigLines, want)
@@ -279,9 +279,9 @@ func TestFindFuzzyMatchSpans_BlankLineTolerantUniqueFallback(t *testing.T) {
 		t.Parallel()
 		content := "alpha\n}\n\nfunction boundaryRank(x) {\n  return x\n}\n"
 		old := "}\nfunction boundaryRank(x) {"
-		spans, ambigLines, limitExceeded := findFuzzyMatchSpans(content, old, true, 10)
-		if spans != nil || ambigLines != nil || limitExceeded {
-			t.Fatalf("replaceAll blank-line fallback = (%v, %v, %v), want (nil, nil, false)", spans, ambigLines, limitExceeded)
+		spans, ambigLines, limitExceeded, blankTolerant := findFuzzyMatchSpans(content, old, true, 10)
+		if spans != nil || ambigLines != nil || limitExceeded || blankTolerant {
+			t.Fatalf("replaceAll blank-line fallback = (%v, %v, %v, %v), want (nil, nil, false, false)", spans, ambigLines, limitExceeded, blankTolerant)
 		}
 	})
 
@@ -294,9 +294,9 @@ func TestFindFuzzyMatchSpans_BlankLineTolerantUniqueFallback(t *testing.T) {
 			"   \n}\nfunction boundaryRank(x) {",
 			"}\nfunction boundaryRank(x) {\n\t ",
 		} {
-			spans, ambigLines, limitExceeded := findFuzzyMatchSpans(content, old, false, 10)
-			if spans != nil || ambigLines != nil || limitExceeded {
-				t.Fatalf("boundary-blank old=%q = (%v, %v, %v), want (nil, nil, false)", old, spans, ambigLines, limitExceeded)
+			spans, ambigLines, limitExceeded, blankTolerant := findFuzzyMatchSpans(content, old, false, 10)
+			if spans != nil || ambigLines != nil || limitExceeded || blankTolerant {
+				t.Fatalf("boundary-blank old=%q = (%v, %v, %v, %v), want (nil, nil, false, false)", old, spans, ambigLines, limitExceeded, blankTolerant)
 			}
 		}
 	})
@@ -305,17 +305,100 @@ func TestFindFuzzyMatchSpans_BlankLineTolerantUniqueFallback(t *testing.T) {
 		t.Parallel()
 		content := "alpha\n}\n\nfunction boundaryRank(x) {\n  return x\n}\n"
 		old := "}\nfunction boundaryRank(x) {"
-		spans, ambigLines, limitExceeded := findFuzzyMatchSpans(content, old, false, 0)
-		if !limitExceeded || spans != nil || ambigLines != nil {
-			t.Fatalf("maxSpans=0 fallback = (%v, %v, %v), want (nil, nil, true)", spans, ambigLines, limitExceeded)
+		spans, ambigLines, limitExceeded, blankTolerant := findFuzzyMatchSpans(content, old, false, 0)
+		if !limitExceeded || spans != nil || ambigLines != nil || blankTolerant {
+			t.Fatalf("maxSpans=0 fallback = (%v, %v, %v, %v), want (nil, nil, true, false)", spans, ambigLines, limitExceeded, blankTolerant)
 		}
 
 		dup := "}\n\nfunction f() {\n}\n\nfunction f() {\n"
-		spans, ambigLines, limitExceeded = findFuzzyMatchSpans(dup, "}\nfunction f() {", false, 1)
-		if limitExceeded || spans != nil || !slices.Equal(ambigLines, []int{1, 4}) {
-			t.Fatalf("maxSpans=1 ambiguous fallback = (%v, %v, %v), want ambig [1 4]", spans, ambigLines, limitExceeded)
+		spans, ambigLines, limitExceeded, blankTolerant = findFuzzyMatchSpans(dup, "}\nfunction f() {", false, 1)
+		if limitExceeded || spans != nil || blankTolerant || !slices.Equal(ambigLines, []int{1, 4}) {
+			t.Fatalf("maxSpans=1 ambiguous fallback = (%v, %v, %v, %v), want ambig [1 4]", spans, ambigLines, limitExceeded, blankTolerant)
 		}
 	})
+}
+
+func TestReconcileBlankTolerantReplacement(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name    string
+		matched string
+		old     string
+		new     string
+		want    string
+	}{
+		{
+			name:    "entire block changed returns newString verbatim",
+			matched: "a\n\nb",
+			old:     "a\nb",
+			new:     "x\ny",
+			want:    "x\ny",
+		},
+		{
+			name:    "identical old and new returns matched verbatim",
+			matched: "a\n\nb",
+			old:     "a\nb",
+			new:     "a\nb",
+			want:    "a\n\nb",
+		},
+		{
+			name:    "explicit blank count expansion rolls back shared prefix blank",
+			matched: "Overview\n\n\nVersion 1",
+			old:     "Overview\n\nVersion 1",
+			new:     "Overview\n\n\n\nVersion 2",
+			want:    "Overview\n\n\n\nVersion 2",
+		},
+		{
+			name:    "explicit blank count expansion rolls back shared suffix blank",
+			matched: "Version 1\n\n\nFooter",
+			old:     "Version 1\n\nFooter",
+			new:     "Version 2\n\n\n\nFooter",
+			want:    "Version 2\n\n\n\nFooter",
+		},
+		{
+			name:    "insertion after shared blank keeps file gap before insertion",
+			matched: "a\n\n\n\nb",
+			old:     "a\n\nb",
+			new:     "a\n\nmid\nb",
+			want:    "a\n\n\n\nmid\nb",
+		},
+		{
+			name:    "insertion before shared blank keeps file gap after insertion",
+			matched: "a\n\n\n\nb",
+			old:     "a\n\nb",
+			new:     "a\nmid\n\nb",
+			want:    "a\nmid\n\n\n\nb",
+		},
+		{
+			name:    "pure deletion of trailing line leaves no orphan blank",
+			matched: "a\n\ndrop",
+			old:     "a\ndrop",
+			new:     "a",
+			want:    "a",
+		},
+		{
+			name:    "pure deletion of leading line leaves no orphan blank",
+			matched: "drop\n\nb",
+			old:     "drop\nb",
+			new:     "b",
+			want:    "b",
+		},
+		{
+			name:    "pure deletion between prefix and suffix falls back to postGap",
+			matched: "a\ndrop\n\nb",
+			old:     "a\ndrop\nb",
+			new:     "a\nb",
+			want:    "a\n\nb",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := reconcileBlankTolerantReplacement(tc.matched, tc.old, tc.new); got != tc.want {
+				t.Fatalf("reconcileBlankTolerantReplacement(%q, %q, %q) = %q, want %q", tc.matched, tc.old, tc.new, got, tc.want)
+			}
+		})
+	}
 }
 
 // TestNearestFileRegion_IncludesOneBasedLineNumber pins the near-miss

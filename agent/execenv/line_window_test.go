@@ -135,10 +135,10 @@ func TestFindFuzzyMatchBlankLineFallbackBoundsAllocationOnALineHeavyFile(t *test
 	content := strings.Repeat("\n", 32<<20)
 	var before, after runtime.MemStats
 	runtime.ReadMemStats(&before)
-	spans, ambigLines, limitExceeded := findFuzzyMatchSpans(content, "absent1\nabsent2", false, 10)
+	spans, ambigLines, limitExceeded, blankTolerant := findFuzzyMatchSpans(content, "absent1\nabsent2", false, 10)
 	runtime.ReadMemStats(&after)
-	if spans != nil || ambigLines != nil || limitExceeded {
-		t.Fatalf("unexpected match on all-newline buffer: (%v, %v, %v)", spans, ambigLines, limitExceeded)
+	if spans != nil || ambigLines != nil || limitExceeded || blankTolerant {
+		t.Fatalf("unexpected match on all-newline buffer: (%v, %v, %v, %v)", spans, ambigLines, limitExceeded, blankTolerant)
 	}
 	if allocated := after.TotalAlloc - before.TotalAlloc; allocated > 1<<20 {
 		t.Fatalf("blank-line fallback over a %d-byte line-heavy buffer allocated %d bytes, want a streamed scan", len(content), allocated)
