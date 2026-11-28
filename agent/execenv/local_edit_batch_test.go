@@ -1431,4 +1431,74 @@ func TestEditFile_BlankLineTolerantUniqueFallback(t *testing.T) {
 			t.Fatalf("file mutated on overlapping batch:\n%q", string(got))
 		}
 	})
+
+	t.Run("oversized unaligned interior refuses blank-tolerant fallback while localized large edit succeeds", func(t *testing.T) {
+		t.Parallel()
+		var midFile, midOld []string
+		for i := range 127 {
+			line := fmt.Sprintf("interior line %d", i)
+			midFile = append(midFile, line)
+			midOld = append(midOld, line)
+			if i == 60 {
+				midFile = append(midFile, "")
+			}
+		}
+		// 129 non-blank lines with both endpoints changed (om=129, nm=129 > 16384)
+		// and an omitted interior blank line: must refuse cleanly rather than drop the blank line.
+		orig := "Header\nStart 1\n" + strings.Join(midFile, "\n") + "\nEnd 1\n"
+		oldStr := "Start 1\n" + strings.Join(midOld, "\n") + "\nEnd 1"
+		newStr := "Start 2\n" + strings.Join(midOld, "\n") + "\nEnd 2"
+
+		dir := t.TempDir()
+		env := NewLocalExecutionEnvironment(dir)
+		if _, err := env.WriteFile("single.txt", orig); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := env.EditFile("single.txt", oldStr, newStr, false); err == nil {
+			t.Fatal("expected blank-tolerant fallback refusal when unaligned interior exceeds alignment cap")
+		}
+		got, err := os.ReadFile(filepath.Join(dir, "single.txt"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != orig {
+			t.Fatal("single EditFile mutated file after refusing oversized blank-tolerant edit")
+		}
+
+		if _, err := env.WriteFile("batch.txt", orig); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := env.EditFileBatchCtx(context.Background(), "batch.txt", []FileEdit{
+			{OldString: "Header", NewString: "Title"},
+			{OldString: oldStr, NewString: newStr},
+		}); err == nil {
+			t.Fatal("expected atomic batch refusal when blank-tolerant edit exceeds alignment cap")
+		}
+		got, err = os.ReadFile(filepath.Join(dir, "batch.txt"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != orig {
+			t.Fatal("batch mutated file after refusing oversized blank-tolerant edit")
+		}
+
+		// Same 130+ line block with only one interior line changed: prefix/suffix
+		// trimming shrinks om*nm to 1 <= 16384, so it still succeeds and keeps the blank line.
+		localNew := append([]string(nil), midOld...)
+		localNew[20] = "interior line 20 updated"
+		localNewStr := "Start 1\n" + strings.Join(localNew, "\n") + "\nEnd 1"
+		wantLocal := append([]string(nil), midFile...)
+		wantLocal[20] = "interior line 20 updated"
+		want := "Header\nStart 1\n" + strings.Join(wantLocal, "\n") + "\nEnd 1\n"
+		if _, err := env.EditFile("single.txt", oldStr, localNewStr, false); err != nil {
+			t.Fatalf("localized edit in 130-line block failed: %v", err)
+		}
+		got, err = os.ReadFile(filepath.Join(dir, "single.txt"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != want {
+			t.Fatal("localized large-block edit did not preserve interior blank line")
+		}
+	})
 }

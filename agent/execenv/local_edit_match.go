@@ -14,6 +14,10 @@ type byteSpan struct {
 // reports for an ambiguous single match.
 const maxAmbiguousLines = 10
 
+// maxBlankReconcileCells caps the interior LCS DP table (om*nm) used to align
+// unchanged non-blank lines on blank-line-tolerant edit_file matches.
+const maxBlankReconcileCells = 16384
+
 // findFuzzyMatchSpans scans the file content for exact byte ranges that match
 // oldString when whitespace is normalized. replaceAll collects every
 // non-overlapping match; otherwise the single match is returned, or its
@@ -216,8 +220,9 @@ func splitNonBlank(s string) (lines []string, gaps [][]string) {
 }
 
 // alignUnchangedLines returns matched (oldIdx, newIdx) anchor pairs via common
-// prefix/suffix trimming plus bounded LCS DP over the interior.
-func alignUnchangedLines(oldLines, newLines []string) [][2]int {
+// prefix/suffix trimming plus bounded LCS DP over the interior. It reports
+// ok=false when the unaligned interior exceeds maxBlankReconcileCells.
+func alignUnchangedLines(oldLines, newLines []string) ([][2]int, bool) {
 	m, k := len(oldLines), len(newLines)
 	p, s := 0, 0
 	for p < m && p < k && oldLines[p] == newLines[p] {
@@ -226,12 +231,15 @@ func alignUnchangedLines(oldLines, newLines []string) [][2]int {
 	for p+s < m && p+s < k && oldLines[m-1-s] == newLines[k-1-s] {
 		s++
 	}
+	om, nm := m-p-s, k-p-s
+	if om > 0 && nm > 0 && om > maxBlankReconcileCells/nm {
+		return nil, false
+	}
 	anchors := make([][2]int, 0, p+s)
 	for i := range p {
 		anchors = append(anchors, [2]int{i, i})
 	}
-	om, nm := m-p-s, k-p-s
-	if om > 0 && nm > 0 && om*nm <= 16384 {
+	if om > 0 && nm > 0 {
 		w := nm + 1
 		dp := make([]int, (om+1)*w)
 		for i := om - 1; i >= 0; i-- {
@@ -257,23 +265,27 @@ func alignUnchangedLines(oldLines, newLines []string) [][2]int {
 	for i := range s {
 		anchors = append(anchors, [2]int{m - s + i, k - s + i})
 	}
-	return anchors
+	return anchors, true
 }
 
 // reconcileBlankTolerantReplacement aligns unchanged non-blank lines between
 // oldString and newString and preserves real file lines and untouched blank
-// gaps from matched while honoring explicit blank-line edits in newString.
-func reconcileBlankTolerantReplacement(matched, oldString, newString string) string {
+// gaps from matched while honoring explicit blank-line edits in newString. It
+// returns ok=false when the unaligned interior exceeds maxBlankReconcileCells.
+func reconcileBlankTolerantReplacement(matched, oldString, newString string) (string, bool) {
 	mLines, fGaps := splitNonBlank(matched)
 	oLines, oGaps := splitNonBlank(oldString)
 	nLines, nGaps := splitNonBlank(newString)
 	m, k := len(mLines), len(nLines)
 	if m != len(oLines) || k == 0 {
-		return newString
+		return newString, true
 	}
-	anchors := alignUnchangedLines(oLines, nLines)
+	anchors, ok := alignUnchangedLines(oLines, nLines)
+	if !ok {
+		return "", false
+	}
 	if len(anchors) == 0 {
-		return newString
+		return newString, true
 	}
 	var out []string
 	pickGap := func(oi, nj int, preserve bool) []string {
@@ -338,7 +350,7 @@ func reconcileBlankTolerantReplacement(matched, oldString, newString string) str
 		emitNew(last[1]+1, k)
 	}
 	out = append(out, nGaps[k]...)
-	return strings.Join(out, "\n")
+	return strings.Join(out, "\n"), true
 }
 
 // normalizeWS collapses all whitespace runs to single spaces and trims ends.

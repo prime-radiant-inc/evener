@@ -429,13 +429,14 @@ func TestReconcileBlankTolerantReplacement(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			if got := reconcileBlankTolerantReplacement(tc.matched, tc.old, tc.new); got != tc.want {
-				t.Fatalf("reconcileBlankTolerantReplacement(%q, %q, %q) = %q, want %q", tc.matched, tc.old, tc.new, got, tc.want)
+			got, ok := reconcileBlankTolerantReplacement(tc.matched, tc.old, tc.new)
+			if !ok || got != tc.want {
+				t.Fatalf("reconcileBlankTolerantReplacement(%q, %q, %q) = (%q, %v), want (%q, true)", tc.matched, tc.old, tc.new, got, ok, tc.want)
 			}
 		})
 	}
 
-	t.Run("large interior exceeds DP cap and still preserves prefix and suffix blanks", func(t *testing.T) {
+	t.Run("oversized unaligned interior returns ok=false while localized large edit returns ok=true", func(t *testing.T) {
 		t.Parallel()
 		var oldBody, newBody []string
 		for i := range 130 {
@@ -445,9 +446,17 @@ func TestReconcileBlankTolerantReplacement(t *testing.T) {
 		matched := "Head1\n\nHead2\n\n" + strings.Join(oldBody, "\n") + "\n\nTail1\n\nTail2"
 		oldStr := "Head1\nHead2\n" + strings.Join(oldBody, "\n") + "\nTail1\nTail2"
 		newStr := "Head1\nHead2\n" + strings.Join(newBody, "\n") + "\nTail1\nTail2"
-		want := "Head1\n\nHead2\n\n" + strings.Join(newBody, "\n") + "\n\nTail1\n\nTail2"
-		if got := reconcileBlankTolerantReplacement(matched, oldStr, newStr); got != want {
-			t.Fatalf("large-needle reconciliation mismatch:\ngot =%q\nwant=%q", got, want)
+		if got, ok := reconcileBlankTolerantReplacement(matched, oldStr, newStr); ok || got != "" {
+			t.Fatalf("oversized interior = (%q, %v), want (\"\", false)", got, ok)
+		}
+
+		localBody := append([]string(nil), oldBody...)
+		localBody[65] = "changed middle line"
+		localNew := "Head1\nHead2\n" + strings.Join(localBody, "\n") + "\nTail1\nTail2"
+		want := "Head1\n\nHead2\n\n" + strings.Join(localBody, "\n") + "\n\nTail1\n\nTail2"
+		got, ok := reconcileBlankTolerantReplacement(matched, oldStr, localNew)
+		if !ok || got != want {
+			t.Fatalf("localized large-block reconciliation = (%q, %v), want (%q, true)", got, ok, want)
 		}
 	})
 }

@@ -460,6 +460,14 @@ matchLoop:
 				editPrefix(i), path, formatLineNumbers(ambigLines)))
 			continue
 		}
+		var reconciled string
+		if blankTolerant {
+			var ok bool
+			reconciled, ok = reconcileBlankTolerantReplacement(lfText[fuzzySpans[0].start:fuzzySpans[0].end], pe.oldLF, pe.newLF)
+			if !ok {
+				fuzzySpans = nil
+			}
+		}
 		if len(fuzzySpans) == 0 {
 			var near string
 			if nearestCount < 3 {
@@ -496,7 +504,7 @@ matchLoop:
 				continue
 			}
 			if blankTolerant {
-				prepared[i].newLF = reconcileBlankTolerantReplacement(matched, pe.oldLF, pe.newLF)
+				prepared[i].newLF = reconciled
 			}
 		}
 		usedFuzzy = true
