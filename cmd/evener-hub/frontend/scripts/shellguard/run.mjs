@@ -38,8 +38,8 @@ import {
 } from "./floatingFixture.mjs";
 import { checkSessionHoverCards } from "./sessionHoverCard.mjs";
 import { checkSettingsGeometry } from "./settingsGeometry.mjs";
-import { checkTopBarDrawerPlacement } from "./topBarDrawerPlacement.mjs";
 import { measureDelayedFloatingDock } from "./startup.mjs";
+import { checkTopBarDrawerPlacement } from "./topBarDrawerPlacement.mjs";
 
 const FRONTEND = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -98,12 +98,14 @@ async function measureOnPage(cdpEndpoint, sharedTabId, vitePort, viewport, expre
       });
     }
     if (hosted) {
-      await send("Page.addScriptToEvaluateOnNewDocument", { source: `
+      await send("Page.addScriptToEvaluateOnNewDocument", {
+        source: `
         Object.defineProperty(navigator, 'userAgent', {value: navigator.userAgent +
           ' EvenerNative/1 EvenerSessionHeader/1 EvenerWorkspaceControls/1 EvenerSessionsToolbar/1 EvenerPaneNavigation/1'});
         window.ReactNativeWebView = { postMessage() {} };
         window.evenerEdgeToolbar = false;
-      ` });
+      `,
+      });
     }
     await applyViewport(send, viewport);
     if (viewport.platform) {
@@ -208,13 +210,11 @@ async function measureOnPage(cdpEndpoint, sharedTabId, vitePort, viewport, expre
         : header.isDesktop
           ? ["wordmark", "Settings", "Search", "Hide sidebar"]
           : ["wordmark", "Settings"];
-    const containerRight = header.mode === "sheet" ? header.containerRight : railBox?.right ?? null;
+    const containerRight = header.mode === "sheet" ? header.containerRight : (railBox?.right ?? null);
     for (let i = 0; i < header.items.length; i++) {
       const box = header.items[i];
       if (!box || box.width <= 0 || box.height <= 0) {
-        throw new Error(
-          `rail header at ${viewport.width}px: missing visible ${labels[i]}`,
-        );
+        throw new Error(`rail header at ${viewport.width}px: missing visible ${labels[i]}`);
       }
       if (box.left < 0 || box.right > viewport.width)
         throw new Error(`rail header escapes ${viewport.width}px viewport`);
@@ -231,9 +231,19 @@ async function measureOnPage(cdpEndpoint, sharedTabId, vitePort, viewport, expre
         const previous = header.items[i - 1];
         const besideList = box.left >= Math.max(header.filterRight, header.newSessionRight);
         const sameColumn = i === 1 || Math.abs(box.left + box.width / 2 - previous.left - previous.width / 2) <= 1;
-        if (!(besideList && sameColumn && box.width >= 44 && box.height >= 44 &&
-          box.top >= previous.bottom && box.bottom <= viewport.height)) {
-          throw new Error(`installed Sessions drawer: ${labels[i]} must fit its trailing column: ${JSON.stringify(header)}`);
+        if (
+          !(
+            besideList &&
+            sameColumn &&
+            box.width >= 44 &&
+            box.height >= 44 &&
+            box.top >= previous.bottom &&
+            box.bottom <= viewport.height
+          )
+        ) {
+          throw new Error(
+            `installed Sessions drawer: ${labels[i]} must fit its trailing column: ${JSON.stringify(header)}`,
+          );
         }
       } else if (i > 0) {
         const previous = header.items[i - 1];
@@ -832,7 +842,11 @@ async function measurePhoneSearchPalette(page) {
       send,
       "import('/src/widgets/toast/store.ts').then(({ pushToast }) => pushToast('error', 'Palette toast check'))",
     );
-    await waitForDom(send, 'Boolean(document.querySelector(\'[aria-label="Notifications"] [data-kind="error"]\'))', "Toast rendered");
+    await waitForDom(
+      send,
+      'Boolean(document.querySelector(\'[aria-label="Notifications"] [data-kind="error"]\'))',
+      "Toast rendered",
+    );
     await settleFiniteAnimations(send);
     return evaluate(send, hitProbe);
   }
@@ -842,11 +856,7 @@ async function measurePhoneSearchPalette(page) {
     "import('/src/widgets/toast/store.ts').then(({ resetToastStoreForTests }) => resetToastStoreForTests())",
   );
   await pressKey(send, "Escape", "Escape", 27);
-  await waitForDom(
-    send,
-    `!(${dialogByTitleExpr})("Command palette")`,
-    "Escape closes phone Command palette",
-  );
+  await waitForDom(send, `!(${dialogByTitleExpr})("Command palette")`, "Escape closes phone Command palette");
   await settleFiniteAnimations(send);
   const afterEscape = await evaluate(
     send,
@@ -863,7 +873,11 @@ async function measurePhoneSearchPalette(page) {
     })()`,
   );
   await applyViewport(send, { ...MOBILE_VIEWPORT, width: 951, height: 669 });
-  await waitForDom(send, 'Boolean(document.querySelector("[data-desktop-workspace]"))', "Duo landscape workspace mounted");
+  await waitForDom(
+    send,
+    'Boolean(document.querySelector("[data-desktop-workspace]"))',
+    "Duo landscape workspace mounted",
+  );
   const landscape = await measureToast();
   await send("Emulation.setTouchEmulationEnabled", { enabled: false });
   await applyViewport(send, { width: 951, height: 669 });
@@ -892,7 +906,9 @@ function assertPhoneSearchPalette(result) {
   }
   for (const { toast, viewport } of [result, result.landscape]) {
     if (!toast || toast.bottom > viewport.height / 2 || Math.abs(toast.x - viewport.width / 2) > 1)
-      failures.push(`phone toast outside the top center at ${viewport.width}x${viewport.height}: ${JSON.stringify(toast)}`);
+      failures.push(
+        `phone toast outside the top center at ${viewport.width}x${viewport.height}: ${JSON.stringify(toast)}`,
+      );
   }
   const { toast, viewport } = result.desktop;
   if (!toast || toast.bottom < viewport.height / 2 || toast.x < viewport.width / 2)
@@ -906,7 +922,9 @@ function assertPhoneSearchPalette(result) {
 }
 
 async function assertTabletActionGeometry(send) {
-  const result = await evaluate(send, `(async () => {
+  const result = await evaluate(
+    send,
+    `(async () => {
     const root = document.documentElement;
     root.style.setProperty('--dock-clearance', '34px');
     try {
@@ -933,8 +951,14 @@ async function assertTabletActionGeometry(send) {
     } finally {
       root.style.removeProperty('--dock-clearance');
     }
-  })()`);
-  if (Math.abs(result.newY - result.sendY) > 1 || !result.atEnd || !result.lastVisible || result.lastBottom > result.actionTop + 1) {
+  })()`,
+  );
+  if (
+    Math.abs(result.newY - result.sendY) > 1 ||
+    !result.atEnd ||
+    !result.lastVisible ||
+    result.lastBottom > result.actionTop + 1
+  ) {
     throw new Error(`tablet action alignment or final session clearance: ${JSON.stringify(result)}`);
   }
   if (result.newInkOffset > 1 || result.sendInkOffset > 1 || result.attachInkOffset > 1) {
@@ -942,12 +966,15 @@ async function assertTabletActionGeometry(send) {
   }
   const settings = '[data-testid="rail-settings"]';
   await forcePseudoStates(send, [{ selector: settings, pseudoClasses: ["hover"] }]);
-  const feedback = await evaluate(send, `(() => {
+  const feedback = await evaluate(
+    send,
+    `(() => {
     const button = document.querySelector('${settings}');
     const { width, height } = button.getBoundingClientRect();
     const corner = getComputedStyle(button).borderTopLeftRadius;
     return { width, height, corner };
-  })()`);
+  })()`,
+  );
   await forcePseudoStates(send, [{ selector: settings, pseudoClasses: [] }]);
   const circularCorner = feedback.corner.endsWith("%") ? 50 : feedback.width / 2;
   if (!feedback.width || feedback.width !== feedback.height || parseFloat(feedback.corner) < circularCorner) {
@@ -965,7 +992,11 @@ async function measureWideIPad({ send }) {
   // media for the next measurement.
   await send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-reduced-motion", value: "no-preference" }] });
   await evaluate(send, "window.overviewPane('other')");
-  await waitForDom(send, "document.querySelector('[data-iphone-composer] [data-testid=composer-submit]')", "wide iPad composer");
+  await waitForDom(
+    send,
+    "document.querySelector('[data-iphone-composer] [data-testid=composer-submit]')",
+    "wide iPad composer",
+  );
   await assertFocusedComposerClips(send);
   await assertDrawnGlassCanvasContained(send);
   await assertTabletActionGeometry(send);
@@ -1012,10 +1043,12 @@ async function assertDrawnGlassCanvasContained(send) {
     })()`,
   );
   if (!drawn.card) {
-    throw new Error('the focused conversation card vanished after the liquid-glass worker painted');
+    throw new Error("the focused conversation card vanished after the liquid-glass worker painted");
   }
   if (!drawn.surface) {
-    throw new Error("the focused conversation card never registered as a liquid-glass surface - the drawn-canvas check would pass vacuously");
+    throw new Error(
+      "the focused conversation card never registered as a liquid-glass surface - the drawn-canvas check would pass vacuously",
+    );
   }
   if (!drawn.prevSiblingCanvas || drawn.inCard) {
     throw new Error(
@@ -1041,7 +1074,7 @@ async function assertDrawnGlassCanvasContained(send) {
       const canvas = card.previousElementSibling && card.previousElementSibling.matches('[data-lg-canvas]') ? card.previousElementSibling : null;
       const describe = (el) => {
         let d = el.tagName.toLowerCase();
-        const classes = String(el.className).trim().split(/\s+/).filter(Boolean);
+        const classes = String(el.className).trim().split(/s+/).filter(Boolean);
         if (classes.length) d += '.' + classes.slice(0, 3).join('.');
         for (const attr of ['data-prompt-card', 'data-iphone-composer', 'data-pane-scaffold-root', 'data-reading-scroll-host', 'role', 'data-testid']) {
           if (el.getAttribute(attr) !== null) d += '[' + attr + ']';
@@ -1076,10 +1109,10 @@ async function assertDrawnGlassCanvasContained(send) {
     })()`,
   );
   if (!added.card) {
-    throw new Error('the focused conversation card vanished before its overhang could be read');
+    throw new Error("the focused conversation card vanished before its overhang could be read");
   }
   if (!added.canvas) {
-    throw new Error('the drawn glass canvas is gone from beside the conversation card');
+    throw new Error("the drawn glass canvas is gone from beside the conversation card");
   }
   for (let i = 0; i < added.levels.length; i++) {
     const level = added.levels[i];
@@ -1116,11 +1149,20 @@ async function assertDrawnGlassCanvasContained(send) {
 // environment that loses glass mode fails by name instead of passing
 // vacuously.
 async function assertFocusedComposerClips(send) {
-  await evaluate(send, `(() => {
+  await evaluate(
+    send,
+    `(() => {
     document.querySelector('[data-composer] [role="textbox"]')?.focus();
-  })()`);
-  await waitForDom(send, "document.querySelector('[data-iphone-composer=\"focused\"] [data-prompt-card]')", "focused composer card");
-  const clip = await evaluate(send, `(() => {
+  })()`,
+  );
+  await waitForDom(
+    send,
+    "document.querySelector('[data-iphone-composer=\"focused\"] [data-prompt-card]')",
+    "focused composer card",
+  );
+  const clip = await evaluate(
+    send,
+    `(() => {
     const card = document.querySelector('[data-iphone-composer="focused"] [data-prompt-card]');
     if (!card) return { card: false };
     const style = getComputedStyle(card);
@@ -1131,15 +1173,20 @@ async function assertFocusedComposerClips(send) {
       overflowY: style.overflowY,
       overflowClipMargin: style.overflowClipMargin,
     };
-  })()`);
+  })()`,
+  );
   if (!clip.card) {
     throw new Error('wide iPad composer card is missing under [data-iphone-composer="focused"]');
   }
-  if (clip.glass !== 'regular') {
-    throw new Error(`wide iPad pass is not in regular glass mode (data-iphone-glass=${clip.glass}) - the focused-card clip check would pass vacuously`);
+  if (clip.glass !== "regular") {
+    throw new Error(
+      `wide iPad pass is not in regular glass mode (data-iphone-glass=${clip.glass}) - the focused-card clip check would pass vacuously`,
+    );
   }
-  if (clip.overflowX !== 'clip' || clip.overflowY !== 'clip') {
-    throw new Error(`the focused conversation card does not clip its overflow in glass mode (x: ${clip.overflowX}, y: ${clip.overflowY}, margin: ${clip.overflowClipMargin}) - the liquid-glass SDK would host its canvas inside the card and extend the card's scroll range`);
+  if (clip.overflowX !== "clip" || clip.overflowY !== "clip") {
+    throw new Error(
+      `the focused conversation card does not clip its overflow in glass mode (x: ${clip.overflowX}, y: ${clip.overflowY}, margin: ${clip.overflowClipMargin}) - the liquid-glass SDK would host its canvas inside the card and extend the card's scroll range`,
+    );
   }
 }
 
@@ -1183,11 +1230,19 @@ async function measureTabletSplit(page) {
     const toggles = [...document.querySelectorAll('[data-testid="board-toggle"]')];
     const toggle = toggles[0] ?? null;
     const handle = board?.querySelector('[role="separator"]');
+    const boardStyle = board && getComputedStyle(board);
     return {
       viewport: { width: innerWidth, height: innerHeight },
       document: { scrollWidth: document.documentElement.scrollWidth, scrollHeight: document.documentElement.scrollHeight },
       dataBoard: split?.getAttribute('data-board') ?? null,
+      theme: document.documentElement.dataset.theme,
       board: box(board),
+      boardStyle: boardStyle ? {
+        background: boardStyle.backgroundColor,
+        borderRightWidth: boardStyle.borderRightWidth,
+        borderRightColor: boardStyle.borderRightColor,
+        boxShadow: boardStyle.boxShadow,
+      } : null,
       pane: box(pane),
       topbar: box(topbar),
       topbarInPane: Boolean(pane && topbar && pane.contains(topbar)),
@@ -1268,7 +1323,9 @@ async function measureTabletSplit(page) {
       index: rows ? [...rows].indexOf(row) : -1,
       hit: Boolean(row && target && row.contains(target)), coveredByHeader: Boolean(target && header?.contains(target)) };
   })()`;
-  const startedAtVisibleRow = await evaluate(send, `(() => {
+  const startedAtVisibleRow = await evaluate(
+    send,
+    `(() => {
     const header = document.querySelector('[data-testid="rail-header"]');
     if (!header) return false;
     const bottom = header.getBoundingClientRect().bottom;
@@ -1280,7 +1337,8 @@ async function measureTabletSplit(page) {
       return document.activeElement === rows[index];
     }
     return false;
-  })()`);
+  })()`,
+  );
   const beforeArrowUp = await evaluate(send, rowFocusSample);
   const arrowUpRows = [];
   for (let step = 0; startedAtVisibleRow && step < Math.min(5, beforeArrowUp.index); step++) {
@@ -1314,7 +1372,9 @@ async function measureTabletSplit(page) {
   async function dragDivider(x) {
     const missed = [];
     for (let i = 0; i < 3; i++) {
-      const sample = await waitForValue(send, `(() => {
+      const sample = await waitForValue(
+        send,
+        `(() => {
       const board = document.querySelector('[data-testid="board-column"]:not([inert]):not([data-motion])');
       const handle = board?.querySelector('[role="separator"]');
       if (!board || !handle) return null;
@@ -1324,30 +1384,61 @@ async function measureTabletSplit(page) {
       if (!hit || !handle.contains(hit)) return null;
       return { cx: r.left + r.width / 2, cy: r.top + r.height / 2,
         boardWidth: board.getBoundingClientRect().width };
-    })()`, "settled, hittable tablet divider");
+    })()`,
+        "settled, hittable tablet divider",
+      );
       const where = typeof x === "function" ? x(sample) : x;
       await send("Input.dispatchMouseEvent", { type: "mouseMoved", x: sample.cx, y: sample.cy });
-      await send("Input.dispatchMouseEvent", { type: "mousePressed", x: sample.cx, y: sample.cy, button: "left", clickCount: 1 });
-      await send("Input.dispatchMouseEvent", { type: "mouseMoved", x: where, y: sample.cy, button: "left", buttons: 1 });
+      await send("Input.dispatchMouseEvent", {
+        type: "mousePressed",
+        x: sample.cx,
+        y: sample.cy,
+        button: "left",
+        clickCount: 1,
+      });
+      await send("Input.dispatchMouseEvent", {
+        type: "mouseMoved",
+        x: where,
+        y: sample.cy,
+        button: "left",
+        buttons: 1,
+      });
       let armed = false;
       try {
-        await waitForDom(send, `(() => {
+        await waitForDom(
+          send,
+          `(() => {
         const board = document.querySelector('[data-testid="board-column"]:not([inert]):not([data-motion])');
         const width = board?.getBoundingClientRect().width;
         return width !== undefined && width !== ${sample.boardWidth}
           && width === Number(board?.querySelector('[role="separator"]')?.getAttribute('aria-valuenow'));
-      })()`, "tablet drag moved and published its width before pointerup");
+      })()`,
+          "tablet drag moved and published its width before pointerup",
+        );
         armed = true;
       } catch (error) {
-        missed.push(JSON.stringify(await evaluate(send, `(() => {
+        missed.push(
+          JSON.stringify(
+            await evaluate(
+              send,
+              `(() => {
         const board = document.querySelector('[data-testid="board-column"]:not([inert])');
         const handle = board?.querySelector('[role="separator"]');
         const r = handle?.getBoundingClientRect();
         return { baseline: ${sample.boardWidth}, width: board?.getBoundingClientRect().width,
           now: Number(handle?.getAttribute('aria-valuenow')), handle: r ? { left: r.left, width: r.width } : null };
-      })()`)));
+      })()`,
+            ),
+          ),
+        );
       }
-      await send("Input.dispatchMouseEvent", { type: "mouseReleased", x: where, y: sample.cy, button: "left", clickCount: 1 });
+      await send("Input.dispatchMouseEvent", {
+        type: "mouseReleased",
+        x: where,
+        y: sample.cy,
+        button: "left",
+        clickCount: 1,
+      });
       if (armed) return evaluate(send, snapState);
     }
     throw new Error(`tablet divider drag never moved the Board width: ${JSON.stringify(missed)}`);
@@ -1405,14 +1496,22 @@ async function measureTabletSplit(page) {
   await assertTabletActionGeometry(send);
   await evaluate(send, `document.querySelector('[data-testid="board-toggle"]').focus({ preventScroll: true })`);
   await pressKey(send, "Enter", "Enter", 13);
-  await waitForDom(send, "document.querySelector('[data-testid=\"board-split\"]')?.dataset.board === 'collapsed'", "tablet board collapsed");
+  await waitForDom(
+    send,
+    "document.querySelector('[data-testid=\"board-split\"]')?.dataset.board === 'collapsed'",
+    "tablet board collapsed",
+  );
   await settleFiniteAnimations(send);
   const collapsed = await evaluate(send, snapState);
   const paneScrollCollapsed = await evaluate(send, readPaneScroll);
   const focusedToggle = `document.activeElement === document.querySelector('[data-testid="board-toggle"]')`;
   if (!(await evaluate(send, focusedToggle))) throw new Error("collapsing the tablet board lost keyboard focus");
   await pressKey(send, "Enter", "Enter", 13);
-  await waitForDom(send, "document.querySelector('[data-testid=\"board-split\"]')?.dataset.board === 'visible'", "tablet board re-expanded");
+  await waitForDom(
+    send,
+    "document.querySelector('[data-testid=\"board-split\"]')?.dataset.board === 'visible'",
+    "tablet board re-expanded",
+  );
   await settleFiniteAnimations(send);
   const reopened = await evaluate(send, snapState);
   const paneScrollReopened = await evaluate(send, readPaneScroll);
@@ -1421,20 +1520,37 @@ async function measureTabletSplit(page) {
   await applyViewport(send, { width: 768, height: TABLET_VIEWPORT.height });
   // dragDivider samples the live, settled, hittable separator itself before
   // each press, so this wait only needs the viewport change to have taken.
-  await waitForDom(send, `innerWidth === 768 && document.querySelector('[data-testid="board-column"] [role="separator"]')`,
-    "tablet viewport 768 with the board divider mounted");
-  const pointer = await evaluate(send, `({ fine: matchMedia('(pointer: fine)').matches, coarse: matchMedia('(any-pointer: coarse)').matches })`);
+  await waitForDom(
+    send,
+    `innerWidth === 768 && document.querySelector('[data-testid="board-column"] [role="separator"]')`,
+    "tablet viewport 768 with the board divider mounted",
+  );
+  const pointer = await evaluate(
+    send,
+    `({ fine: matchMedia('(pointer: fine)').matches, coarse: matchMedia('(any-pointer: coarse)').matches })`,
+  );
   const narrowest = await dragDivider(1);
   const wideDrag = await dragDivider(700);
-  await evaluate(send, `document.querySelector('[data-testid="board-column"] [role="separator"]').focus({ preventScroll: true })`);
+  await evaluate(
+    send,
+    `document.querySelector('[data-testid="board-column"] [role="separator"]').focus({ preventScroll: true })`,
+  );
   await pressKey(send, "Home", "Home", 36);
   const home = await evaluate(send, snapState);
   await pressKey(send, "End", "End", 35);
   await clickControl(send, '[data-testid="topbar"] button[aria-label="Find in session"]');
-  await waitForDom(send, `document.activeElement?.matches('[data-find-bar] input[type="search"]')`, "Find query focus at maximum board width");
+  await waitForDom(
+    send,
+    `document.activeElement?.matches('[data-find-bar] input[type="search"]')`,
+    "Find query focus at maximum board width",
+  );
   const findQuery = "session";
   await send("Input.insertText", { text: findQuery });
-  await waitForDom(send, `document.querySelector('[data-find-bar]:not([data-find-status="idle"])')`, "Find query result at maximum board width");
+  await waitForDom(
+    send,
+    `document.querySelector('[data-find-bar]:not([data-find-status="idle"])')`,
+    "Find query result at maximum board width",
+  );
   const widest = await evaluate(send, snapState);
   const largerText = [];
   for (const font of ["l", "xl"]) {
@@ -1445,8 +1561,11 @@ async function measureTabletSplit(page) {
   await evaluate(send, `window.configureOverview('light', 'm')`);
   await pressKey(send, "Escape", "Escape", 27);
   await applyViewport(send, { ...MOBILE_VIEWPORT, width: 400 });
-  await waitForDom(send, `innerWidth === 400 && !document.querySelector('[data-testid="board-split"]')`,
-    "400px uses the phone stack without the tablet board");
+  await waitForDom(
+    send,
+    `innerWidth === 400 && !document.querySelector('[data-testid="board-split"]')`,
+    "400px uses the phone stack without the tablet board",
+  );
   await settleFiniteAnimations(send);
   const paneScrollPhone = await evaluate(send, readPaneScroll);
   await checkNotesReadingPosition(send);
@@ -1464,7 +1583,11 @@ async function measureTabletSplit(page) {
   await pressKey(send, "End", "End", 35);
   const desktopBefore = await evaluate(send, desktopMeasure);
   await applyViewport(send, { ...TABLET_VIEWPORT, width: 768 });
-  await waitForDom(send, `innerWidth === 768 && document.querySelector('[data-testid="board-column"]')`, "narrow tablet restores the board");
+  await waitForDom(
+    send,
+    `innerWidth === 768 && document.querySelector('[data-testid="board-column"]')`,
+    "narrow tablet restores the board",
+  );
   const narrowRestored = await evaluate(send, snapState);
   const roomyViewport = { ...TABLET_VIEWPORT, width: 899 };
   await applyViewport(send, roomyViewport);
@@ -1478,12 +1601,39 @@ async function measureTabletSplit(page) {
   for (let step = 0; step < 4; step++) await pressKey(send, "ArrowLeft", "ArrowLeft", 37);
   const desktopFits = await evaluate(send, desktopMeasure);
   await applyViewport(send, roomyViewport);
-  await waitForDom(send, `innerWidth === 899 && document.querySelector('[data-testid="board-column"]')`, "wide tablet restores a fitting desktop width");
+  await waitForDom(
+    send,
+    `innerWidth === 899 && document.querySelector('[data-testid="board-column"]')`,
+    "wide tablet restores a fitting desktop width",
+  );
   const roomyFits = await evaluate(send, snapState);
-  return { open, scrolledBoard, resized, collapsed, reopened, sessionOpen,
-    paneScrollCapture, paneScrollCollapsed, paneScrollReopened, paneScrollPhone,
-    beforeArrowUp, arrowUpRows, pointer, narrowest, home, wideDrag, widest, findQuery, largerText,
-    desktopBefore, narrowRestored, roomy, desktopAfter, desktopFits, roomyFits };
+  return {
+    open,
+    scrolledBoard,
+    resized,
+    collapsed,
+    reopened,
+    sessionOpen,
+    paneScrollCapture,
+    paneScrollCollapsed,
+    paneScrollReopened,
+    paneScrollPhone,
+    beforeArrowUp,
+    arrowUpRows,
+    pointer,
+    narrowest,
+    home,
+    wideDrag,
+    widest,
+    findQuery,
+    largerText,
+    desktopBefore,
+    narrowRestored,
+    roomy,
+    desktopAfter,
+    desktopFits,
+    roomyFits,
+  };
 }
 
 async function checkNotesReadingPosition(send) {
@@ -1493,17 +1643,23 @@ async function checkNotesReadingPosition(send) {
   // input tells the transcript to give up following its initial end.
   await evaluate(send, `${port}.scrollTop = 0`);
   await waitForDom(send, `${port}.scrollTop < 1 && ${notes}?.offsetHeight > 0`, "Notes resting at the beginning");
-  const point = await evaluate(send, `(() => {
+  const point = await evaluate(
+    send,
+    `(() => {
     const r = ${port}.getBoundingClientRect();
     return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
-  })()`);
+  })()`,
+  );
   const wheel = (deltaY) => send("Input.dispatchMouseEvent", { type: "mouseWheel", ...point, deltaX: 0, deltaY });
   await wheel(240);
   await waitForDom(send, `${notes}.offsetHeight === 0`, "Notes tucked away while reading");
-  await evaluate(send, `window.__notesAnchor = [...${port}.querySelectorAll('p')].find(p => {
+  await evaluate(
+    send,
+    `window.__notesAnchor = [...${port}.querySelectorAll('p')].find(p => {
     const y = p.getBoundingClientRect().y;
     return y > innerHeight / 3 && y < innerHeight * 2 / 3;
-  })`);
+  })`,
+  );
   const geometry = `({ port: ${port}.getBoundingClientRect().y, line: window.__notesAnchor.getBoundingClientRect().y })`;
   const before = await evaluate(send, geometry);
   await wheel(-16);
@@ -1515,11 +1671,14 @@ async function checkNotesReadingPosition(send) {
   await evaluate(send, `document.querySelector('[data-testid="topbar"] button[aria-label="Find in session"]').click()`);
   const query = "document.querySelector('[data-find-bar] input')";
   await waitForDom(send, query, "Find opened from the phone header");
-  const visible = await evaluate(send, `(() => {
+  const visible = await evaluate(
+    send,
+    `(() => {
     const input = ${query};
     const r = input.getBoundingClientRect();
     return document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2) === input;
-  })()`);
+  })()`,
+  );
   if (!visible) throw new Error("The returning header covers the Find query");
   await pressKey(send, "Escape", "Escape", 27);
   await waitForDom(send, `!${query}`, "Find dismissed");
@@ -1533,47 +1692,108 @@ function assertTabletSplit(result) {
     failures.push(`tablet split open missing required nodes: ${JSON.stringify(open)}`);
     return failures;
   }
+  {
+    const wantPage = open.theme === "dark" ? "rgb(17, 18, 20)" : "rgb(246, 247, 249)";
+    const wantEdge = open.theme === "dark" ? "rgb(51, 56, 66)" : "rgb(213, 217, 224)";
+    if (open.boardStyle?.background !== wantPage) {
+      failures.push(`tablet board ground ${open.boardStyle?.background}, want page ground ${wantPage} (${open.theme})`);
+    }
+    if (open.boardStyle.borderRightWidth !== "1px" || open.boardStyle.borderRightColor !== wantEdge) {
+      failures.push(
+        `tablet board hairline ${open.boardStyle.borderRightWidth} ${open.boardStyle.borderRightColor}, want 1px ${wantEdge} (${open.theme})`,
+      );
+    }
+    if (open.boardStyle.boxShadow === "none") {
+      failures.push(`tablet board casts no shadow, want the --shadow-rail cast (${open.theme})`);
+    }
+  }
   if (Math.abs(open.board.top) > 1 || Math.abs(open.board.bottom - TABLET_VIEWPORT.height) > 1) {
     failures.push(`tablet board does not span full height from y=0: ${JSON.stringify(open.board)}`);
   }
   if (!open.topbarInPane || open.topbar.left < open.board.right - 1 || Math.abs(open.topbar.top - open.board.top) > 1) {
-    failures.push(`tablet topbar is not beside board at y=0: board=${JSON.stringify(open.board)} topbar=${JSON.stringify(open.topbar)}`);
+    failures.push(
+      `tablet topbar is not beside board at y=0: board=${JSON.stringify(open.board)} topbar=${JSON.stringify(open.topbar)}`,
+    );
   }
   if (open.title.left < open.board.right - 1 || open.title.right > open.pane.right + 1 || open.title.width <= 0) {
-    failures.push(`tablet title is not beside board: board=${JSON.stringify(open.board)} title=${JSON.stringify(open.title)}`);
+    failures.push(
+      `tablet title is not beside board: board=${JSON.stringify(open.board)} title=${JSON.stringify(open.title)}`,
+    );
   }
   if (open.toggleCount !== 1 || !open.toggleInBoard || !open.toggleInBrand || open.toggleInTopbar) {
-    failures.push(`tablet open toggle must sit inside rail brand only: ${JSON.stringify({ count: open.toggleCount, inBoard: open.toggleInBoard, inBrand: open.toggleInBrand, inTopbar: open.toggleInTopbar })}`);
+    failures.push(
+      `tablet open toggle must sit inside rail brand only: ${JSON.stringify({ count: open.toggleCount, inBoard: open.toggleInBoard, inBrand: open.toggleInBrand, inTopbar: open.toggleInTopbar })}`,
+    );
   }
   if (open.search !== null) {
     failures.push(`tablet board header rendered duplicate rail-search button: ${JSON.stringify(open.search)}`);
   }
-  if (open.settings.right > open.toggle.left + 0.5 || open.toggle.right > open.board.right + 0.5 || Math.abs(centerY(open.settings) - centerY(open.toggle)) > 1.5) {
-    failures.push(`tablet open toggle misaligned or overlapping board header: settings=${JSON.stringify(open.settings)} toggle=${JSON.stringify(open.toggle)} board=${JSON.stringify(open.board)}`);
+  if (
+    open.settings.right > open.toggle.left + 0.5 ||
+    open.toggle.right > open.board.right + 0.5 ||
+    Math.abs(centerY(open.settings) - centerY(open.toggle)) > 1.5
+  ) {
+    failures.push(
+      `tablet open toggle misaligned or overlapping board header: settings=${JSON.stringify(open.settings)} toggle=${JSON.stringify(open.toggle)} board=${JSON.stringify(open.board)}`,
+    );
   }
   if (!open.settingsHit || !open.filterHit || !open.toggleHit) {
-    failures.push(`tablet open header control failed hit-test: ${JSON.stringify({ settings: open.settingsHit, filter: open.filterHit, toggle: open.toggleHit })}`);
+    failures.push(
+      `tablet open header control failed hit-test: ${JSON.stringify({ settings: open.settingsHit, filter: open.filterHit, toggle: open.toggleHit })}`,
+    );
   }
   if (open.toggle.width < 44 || open.toggle.height < 44) {
     failures.push(`tablet toggle below 44px touch floor: ${JSON.stringify(open.toggle)}`);
   }
-  if (!open.resizeHandle || Math.abs(open.resizeHandle.right - open.board.right) > 2 || open.resizeHandle.left < open.board.right - 20 || !open.resizeHandleHit) {
-    failures.push(`tablet divider resize handle not hit-testable at board seam: board=${JSON.stringify(open.board)} handle=${JSON.stringify(open.resizeHandle)} hit=${open.resizeHandleHit}`);
+  if (
+    !open.resizeHandle ||
+    Math.abs(open.resizeHandle.right - open.board.right) > 2 ||
+    open.resizeHandle.left < open.board.right - 20 ||
+    !open.resizeHandleHit
+  ) {
+    failures.push(
+      `tablet divider resize handle not hit-testable at board seam: board=${JSON.stringify(open.board)} handle=${JSON.stringify(open.resizeHandle)} hit=${open.resizeHandleHit}`,
+    );
   }
-  if (!scrolledBoard?.scrolled || scrolledBoard.brandTop === null || Math.abs(scrolledBoard.brandTop - open.brand.top) > 1 || !scrolledBoard.toggleHit) {
-    failures.push(`tablet board header did not stay sticky on scroll: openBrand=${JSON.stringify(open.brand)} scrolled=${JSON.stringify(scrolledBoard)}`);
+  if (
+    !scrolledBoard?.scrolled ||
+    scrolledBoard.brandTop === null ||
+    Math.abs(scrolledBoard.brandTop - open.brand.top) > 1 ||
+    !scrolledBoard.toggleHit
+  ) {
+    failures.push(
+      `tablet board header did not stay sticky on scroll: openBrand=${JSON.stringify(open.brand)} scrolled=${JSON.stringify(scrolledBoard)}`,
+    );
   }
   if (scrolledBoard?.handleTop !== null && Math.abs(scrolledBoard.handleTop - open.resizeHandle.top) > 1) {
-    failures.push(`tablet resize handle scrolled off seam top: open=${open.resizeHandle.top} scrolled=${scrolledBoard.handleTop}`);
+    failures.push(
+      `tablet resize handle scrolled off seam top: open=${open.resizeHandle.top} scrolled=${scrolledBoard.handleTop}`,
+    );
   }
   if (!resized?.board || resized.board.width <= open.board.width + 20 || !resized.toggleInBrand || !resized.toggleHit) {
-    failures.push(`tablet divider drag did not widen board cleanly: before=${open.board.width} after=${resized?.board?.width}`);
+    failures.push(
+      `tablet divider drag did not widen board cleanly: before=${open.board.width} after=${resized?.board?.width}`,
+    );
   }
-  if (collapsed.board !== null || collapsed.dataBoard !== "collapsed" || collapsed.toggleCount !== 1 || !collapsed.toggleInTopbar) {
+  if (
+    collapsed.board !== null ||
+    collapsed.dataBoard !== "collapsed" ||
+    collapsed.toggleCount !== 1 ||
+    !collapsed.toggleInTopbar
+  ) {
     failures.push(`tablet collapsed toggle must move into topbar leading edge: ${JSON.stringify(collapsed)}`);
   }
-  if (!collapsed.toggle || collapsed.toggle.left < collapsed.pane.left - 1 || collapsed.toggle.left > collapsed.pane.left + 20 || collapsed.toggle.right > collapsed.title.left + 0.5 || !collapsed.toggleHit || collapsed.title.height <= 0) {
-    failures.push(`tablet collapsed toggle overlaps or escapes leading conversation edge: ${JSON.stringify({ toggle: collapsed.toggle, title: collapsed.title, toggleHit: collapsed.toggleHit })}`);
+  if (
+    !collapsed.toggle ||
+    collapsed.toggle.left < collapsed.pane.left - 1 ||
+    collapsed.toggle.left > collapsed.pane.left + 20 ||
+    collapsed.toggle.right > collapsed.title.left + 0.5 ||
+    !collapsed.toggleHit ||
+    collapsed.title.height <= 0
+  ) {
+    failures.push(
+      `tablet collapsed toggle overlaps or escapes leading conversation edge: ${JSON.stringify({ toggle: collapsed.toggle, title: collapsed.title, toggleHit: collapsed.toggleHit })}`,
+    );
   }
   if (open.toggleExpanded !== "true" || collapsed.toggleExpanded !== "false" || reopened.toggleExpanded !== "true") {
     failures.push("tablet sidebar toggle does not report the open, collapsed and reopened states");
@@ -1581,9 +1801,15 @@ function assertTabletSplit(result) {
   if (!reopened.board || reopened.dataBoard !== "visible" || !reopened.toggleInBrand || !reopened.toggleHit) {
     failures.push(`tablet re-expanded board did not return toggle to board header: ${JSON.stringify(reopened)}`);
   } else if (Math.abs(reopened.board.width - open.board.width) > 1) {
-    failures.push(`tablet divider reset did not restore the initial width: ${reopened.board.width} vs ${open.board.width}`);
+    failures.push(
+      `tablet divider reset did not restore the initial width: ${reopened.board.width} vs ${open.board.width}`,
+    );
   }
-  if (!result.sessionOpen?.topbarInPane || !result.sessionOpen.overviewHit || result.sessionOpen.topbar.left < result.sessionOpen.board.right - 1) {
+  if (
+    !result.sessionOpen?.topbarInPane ||
+    !result.sessionOpen.overviewHit ||
+    result.sessionOpen.topbar.left < result.sessionOpen.board.right - 1
+  ) {
     failures.push(`tablet session pane topbar/overview geometry failed: ${JSON.stringify(result.sessionOpen)}`);
   }
   const { paneScrollCapture, paneScrollCollapsed, paneScrollReopened, paneScrollPhone } = result;
@@ -1596,40 +1822,87 @@ function assertTabletSplit(result) {
     ["phone", paneScrollPhone],
   ]) {
     if (!sample?.sameNode || sample.scrollTop === null || sample.scrollTop <= 0) {
-      failures.push(`tablet ${phase} remounted the active session scroller or lost its reading position: ${JSON.stringify({ capture: paneScrollCapture, sample })}`);
+      failures.push(
+        `tablet ${phase} remounted the active session scroller or lost its reading position: ${JSON.stringify({ capture: paneScrollCapture, sample })}`,
+      );
     }
   }
   const { beforeArrowUp, arrowUpRows, narrowest, widest, pointer, findQuery } = result;
-  if (!beforeArrowUp.hit || !arrowUpRows.length || arrowUpRows.some((row, i) => row.index !== beforeArrowUp.index - i - 1 || !row.hit || row.coveredByHeader)) {
-    failures.push(`tablet ArrowUp focus is not visible around the board header: ${JSON.stringify({ beforeArrowUp, arrowUpRows })}`);
+  if (
+    !beforeArrowUp.hit ||
+    !arrowUpRows.length ||
+    arrowUpRows.some((row, i) => row.index !== beforeArrowUp.index - i - 1 || !row.hit || row.coveredByHeader)
+  ) {
+    failures.push(
+      `tablet ArrowUp focus is not visible around the board header: ${JSON.stringify({ beforeArrowUp, arrowUpRows })}`,
+    );
   }
   for (const [label, sample, edge] of [
-    ["minimum drag", narrowest, "min"], ["Home", result.home, "min"],
-    ["maximum drag", result.wideDrag, "max"], ["End", widest, "max"],
+    ["minimum drag", narrowest, "min"],
+    ["Home", result.home, "min"],
+    ["maximum drag", result.wideDrag, "max"],
+    ["End", widest, "max"],
   ]) {
     if (sample.board.width !== sample.range?.[edge] || sample.range.now !== sample.range[edge]) {
-      failures.push(`tablet divider ${label} did not reach the advertised limit: ${JSON.stringify({ range: sample.range, width: sample.board.width })}`);
+      failures.push(
+        `tablet divider ${label} did not reach the advertised limit: ${JSON.stringify({ range: sample.range, width: sample.board.width })}`,
+      );
     }
   }
-  if (pointer.coarse || narrowest.search !== null || !narrowest.settingsHit || !narrowest.filterHit || !narrowest.toggleHit || narrowest.toggle?.right > narrowest.board.right) {
-    failures.push(`tablet minimum divider hides a header control: ${JSON.stringify({ pointer, board: narrowest.board, toggle: narrowest.toggle, toggleHit: narrowest.toggleHit, filterHit: narrowest.filterHit })}`);
+  if (
+    pointer.coarse ||
+    narrowest.search !== null ||
+    !narrowest.settingsHit ||
+    !narrowest.filterHit ||
+    !narrowest.toggleHit ||
+    narrowest.toggle?.right > narrowest.board.right
+  ) {
+    failures.push(
+      `tablet minimum divider hides a header control: ${JSON.stringify({ pointer, board: narrowest.board, toggle: narrowest.toggle, toggleHit: narrowest.toggleHit, filterHit: narrowest.filterHit })}`,
+    );
   }
   for (const [font, sample] of [["m", widest], ...result.largerText]) {
     const { board, pane, range, find } = sample;
-    if (board.width !== range?.max || !find?.focused || !find.hit || find.value !== findQuery ||
-        find.editableWidth < find.queryWidth + find.clearAllowance) {
-      failures.push(`tablet maximum divider starves the focused Find query at font ${font}: ${JSON.stringify({ board, pane, range, find })}`);
+    if (
+      board.width !== range?.max ||
+      !find?.focused ||
+      !find.hit ||
+      find.value !== findQuery ||
+      find.editableWidth < find.queryWidth + find.clearAllowance
+    ) {
+      failures.push(
+        `tablet maximum divider starves the focused Find query at font ${font}: ${JSON.stringify({ board, pane, range, find })}`,
+      );
     }
   }
   const { desktopBefore, narrowRestored, roomy, desktopAfter, desktopFits, roomyFits } = result;
-  if (desktopBefore.width !== desktopBefore.max || narrowRestored.board.width !== widest.board.width ||
-      roomy.pane.width !== narrowRestored.pane.width || desktopAfter.width !== desktopBefore.width ||
-      desktopFits.width >= roomy.range.max || roomyFits.board.width !== desktopFits.width) {
-    failures.push(`tablet did not show the usable part of the saved desktop width: ${JSON.stringify({ desktopBefore,
-      narrow: narrowRestored.board.width, roomy: roomy.board.width, desktopAfter, desktopFits, roomyFits: roomyFits.board.width })}`);
+  if (
+    desktopBefore.width !== desktopBefore.max ||
+    narrowRestored.board.width !== widest.board.width ||
+    roomy.pane.width !== narrowRestored.pane.width ||
+    desktopAfter.width !== desktopBefore.width ||
+    desktopFits.width >= roomy.range.max ||
+    roomyFits.board.width !== desktopFits.width
+  ) {
+    failures.push(
+      `tablet did not show the usable part of the saved desktop width: ${JSON.stringify({
+        desktopBefore,
+        narrow: narrowRestored.board.width,
+        roomy: roomy.board.width,
+        desktopAfter,
+        desktopFits,
+        roomyFits: roomyFits.board.width,
+      })}`,
+    );
   }
-  for (const [label, sample] of [["open", open], ["collapsed", collapsed]]) {
-    if (sample.document.scrollWidth > TABLET_VIEWPORT.width + 1 || sample.document.scrollHeight > TABLET_VIEWPORT.height + 1) {
+  for (const [label, sample] of [
+    ["open", open],
+    ["collapsed", collapsed],
+  ]) {
+    if (
+      sample.document.scrollWidth > TABLET_VIEWPORT.width + 1 ||
+      sample.document.scrollHeight > TABLET_VIEWPORT.height + 1
+    ) {
       failures.push(`tablet ${label} document overflow: ${JSON.stringify(sample.document)}`);
     }
   }
@@ -1639,7 +1912,7 @@ function assertTabletSplit(result) {
 const OVERVIEW_VIEWPORTS = [VIEWPORT, MOBILE_VIEWPORT, { width: 320, height: 844, mobile: true, touch: true }];
 const OVERVIEW_THEMES = ["light", "dark"];
 const OVERVIEW = '[data-testid="activity-sidebar"][aria-label="Overview"]';
-const OVERVIEW_CHIP_HOST = '[data-overview-chip]';
+const OVERVIEW_CHIP_HOST = "[data-overview-chip]";
 const OVERVIEW_CHIP = `${OVERVIEW_CHIP_HOST} [data-overview-toggle]`;
 const OVERVIEW_SELECTED_TAB = '[role="tab"][aria-selected="true"]';
 const overviewTabSelector = (labelFilter) => `${OVERVIEW} [role="tab"]${labelFilter}`;
@@ -1827,7 +2100,9 @@ async function openPhoneOverview(send, selector, measure = false) {
   let headerFind;
   if (measure) {
     await waitForDom(send, `document.querySelector(${JSON.stringify(selector)})`, "mounted phone Overview trigger");
-    headerFind = await evaluate(send, `(() => {
+    headerFind = await evaluate(
+      send,
+      `(() => {
       const find = document.querySelector('[data-testid="topbar"] button[aria-label="Find in session"]');
       const overview = document.querySelector(${JSON.stringify(selector)})?.closest('button');
       if (!find || !overview) return { present: false };
@@ -1845,11 +2120,15 @@ async function openPhoneOverview(send, selector, measure = false) {
         findBox: findBox.toJSON(),
         overviewBox: overviewBox.toJSON(),
       };
-    })()`);
+    })()`,
+    );
     if (!headerFind.present || !headerFind.findFits || !headerFind.overviewFits) {
       throw new Error(`phone session header misses Find/Overview tap geometry: ${JSON.stringify(headerFind)}`);
     }
-    await evaluate(send, `document.querySelector(${JSON.stringify(selector)}).closest('button').focus({ preventScroll: true })`);
+    await evaluate(
+      send,
+      `document.querySelector(${JSON.stringify(selector)}).closest('button').focus({ preventScroll: true })`,
+    );
     await pressKey(send, "Enter", "Enter", 13);
   } else {
     await clickControl(send, selector);
@@ -1857,7 +2136,9 @@ async function openPhoneOverview(send, selector, measure = false) {
   await waitForOverviewOpen(send, "opened pane Overview");
   let inspection;
   if (measure) {
-    inspection = await evaluate(send, `(() => {
+    inspection = await evaluate(
+      send,
+      `(() => {
       const aside = document.querySelector(${JSON.stringify(OVERVIEW)});
       const rect = aside.getBoundingClientRect();
       const active = document.activeElement;
@@ -1884,7 +2165,8 @@ async function openPhoneOverview(send, selector, measure = false) {
         tabs,
         fits: rect.left >= -1 && rect.right <= innerWidth + 1 && rect.top >= -1 && rect.bottom <= innerHeight + 1,
       };
-    })()`);
+    })()`,
+    );
     if (!inspection.initialFocus.visible) {
       throw new Error(`phone Overview starts with clipped keyboard focus: ${JSON.stringify(inspection.initialFocus)}`);
     }
@@ -2021,13 +2303,21 @@ async function measureOverview(send) {
       return measure(element, expected);
     });
     const close = aside.querySelector('button[aria-label="Hide Overview"]');
+    const asideStyle = getComputedStyle(aside);
     const resizeHandle = aside.querySelector('[data-testid="overview-resize-handle"]');
     const surface = mobile ? null : Array.from(document.querySelectorAll('[data-testid="statusbar"]'))
       .find(e => !e.closest('[data-pane-footer-fixture]')) ?? null;
     const chips = surface ? Array.from(surface.querySelectorAll('[data-activity-tab]')) : [];
     return {
       theme: document.documentElement.dataset.theme, font: document.body.dataset.fontSize,
-      sidebar: box(aside), tablistScrollsX, categories, values, close: close && box(close),
+      sidebar: box(aside),
+      sidebarStyle: {
+        background: asideStyle.backgroundColor,
+        borderLeftWidth: asideStyle.borderLeftWidth,
+        borderLeftColor: asideStyle.borderLeftColor,
+        boxShadow: asideStyle.boxShadow,
+      },
+      tablistScrollsX, categories, values, close: close && box(close),
       resizeHandle: resizeHandle ? {
         role: resizeHandle.getAttribute('role'),
         min: Number(resizeHandle.getAttribute('aria-valuemin')),
@@ -2123,6 +2413,21 @@ function assertOverview(result, viewport, theme) {
   if (result.theme !== theme || result.font !== "xl") failures.push("XL/theme preferences did not apply");
   if (!viewport.mobile && Math.abs(result.sidebar.width - 320) > 1)
     failures.push(`desktop sidebar width ${result.sidebar.width}`);
+  {
+    const wantPage = theme === "dark" ? "rgb(17, 18, 20)" : "rgb(246, 247, 249)";
+    const wantEdge = theme === "dark" ? "rgb(51, 56, 66)" : "rgb(213, 217, 224)";
+    if (result.sidebarStyle.background !== wantPage)
+      failures.push(`overview ground ${result.sidebarStyle.background}, want page ground ${wantPage} (${theme})`);
+    if (
+      result.sidebarStyle.borderLeftWidth !== (viewport.mobile ? "0px" : "1px") ||
+      (!viewport.mobile && result.sidebarStyle.borderLeftColor !== wantEdge)
+    )
+      failures.push(
+        `overview hairline ${result.sidebarStyle.borderLeftWidth} ${result.sidebarStyle.borderLeftColor} (${theme}, mobile=${viewport.mobile})`,
+      );
+    if ((result.sidebarStyle.boxShadow === "none") === !viewport.mobile)
+      failures.push(`overview shadow ${result.sidebarStyle.boxShadow} (${theme}, mobile=${viewport.mobile})`);
+  }
   if (result.sidebar.left < -1 || result.sidebar.right > viewport.width + 1) failures.push("sidebar escapes viewport");
   if (
     !result.close ||
@@ -2135,7 +2440,8 @@ function assertOverview(result, viewport, theme) {
   // Desktop activity retains its own pane footer. The trusted phone path
   // measures those rows at their replacement owner, the inspection sheet.
   if (
-    !viewport.mobile && (result.footerTabs.length !== 1 ||
+    !viewport.mobile &&
+    (result.footerTabs.length !== 1 ||
       JSON.stringify(result.footerTabs[0]) !== JSON.stringify(["agents", "jobs", "watches", "tasks"]))
   )
     failures.push(`actual pane footer identities ${JSON.stringify(result.footerTabs)}`);
@@ -2151,11 +2457,7 @@ function assertOverview(result, viewport, theme) {
   if (!viewport.mobile) {
     if (!result.resizeHandle || result.resizeHandle.role !== "separator") {
       failures.push(`desktop Overview missing resize handle: ${JSON.stringify(result.resizeHandle)}`);
-    } else if (
-      result.resizeHandle.min !== 280 ||
-      result.resizeHandle.max !== 640 ||
-      result.resizeHandle.now !== 320
-    ) {
+    } else if (result.resizeHandle.min !== 280 || result.resizeHandle.max !== 640 || result.resizeHandle.now !== 320) {
       failures.push(`desktop Overview resize handle bounds unexpected: ${JSON.stringify(result.resizeHandle)}`);
     }
   } else if (result.resizeHandle !== null) {
@@ -2440,10 +2742,7 @@ async function trustedOverviewFlow(send, viewport, childGesture) {
         return window.__overviewExitGeometry;
       })()`,
     );
-    const closedWorkspace = await evaluate(
-      send,
-      `window.__overviewWorkspace?.getBoundingClientRect().width ?? null`,
-    );
+    const closedWorkspace = await evaluate(send, `window.__overviewWorkspace?.getBoundingClientRect().width ?? null`);
     if (exiting) {
       if (!exiting.chip) throw new Error(`${gesture} removes the edge Show chip during Overview exit`);
       if (exiting.position !== "absolute")
@@ -2531,7 +2830,9 @@ async function trustedOverviewFlow(send, viewport, childGesture) {
   }
 
   if (viewport.width === MOBILE_VIEWPORT.width && childGesture === "close") {
-    await evaluate(send, `(() => {
+    await evaluate(
+      send,
+      `(() => {
       const button = window.__overviewExpectedButton;
       button.blur();
       // Keep the real click, but suppress Chromium's default mousedown focus.
@@ -2539,7 +2840,8 @@ async function trustedOverviewFlow(send, viewport, childGesture) {
       button.addEventListener('click', event => {
         window.__overviewUnfocusedClick = event.isTrusted && document.activeElement !== button;
       }, { once: true });
-    })()`);
+    })()`,
+    );
     await clickControl(send, overviewTrigger(pane));
     await waitForOverviewOpen(send, "pointer opens phone Overview");
     if (!(await evaluate(send, "window.__overviewUnfocusedClick")))
@@ -2686,7 +2988,14 @@ async function trustedOverviewFlow(send, viewport, childGesture) {
     );
     await settleOverview(send);
   }
-  return { tabStops, status: true, phoneTrap: !!viewport.mobile, childReturn: childGesture, originalPane: pane, inspection };
+  return {
+    tabStops,
+    status: true,
+    phoneTrap: !!viewport.mobile,
+    childReturn: childGesture,
+    originalPane: pane,
+    inspection,
+  };
 }
 
 async function measureActivityRowPadding(send, viewport) {
@@ -2957,7 +3266,7 @@ async function main() {
       sharedTab.id,
       vitePort,
       MOBILE_VIEWPORT,
-      "JSON.stringify({ sidebar: { ...window.measureMobileSidebar(), railFilter: document.querySelector('[role=\"dialog\"] [data-testid=\"rail-filter\"][role=\"searchbox\"][type=\"text\"]') !== null }, tap: window.measureTapTargets() })",
+      'JSON.stringify({ sidebar: { ...window.measureMobileSidebar(), railFilter: document.querySelector(\'[role="dialog"] [data-testid="rail-filter"][role="searchbox"][type="text"]\') !== null }, tap: window.measureTapTargets() })',
     );
     const phoneSearchPalette = await measureOnPage(
       cdpEndpoint,
@@ -3003,12 +3312,42 @@ async function main() {
     const tabletSplit = await measureOnPage(cdpEndpoint, sharedTab.id, vitePort, TABLET_VIEWPORT, measureTabletSplit);
     const tabletSplitFailures = assertTabletSplit(tabletSplit);
     await measureOnPage(cdpEndpoint, sharedTab.id, vitePort, IPAD_VIEWPORT, measureWideIPad);
-    const { pointer, narrowest, widest, beforeArrowUp, arrowUpRows, largerText, roomy, desktopBefore, desktopAfter, roomyFits, paneScrollCapture, paneScrollCollapsed, paneScrollReopened, paneScrollPhone } = tabletSplit;
-    console.log(`shellguard tablet usability: ${JSON.stringify({ pointer, min: narrowest.board.width, minToggleHit: narrowest.toggleHit,
-      max: widest.board.width, pane: widest.pane.width, find: widest.find, beforeArrowUp, arrowUpRows,
-      paneScroll: { capture: paneScrollCapture, collapsed: paneScrollCollapsed, reopened: paneScrollReopened, phone: paneScrollPhone },
-      largerText: largerText.map(([font, { find, pane }]) => ({ font, find, pane: pane.width })),
-      savedWidth: { desktopBefore, roomy: roomy.board.width, desktopAfter, fittingTablet: roomyFits.board.width } })}`);
+    const {
+      pointer,
+      narrowest,
+      widest,
+      beforeArrowUp,
+      arrowUpRows,
+      largerText,
+      roomy,
+      desktopBefore,
+      desktopAfter,
+      roomyFits,
+      paneScrollCapture,
+      paneScrollCollapsed,
+      paneScrollReopened,
+      paneScrollPhone,
+    } = tabletSplit;
+    console.log(
+      `shellguard tablet usability: ${JSON.stringify({
+        pointer,
+        min: narrowest.board.width,
+        minToggleHit: narrowest.toggleHit,
+        max: widest.board.width,
+        pane: widest.pane.width,
+        find: widest.find,
+        beforeArrowUp,
+        arrowUpRows,
+        paneScroll: {
+          capture: paneScrollCapture,
+          collapsed: paneScrollCollapsed,
+          reopened: paneScrollReopened,
+          phone: paneScrollPhone,
+        },
+        largerText: largerText.map(([font, { find, pane }]) => ({ font, find, pane: pane.width })),
+        savedWidth: { desktopBefore, roomy: roomy.board.width, desktopAfter, fittingTablet: roomyFits.board.width },
+      })}`,
+    );
     if (focusScrollFailures.length === 0) {
       console.log(
         `shellguard focus scroll: PASS - dismissed to rail row ${focusScroll.triggerRef}'s menu trigger ` +

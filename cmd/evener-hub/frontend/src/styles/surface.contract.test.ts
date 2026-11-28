@@ -62,6 +62,7 @@ test.each([
   ["panes/settings/settings.module.css", ".clusterRowsGrouped", ["grouped", "groupedRows"]],
   ["shell/rail/Rail.module.css", ".rail", ["docked"]],
   ["shell/activitybar/activitybar.module.css", ".sidebar", ["docked"]],
+  ["shell/mobile/StackHost.module.css", ".boardColumn", ["docked"]],
 ])("%s %s composes the shared surface and restates none of it", (file, selector, classes) => {
   const body = ruleBody(read(file), selector);
   for (const name of classes) {
