@@ -356,7 +356,7 @@ func registerShellTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 			if deps != nil {
 				guard = deps.readGuard
 			}
-			out, effects, err := tool.ApplyPatchTracked(ctx, fm, patch)
+			out, effects, err := tool.ApplyPatch(ctx, fm, patch)
 			if mismatch, ok := errors.AsType[*tool.PatchMismatchError](err); ok && mismatch.Path != "" {
 				mismatch.FileState = guard.PatchFileState(mismatch.Path)
 				target := resolvePathIn(env, mismatch.Path)

@@ -40,7 +40,7 @@ func TestApplyPatch_MismatchReportsFirstDifferingLineAfterMatchingPrefix(t *test
 	}
 
 	patch := "*** Begin Patch\n*** Update File: f.go\n@@\n \tmodel := \"openai/gpt-5\"\n \tconfig := loadConfig()\n \tMISSING_LINE()\n+\tadded()\n*** End Patch\n"
-	_, err := ApplyPatch(t.Context(), testMutator(dir), patch)
+	_, _, err := ApplyPatch(t.Context(), testMutator(dir), patch)
 	if err == nil {
 		t.Fatal("expected patch mismatch")
 	}

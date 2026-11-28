@@ -491,9 +491,10 @@ func TestApplyPatchTracksReadAndMismatchState(t *testing.T) {
 			t.Fatalf("expected rename failure onto existing directory, got: %q", moveFail.Output)
 		}
 		// Destination directory must not be tracked as read or stamped.
+		blockedKey := s.resolveFilePath(blockedDir)
 		s.readFilesMu.RLock()
-		_, dstRead := s.readFiles[blockedDir]
-		_, dstStamped := s.fileStamps[blockedDir]
+		_, dstRead := s.readFiles[blockedKey]
+		_, dstStamped := s.fileStamps[blockedKey]
 		s.readFilesMu.RUnlock()
 		if dstRead || dstStamped {
 			t.Fatalf("failed move tracked destination directory: read=%v stamped=%v", dstRead, dstStamped)
@@ -532,6 +533,77 @@ func TestApplyPatchTracksReadAndMismatchState(t *testing.T) {
 		}
 		if !strings.Contains(after.Output, "LINE-07") {
 			t.Fatalf("subset read after failed move missing committed edit: %q", after.Output)
+		}
+	})
+
+	t.Run("symlinked parent paths share tracking for write, edit, mismatch, and delete", func(t *testing.T) {
+		t.Parallel()
+		base := t.TempDir()
+		realDir := filepath.Join(base, "real")
+		if err := os.MkdirAll(realDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		linkDir := filepath.Join(base, "link")
+		if err := os.Symlink(realDir, linkDir); err != nil {
+			t.Fatal(err)
+		}
+		linkFile := filepath.Join(linkDir, "file.txt")
+		realFile := filepath.Join(realDir, "file.txt")
+
+		s := newSession(t, withDir(base))
+
+		// Create via symlinked parent.
+		if res := execSessionTool(t, s, "w-link", "write_file", map[string]any{
+			"file_path": linkFile,
+			"content":   "alpha\nbeta\n",
+		}); res.IsError {
+			t.Fatalf("write_file via link: %s", res.Output)
+		}
+
+		// Patch mismatch via canonical parent must recognize the unchanged write.
+		missReal := execSessionTool(t, s, "p-miss-real", "apply_patch", map[string]any{
+			"patch": "*** Begin Patch\n*** Update File: " + realFile + "\n@@\n alpha\n-wrong\n+gamma\n*** End Patch\n",
+		})
+		if mm, ok := errors.AsType[*tool.PatchMismatchError](missReal.Err); !ok || mm.FileState != tool.PatchFileStateUnchanged {
+			t.Fatalf("mismatch via real path = %v, want PatchFileStateUnchanged", missReal.Err)
+		}
+
+		// Edit via canonical parent must not emit an unread-file warning.
+		ed := execSessionTool(t, s, "e-real", "edit_file", map[string]any{
+			"file_path": realFile,
+			"edits":     []any{map[string]any{"old_string": "beta", "new_string": "BETA-UPDATED"}},
+		})
+		if ed.IsError {
+			t.Fatalf("edit_file via real path: %s", ed.Output)
+		}
+		if strings.Contains(ed.Output, "WARNING:") {
+			t.Fatalf("unexpected unread warning editing via canonical parent after symlink write: %q", ed.Output)
+		}
+
+		// Patch mismatch via symlinked parent must see the refreshed stamp from the real-path edit.
+		missLink := execSessionTool(t, s, "p-miss-link", "apply_patch", map[string]any{
+			"patch": "*** Begin Patch\n*** Update File: " + linkFile + "\n@@\n alpha\n-wrong\n+gamma\n*** End Patch\n",
+		})
+		if mm, ok := errors.AsType[*tool.PatchMismatchError](missLink.Err); !ok || mm.FileState != tool.PatchFileStateUnchanged {
+			t.Fatalf("mismatch via link path after real edit = %v, want PatchFileStateUnchanged", missLink.Err)
+		}
+
+		// Delete via symlinked parent must clear the shared stamp for the canonical parent too.
+		info, err := os.Stat(realFile)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res := execSessionTool(t, s, "p-del-link", "apply_patch", map[string]any{
+			"patch": "*** Begin Patch\n*** Delete File: " + linkFile + "\n*** End Patch\n",
+		}); res.IsError {
+			t.Fatalf("delete via link path: %s", res.Output)
+		}
+		pinReadFile(t, realFile, "alpha\nBETA-UPDATED\n", info.ModTime())
+		missAfterDel := execSessionTool(t, s, "p-miss-after-del", "apply_patch", map[string]any{
+			"patch": "*** Begin Patch\n*** Update File: " + realFile + "\n@@\n alpha\n-wrong\n+gamma\n*** End Patch\n",
+		})
+		if mm, ok := errors.AsType[*tool.PatchMismatchError](missAfterDel.Err); !ok || mm.FileState != tool.PatchFileStateUnknown {
+			t.Fatalf("mismatch via real path after link delete = %v, want PatchFileStateUnknown", missAfterDel.Err)
 		}
 	})
 }
@@ -643,8 +715,9 @@ func TestMemoryWriteAndEditTrackReadState(t *testing.T) {
 		}); res.IsError {
 			t.Fatalf("memory_edit failed: %s", res.Output)
 		}
+		key := s.resolveFilePath(abs)
 		s.readFilesMu.RLock()
-		_, hasStampBeforeDelete := s.fileStamps[abs]
+		_, hasStampBeforeDelete := s.fileStamps[key]
 		s.readFilesMu.RUnlock()
 		if !hasStampBeforeDelete {
 			t.Fatal("successful memory_edit did not record file stamp")
@@ -657,7 +730,7 @@ func TestMemoryWriteAndEditTrackReadState(t *testing.T) {
 			t.Fatalf("memory_delete failed: %s", res.Output)
 		}
 		s.readFilesMu.RLock()
-		_, hasStampAfterDelete := s.fileStamps[abs]
+		_, hasStampAfterDelete := s.fileStamps[key]
 		s.readFilesMu.RUnlock()
 		if hasStampAfterDelete {
 			t.Fatal("memory_delete did not remove recorded file stamp")

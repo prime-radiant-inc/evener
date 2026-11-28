@@ -2605,8 +2605,9 @@ func TestMemoryDeleteUnreadable(t *testing.T) {
 					t.Fatalf("fixture is not unreadable: %v", err)
 				}
 			}
+			key := s.resolveFilePath(path)
 			s.readFilesMu.RLock()
-			_, trackedBefore := s.readFiles[path]
+			_, trackedBefore := s.readFiles[key]
 			s.readFilesMu.RUnlock()
 			if trackedBefore {
 				t.Fatal("unreadable fixture already tracked as read")
@@ -2616,7 +2617,7 @@ func TestMemoryDeleteUnreadable(t *testing.T) {
 				t.Fatal(result.Output)
 			}
 			s.readFilesMu.RLock()
-			_, trackedAfter := s.readFiles[path]
+			_, trackedAfter := s.readFiles[key]
 			s.readFilesMu.RUnlock()
 			if trackedAfter {
 				t.Fatal("deletion tracked unreadable page as read")
@@ -2644,8 +2645,9 @@ func TestMemoryDeleteReadGuard(t *testing.T) {
 				}
 				assertTracked := func(want bool) {
 					t.Helper()
+					key := s.resolveFilePath(path)
 					s.readFilesMu.RLock()
-					_, tracked := s.readFiles[path]
+					_, tracked := s.readFiles[key]
 					s.readFilesMu.RUnlock()
 					if tracked != want {
 						t.Fatalf("tracked as read=%t, want %t", tracked, want)

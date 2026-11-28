@@ -11,7 +11,7 @@ import (
 	"primeradiant.com/evener/agent/execenv"
 )
 
-// PatchEffect records one file mutation committed by ApplyPatchTracked.
+// PatchEffect records one file mutation committed by ApplyPatch.
 type PatchEffect struct {
 	Path    string
 	Deleted bool
@@ -20,16 +20,9 @@ type PatchEffect struct {
 // ApplyPatch applies a codex-rs-style apply_patch v4a patch through fm, an
 // execenv.FileMutator that owns path containment (and, under a sandbox policy,
 // race-safe fd-anchored enforcement). It threads ctx to each op's read so a
-// cancelled call ends a read parked on a stream. This is a best-effort
-// implementation intended for local agent loops.
-func ApplyPatch(ctx context.Context, fm execenv.FileMutator, patch string) (string, error) {
-	out, _, err := ApplyPatchTracked(ctx, fm, patch)
-	return out, err
-}
-
-// ApplyPatchTracked behaves like ApplyPatch and returns the committed effects
-// in order, including earlier sections that landed before an error.
-func ApplyPatchTracked(ctx context.Context, fm execenv.FileMutator, patch string) (string, []PatchEffect, error) {
+// cancelled call ends a read parked on a stream, and returns the committed
+// effects in order, including earlier sections that landed before an error.
+func ApplyPatch(ctx context.Context, fm execenv.FileMutator, patch string) (string, []PatchEffect, error) {
 	ops, err := parseV4APatch(patch)
 	if err != nil {
 		return "", nil, err

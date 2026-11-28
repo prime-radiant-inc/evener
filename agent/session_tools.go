@@ -1151,8 +1151,13 @@ func resolvePathIn(env execenv.ExecutionEnvironment, path string) string {
 	if p == "" {
 		return ""
 	}
-	if filepath.IsAbs(p) || env == nil {
-		return filepath.Clean(p)
+	if !filepath.IsAbs(p) && env != nil {
+		p = filepath.Join(env.WorkingDirectory(), p)
 	}
-	return filepath.Join(env.WorkingDirectory(), p)
+	p = filepath.Clean(p)
+	parent := filepath.Dir(p)
+	if parent == p {
+		return p
+	}
+	return filepath.Join(canonicalOrClean(parent), filepath.Base(p))
 }
