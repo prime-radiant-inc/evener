@@ -787,29 +787,27 @@ func uniqueNonBlankMatch(lines []string, nonBlankIdx []int, patNonBlank []string
 // file blank lines outside contiguous deleted blocks.
 func applyBlankTolerantReplacement(origLines []string, matchedIdx []int, entries []replacementEntry) []string {
 	out := make([]string, 0, len(entries))
-	oldIdx, prevPrefix, sawPlus := 0, byte(0), false
+	oldIdx, prevPrefix := 0, byte(0)
+	gapFlushed, sawInsert := false, false
 	for _, entry := range entries {
 		if entry.prefix == '+' {
-			out, sawPlus = append(out, entry.body), true
+			out, sawInsert = append(out, entry.body), true
 			continue
 		}
 		if entry.prefix == ' ' && strings.TrimSpace(entry.body) == "" {
-			if oldIdx > 0 && oldIdx < len(matchedIdx) && prevPrefix == '-' {
+			if oldIdx > 0 && oldIdx < len(matchedIdx) && !gapFlushed {
 				out = append(out, origLines[matchedIdx[oldIdx-1]+1:matchedIdx[oldIdx]]...)
-				prevPrefix = ' '
+				gapFlushed = true
 			}
 			continue
 		}
-		if oldIdx > 0 && prevPrefix == '-' && (entry.prefix == ' ' || sawPlus) {
+		if oldIdx > 0 && !gapFlushed && (prevPrefix != '-' || entry.prefix != '-' || sawInsert) {
 			out = append(out, origLines[matchedIdx[oldIdx-1]+1:matchedIdx[oldIdx]]...)
 		}
 		if entry.prefix == ' ' {
 			out = append(out, origLines[matchedIdx[oldIdx]])
-			if oldIdx+1 < len(matchedIdx) {
-				out = append(out, origLines[matchedIdx[oldIdx]+1:matchedIdx[oldIdx+1]]...)
-			}
 		}
-		prevPrefix, sawPlus = entry.prefix, false
+		prevPrefix, gapFlushed, sawInsert = entry.prefix, false, false
 		oldIdx++
 	}
 	return out

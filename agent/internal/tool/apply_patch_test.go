@@ -1099,4 +1099,55 @@ func TestApplyPatch_BlankLineTolerantUniqueFallback(t *testing.T) {
 			})
 		}
 	})
+
+	t.Run("additions around explicit blank context between context lines keep patch order", func(t *testing.T) {
+		t.Parallel()
+		orig := "p1\n\np2\n\np3\n"
+		cases := []struct {
+			name  string
+			patch string
+			want  string
+		}{
+			{
+				name:  "addition before blank context",
+				patch: "*** Begin Patch\n*** Update File: f.txt\n@@\n p1\n+p1_more\n \n p2\n p3\n*** End Patch\n",
+				want:  "p1\np1_more\n\np2\n\np3\n",
+			},
+			{
+				name:  "addition after blank context",
+				patch: "*** Begin Patch\n*** Update File: f.txt\n@@\n p1\n \n+p2_pre\n p2\n p3\n*** End Patch\n",
+				want:  "p1\n\np2_pre\np2\n\np3\n",
+			},
+			{
+				name:  "additions on both sides of blank context",
+				patch: "*** Begin Patch\n*** Update File: f.txt\n@@\n p1\n+p1_more\n \n+p2_pre\n p2\n p3\n*** End Patch\n",
+				want:  "p1\np1_more\n\np2_pre\np2\n\np3\n",
+			},
+			{
+				name:  "repeated blank context does not duplicate file gap",
+				patch: "*** Begin Patch\n*** Update File: f.txt\n@@\n p1\n+p1_more\n \n \n p2\n p3\n*** End Patch\n",
+				want:  "p1\np1_more\n\np2\n\np3\n",
+			},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
+				dir := t.TempDir()
+				path := filepath.Join(dir, "f.txt")
+				if err := os.WriteFile(path, []byte(orig), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := ApplyPatch(t.Context(), testMutator(dir), tc.patch); err != nil {
+					t.Fatalf("ApplyPatch failed: %v", err)
+				}
+				got, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if string(got) != tc.want {
+					t.Fatalf("got:\n%q\nwant:\n%q", string(got), tc.want)
+				}
+			})
+		}
+	})
 }
