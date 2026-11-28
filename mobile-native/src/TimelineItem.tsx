@@ -489,7 +489,7 @@ function YourMessage({
 					paddingVertical: 10,
 				}}
 			>
-				<Copy variant="yourMessage" selectable={false} label={`${speaker}: ${item.text}`}>
+				<Copy variant="yourMessage" color={palette.onFill} selectable={false} label={`${speaker}: ${item.text}`}>
 					{item.text}
 				</Copy>
 			</Pressable>

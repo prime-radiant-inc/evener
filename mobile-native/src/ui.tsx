@@ -96,6 +96,7 @@ export function Choice({
 export function Copy({
 	children,
 	muted = false,
+	color,
 	label,
 	numberOfLines,
 	ellipsizeMode,
@@ -104,6 +105,7 @@ export function Copy({
 }: {
 	children: ReactNode;
 	muted?: boolean;
+	color?: string;
 	label?: string;
 	numberOfLines?: number;
 	ellipsizeMode?: TextProps["ellipsizeMode"];
@@ -126,10 +128,10 @@ export function Copy({
 							fontFamily: reading[variant].fontFamily,
 							fontSize: reading[variant].fontSize * textScale,
 							lineHeight: reading[variant].lineHeight * textScale,
-							color: colors.palette.prose,
+							color: color ?? colors.palette.prose,
 						}
 					: {
-							color: muted ? colors.secondary : colors.text,
+							color: color ?? (muted ? colors.secondary : colors.text),
 							...scaledType(muted ? uiType.footnote : uiType.listRow, textScale),
 						}
 			}
