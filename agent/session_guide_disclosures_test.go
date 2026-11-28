@@ -21,21 +21,71 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
-func countGuideNotifications(reqs []llm.Request, topic string) int {
-	tag := guideNotificationOpenTag(topic)
-	var seen int
-	if len(reqs) == 0 {
-		return 0
+func countSkillContextEnvelopesInText(t *testing.T, content, skillName string) int {
+	t.Helper()
+	const open, closeTag = "<skill-context>\n", "\n</skill-context>"
+	rest := content
+	count := 0
+	for {
+		i := strings.Index(rest, open)
+		if i < 0 {
+			return count
+		}
+		rest = rest[i+len(open):]
+		j := strings.Index(rest, closeTag)
+		if j < 0 {
+			return count
+		}
+		var doc skill.SkillDocument
+		if err := json.Unmarshal([]byte(rest[:j]), &doc); err == nil && doc.Name == skillName {
+			if doc.Source == "" || strings.TrimSpace(doc.Instructions) == "" {
+				t.Fatalf("skill-context envelope for %q missing source or instructions: %+v", skillName, doc)
+			}
+			count++
+		}
+		rest = rest[j+len(closeTag):]
 	}
-	last := reqs[len(reqs)-1]
-	for _, msg := range last.Messages {
+}
+
+func countSkillContextEnvelopes(t *testing.T, req llm.Request, skillName string) int {
+	t.Helper()
+	count := 0
+	for _, msg := range req.Messages {
 		for _, part := range msg.Content {
-			if part.Kind == llm.ContentText && strings.Contains(part.Text, tag) {
-				seen++
+			switch part.Kind {
+			case llm.ContentText:
+				count += countSkillContextEnvelopesInText(t, part.Text, skillName)
+			case llm.ContentToolResult:
+				if part.ToolResult != nil {
+					if text, ok := part.ToolResult.Content.(string); ok {
+						count += countSkillContextEnvelopesInText(t, text, skillName)
+					}
+				}
 			}
 		}
 	}
-	return seen
+	return count
+}
+
+func requireSkillInventoryOrdinary(t *testing.T, s *Session, skillName, wantRoute string) schema.OrdinarySkillActivation {
+	t.Helper()
+	s.mu.Lock()
+	entry := s.skillLifecycle.Inventory[skillName]
+	obligations := append([]schema.SkillDeliveryObligation(nil), s.skillLifecycle.Obligations...)
+	s.mu.Unlock()
+	if entry.Ordinary == nil {
+		t.Fatalf("skillLifecycle.Inventory[%q].Ordinary = nil, want active record (obligations=%+v)", skillName, obligations)
+	}
+	if entry.Ordinary.Route != wantRoute {
+		t.Fatalf("skillLifecycle.Inventory[%q].Ordinary.Route = %q, want %q", skillName, entry.Ordinary.Route, wantRoute)
+	}
+	if entry.Ordinary.UserAuthorized {
+		t.Fatalf("skillLifecycle.Inventory[%q].Ordinary.UserAuthorized = true, want false", skillName)
+	}
+	if entry.Ordinary.Identity.Name != skillName || entry.Ordinary.Identity.RenderedDigest == "" || entry.Ordinary.Identity.Source == "" {
+		t.Fatalf("skillLifecycle.Inventory[%q].Ordinary.Identity incomplete: %+v", skillName, entry.Ordinary.Identity)
+	}
+	return *entry.Ordinary
 }
 
 func TestAutoDisclosedGuideSkills_OmittedFromTurn1Catalog(t *testing.T) {
@@ -90,24 +140,9 @@ func TestAutoDisclosedGuideSkills_OmittedFromTurn1Catalog(t *testing.T) {
 		t.Fatal("expected <skill-catalog> to be omitted when all catalog entries are auto-disclosed guides")
 	}
 
-	headless := newSession(t, withDir(t.TempDir()), withConfig(SessionConfig{
-		TurnEndsProcess: true,
-		AgentsDocPath:   filepath.Join(t.TempDir(), "no-AGENTS.md"),
-		testOnly:        testConfig{skipGitSnapshot: true},
-	}))
-	headlessPrompt, _, _ := headless.renderSystemPrompt(headless.env)
-	toolJSON, _ := json.Marshal(headless.ToolDefinitions())
-	var removedCatalog int
-	for _, name := range []string{skill.RunningJobsSkillName, skill.ReadingTranscriptsSkillName, skill.UsingWorktreesSkillName} {
-		if d, ok := headless.skills.Entries[name]; ok {
-			removedCatalog += len("- " + d.CatalogName + ": " + d.Meta.Description + "\n")
-		}
-	}
-	t.Logf("headless Turn-1 prompt=%d bytes toolDefs=%d bytes removedCatalog=%d bytes", len(headlessPrompt), len(toolJSON), removedCatalog)
-
 	// A model-invocable project or user override matching a bundled guide name
 	// wins discovery and must remain advertised in both the launch catalog and
-	// envRuntimeSnapshot while preserving use_skill resolution.
+	// envRuntimeSnapshot without triggering bundled auto-disclosure.
 	t.Run("project_and_user_overrides_remain_advertised", func(t *testing.T) {
 		t.Parallel()
 		repo := t.TempDir()
@@ -201,14 +236,16 @@ func TestAutoDisclosedGuideSkills_OmittedFromTurn1Catalog(t *testing.T) {
 			t.Fatalf("ProcessInput: %v", err)
 		}
 		reqs := adapter.Requests()
-		for _, topic := range []string{guideTopicUsingWorktrees, guideTopicRunningJobs} {
-			if got := countGuideNotifications(reqs, topic); got != 0 {
-				t.Fatalf("overridden guide %q emitted %d bundled disclosures, want 0", topic, got)
+		last := reqs[len(reqs)-1]
+		for _, overriddenName := range []string{skill.UsingWorktreesSkillName, skill.RunningJobsSkillName} {
+			if got := countSkillContextEnvelopes(t, last, overriddenName); got != 0 {
+				t.Fatalf("overridden guide %q auto-disclosed %d times, want 0", overriddenName, got)
 			}
 		}
-		if got := countGuideNotifications(reqs, guideTopicReadingTranscripts); got != 1 {
-			t.Fatalf("unoverridden bundled guide %q emitted %d disclosures, want 1", guideTopicReadingTranscripts, got)
+		if got := countSkillContextEnvelopes(t, last, skill.ReadingTranscriptsSkillName); got != 1 {
+			t.Fatalf("unoverridden bundled guide %q auto-disclosed %d times, want 1", skill.ReadingTranscriptsSkillName, got)
 		}
+		requireSkillInventoryOrdinary(t, overridden, skill.ReadingTranscriptsSkillName, "auto_disclosure")
 	})
 }
 
@@ -247,14 +284,21 @@ func TestGuideDisclosures_BackgroundShellFiresOnceAndPreservesSystemPrefix(t *te
 	if reqs[0].Messages[0].Text() != reqs[1].Messages[0].Text() || reqs[1].Messages[0].Text() != reqs[2].Messages[0].Text() {
 		t.Fatal("system prompt mutated across rounds, breaking KV prefix cache")
 	}
-	if got := countGuideNotifications(reqs[:2], guideTopicRunningJobs); got != 1 {
-		t.Fatalf("after first background shell: running-jobs disclosures = %d, want 1; sh1=%q", got, toolResultTextForCall(reqs[1], "sh1"))
+	if got := countSkillContextEnvelopes(t, reqs[1], skill.RunningJobsSkillName); got != 1 {
+		t.Fatalf("after first background shell: running-jobs envelopes = %d, want 1; sh1=%q", got, toolResultTextForCall(reqs[1], "sh1"))
 	}
-	if got := countGuideNotifications(reqs[:3], guideTopicRunningJobs); got != 1 {
-		t.Fatalf("after second background shell: running-jobs disclosures = %d, want 1 (must not repeat)", got)
+	if got := countSkillContextEnvelopes(t, reqs[2], skill.RunningJobsSkillName); got != 1 {
+		t.Fatalf("after second background shell: running-jobs envelopes = %d, want 1 (must not repeat)", got)
+	}
+	requireSkillInventoryOrdinary(t, sess, skill.RunningJobsSkillName, "auto_disclosure")
+	sess.mu.Lock()
+	remainingObligations := len(sess.skillLifecycle.Obligations)
+	sess.mu.Unlock()
+	if remainingObligations != 0 {
+		t.Fatalf("pending obligations after delivery = %d, want 0", remainingObligations)
 	}
 
-	// Without job tools exposed, background shell must NOT inject running-jobs.
+	// Without job tools exposed, background shell must NOT activate running-jobs.
 	cNoJobs := llm.NewClient()
 	aNoJobs := newFakeAdapter("anthropic",
 		func(llm.Request) llm.Response {
@@ -277,13 +321,18 @@ func TestGuideDisclosures_BackgroundShellFiresOnceAndPreservesSystemPrefix(t *te
 	if _, err := noJobs.ProcessInput(tripwireCtx(t), "run background shell without job tools", nil); err != nil {
 		t.Fatalf("noJobs ProcessInput: %v", err)
 	}
-	if got := countGuideNotifications(aNoJobs.Requests(), guideTopicRunningJobs); got != 0 {
-		t.Fatalf("session without job tools injected %d running-jobs disclosures, want 0", got)
+	reqsNoJobs := aNoJobs.Requests()
+	if got := countSkillContextEnvelopes(t, reqsNoJobs[len(reqsNoJobs)-1], skill.RunningJobsSkillName); got != 0 {
+		t.Fatalf("session without job tools injected %d running-jobs envelopes, want 0", got)
+	}
+	if _, ok := noJobs.skillInventorySnapshot()[skill.RunningJobsSkillName]; ok {
+		t.Fatal("session without job tools unexpectedly recorded running-jobs in inventory")
 	}
 
-	// One-shot running-jobs disclosure must give a schema-valid job_watch recipe
-	// including required operation="create".
-	t.Run("one_shot_job_watch_recipe_includes_operation_create", func(t *testing.T) {
+	// Ephemeral one-shot sessions without StateDir (no transcript writer or
+	// meta.json on disk) must activate running-jobs cleanly through the native
+	// lifecycle without persistence errors.
+	t.Run("one_shot_ephemeral_without_state_dir", func(t *testing.T) {
 		t.Parallel()
 		cOne := llm.NewClient()
 		aOne := newFakeAdapter("anthropic",
@@ -296,7 +345,6 @@ func TestGuideDisclosures_BackgroundShellFiresOnceAndPreservesSystemPrefix(t *te
 		)
 		cOne.Register(aOne)
 		oneShot := newSession(t, withClient(cOne), withProfile(newAnthropicProfile("claude-test")), withDir(dir), withConfig(SessionConfig{
-			StateDir:        t.TempDir(),
 			TurnEndsProcess: true,
 			AgentsDocPath:   filepath.Join(t.TempDir(), "no-AGENTS.md"),
 		}))
@@ -308,20 +356,11 @@ func TestGuideDisclosures_BackgroundShellFiresOnceAndPreservesSystemPrefix(t *te
 		if len(reqs) < 2 {
 			t.Fatalf("expected at least 2 requests, got %d", len(reqs))
 		}
-		var disclosure string
-		for _, msg := range reqs[1].Messages {
-			for _, part := range msg.Content {
-				if part.Kind == llm.ContentText && strings.Contains(part.Text, guideNotificationOpenTag(guideTopicRunningJobs)) {
-					disclosure = part.Text
-				}
-			}
+		if got := countSkillContextEnvelopes(t, reqs[1], skill.RunningJobsSkillName); got != 1 {
+			t.Fatalf("one-shot ephemeral session running-jobs envelopes = %d, want 1", got)
 		}
-		for _, token := range []string{`job_watch(operation="create"`, `source=`, `progress_interval_ms=180000`, `output_match`} {
-			if !strings.Contains(disclosure, token) {
-				t.Fatalf("one-shot running-jobs disclosure missing required API token %q: %q", token, disclosure)
-			}
-		}
-		// Confirm the documented recipe validates and succeeds against job_watch.
+		requireSkillInventoryOrdinary(t, oneShot, skill.RunningJobsSkillName, "auto_disclosure")
+
 		jobs := oneShot.jobManager.list(listFilter{})
 		if len(jobs) == 0 {
 			t.Fatal("expected running background shell job in one-shot session")
@@ -334,8 +373,43 @@ func TestGuideDisclosures_BackgroundShellFiresOnceAndPreservesSystemPrefix(t *te
 		if watchRes := oneShot.reg.ExecuteCall(context.Background(), oneShot.env, llm.ToolCallData{
 			ID: "w-recipe", Name: "job_watch", Arguments: watchArgs,
 		}); watchRes.IsError {
-			t.Fatalf("documented job_watch recipe failed validation/execution: %s", watchRes.Output)
+			t.Fatalf("job_watch create recipe failed: %s", watchRes.Output)
 		}
+	})
+
+	// Explicit use_skill and a triggering background shell in the same tool
+	// round must not double-inject the skill carrier.
+	t.Run("same_round_use_skill_deduplicates", func(t *testing.T) {
+		t.Parallel()
+		cDup := llm.NewClient()
+		aDup := newFakeAdapter("anthropic",
+			func(llm.Request) llm.Response {
+				return agenttest.ToolCallResponse(
+					useSkillCall("sk1", skill.RunningJobsSkillName),
+					llm.ToolCallData{ID: "sh1", Name: "shell", Arguments: bgArgs, Type: "function"},
+				)
+			},
+			func(llm.Request) llm.Response {
+				return agenttest.ToolCallResponse(communicateCall("done", "ok"))
+			},
+		)
+		cDup.Register(aDup)
+		sDup := newSession(t, withClient(cDup), withProfile(newAnthropicProfile("claude-test")), withDir(dir), withConfig(SessionConfig{
+			StateDir:      t.TempDir(),
+			AgentsDocPath: filepath.Join(t.TempDir(), "no-AGENTS.md"),
+		}))
+		defer sDup.Close()
+		if _, err := sDup.ProcessInput(tripwireCtx(t), "load skill and run background shell together", nil); err != nil {
+			t.Fatalf("ProcessInput: %v", err)
+		}
+		reqs := aDup.Requests()
+		if len(reqs) < 2 {
+			t.Fatalf("expected at least 2 requests, got %d", len(reqs))
+		}
+		if got := countSkillContextEnvelopes(t, reqs[1], skill.RunningJobsSkillName); got != 1 {
+			t.Fatalf("same-round use_skill + background shell produced %d running-jobs envelopes, want 1", got)
+		}
+		requireSkillInventoryOrdinary(t, sDup, skill.RunningJobsSkillName, "model_tool")
 	})
 }
 
@@ -350,54 +424,42 @@ func TestGuideDisclosures_DelegateFiresOnce(t *testing.T) {
 	}
 
 	delArgs := json.RawMessage(`{"prompt":"return ok","delegation_allowance":0}`)
+	c := llm.NewClient()
+	adapter := newFakeAdapter("openai",
+		func(llm.Request) llm.Response {
+			return agenttest.ToolCallResponse(llm.ToolCallData{ID: "d1", Name: "delegate", Arguments: delArgs, Type: "function"})
+		},
+		func(llm.Request) llm.Response {
+			return agenttest.ToolCallResponse(llm.ToolCallData{ID: "d2", Name: "delegate", Arguments: delArgs, Type: "function"})
+		},
+		func(llm.Request) llm.Response {
+			return agenttest.ToolCallResponse(communicateCall("c1", "done"))
+		},
+	)
+	c.Register(adapter)
 
-	for _, tc := range []struct {
-		name string
-		call llm.ToolCallData
-	}{
-		{name: "direct", call: llm.ToolCallData{ID: "d1", Name: "delegate", Arguments: delArgs, Type: "function"}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			c := llm.NewClient()
-			call2 := tc.call
-			call2.ID = "d2"
-			adapter := newFakeAdapter("openai",
-				func(llm.Request) llm.Response {
-					return agenttest.ToolCallResponse(tc.call)
-				},
-				func(llm.Request) llm.Response {
-					return agenttest.ToolCallResponse(call2)
-				},
-				func(llm.Request) llm.Response {
-					return agenttest.ToolCallResponse(communicateCall("c1", "done"))
-				},
-			)
-			c.Register(adapter)
+	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{
+		MaxSubagentDepth: 2,
+		StateDir:         t.TempDir(),
+		AgentsDocPath:    filepath.Join(t.TempDir(), "no-AGENTS.md"),
+		testOnly:         testConfig{childClientFactory: childClientFactory},
+	}))
+	defer sess.Close()
 
-			sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{
-				MaxSubagentDepth: 2,
-				StateDir:         t.TempDir(),
-				AgentsDocPath:    filepath.Join(t.TempDir(), "no-AGENTS.md"),
-				testOnly:         testConfig{childClientFactory: childClientFactory},
-			}))
-			defer sess.Close()
-
-			if _, err := sess.ProcessInput(tripwireCtx(t), "start delegates", nil); err != nil {
-				t.Fatalf("ProcessInput: %v", err)
-			}
-			reqs := adapter.Requests()
-			if len(reqs) < 3 {
-				t.Fatalf("expected 3 requests, got %d", len(reqs))
-			}
-			if got := countGuideNotifications(reqs[:2], guideTopicRunningJobs); got != 1 {
-				t.Fatalf("after first delegate (%s): running-jobs disclosures = %d, want 1", tc.name, got)
-			}
-			if got := countGuideNotifications(reqs[:3], guideTopicRunningJobs); got != 1 {
-				t.Fatalf("after second delegate (%s): running-jobs disclosures = %d, want 1", tc.name, got)
-			}
-		})
+	if _, err := sess.ProcessInput(tripwireCtx(t), "start delegates", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
 	}
+	reqs := adapter.Requests()
+	if len(reqs) < 3 {
+		t.Fatalf("expected 3 requests, got %d", len(reqs))
+	}
+	if got := countSkillContextEnvelopes(t, reqs[1], skill.RunningJobsSkillName); got != 1 {
+		t.Fatalf("after first delegate: running-jobs envelopes = %d, want 1", got)
+	}
+	if got := countSkillContextEnvelopes(t, reqs[2], skill.RunningJobsSkillName); got != 1 {
+		t.Fatalf("after second delegate: running-jobs envelopes = %d, want 1", got)
+	}
+	requireSkillInventoryOrdinary(t, sess, skill.RunningJobsSkillName, "auto_disclosure")
 }
 
 func TestGuideDisclosures_ArtifactTruncationAndCapabilityGate(t *testing.T) {
@@ -444,14 +506,15 @@ func TestGuideDisclosures_ArtifactTruncationAndCapabilityGate(t *testing.T) {
 	if len(reqs) < 3 {
 		t.Fatalf("expected 3 requests, got %d", len(reqs))
 	}
-	if got := countGuideNotifications(reqs[:2], guideTopicReadingTranscripts); got != 1 {
-		t.Fatalf("after first truncated read_file: reading-transcripts disclosures = %d, want 1", got)
+	if got := countSkillContextEnvelopes(t, reqs[1], skill.ReadingTranscriptsSkillName); got != 1 {
+		t.Fatalf("after first truncated read_file: reading-transcripts envelopes = %d, want 1", got)
 	}
-	if got := countGuideNotifications(reqs[:3], guideTopicReadingTranscripts); got != 1 {
-		t.Fatalf("after second truncated read_file: reading-transcripts disclosures = %d, want 1", got)
+	if got := countSkillContextEnvelopes(t, reqs[2], skill.ReadingTranscriptsSkillName); got != 1 {
+		t.Fatalf("after second truncated read_file: reading-transcripts envelopes = %d, want 1", got)
 	}
+	requireSkillInventoryOrdinary(t, sess, skill.ReadingTranscriptsSkillName, "auto_disclosure")
 
-	// Without read_transcript callable, truncation must NOT disclose reading-transcripts.
+	// Without read_transcript callable, truncation must NOT activate reading-transcripts.
 	c2 := llm.NewClient()
 	adapter2 := newFakeAdapter("openai",
 		func(llm.Request) llm.Response {
@@ -475,8 +538,9 @@ func TestGuideDisclosures_ArtifactTruncationAndCapabilityGate(t *testing.T) {
 	if _, err := gated.ProcessInput(tripwireCtx(t), "read big file", nil); err != nil {
 		t.Fatalf("gated ProcessInput: %v", err)
 	}
-	if got := countGuideNotifications(adapter2.Requests(), guideTopicReadingTranscripts); got != 0 {
-		t.Fatalf("session without read_transcript injected %d reading-transcripts disclosures, want 0", got)
+	reqs2 := adapter2.Requests()
+	if got := countSkillContextEnvelopes(t, reqs2[len(reqs2)-1], skill.ReadingTranscriptsSkillName); got != 0 {
+		t.Fatalf("session without read_transcript injected %d reading-transcripts envelopes, want 0", got)
 	}
 }
 
@@ -564,180 +628,311 @@ func TestGuideDisclosures_PromotedShellTriggersBothOnce(t *testing.T) {
 		if got := toolResultTextForCall(reqs[check.round], check.callID); !strings.Contains(got, check.jobID) {
 			t.Fatalf("round %d shell result missing promoted job_id %q: %q", check.round, check.jobID, got)
 		}
-		for _, topic := range []string{guideTopicRunningJobs, guideTopicReadingTranscripts} {
-			if got := countGuideNotifications(reqs[:check.round+1], topic); got != 1 {
-				t.Fatalf("after promoted shell round %d: %s disclosures = %d, want 1", check.round, topic, got)
+		for _, name := range []string{skill.RunningJobsSkillName, skill.ReadingTranscriptsSkillName} {
+			if got := countSkillContextEnvelopes(t, reqs[check.round], name); got != 1 {
+				t.Fatalf("after promoted shell round %d: %s envelopes = %d, want 1", check.round, name, got)
 			}
 		}
 	}
+	requireSkillInventoryOrdinary(t, sess, skill.RunningJobsSkillName, "auto_disclosure")
+	requireSkillInventoryOrdinary(t, sess, skill.ReadingTranscriptsSkillName, "auto_disclosure")
 }
 
 func TestGuideDisclosures_WorktreeFiresOnceAndNeverWithoutTool(t *testing.T) {
 	t.Parallel()
 	listArgs := json.RawMessage(`{"operation":"list"}`)
+	repo := t.TempDir()
+	initGitRepo(t, repo)
 
-	for _, tc := range []struct {
-		name string
-		call llm.ToolCallData
-	}{
-		{name: "direct", call: llm.ToolCallData{ID: "w1", Name: "manage_worktree", Arguments: listArgs, Type: "function"}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			repo := t.TempDir()
-			initGitRepo(t, repo)
-
-			c := llm.NewClient()
-			call2 := tc.call
-			call2.ID = "w2"
-			adapter := newFakeAdapter("openai",
-				func(llm.Request) llm.Response {
-					return agenttest.ToolCallResponse(tc.call)
-				},
-				func(llm.Request) llm.Response {
-					return agenttest.ToolCallResponse(call2)
-				},
-				func(llm.Request) llm.Response {
-					return agenttest.ToolCallResponse(communicateCall("c1", "done"))
-				},
-			)
-			c.Register(adapter)
-
-			sess := newSession(t, withClient(c), withDir(repo), withConfig(SessionConfig{
-				StateDir:      t.TempDir(),
-				AgentsDocPath: filepath.Join(t.TempDir(), "no-AGENTS.md"),
-			}))
-			defer sess.Close()
-
-			if _, err := sess.ProcessInput(tripwireCtx(t), "list worktrees", nil); err != nil {
-				t.Fatalf("ProcessInput: %v", err)
-			}
-			reqs := adapter.Requests()
-			if len(reqs) < 3 {
-				t.Fatalf("expected 3 requests, got %d", len(reqs))
-			}
-			if got := countGuideNotifications(reqs[:2], guideTopicUsingWorktrees); got != 1 {
-				t.Fatalf("after first manage_worktree (%s): using-worktrees disclosures = %d, want 1", tc.name, got)
-			}
-			if got := countGuideNotifications(reqs[:3], guideTopicUsingWorktrees); got != 1 {
-				t.Fatalf("after second manage_worktree (%s): using-worktrees disclosures = %d, want 1", tc.name, got)
-			}
-		})
-	}
-}
-
-func TestGuideDisclosures_RestoreAndCompactionSync(t *testing.T) {
-	t.Parallel()
-	stateDir := t.TempDir()
-	dir := t.TempDir()
-	bgArgs := idleShellJSON(`,"mode":"background"`)
-
-	c1 := llm.NewClient()
-	a1 := newFakeAdapter("openai",
+	c := llm.NewClient()
+	adapter := newFakeAdapter("openai",
 		func(llm.Request) llm.Response {
-			return agenttest.ToolCallResponse(llm.ToolCallData{ID: "sh1", Name: "shell", Arguments: bgArgs, Type: "function"})
+			return agenttest.ToolCallResponse(llm.ToolCallData{ID: "w1", Name: "manage_worktree", Arguments: listArgs, Type: "function"})
+		},
+		func(llm.Request) llm.Response {
+			return agenttest.ToolCallResponse(llm.ToolCallData{ID: "w2", Name: "manage_worktree", Arguments: listArgs, Type: "function"})
 		},
 		func(llm.Request) llm.Response {
 			return agenttest.ToolCallResponse(communicateCall("c1", "done"))
 		},
-		func(llm.Request) llm.Response {
-			return agenttest.ToolCallResponse(llm.ToolCallData{ID: "sh-post-fold", Name: "shell", Arguments: bgArgs, Type: "function"})
-		},
-		func(llm.Request) llm.Response {
-			return agenttest.ToolCallResponse(communicateCall("c-post-fold", "done"))
-		},
 	)
-	c1.Register(a1)
-	registerTestSessionNamer(c1)
-	sess := newSession(t, withClient(c1), withDir(dir), withConfig(SessionConfig{
-		StateDir:      stateDir,
+	c.Register(adapter)
+
+	sess := newSession(t, withClient(c), withDir(repo), withConfig(SessionConfig{
+		StateDir:      t.TempDir(),
 		AgentsDocPath: filepath.Join(t.TempDir(), "no-AGENTS.md"),
-		testOnly:      testConfig{skipGitSnapshot: true, noSyncJobStore: true},
 	}))
-	if _, err := sess.ProcessInput(tripwireCtx(t), "run one", nil); err != nil {
-		t.Fatalf("first ProcessInput: %v", err)
-	}
+	defer sess.Close()
 
-	// Mark the other two guide disclosures as already emitted too so we verify
-	// all three stay set across an actual compaction fold and compacted restore.
-	for _, topic := range []string{guideTopicReadingTranscripts, guideTopicUsingWorktrees} {
-		m := llm.UserMachinery(wrapGuideNotification(topic, "disclosed"))
-		sess.appendTurnWithTranscriptMessage(schema.TurnSystem, m, m)
+	if _, err := sess.ProcessInput(tripwireCtx(t), "list worktrees", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
 	}
-	sess.mu.Lock()
-	sess.disclosedReadingTranscripts = true
-	sess.disclosedUsingWorktrees = true
-	sess.mu.Unlock()
+	reqs := adapter.Requests()
+	if len(reqs) < 3 {
+		t.Fatalf("expected 3 requests, got %d", len(reqs))
+	}
+	if got := countSkillContextEnvelopes(t, reqs[1], skill.UsingWorktreesSkillName); got != 1 {
+		t.Fatalf("after first manage_worktree: using-worktrees envelopes = %d, want 1", got)
+	}
+	if got := countSkillContextEnvelopes(t, reqs[2], skill.UsingWorktreesSkillName); got != 1 {
+		t.Fatalf("after second manage_worktree: using-worktrees envelopes = %d, want 1", got)
+	}
+	requireSkillInventoryOrdinary(t, sess, skill.UsingWorktreesSkillName, "auto_disclosure")
+}
 
-	// Add enough turns so an actual compaction fold removes the earlier
-	// TurnSystem running-jobs disclosure from retained model history.
-	for i := range 20 {
+func appendFillerTurnsForFold(s *Session, count int) {
+	for i := range count {
 		u := schema.NewTurn(schema.TurnUserInput, llm.User(fmt.Sprintf("filler-user-%d", i)))
-		sess.recordTurn(u, u)
+		s.recordTurn(u, u)
 		a := schema.NewTurn(schema.TurnAssistant, llm.Assistant(fmt.Sprintf("filler-assistant-%d %s", i, strings.Repeat("x", 200))))
-		sess.recordTurn(a, a)
+		s.recordTurn(a, a)
 	}
-	if err := sess.Compact(tripwireCtx(t)); err != nil {
-		t.Fatalf("Compact: %v", err)
-	}
-	sess.mu.Lock()
-	for _, turn := range sess.history {
-		if turn.Kind == schema.TurnSystem && strings.Contains(turn.Message.Text(), guideNotificationOpenTag(guideTopicRunningJobs)) {
-			sess.mu.Unlock()
-			t.Fatal("fixture setup error: running-jobs disclosure remained in post-fold history")
+}
+
+func TestGuideDisclosures_CompactionSurvival(t *testing.T) {
+	t.Parallel()
+	bgArgs := idleShellJSON(`,"mode":"background"`)
+
+	t.Run("reload_skills_reloads_auto_disclosed_guide", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		step := 0
+		var reqs []llm.Request
+		main := func(req llm.Request) llm.Response {
+			reqs = append(reqs, req)
+			step++
+			switch step {
+			case 1:
+				return agenttest.ToolCallResponse(llm.ToolCallData{ID: "sh1", Name: "shell", Arguments: bgArgs, Type: "function"})
+			case 2:
+				return agenttest.ToolCallResponse(communicateCall("c1", "first done"))
+			case 3:
+				return agenttest.ToolCallResponse(compactContextCall("cmp1", []string{skill.RunningJobsSkillName}))
+			case 4:
+				return agenttest.ToolCallResponse(llm.ToolCallData{ID: "sh2", Name: "shell", Arguments: bgArgs, Type: "function"})
+			default:
+				return agenttest.ToolCallResponse(communicateCall("c2", "second done"))
+			}
 		}
-	}
-	if !sess.disclosedRunningJobs || !sess.disclosedReadingTranscripts || !sess.disclosedUsingWorktrees {
-		sess.mu.Unlock()
-		t.Fatalf("compaction fold cleared sticky guide flags: running=%v transcripts=%v worktrees=%v",
-			sess.disclosedRunningJobs, sess.disclosedReadingTranscripts, sess.disclosedUsingWorktrees)
-	}
-	sess.mu.Unlock()
+		sess, _, _ := newReloadSession(t, dir, 0, main, reloadSummaryResponder("SUM_RELOAD_7910", nil), withConfig(SessionConfig{
+			StateDir:      t.TempDir(),
+			AgentsDocPath: filepath.Join(t.TempDir(), "no-AGENTS.md"),
+			testOnly:      testConfig{skipGitSnapshot: true, noSyncJobStore: true},
+		}))
+		defer sess.Close()
 
-	// A later qualifying round after compaction must NOT emit a duplicate guide.
-	if _, err := sess.ProcessInput(tripwireCtx(t), "run after fold", nil); err != nil {
-		t.Fatalf("post-fold ProcessInput: %v", err)
-	}
-	if got := countGuideNotifications(a1.Requests(), guideTopicRunningJobs); got != 0 {
-		t.Fatalf("post-fold session emitted %d duplicate running-jobs disclosures, want 0", got)
-	}
+		if _, err := sess.ProcessInput(tripwireCtx(t), "start initial background job", nil); err != nil {
+			t.Fatalf("turn 1 ProcessInput: %v", err)
+		}
+		requireSkillInventoryOrdinary(t, sess, skill.RunningJobsSkillName, "auto_disclosure")
+		if _, ok := sess.advertisedSkillInventory()[skill.RunningJobsSkillName]; !ok {
+			t.Fatal("auto-disclosed running-jobs missing from advertisedSkillInventory for compaction elicitation")
+		}
 
-	id := sess.ID()
-	sess.Close()
+		appendFillerTurnsForFold(sess, 20)
 
-	meta, err := schema.LoadSessionMeta(stateDir, id)
-	if err != nil {
-		t.Fatalf("LoadSessionMeta: %v", err)
-	}
-	c2 := llm.NewClient()
-	a2 := newFakeAdapter("openai",
-		func(llm.Request) llm.Response {
-			return agenttest.ToolCallResponse(llm.ToolCallData{ID: "sh2", Name: "shell", Arguments: bgArgs, Type: "function"})
-		},
-		func(llm.Request) llm.Response {
-			return agenttest.ToolCallResponse(communicateCall("c2", "done"))
-		},
-	)
-	c2.Register(a2)
-	resumed, err := RestoreSessionFromMetaWithConfig(c2, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, RestoreSessionConfig{
-		StateDir: stateDir,
-		testOnly: testConfig{skipGitSnapshot: true, noSyncJobStore: true},
+		if _, err := sess.ProcessInput(tripwireCtx(t), "compact and reload running-jobs", nil); err != nil {
+			t.Fatalf("turn 2 ProcessInput: %v", err)
+		}
+		if len(reqs) < 5 {
+			t.Fatalf("expected 5 model requests, got %d", len(reqs))
+		}
+		if got := countSkillContextEnvelopes(t, reqs[3], skill.RunningJobsSkillName); got != 1 {
+			t.Fatalf("post-compaction request after reload_skills=[running-jobs] has %d envelopes, want 1", got)
+		}
+		if got := countSkillContextEnvelopes(t, reqs[4], skill.RunningJobsSkillName); got != 1 {
+			t.Fatalf("post-compaction follow-up background shell produced %d envelopes, want 1 (no duplicate)", got)
+		}
 	})
-	if err != nil {
-		t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
-	}
-	defer resumed.Close()
 
-	if !resumed.disclosedRunningJobs || !resumed.disclosedReadingTranscripts || !resumed.disclosedUsingWorktrees {
-		t.Fatalf("resumed compacted session did not recover all sticky guide flags from pre-compaction transcript: running=%v transcripts=%v worktrees=%v",
-			resumed.disclosedRunningJobs, resumed.disclosedReadingTranscripts, resumed.disclosedUsingWorktrees)
-	}
-	if _, err := resumed.ProcessInput(tripwireCtx(t), "run two", nil); err != nil {
-		t.Fatalf("second ProcessInput: %v", err)
-	}
-	if got := countGuideNotifications(a2.Requests(), guideTopicRunningJobs); got != 0 {
-		t.Fatalf("resumed compacted session emitted %d duplicate running-jobs disclosures, want 0", got)
-	}
+	t.Run("retrigger_after_compaction_fold_without_reload", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		step := 0
+		var reqs []llm.Request
+		main := func(req llm.Request) llm.Response {
+			reqs = append(reqs, req)
+			step++
+			switch step {
+			case 1:
+				return agenttest.ToolCallResponse(llm.ToolCallData{ID: "sh1", Name: "shell", Arguments: bgArgs, Type: "function"})
+			case 2:
+				return agenttest.ToolCallResponse(communicateCall("c1", "first done"))
+			case 3:
+				return agenttest.ToolCallResponse(compactContextCall("cmp-none", []string{}))
+			case 4:
+				return agenttest.ToolCallResponse(llm.ToolCallData{ID: "sh2", Name: "shell", Arguments: bgArgs, Type: "function"})
+			case 5:
+				return agenttest.ToolCallResponse(llm.ToolCallData{ID: "sh3", Name: "shell", Arguments: bgArgs, Type: "function"})
+			default:
+				return agenttest.ToolCallResponse(communicateCall("c2", "second done"))
+			}
+		}
+		sess, _, _ := newReloadSession(t, dir, 0, main, reloadSummaryResponder("SUM_DROP_7910", nil), withConfig(SessionConfig{
+			StateDir:      t.TempDir(),
+			AgentsDocPath: filepath.Join(t.TempDir(), "no-AGENTS.md"),
+			testOnly:      testConfig{skipGitSnapshot: true, noSyncJobStore: true},
+		}))
+		defer sess.Close()
+
+		if _, err := sess.ProcessInput(tripwireCtx(t), "start initial background job", nil); err != nil {
+			t.Fatalf("turn 1 ProcessInput: %v", err)
+		}
+		prior := requireSkillInventoryOrdinary(t, sess, skill.RunningJobsSkillName, "auto_disclosure")
+
+		appendFillerTurnsForFold(sess, 20)
+
+		if _, err := sess.ProcessInput(tripwireCtx(t), "compact without reload then run background shells", nil); err != nil {
+			t.Fatalf("turn 2 ProcessInput: %v", err)
+		}
+		if len(reqs) < 6 {
+			t.Fatalf("expected 6 model requests, got %d", len(reqs))
+		}
+		if got := countSkillContextEnvelopes(t, reqs[3], skill.RunningJobsSkillName); got != 0 {
+			t.Fatalf("fixture setup error: post-fold request before re-trigger still had %d running-jobs envelopes", got)
+		}
+		if got := countSkillContextEnvelopes(t, reqs[4], skill.RunningJobsSkillName); got != 1 {
+			t.Fatalf("post-fold re-trigger delivered %d running-jobs envelopes, want 1", got)
+		}
+		if got := countSkillContextEnvelopes(t, reqs[5], skill.RunningJobsSkillName); got != 1 {
+			t.Fatalf("second post-fold background shell produced %d running-jobs envelopes, want 1 (no duplicate)", got)
+		}
+		if !sess.skillContentInLiveHistory(prior.Identity) {
+			t.Fatal("expected re-delivered running-jobs carrier to remain in live post-compaction history")
+		}
+	})
+
+	t.Run("resume_deduplicates_when_present_and_redelivers_after_drop", func(t *testing.T) {
+		t.Parallel()
+		stateDir := t.TempDir()
+		dir := t.TempDir()
+
+		c1 := llm.NewClient()
+		a1 := newFakeAdapter("openai",
+			func(llm.Request) llm.Response {
+				return agenttest.ToolCallResponse(llm.ToolCallData{ID: "sh1", Name: "shell", Arguments: bgArgs, Type: "function"})
+			},
+			func(llm.Request) llm.Response {
+				return agenttest.ToolCallResponse(communicateCall("c1", "done"))
+			},
+		)
+		c1.Register(a1)
+		registerTestSessionNamer(c1)
+		sess := newSession(t, withClient(c1), withDir(dir), withConfig(SessionConfig{
+			StateDir:      stateDir,
+			AgentsDocPath: filepath.Join(t.TempDir(), "no-AGENTS.md"),
+			testOnly:      testConfig{skipGitSnapshot: true, noSyncJobStore: true},
+		}))
+		if _, err := sess.ProcessInput(tripwireCtx(t), "run one", nil); err != nil {
+			t.Fatalf("initial ProcessInput: %v", err)
+		}
+		prior := requireSkillInventoryOrdinary(t, sess, skill.RunningJobsSkillName, "auto_disclosure")
+		id := sess.ID()
+		sess.Close()
+
+		// Resume while the skill carrier is still in live history: a new
+		// background shell must not inject a duplicate carrier.
+		meta1, err := schema.LoadSessionMeta(stateDir, id)
+		if err != nil {
+			t.Fatalf("LoadSessionMeta (before compact): %v", err)
+		}
+		c2 := llm.NewClient()
+		a2 := newFakeAdapter("openai",
+			func(llm.Request) llm.Response {
+				return agenttest.ToolCallResponse(llm.ToolCallData{ID: "sh2", Name: "shell", Arguments: bgArgs, Type: "function"})
+			},
+			func(llm.Request) llm.Response {
+				return agenttest.ToolCallResponse(communicateCall("c2", "done"))
+			},
+		)
+		c2.Register(a2)
+		registerTestSessionNamer(c2)
+		resumed1, err := RestoreSessionFromMetaWithConfig(c2, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta1, RestoreSessionConfig{
+			StateDir: stateDir,
+			testOnly: testConfig{skipGitSnapshot: true, noSyncJobStore: true},
+		})
+		if err != nil {
+			t.Fatalf("RestoreSessionFromMetaWithConfig (present): %v", err)
+		}
+		if _, err := resumed1.ProcessInput(tripwireCtx(t), "run while carrier present", nil); err != nil {
+			resumed1.Close()
+			t.Fatalf("resumed1 ProcessInput: %v", err)
+		}
+		reqs2 := a2.Requests()
+		if len(reqs2) < 2 {
+			resumed1.Close()
+			t.Fatalf("resumed1 expected 2 requests, got %d", len(reqs2))
+		}
+		if got := countSkillContextEnvelopes(t, reqs2[1], skill.RunningJobsSkillName); got != 1 {
+			resumed1.Close()
+			t.Fatalf("resumed session with carrier present had %d running-jobs envelopes, want 1", got)
+		}
+
+		// Fold away the carrier via Compact, close, and restore again.
+		appendFillerTurnsForFold(resumed1, 20)
+		if err := resumed1.Compact(tripwireCtx(t)); err != nil {
+			resumed1.Close()
+			t.Fatalf("Compact: %v", err)
+		}
+		if resumed1.skillContentInLiveHistory(prior.Identity) {
+			resumed1.Close()
+			t.Fatal("fixture setup error: running-jobs carrier survived Compact")
+		}
+		resumed1.Close()
+
+		meta2, err := schema.LoadSessionMeta(stateDir, id)
+		if err != nil {
+			t.Fatalf("LoadSessionMeta (after compact): %v", err)
+		}
+		c3 := llm.NewClient()
+		a3 := newFakeAdapter("openai",
+			func(llm.Request) llm.Response {
+				return agenttest.ToolCallResponse(llm.ToolCallData{ID: "sh3", Name: "shell", Arguments: bgArgs, Type: "function"})
+			},
+			func(llm.Request) llm.Response {
+				return agenttest.ToolCallResponse(llm.ToolCallData{ID: "sh4", Name: "shell", Arguments: bgArgs, Type: "function"})
+			},
+			func(llm.Request) llm.Response {
+				return agenttest.ToolCallResponse(communicateCall("c3", "done"))
+			},
+		)
+		c3.Register(a3)
+		resumed2, err := RestoreSessionFromMetaWithConfig(c3, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta2, RestoreSessionConfig{
+			StateDir: stateDir,
+			testOnly: testConfig{skipGitSnapshot: true, noSyncJobStore: true},
+		})
+		if err != nil {
+			t.Fatalf("RestoreSessionFromMetaWithConfig (compacted): %v", err)
+		}
+		defer resumed2.Close()
+
+		requireSkillInventoryOrdinary(t, resumed2, skill.RunningJobsSkillName, "auto_disclosure")
+		if resumed2.skillContentInLiveHistory(prior.Identity) {
+			t.Fatal("fixture setup error: resumed compacted history still contained running-jobs carrier")
+		}
+		if _, err := resumed2.ProcessInput(tripwireCtx(t), "run after compacted resume", nil); err != nil {
+			t.Fatalf("resumed2 ProcessInput: %v", err)
+		}
+		reqs3 := a3.Requests()
+		if len(reqs3) < 3 {
+			t.Fatalf("resumed2 expected 3 requests, got %d", len(reqs3))
+		}
+		inv := requestInventoryDocument(t, reqs3[0])
+		if !slices.ContainsFunc(inv, func(e schema.SkillInventorySummary) bool {
+			return e.Name == skill.RunningJobsSkillName && e.Availability == skillAvailabilityReloadable
+		}) {
+			t.Fatalf("post-compaction reload reminder missing reloadable running-jobs: %+v", inv)
+		}
+		if got := countSkillContextEnvelopes(t, reqs3[0], skill.RunningJobsSkillName); got != 0 {
+			t.Fatalf("resumed2 request 0 before trigger had %d running-jobs envelopes, want 0", got)
+		}
+		if got := countSkillContextEnvelopes(t, reqs3[1], skill.RunningJobsSkillName); got != 1 {
+			t.Fatalf("resumed2 request 1 after trigger had %d running-jobs envelopes, want 1", got)
+		}
+		if got := countSkillContextEnvelopes(t, reqs3[2], skill.RunningJobsSkillName); got != 1 {
+			t.Fatalf("resumed2 request 2 after second trigger had %d running-jobs envelopes, want 1", got)
+		}
+	})
 }
 
 func TestGuideDisclosures_UpgradedRestoreAvoidsBogusRemovedSkillsDelta(t *testing.T) {
@@ -822,12 +1017,7 @@ func TestGuideDisclosures_UpgradedRestoreAvoidsBogusRemovedSkillsDelta(t *testin
 		}
 		// Compaction resets envTracker from LaunchEnvBaseline; verify it still
 		// does not emit bogus removed-skill deltas for bundled guides afterward.
-		for i := range 20 {
-			u := schema.NewTurn(schema.TurnUserInput, llm.User(fmt.Sprintf("compact-u-%d", i)))
-			resumed.recordTurn(u, u)
-			a := schema.NewTurn(schema.TurnAssistant, llm.Assistant(fmt.Sprintf("compact-a-%d %s", i, strings.Repeat("x", 200))))
-			resumed.recordTurn(a, a)
-		}
+		appendFillerTurnsForFold(resumed, 20)
 		if err := resumed.Compact(tripwireCtx(t)); err != nil {
 			t.Fatalf("Compact on upgraded resumed session: %v", err)
 		}

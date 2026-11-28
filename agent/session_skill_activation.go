@@ -360,7 +360,7 @@ func skillInvocationAllowed(route string, controls skill.InvocationControls, aut
 	switch route {
 	case "user_slash", "user_selection":
 		return controls.UserInvocable
-	case "model_tool", "compaction_reload":
+	case "model_tool", "compaction_reload", "auto_disclosure":
 		return authorized || !controls.DisableModelInvocation
 	case "role_preload":
 		return true
@@ -461,9 +461,9 @@ func (s *Session) prepareSkillActivations(ctx context.Context, invocations []ski
 // warnFirstSkillCollision reports one warning for a catalog name the first time
 // a genuine model or user activation resolves it. The warning names the source
 // the catalog selected and every source it shadowed. Background routes (role
-// preload, compaction reload) and continuations pinned to a recorded source go
-// through the same preparation without re-reporting a catalog choice the user
-// did not just make.
+// preload, compaction reload, auto disclosure) and continuations pinned to a
+// recorded source go through the same preparation without re-reporting a
+// catalog choice the user did not just make.
 func (s *Session) warnFirstSkillCollision(invocation skillInvocation, descriptor skill.Descriptor) {
 	if invocation.Source != nil {
 		return
@@ -567,7 +567,7 @@ func ordinaryActivationRecord(item preparedSkillActivation, prior *schema.Ordina
 	}
 }
 
-// admitSkillActivationBatch admits a prepared user-route batch: each
+// admitSkillActivationBatch admits a prepared activation batch: each
 // activation's complete rendered instructions are recorded as a separately
 // identifiable typed context turn, and the pending delivery obligations are
 // persisted before any dispatch or restart can lose them. An activation whose
