@@ -12,6 +12,11 @@
 .svg {
   max-width: 100%;
   overflow: hidden;
+  /* Diagrams sit bare on neutral pages; a filled host (an accent user bubble)
+   * supplies a neutral well so ink-mid connectors stay legible. */
+  background: var(--mermaid-surface, transparent);
+  border-radius: var(--mermaid-radius, 0);
+  padding: var(--mermaid-pad, 0);
 }
 
 .svg > svg {

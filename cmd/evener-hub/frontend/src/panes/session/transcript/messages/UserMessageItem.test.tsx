@@ -230,6 +230,9 @@ test("delivered user bubbles paint white on accent-fill while leaving agent and 
   expect(deliveredBody).toMatch(/--quiet-ink:\s*var\(--on-fill\)/);
   expect(deliveredBody).toMatch(/--selection-surface:\s*var\(--on-fill\)/);
   expect(deliveredBody).toMatch(/--selection-ink:\s*var\(--accent-fill\)/);
+  expect(deliveredBody).toMatch(/--mermaid-surface:\s*var\(--surface-1\)/);
+  expect(deliveredBody).toMatch(/--mermaid-radius:\s*var\(--radius-pane\)/);
+  expect(deliveredBody).toMatch(/--mermaid-pad:\s*var\(--space-2\)/);
 
   const deliveredText = topRuleBlock(css, '.message[data-speaker="user"]:not(.provisional) .text');
   expect(deliveredText).toMatch(/color:\s*var\(--on-fill\)/);
@@ -268,6 +271,12 @@ test("inline markdown, entity triggers, quiet controls, and selection honor host
 
   const buttonCss = readModuleCss(import.meta.url, "../../../../widgets/button/button.module.css");
   expect(topRuleBlock(buttonCss, ".quiet")).toMatch(/color:\s*var\(--quiet-ink,\s*var\(--ink-hi\)\)/);
+
+  const mermaidCss = readModuleCss(import.meta.url, "../../../../widgets/mermaid/mermaid.module.css");
+  const mermaidSvg = topRuleBlock(mermaidCss, ".svg");
+  expect(mermaidSvg).toMatch(/background:\s*var\(--mermaid-surface,\s*transparent\)/);
+  expect(mermaidSvg).toMatch(/border-radius:\s*var\(--mermaid-radius,\s*0\)/);
+  expect(mermaidSvg).toMatch(/padding:\s*var\(--mermaid-pad,\s*0\)/);
 });
 
 test("renders GFM markdown in user messages and escapes raw HTML", () => {

@@ -102,8 +102,8 @@
  * themes, hugging short replies and expanding up to the reading column.
  * Custom-property hooks keep nested markdown, entity links, quiet open buttons,
  * focus rings, and text selection legible on indigo while self-surfaced blocks
- * (CodeBlock, narrow reflowed table cards, image thumbnails) reset them back to
- * page ink. */
+ * (CodeBlock, Mermaid diagrams, narrow reflowed table cards, image thumbnails)
+ * paint or reset back to neutral surfaces. */
 .message[data-speaker="user"]:not(.provisional) .body {
   align-self: flex-start;
   justify-self: start;
@@ -127,6 +127,9 @@
   --quiet-focus-ring: var(--focus-ring-width) solid var(--on-fill);
   --selection-surface: var(--on-fill);
   --selection-ink: var(--accent-fill);
+  --mermaid-surface: var(--surface-1);
+  --mermaid-radius: var(--radius-pane);
+  --mermaid-pad: var(--space-2);
 }
 
 .text {
