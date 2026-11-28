@@ -1325,6 +1325,27 @@ func TestEditFile_BlankLineTolerantUniqueFallback(t *testing.T) {
 				new:  "  Overview\n  Details\n\tVersion 2",
 				want: "\tOverview\n\n\tDetails\n\tVersion 2\n",
 			},
+			{
+				name: "changed first and last lines preserve interior paragraph breaks",
+				orig: "Status 1\n\nP1\n\nP2\n\nOwner 1\n",
+				old:  "Status 1\nP1\nP2\nOwner 1",
+				new:  "Status 2\nP1\nP2\nOwner 2",
+				want: "Status 2\n\nP1\n\nP2\n\nOwner 2\n",
+			},
+			{
+				name: "explicit blank-line reduction before changed line is honored",
+				orig: "Heading\n\nOld text\n\nFooter\n",
+				old:  "Heading\n\nOld text\nFooter",
+				new:  "Heading\nNew text\nFooter",
+				want: "Heading\nNew text\n\nFooter\n",
+			},
+			{
+				name: "explicit blank-line removal between unchanged lines is honored",
+				orig: "Heading\n\nBody\n\nFooter\n",
+				old:  "Heading\n\nBody\nFooter",
+				new:  "Heading\nBody\nFooter",
+				want: "Heading\nBody\n\nFooter\n",
+			},
 		}
 		for _, tc := range cases {
 			t.Run(tc.name, func(t *testing.T) {

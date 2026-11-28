@@ -2,7 +2,6 @@ package execenv
 
 import (
 	"fmt"
-	"slices"
 	"strings"
 )
 
@@ -199,71 +198,147 @@ func findBlankTolerantMatchSpan(content string, oldLines []string, maxSpans int)
 	return spans, nil, false
 }
 
-// reconcileBlankTolerantReplacement preserves unchanged leading/trailing whole
-// context lines (and their blank lines) from matched on blank-tolerant hits.
-func reconcileBlankTolerantReplacement(matched, oldString, newString string) string {
-	matchedLines := splitEditLines(matched, "\n")
-	oldLines, newLines := splitEditLines(oldString, "\n"), splitEditLines(newString, "\n")
-	matchedIdx := make([]int, 0, len(matchedLines))
-	for i, l := range matchedLines {
-		if normalizeWS(l) != "" {
-			matchedIdx = append(matchedIdx, i)
+// splitNonBlank partitions s into non-blank lines and the blank-line slices
+// around them: gaps[0] is leading blanks, gaps[i] sits between lines[i-1] and
+// lines[i], and gaps[len(lines)] is trailing blanks.
+func splitNonBlank(s string) (lines []string, gaps [][]string) {
+	var blanks []string
+	for _, l := range splitEditLines(s, "\n") {
+		if normalizeWS(l) == "" {
+			blanks = append(blanks, l)
+			continue
 		}
+		gaps = append(gaps, blanks)
+		blanks = nil
+		lines = append(lines, l)
 	}
-	p, pNB, s, sNB := 0, 0, 0, 0
-	for p < len(oldLines) && p < len(newLines) && oldLines[p] == newLines[p] {
-		if normalizeWS(oldLines[p]) != "" {
-			pNB++
-		}
+	return lines, append(gaps, blanks)
+}
+
+// alignUnchangedLines returns matched (oldIdx, newIdx) anchor pairs via common
+// prefix/suffix trimming plus bounded LCS DP over the interior.
+func alignUnchangedLines(oldLines, newLines []string) [][2]int {
+	m, k := len(oldLines), len(newLines)
+	p, s := 0, 0
+	for p < m && p < k && oldLines[p] == newLines[p] {
 		p++
 	}
-	if p == len(oldLines) && p == len(newLines) {
-		return matched
-	}
-	for p+s < len(oldLines) && p+s < len(newLines) && oldLines[len(oldLines)-1-s] == newLines[len(newLines)-1-s] {
-		if normalizeWS(oldLines[len(oldLines)-1-s]) != "" {
-			sNB++
-		}
+	for p+s < m && p+s < k && oldLines[m-1-s] == newLines[k-1-s] {
 		s++
 	}
-	totalNB := len(matchedIdx)
-	if (pNB == 0 && sNB == 0) || pNB+sNB > totalNB {
-		return newString
+	anchors := make([][2]int, 0, p+s)
+	for i := range p {
+		anchors = append(anchors, [2]int{i, i})
 	}
-	for pNB > 0 && p < len(newLines)-s && normalizeWS(newLines[p]) == "" && p > 0 && normalizeWS(oldLines[p-1]) == "" {
-		p--
-	}
-	for sNB > 0 && p < len(newLines)-s && normalizeWS(newLines[len(newLines)-s-1]) == "" && s > 0 && normalizeWS(oldLines[len(oldLines)-s]) == "" {
-		s--
-	}
-	newMid := newLines[p : len(newLines)-s]
-	gap := func(k int) []string { return matchedLines[matchedIdx[k]+1 : matchedIdx[k+1]] }
-	var prefix, preGap, postGap, suffix []string
-	if pNB > 0 {
-		prefix = matchedLines[:matchedIdx[pNB-1]+1]
-	}
-	if sNB > 0 {
-		suffix = matchedLines[matchedIdx[totalNB-sNB]:]
-	}
-	startNB := len(newMid) > 0 && normalizeWS(newMid[0]) != ""
-	endNB := len(newMid) > 0 && normalizeWS(newMid[len(newMid)-1]) != ""
-	if pNB+sNB == totalNB {
-		if pNB > 0 && sNB > 0 && startNB && endNB {
-			if p > 0 && normalizeWS(oldLines[p-1]) == "" {
-				preGap = gap(pNB - 1)
-			} else {
-				postGap = gap(pNB - 1)
+	om, nm := m-p-s, k-p-s
+	if om > 0 && nm > 0 && om*nm <= 16384 {
+		w := nm + 1
+		dp := make([]int, (om+1)*w)
+		for i := om - 1; i >= 0; i-- {
+			for j := nm - 1; j >= 0; j-- {
+				if oldLines[p+i] == newLines[p+j] {
+					dp[i*w+j] = dp[(i+1)*w+j+1] + 1
+				} else {
+					dp[i*w+j] = max(dp[(i+1)*w+j], dp[i*w+j+1])
+				}
 			}
 		}
-	} else {
-		if pNB > 0 && (startNB || (len(newMid) == 0 && sNB > 0)) {
-			preGap = gap(pNB - 1)
-		}
-		if sNB > 0 && (endNB || (len(newMid) == 0 && pNB > 0 && len(preGap) == 0)) {
-			postGap = gap(totalNB - sNB - 1)
+		for i, j := 0, 0; i < om && j < nm; {
+			if oldLines[p+i] == newLines[p+j] {
+				anchors = append(anchors, [2]int{p + i, p + j})
+				i, j = i+1, j+1
+			} else if dp[(i+1)*w+j] >= dp[i*w+j+1] {
+				i++
+			} else {
+				j++
+			}
 		}
 	}
-	return strings.Join(slices.Concat(prefix, preGap, newMid, postGap, suffix), "\n")
+	for i := range s {
+		anchors = append(anchors, [2]int{m - s + i, k - s + i})
+	}
+	return anchors
+}
+
+// reconcileBlankTolerantReplacement aligns unchanged non-blank lines between
+// oldString and newString and preserves real file lines and untouched blank
+// gaps from matched while honoring explicit blank-line edits in newString.
+func reconcileBlankTolerantReplacement(matched, oldString, newString string) string {
+	mLines, fGaps := splitNonBlank(matched)
+	oLines, oGaps := splitNonBlank(oldString)
+	nLines, nGaps := splitNonBlank(newString)
+	m, k := len(mLines), len(nLines)
+	if m != len(oLines) || k == 0 {
+		return newString
+	}
+	anchors := alignUnchangedLines(oLines, nLines)
+	if len(anchors) == 0 {
+		return newString
+	}
+	var out []string
+	pickGap := func(oi, nj int, preserve bool) []string {
+		if preserve && len(oGaps[oi]) == len(nGaps[nj]) {
+			return fGaps[oi]
+		}
+		return nGaps[nj]
+	}
+	emitNew := func(lo, hi int) {
+		for j := lo; j < hi; j++ {
+			if j > lo {
+				out = append(out, nGaps[j]...)
+			}
+			out = append(out, nLines[j])
+		}
+	}
+	first, last := anchors[0], anchors[len(anchors)-1]
+	out = append(out, nGaps[0]...)
+	if first[1] > 0 {
+		emitNew(0, first[1])
+		out = append(out, pickGap(first[0], first[1], first[0] > 0)...)
+	}
+	out = append(out, mLines[first[0]])
+	for i := 1; i < len(anchors); i++ {
+		prevO, prevN := anchors[i-1][0], anchors[i-1][1]
+		curO, curN := anchors[i][0], anchors[i][1]
+		delCount, insCount := curO-prevO-1, curN-prevN-1
+		switch {
+		case delCount == 0 && insCount == 0:
+			out = append(out, pickGap(curO, curN, true)...)
+		case delCount == 0:
+			leadGap, trailGap := nGaps[prevN+1], nGaps[curN]
+			if len(leadGap) == len(oGaps[curO]) && len(trailGap) == 0 {
+				if len(oGaps[curO]) == 0 {
+					trailGap = fGaps[curO]
+				} else {
+					leadGap = fGaps[curO]
+				}
+			} else if len(trailGap) == len(oGaps[curO]) && len(leadGap) == 0 {
+				trailGap = fGaps[curO]
+			}
+			out = append(out, leadGap...)
+			emitNew(prevN+1, curN)
+			out = append(out, trailGap...)
+		case insCount == 0:
+			if len(nGaps[curN]) > 0 || len(oGaps[prevO+1]) > 0 || len(oGaps[curO]) > 0 {
+				out = append(out, nGaps[curN]...)
+			} else if len(fGaps[prevO+1]) > 0 {
+				out = append(out, fGaps[prevO+1]...)
+			} else {
+				out = append(out, fGaps[curO]...)
+			}
+		default:
+			out = append(out, pickGap(prevO+1, prevN+1, true)...)
+			emitNew(prevN+1, curN)
+			out = append(out, pickGap(curO, curN, true)...)
+		}
+		out = append(out, mLines[curO])
+	}
+	if last[1]+1 < k {
+		out = append(out, pickGap(last[0]+1, last[1]+1, last[0]+1 < m)...)
+		emitNew(last[1]+1, k)
+	}
+	out = append(out, nGaps[k]...)
+	return strings.Join(out, "\n")
 }
 
 // normalizeWS collapses all whitespace runs to single spaces and trims ends.

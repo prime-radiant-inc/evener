@@ -390,6 +390,41 @@ func TestReconcileBlankTolerantReplacement(t *testing.T) {
 			new:     "a\nb",
 			want:    "a\n\nb",
 		},
+		{
+			name:    "changed first and last lines preserve interior paragraph breaks",
+			matched: "Status 1\n\nP1\n\nP2\n\nOwner 1",
+			old:     "Status 1\nP1\nP2\nOwner 1",
+			new:     "Status 2\nP1\nP2\nOwner 2",
+			want:    "Status 2\n\nP1\n\nP2\n\nOwner 2",
+		},
+		{
+			name:    "explicit boundary blank reduction to zero is honored",
+			matched: "Heading\n\nOld text\n\nFooter",
+			old:     "Heading\n\nOld text\nFooter",
+			new:     "Heading\nNew text\nFooter",
+			want:    "Heading\nNew text\n\nFooter",
+		},
+		{
+			name:    "explicit blank removal between unchanged lines is honored",
+			matched: "Heading\n\nBody\n\nFooter",
+			old:     "Heading\n\nBody\nFooter",
+			new:     "Heading\nBody\nFooter",
+			want:    "Heading\nBody\n\nFooter",
+		},
+		{
+			name:    "explicit blank removal on pure deletion is honored",
+			matched: "a\n\ndrop\nb\n\nc",
+			old:     "a\n\ndrop\nb\nc",
+			new:     "a\nb\nc",
+			want:    "a\nb\n\nc",
+		},
+		{
+			name:    "explicit blank removal on pure insertion is honored",
+			matched: "a\n\nb\n\nc",
+			old:     "a\n\nb\nc",
+			new:     "a\nmid\nb\nc",
+			want:    "a\nmid\nb\n\nc",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -399,6 +434,22 @@ func TestReconcileBlankTolerantReplacement(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("large interior exceeds DP cap and still preserves prefix and suffix blanks", func(t *testing.T) {
+		t.Parallel()
+		var oldBody, newBody []string
+		for i := range 130 {
+			oldBody = append(oldBody, "old"+strings.Repeat("x", i%5+1))
+			newBody = append(newBody, "new"+strings.Repeat("y", i%5+1))
+		}
+		matched := "Head1\n\nHead2\n\n" + strings.Join(oldBody, "\n") + "\n\nTail1\n\nTail2"
+		oldStr := "Head1\nHead2\n" + strings.Join(oldBody, "\n") + "\nTail1\nTail2"
+		newStr := "Head1\nHead2\n" + strings.Join(newBody, "\n") + "\nTail1\nTail2"
+		want := "Head1\n\nHead2\n\n" + strings.Join(newBody, "\n") + "\n\nTail1\n\nTail2"
+		if got := reconcileBlankTolerantReplacement(matched, oldStr, newStr); got != want {
+			t.Fatalf("large-needle reconciliation mismatch:\ngot =%q\nwant=%q", got, want)
+		}
+	})
 }
 
 // TestNearestFileRegion_IncludesOneBasedLineNumber pins the near-miss
