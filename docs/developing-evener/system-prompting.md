@@ -8,16 +8,16 @@ Evener separates **launch-time static context** from **runtime incremental updat
 
 ```mermaid
 flowchart LR
-  Launch[Launch prompt and immutable req.Tools] --> Cache[Byte-identical KV-cache prefix across turns]
+  Launch[Launch prompt and full registered req.Tools] --> Cache[Byte-identical KV-cache prefix across turns]
   Cache --> Tail[Append-only conversation tail]
   Env[envctx diffs] --> Tail
   Notif[Event-triggered system-notification and job-notification] --> Tail
+  Results[Concise lifecycle and paging instructions in tool results] --> Tail
   Skills[On-demand bundled skills via use_skill] --> Tail
-  Schema[tool_search and reactive one-time schema disclosure] --> Tail
   Replay[Full assistant reasoning replay] --> Tail
 ```
 
-At session startup, [`agent/session_prompts.go`](../../agent/session_prompts.go) renders [`agent/prompts/system.md.tmpl`](../../agent/prompts/system.md.tmpl) once from live capabilities and freezes it (`systemPromptFrozen`). [`agent/session_tool_definitions.go`](../../agent/session_tool_definitions.go) caches the wire tool list (`cachedToolDefs`) so `req.Tools` stays stable across rounds. Runtime changes, lifecycle disclosures, job completions, and loaded skills append to the conversation tail, preserving the prefix cache.
+At session startup, [`agent/session_prompts.go`](../../agent/session_prompts.go) renders [`agent/prompts/system.md.tmpl`](../../agent/prompts/system.md.tmpl) once from live capabilities and freezes it (`systemPromptFrozen`). `rebuildToolDefsCache` in [`agent/session_tool_definitions.go`](../../agent/session_tool_definitions.go) caches full schemas for registered tools (`cachedToolDefs`) so `req.Tools` stays stable across rounds. Runtime changes, concise lifecycle and paging instructions (such as `formatShellResult` in [`agent/session_tools_shell.go`](../../agent/session_tools_shell.go)), job completions, and loaded skills append to the conversation tail, preserving the prefix cache.
 
 ## Identity and original prose
 
@@ -92,29 +92,29 @@ Every prompt line, section, and environment block must reflect the session's act
 
 Provider prompt prefix KV-caches across Anthropic, OpenAI Responses, Chat Completions, and Gemini require byte-identical prefixes: the system prompt, the `req.Tools` array (order, names, and schemas), and all prior messages.
 
-- **Freeze the launch prefix and `req.Tools`:** Evener freezes the rendered system prompt at launch (`systemPromptFrozen` in [`agent/session_prompts.go`](../../agent/session_prompts.go)) and serves a cached wire tool list (`cachedToolDefs` in [`agent/session_tool_definitions.go`](../../agent/session_tool_definitions.go)). Avoid mutating `req.Tools` mid-session to swap deferred schemas in or out. Mid-session tool-array mutations bust the entire prompt prefix cache and convert cheap cached reads into expensive uncached prefills.
+- **Freeze the launch prefix and `req.Tools`:** Evener freezes the rendered system prompt at launch (`systemPromptFrozen` in [`agent/session_prompts.go`](../../agent/session_prompts.go)) and serves a cached wire tool list (`cachedToolDefs` built by `rebuildToolDefsCache` in [`agent/session_tool_definitions.go`](../../agent/session_tool_definitions.go)) with full schemas for registered tools. Avoid mutating `req.Tools` mid-session to swap schemas in or out. Mid-session tool-array mutations bust the entire prompt prefix cache and convert cheap cached reads into expensive uncached prefills.
 - **Never elide or prune earlier reasoning replay:** Preserve full assistant reasoning history across all wire adapters (`llm/providers/anthropic/`, `llm/providers/responses/`, `llm/providers/chatcompletions/`, and `llm/providers/google/`). Dropping or window-pruning earlier reasoning blocks invalidates the prompt prefix KV-cache and breaks continuity on reasoning models. Achieve input-token reductions by cutting static Turn-1 prompt weight, schema size, tool-result boilerplate, and unnecessary rounds while leaving history intact.
 
 ### Two-tier tool surface (when deferral is enabled)
 
-When a session enables tool deferral to shrink Turn-1 schema overhead, keep the wire tool list immutable by splitting tools into two tiers at launch:
+Today, `rebuildToolDefsCache` advertises full schemas for every registered tool (including `delegate`, `job_watch`, and `read_transcript`), and Evener has no schema-deferral setting or `tool_search` tool. When a session enables tool deferral to shrink Turn-1 schema overhead, keep the wire tool list immutable by splitting tools into two tiers at launch:
 
 | Tier | Membership | Wire representation in `req.Tools` | Discovery mechanism |
 | --- | --- | --- | --- |
 | **Tier 1 (upfront)** | Core file, search, and shell tools, planning and delegation tools (`task_list`, `delegate`, `delegate_send`), `use_skill`, `web_fetch`, result reporting, and configured `Tier1Tools` promotions | Full JSON schema and concise description | Directly visible at Turn 1 |
 | **Tier 2 (deferred)** | Rare or schema-heavy tools permitted by session policy (`job_*`, `manage_worktree`, `read_transcript`, `find_session_transcripts`, `doctor_evener`, `compact_context`, `model_list`, `notes_*`, `urls_*`, `memory_*`) | Empty-description open-object stub callable directly by name | Compact read-only `tool_search` lookup, reactive event-triggered schema disclosure in tail notifications, and one-time live-schema self-disclosure on invalid arguments |
 
-Five design invariants govern this layout:
+Five design invariants govern a deferred tool surface:
 
 1. **Keep planning and delegation in Tier 1:** Place core planning and delegation tools (`task_list`, `delegate`, `delegate_send`) in Tier 1 with compact schemas alongside file, search, shell, `use_skill`, `web_fetch`, and result reporting. Multi-step repository work then avoids stub-guessing and suppressed delegation while rare or schema-heavy tools stay deferred as empty stubs.
 2. **Additive promotion respects policy ceilings:** Configurable `Tier1Tools` promotion promotes permitted tools from Tier 2 to Tier 1 for workflows that invoke them heavily. Promotion stays strictly inside the session's policy and denied tool ceilings; it never makes a denied or excluded tool callable.
 3. **Direct open-object stubs beat wrapper indirection:** Keeping every Tier 2 tool in `req.Tools` under its own name lets the model call the tool directly without `call_tool` wrapper keys. Direct calls avoid double-encoded JSON errors, keep transcripts and UI rows legible, and keep `req.Tools` byte-identical across turns.
 4. **Empty stub descriptions prevent blind bypass calls:** Deferred stubs carry empty descriptions on purpose. Putting a short summary on a deferred stub tempts models to guess parameters and skip `tool_search`. Leaving the stub bare guides the model to inspect the full schema with `tool_search` first, while one-time live-schema self-disclosure on invalid arguments recovers cleanly if the model calls a deferred tool with bad parameters.
-5. **Disclose deferred schemas reactively on lifecycle events:** Back deferred stubs with **reactive event-triggered schema disclosure** alongside `tool_search`. When a session loads a matching skill, launches or promotes a background job, spawns a delegate, or hits a truncated artifact, disclose the relevant deferred tool's full schema once in a tail notification, achieving zero `req.Tools` mutation and zero KV-cache invalidation.
+5. **Disclose deferred schemas reactively on lifecycle events:** When a session enables tool deferral, back deferred stubs with **reactive event-triggered schema disclosure** alongside `tool_search`. Only for tools whose schemas were actually deferred behind stubs, disclose the relevant deferred tool's full schema once in a tail notification when a matching skill loads, a background job launches or promotes, a delegate spawns, or output truncates into an artifact, achieving zero `req.Tools` mutation and zero KV-cache invalidation. Never re-emit schemas that `req.Tools` already advertises in full.
 
 ### Preserve delegation discoverability
 
-Hiding delegation completely suppresses delegation on multi-part work, even when parallel subagents would finish faster and cleaner. Whenever `delegate` is registered (including when a custom profile defers its schema to Tier 2), retain a compact Turn-1 delegation cue:
+Hiding delegation completely suppresses delegation on multi-part work, even when parallel subagents would finish faster and cleaner. Whenever `delegate` is registered (including if a deferred tool surface ever places its schema in Tier 2), retain a compact Turn-1 delegation cue:
 
 - a single-sentence cue stating when to delegate;
 - a compact `<available_agents>` roster (role names, brief descriptions, and default task summaries, with authoritative per-role tool lists computed dynamically in [`agent/session_tool_definitions.go`](../../agent/session_tool_definitions.go) so the frozen launch prompt and live `delegate` schema never disagree);
