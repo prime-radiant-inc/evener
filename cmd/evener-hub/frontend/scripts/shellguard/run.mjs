@@ -957,10 +957,150 @@ async function assertTabletActionGeometry(send) {
 }
 
 async function measureWideIPad({ send }) {
+  // Pin the motion preference the glass scene requires. iPhoneGlass skips
+  // creating the scene under prefers-reduced-motion: reduce while the body
+  // still reads glass mode as regular, so a host carrying the preference
+  // would pass the clip assert and then hang the drawn wait on a healthy
+  // build. The clear after the pass hands the shared tab back its host
+  // media for the next measurement.
+  await send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-reduced-motion", value: "no-preference" }] });
   await evaluate(send, "window.overviewPane('other')");
   await waitForDom(send, "document.querySelector('[data-iphone-composer] [data-testid=composer-submit]')", "wide iPad composer");
   await assertFocusedComposerClips(send);
+  await assertDrawnGlassCanvasContained(send);
   await assertTabletActionGeometry(send);
+  await send("Emulation.setEmulatedMedia", { features: [] });
+}
+
+// The drawn half of the glass containment contract (#7930). The SDK creates
+// each surface's canvas inside the surface, then its own pipeline - the frame
+// addSurface requests, the ResizeObserver's measure, the worker's paint -
+// moves the canvas to a positioned previous sibling when the card clips,
+// sizes it to the card plus its bleed, and flags the card
+// data-iphone-glass-drawn. Nothing drives that pipeline, so the guard only
+// waits for the drawn flag, then requires the canvas to be the card's previous
+// sibling (the placement the SDK maintains for a clipped card: an unclipped
+// card keeps the bleed-sized canvas in-card, widening the card's scrollable
+// content - the escape #7928 fixed), to cover the card it drew, and to add
+// no horizontal scroll range any user can reach.
+async function assertDrawnGlassCanvasContained(send) {
+  await waitForDom(
+    send,
+    "document.querySelector('[data-iphone-composer=\"focused\"] [data-prompt-card]')?.hasAttribute('data-iphone-glass-drawn')",
+    "focused composer card painted by the liquid-glass worker",
+  );
+  await settleFiniteAnimations(send);
+  const drawn = await evaluate(
+    send,
+    `(() => {
+      const card = document.querySelector('[data-iphone-composer="focused"] [data-prompt-card]');
+      if (!card) return { card: false };
+      const prev = card.previousElementSibling;
+      const canvas = prev && prev.matches('[data-lg-canvas]') ? prev : null;
+      const rect = (el) => {
+        const r = el.getBoundingClientRect();
+        return { left: r.left, top: r.top, right: r.right, bottom: r.bottom };
+      };
+      return {
+        card: true,
+        surface: card.hasAttribute('data-lg-surface'),
+        prevSiblingCanvas: Boolean(canvas),
+        inCard: Boolean(card.querySelector('[data-lg-canvas]')),
+        canvasRect: canvas ? rect(canvas) : null,
+        cardRect: rect(card),
+      };
+    })()`,
+  );
+  if (!drawn.card) {
+    throw new Error('the focused conversation card vanished after the liquid-glass worker painted');
+  }
+  if (!drawn.surface) {
+    throw new Error("the focused conversation card never registered as a liquid-glass surface - the drawn-canvas check would pass vacuously");
+  }
+  if (!drawn.prevSiblingCanvas || drawn.inCard) {
+    throw new Error(
+      `the drawn liquid-glass canvas is hosted inside the conversation card (prevSiblingCanvas=${drawn.prevSiblingCanvas}, inCard=${drawn.inCard}) - the SDK hosts the canvas in-card only when the card does not clip, and the in-card canvas widens the card's scrollable content`,
+    );
+  }
+  if (
+    !drawn.canvasRect ||
+    drawn.canvasRect.left > drawn.cardRect.left ||
+    drawn.canvasRect.right < drawn.cardRect.right ||
+    drawn.canvasRect.top > drawn.cardRect.top ||
+    drawn.canvasRect.bottom < drawn.cardRect.bottom
+  ) {
+    throw new Error(
+      `the drawn glass canvas does not cover the conversation card (canvas ${JSON.stringify(drawn.canvasRect)} card ${JSON.stringify(drawn.cardRect)}) - the SDK sizes the sibling canvas to the card plus its bleed, so a partial cover means the canvas is not this card's`,
+    );
+  }
+  const added = await evaluate(
+    send,
+    `(() => {
+      const card = document.querySelector('[data-iphone-composer="focused"] [data-prompt-card]');
+      if (!card) return { card: false };
+      const canvas = card.previousElementSibling && card.previousElementSibling.matches('[data-lg-canvas]') ? card.previousElementSibling : null;
+      const describe = (el) => {
+        let d = el.tagName.toLowerCase();
+        const classes = String(el.className).trim().split(/\s+/).filter(Boolean);
+        if (classes.length) d += '.' + classes.slice(0, 3).join('.');
+        for (const attr of ['data-prompt-card', 'data-iphone-composer', 'data-pane-scaffold-root', 'data-reading-scroll-host', 'role', 'data-testid']) {
+          if (el.getAttribute(attr) !== null) d += '[' + attr + ']';
+        }
+        return d;
+      };
+      const read = () => {
+        const levels = [];
+        for (let el = card; el; el = el.parentElement) {
+          levels.push({ descriptor: describe(el), overhang: el.scrollWidth - el.clientWidth, overflowX: getComputedStyle(el).overflowX });
+        }
+        return levels;
+      };
+      // Both reads run in one synchronous evaluation, with the canvas hidden
+      // between them: renders ride rAF, so the SDK cannot react to the hide,
+      // and the finally restores the inline display before any frame. The
+      // difference is exactly what the canvas adds to each box.
+      const shown = read();
+      if (!canvas) return { card: true, canvas: false, levels: shown };
+      const display = canvas.style.display;
+      try {
+        canvas.style.display = 'none';
+        const hidden = read();
+        return {
+          card: true,
+          canvas: true,
+          levels: shown.map((level, i) => ({ ...level, added: level.overhang - hidden[i].overhang })),
+        };
+      } finally {
+        canvas.style.display = display;
+      }
+    })()`,
+  );
+  if (!added.card) {
+    throw new Error('the focused conversation card vanished before its overhang could be read');
+  }
+  if (!added.canvas) {
+    throw new Error('the drawn glass canvas is gone from beside the conversation card');
+  }
+  for (let i = 0; i < added.levels.length; i++) {
+    const level = added.levels[i];
+    // The canvas's contribution only fails the guard where the box actually
+    // scrolls: a visible box hands its growth up to the next scroller (which
+    // this walk also measures) and a clipped box discards it, while the
+    // document root is the viewport scroller whatever its computed overflow
+    // says. The SDK sizes the sibling canvas to the card plus its bleed, so
+    // its host boxes always report the bleed as overhang - invisible unless a
+    // scroller adopts it.
+    const scrolls =
+      (i === added.levels.length - 1 && level.overflowX !== "clip") ||
+      level.overflowX === "auto" ||
+      level.overflowX === "scroll" ||
+      level.overflowX === "hidden";
+    if (level.added > 0 && scrolls) {
+      throw new Error(
+        `the drawn glass canvas added horizontal scroll range at ${level.descriptor} (overflow-x: ${level.overflowX}): +${level.added}px`,
+      );
+    }
+  }
 }
 
 // The focused conversation card is the one surface the liquid-glass SDK draws:
