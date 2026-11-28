@@ -862,8 +862,9 @@ func (s *Session) skillToolActivate(ctx context.Context, skillName, toolCallID s
 		// The hit is provisional: compaction or projection can still remove the
 		// body before dispatch. The obligation stands until final admission.
 		outcome.Status = "already_present"
+		out := systemNotificationf("Skill %q is already active with identical content (source %s); its complete instructions remain in this conversation.", identity.Name, identity.Source)
 		return tool.StateResult{
-			Output: systemNotificationf("Skill %q is already active with identical content (source %s); its complete instructions remain in this conversation.", identity.Name, identity.Source),
+			Output: out,
 			State:  skillToolState{Outcome: outcome, Obligation: obligation},
 		}, nil
 	}

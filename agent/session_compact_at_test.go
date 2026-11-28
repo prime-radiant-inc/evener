@@ -503,7 +503,10 @@ func TestRequestNearTheWindowRaisesNoContextBudgetWarning(t *testing.T) {
 	c := llm.NewClient()
 	base := withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2"))
 	standing := standingRequestTokens(t, dir, base, SessionConfig{StateDir: t.TempDir()}, "hi")
-	profile := withContextWindow(base, standing*100/90)
+	// Keep synthetic headroom above the pre-dispatch safety reserve floor
+	// while still placing the request near the context window.
+	window := max(standing*100/90, standing+llm.SafetyReserveTokens(standing)+64)
+	profile := withContextWindow(base, window)
 
 	c.Register(newFakeAdapter("openai", func(llm.Request) llm.Response { return agenttest.FinalResponse("done") }))
 	sess := newSession(t, withClient(c), withProfile(profile), withDir(dir), withConfig(SessionConfig{StateDir: t.TempDir()}))

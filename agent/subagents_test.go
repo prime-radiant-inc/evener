@@ -114,6 +114,9 @@ func TestToolSummaryAdvertisesWhatTheDefaultGrantGrants(t *testing.T) {
 				registered := child.reg.RegisteredNames()
 				got := make([]string, 0, len(registered))
 				for name := range registered {
+					if name == "tool_search" && child.hasDeferredToolsLocked() {
+						continue
+					}
 					got = append(got, name)
 				}
 				sort.Strings(got)

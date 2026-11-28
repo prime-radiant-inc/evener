@@ -230,12 +230,24 @@ func (s *Session) maybeNudgeSelfCompact(sysPromptChars int) bool {
 	s.mu.Lock()
 	s.nudgedSinceCompact = true
 	s.mu.Unlock()
-	if err := s.steerKind(selfCompactNudge(s.canInstructTool("compact_context"), skillInventoryNames(s.advertisedSkillInventory())), events.SteeringKindCompactNudge); err != nil {
+	canCompact := s.canInstructTool("compact_context")
+	nudge := selfCompactNudge(canCompact, skillInventoryNames(s.advertisedSkillInventory()))
+	discloseCompact := false
+	if canCompact {
+		if notice := formatDeferredToolSchemas(s.deferredToolDefsForDisclosure([]string{"compact_context"}, false)); notice != "" {
+			nudge += "\n" + notice
+			discloseCompact = true
+		}
+	}
+	if err := s.steerKind(nudge, events.SteeringKindCompactNudge); err != nil {
 		s.mu.Lock()
 		s.nudgedSinceCompact = false
 		s.mu.Unlock()
 		s.emitDiagnosticWarning(events.WarningData{Message: fmt.Sprintf("compact nudge admission failed: %v", err)})
 		return false
+	}
+	if discloseCompact {
+		s.markToolSchemasDisclosed([]string{"compact_context"})
 	}
 	return true
 }

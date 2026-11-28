@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"maps"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -16,6 +17,7 @@ import (
 	"primeradiant.com/evener/agent/internal/hooks"
 	"primeradiant.com/evener/agent/internal/runetrim"
 	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/agent/internal/tool/repair"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
@@ -472,6 +474,25 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 	// non-sandbox error, a non-interactive/subagent session, or an ineligible denial
 	// all pass through untouched (escalateOnSandboxDenial is a no-op for them).
 	res = s.escalateOnSandboxDenial(ctx, call.Name, res, toolCallRerunner{session: s, call: call}.run)
+	droppedUnknown := slices.ContainsFunc(prep.Changes, func(c repair.Change) bool { return c.Kind == repair.ChangeDropUnknown })
+	if s.isDeferredTool(call.Name) {
+		if prep.PrevalErr != "" || res.Rejected || (droppedUnknown && res.IsError) {
+			if notice := s.discloseDeferredToolsNotification("", []string{call.Name}); notice != "" {
+				res.Output += "\n" + notice
+				res.FullOutput += "\n" + notice
+			}
+		} else if droppedUnknown {
+			if notice, claimed := s.discloseDeferredTools("", []string{call.Name}); notice != "" {
+				if err := s.steerKind(notice, events.SteeringKindNotification); err != nil {
+					s.mu.Lock()
+					for _, name := range claimed {
+						delete(s.disclosedToolSchemas, name)
+					}
+					s.mu.Unlock()
+				}
+			}
+		}
+	}
 	s.execToolCheckpoint("after_execute")
 	if err := s.errIfClosing(); err != nil {
 		emitCanceledEnd(err)
@@ -543,6 +564,8 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 	s.emit(endData)
 	s.responseSideEffectsMu.Unlock()
 	closeToolEvent()
+
+	s.steerReactiveToolDisclosure(call.Name, res, outputRef)
 
 	if early := s.runPostToolHooks(ctx, call, res); early != nil {
 		return *early

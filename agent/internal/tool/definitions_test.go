@@ -1479,3 +1479,31 @@ func TestDefDelegatePromptAndTaskListSchema(t *testing.T) {
 		t.Errorf("task_list items additionalProperties = %v, want false", items["additionalProperties"])
 	}
 }
+
+func TestDefToolSearch(t *testing.T) {
+	def := DefToolSearch()
+	if def.Name != "tool_search" {
+		t.Fatalf("name = %q, want tool_search", def.Name)
+	}
+	if def.Strict == nil || *def.Strict {
+		t.Fatalf("Strict = %v, want pointer to false", def.Strict)
+	}
+	if strings.TrimSpace(def.Description) == "" || strings.Contains(def.Description, "\n") {
+		t.Fatalf("Description = %q, want compact 1-line description", def.Description)
+	}
+	if ap, ok := def.Parameters["additionalProperties"].(bool); !ok || ap {
+		t.Fatalf("additionalProperties = %v, want false", def.Parameters["additionalProperties"])
+	}
+	props, ok := def.Parameters["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("properties = %T, want map[string]any", def.Parameters["properties"])
+	}
+	namesProp, ok := props["names"].(map[string]any)
+	if !ok || namesProp["type"] != "array" {
+		t.Fatalf("names prop = %#v, want array", namesProp)
+	}
+	queryProp, ok := props["query"].(map[string]any)
+	if !ok || queryProp["type"] != "string" {
+		t.Fatalf("query prop = %#v, want string", queryProp)
+	}
+}

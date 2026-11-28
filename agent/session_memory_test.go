@@ -3443,14 +3443,25 @@ func TestMemoryWarningDeliveryRestricted(t *testing.T) {
 func TestMemorySchemaAndOutputAliases(t *testing.T) {
 	t.Parallel()
 	pairs := map[string]string{"memory_read": "read_file", "memory_write": "write_file", "memory_edit": "edit_file", "memory_search": "grep", "memory_delete": "write_file"}
+	var sess *Session
 	s := newSession(t, withConfig(SessionConfig{MemoryStateRoot: t.TempDir()}), withSteps(func(req llm.Request) llm.Response {
+		if !hasToolDef(req.Tools, "memory_read") || !hasToolDef(req.Tools, "tool_search") {
+			t.Fatal("request missing deferred memory_read stub or tool_search")
+		}
 		seen := 0
-		for _, def := range req.Tools {
-			if _, memory := pairs[def.Name]; !memory {
+		sess.mu.Lock()
+		defs := make([]llm.ToolDefinition, 0, len(pairs))
+		for name := range pairs {
+			def, ok := sess.deferredToolDefinitionLocked(name)
+			if !ok {
 				continue
 			}
+			defs = append(defs, def)
+		}
+		sess.mu.Unlock()
+		for _, def := range defs {
 			seen++
-			required := def.Parameters["required"].([]string)
+			required, _ := def.Parameters["required"].([]string)
 			for _, field := range []string{"scope", "intent"} {
 				if !slices.Contains(required, field) {
 					t.Fatalf("advertised %s does not require %s: %v", def.Name, field, required)
@@ -3458,10 +3469,11 @@ func TestMemorySchemaAndOutputAliases(t *testing.T) {
 			}
 		}
 		if seen != len(pairs) {
-			t.Fatalf("advertised memory tools=%d want=%d", seen, len(pairs))
+			t.Fatalf("deferred memory tools=%d want=%d", seen, len(pairs))
 		}
 		return agenttest.FinalResponse("schemas checked")
 	}))
+	sess = s
 	for name, base := range pairs {
 		memory, ordinary := s.reg.Get(name), s.reg.Get(base)
 		if memory == nil || ordinary == nil || memory.Limit != ordinary.Limit {

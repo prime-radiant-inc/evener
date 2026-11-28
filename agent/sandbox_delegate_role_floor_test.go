@@ -215,6 +215,9 @@ func TestCreateDelegate_FilteredMutationToolUsesEffectiveCeilingFloor(t *testing
 			}
 			assertReadOnlyDelegateBackend(t, child.sess, sandbox.ModeReadOnly, false)
 			for name := range child.sess.reg.RegisteredNames() {
+				if name == "tool_search" && child.sess.hasDeferredToolsLocked() {
+					continue
+				}
 				if !hasString(descriptor.ToolNameCeiling, name) {
 					t.Fatalf("runtime tool %q exceeds committed effective ceiling %v", name, descriptor.ToolNameCeiling)
 				}

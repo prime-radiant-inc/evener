@@ -286,6 +286,7 @@ func mainWithDeps(deps mainDeps) {
 		sandboxNet:                  *flags.sandboxNet,
 		commitProvenance:            *flags.commitProvenance,
 		apiLog:                      *flags.apiLog,
+		tier1Tools:                  []string(flags.tier1Tools),
 		runTimeout:                  *flags.runTimeout,
 		askResponder:                *flags.askResponder,
 		stdout:                      deps.stdout,

@@ -49,6 +49,7 @@ type launchFlags struct {
 	sandboxNet                  *string
 	commitProvenance            *string
 	apiLog                      *string
+	tier1Tools                  stringSliceFlag
 }
 
 func registerLaunchFlags(fs *flag.FlagSet) *launchFlags {
@@ -92,6 +93,7 @@ func registerLaunchFlags(fs *flag.FlagSet) *launchFlags {
 	flags.sandboxNet = fs.String("sandbox-net", "on", "sandbox network egress `on|off` (default on; only applies with a non-off --sandbox mode)")
 	flags.commitProvenance = fs.String("commit-provenance", "", "record Evener session details in commit messages the model writes: `coauthor` or `off` (default coauthor)")
 	flags.apiLog = fs.String("api-log", "off", "durable API request logging `on|off` (default off; on records every provider request and response to <state-dir>/sessions/<id>.api.jsonl)")
+	fs.Var(&flags.tier1Tools, "tier1-tool", "extra tool `name` to promote to Tier-1 upfront schema (repeatable)")
 	return flags
 }
 

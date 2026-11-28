@@ -309,10 +309,96 @@ func (s *Session) profileWireToolDefs() []llm.ToolDefinition {
 // rebuildToolDefsCache builds the cached tool definition lists from the
 // current profile, MCP tools, and registry state. Called once at session init
 // and again if tools are added at runtime (e.g. MCP or custom tools).
+var tier2DeferredGroups = map[string]string{
+	"job_list":                 "jobs",
+	"job_status":               "jobs",
+	"job_stop":                 "jobs",
+	"job_watch":                "jobs",
+	"manage_worktree":          "worktrees",
+	"read_transcript":          "transcripts",
+	"find_session_transcripts": "transcripts",
+	"doctor_evener":            "doctor",
+	"compact_context":          "compact",
+	"model_list":               "secondary",
+	"notes_agent_set":          "secondary",
+	"notes_read":               "secondary",
+	"urls_add":                 "secondary",
+	"urls_remove":              "secondary",
+	"memory_read":              "secondary",
+	"memory_write":             "secondary",
+	"memory_edit":              "secondary",
+	"memory_delete":            "secondary",
+	"memory_search":            "secondary",
+}
+
+func (s *Session) isTier1PromotedLocked(canonicalName string) bool {
+	if s == nil || len(s.cfg.Tier1Tools) == 0 {
+		return false
+	}
+	nameMap := s.toolNameMap()
+	for _, raw := range s.cfg.Tier1Tools {
+		if canonicalToolName(raw, nameMap) == canonicalName {
+			return true
+		}
+	}
+	return false
+}
+
+// isDeferredToolLocked reports whether canonicalName is deferred to a minimal
+// Tier-2 stub in req.Tools (with full schemas discoverable via tool_search and
+// JIT disclosures). Manager sessions, parent observers, configured Tier1Tools,
+// and the configured result tool keep full Tier-1 schemas upfront.
+func (s *Session) isDeferredToolLocked(canonicalName string) bool {
+	if s == nil || s.resultToolOwnsToolSearch() || canonicalName == s.resultToolName() {
+		return false
+	}
+	group, ok := tier2DeferredGroups[canonicalName]
+	if !ok {
+		return false
+	}
+	if s.isTier1PromotedLocked(canonicalName) {
+		return false
+	}
+	if group == "jobs" && (s.hubEnabled || s.cfg.spawn.parentWatchGranted) {
+		return false
+	}
+	if canonicalName == "read_transcript" && (s.hubEnabled || s.cfg.spawn.parentWatchGranted) {
+		return false
+	}
+	if s.hubEnabled && canonicalName == "model_list" {
+		return false
+	}
+	return true
+}
+
+func (s *Session) hasDeferredToolsLocked() bool {
+	if s == nil {
+		return false
+	}
+	return len(s.cachedDeferredFullDefs) > 0
+}
+
+// deferredToolStub returns the minimal static open-object stub for a
+// deferred Tier-2 tool.
+func deferredToolStub(canonicalName string, nameMap map[string]string) llm.ToolDefinition {
+	strictFalse := false
+	return llm.ToolDefinition{
+		Name:        providerToolName(canonicalName, nameMap),
+		Description: "",
+		Strict:      &strictFalse,
+		Parameters: map[string]any{
+			"type":                 "object",
+			"properties":           map[string]any{},
+			"additionalProperties": true,
+		},
+	}
+}
+
 func (s *Session) rebuildToolDefsCache() {
 	if s == nil || s.reg == nil {
 		if s != nil {
 			s.cachedToolDefs = nil
+			s.cachedDeferredFullDefs = nil
 			s.cachedToolDefsJSONBytes = 0
 			s.toolDefsGen++
 		}
@@ -415,6 +501,9 @@ func (s *Session) rebuildToolDefsCache() {
 		if included[td.Name] {
 			continue
 		}
+		if td.Name == "tool_search" && !s.resultToolOwnsToolSearch() {
+			continue
+		}
 		// Never expose both apply_patch and edit_file in the same session; both
 		// stay registered in s.reg for mid-session model switching.
 		if (td.Name == "apply_patch" && included["edit_file"]) || (td.Name == "edit_file" && included["apply_patch"]) {
@@ -444,8 +533,17 @@ func (s *Session) rebuildToolDefsCache() {
 	}
 	// The registry holds what this session can call, by canonical name.
 	canMessageDelegates := s.reg.Get("delegate_send") != nil
+	deferredFull := make(map[string]llm.ToolDefinition)
 	for i := range defs {
-		if isResultToolDefinition(defs[i].Name, defs[i].Name, s.resultToolName()) {
+		canonical := canonicalToolName(defs[i].Name, nameMap)
+		if s.isDeferredToolLocked(canonical) {
+			full := defs[i]
+			full.Name = canonical
+			deferredFull[canonical] = wireDeferredToolDef(full, nameMap)
+			defs[i] = deferredToolStub(canonical, nameMap)
+			continue
+		}
+		if isResultToolDefinition(canonical, defs[i].Name, s.resultToolName()) {
 			defs[i] = tool.WithoutIntentParameter(defs[i])
 			if s.reportsToParent() {
 				defs[i] = tool.WithCommunicateDelegateUpdates(defs[i])
@@ -459,8 +557,18 @@ func (s *Session) rebuildToolDefsCache() {
 			defs[i] = tool.WithIntentParameterRequired(defs[i])
 		}
 	}
+	if !s.resultToolOwnsToolSearch() {
+		if len(deferredFull) == 0 {
+			s.reg.Remove("tool_search")
+		} else if s.ensureToolSearchRegisteredLocked() {
+			if rt := s.reg.Get("tool_search"); rt != nil {
+				defs = append(defs, tool.WithIntentParameterRequired(normalizeRegistryToolDefinition(rt.Definition)))
+			}
+		}
+	}
 
 	s.cachedToolDefs = defs
+	s.cachedDeferredFullDefs = deferredFull
 	s.cachedToolDefsJSONBytes = llm.ToolsJSONBytes(defs)
 	s.toolDefsGen++
 }

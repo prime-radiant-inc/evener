@@ -102,6 +102,32 @@ func defReadFile(visionSuffix, visionParamDesc string) llm.ToolDefinition {
 	}
 }
 
+// DefToolSearch defines the compact Tier-1 read-only discovery tool that
+// loads full parameter schemas for deferred Tier-2 tools without mutating req.Tools.
+func DefToolSearch() llm.ToolDefinition {
+	strictFalse := false
+	return llm.ToolDefinition{
+		Name:        "tool_search",
+		Description: "Load deferred tool schemas by exact `names` or keyword `query`.",
+		Strict:      &strictFalse,
+		Parameters: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"names": map[string]any{
+					"type":        "array",
+					"items":       map[string]any{"type": "string"},
+					"description": "Deferred tool names.",
+				},
+				"query": map[string]any{
+					"type":        "string",
+					"description": "Keyword filter (\"all\" or empty lists all).",
+				},
+			},
+		},
+	}
+}
+
 // DefReadFile returns read_file for Regime 3, where images and PDFs both use
 // the vision side-channel.
 func DefReadFile() llm.ToolDefinition {

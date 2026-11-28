@@ -57,6 +57,9 @@ func TestCachedToolDefs_MatchUncached(t *testing.T) {
 		}
 		wantNames[wireName] = true
 	}
+	if sess.hasDeferredToolsLocked() {
+		wantNames["tool_search"] = true
+	}
 	if len(wantNames) == 0 {
 		t.Fatal("no registered profile tools found — test precondition violated")
 	}

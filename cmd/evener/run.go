@@ -68,6 +68,7 @@ type runConfig struct {
 	sandboxNet                  string        // --sandbox-net on|off
 	commitProvenance            string        // --commit-provenance coauthor|off (empty keeps the default or a resumed value)
 	apiLog                      string        // --api-log on|off (default off)
+	tier1Tools                  []string      // --tier1-tool tool names promoted to Tier-1 upfront
 	askResponder                string        // --ask-responder command; non-empty makes the session interactive
 
 	// Resume options.
@@ -395,6 +396,7 @@ func run(ctx context.Context, cfg runConfig) error {
 		ExportATIFPath:              cfg.exportATIF,
 		ExportATIFProviderHandles:   cfg.exportATIFProviderHandles,
 		VisionModel:                 visionModel,
+		Tier1Tools:                  cfg.tier1Tools,
 		NonInteractive:              true,
 		TurnEndsProcess:             true,
 		SystemPromptAsUser:          cfg.systemPromptAsUser,
@@ -456,6 +458,7 @@ func run(ctx context.Context, cfg runConfig) error {
 			ProviderIdleTimeout:         cfg.providerIdleTimeout,
 			CompactAtPercent:            cfg.compactAtPercent,
 			CommitProvenance:            cfg.commitProvenance,
+			Tier1Tools:                  baseSessionCfg.Tier1Tools,
 			TurnEndsProcess:             baseSessionCfg.TurnEndsProcess,
 			// See RestoreSessionConfig.ExportATIFPath: the flag is json:"-" on
 			// SessionConfig, so restore cannot recover it from the saved meta.

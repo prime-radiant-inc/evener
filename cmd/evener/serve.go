@@ -697,6 +697,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		ExportATIFPath:              *lf.exportATIF,
 		ExportATIFProviderHandles:   *lf.exportATIFProviderHandles,
 		VisionModel:                 visionModelVal,
+		Tier1Tools:                  []string(lf.tier1Tools),
 		NonInteractive:              *nonInteractive,
 		Manager:                     *managerMode,
 		SystemPromptAsUser:          *lf.systemPromptAsUser,
@@ -759,6 +760,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			ProviderIdleTimeout:         *lf.providerIdleTimeout,
 			CompactAtPercent:            *lf.compactAtPercent,
 			CommitProvenance:            *lf.commitProvenance,
+			Tier1Tools:                  sessionCfg.Tier1Tools,
 			AgentsDocPath:               *agentsDoc,
 			// See RestoreSessionConfig.ExportATIFPath.
 			ExportATIFPath:            sessionCfg.ExportATIFPath,

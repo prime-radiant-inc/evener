@@ -1763,6 +1763,55 @@ func TestServeCompactAtPercentFlagReachesTheSessionConfig(t *testing.T) {
 	}
 }
 
+func TestServeTier1ToolFlagReachesTheSessionConfig(t *testing.T) {
+	installServeScriptedProvider(t, &scriptedProvider{name: "openai"})
+	deps := defaultServeDeps()
+	deps.ensureConfigDirs = func() error { return nil }
+	deps.seedMarketplaces = func(context.Context) error { return nil }
+	var got agent.SessionConfig
+	deps.newSession = func(_ *llm.Client, _ *provider.Profile, _ execenv.ExecutionEnvironment, cfg agent.SessionConfig) (*agent.Session, error) {
+		got = cfg
+		return nil, errNoSessionToday
+	}
+
+	args := []string{
+		"--model", "openai/gpt-test",
+		"--dir", t.TempDir(),
+		"--state-dir", t.TempDir(),
+		"--tier1-tool", "manage_worktree",
+		"--tier1-tool", "task_list",
+	}
+	if err := runServeWithDeps(args, deps); !errors.Is(err, errNoSessionToday) {
+		t.Fatalf("serve error = %v, want session-creation sentinel", err)
+	}
+	if len(got.Tier1Tools) != 2 || got.Tier1Tools[0] != "manage_worktree" || got.Tier1Tools[1] != "task_list" {
+		t.Fatalf("SessionConfig.Tier1Tools = %v, want [manage_worktree task_list]", got.Tier1Tools)
+	}
+
+	stateDir := t.TempDir()
+	const sessionID = "02wMz5Txv1C3Hut0M8GCeB"
+	if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{
+		ID: sessionID, ProfileID: "openai", Model: "gpt-test",
+		CreatedAt: time.Unix(1, 0).UTC(), UpdatedAt: time.Unix(2, 0).UTC(),
+	}); err != nil {
+		t.Fatalf("SaveSessionMeta: %v", err)
+	}
+	var gotRestore []string
+	deps.restoreSession = func(_ *llm.Client, _ *provider.Profile, _ execenv.ExecutionEnvironment, _ schema.SessionMeta, restoreCfg agent.RestoreSessionConfig) (*agent.Session, error) {
+		gotRestore = restoreCfg.Tier1Tools
+		return nil, errNoSessionToday
+	}
+	if err := runServeWithDeps([]string{
+		"--resume", sessionID, "--dir", stateDir, "--state-dir", stateDir, "--run-dir", t.TempDir(),
+		"--tier1-tool", "manage_worktree",
+	}, deps); !errors.Is(err, errNoSessionToday) {
+		t.Fatalf("serve resume error = %v, want session-creation sentinel", err)
+	}
+	if len(gotRestore) != 1 || gotRestore[0] != "manage_worktree" {
+		t.Fatalf("RestoreSessionConfig.Tier1Tools = %v, want [manage_worktree]", gotRestore)
+	}
+}
+
 // A resume takes the flag too: the hub passes --agents-doc on every resume it
 // spawns (buildResumeArgs), and the restore has to prefer it over the path
 // frozen in the snapshot, which a pre-feature session never had and a moved
