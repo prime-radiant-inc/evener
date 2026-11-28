@@ -60,11 +60,15 @@ func RequestDeviceCode(ctx context.Context, client *http.Client, cfg Config) (De
 	if payload.DeviceCode == "" || payload.UserCode == "" || payload.VerificationURL == "" || payload.ExpiresIn <= 0 {
 		return DeviceCode{}, fmt.Errorf("%w: missing device authorization fields", ErrMalformedResponse)
 	}
+	expiry, err := expiryAfter(nowFunc(), payload.ExpiresIn, "expires_in")
+	if err != nil {
+		return DeviceCode{}, err
+	}
 	interval := positiveInterval(time.Duration(payload.Interval) * time.Second)
 	return DeviceCode{
 		DeviceCode: payload.DeviceCode, UserCode: payload.UserCode,
 		VerificationURL: payload.VerificationURL, Interval: interval,
-		Expiry: nowFunc().Add(time.Duration(payload.ExpiresIn) * time.Second),
+		Expiry: expiry,
 	}, nil
 }
 
@@ -86,7 +90,10 @@ func PollDeviceOnce(ctx context.Context, client *http.Client, cfg Config, dc Dev
 	}
 	switch payload.Error {
 	case "":
-		tokens := payload.tokenSet(nowFunc())
+		tokens, err := payload.tokenSet(nowFunc())
+		if err != nil {
+			return TokenSet{}, PollPending, interval, err
+		}
 		if err := validateTokenSet(tokens); err != nil {
 			return TokenSet{}, PollPending, interval, err
 		}

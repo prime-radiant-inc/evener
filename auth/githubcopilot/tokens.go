@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"net/url"
 	"strings"
@@ -75,16 +76,39 @@ func postFormJSON(ctx context.Context, client *http.Client, cfg Config, path str
 	return nil
 }
 
-func (p tokenResponsePayload) tokenSet(now time.Time) TokenSet {
+// maxLifetimeSeconds is the longest lifetime, in whole seconds, that a
+// time.Duration can hold. A larger expires_in would wrap when converted and put
+// the computed expiry in the past.
+const maxLifetimeSeconds = int64(math.MaxInt64 / int64(time.Second))
+
+// expiryAfter turns a positive lifetime in seconds into an absolute expiry. A
+// lifetime too long for time.Duration is a malformed response rather than an
+// immediately expired credential.
+func expiryAfter(now time.Time, seconds int, field string) (time.Time, error) {
+	if int64(seconds) > maxLifetimeSeconds {
+		return time.Time{}, fmt.Errorf("%w: %s out of range", ErrMalformedResponse, field)
+	}
+	return now.Add(time.Duration(seconds) * time.Second), nil
+}
+
+func (p tokenResponsePayload) tokenSet(now time.Time) (TokenSet, error) {
 	tokens := TokenSet{AccessToken: p.AccessToken, RefreshToken: p.RefreshToken,
 		TokenType: p.TokenType, Scope: p.Scope}
 	if p.ExpiresIn > 0 {
-		tokens.AccessExpiry = now.Add(time.Duration(p.ExpiresIn) * time.Second)
+		expiry, err := expiryAfter(now, p.ExpiresIn, "expires_in")
+		if err != nil {
+			return TokenSet{}, err
+		}
+		tokens.AccessExpiry = expiry
 	}
 	if p.RefreshExpiresIn > 0 {
-		tokens.RefreshExpiry = now.Add(time.Duration(p.RefreshExpiresIn) * time.Second)
+		expiry, err := expiryAfter(now, p.RefreshExpiresIn, "refresh_token_expires_in")
+		if err != nil {
+			return TokenSet{}, err
+		}
+		tokens.RefreshExpiry = expiry
 	}
-	return tokens
+	return tokens, nil
 }
 
 // validateTokenSet enforces the GitHub tokens a record needs. The GitHub access
@@ -160,7 +184,10 @@ func RefreshToken(ctx context.Context, client *http.Client, cfg Config, refreshT
 	default:
 		return TokenSet{}, fmt.Errorf("github token refresh failed: %s", payload.Error)
 	}
-	tokens := payload.tokenSet(nowFunc())
+	tokens, err := payload.tokenSet(nowFunc())
+	if err != nil {
+		return TokenSet{}, err
+	}
 	if err := validateTokenSet(tokens); err != nil {
 		return TokenSet{}, err
 	}
