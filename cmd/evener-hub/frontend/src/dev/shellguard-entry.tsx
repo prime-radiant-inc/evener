@@ -643,7 +643,10 @@ function measureShell() {
   const de = document.documentElement;
   const shell = harnessRoot("shellguard").firstElementChild;
   // Select the rail directly, independently of header control placement.
-  const rail = document.querySelector(`.${railStyles.rail}`);
+  // Markers, not classes: composing a module class joins two class names
+  // with a space, which a single-dot interpolation turns into a descendant
+  // selector that matches nothing (kata: the .docked refactor).
+  const rail = document.querySelector("[data-sidebar-rail]");
   const newSession = rail === null ? null : rail.querySelector<HTMLButtonElement>('[data-testid="rail-new-session"]');
   const railBody =
     rail === null ? null : ([...rail.children].find((el) => getComputedStyle(el).overflowY !== "visible") ?? null);
@@ -808,13 +811,13 @@ function scrollMetrics(el: Element | null) {
 // The mobile Sheet panel hosting the rail. Shared by both mobile
 // measurements so the ancestor walk lives in exactly one place.
 function mobileRailPanel(): Element | null {
-  const rail = document.querySelector(`.${railStyles.rail}`);
+  const rail = document.querySelector("[data-sidebar-rail]");
   const panelBody = rail?.parentElement ?? null;
   return panelBody?.parentElement ?? null;
 }
 
 function measureMobileSidebar() {
-  const rail = document.querySelector(`.${railStyles.rail}`);
+  const rail = document.querySelector("[data-sidebar-rail]");
   const railBody = findRailBody();
   const panelBody = rail?.parentElement ?? null;
   const panel = mobileRailPanel();
@@ -1083,7 +1086,7 @@ function revealFocusScrollActions(trigger: HTMLElement | null): boolean {
 // The rail's own scroll container, by class: shared by the mobile Sheet
 // measurement and the focus-scroll fixture so the lookup lives in one place.
 function findRailBody(): HTMLElement | null {
-  const body = document.querySelector(`.${railStyles.rail}`)?.querySelector(`.${railStyles.body}`) ?? null;
+  const body = document.querySelector("[data-sidebar-rail]")?.querySelector(`.${railStyles.body}`) ?? null;
   return body instanceof HTMLElement ? body : null;
 }
 

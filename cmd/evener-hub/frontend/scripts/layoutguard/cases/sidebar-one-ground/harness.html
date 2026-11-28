@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=1200, initial-scale=1">
+<title>sidebar one-ground harness</title>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="resolved.css">
+</head>
+<body>
+<div data-theme="dark" id="dark-scope">
+  <div class="rail" id="rail-dark"></div>
+</div>
+<div data-theme="light" id="light-scope">
+  <div class="rail" id="rail-light"></div>
+</div>
+<script>
+window.measure = () => {
+  const cs = (id) => getComputedStyle(document.getElementById(id));
+  const railDark = cs("rail-dark"), railLight = cs("rail-light");
+  return {
+    railDarkBg: railDark.backgroundColor,
+    railLightBg: railLight.backgroundColor,
+    railDarkBorderRightWidth: railDark.borderRightWidth,
+    railDarkBorderRightStyle: railDark.borderRightStyle,
+    railDarkBorderRightColor: railDark.borderRightColor,
+    railLightBorderRightColor: railLight.borderRightColor,
+    railDarkShadow: railDark.boxShadow,
+    railLightShadow: railLight.boxShadow,
+    railDarkZ: railDark.zIndex,
+  };
+};
+</script>
+</body>
+</html>

@@ -6,9 +6,9 @@
   width: var(--overview-width, 320px);
   min-width: 0;
   flex: none;
-  position: relative;
   border-left: 1px solid var(--edge);
-  background: var(--surface-canvas);
+  composes: docked from "../../styles/surface.module.css";
+  box-shadow: var(--shadow-overview);
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -23,6 +23,7 @@
   height: 100%;
   flex: 1 1 auto;
   border-left: none;
+  box-shadow: none;
 }
 
 /* Closed desktop Overview: the Show chip docks at the top-right edge, mirroring

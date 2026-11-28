@@ -11,6 +11,7 @@
     "styles/global.css",
     "styles/text.module.css",
     "styles/tokens.css",
+    "styles/surface.module.css",
     "styles/dockedEdge.module.css",
     "shell/activitybar/activitybar.module.css",
     "widgets/tabs/tabs.module.css"

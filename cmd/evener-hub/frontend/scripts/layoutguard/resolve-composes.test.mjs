@@ -71,6 +71,32 @@ describe("prefixClassSelectors", () => {
 });
 
 describe("resolveComposes", () => {
+  test("resolves a same-name composes import without a cycle, consumer declarations kept", () => {
+    // popover.module.css's .panel composes floatingSurface.module.css's
+    // .panel: the consumer extends the same-named class from another
+    // module. The consumer is not a target of itself.
+    const out = resolveComposes([
+      ".panel { background: blue; }",
+      '.panel { composes: panel from "./floatingSurface.module.css"; color: red; }',
+    ]);
+    expect(out).toMatch(/\.panel\s*\{[^}]*background:\s*blue[^}]*color:\s*red/);
+    expect(out).not.toContain("composes");
+  });
+
+  test("resolves a composes chain transitively, the way the build merges class lists", () => {
+    // .sidebarMobile composes .sidebar, which itself composes .docked from
+    // another module: postcss-modules merges the whole class list, so the
+    // mobile sidebar paints the docked ground. A single pass leaves the
+    // second hop as a literal composes line the browser drops.
+    const out = resolveComposes([
+      ".docked { background: blue; position: relative; }",
+      '.sidebar { composes: docked from "./surface.module.css"; color: red; }\n.sidebarMobile { composes: sidebar; }',
+    ]);
+    expect(out).toMatch(/\.sidebarMobile\s*\{[^}]*background:\s*blue/);
+    expect(out).toMatch(/\.sidebarMobile\s*\{[^}]*color:\s*red/);
+    expect(out).not.toContain("composes");
+  });
+
   test("unwraps :global while still resolving composes", () => {
     const out = resolveComposes([
       ".base { color: red; }",

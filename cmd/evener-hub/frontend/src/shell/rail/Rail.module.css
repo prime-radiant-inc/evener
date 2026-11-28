@@ -28,19 +28,19 @@
   width: var(--rail-width, 280px);
   min-width: 0;
   height: 100%;
-  /* Anchors the absolutely-positioned resize handle to the right edge. */
-  position: relative;
-  background: var(--surface-canvas);
+  composes: docked from "../../styles/surface.module.css";
   border-right: 1px solid var(--edge);
+  box-shadow: var(--shadow-rail);
 }
 
 /* Below 900px either the drawer or the tablet board frames the Rail.
- * Fill that width and leave the border to its host. */
+ * Fill that width and leave the border and the cast to its host. */
 @media (max-width: 899px), (display-mode: standalone) {
   :where(html:not(:has([data-desktop-workspace]))) {
     .rail {
       width: 100%;
       border-right: none;
+      box-shadow: none;
     }
   }
 }

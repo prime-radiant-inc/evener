@@ -8,9 +8,10 @@ import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { act } from "react-test-renderer";
 import { expect, it, vi } from "vitest";
 import { createTestStack } from "../navigationTestStack.testkit";
+import { paletteFor } from "../design/tokens";
 import { render, settle } from "../renderNative.testkit";
 import type { Routes } from "../screens";
-import { DuoSplit } from "./DuoSplit";
+import { DuoSplit, duoSurfaceStyles } from "./DuoSplit";
 
 const harness = vi.hoisted(() => ({
 	openConversation: null as ((params: Routes["Conversation"]) => void) | null,
@@ -142,4 +143,42 @@ it("folds the conversation on screen into the root stack", async () => {
 	act(() => tree.unmount());
 	expect(onFold).toHaveBeenCalledTimes(1);
 	expect(onFold).toHaveBeenCalledWith(first);
+});
+
+it("seats both panes on the one page ground with the sidebar's shadow cast onto the detail", () => {
+	for (const scheme of ["light", "dark"] as const) {
+		const palette = paletteFor(scheme);
+		const styles = duoSurfaceStyles(palette);
+		expect(styles.root.backgroundColor).toBe(palette.page);
+		expect(styles.sidebar.backgroundColor).toBe(palette.page);
+		expect(styles.divider).toEqual({ width: 1, backgroundColor: palette.edge });
+		expect(styles.sidebar).toMatchObject({
+			shadowColor: "#000",
+			shadowOpacity: 0.12,
+			shadowRadius: 8,
+			shadowOffset: { width: 2, height: 0 },
+			elevation: 3,
+			zIndex: 1,
+		});
+	}
+});
+
+const flattenStyle = (style: unknown): Record<string, unknown> =>
+	Object.assign({}, ...([style].flat().filter(Boolean) as Record<string, unknown>[]));
+
+it("applies the sidebar's shadow style to the rendered Board wrapper", async () => {
+	const { tree } = mount();
+	await settle();
+	const sidebar = tree.root.findAll(
+		(node) => node.type === ("View" as never) && flattenStyle(node.props.style).shadowOpacity === 0.12,
+	);
+	expect(sidebar).toHaveLength(1);
+	expect(flattenStyle(sidebar[0]?.props.style)).toMatchObject({
+		shadowColor: "#000",
+		shadowOpacity: 0.12,
+		shadowRadius: 8,
+		shadowOffset: { width: 2, height: 0 },
+		elevation: 3,
+		zIndex: 1,
+	});
 });

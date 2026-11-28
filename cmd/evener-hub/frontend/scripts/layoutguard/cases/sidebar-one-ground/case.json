@@ -1,0 +1,22 @@
+{
+  "name": "sidebar-one-ground",
+  "description": "the rail shares the page's --surface-0 ground in both themes, with the split carried by the 1px --edge hairline plus the one-sided --shadow-rail cast (spec 2026-11-28)",
+  "cssFiles": [
+    "styles/global.css",
+    "styles/tokens.css",
+    "styles/surface.module.css",
+    "shell/rail/Rail.module.css"
+  ],
+  "viewport": {
+    "width": 1200,
+    "height": 800,
+    "deviceScaleFactor": 1,
+    "mobile": false
+  },
+  "mutation": {
+    "declaration": "shell/rail/Rail.module.css: background reverted to var(--surface-canvas), box-shadow/z-index declarations removed (the pre-change code)",
+    "verified": "2026-11-28",
+    "expect": "fail",
+    "note": "Verified by running the case against the pre-change code: both background probes resolved to canvas rgb(22, 24, 28)/rgb(238, 240, 243) instead of the page values, boxShadow was none, and z-index was auto."
+  }
+}

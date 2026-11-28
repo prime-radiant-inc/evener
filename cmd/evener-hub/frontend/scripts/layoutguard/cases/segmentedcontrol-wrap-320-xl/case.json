@@ -12,6 +12,7 @@
     "styles/tapfloor.module.css",
     "styles/text.module.css",
     "styles/tokens.css",
+    "styles/surface.module.css",
     "styles/dockedEdge.module.css",
     "widgets/segmentedcontrol/segmentedcontrol.module.css",
     "shell/activitybar/activitybar.module.css"

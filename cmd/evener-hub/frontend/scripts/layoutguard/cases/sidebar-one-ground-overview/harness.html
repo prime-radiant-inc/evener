@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=1200, initial-scale=1">
+<title>overview one-ground harness</title>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="resolved.css">
+</head>
+<body>
+<div data-theme="dark" id="dark-scope">
+  <div class="sidebar" id="overview-dark"></div>
+</div>
+<div data-theme="light" id="light-scope">
+  <div class="sidebar" id="overview-light"></div>
+</div>
+<div class="sidebarMobile" id="overview-mobile"></div>
+<script>
+window.measure = () => {
+  const cs = (id) => getComputedStyle(document.getElementById(id));
+  const ovDark = cs("overview-dark"), ovLight = cs("overview-light");
+  const ovMobile = cs("overview-mobile");
+  return {
+    ovDarkBg: ovDark.backgroundColor,
+    ovLightBg: ovLight.backgroundColor,
+    ovMobileBg: ovMobile.backgroundColor,
+    ovDarkBorderLeftWidth: ovDark.borderLeftWidth,
+    ovDarkBorderLeftStyle: ovDark.borderLeftStyle,
+    ovDarkBorderLeftColor: ovDark.borderLeftColor,
+    ovLightBorderLeftColor: ovLight.borderLeftColor,
+    ovMobileBorderLeftWidth: ovMobile.borderLeftWidth,
+    ovDarkShadow: ovDark.boxShadow,
+    ovLightShadow: ovLight.boxShadow,
+    ovMobileShadow: ovMobile.boxShadow,
+    ovDarkZ: ovDark.zIndex,
+  };
+};
+</script>
+</body>
+</html>

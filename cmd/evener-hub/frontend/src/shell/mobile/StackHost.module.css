@@ -40,8 +40,8 @@
   border-right: 1px solid var(--edge);
   min-height: 0;
   padding-top: env(safe-area-inset-top);
-  background: var(--surface-canvas);
-  position: relative;
+  composes: docked from "../../styles/surface.module.css";
+  box-shadow: var(--shadow-rail);
   display: flex;
   flex-direction: column;
 }

@@ -1,0 +1,24 @@
+{
+  "name": "sidebar-one-ground-overview",
+  "description": "the Overview sidebar shares the page's --surface-0 ground in both themes, with the split carried by the 1px --edge hairline plus the left-cast --shadow-overview, and the mobile variant carries neither (spec 2026-11-28)",
+  "cssFiles": [
+    "styles/global.css",
+    "styles/tokens.css",
+    "styles/text.module.css",
+    "styles/dockedEdge.module.css",
+    "styles/surface.module.css",
+    "shell/activitybar/activitybar.module.css"
+  ],
+  "viewport": {
+    "width": 1200,
+    "height": 800,
+    "deviceScaleFactor": 1,
+    "mobile": false
+  },
+  "mutation": {
+    "declaration": "shell/activitybar/activitybar.module.css: backgrounds reverted to var(--surface-canvas), box-shadow/z-index declarations removed (the pre-change code)",
+    "verified": "2026-11-28",
+    "expect": "fail",
+    "note": "Verified by running the combined case against the pre-change code: the Overview backgrounds resolved to canvas instead of the page values, boxShadow was none, and z-index was auto. Split out of sidebar-one-ground because the rail and Overview modules both define .body, which the class-collisions test bans loading together."
+  }
+}
