@@ -969,6 +969,29 @@ test.each(THEME_BLOCKS)(
   },
 );
 
+// --accent-fill / --on-fill is the theme-invariant brand indigo fill with
+// white text (user message bubbles on both clients, and filled native actions).
+// Unlike --accent/--on-accent, dark mode keeps the deep indigo so white text
+// still clears 4.5:1 while the fill stays distinct from both light and dark
+// grounds.
+test.each(THEME_BLOCKS)(
+  "--on-fill clears 4.5:1 on --accent-fill, stays white, and the fill stands off its grounds in $name",
+  (theme) => {
+    const accentFillHex = resolvedTokenColor(theme.block, "--accent-fill");
+    const onFillHex = resolvedTokenColor(theme.block, "--on-fill");
+    expect(onFillHex).toBe("#FFFFFF");
+    const accentFill = parseHexColor(accentFillHex);
+    const onFill = parseHexColor(onFillHex);
+    expect(contrastRatio(onFill, accentFill), `${theme.name} --on-fill on --accent-fill`).toBeGreaterThanOrEqual(4.5);
+    for (const groundName of ["--surface-0", "--surface-canvas", "--surface-1"]) {
+      const ground = parseHexColor(resolvedTokenColor(theme.block, groundName));
+      expect(contrastRatio(accentFill, ground), `${theme.name} --accent-fill on ${groundName}`).toBeGreaterThanOrEqual(
+        3,
+      );
+    }
+  },
+);
+
 test("the four -ink companions clear 4.5:1 on their theme's lightest text grounds", () => {
   const themes = [
     {
