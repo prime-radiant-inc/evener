@@ -1,0 +1,109 @@
+# Sidebar one ground + soft shadow — design
+
+Status: approved by Jesse 2026-11-28 ("Proposal B", after the mockup review at
+https://artifacts.trout-rigel.ts.net/p/evener-sidebar-mockups/). Branch `sidebar-one-ground`.
+
+## Intent
+
+The sidebars and the main body use two different ground colors, and the two
+platforms invert the mapping: on web the rail and the Overview sidebar are
+`--surface-canvas` over a `--surface-0` page, while on iPad the split's
+sidebar is `palette.page` over a `palette.canvas` detail pane
+(`DuoSplit.tsx:97,149`). In light theme canvas is darker than page; in dark
+it is lighter, so the tint relationship flips four ways. That is the crappy
+look. Sidebars and main body share one ground; the split is carried by the
+1px `--edge` hairline both platforms already draw, plus a soft one-sided
+shadow so the sidebar reads as a layer on top of the page.
+
+## Approaches
+
+- **Same ground + hairline only.** Flattest; Jesse judged it too quiet when
+  choosing between the mockups.
+- **Same ground + hairline + soft shadow (chosen).** The "little bit more
+  visual weight" he asked for. Uses existing token vocabulary; no palette
+  changes.
+- **Replace the visual world (warm glow-up palette).** Larger than the
+  finding, discards the cool-neutral ruling, and the 2026-11-05 spec it
+  comes from never merged.
+
+## Goals
+
+- Web: rail and Overview sidebar share `--surface-0` with the page; each
+  keeps its hairline and gains a soft shadow cast onto the page.
+- iPad: the split's detail pane joins the sidebar on `palette.page`; the
+  sidebar gains the native shadow recipe (matching `FloatingStack`) cast
+  onto the detail pane. The 1px `palette.edge` divider stays.
+- Design law, decisions record and native design record updated in the same
+  change (evergreen docs rule).
+
+## Non-goals
+
+- No palette token changes. `--surface-canvas`/`palette.canvas` keep their
+  real jobs: dock tab strip and inactive tabs, status bar pills,
+  SegmentedControl track, mermaid ground, zoom and settings preview wells,
+  and the iOS grouped-sheet ground.
+- The dock tab strip stays canvas (the pane well). Builder's call, flagged
+  on the mockup page and not overridden.
+- iPhone: untouched (Board and Session are already flat `palette.page`).
+- Android: deferred as before.
+
+## Anti-goals
+
+- No decorative elevation on ordinary rows (the Flat Board Rule stands).
+- No warm or beige ground: the cool-neutral ruling stands.
+- No guard weakened: a new layoutguard case pins the new contract.
+
+## Behavior
+
+**Web.** `Rail.module.css` `.rail` and `activitybar.module.css`
+`.sidebar`/`.sidebarMobile` backgrounds go `--surface-canvas` →
+`--surface-0`. Two new tokens, declared in both theme blocks with literals
+from the `--shadow-raised` alpha family: `--shadow-rail: 8px 0 24px -12px
+#00000066` (dark) / `#1A1D230F` (light), and `--shadow-overview` the
+left-pointing mirror (`-8px 0 24px -12px ...`). Both sidebars take
+`z-index: var(--z-raised)` so the following sibling's background does not
+paint over the cast shadow. At ≤899px the rail is drawer-hosted and keeps
+no border and no shadow (the Sheet frames it), and `.sidebarMobile`
+likewise drops border and shadow. Light-theme shadows stay ink-tinted and
+much fainter than dark's, per the shadow tokens' own rule.
+
+**iPad.** `DuoSplit.tsx`: the detail stack's `contentStyle.backgroundColor`
+goes `palette.canvas` → `palette.page`. The sidebar container gains
+`FloatingStack`'s shadow recipe turned sideways — `shadowColor: "#000"`,
+`shadowOpacity: 0.12`, `shadowRadius: 8`, `shadowOffset: {width: 2, height:
+0}`, `elevation: 3` — plus `zIndex: 1` so the detail pane does not paint
+over the cast. The surface values are computed by a pure exported helper,
+`duoSurfaceStyles(palette)`, beside the component, in the `FloatingStack`
+exported-helper pattern.
+
+## Recovery and preservation
+
+Pure styling: no preferences, wire fields, or persistence change; the
+sidebar width prefs are untouched. Reverting the commit restores the old
+grounds exactly. Reduced-motion behavior is unaffected (nothing animates).
+
+## Test plan
+
+1. New layoutguard case `sidebar-one-ground`, modeled on
+   `zscn-theme-flip-dark-surface`: computed rail and Overview backgrounds
+   equal `--surface-0` in both themes, the hairlines are 1px `var(--edge)`,
+   desktop `box-shadow` is non-`none` with `z-index` applied, and at ≤899px
+   the rail's `box-shadow` is `none`. Fails before the CSS change, passes
+   after.
+2. `DuoSplit.test.tsx` gains a `duoSurfaceStyles` contract test: detail
+   ground is `palette.page` in both schemes, the divider stays 1px
+   `palette.edge`, and the sidebar shadow matches the spec values with
+   `zIndex: 1`. Fails before, passes after.
+3. Gates: `make test-web` (token contract, typecheck, Biome, unit),
+   `npm run layoutguard`, targeted native Vitest for the duo suite and
+   `tsc --noEmit -p tsconfig.check.json`. CI owns the full suites and
+   `make test-web-browser`.
+4. Visual: the running hub in both themes; the iPad split in both schemes
+   if a simulator is available, screenshots otherwise from the mockup page.
+
+## What the builder may decide
+
+Exact harness mechanics of the layoutguard case (copy the
+`zscn-theme-flip-dark-surface` case's registration), the layoutguard
+single-case invocation, and whether `npm run layoutguard` or
+`make test-web-browser` runs the new case locally.
