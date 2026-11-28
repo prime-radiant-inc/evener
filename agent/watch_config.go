@@ -132,7 +132,7 @@ func (jm *jobManager) configureWatchWithHooks(a watchArgs, hooks watchConfigureH
 		sendTo = strings.TrimSpace(a.Send.To)
 	}
 	// The Slot is filled in below, once the request has earned an id. Terminal
-	// catch-up never carries a slot (timers are excluded by watchArgsIsOutputMatchOnly).
+	// catch-up never carries a slot (timers are excluded by watchArgsSupportsTerminalCatchup).
 	key := watchKey{
 		VisibleSessionID:   jm.sessionID,
 		Target:             a.Target,
@@ -156,7 +156,7 @@ func (jm *jobManager) configureWatchWithHooks(a watchArgs, hooks watchConfigureH
 	if err != nil {
 		return watchResult{}, err
 	}
-	return jm.installWatch(key, cfg, hooks)
+	return jm.installWatch(a, key, cfg, hooks)
 }
 
 // validateWatchRequest runs the checks a request must pass before it is
@@ -165,23 +165,8 @@ func (jm *jobManager) configureWatchWithHooks(a watchArgs, hooks watchConfigureH
 // otherwise the request is a valid install.
 func (jm *jobManager) validateWatchRequest(a watchArgs, key watchKey) (result watchResult, done bool, err error) {
 	if err := jm.validateWatchTarget(a.Target); err != nil {
-		// An output_match-only watch on an already-terminal job is served as a
-		// one-shot catch-up scan of retained output rather than rejected (spec
-		// §7.1 "Terminal target"). Any other terminal request, and target_not_found,
-		// keep their original error. terminalWatchTargetStatus resolves the terminal
-		// status directly rather than parsing the error string.
-		if watchArgsIsOutputMatchOnly(a) {
-			status, reason, terminal, statusErr := jm.terminalWatchTargetStatus(a.Target)
-			if statusErr != nil {
-				return watchResult{}, true, statusErr
-			}
-			if terminal {
-				if sendErr := validateWatchSendArgs(a); sendErr != nil {
-					return watchResult{}, true, sendErr
-				}
-				result, err := jm.runTerminalCatchup(a, key, status, reason)
-				return result, true, err
-			}
+		if result, handled, catchupErr := jm.tryTerminalCatchup(a, key); handled {
+			return result, true, catchupErr
 		}
 		return watchResult{}, true, err
 	}
@@ -205,7 +190,7 @@ func (jm *jobManager) validateWatchRequest(a watchArgs, key watchKey) (result wa
 
 // installWatch registers cfg under key, replacing an existing watch or reviving
 // a detached one, and runs the level-trigger attach scan. It takes jm.mu itself.
-func (jm *jobManager) installWatch(key watchKey, cfg *watchConfig, hooks watchConfigureHooks) (watchResult, error) {
+func (jm *jobManager) installWatch(a watchArgs, key watchKey, cfg *watchConfig, hooks watchConfigureHooks) (watchResult, error) {
 	jm.mu.Lock()
 	if !isWatchSessionTarget(key.Target) && !isWatchableConcreteJobLocked(jm.running[key.Target]) {
 		jm.mu.Unlock()
@@ -213,6 +198,9 @@ func (jm *jobManager) installWatch(key watchKey, cfg *watchConfig, hooks watchCo
 			hooks.beforeTargetRevalidate(key.Target)
 		}
 		if err := jm.validateWatchTarget(key.Target); err != nil {
+			if result, handled, catchupErr := jm.tryTerminalCatchup(a, key); handled {
+				return result, catchupErr
+			}
 			return watchResult{}, err
 		}
 		jm.mu.Lock()
@@ -359,19 +347,58 @@ func watchArgsIsTimer(a watchArgs) bool {
 }
 
 // watchArgsIsOutputMatchOnly reports whether a watch request carries an
-// output_match condition and NO other trigger source — the only shape eligible
-// for terminal catch-up (spec §7.1 "Terminal target"). events/progress/every on a
-// terminal target can never fire, so they still fail target_terminal. A time
-// field is excluded too: catch-up runs
-// before validateWatchTriggerShape, so admitting that shape would serve a scan
-// instead of the timer rules' correction. A note is not a trigger — it is the
-// watch's prose payload — so it rides the scan's notification like any other.
+// output_match condition and no other trigger source. Combined with
+// watchArgsIsProgressOnly, these are the only shapes eligible for terminal
+// catch-up. A time field is excluded because catch-up runs before
+// validateWatchTriggerShape, so admitting that shape would serve a scan instead
+// of the timer rules' correction. A note is not a trigger (it is the watch's
+// prose payload), so it rides the scan's notification like any other.
 func watchArgsIsOutputMatchOnly(a watchArgs) bool {
 	return a.OutputMatch != "" &&
 		len(a.Events) == 0 &&
 		a.Every == 0 &&
 		a.ProgressIntervalMS == 0 &&
 		!watchArgsIsTimer(a)
+}
+
+// watchArgsIsProgressOnly reports whether a watch request carries a
+// progress_interval_ms trigger and no other trigger source. Like
+// watchArgsIsOutputMatchOnly, it is eligible for terminal catch-up on an
+// already-terminal owned concrete shell job, returning the terminal status
+// without installing a live watch or emitting a progress tick.
+func watchArgsIsProgressOnly(a watchArgs) bool {
+	return a.ProgressIntervalMS > 0 &&
+		a.OutputMatch == "" &&
+		len(a.Events) == 0 &&
+		a.Every == 0 &&
+		a.EventFilter == nil &&
+		!watchArgsIsTimer(a)
+}
+
+func watchArgsSupportsTerminalCatchup(a watchArgs) bool {
+	return watchArgsIsOutputMatchOnly(a) || watchArgsIsProgressOnly(a)
+}
+
+// tryTerminalCatchup serves an output_match-only or progress_interval_ms-only
+// watch on an already-terminal owned concrete job as a one-shot catch-up.
+// Finalizing jobs, missing targets, nested-owned targets, and ineligible
+// trigger shapes return handled=false so the caller preserves its target error.
+func (jm *jobManager) tryTerminalCatchup(a watchArgs, key watchKey) (watchResult, bool, error) {
+	if !watchArgsSupportsTerminalCatchup(a) {
+		return watchResult{}, false, nil
+	}
+	status, reason, terminal, statusErr := jm.terminalWatchTargetStatus(a.Target)
+	if statusErr != nil {
+		return watchResult{}, true, statusErr
+	}
+	if !terminal {
+		return watchResult{}, false, nil
+	}
+	if sendErr := validateWatchSendArgs(a); sendErr != nil {
+		return watchResult{}, true, sendErr
+	}
+	result, err := jm.runTerminalCatchup(a, key, status, reason)
+	return result, true, err
 }
 
 // parentObserverRepair is the repair shape appended to a validation error when
