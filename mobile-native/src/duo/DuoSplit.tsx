@@ -33,7 +33,28 @@ import { SubagentScreen } from "../subagents/SubagentScreen";
 import { TasksSheet } from "../TasksSheet";
 import { activeConversation } from "../navigationRoutes";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
+import type { Palette } from "../design/tokens";
 import { DetailPaneWidthContext } from "./paneWidth";
+
+/** The split's one-ground surface treatment: both panes sit on palette.page,
+ * the 1px edge hairline divides them, and the sidebar casts FloatingStack's
+ * shadow recipe sideways so it reads as a layer over the detail pane. The
+ * backgroundColor on the sidebar is what lets iOS render the shadow at all. */
+export function duoSurfaceStyles(palette: Palette) {
+	return {
+		root: { backgroundColor: palette.page },
+		sidebar: {
+			backgroundColor: palette.page,
+			shadowColor: "#000",
+			shadowOpacity: 0.12,
+			shadowRadius: 8,
+			shadowOffset: { width: 2, height: 0 },
+			elevation: 3,
+			zIndex: 1,
+		},
+		divider: { width: 1, backgroundColor: palette.edge },
+	} as const;
+}
 
 /** The right pane's routes: the conversation and everything it can open. */
 type DetailNavigation = NativeStackNavigationProp<Routes>;
@@ -93,9 +114,10 @@ export function DuoSplit({
 	);
 	const sidebarWidth = Math.min(380, Math.max(280, Math.round(width * 0.36)));
 	const detailWidth = width - sidebarWidth - 1;
+	const surfaces = duoSurfaceStyles(palette);
 	return (
-		<View style={{ flex: 1, flexDirection: "row", backgroundColor: palette.page }}>
-			<View style={{ width: sidebarWidth }}>
+		<View style={[{ flex: 1, flexDirection: "row" }, surfaces.root]}>
+			<View style={[surfaces.sidebar, { width: sidebarWidth }]}>
 				<BoardScreen
 					navigation={navigation}
 					route={route}
@@ -104,7 +126,7 @@ export function DuoSplit({
 					onOpenConversation={openConversation}
 				/>
 			</View>
-			<View style={{ width: 1, backgroundColor: palette.edge }} />
+			<View style={surfaces.divider} />
 			<View style={{ flex: 1 }}>
 				<DetailPaneWidthContext.Provider value={detailWidth}>
 					<DetailNavigationContext.Provider value={setDetailNavigation}>
