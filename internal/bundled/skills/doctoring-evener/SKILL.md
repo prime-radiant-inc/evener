@@ -1,6 +1,6 @@
 ---
 name: doctoring-evener
-description: Use when diagnosing a evener session, job, watch, or the session tree — investigating watch runaways (self-influence depth + runaway-fuse drops), dropped/coalesced deliveries, "how many times did X actually get called", stuck turns, or parent↔delegate↔observer linkage. Covers the evener doctor forensic tools, the Finding contract, runbook authoring, and graduated repair.
+description: Use when diagnosing an Evener session, job, watch, or session tree, investigating watch runaways, dropped deliveries, stuck turns, or authoring doctor runbooks.
 ---
 
 # Doctoring evener

@@ -321,7 +321,8 @@ func TestSetModel_KnownWindowMarkerStaysUnassumed(t *testing.T) {
 
 	// The turn before the switch must survive it: the marker is appended, not a
 	// replacement for history.
-	prior := schema.NewTurn(schema.TurnUserInput, llm.User("before the switch"))
+	priorText := "before the switch\n" + strings.Repeat("prior turn context ", 350)
+	prior := schema.NewTurn(schema.TurnUserInput, llm.User(priorText))
 	sess.history = []schema.Turn{prior}
 
 	if err := sess.SetModel("", "win/gpt-5.5"); err != nil {
@@ -352,7 +353,7 @@ func TestSetModel_KnownWindowMarkerStaysUnassumed(t *testing.T) {
 	if len(history) != 2 {
 		t.Fatalf("history after switch = %d turns, want 2 (the prior turn plus the marker): %+v", len(history), history)
 	}
-	if history[0].Kind != schema.TurnUserInput || history[0].Message.Text() != "before the switch" {
+	if history[0].Kind != schema.TurnUserInput || history[0].Message.Text() != priorText {
 		t.Fatalf("switch did not preserve the pre-switch turn: %+v", history[0])
 	}
 

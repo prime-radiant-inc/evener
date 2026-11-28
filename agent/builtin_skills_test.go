@@ -43,7 +43,7 @@ func TestEmbeddedSkillsDir_IncludesDoctoringSkill(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected embedded %q skill, got %v", embeddedDoctoringSkill, builtinSkillNames(skills))
 	}
-	if !strings.Contains(meta.Description, "evener") {
+	if !strings.Contains(strings.ToLower(meta.Description), "evener") {
 		t.Fatalf("embedded %q description = %q, want evener-specific description", embeddedDoctoringSkill, meta.Description)
 	}
 }

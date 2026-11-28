@@ -141,23 +141,36 @@ func TestRenderedEnvironmentOmitsUnknownOrUnlimitedResources(t *testing.T) {
 func TestRenderedEnvironmentDisclosesResourceCapsAreShared(t *testing.T) {
 	t.Parallel()
 	for name, tc := range map[string]struct {
-		resources *schema.ResourceCaps
-		want      bool
+		resources        *schema.ResourceCaps
+		disableSubagents bool
+		leafDelegate     bool
+		want             bool
 	}{
-		"finite caps are disclosed as shared": {resources: &schema.ResourceCaps{CPUs: 2, MemoryMB: 4096}, want: true},
-		"no caps means no disclosure":         {resources: nil, want: false},
+		"finite caps are disclosed as shared":                          {resources: &schema.ResourceCaps{CPUs: 2, MemoryMB: 4096}, want: true},
+		"finite caps are disclosed as shared when delegation disabled": {resources: &schema.ResourceCaps{CPUs: 2, MemoryMB: 4096}, disableSubagents: true, want: true},
+		"finite caps are disclosed as shared for leaf delegate":        {resources: &schema.ResourceCaps{CPUs: 2, MemoryMB: 4096}, leafDelegate: true, want: true},
+		"no caps means no disclosure":                                  {resources: nil, want: false},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			info := schema.EnvironmentInfo{WorkingDir: t.TempDir(), Platform: "linux", Resources: tc.resources}
-			sess := newSession(t, withConfig(SessionConfig{
+			cfg := SessionConfig{
+				DisableSubagents: tc.disableSubagents,
 				testOnly: testConfig{
 					skipGitSnapshot: true,
 					environmentInfo: func(execenv.ExecutionEnvironment, clock.Clock) schema.EnvironmentInfo {
 						return info
 					},
 				},
-			}))
+			}
+			if tc.leafDelegate {
+				cfg.spawn = spawnConfig{
+					parentSessionID:     "resource-caps-parent",
+					depth:               1,
+					delegationAllowance: 0,
+				}
+			}
+			sess := newSession(t, withConfig(cfg))
 			prompt, warning, _ := sess.renderSystemPrompt(sess.env)
 			if warning != "" {
 				t.Fatalf("render system prompt: %s", warning)

@@ -371,12 +371,12 @@ func TestEditFile_AndApplyPatch_NeverBothAdvertisedInSession(t *testing.T) {
 				if got := data.HasTool("edit_file"); got != tc.wantEditFile {
 					t.Fatalf("%s: prompt HasTool(edit_file) = %v, want %v", tc.name, got, tc.wantEditFile)
 				}
-				toolUsage := systemPromptSection(t, prompt, "## Tool usage")
-				if strings.Contains(toolUsage, "`edit_file`") {
-					t.Fatalf("%s: frozen Tool usage must not hardcode edit_file guidance\n%s", tc.name, toolUsage)
+				body := operationalPromptBody(t, prompt)
+				if strings.Contains(body, "`edit_file`") {
+					t.Fatalf("%s: frozen operational prompt must not hardcode edit_file guidance\n%s", tc.name, body)
 				}
-				if tc.adapter == "openai" && !strings.Contains(toolUsage, "`apply_patch`") {
-					t.Fatalf("%s: Tool usage should mention apply_patch\n%s", tc.name, toolUsage)
+				if tc.adapter == "openai" && !strings.Contains(body, "`apply_patch`") {
+					t.Fatalf("%s: operational prompt should mention apply_patch\n%s", tc.name, body)
 				}
 			})
 		}
@@ -445,9 +445,9 @@ func TestEditFile_AndApplyPatch_NeverBothAdvertisedInSession(t *testing.T) {
 		sess.mu.Lock()
 		frozenPrompt := sess.cachedSystemPrompt
 		sess.mu.Unlock()
-		toolUsage := systemPromptSection(t, frozenPrompt, "## Tool usage")
-		if strings.Contains(toolUsage, "`edit_file`") {
-			t.Fatalf("frozen launch prompt still recommends edit_file after switching to openai:\n%s", toolUsage)
+		body := operationalPromptBody(t, frozenPrompt)
+		if strings.Contains(body, "`edit_file`") {
+			t.Fatalf("frozen launch prompt still recommends edit_file after switching to openai:\n%s", body)
 		}
 	})
 }

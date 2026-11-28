@@ -423,6 +423,24 @@ func systemPromptSection(t *testing.T, prompt, heading string) string {
 	return heading + "\n" + section + "\n"
 }
 
+// operationalPromptBody returns the opening identity and operational guidance
+// bullets before the first conditional section heading or environment block.
+func operationalPromptBody(t *testing.T, prompt string) string {
+	t.Helper()
+	body, _, ok := strings.Cut(prompt, "\n<environment>\n")
+	if !ok {
+		t.Fatalf("system prompt has no <environment> block")
+	}
+	for _, marker := range []string{"\n## ", "\nCurrent role/session:\n"} {
+		body, _, _ = strings.Cut(body, marker)
+	}
+	body = strings.TrimSpace(body)
+	if body == "" {
+		t.Fatalf("system prompt has empty operational body")
+	}
+	return body
+}
+
 // promptValue is one value the session computes for its prompt, named for the
 // failure message.
 type promptValue struct {
@@ -466,7 +484,7 @@ func TestSystemPromptRendersTheSessionData(t *testing.T) {
 				for _, skill := range d.Skills {
 					values = append(values,
 						promptValue{"skill catalog name", skill.CatalogNameOrName()},
-						promptValue{"skill directory", skill.Dir},
+						promptValue{"skill description", skill.Description},
 					)
 				}
 				for _, agent := range d.AvailableAgents {
@@ -595,6 +613,73 @@ func TestSystemPromptDiagramGuidanceClaimsNoRendering(t *testing.T) {
 	}
 	if !strings.Contains(prompt, "```mermaid code block") {
 		t.Errorf("the mermaid diagram guidance is missing from the rendered prompt")
+	}
+}
+
+// TestSystemPromptTier1DelegateAndTaskListAlignment verifies structural prompt
+// gating: delegate, task_list, and job_watch follow CallableTools directly,
+// delegate omits tool_search indirection, and task_list folds inline into the
+// core ethos without adding a standalone bullet or appearing when unavailable.
+func TestSystemPromptTier1DelegateAndTaskListAlignment(t *testing.T) {
+	t.Parallel()
+	agents := []agentEntry{{Name: "reviewer", Description: "Reviews code."}}
+	withUpfront, err := executeSystemPromptTemplate(promptData{
+		ResultToolName:  "communicate",
+		TurnEndsProcess: true,
+		AvailableAgents: agents,
+		CallableTools: map[string]bool{
+			"communicate": true,
+			"delegate":    true,
+			"task_list":   true,
+			"job_watch":   true,
+			"tool_search": true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("render upfront: %v", err)
+	}
+	upfrontBody := operationalPromptBody(t, withUpfront)
+	if !strings.Contains(upfrontBody, "`delegate`") || strings.Contains(upfrontBody, "`tool_search`") {
+		t.Errorf("upfront delegate prompt should name `delegate` directly without `tool_search`:\n%s", upfrontBody)
+	}
+	if !strings.Contains(upfrontBody, "`task_list`") || !strings.Contains(upfrontBody, "`job_watch`") {
+		t.Errorf("upfront prompt missing `task_list` or `job_watch`:\n%s", upfrontBody)
+	}
+	if !strings.Contains(withUpfront, "<available_agents>") {
+		t.Errorf("upfront delegate prompt missing <available_agents>:\n%s", withUpfront)
+	}
+
+	withoutTaskAndWatch, err := executeSystemPromptTemplate(promptData{
+		ResultToolName:  "communicate",
+		TurnEndsProcess: true,
+		AvailableAgents: agents,
+		CallableTools: map[string]bool{
+			"communicate": true,
+			"delegate":    true,
+			"tool_search": true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("render without task_list/job_watch: %v", err)
+	}
+	withoutBody := operationalPromptBody(t, withoutTaskAndWatch)
+	if strings.Contains(withoutBody, "`task_list`") || strings.Contains(withoutBody, "`job_watch`") {
+		t.Errorf("prompt without task_list/job_watch must not mention them:\n%s", withoutBody)
+	}
+	if upfrontBullets, withoutBullets := strings.Count(upfrontBody, "\n- "), strings.Count(withoutBody, "\n- "); upfrontBullets != withoutBullets {
+		t.Errorf("adding task_list changed bullet count (%d vs %d); fold task_list inline into Bullet 3:\n%s", upfrontBullets, withoutBullets, upfrontBody)
+	}
+
+	withoutDelegate, err := executeSystemPromptTemplate(promptData{
+		ResultToolName:  "communicate",
+		AvailableAgents: agents,
+		CallableTools:   map[string]bool{"communicate": true, "tool_search": true},
+	})
+	if err != nil {
+		t.Fatalf("render without delegate: %v", err)
+	}
+	if noDelBody := operationalPromptBody(t, withoutDelegate); strings.Contains(noDelBody, "`delegate`") || strings.Contains(noDelBody, "`tool_search`") || strings.Contains(withoutDelegate, "<available_agents>") {
+		t.Errorf("prompt without delegate should omit delegate, tool_search, and <available_agents>:\n%s", withoutDelegate)
 	}
 }
 

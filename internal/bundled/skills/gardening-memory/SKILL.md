@@ -1,6 +1,6 @@
 ---
 name: gardening-memory
-description: Reconcile and maintain useful personal and project memory with the native memory tools.
+description: Use when auditing, deduplicating, splitting, or pruning personal and project memory pages.
 ---
 # Gardening memory
 

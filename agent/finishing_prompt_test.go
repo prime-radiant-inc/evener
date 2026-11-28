@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -36,18 +37,25 @@ func TestFinishingPromptGating(t *testing.T) {
 				sess = buildRootInteractiveAnthropicSession(t)
 				if !tc.worktree {
 					sess.reg.Remove("manage_worktree")
+					refreshModelFacingCaches(sess)
 				}
 			}
+			checkPromptInput(t, "registered manage_worktree", sess.reg.Get("manage_worktree") != nil, tc.worktree)
+			advertised := hasToolDef(sess.ToolDefinitions(), "manage_worktree")
+			checkPromptInput(t, "advertised manage_worktree", advertised, tc.worktree)
 			data, _ := sess.buildPromptData(sess.env)
 			checkPromptInput(t, "IsSubagent", data.IsSubagent, tc.delegate)
-			checkPromptInput(t, "HasTool manage_worktree", data.HasTool("manage_worktree"), tc.worktree)
+			checkPromptInput(t, "HasTool manage_worktree", data.HasTool("manage_worktree"), advertised)
 			checkPromptInput(t, "worktreeDisposeOnly", sess.worktreeDisposeOnly, tc.disposeOnly)
 			checkPromptInput(t, "WorktreeDisposeOnly", data.WorktreeDisposeOnly, tc.disposeOnly)
 			prompt, warning, _ := sess.renderSystemPrompt(sess.env)
 			if warning != "" {
 				t.Fatalf("render system prompt: %s", warning)
 			}
-			systemPromptSection(t, prompt, "## Finishing")
+			body := operationalPromptBody(t, prompt)
+			if got := strings.Contains(body, "manage_worktree"); got != advertised {
+				t.Fatalf("operational prompt mentions manage_worktree = %v, want %v:\n%s", got, advertised, body)
+			}
 		})
 	}
 }

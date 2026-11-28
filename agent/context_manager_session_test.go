@@ -226,14 +226,14 @@ func TestSession_ContextManager_EmitsEvents(t *testing.T) {
 
 // contextWindowForRead returns the fixture's profile, its measured standing
 // request, and a big.txt body whose read_file result lifts pressure from that
-// standing request to about 93% of the profile's window. The first round
+// standing request to about 92% of the profile's window. The first round
 // reports the standing request as usage, so the read is the only thing that can
-// cross the 90% checkpoint trigger, while the window keeps the post-read
-// request admitted. The body is sized through the estimator's 21 output bytes
-// per numbered line (5.25 tokens), and capped under read_file's 50,000-character
-// output limit, so neither a larger host prompt nor truncation moves the band.
-// Sizing from the measured request keeps it from moving with host-dependent
-// prompt size (#6090).
+// cross the 90% checkpoint trigger (without tripping the 95% summarize layer),
+// while keeping headroom above llm.SafetyReserveTokens(window) so
+// ApplyTokenBudget admits the post-read request regardless of prompt size.
+// The body is capped under read_file's 48,000-byte limit so truncation does
+// not shrink the tool result. Sizing from the measured request keeps it from
+// moving with host-dependent prompt size (#6090).
 func contextWindowForRead(t *testing.T, dir, input string) (profile *provider.Profile, standing int, bigContent string) {
 	t.Helper()
 	profile = NewOpenAIProfile("gpt-5.2")
@@ -241,18 +241,21 @@ func contextWindowForRead(t *testing.T, dir, input string) (profile *provider.Pr
 	if standing <= 0 {
 		t.Fatalf("standingRequestTokens = %d, want a positive measurement", standing)
 	}
-	// read_file renders each line as "%d\t" + content + newline: about 20 bytes
-	// for the 16-byte fixture line (the 21-byte estimate also covers 4-digit
-	// line numbers), which the estimator prices at 5.25 tokens per 21 bytes.
-	// Cap the body at 2,300 lines so the rendered result stays under
-	// read_file's 48,000-byte head-only cap instead of being truncated.
-	lines := standing * 38 / 100 * 4 / 21
-	if maxLines := 2_300; lines > maxLines {
+	// Leave at least SafetyReserveTokens + 500 tokens in the remaining ~8%
+	// headroom so ApplyTokenBudget admits round 2 even when leaner prompts
+	// shrink standing below 10 * SafetyReserveTokens, and keep standing well
+	// below 90% so a short read never triggers compaction.
+	minHeadroom := llm.SafetyReserveTokens(standing) + 500
+	minWindow := max(minHeadroom*100/8, standing*100/78)
+	desiredToolTokens := max(1, minWindow*92/100-standing)
+	lines := max(1, desiredToolTokens*4/20)
+	if maxLines := 2_200; lines > maxLines {
 		lines = maxLines
 	}
-	toolTokens := lines * 21 / 4
-	profile = withContextWindow(profile, standing+toolTokens+standing/10)
-	return profile, standing, strings.Repeat("line of content\n", lines)
+	bigContent = strings.Repeat("line of content\n", lines)
+	toolTokens := len(execenv.NumberLines(bigContent, nil, &lines)) / 4
+	profile = withContextWindow(profile, (standing+toolTokens)*100/92)
+	return profile, standing, bigContent
 }
 
 // TestBuildCompactionMeta_ExcludesTaskState is the agent-side half of the
