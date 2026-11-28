@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -1873,7 +1874,7 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 		Plugins:       sources,
 	})
 	discovered := s.skills.Diagnostics
-	s.skills.Diagnostics = append(diagnostics, discovered...)
+	s.skills.Diagnostics = slices.Concat(diagnostics, discovered)
 	for _, diagnostic := range diagnostics {
 		// A plugin-manifest collision is between two plugin dirs that share a
 		// manifest name, not between skills. It stays in the diagnostics for
