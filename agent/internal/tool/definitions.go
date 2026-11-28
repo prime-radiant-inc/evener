@@ -316,14 +316,14 @@ func delegateReasoningEffortDescription() string {
 }
 
 // DefDelegate returns the default delegate tool definition with free-form
-// agent_type, the full sandbox surface, and DefaultResultToolName. Session
-// callers use DefDelegateWithResultTool so advertised roles, sandbox controls,
-// and result tool match the live session.
+// agent_type and the full sandbox surface. Session callers use
+// DefDelegateWithSandbox so advertised roles and sandbox controls match the
+// live session.
 func DefDelegate() llm.ToolDefinition {
-	return DefDelegateWithResultTool(nil, DelegateSandboxSchema{
+	return DefDelegateWithSandbox(nil, DelegateSandboxSchema{
 		Available: true,
 		Modes:     []string{"off", "read-only", "workspace-write", "restricted"},
-	}, DefaultResultToolName)
+	})
 }
 
 // DelegateRoleWriteNote notes that the explorer role is read-only (no edit
@@ -331,17 +331,14 @@ func DefDelegate() llm.ToolDefinition {
 // capability roster appended at request time.
 const DelegateRoleWriteNote = "explorer is read-only."
 
-// DefDelegateWithResultTool defines the delegate tool, which starts a NEW
+// DefDelegateWithSandbox defines the delegate tool, which starts a NEW
 // delegate conversation and returns its durable stable identity. agentTypes
 // constrains the agent_type enum to the session's available roles; nil omits
 // the enum (free-form). sandboxSchema exposes only the sandbox controls and
-// model descriptions the session can enforce. resultTool is retained for
-// caller compatibility; observer reporting guidance lives on observer tools.
-// reasoning_effort uses the delegate contract's portable vocabulary
-// (delegateReasoningEffortLevels); the handler clamps it to the child model's
-// own ladder.
-func DefDelegateWithResultTool(agentTypes []string, sandboxSchema DelegateSandboxSchema, resultTool string) llm.ToolDefinition {
-	_ = resultTool
+// model descriptions the session can enforce. reasoning_effort uses the
+// delegate contract's portable vocabulary (delegateReasoningEffortLevels); the
+// handler clamps it to the child model's own ladder.
+func DefDelegateWithSandbox(agentTypes []string, sandboxSchema DelegateSandboxSchema) llm.ToolDefinition {
 	strictFalse := false
 	effortLevels := delegateReasoningEffortLevels()
 	agentTypeSchema := map[string]any{

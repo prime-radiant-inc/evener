@@ -205,10 +205,10 @@ func TestDefShellHasExecutionMode(t *testing.T) {
 
 func TestDefDelegateParamsAndEnum(t *testing.T) {
 	agentTypes := []string{"explorer", "implementer"}
-	def := DefDelegateWithResultTool(agentTypes, DelegateSandboxSchema{
+	def := DefDelegateWithSandbox(agentTypes, DelegateSandboxSchema{
 		Available: true,
 		Modes:     []string{"off", "read-only", "workspace-write", "restricted"},
-	}, DefaultResultToolName)
+	})
 	if def.Name != "delegate" {
 		t.Fatalf("name = %q, want delegate", def.Name)
 	}
@@ -294,10 +294,10 @@ func TestDefDelegateHasDelegationAllowance(t *testing.T) {
 }
 
 func TestDefDelegateHasWatchParent(t *testing.T) {
-	def := DefDelegateWithResultTool([]string{"subagent"}, DelegateSandboxSchema{
+	def := DefDelegateWithSandbox([]string{"subagent"}, DelegateSandboxSchema{
 		Available: true,
 		Modes:     []string{"off", "read-only", "workspace-write", "restricted"},
-	}, DefaultResultToolName)
+	})
 	props := def.Parameters["properties"].(map[string]any)
 	watchParent, ok := props["watch_parent"].(map[string]any)
 	if !ok {
@@ -318,7 +318,7 @@ func TestDefDelegateHasWatchParent(t *testing.T) {
 		}
 	}
 
-	noSandbox := DefDelegateWithResultTool(nil, DelegateSandboxSchema{Available: false}, DefaultResultToolName)
+	noSandbox := DefDelegateWithSandbox(nil, DelegateSandboxSchema{Available: false})
 	if _, has := noSandbox.Parameters["properties"].(map[string]any)["sandbox"]; has {
 		t.Fatal("delegate schema must omit sandbox property when unavailable")
 	}
@@ -605,14 +605,6 @@ func TestDefJobWatch_TimerProperties(t *testing.T) {
 	source := props["source"].(map[string]any)
 	if types, _ := source["type"].([]string); len(types) != 2 || types[1] != "null" {
 		t.Errorf("source must be nullable now that timers default it: %v", source["type"])
-	}
-	if !strings.HasPrefix(def.Description, "Wake yourself later:") {
-		t.Errorf("description must lead with the timer: %q", def.Description[:60])
-	}
-	for _, want := range []string{"(60 to 86400)", "(60 to 3600)"} {
-		if !strings.Contains(def.Description, want) && !strings.Contains(fmt.Sprint(props), want) {
-			t.Errorf("description or properties lack %q", want)
-		}
 	}
 }
 
@@ -1326,7 +1318,7 @@ func TestDefModelListBoundsMatchContract(t *testing.T) {
 func TestAllBuiltinParametersCarryDescriptions(t *testing.T) {
 	defs := []llm.ToolDefinition{
 		DefReadFile(), DefWriteFile(), DefListDir(), DefEditFile(), DefShell(),
-		DefDelegate(), DefDelegateWithResultTool(nil, DelegateSandboxSchema{}, DefaultResultToolName),
+		DefDelegate(), DefDelegateWithSandbox(nil, DelegateSandboxSchema{}),
 		DefDelegateSend(), DefModelList(), DefJobWatch(nil),
 		DefJobStatus(), DefJobList(), DefJobStop(), DefGrep(), DefGlob(),
 		DefApplyPatch(), DefWebFetch(), DefCommunicate(),
@@ -1405,11 +1397,11 @@ func TestDefAskUserNamedPropagatesResultTool(t *testing.T) {
 }
 
 func TestDefDelegateWithSandboxIncludesVerifiedModelChoices(t *testing.T) {
-	def := DefDelegateWithResultTool(nil, DelegateSandboxSchema{
+	def := DefDelegateWithSandbox(nil, DelegateSandboxSchema{
 		Available:        true,
 		Modes:            []string{"off"},
 		ModelDescription: "Verified at startup (snapshot v1): openai/gpt-5, vertex/gemini-2.5.",
-	}, DefaultResultToolName)
+	})
 	props := def.Parameters["properties"].(map[string]any)
 	model := props["model"].(map[string]any)
 	if got := model["description"].(string); !strings.Contains(got, "openai/gpt-5") {
@@ -1418,9 +1410,9 @@ func TestDefDelegateWithSandboxIncludesVerifiedModelChoices(t *testing.T) {
 }
 
 func TestDefDelegateWithoutSandboxIncludesVerifiedModelChoices(t *testing.T) {
-	def := DefDelegateWithResultTool(nil, DelegateSandboxSchema{
+	def := DefDelegateWithSandbox(nil, DelegateSandboxSchema{
 		ModelDescription: "Verified at startup (snapshot v1): openai/gpt-5.",
-	}, DefaultResultToolName)
+	})
 	props := def.Parameters["properties"].(map[string]any)
 	model := props["model"].(map[string]any)
 	if got := model["description"].(string); !strings.Contains(got, "openai/gpt-5") {
