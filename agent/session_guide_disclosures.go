@@ -4,7 +4,6 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
-	"slices"
 	"strings"
 
 	"primeradiant.com/evener/agent/internal/tool"
@@ -25,8 +24,7 @@ func (s *Session) detectToolRoundGuideTriggers(calls []llm.ToolCallData, results
 		if res.Truncated && strings.Contains(res.Output, `read_transcript(transcript_ref="artifact:`) {
 			wantTranscripts = true
 		}
-		effectiveName := s.canonicalToolName(calls[i].Name)
-		switch effectiveName {
+		switch calls[i].Name {
 		case "shell":
 			var st struct {
 				Mode      string `json:"mode"`
@@ -50,11 +48,10 @@ func (s *Session) detectToolRoundGuideTriggers(calls []llm.ToolCallData, results
 			wantWorktrees = wantWorktrees || (!res.Rejected && !res.PrevalOnly)
 		}
 	}
-	hasJobTools := slices.ContainsFunc([]string{"job_status", "job_stop", "job_list", "job_watch", "delegate"}, s.canInstructTool)
 	return [3]bool{
-		wantJobs && hasJobTools,
+		wantJobs,
 		wantTranscripts && s.canInstructTool("read_transcript"),
-		wantWorktrees && s.canInstructTool("manage_worktree") && !s.worktreeDisposeOnlySurface(),
+		wantWorktrees,
 	}
 }
 
