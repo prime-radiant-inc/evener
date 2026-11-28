@@ -107,17 +107,21 @@ func TestSkillCollision_WarnsOnceOnGenuineActivation(t *testing.T) {
 }
 
 func TestSkillCollision_BackgroundReloadDoesNotWarn(t *testing.T) {
-	sess, winner, _ := newCollisionSession(t)
-	batch, err := sess.prepareSkillActivations(context.Background(), []skillInvocation{{
-		Name:         "dup",
-		Route:        "role_preload",
-		InvocationID: "inv-1",
-	}})
-	if err != nil || batch == nil || len(batch.Items) != 1 {
-		t.Fatalf("role preload: batch=%+v err=%v", batch, err)
-	}
-	if got := warningsForSource(drainWarnings(t, sess), winner); len(got) != 0 {
-		t.Fatalf("background preload emitted %d collision warnings, want none: %+v", len(got), got)
+	for _, route := range []string{"role_preload", "auto_disclosure"} {
+		t.Run(route, func(t *testing.T) {
+			sess, winner, _ := newCollisionSession(t)
+			batch, err := sess.prepareSkillActivations(context.Background(), []skillInvocation{{
+				Name:         "dup",
+				Route:        route,
+				InvocationID: "inv-1",
+			}})
+			if err != nil || batch == nil || len(batch.Items) != 1 {
+				t.Fatalf("%s: batch=%+v err=%v", route, batch, err)
+			}
+			if got := warningsForSource(drainWarnings(t, sess), winner); len(got) != 0 {
+				t.Fatalf("background %s emitted %d collision warnings, want none: %+v", route, len(got), got)
+			}
+		})
 	}
 }
 

@@ -301,8 +301,8 @@ func TestBundledGuideSkills_CapabilityGatedInPromptAndUseSkill(t *testing.T) {
 				MaxSubagentDepth: 1,
 				StateDir:         t.TempDir(),
 			}))
-			if !hasPromptSkill(capableSess, tc.skillName) {
-				t.Fatalf("capable root session missing %q in <skill-catalog>", tc.skillName)
+			if hasPromptSkill(capableSess, tc.skillName) {
+				t.Fatalf("capable root session still advertises auto-disclosed %q in <skill-catalog>", tc.skillName)
 			}
 			if _, err := capableSess.ProcessInput(tripwireCtx(t), "activate", nil); err != nil {
 				t.Fatalf("capable ProcessInput: %v", err)

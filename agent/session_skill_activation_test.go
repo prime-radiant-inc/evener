@@ -77,12 +77,12 @@ func TestSkillActivation_PolicyMatrix(t *testing.T) {
 		for _, user := range []bool{false, true} {
 			controls := skill.InvocationControls{DisableModelInvocation: disabled, UserInvocable: user}
 			for _, authorized := range []bool{false, true} {
-				for _, route := range []string{"user_slash", "user_selection", "model_tool", "compaction_reload", "role_preload"} {
+				for _, route := range []string{"user_slash", "user_selection", "model_tool", "compaction_reload", "auto_disclosure", "role_preload"} {
 					want := route == "role_preload"
 					switch route {
 					case "user_slash", "user_selection":
 						want = user
-					case "model_tool", "compaction_reload":
+					case "model_tool", "compaction_reload", "auto_disclosure":
 						want = authorized || !disabled
 					}
 					if got := skillInvocationAllowed(route, controls, authorized); got != want {
@@ -143,7 +143,7 @@ func TestSkillActivation_PrepareCurrentControlsAndExactSource(t *testing.T) {
 	if batch != nil || !reflect.DeepEqual(s.Meta().Skills, before) {
 		t.Fatal("failed reinvocation changed prior state")
 	}
-	for _, route := range []string{"model_tool", "compaction_reload"} {
+	for _, route := range []string{"model_tool", "compaction_reload", "auto_disclosure"} {
 		batch, err = s.prepareSkillActivations(context.Background(), []skillInvocation{{Name: "alpha", Route: route, InvocationID: "inv-new"}})
 		if err != nil || len(batch.Items) != 1 {
 			t.Fatalf("authorized %s: batch=%+v err=%v", route, batch, err)

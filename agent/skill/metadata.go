@@ -97,6 +97,7 @@ type Descriptor struct {
 	Meta        SkillMeta
 	Controls    InvocationControls
 	Unavailable bool
+	Bundled     bool `json:"-"`
 }
 
 // Parse parses and validates discovery metadata from a SKILL.md file.

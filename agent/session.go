@@ -3381,7 +3381,7 @@ func (s *Session) envContextDue() bool {
 func (s *Session) envRuntimeSnapshot(snap envctx.Snapshot) envctx.Snapshot {
 	var skills []string
 	for _, d := range s.skills.ModelEntries() {
-		if s.skillAvailableToSession(d.CatalogName) {
+		if s.skillAvailableToSession(d.CatalogName) && !skill.IsAutoDisclosedGuideSkill(d) {
 			skills = append(skills, d.CatalogName)
 		}
 	}
@@ -3569,6 +3569,7 @@ func (s *Session) resetEnvContextTrackerLocked() bool {
 			s.envTracker.ReplayBlock(turn.Message.Text())
 		}
 	}
+	s.filterEnvTrackerBundledGuidesLocked()
 	s.envTracker.ResetState()
 	state := envctx.State{}
 	s.envContextState = &state

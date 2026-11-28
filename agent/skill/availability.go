@@ -49,6 +49,21 @@ func (a SessionAvailability) SkillAvailable(name string) bool {
 	}
 }
 
+// IsAutoDisclosedGuideSkill reports whether d is one of the bundled guide
+// skills omitted from the Turn-1 <skill-catalog> and disclosed on first use.
+// Non-bundled overrides (project, user, extra dirs) return false so they stay advertised.
+func IsAutoDisclosedGuideSkill(d Descriptor) bool {
+	if !d.Bundled {
+		return false
+	}
+	switch d.CatalogName {
+	case RunningJobsSkillName, UsingWorktreesSkillName, ReadingTranscriptsSkillName:
+		return true
+	default:
+		return false
+	}
+}
+
 // UserEntriesForSession is UserEntries narrowed by a session's availability,
 // preserving canonical order.
 func (c Catalog) UserEntriesForSession(availability SessionAvailability) []Descriptor {

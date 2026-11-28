@@ -83,6 +83,19 @@ func (t *Tracker) SeedRuntime(rt Snapshot) {
 	b.CommunicateContract = cmp.Or(b.CommunicateContract, rt.CommunicateContract)
 }
 
+// FilterRuntimeSkills retains only the names in the tracked skill baseline for
+// which keep returns true. Used when skill-advertisement policy changes across
+// an upgrade so omitted-but-still-loadable bundled guides do not produce bogus
+// "removed skills" deltas against a restored baseline.
+func (t *Tracker) FilterRuntimeSkills(keep func(string) bool) {
+	if t == nil || t.base.AvailableSkills == "" || keep == nil {
+		return
+	}
+	t.base.AvailableSkills = JoinNames(slices.DeleteFunc(splitNames(t.base.AvailableSkills), func(n string) bool {
+		return !keep(n)
+	}))
+}
+
 // RuntimeDrifted reports whether cur holds a runtime fact base does not.
 func (t *Tracker) RuntimeDrifted(cur Snapshot) bool {
 	return (&Tracker{st: State{Last: cur, HasSent: true}, base: t.base, fullInventory: t.fullInventory}).RenderDiff(cur) != ""

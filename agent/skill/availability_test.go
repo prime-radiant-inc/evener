@@ -1,8 +1,12 @@
 package skill
 
 import (
+	"os"
+	"path/filepath"
 	"slices"
 	"testing"
+
+	"primeradiant.com/evener/agent/execenv"
 )
 
 func TestSessionAvailability(t *testing.T) {
@@ -39,6 +43,51 @@ func TestSessionAvailability(t *testing.T) {
 			t.Fatalf("MemorySaveAvailable must not unlock %q", tc.name)
 		}
 	}
+}
+
+func TestIsAutoDisclosedGuideSkill(t *testing.T) {
+	t.Parallel()
+	for _, name := range []string{RunningJobsSkillName, UsingWorktreesSkillName, ReadingTranscriptsSkillName} {
+		if !IsAutoDisclosedGuideSkill(Descriptor{CatalogName: name, Bundled: true}) {
+			t.Fatalf("IsAutoDisclosedGuideSkill(bundled %q) = false, want true", name)
+		}
+		if IsAutoDisclosedGuideSkill(Descriptor{CatalogName: name, Bundled: false}) {
+			t.Fatalf("IsAutoDisclosedGuideSkill(non-bundled override %q) = true, want false", name)
+		}
+	}
+	for _, name := range []string{GardeningMemorySkillName, "doctoring-evener", "custom-skill"} {
+		if IsAutoDisclosedGuideSkill(Descriptor{CatalogName: name, Bundled: true}) {
+			t.Fatalf("IsAutoDisclosedGuideSkill(bundled %q) = true, want false", name)
+		}
+	}
+
+	t.Run("discover_marks_only_bundled_source", func(t *testing.T) {
+		t.Parallel()
+		projectDir := t.TempDir()
+		userDir := t.TempDir()
+		for _, spec := range []struct{ root, name string }{
+			{filepath.Join(projectDir, ".agents", "skills"), UsingWorktreesSkillName},
+			{userDir, RunningJobsSkillName},
+		} {
+			dir := filepath.Join(spec.root, spec.name)
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, "SKILL.md"),
+				[]byte("---\nname: "+spec.name+"\ndescription: Override\n---\nBody.\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		cat := Discover(execenv.NewLocalExecutionEnvironment(projectDir), DiscoverOptions{UserSkillsDir: userDir})
+		for _, overridden := range []string{UsingWorktreesSkillName, RunningJobsSkillName} {
+			if d, ok := cat.Entries[overridden]; !ok || d.Bundled || IsAutoDisclosedGuideSkill(d) {
+				t.Fatalf("overridden %q = %+v (ok=%v), want Bundled=false and not auto-disclosed", overridden, d, ok)
+			}
+		}
+		if d, ok := cat.Entries[ReadingTranscriptsSkillName]; !ok || !d.Bundled || !IsAutoDisclosedGuideSkill(d) {
+			t.Fatalf("bundled %q = %+v (ok=%v), want Bundled=true and auto-disclosed", ReadingTranscriptsSkillName, d, ok)
+		}
+	})
 }
 
 func TestUserEntriesForSession(t *testing.T) {
