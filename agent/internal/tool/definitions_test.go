@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"maps"
 	"reflect"
+	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -33,6 +35,12 @@ func required(t *testing.T, def llm.ToolDefinition, name string, want []string) 
 			t.Fatalf("%s missing required property %q", name, param)
 		}
 	}
+}
+
+// descriptionMentions asserts desc carries n at a word boundary, so a longer
+// number containing the same digits (1000 vs 100) cannot satisfy the pin.
+func descriptionMentions(desc string, n int) bool {
+	return regexp.MustCompile(`\b` + strconv.Itoa(n) + `\b`).MatchString(desc)
 }
 
 func containsString(values []string, want string) bool {
@@ -87,14 +95,11 @@ func TestSchemaWaitKnobs(t *testing.T) {
 				t.Errorf("%s: max_wait_ms type = %q, want integer", tc.name, typ)
 			}
 
-			// No minimum or maximum keywords on max_wait_ms; default is 0.
-			for _, banned := range []string{"minimum", "maximum"} {
+			// No minimum, maximum, or default keywords on max_wait_ms (Manager hub calls reject it).
+			for _, banned := range []string{"minimum", "maximum", "default"} {
 				if _, ok := mwSchema[banned]; ok {
 					t.Errorf("%s: max_wait_ms must not have keyword %q", tc.name, banned)
 				}
-			}
-			if mwSchema["default"] != 0 {
-				t.Errorf("%s: max_wait_ms default = %v, want 0", tc.name, mwSchema["default"])
 			}
 		})
 	}
@@ -758,6 +763,11 @@ func TestWithCommunicateDelegateUpdatesClonesWithoutMutatingBase(t *testing.T) {
 	if dlg.Description == "" || dlg.Description == base.Description {
 		t.Fatalf("WithCommunicateDelegateUpdates did not adapt tool description: %q", dlg.Description)
 	}
+	for _, def := range []llm.ToolDefinition{base, dlg} {
+		if !strings.Contains(def.Description, "`output`") || !strings.Contains(def.Description, "`send_and_end_turn`") {
+			t.Errorf("%s description must preserve conditional output rule across result-schema replacement: %q", def.Name, def.Description)
+		}
+	}
 	dlgProps := dlg.Parameters["properties"].(map[string]any)
 	dlgNext := dlgProps["next"].(map[string]any)
 	if dlgNext["default"] != CommunicateNextSendAndEndTurn {
@@ -831,8 +841,8 @@ func TestDefJobWatchDescriptionIncludesImplicitDeliveryContract(t *testing.T) {
 	}
 	props := def.Parameters["properties"].(map[string]any)
 	source := props["source"].(map[string]any)
-	if source["default"] != "self" {
-		t.Fatalf("source default = %v, want self", source["default"])
+	if _, has := source["default"]; has {
+		t.Fatalf("source must not declare schema default (timer-only default), got %v", source["default"])
 	}
 	sourceDesc := source["description"].(string)
 	for _, want := range []string{"self", "parent", "job_id", "dlg_..."} {
@@ -840,8 +850,8 @@ func TestDefJobWatchDescriptionIncludesImplicitDeliveryContract(t *testing.T) {
 			t.Fatalf("source description = %q, want %q", sourceDesc, want)
 		}
 	}
-	if got := props["every"].(map[string]any)["default"]; got != 1 {
-		t.Fatalf("every default = %v, want 1", got)
+	if _, has := props["every"].(map[string]any)["default"]; has {
+		t.Fatalf("every must not declare schema default, got %v", props["every"].(map[string]any)["default"])
 	}
 	for _, banned := range []string{"send", "target"} {
 		if _, ok := props[banned]; ok {
@@ -895,8 +905,8 @@ func TestTranscriptToolDefinitions(t *testing.T) {
 	// format accepts the three public tokens plus null so ref-aware repair can
 	// remove job defaults while artifact refs still reject explicit null.
 	format := rp["format"].(map[string]any)
-	if format["default"] != "markdown" {
-		t.Errorf("format default = %v, want markdown", format["default"])
+	if _, has := format["default"]; has {
+		t.Errorf("format must not declare schema default (rejected on artifact/hub refs), got %v", format["default"])
 	}
 	formatEnum := format["enum"].([]any)
 	want := map[string]bool{"outline": true, "markdown": true, "jsonl": true}
@@ -942,8 +952,11 @@ func TestTranscriptToolDefinitions(t *testing.T) {
 	}
 	contextLines := rp["context_lines"].(map[string]any)
 	contextLineTypes, ok := contextLines["type"].([]any)
-	if !ok || len(contextLineTypes) != 2 || contextLineTypes[0] != "integer" || contextLineTypes[1] != "null" || contextLines["minimum"] != 0 || contextLines["maximum"] != 10 || contextLines["default"] != 0 {
-		t.Errorf("context_lines schema = %#v, want nullable integer 0..10 with default 0", contextLines)
+	if !ok || len(contextLineTypes) != 2 || contextLineTypes[0] != "integer" || contextLineTypes[1] != "null" || contextLines["minimum"] != 0 || contextLines["maximum"] != 10 {
+		t.Errorf("context_lines schema = %#v, want nullable integer 0..10", contextLines)
+	}
+	if _, has := contextLines["default"]; has {
+		t.Errorf("context_lines must not declare schema default (requires output_match and rejected on hub refs), got %v", contextLines["default"])
 	}
 	for _, want := range []string{"session ref", "job:", "artifact:", "output_match", "context_lines", "retained_start_bytes", "job_status"} {
 		if !strings.Contains(read.Description, want) {
@@ -1105,17 +1118,17 @@ func TestDefReadFileSliceParamsDocumented(t *testing.T) {
 	}
 	offsetDesc, _ := offset["description"].(string)
 	limitDesc, _ := limit["description"].(string)
-	if offset["default"] != 1 {
-		t.Errorf("offset default = %v, want 1", offset["default"])
+	if _, has := offset["default"]; has {
+		t.Errorf("offset must not declare schema default, got %v", offset["default"])
 	}
 	if !strings.Contains(offsetDesc, "1-based") || !strings.Contains(offsetDesc, "negative") {
 		t.Errorf("offset description should document a 1-based start line and negative tail reads, got: %q", offsetDesc)
 	}
-	if limit["default"] != 2000 || limit["default"] != execenv.DefaultReadLines {
-		t.Errorf("limit default = %v, want %d", limit["default"], execenv.DefaultReadLines)
+	if _, has := limit["default"]; has {
+		t.Errorf("limit must not declare schema default, got %v", limit["default"])
 	}
-	if !strings.Contains(limitDesc, "48 KB") || !strings.Contains(limitDesc, "uncut") {
-		t.Errorf("limit description should document the ~48 KB cap and the limit=1 uncut escape, got: %q", limitDesc)
+	if !descriptionMentions(limitDesc, 2000) || !descriptionMentions(limitDesc, execenv.DefaultReadLines) || !strings.Contains(limitDesc, "48 KB") || !strings.Contains(limitDesc, "uncut") {
+		t.Errorf("limit description should document the default of %d (~48 KB cap) and the limit=1 uncut escape, got: %q", execenv.DefaultReadLines, limitDesc)
 	}
 }
 
@@ -1283,8 +1296,12 @@ func TestDefModelListBoundsMatchContract(t *testing.T) {
 		if bound, ok := prop["maximum"].(int); !ok || bound != tc.deflt {
 			t.Errorf("model_list %s maximum = %v (%T), want the enforced bound %d", tc.param, prop["maximum"], prop["maximum"], tc.deflt)
 		}
-		if deflt, ok := prop["default"].(int); !ok || deflt != tc.deflt {
-			t.Errorf("model_list %s default = %v (%T), want %d", tc.param, prop["default"], prop["default"], tc.deflt)
+		if _, has := prop["default"]; has {
+			t.Errorf("model_list %s must not declare schema default (rejected on hub reads), got %v", tc.param, prop["default"])
+		}
+		desc, _ := prop["description"].(string)
+		if !descriptionMentions(desc, tc.deflt) {
+			t.Errorf("model_list %s description should document the default of %d, got: %q", tc.param, tc.deflt, desc)
 		}
 	}
 
@@ -1510,53 +1527,55 @@ func TestDefDelegatePromptAndTaskListSchema(t *testing.T) {
 	}
 }
 
+func schemaPropAt(t *testing.T, def llm.ToolDefinition, path ...string) map[string]any {
+	t.Helper()
+	cur := def.Parameters
+	for _, seg := range path {
+		if seg == "[]" {
+			next, ok := cur["items"].(map[string]any)
+			if !ok {
+				t.Fatalf("%s missing items along %v", def.Name, path)
+			}
+			cur = next
+			continue
+		}
+		props, ok := cur["properties"].(map[string]any)
+		if !ok {
+			t.Fatalf("%s missing properties along %v", def.Name, path)
+		}
+		next, ok := props[seg].(map[string]any)
+		if !ok {
+			t.Fatalf("%s missing property %q along %v", def.Name, seg, path)
+		}
+		cur = next
+	}
+	return cur
+}
+
 func TestBuiltinStaticDefaultsDeclaredInSchema(t *testing.T) {
 	t.Parallel()
 	prop := func(def llm.ToolDefinition, path ...string) map[string]any {
 		t.Helper()
-		cur := def.Parameters
-		for _, seg := range path {
-			if seg == "[]" {
-				next, ok := cur["items"].(map[string]any)
-				if !ok {
-					t.Fatalf("%s missing items along %v", def.Name, path)
-				}
-				cur = next
-				continue
-			}
-			props, ok := cur["properties"].(map[string]any)
-			if !ok {
-				t.Fatalf("%s missing properties along %v", def.Name, path)
-			}
-			next, ok := props[seg].(map[string]any)
-			if !ok {
-				t.Fatalf("%s missing property %q along %v", def.Name, seg, path)
-			}
-			cur = next
-		}
-		return cur
+		return schemaPropAt(t, def, path...)
 	}
-
 	checks := []struct {
 		name string
 		got  any
 		want any
 	}{
-		{"read_file.offset", prop(DefReadFile(), "offset")["default"], 1},
-		{"read_file.limit", prop(DefReadFile(), "limit")["default"], 2000},
 		{"list_dir.depth", prop(DefListDir(), "depth")["default"], 1},
 		{"list_dir.offset", prop(DefListDir(), "offset")["default"], 0},
 		{"list_dir.limit", prop(DefListDir(), "limit")["default"], 1000},
 		{"edit_file.edits[].replace_all", prop(DefEditFile(), "edits", "[]", "replace_all")["default"], false},
 		{"shell.mode", prop(DefShell(), "mode")["default"], "foreground"},
+		{"delegate.fork_context", prop(DefDelegate(), "fork_context")["default"], false},
 		{"delegate.task_list[].reasoning_effort", prop(DefDelegate(), "task_list", "[]", "reasoning_effort")["default"], "inherit"},
 		{"delegate.task_list[].type", prop(DefDelegate(), "task_list", "[]", "type")["default"], "implement"},
-		{"delegate_send.max_wait_ms", prop(DefDelegateSend(), "max_wait_ms")["default"], 0},
-		{"model_list.max_count", prop(DefModelList(), "max_count")["default"], 128},
-		{"model_list.max_bytes", prop(DefModelList(), "max_bytes")["default"], 4096},
-		{"job_watch.source", prop(DefJobWatch(nil), "source")["default"], "self"},
-		{"job_watch.every", prop(DefJobWatch(nil), "every")["default"], 1},
-		{"job_stop.max_wait_ms", prop(DefJobStop(), "max_wait_ms")["default"], 0},
+		{"job_list.include_nested", prop(DefJobList(), "include_nested")["default"], false},
+		{"job_list.include_descendants", prop(DefJobList(), "include_descendants")["default"], false},
+		{"job_list.limit", prop(DefJobList(), "limit")["default"], 50},
+		{"job_list.offset", prop(DefJobList(), "offset")["default"], 0},
+		{"job_stop.include_children", prop(DefJobStop(), "include_children")["default"], false},
 		{"grep.max_results", prop(DefGrep(), "max_results")["default"], 100},
 		{"grep.context_lines", prop(DefGrep(), "context_lines")["default"], 0},
 		{"grep.output_mode", prop(DefGrep(), "output_mode")["default"], "content"},
@@ -1564,16 +1583,46 @@ func TestBuiltinStaticDefaultsDeclaredInSchema(t *testing.T) {
 		{"task_list.add[].type", prop(DefTaskList(nil), "add", "[]", "type")["default"], "implement"},
 		{"find_session_transcripts.scope", prop(DefFindSessionTranscripts(), "scope")["default"], "current_project"},
 		{"find_session_transcripts.limit", prop(DefFindSessionTranscripts(), "limit")["default"], 10},
-		{"manage_worktree.base_ref", prop(DefManageWorktree(), "base_ref")["default"], "HEAD"},
-		{"manage_worktree.orphaned_delegate_days", prop(DefManageWorktree(), "orphaned_delegate_days")["default"], 0},
 		{"manage_worktree.limit", prop(DefManageWorktree(), "limit")["default"], 15},
-		{"read_transcript.format", prop(DefReadTranscript(), "format")["default"], "markdown"},
-		{"read_transcript.context_lines", prop(DefReadTranscript(), "context_lines")["default"], 0},
+		{"manage_worktree.offset", prop(DefManageWorktree(), "offset")["default"], 0},
 		{"communicate.next", prop(DefCommunicate(), "next")["default"], CommunicateNextSendAndEndTurn},
+		{"ask_user.questions[].multi_select", prop(DefAskUser(), "questions", "[]", "multi_select")["default"], false},
 	}
 	for _, tc := range checks {
 		if tc.got != tc.want {
 			t.Errorf("%s default = %#v, want %#v", tc.name, tc.got, tc.want)
+		}
+	}
+}
+
+// TestContextDependentParamsOmitSchemaDefault verifies that parameters whose
+// explicit default behaves differently from omission across supported call
+// shapes (negative offsets, artifact refs, multi-op tools, or Manager hub
+// branches) intentionally do not declare a JSON Schema "default".
+func TestContextDependentParamsOmitSchemaDefault(t *testing.T) {
+	t.Parallel()
+	checks := []struct {
+		name string
+		prop map[string]any
+	}{
+		{"read_file.offset", schemaPropAt(t, DefReadFile(), "offset")},
+		{"read_file.limit", schemaPropAt(t, DefReadFile(), "limit")},
+		{"memory_read.offset", schemaPropAt(t, DefMemoryRead(), "offset")},
+		{"memory_read.limit", schemaPropAt(t, DefMemoryRead(), "limit")},
+		{"delegate_send.max_wait_ms", schemaPropAt(t, DefDelegateSend(), "max_wait_ms")},
+		{"model_list.max_count", schemaPropAt(t, DefModelList(), "max_count")},
+		{"model_list.max_bytes", schemaPropAt(t, DefModelList(), "max_bytes")},
+		{"job_watch.source", schemaPropAt(t, DefJobWatch(nil), "source")},
+		{"job_watch.every", schemaPropAt(t, DefJobWatch(nil), "every")},
+		{"job_stop.max_wait_ms", schemaPropAt(t, DefJobStop(), "max_wait_ms")},
+		{"manage_worktree.base_ref", schemaPropAt(t, DefManageWorktree(), "base_ref")},
+		{"manage_worktree.orphaned_delegate_days", schemaPropAt(t, DefManageWorktree(), "orphaned_delegate_days")},
+		{"read_transcript.format", schemaPropAt(t, DefReadTranscript(), "format")},
+		{"read_transcript.context_lines", schemaPropAt(t, DefReadTranscript(), "context_lines")},
+	}
+	for _, tc := range checks {
+		if v, has := tc.prop["default"]; has {
+			t.Errorf("%s must omit schema default, got %#v", tc.name, v)
 		}
 	}
 }

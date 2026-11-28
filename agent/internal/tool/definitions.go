@@ -83,8 +83,8 @@ const readFileCoreDescription = "Read numbered text, image, or PDF."
 func defReadFile(visionSuffix, visionParamDesc string) llm.ToolDefinition {
 	props := map[string]any{
 		"file_path": map[string]any{"type": "string", "description": "Path."},
-		"offset":    map[string]any{"type": "integer", "default": 1, "description": "1-based start line, or negative from EOF."},
-		"limit":     map[string]any{"type": "integer", "default": 2000, "description": "Max lines (~48 KB cap; 1 reads one long line uncut)."},
+		"offset":    map[string]any{"type": "integer", "description": "1-based start line (default 1), or negative from EOF."},
+		"limit":     map[string]any{"type": "integer", "description": "Max lines (default 2000, ~48 KB cap; 1 reads one long line uncut; omit with negative offset to keep EOF)."},
 		"pages":     map[string]any{"type": "string", "description": "PDF pages (e.g. \"1-5\", max 20; required >10 pages/20 MiB)."},
 	}
 	if visionParamDesc != "" {
@@ -481,7 +481,7 @@ func DefDelegateSendNamed(resultTool string) llm.ToolDefinition {
 			"properties": map[string]any{
 				"to":          map[string]any{"type": "string", "description": "Child by `dlg_...` ID."},
 				"message":     map[string]any{"type": "string", "description": "Message."},
-				"max_wait_ms": map[string]any{"type": "integer", "default": 0, "description": "0 sends/steers now; >0 waits if idle (`earlier_results`), fails `target_busy` if running."},
+				"max_wait_ms": map[string]any{"type": "integer", "description": "0 (default) sends/steers now; >0 waits if idle (`earlier_results`), fails `target_busy` if running."},
 			},
 			"required": []string{"to", "message"},
 		},
@@ -503,8 +503,8 @@ func DefModelList() llm.ToolDefinition {
 			"additionalProperties": false,
 			"properties": map[string]any{
 				"cursor":    map[string]any{"type": "string", "description": "Opaque `next` cursor (keep matching bounds)."},
-				"max_count": map[string]any{"type": "integer", "minimum": 1, "maximum": 128, "default": 128, "description": "Max models per page."},
-				"max_bytes": map[string]any{"type": "integer", "minimum": 512, "maximum": 4096, "default": 4096, "description": "Max bytes per page."},
+				"max_count": map[string]any{"type": "integer", "minimum": 1, "maximum": 128, "description": "Max models per page (default 128)."},
+				"max_bytes": map[string]any{"type": "integer", "minimum": 512, "maximum": 4096, "description": "Max bytes per page (default 4096)."},
 			},
 		},
 	}
@@ -540,7 +540,7 @@ func DefJobWatchNamed(eventKinds []string, resultTool string) llm.ToolDefinition
 			"properties": map[string]any{
 				"operation":            map[string]any{"type": "string", "description": "Watch operation.", "enum": []string{"create", "list", "inspect", "clear"}},
 				"watch_id":             map[string]any{"type": "string", "description": "Watch ID (required for inspect or clear)."},
-				"source":               map[string]any{"type": []string{"string", "null"}, "default": "self", "description": "`self`, `parent`, `dlg_...`, or shell `job_id`."},
+				"source":               map[string]any{"type": []string{"string", "null"}, "description": "`self`, `parent`, `dlg_...`, or shell `job_id` (defaults to `self` for timers only)."},
 				"output_match":         map[string]any{"type": []string{"string", "null"}, "description": "RE2 regex on rolling 4096-byte job output."},
 				"progress_interval_ms": map[string]any{"type": []string{"integer", "null"}, "description": "Concrete shell job progress interval in ms (1000-3600000)."},
 				"after_seconds":        map[string]any{"type": []string{"integer", "null"}, "description": "One-shot delay in seconds (60 to 86400); source self only."},
@@ -553,8 +553,7 @@ func DefJobWatchNamed(eventKinds []string, resultTool string) llm.ToolDefinition
 				},
 				"every": map[string]any{
 					"type":        []string{"integer", "null"},
-					"default":     1,
-					"description": "Fire every Nth match (>1 requires one event kind).",
+					"description": "Fire every Nth match (default 1; >1 requires one event kind).",
 				},
 				"event_filter": map[string]any{
 					"type":                 []string{"object", "null"},
@@ -658,7 +657,7 @@ func DefJobStop() llm.ToolDefinition {
 			"additionalProperties": false,
 			"properties": map[string]any{
 				"target":           map[string]any{"type": "string", "description": "Shell `job_id` or delegate `dlg_...` ID."},
-				"max_wait_ms":      map[string]any{"type": "integer", "default": 0, "description": "0 returns now; >0 waits ms for settlement."},
+				"max_wait_ms":      map[string]any{"type": "integer", "description": "0 (default) returns now; >0 waits ms for settlement."},
 				"include_children": map[string]any{"type": "boolean", "default": false, "description": "Also stop nested child shell jobs."},
 			},
 			"required": []string{"target"},
@@ -770,7 +769,8 @@ const (
 func communicateDescription(audience, finalUse string) string {
 	return "Message " + audience +
 		". Default next=\"send_and_end_turn\" ENDS YOUR TURN IMMEDIATELY (use only " + finalUse +
-		"); use next=\"send_and_continue\" for mid-work updates, or next=\"log_quietly_and_end_turn\" (wait note only) when waiting on background work."
+		"); use next=\"send_and_continue\" for mid-work updates, or next=\"log_quietly_and_end_turn\" (wait note only) when waiting on background work. " +
+		"Include `output` only on `send_and_end_turn` (required when a result schema is bound; omit on updates and quiet yields)."
 }
 
 // communicateNextDescription builds the `next` enum parameter description for
@@ -1099,8 +1099,7 @@ func DefManageWorktree() llm.ToolDefinition {
 				},
 				"base_ref": map[string]any{
 					"type":        "string",
-					"default":     "HEAD",
-					"description": "Base ref for create.",
+					"description": "Base ref for create (default HEAD).",
 				},
 				"path": map[string]any{
 					"type":        "string",
@@ -1120,8 +1119,7 @@ func DefManageWorktree() llm.ToolDefinition {
 				},
 				"orphaned_delegate_days": map[string]any{
 					"type":        "number",
-					"default":     0,
-					"description": "Prune locks for parents inactive this many days (positive min ~0.00072).",
+					"description": "Prune locks for parents inactive this many days (default 0; positive min ~0.00072).",
 				},
 				"limit": map[string]any{
 					"type":        "integer",
@@ -1201,7 +1199,7 @@ func DefReadTranscript() llm.ToolDefinition {
 			"additionalProperties": false,
 			"properties": map[string]any{
 				"transcript_ref": map[string]any{"type": "string", "description": "Session ref, ID, `current`, `job:<job_id>`, or `artifact:<id>`."},
-				"format":         map[string]any{"type": []any{"string", "null"}, "enum": []any{"outline", "markdown", "jsonl", nil}, "default": "markdown", "description": "Output format."},
+				"format":         map[string]any{"type": []any{"string", "null"}, "enum": []any{"outline", "markdown", "jsonl", nil}, "description": "Session output format (default markdown)."},
 				"range":          map[string]any{"type": []any{"string", "null"}, "description": "Turn window (`12-40`, `last:40`, or `start:40`)."},
 				"expand_turn":    map[string]any{"type": []any{"integer", "null"}, "minimum": 0, "description": "Session markdown only: expand any semantic Turn N as byte-paged transcript_v2_jsonl."},
 				"offset_bytes":   map[string]any{"type": "integer", "minimum": 0, "description": "Continuation byte offset for `expand_turn`, or raw start for `job:`/`artifact:`."},
@@ -1210,8 +1208,7 @@ func DefReadTranscript() llm.ToolDefinition {
 					"type":        []any{"integer", "null"},
 					"minimum":     0,
 					"maximum":     10,
-					"default":     0,
-					"description": "Context lines (requires output_match).",
+					"description": "Context lines (default 0; requires output_match).",
 				},
 			},
 		},
