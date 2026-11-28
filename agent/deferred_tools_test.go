@@ -751,9 +751,12 @@ func TestToolSearchSchemasStaticToolsAndOmission(t *testing.T) {
 		}
 		var ordReq llm.Request
 		ordAdapter := &modelAvailabilityAdapter{models: models}
-		ordAdapter.fakeAdapter = *newFakeAdapter("openai", func(req llm.Request) llm.Response {
-			ordReq = req
-			return agenttest.FinalResponse("ok")
+		ordAdapter.name = "openai"
+		ordAdapter.setSteps([]func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				ordReq = req
+				return agenttest.FinalResponse("ok")
+			},
 		})
 		oc := llm.NewClient()
 		oc.Register(ordAdapter)
