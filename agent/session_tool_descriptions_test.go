@@ -51,8 +51,7 @@ func TestDefListDirLimitProseMatchesEnforcedDefault(t *testing.T) {
 	if !ok {
 		t.Fatalf("list_dir missing limit property; got properties: %v", props)
 	}
-	desc, _ := limit["description"].(string)
-	if !descriptionMentions(desc, defaultListDirLimit) {
-		t.Errorf("list_dir limit description should state the enforced default of %d, got: %q", defaultListDirLimit, desc)
+	if deflt, ok := limit["default"].(int); !ok || deflt != defaultListDirLimit {
+		t.Errorf("list_dir limit default = %v (%T), want enforced default %d", limit["default"], limit["default"], defaultListDirLimit)
 	}
 }

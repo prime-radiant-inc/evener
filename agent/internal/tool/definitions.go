@@ -312,7 +312,7 @@ func delegateReasoningEffortLevels() []string {
 // delegateReasoningEffortDescription explains the non-enum semantics of
 // reasoning_effort; the enum itself carries the accepted values.
 func delegateReasoningEffortDescription() string {
-	return fmt.Sprintf("Reasoning effort (`%s` turns it off; inherits parent if omitted).", llm.ReasoningEffortNone)
+	return fmt.Sprintf("Reasoning effort (%#q turns it off; inherits parent if omitted).", llm.ReasoningEffortNone)
 }
 
 // DefDelegate returns the default delegate tool definition with free-form
