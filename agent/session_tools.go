@@ -1075,14 +1075,52 @@ func (s *Session) hasTranscriptWriter() bool {
 }
 
 // trackReadFile records that a file has been read in this session.
-func (s *Session) trackReadFile(path string) {
-	// Resolve before taking readFilesMu: resolveFilePath calls currentEnv,
-	// which takes s.mu, and a fold publishing under s.mu takes readFilesMu
-	// (clearPriorReads), so the reverse order here would deadlock the two.
+func (s *Session) trackReadFile(path string) { s.recordFileState(path, false, false) }
+
+func (s *Session) recordFileState(path string, invalidateReads, deleted bool) {
+	// Resolve and stat before taking readFilesMu: resolveFilePath takes s.mu,
+	// and clearPriorReads takes readFilesMu under s.mu.
 	abs := s.resolveFilePath(path)
+	stamp, hasStamp := readStamp{}, false
+	if !deleted {
+		stamp, hasStamp = statReadStamp(abs)
+	}
 	s.readFilesMu.Lock()
-	s.readFiles[abs] = true
-	s.readFilesMu.Unlock()
+	defer s.readFilesMu.Unlock()
+	if invalidateReads {
+		delete(s.priorReads, abs)
+	}
+	if !deleted {
+		s.readFiles[abs] = true
+	}
+	if hasStamp {
+		s.setFileStampLocked(abs, stamp)
+	} else {
+		delete(s.fileStamps, abs)
+	}
+}
+
+func (s *Session) setFileStampLocked(abs string, stamp readStamp) {
+	if s.fileStamps == nil {
+		s.fileStamps = map[string]readStamp{}
+	}
+	s.fileStamps[abs] = stamp
+}
+
+// patchFileState compares path's current on-disk stamp against the session's
+// last recorded read/write stamp.
+func (s *Session) patchFileState(path string) tool.PatchFileState {
+	abs := s.resolveFilePath(path)
+	s.readFilesMu.RLock()
+	recorded, seen := s.fileStamps[abs]
+	s.readFilesMu.RUnlock()
+	if !seen {
+		return tool.PatchFileStateUnknown
+	}
+	if current, ok := statReadStamp(abs); ok && sameReadStamp(recorded, current) {
+		return tool.PatchFileStateUnchanged
+	}
+	return tool.PatchFileStateChanged
 }
 
 // readBeforeWriteWarning returns a warning string if the file exists but hasn't
@@ -1106,10 +1144,15 @@ func (s *Session) readBeforeWriteWarningIn(env execenv.ExecutionEnvironment, pat
 	return "[WARNING: Writing to file that has not been read in this session. Consider reading first.]\n"
 }
 
-func (s *Session) resolveFilePath(path string) string {
+func (s *Session) resolveFilePath(path string) string { return resolvePathIn(s.currentEnv(), path) }
+
+func resolvePathIn(env execenv.ExecutionEnvironment, path string) string {
 	p := strings.TrimSpace(path)
-	if p == "" || filepath.IsAbs(p) {
-		return p
+	if p == "" {
+		return ""
 	}
-	return filepath.Join(s.currentEnv().WorkingDirectory(), p)
+	if filepath.IsAbs(p) || env == nil {
+		return filepath.Clean(p)
+	}
+	return filepath.Join(env.WorkingDirectory(), p)
 }

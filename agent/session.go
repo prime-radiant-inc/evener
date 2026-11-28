@@ -1216,6 +1216,10 @@ type Session struct {
 	// read-before-write guardrail
 	readFiles   map[string]bool
 	readFilesMu sync.RWMutex
+	// fileStamps records the last observed (size, mtime) stamp per resolved
+	// path from a successful read or write in this session. Guarded by
+	// readFilesMu.
+	fileStamps map[string]readStamp
 	// priorReads remembers the line ranges already read from each read_file
 	// path, with the file's state and the turn of each read. Guarded by
 	// readFilesMu.

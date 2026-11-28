@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -421,13 +422,48 @@ func TestApplyPatch_ContextMismatchEndsWithRecoveryPointer(t *testing.T) {
 
 	patch := "*** Begin Patch\n*** Update File: f.go\n@@\n \tmodel := \"openai/gpt-5\"\n-\treturn nonexistent\n+\treturn model\n*** End Patch\n"
 	_, err := ApplyPatch(t.Context(), testMutator(dir), patch)
-	if err == nil {
-		t.Fatal("expected patch mismatch")
+	mm, ok := errors.AsType[*PatchMismatchError](err)
+	if !ok {
+		t.Fatalf("err = %v, want *PatchMismatchError", err)
 	}
-	msg := err.Error()
-	const wantSuffix = "the file has changed since the content this patch was built from; re-read the target region with read_file, then rebuild the patch"
-	if !strings.HasSuffix(msg, wantSuffix) {
-		t.Fatalf("error does not end with recovery pointer:\n%s", msg)
+	if mm.FileState != PatchFileStateUnknown {
+		t.Fatalf("default FileState = %v, want PatchFileStateUnknown", mm.FileState)
+	}
+
+	cases := []struct {
+		name         string
+		state        PatchFileState
+		wantSuffix   string
+		forbidSubstr string
+	}{
+		{
+			name:         "unknown",
+			state:        PatchFileStateUnknown,
+			wantSuffix:   "re-read the target region with read_file, then rebuild the patch",
+			forbidSubstr: "the file has changed",
+		},
+		{
+			name:         "unchanged",
+			state:        PatchFileStateUnchanged,
+			wantSuffix:   "the file has not changed since your last read or write; inspect the mismatch and snippet above, then rebuild the patch",
+			forbidSubstr: "the file has changed",
+		},
+		{
+			name:         "changed",
+			state:        PatchFileStateChanged,
+			wantSuffix:   "the file has changed since your last read or write; re-read the target region with read_file, then rebuild the patch",
+			forbidSubstr: "has not changed",
+		},
+	}
+	for _, tc := range cases {
+		mm.FileState = tc.state
+		msg := mm.Error()
+		if !strings.HasSuffix(msg, tc.wantSuffix) {
+			t.Fatalf("%s: error does not end with expected recovery pointer:\n%s", tc.name, msg)
+		}
+		if strings.Contains(msg, tc.forbidSubstr) {
+			t.Fatalf("%s: error unexpectedly contains %q:\n%s", tc.name, tc.forbidSubstr, msg)
+		}
 	}
 }
 
@@ -673,5 +709,65 @@ func TestApplyPatchMismatchAtEndOfFileReportsEOF(t *testing.T) {
 	}
 	if mm.HunkLine != 2 || mm.Want != "gamma" || !mm.GotEOF {
 		t.Errorf("mismatch = {HunkLine:%d Want:%q GotEOF:%v}, want {2 gamma true}", mm.HunkLine, mm.Want, mm.GotEOF)
+	}
+}
+
+func TestApplyPatchTracked_ReportsCommittedEffectsInOrder(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "keep.txt"), []byte("one\ntwo\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "drop.txt"), []byte("bye\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	patch := strings.Join([]string{
+		"*** Begin Patch",
+		"*** Add File: created.txt",
+		"+hello",
+		"*** Update File: keep.txt",
+		"*** Move to: moved.txt",
+		"@@",
+		"-one",
+		"+ONE",
+		" two",
+		"*** Delete File: drop.txt",
+		"*** End Patch",
+		"",
+	}, "\n")
+	_, effects, err := ApplyPatchTracked(t.Context(), testMutator(dir), patch)
+	if err != nil {
+		t.Fatalf("ApplyPatchTracked: %v", err)
+	}
+	want := []PatchEffect{
+		{Path: "created.txt"},
+		{Path: "keep.txt", Deleted: true},
+		{Path: "moved.txt"},
+		{Path: "drop.txt", Deleted: true},
+	}
+	if !slices.Equal(effects, want) {
+		t.Fatalf("effects = %+v, want %+v", effects, want)
+	}
+
+	// Coalesced run where section 1 commits and section 2 mismatches must still
+	// report section 1's committed write alongside the mismatch error.
+	partial := strings.Join([]string{
+		"*** Begin Patch",
+		"*** Update File: moved.txt",
+		"@@",
+		"-ONE",
+		"+UNO",
+		"*** Update File: moved.txt",
+		"@@",
+		"-missing",
+		"+nope",
+		"*** End Patch",
+		"",
+	}, "\n")
+	_, partialEffects, err := ApplyPatchTracked(t.Context(), testMutator(dir), partial)
+	if _, ok := errors.AsType[*PatchMismatchError](err); !ok {
+		t.Fatalf("partial err = %v, want *PatchMismatchError", err)
+	}
+	if !slices.Equal(partialEffects, []PatchEffect{{Path: "moved.txt"}}) {
+		t.Fatalf("partial effects = %+v, want moved.txt written", partialEffects)
 	}
 }

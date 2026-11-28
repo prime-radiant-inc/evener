@@ -149,7 +149,7 @@ func execFileWrite(ctx context.Context, env execenv.ExecutionEnvironment, args m
 	warn := guard.ReadBeforeWriteWarning(path)
 	result, err := env.WriteFile(path, fmt.Sprint(args["content"]))
 	if err == nil {
-		guard.TrackRead(path)
+		guard.TrackChange(path, false)
 		if warn != "" {
 			return warn + result, nil
 		}
@@ -186,8 +186,11 @@ func execFileEditWith(args map[string]any, guard readGuard, edit func(path strin
 	}
 	warn := guard.ReadBeforeWriteWarning(path)
 	result, err := edit(path, edits)
-	if err == nil && warn != "" {
-		return warn + result, nil
+	if err == nil {
+		guard.TrackChange(path, false)
+		if warn != "" {
+			return warn + result, nil
+		}
 	}
 	return result, err
 }

@@ -81,6 +81,9 @@ func (s *Session) noteReadFileRepeat(path string, before readStamp, res *tool.Ex
 	// range, and a clamped read withheld parts of long lines that a follow-up
 	// limit=1 read must be free to fetch without a false repeat hint.
 	if res.ReadPastEOF || res.ReadUnnumberedTail || res.ReadClamped {
+		s.readFilesMu.Lock()
+		s.setFileStampLocked(path, before)
+		s.readFilesMu.Unlock()
 		return
 	}
 	s.mu.Lock()
@@ -95,6 +98,7 @@ func (s *Session) noteReadFileRepeat(path string, before readStamp, res *tool.Ex
 	}
 
 	s.readFilesMu.Lock()
+	s.setFileStampLocked(path, before)
 	if s.priorReads == nil {
 		s.priorReads = map[string][]priorReadSpan{}
 	}

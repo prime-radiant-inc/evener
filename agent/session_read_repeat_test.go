@@ -489,3 +489,94 @@ func TestRepeatReadDoesNotFlagLimitOneUncutEscapeAfterClampedRead(t *testing.T) 
 		t.Fatal("offset=2 limit=1 did not return the full uncut line")
 	}
 }
+
+// Writing, editing, or patching a file invalidates any pre-write repeat spans
+// for that path, even when the mutation preserves the file's size and mtime
+// and the follow-up read only inspects a subset range.
+func TestReadFileRepeatInvalidatedBySessionWrites(t *testing.T) {
+	t.Parallel()
+	mtime := time.Date(2026, 7, 8, 9, 10, 11, 0, time.UTC)
+	var initialBuilder strings.Builder
+	for i := 1; i <= 20; i++ {
+		fmt.Fprintf(&initialBuilder, "line-%02d\n", i)
+	}
+	initial := initialBuilder.String()
+	updated := strings.Replace(initial, "line-07\n", "LINE-07\n", 1)
+	if len(updated) != len(initial) {
+		t.Fatalf("fixture rewrite changed size: %d != %d", len(updated), len(initial))
+	}
+
+	cases := []struct {
+		name   string
+		mutate func(t *testing.T, s *Session, path string)
+	}{
+		{
+			name: "write_file",
+			mutate: func(t *testing.T, s *Session, path string) {
+				raw, err := json.Marshal(map[string]any{"file_path": path, "content": updated})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if res := s.execTool(t.Context(), llm.ToolCallData{ID: "w1", Name: "write_file", Arguments: raw}, ""); res.IsError {
+					t.Fatalf("write_file failed: %s", res.Output)
+				}
+			},
+		},
+		{
+			name: "edit_file",
+			mutate: func(t *testing.T, s *Session, path string) {
+				raw, err := json.Marshal(map[string]any{
+					"file_path": path,
+					"edits":     []any{map[string]any{"old_string": "line-07", "new_string": "LINE-07"}},
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if res := s.execTool(t.Context(), llm.ToolCallData{ID: "e1", Name: "edit_file", Arguments: raw}, ""); res.IsError {
+					t.Fatalf("edit_file failed: %s", res.Output)
+				}
+			},
+		},
+		{
+			name: "apply_patch",
+			mutate: func(t *testing.T, s *Session, path string) {
+				patch := "*** Begin Patch\n*** Update File: notes.txt\n@@\n line-06\n-line-07\n+LINE-07\n line-08\n*** End Patch\n"
+				raw, err := json.Marshal(map[string]any{"patch": patch})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if res := s.execTool(t.Context(), llm.ToolCallData{ID: "p1", Name: "apply_patch", Arguments: raw}, ""); res.IsError {
+					t.Fatalf("apply_patch failed: %s", res.Output)
+				}
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			path := filepath.Join(dir, "notes.txt")
+			pinReadFile(t, path, initial, mtime)
+			s := newSession(t, withEnv(execenv.NewLocalExecutionEnvironment(dir)))
+
+			if first := repeatReadFile(t, s, "r1", path, map[string]any{"offset": 1, "limit": 20}); first.UnchangedSinceTurn != nil {
+				t.Fatal("first read must not be marked unchanged")
+			}
+			tc.mutate(t, s, path)
+			// Pin mtime back to the pre-write timestamp to simulate a same-tick
+			// rewrite of identical byte size, where only write-side invalidation
+			// prevents a subset read from matching the stale pre-write span.
+			if err := os.Chtimes(path, mtime, mtime); err != nil {
+				t.Fatal(err)
+			}
+			after := repeatReadFile(t, s, "r2", path, map[string]any{"offset": 5, "limit": 6})
+			if after.UnchangedSinceTurn != nil {
+				t.Fatalf("%s did not invalidate priorReads: subset read falsely marked unchanged since turn %d", tc.name, *after.UnchangedSinceTurn)
+			}
+			if !strings.Contains(after.Output, "LINE-07") {
+				t.Fatalf("subset read after %s missing updated line: %q", tc.name, after.Output)
+			}
+		})
+	}
+}
