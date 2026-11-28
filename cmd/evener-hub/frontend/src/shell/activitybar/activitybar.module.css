@@ -6,11 +6,7 @@
   width: 320px;
   flex: none;
   border-left: 1px solid var(--edge);
-  background: var(--surface-0);
-  /* Mirrors the rail's rule: keeps the left cast above the workspace's
-   * positioned panes whatever the sibling order. */
-  position: relative;
-  z-index: var(--z-raised);
+  composes: docked from "../../styles/surface.module.css";
   box-shadow: var(--shadow-overview);
   display: flex;
   flex-direction: column;

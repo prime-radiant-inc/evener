@@ -2,20 +2,7 @@
 // themes; the split is the 1px --edge hairline plus the one-sided
 // --shadow-rail cast, and --z-raised keeps the cast above the following
 // sibling's paint. Spec: docs/superpowers/specs/2026-11-28-sidebar-one-ground-design.md.
-const PAGE_DARK = "rgb(17, 18, 20)";
-const PAGE_LIGHT = "rgb(246, 247, 249)";
-const EDGE_DARK = "rgb(51, 56, 66)";
-const EDGE_LIGHT = "rgb(213, 217, 224)";
-
-function shadowOffsetX(shadow) {
-  const m = /rgba?\([^)]*\) (-?\d+(?:\.\d+)?)px 0px 24px -12px/.exec(shadow);
-  return m ? Number(m[1]) : null;
-}
-
-function shadowAlpha(shadow) {
-  const m = /rgba\([^,]+,[^,]+,[^,]+,\s*([\d.]+)\)/.exec(shadow);
-  return m ? Number(m[1]) : 1;
-}
+import { EDGE_DARK, EDGE_LIGHT, PAGE_DARK, PAGE_LIGHT, shadowAlpha, shadowOffsetX } from "./shared-assert.mjs";
 
 export default function assert(measurement) {
   const failures = [];

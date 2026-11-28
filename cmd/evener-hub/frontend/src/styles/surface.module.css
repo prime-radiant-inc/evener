@@ -125,3 +125,15 @@
   border-radius: var(--radius-control);
   background: var(--field);
 }
+
+/* --- the docked sidebar --------------------------------------------------
+ * A full-height pane seated on the page ground that casts its one-sided
+ * shadow over the workspace. The ground is the page itself; the relative
+ * positioning and the raised z tier keep the cast above the workspace's
+ * positioned panes, which paint after the sidebar in the shell's DOM order.
+ * Consumers add only their directional hairline and cast. */
+.docked {
+  background: var(--surface-0);
+  position: relative;
+  z-index: var(--z-raised);
+}

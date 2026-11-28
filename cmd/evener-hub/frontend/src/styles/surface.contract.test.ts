@@ -32,6 +32,19 @@ const SURFACE_DECLARATIONS = [
   /box-shadow:\s*var\(--shadow-card\)/,
 ];
 
+// The three declarations that make the docked sidebar: the page ground and
+// the raised cast tier. Same fork rule as the grouped surface.
+const DOCKED_DECLARATIONS = [
+  /background:\s*var\(--surface-0\)/,
+  /position:\s*relative/,
+  /z-index:\s*var\(--z-raised\)/,
+];
+
+test("the docked sidebar is one rule: the page ground and the raised cast tier", () => {
+  const docked = ruleBody(surface, ".docked");
+  for (const declaration of DOCKED_DECLARATIONS) expect(docked).toMatch(declaration);
+});
+
 test("the grouped surface is one rule: hairline edge, pane corner, content surface, card lift", () => {
   const grouped = ruleBody(surface, ".grouped");
   for (const declaration of SURFACE_DECLARATIONS) expect(grouped).toMatch(declaration);
@@ -49,6 +62,8 @@ test.each([
   ["panes/settings/settings.module.css", ".clusterRowsGrouped", ["grouped", "groupedRows"]],
   ["panes/session/session.module.css", ".intentGroupRows", ["grouped", "groupedRows"]],
   ["panes/session/transcript/toolrungroup.module.css", ".body", ["groupedRows"]],
+  ["shell/rail/Rail.module.css", ".rail", ["docked"]],
+  ["shell/activitybar/activitybar.module.css", ".sidebar", ["docked"]],
 ])("%s %s composes the shared surface and restates none of it", (file, selector, classes) => {
   const body = ruleBody(read(file), selector);
   for (const name of classes) {
@@ -56,6 +71,9 @@ test.each([
   }
   if (classes.includes("grouped")) {
     for (const declaration of SURFACE_DECLARATIONS) expect(body).not.toMatch(declaration);
+  }
+  if (classes.includes("docked")) {
+    for (const declaration of DOCKED_DECLARATIONS) expect(body).not.toMatch(declaration);
   }
 });
 

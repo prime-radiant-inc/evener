@@ -1,7 +1,7 @@
 // sidebar-one-ground-mobile: at <=899px the rail renders inside StackHost's
 // drawer Sheet, which already frames the panel — so the rail keeps the page
 // ground but carries no border and no shadow of its own (spec 2026-11-28).
-const PAGE_DARK = "rgb(17, 18, 20)";
+import { PAGE_DARK } from "../sidebar-one-ground/shared-assert.mjs";
 
 export default function assert(measurement) {
   const failures = [];
