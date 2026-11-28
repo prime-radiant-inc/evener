@@ -319,7 +319,6 @@ var tier2DeferredGroups = map[string]string{
 	"find_session_transcripts": "transcripts",
 	"doctor_evener":            "doctor",
 	"compact_context":          "compact",
-	"web_fetch":                "secondary",
 	"model_list":               "secondary",
 	"notes_agent_set":          "secondary",
 	"notes_read":               "secondary",

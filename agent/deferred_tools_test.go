@@ -149,8 +149,8 @@ func TestDeferredToolsTurn1ToolsAndPromptAvailability(t *testing.T) {
 	for _, td := range captured.Tools {
 		byName[td.Name] = td
 	}
-	// Core Tier-1 includes task_list, delegate, delegate_send, and tool_search upfront with full schemas; web_fetch is a deferred stub.
-	for _, tier1 := range []string{"communicate", "exec_command", "read_file", "apply_patch", "write_file", "grep_files", "find_files", "use_skill", "tool_search", "delegate", "delegate_send", "task_list"} {
+	// Core Tier-1 includes web_fetch, task_list, delegate, delegate_send, and tool_search upfront with full schemas.
+	for _, tier1 := range []string{"communicate", "exec_command", "read_file", "apply_patch", "write_file", "grep_files", "find_files", "use_skill", "web_fetch", "tool_search", "delegate", "delegate_send", "task_list"} {
 		td, ok := byName[tier1]
 		if !ok {
 			t.Errorf("Turn 1 req.Tools missing Tier-1 tool %q", tier1)
@@ -158,10 +158,8 @@ func TestDeferredToolsTurn1ToolsAndPromptAvailability(t *testing.T) {
 		}
 		assertFullTier1Def(t, td)
 	}
-	if td, ok := byName["web_fetch"]; !ok {
-		t.Errorf("Turn 1 req.Tools missing deferred stub for web_fetch")
-	} else {
-		assertDeferredStubDef(t, td, "")
+	if sess.isDeferredTool("web_fetch") {
+		t.Errorf("isDeferredTool(\"web_fetch\") = true, want false (Tier-1 upfront)")
 	}
 	if rt := sess.reg.Get("tool_search"); rt == nil || !rt.ReadOnly {
 		t.Fatalf("tool_search must be registered as ReadOnly=true, got %+v", rt)
@@ -185,7 +183,7 @@ func TestDeferredToolsTurn1ToolsAndPromptAvailability(t *testing.T) {
 	}
 
 	data, _ := sess.buildPromptData(sess.currentEnv())
-	for _, deferred := range []string{"job_watch", "manage_worktree", "read_transcript", "web_fetch", "compact_context", "model_list", "doctor_evener"} {
+	for _, deferred := range []string{"job_watch", "manage_worktree", "read_transcript", "compact_context", "model_list", "doctor_evener"} {
 		if slices.Contains(data.UnavailableProfileToolNames, deferred) {
 			t.Errorf("UnavailableProfileToolNames must not list deferred tool %q: %v", deferred, data.UnavailableProfileToolNames)
 		}
@@ -193,7 +191,7 @@ func TestDeferredToolsTurn1ToolsAndPromptAvailability(t *testing.T) {
 			t.Errorf("promptData.HasTool(%q) = false for advertised deferred stub, want true", deferred)
 		}
 	}
-	for _, tier1 := range []string{"tool_search", "delegate", "delegate_send", "task_list"} {
+	for _, tier1 := range []string{"web_fetch", "tool_search", "delegate", "delegate_send", "task_list"} {
 		if !data.HasTool(tier1) {
 			t.Errorf("promptData.HasTool(%q) = false, want true for Tier-1 tool", tier1)
 		}
@@ -226,7 +224,7 @@ func TestDeferredToolsTurn1ToolsAndPromptAvailability(t *testing.T) {
 		}
 	}
 
-	// Headless OpenAI session keeps 13 Tier-1 tools upfront (including task_list, delegate, delegate_send, tool_search) plus minimal stubs.
+	// Headless OpenAI session keeps 14 Tier-1 tools upfront (including web_fetch, task_list, delegate, delegate_send, tool_search) plus minimal stubs.
 	var headlessReq llm.Request
 	hc := llm.NewClient()
 	hc.Register(newFakeAdapter("openai", func(req llm.Request) llm.Response {
@@ -255,7 +253,7 @@ func TestDeferredToolsTurn1ToolsAndPromptAvailability(t *testing.T) {
 	for _, td := range headlessReq.Tools {
 		headlessByName[td.Name] = td
 	}
-	for _, tier1 := range []string{"communicate", "exec_command", "read_file", "apply_patch", "write_file", "grep_files", "find_files", "list_dir", "use_skill", "tool_search", "delegate", "delegate_send", "task_list"} {
+	for _, tier1 := range []string{"communicate", "exec_command", "read_file", "apply_patch", "write_file", "grep_files", "find_files", "list_dir", "use_skill", "web_fetch", "tool_search", "delegate", "delegate_send", "task_list"} {
 		td, ok := headlessByName[tier1]
 		if !ok {
 			t.Errorf("headless Turn 1 req.Tools missing Tier-1 tool %q", tier1)
@@ -270,11 +268,11 @@ func TestDeferredToolsTurn1ToolsAndPromptAvailability(t *testing.T) {
 			headlessStubs++
 		}
 	}
-	if got, want := len(headlessReq.Tools), 13+headlessStubs; got != want {
-		t.Errorf("headless Turn 1 req.Tools count = %d (%v), want %d (13 Tier-1 + %d stubs)",
+	if got, want := len(headlessReq.Tools), 14+headlessStubs; got != want {
+		t.Errorf("headless Turn 1 req.Tools count = %d (%v), want %d (14 Tier-1 + %d stubs)",
 			got, toolNamesFromDefinitions(headlessReq.Tools), want, headlessStubs)
 	}
-	t.Logf("openai headless Turn 1: tools=%d (tier1=13 stubs=%d) tools_B=%d sys_B=%d tot_B=%d names=%v",
+	t.Logf("openai headless Turn 1: tools=%d (tier1=14 stubs=%d) tools_B=%d sys_B=%d tot_B=%d names=%v",
 		len(headlessReq.Tools), headlessStubs, llm.ToolsJSONBytes(headlessReq.Tools), len(headless.cachedSystemPrompt),
 		llm.ToolsJSONBytes(headlessReq.Tools)+len(headless.cachedSystemPrompt), toolNamesFromDefinitions(headlessReq.Tools))
 
@@ -305,11 +303,11 @@ func TestDeferredToolsTurn1ToolsAndPromptAvailability(t *testing.T) {
 			dsStubs++
 		}
 	}
-	if got, want := len(dsReq.Tools), 13+dsStubs; got != want {
-		t.Errorf("deepseek headless Turn 1 req.Tools count = %d (%v), want %d (13 Tier-1 + %d stubs)",
+	if got, want := len(dsReq.Tools), 14+dsStubs; got != want {
+		t.Errorf("deepseek headless Turn 1 req.Tools count = %d (%v), want %d (14 Tier-1 + %d stubs)",
 			got, toolNamesFromDefinitions(dsReq.Tools), want, dsStubs)
 	}
-	t.Logf("deepseek headless Turn 1: tools=%d (tier1=13 stubs=%d) tools_B=%d sys_B=%d tot_B=%d names=%v",
+	t.Logf("deepseek headless Turn 1: tools=%d (tier1=14 stubs=%d) tools_B=%d sys_B=%d tot_B=%d names=%v",
 		len(dsReq.Tools), dsStubs, llm.ToolsJSONBytes(dsReq.Tools), len(dsSess.cachedSystemPrompt),
 		llm.ToolsJSONBytes(dsReq.Tools)+len(dsSess.cachedSystemPrompt), toolNamesFromDefinitions(dsReq.Tools))
 
@@ -340,8 +338,8 @@ func TestDeferredToolsTurn1ToolsAndPromptAvailability(t *testing.T) {
 			antStubs++
 		}
 	}
-	if got, want := len(antReq.Tools), 13+antStubs; got != want {
-		t.Errorf("anthropic headless Turn 1 req.Tools count = %d (%v), want %d (13 Tier-1 + %d stubs)",
+	if got, want := len(antReq.Tools), 14+antStubs; got != want {
+		t.Errorf("anthropic headless Turn 1 req.Tools count = %d (%v), want %d (14 Tier-1 + %d stubs)",
 			got, toolNamesFromDefinitions(antReq.Tools), want, antStubs)
 	}
 	t.Logf("anthropic headless Turn 1: tools=%d (tier1=%d stubs=%d) tools_B=%d sys_B=%d tot_B=%d names=%v",
@@ -452,40 +450,40 @@ func TestToolSearchSchemasStaticToolsAndOmission(t *testing.T) {
 		if listRes.IsError {
 			t.Fatalf("tool_search(%s) failed: %s", args, listRes.Output)
 		}
-		for _, want := range []string{"job_watch", "manage_worktree", "read_transcript", "web_fetch"} {
+		for _, want := range []string{"job_watch", "manage_worktree", "read_transcript", "model_list"} {
 			if !strings.Contains(listRes.Output, want) {
 				t.Errorf("tool_search(%s) missing %q:\n%s", args, want, listRes.Output)
 			}
 		}
-		for _, upfront := range []string{"read_file", "delegate", "delegate_send", "task_list"} {
+		for _, upfront := range []string{"read_file", "web_fetch", "delegate", "delegate_send", "task_list"} {
 			if strings.Contains(listRes.Output, "- "+upfront+":") {
 				t.Errorf("tool_search(%s) listed Tier-1 %q as deferred:\n%s", args, upfront, listRes.Output)
 			}
 		}
 	}
 
-	wfRes := sess.execTool(tripwireCtx(t), llm.ToolCallData{
-		ID:        "ts-wf",
+	mlRes := sess.execTool(tripwireCtx(t), llm.ToolCallData{
+		ID:        "ts-ml",
 		Name:      "tool_search",
 		Type:      "function",
-		Arguments: json.RawMessage(`{"names":["web_fetch"],"intent":"Loading web_fetch schema"}`),
+		Arguments: json.RawMessage(`{"names":["model_list"],"intent":"Loading model_list schema"}`),
 	}, "")
-	if wfRes.IsError {
-		t.Fatalf("tool_search(names=[web_fetch]) failed: %s", wfRes.Output)
+	if mlRes.IsError {
+		t.Fatalf("tool_search(names=[model_list]) failed: %s", mlRes.Output)
 	}
-	var wfSchemas []liveToolSchema
-	if err := json.Unmarshal([]byte(wfRes.Output), &wfSchemas); err != nil || len(wfSchemas) != 1 || wfSchemas[0].Name != "web_fetch" {
-		t.Fatalf("tool_search(names=[web_fetch]) = %q (err=%v), want web_fetch schema", wfRes.Output, err)
+	var mlSchemas []liveToolSchema
+	if err := json.Unmarshal([]byte(mlRes.Output), &mlSchemas); err != nil || len(mlSchemas) != 1 || mlSchemas[0].Name != "model_list" {
+		t.Fatalf("tool_search(names=[model_list]) = %q (err=%v), want model_list schema", mlRes.Output, err)
 	}
-	assertParamsRequireIntent(t, "tool_search web_fetch", wfSchemas[0].Parameters)
+	assertParamsRequireIntent(t, "tool_search model_list", mlSchemas[0].Parameters)
 
 	t1Res := sess.execTool(tripwireCtx(t), llm.ToolCallData{
 		ID:        "ts-t1",
 		Name:      "tool_search",
 		Type:      "function",
-		Arguments: json.RawMessage(`{"names":["read_file","delegate","delegate_send","task_list"],"intent":"Checking Tier-1 tools"}`),
+		Arguments: json.RawMessage(`{"names":["read_file","web_fetch","delegate","delegate_send","task_list"],"intent":"Checking Tier-1 tools"}`),
 	}, "")
-	for _, upfront := range []string{"read_file", "delegate", "delegate_send", "task_list"} {
+	for _, upfront := range []string{"read_file", "web_fetch", "delegate", "delegate_send", "task_list"} {
 		if t1Res.IsError || !strings.Contains(t1Res.Output, upfront) {
 			t.Fatalf("tool_search(names=[Tier-1]) = isErr:%v out:%q, want non-error naming %s", t1Res.IsError, t1Res.Output, upfront)
 		}
@@ -656,7 +654,7 @@ func TestToolSearchSchemasStaticToolsAndOmission(t *testing.T) {
 			if _, hasMsg := props["message"]; !hasMsg {
 				t.Fatalf("%s: advertised tool_search lacks communicate message property: %v", label, props)
 			}
-			for _, name := range []string{"job_watch", "manage_worktree", "read_transcript", "web_fetch"} {
+			for _, name := range []string{"job_watch", "manage_worktree", "read_transcript", "model_list", "web_fetch"} {
 				td, exists := byName[name]
 				if !exists {
 					t.Fatalf("%s: expected %q in ToolDefinitions()", label, name)
@@ -778,10 +776,10 @@ func TestToolSearchSchemasStaticToolsAndOmission(t *testing.T) {
 			if _, hasVerdict := outProps["verdict"]; !hasVerdict {
 				t.Fatalf("%s: advertised model_list lost bound output schema: %#v", label, outProp)
 			}
-			if wf, ok := byName["web_fetch"]; !ok {
-				t.Fatalf("%s: expected web_fetch stub alongside result alias", label)
+			if cc, ok := byName["compact_context"]; !ok {
+				t.Fatalf("%s: expected compact_context stub alongside result alias", label)
 			} else {
-				assertDeferredStubDef(t, wf, "")
+				assertDeferredStubDef(t, cc, "")
 			}
 		}
 		checkAliasRequest("new", aliasReq)
@@ -1025,7 +1023,7 @@ func TestToolSearchSchemasStaticToolsAndOmission(t *testing.T) {
 				"tool_search": {MaxChars: 4096, Strategy: schema.TruncHeadTail},
 			},
 		}
-		delCfg.spawn.toolNameCeiling = []string{"read_file", "web_fetch", "communicate"}
+		delCfg.spawn.toolNameCeiling = []string{"read_file", "compact_context", "communicate"}
 		delCfg.testOnly.registerTool = func(reg *tool.Registry, rt tool.RegisteredTool) error {
 			if rt.Definition.Name == "tool_search" {
 				delegateRegCount++
@@ -1187,7 +1185,7 @@ func TestTier1ToolsConfigPromotionRespectsCeilings(t *testing.T) {
 		MaxSubagentDepth: 2,
 		NonInteractive:   true,
 		TurnEndsProcess:  true,
-		Tier1Tools:       []string{"manage_worktree", "read_transcript", "web_fetch", "notes_agent_set", "delegate"},
+		Tier1Tools:       []string{"manage_worktree", "read_transcript", "compact_context", "notes_agent_set", "delegate"},
 		AgentsDocPath:    filepath.Join(t.TempDir(), "no-personal-AGENTS.md"),
 	}
 	cfg.spawn.deniedToolNames = []string{"delegate"}
@@ -1203,7 +1201,7 @@ func TestTier1ToolsConfigPromotionRespectsCeilings(t *testing.T) {
 	}
 
 	// Promoted registered tools receive full Tier-1 schemas upfront.
-	for _, promoted := range []string{"manage_worktree", "read_transcript", "web_fetch"} {
+	for _, promoted := range []string{"manage_worktree", "read_transcript", "compact_context"} {
 		td, ok := byName[promoted]
 		if !ok {
 			t.Fatalf("promoted tool %q missing from ToolDefinitions", promoted)
@@ -1275,7 +1273,7 @@ func TestTier1ToolsConfigPromotionRespectsCeilings(t *testing.T) {
 		orig, err := NewSession(c0, withTestSessionNamer(c0, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(rdir), SessionConfig{
 			StateDir:         stateDir,
 			MaxSubagentDepth: 2,
-			Tier1Tools:       []string{"web_fetch"},
+			Tier1Tools:       []string{"compact_context"},
 			AgentsDocPath:    noAgents,
 		})
 		if err != nil {
@@ -1293,7 +1291,7 @@ func TestTier1ToolsConfigPromotionRespectsCeilings(t *testing.T) {
 			t.Fatalf("LoadSessionMeta: %v", err)
 		}
 
-		// Omitting Tier1Tools on restore preserves saved web_fetch and keeps manage_worktree deferred.
+		// Omitting Tier1Tools on restore preserves saved compact_context and keeps manage_worktree deferred.
 		var reqOmitted llm.Request
 		c1 := llm.NewClient()
 		c1.Register(newFakeAdapter("openai", func(req llm.Request) llm.Response {
@@ -1316,10 +1314,10 @@ func TestTier1ToolsConfigPromotionRespectsCeilings(t *testing.T) {
 		for _, td := range reqOmitted.Tools {
 			omittedByName[td.Name] = td
 		}
-		assertFullTier1Def(t, omittedByName["web_fetch"])
+		assertFullTier1Def(t, omittedByName["compact_context"])
 		assertDeferredStubDef(t, omittedByName["manage_worktree"], "")
 
-		// Passing manage_worktree on restore promotes manage_worktree while preserving saved web_fetch.
+		// Passing manage_worktree on restore promotes manage_worktree while preserving saved compact_context.
 		var reqMerged llm.Request
 		c2 := llm.NewClient()
 		c2.Register(newFakeAdapter("openai", func(req llm.Request) llm.Response {
@@ -1343,7 +1341,7 @@ func TestTier1ToolsConfigPromotionRespectsCeilings(t *testing.T) {
 		for _, td := range reqMerged.Tools {
 			mergedByName[td.Name] = td
 		}
-		assertFullTier1Def(t, mergedByName["web_fetch"])
+		assertFullTier1Def(t, mergedByName["compact_context"])
 		assertFullTier1Def(t, mergedByName["manage_worktree"])
 	})
 }
@@ -1466,18 +1464,18 @@ func TestDeferredStubDirectDispatchHooksAndSchemaDisclosure(t *testing.T) {
 		t.Fatalf("manage_worktree retry with valid args failed: %s", retryRes.Output)
 	}
 
-	// Calling deferred web_fetch with empty args fails validation and discloses its schema cleanly.
+	// Calling deferred job_status with empty args fails validation and discloses its schema cleanly.
 	inspectRes := sess.execTool(tripwireCtx(t), llm.ToolCallData{
-		ID:        "stub-inspect-webfetch",
-		Name:      "web_fetch",
+		ID:        "stub-inspect-jobstatus",
+		Name:      "job_status",
 		Type:      "function",
 		Arguments: json.RawMessage(`{}`),
 	}, "")
 	if !inspectRes.IsError {
-		t.Fatalf("web_fetch({}) unexpectedly succeeded: %s", inspectRes.Output)
+		t.Fatalf("job_status({}) unexpectedly succeeded: %s", inspectRes.Output)
 	}
-	if !strings.Contains(inspectRes.Output, "<system-notification>") || !strings.Contains(inspectRes.Output, `"name":"web_fetch"`) || !strings.Contains(inspectRes.Output, `"url"`) {
-		t.Fatalf("web_fetch({}) should disclose schema cleanly, got:\n%s", inspectRes.Output)
+	if !strings.Contains(inspectRes.Output, "<system-notification>") || !strings.Contains(inspectRes.Output, `"name":"job_status"`) || !strings.Contains(inspectRes.Output, `"target"`) {
+		t.Fatalf("job_status({}) should disclose schema cleanly, got:\n%s", inspectRes.Output)
 	}
 
 	// call_tool is unregistered and fails as an unknown tool.
@@ -1860,7 +1858,8 @@ func TestManagerAndWatchParentKeepJobsUpfront(t *testing.T) {
 		}
 		assertFullTier1Def(t, mgrByName[want])
 	}
-	assertDeferredStubDef(t, mgrByName["web_fetch"], "")
+	assertFullTier1Def(t, mgrByName["web_fetch"])
+	assertDeferredStubDef(t, mgrByName["compact_context"], "")
 
 	obsCfg := SessionConfig{
 		StateDir:      t.TempDir(),
@@ -1905,7 +1904,8 @@ func TestManagerAndWatchParentKeepJobsUpfront(t *testing.T) {
 		}
 		assertFullTier1Def(t, reqTD)
 	}
-	assertDeferredStubDef(t, obsByName["web_fetch"], "")
+	assertFullTier1Def(t, obsByName["web_fetch"])
+	assertDeferredStubDef(t, obsByName["compact_context"], "")
 
 	// When read_transcript is denied/unregistered, observer must not advertise it.
 	deniedObsCfg := SessionConfig{
