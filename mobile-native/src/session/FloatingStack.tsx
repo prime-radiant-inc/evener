@@ -10,6 +10,7 @@
 import type { ReactNode } from "react";
 import { View } from "react-native";
 import { type Palette, radius } from "../design/tokens";
+import { floatingShadow } from "../design/floatingShadow";
 import { FLOAT_GAP } from "../design/underBar";
 import { useComposerTyping } from "../useKeyboardShown";
 import type { ComposerFocus } from "./composerFocus";
@@ -24,11 +25,7 @@ export function floatingCapsule(palette: Palette) {
 		borderWidth: 1,
 		borderColor: palette.edgeStrong,
 		backgroundColor: palette.surface,
-		shadowColor: "#000",
-		shadowOpacity: 0.12,
-		shadowRadius: 8,
-		shadowOffset: { width: 0, height: 2 },
-		elevation: 3,
+		...floatingShadow({ width: 0, height: 2 }, 8),
 	} as const;
 }
 

@@ -3,21 +3,15 @@
 // (spec 16.3).
 import { useCallback, useState } from "react";
 import { type LayoutChangeEvent, Platform, type ViewStyle } from "react-native";
+import { floatingShadow } from "./floatingShadow";
 
 /** The gap between a bar and what floats above it (a toast, Next, "↓ new"). */
 export const FLOAT_GAP = 10;
 
-/** What a floating element wears so it reads as lifted off the page
- * (spec 16.3): the shadow* props iOS draws, and the elevation Android draws
- * instead. A round control (the Board's compose button) and a surface (a
- * toast, a notice banner) take the same lift. */
-export const FLOATING_SHADOW: ViewStyle = {
-	shadowColor: "#000000",
-	shadowOpacity: 0.12,
-	shadowRadius: 12,
-	shadowOffset: { width: 0, height: 4 },
-	elevation: 3,
-};
+/** What an under-bar floating element wears so it reads as lifted off the
+ * page (spec 16.3): a round control (the Board's compose button) and a
+ * surface (a toast, a notice banner) take the same lift. */
+export const FLOATING_SHADOW: ViewStyle = floatingShadow({ width: 0, height: 4 }, 12);
 
 /** How a list keeps its end clear of a bar `barHeight` tall. On iOS the bar
  * is a content inset: the list's content size never depends on it, so the
