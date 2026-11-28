@@ -990,4 +990,113 @@ func TestApplyPatch_BlankLineTolerantUniqueFallback(t *testing.T) {
 			t.Fatalf("got:\n%q\nwant:\n%q", string(got), want)
 		}
 	})
+
+	t.Run("explicit blank context between deletions preserves file blank line", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		path := filepath.Join(dir, "para.txt")
+		orig := "p1a\np1b\n\np2a\np2b\n\nend\n"
+		if err := os.WriteFile(path, []byte(orig), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		// Omitted blank line before "end" activates blank-line fallback; the
+		// explicit blank context between -p1b and -p2a must keep the file gap.
+		patch := "*** Begin Patch\n*** Update File: para.txt\n@@\n p1a\n-p1b\n \n-p2a\n p2b\n end\n*** End Patch\n"
+		if _, err := ApplyPatch(t.Context(), testMutator(dir), patch); err != nil {
+			t.Fatalf("ApplyPatch failed: %v", err)
+		}
+		got, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := "p1a\n\np2b\n\nend\n"
+		if string(got) != want {
+			t.Fatalf("got:\n%q\nwant:\n%q", string(got), want)
+		}
+
+		// Multiple blank context lines in the patch must not duplicate a single file blank line.
+		dupPath := filepath.Join(dir, "para_dup.txt")
+		if err := os.WriteFile(dupPath, []byte(orig), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		dupPatch := "*** Begin Patch\n*** Update File: para_dup.txt\n@@\n p1a\n-p1b\n \n \n-p2a\n p2b\n end\n*** End Patch\n"
+		if _, err := ApplyPatch(t.Context(), testMutator(dir), dupPatch); err != nil {
+			t.Fatalf("ApplyPatch failed: %v", err)
+		}
+		got, err = os.ReadFile(dupPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != want {
+			t.Fatalf("got:\n%q\nwant:\n%q", string(got), want)
+		}
+	})
+
+	t.Run("extra blank context between deletions does not invent blank line", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		path := filepath.Join(dir, "nobrk.txt")
+		orig := "p1a\np1b\np2a\np2b\n\nend\n"
+		if err := os.WriteFile(path, []byte(orig), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		patch := "*** Begin Patch\n*** Update File: nobrk.txt\n@@\n p1a\n-p1b\n \n-p2a\n p2b\n end\n*** End Patch\n"
+		if _, err := ApplyPatch(t.Context(), testMutator(dir), patch); err != nil {
+			t.Fatalf("ApplyPatch failed: %v", err)
+		}
+		got, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := "p1a\np2b\n\nend\n"
+		if string(got) != want {
+			t.Fatalf("got:\n%q\nwant:\n%q", string(got), want)
+		}
+	})
+
+	t.Run("additions around explicit blank context between deletions keep patch order", func(t *testing.T) {
+		t.Parallel()
+		orig := "top\ndrop1\n\ndrop2\n\nbot\n"
+		cases := []struct {
+			name  string
+			patch string
+			want  string
+		}{
+			{
+				name:  "blank context before addition",
+				patch: "*** Begin Patch\n*** Update File: f.txt\n@@\n top\n-drop1\n \n+added\n-drop2\n bot\n*** End Patch\n",
+				want:  "top\n\nadded\n\nbot\n",
+			},
+			{
+				name:  "addition before blank context",
+				patch: "*** Begin Patch\n*** Update File: f.txt\n@@\n top\n-drop1\n+added\n \n-drop2\n bot\n*** End Patch\n",
+				want:  "top\nadded\n\n\nbot\n",
+			},
+			{
+				name:  "additions on both sides of blank context",
+				patch: "*** Begin Patch\n*** Update File: f.txt\n@@\n top\n-drop1\n+added1\n \n+added2\n-drop2\n bot\n*** End Patch\n",
+				want:  "top\nadded1\n\nadded2\n\nbot\n",
+			},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
+				dir := t.TempDir()
+				path := filepath.Join(dir, "f.txt")
+				if err := os.WriteFile(path, []byte(orig), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := ApplyPatch(t.Context(), testMutator(dir), tc.patch); err != nil {
+					t.Fatalf("ApplyPatch failed: %v", err)
+				}
+				got, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if string(got) != tc.want {
+					t.Fatalf("got:\n%q\nwant:\n%q", string(got), tc.want)
+				}
+			})
+		}
+	})
 }

@@ -784,17 +784,20 @@ func uniqueNonBlankMatch(lines []string, nonBlankIdx []int, patNonBlank []string
 }
 
 // applyBlankTolerantReplacement preserves file indentation on context lines and
-// file blank lines outside deleted blocks while skipping blank patch context.
+// file blank lines outside contiguous deleted blocks.
 func applyBlankTolerantReplacement(origLines []string, matchedIdx []int, entries []replacementEntry) []string {
 	out := make([]string, 0, len(entries))
 	oldIdx, prevPrefix, sawPlus := 0, byte(0), false
 	for _, entry := range entries {
 		if entry.prefix == '+' {
-			out = append(out, entry.body)
-			sawPlus = true
+			out, sawPlus = append(out, entry.body), true
 			continue
 		}
 		if entry.prefix == ' ' && strings.TrimSpace(entry.body) == "" {
+			if oldIdx > 0 && oldIdx < len(matchedIdx) && prevPrefix == '-' {
+				out = append(out, origLines[matchedIdx[oldIdx-1]+1:matchedIdx[oldIdx]]...)
+				prevPrefix = ' '
+			}
 			continue
 		}
 		if oldIdx > 0 && prevPrefix == '-' && (entry.prefix == ' ' || sawPlus) {
