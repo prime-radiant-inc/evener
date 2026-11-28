@@ -8,10 +8,9 @@ import { floatingShadow } from "./floatingShadow";
 /** The gap between a bar and what floats above it (a toast, Next, "↓ new"). */
 export const FLOAT_GAP = 10;
 
-/** What a floating element wears so it reads as lifted off the page
- * (spec 16.3): the shadow* props iOS draws, and the elevation Android draws
- * instead. A round control (the Board's compose button) and a surface (a
- * toast, a notice banner) take the same lift. */
+/** What an under-bar floating element wears so it reads as lifted off the
+ * page (spec 16.3): a round control (the Board's compose button) and a
+ * surface (a toast, a notice banner) take the same lift. */
 export const FLOATING_SHADOW: ViewStyle = floatingShadow({ width: 0, height: 4 }, 12);
 
 /** How a list keeps its end clear of a bar `barHeight` tall. On iOS the bar

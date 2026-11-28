@@ -1,7 +1,6 @@
-// The one float-family shadow recipe: every floating layer — the under-bar's
-// toast and compose button, the transcript's floating stack, the Duo split's
-// sidebar — rests on the same soft cast so the family restyles together
-// (issue #7940). A surface passes only its offset direction and blur radius.
+// The one float-family shadow recipe: every floating layer rests on the
+// same soft cast so the family restyles together. A surface passes only its
+// offset direction and blur radius.
 import type { ViewStyle } from "react-native";
 
 /** What a floating element wears so it reads as lifted off the page: the

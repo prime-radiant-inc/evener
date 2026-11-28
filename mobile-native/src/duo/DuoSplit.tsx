@@ -38,9 +38,10 @@ import { floatingShadow } from "../design/floatingShadow";
 import { DetailPaneWidthContext } from "./paneWidth";
 
 /** The split's one-ground surface treatment: both panes sit on palette.page,
- * the 1px edge hairline divides them, and the sidebar casts FloatingStack's
- * shadow recipe sideways so it reads as a layer over the detail pane. The
- * backgroundColor on the sidebar is what lets iOS render the shadow at all. */
+ * the 1px edge hairline divides them, and the sidebar casts the shared
+ * float-family shadow recipe (design/floatingShadow.ts) sideways so it reads
+ * as a layer over the detail pane. The backgroundColor on the sidebar is
+ * what lets iOS render the shadow at all. */
 export function duoSurfaceStyles(palette: Palette) {
 	return {
 		root: { backgroundColor: palette.page },
